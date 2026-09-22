@@ -1,6 +1,6 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
 import type { Context, Hono } from "hono";
-import type { AppEnv } from "../../app.ts";
+import type { AppEnv } from "../../app/app.ts";
 import type { AuthRouteOpts } from "../authn/http.ts";
 import { createSessionMiddleware } from "../authn/middleware.ts";
 import { isAdminRole } from "../authn/session-store.ts";
@@ -11,21 +11,21 @@ import {
   getOrgId,
   parseJsonBody,
 } from "../shared.ts";
-import { type Db, getDaemonCellRegistry, getDb } from "../../db.ts";
-import { recordAuditAndNotify } from "../../lib/notifications/audit-bridge.ts";
-import { parseOrganizationOptions } from "../../lib/organization-options.ts";
-import { parseDatacenterOptions } from "../../lib/datacenter-options.ts";
+import { type Db, getDaemonCellRegistry, getDb } from "../../db/connection.ts";
+import { recordAuditAndNotify } from "../../features/notifications/audit-bridge.ts";
+import { parseOrganizationOptions } from "../../features/organizations/organization-options.ts";
+import { parseDatacenterOptions } from "../../features/datacenters/datacenter-options.ts";
 import {
   parseServerOptions,
   redactServerOptions,
   type ServerOptions,
-} from "../../lib/db/server-metadata.ts";
-import { metricsDeploymentKindForRuntime } from "../../daemon/metrics/capability-plan.ts";
-import { loadTierPlacementsForServers } from "../../lib/tiers/tier-enforcement.ts";
-import { loadServerLayoutPaths } from "./server-topology-records.ts";
-import { isActiveContainerStatus } from "../../lib/db/project-delete.ts";
+} from "../../features/servers/server-metadata.ts";
+import { metricsDeploymentKindForRuntime } from "../../contracts/capability-plan.ts";
+import { loadTierPlacementsForServers } from "../../features/tiers/tier-enforcement.ts";
+import { loadServerLayoutPaths } from "../../features/servers/server-topology-records.ts";
+import { isActiveContainerStatus } from "../../features/projects/project-delete.ts";
 import { cachedServerDetailReadModel } from "../../query-cache/read-models/server-detail.ts";
-import { listServerLabels } from "../../lib/db/label-records.ts";
+import { listServerLabels } from "../../features/servers/label-records.ts";
 import { fetchDaemonServerCell } from "../../daemon/cell/server-diagnostics.ts";
 import { resolveFleetPresence } from "../../daemon/cell/fleet-presence.ts";
 import { readProjectionsForServers } from "../../daemon/cell/postgres-projection.ts";
@@ -36,19 +36,19 @@ import {
   onDaemonUpdateResult,
   repairStaleProjectedUpdate,
 } from "../../daemon/cell/control-plane-monitor.ts";
-import type { DaemonCellRegistry } from "../../daemon/cell/contracts.ts";
-import type { UpdateProjection } from "../../daemon/authn/daemon-state.ts";
+import type { DaemonCellRegistry } from "../../contracts/cell.ts";
+import type { UpdateProjection } from "../../features/servers/daemon-state.ts";
 import {
   type DaemonOutboundEnvelope,
   generateDeliveryId,
   generateRequestId,
-} from "../../daemon/cell/protocol.ts";
+} from "../../contracts/cell-protocol.ts";
 import {
   clearServerDaemonState,
   getServerDaemonStateByServerId,
   isDaemonKeyActive,
   revokeDaemonKey,
-} from "../../daemon/authn/server-identity-db.ts";
+} from "../../features/servers/server-identity-db.ts";
 import {
   container,
   datacenter,
@@ -56,27 +56,27 @@ import {
   organization,
   server,
   service,
-} from "../../lib/db/schema.ts";
-import { resolveUpdateManifest } from "../../lib/update/manifest.ts";
+} from "../../db/schema.ts";
+import { resolveUpdateManifest } from "../../features/update/manifest.ts";
 import {
   resolveInstanceUpdateChannel,
   type UpdateChannel,
-} from "../../lib/update/channel.ts";
-import { getServerUpdatePreparer } from "../../lib/update/prepare.ts";
-import { revokeLicense } from "../authn/license.ts";
-import { recomputeOrganizationAssignments } from "../../lib/tiers/assignment-records.ts";
-import { syncSelfHostedGrant } from "../../lib/tiers/self-hosted-grant-records.ts";
-import { compatLogWarn } from "../../log-compat.ts";
+} from "../../contracts/update-channel.ts";
+import { getServerUpdatePreparer } from "../../features/update/prepare.ts";
+import { revokeLicense } from "../../features/licenses/license.ts";
+import { recomputeOrganizationAssignments } from "../../features/tiers/assignment-records.ts";
+import { syncSelfHostedGrant } from "../../features/tiers/self-hosted-grant-records.ts";
+import { compatLogWarn } from "../../lib/log-compat.ts";
 import {
   hierarchyDeleteHasChildrenResponse,
   runHierarchyDelete,
 } from "../hierarchy-delete.ts";
-import * as systemHierarchy from "../system/hierarchy.ts";
-import { enqueueSystemReconcile } from "../system/reconcile.ts";
-import type { SystemReconcileAction } from "../../lib/commands/schemas.ts";
+import * as systemHierarchy from "../../features/system/hierarchy.ts";
+import { enqueueSystemReconcile } from "../../features/system/reconcile.ts";
+import type { SystemReconcileAction } from "../../contracts/commands/schemas.ts";
 import { assertDispatchInfrastructure } from "./command-dispatch.ts";
-import { deleteServerFabricMembership } from "../../lib/db/fabric-records.ts";
-import { reconcileFabricMembership } from "../../lib/fabric/enqueue.ts";
+import { deleteServerFabricMembership } from "../../features/fabric/fabric-records.ts";
+import { reconcileFabricMembership } from "../../features/fabric/enqueue.ts";
 import {
   COLOCATED_SERVER_KEY_REVOKE_BLOCKED_REASON,
   colocatedServerDeleteBlockedReason,
@@ -94,7 +94,7 @@ import {
   resolveServerUpdateStatus,
   type ServerUpdateCommit,
 } from "./update-status.ts";
-import { UPDATE_REQUEST_TTL_MS } from "../../lib/update/constants.ts";
+import { UPDATE_REQUEST_TTL_MS } from "../../features/update/constants.ts";
 import { registerServerCommandRoutes } from "./commands-routes.ts";
 import { registerServerMetricsRoutes } from "./metrics-routes.ts";
 import { registerServerLabelRoutes } from "./labels-routes.ts";
@@ -130,7 +130,7 @@ import {
 import {
   loadDatacenterDisplayNames,
   loadDatacenterMembershipsForServers,
-} from "../../lib/net/datacenter-membership.ts";
+} from "../../features/net/datacenter-membership.ts";
 
 const UPDATE_REQUEST_TTL_SECONDS = 300;
 

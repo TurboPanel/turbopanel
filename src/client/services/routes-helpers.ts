@@ -1,7 +1,7 @@
 import {
   type ParseServiceOptionsOptions,
   parseServiceOptions,
-} from '../../lib/service-options.ts'
+} from '../../features/projects/service-options.ts'
 import {
   buildPatchUpdateFields,
   parseDescription,

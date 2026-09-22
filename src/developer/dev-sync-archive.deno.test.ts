@@ -12,7 +12,7 @@ import {
  * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
  * reports Deno suites as empty; keep this alias so analysis sees real tests.
  *
- * Sibling `dev-sync-archive.test.ts` is Vitest-only and does not feed Deno LCOV.
+ * Sibling `dev-sync-archive.workers.test.ts` is Vitest-only and does not feed Deno LCOV.
  */
 const test = Deno.test.bind(Deno)
 

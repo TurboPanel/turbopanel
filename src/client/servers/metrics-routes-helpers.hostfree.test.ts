@@ -46,7 +46,7 @@ import {
   topologyOverridesFromHardwareProfile,
   withIngressDerivedValues,
 } from './metrics-routes-helpers.ts'
-import { MAX_NIC_SLOTS } from './topology-types.ts'
+import { MAX_NIC_SLOTS } from '../../contracts/topology-types.ts'
 import type { TopologyInventory } from './topology-inventory.ts'
 
 /**

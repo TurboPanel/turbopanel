@@ -1,7 +1,9 @@
 import type { Context } from 'hono'
-import type { AppEnv } from '../../app.ts'
-import type { ResolvedVariableMap } from './resolve-inherited.ts'
-import { isPostgresUniqueViolation, uniqueViolationMessage } from '../../lib/db/unique-violation.ts'
+import type { AppEnv } from '../../app/app.ts'
+import type { ResolvedVariableMap } from '../../features/variables/resolve-inherited.ts'
+import { uniqueViolationMessage } from '../../db/unique-violation.ts'
+
+export { isPostgresUniqueViolation } from '../../db/unique-violation.ts'
 
 export const VARIABLE_KEY_RE = /^[A-Za-z_]\w*$/
 
@@ -53,8 +55,6 @@ export type VariableRow = {
   createdAt: string
   updatedAt: string
 }
-
-export { isPostgresUniqueViolation }
 
 export function isVariableKeyUniqueViolation(err: unknown): boolean {
   const message = uniqueViolationMessage(err)

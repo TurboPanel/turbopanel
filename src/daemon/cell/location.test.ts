@@ -1,6 +1,6 @@
 import { assertEquals } from "@std/assert";
-import type { Db } from "../../db.ts";
-import type { ServerMetadata, ServerOptions } from "../../lib/db/server-metadata.ts";
+import type { Db } from "../../db/connection.ts";
+import type { ServerMetadata, ServerOptions } from "../../features/servers/server-metadata.ts";
 import { resolveCellLocationHint } from "./location.ts";
 
 /**

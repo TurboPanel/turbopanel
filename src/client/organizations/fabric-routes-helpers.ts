@@ -1,10 +1,10 @@
-import type { Db } from "../../db.ts";
-import type { CommandQueue } from "../../lib/commands/queue.ts";
+import type { Db } from "../../db/connection.ts";
+import type { CommandQueue } from "../../features/commands/queue.ts";
 import {
   type FabricEnqueueResult,
   fabricEnqueueTypedError,
   type reconcileFabricMembership,
-} from "../../lib/fabric/enqueue.ts";
+} from "../../features/fabric/enqueue.ts";
 import {
   type EndpointAddressCaches,
   FabricAllocationError,
@@ -14,19 +14,19 @@ import {
   type RelayRecord,
   type RelayRole,
   resolveRelayGlobalEndpointAddress,
-} from "../../lib/db/fabric-records.ts";
+} from "../../features/fabric/fabric-records.ts";
 import {
   parseFabricOptions,
   parseIpv4Cidr,
   RELAY_PREFIX_LENGTH,
-} from "../../lib/fabric/cidr.ts";
+} from "../../features/fabric/cidr.ts";
 import {
   PREFERRED_GATEWAY_IDS_MAX,
   resolveEffectiveAllowRelay,
-} from "../../lib/fabric/policy.ts";
+} from "../../features/fabric/policy.ts";
 import { alignedNetworkCidr, isValidIpAddress } from "../../lib/ip-address.ts";
-import { isValidWireguardPublicKey } from "../../lib/fabric/wg.ts";
-import type { GatewayRelayReadyError } from "../../lib/net/datacenter-networks.ts";
+import { isValidWireguardPublicKey } from "../../features/fabric/wg.ts";
+import type { GatewayRelayReadyError } from "../../features/net/datacenter-networks.ts";
 
 export type FabricMembershipSecrets = Pick<
   Parameters<typeof reconcileFabricMembership>[0],
@@ -35,7 +35,7 @@ export type FabricMembershipSecrets = Pick<
 
 export type RelayPatchReconcileFn = typeof reconcileFabricMembership;
 
-export type { RelayMetadata } from "../../lib/db/fabric-records.ts";
+export type { RelayMetadata } from "../../features/fabric/fabric-records.ts";
 
 const ADVERTISED_CIDRS_MAX = 32;
 const UUID_RE =
@@ -57,7 +57,7 @@ export type FabricPutBody = {
 
 /**
  * The fabric container pool is deliberately IPv4-only (see the header of
- * `src/lib/fabric/cidr.ts`) and must fit at least one relay aggregate
+ * `src/features/fabric/cidr.ts`) and must fit at least one relay aggregate
  * (`RELAY_PREFIX_LENGTH`), otherwise `requireRelayPrefix` would exhaust on
  * the first relay.
  */

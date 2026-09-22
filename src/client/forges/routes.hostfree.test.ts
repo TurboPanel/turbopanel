@@ -9,9 +9,9 @@
 import { assertEquals, assertThrows } from "@std/assert";
 import { Hono } from "hono";
 import type { Context } from "hono";
-import type { AppEnv } from "../../app.ts";
-import type { Db } from "../../db.ts";
-import { forge, setting } from "../../lib/db/schema.ts";
+import type { AppEnv } from "../../app/app.ts";
+import type { Db } from "../../db/connection.ts";
+import { forge, setting } from "../../db/schema.ts";
 import { parseTestSecretsConfig } from "../../test-fixtures/secrets.ts";
 import {
   createEmptyMockAuthState,
@@ -23,7 +23,7 @@ import {
   buildSignedCookie,
   HTTP_SESSION_COOKIE_NAME,
 } from "../authn/crypto.ts";
-import { deriveSecretsConfig } from "../authn/secrets.ts";
+import { deriveSecretsConfig } from "../../lib/secrets/secrets.ts";
 import { ORG_ID_HEADER } from "../org-context.ts";
 import { registerForgeRoutes } from "./routes.ts";
 

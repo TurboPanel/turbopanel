@@ -36,7 +36,7 @@ if (!parts) {
 
 const options = { max: 1, prepare: false, connect_timeout: 15, onnotice: () => {} }
 // Unix-socket libpq URLs (`?host=/dir`) need the connection-object form —
-// postgres.js string parsing rejects the `@/db` shape (same as src/db.ts).
+// postgres.js string parsing rejects the `@/db` shape (same as src/db/connection.ts).
 const sql = parts.socketDir
   ? postgres({
       host: parts.socketDir,

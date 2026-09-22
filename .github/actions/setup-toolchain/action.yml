@@ -1,0 +1,51 @@
+name: Setup instance toolchain
+description: Install pinned pnpm, Node, and Deno, then a frozen pnpm install.
+
+runs:
+  using: composite
+  steps:
+    # Node and Deno versions are the daemon role defaults (node_version /
+    # deno_version). dev paths.sh and run.sh are tested against those files,
+    # so this action reads them instead of copying the numbers.
+    - name: Check out runtime pins
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        repository: TurboPanel/turbopaneld
+        ref: trunk
+        fetch-depth: 1
+        path: .ci-toolchain-pins
+        persist-credentials: false
+        sparse-checkout: |
+          orchestration/roles/node-runtime/defaults
+          orchestration/roles/deno-runtime/defaults
+
+    - name: Read runtime pins
+      id: pins
+      shell: bash
+      run: |
+        root="${GITHUB_WORKSPACE}/.ci-toolchain-pins"
+        node_version=$(sh scripts/ci-runtime-pins.sh "$root" node)
+        deno_version=$(sh scripts/ci-runtime-pins.sh "$root" deno)
+        echo "node-version=${node_version}" >> "$GITHUB_OUTPUT"
+        echo "deno-version=${deno_version}" >> "$GITHUB_OUTPUT"
+        rm -rf "$root"
+
+    - name: Install pnpm
+      uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+    - name: Set up Node.js
+      uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      with:
+        node-version: ${{ steps.pins.outputs.node-version }}
+        cache: pnpm
+
+    - name: Install Deno
+      uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
+      with:
+        deno-version: ${{ steps.pins.outputs.deno-version }}
+        cache: true
+
+    - name: Install dependencies
+      # BYONM: deno task compile bundles duckdb.node from this pnpm tree.
+      shell: bash
+      run: pnpm install --frozen-lockfile --ignore-scripts

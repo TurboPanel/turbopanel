@@ -24,11 +24,11 @@
  */
 import { assertEquals } from '@std/assert'
 import { it } from '@std/testing/bdd'
-import { buildMetricsSample, type MetricsSampleInput } from '../../contract.ts'
+import { buildMetricsSample, type MetricsSampleInput } from '../../../../contracts/metrics-contract.ts'
 import {
   resolveMetricsCapabilityPlan,
   truncateSampleToCapabilityPlan,
-} from '../../capability-plan.ts'
+} from '../../../../contracts/capability-plan.ts'
 import type { AuthenticatedMetricsSample, SlotMapping } from '../../types.ts'
 import type { ServerStatusEvent } from '../../types.ts'
 import { DuckDbParquetServerMetricsStore } from '../duckdb/store.ts'

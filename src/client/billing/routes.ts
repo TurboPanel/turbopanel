@@ -19,48 +19,48 @@
  *
  * Nothing on this surface names a license or a server: an admin buys and
  * releases *quantities* per tier, and which server sits where is derived
- * (`src/lib/tiers/assignment.ts`).
+ * (`src/features/tiers/assignment.ts`).
  */
 
 import type { Context, Hono } from "hono";
-import type { AppEnv } from "../../app.ts";
-import { type Db, getDb } from "../../db.ts";
+import type { AppEnv } from "../../app/app.ts";
+import { type Db, getDb } from "../../db/connection.ts";
 import {
   createStripeClient,
   type StripeClient,
-} from "../../lib/billing/client.ts";
+} from "../../features/billing/client.ts";
 import {
   type BillingConfig,
   isCustomerBillingOperational,
-} from "../../lib/billing/config.ts";
+} from "../../features/billing/config.ts";
 import {
   checkoutIdempotencyKey,
   checkoutReturnUrls,
   createCheckoutSession,
   ensureCustomerForOrganization,
-} from "../../lib/billing/checkout.ts";
-import { seatLinesFromState } from "../../lib/billing/entitlements.ts";
-import { resolveBillingGateway } from "../../lib/billing/gateway.ts";
+} from "../../features/billing/checkout.ts";
+import { seatLinesFromState } from "../../features/billing/entitlements.ts";
+import { resolveBillingGateway } from "../../features/billing/gateway.ts";
 import {
   newPendingCheckoutRecord,
   pendingCheckoutMatches,
   readPendingCheckout,
   writePendingCheckout,
-} from "../../lib/billing/pending-checkout.ts";
-import { createPortalSession } from "../../lib/billing/portal.ts";
+} from "../../features/billing/pending-checkout.ts";
+import { createPortalSession } from "../../features/billing/portal.ts";
 import {
   type BillingQuantityLock,
   endQuantityMutation,
   tryBeginQuantityMutation,
-} from "../../lib/billing/quantity-lock.ts";
+} from "../../features/billing/quantity-lock.ts";
 import {
   buildItemMutation,
   previewSubscriptionChange,
   type TierDelta,
-} from "../../lib/billing/subscriptions.ts";
-import { resolveTierPrice } from "../../lib/billing/tier-prices.ts";
-import { listActiveTiers } from "../../lib/db/tier-records.ts";
-import { resolvePublicBaseUrl } from "../../lib/resolve-public-base-url.ts";
+} from "../../features/billing/subscriptions.ts";
+import { resolveTierPrice } from "../../features/billing/tier-prices.ts";
+import { listActiveTiers } from "../../features/tiers/tier-records.ts";
+import { resolvePublicBaseUrl } from "../../features/install/resolve-public-base-url.ts";
 import type { AuthRouteOpts } from "../authn/http.ts";
 import { createSessionMiddleware } from "../authn/middleware.ts";
 import { assertOrgOwnerOr403 } from "../authz/index.ts";

@@ -50,7 +50,7 @@ import {
   STORAGE_FLAT_FIELD_NAMES,
   storageEngineFieldName,
   type StorageEngineSample,
-} from '../../contract.ts'
+} from '../../../../contracts/metrics-contract.ts'
 
 /** Hot raw-sample tables (recent, un-archived rows). */
 export const HOST_SAMPLES_TABLE = 'server_host_samples'

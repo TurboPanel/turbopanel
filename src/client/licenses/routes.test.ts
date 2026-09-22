@@ -1,16 +1,16 @@
 import { assertEquals } from '@std/assert'
 import { and, eq } from 'drizzle-orm'
 import { Hono } from 'hono'
-import type { AppEnv } from '../../app.ts'
-import { getDatabaseUrl } from '../../db-url.ts'
-import { createDenoDb } from '../../db.ts'
-import type { DaemonCell, DaemonCellRegistry } from '../../daemon/cell/contracts.ts'
+import type { AppEnv } from '../../app/app.ts'
+import { getDatabaseUrl } from '../../db/url.ts'
+import { createDenoDb } from '../../db/connection.ts'
+import type { DaemonCell, DaemonCellRegistry } from '../../contracts/cell.ts'
 import {
   buildSignedCookie,
   HTTP_SESSION_COOKIE_NAME,
 } from '../authn/crypto.ts'
 import { createSession } from '../authn/session-store.ts'
-import { deriveSecretsConfig } from '../authn/secrets.ts'
+import { deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
 import {
   COLOCATED_SERVER_DISPLAY_NAME,
   colocatedLicenseRevokeError,
@@ -26,9 +26,9 @@ import {
   service,
   user,
   workspace,
-} from '../../lib/db/schema.ts'
+} from '../../db/schema.ts'
 import { DISPLAY_NAME_MAX_LENGTH } from '../../lib/display-name-format.ts'
-import { ensureSelfHostSystemHierarchy } from '../system/hierarchy.ts'
+import { ensureSelfHostSystemHierarchy } from '../../features/system/hierarchy.ts'
 import { registerLicenseRoutes } from './routes.ts'
 import { registerServerRoutes } from '../servers/routes.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'

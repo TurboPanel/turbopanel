@@ -1,8 +1,8 @@
 import { assertEquals } from "@std/assert";
 import { it } from "@std/testing/bdd";
-import type { PendingRequestRecord } from "../../daemon/cell/contracts.ts";
+import type { PendingRequestRecord } from "../../contracts/cell.ts";
 import type { ServerFleetPresence } from "../../daemon/cell/fleet-presence.ts";
-import { UPDATE_REQUEST_TTL_MS } from "../../lib/update/constants.ts";
+import { UPDATE_REQUEST_TTL_MS } from "../../features/update/constants.ts";
 import {
   buildServerStatusRecord,
   colocatedServerUpdateBlockedReason,

@@ -13,13 +13,13 @@
  */
 import { and, asc, count, eq, gt, isNull, lt, or, sql } from "drizzle-orm";
 import type { Context } from "hono";
-import type { AppEnv } from "../../app.ts";
-import type { DerivedSecretsConfig, SecretsConfig } from "../authn/secrets.ts";
-import type { Db } from "../../db.ts";
-import type { CommandQueue } from "../../lib/commands/queue.ts";
-import { leaf, lease, tls } from "../../lib/db/schema.ts";
+import type { AppEnv } from "../../app/app.ts";
+import type { DerivedSecretsConfig, SecretsConfig } from "../../lib/secrets/secrets.ts";
+import type { Db } from "../../db/connection.ts";
+import type { CommandQueue } from "../../features/commands/queue.ts";
+import { leaf, lease, tls } from "../../db/schema.ts";
 import { ORGANIZATION_CA_LEAF_VALID_DAYS } from "../../lib/tls/self-signed.ts";
-import { enqueueManagedIngressReconcile } from "../managed/ingress-desired.ts";
+import { enqueueManagedIngressReconcile } from "../../features/managed/ingress-desired.ts";
 import { enqueueApplyForManagedCluster } from "./changeover-fanout.ts";
 
 const MS_PER_DAY = 86_400_000;

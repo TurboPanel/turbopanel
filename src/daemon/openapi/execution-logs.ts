@@ -1,4 +1,4 @@
-import { MAX_EXECUTION_LOG_CHUNK_BYTES } from "../../lib/execution-logs/types.ts";
+import { MAX_EXECUTION_LOG_CHUNK_BYTES } from "../../features/execution-logs/types.ts";
 
 export const executionLogSchemas = {
   DaemonExecutionLogChunk: {

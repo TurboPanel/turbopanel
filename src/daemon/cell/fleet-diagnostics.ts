@@ -1,15 +1,15 @@
-import type { Db } from "../../db.ts";
-import { server } from "../../lib/db/schema.ts";
+import type { Db } from "../../db/connection.ts";
+import { server } from "../../db/schema.ts";
 import type {
   CellDiagnostics,
   DaemonCellRegistry,
   PendingRequestRecord,
-} from "./contracts.ts";
+} from "../../contracts/cell.ts";
 import {
   type DaemonOutboundEnvelope,
   generateDeliveryId,
   generateRequestId,
-} from "./protocol.ts";
+} from "../../contracts/cell-protocol.ts";
 
 export type CommandResult = {
   id: string;

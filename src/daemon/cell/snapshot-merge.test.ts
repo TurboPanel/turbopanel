@@ -1,5 +1,5 @@
 import { assertEquals } from '@std/assert'
-import type { DaemonCellSnapshot } from './contracts.ts'
+import type { DaemonCellSnapshot } from '../../contracts/cell.ts'
 import { mergeSnapshotPresence } from './snapshot-merge.ts'
 
 /**

@@ -1,5 +1,5 @@
 import type { Context, Hono } from 'hono'
-import type { AppEnv } from '../../app.ts'
+import type { AppEnv } from '../../app/app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import {
@@ -8,12 +8,12 @@ import {
   getOrgId,
   parseJsonBody,
 } from '../shared.ts'
-import { getDb, type Db } from '../../db.ts'
+import { getDb, type Db } from '../../db/connection.ts'
 import {
   listServerLabels,
   parseServerLabelInput,
   setServerLabels,
-} from '../../lib/db/label-records.ts'
+} from '../../features/servers/label-records.ts'
 import { verifyServerInOrg } from '../environments/deploy-prepare.ts'
 
 type ServerLabelAccess = {

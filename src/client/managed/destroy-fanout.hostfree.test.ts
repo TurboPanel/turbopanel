@@ -11,17 +11,17 @@
 
 import { assertEquals } from '@std/assert'
 import type { Context } from 'hono'
-import type { AppEnv } from '../../app.ts'
-import type { Db } from '../../db.ts'
-import type { CommandEnvelope } from '../../lib/commands/envelope.ts'
-import type { CommandQueue } from '../../lib/commands/queue.ts'
-import { command } from '../../lib/db/schema.ts'
+import type { AppEnv } from '../../app/app.ts'
+import type { Db } from '../../db/connection.ts'
+import type { CommandEnvelope } from '../../features/commands/envelope.ts'
+import type { CommandQueue } from '../../features/commands/queue.ts'
+import { command } from '../../db/schema.ts'
 import {
   enqueueManagedDestroyFanout,
   MANAGED_DESTROY_GATE_METADATA_KEY,
-} from './apply-prepare.ts'
-import { parseManagedDestroyGate } from './destroy-gate.ts'
-import type { ManagedMemberRow } from './members.ts'
+} from '../../features/managed/apply-prepare.ts'
+import { parseManagedDestroyGate } from '../../features/managed/destroy-gate.ts'
+import type { ManagedMemberRow } from '../../features/managed/members.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.

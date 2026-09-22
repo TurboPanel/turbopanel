@@ -6,17 +6,17 @@
  *   daemon cell  = live connection owner
  *   projection   = writing meaningful state to Postgres (postgres-projection.ts)
  */
-import type { Db } from "../../db.ts";
-import type { ServerGeo } from "../../lib/geo/server-geo.ts";
-import { getServerDaemonStateByServerId } from "../authn/server-identity-db.ts";
-import type { UpdateProjection } from "../authn/daemon-state.ts";
-import type { DaemonCell } from "./contracts.ts";
+import type { Db } from "../../db/connection.ts";
+import type { ServerGeo } from "../../features/geo/server-geo.ts";
+import { getServerDaemonStateByServerId } from "../../features/servers/server-identity-db.ts";
+import type { UpdateProjection } from "../../features/servers/daemon-state.ts";
+import type { DaemonCell } from "../../contracts/cell.ts";
 import {
   type AlertSender,
   NOOP_ALERT_SENDER,
-} from "../../lib/alerts/alert-sender.ts";
+} from "../../features/alerts/alert-sender.ts";
 import { isMassDisconnect } from "./mass-disconnect.ts";
-import { notifyDemotions } from "../../lib/alerts/notify-demotions.ts";
+import { notifyDemotions } from "../../features/alerts/notify-demotions.ts";
 import {
   daemonBuildChanged,
   identityFromSnapshot,
@@ -24,13 +24,13 @@ import {
   steadyStateInboundSkipsDbRead,
   type ProjectionDaemonBuild,
 } from "./postgres-projection.ts";
-import { resolveUpdateManifest } from "../../lib/update/manifest.ts";
+import { resolveUpdateManifest } from "../../features/update/manifest.ts";
 import {
   DEFAULT_UPDATE_CHANNEL,
   type UpdateChannel,
-} from "../../lib/update/channel.ts";
+} from "../../contracts/update-channel.ts";
 import { isStaleProjectedUpdating } from "../../client/servers/update-status.ts";
-import { UPDATE_REQUEST_TTL_MS } from "../../lib/update/constants.ts";
+import { UPDATE_REQUEST_TTL_MS } from "../../features/update/constants.ts";
 import type { RedisDaemonCell } from "./redis/cell.ts";
 import type { RedisDaemonCellRegistry } from "./redis/registry.ts";
 

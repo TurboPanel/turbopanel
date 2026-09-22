@@ -1,7 +1,7 @@
 import { assertEquals } from '@std/assert'
 
 import { postgresConfigFromContext } from './database-routes-shared.ts'
-import { postgresConfigFromEnv } from '../db-url.ts'
+import { postgresConfigFromEnv } from '../db/url.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.

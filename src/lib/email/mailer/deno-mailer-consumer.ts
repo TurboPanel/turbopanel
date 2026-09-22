@@ -1,17 +1,17 @@
 import amqplib from 'amqplib'
-import type { Db } from '../../../db.ts'
-import type { DerivedSecretsConfig } from '../../../client/authn/secrets.ts'
-import { logError, logInfo, logWarn } from '../../../logger.ts'
+import type { Db } from '../../../db/connection.ts'
+import type { DerivedSecretsConfig } from '../../secrets/secrets.ts'
+import { logError, logInfo, logWarn } from '../../logger.ts'
 import {
   type EmailProvider,
   type ResolvedEmailSettings,
   resolveEmailSettings,
-} from '../../settings/email-settings.ts'
-import type { MailerSender } from '../sender-types.ts'
+} from '../../../features/settings/email-settings.ts'
+import type { MailerSender } from '../../../features/email/sender-types.ts'
 import {
   assertEmailAmqpTopology,
   EMAIL_AMQP_QUEUE,
-} from '../smtp/amqp-topology.ts'
+} from '../../../features/email/smtp/amqp-topology.ts'
 import { createMailerSmtpSender } from '@turbopanel/email/smtp-sender'
 import { createMailerMailgunSender } from './mailgun-sender.ts'
 import { createMailerMailpitSender } from './mailpit-sender.ts'

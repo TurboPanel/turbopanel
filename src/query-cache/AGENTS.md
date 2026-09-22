@@ -22,7 +22,7 @@ Read-through cache for **reviewed, read-only** Postgres read models. Permission 
 
 Workers must **not** fall back to the primary Hyperdrive binding as the cached connection. `resolveWorkersCachedDb()` returns a database only when `HYPERDRIVE_CACHED` is present; otherwise `resolveWorkersQueryCache` uses passthrough (no Hyperdrive caching).
 
-On Workers, Hyperdrive caching for approved read models relies on **`prepare: true`** on the postgres.js client (`PG_OPTS_WORKERS` in `src/db.ts`). With `prepare: false`, Hyperdrive treats parameterized `SELECT`s as uncacheable. See **Workers Hyperdrive** in `../../AGENTS.md` (instance repo root). A source-scan regression test in `src/db.test.ts` pins `prepare: true` so it cannot silently regress.
+On Workers, Hyperdrive caching for approved read models relies on **`prepare: true`** on the postgres.js client (`PG_OPTS_WORKERS` in `src/db/connection.ts`). With `prepare: false`, Hyperdrive treats parameterized `SELECT`s as uncacheable. See **Workers Hyperdrive** in `../../AGENTS.md` (instance repo root). A source-scan regression test in `src/db/connection.test.ts` pins `prepare: true` so it cannot silently regress.
 
 ### Hyperdrive binding ids
 

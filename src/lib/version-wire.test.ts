@@ -8,7 +8,7 @@ import {
   parseSemver,
   resolveDaemonSupport,
 } from './version-wire.ts'
-import { INSTANCE_VERSION } from '../version.ts'
+import { INSTANCE_VERSION } from '../app/version.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.

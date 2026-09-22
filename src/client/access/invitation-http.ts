@@ -11,17 +11,17 @@ import {
   validatePermissionEntityCompatibility,
 } from '../authz/create-access-grant.ts'
 import { can, canInviteToTeam, canManageOrganization } from '../authz/index.ts'
-import type { Db } from '../../db.ts'
-import { getDb } from '../../db.ts'
+import type { Db } from '../../db/connection.ts'
+import { getDb } from '../../db/connection.ts'
 import {
   invitation,
   organization,
   team,
   user,
-} from '../../lib/db/schema.ts'
-import { getEmailQueue } from '../../lib/email/types.ts'
-import { isNoopEmailQueue } from '../../lib/email/noop-queue.ts'
-import { resolvePublicBaseUrl } from '../../lib/resolve-public-base-url.ts'
+} from '../../db/schema.ts'
+import { getEmailQueue } from '../../features/email/types.ts'
+import { isNoopEmailQueue } from '../../features/email/noop-queue.ts'
+import { resolvePublicBaseUrl } from '../../features/install/resolve-public-base-url.ts'
 import { getOrgId } from '../shared.ts'
 import {
   parseCreateInvitationBody,

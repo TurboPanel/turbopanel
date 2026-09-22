@@ -7,7 +7,7 @@
  * emitting SQL that survives reserved identifiers and apostrophes; and
  * printing only the statements whose text differs from what already
  * shipped, in snapshot order. The CLI is run through `node` the way the
- * loop in src/lib/db/AGENTS.md invokes it.
+ * loop in src/db/AGENTS.md invokes it.
  */
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { describe, it } from "@std/testing/bdd";
@@ -22,7 +22,7 @@ import {
   sqlLiteral,
 } from "./schema-comments.mjs";
 import { readLatestSnapshot } from "./schema-snapshot.mjs";
-import { SCHEMA_DESCRIPTIONS } from "../src/lib/db/schema-descriptions.ts";
+import { SCHEMA_DESCRIPTIONS } from "../src/db/schema-descriptions.ts";
 import { writeFixtureMigrations } from "./schema-fixture.test-helper.ts";
 
 const repoRoot = join(dirname(fromFileUrl(import.meta.url)), "..");

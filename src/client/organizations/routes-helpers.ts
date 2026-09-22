@@ -7,7 +7,7 @@ import {
   resolveComposeGatedFieldsEnabled,
   resolveDeployHooksEnabled,
   type TemperatureUnit,
-} from "../../lib/organization-options.ts";
+} from "../../features/organizations/organization-options.ts";
 import { DISPLAY_NAME_MAX_LENGTH } from "../../lib/display-name-format.ts";
 import { isAllowedTimezone } from "../../lib/timezones.ts";
 import type { OrganizationSummary } from "../org-context.ts";
@@ -17,29 +17,29 @@ import {
   parseDefaultFabricEnabledInput,
   parseNtpDefaultsInput,
   parseSshPortInput,
-} from "../../lib/host-defaults.ts";
+} from "../../features/servers/host-defaults.ts";
 import {
   type ManagedIngressPortsPatch,
   type ManagedOrganizationDefaults,
   parseManagedIngressPortsInput,
   parseManagedSslModeInput,
   validateManagedOrganizationDefaults,
-} from "../../lib/managed/org-defaults.ts";
+} from "../../features/managed/org-defaults.ts";
 import {
   type ManagedIngressPortRejection,
   resolveManagedIngressPorts,
-} from "../../lib/managed/ingress-ports.ts";
+} from "../../features/managed/ingress-ports.ts";
 import {
   type ManagedSslMode,
   resolveManagedSslMode,
-} from "../../lib/managed/ssl.ts";
+} from "../../features/managed/ssl.ts";
 import {
   DOCKER_ADDRESS_POOLS_MAX,
   type DockerAddressingRejection,
   isValidDefaultBridgeCidr,
   type OrganizationDockerNetworking,
   validateDockerAddressPools,
-} from "../../lib/docker-address-pools.ts";
+} from "../../features/deploy/docker-address-pools.ts";
 
 /** Matches {@link NEW_ORGANIZATION_NAME} in authn/install-state.ts. */
 const NEW_ORGANIZATION_DISPLAY_NAME = "New Organization";

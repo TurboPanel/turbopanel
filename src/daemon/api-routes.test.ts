@@ -2,11 +2,11 @@ import { assert, assertEquals, assertExists } from "@std/assert";
 import { decodeBase64Url, encodeBase64Url } from "@std/encoding/base64url";
 import { eq, sql } from "drizzle-orm";
 import { Hono } from "hono";
-import type { AppEnv } from "../app.ts";
-import { deriveSecretsConfig } from "../client/authn/secrets.ts";
+import type { AppEnv } from "../app/app.ts";
+import { deriveSecretsConfig } from "../lib/secrets/secrets.ts";
 import { deriveDaemonJwtKeyring } from "./authn/daemon-jwt-keyring.ts";
 import type { DaemonPublicJwk } from "./authn/daemon-jwt-keyring.ts";
-import { encryptSecretForDaemon } from "../client/authn/data-encryption.ts";
+import { encryptSecretForDaemon } from "../lib/secrets/data-encryption.ts";
 import {
   COLOCATED_SERVER_DISPLAY_NAME,
   rotateColocatedLicenseCredentials,
@@ -15,13 +15,13 @@ import {
   createLicense,
   invalidateLicense,
   revokeLicense,
-} from "../client/authn/license.ts";
+} from "../features/licenses/license.ts";
 import {
   LICENSE_TIER_BELOW_REQUIRED_ERROR,
   LICENSE_TIER_UNASSIGNED_ERROR,
-} from "../lib/tiers/tier-enforcement.ts";
-import { getDatabaseUrl } from "../db-url.ts";
-import { createDenoDb, endDbConnection } from "../db.ts";
+} from "../features/tiers/tier-enforcement.ts";
+import { getDatabaseUrl } from "../db/url.ts";
+import { createDenoDb, endDbConnection } from "../db/connection.ts";
 import {
   container,
   environment,
@@ -36,9 +36,9 @@ import {
   subscriptionItem,
   tier,
   workspace,
-} from "../lib/db/schema.ts";
-import { getTierByLabel, insertTier } from "../lib/db/tier-records.ts";
-import { recomputeOrganizationAssignments } from "../lib/tiers/assignment-records.ts";
+} from "../db/schema.ts";
+import { getTierByLabel, insertTier } from "../features/tiers/tier-records.ts";
+import { recomputeOrganizationAssignments } from "../features/tiers/assignment-records.ts";
 import {
   MAX_AUTH_CHALLENGE_BODY_BYTES,
   MAX_AUTH_SESSION_BODY_BYTES,
@@ -49,20 +49,20 @@ import {
   registerDaemonApiRoutes,
 } from "./api-routes.ts";
 import { MAX_METRICS_PAYLOAD_BYTES } from "./metrics/validation.ts";
-import { METRICS_SCHEMA_VERSION } from "./metrics/contract.ts";
+import { METRICS_SCHEMA_VERSION } from "../contracts/metrics-contract.ts";
 import type {
   DaemonCell,
   DaemonCellRegistry,
   DaemonCellSnapshot,
-} from "./cell/contracts.ts";
-import type { DaemonOutboundEnvelope } from "./cell/protocol.ts";
+} from "../contracts/cell.ts";
+import type { DaemonOutboundEnvelope } from "../contracts/cell-protocol.ts";
 import { getLatestCapabilityPlanGeneration } from "../client/servers/capability-plan-records.ts";
 import type {
   AuthenticatedMetricsSample,
   ServerMetricsStore,
   SlotMapping,
 } from "./metrics/types.ts";
-import { recordTopologyGeneration } from "../client/servers/server-topology-records.ts";
+import { recordTopologyGeneration } from "../features/servers/server-topology-records.ts";
 import {
   consumeChallenge,
   createStatelessChallengeStore,
@@ -74,7 +74,8 @@ import {
   revokeDaemonKey,
   SERVER_KEY_REVOKED_ERROR,
   type ServerDaemonStateWithMetadata,
-} from "./authn/server-identity-db.ts";
+} from "../features/servers/server-identity-db.ts";
+import { setRevokeBoundDaemonKey } from "../features/licenses/revoke-bound-daemon-key.ts";
 import {
   buildAuthPayload,
   buildEnrollmentPayload,
@@ -457,6 +458,7 @@ async function createTestApp(
   db: ReturnType<typeof createDenoDb>,
   runtime: "workers" | "deno" = "workers",
 ): Promise<Hono<AppEnv>> {
+  setRevokeBoundDaemonKey(revokeDaemonKey);
   const app = new Hono<AppEnv>();
   app.use("*", (c, next) => {
     c.set("db", db);
@@ -703,6 +705,7 @@ async function withEnrollFixture(
       }
       await db.delete(organization).where(eq(organization.id, organizationId));
     } finally {
+      setRevokeBoundDaemonKey(null);
       await endDbConnection(db);
     }
   }
@@ -859,6 +862,7 @@ test("POST /enroll rejects a raw machine-id shaped machineKey", async () => {
     const body = (await response.json()) as { error?: string };
     assertEquals(body.error, "Invalid machineKey");
   } finally {
+    setRevokeBoundDaemonKey(null);
     await endDbConnection(db);
   }
 });
@@ -892,6 +896,7 @@ test("POST /enroll returns 400 for malformed tpchallenge id", async () => {
     const body = (await response.json()) as { error?: string };
     assertEquals(body.error, "Invalid or expired challenge");
   } finally {
+    setRevokeBoundDaemonKey(null);
     await endDbConnection(db);
   }
 });

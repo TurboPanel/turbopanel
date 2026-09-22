@@ -1,11 +1,13 @@
 import type { Context } from 'hono'
-import type { AppEnv } from '../../app.ts'
-import type { storage } from '../../lib/db/schema.ts'
+import type { AppEnv } from '../../app/app.ts'
+import type { storage } from '../../db/schema.ts'
 import { parseJsonbObject, requireStringField } from '../shared.ts'
 import {
   isPostgresUniqueViolation,
   uniqueViolationMessage as uniqueViolationLayerMessage,
-} from '../../lib/db/unique-violation.ts'
+} from '../../db/unique-violation.ts'
+
+export { isPostgresUniqueViolation } from '../../db/unique-violation.ts'
 
 export const MAX_STORAGE_CONTENT_BYTES = 256 * 1024
 
@@ -228,8 +230,6 @@ function parseOptionalBoolean(
   if (typeof value === 'boolean') return value
   return c.json({ error: 'Invalid request' }, 400)
 }
-
-export { isPostgresUniqueViolation }
 
 export const COPY_PRIMARY_EXISTS_ERROR = 'copy_primary_exists'
 export const COPY_SERVER_PROVIDER_EXISTS_ERROR = 'copy_server_provider_exists'
@@ -478,6 +478,4 @@ export function principalProjectMismatch(
   return principalProjectId !== expectedProjectId
 }
 
-export function scratchCopyNotMountable(role: string | null | undefined): boolean {
-  return role === 'scratch'
-}
+export { scratchCopyNotMountable } from '../../features/storage/scratch.ts'

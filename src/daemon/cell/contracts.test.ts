@@ -1,5 +1,5 @@
 import { assert, assertEquals, assertExists } from "@std/assert";
-import type { DaemonCellSnapshot, PendingRequestStatus } from "./contracts.ts";
+import type { DaemonCellSnapshot, PendingRequestStatus } from "../../contracts/cell.ts";
 import { mergeSnapshotPresence } from "./snapshot-merge.ts";
 
 const TERMINAL_STATUSES = new Set<PendingRequestStatus>([

@@ -7,7 +7,7 @@ import { parseSignupBody } from './http.ts'
  * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
  * reports Deno suites as empty; keep this alias so analysis sees real tests.
  *
- * Deno twin of signup-validation.test.ts (Vitest) so Sonar LCOV can attribute
+ * Deno twin of signup-validation.workers.test.ts (Vitest) so Sonar LCOV can attribute
  * parseSignupBody coverage from the Deno coverage profile.
  */
 const test = Deno.test.bind(Deno)

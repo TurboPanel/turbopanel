@@ -15,8 +15,8 @@
  */
 import { assertEquals } from '@std/assert'
 import { it } from '@std/testing/bdd'
-import { buildMetricsSample } from '../../contract.ts'
-import { truncateSampleToCapabilityPlan } from '../../capability-plan.ts'
+import { buildMetricsSample } from '../../../../contracts/metrics-contract.ts'
+import { truncateSampleToCapabilityPlan } from '../../../../contracts/capability-plan.ts'
 import type { AuthenticatedMetricsSample } from '../../types.ts'
 import { representativeMachineFixtures } from '../../testing/representative-machines.ts'
 import {

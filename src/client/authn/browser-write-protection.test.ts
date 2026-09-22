@@ -1,12 +1,12 @@
 import { assertEquals } from '@std/assert'
 import { Hono } from 'hono'
-import { createApp, type AppEnv } from '../../app.ts'
+import { createApp, type AppEnv } from '../../app/app.ts'
 import {
   createBrowserWriteProtectionMiddleware,
   isSameOriginBrowserWrite,
   resolveExpectedBrowserOrigin,
-} from '../../browser-write-protection.ts'
-import { registerCorsMiddleware } from '../../cors.ts'
+} from '../../app/browser-write-protection.ts'
+import { registerCorsMiddleware } from '../../app/cors.ts'
 import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
 import {
   ADMIN_API_PREFIX,
@@ -14,8 +14,8 @@ import {
   DAEMON_API_PREFIX,
   DEVELOPER_API_PREFIX,
   INSTALL_API_PREFIX,
-} from '../../surfaces.ts'
-import { deriveSecretsConfig, parseSecretsEnv } from './secrets.ts'
+} from '../../app/surfaces.ts'
+import { deriveSecretsConfig, parseSecretsEnv } from '../../lib/secrets/secrets.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.

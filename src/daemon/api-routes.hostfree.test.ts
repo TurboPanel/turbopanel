@@ -1,10 +1,10 @@
 import { assertEquals } from "@std/assert";
 import { Hono } from "hono";
-import type { AppEnv } from "../app.ts";
-import { deriveSecretsConfig } from "../client/authn/secrets.ts";
-import type { Db } from "../db.ts";
+import type { AppEnv } from "../app/app.ts";
+import { deriveSecretsConfig } from "../lib/secrets/secrets.ts";
+import type { Db } from "../db/connection.ts";
 import { parseTestSecretsConfig } from "../test-fixtures/secrets.ts";
-import { DAEMON_API_PREFIX } from "../surfaces.ts";
+import { DAEMON_API_PREFIX } from "../app/surfaces.ts";
 import { deriveDaemonJwtKeyring } from "./authn/daemon-jwt-keyring.ts";
 import { issueDaemonJwt } from "./authn/daemon-jwt.ts";
 import {
@@ -66,10 +66,22 @@ test("GET /instance/ca 404s when tlsPublic is set", async () => {
   assertEquals(await response.json(), { error: "platform CA not configured" });
 });
 
-test("GET /instance/ca keeps today's disk path unless tlsPublic is set", async () => {
+test("GET /instance/ca 404s on Deno when no reader is injected", async () => {
   const app = daemonApp();
   const response = await app.request(`${DAEMON_API_PREFIX}/instance/ca`);
-  assertEquals(response.status === 404, false);
+  assertEquals(response.status, 404);
+  assertEquals(await response.json(), { error: "platform CA not configured" });
+});
+
+test("GET /instance/ca serves the injected Platform CA PEM", async () => {
+  const pem = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n";
+  const app = daemonApp({
+    readPlatformCaPem: () => Promise.resolve(pem),
+  });
+  const response = await app.request(`${DAEMON_API_PREFIX}/instance/ca`);
+  assertEquals(response.status, 200);
+  assertEquals(await response.text(), pem);
+  assertEquals(response.headers.get("content-type"), "application/x-pem-file");
 });
 
 test("readiness, enroll, and session fail closed without a database", async () => {

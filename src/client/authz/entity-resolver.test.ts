@@ -1,13 +1,13 @@
 import { eq } from 'drizzle-orm'
 import { assertEquals } from '@std/assert'
-import { getDatabaseUrl } from '../../db-url.ts'
-import { createDenoDb } from '../../db.ts'
+import { getDatabaseUrl } from '../../db/url.ts'
+import { createDenoDb } from '../../db/connection.ts'
 import {
   network,
   organization,
   server,
   user,
-} from '../../lib/db/schema.ts'
+} from '../../db/schema.ts'
 import { resolveEntityById } from './entity-resolver.ts'
 
 /**

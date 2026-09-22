@@ -5,13 +5,13 @@ import {
   encryptSecret,
   encryptSecretForDaemon,
   parseSecretEnvelope,
-} from "../client/authn/data-encryption.ts";
+} from "../lib/secrets/data-encryption.ts";
 import {
   deriveEncryptionSecretsConfig,
   parseSecretsEnv,
-} from "../client/authn/secrets.ts";
-import { getDatabaseUrl } from "../db-url.ts";
-import { createDenoDb, type Db } from "../db.ts";
+} from "../lib/secrets/secrets.ts";
+import { getDatabaseUrl } from "../db/url.ts";
+import { createDenoDb, type Db } from "../db/connection.ts";
 import {
   forge,
   gitConnection,
@@ -22,9 +22,9 @@ import {
   twoFactor,
   user,
   variable,
-} from "../lib/db/schema.ts";
-import { SYSTEM_AUTH_PROVIDERS_DB_KEY } from "../lib/settings/auth-provider-settings.ts";
-import { SYSTEM_EMAIL_DB_KEY } from "../lib/settings/email-settings.ts";
+} from "../db/schema.ts";
+import { SYSTEM_AUTH_PROVIDERS_DB_KEY } from "../features/settings/auth-provider-settings.ts";
+import { SYSTEM_EMAIL_DB_KEY } from "../features/settings/email-settings.ts";
 import { TEST_ONLY_TURBOPANEL_SECRET } from "../test-fixtures/secrets.ts";
 import {
   endReencryptSweep,

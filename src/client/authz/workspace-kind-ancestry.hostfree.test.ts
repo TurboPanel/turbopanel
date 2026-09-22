@@ -3,11 +3,11 @@
  */
 
 import { assertEquals } from '@std/assert'
-import type { Db } from '../../db.ts'
+import type { Db } from '../../db/connection.ts'
 import {
   WORKSPACE_KIND_SYSTEM,
   WORKSPACE_KIND_USER,
-} from '../../lib/db/workspace-kind.ts'
+} from '../../db/workspace-kind.ts'
 import { resolveWorkspaceKindForEntity } from './workspace-kind-ancestry.ts'
 
 /**

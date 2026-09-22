@@ -7,7 +7,7 @@ import {
   SYSTEM_HOSTING_INGRESS_COMPONENT,
   SYSTEM_MANAGED_HA_COMPONENT,
   SYSTEM_MANAGED_INGRESS_COMPONENT,
-} from './hierarchy.ts'
+} from '../../features/system/hierarchy.ts'
 import {
   isSystemOperateComponent,
   mapSystemRestartFailure,

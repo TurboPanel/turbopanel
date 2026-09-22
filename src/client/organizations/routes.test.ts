@@ -1,22 +1,22 @@
 import { assertEquals } from "@std/assert";
 import { and, eq } from "drizzle-orm";
 import { Hono } from "hono";
-import type { AppEnv } from "../../app.ts";
-import { getDatabaseUrl } from "../../db-url.ts";
-import { createDenoDb } from "../../db.ts";
+import type { AppEnv } from "../../app/app.ts";
+import { getDatabaseUrl } from "../../db/url.ts";
+import { createDenoDb } from "../../db/connection.ts";
 import {
   buildSignedCookie,
   HTTP_SESSION_COOKIE_NAME,
 } from "../authn/crypto.ts";
 import { createSession } from "../authn/session-store.ts";
-import { deriveSecretsConfig, parseSecretsEnv } from "../authn/secrets.ts";
+import { deriveSecretsConfig, parseSecretsEnv } from "../../lib/secrets/secrets.ts";
 import {
   fabric,
   grant,
   network,
   organization,
   user,
-} from "../../lib/db/schema.ts";
+} from "../../db/schema.ts";
 import { registerOrganizationRoutes } from "./routes.ts";
 import { TEST_ONLY_TURBOPANEL_SECRET } from "../../test-fixtures/secrets.ts";
 

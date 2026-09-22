@@ -1,12 +1,12 @@
 import { and, eq, inArray, type SQL } from "drizzle-orm";
 import type { Context, Hono } from "hono";
-import type { AppEnv } from "../../app.ts";
+import type { AppEnv } from "../../app/app.ts";
 import type { AuthRouteOpts } from "../authn/http.ts";
 import { createSessionMiddleware } from "../authn/middleware.ts";
 import { assertCanOr403, listVisible } from "../authz/index.ts";
 import { resolveEntityOrganizationId } from "../authz/create-access-grant.ts";
-import { type Db, getDb } from "../../db.ts";
-import { hosting, ip, network } from "../../lib/db/schema.ts";
+import { type Db, getDb } from "../../db/connection.ts";
+import { hosting, ip, network } from "../../db/schema.ts";
 import {
   applyJsonbPatchFields,
   assertDatacenterMembershipNetwork,

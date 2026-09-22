@@ -1,8 +1,8 @@
 import { assertEquals } from '@std/assert'
 import { describe, it } from '@std/testing/bdd'
 import { Hono } from 'hono'
-import { createApp, type AppEnv } from '../../app.ts'
-import { CLIENT_API_PREFIX } from '../../surfaces.ts'
+import { createApp, type AppEnv } from '../../app/app.ts'
+import { CLIENT_API_PREFIX } from '../../app/surfaces.ts'
 import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
 import { registerAuthRoutes, resolveClientIp } from './http.ts'
 import {
@@ -13,7 +13,7 @@ import {
 } from './auth-rate-limit.ts'
 import { createRedisRateLimiter } from '../../daemon/rate-limit/redis-rate-limiter.ts'
 import type { RedisCellClient } from '../../daemon/cell/redis/client.ts'
-import { deriveSecretsConfig, parseSecretsEnv } from './secrets.ts'
+import { deriveSecretsConfig, parseSecretsEnv } from '../../lib/secrets/secrets.ts'
 
 /**
  * Build an app with the auth limiter injected through the request context, the

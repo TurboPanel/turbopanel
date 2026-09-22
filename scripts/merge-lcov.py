@@ -10,10 +10,16 @@ Merge rule (matches turbopanel/AGENTS.md):
   Per SF, the report with more covered lines (LH) is primary. Secondary may
   only max shared hits or add *executed* lines — never zero-hit V8 transitive
   rows that dilute Workers/DO Istanbul.
+
+CI shards the Deno run. Pass every shard with repeated ``--deno`` or point
+``--parts`` at the downloaded ``lcov-*`` artifacts. Shard reports are unioned
+first (max line and branch hits); that combined Deno report is then
+smart-merged with Vitest. A single ``--deno`` file takes the historical path.
 """
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
@@ -132,9 +138,52 @@ def merge_sf_records(
     return body
 
 
-def merge_lcov(vitest_path: Path, deno_path: Path, out_path: Path) -> None:
-    vitest_records = parse_records(vitest_path)
-    deno_records = parse_records(deno_path)
+# Artifact directory names produced by .github/workflows/build.yml.
+# A missing shard must fail the merge — scanning a partial LCOV would
+# publish a green quality gate over tests that never ran.
+DENO_PART_NAMES = (
+    "lcov-deno-hostfree",
+    "lcov-deno-api-routes",
+    "lcov-deno-db-1",
+    "lcov-deno-db-2",
+)
+
+WORKERS_FLOORS = (
+    (r"SF:src/daemon/cell/do\.ts\n(?:.*\n)*?LH:(\d+)", 50, "do.ts"),
+    (r"SF:src/daemon/cell/do-registry\.ts\n(?:.*\n)*?LH:(\d+)", 80, "do-registry.ts"),
+    (r"SF:src/daemon/workers-ws\.ts\n(?:.*\n)*?LH:(\d+)", 10, "workers-ws.ts"),
+)
+
+
+def da_line_count(record_lines: list[str]) -> int:
+    return sum(1 for line in record_lines if line.startswith("DA:"))
+
+
+def union_deno_records(paths: list[Path]) -> dict[str, list[str]]:
+    """Max line and branch hits across Deno shards.
+
+    A file that only one shard loaded keeps that shard's record, including
+    function rows. A file loaded by several shards keeps the wider line map
+    and takes the max hit on every shared line.
+    """
+    merged: dict[str, list[str]] = {}
+    for path in paths:
+        for sf, lines in parse_records(path).items():
+            current = merged.get(sf)
+            if current is None:
+                merged[sf] = lines
+                continue
+            if da_line_count(lines) > da_line_count(current):
+                merged[sf] = merge_sf_records(lines, current)
+            else:
+                merged[sf] = merge_sf_records(current, lines)
+    return merged
+
+
+def merge_record_maps(
+    vitest_records: dict[str, list[str]],
+    deno_records: dict[str, list[str]],
+) -> dict[str, list[str]]:
     # Pair Vitest + Deno per SF:
     # - Vitest-only → Vitest (Workers/DO path).
     # - Deno-only → Deno (host-free unit suites).
@@ -156,11 +205,64 @@ def merge_lcov(vitest_path: Path, deno_path: Path, out_path: Path) -> None:
             merged[sf] = merge_sf_records(d, v)
         else:
             merged[sf] = merge_sf_records(v, d)
+    return merged
 
+
+def write_records(records: dict[str, list[str]], out_path: Path) -> None:
     out_lines: list[str] = []
-    for sf in sorted(merged):
-        out_lines.extend(merged[sf])
+    for sf in sorted(records):
+        out_lines.extend(records[sf])
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text("\n".join(out_lines) + "\n")
+
+
+def merge_lcov(vitest_path: Path, deno_paths: list[Path], out_path: Path) -> None:
+    deno_records = union_deno_records(deno_paths)
+    merged = merge_record_maps(parse_records(vitest_path), deno_records)
+    write_records(merged, out_path)
+
+
+def assert_workers_floors(text: str) -> None:
+    for pattern, minimum, label in WORKERS_FLOORS:
+        match = re.search(pattern, text)
+        hits = int(match.group(1)) if match else 0
+        if hits < minimum:
+            raise SystemExit(
+                f"Merged LCOV missing expected {label} coverage (LH:{hits}, need >={minimum})"
+            )
+
+
+def discover_parts(parts: Path) -> tuple[Path, list[Path]]:
+    if not parts.is_dir():
+        raise SystemExit(f"missing coverage parts directory: {parts}")
+    vitest_dir = parts / "lcov-vitest"
+    vitest_matches = sorted(vitest_dir.rglob("lcov.info")) if vitest_dir.is_dir() else []
+    if len(vitest_matches) != 1:
+        raise SystemExit(
+            f"expected one lcov.info under {vitest_dir}, found {len(vitest_matches)}"
+        )
+    found = {
+        path.name
+        for path in parts.iterdir()
+        if path.is_dir() and path.name.startswith("lcov-deno-")
+    }
+    expected = set(DENO_PART_NAMES)
+    if found != expected:
+        raise SystemExit(
+            "expected deno artifacts "
+            + ", ".join(sorted(expected))
+            + "; found "
+            + (", ".join(sorted(found)) if found else "(none)")
+        )
+    deno_paths: list[Path] = []
+    for name in DENO_PART_NAMES:
+        matches = sorted((parts / name).rglob("deno.lcov"))
+        if len(matches) != 1:
+            raise SystemExit(
+                f"expected one deno.lcov under {parts / name}, found {len(matches)}"
+            )
+        deno_paths.append(matches[0])
+    return vitest_matches[0], deno_paths
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -174,8 +276,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--deno",
         type=Path,
-        default=Path("coverage/deno.lcov"),
-        help="Deno V8 LCOV (repo-relative SF paths)",
+        action="append",
+        help="Deno V8 LCOV. Repeat for each CI shard. Default: coverage/deno.lcov",
+    )
+    parser.add_argument(
+        "--parts",
+        type=Path,
+        help="Directory of downloaded lcov-* artifacts (CI fan-in)",
     )
     parser.add_argument(
         "--out",
@@ -183,14 +290,30 @@ def main(argv: list[str] | None = None) -> int:
         default=Path("coverage/lcov.info"),
         help="Merged LCOV output path",
     )
+    parser.add_argument(
+        "--assert-workers",
+        action="store_true",
+        help="Fail unless Workers/DO LH floors still clear after the merge",
+    )
     args = parser.parse_args(argv)
-    if not args.vitest.is_file():
-        print(f"missing Vitest LCOV: {args.vitest}", file=sys.stderr)
+    if args.parts is not None and args.deno:
+        print("pass either --parts or --deno, not both", file=sys.stderr)
         return 1
-    if not args.deno.is_file():
-        print(f"missing Deno LCOV: {args.deno}", file=sys.stderr)
+    if args.parts is not None:
+        vitest_path, deno_paths = discover_parts(args.parts)
+    else:
+        vitest_path = args.vitest
+        deno_paths = args.deno if args.deno else [Path("coverage/deno.lcov")]
+    if not vitest_path.is_file():
+        print(f"missing Vitest LCOV: {vitest_path}", file=sys.stderr)
         return 1
-    merge_lcov(args.vitest, args.deno, args.out)
+    for deno_path in deno_paths:
+        if not deno_path.is_file():
+            print(f"missing Deno LCOV: {deno_path}", file=sys.stderr)
+            return 1
+    merge_lcov(vitest_path, deno_paths, args.out)
+    if args.assert_workers:
+        assert_workers_floors(args.out.read_text())
     return 0
 
 

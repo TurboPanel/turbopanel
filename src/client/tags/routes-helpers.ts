@@ -1,13 +1,13 @@
 import type { Context } from 'hono'
-import type { AppEnv } from '../../app.ts'
-import { nowIso } from '../../lib/commands/ids.ts'
+import type { AppEnv } from '../../app/app.ts'
+import { nowIso } from '../../features/commands/ids.ts'
 import { isValidDescription, normalizeDisplayName } from '../../lib/display-name-format.ts'
 import {
   parseTagNameInput,
   TAGGABLE_PARENTS,
   type ParsedTagParent,
   type TagUpdateFields,
-} from '../../lib/db/tag-records.ts'
+} from '../../features/servers/tag-records.ts'
 
 export { TAGGABLE_PARENTS }
 export type { ParsedTagParent }

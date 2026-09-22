@@ -1,18 +1,18 @@
 import { and, eq, inArray } from 'drizzle-orm'
 import type { Context, Hono } from 'hono'
-import type { AppEnv } from '../../app.ts'
+import type { AppEnv } from '../../app/app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { assertCanOr403, listVisible } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
-import { getDb } from '../../db.ts'
-import { organization, service } from '../../lib/db/schema.ts'
+import { getDb } from '../../db/connection.ts'
+import { organization, service } from '../../db/schema.ts'
 import {
   parseOrganizationOptions,
   resolveDeployHooksEnabled,
-} from '../../lib/organization-options.ts'
-import type { ParseServiceOptionsOptions } from '../../lib/service-options.ts'
-import { applyStorageRetentionOnParentDelete } from '../../lib/db/storage-records.ts'
+} from '../../features/organizations/organization-options.ts'
+import type { ParseServiceOptionsOptions } from '../../features/projects/service-options.ts'
+import { applyStorageRetentionOnParentDelete } from '../../features/storage/storage-records.ts'
 import {
   assertCanCreateOr403,
   assertCanReadOr403,

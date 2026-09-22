@@ -1,6 +1,6 @@
 import { assertEquals } from '@std/assert'
-import type { Db } from '../db.ts'
-import { organization } from '../lib/db/schema.ts'
+import type { Db } from '../db/connection.ts'
+import { organization } from '../db/schema.ts'
 import {
   addressesFetchErrorStatus,
   extractAddresses,

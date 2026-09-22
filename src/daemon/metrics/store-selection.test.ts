@@ -2,7 +2,7 @@ import { assertEquals, assertInstanceOf, assertRejects, assertStringIncludes } f
 import { CloudflareAnalyticsEngineServerMetricsStore } from './backends/cloudflare/store.ts'
 import { AE_DEFAULT_MAX_RANGE_SECONDS } from './backends/cloudflare/sql-api.ts'
 import { DuckDbParquetServerMetricsStore } from './backends/duckdb/store.ts'
-import { buildMetricsSample } from './contract.ts'
+import { buildMetricsSample } from '../../contracts/metrics-contract.ts'
 import type { AuthenticatedMetricsSample } from './types.ts'
 import { DisabledServerMetricsStore } from './disabled-store.ts'
 import { it } from '@std/testing/bdd'

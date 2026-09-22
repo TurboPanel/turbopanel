@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Generate TurboPanel secrets/passwords (48 chars, [A-Za-z0-9_], ≥1 underscore in pos 2–47).
- * Runtime import: src/generate-secret.ts re-exports this module.
+ * Runtime import: src/lib/secrets/generate-secret.ts re-exports this module.
  */
 
 const getRandomValues = globalThis.crypto.getRandomValues.bind(globalThis.crypto)

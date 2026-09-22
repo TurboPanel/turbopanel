@@ -5,11 +5,11 @@
 
 import { assertEquals, assertThrows } from '@std/assert'
 import { Hono } from 'hono'
-import type { AppEnv } from '../../app.ts'
-import type { DaemonCell, DaemonCellRegistry } from '../../daemon/cell/contracts.ts'
-import type { Db } from '../../db.ts'
-import { seedUpdateManifestCacheForTests } from '../../lib/update/manifest.ts'
-import { server } from '../../lib/db/schema.ts'
+import type { AppEnv } from '../../app/app.ts'
+import type { DaemonCell, DaemonCellRegistry } from '../../contracts/cell.ts'
+import type { Db } from '../../db/connection.ts'
+import { seedUpdateManifestCacheForTests } from '../../features/update/manifest.ts'
+import { server } from '../../db/schema.ts'
 import type { QueryCache } from '../../query-cache/contracts.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import {
@@ -22,7 +22,7 @@ import {
   buildSignedCookie,
   HTTP_SESSION_COOKIE_NAME,
 } from '../authn/crypto.ts'
-import { deriveSecretsConfig } from '../authn/secrets.ts'
+import { deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { colocatedServerDeleteBlockedReason } from './delete-guards.ts'
 import { registerServerLabelRoutes } from './labels-routes.ts'

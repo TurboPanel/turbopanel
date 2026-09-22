@@ -19,8 +19,8 @@ import {
   stampCreateProjectMetadata,
 } from './routes-helpers.ts'
 import type { CatalogEntry } from './catalog/index.ts'
-import { SYSTEM_PROJECT_METADATA_TYPE } from '../system/hierarchy.ts'
-import { emptyComposeDocument, type ComposeDocument } from '../../lib/compose/index.ts'
+import { SYSTEM_PROJECT_METADATA_TYPE } from '../../features/system/hierarchy.ts'
+import { emptyComposeDocument, type ComposeDocument } from '../../features/compose/index.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.

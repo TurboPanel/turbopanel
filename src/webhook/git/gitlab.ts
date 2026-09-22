@@ -9,7 +9,7 @@
  *    secret back in `X-Gitlab-Token`. The gate still reads raw bytes before
  *    anything is parsed — the two surfaces stay structurally identical — but
  *    what admits the request is possession of the shared token, compared in
- *    constant time (`src/lib/git/gitlab-webhook.ts`).
+ *    constant time (`src/features/git/gitlab-webhook.ts`).
  *  - **No guaranteed delivery id.** `X-Gitlab-Event-UUID` exists on recent
  *    versions; where it does not, the body is hashed. A redelivery carries
  *    byte-identical JSON and therefore the same claim, which is exactly what
@@ -17,23 +17,23 @@
  */
 
 import type { Context, Hono } from 'hono'
-import type { AppEnv } from '../../app.ts'
-import type { Db } from '../../db.ts'
+import type { AppEnv } from '../../app/app.ts'
+import type { Db } from '../../db/connection.ts'
 import {
   GITLAB_WEBHOOK_PATH,
   GITLAB_WEBHOOK_SCOPED_PATH,
-} from '../../surfaces.ts'
+} from '../../app/surfaces.ts'
 import { gitlabWebhookRateLimitKey } from '../../daemon/rate-limit/keys.ts'
-import { gitlabProvider } from '../../lib/git/gitlab-provider.ts'
-import { resolveGitlabWebhookForge } from '../../lib/git/resolve-webhook-forge.ts'
-import type { Forge } from '../../lib/git/forge-records.ts'
+import { gitlabProvider } from '../../features/git/gitlab-provider.ts'
+import { resolveGitlabWebhookForge } from '../../features/git/resolve-webhook-forge.ts'
+import type { Forge } from '../../features/git/forge-records.ts'
 import {
   gitlabDeliveryId,
   gitlabEventName,
   GITLAB_EVENT_HEADER,
   GITLAB_EVENT_UUID_HEADER,
   GITLAB_TOKEN_HEADER,
-} from '../../lib/git/gitlab-webhook.ts'
+} from '../../features/git/gitlab-webhook.ts'
 import { assertDeployDispatchInfrastructure } from '../../client/environments/deploy-routes.ts'
 import {
   resolveCheckTrigger,

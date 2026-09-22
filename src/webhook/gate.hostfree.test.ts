@@ -10,9 +10,9 @@
 
 import { assertEquals } from '@std/assert'
 import { Hono } from 'hono'
-import type { AppEnv } from '../app.ts'
-import type { Db } from '../db.ts'
-import { deriveEncryptionSecretsConfig } from '../client/authn/secrets.ts'
+import type { AppEnv } from '../app/app.ts'
+import type { Db } from '../db/connection.ts'
+import { deriveEncryptionSecretsConfig } from '../lib/secrets/secrets.ts'
 import { parseTestSecretsConfig } from '../test-fixtures/secrets.ts'
 import {
   accepted,

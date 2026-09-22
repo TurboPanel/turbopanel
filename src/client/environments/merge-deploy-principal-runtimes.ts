@@ -1,13 +1,13 @@
 import type {
   EnvironmentDeployPrincipalMaterial,
   EnvironmentDeploySource,
-} from "../../lib/commands/schemas.ts";
-import type { PreparedNativeAppService } from "../../lib/compose/ir.ts";
+} from "../../contracts/commands/schemas.ts";
+import type { PreparedNativeAppService } from "../../features/compose/ir.ts";
 import {
   DEFAULT_NATIVE_APP_NODE_SERIES,
   nodeEntitlementSeries,
   runtimeSeries,
-} from "../../lib/runtime-registry.ts";
+} from "../../contracts/runtime-registry.ts";
 
 export type DeployRuntimeEntitlement = {
   principalId: string;

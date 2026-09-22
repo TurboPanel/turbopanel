@@ -1,4 +1,4 @@
-import { ADMIN_API_PREFIX } from '../../surfaces.ts'
+import { ADMIN_API_PREFIX } from '../../app/surfaces.ts'
 
 const cookieSecurity = [{ cookieAuth: [] }] as const
 

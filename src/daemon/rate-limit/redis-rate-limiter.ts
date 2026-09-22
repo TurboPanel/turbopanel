@@ -6,7 +6,7 @@
 import type { RedisCellClient } from '../cell/redis/client.ts'
 import { rateLimitKey } from '../cell/redis/keys.ts'
 import { RATE_LIMIT_TOKEN_BUCKET } from '../cell/redis/lua.ts'
-import { logWarn } from '../../logger.ts'
+import { logWarn } from '../../lib/logger.ts'
 import type { RateLimiter } from './contracts.ts'
 
 /** Defaults match Wrangler `DAEMON_CONNECT_RATE_LIMITER` (`{ limit: 6, period: 60 }`). */

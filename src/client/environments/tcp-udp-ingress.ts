@@ -7,12 +7,12 @@
  */
 
 import { eq } from 'drizzle-orm'
-import type { Db } from '../../db.ts'
-import { hosting, service } from '../../lib/db/schema.ts'
+import type { Db } from '../../db/connection.ts'
+import { hosting, service } from '../../db/schema.ts'
 import {
   parseHostingOptions,
   resolveHostingProtocol,
-} from '../../lib/hosting-options.ts'
+} from '../../features/hostings/hosting-options.ts'
 
 export type TcpUdpIngressService = {
   serviceId: string

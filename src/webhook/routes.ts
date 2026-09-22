@@ -17,7 +17,7 @@
  * top-level app.
  *
  * **And deliberately no `.use('*')`.** `/webhook` stays out of
- * `PROTECTED_PREFIXES` in `src/browser-write-protection.ts`: session middleware
+ * `PROTECTED_PREFIXES` in `src/app/browser-write-protection.ts`: session middleware
  * would reject every delivery, and the caller sends no `Origin` for the
  * cross-origin write gate to read. Each gate authenticates itself.
  *
@@ -26,7 +26,7 @@
  */
 
 import type { Hono } from 'hono'
-import type { AppEnv } from '../app.ts'
+import type { AppEnv } from '../app/app.ts'
 import type { RateLimiter } from '../daemon/rate-limit/contracts.ts'
 import { registerGithubWebhookRoutes } from './git/github.ts'
 import { registerGitlabWebhookRoutes } from './git/gitlab.ts'

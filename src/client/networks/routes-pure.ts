@@ -4,7 +4,7 @@ import {
   isValidDockerNetworkName,
   normalizeDockerNetworkOptionsStrict,
   readNetworkDockerNetworkName,
-} from '../../lib/docker-network-name.ts'
+} from '../../features/deploy/docker-network-name.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { buildPatchUpdateFields, parseName, parseJsonbObject } from '../shared.ts'
 

@@ -7,12 +7,12 @@
  */
 
 import { eq } from "drizzle-orm";
-import type { Db } from "../db.ts";
-import { command } from "../lib/db/schema.ts";
+import type { Db } from "../db/connection.ts";
+import { command } from "../db/schema.ts";
 import {
   MAX_EXECUTION_LOG_CHUNK_BYTES,
-} from "../lib/execution-logs/types.ts";
-import { TERMINAL_COMMAND_STATUSES } from "../lib/commands/types.ts";
+} from "../features/execution-logs/types.ts";
+import { TERMINAL_COMMAND_STATUSES } from "../features/commands/types.ts";
 
 /**
  * Whole-request byte budget, read (and aborted) before JSON parsing. Sized as

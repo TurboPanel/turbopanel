@@ -214,22 +214,27 @@ everyday code stay below (**TypeScript style**).
 
 ### Adding tests (inventory)
 
-This repo does **not** glob `*.test.ts`. A new suite that is not claimed by a
-runner never executes in CI and never appears in `coverage/lcov.info`, so it
-reads as tested in review while contributing **0%** to the Sonar new-code
-coverage gate. After adding, renaming, or deleting a `*.test.ts`, run
-**`pnpm check:test-inventory`** (`scripts/check-test-inventory.mjs`) — it is
-wired into `pnpm test:hook` and CI `build.yml`. Claim each file in **exactly
-one** bucket:
+A new suite that is not claimed by a runner never executes in CI and never
+appears in `coverage/lcov.info`. After adding, renaming, or deleting a
+`*.test.ts`, run **`pnpm check:test-inventory`** (`scripts/check-test-inventory.mjs`)
+— it is wired into `pnpm test:hook` and CI `build.yml`. Claim each file in
+**exactly one** bucket via its **filename suffix** (or an explicit
+`SERVICE_DEPENDENT` row):
 
-| Suite kind                                                                       | Claim it in                                                                                                                                                                          |
+| Suite kind                                                                       | Claim it                                                                                                                                                                             |
 | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Deno (`@std/assert`, `const test = Deno.test.bind(Deno)`, `@std/testing/bdd`)    | the `deno test` file list in `scripts/test-coverage.sh` (host-free unit tests, plus Postgres suites — CI starts Postgres; they skip locally when `TURBOPANEL_DATABASE_URL` is unset) |
-| Workers / Durable Object (`vitest`, `cloudflare:test`, `@needs-workers-globals`) | `test.include` in `vitest.config.ts` (explicit file list, not a glob)                                                                                                                |
+| Deno (`@std/assert`, `const test = Deno.test.bind(Deno)`, `@std/testing/bdd`)    | `*.test.ts` / `*.hostfree.test.ts` / `*.deno.test.ts` under `src/` or `scripts/` (`scripts/test-coverage.sh` walks those trees)                                          |
+| Workers / Durable Object (`vitest`, `cloudflare:test`, `@needs-workers-globals`) | `*.workers.test.ts` / `*.workers-e2e.test.ts` / `*.entry.test.ts` (`vitest.config.ts` `test.include` suffix globs)                                                                    |
 | Needs a service CI does not start (Redis, …)                                     | `SERVICE_DEPENDENT` in `scripts/check-test-inventory.mjs` **with a reason** — the only sanctioned way to leave a suite out of both runners                                           |
 
-Do not add the same file to both lists. Coverage-attribution traps and the LCOV
-merge live in [`scripts/AGENTS.md`](./scripts/AGENTS.md).
+Do not give a Deno suite a Workers suffix. Coverage-attribution traps and the
+LCOV merge live in [`scripts/AGENTS.md`](./scripts/AGENTS.md).
+
+**Suffix semantics.** Host-free Deno suites use **`.hostfree.test.ts`** only.
+Workers/Durable Object suites that must run under Vitest use
+**`.workers.test.ts`**, **`.workers-e2e.test.ts`**, or **`.entry.test.ts`**.
+`scripts/generate-test-lists.mjs --write` rebuilds both inventories as suffix
+globs.
 
 ### Workers-reachable imports
 
@@ -335,15 +340,15 @@ guard; `pnpm test:do` alone does not.
   `runtime.dev-vars` from `git rev-parse HEAD` in the instance checkout.
   `GET /api/health` reports `{ license, version, revision: { commit, sourceUrl } }`
   so a network user can identify Corresponding Source.
-- **Versions on the wires** (`src/version.ts`, `src/lib/version-wire.ts`) —
+- **Versions on the wires** (`src/app/version.ts`, `src/lib/version-wire.ts`) —
   `INSTANCE_VERSION` is a JSON import of `deno.json`'s `version`, the one place
   the number is typed (`package.json` and `sonar.projectVersion` mirror it;
-  `src/version.test.ts` pins all three). It feeds the three OpenAPI
+  `src/app/version.test.ts` pins all three). It feeds the three OpenAPI
   `info.version`s, `/api/health`, and the `x-turbopanel-version` response header
   `createApp()` stamps on every response; a client that is not the bundled web
   export sends `x-turbopanel-client-version`, which the instance reads and does
   not enforce. Daemons report `daemonBuild.version` (turbopaneld
-  `src/version.ts`); `resolveDaemonSupport` holds it against
+  `src/app/version.ts`); `resolveDaemonSupport` holds it against
   `MIN_SUPPORTED_DAEMON_VERSION`. An **unsupported** daemon keeps its
   connection (that is the update path) but the command consumer fails its
   commands with `daemon_unsupported`; a build reporting no version is
@@ -359,7 +364,7 @@ guard; `pnpm test:do` alone does not.
   a narrow include list and can tree-shake away modules only the full deploy
   graph pulls in.
 - **`pnpm check:ca-boundary`** — Organization CA sources (`src/lib/tls/`,
-  `src/client/tls/`) must not reference Platform CA paths. See
+  `src/client/tls/`, `src/features/tls/`) must not reference Platform CA paths. See
   `src/lib/tls/AGENTS.md`. Wired into `test:hook` and CI `build.yml`.
 - `pnpm cf-typegen` — regenerate `worker-configuration.d.ts`. Keep the
   `Cloudflare.Env` / global `Env` aliases that extend `CloudflareBindings`
@@ -468,7 +473,7 @@ dev user. In **production** it is **`2770 tp:tp`** (setgid) so the
 | `TURBOPANEL_TRUSTED_PROXY_CIDRS` | `127.0.0.0/8,::1/128`                   | Peer addresses whose `CF-Connecting-IP` / `X-Forwarded-For` the instance believes. Set it when a Cloudflare Tunnel connector or other reverse proxy runs on a **different host** than the instance. **Replaces** the loopback default — include loopback explicitly if Caddy is still co-located. See **Caddy (production) → Server addresses**. |
 | `TURBOPANEL_PUBLIC_URLS`         | —                                       | Comma-separated list of URLs/hosts this control plane is reachable at (e.g. `https://panel.example.com,https://huey.lan:8443`). Persisted in the `setting` table by the admin API; read by `generate-self-signed-cert.mjs` to derive cert SANs. Also consulted by `resolvePublicBaseUrl` as the preferred install-command host.                  |
 
-Path resolution lives in `src/server-paths.ts`. It ships **FHS defaults** —
+Path resolution lives in `src/platform/deno/server-paths.ts`. It ships **FHS defaults** —
 config `/etc/turbopanel`, state `/var/lib/turbopanel`, logs
 `/var/log/turbopanel`, runtime `/run/turbopanel`, static UI
 `/opt/turbopanel/share/ui` — and every path is env-overridable
@@ -485,15 +490,15 @@ installs also run the daemon as **`turbopaneld.service`** — native
 `/opt/turbopanel/bin/turbopaneld`, or `turbopaneld.js` via vendored Deno on
 hosts where that binary cannot load (see `../turbopaneld/AGENTS.md` → Filesystem
 layout & path model). Defaults and overrides are pinned by
-`src/server-paths.deno.test.ts` (`deno task test:paths`).
+`src/platform/deno/server-paths.deno.test.ts` (`deno task test:paths`).
 
 ## Database (Drizzle + Postgres.js)
 
 The instance uses **Drizzle ORM** over **postgres.js**. The Workers/Hyperdrive
 client uses `prepare: true` (see Workers Hyperdrive below); the Deno client uses
 `prepare: false` (direct Postgres, no Hyperdrive). Connection factories live in
-`src/db.ts`; schema in `src/lib/db/schema.ts`; drizzle-kit config in
-`drizzle.config.ts`. **Read `src/lib/db/AGENTS.md` before touching schema or the
+`src/db/connection.ts`; schema in `src/db/schema.ts`; drizzle-kit config in
+`drizzle.config.mjs`. **Read `src/db/AGENTS.md` before touching schema or the
 database.** Schema changes are versioned in `migrations/`; `pnpm migrate`
 applies pending SQL during Workers deploy (after a preflight that requires
 PostgreSQL 18+ / built-in `uuidv7()` — `scripts/check-postgres-compat.mjs`).
@@ -504,7 +509,7 @@ with exactly one writable primary (streaming replication for HA/failover;
 logical replication for read replicas/DR). UUIDv7 primary keys remove sequence
 coordination across writers and failovers — they are **not** distributed-SQL
 readiness, and sharded/distributed SQL (Citus, CockroachDB, YugabyteDB, …) is
-out of scope for this schema. See `src/lib/db/AGENTS.md` (Multi-node PostgreSQL
+out of scope for this schema. See `src/db/AGENTS.md` (Multi-node PostgreSQL
 model) before changing key strategy or targeting a distributed engine.
 
 | Runtime            | Factory                                                                      | When connected                                                                                                                                                         |
@@ -607,7 +612,7 @@ eliminates the connection startup overhead."_ —
 **The contract in this repo:**
 
 - `resolveWorkersDb` / `resolveWorkersCachedDb` / `openWorkersRequestDb`
-  (`src/workers-bindings.ts`) **create a fresh client per call**. `workers.ts`
+  (`src/platform/workers/workers-bindings.ts`) **create a fresh client per call**. `workers.ts`
   `fetch()` / `queue()` and the offline-sweep cron each resolve their own
   client(s) for that one invocation. Do **not** add a
   `Map`/`WeakMap`/module-level singleton that returns the same client on a later
@@ -632,7 +637,7 @@ isolate → fresh-per-request **and** close; Durable Object → fresh-per-op, al
 close. Never reuse a request-path client inside a DO or vice-versa. DO/cost
 rules: `src/daemon/cell/AGENTS.md`.
 
-**Regression guard:** `src/workers-bindings.test.ts` asserts `resolveWorkersDb`
+**Regression guard:** `src/platform/workers/workers-bindings.workers.test.ts` asserts `resolveWorkersDb`
 / `resolveWorkersCachedDb` return a **new** client on each call (never the same
 instance), and that `openWorkersRequestDb` / `closeWorkersRequestDb` end both
 primary and cached clients. Source scans on `workers.ts` and `offline-sweep.ts`
@@ -664,7 +669,7 @@ Authorization, sessions, and secrets must use the primary connection. See
   `migrations/`; apply locally with `TURBOPANEL_DATABASE_URL=… pnpm migrate` or
   `DATABASE_URL=… pnpm migrate`. Workers deploy runs `pnpm migrate`
   automatically (Node only — no Deno). Deno dev can still use
-  `dev/scripts/sync.sh` (`push`) — see `src/lib/db/AGENTS.md`.
+  `dev/scripts/sync.sh` (`push`) — see `src/db/AGENTS.md`.
 
 ### Caddy dial format
 
@@ -680,7 +685,7 @@ The managed-install template (turbopaneld
 `turbopanel_run_dir`; the dev overlay spells it
 `unix/{$TURBOPANEL_RUN_DIR:/run/turbopanel}/instance.sock` — both derived from
 the same run-dir + filename contract as `resolveInstanceSocket` in
-`src/server-paths.ts` (`caddyInstanceUpstream` mirrors it). The only socket
+`src/platform/deno/server-paths.ts` (`caddyInstanceUpstream` mirrors it). The only socket
 path inputs are `TURBOPANEL_RUN_DIR`, `TURBOPANEL_SOCKET_DIR`, and
 `TURBOPANEL_SOCKET`; there is no operator-set dial variable. Caddy reads only
 the run dir (the managed units set `TURBOPANEL_RUN_DIR` and the role renders
@@ -742,12 +747,12 @@ match is served the SPA shell with **HTTP 200** rather than a 404. For a Git
 webhook that means the provider records a successful delivery and never retries
 — silent, unrecoverable loss. The same trap exists on Workers
 (`not_found_handling: "single-page-application"`); add the prefix to `routes` in
-`wrangler.jsonc` at the same time. `src/surfaces.test.ts` pins the strings.
+`wrangler.jsonc` at the same time. `src/app/surfaces.test.ts` pins the strings.
 
 ## API / WS surfaces (versioned)
 
 Four versioned surfaces each have REST + WS namespaces (where applicable).
-Prefixes live in `src/surfaces.ts`; `GET /api/health` is the single
+Prefixes live in `src/app/surfaces.ts`; `GET /api/health` is the single
 deliberately-unversioned probe
 (`{ ok, license: 'AGPL-3.0-only', revision:
 { commit, sourceUrl } }` —
@@ -766,7 +771,7 @@ see the last row.
 | Git webhooks                 | `/webhook/{github,gitlab}(/:ref)` | —                         | **Not an API.** The caller is GitHub or GitLab: no session, no daemon JWT, no `Origin`, and what arrives is an event rather than a call. Unversioned and outside every protected prefix by design. Self-hosted providers get the `:ref` suffix; hosted ones get the clean path. Every fronting layer must forward it — see `src/webhook/AGENTS.md`                                                                                                                                                                |
 
 - Route modules: `src/daemon/api-routes.ts`, `src/client/routes.ts`,
-  `src/lib/install/routes.ts` (registered from `deno.ts` only); Deno-only routes
+  `src/install/routes.ts` (registered from `deno.ts` only); Deno-only routes
   `src/developer/system-routes.ts`, `src/developer/dev-sync.ts`,
   `src/developer/tunnel-routes.ts`, and the version route are registered in
   `src/deno-dev.ts`. `src/admin/routes.ts` is mounted on both Deno and Workers
@@ -779,7 +784,8 @@ see the last row.
   `environmentId`, or managed-cluster `managedEnvironmentId`. Create returns
   `{ ok, id }`; patch returns `{ ok }`.
 - The TurboPanel Development Environment calls developer routes via
-  `src/instance-client.ts` (Unix socket + HTTPS fallback).
+  [`dev/src/lib/developer-client.ts`](../dev/src/lib/developer-client.ts)
+  (Unix socket + HTTPS fallback).
 - Hard cutover: daemon, UI, Caddy (`/ws/*`), and Workers routes
   (`wrangler.jsonc`) moved together. The external CDN node installer must fetch
   the CA from the new `/api/daemon/v1/instance/ca` path.
@@ -799,9 +805,9 @@ the linked doc.
 
 | # | Workload                                                       | Access pattern                                                                                  | Hosted (Workers)                    | Self-hosted (Deno)                                                    | Read before editing                |
 | - | -------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- | ----------------------------------- | --------------------------------------------------------------------- | ---------------------------------- |
-| 1 | **Command state** — `command` rows, status, timings, `context` | Relational, transactional, filtered/joined; source of truth                                     | Postgres via Hyperdrive             | Postgres (co-located)                                                 | `src/lib/commands/AGENTS.md`       |
-| 2 | **Command execution material** — the one-shot daemon payload   | Written once, read once, then deleted (~24 h on failure)                                        | Postgres `dispatch` side table      | Postgres `dispatch` side table                                        | `src/lib/db/AGENTS.md`             |
-| 3 | **Deploy/build transcript** — a command's stdout/stderr        | `GET` by known `commandId`, whole or resumed from an offset — **never scanned across commands** | R2 keyed objects (`EXECUTION_LOGS`) | Filesystem under the state tree (or S3)                               | `src/lib/execution-logs/AGENTS.md` |
+| 1 | **Command state** — `command` rows, status, timings, `context` | Relational, transactional, filtered/joined; source of truth                                     | Postgres via Hyperdrive             | Postgres (co-located)                                                 | `src/features/commands/AGENTS.md`       |
+| 2 | **Command execution material** — the one-shot daemon payload   | Written once, read once, then deleted (~24 h on failure)                                        | Postgres `dispatch` side table      | Postgres `dispatch` side table                                        | `src/db/AGENTS.md`             |
+| 3 | **Deploy/build transcript** — a command's stdout/stderr        | `GET` by known `commandId`, whole or resumed from an offset — **never scanned across commands** | R2 keyed objects (`EXECUTION_LOGS`) | Filesystem under the state tree (or S3)                               | `src/features/execution-logs/AGENTS.md` |
 | 4 | **Analytics** — host metrics + connection-status events        | Aggregate over time buckets; sampled, disposable                                                | Analytics Engine                    | DuckDB + Parquet under the metrics state root (`resolveMetricsDir()`) | `src/daemon/metrics/AGENTS.md`     |
 
 Container output is tailed live (on-demand `docker container logs` via a
@@ -835,7 +841,7 @@ in `src/deno-compile-permissions.test.ts` and gated by `deno task duckdb:smoke`:
   converge (locating it via `scripts/duckdb-native-lib.ts`; converge fails when
   it cannot be staged) and the instance unit puts that directory on
   `LD_LIBRARY_PATH` (see `resolveDuckdbNativeLibraryPath` in
-  `src/server-paths.ts`). Source mode (`deno run --allow-ffi`) needs neither —
+  `src/platform/deno/server-paths.ts`). Source mode (`deno run --allow-ffi`) needs neither —
   addon and `.so` are real sibling files under `node_modules`.
 - Metrics state lives at `resolveMetricsDir()` (`<stateDir>/metrics`,
   `TURBOPANEL_METRICS_DIR` override); the compile tasks and the daemon's
@@ -843,7 +849,7 @@ in `src/deno-compile-permissions.test.ts` and gated by `deno task duckdb:smoke`:
   metrics store needs no network grant on either surface.
 - `deno task duckdb:smoke` builds the **real** production artifact
   (`deno task compile` → `dist/turbopanel`) and drives its
-  `duckdb-smoke` subcommand (`src/duckdb-smoke.ts`, routed by `src/deno.ts`) to
+  `duckdb-smoke` subcommand (`src/cli/duckdb-smoke.ts`, routed by `src/deno.ts`) to
   prove DB create → restart durability → Parquet round trip against the exact
   binary that ships. **Run it inside the Vagrant guest on both linux-x64 and
   linux-arm64** (`../dev/AGENTS.md` → Testing), never on the host.
@@ -906,25 +912,28 @@ orientation; the detail moved to:
 
 | Subsystem                          | Read before editing                                 | Covers                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | ---------------------------------- | --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Daemon Cell** (`/ws/daemon/v1`)  | `src/daemon/cell/AGENTS.md`                         | Presence, outbox + request correlation, Redis vs Durable Object backends, the **canonical Durable Object cost / hibernation / billing rules**, and the Postgres liveness read model (`server.is_connected` + `server.status_changed_at` only — no stored tri-state `daemon_status` column)                                                                                                                                                                                                                                                                                                                                                                                                     |
+| **Daemon Cell** (`/ws/daemon/v1`)  | `src/daemon/AGENTS.md` + `src/daemon/cell/AGENTS.md` | Control-plane side of the daemon protocol (not `turbopaneld`). Presence, outbox + request correlation, Redis vs Durable Object backends, the **canonical Durable Object cost / hibernation / billing rules**, and the Postgres liveness read model (`server.is_connected` + `server.status_changed_at` only — no stored tri-state `daemon_status` column). **Producer-owns:** this repo owns command shapes + cell protocol; `turbopaneld` owns metrics/topology discovery. |
 | **Server metrics**                 | `src/daemon/metrics/AGENTS.md`                      | Host-metrics ingestion, Analytics Engine (Workers) / DuckDB + Parquet (Deno) storage, query + chart caching; also carries a history-only connection-status event stream (`blob1 = "status"`) — never authoritative for current liveness                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| **Command Pipeline**               | `src/lib/commands/AGENTS.md`                        | Typed commands, queue transport, and correlated dev-sync / tunnel-token / public-URL-apply requests                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| **Command Pipeline**               | `src/features/commands/AGENTS.md`                        | Typed commands, queue transport, and correlated dev-sync / tunnel-token / public-URL-apply requests                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | **Webhook ingress** (`/webhook/*`) | `src/webhook/AGENTS.md`                             | The six-step gate every inbound webhook runs, why its ordering is load-bearing, how a delivery is resolved to the secret that verifies it, the delivery-claim replay ledger, and what adding a new webhook kind costs                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| **Billing** (`/webhook/stripe`)    | `src/lib/billing/AGENTS.md`                         | Stripe owns money, Postgres owns entitlement: the `payer` / `subscription` / `seat` projection and why nothing on the ingest or page-load path may call Stripe; the dependency-free REST client (idempotency-key rule, `Stripe-Version` pin, no npm SDK); raw-bytes signature verification; the `setting`-row quantity lease (no advisory locks on Hyperdrive); `billingEnabled` = both Stripe secrets                                                                                                                                                                                                                                                                                         |
-| **Execution logs**                 | `src/lib/execution-logs/AGENTS.md`                  | Command transcripts (daemon stdout/stderr): the `ExecutionLogStore` contract, R2 (Workers) / filesystem + S3 (Deno) drivers, seq/seal/truncation semantics, retention on the shared maintenance tick. **Keyed-object GET, not an analytics table** — nothing queries across transcripts. Postgres holds no execution-log column; `hasLog` is resolved store-side. This is the **only** log class TurboPanel stores. Container stdout is a live on-demand tail, never this store.                                                                                                                                                                                                               |
-| **Compose documents**              | `src/lib/compose/AGENTS.md`                         | `ComposeDocument` model, `x-turbopanel` extension, linter, overlay merge; compile-runtime (`compose.yaml` per participating server); schedule in `src/lib/schedule/`; **placement = `environment.server_id` ?? `project.options.defaultServerId`** (compose placement stripped on save)                                                                                                                                                                                                                                                                                                                                                                                                        |
-| **Managed engines**                | `src/lib/managed/AGENTS.md` + `src/client/managed/` | Engine registry + client API (`POST …/managed`, apply/lifecycle/users/databases/status/logs, `GET /organizations/:id/managed`); whole-server `managed.ingress.reconcile` for shared ProxySQL and `managed.ha.reconcile` for per-org Orchestrator (lazy: HA only on servers that host a primary or `failover` replica). Promote / DR / auto-failover journal in `recovery`; detection is unsolicited `managed-ha-event`. All status reads are Postgres-backed (`GET …/managed/status` includes `error` when status is `failed`); engine logs use cell `managed-logs-request`. Container stdout uses the same correlated cell round trip (`docker container logs` on demand) and is never stored |
+| **Billing** (`/webhook/stripe`)    | `src/features/billing/AGENTS.md`                         | Stripe owns money, Postgres owns entitlement: the `payer` / `subscription` / `seat` projection and why nothing on the ingest or page-load path may call Stripe; the dependency-free REST client (idempotency-key rule, `Stripe-Version` pin, no npm SDK); raw-bytes signature verification; the `setting`-row quantity lease (no advisory locks on Hyperdrive); `billingEnabled` = both Stripe secrets                                                                                                                                                                                                                                                                                         |
+| **Execution logs**                 | `src/features/execution-logs/AGENTS.md`                  | Command transcripts (daemon stdout/stderr): the `ExecutionLogStore` contract, R2 (Workers) / filesystem + S3 (Deno) drivers, seq/seal/truncation semantics, retention on the shared maintenance tick. **Keyed-object GET, not an analytics table** — nothing queries across transcripts. Postgres holds no execution-log column; `hasLog` is resolved store-side. This is the **only** log class TurboPanel stores. Container stdout is a live on-demand tail, never this store.                                                                                                                                                                                                               |
+| **Compose documents**              | `src/features/compose/AGENTS.md`                         | `ComposeDocument` model, `x-turbopanel` extension, linter, overlay merge; compile-runtime (`compose.yaml` per participating server); schedule in `src/features/schedule/`; **placement = `environment.server_id` ?? `project.options.defaultServerId`** (compose placement stripped on save)                                                                                                                                                                                                                                                                                                                                                                                                        |
+| **Managed engines**                | `src/features/managed/AGENTS.md` + `src/client/managed/` | Engine registry + client API (`POST …/managed`, apply/lifecycle/users/databases/status/logs, `GET /organizations/:id/managed`); whole-server `managed.ingress.reconcile` for shared ProxySQL and `managed.ha.reconcile` for per-org Orchestrator (lazy: HA only on servers that host a primary or `failover` replica). Promote / DR / auto-failover journal in `recovery`; detection is unsolicited `managed-ha-event`. All status reads are Postgres-backed (`GET …/managed/status` includes `error` when status is `failed`); engine logs use cell `managed-logs-request`. Container stdout uses the same correlated cell round trip (`docker container logs` on demand) and is never stored |
 | **Bindings**                       | `src/client/bindings/`                              | Managed DB principal → compose service materialization of service-scoped `variable` rows (`binding_id`); ride existing `environment.deploy` inject rail; no new command type                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| **Client API routes**              | `src/client/AGENTS.md`                              | Per-endpoint permission contract for the `/api/client/v1/*` surface: access/permission endpoints + the full resource-tree CRUD table (moved from `src/lib/db/AGENTS.md`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| **Client API routes**              | `src/client/AGENTS.md`                              | Per-endpoint permission contract for the `/api/client/v1/*` surface: access/permission endpoints + the full resource-tree CRUD table (moved from `src/db/AGENTS.md`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | **Authentication**                 | `src/client/authn/AGENTS.md`                        | Argon2id, sessions, PAM install gate, secret keyring + data encryption, daemon key JWT, auth routes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | **CI analysis & coverage**         | `scripts/AGENTS.md`                                 | SonarCloud CI job, Vitest+Deno LCOV merge (`test-coverage.sh`), **`pnpm check:test-inventory`** (every `*.test.ts` claimed by exactly one runner), analysis-scope rules, coverage-attribution traps                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | **System components**              | `src/client/system/AGENTS.md`                       | Self-host platform component inventory (`container`-tracked vs host-native), container name suffix contract                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | **OpenAPI & Scalar**               | `src/client/openapi/AGENTS.md`                      | Hand-authored specs per surface, Scalar embeds, CPD exclusion                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | **Client route contract**          | `src/client/routes-contract.md`                     | Per-route method/path/permission table for `/api/client/v1/*` (referenced from `src/client/AGENTS.md`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| **Email**                          | `src/lib/email/AGENTS.md`                           | Queue abstraction, RabbitMQ→mailer (Deno) / Mailgun (Workers), settings, OTP surface                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| **Database & schema**              | `src/lib/db/AGENTS.md`                              | Drizzle schema, tables, migrations; deploy-tree columns (`container_*`, `service.compose_service_name` + `service.name` label (API `name`), non-partial unique per environment on compose name, `environment.server_id`, `environment.generation`); runtime `deployment` / `slot` (nullable `slot.address`) / `label`; TurboFabric `fabric` / `relay` / `subnet` (compose-bridge, not a datacenter subnet); storage identity `storage` / `copy` / `mount` (+ schema-only `secret`); plus `tag` / `marker` / scheduled `task`                                                                                                                                                                   |
+| **Email**                          | `src/features/email/AGENTS.md`                           | Queue abstraction, RabbitMQ→mailer (Deno) / Mailgun (Workers), settings, OTP surface                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| **Database & schema**              | `src/db/AGENTS.md`                              | Drizzle schema, tables, migrations; deploy-tree columns (`container_*`, `service.compose_service_name` + `service.name` label (API `name`), non-partial unique per environment on compose name, `environment.server_id`, `environment.generation`); runtime `deployment` / `slot` (nullable `slot.address`) / `label`; TurboFabric `fabric` / `relay` / `subnet` (compose-bridge, not a datacenter subnet); storage identity `storage` / `copy` / `mount` (+ schema-only `secret`); plus `tag` / `marker` / scheduled `task`                                                                                                                                                                   |
 | **Query cache**                    | `src/query-cache/AGENTS.md`                         | Approved read-only cached `SELECT` models (Hyperdrive cached / Redis read-through)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | **TLS & certificate authorities**  | `src/lib/tls/AGENTS.md`                             | Platform CA vs Organization CA boundary, org TLS library primitives, leaf issuance + `leaf` tracking, Workers/Deno renewal sweep                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| **Contracts**                      | `src/contracts/`                                    | Shared wire shapes: command schemas, deploy-validation, hostname, metrics contract, capability-plan, topology, cell protocol, server-addresses, runtime-registry, update-channel. Drift-checked against `turbopaneld/src/contracts/`                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| **Platform**                       | `src/platform/`                                     | `ports/` (queue/store interfaces), `workers/` (bindings, Hyperdrive, R2, Mailgun), `deno/` (server, paths, AMQP, filesystem stores, Redis, SMTP, DuckDB). Dual-runtime modules must not statically import the other runtime.                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| **Install**                        | `src/install/`                                      | Sixth surface: self-hosted wizard (`/api/install/v1/*`) |
 
 ## Self-host system inventory
 
@@ -938,8 +947,42 @@ Moved to `src/client/openapi/AGENTS.md`.
 
 ## Layout
 
-- `src/app.ts` — shared Hono factory (`/api/health` + client/daemon routers)
-- `src/deno.ts` — production Deno entry (`deno-server.ts` + no developer
+Feature-first tree. The four executables stay at `src/` root. Names that match
+URL prefixes stay (`client/` = end-user API surface; `daemon/` = control-plane
+side of the daemon protocol, **not** `turbopaneld`). `lib/` is an admitted
+kernel only (both-runtime, no DB connection import, no feature vocabulary).
+
+```text
+src/
+├── workers.ts · workers-vitest.ts · deno.ts · deno-dev.ts   # only executables
+├── app/            # createApp, surfaces, cors, security-headers,
+│                   # browser-write-protection, scalar-html, build-info,
+│                   # version, developer-surface gate (dev-mode)
+├── platform/
+│   ├── ports/      # command-queue, execution-log-store, rate-limiter,
+│   │               # query-cache, email-queue
+│   ├── workers/    # bindings, Hyperdrive, Workers queue, R2, Mailgun
+│   └── deno/       # server.ts (was deno-server), server-paths, runtime-paths,
+│                   # AMQP, filesystem/S3 stores, Redis, SMTP, DuckDB
+├── db/             # schema + factories + generic helpers; AGENTS.md
+├── lib/            # kernel: ip-address, naming, version-wire, machine-key,
+│                   # peer-address, display-name-format, timezones,
+│                   # optional-fields, logger, log-compat, sha512-crypt,
+│                   # secrets/{secrets,data-encryption,generate-secret},
+│                   # http/, tls/
+├── contracts/      # command schemas, deploy-validation, hostname,
+│                   # metrics-contract, capability-plan, topology,
+│                   # cell + cell-protocol, server-addresses,
+│                   # runtime-registry, update-channel
+├── features/       # domain modules (organizations, servers, compose,
+│                   # commands consumer, email queue, managed, …)
+├── client/ · admin/ · developer/ · daemon/ · webhook/ · install/ · cli/
+├── query-cache/    # keep (own AGENTS.md); backends live in platform/
+└── test-fixtures/
+```
+
+- `src/app/app.ts` — shared Hono factory (`/api/health` + client/daemon routers)
+- `src/deno.ts` — production Deno entry (`platform/deno/server.ts` + no developer
   modules)
 - `src/deno-dev.ts` — development Deno entry; registers install routes,
   developer surface, `/api/daemon/v1/version`, daemon WS, and the dev update
@@ -953,8 +996,8 @@ Moved to `src/client/openapi/AGENTS.md`.
   (pre-commit / `pnpm check:workers-bundle`)
 - `src/lib/machine-key.ts` — machine-key derive/normalize (Workers + Deno; no
   `@std` imports)
-- `src/surfaces.ts` — versioned API/WS prefix constants
-- `src/openapi.ts` / `src/scalar-html.ts` — hand-authored OpenAPI 3.1 specs +
+- `src/app/surfaces.ts` — versioned API/WS prefix constants
+- `src/client/openapi/` / `src/app/scalar-html.ts` — hand-authored OpenAPI 3.1 specs +
   Scalar embed HTML
 - `src/client/routes.ts` — client REST router; imports `src/client/authn/*` and
   `src/client/authz/*`
@@ -974,51 +1017,26 @@ Moved to `src/client/openapi/AGENTS.md`.
   `workspace.kind` (`user` \| `turbopanel`; `WORKSPACE_KIND_SYSTEM` is only a
   deprecated alias). `project.metadata.type = 'system'` is a
   presentation/classification stamp only — never an authorization source.
-- `src/daemon/api-routes.ts` / `src/daemon/deno-ws.ts` /
-  `src/daemon/workers-ws.ts` — daemon REST + WS (cell-backed)
-- `src/daemon/cell/contracts.ts` — `DaemonCell` interface, `DaemonCellRegistry`,
-  DTOs
-- `src/daemon/cell/protocol.ts` — `DaemonMessage`, envelope codecs,
-  `DAEMON_INBOUND_ALLOWED`, `DAEMON_STALE_MS`
-- `src/daemon/cell/do.ts` — `DaemonCellObject` (SQLite-backed Durable Object,
-  Workers)
-- `src/daemon/cell/do-registry.ts` — `createDurableObjectDaemonCellRegistry`
-- `src/daemon/cell/redis/` — `RedisDaemonCell`, `RedisCellClient`,
-  `createRedisDaemonCellRegistry` (Deno only)
-- `src/daemon/cell/stateless-challenge.ts` — stateless HMAC-signed challenge
-  tokens (`DaemonChallengeStore`)
-- `src/daemon/cell/location.ts` — `resolveCellLocationHint`,
-  `resolveCellGeneration`
-- `src/daemon/cell/postgres-projection.ts` — write-through helpers for canonical
-  Postgres fields
-- `src/daemon/cell/snapshot-merge.ts` — `mergeSnapshotPresence`
-- `src/daemon/authn/license.ts` — daemon hello license verification
-  (`verifyDaemonLicense`)
-- `src/daemon/authn/daemon-jwt.ts` — daemon JWT issue/verify (EdDSA/Ed25519,
-  15-minute lifetime)
-- `src/daemon/authn/daemon-jwt-keyring.ts` — deterministic Ed25519 keyring
-  derived from `TURBOPANEL_SECRET` / `TURBOPANEL_SECRETS`;
-  `deriveDaemonJwtKeyring`, `buildJwksDocument`
-- `src/daemon/authn/daemon-state.ts` — `ServerDaemonState` / `ServerDaemonKey`
-  types and parsers for `server.daemon` jsonb
-- `src/daemon/authn/server-identity-db.ts` — DB helpers for `server.daemon`
-  (`getServerDaemonStateByServerId`, `attachDaemonStateToServer`,
-  `touchDaemonKeyLastUsed`, `revokeDaemonKey`, `clearServerDaemonState`)
-- `src/daemon/authn/server-key.ts` — `buildAuthPayload`,
-  `computePublicKeyFingerprint`, `verifyDaemonSignature`
-- `src/daemon/authz/` — daemon-side authorization placeholder
-- `src/lib/db/schema.ts` — Drizzle table definitions (`server`, etc.; see
-  `src/lib/db/AGENTS.md`); connection factories stay in `src/db.ts`
-- `src/lib/install/routes.ts` — self-hosted install wizard (`/api/install/v1/*`;
-  Deno-only registration)
-- `src/lib/update/manifest.ts` — Workers-safe channel manifest resolver
+- `src/daemon/` — control-plane side of `/api/daemon/v1` + `/ws/daemon/v1`
+  (see `src/daemon/AGENTS.md`). Cell protocol types live in `src/contracts/`;
+  the Durable Object + Redis pair stay under `src/daemon/cell/`.
+- `src/features/licenses/verify-daemon-license.ts` — daemon hello license
+  verification (`verifyDaemonLicense`)
+- `src/daemon/authn/` — daemon JWT issue/verify + keyring + server-key
+- `src/features/servers/daemon-state.ts` / `server-identity-db.ts` — `server.daemon`
+  jsonb parsers and DB helpers
+- `src/db/schema.ts` — Drizzle table definitions (`server`, etc.; see
+  `src/db/AGENTS.md`); connection factories stay in `src/db/connection.ts`
+- `src/install/routes.ts` — self-hosted install wizard (`/api/install/v1/*`;
+  Deno-only registration). Install helpers live in `src/features/install/`.
+- `src/features/update/manifest.ts` — Workers-safe channel manifest resolver
   (`fetch`-only, one fetch straight to the channel's built-in location from
-  `src/lib/update/channel.ts` — trunk on the CDN drop, rc/release on the
+  `src/contracts/update-channel.ts` — trunk on the CDN drop, rc/release on the
   daemon's GitHub Releases; per-channel cache; returns `null` on any failure).
   The instance follows `TURBOPANEL_UPDATE_CHANNEL` (default `trunk`; invalid
   is a Deno startup error) and every queued daemon update carries that channel
-- `src/lib/email/` — shared queue types/templates; `smtp/` (Deno/AMQP) and
-  `mailgun/` (Workers) backends
+- `src/features/email/` — shared queue types/templates; SMTP (Deno/AMQP) and
+  Mailgun (Workers) backends live under `src/platform/`
 - `src/developer/` — developer surface (Deno-only routes + Workers-safe
   `routes-core.ts`)
 - `src/webhook/` — inbound webhook surface (`/webhook/*`). Its own top-level
@@ -1040,6 +1058,7 @@ Moved to `src/client/openapi/AGENTS.md`.
   (`src/admin/reencrypt-secrets.ts` — resume via `cursor` until `completed`;
   durable `REENCRYPT_SWEEP_LOCK` setting lease across isolates; **409**
   `reencrypt_in_progress` when another sweep holds the lease).
-- `src/resource-routes.ts` — workspace/environment/project/service/hosting CRUD
-- `src/server-paths.ts` / `src/server-registry.ts` — Unix socket path + daemon
+- `src/platform/deno/server-paths.ts` / `src/features/servers/server-registry.ts` — Unix socket path + daemon
   server row resolution
+- `src/cli/` — compiled-binary verbs (`migrate`, `generate-secret`,
+  `generate-self-signed-cert`) plus `duckdb-smoke`

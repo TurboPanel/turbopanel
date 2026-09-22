@@ -1,15 +1,14 @@
 import { eq } from 'drizzle-orm'
 import type { Context } from 'hono'
-import type { AppEnv } from '../../app.ts'
-import { type Db, getDaemonCellRegistry } from '../../db.ts'
+import type { AppEnv } from '../../app/app.ts'
+import { type Db, getDaemonCellRegistry } from '../../db/connection.ts'
 import {
   getManagedEngineSpec,
   MANAGED_ENGINE_STATUS,
-  type ManagedEngineSpec,
-} from '../../lib/managed/index.ts'
-import { environment, project } from '../../lib/db/schema.ts'
-import type { ManagedOrganizationDefaults } from '../../lib/managed/org-defaults.ts'
-import { loadManagedOrgDefaults } from './org-defaults.ts'
+} from '../../features/managed/index.ts'
+import { environment, project } from '../../db/schema.ts'
+import type { ManagedContext } from '../../features/managed/managed-context.ts'
+import { loadManagedOrgDefaults } from '../../features/managed/load-org-defaults.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import {
   assertCanManageOr403,
@@ -20,7 +19,7 @@ import {
 import { verifyServerInOrg } from '../environments/deploy-prepare.ts'
 import { getCatalogEntry } from '../projects/catalog/index.ts'
 import { loadServerStatusRecords } from '../servers/update-status.ts'
-import type { ManagedStatus } from '../../lib/managed/types.ts'
+import type { ManagedStatus } from '../../features/managed/types.ts'
 
 export async function authorizeManagedRequest(
   c: Context<AppEnv>,
@@ -70,34 +69,7 @@ function readProjectCatalogCode(metadata: unknown): string | null {
   return typeof code === 'string' && code.length > 0 ? code : null
 }
 
-export type ManagedContext = {
-  environmentId: string
-  projectId: string
-  envDisplayName: string | null
-  catalogCode: string
-  spec: ManagedEngineSpec
-  /**
-   * The environment's *current* placement pin — **not** necessarily the host
-   * that owns an existing managed service. Once a `managed` row exists,
-   * `managed.server_id` is the source of truth for where the engine actually
-   * runs; this field may be `null` (placement cleared) or point at a
-   * different server than `managed.server_id` after the environment's
-   * compose placement moves independently. Routes operating on an existing
-   * row must resolve their target via {@link resolveManagedTargetServerId},
-   * not by reading this field directly. It remains required (via
-   * {@link requireManagedCreateServerId}) only when creating a brand-new
-   * managed row.
-   */
-  serverId: string | null
-  organizationId: string
-  /**
-   * Org-wide managed defaults inherited by services with no override
-   * (`organization.options.managedDatabase`). Resolve an effective value with
-   * the matching `resolveManaged*` helper rather than reading a service field
-   * directly.
-   */
-  orgDefaults: ManagedOrganizationDefaults
-}
+export type { ManagedContext } from '../../features/managed/managed-context.ts'
 
 export async function loadManagedContext(
   c: Context<AppEnv>,

@@ -17,7 +17,7 @@ import { readLatestSnapshot } from "./schema-snapshot.mjs";
 import {
   DATA_DICTIONARY_GROUPS,
   SCHEMA_DESCRIPTIONS,
-} from "../src/lib/db/schema-descriptions.ts";
+} from "../src/db/schema-descriptions.ts";
 import { writeFixtureMigrations } from "./schema-fixture.test-helper.ts";
 
 const repoRoot = join(dirname(fromFileUrl(import.meta.url)), "..");

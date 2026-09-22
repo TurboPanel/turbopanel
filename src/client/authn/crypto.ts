@@ -2,8 +2,8 @@ import {
   ENVELOPE_SCHEME_SESSION,
   formatEnvelope,
   parseEnvelope,
-} from "./envelope.ts";
-import { findKeyForVersion, type DerivedSecretsConfig } from "./secrets.ts";
+} from "../../lib/secrets/envelope.ts";
+import { findKeyForVersion, type DerivedSecretsConfig } from "../../lib/secrets/secrets.ts";
 
 export type VerifyResult = {
   token: string;

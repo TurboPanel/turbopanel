@@ -14,7 +14,7 @@ import {
   parseGithubManifestStartBody,
   serializeForge,
 } from './routes-helpers.ts'
-import type { ForgeSummary } from '../../lib/git/forge-records.ts'
+import type { ForgeSummary } from '../../features/git/forge-records.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.

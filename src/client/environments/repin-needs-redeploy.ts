@@ -18,9 +18,9 @@
  */
 
 import { and, eq, isNotNull } from 'drizzle-orm'
-import type { Db } from '../../db.ts'
-import { deployment, hosting, ip, service } from '../../lib/db/schema.ts'
-import { parseIpPinMetadata } from '../../lib/net/repin.ts'
+import type { Db } from '../../db/connection.ts'
+import { deployment, hosting, ip, service } from '../../db/schema.ts'
+import { parseIpPinMetadata } from '../../features/net/repin.ts'
 
 export type RepinNeedsRedeploy = {
   serverId: string

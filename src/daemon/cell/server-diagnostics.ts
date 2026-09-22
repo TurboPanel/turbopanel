@@ -5,12 +5,12 @@
  * It must never be called from normal UI status views or on a timer.
  * Use the server status read model (server-status.ts) for all normal status reads.
  */
-import type { Db } from '../../db.ts'
+import type { Db } from '../../db/connection.ts'
 import type {
   CellDiagnostics,
   DaemonCellRegistry,
   DaemonCellSnapshot,
-} from './contracts.ts'
+} from '../../contracts/cell.ts'
 
 export type FetchServerCellSuccess = {
   ok: true

@@ -29,7 +29,7 @@ import {
   type HostCapacities,
 } from '../../daemon/metrics/query/derived-metrics.ts'
 import type { HostSeriesChartResponse } from '../../daemon/metrics/query/series-response.ts'
-import { computeSlotMapping } from './topology-slot-mapping.ts'
+import { computeSlotMapping } from '../../contracts/topology-slot-mapping.ts'
 import {
   buildTopologyInventory,
   rootFilesystemTotalBytes,
@@ -39,7 +39,7 @@ import type { AuthRouteOpts } from '../authn/http.ts'
 import {
   inferServerMachineClass,
   type ServerMachineClass,
-} from '../../daemon/metrics/capability-plan.ts'
+} from '../../contracts/capability-plan.ts'
 import {
   type EffectiveCpuThermalLimits,
   HARDWARE_PROFILE_NIC_KEYS,
@@ -50,7 +50,7 @@ import {
   type ServerHardwareProfile,
   type ServerHardwareProfileUpdate,
   type ServerSensorSlotAssignment,
-} from '../../lib/db/server-metadata.ts'
+} from '../../features/servers/server-metadata.ts'
 import {
   EMPTY_TOPOLOGY_OVERRIDES,
   type FilesystemId,
@@ -59,12 +59,12 @@ import {
   type TopologyDeviceId,
   type TopologyOverrides,
   type TopologySnapshot,
-} from './topology-types.ts'
+} from '../../contracts/topology-types.ts'
 import {
   type OrganizationOptions,
   resolveTemperatureUnit,
   type TemperatureUnit,
-} from '../../lib/organization-options.ts'
+} from '../../features/organizations/organization-options.ts'
 
 export type IsoTimestampParseResult =
   | { ok: true; ms: number; iso: string }

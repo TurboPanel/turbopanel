@@ -1,11 +1,11 @@
 import { and, eq, or, isNull } from 'drizzle-orm'
-import type { Db } from '../../db.ts'
-import type { EnvironmentDeployDockerNetwork } from '../../lib/commands/schemas.ts'
-import { network } from '../../lib/db/schema.ts'
+import type { Db } from '../../db/connection.ts'
+import type { EnvironmentDeployDockerNetwork } from '../../contracts/commands/schemas.ts'
+import { network } from '../../db/schema.ts'
 import {
   readNetworkDockerAddressing,
   readNetworkDockerNetworkName,
-} from '../../lib/docker-network-name.ts'
+} from '../../features/deploy/docker-network-name.ts'
 
 export type ResolvedExternalDockerNetworks = {
   /** Compose names with no matching `kind='docker'` registration, sorted. */

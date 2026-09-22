@@ -18,7 +18,7 @@
  */
 switch (Deno.args[0]) {
   case "duckdb-smoke": {
-    const { runDuckdbSmoke } = await import("./duckdb-smoke.ts");
+    const { runDuckdbSmoke } = await import("./cli/duckdb-smoke.ts");
     await runDuckdbSmoke(Deno.args[1] ?? "");
     break;
   }
@@ -46,7 +46,7 @@ switch (Deno.args[0]) {
     // module evaluation (it needs the vendored libduckdb.so on
     // LD_LIBRARY_PATH), which an install-time verb run before the unit
     // exists must not require.
-    const { startDenoServer } = await import("./deno-server.ts");
+    const { startDenoServer } = await import("./platform/deno/server.ts");
     await startDenoServer();
   }
 }

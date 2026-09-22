@@ -1,39 +1,39 @@
 import { and, count, eq, inArray, isNotNull } from "drizzle-orm";
 import type { Context, Hono } from "hono";
-import type { AppEnv } from "../../app.ts";
+import type { AppEnv } from "../../app/app.ts";
 import type { AuthRouteOpts } from "../authn/http.ts";
 import { createSessionMiddleware } from "../authn/middleware.ts";
 import { assertCanOr403, listVisible } from "../authz/index.ts";
 import { resolveEntityOrganizationId } from "../authz/create-access-grant.ts";
-import { type Db, getDb } from "../../db.ts";
-import { datacenter, ip, network, server } from "../../lib/db/schema.ts";
+import { type Db, getDb } from "../../db/connection.ts";
+import { datacenter, ip, network, server } from "../../db/schema.ts";
 import {
   type DatacenterPolicy,
   parseDatacenterOptions,
   resolveDatacenterPolicy,
-} from "../../lib/datacenter-options.ts";
-import { getCommandQueue } from "../../lib/commands/queue.ts";
-import { isNoopCommandQueue } from "../../lib/commands/noop-command-queue.ts";
-import { compatLogWarn } from "../../log-compat.ts";
+} from "../../features/datacenters/datacenter-options.ts";
+import { getCommandQueue } from "../../features/commands/queue.ts";
+import { isNoopCommandQueue } from "../../features/commands/noop-command-queue.ts";
+import { compatLogWarn } from "../../lib/log-compat.ts";
 import { fanOutDatacenterRoutingChange } from "./routing-fanout.ts";
-import { suggestDatacenterNames } from "../../lib/datacenter-name-suggestions.ts";
+import { suggestDatacenterNames } from "../../features/datacenters/datacenter-name-suggestions.ts";
 import { alignedNetworkCidr, isValidCidr } from "../../lib/ip-address.ts";
 import {
   assertCidrAvailable,
   assertCidrsAvailable,
-} from "../../lib/net/cidr-collisions.ts";
+} from "../../features/net/cidr-collisions.ts";
 import {
   loadDatacenterCidrs,
   loadDatacenterSubnets,
-} from "../../lib/net/datacenter-networks.ts";
+} from "../../features/net/datacenter-networks.ts";
 import {
   countUnassignedServersAmong,
   loadDatacenterMembershipsForDatacenter,
   type MemberPinSubnet,
   validateMemberPinAddress,
-} from "../../lib/net/datacenter-membership.ts";
+} from "../../features/net/datacenter-membership.ts";
 import { isIpAddressUniqueViolation } from "../ips/ip-create-validation.ts";
-import { parseIpPinMetadata } from "../../lib/net/repin.ts";
+import { parseIpPinMetadata } from "../../features/net/repin.ts";
 import { cidrCollisionResponse } from "../networks/network-scope.ts";
 import {
   assertCanCreateOr403,

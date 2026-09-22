@@ -1,12 +1,12 @@
 import { assertEquals } from "@std/assert";
-import type { Db } from "../../db.ts";
-import type { ServerMetadata } from "../../lib/db/server-metadata.ts";
+import type { Db } from "../../db/connection.ts";
+import type { ServerMetadata } from "../../features/servers/server-metadata.ts";
 import {
   buildDefaultDaemonStatus,
   type ServerDaemonState,
   type ServerDaemonStatus,
-} from "../authn/daemon-state.ts";
-import type { DaemonCellRegistry, DaemonCellSnapshot } from "./contracts.ts";
+} from "../../features/servers/daemon-state.ts";
+import type { DaemonCellRegistry, DaemonCellSnapshot } from "../../contracts/cell.ts";
 // Canonical import path: ./server-status.ts (fleet-presence.ts is a re-export shim).
 import {
   fleetPresenceToConnection,

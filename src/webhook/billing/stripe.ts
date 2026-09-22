@@ -40,19 +40,19 @@
  */
 
 import type { Context, Hono } from 'hono'
-import type { AppEnv } from '../../app.ts'
-import { createWorkersDb, endDbConnection, getDb, type Db } from '../../db.ts'
-import { logWarn } from '../../logger.ts'
-import { STRIPE_WEBHOOK_PATH } from '../../surfaces.ts'
+import type { AppEnv } from '../../app/app.ts'
+import { createWorkersDb, endDbConnection, getDb, type Db } from '../../db/connection.ts'
+import { logWarn } from '../../lib/logger.ts'
+import { STRIPE_WEBHOOK_PATH } from '../../app/surfaces.ts'
 import { stripeWebhookRateLimitKey } from '../../daemon/rate-limit/keys.ts'
-import type { BillingConfig } from '../../lib/billing/config.ts'
-import { createStripeClient, type StripeClient } from '../../lib/billing/client.ts'
+import type { BillingConfig } from '../../features/billing/config.ts'
+import { createStripeClient, type StripeClient } from '../../features/billing/client.ts'
 import {
   STRIPE_SIGNATURE_HEADER,
   verifyStripeSignature,
-} from '../../lib/billing/webhook-signature.ts'
+} from '../../features/billing/webhook-signature.ts'
 import { type AfterResponseScheduler, runAfterResponse } from '../../lib/http/after-response.ts'
-import { enqueueStripeProjection } from '../../lib/db/webhook-delivery-records.ts'
+import { enqueueStripeProjection } from '../../features/webhook-delivery/webhook-delivery-records.ts'
 import {
   accepted,
   type DeliveryOutcome,

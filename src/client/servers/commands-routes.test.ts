@@ -10,32 +10,32 @@ import { assertEquals } from '@std/assert'
 import { and, eq } from 'drizzle-orm'
 import { it } from '@std/testing/bdd'
 import { Hono } from 'hono'
-import type { AppEnv } from '../../app.ts'
-import { getDatabaseUrl } from '../../db-url.ts'
-import { createDenoDb } from '../../db.ts'
-import type { DaemonCell, DaemonCellRegistry } from '../../daemon/cell/contracts.ts'
+import type { AppEnv } from '../../app/app.ts'
+import { getDatabaseUrl } from '../../db/url.ts'
+import { createDenoDb } from '../../db/connection.ts'
+import type { DaemonCell, DaemonCellRegistry } from '../../contracts/cell.ts'
 import {
   buildSignedCookie,
   HTTP_SESSION_COOKIE_NAME,
 } from '../authn/crypto.ts'
 import { createSession } from '../authn/session-store.ts'
-import { deriveSecretsConfig } from '../authn/secrets.ts'
+import { deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
 import {
   command,
   grant,
   organization,
   server,
   user,
-} from '../../lib/db/schema.ts'
+} from '../../db/schema.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { registerServerRoutes } from './routes.ts'
-import type { CommandEnvelope } from '../../lib/commands/envelope.ts'
-import type { CommandQueue } from '../../lib/commands/queue.ts'
+import type { CommandEnvelope } from '../../features/commands/envelope.ts'
+import type { CommandQueue } from '../../features/commands/queue.ts'
 import {
   createCommandRecord,
   getCommandRecord,
   transitionCommand,
-} from '../../lib/db/command-records.ts'
+} from '../../features/commands/command-records.ts'
 import { COMMAND_STATUS_BATCH_LIMIT } from './commands-routes-helpers.ts'
 
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'

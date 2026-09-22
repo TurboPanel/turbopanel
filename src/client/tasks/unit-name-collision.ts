@@ -8,12 +8,12 @@
  * silently later.
  */
 import { eq } from 'drizzle-orm'
-import type { Db } from '../../db.ts'
-import { environment, project, service, task } from '../../lib/db/schema.ts'
-import { cronJobUnitName } from '../../lib/cron.ts'
-import { readServiceTurbopanelExtension } from '../../lib/compose/service-kind.ts'
-import { resolveMergedCompose, servicesMapping } from '../../lib/schedule/plan-deploy.ts'
-import { environmentComposeFilename } from '../environments/deploy-layers.ts'
+import type { Db } from '../../db/connection.ts'
+import { environment, project, service, task } from '../../db/schema.ts'
+import { cronJobUnitName } from '../../features/deploy/cron.ts'
+import { readServiceTurbopanelExtension } from '../../features/compose/service-kind.ts'
+import { resolveMergedCompose, servicesMapping } from '../../features/schedule/plan-deploy.ts'
+import { environmentComposeFilename } from '../../features/deploy/deploy-layers.ts'
 import { isPlainObject } from '../environments/deploy-routes-helpers.ts'
 
 import { TASK_NAME_IN_USE_ERROR } from '../display-name-uniqueness.ts'

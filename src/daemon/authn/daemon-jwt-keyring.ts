@@ -1,4 +1,4 @@
-import type { SecretsConfig } from "../../client/authn/secrets.ts";
+import type { SecretsConfig } from "../../lib/secrets/secrets.ts";
 
 const textEncoder = new TextEncoder();
 

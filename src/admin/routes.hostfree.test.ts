@@ -4,7 +4,7 @@
 
 import { assertEquals, assertExists } from "@std/assert";
 import { Hono } from "hono";
-import type { AppEnv } from "../app.ts";
+import type { AppEnv } from "../app/app.ts";
 import {
   createEmptyMockAuthState,
   createMockAuthDb,
@@ -17,16 +17,16 @@ import {
 import {
   deriveEncryptionSecretsConfig,
   deriveSecretsConfig,
-} from "../client/authn/secrets.ts";
+} from "../lib/secrets/secrets.ts";
 import type {
   DaemonCell,
   DaemonCellRegistry,
   PendingRequestRecord,
-} from "../daemon/cell/contracts.ts";
-import { ADMIN_API_PREFIX } from "../surfaces.ts";
+} from "../contracts/cell.ts";
+import { ADMIN_API_PREFIX } from "../app/surfaces.ts";
 import { parseTestSecretsConfig } from "../test-fixtures/secrets.ts";
-import type { Db } from "../db.ts";
-import { server } from "../lib/db/schema.ts";
+import type { Db } from "../db/connection.ts";
+import { server } from "../db/schema.ts";
 import { registerAdminRoutes } from "./routes.ts";
 import { registerAdminTierRoutes } from "./tier-routes.ts";
 
@@ -241,6 +241,9 @@ async function buildApp(opts: Readonly<{
     secrets,
     runtime: opts.runtime ?? "deno",
     devSurface: opts.devSurface ?? false,
+    ...(opts.runtime === "workers"
+      ? {}
+      : { collectInstanceIps: () => [] }),
     ...(opts.getEnv ? { getEnv: opts.getEnv } : {}),
     ...(opts.registerTiers
       ? {

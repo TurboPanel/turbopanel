@@ -4,8 +4,8 @@ import {
   generateRequestId,
   DAEMON_OFFLINE_SWEEP_MS,
   DAEMON_STALE_MS,
-} from "../protocol.ts";
-import { emptyServerIps } from "../../../server-addresses.ts";
+} from "../../../contracts/cell-protocol.ts";
+import { emptyServerIps } from "../../../contracts/server-addresses.ts";
 import { RedisDaemonCell } from "./cell.ts";
 import {
   cellKeyPattern,

@@ -1,6 +1,6 @@
 import { assertEquals, assertExists } from '@std/assert'
-import type { Db } from '../db.ts'
-import type { DaemonCell, DaemonCellRegistry, PendingRequestRecord } from '../daemon/cell/contracts.ts'
+import type { Db } from '../db/connection.ts'
+import type { DaemonCell, DaemonCellRegistry, PendingRequestRecord } from '../contracts/cell.ts'
 import { REENCRYPT_BATCH_SIZE } from './reencrypt-secrets.ts'
 import {
   extractAddresses,

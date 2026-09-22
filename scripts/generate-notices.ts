@@ -31,7 +31,7 @@ import {
   pnpmLicenseKeys,
   pnpmPackagePaths,
   renderThirdPartyNotices,
-} from "../src/lib/notices.ts";
+} from "./lib/notices.ts";
 
 const ROOT = dirname(dirname(fromFileUrl(import.meta.url)));
 

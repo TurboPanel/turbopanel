@@ -1,9 +1,9 @@
 import { eq } from 'drizzle-orm'
 import { assertEquals } from '@std/assert'
 import { Hono } from 'hono'
-import type { AppEnv } from '../../app.ts'
-import { getDatabaseUrl } from '../../db-url.ts'
-import { createDenoDb } from '../../db.ts'
+import type { AppEnv } from '../../app/app.ts'
+import { getDatabaseUrl } from '../../db/url.ts'
+import { createDenoDb } from '../../db/connection.ts'
 import {
   buildSignedCookie,
   HTTP_SESSION_COOKIE_NAME,
@@ -21,8 +21,8 @@ import {
   deriveSecretsConfig,
   parseSecretsEnv,
   type DerivedSecretsConfig,
-} from './secrets.ts'
-import { session, user } from '../../lib/db/schema.ts'
+} from '../../lib/secrets/secrets.ts'
+import { session, user } from '../../db/schema.ts'
 import { TEST_ONLY_TURBOPANEL_SECRET, parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import {
   createEmptyMockAuthState,

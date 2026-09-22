@@ -1,4 +1,4 @@
-import { TASK_CONCURRENCY_POLICIES } from '../../lib/db/task-records.ts'
+import { TASK_CONCURRENCY_POLICIES } from '../../features/schedule/task-records.ts'
 import { buildResourceCrudPaths, clientErrorJson } from './shared.ts'
 
 const concurrencyPolicySchema = {

@@ -1,8 +1,7 @@
 import { and, eq, gt } from "drizzle-orm";
-import { recordAuditAndNotify } from "../../lib/notifications/audit-bridge.ts";
-import { resolveEntityOrganizationId } from "../authz/create-access-grant.ts";
+import { recordAuditAndNotify } from "../../features/notifications/audit-bridge.ts";
 import type { Context, Hono } from "hono";
-import type { AppEnv } from "../../app.ts";
+import type { AppEnv } from "../../app/app.ts";
 import type { AuthRouteOpts } from "../authn/http.ts";
 import {
   InvitationGrantValidationError,
@@ -14,6 +13,7 @@ import { mapGrantRows, revokeAccessGrant } from "../authz/access-grants.ts";
 import {
   createAccessGrant,
   isAccessGrantEntityType,
+  resolveEntityOrganizationId,
 } from "../authz/create-access-grant.ts";
 import {
   resolveEntityById,
@@ -27,9 +27,9 @@ import {
   canManageOrganization,
 } from "../authz/index.ts";
 import { getPermissionCatalog } from "../authz/catalog.ts";
-import type { Db } from "../../db.ts";
-import { getDb } from "../../db.ts";
-import { grant, invitation, team, teammate } from "../../lib/db/schema.ts";
+import type { Db } from "../../db/connection.ts";
+import { getDb } from "../../db/connection.ts";
+import { grant, invitation, team, teammate } from "../../db/schema.ts";
 import { getOrgId } from "../shared.ts";
 import {
   handleCreateInvitation,

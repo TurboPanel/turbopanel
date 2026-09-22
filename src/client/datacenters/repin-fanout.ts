@@ -3,7 +3,7 @@
  *
  * The repin itself (`ip.address` rewrite) rides the change-detected
  * `touchServerMetadata` write on the daemon presence path
- * (`src/lib/net/repin-apply.ts`). That path cannot enqueue commands — hello
+ * (`src/features/net/repin-apply.ts`). That path cannot enqueue commands — hello
  * and Durable Object handlers must not enqueue (DO cost rule) — so the apply
  * pass only stamps `ip.repin_pending_fanout_at`, and this sweep drains
  * those markers from the shared maintenance tick, which already holds a real
@@ -35,15 +35,15 @@
  */
 
 import { eq, sql } from "drizzle-orm";
-import type { Db } from "../../db.ts";
-import type { CommandQueue } from "../../lib/commands/queue.ts";
-import { ip } from "../../lib/db/schema.ts";
-import { compatLogWarn } from "../../log-compat.ts";
+import type { Db } from "../../db/connection.ts";
+import type { CommandQueue } from "../../features/commands/queue.ts";
+import { ip } from "../../db/schema.ts";
+import { compatLogWarn } from "../../lib/log-compat.ts";
 import type {
   DerivedSecretsConfig,
   SecretsConfig,
-} from "../authn/secrets.ts";
-import { listManagedIdsForServer } from "../bindings/resolve-endpoint.ts";
+} from "../../lib/secrets/secrets.ts";
+import { listManagedIdsForServer } from "../../features/bindings/resolve-endpoint.ts";
 import { fanOutDatacenterRoutingChange } from "./routing-fanout.ts";
 
 /** Bounded batch for one repin fan-out sweep tick. */

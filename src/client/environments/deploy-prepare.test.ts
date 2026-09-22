@@ -1,27 +1,27 @@
 import { assertEquals, assertRejects } from "@std/assert";
-import type { EnvironmentDeploySite } from "../../lib/commands/schemas.ts";
+import type { EnvironmentDeploySite } from "../../contracts/commands/schemas.ts";
 import { describe, it } from "@std/testing/bdd";
 import {
   buildServiceOptionsMap,
   collectHealthCheckWarnings,
-} from "../../lib/compose/apply-service-options.ts";
+} from "../../features/compose/apply-service-options.ts";
 import {
   assertComposeDocument,
   type SiteSpec,
-} from "../../lib/compose/index.ts";
+} from "../../features/compose/index.ts";
 import {
   dockerVolumeNameFromStorageId,
   principalHomeDir,
   principalVolumePath,
   resolveDockerVolumeName,
 } from "../../lib/naming.ts";
-import { DEFAULT_PRINCIPAL_SHELL } from "../../lib/principal-options.ts";
-import { sumServiceResourceUsage } from "../../lib/resource-limits.ts";
+import { DEFAULT_PRINCIPAL_SHELL } from "../../features/principals/principal-options.ts";
+import { sumServiceResourceUsage } from "../../features/organizations/resource-limits.ts";
 import type {
   ResolvedResources,
   ResolvedService,
-} from "../../lib/compose/ir.ts";
-import type { Db } from "../../db.ts";
+} from "../../features/compose/ir.ts";
+import type { Db } from "../../db/connection.ts";
 import {
   absorbSoftPrepareError,
   attachPrincipalsToSites,
@@ -87,8 +87,8 @@ function resolvedServicesFixture(
 describe("deploy-prepare helpers", () => {
   it("merges task rows into the wire cron after compose-authored jobs, compose winning a collision", () => {
     const taskRow = (
-      over: Partial<import("../../lib/db/task-records.ts").TaskRecord> & { name: string },
-    ): import("../../lib/db/task-records.ts").TaskRecord => ({
+      over: Partial<import("../../features/schedule/task-records.ts").TaskRecord> & { name: string },
+    ): import("../../features/schedule/task-records.ts").TaskRecord => ({
       id: "00000000-0000-4000-8000-000000000001",
       serviceId: "00000000-0000-4000-8000-000000000002",
       schedule: "0 3 * * *",

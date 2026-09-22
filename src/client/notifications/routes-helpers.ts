@@ -3,7 +3,7 @@
  * without a database. Refusals are `{ status, error, reason? }`, the error a
  * short code the console maps to a sentence.
  */
-import { validateEmailAddress } from "../../lib/email/validate-address.ts";
+import { validateEmailAddress } from "../../features/email/validate-address.ts";
 import {
   resolveOutboundHostScope,
   validateOutboundUrl,
@@ -13,12 +13,12 @@ import {
   NOTIFICATION_RULE_ANY_EVENT,
   NOTIFICATION_SEVERITIES,
   type NotificationSeverity,
-} from "../../lib/notifications/events.ts";
+} from "../../features/notifications/events.ts";
 import {
   NOTIFICATION_CHANNEL_KINDS,
   type NotificationChannelKind,
-} from "../../lib/notifications/records.ts";
-import { parseTelegramAddress } from "../../lib/notifications/senders.ts";
+} from "../../features/notifications/records.ts";
+import { parseTelegramAddress } from "../../features/notifications/senders.ts";
 
 export type ChannelWriteRefusal = {
   ok: false;

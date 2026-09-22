@@ -1,13 +1,13 @@
 import { and, eq } from "drizzle-orm";
-import type { Db } from "../../db.ts";
-import { isExplicitDevelopmentMode } from "../../dev-mode.ts";
-import { passkey, user, verification } from "../../lib/db/schema.ts";
+import type { Db } from "../../db/connection.ts";
+import { isExplicitDevelopmentMode } from "../../app/dev-mode.ts";
+import { passkey, user, verification } from "../../db/schema.ts";
 import {
   ENVELOPE_SCHEME_WEBAUTHN,
   formatEnvelope,
   parseEnvelope,
-} from "./envelope.ts";
-import { type DerivedSecretsConfig, findKeyForVersion } from "./secrets.ts";
+} from "../../lib/secrets/envelope.ts";
+import { type DerivedSecretsConfig, findKeyForVersion } from "../../lib/secrets/secrets.ts";
 import {
   aaguidToUuid,
   AUTH_DATA_FLAG_UP,
@@ -23,7 +23,7 @@ import {
   verifyAssertion,
   verifyRpIdHash,
 } from "./webauthn.ts";
-import { isPostgresUniqueViolation } from "../../lib/db/unique-violation.ts";
+import { isPostgresUniqueViolation } from "../../db/unique-violation.ts";
 
 export const WEBAUTHN_CHALLENGE_PURPOSE = "webauthn-challenge";
 export const WEBAUTHN_CHALLENGE_TTL_MS = 5 * 60 * 1000;

@@ -1,8 +1,10 @@
 #!/bin/sh
-# Mirrors .github/workflows/build.yml job "sonarqube" minus the Sonar scan.
-# Postgres suites in test-coverage.sh skip when TURBOPANEL_DATABASE_URL is unset;
-# CI always sets it. This script loads the co-located instance URL from the
-# running instance process environ (runtime.env does not carry it).
+# Local serial mirror of .github/workflows/build.yml minus the Sonar scan.
+# CI splits coverage across runners (TEST_PHASE / DENO_SHARD in test-coverage.sh);
+# this script stays one process. Postgres suites skip when
+# TURBOPANEL_DATABASE_URL is unset; CI always sets it. This script loads the
+# co-located instance URL from the running instance process environ
+# (runtime.env does not carry it).
 set -eu
 
 ROOT="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
@@ -73,6 +75,12 @@ pnpm run notices:check
 
 echo "==> Check CA boundary"
 pnpm run check:ca-boundary
+
+echo "==> Check import boundaries"
+pnpm run check:import-boundaries
+
+echo "==> Check contract drift (sibling twins)"
+pnpm run check:contract-drift
 
 echo "==> Test with coverage (Vitest Istanbul + Deno V8 → coverage/lcov.info)"
 pnpm test:coverage

@@ -3,7 +3,7 @@
  *
  * Daemon ↔ control plane: the daemon reports its semver as
  * `daemonBuild.version` in the hello / heartbeat / ping (turbopaneld
- * src/version.ts). This module holds it against the floor the control plane
+ * src/app/version.ts). This module holds it against the floor the control plane
  * supports. A daemon below the floor keeps its connection — the update path
  * *is* that connection — but the command consumer refuses to dispatch to it
  * and the servers page says why. A daemon that reports no version at all is
@@ -61,7 +61,9 @@ function compareIdentifiers(a: string, b: string): number {
   // Numeric identifiers sort before alphanumeric ones (semver §11.4.3).
   if (na) return -1
   if (nb) return 1
-  return a < b ? -1 : a > b ? 1 : 0
+  if (a < b) return -1
+  if (a > b) return 1
+  return 0
 }
 
 /** semver precedence: negative when `a` < `b`, zero when equal, positive when `a` > `b`. */

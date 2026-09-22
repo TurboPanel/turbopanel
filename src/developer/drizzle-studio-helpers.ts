@@ -2,7 +2,7 @@ import { join } from '@std/path'
 import {
   drizzleStudioBrowserUrl,
   DRIZZLE_STUDIO_PORT,
-} from '../drizzle-studio-probe.ts'
+} from './drizzle-studio-probe.ts'
 
 export function drizzleKitBinPath(instanceRepoRoot: string): string {
   return join(instanceRepoRoot, 'node_modules', 'drizzle-kit', 'bin.cjs')

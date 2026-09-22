@@ -3,8 +3,8 @@ import {
   HARDWARE_PROFILE_NIC_SLOT_LIST_KEY,
   HARDWARE_PROFILE_SENSOR_SLOT_KEYS,
   HARDWARE_PROFILE_TOPOLOGY_ID_KEYS,
-} from '../../lib/db/server-metadata.ts'
-import { MAX_NIC_SLOTS } from '../servers/topology-types.ts'
+} from '../../features/servers/server-metadata.ts'
+import { MAX_NIC_SLOTS } from '../../contracts/topology-types.ts'
 import { clientErrorJson } from './shared.ts'
 
 const sensorSlotOrNullSchema = {

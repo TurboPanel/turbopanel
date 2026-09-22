@@ -1,15 +1,15 @@
 import { eq } from 'drizzle-orm'
 import { assertEquals } from '@std/assert'
 import { it } from '@std/testing/bdd'
-import { getDatabaseUrl } from '../../db-url.ts'
-import { createDenoDb } from '../../db.ts'
+import { getDatabaseUrl } from '../../db/url.ts'
+import { createDenoDb } from '../../db/connection.ts'
 import {
   grant,
   organization,
   workspace,
   team,
   user,
-} from '../../lib/db/schema.ts'
+} from '../../db/schema.ts'
 import {
   createAccessGrant,
   isAccessGrantEntityType,

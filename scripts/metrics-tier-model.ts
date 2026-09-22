@@ -10,18 +10,18 @@
  * samples are cached, never durably stored (A3d), so they are not in this
  * model. Self-hosted ingest skips truncation and is not priced here.
  */
-import { buildMetricsSample } from "../src/daemon/metrics/contract.ts";
+import { buildMetricsSample } from "../src/contracts/metrics-contract.ts";
 import {
   METRICS_BASELINE_INTERVAL_SECONDS,
   type MetricsCapabilityPlan,
   platformDefaultMetricsCapabilityPlan,
   truncateSampleToCapabilityPlan,
-} from "../src/daemon/metrics/capability-plan.ts";
+} from "../src/contracts/capability-plan.ts";
 import { buildMetricsDataPoints } from "../src/daemon/metrics/backends/cloudflare/field-map.ts";
 import type {
   MetricsSample,
   MetricsSampleInput,
-} from "../src/daemon/metrics/contract.ts";
+} from "../src/contracts/metrics-contract.ts";
 import type { SlotMapping } from "../src/daemon/metrics/types.ts";
 
 const SERVER_ID = "11111111-2222-4333-8444-555555555555";

@@ -1,21 +1,21 @@
 import { eq } from "drizzle-orm";
-import type { Db } from "../../db.ts";
-import { isExplicitDevelopmentMode } from "../../dev-mode.ts";
+import type { Db } from "../../db/connection.ts";
+import { isExplicitDevelopmentMode } from "../../app/dev-mode.ts";
 import {
   account,
   passkey,
   twoFactor,
   user,
   verification,
-} from "../../lib/db/schema.ts";
-import { decryptSecret, encryptSecret } from "./data-encryption.ts";
+} from "../../db/schema.ts";
+import { decryptSecret, encryptSecret } from "../../lib/secrets/data-encryption.ts";
 import {
   ENVELOPE_SCHEME_OTP,
   ENVELOPE_SCHEME_TWO_FACTOR,
   formatEnvelope,
   parseEnvelope,
-} from "./envelope.ts";
-import { type DerivedSecretsConfig, findKeyForVersion } from "./secrets.ts";
+} from "../../lib/secrets/envelope.ts";
+import { type DerivedSecretsConfig, findKeyForVersion } from "../../lib/secrets/secrets.ts";
 import {
   buildOtpAuthUri,
   decodeBase32,

@@ -8,8 +8,8 @@
  * via `awaiting_retire` / `completed` / `failed`.
  */
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
-import type { Db } from "../../db.ts";
-import { changeover } from "../../lib/db/schema.ts";
+import type { Db } from "../../db/connection.ts";
+import { changeover } from "../../db/schema.ts";
 
 export const CA_ROTATION_STATES = [
   "in_progress",

@@ -5,9 +5,9 @@
  * `restart` on the mutable seam.
  */
 
-import type { Db } from '../../db.ts'
-import type { CommandQueue } from '../../lib/commands/queue.ts'
-import { enqueueSystemReconcile } from './reconcile.ts'
+import type { Db } from '../../db/connection.ts'
+import type { CommandQueue } from '../../features/commands/queue.ts'
+import { enqueueSystemReconcile } from '../../features/system/reconcile.ts'
 
 export type SystemRestartSuccess = {
   ok: true

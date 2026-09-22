@@ -10,13 +10,13 @@ import {
 import {
   isPrincipalAccessLevel,
   shellForAccessLevel,
-} from '../../lib/principal-access.ts'
+} from '../../features/principals/principal-access.ts'
 import {
   parsePrincipalOptionsInput,
   resolvePrincipalIdOverride,
   type PrincipalOptionsPersisted,
-} from '../../lib/principal-options.ts'
-import { parseResourceLimits } from '../../lib/resource-limits.ts'
+} from '../../features/principals/principal-options.ts'
+import { parseResourceLimits } from '../../features/organizations/resource-limits.ts'
 
 export type PrincipalRouteValidationError = {
   ok: false

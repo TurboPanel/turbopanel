@@ -1,5 +1,5 @@
 import { assertEquals, assertRejects } from '@std/assert'
-import { parseSecretsEnv } from '../../client/authn/secrets.ts'
+import { parseSecretsEnv } from '../../lib/secrets/secrets.ts'
 import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
 import {
   buildJwksDocument,

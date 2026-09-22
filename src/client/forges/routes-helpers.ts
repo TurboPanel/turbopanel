@@ -20,12 +20,12 @@ import {
   type ForgeSummary,
   type ForgeUpdate,
   FORGE_PROVIDERS,
-} from '../../lib/git/forge-records.ts'
-import { stripTrailingSlashes } from '../../lib/git/origin.ts'
+} from '../../features/git/forge-records.ts'
+import { stripTrailingSlashes } from '../../features/git/origin.ts'
 import {
   webhookPathFor,
   type WebhookProvider,
-} from '../../lib/git/webhook-reachability.ts'
+} from '../../features/git/webhook-reachability.ts'
 
 export const FORGE_UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i

@@ -14,7 +14,7 @@
 
 import { assertEquals } from "@std/assert";
 import { Hono } from "hono";
-import type { AppEnv } from "../app.ts";
+import type { AppEnv } from "../app/app.ts";
 import {
   createEmptyMockAuthState,
   createMockAuthDb,
@@ -24,11 +24,11 @@ import {
   buildSignedCookie,
   HTTP_SESSION_COOKIE_NAME,
 } from "../client/authn/crypto.ts";
-import { deriveSecretsConfig } from "../client/authn/secrets.ts";
-import type { BillingConfig } from "../lib/billing/config.ts";
-import { StripeApiError } from "../lib/billing/errors.ts";
-import { server, subscriptionItem, tier } from "../lib/db/schema.ts";
-import type { TierRow } from "../lib/db/tier-records.ts";
+import { deriveSecretsConfig } from "../lib/secrets/secrets.ts";
+import type { BillingConfig } from "../features/billing/config.ts";
+import { StripeApiError } from "../features/billing/errors.ts";
+import { server, subscriptionItem, tier } from "../db/schema.ts";
+import type { TierRow } from "../features/tiers/tier-records.ts";
 import { createMemoryDb } from "../test-fixtures/memory-db.ts";
 import { parseTestSecretsConfig } from "../test-fixtures/secrets.ts";
 import {

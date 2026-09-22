@@ -1,13 +1,13 @@
 import { asc, eq, inArray } from 'drizzle-orm'
 import type { Hono } from 'hono'
-import type { AppEnv } from '../../app.ts'
+import type { AppEnv } from '../../app/app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { assertCanOr403, listVisible } from '../authz/index.ts'
-import { getDb } from '../../db.ts'
-import { workspace } from '../../lib/db/schema.ts'
-import { applyStorageRetentionOnParentDelete } from '../../lib/db/storage-records.ts'
-import { WORKSPACE_KIND_USER } from '../../lib/db/workspace-kind.ts'
+import { getDb } from '../../db/connection.ts'
+import { workspace } from '../../db/schema.ts'
+import { applyStorageRetentionOnParentDelete } from '../../features/storage/storage-records.ts'
+import { WORKSPACE_KIND_USER } from '../../db/workspace-kind.ts'
 import {
   assertCanCreateOr403,
   assertCanReadOr403,
@@ -145,7 +145,7 @@ export function registerWorkspaceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpt
       const [inserted] = await tx
         .insert(workspace)
         // Public create is always `user`. `kind='turbopanel'` is reachable only from
-        // ensureSystemWorkspace in src/client/system/hierarchy.ts.
+        // ensureSystemWorkspace in src/features/system/hierarchy.ts.
         .values({ name, description, organizationId, kind: WORKSPACE_KIND_USER })
         .returning({ id: workspace.id })
       return inserted.id

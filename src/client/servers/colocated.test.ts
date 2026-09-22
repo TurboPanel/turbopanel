@@ -1,11 +1,11 @@
 import { assertEquals } from '@std/assert'
 import { it } from '@std/testing/bdd'
 import { and, eq } from 'drizzle-orm'
-import { getDatabaseUrl } from '../../db-url.ts'
-import { createDenoDb } from '../../db.ts'
+import { getDatabaseUrl } from '../../db/url.ts'
+import { createDenoDb } from '../../db/connection.ts'
 import { COLOCATED_SERVER_DISPLAY_NAME } from '../authn/install-state.ts'
-import { createLicense } from '../authn/license.ts'
-import { license, organization, server } from '../../lib/db/schema.ts'
+import { createLicense } from '../../features/licenses/license.ts'
+import { license, organization, server } from '../../db/schema.ts'
 import {
   hasActiveColocatedLicenseBinding,
   isColocatedWithInstance,

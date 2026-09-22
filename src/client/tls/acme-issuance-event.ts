@@ -8,8 +8,8 @@
  */
 
 import { and, eq } from "drizzle-orm";
-import type { Db } from "../../db.ts";
-import { server, tls } from "../../lib/db/schema.ts";
+import type { Db } from "../../db/connection.ts";
+import { server, tls } from "../../db/schema.ts";
 import { coversHostname, normalizeHostname } from "../../lib/tls/match.ts";
 import type { TlsAcmeMetadata } from "../../lib/tls/types.ts";
 

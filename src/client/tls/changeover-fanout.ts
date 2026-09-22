@@ -7,24 +7,24 @@
  */
 import { and, asc, eq, inArray } from "drizzle-orm";
 import type { Context } from "hono";
-import type { AppEnv } from "../../app.ts";
-import type { Db } from "../../db.ts";
-import { materializeBindingsForPrincipal } from "../bindings/materialize.ts";
+import type { AppEnv } from "../../app/app.ts";
+import type { Db } from "../../db/connection.ts";
+import { materializeBindingsForPrincipal } from "../../features/bindings/materialize.ts";
 import {
   enqueuePreparedManagedApply,
   isPrepareError,
   prepareManagedApplyPayloads,
-} from "../managed/apply-prepare.ts";
-import { enqueueManagedIngressReconcile } from "../managed/ingress-desired.ts";
-import { parseManagedRowOptions } from "../managed/options.ts";
-import { parseManagedResidual } from "../managed/serialize.ts";
-import type { DerivedSecretsConfig, SecretsConfig } from "../authn/secrets.ts";
-import type { CommandQueue } from "../../lib/commands/queue.ts";
-import { getManagedEngineSpec } from "../../lib/managed/index.ts";
+} from "../../features/managed/apply-prepare.ts";
+import { enqueueManagedIngressReconcile } from "../../features/managed/ingress-desired.ts";
+import { parseManagedRowOptions } from "../../features/managed/options.ts";
+import { parseManagedResidual } from "../../features/managed/serialize.ts";
+import type { DerivedSecretsConfig, SecretsConfig } from "../../lib/secrets/secrets.ts";
+import type { CommandQueue } from "../../features/commands/queue.ts";
+import { getManagedEngineSpec } from "../../features/managed/index.ts";
 import {
   parseProjectOptions,
   resolveEffectivePlacementServerId,
-} from "../../lib/project-options.ts";
+} from "../../features/projects/project-options.ts";
 import {
   binding,
   environment,
@@ -36,7 +36,7 @@ import {
   service,
   slot,
   workspace,
-} from "../../lib/db/schema.ts";
+} from "../../db/schema.ts";
 import { updateCaRotationJournal } from "./changeover-lease.ts";
 
 export const ROTATION_FANOUT_BATCH_SIZE = 10;

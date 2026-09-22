@@ -7,15 +7,15 @@ import type {
   ProductLadderExpectation,
   ProductVerification,
   ProviderProduct,
-} from "../lib/billing/gateway.ts";
-import type { TierReferenceCounts, TierRow } from "../lib/db/tier-records.ts";
+} from "../features/billing/gateway.ts";
+import type { TierReferenceCounts, TierRow } from "../features/tiers/tier-records.ts";
 import {
   isTierLabel,
   LADDER,
   type LadderEntry,
   ladderEntry,
   type TierLabel,
-} from "../lib/tiers/ladder.ts";
+} from "../features/tiers/ladder.ts";
 
 export type TierCreateFields = Readonly<{
   label: TierLabel;

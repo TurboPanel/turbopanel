@@ -6,12 +6,12 @@
  */
 
 import { eq, sql } from 'drizzle-orm'
-import type { Db } from '../../db.ts'
-import { workspace } from '../../lib/db/schema.ts'
+import type { Db } from '../../db/connection.ts'
+import { workspace } from '../../db/schema.ts'
 import {
   parseWorkspaceKind,
   type WorkspaceKind,
-} from '../../lib/db/workspace-kind.ts'
+} from '../../db/workspace-kind.ts'
 
 function kindFromRow(value: string | null | undefined): WorkspaceKind | null {
   if (value == null) return null

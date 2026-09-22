@@ -4,7 +4,7 @@
 
 import { assertEquals } from '@std/assert'
 import type { Context } from 'hono'
-import type { Db } from '../db.ts'
+import type { Db } from '../db/connection.ts'
 import {
   canAccessOrganization,
   listAccessibleOrganizations,

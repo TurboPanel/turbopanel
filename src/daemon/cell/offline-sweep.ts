@@ -55,44 +55,43 @@ import {
   endDbConnection,
   raceWithTimeout,
   runWithDbTimeout,
-} from "../../db.ts";
-import { resolveWorkersDb } from "../../workers-bindings.ts";
-import { runManagedIngressOrphanSweep } from "../../client/managed/ingress-desired.ts";
+} from "../../db/connection.ts";
+import { resolveWorkersDb } from "../../platform/workers/workers-bindings.ts";
+import { runManagedIngressOrphanSweep } from "../../features/managed/ingress-desired.ts";
 import { runDatacenterRepinFanoutSweep } from "../../client/datacenters/repin-fanout.ts";
-import { runSystemReconcileSweep } from "../../client/system/reconcile.ts";
+import { runSystemReconcileSweep } from "../../features/system/reconcile.ts";
 import { runLeafRenewalSweepTick } from "../../client/tls/leaf-renewal-sweep.ts";
-import { compatLogWarn } from "../../log-compat.ts";
 import {
   type AlertSender,
   NOOP_ALERT_SENDER,
-} from "../../lib/alerts/alert-sender.ts";
-import { resolveAlertSender } from "../../lib/alerts/resolve-alert-sender.ts";
+} from "../../features/alerts/alert-sender.ts";
+import { resolveAlertSender } from "../../features/alerts/resolve-alert-sender.ts";
 import {
   type EmitEmail,
   retryDueDeliveries,
-} from "../../lib/notifications/emit.ts";
+} from "../../features/notifications/emit.ts";
 import {
   ALERT_DELIVERY_BUDGET_MS,
   notifyDemotions,
-} from "../../lib/alerts/notify-demotions.ts";
+} from "../../features/alerts/notify-demotions.ts";
 import { isMassDisconnect } from "./mass-disconnect.ts";
 import type {
   DerivedSecretsConfig,
   SecretsConfig,
-} from "../../client/authn/secrets.ts";
-import { createWorkersCommandQueue } from "../../lib/commands/workers-queue.ts";
+} from "../../lib/secrets/secrets.ts";
+import { createWorkersCommandQueue } from "../../features/commands/workers-queue.ts";
 import {
   COMMAND_DISPATCH_SWEEP_LIMIT,
   sweepExpiredCommandDispatch,
-} from "../../lib/db/command-records.ts";
+} from "../../features/commands/command-records.ts";
 import {
   releaseStuckManagedApplying,
   sweepStaleCommands,
-} from "../../lib/commands/stale-sweep.ts";
+} from "../../features/commands/stale-sweep.ts";
 import {
   sweepExpiredWebhookDeliveries,
   WEBHOOK_DELIVERY_SWEEP_LIMIT,
-} from "../../lib/db/webhook-delivery-records.ts";
+} from "../../features/webhook-delivery/webhook-delivery-records.ts";
 import {
   type AnalyticsEngineDatasetLike,
   resolveServerMetricsStore,
@@ -102,11 +101,11 @@ import {
   parseExecutionLogRetentionDays,
   type R2BucketLike,
   resolveExecutionLogStore,
-} from "../../lib/execution-logs/store-selection.ts";
+} from "../../features/execution-logs/store-selection.ts";
 import {
   EXECUTION_LOG_SWEEP_LIMIT,
   type ExecutionLogStore,
-} from "../../lib/execution-logs/types.ts";
+} from "../../features/execution-logs/types.ts";
 import { createDurableObjectDaemonCellRegistry } from "./do-registry.ts";
 import {
   onDaemonConnected,
@@ -124,7 +123,7 @@ import type {
   DaemonCell,
   DaemonCellLiveness,
   DaemonCellRegistry,
-} from "./contracts.ts";
+} from "../../contracts/cell.ts";
 import { resolveCloudflareAnalyticsSqlConfig } from "../metrics/store-selection-workers.ts";
 import {
   AE_LIVENESS_QUERY_TIMEOUT_MS,
@@ -135,19 +134,19 @@ import {
   endOfflineSweep,
   tryBeginOfflineSweep,
 } from "./offline-sweep-lease.ts";
-import { resolveWorkersEmailQueue } from "../../lib/email/mailgun/workers-queue.ts";
-import { resolveEmailSettings } from "../../lib/settings/email-settings.ts";
-import { sweepTierNotices } from "../../lib/tiers/tier-notice-sweep.ts";
-import { resolveBillingConfig } from "../../lib/billing/config.ts";
-import { createStripeClient } from "../../lib/billing/client.ts";
+import { resolveWorkersEmailQueue } from "../../features/email/mailgun/workers-queue.ts";
+import { resolveEmailSettings } from "../../features/settings/email-settings.ts";
+import { sweepTierNotices } from "../../features/tiers/tier-notice-sweep.ts";
+import { resolveBillingConfig } from "../../features/billing/config.ts";
+import { createStripeClient } from "../../features/billing/client.ts";
 import {
   runGraceClock,
   shouldRunGraceClock,
-} from "../../lib/billing/grace-clock.ts";
+} from "../../features/billing/grace-clock.ts";
 import {
   runReconcile,
   shouldRunReconcile,
-} from "../../lib/billing/reconcile.ts";
+} from "../../features/billing/reconcile.ts";
 import {
   projectSubscriptionById,
   runPendingStripeProjections,
@@ -180,7 +179,7 @@ export const DEMOTION_RESERVE_MS = 8_000;
 
 // Re-exported: the sweep's tests and callers have always reached for it here,
 // and the definition now lives with the delivery it bounds.
-export { ALERT_DELIVERY_BUDGET_MS } from "../../lib/alerts/notify-demotions.ts";
+export { ALERT_DELIVERY_BUDGET_MS } from "../../features/alerts/notify-demotions.ts";
 
 /** Hard deadline per `checkLiveness` DO RPC. */
 export const LIVENESS_RPC_TIMEOUT_MS = 5_000;

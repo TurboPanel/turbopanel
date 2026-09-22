@@ -1,6 +1,6 @@
 import { eq, type SQL, sql } from "drizzle-orm";
-import type { Db } from "../../db.ts";
-import { grant, team, teammate } from "../../lib/db/schema.ts";
+import type { Db } from "../../db/connection.ts";
+import { grant, team, teammate } from "../../db/schema.ts";
 import {
   isSystemPermissionKey,
   type PermissionKey,

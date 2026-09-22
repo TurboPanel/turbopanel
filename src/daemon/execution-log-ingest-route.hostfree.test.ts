@@ -11,8 +11,8 @@
 import { assert, assertEquals } from "@std/assert";
 import { describe, it } from "@std/testing/bdd";
 import { Hono } from "hono";
-import type { AppEnv } from "../app.ts";
-import type { Db } from "../db.ts";
+import type { AppEnv } from "../app/app.ts";
+import type { Db } from "../db/connection.ts";
 import { deriveDaemonJwtKeyring } from "./authn/daemon-jwt-keyring.ts";
 import { issueDaemonJwt } from "./authn/daemon-jwt.ts";
 import { registerDaemonApiRoutes } from "./api-routes.ts";
@@ -23,7 +23,7 @@ import {
   type ExecutionLogChunk,
   type ExecutionLogSealResult,
   type ExecutionLogStore,
-} from "../lib/execution-logs/types.ts";
+} from "../features/execution-logs/types.ts";
 
 const SERVER_ID = "srv-log-seal";
 const KEY_ID = "key-log-seal";

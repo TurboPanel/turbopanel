@@ -5,10 +5,10 @@
 import { assertEquals } from "@std/assert";
 import { Hono } from "hono";
 import type { Context } from "hono";
-import type { AppEnv } from "../../app.ts";
-import type { Db } from "../../db.ts";
-import { marker, tag } from "../../lib/db/schema.ts";
-import { CLIENT_API_PREFIX } from "../../surfaces.ts";
+import type { AppEnv } from "../../app/app.ts";
+import type { Db } from "../../db/connection.ts";
+import { marker, tag } from "../../db/schema.ts";
+import { CLIENT_API_PREFIX } from "../../app/surfaces.ts";
 import { parseTestSecretsConfig } from "../../test-fixtures/secrets.ts";
 import {
   createEmptyMockAuthState,
@@ -20,13 +20,13 @@ import {
   buildSignedCookie,
   HTTP_SESSION_COOKIE_NAME,
 } from "../authn/crypto.ts";
-import { deriveSecretsConfig } from "../authn/secrets.ts";
+import { deriveSecretsConfig } from "../../lib/secrets/secrets.ts";
 import { SYSTEM_RESOURCE_IMMUTABLE_ERROR } from "../authz/http.ts";
 import { TAG_NAME_IN_USE_ERROR } from "../display-name-uniqueness.ts";
 import { ORG_ID_HEADER } from "../org-context.ts";
 import { registerClientRoutes } from "../routes.ts";
 import { registerBillingRoutes } from "../billing/routes.ts";
-import type { BillingConfig } from "../../lib/billing/config.ts";
+import type { BillingConfig } from "../../features/billing/config.ts";
 import { registerTagRoutes } from "./routes.ts";
 
 /**

@@ -12,7 +12,7 @@ import {
   resolveTrustedProxyRequestTls,
   verifySignedCookie,
 } from './crypto.ts'
-import { deriveSecretsConfig, parseSecretsEnv } from './secrets.ts'
+import { deriveSecretsConfig, parseSecretsEnv } from '../../lib/secrets/secrets.ts'
 import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
 
 const V2_SECRET = 'Bb2Cc3Dd4Ee5Ff6Gg7Hh8Ii9Jj0Kk1Ll2_Mm3Nn4Oo5Pp6Qq7'

@@ -5,10 +5,10 @@
 import { assertEquals } from "@std/assert";
 import { Hono } from "hono";
 import type { Context } from "hono";
-import type { AppEnv } from "../../app.ts";
-import type { Db } from "../../db.ts";
-import { service, task } from "../../lib/db/schema.ts";
-import { CLIENT_API_PREFIX } from "../../surfaces.ts";
+import type { AppEnv } from "../../app/app.ts";
+import type { Db } from "../../db/connection.ts";
+import { service, task } from "../../db/schema.ts";
+import { CLIENT_API_PREFIX } from "../../app/surfaces.ts";
 import { parseTestSecretsConfig } from "../../test-fixtures/secrets.ts";
 import {
   createEmptyMockAuthState,
@@ -20,7 +20,7 @@ import {
   buildSignedCookie,
   HTTP_SESSION_COOKIE_NAME,
 } from "../authn/crypto.ts";
-import { deriveSecretsConfig } from "../authn/secrets.ts";
+import { deriveSecretsConfig } from "../../lib/secrets/secrets.ts";
 import { SYSTEM_RESOURCE_IMMUTABLE_ERROR } from "../authz/http.ts";
 import { TASK_NAME_IN_USE_ERROR } from "../display-name-uniqueness.ts";
 import {

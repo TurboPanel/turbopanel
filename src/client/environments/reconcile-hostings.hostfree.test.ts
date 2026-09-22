@@ -3,14 +3,14 @@
  */
 
 import { assertEquals } from '@std/assert'
-import type { ComposeDocument } from '../../lib/compose/index.ts'
-import { hostingEntryKey } from '../../lib/compose/index.ts'
-import { hostname, hosting, ip, service, tls } from '../../lib/db/schema.ts'
+import type { ComposeDocument } from '../../features/compose/index.ts'
+import { hostingEntryKey } from '../../features/compose/index.ts'
+import { hostname, hosting, ip, service, tls } from '../../db/schema.ts'
 import { createMemoryDb } from '../../test-fixtures/memory-db.ts'
 import {
   HOSTING_COMPOSE_ROUTE_METADATA_KEY,
   withHostingComposeOwner,
-} from '../../lib/hosting-compose-owner.ts'
+} from '../../features/hostings/hosting-compose-owner.ts'
 import { reconcileHostingsFromCompose } from './reconcile-hostings.ts'
 
 /**

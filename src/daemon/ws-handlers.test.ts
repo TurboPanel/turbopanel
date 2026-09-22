@@ -19,7 +19,7 @@ import {
   generateDeliveryId,
   generateRequestId,
   outboundEnvelopeToWireMessage,
-} from "./cell/protocol.ts";
+} from "../contracts/cell-protocol.ts";
 
 const DEFAULT_SOCKET = Deno.env.get("TURBOPANEL_REDIS_SOCKET") ??
   "/run/turbopanel/redis.sock";

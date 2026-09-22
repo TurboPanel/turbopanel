@@ -4,7 +4,7 @@
  * `migrations/` may only grow.
  *
  * Layer one (`scripts/check-migration-freeze.mjs`, run by
- * `src/lib/db/migration-manifest.test.ts`) proves the working tree matches
+ * `src/db/migration-manifest.test.ts`) proves the working tree matches
  * `migrations/manifest.json`. That alone cannot stop a commit that edits a
  * shipped migration *and* re-records its hash — so this script compares the
  * commit against its base ref and refuses any modified or deleted

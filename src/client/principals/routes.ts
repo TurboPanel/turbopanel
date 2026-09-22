@@ -2,22 +2,22 @@ import { eq } from "drizzle-orm";
 import {
   SUPPORTED_RUNTIME_SERIES,
   SUPPORTED_RUNTIMES,
-} from "../../lib/runtime-registry.ts";
+} from "../../contracts/runtime-registry.ts";
 import type { Context, Hono } from "hono";
-import type { AppEnv } from "../../app.ts";
+import type { AppEnv } from "../../app/app.ts";
 import type { AuthRouteOpts } from "../authn/http.ts";
 import { createSessionMiddleware } from "../authn/middleware.ts";
 import { assertCanOr403 } from "../authz/index.ts";
 import { resolveEntityOrganizationId } from "../authz/create-access-grant.ts";
-import { type Db, getDb } from "../../db.ts";
-import { organization, principal, server } from "../../lib/db/schema.ts";
+import { type Db, getDb } from "../../db/connection.ts";
+import { organization, principal, server } from "../../db/schema.ts";
 import {
   MAX_SUFFIXED_PRINCIPAL_USERNAME_LENGTH,
   principalHomeDir,
   randomPrincipalUsernameSuffix,
 } from "../../lib/naming.ts";
-import { loadRandomizedUsernamesDefault } from "../managed/org-defaults.ts";
-import type { PrincipalOptionsPersisted } from "../../lib/principal-options.ts";
+import { loadRandomizedUsernamesDefault } from "../../features/managed/load-org-defaults.ts";
+import type { PrincipalOptionsPersisted } from "../../features/principals/principal-options.ts";
 import {
   assertCanManageOr403,
   assertNotSystemOwnedOr403,
@@ -25,13 +25,13 @@ import {
   parseJsonBody,
   requireStringField,
 } from "../shared.ts";
-import { parseResourceLimits } from "../../lib/resource-limits.ts";
+import { parseResourceLimits } from "../../features/organizations/resource-limits.ts";
 import {
   loadServiceIdsByPrincipalIds,
   parseServiceIdsField,
   servicesBelongToProject,
 } from "./tenancies.ts";
-import { getCommandQueue } from "../../lib/commands/queue.ts";
+import { getCommandQueue } from "../../features/commands/queue.ts";
 import { reconcilePrincipalAccess } from "./reconcile.ts";
 import {
   addSshKey,
@@ -52,7 +52,7 @@ import {
   SERVER_PRINCIPAL_PROVIDER,
   setServerPrincipalPasswordHash,
   USERNAME_IN_USE_ERROR,
-} from "./store.ts";
+} from "../../features/principals/store.ts";
 import { hashPrincipalPassword } from "../../lib/sha512-crypt.ts";
 import { serializeProjectPrincipal } from "./serialize.ts";
 import {

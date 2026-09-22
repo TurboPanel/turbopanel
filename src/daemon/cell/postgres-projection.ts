@@ -6,7 +6,7 @@
  *   server status read model = fleet-presence.ts / server-status.ts
  */
 import { eq, inArray, sql } from 'drizzle-orm'
-import type { Db } from '../../db.ts'
+import type { Db } from '../../db/connection.ts'
 import {
   buildDefaultDaemonStatus,
   parseServerDaemonState,
@@ -14,16 +14,16 @@ import {
   type ServerDaemonState,
   type ServerDaemonStatus,
   type UpdateProjection,
-} from '../authn/daemon-state.ts'
+} from '../../features/servers/daemon-state.ts'
 import {
   getServerDaemonStateByServerId,
   type ServerDaemonStateWithMetadata,
-} from '../authn/server-identity-db.ts'
-import { key, server } from '../../lib/db/schema.ts'
+} from '../../features/servers/server-identity-db.ts'
+import { key, server } from '../../db/schema.ts'
 import { normalizeMachineKey } from '../../lib/machine-key.ts'
-import type { ServerMetadata } from '../../lib/db/server-metadata.ts'
-import { geoEquals, parseServerGeo, type ServerGeo } from '../../lib/geo/server-geo.ts'
-import type { DaemonCell, DaemonCellSnapshot } from './contracts.ts'
+import type { ServerMetadata } from '../../features/servers/server-metadata.ts'
+import { geoEquals, parseServerGeo, type ServerGeo } from '../../features/geo/server-geo.ts'
+import type { DaemonCell, DaemonCellSnapshot } from '../../contracts/cell.ts'
 import type { ServerStatusTransitionReason } from '../metrics/types.ts'
 import { emitServerStatusEvent, type ServerStatusEventSink } from '../metrics/status-events.ts'
 
@@ -40,7 +40,7 @@ export type ProjectionDaemonBuild = {
   buildId: string
   builtAt?: string
   channel?: string
-  /** The daemon's semver (turbopaneld src/version.ts); absent from builds before 0.1.0. */
+  /** The daemon's semver (turbopaneld src/app/version.ts); absent from builds before 0.1.0. */
   version?: string
 }
 

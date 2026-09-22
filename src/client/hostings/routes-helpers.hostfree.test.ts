@@ -4,8 +4,8 @@
 
 import { assertEquals } from '@std/assert'
 import type { Context } from 'hono'
-import type { AppEnv } from '../../app.ts'
-import type { Db } from '../../db.ts'
+import type { AppEnv } from '../../app/app.ts'
+import type { Db } from '../../db/connection.ts'
 import {
   assertCreateHostingBindScope,
   assertHostingPublicBindScope,

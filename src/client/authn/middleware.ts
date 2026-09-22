@@ -1,15 +1,15 @@
 import { getCookie } from 'hono/cookie'
 import type { Context, MiddlewareHandler } from 'hono'
-import type { AppEnv } from '../../app.ts'
-import type { Db } from '../../db.ts'
-import { getDb } from '../../db.ts'
+import type { AppEnv } from '../../app/app.ts'
+import type { Db } from '../../db/connection.ts'
+import { getDb } from '../../db/connection.ts'
 import {
   buildSignedCookie,
   resolveRequestTls,
   SESSION_EXPIRES_IN_MS,
   verifySignedCookie,
 } from './crypto.ts'
-import type { DerivedSecretsConfig } from './secrets.ts'
+import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { verifyLocalConsoleAuthorization } from '../../developer/local-console-auth.ts'
 import {
   getSession,

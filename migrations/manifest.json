@@ -32,6 +32,12 @@
       "tag": "0004_schema_comments",
       "when": 1789994531436,
       "sha256": "5ec3fa38b0e48914069bc2e027d2b846e97fa19599182183ac6a1e4f2ab952df"
+    },
+    {
+      "idx": 5,
+      "tag": "0005_tier_label_ladder_path",
+      "when": 1790041120375,
+      "sha256": "9ee8fdd759417a5885657b1e48ef990bc59845ca7104a47e6b5f274cbd1235ab"
     }
   ]
 }

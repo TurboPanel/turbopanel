@@ -1,7 +1,7 @@
 /**
  * Host-free coverage for managed route short-circuits (no Postgres).
  *
- * Requires env read for `src/logger.ts` (`TURBOPANEL_DAEMON_DEBUG` /
+ * Requires env read for `src/lib/logger.ts` (`TURBOPANEL_DAEMON_DEBUG` /
  * `TURBOPANEL_LOG_LEVEL`) because `routes.ts` imports the logger at module
  * load. Run standalone with:
  *
@@ -14,12 +14,12 @@
 
 import { assertEquals } from "@std/assert";
 import { Hono } from "hono";
-import type { AppEnv } from "../../app.ts";
-import type { DaemonCellRegistry } from "../../daemon/cell/contracts.ts";
-import type { DaemonOutboundEnvelope } from "../../daemon/cell/protocol.ts";
-import type { Db } from "../../db.ts";
-import type { CommandEnvelope } from "../../lib/commands/envelope.ts";
-import type { CommandQueue } from "../../lib/commands/queue.ts";
+import type { AppEnv } from "../../app/app.ts";
+import type { DaemonCellRegistry } from "../../contracts/cell.ts";
+import type { DaemonOutboundEnvelope } from "../../contracts/cell-protocol.ts";
+import type { Db } from "../../db/connection.ts";
+import type { CommandEnvelope } from "../../features/commands/envelope.ts";
+import type { CommandQueue } from "../../features/commands/queue.ts";
 import { parseTestSecretsConfig } from "../../test-fixtures/secrets.ts";
 import {
   buildSignedCookie,
@@ -28,7 +28,7 @@ import {
 import {
   deriveEncryptionSecretsConfig,
   deriveSecretsConfig,
-} from "../authn/secrets.ts";
+} from "../../lib/secrets/secrets.ts";
 import {
   backup,
   binding,
@@ -46,10 +46,10 @@ import {
   session,
   user,
   workspace,
-} from "../../lib/db/schema.ts";
-import { postgresEngineSpec } from "../../lib/managed/postgres.ts";
+} from "../../db/schema.ts";
+import { postgresEngineSpec } from "../../features/managed/postgres.ts";
 import { ORG_ID_HEADER } from "../org-context.ts";
-import { managedSessionPaths } from "./routes-helpers.ts";
+import { managedSessionPaths } from "../../features/managed/routes-helpers.ts";
 import { registerManagedRoutes } from "./routes.ts";
 
 /**
@@ -310,7 +310,7 @@ function queryChain(rows: unknown[]) {
  * a 3x `.innerJoin()` + `.leftJoin()` + `.orderBy()` list join
  * (`GET /organizations/:id/managed`), and a 3x `.innerJoin()` +
  * `.where().limit()` ancestry walk (`resolveManagedHomeOrganizationId` in
- * `client/principals/store.ts`, used by `createManagedPrincipal`). `rows`
+ * `features/principals/store.ts`, used by `createManagedPrincipal`). `rows`
  * answers the first two; `ancestryRows` answers the third — distinguished
  * by whether `.leftJoin()` was reached before `.where()`, since that's the
  * one call the ancestry walk never makes.

@@ -1,5 +1,5 @@
 import { assertEquals, assertStringIncludes } from '@std/assert'
-import { METRIC_EVENT_KINDS, METRICS_SCHEMA_VERSION } from '../metrics/contract.ts'
+import { METRIC_EVENT_KINDS, METRICS_SCHEMA_VERSION } from '../../contracts/metrics-contract.ts'
 import {
   HOST_METRICS_METRIC_DESCRIPTORS,
   type MetricEntityScope,

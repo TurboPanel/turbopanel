@@ -1,8 +1,8 @@
 import { and, count, eq, sql } from 'drizzle-orm'
 import type { Context } from 'hono'
-import type { Db } from '../../db.ts'
-import { ip, network, server } from '../../lib/db/schema.ts'
-import { WORKSPACE_KIND_TURBOPANEL } from '../../lib/db/workspace-kind.ts'
+import type { Db } from '../../db/connection.ts'
+import { ip, network, server } from '../../db/schema.ts'
+import { WORKSPACE_KIND_TURBOPANEL } from '../../db/workspace-kind.ts'
 
 export type ServerDeleteBlockerKind = 'network' | 'container' | 'ip'
 

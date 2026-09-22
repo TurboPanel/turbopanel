@@ -1,0 +1,19 @@
+{
+  "files": {
+    "src/features/managed/load-org-defaults.ts": "src/features/managed/load-org-defaults.ts",
+    "src/features/managed/options.ts": "src/features/managed/options.ts",
+    "src/features/managed/options.test.ts": "src/features/managed/options.test.ts",
+    "src/features/managed/last-error.ts": "src/features/managed/last-error.ts",
+    "src/features/system/reconcile.ts": "src/features/system/reconcile.ts",
+    "src/features/system/reconcile.test.ts": "src/features/system/reconcile.test.ts",
+    "src/features/system/reconcile.hostfree.test.ts": "src/features/system/reconcile.hostfree.test.ts",
+    "src/features/bindings/materialize.ts": "src/features/bindings/materialize.ts",
+    "src/features/bindings/materialize.test.ts": "src/features/bindings/materialize.test.ts",
+    "src/features/bindings/materialize.hostfree.test.ts": "src/features/bindings/materialize.hostfree.test.ts",
+    "src/features/bindings/resolve-endpoint.ts": "src/features/bindings/resolve-endpoint.ts",
+    "src/features/bindings/resolve-endpoint.test.ts": "src/features/bindings/resolve-endpoint.test.ts",
+    "src/features/bindings/resolve-endpoint.hostfree.test.ts": "src/features/bindings/resolve-endpoint.hostfree.test.ts",
+    "src/features/bindings/impact.ts": "src/features/bindings/impact.ts",
+    "src/features/bindings/impact.test.ts": "src/features/bindings/impact.test.ts"
+  }
+}

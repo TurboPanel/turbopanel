@@ -2,7 +2,7 @@ import { assertEquals } from '@std/assert'
 import { describe, it } from '@std/testing/bdd'
 import {
   resolveDrizzleStudioBindHost,
-} from '../drizzle-studio-probe.ts'
+} from './drizzle-studio-probe.ts'
 import { startDrizzleStudio } from './drizzle-studio.ts'
 
 /**

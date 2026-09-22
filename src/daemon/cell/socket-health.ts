@@ -3,7 +3,7 @@
  *
  * Cost guardrail: a Durable Object bills for wall-clock time whenever it is
  * awake but not hibernating. The primary fix for the 71-minute billable-duration
- * incident is bounding every DO DB op (see `src/db.ts` `runWithDbTimeout`), which
+ * incident is bounding every DO DB op (see `src/db/connection.ts` `runWithDbTimeout`), which
  * lets the object hibernate promptly. This module is the belt-and-suspenders
  * backstop: the offline-sweep cron already probes every connected server once a
  * minute via `DaemonCell.checkLiveness`, so we reuse that visit to force-close

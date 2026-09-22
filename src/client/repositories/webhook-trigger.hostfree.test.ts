@@ -1,8 +1,8 @@
 import { assertEquals } from '@std/assert'
 import type { Context } from 'hono'
-import type { AppEnv } from '../../app.ts'
-import type { Db } from '../../db.ts'
-import type { CommandQueue } from '../../lib/commands/queue.ts'
+import type { AppEnv } from '../../app/app.ts'
+import type { Db } from '../../db/connection.ts'
+import type { CommandQueue } from '../../features/commands/queue.ts'
 import {
   applyGithubInstallationEvent,
   applyProviderInstallationEvent,

@@ -19,10 +19,10 @@
 
 import type { Context } from "hono";
 import { and, eq } from "drizzle-orm";
-import type { AppEnv } from "../../app.ts";
-import type { Db } from "../../db.ts";
-import { recordAudit } from "../../lib/db/audit-records.ts";
-import { forge } from "../../lib/db/schema.ts";
+import type { AppEnv } from "../../app/app.ts";
+import type { Db } from "../../db/connection.ts";
+import { recordAudit } from "../../features/audit/audit-records.ts";
+import { forge } from "../../db/schema.ts";
 import {
   createForge,
   deleteForge,
@@ -34,25 +34,25 @@ import {
   loadForge,
   updateForge,
   visibleForgesCondition,
-} from "../../lib/git/forge-records.ts";
+} from "../../features/git/forge-records.ts";
 import {
   buildGithubAppManifest,
   convertGithubAppManifest,
   githubAppCreateUrl,
   GithubManifestError,
-} from "../../lib/git/github-manifest.ts";
-import { githubApiBaseFor } from "../../lib/git/github-app-token.ts";
+} from "../../features/git/github-manifest.ts";
+import { githubApiBaseFor } from "../../features/git/github-app-token.ts";
 import {
   type ForgeUrlField,
   resolveForgeHostScope,
   validateForgeUrl,
-} from "../../lib/git/forge-url.ts";
-import { fetchGithubAppMetadata } from "../../lib/git/github-app-metadata.ts";
+} from "../../features/git/forge-url.ts";
+import { fetchGithubAppMetadata } from "../../features/git/github-app-metadata.ts";
 import {
   getPublicUrls,
   publicUrlEntryToInstallOrigin,
-} from "../../admin/public-urls.ts";
-import { webhookPathFor } from "../../lib/git/webhook-reachability.ts";
+} from "../../features/install/public-urls.ts";
+import { webhookPathFor } from "../../features/git/webhook-reachability.ts";
 import {
   signGithubManifestState,
   verifyGithubManifestState,

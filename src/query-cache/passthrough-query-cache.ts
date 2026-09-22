@@ -1,4 +1,4 @@
-import type { Db } from '../db.ts'
+import type { Db } from '../db/connection.ts'
 import { isApprovedReadModelId } from './approved-read-models.ts'
 import type { QueryCache } from './contracts.ts'
 

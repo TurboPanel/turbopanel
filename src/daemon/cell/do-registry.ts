@@ -1,4 +1,4 @@
-import type { Db } from "../../db.ts";
+import type { Db } from "../../db/connection.ts";
 import type {
   ClearUpdateStatusOptions,
   CellDiagnostics,
@@ -10,7 +10,7 @@ import type {
   ExpiredUpdateRequest,
   PendingRequestRecord,
   PendingRequestStatus,
-} from "./contracts.ts";
+} from "../../contracts/cell.ts";
 import { resolveCellLocationHint } from "./location.ts";
 import { listConnectedServerIdsFromProjection } from "./postgres-projection.ts";
 import {
@@ -22,7 +22,7 @@ import type {
   DaemonInboundEnvelope,
   DaemonOutboundEnvelope,
   OutboxDeliveryId,
-} from "./protocol.ts";
+} from "../../contracts/cell-protocol.ts";
 
 const CELL_SERVER_ID_HEADER = "X-Turbopanel-Cell-Server-Id";
 
@@ -204,7 +204,7 @@ class DurableObjectStubDaemonCell implements DaemonCell {
     connectionId?: string;
     hostname?: string;
     at?: string;
-    daemonBuild?: import("./protocol.ts").DaemonBuildInfo;
+    daemonBuild?: import("../../contracts/cell-protocol.ts").DaemonBuildInfo;
   }): Promise<void> {
     return this.#rpc("/rpc/record-inbound", {
       serverId: this.#serverId,

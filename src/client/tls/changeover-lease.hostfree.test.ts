@@ -3,7 +3,7 @@
  */
 
 import { assertEquals } from "@std/assert";
-import type { Db } from "../../db.ts";
+import type { Db } from "../../db/connection.ts";
 import {
   CA_ROTATION_STALE_MS,
   type CaRotationJournalRow,

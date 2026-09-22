@@ -12,17 +12,17 @@
 
 import { assertEquals } from "@std/assert";
 import { Hono } from "hono";
-import type { AppEnv } from "../../app.ts";
-import type { Db } from "../../db.ts";
-import type { BillingConfig } from "../../lib/billing/config.ts";
+import type { AppEnv } from "../../app/app.ts";
+import type { Db } from "../../db/connection.ts";
+import type { BillingConfig } from "../../features/billing/config.ts";
 import {
   emptyLedger,
   newDeferredIntent,
   withIntent,
-} from "../../lib/billing/pending-changes.ts";
-import type { OrganizationBillingState } from "../../lib/db/billing-records.ts";
-import { payer, setting, tier } from "../../lib/db/schema.ts";
-import type { TierRow } from "../../lib/db/tier-records.ts";
+} from "../../features/billing/pending-changes.ts";
+import type { OrganizationBillingState } from "../../features/billing/billing-records.ts";
+import { payer, setting, tier } from "../../db/schema.ts";
+import type { TierRow } from "../../features/tiers/tier-records.ts";
 import { createMemoryDb } from "../../test-fixtures/memory-db.ts";
 import { parseTestSecretsConfig } from "../../test-fixtures/secrets.ts";
 import {
@@ -40,7 +40,7 @@ import {
   buildSignedCookie,
   HTTP_SESSION_COOKIE_NAME,
 } from "../authn/crypto.ts";
-import { deriveSecretsConfig } from "../authn/secrets.ts";
+import { deriveSecretsConfig } from "../../lib/secrets/secrets.ts";
 import { ORG_ID_HEADER } from "../org-context.ts";
 import {
   type BillingOrgView,

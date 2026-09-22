@@ -3,16 +3,16 @@
  */
 
 import { assertEquals, assertRejects } from "@std/assert";
-import type { Db } from "../db.ts";
+import type { Db } from "../db/connection.ts";
 import {
   encryptSecret,
   encryptSecretForDaemon,
-} from "../client/authn/data-encryption.ts";
+} from "../lib/secrets/data-encryption.ts";
 import {
   type DerivedSecretsConfig,
   deriveEncryptionSecretsConfig,
   parseSecretsEnv,
-} from "../client/authn/secrets.ts";
+} from "../lib/secrets/secrets.ts";
 import {
   forge,
   gitConnection,
@@ -24,7 +24,7 @@ import {
   notificationChannel,
   twoFactor,
   variable,
-} from "../lib/db/schema.ts";
+} from "../db/schema.ts";
 import { TEST_ONLY_TURBOPANEL_SECRET } from "../test-fixtures/secrets.ts";
 import {
   endReencryptSweep,

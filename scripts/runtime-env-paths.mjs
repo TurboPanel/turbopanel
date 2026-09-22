@@ -1,9 +1,10 @@
 /**
  * Resolve secret-bearing runtime env paths from the instance-launch contract.
- * Mirrors the compose logic in src/server-paths.ts for standalone Node scripts.
+ * Mirrors the compose logic in src/platform/deno/server-paths.ts for standalone Node scripts.
  */
 export function resolveRuntimeEnvConfigDir(env = process.env) {
-  return (env.TURBOPANEL_CONFIG_DIR?.trim() || '/etc/turbopanel').replace(/\/$/, '')
+  const configured = env.TURBOPANEL_CONFIG_DIR?.trim() || '/etc/turbopanel'
+  return configured.endsWith('/') ? configured.slice(0, -1) : configured
 }
 
 export function resolveRuntimeEnvPath(env = process.env) {

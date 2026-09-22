@@ -1,5 +1,5 @@
 import { assertEquals, assertExists } from "@std/assert";
-import { CLIENT_API_PREFIX } from "../../surfaces.ts";
+import { CLIENT_API_PREFIX } from "../../app/surfaces.ts";
 import { authPaths } from "./auth.ts";
 import { getClientOpenApiSpec } from "./index.ts";
 import { getWorkersClientOpenApiSpec } from "./workers.ts";

@@ -1,5 +1,5 @@
 import { buildPatchUpdateFields, stripPromotedMetadataKeys } from '../shared.ts'
-import { isContainerStatus } from '../../lib/db/container-records.ts'
+import { isContainerStatus } from '../../features/environments/container-records.ts'
 
 /** Identity/status/compose keys live on real columns — never persist into metadata. */
 export const CONTAINER_PROMOTED_METADATA_KEYS = [

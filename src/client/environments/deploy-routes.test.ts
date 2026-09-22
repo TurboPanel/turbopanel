@@ -1,13 +1,13 @@
 import { assertEquals } from "@std/assert";
 import { and, eq, inArray } from "drizzle-orm";
 import { Hono } from "hono";
-import type { AppEnv } from "../../app.ts";
-import { getDatabaseUrl } from "../../db-url.ts";
-import { createDenoDb } from "../../db.ts";
+import type { AppEnv } from "../../app/app.ts";
+import { getDatabaseUrl } from "../../db/url.ts";
+import { createDenoDb } from "../../db/connection.ts";
 import type {
   DaemonCell,
   DaemonCellRegistry,
-} from "../../daemon/cell/contracts.ts";
+} from "../../contracts/cell.ts";
 import {
   buildSignedCookie,
   HTTP_SESSION_COOKIE_NAME,
@@ -17,13 +17,13 @@ import {
   deriveEncryptionSecretsConfig,
   deriveSecretsConfig,
   parseSecretsEnv,
-} from "../authn/secrets.ts";
-import { emptyComposeDocument } from "../../lib/compose/index.ts";
-import { DEFAULT_MANAGED_INGRESS_PORTS } from "../../lib/managed/ingress-ports.ts";
-import type { ComposeDocument } from "../../lib/compose/types.ts";
+} from "../../lib/secrets/secrets.ts";
+import { emptyComposeDocument } from "../../features/compose/index.ts";
+import { DEFAULT_MANAGED_INGRESS_PORTS } from "../../features/managed/ingress-ports.ts";
+import type { ComposeDocument } from "../../features/compose/types.ts";
 import type { PreparedDeployCompose } from "./deploy-prepare.ts";
-import type { CommandEnvelope } from "../../lib/commands/envelope.ts";
-import type { CommandQueue } from "../../lib/commands/queue.ts";
+import type { CommandEnvelope } from "../../features/commands/envelope.ts";
+import type { CommandQueue } from "../../features/commands/queue.ts";
 import {
   command,
   container,
@@ -43,11 +43,11 @@ import {
   tls,
   user,
   workspace,
-} from "../../lib/db/schema.ts";
+} from "../../db/schema.ts";
 import {
   getCommandMetadata,
   transitionCommand,
-} from "../../lib/db/command-records.ts";
+} from "../../features/commands/command-records.ts";
 import {
   enableOrganizationFabric,
   getOrganizationFabric,
@@ -56,8 +56,8 @@ import {
   stampRelayPublicKey,
   stampRelayReconcileSuccess,
   updateFabricRelay,
-} from "../../lib/db/fabric-records.ts";
-import { setFabricConvergenceTimeoutMsForTests } from "../../lib/fabric/enqueue.ts";
+} from "../../features/fabric/fabric-records.ts";
+import { setFabricConvergenceTimeoutMsForTests } from "../../features/fabric/enqueue.ts";
 import { ORG_ID_HEADER } from "../org-context.ts";
 import {
   attachmentServerIds,
@@ -77,7 +77,7 @@ import {
   validateDeployMaterials,
 } from "./deploy-routes.ts";
 import { TEST_ONLY_TURBOPANEL_SECRET } from "../../test-fixtures/secrets.ts";
-import { systemHierarchyProvision } from "../system/hierarchy.ts";
+import { systemHierarchyProvision } from "../../features/system/hierarchy.ts";
 import { registerTlsRoutes } from "../tls/routes.ts";
 
 const dbUrl = getDatabaseUrl();

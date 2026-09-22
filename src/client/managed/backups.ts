@@ -1,17 +1,17 @@
 import type { Context } from "hono";
-import type { AppEnv } from "../../app.ts";
+import type { AppEnv } from "../../app/app.ts";
 import type {
   ManagedBackupCommandPayload,
   ManagedRestoreCommandPayload,
-} from "../../lib/commands/schemas.ts";
-import type { CommandQueue } from "../../lib/commands/queue.ts";
-import type { Db } from "../../db.ts";
+} from "../../contracts/commands/schemas.ts";
+import type { CommandQueue } from "../../features/commands/queue.ts";
+import type { Db } from "../../db/connection.ts";
 import type { ManagedContext } from "./context.ts";
-import { enqueueTypedCommand } from "./apply-prepare.ts";
-import type { ManagedRowOptions } from "./options.ts";
-import type { ManagedBackupRecord } from "../../lib/db/backup-records.ts";
+import { enqueueTypedCommand } from "../../features/managed/apply-prepare.ts";
+import type { ManagedRowOptions } from "../../features/managed/options.ts";
+import type { ManagedBackupRecord } from "../../features/backups/backup-records.ts";
 
-/** Mirrors `COMMAND_TIMEOUT_MS['managed.backup' | 'managed.restore']` in `../../lib/commands/consumer.ts`. */
+/** Mirrors `COMMAND_TIMEOUT_MS['managed.backup' | 'managed.restore']` in `../../features/commands/consumer.ts`. */
 const BACKUP_COMMAND_EXPIRES_MS = 1_800_000;
 
 export type ManagedBackupApiError =

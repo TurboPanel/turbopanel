@@ -7,23 +7,23 @@
 
 import type { Context, Hono } from 'hono'
 import { eq, inArray } from 'drizzle-orm'
-import type { AppEnv } from '../../app.ts'
+import type { AppEnv } from '../../app/app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
-import type { DerivedSecretsConfig } from '../authn/secrets.ts'
+import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { assertCanOr403 } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
-import { getDb, type Db } from '../../db.ts'
+import { getDb, type Db } from '../../db/connection.ts'
 import {
   binding,
   managed,
   principal,
   service,
   slot,
-} from '../../lib/db/schema.ts'
-import { isNoopCommandQueue } from '../../lib/commands/noop-command-queue.ts'
-import { getCommandQueue } from '../../lib/commands/queue.ts'
-import { compatLogWarn } from '../../log-compat.ts'
+} from '../../db/schema.ts'
+import { isNoopCommandQueue } from '../../features/commands/noop-command-queue.ts'
+import { getCommandQueue } from '../../features/commands/queue.ts'
+import { compatLogWarn } from '../../lib/log-compat.ts'
 import {
   assertCanManageOr403,
   assertCanReadOr403,
@@ -32,15 +32,15 @@ import {
   parseJsonBody,
   requireStringField,
 } from '../shared.ts'
-import { enqueueManagedIngressReconcile } from '../managed/ingress-desired.ts'
+import { enqueueManagedIngressReconcile } from '../../features/managed/ingress-desired.ts'
 import {
   loadServicePlacementServerId,
   memberServerIdsForManaged,
-} from './resolve-endpoint.ts'
+} from '../../features/bindings/resolve-endpoint.ts'
 import {
   materializeBinding,
   type MaterializeBindingError,
-} from './materialize.ts'
+} from '../../features/bindings/materialize.ts'
 import {
   bindingMaterializeHttpPayload,
   checkBindingDatabaseTarget,

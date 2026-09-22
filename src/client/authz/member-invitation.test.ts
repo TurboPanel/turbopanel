@@ -1,8 +1,8 @@
 import { and, eq } from 'drizzle-orm'
 import { Hono } from 'hono'
-import type { AppEnv } from '../../app.ts'
-import { getDatabaseUrl } from '../../db-url.ts'
-import { createDenoDb } from '../../db.ts'
+import type { AppEnv } from '../../app/app.ts'
+import { getDatabaseUrl } from '../../db/url.ts'
+import { createDenoDb } from '../../db/connection.ts'
 import {
   grant,
   invitation,
@@ -10,14 +10,14 @@ import {
   team,
   workspace,
   user,
-} from '../../lib/db/schema.ts'
-import type { EmailQueue } from '../../lib/email/types.ts'
+} from '../../db/schema.ts'
+import type { EmailQueue } from '../../features/email/types.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import {
   buildSignedCookie,
   HTTP_SESSION_COOKIE_NAME,
 } from '../authn/crypto.ts'
-import { deriveSecretsConfig } from '../authn/secrets.ts'
+import { deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { createSession } from '../authn/session-store.ts'
 import { registerAccessRoutes } from '../access/routes.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'

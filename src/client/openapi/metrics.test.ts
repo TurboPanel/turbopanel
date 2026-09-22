@@ -1,5 +1,5 @@
 import { assertEquals, assertExists } from '@std/assert'
-import type { ServerHardwareProfileUpdate } from '../../lib/db/server-metadata.ts'
+import type { ServerHardwareProfileUpdate } from '../../features/servers/server-metadata.ts'
 import { metricsPaths, metricsSchemas } from './metrics.ts'
 
 /**

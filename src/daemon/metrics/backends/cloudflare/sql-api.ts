@@ -61,7 +61,7 @@ import type {
   StatusHistoryQuery,
   StatusHistoryResult,
 } from '../../types.ts'
-import type { MetricEventKind, MetricEventSeverity, MetricEvent } from '../../contract.ts'
+import type { MetricEventKind, MetricEventSeverity, MetricEvent } from '../../../../contracts/metrics-contract.ts'
 import { computeStatusUptime } from '../../query/uptime.ts'
 import {
   computeSeriesGapCount,

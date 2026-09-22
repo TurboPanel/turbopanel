@@ -9,7 +9,7 @@ import { registerDeveloperRoutes } from './developer/routes.ts'
 import { registerSystemRoutes } from './developer/system-routes.ts'
 import { registerTunnelRoutes } from './developer/tunnel-routes.ts'
 import { registerUpdateRoutes } from './developer/update-routes.ts'
-import { startDenoServer } from './deno-server.ts'
+import { startDenoServer } from './platform/deno/server.ts'
 
 await startDenoServer({
   registerDeveloperSurface({ routes, sessionSecrets, db }) {

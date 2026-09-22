@@ -5,8 +5,8 @@
  */
 
 import { assertEquals } from '@std/assert'
-import type { Db } from '../../db.ts'
-import type { CommandQueue } from '../../lib/commands/queue.ts'
+import type { Db } from '../../db/connection.ts'
+import type { CommandQueue } from '../../features/commands/queue.ts'
 import {
   dispatchEnvironmentTeardown,
   planEnvironmentTeardown,

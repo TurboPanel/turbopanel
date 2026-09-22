@@ -1,6 +1,6 @@
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
-import type { Db } from "../../db.ts";
-import type { DaemonCellRegistry } from "../../daemon/cell/contracts.ts";
+import type { Db } from "../../db/connection.ts";
+import type { DaemonCellRegistry } from "../../contracts/cell.ts";
 import type { PreloadedFleetPresenceData } from "../../daemon/cell/server-status.ts";
 import { readProjectionsForServers } from "../../daemon/cell/postgres-projection.ts";
 import {
@@ -8,8 +8,8 @@ import {
   readLocalMachineKey,
   resolveColocatedServerId,
 } from "../authn/install-state.ts";
-import { WORKSPACE_KIND_TURBOPANEL } from "../../lib/db/workspace-kind.ts";
-import { license, server } from "../../lib/db/schema.ts";
+import { WORKSPACE_KIND_TURBOPANEL } from "../../db/workspace-kind.ts";
+import { license, server } from "../../db/schema.ts";
 
 /** Matches `SYSTEM_SELF_HOST_COMPONENT` in `system/hierarchy.ts` (literal to avoid importing that module). */
 const SELF_HOST_COMPONENT = "turbopanel";

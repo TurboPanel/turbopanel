@@ -1,8 +1,8 @@
 import { assertEquals } from '@std/assert'
 import { asc, and, eq, inArray, isNull } from 'drizzle-orm'
 import { it } from '@std/testing/bdd'
-import { getDatabaseUrl } from '../../db-url.ts'
-import { createDenoDb, type Db } from '../../db.ts'
+import { getDatabaseUrl } from '../../db/url.ts'
+import { createDenoDb, type Db } from '../../db/connection.ts'
 import {
   COLOCATED_SERVER_DISPLAY_NAME,
   completeInstanceInstall,
@@ -32,9 +32,9 @@ import {
   teammate,
   user,
   workspace,
-} from '../../lib/db/schema.ts'
-import { WORKSPACE_KIND_SYSTEM, WORKSPACE_KIND_USER } from '../../lib/db/workspace-kind.ts'
-import { SYSTEM_WORKSPACE_DISPLAY_NAME } from '../system/hierarchy.ts'
+} from '../../db/schema.ts'
+import { WORKSPACE_KIND_SYSTEM, WORKSPACE_KIND_USER } from '../../db/workspace-kind.ts'
+import { SYSTEM_WORKSPACE_DISPLAY_NAME } from '../../features/system/hierarchy.ts'
 
 const dbUrl = getDatabaseUrl()
 

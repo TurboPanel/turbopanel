@@ -11,26 +11,26 @@
  */
 
 import type { Context, Hono } from 'hono'
-import type { AppEnv } from '../../app.ts'
-import type { Db } from '../../db.ts'
+import type { AppEnv } from '../../app/app.ts'
+import type { Db } from '../../db/connection.ts'
 import {
   GITHUB_WEBHOOK_PATH,
   GITHUB_WEBHOOK_SCOPED_PATH,
-} from '../../surfaces.ts'
-import { logInfo } from '../../logger.ts'
+} from '../../app/surfaces.ts'
+import { logInfo } from '../../lib/logger.ts'
 import { githubWebhookRateLimitKey } from '../../daemon/rate-limit/keys.ts'
-import { resolveGithubWebhookForge } from '../../lib/git/resolve-webhook-forge.ts'
-import type { Forge } from '../../lib/git/forge-records.ts'
+import { resolveGithubWebhookForge } from '../../features/git/resolve-webhook-forge.ts'
+import type { Forge } from '../../features/git/forge-records.ts'
 import {
   branchFromGitRef,
   GITHUB_DELIVERY_HEADER,
   GITHUB_EVENT_HEADER,
-} from '../../lib/git/github-webhook.ts'
+} from '../../features/git/github-webhook.ts'
 import { assertDeployDispatchInfrastructure } from '../../client/environments/deploy-routes.ts'
 import {
   githubInstallationExternalId as installationExternalId,
   githubProvider,
-} from '../../lib/git/github-provider.ts'
+} from '../../features/git/github-provider.ts'
 import {
   applyGithubInstallationEvent,
   resolveGithubCheckTrigger,
@@ -59,11 +59,11 @@ export const GITHUB_WEBHOOK_MAX_BODY_BYTES = 1024 * 1024
 
 /**
  * The suite-level check rule lives with the rest of GitHub's payload vocabulary
- * in `src/lib/git/github-provider.ts`, so the GitLab surface can be written
+ * in `src/features/git/github-provider.ts`, so the GitLab surface can be written
  * against the same interface. Re-exported unchanged — it is part of this
  * module's tested surface.
  */
-export { successfulCheckSha } from '../../lib/git/github-provider.ts'
+export { successfulCheckSha } from '../../features/git/github-provider.ts'
 
 async function handlePush(
   c: Context<AppEnv>,

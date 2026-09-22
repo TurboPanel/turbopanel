@@ -1,6 +1,6 @@
 import type { Env, Hono } from 'hono'
-import type { DerivedSecretsConfig } from '../client/authn/secrets.ts'
-import type { Db } from '../db.ts'
+import type { DerivedSecretsConfig } from '../lib/secrets/secrets.ts'
+import type { Db } from '../db/connection.ts'
 import {
   buildDeveloperRouter,
   mountDeveloperRouter,

@@ -1,4 +1,4 @@
-import type { Db } from "../../db.ts";
+import type { Db } from "../../db/connection.ts";
 import {
   account,
   grant,
@@ -13,10 +13,10 @@ import {
   user,
   verification,
   workspace,
-} from "../../lib/db/schema.ts";
-import type { OtpType } from "../../lib/email/types.ts";
+} from "../../db/schema.ts";
+import type { OtpType } from "../../features/email/types.ts";
 import { deriveOtpVerifier, hashEmailForOtp } from "./email-otp.ts";
-import type { DerivedSecretsConfig } from "./secrets.ts";
+import type { DerivedSecretsConfig } from "../../lib/secrets/secrets.ts";
 import { IS_SIGNUP_ENABLED_CONFIG_KEY } from "./install-state.ts";
 import { SUPERADMIN_ROLE } from "./session-store.ts";
 import type { SessionData } from "./session-store.ts";

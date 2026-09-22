@@ -40,13 +40,13 @@ import type {
   IngressSourceSample,
   NetworkDeviceSample,
   RouterSample,
-} from './contract.ts'
+} from '../../contracts/metrics-contract.ts'
 import {
   STORAGE_ENGINE_FIELD_NAMES,
   STORAGE_ENGINE_KEYS,
   STORAGE_FLAT_FIELD_NAMES,
   storageEngineFieldName,
-} from './contract.ts'
+} from '../../contracts/metrics-contract.ts'
 
 /** How out-of-range finite values are corrected before storage. */
 export type MetricSanitizeBehavior = 'clamp' | 'null'

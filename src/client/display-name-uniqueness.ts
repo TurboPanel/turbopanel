@@ -1,7 +1,7 @@
 import { and, eq, ne, sql } from 'drizzle-orm'
-import type { Db } from '../db.ts'
+import type { Db } from '../db/connection.ts'
 import { normalizeDisplayNameKey } from '../lib/display-name-format.ts'
-import { project, tag, task, workspace } from '../lib/db/schema.ts'
+import { project, tag, task, workspace } from '../db/schema.ts'
 
 export { normalizeDisplayNameKey }
 

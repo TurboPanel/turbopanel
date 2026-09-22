@@ -7,7 +7,7 @@
  *   1. scripts/check-postgres-compat.mjs — refuse a server without
  *      `uuidv7()` (PostgreSQL 18+), since the schema defaults primary keys to
  *      it and the first migration would fail half-way with a worse message.
- *   2. src/lib/db/schema-state.ts — refuse a database migrated by files this
+ *   2. src/db/schema-state.ts — refuse a database migrated by files this
  *      build does not ship (a newer release, or the pre-freeze baseline):
  *      drizzle would apply our files on top of that history and fail
  *      mid-DDL. Read under the lock below.
@@ -29,13 +29,13 @@
 import postgres from "postgres";
 import { drizzle } from "drizzle-orm/postgres-js";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
-import { resolvePostgresConnection } from "../db-url.ts";
+import { resolvePostgresConnection } from "../db/url.ts";
 import {
   compareSchemaState,
   describeSchemaState,
   MIGRATIONS_FOLDER,
   readShippedMigrationHashes,
-} from "../lib/db/schema-state.ts";
+} from "../db/schema-state.ts";
 
 export { MIGRATIONS_FOLDER };
 
@@ -116,7 +116,7 @@ export async function assertPostgresCompatible(
 
 /**
  * Gate 2: refuse a database whose history this build does not ship
- * (src/lib/db/schema-state.ts — `ahead` / `diverged`). drizzle keys replay
+ * (src/db/schema-state.ts — `ahead` / `diverged`). drizzle keys replay
  * on the journal `when`, so it would otherwise apply our files on top of a
  * foreign history and fail mid-DDL. Read under the lock so a concurrent
  * migrate cannot change the answer between the check and the apply.

@@ -16,12 +16,12 @@ import {
   ENVELOPE_SCHEME_OAUTH_STATE,
   formatEnvelope,
   parseEnvelope,
-} from "../envelope.ts";
+} from "../../../lib/secrets/envelope.ts";
 import {
   deriveSecretsConfig,
   findKeyForVersion,
   type SecretsConfig,
-} from "../secrets.ts";
+} from "../../../lib/secrets/secrets.ts";
 import type { OAuthProviderId } from "./providers.ts";
 import { isOAuthProviderId } from "./providers.ts";
 

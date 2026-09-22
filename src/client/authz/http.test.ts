@@ -1,7 +1,7 @@
 import { assertEquals } from '@std/assert'
 import type { Context } from 'hono'
-import type { Db } from '../../db.ts'
-import { WORKSPACE_KIND_TURBOPANEL, WORKSPACE_KIND_USER } from '../../lib/db/workspace-kind.ts'
+import type { Db } from '../../db/connection.ts'
+import { WORKSPACE_KIND_TURBOPANEL, WORKSPACE_KIND_USER } from '../../db/workspace-kind.ts'
 import {
   assertCanOr403,
   assertNotSystemOwnedOr403,

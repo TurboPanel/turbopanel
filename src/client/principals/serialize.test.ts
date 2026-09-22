@@ -1,7 +1,7 @@
 import { assertEquals } from '@std/assert'
 import { describe, it } from '@std/testing/bdd'
 import { serializeProjectPrincipal } from './serialize.ts'
-import type { principal } from '../../lib/db/schema.ts'
+import type { principal } from '../../db/schema.ts'
 
 type PrincipalRow = typeof principal.$inferSelect
 

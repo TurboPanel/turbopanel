@@ -3,7 +3,7 @@ import type {
   DaemonCellRegistry,
   PendingRequestRecord,
   PendingRequestStatus,
-} from '../../daemon/cell/contracts.ts'
+} from '../../contracts/cell.ts'
 import type { ServerFleetPresence } from '../../daemon/cell/fleet-presence.ts'
 import { resolveFleetPresence } from '../../daemon/cell/fleet-presence.ts'
 import {
@@ -11,17 +11,17 @@ import {
   mapServerDaemonStatusFromColumns,
   type ServerDaemonStatus,
   type UpdateProjection,
-} from '../../daemon/authn/daemon-state.ts'
-import type { Db } from '../../db.ts'
-import type { ServerGeo } from '../../lib/geo/server-geo.ts'
-import { server } from '../../lib/db/schema.ts'
+} from '../../features/servers/daemon-state.ts'
+import type { Db } from '../../db/connection.ts'
+import type { ServerGeo } from '../../features/geo/server-geo.ts'
+import { server } from '../../db/schema.ts'
 import { resolveColocatedServerIdSet } from './colocated.ts'
-import { UPDATE_PENDING_MS, UPDATE_REQUEST_TTL_MS } from '../../lib/update/constants.ts'
+import { UPDATE_PENDING_MS, UPDATE_REQUEST_TTL_MS } from '../../features/update/constants.ts'
 import {
   resolveUpdateManifest,
   type UpdateManifestTarget,
-} from '../../lib/update/manifest.ts'
-import type { UpdateChannel } from '../../lib/update/channel.ts'
+} from '../../features/update/manifest.ts'
+import type { UpdateChannel } from '../../contracts/update-channel.ts'
 import { type DaemonSupport, resolveDaemonSupport } from '../../lib/version-wire.ts'
 
 const TERMINAL_STATUSES = new Set<PendingRequestStatus>([

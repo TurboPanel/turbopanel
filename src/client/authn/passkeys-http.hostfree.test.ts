@@ -1,7 +1,7 @@
 import { assertEquals } from "@std/assert";
 import { Hono } from "hono";
-import type { AppEnv } from "../../app.ts";
-import { CLIENT_API_PREFIX } from "../../surfaces.ts";
+import type { AppEnv } from "../../app/app.ts";
+import { CLIENT_API_PREFIX } from "../../app/surfaces.ts";
 import { parseTestSecretsConfig } from "../../test-fixtures/secrets.ts";
 import {
   createAuthRateLimiter,
@@ -15,9 +15,9 @@ import {
 } from "./authn-hostfree-doubles.ts";
 import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from "./crypto.ts";
 import { registerAuthRoutes } from "./http.ts";
-import { hashPassword } from "./password.ts";
+import { hashPassword } from "../../lib/secrets/password.ts";
 import { WEBAUTHN_CHALLENGE_PURPOSE } from "./passkeys.ts";
-import { deriveSecretsConfig } from "./secrets.ts";
+import { deriveSecretsConfig } from "../../lib/secrets/secrets.ts";
 import { createSession } from "./session-store.ts";
 import {
   AUTH_DATA_FLAG_AT,

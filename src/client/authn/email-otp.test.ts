@@ -1,9 +1,9 @@
 import { eq } from 'drizzle-orm'
 import { assertEquals } from '@std/assert'
 import { it } from '@std/testing/bdd'
-import { getDatabaseUrl } from '../../db-url.ts'
-import { createDenoDb } from '../../db.ts'
-import { verification } from '../../lib/db/schema.ts'
+import { getDatabaseUrl } from '../../db/url.ts'
+import { createDenoDb } from '../../db/connection.ts'
+import { verification } from '../../db/schema.ts'
 import { TEST_ONLY_TURBOPANEL_SECRET, parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import {
   createEmailOtp,
@@ -19,7 +19,7 @@ import {
   deriveSecretsConfig,
   parseSecretsEnv,
   type DerivedSecretsConfig,
-} from './secrets.ts'
+} from '../../lib/secrets/secrets.ts'
 
 const dbUrl = getDatabaseUrl()
 

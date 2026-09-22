@@ -1,15 +1,15 @@
 import type { Env, Hono } from 'hono'
 import { createDeveloperAccessMiddleware } from '../client/authn/middleware.ts'
 import { resolveColocatedServerId } from '../client/authn/install-state.ts'
-import type { DerivedSecretsConfig } from '../client/authn/secrets.ts'
+import type { DerivedSecretsConfig } from '../lib/secrets/secrets.ts'
 import {
   generateDeliveryId,
   generateRequestId,
   type DaemonOutboundEnvelope,
-} from '../daemon/cell/protocol.ts'
-import { getDb, getDaemonCellRegistry } from '../db.ts'
-import { cellTrace } from '../logger.ts'
-import { DEVELOPER_API_PREFIX } from '../surfaces.ts'
+} from '../contracts/cell-protocol.ts'
+import { getDb, getDaemonCellRegistry } from '../db/connection.ts'
+import { cellTrace } from '../lib/logger.ts'
+import { DEVELOPER_API_PREFIX } from '../app/surfaces.ts'
 
 const TUNNEL_TOKEN_TIMEOUT_MS = 30_000
 

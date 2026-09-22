@@ -17,7 +17,7 @@
  */
 
 import { Column, getTableColumns, getTableName, Param, SQL, StringChunk } from 'drizzle-orm'
-import type { Db } from '../db.ts'
+import type { Db } from '../db/connection.ts'
 
 type Row = Record<string, unknown>
 type Table = Parameters<typeof getTableColumns>[0]

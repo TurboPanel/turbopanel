@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import type { AppEnv } from "../app.ts";
+import type { AppEnv } from "../app/app.ts";
 import {
   type AuthRouteOpts,
   registerAuthnRoutes,
@@ -9,8 +9,8 @@ import {
   getClientPublicStatus,
   resolveSignupEnvOverrideFromContext,
 } from "./authn/install-state.ts";
-import { getDb } from "../db.ts";
-import { isCustomerBillingOperational } from "../lib/billing/config.ts";
+import { getDb } from "../db/connection.ts";
+import { isCustomerBillingOperational } from "../features/billing/config.ts";
 import { registerAccessRoutes } from "./access/routes.ts";
 import {
   registerEnvironmentDeployPreviewRoutes,
@@ -54,8 +54,8 @@ import {
   type ClientOpenApiOptions,
   getClientOpenApiSpec,
 } from "./openapi/index.ts";
-import { buildClientScalarHtml } from "../scalar-html.ts";
-import { CLIENT_API_PREFIX } from "../surfaces.ts";
+import { buildClientScalarHtml } from "../app/scalar-html.ts";
+import { CLIENT_API_PREFIX } from "../app/surfaces.ts";
 
 /**
  * Workers-only billing and OpenAPI hooks. Passed from `src/workers.ts` so

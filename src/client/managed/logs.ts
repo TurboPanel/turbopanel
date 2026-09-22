@@ -1,14 +1,14 @@
 import type { Context } from 'hono'
-import type { AppEnv } from '../../app.ts'
-import { getDaemonCellRegistry } from '../../db.ts'
+import type { AppEnv } from '../../app/app.ts'
+import { getDaemonCellRegistry } from '../../db/connection.ts'
 import {
   generateDeliveryId,
   generateRequestId,
   type DaemonOutboundEnvelope,
-} from '../../daemon/cell/protocol.ts'
-import { cellTrace } from '../../logger.ts'
+} from '../../contracts/cell-protocol.ts'
+import { cellTrace } from '../../lib/logger.ts'
 import { loadServerStatusRecords } from '../servers/update-status.ts'
-import type { Db } from '../../db.ts'
+import type { Db } from '../../db/connection.ts'
 
 const LOGS_TIMEOUT_MS = 20_000
 const DEFAULT_TAIL = 200

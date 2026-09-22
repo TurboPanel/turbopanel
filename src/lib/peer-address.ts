@@ -27,7 +27,7 @@ import {
 import {
   bestReportedAddress,
   type ServerReportedIp,
-} from '../server-addresses.ts'
+} from '../contracts/server-addresses.ts'
 
 /**
  * Peer addresses the instance will read forwarding headers from.

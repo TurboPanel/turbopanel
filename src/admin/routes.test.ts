@@ -1,13 +1,13 @@
 import { assertEquals } from "@std/assert";
 import { Hono } from "hono";
-import type { AppEnv } from "../app.ts";
-import { createBrowserWriteProtectionMiddleware } from "../browser-write-protection.ts";
-import { getDatabaseUrl } from "../db-url.ts";
-import { createDenoDb, endDbConnection } from "../db.ts";
+import type { AppEnv } from "../app/app.ts";
+import { createBrowserWriteProtectionMiddleware } from "../app/browser-write-protection.ts";
+import { getDatabaseUrl } from "../db/url.ts";
+import { createDenoDb, endDbConnection } from "../db/connection.ts";
 import type {
   DaemonCell,
   DaemonCellRegistry,
-} from "../daemon/cell/contracts.ts";
+} from "../contracts/cell.ts";
 import {
   buildSignedCookie,
   HTTP_SESSION_COOKIE_NAME,
@@ -18,20 +18,20 @@ import {
   deriveEncryptionSecretsConfig,
   deriveSecretsConfig,
   parseSecretsEnv,
-} from "../client/authn/secrets.ts";
-import { notificationChannel, server, setting, user } from "../lib/db/schema.ts";
-import { OPERATOR_WEBHOOK_LABEL } from "../lib/notifications/records.ts";
-import { encryptSecret } from "../client/authn/data-encryption.ts";
+} from "../lib/secrets/secrets.ts";
+import { notificationChannel, server, setting, user } from "../db/schema.ts";
+import { OPERATOR_WEBHOOK_LABEL } from "../features/notifications/records.ts";
+import { encryptSecret } from "../lib/secrets/data-encryption.ts";
 import { eq } from "drizzle-orm";
-import { ADMIN_API_PREFIX } from "../surfaces.ts";
+import { ADMIN_API_PREFIX } from "../app/surfaces.ts";
 import {
   endReencryptSweep,
   resetReencryptSweepLockForTests,
   tryBeginReencryptSweep,
 } from "./reencrypt-secrets.ts";
 import { registerAdminRoutes } from "./routes.ts";
-import { SERVER_METRICS_LIVE_MAX_MINUTES_KEY } from "../lib/settings/server-metrics-settings.ts";
-import { ALERT_WEBHOOK_URL_KEY } from "../lib/alerts/alert-webhook-settings.ts";
+import { SERVER_METRICS_LIVE_MAX_MINUTES_KEY } from "../features/settings/server-metrics-settings.ts";
+import { ALERT_WEBHOOK_URL_KEY } from "../features/alerts/alert-webhook-settings.ts";
 
 const dbUrl = getDatabaseUrl();
 import { TEST_ONLY_TURBOPANEL_SECRET } from "../test-fixtures/secrets.ts";

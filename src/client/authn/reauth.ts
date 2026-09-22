@@ -1,9 +1,9 @@
 import { and, eq } from "drizzle-orm";
 import type { Context } from "hono";
-import type { AppEnv } from "../../app.ts";
-import { getDb } from "../../db.ts";
-import { account } from "../../lib/db/schema.ts";
-import { verifyPassword } from "./password.ts";
+import type { AppEnv } from "../../app/app.ts";
+import { getDb } from "../../db/connection.ts";
+import { account } from "../../db/schema.ts";
+import { verifyPassword } from "../../lib/secrets/password.ts";
 import type { SessionData } from "./session-store.ts";
 
 /**

@@ -57,7 +57,7 @@ import {
   storageEngineFieldName,
   type StorageEngineKey,
   type StorageSample,
-} from "../../contract.ts";
+} from "../../../../contracts/metrics-contract.ts";
 import {
   DIAGNOSTICS_CPU_FIELD_NAMES,
   DIAGNOSTICS_MEMORY_FIELD_NAMES,

@@ -1,18 +1,18 @@
 import { dirname, fromFileUrl, join } from '@std/path'
-import { getDatabaseUrl } from '../db-url.ts'
+import { getDatabaseUrl } from '../db/url.ts'
 import {
   DRIZZLE_STUDIO_CONFIG,
   writeDrizzleKitConfig,
-} from '../drizzle-kit-config.ts'
+} from './drizzle-kit-config.ts'
 import {
   configuredDrizzleStudioHost,
   drizzleStudioBrowserUrl,
   DRIZZLE_STUDIO_PORT,
   probeDrizzleStudioPort,
   resolveDrizzleStudioBindHost,
-} from '../drizzle-studio-probe.ts'
-import { resolveNodePath } from '../node-path.ts'
-import { logInfo, logWarn } from '../logger.ts'
+} from './drizzle-studio-probe.ts'
+import { resolveNodePath } from '../platform/deno/node-path.ts'
+import { logInfo, logWarn } from '../lib/logger.ts'
 import {
   childErrorDetail,
   drizzleKitBinPath,

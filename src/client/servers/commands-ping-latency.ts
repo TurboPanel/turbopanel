@@ -1,5 +1,5 @@
-import type { CommandRecord } from '../../lib/db/command-records.ts'
-import { parsePingResult } from '../../lib/commands/schemas.ts'
+import type { CommandRecord } from '../../features/commands/command-records.ts'
+import { parsePingResult } from '../../contracts/commands/schemas.ts'
 
 export type PingLatencyBreakdown = {
   apiToConsumerMs: number | null

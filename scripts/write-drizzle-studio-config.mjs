@@ -54,7 +54,7 @@ const dbCredentials = parts.host
 
 const configContent = `import { defineConfig } from 'drizzle-kit'
 export default defineConfig({
-  schema: './src/lib/db/schema.ts',
+  schema: './src/db/schema.ts',
   out: './migrations',
   migrations: { table: 'migration', schema: 'public' },
   dialect: 'postgresql',

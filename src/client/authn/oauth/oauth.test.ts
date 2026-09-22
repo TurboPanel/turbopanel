@@ -1,11 +1,11 @@
 import { assertEquals } from "@std/assert";
 import { eq, inArray, sql } from "drizzle-orm";
 import { Hono } from "hono";
-import type { AppEnv } from "../../../app.ts";
-import { getDatabaseUrl } from "../../../db-url.ts";
-import { createDenoDb, endDbConnection } from "../../../db.ts";
-import { account, passkey, user } from "../../../lib/db/schema.ts";
-import { CLIENT_API_PREFIX } from "../../../surfaces.ts";
+import type { AppEnv } from "../../../app/app.ts";
+import { getDatabaseUrl } from "../../../db/url.ts";
+import { createDenoDb, endDbConnection } from "../../../db/connection.ts";
+import { account, passkey, user } from "../../../db/schema.ts";
+import { CLIENT_API_PREFIX } from "../../../app/surfaces.ts";
 import { parseTestSecretsConfig } from "../../../test-fixtures/secrets.ts";
 import {
   createAuthRateLimiter,
@@ -13,8 +13,8 @@ import {
 } from "../auth-rate-limit.ts";
 import { buildSignedCookie, HTTPS_SESSION_COOKIE_NAME } from "../crypto.ts";
 import { registerAuthRoutes } from "../http.ts";
-import { hashPassword } from "../password.ts";
-import { deriveSecretsConfig } from "../secrets.ts";
+import { hashPassword } from "../../../lib/secrets/password.ts";
+import { deriveSecretsConfig } from "../../../lib/secrets/secrets.ts";
 import { createSession } from "../session-store.ts";
 import { signUpFromIdentity } from "./oauth-http.ts";
 import { signOAuthState } from "./oauth-state.ts";

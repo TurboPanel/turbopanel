@@ -9,7 +9,7 @@
  * overlay the buffered point on a now-tailed live-range read, and only while
  * the marker still has an unexpired lease.
  */
-import type { MetricsSample } from "../contract.ts";
+import type { MetricsSample } from "../../../contracts/metrics-contract.ts";
 import {
   HOST_METRICS_METRIC_DESCRIPTORS,
   type MetricEntityScope,

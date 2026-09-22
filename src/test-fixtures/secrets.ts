@@ -1,5 +1,5 @@
-import type { SecretsConfig, SecretsRuntime } from "../client/authn/secrets.ts";
-import { parseSecretsEnv } from "../client/authn/secrets.ts";
+import type { SecretsConfig, SecretsRuntime } from "../lib/secrets/secrets.ts";
+import { parseSecretsEnv } from "../lib/secrets/secrets.ts";
 
 /** Non-production test fixture — never use outside unit tests. */
 export const TEST_ONLY_TURBOPANEL_SECRET =

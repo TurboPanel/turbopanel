@@ -96,7 +96,7 @@ db_connect_build_database_url() {
 
 db_connect_verify_schema() {
   local caller="${1:-db-connect}"
-  local schema_file="${2:-$ROOT/src/lib/db/schema.ts}"
+  local schema_file="${2:-$ROOT/src/db/schema.ts}"
   if [[ -x "$DENO" ]]; then
     "$DENO" check "$schema_file"
     return $?

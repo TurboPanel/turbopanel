@@ -1,6 +1,6 @@
 import type { Context } from "hono";
 import { and, eq, inArray, or } from "drizzle-orm";
-import type { AppEnv } from "../../app.ts";
+import type { AppEnv } from "../../app/app.ts";
 import {
   decryptSecret,
   encryptSecretForDaemon,
@@ -8,30 +8,30 @@ import {
   isDaemonSealedEnvelope,
   isSealedEnvelope,
   resealSecretForDaemon,
-} from "../authn/data-encryption.ts";
+} from "../../lib/secrets/data-encryption.ts";
 import {
   getServerDaemonStateByServerId,
   isDaemonKeyActive,
-} from "../../daemon/authn/server-identity-db.ts";
+} from "../../features/servers/server-identity-db.ts";
 import {
   applyServiceOptionsToComposeDocument,
   buildServiceOptionsMap,
   collectHealthCheckWarnings,
   type ServiceDeployHook,
   type ServiceOptionsByComposeName,
-} from "../../lib/compose/apply-service-options.ts";
+} from "../../features/compose/apply-service-options.ts";
 import {
   compileRuntimeCompose,
   type CompileRuntimeOptions,
-} from "../../lib/compose/compile-runtime.ts";
-import { sha256HexUtf8 } from "../../lib/compose/desired-hash.ts";
+} from "../../features/compose/compile-runtime.ts";
+import { sha256HexUtf8 } from "../../features/compose/desired-hash.ts";
 import {
   parseOrganizationOptions,
   resolveAcmeEnabled,
   resolveComposeDefaultResourceLimits,
   resolveComposeGatedFieldsEnabled,
   resolveDeployHooksEnabled,
-} from "../../lib/organization-options.ts";
+} from "../../features/organizations/organization-options.ts";
 import {
   type ApplyVariablesError,
   applyVariablesToComposeDocument,
@@ -39,8 +39,8 @@ import {
   type DeployVariableMaterial,
   isApplyVariablesError,
   type VariableScopeEntryMap,
-} from "../../lib/compose/apply-variables.ts";
-import type { DeploySecretPlanEntry } from "../../lib/compose/secret-files.ts";
+} from "../../features/compose/apply-variables.ts";
+import type { DeploySecretPlanEntry } from "../../features/compose/secret-files.ts";
 import {
   type ComposeDeployValidationError,
   type ComposeDocument,
@@ -55,8 +55,8 @@ import {
   splitNativeAppServices,
   splitSiteServices,
   validateComposeForDeploy,
-} from "../../lib/compose/index.ts";
-import type { ComposeServiceCronJob } from "../../lib/compose/service-kind.ts";
+} from "../../features/compose/index.ts";
+import type { ComposeServiceCronJob } from "../../features/compose/service-kind.ts";
 import {
   type Application,
   buildApplicationModel,
@@ -67,23 +67,23 @@ import {
   type ResolvedService,
   type ServerDeployment,
   serviceIdsOnServer,
-} from "../../lib/compose/ir.ts";
+} from "../../features/compose/ir.ts";
 import {
   environmentComposeFilename,
   renderRuntimeComposeFiles,
-} from "./deploy-layers.ts";
-import { stripReservedDeployVariableKeys } from "../../lib/compose/platform-variables.ts";
-import { renameComposeVolumes } from "../../lib/compose/rename-volumes.ts";
+} from "../../features/deploy/deploy-layers.ts";
+import { stripReservedDeployVariableKeys } from "../../features/compose/platform-variables.ts";
+import { renameComposeVolumes } from "../../features/compose/rename-volumes.ts";
 import {
   collectComposeExternalDockerNetworkNames,
   pruneUnreferencedComposeNetworks,
-} from "../../lib/compose/docker-external-networks.ts";
+} from "../../features/compose/docker-external-networks.ts";
 import {
   principalHomeDir,
   principalVolumePath,
   resolveDockerVolumeName,
 } from "../../lib/naming.ts";
-import { accessGroupsFor } from "../../lib/principal-access.ts";
+import { accessGroupsFor } from "../../features/principals/principal-access.ts";
 import { SHA512_CRYPT_HASH_RE } from "../../lib/sha512-crypt.ts";
 import {
   CRON_JOB_NAME_RE,
@@ -91,47 +91,47 @@ import {
   cronToOnCalendar,
   MAX_CRON_JOBS_PER_SERVICE,
   parseCronCommand,
-} from "../../lib/cron.ts";
+} from "../../features/deploy/cron.ts";
 import {
   listTasksForServices,
   type TaskRecord,
-} from "../../lib/db/task-records.ts";
+} from "../../features/schedule/task-records.ts";
 import { loadSshKeysByPrincipalIds } from "../principals/ssh-keys.ts";
 import {
   parsePrincipalOptions,
   resolvePrincipalIdOverride,
   resolvePrincipalShell,
-} from "../../lib/principal-options.ts";
+} from "../../features/principals/principal-options.ts";
 import {
   insertDeployEntitlementsIfMissing,
   loadEntitlementsByPrincipalIds,
-} from "../principals/store.ts";
-import { renderPhpForDeploy } from "../../lib/php-settings.ts";
+} from "../../features/principals/store.ts";
+import { renderPhpForDeploy } from "../../features/hostings/php-settings.ts";
 import {
   isComposeChainError,
   resolveComposeLayerChain,
-} from "../../lib/compose/layer-chain.ts";
+} from "../../features/compose/layer-chain.ts";
 import {
   ALLOWED_PHP_EXTENSIONS,
   SUPPORTED_PHP_SERIES,
-} from "../../lib/compose/service-kind.ts";
+} from "../../features/compose/service-kind.ts";
 import {
   parseProjectOptions,
   resolveContainerNaming,
   resolveEffectivePlacementServerId,
-} from "../../lib/project-options.ts";
+} from "../../features/projects/project-options.ts";
 import {
   parseServiceOptions,
   resolveServiceInstances,
-} from "../../lib/service-options.ts";
+} from "../../features/projects/service-options.ts";
 import { resolveRegisteredExternalDockerNetworks } from "./validate-docker-external-networks.ts";
-import { ensureOrganizationManagedNetwork } from "../../lib/db/fabric-records.ts";
-import type { DesiredSlotInput } from "../../lib/db/slot-records.ts";
+import { ensureOrganizationManagedNetwork } from "../../features/fabric/fabric-records.ts";
+import type { DesiredSlotInput } from "../../features/servers/slot-records.ts";
 import {
   localReplicaCounts,
   localServiceNames,
-} from "../../lib/schedule/planner.ts";
-import type { SpanningHostsForService } from "../../lib/schedule/slot-addresses.ts";
+} from "../../features/schedule/planner.ts";
+import type { SpanningHostsForService } from "../../features/schedule/slot-addresses.ts";
 import {
   allocateEnvironmentContainers,
   authoredContainerNamesForAllocation,
@@ -139,13 +139,13 @@ import {
   type ContainerAllocation,
   type ContainerServiceSpec,
   ensureServiceIngressContainerAllocation,
-} from "./allocate-containers.ts";
+} from "../../features/environments/allocate-containers.ts";
 import { resolveTcpUdpIngressServices } from "./tcp-udp-ingress.ts";
 import {
   registerComposeVolumes,
   type RegisteredComposeVolume,
-} from "./register-compose-volumes.ts";
-import { registerComposeMounts } from "./register-compose-mounts.ts";
+} from "../../features/deploy/register-compose-volumes.ts";
+import { registerComposeMounts } from "../../features/deploy/register-compose-mounts.ts";
 import type {
   EnvironmentDeployComposeFile,
   EnvironmentDeployCronJob,
@@ -162,7 +162,7 @@ import type {
   EnvironmentDeployStorageMount,
   EnvironmentDeployTlsMaterial,
   EnvironmentDeployVariableMaterial,
-} from "../../lib/commands/schemas.ts";
+} from "../../contracts/commands/schemas.ts";
 import {
   type DeployRollbackRequest,
   type DeploySourcePrepareError,
@@ -183,26 +183,26 @@ import {
   storage,
   storageCopy,
   tls,
-} from "../../lib/db/schema.ts";
+} from "../../db/schema.ts";
 import {
   checkResourceLimits,
   parseResourceLimits,
   sumServiceResourceUsage,
-} from "../../lib/resource-limits.ts";
+} from "../../features/organizations/resource-limits.ts";
 import {
   type HostingBindScope,
   parseHostingOptions,
   resolveHostingBind,
   resolveHostingProxy,
-} from "../../lib/hosting-options.ts";
+} from "../../features/hostings/hosting-options.ts";
 import { inetAddressToString } from "../../lib/ip-address.ts";
-import { loadServerDatacenterAddress } from "../../lib/net/private-endpoint.ts";
-import { reconcileServicesFromCompose } from "./reconcile-services.ts";
+import { loadServerDatacenterAddress } from "../../features/net/private-endpoint.ts";
+import { reconcileServicesFromCompose } from "../../features/deploy/reconcile-services.ts";
 import {
   type ComposeHostingError,
   reconcileHostingsFromCompose,
 } from "./reconcile-hostings.ts";
-import type { Db } from "../../db.ts";
+import type { Db } from "../../db/connection.ts";
 import {
   mergeHostingVariablesForService,
   type ResolvedVariableMap,
@@ -210,7 +210,7 @@ import {
   resolveInheritedVariableBundleForService,
   resolveInheritedVariablesForEnvironment,
   resolveServerScopedVariables,
-} from "../variables/resolve-inherited.ts";
+} from "../../features/variables/resolve-inherited.ts";
 import {
   type ComposePrincipalResolution,
   loadPrincipalIdsByServiceIdForEnvironment,
@@ -221,9 +221,9 @@ import {
 import {
   materializeBindingsForServices,
   reapplyBindingOwnedVariables,
-} from "../bindings/materialize.ts";
-import type { DerivedSecretsConfig } from "../authn/secrets.ts";
-import { resolveHostingDeployWeb } from "../../lib/hosting-web-env.ts";
+} from "../../features/bindings/materialize.ts";
+import type { DerivedSecretsConfig } from "../../lib/secrets/secrets.ts";
+import { resolveHostingDeployWeb } from "../../features/hostings/hosting-web-env.ts";
 import {
   assembleTlsMetadata,
   parseTlsOptions,
@@ -251,9 +251,9 @@ import {
 import {
   ensureSystemHierarchy,
   SYSTEM_TRAEFIK_COMPOSE_SERVICE_NAME,
-} from "../system/hierarchy.ts";
-import { loadManagedIngressPorts } from "../managed/org-defaults.ts";
-import { DEFAULT_MANAGED_INGRESS_PORTS } from "../../lib/managed/ingress-ports.ts";
+} from "../../features/system/hierarchy.ts";
+import { loadManagedIngressPorts } from "../../features/managed/load-org-defaults.ts";
+import { DEFAULT_MANAGED_INGRESS_PORTS } from "../../features/managed/ingress-ports.ts";
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -3495,46 +3495,56 @@ export function renderCronForDeploy(
 ): EnvironmentDeployCronJob[] {
   const out: EnvironmentDeployCronJob[] = [];
   const seen = new Set<string>();
-  for (const job of jobs ?? []) {
-    if (out.length >= MAX_CRON_JOBS_PER_SERVICE) break;
-    if (!CRON_JOB_NAME_RE.test(job.name) || seen.has(job.name)) continue;
-    const schedule = cronToOnCalendar(job.schedule);
-    if (!schedule.ok) continue;
-    const command = parseCronCommand(job.command);
-    if (!command.ok) continue;
-    seen.add(job.name);
-    out.push({
-      name: job.name,
-      schedule: schedule.value,
-      command: command.value,
-    });
-  }
-  for (const row of tasks) {
-    if (out.length >= MAX_CRON_JOBS_PER_SERVICE) break;
-    if (!row.isEnabled) continue;
-    const name = cronJobUnitName(row.name);
-    if (name === null || seen.has(name)) continue;
-    const schedule = cronToOnCalendar(row.schedule, row.timezone);
-    if (!schedule.ok) continue;
-    const command = parseCronCommand(row.command);
-    if (!command.ok) continue;
-    seen.add(name);
-    out.push({
-      name,
-      schedule: schedule.value,
-      command: command.value,
-      ...(row.timeoutSeconds !== null
-        ? { timeoutSeconds: row.timeoutSeconds }
-        : {}),
-      // The wire carries `forbid` only (see EnvironmentDeployCronJob); a row
-      // holding another policy is rendered without one, which is systemd's
-      // own behaviour for a still-active unit — the same thing as forbid.
-      ...(row.concurrencyPolicy === "forbid"
-        ? { concurrencyPolicy: "forbid" as const }
-        : {}),
-    });
-  }
+  for (const job of jobs ?? []) tryPushComposeCronJob(job, seen, out);
+  for (const row of tasks) tryPushTaskCronJob(row, seen, out);
   return out;
+}
+
+function tryPushComposeCronJob(
+  job: ComposeServiceCronJob,
+  seen: Set<string>,
+  out: EnvironmentDeployCronJob[],
+): void {
+  if (out.length >= MAX_CRON_JOBS_PER_SERVICE) return;
+  if (!CRON_JOB_NAME_RE.test(job.name) || seen.has(job.name)) return;
+  const schedule = cronToOnCalendar(job.schedule);
+  if (!schedule.ok) return;
+  const command = parseCronCommand(job.command);
+  if (!command.ok) return;
+  seen.add(job.name);
+  out.push({
+    name: job.name,
+    schedule: schedule.value,
+    command: command.value,
+  });
+}
+
+function tryPushTaskCronJob(
+  row: TaskRecord,
+  seen: Set<string>,
+  out: EnvironmentDeployCronJob[],
+): void {
+  if (out.length >= MAX_CRON_JOBS_PER_SERVICE) return;
+  if (!row.isEnabled) return;
+  const name = cronJobUnitName(row.name);
+  if (name === null || seen.has(name)) return;
+  const schedule = cronToOnCalendar(row.schedule, row.timezone);
+  if (!schedule.ok) return;
+  const command = parseCronCommand(row.command);
+  if (!command.ok) return;
+  seen.add(name);
+  const extra: Partial<EnvironmentDeployCronJob> = {};
+  if (row.timeoutSeconds !== null) extra.timeoutSeconds = row.timeoutSeconds;
+  // The wire carries `forbid` only (see EnvironmentDeployCronJob); a row
+  // holding another policy is rendered without one, which is systemd's
+  // own behaviour for a still-active unit — the same thing as forbid.
+  if (row.concurrencyPolicy === "forbid") extra.concurrencyPolicy = "forbid";
+  out.push({
+    name,
+    schedule: schedule.value,
+    command: command.value,
+    ...extra,
+  });
 }
 
 /** Task rows for an environment's services, keyed by compose service name. */
@@ -4331,4 +4341,4 @@ export {
   PROJECT_COMPOSE_FILENAME,
   renderRuntimeComposeFiles,
   RUNTIME_COMPOSE_FILENAME,
-} from "./deploy-layers.ts";
+} from "../../features/deploy/deploy-layers.ts";

@@ -1,8 +1,8 @@
 import { and, eq } from 'drizzle-orm'
 import { it } from '@std/testing/bdd'
-import { getDatabaseUrl } from '../../db-url.ts'
-import { createDenoDb } from '../../db.ts'
-import { grant, organization, workspace, team, teammate, user } from '../../lib/db/schema.ts'
+import { getDatabaseUrl } from '../../db/url.ts'
+import { createDenoDb } from '../../db/connection.ts'
+import { grant, organization, workspace, team, teammate, user } from '../../db/schema.ts'
 import { materializeInvitationGrants } from '../authn/invitation-grants.ts'
 import {
   assertNotLastOrgOwner,

@@ -4,19 +4,19 @@
  * are logged and never thrown: the daemon still has server-side truncation as
  * defense-in-depth, and the next attach/ingest will retry.
  */
-import type { Db } from "../../db.ts";
-import type { DaemonCellRegistry } from "../../daemon/cell/contracts.ts";
-import type { DaemonOutboundEnvelope } from "../../daemon/cell/protocol.ts";
+import type { Db } from "../../db/connection.ts";
+import type { DaemonCellRegistry } from "../../contracts/cell.ts";
+import type { DaemonOutboundEnvelope } from "../../contracts/cell-protocol.ts";
 import {
   generateDeliveryId,
   generateRequestId,
-} from "../../daemon/cell/protocol.ts";
+} from "../../contracts/cell-protocol.ts";
 import {
   type MetricsCapabilityPlan,
   type MetricsDeploymentKind,
   parseMetricsCapabilityPlan,
-} from "../../daemon/metrics/capability-plan.ts";
-import { cellTrace } from "../../logger.ts";
+} from "../../contracts/capability-plan.ts";
+import { cellTrace } from "../../lib/logger.ts";
 import { getLatestCapabilityPlanGeneration } from "./capability-plan-records.ts";
 
 type CapabilityPlanUpdateEnvelope = Extract<

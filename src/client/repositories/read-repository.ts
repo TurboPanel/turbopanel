@@ -1,16 +1,16 @@
-import type { Db } from '../../db.ts'
-import type { DaemonCellRegistry } from '../../daemon/cell/contracts.ts'
+import type { Db } from '../../db/connection.ts'
+import type { DaemonCellRegistry } from '../../contracts/cell.ts'
 import {
   generateDeliveryId,
   generateRequestId,
   type DaemonOutboundEnvelope,
-} from '../../daemon/cell/protocol.ts'
-import { cellTrace } from '../../logger.ts'
+} from '../../contracts/cell-protocol.ts'
+import { cellTrace } from '../../lib/logger.ts'
 import { loadServerStatusRecords } from '../servers/update-status.ts'
 import type {
   RepositoryEntry,
   RepositoryFileEntry,
-} from '../../lib/git/git-provider.ts'
+} from '../../features/git/git-provider.ts'
 
 /**
  * On an operator's request path, not a deploy's — 30s, not the 600s a release

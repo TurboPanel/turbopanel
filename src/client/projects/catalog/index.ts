@@ -1,10 +1,10 @@
-import { generatePassword } from '../../../generate-secret.ts'
-import type { ComposeDocument } from '../../../lib/compose/index.ts'
+import { generatePassword } from '../../../lib/secrets/generate-secret.ts'
+import type { ComposeDocument } from '../../../features/compose/index.ts'
 import {
   getManagedEngineSpec,
   MANAGED_ENGINE_CODES,
   type ManagedEngineCode,
-} from '../../../lib/managed/index.ts'
+} from '../../../features/managed/index.ts'
 
 export { MANAGED_ENGINE_CODES, type ManagedEngineCode }
 

@@ -1,15 +1,15 @@
 import { and, eq, inArray } from 'drizzle-orm'
 import type { Context, Hono } from 'hono'
-import type { AppEnv } from '../../app.ts'
+import type { AppEnv } from '../../app/app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { assertCanOr403, listVisible } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
-import { getDb, type Db } from '../../db.ts'
-import { environment, managed } from '../../lib/db/schema.ts'
-import { MANAGED_RUNTIME_PRESENT_ERROR } from '../../lib/db/project-delete.ts'
-import { applyStorageRetentionOnParentDelete } from '../../lib/db/storage-records.ts'
-import { purgeEnvironmentComposeNetworks } from '../../lib/db/fabric-records.ts'
+import { getDb, type Db } from '../../db/connection.ts'
+import { environment, managed } from '../../db/schema.ts'
+import { MANAGED_RUNTIME_PRESENT_ERROR } from '../../features/projects/project-delete.ts'
+import { applyStorageRetentionOnParentDelete } from '../../features/storage/storage-records.ts'
+import { purgeEnvironmentComposeNetworks } from '../../features/fabric/fabric-records.ts'
 import { verifyServerInOrg } from './deploy-prepare.ts'
 import { loadRepinNeedsRedeployForEnvironment } from './repin-needs-redeploy.ts'
 import { reconcileServicesForEnvironment } from './reconcile-after-compose-save.ts'
@@ -34,13 +34,13 @@ import {
   composePrincipalAliases,
   loadProjectPrincipalAliases,
   unionAliasSets,
-} from '../../lib/db/principal-alias-records.ts'
+} from '../../features/principals/principal-alias-records.ts'
 import {
   adoptProjectRepository,
   loadEnvironmentProjectRepository,
   loadOrganizationRepositoryIds,
   loadProjectRepositoryId,
-} from '../../lib/db/repository-records.ts'
+} from '../../features/git/repository-records.ts'
 import {
   parseCreateEnvironmentJsonb,
   parseCreateEnvironmentNames,

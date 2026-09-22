@@ -16,15 +16,15 @@ import {
   type ServerHostResources,
   type ServerDockerMetadata,
   type ServerRuntimeMetadata,
-} from '../../lib/db/server-metadata.ts'
-import type { OrganizationOptions } from '../../lib/organization-options.ts'
-import type { DatacenterOptions } from '../../lib/datacenter-options.ts'
+} from '../../features/servers/server-metadata.ts'
+import type { OrganizationOptions } from '../../features/organizations/organization-options.ts'
+import type { DatacenterOptions } from '../../features/datacenters/datacenter-options.ts'
 import { parseName } from '../shared.ts'
 import {
   isServerMachineClass,
   type MetricsDeploymentKind,
   type ServerMachineClass,
-} from '../../daemon/metrics/capability-plan.ts'
+} from '../../contracts/capability-plan.ts'
 import {
   colocatedServerUpdateBlockedReason,
   type ServerUpdateCommit,
@@ -35,13 +35,13 @@ import {
   resolveEffectiveNtpDefaults,
   resolveEffectiveSshPort,
   type NtpDefaults,
-} from '../../lib/host-defaults.ts'
+} from '../../features/servers/host-defaults.ts'
 import {
   DIRECT_ATTACH_SENTINEL,
   resolveServerAddress,
 } from '../../lib/peer-address.ts'
-import { parseServerIps } from '../../server-addresses.ts'
-import type { UpdateChannel } from '../../lib/update/channel.ts'
+import { parseServerIps } from '../../contracts/server-addresses.ts'
+import type { UpdateChannel } from '../../contracts/update-channel.ts'
 import { unresolvedTargetError } from './update-status.ts'
 
 export const SERVER_UUID_RE =

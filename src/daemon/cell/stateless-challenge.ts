@@ -2,11 +2,11 @@ import {
   ENVELOPE_SCHEME_CHALLENGE,
   formatEnvelope,
   parseEnvelope,
-} from "../../client/authn/envelope.ts";
+} from "../../lib/secrets/envelope.ts";
 import {
   findKeyForVersion,
   type DerivedSecretsConfig,
-} from "../../client/authn/secrets.ts";
+} from "../../lib/secrets/secrets.ts";
 import type { DaemonChallenge } from "../authn/challenge.ts";
 
 export {

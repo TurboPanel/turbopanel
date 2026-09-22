@@ -18,7 +18,7 @@ set -eu
 
 cd "$(dirname "$0")/.."
 
-deno check src/deno.ts src/app.ts
+deno check src/deno.ts src/app/app.ts
 
 # Enumerate from the worktree, not from the index alone: `--others` picks up
 # test files that are new and not yet staged, and the `-f` guard drops paths

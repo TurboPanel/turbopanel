@@ -1,18 +1,18 @@
 import type { Context } from 'hono'
-import type { Db } from '../db.ts'
-import type { DaemonCellRegistry } from '../daemon/cell/contracts.ts'
+import type { Db } from '../db/connection.ts'
+import type { DaemonCellRegistry } from '../contracts/cell.ts'
 import {
   generateDeliveryId,
   generateRequestId,
   type DaemonOutboundEnvelope,
-} from '../daemon/cell/protocol.ts'
-import { cellTrace } from '../logger.ts'
-import type { ServerReportedIp } from '../server-addresses.ts'
+} from '../contracts/cell-protocol.ts'
+import { cellTrace } from '../lib/logger.ts'
+import type { ServerReportedIp } from '../contracts/server-addresses.ts'
 import {
   getPublicUrls,
   parsePublicUrlEntries,
   setPublicUrls,
-} from './public-urls.ts'
+} from '../features/install/public-urls.ts'
 import {
   REENCRYPT_BATCH_SIZE,
   REENCRYPT_STAGES,

@@ -21,7 +21,7 @@ represented as `container` rows.
 | Redis                                                             | vendored `.deb`, unix socket         | stays host-native                                               | none                                     |
 | Mailer, dbstudio, Expo UI, website, mailpit, redis-insight        | systemd / dev-only                   | excluded                                                        | none                                     |
 
-`project.metadata.component` maps to project display names (`src/client/system/hierarchy.ts` — single source of truth): `hosting-ingress` → HTTP/HTTPS Ingress, `managed-ingress` → Database Ingress, `managed-ha` → Database High-Availability, `turbopanel` → Self Hosted TurboPanel Instance.
+`project.metadata.component` maps to project display names (`src/features/system/hierarchy.ts` — single source of truth): `hosting-ingress` → HTTP/HTTPS Ingress, `managed-ingress` → Database Ingress, `managed-ha` → Database High-Availability, `turbopanel` → Self Hosted TurboPanel Instance.
 
 The databases/brokers above are provisioned into the `turbopanel-system`
 Compose project (see daemon `src/deploy/AGENTS.md` → **Shared HTTP ingress
@@ -52,7 +52,7 @@ ProxySQL also joins the organization's managed network **plus each consuming
 environment's spanning `tpn_*` network** (pinned to the reserved last-usable
 host address). Tenant docker-compose raw TCP/UDP Traefik remains a separate
 pattern (compose project = the bare `<serviceId>`). Managed-network naming:
-`src/lib/db/AGENTS.md` → `network` `kind: 'managed'`.
+`src/db/AGENTS.md` → `network` `kind: 'managed'`.
 
 ## Container name suffix contract
 

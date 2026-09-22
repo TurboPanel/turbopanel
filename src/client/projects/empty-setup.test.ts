@@ -1,7 +1,7 @@
 import { assertEquals, assertRejects } from '@std/assert'
-import type { DerivedSecretsConfig } from '../authn/secrets.ts'
-import { deriveEncryptionSecretsConfig } from '../authn/secrets.ts'
-import type { Db } from '../../db.ts'
+import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
+import { deriveEncryptionSecretsConfig } from '../../lib/secrets/secrets.ts'
+import type { Db } from '../../db/connection.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import {
   DEFAULT_PRODUCTION_ENVIRONMENT_DESCRIPTION,

@@ -3,11 +3,11 @@
  */
 
 import { assertEquals, assertThrows } from "@std/assert";
-import { encryptSecret, ENVELOPE_MAGIC } from "../authn/data-encryption.ts";
+import { encryptSecret, ENVELOPE_MAGIC } from "../../lib/secrets/data-encryption.ts";
 import {
   deriveEncryptionSecretsConfig,
   parseSecretsEnv,
-} from "../authn/secrets.ts";
+} from "../../lib/secrets/secrets.ts";
 import { TEST_ONLY_TURBOPANEL_SECRET } from "../../test-fixtures/secrets.ts";
 import { mintSelfSignedCertificate } from "../../lib/tls/index.ts";
 import {

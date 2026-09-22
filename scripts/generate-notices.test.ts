@@ -7,7 +7,7 @@ import {
   packagesFromDenoLock,
   type PnpmLicenseEntry,
   renderThirdPartyNotices,
-} from "../src/lib/notices.ts";
+} from "./lib/notices.ts";
 import { runGenerateNotices } from "./generate-notices.ts";
 
 describe("generate-notices deno.lock npm", () => {

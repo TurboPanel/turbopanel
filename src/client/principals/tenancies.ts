@@ -1,14 +1,14 @@
 import { and, eq, inArray } from 'drizzle-orm'
-import type { Db } from '../../db.ts'
+import type { Db } from '../../db/connection.ts'
 import {
   parseRootExtension,
   readServiceTurbopanelExtension,
   TURBOPANEL_ROOT_EXTENSION_KEY,
   type ComposeDocument,
   type PrincipalSpec,
-} from '../../lib/compose/index.ts'
-import { environment, service, tenancy } from '../../lib/db/schema.ts'
-import { ensureComposePrincipal, isUuid } from './store.ts'
+} from '../../features/compose/index.ts'
+import { environment, service, tenancy } from '../../db/schema.ts'
+import { ensureComposePrincipal, isUuid } from '../../features/principals/store.ts'
 
 /** Service ids linked to each principal (empty array when none). */
 export async function loadServiceIdsByPrincipalIds(

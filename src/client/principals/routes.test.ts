@@ -1,15 +1,15 @@
 import { assertEquals, assertMatch } from '@std/assert'
 import { and, eq } from 'drizzle-orm'
 import { Hono } from 'hono'
-import type { AppEnv } from '../../app.ts'
-import { getDatabaseUrl } from '../../db-url.ts'
-import { createDenoDb } from '../../db.ts'
+import type { AppEnv } from '../../app/app.ts'
+import { getDatabaseUrl } from '../../db/url.ts'
+import { createDenoDb } from '../../db/connection.ts'
 import {
   buildSignedCookie,
   HTTP_SESSION_COOKIE_NAME,
 } from '../authn/crypto.ts'
 import { createSession } from '../authn/session-store.ts'
-import { deriveSecretsConfig } from '../authn/secrets.ts'
+import { deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
 import {
   tenancy,
   environment,
@@ -21,10 +21,10 @@ import {
   service,
   user,
   workspace,
-} from '../../lib/db/schema.ts'
-import { WORKSPACE_KIND_TURBOPANEL } from '../../lib/db/workspace-kind.ts'
+} from '../../db/schema.ts'
+import { WORKSPACE_KIND_TURBOPANEL } from '../../db/workspace-kind.ts'
 import { principalHomeDir } from '../../lib/naming.ts'
-import { DEFAULT_PRINCIPAL_SHELL } from '../../lib/principal-options.ts'
+import { DEFAULT_PRINCIPAL_SHELL } from '../../features/principals/principal-options.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import {
   registerOrganizationLimitsRoutes,

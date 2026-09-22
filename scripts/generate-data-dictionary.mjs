@@ -3,7 +3,7 @@
  * Website data dictionary generator.
  *
  * Renders the shipped schema — the latest `migrations/meta/NNNN_snapshot.json`
- * joined with `src/lib/db/schema-descriptions.ts` — as Fumadocs MDX pages
+ * joined with `src/db/schema-descriptions.ts` — as Fumadocs MDX pages
  * under the website checkout: one index, one page per data-dictionary
  * group, and the section `meta.json`. Every file starts with a generated
  * banner; edit the descriptions file or `schema.ts`, never the pages.
@@ -17,7 +17,7 @@
  * change that has been through `pnpm drizzle-kit generate --name …` shows
  * up as a diff here even before anyone touches a description.
  *
- * See src/lib/db/AGENTS.md → "Schema descriptions".
+ * See src/db/AGENTS.md → "Schema descriptions".
  */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -27,7 +27,7 @@ import {
   isObviousColumn,
   SCHEMA_DESCRIPTIONS,
   STANDARD_COLUMNS,
-} from '../src/lib/db/schema-descriptions.ts'
+} from '../src/db/schema-descriptions.ts'
 import { readLatestSnapshot, REPO_ROOT } from './schema-snapshot.mjs'
 
 export const DEFAULT_OUT_DIR = path.resolve(REPO_ROOT, '../website/docs/database')
@@ -47,7 +47,7 @@ function banner(snapshot) {
   return [
     '{/*',
     '  GENERATED FILE — do not edit by hand.',
-    `  Source: turbopanel/src/lib/db/schema-descriptions.ts + migrations/meta/${String(snapshot.idx).padStart(4, '0')}_snapshot.json (${snapshot.tag}).`,
+    `  Source: turbopanel/src/db/schema-descriptions.ts + migrations/meta/${String(snapshot.idx).padStart(4, '0')}_snapshot.json (${snapshot.tag}).`,
     '  Regenerate: `node scripts/generate-data-dictionary.mjs` in the turbopanel repo (`pnpm docs:data-dictionary`).',
     '*/}',
   ].join('\n')
@@ -196,7 +196,7 @@ function renderIndex(snapshot, groups) {
     '- **Booleans** are named `is_*`; `NULL` on a boolean means *not set*, not `false`.',
     '- **Secrets** are never stored in the clear: a column holding one says so and names the envelope format.',
     '',
-    'To change a description, edit `src/lib/db/schema-descriptions.ts` in the turbopanel repository and follow the *Schema descriptions* loop in its `AGENTS.md`; a schema change regenerates these pages as part of the same migration.',
+    'To change a description, edit `src/db/schema-descriptions.ts` in the turbopanel repository and follow the *Schema descriptions* loop in its `AGENTS.md`; a schema change regenerates these pages as part of the same migration.',
     '',
   ].join('\n')
 }

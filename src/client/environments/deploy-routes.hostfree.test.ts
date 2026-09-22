@@ -5,13 +5,13 @@
 import { assertEquals } from '@std/assert'
 import type { Context } from 'hono'
 import { Hono } from 'hono'
-import type { AppEnv } from '../../app.ts'
-import type { Db } from '../../db.ts'
-import type { DaemonCellRegistry } from '../../daemon/cell/contracts.ts'
-import type { CommandQueue } from '../../lib/commands/queue.ts'
-import { createNoopCommandQueue } from '../../lib/commands/noop-command-queue.ts'
-import { environment } from '../../lib/db/schema.ts'
-import { DEFAULT_MANAGED_INGRESS_PORTS } from '../../lib/managed/ingress-ports.ts'
+import type { AppEnv } from '../../app/app.ts'
+import type { Db } from '../../db/connection.ts'
+import type { DaemonCellRegistry } from '../../contracts/cell.ts'
+import type { CommandQueue } from '../../features/commands/queue.ts'
+import { createNoopCommandQueue } from '../../features/commands/noop-command-queue.ts'
+import { environment } from '../../db/schema.ts'
+import { DEFAULT_MANAGED_INGRESS_PORTS } from '../../features/managed/ingress-ports.ts'
 import type { PreparedDeployCompose } from './deploy-prepare.ts'
 import {
   createEmptyMockAuthState,
@@ -23,7 +23,7 @@ import {
   buildSignedCookie,
   HTTP_SESSION_COOKIE_NAME,
 } from '../authn/crypto.ts'
-import { deriveSecretsConfig } from '../authn/secrets.ts'
+import { deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import {

@@ -8,17 +8,17 @@
 
 import { assertEquals } from '@std/assert'
 import { Hono } from 'hono'
-import type { AppEnv } from '../../app.ts'
-import { deriveEncryptionSecretsConfig } from '../../client/authn/secrets.ts'
+import type { AppEnv } from '../../app/app.ts'
+import { deriveEncryptionSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
-import { STRIPE_WEBHOOK_PATH } from '../../surfaces.ts'
-import type { BillingConfig } from '../../lib/billing/config.ts'
+import { STRIPE_WEBHOOK_PATH } from '../../app/surfaces.ts'
+import type { BillingConfig } from '../../features/billing/config.ts'
 import {
   createStripeClient,
   type StripeFetch,
-} from '../../lib/billing/client.ts'
-import { computeStripeSignature } from '../../lib/billing/webhook-signature.ts'
-import { STRIPE_CUSTOMER_ORGANIZATION_METADATA_KEY } from '../../lib/billing/customer-subject.ts'
+} from '../../features/billing/client.ts'
+import { computeStripeSignature } from '../../features/billing/webhook-signature.ts'
+import { STRIPE_CUSTOMER_ORGANIZATION_METADATA_KEY } from '../../features/billing/customer-subject.ts'
 import {
   allowance,
   key,
@@ -31,12 +31,12 @@ import {
   subscriptionItem,
   tier,
   webhookDelivery,
-} from '../../lib/db/schema.ts'
+} from '../../db/schema.ts'
 import {
   claimWebhookDelivery,
   enqueueStripeProjection,
   listPendingStripeProjections,
-} from '../../lib/db/webhook-delivery-records.ts'
+} from '../../features/webhook-delivery/webhook-delivery-records.ts'
 import { createMemoryDb, type MemoryDb } from '../../test-fixtures/memory-db.ts'
 import {
   emptyLedger,
@@ -44,7 +44,7 @@ import {
   readPendingChanges,
   withIntent,
   writePendingChanges,
-} from '../../lib/billing/pending-changes.ts'
+} from '../../features/billing/pending-changes.ts'
 import { registerWebhookRoutes } from '../routes.ts'
 import {
   PROJECTED_STRIPE_EVENT_TYPES,

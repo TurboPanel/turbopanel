@@ -1,16 +1,16 @@
 import type { Env, Hono } from "hono";
 import type { DaemonJwtKeyring } from "./authn/daemon-jwt-keyring.ts";
-import { getDb } from "../db.ts";
-import { DAEMON_WS_PATH } from "../surfaces.ts";
+import { getDb } from "../db/connection.ts";
+import { DAEMON_WS_PATH } from "../app/surfaces.ts";
 import { verifyDaemonJwt } from "./authn/daemon-jwt.ts";
 import {
   getServerDaemonStateByServerId,
   isDaemonKeyActive,
-} from "./authn/server-identity-db.ts";
+} from "../features/servers/server-identity-db.ts";
 import {
   resolveCellLocationHint,
 } from "./cell/location.ts";
-import { extractCloudflareGeo } from "../lib/geo/server-geo.ts";
+import { extractCloudflareGeo } from "../features/geo/server-geo.ts";
 import type { RateLimiter } from "./rate-limit/contracts.ts";
 import { daemonConnectRateLimitKey } from "./rate-limit/keys.ts";
 import { resolvePeerAddress } from "../lib/peer-address.ts";

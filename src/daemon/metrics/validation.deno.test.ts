@@ -1,6 +1,6 @@
 import { assertEquals } from '@std/assert'
 import { it } from '@std/testing/bdd'
-import { METRICS_SCHEMA_VERSION } from './contract.ts'
+import { METRICS_SCHEMA_VERSION } from '../../contracts/metrics-contract.ts'
 import { MAX_METRICS_PAYLOAD_BYTES, validateMetricsSample } from './validation.ts'
 
 /**

@@ -13,16 +13,16 @@
 
 import { and, eq, inArray } from 'drizzle-orm'
 import type { Context, Hono } from 'hono'
-import type { AppEnv } from '../../app.ts'
+import type { AppEnv } from '../../app/app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
-import { getDb, type Db } from '../../db.ts'
+import { getDb, type Db } from '../../db/connection.ts'
 import {
   TAG_NAME_IN_USE_ERROR,
   isTagDisplayNameTaken,
 } from '../display-name-uniqueness.ts'
-import { tag } from '../../lib/db/schema.ts'
+import { tag } from '../../db/schema.ts'
 import {
   createTag,
   deleteTag,
@@ -33,7 +33,7 @@ import {
   serializeTag,
   setEntityTags,
   updateTag,
-} from '../../lib/db/tag-records.ts'
+} from '../../features/servers/tag-records.ts'
 import {
   assertCanManageOr403,
   assertCanReadOr403,

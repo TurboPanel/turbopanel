@@ -1,6 +1,6 @@
 import { assertEquals } from '@std/assert'
 import { describe, it } from '@std/testing/bdd'
-import type { Db } from '../../db.ts'
+import type { Db } from '../../db/connection.ts'
 import {
   loadTenancyPrincipalIdsForEnvironment,
   loadPrincipalIdsByServiceIdForEnvironment,

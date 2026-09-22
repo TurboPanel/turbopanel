@@ -1,6 +1,6 @@
 import { eq, sql } from "drizzle-orm";
 import type { Hono } from "hono";
-import type { AppEnv } from "../../app.ts";
+import type { AppEnv } from "../../app/app.ts";
 import type { AuthRouteOpts } from "../authn/http.ts";
 import { createSessionMiddleware } from "../authn/middleware.ts";
 import { createOrganizationForUser } from "../authn/install-state.ts";
@@ -10,22 +10,22 @@ import {
   listAccessibleOrganizations,
 } from "../org-context.ts";
 import { assertCanManageOr403, parseJsonBody } from "../shared.ts";
-import { type Db, getDb } from "../../db.ts";
+import { type Db, getDb } from "../../db/connection.ts";
 import {
   AUDIT_MAX_PAGE_SIZE,
   listAuditForOrganization,
   recordAudit,
-} from "../../lib/db/audit-records.ts";
-import { organization } from "../../lib/db/schema.ts";
+} from "../../features/audit/audit-records.ts";
+import { organization } from "../../db/schema.ts";
 import {
   parseOrganizationOptions,
   resolveRandomizedPrincipalUsernames,
-} from "../../lib/organization-options.ts";
-import { loadOrgServerCapacity } from "../../lib/server-capacity.ts";
+} from "../../features/organizations/organization-options.ts";
+import { loadOrgServerCapacity } from "../../features/servers/server-capacity.ts";
 import { listTimezones } from "../../lib/timezones.ts";
-import { assertCidrAvailable } from "../../lib/net/cidr-collisions.ts";
+import { assertCidrAvailable } from "../../features/net/cidr-collisions.ts";
 import { alignedNetworkCidr } from "../../lib/ip-address.ts";
-import { findDockerBridgePoolOverlap } from "../../lib/docker-address-pools.ts";
+import { findDockerBridgePoolOverlap } from "../../features/deploy/docker-address-pools.ts";
 import { cidrCollisionResponse } from "../networks/network-scope.ts";
 import {
   applyManagedDefaultsPatch,

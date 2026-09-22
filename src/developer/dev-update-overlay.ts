@@ -24,9 +24,9 @@ import { getDaemonRepoPath } from "../daemon/version.ts";
 import {
   setUpdateManifestProvider,
   type UpdateManifestTarget,
-} from "../lib/update/manifest.ts";
-import { setServerUpdatePreparer } from "../lib/update/prepare.ts";
-import { logError, logInfo, logWarn } from "../logger.ts";
+} from "../features/update/manifest.ts";
+import { setServerUpdatePreparer } from "../features/update/prepare.ts";
+import { logError, logInfo, logWarn } from "../lib/logger.ts";
 
 const LOG_COMPONENT = "dev-update-overlay";
 

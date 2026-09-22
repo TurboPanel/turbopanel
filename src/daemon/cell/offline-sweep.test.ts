@@ -13,7 +13,7 @@ import type {
   DaemonCellLiveness,
   DaemonCellRegistry,
   DaemonCellSnapshot,
-} from "./contracts.ts";
+} from "../../contracts/cell.ts";
 import {
   canDirectHealFromAeEvidence,
   ALERT_DELIVERY_BUDGET_MS,
@@ -35,16 +35,16 @@ import {
   takeLastOfflineSweepScheduledTimeForTests,
   updateNullGraceBookkeeping,
 } from "./offline-sweep.ts";
-import type { Alert } from "../../lib/alerts/alert-sender.ts";
-import { WEBHOOK_DELIVERY_SWEEP_LIMIT } from "../../lib/db/webhook-delivery-records.ts";
-import type { ExecutionLogStore } from "../../lib/execution-logs/types.ts";
+import type { Alert } from "../../features/alerts/alert-sender.ts";
+import { WEBHOOK_DELIVERY_SWEEP_LIMIT } from "../../features/webhook-delivery/webhook-delivery-records.ts";
+import type { ExecutionLogStore } from "../../features/execution-logs/types.ts";
 import {
   endOfflineSweep,
   OFFLINE_SWEEP_LEASE_MS,
   tryBeginOfflineSweep,
 } from "./offline-sweep-lease.ts";
-import type { Db } from "../../db.ts";
-import { COMMAND_DISPATCH_SWEEP_LIMIT } from "../../lib/db/command-records.ts";
+import type { Db } from "../../db/connection.ts";
+import { COMMAND_DISPATCH_SWEEP_LIMIT } from "../../features/commands/command-records.ts";
 
 const serverId = "srv-offline-sweep-null-grace";
 
@@ -1553,9 +1553,9 @@ import {
   subscriptionItem,
   tier,
   webhookDelivery,
-} from "../../lib/db/schema.ts";
-import { BILLING_RECONCILE_REPORT_KEY } from "../../lib/billing/reconcile.ts";
-import { deriveEncryptionSecretsConfig } from "../../client/authn/secrets.ts";
+} from "../../db/schema.ts";
+import { BILLING_RECONCILE_REPORT_KEY } from "../../features/billing/reconcile.ts";
+import { deriveEncryptionSecretsConfig } from "../../lib/secrets/secrets.ts";
 import { parseTestSecretsConfig } from "../../test-fixtures/secrets.ts";
 
 /** Every scheduled phase fires on the hour: execution logs, tier notices, grace clock, reconcile. */

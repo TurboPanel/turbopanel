@@ -1,6 +1,6 @@
 import { and, eq } from 'drizzle-orm'
-import type { Db } from '../../db.ts'
-import { grant, user } from '../../lib/db/schema.ts'
+import type { Db } from '../../db/connection.ts'
+import { grant, user } from '../../db/schema.ts'
 import { can } from './evaluator.ts'
 
 export type PlatformUser = { id: string; role: string }

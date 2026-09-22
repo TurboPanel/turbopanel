@@ -1,6 +1,6 @@
 import type { Env, Hono } from "hono";
 import { dirname, fromFileUrl, join } from "@std/path";
-import { DAEMON_API_PREFIX } from "../surfaces.ts";
+import { DAEMON_API_PREFIX } from "../app/surfaces.ts";
 
 /**
  * Informational daemon checkout commit for the co-located daemon repo on this host.

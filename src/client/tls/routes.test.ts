@@ -1,9 +1,9 @@
 import { assertEquals } from "@std/assert";
 import { eq } from "drizzle-orm";
 import { Hono } from "hono";
-import type { AppEnv } from "../../app.ts";
-import { getDatabaseUrl } from "../../db-url.ts";
-import { createDenoDb } from "../../db.ts";
+import type { AppEnv } from "../../app/app.ts";
+import { getDatabaseUrl } from "../../db/url.ts";
+import { createDenoDb } from "../../db/connection.ts";
 import {
   buildSignedCookie,
   HTTP_SESSION_COOKIE_NAME,
@@ -13,7 +13,7 @@ import {
   deriveEncryptionSecretsConfig,
   deriveSecretsConfig,
   parseSecretsEnv,
-} from "../authn/secrets.ts";
+} from "../../lib/secrets/secrets.ts";
 import {
   changeover,
   command,
@@ -26,7 +26,7 @@ import {
   tls,
   user,
   workspace,
-} from "../../lib/db/schema.ts";
+} from "../../db/schema.ts";
 import {
   assembleTlsMetadata,
   mintSelfSignedCertificate,
@@ -42,10 +42,10 @@ import { ORG_ID_HEADER } from "../org-context.ts";
 import { registerTlsRoutes } from "./routes.ts";
 import { ROTATION_FANOUT_BATCH_SIZE } from "./changeover-fanout.ts";
 import { TEST_ONLY_TURBOPANEL_SECRET } from "../../test-fixtures/secrets.ts";
-import type { CommandEnvelope } from "../../lib/commands/envelope.ts";
-import type { CommandQueue } from "../../lib/commands/queue.ts";
-import type { DaemonCellRegistry } from "../../daemon/cell/contracts.ts";
-import type { DaemonOutboundEnvelope } from "../../daemon/cell/protocol.ts";
+import type { CommandEnvelope } from "../../features/commands/envelope.ts";
+import type { CommandQueue } from "../../features/commands/queue.ts";
+import type { DaemonCellRegistry } from "../../contracts/cell.ts";
+import type { DaemonOutboundEnvelope } from "../../contracts/cell-protocol.ts";
 
 const dbUrl = getDatabaseUrl();
 

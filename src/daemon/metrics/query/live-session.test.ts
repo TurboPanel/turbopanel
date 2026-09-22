@@ -1,5 +1,5 @@
 import { assertEquals } from "@std/assert";
-import { METRICS_SCHEMA_VERSION } from "../contract.ts";
+import { METRICS_SCHEMA_VERSION } from "../../../contracts/metrics-contract.ts";
 import type { AuthenticatedMetricsSample } from "../types.ts";
 import {
   createMetricsChartCache,

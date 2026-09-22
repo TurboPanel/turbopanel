@@ -1,6 +1,6 @@
 import type { Hono } from "hono";
 import { eq, sql } from "drizzle-orm";
-import type { AppEnv } from "../../app.ts";
+import type { AppEnv } from "../../app/app.ts";
 import type { AuthRouteOpts } from "../authn/http.ts";
 import { createSessionMiddleware } from "../authn/middleware.ts";
 import { listVisible } from "../authz/index.ts";
@@ -13,14 +13,14 @@ import {
   getDaemonCellRegistry,
   getDb,
   getServerMetricsStore,
-} from "../../db.ts";
+} from "../../db/connection.ts";
 import {
   type DaemonOutboundEnvelope,
   generateDeliveryId,
   generateRequestId,
-} from "../../daemon/cell/protocol.ts";
-import { cellTrace } from "../../logger.ts";
-import { organization, server, tier } from "../../lib/db/schema.ts";
+} from "../../contracts/cell-protocol.ts";
+import { cellTrace } from "../../lib/logger.ts";
+import { organization, server, tier } from "../../db/schema.ts";
 import {
   mergeServerHardwareProfile,
   parseServerHardwareProfile,
@@ -29,16 +29,16 @@ import {
   resolveEffectiveMetricsCapabilityPlan,
   type ServerHardwareProfile,
   type ServerHardwareProfileUpdate,
-} from "../../lib/db/server-metadata.ts";
+} from "../../features/servers/server-metadata.ts";
 import {
   type MetricsCapabilityTierEntitlements,
   type MetricsDeploymentKind,
   metricsDeploymentKindForRuntime,
   resolveServerMachineClass,
-} from "../../daemon/metrics/capability-plan.ts";
-import { metricsCapabilityTierEntitlementsForRank } from "../../lib/tiers/tier-entitlements.ts";
-import { parseOrganizationOptions } from "../../lib/organization-options.ts";
-import { getServerMetricsLiveMaxMinutes } from "../../lib/settings/server-metrics-settings.ts";
+} from "../../contracts/capability-plan.ts";
+import { metricsCapabilityTierEntitlementsForRank } from "../../features/tiers/tier-entitlements.ts";
+import { parseOrganizationOptions } from "../../features/organizations/organization-options.ts";
+import { getServerMetricsLiveMaxMinutes } from "../../features/settings/server-metrics-settings.ts";
 import { loadServerStatusRecords } from "./update-status.ts";
 import {
   createMetricsChartCache,
@@ -107,7 +107,7 @@ import {
   getLatestTopologyGeneration,
   getLatestTopologyGenerations,
   getTopologyGenerations,
-} from "./server-topology-records.ts";
+} from "../../features/servers/server-topology-records.ts";
 
 /** Fixed lookback for the org servers overview usage strip/bars (~1 sample/min). */
 export const FLEET_USAGE_LOOKBACK_MS = 10 * 60_000;

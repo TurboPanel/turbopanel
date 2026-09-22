@@ -1,16 +1,16 @@
 import { and, eq, inArray } from 'drizzle-orm'
 import type { Context, Hono } from 'hono'
-import type { AppEnv } from '../../app.ts'
+import type { AppEnv } from '../../app/app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { assertCanOr403, listVisible } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
-import { getDb, type Db } from '../../db.ts'
-import { network } from '../../lib/db/schema.ts'
+import { getDb, type Db } from '../../db/connection.ts'
+import { network } from '../../db/schema.ts'
 import {
   assertCidrAvailable,
   cidrWriteIntentForKind,
-} from '../../lib/net/cidr-collisions.ts'
+} from '../../features/net/cidr-collisions.ts'
 import { canAccessOrganization } from '../org-context.ts'
 import {
   assertCanCreateOr403,

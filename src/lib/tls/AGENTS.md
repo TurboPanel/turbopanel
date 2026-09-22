@@ -9,7 +9,7 @@ operator-pinned library certificates, Caddy `tls internal`, or a `managed`
 `lets_encrypt` row (`tlsMode: 'acme'`) that Caddy issues and renews on the
 serving host. They are never issued by the Organization CA. **Let's Encrypt is
 opt-in at the organization level, off by default**
-(`organization.options.acmeEnabled`, `../organization-options.ts`) — some
+(`organization.options.acmeEnabled`, `../../features/organizations/organization-options.ts`) — some
 operators do not want ACME used against their servers at all. `POST /tls` with
 `source: 'lets_encrypt'` refuses to create the row (`lets_encrypt_not_enabled`,
 403) while the org is opted out, and `hostingTlsWireFromResolved`
@@ -24,7 +24,7 @@ hatch: deploy-prepare treats that pin as Caddy `tls internal` instead of
 **Issuance-failure visibility (built).** The daemon's `AcmeIssuanceObserver`
 (`turbopaneld/src/instance/acme-observe.ts`) live-probes every deployed
 `tlsMode: 'acme'` hostname every 60s and reports a state change as
-`acme-issuance-event` (`src/daemon/cell/protocol.ts`). This control plane's
+`acme-issuance-event` (`src/contracts/cell-protocol.ts`). This control plane's
 `handleAcmeIssuanceEvent` (`../../client/tls/acme-issuance-event.ts`)
 merge-patches the matching `managed` row's `metadata.acme.lastError` — it
 never writes `status`, so a recorded failure cannot itself flip
@@ -36,9 +36,9 @@ certificate read-back (daemon reading Caddy's cert file under
 displayed anywhere.
 
 Root context: `../../../AGENTS.md` (Caddy + TLS). Client TLS / SSL mode:
-`../managed/AGENTS.md`. Command payload comments: `../commands/AGENTS.md`. Org
+`../../features/managed/AGENTS.md`. Command payload comments: `../../features/commands/AGENTS.md`. Org
 TLS routes: `../../client/tls/`. Platform CA path resolution:
-`../../server-paths.ts`.
+`../../platform/deno/server-paths.ts`.
 
 **This file owns the Platform CA vs Organization CA comparison.** Other docs
 link here rather than restating the table.
@@ -75,24 +75,24 @@ All of this package is Web-Crypto-only and Workers-safe.
 
 Read-only reference — no behavior claims beyond today:
 
-- `loadOrganizationCaSet` in `../../client/tls/organization-ca.ts` — **only**
+- `loadOrganizationCaSet` in `../../features/tls/organization-ca.ts` — **only**
   Organization-CA reader (`ca_state IN ('active','retired')`); returns
   `{ signer, trustBundlePem }`
 - `ensureActiveOrganizationCa` / `buildManagedOrgTlsMaterial` /
   `buildOrgTlsMaterialForServer` / `attachManagedOrgTlsMaterial` in
-  `../../client/managed/apply-prepare.ts` (leaf signing uses `signer.*`;
+  `../../features/managed/apply-prepare.ts` (leaf signing uses `signer.*`;
   `caCertPem` / `<PREFIX>_CA_CERT` ship `trustBundlePem`; minted engine-leaf
   details ride command metadata as `pendingTlsLeaf` and are upserted onto `leaf`
   `kind='engine'` only after `managed.apply` succeeds)
-- `buildOrgTlsForServer` in `../../client/managed/ingress-desired.ts` (same
+- `buildOrgTlsForServer` in `../../features/managed/ingress-desired.ts` (same
   pending-metadata path for `leaf` `kind='ingress'` on
   `managed.ingress.reconcile` success)
-- `computeBindingVariableSet` in `../../client/bindings/materialize.ts`
+- `computeBindingVariableSet` in `../../features/bindings/materialize.ts`
 - `GET /tls/ca` / `POST /tls/ca/rotate` / `GET /tls/ca/rotation` /
   `POST /tls/ca/retire` / `GET /tls/ca/download` in `../../client/tls/routes.ts`
   (JSON and download serve the overlap bundle; rotate fans existing
   `managed.apply` / `managed.ingress.reconcile` commands and rematerializes
-  bindings — see `../commands/AGENTS.md`. Repeat POST while `in_progress`
+  bindings — see `../../features/commands/AGENTS.md`. Repeat POST while `in_progress`
   resumes the stored cursor without minting another generation. `GET /tls/ca`
   also returns `leafHealth: { dueCount,
   caGeneration, caNotAfter }` (one
@@ -106,14 +106,14 @@ Read-only reference — no behavior claims beyond today:
 
 ## Where the Platform CA lives instead
 
-- `../../server-paths.ts` (`resolveInstanceTlsCa*` / `TURBOPANEL_TLS_CA*`)
+- `../../platform/deno/server-paths.ts` (`resolveInstanceTlsCa*` / `TURBOPANEL_TLS_CA*`)
 - `../../../scripts/generate-self-signed-cert.mjs` (`ensureCa()`)
 - `../../admin/tls-trust-reconcile.ts`
 - `../../daemon/api-routes.ts` (`GET /api/daemon/v1/instance/ca`)
 
 ## Hard rule + guard
 
-Organization CA / org TLS library code (`src/lib/tls/`, `src/client/tls/`) must
+Organization CA / org TLS library code (`src/lib/tls/`, `src/client/tls/`, `src/features/tls/`) must
 never reference `TURBOPANEL_TLS_CA*`, `resolveInstanceTlsCa*`, `ca-bundle.pem`,
 or `instance-ca.pem`, and must never import `server-paths.ts`. Enforced by
 `pnpm check:ca-boundary` (`scripts/check-ca-boundary.mjs`), chained into
@@ -124,13 +124,13 @@ The guard has **no allowlist entries** other than its own script path (`SELF`),
 which is required because the script contains the forbidden literals. Widening
 that allowlist (or adding scan exemptions) needs review — it is how Platform CA
 paths would leak into Organization CA code. Prefer moving a legitimate Platform
-CA reference out of `src/lib/tls/` / `src/client/tls/` over punching a hole.
+CA reference out of `src/lib/tls/` / `src/client/tls/` / `src/features/tls/` over punching a hole.
 
 ## Leaf tracking + renewal sweep
 
 Managed leaves from `issueLeafCertificate` are 90-day and used to be minted
 transiently on every `managed.apply` / `managed.ingress.reconcile`. They are now
-tracked in **`leaf`** (`src/lib/db/schema.ts` `leaf`) as successfully
+tracked in **`leaf`** (`src/db/schema.ts` `leaf`) as successfully
 **deployed** leaf state — not payload generation:
 
 | Column                    | Role                                                                          |
@@ -141,7 +141,7 @@ tracked in **`leaf`** (`src/lib/db/schema.ts` `leaf`) as successfully
 
 Re-issuance **upserts** (partial uniques `uniq_leaf_ingress_server` /
 `uniq_leaf_engine_replica` on `leaf.replica_id`) — no history. Helpers:
-`src/client/tls/leaf-tracking.ts`. Mint sites (`buildOrgTlsMaterialForServer` /
+`src/features/tls/leaf-tracking.ts`. Mint sites (`buildOrgTlsMaterialForServer` /
 `buildOrgTlsForServer`) persist freshly minted details as command metadata
 (`pendingTlsLeaf`); the command consumer upserts `leaf` only on success of
 `managed.apply` / `managed.ingress.reconcile`. Enqueue or terminal failure
@@ -174,7 +174,7 @@ progress when earlier rows keep failing.
 | Runtime | Tick                                                                                                                                                                                            | DB client                                                                  |
 | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
 | Workers | existing cron (`workers.ts` `scheduled()` → `runOfflineSweep`) piggybacks one bounded batch on the **already-open** Hyperdrive client after `runSystemReconcileSweep`                           | reuse; never a second client                                               |
-| Deno    | `startDenoServer` (`src/deno-server.ts`, covers `deno.ts` / `deno-dev.ts`) — first Deno-side scheduled surface besides cell maintain; `LEAF_RENEWAL_SWEEP_INTERVAL_MS` (5 min), overlap-guarded | **fresh** `createDenoDb()` per tick, always `endDbConnection` in `finally` |
+| Deno    | `startDenoServer` (`src/platform/deno/server.ts`, covers `deno.ts` / `deno-dev.ts`) — first Deno-side scheduled surface besides cell maintain; `LEAF_RENEWAL_SWEEP_INTERVAL_MS` (5 min), overlap-guarded | **fresh** `createDenoDb()` per tick, always `endDbConnection` in `finally` |
 
 Module: `src/client/tls/leaf-renewal-sweep.ts`. `GET /tls/ca` exposes
 `leafHealth: { dueCount, caGeneration, caNotAfter }` via one org-scoped COUNT

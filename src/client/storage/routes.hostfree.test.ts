@@ -4,11 +4,11 @@
 
 import { assertEquals } from '@std/assert'
 import { Hono } from 'hono'
-import type { AppEnv } from '../../app.ts'
-import type { Db } from '../../db.ts'
+import type { AppEnv } from '../../app/app.ts'
+import type { Db } from '../../db/connection.ts'
 import { registerStorageRoutes } from './routes.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
-import { deriveSecretsConfig } from '../authn/secrets.ts'
+import { deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.

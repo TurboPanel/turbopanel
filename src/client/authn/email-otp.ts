@@ -1,14 +1,14 @@
 import { eq } from 'drizzle-orm'
-import type { Db } from '../../db.ts'
-import { isExplicitDevelopmentMode } from '../../dev-mode.ts'
-import { verification } from '../../lib/db/schema.ts'
-import type { OtpType } from '../../lib/email/types.ts'
+import type { Db } from '../../db/connection.ts'
+import { isExplicitDevelopmentMode } from '../../app/dev-mode.ts'
+import { verification } from '../../db/schema.ts'
+import type { OtpType } from '../../features/email/types.ts'
 import {
   ENVELOPE_SCHEME_OTP,
   formatEnvelope,
   parseEnvelope,
-} from './envelope.ts'
-import { findKeyForVersion, type DerivedSecretsConfig } from './secrets.ts'
+} from '../../lib/secrets/envelope.ts'
+import { findKeyForVersion, type DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 
 export const OTP_IDENTIFIER_PREFIX = 'otp'
 export const OTP_ATTEMPTS_IDENTIFIER_PREFIX = 'otp-attempts'

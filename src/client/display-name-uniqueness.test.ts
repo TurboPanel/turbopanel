@@ -1,7 +1,7 @@
 import { assertEquals } from "@std/assert";
 import { eq, inArray } from "drizzle-orm";
-import { getDatabaseUrl } from "../db-url.ts";
-import { createDenoDb } from "../db.ts";
+import { getDatabaseUrl } from "../db/url.ts";
+import { createDenoDb } from "../db/connection.ts";
 import {
   container,
   environment,
@@ -10,9 +10,9 @@ import {
   server,
   service,
   workspace,
-} from "../lib/db/schema.ts";
-import { ensureSystemHierarchy } from "./system/hierarchy.ts";
-import type { Db } from "../db.ts";
+} from "../db/schema.ts";
+import { ensureSystemHierarchy } from "../features/system/hierarchy.ts";
+import type { Db } from "../db/connection.ts";
 import {
   isProjectDisplayNameTaken,
   isTagDisplayNameTaken,

@@ -30,7 +30,7 @@ import {
   toOrganizationRecord,
   validateManagedDefaults,
 } from "./routes-helpers.ts";
-import type { ManagedOrganizationDefaults } from "../../lib/managed/org-defaults.ts";
+import type { ManagedOrganizationDefaults } from "../../features/managed/org-defaults.ts";
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.

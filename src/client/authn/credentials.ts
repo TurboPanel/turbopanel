@@ -1,10 +1,10 @@
 import { and, eq, sql } from "drizzle-orm";
-import type { Db } from "../../db.ts";
-import { account, user } from "../../lib/db/schema.ts";
-import { isExplicitDevelopmentMode } from "../../dev-mode.ts";
+import type { Db } from "../../db/connection.ts";
+import { account, user } from "../../db/schema.ts";
+import { isExplicitDevelopmentMode } from "../../app/dev-mode.ts";
 import { isInstanceInstalled } from "./install-state.ts";
-import { verifyPassword } from "./password.ts";
-import { compatLogWarn } from "../../log-compat.ts";
+import { verifyPassword } from "../../lib/secrets/password.ts";
+import { compatLogWarn } from "../../lib/log-compat.ts";
 
 export const PAM_ROOT_USERNAME = "root";
 

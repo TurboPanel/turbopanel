@@ -1,11 +1,11 @@
 import { assertEquals } from "@std/assert";
-import type { Db } from "../../db.ts";
+import type { Db } from "../../db/connection.ts";
 import type {
   CellDiagnostics,
   DaemonCell,
   DaemonCellRegistry,
   PendingRequestRecord,
-} from "./contracts.ts";
+} from "../../contracts/cell.ts";
 import {
   broadcastEchoToFleet,
   collectFleetCellDiagnostics,

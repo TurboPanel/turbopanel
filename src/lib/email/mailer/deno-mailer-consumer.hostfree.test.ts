@@ -7,12 +7,12 @@
 import { assertEquals, assertRejects } from "@std/assert";
 import { stub } from "@std/testing/mock";
 import amqplib from "amqplib";
-import type { MailerSender, MailerSendResult } from "../sender-types.ts";
-import type { EmailJob } from "../types.ts";
+import type { MailerSender, MailerSendResult } from "../../../features/email/sender-types.ts";
+import type { EmailJob } from "../../../features/email/types.ts";
 import type {
   EmailProvider,
   ResolvedEmailSettings,
-} from "../../settings/email-settings.ts";
+} from "../../../features/settings/email-settings.ts";
 import {
   carryOverRateLimiter,
   mailerPrefetch,

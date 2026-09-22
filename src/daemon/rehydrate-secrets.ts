@@ -6,29 +6,29 @@ import {
   parseDaemonSecretEnvelope,
   parseSecretEnvelope,
   resealSecretForDaemon,
-} from "../client/authn/data-encryption.ts";
+} from "../lib/secrets/data-encryption.ts";
 import type {
   DerivedSecretsConfig,
   SecretsConfig,
-} from "../client/authn/secrets.ts";
+} from "../lib/secrets/secrets.ts";
 import {
   getServerDaemonStateByServerId,
   isDaemonKeyActive,
-} from "./authn/server-identity-db.ts";
-import { reapplyBindingOwnedVariables } from "../client/bindings/materialize.ts";
+} from "../features/servers/server-identity-db.ts";
+import { reapplyBindingOwnedVariables } from "../features/bindings/materialize.ts";
 import {
   mergeHostingVariablesForService,
   type ResolvedVariableMap,
   resolveInheritedVariablesForService,
   resolveServerScopedVariables,
-} from "../client/variables/resolve-inherited.ts";
-import type { Db } from "../db.ts";
+} from "../features/variables/resolve-inherited.ts";
+import type { Db } from "../db/connection.ts";
 import {
   type EnvironmentDeploySecretPlanEntry,
   type EnvironmentDeployVariableMaterial,
   parseDeploySecretPlan,
-} from "../lib/commands/schemas.ts";
-import { deployment, environment, service } from "../lib/db/schema.ts";
+} from "../contracts/commands/schemas.ts";
+import { deployment, environment, service } from "../db/schema.ts";
 
 export type RehydrateDeploymentRequest = {
   projectId: string;

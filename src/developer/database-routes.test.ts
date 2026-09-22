@@ -1,9 +1,9 @@
 import { assertEquals } from '@std/assert'
 import { Hono } from 'hono'
-import type { AppEnv } from '../app.ts'
-import type { Db } from '../db.ts'
-import { getDatabaseUrl } from '../db-url.ts'
-import { createDenoDb } from '../db.ts'
+import type { AppEnv } from '../app/app.ts'
+import type { Db } from '../db/connection.ts'
+import { getDatabaseUrl } from '../db/url.ts'
+import { createDenoDb } from '../db/connection.ts'
 import { registerDatabaseRoutes } from './database-routes.ts'
 import { testOnlyPostgresTcpUrl } from '../test-fixtures/database-url.ts'
 

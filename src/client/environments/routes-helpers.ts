@@ -4,7 +4,7 @@ import {
   type ComposeValidationIssue,
   isPlacementServerId,
   stripComposePlacementOption,
-} from '../../lib/compose/index.ts'
+} from '../../features/compose/index.ts'
 import {
   parseDescription,
   parseName,

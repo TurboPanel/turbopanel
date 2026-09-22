@@ -1,9 +1,9 @@
 import { assertEquals } from "@std/assert";
 import { and, eq } from "drizzle-orm";
 import { Hono } from "hono";
-import type { AppEnv } from "../../app.ts";
-import { getDatabaseUrl } from "../../db-url.ts";
-import { createDenoDb } from "../../db.ts";
+import type { AppEnv } from "../../app/app.ts";
+import { getDatabaseUrl } from "../../db/url.ts";
+import { createDenoDb } from "../../db/connection.ts";
 import {
   buildSignedCookie,
   HTTP_SESSION_COOKIE_NAME,
@@ -13,8 +13,8 @@ import {
   deriveEncryptionSecretsConfig,
   deriveSecretsConfig,
   type SecretsConfig,
-} from "../authn/secrets.ts";
-import { decryptSecret, encryptSecret } from "../authn/data-encryption.ts";
+} from "../../lib/secrets/secrets.ts";
+import { decryptSecret, encryptSecret } from "../../lib/secrets/data-encryption.ts";
 import { computePublicKeyFingerprint } from "../../daemon/authn/server-key.ts";
 import {
   binding,
@@ -29,7 +29,7 @@ import {
   user,
   variable,
   workspace,
-} from "../../lib/db/schema.ts";
+} from "../../db/schema.ts";
 import { ORG_ID_HEADER } from "../org-context.ts";
 import { registerVariableRoutes } from "./routes.ts";
 import { parseTestSecretsConfig } from "../../test-fixtures/secrets.ts";

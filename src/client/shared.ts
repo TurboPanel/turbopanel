@@ -1,5 +1,5 @@
 import type { Context } from "hono";
-import { getDb } from "../db.ts";
+import { getDb } from "../db/connection.ts";
 import {
   isValidDescription,
   isValidDisplayName,
@@ -7,35 +7,24 @@ import {
 } from "../lib/display-name-format.ts";
 import { can } from "./authz/index.ts";
 import { resolveOrgId } from "./org-context.ts";
+import {
+  BadRequestError,
+  parseName,
+  requireStringField,
+} from "../lib/http/request-fields.ts";
+
+export { BadRequestError, parseName, requireStringField };
 
 export {
   assertNotSystemOwnedOr403,
   SYSTEM_RESOURCE_IMMUTABLE_ERROR,
 } from "./authz/http.ts";
 
-export class BadRequestError extends Error {}
-
 export function getOrgId(
   c: Context,
   userId: string,
 ): Promise<string | Response> {
   return resolveOrgId(c, userId);
-}
-
-/** Parse resource name from the wire body (`name` only). */
-export function parseName(body: Record<string, unknown>): string | null {
-  const raw = body.name;
-  if (raw === undefined) {
-    return null;
-  }
-  if (typeof raw !== "string") {
-    throw new BadRequestError("Invalid request");
-  }
-  const name = normalizeDisplayName(raw);
-  if (!isValidDisplayName(name)) {
-    throw new BadRequestError("Invalid request");
-  }
-  return name;
 }
 
 export function parseDescription(body: Record<string, unknown>): string | null {
@@ -196,16 +185,4 @@ export async function parseJsonBody(
     return c.json({ error: "Invalid request" }, 400);
   }
   return body as Record<string, unknown>;
-}
-
-export function requireStringField(
-  c: Context,
-  body: Record<string, unknown>,
-  field: string,
-): string | Response {
-  const value = body[field];
-  if (typeof value !== "string" || !value) {
-    return c.json({ error: "Invalid request" }, 400);
-  }
-  return value;
 }

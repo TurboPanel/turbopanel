@@ -1,6 +1,6 @@
 import { assertEquals, assertRejects } from '@std/assert'
 import { Hono } from 'hono'
-import type { Db } from '../db.ts'
+import type { Db } from '../db/connection.ts'
 import {
   HIERARCHY_DELETE_HAS_CHILDREN_ERROR,
   hierarchyDeleteHasChildrenResponse,

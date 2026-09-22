@@ -44,25 +44,25 @@
 
 import type { Context } from "hono";
 import { and, eq, inArray } from "drizzle-orm";
-import type { AppEnv } from "../../app.ts";
-import type { Db } from "../../db.ts";
+import type { AppEnv } from "../../app/app.ts";
+import type { Db } from "../../db/connection.ts";
 import {
   encryptSecretForDaemon,
   isDaemonSealedEnvelope,
   isSealedEnvelope,
   resealSecretForDaemon,
-} from "../authn/data-encryption.ts";
+} from "../../lib/secrets/data-encryption.ts";
 import {
   getServerDaemonStateByServerId,
   isDaemonKeyActive,
-} from "../../daemon/authn/server-identity-db.ts";
+} from "../../features/servers/server-identity-db.ts";
 import {
   isGitProviderFailure,
   resolveGitProvider,
-} from "../../lib/git/git-provider.ts";
-import type { ResolvedSourceCommit } from "../../lib/git/git-provider.ts";
-import { isSshCloneUrl } from "../../lib/git/clone-url.ts";
-import { newCorrelationId } from "../../lib/commands/ids.ts";
+} from "../../features/git/git-provider.ts";
+import type { ResolvedSourceCommit } from "../../features/git/git-provider.ts";
+import { isSshCloneUrl } from "../../features/git/clone-url.ts";
+import { newCorrelationId } from "../../features/commands/ids.ts";
 import { definedFields } from "../../lib/optional-fields.ts";
 import {
   type ComposeServiceKind,
@@ -70,15 +70,15 @@ import {
   isHostNativeServiceKind,
   type NodePackageManager,
   readServiceTurbopanelExtension,
-} from "../../lib/compose/index.ts";
+} from "../../features/compose/index.ts";
 import type {
   EnvironmentDeployPrincipalMaterial,
   EnvironmentDeploySource,
   EnvironmentDeploySourceBuild,
   EnvironmentDeploySourceCredentialKind,
   EnvironmentDeploySitePrincipal,
-} from "../../lib/commands/schemas.ts";
-import { secret, repository } from "../../lib/db/schema.ts";
+} from "../../contracts/commands/schemas.ts";
+import { secret, repository } from "../../db/schema.ts";
 import {
   type ComposePrincipalResolution,
   loadPrincipalIdsByServiceIdForEnvironment,
@@ -282,7 +282,7 @@ function collectSourceBindings(
 }
 
 /**
- * Clone-URL and commit-metadata helpers moved to `src/lib/git/clone-url.ts`
+ * Clone-URL and commit-metadata helpers moved to `src/features/git/clone-url.ts`
  * when the second provider needed them too. Re-exported under their original
  * names: they are part of this module's tested surface, and every caller
  * already reaches for them here.
@@ -291,11 +291,11 @@ export { isSshCloneUrl };
 export {
   commitSubject,
   parseRepositoryOwnerRepo as parseGithubRepositoryPath,
-} from "../../lib/git/clone-url.ts";
+} from "../../features/git/clone-url.ts";
 
 /**
  * Commit metadata the release surface renders, as resolved from the provider.
- * Defined with the provider interface in `src/lib/git/git-provider.ts` and
+ * Defined with the provider interface in `src/features/git/git-provider.ts` and
  * re-exported here for the readers that already import it from prepare.
  */
 export type { ResolvedSourceCommit };

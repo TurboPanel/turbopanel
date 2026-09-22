@@ -17,8 +17,8 @@ import { assertEquals, assertRejects } from "@std/assert";
 import {
   STRIPE_CUSTOMER_ORGANIZATION_METADATA_KEY,
   STRIPE_CUSTOMER_USER_METADATA_KEY,
-} from "../../lib/billing/customer-subject.ts";
-import { StripeApiError } from "../../lib/billing/errors.ts";
+} from "../../features/billing/customer-subject.ts";
+import { StripeApiError } from "../../features/billing/errors.ts";
 import {
   allowance,
   key,
@@ -30,7 +30,7 @@ import {
   subscription,
   subscriptionItem,
   tier,
-} from "../../lib/db/schema.ts";
+} from "../../db/schema.ts";
 import {
   createMemoryDb,
   type MemoryDb,
@@ -49,7 +49,7 @@ import {
   newPendingCheckoutRecord,
   readPendingCheckout,
   writePendingCheckout,
-} from "../../lib/billing/pending-checkout.ts";
+} from "../../features/billing/pending-checkout.ts";
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
