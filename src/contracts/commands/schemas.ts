@@ -679,6 +679,27 @@ function requireFirewallEnum(
   return value;
 }
 
+function assignFirewallRulePortRange(
+  ports: string,
+  rule: FirewallCommandRule,
+  index: number,
+): void {
+  const range = parseFirewallPortRange(ports);
+  if (!range) {
+    throw new Error(
+      `rules[${index}].ports must be a port or an ascending range 1-65535`,
+    );
+  }
+  if (rule.proto === "any") {
+    throw new Error(`rules[${index}].ports requires proto tcp or udp`);
+  }
+  if (range.from === range.to) {
+    rule.ports = String(range.from);
+    return;
+  }
+  rule.ports = `${range.from}-${range.to}`;
+}
+
 function applyFirewallRulePorts(
   value: Record<string, unknown>,
   rule: FirewallCommandRule,
@@ -688,20 +709,7 @@ function applyFirewallRulePorts(
     if (!isString(value.ports)) {
       throw new TypeError(`rules[${index}].ports must be a string`);
     }
-    const range = parseFirewallPortRange(value.ports);
-    if (!range) {
-      throw new Error(
-        `rules[${index}].ports must be a port or an ascending range 1-65535`,
-      );
-    }
-    if (rule.proto === "any") {
-      throw new Error(`rules[${index}].ports requires proto tcp or udp`);
-    }
-    if (range.from === range.to) {
-      rule.ports = String(range.from);
-      return;
-    }
-    rule.ports = `${range.from}-${range.to}`;
+    assignFirewallRulePortRange(value.ports, rule, index);
     return;
   }
   if (rule.action === "accept") {
@@ -744,7 +752,7 @@ function applyFirewallRuleComment(
 
 function parseFirewallRule(value: unknown, index: number): FirewallCommandRule {
   if (!isRecord(value)) {
-    throw new Error(`rules[${index}] must be an object`);
+    throw new TypeError(`rules[${index}] must be an object`);
   }
   if (!isString(value.id) || !FIREWALL_RULE_ID_RE.test(value.id)) {
     throw new Error(`rules[${index}].id must match ${FIREWALL_RULE_ID_RE}`);
@@ -817,7 +825,7 @@ function requireNonNegativeInt(value: unknown, field: string): number {
 
 function parseFirewallCommandPolicy(value: unknown): FirewallCommandPolicy {
   if (!isRecord(value)) {
-    throw new Error("policy must be an object");
+    throw new TypeError("policy must be an object");
   }
   if (
     value.inputDefault !== "accept" &&
@@ -873,9 +881,17 @@ export function parseFirewallReconcilePayload(
     policy: parseFirewallCommandPolicy(value.policy),
     rules,
   };
+  applyOptionalFirewallReconcileExtras(value, payload);
+  return payload;
+}
+
+function applyOptionalFirewallReconcileExtras(
+  value: Record<string, unknown>,
+  payload: FirewallReconcileCommandPayload,
+): void {
   if (value.controlPlane !== undefined) {
     if (!isRecord(value.controlPlane)) {
-      throw new Error("controlPlane must be an object");
+      throw new TypeError("controlPlane must be an object");
     }
     payload.controlPlane = {
       tcpPorts: parseFirewallPortList(
@@ -887,7 +903,6 @@ export function parseFirewallReconcilePayload(
   if (value.sshPorts !== undefined) {
     payload.sshPorts = parseFirewallPortList(value.sshPorts, "sshPorts");
   }
-  return payload;
 }
 
 export function parseFirewallReconcileResult(

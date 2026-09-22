@@ -279,6 +279,47 @@ function snapshotFromMetaRow(
   };
 }
 
+/** Merge cell-row base with live runtime when Postgres has no daemon state. */
+function snapshotFromRuntimeOnly(
+  base: DaemonCellSnapshot,
+  runtime: DaemonCellSnapshot,
+): DaemonCellSnapshot {
+  return {
+    ...base,
+    connected: runtime.connected,
+    connectedAt: runtime.connectedAt,
+    lastInboundAt: runtime.lastInboundAt,
+    lastSeenAt: runtime.lastSeenAt,
+    daemonBuild: runtime.daemonBuild,
+    remoteAddress: base.remoteAddress ?? runtime.remoteAddress,
+  };
+}
+
+/** Merge cell-row base with Postgres daemon state + live runtime presence. */
+function snapshotFromDaemonState(
+  base: DaemonCellSnapshot,
+  runtime: DaemonCellSnapshot,
+  daemonState: NonNullable<
+    Awaited<ReturnType<typeof getServerDaemonStateByServerId>>
+  >,
+  daemonBuild: DaemonCellSnapshot["daemonBuild"],
+): DaemonCellSnapshot {
+  const status = daemonState.status;
+  const projected: DaemonCellSnapshot = {
+    ...base,
+    connected: status?.connected ?? base.connected,
+    lastInboundAt: runtime.lastInboundAt,
+    lastSeenAt: runtime.lastSeenAt,
+    daemonBuild,
+    remoteAddress: base.remoteAddress ??
+      daemonState.projection?.remoteAddress,
+  };
+  if (status?.connected) {
+    projected.connectedAt = status.statusChangedAt ?? undefined;
+  }
+  return mergeSnapshotPresence(projected, runtime);
+}
+
 function parseRequestRow(
   serverId: string,
   row: Record<string, SqlStorageValue>,
@@ -1477,42 +1518,50 @@ export class DaemonCellObject {
     if (batch.length === 0) return;
 
     for (const ws of sockets) {
-      const attachment = ws.deserializeAttachment() as {
-        connectionId: string;
-        serverId: string;
-      } | null;
-      if (attachment?.serverId !== serverId) continue;
-
-      for (const envelope of batch) {
-        try {
-          const wireMsg = outboundEnvelopeToWireMessage(envelope);
-          this.#trace("outbox-send", {
-            serverId,
-            conn: attachment.connectionId,
-            deliveryId: envelope.deliveryId,
-            requestId: envelope.requestId,
-            kind: envelope.kind,
-          });
-          if (forceOutboxSendErrorForTests) {
-            throw forceOutboxSendErrorForTests;
-          }
-          ws.send(JSON.stringify(wireMsg));
-          this.#markSent(
-            serverId,
-            envelope.deliveryId,
-            attachment.connectionId,
-          );
-          await this.#ackOutbox(serverId, [envelope.deliveryId]);
-        } catch {
-          this.#requeueOutbox(envelope.deliveryId);
-        }
-      }
+      await this.#deliverOutboxBatchToSocket(serverId, ws, batch);
     }
 
     if (this.#hasDeliverableOutbox()) {
       await this.#scheduleOutboxRetryIfNeeded();
     } else {
       await this.#scheduleNearestAlarm();
+    }
+  }
+
+  async #deliverOutboxBatchToSocket(
+    serverId: string,
+    ws: WebSocket,
+    batch: DaemonOutboundEnvelope[],
+  ): Promise<void> {
+    const attachment = ws.deserializeAttachment() as {
+      connectionId: string;
+      serverId: string;
+    } | null;
+    if (attachment?.serverId !== serverId) return;
+
+    for (const envelope of batch) {
+      try {
+        const wireMsg = outboundEnvelopeToWireMessage(envelope);
+        this.#trace("outbox-send", {
+          serverId,
+          conn: attachment.connectionId,
+          deliveryId: envelope.deliveryId,
+          requestId: envelope.requestId,
+          kind: envelope.kind,
+        });
+        if (forceOutboxSendErrorForTests) {
+          throw forceOutboxSendErrorForTests;
+        }
+        ws.send(JSON.stringify(wireMsg));
+        this.#markSent(
+          serverId,
+          envelope.deliveryId,
+          attachment.connectionId,
+        );
+        await this.#ackOutbox(serverId, [envelope.deliveryId]);
+      } catch {
+        this.#requeueOutbox(envelope.deliveryId);
+      }
     }
   }
 
@@ -2406,33 +2455,15 @@ export class DaemonCellObject {
     );
     const runtime = this.#buildRuntimeSnapshot(serverId);
     if (!daemonState) {
-      return {
-        ...base,
-        connected: runtime.connected,
-        connectedAt: runtime.connectedAt,
-        lastInboundAt: runtime.lastInboundAt,
-        lastSeenAt: runtime.lastSeenAt,
-        daemonBuild: runtime.daemonBuild,
-        remoteAddress: base.remoteAddress ?? runtime.remoteAddress,
-      };
+      return snapshotFromRuntimeOnly(base, runtime);
     }
 
-    const status = daemonState.status;
-    const projected: DaemonCellSnapshot = {
-      ...base,
-      connected: status?.connected ?? base.connected,
-      lastInboundAt: runtime.lastInboundAt,
-      lastSeenAt: runtime.lastSeenAt,
-      daemonBuild: this.#daemonBuildFromProjection(
-        daemonState.projection?.daemonBuild,
-      ),
-      remoteAddress: base.remoteAddress ??
-        daemonState.projection?.remoteAddress,
-    };
-    if (status?.connected) {
-      projected.connectedAt = status.statusChangedAt ?? undefined;
-    }
-    return mergeSnapshotPresence(projected, runtime);
+    return snapshotFromDaemonState(
+      base,
+      runtime,
+      daemonState,
+      this.#daemonBuildFromProjection(daemonState.projection?.daemonBuild),
+    );
   }
 
   async #putSnapshot(

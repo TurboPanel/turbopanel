@@ -36,7 +36,47 @@ import {
   parseOptionalHostingOptions,
   resolveOptionalHostingFks,
   type HostingFkResult,
+  type HostingPatchFields,
 } from "./routes-helpers.ts";
+
+function hostnamesPatchFromFields(
+  patchFields: HostingPatchFields,
+): string[] | null {
+  // `patchFields.options` is only set when the request body included
+  // `options` (see `buildHostingPatchFields`) — that is the only signal
+  // hostnames changed, since `options` replaces the whole jsonb object.
+  if (patchFields.options === undefined) return null;
+  return (patchFields.options as { hostnames?: string[] }).hostnames ?? [];
+}
+
+async function commitHostingPatch(
+  c: Context<AppEnv>,
+  db: Db,
+  id: string,
+  organizationId: string,
+  patchFields: HostingPatchFields,
+  hostnamesPatch: string[] | null,
+): Promise<Response | null> {
+  try {
+    await db.transaction(async (tx) => {
+      await tx
+        .update(hosting)
+        .set(patchFields)
+        .where(eq(hosting.id, id));
+      if (hostnamesPatch !== null) {
+        // `organizationId` was already checked equal to this hosting's
+        // resolved workspace-ancestry organization above.
+        await replaceHostingHostnames(tx, id, organizationId, hostnamesPatch);
+      }
+    });
+  } catch (err) {
+    if (isHostnameUniqueViolation(err)) {
+      return c.json({ error: "hostname_in_use" }, 409);
+    }
+    throw err;
+  }
+  return null;
+}
 
 function parseHostingCreatePayload(
   c: Context<AppEnv>,
@@ -337,31 +377,15 @@ export function registerHostingRoutes(
     );
     if (scopeDenied) return scopeDenied;
 
-    // `patchFields.options` is only set when the request body included
-    // `options` (see `buildHostingPatchFields`) — that is the only signal
-    // hostnames changed, since `options` replaces the whole jsonb object.
-    const hostnamesPatch = patchFields.options !== undefined
-      ? (patchFields.options as { hostnames?: string[] }).hostnames ?? []
-      : null;
-
-    try {
-      await db.transaction(async (tx) => {
-        await tx
-          .update(hosting)
-          .set(patchFields)
-          .where(eq(hosting.id, id));
-        if (hostnamesPatch !== null) {
-          // `organizationId` was already checked equal to this hosting's
-          // resolved workspace-ancestry organization above.
-          await replaceHostingHostnames(tx, id, organizationId, hostnamesPatch);
-        }
-      });
-    } catch (err) {
-      if (isHostnameUniqueViolation(err)) {
-        return c.json({ error: "hostname_in_use" }, 409);
-      }
-      throw err;
-    }
+    const conflict = await commitHostingPatch(
+      c,
+      db,
+      id,
+      organizationId,
+      patchFields,
+      hostnamesPatchFromFields(patchFields),
+    );
+    if (conflict) return conflict;
 
     return c.json({ ok: true as const });
   });

@@ -220,8 +220,7 @@ function deliverableHere(
   channel: NotificationChannelRecord | null,
   deps: EmitDeps,
 ): channel is NotificationChannelRecord {
-  if (channel == null) return false;
-  if (channel.disabledAt !== null) return false;
+  if (channel?.disabledAt !== null) return false;
   if (channel.kind === "push") return false;
   // An email address is delivered to only once it is known to be the
   // recipient's (decided 2026-09-18): the route sets `verified_at` when the
