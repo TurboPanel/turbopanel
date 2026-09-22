@@ -315,9 +315,12 @@ afterEach(async () => {
   setForceOutboxSendErrorForTests(null)
   setForceAlarmErrorForTests(null)
   setForceAutoResponseAgeMsForTests(null)
-  // Attach/disconnect projections run in ctx.waitUntil — give them a tick to
-  // finish on the noop client before the next test reuses the DO isolate.
-  await new Promise((resolve) => setTimeout(resolve, 50))
+  // Drop the projection factory immediately so a prior test's ws.close()
+  // waitUntil disconnect cannot increment the next test's factory counter.
+  useNoopProjectionDb()
+  // Attach/disconnect projections run in ctx.waitUntil — cover the 300ms
+  // heartbeat sleeps some tests use before close.
+  await new Promise((resolve) => setTimeout(resolve, 350))
 })
 
 /**
@@ -834,7 +837,9 @@ describe('DaemonCellObject diagnostics', () => {
   }, 10_000)
 })
 
-describe('DaemonCellObject', () => {
+// Global projectionDbFactoryForTests is process-wide; parallel tests that
+// count factory invocations race with other tests' attach/disconnect waitUntil.
+describe.sequential('DaemonCellObject', () => {
   it('projects connect to Postgres after websocket attach', async () => {
     const serverId = 'test-srv-proj-connect'
     const { db, updateCalls } = createProjectionRecordingDb({
