@@ -15,6 +15,7 @@ import {
   deriveEncryptionSecretsConfig,
   deriveSecretsConfig,
 } from '../../lib/secrets/secrets.ts'
+import { encryptSecret } from '../../lib/secrets/data-encryption.ts'
 import type { DaemonCellRegistry } from '../../contracts/cell.ts'
 import type { Db } from '../../db/connection.ts'
 import { GithubAppTokenError } from '../../features/git/github-app-token.ts'
@@ -578,6 +579,28 @@ test('finishGitlabOauthCallback rejects the wrong provider and maps invalid cred
     invalidCredentials.headers.get('Location'),
     providerInstallUiReturnPath(ORG_ID, APP_ID, { error: 'provider_failed' }),
   )
+
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (() => Promise.reject('provider unavailable')) as typeof fetch
+  try {
+    const providerFailure = await finishGitlabOauthCallback(
+      mockContext(),
+      selectLimitDb([{
+        ...forgeRow,
+        envelopes: {
+          clientSecretEnvelope: await encryptSecret(secrets, 'client-secret'),
+        },
+      }]),
+      secrets,
+      params,
+    )
+    assertEquals(
+      providerFailure.headers.get('Location'),
+      providerInstallUiReturnPath(ORG_ID, APP_ID, { error: 'provider_failed' }),
+    )
+  } finally {
+    globalThis.fetch = originalFetch
+  }
 })
 
 test('resolveSourceWebhookInfo is undefined for generic git and otherwise folds reachability', async () => {
