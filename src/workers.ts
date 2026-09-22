@@ -38,13 +38,9 @@ import {
 } from "./features/commands/consumer.ts";
 import { parseCommandEnvelope } from "./features/commands/envelope.ts";
 import { setRevokeBoundDaemonKey } from "./features/licenses/revoke-bound-daemon-key.ts";
-import { setManagedHaRecoveryHooks } from "./platform/ports/managed-ha-recovery.ts";
-import { setLoadServerStatusRecords } from "./platform/ports/load-server-status.ts";
-import { setResolveFleetPresence } from "./platform/ports/fleet-presence.ts";
+import { registerCommandRuntimePorts } from "./platform/ports/register-command-runtime-ports.ts";
 import { loadServerStatusRecords } from "./client/servers/update-status.ts";
 import { resolveFleetPresence } from "./daemon/cell/server-status.ts";
-import type { DaemonCellRegistry } from "./contracts/cell.ts";
-import type { ManagedEngineCode } from "./features/managed/types.ts";
 import {
   fencePhaseFromCommandMetadata,
   onFenceCommandFailed,
@@ -201,38 +197,16 @@ function createLazyWorkersEmailQueue(
 
 async function initWorkerApp(env: CloudflareBindings) {
   setRevokeBoundDaemonKey(revokeDaemonKey)
-  // Port signatures stay boundary-safe (`engine: string`, `registry: unknown`);
-  // the composition root narrows when wiring the concrete feature/daemon impls.
-  setManagedHaRecoveryHooks({
+  registerCommandRuntimePorts({
     fencePhaseFromCommandMetadata,
     recoveryIdFromCommandMetadata,
-    onFenceCommandSucceeded: (db, commandQueue, params) =>
-      onFenceCommandSucceeded(db, commandQueue, {
-        ...params,
-        engine: params.engine as ManagedEngineCode,
-      }),
-    onFenceCommandFailed: (db, commandQueue, params) =>
-      onFenceCommandFailed(db, commandQueue, {
-        ...params,
-        engine: params.engine as ManagedEngineCode,
-      }),
+    onFenceCommandSucceeded,
+    onFenceCommandFailed,
     onPromoteSucceeded,
     onRecoveryCommandFailed,
+    loadServerStatusRecords,
+    resolveFleetPresence,
   })
-  setLoadServerStatusRecords((db, registry, serverIds) =>
-    loadServerStatusRecords(
-      db,
-      registry as DaemonCellRegistry | undefined,
-      serverIds,
-    )
-  )
-  setResolveFleetPresence((db, registry, serverIds) =>
-    resolveFleetPresence(
-      db,
-      registry as DaemonCellRegistry | undefined,
-      serverIds,
-    )
-  )
   const secretsConfig = parseSecretsFromEnv(
     {
       TURBOPANEL_SECRET: env.TURBOPANEL_SECRET,
