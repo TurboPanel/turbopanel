@@ -27,8 +27,7 @@ import {
   canManageOrganization,
 } from "../authz/index.ts";
 import { getPermissionCatalog } from "../authz/catalog.ts";
-import type { Db } from "../../db/connection.ts";
-import { getDb } from "../../db/connection.ts";
+import { getDb, type Db } from "../../db/connection.ts";
 import { grant, invitation, team, teammate } from "../../db/schema.ts";
 import { getOrgId } from "../shared.ts";
 import {
