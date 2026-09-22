@@ -43,6 +43,8 @@ import { setLoadServerStatusRecords } from "./platform/ports/load-server-status.
 import { setResolveFleetPresence } from "./platform/ports/fleet-presence.ts";
 import { loadServerStatusRecords } from "./client/servers/update-status.ts";
 import { resolveFleetPresence } from "./daemon/cell/server-status.ts";
+import type { DaemonCellRegistry } from "./contracts/cell.ts";
+import type { ManagedEngineCode } from "./features/managed/types.ts";
 import {
   fencePhaseFromCommandMetadata,
   onFenceCommandFailed,
@@ -199,16 +201,38 @@ function createLazyWorkersEmailQueue(
 
 async function initWorkerApp(env: CloudflareBindings) {
   setRevokeBoundDaemonKey(revokeDaemonKey)
+  // Port signatures stay boundary-safe (`engine: string`, `registry: unknown`);
+  // the composition root narrows when wiring the concrete feature/daemon impls.
   setManagedHaRecoveryHooks({
     fencePhaseFromCommandMetadata,
     recoveryIdFromCommandMetadata,
-    onFenceCommandSucceeded,
-    onFenceCommandFailed,
+    onFenceCommandSucceeded: (db, commandQueue, params) =>
+      onFenceCommandSucceeded(db, commandQueue, {
+        ...params,
+        engine: params.engine as ManagedEngineCode,
+      }),
+    onFenceCommandFailed: (db, commandQueue, params) =>
+      onFenceCommandFailed(db, commandQueue, {
+        ...params,
+        engine: params.engine as ManagedEngineCode,
+      }),
     onPromoteSucceeded,
     onRecoveryCommandFailed,
   })
-  setLoadServerStatusRecords(loadServerStatusRecords)
-  setResolveFleetPresence(resolveFleetPresence)
+  setLoadServerStatusRecords((db, registry, serverIds) =>
+    loadServerStatusRecords(
+      db,
+      registry as DaemonCellRegistry | undefined,
+      serverIds,
+    )
+  )
+  setResolveFleetPresence((db, registry, serverIds) =>
+    resolveFleetPresence(
+      db,
+      registry as DaemonCellRegistry | undefined,
+      serverIds,
+    )
+  )
   const secretsConfig = parseSecretsFromEnv(
     {
       TURBOPANEL_SECRET: env.TURBOPANEL_SECRET,
