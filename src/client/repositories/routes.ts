@@ -713,105 +713,6 @@ async function persistGithubGitConnection(
   }
 }
 
-/**
- * After state + org authorization succeed: load the App, prove the installer,
- * persist the connection, and redirect into the console.
- */
-async function finishGithubInstallCallback(
-  c: Context<AppEnv>,
-  db: Db,
-  dataEncryptionSecrets: DerivedSecretsConfig,
-  params: {
-    organizationId: string
-    forgeId: string
-    externalInstallationId: string
-    code: string
-  },
-): Promise<Response> {
-  const { organizationId, forgeId, externalInstallationId, code } = params
-  // The app comes from the signed state, not from a query param on the
-  // provider's redirect — the callback URL is one GitHub controls.
-  const app = await loadForge(db, dataEncryptionSecrets, forgeId)
-  if (app?.provider !== 'github' || !app.privateKeyPem) {
-    return providerCallbackFail(c, organizationId, 'not_configured', forgeId)
-  }
-
-  const claimed = await assertConnectionUnclaimed(c, db, {
-    forgeId: app.id,
-    externalInstallationId,
-    provider: 'github',
-    organizationId,
-  })
-  if (claimed) return providerCallbackFail(c, organizationId, 'claimed', app.id)
-
-  // Proof of approval, before the App's key is used for anything: the
-  // GitHub user who came back must be able to see this installation.
-  const unauthorized = await proveGithubInstallUser(c, app, {
-    code,
-    externalInstallationId,
-    organizationId,
-  })
-  if (unauthorized) return unauthorized
-
-  const account = await lookupGithubInstallAccount(
-    c,
-    app,
-    app.privateKeyPem,
-    externalInstallationId,
-    organizationId,
-  )
-  if (account instanceof Response) return account
-
-  const row = await persistGithubGitConnection(c, db, {
-    organizationId,
-    appId: app.id,
-    externalInstallationId,
-    accountLogin: account.accountLogin,
-    accountType: account.accountType,
-  })
-  if (row instanceof Response) return row
-
-  return redirectToForgeUi(c, organizationId, app.id, {
-    installed: row.id,
-  })
-}
-
-async function exchangeGitlabConnectAccount(
-  c: Context<AppEnv>,
-  app: Forge,
-  params: { code: string; redirectUri: string; organizationId: string },
-): Promise<
-  | {
-    credentials: ReturnType<typeof gitlabOauthCredentials>
-    pair: Awaited<ReturnType<typeof exchangeGitlabAuthorizationCode>>
-    account: Awaited<ReturnType<typeof fetchGitlabAccount>>
-  }
-  | Response
-> {
-  try {
-    const credentials = gitlabOauthCredentials(app)
-    const pair = await exchangeGitlabAuthorizationCode(credentials, {
-      code: params.code,
-      redirectUri: params.redirectUri,
-    })
-    const account = await fetchGitlabAccount(app.baseUrl, pair.token)
-    return { credentials, pair, account }
-  } catch (error) {
-    logWarn(
-      'git-sources',
-      `gitlab connect failed: ${
-        error instanceof Error ? error.message : 'unknown error'
-      }`,
-    )
-    return providerCallbackFail(
-      c,
-      params.organizationId,
-      'provider_failed',
-      app.id,
-    )
-  }
-}
-
 async function finishGitlabOauthCallback(
   c: Context<AppEnv>,
   db: Db,
@@ -833,13 +734,30 @@ async function finishGitlabOauthCallback(
     return providerCallbackFail(c, organizationId, 'not_configured', app.id)
   }
 
-  const exchanged = await exchangeGitlabConnectAccount(c, app, {
-    code,
-    redirectUri,
-    organizationId,
-  })
-  if (exchanged instanceof Response) return exchanged
-  const { credentials, pair, account } = exchanged
+  let credentials
+  let pair
+  let account
+  try {
+    credentials = gitlabOauthCredentials(app)
+    pair = await exchangeGitlabAuthorizationCode(credentials, {
+      code,
+      redirectUri,
+    })
+    account = await fetchGitlabAccount(app.baseUrl, pair.token)
+  } catch (error) {
+    logWarn(
+      'git-sources',
+      `gitlab connect failed: ${
+        error instanceof Error ? error.message : 'unknown error'
+      }`,
+    )
+    return providerCallbackFail(
+      c,
+      organizationId,
+      'provider_failed',
+      app.id,
+    )
+  }
 
   // GitLab's own account id is the stable handle for the connection. When the
   // API declined to answer it, the row still has to be addressable and unique
@@ -1247,11 +1165,50 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
     const organizationId = claims.organizationId
     if (!dataEncryptionSecrets) return providerCallbackFail(c,organizationId, 'unavailable', claims.forgeId)
 
-    return await finishGithubInstallCallback(c, db, dataEncryptionSecrets, {
-      organizationId,
-      forgeId: claims.forgeId,
+    // The app comes from the signed state, not from a query param on the
+    // provider's redirect — the callback URL is one GitHub controls.
+    const app = await loadForge(db, dataEncryptionSecrets, claims.forgeId)
+    if (app?.provider !== 'github' || !app.privateKeyPem) {
+      return providerCallbackFail(c,organizationId, 'not_configured', claims.forgeId)
+    }
+
+    const claimed = await assertConnectionUnclaimed(c, db, {
+      forgeId: app.id,
       externalInstallationId,
+      provider: 'github',
+      organizationId,
+    })
+    if (claimed) return providerCallbackFail(c,organizationId, 'claimed', app.id)
+
+    // Proof of approval, before the App's key is used for anything: the
+    // GitHub user who came back must be able to see this installation.
+    const unauthorized = await proveGithubInstallUser(c, app, {
       code,
+      externalInstallationId,
+      organizationId,
+    })
+    if (unauthorized) return unauthorized
+
+    const account = await lookupGithubInstallAccount(
+      c,
+      app,
+      app.privateKeyPem,
+      externalInstallationId,
+      organizationId,
+    )
+    if (account instanceof Response) return account
+
+    const row = await persistGithubGitConnection(c, db, {
+      organizationId,
+      appId: app.id,
+      externalInstallationId,
+      accountLogin: account.accountLogin,
+      accountType: account.accountType,
+    })
+    if (row instanceof Response) return row
+
+    return redirectToForgeUi(c, organizationId, app.id, {
+      installed: row.id,
     })
   })
 
