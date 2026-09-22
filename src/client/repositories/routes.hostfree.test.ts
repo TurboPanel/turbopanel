@@ -557,6 +557,17 @@ test('finishGitlabOauthCallback rejects the wrong provider and maps invalid cred
     providerInstallUiReturnPath(ORG_ID, APP_ID, { error: 'not_configured' }),
   )
 
+  const missingRedirect = await finishGitlabOauthCallback(
+    mockContext(),
+    selectLimitSequence([[{ ...forgeRow, redirectUri: null }], []]),
+    secrets,
+    params,
+  )
+  assertEquals(
+    missingRedirect.headers.get('Location'),
+    providerInstallUiReturnPath(ORG_ID, APP_ID, { error: 'not_configured' }),
+  )
+
   const invalidCredentials = await finishGitlabOauthCallback(
     mockContext(),
     selectLimitDb([forgeRow]),
