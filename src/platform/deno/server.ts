@@ -120,6 +120,7 @@ import { setRevokeBoundDaemonKey } from '../../features/licenses/revoke-bound-da
 import { setManagedHaRecoveryHooks } from '../ports/managed-ha-recovery.ts'
 import { setLoadServerStatusRecords } from '../ports/load-server-status.ts'
 import { setResolveFleetPresence } from '../ports/fleet-presence.ts'
+import { registerCommandRuntimePorts } from '../ports/register-command-runtime-ports.ts'
 import { loadServerStatusRecords } from '../../client/servers/update-status.ts'
 import { resolveFleetPresence } from '../../daemon/cell/server-status.ts'
 import { revokeDaemonKey } from '../../features/servers/server-identity-db.ts'
@@ -308,19 +309,19 @@ async function sweepStaleCommandsPhase(db: Db): Promise<void> {
 
 export async function startDenoServer(options: StartDenoServerOptions = {}): Promise<void> {
   setHostIpv4Discovery(() =>
-    preferredIpv4FromIps(collectServerIps(readDefaultRouteInterfaces()))
+    preferredIpv4FromIps(collectServerIps(readDefaultRouteInterfaces())) ?? null
   )
   setRevokeBoundDaemonKey(revokeDaemonKey)
-  setManagedHaRecoveryHooks({
+  registerCommandRuntimePorts({
     fencePhaseFromCommandMetadata,
     recoveryIdFromCommandMetadata,
     onFenceCommandSucceeded,
     onFenceCommandFailed,
     onPromoteSucceeded,
     onRecoveryCommandFailed,
+    loadServerStatusRecords,
+    resolveFleetPresence,
   })
-  setLoadServerStatusRecords(loadServerStatusRecords)
-  setResolveFleetPresence(resolveFleetPresence)
   setDenoExecutionLogStoreFactories({
     filesystem: (directory) => new FilesystemExecutionLogStore(directory),
     s3: (config) => new S3ExecutionLogStore(config),

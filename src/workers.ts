@@ -38,9 +38,7 @@ import {
 } from "./features/commands/consumer.ts";
 import { parseCommandEnvelope } from "./features/commands/envelope.ts";
 import { setRevokeBoundDaemonKey } from "./features/licenses/revoke-bound-daemon-key.ts";
-import { setManagedHaRecoveryHooks } from "./platform/ports/managed-ha-recovery.ts";
-import { setLoadServerStatusRecords } from "./platform/ports/load-server-status.ts";
-import { setResolveFleetPresence } from "./platform/ports/fleet-presence.ts";
+import { registerCommandRuntimePorts } from "./platform/ports/register-command-runtime-ports.ts";
 import { loadServerStatusRecords } from "./client/servers/update-status.ts";
 import { resolveFleetPresence } from "./daemon/cell/server-status.ts";
 import {
@@ -199,16 +197,16 @@ function createLazyWorkersEmailQueue(
 
 async function initWorkerApp(env: CloudflareBindings) {
   setRevokeBoundDaemonKey(revokeDaemonKey)
-  setManagedHaRecoveryHooks({
+  registerCommandRuntimePorts({
     fencePhaseFromCommandMetadata,
     recoveryIdFromCommandMetadata,
     onFenceCommandSucceeded,
     onFenceCommandFailed,
     onPromoteSucceeded,
     onRecoveryCommandFailed,
+    loadServerStatusRecords,
+    resolveFleetPresence,
   })
-  setLoadServerStatusRecords(loadServerStatusRecords)
-  setResolveFleetPresence(resolveFleetPresence)
   const secretsConfig = parseSecretsFromEnv(
     {
       TURBOPANEL_SECRET: env.TURBOPANEL_SECRET,

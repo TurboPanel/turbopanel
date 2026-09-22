@@ -5,11 +5,19 @@
 
 import type { Db } from '../../db/connection.ts'
 
+/** Minimal presence shape command dispatch reads through this port. */
+export type FleetPresencePortSnapshot = {
+  connected: boolean
+  daemonBuild?: {
+    version?: string
+  }
+}
+
 export type ResolveFleetPresence = (
   db: Db,
   registry: unknown,
   serverIds: string[],
-) => Promise<Map<string, { connected: boolean }>>
+) => Promise<Map<string, FleetPresencePortSnapshot>>
 
 let resolver: ResolveFleetPresence | null = null
 

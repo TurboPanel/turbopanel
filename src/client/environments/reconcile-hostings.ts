@@ -76,14 +76,30 @@ import {
  * Neither is ever resolved by silently nulling the pin: a route that quietly
  * downgrades from a pinned certificate to a self-signed one is the failure this
  * error exists to prevent.
+ *
+ * The kinds are separate object types (not one type with a union `kind`) so
+ * `Extract<DeployPrepareError, { kind: 'hosting_tls_ref_unresolved' }>` stays
+ * inhabited — a single object type with `kind: A | B` extracts to `never`.
  */
-export type ComposeHostingRefError = {
-  kind: 'hosting_tls_ref_unresolved' | 'hosting_ip_ref_unresolved'
+export type ComposeHostingTlsRefError = {
+  kind: 'hosting_tls_ref_unresolved'
   composeServiceName: string
   hostname: string
   ref: string
   reason: 'not_found' | 'ambiguous'
 }
+
+export type ComposeHostingIpRefError = {
+  kind: 'hosting_ip_ref_unresolved'
+  composeServiceName: string
+  hostname: string
+  ref: string
+  reason: 'not_found' | 'ambiguous'
+}
+
+export type ComposeHostingRefError =
+  | ComposeHostingTlsRefError
+  | ComposeHostingIpRefError
 
 /**
  * An entry asked for a TLS mode nothing downstream can perform.
