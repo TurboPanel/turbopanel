@@ -598,6 +598,36 @@ test('finishGitlabOauthCallback rejects the wrong provider and maps invalid cred
       providerFailure.headers.get('Location'),
       providerInstallUiReturnPath(ORG_ID, APP_ID, { error: 'provider_failed' }),
     )
+
+    globalThis.fetch = ((input: RequestInfo | URL) => {
+      const url = String(input instanceof Request ? input.url : input)
+      if (url.endsWith('/oauth/token')) {
+        return Promise.resolve(Response.json({
+          access_token: 'gitlab-access',
+          refresh_token: 'gitlab-refresh',
+          expires_in: 3600,
+        }))
+      }
+      return Promise.resolve(Response.json({ id: 42, username: 'claimed-user' }))
+    }) as typeof fetch
+    const claimedConnection = await finishGitlabOauthCallback(
+      mockContext(),
+      selectLimitSequence([
+        [{
+          ...forgeRow,
+          envelopes: {
+            clientSecretEnvelope: await encryptSecret(secrets, 'client-secret'),
+          },
+        }],
+        [{ organizationId: OTHER_ORG }],
+      ]),
+      secrets,
+      params,
+    )
+    assertEquals(
+      claimedConnection.headers.get('Location'),
+      providerInstallUiReturnPath(ORG_ID, APP_ID, { error: 'claimed' }),
+    )
   } finally {
     globalThis.fetch = originalFetch
   }
