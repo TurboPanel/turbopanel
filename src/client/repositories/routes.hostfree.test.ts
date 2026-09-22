@@ -15,6 +15,7 @@ import {
   deriveEncryptionSecretsConfig,
   deriveSecretsConfig,
 } from '../../lib/secrets/secrets.ts'
+import { encryptSecret } from '../../lib/secrets/data-encryption.ts'
 import type { DaemonCellRegistry } from '../../contracts/cell.ts'
 import type { Db } from '../../db/connection.ts'
 import { GithubAppTokenError } from '../../features/git/github-app-token.ts'
@@ -42,6 +43,7 @@ import {
   fetchInstallationAccount,
   findAttachedSource,
   findSourceByUrl,
+  finishGitlabOauthCallback,
   isUniqueViolation,
   providerErrorResponse,
   redirectToForgeUi,
@@ -512,6 +514,123 @@ test('resolveGitlabRedirectUri prefers the configured URI then a public origin',
     ),
     `https://panel.example.com${CLIENT_API_PREFIX}/repositories/gitlab/oauth/callback`,
   )
+})
+
+test('finishGitlabOauthCallback rejects the wrong provider and maps invalid credentials', async () => {
+  const secrets = await deriveEncryptionSecretsConfig(
+    parseTestSecretsConfig('deno'),
+    'data-encryption',
+  )
+  const forgeRow = {
+    id: APP_ID,
+    organizationId: ORG_ID,
+    provider: 'gitlab',
+    name: 'GitLab',
+    baseUrl: 'https://gitlab.com',
+    apiUrl: null,
+    externalAppId: 'oauth-1',
+    appSlug: null,
+    clientId: 'client-1',
+    redirectUri: 'https://panel.example.com/callback',
+    webhookRef: 'ref-1',
+    webhookOrigin: null,
+    webhookTokenHash: null,
+    isPublic: false,
+    customGitUser: null,
+    customGitPort: null,
+    syncedAt: null,
+    envelopes: {},
+  }
+  const params = {
+    organizationId: ORG_ID,
+    forgeId: APP_ID,
+    code: 'authorization-code',
+  }
+
+  const wrongProvider = await finishGitlabOauthCallback(
+    mockContext(),
+    selectLimitDb([{ ...forgeRow, provider: 'github' }]),
+    secrets,
+    params,
+  )
+  assertEquals(
+    wrongProvider.headers.get('Location'),
+    providerInstallUiReturnPath(ORG_ID, APP_ID, { error: 'not_configured' }),
+  )
+
+  const missingRedirect = await finishGitlabOauthCallback(
+    mockContext(),
+    selectLimitSequence([[{ ...forgeRow, redirectUri: null }], []]),
+    secrets,
+    params,
+  )
+  assertEquals(
+    missingRedirect.headers.get('Location'),
+    providerInstallUiReturnPath(ORG_ID, APP_ID, { error: 'not_configured' }),
+  )
+
+  const invalidCredentials = await finishGitlabOauthCallback(
+    mockContext(),
+    selectLimitDb([forgeRow]),
+    secrets,
+    params,
+  )
+  assertEquals(
+    invalidCredentials.headers.get('Location'),
+    providerInstallUiReturnPath(ORG_ID, APP_ID, { error: 'provider_failed' }),
+  )
+
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (() => Promise.reject('provider unavailable')) as typeof fetch
+  try {
+    const providerFailure = await finishGitlabOauthCallback(
+      mockContext(),
+      selectLimitDb([{
+        ...forgeRow,
+        envelopes: {
+          clientSecretEnvelope: await encryptSecret(secrets, 'client-secret'),
+        },
+      }]),
+      secrets,
+      params,
+    )
+    assertEquals(
+      providerFailure.headers.get('Location'),
+      providerInstallUiReturnPath(ORG_ID, APP_ID, { error: 'provider_failed' }),
+    )
+
+    globalThis.fetch = ((input: RequestInfo | URL) => {
+      const url = String(input instanceof Request ? input.url : input)
+      if (url.endsWith('/oauth/token')) {
+        return Promise.resolve(Response.json({
+          access_token: 'gitlab-access',
+          refresh_token: 'gitlab-refresh',
+          expires_in: 3600,
+        }))
+      }
+      return Promise.resolve(Response.json({ id: 42, username: 'claimed-user' }))
+    }) as typeof fetch
+    const claimedConnection = await finishGitlabOauthCallback(
+      mockContext(),
+      selectLimitSequence([
+        [{
+          ...forgeRow,
+          envelopes: {
+            clientSecretEnvelope: await encryptSecret(secrets, 'client-secret'),
+          },
+        }],
+        [{ organizationId: OTHER_ORG }],
+      ]),
+      secrets,
+      params,
+    )
+    assertEquals(
+      claimedConnection.headers.get('Location'),
+      providerInstallUiReturnPath(ORG_ID, APP_ID, { error: 'claimed' }),
+    )
+  } finally {
+    globalThis.fetch = originalFetch
+  }
 })
 
 test('resolveSourceWebhookInfo is undefined for generic git and otherwise folds reachability', async () => {

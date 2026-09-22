@@ -118,7 +118,10 @@ async function ownedChannel(
 ): Promise<NotificationChannelRecord | Response> {
   const db = getDb(c)!;
   const channel = await getChannel(db, id);
-  if (channel == null || channel.scope === "instance") {
+  if (channel == null) {
+    return c.json({ error: "Not found" }, 404);
+  }
+  if (channel.scope === "instance") {
     return c.json({ error: "Not found" }, 404);
   }
   if (channel.scope === "user") {

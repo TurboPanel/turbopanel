@@ -139,6 +139,46 @@ async function refuseTlsCreateSource(
   return null;
 }
 
+async function prepareTlsCreateMaterial(
+  c: Context<AppEnv>,
+  organizationId: string,
+  source: TlsSource,
+  body: Record<string, unknown>,
+): Promise<
+  | { name: string | null; material: CreateTlsMaterial; options: TlsOptions | null }
+  | Response
+> {
+  let name: string | null;
+  try {
+    name = parseName(body);
+  } catch {
+    return c.json({ error: "Invalid request" }, 400);
+  }
+
+  const dataEncryptionSecrets = c.get("dataEncryptionSecrets");
+  if (!dataEncryptionSecrets) {
+    return c.json({
+      error: "Encryption unavailable — no encryption key configured",
+    }, 503);
+  }
+
+  const material = await buildCreateTlsMaterial(
+    source,
+    body,
+    dataEncryptionSecrets,
+    organizationId,
+  );
+  if (isCreateTlsFailure(material)) {
+    return createTlsFailureResponse(c, material);
+  }
+
+  return {
+    name,
+    material,
+    options: withPreferOption(material.options, body.prefer),
+  };
+}
+
 async function organizationCaRowResponse(
   c: Context<AppEnv>,
   db: NonNullable<ReturnType<typeof getDb>>,
@@ -897,38 +937,20 @@ export function registerTlsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
     );
     if (sourceDenied) return sourceDenied;
 
-    let name: string | null;
-    try {
-      name = parseName(body);
-    } catch {
-      return c.json({ error: "Invalid request" }, 400);
-    }
-
-    const dataEncryptionSecrets = c.get("dataEncryptionSecrets");
-    if (!dataEncryptionSecrets) {
-      return c.json({
-        error: "Encryption unavailable — no encryption key configured",
-      }, 503);
-    }
-
-    const material = await buildCreateTlsMaterial(
+    const prepared = await prepareTlsCreateMaterial(
+      c,
+      organizationId,
       source,
       body,
-      dataEncryptionSecrets,
-      organizationId,
     );
-    if (isCreateTlsFailure(material)) {
-      return createTlsFailureResponse(c, material);
-    }
-
-    const options = withPreferOption(material.options, body.prefer);
+    if (prepared instanceof Response) return prepared;
 
     const idOrResponse = await insertTlsRow(c, db, {
       organizationId,
-      name,
+      name: prepared.name,
       source,
-      material,
-      options,
+      material: prepared.material,
+      options: prepared.options,
     });
     if (idOrResponse instanceof Response) return idOrResponse;
 
