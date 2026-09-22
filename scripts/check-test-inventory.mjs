@@ -4,8 +4,8 @@
  *
  * This repo runs its suites through two suffix-partitioned runners:
  *
- *   - `scripts/test-coverage.sh` -- Deno suites (V8 coverage). Walks `src/`,
- *     `mailer/`, and `scripts/` while ignoring Workers suffixes and
+ *   - `scripts/test-coverage.sh` -- Deno suites (V8 coverage). Walks `src/`
+ *     and `scripts/` while ignoring Workers suffixes and
  *     `SERVICE_DEPENDENT` paths.
  *   - `vitest.config.ts` `test.include` -- suffix globs
  *     (`.workers.test.ts`, `.workers-e2e.test.ts`, `.entry.test.ts`) for

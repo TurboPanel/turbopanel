@@ -27,6 +27,7 @@ import {
   runFabricRendezvousRound,
   setCollectFabricPathObservationsForTests,
 } from "./rendezvous.ts";
+import { setLoadServerStatusRecords } from "../../platform/ports/load-server-status.ts";
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -532,6 +533,21 @@ function loadServerStatusRecordsDb(statuses: readonly LiveStatusRow[]): Db {
   } as unknown as Db;
 }
 
+function withStatusLoader(
+  statuses: readonly LiveStatusRow[],
+  run: () => Promise<void>,
+): Promise<void> {
+  const byId = new Map(statuses.map((row) => [row.serverId, row.connected]));
+  setLoadServerStatusRecords(async (_db, _registry, serverIds) =>
+    serverIds.flatMap((serverId) => {
+      const connected = byId.get(serverId);
+      if (connected === undefined) return [];
+      return [{ serverId, connected }];
+    })
+  );
+  return run().finally(() => setLoadServerStatusRecords(null));
+}
+
 type LiveCellRecord = {
   status: string;
   result?: unknown;
@@ -719,32 +735,40 @@ test("collectFabricPathObservations skips keyed relays that are offline or missi
   setCollectFabricPathObservationsForTests(null);
   const captured: CapturedCellRequest[] = [];
   const registry = liveCollectRegistry(new Map(), captured);
+  const relays = [
+    keyedRelay({ serverId: "srv-a", publicKey: KEY_A }),
+    keyedRelay({ serverId: "srv-b", publicKey: KEY_B }),
+  ];
 
-  const offline = await collectFabricPathObservations({
-    db: loadServerStatusRecordsDb([
+  await withStatusLoader(
+    [
       { serverId: "srv-a", connected: false },
       { serverId: "srv-b", connected: false },
-    ]),
-    registry,
-    relays: [
-      keyedRelay({ serverId: "srv-a", publicKey: KEY_A }),
-      keyedRelay({ serverId: "srv-b", publicKey: KEY_B }),
     ],
-    fabricId: FABRIC_ID,
-  });
-  assertEquals(offline.size, 0);
+    async () => {
+      const offline = await collectFabricPathObservations({
+        db: loadServerStatusRecordsDb([
+          { serverId: "srv-a", connected: false },
+          { serverId: "srv-b", connected: false },
+        ]),
+        registry,
+        relays,
+        fabricId: FABRIC_ID,
+      });
+      assertEquals(offline.size, 0);
+    },
+  );
 
-  const missing = await collectFabricPathObservations({
-    db: loadServerStatusRecordsDb([]),
-    registry,
-    relays: [
-      keyedRelay({ serverId: "srv-a", publicKey: KEY_A }),
-      keyedRelay({ serverId: "srv-b", publicKey: KEY_B }),
-    ],
-    fabricId: FABRIC_ID,
+  await withStatusLoader([], async () => {
+    const missing = await collectFabricPathObservations({
+      db: loadServerStatusRecordsDb([]),
+      registry,
+      relays,
+      fabricId: FABRIC_ID,
+    });
+    assertEquals(missing.size, 0);
+    assertEquals(captured, []);
   });
-  assertEquals(missing.size, 0);
-  assertEquals(captured, []);
 });
 
 test("collectFabricPathObservations probes only live relays and records successful paths", async () => {
@@ -759,67 +783,73 @@ test("collectFabricPathObservations probes only live relays and records successf
     captured,
   );
   const candidates = [{ publicKey: KEY_B, endpoints: ["203.0.113.20:51820"] }];
-  const map = await collectFabricPathObservations({
-    db: loadServerStatusRecordsDb([
-      { serverId: "srv-a", connected: true },
-      { serverId: "srv-offline", connected: false },
-    ]),
-    registry,
-    relays: [
-      keyedRelay({ serverId: "srv-a", publicKey: KEY_A }),
-      keyedRelay({ serverId: "srv-offline", publicKey: KEY_B }),
-    ],
-    fabricId: FABRIC_ID,
-    probeMs: 250,
-    candidatesByServerId: new Map([["srv-a", candidates]]),
+  const statuses = [
+    { serverId: "srv-a", connected: true },
+    { serverId: "srv-offline", connected: false },
+  ];
+  await withStatusLoader(statuses, async () => {
+    const map = await collectFabricPathObservations({
+      db: loadServerStatusRecordsDb(statuses),
+      registry,
+      relays: [
+        keyedRelay({ serverId: "srv-a", publicKey: KEY_A }),
+        keyedRelay({ serverId: "srv-offline", publicKey: KEY_B }),
+      ],
+      fabricId: FABRIC_ID,
+      probeMs: 250,
+      candidatesByServerId: new Map([["srv-a", candidates]]),
+    });
+    assertEquals([...map.keys()], ["srv-a"]);
+    assertEquals(map.get("srv-a"), aPaths);
+    assertEquals(captured.length, 1);
+    assertEquals(captured[0]?.serverId, "srv-a");
+    assertEquals(captured[0]?.fabricId, FABRIC_ID);
+    assertEquals(captured[0]?.probeMs, 250);
+    assertEquals(captured[0]?.candidates, candidates);
   });
-  assertEquals([...map.keys()], ["srv-a"]);
-  assertEquals(map.get("srv-a"), aPaths);
-  assertEquals(captured.length, 1);
-  assertEquals(captured[0]?.serverId, "srv-a");
-  assertEquals(captured[0]?.fabricId, FABRIC_ID);
-  assertEquals(captured[0]?.probeMs, 250);
-  assertEquals(captured[0]?.candidates, candidates);
 });
 
 test("collectFabricPathObservations omits live relays whose cell request is not ok", async () => {
   setCollectFabricPathObservationsForTests(null);
   const captured: CapturedCellRequest[] = [];
   const okPaths = paths(KEY_B, "203.0.113.20:51820");
-  const map = await collectFabricPathObservations({
-    db: loadServerStatusRecordsDb([
-      { serverId: "srv-a", connected: true },
-      { serverId: "srv-expired", connected: true },
-      { serverId: "srv-failed", connected: true },
-      { serverId: "srv-malformed", connected: true },
-    ]),
-    registry: liveCollectRegistry(
-      new Map<string, LiveCellRecord | Error | string>([
-        ["srv-a", donePaths(okPaths)],
-        ["srv-expired", { status: "expired" }],
-        ["srv-failed", { status: "failed", error: "compose unavailable" }],
-        ["srv-malformed", { status: "done", result: { paths: "nope" } }],
-      ]),
-      captured,
-    ),
-    relays: [
-      keyedRelay({ serverId: "srv-a", publicKey: KEY_A }),
-      keyedRelay({ serverId: "srv-expired", publicKey: KEY_B }),
-      keyedRelay({ serverId: "srv-failed", publicKey: KEY_GW }),
-      keyedRelay({
-        serverId: "srv-malformed",
-        publicKey: "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD=",
-      }),
-    ],
-    fabricId: FABRIC_ID,
+  const statuses = [
+    { serverId: "srv-a", connected: true },
+    { serverId: "srv-expired", connected: true },
+    { serverId: "srv-failed", connected: true },
+    { serverId: "srv-malformed", connected: true },
+  ];
+  await withStatusLoader(statuses, async () => {
+    const map = await collectFabricPathObservations({
+      db: loadServerStatusRecordsDb(statuses),
+      registry: liveCollectRegistry(
+        new Map<string, LiveCellRecord | Error | string>([
+          ["srv-a", donePaths(okPaths)],
+          ["srv-expired", { status: "expired" }],
+          ["srv-failed", { status: "failed", error: "compose unavailable" }],
+          ["srv-malformed", { status: "done", result: { paths: "nope" } }],
+        ]),
+        captured,
+      ),
+      relays: [
+        keyedRelay({ serverId: "srv-a", publicKey: KEY_A }),
+        keyedRelay({ serverId: "srv-expired", publicKey: KEY_B }),
+        keyedRelay({ serverId: "srv-failed", publicKey: KEY_GW }),
+        keyedRelay({
+          serverId: "srv-malformed",
+          publicKey: "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD=",
+        }),
+      ],
+      fabricId: FABRIC_ID,
+    });
+    assertEquals([...map.keys()], ["srv-a"]);
+    assertEquals(map.get("srv-a"), okPaths);
+    assertEquals(
+      captured.map((row) => row.serverId).sort((a, b) => a.localeCompare(b)),
+      ["srv-a", "srv-expired", "srv-failed", "srv-malformed"],
+    );
+    assertEquals(captured.every((row) => row.probeMs === 0), true);
   });
-  assertEquals([...map.keys()], ["srv-a"]);
-  assertEquals(map.get("srv-a"), okPaths);
-  assertEquals(
-    captured.map((row) => row.serverId).sort((a, b) => a.localeCompare(b)),
-    ["srv-a", "srv-expired", "srv-failed", "srv-malformed"],
-  );
-  assertEquals(captured.every((row) => row.probeMs === 0), true);
 });
 
 test("collectFabricPathObservations fans out past the mapPool worker cap", async () => {
@@ -830,24 +860,25 @@ test("collectFabricPathObservations fans out past the mapPool worker cap", async
     publicKey: `pool-${index}`,
     paths: paths(KEY_A, `203.0.113.${10 + index}:51820`),
   }));
-  const map = await collectFabricPathObservations({
-    db: loadServerStatusRecordsDb(
-      live.map((row) => ({ serverId: row.serverId, connected: true })),
-    ),
-    registry: liveCollectRegistry(
-      new Map(live.map((row) => [row.serverId, donePaths(row.paths)])),
-      captured,
-    ),
-    relays: live.map((row) =>
-      keyedRelay({ serverId: row.serverId, publicKey: row.publicKey })
-    ),
-    fabricId: FABRIC_ID,
+  const statuses = live.map((row) => ({ serverId: row.serverId, connected: true }));
+  await withStatusLoader(statuses, async () => {
+    const map = await collectFabricPathObservations({
+      db: loadServerStatusRecordsDb(statuses),
+      registry: liveCollectRegistry(
+        new Map(live.map((row) => [row.serverId, donePaths(row.paths)])),
+        captured,
+      ),
+      relays: live.map((row) =>
+        keyedRelay({ serverId: row.serverId, publicKey: row.publicKey })
+      ),
+      fabricId: FABRIC_ID,
+    });
+    assertEquals(map.size, 9);
+    assertEquals(captured.length, 9);
+    for (const row of live) {
+      assertEquals(map.get(row.serverId), row.paths);
+    }
   });
-  assertEquals(map.size, 9);
-  assertEquals(captured.length, 9);
-  for (const row of live) {
-    assertEquals(map.get(row.serverId), row.paths);
-  }
 });
 
 test("classifyNatMapping ignores endpoints without a port", () => {

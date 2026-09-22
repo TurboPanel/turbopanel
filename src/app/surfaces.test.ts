@@ -74,7 +74,7 @@ async function readIfPresent(path: string): Promise<string | null> {
 
 test("every fronting layer forwards the whole /webhook/* prefix", async () => {
   const here = dirname(fromFileUrl(import.meta.url));
-  const repo = join(here, "..");
+  const repo = join(here, "../..");
   for (
     const path of [
       STRIPE_WEBHOOK_PATH,

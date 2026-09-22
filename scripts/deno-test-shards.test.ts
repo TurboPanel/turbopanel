@@ -93,7 +93,6 @@ describe("deno-test-shards", () => {
     }
     const block = lines.slice(start, end + 1).join("\n");
     assertStringIncludes(block, "\n  src/");
-    assertStringIncludes(block, "\n  mailer/");
     assertStringIncludes(block, "\n  scripts/");
   });
 });

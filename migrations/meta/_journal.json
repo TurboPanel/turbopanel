@@ -36,6 +36,13 @@
       "when": 1789994531436,
       "tag": "0004_schema_comments",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1790041120375,
+      "tag": "0005_tier_label_ladder_path",
+      "breakpoints": true
     }
   ]
 }

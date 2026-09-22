@@ -75,6 +75,7 @@ import {
   SERVER_KEY_REVOKED_ERROR,
   type ServerDaemonStateWithMetadata,
 } from "../features/servers/server-identity-db.ts";
+import { setRevokeBoundDaemonKey } from "../features/licenses/revoke-bound-daemon-key.ts";
 import {
   buildAuthPayload,
   buildEnrollmentPayload,
@@ -457,6 +458,7 @@ async function createTestApp(
   db: ReturnType<typeof createDenoDb>,
   runtime: "workers" | "deno" = "workers",
 ): Promise<Hono<AppEnv>> {
+  setRevokeBoundDaemonKey(revokeDaemonKey);
   const app = new Hono<AppEnv>();
   app.use("*", (c, next) => {
     c.set("db", db);
@@ -703,6 +705,7 @@ async function withEnrollFixture(
       }
       await db.delete(organization).where(eq(organization.id, organizationId));
     } finally {
+      setRevokeBoundDaemonKey(null);
       await endDbConnection(db);
     }
   }
@@ -859,6 +862,7 @@ test("POST /enroll rejects a raw machine-id shaped machineKey", async () => {
     const body = (await response.json()) as { error?: string };
     assertEquals(body.error, "Invalid machineKey");
   } finally {
+    setRevokeBoundDaemonKey(null);
     await endDbConnection(db);
   }
 });
@@ -892,6 +896,7 @@ test("POST /enroll returns 400 for malformed tpchallenge id", async () => {
     const body = (await response.json()) as { error?: string };
     assertEquals(body.error, "Invalid or expired challenge");
   } finally {
+    setRevokeBoundDaemonKey(null);
     await endDbConnection(db);
   }
 });

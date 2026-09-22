@@ -10,7 +10,7 @@ import { INSTANCE_VERSION } from './version.ts'
  */
 const test = Deno.test.bind(Deno)
 
-const ROOT = dirname(dirname(fromFileUrl(import.meta.url)))
+const ROOT = dirname(dirname(dirname(fromFileUrl(import.meta.url))))
 
 test('INSTANCE_VERSION is deno.json\'s version and is a semver', async () => {
   const denoJson = JSON.parse(await Deno.readTextFile(join(ROOT, 'deno.json')))

@@ -6,8 +6,8 @@ Covers the SonarCloud CI job, the Vitest+Deno LCOV merge in
 
 **When adding, renaming, or deleting a `*.test.ts`:** claim it in exactly one
 runner via filename suffix, then run **`pnpm check:test-inventory`**. Deno
-suites are `*.test.ts` / `*.hostfree.test.ts` / `*.deno.test.ts` under `src/`,
-`mailer/`, or `scripts/` (`test-coverage.sh` walks those trees and ignores
+suites are `*.test.ts` / `*.hostfree.test.ts` / `*.deno.test.ts` under `src/`
+or `scripts/` (`test-coverage.sh` walks those trees and ignores
 Workers suffixes). Workers/DO suites are `*.workers.test.ts` /
 `*.workers-e2e.test.ts` / `*.entry.test.ts` (`vitest.config.ts` `test.include`
 suffix globs). Redis (etc.) suites go in `SERVICE_DEPENDENT` in

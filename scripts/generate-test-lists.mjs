@@ -4,7 +4,7 @@
  *
  * Default (`--write`): suffix-glob inventories. Vitest `test.include` is
  * `.workers.test.ts` / `.workers-e2e.test.ts` / `.entry.test.ts`; Deno walks
- * `src/`, `mailer/`, `scripts/` with `--ignore` for those suffixes and
+ * `src/` and `scripts/` with `--ignore` for those suffixes and
  * `SERVICE_DEPENDENT` paths.
  *
  * `--files`: rebuild an exhaustive Deno file list from current classification
@@ -23,7 +23,7 @@ import { fileURLToPath } from 'node:url'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
-const TEST_ROOTS = ['src', 'mailer', 'scripts']
+const TEST_ROOTS = ['src', 'scripts']
 const SKIP_DIRS = new Set([
   'node_modules',
   'dist',

@@ -223,7 +223,7 @@ appears in `coverage/lcov.info`. After adding, renaming, or deleting a
 
 | Suite kind                                                                       | Claim it                                                                                                                                                                             |
 | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Deno (`@std/assert`, `const test = Deno.test.bind(Deno)`, `@std/testing/bdd`)    | `*.test.ts` / `*.hostfree.test.ts` / `*.deno.test.ts` under `src/`, `mailer/`, or `scripts/` (`scripts/test-coverage.sh` walks those trees)                                          |
+| Deno (`@std/assert`, `const test = Deno.test.bind(Deno)`, `@std/testing/bdd`)    | `*.test.ts` / `*.hostfree.test.ts` / `*.deno.test.ts` under `src/` or `scripts/` (`scripts/test-coverage.sh` walks those trees)                                          |
 | Workers / Durable Object (`vitest`, `cloudflare:test`, `@needs-workers-globals`) | `*.workers.test.ts` / `*.workers-e2e.test.ts` / `*.entry.test.ts` (`vitest.config.ts` `test.include` suffix globs)                                                                    |
 | Needs a service CI does not start (Redis, …)                                     | `SERVICE_DEPENDENT` in `scripts/check-test-inventory.mjs` **with a reason** — the only sanctioned way to leave a suite out of both runners                                           |
 

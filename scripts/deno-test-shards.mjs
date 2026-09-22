@@ -2,7 +2,7 @@
 /**
  * Partition the Deno suites walked by scripts/test-coverage.sh into CI shards.
  *
- * The coverage script still walks `src/`, `mailer/`, and `scripts/` when
+ * The coverage script still walks `src/` and `scripts/` when
  * `DENO_SHARD` is unset, and that walk is what check-test-inventory.mjs
  * claims. CI sets `DENO_SHARD` and this script prints the subset, so every
  * suite still runs on every push without a second inventory list.
@@ -25,7 +25,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
-const TEST_ROOTS = ['src', 'mailer', 'scripts']
+const TEST_ROOTS = ['src', 'scripts']
 
 const SKIP_DIRS = new Set([
   'node_modules',
