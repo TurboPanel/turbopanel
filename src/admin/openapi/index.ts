@@ -1,6 +1,9 @@
 import { INSTANCE_VERSION } from "../../app/version.ts";
 import { resolveSessionCookieNameFromUrl } from "../../client/authn/crypto.ts";
 import { ADMIN_API_PREFIX } from "../../app/surfaces.ts";
+import { INSTANCE_ACCESS_PATHS } from "./instance-access.ts";
+import { INSTANCE_UPDATES_PATHS } from "./instance-updates.ts";
+import { INSTANCE_HOSTNAME_PATHS } from "./instance-hostnames.ts";
 
 const cookieSecurity = [{ cookieAuth: [] }] as const;
 
@@ -443,6 +446,9 @@ export function getAdminOpenApiSpec(
       },
     },
     paths: {
+      ...INSTANCE_HOSTNAME_PATHS,
+      ...INSTANCE_ACCESS_PATHS,
+      ...INSTANCE_UPDATES_PATHS,
       [`${ADMIN_API_PREFIX}/instance/public-urls`]: {
         get: {
           tags: ["Instance"],

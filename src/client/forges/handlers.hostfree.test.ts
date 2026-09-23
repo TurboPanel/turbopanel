@@ -12,7 +12,7 @@ import type { AppEnv } from '../../app/app.ts'
 import type { Db } from '../../db/connection.ts'
 import { deriveEncryptionSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { encryptSecret } from '../../lib/secrets/data-encryption.ts'
-import { setting } from '../../db/schema.ts'
+import { setting, instanceHostname } from '../../db/schema.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import { signGithubManifestState } from '../repositories/provider-install-state.ts'
 import type { GithubManifestStateClaims } from '../repositories/provider-install-state.ts'
@@ -85,18 +85,52 @@ type FakeDbConfig = {
   deleteEmpty?: boolean
 }
 
+function coercePublicUrlList(publicUrls: string[] | string | undefined): string[] {
+  if (publicUrls === undefined) return []
+  if (Array.isArray(publicUrls)) return publicUrls
+  return publicUrls.split(',').map((entry) => entry.trim()).filter((entry) => entry !== '')
+}
+
+function hostnameRowsFromPublicUrls(
+  publicUrls: string[] | string | undefined,
+): Array<Record<string, unknown>> {
+  return coercePublicUrlList(publicUrls).map((host, index) => ({
+    id: `host-${index}`,
+    host,
+    source: 'platform-ca',
+    uploadedCertId: null,
+    acmeLastAttemptAt: null,
+    acmeLastError: null,
+    notAfter: null,
+    createdAt: new Date(0).toISOString(),
+    updatedAt: new Date(0).toISOString(),
+  }))
+}
+
+function thenableRows(rows: unknown[]) {
+  const promise = Promise.resolve(rows)
+  return Object.assign(promise, {
+    limit: () => promise,
+    orderBy: () => promise,
+  })
+}
+
 function fakeDb(config: FakeDbConfig = {}): Db {
+  const hostnameRows = hostnameRowsFromPublicUrls(config.publicUrls)
+  const settingRows = config.publicUrls === undefined
+    ? []
+    : [{ key: 'TURBOPANEL_PUBLIC_URLS', value: config.publicUrls }]
   return {
     select: (fields?: Record<string, unknown>) => ({
       from: (table: unknown) => {
+        if (table === instanceHostname) {
+          return {
+            where: () => thenableRows(hostnameRows.map((row) => ({ ...row }))),
+          }
+        }
         if (table === setting) {
           return {
-            where: () => ({
-              limit: () =>
-                Promise.resolve(
-                  config.publicUrls === undefined ? [] : [{ value: config.publicUrls }],
-                ),
-            }),
+            where: () => thenableRows(settingRows.map((row) => ({ ...row }))),
           }
         }
         const rows = config.appRows ?? []
@@ -140,6 +174,7 @@ function fakeDb(config: FakeDbConfig = {}): Db {
         returning: () => Promise.resolve(config.deleteEmpty ? [] : [{ id: APP_ID }]),
       }),
     }),
+    transaction: async (fn: (tx: Db) => Promise<unknown>) => fn(fakeDb(config)),
   } as unknown as Db
 }
 

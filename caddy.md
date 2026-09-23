@@ -3,16 +3,21 @@
 Referenced from `AGENTS.md` (**Caddy**). Covers the production Caddyfile:
 server addresses, certs and entrypoint, the daemon TLS trust model, and the
 static UI catch-all. Read before editing the daemon's Caddyfile template or
-`scripts/download-caddy.mjs`.
+`scripts/download-caddy.mjs` (pinned **2.11.4**, SHA-256 verified — keep in
+step with `turbopaneld/orchestration/roles/caddy/defaults/main.yml`).
 
 The production Caddyfile lives in the **daemon** repo as a Jinja template —
 `turbopaneld/orchestration/roles/instance-launch/templates/Caddyfile.j2` —
 and the `instance-launch` role renders it into
 `/etc/turbopanel/caddy/Caddyfile` (root:tp `0640`) on every converge,
-restarting `turbopanel-caddy` when it changes. One template; the three TLS
-modes (`self_signed` / `upload` / `lets_encrypt`) are its branches, with the
-port, leaf paths, public hostname and optional ACME contact baked in at render
-time. The instance release package ships no site config, and the rendered
+restarting `turbopanel-caddy` when it changes. One template. `:8443` is always
+the Platform CA recovery listener. `:8880` is always the HTTP-01 solver
+(other paths redirect to `:8443`). Public `:443` for an `uploaded` or
+`lets-encrypt` hostname is bound by this Caddy only when hosting Caddy is
+not installed. On a combined host, hosting Caddy owns `:443` and
+reverse-proxies the name here. `turbopanel_tls_mode` is a display-only derivation
+of that hostname list. Ports, leaf paths, and the optional ACME contact are
+baked in at render time. The instance release package ships no site config, and the rendered
 file is never hand-edited: change the template, converge. Caddy terminates
 TLS and routes:
 
@@ -30,8 +35,9 @@ the UI worker holds the apex as a custom domain with
 `not_found_handling: "single-page-application"`; add the prefix to `routes` in
 `wrangler.jsonc` at the same time. `src/app/surfaces.test.ts` pins the strings.
 
-`reverse_proxy` to the Unix socket sets `X-Real-IP {remote_host}` on all three.
-The instance uses that header to deduplicate daemon WebSocket reconnects
+`reverse_proxy` to the Unix socket sets `X-Real-IP {client_ip}` on all three.
+Global `trusted_proxies` trusts loopback, so a hosting Caddy hop keeps the
+original client. The instance uses that header to deduplicate daemon WebSocket reconnects
 (without it, every reconnect looked like a new fleet member behind the proxy),
 and to key the webhook rate limiter per peer address.
 
@@ -88,37 +94,71 @@ URL in `resolve-public-base-url.ts`.
 
 Caddy/cert installs are handled by the daemon's `caddy`, `instance-certs`, and
 `instance-launch` Ansible roles; `turbopanel-caddy.service` runs as `tpcaddy:tp`
-in production. Control-plane TLS is selected by `turbopanel_tls_mode`:
+in production. Listeners are derived from `turbopanel_hostnames`
+(`{host, source, cert_id}`). An empty list is synthesized from the deprecated
+`turbopanel_tls_mode` aliases so an existing converge keeps working. The
+template's display-only mode is `upload` if any hostname is uploaded,
+`lets_encrypt` if any is ACME, otherwise `self_signed`.
 
-| Mode | Rendered site block | Listen | Leaf material | Platform CA minted | `GET /instance/ca` | `--insecure-tls` |
-| --- | --- | --- | --- | --- | --- | --- |
-| `self_signed` (default) | `:<port>` + `tls` leaf, `auto_https off` | `:8443` | `certs/self-signed.*` | yes, served | 200 | yes |
-| `upload` | `:<port>` + `tls` pair, `auto_https off` | `:8443` (or `caddy_port`) | operator pair copied to `certs/` | yes, served unless `turbopanel_tls_public` | 200 / 404 | follows `turbopanel_tls_public` |
-| `lets_encrypt` | `<public hostname>`, automatic HTTPS | `:443` (+ `:80` challenge) | Caddy ACME storage | yes, **not** served | 404 | no |
+| Listener | Always | What it serves |
+| --- | --- | --- |
+| `:8443` | yes | Platform CA leaf `platform-ca.crt` / `platform-ca.key`. Recovery address. Every `platform-ca` hostname is a SAN. Still minted when no hostname uses that source. `self-signed.{crt,key}` is a symlink to `platform-ca.*` for one release. |
+| `:8880` (`http_port`) | yes | Built-in HTTP-01 solver owns `/.well-known/acme-challenge/*`. Every other path redirects to `https://{host}:8443`. |
+| `:443` | only when hosting Caddy is absent | Explicit `<host>:443`. Let's Encrypt has no `tls` line (Caddy automatic HTTPS). An uploaded pair is `tls uploaded-<cert_id>.{crt,key}` (legacy empty `cert_id` uses `uploaded.{crt,key}`). The unit grants `CAP_NET_BIND_SERVICE` for either source. On a combined host this port is not bound here: Let's Encrypt listens on loopback `:8444` and hosting Caddy publishes `:443`. |
+| `:80` | whoever owns the public edge | Let's Encrypt dials this port. See the three challenge routes below. |
 
-`lets_encrypt` needs `:80` / `:443` free on the control-plane host — it conflicts
-with a hosting Caddy on the same host. ACME mode is **managed-install only**
-(the co-located dev overlay Caddyfile wins over `turbopanel_caddyfile`).
+`lets-encrypt` is managed-install only (the co-located dev overlay Caddyfile
+wins over `turbopanel_caddyfile` and has no per-hostname sites).
 `turbopanel_acme_email` is optional: the template emits the `email` directive
 only when the address is non-empty, so an unset contact never renders an
-invalid `email ` line.
+invalid `email ` line. `TURBOPANEL_TLS_PUBLIC` is forced true when any hostname
+is `lets-encrypt` (or the deprecated mode is `lets_encrypt`). Then
+`GET /api/daemon/v1/instance/ca` 404s and install commands omit `--insecure-tls`.
+The Platform CA is still minted. `:8443` still presents it.
 
-- Entrypoint: `https://<host>:8443` by default — binds all interfaces; use
-  `localhost` or the machine's LAN IP. `lets_encrypt` binds `:443` on the
-  public hostname.
+**Why port 80 when the panel serves `:8443`.** Let's Encrypt HTTP-01 dials the
+public hostname on port 80. The solver is pinned to `:8880` so `:80` can stay
+with hosting Caddy. Three shapes deliver that request:
+
+1. **Solver.** `:8880` always answers `/.well-known/acme-challenge/*`. Publishing `:8880` does not replace the port-80 check.
+2. **Hosting Caddy on the same host.** The daemon writes the reserved site `00-instance-acme-http01.caddy` (`INSTANCE_ACME_HTTP01_SITE` in `turbopaneld/src/deploy/instance-acme-http01.ts`). For each control-plane Let's Encrypt hostname, `http://<host>` reverse-proxies only the challenge path to `127.0.0.1:8880`. After the leaf exists, that file also terminates public `:443` (the copy under `<state>/caddy/public-edge`) and reverse-proxies to loopback `:8444`. Uploaded names are served from their on-disk pair and reverse-proxied to `:8443`. Tenant teardown skips that file (`DAEMON_RESERVED_HOSTING_SITES`). The file is removed when no hostname is `lets-encrypt` or `uploaded`. `ensureHostingCaddyRuntime` calls `syncInstanceAcmeHttp01Site` after hosting Caddy starts.
+3. **No hosting Caddy yet.** The sync is a no-op. An edge must forward public `:80` to `:8880`, or issuance waits until hosting Caddy is installed. This Caddy then binds explicit `:443` itself.
+
+On a combined host, control-plane Caddy does not bind `:443`. Hosting Caddy
+owns that port for tenant sites and for these control-plane names.
+`instance-certs-apply` loads the candidate through `admin localhost:2019`
+and replaces the persistent Caddyfile only after the running process accepts
+it. A failed validate or a rejected reload does not replace the live file.
+`:8443` stays up either way.
+
+**Wildcards are upload-only.** HTTP-01 cannot prove a `*.` name, and DNS-01
+needs a DNS-provider module the stock Caddy binary (pinned **2.11.4**,
+`scripts/download-caddy.mjs` and the `caddy` role) does not include. The
+control plane refuses Let's Encrypt for a wildcard, a loopback name, and a
+private name.
+
+**Instance Let's Encrypt is its own settings row** (`INSTANCE_ACME_SETTINGS`:
+contact email, terms, directory URL, staging; env prefix
+`TURBOPANEL_INSTANCE_ACME__`). It applies to this control plane's hostnames.
+An organization's `acmeEnabled` opt-in applies to that organization's hosting
+certificates. Saving one leaves the other unchanged. ACME storage is this
+unit's `XDG_DATA_HOME` (`<state>/caddy/.local/share`), distinct from hosting
+Caddy (`<state>/hosting-caddy`) and site Caddy (`<state>/site-caddy`).
+
+- Entrypoint: `https://<host>:8443` always — binds all interfaces; use
+  `localhost` or the machine's LAN IP. A Let's Encrypt or uploaded hostname
+  is also `https://<hostname>/` on `:443` (hosting Caddy on a combined host,
+  this Caddy when it is the only one).
 - Self-hosted TLS uses a **Platform CA** stored in the durable state tree
   (`/var/lib/turbopanel/tls/ca.crt` + `ca.key`, plus `ca-bundle.pem` for
-  current+retired overlap). The Caddy **leaf** for `self_signed` / `upload`
-  stays under the instance `certs/` dir (`self-signed.*` or `uploaded.*`).
-  **`auto_https off` is mandatory in `self_signed` and `upload` and must never
-  be removed from the template's non-ACME branch.** The `lets_encrypt` branch
-  is the only place Caddy issues a certificate, and only for the instance's
-  own hostname. Tenant
-  hosting leaves stay on the per-server hosting Caddy. All other cert issuance
-  goes through `scripts/generate-self-signed-cert.mjs` (self-hosted,
+  current+retired overlap). The `:8443` leaf stays under the instance `certs/`
+  dir (`platform-ca.*`). Hostname sites that use Let's Encrypt obtain their
+  own certificate. Uploaded pairs are files beside the leaf.
+  Tenant hosting leaves stay on the per-server hosting Caddy. All other cert
+  issuance goes through `scripts/generate-self-signed-cert.mjs` (self-hosted,
   **Platform CA**) or an explicitly-configured uploaded pair. The
   `instance-certs-apply.yml` playbook is the runtime **leaf-only** cert-regen
-  path triggered by the admin public-URL apply action — it never passes
+  path triggered by the admin hostname apply — it never passes
   `TURBOPANEL_TLS_CA_ROTATE`. `ensureCa()` validates readable existing durable
   **Platform CA** files, rotates when requested, or mints a new durable root —
   and refuses to mint over an unreadable existing **Platform CA**. Rotation is
@@ -126,7 +166,7 @@ invalid `email ` line.
   root in the bundle until daemons ack `server.tls.trust.reconcile`. Daemons
   fetch the bundle from `GET /api/daemon/v1/instance/ca` unless
   `TURBOPANEL_TLS_PUBLIC` is set (404 → system trust store). Trust the
-  **Platform CA** in browsers/OS to avoid warnings on the default path. The
+  **Platform CA** in browsers/OS to avoid warnings on `:8443`. The
   **Organization CA** and org TLS library (`/api/client/v1/tls`, `/tls/ca`)
   are a separate per-organization store for managed-database / ProxySQL /
   replication leaves and must never write **Platform CA** paths — see
@@ -135,33 +175,39 @@ invalid `email ` line.
   or — only once the organization has opted in
   (`organization.options.acmeEnabled`, off by default) — a `managed`
   `lets_encrypt` row (`tlsMode: 'acme'`) that Caddy issues and renews on the
-  serving host. They are never issued by the Organization CA. The opt-in gate
-  is enforced both at `POST /tls` (creation) and at deploy time
+  serving host. They are never issued by the Organization CA, and the
+  organization's opt-in does not obtain a certificate for the panel. The
+  opt-in gate is enforced both at `POST /tls` (creation) and at deploy time
   (`hostingTlsWireFromResolved`), so a `managed` row created before the org
   opted out still can't wire `tlsMode: 'acme'` once the gate is off.
+  `pnpm check:instance-acme-boundary` fails the build if instance ACME code
+  references an organization's opt-in, or organization code references
+  instance ACME settings or the `origin` / `certificate` tables.
 - Override the resolved binary with `TURBOPANEL_CADDY` (and `TURBOPANEL_DENO`
   for Deno).
 
-There is **no** plaintext HTTP listener in the production Caddyfile. Co-located
-`:8880` lives only in the dev overlay Caddyfile.
+On a managed host `:8880` is the solver and redirect, not a second copy of the
+panel. The plaintext mirror of `:8443` lives only in the dev overlay Caddyfile,
+and the instance accepts it only when `TURBOPANEL_DEV_HTTP_CONTROL_PLANE=1`.
 
-Every rendered mode sets a global `header` block
+Every rendered site sets a global `header` block
 (`Strict-Transport-Security`, `X-Content-Type-Options: nosniff`,
-`X-Frame-Options: DENY`) on the instance site. HSTS applies even on the
-`self_signed` default: a browser that already trusts the leaf (Platform CA
+`X-Frame-Options: DENY`) on the instance site. HSTS applies on the Platform CA
+listener too: a browser that already trusts the leaf (Platform CA
 import, or an uploaded/publicly-trusted cert) should not be silently
 downgraded to plaintext on a later visit. This is **control-plane only** —
 tenant hosting sites are a separate, per-server Caddy config the daemon
 generates (`turbopaneld/src/deploy/ingress.ts`), which does not inherit these
 headers.
 
-## Daemon TLS trust model (3 paths)
+## Daemon TLS trust model
 
 The daemon validates the instance server cert on **every** connect — both chain
 trust **and** hostname (SAN). There is **no** insecure/skip-verification mode at
 runtime (the old `TURBOPANEL_TLS_INSECURE` daemon env was dead and was removed;
-`run.sh --insecure-tls` only affects the bootstrap `curl -k` downloads). Three
-valid configurations:
+`run.sh --insecure-tls` only affects the bootstrap `curl -k` downloads). Four
+valid configurations. A Let's Encrypt or uploaded hostname uses that name's
+certificate on `:443`. `:8443` remains the Platform CA path.
 
 | Path                          | Platform CA trust                                                                                                  | SAN requirement                                                                                                                                                                                                                                                                                                                                                                                                               | `GET /api/daemon/v1/instance/ca` |
 | ----------------------------- | ------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------- |
@@ -191,11 +237,9 @@ not “we are in development”:
   and the Deno CA route 404s (unlocking `run.sh`'s system-trust branch)
 - Plaintext `http://` (dev `:8880`) → no TLS flags
 
-Let’s Encrypt (`turbopanel_tls_mode=lets_encrypt`) and uploaded certificates
-(`upload`) for the **control-plane origin** are operator opt-in. The
-`self_signed` and `upload` branches keep `auto_https off`; only the
-`lets_encrypt` branch obtains a public certificate, and only for the instance
-hostname. A Cloudflare tunnel presents a
+Let’s Encrypt and uploaded certificates for a **control-plane hostname** are
+per-name sources on **Admin → Access**. The `:8443` Platform CA listener stays
+bound beside them. A Cloudflare tunnel presents a
 publicly-trusted cert at the edge; the origin can stay on the **Platform CA**.
 
 Dev overlay install commands also set

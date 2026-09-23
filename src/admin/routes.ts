@@ -77,6 +77,14 @@ import {
   reencryptAtRestSecrets,
   tryBeginReencryptSweep,
 } from "./reencrypt-secrets.ts";
+import { registerInstanceAccessAdminRoutes } from "./instance-access-routes.ts";
+import { registerInstanceUpdatesAdminRoutes } from "./instance-updates-routes.ts";
+import { registerInstanceHostnameAdminRoutes } from "./instance-hostname-routes.ts";
+import { recordInstanceAcmePreflightFailure } from "../features/install/instance-hostnames.ts";
+import {
+  PublicUrlsApplyPayloadError,
+  resolvePublicUrlsApplyPayload,
+} from "./public-urls-apply-payload.ts";
 import {
   extractAddresses,
   parseCellPurgeBatchBody,
@@ -248,6 +256,24 @@ export function registerAdminRoutes(app: Hono<AppEnv>, opts: {
 
     await setPublicUrls(db, parsed.urls);
     return c.json({ ok: true, urls: parsed.urls, applied: false });
+  });
+
+  registerInstanceHostnameAdminRoutes(admin, {
+    devSurface: opts.devSurface,
+    ...(opts.getEnv ? { getEnv: opts.getEnv } : {}),
+  });
+
+  registerInstanceAccessAdminRoutes(admin, {
+    runtime: opts.runtime,
+    ...(opts.getEnv ? { getEnv: opts.getEnv } : {}),
+    ...(opts.readPlatformCaBundle
+      ? { readPlatformCaBundle: opts.readPlatformCaBundle }
+      : {}),
+  });
+
+  registerInstanceUpdatesAdminRoutes(admin, {
+    runtime: opts.runtime,
+    ...(opts.getEnv ? { getEnv: opts.getEnv } : {}),
   });
 
   // Instance-wide Git provider applications: GitHub Apps and GitLab OAuth
@@ -519,14 +545,19 @@ export function registerAdminRoutes(app: Hono<AppEnv>, opts: {
     const body = await c.req.json().catch(() => null);
     const raw = (body as { url?: unknown } | null)?.url;
     if (raw !== null && typeof raw !== "string") {
-      return c.json({ error: "url must be a string, or null to clear it" }, 400);
+      return c.json(
+        { error: "url must be a string, or null to clear it" },
+        400,
+      );
     }
     const url = raw === null || raw.trim() === "" ? null : raw.trim();
 
     const dataEncryptionSecrets = c.get("dataEncryptionSecrets");
     if (url !== null && !dataEncryptionSecrets) {
       return c.json(
-        { error: "data encryption secrets are required to store a webhook URL" },
+        {
+          error: "data encryption secrets are required to store a webhook URL",
+        },
         503,
       );
     }
@@ -590,18 +621,38 @@ export function registerAdminRoutes(app: Hono<AppEnv>, opts: {
     }
 
     const snapshots = await registry.getSnapshots([serverId]);
-    if (!snapshots.get(serverId)?.connected) {
+    const snapshot = snapshots.get(serverId);
+    if (!snapshot?.connected) {
       return c.json(
         { ok: false, error: "co-located daemon disconnected" },
         503,
       );
     }
 
+    let applyPayload: Awaited<ReturnType<typeof resolvePublicUrlsApplyPayload>>;
+    try {
+      applyPayload = await resolvePublicUrlsApplyPayload(
+        db,
+        urlsResult.urls,
+        snapshot.daemonBuild?.version,
+        c.get("dataEncryptionSecrets"),
+        opts.getEnv?.() ?? {},
+      );
+    } catch (err) {
+      if (err instanceof PublicUrlsApplyPayloadError) {
+        return c.json({ ok: false, error: err.message }, 503);
+      }
+      throw err;
+    }
+
     const result = await waitForPublicUrlsApply(
       registry,
       serverId,
-      urlsResult.urls,
+      applyPayload,
     );
+    if (result.kind === "failed" || result.kind === "error") {
+      await recordInstanceAcmePreflightFailure(db, result.error);
+    }
     const response = publicUrlsApplyWaitToResponse(result);
     if (response.status === 200) {
       const commandQueue = getCommandQueue(c);

@@ -223,6 +223,23 @@ it("wireMessageToInboundEnvelope maps inbound wire types", () => {
 
   assertEquals(
     wireMessageToInboundEnvelope({
+      type: "instance-update-result",
+      id: "r6b",
+      at,
+      ok: false,
+      error: "below floor",
+    }),
+    {
+      kind: "instance-update-result",
+      requestId: "r6b",
+      at,
+      ok: false,
+      error: "below floor",
+    },
+  );
+
+  assertEquals(
+    wireMessageToInboundEnvelope({
       type: "public-urls-update-result",
       id: "r7",
       at,
@@ -463,6 +480,40 @@ it("outboundEnvelopeToWireMessage maps outbound kinds", () => {
   assertEquals(
     outboundEnvelopeToWireMessage({
       ...base,
+      kind: "public-urls-update",
+      urls: ["https://panel.example.com"],
+      hostnames: [{
+        host: "https://panel.example.com",
+        source: "lets-encrypt",
+      }],
+      instanceAcme: {
+        contactEmail: "ops@example.com",
+        tosAccepted: true,
+        directoryUrl: "https://acme-v02.api.letsencrypt.org/directory",
+        useStaging: false,
+      },
+    }),
+    {
+      type: "public-urls-update",
+      id: "req-1",
+      urls: ["https://panel.example.com"],
+      hostnames: [{
+        host: "https://panel.example.com",
+        source: "lets-encrypt",
+      }],
+      instanceAcme: {
+        contactEmail: "ops@example.com",
+        tosAccepted: true,
+        directoryUrl: "https://acme-v02.api.letsencrypt.org/directory",
+        useStaging: false,
+      },
+      at: base.at,
+    },
+  );
+
+  assertEquals(
+    outboundEnvelopeToWireMessage({
+      ...base,
       kind: "update",
       updateUrl: "https://example.com/update",
       updateSha256: "a".repeat(64),
@@ -472,6 +523,42 @@ it("outboundEnvelopeToWireMessage maps outbound kinds", () => {
       id: "req-1",
       updateUrl: "https://example.com/update",
       updateSha256: "a".repeat(64),
+      at: base.at,
+    },
+  );
+
+  assertEquals(
+    outboundEnvelopeToWireMessage({
+      ...base,
+      kind: "instance-update",
+      channel: "release",
+      targetVersion: "0.1.1",
+    }),
+    {
+      type: "instance-update",
+      id: "req-1",
+      channel: "release",
+      targetVersion: "0.1.1",
+      at: base.at,
+    },
+  );
+
+  const uiManifestUrl =
+    "https://github.com/TurboPanel/ui/releases/download/v0.1.1/manifest.json";
+  assertEquals(
+    outboundEnvelopeToWireMessage({
+      ...base,
+      kind: "instance-update",
+      channel: "release",
+      targetVersion: "0.1.1",
+      uiManifestUrl,
+    }),
+    {
+      type: "instance-update",
+      id: "req-1",
+      channel: "release",
+      targetVersion: "0.1.1",
+      uiManifestUrl,
       at: base.at,
     },
   );
@@ -676,6 +763,7 @@ it("validateDaemonInboundFrame validates ok-result and command messages", () => 
       "tunnel-token-result",
       "public-urls-update-result",
       "update-result",
+      "instance-update-result",
     ] as const
   ) {
     assertEquals(
@@ -1757,6 +1845,43 @@ it("validateDaemonInboundFrame rejects topology-report field shapes", () => {
     ).ok,
     false,
   );
+});
+
+it("validateDaemonInboundFrame accepts an instance-acme-issuance-event", () => {
+  const frame = {
+    type: "instance-acme-issuance-event",
+    at: VALID_AT,
+    hostname: "panel.example.com",
+    ok: false,
+    errorMessage: "tls alert",
+  };
+  const parsed = validateDaemonInboundFrame(JSON.stringify(frame));
+  assertEquals(parsed.ok, true);
+  if (!parsed.ok) return;
+  assertEquals(wireMessageToInboundEnvelope(parsed.message), null);
+});
+
+it("validateDaemonInboundFrame accepts instance ACME expiry and rejects a bad one", () => {
+  const ok = validateDaemonInboundFrame(
+    JSON.stringify({
+      type: "instance-acme-issuance-event",
+      at: VALID_AT,
+      hostname: "panel.example.com",
+      ok: true,
+      notAfter: "2027-01-01T00:00:00.000Z",
+    }),
+  );
+  assertEquals(ok.ok, true);
+  const bad = validateDaemonInboundFrame(
+    JSON.stringify({
+      type: "instance-acme-issuance-event",
+      at: VALID_AT,
+      hostname: "panel.example.com",
+      ok: true,
+      notAfter: "next year",
+    }),
+  );
+  assertEquals(bad.ok, false);
 });
 
 it("validateDaemonInboundFrame accepts an acme-issuance-event", () => {

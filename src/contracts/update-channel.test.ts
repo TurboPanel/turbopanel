@@ -15,7 +15,7 @@ import {
  * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
  * reports Deno suites as empty; keep this alias so analysis sees real tests.
  */
-const test = Deno.test.bind(Deno)
+const test = Deno.test.bind(Deno);
 
 const HERE = dirname(fromFileUrl(import.meta.url));
 /** The sibling daemon checkout, when this is the shared five-repo tree. */
@@ -54,7 +54,9 @@ test("assertValidUpdateChannelEnv throws the daemon's wording for an unknown cha
 });
 
 test("isUpdateChannel accepts exactly the daemon's vocabulary", () => {
-  for (const channel of UPDATE_CHANNELS) assertEquals(isUpdateChannel(channel), true);
+  for (const channel of UPDATE_CHANNELS) {
+    assertEquals(isUpdateChannel(channel), true);
+  }
   assertEquals(isUpdateChannel("stable"), false);
   assertEquals(isUpdateChannel(""), false);
   assertEquals(isUpdateChannel(undefined), false);
@@ -81,33 +83,27 @@ test("builtinChannelManifestUrl: trunk on the CDN, canary/rc/release on GitHub R
 });
 
 test("builtinChannelManifestUrl matches the daemon's table when the daemon checkout is beside this one", async () => {
-  let daemonSource: string;
+  let daemon: {
+    builtinChannelManifestUrl: (
+      channel: UpdateChannel,
+      kind?: "daemon" | "instance" | "ui",
+    ) => string | null;
+  };
   try {
-    daemonSource = await Deno.readTextFile(DAEMON_URLS_TS);
+    daemon = await import(DAEMON_URLS_TS);
   } catch {
     // CI checks this repo out alone; the daemon's own urls.test.ts pins
     // run.sh to the same table, so the three copies still meet there.
     return;
   }
-  const fn = daemonSource.match(
-    /export function builtinChannelManifestUrl\([\s\S]*?\n\}/,
-  );
-  if (!fn) throw new Error("builtinChannelManifestUrl not found in the daemon's urls.ts");
-  // Evaluate the daemon's switch the cheap way: substitute its constants.
-  const table = new Map<string, string>();
-  for (const m of fn[0].matchAll(/case "(\w+)":\s*\n\s*return `([^`]+)`;/g)) {
-    table.set(
-      m[1],
-      m[2]
-        .replace("${DL_BASE_URL}", "https://dl.trbp.nl")
-        .replace("${GITHUB_RELEASES_REPO}", "TurboPanel/turbopaneld"),
-    );
+  const kinds = ["daemon", "instance", "ui"] as const;
+  for (const kind of kinds) {
+    for (const channel of UPDATE_CHANNELS) {
+      assertEquals(
+        builtinChannelManifestUrl(channel, kind),
+        daemon.builtinChannelManifestUrl(channel, kind),
+        `${kind} ${channel}`,
+      );
+    }
   }
-  const expected = new Map<string, string>();
-  for (const channel of UPDATE_CHANNELS as readonly UpdateChannel[]) {
-    const url = builtinChannelManifestUrl(channel);
-    if (url !== null) expected.set(channel, url);
-  }
-  assertEquals(table.size, 4);
-  assertEquals(table, expected);
 });

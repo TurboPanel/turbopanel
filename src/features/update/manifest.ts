@@ -1,23 +1,27 @@
-import { MANIFEST_CACHE_MS } from './constants.ts'
-import { builtinChannelManifestUrl, type UpdateChannel } from '../../contracts/update-channel.ts'
+import { MANIFEST_CACHE_MS } from "./constants.ts";
+import {
+  builtinChannelManifestUrl,
+  type ReleaseArtifactKind,
+  type UpdateChannel,
+} from "../../contracts/update-channel.ts";
 
-export { DL_BASE_URL } from '../../contracts/update-channel.ts'
+export { DL_BASE_URL } from "../../contracts/update-channel.ts";
 
 export type UpdateManifestTarget = {
-  commit: string
-  buildId: string
-  builtAt: string
-  channel: string
-  manifestUrl: string
+  commit: string;
+  buildId: string;
+  builtAt: string;
+  channel: string;
+  manifestUrl: string;
   /** The release version the manifest names (rc/release manifests carry one; trunk drops do not). */
-  version?: string
-}
+  version?: string;
+};
 
 function requireHttpsUrl(url: string): boolean {
   try {
-    return new URL(url).protocol === 'https:'
+    return new URL(url).protocol === "https:";
   } catch {
-    return false
+    return false;
   }
 }
 
@@ -30,35 +34,37 @@ function requireHttpsUrl(url: string): boolean {
  */
 async function fetchManifestUncached(
   channel: UpdateChannel,
+  kind: ReleaseArtifactKind,
 ): Promise<UpdateManifestTarget | null> {
   try {
-    const manifestUrl = builtinChannelManifestUrl(channel)
-    if (manifestUrl === null || !requireHttpsUrl(manifestUrl)) return null
+    const manifestUrl = builtinChannelManifestUrl(channel, kind);
+    if (manifestUrl === null || !requireHttpsUrl(manifestUrl)) return null;
 
     const manifestRes = await fetch(manifestUrl, {
       signal: AbortSignal.timeout(8000),
-    })
-    if (!manifestRes.ok) return null
+    });
+    if (!manifestRes.ok) return null;
 
     const manifestJson = JSON.parse(await manifestRes.text()) as {
-      commit?: unknown
-      buildId?: unknown
-      builtAt?: unknown
-      channel?: unknown
-      version?: unknown
-    }
+      commit?: unknown;
+      buildId?: unknown;
+      builtAt?: unknown;
+      channel?: unknown;
+      version?: unknown;
+    };
 
-    const { commit, buildId, builtAt, channel: manifestChannel } = manifestJson
-    const version = typeof manifestJson.version === 'string' && manifestJson.version.trim()
-      ? manifestJson.version.trim()
-      : undefined
+    const { commit, buildId, builtAt, channel: manifestChannel } = manifestJson;
+    const version =
+      typeof manifestJson.version === "string" && manifestJson.version.trim()
+        ? manifestJson.version.trim()
+        : undefined;
     if (
-      typeof commit !== 'string' || !commit ||
-      typeof buildId !== 'string' || !buildId ||
-      typeof builtAt !== 'string' || !builtAt ||
-      typeof manifestChannel !== 'string' || !manifestChannel
+      typeof commit !== "string" || !commit ||
+      typeof buildId !== "string" || !buildId ||
+      typeof builtAt !== "string" || !builtAt ||
+      typeof manifestChannel !== "string" || !manifestChannel
     ) {
-      return null
+      return null;
     }
 
     return {
@@ -68,9 +74,9 @@ async function fetchManifestUncached(
       channel: manifestChannel,
       manifestUrl,
       ...(version ? { version } : {}),
-    }
+    };
   } catch {
-    return null
+    return null;
   }
 }
 
@@ -81,75 +87,93 @@ async function fetchManifestUncached(
  * "update available" tracks local daemon changes instead of the public rail.
  * Never set in production; the provider does its own caching.
  */
-export type UpdateManifestProvider = () => Promise<UpdateManifestTarget | null>
+export type UpdateManifestProvider = () => Promise<UpdateManifestTarget | null>;
 
-let updateManifestProvider: UpdateManifestProvider | null = null
+let updateManifestProvider: UpdateManifestProvider | null = null;
 
 export function setUpdateManifestProvider(
   provider: UpdateManifestProvider | null,
 ): void {
-  updateManifestProvider = provider
+  updateManifestProvider = provider;
 }
 
 type CacheEntry = {
-  manifest: UpdateManifestTarget | null
-  expiresAt: number
+  manifest: UpdateManifestTarget | null;
+  expiresAt: number;
+};
+
+function manifestCacheKey(
+  channel: UpdateChannel,
+  kind: ReleaseArtifactKind,
+): string {
+  return `${kind}:${channel}`;
 }
 
-const cache = new Map<UpdateChannel, CacheEntry>()
-const inflight = new Map<UpdateChannel, Promise<UpdateManifestTarget | null>>()
+const cache = new Map<string, CacheEntry>();
+const inflight = new Map<string, Promise<UpdateManifestTarget | null>>();
 
 /** Reset manifest cache — for tests only. */
 export function resetUpdateManifestCacheForTests(): void {
-  cache.clear()
-  inflight.clear()
+  cache.clear();
+  inflight.clear();
 }
 
 /** Seed manifest cache — for tests only. */
 export function seedUpdateManifestCacheForTests(
   manifest: UpdateManifestTarget | null,
-  channel: UpdateChannel = 'trunk',
+  channel: UpdateChannel = "trunk",
+  kind: ReleaseArtifactKind = "daemon",
 ): void {
-  cache.set(channel, { manifest, expiresAt: Date.now() + MANIFEST_CACHE_MS })
-  inflight.delete(channel)
+  const key = manifestCacheKey(channel, kind);
+  cache.set(key, { manifest, expiresAt: Date.now() + MANIFEST_CACHE_MS });
+  inflight.delete(key);
 }
 
+/**
+ * Resolve one channel's manifest.
+ *
+ * The dev overlay provider applies only to the daemon kind, so a local
+ * daemon checkout still drives the fleet-update view. Instance and UI
+ * always read their own rail.
+ */
 export async function resolveUpdateManifest(
   channel: UpdateChannel,
+  kind: ReleaseArtifactKind = "daemon",
 ): Promise<UpdateManifestTarget | null> {
-  if (updateManifestProvider) {
-    return await updateManifestProvider()
+  if (kind === "daemon" && updateManifestProvider) {
+    return await updateManifestProvider();
   }
 
-  const now = Date.now()
-  const cached = cache.get(channel)
+  const key = manifestCacheKey(channel, kind);
+  const now = Date.now();
+  const cached = cache.get(key);
   if (cached && now < cached.expiresAt) {
-    return cached.manifest
+    return cached.manifest;
   }
 
-  const pending = inflight.get(channel)
+  const pending = inflight.get(key);
   if (pending) {
-    return pending
+    return pending;
   }
 
-  const lookup = fetchManifestUncached(channel)
+  const lookup = fetchManifestUncached(channel, kind)
     .then((manifest) => {
-      cache.set(channel, {
+      cache.set(key, {
         manifest,
         expiresAt: Date.now() + MANIFEST_CACHE_MS,
-      })
-      inflight.delete(channel)
-      return manifest
+      });
+      inflight.delete(key);
+      return manifest;
     })
     .catch(() => {
-      inflight.delete(channel)
-      cache.set(channel, {
+      inflight.delete(key);
+      cache.set(key, {
         manifest: null,
         expiresAt: Date.now() + MANIFEST_CACHE_MS,
-      })
-      return null
-    })
-  inflight.set(channel, lookup)
+      });
+      return null;
+    });
+  inflight.set(key, lookup);
 
-  return lookup
+  return lookup;
 }

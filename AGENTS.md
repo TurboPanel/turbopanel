@@ -37,8 +37,8 @@ TurboPanel is named for speed; keep it fast on every path.
   `/opt/turbopanel/vendor/<tool>/current`; install only when the pinned version
   is missing. Don't re-download or re-`pnpm install` when nothing changed. Caddy
   follows the same `vendor/caddy/<version>/caddy` + `current` layout (no
-  `versions/` subdir); `scripts/download-caddy.mjs` and the `caddy` Ansible role
-  are aligned.
+  `versions/` subdir); `scripts/download-caddy.mjs` (pinned **2.11.4**, SHA-256
+  verified) and the `caddy` Ansible role are aligned.
 - **Idempotent fast-paths.** Bootstrap/install steps must short-circuit when
   already satisfied (the Ansible roles do; mirror that in scripts).
 - **Avoid redundant work.** No polling loops or periodic git/`systemctl` forks
@@ -353,7 +353,36 @@ guard; `pnpm test:do` alone does not.
   connection (that is the update path) but the command consumer fails its
   commands with `daemon_unsupported`; a build reporting no version is
   **unknown** and passes — flag, not refusal, until the fleet is re-enrolled
-  on tagged builds. Both wires are expand-only by convention.
+  on tagged builds. The other direction lives on the daemon
+  (`turbopaneld/src/instance/version-wire.ts`): every daemon REST response
+  (including non-OK and the 401 before a refresh) and the cell attach
+  `{ type: "version", instanceVersion }` frame (`src/daemon/attach-version.ts`,
+  sent from `deno-ws.ts` and the Durable Object upgrade) feed
+  `MIN_SUPPORTED_INSTANCE_VERSION`. A response or frame that omits the version
+  clears the daemon's last observation back to `unknown`. An unsupported
+  control plane is flagged with the greppable `instance-version:` log and the
+  daemon keeps reconnecting; `unknown` (no header and no field — an older
+  instance) passes silently. Each floor tolerates every peer semver at or
+  above the constant. Today both floors are **`0.1.0`** against package
+  **`0.1.1`**, so a `0.1.x` peer is in window and a `0.0.x` peer is not. The
+  window is allowed to trail the current release by several minor versions;
+  it is not a same-version lock and it does not impose an upgrade order.
+  Bump `MIN_SUPPORTED_DAEMON_VERSION` and `MIN_SUPPORTED_INSTANCE_VERSION`
+  together, in the same change, and record why in this note and in
+  `turbopaneld/AGENTS.md`. Never raise either floor silently.
+  Dispatching `instance-update` does not gate on the daemon version (the
+  daemon only runs the reconcile). The downgrade guard lives on the daemon:
+  it refuses a target below its own `MIN_SUPPORTED_INSTANCE_VERSION`.
+  `DAEMON_FEATURE_MIN_VERSIONS` (same map in both `version-wire.ts` files) is
+  the peer-version feature gate, distinct from the metrics capability plan.
+  A panel-visible admin feature that depends on a daemon-rendered artifact
+  adds an entry here; the UI phase calls `resolveDaemonCapabilities` and does
+  not re-implement semver comparison. An unknown peer version is **not**
+  supported for a feature (the opposite default from the floor's `unknown`).
+  The first entry is `instance-cert-sources-per-hostname` at daemon **`0.1.1`**,
+  the release that renders per-hostname certificate sources in
+  `turbopaneld/orchestration/roles/instance-launch/templates/Caddyfile.j2`.
+  Both wires are expand-only by convention.
 - **`pnpm notices:generate` / `notices:check`** — `THIRD_PARTY_NOTICES.md` from
   `pnpm-lock.yaml` plus the JSR/npm graph in `deno.lock`. Wired into `test:hook`
   and CI `build.yml`.
@@ -366,6 +395,13 @@ guard; `pnpm test:do` alone does not.
 - **`pnpm check:ca-boundary`** — Organization CA sources (`src/lib/tls/`,
   `src/client/tls/`, `src/features/tls/`) must not reference Platform CA paths. See
   `src/lib/tls/AGENTS.md`. Wired into `test:hook` and CI `build.yml`.
+- **`pnpm check:instance-acme-boundary`** — instance ACME
+  (`src/features/install/instance-acme-settings.ts`, `instance-hostnames.ts`,
+  `instance-certificates.ts`) must not reference an organization's ACME opt-in,
+  and organization code must not reference instance ACME settings or the
+  `origin` / `certificate` tables. Wired into `test:hook` and CI `build.yml`
+  immediately after `check:ca-boundary`. See **Instance hostnames and instance
+  ACME** below.
 - `pnpm cf-typegen` — regenerate `worker-configuration.d.ts`. Keep the
   `Cloudflare.Env` / global `Env` aliases that extend `CloudflareBindings`
   (vitest `cloudflare:test` `env` is typed as `Cloudflare.Env`, not the retired
@@ -374,6 +410,40 @@ guard; `pnpm test:do` alone does not.
   standalone `pnpm cert:generate` / `pnpm caddy:install` scripts for managed
   hosts (the scripts remain for manual use).
 
+### Instance hostnames and instance ACME
+
+The control plane's own names live on `origin` (export `instanceHostname`),
+not in an organization's `tls` rows. Each row stores the normalized public URL
+entry plus a certificate source: `platform-ca` (the Platform CA leaf Ansible
+already renders), `uploaded` (a `certificate` row whose key is a sealed
+`tpsecret` envelope), or `lets-encrypt`. Let's Encrypt is refused for loopback,
+private, and wildcard names. Issuance state (`acme_last_attempt_at`,
+`acme_last_error`, `not_after`) is per hostname.
+
+Instance-wide ACME knobs (contact email, terms acceptance, directory URL,
+staging) are the `INSTANCE_ACME_SETTINGS` setting row. That group is
+independent of every organization's ACME opt-in: instance ACME code does not
+read or write it, and organization code does not read instance ACME.
+`GET/PUT /api/admin/v1/instance/public-urls` still round-trips the flat list;
+`getPublicUrls` / `setPublicUrls` project it onto `origin` with source
+`platform-ca`, and the `TURBOPANEL_PUBLIC_URLS` setting stays in sync so cert
+SAN generation and webhook reachability keep calling them.
+
+`POST /api/admin/v1/instance/public-urls/apply` sends `public-urls-update`.
+Daemons at or above `instance-cert-sources-per-hostname` (`0.1.1`) also
+receive `hostnames` and, when any source is `lets-encrypt`, `instanceAcme`.
+Uploaded `keyPem` values are decrypted for that one hop. Older daemons get
+`urls` only. Before a `lets-encrypt` hostname is applied, the daemon
+publishes an HTTP-01 nonce and requires
+`http://<hostname>/.well-known/acme-challenge/<nonce>` to reach
+`127.0.0.1:8880`. A miss fails the apply; the admin route records that
+error on the hostname. Issuance results come back as
+`instance-acme-issuance-event` and update `origin.acme_last_attempt_at` /
+`acme_last_error`. A successful probe may also include `notAfter`, which
+is stored on the hostname. A failure does not clear `notAfter`. Changing
+the source away from Let's Encrypt does. That message is not the tenant
+`acme-issuance-event` stream.
+
 ### Systemd (dev services run as the dev user; production uses dedicated users)
 
 Installed and managed by the daemon via the `instance-launch` Ansible role:
@@ -381,7 +451,7 @@ Installed and managed by the daemon via the `instance-launch` Ansible role:
 | Unit                          | User (dev)       | User (production) | Notes                                                            |
 | ----------------------------- | ---------------- | ----------------- | ---------------------------------------------------------------- |
 | `turbopanel-instance.service` | current dev user | `tpctrl:tp`       | Deno instance on the Unix socket                                 |
-| `turbopanel-caddy.service`    | current dev user | `tpcaddy:tp`      | TLS + reverse proxy on `:8443` (`GOMAXPROCS=1`, `CPUQuota=100%`) |
+| `turbopanel-caddy.service`    | current dev user | `tpcaddy:tp`      | TLS + reverse proxy. `:8443` Platform CA and `:8880` solver always. `:443` only when hosting Caddy is not installed; on a combined host hosting Caddy owns `:443` and reverse-proxies here (`GOMAXPROCS=1`, `CPUQuota=100%`) |
 | `turbopanel-ui.service`       | current dev user | `tpctrl:tp`       | Expo web dev server (`:8081`, dev only)                          |
 | `turbopaneld.service`         | current dev user | `tp:tp`           | runs Ansible; has sudo (production only)                         |
 
@@ -462,16 +532,21 @@ dev user. In **production** it is **`2770 tp:tp`** (setgid) so the
 | `TURBOPANEL_UI_ROOT`             | `/opt/turbopanel/share/ui`              | Directory of `expo export --platform web` output (local manual dev typically sets `../ui/dist`)                                                                                                                                                                                                                                                  |
 | `TURBOPANEL_DEV_SURFACE`         | —                                       | `1` enables the developer surface + dev-only auth relaxations. Written only by the daemon's `turbopanel-instance.service.j2` for co-located Deno source-mode dev with `TURBOPANEL_UI_MODE=dev`; never on managed hosts                                                                                                                         |
 | `TURBOPANEL_INSTANCE_SERVICE`    | `turbopanel-instance`                   | systemd unit the developer surface restarts after Upgrade System; set it only for a non-standard unit name                                                                                                                                                                                                                                       |
-| `CADDY_PORT`                     | `8443`                                  | HTTPS listen port (default `self_signed` / `upload`; `lets_encrypt` binds `443`)                                                                                                                                                                                                                                                               |
-| `CADDY_TLS_CERT`                 | `./certs/self-signed.crt`               | Server leaf certificate (signed by the **Platform CA**; stays under the instance `certs/` dir). Unused in `lets_encrypt`.                                                                                                                                                                                                                      |
-| `CADDY_TLS_KEY`                  | `./certs/self-signed.key`               | Server leaf private key. Unused in `lets_encrypt`.                                                                                                                                                                                                                                                                                            |
-| `TURBOPANEL_TLS_PUBLIC`          | —                                       | When `1` / `true`, the Deno CA route 404s (daemons use the system trust store) and install commands omit `--insecure-tls` even on a non-443 port. Set by `instance-launch` when `turbopanel_tls_mode=lets_encrypt` or `turbopanel_tls_public` is true. Hosted Workers already 404 without `TURBOPANEL_TLS_CA_PEM_B64`. |
+| `CADDY_PORT`                     | `8443`                                  | Platform CA recovery listener. Always bound. A Let's Encrypt or uploaded hostname is an additional site on port 443.                                                                                                                                                                                                                          |
+| `CADDY_TLS_CERT`                 | `./certs/self-signed.crt`               | Leaf path the **development** Caddyfile reads. A managed Caddyfile bakes `platform-ca.*` (and `self-signed.*` linked to it) plus per-hostname files at render time.                                                                                                                                                                           |
+| `CADDY_TLS_KEY`                  | `./certs/self-signed.key`               | Leaf key path the **development** Caddyfile reads. The managed template bakes the key path beside `CADDY_TLS_CERT`.                                                                                                                                                                                                                            |
+| `TURBOPANEL_TLS_PUBLIC`          | —                                       | When `1` / `true`, the Deno CA route 404s (daemons use the system trust store) and install commands omit `--insecure-tls` even on a non-443 port. Set by `instance-launch` when any hostname is `lets-encrypt` or `turbopanel_tls_public` is true. `:8443` still presents the Platform CA. Hosted Workers already 404 without `TURBOPANEL_TLS_CA_PEM_B64`. |
 | `TURBOPANEL_TLS_CA`              | `/var/lib/turbopanel/tls/ca.crt`        | Durable **Platform CA** (override; default is `${TURBOPANEL_STATE_DIR}/tls/ca.crt`)                                                                                                                                                                                                                                                              |
 | `TURBOPANEL_TLS_CA_KEY`          | `/var/lib/turbopanel/tls/ca.key`        | Durable **Platform CA** private key                                                                                                                                                                                                                                                                                                              |
 | `TURBOPANEL_TLS_CA_BUNDLE`       | `/var/lib/turbopanel/tls/ca-bundle.pem` | Current+retired **Platform CA** PEM bundle served at `GET /api/daemon/v1/instance/ca`                                                                                                                                                                                                                                                            |
 | `TURBOPANEL_TLS_EXTRA_SANS`      | —                                       | Comma-separated DNS names for the server cert (e.g. `turbopanel.lan`)                                                                                                                                                                                                                                                                            |
 | `TURBOPANEL_TRUSTED_PROXY_CIDRS` | `127.0.0.0/8,::1/128`                   | Peer addresses whose `CF-Connecting-IP` / `X-Forwarded-For` the instance believes. Set it when a Cloudflare Tunnel connector or other reverse proxy runs on a **different host** than the instance. **Replaces** the loopback default — include loopback explicitly if Caddy is still co-located. See **Caddy (production) → Server addresses**. |
-| `TURBOPANEL_PUBLIC_URLS`         | —                                       | Comma-separated list of URLs/hosts this control plane is reachable at (e.g. `https://panel.example.com,https://huey.lan:8443`). Persisted in the `setting` table by the admin API; read by `generate-self-signed-cert.mjs` to derive cert SANs. Also consulted by `resolvePublicBaseUrl` as the preferred install-command host.                  |
+| `TURBOPANEL_PUBLIC_URLS`         | —                                       | Flat projection of the `platform-ca` hostnames (e.g. `https://panel.example.com,https://huey.lan:8443`). The admin API persists hostname rows on `origin`; this `setting` key stays in sync so cert SAN generation and webhook reachability keep calling `getPublicUrls` / `setPublicUrls`. **Admin → Access → Hostnames** is the editor. |
+| `CADDY_HTTP_PORT`                | `8880`                                  | On a managed host, the HTTP-01 solver. Other paths redirect to `:8443`. On co-located dev, the plaintext mirror (accepted only with `TURBOPANEL_DEV_HTTP_CONTROL_PLANE=1`). |
+| `TURBOPANEL_INSTANCE_ACME__CONTACT_EMAIL` | unset                            | Contact email for this control plane's Let's Encrypt account. Env wins over **Admin → Access → Certificates** and is read-only there. Independent of every organization's Let's Encrypt opt-in. |
+| `TURBOPANEL_INSTANCE_ACME__TOS_ACCEPTED` | `false`                            | Terms acceptance for that account. Same env-wins rule. |
+| `TURBOPANEL_INSTANCE_ACME__DIRECTORY_URL` | Let's Encrypt production directory | ACME directory URL. Same env-wins rule. |
+| `TURBOPANEL_INSTANCE_ACME__USE_STAGING` | `false`                             | `true` selects the Let's Encrypt staging directory. Same env-wins rule. |
 
 Path resolution lives in `src/platform/deno/server-paths.ts`. It ships **FHS defaults** —
 config `/etc/turbopanel`, state `/var/lib/turbopanel`, logs
@@ -1048,8 +1123,25 @@ src/
 - `src/admin/routes.ts` — admin surface (`/api/admin/v1`); **now mounted** on
   both runtimes; gated to `superadmin` or `admin` via
   `createAdminAccessMiddleware`; dev-only OpenAPI/Scalar;
-  `GET/PUT /instance/public-urls` persists `TURBOPANEL_PUBLIC_URLS` in the
-  `setting` table; `GET/PUT /settings/signup` toggles public sign-up via
+  `GET/PUT /instance/public-urls` persists the flat public-URL projection;
+  `GET/PUT /instance/hostnames`, `GET/POST /instance/certificates`,
+  `PATCH /instance/certificates/:id/hostnames`, and `GET/PUT /instance/acme`
+  manage per-name certificate source and instance ACME settings (independent
+  of any organization's ACME opt-in); `GET /instance/daemon` reports the
+  co-located daemon's `resolveDaemonCapabilities` snapshot (`{ applicable: false }`
+  on Workers, and it must not wake a cell); `GET /instance/updates` reports the
+  installed control-plane version (`INSTANCE_VERSION` plus `resolveInstanceRevision`)
+  and the co-located daemon's `daemonBuild` beside each channel manifest target;
+  `POST /instance/updates/instance` enqueues `instance-update` (202, Deno only —
+  Workers 422, a channel other than canary/rc/release 422, no connected daemon
+  503) and `POST /instance/updates/daemon` enqueues the existing `update` cell
+  message for the co-located host (the per-server update route refuses that
+  host); `GET /instance/platform-ca` and
+  `POST /instance/platform-ca/trust-reconcile` are Deno-only Platform CA read
+  and the existing `server.tls.trust.reconcile` fan-out; `GET /instance/trusted-proxies`
+  is the read-only effective `TURBOPANEL_TRUSTED_PROXY_CIDRS` list; `POST /instance/tunnel-token`
+  shares `dispatchInstanceTunnelToken` with the developer route (write-only;
+  empty token tears the tunnel down); `GET/PUT /settings/signup` toggles public sign-up via
   `IS_SIGNUP_ENABLED`; `GET/PUT /settings/email` and
   `GET/PUT /settings/auth-providers` (GitHub/Google OAuth client id/secret;
   env-wins `TURBOPANEL_AUTH_PROVIDERS__*`) persist system email and OAuth

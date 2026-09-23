@@ -23,10 +23,12 @@ import type {
   DaemonCellRegistry,
   PendingRequestRecord,
 } from "../contracts/cell.ts";
+import type { DaemonOutboundEnvelope } from "../contracts/cell-protocol.ts";
 import { ADMIN_API_PREFIX } from "../app/surfaces.ts";
 import { parseTestSecretsConfig } from "../test-fixtures/secrets.ts";
 import type { Db } from "../db/connection.ts";
 import { server } from "../db/schema.ts";
+import { mintSelfSignedCertificate } from "../lib/tls/self-signed.ts";
 import { registerAdminRoutes } from "./routes.ts";
 import { registerAdminTierRoutes } from "./tier-routes.ts";
 
@@ -49,6 +51,7 @@ function jsonBody<T>(res: Response): Promise<T> {
 function createCell(opts: Readonly<{
   wait?: WaitFn;
   purgeError?: unknown;
+  enqueued?: DaemonOutboundEnvelope[];
 }> = {}): DaemonCell {
   const noopAsync = () => Promise.resolve();
   return {
@@ -78,15 +81,17 @@ function createCell(opts: Readonly<{
         connected: false,
         ...patch,
       }),
-    enqueue: (outbound) =>
-      Promise.resolve({
+    enqueue: (outbound) => {
+      opts.enqueued?.push(outbound);
+      return Promise.resolve({
         serverId: "unused",
         requestId: outbound.requestId,
         requestKind: outbound.kind,
         status: "queued" as const,
         createdAt: outbound.at,
         expiresAt: outbound.at,
-      }),
+      });
+    },
     markSent: noopAsync,
     handleInbound: () => Promise.resolve(null),
     getRequest: () => Promise.resolve(null),
@@ -124,14 +129,16 @@ function createCell(opts: Readonly<{
 
 function createRegistry(opts: Readonly<{
   onlineIds?: string[];
-  snapshots?: Map<string, { connected: boolean }>;
+  snapshots?: Map<string, { connected: boolean; daemonVersion?: string }>;
   wait?: WaitFn;
   purgeError?: unknown;
   purgeThrows?: unknown;
+  enqueued?: DaemonOutboundEnvelope[];
 }> = {}): DaemonCellRegistry {
   const cell = createCell({
     ...(opts.wait ? { wait: opts.wait } : {}),
     ...(opts.purgeError !== undefined ? { purgeError: opts.purgeError } : {}),
+    ...(opts.enqueued ? { enqueued: opts.enqueued } : {}),
   });
   return {
     getCell: () => cell,
@@ -147,6 +154,15 @@ function createRegistry(opts: Readonly<{
             updatedAt: new Date().toISOString(),
             connected: snap.connected,
             lastInboundAt: new Date().toISOString(),
+            ...(snap.daemonVersion
+              ? {
+                daemonBuild: {
+                  commit: "abc",
+                  buildId: "build",
+                  version: snap.daemonVersion,
+                },
+              }
+              : {}),
           });
         }
       }
@@ -198,6 +214,7 @@ async function buildApp(opts: Readonly<{
   withDataEncryption?: boolean;
   devSurface?: boolean;
   getEnv?: () => Record<string, string | undefined>;
+  readPlatformCaBundle?: () => Promise<string>;
   colocatedServerId?: string;
   commandQueue?: { enqueue: (envelope: unknown) => Promise<void> };
   registerTiers?: boolean;
@@ -241,10 +258,11 @@ async function buildApp(opts: Readonly<{
     secrets,
     runtime: opts.runtime ?? "deno",
     devSurface: opts.devSurface ?? false,
-    ...(opts.runtime === "workers"
-      ? {}
-      : { collectInstanceIps: () => [] }),
+    ...(opts.runtime === "workers" ? {} : { collectInstanceIps: () => [] }),
     ...(opts.getEnv ? { getEnv: opts.getEnv } : {}),
+    ...(opts.readPlatformCaBundle
+      ? { readPlatformCaBundle: opts.readPlatformCaBundle }
+      : {}),
     ...(opts.registerTiers
       ? {
         registerTiers: (admin: Hono<AppEnv>) =>
@@ -610,6 +628,38 @@ test("POST /instance/public-urls/apply returns 200 and fans out via commandQueue
   assertEquals(await res.json(), { ok: true, applied: true });
 });
 
+test("POST /instance/public-urls/apply returns the HTTP-01 preflight error", async () => {
+  const serverId = crypto.randomUUID();
+  const error =
+    "Let's Encrypt HTTP-01 preflight failed for panel.example.com: http://panel.example.com/.well-known/acme-challenge/abc did not reach 127.0.0.1:8880 (HTTP 404)";
+  const { app, cookie } = await buildApp({
+    colocatedServerId: serverId,
+    registry: createRegistry({
+      snapshots: new Map([[serverId, { connected: true }]]),
+      wait: () =>
+        Promise.resolve({
+          serverId,
+          requestId: "req-preflight",
+          requestKind: "public-urls-update",
+          status: "failed",
+          createdAt: new Date().toISOString(),
+          expiresAt: new Date().toISOString(),
+          error,
+        }),
+    }),
+  });
+  const res = await app.request(
+    `${ADMIN_API_PREFIX}/instance/public-urls/apply`,
+    {
+      method: "POST",
+      headers: { Cookie: cookie, "content-type": "application/json" },
+      body: "{}",
+    },
+  );
+  assertEquals(res.status, 500);
+  assertEquals(await res.json(), { ok: false, applied: false, error });
+});
+
 test("GET /daemon/addresses returns empty fleet list", async () => {
   const { app, cookie } = await buildApp();
   const res = await app.request(`${ADMIN_API_PREFIX}/daemon/addresses`, {
@@ -784,4 +834,393 @@ test("instance-wide forge collection routes are reachable for an admin session",
     headers: { Cookie: cookie },
   });
   assertEquals(typeof del.status, "number");
+});
+
+test("instance hostname, certificate, and ACME routes cover validation branches", async () => {
+  const { app, cookie } = await buildApp();
+  const headers = { Cookie: cookie, "content-type": "application/json" };
+
+  const listed = await app.request(`${ADMIN_API_PREFIX}/instance/hostnames`, {
+    headers: { Cookie: cookie },
+  });
+  assertEquals(listed.status, 200);
+  assertEquals(await listed.json(), { ok: true, hostnames: [] });
+
+  const missing = await app.request(`${ADMIN_API_PREFIX}/instance/hostnames`, {
+    method: "PUT",
+    headers,
+    body: JSON.stringify({}),
+  });
+  assertEquals(missing.status, 400);
+
+  const privateAcme = await app.request(
+    `${ADMIN_API_PREFIX}/instance/hostnames`,
+    {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({
+        hostnames: [{ host: "10.1.2.3", source: "lets-encrypt" }],
+      }),
+    },
+  );
+  assertEquals(privateAcme.status, 422);
+  const privateBody = await jsonBody<{ ok: boolean; invalid: string[] }>(
+    privateAcme,
+  );
+  assertEquals(privateBody.ok, false);
+  assertEquals(privateBody.invalid, ["10.1.2.3"]);
+
+  const wildcard = await app.request(`${ADMIN_API_PREFIX}/instance/hostnames`, {
+    method: "PUT",
+    headers,
+    body: JSON.stringify({
+      hostnames: [{ host: "*.example.com", source: "lets-encrypt" }],
+    }),
+  });
+  assertEquals(wildcard.status, 422);
+
+  const saved = await app.request(`${ADMIN_API_PREFIX}/instance/hostnames`, {
+    method: "PUT",
+    headers,
+    body: JSON.stringify({
+      hostnames: [{ host: "https://panel.example.com", source: "platform-ca" }],
+    }),
+  });
+  assertEquals(saved.status, 200);
+  const savedBody = await jsonBody<
+    { hostnames: { host: string; source: string }[] }
+  >(
+    saved,
+  );
+  assertEquals(savedBody.hostnames[0]?.host, "https://panel.example.com");
+  assertEquals(savedBody.hostnames[0]?.source, "platform-ca");
+
+  const certs = await app.request(`${ADMIN_API_PREFIX}/instance/certificates`, {
+    headers: { Cookie: cookie },
+  });
+  assertEquals(certs.status, 200);
+
+  const badCert = await app.request(
+    `${ADMIN_API_PREFIX}/instance/certificates`,
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ label: "leaf", certPem: "nope", keyPem: "nope" }),
+    },
+  );
+  assertEquals(badCert.status, 422);
+
+  const missingCert = await app.request(
+    `${ADMIN_API_PREFIX}/instance/certificates/${crypto.randomUUID()}/hostnames`,
+    {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({ hosts: ["panel.example.com"] }),
+    },
+  );
+  assertEquals(missingCert.status, 404);
+
+  const acme = await app.request(`${ADMIN_API_PREFIX}/instance/acme`, {
+    headers: { Cookie: cookie },
+  });
+  assertEquals(acme.status, 200);
+  const acmeBody = await jsonBody<
+    { settings: Record<string, { source: string }> }
+  >(acme);
+  assertExists(acmeBody.settings.TURBOPANEL_INSTANCE_ACME__DIRECTORY_URL);
+
+  const acmePut = await app.request(`${ADMIN_API_PREFIX}/instance/acme`, {
+    method: "PUT",
+    headers,
+    body: JSON.stringify({
+      contactEmail: "ops@example.com",
+      tosAccepted: true,
+    }),
+  });
+  assertEquals(acmePut.status, 200);
+
+  const noKey = await buildApp({ withDataEncryption: false });
+  const sealed = await noKey.app.request(
+    `${ADMIN_API_PREFIX}/instance/certificates`,
+    {
+      method: "POST",
+      headers: { Cookie: noKey.cookie, "content-type": "application/json" },
+      body: JSON.stringify({ label: "leaf", certPem: "nope", keyPem: "nope" }),
+    },
+  );
+  assertEquals(sealed.status, 503);
+
+  const acmeNoKey = await noKey.app.request(
+    `${ADMIN_API_PREFIX}/instance/acme`,
+    {
+      method: "PUT",
+      headers: { Cookie: noKey.cookie, "content-type": "application/json" },
+      body: JSON.stringify({ contactEmail: "ops@example.com" }),
+    },
+  );
+  assertEquals(acmeNoKey.status, 200);
+});
+
+test("instance access reads are runtime-scoped and capability-shaped", async () => {
+  const workers = await buildApp({ runtime: "workers" });
+  const workerHeaders = { Cookie: workers.cookie };
+  const platformCa = await workers.app.request(
+    `${ADMIN_API_PREFIX}/instance/platform-ca`,
+    { headers: workerHeaders },
+  );
+  assertEquals(platformCa.status, 422);
+  const trust = await workers.app.request(
+    `${ADMIN_API_PREFIX}/instance/platform-ca/trust-reconcile`,
+    { method: "POST", headers: workerHeaders },
+  );
+  assertEquals(trust.status, 422);
+  const daemon = await workers.app.request(
+    `${ADMIN_API_PREFIX}/instance/daemon`,
+    { headers: workerHeaders },
+  );
+  assertEquals(daemon.status, 200);
+  assertEquals(await daemon.json(), { applicable: false });
+
+  const knownId = crypto.randomUUID();
+  const known = await buildApp({
+    colocatedServerId: knownId,
+    registry: createRegistry({
+      snapshots: new Map([[
+        knownId,
+        { connected: true, daemonVersion: "0.1.1" },
+      ]]),
+    }),
+  });
+  const knownRes = await known.app.request(
+    `${ADMIN_API_PREFIX}/instance/daemon`,
+    { headers: { Cookie: known.cookie } },
+  );
+  assertEquals(knownRes.status, 200);
+  const knownBody = await jsonBody<{
+    applicable: boolean;
+    connected: boolean;
+    version: string | null;
+    capabilities: Record<string, boolean>;
+  }>(knownRes);
+  assertEquals(knownBody.applicable, true);
+  assertEquals(knownBody.connected, true);
+  assertEquals(knownBody.version, "0.1.1");
+  assertEquals(
+    knownBody.capabilities["instance-cert-sources-per-hostname"],
+    true,
+  );
+
+  const unknownId = crypto.randomUUID();
+  const unknown = await buildApp({
+    colocatedServerId: unknownId,
+    registry: createRegistry({
+      snapshots: new Map([[unknownId, { connected: true }]]),
+    }),
+  });
+  const unknownRes = await unknown.app.request(
+    `${ADMIN_API_PREFIX}/instance/daemon`,
+    { headers: { Cookie: unknown.cookie } },
+  );
+  const unknownBody = await jsonBody<{
+    version: string | null;
+    capabilities: Record<string, boolean>;
+  }>(unknownRes);
+  assertEquals(unknownBody.version, null);
+  assertEquals(
+    unknownBody.capabilities["instance-cert-sources-per-hostname"],
+    false,
+  );
+
+  const { app, cookie } = await buildApp();
+  const tunnel = await app.request(
+    `${ADMIN_API_PREFIX}/instance/tunnel-token`,
+    {
+      method: "POST",
+      headers: { Cookie: cookie, "content-type": "application/json" },
+      body: JSON.stringify({ token: "" }),
+    },
+  );
+  assertEquals(tunnel.status, 503);
+
+  const missingCa = await app.request(
+    `${ADMIN_API_PREFIX}/instance/platform-ca`,
+    { headers: { Cookie: cookie } },
+  );
+  assertEquals(missingCa.status, 200);
+  assertEquals(await missingCa.json(), { ok: false });
+
+  const material = await mintSelfSignedCertificate(["panel.example.test"]);
+  const withCa = await buildApp({
+    readPlatformCaBundle: () => Promise.resolve(material.certificatePem),
+    commandQueue: { enqueue: () => Promise.resolve() },
+  });
+  const caRes = await withCa.app.request(
+    `${ADMIN_API_PREFIX}/instance/platform-ca`,
+    { headers: { Cookie: withCa.cookie } },
+  );
+  assertEquals(caRes.status, 200);
+  const caBody = await jsonBody<{ ok: boolean; fingerprintSha256?: string }>(
+    caRes,
+  );
+  assertEquals(caBody.ok, true);
+  assertExists(caBody.fingerprintSha256);
+
+  const reconcile = await withCa.app.request(
+    `${ADMIN_API_PREFIX}/instance/platform-ca/trust-reconcile`,
+    { method: "POST", headers: { Cookie: withCa.cookie } },
+  );
+  assertEquals(reconcile.status, 200);
+  assertEquals(await reconcile.json(), { ok: true, enqueued: 0 });
+
+  const proxies = await app.request(
+    `${ADMIN_API_PREFIX}/instance/trusted-proxies`,
+    { headers: { Cookie: cookie } },
+  );
+  const proxyBody = await jsonBody<{ isDefault: boolean; cidrs: string[] }>(
+    proxies,
+  );
+  assertEquals(proxyBody.isDefault, true);
+  assertEquals(proxyBody.cidrs.includes("127.0.0.0/8"), true);
+
+  const custom = await buildApp({
+    getEnv: () => ({ TURBOPANEL_TRUSTED_PROXY_CIDRS: "203.0.113.0/24" }),
+  });
+  const customRes = await custom.app.request(
+    `${ADMIN_API_PREFIX}/instance/trusted-proxies`,
+    { headers: { Cookie: custom.cookie } },
+  );
+  const customBody = await jsonBody<{ isDefault: boolean; cidrs: string[] }>(
+    customRes,
+  );
+  assertEquals(customBody.isDefault, false);
+  assertEquals(customBody.cidrs, ["203.0.113.0/24"]);
+});
+
+test("instance updates: workers refuses the control plane, GET still reports its version", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (() =>
+    Promise.resolve(
+      new Response("missing", { status: 404 }),
+    )) as typeof fetch;
+  try {
+    const workers = await buildApp({
+      runtime: "workers",
+      getEnv: () => ({ TURBOPANEL_UPDATE_CHANNEL: "edge" }),
+    });
+    const listed = await workers.app.request(
+      `${ADMIN_API_PREFIX}/instance/updates`,
+      { headers: { Cookie: workers.cookie } },
+    );
+    assertEquals(listed.status, 200);
+    const body = await jsonBody<{
+      ok: boolean;
+      channel: string;
+      units: { instance: { installed: { version: string } } };
+    }>(listed);
+    assertEquals(body.ok, true);
+    assertEquals(body.channel, "edge");
+    assertEquals(body.units.instance.installed.version.length > 0, true);
+
+    const upgrade = await workers.app.request(
+      `${ADMIN_API_PREFIX}/instance/updates/instance`,
+      { method: "POST", headers: { Cookie: workers.cookie } },
+    );
+    assertEquals(upgrade.status, 422);
+    assertEquals(await upgrade.json(), {
+      ok: false,
+      error: "control-plane update is not applicable on this runtime",
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("instance updates refuse a missing or disconnected co-located daemon", async () => {
+  const releaseEnv = () => ({ TURBOPANEL_UPDATE_CHANNEL: "release" });
+  const noRegistry = await buildApp({ registry: null, getEnv: releaseEnv });
+  const missing = await noRegistry.app.request(
+    `${ADMIN_API_PREFIX}/instance/updates/instance`,
+    { method: "POST", headers: { Cookie: noRegistry.cookie } },
+  );
+  assertEquals(missing.status, 503);
+
+  const serverId = crypto.randomUUID();
+  const disconnected = await buildApp({
+    getEnv: releaseEnv,
+    colocatedServerId: serverId,
+    registry: createRegistry({
+      snapshots: new Map([[serverId, { connected: false }]]),
+    }),
+  });
+  const down = await disconnected.app.request(
+    `${ADMIN_API_PREFIX}/instance/updates/daemon`,
+    { method: "POST", headers: { Cookie: disconnected.cookie } },
+  );
+  assertEquals(down.status, 503);
+  assertEquals(
+    await down.json(),
+    { ok: false, error: "co-located daemon disconnected" },
+  );
+});
+
+test("instance updates enqueue and return before the install finishes", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (() =>
+    Promise.resolve(
+      new Response(
+        JSON.stringify({
+          commit: "abc",
+          buildId: "build-abc",
+          builtAt: "2020-01-01T00:00:00.000Z",
+          channel: "release",
+          version: "0.1.1",
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      ),
+    )) as typeof fetch;
+  const serverId = crypto.randomUUID();
+  const enqueued: DaemonOutboundEnvelope[] = [];
+  try {
+    const { app, cookie } = await buildApp({
+      getEnv: () => ({ TURBOPANEL_UPDATE_CHANNEL: "release" }),
+      colocatedServerId: serverId,
+      registry: createRegistry({
+        enqueued,
+        snapshots: new Map([[
+          serverId,
+          { connected: true, daemonVersion: "0.1.1" },
+        ]]),
+      }),
+    });
+    const instance = await app.request(
+      `${ADMIN_API_PREFIX}/instance/updates/instance`,
+      { method: "POST", headers: { Cookie: cookie } },
+    );
+    assertEquals(instance.status, 202);
+    assertEquals(await instance.json(), { ok: true, dispatched: true });
+    const daemon = await app.request(
+      `${ADMIN_API_PREFIX}/instance/updates/daemon`,
+      { method: "POST", headers: { Cookie: cookie } },
+    );
+    assertEquals(daemon.status, 202);
+    assertEquals(enqueued.map((entry) => entry.kind), [
+      "instance-update",
+      "update",
+    ]);
+    const controlPlane = enqueued[0];
+    if (controlPlane?.kind !== "instance-update") {
+      throw new TypeError("expected an instance-update envelope");
+    }
+    assertEquals(controlPlane.channel, "release");
+    assertEquals(controlPlane.targetVersion, "0.1.1");
+    assertEquals(typeof controlPlane.manifestUrl, "string");
+    assertEquals(
+      controlPlane.manifestUrl?.includes("TurboPanel/turbopanel/"),
+      true,
+    );
+    assertEquals(typeof controlPlane.uiManifestUrl, "string");
+    assertEquals(controlPlane.uiManifestUrl?.includes("TurboPanel/ui/"), true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });

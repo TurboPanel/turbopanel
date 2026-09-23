@@ -11,7 +11,7 @@ import { Hono } from "hono";
 import type { Context } from "hono";
 import type { AppEnv } from "../../app/app.ts";
 import type { Db } from "../../db/connection.ts";
-import { forge, setting } from "../../db/schema.ts";
+import { forge, setting, instanceHostname } from "../../db/schema.ts";
 import { parseTestSecretsConfig } from "../../test-fixtures/secrets.ts";
 import {
   createEmptyMockAuthState,
@@ -109,20 +109,39 @@ function createRouteDb(opts: RouteDbOpts = {}): Db {
   ).select.bind(authDb);
 
   const appRows = opts.appRows ?? [appRow()];
+  const hostnameRows = (opts.publicUrls ?? []).map((host, index) => ({
+    id: `host-${index}`,
+    host,
+    source: "platform-ca",
+    uploadedCertId: null,
+    acmeLastAttemptAt: null,
+    acmeLastError: null,
+    notAfter: null,
+    createdAt: new Date(0).toISOString(),
+    updatedAt: new Date(0).toISOString(),
+  }));
+  const settingRows = opts.publicUrls === undefined
+    ? []
+    : [{ key: "TURBOPANEL_PUBLIC_URLS", value: opts.publicUrls }];
   return Object.assign(authDb, {
     execute: () => Promise.resolve([{ allowed: opts.allowed ?? true }]),
     select: (fields?: unknown) => ({
       from: (table: unknown) => {
+        if (table === instanceHostname) {
+          return {
+            where: () =>
+              Promise.resolve(hostnameRows.map((row) => ({ ...row }))),
+          };
+        }
         if (table === setting) {
           return {
-            where: () => ({
-              limit: () =>
-                Promise.resolve(
-                  opts.publicUrls === undefined
-                    ? []
-                    : [{ value: opts.publicUrls }],
-                ),
-            }),
+            where: () => {
+              const rows = settingRows.map((row) => ({ ...row }));
+              const promise = Promise.resolve(rows);
+              return Object.assign(promise, {
+                limit: () => promise,
+              });
+            },
           };
         }
         if (table === forge) {

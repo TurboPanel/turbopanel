@@ -126,6 +126,17 @@ that allowlist (or adding scan exemptions) needs review — it is how Platform C
 paths would leak into Organization CA code. Prefer moving a legitimate Platform
 CA reference out of `src/lib/tls/` / `src/client/tls/` / `src/features/tls/` over punching a hole.
 
+**Instance ACME is a third boundary, not a third CA.** The control plane's own
+names (`origin` / `certificate`, `INSTANCE_ACME_SETTINGS`) are independent of
+every organization's ACME opt-in. `src/lib/tls/` stays a pure parse/match
+library for both: instance certificate upload calls `parseCertificatePem` /
+`privateKeyMatchesCertificate` / `coversHostname` and does not push
+instance-ACME imports back into this tree. `pnpm check:instance-acme-boundary`
+(`scripts/check-instance-acme-boundary.mjs`) keeps organization code from
+naming instance ACME, and instance ACME modules from naming the organization
+opt-in. It runs in `test:hook` and CI `build.yml` immediately after
+`check:ca-boundary`.
+
 ## Leaf tracking + renewal sweep
 
 Managed leaves from `issueLeafCertificate` are 90-day and used to be minted

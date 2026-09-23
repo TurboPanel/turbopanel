@@ -23,9 +23,11 @@ import {
 import { TERMINAL_UPDATE_RETENTION_MS } from "../../features/update/constants.ts";
 import { handleManagedHaEvent } from "../../features/managed/ha-event.ts";
 import { handleAcmeIssuanceEvent } from "../../client/tls/acme-issuance-event.ts";
+import { recordInstanceAcmeIssuance } from "../../features/install/instance-hostnames.ts";
 import { enqueueLatestRecordedCapabilityPlan } from "../../client/servers/capability-plan-push.ts";
 import { recordTopologyGeneration } from "../../features/servers/server-topology-records.ts";
 import { touchServerMetadata } from "../../features/servers/server-registry.ts";
+import { instanceAttachVersionFrame } from "../attach-version.ts";
 import { verifyDaemonJwt } from "../authn/daemon-jwt.ts";
 import { getServerDaemonStateByServerId } from "../../features/servers/server-identity-db.ts";
 import { inboundHeartbeatProjectionDue } from "./postgres-projection.ts";
@@ -1565,6 +1567,24 @@ export class DaemonCellObject {
     }
   }
 
+  /**
+   * A new attach takes the cell from whatever socket already holds it.
+   * `existingHolder` is read before the incoming socket is accepted, and
+   * that socket stays open.
+   */
+  #closeReplacedDaemonSockets(
+    existingHolder: string | null,
+    connectionId: string,
+    incoming: WebSocket,
+  ): void {
+    if (!existingHolder || existingHolder === connectionId) return;
+    for (const ws of this.#ctx.getWebSockets()) {
+      if (ws !== incoming) {
+        ws.close(4000, "replaced by new connection");
+      }
+    }
+  }
+
   async #handleWebSocketUpgrade(request: Request): Promise<Response> {
     const authHeader = request.headers.get("Authorization") ?? "";
     const token = authHeader.startsWith("Bearer ")
@@ -1605,13 +1625,7 @@ export class DaemonCellObject {
     this.#ctx.acceptWebSocket(server);
     this.#bumpDiag("wsAccepted");
 
-    if (existingHolder && existingHolder !== connectionId) {
-      for (const ws of this.#ctx.getWebSockets()) {
-        if (ws !== server) {
-          ws.close(4000, "replaced by new connection");
-        }
-      }
-    }
+    this.#closeReplacedDaemonSockets(existingHolder, connectionId, server);
 
     const connectedAtMs = Date.parse(connectedAt) || Date.now();
     // Persist projection identity + cf geo on the hibernation attachment so
@@ -1640,6 +1654,18 @@ export class DaemonCellObject {
     console.info(
       `daemon-cell event=attach serverId=${serverId} conn=${connectionId} remoteAddress=${remoteAddress}`,
     );
+
+    try {
+      server.send(JSON.stringify(
+        instanceAttachVersionFrame(connectedAt, this.#env),
+      ));
+    } catch (err) {
+      console.error(
+        `daemon-cell event=attach-version-failed serverId=${serverId} error=${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
 
     this.#ctx.waitUntil(
       this.#projectConnected(serverId, connectedAt, geo ?? undefined, keyId),
@@ -1901,6 +1927,31 @@ export class DaemonCellObject {
               ...(parsed.errorMessage
                 ? { errorMessage: parsed.errorMessage }
                 : {}),
+            });
+          },
+        );
+        return;
+      }
+
+      if (parsed.type === "instance-acme-issuance-event") {
+        this.#recordInbound(
+          attachment.serverId,
+          parsed.at,
+          undefined,
+          attachment.connectionId,
+        );
+        await this.#withProjectionDb(
+          "instance-acme-issuance-event",
+          attachment.serverId,
+          async (db) => {
+            await recordInstanceAcmeIssuance(db, {
+              hostname: parsed.hostname,
+              ok: parsed.ok,
+              at: parsed.at,
+              ...(parsed.errorMessage
+                ? { errorMessage: parsed.errorMessage }
+                : {}),
+              ...(parsed.notAfter ? { notAfter: parsed.notAfter } : {}),
             });
           },
         );

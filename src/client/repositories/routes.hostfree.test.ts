@@ -18,6 +18,7 @@ import {
 import { encryptSecret } from '../../lib/secrets/data-encryption.ts'
 import type { DaemonCellRegistry } from '../../contracts/cell.ts'
 import type { Db } from '../../db/connection.ts'
+import { instanceHostname, setting } from '../../db/schema.ts'
 import { GithubAppTokenError } from '../../features/git/github-app-token.ts'
 import { createAuthRateLimiter } from '../authn/auth-rate-limit.ts'
 import { GitlabApiError } from '../../features/git/gitlab-api.ts'
@@ -102,14 +103,71 @@ function mockContext(options: MockContextOptions = {}): Context<AppEnv> {
   } as unknown as Context<AppEnv>
 }
 
+function coerceSeedPublicUrls(rows: unknown[]): string[] {
+  const first = rows[0] as { value?: unknown; host?: unknown } | undefined
+  if (!first) return []
+  if (typeof first.host === 'string') {
+    return rows
+      .map((row) => (row as { host?: unknown }).host)
+      .filter((host): host is string => typeof host === 'string')
+  }
+  const value = first.value
+  if (Array.isArray(value)) {
+    return value.filter((entry): entry is string => typeof entry === 'string')
+  }
+  if (typeof value === 'string') {
+    return value.split(',').map((entry) => entry.trim()).filter((entry) => entry !== '')
+  }
+  return []
+}
+
+function hostnameRowsFromSeed(rows: unknown[]): Array<Record<string, unknown>> {
+  return coerceSeedPublicUrls(rows).map((host, index) => ({
+    id: `host-${index}`,
+    host,
+    source: 'platform-ca',
+    uploadedCertId: null,
+    acmeLastAttemptAt: null,
+    acmeLastError: null,
+    notAfter: null,
+    createdAt: new Date(0).toISOString(),
+    updatedAt: new Date(0).toISOString(),
+  }))
+}
+
+function settingRowsFromSeed(rows: unknown[]): Array<Record<string, unknown>> {
+  const first = rows[0] as { value?: unknown; key?: unknown } | undefined
+  if (!first || first.value === undefined) return []
+  return [{ key: 'TURBOPANEL_PUBLIC_URLS', value: first.value }]
+}
+
+function thenableRows(rows: unknown[]) {
+  const promise = Promise.resolve(rows)
+  return Object.assign(promise, {
+    limit: () => promise,
+    orderBy: () => promise,
+  })
+}
+
 function selectLimitDb(rows: unknown[]): Db {
+  const looksLikePublicUrlSeed = rows.some((row) => {
+    const record = row as { value?: unknown; host?: unknown }
+    return record.value !== undefined || typeof record.host === 'string'
+  })
   return {
     select: () => ({
-      from: () => ({
-        where: () => ({
-          limit: () => Promise.resolve(rows),
-          orderBy: () => Promise.resolve(rows),
-        }),
+      from: (table: unknown) => ({
+        where: () => {
+          if (looksLikePublicUrlSeed) {
+            if (table === instanceHostname) {
+              return thenableRows(hostnameRowsFromSeed(rows))
+            }
+            if (table === setting) {
+              return thenableRows(settingRowsFromSeed(rows))
+            }
+          }
+          return thenableRows(rows)
+        },
         innerJoin: () => ({
           where: () => ({
             limit: () => Promise.resolve(rows),
@@ -123,6 +181,7 @@ function selectLimitDb(rows: unknown[]): Db {
 
 function selectLimitSequence(steps: unknown[][]): Db {
   let index = 0
+  let stickyHostnames: Array<Record<string, unknown>> | null = null
   const next = (): unknown[] => {
     const rows = steps[index] ?? []
     index += 1
@@ -130,11 +189,28 @@ function selectLimitSequence(steps: unknown[][]): Db {
   }
   return {
     select: () => ({
-      from: () => ({
-        where: () => ({
-          limit: () => Promise.resolve(next()),
-          orderBy: () => Promise.resolve(next()),
-        }),
+      from: (table: unknown) => ({
+        where: () => {
+          // listInstanceHostnames reads the hostname table twice (migrate + load).
+          if (table === instanceHostname && stickyHostnames) {
+            return thenableRows(stickyHostnames.map((row) => ({ ...row })))
+          }
+          const rows = next()
+          const looksLikePublicUrlSeed = rows.some((row) => {
+            const record = row as { value?: unknown; host?: unknown }
+            return record.value !== undefined || typeof record.host === 'string'
+          })
+          if (looksLikePublicUrlSeed) {
+            if (table === instanceHostname) {
+              stickyHostnames = hostnameRowsFromSeed(rows)
+              return thenableRows(stickyHostnames.map((row) => ({ ...row })))
+            }
+            if (table === setting) {
+              return thenableRows(settingRowsFromSeed(rows))
+            }
+          }
+          return thenableRows(rows)
+        },
         innerJoin: () => ({
           where: () => ({
             limit: () => Promise.resolve(next()),
@@ -838,6 +914,7 @@ function sourceHttpDb(options: {
   insertId?: string | null
   insertError?: unknown
   sessionRole?: string
+  publicUrls?: string[]
 } = {}): Db {
   const sessionRole = options.sessionRole ?? 'superadmin'
   const session = sessionRow(sessionRole)
@@ -848,8 +925,21 @@ function sourceHttpDb(options: {
     referenced: false,
     organization_id: ORG_ID,
   }]
+  const hostnameRows = hostnameRowsFromSeed(
+    options.publicUrls === undefined ? [] : [{ value: options.publicUrls }],
+  )
   const limitRows = () => Promise.resolve(takeNext(options.limitQueue, defaultSelect))
-  const whereResult = () => {
+  const whereResult = (table?: unknown) => {
+    if (table === instanceHostname) {
+      return thenableRows(hostnameRows.map((row) => ({ ...row })))
+    }
+    if (table === setting) {
+      return thenableRows(
+        options.publicUrls === undefined
+          ? []
+          : [{ key: 'TURBOPANEL_PUBLIC_URLS', value: options.publicUrls }],
+      )
+    }
     const rows = limitRows()
     return Object.assign(rows, {
       limit: () => rows,
@@ -858,8 +948,8 @@ function sourceHttpDb(options: {
   }
   return {
     select: () => ({
-      from: () => ({
-        where: whereResult,
+      from: (table: unknown) => ({
+        where: () => whereResult(table),
         innerJoin: () => ({
           where: () => ({
             limit: () => Promise.resolve([session]),
