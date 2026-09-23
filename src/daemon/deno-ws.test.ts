@@ -1758,6 +1758,25 @@ function waitForWsMessage(ws: WebSocket, timeoutMs = 3000): Promise<string> {
   });
 }
 
+/** Skip the attach `{ type: "version" }` ack until a non-version frame arrives. */
+async function waitForWsMessageAfterAttachVersion(
+  ws: WebSocket,
+  timeoutMs = 3000,
+): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const raw = await waitForWsMessage(ws, Math.max(1, deadline - Date.now()));
+    try {
+      const parsed = JSON.parse(raw) as { type?: string };
+      if (parsed.type === "version") continue;
+    } catch {
+      // Non-JSON frames are what the caller wants.
+    }
+    return raw;
+  }
+  throw new TypeError("timed out waiting for ws message after attach version");
+}
+
 async function withLiveDaemonServer(
   options: {
     secrets: Awaited<ReturnType<typeof createDaemonJwtSecrets>>;
@@ -1918,7 +1937,7 @@ test("live WS self-hosted reconnect clears a leftover hosted capability plan", a
   );
 });
 
-/** Open a live WS while buffering the first inbound server message. */
+/** Open a live WS while buffering the first non-version inbound server message. */
 async function openLiveDaemonWsWithFirstMessage(params: {
   port: number;
   token: string;
@@ -1934,7 +1953,7 @@ async function openLiveDaemonWsWithFirstMessage(params: {
     `ws://127.0.0.1:${params.port}${DAEMON_WS_PATH}`,
     { headers },
   );
-  const firstMessage = waitForWsMessage(ws);
+  const firstMessage = waitForWsMessageAfterAttachVersion(ws);
   await waitForWsOpen(ws);
   await new Promise((resolve) => setTimeout(resolve, 40));
   return { ws, firstMessage };

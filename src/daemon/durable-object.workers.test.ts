@@ -127,6 +127,33 @@ function waitForWebSocketMessage(ws: WebSocket, timeoutMs = 5000): Promise<strin
   })
 }
 
+/** Skip the attach `{ type: "version" }` ack until a non-version frame arrives. */
+async function waitForWebSocketMessageAfterAttachVersion(
+  ws: WebSocket,
+  timeoutMs = 5000,
+): Promise<string> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const raw = await waitForWebSocketMessage(ws, Math.max(1, deadline - Date.now()))
+    try {
+      const parsed = JSON.parse(raw) as { type?: string }
+      if (parsed.type === 'version') continue
+    } catch {
+      // Non-JSON frames (e.g. auto-response pong) are what the caller wants.
+    }
+    return raw
+  }
+  throw new Error('timed out waiting for websocket message after attach version')
+}
+
+/** Consume the attach version frame that the cell sends before outbox traffic. */
+async function drainAttachVersionFrame(ws: WebSocket, timeoutMs = 5000): Promise<void> {
+  const raw = await waitForWebSocketMessage(ws, timeoutMs)
+  const parsed = JSON.parse(raw) as { type?: string; instanceVersion?: string }
+  expect(parsed.type).toBe('version')
+  expect(typeof parsed.instanceVersion).toBe('string')
+}
+
 async function waitFor(
   assertion: () => void | Promise<void>,
   timeoutMs = 5000,
@@ -875,7 +902,7 @@ describe.sequential('DaemonCellObject', () => {
 
     const stub = env.DAEMON_CELL.getByName(serverId)
     const { ws } = await openDaemonWebSocket(stub, serverId)
-    const raw = await waitForWebSocketMessage(ws)
+    const raw = await waitForWebSocketMessageAfterAttachVersion(ws)
     const msg = JSON.parse(raw) as {
       type: string
       generation?: number
@@ -1383,7 +1410,7 @@ describe.sequential('DaemonCellObject', () => {
     first.ws.addEventListener('message', () => {
       firstReceived = true
     })
-    const secondMessagePromise = waitForWebSocketMessage(second.ws)
+    const secondMessagePromise = waitForWebSocketMessageAfterAttachVersion(second.ws)
 
     await cellRpc(stub, serverId, '/rpc/enqueue', {
       method: 'POST',
@@ -1983,7 +2010,7 @@ describe.sequential('DaemonCellObject', () => {
     })
 
     const second = await openDaemonWebSocket(stub, serverId)
-    const raw = await waitForWebSocketMessage(second.ws)
+    const raw = await waitForWebSocketMessageAfterAttachVersion(second.ws)
     const msg = JSON.parse(raw) as {
       type: string
       commandType?: string
@@ -2202,6 +2229,7 @@ describe('createRequestAndWait expiry parity', () => {
     expect(readBody.envelopes.some((entry) => entry.requestId === requestId)).toBe(false)
 
     const { ws } = await openDaemonWebSocket(stub, serverId)
+    await drainAttachVersionFrame(ws)
     let received = false
     ws.addEventListener('message', () => {
       received = true
@@ -2491,7 +2519,7 @@ describe('command-dispatch correlation', () => {
     const requestId = generateRequestId()
     const deliveryId = generateDeliveryId()
     const at = new Date().toISOString()
-    const messagePromise = waitForWebSocketMessage(ws)
+    const messagePromise = waitForWebSocketMessageAfterAttachVersion(ws)
 
     await cellRpc(stub, serverId, '/rpc/enqueue', {
       method: 'POST',
@@ -2571,7 +2599,7 @@ describe('command-dispatch correlation', () => {
     const serverId = 'test-srv-auto-response-constructor'
     const stub = env.DAEMON_CELL.getByName(serverId)
     const { ws } = await openDaemonWebSocket(stub, serverId)
-
+    await drainAttachVersionFrame(ws)
     const pongPromise = waitForWebSocketMessage(ws, 2000)
     ws.send(DAEMON_CELL_PING)
     const pong = await pongPromise
@@ -3150,7 +3178,8 @@ describe('DaemonCellObject storageByCallSite attribution', () => {
     const at = new Date().toISOString()
 
     // Listen before enqueue — the outbox pump may deliver synchronously.
-    const wirePromise = waitForWebSocketMessage(ws, 5000)
+    // Skip the attach version frame that precedes outbox traffic.
+    const wirePromise = waitForWebSocketMessageAfterAttachVersion(ws, 5000)
 
     await cellRpc(stub, serverId, '/rpc/enqueue', {
       method: 'POST',

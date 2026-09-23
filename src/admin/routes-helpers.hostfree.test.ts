@@ -1,6 +1,7 @@
 import { assertEquals, assertExists } from '@std/assert'
 import type { Db } from '../db/connection.ts'
 import type { DaemonCell, DaemonCellRegistry, PendingRequestRecord } from '../contracts/cell.ts'
+import { instanceHostname, setting } from '../db/schema.ts'
 import { REENCRYPT_BATCH_SIZE } from './reencrypt-secrets.ts'
 import {
   extractAddresses,
@@ -190,23 +191,59 @@ test('resolvePlatformEnv prefers context then opts.getEnv', () => {
 })
 
 test('resolvePublicUrlsForApply validates, persists, or loads stored urls', async () => {
-  let stored: string[] = ['https://panel.example.com']
+  const hostnames: Array<Record<string, unknown>> = [{
+    id: 'host-0',
+    host: 'https://panel.example.com',
+    source: 'platform-ca',
+    uploadedCertId: null,
+    acmeLastAttemptAt: null,
+    acmeLastError: null,
+    notAfter: null,
+    createdAt: new Date(0).toISOString(),
+    updatedAt: new Date(0).toISOString(),
+  }]
+  const settings: Array<Record<string, unknown>> = [
+    { key: 'TURBOPANEL_PUBLIC_URLS', value: ['https://panel.example.com'] },
+  ]
+
   const db = {
     select: () => ({
-      from: () => ({
-        where: () => ({
-          limit: () => Promise.resolve([{ value: stored }]),
-        }),
+      from: (table: unknown) => ({
+        where: () => {
+          if (table === instanceHostname) {
+            return Promise.resolve(hostnames.map((row) => ({ ...row })))
+          }
+          if (table === setting) {
+            return Promise.resolve(settings.map((row) => ({ ...row })))
+          }
+          return Promise.resolve([])
+        },
       }),
     }),
-    insert: () => ({
-      values: (row: { value: string[] }) => {
-        stored = row.value
+    insert: (table: unknown) => ({
+      values: (value: unknown) => {
+        const rows = Array.isArray(value) ? value : [value]
+        if (table === instanceHostname) {
+          for (const row of rows) hostnames.push(row as Record<string, unknown>)
+        }
+        if (table === setting) {
+          const row = rows[0] as Record<string, unknown>
+          const index = settings.findIndex((item) => item.key === row.key)
+          if (index >= 0) settings[index] = row
+          else settings.push(row)
+        }
         return {
           onConflictDoUpdate: () => Promise.resolve(),
         }
       },
     }),
+    delete: (table: unknown) => ({
+      where: () => {
+        if (table === instanceHostname) hostnames.length = 0
+        return Promise.resolve()
+      },
+    }),
+    transaction: async (fn: (tx: typeof db) => Promise<unknown>) => fn(db),
   } as unknown as Db
 
   const badShape = await resolvePublicUrlsForApply(db, { urls: [1] }, false)

@@ -290,11 +290,24 @@ jobs:
         with:
           path: turbopanel
 
+      - name: Resolve turbopaneld checkout ref
+        id: daemon-ref
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          REF="${{ github.head_ref || github.ref_name }}"
+          if gh api "repos/TurboPanel/turbopaneld/branches/${REF}" --silent; then
+            echo "ref=${REF}" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=trunk" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Check out turbopaneld (metrics-legacy guard)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: TurboPanel/turbopaneld
           path: turbopaneld
+          ref: ${{ steps.daemon-ref.outputs.ref }}
 
       - name: Read Deno pin
         id: deno-pin
