@@ -51,14 +51,6 @@ export const INSTANCE_ACME_SETTINGS_SCHEMA: Record<
   USE_STAGING: "false",
 };
 
-/**
- * No instance ACME field is sealed today. The set stays so a later account
- * key can join the same encryption gate the email and OAuth settings use.
- */
-export const INSTANCE_ACME_SECRET_KEYS: ReadonlySet<
-  InstanceAcmeSettingShortKey
-> = new Set();
-
 const CAMEL_TO_SHORT: Record<string, InstanceAcmeSettingShortKey> = {
   contactEmail: "CONTACT_EMAIL",
   tosAccepted: "TOS_ACCEPTED",
@@ -275,17 +267,13 @@ export type InstanceAcmeUpdateResult =
   | { ok: false; error: string };
 
 /**
- * True when an update sets a sealed field. None are sealed today, so this
- * stays false and the admin route allows the write without an encryption key.
+ * True when an update sets a sealed field. No instance ACME field is sealed,
+ * so the admin route allows the write without an encryption key. A later
+ * account key should join the same gate the email and OAuth settings use.
  */
 export function instanceAcmeUpdatesRequireEncryption(
-  updates: Record<string, string | null>,
+  _updates: Record<string, string | null>,
 ): boolean {
-  for (const [key, value] of Object.entries(updates)) {
-    if (typeof value !== "string" || value.trim() === "") continue;
-    const shortKey = resolveShortKey(key);
-    if (shortKey && INSTANCE_ACME_SECRET_KEYS.has(shortKey)) return true;
-  }
   return false;
 }
 

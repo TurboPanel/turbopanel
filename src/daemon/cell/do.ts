@@ -1567,6 +1567,24 @@ export class DaemonCellObject {
     }
   }
 
+  /**
+   * A new attach takes the cell from whatever socket already holds it.
+   * `existingHolder` is read before the incoming socket is accepted, and
+   * that socket stays open.
+   */
+  #closeReplacedDaemonSockets(
+    existingHolder: string | null,
+    connectionId: string,
+    incoming: WebSocket,
+  ): void {
+    if (!existingHolder || existingHolder === connectionId) return;
+    for (const ws of this.#ctx.getWebSockets()) {
+      if (ws !== incoming) {
+        ws.close(4000, "replaced by new connection");
+      }
+    }
+  }
+
   async #handleWebSocketUpgrade(request: Request): Promise<Response> {
     const authHeader = request.headers.get("Authorization") ?? "";
     const token = authHeader.startsWith("Bearer ")
@@ -1607,13 +1625,7 @@ export class DaemonCellObject {
     this.#ctx.acceptWebSocket(server);
     this.#bumpDiag("wsAccepted");
 
-    if (existingHolder && existingHolder !== connectionId) {
-      for (const ws of this.#ctx.getWebSockets()) {
-        if (ws !== server) {
-          ws.close(4000, "replaced by new connection");
-        }
-      }
-    }
+    this.#closeReplacedDaemonSockets(existingHolder, connectionId, server);
 
     const connectedAtMs = Date.parse(connectedAt) || Date.now();
     // Persist projection identity + cf geo on the hibernation attachment so
