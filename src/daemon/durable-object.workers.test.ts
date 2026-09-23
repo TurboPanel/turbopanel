@@ -1407,7 +1407,13 @@ describe.sequential('DaemonCellObject', () => {
     const deliveryId = generateDeliveryId()
     const at = new Date().toISOString()
     let firstReceived = false
-    first.ws.addEventListener('message', () => {
+    first.ws.addEventListener('message', (event) => {
+      try {
+        const parsed = JSON.parse(String(event.data)) as { type?: string }
+        if (parsed.type === 'version') return
+      } catch {
+        // Non-JSON counts as a delivery.
+      }
       firstReceived = true
     })
     const secondMessagePromise = waitForWebSocketMessageAfterAttachVersion(second.ws)
@@ -1965,6 +1971,7 @@ describe.sequential('DaemonCellObject', () => {
     const at = new Date().toISOString()
 
     const first = await openDaemonWebSocket(stub, serverId)
+    await drainAttachVersionFrame(first.ws)
     let firstReceived = false
     first.ws.addEventListener('message', () => {
       firstReceived = true
