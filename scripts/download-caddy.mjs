@@ -10,15 +10,22 @@
  * always refreshes the "current" symlink to point at the pinned version.
  */
 
+import { createHash } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, rmSync, mkdirSync, existsSync, symlinkSync, unlinkSync, copyFileSync, chmodSync, lstatSync } from 'node:fs'
+import { mkdtempSync, rmSync, mkdirSync, existsSync, symlinkSync, unlinkSync, copyFileSync, chmodSync, lstatSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { resolveRuntimesDir } from './runtime-paths.mjs'
 
 const TURBOPANEL_RUNTIMES_DIR = resolveRuntimesDir()
-const CADDY_VERSION = '2.10.2'
-const CADDY_RELEASE_TAG = 'v2.10.2'
+const CADDY_VERSION = '2.11.4'
+const CADDY_RELEASE_TAG = 'v2.11.4'
+
+/** Upstream SHA-256 of linux release tarballs (keep in step with caddy Ansible role). */
+const CADDY_SHA256 = {
+  amd64: '527fbf917c39189a1e3b31d34fa955601680b2d5c8055d2a87b8b9588dec7bb9',
+  arm64: '52d42ae12b3462097e9868da6dfed3c9648ae12edd3b3638102312af84cb6904',
+}
 
 const ARCH_MAP = {
   arm64: 'arm64',
@@ -60,6 +67,14 @@ function isSymlink(p) {
   }
 }
 
+function verifyTarballSha256(tarballPath) {
+  const expected = CADDY_SHA256[arch]
+  const actual = createHash('sha256').update(readFileSync(tarballPath)).digest('hex')
+  if (actual !== expected) {
+    fail(`tarball SHA-256 mismatch (expected ${expected}, got ${actual})`)
+  }
+}
+
 if (existsSync(binPath)) {
   console.log(`download-caddy: Caddy ${CADDY_VERSION} already installed at ${binPath}`)
   refreshCurrentSymlink()
@@ -75,6 +90,7 @@ const tarball = path.join(tmp, assetName)
 try {
   console.log(`download-caddy: downloading ${url}`)
   execFileSync('/usr/bin/curl', ['-fsSL', '-o', tarball, url], { stdio: ['ignore', 'inherit', 'inherit'] })
+  verifyTarballSha256(tarball)
 
   console.log('download-caddy: extracting caddy binary')
   execFileSync('/usr/bin/tar', ['-xzf', tarball, '-C', tmp, 'caddy'], { stdio: ['ignore', 'inherit', 'inherit'] })

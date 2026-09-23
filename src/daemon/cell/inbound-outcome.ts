@@ -49,6 +49,11 @@ function repoReadResultPayload(
 /**
  * Map a daemon inbound envelope to a pending-request completion.
  * Returns `null` for non-terminal kinds (`command-ack` and similar).
+ *
+ * `instance-acme-issuance-event` and `acme-issuance-event` are
+ * fire-and-forget inbound messages, not envelopes. They never reach this
+ * function. `public-urls-update` grew optional `hostnames` / `instanceAcme`
+ * on the outbound side; its result kind is unchanged.
  */
 export function deriveInboundOutcome(
   inbound: DaemonInboundEnvelope,
@@ -77,6 +82,7 @@ export function deriveInboundOutcome(
     case "dev-sync-result":
     case "tunnel-token-result":
     case "update-result":
+    case "instance-update-result":
     case "metrics-live-start-result":
     case "metrics-live-stop-result":
     case "topology-overrides-update-result":

@@ -3,10 +3,13 @@ import {
   CLIENT_VERSION_HEADER,
   compareSemver,
   daemonUnsupportedReason,
+  DAEMON_FEATURE_MIN_VERSIONS,
   INSTANCE_VERSION_HEADER,
   MIN_SUPPORTED_DAEMON_VERSION,
   parseSemver,
+  resolveDaemonCapabilities,
   resolveDaemonSupport,
+  resolveInstanceCapabilities,
 } from './version-wire.ts'
 import { INSTANCE_VERSION } from '../app/version.ts'
 
@@ -83,4 +86,32 @@ test('the floor is a semver no newer than this instance', () => {
 test('header names are lower-case, as Hono and fetch normalize them', () => {
   assertEquals(INSTANCE_VERSION_HEADER, INSTANCE_VERSION_HEADER.toLowerCase())
   assertEquals(CLIENT_VERSION_HEADER, CLIENT_VERSION_HEADER.toLowerCase())
+})
+
+const CERT_SOURCES = 'instance-cert-sources-per-hostname'
+
+test('the daemon floor pin is the documented 0.1.0 window', () => {
+  // Changing the constant requires the Versions-on-the-wires note in both AGENTS.md files.
+  assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
+})
+
+test('resolveDaemonCapabilities closes on an unknown peer and opens at the feature floor', () => {
+  assertEquals(resolveDaemonCapabilities('0.1.1')[CERT_SOURCES], true)
+  assertEquals(resolveDaemonCapabilities('0.1.0')[CERT_SOURCES], false)
+  assertEquals(resolveDaemonCapabilities(undefined)[CERT_SOURCES], false)
+  assertEquals(resolveDaemonCapabilities('unstamped')[CERT_SOURCES], false)
+  assertEquals(DAEMON_FEATURE_MIN_VERSIONS[CERT_SOURCES], '0.1.1')
+  assertEquals(resolveInstanceCapabilities('0.1.1', { demo: '0.1.1' }).demo, true)
+  assertEquals(resolveInstanceCapabilities(null, { demo: '0.1.1' }).demo, false)
+})
+
+test('an old daemon is unsupported while the resolver itself does not disconnect', () => {
+  // Dispatch refusal lives in the command consumer (consumer.test.ts): the
+  // socket stays up. This resolver only classifies. An unknown version still
+  // passes the floor and stays closed for capability gates.
+  const support = resolveDaemonSupport('0.0.9')
+  assertEquals(support.status, 'unsupported')
+  assertEquals(resolveDaemonCapabilities('0.0.9')[CERT_SOURCES], false)
+  assertEquals(resolveDaemonSupport(undefined).status, 'unknown')
+  assertEquals(resolveDaemonCapabilities(undefined)[CERT_SOURCES], false)
 })

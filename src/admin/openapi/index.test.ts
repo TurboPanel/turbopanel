@@ -85,8 +85,24 @@ test("getAdminOpenApiSpec documents public URL and reencrypt paths", () => {
     paths: Record<string, unknown>;
     components: { schemas: Record<string, SchemaObject> };
   };
+  assertExists(spec.paths[`${ADMIN_API_PREFIX}/instance/hostnames`]);
+  assertExists(spec.paths[`${ADMIN_API_PREFIX}/instance/certificates`]);
+  assertExists(
+    spec.paths[`${ADMIN_API_PREFIX}/instance/certificates/{id}/hostnames`],
+  );
+  assertExists(spec.paths[`${ADMIN_API_PREFIX}/instance/acme`]);
+  assertExists(spec.paths[`${ADMIN_API_PREFIX}/instance/daemon`]);
+  assertExists(spec.paths[`${ADMIN_API_PREFIX}/instance/platform-ca`]);
+  assertExists(
+    spec.paths[`${ADMIN_API_PREFIX}/instance/platform-ca/trust-reconcile`],
+  );
+  assertExists(spec.paths[`${ADMIN_API_PREFIX}/instance/trusted-proxies`]);
+  assertExists(spec.paths[`${ADMIN_API_PREFIX}/instance/tunnel-token`]);
   assertExists(spec.paths[`${ADMIN_API_PREFIX}/instance/public-urls`]);
   assertExists(spec.paths[`${ADMIN_API_PREFIX}/instance/public-urls/apply`]);
+  assertExists(spec.paths[`${ADMIN_API_PREFIX}/instance/updates`]);
+  assertExists(spec.paths[`${ADMIN_API_PREFIX}/instance/updates/instance`]);
+  assertExists(spec.paths[`${ADMIN_API_PREFIX}/instance/updates/daemon`]);
   assertExists(spec.paths[`${ADMIN_API_PREFIX}/settings/auth-providers`]);
   const authProviderEntry = spec.components.schemas.AuthProviderSettingEntry;
   assertEquals(authProviderEntry?.required, [

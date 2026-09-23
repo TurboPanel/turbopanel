@@ -43,6 +43,13 @@
       "when": 1790041120375,
       "tag": "0005_tier_label_ladder_path",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1790112163842,
+      "tag": "0006_instance_hostnames",
+      "breakpoints": true
     }
   ]
 }

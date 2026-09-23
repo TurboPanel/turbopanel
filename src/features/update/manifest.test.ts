@@ -12,7 +12,7 @@ import {
  * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
  * reports Deno suites as empty; keep this alias so analysis sees real tests.
  */
-const test = Deno.test.bind(Deno)
+const test = Deno.test.bind(Deno);
 
 const TRUNK_MANIFEST_URL = "https://dl.trbp.nl/channels/trunk/manifest.json";
 const RC_MANIFEST_URL =
@@ -237,6 +237,43 @@ test("resolveUpdateManifest defers to a registered provider for every channel", 
     assertEquals(await resolveUpdateManifest("trunk"), target);
     assertEquals(await resolveUpdateManifest("release"), target);
     assertEquals(stub.calls, []);
+  } finally {
+    setUpdateManifestProvider(null);
+    stub.restore();
+    resetUpdateManifestCacheForTests();
+  }
+});
+
+test("resolveUpdateManifest keeps the daemon provider off the instance kind", async () => {
+  resetUpdateManifestCacheForTests();
+  const instanceUrl =
+    "https://github.com/TurboPanel/turbopanel/releases/download/rc/manifest.json";
+  const stub = stubFetch((url) =>
+    url === instanceUrl
+      ? new Response(manifestBody("rc", "inst1", "0.1.1"), { status: 200 })
+      : new Response("missing", { status: 404 })
+  );
+  try {
+    setUpdateManifestProvider(() =>
+      Promise.resolve({
+        commit: "daemon-only",
+        buildId: "d",
+        builtAt: "2020-01-01T00:00:00.000Z",
+        channel: "rc",
+        manifestUrl: "https://example.invalid/m.json",
+      })
+    );
+    assertEquals((await resolveUpdateManifest("rc"))?.commit, "daemon-only");
+    assertEquals(
+      (await resolveUpdateManifest("rc", "instance"))?.commit,
+      "inst1",
+    );
+    assertEquals(
+      (await resolveUpdateManifest("rc", "instance"))?.version,
+      "0.1.1",
+    );
+    assertEquals(await resolveUpdateManifest("trunk", "instance"), null);
+    assertEquals(stub.calls, [instanceUrl]);
   } finally {
     setUpdateManifestProvider(null);
     stub.restore();

@@ -4841,6 +4841,100 @@ export const setting = pgTable(
   (table) => [unique("setting_key_unique").on(table.key)],
 );
 /**
+ * One uploaded control-plane certificate pair. Several `origin` rows may
+ * reference the same pair (`uploaded_cert_id`) when a wildcard covers them.
+ * `key_pem` is a sealed `tpsecret` envelope. This is instance TLS material,
+ * never an organization `tls` row.
+ */
+export const instanceUploadedCertificate = pgTable("certificate", {
+  id: uuid()
+    .default(sql`uuidv7()`)
+    .primaryKey()
+    .notNull(),
+  createdAt: timestamp("created_at", {
+    precision: 3,
+    withTimezone: true,
+    mode: "string",
+  })
+    .defaultNow()
+    .notNull(),
+  label: text().notNull(),
+  certPem: text("cert_pem").notNull(),
+  keyPem: text("key_pem").notNull(),
+  dnsNames: jsonb("dns_names").notNull(),
+  notAfter: timestamp("not_after", {
+    precision: 3,
+    withTimezone: true,
+    mode: "string",
+  }).notNull(),
+});
+/**
+ * One public name for this control plane. Replaces the flat
+ * `TURBOPANEL_PUBLIC_URLS` setting as the source of truth; that setting stays
+ * as a compatibility projection. Certificate source and Let's Encrypt attempt
+ * state live on the row because a single jsonb setting cannot hold them.
+ */
+export const instanceHostname = pgTable(
+  "origin",
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp("created_at", {
+      precision: 3,
+      withTimezone: true,
+      mode: "string",
+    })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", {
+      precision: 3,
+      withTimezone: true,
+      mode: "string",
+    })
+      .defaultNow()
+      .$onUpdate(() => sql`now()`)
+      .notNull(),
+    /** Normalized public URL entry (`parsePublicUrlEntries` form). */
+    host: text().notNull(),
+    /** `platform-ca` | `uploaded` | `lets-encrypt` */
+    source: text().notNull(),
+    uploadedCertId: uuid("uploaded_cert_id"),
+    acmeLastAttemptAt: timestamp("acme_last_attempt_at", {
+      precision: 3,
+      withTimezone: true,
+      mode: "string",
+    }),
+    acmeLastError: text("acme_last_error"),
+    notAfter: timestamp("not_after", {
+      precision: 3,
+      withTimezone: true,
+      mode: "string",
+    }),
+  },
+  (table) => [
+    unique("origin_host_unique").on(table.host),
+    index("idx_origin_uploaded_cert_id").using(
+      "btree",
+      table.uploadedCertId.asc().nullsLast().op("uuid_ops"),
+    ),
+    foreignKey({
+      columns: [table.uploadedCertId],
+      foreignColumns: [instanceUploadedCertificate.id],
+      name: "origin_uploaded_cert_id_certificate_id_fk",
+    }).onDelete("set null"),
+    check(
+      "origin_source_check",
+      sql`source IN ('platform-ca', 'uploaded', 'lets-encrypt')`,
+    ),
+    check(
+      "origin_uploaded_cert_check",
+      sql`(source <> 'uploaded') OR (uploaded_cert_id IS NOT NULL)`,
+    ),
+  ],
+);
+/**
  * The cross-isolate CAS lease, promoted out of four identical `setting`-row
  * protocols (schema-child-tables, Road-to-0.1.x): `offline-sweep-lease.ts`,
  * `leaf-renewal-sweep.ts`, `reencrypt-secrets.ts`, `billing/quantity-lock.ts`.

@@ -77,12 +77,51 @@ export type TopologyOverridesUpdatePayload = ServerHardwareProfile;
 export type CapabilityPlanUpdatePayload = MetricsCapabilityPlan;
 
 /**
+ * Sent once on cell attach, the counterpart to the daemon's `hello`.
+ * `instanceVersion` is `INSTANCE_VERSION`. Absent on control planes that
+ * predate the field — the daemon treats that as `unknown`.
+ */
+export type CellAttachVersionMessage = {
+  type: "version";
+  commit: string;
+  branch: string;
+  at: string;
+  instanceVersion?: string;
+};
+
+/**
  * JSON messages exchanged between the instance and daemon over /ws.
  *
  * Canonical for the shared protocol. The daemon exports its own extracted
  * union at `turbopaneld/src/contracts/cell-messages.ts` (hello/heartbeat live
  * here; daemon snapshot typing and `drivetemp` enable results may diverge).
  */
+/**
+ * One control-plane hostname on `public-urls-update`. Twin of
+ * `turbopaneld/src/contracts/cell-messages.ts`. `certPem` / `keyPem` are
+ * decrypted for this one hop and are never a stored plaintext column.
+ */
+export type InstanceHostnameCertSource =
+  | "lets-encrypt"
+  | "platform-ca"
+  | "uploaded";
+
+export type InstanceHostnameWireEntry = {
+  host: string;
+  source: InstanceHostnameCertSource;
+  certPem?: string;
+  keyPem?: string;
+  uploadedCertId?: string;
+};
+
+/** Instance-wide ACME knobs for hostnames whose source is `lets-encrypt`. */
+export type InstanceAcmeWireSettings = {
+  contactEmail: string;
+  tosAccepted: boolean;
+  directoryUrl: string;
+  useStaging: boolean;
+};
+
 export type DaemonMessage =
   | {
     type: "hello";
@@ -123,7 +162,7 @@ export type DaemonMessage =
     docker?: ServerDockerMetadata;
   }
   | { type: "echo"; payload: unknown; at: string }
-  | { type: "version"; commit: string; branch: string; at: string }
+  | CellAttachVersionMessage
   | { type: "addresses-request"; id: string; at: string }
   | {
     type: "addresses-result";
@@ -312,6 +351,22 @@ export type DaemonMessage =
     at: string;
   }
   | {
+    /**
+     * Daemon-initiated, fire-and-forget. Issuance state for the control
+     * plane's own hostnames (`origin`), reported by
+     * `InstanceAcmeIssuanceObserver`. Not `acme-issuance-event`: that stream
+     * merge-patches an organization's `tls` row, and the two must stay
+     * distinct so a consumer cannot conflate them.
+     */
+    type: "instance-acme-issuance-event";
+    hostname: string;
+    ok: boolean;
+    errorMessage?: string;
+    /** Leaf notAfter from the probe. Absent when the leaf could not be read. */
+    notAfter?: string;
+    at: string;
+  }
+  | {
     type: "fabric-paths-request";
     id: string;
     fabricId: string;
@@ -356,7 +411,17 @@ export type DaemonMessage =
     error?: string;
     at: string;
   }
-  | { type: "public-urls-update"; id: string; urls: string[]; at: string }
+  | {
+    type: "public-urls-update";
+    id: string;
+    /** Flat compatibility list. Daemons below the per-hostname floor read only this. */
+    urls: string[];
+    /** Present when the daemon can render per-hostname certificate sources. */
+    hostnames?: InstanceHostnameWireEntry[];
+    /** Present when any hostname uses `lets-encrypt`. */
+    instanceAcme?: InstanceAcmeWireSettings;
+    at: string;
+  }
   | {
     type: "public-urls-update-result";
     id: string;
@@ -374,6 +439,24 @@ export type DaemonMessage =
   }
   | {
     type: "update-result";
+    id: string;
+    ok: boolean;
+    error?: string;
+    at: string;
+  }
+  | {
+    type: "instance-update";
+    id: string;
+    channel?: string;
+    manifestUrl?: string;
+    /** UI package pin. Passed to run.sh as `--ui-manifest-url`. */
+    uiManifestUrl?: string;
+    /** Semver the control plane is about to install, when the manifest names one. */
+    targetVersion?: string;
+    at: string;
+  }
+  | {
+    type: "instance-update-result";
     id: string;
     ok: boolean;
     error?: string;
@@ -430,11 +513,13 @@ export const DAEMON_INBOUND_ALLOWED = new Set(
     "managed-ha-event",
     "topology-report",
     "acme-issuance-event",
+    "instance-acme-issuance-event",
     "fabric-paths-result",
     "dev-sync-result",
     "tunnel-token-result",
     "public-urls-update-result",
     "update-result",
+    "instance-update-result",
     "command-ack",
     "command-outcome",
   ] as const,
@@ -744,6 +829,9 @@ function validateAcmeIssuanceEventFields(
     return "invalid hostname";
   }
   if (typeof record.ok !== "boolean") return "invalid ok";
+  if (record.notAfter !== undefined && !isIsoTimestamp(record.notAfter)) {
+    return "invalid notAfter";
+  }
   return validateOptionalError(record.errorMessage);
 }
 
@@ -908,6 +996,7 @@ function validateInboundMessageFields(
     case "topology-report":
       return validateTopologyReportFields(record);
     case "acme-issuance-event":
+    case "instance-acme-issuance-event":
       return validateAcmeIssuanceEventFields(record);
     case "fabric-paths-result":
       return validateFabricPathsResultFields(record);
@@ -915,6 +1004,7 @@ function validateInboundMessageFields(
     case "tunnel-token-result":
     case "public-urls-update-result":
     case "update-result":
+    case "instance-update-result":
     case "metrics-live-start-result":
     case "metrics-live-stop-result":
     case "topology-overrides-update-result":
@@ -989,7 +1079,10 @@ function validateCommandAckEnvelope(
 }
 
 function validateCapabilitiesEnvelope(
-  inbound: Extract<DaemonInboundEnvelope, { kind: "metrics-capabilities-result" }>,
+  inbound: Extract<
+    DaemonInboundEnvelope,
+    { kind: "metrics-capabilities-result" }
+  >,
 ): string | null {
   if (inbound.capabilities !== undefined) {
     if (
@@ -1022,6 +1115,7 @@ function validateInboundEnvelopeKind(
     case "tunnel-token-result":
     case "public-urls-update-result":
     case "update-result":
+    case "instance-update-result":
     case "metrics-live-start-result":
     case "metrics-live-stop-result":
     case "topology-overrides-update-result":
@@ -1126,7 +1220,12 @@ export type DaemonOutboundEnvelope =
   })
   | (OutboundEnvelopeBase & { kind: "dev-sync"; phase: "end" })
   | (OutboundEnvelopeBase & { kind: "tunnel-token"; token: string })
-  | (OutboundEnvelopeBase & { kind: "public-urls-update"; urls: string[] })
+  | (OutboundEnvelopeBase & {
+    kind: "public-urls-update";
+    urls: string[];
+    hostnames?: InstanceHostnameWireEntry[];
+    instanceAcme?: InstanceAcmeWireSettings;
+  })
   | (OutboundEnvelopeBase & {
     kind: "metrics-live-start";
     leaseId: string;
@@ -1150,6 +1249,13 @@ export type DaemonOutboundEnvelope =
     channel?: string;
     updateUrl?: string;
     updateSha256?: string;
+  })
+  | (OutboundEnvelopeBase & {
+    kind: "instance-update";
+    channel?: string;
+    manifestUrl?: string;
+    uiManifestUrl?: string;
+    targetVersion?: string;
   })
   | (OutboundEnvelopeBase & { kind: "echo"; payload: unknown })
   | (OutboundEnvelopeBase & {
@@ -1284,6 +1390,13 @@ export type DaemonInboundEnvelope =
     error?: string;
   }
   | {
+    kind: "instance-update-result";
+    requestId: string;
+    at: string;
+    ok: boolean;
+    error?: string;
+  }
+  | {
     kind: "command-ack";
     requestId: string;
     at: string;
@@ -1316,6 +1429,9 @@ export function wireMessageToInboundEnvelope(
     case "heartbeat":
     case "managed-ha-event":
     case "topology-report":
+    case "acme-issuance-event":
+    case "instance-acme-issuance-event":
+      // Fire-and-forget (or session setup). Not a correlated request.
       return null;
 
     case "addresses-result":
@@ -1450,6 +1566,14 @@ export function wireMessageToInboundEnvelope(
         ok: msg.ok,
         error: msg.error,
       };
+    case "instance-update-result":
+      return {
+        kind: "instance-update-result",
+        requestId: msg.id,
+        at: msg.at,
+        ok: msg.ok,
+        error: msg.error,
+      };
     case "command-ack":
       return {
         kind: "command-ack",
@@ -1529,7 +1653,49 @@ function devSyncMessage(env: OutboundEnvelopeOf<"dev-sync">): DaemonMessage {
   return { type: "dev-sync-end", id: env.requestId, at: env.at };
 }
 
+/**
+ * Omit `hostnames` and `instanceAcme` when absent so an older daemon sees
+ * the flat `urls` list it already understands.
+ */
+function publicUrlsUpdateMessage(
+  env: OutboundEnvelopeOf<"public-urls-update">,
+): DaemonMessage {
+  const message = {
+    type: "public-urls-update" as const,
+    id: env.requestId,
+    urls: env.urls,
+    at: env.at,
+  };
+  if (env.hostnames === undefined) return message;
+  if (env.instanceAcme === undefined) {
+    return { ...message, hostnames: env.hostnames };
+  }
+  return {
+    ...message,
+    hostnames: env.hostnames,
+    instanceAcme: env.instanceAcme,
+  };
+}
+
 /** An absent field means "keep what you have", not "clear it". */
+function instanceUpdateMessage(
+  env: OutboundEnvelopeOf<"instance-update">,
+): DaemonMessage {
+  return {
+    type: "instance-update",
+    id: env.requestId,
+    at: env.at,
+    ...(env.channel !== undefined ? { channel: env.channel } : {}),
+    ...(env.manifestUrl !== undefined ? { manifestUrl: env.manifestUrl } : {}),
+    ...(env.uiManifestUrl !== undefined
+      ? { uiManifestUrl: env.uiManifestUrl }
+      : {}),
+    ...(env.targetVersion !== undefined
+      ? { targetVersion: env.targetVersion }
+      : {}),
+  };
+}
+
 function updateMessage(env: OutboundEnvelopeOf<"update">): DaemonMessage {
   return {
     type: "update",
@@ -1606,12 +1772,7 @@ export function outboundEnvelopeToWireMessage(
         at: env.at,
       };
     case "public-urls-update":
-      return {
-        type: "public-urls-update",
-        id: env.requestId,
-        urls: env.urls,
-        at: env.at,
-      };
+      return publicUrlsUpdateMessage(env);
     case "metrics-live-start":
       return {
         type: "metrics-live-start",
@@ -1651,6 +1812,8 @@ export function outboundEnvelopeToWireMessage(
       };
     case "update":
       return updateMessage(env);
+    case "instance-update":
+      return instanceUpdateMessage(env);
     case "echo":
       return { type: "echo", payload: env.payload, at: env.at };
     case "command-dispatch":

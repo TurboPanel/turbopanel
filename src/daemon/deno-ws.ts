@@ -2,7 +2,10 @@ import type { Context, Env, Hono } from "hono";
 import { upgradeWebSocket } from "hono/deno";
 import type { WSContext } from "hono/ws";
 import type { DaemonCellRegistry } from "../contracts/cell.ts";
-import type { DaemonInboundEnvelope, DaemonMessage } from "../contracts/cell-protocol.ts";
+import type {
+  DaemonInboundEnvelope,
+  DaemonMessage,
+} from "../contracts/cell-protocol.ts";
 import {
   DAEMON_CELL_PING,
   DAEMON_CELL_PONG,
@@ -11,8 +14,10 @@ import {
   validateDaemonInboundFrame,
   wireMessageToInboundEnvelope,
 } from "../contracts/cell-protocol.ts";
+import { instanceAttachVersionFrame } from "./attach-version.ts";
 import type { DaemonJwtKeyring } from "./authn/daemon-jwt-keyring.ts";
 import { tryAssignColocatedDaemonToInstalledOrganization } from "../client/authn/install-state.ts";
+import { recordInstanceAcmeIssuance } from "../features/install/instance-hostnames.ts";
 import { getDb } from "../db/connection.ts";
 import type { Db } from "../db/connection.ts";
 import { compatLogError, compatLogWarn } from "../lib/log-compat.ts";
@@ -307,6 +312,23 @@ async function handleDaemonManagedHaInbound(params: {
   await cell.recordInbound({ connectionId, at: message.at });
 }
 
+async function handleInstanceAcmeIssuanceInbound(params: {
+  cell: ReturnType<DaemonCellRegistry["getCell"]>;
+  db: Db;
+  connectionId: string | undefined;
+  message: Extract<DaemonMessage, { type: "instance-acme-issuance-event" }>;
+}): Promise<void> {
+  const { cell, db, connectionId, message } = params;
+  await cell.recordInbound({ connectionId, at: message.at });
+  await recordInstanceAcmeIssuance(db, {
+    hostname: message.hostname,
+    ok: message.ok,
+    at: message.at,
+    ...(message.errorMessage ? { errorMessage: message.errorMessage } : {}),
+    ...(message.notAfter ? { notAfter: message.notAfter } : {}),
+  });
+}
+
 async function handleDaemonTopologyReportInbound(params: {
   cell: ReturnType<DaemonCellRegistry["getCell"]>;
   db: Db;
@@ -556,6 +578,16 @@ export function registerDaemonWebSocket<E extends Env>(
           return;
         }
 
+        if (message.type === "instance-acme-issuance-event") {
+          await handleInstanceAcmeIssuanceInbound({
+            cell,
+            db,
+            connectionId,
+            message,
+          });
+          return;
+        }
+
         await cell.recordInbound({ connectionId, at: message.at });
 
         const envelope = wireMessageToInboundEnvelope(message);
@@ -640,6 +672,19 @@ export function registerDaemonWebSocket<E extends Env>(
             connectionId,
             `daemon connected${connectedFromSuffix}`,
           );
+
+          try {
+            ws.send(JSON.stringify(
+              instanceAttachVersionFrame(connectedAt, Deno.env.toObject()),
+            ));
+          } catch (err) {
+            daemonCellLog(
+              "WARN",
+              payload.sub,
+              connectionId,
+              `attach version frame failed: ${String(err)}`,
+            );
+          }
 
           if (identityAddress === DIRECT_ATTACH_SENTINEL) {
             assignColocatedDaemonOnConnect(db, registry);

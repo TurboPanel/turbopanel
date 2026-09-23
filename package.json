@@ -24,6 +24,7 @@
     "notices:generate": "deno task notices:generate",
     "notices:check": "deno task notices:check",
     "check:ca-boundary": "node scripts/check-ca-boundary.mjs",
+    "check:instance-acme-boundary": "node scripts/check-instance-acme-boundary.mjs",
     "check:import-boundaries": "node scripts/check-import-boundaries.mjs",
     "check:contract-drift": "node scripts/check-contract-drift.mjs",
     "check:migration-freeze": "node scripts/check-migration-freeze.mjs",
@@ -35,7 +36,7 @@
     "check:deploy-env": "node scripts/check-deploy-env.mjs",
     "bootstrap:superadmin": "node scripts/bootstrap-superadmin.mjs",
     "check:metrics-boundaries": "node scripts/check-metrics-boundaries.mjs",
-    "test:hook": "deno task check:types && pnpm run check:do-hibernation && pnpm run check:workers-bundle && pnpm run check:vocabulary && pnpm run check:test-inventory && pnpm run notices:check && pnpm run check:ca-boundary && pnpm run check:import-boundaries && pnpm run check:metrics-boundaries && pnpm run check:contract-drift && pnpm test:do && deno task test:authn && deno task test:permissions && deno task test:authz && deno task test:paths && deno task test:compose && deno task test:managed && deno task test:admin"
+    "test:hook": "deno task check:types && pnpm run check:do-hibernation && pnpm run check:workers-bundle && pnpm run check:vocabulary && pnpm run check:test-inventory && pnpm run notices:check && pnpm run check:ca-boundary && pnpm run check:instance-acme-boundary && pnpm run check:import-boundaries && pnpm run check:metrics-boundaries && pnpm run check:contract-drift && pnpm test:do && deno task test:authn && deno task test:permissions && deno task test:authz && deno task test:paths && deno task test:compose && deno task test:managed && deno task test:admin"
   },
   "dependencies": {
     "@duckdb/node-api": "1.5.5-r.4",

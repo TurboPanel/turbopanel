@@ -76,6 +76,9 @@ pnpm run notices:check
 echo "==> Check CA boundary"
 pnpm run check:ca-boundary
 
+echo "==> Check instance ACME boundary"
+pnpm run check:instance-acme-boundary
+
 echo "==> Check import boundaries"
 pnpm run check:import-boundaries
 

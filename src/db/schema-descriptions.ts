@@ -553,6 +553,42 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         "JSON value for the key (scalar, array or object); any secret inside it is stored only as a sealed `tpsecret` envelope, never in plaintext.",
     },
   },
+  certificate: {
+    group: "platform",
+    summary:
+      "Uploaded control-plane certificate pair; several origin rows may reference one pair when its names cover them.",
+    columns: {
+      label:
+        "Operator-chosen name for the uploaded pair, shown in the admin certificate list.",
+      cert_pem:
+        "Public certificate PEM, chain allowed; the leaf is parsed for names and expiry when the pair is stored.",
+      key_pem:
+        "Private key PEM sealed as a `tpsecret` envelope; the admin API never returns it.",
+      dns_names:
+        "JSON array of DNS names and IP addresses parsed from the leaf, used to test which hostnames the pair covers.",
+      not_after:
+        "Leaf expiry copied from the parsed certificate when the pair is stored.",
+    },
+  },
+  origin: {
+    group: "platform",
+    summary:
+      "One control-plane public name operators publish, with its certificate source and any Let's Encrypt attempt state.",
+    columns: {
+      host:
+        "Normalized public URL entry (origin, host, or host:port) in the form public URL parsing already stores.",
+      source:
+        "Certificate source for this name: `platform-ca`, `uploaded`, or `lets-encrypt`.",
+      uploaded_cert_id:
+        "Uploaded pair (`certificate.id`) this name serves; required when `source` is `uploaded`, otherwise NULL.",
+      acme_last_attempt_at:
+        "When this instance last tried Let's Encrypt for this name; NULL until an attempt runs.",
+      acme_last_error:
+        "Last Let's Encrypt error for this name; NULL when the last attempt succeeded or none has run.",
+      not_after:
+        "Leaf expiry for this name when known; NULL for `platform-ca` and for Let's Encrypt before a leaf exists.",
+    },
+  },
   // ── networking ────────────────────────────────────────────────────────
   datacenter: {
     group: "networking",

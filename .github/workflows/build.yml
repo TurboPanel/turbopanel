@@ -76,6 +76,9 @@ jobs:
       - name: Check CA boundary (Organization CA must not touch Platform CA paths)
         run: pnpm run check:ca-boundary
 
+      - name: Check instance ACME boundary (instance ACME must not touch organization ACME)
+        run: pnpm run check:instance-acme-boundary
+
       - name: Check import boundaries
         run: pnpm run check:import-boundaries
 

@@ -179,6 +179,7 @@ test("deriveInboundOutcome maps ok-result kinds", () => {
       "dev-sync-result",
       "tunnel-token-result",
       "update-result",
+      "instance-update-result",
       "capability-plan-update-result",
       "capability-plan-clear-result",
     ] as const

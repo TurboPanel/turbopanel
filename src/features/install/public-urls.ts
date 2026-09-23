@@ -1,24 +1,27 @@
-import { eq } from 'drizzle-orm'
-import type { Db } from '../../db/connection.ts'
-import { setting } from '../../db/schema.ts'
+import type { Db } from "../../db/connection.ts";
+import {
+  getInstanceHostnamesLegacyShim,
+  replacePublicUrlsWithPlatformCa,
+} from "./instance-hostnames.ts";
 
-const PUBLIC_URLS_SETTING_KEY = 'TURBOPANEL_PUBLIC_URLS'
+export const PUBLIC_URLS_SETTING_KEY = "TURBOPANEL_PUBLIC_URLS";
 
 function trimTrailingSlash(url: string): string {
-  return url.endsWith('/') ? url.slice(0, -1) : url
+  return url.endsWith("/") ? url.slice(0, -1) : url;
 }
 
 function stripIpv6Brackets(host: string): string {
-  return host.replace(/^\[/, '').replace(/\]$/, '')
+  return host.replace(/^\[/, "").replace(/\]$/, "");
 }
 
 function isValidPublicHost(hostname: string): boolean {
-  const host = stripIpv6Brackets(hostname)
-  return host.length > 0 && host !== 'null' && host !== 'localhost'
+  const host = stripIpv6Brackets(hostname);
+  return host.length > 0 && host !== "null" && host !== "localhost";
 }
 
 function hasNonOriginUrlParts(url: URL): boolean {
-  return (url.pathname !== '/' && url.pathname !== '') || Boolean(url.search) || Boolean(url.hash)
+  return (url.pathname !== "/" && url.pathname !== "") || Boolean(url.search) ||
+    Boolean(url.hash);
 }
 
 /**
@@ -31,47 +34,48 @@ function hasNonOriginUrlParts(url: URL): boolean {
  * configuration for managed servers.
  */
 function isHttpOrHttpsOriginUrl(url: URL, allowHttp = false): boolean {
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') return false
-  if (url.protocol === 'http:' && !allowHttp) return false
-  if (!isValidPublicHost(url.hostname)) return false
-  if (url.username || url.password) return false
-  return !hasNonOriginUrlParts(url)
+  if (url.protocol !== "http:" && url.protocol !== "https:") return false;
+  if (url.protocol === "http:" && !allowHttp) return false;
+  if (!isValidPublicHost(url.hostname)) return false;
+  if (url.username || url.password) return false;
+  return !hasNonOriginUrlParts(url);
 }
 
 /** Bracket IPv6 literals when formatting host[:port]. */
 function formatHostForUrl(host: string, port?: string): string {
-  const hostPart = host.includes(':') ? `[${host}]` : host
-  return port ? `${hostPart}:${port}` : hostPart
+  const hostPart = host.includes(":") ? `[${host}]` : host;
+  return port ? `${hostPart}:${port}` : hostPart;
 }
 
 /**
  * Parse a bare host / host:port entry (no scheme) into a URL, or null if invalid.
  */
 function tryParseBareHostEntry(trimmed: string): URL | null {
-  if (/[/?#@]/.test(trimmed)) return null
+  if (/[/?#@]/.test(trimmed)) return null;
   try {
-    const url = new URL(`https://${trimmed}`)
-    if (!isValidPublicHost(url.hostname)) return null
-    if (url.pathname !== '/' && url.pathname !== '') return null
-    return url
+    const url = new URL(`https://${trimmed}`);
+    if (!isValidPublicHost(url.hostname)) return null;
+    if (url.pathname !== "/" && url.pathname !== "") return null;
+    return url;
   } catch {
-    return null
+    return null;
   }
 }
 
 /** Parse one URL or bare host into a normalized hostname, or null to skip. */
 export function hostFromPublicUrlEntry(entry: string): string | null {
-  const trimmed = entry.trim()
-  if (!trimmed) return null
-  let host: string
+  const trimmed = entry.trim();
+  if (!trimmed) return null;
+  let host: string;
   try {
-    host = new URL(trimmed.includes('://') ? trimmed : `https://${trimmed}`).hostname
+    host = new URL(trimmed.includes("://") ? trimmed : `https://${trimmed}`)
+      .hostname;
   } catch {
-    return null
+    return null;
   }
-  host = stripIpv6Brackets(host)
-  if (!isValidPublicHost(host)) return null
-  return host
+  host = stripIpv6Brackets(host);
+  if (!isValidPublicHost(host)) return null;
+  return host;
 }
 
 /**
@@ -83,26 +87,26 @@ export function hostFromPublicUrlEntry(entry: string): string | null {
  */
 export function publicUrlEntryToInstallOrigin(
   entry: string,
-  defaultHttpsPort = '8443',
+  defaultHttpsPort = "8443",
   opts: { allowHttp?: boolean } = {},
 ): string | null {
-  const trimmed = entry.trim()
-  if (!trimmed) return null
+  const trimmed = entry.trim();
+  if (!trimmed) return null;
 
   try {
-    if (trimmed.includes('://')) {
-      const url = new URL(trimmed)
-      if (!isHttpOrHttpsOriginUrl(url, opts.allowHttp)) return null
-      return trimTrailingSlash(url.origin)
+    if (trimmed.includes("://")) {
+      const url = new URL(trimmed);
+      if (!isHttpOrHttpsOriginUrl(url, opts.allowHttp)) return null;
+      return trimTrailingSlash(url.origin);
     }
 
-    const url = tryParseBareHostEntry(trimmed)
-    if (!url) return null
+    const url = tryParseBareHostEntry(trimmed);
+    if (!url) return null;
 
-    const port = url.port || defaultHttpsPort
-    return `https://${formatHostForUrl(url.hostname, port)}`
+    const port = url.port || defaultHttpsPort;
+    return `https://${formatHostForUrl(url.hostname, port)}`;
   } catch {
-    return null
+    return null;
   }
 }
 
@@ -110,29 +114,29 @@ function parseAndNormalizePublicUrlEntry(
   entry: string,
   allowHttp = false,
 ): string | null {
-  const trimmed = entry.trim()
-  if (!trimmed) return null
+  const trimmed = entry.trim();
+  if (!trimmed) return null;
 
-  if (trimmed.includes('://')) {
+  if (trimmed.includes("://")) {
     try {
-      const url = new URL(trimmed)
-      if (!isHttpOrHttpsOriginUrl(url, allowHttp)) return null
-      return url.origin
+      const url = new URL(trimmed);
+      if (!isHttpOrHttpsOriginUrl(url, allowHttp)) return null;
+      return url.origin;
     } catch {
-      return null
+      return null;
     }
   }
 
-  const url = tryParseBareHostEntry(trimmed)
-  if (!url) return null
+  const url = tryParseBareHostEntry(trimmed);
+  if (!url) return null;
 
-  const host = stripIpv6Brackets(url.hostname)
-  return url.port ? formatHostForUrl(host, url.port) : host
+  const host = stripIpv6Brackets(url.hostname);
+  return url.port ? formatHostForUrl(host, url.port) : host;
 }
 
 export type ParsePublicUrlEntriesResult =
   | { ok: true; urls: string[] }
-  | { ok: false; error: string; invalid: string[] }
+  | { ok: false; error: string; invalid: string[] };
 
 /**
  * Parse and validate public URL entries.
@@ -146,62 +150,44 @@ export function parsePublicUrlEntries(
   raw: string[],
   opts: { allowHttp?: boolean } = {},
 ): ParsePublicUrlEntriesResult {
-  const validated: string[] = []
-  const invalid: string[] = []
-  const seen = new Set<string>()
+  const validated: string[] = [];
+  const invalid: string[] = [];
+  const seen = new Set<string>();
 
   for (const entry of raw) {
-    const normalized = parseAndNormalizePublicUrlEntry(entry, opts.allowHttp)
+    const normalized = parseAndNormalizePublicUrlEntry(entry, opts.allowHttp);
     if (!normalized) {
-      invalid.push(entry)
-      continue
+      invalid.push(entry);
+      continue;
     }
-    const dedupeKey =
-      publicUrlEntryToInstallOrigin(normalized, undefined, {
-        allowHttp: opts.allowHttp,
-      }) ?? normalized
-    if (seen.has(dedupeKey)) continue
-    seen.add(dedupeKey)
-    validated.push(normalized)
+    const dedupeKey = publicUrlEntryToInstallOrigin(normalized, undefined, {
+      allowHttp: opts.allowHttp,
+    }) ?? normalized;
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+    validated.push(normalized);
   }
 
   if (invalid.length > 0) {
     return {
       ok: false,
-      error: 'One or more public URL entries are invalid',
+      error: "One or more public URL entries are invalid",
       invalid,
-    }
+    };
   }
 
-  return { ok: true, urls: validated }
+  return { ok: true, urls: validated };
 }
 
+/**
+ * Flat public-URL list. Storage is the `hostname` table (`platform-ca` when
+ * written here). `TURBOPANEL_PUBLIC_URLS` is kept as a projection of that list.
+ */
 export async function getPublicUrls(db: Db): Promise<string[]> {
-  const rows = await db
-    .select()
-    .from(setting)
-    .where(eq(setting.key, PUBLIC_URLS_SETTING_KEY))
-    .limit(1)
-  const raw = rows[0]?.value as string[] | string | null | undefined
-  if (raw == null) return []
-  if (Array.isArray(raw)) {
-    return raw.filter((entry): entry is string => typeof entry === 'string' && entry.trim() !== '')
-  }
-  return raw.split(',').map((s) => s.trim()).filter((s) => s !== '')
+  return await getInstanceHostnamesLegacyShim(db);
 }
 
+/** Replace the published names. Entries written here use source `platform-ca`. */
 export async function setPublicUrls(db: Db, urls: string[]): Promise<void> {
-  await db
-    .insert(setting)
-    .values({
-      key: PUBLIC_URLS_SETTING_KEY,
-      value: urls,
-    })
-    .onConflictDoUpdate({
-      target: setting.key,
-      set: {
-        value: urls,
-        updatedAt: new Date().toISOString(),
-      },
-    })
+  await replacePublicUrlsWithPlatformCa(db, urls);
 }

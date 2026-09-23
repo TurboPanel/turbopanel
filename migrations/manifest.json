@@ -38,6 +38,12 @@
       "tag": "0005_tier_label_ladder_path",
       "when": 1790041120375,
       "sha256": "9ee8fdd759417a5885657b1e48ef990bc59845ca7104a47e6b5f274cbd1235ab"
+    },
+    {
+      "idx": 6,
+      "tag": "0006_instance_hostnames",
+      "when": 1790112163842,
+      "sha256": "d8b13ba408c446e16affe8a6daad754bfb25bd8cbf8dd78dbac9329604b6bf2a"
     }
   ]
 }

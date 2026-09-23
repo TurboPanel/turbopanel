@@ -4,10 +4,7 @@ import type { AppEnv } from "../app/app.ts";
 import { createBrowserWriteProtectionMiddleware } from "../app/browser-write-protection.ts";
 import { getDatabaseUrl } from "../db/url.ts";
 import { createDenoDb, endDbConnection } from "../db/connection.ts";
-import type {
-  DaemonCell,
-  DaemonCellRegistry,
-} from "../contracts/cell.ts";
+import type { DaemonCell, DaemonCellRegistry } from "../contracts/cell.ts";
 import {
   buildSignedCookie,
   HTTP_SESSION_COOKIE_NAME,
@@ -19,10 +16,16 @@ import {
   deriveSecretsConfig,
   parseSecretsEnv,
 } from "../lib/secrets/secrets.ts";
-import { notificationChannel, server, setting, user } from "../db/schema.ts";
+import {
+  instanceHostname,
+  notificationChannel,
+  server,
+  setting,
+  user,
+} from "../db/schema.ts";
 import { OPERATOR_WEBHOOK_LABEL } from "../features/notifications/records.ts";
 import { encryptSecret } from "../lib/secrets/data-encryption.ts";
-import { eq } from "drizzle-orm";
+import { eq, isNotNull } from "drizzle-orm";
 import { ADMIN_API_PREFIX } from "../app/surfaces.ts";
 import {
   endReencryptSweep,
@@ -189,8 +192,10 @@ async function createAdminTestApp(
     runtime?: "deno" | "workers";
   }> = {},
 ) {
-  const secretsConfig = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`,
-    "deno");
+  const secretsConfig = parseSecretsEnv(
+    `1:${TEST_ONLY_TURBOPANEL_SECRET}`,
+    "deno",
+  );
   const secrets = await deriveSecretsConfig(secretsConfig, "session-signing");
   const dataEncryptionSecrets = options.withDataEncryption === false
     ? undefined
@@ -334,8 +339,10 @@ test("POST /api/admin/v1/cells/purge-batch reports per-id results for superadmin
     const failIds = new Set([failId]);
     const { registry, purgedIds } = createTrackingRegistry(failIds);
 
-    const secretsConfig = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`,
-    "deno");
+    const secretsConfig = parseSecretsEnv(
+      `1:${TEST_ONLY_TURBOPANEL_SECRET}`,
+      "deno",
+    );
     const secrets = await deriveSecretsConfig(secretsConfig, "session-signing");
     const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
       secretsConfig,
@@ -676,8 +683,10 @@ test("GET and PUT /api/admin/v1/instance/public-urls validate and persist origin
       .from(setting)
       .where(eq(setting.key, publicUrlsKey))
       .limit(1);
+    const previousHosts = await db.select().from(instanceHostname);
 
     try {
+      await db.delete(instanceHostname).where(isNotNull(instanceHostname.id));
       await db.delete(setting).where(eq(setting.key, publicUrlsKey));
 
       const empty = await app.request(
@@ -732,8 +741,56 @@ test("GET and PUT /api/admin/v1/instance/public-urls validate and persist origin
         ok: true,
         urls: ["https://panel.example.com"],
       });
+
+      const savedNames = await app.request(
+        `${ADMIN_API_PREFIX}/instance/hostnames`,
+        {
+          method: "PUT",
+          headers: {
+            Cookie: cookie,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            hostnames: [{
+              host: "https://names.example.com",
+              source: "platform-ca",
+            }],
+          }),
+        },
+      );
+      assertEquals(savedNames.status, 200);
+      const listedNames = await app.request(
+        `${ADMIN_API_PREFIX}/instance/hostnames`,
+        { headers: { Cookie: cookie } },
+      );
+      assertEquals(listedNames.status, 200);
+      const listedBody = await listedNames.json() as {
+        hostnames: { host: string; source: string; status: string }[];
+      };
+      assertEquals(listedBody.hostnames[0]?.host, "https://names.example.com");
+      assertEquals(listedBody.hostnames[0]?.source, "platform-ca");
+      assertEquals(listedBody.hostnames[0]?.status, "ready");
+
+      const rejectedAcme = await app.request(
+        `${ADMIN_API_PREFIX}/instance/hostnames`,
+        {
+          method: "PUT",
+          headers: {
+            Cookie: cookie,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            hostnames: [{ host: "10.1.2.3", source: "lets-encrypt" }],
+          }),
+        },
+      );
+      assertEquals(rejectedAcme.status, 422);
     } finally {
+      await db.delete(instanceHostname).where(isNotNull(instanceHostname.id));
       await db.delete(setting).where(eq(setting.key, publicUrlsKey));
+      if (previousHosts.length > 0) {
+        await db.insert(instanceHostname).values(previousHosts);
+      }
       if (previous.length > 0) {
         await db.insert(setting).values({
           key: publicUrlsKey,
@@ -1158,7 +1215,10 @@ test("GET and PUT /api/admin/v1/settings/server-metrics-live round-trip the cap"
 
       const thirty = await put(30);
       assertEquals(thirty.status, 200);
-      assertEquals((await jsonBody<{ maxMinutes: number }>(thirty)).maxMinutes, 30);
+      assertEquals(
+        (await jsonBody<{ maxMinutes: number }>(thirty)).maxMinutes,
+        30,
+      );
 
       const readBack = await app.request(
         `${ADMIN_API_PREFIX}/settings/server-metrics-live`,
@@ -1241,7 +1301,9 @@ test("GET and PUT /api/admin/v1/settings/alert-webhook never hand the URL back",
           body: JSON.stringify({ url }),
         });
 
-      const set = await put("https://hooks.slack.com/services/T0/B0/SECRETPATH");
+      const set = await put(
+        "https://hooks.slack.com/services/T0/B0/SECRETPATH",
+      );
       assertEquals(set.status, 200);
       const setBody = await jsonBody<
         { configured: boolean; origin: string | null }
@@ -1276,7 +1338,12 @@ test("GET and PUT /api/admin/v1/settings/alert-webhook never hand the URL back",
       // Scheme and credential rules hold on every runtime; the test app is
       // the self-hosted (Deno) runtime, where a LAN or loopback target is
       // allowed by decision (2026-09-18) — see the Workers case below.
-      for (const rejected of ["http://hooks.slack.com/x", "https://u:p@hooks.slack.com/x"]) {
+      for (
+        const rejected of [
+          "http://hooks.slack.com/x",
+          "https://u:p@hooks.slack.com/x",
+        ]
+      ) {
         assertEquals((await put(rejected)).status, 400, rejected);
       }
       assertEquals((await put(42)).status, 400);
@@ -1319,25 +1386,48 @@ test("a legacy ALERT_WEBHOOK_URL setting is adopted into the operator channel on
         `1:${TEST_ONLY_TURBOPANEL_SECRET}`,
         "deno",
       );
-      const enc = await deriveEncryptionSecretsConfig(secretsConfig, "data-encryption");
+      const enc = await deriveEncryptionSecretsConfig(
+        secretsConfig,
+        "data-encryption",
+      );
       await db.insert(setting).values({
         key: ALERT_WEBHOOK_URL_KEY,
-        value: await encryptSecret(enc, "https://hooks.slack.com/services/LEGACY/PATH"),
+        value: await encryptSecret(
+          enc,
+          "https://hooks.slack.com/services/LEGACY/PATH",
+        ),
       }).onConflictDoUpdate({
         target: setting.key,
-        set: { value: await encryptSecret(enc, "https://hooks.slack.com/services/LEGACY/PATH") },
+        set: {
+          value: await encryptSecret(
+            enc,
+            "https://hooks.slack.com/services/LEGACY/PATH",
+          ),
+        },
       });
 
       // Listing the instance channels folds it in: one channel, a `*` rule,
       // the setting row gone.
-      const listed = await app.request(`${ADMIN_API_PREFIX}/notification-channels`, {
-        headers: { Cookie: cookie },
-      });
+      const listed = await app.request(
+        `${ADMIN_API_PREFIX}/notification-channels`,
+        {
+          headers: { Cookie: cookie },
+        },
+      );
       assertEquals(listed.status, 200);
       const { channels } = await jsonBody<{
-        channels: Array<{ label: string; kind: string; address: string; rules: Array<{ event: string; minSeverity: string }> }>;
+        channels: Array<
+          {
+            label: string;
+            kind: string;
+            address: string;
+            rules: Array<{ event: string; minSeverity: string }>;
+          }
+        >;
       }>(listed);
-      const operator = channels.find((ch) => ch.label === OPERATOR_WEBHOOK_LABEL);
+      const operator = channels.find((ch) =>
+        ch.label === OPERATOR_WEBHOOK_LABEL
+      );
       assertEquals(operator?.kind, "webhook");
       assertEquals(operator?.address, "https://hooks.slack.com");
       assertEquals(operator?.rules, [{ event: "*", minSeverity: "info" }]);
@@ -1348,9 +1438,12 @@ test("a legacy ALERT_WEBHOOK_URL setting is adopted into the operator channel on
       assertEquals(legacyRows.length, 0);
 
       // And the old route still answers from the same channel.
-      const described = await app.request(`${ADMIN_API_PREFIX}/settings/alert-webhook`, {
-        headers: { Cookie: cookie },
-      });
+      const described = await app.request(
+        `${ADMIN_API_PREFIX}/settings/alert-webhook`,
+        {
+          headers: { Cookie: cookie },
+        },
+      );
       assertEquals(await jsonBody(described), {
         configured: true,
         origin: "https://hooks.slack.com",
@@ -1384,14 +1477,19 @@ test("PUT /api/admin/v1/settings/alert-webhook accepts a private target on every
         for (const url of privateTargets) {
           const res = await put(app, cookie, url);
           assertEquals(res.status, 200, `${runtime}: ${url}`);
-          const body = await jsonBody<{ configured: boolean; origin: string | null }>(res);
+          const body = await jsonBody<
+            { configured: boolean; origin: string | null }
+          >(res);
           assertEquals(body.configured, true);
           assertEquals(JSON.stringify(body).includes("/hook"), false);
         }
         // Scheme is still the rule.
         const plain = await put(app, cookie, "http://10.0.0.5/hook");
         assertEquals(plain.status, 400, `${runtime}: http`);
-        assertEquals((await jsonBody<{ reason: string }>(plain)).reason, "scheme_not_https");
+        assertEquals(
+          (await jsonBody<{ reason: string }>(plain)).reason,
+          "scheme_not_https",
+        );
       } finally {
         // Clear through the route itself: `null` deletes the row.
         assertEquals((await put(app, cookie, null)).status, 200);
