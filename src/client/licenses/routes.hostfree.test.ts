@@ -19,10 +19,7 @@ import type { Context } from "hono";
 import type { AppEnv } from "../../app/app.ts";
 import type { AuthRouteOpts } from "../authn/http.ts";
 import type { Db } from "../../db/connection.ts";
-import type {
-  DaemonCell,
-  DaemonCellRegistry,
-} from "../../contracts/cell.ts";
+import type { DaemonCell, DaemonCellRegistry } from "../../contracts/cell.ts";
 import type { BillingConfig } from "../../features/billing/config.ts";
 import {
   emptyLedger,
@@ -35,6 +32,7 @@ import {
   BILLING_QUANTITY_LOCK_NAME,
 } from "../../features/billing/quantity-lock.ts";
 import {
+  instanceHostname,
   lease,
   license,
   payer,
@@ -111,6 +109,8 @@ type Fixture = {
   allowed?: boolean;
   registry?: DaemonCellRegistry;
   afterSession?: "drop-db" | "swallow-session";
+  platformEnv?: Record<string, string | undefined>;
+  omitBaseUrl?: boolean;
 };
 
 function noopRegistry(): DaemonCellRegistry {
@@ -193,6 +193,7 @@ async function buildApp(fx: Fixture = {}) {
     : fx.seats;
   const db = createMemoryDb([
     [setting, []],
+    [instanceHostname, []],
     [
       server,
       (fx.servers ?? []).map((row) => ({
@@ -277,6 +278,7 @@ async function buildApp(fx: Fixture = {}) {
       const config = fx.config === undefined ? CONFIG : fx.config;
       if (config) c.set("billingConfig", config);
       if (fx.registry) c.set("daemonCellRegistry", fx.registry);
+      if (fx.platformEnv) c.set("platformEnv", fx.platformEnv);
       return next();
     });
   }
@@ -284,7 +286,7 @@ async function buildApp(fx: Fixture = {}) {
     secrets,
     runtime: "workers",
     signupEnvOverride: undefined,
-    baseUrl: "https://panel.example.com",
+    ...(fx.omitBaseUrl ? {} : { baseUrl: "https://panel.example.com" }),
   });
   const cookie = `${HTTP_SESSION_COOKIE_NAME}=${await buildSignedCookie(
     token,
@@ -754,6 +756,32 @@ test("POST /licenses returns 400 for a plaintext installBaseUrl outside the deve
   assertEquals(await res.json(), {
     error: "installBaseUrl must be a valid https URL",
   });
+});
+
+test("POST /licenses keeps a hosted Workers origin on port 443", async () => {
+  const previousBase = Deno.env.get("TURBOPANEL_BASE_URL");
+  const previousPublic = Deno.env.get("TURBOPANEL_PUBLIC_URLS");
+  Deno.env.delete("TURBOPANEL_BASE_URL");
+  Deno.env.delete("TURBOPANEL_PUBLIC_URLS");
+  try {
+    const { app, headers } = await buildApp({
+      config: null,
+      seats: null,
+      omitBaseUrl: true,
+      platformEnv: { TURBOPANEL_BASE_URL: "https://turbopanel.app" },
+    });
+    const res = await mint(app, headers, { name: "edge-hosted" });
+    assertEquals(res.status, 200);
+    const body = await res.json() as { installCommand: string };
+    assertEquals(body.installCommand.includes(":8443"), false);
+    assertEquals(body.installCommand.includes("TURBOPANEL_HOST"), false);
+    assertEquals(body.installCommand.includes("turbopanel.sh"), true);
+  } finally {
+    if (previousBase === undefined) Deno.env.delete("TURBOPANEL_BASE_URL");
+    else Deno.env.set("TURBOPANEL_BASE_URL", previousBase);
+    if (previousPublic === undefined) Deno.env.delete("TURBOPANEL_PUBLIC_URLS");
+    else Deno.env.set("TURBOPANEL_PUBLIC_URLS", previousPublic);
+  }
 });
 
 test("POST /licenses uses a valid https installBaseUrl in the install command", async () => {

@@ -1,72 +1,82 @@
-import type { Hono } from 'hono'
-import { deriveDaemonJwtKeyring } from '../../daemon/authn/daemon-jwt-keyring.ts'
+import type { Hono } from "hono";
+import { deriveDaemonJwtKeyring } from "../../daemon/authn/daemon-jwt-keyring.ts";
 import {
   type DerivedSecretsConfig,
   deriveEncryptionSecretsConfig,
   deriveSecretsConfig,
   parseSecretsFromEnv,
   type SecretsConfig,
-} from '../../lib/secrets/secrets.ts'
-import { type AppEnv, createApp } from '../../app/app.ts'
-import { createDenoDb, type Db, endDbConnection } from '../../db/connection.ts'
-import { assertSchemaCurrent, SchemaStateError } from '../../db/schema-state.ts'
-import { logError, logInfo, logWarn } from '../../lib/logger.ts'
+} from "../../lib/secrets/secrets.ts";
+import { type AppEnv, createApp } from "../../app/app.ts";
+import { createDenoDb, type Db, endDbConnection } from "../../db/connection.ts";
+import {
+  assertSchemaCurrent,
+  SchemaStateError,
+} from "../../db/schema-state.ts";
+import { logError, logInfo, logWarn } from "../../lib/logger.ts";
 import {
   assertValidUpdateChannelEnv,
   resolveInstanceUpdateChannel,
-} from '../../contracts/update-channel.ts'
-import { createRedisDaemonCellRegistry } from '../../daemon/cell/redis/registry.ts'
-import { sweepStalePresence } from '../../daemon/cell/control-plane-monitor.ts'
-import { createDenoMaintenanceScheduler } from '../../daemon/cell/deno-maintenance.ts'
-import { resolveAlertSender } from '../../features/alerts/resolve-alert-sender.ts'
-import { ALERT_WEBHOOK_POLICY } from '../../features/alerts/alert-webhook-settings.ts'
-import { retryDueDeliveries } from '../../features/notifications/emit.ts'
-import { DAEMON_CELL_MAINTAIN_MS } from '../../contracts/cell-protocol.ts'
+} from "../../contracts/update-channel.ts";
+import { createRedisDaemonCellRegistry } from "../../daemon/cell/redis/registry.ts";
+import { sweepStalePresence } from "../../daemon/cell/control-plane-monitor.ts";
+import { createDenoMaintenanceScheduler } from "../../daemon/cell/deno-maintenance.ts";
+import { resolveAlertSender } from "../../features/alerts/resolve-alert-sender.ts";
+import { ALERT_WEBHOOK_POLICY } from "../../features/alerts/alert-webhook-settings.ts";
+import { retryDueDeliveries } from "../../features/notifications/emit.ts";
+import { DAEMON_CELL_MAINTAIN_MS } from "../../contracts/cell-protocol.ts";
 import {
   COMMAND_DISPATCH_SWEEP_LIMIT,
   sweepExpiredCommandDispatch,
-} from '../../features/commands/command-records.ts'
-import { releaseStuckManagedApplying, sweepStaleCommands } from '../../features/commands/stale-sweep.ts'
+} from "../../features/commands/command-records.ts";
+import {
+  releaseStuckManagedApplying,
+  sweepStaleCommands,
+} from "../../features/commands/stale-sweep.ts";
 import {
   sweepExpiredWebhookDeliveries,
   WEBHOOK_DELIVERY_SWEEP_LIMIT,
-} from '../../features/webhook-delivery/webhook-delivery-records.ts'
-import { registerWebhookRoutes } from '../../webhook/routes.ts'
-import { runManagedIngressOrphanSweep } from '../../features/managed/ingress-desired.ts'
-import { runDatacenterRepinFanoutSweep } from '../../client/datacenters/repin-fanout.ts'
-import { runSystemReconcileSweep } from '../../features/system/reconcile.ts'
+} from "../../features/webhook-delivery/webhook-delivery-records.ts";
+import { registerWebhookRoutes } from "../../webhook/routes.ts";
+import { runManagedIngressOrphanSweep } from "../../features/managed/ingress-desired.ts";
+import { runDatacenterRepinFanoutSweep } from "../../client/datacenters/repin-fanout.ts";
+import { runSystemReconcileSweep } from "../../features/system/reconcile.ts";
 import {
   LEAF_RENEWAL_SWEEP_INTERVAL_MS,
   runLeafRenewalSweepTick,
-} from '../../client/tls/leaf-renewal-sweep.ts'
+} from "../../client/tls/leaf-renewal-sweep.ts";
 import {
   assertPasswordHasherAvailable,
   configureArgon2idWorkFactor,
-} from '../../lib/secrets/password.ts'
-import { registerAdminRoutes } from '../../admin/routes.ts'
-import { registerInstallRoutes } from '../../install/routes.ts'
-import { registerDaemonApiRoutes } from '../../daemon/api-routes.ts'
-import { resolvePublicInstanceTls } from '../../features/install/install-tls.ts'
-import { registerDaemonWebSocket } from '../../daemon/deno-ws.ts'
+} from "../../lib/secrets/password.ts";
+import { registerAdminRoutes } from "../../admin/routes.ts";
+import { registerInstallRoutes } from "../../install/routes.ts";
+import { registerDaemonApiRoutes } from "../../daemon/api-routes.ts";
+import {
+  hostnamePresentsPlatformCaLeaf,
+  resolvePublicInstanceTls,
+} from "../../features/install/install-tls.ts";
+import { listInstanceHostnames } from "../../features/install/instance-hostnames.ts";
+import { registerDaemonWebSocket } from "../../daemon/deno-ws.ts";
 import {
   parseMetricsRetentionDays,
   parsePositiveIntEnv,
   resolveServerMetricsStore,
-} from '../../daemon/metrics/store-selection.ts'
-import type { ServerMetricsStore } from '../../daemon/metrics/types.ts'
-import { setServerStatusEventSink } from '../../daemon/metrics/status-events.ts'
-import { setActiveServerMetricsStore } from '../../daemon/metrics/active-store.ts'
+} from "../../daemon/metrics/store-selection.ts";
+import type { ServerMetricsStore } from "../../daemon/metrics/types.ts";
+import { setServerStatusEventSink } from "../../daemon/metrics/status-events.ts";
+import { setActiveServerMetricsStore } from "../../daemon/metrics/active-store.ts";
 import {
   parseExecutionLogDriver,
   parseExecutionLogRetentionDays,
   resolveExecutionLogStore,
   resolveS3ExecutionLogConfig,
   setDenoExecutionLogStoreFactories,
-} from '../../features/execution-logs/store-selection.ts'
-import { FilesystemExecutionLogStore } from './execution-logs/filesystem-store.ts'
-import { S3ExecutionLogStore } from '../../features/execution-logs/s3-store.ts'
-import { setExecutionLogSealSink } from '../../features/execution-logs/seal-on-terminal.ts'
-import { EXECUTION_LOG_SWEEP_LIMIT } from '../../features/execution-logs/types.ts'
+} from "../../features/execution-logs/store-selection.ts";
+import { FilesystemExecutionLogStore } from "./execution-logs/filesystem-store.ts";
+import { S3ExecutionLogStore } from "../../features/execution-logs/s3-store.ts";
+import { setExecutionLogSealSink } from "../../features/execution-logs/seal-on-terminal.ts";
+import { EXECUTION_LOG_SWEEP_LIMIT } from "../../features/execution-logs/types.ts";
 import {
   createRedisRateLimiter,
   resolveClientAuthRateLimit,
@@ -77,53 +87,59 @@ import {
   resolveDaemonWsInboundLimits,
   resolveGithubWebhookRateLimit,
   resolveGitlabWebhookRateLimit,
-} from '../../daemon/rate-limit/redis-rate-limiter.ts'
-import { createDurableAuthRateLimiter } from '../../client/authn/auth-rate-limit.ts'
-import { OTP_VERIFIER_SECRET_PURPOSE } from '../../client/authn/email-otp.ts'
-import { WEBAUTHN_CHALLENGE_PURPOSE } from '../../client/authn/passkeys.ts'
+} from "../../daemon/rate-limit/redis-rate-limiter.ts";
+import { createDurableAuthRateLimiter } from "../../client/authn/auth-rate-limit.ts";
+import { OTP_VERIFIER_SECRET_PURPOSE } from "../../client/authn/email-otp.ts";
+import { WEBAUTHN_CHALLENGE_PURPOSE } from "../../client/authn/passkeys.ts";
 import {
   BACKUP_CODE_VERIFIER_PURPOSE,
   TWO_FACTOR_CHALLENGE_PURPOSE,
-} from '../../client/authn/two-factor.ts'
-import { isDeveloperSurfaceEnabled } from '../../app/dev-mode.ts'
+} from "../../client/authn/two-factor.ts";
+import { isDeveloperSurfaceEnabled } from "../../app/dev-mode.ts";
 import {
   createDenoAmqpQueue,
   DEFAULT_AMQP_URL,
   probeAmqpBrokerReachable,
-} from './email/deno-amqp-queue.ts'
-import { resolveEmailSettings } from '../../features/settings/email-settings.ts'
-import { createNoopQueue, isNoopEmailQueue } from '../../features/email/noop-queue.ts'
-import type { EmailQueue } from '../../features/email/types.ts'
+} from "./email/deno-amqp-queue.ts";
+import { resolveEmailSettings } from "../../features/settings/email-settings.ts";
+import {
+  createNoopQueue,
+  isNoopEmailQueue,
+} from "../../features/email/noop-queue.ts";
+import type { EmailQueue } from "../../features/email/types.ts";
 import {
   createDenoAmqpCommandQueue,
   probeCommandAmqpBrokerReachable,
-} from './commands/deno-amqp-queue.ts'
-import { startCommandConsumer } from '../../features/commands/deno-consumer.ts'
-import { startMailerConsumer } from '../../lib/email/mailer/deno-mailer-consumer.ts'
-import { createNoopCommandQueue, isNoopCommandQueue } from '../../features/commands/noop-command-queue.ts'
-import type { CommandQueue } from '../../features/commands/queue.ts'
-import { createRedisQueryCache } from '../../query-cache/redis-query-cache.ts'
+} from "./commands/deno-amqp-queue.ts";
+import { startCommandConsumer } from "../../features/commands/deno-consumer.ts";
+import { startMailerConsumer } from "../../lib/email/mailer/deno-mailer-consumer.ts";
+import {
+  createNoopCommandQueue,
+  isNoopCommandQueue,
+} from "../../features/commands/noop-command-queue.ts";
+import type { CommandQueue } from "../../features/commands/queue.ts";
+import { createRedisQueryCache } from "../../query-cache/redis-query-cache.ts";
 import {
   hardenInstanceSocket,
   prepareInstanceSocket,
   resolveExecutionLogDir,
   resolveInstanceSocket,
   resolveInstanceTlsCaServePath,
-} from './server-paths.ts'
+} from "./server-paths.ts";
 import {
   collectServerIps,
   readDefaultRouteInterfaces,
-} from './server-addresses-deno.ts'
-import { preferredIpv4FromIps } from '../../contracts/server-addresses.ts'
-import { setHostIpv4Discovery } from '../ports/host-ipv4-discovery.ts'
-import { setRevokeBoundDaemonKey } from '../../features/licenses/revoke-bound-daemon-key.ts'
-import { setManagedHaRecoveryHooks } from '../ports/managed-ha-recovery.ts'
-import { setLoadServerStatusRecords } from '../ports/load-server-status.ts'
-import { setResolveFleetPresence } from '../ports/fleet-presence.ts'
-import { registerCommandRuntimePorts } from '../ports/register-command-runtime-ports.ts'
-import { loadServerStatusRecords } from '../../client/servers/update-status.ts'
-import { resolveFleetPresence } from '../../daemon/cell/server-status.ts'
-import { revokeDaemonKey } from '../../features/servers/server-identity-db.ts'
+} from "./server-addresses-deno.ts";
+import { preferredIpv4FromIps } from "../../contracts/server-addresses.ts";
+import { setHostIpv4Discovery } from "../ports/host-ipv4-discovery.ts";
+import { setRevokeBoundDaemonKey } from "../../features/licenses/revoke-bound-daemon-key.ts";
+import { setManagedHaRecoveryHooks } from "../ports/managed-ha-recovery.ts";
+import { setLoadServerStatusRecords } from "../ports/load-server-status.ts";
+import { setResolveFleetPresence } from "../ports/fleet-presence.ts";
+import { registerCommandRuntimePorts } from "../ports/register-command-runtime-ports.ts";
+import { loadServerStatusRecords } from "../../client/servers/update-status.ts";
+import { resolveFleetPresence } from "../../daemon/cell/server-status.ts";
+import { revokeDaemonKey } from "../../features/servers/server-identity-db.ts";
 import {
   fencePhaseFromCommandMetadata,
   onFenceCommandFailed,
@@ -131,13 +147,13 @@ import {
   onPromoteSucceeded,
   onRecoveryCommandFailed,
   recoveryIdFromCommandMetadata,
-} from '../../features/managed/ha-recovery.ts'
+} from "../../features/managed/ha-recovery.ts";
 
 export type DenoDeveloperSurfaceContext = {
-  routes: Hono<AppEnv>
-  sessionSecrets: DerivedSecretsConfig
-  db: Db
-}
+  routes: Hono<AppEnv>;
+  sessionSecrets: DerivedSecretsConfig;
+  db: Db;
+};
 
 export type StartDenoServerOptions = {
   /**
@@ -145,55 +161,60 @@ export type StartDenoServerOptions = {
    * so developer modules stay out of the compiled graph. The development
    * entrypoint passes a registrar that imports those modules.
    */
-  registerDeveloperSurface?: (ctx: DenoDeveloperSurfaceContext) => void
-}
+  registerDeveloperSurface?: (ctx: DenoDeveloperSurfaceContext) => void;
+};
 
 async function resolveEmailQueue(_db: Db): Promise<EmailQueue> {
-  const envUrl = Deno.env.get('TURBOPANEL_AMQP_URL')
-  if (envUrl?.trim() === '') {
-    logInfo('email', 'TURBOPANEL_AMQP_URL is empty; using noop queue')
-    return createNoopQueue()
+  const envUrl = Deno.env.get("TURBOPANEL_AMQP_URL");
+  if (envUrl?.trim() === "") {
+    logInfo("email", "TURBOPANEL_AMQP_URL is empty; using noop queue");
+    return createNoopQueue();
   }
   if (envUrl !== undefined) {
-    return createDenoAmqpQueue({ amqpUrl: envUrl.trim() })
+    return createDenoAmqpQueue({ amqpUrl: envUrl.trim() });
   }
   if (await probeAmqpBrokerReachable(DEFAULT_AMQP_URL)) {
-    return createDenoAmqpQueue({ amqpUrl: DEFAULT_AMQP_URL })
+    return createDenoAmqpQueue({ amqpUrl: DEFAULT_AMQP_URL });
   }
 
-  logInfo('email', 'AMQP broker unavailable; using noop queue')
-  return createNoopQueue()
+  logInfo("email", "AMQP broker unavailable; using noop queue");
+  return createNoopQueue();
 }
 
 async function resolveCommandQueue(): Promise<CommandQueue> {
-  const envUrl = Deno.env.get('TURBOPANEL_AMQP_URL')
-  if (envUrl?.trim() === '') {
-    return createNoopCommandQueue()
+  const envUrl = Deno.env.get("TURBOPANEL_AMQP_URL");
+  if (envUrl?.trim() === "") {
+    return createNoopCommandQueue();
   }
   if (envUrl !== undefined) {
-    return createDenoAmqpCommandQueue({ amqpUrl: envUrl.trim() })
+    return createDenoAmqpCommandQueue({ amqpUrl: envUrl.trim() });
   }
   if (await probeCommandAmqpBrokerReachable(DEFAULT_AMQP_URL)) {
-    return createDenoAmqpCommandQueue({ amqpUrl: DEFAULT_AMQP_URL })
+    return createDenoAmqpCommandQueue({ amqpUrl: DEFAULT_AMQP_URL });
   }
 
-  logInfo('command-queue', 'AMQP broker unavailable; using noop command queue')
-  return createNoopCommandQueue()
+  logInfo("command-queue", "AMQP broker unavailable; using noop command queue");
+  return createNoopCommandQueue();
 }
 
 async function startOptionalCommandConsumer(opts: {
-  db: Db
-  commandQueue: CommandQueue
-  daemonCellRegistry: ReturnType<typeof createRedisDaemonCellRegistry>
-  secretsConfig: SecretsConfig
-  dataEncryptionSecrets: Awaited<ReturnType<typeof deriveEncryptionSecretsConfig>>
+  db: Db;
+  commandQueue: CommandQueue;
+  daemonCellRegistry: ReturnType<typeof createRedisDaemonCellRegistry>;
+  secretsConfig: SecretsConfig;
+  dataEncryptionSecrets: Awaited<
+    ReturnType<typeof deriveEncryptionSecretsConfig>
+  >;
 }): Promise<{ close(): Promise<void> } | null> {
   if (isNoopCommandQueue(opts.commandQueue)) {
-    logWarn('command-consumer', 'AMQP broker unavailable; command consumer not started')
-    return null
+    logWarn(
+      "command-consumer",
+      "AMQP broker unavailable; command consumer not started",
+    );
+    return null;
   }
-  const amqpUrl = resolveCommandAmqpUrl()
-  if (!amqpUrl) return null
+  const amqpUrl = resolveCommandAmqpUrl();
+  if (!amqpUrl) return null;
   try {
     return await startCommandConsumer({
       db: opts.db,
@@ -206,13 +227,13 @@ async function startOptionalCommandConsumer(opts: {
       },
       secretsConfig: opts.secretsConfig,
       dataEncryptionSecrets: opts.dataEncryptionSecrets,
-    })
+    });
   } catch (err) {
     logWarn(
-      'command-consumer',
-      `AMQP broker unavailable; command consumer not started: ${String(err)}`
-    )
-    return null
+      "command-consumer",
+      `AMQP broker unavailable; command consumer not started: ${String(err)}`,
+    );
+    return null;
   }
 }
 
@@ -223,27 +244,32 @@ async function startOptionalCommandConsumer(opts: {
  * it just cannot deliver mail until the broker is back and the unit restarts.
  */
 async function startOptionalMailerConsumer(opts: {
-  db: Db
-  emailQueue: EmailQueue
-  env: Record<string, string | undefined>
-  dataEncryptionSecrets: Awaited<ReturnType<typeof deriveEncryptionSecretsConfig>>
+  db: Db;
+  emailQueue: EmailQueue;
+  env: Record<string, string | undefined>;
+  dataEncryptionSecrets: Awaited<
+    ReturnType<typeof deriveEncryptionSecretsConfig>
+  >;
 }): Promise<{ close(): Promise<void> } | null> {
   if (isNoopEmailQueue(opts.emailQueue)) {
-    logWarn('mailer', 'AMQP broker unavailable; email consumer not started')
-    return null
+    logWarn("mailer", "AMQP broker unavailable; email consumer not started");
+    return null;
   }
-  const amqpUrl = resolveCommandAmqpUrl()
-  if (!amqpUrl) return null
+  const amqpUrl = resolveCommandAmqpUrl();
+  if (!amqpUrl) return null;
   try {
     return await startMailerConsumer({
       db: opts.db,
       amqpUrl,
       env: opts.env,
       dataEncryptionSecrets: opts.dataEncryptionSecrets,
-    })
+    });
   } catch (err) {
-    logWarn('mailer', `AMQP broker unavailable; email consumer not started: ${String(err)}`)
-    return null
+    logWarn(
+      "mailer",
+      `AMQP broker unavailable; email consumer not started: ${String(err)}`,
+    );
+    return null;
   }
 }
 
@@ -253,9 +279,9 @@ async function startOptionalMailerConsumer(opts: {
  */
 function startMetricsDailyArchiveIfSupported(store: ServerMetricsStore): void {
   const candidate = store as ServerMetricsStore & {
-    startDailyArchiveTimer?: () => void
-  }
-  candidate.startDailyArchiveTimer?.()
+    startDailyArchiveTimer?: () => void;
+  };
+  candidate.startDailyArchiveTimer?.();
 }
 
 /**
@@ -263,55 +289,65 @@ function startMetricsDailyArchiveIfSupported(store: ServerMetricsStore): void {
  * accepted samples are persisted before the process exits. No-ops for stores
  * without a close() (e.g. the disabled fallback store).
  */
-async function closeMetricsStoreIfSupported(store: ServerMetricsStore): Promise<void> {
+async function closeMetricsStoreIfSupported(
+  store: ServerMetricsStore,
+): Promise<void> {
   const candidate = store as ServerMetricsStore & {
-    close?: () => Promise<void>
-  }
+    close?: () => Promise<void>;
+  };
   try {
-    await candidate.close?.()
+    await candidate.close?.();
   } catch (err) {
-    logWarn('metrics', `metrics store close on shutdown failed: ${String(err)}`)
+    logWarn(
+      "metrics",
+      `metrics store close on shutdown failed: ${String(err)}`,
+    );
   }
 }
 
 function resolveCommandAmqpUrl(): string | null {
-  const envUrl = Deno.env.get('TURBOPANEL_AMQP_URL')
-  if (envUrl?.trim() === '') {
-    return null
+  const envUrl = Deno.env.get("TURBOPANEL_AMQP_URL");
+  if (envUrl?.trim() === "") {
+    return null;
   }
   if (envUrl !== undefined) {
-    return envUrl.trim()
+    return envUrl.trim();
   }
-  return DEFAULT_AMQP_URL
+  return DEFAULT_AMQP_URL;
 }
 
 /** Isolate one cleanup phase so a failure cannot abort the rest of the tick. */
-async function runCleanupPhase(label: string, fn: () => Promise<unknown>): Promise<void> {
+async function runCleanupPhase(
+  label: string,
+  fn: () => Promise<unknown>,
+): Promise<void> {
   try {
-    await fn()
+    await fn();
   } catch (err) {
-    logWarn('daemon-cell', `${label} error: ${String(err)}`)
+    logWarn("daemon-cell", `${label} error: ${String(err)}`);
   }
 }
 
 async function sweepStaleCommandsPhase(db: Db): Promise<void> {
-  const swept = await sweepStaleCommands(db)
-  const released = await releaseStuckManagedApplying(db)
+  const swept = await sweepStaleCommands(db);
+  const released = await releaseStuckManagedApplying(db);
   if (swept > 0 || released.length > 0) {
     logWarn(
-      'daemon-cell',
+      "daemon-cell",
       `stale command sweep: timed out ${swept}, released managed ${
-        released.join(',') || 'none'
-      }`
-    )
+        released.join(",") || "none"
+      }`,
+    );
   }
 }
 
-export async function startDenoServer(options: StartDenoServerOptions = {}): Promise<void> {
+export async function startDenoServer(
+  options: StartDenoServerOptions = {},
+): Promise<void> {
   setHostIpv4Discovery(() =>
     preferredIpv4FromIps(collectServerIps(readDefaultRouteInterfaces())) ?? null
-  )
-  setRevokeBoundDaemonKey(revokeDaemonKey)
+  );
+  setRevokeBoundDaemonKey(revokeDaemonKey);
   registerCommandRuntimePorts({
     fencePhaseFromCommandMetadata,
     recoveryIdFromCommandMetadata,
@@ -321,131 +357,149 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     onRecoveryCommandFailed,
     loadServerStatusRecords,
     resolveFleetPresence,
-  })
+  });
   setDenoExecutionLogStoreFactories({
     filesystem: (directory) => new FilesystemExecutionLogStore(directory),
     s3: (config) => new S3ExecutionLogStore(config),
-  })
-  const developerSurface = Boolean(options.registerDeveloperSurface) && isDeveloperSurfaceEnabled()
-  const db = createDenoDb()
+  });
+  const developerSurface = Boolean(options.registerDeveloperSurface) &&
+    isDeveloperSurfaceEnabled();
+  const db = createDenoDb();
   // The instance never migrates on boot (the installer and instance-launch
   // do); it refuses to serve a schema that is not the one it was built for.
   // A database that is not reachable yet is a different failure — it
   // propagates as-is and systemd's restart loop retries.
   try {
-    const schemaState = await assertSchemaCurrent(db)
-    logInfo('db', `schema check: ${schemaState.applied} migrations applied, current`)
+    const schemaState = await assertSchemaCurrent(db);
+    logInfo(
+      "db",
+      `schema check: ${schemaState.applied} migrations applied, current`,
+    );
   } catch (err) {
     if (err instanceof SchemaStateError) {
-      logError('db', `refusing to start: ${err.message}`)
+      logError("db", `refusing to start: ${err.message}`);
     }
-    throw err
+    throw err;
   }
-  const emailQueue = await resolveEmailQueue(db)
-  const commandQueue = await resolveCommandQueue()
-  const runtimeEnv = Deno.env.toObject()
+  const emailQueue = await resolveEmailQueue(db);
+  const commandQueue = await resolveCommandQueue();
+  const runtimeEnv = Deno.env.toObject();
   // Same rule as the daemon: a misspelt channel is a startup error, not a
   // silent fleet left on trunk.
-  assertValidUpdateChannelEnv(runtimeEnv)
+  assertValidUpdateChannelEnv(runtimeEnv);
   logInfo(
-    'update',
+    "update",
     `Daemon update channel: ${resolveInstanceUpdateChannel(runtimeEnv)}`,
-  )
+  );
   configureArgon2idWorkFactor({
-    memoryKib: Deno.env.get('TURBOPANEL_ARGON2ID_MEMORY_KIB') ?? null,
-    timeCost: Deno.env.get('TURBOPANEL_ARGON2ID_TIME_COST') ?? null,
-  })
-  await assertPasswordHasherAvailable()
-  logInfo('auth', 'Argon2id password hasher available')
+    memoryKib: Deno.env.get("TURBOPANEL_ARGON2ID_MEMORY_KIB") ?? null,
+    timeCost: Deno.env.get("TURBOPANEL_ARGON2ID_TIME_COST") ?? null,
+  });
+  await assertPasswordHasherAvailable();
+  logInfo("auth", "Argon2id password hasher available");
   const secretsConfig = parseSecretsFromEnv(
     {
-      TURBOPANEL_SECRET: Deno.env.get('TURBOPANEL_SECRET'),
-      TURBOPANEL_SECRETS: Deno.env.get('TURBOPANEL_SECRETS'),
+      TURBOPANEL_SECRET: Deno.env.get("TURBOPANEL_SECRET"),
+      TURBOPANEL_SECRETS: Deno.env.get("TURBOPANEL_SECRETS"),
     },
-    'deno'
-  )
-  const sessionSecrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
-  const otpVerifierSecrets = await deriveSecretsConfig(secretsConfig, OTP_VERIFIER_SECRET_PURPOSE)
+    "deno",
+  );
+  const sessionSecrets = await deriveSecretsConfig(
+    secretsConfig,
+    "session-signing",
+  );
+  const otpVerifierSecrets = await deriveSecretsConfig(
+    secretsConfig,
+    OTP_VERIFIER_SECRET_PURPOSE,
+  );
   const twoFactorChallengeSecrets = await deriveSecretsConfig(
     secretsConfig,
     TWO_FACTOR_CHALLENGE_PURPOSE,
-  )
+  );
   const backupCodeVerifierSecrets = await deriveSecretsConfig(
     secretsConfig,
     BACKUP_CODE_VERIFIER_PURPOSE,
-  )
+  );
   const webauthnChallengeSecrets = await deriveSecretsConfig(
     secretsConfig,
     WEBAUTHN_CHALLENGE_PURPOSE,
-  )
-  const daemonJwtKeyring = await deriveDaemonJwtKeyring(secretsConfig)
+  );
+  const daemonJwtKeyring = await deriveDaemonJwtKeyring(secretsConfig);
   const challengeSigningSecrets = await deriveSecretsConfig(
     secretsConfig,
-    'daemon-challenge-signing'
-  )
+    "daemon-challenge-signing",
+  );
   const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
     secretsConfig,
-    'data-encryption'
-  )
+    "data-encryption",
+  );
   // Derived after data-encryption secrets so DB-backed email secrets can be decrypted.
-  const emailSettings = await resolveEmailSettings(db, runtimeEnv, dataEncryptionSecrets)
-  const daemonCellRegistry = createRedisDaemonCellRegistry({ db })
+  const emailSettings = await resolveEmailSettings(
+    db,
+    runtimeEnv,
+    dataEncryptionSecrets,
+  );
+  const daemonCellRegistry = createRedisDaemonCellRegistry({ db });
   const queryCache = createRedisQueryCache({
     client: daemonCellRegistry.client,
     db,
-  })
+  });
   // Metrics directory itself stays unconfigured here — `resolveMetricsDir()`
   // already reads TURBOPANEL_METRICS_DIR inside the DuckDB store.
   const serverMetricsStore = resolveServerMetricsStore({
-    runtime: 'deno',
+    runtime: "deno",
     duckdb: {
       retentionDays: parseMetricsRetentionDays(
-        Deno.env.get('TURBOPANEL_SERVER_METRICS_RETENTION_DAYS')
+        Deno.env.get("TURBOPANEL_SERVER_METRICS_RETENTION_DAYS"),
       ),
-      threads: parsePositiveIntEnv(Deno.env.get('TURBOPANEL_SERVER_METRICS_DUCKDB_THREADS')),
+      threads: parsePositiveIntEnv(
+        Deno.env.get("TURBOPANEL_SERVER_METRICS_DUCKDB_THREADS"),
+      ),
       memoryLimitMb: parsePositiveIntEnv(
-        Deno.env.get('TURBOPANEL_SERVER_METRICS_DUCKDB_MEMORY_LIMIT')
+        Deno.env.get("TURBOPANEL_SERVER_METRICS_DUCKDB_MEMORY_LIMIT"),
       ),
     },
-  })
-  setServerStatusEventSink(serverMetricsStore)
-  setActiveServerMetricsStore(serverMetricsStore)
-  startMetricsDailyArchiveIfSupported(serverMetricsStore)
+  });
+  setServerStatusEventSink(serverMetricsStore);
+  setActiveServerMetricsStore(serverMetricsStore);
+  startMetricsDailyArchiveIfSupported(serverMetricsStore);
   const executionLogRetentionDays = parseExecutionLogRetentionDays(
-    Deno.env.get('TURBOPANEL_EXECUTION_LOG_RETENTION_DAYS')
-  )
+    Deno.env.get("TURBOPANEL_EXECUTION_LOG_RETENTION_DAYS"),
+  );
   const executionLogStore = resolveExecutionLogStore({
-    runtime: 'deno',
+    runtime: "deno",
     deno: {
-      driver: parseExecutionLogDriver(Deno.env.get('TURBOPANEL_EXECUTION_LOG_DRIVER')),
+      driver: parseExecutionLogDriver(
+        Deno.env.get("TURBOPANEL_EXECUTION_LOG_DRIVER"),
+      ),
       directory: resolveExecutionLogDir(),
       s3: resolveS3ExecutionLogConfig(Deno.env.toObject()),
     },
-  })
+  });
   // The AMQP command consumer transitions commands outside any Hono context —
   // register the seal sink at boot so terminal transitions compact transcripts.
-  setExecutionLogSealSink(executionLogStore)
-  const connectRate = resolveDaemonConnectRateLimit()
-  const restRate = resolveDaemonRestRateLimit()
-  const metricsRate = resolveDaemonMetricsRateLimit()
-  const githubWebhookRate = resolveGithubWebhookRateLimit()
-  const gitlabWebhookRate = resolveGitlabWebhookRateLimit()
-  const inboundLimits = resolveDaemonWsInboundLimits()
+  setExecutionLogSealSink(executionLogStore);
+  const connectRate = resolveDaemonConnectRateLimit();
+  const restRate = resolveDaemonRestRateLimit();
+  const metricsRate = resolveDaemonMetricsRateLimit();
+  const githubWebhookRate = resolveGithubWebhookRateLimit();
+  const gitlabWebhookRate = resolveGitlabWebhookRateLimit();
+  const inboundLimits = resolveDaemonWsInboundLimits();
   const daemonConnectLimiter = createRedisRateLimiter({
     client: daemonCellRegistry.client,
     limit: connectRate.limit,
     periodSeconds: connectRate.periodSeconds,
-  })
+  });
   const daemonRestLimiter = createRedisRateLimiter({
     client: daemonCellRegistry.client,
     limit: restRate.limit,
     periodSeconds: restRate.periodSeconds,
-  })
+  });
   const daemonMetricsLimiter = createRedisRateLimiter({
     client: daemonCellRegistry.client,
     limit: metricsRate.limit,
     periodSeconds: metricsRate.periodSeconds,
-  })
+  });
   // Inbound GitHub webhooks: keyed per peer address, not per server, because the
   // caller has no identity until its HMAC has been checked (see
   // `githubWebhookRateLimitKey`). Redis eval failures fall through to a
@@ -455,8 +509,8 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     client: daemonCellRegistry.client,
     limit: githubWebhookRate.limit,
     periodSeconds: githubWebhookRate.periodSeconds,
-    onError: 'local',
-  })
+    onError: "local",
+  });
   // GitLab gets its own bucket rather than sharing GitHub's: the two are
   // independent senders and one flooding must not start dropping the other's
   // deliveries.
@@ -464,8 +518,8 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     client: daemonCellRegistry.client,
     limit: gitlabWebhookRate.limit,
     periodSeconds: gitlabWebhookRate.periodSeconds,
-    onError: 'local',
-  })
+    onError: "local",
+  });
   // Durable, globally-shared client-auth throttle over Redis (same infrastructure
   // as the daemon limiters). Auth uses onError: 'closed' so a Redis hiccup cannot
   // fail open into unthrottled login/OTP/install; daemon limiters keep the
@@ -475,22 +529,22 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
   // send-otp / reset-password-request get their own stricter budget instead of
   // sharing the looser default one — mirrors the in-memory SHARED_POLICIES this
   // replaces for Deno (see src/client/authn/auth-rate-limit.ts).
-  const clientAuthRate = resolveClientAuthRateLimit()
-  const clientAuthStrictRate = resolveClientAuthStrictRateLimit()
+  const clientAuthRate = resolveClientAuthRateLimit();
+  const clientAuthStrictRate = resolveClientAuthStrictRateLimit();
   const authRateLimiter = createDurableAuthRateLimiter({
     default: createRedisRateLimiter({
       client: daemonCellRegistry.client,
       limit: clientAuthRate.limit,
       periodSeconds: clientAuthRate.periodSeconds,
-      onError: 'closed',
+      onError: "closed",
     }),
     strict: createRedisRateLimiter({
       client: daemonCellRegistry.client,
       limit: clientAuthStrictRate.limit,
       periodSeconds: clientAuthStrictRate.periodSeconds,
-      onError: 'closed',
+      onError: "closed",
     }),
-  })
+  });
 
   const commandConsumer = await startOptionalCommandConsumer({
     db,
@@ -498,13 +552,13 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     daemonCellRegistry,
     secretsConfig,
     dataEncryptionSecrets,
-  })
+  });
   const mailerConsumer = await startOptionalMailerConsumer({
     db,
     emailQueue,
     env: runtimeEnv,
     dataEncryptionSecrets,
-  })
+  });
 
   const app = createApp({
     db,
@@ -515,11 +569,11 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     twoFactorChallengeSecrets,
     backupCodeVerifierSecrets,
     webauthnChallengeSecrets,
-    runtime: 'deno',
-    corsOrigins: Deno.env.get('TURBOPANEL_UI_CORS_ORIGINS'),
-    signupEnvOverride: Deno.env.get('TURBOPANEL_IS_SIGNUP_ENABLED'),
+    runtime: "deno",
+    corsOrigins: Deno.env.get("TURBOPANEL_UI_CORS_ORIGINS"),
+    signupEnvOverride: Deno.env.get("TURBOPANEL_IS_SIGNUP_ENABLED"),
     emailFrom: emailSettings.from,
-    baseUrl: Deno.env.get('TURBOPANEL_BASE_URL') ?? undefined,
+    baseUrl: Deno.env.get("TURBOPANEL_BASE_URL") ?? undefined,
     daemonCellRegistry,
     queryCache,
     serverMetricsStore,
@@ -532,18 +586,18 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     // Must be registered inside createApp() *before* GET /api/health, or the
     // health handler never sees TURBOPANEL_REVISION from systemd.
     getPlatformEnv: () => Deno.env.toObject(),
-  })
+  });
   // Daemon + developer registrars are generic over the env, so the app's own
   // `AppEnv` typing carries through — no cast.
-  const routes = app
+  const routes = app;
   registerInstallRoutes(app, {
     secrets: sessionSecrets,
     otpVerifierSecrets,
-    runtime: 'deno',
-    signupEnvOverride: Deno.env.get('TURBOPANEL_IS_SIGNUP_ENABLED'),
-  })
+    runtime: "deno",
+    signupEnvOverride: Deno.env.get("TURBOPANEL_IS_SIGNUP_ENABLED"),
+  });
   if (developerSurface) {
-    options.registerDeveloperSurface?.({ routes, sessionSecrets, db })
+    options.registerDeveloperSurface?.({ routes, sessionSecrets, db });
   }
   registerDaemonApiRoutes(routes, {
     secrets: daemonJwtKeyring,
@@ -551,19 +605,23 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     secretsConfig,
     restLimiter: daemonRestLimiter,
     metricsLimiter: daemonMetricsLimiter,
-    runtime: 'deno',
+    runtime: "deno",
     tlsPublic: resolvePublicInstanceTls(Deno.env.toObject()),
-    readPlatformCaPem: () =>
-      Deno.readTextFile(resolveInstanceTlsCaServePath()),
-  })
+    platformCaLeafPresented: async (hostname: string) =>
+      hostnamePresentsPlatformCaLeaf(
+        hostname,
+        await listInstanceHostnames(db),
+      ),
+    readPlatformCaPem: () => Deno.readTextFile(resolveInstanceTlsCaServePath()),
+  });
   // Unversioned, session-free surface: mounted on the top-level app next to the
   // daemon API rather than under CLIENT_API_PREFIX, and authenticating itself.
   // Git kinds only — `/webhook/stripe` is hosted-only and is not imported here.
   registerWebhookRoutes(app, {
-    runtime: 'deno',
+    runtime: "deno",
     github: githubWebhookLimiter,
     gitlab: gitlabWebhookLimiter,
-  })
+  });
   registerDaemonWebSocket(routes, {
     developerSurface,
     db,
@@ -574,23 +632,23 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     inboundMessageLimit: inboundLimits.limit,
     inboundMessageWindowMs: inboundLimits.windowMs,
     commandQueue,
-  })
+  });
   registerAdminRoutes(app, {
     secrets: sessionSecrets,
-    runtime: 'deno',
+    runtime: "deno",
     devSurface: developerSurface,
     readPlatformCaBundle: () =>
       Deno.readTextFile(resolveInstanceTlsCaServePath()),
     collectInstanceIps: () => collectServerIps(readDefaultRouteInterfaces()),
-  })
-  const socketPath = resolveInstanceSocket()
+  });
+  const socketPath = resolveInstanceSocket();
 
-  const abort = new AbortController()
+  const abort = new AbortController();
   const runSystemReconcileSweepTick = (): void => {
-    if (isNoopCommandQueue(commandQueue)) return
+    if (isNoopCommandQueue(commandQueue)) return;
     void runSystemReconcileSweep(db, commandQueue).catch((err) => {
-      logWarn('daemon-cell', `system reconcile sweep error: ${String(err)}`)
-    })
+      logWarn("daemon-cell", `system reconcile sweep error: ${String(err)}`);
+    });
     // Orphaned-frontend teardown rides the same tick; separate call because
     // it enqueues `managed.ingress.reconcile` (needs secrets for payload
     // sealing), which `system.reconcile` cannot express.
@@ -598,8 +656,11 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
       secretsConfig,
       dataEncryptionSecrets,
     }).catch((err) => {
-      logWarn('daemon-cell', `managed ingress orphan sweep error: ${String(err)}`)
-    })
+      logWarn(
+        "daemon-cell",
+        `managed ingress orphan sweep error: ${String(err)}`,
+      );
+    });
     // Automatic membership repins stamp `ip.repin_pending_fanout_at`
     // from the presence path (which must not enqueue); this drains them with
     // the datacenter routing fan-out. Isolated so a failure never affects the
@@ -608,12 +669,15 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
       secretsConfig,
       dataEncryptionSecrets,
     }).catch((err) => {
-      logWarn('daemon-cell', `datacenter repin fan-out sweep error: ${String(err)}`)
-    })
-  }
+      logWarn(
+        "daemon-cell",
+        `datacenter repin fan-out sweep error: ${String(err)}`,
+      );
+    });
+  };
   // Observe pending self-host inventory on boot, not only after the first
   // 60s cell tick. Hello/DO still must not enqueue; this is the Deno timer path.
-  runSystemReconcileSweepTick()
+  runSystemReconcileSweepTick();
   // Deno process timer (not a Durable Object) — cost-safe. Both backends demote
   // stale presence at DAEMON_OFFLINE_SWEEP_MS; Redis uses this timer-driven
   // maintain() + sweepStalePresence loop. Workers is disconnect-first (no periodic
@@ -623,78 +687,100 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
   const maintenance = createDenoMaintenanceScheduler({
     async runLiveness() {
       try {
-        await daemonCellRegistry.maintain()
+        await daemonCellRegistry.maintain();
       } catch (err) {
-        logWarn('daemon-cell', `maintenance error: ${String(err)}`)
+        logWarn("daemon-cell", `maintenance error: ${String(err)}`);
       }
       try {
-        await sweepStalePresence(db, daemonCellRegistry, () =>
-          resolveAlertSender(
-            db,
-            dataEncryptionSecrets,
-            undefined,
-            ALERT_WEBHOOK_POLICY,
-            {
-              queue: emailQueue,
-              from: emailSettings.from,
-              consoleBaseUrl: Deno.env.get('TURBOPANEL_BASE_URL') ?? null,
-            },
-          ))
+        await sweepStalePresence(
+          db,
+          daemonCellRegistry,
+          () =>
+            resolveAlertSender(
+              db,
+              dataEncryptionSecrets,
+              undefined,
+              ALERT_WEBHOOK_POLICY,
+              {
+                queue: emailQueue,
+                from: emailSettings.from,
+                consoleBaseUrl: Deno.env.get("TURBOPANEL_BASE_URL") ?? null,
+              },
+            ),
+        );
       } catch (err) {
-        logWarn('daemon-cell', `stale presence sweep error: ${String(err)}`)
+        logWarn("daemon-cell", `stale presence sweep error: ${String(err)}`);
       }
     },
     async runCleanup() {
       // Workers parity (offline-sweep cron): bounded cleanup of expired
       // `dispatch` failure-retention payloads on the process-long db.
-      await runCleanupPhase('command dispatch sweep', () =>
-        sweepExpiredCommandDispatch(db, { limit: COMMAND_DISPATCH_SWEEP_LIMIT })
-      )
+      await runCleanupPhase(
+        "command dispatch sweep",
+        () =>
+          sweepExpiredCommandDispatch(db, {
+            limit: COMMAND_DISPATCH_SWEEP_LIMIT,
+          }),
+      );
       // Recover commands stranded non-terminal by a mid-run restart (the
       // consumer's timeout lives only in memory), then unwedge managed rows
       // stuck at 'applying' with no live command left.
-      await runCleanupPhase('stale command sweep', () => sweepStaleCommandsPhase(db))
+      await runCleanupPhase(
+        "stale command sweep",
+        () => sweepStaleCommandsPhase(db),
+      );
       // Workers parity (offline-sweep cron): drop webhook delivery ids past the
       // replay-protection retention window.
-      await runCleanupPhase('webhook delivery sweep', () =>
-        sweepExpiredWebhookDeliveries(db, { limit: WEBHOOK_DELIVERY_SWEEP_LIMIT })
-      )
+      await runCleanupPhase(
+        "webhook delivery sweep",
+        () =>
+          sweepExpiredWebhookDeliveries(db, {
+            limit: WEBHOOK_DELIVERY_SWEEP_LIMIT,
+          }),
+      );
       // Workers parity (offline-sweep cron): resend notification deliveries
       // whose backoff has elapsed. Self-hosted may dial a LAN receiver.
-      await runCleanupPhase('notification retry sweep', () =>
-        retryDueDeliveries(db, dataEncryptionSecrets, {
-          allowPrivateTargets: true,
-          email: {
-            queue: emailQueue,
-            from: emailSettings.from,
-            consoleBaseUrl: Deno.env.get('TURBOPANEL_BASE_URL') ?? null,
-          },
-        })
-      )
+      await runCleanupPhase(
+        "notification retry sweep",
+        () =>
+          retryDueDeliveries(db, dataEncryptionSecrets, {
+            allowPrivateTargets: true,
+            email: {
+              queue: emailQueue,
+              from: emailSettings.from,
+              consoleBaseUrl: Deno.env.get("TURBOPANEL_BASE_URL") ?? null,
+            },
+          }),
+      );
       // Workers parity (offline-sweep cron): bounded removal of command
       // transcripts past retention. Object/filesystem only — no db involved.
-      await runCleanupPhase('execution log sweep', () =>
-        executionLogStore.sweepExpired({
-          retentionDays: executionLogRetentionDays,
-          limit: EXECUTION_LOG_SWEEP_LIMIT,
-        })
-      )
-      runSystemReconcileSweepTick()
+      await runCleanupPhase(
+        "execution log sweep",
+        () =>
+          executionLogStore.sweepExpired({
+            retentionDays: executionLogRetentionDays,
+            limit: EXECUTION_LOG_SWEEP_LIMIT,
+          }),
+      );
+      runSystemReconcileSweepTick();
     },
-  })
-  const maintenanceTimer = setInterval(() => maintenance.tick(), DAEMON_CELL_MAINTAIN_MS)
+  });
+  const maintenanceTimer = setInterval(
+    () => maintenance.tick(),
+    DAEMON_CELL_MAINTAIN_MS,
+  );
 
   // First Deno-side scheduled surface besides cell maintain: Organization CA
   // leaf renewal. Fresh createDenoDb() per tick, always endDbConnection in
   // finally — do not reuse the process-long `db` (same discipline as Workers
   // Hyperdrive). Overlap-guarded; cadence is minutes, not the 60s cell tick.
-  let leafRenewalInFlight = false
+  let leafRenewalInFlight = false;
   const leafRenewalTimer = setInterval(() => {
-    if (leafRenewalInFlight) return
-    if (isNoopCommandQueue(commandQueue)) return
-    leafRenewalInFlight = true
+    if (leafRenewalInFlight) return;
+    if (isNoopCommandQueue(commandQueue)) return;
+    leafRenewalInFlight = true;
     void (async () => {
-      const tickDb = createDenoDb()
+      const tickDb = createDenoDb();
       try {
         // Resumes from the durable LEAF_RENEWAL_SWEEP_LOCK cursor (advanced
         // per bounded batch; reset when the sweep completes or the cursor
@@ -702,57 +788,57 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
         await runLeafRenewalSweepTick(tickDb, commandQueue, {
           secretsConfig,
           dataEncryptionSecrets,
-        })
+        });
       } catch (err) {
-        logWarn('tls-leaf-renewal', `sweep error: ${String(err)}`)
+        logWarn("tls-leaf-renewal", `sweep error: ${String(err)}`);
       } finally {
-        await endDbConnection(tickDb).catch(() => {})
-        leafRenewalInFlight = false
+        await endDbConnection(tickDb).catch(() => {});
+        leafRenewalInFlight = false;
       }
-    })()
-  }, LEAF_RENEWAL_SWEEP_INTERVAL_MS)
+    })();
+  }, LEAF_RENEWAL_SWEEP_INTERVAL_MS);
 
-  for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+  for (const signal of ["SIGINT", "SIGTERM"] as const) {
     Deno.addSignalListener(signal, async () => {
-      clearInterval(maintenanceTimer)
-      clearInterval(leafRenewalTimer)
-      await emailQueue.close?.()
-      await commandQueue.close?.()
-      await commandConsumer?.close()
-      await mailerConsumer?.close()
-      await daemonCellRegistry.close()
+      clearInterval(maintenanceTimer);
+      clearInterval(leafRenewalTimer);
+      await emailQueue.close?.();
+      await commandQueue.close?.();
+      await commandConsumer?.close();
+      await mailerConsumer?.close();
+      await daemonCellRegistry.close();
       // Persist any pending batched metrics rows before tearing the process
       // down — accepted (202) samples must survive a normal SIGINT/SIGTERM.
-      await closeMetricsStoreIfSupported(serverMetricsStore)
-      setHostIpv4Discovery(null)
-      setRevokeBoundDaemonKey(null)
-      setManagedHaRecoveryHooks(null)
-      setLoadServerStatusRecords(null)
-      setResolveFleetPresence(null)
-      setDenoExecutionLogStoreFactories(null)
-      abort.abort()
-    })
+      await closeMetricsStoreIfSupported(serverMetricsStore);
+      setHostIpv4Discovery(null);
+      setRevokeBoundDaemonKey(null);
+      setManagedHaRecoveryHooks(null);
+      setLoadServerStatusRecords(null);
+      setResolveFleetPresence(null);
+      setDenoExecutionLogStoreFactories(null);
+      abort.abort();
+    });
   }
 
-  await prepareInstanceSocket(socketPath)
+  await prepareInstanceSocket(socketPath);
 
-  await daemonCellRegistry.reclaimOrphanedSocketLeasesOnStartup()
+  await daemonCellRegistry.reclaimOrphanedSocketLeasesOnStartup();
 
   Deno.serve(
     {
       path: socketPath,
       signal: abort.signal,
       async onListen(addr) {
-        const path = 'path' in addr ? addr.path : socketPath
-        await hardenInstanceSocket(path)
+        const path = "path" in addr ? addr.path : socketPath;
+        await hardenInstanceSocket(path);
         logInfo(
-          'instance',
+          "instance",
           `TurboPanel listening on ${path}; developer surface ${
-            developerSurface ? 'enabled' : 'disabled'
-          }`
-        )
+            developerSurface ? "enabled" : "disabled"
+          }`,
+        );
       },
     },
-    app.fetch
-  )
+    app.fetch,
+  );
 }

@@ -51,15 +51,15 @@ test("HSTS rides https and is left off plaintext", async () => {
   const secure = await app.request("https://panel.example.com/ok");
   assertEquals(secure.headers.get(HSTS_HEADER), HSTS_VALUE);
 
-  // The co-located dev surface is deliberately plain http; HSTS there is
-  // meaningless to a browser and misleading in a capture.
-  const plain = await app.request("http://localhost:8880/ok");
+  // An HTTP request URL is not a TLS origin; HSTS there is meaningless to a
+  // browser and misleading in a capture.
+  const plain = await app.request("http://localhost/ok");
   assertEquals(plain.headers.get(HSTS_HEADER), null);
   // The rest still apply.
   assertEquals(plain.headers.get("X-Frame-Options"), "DENY");
 
   // Behind a TLS-terminating proxy the request URL is the internal one.
-  const proxied = await app.request("http://localhost:8880/ok", {
+  const proxied = await app.request("http://localhost/ok", {
     headers: { "x-forwarded-proto": "https" },
   });
   assertEquals(proxied.headers.get(HSTS_HEADER), HSTS_VALUE);
@@ -67,10 +67,10 @@ test("HSTS rides https and is left off plaintext", async () => {
 
 test("isSecureRequest reads the proxy declaration first, then the URL", () => {
   assertEquals(isSecureRequest("https://panel.example.com/x"), true);
-  assertEquals(isSecureRequest("http://localhost:8880/x"), false);
-  assertEquals(isSecureRequest("http://localhost:8880/x", "https"), true);
+  assertEquals(isSecureRequest("http://localhost/x"), false);
+  assertEquals(isSecureRequest("http://localhost/x", "https"), true);
   // A proxy chain lists the client-facing protocol first.
-  assertEquals(isSecureRequest("http://localhost:8880/x", "https, http"), true);
+  assertEquals(isSecureRequest("http://localhost/x", "https, http"), true);
   assertEquals(isSecureRequest("https://panel.example.com/x", "http"), false);
   assertEquals(isSecureRequest("not a url"), false);
   assertEquals(isSecureRequest("not a url", "https"), true);

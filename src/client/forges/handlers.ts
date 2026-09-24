@@ -453,11 +453,12 @@ export async function startGithubManifestHandler(
   // default keeps the old single-URL behaviour working.
   let webhookOrigin = publicOrigin.replace(/\/$/, "");
   if (wizard.webhookOrigin) {
+    const chosen = publicUrlEntryToInstallOrigin(wizard.webhookOrigin);
     const known = await listPublicOrigins(db);
-    if (!known.includes(wizard.webhookOrigin)) {
+    if (!chosen || !known.includes(chosen)) {
       return c.json({ error: "webhook_origin_not_published" }, 400);
     }
-    webhookOrigin = wizard.webhookOrigin;
+    webhookOrigin = chosen;
   }
 
   // Instance-wide apps have to be installable by accounts other than the one

@@ -173,9 +173,9 @@ test("storeUploadedCertificate seals the key and attach checks SAN coverage", as
   ]);
   assertEquals(attached.ok, true);
   if (attached.ok) {
-    assertEquals(attached.hostnames, ["https://panel.example.com"]);
+    assertEquals(attached.hostnames, ["https://panel.example.com:8443"]);
   }
 
   const after = await listUploadedCertificates(db);
-  assertEquals(after[0]?.hostnames, ["https://panel.example.com"]);
+  assertEquals(after[0]?.hostnames, ["https://panel.example.com:8443"]);
 });

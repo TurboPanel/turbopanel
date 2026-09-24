@@ -109,6 +109,8 @@ async function buildApp(opts?: {
   withSecrets?: boolean;
   withTwoFactorChallengeSecrets?: boolean;
   platformEnv?: Record<string, string | undefined>;
+  runtime?: "deno" | "workers";
+  omitBaseUrl?: boolean;
 }) {
   const config = parseTestSecretsConfig("deno");
   const secrets = await deriveSecretsConfig(config, "session-signing");
@@ -138,9 +140,9 @@ async function buildApp(opts?: {
     ...(opts?.withTwoFactorChallengeSecrets === false
       ? {}
       : { twoFactorChallengeSecrets }),
-    runtime: "deno",
+    runtime: opts?.runtime ?? "deno",
     signupEnvOverride: opts?.signupEnabled === true ? "1" : "0",
-    baseUrl: ORIGIN,
+    ...(opts?.omitBaseUrl ? {} : { baseUrl: ORIGIN }),
   });
   app.route(CLIENT_API_PREFIX, client);
 
@@ -194,6 +196,52 @@ test("start redirects to GitHub authorize URL with signed state", async () => {
   );
   assertEquals(location.includes("client_id=gh-client"), true);
   assertEquals(location.includes("state="), true);
+});
+
+test("Workers OAuth callback stays on the hosted https origin", async () => {
+  const previousBase = Deno.env.get("TURBOPANEL_BASE_URL");
+  const previousPublic = Deno.env.get("TURBOPANEL_PUBLIC_URLS");
+  Deno.env.delete("TURBOPANEL_BASE_URL");
+  Deno.env.delete("TURBOPANEL_PUBLIC_URLS");
+  try {
+    const { app } = await buildApp({
+      runtime: "workers",
+      omitBaseUrl: true,
+      platformEnv: {
+        ...BOTH_PROVIDERS_ENV,
+        TURBOPANEL_BASE_URL: "https://turbopanel.app",
+      },
+    });
+    const github = await app.request(`${ORIGIN}${AUTH}/oauth/github/start`);
+    const google = await app.request(`${ORIGIN}${AUTH}/oauth/google/start`);
+    assertEquals(github.status, 302);
+    assertEquals(google.status, 302);
+    const githubCallback =
+      "https://turbopanel.app/api/client/v1/auth/oauth/github/callback";
+    const googleCallback =
+      "https://turbopanel.app/api/client/v1/auth/oauth/google/callback";
+    const githubLocation = github.headers.get("location") ?? "";
+    const googleLocation = google.headers.get("location") ?? "";
+    assertEquals(
+      githubLocation.includes(
+        `redirect_uri=${encodeURIComponent(githubCallback)}`,
+      ),
+      true,
+    );
+    assertEquals(
+      googleLocation.includes(
+        `redirect_uri=${encodeURIComponent(googleCallback)}`,
+      ),
+      true,
+    );
+    assertEquals(githubLocation.includes("8443"), false);
+    assertEquals(googleLocation.includes("8443"), false);
+  } finally {
+    if (previousBase === undefined) Deno.env.delete("TURBOPANEL_BASE_URL");
+    else Deno.env.set("TURBOPANEL_BASE_URL", previousBase);
+    if (previousPublic === undefined) Deno.env.delete("TURBOPANEL_PUBLIC_URLS");
+    else Deno.env.set("TURBOPANEL_PUBLIC_URLS", previousPublic);
+  }
 });
 
 test("callback with tampered or expired state redirects oauth_state_invalid", async () => {

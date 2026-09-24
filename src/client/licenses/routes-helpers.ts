@@ -110,10 +110,7 @@ export function reservedColocatedLicenseNameError(
   return `'${reservedName}' is reserved for the co-located control plane`;
 }
 
-export function installBaseUrlValidationError(devSurface: boolean): string {
-  if (devSurface) {
-    return "installBaseUrl must be a valid http(s) URL";
-  }
+export function installBaseUrlValidationError(): string {
   return "installBaseUrl must be a valid https URL";
 }
 

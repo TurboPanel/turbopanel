@@ -354,15 +354,16 @@ export type DaemonMessage =
     /**
      * Daemon-initiated, fire-and-forget. Issuance state for the control
      * plane's own hostnames (`origin`), reported by
-     * `InstanceAcmeIssuanceObserver`. Not `acme-issuance-event`: that stream
-     * merge-patches an organization's `tls` row, and the two must stay
-     * distinct so a consumer cannot conflate them.
+     * `InstanceAcmeRenewalScheduler` for each renewal attempt. Not
+     * `acme-issuance-event`: that stream merge-patches an organization's
+     * `tls` row, and the two must stay distinct so a consumer cannot
+     * conflate them.
      */
     type: "instance-acme-issuance-event";
     hostname: string;
     ok: boolean;
     errorMessage?: string;
-    /** Leaf notAfter from the probe. Absent when the leaf could not be read. */
+    /** Leaf notAfter from the installed certificate file. */
     notAfter?: string;
     at: string;
   }

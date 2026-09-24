@@ -631,7 +631,7 @@ test("POST /instance/public-urls/apply returns 200 and fans out via commandQueue
 test("POST /instance/public-urls/apply returns the HTTP-01 preflight error", async () => {
   const serverId = crypto.randomUUID();
   const error =
-    "Let's Encrypt HTTP-01 preflight failed for panel.example.com: http://panel.example.com/.well-known/acme-challenge/abc did not reach 127.0.0.1:8880 (HTTP 404)";
+    "Let's Encrypt HTTP-01 preflight failed for panel.example.com: http://panel.example.com/.well-known/acme-challenge/abc did not reach the instance ACME issuer (HTTP 404)";
   const { app, cookie } = await buildApp({
     colocatedServerId: serverId,
     registry: createRegistry({
@@ -892,7 +892,7 @@ test("instance hostname, certificate, and ACME routes cover validation branches"
   >(
     saved,
   );
-  assertEquals(savedBody.hostnames[0]?.host, "https://panel.example.com");
+  assertEquals(savedBody.hostnames[0]?.host, "https://panel.example.com:8443");
   assertEquals(savedBody.hostnames[0]?.source, "platform-ca");
 
   const certs = await app.request(`${ADMIN_API_PREFIX}/instance/certificates`, {

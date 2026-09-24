@@ -726,7 +726,7 @@ test("GET and PUT /api/admin/v1/instance/public-urls validate and persist origin
       const savedBody = await save.json();
       assertEquals(savedBody, {
         ok: true,
-        urls: ["https://panel.example.com"],
+        urls: ["https://panel.example.com:8443"],
         applied: false,
       });
 
@@ -739,7 +739,7 @@ test("GET and PUT /api/admin/v1/instance/public-urls validate and persist origin
       assertEquals(reload.status, 200);
       assertEquals(await reload.json(), {
         ok: true,
-        urls: ["https://panel.example.com"],
+        urls: ["https://panel.example.com:8443"],
       });
 
       const savedNames = await app.request(
@@ -767,7 +767,10 @@ test("GET and PUT /api/admin/v1/instance/public-urls validate and persist origin
       const listedBody = await listedNames.json() as {
         hostnames: { host: string; source: string; status: string }[];
       };
-      assertEquals(listedBody.hostnames[0]?.host, "https://names.example.com");
+      assertEquals(
+        listedBody.hostnames[0]?.host,
+        "https://names.example.com:8443",
+      );
       assertEquals(listedBody.hostnames[0]?.source, "platform-ca");
       assertEquals(listedBody.hostnames[0]?.status, "ready");
 

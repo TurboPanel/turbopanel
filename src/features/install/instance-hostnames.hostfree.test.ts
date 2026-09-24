@@ -10,13 +10,16 @@ import {
   setting,
 } from "../../db/schema.ts";
 import {
+  certificateSourceForInstallOrigin,
   deriveInstanceHostnameStatus,
   getInstanceHostnamesLegacyShim,
+  INSTANCE_ACME_HTTP01_ISSUER_UNREACHABLE,
   instanceAcmeHttp01PreflightFailure,
   migrateLegacyPublicUrls,
   recordInstanceAcmeIssuance,
   replaceInstanceHostnames,
   replacePublicUrlsWithPlatformCa,
+  upsertInstanceHostname,
   validateHostnameSource,
 } from "./instance-hostnames.ts";
 import {
@@ -179,7 +182,7 @@ test("migrateLegacyPublicUrls backfills once and get/set still round-trip", asyn
 
   assertEquals(await getPublicUrls(db), [
     "panel.example.com",
-    "https://other.example.com",
+    "https://other.example.com:8443",
   ]);
   assertEquals(hostnames.length, 2);
   assertEquals(hostnames.every((row) => row.source === "platform-ca"), true);
@@ -188,14 +191,100 @@ test("migrateLegacyPublicUrls backfills once and get/set still round-trip", asyn
   assertEquals(hostnames.length, 2);
   assertEquals(await getInstanceHostnamesLegacyShim(db), [
     "panel.example.com",
-    "https://other.example.com",
+    "https://other.example.com:8443",
   ]);
 
   await setPublicUrls(db, ["https://panel.example.com:9443"]);
-  assertEquals(await getPublicUrls(db), ["https://panel.example.com:9443"]);
+  assertEquals(await getPublicUrls(db), ["https://panel.example.com:8443"]);
   assertEquals(hostnames.length, 1);
   const projected = settings.find((row) => row.key === PUBLIC_URLS_SETTING_KEY);
-  assertEquals(projected?.value, ["https://panel.example.com:9443"]);
+  assertEquals(projected?.value, ["https://panel.example.com:8443"]);
+});
+
+test("replaceInstanceHostnames keeps Let's Encrypt state when a portless row is saved again", async () => {
+  const { db, hostnames } = createMemoryDb();
+  const saved = await replaceInstanceHostnames(db, [
+    {
+      host: "https://panel.example.com:8443",
+      source: "lets-encrypt",
+      uploadedCertId: null,
+    },
+  ]);
+  assertEquals(saved.ok, true);
+  const row = hostnames[0];
+  if (!row) throw new TypeError("expected a hostname row");
+  const id = row.id;
+  row.host = "https://panel.example.com";
+  row.notAfter = "2099-01-01T00:00:00.000Z";
+  row.acmeLastAttemptAt = "2026-09-01T00:00:00.000Z";
+  row.acmeLastError = null;
+  const again = await replaceInstanceHostnames(db, [
+    {
+      host: "https://panel.example.com",
+      source: "lets-encrypt",
+      uploadedCertId: null,
+    },
+  ]);
+  assertEquals(again.ok, true);
+  if (!again.ok) throw new TypeError("expected the hostname to save");
+  assertEquals(again.hostnames.length, 1);
+  assertEquals(again.hostnames[0]?.id, id);
+  assertEquals(again.hostnames[0]?.host, "https://panel.example.com:8443");
+  assertEquals(again.hostnames[0]?.source, "lets-encrypt");
+  assertEquals(again.hostnames[0]?.notAfter, "2099-01-01T00:00:00.000Z");
+  assertEquals(
+    again.hostnames[0]?.acmeLastAttemptAt,
+    "2026-09-01T00:00:00.000Z",
+  );
+  assertEquals(again.hostnames[0]?.acmeLastError, null);
+});
+
+test("replaceInstanceHostnames rejects two certificate sources for one hostname", async () => {
+  const { db, hostnames } = createMemoryDb();
+  const saved = await replaceInstanceHostnames(db, [
+    {
+      host: "https://panel.example.com:8443",
+      source: "lets-encrypt",
+      uploadedCertId: null,
+    },
+  ]);
+  assertEquals(saved.ok, true);
+  const id = hostnames[0]?.id;
+  const conflict = await replaceInstanceHostnames(db, [
+    {
+      host: "https://panel.example.com:8443",
+      source: "lets-encrypt",
+      uploadedCertId: null,
+    },
+    {
+      host: "https://panel.example.com",
+      source: "platform-ca",
+      uploadedCertId: null,
+    },
+  ]);
+  assertEquals(conflict.ok, false);
+  if (conflict.ok) throw new TypeError("expected a conflict");
+  assertEquals(conflict.error, "The same hostname is listed more than once");
+  assertEquals(hostnames[0]?.id, id);
+  assertEquals(hostnames[0]?.source, "lets-encrypt");
+
+  const deduped = await replaceInstanceHostnames(db, [
+    {
+      host: "https://panel.example.com",
+      source: "lets-encrypt",
+      uploadedCertId: null,
+    },
+    {
+      host: "https://panel.example.com:8443",
+      source: "lets-encrypt",
+      uploadedCertId: null,
+    },
+  ]);
+  assertEquals(deduped.ok, true);
+  if (!deduped.ok) throw new TypeError("expected one hostname");
+  assertEquals(deduped.hostnames.length, 1);
+  assertEquals(deduped.hostnames[0]?.host, "https://panel.example.com:8443");
+  assertEquals(deduped.hostnames[0]?.source, "lets-encrypt");
 });
 
 test("replaceInstanceHostnames rejects Let's Encrypt on a private name and keeps the prior set", async () => {
@@ -206,7 +295,9 @@ test("replaceInstanceHostnames rejects Let's Encrypt on a private name and keeps
   ]);
   assertEquals(rejected.ok, false);
   if (!rejected.ok) assertEquals(rejected.invalid, ["10.1.2.3"]);
-  assertEquals(hostnames.map((row) => row.host), ["https://panel.example.com"]);
+  assertEquals(hostnames.map((row) => row.host), [
+    "https://panel.example.com:8443",
+  ]);
 
   const wildcard = await replaceInstanceHostnames(db, [
     { host: "*.example.com", source: "lets-encrypt", uploadedCertId: null },
@@ -296,12 +387,41 @@ test("recordInstanceAcmeIssuance stores notAfter only on success", async () => {
   }]);
 });
 
+test("certificateSourceForInstallOrigin matches the dialed host", () => {
+  const hostnames = [
+    { host: "https://panel.example.com:8443", source: "platform-ca" as const },
+    { host: "hooks.example.com", source: "lets-encrypt" as const },
+  ];
+  assertEquals(
+    certificateSourceForInstallOrigin(
+      "https://panel.example.com:8443",
+      hostnames,
+    ),
+    "platform-ca",
+  );
+  assertEquals(
+    certificateSourceForInstallOrigin("https://hooks.example.com", hostnames),
+    "lets-encrypt",
+  );
+  assertEquals(
+    certificateSourceForInstallOrigin(
+      "https://other.example.com:8443",
+      hostnames,
+    ),
+    undefined,
+  );
+});
+
 test("instanceAcmeHttp01PreflightFailure parses only the preflight prefix", () => {
   assertEquals(instanceAcmeHttp01PreflightFailure("tls alert"), null);
   const parsed = instanceAcmeHttp01PreflightFailure(
-    "Let's Encrypt HTTP-01 preflight failed for panel.example.com: http://panel.example.com/.well-known/acme-challenge/abc did not reach 127.0.0.1:8880 (HTTP 404)",
+    "Let's Encrypt HTTP-01 preflight failed for panel.example.com: http://panel.example.com/.well-known/acme-challenge/abc did not reach the instance ACME issuer (HTTP 404)",
   );
   assertEquals(parsed?.hostname, "panel.example.com");
+  assertEquals(
+    parsed?.errorMessage.includes(INSTANCE_ACME_HTTP01_ISSUER_UNREACHABLE),
+    true,
+  );
 });
 
 test("replaceInstanceHostnames clears notAfter when the source leaves Let's Encrypt", async () => {
@@ -318,5 +438,51 @@ test("replaceInstanceHostnames clears notAfter when the source leaves Let's Encr
   ]);
   assertEquals(next.ok, true);
   assertEquals(hostnames[0]?.notAfter, null);
+  assertEquals(hostnames[0]?.source, "platform-ca");
+});
+
+test("upsertInstanceHostname replaces the canonical row and replace-all still rejects conflicts", async () => {
+  const { db, hostnames } = createMemoryDb();
+  const saved = await replaceInstanceHostnames(db, [
+    {
+      host: "https://panel.example.com:8443",
+      source: "lets-encrypt",
+      uploadedCertId: null,
+    },
+  ]);
+  assertEquals(saved.ok, true);
+  const id = hostnames[0]?.id;
+  if (typeof id !== "string") throw new TypeError("expected a hostname id");
+
+  const upserted = await upsertInstanceHostname(
+    db,
+    "panel.example.com",
+    "platform-ca",
+  );
+  assertEquals(upserted.ok, true);
+  if (!upserted.ok) throw new TypeError("expected the upsert to save");
+  assertEquals(hostnames.length, 1);
+  assertEquals(upserted.hostname.id, id);
+  assertEquals(upserted.hostname.source, "platform-ca");
+  assertEquals(hostnames[0]?.id, id);
+  assertEquals(hostnames[0]?.host, "panel.example.com");
+
+  const conflict = await replaceInstanceHostnames(db, [
+    {
+      host: "https://panel.example.com:8443",
+      source: "platform-ca",
+      uploadedCertId: null,
+    },
+    {
+      host: "panel.example.com",
+      source: "lets-encrypt",
+      uploadedCertId: null,
+    },
+  ]);
+  assertEquals(conflict.ok, false);
+  if (conflict.ok) throw new TypeError("expected a conflict");
+  assertEquals(conflict.error, "The same hostname is listed more than once");
+  assertEquals(hostnames.length, 1);
+  assertEquals(hostnames[0]?.id, id);
   assertEquals(hostnames[0]?.source, "platform-ca");
 });

@@ -246,12 +246,12 @@ test('resolvePublicUrlsForApply validates, persists, or loads stored urls', asyn
     transaction: async (fn: (tx: typeof db) => Promise<unknown>) => fn(db),
   } as unknown as Db
 
-  const badShape = await resolvePublicUrlsForApply(db, { urls: [1] }, false)
+  const badShape = await resolvePublicUrlsForApply(db, { urls: [1] })
   assertEquals(badShape.ok, false)
   if (badShape.ok) throw new TypeError('expected failure')
   assertEquals(badShape.status, 400)
 
-  const invalidUrl = await resolvePublicUrlsForApply(db, { urls: ['https://localhost'] }, false)
+  const invalidUrl = await resolvePublicUrlsForApply(db, { urls: ['https://localhost'] })
   assertEquals(invalidUrl.ok, false)
   if (invalidUrl.ok) throw new TypeError('expected failure')
   assertEquals(invalidUrl.status, 422)
@@ -259,13 +259,12 @@ test('resolvePublicUrlsForApply validates, persists, or loads stored urls', asyn
   const applied = await resolvePublicUrlsForApply(
     db,
     { urls: ['https://new.example.com'] },
-    false,
   )
   assertEquals(applied.ok, true)
   if (!applied.ok) throw new TypeError('expected ok')
-  assertEquals(applied.urls, ['https://new.example.com'])
+  assertEquals(applied.urls, ['https://new.example.com:8443'])
 
-  const loaded = await resolvePublicUrlsForApply(db, {}, false)
+  const loaded = await resolvePublicUrlsForApply(db, {})
   assertEquals(loaded.ok, true)
   if (!loaded.ok) throw new TypeError('expected ok')
   assertExists(loaded.urls)

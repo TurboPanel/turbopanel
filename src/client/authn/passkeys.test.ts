@@ -112,16 +112,11 @@ async function rpIdHash(rpId: string): Promise<Uint8Array> {
 async function resolveTestWebauthnOrigin(
   db: Db,
 ): Promise<{ origin: string; rpId: string }> {
-  const caddyPort = Deno.env.get("CADDY_PORT")?.trim() || "8443";
   const stored = (await getPublicUrls(db))[0];
-  const fromStored = stored
-    ? publicUrlEntryToInstallOrigin(stored, caddyPort)
-    : null;
+  const fromStored = stored ? publicUrlEntryToInstallOrigin(stored) : null;
   const fromEnv = Deno.env.get("TURBOPANEL_PUBLIC_URLS")?.trim();
   const parsed = fromStored ?? (
-    fromEnv
-      ? publicUrlEntryToInstallOrigin(fromEnv.split(",")[0] ?? "", caddyPort)
-      : null
+    fromEnv ? publicUrlEntryToInstallOrigin(fromEnv.split(",")[0] ?? "") : null
   );
   const origin = parsed ?? ORIGIN;
   return { origin, rpId: new URL(origin).hostname };

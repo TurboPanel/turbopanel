@@ -151,13 +151,9 @@ test("reserved colocated license name helpers", () => {
   );
 });
 
-test("installBaseUrlValidationError depends on developer surface", () => {
+test("installBaseUrlValidationError requires https", () => {
   assertEquals(
-    installBaseUrlValidationError(true),
-    "installBaseUrl must be a valid http(s) URL",
-  );
-  assertEquals(
-    installBaseUrlValidationError(false),
+    installBaseUrlValidationError(),
     "installBaseUrl must be a valid https URL",
   );
 });

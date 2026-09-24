@@ -102,7 +102,6 @@ export type PublicUrlsApplyUrlsResult =
 export async function resolvePublicUrlsForApply(
   db: Db,
   body: unknown,
-  allowHttp: boolean,
 ): Promise<PublicUrlsApplyUrlsResult> {
   if (body && typeof body === "object" && "urls" in body) {
     const urlsBody = body as { urls: unknown };
@@ -116,7 +115,7 @@ export async function resolvePublicUrlsForApply(
         body: { ok: false, error: "expected { urls?: string[] }" },
       };
     }
-    const parsed = parsePublicUrlEntries(urlsBody.urls, { allowHttp });
+    const parsed = parsePublicUrlEntries(urlsBody.urls);
     if (!parsed.ok) {
       return { ok: false, status: 422, body: parsed };
     }

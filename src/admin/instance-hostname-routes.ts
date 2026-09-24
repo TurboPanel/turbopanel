@@ -41,7 +41,6 @@ function failureStatus(error: string): 404 | 422 {
 export function registerInstanceHostnameAdminRoutes(
   admin: Hono<AppEnv>,
   opts: {
-    devSurface: boolean;
     getEnv?: () => Record<string, string | undefined>;
   },
 ): void {
@@ -58,9 +57,7 @@ export function registerInstanceHostnameAdminRoutes(
     const body = await c.req.json().catch(() => null);
     const parsed = parseInstanceHostnamesBody(body);
     if (!parsed.ok) return c.json(parsed, 400);
-    const replaced = await replaceInstanceHostnames(db, parsed.hostnames, {
-      allowHttp: opts.devSurface,
-    });
+    const replaced = await replaceInstanceHostnames(db, parsed.hostnames);
     if (!replaced.ok) return c.json(replaced, 422);
     return c.json({ ok: true, hostnames: replaced.hostnames });
   });
@@ -107,7 +104,6 @@ export function registerInstanceHostnameAdminRoutes(
       db,
       c.req.param("id"),
       parsed.hosts,
-      { allowHttp: opts.devSurface },
     );
     if (!attached.ok) return c.json(attached, failureStatus(attached.error));
     return c.json({ ok: true, hostnames: attached.hostnames });
