@@ -71,8 +71,18 @@ async function createLicenseTestApp(
     if (registry) c.set('daemonCellRegistry', registry)
     return next()
   })
-  registerLicenseRoutes(app, { secrets, runtime: 'deno', signupEnvOverride: undefined })
-  registerServerRoutes(app, { secrets, runtime: 'deno', signupEnvOverride: undefined })
+  registerLicenseRoutes(app, {
+    secrets,
+    runtime: 'deno',
+    signupEnvOverride: undefined,
+    baseUrl: 'https://panel.example.com',
+  })
+  registerServerRoutes(app, {
+    secrets,
+    runtime: 'deno',
+    signupEnvOverride: undefined,
+    baseUrl: 'https://panel.example.com',
+  })
   return { app, secrets }
 }
 

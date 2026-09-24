@@ -581,14 +581,14 @@ test('resolveGitlabRedirectUri prefers the configured URI then a public origin',
       selectLimitDb([{ value: ['https://panel.example.com/'] }]),
       null,
     ),
-    `https://panel.example.com${CLIENT_API_PREFIX}/repositories/gitlab/oauth/callback`,
+    `https://panel.example.com:8443${CLIENT_API_PREFIX}/repositories/gitlab/oauth/callback`,
   )
   assertEquals(
     await resolveGitlabRedirectUri(
       selectLimitDb([{ value: 'https://panel.example.com, https://other.example.com' }]),
       null,
     ),
-    `https://panel.example.com${CLIENT_API_PREFIX}/repositories/gitlab/oauth/callback`,
+    `https://panel.example.com:8443${CLIENT_API_PREFIX}/repositories/gitlab/oauth/callback`,
   )
 })
 
