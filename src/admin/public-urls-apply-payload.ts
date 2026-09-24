@@ -14,7 +14,10 @@ import type {
   InstanceAcmeWireSettings,
   InstanceHostnameWireEntry,
 } from "../contracts/cell-protocol.ts";
-import { resolveInstanceAcmeSettings } from "../features/install/instance-acme-settings.ts";
+import {
+  INSTANCE_ACME_TOS_NOT_ACCEPTED_MESSAGE,
+  resolveInstanceAcmeSettings,
+} from "../features/install/instance-acme-settings.ts";
 import { listInstanceHostnames } from "../features/install/instance-hostnames.ts";
 import { decryptSecret } from "../lib/secrets/data-encryption.ts";
 import type { DerivedSecretsConfig } from "../lib/secrets/secrets.ts";
@@ -80,6 +83,11 @@ async function loadInstanceAcme(
   env: Record<string, string | undefined>,
 ): Promise<InstanceAcmeWireSettings> {
   const resolved = await resolveInstanceAcmeSettings(db, env);
+  if (!resolved.tosAccepted) {
+    throw new PublicUrlsApplyPayloadError(
+      INSTANCE_ACME_TOS_NOT_ACCEPTED_MESSAGE,
+    );
+  }
   return {
     contactEmail: resolved.contactEmail,
     tosAccepted: resolved.tosAccepted,

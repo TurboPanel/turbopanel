@@ -633,7 +633,10 @@ export function registerAdminRoutes(app: Hono<AppEnv>, opts: {
       );
     } catch (err) {
       if (err instanceof PublicUrlsApplyPayloadError) {
-        return c.json({ ok: false, error: err.message }, 503);
+        const status = err.message.includes("terms have not been accepted")
+          ? 422
+          : 503;
+        return c.json({ ok: false, error: err.message }, status);
       }
       throw err;
     }
