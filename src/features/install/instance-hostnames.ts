@@ -24,6 +24,7 @@ import {
   hostFromPublicUrlEntry,
   parsePublicUrlEntries,
   PUBLIC_URLS_SETTING_KEY,
+  publicUrlEntryToInstallOrigin,
 } from "./public-urls.ts";
 
 export const INSTANCE_HOSTNAME_SOURCES = [
@@ -207,11 +208,11 @@ function coercePublicUrlValue(raw: unknown): string[] {
 }
 
 function legacyUrlsToStore(raw: string[]): string[] {
-  const parsed = parsePublicUrlEntries(raw, { allowHttp: true });
+  const parsed = parsePublicUrlEntries(raw);
   if (parsed.ok) return parsed.urls;
   const kept: string[] = [];
   for (const entry of raw) {
-    const one = parsePublicUrlEntries([entry], { allowHttp: true });
+    const one = parsePublicUrlEntries([entry]);
     if (one.ok && one.urls[0]) kept.push(one.urls[0]);
   }
   return kept;
@@ -368,6 +369,10 @@ export async function listInstanceHostnames(
 
 const HTTP01_PREFLIGHT_PREFIX = "Let's Encrypt HTTP-01 preflight failed for ";
 
+/** Detail phrase. Keep in step with the daemon and the UI. */
+export const INSTANCE_ACME_HTTP01_ISSUER_UNREACHABLE =
+  "did not reach the instance ACME issuer";
+
 /** Parse a daemon HTTP-01 preflight failure. Other apply errors return null. */
 export function instanceAcmeHttp01PreflightFailure(
   error: string,
@@ -453,9 +458,11 @@ export async function replacePublicUrlsWithPlatformCa(
   db: Db,
   urls: string[],
 ): Promise<void> {
+  const parsed = parsePublicUrlEntries(urls);
+  const stored = parsed.ok ? parsed.urls : [];
   await persistHostnameRows(
     db,
-    urls.map((host, index) => newPlatformCaRow(host, index)),
+    stored.map((host, index) => newPlatformCaRow(host, index)),
   );
 }
 
@@ -501,11 +508,27 @@ function rowFromEntry(
   };
 }
 
+/**
+ * Certificate source of the hostname this install origin dials, matched on
+ * the host label. Used so `curl -k` follows that source.
+ */
+export function certificateSourceForInstallOrigin(
+  origin: string,
+  hostnames: readonly { host: string; source: InstanceHostnameSource }[],
+): InstanceHostnameSource | undefined {
+  const wanted = hostFromPublicUrlEntry(origin)?.toLowerCase();
+  if (!wanted) return undefined;
+  const match = hostnames.find((row) =>
+    hostFromPublicUrlEntry(row.host)?.toLowerCase() === wanted
+  );
+  return match?.source;
+}
+
 function normalizeEntryHost(
   entry: InstanceHostnameEntry,
-  allowHttp: boolean,
 ): { ok: true; host: string } | InstanceHostnameFailure {
-  const parsed = parsePublicUrlEntries([entry.host], { allowHttp });
+  // parsePublicUrlEntries writes an omitted https port as :8443.
+  const parsed = parsePublicUrlEntries([entry.host]);
   if (!parsed.ok) {
     return {
       ok: false,
@@ -535,37 +558,81 @@ function combineFailures(
   return { ok: false, error, invalid };
 }
 
+const DUPLICATE_HOSTNAME_ERROR = "The same hostname is listed more than once";
+
+/** Install origin, so a portless row and its `:8443` form are one hostname. */
+function canonicalHostKey(host: string): string {
+  return publicUrlEntryToInstallOrigin(host) ?? host;
+}
+
+function sourcesConflict(
+  left: InstanceHostnameEntry,
+  right: InstanceHostnameEntry,
+): boolean {
+  if (left.source !== right.source) return true;
+  return left.uploadedCertId !== right.uploadedCertId;
+}
+
+function takeUniqueHostname(
+  entry: InstanceHostnameEntry,
+  byHost: Map<string, InstanceHostnameEntry>,
+): InstanceHostnameFailure | null {
+  const hostResult = normalizeEntryHost(entry);
+  if (!hostResult.ok) return hostResult;
+  const sourceResult = validateHostnameSource(hostResult.host, entry.source);
+  if (!sourceResult.ok) return sourceResult;
+  const normalized: InstanceHostnameEntry = {
+    host: hostResult.host,
+    source: entry.source,
+    uploadedCertId: entry.uploadedCertId,
+  };
+  const key = canonicalHostKey(normalized.host);
+  const existing = byHost.get(key);
+  if (!existing) {
+    byHost.set(key, normalized);
+    return null;
+  }
+  if (!sourcesConflict(existing, normalized)) return null;
+  return {
+    ok: false,
+    error: DUPLICATE_HOSTNAME_ERROR,
+    invalid: [existing.host, entry.host],
+  };
+}
+
+function uniqueHostnames(
+  entries: InstanceHostnameEntry[],
+): { ok: true; entries: InstanceHostnameEntry[] } | InstanceHostnameFailure {
+  const failures: InstanceHostnameFailure[] = [];
+  const byHost = new Map<string, InstanceHostnameEntry>();
+  for (const entry of entries) {
+    const failure = takeUniqueHostname(entry, byHost);
+    if (failure) failures.push(failure);
+  }
+  if (failures.length > 0) return combineFailures(failures);
+  return { ok: true, entries: [...byHost.values()] };
+}
+
+function previousHostname(
+  current: readonly StoredHostname[],
+  host: string,
+): StoredHostname | undefined {
+  const key = canonicalHostKey(host);
+  return current.find((row) => canonicalHostKey(row.host) === key);
+}
+
 async function buildReplacementRows(
   db: Db,
   entries: InstanceHostnameEntry[],
   current: StoredHostname[],
-  allowHttp: boolean,
 ): Promise<{ ok: true; rows: StoredHostname[] } | InstanceHostnameFailure> {
-  const failures: InstanceHostnameFailure[] = [];
-  const byHost = new Map<string, InstanceHostnameEntry>();
-  for (const entry of entries) {
-    const hostResult = normalizeEntryHost(entry, allowHttp);
-    if (!hostResult.ok) {
-      failures.push(hostResult);
-      continue;
-    }
-    const sourceResult = validateHostnameSource(hostResult.host, entry.source);
-    if (!sourceResult.ok) {
-      failures.push(sourceResult);
-      continue;
-    }
-    byHost.set(hostResult.host, {
-      host: hostResult.host,
-      source: entry.source,
-      uploadedCertId: entry.uploadedCertId,
-    });
-  }
-  const normalized = [...byHost.values()];
-  if (failures.length > 0) return combineFailures(failures);
+  const unique = uniqueHostnames(entries);
+  if (!unique.ok) return unique;
 
+  const failures: InstanceHostnameFailure[] = [];
   const certs = await loadUploadedCertificates(db);
   const rows: StoredHostname[] = [];
-  for (const [index, entry] of normalized.entries()) {
+  for (const [index, entry] of unique.entries.entries()) {
     let notAfter: string | null = null;
     if (entry.source === "uploaded") {
       const covered = certForHost(certs, entry.host, entry.uploadedCertId);
@@ -575,7 +642,7 @@ async function buildReplacementRows(
       }
       notAfter = covered.cert.notAfter;
     }
-    const previous = current.find((row) => row.host === entry.host);
+    const previous = previousHostname(current, entry.host);
     rows.push(rowFromEntry(entry, previous, index, notAfter));
   }
   if (failures.length > 0) return combineFailures(failures);
@@ -585,46 +652,60 @@ async function buildReplacementRows(
 export async function replaceInstanceHostnames(
   db: Db,
   entries: InstanceHostnameEntry[],
-  opts: { allowHttp?: boolean } = {},
 ): Promise<
   { ok: true; hostnames: InstanceHostnameRecord[] } | InstanceHostnameFailure
 > {
   await migrateLegacyPublicUrls(db);
   const current = await loadHostnameRows(db);
-  const built = await buildReplacementRows(
-    db,
-    entries,
-    current,
-    opts.allowHttp === true,
-  );
+  const built = await buildReplacementRows(db, entries, current);
   if (!built.ok) return built;
   await persistHostnameRows(db, built.rows);
   return { ok: true, hostnames: built.rows.map(toRecord) };
+}
+
+function entriesReplacingCanonicalHost(
+  current: readonly InstanceHostnameRecord[],
+  incoming: InstanceHostnameEntry,
+): InstanceHostnameEntry[] {
+  const key = canonicalHostKey(incoming.host);
+  const entries: InstanceHostnameEntry[] = [];
+  let replaced = false;
+  for (const row of current) {
+    if (canonicalHostKey(row.host) !== key) {
+      entries.push({
+        host: row.host,
+        source: row.source,
+        uploadedCertId: row.uploadedCertId,
+      });
+      continue;
+    }
+    if (replaced) continue;
+    entries.push(incoming);
+    replaced = true;
+  }
+  if (!replaced) entries.push(incoming);
+  return entries;
 }
 
 export async function upsertInstanceHostname(
   db: Db,
   host: string,
   source: InstanceHostnameSource,
-  opts: { uploadedCertId?: string | null; allowHttp?: boolean } = {},
+  opts: { uploadedCertId?: string | null } = {},
 ): Promise<
   { ok: true; hostname: InstanceHostnameRecord } | InstanceHostnameFailure
 > {
   const current = await listInstanceHostnames(db);
-  const replaced = await replaceInstanceHostnames(db, [
-    ...current.map((row) => ({
-      host: row.host,
-      source: row.source,
-      uploadedCertId: row.uploadedCertId,
-    })),
-    {
+  const replaced = await replaceInstanceHostnames(
+    db,
+    entriesReplacingCanonicalHost(current, {
       host,
       source,
       uploadedCertId: opts.uploadedCertId ?? null,
-    },
-  ], { allowHttp: opts.allowHttp });
+    }),
+  );
   if (!replaced.ok) return replaced;
-  const parsed = parsePublicUrlEntries([host], { allowHttp: opts.allowHttp });
+  const parsed = parsePublicUrlEntries([host]);
   const normalized = parsed.ok ? parsed.urls[0] : undefined;
   const hostname = replaced.hostnames.find((row) => row.host === normalized);
   if (!hostname) {
@@ -657,14 +738,13 @@ export async function applyUploadedCertificateHosts(
   db: Db,
   cert: UploadedCertHit,
   hosts: string[],
-  opts: { allowHttp?: boolean } = {},
 ): Promise<{ ok: true; hostnames: string[] } | InstanceHostnameFailure> {
   await migrateLegacyPublicUrls(db);
   const current = await loadHostnameRows(db);
   const desired = new Set<string>();
   const failures: InstanceHostnameFailure[] = [];
   for (const raw of hosts) {
-    const parsed = parsePublicUrlEntries([raw], { allowHttp: opts.allowHttp });
+    const parsed = parsePublicUrlEntries([raw]);
     if (!parsed.ok || !parsed.urls[0]) {
       failures.push({
         ok: false,

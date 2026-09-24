@@ -2,6 +2,11 @@ import { Hono } from "hono";
 import type { Context, Env, Next } from "hono";
 import { and, eq, isNull } from "drizzle-orm";
 import { isInstanceInstalled } from "../client/authn/install-state.ts";
+import { readPrivateUploadedTrustPem } from "../features/install/install-trust.ts";
+import {
+  dialedInstallHostname,
+  shouldServePlatformCaBundle,
+} from "../features/install/install-tls.ts";
 import { lookupActiveLicense } from "../features/licenses/license.ts";
 import { organization, server } from "../db/schema.ts";
 import type {
@@ -579,7 +584,6 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-
 /**
  * A snapshot is only usable for slot mapping once it carries every array
  * `computeSlotMapping` reads. `resolveServerMachineClass` only ever
@@ -915,13 +919,19 @@ export function registerDaemonApiRoutes<E extends Env>(
      */
     runtime?: "workers" | "deno";
     /**
-     * When true, GET /instance/ca answers 404 (publicly trusted leaf; daemons
-     * use the system trust store). Defaults to false so self-signed installs
-     * keep serving the Platform CA from disk. Passed as a plain boolean so the
-     * route stays testable without env mutation and the Workers graph gains no
-     * import.
+     * When true, GET /instance/ca answers 404 for a name that presents a
+     * Let's Encrypt or uploaded leaf. An unlisted name on the self-hosted
+     * listener still receives the bundle: that request hits the Platform CA
+     * catch-all. Defaults to false so self-signed installs keep serving the
+     * Platform CA from disk.
      */
     tlsPublic?: boolean;
+    /**
+     * True when the requested hostname reaches the Platform CA catch-all.
+     * The argument is the dialed host (no port). Consulted only when
+     * `tlsPublic` is true. Omitted means the name does not present that leaf.
+     */
+    platformCaLeafPresented?: (hostname: string) => Promise<boolean>;
     /**
      * Deno composition root injects the filesystem Platform CA reader.
      * Workers omits this and serves `TURBOPANEL_TLS_CA_PEM_B64` (or 404).
@@ -1131,7 +1141,13 @@ export function registerDaemonApiRoutes<E extends Env>(
         return c.json({ error: message }, 500);
       }
     }
-    if (tlsPublic) {
+    let presentsPlatformCaLeaf = false;
+    if (tlsPublic && options.platformCaLeafPresented) {
+      presentsPlatformCaLeaf = await options.platformCaLeafPresented(
+        dialedInstallHostname(c.req.header("host"), c.req.url),
+      );
+    }
+    if (!shouldServePlatformCaBundle(tlsPublic, presentsPlatformCaLeaf)) {
       return c.json({ error: "platform CA not configured" }, 404);
     }
     const readPlatformCaPem = options.readPlatformCaPem;
@@ -1145,6 +1161,25 @@ export function registerDaemonApiRoutes<E extends Env>(
       const message = err instanceof Error ? err.message : String(err);
       return c.json({ error: message }, 500);
     }
+  });
+
+  // Private uploaded issuer for the dialed hostname. Distinct from the
+  // Platform CA bundle. Public uploads and every other source 404 so the
+  // installer keeps the system roots. Bootstrap `-k` is not this document.
+  daemon.get("/instance/uploaded-trust", async (c) => {
+    if (typeof Deno === "undefined") {
+      return c.json({ error: "uploaded trust not configured" }, 404);
+    }
+    const db = getDb(c);
+    if (!db) {
+      return c.json({ error: "uploaded trust not configured" }, 404);
+    }
+    const hostname = dialedInstallHostname(c.req.header("host"), c.req.url);
+    const pem = await readPrivateUploadedTrustPem(db, hostname);
+    if (!pem) {
+      return c.json({ error: "uploaded trust not configured" }, 404);
+    }
+    return c.body(pem, 200, { "content-type": "application/x-pem-file" });
   });
 
   daemon.get("/jwks.json", (c) => {

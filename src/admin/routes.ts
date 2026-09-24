@@ -247,9 +247,7 @@ export function registerAdminRoutes(app: Hono<AppEnv>, opts: {
       return c.json({ ok: false, error: "expected { urls: string[] }" }, 400);
     }
 
-    const parsed = parsePublicUrlEntries(body.urls, {
-      allowHttp: opts.devSurface,
-    });
+    const parsed = parsePublicUrlEntries(body.urls);
     if (!parsed.ok) {
       return c.json(parsed, 422);
     }
@@ -259,7 +257,6 @@ export function registerAdminRoutes(app: Hono<AppEnv>, opts: {
   });
 
   registerInstanceHostnameAdminRoutes(admin, {
-    devSurface: opts.devSurface,
     ...(opts.getEnv ? { getEnv: opts.getEnv } : {}),
   });
 
@@ -592,11 +589,7 @@ export function registerAdminRoutes(app: Hono<AppEnv>, opts: {
     if (!db) return c.json({ ok: false, error: "Database unavailable" }, 503);
 
     const body = await c.req.json().catch(() => null);
-    const urlsResult = await resolvePublicUrlsForApply(
-      db,
-      body,
-      opts.devSurface,
-    );
+    const urlsResult = await resolvePublicUrlsForApply(db, body);
     if (!urlsResult.ok) {
       return c.json(urlsResult.body, urlsResult.status);
     }

@@ -652,7 +652,7 @@ test('sign-in/otp omits Secure on plain HTTP Workers request URL', async () => {
     runtime: 'workers',
   })
 
-  const res = await app.request(`http://localhost:8880${AUTH_PREFIX}/sign-in/otp`, {
+  const res = await app.request(`http://localhost${AUTH_PREFIX}/sign-in/otp`, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',

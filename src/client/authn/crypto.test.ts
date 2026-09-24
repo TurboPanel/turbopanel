@@ -57,7 +57,7 @@ it('resolveRequestTls (Workers) derives HTTPS state from the URL when no header 
 
 it('resolveRequestTls (Workers) serves the HTTP cookie for genuine plaintext HTTP requests', () => {
   const tls = resolveRequestTls({
-    requestUrl: 'http://localhost:8880/',
+    requestUrl: 'http://localhost/',
     runtime: 'workers',
     forwardedProto: 'https',
   })
@@ -120,7 +120,7 @@ it('resolveRequestTlsFromUrl never consults a header', () => {
     HTTPS_SESSION_COOKIE_NAME,
   )
   assertEquals(
-    resolveRequestTlsFromUrl('http://localhost:8880/').cookieName,
+    resolveRequestTlsFromUrl('http://localhost/').cookieName,
     HTTP_SESSION_COOKIE_NAME,
   )
 })

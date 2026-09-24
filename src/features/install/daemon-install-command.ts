@@ -101,9 +101,7 @@ export function buildLicenseInstallCommand(opts: {
     dlBase,
     updateChannel,
   } = opts;
-  const insecureTls = instanceUrl.startsWith("http://")
-    ? false
-    : insecureTlsOpt;
+  const insecureTls = insecureTlsOpt;
   const licenseArg = encodeLicenseArg(licenseId, licenseToken);
   const includeHost = instanceUrl !== "https://turbopanel.app";
   const scriptBase = instanceUrl.replace(/\/$/, ""); // origin for curl URL + TURBOPANEL_HOST

@@ -59,11 +59,23 @@ test("daemon docs and JWKS stay host-free", async () => {
   assertEquals((await reference.text()).includes("html"), true);
 });
 
-test("GET /instance/ca 404s when tlsPublic is set", async () => {
+test("GET /instance/ca 404s when tlsPublic is set and no Platform CA hostname is presented", async () => {
   const app = daemonApp({ tlsPublic: true });
   const response = await app.request(`${DAEMON_API_PREFIX}/instance/ca`);
   assertEquals(response.status, 404);
   assertEquals(await response.json(), { error: "platform CA not configured" });
+});
+
+test("GET /instance/ca serves the bundle when a Platform CA hostname remains", async () => {
+  const pem = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n";
+  const app = daemonApp({
+    tlsPublic: true,
+    platformCaLeafPresented: () => Promise.resolve(true),
+    readPlatformCaPem: () => Promise.resolve(pem),
+  });
+  const response = await app.request(`${DAEMON_API_PREFIX}/instance/ca`);
+  assertEquals(response.status, 200);
+  assertEquals(await response.text(), pem);
 });
 
 test("GET /instance/ca 404s on Deno when no reader is injected", async () => {

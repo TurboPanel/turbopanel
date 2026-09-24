@@ -6,9 +6,13 @@ import {
 
 export const PUBLIC_URLS_SETTING_KEY = "TURBOPANEL_PUBLIC_URLS";
 
-function trimTrailingSlash(url: string): string {
-  return url.endsWith("/") ? url.slice(0, -1) : url;
-}
+/**
+ * Self-hosted control-plane listener. Managed Caddy binds `:8443` only.
+ * Bare hosts and the discovered-address fallback dial this port.
+ * An already valid public HTTPS origin (Workers, a tunnel, any explicit
+ * port including `:443`) keeps its own port via {@link publicHttpsOrigin}.
+ */
+export const PANEL_HTTPS_PORT = "8443";
 
 function stripIpv6Brackets(host: string): string {
   return host.replace(/^\[/, "").replace(/\]$/, "");
@@ -25,26 +29,59 @@ function hasNonOriginUrlParts(url: URL): boolean {
 }
 
 /**
- * True when the URL is an https origin (or a plaintext http origin when the
- * caller passes an explicit development-only allowance) with a valid public host
- * and no extras.
- *
- * Plaintext `http:` is rejected by default so a dev-only control-plane URL can
- * never escape into production install commands or persisted daemon runtime
- * configuration for managed servers.
+ * True when the URL is an https origin with a valid public host and no extras.
  */
-function isHttpOrHttpsOriginUrl(url: URL, allowHttp = false): boolean {
-  if (url.protocol !== "http:" && url.protocol !== "https:") return false;
-  if (url.protocol === "http:" && !allowHttp) return false;
+function isHttpsOriginUrl(url: URL): boolean {
+  if (url.protocol !== "https:") return false;
   if (!isValidPublicHost(url.hostname)) return false;
   if (url.username || url.password) return false;
   return !hasNonOriginUrlParts(url);
 }
 
-/** Bracket IPv6 literals when formatting host[:port]. */
+/**
+ * Bracket an IPv6 literal once. `URL.hostname` already includes brackets, so
+ * those are stripped before a new pair is added.
+ */
 function formatHostForUrl(host: string, port?: string): string {
-  const hostPart = host.includes(":") ? `[${host}]` : host;
+  const bare = stripIpv6Brackets(host);
+  const hostPart = bare.includes(":") ? `[${bare}]` : bare;
   return port ? `${hostPart}:${port}` : hostPart;
+}
+
+/**
+ * Self-hosted listener origin. HTTPS always dials {@link PANEL_HTTPS_PORT}.
+ */
+function httpsOriginWithExplicitPort(url: URL): string {
+  return `https://${formatHostForUrl(url.hostname, PANEL_HTTPS_PORT)}`;
+}
+
+/**
+ * Port kept on an already valid public HTTPS origin. Omitted and `:443`
+ * stay the standard origin. Any other explicit port is unchanged.
+ */
+function preservedHttpsPort(url: URL): string | undefined {
+  if (url.port === "" || url.port === "443") return undefined;
+  return url.port;
+}
+
+/**
+ * HTTPS origin that keeps the port of an already valid public URL.
+ *
+ * Workers (`https://turbopanel.app`), `TURBOPANEL_BASE_URL`, and externally
+ * forwarded hosts are reached on their own port — usually 443. Plaintext
+ * `http:` is rejected. A bare host is not an edge origin; the self-hosted
+ * dial is {@link publicUrlEntryToInstallOrigin}.
+ */
+export function publicHttpsOrigin(entry: string): string | null {
+  const trimmed = entry.trim();
+  if (!trimmed || !trimmed.includes("://")) return null;
+  try {
+    const url = new URL(trimmed);
+    if (!isHttpsOriginUrl(url)) return null;
+    return `https://${formatHostForUrl(url.hostname, preservedHttpsPort(url))}`;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -79,49 +116,42 @@ export function hostFromPublicUrlEntry(entry: string): string | null {
 }
 
 /**
- * Normalize a stored or env public URL entry to an HTTPS origin for install commands.
- * Accepts persisted origin strings and bare host / host:port forms.
+ * Normalize a self-hosted listener name to `https://<host>:8443`.
  *
- * Plaintext `http:` origins are rejected unless the caller passes the
- * development-only `{ allowHttp: true }` allowance.
+ * Accepts persisted origin strings and bare host / host:port forms. This is
+ * the Caddy dial for stored panel hostnames and webhook origins. Hosted and
+ * forwarded public origins use {@link publicHttpsOrigin} so an implicit
+ * port 443 is left alone. Plaintext `http:` is rejected.
  */
-export function publicUrlEntryToInstallOrigin(
-  entry: string,
-  defaultHttpsPort = "8443",
-  opts: { allowHttp?: boolean } = {},
-): string | null {
+export function publicUrlEntryToInstallOrigin(entry: string): string | null {
   const trimmed = entry.trim();
   if (!trimmed) return null;
 
   try {
     if (trimmed.includes("://")) {
       const url = new URL(trimmed);
-      if (!isHttpOrHttpsOriginUrl(url, opts.allowHttp)) return null;
-      return trimTrailingSlash(url.origin);
+      if (!isHttpsOriginUrl(url)) return null;
+      return httpsOriginWithExplicitPort(url);
     }
 
     const url = tryParseBareHostEntry(trimmed);
     if (!url) return null;
 
-    const port = url.port || defaultHttpsPort;
-    return `https://${formatHostForUrl(url.hostname, port)}`;
+    return `https://${formatHostForUrl(url.hostname, PANEL_HTTPS_PORT)}`;
   } catch {
     return null;
   }
 }
 
-function parseAndNormalizePublicUrlEntry(
-  entry: string,
-  allowHttp = false,
-): string | null {
+function parseAndNormalizePublicUrlEntry(entry: string): string | null {
   const trimmed = entry.trim();
   if (!trimmed) return null;
 
   if (trimmed.includes("://")) {
     try {
       const url = new URL(trimmed);
-      if (!isHttpOrHttpsOriginUrl(url, allowHttp)) return null;
-      return url.origin;
+      if (!isHttpsOriginUrl(url)) return null;
+      return httpsOriginWithExplicitPort(url);
     } catch {
       return null;
     }
@@ -131,7 +161,8 @@ function parseAndNormalizePublicUrlEntry(
   if (!url) return null;
 
   const host = stripIpv6Brackets(url.hostname);
-  return url.port ? formatHostForUrl(host, url.port) : host;
+  if (!url.port) return formatHostForUrl(host);
+  return formatHostForUrl(host, PANEL_HTTPS_PORT);
 }
 
 export type ParsePublicUrlEntriesResult =
@@ -141,28 +172,22 @@ export type ParsePublicUrlEntriesResult =
 /**
  * Parse and validate public URL entries.
  *
- * Plaintext `http:` entries are rejected (reported as invalid) unless the caller
- * passes the development-only `{ allowHttp: true }` allowance. Managed/production
- * callers must never pass the allowance, so a dev-only plaintext control-plane
- * URL cannot be persisted into daemon runtime configuration.
+ * Plaintext `http:` entries are rejected and reported as invalid.
  */
 export function parsePublicUrlEntries(
   raw: string[],
-  opts: { allowHttp?: boolean } = {},
 ): ParsePublicUrlEntriesResult {
   const validated: string[] = [];
   const invalid: string[] = [];
   const seen = new Set<string>();
 
   for (const entry of raw) {
-    const normalized = parseAndNormalizePublicUrlEntry(entry, opts.allowHttp);
+    const normalized = parseAndNormalizePublicUrlEntry(entry);
     if (!normalized) {
       invalid.push(entry);
       continue;
     }
-    const dedupeKey = publicUrlEntryToInstallOrigin(normalized, undefined, {
-      allowHttp: opts.allowHttp,
-    }) ?? normalized;
+    const dedupeKey = publicUrlEntryToInstallOrigin(normalized) ?? normalized;
     if (seen.has(dedupeKey)) continue;
     seen.add(dedupeKey);
     validated.push(normalized);

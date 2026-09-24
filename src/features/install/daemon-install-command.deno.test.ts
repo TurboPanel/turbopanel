@@ -5,7 +5,11 @@ import {
   encodeLicenseArg,
   formatInstallScriptCurlUrl,
 } from "./daemon-install-command.ts";
-import { installOriginNeedsInsecureTls } from "./install-tls.ts";
+import {
+  installOriginNeedsInsecureTls,
+  installOriginTlsOptions,
+} from "./install-tls.ts";
+import { parseInstallBaseUrl } from "./resolve-public-base-url.ts";
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -32,8 +36,8 @@ test("formatInstallScriptCurlUrl keeps bare CDN host and appends /run.sh elsewhe
     "https://huey.lan:8443/run.sh",
   );
   assertEquals(
-    formatInstallScriptCurlUrl("http://huey.lan:8880"),
-    "http://huey.lan:8880/run.sh",
+    formatInstallScriptCurlUrl("https://huey.lan:8443"),
+    "https://huey.lan:8443/run.sh",
   );
 });
 
@@ -129,10 +133,10 @@ test("buildLicenseInstallCommand Workers omits host on production URL", () => {
   assertEquals(command.includes("TURBOPANEL_HOST"), false);
 });
 
-test("composed pipeline omits insecure TLS for a public non-443 origin", () => {
+test("composed pipeline omits insecure TLS for a Let's Encrypt hostname", () => {
   const instanceUrl = "https://panel.example.com:8443";
   const insecureTls = installOriginNeedsInsecureTls(instanceUrl, {
-    publicOrigin: true,
+    source: "lets-encrypt",
   });
   const command = buildLicenseInstallCommand({
     runtime: "deno",
@@ -143,6 +147,41 @@ test("composed pipeline omits insecure TLS for a public non-443 origin", () => {
   });
   assertEquals(command.includes("curl -fsSLk"), false);
   assertEquals(command.includes("TURBOPANEL_INSECURE_TLS=1"), false);
+});
+
+test("no stored hostnames: a public DNS name on the self-hosted listener bootstraps with Platform CA trust", () => {
+  const instanceUrl = parseInstallBaseUrl("panel.example.com");
+  if (!instanceUrl) throw new TypeError("expected an install origin");
+  const insecureTls = installOriginNeedsInsecureTls(
+    instanceUrl,
+    installOriginTlsOptions(undefined, {}, {
+      hostnames: [],
+      selfHostedListener: true,
+    }),
+  );
+  const command = buildLicenseInstallCommand({
+    runtime: "deno",
+    instanceUrl,
+    licenseId: "license-id",
+    licenseToken: "token",
+    insecureTls,
+  });
+  assertEquals(instanceUrl, "https://panel.example.com:8443");
+  assertEquals(insecureTls, true);
+  assertEquals(command.includes("curl -fsSLk"), true);
+  assertEquals(command.includes("TURBOPANEL_INSECURE_TLS=1"), true);
+  assertEquals(
+    command.includes("TURBOPANEL_HOST=https://panel.example.com:8443"),
+    true,
+  );
+  const hosted = installOriginNeedsInsecureTls(
+    instanceUrl,
+    installOriginTlsOptions(undefined, {}, {
+      hostnames: [],
+      selfHostedListener: false,
+    }),
+  );
+  assertEquals(hosted, false);
 });
 
 test("license arg round-trips through base64url decoding", () => {

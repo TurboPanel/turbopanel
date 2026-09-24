@@ -174,7 +174,6 @@ export async function attachUploadedCertificateToHostnames(
   db: Db,
   certId: string,
   hosts: string[],
-  opts: { allowHttp?: boolean } = {},
 ): Promise<
   | { ok: true; hostnames: string[] }
   | InstanceHostnameFailure
@@ -187,6 +186,5 @@ export async function attachUploadedCertificateToHostnames(
     db,
     { id: cert.id, dnsNames: cert.dnsNames, notAfter: cert.notAfter },
     hosts,
-    opts,
   );
 }

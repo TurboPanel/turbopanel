@@ -38,17 +38,15 @@ test("publicUrlEntryToInstallOrigin https bare host and http allowance", () => {
   assertEquals(publicUrlEntryToInstallOrigin(""), null);
   assertEquals(
     publicUrlEntryToInstallOrigin("https://panel.example.com/"),
-    "https://panel.example.com",
+    "https://panel.example.com:8443",
   );
   assertEquals(
-    publicUrlEntryToInstallOrigin("http://dev.example.com:8880"),
+    publicUrlEntryToInstallOrigin("https://panel.example.com:443"),
+    "https://panel.example.com:8443",
+  );
+  assertEquals(
+    publicUrlEntryToInstallOrigin("http://dev.example.com"),
     null,
-  );
-  assertEquals(
-    publicUrlEntryToInstallOrigin("http://dev.example.com:8880", "8443", {
-      allowHttp: true,
-    }),
-    "http://dev.example.com:8880",
   );
   assertEquals(
     publicUrlEntryToInstallOrigin("panel.example.com"),
@@ -56,7 +54,19 @@ test("publicUrlEntryToInstallOrigin https bare host and http allowance", () => {
   );
   assertEquals(
     publicUrlEntryToInstallOrigin("https://[2001:db8::1]:9443"),
-    "https://[2001:db8::1]:9443",
+    "https://[2001:db8::1]:8443",
+  );
+  assertEquals(
+    publicUrlEntryToInstallOrigin("https://[2001:db8::1]"),
+    "https://[2001:db8::1]:8443",
+  );
+  assertEquals(
+    publicUrlEntryToInstallOrigin("[2001:db8::1]"),
+    "https://[2001:db8::1]:8443",
+  );
+  assertEquals(
+    publicUrlEntryToInstallOrigin("https://panel.example.com:9443"),
+    "https://panel.example.com:8443",
   );
   assertEquals(
     publicUrlEntryToInstallOrigin("ftp://panel.example.com"),
@@ -91,7 +101,7 @@ test("parsePublicUrlEntries validates dedupes and reports invalids", () => {
   assertEquals(parsePublicUrlEntries([]), { ok: true, urls: [] });
   assertEquals(
     parsePublicUrlEntries(["https://a.example.com", "https://a.example.com/"]),
-    { ok: true, urls: ["https://a.example.com"] },
+    { ok: true, urls: ["https://a.example.com:8443"] },
   );
   const invalid = parsePublicUrlEntries([
     "localhost",
@@ -101,10 +111,6 @@ test("parsePublicUrlEntries validates dedupes and reports invalids", () => {
   if (!invalid.ok) {
     assertEquals(invalid.invalid, ["localhost"]);
   }
-  assertEquals(
-    parsePublicUrlEntries(["http://dev.example.com"], { allowHttp: true }).ok,
-    true,
-  );
   assertEquals(
     parsePublicUrlEntries(["http://dev.example.com"]).ok,
     false,
@@ -117,6 +123,18 @@ test("parsePublicUrlEntries validates dedupes and reports invalids", () => {
   assertEquals(
     parsePublicUrlEntries(["[2001:db8::1]:8443"]),
     { ok: true, urls: ["[2001:db8::1]:8443"] },
+  );
+  assertEquals(
+    parsePublicUrlEntries(["https://[2001:db8::1]"]),
+    { ok: true, urls: ["https://[2001:db8::1]:8443"] },
+  );
+  assertEquals(
+    parsePublicUrlEntries(["[2001:db8::1]"]),
+    { ok: true, urls: ["[2001:db8::1]"] },
+  );
+  assertEquals(
+    parsePublicUrlEntries(["https://panel.example.com:9443"]),
+    { ok: true, urls: ["https://panel.example.com:8443"] },
   );
   assertEquals(
     parsePublicUrlEntries(["https://user:pass@panel.example.com"]).ok,

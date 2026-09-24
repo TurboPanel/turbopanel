@@ -33,10 +33,7 @@ import { type Db, getDaemonCellRegistry, getDb } from "../../db/connection.ts";
 import type { DaemonCellRegistry } from "../../contracts/cell.ts";
 import { isDeveloperSurfaceEnabled } from "../../app/dev-mode.ts";
 import { buildLicenseInstallCommand } from "../../features/install/daemon-install-command.ts";
-import {
-  installOriginNeedsInsecureTls,
-  resolvePublicInstanceTls,
-} from "../../features/install/install-tls.ts";
+import { resolveInstallOriginTls } from "../../features/install/install-trust.ts";
 import { syncSelfHostedGrant } from "../../features/tiers/self-hosted-grant-records.ts";
 import {
   parseInstallBaseUrl,
@@ -247,20 +244,11 @@ export function registerLicenseRoutes(
     }
 
     const devSurface = opts.runtime === "deno" && isDeveloperSurfaceEnabled();
-    // The install base URL override is a runtime-agnostic developer convenience
-    // (the UI only surfaces it in __DEV__). Parsing an HTTPS override is safe on
-    // both Deno and Workers, so don't gate that behind the Deno-only devSurface —
-    // that left Workers dev unable to use the override at all. A plaintext
-    // `http:` override is only permitted on the developer surface; outside dev it
-    // is rejected so a plaintext control-plane URL cannot leak into a managed
-    // install command.
-    const parsedInstallBaseUrl = parseInstallBaseUrl(installBaseUrl, {
-      allowHttp: devSurface,
-    });
+    const parsedInstallBaseUrl = parseInstallBaseUrl(installBaseUrl);
     if (isInvalidInstallBaseUrl(installBaseUrl, parsedInstallBaseUrl)) {
       return c.json(
         {
-          error: installBaseUrlValidationError(devSurface),
+          error: installBaseUrlValidationError(),
         },
         400,
       );
@@ -291,6 +279,28 @@ export function registerLicenseRoutes(
       );
       if (unavailable) return unavailable;
 
+      const instanceUrl = parsedInstallBaseUrl ??
+        await resolvePublicBaseUrl(c, opts);
+      // Insecure TLS follows the dialed hostname and is bootstrap-only.
+      // Let's Encrypt uses the system store. An uploaded leaf uses it only
+      // when that certificate chains to a public root. A Let's Encrypt
+      // sibling does not make a private upload public. A private upload is
+      // refused unless the stored PEM contains the issuer that signed the
+      // leaf; the installer then keeps that issuer, not curl -k. A Platform
+      // CA name needs curl -k. Every Platform CA catch-all name on the
+      // self-hosted :8443 listener, including a private IP or .lan alias,
+      // needs -k when the leaf covers it, and is refused when it does not.
+      const env = (c.get("platformEnv") as
+        | Record<string, string | undefined>
+        | undefined) ?? {};
+      const prepared = await resolveInstallOriginTls(
+        db,
+        instanceUrl,
+        env,
+        opts.runtime === "deno",
+      );
+      if (!prepared.ok) return c.json({ error: prepared.error }, 400);
+
       // The instance does not build daemon release artifacts. In self-hosted dev
       // the operator builds them via Developer → Rebuild daemon and upgrade
       // (`deno task release:dev`); Caddy serves `dist/` at `/downloads/daemon`.
@@ -307,23 +317,7 @@ export function registerLicenseRoutes(
       if (opts.runtime === "deno") {
         await syncSelfHostedGrant(db, organizationId, { allowGrow: true });
       }
-
-      const instanceUrl = parsedInstallBaseUrl ??
-        await resolvePublicBaseUrl(c, opts);
-      // Insecure TLS follows the selected origin, not "we are in development":
-      // LAN / :8443 platform-CA needs curl -k; a Cloudflare tunnel or other
-      // publicly-trusted HTTPS origin must not.
-      // TURBOPANEL_TLS_PUBLIC (lets_encrypt, or upload with turbopanel_tls_public)
-      // overrides the non-443 port check so an uploaded public cert on :8443
-      // does not force curl -k.
-      const publicOrigin = resolvePublicInstanceTls(
-        (c.get("platformEnv") as
-          | Record<string, string | undefined>
-          | undefined) ?? {},
-      );
-      const insecureTls = installOriginNeedsInsecureTls(instanceUrl, {
-        publicOrigin,
-      });
+      const insecureTls = prepared.insecureTls;
       // Instance-host `/run.sh` is served only by the dev overlay Caddyfile.
       // Production / self-hosted Deno installs curl the CDN and pass TURBOPANEL_HOST.
       const installCommand = buildLicenseInstallCommand({

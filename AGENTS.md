@@ -429,15 +429,42 @@ read or write it, and organization code does not read instance ACME.
 `platform-ca`, and the `TURBOPANEL_PUBLIC_URLS` setting stays in sync so cert
 SAN generation and webhook reachability keep calling them.
 
-`POST /api/admin/v1/instance/public-urls/apply` sends `public-urls-update`.
-Daemons at or above `instance-cert-sources-per-hostname` (`0.1.1`) also
-receive `hostnames` and, when any source is `lets-encrypt`, `instanceAcme`.
-Uploaded `keyPem` values are decrypted for that one hop. Older daemons get
-`urls` only. Before a `lets-encrypt` hostname is applied, the daemon
+Uploaded public trust is per certificate. The install command treats an
+uploaded leaf as public only when that PEM chains to a system root.
+`TURBOPANEL_TLS_PUBLIC` stays an aggregate signal (any Let's Encrypt hostname,
+or the operator's public-TLS setting) and does not mark an unrelated upload
+as public. `GET /api/daemon/v1/instance/ca` still returns the Platform CA
+bundle for a name that hits the `:8443` catch-all, including an unlisted
+name, when that flag is set. A name that presents a Let's Encrypt or uploaded
+leaf does not. That 404 is not system trust for a private upload.
+`GET /api/daemon/v1/instance/uploaded-trust` returns the issuer from that
+hostname's PEM when the leaf covers the dialed name and the issuer signed
+the leaf. The installer verifies that relationship against the presented
+certificate before writing `/etc/turbopanel/instance-uploaded-trust.pem`.
+That file is not the Platform CA bundle. A publicly trusted upload answers
+404 and the daemon keeps the system roots. A private upload with no covering
+issuer is refused before an install command is emitted. Bootstrap `-k` fetches
+that document and is not stored as runtime trust; the daemon still verifies
+the chain and the hostname. Every self-hosted `:8443` origin served by
+the Platform CA catch-all — a public name, a private IP, or a `.lan`
+alias, listed or not — is accepted only when that leaf's SANs cover it.
+Otherwise `POST /licenses` refuses the command before it is returned.
+Let's Encrypt and uploaded hostnames are checked against their own leaf.
+
+Every hostname, whatever its certificate source, is reached at
+`https://<host>:8443`. `POST /api/admin/v1/instance/public-urls/apply` sends
+`public-urls-update`. Daemons at or above
+`instance-cert-sources-per-hostname` (`0.1.1`) also receive `hostnames` and,
+when any source is `lets-encrypt`, `instanceAcme`. Uploaded `keyPem` values
+are decrypted for that one hop. Older daemons get `urls` only. Port 80 is
+open only during issuance or renewal. The issuer is the short-lived
+`turbopanel-instance-acme.service`, which the daemon starts and stops for
+that window. Before a `lets-encrypt` hostname is applied, the daemon
 publishes an HTTP-01 nonce and requires
-`http://<hostname>/.well-known/acme-challenge/<nonce>` to reach
-`127.0.0.1:8880`. A miss fails the apply; the admin route records that
-error on the hostname. Issuance results come back as
+`http://<hostname>/.well-known/acme-challenge/<nonce>` to reach the instance
+ACME issuer through hosting Caddy. A miss fails the apply; the admin route
+records that error on the hostname. The detail phrase is
+`did not reach the instance ACME issuer`. Issuance results come back as
 `instance-acme-issuance-event` and update `origin.acme_last_attempt_at` /
 `acme_last_error`. A successful probe may also include `notAfter`, which
 is stored on the hostname. A failure does not clear `notAfter`. Changing
@@ -451,7 +478,7 @@ Installed and managed by the daemon via the `instance-launch` Ansible role:
 | Unit                          | User (dev)       | User (production) | Notes                                                            |
 | ----------------------------- | ---------------- | ----------------- | ---------------------------------------------------------------- |
 | `turbopanel-instance.service` | current dev user | `tpctrl:tp`       | Deno instance on the Unix socket                                 |
-| `turbopanel-caddy.service`    | current dev user | `tpcaddy:tp`      | TLS + reverse proxy. `:8443` Platform CA and `:8880` solver always. `:443` only when hosting Caddy is not installed; on a combined host hosting Caddy owns `:443` and reverse-proxies here (`GOMAXPROCS=1`, `CPUQuota=100%`) |
+| `turbopanel-caddy.service`    | current dev user | `tpcaddy:tp`      | TLS + reverse proxy. `:8443` is the only listener; the certificate is chosen by hostname. Let's Encrypt runs in the short-lived `turbopanel-instance-acme` unit. |
 | `turbopanel-ui.service`       | current dev user | `tpctrl:tp`       | Expo web dev server (`:8081`, dev only)                          |
 | `turbopaneld.service`         | current dev user | `tp:tp`           | runs Ansible; has sudo (production only)                         |
 
@@ -532,17 +559,16 @@ dev user. In **production** it is **`2770 tp:tp`** (setgid) so the
 | `TURBOPANEL_UI_ROOT`             | `/opt/turbopanel/share/ui`              | Directory of `expo export --platform web` output (local manual dev typically sets `../ui/dist`)                                                                                                                                                                                                                                                  |
 | `TURBOPANEL_DEV_SURFACE`         | —                                       | `1` enables the developer surface + dev-only auth relaxations. Written only by the daemon's `turbopanel-instance.service.j2` for co-located Deno source-mode dev with `TURBOPANEL_UI_MODE=dev`; never on managed hosts                                                                                                                         |
 | `TURBOPANEL_INSTANCE_SERVICE`    | `turbopanel-instance`                   | systemd unit the developer surface restarts after Upgrade System; set it only for a non-standard unit name                                                                                                                                                                                                                                       |
-| `CADDY_PORT`                     | `8443`                                  | Platform CA recovery listener. Always bound. A Let's Encrypt or uploaded hostname is an additional site on port 443.                                                                                                                                                                                                                          |
+| `CADDY_PORT`                     | `8443`                                  | The only control-plane HTTPS listener. Every hostname is served here; the certificate is chosen by the name. The dev overlay unit reads this value. The managed Caddyfile binds literal `:8443`. Stored self-hosted hostnames use that listener port and do not follow this variable. Hosted and externally forwarded origins (`TURBOPANEL_BASE_URL`, `x-forwarded-host`, the request origin) keep their HTTPS port, including implicit 443.                                                                                                         |
 | `CADDY_TLS_CERT`                 | `./certs/self-signed.crt`               | Leaf path the **development** Caddyfile reads. A managed Caddyfile bakes `platform-ca.*` (and `self-signed.*` linked to it) plus per-hostname files at render time.                                                                                                                                                                           |
 | `CADDY_TLS_KEY`                  | `./certs/self-signed.key`               | Leaf key path the **development** Caddyfile reads. The managed template bakes the key path beside `CADDY_TLS_CERT`.                                                                                                                                                                                                                            |
-| `TURBOPANEL_TLS_PUBLIC`          | —                                       | When `1` / `true`, the Deno CA route 404s (daemons use the system trust store) and install commands omit `--insecure-tls` even on a non-443 port. Set by `instance-launch` when any hostname is `lets-encrypt` or `turbopanel_tls_public` is true. `:8443` still presents the Platform CA. Hosted Workers already 404 without `TURBOPANEL_TLS_CA_PEM_B64`. |
+| `TURBOPANEL_TLS_PUBLIC`          | —                                       | When `1` / `true`, `GET /api/daemon/v1/instance/ca` 404s for a hostname that presents a Let's Encrypt or uploaded leaf. An unlisted name on the self-hosted `:8443` listener still receives the bundle, because that request hits the Platform CA catch-all. Set by `instance-launch` when any hostname is `lets-encrypt` or `turbopanel_tls_public` is true. Aggregate compatibility only: it marks an uploaded leaf public when no Let's Encrypt sibling exists and that certificate was not checked on its own. It is not proof for one upload among several. Install `curl -k` follows the dialed hostname. Let's Encrypt uses system trust. An uploaded leaf uses system trust when that certificate chains to a public root. A private upload is refused until its PEM contains the issuer that signed the leaf; the installer stores that issuer separately (`GET /api/daemon/v1/instance/uploaded-trust`) and runtime TLS still verifies the chain and hostname. Bootstrap `-k` is not that trust. A Platform CA hostname, and a covered unlisted name on `:8443`, still need `-k`. An unlisted public name the catch-all leaf does not cover is refused before an install command is emitted. Hosted Workers already 404 without `TURBOPANEL_TLS_CA_PEM_B64`. |
 | `TURBOPANEL_TLS_CA`              | `/var/lib/turbopanel/tls/ca.crt`        | Durable **Platform CA** (override; default is `${TURBOPANEL_STATE_DIR}/tls/ca.crt`)                                                                                                                                                                                                                                                              |
 | `TURBOPANEL_TLS_CA_KEY`          | `/var/lib/turbopanel/tls/ca.key`        | Durable **Platform CA** private key                                                                                                                                                                                                                                                                                                              |
 | `TURBOPANEL_TLS_CA_BUNDLE`       | `/var/lib/turbopanel/tls/ca-bundle.pem` | Current+retired **Platform CA** PEM bundle served at `GET /api/daemon/v1/instance/ca`                                                                                                                                                                                                                                                            |
 | `TURBOPANEL_TLS_EXTRA_SANS`      | —                                       | Comma-separated DNS names for the server cert (e.g. `turbopanel.lan`)                                                                                                                                                                                                                                                                            |
 | `TURBOPANEL_TRUSTED_PROXY_CIDRS` | `127.0.0.0/8,::1/128`                   | Peer addresses whose `CF-Connecting-IP` / `X-Forwarded-For` the instance believes. Set it when a Cloudflare Tunnel connector or other reverse proxy runs on a **different host** than the instance. **Replaces** the loopback default — include loopback explicitly if Caddy is still co-located. See **Caddy (production) → Server addresses**. |
-| `TURBOPANEL_PUBLIC_URLS`         | —                                       | Flat projection of the `platform-ca` hostnames (e.g. `https://panel.example.com,https://huey.lan:8443`). The admin API persists hostname rows on `origin`; this `setting` key stays in sync so cert SAN generation and webhook reachability keep calling `getPublicUrls` / `setPublicUrls`. **Admin → Access → Hostnames** is the editor. |
-| `CADDY_HTTP_PORT`                | `8880`                                  | On a managed host, the HTTP-01 solver. Other paths redirect to `:8443`. On co-located dev, the plaintext mirror (accepted only with `TURBOPANEL_DEV_HTTP_CONTROL_PLANE=1`). |
+| `TURBOPANEL_PUBLIC_URLS`         | —                                       | Flat projection of the `platform-ca` hostnames (e.g. `https://panel.example.com:8443,huey.lan:8443`). The admin API persists hostname rows on `origin`; this `setting` key stays in sync so cert SAN generation and webhook reachability keep calling `getPublicUrls` / `setPublicUrls`. **Admin → Access → Hostnames** is the editor. |
 | `TURBOPANEL_INSTANCE_ACME__CONTACT_EMAIL` | unset                            | Contact email for this control plane's Let's Encrypt account. Env wins over **Admin → Access → Certificates** and is read-only there. Independent of every organization's Let's Encrypt opt-in. |
 | `TURBOPANEL_INSTANCE_ACME__TOS_ACCEPTED` | `false`                            | Terms acceptance for that account. Same env-wins rule. |
 | `TURBOPANEL_INSTANCE_ACME__DIRECTORY_URL` | Let's Encrypt production directory | ACME directory URL. Same env-wins rule. |
@@ -842,7 +868,7 @@ see the last row.
 | Install (self-hosted wizard) | `/api/install/v1/*`               | —                         | Deno only for POST endpoints; PAM-gated; no session/cookie on bootstrap                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | Developer (dev console)      | `/api/developer/v1/*`             | `/ws/developer/v1` (stub) | fleet, diagnostics, shell, addresses, `system/upgrade`, `instance/tunnel-token`, `daemon/(:id/)sync-dev`                                                                                                                                                                                                                                                                                                                                                                                                          |
 | Admin                        | `/api/admin/v1/*`                 | —                         | Mounted on both Deno and Workers; `superadmin` or `admin` role required; OpenAPI/Scalar at `/api/admin/v1/openapi.json` + `/reference` in development only                                                                                                                                                                                                                                                                                                                                                        |
-| Daemon                       | `/api/daemon/v1/*`                | `/ws/daemon/v1`           | `version`, `instance/ca`; daemons connect on the WS path                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| Daemon                       | `/api/daemon/v1/*`                | `/ws/daemon/v1`           | `version`, `instance/ca`, `instance/uploaded-trust`; daemons connect on the WS path                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | Git webhooks                 | `/webhook/{github,gitlab}(/:ref)` | —                         | **Not an API.** The caller is GitHub or GitLab: no session, no daemon JWT, no `Origin`, and what arrives is an event rather than a call. Unversioned and outside every protected prefix by design. Self-hosted providers get the `:ref` suffix; hosted ones get the clean path. Every fronting layer must forward it — see `src/webhook/AGENTS.md`                                                                                                                                                                |
 
 - Route modules: `src/daemon/api-routes.ts`, `src/client/routes.ts`,
