@@ -29,12 +29,12 @@ export const INSTANCE_UPDATES_PATHS = {
   [`${ADMIN_API_PREFIX}/instance/updates/instance`]: {
     post: {
       tags: ["Instance"],
-      summary: "Queue a control-plane update on the co-located daemon",
+      summary: "Start the guarded upgrade from the legacy control-plane action",
       description:
-        "Enqueues `instance-update` and returns 202 as soon as the message " +
-        "is queued. The install restarts the control plane. Workers answers " +
-        "422. A channel other than canary, rc, or release answers 422. No " +
-        "connected co-located daemon answers 503.",
+        "Starts the same managed run as `POST /instance/updates/runs`. " +
+        "Workers answers 422. A channel other than canary, rc, or release " +
+        "answers 422. No connected co-located daemon answers 503. Pre-flight " +
+        "failure answers 409.",
       security: [...cookieSecurity],
       responses: {
         "202": { description: "`{ ok: true, dispatched: true }`" },
@@ -45,14 +45,45 @@ export const INSTANCE_UPDATES_PATHS = {
       },
     },
   },
+  [`${ADMIN_API_PREFIX}/instance/updates/preflight`]: {
+    post: {
+      tags: ["Instance"],
+      summary: "Pre-flight a managed upgrade",
+      security: [...cookieSecurity],
+      responses: {
+        "200": { description: "Checks, blockers, and the recovery command" },
+      },
+    },
+  },
+  [`${ADMIN_API_PREFIX}/instance/updates/runs`]: {
+    post: {
+      tags: ["Instance"],
+      summary: "Start a managed upgrade run",
+      security: [...cookieSecurity],
+      responses: {
+        "202": { description: "`{ ok: true, dispatched: true, runId }`" },
+        "409": { description: "Pre-flight failed or a run is already active" },
+      },
+    },
+  },
+  [`${ADMIN_API_PREFIX}/instance/updates/runs/{id}`]: {
+    get: {
+      tags: ["Instance"],
+      summary: "Read one upgrade run",
+      security: [...cookieSecurity],
+      responses: {
+        "200": { description: "The run and its steps" },
+        "404": { description: "`upgrade_run_not_found`" },
+      },
+    },
+  },
   [`${ADMIN_API_PREFIX}/instance/updates/daemon`]: {
     post: {
       tags: ["Instance"],
-      summary: "Queue a daemon update on the co-located host",
+      summary: "Start the guarded upgrade from the legacy daemon action",
       description:
-        "Enqueues the existing daemon `update` for the co-located host. " +
-        "The per-server update route refuses that host. Returns 202 once " +
-        "queued. No connected co-located daemon answers 503.",
+        "Starts the same managed run as `POST /instance/updates/runs`. " +
+        "On self-hosted, no connected co-located daemon answers 503.",
       security: [...cookieSecurity],
       responses: {
         "202": { description: "`{ ok: true, dispatched: true }`" },

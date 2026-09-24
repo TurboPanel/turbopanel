@@ -87,6 +87,83 @@ export type CellAttachVersionMessage = {
   branch: string;
   at: string;
   instanceVersion?: string;
+  /**
+   * Features this control plane advertises (`DAEMON_WIRE_FEATURES`).
+   * Omitted by a peer that predates the field; the daemon treats that as
+   * none (`instanceSupports` stays closed).
+   */
+  features?: string[];
+};
+
+/** Control-plane → daemon self-update. Optional pin fields are expand-only. */
+export type DaemonUpdateMessage = {
+  type: "update";
+  id: string;
+  channel?: string;
+  updateUrl?: string;
+  updateSha256?: string;
+  /** Correlates progress frames for one upgrade. */
+  upgradeId?: string;
+  /** Pinned manifest URL (`pinnedChannelManifestUrl`). */
+  manifestUrl?: string;
+  /** Git commit the pin names, when the manifest carries one. */
+  targetCommit?: string;
+  at: string;
+};
+
+/** Control-plane → daemon control-plane update. Optional pin fields are expand-only. */
+export type InstanceUpdateMessage = {
+  type: "instance-update";
+  id: string;
+  channel?: string;
+  manifestUrl?: string;
+  /** UI package pin. Passed to run.sh as `--ui-manifest-url`. */
+  uiManifestUrl?: string;
+  /** Semver the control plane is about to install, when the manifest names one. */
+  targetVersion?: string;
+  /** Correlates progress frames for one upgrade. */
+  upgradeId?: string;
+  /** Git commit the pin names, when the manifest carries one. */
+  targetCommit?: string;
+  at: string;
+};
+
+export const UPDATE_PROGRESS_UNITS = ["daemon", "instance"] as const;
+export type UpdateProgressUnit = "daemon" | "instance";
+
+export const UPDATE_PROGRESS_STAGES = [
+  "preparing",
+  "downloading",
+  "installing",
+  "restarting",
+  "verifying",
+  "done",
+  "failed",
+  "rolled-back",
+] as const;
+export type UpdateProgressStage =
+  | "preparing"
+  | "downloading"
+  | "installing"
+  | "restarting"
+  | "verifying"
+  | "done"
+  | "failed"
+  | "rolled-back";
+
+/**
+ * Fire-and-forget upgrade progress. No correlated request: it must not
+ * complete a pending `update` / `instance-update`.
+ */
+export type UpdateProgressMessage = {
+  type: "update-progress";
+  id: string;
+  upgradeId?: string;
+  unit: UpdateProgressUnit;
+  stage: UpdateProgressStage;
+  at: string;
+  detail?: string;
+  errorCode?: string;
 };
 
 /**
@@ -143,6 +220,11 @@ export type DaemonMessage =
      * Omit when Docker is not installed.
      */
     docker?: ServerDockerMetadata;
+    /**
+     * Advertised wire features (`DAEMON_WIRE_FEATURES`). Omitted by a daemon
+     * that predates the field; persistence stores `[]`.
+     */
+    features?: string[];
   }
   | {
     type: "heartbeat";
@@ -430,32 +512,18 @@ export type DaemonMessage =
     error?: string;
     at: string;
   }
-  | {
-    type: "update";
-    id: string;
-    channel?: string;
-    updateUrl?: string;
-    updateSha256?: string;
-    at: string;
-  }
+  | DaemonUpdateMessage
   | {
     type: "update-result";
     id: string;
     ok: boolean;
     error?: string;
+    errorCode?: string;
+    upgradeId?: string;
     at: string;
   }
-  | {
-    type: "instance-update";
-    id: string;
-    channel?: string;
-    manifestUrl?: string;
-    /** UI package pin. Passed to run.sh as `--ui-manifest-url`. */
-    uiManifestUrl?: string;
-    /** Semver the control plane is about to install, when the manifest names one. */
-    targetVersion?: string;
-    at: string;
-  }
+  | InstanceUpdateMessage
+  | UpdateProgressMessage
   | {
     type: "instance-update-result";
     id: string;
@@ -521,6 +589,7 @@ export const DAEMON_INBOUND_ALLOWED = new Set(
     "public-urls-update-result",
     "update-result",
     "instance-update-result",
+    "update-progress",
     "command-ack",
     "command-outcome",
   ] as const,
@@ -531,6 +600,15 @@ export const MAX_DAEMON_WS_FRAME_BYTES = 256 * 1024;
 
 /** Max characters for correlation / delivery identifiers (`id`, `requestId`). */
 export const MAX_DAEMON_WS_ID_CHARS = 128;
+
+/** Max advertised feature names on `hello` / the attach `version` frame. */
+export const MAX_DAEMON_WS_FEATURES = 32;
+
+/** Max characters for one advertised feature name. */
+export const MAX_DAEMON_WS_FEATURE_CHARS = 64;
+
+/** Max characters for `update-progress.errorCode`. */
+export const MAX_DAEMON_WS_ERROR_CODE_CHARS = 64;
 
 /** Max characters for daemon-reported error strings. */
 export const MAX_DAEMON_WS_ERROR_CHARS = 4 * 1024;
@@ -685,9 +763,68 @@ function validateOptionalIsoTimestamp(
   return null;
 }
 
+function validateHelloFeatures(value: unknown): string | null {
+  if (value === undefined) return null;
+  if (!Array.isArray(value)) return "invalid features";
+  if (value.length > MAX_DAEMON_WS_FEATURES) {
+    return "features exceed max entries";
+  }
+  for (const entry of value) {
+    if (typeof entry !== "string" || entry.length === 0) {
+      return "invalid features";
+    }
+    if (entry.length > MAX_DAEMON_WS_FEATURE_CHARS) {
+      return "features exceed max length";
+    }
+  }
+  return null;
+}
+
 function validateHelloFields(record: Record<string, unknown>): string | null {
   if (!parseDaemonBuildInfo(record.daemonBuild)) return "invalid daemonBuild";
-  return validatePresenceFields(record);
+  const presence = validatePresenceFields(record);
+  if (presence) return presence;
+  return validateHelloFeatures(record.features);
+}
+
+const UPDATE_PROGRESS_UNIT_SET = new Set<string>(UPDATE_PROGRESS_UNITS);
+const UPDATE_PROGRESS_STAGE_SET = new Set<string>(UPDATE_PROGRESS_STAGES);
+
+function validateUpdateProgressFields(
+  record: Record<string, unknown>,
+): string | null {
+  if (!isBoundedId(record.id)) return "invalid id";
+  if (record.upgradeId !== undefined && !isBoundedId(record.upgradeId)) {
+    return "invalid upgradeId";
+  }
+  if (
+    typeof record.unit !== "string" ||
+    !UPDATE_PROGRESS_UNIT_SET.has(record.unit)
+  ) {
+    return "invalid unit";
+  }
+  if (
+    typeof record.stage !== "string" ||
+    !UPDATE_PROGRESS_STAGE_SET.has(record.stage)
+  ) {
+    return "invalid stage";
+  }
+  if (!isIsoTimestamp(record.at)) return "invalid at timestamp";
+  if (record.detail !== undefined) {
+    if (typeof record.detail !== "string") return "detail must be a string";
+    if (record.detail.length > MAX_DAEMON_WS_ERROR_CHARS) {
+      return "detail exceeds max length";
+    }
+  }
+  if (record.errorCode !== undefined) {
+    if (typeof record.errorCode !== "string") {
+      return "errorCode must be a string";
+    }
+    if (record.errorCode.length > MAX_DAEMON_WS_ERROR_CODE_CHARS) {
+      return "errorCode exceeds max length";
+    }
+  }
+  return null;
 }
 
 function validateAddressesResultFields(
@@ -893,6 +1030,25 @@ function validateOkResultFields(
   return null;
 }
 
+function validateUpdateResultFields(
+  record: Record<string, unknown>,
+): string | null {
+  const base = validateOkResultFields(record);
+  if (base) return base;
+  if (record.upgradeId !== undefined && !isBoundedId(record.upgradeId)) {
+    return "invalid upgradeId";
+  }
+  if (record.errorCode !== undefined) {
+    if (typeof record.errorCode !== "string") {
+      return "errorCode must be a string";
+    }
+    if (record.errorCode.length > MAX_DAEMON_WS_ERROR_CODE_CHARS) {
+      return "errorCode exceeds max length";
+    }
+  }
+  return null;
+}
+
 function validateCapabilitiesResultFields(
   record: Record<string, unknown>,
 ): string | null {
@@ -944,33 +1100,61 @@ function validateCommandOutcomeFields(
 }
 
 /**
+ * Result of {@link validateDaemonInboundFrame}.
+ *
+ * `ignored` is a well-formed object whose `type` this control plane does not
+ * know. The socket stays up. Every other failure still closes with 1008.
+ */
+export type DaemonInboundFrameResult =
+  | { ok: true; message: DaemonMessage }
+  | { ok: false; ignored: true; reason: string }
+  | { ok: false; ignored: false; reason: string };
+
+function rejectedInboundFrame(
+  reason: string,
+): { ok: false; ignored: false; reason: string } {
+  return { ok: false, ignored: false, reason };
+}
+
+function ignoredInboundFrame(
+  reason: string,
+): { ok: false; ignored: true; reason: string } {
+  return { ok: false, ignored: true, reason };
+}
+
+/**
  * Strict inbound WebSocket frame validator. Checks frame size, message type,
  * required fields, timestamp format, identifier lengths, and per-field caps
  * before any cell storage / rate-limit bookkeeping runs.
+ *
+ * An unrecognized `type` on an otherwise well-formed object is `ignored`
+ * (the peer learned a message this process has not). Oversized frames,
+ * invalid JSON, a non-object body, and a known type that fails field
+ * validation stay rejections.
  */
 export function validateDaemonInboundFrame(
   raw: string,
-): { ok: true; message: DaemonMessage } | { ok: false; reason: string } {
+): DaemonInboundFrameResult {
   if (utf8ByteLength(raw) > MAX_DAEMON_WS_FRAME_BYTES) {
-    return { ok: false, reason: "frame exceeds max size" };
+    return rejectedInboundFrame("frame exceeds max size");
   }
 
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
-    return { ok: false, reason: "invalid json" };
+    return rejectedInboundFrame("invalid json");
   }
   if (!isRecord(parsed) || typeof parsed.type !== "string") {
-    return { ok: false, reason: "invalid message shape" };
+    return rejectedInboundFrame("invalid message shape");
   }
 
   if (!(DAEMON_INBOUND_ALLOWED as ReadonlySet<string>).has(parsed.type)) {
-    return { ok: false, reason: `disallowed type ${parsed.type}` };
+    return ignoredInboundFrame(`disallowed type ${parsed.type}`);
   }
 
   const typeIssue = validateInboundMessageFields(parsed);
-  if (typeIssue) return { ok: false, reason: typeIssue };
+  if (typeIssue) return rejectedInboundFrame(typeIssue);
 
   return { ok: true, message: parsed as DaemonMessage };
 }
@@ -1004,7 +1188,6 @@ function validateInboundMessageFields(
     case "dev-sync-result":
     case "tunnel-token-result":
     case "public-urls-update-result":
-    case "update-result":
     case "instance-update-result":
     case "metrics-live-start-result":
     case "metrics-live-stop-result":
@@ -1012,12 +1195,16 @@ function validateInboundMessageFields(
     case "capability-plan-update-result":
     case "capability-plan-clear-result":
       return validateOkResultFields(record);
+    case "update-result":
+      return validateUpdateResultFields(record);
     case "metrics-capabilities-result":
       return validateCapabilitiesResultFields(record);
     case "command-ack":
       return validateCommandAckFields(record);
     case "command-outcome":
       return validateCommandOutcomeFields(record);
+    case "update-progress":
+      return validateUpdateProgressFields(record);
     default:
       return `disallowed type ${String(record.type)}`;
   }
@@ -1250,6 +1437,9 @@ export type DaemonOutboundEnvelope =
     channel?: string;
     updateUrl?: string;
     updateSha256?: string;
+    upgradeId?: string;
+    manifestUrl?: string;
+    targetCommit?: string;
   })
   | (OutboundEnvelopeBase & {
     kind: "instance-update";
@@ -1257,6 +1447,8 @@ export type DaemonOutboundEnvelope =
     manifestUrl?: string;
     uiManifestUrl?: string;
     targetVersion?: string;
+    upgradeId?: string;
+    targetCommit?: string;
   })
   | (OutboundEnvelopeBase & { kind: "echo"; payload: unknown })
   | (OutboundEnvelopeBase & {
@@ -1389,6 +1581,8 @@ export type DaemonInboundEnvelope =
     at: string;
     ok: boolean;
     error?: string;
+    errorCode?: string;
+    upgradeId?: string;
   }
   | {
     kind: "instance-update-result";
@@ -1432,7 +1626,10 @@ export function wireMessageToInboundEnvelope(
     case "topology-report":
     case "acme-issuance-event":
     case "instance-acme-issuance-event":
+    case "update-progress":
       // Fire-and-forget (or session setup). Not a correlated request.
+      // `update-progress` must stay in this list: it never completes a
+      // pending update.
       return null;
 
     case "addresses-result":
@@ -1566,6 +1763,8 @@ export function wireMessageToInboundEnvelope(
         at: msg.at,
         ok: msg.ok,
         error: msg.error,
+        ...(msg.errorCode !== undefined ? { errorCode: msg.errorCode } : {}),
+        ...(msg.upgradeId !== undefined ? { upgradeId: msg.upgradeId } : {}),
       };
     case "instance-update-result":
       return {
@@ -1694,6 +1893,10 @@ function instanceUpdateMessage(
     ...(env.targetVersion !== undefined
       ? { targetVersion: env.targetVersion }
       : {}),
+    ...(env.upgradeId !== undefined ? { upgradeId: env.upgradeId } : {}),
+    ...(env.targetCommit !== undefined
+      ? { targetCommit: env.targetCommit }
+      : {}),
   };
 }
 
@@ -1706,6 +1909,11 @@ function updateMessage(env: OutboundEnvelopeOf<"update">): DaemonMessage {
     ...(env.updateUrl !== undefined ? { updateUrl: env.updateUrl } : {}),
     ...(env.updateSha256 !== undefined
       ? { updateSha256: env.updateSha256 }
+      : {}),
+    ...(env.upgradeId !== undefined ? { upgradeId: env.upgradeId } : {}),
+    ...(env.manifestUrl !== undefined ? { manifestUrl: env.manifestUrl } : {}),
+    ...(env.targetCommit !== undefined
+      ? { targetCommit: env.targetCommit }
       : {}),
   };
 }

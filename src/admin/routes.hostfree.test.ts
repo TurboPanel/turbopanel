@@ -1163,13 +1163,13 @@ test("instance updates refuse a missing or disconnected co-located daemon", asyn
   );
 });
 
-test("instance updates enqueue and return before the install finishes", async () => {
+test("legacy instance update refuses a daemon that cannot roll the control plane back", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (() =>
     Promise.resolve(
       new Response(
         JSON.stringify({
-          commit: "abc",
+          commit: "targetcommit",
           buildId: "build-abc",
           builtAt: "2020-01-01T00:00:00.000Z",
           channel: "release",
@@ -1188,7 +1188,7 @@ test("instance updates enqueue and return before the install finishes", async ()
         enqueued,
         snapshots: new Map([[
           serverId,
-          { connected: true, daemonVersion: "0.1.1" },
+          { connected: true, daemonVersion: "0.1.0" },
         ]]),
       }),
     });
@@ -1196,30 +1196,20 @@ test("instance updates enqueue and return before the install finishes", async ()
       `${ADMIN_API_PREFIX}/instance/updates/instance`,
       { method: "POST", headers: { Cookie: cookie } },
     );
-    assertEquals(instance.status, 202);
-    assertEquals(await instance.json(), { ok: true, dispatched: true });
+    assertEquals(instance.status, 409);
+    const body = await jsonBody<{ ok: boolean; error: string }>(instance);
+    assertEquals(body.ok, false);
+    assertEquals(body.error.includes("managed-upgrade-v1"), true);
+    assertEquals(enqueued.length, 0);
     const daemon = await app.request(
       `${ADMIN_API_PREFIX}/instance/updates/daemon`,
       { method: "POST", headers: { Cookie: cookie } },
     );
-    assertEquals(daemon.status, 202);
-    assertEquals(enqueued.map((entry) => entry.kind), [
-      "instance-update",
-      "update",
-    ]);
-    const controlPlane = enqueued[0];
-    if (controlPlane?.kind !== "instance-update") {
-      throw new TypeError("expected an instance-update envelope");
-    }
-    assertEquals(controlPlane.channel, "release");
-    assertEquals(controlPlane.targetVersion, "0.1.1");
-    assertEquals(typeof controlPlane.manifestUrl, "string");
+    assertEquals(daemon.status, 409);
     assertEquals(
-      controlPlane.manifestUrl?.includes("TurboPanel/turbopanel/"),
-      true,
+      enqueued.some((entry) => entry.kind === "instance-update"),
+      false,
     );
-    assertEquals(typeof controlPlane.uiManifestUrl, "string");
-    assertEquals(controlPlane.uiManifestUrl?.includes("TurboPanel/ui/"), true);
   } finally {
     globalThis.fetch = originalFetch;
   }

@@ -50,6 +50,13 @@
       "when": 1790112163842,
       "tag": "0006_instance_hostnames",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1790263668545,
+      "tag": "0007_add_upgrade_tables",
+      "breakpoints": true
     }
   ]
 }

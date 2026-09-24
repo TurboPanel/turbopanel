@@ -44,6 +44,12 @@
       "tag": "0006_instance_hostnames",
       "when": 1790112163842,
       "sha256": "d8b13ba408c446e16affe8a6daad754bfb25bd8cbf8dd78dbac9329604b6bf2a"
+    },
+    {
+      "idx": 7,
+      "tag": "0007_add_upgrade_tables",
+      "when": 1790263668545,
+      "sha256": "f54bb8294ee4cf56e41dbca8e7a893a76e85190d68588f2889a4ae2e62d981fd"
     }
   ]
 }

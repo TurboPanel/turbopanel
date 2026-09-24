@@ -3,18 +3,18 @@ import type { AppEnv } from "../app/app.ts";
 import { resolveInstanceRevision } from "../app/build-info.ts";
 import { INSTANCE_VERSION } from "../app/version.ts";
 import { resolveColocatedServerId } from "../client/authn/install-state.ts";
-import type { DaemonCellRegistry } from "../contracts/cell.ts";
-import type { DaemonOutboundEnvelope } from "../contracts/cell-protocol.ts";
-import {
-  generateDeliveryId,
-  generateRequestId,
-} from "../contracts/cell-protocol.ts";
 import {
   resolveInstanceUpdateChannel,
   type UpdateChannel,
 } from "../contracts/update-channel.ts";
 import { getDaemonCellRegistry, getDb } from "../db/connection.ts";
 import { resolveUpdateManifest } from "../features/update/manifest.ts";
+import { isExplicitDevelopmentMode } from "../lib/dev-mode.ts";
+import { createUpgradeCoordinator } from "../features/upgrades/coordinator.ts";
+import { createDrizzleUpgradeStore } from "../features/upgrades/store.ts";
+import {
+  normalizeUpgradeSettings,
+} from "../features/settings/upgrade-settings.ts";
 import { resolvePlatformEnv } from "./routes-helpers.ts";
 
 const INSTANCE_UPDATE_RUNTIME_ERROR =
@@ -67,51 +67,11 @@ async function readColocatedDaemon(
   };
 }
 
-function updateEnvelope(
-  kind: "update" | "instance-update",
-  channel: UpdateChannel,
-  extra: {
-    targetVersion?: string;
-    manifestUrl?: string;
-    uiManifestUrl?: string;
-  } = {},
-): DaemonOutboundEnvelope {
-  const pins = kind === "instance-update"
-    ? {
-      ...(extra.manifestUrl ? { manifestUrl: extra.manifestUrl } : {}),
-      ...(extra.uiManifestUrl ? { uiManifestUrl: extra.uiManifestUrl } : {}),
-    }
-    : {};
-  return {
-    kind,
-    deliveryId: generateDeliveryId(),
-    requestId: generateRequestId(),
-    at: new Date().toISOString(),
-    channel,
-    ...(extra.targetVersion ? { targetVersion: extra.targetVersion } : {}),
-    ...pins,
-  };
-}
-
-async function enqueueUpdate(
-  registry: DaemonCellRegistry,
-  serverId: string,
-  envelope: DaemonOutboundEnvelope,
-): Promise<void> {
-  await registry.getCell(serverId).enqueue(envelope);
-}
-
 /**
- * Installed versions and channel targets for the control plane and the
- * co-located daemon, plus the two upgrade dispatches.
+ * Installed versions, channel targets, and the managed upgrade run API.
  *
- * The control-plane row is `INSTANCE_VERSION` — the same value `/api/health`
- * stamps. The UI export is installed by the same `run.sh --instance` run and
- * is not a separate version. `POST …/instance` returns as soon as the cell
- * message is queued: the install restarts the control plane, so the caller
- * must not wait for it. `POST …/daemon` enqueues the existing daemon `update`
- * for the co-located host specifically (the per-server route refuses that
- * host).
+ * `POST …/instance` and `POST …/daemon` start the same guarded run as
+ * `POST …/runs`. The control-plane row is `INSTANCE_VERSION`.
  */
 export function registerInstanceUpdatesAdminRoutes(
   admin: Hono<AppEnv>,
@@ -133,6 +93,9 @@ export function registerInstanceUpdatesAdminRoutes(
     return c.json({
       ok: true,
       channel,
+      runtime: opts.runtime,
+      managedUpgrade: true,
+      updatesManaged: opts.runtime === "workers",
       units: {
         instance: {
           installed: { version: INSTANCE_VERSION, commit: revision.commit },
@@ -161,45 +124,164 @@ export function registerInstanceUpdatesAdminRoutes(
     }
     const refused = await refuseWithoutConnectedDaemon(c);
     if (refused) return refused;
-    const [target, uiTarget] = await Promise.all([
-      resolveUpdateManifest(channel, "instance"),
-      resolveUpdateManifest(channel, "ui"),
-    ]);
-    const registry = getDaemonCellRegistry(c);
-    const daemon = await readColocatedDaemon(c);
-    if (!registry || !daemon.serverId) {
-      return c.json({ ok: false, error: NO_DAEMON_ERROR }, 503);
-    }
-    await enqueueUpdate(
-      registry,
-      daemon.serverId,
-      updateEnvelope("instance-update", channel, {
-        ...(target?.version ? { targetVersion: target.version } : {}),
-        ...(target?.manifestUrl ? { manifestUrl: target.manifestUrl } : {}),
-        ...(uiTarget?.manifestUrl
-          ? { uiManifestUrl: uiTarget.manifestUrl }
-          : {}),
-      }),
-    );
-    return c.json({ ok: true, dispatched: true }, 202);
+    return await startGuardedRun(c, opts);
   });
 
   admin.post("/instance/updates/daemon", async (c) => {
-    const channel = resolveInstanceUpdateChannel(resolvePlatformEnv(c, opts));
-    const refused = await refuseWithoutConnectedDaemon(c);
-    if (refused) return refused;
-    const registry = getDaemonCellRegistry(c);
-    const daemon = await readColocatedDaemon(c);
-    if (!registry || !daemon.serverId) {
-      return c.json({ ok: false, error: NO_DAEMON_ERROR }, 503);
+    if (opts.runtime === "deno") {
+      const refused = await refuseWithoutConnectedDaemon(c);
+      if (refused) return refused;
     }
-    await enqueueUpdate(
-      registry,
-      daemon.serverId,
-      updateEnvelope("update", channel),
-    );
-    return c.json({ ok: true, dispatched: true }, 202);
+    return await startGuardedRun(c, opts);
   });
+
+  admin.post("/instance/updates/preflight", async (c) => {
+    const coordinator = await coordinatorFrom(c, opts);
+    if (coordinator instanceof Response) return coordinator;
+    return c.json(await coordinator.preflight());
+  });
+
+  admin.post("/instance/updates/runs", async (c) => {
+    return await startGuardedRun(c, opts);
+  });
+
+  admin.get("/instance/updates/run", async (c) => {
+    const coordinator = await coordinatorFrom(c, opts);
+    if (coordinator instanceof Response) return coordinator;
+    return c.json({ ok: true, run: await coordinator.activeRun() });
+  });
+
+  admin.get("/instance/updates/runs/:id", async (c) => {
+    const coordinator = await coordinatorFrom(c, opts);
+    if (coordinator instanceof Response) return coordinator;
+    const run = await coordinator.run(c.req.param("id"));
+    if (!run) return c.json({ ok: false, error: "upgrade_run_not_found" }, 404);
+    return c.json({ ok: true, run });
+  });
+
+  admin.post("/instance/updates/check", async (c) => {
+    const coordinator = await coordinatorFrom(c, opts);
+    if (coordinator instanceof Response) return coordinator;
+    await coordinator.tick({ resolveManifests: true });
+    return c.json({ ok: true });
+  });
+
+  admin.get("/instance/updates/history", async (c) => {
+    const coordinator = await coordinatorFrom(c, opts);
+    if (coordinator instanceof Response) return coordinator;
+    const page = pageQuery(c);
+    const history = await coordinator.history(page.offset, page.limit);
+    return c.json({ ok: true, runs: history.runs, total: history.total });
+  });
+
+  admin.get("/instance/updates/servers", async (c) => {
+    const coordinator = await coordinatorFrom(c, opts);
+    if (coordinator instanceof Response) return coordinator;
+    const page = pageQuery(c);
+    const status = c.req.query("status") ?? "";
+    const listed = await coordinator.servers({ ...page, status });
+    return c.json({ ok: true, servers: listed.servers, total: listed.total });
+  });
+
+  admin.get("/instance/updates/settings", async (c) => {
+    const coordinator = await coordinatorFrom(c, opts);
+    if (coordinator instanceof Response) return coordinator;
+    return c.json({ ok: true, settings: await coordinator.settings() });
+  });
+
+  admin.put("/instance/updates/settings", async (c) => {
+    const coordinator = await coordinatorFrom(c, opts);
+    if (coordinator instanceof Response) return coordinator;
+    const body = await c.req.json().catch(() => null);
+    const settings = normalizeUpgradeSettings(body);
+    if (!settings) return c.json({ ok: false, error: "invalid_settings" }, 400);
+    await coordinator.saveSettings(settings);
+    return c.json({ ok: true, settings });
+  });
+
+  admin.post("/instance/updates/steps/:id/retry", async (c) => {
+    const coordinator = await coordinatorFrom(c, opts);
+    if (coordinator instanceof Response) return coordinator;
+    const result = await coordinator.retry(c.req.param("id"));
+    if (!result.ok) return c.json(result, 409);
+    return c.json(result);
+  });
+
+  admin.post("/instance/updates/runs/:id/cancel", async (c) => {
+    const coordinator = await coordinatorFrom(c, opts);
+    if (coordinator instanceof Response) return coordinator;
+    const result = await coordinator.cancel(c.req.param("id"));
+    if (!result.ok) {
+      const status = result.error === "upgrade_run_not_found" ? 404 : 409;
+      return c.json(result, status);
+    }
+    return c.json(result);
+  });
+}
+
+function pageQuery(c: Context<AppEnv>): { offset: number; limit: number } {
+  const offset = Number.parseInt(c.req.query("offset") ?? "0", 10);
+  const limit = Number.parseInt(c.req.query("limit") ?? "50", 10);
+  return {
+    offset: Number.isInteger(offset) && offset > 0 ? offset : 0,
+    limit: Number.isInteger(limit) && limit > 0 ? Math.min(limit, 100) : 50,
+  };
+}
+
+async function coordinatorFrom(
+  c: Context<AppEnv>,
+  opts: {
+    runtime: "deno" | "workers";
+    getEnv?: () => Record<string, string | undefined>;
+  },
+): Promise<ReturnType<typeof createUpgradeCoordinator> | Response> {
+  const db = getDb(c);
+  if (!db) return c.json({ ok: false, error: "Database unavailable" }, 503);
+  const registry = getDaemonCellRegistry(c) ?? null;
+  const env = resolvePlatformEnv(c, opts);
+  const revision = resolveInstanceRevision(env);
+  const colocated = registry
+    ? await resolveColocatedServerId(db, registry)
+    : null;
+  return createUpgradeCoordinator({
+    store: createDrizzleUpgradeStore(db, registry),
+    enqueue: async (serverId, envelope) => {
+      if (!registry) throw new Error(NO_DAEMON_ERROR);
+      await registry.getCell(serverId).enqueue(envelope);
+    },
+    runtime: opts.runtime,
+    channel: resolveInstanceUpdateChannel(env),
+    development: isExplicitDevelopmentMode(),
+    now: () => new Date().toISOString(),
+    colocatedServerId: colocated,
+    instanceInstalled: { version: INSTANCE_VERSION, commit: revision.commit },
+  });
+}
+
+async function startGuardedRun(
+  c: Context<AppEnv>,
+  opts: {
+    runtime: "deno" | "workers";
+    getEnv?: () => Record<string, string | undefined>;
+  },
+): Promise<Response> {
+  const coordinator = await coordinatorFrom(c, opts);
+  if (coordinator instanceof Response) return coordinator;
+  const startedBy = c.get("session")?.userId ?? null;
+  const body = await c.req.json().catch(() => null);
+  const runId = typeof body?.runId === "string" ? body.runId : undefined;
+  const result = await coordinator.start({
+    source: "manual",
+    startedBy,
+    runId,
+  });
+  if (!result.ok) {
+    return c.json(
+      { ok: false, error: result.error, blockers: result.blockers },
+      409,
+    );
+  }
+  return c.json({ ok: true, dispatched: true, runId: result.runId }, 202);
 }
 
 async function refuseWithoutConnectedDaemon(

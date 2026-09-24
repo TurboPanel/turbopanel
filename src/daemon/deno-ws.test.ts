@@ -1,4 +1,4 @@
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import { stub } from "@std/testing/mock";
 import { Hono } from "hono";
 import { it } from "@std/testing/bdd";
@@ -28,8 +28,12 @@ import type {
   DaemonInboundEnvelope,
   DaemonOutboundEnvelope,
 } from "../contracts/cell-protocol.ts";
-import { DAEMON_CELL_PING, DAEMON_CELL_PONG } from "../contracts/cell-protocol.ts";
+import {
+  DAEMON_CELL_PING,
+  DAEMON_CELL_PONG,
+} from "../contracts/cell-protocol.ts";
 import { issueDaemonJwt } from "./authn/daemon-jwt.ts";
+import { materializeDaemonJsonbWrite } from "./cell/daemon-jsonb-write.ts";
 import {
   handleDaemonCellPing,
   isClosedConnectionError,
@@ -192,7 +196,7 @@ function createProjectionTrackingDb(
         updateCalls += 1;
         patches.push(patch);
         if (patch.daemon !== undefined) {
-          daemonJsonb = patch.daemon as { projection?: ServerDaemonProjection } | null;
+          daemonJsonb = materializeDaemonJsonbWrite(daemonJsonb, patch.daemon);
         }
         if ("isConnected" in patch) {
           columns.connected = patch.isConnected as boolean;
@@ -1364,7 +1368,10 @@ test("wsMessageDataToString accepts string, Blob, and ArrayBuffer views", async 
   );
 });
 
-function fakePingSocket(): { ws: { send: (data: string) => void }; sent: string[] } {
+function fakePingSocket(): {
+  ws: { send: (data: string) => void };
+  sent: string[];
+} {
   const sent: string[] = [];
   return {
     sent,
@@ -1884,7 +1891,7 @@ function createRecordedPlanDb(serverId: string): Db {
           },
         ]),
     }),
-  }
+  };
   return {
     select: () => ({
       from: () => ({
@@ -2667,6 +2674,127 @@ test("live WS swallows inbound handler errors without tearing down the socket", 
   );
 });
 
+it("live WS ignores an unknown inbound type and still closes a bad frame", async () => {
+  const secrets = await createDaemonJwtSecrets();
+  const serverId = "srv-live-unknown-type";
+  const tracking = createTrackingDaemonCell(serverId);
+  const previousDebug = Deno.env.get("TURBOPANEL_DAEMON_DEBUG");
+  Deno.env.set("TURBOPANEL_DAEMON_DEBUG", "1");
+  const chunks: Uint8Array[] = [];
+  const originalWrite = Deno.stdout.writeSync;
+  Deno.stdout.writeSync = (data: Uint8Array) => {
+    chunks.push(data.slice());
+    return originalWrite.call(Deno.stdout, data);
+  };
+  try {
+    await withLiveDaemonServer(
+      {
+        secrets,
+        db: createMockDb(),
+        registry: createTrackingRegistry(tracking.cell),
+      },
+      async ({ port }) => {
+        const issued = await issueDaemonJwt(
+          { sub: serverId, kid: "key-test" },
+          secrets,
+        );
+        const ws = await openLiveDaemonWs({
+          port,
+          token: issued.token,
+          remoteIp: LIVE_REMOTE_IP,
+        });
+        ws.send(
+          JSON.stringify({
+            type: "future-inbound",
+            at: new Date().toISOString(),
+          }),
+        );
+        await new Promise((resolve) => setTimeout(resolve, 40));
+        assertEquals(ws.readyState, WebSocket.OPEN);
+        const log = new TextDecoder().decode(
+          chunks.reduce(
+            (all, chunk) => {
+              const next = new Uint8Array(all.length + chunk.length);
+              next.set(all);
+              next.set(chunk, all.length);
+              return next;
+            },
+            new Uint8Array(),
+          ),
+        );
+        assertStringIncludes(log, "daemon-cell");
+        assertStringIncludes(log, "event=inbound-ignored-unknown-type");
+        const closed = waitForWsClose(ws);
+        ws.send("{");
+        const closeEvent = await closed;
+        assertEquals(closeEvent.code, 1008);
+        assertEquals(closeEvent.reason, "policy_violation");
+      },
+    );
+  } finally {
+    Deno.stdout.writeSync = originalWrite;
+    if (previousDebug === undefined) Deno.env.delete("TURBOPANEL_DAEMON_DEBUG");
+    else Deno.env.set("TURBOPANEL_DAEMON_DEBUG", previousDebug);
+  }
+});
+
+test("live WS unknown frame stays open for an active key and closes after revocation", async () => {
+  const secrets = await createDaemonJwtSecrets();
+  const serverId = "srv-live-unknown-revoked";
+  const key = {
+    ...baseDaemonKey,
+    revokedAt: null as string | null,
+  };
+  const { db } = createProjectionTrackingDb(
+    serverId,
+    { key },
+    {
+      connected: true,
+      statusChangedAt: "2020-01-01T00:00:00.000Z",
+    },
+  );
+  const tracking = createTrackingDaemonCell(serverId);
+
+  await withLiveDaemonServer(
+    {
+      secrets,
+      db,
+      registry: createTrackingRegistry(tracking.cell),
+    },
+    async ({ port }) => {
+      const issued = await issueDaemonJwt(
+        { sub: serverId, kid: "key-test" },
+        secrets,
+      );
+      const ws = await openLiveDaemonWs({
+        port,
+        token: issued.token,
+        remoteIp: LIVE_REMOTE_IP,
+      });
+      ws.send(
+        JSON.stringify({
+          type: "future-inbound",
+          at: new Date().toISOString(),
+        }),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      assertEquals(ws.readyState, WebSocket.OPEN);
+
+      key.revokedAt = "2020-01-02T00:00:00.000Z";
+      const closed = waitForWsClose(ws);
+      ws.send(
+        JSON.stringify({
+          type: "future-inbound",
+          at: new Date().toISOString(),
+        }),
+      );
+      const closeEvent = await closed;
+      assertEquals(closeEvent.code, 1008);
+      assertEquals(closeEvent.reason, "key_revoked");
+    },
+  );
+});
+
 test("live WS outbox pump aborts on closed-connection errors", async () => {
   const secrets = await createDaemonJwtSecrets();
   const serverId = "srv-live-outbox-closed";
@@ -2975,7 +3103,9 @@ test("live WS detach uses reason error when the peer violates the protocol", asy
         assertEquals(
           tracking.detachReasons.includes("error"),
           true,
-          `expected onError detach, got ${JSON.stringify(tracking.detachReasons)}`,
+          `expected onError detach, got ${
+            JSON.stringify(tracking.detachReasons)
+          }`,
         );
       } finally {
         try {

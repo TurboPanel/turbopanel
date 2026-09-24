@@ -1,5 +1,6 @@
 import { assertEquals } from "@std/assert";
 import { INSTANCE_VERSION } from "../app/version.ts";
+import { DAEMON_WIRE_FEATURES } from "../lib/version-wire.ts";
 import { instanceAttachVersionFrame } from "./attach-version.ts";
 
 /**
@@ -19,6 +20,7 @@ test("attach version frame carries INSTANCE_VERSION and the revision commit", ()
   assertEquals(frame.commit, "abc1234");
   assertEquals(frame.branch, "unknown");
   assertEquals(frame.instanceVersion, INSTANCE_VERSION);
+  assertEquals(frame.features, [...DAEMON_WIRE_FEATURES]);
 });
 
 test("attach version frame omits a non-string revision", () => {

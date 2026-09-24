@@ -1,7 +1,7 @@
-import { assert, assertEquals } from '@std/assert'
-import type { Db } from '../../db/connection.ts'
-import type { ServerGeo } from '../../features/geo/server-geo.ts'
-import type { ServerMetadata } from '../../features/servers/server-metadata.ts'
+import { assert, assertEquals } from "@std/assert";
+import type { Db } from "../../db/connection.ts";
+import type { ServerGeo } from "../../features/geo/server-geo.ts";
+import type { ServerMetadata } from "../../features/servers/server-metadata.ts";
 import {
   buildDefaultDaemonStatus,
   mapServerDaemonStatusFromColumns,
@@ -9,9 +9,10 @@ import {
   type ServerDaemonProjection,
   type ServerDaemonState,
   type ServerDaemonStatus,
-} from '../../features/servers/daemon-state.ts'
-import type { DaemonCellRegistry } from '../../contracts/cell.ts'
-import { DAEMON_OFFLINE_SWEEP_MS } from '../../contracts/cell-protocol.ts'
+} from "../../features/servers/daemon-state.ts";
+import { materializeDaemonJsonbWrite } from "./daemon-jsonb-write.ts";
+import type { DaemonCellRegistry } from "../../contracts/cell.ts";
+import { DAEMON_OFFLINE_SWEEP_MS } from "../../contracts/cell-protocol.ts";
 import {
   onDaemonConnected,
   onDaemonConnectedFromEvidence,
@@ -23,38 +24,39 @@ import {
   onDaemonUpdateReset,
   onDaemonUpdateResult,
   sweepStalePresence,
-} from './control-plane-monitor.ts'
-import type { RedisDaemonCellRegistry } from './redis/registry.ts'
-import { resolveFleetPresence } from './fleet-presence.ts'
+} from "./control-plane-monitor.ts";
+import type { RedisDaemonCellRegistry } from "./redis/registry.ts";
+import { resolveFleetPresence } from "./fleet-presence.ts";
 import {
   resetUpdateManifestCacheForTests,
   seedUpdateManifestCacheForTests,
-} from '../../features/update/manifest.ts'
-import type { ServerStatusEvent } from '../metrics/types.ts'
-import type { Alert } from '../../features/alerts/alert-sender.ts'
+} from "../../features/update/manifest.ts";
+import type { ServerStatusEvent } from "../metrics/types.ts";
+import type { Alert } from "../../features/alerts/alert-sender.ts";
 import {
   resetServerStatusEventSinkForTests,
   setServerStatusEventSink,
-} from '../metrics/status-events.ts'
+} from "../metrics/status-events.ts";
 
-const serverId = 'srv-heartbeat-daemonBuild'
+const serverId = "srv-heartbeat-daemonBuild";
 
 /** Canonical 64-char lowercase hex HMAC shape used by real daemons. */
-const TEST_MACHINE_KEY = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+const TEST_MACHINE_KEY =
+  "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
 const testGeo: ServerGeo = {
-  country: 'US',
-  city: 'San Francisco',
-  capturedAt: '2020-01-01T00:00:00.000Z',
-}
+  country: "US",
+  city: "San Francisco",
+  capturedAt: "2020-01-01T00:00:00.000Z",
+};
 
 const baseKey = {
-  id: 'key-1',
-  algorithm: 'Ed25519' as const,
-  publicJwk: { kty: 'OKP', crv: 'Ed25519', x: 'abc' },
-  fingerprint: 'fp-1',
-  createdAt: '2020-01-01T00:00:00.000Z',
-}
+  id: "key-1",
+  algorithm: "Ed25519" as const,
+  publicJwk: { kty: "OKP", crv: "Ed25519", x: "abc" },
+  fingerprint: "fp-1",
+  createdAt: "2020-01-01T00:00:00.000Z",
+};
 
 /**
  * Mock row shape mirrors `getServerDaemonStateByServerId`'s joined select:
@@ -64,31 +66,33 @@ const baseKey = {
  */
 type MockRow = {
   /** `server.id` — the fleet-presence select's own `id` column. */
-  serverId: string
-  keyId: string
-  algorithm: 'Ed25519'
-  publicJwk: JsonWebKey
-  fingerprint: string
-  createdAt: string
-  revokedAt: string | null
-  lastUsedAt: string | null
-  daemon: { projection?: ServerDaemonProjection } | null
-  metadata: ServerMetadata | null
-  hostname: string | null
-  machineKey: string | null
-  connected: boolean
-  statusChangedAt: string | null
-}
+  serverId: string;
+  keyId: string;
+  algorithm: "Ed25519";
+  publicJwk: JsonWebKey;
+  fingerprint: string;
+  createdAt: string;
+  revokedAt: string | null;
+  lastUsedAt: string | null;
+  daemon: { projection?: ServerDaemonProjection } | null;
+  metadata: ServerMetadata | null;
+  hostname: string | null;
+  machineKey: string | null;
+  connected: boolean;
+  statusChangedAt: string | null;
+};
 
 function buildMockRow(
   daemon: ServerDaemonState,
-  statusOverrides: Partial<Pick<ServerDaemonStatus, 'connected' | 'statusChangedAt'>> = {},
+  statusOverrides: Partial<
+    Pick<ServerDaemonStatus, "connected" | "statusChangedAt">
+  > = {},
   identity: { hostname?: string | null; machineKey?: string | null } = {
-    hostname: 'host-1',
+    hostname: "host-1",
   },
-  metadata: ServerMetadata | null = null
+  metadata: ServerMetadata | null = null,
 ): MockRow {
-  const status = { ...buildDefaultDaemonStatus(), ...statusOverrides }
+  const status = { ...buildDefaultDaemonStatus(), ...statusOverrides };
   return {
     serverId,
     keyId: daemon.key.id,
@@ -104,42 +108,46 @@ function buildMockRow(
     machineKey: identity.machineKey ?? null,
     connected: status.connected,
     statusChangedAt: status.statusChangedAt,
-  }
+  };
 }
 
 /** Unwrap drizzle `sql\`… || ${json}::jsonb\`` metadata patches. */
-function unwrapMetadataSqlPatch(value: unknown): Record<string, unknown> | null | undefined {
-  if (value === null || value === undefined) return value
-  if (typeof value === 'object' && value !== null && 'queryChunks' in value) {
+function unwrapMetadataSqlPatch(
+  value: unknown,
+): Record<string, unknown> | null | undefined {
+  if (value === null || value === undefined) return value;
+  if (typeof value === "object" && value !== null && "queryChunks" in value) {
     for (const chunk of (value as { queryChunks: unknown[] }).queryChunks) {
-      if (typeof chunk === 'string') {
+      if (typeof chunk === "string") {
         try {
-          return JSON.parse(chunk) as Record<string, unknown>
+          return JSON.parse(chunk) as Record<string, unknown>;
         } catch {
           // keep scanning
         }
       }
     }
-    return undefined
+    return undefined;
   }
-  if (typeof value === 'object') return value as Record<string, unknown>
-  return undefined
+  if (typeof value === "object") return value as Record<string, unknown>;
+  return undefined;
 }
 
 /** Apply an `.update(server).set(patch)` call onto the mock row in place. */
 function applyPatchToRow(row: MockRow, patch: Record<string, unknown>): void {
   if (patch.daemon !== undefined) {
-    row.daemon = patch.daemon as { projection?: ServerDaemonProjection } | null
+    row.daemon = materializeDaemonJsonbWrite(row.daemon, patch.daemon);
   }
-  if ('hostname' in patch) row.hostname = patch.hostname as string | null
-  if ('machineKey' in patch) row.machineKey = patch.machineKey as string | null
-  if ('isConnected' in patch) row.connected = patch.isConnected as boolean
-  if ('statusChangedAt' in patch) {
-    row.statusChangedAt = patch.statusChangedAt as string | null
+  if ("hostname" in patch) row.hostname = patch.hostname as string | null;
+  if ("machineKey" in patch) row.machineKey = patch.machineKey as string | null;
+  if ("isConnected" in patch) row.connected = patch.isConnected as boolean;
+  if ("statusChangedAt" in patch) {
+    row.statusChangedAt = patch.statusChangedAt as string | null;
   }
-  const unwrapped = unwrapMetadataSqlPatch(patch.metadata)
+  const unwrapped = unwrapMetadataSqlPatch(patch.metadata);
   if (unwrapped !== undefined) {
-    row.metadata = unwrapped === null ? null : ({ ...row.metadata, ...unwrapped } as ServerMetadata)
+    row.metadata = unwrapped === null
+      ? null
+      : ({ ...row.metadata, ...unwrapped } as ServerMetadata);
   }
 }
 
@@ -147,20 +155,20 @@ function createTrackingDb(
   initialDaemon: ServerDaemonState,
   statusOverrides: Partial<ServerDaemonStatus> = {},
   identity: { hostname?: string | null; machineKey?: string | null } = {
-    hostname: 'host-1',
-  }
+    hostname: "host-1",
+  },
 ): {
-  db: Db
-  updateCalls: Array<Record<string, unknown>>
-  getSelectCallCount: () => number
-  getDaemon: () => { projection?: ServerDaemonProjection } | null
-  getMetadata: () => ServerMetadata | null
-  getStatus: () => ServerDaemonStatus
-  getIdentity: () => { hostname: string | null; machineKey: string | null }
+  db: Db;
+  updateCalls: Array<Record<string, unknown>>;
+  getSelectCallCount: () => number;
+  getDaemon: () => { projection?: ServerDaemonProjection } | null;
+  getMetadata: () => ServerMetadata | null;
+  getStatus: () => ServerDaemonStatus;
+  getIdentity: () => { hostname: string | null; machineKey: string | null };
 } {
-  const updateCalls: Array<Record<string, unknown>> = []
-  let selectCalls = 0
-  const row = buildMockRow(initialDaemon, statusOverrides, identity)
+  const updateCalls: Array<Record<string, unknown>> = [];
+  let selectCalls = 0;
+  const row = buildMockRow(initialDaemon, statusOverrides, identity);
 
   const db = {
     select: () => ({
@@ -172,35 +180,41 @@ function createTrackingDb(
         // ignores the join predicate and picks the right `id` by which
         // path was taken.
         const joined = () => {
-          selectCalls += 1
-          const rows = Promise.resolve([{ ...row, id: row.keyId }])
-          return Object.assign(rows, { limit: () => rows })
-        }
+          selectCalls += 1;
+          const rows = Promise.resolve([{ ...row, id: row.keyId }]);
+          return Object.assign(rows, { limit: () => rows });
+        };
         const unjoined = () => {
-          const rows = Promise.resolve([{ ...row, id: row.serverId }])
-          return Object.assign(rows, { limit: () => rows })
-        }
+          const rows = Promise.resolve([{ ...row, id: row.serverId }]);
+          return Object.assign(rows, { limit: () => rows });
+        };
         return {
           innerJoin: () => ({ where: joined }),
           where: unjoined,
-        }
+        };
       },
     }),
     update: () => ({
       set: (patch: Record<string, unknown>) => {
-        const recorded = { ...patch }
-        const unwrapped = unwrapMetadataSqlPatch(patch.metadata)
-        if (unwrapped !== undefined) {
-          recorded.metadata = unwrapped
+        const recorded = { ...patch };
+        if ("daemon" in patch) {
+          recorded.daemon = materializeDaemonJsonbWrite(
+            row.daemon,
+            patch.daemon,
+          );
         }
-        updateCalls.push(recorded)
-        applyPatchToRow(row, patch)
+        const unwrapped = unwrapMetadataSqlPatch(patch.metadata);
+        if (unwrapped !== undefined) {
+          recorded.metadata = unwrapped;
+        }
+        updateCalls.push(recorded);
+        applyPatchToRow(row, recorded);
         return {
           where: () => Promise.resolve(undefined),
-        }
+        };
       },
     }),
-  } as unknown as Db
+  } as unknown as Db;
 
   return {
     db,
@@ -210,20 +224,20 @@ function createTrackingDb(
     getMetadata: () => row.metadata,
     getStatus: () => mapServerDaemonStatusFromColumns(row),
     getIdentity: () => ({ hostname: row.hostname, machineKey: row.machineKey }),
-  }
+  };
 }
 
 function createEmptyRegistry(): DaemonCellRegistry {
   return {
     getCell: () => {
-      throw new Error('not used')
+      throw new Error("not used");
     },
     listOnlineServerIds: () => Promise.resolve([]),
     getSnapshots: () => {
-      throw new Error('getSnapshots must not be called')
+      throw new Error("getSnapshots must not be called");
     },
     purge: () => Promise.resolve(),
-  }
+  };
 }
 
 function createMockCell(snapshot: Record<string, unknown> = {}) {
@@ -234,11 +248,11 @@ function createMockCell(snapshot: Record<string, unknown> = {}) {
         version: 1,
         updatedAt: new Date().toISOString(),
         connected: true,
-        hostname: 'host-1',
+        hostname: "host-1",
         machineKey: TEST_MACHINE_KEY,
         ...snapshot,
       }),
-  }
+  };
 }
 
 /**
@@ -247,92 +261,94 @@ function createMockCell(snapshot: Record<string, unknown> = {}) {
  * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
  * reports Deno suites as empty; keep this alias so analysis sees real tests.
  */
-const test = Deno.test.bind(Deno)
+const test = Deno.test.bind(Deno);
 
-test('onDaemonHeartbeat projects daemonBuild.commit for update status via resolveFleetPresence', async () => {
+test("onDaemonHeartbeat projects daemonBuild.commit for update status via resolveFleetPresence", async () => {
   const { db, getDaemon } = createTrackingDb(
-    { key: baseKey, projection: { hostname: 'host-1' } },
+    { key: baseKey, projection: { hostname: "host-1" } },
     {
       connected: true,
       statusChangedAt: new Date(Date.now() - 61_000).toISOString(),
-    }
-  )
+    },
+  );
 
   const daemonBuild = {
-    commit: 'heartbeat-commit',
-    buildId: 'heartbeat-build',
-    channel: 'trunk' as const,
-  }
+    commit: "heartbeat-commit",
+    buildId: "heartbeat-build",
+    channel: "trunk" as const,
+  };
 
   await onDaemonHeartbeat(
     db,
     serverId,
     createMockCell({ connected: true, daemonBuild }) as never,
-    daemonBuild
-  )
+    daemonBuild,
+  );
 
-  const merged = parseServerDaemonState(getDaemon())
-  assertEquals(merged?.projection?.daemonBuild?.commit, daemonBuild.commit)
+  const merged = parseServerDaemonState(getDaemon());
+  assertEquals(merged?.projection?.daemonBuild?.commit, daemonBuild.commit);
 
-  const presence = await resolveFleetPresence(db, createEmptyRegistry(), [serverId])
-  const liveDaemonBuild = presence.get(serverId)?.daemonBuild
-  assertEquals(liveDaemonBuild?.commit, daemonBuild.commit)
-  assertEquals(liveDaemonBuild?.buildId, daemonBuild.buildId)
+  const presence = await resolveFleetPresence(db, createEmptyRegistry(), [
+    serverId,
+  ]);
+  const liveDaemonBuild = presence.get(serverId)?.daemonBuild;
+  assertEquals(liveDaemonBuild?.commit, daemonBuild.commit);
+  assertEquals(liveDaemonBuild?.buildId, daemonBuild.buildId);
 
   const current = liveDaemonBuild?.commit
     ? {
-        commit: liveDaemonBuild.commit,
-        buildId: liveDaemonBuild.buildId ?? '',
-        builtAt: liveDaemonBuild.builtAt ?? '',
-      }
-    : null
-  assertEquals(current?.commit, daemonBuild.commit)
-})
+      commit: liveDaemonBuild.commit,
+      buildId: liveDaemonBuild.buildId ?? "",
+      builtAt: liveDaemonBuild.builtAt ?? "",
+    }
+    : null;
+  assertEquals(current?.commit, daemonBuild.commit);
+});
 
-test('onDaemonConnected persists optional geo into metadata (hostname/machineKey stay on columns)', async () => {
+test("onDaemonConnected persists optional geo into metadata (hostname/machineKey stay on columns)", async () => {
   const { db, updateCalls } = createTrackingDb(
     { key: baseKey },
     {},
     {
-      hostname: 'host-1',
-    }
-  )
+      hostname: "host-1",
+    },
+  );
 
   await onDaemonConnected(
     db,
     serverId,
     createMockCell({
-      connectedAt: '2020-01-01T00:00:00.000Z',
-      remoteAddress: '203.0.113.10',
+      connectedAt: "2020-01-01T00:00:00.000Z",
+      remoteAddress: "203.0.113.10",
     }) as never,
-    '2020-01-01T00:00:00.000Z',
+    "2020-01-01T00:00:00.000Z",
     undefined,
-    testGeo
-  )
+    testGeo,
+  );
 
-  assertEquals(updateCalls.length, 1)
+  assertEquals(updateCalls.length, 1);
   // hostname/machineKey are dedicated column patches now — never in metadata.
-  assertEquals(updateCalls[0]?.machineKey, TEST_MACHINE_KEY)
-  assertEquals(updateCalls[0]?.metadata, { geo: testGeo })
-})
+  assertEquals(updateCalls[0]?.machineKey, TEST_MACHINE_KEY);
+  assertEquals(updateCalls[0]?.metadata, { geo: testGeo });
+});
 
-test('onDaemonInbound backfills metadata.geo when already online', async () => {
-  const recentAt = new Date().toISOString()
+test("onDaemonInbound backfills metadata.geo when already online", async () => {
+  const recentAt = new Date().toISOString();
   const { db, updateCalls, getMetadata } = createTrackingDb(
     {
       key: baseKey,
       projection: {
-        hostname: 'host-1',
+        hostname: "host-1",
         machineKey: TEST_MACHINE_KEY,
-        remoteAddress: '203.0.113.10',
+        remoteAddress: "203.0.113.10",
       },
     },
     {
       connected: true,
       statusChangedAt: recentAt,
     },
-    { hostname: 'host-1', machineKey: TEST_MACHINE_KEY }
-  )
+    { hostname: "host-1", machineKey: TEST_MACHINE_KEY },
+  );
 
   await onDaemonInbound(
     db,
@@ -341,89 +357,93 @@ test('onDaemonInbound backfills metadata.geo when already online', async () => {
       connected: true,
       connectedAt: recentAt,
       lastSeenAt: recentAt,
-      remoteAddress: '203.0.113.10',
-      hostname: 'host-1',
+      remoteAddress: "203.0.113.10",
+      hostname: "host-1",
       machineKey: TEST_MACHINE_KEY,
     }) as never,
-    { at: recentAt, geo: testGeo }
-  )
+    { at: recentAt, geo: testGeo },
+  );
 
   assertEquals(
     updateCalls.some(
-      (patch) => (patch.metadata as { geo?: ServerGeo } | undefined)?.geo?.country === 'US'
+      (patch) =>
+        (patch.metadata as { geo?: ServerGeo } | undefined)?.geo?.country ===
+          "US",
     ),
-    true
-  )
-  assertEquals(getMetadata()?.geo, testGeo)
-})
+    true,
+  );
+  assertEquals(getMetadata()?.geo, testGeo);
+});
 
-test('onDaemonConnected sets status on dedicated columns', async () => {
-  const { db, updateCalls } = createTrackingDb({ key: baseKey })
+test("onDaemonConnected sets status on dedicated columns", async () => {
+  const { db, updateCalls } = createTrackingDb({ key: baseKey });
 
   await onDaemonConnected(
     db,
     serverId,
-    createMockCell({ connectedAt: '2020-01-01T00:00:00.000Z' }) as never,
-    '2020-01-01T00:00:00.000Z'
-  )
+    createMockCell({ connectedAt: "2020-01-01T00:00:00.000Z" }) as never,
+    "2020-01-01T00:00:00.000Z",
+  );
 
-  assertEquals(updateCalls.length, 1)
-  assertEquals(updateCalls[0]?.isConnected, true)
-  assertEquals(updateCalls[0]?.statusChangedAt, '2020-01-01T00:00:00.000Z')
+  assertEquals(updateCalls.length, 1);
+  assertEquals(updateCalls[0]?.isConnected, true);
+  assertEquals(updateCalls[0]?.statusChangedAt, "2020-01-01T00:00:00.000Z");
   // status never lives in the daemon jsonb patch.
-  const daemonPatch = updateCalls[0]?.daemon as Record<string, unknown> | undefined
-  assertEquals(daemonPatch !== undefined && 'status' in daemonPatch, false)
-})
+  const daemonPatch = updateCalls[0]?.daemon as
+    | Record<string, unknown>
+    | undefined;
+  assertEquals(daemonPatch !== undefined && "status" in daemonPatch, false);
+});
 
-test('onDaemonConnected repeated within 60s skips write when already online', async () => {
-  const recent = new Date().toISOString()
+test("onDaemonConnected repeated within 60s skips write when already online", async () => {
+  const recent = new Date().toISOString();
   const { db, updateCalls } = createTrackingDb(
     {
       key: baseKey,
-      projection: { hostname: 'host-1', machineKey: TEST_MACHINE_KEY },
+      projection: { hostname: "host-1", machineKey: TEST_MACHINE_KEY },
     },
     {
       connected: true,
       statusChangedAt: recent,
     },
-    { hostname: 'host-1', machineKey: TEST_MACHINE_KEY }
-  )
+    { hostname: "host-1", machineKey: TEST_MACHINE_KEY },
+  );
 
   await onDaemonConnected(
     db,
     serverId,
-    createMockCell({ connectedAt: '2020-06-01T00:00:00.000Z' }) as never,
-    '2020-06-01T00:00:00.000Z'
-  )
+    createMockCell({ connectedAt: "2020-06-01T00:00:00.000Z" }) as never,
+    "2020-06-01T00:00:00.000Z",
+  );
 
-  assertEquals(updateCalls.length, 0)
-})
+  assertEquals(updateCalls.length, 0);
+});
 
-test('onDaemonDisconnected sets offline status on columns', async () => {
+test("onDaemonDisconnected sets offline status on columns", async () => {
   const { db, updateCalls } = createTrackingDb(
-    { key: baseKey, projection: { hostname: 'host-1' } },
+    { key: baseKey, projection: { hostname: "host-1" } },
     {
       connected: true,
-      statusChangedAt: '2020-01-01T00:00:00.000Z',
-    }
-  )
+      statusChangedAt: "2020-01-01T00:00:00.000Z",
+    },
+  );
 
-  await onDaemonDisconnected(db, serverId)
+  await onDaemonDisconnected(db, serverId);
 
-  assertEquals(updateCalls.length, 1)
-  assertEquals(updateCalls[0]?.isConnected, false)
-  assertEquals(typeof updateCalls[0]?.statusChangedAt, 'string')
-})
+  assertEquals(updateCalls.length, 1);
+  assertEquals(updateCalls[0]?.isConnected, false);
+  assertEquals(typeof updateCalls[0]?.statusChangedAt, "string");
+});
 
-test('onDaemonConnected self-heals Postgres offline when cell is live', async () => {
-  const recentAt = new Date().toISOString()
+test("onDaemonConnected self-heals Postgres offline when cell is live", async () => {
+  const recentAt = new Date().toISOString();
   const { db, updateCalls } = createTrackingDb(
-    { key: baseKey, projection: { hostname: 'host-1' } },
+    { key: baseKey, projection: { hostname: "host-1" } },
     {
       connected: false,
       statusChangedAt: recentAt,
-    }
-  )
+    },
+  );
 
   await onDaemonConnected(
     db,
@@ -433,45 +453,45 @@ test('onDaemonConnected self-heals Postgres offline when cell is live', async ()
       connectedAt: recentAt,
       lastSeenAt: recentAt,
     }) as never,
-    recentAt
-  )
+    recentAt,
+  );
 
-  assertEquals(updateCalls.length, 1)
-  assertEquals(updateCalls[0]?.isConnected, true)
-})
+  assertEquals(updateCalls.length, 1);
+  assertEquals(updateCalls[0]?.isConnected, true);
+});
 
-test('onDaemonConnectedFromEvidence marks online without a cell', async () => {
-  const recentAt = new Date().toISOString()
-  const connectedAt = '2020-01-01T00:00:00.000Z'
+test("onDaemonConnectedFromEvidence marks online without a cell", async () => {
+  const recentAt = new Date().toISOString();
+  const connectedAt = "2020-01-01T00:00:00.000Z";
   const { db, updateCalls } = createTrackingDb(
     {
       key: baseKey,
-      projection: { hostname: 'host-1', machineKey: TEST_MACHINE_KEY },
+      projection: { hostname: "host-1", machineKey: TEST_MACHINE_KEY },
     },
     {
       connected: false,
       statusChangedAt: recentAt,
     },
-    { hostname: 'host-1', machineKey: TEST_MACHINE_KEY }
-  )
+    { hostname: "host-1", machineKey: TEST_MACHINE_KEY },
+  );
 
-  await onDaemonConnectedFromEvidence(db, serverId, connectedAt)
+  await onDaemonConnectedFromEvidence(db, serverId, connectedAt);
 
-  assertEquals(updateCalls.length, 1)
-  assertEquals(updateCalls[0]?.isConnected, true)
-  assertEquals(updateCalls[0]?.statusChangedAt, connectedAt)
-  const daemon = parseServerDaemonState(updateCalls[0]?.daemon)
-  assertEquals(daemon?.projection?.hostname, 'host-1')
-  assertEquals(daemon?.projection?.machineKey, TEST_MACHINE_KEY)
-})
+  assertEquals(updateCalls.length, 1);
+  assertEquals(updateCalls[0]?.isConnected, true);
+  assertEquals(updateCalls[0]?.statusChangedAt, connectedAt);
+  const daemon = parseServerDaemonState(updateCalls[0]?.daemon);
+  assertEquals(daemon?.projection?.hostname, "host-1");
+  assertEquals(daemon?.projection?.machineKey, TEST_MACHINE_KEY);
+});
 
-test('onDaemonHeartbeat within 60s skips DB write when daemonBuild unchanged', async () => {
+test("onDaemonHeartbeat within 60s skips DB write when daemonBuild unchanged", async () => {
   const daemonBuild = {
-    commit: 'abc123',
-    buildId: 'build-1',
-    channel: 'trunk' as const,
-  }
-  const recentAt = new Date().toISOString()
+    commit: "abc123",
+    buildId: "build-1",
+    channel: "trunk" as const,
+  };
+  const recentAt = new Date().toISOString();
   const { db, updateCalls, getSelectCallCount } = createTrackingDb(
     {
       key: baseKey,
@@ -480,8 +500,8 @@ test('onDaemonHeartbeat within 60s skips DB write when daemonBuild unchanged', a
     {
       connected: true,
       statusChangedAt: recentAt,
-    }
-  )
+    },
+  );
 
   await onDaemonHeartbeat(
     db,
@@ -492,20 +512,20 @@ test('onDaemonHeartbeat within 60s skips DB write when daemonBuild unchanged', a
       daemonBuild,
     }) as never,
     daemonBuild,
-    new Date(Date.now() + 1000).toISOString()
-  )
+    new Date(Date.now() + 1000).toISOString(),
+  );
 
-  assertEquals(updateCalls.length, 0)
-  assertEquals(getSelectCallCount(), 0)
-})
+  assertEquals(updateCalls.length, 0);
+  assertEquals(getSelectCallCount(), 0);
+});
 
-test('onDaemonHeartbeat after coalesce window skips Postgres for heartbeat-only', async () => {
+test("onDaemonHeartbeat after coalesce window skips Postgres for heartbeat-only", async () => {
   const daemonBuild = {
-    commit: 'abc123',
-    buildId: 'build-1',
-    channel: 'trunk' as const,
-  }
-  const staleAt = new Date(Date.now() - 61_000).toISOString()
+    commit: "abc123",
+    buildId: "build-1",
+    channel: "trunk" as const,
+  };
+  const staleAt = new Date(Date.now() - 61_000).toISOString();
   const { db, updateCalls, getSelectCallCount } = createTrackingDb(
     {
       key: baseKey,
@@ -514,8 +534,8 @@ test('onDaemonHeartbeat after coalesce window skips Postgres for heartbeat-only'
     {
       connected: true,
       statusChangedAt: staleAt,
-    }
-  )
+    },
+  );
 
   await onDaemonHeartbeat(
     db,
@@ -526,41 +546,41 @@ test('onDaemonHeartbeat after coalesce window skips Postgres for heartbeat-only'
       daemonBuild,
     }) as never,
     daemonBuild,
-    new Date().toISOString()
-  )
+    new Date().toISOString(),
+  );
 
-  assertEquals(updateCalls.length, 0)
-  assertEquals(getSelectCallCount(), 0)
+  assertEquals(updateCalls.length, 0);
+  assertEquals(getSelectCallCount(), 0);
 
   await onDaemonHeartbeat(
     db,
     serverId,
     createMockCell({ connected: true, lastSeenAt: staleAt }) as never,
     undefined,
-    new Date().toISOString()
-  )
+    new Date().toISOString(),
+  );
 
-  assertEquals(updateCalls.length, 0)
-  assertEquals(getSelectCallCount(), 0)
-})
+  assertEquals(updateCalls.length, 0);
+  assertEquals(getSelectCallCount(), 0);
+});
 
-test('onDaemonInbound projects new daemonBuild before steady-state skip', async () => {
+test("onDaemonInbound projects new daemonBuild before steady-state skip", async () => {
   const daemonBuild = {
-    commit: 'abc123',
-    buildId: 'build-1',
-    channel: 'trunk' as const,
-  }
-  const recentAt = new Date().toISOString()
+    commit: "abc123",
+    buildId: "build-1",
+    channel: "trunk" as const,
+  };
+  const recentAt = new Date().toISOString();
   const { db, updateCalls, getDaemon } = createTrackingDb(
     {
       key: baseKey,
-      projection: { hostname: 'host-1' },
+      projection: { hostname: "host-1" },
     },
     {
       connected: true,
       statusChangedAt: recentAt,
-    }
-  )
+    },
+  );
 
   await onDaemonInbound(
     db,
@@ -570,47 +590,47 @@ test('onDaemonInbound projects new daemonBuild before steady-state skip', async 
       lastSeenAt: recentAt,
       daemonBuild,
     }) as never,
-    { at: new Date(Date.now() + 1000).toISOString(), daemonBuild }
-  )
+    { at: new Date(Date.now() + 1000).toISOString(), daemonBuild },
+  );
 
-  assertEquals(updateCalls.length, 1)
-  assertEquals(getDaemon()?.projection?.daemonBuild?.commit, 'abc123')
-})
+  assertEquals(updateCalls.length, 1);
+  assertEquals(getDaemon()?.projection?.daemonBuild?.commit, "abc123");
+});
 
-test('onDaemonInbound repairs stale updating on steady-state hello when daemonBuild matches trunk', async () => {
-  resetUpdateManifestCacheForTests()
+test("onDaemonInbound repairs stale updating on steady-state hello when daemonBuild matches trunk", async () => {
+  resetUpdateManifestCacheForTests();
   seedUpdateManifestCacheForTests({
-    commit: 'target-commit',
-    buildId: 'b2',
-    builtAt: '2020-01-01T00:00:00.000Z',
-    channel: 'trunk',
-    manifestUrl: 'https://dl.trbp.nl/channels/trunk/manifest.json',
-  })
+    commit: "target-commit",
+    buildId: "b2",
+    builtAt: "2020-01-01T00:00:00.000Z",
+    channel: "trunk",
+    manifestUrl: "https://dl.trbp.nl/channels/trunk/manifest.json",
+  });
 
   const daemonBuild = {
-    commit: 'target-commit',
-    buildId: 'build-1',
-    channel: 'trunk' as const,
-  }
-  const recentAt = new Date().toISOString()
+    commit: "target-commit",
+    buildId: "build-1",
+    channel: "trunk" as const,
+  };
+  const recentAt = new Date().toISOString();
   const { db, updateCalls, getDaemon } = createTrackingDb(
     {
       key: baseKey,
       projection: {
         daemonBuild,
         update: {
-          status: 'updating',
-          requestId: 'req-1',
-          channel: 'trunk',
-          queuedAt: '2020-01-01T00:00:00.000Z',
+          status: "updating",
+          requestId: "req-1",
+          channel: "trunk",
+          queuedAt: "2020-01-01T00:00:00.000Z",
         },
       },
     },
     {
       connected: true,
       statusChangedAt: recentAt,
-    }
-  )
+    },
+  );
 
   await onDaemonInbound(
     db,
@@ -620,22 +640,22 @@ test('onDaemonInbound repairs stale updating on steady-state hello when daemonBu
       lastSeenAt: recentAt,
       daemonBuild,
     }) as never,
-    { at: new Date(Date.now() + 1000).toISOString(), daemonBuild }
-  )
+    { at: new Date(Date.now() + 1000).toISOString(), daemonBuild },
+  );
 
-  const update = parseServerDaemonState(getDaemon())?.projection?.update
-  assertEquals(update?.status, 'done')
-  assertEquals(update?.requestId, 'req-1')
-  assertEquals(updateCalls.length, 1)
-})
+  const update = parseServerDaemonState(getDaemon())?.projection?.update;
+  assertEquals(update?.status, "done");
+  assertEquals(update?.requestId, "req-1");
+  assertEquals(updateCalls.length, 1);
+});
 
-test('onDaemonInbound within 60s skips heartbeat write when daemonBuild unchanged', async () => {
+test("onDaemonInbound within 60s skips heartbeat write when daemonBuild unchanged", async () => {
   const daemonBuild = {
-    commit: 'abc123',
-    buildId: 'build-1',
-    channel: 'trunk' as const,
-  }
-  const recentAt = new Date().toISOString()
+    commit: "abc123",
+    buildId: "build-1",
+    channel: "trunk" as const,
+  };
+  const recentAt = new Date().toISOString();
   const { db, updateCalls, getSelectCallCount } = createTrackingDb(
     {
       key: baseKey,
@@ -644,8 +664,8 @@ test('onDaemonInbound within 60s skips heartbeat write when daemonBuild unchange
     {
       connected: true,
       statusChangedAt: recentAt,
-    }
-  )
+    },
+  );
 
   await onDaemonInbound(
     db,
@@ -655,24 +675,24 @@ test('onDaemonInbound within 60s skips heartbeat write when daemonBuild unchange
       lastSeenAt: recentAt,
       daemonBuild,
     }) as never,
-    { at: new Date(Date.now() + 1000).toISOString(), daemonBuild }
-  )
+    { at: new Date(Date.now() + 1000).toISOString(), daemonBuild },
+  );
 
-  assertEquals(updateCalls.length, 0)
-  assertEquals(getSelectCallCount(), 2)
-})
+  assertEquals(updateCalls.length, 0);
+  assertEquals(getSelectCallCount(), 2);
+});
 
-test('onDaemonHeartbeat projects daemonBuild change to daemon projection', async () => {
+test("onDaemonHeartbeat projects daemonBuild change to daemon projection", async () => {
   const priorDaemonBuild = {
-    commit: 'abc123',
-    buildId: 'build-1',
-    channel: 'trunk' as const,
-  }
+    commit: "abc123",
+    buildId: "build-1",
+    channel: "trunk" as const,
+  };
   const nextDaemonBuild = {
-    commit: 'def456',
-    buildId: 'build-2',
-    channel: 'trunk' as const,
-  }
+    commit: "def456",
+    buildId: "build-2",
+    channel: "trunk" as const,
+  };
   const { db, updateCalls, getDaemon } = createTrackingDb(
     {
       key: baseKey,
@@ -681,444 +701,481 @@ test('onDaemonHeartbeat projects daemonBuild change to daemon projection', async
     {
       connected: true,
       statusChangedAt: new Date().toISOString(),
-    }
-  )
+    },
+  );
 
   await onDaemonHeartbeat(
     db,
     serverId,
     createMockCell({ connected: true, daemonBuild: nextDaemonBuild }) as never,
-    nextDaemonBuild
-  )
+    nextDaemonBuild,
+  );
 
-  assertEquals(updateCalls.length, 1)
-  assertEquals(getDaemon()?.projection?.daemonBuild?.commit, 'def456')
+  assertEquals(updateCalls.length, 1);
+  assertEquals(getDaemon()?.projection?.daemonBuild?.commit, "def456");
 
   await onDaemonHeartbeat(
     db,
     serverId,
     createMockCell({ connected: true, daemonBuild: nextDaemonBuild }) as never,
-    nextDaemonBuild
-  )
+    nextDaemonBuild,
+  );
 
-  assertEquals(updateCalls.length, 1)
-})
+  assertEquals(updateCalls.length, 1);
+});
 
-test('onDaemonInbound restores online projection after stale sweep', async () => {
-  const stale = new Date(Date.now() - DAEMON_OFFLINE_SWEEP_MS - 1000).toISOString()
+test("onDaemonInbound restores online projection after stale sweep", async () => {
+  const stale = new Date(Date.now() - DAEMON_OFFLINE_SWEEP_MS - 1000)
+    .toISOString();
   const { db, updateCalls } = createTrackingDb(
     {
       key: baseKey,
       projection: {
-        hostname: 'host-1',
-        daemonBuild: { commit: 'abc', buildId: '1' },
+        hostname: "host-1",
+        daemonBuild: { commit: "abc", buildId: "1" },
       },
     },
     {
       connected: false,
       statusChangedAt: stale,
-    }
-  )
+    },
+  );
 
-  const at = new Date().toISOString()
+  const at = new Date().toISOString();
   await onDaemonInbound(
     db,
     serverId,
     createMockCell({ connected: false, lastSeenAt: stale }) as never,
     {
       at,
-      daemonBuild: { commit: 'recovered', buildId: '2', channel: 'trunk' },
-    }
-  )
+      daemonBuild: { commit: "recovered", buildId: "2", channel: "trunk" },
+    },
+  );
 
-  assertEquals(updateCalls.length, 2)
-  const onlinePatch = updateCalls.find((patch) => patch.isConnected === true)
-  assert(onlinePatch)
-  assertEquals(onlinePatch?.isConnected, true)
-  assertEquals(typeof onlinePatch?.statusChangedAt, 'string')
-})
+  assertEquals(updateCalls.length, 2);
+  const onlinePatch = updateCalls.find((patch) => patch.isConnected === true);
+  assert(onlinePatch);
+  assertEquals(onlinePatch?.isConnected, true);
+  assertEquals(typeof onlinePatch?.statusChangedAt, "string");
+});
 
-test('onDaemonUpdateQueued writes projection.update as updating', async () => {
-  const { db, getDaemon } = createTrackingDb({ key: baseKey })
+test("onDaemonUpdateQueued writes projection.update as updating", async () => {
+  const { db, getDaemon } = createTrackingDb({ key: baseKey });
 
-  await onDaemonUpdateQueued(db, serverId, 'req-1', 'trunk', '2020-01-01T00:00:00.000Z')
+  await onDaemonUpdateQueued(
+    db,
+    serverId,
+    "req-1",
+    "trunk",
+    "2020-01-01T00:00:00.000Z",
+  );
 
-  const update = parseServerDaemonState(getDaemon())?.projection?.update
-  assertEquals(update?.status, 'updating')
-  assertEquals(update?.requestId, 'req-1')
-  assertEquals(update?.channel, 'trunk')
-  assertEquals(update?.queuedAt, '2020-01-01T00:00:00.000Z')
-})
+  const update = parseServerDaemonState(getDaemon())?.projection?.update;
+  assertEquals(update?.status, "updating");
+  assertEquals(update?.requestId, "req-1");
+  assertEquals(update?.channel, "trunk");
+  assertEquals(update?.queuedAt, "2020-01-01T00:00:00.000Z");
+});
 
-test('onDaemonUpdateResult writes projection.update as done or failed', async () => {
+test("onDaemonUpdateResult writes projection.update as done or failed", async () => {
   const { db, getDaemon } = createTrackingDb({
     key: baseKey,
     projection: {
       update: {
-        status: 'updating',
-        requestId: 'req-1',
-        channel: 'trunk',
-        queuedAt: '2020-01-01T00:00:00.000Z',
+        status: "updating",
+        requestId: "req-1",
+        channel: "trunk",
+        queuedAt: "2020-01-01T00:00:00.000Z",
       },
     },
-  })
-
-  await onDaemonUpdateResult(db, serverId, 'req-1', true, '2020-01-01T00:01:00.000Z')
-
-  let update = parseServerDaemonState(getDaemon())?.projection?.update
-  assertEquals(update?.status, 'done')
-  assertEquals(update?.requestId, 'req-1')
-  assertEquals(update?.finishedAt, '2020-01-01T00:01:00.000Z')
+  });
 
   await onDaemonUpdateResult(
     db,
     serverId,
-    'req-2',
+    "req-1",
+    true,
+    "2020-01-01T00:01:00.000Z",
+  );
+
+  let update = parseServerDaemonState(getDaemon())?.projection?.update;
+  assertEquals(update?.status, "done");
+  assertEquals(update?.requestId, "req-1");
+  assertEquals(update?.finishedAt, "2020-01-01T00:01:00.000Z");
+
+  await onDaemonUpdateResult(
+    db,
+    serverId,
+    "req-2",
     false,
-    '2020-01-01T00:02:00.000Z',
-    'reconcile failed'
-  )
+    "2020-01-01T00:02:00.000Z",
+    "reconcile failed",
+  );
 
-  update = parseServerDaemonState(getDaemon())?.projection?.update
-  assertEquals(update?.status, 'failed')
-  assertEquals(update?.requestId, 'req-2')
-  assertEquals(update?.error, 'reconcile failed')
-})
+  update = parseServerDaemonState(getDaemon())?.projection?.update;
+  assertEquals(update?.status, "failed");
+  assertEquals(update?.requestId, "req-2");
+  assertEquals(update?.error, "reconcile failed");
+});
 
-test('onDaemonUpdateReset clears projection.update to idle', async () => {
+test("onDaemonUpdateReset clears projection.update to idle", async () => {
   const { db, getDaemon } = createTrackingDb({
     key: baseKey,
     projection: {
       update: {
-        status: 'failed',
-        requestId: 'req-1',
-        error: 'reconcile failed',
+        status: "failed",
+        requestId: "req-1",
+        error: "reconcile failed",
       },
     },
-  })
+  });
 
-  await onDaemonUpdateReset(db, serverId)
+  await onDaemonUpdateReset(db, serverId);
 
-  const update = parseServerDaemonState(getDaemon())?.projection?.update
-  assertEquals(update?.status, 'idle')
-})
+  const update = parseServerDaemonState(getDaemon())?.projection?.update;
+  assertEquals(update?.status, "idle");
+});
 
-test('onDaemonUpdateExpired writes projection.update as expired', async () => {
+test("onDaemonUpdateExpired writes projection.update as expired", async () => {
   const { db, getDaemon } = createTrackingDb({
     key: baseKey,
     projection: {
       update: {
-        status: 'updating',
-        requestId: 'req-1',
-        channel: 'trunk',
-        queuedAt: '2020-01-01T00:00:00.000Z',
+        status: "updating",
+        requestId: "req-1",
+        channel: "trunk",
+        queuedAt: "2020-01-01T00:00:00.000Z",
       },
     },
-  })
+  });
 
-  await onDaemonUpdateExpired(db, serverId, 'req-1', '2020-01-01T00:05:00.000Z')
+  await onDaemonUpdateExpired(
+    db,
+    serverId,
+    "req-1",
+    "2020-01-01T00:05:00.000Z",
+  );
 
-  const update = parseServerDaemonState(getDaemon())?.projection?.update
-  assertEquals(update?.status, 'expired')
-  assertEquals(update?.requestId, 'req-1')
-  assertEquals(update?.finishedAt, '2020-01-01T00:05:00.000Z')
-  assertEquals(update?.error, 'Update timed out waiting for daemon acknowledgement')
-})
+  const update = parseServerDaemonState(getDaemon())?.projection?.update;
+  assertEquals(update?.status, "expired");
+  assertEquals(update?.requestId, "req-1");
+  assertEquals(update?.finishedAt, "2020-01-01T00:05:00.000Z");
+  assertEquals(
+    update?.error,
+    "Update timed out waiting for daemon acknowledgement",
+  );
+});
 
-test('repairStaleProjectedUpdate marks done when daemon commit matches trunk', async () => {
+test("repairStaleProjectedUpdate marks done when daemon commit matches trunk", async () => {
   const { db, getDaemon } = createTrackingDb({
     key: baseKey,
     projection: {
       update: {
-        status: 'updating',
-        requestId: 'req-1',
-        channel: 'trunk',
-        queuedAt: '2020-01-01T00:00:00.000Z',
+        status: "updating",
+        requestId: "req-1",
+        channel: "trunk",
+        queuedAt: "2020-01-01T00:00:00.000Z",
       },
     },
-  })
+  });
 
-  const { repairStaleProjectedUpdate } = await import('./control-plane-monitor.ts')
+  const { repairStaleProjectedUpdate } = await import(
+    "./control-plane-monitor.ts"
+  );
   const repaired = await repairStaleProjectedUpdate(
     db,
     serverId,
     {
-      status: 'updating',
-      requestId: 'req-1',
-      channel: 'trunk',
-      queuedAt: '2020-01-01T00:00:00.000Z',
+      status: "updating",
+      requestId: "req-1",
+      channel: "trunk",
+      queuedAt: "2020-01-01T00:00:00.000Z",
     },
     {
-      currentCommit: 'target-commit',
-      targetCommit: 'target-commit',
-    }
-  )
+      currentCommit: "target-commit",
+      targetCommit: "target-commit",
+    },
+  );
 
-  assertEquals(repaired, true)
-  const update = parseServerDaemonState(getDaemon())?.projection?.update
-  assertEquals(update?.status, 'done')
-})
+  assertEquals(repaired, true);
+  const update = parseServerDaemonState(getDaemon())?.projection?.update;
+  assertEquals(update?.status, "done");
+});
 
-test('maybeRepairUpdateFromDaemonBuildHello clears updating when daemonBuild matches trunk', async () => {
+test("maybeRepairUpdateFromDaemonBuildHello clears updating when daemonBuild matches trunk", async () => {
   const { db, getDaemon } = createTrackingDb({
     key: baseKey,
     projection: {
       update: {
-        status: 'updating',
-        requestId: 'req-1',
-        channel: 'trunk',
-        queuedAt: '2020-01-01T00:00:00.000Z',
+        status: "updating",
+        requestId: "req-1",
+        channel: "trunk",
+        queuedAt: "2020-01-01T00:00:00.000Z",
       },
     },
-  })
+  });
 
-  const { maybeRepairUpdateFromDaemonBuildHello } = await import('./control-plane-monitor.ts')
+  const { maybeRepairUpdateFromDaemonBuildHello } = await import(
+    "./control-plane-monitor.ts"
+  );
   await maybeRepairUpdateFromDaemonBuildHello(
     db,
     serverId,
     {
-      commit: 'target-commit',
-      buildId: 'b1',
-      channel: 'trunk',
+      commit: "target-commit",
+      buildId: "b1",
+      channel: "trunk",
     },
-    'target-commit'
-  )
+    "target-commit",
+  );
 
-  const update = parseServerDaemonState(getDaemon())?.projection?.update
-  assertEquals(update?.status, 'done')
-  assertEquals(update?.requestId, 'req-1')
-})
+  const update = parseServerDaemonState(getDaemon())?.projection?.update;
+  assertEquals(update?.status, "done");
+  assertEquals(update?.requestId, "req-1");
+});
 
-test('onDaemonDisconnected defaults reason to disconnect', async () => {
-  resetServerStatusEventSinkForTests()
-  const events: ServerStatusEvent[] = []
+test("onDaemonDisconnected defaults reason to disconnect", async () => {
+  resetServerStatusEventSinkForTests();
+  const events: ServerStatusEvent[] = [];
   setServerStatusEventSink({
     writeStatusEvent(event) {
-      events.push(event)
+      events.push(event);
     },
-  })
+  });
   const { db } = createTrackingDb(
-    { key: baseKey, projection: { hostname: 'host-1' } },
+    { key: baseKey, projection: { hostname: "host-1" } },
     {
       connected: true,
-      statusChangedAt: '2020-01-01T00:00:00.000Z',
-    }
-  )
+      statusChangedAt: "2020-01-01T00:00:00.000Z",
+    },
+  );
 
-  await onDaemonDisconnected(db, serverId)
+  await onDaemonDisconnected(db, serverId);
 
-  assertEquals(events.length, 1)
-  assertEquals(events[0]?.reason, 'disconnect')
-  assertEquals(events[0]?.connected, false)
-  resetServerStatusEventSinkForTests()
-})
+  assertEquals(events.length, 1);
+  assertEquals(events[0]?.reason, "disconnect");
+  assertEquals(events[0]?.connected, false);
+  resetServerStatusEventSinkForTests();
+});
 
-test('onDaemonDisconnected accepts sweep_stale reason', async () => {
-  resetServerStatusEventSinkForTests()
-  const events: ServerStatusEvent[] = []
+test("onDaemonDisconnected accepts sweep_stale reason", async () => {
+  resetServerStatusEventSinkForTests();
+  const events: ServerStatusEvent[] = [];
   setServerStatusEventSink({
     writeStatusEvent(event) {
-      events.push(event)
+      events.push(event);
     },
-  })
+  });
   const { db } = createTrackingDb(
-    { key: baseKey, projection: { hostname: 'host-1' } },
+    { key: baseKey, projection: { hostname: "host-1" } },
     {
       connected: true,
-      statusChangedAt: '2020-01-01T00:00:00.000Z',
-    }
-  )
+      statusChangedAt: "2020-01-01T00:00:00.000Z",
+    },
+  );
 
-  await onDaemonDisconnected(db, serverId, undefined, 'sweep_stale')
+  await onDaemonDisconnected(db, serverId, undefined, "sweep_stale");
 
-  assertEquals(events.length, 1)
-  assertEquals(events[0]?.reason, 'sweep_stale')
-  resetServerStatusEventSinkForTests()
-})
+  assertEquals(events.length, 1);
+  assertEquals(events[0]?.reason, "sweep_stale");
+  resetServerStatusEventSinkForTests();
+});
 
-test('onDaemonConnectedFromEvidence emits self_heal; onDaemonConnected emits connect', async () => {
-  resetServerStatusEventSinkForTests()
-  const events: ServerStatusEvent[] = []
+test("onDaemonConnectedFromEvidence emits self_heal; onDaemonConnected emits connect", async () => {
+  resetServerStatusEventSinkForTests();
+  const events: ServerStatusEvent[] = [];
   setServerStatusEventSink({
     writeStatusEvent(event) {
-      events.push(event)
+      events.push(event);
     },
-  })
+  });
 
   const evidence = createTrackingDb(
-    { key: baseKey, projection: { hostname: 'host-1' } },
+    { key: baseKey, projection: { hostname: "host-1" } },
     {
       connected: false,
-      statusChangedAt: '2020-01-01T00:00:00.000Z',
-    }
-  )
-  await onDaemonConnectedFromEvidence(evidence.db, serverId, '2020-01-01T00:00:00.000Z')
-  assertEquals(events.length, 1)
-  assertEquals(events[0]?.reason, 'self_heal')
-  assertEquals(events[0]?.connected, true)
+      statusChangedAt: "2020-01-01T00:00:00.000Z",
+    },
+  );
+  await onDaemonConnectedFromEvidence(
+    evidence.db,
+    serverId,
+    "2020-01-01T00:00:00.000Z",
+  );
+  assertEquals(events.length, 1);
+  assertEquals(events[0]?.reason, "self_heal");
+  assertEquals(events[0]?.connected, true);
 
-  events.length = 0
+  events.length = 0;
   const socket = createTrackingDb(
-    { key: baseKey, projection: { hostname: 'host-1' } },
+    { key: baseKey, projection: { hostname: "host-1" } },
     {
       connected: false,
-      statusChangedAt: '2020-01-01T00:00:00.000Z',
-    }
-  )
+      statusChangedAt: "2020-01-01T00:00:00.000Z",
+    },
+  );
   await onDaemonConnected(
     socket.db,
     serverId,
     createMockCell({
       connected: true,
-      connectedAt: '2020-06-01T00:00:00.000Z',
+      connectedAt: "2020-06-01T00:00:00.000Z",
     }) as never,
-    '2020-06-01T00:00:00.000Z'
-  )
-  assertEquals(events.length, 1)
-  assertEquals(events[0]?.reason, 'connect')
-  resetServerStatusEventSinkForTests()
-})
+    "2020-06-01T00:00:00.000Z",
+  );
+  assertEquals(events.length, 1);
+  assertEquals(events[0]?.reason, "connect");
+  resetServerStatusEventSinkForTests();
+});
 
-test('repairStaleProjectedUpdate expires when the daemon commit does not match trunk', async () => {
+test("repairStaleProjectedUpdate expires when the daemon commit does not match trunk", async () => {
   const { db, getDaemon } = createTrackingDb({
     key: baseKey,
     projection: {
       update: {
-        status: 'updating',
-        requestId: 'req-expire',
-        channel: 'trunk',
-        queuedAt: '2020-01-01T00:00:00.000Z',
+        status: "updating",
+        requestId: "req-expire",
+        channel: "trunk",
+        queuedAt: "2020-01-01T00:00:00.000Z",
       },
     },
-  })
+  });
 
-  const { repairStaleProjectedUpdate } = await import('./control-plane-monitor.ts')
+  const { repairStaleProjectedUpdate } = await import(
+    "./control-plane-monitor.ts"
+  );
   const repaired = await repairStaleProjectedUpdate(
     db,
     serverId,
     {
-      status: 'updating',
-      requestId: 'req-expire',
-      channel: 'trunk',
-      queuedAt: '2020-01-01T00:00:00.000Z',
+      status: "updating",
+      requestId: "req-expire",
+      channel: "trunk",
+      queuedAt: "2020-01-01T00:00:00.000Z",
     },
     {
-      currentCommit: 'old-commit',
-      targetCommit: 'new-commit',
+      currentCommit: "old-commit",
+      targetCommit: "new-commit",
     },
-  )
+  );
 
-  assertEquals(repaired, true)
-  const update = parseServerDaemonState(getDaemon())?.projection?.update
-  assertEquals(update?.status, 'expired')
-  assertEquals(update?.requestId, 'req-expire')
-})
+  assertEquals(repaired, true);
+  const update = parseServerDaemonState(getDaemon())?.projection?.update;
+  assertEquals(update?.status, "expired");
+  assertEquals(update?.requestId, "req-expire");
+});
 
-test('maybeRepairUpdateFromDaemonBuildHello uses the trunk manifest when targetCommit is omitted', async () => {
-  resetUpdateManifestCacheForTests()
+test("maybeRepairUpdateFromDaemonBuildHello uses the trunk manifest when targetCommit is omitted", async () => {
+  resetUpdateManifestCacheForTests();
   seedUpdateManifestCacheForTests({
-    commit: 'manifest-commit',
-    buildId: 'b-manifest',
-    builtAt: '2020-01-01T00:00:00.000Z',
-    channel: 'trunk',
-    manifestUrl: 'https://dl.trbp.nl/channels/trunk/manifest.json',
-  })
+    commit: "manifest-commit",
+    buildId: "b-manifest",
+    builtAt: "2020-01-01T00:00:00.000Z",
+    channel: "trunk",
+    manifestUrl: "https://dl.trbp.nl/channels/trunk/manifest.json",
+  });
   const { db, getDaemon } = createTrackingDb({
     key: baseKey,
     projection: {
       update: {
-        status: 'updating',
-        requestId: 'req-manifest',
-        channel: 'trunk',
-        queuedAt: '2020-01-01T00:00:00.000Z',
+        status: "updating",
+        requestId: "req-manifest",
+        channel: "trunk",
+        queuedAt: "2020-01-01T00:00:00.000Z",
       },
     },
-  })
+  });
 
-  const { maybeRepairUpdateFromDaemonBuildHello } = await import('./control-plane-monitor.ts')
+  const { maybeRepairUpdateFromDaemonBuildHello } = await import(
+    "./control-plane-monitor.ts"
+  );
   await maybeRepairUpdateFromDaemonBuildHello(
     db,
     serverId,
-    { commit: 'manifest-commit', buildId: 'b1', channel: 'trunk' },
-  )
+    { commit: "manifest-commit", buildId: "b1", channel: "trunk" },
+  );
 
-  const update = parseServerDaemonState(getDaemon())?.projection?.update
-  assertEquals(update?.status, 'done')
-  resetUpdateManifestCacheForTests()
-})
+  const update = parseServerDaemonState(getDaemon())?.projection?.update;
+  assertEquals(update?.status, "done");
+  resetUpdateManifestCacheForTests();
+});
 
-test('maybeRepairUpdateFromDaemonBuildHello no-ops without a commit or idle update', async () => {
+test("maybeRepairUpdateFromDaemonBuildHello no-ops without a commit or idle update", async () => {
   const { db, getDaemon } = createTrackingDb({
     key: baseKey,
     projection: {
       update: {
-        status: 'idle',
-        requestId: 'req-idle',
+        status: "idle",
+        requestId: "req-idle",
       },
     },
-  })
+  });
 
-  const { maybeRepairUpdateFromDaemonBuildHello } = await import('./control-plane-monitor.ts')
-  await maybeRepairUpdateFromDaemonBuildHello(db, serverId)
+  const { maybeRepairUpdateFromDaemonBuildHello } = await import(
+    "./control-plane-monitor.ts"
+  );
+  await maybeRepairUpdateFromDaemonBuildHello(db, serverId);
   await maybeRepairUpdateFromDaemonBuildHello(
     db,
     serverId,
-    { commit: 'other', buildId: 'b1' },
-  )
+    { commit: "other", buildId: "b1" },
+  );
 
-  const update = parseServerDaemonState(getDaemon())?.projection?.update
-  assertEquals(update?.status, 'idle')
-})
+  const update = parseServerDaemonState(getDaemon())?.projection?.update;
+  assertEquals(update?.status, "idle");
+});
 
-test('onDaemonHeartbeat skips Postgres when the server row is missing', async () => {
+test("onDaemonHeartbeat skips Postgres when the server row is missing", async () => {
   const db = {
     select: () => ({
       from: () => ({
         innerJoin: () => ({
           where: () => {
-            const rows = Promise.resolve([])
-            return Object.assign(rows, { limit: () => rows })
+            const rows = Promise.resolve([]);
+            return Object.assign(rows, { limit: () => rows });
           },
         }),
       }),
     }),
     update: () => {
-      throw new TypeError('heartbeat must not write when the server is missing')
+      throw new TypeError(
+        "heartbeat must not write when the server is missing",
+      );
     },
-  } as unknown as Db
+  } as unknown as Db;
 
   const daemonBuild = {
-    commit: 'missing-row',
-    buildId: 'b-missing',
-    channel: 'trunk' as const,
-  }
+    commit: "missing-row",
+    buildId: "b-missing",
+    channel: "trunk" as const,
+  };
   await onDaemonHeartbeat(
     db,
     serverId,
     createMockCell({
       connected: true,
-      lastSeenAt: '2020-01-01T00:00:00.000Z',
-      daemonBuild: { commit: 'other', buildId: 'other-build' },
+      lastSeenAt: "2020-01-01T00:00:00.000Z",
+      daemonBuild: { commit: "other", buildId: "other-build" },
     }) as never,
     daemonBuild,
-  )
-})
+  );
+});
 
-test('sweepStalePresence demotes online servers whose cell reports stale', async () => {
-  resetServerStatusEventSinkForTests()
-  const events: ServerStatusEvent[] = []
+test("sweepStalePresence demotes online servers whose cell reports stale", async () => {
+  resetServerStatusEventSinkForTests();
+  const events: ServerStatusEvent[] = [];
   setServerStatusEventSink({
     writeStatusEvent(event) {
-      events.push(event)
+      events.push(event);
     },
-  })
+  });
   const { db } = createTrackingDb(
-    { key: baseKey, projection: { hostname: 'host-1' } },
+    { key: baseKey, projection: { hostname: "host-1" } },
     {
       connected: true,
-      statusChangedAt: '2020-01-01T00:00:00.000Z',
+      statusChangedAt: "2020-01-01T00:00:00.000Z",
     },
-  )
+  );
 
   const registry = {
     listOnlineServerIds: () => Promise.resolve([serverId]),
@@ -1130,42 +1187,42 @@ test('sweepStalePresence demotes online servers whose cell reports stale', async
           version: 1,
           updatedAt: new Date().toISOString(),
           connected: false,
-          hostname: 'host-1',
+          hostname: "host-1",
           machineKey: TEST_MACHINE_KEY,
         }),
     }),
     getSnapshots: () => {
-      throw new TypeError('unused')
+      throw new TypeError("unused");
     },
     purge: () => Promise.resolve(),
-    client: {} as RedisDaemonCellRegistry['client'],
+    client: {} as RedisDaemonCellRegistry["client"],
     maintain: () => Promise.resolve(),
     reclaimOrphanedSocketLeasesOnStartup: () => Promise.resolve(),
     close: () => Promise.resolve(),
-  } as unknown as RedisDaemonCellRegistry
+  } as unknown as RedisDaemonCellRegistry;
 
-  await sweepStalePresence(db, registry)
+  await sweepStalePresence(db, registry);
 
-  assertEquals(events.length, 1)
-  assertEquals(events[0]?.reason, 'sweep_stale')
-  resetServerStatusEventSinkForTests()
-})
+  assertEquals(events.length, 1);
+  assertEquals(events[0]?.reason, "sweep_stale");
+  resetServerStatusEventSinkForTests();
+});
 
-test('sweepStalePresence skips servers whose presence is still live', async () => {
-  resetServerStatusEventSinkForTests()
-  const events: ServerStatusEvent[] = []
+test("sweepStalePresence skips servers whose presence is still live", async () => {
+  resetServerStatusEventSinkForTests();
+  const events: ServerStatusEvent[] = [];
   setServerStatusEventSink({
     writeStatusEvent(event) {
-      events.push(event)
+      events.push(event);
     },
-  })
+  });
   const { db } = createTrackingDb(
-    { key: baseKey, projection: { hostname: 'host-1' } },
+    { key: baseKey, projection: { hostname: "host-1" } },
     {
       connected: true,
-      statusChangedAt: '2020-01-01T00:00:00.000Z',
+      statusChangedAt: "2020-01-01T00:00:00.000Z",
     },
-  )
+  );
 
   const registry = {
     listOnlineServerIds: () => Promise.resolve([serverId]),
@@ -1173,20 +1230,20 @@ test('sweepStalePresence skips servers whose presence is still live', async () =
       reconcileStalePresence: () => Promise.resolve(false),
     }),
     getSnapshots: () => {
-      throw new TypeError('unused')
+      throw new TypeError("unused");
     },
     purge: () => Promise.resolve(),
-    client: {} as RedisDaemonCellRegistry['client'],
+    client: {} as RedisDaemonCellRegistry["client"],
     maintain: () => Promise.resolve(),
     reclaimOrphanedSocketLeasesOnStartup: () => Promise.resolve(),
     close: () => Promise.resolve(),
-  } as unknown as RedisDaemonCellRegistry
+  } as unknown as RedisDaemonCellRegistry;
 
-  await sweepStalePresence(db, registry)
+  await sweepStalePresence(db, registry);
 
-  assertEquals(events.length, 0)
-  resetServerStatusEventSinkForTests()
-})
+  assertEquals(events.length, 0);
+  resetServerStatusEventSinkForTests();
+});
 
 /**
  * The self-hosted half of daemon-offline alerting. The first pass wired it
@@ -1204,107 +1261,118 @@ function stalePresenceRegistry(serverIds: string[]): RedisDaemonCellRegistry {
           version: 1,
           updatedAt: new Date().toISOString(),
           connected: false,
-          hostname: 'host-1',
+          hostname: "host-1",
           machineKey: TEST_MACHINE_KEY,
         }),
     }),
     getSnapshots: () => {
-      throw new TypeError('unused')
+      throw new TypeError("unused");
     },
     purge: () => Promise.resolve(),
-    client: {} as RedisDaemonCellRegistry['client'],
+    client: {} as RedisDaemonCellRegistry["client"],
     maintain: () => Promise.resolve(),
     reclaimOrphanedSocketLeasesOnStartup: () => Promise.resolve(),
     close: () => Promise.resolve(),
-  } as unknown as RedisDaemonCellRegistry
+  } as unknown as RedisDaemonCellRegistry;
 }
 
 async function settle(): Promise<void> {
   for (let i = 0; i < 40; i++) {
-    await new Promise((resolve) => setTimeout(resolve, 5))
+    await new Promise((resolve) => setTimeout(resolve, 5));
   }
 }
 
-test('sweepStalePresence alerts on the servers it demoted', async () => {
-  resetServerStatusEventSinkForTests()
-  setServerStatusEventSink({ writeStatusEvent() {} })
+test("sweepStalePresence alerts on the servers it demoted", async () => {
+  resetServerStatusEventSinkForTests();
+  setServerStatusEventSink({ writeStatusEvent() {} });
   const { db } = createTrackingDb(
-    { key: baseKey, projection: { hostname: 'host-1' } },
-    { connected: true, statusChangedAt: '2020-01-01T00:00:00.000Z' },
-  )
-  const alerts: Alert[] = []
+    { key: baseKey, projection: { hostname: "host-1" } },
+    { connected: true, statusChangedAt: "2020-01-01T00:00:00.000Z" },
+  );
+  const alerts: Alert[] = [];
 
-  await sweepStalePresence(db, stalePresenceRegistry([serverId]), () =>
-    Promise.resolve((alert) => {
-      alerts.push(alert)
-      return Promise.resolve()
-    }))
-  await settle()
+  await sweepStalePresence(
+    db,
+    stalePresenceRegistry([serverId]),
+    () =>
+      Promise.resolve((alert) => {
+        alerts.push(alert);
+        return Promise.resolve();
+      }),
+  );
+  await settle();
 
-  assertEquals(alerts.length, 1)
-  assertEquals(alerts[0].kind, 'server.offline')
-  assertEquals(alerts[0].detail, { serverId })
-  resetServerStatusEventSinkForTests()
-})
+  assertEquals(alerts.length, 1);
+  assertEquals(alerts[0].kind, "server.offline");
+  assertEquals(alerts[0].detail, { serverId });
+  resetServerStatusEventSinkForTests();
+});
 
-test('sweepStalePresence sends the aggregate first when the fleet goes dark together', async () => {
-  resetServerStatusEventSinkForTests()
-  setServerStatusEventSink({ writeStatusEvent() {} })
+test("sweepStalePresence sends the aggregate first when the fleet goes dark together", async () => {
+  resetServerStatusEventSinkForTests();
+  setServerStatusEventSink({ writeStatusEvent() {} });
   const { db } = createTrackingDb(
-    { key: baseKey, projection: { hostname: 'host-1' } },
-    { connected: true, statusChangedAt: '2020-01-01T00:00:00.000Z' },
-  )
-  const alerts: Alert[] = []
-  const ids = ['srv-a', 'srv-b', 'srv-c']
+    { key: baseKey, projection: { hostname: "host-1" } },
+    { connected: true, statusChangedAt: "2020-01-01T00:00:00.000Z" },
+  );
+  const alerts: Alert[] = [];
+  const ids = ["srv-a", "srv-b", "srv-c"];
 
-  await sweepStalePresence(db, stalePresenceRegistry(ids), () =>
-    Promise.resolve((alert) => {
-      alerts.push(alert)
-      return Promise.resolve()
-    }))
-  await settle()
+  await sweepStalePresence(
+    db,
+    stalePresenceRegistry(ids),
+    () =>
+      Promise.resolve((alert) => {
+        alerts.push(alert);
+        return Promise.resolve();
+      }),
+  );
+  await settle();
 
-  assertEquals(alerts[0].kind, 'fleet.mass_disconnect')
-  assertEquals(alerts[0].detail, { staleCount: 3, connectedBefore: 3 })
-  assertEquals(alerts.length, 4)
-  resetServerStatusEventSinkForTests()
-})
+  assertEquals(alerts[0].kind, "fleet.mass_disconnect");
+  assertEquals(alerts[0].detail, { staleCount: 3, connectedBefore: 3 });
+  assertEquals(alerts.length, 4);
+  resetServerStatusEventSinkForTests();
+});
 
-test('a hung webhook does not hold the liveness lane', async () => {
+test("a hung webhook does not hold the liveness lane", async () => {
   // This runs on the Deno maintenance scheduler's liveness lane, which refuses
   // to overlap itself — so awaiting a webhook here would skip every
   // stale-presence tick until it returned. Demotions land, the sweep returns,
   // the alert goes out behind it.
-  resetServerStatusEventSinkForTests()
-  const events: ServerStatusEvent[] = []
+  resetServerStatusEventSinkForTests();
+  const events: ServerStatusEvent[] = [];
   setServerStatusEventSink({
     writeStatusEvent(event) {
-      events.push(event)
+      events.push(event);
     },
-  })
+  });
   const { db } = createTrackingDb(
-    { key: baseKey, projection: { hostname: 'host-1' } },
-    { connected: true, statusChangedAt: '2020-01-01T00:00:00.000Z' },
-  )
+    { key: baseKey, projection: { hostname: "host-1" } },
+    { connected: true, statusChangedAt: "2020-01-01T00:00:00.000Z" },
+  );
 
-  const startedAt = Date.now()
-  await sweepStalePresence(db, stalePresenceRegistry([serverId]), () =>
-    Promise.resolve(() => new Promise<void>(() => {})))
+  const startedAt = Date.now();
+  await sweepStalePresence(
+    db,
+    stalePresenceRegistry([serverId]),
+    () => Promise.resolve(() => new Promise<void>(() => {})),
+  );
 
-  assertEquals(Date.now() - startedAt < 1_000, true)
-  assertEquals(events.length, 1)
-  assertEquals(events[0]?.reason, 'sweep_stale')
-  resetServerStatusEventSinkForTests()
-})
+  assertEquals(Date.now() - startedAt < 1_000, true);
+  assertEquals(events.length, 1);
+  assertEquals(events[0]?.reason, "sweep_stale");
+  resetServerStatusEventSinkForTests();
+});
 
-test('no demotions means no settings read and no alert', async () => {
-  resetServerStatusEventSinkForTests()
-  setServerStatusEventSink({ writeStatusEvent() {} })
+test("no demotions means no settings read and no alert", async () => {
+  resetServerStatusEventSinkForTests();
+  setServerStatusEventSink({ writeStatusEvent() {} });
   const { db } = createTrackingDb(
-    { key: baseKey, projection: { hostname: 'host-1' } },
-    { connected: true, statusChangedAt: '2020-01-01T00:00:00.000Z' },
-  )
-  let resolved = 0
+    { key: baseKey, projection: { hostname: "host-1" } },
+    { connected: true, statusChangedAt: "2020-01-01T00:00:00.000Z" },
+  );
+  let resolved = 0;
 
   const registry = {
     ...stalePresenceRegistry([serverId]),
@@ -1312,14 +1380,14 @@ test('no demotions means no settings read and no alert', async () => {
       reconcileStalePresence: () => Promise.resolve(false),
       getSnapshot: () => Promise.resolve({}),
     }),
-  } as unknown as RedisDaemonCellRegistry
+  } as unknown as RedisDaemonCellRegistry;
 
   await sweepStalePresence(db, registry, () => {
-    resolved++
-    return Promise.resolve(() => Promise.resolve())
-  })
-  await settle()
+    resolved++;
+    return Promise.resolve(() => Promise.resolve());
+  });
+  await settle();
 
-  assertEquals(resolved, 0)
-  resetServerStatusEventSinkForTests()
-})
+  assertEquals(resolved, 0);
+  resetServerStatusEventSinkForTests();
+});

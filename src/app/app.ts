@@ -6,7 +6,10 @@ import type {
   DerivedSecretsConfig,
   SecretsConfig,
 } from "../lib/secrets/secrets.ts";
-import { type ClientRouteOpts, registerClientRoutes } from "../client/routes.ts";
+import {
+  type ClientRouteOpts,
+  registerClientRoutes,
+} from "../client/routes.ts";
 import { createBrowserWriteProtectionMiddleware } from "./browser-write-protection.ts";
 import { registerCorsMiddleware } from "./cors.ts";
 import type { DaemonCellRegistry } from "../contracts/cell.ts";
@@ -19,9 +22,12 @@ import type { EmailQueue } from "../features/email/types.ts";
 import type { QueryCache } from "../query-cache/contracts.ts";
 import type { BillingConfig } from "../features/billing/config.ts";
 import { HEALTH_PATH } from "./surfaces.ts";
-import { healthPayload } from "./build-info.ts";
+import { healthPayload, resolveInstanceRevision } from "./build-info.ts";
 import { INSTANCE_VERSION } from "./version.ts";
-import { INSTANCE_VERSION_HEADER } from "../lib/version-wire.ts";
+import {
+  INSTANCE_REVISION_HEADER,
+  INSTANCE_VERSION_HEADER,
+} from "../lib/version-wire.ts";
 
 export type AppEnv = {
   Variables: {
@@ -220,6 +226,10 @@ export function createApp({
     await next();
     if (isUpgrade || c.res.status === 101) return;
     c.header(INSTANCE_VERSION_HEADER, INSTANCE_VERSION);
+    const revision = resolveInstanceRevision(c.get("platformEnv"));
+    if (revision.commit && revision.commit !== "unknown") {
+      c.header(INSTANCE_REVISION_HEADER, revision.commit);
+    }
   });
   app.get("/", (c) => c.text("TurboPanel"));
   app.get(HEALTH_PATH, (c) => c.json(healthPayload(c.get("platformEnv"))));

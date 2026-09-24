@@ -28,6 +28,7 @@ import {
   SELF_HEAL_SWEEP_BUDGET,
   shouldSweepExecutionLogs,
   shouldSweepTierNotices,
+  shouldSweepUpgradeHistory,
   sweepExpiredCommandDispatchSafely,
   sweepExpiredExecutionLogsSafely,
   sweepExpiredWebhookDeliveriesSafely,
@@ -661,6 +662,21 @@ it("shouldSweepExecutionLogs is true on every 15th UTC minute", () => {
   );
   assertEquals(
     shouldSweepExecutionLogs(Date.parse("2026-01-01T00:01:00.000Z")),
+    false,
+  );
+});
+
+it("shouldSweepUpgradeHistory is true on every 15th UTC minute", () => {
+  assertEquals(
+    shouldSweepUpgradeHistory(Date.parse("2026-01-01T00:00:00.000Z")),
+    true,
+  );
+  assertEquals(
+    shouldSweepUpgradeHistory(Date.parse("2026-01-01T00:15:00.000Z")),
+    true,
+  );
+  assertEquals(
+    shouldSweepUpgradeHistory(Date.parse("2026-01-01T00:01:00.000Z")),
     false,
   );
 });

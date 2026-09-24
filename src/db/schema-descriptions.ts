@@ -97,6 +97,11 @@ export const DATA_DICTIONARY_GROUPS = {
     blurb:
       "Enrolled servers and their daemon keys, the command / dispatch pipeline, deployments, slots, tasks, labels, and the metrics topology generations.",
   },
+  upgrades: {
+    title: "Upgrades",
+    blurb:
+      "Instance-wide upgrade runs and the per-server daemon and instance steps that belong to them.",
+  },
   git: {
     title: "Git and SSH",
     blurb:
@@ -1645,6 +1650,71 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         "One catalogue event code, or `*` for every event; unique per channel.",
       min_severity:
         "Severity floor `info` (default), `warning` or `critical`; delivered only when the event's severity ranks at or above it.",
+    },
+  },
+  upgrade: {
+    group: "upgrades",
+    summary:
+      "One instance-wide upgrade run, written by the upgrade orchestrator, with at most one `pending` or `running` row.",
+    columns: {
+      source:
+        "Who started the run: `manual` from the panel, `auto` from the scheduler, or `server` for a single-host request.",
+      channel:
+        "Update channel the run follows (`trunk`, `canary`, `rc` or `release`), copied from the instance when the run is created.",
+      target:
+        "Pins for `daemon`, `instance` and `ui`: version, commit, build id, built-at time and pinned manifest URL; NULL until resolved.",
+      status:
+        "Lifecycle `pending`, `running`, `succeeded`, `partially_failed`, `failed` or `cancelled`; the orchestrator advances it.",
+      phase:
+        "Current wave `colocated_daemon`, `control_plane` or `fleet`; NULL until the orchestrator enters the first wave.",
+      started_by:
+        "User who started a manual run; NULL for an automatic run and after that account is deleted.",
+      batch_policy:
+        "Snapshot of upgrade settings (auto-update, batch size and maintenance window) taken when the run starts.",
+      preflight:
+        "Checks recorded before the first dispatch: blockers, version floors and which units this run will touch.",
+      counts:
+        "Terminal step totals written when the run finishes, so the summary remains after old steps are pruned.",
+      error:
+        "Run-level failure text when the status is `failed` or `partially_failed`; NULL on success.",
+      started_at:
+        "When the orchestrator moved the run from `pending` to `running`.",
+      finished_at: "When the run reached a terminal status.",
+    },
+  },
+  upgradestep: {
+    group: "upgrades",
+    summary:
+      "One `daemon` or `instance` install on one server inside an upgrade run, advanced by the orchestrator until a terminal outcome.",
+    columns: {
+      unit:
+        "`daemon` or `instance`: the package this step installs on its server.",
+      batch_index:
+        "Zero-based wave index within the run; steps that share an index are dispatched together.",
+      status:
+        "`pending`/`waiting`/`dispatched`/`preparing`/`downloading`/`installing`/`restarting`/`verifying`/`done`/`failed`/`rolled_back`/`needs_attention`/`skipped`.",
+      request_id:
+        "Cell correlation id for the in-flight install; NULL until the step is dispatched.",
+      attempts:
+        "Dispatch count for this step, starting at 0 and incremented before each retry.",
+      next_attempt_at:
+        "Earliest time a non-terminal step may be retried; NULL when no retry is scheduled.",
+      from_version:
+        "Version installed before this step ran; NULL when the host had none.",
+      to_version:
+        "Version this step installs, copied from the run target for `unit`.",
+      from_commit:
+        "Commit installed before this step ran; NULL when it was unknown.",
+      to_commit:
+        "Commit this step installs, copied from the run target for `unit`.",
+      last_stage_at:
+        "When `status` last changed, so a step stuck in one stage can be detected.",
+      error_code:
+        "Machine-readable code when the step fails, rolls back or needs attention.",
+      error_message:
+        "Human-readable failure text set alongside `error_code`.",
+      detail:
+        "Small stage facts such as bytes fetched or an exit code; the orchestrator writes it, never a transcript.",
     },
   },
 };

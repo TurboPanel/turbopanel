@@ -32,6 +32,8 @@ export type ServerDaemonProjection = {
     version?: string;
   };
   update?: UpdateProjection;
+  /** Advertised wire features from `hello`. Missing on disk means none. */
+  features?: string[];
 };
 
 /** Fleet liveness — stored on dedicated `server` columns, not `server.daemon`. */
@@ -133,6 +135,39 @@ function parseProjectionDaemonBuild(
   return result;
 }
 
+function parseProjectionFeatures(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const features: string[] = [];
+  for (const entry of raw) {
+    if (typeof entry !== "string") return undefined;
+    features.push(entry);
+  }
+  return features;
+}
+
+/** True when the stored list is the same sequence as `next`. A missing list is not `[]`. */
+export function featuresMatch(
+  current: readonly string[] | undefined,
+  next: readonly string[],
+): boolean {
+  if (current === undefined || current.length !== next.length) return false;
+  for (let i = 0; i < current.length; i += 1) {
+    if (current[i] !== next[i]) return false;
+  }
+  return true;
+}
+
+/** Copy `current` and set `features`. Does not drop hostname, daemonBuild, or update. */
+export function projectionWithFeatures(
+  current: ServerDaemonProjection | undefined,
+  features: readonly string[],
+): ServerDaemonProjection {
+  return {
+    ...current,
+    features: [...features],
+  };
+}
+
 function parseServerDaemonProjection(
   raw: unknown,
 ): ServerDaemonProjection | null {
@@ -142,6 +177,7 @@ function parseServerDaemonProjection(
   const projection = raw as Record<string, unknown>;
   const parsedDaemonBuild = parseProjectionDaemonBuild(projection.daemonBuild);
   const parsedUpdate = parseUpdateProjection(projection.update);
+  const parsedFeatures = parseProjectionFeatures(projection.features);
 
   const parsed: ServerDaemonProjection = {
     hostname: isNonEmptyString(projection.hostname)
@@ -156,6 +192,7 @@ function parseServerDaemonProjection(
     keyId: isNonEmptyString(projection.keyId) ? projection.keyId : undefined,
     ...(parsedDaemonBuild ? { daemonBuild: parsedDaemonBuild } : {}),
     ...(parsedUpdate ? { update: parsedUpdate } : {}),
+    ...(parsedFeatures !== undefined ? { features: parsedFeatures } : {}),
   };
 
   if (
@@ -164,7 +201,8 @@ function parseServerDaemonProjection(
     parsed.remoteAddress === undefined &&
     parsed.keyId === undefined &&
     parsed.daemonBuild === undefined &&
-    parsed.update === undefined
+    parsed.update === undefined &&
+    parsed.features === undefined
   ) {
     return null;
   }

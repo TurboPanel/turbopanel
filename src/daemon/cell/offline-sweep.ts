@@ -93,6 +93,11 @@ import {
   WEBHOOK_DELIVERY_SWEEP_LIMIT,
 } from "../../features/webhook-delivery/webhook-delivery-records.ts";
 import {
+  parseUpgradeStepRetentionDays,
+  pruneUpgradeHistory,
+} from "../../features/upgrades/prune.ts";
+import { runUpgradeMaintenance } from "../../features/upgrades/maintenance.ts";
+import {
   type AnalyticsEngineDatasetLike,
   resolveServerMetricsStore,
 } from "../metrics/store-selection-workers.ts";
@@ -217,6 +222,15 @@ export function takeLastOfflineSweepScheduledTimeForTests():
 export function shouldSweepExecutionLogs(scheduledTimeMs: number): boolean {
   const minute = Math.floor(scheduledTimeMs / 60_000);
   return minute % EXECUTION_LOG_SWEEP_MINUTE_DIVISOR === 0;
+}
+
+/** Upgrade-history prune shares the execution-log 15-minute window. */
+export const UPGRADE_HISTORY_SWEEP_MINUTE_DIVISOR =
+  EXECUTION_LOG_SWEEP_MINUTE_DIVISOR;
+
+export function shouldSweepUpgradeHistory(scheduledTimeMs: number): boolean {
+  const minute = Math.floor(scheduledTimeMs / 60_000);
+  return minute % UPGRADE_HISTORY_SWEEP_MINUTE_DIVISOR === 0;
 }
 
 export function shouldSweepTierNotices(scheduledTimeMs: number): boolean {
@@ -1031,6 +1045,50 @@ export async function sweepExpiredWebhookDeliveriesSafely(
 }
 
 /**
+ * Prune aged upgrade steps and terminal runs. Rides this cron's already-open
+ * db on the 15-minute window and is isolated so a failure never aborts the
+ * other sweeps.
+ */
+export async function sweepUpgradeHistorySafely(
+  db: Db,
+  doneRetentionDays?: number,
+): Promise<void> {
+  try {
+    const counts = await pruneUpgradeHistory(db, { doneRetentionDays });
+    if (counts.doneSteps > 0 || counts.failedSteps > 0 || counts.runs > 0) {
+      sweepTrace("upgrade-history-swept", counts);
+    }
+  } catch (err) {
+    sweepTrace("upgrade-history-sweep-failed", {
+      error: sweepErrorMessage(err),
+    });
+  }
+}
+
+/**
+ * Advance managed upgrades on the same 15-minute window as history prune.
+ * Manifest fetches are cached. Dispatch is capped inside the coordinator.
+ */
+export async function runUpgradeMaintenanceSafely(
+  db: Db,
+  env: CloudflareBindings,
+): Promise<void> {
+  try {
+    const registry = createDurableObjectDaemonCellRegistry(env, db);
+    await runUpgradeMaintenance({
+      db,
+      registry,
+      runtime: "workers",
+      resolveManifests: true,
+      env: env as unknown as Record<string, string | undefined>,
+    });
+    sweepTrace("upgrade-tick");
+  } catch (err) {
+    sweepTrace("upgrade-tick-failed", { error: sweepErrorMessage(err) });
+  }
+}
+
+/**
  * Delete command transcripts past their retention window. Rides this cron's
  * existing tick (no new timer, no new connection) and is isolated so a storage
  * failure never aborts the other sweeps.
@@ -1113,6 +1171,9 @@ function optionalPhaseNames(scheduledTime: number | undefined): string[] {
   const names = ["command-dispatch", "webhook-deliveries"];
   if (shouldRunScheduledPhase(scheduledTime, shouldSweepExecutionLogs)) {
     names.push("execution-logs");
+  }
+  if (shouldRunScheduledPhase(scheduledTime, shouldSweepUpgradeHistory)) {
+    names.push("upgrade-history");
   }
   if (shouldRunScheduledPhase(scheduledTime, shouldSweepTierNotices)) {
     names.push("tier-notices");
@@ -1240,11 +1301,13 @@ async function workersNotificationEmail(
       platformEnv,
       tlsRenewal?.dataEncryptionSecrets,
     );
-    const publicUrls = platformEnv.TURBOPANEL_PUBLIC_URLS?.split(",")[0]?.trim();
+    const publicUrls = platformEnv.TURBOPANEL_PUBLIC_URLS?.split(",")[0]
+      ?.trim();
     return {
       queue,
       from: settings.from,
-      consoleBaseUrl: platformEnv.TURBOPANEL_BASE_URL?.trim() || publicUrls || null,
+      consoleBaseUrl: platformEnv.TURBOPANEL_BASE_URL?.trim() || publicUrls ||
+        null,
     };
   } catch {
     return undefined;
@@ -1410,6 +1473,33 @@ async function runOptionalCronPhases(
       phasesSkipped,
       shouldSweepExecutionLogs,
       () => sweepExecutionLogsPhase(env, opts),
+    ))
+  ) {
+    return;
+  }
+
+  if (
+    !(await runScheduledOptionalPhase(
+      deadlineMs,
+      "upgrade-history",
+      opts.scheduledTime,
+      phasesSkipped,
+      shouldSweepUpgradeHistory,
+      async () => {
+        await runWithDbTimeout(
+          db,
+          (database) =>
+            sweepUpgradeHistorySafely(
+              database,
+              parseUpgradeStepRetentionDays(
+                (env as { TURBOPANEL_UPGRADE_STEP_RETENTION_DAYS?: string })
+                  .TURBOPANEL_UPGRADE_STEP_RETENTION_DAYS,
+              ),
+            ),
+          capDbTimeout(deadlineMs),
+        );
+        await runUpgradeMaintenanceSafely(db, env);
+      },
     ))
   ) {
     return;

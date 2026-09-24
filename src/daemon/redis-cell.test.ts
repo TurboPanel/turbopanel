@@ -9,7 +9,13 @@ import {
   type ServerDaemonState,
   type ServerDaemonStatus,
 } from "../features/servers/daemon-state.ts";
-import { sweepStalePresence, onDaemonInbound, onDaemonConnected, onDaemonHeartbeat } from "./cell/control-plane-monitor.ts";
+import { materializeDaemonJsonbWrite } from "./cell/daemon-jsonb-write.ts";
+import {
+  onDaemonConnected,
+  onDaemonHeartbeat,
+  onDaemonInbound,
+  sweepStalePresence,
+} from "./cell/control-plane-monitor.ts";
 import { RedisDaemonCell } from "./cell/redis/cell.ts";
 import {
   createRedisCellClient,
@@ -22,17 +28,21 @@ import {
 import {
   cellKeyPattern,
   connKey,
-  LEASE_TTL_MS,
   deliveryLeaseKey,
+  HEARTBEAT_COALESCE_MS,
+  LEASE_TTL_MS,
   leaseKey,
   metaKey,
   onlineSetKey,
   outboxKey,
   requestKey,
   snapshotKey,
-  HEARTBEAT_COALESCE_MS,
 } from "./cell/redis/keys.ts";
-import { generateDeliveryId, generateRequestId, DAEMON_OFFLINE_SWEEP_MS } from "../contracts/cell-protocol.ts";
+import {
+  DAEMON_OFFLINE_SWEEP_MS,
+  generateDeliveryId,
+  generateRequestId,
+} from "../contracts/cell-protocol.ts";
 
 const DEFAULT_SOCKET = Deno.env.get("TURBOPANEL_REDIS_SOCKET") ??
   "/run/turbopanel/redis.sock";
@@ -142,7 +152,7 @@ function assertNoMisattributedStorage(
  * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
  * reports Deno suites as empty; keep this alias so analysis sees real tests.
  */
-const test = Deno.test.bind(Deno)
+const test = Deno.test.bind(Deno);
 
 test(
   "getDiagnostics returns redis counters after attach, inbound, enqueue, detach",
@@ -668,7 +678,10 @@ function createProjectionTrackingDb(serverId: string): {
     update: () => ({
       set: (patch: Record<string, unknown>) => {
         if (patch.daemon !== undefined) {
-          daemon = patch.daemon as ServerDaemonState;
+          daemon = materializeDaemonJsonbWrite(
+            { projection: daemon.projection },
+            patch.daemon,
+          ) as ServerDaemonState;
         }
         return {
           where: () => Promise.resolve(undefined),
@@ -725,10 +738,15 @@ function createSweepMockDb(init: {
       set: (patch: Record<string, unknown>) => {
         updateCalls.push(patch);
         if (patch.daemon !== undefined) {
-          daemon = patch.daemon as ServerDaemonState;
+          daemon = materializeDaemonJsonbWrite(
+            { projection: daemon.projection },
+            patch.daemon,
+          ) as ServerDaemonState;
         }
         if ("hostname" in patch) hostname = patch.hostname as string | null;
-        if ("machineKey" in patch) machineKey = patch.machineKey as string | null;
+        if ("machineKey" in patch) {
+          machineKey = patch.machineKey as string | null;
+        }
         if ("isConnected" in patch) {
           columns.connected = patch.isConnected as boolean;
         }
@@ -1274,7 +1292,10 @@ test(
       keyId: crypto.randomUUID(),
     });
     const staleAt = new Date(Date.now() - 61_000).toISOString();
-    await client.hset(metaKey(serverId), { lastInboundAt: staleAt, lastSeenAt: staleAt });
+    await client.hset(metaKey(serverId), {
+      lastInboundAt: staleAt,
+      lastSeenAt: staleAt,
+    });
 
     const at = new Date().toISOString();
     await cell.recordInbound({
@@ -1294,7 +1315,10 @@ test(
       keyId: crypto.randomUUID(),
     });
     const staleAt = new Date(Date.now() - 61_000).toISOString();
-    await client.hset(metaKey(serverId), { lastInboundAt: staleAt, lastSeenAt: staleAt });
+    await client.hset(metaKey(serverId), {
+      lastInboundAt: staleAt,
+      lastSeenAt: staleAt,
+    });
 
     const firstAt = new Date().toISOString();
     await cell.recordInbound({
@@ -1401,8 +1425,10 @@ test(
     });
 
     const diagAfterFirstResp = await cell.getDiagnostics();
-    const writesAfterAttach = diagAfterFirstResp.storageByCallSite["recordInbound"]?.writes ?? 0;
-    const readsAfterAttach = diagAfterFirstResp.storageByCallSite["recordInbound"]?.reads ?? 0;
+    const writesAfterAttach =
+      diagAfterFirstResp.storageByCallSite["recordInbound"]?.writes ?? 0;
+    const readsAfterAttach =
+      diagAfterFirstResp.storageByCallSite["recordInbound"]?.reads ?? 0;
 
     await cell.recordInbound({
       connectionId: attached.connectionId,
@@ -1410,8 +1436,10 @@ test(
     });
 
     const diagAfterSecond = await cell.getDiagnostics();
-    const writesAfterSecond = diagAfterSecond.storageByCallSite["recordInbound"]?.writes ?? 0;
-    const readsAfterSecond = diagAfterSecond.storageByCallSite["recordInbound"]?.reads ?? 0;
+    const writesAfterSecond =
+      diagAfterSecond.storageByCallSite["recordInbound"]?.writes ?? 0;
+    const readsAfterSecond =
+      diagAfterSecond.storageByCallSite["recordInbound"]?.reads ?? 0;
 
     assertEquals(writesAfterSecond, writesAfterAttach);
     assertEquals(readsAfterSecond, readsAfterAttach);
@@ -1422,8 +1450,10 @@ test(
     });
 
     const diagAfterWindow = await cell.getDiagnostics();
-    const writesAfterWindow = diagAfterWindow.storageByCallSite["recordInbound"]?.writes ?? 0;
-    const readsAfterWindow = diagAfterWindow.storageByCallSite["recordInbound"]?.reads ?? 0;
+    const writesAfterWindow =
+      diagAfterWindow.storageByCallSite["recordInbound"]?.writes ?? 0;
+    const readsAfterWindow =
+      diagAfterWindow.storageByCallSite["recordInbound"]?.reads ?? 0;
 
     assert(writesAfterWindow > writesAfterAttach);
     assert(readsAfterWindow > readsAfterAttach);
@@ -1634,7 +1664,9 @@ test(
     const hash = await client.hgetall(requestKey(serverId, requestId));
     assert(hash !== null);
     if (hash === null) {
-      throw new TypeError("expected retained request HASH after terminal status");
+      throw new TypeError(
+        "expected retained request HASH after terminal status",
+      );
     }
     assertEquals(hash.status, "done");
     assert(typeof hash.expiresAt === "string" && hash.expiresAt.length > 0);
@@ -1750,4 +1782,3 @@ test(
     );
   }),
 );
-

@@ -55,9 +55,14 @@ The **daemon is the constant** installed on every TurboPanel-managed host and is
 the only party that runs Ansible to install/update everything else (runtimes,
 users, the instance, UI, Caddy). The instance does not install itself. In
 co-located dev the daemon runs the `instance-dev-install` playbook (see
-`../turbopaneld/AGENTS.md`) when `TURBOPANEL_DEV_INSTANCE=1`. Nothing
-auto-updates — updates are operator-driven (admin **Upgrade System** button or
-**Sync Dev Build**).
+`../turbopaneld/AGENTS.md`) when `TURBOPANEL_DEV_INSTANCE=1`. Updates are
+**managed upgrades** (`src/features/upgrades/`): the maintenance tick resolves
+the channel manifests, records the latest available build, and drives
+fleet-aware upgrade runs — manual from the panel, or automatic (self-hosted when
+`autoUpdate` is on, Workers always) inside the maintenance window. Order is
+co-located daemon → control plane → fleet, with the fleet phase hard-gated on
+both being on target; Workers runs fleet-only (the control plane is
+deploy-managed). See `src/features/upgrades/AGENTS.md`.
 
 ## Users, group & socket permissions
 
@@ -382,6 +387,14 @@ guard; `pnpm test:do` alone does not.
   The first entry is `instance-cert-sources-per-hostname` at daemon **`0.1.1`**,
   the release that renders per-hostname certificate sources in
   `turbopaneld/orchestration/roles/instance-launch/templates/Caddyfile.j2`.
+  A release that introduces a new wire message leaves
+  `MIN_SUPPORTED_DAEMON_VERSION` and `MIN_SUPPORTED_INSTANCE_VERSION` where
+  they are. Each new message is feature-gated: the peer advertises support
+  in `features[]` (`DAEMON_WIRE_FEATURES`, kept equal in both
+  `version-wire.ts` files) and the daemon checks `instanceSupports()` before
+  treating the peer as able to speak it. `update-progress`
+  (`update-progress-v1`) is the worked example — fire-and-forget progress,
+  ignored by a peer that does not list the feature.
   Both wires are expand-only by convention.
 - **`pnpm notices:generate` / `notices:check`** — `THIRD_PARTY_NOTICES.md` from
   `pnpm-lock.yaml` plus the JSR/npm graph in `deno.lock`. Wired into `test:hook`

@@ -81,7 +81,7 @@ it("validateDaemonInboundFrame rejects oversized frames", () => {
   }
 });
 
-it("validateDaemonInboundFrame rejects disallowed types", () => {
+it("validateDaemonInboundFrame ignores an unknown well-formed type", () => {
   const result = validateDaemonInboundFrame(
     JSON.stringify({
       type: "echo",
@@ -90,6 +90,31 @@ it("validateDaemonInboundFrame rejects disallowed types", () => {
     }),
   );
   assertEquals(result.ok, false);
+  if (result.ok) return;
+  assertEquals(result.ignored, true);
+  assertEquals(result.reason, "disallowed type echo");
+});
+
+it("validateDaemonInboundFrame still rejects malformed frames", () => {
+  const oversized = "x".repeat(MAX_DAEMON_WS_FRAME_BYTES + 8);
+  const cases = [
+    validateDaemonInboundFrame("not-json"),
+    validateDaemonInboundFrame("[]"),
+    validateDaemonInboundFrame("null"),
+    validateDaemonInboundFrame(oversized),
+    validateDaemonInboundFrame(
+      JSON.stringify({
+        type: "hello",
+        at: VALID_AT,
+        daemonBuild: { commit: "" },
+      }),
+    ),
+  ];
+  for (const result of cases) {
+    assertEquals(result.ok, false);
+    if (result.ok) continue;
+    assertEquals(result.ignored, false);
+  }
 });
 
 it("validateDaemonInboundFrame rejects oversized managed logs", () => {
@@ -658,6 +683,95 @@ it("validateDaemonInboundFrame rejects invalid json and message shape", () => {
     validateDaemonInboundFrame('{"at":"' + VALID_AT + '"}').ok,
     false,
   );
+});
+
+it("validateDaemonInboundFrame bounds hello features and ignores them on heartbeat", () => {
+  const ok = validateDaemonInboundFrame(
+    JSON.stringify({
+      type: "hello",
+      at: VALID_AT,
+      daemonBuild: VALID_DAEMON_BUILD,
+      features: ["managed-upgrade-v1"],
+    }),
+  );
+  assertEquals(ok.ok, true);
+  if (ok.ok && ok.message.type === "hello") {
+    assertEquals(ok.message.features, ["managed-upgrade-v1"]);
+  }
+
+  const omitted = validateDaemonInboundFrame(
+    JSON.stringify({
+      type: "hello",
+      at: VALID_AT,
+      daemonBuild: VALID_DAEMON_BUILD,
+    }),
+  );
+  assertEquals(omitted.ok, true);
+
+  const tooMany = validateDaemonInboundFrame(
+    JSON.stringify({
+      type: "hello",
+      at: VALID_AT,
+      daemonBuild: VALID_DAEMON_BUILD,
+      features: Array.from({ length: 33 }, (_, index) => `f${index}`),
+    }),
+  );
+  assertEquals(tooMany.ok, false);
+  if (!tooMany.ok) assertEquals(tooMany.ignored, false);
+
+  const badEntry = validateDaemonInboundFrame(
+    JSON.stringify({
+      type: "hello",
+      at: VALID_AT,
+      daemonBuild: VALID_DAEMON_BUILD,
+      features: ["ok", 1],
+    }),
+  );
+  assertEquals(badEntry.ok, false);
+  if (!badEntry.ok) assertEquals(badEntry.ignored, false);
+
+  const heartbeat = validateDaemonInboundFrame(
+    JSON.stringify({
+      type: "heartbeat",
+      at: VALID_AT,
+      features: ["not-applied"],
+    }),
+  );
+  assertEquals(heartbeat.ok, true);
+});
+
+it("validateDaemonInboundFrame validates update-progress", () => {
+  const ok = validateDaemonInboundFrame(
+    JSON.stringify({
+      type: "update-progress",
+      id: "step-1",
+      upgradeId: "upg-1",
+      unit: "daemon",
+      stage: "downloading",
+      at: VALID_AT,
+      detail: "fetching",
+    }),
+  );
+  assertEquals(ok.ok, true);
+  if (ok.ok && ok.message.type === "update-progress") {
+    assertEquals(ok.message.stage, "downloading");
+    assertEquals(ok.message.unit, "daemon");
+  }
+
+  const badStage = validateDaemonInboundFrame(
+    JSON.stringify({
+      type: "update-progress",
+      id: "step-1",
+      unit: "daemon",
+      stage: "compiling",
+      at: VALID_AT,
+    }),
+  );
+  assertEquals(badStage.ok, false);
+  if (!badStage.ok) {
+    assertEquals(badStage.ignored, false);
+    assertEquals(badStage.reason, "invalid stage");
+  }
 });
 
 it("validateDaemonInboundFrame accepts hello with optional fields", () => {

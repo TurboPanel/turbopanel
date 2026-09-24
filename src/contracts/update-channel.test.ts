@@ -4,6 +4,7 @@ import {
   assertValidUpdateChannelEnv,
   builtinChannelManifestUrl,
   isUpdateChannel,
+  pinnedChannelManifestUrl,
   resolveInstanceUpdateChannel,
   UPDATE_CHANNELS,
   type UpdateChannel,
@@ -82,11 +83,48 @@ test("builtinChannelManifestUrl: trunk on the CDN, canary/rc/release on GitHub R
   assertEquals(builtinChannelManifestUrl("edge"), null);
 });
 
+test("pinnedChannelManifestUrl pins canary and versioned releases and leaves trunk floating", () => {
+  const kinds = ["daemon", "instance", "ui"] as const;
+  const repos = {
+    daemon: "TurboPanel/turbopaneld",
+    instance: "TurboPanel/turbopanel",
+    ui: "TurboPanel/ui",
+  };
+  for (const kind of kinds) {
+    const repo = repos[kind];
+    assertEquals(
+      pinnedChannelManifestUrl(kind, "canary", "0.1.0-rc.1"),
+      `https://github.com/${repo}/releases/download/canary/manifest-0.1.0-rc.1.json`,
+    );
+    assertEquals(
+      pinnedChannelManifestUrl(kind, "rc", "0.1.1"),
+      `https://github.com/${repo}/releases/download/v0.1.1/manifest.json`,
+    );
+    assertEquals(
+      pinnedChannelManifestUrl(kind, "release", "0.1.1"),
+      `https://github.com/${repo}/releases/download/v0.1.1/manifest.json`,
+    );
+    assertEquals(pinnedChannelManifestUrl(kind, "trunk", "0.1.1"), null);
+    assertEquals(pinnedChannelManifestUrl(kind, "edge", "0.1.1"), null);
+  }
+  assertEquals(pinnedChannelManifestUrl("daemon", "canary", ""), null);
+  assertEquals(pinnedChannelManifestUrl("daemon", "canary", "v0.1.0"), null);
+  assertEquals(
+    pinnedChannelManifestUrl("daemon", "release", "0.1.0/evil"),
+    null,
+  );
+});
+
 test("builtinChannelManifestUrl matches the daemon's table when the daemon checkout is beside this one", async () => {
   let daemon: {
     builtinChannelManifestUrl: (
       channel: UpdateChannel,
       kind?: "daemon" | "instance" | "ui",
+    ) => string | null;
+    pinnedChannelManifestUrl: (
+      kind: "daemon" | "instance" | "ui",
+      channel: UpdateChannel,
+      version: string,
     ) => string | null;
   };
   try {
@@ -103,6 +141,11 @@ test("builtinChannelManifestUrl matches the daemon's table when the daemon check
         builtinChannelManifestUrl(channel, kind),
         daemon.builtinChannelManifestUrl(channel, kind),
         `${kind} ${channel}`,
+      );
+      assertEquals(
+        pinnedChannelManifestUrl(kind, channel, "0.1.2"),
+        daemon.pinnedChannelManifestUrl(kind, channel, "0.1.2"),
+        `pinned ${kind} ${channel}`,
       );
     }
   }

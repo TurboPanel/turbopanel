@@ -1,10 +1,12 @@
 import { assertEquals } from "@std/assert";
 import {
   buildDefaultDaemonStatus,
+  featuresMatch,
   isDaemonKeyActive,
   mapServerDaemonStatusFromColumns,
   parseServerDaemonKeyRow,
   parseServerDaemonState,
+  projectionWithFeatures,
 } from "./daemon-state.ts";
 
 const baseKey = {
@@ -205,6 +207,24 @@ test("parseServerDaemonKeyRow narrows a valid key table row", () => {
 
 test("parseServerDaemonKeyRow rejects a non-Ed25519 algorithm", () => {
   assertEquals(parseServerDaemonKeyRow({ ...baseKey, algorithm: "RSA" }), null);
+});
+
+test("parseServerDaemonState keeps an empty features list and drops a non-array", () => {
+  const empty = parseServerDaemonState({ projection: { features: [] } });
+  assertEquals(empty?.projection?.features, []);
+  assertEquals(featuresMatch(undefined, []), false);
+  assertEquals(featuresMatch([], []), true);
+  const merged = projectionWithFeatures(
+    { hostname: "host-1", features: ["old"] },
+    ["managed-upgrade-v1"],
+  );
+  assertEquals(merged.hostname, "host-1");
+  assertEquals(merged.features, ["managed-upgrade-v1"]);
+  const bad = parseServerDaemonState({
+    projection: { hostname: "host-1", features: ["ok", 1] },
+  });
+  assertEquals(bad?.projection?.hostname, "host-1");
+  assertEquals(bad?.projection?.features, undefined);
 });
 
 test("parseServerDaemonKeyRow rejects a malformed publicJwk", () => {

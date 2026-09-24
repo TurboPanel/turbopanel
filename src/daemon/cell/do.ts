@@ -24,6 +24,11 @@ import { TERMINAL_UPDATE_RETENTION_MS } from "../../features/update/constants.ts
 import { handleManagedHaEvent } from "../../features/managed/ha-event.ts";
 import { handleAcmeIssuanceEvent } from "../../client/tls/acme-issuance-event.ts";
 import { recordInstanceAcmeIssuance } from "../../features/install/instance-hostnames.ts";
+import {
+  persistDaemonReachedTarget,
+  persistUpgradeOutcome,
+  persistUpgradeProgress,
+} from "../../features/upgrades/persist.ts";
 import { enqueueLatestRecordedCapabilityPlan } from "../../client/servers/capability-plan-push.ts";
 import { recordTopologyGeneration } from "../../features/servers/server-topology-records.ts";
 import { touchServerMetadata } from "../../features/servers/server-registry.ts";
@@ -1190,6 +1195,7 @@ export class DaemonCellObject {
       resources?: ServerHostResources;
       timeSync?: ServerTimeSync;
       docker?: ServerDockerMetadata;
+      features?: string[];
     },
     geo?: ServerGeo,
   ): Promise<void> {
@@ -1200,7 +1206,8 @@ export class DaemonCellObject {
         hostIdentity?.os ||
         hostIdentity?.resources ||
         hostIdentity?.timeSync ||
-        hostIdentity?.docker
+        hostIdentity?.docker ||
+        hostIdentity?.features
       ) {
         await touchServerMetadata(db, serverId, {
           hostname: hostIdentity.hostname,
@@ -1209,6 +1216,9 @@ export class DaemonCellObject {
           resources: hostIdentity.resources,
           timeSync: hostIdentity.timeSync,
           docker: hostIdentity.docker,
+          ...(hostIdentity.features !== undefined
+            ? { features: hostIdentity.features }
+            : {}),
         });
       }
       await onDaemonInbound(db, serverId, this.#projectionCell(serverId), {
@@ -1216,6 +1226,14 @@ export class DaemonCellObject {
         daemonBuild,
         geo,
       });
+      if (daemonBuild?.commit) {
+        await persistDaemonReachedTarget(
+          db,
+          serverId,
+          daemonBuild.commit,
+          at ?? new Date().toISOString(),
+        );
+      }
     });
     const atMs = at ? Date.parse(at) : Date.now();
     this.#lastProjectedAtMs = Number.isNaN(atMs) ? Date.now() : atMs;
@@ -1741,6 +1759,7 @@ export class DaemonCellObject {
       resources?: ServerHostResources;
       timeSync?: ServerTimeSync;
       docker?: ServerDockerMetadata;
+      features?: string[];
     },
   ): Promise<void> {
     this.#bumpDiag("heartbeatCount");
@@ -1774,6 +1793,7 @@ export class DaemonCellObject {
         resources?: ServerHostResources;
         timeSync?: ServerTimeSync;
         docker?: ServerDockerMetadata;
+        features?: string[];
       }
       | undefined;
     if (parsed.type === "hello") {
@@ -1781,6 +1801,7 @@ export class DaemonCellObject {
         hostname: parsed.hostname,
         machineKey: parsed.machineKey,
         os: parsed.os,
+        features: parsed.features ?? [],
         ...presenceFacts,
       };
     } else if (hasPresenceFacts) {
@@ -1792,7 +1813,8 @@ export class DaemonCellObject {
         hostIdentity?.os ||
         hostIdentity?.resources ||
         hostIdentity?.timeSync ||
-        hostIdentity?.docker,
+        hostIdentity?.docker ||
+        hostIdentity?.features,
     );
     const attachGeo = parseServerGeo(attachment.geo) ?? undefined;
     // Heartbeats: daemon-build change, presence facts, or offline repair only —
@@ -1813,6 +1835,53 @@ export class DaemonCellObject {
         attachGeo,
       );
     }
+  }
+
+  /**
+   * Fire-and-forget upgrade progress. Records liveness, then writes the
+   * matching step. Never enqueues.
+   */
+  async #handleUpdateProgressInbound(
+    attachment: { connectionId: string; serverId: string },
+    parsed: {
+      id: string;
+      at: string;
+      upgradeId?: string;
+      unit: "daemon" | "instance";
+      stage:
+        | "preparing"
+        | "downloading"
+        | "installing"
+        | "restarting"
+        | "verifying"
+        | "done"
+        | "failed"
+        | "rolled-back";
+      detail?: string;
+      errorCode?: string;
+    },
+  ): Promise<void> {
+    this.#recordInbound(
+      attachment.serverId,
+      parsed.at,
+      undefined,
+      attachment.connectionId,
+    );
+    await this.#withProjectionDb(
+      "update-progress",
+      attachment.serverId,
+      (db) =>
+        persistUpgradeProgress(db, {
+          serverId: attachment.serverId,
+          upgradeId: parsed.upgradeId,
+          unit: parsed.unit,
+          stage: parsed.stage,
+          at: parsed.at,
+          detail: parsed.detail,
+          errorCode: parsed.errorCode,
+          requestId: parsed.id,
+        }),
+    );
   }
 
   async webSocketMessage(
@@ -1836,6 +1905,14 @@ export class DaemonCellObject {
 
     const validated = validateDaemonInboundFrame(raw);
     if (!validated.ok) {
+      if (validated.ignored) {
+        this.#trace("inbound-ignored-unknown-type", {
+          serverId: attachment.serverId,
+          conn: attachment.connectionId,
+          reason: validated.reason,
+        });
+        return;
+      }
       this.#trace("inbound-rejected", {
         serverId: attachment.serverId,
         conn: attachment.connectionId,
@@ -1955,6 +2032,11 @@ export class DaemonCellObject {
             });
           },
         );
+        return;
+      }
+
+      if (parsed.type === "update-progress") {
+        await this.#handleUpdateProgressInbound(attachment, parsed);
         return;
       }
 
@@ -2886,6 +2968,36 @@ export class DaemonCellObject {
         inbound.ok,
         inbound.at,
         inbound.error,
+      );
+      await this.#withProjectionDb(
+        "update-result-step",
+        serverId,
+        (db) =>
+          persistUpgradeOutcome(db, {
+            serverId,
+            unit: "daemon",
+            upgradeId: inbound.upgradeId,
+            ok: inbound.ok,
+            at: inbound.at,
+            error: inbound.error,
+            errorCode: inbound.errorCode,
+            requestId: inbound.requestId,
+          }),
+      );
+    }
+    if (inbound.kind === "instance-update-result") {
+      await this.#withProjectionDb(
+        "instance-update-result",
+        serverId,
+        (db) =>
+          persistUpgradeOutcome(db, {
+            serverId,
+            unit: "instance",
+            ok: inbound.ok,
+            at: inbound.at,
+            error: inbound.error,
+            requestId: inbound.requestId,
+          }),
       );
     }
     return record;

@@ -54,6 +54,10 @@ function repoReadResultPayload(
  * fire-and-forget inbound messages, not envelopes. They never reach this
  * function. `public-urls-update` grew optional `hostnames` / `instanceAcme`
  * on the outbound side; its result kind is unchanged.
+ *
+ * `update-progress` has no correlated request and must not gain a case
+ * here. It is fire-and-forget progress, not a completion of `update` or
+ * `instance-update`.
  */
 export function deriveInboundOutcome(
   inbound: DaemonInboundEnvelope,
@@ -81,7 +85,6 @@ export function deriveInboundOutcome(
     case "public-urls-update-result":
     case "dev-sync-result":
     case "tunnel-token-result":
-    case "update-result":
     case "instance-update-result":
     case "metrics-live-start-result":
     case "metrics-live-stop-result":
@@ -91,6 +94,13 @@ export function deriveInboundOutcome(
       return inboundOutcomeFromOk(inbound.ok, inbound.error, {
         ok: inbound.ok,
         error: inbound.error,
+      });
+    case "update-result":
+      return inboundOutcomeFromOk(inbound.ok, inbound.error, {
+        ok: inbound.ok,
+        error: inbound.error,
+        ...(inbound.errorCode ? { errorCode: inbound.errorCode } : {}),
+        ...(inbound.upgradeId ? { upgradeId: inbound.upgradeId } : {}),
       });
     case "metrics-capabilities-result":
       return inboundOutcomeFromOk(inbound.ok, inbound.error, {

@@ -8,6 +8,7 @@
  */
 import { resolveInstanceRevision } from "../app/build-info.ts";
 import { INSTANCE_VERSION } from "../app/version.ts";
+import { DAEMON_WIRE_FEATURES } from "../lib/version-wire.ts";
 
 export type InstanceAttachVersionFrame = {
   type: "version";
@@ -15,6 +16,8 @@ export type InstanceAttachVersionFrame = {
   branch: string;
   at: string;
   instanceVersion: string;
+  /** Advertised control-plane features. See `DAEMON_WIRE_FEATURES`. */
+  features: readonly string[];
 };
 
 function revisionEnv(
@@ -37,5 +40,6 @@ export function instanceAttachVersionFrame(
     branch: "unknown",
     at,
     instanceVersion: INSTANCE_VERSION,
+    features: [...DAEMON_WIRE_FEATURES],
   };
 }

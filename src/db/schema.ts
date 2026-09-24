@@ -1217,6 +1217,165 @@ export const dispatch = pgTable(
   ],
 );
 /**
+ * One instance-wide upgrade run. At most one row may be `pending` or
+ * `running` (`uniq_upgrade_active` — a partial unique on a constant, because
+ * there is no organization column to scope the way `uniq_changeover_inflight_organization`
+ * does). `counts` is the summary the orchestrator writes when the run
+ * finishes, so history remains after step rows are pruned.
+ */
+export const upgrade = pgTable(
+  "upgrade",
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp("created_at", {
+      precision: 3,
+      withTimezone: true,
+      mode: "string",
+    })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", {
+      precision: 3,
+      withTimezone: true,
+      mode: "string",
+    })
+      .defaultNow()
+      .$onUpdate(() => sql`now()`)
+      .notNull(),
+    /** `{ daemon?, instance?, ui? }` each `{ version, commit, buildId, builtAt, pinnedManifestUrl }`. */
+    target: jsonb(),
+    preflight: jsonb(),
+    source: text().notNull(),
+    channel: text().notNull(),
+    status: text().notNull().default("pending"),
+    phase: text(),
+    startedBy: uuid("started_by"),
+    /** Snapshot of upgrade settings at run start. */
+    batchPolicy: jsonb("batch_policy"),
+    counts: jsonb(),
+    error: text(),
+    startedAt: timestamp("started_at", {
+      precision: 3,
+      withTimezone: true,
+      mode: "string",
+    }),
+    finishedAt: timestamp("finished_at", {
+      precision: 3,
+      withTimezone: true,
+      mode: "string",
+    }),
+  },
+  (table) => [
+    uniqueIndex("uniq_upgrade_active")
+      .on(sql`(true)`)
+      .where(sql`${table.status} IN ('pending', 'running')`),
+    foreignKey({
+      columns: [table.startedBy],
+      foreignColumns: [user.id],
+      name: "upgrade_started_by_user_id_fk",
+    }).onDelete("set null"),
+    // Mirror UPGRADE_SOURCES / UPGRADE_STATUSES / UPGRADE_PHASES
+    // (src/features/upgrades/vocabulary.ts) — pinned by enum-checks.test.ts.
+    check(
+      "upgrade_source_check",
+      sql`source IN ('manual', 'auto', 'server')`,
+    ),
+    check(
+      "upgrade_status_check",
+      sql`status IN ('pending', 'running', 'succeeded', 'partially_failed', 'failed', 'cancelled')`,
+    ),
+    check(
+      "upgrade_phase_check",
+      sql`phase IS NULL OR phase IN ('colocated_daemon', 'control_plane', 'fleet')`,
+    ),
+  ],
+);
+/**
+ * One daemon or instance install on one server inside an {@link upgrade} run.
+ * Physical name `upgradestep` (one word). Active steps are indexed for the
+ * retry scan; terminal rows are pruned by `pruneUpgradeHistory`.
+ */
+export const upgradeStep = pgTable(
+  "upgradestep",
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp("created_at", {
+      precision: 3,
+      withTimezone: true,
+      mode: "string",
+    })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp("updated_at", {
+      precision: 3,
+      withTimezone: true,
+      mode: "string",
+    })
+      .defaultNow()
+      .$onUpdate(() => sql`now()`)
+      .notNull(),
+    upgradeId: uuid("upgrade_id").notNull(),
+    serverId: uuid("server_id").notNull(),
+    unit: text().notNull(),
+    batchIndex: integer("batch_index").default(0).notNull(),
+    status: text().notNull().default("pending"),
+    requestId: text("request_id"),
+    attempts: integer().default(0).notNull(),
+    nextAttemptAt: timestamp("next_attempt_at", {
+      precision: 3,
+      withTimezone: true,
+      mode: "string",
+    }),
+    fromVersion: text("from_version"),
+    toVersion: text("to_version"),
+    fromCommit: text("from_commit"),
+    toCommit: text("to_commit"),
+    lastStageAt: timestamp("last_stage_at", {
+      precision: 3,
+      withTimezone: true,
+      mode: "string",
+    }),
+    errorCode: text("error_code"),
+    errorMessage: text("error_message"),
+    detail: jsonb(),
+  },
+  (table) => [
+    index("idx_upgradestep_upgrade_status").on(table.upgradeId, table.status),
+    index("idx_upgradestep_server_created").on(
+      table.serverId,
+      table.createdAt.desc(),
+    ),
+    index("idx_upgradestep_active_next_attempt")
+      .on(table.status, table.nextAttemptAt)
+      .where(
+        sql`${table.status} IN ('pending', 'waiting', 'dispatched', 'preparing', 'downloading', 'installing', 'restarting', 'verifying')`,
+      ),
+    foreignKey({
+      columns: [table.upgradeId],
+      foreignColumns: [upgrade.id],
+      name: "upgradestep_upgrade_id_upgrade_id_fk",
+    }).onDelete("cascade"),
+    foreignKey({
+      columns: [table.serverId],
+      foreignColumns: [server.id],
+      name: "upgradestep_server_id_server_id_fk",
+    }).onDelete("cascade"),
+    // Mirror UPGRADE_STEP_UNITS / UPGRADE_STEP_STATUSES
+    // (src/features/upgrades/vocabulary.ts) — pinned by enum-checks.test.ts.
+    check("upgradestep_unit_check", sql`unit IN ('daemon', 'instance')`),
+    check(
+      "upgradestep_status_check",
+      sql`status IN ('pending', 'waiting', 'dispatched', 'preparing', 'downloading', 'installing', 'restarting', 'verifying', 'done', 'failed', 'rolled_back', 'needs_attention', 'skipped')`,
+    ),
+  ],
+);
+/**
  * Org-owned network registry: datacenter site CIDRs (`kind = 'datacenter'`;
  * a datacenter may own multiple CIDR rows), external Docker registrations
  * (`kind = 'docker'`, optional `server_id`), TurboFabric logical spanning

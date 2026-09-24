@@ -57,6 +57,16 @@ import {
   server,
   service,
 } from "../../db/schema.ts";
+import { INSTANCE_VERSION } from "../../app/version.ts";
+import { resolveInstanceRevision } from "../../app/build-info.ts";
+import { isExplicitDevelopmentMode } from "../../lib/dev-mode.ts";
+import { createUpgradeCoordinator } from "../../features/upgrades/coordinator.ts";
+import { createDrizzleUpgradeStore } from "../../features/upgrades/store.ts";
+import {
+  type ClientUpdateBlock,
+  clientUpdateBlockReason,
+  clientUpdateBlockStatus,
+} from "../../features/upgrades/decisions.ts";
 import { resolveUpdateManifest } from "../../features/update/manifest.ts";
 import {
   resolveInstanceUpdateChannel,
@@ -83,6 +93,7 @@ import {
   listServerDeleteBlockers,
   serverDeleteBlockersResponse,
 } from "./delete-guards.ts";
+import { resolveColocatedServerId } from "../authn/install-state.ts";
 import {
   hasActiveColocatedLicenseBinding,
   resolveColocatedServerIdSet,
@@ -169,6 +180,66 @@ type QueueUpdateFailure = {
 /** The channel this instance follows — the one every queued update targets. */
 function instanceUpdateChannel(c: Context<AppEnv>): UpdateChannel {
   return resolveInstanceUpdateChannel(c.get("platformEnv"));
+}
+
+async function clientUpdateGate(
+  c: Context<AppEnv>,
+  runtime: "deno" | "workers",
+): Promise<ClientUpdateBlock> {
+  if (runtime === "workers") {
+    return { blocked: true, error: "updates_managed" };
+  }
+  const db = getDb(c);
+  const registry = getDaemonCellRegistry(c);
+  if (!db || !registry) return { blocked: false, useCoordinator: false };
+  const revision = resolveInstanceRevision(c.get("platformEnv"));
+  const colocated = await resolveColocatedServerId(db, registry);
+  const coordinator = createUpgradeCoordinator({
+    store: createDrizzleUpgradeStore(db, registry),
+    enqueue: (serverId, envelope) =>
+      registry.getCell(serverId).enqueue(envelope),
+    runtime,
+    channel: instanceUpdateChannel(c),
+    development: isExplicitDevelopmentMode(),
+    now: () => new Date().toISOString(),
+    colocatedServerId: colocated,
+    instanceInstalled: { version: INSTANCE_VERSION, commit: revision.commit },
+  });
+  try {
+    return await coordinator.updateGate();
+  } catch {
+    if (isExplicitDevelopmentMode()) {
+      return { blocked: false, useCoordinator: false };
+    }
+    return { blocked: true, error: "upgrade_gate_unavailable" };
+  }
+}
+
+function blockedUpdateResponse(
+  c: Context<AppEnv>,
+  gate: ClientUpdateBlock,
+): Response | null {
+  if (!gate.blocked) return null;
+  return c.json(
+    { ok: false, error: gate.error },
+    clientUpdateBlockStatus(gate.error),
+  );
+}
+
+/** Legacy per-server enqueue is development-only. Production fails closed. */
+function legacyUpdateAllowed(gate: ClientUpdateBlock): boolean {
+  return !gate.blocked && !gate.useCoordinator && isExplicitDevelopmentMode();
+}
+
+function gateFields(gate: ClientUpdateBlock): {
+  updateBlocked?: boolean;
+  updateBlockedReason?: string;
+} {
+  if (!gate.blocked) return {};
+  return {
+    updateBlocked: true,
+    updateBlockedReason: clientUpdateBlockReason(gate.error),
+  };
 }
 
 async function queueServerUpdate(
@@ -827,6 +898,7 @@ export function registerServerRoutes(
       targetManifest,
       channel,
     );
+    const gate = await clientUpdateGate(c, opts.runtime);
 
     const servers = await Promise.all(
       visibleIds.map(async (serverId) => {
@@ -854,6 +926,7 @@ export function registerServerRoutes(
           current,
           colocatedWithInstance: colocatedIds.has(serverId),
           ...resolved,
+          ...gateFields(gate),
         };
       }),
     );
@@ -889,6 +962,41 @@ export function registerServerRoutes(
       userId: session.userId,
       organizationId,
     });
+
+    if (opts.runtime === "workers") {
+      return c.json({ ok: false, error: "updates_managed" }, 409);
+    }
+    const gate = await clientUpdateGate(c, opts.runtime);
+    const blocked = blockedUpdateResponse(c, gate);
+    if (blocked) return blocked;
+    if (!gate.blocked && gate.useCoordinator) {
+      const revision = resolveInstanceRevision(c.get("platformEnv"));
+      const colocated = await resolveColocatedServerId(db, registry);
+      const coordinator = createUpgradeCoordinator({
+        store: createDrizzleUpgradeStore(db, registry),
+        enqueue: (serverId, envelope) =>
+          registry.getCell(serverId).enqueue(envelope),
+        runtime: opts.runtime,
+        channel: instanceUpdateChannel(c),
+        development: isExplicitDevelopmentMode(),
+        now: () => new Date().toISOString(),
+        colocatedServerId: colocated,
+        instanceInstalled: {
+          version: INSTANCE_VERSION,
+          commit: revision.commit,
+        },
+      });
+      const started = await coordinator.start({
+        source: "server",
+        startedBy: session.userId,
+        fleetServerIds: visibleIds.filter((id) => id !== colocated),
+      });
+      if (!started.ok) return c.json(started, 409);
+      return c.json({ ok: true, runId: started.runId, queued: true });
+    }
+    if (!legacyUpdateAllowed(gate)) {
+      return c.json({ ok: false, error: "upgrade_gate_unavailable" }, 503);
+    }
 
     const channel = instanceUpdateChannel(c);
     const targetManifest = await resolveUpdateManifest(channel);
@@ -1199,6 +1307,7 @@ export function registerServerRoutes(
       projectedUpdate: repairedUpdate ?? null,
     });
 
+    const gate = await clientUpdateGate(c, opts.runtime);
     return c.json({
       ok: true,
       serverId: id,
@@ -1206,6 +1315,7 @@ export function registerServerRoutes(
       current,
       colocatedWithInstance: colocatedIds.has(id),
       ...resolved,
+      ...gateFields(gate),
     });
   });
 
@@ -1220,6 +1330,41 @@ export function registerServerRoutes(
     const registry = getDaemonCellRegistry(c);
     if (!registry) {
       return c.json({ error: "Daemon cell registry unavailable" }, 503);
+    }
+
+    if (opts.runtime === "workers") {
+      return c.json({ ok: false, error: "updates_managed" }, 409);
+    }
+    const gate = await clientUpdateGate(c, opts.runtime);
+    const blocked = blockedUpdateResponse(c, gate);
+    if (blocked) return blocked;
+    if (!gate.blocked && gate.useCoordinator) {
+      const revision = resolveInstanceRevision(c.get("platformEnv"));
+      const colocated = await resolveColocatedServerId(db, registry);
+      const coordinator = createUpgradeCoordinator({
+        store: createDrizzleUpgradeStore(db, registry),
+        enqueue: (serverId, envelope) =>
+          registry.getCell(serverId).enqueue(envelope),
+        runtime: opts.runtime,
+        channel: instanceUpdateChannel(c),
+        development: isExplicitDevelopmentMode(),
+        now: () => new Date().toISOString(),
+        colocatedServerId: colocated,
+        instanceInstalled: {
+          version: INSTANCE_VERSION,
+          commit: revision.commit,
+        },
+      });
+      const started = await coordinator.start({
+        source: "server",
+        startedBy: c.get("session")?.userId ?? null,
+        serverId: id,
+      });
+      if (!started.ok) return c.json(started, 409);
+      return c.json({ ok: true, runId: started.runId, queued: true });
+    }
+    if (!legacyUpdateAllowed(gate)) {
+      return c.json({ ok: false, error: "upgrade_gate_unavailable" }, 503);
     }
 
     const queued = await queueServerUpdate(

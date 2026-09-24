@@ -18,6 +18,11 @@ import { instanceAttachVersionFrame } from "./attach-version.ts";
 import type { DaemonJwtKeyring } from "./authn/daemon-jwt-keyring.ts";
 import { tryAssignColocatedDaemonToInstalledOrganization } from "../client/authn/install-state.ts";
 import { recordInstanceAcmeIssuance } from "../features/install/instance-hostnames.ts";
+import {
+  persistDaemonReachedTarget,
+  persistUpgradeOutcome,
+  persistUpgradeProgress,
+} from "../features/upgrades/persist.ts";
 import { getDb } from "../db/connection.ts";
 import type { Db } from "../db/connection.ts";
 import { compatLogError, compatLogWarn } from "../lib/log-compat.ts";
@@ -249,6 +254,40 @@ function rejectDaemonInboundFrame(
   ws.close(DAEMON_WS_POLICY_VIOLATION_CLOSE, "policy_violation");
 }
 
+/** A well-formed frame whose `type` this process does not know. Socket stays up. */
+function traceIgnoredUnknownInboundType(
+  serverId: string,
+  connectionId: string | undefined,
+  reason: string,
+): void {
+  cellTrace("inbound-ignored-unknown-type", {
+    serverId,
+    conn: connectionId,
+    reason,
+  });
+}
+
+async function handleUpdateProgressInbound(params: {
+  cell: ReturnType<DaemonCellRegistry["getCell"]>;
+  db: Db;
+  serverId: string;
+  connectionId: string | undefined;
+  message: Extract<DaemonMessage, { type: "update-progress" }>;
+}): Promise<void> {
+  const { cell, db, serverId, connectionId, message } = params;
+  await cell.recordInbound({ connectionId, at: message.at });
+  await persistUpgradeProgress(db, {
+    serverId,
+    upgradeId: message.upgradeId,
+    unit: message.unit,
+    stage: message.stage,
+    at: message.at,
+    detail: message.detail,
+    errorCode: message.errorCode,
+    requestId: message.id,
+  });
+}
+
 async function handleDaemonPresenceInbound(params: {
   cell: ReturnType<DaemonCellRegistry["getCell"]>;
   db: Db;
@@ -268,6 +307,7 @@ async function handleDaemonPresenceInbound(params: {
       resources,
       timeSync: message.timeSync,
       docker: message.docker,
+      features: message.features ?? [],
     });
   } else if (message.timeSync || resources !== undefined || message.docker) {
     await touchServerMetadata(db, serverId, {
@@ -286,6 +326,10 @@ async function handleDaemonPresenceInbound(params: {
     at: message.at,
     daemonBuild: message.daemonBuild,
   });
+  const commit = message.daemonBuild?.commit;
+  if (commit) {
+    await persistDaemonReachedTarget(db, serverId, commit, message.at);
+  }
 }
 
 async function handleDaemonManagedHaInbound(params: {
@@ -354,15 +398,38 @@ async function applyDaemonInboundEnvelope(params: {
 }): Promise<void> {
   const { cell, db, serverId, envelope } = params;
   const record = await cell.handleInbound(envelope);
-  if (envelope.kind !== "update-result" || !record) return;
-  await onDaemonUpdateResult(
-    db,
-    serverId,
-    envelope.requestId,
-    envelope.ok,
-    envelope.at,
-    envelope.error,
-  );
+  if (envelope.kind === "update-result" && record) {
+    await onDaemonUpdateResult(
+      db,
+      serverId,
+      envelope.requestId,
+      envelope.ok,
+      envelope.at,
+      envelope.error,
+    );
+  }
+  if (envelope.kind === "update-result") {
+    await persistUpgradeOutcome(db, {
+      serverId,
+      unit: "daemon",
+      upgradeId: envelope.upgradeId,
+      ok: envelope.ok,
+      at: envelope.at,
+      error: envelope.error,
+      errorCode: envelope.errorCode,
+      requestId: envelope.requestId,
+    });
+  }
+  if (envelope.kind === "instance-update-result") {
+    await persistUpgradeOutcome(db, {
+      serverId,
+      unit: "instance",
+      ok: envelope.ok,
+      at: envelope.at,
+      error: envelope.error,
+      requestId: envelope.requestId,
+    });
+  }
 }
 
 export type DaemonWebSocketOptions = {
@@ -518,6 +585,26 @@ export function registerDaemonWebSocket<E extends Env>(
 
         const validated = validateDaemonInboundFrame(raw);
         if (!validated.ok) {
+          if (validated.ignored) {
+            // Unknown types stay on the socket, but they are still the next
+            // inbound frame — a revoked key must close here. Redis purge
+            // cannot drop the live socket, and a peer that sends only
+            // unrecognized types would otherwise stay up inside the rate cap.
+            // The inbound gate already ran in onMessage, ahead of validation.
+            const keyStillActive = await assertDaemonKeyStillActive(
+              db,
+              payload.sub,
+              payload.kid,
+              ws,
+            );
+            if (!keyStillActive) return;
+            traceIgnoredUnknownInboundType(
+              payload.sub,
+              connectionId,
+              validated.reason,
+            );
+            return;
+          }
           rejectDaemonInboundFrame(
             ws,
             payload.sub,
@@ -582,6 +669,17 @@ export function registerDaemonWebSocket<E extends Env>(
           await handleInstanceAcmeIssuanceInbound({
             cell,
             db,
+            connectionId,
+            message,
+          });
+          return;
+        }
+
+        if (message.type === "update-progress") {
+          await handleUpdateProgressInbound({
+            cell,
+            db,
+            serverId: payload.sub,
             connectionId,
             message,
           });

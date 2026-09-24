@@ -21,6 +21,13 @@ import {
   NOTIFICATION_DELIVERY_STATUSES,
 } from "../features/notifications/records.ts";
 import { INSTANCE_HOSTNAME_SOURCES } from "../features/install/instance-hostnames.ts";
+import {
+  UPGRADE_PHASES,
+  UPGRADE_SOURCES,
+  UPGRADE_STATUSES,
+  UPGRADE_STEP_STATUSES,
+  UPGRADE_STEP_UNITS,
+} from "../features/upgrades/vocabulary.ts";
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -47,7 +54,7 @@ const schemaSource = await Deno.readTextFile(
 function checkValues(constraintName: string): string[] {
   const re = new RegExp(
     String
-      .raw`check\(\s*"${constraintName}",\s*sql\x60[a-z_]+ IN \(([^)]*)\)\x60`,
+      .raw`check\(\s*"${constraintName}",\s*sql\x60(?:[a-z_]+ IS NULL OR )?[a-z_]+ IN \(([^)]*)\)\x60`,
   );
   const match = re.exec(schemaSource);
   if (!match) throw new TypeError(`schema.ts has no ${constraintName}`);
@@ -76,6 +83,11 @@ const CASES: Array<[constraint: string, values: readonly string[]]> = [
   ["attempt_severity_check", NOTIFICATION_SEVERITIES],
   ["attempt_status_check", NOTIFICATION_DELIVERY_STATUSES],
   ["origin_source_check", INSTANCE_HOSTNAME_SOURCES],
+  ["upgrade_source_check", UPGRADE_SOURCES],
+  ["upgrade_status_check", UPGRADE_STATUSES],
+  ["upgrade_phase_check", UPGRADE_PHASES],
+  ["upgradestep_unit_check", UPGRADE_STEP_UNITS],
+  ["upgradestep_status_check", UPGRADE_STEP_STATUSES],
 ];
 
 for (const [constraint, values] of CASES) {

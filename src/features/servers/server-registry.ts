@@ -1,49 +1,54 @@
-import { and, eq, isNull, sql } from 'drizzle-orm'
-import type { Db } from '../../db/connection.ts'
-import { verifyDaemonLicense } from '../licenses/verify-daemon-license.ts'
+import { and, eq, isNull, sql } from "drizzle-orm";
+import type { Db } from "../../db/connection.ts";
+import { verifyDaemonLicense } from "../licenses/verify-daemon-license.ts";
 import {
   mergeServerHostResources,
   osColumnsEqual,
   osColumnsFromMetadata,
-  parseServerOsMetadata,
-  parseServerTimeSync,
-  parseServerHostResources,
   parseServerDockerMetadata,
+  parseServerHostResources,
+  parseServerOsMetadata,
   parseServerRuntimeMetadata,
-  serverHostResourcesEquals,
+  parseServerTimeSync,
+  type ServerDockerMetadata,
   serverDockerMetadataEquals,
-  serverRuntimeMetadataEquals,
-  timeSyncColumnPatch,
+  type ServerHostResources,
+  serverHostResourcesEquals,
   type ServerMetadata,
   type ServerOsColumns,
   type ServerOsMetadata,
+  type ServerRuntimeMetadata,
+  serverRuntimeMetadataEquals,
   type ServerTimeSync,
   type ServerTimeSyncColumns,
-  type ServerHostResources,
-  type ServerDockerMetadata,
-  type ServerRuntimeMetadata,
-} from './server-metadata.ts'
-import { license, server } from '../../db/schema.ts'
-import { recomputeAssignmentsForServer } from '../tiers/assignment-records.ts'
-import { applyReportedAddressRepin } from '../net/repin-apply.ts'
-import { serverIpsEquals } from '../../contracts/server-addresses.ts'
-import { normalizeMachineKey } from '../../lib/machine-key.ts'
-import { ensureSystemHierarchy } from '../system/hierarchy.ts'
-import { compatLogWarn } from '../../lib/log-compat.ts'
-import type { CommandQueue } from '../commands/queue.ts'
-import { isNoopCommandQueue } from '../commands/noop-command-queue.ts'
-import { reconcileFabricMembership } from '../fabric/enqueue.ts'
-import type { DerivedSecretsConfig, SecretsConfig } from '../../lib/secrets/secrets.ts'
-import { isPostgresUniqueViolation as isUniqueViolation } from '../../db/unique-violation.ts'
+  timeSyncColumnPatch,
+} from "./server-metadata.ts";
+import { license, server } from "../../db/schema.ts";
+import { recomputeAssignmentsForServer } from "../tiers/assignment-records.ts";
+import { applyReportedAddressRepin } from "../net/repin-apply.ts";
+import { serverIpsEquals } from "../../contracts/server-addresses.ts";
+import { normalizeMachineKey } from "../../lib/machine-key.ts";
+import { daemonFeaturesColumnPatch } from "../../daemon/cell/daemon-jsonb-write.ts";
+import { featuresMatch, parseServerDaemonState } from "./daemon-state.ts";
+import { ensureSystemHierarchy } from "../system/hierarchy.ts";
+import { compatLogWarn } from "../../lib/log-compat.ts";
+import type { CommandQueue } from "../commands/queue.ts";
+import { isNoopCommandQueue } from "../commands/noop-command-queue.ts";
+import { reconcileFabricMembership } from "../fabric/enqueue.ts";
+import type {
+  DerivedSecretsConfig,
+  SecretsConfig,
+} from "../../lib/secrets/secrets.ts";
+import { isPostgresUniqueViolation as isUniqueViolation } from "../../db/unique-violation.ts";
 
 export type FabricMembershipDeps = {
-  commandQueue: CommandQueue
-  secretsConfig?: SecretsConfig
-  dataEncryptionSecrets?: DerivedSecretsConfig
-}
+  commandQueue: CommandQueue;
+  secretsConfig?: SecretsConfig;
+  dataEncryptionSecrets?: DerivedSecretsConfig;
+};
 
 const UUID_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 async function reconcileFabricMembershipBestEffort(
   db: Db,
@@ -51,64 +56,68 @@ async function reconcileFabricMembershipBestEffort(
   serverId: string,
   fabricDeps?: FabricMembershipDeps,
 ): Promise<void> {
-  if (!fabricDeps || isNoopCommandQueue(fabricDeps.commandQueue)) return
+  if (!fabricDeps || isNoopCommandQueue(fabricDeps.commandQueue)) return;
   try {
     await reconcileFabricMembership({
       db,
       commandQueue: fabricDeps.commandQueue,
-      actorType: 'system',
+      actorType: "system",
       actorId: serverId,
       organizationId,
-      ...(fabricDeps.secretsConfig ? { secretsConfig: fabricDeps.secretsConfig } : {}),
+      ...(fabricDeps.secretsConfig
+        ? { secretsConfig: fabricDeps.secretsConfig }
+        : {}),
       ...(fabricDeps.dataEncryptionSecrets
         ? { dataEncryptionSecrets: fabricDeps.dataEncryptionSecrets }
         : {}),
-    })
+    });
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
+    const message = err instanceof Error ? err.message : String(err);
     compatLogWarn(
-      'server-registry',
+      "server-registry",
       `reconcileFabricMembership failed for server ${serverId}: ${message}`,
-    )
+    );
   }
 }
 
 export type ServerHelloIdentity = {
-  serverId?: string
-  machineKey?: string
-  hostname?: string
-  licenseId?: string
-  licenseToken?: string
-  os?: ServerOsMetadata
-  resources?: ServerHostResources
-  timeSync?: ServerTimeSync
-  docker?: ServerDockerMetadata
-  runtimes?: ServerRuntimeMetadata
-}
+  serverId?: string;
+  machineKey?: string;
+  hostname?: string;
+  licenseId?: string;
+  licenseToken?: string;
+  os?: ServerOsMetadata;
+  resources?: ServerHostResources;
+  timeSync?: ServerTimeSync;
+  docker?: ServerDockerMetadata;
+  runtimes?: ServerRuntimeMetadata;
+  /** Hello only. `[]` when the daemon omitted `features`. Heartbeat leaves this unset. */
+  features?: string[];
+};
 
 function metadataPatch(identity: ServerHelloIdentity): Partial<ServerMetadata> {
-  const patch: Partial<ServerMetadata> = {}
-  const resources = parseServerHostResources(identity.resources)
+  const patch: Partial<ServerMetadata> = {};
+  const resources = parseServerHostResources(identity.resources);
   if (resources && Object.keys(resources).length > 0) {
-    patch.resources = resources
+    patch.resources = resources;
   }
-  const docker = parseServerDockerMetadata(identity.docker)
-  if (docker) patch.docker = docker
-  const runtimes = parseServerRuntimeMetadata(identity.runtimes)
-  if (runtimes) patch.runtimes = runtimes
-  return patch
+  const docker = parseServerDockerMetadata(identity.docker);
+  if (docker) patch.docker = docker;
+  const runtimes = parseServerRuntimeMetadata(identity.runtimes);
+  if (runtimes) patch.runtimes = runtimes;
+  return patch;
 }
 
 function identityColumnPatch(identity: ServerHelloIdentity): {
-  hostname?: string
-  machineKey?: string
+  hostname?: string;
+  machineKey?: string;
 } {
-  const patch: { hostname?: string; machineKey?: string } = {}
-  const machineKey = normalizeMachineKey(identity.machineKey)
-  const hostname = identity.hostname?.trim()
-  if (machineKey) patch.machineKey = machineKey
-  if (hostname) patch.hostname = hostname
-  return patch
+  const patch: { hostname?: string; machineKey?: string } = {};
+  const machineKey = normalizeMachineKey(identity.machineKey);
+  const hostname = identity.hostname?.trim();
+  if (machineKey) patch.machineKey = machineKey;
+  if (hostname) patch.hostname = hostname;
+  return patch;
 }
 
 function emptyOsColumns(): ServerOsColumns {
@@ -119,7 +128,7 @@ function emptyOsColumns(): ServerOsColumns {
     osCodename: null,
     osPrettyName: null,
     osArchitecture: null,
-  }
+  };
 }
 
 function emptyTimeSyncColumns(): ServerTimeSyncColumns {
@@ -128,17 +137,17 @@ function emptyTimeSyncColumns(): ServerTimeSyncColumns {
     isTimeSyncEnabled: null,
     ntpServers: null,
     ntpLastSyncedAt: null,
-  }
+  };
 }
 
 function identityOsColumnPatch(
   identity: ServerHelloIdentity,
   current: ServerOsColumns,
 ): ServerOsColumns | null {
-  const os = parseServerOsMetadata(identity.os)
-  if (!os) return null
-  const next = osColumnsFromMetadata(os)
-  return osColumnsEqual(next, current) ? null : next
+  const os = parseServerOsMetadata(identity.os);
+  if (!os) return null;
+  const next = osColumnsFromMetadata(os);
+  return osColumnsEqual(next, current) ? null : next;
 }
 
 function identityTimeSyncColumnPatch(
@@ -146,9 +155,9 @@ function identityTimeSyncColumnPatch(
   current: ServerTimeSyncColumns,
   nowIso: string,
 ): Partial<ServerTimeSyncColumns> | null {
-  const timeSync = parseServerTimeSync(identity.timeSync)
-  if (!timeSync) return null
-  return timeSyncColumnPatch(timeSync, current, nowIso)
+  const timeSync = parseServerTimeSync(identity.timeSync);
+  if (!timeSync) return null;
+  return timeSyncColumnPatch(timeSync, current, nowIso);
 }
 
 /**
@@ -160,47 +169,47 @@ export function mergeServerMetadataIdentity(
   current: ServerMetadata | null | undefined,
   identity: Pick<
     ServerHelloIdentity,
-    'hostname' | 'machineKey' | 'os' | 'resources' | 'timeSync' | 'docker'
+    "hostname" | "machineKey" | "os" | "resources" | "timeSync" | "docker"
   >,
 ): ServerMetadata | null {
-  const patch = metadataPatch(identity)
-  if (Object.keys(patch).length === 0) return null
+  const patch = metadataPatch(identity);
+  if (Object.keys(patch).length === 0) return null;
 
-  const base = current ?? {}
-  const next: ServerMetadata = { ...base }
+  const base = current ?? {};
+  const next: ServerMetadata = { ...base };
 
-  let changed = false
+  let changed = false;
   if (patch.resources !== undefined) {
-    const merged = mergeServerHostResources(base.resources, patch.resources)
+    const merged = mergeServerHostResources(base.resources, patch.resources);
     if (!serverHostResourcesEquals(merged, base.resources)) {
-      next.resources = merged
-      changed = true
+      next.resources = merged;
+      changed = true;
     }
   }
   if (
     patch.docker !== undefined &&
     !serverDockerMetadataEquals(patch.docker, base.docker)
   ) {
-    next.docker = patch.docker
-    changed = true
+    next.docker = patch.docker;
+    changed = true;
   }
   if (
     patch.runtimes !== undefined &&
     !serverRuntimeMetadataEquals(patch.runtimes, base.runtimes)
   ) {
-    next.runtimes = patch.runtimes
-    changed = true
+    next.runtimes = patch.runtimes;
+    changed = true;
   }
 
-  return changed ? next : null
+  return changed ? next : null;
 }
 
 function defaultDisplayName(_identity: ServerHelloIdentity): string | null {
-  return null
+  return null;
 }
 
 function nowTs(): string {
-  return new Date().toISOString()
+  return new Date().toISOString();
 }
 
 /**
@@ -212,27 +221,27 @@ function buildMetadataDelta(
   base: ServerMetadata | null | undefined,
   identity: ServerHelloIdentity,
 ): Partial<ServerMetadata> {
-  const patch = metadataPatch(identity)
-  const delta: Partial<ServerMetadata> = {}
+  const patch = metadataPatch(identity);
+  const delta: Partial<ServerMetadata> = {};
   if (patch.resources !== undefined) {
-    const merged = mergeServerHostResources(base?.resources, patch.resources)
+    const merged = mergeServerHostResources(base?.resources, patch.resources);
     if (!serverHostResourcesEquals(merged, base?.resources)) {
-      delta.resources = merged
+      delta.resources = merged;
     }
   }
   if (
     patch.docker !== undefined &&
     !serverDockerMetadataEquals(patch.docker, base?.docker)
   ) {
-    delta.docker = patch.docker
+    delta.docker = patch.docker;
   }
   if (
     patch.runtimes !== undefined &&
     !serverRuntimeMetadataEquals(patch.runtimes, base?.runtimes)
   ) {
-    delta.runtimes = patch.runtimes
+    delta.runtimes = patch.runtimes;
   }
-  return delta
+  return delta;
 }
 
 export async function touchServerMetadata(
@@ -255,16 +264,17 @@ export async function touchServerMetadata(
       isTimeSyncEnabled: server.isTimeSyncEnabled,
       ntpServers: server.ntpServers,
       ntpLastSyncedAt: server.ntpLastSyncedAt,
+      daemon: server.daemon,
     })
     .from(server)
     .where(eq(server.id, serverId))
-    .limit(1)
-  const row = rows[0]
-  if (!row) return
+    .limit(1);
+  const row = rows[0];
+  if (!row) return;
 
-  const now = nowTs()
-  const base = row.metadata as ServerMetadata | null | undefined
-  const columns = identityColumnPatch(identity)
+  const now = nowTs();
+  const base = row.metadata as ServerMetadata | null | undefined;
+  const columns = identityColumnPatch(identity);
   const osPatch = identityOsColumnPatch(identity, {
     osId: row.osId ?? null,
     osFamily: row.osFamily ?? null,
@@ -272,7 +282,7 @@ export async function touchServerMetadata(
     osCodename: row.osCodename ?? null,
     osPrettyName: row.osPrettyName ?? null,
     osArchitecture: row.osArchitecture ?? null,
-  })
+  });
   const timePatch = identityTimeSyncColumnPatch(
     identity,
     {
@@ -282,45 +292,57 @@ export async function touchServerMetadata(
       ntpLastSyncedAt: row.ntpLastSyncedAt ?? null,
     },
     now,
-  )
-  const metadataChanged = mergeServerMetadataIdentity(base, identity) !== null
+  );
+  const metadataChanged = mergeServerMetadataIdentity(base, identity) !== null;
   const hostnameChanged = Boolean(
     columns.hostname && columns.hostname !== row.hostname,
-  )
+  );
   const machineKeyChanged = Boolean(
     columns.machineKey && columns.machineKey !== row.machineKey,
-  )
+  );
+  const incomingFeatures = identity.features;
+  const currentProjection = parseServerDaemonState(row.daemon)?.projection;
+  const featuresChanged = incomingFeatures !== undefined &&
+    !featuresMatch(currentProjection?.features, incomingFeatures);
   if (
     !metadataChanged &&
     !hostnameChanged &&
     !machineKeyChanged &&
     !osPatch &&
-    !timePatch
+    !timePatch &&
+    !featuresChanged
   ) {
-    return
+    return;
   }
 
-  const delta = buildMetadataDelta(base, identity)
-  const update: Record<string, unknown> = { updatedAt: now }
-  if (hostnameChanged) update.hostname = columns.hostname
-  if (machineKeyChanged) update.machineKey = columns.machineKey
-  if (osPatch) Object.assign(update, osPatch)
-  if (timePatch) Object.assign(update, timePatch)
+  const delta = buildMetadataDelta(base, identity);
+  const update: Record<string, unknown> = { updatedAt: now };
+  if (hostnameChanged) update.hostname = columns.hostname;
+  if (machineKeyChanged) update.machineKey = columns.machineKey;
+  if (osPatch) Object.assign(update, osPatch);
+  if (timePatch) Object.assign(update, timePatch);
   if (Object.keys(delta).length > 0) {
     update.metadata = sql`COALESCE(${server.metadata}, '{}'::jsonb) || ${
       JSON.stringify(delta)
-    }::jsonb`
+    }::jsonb`;
+  }
+  if (featuresChanged && incomingFeatures !== undefined) {
+    // Set only projection.features on the current row. A reconstructed daemon
+    // object would drop an update or build projection committed after this read.
+    update.daemon = daemonFeaturesColumnPatch(incomingFeatures);
   }
 
-  await db.update(server).set(update).where(eq(server.id, serverId))
+  await db.update(server).set(update).where(eq(server.id, serverId));
 
   // A hardware report can move the server's tier requirement: re-derive the
   // organization's assignment. Best-effort — a failure here must not reject
   // the hello, and the next session check recomputes again.
   if (delta.resources !== undefined) {
     await recomputeAssignmentsForServer(db, serverId).catch((err) => {
-      console.warn(`tier assignment recompute failed for ${serverId}: ${String(err)}`)
-    })
+      console.warn(
+        `tier assignment recompute failed for ${serverId}: ${String(err)}`,
+      );
+    });
   }
 
   // Reported addresses moved: re-point / flag the server's datacenter
@@ -337,11 +359,11 @@ export async function touchServerMetadata(
     await applyReportedAddressRepin(db, serverId, delta.resources.ips).catch(
       (err) => {
         compatLogWarn(
-          'server-registry',
+          "server-registry",
           `membership repin failed for ${serverId}: ${String(err)}`,
-        )
+        );
       },
-    )
+    );
   }
 }
 
@@ -349,38 +371,38 @@ async function findExistingServerId(
   db: Db,
   identity: ServerHelloIdentity,
 ): Promise<string | undefined> {
-  const hinted = identity.serverId?.trim()
+  const hinted = identity.serverId?.trim();
   if (hinted && UUID_RE.test(hinted)) {
     const existing = await db
       .select({ id: server.id })
       .from(server)
       .where(eq(server.id, hinted))
-      .limit(1)
-    if (existing.length > 0) return existing[0].id
+      .limit(1);
+    if (existing.length > 0) return existing[0].id;
   }
 
-  const machineKey = identity.machineKey?.trim()
+  const machineKey = identity.machineKey?.trim();
   if (machineKey) {
     const byMachine = await db
       .select({ id: server.id })
       .from(server)
       .where(eq(server.machineKey, machineKey))
-      .limit(1)
-    if (byMachine.length > 0) return byMachine[0].id
+      .limit(1);
+    if (byMachine.length > 0) return byMachine[0].id;
   }
 
-  const hostname = identity.hostname?.trim()
+  const hostname = identity.hostname?.trim();
   if (hostname) {
     const byHostname = await db
       .select({ id: server.id })
       .from(server)
       .where(eq(server.hostname, hostname))
       .orderBy(server.createdAt)
-      .limit(1)
-    if (byHostname.length > 0) return byHostname[0].id
+      .limit(1);
+    if (byHostname.length > 0) return byHostname[0].id;
   }
 
-  return undefined
+  return undefined;
 }
 
 /**
@@ -394,8 +416,8 @@ async function findServerBoundToLicense(
     .select({ serverId: license.serverId })
     .from(license)
     .where(eq(license.id, licenseId))
-    .limit(1)
-  return row?.serverId ?? undefined
+    .limit(1);
+  return row?.serverId ?? undefined;
 }
 
 /**
@@ -414,22 +436,22 @@ async function findReusableLicensedServerId(
   identity: ServerHelloIdentity,
   licenseId: string,
 ): Promise<string | undefined> {
-  const boundServerId = await findServerBoundToLicense(db, licenseId)
-  if (!boundServerId) return undefined
+  const boundServerId = await findServerBoundToLicense(db, licenseId);
+  if (!boundServerId) return undefined;
 
-  const hinted = identity.serverId?.trim()
+  const hinted = identity.serverId?.trim();
   if (hinted && UUID_RE.test(hinted) && hinted === boundServerId) {
-    return boundServerId
+    return boundServerId;
   }
 
   // License already consumed by another (or unknown) server.
-  return undefined
+  return undefined;
 }
 
 type ServerLicenseBinding = {
-  licenseId: string | null
-  organizationId: string | null
-}
+  licenseId: string | null;
+  organizationId: string | null;
+};
 
 export async function getServerLicenseBinding(
   db: Db,
@@ -439,8 +461,8 @@ export async function getServerLicenseBinding(
     .select({ organizationId: server.organizationId })
     .from(server)
     .where(eq(server.id, serverId))
-    .limit(1)
-  if (!serverRow) return null
+    .limit(1);
+  if (!serverRow) return null;
 
   // Prefer an active bound license. When only a revoked latch remains, surface
   // that id so callers can fail closed with a clear inactive-license state.
@@ -448,24 +470,24 @@ export async function getServerLicenseBinding(
     .select({ id: license.id })
     .from(license)
     .where(and(eq(license.serverId, serverId), isNull(license.revokedAt)))
-    .limit(1)
+    .limit(1);
   if (activeLicense) {
     return {
       licenseId: activeLicense.id,
       organizationId: serverRow.organizationId,
-    }
+    };
   }
 
   const [revokedLicense] = await db
     .select({ id: license.id })
     .from(license)
     .where(eq(license.serverId, serverId))
-    .limit(1)
+    .limit(1);
 
   return {
     licenseId: revokedLicense?.id ?? null,
     organizationId: serverRow.organizationId,
-  }
+  };
 }
 
 /** Accept only the same license that already latched this server (or unbound). */
@@ -473,8 +495,8 @@ function credentialAuthorizedForServer(
   binding: ServerLicenseBinding,
   licenseId: string,
 ): boolean {
-  if (!binding.licenseId) return true
-  return binding.licenseId === licenseId
+  if (!binding.licenseId) return true;
+  return binding.licenseId === licenseId;
 }
 
 async function applyLicensedServerBinding(
@@ -483,11 +505,11 @@ async function applyLicensedServerBinding(
   identity: ServerHelloIdentity,
   organizationId: string,
 ): Promise<void> {
-  const licenseId = identity.licenseId!.trim()
-  const binding = await getServerLicenseBinding(db, serverId)
-  if (!binding) return
+  const licenseId = identity.licenseId!.trim();
+  const binding = await getServerLicenseBinding(db, serverId);
+  if (!binding) return;
 
-  const now = nowTs()
+  const now = nowTs();
   if (!binding.licenseId) {
     await db
       .update(license)
@@ -496,19 +518,19 @@ async function applyLicensedServerBinding(
         eq(license.id, licenseId),
         isNull(license.serverId),
         isNull(license.revokedAt),
-      ))
+      ));
     await db.update(server).set({
       organizationId,
       updatedAt: now,
-    }).where(eq(server.id, serverId))
-    return
+    }).where(eq(server.id, serverId));
+    return;
   }
 
   if (binding.licenseId === licenseId && !binding.organizationId) {
     await db.update(server).set({
       organizationId,
       updatedAt: now,
-    }).where(eq(server.id, serverId))
+    }).where(eq(server.id, serverId));
   }
 }
 
@@ -520,13 +542,13 @@ async function authorizeAndBindLicensedServer(
   licenseId: string,
   organizationId: string,
 ): Promise<string | null> {
-  const binding = await getServerLicenseBinding(db, serverId)
+  const binding = await getServerLicenseBinding(db, serverId);
   if (!binding || !credentialAuthorizedForServer(binding, licenseId)) {
-    return null
+    return null;
   }
-  await touchServerMetadata(db, serverId, identity)
-  await applyLicensedServerBinding(db, serverId, identity, organizationId)
-  return serverId
+  await touchServerMetadata(db, serverId, identity);
+  await applyLicensedServerBinding(db, serverId, identity, organizationId);
+  return serverId;
 }
 
 /**
@@ -540,15 +562,15 @@ async function insertLicensedServer(
   licenseId: string,
   organizationId: string,
 ): Promise<string> {
-  const now = nowTs()
-  const patch = metadataPatch(identity)
-  const columns = identityColumnPatch(identity)
-  const osPatch = identityOsColumnPatch(identity, emptyOsColumns())
+  const now = nowTs();
+  const patch = metadataPatch(identity);
+  const columns = identityColumnPatch(identity);
+  const osPatch = identityOsColumnPatch(identity, emptyOsColumns());
   const timePatch = identityTimeSyncColumnPatch(
     identity,
     emptyTimeSyncColumns(),
     now,
-  )
+  );
   const inserted = await db
     .insert(server)
     .values({
@@ -562,10 +584,10 @@ async function insertLicensedServer(
       ...timePatch,
       metadata: Object.keys(patch).length > 0 ? patch : null,
     })
-    .returning({ id: server.id })
+    .returning({ id: server.id });
 
-  const id = inserted[0]?.id
-  if (!id) throw new Error('failed to insert server row')
+  const id = inserted[0]?.id;
+  if (!id) throw new Error("failed to insert server row");
 
   const latched = await db
     .update(license)
@@ -575,16 +597,18 @@ async function insertLicensedServer(
       isNull(license.serverId),
       isNull(license.revokedAt),
     ))
-    .returning({ id: license.id })
+    .returning({ id: license.id });
 
   if (latched.length === 0) {
-    await db.delete(server).where(eq(server.id, id))
-    const err = new Error('license already consumed') as Error & { code: string }
-    err.code = '23505'
-    throw err
+    await db.delete(server).where(eq(server.id, id));
+    const err = new Error("license already consumed") as Error & {
+      code: string;
+    };
+    err.code = "23505";
+    throw err;
   }
 
-  return id
+  return id;
 }
 
 async function resolveLicensedServerId(
@@ -592,25 +616,29 @@ async function resolveLicensedServerId(
   identity: ServerHelloIdentity,
   fabricDeps?: FabricMembershipDeps,
 ): Promise<string | null> {
-  const licenseId = identity.licenseId?.trim()
-  const licenseToken = identity.licenseToken?.trim()
-  if (!licenseId || !licenseToken) return null
+  const licenseId = identity.licenseId?.trim();
+  const licenseToken = identity.licenseToken?.trim();
+  if (!licenseId || !licenseToken) return null;
 
-  const verified = await verifyDaemonLicense(db, licenseId, licenseToken)
-  if (!verified) return null
+  const verified = await verifyDaemonLicense(db, licenseId, licenseToken);
+  if (!verified) return null;
 
   // Already latched: only the bound server may re-enroll (with matching serverId).
-  const boundServerId = await findServerBoundToLicense(db, licenseId)
+  const boundServerId = await findServerBoundToLicense(db, licenseId);
   if (boundServerId) {
-    const reusable = await findReusableLicensedServerId(db, identity, licenseId)
-    if (!reusable) return null
+    const reusable = await findReusableLicensedServerId(
+      db,
+      identity,
+      licenseId,
+    );
+    if (!reusable) return null;
     return authorizeAndBindLicensedServer(
       db,
       reusable,
       identity,
       licenseId,
       verified.organizationId,
-    )
+    );
   }
 
   try {
@@ -619,40 +647,40 @@ async function resolveLicensedServerId(
       identity,
       licenseId,
       verified.organizationId,
-    )
+    );
     // Best-effort: hierarchy failure must never block daemon enrollment.
     try {
       await ensureSystemHierarchy(db, {
         organizationId: verified.organizationId,
         serverId,
-      })
+      });
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
+      const message = err instanceof Error ? err.message : String(err);
       compatLogWarn(
-        'server-registry',
+        "server-registry",
         `ensureSystemHierarchy failed for server ${serverId}: ${message}`,
-      )
+      );
     }
     await reconcileFabricMembershipBestEffort(
       db,
       verified.organizationId,
       serverId,
       fabricDeps,
-    )
-    return serverId
+    );
+    return serverId;
   } catch (err) {
-    if (!isUniqueViolation(err)) throw err
+    if (!isUniqueViolation(err)) throw err;
     // Concurrent first enroll: the winner owns the license; only that server
     // may continue, and only when this caller presents the matching serverId.
-    const raced = await findReusableLicensedServerId(db, identity, licenseId)
-    if (!raced) return null
+    const raced = await findReusableLicensedServerId(db, identity, licenseId);
+    if (!raced) return null;
     return authorizeAndBindLicensedServer(
       db,
       raced,
       identity,
       licenseId,
       verified.organizationId,
-    )
+    );
   }
 }
 
@@ -695,11 +723,11 @@ export async function findServerIdForIdentity(
   db: Db,
   identity: ServerHelloIdentity,
 ): Promise<string | undefined> {
-  const licenseId = identity.licenseId?.trim()
+  const licenseId = identity.licenseId?.trim();
   if (licenseId) {
-    return await findServerBoundToLicense(db, licenseId)
+    return await findServerBoundToLicense(db, licenseId);
   }
-  return await findExistingServerId(db, identity)
+  return await findExistingServerId(db, identity);
 }
 
 export async function resolveServerId(
@@ -708,13 +736,13 @@ export async function resolveServerId(
   fabricDeps?: FabricMembershipDeps,
 ): Promise<string | null> {
   if (identity.licenseId?.trim()) {
-    return resolveLicensedServerId(db, identity, fabricDeps)
+    return resolveLicensedServerId(db, identity, fabricDeps);
   }
 
-  const existing = await findExistingServerId(db, identity)
+  const existing = await findExistingServerId(db, identity);
   if (existing) {
-    await touchServerMetadata(db, existing, identity)
-    return existing
+    await touchServerMetadata(db, existing, identity);
+    return existing;
   }
-  return null
+  return null;
 }

@@ -37,6 +37,11 @@ import {
   sweepExpiredWebhookDeliveries,
   WEBHOOK_DELIVERY_SWEEP_LIMIT,
 } from "../../features/webhook-delivery/webhook-delivery-records.ts";
+import {
+  parseUpgradeStepRetentionDays,
+  pruneUpgradeHistory,
+} from "../../features/upgrades/prune.ts";
+import { runUpgradeMaintenance } from "../../features/upgrades/maintenance.ts";
 import { registerWebhookRoutes } from "../../webhook/routes.ts";
 import { runManagedIngressOrphanSweep } from "../../features/managed/ingress-desired.ts";
 import { runDatacenterRepinFanoutSweep } from "../../client/datacenters/repin-fanout.ts";
@@ -762,6 +767,22 @@ export async function startDenoServer(
             limit: EXECUTION_LOG_SWEEP_LIMIT,
           }),
       );
+      await runCleanupPhase(
+        "upgrade history prune",
+        () =>
+          pruneUpgradeHistory(db, {
+            doneRetentionDays: parseUpgradeStepRetentionDays(
+              Deno.env.get("TURBOPANEL_UPGRADE_STEP_RETENTION_DAYS"),
+            ),
+          }),
+      );
+      await runCleanupPhase("upgrade tick", () =>
+        runUpgradeMaintenance({
+          db,
+          registry: daemonCellRegistry,
+          runtime: "deno",
+          resolveManifests: true,
+        }));
       runSystemReconcileSweepTick();
     },
   });
