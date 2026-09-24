@@ -8,6 +8,9 @@ import {
   type SecretsConfig,
 } from "../../lib/secrets/secrets.ts";
 import { type AppEnv, createApp } from "../../app/app.ts";
+import { resolveInstanceRevision } from "../../app/build-info.ts";
+import { INSTANCE_VERSION } from "../../app/version.ts";
+import { resolveColocatedServerId } from "../../client/authn/install-state.ts";
 import { createDenoDb, type Db, endDbConnection } from "../../db/connection.ts";
 import {
   assertSchemaCurrent,
@@ -776,13 +779,23 @@ export async function startDenoServer(
             ),
           }),
       );
-      await runCleanupPhase("upgrade tick", () =>
-        runUpgradeMaintenance({
+      await runCleanupPhase("upgrade tick", async () => {
+        const env = Deno.env.toObject();
+        const revision = resolveInstanceRevision(env);
+        const colocated = await resolveColocatedServerId(db, daemonCellRegistry);
+        await runUpgradeMaintenance({
           db,
           registry: daemonCellRegistry,
           runtime: "deno",
           resolveManifests: true,
-        }));
+          env,
+          instanceInstalled: {
+            version: INSTANCE_VERSION,
+            commit: revision.commit,
+          },
+          colocatedServerId: colocated,
+        });
+      });
       runSystemReconcileSweepTick();
     },
   });

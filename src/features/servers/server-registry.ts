@@ -28,7 +28,7 @@ import { recomputeAssignmentsForServer } from "../tiers/assignment-records.ts";
 import { applyReportedAddressRepin } from "../net/repin-apply.ts";
 import { serverIpsEquals } from "../../contracts/server-addresses.ts";
 import { normalizeMachineKey } from "../../lib/machine-key.ts";
-import { daemonFeaturesColumnPatch } from "../../daemon/cell/daemon-jsonb-write.ts";
+import { daemonFeaturesColumnPatch } from "./daemon-jsonb-write.ts";
 import { featuresMatch, parseServerDaemonState } from "./daemon-state.ts";
 import { ensureSystemHierarchy } from "../system/hierarchy.ts";
 import { compatLogWarn } from "../../lib/log-compat.ts";

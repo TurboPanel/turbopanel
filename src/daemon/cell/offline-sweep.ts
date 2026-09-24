@@ -96,6 +96,9 @@ import {
   parseUpgradeStepRetentionDays,
   pruneUpgradeHistory,
 } from "../../features/upgrades/prune.ts";
+import { resolveInstanceRevision } from "../../app/build-info.ts";
+import { INSTANCE_VERSION } from "../../app/version.ts";
+import { resolveColocatedServerId } from "../../client/authn/install-state.ts";
 import { runUpgradeMaintenance } from "../../features/upgrades/maintenance.ts";
 import {
   type AnalyticsEngineDatasetLike,
@@ -1075,12 +1078,20 @@ export async function runUpgradeMaintenanceSafely(
 ): Promise<void> {
   try {
     const registry = createDurableObjectDaemonCellRegistry(env, db);
+    const envRecord = env as unknown as Record<string, string | undefined>;
+    const revision = resolveInstanceRevision(envRecord);
+    const colocated = await resolveColocatedServerId(db, registry);
     await runUpgradeMaintenance({
       db,
       registry,
       runtime: "workers",
       resolveManifests: true,
-      env: env as unknown as Record<string, string | undefined>,
+      env: envRecord,
+      instanceInstalled: {
+        version: INSTANCE_VERSION,
+        commit: revision.commit,
+      },
+      colocatedServerId: colocated,
     });
     sweepTrace("upgrade-tick");
   } catch (err) {

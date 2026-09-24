@@ -8,8 +8,8 @@
  * key off the current row when it is already present.
  */
 import { type SQL, sql } from "drizzle-orm";
-import type { ServerDaemonJsonb } from "../../features/servers/daemon-state.ts";
 import { server } from "../../db/schema.ts";
+import type { ServerDaemonJsonb } from "./daemon-state.ts";
 
 const FEATURES_PATCH_MARKER = "daemon-features-patch";
 const PROJECTION_PATCH_MARKER = "daemon-projection-patch";

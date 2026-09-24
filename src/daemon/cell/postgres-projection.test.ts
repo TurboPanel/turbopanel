@@ -18,7 +18,7 @@ import {
   type ServerDaemonState,
   type ServerDaemonStatus,
 } from "../../features/servers/daemon-state.ts";
-import { materializeDaemonJsonbWrite } from "./daemon-jsonb-write.ts";
+import { materializeDaemonJsonbWrite } from "../../features/servers/daemon-jsonb-write.ts";
 import { touchServerMetadata } from "../../features/servers/server-registry.ts";
 import {
   buildProjectionsFromDaemonRows,

@@ -10,7 +10,7 @@ import {
   type ServerDaemonState,
   type ServerDaemonStatus,
 } from "../../features/servers/daemon-state.ts";
-import { materializeDaemonJsonbWrite } from "./daemon-jsonb-write.ts";
+import { materializeDaemonJsonbWrite } from "../../features/servers/daemon-jsonb-write.ts";
 import type { DaemonCellRegistry } from "../../contracts/cell.ts";
 import { DAEMON_OFFLINE_SWEEP_MS } from "../../contracts/cell-protocol.ts";
 import {

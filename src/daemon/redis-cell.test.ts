@@ -9,7 +9,7 @@ import {
   type ServerDaemonState,
   type ServerDaemonStatus,
 } from "../features/servers/daemon-state.ts";
-import { materializeDaemonJsonbWrite } from "./cell/daemon-jsonb-write.ts";
+import { materializeDaemonJsonbWrite } from "../features/servers/daemon-jsonb-write.ts";
 import {
   onDaemonConnected,
   onDaemonHeartbeat,

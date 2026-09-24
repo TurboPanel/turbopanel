@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { parseSecretsFromEnv } from "../lib/secrets/secrets.ts";
 import { deriveDaemonJwtKeyring } from "./authn/daemon-jwt-keyring.ts";
 import type { Db } from "../db/connection.ts";
-import { materializeDaemonJsonbWrite } from "./cell/daemon-jsonb-write.ts";
+import { materializeDaemonJsonbWrite } from "../features/servers/daemon-jsonb-write.ts";
 import { key } from "../db/schema.ts";
 import type { ServerGeo } from "../features/geo/server-geo.ts";
 import { issueDaemonJwt } from "./authn/daemon-jwt.ts";

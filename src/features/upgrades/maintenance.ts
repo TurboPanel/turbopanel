@@ -3,9 +3,6 @@
  * an automatic run, then advances the active run. Hello handlers do not
  * enqueue; this is the path that does.
  */
-import { INSTANCE_VERSION } from "../../app/version.ts";
-import { resolveInstanceRevision } from "../../app/build-info.ts";
-import { resolveColocatedServerId } from "../../client/authn/install-state.ts";
 import type { DaemonCellRegistry } from "../../contracts/cell.ts";
 import { resolveInstanceUpdateChannel } from "../../contracts/update-channel.ts";
 import type { Db } from "../../db/connection.ts";
@@ -20,14 +17,12 @@ export async function runUpgradeMaintenance(input: {
   runtime: UpgradeRuntime;
   resolveManifests: boolean;
   env?: Record<string, string | undefined>;
+  instanceInstalled: { version: string; commit: string | null };
+  colocatedServerId: string | null;
 }): Promise<void> {
   const env = input.env ??
     (typeof Deno === "undefined" ? {} : Deno.env.toObject());
   const channel = resolveInstanceUpdateChannel(env);
-  const revision = resolveInstanceRevision(env);
-  const colocated = input.registry
-    ? await resolveColocatedServerId(input.db, input.registry)
-    : null;
   const coordinator = createUpgradeCoordinator({
     store: createDrizzleUpgradeStore(input.db, input.registry),
     enqueue: async (serverId, envelope) => {
@@ -38,8 +33,8 @@ export async function runUpgradeMaintenance(input: {
     channel,
     development: isExplicitDevelopmentMode(),
     now: () => new Date().toISOString(),
-    colocatedServerId: colocated,
-    instanceInstalled: { version: INSTANCE_VERSION, commit: revision.commit },
+    colocatedServerId: input.colocatedServerId,
+    instanceInstalled: input.instanceInstalled,
   });
   await coordinator.tick({ resolveManifests: input.resolveManifests });
 }

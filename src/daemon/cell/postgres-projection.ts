@@ -19,7 +19,7 @@ import {
   getServerDaemonStateByServerId,
   type ServerDaemonStateWithMetadata,
 } from "../../features/servers/server-identity-db.ts";
-import { daemonProjectionColumnPatch } from "./daemon-jsonb-write.ts";
+import { daemonProjectionColumnPatch } from "../../features/servers/daemon-jsonb-write.ts";
 import { key, server } from "../../db/schema.ts";
 import { normalizeMachineKey } from "../../lib/machine-key.ts";
 import type { ServerMetadata } from "../../features/servers/server-metadata.ts";
