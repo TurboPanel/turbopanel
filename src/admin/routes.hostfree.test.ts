@@ -27,7 +27,7 @@ import type { DaemonOutboundEnvelope } from "../contracts/cell-protocol.ts";
 import { ADMIN_API_PREFIX } from "../app/surfaces.ts";
 import { parseTestSecretsConfig } from "../test-fixtures/secrets.ts";
 import type { Db } from "../db/connection.ts";
-import { server } from "../db/schema.ts";
+import { server, upgrade, upgradeStep } from "../db/schema.ts";
 import { mintSelfSignedCertificate } from "../lib/tls/self-signed.ts";
 import { registerAdminRoutes } from "./routes.ts";
 import { registerAdminTierRoutes } from "./tier-routes.ts";
@@ -176,34 +176,101 @@ function createRegistry(opts: Readonly<{
   };
 }
 
-function wrapDbWithColocatedServer(db: Db, serverId: string): Db {
-  const original = db as unknown as {
-    select: (...args: unknown[]) => {
-      from: (table: unknown) => unknown;
-    };
+type QueryChain<T> = {
+  where: () => QueryChain<T>;
+  orderBy: () => QueryChain<T>;
+  limit: () => QueryChain<T>;
+  offset: () => QueryChain<T>;
+  leftJoin: () => QueryChain<T>;
+  then: Promise<T[]>[ "then" ];
+  catch: Promise<T[]>[ "catch" ];
+  finally: Promise<T[]>[ "finally" ];
+};
+
+function queryChain<T>(rows: T[]): QueryChain<T> {
+  const promise = Promise.resolve(rows);
+  const chain: QueryChain<T> = {
+    where: () => chain,
+    orderBy: () => chain,
+    limit: () => chain,
+    offset: () => chain,
+    leftJoin: () => chain,
+    then: promise.then.bind(promise),
+    catch: promise.catch.bind(promise),
+    finally: promise.finally.bind(promise),
   };
-  const rows = Promise.resolve([{ id: serverId }]);
-  return {
-    ...original,
-    select: (...args: unknown[]) => {
-      const chain = original.select(...args);
-      return {
-        from: (table: unknown) => {
-          if (table === server) {
-            return {
-              where: () => ({
-                limit: () => rows,
-                then: rows.then.bind(rows),
-                catch: rows.catch.bind(rows),
-                finally: rows.finally.bind(rows),
-              }),
-            };
-          }
-          return chain.from(table);
+  return chain;
+}
+
+function wrapDbWithColocatedServer(
+  db: Db,
+  serverId: string,
+  opts: Readonly<{ daemonFeatures?: string[] }> = {},
+): Db {
+  const original = db as unknown as {
+    select: (...args: unknown[]) => { from: (table: unknown) => unknown };
+    insert: (table: unknown) => unknown;
+    update: (table: unknown) => unknown;
+    transaction: (fn: (tx: Db) => Promise<unknown>) => Promise<unknown>;
+  };
+
+  const fleetRow = {
+    id: serverId,
+    name: "colocated",
+    hostname: "panel.local",
+    isConnected: true,
+    daemon: {
+      projection: {
+        daemonBuild: {
+          commit: "abc",
+          version: "0.1.0",
+          buildId: "build",
         },
-      };
+        features: opts.daemonFeatures ?? [],
+      },
     },
-  } as unknown as Db;
+  };
+
+  const wrap = (inner: typeof original): Db =>
+    ({
+      ...inner,
+      select: (...args: unknown[]) => {
+        const chain = inner.select(...args);
+        return {
+          from: (table: unknown) => {
+            if (table === server) return queryChain([fleetRow]);
+            if (table === upgrade || table === upgradeStep) {
+              return queryChain([]);
+            }
+            return chain.from(table);
+          },
+        };
+      },
+      insert: (table: unknown) => {
+        if (table === upgrade || table === upgradeStep) {
+          return {
+            values: () => Promise.resolve(),
+            onConflictDoUpdate: () => Promise.resolve(),
+          };
+        }
+        return inner.insert(table);
+      },
+      update: (table: unknown) => {
+        if (table === upgrade || table === upgradeStep) {
+          return {
+            set: () => ({
+              where: () => Promise.resolve(),
+            }),
+          };
+        }
+        return inner.update(table);
+      },
+      transaction: async (fn: (tx: Db) => Promise<unknown>) => {
+        await fn(wrap(inner));
+      },
+    }) as unknown as Db;
+
+  return wrap(original);
 }
 
 async function buildApp(opts: Readonly<{
