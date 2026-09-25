@@ -9,8 +9,7 @@ export const MAILPIT_SMTP_PORT_ENV_KEY = `${SYSTEM_EMAIL_ENV_PREFIX}__MAILPIT_SM
 const LEGACY_MAILPIT_API_URL = 'MAILPIT_API_URL'
 const LEGACY_MAILPIT_SMTP_PORT = 'MAILPIT_SMTP_PORT'
 
-/** Deno `mailpit` provider only — co-located Mailpit HTTP API when no URL is configured. */
-export const DEFAULT_DENO_MAILPIT_API_BASE_URL = 'http://127.0.0.1:8025'
+export const DEFAULT_MAILPIT_SMTP_HOST = '127.0.0.1'
 export const DEFAULT_MAILPIT_SMTP_PORT = 1025
 
 function warnLegacyEnv(legacy: string, replacement: string): void {
@@ -64,13 +63,6 @@ export function parseMailpitApiBaseUrl(mailpitApiUrl: string): string | undefine
 /** TurboPanel High Availability (Workers): Mailpit delivery requires a full API URL. */
 export function resolveWorkersMailpitApiBaseUrl(mailpitApiUrl: string): string | undefined {
   return parseMailpitApiBaseUrl(mailpitApiUrl)
-}
-
-/**
- * Deno `mailpit` provider: use configured API URL or the co-located Mailpit default.
- */
-export function resolveDenoMailpitApiBaseUrl(mailpitApiUrl: string): string {
-  return parseMailpitApiBaseUrl(mailpitApiUrl) ?? DEFAULT_DENO_MAILPIT_API_BASE_URL
 }
 
 export function resolveMailpitSmtpPort(mailpitSmtpPort: string): number {

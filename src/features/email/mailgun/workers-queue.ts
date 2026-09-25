@@ -87,7 +87,7 @@ export function emailQueueFromResolvedSettings(
   env: Record<string, string | undefined>,
 ): EmailQueue {
   const workersProvider = resolved.provider
-  if (workersProvider === 'mailpit') {
+  if (workersProvider === 'mailpit-api') {
     const apiBaseUrl = resolveWorkersMailpitApiBaseUrl(
       resolved.keys.MAILPIT_API_URL.value,
     )

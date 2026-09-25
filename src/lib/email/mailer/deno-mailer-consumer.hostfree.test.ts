@@ -247,7 +247,7 @@ const OTP_JOB_JSON = JSON.stringify({
 
 /** Env-only settings: no db, so the resolver never touches Postgres. */
 const baseEnv = (): Record<string, string | undefined> => ({
-  TURBOPANEL_SYSTEM_EMAIL__PROVIDER: "mailpit",
+  TURBOPANEL_SYSTEM_EMAIL__PROVIDER: "mailpit-smtp",
   TURBOPANEL_SYSTEM_EMAIL__FROM: "noreply@example.com",
 });
 
@@ -267,7 +267,7 @@ test("startMailerConsumer applies prefetch, acks a delivered job, and cancels on
       senderFactory: sender.factory,
     });
     assertEquals(broker.prefetches, [3]);
-    assertEquals(sender.providers, ["mailpit"]);
+    assertEquals(sender.providers, ["mailpit-smtp"]);
     broker.deliver({ content: { toString: () => OTP_JOB_JSON } });
     await waitFor(() => broker.dispositions.length > 0, "disposition");
     assertEquals(broker.dispositions, [{ method: "ack" }]);
@@ -374,7 +374,7 @@ test("startMailerConsumer hot-applies provider, rate/burst and prefetch from cha
       settingsTtlMs: 0,
       senderFactory: sender.factory,
     });
-    assertEquals(sender.providers, ["mailpit"]);
+    assertEquals(sender.providers, ["mailpit-smtp"]);
     assertEquals(broker.prefetches, [1]);
 
     // The env object is shared with the consumer; mutating it is what a
@@ -388,14 +388,14 @@ test("startMailerConsumer hot-applies provider, rate/burst and prefetch from cha
     broker.deliver({ content: { toString: () => OTP_JOB_JSON } });
     await waitFor(() => broker.dispositions.length === 1, "disposition");
 
-    assertEquals(sender.providers, ["mailpit", "mailgun"]);
+    assertEquals(sender.providers, ["mailpit-smtp", "mailgun"]);
     assertEquals(broker.prefetches, [1, 5]);
     assertEquals(broker.dispositions, [{ method: "ack" }]);
 
     // Unchanged settings on the next delivery swap nothing.
     broker.deliver({ content: { toString: () => OTP_JOB_JSON } });
     await waitFor(() => broker.dispositions.length === 2, "second disposition");
-    assertEquals(sender.providers, ["mailpit", "mailgun"]);
+    assertEquals(sender.providers, ["mailpit-smtp", "mailgun"]);
     assertEquals(broker.prefetches, [1, 5]);
     await handle.close();
   } finally {
@@ -607,8 +607,8 @@ test("a delivery whose ack throws does not escape the message handler", async ()
   }
 });
 
-test("startMailerConsumer constructs the real mailpit, smtp and mailgun senders", async () => {
-  const providers: EmailProvider[] = ["mailpit", "smtp", "mailgun"];
+test("startMailerConsumer constructs the real mailpit-smtp, smtp and mailgun senders", async () => {
+  const providers: EmailProvider[] = ["mailpit-smtp", "smtp", "mailgun"];
   for (const provider of providers) {
     const broker = createStubBroker({
       // No EventEmitter: watchForLoss returns before attaching listeners.

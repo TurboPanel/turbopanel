@@ -8,6 +8,8 @@ import {
 } from '../../lib/secrets/data-encryption.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { normalizeMailpitApiEnv, normalizeMailpitRuntimeEnv } from '../email/mailpit/env.ts'
+import { buildMailpitSmtpConfig } from '../email/mailpit/smtp-config.ts'
+import { compatLogWarn } from '../../lib/log-compat.ts'
 import type { SmtpConfig } from '../email/smtp/smtp-resolve.ts'
 import {
   normalizeSettingFullKey,
@@ -40,7 +42,7 @@ export const EMAIL_SETTING_SHORT_KEYS = [
 
 export type EmailSettingShortKey = (typeof EMAIL_SETTING_SHORT_KEYS)[number]
 
-export type EmailProvider = 'smtp' | 'mailgun' | 'mailpit'
+export type EmailProvider = 'smtp' | 'mailgun' | 'mailpit-api' | 'mailpit-smtp'
 
 export const EMAIL_SETTINGS_SCHEMA: Record<EmailSettingShortKey, string | undefined> = {
   PROVIDER: 'smtp',
@@ -100,12 +102,12 @@ export function isEmailActiveForRuntime(
     const domain = settings.mailgunDomain?.trim() ?? ''
     return apiKey !== '' && domain !== ''
   }
-  if (settings.provider === 'mailpit') {
-    if (runtime === 'workers') {
-      return settings.keys.MAILPIT_API_URL.value.trim() !== ''
-    }
-    // Deno HTTP Mailpit can fall back to the co-located listener without env.
-    return true
+  if (settings.provider === 'mailpit-api') {
+    if (runtime !== 'workers') return false
+    return settings.keys.MAILPIT_API_URL.value.trim() !== ''
+  }
+  if (settings.provider === 'mailpit-smtp') {
+    return runtime === 'deno'
   }
   if (settings.provider === 'smtp') {
     if (runtime === 'workers') return false
@@ -129,8 +131,17 @@ function fullEmailSettingKey(shortKey: EmailSettingShortKey): string {
 }
 
 function parseProvider(value: string): EmailProvider {
-  if (value === 'mailgun') return 'mailgun'
-  if (value === 'mailpit') return 'mailpit'
+  const normalized = value.trim().toLowerCase()
+  if (normalized === 'mailgun') return 'mailgun'
+  if (normalized === 'mailpit-api') return 'mailpit-api'
+  if (normalized === 'mailpit-smtp') return 'mailpit-smtp'
+  if (normalized === 'mailpit') {
+    compatLogWarn(
+      'email',
+      'PROVIDER mailpit is deprecated; use mailpit-api (Workers) or mailpit-smtp (Deno)',
+    )
+    return 'mailpit-smtp'
+  }
   return 'smtp'
 }
 
@@ -206,7 +217,11 @@ function isAllowedEmailSettingValue(
   trimmed: string,
 ): boolean {
   if (shortKey === 'PROVIDER') {
-    return trimmed === 'smtp' || trimmed === 'mailgun' || trimmed === 'mailpit'
+    return trimmed === 'smtp' ||
+      trimmed === 'mailgun' ||
+      trimmed === 'mailpit-api' ||
+      trimmed === 'mailpit-smtp' ||
+      trimmed === 'mailpit'
   }
   if (shortKey === 'MAILGUN_REGION') {
     return trimmed === 'us' || trimmed === 'eu'
@@ -437,11 +452,12 @@ export async function resolveEmailActivePresence(
 ): Promise<boolean> {
   const resolver = await createEmailPresenceResolver(db, normalizeMailpitApiEnv(env))
   const provider = parseProvider(resolver.resolve('PROVIDER').value)
-  if (provider === 'mailpit') {
-    if (runtime === 'workers') {
-      return resolver.resolve('MAILPIT_API_URL').value.trim() !== ''
-    }
-    return true
+  if (provider === 'mailpit-api') {
+    return runtime === 'workers' &&
+      resolver.resolve('MAILPIT_API_URL').value.trim() !== ''
+  }
+  if (provider === 'mailpit-smtp') {
+    return runtime === 'deno'
   }
   if (provider === 'smtp') {
     if (runtime === 'workers') return false
@@ -490,12 +506,20 @@ export async function resolveEmailSettings(
     keys.MAILGUN_REGION.value.trim() || EMAIL_SETTINGS_SCHEMA.MAILGUN_REGION!,
   )
   const mailgunApiBase = resolveMailgunApiBase(mailgunRegion)
-  const smtp = buildSmtpConfig(
-    keys.SMTP_HOST.value,
-    keys.SMTP_PORT.value,
-    keys.SMTP_USER.value,
-    keys.SMTP_PASS.value,
-  )
+  const smtp = provider === 'mailpit-smtp'
+    ? buildMailpitSmtpConfig(
+      keys.SMTP_HOST.value,
+      keys.SMTP_PORT.value,
+      keys.MAILPIT_SMTP_PORT.value,
+      keys.SMTP_USER.value,
+      keys.SMTP_PASS.value,
+    )
+    : buildSmtpConfig(
+      keys.SMTP_HOST.value,
+      keys.SMTP_PORT.value,
+      keys.SMTP_USER.value,
+      keys.SMTP_PASS.value,
+    )
 
   return {
     provider,

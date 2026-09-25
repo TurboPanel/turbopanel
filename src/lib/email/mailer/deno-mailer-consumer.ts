@@ -14,7 +14,6 @@ import {
 } from '../../../features/email/smtp/amqp-topology.ts'
 import { createMailerSmtpSender } from '@turbopanel/email/smtp-sender'
 import { createMailerMailgunSender } from './mailgun-sender.ts'
-import { createMailerMailpitSender } from './mailpit-sender.ts'
 import { parseEmailJob } from './parse-email-job.ts'
 import { RateLimiter } from './rate-limiter.ts'
 import { redactUrlCredentials } from './redact-url.ts'
@@ -190,7 +189,9 @@ export async function startMailerConsumer(
       dataEncryptionSecrets: opts.dataEncryptionSecrets,
     }
     if (provider === 'mailgun') return createMailerMailgunSender(senderOpts)
-    if (provider === 'mailpit') return createMailerMailpitSender(senderOpts)
+    if (provider === 'mailpit-api') {
+      throw new Error('mailpit-api is only supported on Workers')
+    }
     return createMailerSmtpSender(senderOpts)
   }
 

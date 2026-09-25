@@ -52,6 +52,12 @@ function smtpConfigAttempted(resolved: ResolvedEmailSettings): boolean {
 }
 
 function validateResolvedSmtpConfig(resolved: ResolvedEmailSettings): SmtpConfig | undefined {
+  if (resolved.provider === 'mailpit-smtp') {
+    if (!resolved.smtp) {
+      throw new PermanentSendError('invalid Mailpit SMTP configuration')
+    }
+    return resolved.smtp
+  }
   if (resolved.provider !== 'smtp') {
     throw new PermanentSendError(`email provider is ${resolved.provider}, not smtp`)
   }
