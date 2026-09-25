@@ -96,6 +96,29 @@ test('parseEnvironmentPatchMetadata returns absent when field omitted', () => {
   assertEquals(absent.metadata, 'absent')
 })
 
+test('a client cannot claim a host-level Compose approval on create or patch', () => {
+  // The approval is what lets a webhook deploy host-level content; only the
+  // deploy planner may write it, when a manager or owner deploys.
+  const claimed = {
+    composeHostAccessApproval: {
+      fingerprint: 'f'.repeat(64),
+      approvedBy: validUuid,
+      approvedAt: '2026-09-25T00:00:00.000Z',
+    },
+    team: 'payments',
+  }
+
+  const patched = parseEnvironmentPatchMetadata({ metadata: claimed })
+  if (!patched.ok || patched.metadata === 'absent' || patched.metadata === null) {
+    throw new TypeError('expected parsed metadata')
+  }
+  assertEquals(patched.metadata, { team: 'payments' })
+
+  const created = parseCreateEnvironmentJsonb({ metadata: claimed })
+  if (!created.ok) throw new TypeError('expected valid create')
+  assertEquals(created.metadata, { team: 'payments' })
+})
+
 test('parseEnvironmentPatchOptions rejects invalid compose', () => {
   const invalid = parseEnvironmentPatchOptions({ options: 'bad' })
   assertEquals(invalid.ok, false)

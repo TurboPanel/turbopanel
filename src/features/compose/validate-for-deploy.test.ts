@@ -95,7 +95,7 @@ test("a merge that drops a schema-required key is refused by the upstream schema
     services: {
       web: {
         image: "nginx:alpine",
-        extends: { service: "other", file: "o.yml" },
+        extends: { service: "other" },
       },
     },
   };

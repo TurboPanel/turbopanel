@@ -1938,7 +1938,23 @@ export type EnvironmentDeployDockerNetwork = {
   mtu?: number;
 };
 
-export type EnvironmentDeployCommandPayload = {
+/**
+ * Host-level Compose approval carried on `environment.deploy`.
+ *
+ * `hostLevelApproved` is true only when the deployed document reaches the host
+ * (a gated key, a bind outside the service directory, the Docker socket, …),
+ * the organization has host-level Compose features on, and the actor rule
+ * passed (a manager or owner deployed it, or an automated deploy matches the
+ * recorded approval). Absent reads as `false`. The daemon uses it to allow
+ * absolute and Docker-socket binds; it never excuses a symlink escape from the
+ * deployment directory. Twinned by name in turbopaneld's
+ * `commands-contracts.ts` and pinned in `scripts/contract-field-snapshot.json`.
+ */
+export type EnvironmentDeployHostAccess = {
+  hostLevelApproved?: boolean;
+};
+
+export type EnvironmentDeployCommandPayload = EnvironmentDeployHostAccess & {
   environmentId: string;
   projectId: string;
   organizationId: string;
@@ -3701,7 +3717,7 @@ function parseOptionalDeployServerId(value: unknown): string | undefined {
   return value;
 }
 
-function parseOptionalDeployNoCache(value: unknown): boolean | undefined {
+function parseOptionalDeployBoolean(value: unknown): boolean | undefined {
   if (value === undefined) return undefined;
   if (typeof value !== "boolean") {
     throw new TypeError("Invalid environment.deploy payload");
@@ -3884,7 +3900,8 @@ export function parseEnvironmentDeployPayload(
         value.managedNetwork,
         managedNetworkServices,
       ),
-      noCache: parseOptionalDeployNoCache(value.noCache),
+      noCache: parseOptionalDeployBoolean(value.noCache),
+      hostLevelApproved: parseOptionalDeployBoolean(value.hostLevelApproved),
       tlsMaterial: parseDeployTlsMaterial(value.tlsMaterial),
       variableMaterial: parseDeployVariableMaterial(value.variableMaterial),
       envFile: parseDeployEnvFile(value.envFile),

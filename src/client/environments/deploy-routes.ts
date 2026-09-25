@@ -4,6 +4,7 @@ import type { AppEnv } from "../../app/app.ts";
 import type { AuthRouteOpts } from "../authn/http.ts";
 import { createSessionMiddleware } from "../authn/middleware.ts";
 import { resolveEntityOrganizationId } from "../authz/create-access-grant.ts";
+import { can } from "../authz/evaluator.ts";
 import {
   createReleaseIdAllocator,
   type DeployPrepareError,
@@ -103,6 +104,7 @@ import type { FabricGateOutcome } from "../../features/fabric/gate.ts";
 import {
   assignSlotAddresses,
   buildCompileAddressMaps,
+  type HostAccessActor,
   planEnvironmentDeploy,
   type PlannedDeploy,
 } from "../../features/schedule/index.ts";
@@ -520,6 +522,8 @@ type DeployCommandCreateParams = DeployActor & {
   /** Set only when `managedNetworkServices` is non-empty (see prepare). */
   managedNetwork?: string;
   noCache: boolean;
+  /** The planner's host-level verdict (`PlannedDeploy.hostLevelApproved`). */
+  hostLevelApproved: boolean;
   generation: number;
   desiredHash: string;
   replicaCounts: Record<string, number>;
@@ -634,6 +638,7 @@ async function createDeployCommand(
         managedNetworkServices: params.managedNetworkServices,
         managedNetwork: params.managedNetwork,
         noCache: params.noCache ? true : undefined,
+        hostLevelApproved: params.hostLevelApproved ? true : undefined,
       }),
       listenerPorts: params.listenerPorts,
     },
@@ -719,6 +724,7 @@ function createParamsForPreparedServer(
     projectName: string;
     generation: number;
     noCache: boolean;
+    hostLevelApproved: boolean;
     selection: DeploySourceSelection;
   },
 ): DeployCommandCreateParams {
@@ -769,6 +775,7 @@ function createParamsForPreparedServer(
       ? {}
       : { managedNetwork: row.prepared.managedNetwork }),
     noCache: params.noCache,
+    hostLevelApproved: params.hostLevelApproved,
     generation: params.generation,
     desiredHash: row.prepared.desiredHash,
     replicaCounts: row.prepared.replicaCounts,
@@ -841,6 +848,7 @@ async function persistDeployFanOut(
     projectName: string;
     slots: readonly DesiredSlotInput[];
     noCache: boolean;
+    hostLevelApproved: boolean;
     selection: DeploySourceSelection;
     /** Release trees to record on each target — see `deploymentTargetsForFanOut`. */
     siteReleases: readonly EnvironmentSiteRelease[];
@@ -868,6 +876,7 @@ async function persistDeployFanOut(
             projectName: params.projectName,
             generation,
             noCache: params.noCache,
+            hostLevelApproved: params.hostLevelApproved,
             selection: params.selection,
           }),
         ),
@@ -1094,6 +1103,13 @@ export function registerEnvironmentDeployPreviewRoutes(
       db,
       environmentId,
       auth.organizationId,
+      // A preview changes nothing, so it approves nothing.
+      await resolveHostAccessActor(
+        db,
+        { actorType: "user", actorId: auth.userId },
+        auth.organizationId,
+        false,
+      ),
     );
     if (planned instanceof Response) return planned;
 
@@ -1202,15 +1218,44 @@ type DeploySpanningContext = {
   listenerNames: Map<string, string>;
 };
 
+/**
+ * The host-level Compose gate's view of who is deploying. Evaluated here, with
+ * the grant model, rather than inferred from the route: every session route
+ * that reaches a deploy already requires `organization:manage`, and this check
+ * is what keeps a future, lower deploy grant from inheriting host-level access
+ * with it. The webhook has no person behind it and is judged on a recorded
+ * approval instead (see `HostAccessActor`).
+ */
+async function resolveHostAccessActor(
+  db: Db,
+  actor: DeployActor,
+  organizationId: string,
+  recordApproval: boolean,
+): Promise<HostAccessActor> {
+  if (actor.actorType === "system") return { kind: "automated" };
+  const isManager = await can(
+    db,
+    actor.actorId,
+    "organization:manage",
+    "organization",
+    organizationId,
+  );
+  return isManager
+    ? { kind: "manager", userId: actor.actorId, recordApproval }
+    : { kind: "not_manager" };
+}
+
 async function resolveSuccessfulPlan(
   c: Context<AppEnv>,
   db: Db,
   environmentId: string,
   organizationId: string,
+  hostAccess: HostAccessActor,
 ): Promise<SuccessfulPlannedDeploy | Response> {
   const planned = await planEnvironmentDeploy(db, {
     environmentId,
     organizationId,
+    hostAccess,
   });
   if ("kind" in planned) {
     if (planned.kind === "not_found") {
@@ -1633,6 +1678,7 @@ async function runEnvironmentDeploy(
     db,
     environmentId,
     auth.organizationId,
+    await resolveHostAccessActor(db, auth, auth.organizationId, true),
   );
   if (planned instanceof Response) return planned;
 
@@ -1702,6 +1748,7 @@ async function runEnvironmentDeploy(
       projectName,
       slots: spanningCtx.enriched.slots,
       noCache: auth.noCache,
+      hostLevelApproved: planned.hostLevelApproved,
       selection: auth.selection,
       siteReleases,
     });

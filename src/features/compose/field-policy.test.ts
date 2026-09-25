@@ -156,20 +156,26 @@ test("every network key the registry knows has an answer at both drivers", () =>
   }
 });
 
-test("GATED_SERVICE_FIELD_KEYS is exactly the ten namespace/capability-escaping keys", () => {
+test("GATED_SERVICE_FIELD_KEYS is exactly the sixteen host-reaching keys", () => {
   assertEquals(
     [...GATED_SERVICE_FIELD_KEYS].sort(),
     [
       "cap_add",
+      "cgroup",
       "cgroup_parent",
+      "device_cgroup_rules",
       "devices",
       "ipc",
       "network_mode",
       "pid",
       "privileged",
+      "runtime",
       "security_opt",
       "sysctls",
+      "use_api_socket",
       "userns_mode",
+      "uts",
+      "volumes_from",
     ],
   );
 });

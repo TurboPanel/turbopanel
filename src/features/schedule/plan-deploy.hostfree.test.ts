@@ -37,6 +37,11 @@ const PROJECT_ID = '00000000-0000-4000-8000-000000000003'
 const FABRIC_ID = '00000000-0000-4000-8000-0000000000ff'
 const SERVER_A = '00000000-0000-4000-8000-00000000000a'
 const SERVER_B = '00000000-0000-4000-8000-00000000000b'
+/**
+ * The strictest actor: none of these documents reach the host, so the
+ * host-level gate never engages — which is what these tests rely on.
+ */
+const AUTOMATED = { kind: 'automated' } as const
 const SERVICE_WEB = '00000000-0000-4000-8000-0000000000aa'
 const SERVICE_DB = '00000000-0000-4000-8000-0000000000bb'
 const STORAGE_VOL = '00000000-0000-4000-8000-0000000000cc'
@@ -270,7 +275,7 @@ test('computeStoragePinsFromMountRows ignores rows without a primary server', ()
 test('planEnvironmentDeploy returns not_found when environment is missing', async () => {
   const result = await planEnvironmentDeploy(
     createPlanDeployDb({ env: null }),
-    { environmentId: ENV_ID, organizationId: ORG_ID },
+    { environmentId: ENV_ID, organizationId: ORG_ID, hostAccess: AUTOMATED },
     noopDeps(),
   )
   assertEquals(result, { kind: 'not_found' })
@@ -288,7 +293,7 @@ test('planEnvironmentDeploy returns not_found when project is missing', async ()
       },
       project: null,
     }),
-    { environmentId: ENV_ID, organizationId: ORG_ID },
+    { environmentId: ENV_ID, organizationId: ORG_ID, hostAccess: AUTOMATED },
     noopDeps(),
   )
   assertEquals(result, { kind: 'not_found' })
@@ -306,7 +311,7 @@ test('planEnvironmentDeploy returns invalid_compose for bad project compose', as
       },
       project: { id: PROJECT_ID, options: { compose: { version: 2 } } },
     }),
-    { environmentId: ENV_ID, organizationId: ORG_ID },
+    { environmentId: ENV_ID, organizationId: ORG_ID, hostAccess: AUTOMATED },
     noopDeps(),
   )
   assertEquals(result, { kind: 'invalid_compose' })
@@ -330,7 +335,7 @@ test('planEnvironmentDeploy skips register when no pin or default server', async
       services: [],
       servers: [],
     }),
-    { environmentId: ENV_ID, organizationId: ORG_ID },
+    { environmentId: ENV_ID, organizationId: ORG_ID, hostAccess: AUTOMATED },
     noopDeps({
       reconcileServicesFromCompose: async () => {
         reconcileCalls += 1
@@ -397,7 +402,7 @@ test('planEnvironmentDeploy registers volumes/mounts and plans with pin + fabric
         },
       ],
     }),
-    { environmentId: ENV_ID, organizationId: ORG_ID },
+    { environmentId: ENV_ID, organizationId: ORG_ID, hostAccess: AUTOMATED },
     noopDeps({
       registerComposeVolumes: async (_db, params) => {
         registerCalls.push({ kind: 'volumes', serverId: params.serverId })
@@ -485,7 +490,7 @@ test('planEnvironmentDeploy uses project defaultServerId for register when env h
       services: [],
       servers: [{ id: SERVER_B, connected: true }],
     }),
-    { environmentId: ENV_ID, organizationId: ORG_ID },
+    { environmentId: ENV_ID, organizationId: ORG_ID, hostAccess: AUTOMATED },
     noopDeps({
       registerComposeVolumes: async (_db, params) => {
         registerServerIds.push(params.serverId)
@@ -530,7 +535,7 @@ test('planEnvironmentDeploy refuses a rejected merge before it writes a row', as
       services: [],
       servers: [],
     }),
-    { environmentId: ENV_ID, organizationId: ORG_ID },
+    { environmentId: ENV_ID, organizationId: ORG_ID, hostAccess: AUTOMATED },
     noopDeps({
       reconcileServicesFromCompose: async () => {
         reconcileCalls += 1
@@ -572,7 +577,7 @@ test('planEnvironmentDeploy stamps the plan with the validation it already ran',
       services: [],
       servers: [],
     }),
-    { environmentId: ENV_ID, organizationId: ORG_ID },
+    { environmentId: ENV_ID, organizationId: ORG_ID, hostAccess: AUTOMATED },
     noopDeps(),
   )
   assertEquals('kind' in planned, false)
@@ -604,7 +609,7 @@ test('planEnvironmentDeploy treats a single-server install as a full deploy targ
       services,
       servers: [{ id: SERVER_A, connected: true }],
     }),
-    { environmentId: ENV_ID, organizationId: ORG_ID },
+    { environmentId: ENV_ID, organizationId: ORG_ID, hostAccess: AUTOMATED },
     noopDeps(),
   )
   assertEquals('kind' in unpinned, false)
@@ -623,7 +628,7 @@ test('planEnvironmentDeploy treats a single-server install as a full deploy targ
         { id: SERVER_B, connected: true },
       ],
     }),
-    { environmentId: ENV_ID, organizationId: ORG_ID },
+    { environmentId: ENV_ID, organizationId: ORG_ID, hostAccess: AUTOMATED },
     noopDeps(),
   )
   assertEquals('kind' in pinned, false)

@@ -290,8 +290,28 @@ function mapComposeOptInError(
       error: 'compose_field_requires_org_opt_in',
       issues: prepared.issues,
       message:
-        `This compose document sets ${fieldNoun(count)} that grant root-equivalent access to the shared daemon host: ${composeIssuePaths(prepared.issues)}. An organization owner has to opt in under Manage Organization → Compose before a deploy that sets ${pronounWord(count)} will run.`,
+        `This compose document reaches the host through ${composeIssuePaths(prepared.issues)}. Host-level Compose features are off for this organization. An organization owner can turn them on under Manage Organization → Compose, and then only an organization manager or owner can deploy them.`,
     },
+  }
+}
+
+function mapComposeHostAccessActorError(
+  prepared: Extract<
+    DeployPrepareError,
+    {
+      kind:
+        | 'compose_host_access_requires_manager'
+        | 'compose_host_access_requires_approval'
+    }
+  >,
+): PrepareErrorResponse {
+  const paths = composeIssuePaths(prepared.issues)
+  const message = prepared.kind === 'compose_host_access_requires_manager'
+    ? `This compose document reaches the host through ${paths}. Only an organization manager or owner can deploy host-level Compose features.`
+    : `This compose document reaches the host through ${paths}, and no organization manager or owner has deployed it in this form yet. Deploy it once from the console to approve it; automated deploys of the same content will then run.`
+  return {
+    status: 403,
+    body: { error: prepared.kind, issues: prepared.issues, message },
   }
 }
 
@@ -581,6 +601,12 @@ function mapCorePrepareError(prepared: DeployPrepareError): PrepareErrorResponse
     // organization is simply not authorized to deploy it.
     case 'compose_field_requires_org_opt_in':
       return mapComposeOptInError(prepared)
+    // The organization has host-level features on, but this actor may not use
+    // them — a person without organization:manage, or a webhook deploy of
+    // host-level content no manager or owner has deployed in this form.
+    case 'compose_host_access_requires_manager':
+    case 'compose_host_access_requires_approval':
+      return mapComposeHostAccessActorError(prepared)
     case 'datacenter_ip_required':
       return {
         status: 422,

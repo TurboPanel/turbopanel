@@ -2054,6 +2054,47 @@ test("parseCommandPayload rejects non-boolean noCache on environment.deploy", ()
   );
 });
 
+const MINIMAL_DEPLOY = {
+  environmentId: "env-1",
+  projectId: "proj-1",
+  organizationId: "org-1",
+  projectName: "tp-demo",
+  composeFiles: [{
+    filename: "compose.yaml",
+    role: "runtime" as const,
+    content: "services: {}\\n",
+  }],
+  hostings: [],
+};
+
+test("parseCommandPayload round-trips hostLevelApproved on environment.deploy", () => {
+  const parsed = parseCommandPayload("environment.deploy" as CommandType, {
+    ...MINIMAL_DEPLOY,
+    hostLevelApproved: true,
+  }) as { hostLevelApproved?: boolean };
+  assertEquals(parsed.hostLevelApproved, true);
+});
+
+test("parseCommandPayload leaves hostLevelApproved absent when the control plane omits it", () => {
+  const parsed = parseCommandPayload(
+    "environment.deploy" as CommandType,
+    MINIMAL_DEPLOY,
+  ) as Record<string, unknown>;
+  assertEquals("hostLevelApproved" in parsed, false);
+});
+
+test("parseCommandPayload rejects a non-boolean hostLevelApproved", () => {
+  assertThrows(
+    () =>
+      parseCommandPayload("environment.deploy" as CommandType, {
+        ...MINIMAL_DEPLOY,
+        hostLevelApproved: "true",
+      }),
+    Error,
+    "Invalid environment.deploy payload",
+  );
+});
+
 function deployPayloadWithPrincipal(runtimes: unknown) {
   return {
     environmentId: "env-1",

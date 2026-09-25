@@ -73,9 +73,11 @@ import {
   registerEnvironmentDeployPreviewRoutes,
   registerEnvironmentDeployRoutes,
   registerEnvironmentLifecycleRoutes,
+  runEnvironmentDeployForActor,
   tcpUdpIngressServiceRefs,
   validateDeployMaterials,
 } from "./deploy-routes.ts";
+import { planEnvironmentDeploy } from "../../features/schedule/index.ts";
 import { TEST_ONLY_TURBOPANEL_SECRET } from "../../test-fixtures/secrets.ts";
 import { systemHierarchyProvision } from "../../features/system/hierarchy.ts";
 import { registerTlsRoutes } from "../tls/routes.ts";
@@ -2241,5 +2243,288 @@ test("POST /environments/:id/deploy records per-server failures when queue deliv
         extraServerId,
       });
     }
+  });
+});
+
+// --- host-level Compose features (audit S1, 2026-09-25) ---------------------
+
+const DOCKER_SOCKET_BIND = "/var/run/docker.sock:/var/run/docker.sock";
+
+function composeWithBind(bind: string): ComposeDocument {
+  return {
+    version: 1,
+    data: { services: { web: { image: "traefik:v3", volumes: [bind] } } },
+    presentation: { keyOrder: ["services"], comments: {} },
+  };
+}
+
+type HostLevelCtx = {
+  db: ReturnType<typeof createDenoDb>;
+  app: Hono<AppEnv>;
+  secrets: Awaited<ReturnType<typeof deriveSecretsConfig>>;
+  userId: string;
+  organizationId: string;
+  projectId: string;
+  environmentId: string;
+  serverId: string;
+  commandQueue: ReturnType<typeof createRecordingCommandQueue>;
+};
+
+const appsWithWebhookRoute = new WeakSet<Hono<AppEnv>>();
+
+/**
+ * Mount a stand-in for the GitHub webhook: the same
+ * `runEnvironmentDeployForActor` the webhook trigger calls, with no person
+ * behind it. Hono freezes its routes on the first request, so this is mounted
+ * before any — once per app.
+ */
+function mountWebhookRoute(ctx: HostLevelCtx): void {
+  if (appsWithWebhookRoute.has(ctx.app)) return;
+  appsWithWebhookRoute.add(ctx.app);
+  ctx.app.post("/test/webhook-deploy/:id", (c) =>
+    runEnvironmentDeployForActor(c, ctx.db, ctx.commandQueue, c.req.param("id"), {
+      actorType: "system",
+      actorId: crypto.randomUUID(),
+      organizationId: ctx.organizationId,
+      acknowledgeHealthCheckWarnings: true,
+      noCache: false,
+      selection: { ref: null, commitSha: null, sourceId: null },
+    }));
+}
+
+/** Pin the environment, store `compose` on the project, set the org gate. */
+async function useCompose(
+  ctx: HostLevelCtx,
+  compose: ComposeDocument,
+  hostLevelEnabled: boolean,
+): Promise<void> {
+  mountWebhookRoute(ctx);
+  const now = new Date().toISOString();
+  await ctx.db
+    .update(environment)
+    .set({ serverId: ctx.serverId, name: "Production", updatedAt: now })
+    .where(eq(environment.id, ctx.environmentId));
+  await ctx.db
+    .update(project)
+    .set({ options: { compose }, updatedAt: now })
+    .where(eq(project.id, ctx.projectId));
+  await ctx.db
+    .update(organization)
+    .set({ options: { composeGatedFieldsEnabled: hostLevelEnabled } })
+    .where(eq(organization.id, ctx.organizationId));
+}
+
+async function managerDeploy(ctx: HostLevelCtx): Promise<Response> {
+  const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId);
+  return await ctx.app.request(`/environments/${ctx.environmentId}/deploy`, {
+    method: "POST",
+    headers: {
+      Cookie: cookie,
+      [ORG_ID_HEADER]: ctx.organizationId,
+      "Content-Type": "application/json",
+    },
+    body: "{}",
+  });
+}
+
+/** A deploy through the mounted webhook stand-in (see `mountWebhookRoute`). */
+async function webhookDeploy(ctx: HostLevelCtx): Promise<Response> {
+  return await ctx.app.request(`/test/webhook-deploy/${ctx.environmentId}`, {
+    method: "POST",
+  });
+}
+
+async function storedApproval(ctx: HostLevelCtx): Promise<unknown> {
+  const [row] = await ctx.db
+    .select({ metadata: environment.metadata })
+    .from(environment)
+    .where(eq(environment.id, ctx.environmentId))
+    .limit(1);
+  const metadata = row?.metadata as Record<string, unknown> | null;
+  return metadata?.composeHostAccessApproval;
+}
+
+test("POST /environments/:id/deploy refuses a Docker socket bind while host-level features are off", async () => {
+  await withDeployFixtures(async (ctx) => {
+    await useCompose(ctx, composeWithBind(DOCKER_SOCKET_BIND), false);
+
+    const res = await managerDeploy(ctx);
+
+    assertEquals(res.status, 403);
+    const body = await res.json() as {
+      error: string;
+      issues: Array<{ path: string }>;
+    };
+    assertEquals(body.error, "compose_field_requires_org_opt_in");
+    assertEquals(
+      body.issues.some((issue) => issue.path === "services.web.volumes[0]"),
+      true,
+    );
+    assertEquals(ctx.commandQueue.envelopes.length, 0);
+  });
+});
+
+test("POST /environments/:id/deploy runs binds inside the service directory with host-level features off", async () => {
+  await withDeployFixtures(async (ctx) => {
+    await useCompose(ctx, composeWithBind("./data:/data"), false);
+
+    assertEquals((await managerDeploy(ctx)).status, 200);
+    // Nothing host-level, so a webhook needs no approval either.
+    assertEquals((await webhookDeploy(ctx)).status, 200);
+    assertEquals(ctx.commandQueue.envelopes.length, 2);
+  });
+});
+
+test("a webhook deploy of host-level content no manager has deployed is refused", async () => {
+  await withDeployFixtures(async (ctx) => {
+    await useCompose(ctx, composeWithBind(DOCKER_SOCKET_BIND), true);
+
+    const res = await webhookDeploy(ctx);
+
+    assertEquals(res.status, 403);
+    const body = await res.json() as { error: string };
+    assertEquals(body.error, "compose_host_access_requires_approval");
+    assertEquals(ctx.commandQueue.envelopes.length, 0);
+  });
+});
+
+test("a manager's deploy approves host-level content for later webhook deploys", async () => {
+  await withDeployFixtures(async (ctx) => {
+    await useCompose(ctx, composeWithBind(DOCKER_SOCKET_BIND), true);
+
+    assertEquals((await managerDeploy(ctx)).status, 200);
+    const approval = await storedApproval(ctx) as {
+      fingerprint: string;
+      approvedBy: string;
+    } | undefined;
+    assertEquals(approval?.approvedBy, ctx.userId);
+    assertEquals(approval?.fingerprint.length, 64);
+
+    assertEquals((await webhookDeploy(ctx)).status, 200);
+    assertEquals(ctx.commandQueue.envelopes.length, 2);
+  });
+});
+
+test("changing what reaches the host voids the approval for webhook deploys", async () => {
+  await withDeployFixtures(async (ctx) => {
+    await useCompose(ctx, composeWithBind(DOCKER_SOCKET_BIND), true);
+    assertEquals((await managerDeploy(ctx)).status, 200);
+
+    // Same stack, now binding the host root instead of the socket.
+    await useCompose(ctx, composeWithBind("/:/host"), true);
+    const res = await webhookDeploy(ctx);
+
+    assertEquals(res.status, 403);
+    const body = await res.json() as { error: string };
+    assertEquals(body.error, "compose_host_access_requires_approval");
+    assertEquals(ctx.commandQueue.envelopes.length, 1);
+  });
+});
+
+test("a deploy preview approves nothing", async () => {
+  await withDeployFixtures(async (ctx) => {
+    await useCompose(ctx, composeWithBind(DOCKER_SOCKET_BIND), true);
+    const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId);
+
+    const preview = await ctx.app.request(
+      `/environments/${ctx.environmentId}/deploy-preview`,
+      { headers: { Cookie: cookie, [ORG_ID_HEADER]: ctx.organizationId } },
+    );
+
+    assertEquals(preview.status, 200);
+    assertEquals(await storedApproval(ctx), undefined);
+    assertEquals((await webhookDeploy(ctx)).status, 403);
+  });
+});
+
+test("a person without organization:manage cannot deploy host-level content", async () => {
+  await withDeployFixtures(async (ctx) => {
+    await useCompose(ctx, composeWithBind(DOCKER_SOCKET_BIND), true);
+
+    const planned = await planEnvironmentDeploy(ctx.db, {
+      environmentId: ctx.environmentId,
+      organizationId: ctx.organizationId,
+      hostAccess: { kind: "not_manager" },
+    });
+
+    assertEquals("kind" in planned ? planned.kind : "planned", "compose_rejected");
+    assertEquals(
+      "kind" in planned && planned.kind === "compose_rejected"
+        ? planned.error.kind
+        : null,
+      "compose_host_access_requires_manager",
+    );
+  });
+});
+
+/** `hostLevelApproved` on the queued `environment.deploy` payload for a deploy response. */
+async function payloadHostLevelApproved(
+  ctx: HostLevelCtx,
+  res: Response,
+): Promise<unknown> {
+  const body = await res.json() as { commandId: string };
+  const [row] = await ctx.db
+    .select({ payload: dispatch.payload })
+    .from(dispatch)
+    .where(eq(dispatch.commandId, body.commandId))
+    .limit(1);
+  return (row?.payload as Record<string, unknown> | undefined)
+    ?.hostLevelApproved;
+}
+
+test("a manager's host-level deploy tells the daemon it is approved", async () => {
+  await withDeployFixtures(async (ctx) => {
+    await useCompose(ctx, composeWithBind(DOCKER_SOCKET_BIND), true);
+
+    const res = await managerDeploy(ctx);
+
+    assertEquals(res.status, 200);
+    assertEquals(await payloadHostLevelApproved(ctx, res), true);
+  });
+});
+
+test("a webhook deploy matching a recorded approval tells the daemon it is approved", async () => {
+  await withDeployFixtures(async (ctx) => {
+    await useCompose(ctx, composeWithBind(DOCKER_SOCKET_BIND), true);
+    assertEquals((await managerDeploy(ctx)).status, 200);
+
+    const res = await webhookDeploy(ctx);
+
+    assertEquals(res.status, 200);
+    assertEquals(await payloadHostLevelApproved(ctx, res), true);
+  });
+});
+
+test("a deploy that reaches nothing on the host carries no approval, even with the gate on", async () => {
+  await withDeployFixtures(async (ctx) => {
+    await useCompose(ctx, composeWithBind("./data:/data"), true);
+
+    const res = await managerDeploy(ctx);
+
+    assertEquals(res.status, 200);
+    assertEquals(await payloadHostLevelApproved(ctx, res), undefined);
+  });
+});
+
+test("the planner approves host-level content only for an allowed actor", async () => {
+  await withDeployFixtures(async (ctx) => {
+    await useCompose(ctx, composeWithBind(DOCKER_SOCKET_BIND), true);
+    const manager = await planEnvironmentDeploy(ctx.db, {
+      environmentId: ctx.environmentId,
+      organizationId: ctx.organizationId,
+      hostAccess: { kind: "manager", userId: ctx.userId, recordApproval: false },
+    });
+    assertEquals("kind" in manager ? manager.kind : manager.hostLevelApproved, true);
+
+    await useCompose(ctx, composeWithBind("./data:/data"), true);
+    const ordinary = await planEnvironmentDeploy(ctx.db, {
+      environmentId: ctx.environmentId,
+      organizationId: ctx.organizationId,
+      hostAccess: { kind: "automated" },
+    });
+    assertEquals(
+      "kind" in ordinary ? ordinary.kind : ordinary.hostLevelApproved,
+      false,
+    );
   });
 });
