@@ -45,6 +45,7 @@ import {
   unsupportedNetworkReason,
 } from "./field-policy.ts";
 import { validateAgainstUpstreamSchema } from "./upstream-schema.ts";
+import { collectHostAccessFindings } from "./host-access.ts";
 
 export type ComposeLintLevel = "error" | "warning";
 
@@ -741,6 +742,31 @@ function lintServiceField(
   }
 
   return { hasImage, hasBuild };
+}
+
+/**
+ * Host paths reached by value — binds outside the service directory and the
+ * Compose spellings that disguise one (`./host-access.ts`). Same code and same
+ * posture as a gated key: always an advisory here, because this linter cannot
+ * know whether the organization has turned host-level features on; the
+ * refusal is `validateComposeForDeploy`'s, run where that is known.
+ */
+function lintHostAccess(
+  doc: ReturnType<typeof parseDocument>,
+  lineCounter: LineCounter,
+  issues: ComposeLintIssue[],
+): void {
+  for (const finding of collectHostAccessFindings(doc.toJS())) {
+    const node = doc.getIn(finding.segments, true) as Node | undefined;
+    issues.push({
+      level: "warning",
+      code: "field_requires_org_opt_in",
+      message: finding.message,
+      path: finding.path,
+      line: nodeLine(node, lineCounter),
+      blocking: false,
+    });
+  }
 }
 
 function lintVariableRefScalar(
@@ -1715,6 +1741,7 @@ export function lintComposeYaml(
     known,
     issues,
   );
+  lintHostAccess(doc, lineCounter, issues);
   if (options?.projectRepositoryId !== undefined) {
     lintSingleRepository(
       root,

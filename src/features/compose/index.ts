@@ -114,10 +114,17 @@ export {
 } from "./upstream-schema.ts";
 export {
   type ComposeDeployValidationError,
+  type ComposeHostAccessActorError,
   type ComposeMergedInvalidError,
   type ComposeUnsupportedFieldError,
   validateComposeForDeploy,
 } from "./validate-for-deploy.ts";
+export {
+  collectHostAccessFindings,
+  type HostAccessFinding,
+  hostAccessFingerprint,
+  hostAccessIssues,
+} from "./host-access.ts";
 export {
   applyComposePlacement,
   isPlacementServerId,
