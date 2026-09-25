@@ -151,16 +151,29 @@ export async function verifyTotp(
   code: string,
   unixSeconds: number = Date.now() / 1000,
 ): Promise<boolean> {
-  const normalized = normalizeTotpCode(code);
-  if (!/^\d{6}$/.test(normalized)) return false;
+  return (await matchTotpStep(secret, code, unixSeconds)) !== null;
+}
 
-  let matched = false;
+/**
+ * Like {@link verifyTotp}, but returns the RFC 6238 time-step counter the code
+ * matched (or `null`), so a caller can refuse a step it already accepted.
+ */
+export async function matchTotpStep(
+  secret: Uint8Array,
+  code: string,
+  unixSeconds: number = Date.now() / 1000,
+): Promise<number | null> {
+  const normalized = normalizeTotpCode(code);
+  if (!/^\d{6}$/.test(normalized)) return null;
+
+  const current = Math.floor(unixSeconds / TOTP_STEP_SECONDS);
+  let matched: number | null = null;
   for (let delta = -TOTP_WINDOW_STEPS; delta <= TOTP_WINDOW_STEPS; delta += 1) {
     const candidate = await generateTotp(secret, {
       unixSeconds: unixSeconds + delta * TOTP_STEP_SECONDS,
     });
-    if (constantTimeEqual(candidate, normalized)) {
-      matched = true;
+    if (constantTimeEqual(candidate, normalized) && matched === null) {
+      matched = current + delta;
     }
   }
   return matched;

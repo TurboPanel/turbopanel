@@ -178,7 +178,13 @@ Local-Console auth is Deno + developer-surface only; it never applies on Workers
 
 Contracts and gotchas for the three account-security paths. Route table is below — do not restate it here.
 
-**TOTP (`tp2fa`):** the sign-in challenge is a stateless envelope (HKDF purpose `two-factor-challenge`) with a **5-minute TTL**. Five wrong codes (TOTP or backup) kill the challenge; the client signs in again rather than retrying a dead token. Backup-code verifiers reuse the `tpotp` envelope under HKDF purpose `backup-code-verifier` and are **consumed on use** — a code that verifies is removed from the remaining set in the same write.
+**TOTP (`tp2fa`):** the sign-in challenge is a stateless envelope (HKDF purpose `two-factor-challenge`) with a **5-minute TTL**; its payload carries `userId`, `exp` (seconds) and `iat` (milliseconds). Three rules, all enforced in `verifyTwoFactorSignIn` under the `2fa` row lock:
+
+- **Lockout is per user, not per challenge.** Five wrong codes (TOTP or backup) inside `TWO_FACTOR_LOCKOUT_WINDOW_MS` (15 minutes, row `2fa-attempts:<userId>`) lock second-factor sign-in until the window closes. `issueTwoFactorChallenge` does **not** reset the counter — whoever holds the password can mint challenges at will, and each one must not buy five more guesses. Only a successful second factor resets it.
+- **A TOTP step is accepted once.** `matchTotpStep` returns the RFC 6238 counter a code matched; a step at or before the last accepted one (row `2fa-used:<userId>`, which enrolment also writes) is refused and counts as a failure.
+- **A challenge completes one sign-in.** Success records the challenge's `iat`; any challenge issued at or before it is spent and answers like an invalid token (400, no attempt charged). The used row expires once nothing it records could still be presented, so it never accumulates — `verification` has no sweeper.
+
+Backup-code verifiers reuse the `tpotp` envelope under HKDF purpose `backup-code-verifier` and are **consumed on use** — a code that verifies is removed from the remaining set in the same write.
 
 **WebAuthn:** the relying-party id is the hostname of `resolvePublicBaseUrl` (never the request Host). Ceremonies require **user verification**, discoverable credentials, and `ES256` / `RS256`. An authenticator counter that regresses is rejected. A passkey login is a **full second factor** — it issues a session without a TOTP challenge even when `user.is_2fa_enabled`.
 
@@ -188,7 +194,7 @@ Contracts and gotchas for the three account-security paths. Route table is below
 - **Sign-up needs a provider-verified email:** a new account takes the identity's email as its own, so an unverified one redirects `oauth_email_unverified` (GitHub already returns only a verified primary; Google's `email_verified` is honoured). Signing in to an existing linked identity is unaffected — it matches on `provider_user_id`, never on email.
 - **`redirectTo`** is a same-origin path; `isSafeRedirectPath` refuses a leading `//`, `://`, a backslash, and any C0 control or DEL — raw **or** once percent-decoded — because browsers drop TAB/CR/LF, turning `/\t/evil.com` into `//evil.com`.
 
-**Re-auth:** `assertRecentAuthOr403` (`reauth.ts`) is shared by enroll/disable 2FA, passkey add/remove, and provider unlink. An account with a credential row must resubmit its password in the body — a fresh session never substitutes; an account with no password (passkey / OAuth only) passes on a session younger than 15 minutes; otherwise **403**. Provider *linking* is a redirect and uses the session window alone (`oauth_reauth_required`).
+**Re-auth:** `assertRecentAuthOr403` (`reauth.ts`) is shared by enroll/disable 2FA, passkey add/remove, and provider unlink. An account with a credential row must resubmit its password in the body — a fresh session never substitutes; an account with no password (passkey / OAuth only) passes on a session younger than 15 minutes; otherwise **403**. Every submitted password is charged to the `reauth` rate-limit purpose (strict tier, 5/min) keyed on the **signed-in user** plus the caller's IP before it is checked, so a stolen session is not an unthrottled password oracle — rotating IPs does not help; over the limit it answers **429**. Provider *linking* is a redirect and uses the session window alone (`oauth_reauth_required`).
 
 ### Auth routes
 
@@ -197,7 +203,7 @@ Client auth lives under `CLIENT_API_PREFIX` (`/api/client/v1`):
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `POST` | `/api/client/v1/auth/sign-in` | Verify DB user credentials by **email** + password. When `user.is_2fa_enabled`, returns `{ ok: true, requires2fa: true, challenge }` (no session). Otherwise create session. Session payload has `userId` / `email` / `role` / `is2faEnabled` (no `username`) |
-| `POST` | `/api/client/v1/auth/sign-in/2fa` | Public; complete sign-in with a TOTP code or backup code against a `tp2fa` challenge. Rate-limited `sign-in-2fa`. Five failures kill the challenge. |
+| `POST` | `/api/client/v1/auth/sign-in/2fa` | Public; complete sign-in with a TOTP code or backup code against a `tp2fa` challenge. Rate-limited `sign-in-2fa`. Five failures lock the user's second factor for 15 minutes (**429** `Too many attempts`), across challenges. A spent challenge or a reused TOTP step is refused. |
 | `GET` | `/api/client/v1/auth/2fa` | Session: `{ enabled, method, backupCodesRemaining, passkeys, linkedProviders }` — `passkeys` is `{ id, name, createdAt, deviceType, isBackedUp }[]` (same shape as `GET /auth/passkeys`). `linkedProviders` is the OAuth identities on this account (`github` / `google`; the password `credential` row is omitted). There is no separate `GET /auth/oauth`. |
 | `POST` | `/api/client/v1/auth/2fa/totp/enroll` | Session + reauth; returns `{ secret, otpauthUri }`. **409** `two_factor_enabled` while a verified row exists |
 | `POST` | `/api/client/v1/auth/2fa/totp/verify` | Session; flips `is_verified` + `user.is_2fa_enabled`; returns `{ backupCodes }` once |

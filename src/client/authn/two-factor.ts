@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import type { Db } from "../../db/connection.ts";
 import { isExplicitDevelopmentMode } from "../../app/dev-mode.ts";
 import {
@@ -20,13 +20,20 @@ import {
   buildOtpAuthUri,
   decodeBase32,
   generateTotpSecret,
-  verifyTotp,
+  matchTotpStep,
+  TOTP_STEP_SECONDS,
+  TOTP_WINDOW_STEPS,
 } from "./totp.ts";
 
 export const TWO_FACTOR_CHALLENGE_PURPOSE = "two-factor-challenge";
 export const BACKUP_CODE_VERIFIER_PURPOSE = "backup-code-verifier";
 export const TWO_FACTOR_CHALLENGE_TTL_MS = 5 * 60 * 1000;
 export const MAX_2FA_ATTEMPTS = 5;
+/**
+ * Failed-attempt window per user. Five failures lock second-factor sign-in for
+ * the rest of the window, however many new challenges the password mints.
+ */
+export const TWO_FACTOR_LOCKOUT_WINDOW_MS = 15 * 60 * 1000;
 export const BACKUP_CODE_COUNT = 10;
 export const BACKUP_CODE_LENGTH = 10;
 /** 32-symbol alphabet (no I/L/O/U) so printed codes stay unambiguous. */
@@ -34,6 +41,8 @@ export const BACKUP_CODE_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 
 const BACKUP_CODE_VERIFIER_CONTEXT = "turbopanel-backup-code-verifier-v1";
 const TWO_FA_ATTEMPTS_PREFIX = "2fa-attempts:";
+/** Last accepted TOTP step and last consumed challenge, one row per user. */
+const TWO_FA_USED_PREFIX = "2fa-used:";
 const BACKUP_CODE_ALPHABET_BOUND =
   Math.floor(256 / BACKUP_CODE_ALPHABET.length) * BACKUP_CODE_ALPHABET.length;
 
@@ -107,6 +116,10 @@ function base64urlDecode(input: string): Uint8Array {
 
 function attemptsIdentifier(userId: string): string {
   return `${TWO_FA_ATTEMPTS_PREFIX}${userId}`;
+}
+
+function usedIdentifier(userId: string): string {
+  return `${TWO_FA_USED_PREFIX}${userId}`;
 }
 
 export function requireBackupCodeVerifierSecrets(
@@ -257,7 +270,8 @@ function parseBackupCodeEnvelopes(raw: string): string[] {
   }
 }
 
-type ChallengePayload = { userId: string; exp: number };
+/** `iat` is milliseconds; a sign-in consumes every challenge issued at or before it. */
+type ChallengePayload = { userId: string; exp: number; iat: number };
 
 export async function signTwoFactorChallenge(
   secrets: DerivedSecretsConfig,
@@ -268,6 +282,7 @@ export async function signTwoFactorChallenge(
   const payload: ChallengePayload = {
     userId,
     exp: Math.floor((nowMs + TWO_FACTOR_CHALLENGE_TTL_MS) / 1000),
+    iat: nowMs,
   };
   const encodedPayload = base64urlEncode(
     textEncoder.encode(JSON.stringify(payload)),
@@ -303,7 +318,7 @@ export async function verifyTwoFactorChallenge(
   secrets: DerivedSecretsConfig,
   challenge: string,
   nowMs: number = Date.now(),
-): Promise<{ userId: string; exp: number } | "invalid" | "expired"> {
+): Promise<ChallengePayload | "invalid" | "expired"> {
   const keyring = requireTwoFactorChallengeSecrets(secrets);
   const parsed = parseEnvelope(ENVELOPE_SCHEME_TWO_FACTOR, challenge, 2);
   if (!parsed) return "invalid";
@@ -328,13 +343,20 @@ export async function verifyTwoFactorChallenge(
   ) {
     return "invalid";
   }
-  if (typeof decoded.payload.exp !== "number") {
+  if (
+    typeof decoded.payload.exp !== "number" ||
+    !Number.isSafeInteger(decoded.payload.iat)
+  ) {
     return "invalid";
   }
   if (decoded.payload.exp * 1000 <= nowMs) {
     return "expired";
   }
-  return { userId: decoded.payload.userId, exp: decoded.payload.exp };
+  return {
+    userId: decoded.payload.userId,
+    exp: decoded.payload.exp,
+    iat: decoded.payload.iat,
+  };
 }
 
 async function resetTwoFactorAttempts(db: Db, userId: string): Promise<void> {
@@ -344,16 +366,16 @@ async function resetTwoFactorAttempts(db: Db, userId: string): Promise<void> {
 }
 
 /**
- * Mint a fresh 5-minute `tp2fa` challenge and reset that user's attempt
- * counter so a new sign-in is not blocked by a prior failed challenge.
+ * Mint a fresh 5-minute `tp2fa` challenge. It deliberately leaves the attempt
+ * counter alone: whoever holds the password can mint challenges at will, so a
+ * new one must not buy more guesses (see {@link TWO_FACTOR_LOCKOUT_WINDOW_MS}).
  */
-export async function issueTwoFactorChallenge(
-  db: Db,
+export function issueTwoFactorChallenge(
+  _db: Db,
   secrets: DerivedSecretsConfig,
   userId: string,
   nowMs: number = Date.now(),
 ): Promise<string> {
-  await resetTwoFactorAttempts(db, userId);
   return signTwoFactorChallenge(secrets, userId, nowMs);
 }
 
@@ -520,10 +542,19 @@ export async function verifyTotpEnrollment(
       params.dataEncryptionSecrets,
       row.secret,
     );
-    const matched = await verifyTotp(decodeBase32(base32Secret), params.code);
-    if (!matched) {
+    const nowMs = Date.now();
+    const step = await matchTotpStep(
+      decodeBase32(base32Secret),
+      params.code,
+      nowMs / 1000,
+    );
+    if (step === null) {
       throw new InvalidTotpError();
     }
+    await writeUsedState(tx, params.userId, {
+      totpStep: step,
+      challengeIat: null,
+    }, nowMs);
 
     const backupCodes = generateBackupCodes();
     const sealedCodes = await sealBackupCodes(
@@ -640,7 +671,10 @@ export async function disableTwoFactor(db: Db, userId: string): Promise<void> {
       .set({ is2FaEnabled: false, updatedAt: nowTs() })
       .where(eq(user.id, userId));
     await tx.delete(verification).where(
-      eq(verification.identifier, attemptsIdentifier(userId)),
+      inArray(verification.identifier, [
+        attemptsIdentifier(userId),
+        usedIdentifier(userId),
+      ]),
     );
   });
 }
@@ -651,19 +685,96 @@ export type VerifyTwoFactorSignInResult =
   | "expired"
   | "too_many_attempts";
 
+function isLive(expiresAt: string, nowMs: number): boolean {
+  const at = Date.parse(expiresAt);
+  return Number.isFinite(at) && at > nowMs;
+}
+
+/**
+ * Failures inside the current lockout window. A missing or lapsed row starts
+ * a new window that closes {@link TWO_FACTOR_LOCKOUT_WINDOW_MS} from now.
+ */
 async function readAttemptCount(
   tx: Db,
   userId: string,
-  expiresAt: string,
+  nowMs: number,
 ): Promise<{ attempts: number; expiresAt: string }> {
   const attemptsRow = await lockAttemptsRow(tx, userId);
-  if (!attemptsRow) {
-    return { attempts: 0, expiresAt };
+  if (!attemptsRow || !isLive(attemptsRow.expiresAt, nowMs)) {
+    return {
+      attempts: 0,
+      expiresAt: new Date(nowMs + TWO_FACTOR_LOCKOUT_WINDOW_MS).toISOString(),
+    };
   }
   return {
     attempts: Number.parseInt(attemptsRow.value ?? "0", 10) || 0,
     expiresAt: attemptsRow.expiresAt,
   };
+}
+
+type UsedState = { totpStep: number | null; challengeIat: number | null };
+
+const NOTHING_USED: UsedState = { totpStep: null, challengeIat: null };
+
+function parseUsedState(raw: string | null): UsedState {
+  try {
+    const parsed: unknown = JSON.parse(raw ?? "");
+    if (parsed === null || typeof parsed !== "object") return NOTHING_USED;
+    const { totpStep, challengeIat } = parsed as Record<string, unknown>;
+    return {
+      totpStep: Number.isSafeInteger(totpStep) ? totpStep as number : null,
+      challengeIat: Number.isSafeInteger(challengeIat)
+        ? challengeIat as number
+        : null,
+    };
+  } catch {
+    return NOTHING_USED;
+  }
+}
+
+/** FOR UPDATE the per-user used-state row. Must follow {@link lockAttemptsRow}. */
+async function readUsedState(
+  tx: Db,
+  userId: string,
+  nowMs: number,
+): Promise<UsedState> {
+  const rows = await tx
+    .select({ value: verification.value, expiresAt: verification.expiresAt })
+    .from(verification)
+    .where(eq(verification.identifier, usedIdentifier(userId)))
+    .for("update")
+    .limit(1);
+  const row = rows[0];
+  if (!row || !isLive(row.expiresAt, nowMs)) return NOTHING_USED;
+  return parseUsedState(row.value);
+}
+
+/**
+ * Persist what was just accepted. The row only has to outlive the window in
+ * which what it records could still be presented: a challenge lives
+ * {@link TWO_FACTOR_CHALLENGE_TTL_MS} and a TOTP step at most
+ * `TOTP_WINDOW_STEPS + 1` steps past its own.
+ */
+async function writeUsedState(
+  tx: Db,
+  userId: string,
+  state: UsedState,
+  nowMs: number,
+): Promise<void> {
+  const stepHorizonMs = state.totpStep === null
+    ? 0
+    : (state.totpStep + TOTP_WINDOW_STEPS + 1) * TOTP_STEP_SECONDS * 1000;
+  const expiresAt = new Date(
+    Math.max(nowMs + TWO_FACTOR_CHALLENGE_TTL_MS, stepHorizonMs),
+  ).toISOString();
+  const value = JSON.stringify(state);
+  await tx
+    .insert(verification)
+    .values({ identifier: usedIdentifier(userId), value, expiresAt })
+    .onConflictDoUpdate({
+      target: verification.identifier,
+      set: { value, expiresAt, updatedAt: nowTs() },
+    });
 }
 
 async function recordFailedAttempt(
@@ -725,6 +836,11 @@ async function consumeMatchingBackupCode(
   return true;
 }
 
+/**
+ * `false` on no match; otherwise the TOTP step that matched (`null` for a
+ * backup code). A TOTP step at or before the last accepted one is a replay
+ * and does not match.
+ */
 async function matchTotpOrBackupCode(
   tx: Db,
   row: TwoFactorAuthRow | undefined,
@@ -732,10 +848,12 @@ async function matchTotpOrBackupCode(
     userId: string;
     code: string | undefined;
     backupCode: string | undefined;
+    lastTotpStep: number | null;
+    nowMs: number;
     dataEncryptionSecrets: DerivedSecretsConfig;
     backupCodeVerifierSecrets: DerivedSecretsConfig;
   },
-): Promise<boolean> {
+): Promise<false | { totpStep: number | null }> {
   if (!row?.isVerified) return false;
 
   if (params.code !== undefined) {
@@ -743,25 +861,41 @@ async function matchTotpOrBackupCode(
       params.dataEncryptionSecrets,
       row.secret,
     );
-    return verifyTotp(decodeBase32(base32Secret), params.code);
+    const step = await matchTotpStep(
+      decodeBase32(base32Secret),
+      params.code,
+      params.nowMs / 1000,
+    );
+    if (step === null) return false;
+    if (params.lastTotpStep !== null && step <= params.lastTotpStep) {
+      return false;
+    }
+    return { totpStep: step };
   }
 
   const submitted = normalizeBackupCode(params.backupCode ?? "");
   if (submitted.length !== BACKUP_CODE_LENGTH) return false;
 
-  return consumeMatchingBackupCode(tx, {
+  const consumed = await consumeMatchingBackupCode(tx, {
     userId: params.userId,
     rowId: row.id,
     submitted,
     envelopes: parseBackupCodeEnvelopes(row.backupCodes),
     backupCodeVerifierSecrets: params.backupCodeVerifierSecrets,
   });
+  return consumed ? { totpStep: null } : false;
 }
 
 /**
- * Verify a TOTP or backup code against a signed `tp2fa` challenge. Five
- * failures (tracked in `verification` under `2fa-attempts:<userId>`) kill the
- * challenge. A consumed backup code is removed in the same transaction.
+ * Verify a TOTP or backup code against a signed `tp2fa` challenge.
+ *
+ * - Five failures inside {@link TWO_FACTOR_LOCKOUT_WINDOW_MS} (tracked in
+ *   `verification` under `2fa-attempts:<userId>`) lock the user's second
+ *   factor until the window closes; a new challenge does not reset them.
+ * - A successful sign-in consumes its challenge and every earlier one, and
+ *   records the TOTP step it accepted, so neither a captured challenge nor a
+ *   seen code works twice (`2fa-used:<userId>`).
+ * - A consumed backup code is removed in the same transaction.
  */
 export async function verifyTwoFactorSignIn(
   db: Db,
@@ -785,24 +919,28 @@ export async function verifyTwoFactorSignIn(
     return { status: claims };
   }
 
-  const { userId, exp } = claims;
-  const challengeExpIso = new Date(exp * 1000).toISOString();
+  const { userId, iat } = claims;
 
   return await db.transaction(async (tx) => {
     const row = await lockTwoFactorRow(tx, userId);
-    const { attempts, expiresAt } = await readAttemptCount(
-      tx,
-      userId,
-      challengeExpIso,
-    );
+    const { attempts, expiresAt } = await readAttemptCount(tx, userId, nowMs);
     if (attempts >= MAX_2FA_ATTEMPTS) {
       return { status: "too_many_attempts" as const, userId };
+    }
+
+    const used = await readUsedState(tx, userId, nowMs);
+    if (used.challengeIat !== null && iat <= used.challengeIat) {
+      // Already spent by an earlier sign-in. Not a code guess, so it does not
+      // count against the user; it carries no userId, like an invalid token.
+      return { status: "invalid" as const };
     }
 
     const matched = await matchTotpOrBackupCode(tx, row, {
       userId,
       code: params.code,
       backupCode: params.backupCode,
+      lastTotpStep: used.totpStep,
+      nowMs,
       dataEncryptionSecrets: params.dataEncryptionSecrets,
       backupCodeVerifierSecrets: params.backupCodeVerifierSecrets,
     });
@@ -816,6 +954,10 @@ export async function verifyTwoFactorSignIn(
     }
 
     await resetTwoFactorAttempts(tx, userId);
+    await writeUsedState(tx, userId, {
+      totpStep: matched.totpStep ?? used.totpStep,
+      challengeIat: iat,
+    }, nowMs);
     return { status: "ok" as const, userId };
   });
 }
