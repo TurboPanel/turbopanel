@@ -159,17 +159,13 @@
   },
   "env": {
     "testing": {
+      "name": "testing-instance",
       "queues": {
-        "producers": [
-          {
-            "binding": "TURBOPANEL_COMMAND_QUEUE",
-            "queue": "staging-daemon-commands"
-          }
-        ],
+        "producers": [{ "binding": "TURBOPANEL_COMMAND_QUEUE", "queue": "testing-daemon-commands" }],
         "consumers": [
           {
-            "queue": "staging-daemon-commands",
-            "dead_letter_queue": "staging-daemon-commands-dlq",
+            "queue": "testing-daemon-commands",
+            "dead_letter_queue": "testing-daemon-commands-dlq",
             "max_batch_size": 1,
             "max_batch_timeout": 0,
             "max_retries": 3
@@ -244,13 +240,13 @@
       "hyperdrive": [
         {
           "binding": "HYPERDRIVE",
-          "id": "83edd62a2d7e4e6ba8b5d77b01ca3729"
+          "id": "3fcb0ba1b38143508e8fe60c3b45b3e6"
         },
         {
           // Create via scripts/ensure-testing-hyperdrive-cached.sh — must be a dedicated
           // cached config for the testing Postgres origin (not the primary HYPERDRIVE id).
           "binding": "HYPERDRIVE_CACHED",
-          "id": "0000000000000000000000000000dev0"
+          "id": "c7f506e96d1644c18d6f7fb4cd0f35ac"
         }
       ],
       "routes": [
