@@ -539,13 +539,13 @@ test('POST /projects/:projectId/principals accepts uid and gid override', async 
         [ORG_ID_HEADER]: organizationId,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ username: 'customuid', uid: 10001, gid: 10001 }),
+      body: JSON.stringify({ username: 'customuid', uid: 15001, gid: 15001 }),
     })
 
     assertEquals(res.status, 200)
     const body = await res.json() as { ok: boolean; uid: number; gid: number }
-    assertEquals(body.uid, 10001)
-    assertEquals(body.gid, 10001)
+    assertEquals(body.uid, 15001)
+    assertEquals(body.gid, 15001)
   })
 })
 

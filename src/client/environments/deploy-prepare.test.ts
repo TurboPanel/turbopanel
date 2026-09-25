@@ -612,11 +612,11 @@ describe("loadPrincipalMaterial home and shell", () => {
     const db = createSelectWhereDb([{
       id: principalId,
       username,
-      options: { shell: "/bin/bash", uid: 10001, gid: 10001 },
+      options: { shell: "/bin/bash", uid: 15001, gid: 15001 },
     }]);
     const material = await loadPrincipalMaterial(db, [principalId]);
-    assertEquals(material[0]?.uid, 10001);
-    assertEquals(material[0]?.gid, 10001);
+    assertEquals(material[0]?.uid, 15001);
+    assertEquals(material[0]?.gid, 15001);
     assertEquals(material[0]?.home, principalHomeDir(username));
   });
 
@@ -1193,8 +1193,8 @@ describe("attachPrincipalsToSites", () => {
         username: "appuser",
         home: principalHomeDir("appuser"),
         shell: "/bin/bash",
-        uid: 10001,
-        gid: 10001,
+        uid: 15001,
+        gid: 15001,
       }],
       [site],
       NO_COMPOSE_PRINCIPALS,
@@ -1206,8 +1206,8 @@ describe("attachPrincipalsToSites", () => {
     assertEquals(result[0]?.principal, {
       principalId,
       username: "appuser",
-      uid: 10001,
-      gid: 10001,
+      uid: 15001,
+      gid: 15001,
     });
   });
 

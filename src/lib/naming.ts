@@ -128,14 +128,19 @@ export function resolveDockerVolumeName(input: {
 }
 
 /**
- * Principal home root on managed hosts. The host allocates uid/gid; when an
- * operator supplies an explicit override it must be ≥ {@link PRINCIPAL_UID_START}
- * and outside the reserved `tp*` service band
+ * Principal home root on managed hosts. The host picks uid/gid from 15001
+ * through 60000; when an operator supplies an explicit override it must be
+ * ≥ {@link PRINCIPAL_UID_START} and outside the reserved `tp*` service band
  * [{@link PRINCIPAL_RESERVED_UID_MIN}, {@link PRINCIPAL_RESERVED_UID_MAX}].
  */
 export const PRINCIPAL_HOME_ROOT = '/srv/users'
-/** Floor for an optional operator uid/gid override (host allocates when omitted). */
-export const PRINCIPAL_UID_START = 10001
+/**
+ * Floor for a principal uid/gid. The host picks from this value through 60000
+ * when the operator omits an override; an explicit override must be ≥ this
+ * constant. Keep in step with `PRINCIPAL_ID_MIN` in the daemon's
+ * `src/deploy/ensure-principal.ts`.
+ */
+export const PRINCIPAL_UID_START = 15001
 /**
  * Inclusive low end of the reserved TurboPanel service-account UID band.
  *

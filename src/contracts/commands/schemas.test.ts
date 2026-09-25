@@ -1961,8 +1961,8 @@ test("parseCommandPayload accepts sites and dockerExternalNetworks", () => {
           principal: {
             principalId: "00000000-0000-4000-8000-000000000099",
             username: "site_user",
-            uid: 10001,
-            gid: 10001,
+            uid: 15001,
+            gid: 15001,
           },
         },
       ],
@@ -1993,8 +1993,8 @@ test("parseCommandPayload accepts sites and dockerExternalNetworks", () => {
           principal: {
             principalId: "00000000-0000-4000-8000-000000000099",
             username: "site_user",
-            uid: 10001,
-            gid: 10001,
+            uid: 15001,
+            gid: 15001,
           },
         },
       ],
@@ -2135,8 +2135,8 @@ test("parseCommandPayload accepts principalMaterial with and without uid/gid", (
         {
           principalId: "00000000-0000-4000-8000-000000000002",
           username: "webuser",
-          uid: 10001,
-          gid: 10001,
+          uid: 15001,
+          gid: 15001,
           home: "/srv/users/webuser",
         },
       ],
@@ -2162,8 +2162,8 @@ test("parseCommandPayload accepts principalMaterial with and without uid/gid", (
         {
           principalId: "00000000-0000-4000-8000-000000000002",
           username: "webuser",
-          uid: 10001,
-          gid: 10001,
+          uid: 15001,
+          gid: 15001,
           home: "/srv/users/webuser",
         },
       ],
@@ -2214,6 +2214,7 @@ test("parseCommandPayload round-trips a principal password hash and rejects junk
 });
 
 test("parseCommandPayload rejects negative or non-integer principal ids", () => {
+  // Companion gid is a legal override. This case rejects uid `-1` and `1.5`.
   assertThrows(
     () =>
       parseCommandPayload("environment.deploy" as CommandType, {
@@ -2232,7 +2233,7 @@ test("parseCommandPayload rejects negative or non-integer principal ids", () => 
             principalId: "00000000-0000-4000-8000-000000000001",
             username: "appuser",
             uid: -1,
-            gid: 10001,
+            gid: 15001,
           },
         ],
       }),
@@ -2262,7 +2263,7 @@ test("parseCommandPayload rejects negative or non-integer principal ids", () => 
               principalId: "00000000-0000-4000-8000-000000000099",
               username: "site_user",
               uid: 1.5,
-              gid: 10001,
+              gid: 15001,
             },
           },
         ],
@@ -5432,7 +5433,7 @@ test("parseEnvironmentDeployPayload sites accept engines, php, and principal ids
   const parsed = parseEnvironmentDeployPayload(
     deployPayloadWithSite({
       engine: "nginx",
-      principal: { ...SITE_PRINCIPAL, uid: 1000, gid: 1000 },
+      principal: { ...SITE_PRINCIPAL, uid: 15001, gid: 15001 },
       webEnv: { APP_ENV: "prod", drop: 1 },
       php: { version: "8.3", extensions: ["gd"] },
     }),
@@ -5440,7 +5441,7 @@ test("parseEnvironmentDeployPayload sites accept engines, php, and principal ids
   const sites = parsed.sites;
   if (!sites) throw new TypeError("expected sites");
   assertEquals(sites[0]?.engine, "nginx");
-  assertEquals(sites[0]?.principal?.uid, 1000);
+  assertEquals(sites[0]?.principal?.uid, 15001);
   assertEquals(sites[0]?.webEnv, { APP_ENV: "prod" });
   assertEquals(sites[0]?.php?.extensions, ["gd"]);
 

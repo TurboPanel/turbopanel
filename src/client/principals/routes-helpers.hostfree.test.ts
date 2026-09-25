@@ -62,9 +62,9 @@ test('parsePrincipalUsernameValue rejects reserved and unsafe names', () => {
 })
 
 test('parseCreatePrincipalOptions accepts and rejects option shapes', () => {
-  const ok = parseCreatePrincipalOptions({ uid: 10001, gid: 10001 })
+  const ok = parseCreatePrincipalOptions({ uid: 15001, gid: 15001 })
   if (!ok.ok) throw new TypeError('expected valid options')
-  assertEquals(ok.override, { uid: 10001, gid: 10001 })
+  assertEquals(ok.override, { uid: 15001, gid: 15001 })
 
   assertEquals(parseCreatePrincipalOptions({ options: 'nope' }).ok, false)
   assertEquals(parseCreatePrincipalOptions({ uid: 2000, gid: 2000 }).ok, false)
