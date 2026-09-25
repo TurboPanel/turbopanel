@@ -39,20 +39,6 @@ function resolveMailpitTemplate(job: EmailJob) {
   return null
 }
 
-export function resolveMailpitApiBaseUrl(
-  env: Record<string, string | undefined>,
-): string {
-  const apiUrl = env.MAILPIT_API_URL?.trim()
-  if (apiUrl) {
-    return apiUrl.replace(/\/$/, '')
-  }
-
-  const portRaw = env.MAILPIT_WEB_PORT?.trim()
-  const port = portRaw ? Number.parseInt(portRaw, 10) : 8025
-  const effectivePort = Number.isNaN(port) ? 8025 : port
-  return `http://127.0.0.1:${effectivePort}`
-}
-
 export async function sendMailpitJob(
   job: EmailJob,
   config: MailpitSendConfig,

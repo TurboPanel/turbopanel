@@ -32,7 +32,7 @@ test('resolveDenoMailgunQueue returns null for non-mailgun providers', async () 
   )
   assertEquals(
     await resolveDenoMailgunQueue(undefined, {
-      TURBOPANEL_SYSTEM_EMAIL__PROVIDER: 'mailpit',
+      TURBOPANEL_SYSTEM_EMAIL__PROVIDER: 'mailpit-smtp',
     }),
     null,
   )
@@ -68,7 +68,7 @@ test('resolveDenoMailgunQueue builds a queue when credentials are present', asyn
 test('createDenoMailgunQueue enqueue is a no-op for non-mailgun providers', async () => {
   const queue = createDenoMailgunQueue({
     db: undefined,
-    env: { TURBOPANEL_SYSTEM_EMAIL__PROVIDER: 'mailpit' },
+    env: { TURBOPANEL_SYSTEM_EMAIL__PROVIDER: 'mailpit-smtp' },
   })
   await queue.enqueue(sampleJob)
 })

@@ -6,7 +6,7 @@ Root context: `../../../AGENTS.md`.
 
 ## Email
 
-The `src/features/email/` module defines a queue abstraction (`EmailQueue`, `EmailJob`, `getEmailQueue`) shared by both runtimes. Job types: `signup-verification`, `email-otp`, `server-tier-notice` (hosted license-tier nag from `src/features/tiers/tier-notice-sweep.ts`), `invitation` (team invite from `src/client/access/invitation-http.ts`), and `notification` (one event delivered to an email channel, rendered by `src/features/notifications/emit.ts` from the catalogue in `events.ts`; template `createNotificationEmail`). Every sender switch (`mailgun/send.ts`, `mailpit/send.ts`, `src/lib/email/mailer/smtp-sender.ts`, `mailgun-sender.ts`, `mailpit-sender.ts`) plus `src/lib/email/mailer/parse-email-job.ts` (`parseEmailJob`, used by `src/lib/email/mailer/deno-mailer-consumer.ts`) must handle a new type or the job is dropped.
+The `src/features/email/` module defines a queue abstraction (`EmailQueue`, `EmailJob`, `getEmailQueue`) shared by both runtimes. Job types: `signup-verification`, `email-otp`, `server-tier-notice` (hosted license-tier nag from `src/features/tiers/tier-notice-sweep.ts`), `invitation` (team invite from `src/client/access/invitation-http.ts`), and `notification` (one event delivered to an email channel, rendered by `src/features/notifications/emit.ts` from the catalogue in `events.ts`; template `createNotificationEmail`). Every sender switch (`mailgun/send.ts`, `mailpit/send.ts`, `src/lib/email/mailer/smtp-sender.ts`, `mailgun-sender.ts`) plus `src/lib/email/mailer/parse-email-job.ts` (`parseEmailJob`, used by `src/lib/email/mailer/deno-mailer-consumer.ts`) must handle a new type or the job is dropped.
 
 ### Deno vs Workers paths
 
@@ -15,7 +15,8 @@ The `src/features/email/` module defines a queue abstraction (`EmailQueue`, `Ema
 
 See "Deno mailer throttling and prefetch" below for rate/burst/prefetch behavior.
 
-- **Deno instance** — publishes jobs to RabbitMQ and delivers them from the in-process consumer. In dev, Ansible injects `TURBOPANEL_SYSTEM_EMAIL__PROVIDER=smtp`, `TURBOPANEL_SYSTEM_EMAIL__SMTP_HOST=127.0.0.1`, and `TURBOPANEL_SYSTEM_EMAIL__SMTP_PORT=1025` on the instance unit, so both the enqueue path (`from` address) and the SMTP sender reach Mailpit's SMTP listener without any DB configuration. The `mailpit` provider (Mailpit HTTP API, `MailerMailpitSender`) remains available for a host with no SMTP path at all. In production, `smtp` or `mailgun` from DB/env settings.
+- **Deno instance** — publishes jobs to RabbitMQ and delivers them from the in-process consumer. In dev, Ansible injects `TURBOPANEL_SYSTEM_EMAIL__PROVIDER=mailpit-smtp` and `TURBOPANEL_SYSTEM_EMAIL__MAILPIT_SMTP_PORT` (default 1025) so the mailer exercises nodemailer against co-located Mailpit SMTP. In production, `smtp` or `mailgun` from DB/env settings. `mailpit-smtp` is Deno-only; `mailpit-api` is rejected at consumer startup.
+- **Workers** — `mailpit-api` posts to Mailpit's HTTP API (`mailpit/send.ts`) and requires `TURBOPANEL_SYSTEM_EMAIL__MAILPIT_API_URL`. `mailpit-smtp` and generic `smtp` resolve to a noop queue.
 
 | Variable | Runtime | Purpose |
 |---|---|---|
@@ -23,11 +24,11 @@ See "Deno mailer throttling and prefetch" below for rate/burst/prefetch behavior
 | `TURBOPANEL_DATABASE_URL` | Deno | Postgres for DB-backed SMTP settings (`setting` table); the consumer uses the instance's own connection |
 | `TURBOPANEL_REDIS_SOCKET` | Deno | Unix socket path used by the Daemon Cell Redis backend (`src/daemon/cell/redis/client.ts`); default `/run/turbopanel/redis.sock` |
 | `TURBOPANEL_BASE_URL` | Deno | Public base URL for verification links (falls back to request origin) |
-| `TURBOPANEL_SYSTEM_EMAIL__PROVIDER` | Deno instance (dev) | Injected by Ansible in dev: `smtp` on the instance unit (SMTP → Mailpit port 1025); `mailpit` selects the Mailpit HTTP API sender instead |
-| `TURBOPANEL_SYSTEM_EMAIL__SMTP_HOST` / `TURBOPANEL_SYSTEM_EMAIL__SMTP_PORT` | Deno instance (dev) | Ansible injects Mailpit SMTP host/port into **`turbopanel-instance.service`**; the in-process SMTP sender delivers there |
+| `TURBOPANEL_SYSTEM_EMAIL__PROVIDER` | Both | `smtp`, `mailgun`, `mailpit-api` (Workers only), or `mailpit-smtp` (Deno only) |
+| `TURBOPANEL_SYSTEM_EMAIL__SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` | Deno (`smtp` or optional override for `mailpit-smtp`) | Real SMTP relay configuration |
 | `TURBOPANEL_SYSTEM_EMAIL__RATE_LIMIT_PER_MINUTE` | Deno | Token-bucket rate limit for the email consumer (default 60) |
-| `MAILPIT_API_URL` | Deno (dev) | Mailpit HTTP API base URL (e.g. `http://127.0.0.1:8025`); used by the `mailpit` provider sender in `mailer/mailpit-sender.ts`; falls back to `http://127.0.0.1:${MAILPIT_WEB_PORT ?? 8025}` |
-| `MAILPIT_SMTP_PORT` | Deno | Mailpit SMTP port used as fallback when no SMTP config (default 1025) |
+| `TURBOPANEL_SYSTEM_EMAIL__MAILPIT_API_URL` | Workers (`mailpit-api`, required) | Full Mailpit HTTP API base URL (e.g. `https://mailpit.turbopanel.dev`) |
+| `TURBOPANEL_SYSTEM_EMAIL__MAILPIT_SMTP_PORT` | Deno (`mailpit-smtp`) | Co-located Mailpit SMTP port when `SMTP_HOST` / `SMTP_PORT` are unset (default 1025) |
 
 ### Settings-driven configuration (`TURBOPANEL_SYSTEM_EMAIL__*`)
 
@@ -47,16 +48,17 @@ Short keys and new rate/queue keys (added to `src/features/settings/email-settin
 
 | Short key | Default | Env key | Notes |
 |---|----|----|----|
-| `PROVIDER` | `smtp` | `TURBOPANEL_SYSTEM_EMAIL__PROVIDER` | `smtp`, `mailgun`, or `mailpit` (dev only — Mailpit HTTP API sender) |
+| `PROVIDER` | `smtp` | `TURBOPANEL_SYSTEM_EMAIL__PROVIDER` | `smtp`, `mailgun`, `mailpit-api` (Workers), `mailpit-smtp` (Deno dev) |
 | `FROM` | `noreply@turbopanel.local` | `TURBOPANEL_SYSTEM_EMAIL__FROM` | |
 | `MAILGUN_API_KEY` | — | `TURBOPANEL_SYSTEM_EMAIL__MAILGUN_API_KEY` | secret |
 | `MAILGUN_DOMAIN` | — | `TURBOPANEL_SYSTEM_EMAIL__MAILGUN_DOMAIN` | |
 | `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` | — | `TURBOPANEL_SYSTEM_EMAIL__SMTP_*` | |
+| `MAILPIT_API_URL` / `MAILPIT_SMTP_PORT` | — | `TURBOPANEL_SYSTEM_EMAIL__MAILPIT_*` | Workers read API URL only; Deno reads SMTP port only |
 | `RATE_LIMIT_PER_MINUTE` | `60` | `TURBOPANEL_SYSTEM_EMAIL__RATE_LIMIT_PER_MINUTE` | used by the Deno email consumer |
 | `RATE_LIMIT_BURST` | same as rate | — | max bucket size; see mailer throttling |
 | `QUEUE_PREFETCH` | `1` | — | RabbitMQ `channel.prefetch` for the email consumer |
 
-The consumer resolves settings via `resolveEmailSettings(db, env, dataEncryptionSecrets)` with a 30s TTL cache and re-resolves on each consumed message. Without restart, it hot-applies **provider** (swaps the active sender), **rate/burst** (swaps the token bucket), and **prefetch** (re-applies `channel.prefetch`). **FROM**, SMTP/Mailgun credentials, and transport config are re-resolved inside `MailerSmtpSender` / `MailerMailgunSender` / `MailerMailpitSender` on each send.
+The consumer resolves settings via `resolveEmailSettings(db, env, dataEncryptionSecrets)` with a 30s TTL cache and re-resolves on each consumed message. Without restart, it hot-applies **provider** (swaps the active sender), **rate/burst** (swaps the token bucket), and **prefetch** (re-applies `channel.prefetch`). **FROM**, SMTP/Mailgun credentials, and transport config are re-resolved inside `MailerSmtpSender` / `MailerMailgunSender` on each send.
 
 ### Deno mailer throttling and prefetch
 
@@ -79,5 +81,5 @@ Client authentication supports one-time passcodes (OTPs) for sign-in, email veri
 - `POST /api/client/v1/auth/reset-password/request-otp` — create a `forget-password` OTP and enqueue
 - `POST /api/client/v1/auth/reset-password/otp` — verify OTP and set a new password
 
-These endpoints enqueue `EmailJob` payloads of type `email-otp` (with `otpType`: `sign-in` | `email-verification` | `forget-password`). On Deno, the mailer delivers them via the configured provider; on Workers, delivery is direct via Mailgun (or noop when provider is SMTP).
+These endpoints enqueue `EmailJob` payloads of type `email-otp` (with `otpType`: `sign-in` | `email-verification` | `forget-password`). On Deno, the mailer delivers them via the configured provider; on Workers, delivery is direct via Mailgun or `mailpit-api` (or noop for unsupported providers).
 

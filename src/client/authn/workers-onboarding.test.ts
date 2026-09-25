@@ -64,7 +64,8 @@ const MAILGUN_PLATFORM_ENV = {
 } as const
 
 const MAILPIT_PLATFORM_ENV = {
-  TURBOPANEL_SYSTEM_EMAIL__PROVIDER: 'mailpit',
+  TURBOPANEL_SYSTEM_EMAIL__PROVIDER: 'mailpit-api',
+  TURBOPANEL_SYSTEM_EMAIL__MAILPIT_API_URL: 'https://mailpit.example.dev',
 } as const
 
 async function setSignupEnabledSetting(

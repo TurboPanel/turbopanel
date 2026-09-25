@@ -7,7 +7,10 @@ import {
   isSealedEnvelope,
 } from '../../lib/secrets/data-encryption.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
-import type { SmtpConfig } from '../email/smtp/smtp-resolve.ts'
+import { normalizeMailpitApiEnv, normalizeMailpitRuntimeEnv } from '../email/mailpit/env.ts'
+import { buildMailpitSmtpConfig } from '../email/mailpit/smtp-config.ts'
+import { compatLogWarn } from '../../lib/log-compat.ts'
+import { parseExplicitSmtpConfig, type SmtpConfig } from '../email/smtp/smtp-resolve.ts'
 import {
   normalizeSettingFullKey,
   SettingsResolver,
@@ -30,6 +33,8 @@ export const EMAIL_SETTING_SHORT_KEYS = [
   'SMTP_PORT',
   'SMTP_USER',
   'SMTP_PASS',
+  'MAILPIT_API_URL',
+  'MAILPIT_SMTP_PORT',
   'RATE_LIMIT_PER_MINUTE',
   'RATE_LIMIT_BURST',
   'QUEUE_PREFETCH',
@@ -37,7 +42,7 @@ export const EMAIL_SETTING_SHORT_KEYS = [
 
 export type EmailSettingShortKey = (typeof EMAIL_SETTING_SHORT_KEYS)[number]
 
-export type EmailProvider = 'smtp' | 'mailgun' | 'mailpit'
+export type EmailProvider = 'smtp' | 'mailgun' | 'mailpit-api' | 'mailpit-smtp'
 
 export const EMAIL_SETTINGS_SCHEMA: Record<EmailSettingShortKey, string | undefined> = {
   PROVIDER: 'smtp',
@@ -49,6 +54,8 @@ export const EMAIL_SETTINGS_SCHEMA: Record<EmailSettingShortKey, string | undefi
   SMTP_PORT: undefined,
   SMTP_USER: undefined,
   SMTP_PASS: undefined,
+  MAILPIT_API_URL: undefined,
+  MAILPIT_SMTP_PORT: undefined,
   RATE_LIMIT_PER_MINUTE: '60',
   RATE_LIMIT_BURST: undefined,
   QUEUE_PREFETCH: '1',
@@ -80,32 +87,33 @@ export type ResolvedEmailSettings = {
   keys: Record<EmailSettingShortKey, EmailSettingMeta>
 }
 
-/** True when email is configured and usable for outbound delivery. */
+/** True when email is configured for outbound delivery on self-hosted Deno. */
 export function isEmailActive(settings: ResolvedEmailSettings): boolean {
-  if (settings.provider === 'mailpit') return true
-  if (settings.provider === 'smtp') return settings.smtp !== undefined
+  return isEmailActiveForRuntime(settings, 'deno')
+}
+
+/** Settings-based signup verification gate and enqueue guards (runtime-specific). */
+export function isEmailActiveForRuntime(
+  settings: ResolvedEmailSettings,
+  runtime: 'deno' | 'workers',
+): boolean {
   if (settings.provider === 'mailgun') {
     const apiKey = settings.mailgunApiKey?.trim() ?? ''
     const domain = settings.mailgunDomain?.trim() ?? ''
     return apiKey !== '' && domain !== ''
   }
+  if (settings.provider === 'mailpit-api') {
+    if (runtime !== 'workers') return false
+    return settings.keys.MAILPIT_API_URL.value.trim() !== ''
+  }
+  if (settings.provider === 'mailpit-smtp') {
+    return runtime === 'deno'
+  }
+  if (settings.provider === 'smtp') {
+    if (runtime === 'workers') return false
+    return settings.smtp !== undefined
+  }
   return false
-}
-
-/** Apply runtime-specific provider normalization before activation checks. */
-export function normalizeEmailSettingsForRuntime(
-  settings: ResolvedEmailSettings,
-  _runtime: 'deno' | 'workers',
-): ResolvedEmailSettings {
-  return settings
-}
-
-/** Settings-based signup verification gate. */
-export function isEmailActiveForRuntime(
-  settings: ResolvedEmailSettings,
-  runtime: 'deno' | 'workers',
-): boolean {
-  return isEmailActive(normalizeEmailSettingsForRuntime(settings, runtime))
 }
 
 export function resolveMailgunApiBase(region: string | undefined): string {
@@ -123,27 +131,18 @@ function fullEmailSettingKey(shortKey: EmailSettingShortKey): string {
 }
 
 function parseProvider(value: string): EmailProvider {
-  if (value === 'mailgun') return 'mailgun'
-  if (value === 'mailpit') return 'mailpit'
-  return 'smtp'
-}
-
-function buildSmtpConfig(host: string, portRaw: string, user: string, pass?: string): SmtpConfig | undefined {
-  const trimmedHost = host.trim()
-  const trimmedPort = portRaw.trim()
-  if (trimmedHost === '' || trimmedPort === '') return undefined
-
-  const port = Number.parseInt(trimmedPort, 10)
-  if (Number.isNaN(port)) return undefined
-
-  const trimmedUser = user.trim()
-  const trimmedPass = pass?.trim()
-  return {
-    host: trimmedHost,
-    port,
-    ...(trimmedUser !== '' ? { user: trimmedUser } : {}),
-    ...(trimmedPass !== undefined && trimmedPass !== '' ? { pass: trimmedPass } : {}),
+  const normalized = value.trim().toLowerCase()
+  if (normalized === 'mailgun') return 'mailgun'
+  if (normalized === 'mailpit-api') return 'mailpit-api'
+  if (normalized === 'mailpit-smtp') return 'mailpit-smtp'
+  if (normalized === 'mailpit') {
+    compatLogWarn(
+      'email',
+      'PROVIDER mailpit is deprecated; use mailpit-api (Workers) or mailpit-smtp (Deno)',
+    )
+    return 'mailpit-smtp'
   }
+  return 'smtp'
 }
 
 function metaFromResolved(
@@ -200,7 +199,11 @@ function isAllowedEmailSettingValue(
   trimmed: string,
 ): boolean {
   if (shortKey === 'PROVIDER') {
-    return trimmed === 'smtp' || trimmed === 'mailgun' || trimmed === 'mailpit'
+    return trimmed === 'smtp' ||
+      trimmed === 'mailgun' ||
+      trimmed === 'mailpit-api' ||
+      trimmed === 'mailpit-smtp' ||
+      trimmed === 'mailpit'
   }
   if (shortKey === 'MAILGUN_REGION') {
     return trimmed === 'us' || trimmed === 'eu'
@@ -427,11 +430,19 @@ async function createEmailPresenceResolver(
 export async function resolveEmailActivePresence(
   db: Db | undefined,
   env: Record<string, string | undefined>,
+  runtime: 'deno' | 'workers' = 'deno',
 ): Promise<boolean> {
-  const resolver = await createEmailPresenceResolver(db, env)
+  const resolver = await createEmailPresenceResolver(db, normalizeMailpitApiEnv(env))
   const provider = parseProvider(resolver.resolve('PROVIDER').value)
-  if (provider === 'mailpit') return true
+  if (provider === 'mailpit-api') {
+    return runtime === 'workers' &&
+      resolver.resolve('MAILPIT_API_URL').value.trim() !== ''
+  }
+  if (provider === 'mailpit-smtp') {
+    return runtime === 'deno'
+  }
   if (provider === 'smtp') {
+    if (runtime === 'workers') return false
     const host = resolver.resolve('SMTP_HOST').value.trim()
     const port = resolver.resolve('SMTP_PORT').value.trim()
     return host !== '' && port !== '' && !Number.isNaN(Number.parseInt(port, 10))
@@ -448,7 +459,8 @@ export async function resolveEmailSettings(
   env: Record<string, string | undefined>,
   dataEncryptionSecrets?: DerivedSecretsConfig,
 ): Promise<ResolvedEmailSettings> {
-  const resolver = await createEmailSettingsResolver(db, env, dataEncryptionSecrets)
+  const runtimeEnv = normalizeMailpitRuntimeEnv(env)
+  const resolver = await createEmailSettingsResolver(db, runtimeEnv, dataEncryptionSecrets)
 
   const keys = {} as Record<EmailSettingShortKey, EmailSettingMeta>
   for (const shortKey of EMAIL_SETTING_SHORT_KEYS) {
@@ -476,12 +488,20 @@ export async function resolveEmailSettings(
     keys.MAILGUN_REGION.value.trim() || EMAIL_SETTINGS_SCHEMA.MAILGUN_REGION!,
   )
   const mailgunApiBase = resolveMailgunApiBase(mailgunRegion)
-  const smtp = buildSmtpConfig(
-    keys.SMTP_HOST.value,
-    keys.SMTP_PORT.value,
-    keys.SMTP_USER.value,
-    keys.SMTP_PASS.value,
-  )
+  const smtp = provider === 'mailpit-smtp'
+    ? buildMailpitSmtpConfig(
+      keys.SMTP_HOST.value,
+      keys.SMTP_PORT.value,
+      keys.MAILPIT_SMTP_PORT.value,
+      keys.SMTP_USER.value,
+      keys.SMTP_PASS.value,
+    )
+    : parseExplicitSmtpConfig(
+      keys.SMTP_HOST.value,
+      keys.SMTP_PORT.value,
+      keys.SMTP_USER.value,
+      keys.SMTP_PASS.value,
+    )
 
   return {
     provider,

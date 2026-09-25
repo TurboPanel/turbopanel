@@ -24,10 +24,10 @@ test('resolveMailgunApiBase maps EU region and defaults to US', () => {
 })
 
 test('isEmailActive reflects provider-specific requirements', async () => {
-  const mailpit = await resolveEmailSettings(undefined, {
-    TURBOPANEL_SYSTEM_EMAIL__PROVIDER: 'mailpit',
+  const mailpitSmtp = await resolveEmailSettings(undefined, {
+    TURBOPANEL_SYSTEM_EMAIL__PROVIDER: 'mailpit-smtp',
   })
-  assertEquals(isEmailActive(mailpit), true)
+  assertEquals(isEmailActive(mailpitSmtp), true)
 
   const smtpMissing = await resolveEmailSettings(undefined, {
     TURBOPANEL_SYSTEM_EMAIL__PROVIDER: 'smtp',

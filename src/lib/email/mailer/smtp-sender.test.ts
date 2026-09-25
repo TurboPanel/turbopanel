@@ -102,6 +102,22 @@ test('omitted env falls back to Deno.env for SMTP delivery', async () => {
   }
 })
 
+test('sendJob delivers signup-verification over mailpit-smtp via nodemailer', async () => {
+  const { transports, restore } = installTransportStub()
+  try {
+    const result = await smtpSender({
+      TURBOPANEL_SYSTEM_EMAIL__PROVIDER: 'mailpit-smtp',
+      TURBOPANEL_SYSTEM_EMAIL__FROM: 'noreply@turbopanel.local',
+      TURBOPANEL_SYSTEM_EMAIL__MAILPIT_SMTP_PORT: '1025',
+    }).sendJob(SIGNUP_JOB)
+    assertEquals(result, { success: true })
+    assertEquals(transports[0]?.options.host, '127.0.0.1')
+    assertEquals(transports[0]?.options.port, 1025)
+  } finally {
+    restore()
+  }
+})
+
 test('sendJob delivers signup-verification over configured SMTP with auth', async () => {
   const sent: Record<string, unknown>[] = []
   const { transports, restore } = installTransportStub((mail) => {
@@ -178,14 +194,14 @@ test('sendJob falls back to Mailpit SMTP when no SMTP config is set', async () =
     {
       env: {
         TURBOPANEL_SYSTEM_EMAIL__PROVIDER: 'smtp',
-        MAILPIT_SMTP_PORT: '1125',
+        TURBOPANEL_SYSTEM_EMAIL__MAILPIT_SMTP_PORT: '1125',
       },
       port: 1125,
     },
     {
       env: {
         TURBOPANEL_SYSTEM_EMAIL__PROVIDER: 'smtp',
-        MAILPIT_SMTP_PORT: 'not-a-port',
+        TURBOPANEL_SYSTEM_EMAIL__MAILPIT_SMTP_PORT: 'not-a-port',
         SMTP_PORT: '2025',
       },
       port: 2025,
@@ -193,7 +209,7 @@ test('sendJob falls back to Mailpit SMTP when no SMTP config is set', async () =
     {
       env: {
         TURBOPANEL_SYSTEM_EMAIL__PROVIDER: 'smtp',
-        MAILPIT_SMTP_PORT: 'not-a-port',
+        TURBOPANEL_SYSTEM_EMAIL__MAILPIT_SMTP_PORT: 'not-a-port',
         SMTP_PORT: 'also-bad',
       },
       port: 1025,
@@ -216,7 +232,7 @@ test('sendJob falls back to Mailpit SMTP when no SMTP config is set', async () =
 
 test('sendJob rejects a non-smtp provider as permanent', async () => {
   const result = await smtpSender({
-    TURBOPANEL_SYSTEM_EMAIL__PROVIDER: 'mailpit',
+    TURBOPANEL_SYSTEM_EMAIL__PROVIDER: 'mailgun',
   }).sendJob(SIGNUP_JOB)
   const failure = assertFailure(result)
   assertEquals(failure.permanent, true)
