@@ -13,6 +13,10 @@ import type { MailerSendResult } from '../../../features/email/sender-types.ts'
 import { PermanentSendError, validateEmailAddress } from '../../../features/email/validate-address.ts'
 import type { Db } from '../../../db/connection.ts'
 import { logError } from '../../logger.ts'
+import {
+  DEFAULT_MAILPIT_SMTP_PORT,
+  normalizeMailpitRuntimeEnv,
+} from '../../../features/email/mailpit/env.ts'
 import type { SmtpConfig } from '../../../features/email/smtp/smtp-resolve.ts'
 
 type Transporter = ReturnType<typeof nodemailer.createTransport>
@@ -22,7 +26,8 @@ const POOL_OPTS = { pool: true, maxConnections: 5, maxMessages: 100 }
 export type { MailerSendResult }
 
 function mailpitPort(env: Record<string, string | undefined>): number {
-  const mailpit = env.MAILPIT_SMTP_PORT?.trim()
+  const normalized = normalizeMailpitRuntimeEnv(env)
+  const mailpit = normalized.TURBOPANEL_SYSTEM_EMAIL__MAILPIT_SMTP_PORT?.trim()
   if (mailpit) {
     const parsed = Number.parseInt(mailpit, 10)
     if (!Number.isNaN(parsed)) return parsed
@@ -32,7 +37,7 @@ function mailpitPort(env: Record<string, string | undefined>): number {
     const parsed = Number.parseInt(smtp, 10)
     if (!Number.isNaN(parsed)) return parsed
   }
-  return 1025
+  return DEFAULT_MAILPIT_SMTP_PORT
 }
 
 const SMTP_SETTING_KEYS = ['SMTP_HOST', 'SMTP_PORT', 'SMTP_USER', 'SMTP_PASS'] as const

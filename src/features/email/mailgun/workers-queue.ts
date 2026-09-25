@@ -3,7 +3,8 @@ import {
 } from '../../settings/email-settings.ts'
 import type { DerivedSecretsConfig } from '../../../lib/secrets/secrets.ts'
 import type { Db } from '../../../db/connection.ts'
-import { resolveMailpitApiBaseUrl, sendMailpitJob } from '../mailpit/send.ts'
+import { buildMailpitApiBaseUrl } from '../mailpit/env.ts'
+import { sendMailpitJob } from '../mailpit/send.ts'
 import { createNoopQueue } from '../noop-queue.ts'
 import type { EmailJob, EmailQueue } from '../types.ts'
 import { sendMailgunJob } from './send.ts'
@@ -88,7 +89,10 @@ export function emailQueueFromResolvedSettings(
   const workersProvider = resolved.provider
   if (workersProvider === 'mailpit') {
     return createWorkersMailpitQueue({
-      apiBaseUrl: resolveMailpitApiBaseUrl(env),
+      apiBaseUrl: buildMailpitApiBaseUrl(
+        resolved.keys.MAILPIT_API_URL.value,
+        resolved.keys.MAILPIT_WEB_PORT.value,
+      ),
       from: resolved.from,
     })
   }

@@ -28,7 +28,7 @@ const OTP_JOB: EmailJob = {
 const MAILPIT_ENV = {
   TURBOPANEL_SYSTEM_EMAIL__PROVIDER: 'mailpit',
   TURBOPANEL_SYSTEM_EMAIL__FROM: 'noreply@turbopanel.local',
-  MAILPIT_API_URL: 'http://127.0.0.1:8025',
+  TURBOPANEL_SYSTEM_EMAIL__MAILPIT_API_URL: 'http://127.0.0.1:8025',
 }
 
 function mailpitSender(
@@ -66,12 +66,12 @@ test('omitted env falls back to Deno.env for Mailpit delivery', async () => {
   const keys = [
     'TURBOPANEL_SYSTEM_EMAIL__PROVIDER',
     'TURBOPANEL_SYSTEM_EMAIL__FROM',
-    'MAILPIT_API_URL',
+    'TURBOPANEL_SYSTEM_EMAIL__MAILPIT_API_URL',
   ] as const
   const previous = Object.fromEntries(keys.map((key) => [key, Deno.env.get(key)]))
   Deno.env.set('TURBOPANEL_SYSTEM_EMAIL__PROVIDER', 'mailpit')
   Deno.env.set('TURBOPANEL_SYSTEM_EMAIL__FROM', 'noreply@turbopanel.local')
-  Deno.env.set('MAILPIT_API_URL', 'http://127.0.0.1:8025')
+  Deno.env.set('TURBOPANEL_SYSTEM_EMAIL__MAILPIT_API_URL', 'http://127.0.0.1:8025')
   const restore = withFetch(() => Promise.resolve(new Response('', { status: 200 })))
   try {
     const result = await createMailerMailpitSender({ db: undefined }).sendJob(SIGNUP_JOB)
@@ -121,21 +121,21 @@ test('sendJob resolves the Mailpit API base from env', async () => {
     {
       env: {
         TURBOPANEL_SYSTEM_EMAIL__PROVIDER: 'mailpit',
-        MAILPIT_API_URL: 'http://203.0.113.10:8025',
+        TURBOPANEL_SYSTEM_EMAIL__MAILPIT_API_URL: 'http://203.0.113.10:8025',
       },
       url: 'http://203.0.113.10:8025/api/v1/send',
     },
     {
       env: {
         TURBOPANEL_SYSTEM_EMAIL__PROVIDER: 'mailpit',
-        MAILPIT_WEB_PORT: '9090',
+        TURBOPANEL_SYSTEM_EMAIL__MAILPIT_WEB_PORT: '9090',
       },
       url: 'http://127.0.0.1:9090/api/v1/send',
     },
     {
       env: {
         TURBOPANEL_SYSTEM_EMAIL__PROVIDER: 'mailpit',
-        MAILPIT_WEB_PORT: 'not-a-port',
+        TURBOPANEL_SYSTEM_EMAIL__MAILPIT_WEB_PORT: 'not-a-port',
       },
       url: 'http://127.0.0.1:8025/api/v1/send',
     },

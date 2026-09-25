@@ -10,16 +10,20 @@ import { resolveMailpitApiBaseUrl, sendMailpitJob } from './send.ts'
  */
 const test = Deno.test.bind(Deno)
 
-test('resolveMailpitApiBaseUrl prefers MAILPIT_API_URL and strips trailing slash', () => {
+test('resolveMailpitApiBaseUrl prefers prefixed API URL and strips trailing slash', () => {
   assertEquals(
-    resolveMailpitApiBaseUrl({ MAILPIT_API_URL: 'http://127.0.0.1:8025/' }),
+    resolveMailpitApiBaseUrl({
+      TURBOPANEL_SYSTEM_EMAIL__MAILPIT_API_URL: 'http://127.0.0.1:8025/',
+    }),
     'http://127.0.0.1:8025',
   )
 })
 
-test('resolveMailpitApiBaseUrl falls back to MAILPIT_WEB_PORT', () => {
+test('resolveMailpitApiBaseUrl falls back to prefixed web port', () => {
   assertEquals(
-    resolveMailpitApiBaseUrl({ MAILPIT_WEB_PORT: '9090' }),
+    resolveMailpitApiBaseUrl({
+      TURBOPANEL_SYSTEM_EMAIL__MAILPIT_WEB_PORT: '9090',
+    }),
     'http://127.0.0.1:9090',
   )
 })
@@ -27,7 +31,16 @@ test('resolveMailpitApiBaseUrl falls back to MAILPIT_WEB_PORT', () => {
 test('resolveMailpitApiBaseUrl defaults when env is empty or invalid', () => {
   assertEquals(resolveMailpitApiBaseUrl({}), 'http://127.0.0.1:8025')
   assertEquals(
-    resolveMailpitApiBaseUrl({ MAILPIT_WEB_PORT: 'not-a-port' }),
+    resolveMailpitApiBaseUrl({
+      TURBOPANEL_SYSTEM_EMAIL__MAILPIT_WEB_PORT: 'not-a-port',
+    }),
+    'http://127.0.0.1:8025',
+  )
+})
+
+test('resolveMailpitApiBaseUrl accepts legacy unprefixed env', () => {
+  assertEquals(
+    resolveMailpitApiBaseUrl({ MAILPIT_API_URL: 'http://127.0.0.1:8025/' }),
     'http://127.0.0.1:8025',
   )
 })

@@ -91,6 +91,9 @@ interface CloudflareBindings {
   TURBOPANEL_SYSTEM_EMAIL__MAILGUN_API_KEY?: string
   TURBOPANEL_SYSTEM_EMAIL__MAILGUN_DOMAIN?: string
   TURBOPANEL_SYSTEM_EMAIL__FROM?: string
+  TURBOPANEL_SYSTEM_EMAIL__MAILPIT_API_URL?: string
+  TURBOPANEL_SYSTEM_EMAIL__MAILPIT_WEB_PORT?: string
+  TURBOPANEL_SYSTEM_EMAIL__MAILPIT_SMTP_PORT?: string
   TURBOPANEL_BASE_URL?: string
   /**
    * Stripe secret key (`sk_…`). A **secret** (`wrangler secret put`), never a

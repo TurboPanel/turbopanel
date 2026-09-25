@@ -263,7 +263,7 @@ describe('resolveWorkersEmailQueue', () => {
   it('builds a Mailpit queue when provider is mailpit', async () => {
     const queue = await resolveWorkersEmailQueue(undefined, {
       TURBOPANEL_SYSTEM_EMAIL__PROVIDER: 'mailpit',
-      MAILPIT_API_URL: 'http://127.0.0.1:8025',
+      TURBOPANEL_SYSTEM_EMAIL__MAILPIT_API_URL: 'http://127.0.0.1:8025',
     })
 
     expect(queue.constructor.name).toBe('WorkersMailpitQueue')

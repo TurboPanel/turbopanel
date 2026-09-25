@@ -5,6 +5,10 @@ import {
   createNotificationEmail,
   createServerTierNoticeEmail,
 } from '../templates.ts'
+import {
+  buildMailpitApiBaseUrl,
+  normalizeMailpitRuntimeEnv,
+} from './env.ts'
 import type { EmailJob } from '../types.ts'
 
 export type MailpitSendConfig = {
@@ -42,15 +46,11 @@ function resolveMailpitTemplate(job: EmailJob) {
 export function resolveMailpitApiBaseUrl(
   env: Record<string, string | undefined>,
 ): string {
-  const apiUrl = env.MAILPIT_API_URL?.trim()
-  if (apiUrl) {
-    return apiUrl.replace(/\/$/, '')
-  }
-
-  const portRaw = env.MAILPIT_WEB_PORT?.trim()
-  const port = portRaw ? Number.parseInt(portRaw, 10) : 8025
-  const effectivePort = Number.isNaN(port) ? 8025 : port
-  return `http://127.0.0.1:${effectivePort}`
+  const normalized = normalizeMailpitRuntimeEnv(env)
+  return buildMailpitApiBaseUrl(
+    normalized.TURBOPANEL_SYSTEM_EMAIL__MAILPIT_API_URL ?? '',
+    normalized.TURBOPANEL_SYSTEM_EMAIL__MAILPIT_WEB_PORT ?? '',
+  )
 }
 
 export async function sendMailpitJob(

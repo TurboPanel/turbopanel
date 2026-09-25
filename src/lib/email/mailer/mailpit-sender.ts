@@ -11,6 +11,7 @@ import type { EmailJob } from '../../../features/email/types.ts'
 import type { MailerSendResult } from '../../../features/email/sender-types.ts'
 import { PermanentSendError, validateEmailAddress } from '../../../features/email/validate-address.ts'
 import type { Db } from '../../../db/connection.ts'
+import { buildMailpitApiBaseUrl } from '../../../features/email/mailpit/env.ts'
 import { logError } from '../../logger.ts'
 
 function validateResolvedMailpitConfig(resolved: ResolvedEmailSettings): { from: string } {
@@ -39,14 +40,16 @@ export class MailerMailpitSender {
     this.dataEncryptionSecrets = opts.dataEncryptionSecrets
   }
 
-  private resolveApiBaseUrl(): string {
-    const apiUrl = this.env.MAILPIT_API_URL?.trim()
-    if (apiUrl) return apiUrl
-
-    const portRaw = this.env.MAILPIT_WEB_PORT?.trim()
-    const port = portRaw ? Number.parseInt(portRaw, 10) : 8025
-    const effectivePort = Number.isNaN(port) ? 8025 : port
-    return `http://127.0.0.1:${effectivePort}`
+  private async resolveApiBaseUrl(): Promise<string> {
+    const resolved = await resolveEmailSettings(
+      this.db,
+      this.env,
+      this.dataEncryptionSecrets,
+    )
+    return buildMailpitApiBaseUrl(
+      resolved.keys.MAILPIT_API_URL.value,
+      resolved.keys.MAILPIT_WEB_PORT.value,
+    )
   }
 
   private async resolveMailpitConfig(): Promise<{ from: string }> {
@@ -98,7 +101,7 @@ export class MailerMailpitSender {
           }
       }
 
-      const baseUrl = this.resolveApiBaseUrl()
+      const baseUrl = await this.resolveApiBaseUrl()
       const payload = {
         From: { Email: from },
         To: [{ Email: job.to }],

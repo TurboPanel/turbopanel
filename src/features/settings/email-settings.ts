@@ -7,6 +7,7 @@ import {
   isSealedEnvelope,
 } from '../../lib/secrets/data-encryption.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
+import { normalizeMailpitRuntimeEnv } from '../email/mailpit/env.ts'
 import type { SmtpConfig } from '../email/smtp/smtp-resolve.ts'
 import {
   normalizeSettingFullKey,
@@ -30,6 +31,9 @@ export const EMAIL_SETTING_SHORT_KEYS = [
   'SMTP_PORT',
   'SMTP_USER',
   'SMTP_PASS',
+  'MAILPIT_API_URL',
+  'MAILPIT_WEB_PORT',
+  'MAILPIT_SMTP_PORT',
   'RATE_LIMIT_PER_MINUTE',
   'RATE_LIMIT_BURST',
   'QUEUE_PREFETCH',
@@ -49,6 +53,9 @@ export const EMAIL_SETTINGS_SCHEMA: Record<EmailSettingShortKey, string | undefi
   SMTP_PORT: undefined,
   SMTP_USER: undefined,
   SMTP_PASS: undefined,
+  MAILPIT_API_URL: undefined,
+  MAILPIT_WEB_PORT: undefined,
+  MAILPIT_SMTP_PORT: undefined,
   RATE_LIMIT_PER_MINUTE: '60',
   RATE_LIMIT_BURST: undefined,
   QUEUE_PREFETCH: '1',
@@ -448,7 +455,8 @@ export async function resolveEmailSettings(
   env: Record<string, string | undefined>,
   dataEncryptionSecrets?: DerivedSecretsConfig,
 ): Promise<ResolvedEmailSettings> {
-  const resolver = await createEmailSettingsResolver(db, env, dataEncryptionSecrets)
+  const runtimeEnv = normalizeMailpitRuntimeEnv(env)
+  const resolver = await createEmailSettingsResolver(db, runtimeEnv, dataEncryptionSecrets)
 
   const keys = {} as Record<EmailSettingShortKey, EmailSettingMeta>
   for (const shortKey of EMAIL_SETTING_SHORT_KEYS) {

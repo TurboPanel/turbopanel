@@ -178,14 +178,14 @@ test('sendJob falls back to Mailpit SMTP when no SMTP config is set', async () =
     {
       env: {
         TURBOPANEL_SYSTEM_EMAIL__PROVIDER: 'smtp',
-        MAILPIT_SMTP_PORT: '1125',
+        TURBOPANEL_SYSTEM_EMAIL__MAILPIT_SMTP_PORT: '1125',
       },
       port: 1125,
     },
     {
       env: {
         TURBOPANEL_SYSTEM_EMAIL__PROVIDER: 'smtp',
-        MAILPIT_SMTP_PORT: 'not-a-port',
+        TURBOPANEL_SYSTEM_EMAIL__MAILPIT_SMTP_PORT: 'not-a-port',
         SMTP_PORT: '2025',
       },
       port: 2025,
@@ -193,7 +193,7 @@ test('sendJob falls back to Mailpit SMTP when no SMTP config is set', async () =
     {
       env: {
         TURBOPANEL_SYSTEM_EMAIL__PROVIDER: 'smtp',
-        MAILPIT_SMTP_PORT: 'not-a-port',
+        TURBOPANEL_SYSTEM_EMAIL__MAILPIT_SMTP_PORT: 'not-a-port',
         SMTP_PORT: 'also-bad',
       },
       port: 1025,
