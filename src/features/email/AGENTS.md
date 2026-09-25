@@ -26,9 +26,8 @@ See "Deno mailer throttling and prefetch" below for rate/burst/prefetch behavior
 | `TURBOPANEL_SYSTEM_EMAIL__PROVIDER` | Deno instance (dev) | Injected by Ansible in dev: `smtp` on the instance unit (SMTP → Mailpit port 1025); `mailpit` selects the Mailpit HTTP API sender instead |
 | `TURBOPANEL_SYSTEM_EMAIL__SMTP_HOST` / `TURBOPANEL_SYSTEM_EMAIL__SMTP_PORT` | Deno instance (dev) | Ansible injects Mailpit SMTP host/port into **`turbopanel-instance.service`**; the in-process SMTP sender delivers there |
 | `TURBOPANEL_SYSTEM_EMAIL__RATE_LIMIT_PER_MINUTE` | Deno | Token-bucket rate limit for the email consumer (default 60) |
-| `TURBOPANEL_SYSTEM_EMAIL__MAILPIT_API_URL` | Deno + Workers (`mailpit` provider) | Mailpit HTTP API base URL (e.g. `http://127.0.0.1:8025` or `https://mailpit.example.dev`); falls back to `http://127.0.0.1:<web-port>` when unset |
-| `TURBOPANEL_SYSTEM_EMAIL__MAILPIT_WEB_PORT` | Deno + Workers | Local Mailpit web/API port when `MAILPIT_API_URL` is unset (default 8025) |
-| `TURBOPANEL_SYSTEM_EMAIL__MAILPIT_SMTP_PORT` | Deno (`smtp` provider) | Mailpit SMTP port used as fallback when no SMTP host/port config (default 1025) |
+| `TURBOPANEL_SYSTEM_EMAIL__MAILPIT_API_URL` | Workers (`mailpit` provider, required); Deno (`mailpit` provider, optional) | Full Mailpit HTTP API base URL (e.g. `https://mailpit.turbopanel.dev` or `http://127.0.0.1:8025`). Workers refuse delivery without it; Deno falls back to `http://127.0.0.1:8025` when unset. |
+| `TURBOPANEL_SYSTEM_EMAIL__MAILPIT_SMTP_PORT` | Deno (`smtp` provider only) | Mailpit SMTP listener when `SMTP_HOST` / `SMTP_PORT` are unset (default 1025). Not used on Workers. |
 
 ### Settings-driven configuration (`TURBOPANEL_SYSTEM_EMAIL__*`)
 
@@ -53,7 +52,7 @@ Short keys and new rate/queue keys (added to `src/features/settings/email-settin
 | `MAILGUN_API_KEY` | — | `TURBOPANEL_SYSTEM_EMAIL__MAILGUN_API_KEY` | secret |
 | `MAILGUN_DOMAIN` | — | `TURBOPANEL_SYSTEM_EMAIL__MAILGUN_DOMAIN` | |
 | `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` | — | `TURBOPANEL_SYSTEM_EMAIL__SMTP_*` | |
-| `MAILPIT_API_URL` / `MAILPIT_WEB_PORT` / `MAILPIT_SMTP_PORT` | — | `TURBOPANEL_SYSTEM_EMAIL__MAILPIT_*` | Mailpit HTTP/SMTP endpoints for the `mailpit` provider (Workers) or SMTP fallback (Deno) |
+| `MAILPIT_API_URL` / `MAILPIT_SMTP_PORT` | — | `TURBOPANEL_SYSTEM_EMAIL__MAILPIT_*` | Legacy unprefixed names log a deprecation warning |
 | `RATE_LIMIT_PER_MINUTE` | `60` | `TURBOPANEL_SYSTEM_EMAIL__RATE_LIMIT_PER_MINUTE` | used by the Deno email consumer |
 | `RATE_LIMIT_BURST` | same as rate | — | max bucket size; see mailer throttling |
 | `QUEUE_PREFETCH` | `1` | — | RabbitMQ `channel.prefetch` for the email consumer |

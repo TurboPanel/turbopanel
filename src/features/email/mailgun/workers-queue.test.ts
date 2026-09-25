@@ -41,6 +41,14 @@ test('emailQueueFromResolvedSettings builds Mailpit and Mailgun queues', async (
   assertEquals(mailgunQueue.constructor.name, 'WorkersMailgunQueue')
 })
 
+test('emailQueueFromResolvedSettings returns noop for mailpit without API URL', async () => {
+  const resolved = await resolveEmailSettings(undefined, {
+    TURBOPANEL_SYSTEM_EMAIL__PROVIDER: 'mailpit',
+  })
+  const queue = emailQueueFromResolvedSettings(resolved, {})
+  assertEquals(isNoopEmailQueue(queue), true)
+})
+
 test('emailQueueFromResolvedSettings returns noop for smtp provider', async () => {
   const resolved = await resolveEmailSettings(undefined, {
     TURBOPANEL_SYSTEM_EMAIL__PROVIDER: 'smtp',

@@ -1,47 +1,49 @@
 import { assertEquals } from '@std/assert'
 import {
-  buildMailpitApiBaseUrl,
-  normalizeMailpitRuntimeEnv,
+  DEFAULT_DENO_MAILPIT_API_BASE_URL,
+  normalizeMailpitApiEnv,
+  normalizeMailpitSmtpEnv,
+  parseMailpitApiBaseUrl,
+  resolveDenoMailpitApiBaseUrl,
   resolveMailpitSmtpPort,
+  resolveWorkersMailpitApiBaseUrl,
 } from './env.ts'
 
 const test = Deno.test.bind(Deno)
 
-test('buildMailpitApiBaseUrl prefers API URL and strips trailing slash', () => {
+test('parseMailpitApiBaseUrl trims and strips trailing slash', () => {
   assertEquals(
-    buildMailpitApiBaseUrl('https://mailpit.example.dev/', ''),
+    parseMailpitApiBaseUrl('https://mailpit.example.dev/'),
     'https://mailpit.example.dev',
   )
+  assertEquals(parseMailpitApiBaseUrl('   '), undefined)
 })
 
-test('buildMailpitApiBaseUrl falls back to localhost web port', () => {
-  assertEquals(buildMailpitApiBaseUrl('', '9090'), 'http://127.0.0.1:9090')
-  assertEquals(buildMailpitApiBaseUrl('', 'not-a-port'), 'http://127.0.0.1:8025')
+test('resolveWorkersMailpitApiBaseUrl requires an explicit URL', () => {
+  assertEquals(resolveWorkersMailpitApiBaseUrl('https://mailpit.turbopanel.dev'), 'https://mailpit.turbopanel.dev')
+  assertEquals(resolveWorkersMailpitApiBaseUrl(''), undefined)
 })
 
-test('normalizeMailpitRuntimeEnv maps legacy unprefixed vars', () => {
-  const normalized = normalizeMailpitRuntimeEnv({
+test('resolveDenoMailpitApiBaseUrl falls back to co-located Mailpit', () => {
+  assertEquals(resolveDenoMailpitApiBaseUrl(''), DEFAULT_DENO_MAILPIT_API_BASE_URL)
+  assertEquals(resolveDenoMailpitApiBaseUrl('http://127.0.0.1:9090'), 'http://127.0.0.1:9090')
+})
+
+test('normalizeMailpitApiEnv maps legacy API URL env', () => {
+  const normalized = normalizeMailpitApiEnv({
     MAILPIT_API_URL: 'http://127.0.0.1:8025',
-    MAILPIT_WEB_PORT: '9090',
-    MAILPIT_SMTP_PORT: '1125',
   })
   assertEquals(
     normalized.TURBOPANEL_SYSTEM_EMAIL__MAILPIT_API_URL,
     'http://127.0.0.1:8025',
   )
-  assertEquals(normalized.TURBOPANEL_SYSTEM_EMAIL__MAILPIT_WEB_PORT, '9090')
-  assertEquals(normalized.TURBOPANEL_SYSTEM_EMAIL__MAILPIT_SMTP_PORT, '1125')
 })
 
-test('normalizeMailpitRuntimeEnv does not override prefixed values', () => {
-  const normalized = normalizeMailpitRuntimeEnv({
-    TURBOPANEL_SYSTEM_EMAIL__MAILPIT_API_URL: 'https://mailpit.turbopanel.dev',
-    MAILPIT_API_URL: 'http://legacy',
+test('normalizeMailpitSmtpEnv maps legacy SMTP port env', () => {
+  const normalized = normalizeMailpitSmtpEnv({
+    MAILPIT_SMTP_PORT: '1125',
   })
-  assertEquals(
-    normalized.TURBOPANEL_SYSTEM_EMAIL__MAILPIT_API_URL,
-    'https://mailpit.turbopanel.dev',
-  )
+  assertEquals(normalized.TURBOPANEL_SYSTEM_EMAIL__MAILPIT_SMTP_PORT, '1125')
 })
 
 test('resolveMailpitSmtpPort parses or defaults', () => {

@@ -137,13 +137,18 @@ describe('isEmailActiveForRuntime', () => {
     expect(isEmailActiveForRuntime(resolved, 'deno')).toBe(true)
   })
 
-  it('treats mailpit provider as active on both runtimes', async () => {
-    const resolved = await resolveEmailSettings(undefined, {
+  it('requires Mailpit API URL on Workers; Deno allows co-located default', async () => {
+    const unresolved = await resolveEmailSettings(undefined, {
       TURBOPANEL_SYSTEM_EMAIL__PROVIDER: 'mailpit',
     })
+    expect(isEmailActiveForRuntime(unresolved, 'workers')).toBe(false)
+    expect(isEmailActiveForRuntime(unresolved, 'deno')).toBe(true)
 
-    expect(isEmailActiveForRuntime(resolved, 'workers')).toBe(true)
-    expect(isEmailActiveForRuntime(resolved, 'deno')).toBe(true)
+    const withUrl = await resolveEmailSettings(undefined, {
+      TURBOPANEL_SYSTEM_EMAIL__PROVIDER: 'mailpit',
+      TURBOPANEL_SYSTEM_EMAIL__MAILPIT_API_URL: 'https://mailpit.example.dev',
+    })
+    expect(isEmailActiveForRuntime(withUrl, 'workers')).toBe(true)
   })
 
   it('requires SMTP host and port when provider is smtp', async () => {
@@ -159,7 +164,7 @@ describe('isEmailActiveForRuntime', () => {
       TURBOPANEL_SYSTEM_EMAIL__SMTP_PORT: '1025',
     })
     expect(isEmailActiveForRuntime(withSmtp, 'deno')).toBe(true)
-    expect(isEmailActiveForRuntime(withSmtp, 'workers')).toBe(true)
+    expect(isEmailActiveForRuntime(withSmtp, 'workers')).toBe(false)
   })
 })
 
@@ -178,11 +183,22 @@ describe('resolveEmailActivePresence', () => {
     expect(inactive).toBe(false)
   })
 
-  it('treats mailpit as active with no configuration at all', async () => {
+  it('treats mailpit as active on Deno without API URL; Workers require URL', async () => {
     expect(
       await resolveEmailActivePresence(undefined, {
         TURBOPANEL_SYSTEM_EMAIL__PROVIDER: 'mailpit',
-      }),
+      }, 'deno'),
+    ).toBe(true)
+    expect(
+      await resolveEmailActivePresence(undefined, {
+        TURBOPANEL_SYSTEM_EMAIL__PROVIDER: 'mailpit',
+      }, 'workers'),
+    ).toBe(false)
+    expect(
+      await resolveEmailActivePresence(undefined, {
+        TURBOPANEL_SYSTEM_EMAIL__PROVIDER: 'mailpit',
+        TURBOPANEL_SYSTEM_EMAIL__MAILPIT_API_URL: 'https://mailpit.example.dev',
+      }, 'workers'),
     ).toBe(true)
   })
 

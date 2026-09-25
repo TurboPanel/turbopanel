@@ -549,6 +549,7 @@ export async function getClientPublicStatus(
       isSignupEmailVerificationEnabled: await resolveEmailActivePresence(
         db,
         platformEnv,
+        "workers",
       ),
       authProviders: await resolveConfiguredProviders(db, platformEnv),
       billingEnabled,

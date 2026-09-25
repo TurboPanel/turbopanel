@@ -11,7 +11,7 @@ import type { EmailJob } from '../../../features/email/types.ts'
 import type { MailerSendResult } from '../../../features/email/sender-types.ts'
 import { PermanentSendError, validateEmailAddress } from '../../../features/email/validate-address.ts'
 import type { Db } from '../../../db/connection.ts'
-import { buildMailpitApiBaseUrl } from '../../../features/email/mailpit/env.ts'
+import { resolveDenoMailpitApiBaseUrl } from '../../../features/email/mailpit/env.ts'
 import { logError } from '../../logger.ts'
 
 function validateResolvedMailpitConfig(resolved: ResolvedEmailSettings): { from: string } {
@@ -46,10 +46,7 @@ export class MailerMailpitSender {
       this.env,
       this.dataEncryptionSecrets,
     )
-    return buildMailpitApiBaseUrl(
-      resolved.keys.MAILPIT_API_URL.value,
-      resolved.keys.MAILPIT_WEB_PORT.value,
-    )
+    return resolveDenoMailpitApiBaseUrl(resolved.keys.MAILPIT_API_URL.value)
   }
 
   private async resolveMailpitConfig(): Promise<{ from: string }> {

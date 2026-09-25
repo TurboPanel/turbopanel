@@ -19,23 +19,8 @@ test('resolveMailpitApiBaseUrl prefers prefixed API URL and strips trailing slas
   )
 })
 
-test('resolveMailpitApiBaseUrl falls back to prefixed web port', () => {
-  assertEquals(
-    resolveMailpitApiBaseUrl({
-      TURBOPANEL_SYSTEM_EMAIL__MAILPIT_WEB_PORT: '9090',
-    }),
-    'http://127.0.0.1:9090',
-  )
-})
-
-test('resolveMailpitApiBaseUrl defaults when env is empty or invalid', () => {
+test('resolveMailpitApiBaseUrl defaults to co-located Mailpit when unset', () => {
   assertEquals(resolveMailpitApiBaseUrl({}), 'http://127.0.0.1:8025')
-  assertEquals(
-    resolveMailpitApiBaseUrl({
-      TURBOPANEL_SYSTEM_EMAIL__MAILPIT_WEB_PORT: 'not-a-port',
-    }),
-    'http://127.0.0.1:8025',
-  )
 })
 
 test('resolveMailpitApiBaseUrl accepts legacy unprefixed env', () => {

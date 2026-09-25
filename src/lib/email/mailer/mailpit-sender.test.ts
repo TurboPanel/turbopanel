@@ -126,20 +126,6 @@ test('sendJob resolves the Mailpit API base from env', async () => {
       url: 'http://203.0.113.10:8025/api/v1/send',
     },
     {
-      env: {
-        TURBOPANEL_SYSTEM_EMAIL__PROVIDER: 'mailpit',
-        TURBOPANEL_SYSTEM_EMAIL__MAILPIT_WEB_PORT: '9090',
-      },
-      url: 'http://127.0.0.1:9090/api/v1/send',
-    },
-    {
-      env: {
-        TURBOPANEL_SYSTEM_EMAIL__PROVIDER: 'mailpit',
-        TURBOPANEL_SYSTEM_EMAIL__MAILPIT_WEB_PORT: 'not-a-port',
-      },
-      url: 'http://127.0.0.1:8025/api/v1/send',
-    },
-    {
       env: { TURBOPANEL_SYSTEM_EMAIL__PROVIDER: 'mailpit' },
       url: 'http://127.0.0.1:8025/api/v1/send',
     },

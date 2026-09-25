@@ -5,10 +5,7 @@ import {
   createNotificationEmail,
   createServerTierNoticeEmail,
 } from '../templates.ts'
-import {
-  buildMailpitApiBaseUrl,
-  normalizeMailpitRuntimeEnv,
-} from './env.ts'
+import { normalizeMailpitApiEnv, resolveDenoMailpitApiBaseUrl } from './env.ts'
 import type { EmailJob } from '../types.ts'
 
 export type MailpitSendConfig = {
@@ -43,13 +40,13 @@ function resolveMailpitTemplate(job: EmailJob) {
   return null
 }
 
+/** Deno-only helper: resolve Mailpit HTTP API base from runtime env. */
 export function resolveMailpitApiBaseUrl(
   env: Record<string, string | undefined>,
 ): string {
-  const normalized = normalizeMailpitRuntimeEnv(env)
-  return buildMailpitApiBaseUrl(
+  const normalized = normalizeMailpitApiEnv(env)
+  return resolveDenoMailpitApiBaseUrl(
     normalized.TURBOPANEL_SYSTEM_EMAIL__MAILPIT_API_URL ?? '',
-    normalized.TURBOPANEL_SYSTEM_EMAIL__MAILPIT_WEB_PORT ?? '',
   )
 }
 

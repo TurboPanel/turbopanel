@@ -15,7 +15,7 @@ import type { Db } from '../../../db/connection.ts'
 import { logError } from '../../logger.ts'
 import {
   DEFAULT_MAILPIT_SMTP_PORT,
-  normalizeMailpitRuntimeEnv,
+  normalizeMailpitSmtpEnv,
 } from '../../../features/email/mailpit/env.ts'
 import type { SmtpConfig } from '../../../features/email/smtp/smtp-resolve.ts'
 
@@ -26,7 +26,7 @@ const POOL_OPTS = { pool: true, maxConnections: 5, maxMessages: 100 }
 export type { MailerSendResult }
 
 function mailpitPort(env: Record<string, string | undefined>): number {
-  const normalized = normalizeMailpitRuntimeEnv(env)
+  const normalized = normalizeMailpitSmtpEnv(env)
   const mailpit = normalized.TURBOPANEL_SYSTEM_EMAIL__MAILPIT_SMTP_PORT?.trim()
   if (mailpit) {
     const parsed = Number.parseInt(mailpit, 10)
