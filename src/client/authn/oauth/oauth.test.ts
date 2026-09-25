@@ -16,8 +16,13 @@ import { registerAuthRoutes } from "../http.ts";
 import { hashPassword } from "../../../lib/secrets/password.ts";
 import { deriveSecretsConfig } from "../../../lib/secrets/secrets.ts";
 import { createSession } from "../session-store.ts";
-import { signUpFromIdentity } from "./oauth-http.ts";
-import { signOAuthState } from "./oauth-state.ts";
+import { oauthFlowCookieName, signUpFromIdentity } from "./oauth-http.ts";
+import {
+  pkceChallenge,
+  signOAuthState,
+  verifyOAuthState,
+} from "./oauth-state.ts";
+import { encodeBase64Url } from "@std/encoding/base64url";
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -26,6 +31,36 @@ import { signOAuthState } from "./oauth-state.ts";
  * reports Deno suites as empty; keep this alias so analysis sees real tests.
  */
 const test = Deno.test.bind(Deno);
+
+/**
+ * The cookie `/start` leaves on the browser that began a flow. A test that
+ * signs its own state must sign {@link FLOW_NONCE} (the verifier's S256
+ * challenge) and present this cookie on the callback, as a real browser does.
+ */
+const FLOW_VERIFIER = "test-only-pkce-verifier-0123456789-abcdefghijklmn";
+const FLOW_NONCE = await pkceChallenge(FLOW_VERIFIER);
+const FLOW_COOKIE = `${oauthFlowCookieName(true)}=${FLOW_VERIFIER}`;
+
+/** The flow cookie a real `GET /start` response set. */
+function flowCookieFrom(start: Response): string {
+  const line = start.headers
+    .getSetCookie()
+    .find((entry) => entry.startsWith(`${oauthFlowCookieName(true)}=`));
+  if (!line) throw new TypeError("/start set no OAuth flow cookie");
+  return line.split(";")[0]!;
+}
+
+/**
+ * Callback request init carrying the flow cookie — the fixed test one, or the
+ * one `start` set when the state came from a real `/start` — plus any other
+ * cookies (e.g. the session).
+ */
+function withFlowCookie(otherCookies?: string, start?: Response): RequestInit {
+  const flow = start ? flowCookieFrom(start) : FLOW_COOKIE;
+  return {
+    headers: { cookie: otherCookies ? `${otherCookies}; ${flow}` : flow },
+  };
+}
 
 const AUTH = `${CLIENT_API_PREFIX}/auth`;
 const ORIGIN = "https://panel.example.com";
@@ -114,14 +149,15 @@ test("Postgres OAuth signup, login, link, unlink, and unique conflict", async ()
     try {
       const state = await signOAuthState(config, {
         provider: "github",
-        nonce: "n",
+        nonce: FLOW_NONCE,
         redirectTo: "/welcome",
       });
       const res = await app.request(
         `${ORIGIN}${AUTH}/oauth/github/callback?code=ok&state=${
           encodeURIComponent(state)
         }`,
-      );
+      withFlowCookie(),
+    );
       assertEquals(res.status, 302);
       assertEquals(res.headers.get("location"), "/welcome");
       assertEquals(
@@ -207,14 +243,15 @@ test("Postgres OAuth signup, login, link, unlink, and unique conflict", async ()
     try {
       const state = await signOAuthState(config, {
         provider: "github",
-        nonce: "n2",
+        nonce: FLOW_NONCE,
         redirectTo: "/",
       });
       const res = await app.request(
         `${ORIGIN}${AUTH}/oauth/github/callback?code=ok&state=${
           encodeURIComponent(state)
         }`,
-      );
+      withFlowCookie(),
+    );
       assertEquals(res.status, 302);
       assertEquals(res.headers.get("location"), "/");
     } finally {
@@ -257,7 +294,7 @@ test("Postgres OAuth signup, login, link, unlink, and unique conflict", async ()
         `${ORIGIN}${AUTH}/oauth/github/callback?code=ok&state=${
           encodeURIComponent(signedState)
         }`,
-        { headers: { cookie } },
+        withFlowCookie(cookie, start),
       );
       assertEquals(linked.status, 302);
       assertEquals(
@@ -267,7 +304,7 @@ test("Postgres OAuth signup, login, link, unlink, and unique conflict", async ()
 
       const secondLinkState = await signOAuthState(config, {
         provider: "github",
-        nonce: "n-second",
+        nonce: FLOW_NONCE,
         redirectTo: "/",
         linkUserId: existingId,
       });
@@ -281,7 +318,7 @@ test("Postgres OAuth signup, login, link, unlink, and unique conflict", async ()
           `${ORIGIN}${AUTH}/oauth/github/callback?code=ok&state=${
             encodeURIComponent(secondLinkState)
           }`,
-          { headers: { cookie } },
+          withFlowCookie(cookie),
         );
         assertEquals(secondLink.status, 302);
         assertEquals(
@@ -299,7 +336,7 @@ test("Postgres OAuth signup, login, link, unlink, and unique conflict", async ()
       try {
         const conflictState = await signOAuthState(config, {
           provider: "github",
-          nonce: "n3",
+          nonce: FLOW_NONCE,
           redirectTo: "/",
           linkUserId: signupUserId,
         });
@@ -307,7 +344,7 @@ test("Postgres OAuth signup, login, link, unlink, and unique conflict", async ()
           `${ORIGIN}${AUTH}/oauth/github/callback?code=ok&state=${
             encodeURIComponent(conflictState)
           }`,
-          { headers: { cookie: signupCookie } },
+          withFlowCookie(signupCookie),
         );
         assertEquals(conflict.status, 302);
         assertEquals(
@@ -396,4 +433,271 @@ test("Postgres OAuth signup account-conflict race does not leave a user row", as
     }
     await endDbConnection(db);
   }
+});
+
+// --- Hostile cases (audit A2, A3, A4) — real Postgres and the real routes.
+
+const GOOGLE_ENV = {
+  TURBOPANEL_AUTH_PROVIDERS__GOOGLE_CLIENT_ID: "google-client",
+  TURBOPANEL_AUTH_PROVIDERS__GOOGLE_CLIENT_SECRET: "google-secret",
+};
+
+type ProviderCall = { url: string; body: string };
+
+/**
+ * Stub both providers' token + identity endpoints and record every call, so a
+ * test can assert what the instance actually sent (e.g. the PKCE verifier).
+ */
+function stubProviders(identity: {
+  githubId?: number;
+  googleSub?: string;
+  email: string;
+  emailVerified?: boolean;
+}): { calls: ProviderCall[]; restore: () => void } {
+  const calls: ProviderCall[] = [];
+  const original = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    calls.push({ url, body: String(init?.body ?? "") });
+    if (url.includes("/login/oauth/access_token")) {
+      return jsonResponse({ access_token: "gho_test" });
+    }
+    if (url.includes("oauth2.googleapis.com/token")) {
+      return jsonResponse({ access_token: "ya29_test" });
+    }
+    if (url.endsWith("api.github.com/user")) {
+      return jsonResponse({ id: identity.githubId, login: "octocat" });
+    }
+    if (url.includes("/user/emails")) {
+      return jsonResponse([
+        { email: identity.email, primary: true, verified: true },
+      ]);
+    }
+    if (url.includes("openidconnect.googleapis.com/v1/userinfo")) {
+      return jsonResponse({
+        sub: identity.googleSub,
+        email: identity.email,
+        email_verified: identity.emailVerified ?? true,
+        name: "Hostile Test",
+      });
+    }
+    return Promise.reject(new Error(`unexpected fetch ${url}`));
+  };
+  return {
+    calls,
+    restore: () => {
+      globalThis.fetch = original;
+    },
+  };
+}
+
+async function withOAuthApp(
+  label: string,
+  platformEnv: Record<string, string>,
+  fn: (ctx: {
+    app: Hono<AppEnv>;
+    db: ReturnType<typeof createDenoDb>;
+    config: ReturnType<typeof parseTestSecretsConfig>;
+  }) => Promise<void>,
+): Promise<void> {
+  if (!dbUrl) {
+    console.warn(`Skipping ${label}: TURBOPANEL_DATABASE_URL not set`);
+    return;
+  }
+  const db = createDenoDb();
+  const config = parseTestSecretsConfig("deno");
+  const secrets = await deriveSecretsConfig(config, "session-signing");
+  const limiter = createAuthRateLimiter({
+    defaultPolicy: { limit: 100, windowMs: 60_000 },
+  });
+  setSharedAuthRateLimiterForTests(limiter);
+  const app = new Hono<AppEnv>();
+  app.use("*", (c, next) => {
+    c.set("db", db);
+    c.set("secretsConfig", config);
+    c.set("platformEnv", platformEnv);
+    c.set("authRateLimiter", limiter);
+    return next();
+  });
+  const client = new Hono<AppEnv>();
+  registerAuthRoutes(client, {
+    secrets,
+    runtime: "deno",
+    signupEnvOverride: "1",
+    baseUrl: ORIGIN,
+  });
+  app.route(CLIENT_API_PREFIX, client);
+  try {
+    await fn({ app, db, config });
+  } finally {
+    setSharedAuthRateLimiterForTests(undefined);
+    await endDbConnection(db);
+  }
+}
+
+/** What a browser holds after `GET /start`: the provider URL and any cookies. */
+async function startFlow(
+  app: Hono<AppEnv>,
+  provider: "github" | "google",
+  query = "",
+): Promise<{ authorize: URL; state: string; cookie: string }> {
+  const res = await app.request(
+    `${ORIGIN}${AUTH}/oauth/${provider}/start${query}`,
+  );
+  assertEquals(res.status, 302);
+  const authorize = new URL(res.headers.get("location") ?? "");
+  const cookie = res.headers
+    .getSetCookie()
+    .map((line) => line.split(";")[0]!)
+    .join("; ");
+  return { authorize, state: authorize.searchParams.get("state") ?? "", cookie };
+}
+
+function callbackUrl(provider: "github" | "google", state: string): string {
+  return `${ORIGIN}${AUTH}/oauth/${provider}/callback?code=ok&state=${
+    encodeURIComponent(state)
+  }`;
+}
+
+async function deleteUsersByEmail(
+  db: ReturnType<typeof createDenoDb>,
+  email: string,
+): Promise<number> {
+  const rows = await db
+    .select({ id: user.id })
+    .from(user)
+    .where(eq(user.email, email));
+  for (const row of rows) {
+    await db.delete(account).where(eq(account.userId, row.id));
+    await db.delete(user).where(eq(user.id, row.id));
+  }
+  return rows.length;
+}
+
+test("A2: /start never signs a redirectTo a browser would send off-site", async () => {
+  await withOAuthApp("oauth-a2", GITHUB_ENV, async ({ app, config }) => {
+    const hostile = [
+      "/\t/evil.com", // browsers strip TAB: "//evil.com"
+      "/%09/evil.com", // the same, one encoding deeper
+      "/\u000b/evil.com",
+      "/\u0000/evil.com",
+      "/%5C/evil.com", // "/\\/evil.com" once decoded
+    ];
+    for (const redirectTo of hostile) {
+      const { state } = await startFlow(
+        app,
+        "github",
+        `?redirectTo=${encodeURIComponent(redirectTo)}`,
+      );
+      const claims = await verifyOAuthState(config, state);
+      assertEquals(
+        claims?.redirectTo,
+        "/",
+        `redirectTo ${JSON.stringify(redirectTo)} survived into state`,
+      );
+    }
+    // An ordinary same-origin path still goes through.
+    const { state } = await startFlow(app, "github", "?redirectTo=%2Fservers");
+    assertEquals((await verifyOAuthState(config, state))?.redirectTo, "/servers");
+  });
+});
+
+test("A3: a callback without the browser that started the flow signs nobody in", async () => {
+  await withOAuthApp("oauth-a3-csrf", GITHUB_ENV, async ({ app, db }) => {
+    const email = `oauth-csrf-${crypto.randomUUID()}@example.com`;
+    const stub = stubProviders({
+      githubId: Math.floor(Math.random() * 1_000_000_000),
+      email,
+    });
+    try {
+      // The attacker starts a flow in their own browser and hands the
+      // victim a link carrying the attacker's state and code.
+      const attacker = await startFlow(app, "github");
+      const victim = await app.request(callbackUrl("github", attacker.state));
+      assertEquals(victim.status, 302);
+      assertEquals(
+        victim.headers.get("location"),
+        "/sign-in?error=oauth_state_invalid",
+      );
+      assertEquals(
+        (victim.headers.get("set-cookie") ?? "").includes(
+          HTTPS_SESSION_COOKIE_NAME,
+        ),
+        false,
+      );
+      assertEquals(await deleteUsersByEmail(db, email), 0);
+    } finally {
+      stub.restore();
+      await deleteUsersByEmail(db, email);
+    }
+  });
+});
+
+test("A3: the token exchange proves possession of the PKCE verifier (S256)", async () => {
+  await withOAuthApp("oauth-a3-pkce", GITHUB_ENV, async ({ app, db }) => {
+    const email = `oauth-pkce-${crypto.randomUUID()}@example.com`;
+    const stub = stubProviders({
+      githubId: Math.floor(Math.random() * 1_000_000_000),
+      email,
+    });
+    try {
+      const flow = await startFlow(app, "github");
+      assertEquals(
+        flow.authorize.searchParams.get("code_challenge_method"),
+        "S256",
+      );
+      const challenge = flow.authorize.searchParams.get("code_challenge");
+      assertEquals(typeof challenge === "string" && challenge.length >= 43, true);
+
+      const res = await app.request(callbackUrl("github", flow.state), {
+        headers: { cookie: flow.cookie },
+      });
+      assertEquals(res.status, 302);
+      assertEquals(res.headers.get("location"), "/");
+
+      const tokenCall = stub.calls.find((call) =>
+        call.url.includes("/login/oauth/access_token")
+      );
+      const verifier = new URLSearchParams(tokenCall?.body ?? "").get(
+        "code_verifier",
+      );
+      assertEquals(typeof verifier === "string" && verifier.length >= 43, true);
+      const digest = new Uint8Array(
+        await crypto.subtle.digest(
+          "SHA-256",
+          new TextEncoder().encode(verifier!),
+        ),
+      );
+      assertEquals(encodeBase64Url(digest), challenge);
+    } finally {
+      stub.restore();
+      await deleteUsersByEmail(db, email);
+    }
+  });
+});
+
+test("A4: Google sign-up with an unverified email is refused", async () => {
+  await withOAuthApp("oauth-a4", GOOGLE_ENV, async ({ app, db }) => {
+    const email = `oauth-unverified-${crypto.randomUUID()}@example.com`;
+    const stub = stubProviders({
+      googleSub: `google-${crypto.randomUUID()}`,
+      email,
+      emailVerified: false,
+    });
+    try {
+      const flow = await startFlow(app, "google");
+      const res = await app.request(callbackUrl("google", flow.state), {
+        headers: { cookie: flow.cookie },
+      });
+      assertEquals(res.status, 302);
+      assertEquals(
+        res.headers.get("location"),
+        "/sign-in?error=oauth_email_unverified",
+      );
+      assertEquals(await deleteUsersByEmail(db, email), 0);
+    } finally {
+      stub.restore();
+      await deleteUsersByEmail(db, email);
+    }
+  });
 });

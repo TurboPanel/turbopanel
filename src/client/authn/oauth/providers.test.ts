@@ -29,9 +29,9 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
-test("github authorize URL includes client_id, redirect, scope, and state", () => {
+test("github authorize URL includes client_id, redirect, scope, state, and an S256 PKCE challenge", () => {
   const provider = resolveOAuthProvider("github", GITHUB_CREDS);
-  const url = new URL(provider.buildAuthorizeUrl("state-token"));
+  const url = new URL(provider.buildAuthorizeUrl("state-token", "challenge-1"));
   assertEquals(
     url.origin + url.pathname,
     "https://github.com/login/oauth/authorize",
@@ -40,11 +40,13 @@ test("github authorize URL includes client_id, redirect, scope, and state", () =
   assertEquals(url.searchParams.get("redirect_uri"), GITHUB_CREDS.redirectUri);
   assertEquals(url.searchParams.get("scope"), "read:user user:email");
   assertEquals(url.searchParams.get("state"), "state-token");
+  assertEquals(url.searchParams.get("code_challenge"), "challenge-1");
+  assertEquals(url.searchParams.get("code_challenge_method"), "S256");
 });
 
-test("google authorize URL includes openid scopes and response_type=code", () => {
+test("google authorize URL includes openid scopes, response_type=code, and an S256 PKCE challenge", () => {
   const provider = resolveOAuthProvider("google", GOOGLE_CREDS);
-  const url = new URL(provider.buildAuthorizeUrl("state-token"));
+  const url = new URL(provider.buildAuthorizeUrl("state-token", "challenge-2"));
   assertEquals(
     url.origin + url.pathname,
     "https://accounts.google.com/o/oauth2/v2/auth",
@@ -53,6 +55,8 @@ test("google authorize URL includes openid scopes and response_type=code", () =>
   assertEquals(url.searchParams.get("response_type"), "code");
   assertEquals(url.searchParams.get("scope"), "openid email profile");
   assertEquals(url.searchParams.get("state"), "state-token");
+  assertEquals(url.searchParams.get("code_challenge"), "challenge-2");
+  assertEquals(url.searchParams.get("code_challenge_method"), "S256");
 });
 
 test("github token exchange and identity parse the primary verified email", async () => {
@@ -63,6 +67,10 @@ test("github token exchange and identity parse the primary verified email", asyn
       assertEquals(init?.method, "POST");
       const headers = new Headers(init?.headers);
       assertEquals(headers.get("accept"), "application/json");
+      assertEquals(
+        new URLSearchParams(String(init?.body)).get("code_verifier"),
+        "verifier-1",
+      );
       return Promise.resolve(jsonResponse({ access_token: "gho_test" }));
     }
     if (url.endsWith("/user") && !url.includes("emails")) {
@@ -82,7 +90,7 @@ test("github token exchange and identity parse the primary verified email", asyn
   };
   try {
     const provider = resolveOAuthProvider("github", GITHUB_CREDS);
-    const { accessToken } = await provider.exchangeCode("code-1");
+    const { accessToken } = await provider.exchangeCode("code-1", "verifier-1");
     assertEquals(accessToken, "gho_test");
     assertEquals(await provider.fetchIdentity(accessToken), {
       providerUserId: "42",
@@ -197,7 +205,7 @@ test("github token exchange maps HTTP errors to OAuthProviderError", async () =>
   try {
     const provider = resolveOAuthProvider("github", GITHUB_CREDS);
     const err = await assertRejects(
-      () => provider.exchangeCode("bad"),
+      () => provider.exchangeCode("bad", "verifier-1"),
       OAuthProviderError,
     );
     assertEquals(err.status, 400);
@@ -225,7 +233,7 @@ test("google token exchange and userinfo parse sub/email/name", async () => {
   };
   try {
     const provider = resolveOAuthProvider("google", GOOGLE_CREDS);
-    const { accessToken } = await provider.exchangeCode("code-1");
+    const { accessToken } = await provider.exchangeCode("code-1", "verifier-1");
     assertEquals(accessToken, "ya29.test");
     assertEquals(await provider.fetchIdentity(accessToken), {
       providerUserId: "google-sub",
