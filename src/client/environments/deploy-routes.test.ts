@@ -2456,3 +2456,75 @@ test("a person without organization:manage cannot deploy host-level content", as
     );
   });
 });
+
+/** `hostLevelApproved` on the queued `environment.deploy` payload for a deploy response. */
+async function payloadHostLevelApproved(
+  ctx: HostLevelCtx,
+  res: Response,
+): Promise<unknown> {
+  const body = await res.json() as { commandId: string };
+  const [row] = await ctx.db
+    .select({ payload: dispatch.payload })
+    .from(dispatch)
+    .where(eq(dispatch.commandId, body.commandId))
+    .limit(1);
+  return (row?.payload as Record<string, unknown> | undefined)
+    ?.hostLevelApproved;
+}
+
+test("a manager's host-level deploy tells the daemon it is approved", async () => {
+  await withDeployFixtures(async (ctx) => {
+    await useCompose(ctx, composeWithBind(DOCKER_SOCKET_BIND), true);
+
+    const res = await managerDeploy(ctx);
+
+    assertEquals(res.status, 200);
+    assertEquals(await payloadHostLevelApproved(ctx, res), true);
+  });
+});
+
+test("a webhook deploy matching a recorded approval tells the daemon it is approved", async () => {
+  await withDeployFixtures(async (ctx) => {
+    await useCompose(ctx, composeWithBind(DOCKER_SOCKET_BIND), true);
+    assertEquals((await managerDeploy(ctx)).status, 200);
+
+    const res = await webhookDeploy(ctx);
+
+    assertEquals(res.status, 200);
+    assertEquals(await payloadHostLevelApproved(ctx, res), true);
+  });
+});
+
+test("a deploy that reaches nothing on the host carries no approval, even with the gate on", async () => {
+  await withDeployFixtures(async (ctx) => {
+    await useCompose(ctx, composeWithBind("./data:/data"), true);
+
+    const res = await managerDeploy(ctx);
+
+    assertEquals(res.status, 200);
+    assertEquals(await payloadHostLevelApproved(ctx, res), undefined);
+  });
+});
+
+test("the planner approves host-level content only for an allowed actor", async () => {
+  await withDeployFixtures(async (ctx) => {
+    await useCompose(ctx, composeWithBind(DOCKER_SOCKET_BIND), true);
+    const manager = await planEnvironmentDeploy(ctx.db, {
+      environmentId: ctx.environmentId,
+      organizationId: ctx.organizationId,
+      hostAccess: { kind: "manager", userId: ctx.userId, recordApproval: false },
+    });
+    assertEquals("kind" in manager ? manager.kind : manager.hostLevelApproved, true);
+
+    await useCompose(ctx, composeWithBind("./data:/data"), true);
+    const ordinary = await planEnvironmentDeploy(ctx.db, {
+      environmentId: ctx.environmentId,
+      organizationId: ctx.organizationId,
+      hostAccess: { kind: "automated" },
+    });
+    assertEquals(
+      "kind" in ordinary ? ordinary.kind : ordinary.hostLevelApproved,
+      false,
+    );
+  });
+});

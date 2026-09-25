@@ -82,24 +82,30 @@ function readHostAccessApproval(metadata: unknown): HostAccessApproval | null {
  * The actor half of the host-level gate. Runs only after
  * `validateComposeForDeploy` has passed, i.e. the organization has host-level
  * features on (or the document reaches nothing on the host).
+ *
+ * `hostLevelApproved` is true exactly when the document reaches the host and
+ * the actor may use that: the daemon's own confinement reads it off the
+ * `environment.deploy` payload.
  */
 async function authorizeHostAccess(
   db: Db,
   envRow: { id: string; metadata: unknown },
   merged: ComposeDocument,
   actor: HostAccessActor,
-): Promise<ComposeDeployValidationError | null> {
+): Promise<
+  { error: ComposeDeployValidationError } | { hostLevelApproved: boolean }
+> {
   const fingerprint = await hostAccessFingerprint(merged.data)
-  if (fingerprint === null) return null
+  if (fingerprint === null) return { hostLevelApproved: false }
   const issues = hostAccessIssues(merged.data)
   if (actor.kind === 'not_manager') {
-    return { kind: 'compose_host_access_requires_manager', issues }
+    return { error: { kind: 'compose_host_access_requires_manager', issues } }
   }
   const approved = readHostAccessApproval(envRow.metadata)
   if (actor.kind === 'automated') {
     return approved?.fingerprint === fingerprint
-      ? null
-      : { kind: 'compose_host_access_requires_approval', issues }
+      ? { hostLevelApproved: true }
+      : { error: { kind: 'compose_host_access_requires_approval', issues } }
   }
   if (actor.recordApproval && approved?.fingerprint !== fingerprint) {
     const approval: HostAccessApproval = {
@@ -117,7 +123,7 @@ async function authorizeHostAccess(
       })
       .where(eq(environment.id, envRow.id))
   }
-  return null
+  return { hostLevelApproved: true }
 }
 
 export type PlannedDeploy = {
@@ -133,6 +139,15 @@ export type PlannedDeploy = {
    * itself is not optional — see {@link planEnvironmentDeploy}.
    */
   composeValidated: true
+  /**
+   * The merged document reaches the host and this actor may deploy it: the
+   * organization has host-level Compose features on and a manager or owner
+   * deployed it (or an automated deploy matches the recorded approval).
+   * Rides every `environment.deploy` command of this deploy as
+   * `hostLevelApproved`, which is what lets the daemon allow absolute and
+   * Docker-socket binds.
+   */
+  hostLevelApproved: boolean
   pinServerId: string | null
   defaultServerId: string | null
   fabricEnabled: boolean
@@ -363,8 +378,9 @@ export async function planEnvironmentDeploy(
   // used to run first and the refusal came later, per server, which left rows
   // behind for a deploy that never happened.
   const rejected = validateComposeForDeploy(merged, { composeGatedFieldsEnabled })
-    ?? await authorizeHostAccess(db, envRow, merged, params.hostAccess)
   if (rejected) return { kind: 'compose_rejected', error: rejected }
+  const access = await authorizeHostAccess(db, envRow, merged, params.hostAccess)
+  if ('error' in access) return { kind: 'compose_rejected', error: access.error }
 
   await reconcile(db, params.environmentId, merged)
 
@@ -435,6 +451,7 @@ export async function planEnvironmentDeploy(
   return {
     plan,
     composeValidated: true,
+    hostLevelApproved: access.hostLevelApproved,
     pinServerId,
     defaultServerId,
     fabricEnabled: Boolean(fabricRow),

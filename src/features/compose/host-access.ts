@@ -19,7 +19,15 @@
  * - `services.<name>.build` — `context`, `dockerfile`, `additional_contexts`,
  *   and the build-time host reach of `ssh`, `network: host`, `privileged`,
  *   `entitlements`;
- * - `services.<name>.extends.file` and top-level `include`.
+ * - `services.<name>.extends.file` and top-level `include` — always, even
+ *   inside the directory: the daemon reads those files on the host at deploy
+ *   time, so what they add never passes this check.
+ *
+ * A bind of the service's directory itself (`.:/app`) is host-level too: a
+ * container that can write there can rewrite the deployed files and plant
+ * symlinks a later bind would follow. The daemon also resolves every bind on
+ * the host before `compose up` (turbopaneld `compose-host-paths.ts`), which
+ * is what catches a symlink this lexical check cannot see.
  *
  * Fail closed: a path this module cannot resolve statically — an interpolated
  * `${VAR}`, a backslash, a value of the wrong type — is treated as outside.
@@ -103,6 +111,29 @@ function outsideReason(path: string): string | null {
   return null;
 }
 
+/**
+ * Why a bind source is not allowed even though it stays inside: the service's
+ * directory itself (`.`, `./`). A container that can write there can rewrite
+ * the files the daemon deploys from and plant symlinks a later bind follows.
+ * Only binds — a build context of `.` only reads, so it stays allowed.
+ */
+function wholeDirectoryReason(path: string): string | null {
+  const parts = path.trim().split("/").filter((part) =>
+    part !== "" && part !== "."
+  );
+  return parts.length === 0
+    ? "is the service's own directory, which holds the files the daemon deploys from"
+    : null;
+}
+
+/**
+ * `extends` and `include` pull in another Compose file that the daemon reads
+ * on the host at deploy time. Its content never reaches this check, and any
+ * file inside the service's directory is one a container could have written.
+ */
+const PULLS_UNCHECKED_COMPOSE =
+  "is read on the host at deploy time, so what it adds never passes this check";
+
 /** Whether a URL-shaped build context names a remote source, not a host path. */
 function isRemoteContext(value: string): boolean {
   return /^[a-z][a-z0-9+.-]*:\/\//i.test(value) ||
@@ -136,6 +167,18 @@ class Collector {
     const reason = outsideReason(value);
     if (reason) this.add(segments, `${what} \`${value}\``, reason, value);
   }
+
+  /** A bind source: {@link path}, and never the service's directory itself. */
+  bindSource(segments: Array<string | number>, what: string, value: unknown): void {
+    if (typeof value === "string" && outsideReason(value) === null) {
+      const whole = wholeDirectoryReason(value);
+      if (whole) {
+        this.add(segments, `${what} \`${value}\``, whole, value);
+        return;
+      }
+    }
+    this.path(segments, what, value);
+  }
 }
 
 /** Short syntax: `[SOURCE:]TARGET[:MODE]`. Only the source can be a host path. */
@@ -162,7 +205,7 @@ function checkShortVolume(
     source.startsWith("~") || source.includes("\\");
   // Anything else is a named volume (Compose refuses a named volume with `/`).
   if (!isPath) return;
-  const reason = outsideReason(source);
+  const reason = outsideReason(source) ?? wholeDirectoryReason(source);
   if (reason) out.add(segments, `bind source \`${source}\``, reason, spec);
 }
 
@@ -173,7 +216,7 @@ function checkLongVolume(
 ): void {
   const type = typeof spec.type === "string" ? spec.type : "volume";
   if (type === "bind") {
-    out.path([...segments, "source"], "bind source", spec.source);
+    out.bindSource([...segments, "source"], "bind source", spec.source);
     return;
   }
   if (!SAFE_MOUNT_TYPES.has(type)) {
@@ -291,7 +334,12 @@ function checkExtends(
   value: unknown,
 ): void {
   if (isRecord(value) && value.file !== undefined) {
-    out.path([...serviceSegments, "extends", "file"], "extends file", value.file);
+    out.add(
+      [...serviceSegments, "extends", "file"],
+      `extends file \`${String(value.file)}\``,
+      PULLS_UNCHECKED_COMPOSE,
+      value.file,
+    );
   }
 }
 
@@ -346,27 +394,10 @@ function checkInclude(out: Collector, include: unknown): void {
   if (include === undefined || include === null) return;
   const entries = Array.isArray(include) ? include : [include];
   entries.forEach((entry, index) => {
-    const at: Array<string | number> = ["include", index];
-    if (typeof entry === "string") {
-      out.path(at, "included file", entry);
-      return;
-    }
-    if (!isRecord(entry)) {
-      out.add(at, "include", "is not a path, so it cannot be checked", entry);
-      return;
-    }
-    const paths = Array.isArray(entry.path) ? entry.path : [entry.path];
-    paths.forEach((path, pathIndex) =>
-      out.path(
-        Array.isArray(entry.path) ? [...at, "path", pathIndex] : [...at, "path"],
-        "included file",
-        path,
-      )
-    );
-    if (entry.project_directory !== undefined) {
-      out.path([...at, "project_directory"], "include project directory", entry.project_directory);
-    }
-    checkFileList(out, [...at, "env_file"], "include env_file", entry.env_file);
+    const label = typeof entry === "string"
+      ? `included file \`${entry}\``
+      : "include entry";
+    out.add(["include", index], label, PULLS_UNCHECKED_COMPOSE, entry);
   });
 }
 
@@ -447,14 +478,26 @@ export function hostAccessCanonical(data: unknown): string {
   for (const finding of collectHostAccessFindings(root)) {
     entries.push([finding.path, finding.value]);
   }
-  entries.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  entries.sort(([a], [b]) => compareCodeUnits(a, b));
   return entries.length === 0 ? "" : JSON.stringify(entries, sortedReplacer);
+}
+
+/**
+ * UTF-16 code-unit order — what `.sort()` does by default, spelled out. Never
+ * `localeCompare`: the approval fingerprint must be byte-identical on every
+ * host and locale, or a recorded approval would stop matching.
+ */
+function compareCodeUnits(a: string, b: string): number {
+  if (a < b) return -1;
+  return a > b ? 1 : 0;
 }
 
 function sortedReplacer(_key: string, value: unknown): unknown {
   if (!isRecord(value)) return value;
   const out: Record<string, unknown> = {};
-  for (const key of Object.keys(value).sort()) out[key] = value[key];
+  for (const key of Object.keys(value).sort(compareCodeUnits)) {
+    out[key] = value[key];
+  }
   return out;
 }
 

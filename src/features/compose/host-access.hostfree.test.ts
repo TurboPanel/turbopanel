@@ -91,7 +91,72 @@ test("an include of another project's file is found", () => {
   };
   assertEquals(
     collectHostAccessFindings(data).map((finding) => finding.path),
-    ["include[0]", "include[1].path[1]"],
+    ["include[0]", "include[1]"],
+  );
+});
+
+test("an include inside the service directory is found: its content is never checked", () => {
+  const data = {
+    include: ["./local.yaml", { path: "data/extra.yaml" }],
+    services: { web: { image: "x" } },
+  };
+  assertEquals(
+    collectHostAccessFindings(data).map((finding) => finding.path),
+    ["include[0]", "include[1]"],
+  );
+});
+
+test("an extends file inside the service directory is found: its content is never checked", () => {
+  const findings = collectHostAccessFindings(
+    stack({ extends: { service: "base", file: "./data/base.yaml" } }),
+  );
+  assertEquals(findings.map((finding) => finding.path), [
+    "services.web.extends.file",
+  ]);
+});
+
+test("extends without a file (same document) is not host-level", () => {
+  assertEquals(
+    collectHostAccessFindings({
+      services: {
+        base: { image: "x" },
+        web: { extends: { service: "base" } },
+      },
+    }),
+    [],
+  );
+});
+
+test("a bind of the service's own directory is found, in every spelling", () => {
+  for (const volume of [".:/app", "./:/app", "./.:/app", ".//:/app:ro"]) {
+    assertEquals(
+      collectHostAccessFindings(stack({ volumes: [volume] })).map((f) => f.path),
+      ["services.web.volumes[0]"],
+      volume,
+    );
+  }
+  assertEquals(
+    collectHostAccessFindings(
+      stack({ volumes: [{ type: "bind", source: "./", target: "/app" }] }),
+    ).map((f) => f.path),
+    ["services.web.volumes[0].source"],
+  );
+});
+
+test("a build context of the service directory stays allowed: it only reads", () => {
+  assertEquals(
+    collectHostAccessFindings(stack({ build: { context: "." } })),
+    [],
+  );
+  assertEquals(collectHostAccessFindings(stack({ build: "./" })), []);
+});
+
+test("subdirectory binds stay allowed", () => {
+  assertEquals(
+    collectHostAccessFindings(
+      stack({ volumes: ["./data:/data", "./data/sub:/sub", "data/x:/x"] }),
+    ),
+    [],
   );
 });
 
@@ -110,4 +175,33 @@ test("a non-string path is refused rather than trusted", () => {
   assertEquals(findings.map((finding) => finding.path), [
     "services.web.env_file[0].path",
   ]);
+});
+
+test("the fingerprint is pinned: a recorded approval must keep matching across releases", async () => {
+  // Mixed-case, non-ASCII and underscore keys exercise the key ordering the
+  // canonical form depends on. If this value changes, every stored approval
+  // (environment.metadata.composeHostAccessApproval) silently stops matching.
+  const data = {
+    services: {
+      web: {
+        image: "x",
+        privileged: true,
+        volumes: [
+          {
+            type: "bind",
+            source: "/srv",
+            target: "/h",
+            bind: { propagation: "rslave", Zeta: 1, "élan": 2, _x: 3 },
+          },
+          "/var/run/docker.sock:/var/run/docker.sock",
+        ],
+        cap_add: ["SYS_ADMIN"],
+      },
+      Api: { image: "y", volumes: ["/etc:/etc:ro"] },
+    },
+  };
+  assertEquals(
+    await hostAccessFingerprint(data),
+    "34f3b32381ef273e289ed0c9e3da3ff40b8a607fb341b9f6b5a9ec87b5812e7c",
+  );
 });

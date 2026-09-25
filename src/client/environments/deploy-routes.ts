@@ -522,6 +522,8 @@ type DeployCommandCreateParams = DeployActor & {
   /** Set only when `managedNetworkServices` is non-empty (see prepare). */
   managedNetwork?: string;
   noCache: boolean;
+  /** The planner's host-level verdict (`PlannedDeploy.hostLevelApproved`). */
+  hostLevelApproved: boolean;
   generation: number;
   desiredHash: string;
   replicaCounts: Record<string, number>;
@@ -636,6 +638,7 @@ async function createDeployCommand(
         managedNetworkServices: params.managedNetworkServices,
         managedNetwork: params.managedNetwork,
         noCache: params.noCache ? true : undefined,
+        hostLevelApproved: params.hostLevelApproved ? true : undefined,
       }),
       listenerPorts: params.listenerPorts,
     },
@@ -721,6 +724,7 @@ function createParamsForPreparedServer(
     projectName: string;
     generation: number;
     noCache: boolean;
+    hostLevelApproved: boolean;
     selection: DeploySourceSelection;
   },
 ): DeployCommandCreateParams {
@@ -771,6 +775,7 @@ function createParamsForPreparedServer(
       ? {}
       : { managedNetwork: row.prepared.managedNetwork }),
     noCache: params.noCache,
+    hostLevelApproved: params.hostLevelApproved,
     generation: params.generation,
     desiredHash: row.prepared.desiredHash,
     replicaCounts: row.prepared.replicaCounts,
@@ -843,6 +848,7 @@ async function persistDeployFanOut(
     projectName: string;
     slots: readonly DesiredSlotInput[];
     noCache: boolean;
+    hostLevelApproved: boolean;
     selection: DeploySourceSelection;
     /** Release trees to record on each target — see `deploymentTargetsForFanOut`. */
     siteReleases: readonly EnvironmentSiteRelease[];
@@ -870,6 +876,7 @@ async function persistDeployFanOut(
             projectName: params.projectName,
             generation,
             noCache: params.noCache,
+            hostLevelApproved: params.hostLevelApproved,
             selection: params.selection,
           }),
         ),
@@ -1741,6 +1748,7 @@ async function runEnvironmentDeploy(
       projectName,
       slots: spanningCtx.enriched.slots,
       noCache: auth.noCache,
+      hostLevelApproved: planned.hostLevelApproved,
       selection: auth.selection,
       siteReleases,
     });

@@ -206,6 +206,15 @@ bind`, `type: none`, a host-path `device` that is not a network filesystem),
 `configs`/`secrets` `file:`, `env_file`, `label_file`, `build` (`context`,
 `dockerfile`, `additional_contexts`, plus `ssh`, `network: host`,
 `privileged`, `entitlements`), `extends.file`, and top-level `include`.
+`extends.file` and `include` are host-level **wherever** they point: the daemon
+reads those files on the host at deploy time, so what they add never passes
+this check, and a file inside the service's directory is one a container could
+have written. A bind of the service's directory itself (`.:/app`, `./:/app`)
+is host-level too — a container that can write there can rewrite the deployed
+files and plant symlinks — while a build context of `.` only reads and stays
+allowed. This check is lexical; the daemon resolves every bind on the host
+before `compose up` (turbopaneld `src/deploy/compose-host-paths.ts`), which is
+what catches a symlink planted inside `./data`.
 `lint.ts` emits each finding with the same `field_requires_org_opt_in` code
 as a gated key, so every rule below applies to both. The platform itself never
 writes such a path into an authored document (compiled secret `file:` paths
@@ -230,7 +239,20 @@ webhook deploy must match it, else `403
 compose_host_access_requires_approval`. An unrelated edit keeps the
 fingerprint; any change to what reaches the host voids it. A preview records
 nothing. The key is in `ENVIRONMENT_PROMOTED_METADATA_KEYS`, so no client
-create or patch can set it.
+create or patch can set it. The fingerprint's canonical form sorts in UTF-16
+code-unit order (never `localeCompare`) so it is byte-stable across hosts, and a
+test pins one known value — changing the canonical form voids every stored
+approval.
+
+**What the daemon is told.** The planner's verdict rides every
+`environment.deploy` command of that deploy as `hostLevelApproved: true`
+(`PlannedDeploy.hostLevelApproved` → `persistDeployFanOut` →
+`createDeployCommand`; omitted when false, and absent reads as false). It is
+true exactly when the merged document reaches the host, the org gate is on and
+the actor rule passed. The daemon allows absolute and Docker-socket binds only
+under it, and never excuses a symlink escape from the deployment directory.
+The field is `EnvironmentDeployHostAccess` in both contract twins, pinned in
+`scripts/contract-field-snapshot.json`.
 
 Unlike `unsupported`, TurboPanel _does_ implement these fields — the fix for an
 ungated org is an opt-in, not removing the field, so `gated` carries its own
