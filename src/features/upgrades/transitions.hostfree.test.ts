@@ -165,6 +165,63 @@ test("rolled_back while offline waits instead of dispatching", () => {
   );
 });
 
+const HOUR_MS = 60 * 60 * 1000;
+
+function hoursBefore(iso: string, hours: number): string {
+  return new Date(Date.parse(iso) - hours * HOUR_MS).toISOString();
+}
+
+test("a step still offline past the offline deadline needs attention", () => {
+  const action = planStepAction(
+    step({ status: "waiting", lastStageAt: hoursBefore(NOW, 2) }),
+    facts({ serverConnected: false }),
+    cfg,
+  );
+  assertEquals(action, { kind: "needs_attention", errorCode: "server_offline" });
+});
+
+test("a waiting step inside the offline deadline keeps waiting", () => {
+  const action = planStepAction(
+    step({
+      status: "waiting",
+      lastStageAt: new Date(Date.parse(NOW) - 10 * 60 * 1000).toISOString(),
+    }),
+    facts({ serverConnected: false }),
+    cfg,
+  );
+  assertEquals(action.kind, "wait_offline");
+});
+
+test("a later-batch step that first finds its server offline waits, whatever its row age", () => {
+  const action = planStepAction(
+    step({ status: "pending", lastStageAt: hoursBefore(NOW, 48) }),
+    facts({ serverConnected: false }),
+    cfg,
+  );
+  assertEquals(action.kind, "wait_offline");
+});
+
+test("the offline deadline is configurable", () => {
+  const action = planStepAction(
+    step({
+      status: "waiting",
+      lastStageAt: new Date(Date.parse(NOW) - 5 * 60 * 1000).toISOString(),
+    }),
+    facts({ serverConnected: false }),
+    { now: NOW, offlineDeadlineMs: 60 * 1000 },
+  );
+  assertEquals(action, { kind: "needs_attention", errorCode: "server_offline" });
+});
+
+test("a server back online before the deadline is dispatched", () => {
+  const action = planStepAction(
+    step({ status: "waiting", lastStageAt: hoursBefore(NOW, 2) }),
+    facts({ serverConnected: true }),
+    cfg,
+  );
+  assertEquals(action.kind, "dispatch");
+});
+
 test("computeBackoffMs doubles per attempt and caps", () => {
   assertEquals(computeBackoffMs(1), UPGRADE_BACKOFF_BASE_MS);
   assertEquals(computeBackoffMs(2), UPGRADE_BACKOFF_BASE_MS * 2);

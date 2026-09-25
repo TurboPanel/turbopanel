@@ -44,8 +44,11 @@ import {
 } from "./vocabulary.ts";
 import {
   compareUpgradeStepRows,
+  failedPlatformPhase,
   FLEET_CELL_PROBE_BUDGET,
   isTerminalStepStatus,
+  PLATFORM_PHASES,
+  type PlatformPhase,
   type StepSummary,
   summarizeSteps,
   UPGRADE_TICK_STEP_BUDGET,
@@ -75,7 +78,8 @@ export type UpgradeTickWindow = {
   counts: StepSummary;
   phase: UpgradePhase | null;
   batchIndex: number | null;
-  controlPlaneFailed: boolean;
+  /** First platform phase with a failed / needs-attention step, else null. */
+  failedPlatformPhase: PlatformPhase | null;
   allTerminal: boolean;
 };
 
@@ -425,7 +429,9 @@ export function createMemoryUpgradeStore(input?: {
     },
     anyDaemonBehind: (commit) => {
       if (!commit) return Promise.resolve(false);
-      return Promise.resolve(facts.some((fact) => fact.commit !== commit));
+      return Promise.resolve(
+        facts.some((fact) => fact.connected && fact.commit !== commit),
+      );
     },
     factsFor: (ids, colocatedServerId) => {
       const wanted = new Set(ids.slice(0, UPGRADE_TICK_STEP_BUDGET + 1));
@@ -868,6 +874,11 @@ function summaryFromStatusCounts(
   return summary;
 }
 
+function asPlatformPhase(value: string | undefined): PlatformPhase | null {
+  if (value === "colocated_daemon" || value === "control_plane") return value;
+  return null;
+}
+
 function asTickPhase(value: string): UpgradePhase {
   if (value === "colocated_daemon" || value === "control_plane") return value;
   return "fleet";
@@ -884,10 +895,7 @@ function memoryTickWindow(
     step.upgradeId === upgradeId
   );
   const counts = summarizeSteps(rows);
-  const controlPlaneFailed = rows.some((step) =>
-    step.phase === "control_plane" &&
-    (step.status === "failed" || step.status === "needs_attention")
-  );
+  const failedPhase = failedPlatformPhase(rows);
   const open = rows
     .filter((step) => !isTerminalStepStatus(step.status))
     .sort(compareUpgradeStepRows);
@@ -898,7 +906,7 @@ function memoryTickWindow(
       counts,
       phase: null,
       batchIndex: null,
-      controlPlaneFailed,
+      failedPlatformPhase: failedPhase,
       allTerminal: true,
     };
   }
@@ -924,7 +932,7 @@ function memoryTickWindow(
     counts,
     phase,
     batchIndex,
-    controlPlaneFailed,
+    failedPlatformPhase: failedPhase,
     allTerminal: false,
   };
 }
@@ -951,16 +959,24 @@ async function loadTickWindow(
   limit: number,
 ): Promise<UpgradeTickWindow> {
   const cap = clampTickLimit(limit);
-  const [counts, failedControlPlane, head] = await Promise.all([
+  const [counts, failedPlatform, head] = await Promise.all([
     countUpgradeSteps(db, upgradeId),
     db
-      .select({ id: upgradeStep.id })
+      .select({
+        phase: sql<string>`coalesce(${upgradeStep.detail}->>'phase', 'fleet')`,
+      })
       .from(upgradeStep)
       .where(and(
         eq(upgradeStep.upgradeId, upgradeId),
-        sql`coalesce(${upgradeStep.detail}->>'phase', 'fleet') = 'control_plane'`,
+        inArray(
+          sql`coalesce(${upgradeStep.detail}->>'phase', 'fleet')`,
+          [...PLATFORM_PHASES],
+        ),
         inArray(upgradeStep.status, ["failed", "needs_attention"]),
       ))
+      .orderBy(
+        sql`case coalesce(${upgradeStep.detail}->>'phase', 'fleet') when 'colocated_daemon' then 0 else 1 end`,
+      )
       .limit(1),
     db
       .select({
@@ -979,7 +995,7 @@ async function loadTickWindow(
       )
       .limit(1),
   ]);
-  const controlPlaneFailed = failedControlPlane.length > 0;
+  const failedPhase = asPlatformPhase(failedPlatform[0]?.phase);
   const opened = head[0];
   if (!opened) {
     return {
@@ -987,7 +1003,7 @@ async function loadTickWindow(
       counts,
       phase: null,
       batchIndex: null,
-      controlPlaneFailed,
+      failedPlatformPhase: failedPhase,
       allTerminal: true,
     };
   }
@@ -1015,7 +1031,7 @@ async function loadTickWindow(
     counts,
     phase,
     batchIndex,
-    controlPlaneFailed,
+    failedPlatformPhase: failedPhase,
     allTerminal: false,
   };
 }
@@ -1083,6 +1099,11 @@ async function writeTickCursor(
     });
 }
 
+/**
+ * A connected daemon off `commit`. An offline host is left out: auto-start
+ * would otherwise open a run for it on every tick, each one waiting out the
+ * offline deadline. It is picked up by the first run after it reconnects.
+ */
 async function anyDaemonBehind(
   db: Db,
   commit: string | null,
@@ -1091,9 +1112,10 @@ async function anyDaemonBehind(
   const rows = await db
     .select({ id: server.id })
     .from(server)
-    .where(
+    .where(and(
+      eq(server.isConnected, true),
       sql`${server.daemon}->'projection'->'daemonBuild'->>'commit' is distinct from ${commit}`,
-    )
+    ))
     .limit(1);
   return rows.length > 0;
 }

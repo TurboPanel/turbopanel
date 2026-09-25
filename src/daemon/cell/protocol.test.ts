@@ -263,6 +263,28 @@ it("wireMessageToInboundEnvelope maps inbound wire types", () => {
     },
   );
 
+  // A rollback's reason code and the run id reach the upgrade step.
+  assertEquals(
+    wireMessageToInboundEnvelope({
+      type: "instance-update-result",
+      id: "r6c",
+      at,
+      ok: false,
+      error: "health_timeout: new build never became healthy",
+      errorCode: "health_timeout",
+      upgradeId: "5f0c9a52-1a8f-4cb4-9f4f-7f3c2c5b8f10",
+    }),
+    {
+      kind: "instance-update-result",
+      requestId: "r6c",
+      at,
+      ok: false,
+      error: "health_timeout: new build never became healthy",
+      errorCode: "health_timeout",
+      upgradeId: "5f0c9a52-1a8f-4cb4-9f4f-7f3c2c5b8f10",
+    },
+  );
+
   assertEquals(
     wireMessageToInboundEnvelope({
       type: "public-urls-update-result",
@@ -895,6 +917,29 @@ it("validateDaemonInboundFrame validates ok-result and command messages", () => 
           ok: "yes",
           error: "x".repeat(MAX_DAEMON_WS_ERROR_CHARS + 1),
         }),
+      ).ok,
+      false,
+    );
+  }
+
+  // Both install results carry the same optional reason code and run id.
+  for (const type of ["update-result", "instance-update-result"] as const) {
+    assertEquals(
+      validateDaemonInboundFrame(
+        JSON.stringify({
+          type,
+          id: "req-1",
+          at: VALID_AT,
+          ok: false,
+          errorCode: "health_timeout",
+          upgradeId: "5f0c9a52-1a8f-4cb4-9f4f-7f3c2c5b8f10",
+        }),
+      ).ok,
+      true,
+    );
+    assertEquals(
+      validateDaemonInboundFrame(
+        JSON.stringify({ type, id: "req-1", at: VALID_AT, ok: false, errorCode: 7 }),
       ).ok,
       false,
     );

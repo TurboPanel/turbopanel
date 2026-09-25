@@ -952,6 +952,15 @@ export function registerServerRoutes(
     if (orgResult instanceof Response) return orgResult;
     const organizationId = orgResult;
 
+    // Starting a fleet update opens the one instance-wide upgrade run: the
+    // same organization:manage bar as updating a single server.
+    const denied = await assertCanManageOr403(
+      c,
+      "organization",
+      organizationId,
+    );
+    if (denied) return denied;
+
     const registry = getDaemonCellRegistry(c);
     if (!registry) {
       return c.json({ error: "Daemon cell registry unavailable" }, 503);

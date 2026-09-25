@@ -463,7 +463,12 @@ test("POST /servers/updates fails closed when the upgrade gate cannot be read", 
   seedUpdateManifestCacheForTests(null);
   const { app, cookie } = await buildSessionApp({
     registry: stubRegistry(),
-    executeQueue: [[{ item_id: SERVER_ID }], [], [{ allowed: false }]],
+    executeQueue: [
+      [{ allowed: true }],
+      [{ item_id: SERVER_ID }],
+      [],
+      [{ allowed: false }],
+    ],
   });
   const res = await app.request("/servers/updates", {
     method: "POST",
@@ -488,7 +493,12 @@ test("POST /servers/updates fails closed while the control-plane host is behind"
   };
   const { app, cookie } = await buildSessionApp({
     registry,
-    executeQueue: [[{ item_id: SERVER_ID }], [], [{ allowed: true }]],
+    executeQueue: [
+      [{ allowed: true }],
+      [{ item_id: SERVER_ID }],
+      [],
+      [{ allowed: true }],
+    ],
   });
   const res = await app.request("/servers/updates", {
     method: "POST",
@@ -499,6 +509,29 @@ test("POST /servers/updates fails closed while the control-plane host is behind"
     ok: false,
     error: "upgrade_gate_unavailable",
   });
+  assertEquals(enqueued, 0);
+});
+
+test("POST /servers/updates refuses a caller without organization:manage", async () => {
+  seedUpdateManifestCacheForTests(null);
+  let enqueued = 0;
+  const registry = stubRegistry();
+  const cell = registry.getCell(SERVER_ID);
+  const enqueue = cell.enqueue.bind(cell);
+  cell.enqueue = (envelope) => {
+    enqueued += 1;
+    return enqueue(envelope);
+  };
+  const { app, cookie } = await buildSessionApp({
+    registry,
+    executeQueue: [[{ allowed: false }]],
+  });
+  const res = await app.request("/servers/updates", {
+    method: "POST",
+    headers: sessionHeaders(cookie),
+  });
+  assertEquals(res.status, 403);
+  assertEquals(await res.json(), { error: "Forbidden" });
   assertEquals(enqueued, 0);
 });
 

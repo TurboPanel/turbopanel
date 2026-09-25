@@ -2993,9 +2993,11 @@ export class DaemonCellObject {
           persistUpgradeOutcome(db, {
             serverId,
             unit: "instance",
+            upgradeId: inbound.upgradeId,
             ok: inbound.ok,
             at: inbound.at,
             error: inbound.error,
+            errorCode: inbound.errorCode,
             requestId: inbound.requestId,
           }),
       );

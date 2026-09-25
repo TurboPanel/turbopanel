@@ -2,6 +2,7 @@ import { assertEquals } from "@std/assert";
 import {
   differsFromInstalled,
   EMPTY_UNIT_TARGET,
+  isDowngrade,
   isOnTarget,
   unitTarget,
   type UpgradeTarget,
@@ -84,4 +85,15 @@ test("differsFromInstalled: unknown target never differs; unknown install does",
     false,
   );
   assertEquals(differsFromInstalled(null, null), false);
+});
+
+test("isDowngrade is strictly-older semver only", () => {
+  assertEquals(isDowngrade("0.2.0", "0.1.1"), true);
+  assertEquals(isDowngrade("v0.1.1", "0.1.1-rc.1"), true);
+  assertEquals(isDowngrade("0.1.1-canary.9", "0.1.1-canary.10"), false);
+  assertEquals(isDowngrade("0.1.1", "0.1.1"), false);
+  assertEquals(isDowngrade("0.1.0", "0.1.1"), false);
+  assertEquals(isDowngrade(null, "0.1.1"), false);
+  assertEquals(isDowngrade("trunk-build", "0.1.1"), false);
+  assertEquals(isDowngrade("0.2.0", null), false);
 });

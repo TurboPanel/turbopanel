@@ -17,6 +17,7 @@ import {
 } from "./target-resolve.ts";
 import {
   differsFromInstalled,
+  isDowngrade,
   isOnTarget,
   unitTarget,
   type UpgradeTarget,
@@ -31,12 +32,14 @@ import {
 import {
   activeBatchIndex,
   capWorkersDispatch,
-  controlPlaneStepFailed,
   earliestOpenPhase,
+  failedPlatformPhase,
   finalRunStatus,
   finalRunStatusFromSummary,
   fleetCellProbeIds,
   isFleetGateSatisfied,
+  type PlatformPhase,
+  platformFailureError,
   type StepSummary,
   summarizeSteps,
   UPGRADE_TICK_STEP_BUDGET,
@@ -52,7 +55,10 @@ import {
   isProgressTerminal,
   isUpgradeRunId,
   MANAGED_UPGRADE_FEATURE,
+  readDispatchHistory,
   stepStatusForProgressStage,
+  withInProgressRefused,
+  withSupersededRequest,
 } from "./decisions.ts";
 import type {
   FleetProbe,
@@ -225,6 +231,13 @@ export function createUpgradeCoordinator(
     });
     for (const gap of manifestGaps) blockers.push(gap);
     if (deps.runtime === "deno" && !deps.development) {
+      const downgrades = downgradeBlockers(target, colocated, hasInstance);
+      checks.push({
+        id: "no-downgrade",
+        label: "Target is not older than what is installed",
+        passed: downgrades.length === 0,
+      });
+      blockers.push(...downgrades);
       const connected = colocated?.connected === true;
       checks.push({
         id: "colocated",
@@ -263,6 +276,30 @@ export function createUpgradeCoordinator(
     };
   }
 
+  function downgradeBlockers(
+    target: UpgradeTarget,
+    colocated: FleetServerFact | undefined,
+    hasInstance: boolean,
+  ): string[] {
+    const out: string[] = [];
+    const rollback =
+      "Managed updates never go back to an older build; use the rollback command instead.";
+    if (
+      hasInstance &&
+      isDowngrade(deps.instanceInstalled.version, target.instance?.version)
+    ) {
+      out.push(
+        `The channel's control-plane build ${target.instance?.version} is older than the installed ${deps.instanceInstalled.version}. ${rollback}`,
+      );
+    }
+    if (colocated && isDowngrade(colocated.version, target.daemon?.version)) {
+      out.push(
+        `The channel's daemon build ${target.daemon?.version} is older than the co-located daemon's ${colocated.version}. ${rollback}`,
+      );
+    }
+    return out;
+  }
+
   async function dispatchStep(
     run: UpgradeRunRow,
     step: UpgradeStepRow,
@@ -270,6 +307,7 @@ export function createUpgradeCoordinator(
   ): Promise<void> {
     const envelope = envelopeFor(run, step, fact);
     await deps.enqueue(step.serverId, envelope);
+    step.detail = withSupersededRequest(step.detail, step.requestId);
     step.status = "dispatched";
     step.attempts += 1;
     step.requestId = envelope.requestId;
@@ -342,6 +380,8 @@ export function createUpgradeCoordinator(
       return await saveStepIfChanged(step, before);
     }
     if (action.kind === "wait_offline") {
+      // The offline deadline counts from here, not from the row's age.
+      if (step.status !== "waiting") step.lastStageAt = deps.now();
       step.status = "waiting";
       return await saveStepIfChanged(step, before);
     }
@@ -437,12 +477,9 @@ export function createUpgradeCoordinator(
       const fact = fleetView.find((item) => item.serverId === step.serverId);
       await dispatchStep(run, step, fact);
     }
-    if (controlPlaneStepFailed(steps)) {
-      run.status = "failed";
-      run.error = "control_plane_failed";
-      run.finishedAt = deps.now();
-      run.counts = summarizeSteps(steps);
-      await deps.store.saveRun(run);
+    const failedPhase = failedPlatformPhase(steps);
+    if (failedPhase) {
+      await failRun(run, failedPhase, summarizeSteps(steps));
       return;
     }
     if (steps.every((step) => isTerminal(step.status))) {
@@ -459,6 +496,35 @@ export function createUpgradeCoordinator(
     await deps.store.saveRun(run);
   }
 
+  /**
+   * A failed co-located daemon or control plane ends the run: the fleet gate
+   * needs both on target, so the fleet phase behind it could never open.
+   */
+  async function failRun(
+    run: UpgradeRunRow,
+    phase: PlatformPhase,
+    counts: StepSummary,
+  ): Promise<void> {
+    run.status = "failed";
+    run.error = platformFailureError(phase);
+    run.finishedAt = deps.now();
+    run.counts = counts;
+    run.phase = null;
+    await deps.store.saveRun(run);
+  }
+
+  async function finishRun(
+    run: UpgradeRunRow,
+    counts: StepSummary,
+  ): Promise<void> {
+    run.status = finalRunStatusFromSummary(counts);
+    run.finishedAt = deps.now();
+    run.counts = counts;
+    run.phase = null;
+    await deps.store.saveRun(run);
+    await deps.store.writeTickCursor(run.id, null);
+  }
+
   async function advanceWindow(run: UpgradeRunRow): Promise<void> {
     const cursor = await deps.store.readTickCursor(run.id);
     const window = await deps.store.tickWindow(
@@ -466,23 +532,13 @@ export function createUpgradeCoordinator(
       cursor,
       UPGRADE_TICK_STEP_BUDGET,
     );
-    if (window.controlPlaneFailed) {
-      run.status = "failed";
-      run.error = "control_plane_failed";
-      run.finishedAt = deps.now();
-      run.counts = window.counts;
-      run.phase = null;
-      await deps.store.saveRun(run);
+    if (window.failedPlatformPhase) {
+      await failRun(run, window.failedPlatformPhase, window.counts);
       await deps.store.writeTickCursor(run.id, null);
       return;
     }
     if (window.allTerminal) {
-      run.status = finalRunStatusFromSummary(window.counts);
-      run.finishedAt = deps.now();
-      run.counts = window.counts;
-      run.phase = null;
-      await deps.store.saveRun(run);
-      await deps.store.writeTickCursor(run.id, null);
+      await finishRun(run, window.counts);
       return;
     }
     const ids = window.steps.map((step) => step.serverId);
@@ -549,6 +605,11 @@ export function createUpgradeCoordinator(
       dirty = true;
     }
     const counts = dirty ? await deps.store.countSteps(run.id) : window.counts;
+    if (counts.total > 0 && counts.inProgress === 0) {
+      // This tick settled the last open step (counts cover the whole run).
+      await finishRun(run, counts);
+      return;
+    }
     const phase = window.phase;
     if (
       run.status !== "running" || run.phase !== phase ||
@@ -568,6 +629,17 @@ export function createUpgradeCoordinator(
         afterId: wrapped || !last ? null : last.id,
       });
     }
+  }
+
+  async function markInProgressRefused(
+    step: UpgradeStepRow,
+    at: string,
+  ): Promise<void> {
+    // An earlier dispatch of this step is still installing. It is the live
+    // install now: keep the step in flight and let its own reports finish it.
+    step.detail = withInProgressRefused(step.detail);
+    step.lastStageAt = at;
+    await deps.store.saveStep(step);
   }
 
   function currentCommit(
@@ -779,7 +851,15 @@ export function createUpgradeCoordinator(
         input.unit,
         input.upgradeId,
       );
-      if (!step || !reportMatchesStep(step, input.requestId)) return;
+      if (!step) return;
+      const report = classifyReport(step, input.requestId);
+      if (!report) return;
+      if (input.stage === "failed" && input.errorCode === DISPATCH_IN_PROGRESS) {
+        if (report === "current") await markInProgressRefused(step, input.at);
+        return;
+      }
+      const failure = input.stage === "failed" || input.stage === "rolled-back";
+      if (failure && !priorFailureApplies(step, report)) return;
       const status = stepStatusForProgressStage(input.stage);
       step.status = status;
       step.lastStageAt = input.at;
@@ -830,16 +910,26 @@ export function createUpgradeCoordinator(
         input.unit,
         input.upgradeId,
       );
-      if (!step || !reportMatchesStep(step, input.requestId)) return;
+      if (!step) return;
+      const report = classifyReport(step, input.requestId);
+      if (!report) return;
+      if (!input.ok && input.errorCode === DISPATCH_IN_PROGRESS) {
+        if (report === "current") await markInProgressRefused(step, input.at);
+        return;
+      }
+      if (!input.ok && !priorFailureApplies(step, report)) return;
       if (input.ok) {
         step.lastStageAt = input.at;
         if (step.unit === "instance") {
           step.status = "done";
         }
-      } else if (input.errorCode === "rolled_back") {
+      } else if (isRollbackOutcome(step, input.errorCode)) {
+        // The daemon reports a rollback as a `rolled-back` progress stage and
+        // then a failed result carrying the rollback's reason code; the
+        // result must not turn that into an ordinary failure.
         step.status = "rolled_back";
-        step.errorCode = input.errorCode;
-        step.errorMessage = input.error ?? null;
+        step.errorCode = input.errorCode ?? step.errorCode ?? "rolled_back";
+        step.errorMessage = input.error ?? step.errorMessage ?? null;
         step.lastStageAt = input.at;
       } else {
         step.status = "failed";
@@ -921,9 +1011,54 @@ function sameSummary(left: StepSummary | null, right: StepSummary): boolean {
     left.inProgress === right.inProgress;
 }
 
-/** Progress and outcome frames name one dispatch. A later attempt wins. */
-function reportMatchesStep(step: UpgradeStepRow, requestId: string): boolean {
-  return step.requestId !== null && step.requestId === requestId;
+/**
+ * The daemon's answer when an `update` / `instance-update` arrives while an
+ * install of that unit is already running (turbopaneld `client.ts`).
+ */
+const DISPATCH_IN_PROGRESS = "preflight_in_progress";
+
+/**
+ * Which dispatch of this step a progress or result frame belongs to: the
+ * current one, an earlier one this step superseded (a stall retry), or none.
+ */
+function classifyReport(
+  step: UpgradeStepRow,
+  requestId: string,
+): "current" | "prior" | null {
+  if (step.requestId !== null && step.requestId === requestId) return "current";
+  const history = readDispatchHistory(step.detail);
+  return history.priorRequestIds.includes(requestId) ? "prior" : null;
+}
+
+/**
+ * A failure from an earlier dispatch counts only once the current dispatch
+ * was refused as already in progress — then the earlier install is the live
+ * one. While the newer dispatch is live, a late failure from an older one is
+ * ignored.
+ */
+function priorFailureApplies(
+  step: UpgradeStepRow,
+  report: "current" | "prior",
+): boolean {
+  if (report === "current") return true;
+  return readDispatchHistory(step.detail).inProgressRefused;
+}
+
+function isRollbackOutcome(
+  step: UpgradeStepRow,
+  errorCode: string | undefined,
+): boolean {
+  return step.status === "rolled_back" || errorCode === "rolled_back" ||
+    errorCode === "update_rollback";
+}
+
+function initialStepStatus(
+  satisfied: boolean,
+  ahead: boolean,
+): UpgradeStepRow["status"] {
+  if (satisfied) return "done";
+  if (ahead) return "skipped";
+  return "pending";
 }
 
 function stepFromPlan(
@@ -939,6 +1074,10 @@ function stepFromPlan(
     daemonCommit: fact?.commit ?? null,
     instanceCommit: instanceCommit,
   }, run.target);
+  // A daemon already newer than the target is left alone. The platform units
+  // never get here older: preflight refuses that run outright.
+  const ahead = !satisfied && planned.unit === "daemon" &&
+    isDowngrade(fact?.version, pin?.version);
   return {
     id: newId(),
     upgradeId: run.id,
@@ -946,7 +1085,7 @@ function stepFromPlan(
     unit: planned.unit,
     phase: planned.phase,
     batchIndex: planned.batchIndex,
-    status: satisfied ? "done" : "pending",
+    status: initialStepStatus(satisfied, ahead),
     requestId: null,
     attempts: 0,
     nextAttemptAt: null,
@@ -955,8 +1094,10 @@ function stepFromPlan(
     fromCommit: planned.unit === "instance" ? null : fact?.commit ?? null,
     toCommit: pin?.commit ?? null,
     lastStageAt: now,
-    errorCode: null,
-    errorMessage: null,
+    errorCode: ahead ? "downgrade_refused" : null,
+    errorMessage: ahead
+      ? `Runs ${fact?.version}, newer than the target ${pin?.version}. Managed updates never downgrade a server.`
+      : null,
     detail: { phase: planned.phase },
   };
 }

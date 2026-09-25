@@ -424,9 +424,11 @@ async function applyDaemonInboundEnvelope(params: {
     await persistUpgradeOutcome(db, {
       serverId,
       unit: "instance",
+      upgradeId: envelope.upgradeId,
       ok: envelope.ok,
       at: envelope.at,
       error: envelope.error,
+      errorCode: envelope.errorCode,
       requestId: envelope.requestId,
     });
   }

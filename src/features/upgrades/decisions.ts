@@ -88,17 +88,85 @@ export function phaseFromDetail(detail: unknown): UpgradePhase {
   return "fleet";
 }
 
+/** Earlier dispatch ids a step remembers; one per retry is plenty. */
+export const MAX_PRIOR_REQUEST_IDS = 5;
+
+/**
+ * What a step remembers about its earlier dispatches.
+ *
+ * - `priorRequestIds`: wire ids of earlier `update` / `instance-update`
+ *   dispatches for this step, oldest first. A stall retry mints a new id; the
+ *   install it retried may still finish and report under an older one.
+ * - `inProgressRefused`: the current dispatch was refused because an earlier
+ *   one is still installing, so that earlier install is the live one.
+ */
+export type StepDispatchHistory = {
+  priorRequestIds: string[];
+  inProgressRefused: boolean;
+};
+
+export type StepDetail = {
+  phase: UpgradePhase;
+  progressDetail?: string;
+  priorRequestIds?: string[];
+  inProgressRefused?: boolean;
+};
+
+function detailRecord(detail: unknown): Record<string, unknown> {
+  return typeof detail === "object" && detail !== null && !Array.isArray(detail)
+    ? detail as Record<string, unknown>
+    : {};
+}
+
+export function readDispatchHistory(detail: unknown): StepDispatchHistory {
+  const record = detailRecord(detail);
+  const ids = Array.isArray(record.priorRequestIds)
+    ? record.priorRequestIds.filter((id): id is string =>
+      typeof id === "string" && id.length > 0
+    )
+    : [];
+  return {
+    priorRequestIds: ids.slice(-MAX_PRIOR_REQUEST_IDS),
+    inProgressRefused: record.inProgressRefused === true,
+  };
+}
+
+/** Record a superseded dispatch id before a step is dispatched again. */
+export function withSupersededRequest(
+  detail: unknown,
+  requestId: string | null,
+): Record<string, unknown> {
+  const history = readDispatchHistory(detail);
+  const ids = requestId && !history.priorRequestIds.includes(requestId)
+    ? [...history.priorRequestIds, requestId].slice(-MAX_PRIOR_REQUEST_IDS)
+    : history.priorRequestIds;
+  return {
+    ...detailRecord(detail),
+    priorRequestIds: ids,
+    inProgressRefused: false,
+  };
+}
+
+/** Mark that the current dispatch was refused because an earlier one still runs. */
+export function withInProgressRefused(detail: unknown): Record<string, unknown> {
+  return { ...detailRecord(detail), inProgressRefused: true };
+}
+
 export function detailWithPhase(
   phase: UpgradePhase,
   detail: unknown,
-): { phase: UpgradePhase; progressDetail?: string } {
-  const progressDetail = typeof detail === "object" && detail !== null &&
-      "progressDetail" in detail &&
-      typeof (detail as { progressDetail?: unknown }).progressDetail ===
-        "string"
-    ? (detail as { progressDetail: string }).progressDetail
-    : undefined;
-  return progressDetail ? { phase, progressDetail } : { phase };
+): StepDetail {
+  const record = detailRecord(detail);
+  const out: StepDetail = { phase };
+  if (typeof record.progressDetail === "string") {
+    out.progressDetail = record.progressDetail;
+  }
+  const history = readDispatchHistory(detail);
+  if (history.priorRequestIds.length > 0) {
+    out.priorRequestIds = history.priorRequestIds;
+  }
+  if (history.inProgressRefused) out.inProgressRefused = true;
+  return out;
 }
 
 export type ClientUpdateBlockError =

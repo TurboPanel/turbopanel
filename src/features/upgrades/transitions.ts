@@ -6,6 +6,9 @@
  *
  * Self-healing rules encoded here:
  *   - An offline server's step becomes `waiting`; it is dispatched on reconnect.
+ *     A step still waiting after {@link UPGRADE_OFFLINE_DEADLINE_MS} becomes
+ *     `needs_attention` (`server_offline`), so one unreachable host cannot hold
+ *     the single instance-wide run open. The retry endpoint reopens it.
  *   - No progress within the step timeout → retry with backoff, up to
  *     {@link UPGRADE_STEP_MAX_ATTEMPTS} dispatches, then `needs_attention`.
  *   - `rolled_back` → one automatic retry, then `needs_attention`.
@@ -29,6 +32,12 @@ export const UPGRADE_BACKOFF_BASE_MS = 60 * 1000;
 
 /** Retry backoff never exceeds this. */
 export const UPGRADE_BACKOFF_MAX_MS = 30 * 60 * 1000;
+
+/**
+ * How long a step may wait for its server to come back, counted from when it
+ * started waiting (the orchestrator stamps `lastStageAt` on entry).
+ */
+export const UPGRADE_OFFLINE_DEADLINE_MS = 60 * 60 * 1000;
 
 /** Statuses that are settled — the tick leaves them alone. */
 const SETTLED: readonly UpgradeStepStatus[] = [
@@ -78,6 +87,7 @@ export type StepConfig = {
   stepTimeoutMs?: number;
   backoffBaseMs?: number;
   backoffMaxMs?: number;
+  offlineDeadlineMs?: number;
 };
 
 export type StepAction =
@@ -121,6 +131,13 @@ function isStalled(step: StepView, cfg: StepConfig): boolean {
   return Date.parse(cfg.now) - Date.parse(step.lastStageAt) > timeout;
 }
 
+/** Only a step already `waiting` has a `lastStageAt` that marks when it went offline. */
+function offlineTooLong(step: StepView, cfg: StepConfig): boolean {
+  if (step.status !== "waiting" || !step.lastStageAt) return false;
+  const deadline = cfg.offlineDeadlineMs ?? UPGRADE_OFFLINE_DEADLINE_MS;
+  return Date.parse(cfg.now) - Date.parse(step.lastStageAt) > deadline;
+}
+
 function handleRolledBack(
   step: StepView,
   facts: StepFacts,
@@ -139,7 +156,12 @@ function handleDue(
   facts: StepFacts,
   cfg: StepConfig,
 ): StepAction {
-  if (!facts.serverConnected) return { kind: "wait_offline" };
+  if (!facts.serverConnected) {
+    if (offlineTooLong(step, cfg)) {
+      return { kind: "needs_attention", errorCode: "server_offline" };
+    }
+    return { kind: "wait_offline" };
+  }
   if (!backoffElapsed(step, cfg)) return { kind: "none" };
   return { kind: "dispatch" };
 }
