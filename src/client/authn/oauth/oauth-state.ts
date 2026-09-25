@@ -10,7 +10,16 @@
  * `redirectTo` is a same-origin path (leading `/`, no scheme/host) validated
  * both at sign time and again on verify so a tampered value cannot become an
  * open redirect.
+ *
+ * A signed state alone proves the instance minted it, not that the browser
+ * presenting it started the flow — an attacker can start a flow and hand the
+ * victim the callback link (login CSRF). So `/start` also mints a PKCE
+ * verifier, keeps it in an HttpOnly cookie on the starting browser, and signs
+ * its S256 challenge into the state as the `nonce`. The callback recomputes
+ * the challenge from the cookie and requires it to equal the signed nonce,
+ * then proves the same verifier to the provider at the token exchange.
  */
+
 
 import {
   ENVELOPE_SCHEME_OAUTH_STATE,
@@ -65,21 +74,47 @@ function base64urlDecode(input: string): Uint8Array {
   return bytes;
 }
 
-/**
- * Same-origin path only: leading `/`, no scheme/host, no protocol-relative
- * `//`, no backslash or CR/LF that could smuggle a Location header.
- */
-export function isSafeRedirectPath(value: string): boolean {
+// C0 controls and DEL. Browsers drop TAB/CR/LF from URLs, so "/\t/evil.com"
+// becomes the protocol-relative "//evil.com".
+// deno-lint-ignore no-control-regex
+const URL_CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
+
+function isSameOriginPathShape(value: string): boolean {
   if (!value.startsWith("/") || value.startsWith("//")) return false;
   if (value.includes("://") || value.includes("\\")) return false;
-  if (value.includes("\r") || value.includes("\n")) return false;
-  return true;
+  return !URL_CONTROL_CHARS.test(value);
 }
 
-export function mintOAuthNonce(): string {
-  const bytes = new Uint8Array(16);
+/**
+ * Same-origin path only: leading `/`, no scheme/host, no protocol-relative
+ * `//`, no backslash, and no control character (TAB, CR, LF, NUL, …) — raw
+ * or percent-encoded, since the value may be decoded again downstream.
+ */
+export function isSafeRedirectPath(value: string): boolean {
+  if (!isSameOriginPathShape(value)) return false;
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(value);
+  } catch {
+    return false;
+  }
+  return decoded === value || isSameOriginPathShape(decoded);
+}
+
+/** RFC 7636 verifier: 32 random bytes, base64url (43 chars). */
+export function mintPkceVerifier(): string {
+  const bytes = new Uint8Array(32);
   crypto.getRandomValues(bytes);
   return base64urlEncode(bytes);
+}
+
+/** RFC 7636 `S256` challenge for a verifier. */
+export async function pkceChallenge(verifier: string): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(verifier),
+  );
+  return base64urlEncode(new Uint8Array(digest));
 }
 
 export async function signOAuthState(

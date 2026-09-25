@@ -1464,7 +1464,7 @@ export const authPaths: Record<string, unknown> = {
       responses: {
         "302": {
           description:
-            "Redirect to the provider authorize URL (Location header). Unconfigured provider: 404. Rate-limited: 429.",
+            "Redirect to the provider authorize URL (Location header) with an S256 PKCE challenge; sets the HttpOnly OAuth flow cookie the callback requires. Unconfigured provider: 404. Rate-limited: 429.",
         },
         "404": { description: "Provider is not configured" },
         "429": { description: "Too many requests" },
@@ -1476,7 +1476,7 @@ export const authPaths: Record<string, unknown> = {
       tags: ["Authentication"],
       summary: "Complete GitHub or Google OAuth sign-in or account link",
       description:
-        "Redirect-only. Success sets the session cookie (or a `tp2fa` challenge) and redirects to `redirectTo` from the signed state. Failures redirect to `/sign-in?error=` with `oauth_state_invalid`, `oauth_exchange_failed`, `account_disabled`, `oauth_signup_disabled`, `account_conflict`, `not_configured`, or `database_unavailable`. Link success redirects to `/account/security?linked=<provider>`; link failures to `/account/security?linked=&error=` (`account_conflict`, `not_configured`, `database_unavailable`). Never returns a JSON body.",
+        "Redirect-only. The state must come back on the browser that started the flow: `/start` sets a short-lived HttpOnly flow cookie holding the PKCE verifier, and the callback requires it to match the state and sends it to the provider (RFC 7636, S256). The cookie is cleared on every callback. Success sets the session cookie (or a `tp2fa` challenge) and redirects to `redirectTo` from the signed state. Failures redirect to `/sign-in?error=` with `oauth_state_invalid` (also when the flow cookie is missing or does not match), `oauth_exchange_failed`, `account_disabled`, `oauth_signup_disabled`, `oauth_email_unverified` (sign-up with an email the provider has not verified), `account_conflict`, `not_configured`, or `database_unavailable`. Link success redirects to `/account/security?linked=<provider>`; link failures to `/account/security?linked=&error=` (`account_conflict`, `not_configured`, `database_unavailable`). Never returns a JSON body.",
       parameters: [
         {
           name: "provider",

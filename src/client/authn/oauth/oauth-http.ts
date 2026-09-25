@@ -48,7 +48,9 @@ import {
 import { issueTwoFactorChallenge } from "../two-factor.ts";
 import {
   isSafeRedirectPath,
-  mintOAuthNonce,
+  mintPkceVerifier,
+  OAUTH_STATE_TTL_MS,
+  pkceChallenge,
   signOAuthState,
   verifyOAuthState,
 } from "./oauth-state.ts";
@@ -64,6 +66,17 @@ import type { OAuthStateClaims } from "./oauth-state.ts";
 import { isPostgresUniqueViolation } from "../../../db/unique-violation.ts";
 
 const DEFAULT_REDIRECT_TO = "/";
+
+/**
+ * Holds the PKCE verifier on the browser that started the flow (see
+ * `oauth-state.ts`). `__Host-` on HTTPS so a sibling subdomain cannot plant it.
+ */
+const OAUTH_FLOW_COOKIE_NAME = "turbopanel.oauth_flow";
+const OAUTH_FLOW_COOKIE_NAME_HTTPS = "__Host-turbopanel.oauth_flow";
+
+export function oauthFlowCookieName(isHttps: boolean): string {
+  return isHttps ? OAUTH_FLOW_COOKIE_NAME_HTTPS : OAUTH_FLOW_COOKIE_NAME;
+}
 
 function requestTls(c: Context<AppEnv>, runtime: "deno" | "workers") {
   return resolveRequestTls({
@@ -196,7 +209,7 @@ async function issueSessionCookieRedirect(
   }
   await buildSessionResponse(db, opts.runtime, sessionData);
 
-  c.header("Set-Cookie", setCookieHeader);
+  c.header("Set-Cookie", setCookieHeader, { append: true });
   return c.redirect(redirectTo);
 }
 
@@ -374,9 +387,10 @@ async function exchangeOAuthIdentity(
   c: Context<AppEnv>,
   provider: ResolvedOAuthProvider,
   code: string,
+  codeVerifier: string,
 ): Promise<OAuthIdentity | Response> {
   try {
-    const { accessToken } = await provider.exchangeCode(code);
+    const { accessToken } = await provider.exchangeCode(code, codeVerifier);
     return await provider.fetchIdentity(accessToken);
   } catch (err) {
     if (err instanceof OAuthProviderError) {
@@ -466,6 +480,12 @@ async function completeOAuthSignup(
   if (!signupEnabled) {
     return signInErrorRedirect(c, "oauth_signup_disabled");
   }
+  // A new account takes the provider's email as its own. Only a provider-
+  // verified address may do that (GitHub already returns only a verified
+  // primary; Google reports `email_verified`).
+  if (!identity.emailVerified) {
+    return signInErrorRedirect(c, "oauth_email_unverified");
+  }
 
   const created = await signUpFromIdentity(db, providerParam, identity);
   if (created === "conflict") {
@@ -538,12 +558,25 @@ export function registerOAuthRoutes(
     }
 
     const redirectTo = resolveRedirectTo(c.req.query("redirectTo"));
+    const codeVerifier = mintPkceVerifier();
+    const codeChallenge = await pkceChallenge(codeVerifier);
     const state = await signOAuthState(secretsConfig, {
       provider: providerParam,
-      nonce: mintOAuthNonce(),
+      nonce: codeChallenge,
       redirectTo,
       ...(linkUserId ? { linkUserId } : {}),
     });
+    const tls = requestTls(c, opts.runtime);
+    c.header(
+      "Set-Cookie",
+      buildCookieHeader(
+        codeVerifier,
+        OAUTH_STATE_TTL_MS / 1000,
+        oauthFlowCookieName(tls.isHttps),
+        tls.isHttps,
+      ),
+      { append: true },
+    );
 
     const baseUrl = await resolvePublicBaseUrl(c, { baseUrl: opts.baseUrl });
     const provider = resolveOAuthProvider(providerParam, {
@@ -551,7 +584,7 @@ export function registerOAuthRoutes(
       clientSecret: credentials.clientSecret,
       redirectUri: callbackRedirectUri(baseUrl, providerParam),
     });
-    return c.redirect(provider.buildAuthorizeUrl(state));
+    return c.redirect(provider.buildAuthorizeUrl(state, codeChallenge));
   });
 
   auth.get("/oauth/:provider/callback", async (c) => {
@@ -562,6 +595,16 @@ export function registerOAuthRoutes(
       opts.runtime,
     );
     if (limited) return limited;
+
+    // Single use: whatever happens next, the starting browser's verifier goes.
+    const tls = requestTls(c, opts.runtime);
+    const flowCookieName = oauthFlowCookieName(tls.isHttps);
+    const codeVerifier = getCookie(c, flowCookieName) ?? "";
+    c.header(
+      "Set-Cookie",
+      buildCookieHeader("", 0, flowCookieName, tls.isHttps),
+      { append: true },
+    );
 
     const providerParam = c.req.param("provider");
     if (!isOAuthProviderId(providerParam)) {
@@ -576,6 +619,14 @@ export function registerOAuthRoutes(
     const stateParam = c.req.query("state") ?? "";
     const claims = await verifyOAuthState(secretsConfig, stateParam);
     if (claims?.provider !== providerParam) {
+      return signInErrorRedirect(c, "oauth_state_invalid");
+    }
+    // Bound to the browser that started the flow: its cookie's verifier must
+    // hash to the challenge signed into the state (login-CSRF defence).
+    if (
+      codeVerifier.length === 0 ||
+      await pkceChallenge(codeVerifier) !== claims.nonce
+    ) {
       return signInErrorRedirect(c, "oauth_state_invalid");
     }
 
@@ -609,7 +660,12 @@ export function registerOAuthRoutes(
       redirectUri: callbackRedirectUri(baseUrl, providerParam),
     });
 
-    const identityResult = await exchangeOAuthIdentity(c, provider, code);
+    const identityResult = await exchangeOAuthIdentity(
+      c,
+      provider,
+      code,
+      codeVerifier,
+    );
     if (identityResult instanceof Response) return identityResult;
     const identity = identityResult;
 
