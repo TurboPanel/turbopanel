@@ -4,6 +4,8 @@ import type { AppEnv } from "../../app/app.ts";
 import { getDb } from "../../db/connection.ts";
 import { account } from "../../db/schema.ts";
 import { verifyPassword } from "../../lib/secrets/password.ts";
+import { enforceAuthRateLimit } from "./http.ts";
+import { resolveRuntime } from "./middleware.ts";
 import type { SessionData } from "./session-store.ts";
 
 /**
@@ -36,7 +38,12 @@ export function isSessionRecentlyAuthenticated(
  * OAuth, once those phases land) must have a session created within
  * {@link REAUTH_WINDOW_MS}.
  *
- * Returns a 403 `Response` when the check fails, or `null` when it passes.
+ * Every submitted password is charged to the `reauth` rate-limit bucket of the
+ * signed-in user (and the caller's IP) before it is checked, so a stolen
+ * session cannot be used to guess the account password.
+ *
+ * Returns a 403 (or 429) `Response` when the check fails, or `null` when it
+ * passes.
  */
 export async function assertRecentAuthOr403(
   c: Context<AppEnv>,
@@ -64,6 +71,13 @@ export async function assertRecentAuthOr403(
     if (typeof body.password !== "string" || body.password.length === 0) {
       return c.json({ ok: false, error: "Reauthentication required" }, 403);
     }
+    const limited = await enforceAuthRateLimit(
+      c,
+      "reauth",
+      session.userId,
+      resolveRuntime(c),
+    );
+    if (limited) return limited;
     const valid = await verifyPassword(body.password, credential.password);
     if (!valid) {
       return c.json({ ok: false, error: "Reauthentication required" }, 403);

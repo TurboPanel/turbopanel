@@ -33,7 +33,8 @@ export type AuthRateLimitPurpose =
   | "install-complete"
   | "oauth-start"
   | "oauth-callback"
-  | "forge-connect";
+  | "forge-connect"
+  | "reauth";
 
 export type AuthRateLimitResult = {
   allowed: boolean;
@@ -94,6 +95,9 @@ const SHARED_POLICIES: Partial<
   // The forge connect callbacks take a provider-side installation id as a
   // plain query parameter; a low ceiling per user keeps guessing them slow.
   "forge-connect": { limit: 5, windowMs: 60_000 },
+  // Password step-up before a security change, keyed on the signed-in user:
+  // a stolen session must not become an unthrottled password oracle.
+  reauth: { limit: 5, windowMs: 60_000 },
 };
 
 /**
@@ -129,6 +133,7 @@ export const AUTH_RATE_LIMIT_PURPOSE_TIERS: Record<
   "oauth-start": "default",
   "oauth-callback": "default",
   "forge-connect": "strict",
+  reauth: "strict",
 };
 
 function tierForPurpose(purpose: AuthRateLimitPurpose): AuthRateLimitTier {
