@@ -141,12 +141,12 @@ export const principalPaths = {
                 uid: {
                   type: "integer",
                   description:
-                    "Optional operator uid override (both uid and gid required together; omit for host allocation)",
+                    "Optional operator uid override, integer ≥ 15001 (both uid and gid required together; omit for host allocation)",
                 },
                 gid: {
                   type: "integer",
                   description:
-                    "Optional operator gid override (both uid and gid required together; omit for host allocation)",
+                    "Optional operator gid override, integer ≥ 15001 (both uid and gid required together; omit for host allocation)",
                 },
               },
             },

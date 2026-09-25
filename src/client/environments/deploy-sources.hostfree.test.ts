@@ -446,8 +446,8 @@ test("a sole tenancy is pinned onto the source entry", async () => {
   const material: EnvironmentDeployPrincipalMaterial = {
     principalId: PRINCIPAL_ID,
     username: "deploy",
-    uid: 10001,
-    gid: 10001,
+    uid: 15001,
+    gid: 15001,
   };
   const result = await resolveDeploySourceMaterial(
     mockContext(),
@@ -463,8 +463,8 @@ test("a sole tenancy is pinned onto the source entry", async () => {
   assertEquals(result[0]?.principal, {
     principalId: PRINCIPAL_ID,
     username: "deploy",
-    uid: 10001,
-    gid: 10001,
+    uid: 15001,
+    gid: 15001,
   });
 });
 
@@ -786,8 +786,8 @@ test("a legacy host-native service with no alias deploys as its sole steward", a
   const material: EnvironmentDeployPrincipalMaterial = {
     principalId: PRINCIPAL_ID,
     username: "legacy",
-    uid: 10002,
-    gid: 10002,
+    uid: 15002,
+    gid: 15002,
   };
   for (const serviceKind of ["site", "node"] as const) {
     const result = await resolveDeploySourceMaterial(
@@ -814,8 +814,8 @@ test("a legacy host-native service with no alias deploys as its sole steward", a
     assertEquals(result[0]?.principal, {
       principalId: PRINCIPAL_ID,
       username: "legacy",
-      uid: 10002,
-      gid: 10002,
+      uid: 15002,
+      gid: 15002,
     });
   }
 });

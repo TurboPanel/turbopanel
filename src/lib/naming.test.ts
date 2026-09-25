@@ -163,7 +163,7 @@ test('resolveDockerVolumeName uses storage UUID when unpinned', () => {
 test('principal path helpers nest under PRINCIPAL_HOME_ROOT by username', () => {
   const username = 'appuser'
   const storageId = '01936b3e-8c7a-7b2d-a1f0-abcdef012345'
-  assertEquals(PRINCIPAL_UID_START, 10001)
+  assertEquals(PRINCIPAL_UID_START, 15001)
   assertEquals(PRINCIPAL_RESERVED_UID_MIN, 9989)
   assertEquals(PRINCIPAL_RESERVED_UID_MAX, 9999)
   assertEquals(principalHomeDir(username), `${PRINCIPAL_HOME_ROOT}/${username}`)

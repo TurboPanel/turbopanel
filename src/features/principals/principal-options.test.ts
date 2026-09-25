@@ -50,8 +50,8 @@ test('parsePrincipalOptions drops invalid shells', () => {
 
 test('parsePrincipalOptions accepts a valid uid/gid override pair', () => {
   assertEquals(
-    parsePrincipalOptions({ shell: '/bin/bash', uid: 10001, gid: 10001 }),
-    { shell: '/bin/bash', uid: 10001, gid: 10001 },
+    parsePrincipalOptions({ shell: '/bin/bash', uid: 15001, gid: 15001 }),
+    { shell: '/bin/bash', uid: 15001, gid: 15001 },
   )
 })
 
@@ -95,8 +95,8 @@ test('parsePrincipalOptionsInput rejects a shell outside the allowlist', () => {
 
 test('parsePrincipalOptionsInput accepts uid/gid at or above the override floor', () => {
   assertEquals(
-    parsePrincipalOptionsInput({ uid: 10001, gid: 10002 }),
-    { ok: true, value: { shell: DEFAULT_PRINCIPAL_SHELL, uid: 10001, gid: 10002 } },
+    parsePrincipalOptionsInput({ uid: 15001, gid: 15002 }),
+    { ok: true, value: { shell: DEFAULT_PRINCIPAL_SHELL, uid: 15001, gid: 15002 } },
   )
 })
 
@@ -141,9 +141,9 @@ test('isValidPrincipalIdOverride enforces floor and reserved service band', () =
 })
 
 test('resolvePrincipalIdOverride returns a pair or null', () => {
-  assertEquals(resolvePrincipalIdOverride({ uid: 10001, gid: 10001 }), {
-    uid: 10001,
-    gid: 10001,
+  assertEquals(resolvePrincipalIdOverride({ uid: 15001, gid: 15001 }), {
+    uid: 15001,
+    gid: 15001,
   })
   assertEquals(resolvePrincipalIdOverride({ uid: 10001 }), null)
   assertEquals(resolvePrincipalIdOverride({}), null)
