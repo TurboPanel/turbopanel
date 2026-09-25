@@ -191,19 +191,34 @@ export type PhaseStepView = {
   status: UpgradeStepStatus;
 };
 
+/** The phases the fleet gate waits on. Neither may end the run still open. */
+export const PLATFORM_PHASES = ["colocated_daemon", "control_plane"] as const;
+
+export type PlatformPhase = (typeof PLATFORM_PHASES)[number];
+
 /**
- * A control-plane step that failed (or needs attention) fails the whole run
- * and holds the fleet gate shut — the fleet never starts on a control plane
- * that did not reach target.
+ * The first platform phase with a step that failed (or needs attention), or
+ * `null`. Either one fails the whole run: the fleet gate needs both on target,
+ * so a fleet phase behind a failed co-located daemon or control plane could
+ * never open, and the single instance-wide run would stay `running` forever.
  */
-export function controlPlaneStepFailed(
+export function failedPlatformPhase(
   steps: readonly PhaseStepView[],
-): boolean {
-  return steps.some(
-    (step) =>
-      step.phase === "control_plane" &&
-      (step.status === "failed" || step.status === "needs_attention"),
-  );
+): PlatformPhase | null {
+  for (const phase of PLATFORM_PHASES) {
+    const failed = steps.some(
+      (step) =>
+        step.phase === phase &&
+        (step.status === "failed" || step.status === "needs_attention"),
+    );
+    if (failed) return phase;
+  }
+  return null;
+}
+
+/** `upgrade.error` for a run ended by {@link failedPlatformPhase}. */
+export function platformFailureError(phase: PlatformPhase): string {
+  return `${phase}_failed`;
 }
 
 export type FleetGateInput = {

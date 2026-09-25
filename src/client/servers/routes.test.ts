@@ -1746,6 +1746,68 @@ test("GET /servers/updates does not call listRequests on the cell", async () => 
   }
 });
 
+test("POST /servers/updates refuses a member who cannot manage the organization", async () => {
+  if (!dbUrl) {
+    console.warn(
+      "Skipping server route tests: TURBOPANEL_DATABASE_URL not set",
+    );
+    return;
+  }
+
+  const db = createDenoDb();
+  const registry = createTrackingRegistry();
+  const { app, secrets } = await createServerRoutesTestApp(db, registry);
+
+  const [insertedOrg] = await db
+    .insert(organization)
+    .values({ name: "Server Updates Member Org" })
+    .returning({ id: organization.id });
+  const organizationId = insertedOrg!.id;
+  const [insertedUser] = await db
+    .insert(user)
+    .values({
+      email: `server-updates-member-${crypto.randomUUID()}@example.com`,
+      isEmailVerified: true,
+      role: "user",
+    })
+    .returning({ id: user.id });
+  const userId = insertedUser!.id;
+  const teamId = await insertOrgTeamMembership(
+    db,
+    organizationId,
+    userId,
+    "Server Updates Members",
+  );
+  const now = new Date().toISOString();
+  const [insertedServer] = await db
+    .insert(server)
+    .values({
+      createdAt: now,
+      updatedAt: now,
+      organizationId,
+      name: "Updates Member",
+    })
+    .returning({ id: server.id });
+  const serverId = insertedServer!.id;
+
+  try {
+    const cookie = await sessionCookie(db, secrets, userId);
+    const res = await app.request("/servers/updates", {
+      method: "POST",
+      headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+    });
+    assertEquals(res.status, 403);
+    assertEquals((await readJson<ErrorJson>(res)).error, "Forbidden");
+  } finally {
+    await db.delete(server).where(eq(server.id, serverId));
+    await db.delete(teammate).where(eq(teammate.teamId, teamId));
+    await db.delete(team).where(eq(team.id, teamId));
+    await db.delete(user).where(eq(user.id, userId));
+    await db.delete(organization).where(eq(organization.id, organizationId));
+    await endDbConnection(db);
+  }
+});
+
 async function attachConnectedDaemonStatus(
   db: ReturnType<typeof createDenoDb>,
   serverId: string,

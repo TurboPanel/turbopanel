@@ -3,10 +3,11 @@ import {
   activeBatchIndex,
   batchComplete,
   capWorkersDispatch,
-  controlPlaneStepFailed,
+  failedPlatformPhase,
   finalRunStatus,
   isFleetGateSatisfied,
   isTerminalStepStatus,
+  platformFailureError,
   summarizeSteps,
   WORKERS_DISPATCH_BUDGET,
 } from "./run.ts";
@@ -78,21 +79,37 @@ test("summarizeSteps and finalRunStatus classify outcomes", () => {
   });
 });
 
-test("a failed control-plane step is detected (fails the run, holds the gate)", () => {
+test("a failed platform step is detected (fails the run, holds the gate)", () => {
   assertEquals(
-    controlPlaneStepFailed([{ phase: "control_plane", status: "failed" }]),
-    true,
+    failedPlatformPhase([{ phase: "control_plane", status: "failed" }]),
+    "control_plane",
   );
   assertEquals(
-    controlPlaneStepFailed([{
+    failedPlatformPhase([{
       phase: "control_plane",
       status: "needs_attention",
     }]),
-    true,
+    "control_plane",
   );
   assertEquals(
-    controlPlaneStepFailed([{ phase: "fleet", status: "failed" }]),
-    false,
+    failedPlatformPhase([{ phase: "colocated_daemon", status: "failed" }]),
+    "colocated_daemon",
+  );
+  assertEquals(
+    failedPlatformPhase([
+      { phase: "control_plane", status: "failed" },
+      { phase: "colocated_daemon", status: "needs_attention" },
+    ]),
+    "colocated_daemon",
+  );
+  assertEquals(
+    failedPlatformPhase([{ phase: "fleet", status: "failed" }]),
+    null,
+  );
+  assertEquals(platformFailureError("control_plane"), "control_plane_failed");
+  assertEquals(
+    platformFailureError("colocated_daemon"),
+    "colocated_daemon_failed",
   );
 });
 

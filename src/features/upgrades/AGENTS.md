@@ -56,7 +56,16 @@ the cache.
   inside the maintenance window (if one is set), only when the target differs
   from what's installed (`differsFromInstalled`), and only when no run is
   active. Never replace a run in progress; the next run targets the newest
-  build.
+  build. Daemon drift counts **connected** servers only (`anyDaemonBehind`):
+  an offline host would otherwise reopen a run on every tick, each waiting
+  out the offline deadline. It is picked up by the first run after it
+  reconnects.
+- **Never a downgrade.** Preflight refuses a run whose control-plane or
+  co-located daemon target is an older semver than what is installed
+  (`isDowngrade` in `target.ts`; equal versions and unparsable ones pass). A
+  fleet daemon already newer than the target gets a `skipped` step with
+  `errorCode` `downgrade_refused` and is not dispatched. Going back is the
+  explicit, logged rollback command, never a managed run.
 - **Single-server** — `planSingleServer`, one fleet step, for manual per-server
   updates.
 
@@ -66,7 +75,10 @@ the cache.
   `control_plane` (instance + UI on that host) → `fleet` (every other daemon,
   batched).
 - The **fleet phase is hard-gated** (`isFleetGateSatisfied`): both the
-  co-located daemon **and** the control plane must be on target.
+  co-located daemon **and** the control plane must be on target. So a failed
+  or needs-attention step in **either** platform phase ends the run
+  (`failedPlatformPhase` → `upgrade.error` `colocated_daemon_failed` /
+  `control_plane_failed`); a fleet phase behind it could never open.
 - Workers: `fleet` only; the control plane is deploy-managed and shown
   read-only.
 - Trunk self-hosted: skip `control_plane` (no package) — the gate then needs
@@ -120,13 +132,19 @@ working.
 ## Self-healing (`transitions.ts`)
 
 - An offline server's step becomes `waiting` (`wait_offline`) and is dispatched
-  when the server reconnects.
+  when the server reconnects. The orchestrator stamps `lastStageAt` when the
+  step enters `waiting`; still waiting after `UPGRADE_OFFLINE_DEADLINE_MS`
+  (60 min) it becomes `needs_attention` with `errorCode` `server_offline`, so
+  one unreachable host cannot hold the single instance-wide run open. The
+  step-retry endpoint reopens it.
 - No progress within `UPGRADE_STEP_TIMEOUT_MS` → retry with backoff, up to
   `UPGRADE_STEP_MAX_ATTEMPTS` (3), then `needs_attention`.
 - `rolled_back` → one automatic retry (`UPGRADE_ROLLBACK_MAX_ATTEMPTS`), then
   `needs_attention`.
-- A failed control-plane step (`controlPlaneStepFailed`) marks the run failed
-  and holds the fleet gate shut.
+- A failed co-located daemon or control-plane step (`failedPlatformPhase`)
+  marks the run failed and holds the fleet gate shut.
+- A run whose last open step settles this tick finishes this tick (the
+  recount covers the whole run, not just the page the tick read).
 - Endpoints exist for retrying a step and cancelling a run.
 
 ## Saving what daemons report
@@ -139,6 +157,26 @@ request id equals the step's current `requestId`, so a replay from an earlier
 dispatch cannot overwrite the attempt that is in flight. Commit confirmation
 (`noteDaemonCommit`) stays separate and does not consult that id.
 
+A stall retry mints a new request id, and the install it retried may still be
+running. Each dispatch moves the previous id into `detail.priorRequestIds`
+(bounded, `MAX_PRIOR_REQUEST_IDS`). Then:
+
+- The daemon refuses a dispatch that lands while an install of that unit is
+  running (`errorCode` `preflight_in_progress`, on both the `failed` progress
+  frame and the result). That is **not** a failure: the step stays in flight,
+  `lastStageAt` moves, and `detail.inProgressRefused` marks the earlier
+  install as the live one.
+- A success (a progress stage or `ok` result) from any earlier id of the step
+  counts. A failure from an earlier id counts only after the current dispatch
+  was refused as in progress; while the newer dispatch is live it is ignored.
+- The attempts ceiling still bounds an install that never finishes.
+
+A control-plane rollback arrives as a `rolled-back` progress stage and then a
+failed `instance-update-result` whose `errorCode` is the rollback's reason.
+The result keeps the step `rolled_back` (so the one automatic retry fires)
+instead of recording a failure. `instance-update-result` carries `errorCode`
+and `upgradeId` through the cell protocol like `update-result` does.
+
 Hosted maintenance ticks page active steps under `UPGRADE_TICK_STEP_BUDGET`
 and keep the cursor on the `UPGRADE_TICK_CURSOR` setting between ticks. A
 `waiting` step that is still waiting is not written again. Fleet totals are a
@@ -150,7 +188,9 @@ grouped `count(*)`, not a materialised server or step list.
   `POST /servers/updates` answer 409 `control_plane_upgrade_required` while the
   gate is closed (self-hosted) and 409 `updates_managed` on Workers; the GET
   update-status routes carry `updateBlocked` + reason. `POST /servers/updates`
-  creates a batched fleet run.
+  creates a batched fleet run and requires `organization:manage` on the
+  organization (403 otherwise) — the same bar as `POST /servers/:id/update` —
+  because it opens the one instance-wide run.
 - Admin API (`../../admin/instance-updates-routes.ts` + `openapi/`): status,
   preflight (with the recovery command), runs, check, history, servers list,
   step-retry, run-cancel, settings. The old `POST /instance/updates/instance`

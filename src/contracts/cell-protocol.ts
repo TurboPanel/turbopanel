@@ -529,6 +529,9 @@ export type DaemonMessage =
     id: string;
     ok: boolean;
     error?: string;
+    /** Why it failed or rolled back (a rollback reason, `preflight_in_progress`, …). */
+    errorCode?: string;
+    upgradeId?: string;
     at: string;
   }
   | {
@@ -1188,7 +1191,6 @@ function validateInboundMessageFields(
     case "dev-sync-result":
     case "tunnel-token-result":
     case "public-urls-update-result":
-    case "instance-update-result":
     case "metrics-live-start-result":
     case "metrics-live-stop-result":
     case "topology-overrides-update-result":
@@ -1196,6 +1198,7 @@ function validateInboundMessageFields(
     case "capability-plan-clear-result":
       return validateOkResultFields(record);
     case "update-result":
+    case "instance-update-result":
       return validateUpdateResultFields(record);
     case "metrics-capabilities-result":
       return validateCapabilitiesResultFields(record);
@@ -1590,6 +1593,8 @@ export type DaemonInboundEnvelope =
     at: string;
     ok: boolean;
     error?: string;
+    errorCode?: string;
+    upgradeId?: string;
   }
   | {
     kind: "command-ack";
@@ -1773,6 +1778,8 @@ export function wireMessageToInboundEnvelope(
         at: msg.at,
         ok: msg.ok,
         error: msg.error,
+        ...(msg.errorCode !== undefined ? { errorCode: msg.errorCode } : {}),
+        ...(msg.upgradeId !== undefined ? { upgradeId: msg.upgradeId } : {}),
       };
     case "command-ack":
       return {

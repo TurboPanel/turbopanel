@@ -11,6 +11,7 @@
  * Pure and host-free: no DB, no clock, no manifest fetch. The orchestrator
  * resolves manifests and hands the resolved pins in here.
  */
+import { compareSemver, parseSemver } from "../../lib/version-wire.ts";
 import type { UpgradeStepUnit } from "./vocabulary.ts";
 
 /** One resolved build for one unit, mirroring an `UpdateManifestTarget`. */
@@ -87,4 +88,20 @@ export function differsFromInstalled(
   const want = target?.commit;
   if (typeof want !== "string" || want.length === 0) return false;
   return installed?.commit !== want;
+}
+
+/**
+ * True when installing `target` would move a host to an older version. Equal
+ * versions (a trunk rebuild on a new commit) and unparsable ones are not
+ * downgrades. A managed run never downgrades; going back is the explicit,
+ * logged rollback path (`controlPlaneRollbackCommand`).
+ */
+export function isDowngrade(
+  installedVersion: string | null | undefined,
+  targetVersion: string | null | undefined,
+): boolean {
+  const have = parseSemver(installedVersion);
+  const want = parseSemver(targetVersion);
+  if (!have || !want) return false;
+  return compareSemver(want, have) < 0;
 }
