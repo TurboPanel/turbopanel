@@ -5,13 +5,15 @@
  *
  * `CLOUDFLARE_ENV=live` with a `TURBOPANEL_DATABASE_URL` that is actually
  * testing's (or the other way round) is the mistake this guards — the two
- * origins have the same schema and the same role name, so nothing else would
- * notice until data went missing. Rather than inventing expected hostnames,
- * it reads the real binding: wrangler.jsonc names the `HYPERDRIVE` config id
- * for the env, and the config's origin (host, port, database, user — never
- * the password) comes from the Cloudflare API when `CLOUDFLARE_API_TOKEN` is
- * set, else `wrangler hyperdrive get` (wrangler login OAuth). The migrate URL
- * must name the same host, port, database and user.
+ * origins have the same schema, so nothing else would notice until data went
+ * missing. Rather than inventing expected hostnames, it reads the real
+ * binding: wrangler.jsonc names the `HYPERDRIVE` config id for the env, and
+ * the config's origin (host, port, database — never the password) comes from
+ * the Cloudflare API when `CLOUDFLARE_API_TOKEN` is set, else
+ * `wrangler hyperdrive get` (wrangler login OAuth). The migrate URL must name
+ * the same host, port, and database. The Postgres role may differ: migrate
+ * runs as a dedicated user with broader grants than the Hyperdrive runtime
+ * and cached-Hyperdrive roles.
  *
  * Fails closed: if `CLOUDFLARE_ENV` is set and the origin cannot be read,
  * the migrate is refused — `pnpm deploy` runs `wrangler deploy` next and
@@ -105,7 +107,6 @@ export function compareTarget(target, origin) {
   if (target.host !== originHost) mismatches.push(`host ${target.host} ≠ ${originHost}`)
   if (target.port !== Number(origin.port ?? 5432)) mismatches.push(`port ${target.port} ≠ ${origin.port ?? 5432}`)
   if (target.database !== origin.database) mismatches.push(`database ${target.database} ≠ ${origin.database}`)
-  if (target.user !== origin.user) mismatches.push(`user ${target.user} ≠ ${origin.user}`)
   return mismatches
 }
 
@@ -127,7 +128,7 @@ export async function assertMigrateTargetMatchesEnv(env = process.env) {
       `TURBOPANEL_DATABASE_URL is not env ${envName}'s Hyperdrive origin (${mismatches.join('; ')}) — refusing`,
     )
   }
-  return `TURBOPANEL_DATABASE_URL matches env ${envName}'s Hyperdrive origin (${origin.host}/${origin.database} as ${origin.user})`
+  return `TURBOPANEL_DATABASE_URL matches env ${envName}'s Hyperdrive origin (${origin.host}/${origin.database}; migrate as ${target.user})`
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
