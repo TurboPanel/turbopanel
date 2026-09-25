@@ -26,6 +26,8 @@ export type OAuthAuthorizeParams = {
   clientId: string;
   redirectUri: string;
   state: string;
+  /** RFC 7636 `S256` challenge; the verifier is sent at the token exchange. */
+  codeChallenge: string;
 };
 
 export interface OAuthProvider {
@@ -49,8 +51,11 @@ export class OAuthProviderError extends Error {
 
 export type ResolvedOAuthProvider = {
   id: OAuthProviderId;
-  buildAuthorizeUrl: (state: string) => string;
-  exchangeCode: (code: string) => Promise<{ accessToken: string }>;
+  buildAuthorizeUrl: (state: string, codeChallenge: string) => string;
+  exchangeCode: (
+    code: string,
+    codeVerifier: string,
+  ) => Promise<{ accessToken: string }>;
   fetchIdentity: (accessToken: string) => Promise<OAuthIdentity>;
 };
 
@@ -189,6 +194,8 @@ function githubAuthorizeUrl(params: OAuthAuthorizeParams): string {
   target.searchParams.set("redirect_uri", params.redirectUri);
   target.searchParams.set("scope", GITHUB_SCOPES);
   target.searchParams.set("state", params.state);
+  target.searchParams.set("code_challenge", params.codeChallenge);
+  target.searchParams.set("code_challenge_method", "S256");
   return target.toString();
 }
 
@@ -199,6 +206,8 @@ function googleAuthorizeUrl(params: OAuthAuthorizeParams): string {
   target.searchParams.set("response_type", "code");
   target.searchParams.set("scope", GOOGLE_SCOPES);
   target.searchParams.set("state", params.state);
+  target.searchParams.set("code_challenge", params.codeChallenge);
+  target.searchParams.set("code_challenge_method", "S256");
   return target.toString();
 }
 
@@ -333,13 +342,14 @@ export function resolveOAuthProvider(
   const provider = providerById(id);
   return {
     id,
-    buildAuthorizeUrl: (state: string) =>
+    buildAuthorizeUrl: (state: string, codeChallenge: string) =>
       provider.authorizeUrl({
         clientId: credentials.clientId,
         redirectUri: credentials.redirectUri,
         state,
+        codeChallenge,
       }),
-    exchangeCode: async (code: string) => {
+    exchangeCode: async (code: string, codeVerifier: string) => {
       const accessToken = await postTokenGrant(
         id,
         provider.tokenUrl,
@@ -347,6 +357,7 @@ export function resolveOAuthProvider(
           client_id: credentials.clientId,
           client_secret: credentials.clientSecret,
           code,
+          code_verifier: codeVerifier,
           redirect_uri: credentials.redirectUri,
           grant_type: "authorization_code",
         },

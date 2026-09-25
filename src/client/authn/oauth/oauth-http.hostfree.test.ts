@@ -21,7 +21,12 @@ import { deriveSecretsConfig } from "../../../lib/secrets/secrets.ts";
 import { createSession } from "../session-store.ts";
 import { REAUTH_WINDOW_MS } from "../reauth.ts";
 import { TWO_FACTOR_CHALLENGE_PURPOSE } from "../two-factor.ts";
-import { OAUTH_STATE_TTL_MS, signOAuthState } from "./oauth-state.ts";
+import {
+  OAUTH_STATE_TTL_MS,
+  pkceChallenge,
+  signOAuthState,
+} from "./oauth-state.ts";
+import { oauthFlowCookieName } from "./oauth-http.ts";
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -30,6 +35,36 @@ import { OAUTH_STATE_TTL_MS, signOAuthState } from "./oauth-state.ts";
  * reports Deno suites as empty; keep this alias so analysis sees real tests.
  */
 const test = Deno.test.bind(Deno);
+
+/**
+ * The cookie `/start` leaves on the browser that began a flow. A test that
+ * signs its own state must sign {@link FLOW_NONCE} (the verifier's S256
+ * challenge) and present this cookie on the callback, as a real browser does.
+ */
+const FLOW_VERIFIER = "test-only-pkce-verifier-0123456789-abcdefghijklmn";
+const FLOW_NONCE = await pkceChallenge(FLOW_VERIFIER);
+const FLOW_COOKIE = `${oauthFlowCookieName(true)}=${FLOW_VERIFIER}`;
+
+/** The flow cookie a real `GET /start` response set. */
+function flowCookieFrom(start: Response): string {
+  const line = start.headers
+    .getSetCookie()
+    .find((entry) => entry.startsWith(`${oauthFlowCookieName(true)}=`));
+  if (!line) throw new TypeError("/start set no OAuth flow cookie");
+  return line.split(";")[0]!;
+}
+
+/**
+ * Callback request init carrying the flow cookie — the fixed test one, or the
+ * one `start` set when the state came from a real `/start` — plus any other
+ * cookies (e.g. the session).
+ */
+function withFlowCookie(otherCookies?: string, start?: Response): RequestInit {
+  const flow = start ? flowCookieFrom(start) : FLOW_COOKIE;
+  return {
+    headers: { cookie: otherCookies ? `${otherCookies}; ${flow}` : flow },
+  };
+}
 
 const AUTH = `${CLIENT_API_PREFIX}/auth`;
 const ORIGIN = "https://panel.example.com";
@@ -248,7 +283,8 @@ test("callback with tampered or expired state redirects oauth_state_invalid", as
   const { app, config } = await buildApp();
   const tampered = await app.request(
     `${ORIGIN}${AUTH}/oauth/github/callback?code=x&state=not-an-envelope`,
-  );
+  withFlowCookie(),
+);
   assertEquals(tampered.status, 302);
   assertEquals(
     tampered.headers.get("location"),
@@ -257,14 +293,15 @@ test("callback with tampered or expired state redirects oauth_state_invalid", as
 
   const expiredState = await signOAuthState(config, {
     provider: "github",
-    nonce: "n",
+    nonce: FLOW_NONCE,
     redirectTo: "/",
   }, Date.now() - OAUTH_STATE_TTL_MS - 1_000);
   const expired = await app.request(
     `${ORIGIN}${AUTH}/oauth/github/callback?code=x&state=${
       encodeURIComponent(expiredState)
     }`,
-  );
+  withFlowCookie(),
+);
   assertEquals(expired.status, 302);
   assertEquals(
     expired.headers.get("location"),
@@ -276,7 +313,7 @@ test("signup-disabled with no matching account redirects oauth_signup_disabled",
   const { app, config } = await buildApp({ signupEnabled: false });
   const state = await signOAuthState(config, {
     provider: "github",
-    nonce: "n",
+    nonce: FLOW_NONCE,
     redirectTo: "/",
   });
   const restore = stubGithubIdentityFetch();
@@ -285,7 +322,8 @@ test("signup-disabled with no matching account redirects oauth_signup_disabled",
       `${ORIGIN}${AUTH}/oauth/github/callback?code=ok&state=${
         encodeURIComponent(state)
       }`,
-    );
+    withFlowCookie(),
+  );
     assertEquals(res.status, 302);
     assertEquals(
       res.headers.get("location"),
@@ -315,7 +353,7 @@ test("existing match issues a session cookie and redirects to redirectTo", async
   });
   const oauthState = await signOAuthState(config, {
     provider: "github",
-    nonce: "n",
+    nonce: FLOW_NONCE,
     redirectTo: "/welcome",
   });
   const restore = stubGithubIdentityFetch();
@@ -324,7 +362,8 @@ test("existing match issues a session cookie and redirects to redirectTo", async
       `${ORIGIN}${AUTH}/oauth/github/callback?code=ok&state=${
         encodeURIComponent(oauthState)
       }`,
-    );
+    withFlowCookie(),
+  );
     assertEquals(res.status, 302);
     assertEquals(res.headers.get("location"), "/welcome");
     const setCookie = res.headers.get("set-cookie") ?? "";
@@ -353,7 +392,7 @@ test("2FA user is redirected to a tp2fa challenge instead of a session", async (
   });
   const oauthState = await signOAuthState(config, {
     provider: "github",
-    nonce: "n",
+    nonce: FLOW_NONCE,
     redirectTo: "/",
   });
   const restore = stubGithubIdentityFetch();
@@ -362,11 +401,16 @@ test("2FA user is redirected to a tp2fa challenge instead of a session", async (
       `${ORIGIN}${AUTH}/oauth/github/callback?code=ok&state=${
         encodeURIComponent(oauthState)
       }`,
-    );
+    withFlowCookie(),
+  );
     assertEquals(res.status, 302);
     const location = res.headers.get("location") ?? "";
     assertEquals(location.startsWith("/sign-in?challenge="), true);
-    assertEquals((res.headers.get("set-cookie") ?? "").length, 0);
+    // No session: the only cookie written clears the spent OAuth flow cookie.
+    assertEquals(
+      (res.headers.get("set-cookie") ?? "").includes(HTTPS_SESSION_COOKIE_NAME),
+      false,
+    );
   } finally {
     restore();
   }
@@ -406,7 +450,7 @@ test("Google existing match issues a session cookie and redirects to redirectTo"
   });
   const oauthState = await signOAuthState(config, {
     provider: "google",
-    nonce: "n",
+    nonce: FLOW_NONCE,
     redirectTo: "/welcome",
   });
   const restore = stubGoogleIdentityFetch();
@@ -415,7 +459,8 @@ test("Google existing match issues a session cookie and redirects to redirectTo"
       `${ORIGIN}${AUTH}/oauth/google/callback?code=ok&state=${
         encodeURIComponent(oauthState)
       }`,
-    );
+    withFlowCookie(),
+  );
     assertEquals(res.status, 302);
     assertEquals(res.headers.get("location"), "/welcome");
     const setCookie = res.headers.get("set-cookie") ?? "";
@@ -446,7 +491,7 @@ test("Google 2FA user is redirected to a tp2fa challenge instead of a session", 
   });
   const oauthState = await signOAuthState(config, {
     provider: "google",
-    nonce: "n",
+    nonce: FLOW_NONCE,
     redirectTo: "/",
   });
   const restore = stubGoogleIdentityFetch({ sub: "google-sub-2fa" });
@@ -455,24 +500,29 @@ test("Google 2FA user is redirected to a tp2fa challenge instead of a session", 
       `${ORIGIN}${AUTH}/oauth/google/callback?code=ok&state=${
         encodeURIComponent(oauthState)
       }`,
-    );
+    withFlowCookie(),
+  );
     assertEquals(res.status, 302);
     const location = res.headers.get("location") ?? "";
     assertEquals(location.startsWith("/sign-in?challenge="), true);
-    assertEquals((res.headers.get("set-cookie") ?? "").length, 0);
+    // No session: the only cookie written clears the spent OAuth flow cookie.
+    assertEquals(
+      (res.headers.get("set-cookie") ?? "").includes(HTTPS_SESSION_COOKIE_NAME),
+      false,
+    );
   } finally {
     restore();
   }
 });
 
-test("Google signup with no existing account creates a new user, unverified email preserved", async () => {
+test("Google sign-up with an unverified email is refused and creates no user", async () => {
   const { app, state, config } = await buildApp({
     signupEnabled: true,
     platformEnv: GOOGLE_ENV,
   });
   const oauthState = await signOAuthState(config, {
     provider: "google",
-    nonce: "n",
+    nonce: FLOW_NONCE,
     redirectTo: "/dashboard",
   });
   const restore = stubGoogleIdentityFetch({
@@ -480,8 +530,8 @@ test("Google signup with no existing account creates a new user, unverified emai
     email: "new-google-user@example.com",
   });
   // stubGoogleIdentityFetch always returns email_verified: true; override it
-  // here to confirm identity.emailVerified is passed through unchanged
-  // rather than the signup path assuming every OAuth identity is verified.
+  // here: a new account must not take an address the provider has not
+  // verified as its own.
   const original = globalThis.fetch;
   globalThis.fetch = (input) => {
     const url = String(input);
@@ -503,26 +553,24 @@ test("Google signup with no existing account creates a new user, unverified emai
       `${ORIGIN}${AUTH}/oauth/google/callback?code=ok&state=${
         encodeURIComponent(oauthState)
       }`,
-    );
+    withFlowCookie(),
+  );
     assertEquals(res.status, 302);
-    assertEquals(res.headers.get("location"), "/dashboard");
+    assertEquals(
+      res.headers.get("location"),
+      "/sign-in?error=oauth_email_unverified",
+    );
     assertEquals(
       (res.headers.get("set-cookie") ?? "").includes(HTTPS_SESSION_COOKIE_NAME),
-      true,
+      false,
     );
-
-    const created = state.users.find((u) =>
-      u.email === "new-google-user@example.com"
-    );
-    assertEquals(created !== undefined, true);
-    assertEquals(created?.isEmailVerified, false);
     assertEquals(
-      state.accounts.some((row) =>
-        row.providerId === "google" &&
-        row.providerUserId === "google-new-user" &&
-        row.userId === created?.id
-      ),
-      true,
+      state.users.some((u) => u.email === "new-google-user@example.com"),
+      false,
+    );
+    assertEquals(
+      state.accounts.some((row) => row.providerUserId === "google-new-user"),
+      false,
     );
   } finally {
     globalThis.fetch = original;
@@ -559,7 +607,7 @@ test("link mode success and unique-constraint conflict", async () => {
       `${ORIGIN}${AUTH}/oauth/github/callback?code=ok&state=${
         encodeURIComponent(signedState)
       }`,
-      { headers: { cookie } },
+      withFlowCookie(cookie, start),
     );
     assertEquals(linked.status, 302);
     assertEquals(
@@ -582,7 +630,7 @@ test("link mode success and unique-constraint conflict", async () => {
     )}`;
     const conflictState = await signOAuthState(config, {
       provider: "github",
-      nonce: "n2",
+      nonce: FLOW_NONCE,
       redirectTo: "/",
       linkUserId: otherUser,
     });
@@ -590,7 +638,7 @@ test("link mode success and unique-constraint conflict", async () => {
       `${ORIGIN}${AUTH}/oauth/github/callback?code=ok&state=${
         encodeURIComponent(conflictState)
       }`,
-      { headers: { cookie: otherCookie } },
+      withFlowCookie(otherCookie),
     );
     assertEquals(conflict.status, 302);
     assertEquals(
@@ -600,7 +648,7 @@ test("link mode success and unique-constraint conflict", async () => {
 
     const secondState = await signOAuthState(config, {
       provider: "github",
-      nonce: "n3",
+      nonce: FLOW_NONCE,
       redirectTo: "/",
       linkUserId: userId,
     });
@@ -619,7 +667,7 @@ test("link mode success and unique-constraint conflict", async () => {
         `${ORIGIN}${AUTH}/oauth/github/callback?code=ok&state=${
           encodeURIComponent(secondState)
         }`,
-        { headers: { cookie: ownerCookie } },
+        withFlowCookie(ownerCookie),
       );
       assertEquals(second.status, 302);
       assertEquals(
@@ -662,7 +710,8 @@ test("link callback after sign-out does not mutate accounts", async () => {
       `${ORIGIN}${AUTH}/oauth/github/callback?code=ok&state=${
         encodeURIComponent(signedState)
       }`,
-    );
+    withFlowCookie(undefined, start),
+  );
     assertEquals(callback.status, 302);
     assertEquals(
       callback.headers.get("location"),
@@ -720,7 +769,7 @@ test("link callback rejects a different signed-in user", async () => {
       `${ORIGIN}${AUTH}/oauth/github/callback?code=ok&state=${
         encodeURIComponent(signedState)
       }`,
-      { headers: { cookie: otherCookie } },
+      withFlowCookie(otherCookie, start),
     );
     assertEquals(callback.status, 302);
     assertEquals(
@@ -859,7 +908,8 @@ test("callback missing secretsConfig redirects not_configured, never JSON", asyn
 
   const res = await app.request(
     `${ORIGIN}${AUTH}/oauth/github/callback?code=ok&state=x`,
-  );
+  withFlowCookie(),
+);
   assertRedirectNotJson(res, "/sign-in?error=not_configured");
   const body = await res.text();
   assertEquals(body.includes('"error"'), false);
@@ -890,14 +940,15 @@ test("callback missing database redirects database_unavailable, never JSON", asy
 
   const oauthState = await signOAuthState(config, {
     provider: "github",
-    nonce: "n",
+    nonce: FLOW_NONCE,
     redirectTo: "/",
   });
   const res = await app.request(
     `${ORIGIN}${AUTH}/oauth/github/callback?code=ok&state=${
       encodeURIComponent(oauthState)
     }`,
-  );
+  withFlowCookie(),
+);
   assertRedirectNotJson(res, "/sign-in?error=database_unavailable");
   const body = await res.text();
   assertEquals(body.includes('"error"'), false);
@@ -922,7 +973,7 @@ test("callback missing session secrets redirects not_configured", async () => {
   });
   const oauthState = await signOAuthState(config, {
     provider: "github",
-    nonce: "n",
+    nonce: FLOW_NONCE,
     redirectTo: "/",
   });
   const restore = stubGithubIdentityFetch();
@@ -931,7 +982,8 @@ test("callback missing session secrets redirects not_configured", async () => {
       `${ORIGIN}${AUTH}/oauth/github/callback?code=ok&state=${
         encodeURIComponent(oauthState)
       }`,
-    );
+    withFlowCookie(),
+  );
     assertRedirectNotJson(res, "/sign-in?error=not_configured");
   } finally {
     restore();
@@ -959,7 +1011,7 @@ test("callback missing two-factor challenge secrets redirects not_configured", a
   });
   const oauthState = await signOAuthState(config, {
     provider: "github",
-    nonce: "n",
+    nonce: FLOW_NONCE,
     redirectTo: "/",
   });
   const restore = stubGithubIdentityFetch();
@@ -968,7 +1020,8 @@ test("callback missing two-factor challenge secrets redirects not_configured", a
       `${ORIGIN}${AUTH}/oauth/github/callback?code=ok&state=${
         encodeURIComponent(oauthState)
       }`,
-    );
+    withFlowCookie(),
+  );
     assertRedirectNotJson(res, "/sign-in?error=not_configured");
   } finally {
     restore();
@@ -1074,7 +1127,7 @@ test("linking a provider revokes the user's other sessions and keeps the current
       `${ORIGIN}${AUTH}/oauth/github/callback?code=ok&state=${
         encodeURIComponent(signedState)
       }`,
-      { headers: { cookie } },
+      withFlowCookie(cookie, start),
     );
     assertEquals(
       linked.headers.get("location"),
