@@ -13,10 +13,12 @@ export const INSTANCE_HOSTNAME_PATHS = {
       summary: "List control-plane hostnames",
       description:
         "Each entry is a published name with its certificate source " +
-        "(`platform-ca`, `uploaded`, or `lets-encrypt`), derived status, and expiry.",
+        "(`platform-ca`, `uploaded`, or `lets-encrypt`), derived status, and expiry. " +
+        "`tosAccepted` is the server's answer to whether Let's Encrypt terms " +
+        "are accepted (stored settings and env overrides alike).",
       security: [...cookieSecurity],
       responses: {
-        "200": { description: "`{ ok, hostnames }`" },
+        "200": { description: "`{ ok, hostnames, tosAccepted }`" },
         "401": { description: "Unauthorized" },
         "403": { description: "Forbidden — requires admin or superadmin role" },
       },
@@ -27,7 +29,9 @@ export const INSTANCE_HOSTNAME_PATHS = {
       description:
         "Body `{ hostnames: [{ host, source, uploadedCertId? }] }`. " +
         "Let's Encrypt is refused for loopback, private, and wildcard names. " +
-        "An `uploaded` source must name a stored pair whose names cover the host.",
+        "An `uploaded` source must name a stored pair whose names cover the host. " +
+        "A `lets-encrypt` row is refused while Let's Encrypt terms are not " +
+        "accepted, so a row every later apply would reject is never stored.",
       security: [...cookieSecurity],
       requestBody: { required: true },
       responses: {
@@ -37,7 +41,9 @@ export const INSTANCE_HOSTNAME_PATHS = {
         "403": { description: "Forbidden — requires admin or superadmin role" },
         "422": {
           description:
-            "`{ ok: false, error, invalid }` when a hostname fails validation",
+            "`{ ok: false, error, invalid }` when a hostname fails validation, or " +
+            "`{ ok: false, error, code: \"acme_terms_not_accepted\" }` when a " +
+            "`lets-encrypt` row is saved before the terms are accepted",
         },
         "503": { description: "Database unavailable" },
       },
@@ -112,7 +118,8 @@ export const INSTANCE_HOSTNAME_PATHS = {
       security: [...cookieSecurity],
       responses: {
         "200": {
-          description: "`{ settings }` keyed by `TURBOPANEL_INSTANCE_ACME__*`",
+          description:
+            "`{ settings, tosAccepted }`; `settings` keyed by `TURBOPANEL_INSTANCE_ACME__*`",
         },
         "401": { description: "Unauthorized" },
         "403": { description: "Forbidden — requires admin or superadmin role" },
@@ -128,7 +135,7 @@ export const INSTANCE_HOSTNAME_PATHS = {
       security: [...cookieSecurity],
       requestBody: { required: true },
       responses: {
-        "200": { description: "`{ settings }`" },
+        "200": { description: "`{ settings, tosAccepted }`" },
         "400": { description: "Invalid request body" },
         "401": { description: "Unauthorized" },
         "403": { description: "Forbidden — requires admin or superadmin role" },

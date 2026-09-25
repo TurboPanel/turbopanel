@@ -5,6 +5,7 @@
  */
 import type {
   UpgradePhase,
+  UpgradeRunErrorCode,
   UpgradeStatus,
   UpgradeStepStatus,
 } from "./vocabulary.ts";
@@ -217,7 +218,7 @@ export function failedPlatformPhase(
 }
 
 /** `upgrade.error` for a run ended by {@link failedPlatformPhase}. */
-export function platformFailureError(phase: PlatformPhase): string {
+export function platformFailureError(phase: PlatformPhase): UpgradeRunErrorCode {
   return `${phase}_failed`;
 }
 

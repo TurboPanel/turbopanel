@@ -85,3 +85,26 @@ export const UPGRADE_STEP_FAILURE_STATUSES = [
   "rolled_back",
   "needs_attention",
 ] as const;
+
+/**
+ * Step `errorCode`s the control plane sets itself. A daemon result can add
+ * its own reason code (for example a rollback reason), so a client renders
+ * these by name and shows any other code verbatim.
+ */
+export const UPGRADE_STEP_ERROR_CODES = [
+  "rolled_back",
+  "server_offline",
+  "step_timeout",
+  "managed_upgrade_required",
+  "downgrade_refused",
+] as const;
+
+export type UpgradeStepErrorCode = (typeof UPGRADE_STEP_ERROR_CODES)[number];
+
+/** `upgrade.error` codes a run can end with (`<phase>_failed`). */
+export const UPGRADE_RUN_ERROR_CODES = [
+  "colocated_daemon_failed",
+  "control_plane_failed",
+] as const;
+
+export type UpgradeRunErrorCode = (typeof UPGRADE_RUN_ERROR_CODES)[number];

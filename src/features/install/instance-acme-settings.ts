@@ -31,9 +31,15 @@ export const LETS_ENCRYPT_DIRECTORY_URL =
 export const LETS_ENCRYPT_STAGING_DIRECTORY_URL =
   "https://acme-staging-v02.api.letsencrypt.org/directory";
 
-/** Stable apply refusal when `TOS_ACCEPTED` is not true. Keep in step with the daemon and UI. */
+/** Human refusal when `TOS_ACCEPTED` is not true. The daemon repeats the sentence. */
 export const INSTANCE_ACME_TOS_NOT_ACCEPTED_MESSAGE =
   "Let's Encrypt terms have not been accepted";
+
+/**
+ * Machine code for the same refusal. Routes return it as `code` beside the
+ * message so a client never has to match on the sentence.
+ */
+export const INSTANCE_ACME_TOS_NOT_ACCEPTED_CODE = "acme_terms_not_accepted";
 
 export const INSTANCE_ACME_SETTING_SHORT_KEYS = [
   "CONTACT_EMAIL",

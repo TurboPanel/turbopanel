@@ -735,7 +735,18 @@ export const serverSchemas = {
       updateBlocked: {
         type: 'boolean',
         description:
-          'True when the co-located development daemon cannot be updated remotely.',
+          'True when remote updates are refused for this server; `updateBlockedCode` says why.',
+      },
+      updateBlockedCode: {
+        type: 'string',
+        enum: [
+          'updates_managed',
+          'control_plane_upgrade_required',
+          'upgrade_gate_unavailable',
+          'colocated_with_instance',
+        ],
+        description:
+          'Machine code for why remote updates are blocked; present whenever `updateBlocked` is true. Clients branch on this, never on `updateBlockedReason`.',
       },
       updateBlockedReason: {
         type: 'string',
