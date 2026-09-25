@@ -91,6 +91,23 @@ export function differsFromInstalled(
 }
 
 /**
+ * The server's one rule for "an update is available": the target names a
+ * commit the host is not running and installing it would not downgrade. Every
+ * client reads this answer; none compares versions or commits itself.
+ */
+export function updateAvailableFor(
+  installed: InstalledBuild | null | undefined,
+  target: { commit?: string | null; version?: string | null } | null | undefined,
+): boolean {
+  if (!target) return false;
+  const pin = { commit: target.commit ?? null, version: target.version ?? null };
+  if (!differsFromInstalled(installed, { ...EMPTY_UNIT_TARGET, ...pin })) {
+    return false;
+  }
+  return !isDowngrade(installed?.version, pin.version);
+}
+
+/**
  * True when installing `target` would move a host to an older version. Equal
  * versions (a trunk rebuild on a new commit) and unparsable ones are not
  * downgrades. A managed run never downgrades; going back is the explicit,

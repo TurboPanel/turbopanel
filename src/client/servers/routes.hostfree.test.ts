@@ -571,11 +571,18 @@ test("GET /servers/:id/update returns idle status without a live daemon", async 
     serverId: string;
     status: string;
     colocatedWithInstance: boolean;
+    updateBlocked?: boolean;
+    updateBlockedCode?: string;
+    updateBlockedReason?: string;
   };
   if (!body.ok) throw new TypeError("expected ok update status");
   assertEquals(body.serverId, SERVER_ID);
   assertEquals(body.colocatedWithInstance, false);
   assertEquals(typeof body.status, "string");
+  // No manifest: the gate fails closed. Clients read the code, not the sentence.
+  assertEquals(body.updateBlocked, true);
+  assertEquals(body.updateBlockedCode, "upgrade_gate_unavailable");
+  assertEquals(typeof body.updateBlockedReason, "string");
 });
 
 test("GET /servers/:id/status returns 403 when read is denied", async () => {

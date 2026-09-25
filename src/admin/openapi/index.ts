@@ -888,7 +888,10 @@ export function getAdminOpenApiSpec(
             "Apply public URLs to co-located daemon (cert regen + Caddy reload)",
           description:
             "Deno only. Sends a public-urls-update WS message to the co-located daemon. " +
-            "Optional body persists URLs before apply. Workers returns 422.",
+            "Optional body persists URLs before apply. Workers returns 422. " +
+            "A `lets-encrypt` hostname with Let's Encrypt terms not accepted " +
+            "(stored settings and env overrides alike) returns 422 " +
+            "`{ ok: false, error, code: \"acme_terms_not_accepted\" }`.",
           security: [...cookieSecurity],
           requestBody: {
             required: false,

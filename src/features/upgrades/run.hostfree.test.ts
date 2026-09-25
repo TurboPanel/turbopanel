@@ -8,10 +8,14 @@ import {
   isFleetGateSatisfied,
   isTerminalStepStatus,
   platformFailureError,
+  PLATFORM_PHASES,
   summarizeSteps,
   WORKERS_DISPATCH_BUDGET,
 } from "./run.ts";
-import type { UpgradeStepStatus } from "./vocabulary.ts";
+import {
+  UPGRADE_RUN_ERROR_CODES,
+  type UpgradeStepStatus,
+} from "./vocabulary.ts";
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -175,4 +179,15 @@ test("capWorkersDispatch limits Workers ticks but never Deno", () => {
   );
   assertEquals(capWorkersDispatch("deno", items).length, items.length);
   assertEquals(capWorkersDispatch("workers", items, 3), [0, 1, 2]);
+});
+
+test("every platform phase fails a run with a code from the published run vocabulary", () => {
+  for (const phase of PLATFORM_PHASES) {
+    assertEquals(
+      (UPGRADE_RUN_ERROR_CODES as readonly string[]).includes(
+        platformFailureError(phase),
+      ),
+      true,
+    );
+  }
 });

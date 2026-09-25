@@ -23,6 +23,7 @@ import {
 } from '../../features/update/manifest.ts'
 import type { UpdateChannel } from '../../contracts/update-channel.ts'
 import { type DaemonSupport, resolveDaemonSupport } from '../../lib/version-wire.ts'
+import type { ServerUpdateBlockedCode } from '../../features/upgrades/decisions.ts'
 
 const TERMINAL_STATUSES = new Set<PendingRequestStatus>([
   'done',
@@ -133,6 +134,8 @@ export type ServerUpdateGetResponse = {
   updateAvailable: boolean
   colocatedWithInstance?: boolean
   updateBlocked?: boolean
+  /** Machine code for `updateBlockedReason`; clients branch on this, never the sentence. */
+  updateBlockedCode?: ServerUpdateBlockedCode
   updateBlockedReason?: string
   status: 'idle' | 'updating' | 'error'
   targetStatus: 'ok' | 'unknown'
@@ -297,6 +300,7 @@ export async function resolveServerUpdateStatus(params: {
     | 'target'
     | 'updateAvailable'
     | 'updateBlocked'
+    | 'updateBlockedCode'
     | 'updateBlockedReason'
     | 'status'
     | 'targetStatus'
@@ -351,6 +355,7 @@ export async function resolveServerUpdateStatus(params: {
     ...(updateBlocked
       ? {
         updateBlocked: true,
+        updateBlockedCode: 'colocated_with_instance' as const,
         updateBlockedReason: colocatedServerUpdateBlockedReason(),
       }
       : {}),

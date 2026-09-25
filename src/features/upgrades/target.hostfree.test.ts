@@ -5,6 +5,7 @@ import {
   isDowngrade,
   isOnTarget,
   unitTarget,
+  updateAvailableFor,
   type UpgradeTarget,
 } from "./target.ts";
 
@@ -96,4 +97,20 @@ test("isDowngrade is strictly-older semver only", () => {
   assertEquals(isDowngrade(null, "0.1.1"), false);
   assertEquals(isDowngrade("trunk-build", "0.1.1"), false);
   assertEquals(isDowngrade("0.2.0", null), false);
+});
+
+test("updateAvailableFor is the server's one update-available rule", () => {
+  const installed = { version: "0.1.1", commit: "aaa" };
+  // A new commit at the same or a higher version is an update.
+  assertEquals(updateAvailableFor(installed, { version: "0.1.1", commit: "bbb" }), true);
+  assertEquals(updateAvailableFor(installed, { version: "0.1.2", commit: "bbb" }), true);
+  // The same commit is not, whatever the version label says.
+  assertEquals(updateAvailableFor(installed, { version: "0.1.2", commit: "aaa" }), false);
+  // An older version on a different commit would downgrade: not offered.
+  assertEquals(updateAvailableFor(installed, { version: "0.1.0", commit: "bbb" }), false);
+  // No target, or a target without a commit, offers nothing.
+  assertEquals(updateAvailableFor(installed, null), false);
+  assertEquals(updateAvailableFor(installed, { version: "0.1.2", commit: null }), false);
+  // A host that reports no commit needs the install.
+  assertEquals(updateAvailableFor({ version: null, commit: null }, { commit: "bbb" }), true);
 });

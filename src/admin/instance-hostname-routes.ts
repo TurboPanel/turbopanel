@@ -1,7 +1,9 @@
-import type { Hono } from "hono";
+import type { Context, Hono } from "hono";
 import type { AppEnv } from "../app/app.ts";
-import { getDb } from "../db/connection.ts";
+import { type Db, getDb } from "../db/connection.ts";
 import {
+  INSTANCE_ACME_TOS_NOT_ACCEPTED_CODE,
+  INSTANCE_ACME_TOS_NOT_ACCEPTED_MESSAGE,
   instanceAcmeSettingsToApiShape,
   instanceAcmeUpdatesRequireEncryption,
   resolveInstanceAcmeSettings,
@@ -15,6 +17,7 @@ import {
 import {
   listInstanceHostnames,
   replaceInstanceHostnames,
+  validateHostnameSource,
 } from "../features/install/instance-hostnames.ts";
 import {
   parseCertificateHostnamesBody,
@@ -44,11 +47,26 @@ export function registerInstanceHostnameAdminRoutes(
     getEnv?: () => Record<string, string | undefined>;
   },
 ): void {
+  /**
+   * Whether Let's Encrypt terms are accepted, from stored settings and the
+   * `TURBOPANEL_INSTANCE_ACME__*` env overrides alike. The one answer every
+   * client reads; nothing re-derives it from the raw flag.
+   */
+  const tosAccepted = async (
+    c: Context<AppEnv>,
+    db: Db,
+  ): Promise<boolean> =>
+    (await resolveInstanceAcmeSettings(
+      db,
+      resolvePlatformEnv(c, opts),
+      c.get("dataEncryptionSecrets"),
+    )).tosAccepted;
+
   admin.get("/instance/hostnames", async (c) => {
     const db = getDb(c);
     if (!db) return c.json({ ok: true, hostnames: [] });
     const hostnames = await listInstanceHostnames(db);
-    return c.json({ ok: true, hostnames });
+    return c.json({ ok: true, hostnames, tosAccepted: await tosAccepted(c, db) });
   });
 
   admin.put("/instance/hostnames", async (c) => {
@@ -57,6 +75,24 @@ export function registerInstanceHostnameAdminRoutes(
     const body = await c.req.json().catch(() => null);
     const parsed = parseInstanceHostnamesBody(body);
     if (!parsed.ok) return c.json(parsed, 400);
+    // Name-level refusals (private, loopback, wildcard) are more specific
+    // than the terms one, so they answer first.
+    for (const entry of parsed.hostnames) {
+      const checked = validateHostnameSource(entry.host, entry.source);
+      if (!checked.ok) return c.json(checked, 422);
+    }
+    // A Let's Encrypt row stored without accepted terms would make every
+    // later apply fail, including unrelated hostname edits — refuse the save.
+    if (
+      parsed.hostnames.some((entry) => entry.source === "lets-encrypt") &&
+      !(await tosAccepted(c, db))
+    ) {
+      return c.json({
+        ok: false,
+        error: INSTANCE_ACME_TOS_NOT_ACCEPTED_MESSAGE,
+        code: INSTANCE_ACME_TOS_NOT_ACCEPTED_CODE,
+      }, 422);
+    }
     const replaced = await replaceInstanceHostnames(db, parsed.hostnames);
     if (!replaced.ok) return c.json(replaced, 422);
     return c.json({ ok: true, hostnames: replaced.hostnames });
@@ -117,7 +153,10 @@ export function registerInstanceHostnameAdminRoutes(
       resolvePlatformEnv(c, opts),
       c.get("dataEncryptionSecrets"),
     );
-    return c.json({ settings: instanceAcmeSettingsToApiShape(resolved) });
+    return c.json({
+      settings: instanceAcmeSettingsToApiShape(resolved),
+      tosAccepted: resolved.tosAccepted,
+    });
   });
 
   admin.put("/instance/acme", async (c) => {
@@ -142,6 +181,7 @@ export function registerInstanceHostnameAdminRoutes(
     if (!updated.ok) return c.json({ error: updated.error }, 422);
     return c.json({
       settings: instanceAcmeSettingsToApiShape(updated.settings),
+      tosAccepted: updated.settings.tosAccepted,
     });
   });
 }

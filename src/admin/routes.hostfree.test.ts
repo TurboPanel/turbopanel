@@ -911,7 +911,11 @@ test("instance hostname, certificate, and ACME routes cover validation branches"
     headers: { Cookie: cookie },
   });
   assertEquals(listed.status, 200);
-  assertEquals(await listed.json(), { ok: true, hostnames: [] });
+  assertEquals(await listed.json(), {
+    ok: true,
+    hostnames: [],
+    tosAccepted: false,
+  });
 
   const missing = await app.request(`${ADMIN_API_PREFIX}/instance/hostnames`, {
     method: "PUT",
@@ -1182,11 +1186,17 @@ test("instance updates: workers refuses the control plane, GET still reports its
     const body = await jsonBody<{
       ok: boolean;
       channel: string;
-      units: { instance: { installed: { version: string } } };
+      units: {
+        instance: { installed: { version: string }; updateAvailable: boolean };
+        daemon: { updateAvailable: boolean };
+      };
     }>(listed);
     assertEquals(body.ok, true);
     assertEquals(body.channel, "edge");
     assertEquals(body.units.instance.installed.version.length > 0, true);
+    // No manifest resolved: the server offers no update for either unit.
+    assertEquals(body.units.instance.updateAvailable, false);
+    assertEquals(body.units.daemon.updateAvailable, false);
 
     const upgrade = await workers.app.request(
       `${ADMIN_API_PREFIX}/instance/updates/instance`,

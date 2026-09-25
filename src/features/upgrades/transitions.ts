@@ -16,7 +16,7 @@
  *     what the hello/heartbeat projection sees when a host comes back on the
  *     new build).
  */
-import type { UpgradeStepStatus } from "./vocabulary.ts";
+import type { UpgradeStepErrorCode, UpgradeStepStatus } from "./vocabulary.ts";
 
 /** Total dispatches allowed for a step whose install stalls. */
 export const UPGRADE_STEP_MAX_ATTEMPTS = 3;
@@ -145,7 +145,7 @@ function handleRolledBack(
 ): StepAction {
   const limit = cfg.rollbackMaxAttempts ?? UPGRADE_ROLLBACK_MAX_ATTEMPTS;
   if (step.attempts >= limit) {
-    return { kind: "needs_attention", errorCode: "rolled_back" };
+    return { kind: "needs_attention", errorCode: "rolled_back" satisfies UpgradeStepErrorCode };
   }
   if (!facts.serverConnected) return { kind: "wait_offline" };
   return { kind: "dispatch" };
@@ -158,7 +158,7 @@ function handleDue(
 ): StepAction {
   if (!facts.serverConnected) {
     if (offlineTooLong(step, cfg)) {
-      return { kind: "needs_attention", errorCode: "server_offline" };
+      return { kind: "needs_attention", errorCode: "server_offline" satisfies UpgradeStepErrorCode };
     }
     return { kind: "wait_offline" };
   }
@@ -176,7 +176,7 @@ function handleInFlight(
   if (!isStalled(step, cfg)) return { kind: "none" };
   const maxAttempts = cfg.maxAttempts ?? UPGRADE_STEP_MAX_ATTEMPTS;
   if (step.attempts >= maxAttempts) {
-    return { kind: "needs_attention", errorCode: "step_timeout" };
+    return { kind: "needs_attention", errorCode: "step_timeout" satisfies UpgradeStepErrorCode };
   }
   return { kind: "retry", nextAttemptAt: backoffAt(cfg, step.attempts) };
 }

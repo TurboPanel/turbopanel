@@ -187,7 +187,10 @@ grouped `count(*)`, not a materialised server or step list.
 - Client gate (`../../client/servers/routes.ts`): `POST /servers/:id/update` and
   `POST /servers/updates` answer 409 `control_plane_upgrade_required` while the
   gate is closed (self-hosted) and 409 `updates_managed` on Workers; the GET
-  update-status routes carry `updateBlocked` + reason. `POST /servers/updates`
+  update-status routes carry `updateBlocked`, the machine `updateBlockedCode`
+  (`ServerUpdateBlockedCode` in `decisions.ts`: the three gate errors plus
+  `colocated_with_instance`) and the human `updateBlockedReason`. Clients
+  branch on the code, never the sentence. `POST /servers/updates`
   creates a batched fleet run and requires `organization:manage` on the
   organization (403 otherwise) — the same bar as `POST /servers/:id/update` —
   because it opens the one instance-wide run.
@@ -195,3 +198,14 @@ grouped `count(*)`, not a materialised server or step list.
   preflight (with the recovery command), runs, check, history, servers list,
   step-retry, run-cancel, settings. The old `POST /instance/updates/instance`
   and `/daemon` endpoints stay as aliases that start a platform run.
+  `GET /instance/updates` gives each unit `updateAvailable` from
+  `updateAvailableFor` (`target.ts`): the target names a commit the host is
+  not running and installing it would not downgrade. That is the one rule; a
+  client renders it and never compares version or commit strings itself.
+- Error vocabulary (`vocabulary.ts`): `UPGRADE_STEP_ERROR_CODES` are the step
+  `errorCode`s the control plane sets itself (`rolled_back`, `server_offline`,
+  `step_timeout`, `managed_upgrade_required`, `downgrade_refused`); a daemon
+  result may add its own reason code, so a client names these and shows any
+  other code verbatim. `UPGRADE_RUN_ERROR_CODES` are the run `error`s
+  (`colocated_daemon_failed`, `control_plane_failed`). The literals in
+  `transitions.ts` / `coordinator.ts` are `satisfies`-checked against them.
