@@ -80,31 +80,57 @@ const INTERPRETED: ComposeFieldPolicy = { state: "interpreted" };
  * times for the *managed*-engine `dockerOptions` path
  * (`lib/managed/settings.ts`'s `MANAGED_DOCKER_OPTION_DENYLIST`,
  * `turbopaneld/src/contracts/commands-contracts.ts`), never for general
- * (non-managed) app compose. `cap_drop`, `volumes`, `ports` and `user` are
- * deliberately *not* here — dropping a capability, a bind mount, a published
- * port, or running as a non-root user are not namespace-escaping in the same
- * way, and tenants need them for ordinary deploys.
+ * (non-managed) app compose.
+ *
+ * The 2026-09-25 audit (S1) added the six that reach the host just as
+ * directly: `use_api_socket` hands the container the Docker engine socket,
+ * `volumes_from` inherits another container's mounts (including its binds),
+ * `uts: host` / `cgroup: host` join host namespaces, `runtime` picks an
+ * engine runtime the platform never vetted, and `device_cgroup_rules` opens
+ * host device nodes.
+ *
+ * `volumes` itself stays ungated: a bind inside the service's own directory
+ * and a named volume are ordinary. A bind that resolves anywhere else — and
+ * every Compose spelling that smuggles one in (`driver_opts` binds,
+ * `configs`/`secrets`/`env_file`/`label_file`/`build`/`extends`/`include`
+ * paths) — is gated by value in `./host-access.ts`, not by key here.
+ * `cap_drop`, `ports` and `user` are deliberately *not* gated.
  */
 const GATED_SERVICE_FIELD_NAMES = [
   "cap_add",
+  "cgroup",
   "cgroup_parent",
+  "device_cgroup_rules",
   "devices",
   "ipc",
   "network_mode",
   "pid",
   "privileged",
+  "runtime",
   "security_opt",
   "sysctls",
+  "use_api_socket",
   "userns_mode",
+  "uts",
+  "volumes_from",
 ] as const;
+
+/**
+ * The sentence every host-level refusal ends with: who can turn it on, and who
+ * may deploy it once it is on. Shared with `./host-access.ts` so a gated key
+ * and a gated bind tell the operator the same thing.
+ */
+export const HOST_LEVEL_OPT_IN_SENTENCE =
+  "an organization owner has to turn on host-level Compose features under " +
+  "Manage Organization → Compose, and only an organization manager or owner " +
+  "can deploy them";
 
 function gatedField(field: string): ComposeFieldPolicy {
   return {
     state: "gated",
     reason:
       `${field} grants root-equivalent access to the shared daemon host — ` +
-      "an organization owner has to opt in under Manage Organization → " +
-      "Compose before a deploy that sets it will run",
+      HOST_LEVEL_OPT_IN_SENTENCE,
   };
 }
 
@@ -146,7 +172,7 @@ const SERVICE_FIELD_POLICY = new Map<string, ComposeFieldPolicy>([
   ["build", INTERPRETED],
   ["cap_add", gatedField("cap_add")],
   ["cap_drop", PASSTHROUGH],
-  ["cgroup", PASSTHROUGH],
+  ["cgroup", gatedField("cgroup")],
   ["cgroup_parent", gatedField("cgroup_parent")],
   ["command", PASSTHROUGH],
   ["configs", PASSTHROUGH],
@@ -168,7 +194,7 @@ const SERVICE_FIELD_POLICY = new Map<string, ComposeFieldPolicy>([
   // See {@link DEPLOY_FIELD_POLICY} for the per-key answer.
   ["deploy", INTERPRETED],
   ["develop", PASSTHROUGH],
-  ["device_cgroup_rules", PASSTHROUGH],
+  ["device_cgroup_rules", gatedField("device_cgroup_rules")],
   ["devices", gatedField("devices")],
   ["dns", PASSTHROUGH],
   ["dns_opt", PASSTHROUGH],
@@ -219,7 +245,7 @@ const SERVICE_FIELD_POLICY = new Map<string, ComposeFieldPolicy>([
   ["pull_policy", PASSTHROUGH],
   ["read_only", PASSTHROUGH],
   ["restart", PASSTHROUGH],
-  ["runtime", PASSTHROUGH],
+  ["runtime", gatedField("runtime")],
   // Written by `apply-service-options.ts` when a service has >1 local replica.
   ["scale", INTERPRETED],
   // Secret variables become Compose `secrets:` entries (`apply-variables.ts`).
@@ -234,13 +260,13 @@ const SERVICE_FIELD_POLICY = new Map<string, ComposeFieldPolicy>([
   ["tmpfs", PASSTHROUGH],
   ["tty", PASSTHROUGH],
   ["ulimits", PASSTHROUGH],
-  ["use_api_socket", PASSTHROUGH],
+  ["use_api_socket", gatedField("use_api_socket")],
   ["user", PASSTHROUGH],
   ["userns_mode", gatedField("userns_mode")],
-  ["uts", PASSTHROUGH],
+  ["uts", gatedField("uts")],
   // Named volumes are registered as `storage` rows and renamed to their UUID.
   ["volumes", INTERPRETED],
-  ["volumes_from", PASSTHROUGH],
+  ["volumes_from", gatedField("volumes_from")],
   ["working_dir", PASSTHROUGH],
 ]);
 

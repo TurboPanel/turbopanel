@@ -182,17 +182,55 @@ not the source of truth), `unsupported` (no behavior — reported, never dropped
 in silence, and carrying a `reason` the diagnostic quotes), and `gated` (see
 below).
 
-**Gated fields.** Ten service-level keys — `privileged`, `cap_add`, `devices`,
-`network_mode`, `pid`, `ipc`, `userns_mode`, `security_opt`, `cgroup_parent`,
-`sysctls` (`GATED_SERVICE_FIELD_KEYS`) — grant root-equivalent access to the
-shared daemon host, compromising every other tenant co-hosted on that server.
-Flagged by the 2026-09-15 security audit (`sec-compose-privileged-gate`):
-already denylisted three times for the _managed_-engine `dockerOptions` path
-(`lib/managed/settings.ts`'s `MANAGED_DOCKER_OPTION_DENYLIST`,
-`turbopaneld/src/contracts/commands-contracts.ts`), never for general
-(non-managed) app compose until now. `cap_drop`, `volumes`, `ports` and `user`
-are deliberately _not_ gated — those are not namespace-escaping, and tenants
-need them for ordinary deploys.
+**Gated fields.** Sixteen service-level keys — `privileged`, `cap_add`,
+`devices`, `network_mode`, `pid`, `ipc`, `userns_mode`, `security_opt`,
+`cgroup_parent`, `sysctls`, and (since the 2026-09-25 audit, S1)
+`use_api_socket`, `volumes_from`, `uts`, `cgroup`, `runtime`,
+`device_cgroup_rules` (`GATED_SERVICE_FIELD_KEYS`) — grant root-equivalent
+access to the shared daemon host, compromising every other tenant co-hosted on
+that server. The first ten were flagged by the 2026-09-15 security audit
+(`sec-compose-privileged-gate`), already denylisted three times for the
+_managed_-engine `dockerOptions` path (`lib/managed/settings.ts`'s
+`MANAGED_DOCKER_OPTION_DENYLIST`,
+`turbopaneld/src/contracts/commands-contracts.ts`). `cap_drop`, `ports` and
+`user` are deliberately _not_ gated.
+
+**Host paths, by value (`host-access.ts`).** `volumes` is not a gated _key_: a
+bind inside the service's own directory (`./data:/data`) and a named volume are
+ordinary. A path that resolves anywhere else is gated by _value_ —
+`collectHostAccessFindings` reports an absolute or `~` source, any `..`
+segment, an interpolated or backslashed path (fail closed), the Docker socket
+by name, long-syntax `type: bind`/`npipe`/unknown types, and every spelling
+that smuggles a bind in: top-level `volumes.<name>.driver_opts` binds (`o:
+bind`, `type: none`, a host-path `device` that is not a network filesystem),
+`configs`/`secrets` `file:`, `env_file`, `label_file`, `build` (`context`,
+`dockerfile`, `additional_contexts`, plus `ssh`, `network: host`,
+`privileged`, `entitlements`), `extends.file`, and top-level `include`.
+`lint.ts` emits each finding with the same `field_requires_org_opt_in` code
+as a gated key, so every rule below applies to both. The platform itself never
+writes such a path into an authored document (compiled secret `file:` paths
+are added after validation, and `registerComposeMounts` registers named
+volumes only), so the gate cannot refuse TurboPanel's own output.
+
+**Who may deploy host-level content.** The org gate above answers "may this
+organization use it"; `planEnvironmentDeploy` then answers "may this actor",
+from a `HostAccessActor` the route resolves (`resolveHostAccessActor` in
+`client/environments/deploy-routes.ts`): a person must hold
+`organization:manage` (owner, manager, or a platform admin) — refused
+otherwise as `403 compose_host_access_requires_manager`. Every session route
+that reaches a deploy already requires that grant; the explicit check keeps a
+future lower deploy grant from inheriting host-level access. An **automated**
+deploy (the Git webhook, `actorType: 'system'`) has no person to check, so it
+runs host-level content only when a manager or owner has deployed that exact
+host-level content before: each such deploy records
+`environment.metadata.composeHostAccessApproval = { fingerprint, approvedBy,
+approvedAt }`, where `fingerprint` is `hostAccessFingerprint` — SHA-256 over
+the sorted gated keys and host-path findings with their values — and the
+webhook deploy must match it, else `403
+compose_host_access_requires_approval`. An unrelated edit keeps the
+fingerprint; any change to what reaches the host voids it. A preview records
+nothing. The key is in `ENVIRONMENT_PROMOTED_METADATA_KEYS`, so no client
+create or patch can set it.
 
 Unlike `unsupported`, TurboPanel _does_ implement these fields — the fix for an
 ungated org is an opt-in, not removing the field, so `gated` carries its own
@@ -259,7 +297,7 @@ declare none. A service with its own ceiling is never overridden: the default
 fills a gap, it does not cap anyone. Tests that assert "no other lint issues"
 filter the advisory out through a local `lintWithoutResourceAdvisory` helper.
 
-`ui/src/features/compose/field-policy.ts` mirrors `gated` and the ten keys
+`ui/src/features/compose/field-policy.ts` mirrors `gated` and (until its follow-up lands) the original ten keys
 byte-for-byte; the editor has no org context either, so it emits the same
 always-advisory note and nothing more.
 

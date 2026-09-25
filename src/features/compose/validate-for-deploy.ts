@@ -97,11 +97,11 @@ export type ComposeMergedInvalidError = {
 };
 
 /**
- * A merged document sets a field TurboPanel supports only for an
- * organization that has opted in (`field-policy.ts`'s `gated` state —
- * `privileged`, `cap_add`, `devices`, `network_mode`, `pid`, `ipc`,
- * `userns_mode`, `security_opt`, `cgroup_parent`, `sysctls`), and this
- * organization has not.
+ * A merged document reaches the host — a key `field-policy.ts` gates
+ * (`privileged`, `cap_add`, `use_api_socket`, …) or a path `host-access.ts`
+ * finds outside the service's directory (a `/`-rooted bind, the Docker
+ * socket, a `driver_opts` bind, a `configs.file` in `/etc`, …) — and this
+ * organization has not turned host-level Compose features on.
  *
  * Distinct from `compose_field_unsupported` on purpose, for the same reason
  * that one is distinct from `compose_merged_invalid`: TurboPanel *does*
@@ -114,11 +114,34 @@ export type ComposeGatedFieldError = {
   issues: ComposeValidationIssue[];
 };
 
+/**
+ * The organization has host-level Compose features on, but the actor asking
+ * for this deploy may not use them.
+ *
+ * - `requires_manager` — a person who is not an organization manager or owner.
+ *   Unreachable through today's routes, which already require
+ *   `organization:manage` to deploy; it exists so a future lower deploy grant
+ *   cannot inherit host-level access by accident.
+ * - `requires_approval` — an automated deploy (a Git webhook) of host-level
+ *   content that no manager or owner has deployed in this exact form. The
+ *   approval is recorded when one does (`environment.metadata.
+ *   composeHostAccessApproval`), keyed on `hostAccessFingerprint`, so any
+ *   change to what reaches the host voids it.
+ *
+ * Produced by the deploy planner, which has the actor; never by
+ * {@link validateComposeForDeploy}, which does not.
+ */
+export type ComposeHostAccessActorError = {
+  kind: "compose_host_access_requires_manager" | "compose_host_access_requires_approval";
+  issues: ComposeValidationIssue[];
+};
+
 /** Everything {@link validateComposeForDeploy} can refuse a deploy with. */
 export type ComposeDeployValidationError =
   | ComposeMergedInvalidError
   | ComposeUnsupportedFieldError
-  | ComposeGatedFieldError;
+  | ComposeGatedFieldError
+  | ComposeHostAccessActorError;
 
 function toValidationIssue(issue: ComposeLintIssue): ComposeValidationIssue {
   return {

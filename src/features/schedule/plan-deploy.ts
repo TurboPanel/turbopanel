@@ -2,7 +2,7 @@
  * Load fleet + compose, interpret Swarm `deploy:`, and plan slots.
  */
 
-import { eq } from 'drizzle-orm'
+import { eq, sql } from 'drizzle-orm'
 import {
   isComposeChainError,
   resolveComposeLayerChain,
@@ -14,6 +14,8 @@ import { listEnvironmentSlots } from '../servers/slot-records.ts'
 import {
   type ComposeDeployValidationError,
   type ComposeDocument,
+  hostAccessFingerprint,
+  hostAccessIssues,
   mergeComposeLayers,
   validateComposeForDeploy,
 } from '../compose/index.ts'
@@ -37,6 +39,85 @@ import {
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/**
+ * Who is asking for this deploy, as far as host-level Compose features care.
+ * Resolved by the caller, which has the session or knows the trigger — this
+ * module never evaluates grants itself.
+ *
+ * - `manager` — a person holding `organization:manage` (owner, manager, or a
+ *   platform admin). When `recordApproval` is set, a successful gate records
+ *   the document's host-level fingerprint as approved for automated deploys;
+ *   a preview leaves it off because it changes nothing.
+ * - `not_manager` — a person without that grant.
+ * - `automated` — no person: the Git webhook.
+ */
+export type HostAccessActor =
+  | { kind: 'manager'; userId: string; recordApproval: boolean }
+  | { kind: 'not_manager' }
+  | { kind: 'automated' }
+
+/** Where an approved host-level fingerprint lives on `environment.metadata`. */
+export const HOST_ACCESS_APPROVAL_METADATA_KEY = 'composeHostAccessApproval'
+
+type HostAccessApproval = {
+  fingerprint: string
+  approvedBy: string
+  approvedAt: string
+}
+
+function readHostAccessApproval(metadata: unknown): HostAccessApproval | null {
+  if (!isPlainObject(metadata)) return null
+  const raw = metadata[HOST_ACCESS_APPROVAL_METADATA_KEY]
+  if (!isPlainObject(raw) || typeof raw.fingerprint !== 'string') return null
+  return {
+    fingerprint: raw.fingerprint,
+    approvedBy: typeof raw.approvedBy === 'string' ? raw.approvedBy : '',
+    approvedAt: typeof raw.approvedAt === 'string' ? raw.approvedAt : '',
+  }
+}
+
+/**
+ * The actor half of the host-level gate. Runs only after
+ * `validateComposeForDeploy` has passed, i.e. the organization has host-level
+ * features on (or the document reaches nothing on the host).
+ */
+async function authorizeHostAccess(
+  db: Db,
+  envRow: { id: string; metadata: unknown },
+  merged: ComposeDocument,
+  actor: HostAccessActor,
+): Promise<ComposeDeployValidationError | null> {
+  const fingerprint = await hostAccessFingerprint(merged.data)
+  if (fingerprint === null) return null
+  const issues = hostAccessIssues(merged.data)
+  if (actor.kind === 'not_manager') {
+    return { kind: 'compose_host_access_requires_manager', issues }
+  }
+  const approved = readHostAccessApproval(envRow.metadata)
+  if (actor.kind === 'automated') {
+    return approved?.fingerprint === fingerprint
+      ? null
+      : { kind: 'compose_host_access_requires_approval', issues }
+  }
+  if (actor.recordApproval && approved?.fingerprint !== fingerprint) {
+    const approval: HostAccessApproval = {
+      fingerprint,
+      approvedBy: actor.userId,
+      approvedAt: new Date().toISOString(),
+    }
+    // Merged into the existing jsonb rather than replacing it, so a concurrent
+    // metadata edit is not lost. The key is stripped from client input
+    // (`ENVIRONMENT_PROMOTED_METADATA_KEYS`), so only this write sets it.
+    await db
+      .update(environment)
+      .set({
+        metadata: sql`coalesce(${environment.metadata}, '{}'::jsonb) || jsonb_build_object(${HOST_ACCESS_APPROVAL_METADATA_KEY}::text, ${JSON.stringify(approval)}::jsonb)`,
+      })
+      .where(eq(environment.id, envRow.id))
+  }
+  return null
 }
 
 export type PlannedDeploy = {
@@ -224,6 +305,8 @@ export async function planEnvironmentDeploy(
   params: {
     environmentId: string
     organizationId: string
+    /** Required: there is no default actor, so a new caller cannot skip the gate. */
+    hostAccess: HostAccessActor
   },
   deps: PlanEnvironmentDeployDeps = {},
 ): Promise<PlannedDeploy | PlanDeployError> {
@@ -239,6 +322,7 @@ export async function planEnvironmentDeploy(
       projectId: environment.projectId,
       serverId: environment.serverId,
       options: environment.options,
+      metadata: environment.metadata,
       name: environment.name,
     })
     .from(environment)
@@ -279,6 +363,7 @@ export async function planEnvironmentDeploy(
   // used to run first and the refusal came later, per server, which left rows
   // behind for a deploy that never happened.
   const rejected = validateComposeForDeploy(merged, { composeGatedFieldsEnabled })
+    ?? await authorizeHostAccess(db, envRow, merged, params.hostAccess)
   if (rejected) return { kind: 'compose_rejected', error: rejected }
 
   await reconcile(db, params.environmentId, merged)

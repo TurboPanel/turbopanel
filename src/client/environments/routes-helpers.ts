@@ -13,8 +13,15 @@ import {
 
 /** Placement lives on `environment.server_id` — never persist it into metadata.
  * `component` is reserved for system project identity — never accept it on
- * public environment create/patch. */
-export const ENVIRONMENT_PROMOTED_METADATA_KEYS = ['serverId', 'component'] as const
+ * public environment create/patch. `composeHostAccessApproval` is written only
+ * by the deploy planner when an organization manager or owner deploys
+ * host-level Compose content (`HOST_ACCESS_APPROVAL_METADATA_KEY`); accepting
+ * it from a client would let an approval be claimed rather than earned. */
+export const ENVIRONMENT_PROMOTED_METADATA_KEYS = [
+  'serverId',
+  'component',
+  'composeHostAccessApproval',
+] as const
 
 export type EnvironmentRouteValidationError = {
   ok: false

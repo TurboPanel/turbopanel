@@ -18,6 +18,8 @@ export {
   type SchedulePlan,
 } from './planner.ts'
 export {
+  HOST_ACCESS_APPROVAL_METADATA_KEY,
+  type HostAccessActor,
   planEnvironmentDeploy,
   type PlanDeployError,
   type PlanEnvironmentDeployDeps,
