@@ -66,6 +66,14 @@ test('contentLengthExceeds / rejectIfContentLengthTooLarge: over budget is a 413
   })
 })
 
+test('readBodyWithByteLimit returns empty bytes when the request has no body stream', async () => {
+  await withContext({}, async (c) => {
+    const result = await readBodyWithByteLimit(c, 100)
+    assertEquals(result, { ok: true, bytes: new Uint8Array(0) })
+    return null
+  })
+})
+
 test('readBodyWithByteLimit returns the full body when within budget', async () => {
   await withContext({ body: 'hello world' }, async (c) => {
     const result = await readBodyWithByteLimit(c, 100)

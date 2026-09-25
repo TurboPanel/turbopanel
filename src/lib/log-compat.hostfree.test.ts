@@ -1,5 +1,10 @@
 import { assertEquals } from '@std/assert'
-import { stripLogInjection } from './log-compat.ts'
+import {
+  compatLogError,
+  compatLogInfo,
+  compatLogWarn,
+  stripLogInjection,
+} from './log-compat.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -12,4 +17,10 @@ const test = Deno.test.bind(Deno)
 test('stripLogInjection neutralizes line breaks and tabs', () => {
   assertEquals(stripLogInjection('ok'), 'ok')
   assertEquals(stripLogInjection('a\nb\rc\td'), 'a_b_c_d')
+})
+
+test('compatLog helpers accept multiline messages on Deno', () => {
+  compatLogInfo('component', 'one\ntwo')
+  compatLogWarn('component', 'warn')
+  compatLogError('component', 'error')
 })
