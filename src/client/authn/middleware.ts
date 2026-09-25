@@ -39,7 +39,7 @@ export type ResolvedSession = {
  * back to the secure URL-derived path (`'workers'`), so a missing signal never
  * results in trusting a client-supplied `X-Forwarded-Proto`.
  */
-function resolveRuntime(c: Context): 'deno' | 'workers' {
+export function resolveRuntime(c: Context): 'deno' | 'workers' {
   return c.get('runtime') === 'deno' ? 'deno' : 'workers'
 }
 

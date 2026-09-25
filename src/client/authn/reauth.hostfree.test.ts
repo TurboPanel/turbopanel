@@ -59,6 +59,7 @@ async function run(
   const app = new Hono<AppEnv>();
   app.use("*", async (c, next) => {
     if (db) (c as Context<AppEnv>).set("db", db);
+    (c as Context<AppEnv>).set("runtime", "deno");
     await next();
   });
   app.post("/", async (c) => {
