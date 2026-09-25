@@ -10,7 +10,7 @@ import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { normalizeMailpitApiEnv, normalizeMailpitRuntimeEnv } from '../email/mailpit/env.ts'
 import { buildMailpitSmtpConfig } from '../email/mailpit/smtp-config.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
-import type { SmtpConfig } from '../email/smtp/smtp-resolve.ts'
+import { parseExplicitSmtpConfig, type SmtpConfig } from '../email/smtp/smtp-resolve.ts'
 import {
   normalizeSettingFullKey,
   SettingsResolver,
@@ -143,24 +143,6 @@ function parseProvider(value: string): EmailProvider {
     return 'mailpit-smtp'
   }
   return 'smtp'
-}
-
-function buildSmtpConfig(host: string, portRaw: string, user: string, pass?: string): SmtpConfig | undefined {
-  const trimmedHost = host.trim()
-  const trimmedPort = portRaw.trim()
-  if (trimmedHost === '' || trimmedPort === '') return undefined
-
-  const port = Number.parseInt(trimmedPort, 10)
-  if (Number.isNaN(port)) return undefined
-
-  const trimmedUser = user.trim()
-  const trimmedPass = pass?.trim()
-  return {
-    host: trimmedHost,
-    port,
-    ...(trimmedUser !== '' ? { user: trimmedUser } : {}),
-    ...(trimmedPass !== undefined && trimmedPass !== '' ? { pass: trimmedPass } : {}),
-  }
 }
 
 function metaFromResolved(
@@ -514,7 +496,7 @@ export async function resolveEmailSettings(
       keys.SMTP_USER.value,
       keys.SMTP_PASS.value,
     )
-    : buildSmtpConfig(
+    : parseExplicitSmtpConfig(
       keys.SMTP_HOST.value,
       keys.SMTP_PORT.value,
       keys.SMTP_USER.value,
