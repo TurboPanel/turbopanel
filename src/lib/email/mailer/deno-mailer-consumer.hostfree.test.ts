@@ -104,6 +104,8 @@ function createStubBroker(options: {
   dispositionError?: Error;
   /** Runs inside consume(), i.e. after the loss listeners are attached. */
   duringConsume?: () => void;
+  /** Runs inside prefetch(), i.e. while the session is still being set up. */
+  duringPrefetch?: () => void;
   /** Make channel setup fail after connect succeeded. */
   topologyError?: Error;
   /**
@@ -130,6 +132,7 @@ function createStubBroker(options: {
     bindQueue: async () => undefined,
     prefetch: async (n: number) => {
       prefetches.push(n);
+      options.duringPrefetch?.();
     },
     consume: async (_queue: string, handler: ConsumeHandler) => {
       onMessage = handler;
@@ -172,6 +175,7 @@ function createStubBroker(options: {
     connectionCloseCount: () => connectionCloseCount,
     emitConnection: connectionEvents.emit,
     emitChannel: channelEvents.emit,
+    connectionListenerCount: connectionEvents.listenerCount,
     deliver: (msg: Parameters<ConsumeHandler>[0]) => {
       if (!onMessage) throw new TypeError("consume handler was not registered");
       onMessage(msg);
@@ -196,6 +200,9 @@ function createStubEmitter() {
     },
     emit(event: string, arg?: unknown) {
       for (const listener of listeners.get(event) ?? []) listener(arg);
+    },
+    listenerCount(event: string) {
+      return (listeners.get(event) ?? []).length;
     },
   };
 }
@@ -550,6 +557,67 @@ test("startMailerConsumer survives the broker dropping an open connection and co
     // A channel-level loss reopens too.
     broker.emitChannel("close");
     await waitFor(() => broker.consumeCount() === 3, "second reconnect");
+    await handle.close();
+  } finally {
+    connectStub.restore();
+  }
+});
+
+test("the connection has its error listener before the session setup awaits the broker", async () => {
+  // A listener attached only after channel/topology/prefetch left a window in
+  // which a broker restart was an unhandled `error` — a process exit.
+  const seen: number[] = [];
+  const broker = createStubBroker({
+    duringPrefetch: () => seen.push(broker.connectionListenerCount("error")),
+  });
+  const connectStub = stub(
+    amqplib,
+    "connect",
+    () => Promise.resolve(broker.connection as never),
+  );
+  const sender = scriptedSender(() => ({ success: true }));
+  try {
+    const handle = await startMailerConsumer({
+      db: undefined,
+      amqpUrl: "amqp://test",
+      env: baseEnv(),
+      senderFactory: sender.factory,
+    });
+    assertEquals(seen.length, 1);
+    assertEquals(seen[0]! >= 1, true);
+    await handle.close();
+  } finally {
+    connectStub.restore();
+  }
+});
+
+test("a broker that drops while the first session is set up is rebuilt, not kept dead", async () => {
+  let dropOnce = true;
+  const broker = createStubBroker({
+    duringPrefetch: () => {
+      if (!dropOnce) return;
+      dropOnce = false;
+      broker.emitConnection("error", new Error("Unexpected close"));
+      broker.emitConnection("close");
+    },
+  });
+  const connectStub = stub(
+    amqplib,
+    "connect",
+    () => Promise.resolve(broker.connection as never),
+  );
+  const sender = scriptedSender(() => ({ success: true }));
+  try {
+    const handle = await startMailerConsumer({
+      db: undefined,
+      amqpUrl: "amqp://test",
+      env: baseEnv(),
+      senderFactory: sender.factory,
+    });
+    await waitFor(() => broker.consumeCount() === 2, "rebuild after start");
+    broker.deliver({ content: { toString: () => OTP_JOB_JSON } });
+    await waitFor(() => broker.dispositions.length > 0, "disposition");
+    assertEquals(broker.dispositions, [{ method: "ack" }]);
     await handle.close();
   } finally {
     connectStub.restore();

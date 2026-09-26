@@ -30,7 +30,7 @@ import {
   GITLAB_OAUTH_SCOPES,
   loadForgeForConnection,
 } from './forge-records.ts'
-import { assertForgeUrlAllowed } from './forge-url.ts'
+import { assertForgeUrlAllowed, forgeFetch } from './forge-url.ts'
 
 /**
  * The application-level material every GitLab grant is minted through.
@@ -187,7 +187,7 @@ async function postTokenGrant(
   try {
     // Fetch-time half of the forge SSRF guard (see `forge-url.ts`); the
     // throw lands in this catch and is reported like any other exchange failure.
-    response = await fetch(`${assertForgeUrlAllowed('baseUrl', config.baseUrl)}/oauth/token`, {
+    response = await forgeFetch(`${assertForgeUrlAllowed('baseUrl', config.baseUrl)}/oauth/token`, {
       method: 'POST',
       headers: {
         'content-type': 'application/x-www-form-urlencoded',

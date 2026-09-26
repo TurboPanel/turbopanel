@@ -26,7 +26,6 @@ import {
   listInstanceHostnames,
 } from "./instance-hostnames.ts";
 
-const SYSTEM_CA_BUNDLE = "/etc/ssl/certs/ca-certificates.crt";
 const PEM_BLOCK =
   /-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g;
 
@@ -120,9 +119,13 @@ async function verifyAgainstSystemRoots(
     ? await writeVerifyPem(intermediates)
     : null;
   try {
+    // No -CAfile: OpenSSL's default trust store is the one this distribution
+    // configured (Debian's /etc/ssl/certs, RHEL's /etc/pki/tls, …), and it
+    // honours SSL_CERT_FILE / SSL_CERT_DIR. A hard-coded Debian bundle made
+    // every public upload read as private on RHEL-family hosts.
     const args = ["verify"];
     if (extraPath) args.push("-untrusted", extraPath);
-    args.push("-CAfile", SYSTEM_CA_BUNDLE, leafPath);
+    args.push(leafPath);
     return await opensslOk(args);
   } finally {
     await Deno.remove(leafPath).catch(() => undefined);
@@ -307,11 +310,53 @@ export async function readPrivateUploadedTrustPem(
     item.source === "uploaded" && hostLabel(item.host) === wanted
   );
   if (!row?.uploadedCertId) return null;
-  const trust = await publicTrustByCertificate(db, [row.uploadedCertId]);
-  if (trust.get(row.uploadedCertId) === true) return null;
   const certPem = await loadUploadedCertPem(db, row.uploadedCertId);
   if (!certPem) return null;
-  return await privateUploadedTrustMaterial(certPem, wanted);
+  return await rememberPrivateTrust(certPem, wanted, async () => {
+    if (await uploadedCertificateChainsToPublicRoot(certPem)) return null;
+    return await privateUploadedTrustMaterial(certPem, wanted);
+  });
+}
+
+/**
+ * The answer for one (certificate, hostname) pair, kept for a few minutes.
+ *
+ * `GET /instance/uploaded-trust` is unauthenticated by design (the installer
+ * calls it before it has any trust), and answering it spawns up to three
+ * `openssl verify` runs. Only a configured uploaded hostname reaches this far,
+ * so the keys are bounded; the cache stops a request loop against one name
+ * from becoming a process-spawn loop. Keyed on the certificate's contents, so
+ * a replaced upload is never answered from the old one.
+ */
+const PRIVATE_TRUST_TTL_MS = 5 * 60_000;
+const PRIVATE_TRUST_MAX_ENTRIES = 128;
+const privateTrustCache = new Map<
+  string,
+  { expiresAt: number; pem: string | null }
+>();
+
+async function rememberPrivateTrust(
+  certPem: string,
+  hostname: string,
+  compute: () => Promise<string | null>,
+): Promise<string | null> {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(certPem),
+  );
+  const key = `${hostname}\n${
+    Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0"))
+      .join("")
+  }`;
+  const now = Date.now();
+  const hit = privateTrustCache.get(key);
+  if (hit && hit.expiresAt > now) return hit.pem;
+  const pem = await compute();
+  if (privateTrustCache.size >= PRIVATE_TRUST_MAX_ENTRIES) {
+    privateTrustCache.clear();
+  }
+  privateTrustCache.set(key, { expiresAt: now + PRIVATE_TRUST_TTL_MS, pem });
+  return pem;
 }
 
 async function privateUploadTrustError(

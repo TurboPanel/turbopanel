@@ -161,6 +161,7 @@ export async function emitNotification(
         payload.event,
         severity,
         organizationId,
+        recipients,
       );
       const deliveries = await insertPendingDeliveries(
         tx,
@@ -365,7 +366,8 @@ export async function retryDueDeliveries(
   try {
     const due = await runWithDbTimeout(
       db,
-      (tx) => listDueDeliveries(tx, limit),
+      (tx) =>
+        listDueDeliveries(tx, limit, { includeEmail: deps.email !== undefined }),
     );
     const items: Array<
       {

@@ -98,6 +98,8 @@ function createStubBroker(options: {
   dispositionError?: Error
   /** Runs inside consume(), i.e. after the loss listeners are attached. */
   duringConsume?: () => void
+  /** Runs inside prefetch(), i.e. while the session is still being set up. */
+  duringPrefetch?: () => void
 } = {}) {
   const dispositions: Array<{ method: string; requeue?: boolean }> = []
   let onMessage: ConsumeHandler | undefined
@@ -109,7 +111,9 @@ function createStubBroker(options: {
     assertExchange: async () => undefined,
     assertQueue: async () => undefined,
     bindQueue: async () => undefined,
-    prefetch: async () => undefined,
+    prefetch: async () => {
+      options.duringPrefetch?.()
+    },
     consume: async (_queue: string, handler: ConsumeHandler) => {
       onMessage = handler
       consumeCount++
@@ -140,6 +144,7 @@ function createStubBroker(options: {
     consumeCount: () => consumeCount,
     emitConnection: connectionEvents.emit,
     emitChannel: channelEvents.emit,
+    connectionListenerCount: connectionEvents.listenerCount,
     deliver: (msg: Parameters<ConsumeHandler>[0]) => {
       if (!onMessage) throw new TypeError('consume handler was not registered')
       onMessage(msg)
@@ -409,6 +414,61 @@ test('startCommandConsumer survives the broker dropping an open connection and c
     await waitForDisposition(broker.dispositions)
     assertEquals(broker.dispositions, [{ method: 'ack' }])
 
+    await handle.close()
+  } finally {
+    connectStub.restore()
+  }
+})
+
+test('the connection has its error listener before the session setup awaits the broker', async () => {
+  // amqplib emits `error` on the connection the moment the broker's socket
+  // ends. Setting up the channel, topology and prefetch all await the broker,
+  // so a listener attached only after them left a window in which a broker
+  // restart was an unhandled `error` — a process exit.
+  const seen: number[] = []
+  const broker = createStubBroker({
+    duringPrefetch: () => seen.push(broker.connectionListenerCount('error')),
+  })
+  const connectStub = stub(amqplib, 'connect', () => Promise.resolve(broker.connection as never))
+  try {
+    const handle = await startCommandConsumer({
+      db: missingRowDb(),
+      registry: emptyRegistry(),
+      amqpUrl: 'amqp://test',
+    })
+    assertEquals(seen.length, 1)
+    assertEquals(seen[0]! >= 1, true)
+    await handle.close()
+  } finally {
+    connectStub.restore()
+  }
+})
+
+test('a broker that drops while the first session is set up is rebuilt, not kept dead', async () => {
+  let dropOnce = true
+  const broker = createStubBroker({
+    duringPrefetch: () => {
+      if (!dropOnce) return
+      dropOnce = false
+      broker.emitConnection('error', new Error('Unexpected close'))
+      broker.emitConnection('close')
+    },
+  })
+  const connectStub = stub(amqplib, 'connect', () => Promise.resolve(broker.connection as never))
+  try {
+    const handle = await startCommandConsumer({
+      db: missingRowDb(),
+      registry: emptyRegistry(),
+      amqpUrl: 'amqp://test',
+    })
+    for (let i = 0; i < 200 && broker.consumeCount() < 2; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+    // The first session died during setup; the second is the live one.
+    assertEquals(broker.consumeCount(), 2)
+    broker.deliver({ content: { toString: () => PING_ENVELOPE_JSON } })
+    await waitForDisposition(broker.dispositions)
+    assertEquals(broker.dispositions, [{ method: 'ack' }])
     await handle.close()
   } finally {
     connectStub.restore()

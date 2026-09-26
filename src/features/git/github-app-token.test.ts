@@ -244,6 +244,46 @@ test('exchangeInstallationTokenAt returns the token and GitHub expiry', async ()
   })
 })
 
+test('exchangeInstallationTokenAt never lets the runtime follow a redirect with the App JWT attached', async () => {
+  await withFetch((_url, init) => {
+    assertEquals(init?.redirect, 'manual')
+    return new Response(JSON.stringify({ token: 'ghs_manual' }), { status: 200 })
+  }, async () => {
+    const result = await exchangeInstallationTokenAt(GITHUB_API_BASE, 'app-jwt', '7')
+    assertEquals(result.token, 'ghs_manual')
+  })
+})
+
+test('exchangeInstallationTokenAt follows a same-origin redirect and refuses a cross-origin one', async () => {
+  const urls: string[] = []
+  await withFetch((url) => {
+    urls.push(url)
+    if (url.endsWith('/access_tokens')) {
+      return new Response(null, {
+        status: 307,
+        headers: { location: `${GITHUB_API_BASE}/app/installations/7/access_tokens/v2` },
+      })
+    }
+    return new Response(JSON.stringify({ token: 'ghs_moved' }), { status: 200 })
+  }, async () => {
+    const result = await exchangeInstallationTokenAt(GITHUB_API_BASE, 'app-jwt', '7')
+    assertEquals(result.token, 'ghs_moved')
+  })
+  assertEquals(urls.length, 2)
+
+  const offsite: string[] = []
+  await withFetch((url) => {
+    offsite.push(url)
+    return new Response(null, { status: 302, headers: { location: 'https://evil.example.net/x' } })
+  }, async () => {
+    await assertRejects(
+      () => exchangeInstallationTokenAt(GITHUB_API_BASE, 'app-jwt', '7'),
+      GithubAppTokenError,
+    )
+  })
+  assertEquals(offsite, [`${GITHUB_API_BASE}/app/installations/7/access_tokens`])
+})
+
 test('exchangeInstallationTokenAt synthesizes expiry when GitHub omits it', async () => {
   await withFetch(
     () => new Response(JSON.stringify({ token: 'ghs_noexp' }), { status: 200 }),
