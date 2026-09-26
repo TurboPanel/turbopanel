@@ -1139,24 +1139,3 @@ async function loadFactsFor(
   return rows.map((row) => factFromServerRow(row, colocatedServerId));
 }
 
-export async function findActiveStep(
-  db: Db,
-  serverId: string,
-  unit: UpgradeStepUnit,
-  upgradeId?: string,
-): Promise<UpgradeStepRow | null> {
-  const filters = [
-    eq(upgradeStep.serverId, serverId),
-    eq(upgradeStep.unit, unit),
-    inArray(upgrade.status, [...UPGRADE_ACTIVE_STATUSES]),
-  ];
-  if (upgradeId) filters.push(eq(upgradeStep.upgradeId, upgradeId));
-  const rows = await db
-    .select({ step: upgradeStep })
-    .from(upgradeStep)
-    .innerJoin(upgrade, eq(upgrade.id, upgradeStep.upgradeId))
-    .where(and(...filters))
-    .limit(1);
-  const row = rows[0]?.step;
-  return row ? toStep(row) : null;
-}

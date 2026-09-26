@@ -30,7 +30,6 @@ import {
   workspace,
 } from "../../db/schema.ts";
 
-export const PRINCIPAL_KINDS = new Set(["system", "database"]);
 export const PRINCIPAL_PROVIDERS = new Set([
   "server",
   "postgres",
