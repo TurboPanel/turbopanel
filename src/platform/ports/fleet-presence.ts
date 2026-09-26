@@ -3,6 +3,7 @@
  * `features/commands` never imports `daemon/cell/server-status`.
  */
 
+import type { DaemonCellRegistry } from '../../contracts/cell.ts'
 import type { Db } from '../../db/connection.ts'
 
 /** Minimal presence shape command dispatch reads through this port. */
@@ -15,8 +16,8 @@ export type FleetPresencePortSnapshot = {
 
 export type ResolveFleetPresence = (
   db: Db,
-  registry: unknown,
-  serverIds: string[],
+  registry: DaemonCellRegistry | undefined,
+  serverIds: string[]
 ) => Promise<Map<string, FleetPresencePortSnapshot>>
 
 let resolver: ResolveFleetPresence | null = null

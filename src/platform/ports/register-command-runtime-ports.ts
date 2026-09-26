@@ -11,10 +11,7 @@ import type { DaemonCellRegistry } from '../../contracts/cell.ts'
 import type { Db } from '../../db/connection.ts'
 import type { CommandQueue } from '../../features/commands/queue.ts'
 import type { ManagedEngineCode } from '../../features/managed/types.ts'
-import {
-  type FleetPresencePortSnapshot,
-  setResolveFleetPresence,
-} from './fleet-presence.ts'
+import { type FleetPresencePortSnapshot, setResolveFleetPresence } from './fleet-presence.ts'
 import {
   type ServerStatusConnectedRecord,
   setLoadServerStatusRecords,
@@ -38,7 +35,7 @@ export type CommandRuntimePortImpls = {
       fencePhase: RecoveryFencePhase
       engine: ManagedEngineCode
       actor: RecoveryCommandActor
-    },
+    }
   ) => Promise<void>
   onFenceCommandFailed: (
     db: Db,
@@ -48,19 +45,19 @@ export type CommandRuntimePortImpls = {
       commandId: string
       engine: ManagedEngineCode
       actor: RecoveryCommandActor
-    },
+    }
   ) => Promise<void>
   onPromoteSucceeded: ManagedHaRecoveryHooks['onPromoteSucceeded']
   onRecoveryCommandFailed: ManagedHaRecoveryHooks['onRecoveryCommandFailed']
   loadServerStatusRecords: (
     db: Db,
     registry: DaemonCellRegistry | undefined,
-    serverIds: string[],
+    serverIds: string[]
   ) => Promise<ServerStatusConnectedRecord[]>
   resolveFleetPresence: (
     db: Db,
     registry: DaemonCellRegistry | undefined,
-    serverIds: string[],
+    serverIds: string[]
   ) => Promise<Map<string, FleetPresencePortSnapshot>>
 }
 
@@ -82,17 +79,9 @@ export function registerCommandRuntimePorts(impls: CommandRuntimePortImpls): voi
     onRecoveryCommandFailed: impls.onRecoveryCommandFailed,
   })
   setLoadServerStatusRecords((db, registry, serverIds) =>
-    impls.loadServerStatusRecords(
-      db,
-      registry as DaemonCellRegistry | undefined,
-      serverIds,
-    )
+    impls.loadServerStatusRecords(db, registry as DaemonCellRegistry | undefined, serverIds)
   )
   setResolveFleetPresence((db, registry, serverIds) =>
-    impls.resolveFleetPresence(
-      db,
-      registry as DaemonCellRegistry | undefined,
-      serverIds,
-    )
+    impls.resolveFleetPresence(db, registry, serverIds)
   )
 }

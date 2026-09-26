@@ -42,6 +42,23 @@ jobs:
       - name: Workers bundle check
         run: pnpm run check:workers-bundle
 
+      # Type-checks the Workers graph (src/workers.ts and what it imports)
+      # against the generated Cloudflare bindings; `deno check` cannot load
+      # @cloudflare/workers-types. The Deno half is the `typecheck` job.
+      - name: Workers typecheck (tsc)
+        run: pnpm run check:workers-types
+
+      - name: Lint (deno lint)
+        run: deno lint
+
+      # Prettier (.prettierrc) is canonical, but most of the tree predates the
+      # gate, so only files this change adds or modifies are checked.
+      - name: Format check (changed files, Prettier)
+        run: sh scripts/check-format-changed.sh "${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}"
+
+      - name: Secret scan (every tracked file)
+        run: sh scripts/scan-secrets.sh --all
+
       - name: Check vocabulary (no daemon-as-agent phrasing)
         run: pnpm run check:vocabulary
 
@@ -206,9 +223,64 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+  # Test shards run with --no-check for speed, so this job is what type-checks
+  # the Deno surface (entry points and every Deno test file).
+  typecheck:
+    name: typecheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: instance-typecheck-${{ github.event_name }}-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: ./.github/actions/setup-toolchain
+
+      - name: Deno typecheck (entry points + tests)
+        run: deno task check:types
+
+  # The website's /docs/database pages are generated from the schema. Not in
+  # the SonarQube fan-in: a schema change lands with its website PR, and a
+  # same-named website branch is used when one exists.
+  data-dictionary:
+    name: data-dictionary
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: instance-data-dictionary-${{ github.event_name }}-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: turbopanel
+
+      - name: Resolve website checkout ref
+        id: website-ref
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          REF="${{ github.head_ref || github.ref_name }}"
+          if gh api "repos/TurboPanel/website/branches/${REF}" --silent; then
+            echo "ref=${REF}" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=trunk" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check out website
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: TurboPanel/website
+          path: website
+          ref: ${{ steps.website-ref.outputs.ref }}
+
+      - name: Check the generated data dictionary is current
+        run: node turbopanel/scripts/generate-data-dictionary.mjs --check
+
   sonarqube:
     name: SonarQube
-    needs: [checks, vitest, deno-hostfree, deno-db]
+    needs: [checks, typecheck, vitest, deno-hostfree, deno-db]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 20

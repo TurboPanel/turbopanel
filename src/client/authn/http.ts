@@ -1,14 +1,14 @@
-import { eq } from "drizzle-orm";
-import { getCookie } from "hono/cookie";
-import { type Context, Hono } from "hono";
-import type { AppEnv } from "../../app/app.ts";
+import { eq } from 'drizzle-orm'
+import { getCookie } from 'hono/cookie'
+import { type Context, Hono } from 'hono'
+import type { AppEnv } from '../../app/app.ts'
 import {
   buildSignedCookie,
   resolveSessionCookieName,
   SESSION_EXPIRES_IN_MS,
   verifySignedCookie,
-} from "./crypto.ts";
-import { PAM_ROOT_USERNAME, verifyCredentials } from "./credentials.ts";
+} from './crypto.ts'
+import { PAM_ROOT_USERNAME, verifyCredentials } from './credentials.ts'
 import {
   createOrganizationForUser,
   isInstanceInstalled,
@@ -17,79 +17,72 @@ import {
   type SignupEnvOverride,
   validateSuperadminEmail,
   validateSuperadminPassword,
-} from "./install-state.ts";
-import { resolvePublicBaseUrl } from "../../features/install/resolve-public-base-url.ts";
-import { hashPassword } from "../../lib/secrets/password.ts";
+} from './install-state.ts'
+import { resolvePublicBaseUrl } from '../../features/install/resolve-public-base-url.ts'
+import { hashPassword } from '../../lib/secrets/password.ts'
 import {
   consumeEmailVerificationToken,
   createEmailVerificationToken,
-} from "./email-verification.ts";
-import { createSession, deleteSession, getSession } from "./session-store.ts";
-import type { DerivedSecretsConfig } from "../../lib/secrets/secrets.ts";
-import {
-  compatLogError,
-  compatLogInfo,
-  compatLogWarn,
-} from "../../lib/log-compat.ts";
-import { getDb } from "../../db/connection.ts";
-import type { Db } from "../../db/connection.ts";
-import { invitationEmailsMatch, isUuid } from "../access/routes-helpers.ts";
-import { account, invitation, user } from "../../db/schema.ts";
-import { type EmailQueue, getEmailQueue } from "../../features/email/types.ts";
-import { isNoopEmailQueue } from "../../features/email/noop-queue.ts";
-import { emailQueueFromResolvedSettings } from "../../features/email/mailgun/workers-queue.ts";
+} from './email-verification.ts'
+import { createSession, deleteSession, getSession } from './session-store.ts'
+import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
+import { compatLogError, compatLogInfo, compatLogWarn } from '../../lib/log-compat.ts'
+import { getDb } from '../../db/connection.ts'
+import type { Db } from '../../db/connection.ts'
+import { invitationEmailsMatch, isUuid } from '../access/routes-helpers.ts'
+import { account, invitation, user } from '../../db/schema.ts'
+import { type EmailQueue, getEmailQueue } from '../../features/email/types.ts'
+import { isNoopEmailQueue } from '../../features/email/noop-queue.ts'
+import { emailQueueFromResolvedSettings } from '../../features/email/mailgun/workers-queue.ts'
 import {
   isEmailActiveForRuntime,
   resolveEmailSettings,
-} from "../../features/settings/email-settings.ts";
-import { registerOAuthRoutes } from "./oauth/oauth-http.ts";
-import { registerOtpRoutes } from "./otp-http.ts";
-import { registerPasskeyRoutes } from "./passkeys-http.ts";
-import { registerTwoFactorRoutes } from "./two-factor-http.ts";
-import { issueTwoFactorChallenge } from "./two-factor.ts";
+} from '../../features/settings/email-settings.ts'
+import { registerOAuthRoutes } from './oauth/oauth-http.ts'
+import { registerOtpRoutes } from './otp-http.ts'
+import { registerPasskeyRoutes } from './passkeys-http.ts'
+import { registerTwoFactorRoutes } from './two-factor-http.ts'
+import { issueTwoFactorChallenge } from './two-factor.ts'
 import {
   type AuthRateLimiter,
   type AuthRateLimitPurpose,
   createFailClosedAuthRateLimiter,
   getSharedAuthRateLimiter,
-} from "./auth-rate-limit.ts";
-import { isExplicitDevelopmentMode } from "../../app/dev-mode.ts";
-import {
-  parseTrustedProxyCidrs,
-  resolvePeerAddress,
-} from "../../lib/peer-address.ts";
-import { readBoundedJson } from "../../lib/http/bounded-body.ts";
+} from './auth-rate-limit.ts'
+import { isExplicitDevelopmentMode } from '../../app/dev-mode.ts'
+import { parseTrustedProxyCidrs, resolvePeerAddress } from '../../lib/peer-address.ts'
+import { readBoundedJson } from '../../lib/http/bounded-body.ts'
 import {
   AUTH_SIGN_IN_MAX_BODY_BYTES,
   AUTH_SIGN_UP_MAX_BODY_BYTES,
   MAX_AUTH_PASSWORD_CHARS,
-} from "./auth-body-limits.ts";
-import { isUniqueViolationOn } from "../../db/unique-violation.ts";
-import { buildCookieHeader, requestTls } from "./request-context.ts";
+} from './auth-body-limits.ts'
+import { isUniqueViolationOn } from '../../db/unique-violation.ts'
+import { buildCookieHeader, requestTls } from './request-context.ts'
 
 export type AuthRouteOpts = {
-  secrets?: DerivedSecretsConfig;
+  secrets?: DerivedSecretsConfig
   /**
    * HMAC keyring for at-rest email OTP verifiers (`email-otp-verifier` purpose).
    * Required for OTP create/verify routes; derived at boot from
    * `TURBOPANEL_SECRET` (or `TURBOPANEL_SECRETS` while rotating).
    */
-  otpVerifierSecrets?: DerivedSecretsConfig;
+  otpVerifierSecrets?: DerivedSecretsConfig
   /**
    * HMAC keyring for TOTP sign-in challenges (`two-factor-challenge` purpose).
    * Required when `user.is_2fa_enabled`; derived at boot from `TURBOPANEL_SECRET`.
    */
-  twoFactorChallengeSecrets?: DerivedSecretsConfig;
+  twoFactorChallengeSecrets?: DerivedSecretsConfig
   /**
    * HMAC keyring for at-rest backup-code verifiers (`backup-code-verifier` purpose).
    */
-  backupCodeVerifierSecrets?: DerivedSecretsConfig;
+  backupCodeVerifierSecrets?: DerivedSecretsConfig
   /**
    * HMAC keyring for WebAuthn ceremony challenges (`webauthn-challenge` purpose).
    * Required for passkey register/login; derived at boot from `TURBOPANEL_SECRET`.
    */
-  webauthnChallengeSecrets?: DerivedSecretsConfig;
-  runtime: "deno" | "workers";
+  webauthnChallengeSecrets?: DerivedSecretsConfig
+  runtime: 'deno' | 'workers'
   /**
    * Optional `TURBOPANEL_IS_SIGNUP_ENABLED` force override. When set to
    * `1`/`true` or `0`/`false` it overrides the `IS_SIGNUP_ENABLED` database
@@ -98,31 +91,28 @@ export type AuthRouteOpts = {
    * under `env.live.vars` or every `wrangler deploy` will overwrite the
    * dashboard value. `keep_vars: true` preserves dashboard-only vars.
    */
-  signupEnvOverride: SignupEnvOverride | undefined;
-  emailFrom?: string;
-  baseUrl?: string;
-};
+  signupEnvOverride: SignupEnvOverride | undefined
+  emailFrom?: string
+  baseUrl?: string
+}
 
 export type SessionResponse = {
-  ok: true;
-  userId: string | null;
-  email: string | null;
-  role: string | null;
+  ok: true
+  userId: string | null
+  email: string | null
+  role: string | null
   /** Deno self-hosted only — omitted on Workers (no install wizard). */
-  needsInstall?: boolean;
-  is2faEnabled: boolean;
-};
+  needsInstall?: boolean
+  is2faEnabled: boolean
+}
 
-function readSessionCookie(
-  c: Context,
-  runtime: "deno" | "workers",
-): string | null {
+function readSessionCookie(c: Context, runtime: 'deno' | 'workers'): string | null {
   const cookieName = resolveSessionCookieName({
     requestUrl: c.req.url,
     runtime,
-    forwardedProto: c.req.header("x-forwarded-proto"),
-  });
-  return getCookie(c, cookieName) ?? null;
+    forwardedProto: c.req.header('x-forwarded-proto'),
+  })
+  return getCookie(c, cookieName) ?? null
 }
 
 /**
@@ -139,33 +129,36 @@ function readSessionCookie(
  *   Cloudflare Tunnel that is the difference between per-visitor rate-limit
  *   buckets and every visitor sharing the `127.0.0.1` bucket.
  */
-export function resolveClientIp(
-  c: Context,
-  runtime: "deno" | "workers",
-): string | null {
-  return resolvePeerAddress({
-    realIp: c.req.header("X-Real-IP"),
-    forwardedFor: c.req.header("X-Forwarded-For"),
-    cfConnectingIp: c.req.header("CF-Connecting-IP"),
-  }, { runtime, trustedProxyCidrs: trustedProxyCidrs() })?.address ?? null;
+export function resolveClientIp(c: Context, runtime: 'deno' | 'workers'): string | null {
+  return (
+    resolvePeerAddress(
+      {
+        realIp: c.req.header('X-Real-IP'),
+        forwardedFor: c.req.header('X-Forwarded-For'),
+        cfConnectingIp: c.req.header('CF-Connecting-IP'),
+      },
+      { runtime, trustedProxyCidrs: trustedProxyCidrs() }
+    )?.address ?? null
+  )
 }
 
 /**
  * Env-configured trusted proxies, read once per process. `Deno.env` is absent
  * on Workers, where the trusted-proxy list is unused.
  */
-let cachedTrustedProxyCidrs: string[] | undefined;
+let cachedTrustedProxyCidrs: string[] | undefined
 function trustedProxyCidrs(): string[] {
   cachedTrustedProxyCidrs ??= parseTrustedProxyCidrs(
-    (globalThis as {
-      Deno?: { env?: { get(key: string): string | undefined } };
-    })
-      .Deno?.env?.get("TURBOPANEL_TRUSTED_PROXY_CIDRS"),
-  );
-  return cachedTrustedProxyCidrs;
+    (
+      globalThis as {
+        Deno?: { env?: { get(key: string): string | undefined } }
+      }
+    ).Deno?.env?.get('TURBOPANEL_TRUSTED_PROXY_CIDRS')
+  )
+  return cachedTrustedProxyCidrs
 }
 
-let failClosedWorkersLimiter: AuthRateLimiter | undefined;
+let failClosedWorkersLimiter: AuthRateLimiter | undefined
 
 /**
  * Resolve the limiter for a request. The per-runtime entrypoint injects a
@@ -175,17 +168,14 @@ let failClosedWorkersLimiter: AuthRateLimiter | undefined;
  *   keeps its own counters, so abuse could rotate across them). Fail closed.
  * - **Deno / tests**: the process-local shared limiter is safe (single process).
  */
-function resolveAuthRateLimiter(
-  c: Context,
-  runtime: "deno" | "workers",
-): AuthRateLimiter {
-  const injected = c.get("authRateLimiter") as AuthRateLimiter | undefined;
-  if (injected) return injected;
-  if (runtime === "workers") {
-    failClosedWorkersLimiter ??= createFailClosedAuthRateLimiter();
-    return failClosedWorkersLimiter;
+function resolveAuthRateLimiter(c: Context, runtime: 'deno' | 'workers'): AuthRateLimiter {
+  const injected = c.get('authRateLimiter') as AuthRateLimiter | undefined
+  if (injected) return injected
+  if (runtime === 'workers') {
+    failClosedWorkersLimiter ??= createFailClosedAuthRateLimiter()
+    return failClosedWorkersLimiter
   }
-  return getSharedAuthRateLimiter();
+  return getSharedAuthRateLimiter()
 }
 
 /**
@@ -197,24 +187,22 @@ export async function enforceAuthRateLimit(
   c: Context,
   purpose: AuthRateLimitPurpose,
   identity: string | null | undefined,
-  runtime: "deno" | "workers",
+  runtime: 'deno' | 'workers'
 ): Promise<Response | null> {
   const result = await resolveAuthRateLimiter(c, runtime).check(
     purpose,
     identity,
-    resolveClientIp(c, runtime),
-  );
+    resolveClientIp(c, runtime)
+  )
   if (result.allowed) {
-    return null;
+    return null
   }
-  return c.json({ ok: false, error: "Too many requests" }, 429, {
-    "Retry-After": String(result.retryAfterSeconds),
-  });
+  return c.json({ ok: false, error: 'Too many requests' }, 429, {
+    'Retry-After': String(result.retryAfterSeconds),
+  })
 }
 
-export type AuthBodyValidation<T> =
-  | { ok: true; value: T }
-  | { ok: false; error: string };
+export type AuthBodyValidation<T> = { ok: true; value: T } | { ok: false; error: string }
 
 /**
  * Bounded read → parse/validate → rate limit, in that order, for every public
@@ -235,62 +223,50 @@ export type AuthBodyValidation<T> =
 export async function readGatedAuthJsonBody<T>(
   c: Context,
   opts: {
-    runtime: "deno" | "workers";
-    purpose: AuthRateLimitPurpose;
-    maxBytes: number;
-    parse: (body: unknown) => AuthBodyValidation<T>;
+    runtime: 'deno' | 'workers'
+    purpose: AuthRateLimitPurpose
+    maxBytes: number
+    parse: (body: unknown) => AuthBodyValidation<T>
     /** Identity to charge the real rate-limit bucket against once validated. */
-    identity: (value: T) => string;
-  },
+    identity: (value: T) => string
+  }
 ): Promise<{ ok: true; value: T } | { ok: false; response: Response }> {
-  const read = await readBoundedJson(c, opts.maxBytes);
+  const read = await readBoundedJson(c, opts.maxBytes)
   if (!read.ok) {
-    const anonLimited = await enforceAuthRateLimit(
-      c,
-      opts.purpose,
-      null,
-      opts.runtime,
-    );
-    if (anonLimited) return { ok: false, response: anonLimited };
-    const status = read.reason === "too-large" ? 413 : 400;
-    const error = read.reason === "too-large"
-      ? "Request body too large"
-      : "Invalid request";
-    return { ok: false, response: c.json({ ok: false, error }, status) };
+    const anonLimited = await enforceAuthRateLimit(c, opts.purpose, null, opts.runtime)
+    if (anonLimited) return { ok: false, response: anonLimited }
+    const status = read.reason === 'too-large' ? 413 : 400
+    const error = read.reason === 'too-large' ? 'Request body too large' : 'Invalid request'
+    return { ok: false, response: c.json({ ok: false, error }, status) }
   }
 
-  const parsed = opts.parse(read.body);
+  const parsed = opts.parse(read.body)
   if (!parsed.ok) {
-    const anonLimited = await enforceAuthRateLimit(
-      c,
-      opts.purpose,
-      null,
-      opts.runtime,
-    );
-    if (anonLimited) return { ok: false, response: anonLimited };
+    const anonLimited = await enforceAuthRateLimit(c, opts.purpose, null, opts.runtime)
+    if (anonLimited) return { ok: false, response: anonLimited }
     return {
       ok: false,
       response: c.json({ ok: false, error: parsed.error }, 400),
-    };
+    }
   }
 
   const limited = await enforceAuthRateLimit(
     c,
     opts.purpose,
     opts.identity(parsed.value),
-    opts.runtime,
-  );
-  if (limited) return { ok: false, response: limited };
+    opts.runtime
+  )
+  if (limited) return { ok: false, response: limited }
 
-  return { ok: true, value: parsed.value };
+  return { ok: true, value: parsed.value }
 }
 
 function nowTs(): string {
-  return new Date().toISOString();
+  return new Date().toISOString()
 }
 
 function isUserEmailUniqueViolation(err: unknown): boolean {
-  return isUniqueViolationOn(err, "user_email_unique");
+  return isUniqueViolationOn(err, 'user_email_unique')
 }
 
 /**
@@ -302,8 +278,8 @@ function isUserEmailUniqueViolation(err: unknown): boolean {
  * / the configured email sink remains the source for the actual link.
  */
 export function isVerificationDevLoggingEnabled(opts: AuthRouteOpts): boolean {
-  if (opts.runtime !== "deno") return false;
-  return isExplicitDevelopmentMode();
+  if (opts.runtime !== 'deno') return false
+  return isExplicitDevelopmentMode()
 }
 
 /**
@@ -313,105 +289,100 @@ export function isVerificationDevLoggingEnabled(opts: AuthRouteOpts): boolean {
  */
 export async function resolveVerificationBaseUrlAsync(
   c: Context,
-  opts: AuthRouteOpts,
+  opts: AuthRouteOpts
 ): Promise<string> {
-  const origin = await resolvePublicBaseUrl(c, { baseUrl: opts.baseUrl });
-  return origin.replace(/\/$/, "");
+  const origin = await resolvePublicBaseUrl(c, { baseUrl: opts.baseUrl })
+  return origin.replace(/\/$/, '')
 }
 
 export async function buildSessionResponse(
   db: Db | undefined,
-  runtime: AuthRouteOpts["runtime"],
+  runtime: AuthRouteOpts['runtime'],
   sessionData: {
-    userId: string;
-    email: string;
-    role: string;
-  },
+    userId: string
+    email: string
+    role: string
+  }
 ): Promise<SessionResponse> {
-  const is2faEnabled = await lookupIs2faEnabled(db, sessionData.userId);
+  const is2faEnabled = await lookupIs2faEnabled(db, sessionData.userId)
   const base: SessionResponse = {
     ok: true,
     userId: sessionData.userId,
     email: sessionData.email,
     role: sessionData.role,
     is2faEnabled,
-  };
+  }
 
   if (db === undefined) {
-    return base;
+    return base
   }
 
-  if (runtime === "deno") {
-    const needsInstall = !(await isInstanceInstalled(db));
-    return { ...base, needsInstall };
+  if (runtime === 'deno') {
+    const needsInstall = !(await isInstanceInstalled(db))
+    return { ...base, needsInstall }
   }
 
-  return base;
+  return base
 }
 
-async function lookupIs2faEnabled(
-  db: Db | undefined,
-  userId: string,
-): Promise<boolean> {
-  if (db === undefined || typeof db.select !== "function") {
-    return false;
+async function lookupIs2faEnabled(db: Db | undefined, userId: string): Promise<boolean> {
+  if (db === undefined || typeof db.select !== 'function') {
+    return false
   }
   const rows = await db
     .select({ is2FaEnabled: user.is2FaEnabled })
     .from(user)
     .where(eq(user.id, userId))
-    .limit(1);
-  return rows[0]?.is2FaEnabled === true;
+    .limit(1)
+  return rows[0]?.is2FaEnabled === true
 }
 
 type ParsedSignupBody =
   | { ok: true; email: string; password: string; invitationId?: string }
-  | { ok: false; error: string };
+  | { ok: false; error: string }
 
 export function parseSignupBody(body: unknown): ParsedSignupBody {
-  if (body === null || typeof body !== "object" || Array.isArray(body)) {
-    return { ok: false, error: "Invalid request" };
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+    return { ok: false, error: 'Invalid request' }
   }
 
   const { email, password, invitationId } = body as {
-    email?: unknown;
-    password?: unknown;
-    invitationId?: unknown;
-  };
+    email?: unknown
+    password?: unknown
+    invitationId?: unknown
+  }
 
   if (
-    typeof email !== "string" ||
+    typeof email !== 'string' ||
     !email ||
-    typeof password !== "string" ||
+    typeof password !== 'string' ||
     !password ||
     password.length > MAX_AUTH_PASSWORD_CHARS
   ) {
-    return { ok: false, error: "Invalid request" };
+    return { ok: false, error: 'Invalid request' }
   }
 
-  const emailError = validateSuperadminEmail(email);
+  const emailError = validateSuperadminEmail(email)
   if (emailError) {
-    return { ok: false, error: emailError };
+    return { ok: false, error: emailError }
   }
 
-  const passwordError = validateSuperadminPassword(password);
+  const passwordError = validateSuperadminPassword(password)
   if (passwordError) {
-    return { ok: false, error: passwordError };
+    return { ok: false, error: passwordError }
   }
 
   if (invitationId !== undefined) {
-    if (typeof invitationId !== "string" || !isUuid(invitationId)) {
-      return { ok: false, error: "Invalid request" };
+    if (typeof invitationId !== 'string' || !isUuid(invitationId)) {
+      return { ok: false, error: 'Invalid request' }
     }
-    return { ok: true, email, password, invitationId };
+    return { ok: true, email, password, invitationId }
   }
 
-  return { ok: true, email, password };
+  return { ok: true, email, password }
 }
 
-type ParsedSignInBody =
-  | { ok: true; email: string; password: string }
-  | { ok: false; error: string };
+type ParsedSignInBody = { ok: true; email: string; password: string } | { ok: false; error: string }
 
 /**
  * Shape-only validation — sign-in must accept any historically-valid
@@ -420,36 +391,34 @@ type ParsedSignInBody =
  * (argon2 verify cost scales with input size).
  */
 export function parseSignInBody(body: unknown): ParsedSignInBody {
-  if (body === null || typeof body !== "object" || Array.isArray(body)) {
-    return { ok: false, error: "Invalid request" };
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+    return { ok: false, error: 'Invalid request' }
   }
 
-  const { email, password } = body as { email?: unknown; password?: unknown };
+  const { email, password } = body as { email?: unknown; password?: unknown }
 
   if (
-    typeof email !== "string" ||
+    typeof email !== 'string' ||
     !email ||
-    typeof password !== "string" ||
+    typeof password !== 'string' ||
     !password ||
     password.length > MAX_AUTH_PASSWORD_CHARS
   ) {
-    return { ok: false, error: "Invalid request" };
+    return { ok: false, error: 'Invalid request' }
   }
 
-  return { ok: true, email, password };
+  return { ok: true, email, password }
 }
 
-type CreateSignupUserResult =
-  | { ok: true; userId: string }
-  | { ok: false; conflict: boolean };
+type CreateSignupUserResult = { ok: true; userId: string } | { ok: false; conflict: boolean }
 
 async function createSignupUser(
   db: Db,
   trimmedEmail: string,
   hashedPassword: string,
-  emailVerificationEnabled: boolean,
+  emailVerificationEnabled: boolean
 ): Promise<CreateSignupUserResult> {
-  let createdUserId: string | undefined;
+  let createdUserId: string | undefined
   try {
     await db.transaction(async (tx) => {
       const insertedUser = await tx
@@ -457,47 +426,47 @@ async function createSignupUser(
         .values({
           email: trimmedEmail,
           isEmailVerified: !emailVerificationEnabled,
-          role: "user",
+          role: 'user',
         })
-        .returning({ id: user.id });
+        .returning({ id: user.id })
 
-      const userId = insertedUser[0]?.id;
+      const userId = insertedUser[0]?.id
       if (!userId) {
-        throw new Error("User creation failed");
+        throw new Error('User creation failed')
       }
-      createdUserId = userId;
+      createdUserId = userId
 
       await tx.insert(account).values({
         userId,
-        providerId: "credential",
+        providerId: 'credential',
         providerUserId: userId,
         password: hashedPassword,
-      });
-    });
+      })
+    })
   } catch (err) {
     if (isUserEmailUniqueViolation(err)) {
-      return { ok: false, conflict: true };
+      return { ok: false, conflict: true }
     }
-    compatLogError("auth", `sign-up failed: ${err}`);
-    return { ok: false, conflict: false };
+    compatLogError('auth', `sign-up failed: ${err}`)
+    return { ok: false, conflict: false }
   }
 
   if (!createdUserId) {
-    return { ok: false, conflict: false };
+    return { ok: false, conflict: false }
   }
-  return { ok: true, userId: createdUserId };
+  return { ok: true, userId: createdUserId }
 }
 
 async function provisionWorkersOrganization(
   db: Db,
   opts: AuthRouteOpts,
-  userId: string,
+  userId: string
 ): Promise<void> {
-  if (opts.runtime !== "workers") return;
+  if (opts.runtime !== 'workers') return
   try {
-    await createOrganizationForUser(db, userId);
+    await createOrganizationForUser(db, userId)
   } catch (err) {
-    compatLogWarn("auth", `Workers sign-up org creation failed: ${err}`);
+    compatLogWarn('auth', `Workers sign-up org creation failed: ${err}`)
   }
 }
 
@@ -508,60 +477,57 @@ async function enqueueSignupVerification(
   queue: EmailQueue,
   trimmedEmail: string,
   userId: string,
-  emailFrom: string,
+  emailFrom: string
 ): Promise<Response | null> {
-  const verificationToken = await createEmailVerificationToken(
-    db,
-    trimmedEmail,
-  );
-  const baseOrigin = await resolveVerificationBaseUrlAsync(c, opts);
-  const verificationUrl = `${baseOrigin}/verify-email?token=${
-    encodeURIComponent(verificationToken)
-  }`;
+  const verificationToken = await createEmailVerificationToken(db, trimmedEmail)
+  const baseOrigin = await resolveVerificationBaseUrlAsync(c, opts)
+  const verificationUrl = `${baseOrigin}/verify-email?token=${encodeURIComponent(
+    verificationToken
+  )}`
 
   try {
     await queue.enqueue({
-      type: "signup-verification",
+      type: 'signup-verification',
       to: trimmedEmail,
       from: emailFrom,
       verificationUrl,
-    });
-    await provisionWorkersOrganization(db, opts, userId);
+    })
+    await provisionWorkersOrganization(db, opts, userId)
     if (isVerificationDevLoggingEnabled(opts)) {
-      compatLogInfo("dev", "verification email queued");
+      compatLogInfo('dev', 'verification email queued')
     }
-    return null;
+    return null
   } catch (err) {
-    compatLogWarn("email", `verification email enqueue failed: ${err}`);
-    if (opts.runtime === "workers") {
-      await db.delete(account).where(eq(account.userId, userId));
-      await db.delete(user).where(eq(user.id, userId));
+    compatLogWarn('email', `verification email enqueue failed: ${err}`)
+    if (opts.runtime === 'workers') {
+      await db.delete(account).where(eq(account.userId, userId))
+      await db.delete(user).where(eq(user.id, userId))
       return c.json(
         {
           ok: false,
-          error: "Could not send verification email. Please try again later.",
+          error: 'Could not send verification email. Please try again later.',
         },
-        503,
-      );
+        503
+      )
     }
-    return null;
+    return null
   }
 }
 
 type SignupGate =
   | {
-    ok: true;
-    emailVerificationEnabled: boolean;
-    /** Queue aligned with the same settings that decided verification. */
-    emailQueue: EmailQueue | undefined;
-    emailFrom: string;
-  }
-  | { ok: false; response: Response };
+      ok: true
+      emailVerificationEnabled: boolean
+      /** Queue aligned with the same settings that decided verification. */
+      emailQueue: EmailQueue | undefined
+      emailFrom: string
+    }
+  | { ok: false; response: Response }
 
 async function invitationAllowsSignup(
   db: Db,
   invitationId: string,
-  trimmedEmail: string,
+  trimmedEmail: string
 ): Promise<boolean> {
   const rows = await db
     .select({
@@ -571,28 +537,25 @@ async function invitationAllowsSignup(
     })
     .from(invitation)
     .where(eq(invitation.id, invitationId))
-    .limit(1);
-  const row = rows[0];
-  if (!row) return false;
-  if (row.status !== "pending") return false;
-  if (row.expiresAt <= new Date().toISOString()) return false;
-  return invitationEmailsMatch(row.email, trimmedEmail);
+    .limit(1)
+  const row = rows[0]
+  if (!row) return false
+  if (row.status !== 'pending') return false
+  if (row.expiresAt <= new Date().toISOString()) return false
+  return invitationEmailsMatch(row.email, trimmedEmail)
 }
 
 async function resolveSignupGate(
   c: Context,
   opts: AuthRouteOpts,
   db: Db,
-  invitationGate?: { invitationId?: string; email: string },
+  invitationGate?: { invitationId?: string; email: string }
 ): Promise<SignupGate> {
-  if (opts.runtime === "deno" && !(await isInstanceInstalled(db))) {
+  if (opts.runtime === 'deno' && !(await isInstanceInstalled(db))) {
     return {
       ok: false,
-      response: c.json(
-        { ok: false, error: "Complete initial setup first" },
-        403,
-      ),
-    };
+      response: c.json({ ok: false, error: 'Complete initial setup first' }, 403),
+    }
   }
 
   if (
@@ -600,56 +563,39 @@ async function resolveSignupGate(
       db,
       opts.runtime,
       resolveSignupEnvOverrideFromContext(
-        c.get("platformEnv") as Record<string, string | undefined> | undefined,
-        opts.signupEnvOverride,
-      ),
+        c.get('platformEnv') as Record<string, string | undefined> | undefined,
+        opts.signupEnvOverride
+      )
     ))
   ) {
     const invited = invitationGate?.invitationId
-      ? await invitationAllowsSignup(
-        db,
-        invitationGate.invitationId,
-        invitationGate.email,
-      )
-      : false;
+      ? await invitationAllowsSignup(db, invitationGate.invitationId, invitationGate.email)
+      : false
     if (!invited) {
       return {
         ok: false,
-        response: c.json({ ok: false, error: "Sign-up is not enabled" }, 403),
-      };
+        response: c.json({ ok: false, error: 'Sign-up is not enabled' }, 403),
+      }
     }
   }
 
-  const platformEnv = c.get("platformEnv") as
-    | Record<string, string | undefined>
-    | undefined;
-  const env = platformEnv ??
-    (opts.runtime === "deno" && typeof Deno !== "undefined"
-      ? Deno.env.toObject()
-      : {});
-  const dataEncryptionSecrets = c.get("dataEncryptionSecrets");
-  const emailSettings = await resolveEmailSettings(
-    db,
-    env,
-    dataEncryptionSecrets,
-  );
-  const emailVerificationEnabled = isEmailActiveForRuntime(
-    emailSettings,
-    opts.runtime,
-  );
+  const platformEnv = c.get('platformEnv') as Record<string, string | undefined> | undefined
+  const env =
+    platformEnv ??
+    (opts.runtime === 'deno' && typeof Deno !== 'undefined' ? Deno.env.toObject() : {})
+  const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
+  const emailSettings = await resolveEmailSettings(db, env, dataEncryptionSecrets)
+  const emailVerificationEnabled = isEmailActiveForRuntime(emailSettings, opts.runtime)
   // Prefer an injected context queue (Deno AMQP / test doubles). On Workers,
   // fall back to a queue derived from the *same* settings used for the
   // verification gate so admin email config changes apply without a restart
   // even if middleware omitted the queue.
-  const emailQueue = getEmailQueue(c) ??
-    (opts.runtime === "workers"
-      ? emailQueueFromResolvedSettings(emailSettings, env)
-      : undefined);
-  const emailFrom = emailSettings.from ||
-    c.get("emailFrom") ||
-    opts.emailFrom ||
-    "noreply@turbopanel.local";
-  return { ok: true, emailVerificationEnabled, emailQueue, emailFrom };
+  const emailQueue =
+    getEmailQueue(c) ??
+    (opts.runtime === 'workers' ? emailQueueFromResolvedSettings(emailSettings) : undefined)
+  const emailFrom =
+    emailSettings.from || c.get('emailFrom') || opts.emailFrom || 'noreply@turbopanel.local'
+  return { ok: true, emailVerificationEnabled, emailQueue, emailFrom }
 }
 
 async function deliverSignupVerification(
@@ -659,58 +605,50 @@ async function deliverSignupVerification(
   queue: EmailQueue | undefined,
   trimmedEmail: string,
   userId: string,
-  emailFrom: string,
+  emailFrom: string
 ): Promise<Response | null> {
   if (!queue) {
     compatLogWarn(
-      "email",
-      `verification email not sent for ${trimmedEmail}: email queue unavailable`,
-    );
-    return null;
+      'email',
+      `verification email not sent for ${trimmedEmail}: email queue unavailable`
+    )
+    return null
   }
 
   // Token generation must not roll back the already-committed user creation.
   try {
-    return await enqueueSignupVerification(
-      c,
-      opts,
-      db,
-      queue,
-      trimmedEmail,
-      userId,
-      emailFrom,
-    );
+    return await enqueueSignupVerification(c, opts, db, queue, trimmedEmail, userId, emailFrom)
   } catch (err) {
-    compatLogError("auth", `verification token generation failed: ${err}`);
-    return null;
+    compatLogError('auth', `verification token generation failed: ${err}`)
+    return null
   }
 }
 
 export function registerAuthRoutes(app: Hono<AppEnv>, opts: AuthRouteOpts) {
-  const auth = new Hono<AppEnv>();
+  const auth = new Hono<AppEnv>()
 
-  auth.post("/sign-in", async (c) => {
-    const db = getDb(c);
-    const secrets = opts.secrets;
+  auth.post('/sign-in', async (c) => {
+    const db = getDb(c)
+    const secrets = opts.secrets
     if (!secrets) {
-      return c.json({ ok: false, error: "Not configured" }, 503);
+      return c.json({ ok: false, error: 'Not configured' }, 503)
     }
 
     const gated = await readGatedAuthJsonBody(c, {
       runtime: opts.runtime,
-      purpose: "sign-in",
+      purpose: 'sign-in',
       maxBytes: AUTH_SIGN_IN_MAX_BODY_BYTES,
       parse: (body) => {
-        const parsed = parseSignInBody(body);
-        return parsed.ok ? { ok: true, value: parsed } : parsed;
+        const parsed = parseSignInBody(body)
+        return parsed.ok ? { ok: true, value: parsed } : parsed
       },
       identity: (v) => v.email,
-    });
-    if (!gated.ok) return gated.response;
-    const { email, password } = gated.value;
+    })
+    if (!gated.ok) return gated.response
+    const { email, password } = gated.value
 
     if (
-      opts.runtime === "deno" &&
+      opts.runtime === 'deno' &&
       email === PAM_ROOT_USERNAME &&
       db &&
       !(await isInstanceInstalled(db))
@@ -718,109 +656,98 @@ export function registerAuthRoutes(app: Hono<AppEnv>, opts: AuthRouteOpts) {
       return c.json(
         {
           ok: false,
-          error:
-            "Complete initial setup on the install page with your host credentials",
+          error: 'Complete initial setup on the install page with your host credentials',
         },
-        403,
-      );
+        403
+      )
     }
 
-    const result = await verifyCredentials(email, password, opts.runtime, db);
+    const result = await verifyCredentials(email, password, opts.runtime, db)
     if (!result.ok) {
-      if (result.reason === "email_not_verified") {
+      if (result.reason === 'email_not_verified') {
         return c.json(
           {
             ok: false,
             error:
-              "Verify your email before signing in. Check your inbox for the verification link.",
+              'Verify your email before signing in. Check your inbox for the verification link.',
           },
-          403,
-        );
+          403
+        )
       }
-      return c.json({ ok: false, error: "Invalid credentials" }, 401);
+      return c.json({ ok: false, error: 'Invalid credentials' }, 401)
     }
 
     if (result.isRoot) {
-      return c.json({ ok: false, error: "Invalid credentials" }, 401);
+      return c.json({ ok: false, error: 'Invalid credentials' }, 401)
     }
 
     if (result.is2FaEnabled) {
       if (!opts.twoFactorChallengeSecrets) {
-        return c.json({ ok: false, error: "Not configured" }, 503);
+        return c.json({ ok: false, error: 'Not configured' }, 503)
       }
       if (db === undefined) {
-        return c.json({ ok: false, error: "Database unavailable" }, 503);
+        return c.json({ ok: false, error: 'Database unavailable' }, 503)
       }
       const challenge = await issueTwoFactorChallenge(
         db,
         opts.twoFactorChallengeSecrets,
-        result.userId,
-      );
-      return c.json({ ok: true, requires2fa: true, challenge });
+        result.userId
+      )
+      return c.json({ ok: true, requires2fa: true, challenge })
     }
 
     const { token } = await createSession(db, result.userId, {
       ipAddress: resolveClientIp(c, opts.runtime) ?? undefined,
-      userAgent: c.req.header("User-Agent") ?? undefined,
-    });
-    const cookieValue = await buildSignedCookie(token, secrets);
-    const tls = requestTls(c, opts.runtime);
+      userAgent: c.req.header('User-Agent') ?? undefined,
+    })
+    const cookieValue = await buildSignedCookie(token, secrets)
+    const tls = requestTls(c, opts.runtime)
     const setCookieHeader = buildCookieHeader(
       cookieValue,
       SESSION_EXPIRES_IN_MS / 1000,
       tls.cookieName,
-      tls.isHttps,
-    );
-    const sessionData = await getSession(db, token);
+      tls.isHttps
+    )
+    const sessionData = await getSession(db, token)
     if (!sessionData) {
-      throw new Error("Session creation failed");
+      throw new Error('Session creation failed')
     }
 
-    const payload = await buildSessionResponse(db, opts.runtime, sessionData);
+    const payload = await buildSessionResponse(db, opts.runtime, sessionData)
 
-    return c.json(
-      payload,
-      200,
-      {
-        "Set-Cookie": setCookieHeader,
-      },
-    );
-  });
+    return c.json(payload, 200, {
+      'Set-Cookie': setCookieHeader,
+    })
+  })
 
-  auth.post("/sign-out", async (c) => {
-    const db = getDb(c);
-    const secrets = opts.secrets;
+  auth.post('/sign-out', async (c) => {
+    const db = getDb(c)
+    const secrets = opts.secrets
     if (!secrets) {
-      return c.json({ ok: false, error: "Not configured" }, 503);
+      return c.json({ ok: false, error: 'Not configured' }, 503)
     }
-    const cookieValue = readSessionCookie(c, opts.runtime);
+    const cookieValue = readSessionCookie(c, opts.runtime)
 
     if (cookieValue) {
-      const result = await verifySignedCookie(cookieValue, secrets);
+      const result = await verifySignedCookie(cookieValue, secrets)
       if (result) {
-        await deleteSession(db, result.token);
+        await deleteSession(db, result.token)
       }
     }
 
-    const tls = requestTls(c, opts.runtime);
-    const clearAttrs = "HttpOnly; SameSite=Lax; Path=/; Max-Age=0";
-    const clearPrimary = `${tls.cookieName}=; ${clearAttrs}${
-      tls.isHttps ? "; Secure" : ""
-    }`;
+    const tls = requestTls(c, opts.runtime)
+    const clearAttrs = 'HttpOnly; SameSite=Lax; Path=/; Max-Age=0'
+    const clearPrimary = `${tls.cookieName}=; ${clearAttrs}${tls.isHttps ? '; Secure' : ''}`
 
-    return c.json(
-      { ok: true },
-      200,
-      {
-        "Set-Cookie": clearPrimary,
-      },
-    );
-  });
+    return c.json({ ok: true }, 200, {
+      'Set-Cookie': clearPrimary,
+    })
+  })
 
-  auth.post("/sign-up", async (c) => {
-    const db = getDb(c);
+  auth.post('/sign-up', async (c) => {
+    const db = getDb(c)
     if (db === undefined) {
-      return c.json({ ok: false, error: "Database unavailable" }, 503);
+      return c.json({ ok: false, error: 'Database unavailable' }, 503)
     }
 
     // Bounded read, shape validation, and the rate-limit charge all run before
@@ -828,30 +755,29 @@ export function registerAuthRoutes(app: Hono<AppEnv>, opts: AuthRouteOpts) {
     // which must never run for an unauthenticated flood ahead of the limiter.
     const gated = await readGatedAuthJsonBody(c, {
       runtime: opts.runtime,
-      purpose: "sign-up",
+      purpose: 'sign-up',
       maxBytes: AUTH_SIGN_UP_MAX_BODY_BYTES,
       parse: (body) => {
-        const parsed = parseSignupBody(body);
-        return parsed.ok ? { ok: true, value: parsed } : parsed;
+        const parsed = parseSignupBody(body)
+        return parsed.ok ? { ok: true, value: parsed } : parsed
       },
       identity: (v) => v.email.trim().toLowerCase(),
-    });
-    if (!gated.ok) return gated.response;
-    const parsed = gated.value;
-    const trimmedEmail = parsed.email.trim().toLowerCase();
+    })
+    if (!gated.ok) return gated.response
+    const parsed = gated.value
+    const trimmedEmail = parsed.email.trim().toLowerCase()
 
     const signupInvitationGate: { invitationId?: string; email: string } = {
       email: trimmedEmail,
-    };
+    }
     if (parsed.invitationId) {
-      signupInvitationGate.invitationId = parsed.invitationId;
+      signupInvitationGate.invitationId = parsed.invitationId
     }
-    const gate = await resolveSignupGate(c, opts, db, signupInvitationGate);
+    const gate = await resolveSignupGate(c, opts, db, signupInvitationGate)
     if (!gate.ok) {
-      return gate.response;
+      return gate.response
     }
-    const { emailVerificationEnabled, emailQueue: signupQueue, emailFrom } =
-      gate;
+    const { emailVerificationEnabled, emailQueue: signupQueue, emailFrom } = gate
 
     // Check email delivery before the existing-user branch so both new and
     // duplicate submissions see the same 503 when verification is required
@@ -860,43 +786,42 @@ export function registerAuthRoutes(app: Hono<AppEnv>, opts: AuthRouteOpts) {
       return c.json(
         {
           ok: false,
-          error:
-            "Sign-up is temporarily unavailable — email delivery is not configured.",
+          error: 'Sign-up is temporarily unavailable — email delivery is not configured.',
         },
-        503,
-      );
+        503
+      )
     }
 
     const existingUser = await db
       .select({ id: user.id })
       .from(user)
       .where(eq(user.email, trimmedEmail))
-      .limit(1);
+      .limit(1)
 
     // Anti-enumeration: duplicate sign-ups return the same outward shape and
     // status as a successful new registration. Do not reveal whether the
     // email is already registered.
     if (existingUser.length > 0) {
-      return c.json({ ok: true }, 201);
+      return c.json({ ok: true }, 201)
     }
 
-    const hashedPassword = await hashPassword(parsed.password);
+    const hashedPassword = await hashPassword(parsed.password)
     const created = await createSignupUser(
       db,
       trimmedEmail,
       hashedPassword,
-      emailVerificationEnabled,
-    );
+      emailVerificationEnabled
+    )
     if (!created.ok) {
       if (created.conflict) {
-        return c.json({ ok: true }, 201);
+        return c.json({ ok: true }, 201)
       }
-      return c.json({ ok: false, error: "Sign-up failed" }, 500);
+      return c.json({ ok: false, error: 'Sign-up failed' }, 500)
     }
 
     if (!emailVerificationEnabled) {
-      await provisionWorkersOrganization(db, opts, created.userId);
-      return c.json({ ok: true }, 201);
+      await provisionWorkersOrganization(db, opts, created.userId)
+      return c.json({ ok: true }, 201)
     }
 
     const verificationResponse = await deliverSignupVerification(
@@ -906,86 +831,89 @@ export function registerAuthRoutes(app: Hono<AppEnv>, opts: AuthRouteOpts) {
       signupQueue,
       trimmedEmail,
       created.userId,
-      emailFrom,
-    );
+      emailFrom
+    )
     if (verificationResponse) {
-      return verificationResponse;
+      return verificationResponse
     }
 
-    return c.json({ ok: true }, 201);
-  });
+    return c.json({ ok: true }, 201)
+  })
 
-  auth.get("/verify-email", async (c) => {
-    const token = c.req.query("token");
+  auth.get('/verify-email', async (c) => {
+    const token = c.req.query('token')
     if (!token) {
-      return c.json({ ok: false, error: "Missing token" }, 400);
+      return c.json({ ok: false, error: 'Missing token' }, 400)
     }
 
-    const db = getDb(c);
+    const db = getDb(c)
     if (db === undefined) {
-      return c.json({ ok: false, error: "Database unavailable" }, 503);
+      return c.json({ ok: false, error: 'Database unavailable' }, 503)
     }
 
-    const identifier = await consumeEmailVerificationToken(db, token);
+    const identifier = await consumeEmailVerificationToken(db, token)
     if (identifier === null) {
-      return c.json({ ok: false, error: "Invalid or expired token" }, 400);
+      return c.json({ ok: false, error: 'Invalid or expired token' }, 400)
     }
 
-    const normalizedEmail = identifier.trim().toLowerCase();
+    const normalizedEmail = identifier.trim().toLowerCase()
     const updated = await db
       .update(user)
       .set({ isEmailVerified: true, updatedAt: nowTs() })
       .where(eq(user.email, normalizedEmail))
-      .returning({ id: user.id, isEmailVerified: user.isEmailVerified });
+      .returning({ id: user.id, isEmailVerified: user.isEmailVerified })
 
     if (updated.length === 0) {
-      return c.json({
-        ok: false,
-        error: "User not found for verification token",
-      }, 404);
+      return c.json(
+        {
+          ok: false,
+          error: 'User not found for verification token',
+        },
+        404
+      )
     }
 
-    return c.json({ ok: true }, 200);
-  });
+    return c.json({ ok: true }, 200)
+  })
 
-  registerOtpRoutes(auth, opts);
-  registerTwoFactorRoutes(auth, opts);
-  registerPasskeyRoutes(auth, opts);
-  registerOAuthRoutes(auth, opts);
+  registerOtpRoutes(auth, opts)
+  registerTwoFactorRoutes(auth, opts)
+  registerPasskeyRoutes(auth, opts)
+  registerOAuthRoutes(auth, opts)
 
-  app.route("/auth", auth);
-  return app;
+  app.route('/auth', auth)
+  return app
 }
 
 export function registerAuthnRoutes(app: Hono<AppEnv>, opts: AuthRouteOpts) {
-  const authn = new Hono<AppEnv>();
+  const authn = new Hono<AppEnv>()
 
-  authn.get("/session", async (c) => {
-    const db = getDb(c);
-    const secrets = opts.secrets;
+  authn.get('/session', async (c) => {
+    const db = getDb(c)
+    const secrets = opts.secrets
     if (!secrets) {
-      return c.json({ ok: false }, 401);
+      return c.json({ ok: false }, 401)
     }
 
-    const cookieValue = readSessionCookie(c, opts.runtime);
+    const cookieValue = readSessionCookie(c, opts.runtime)
     if (!cookieValue) {
-      return c.json({ ok: false }, 401);
+      return c.json({ ok: false }, 401)
     }
 
-    const result = await verifySignedCookie(cookieValue, secrets);
+    const result = await verifySignedCookie(cookieValue, secrets)
     if (!result) {
-      return c.json({ ok: false }, 401);
+      return c.json({ ok: false }, 401)
     }
 
-    const sessionData = await getSession(db, result.token);
+    const sessionData = await getSession(db, result.token)
     if (!sessionData) {
-      return c.json({ ok: false }, 401);
+      return c.json({ ok: false }, 401)
     }
 
-    const payload = await buildSessionResponse(db, opts.runtime, sessionData);
-    return c.json(payload);
-  });
+    const payload = await buildSessionResponse(db, opts.runtime, sessionData)
+    return c.json(payload)
+  })
 
-  app.route("/authn", authn);
-  return app;
+  app.route('/authn', authn)
+  return app
 }

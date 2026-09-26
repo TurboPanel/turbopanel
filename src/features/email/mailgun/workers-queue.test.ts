@@ -1,10 +1,7 @@
 import { assertEquals } from '@std/assert'
 import { resolveEmailSettings } from '../../settings/email-settings.ts'
 import { createNoopQueue, isNoopEmailQueue } from '../noop-queue.ts'
-import {
-  emailQueueFromResolvedSettings,
-  resolveWorkersEmailQueue,
-} from './workers-queue.ts'
+import { emailQueueFromResolvedSettings, resolveWorkersEmailQueue } from './workers-queue.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -19,7 +16,7 @@ test('emailQueueFromResolvedSettings returns noop when mailgun credentials are m
     TURBOPANEL_SYSTEM_EMAIL__PROVIDER: 'mailgun',
     TURBOPANEL_SYSTEM_EMAIL__MAILGUN_DOMAIN: 'mg.example.com',
   })
-  const queue = emailQueueFromResolvedSettings(resolved, {})
+  const queue = emailQueueFromResolvedSettings(resolved)
   assertEquals(isNoopEmailQueue(queue), true)
   assertEquals(queue.constructor.name, 'NoopQueue')
 })
@@ -29,7 +26,7 @@ test('emailQueueFromResolvedSettings builds Mailpit and Mailgun queues', async (
     TURBOPANEL_SYSTEM_EMAIL__PROVIDER: 'mailpit-api',
     TURBOPANEL_SYSTEM_EMAIL__MAILPIT_API_URL: 'http://127.0.0.1:8025',
   })
-  const mailpitQueue = emailQueueFromResolvedSettings(mailpitResolved, {})
+  const mailpitQueue = emailQueueFromResolvedSettings(mailpitResolved)
   assertEquals(mailpitQueue.constructor.name, 'WorkersMailpitQueue')
 
   const mailgunResolved = await resolveEmailSettings(undefined, {
@@ -37,7 +34,7 @@ test('emailQueueFromResolvedSettings builds Mailpit and Mailgun queues', async (
     TURBOPANEL_SYSTEM_EMAIL__MAILGUN_API_KEY: 'key-test-only',
     TURBOPANEL_SYSTEM_EMAIL__MAILGUN_DOMAIN: 'mg.example.com',
   })
-  const mailgunQueue = emailQueueFromResolvedSettings(mailgunResolved, {})
+  const mailgunQueue = emailQueueFromResolvedSettings(mailgunResolved)
   assertEquals(mailgunQueue.constructor.name, 'WorkersMailgunQueue')
 })
 
@@ -45,7 +42,7 @@ test('emailQueueFromResolvedSettings returns noop for mailpit-api without API UR
   const resolved = await resolveEmailSettings(undefined, {
     TURBOPANEL_SYSTEM_EMAIL__PROVIDER: 'mailpit-api',
   })
-  const queue = emailQueueFromResolvedSettings(resolved, {})
+  const queue = emailQueueFromResolvedSettings(resolved)
   assertEquals(isNoopEmailQueue(queue), true)
 })
 
@@ -55,7 +52,7 @@ test('emailQueueFromResolvedSettings returns noop for smtp provider', async () =
     TURBOPANEL_SYSTEM_EMAIL__SMTP_HOST: '127.0.0.1',
     TURBOPANEL_SYSTEM_EMAIL__SMTP_PORT: '1025',
   })
-  const queue = emailQueueFromResolvedSettings(resolved, {})
+  const queue = emailQueueFromResolvedSettings(resolved)
   assertEquals(queue, createNoopQueue())
 })
 
@@ -73,6 +70,6 @@ test('emailQueueFromResolvedSettings returns noop when mailgun api key is blank'
     TURBOPANEL_SYSTEM_EMAIL__MAILGUN_API_KEY: '   ',
     TURBOPANEL_SYSTEM_EMAIL__MAILGUN_DOMAIN: 'mg.example.com',
   })
-  const queue = emailQueueFromResolvedSettings(resolved, {})
+  const queue = emailQueueFromResolvedSettings(resolved)
   assertEquals(isNoopEmailQueue(queue), true)
 })

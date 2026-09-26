@@ -2,7 +2,7 @@ import { assertEquals } from '@std/assert'
 import { Hono } from 'hono'
 import type { AppEnv } from '../app/app.ts'
 import type { Db } from '../db/connection.ts'
-import { getDatabaseUrl } from '../db/url.ts'
+import { getDatabaseUrl, parsePostgresDatabaseUrl } from '../db/url.ts'
 import { createDenoDb } from '../db/connection.ts'
 import { registerDatabaseRoutes } from './database-routes.ts'
 import { testOnlyPostgresTcpUrl } from '../test-fixtures/database-url.ts'
@@ -39,7 +39,7 @@ test('GET /database/status reports unconfigured postgres', async () => {
     const app = buildDatabaseApp({} as Db)
     const res = await app.request('/database/status')
     assertEquals(res.status, 200)
-    const body = await res.json() as {
+    const body = (await res.json()) as {
       configured: boolean
       connected: boolean
       error: string | null
@@ -65,7 +65,7 @@ test('GET /database/status reports client unavailable when db missing', async ()
   const app = buildDatabaseApp(undefined, dbUrl)
   const res = await app.request('/database/status')
   assertEquals(res.status, 200)
-  const body = await res.json() as {
+  const body = (await res.json()) as {
     configured: boolean
     connected: boolean
     error: string | null
@@ -86,7 +86,7 @@ test('GET /database/status returns connected postgres metadata', async () => {
   const app = buildDatabaseApp(db, dbUrl)
   const res = await app.request('/database/status')
   assertEquals(res.status, 200)
-  const body = await res.json() as {
+  const body = (await res.json()) as {
     configured: boolean
     connected: boolean
     version: string | null
@@ -98,7 +98,8 @@ test('GET /database/status returns connected postgres metadata', async () => {
   assertEquals(body.error, null)
   assertEquals(typeof body.version, 'string')
   assertEquals(body.version!.includes('PostgreSQL'), true)
-  assertEquals(body.database, 'turbopanel')
+  // The route reports current_database(); CI and local runs use scratch names.
+  assertEquals(body.database, parsePostgresDatabaseUrl(dbUrl)?.database)
 })
 
 test('GET /database/status surfaces query errors', async () => {
@@ -111,7 +112,7 @@ test('GET /database/status surfaces query errors', async () => {
   const app = buildDatabaseApp(db, testOnlyPostgresTcpUrl())
   const res = await app.request('/database/status')
   assertEquals(res.status, 200)
-  const body = await res.json() as {
+  const body = (await res.json()) as {
     connected: boolean
     error: string | null
   }
@@ -123,7 +124,7 @@ test('GET /database/studio returns probe payload', async () => {
   const app = buildDatabaseApp(undefined)
   const res = await app.request('/database/studio')
   assertEquals(res.status, 200)
-  const body = await res.json() as {
+  const body = (await res.json()) as {
     running: boolean
     browserUrl: string
     port: number

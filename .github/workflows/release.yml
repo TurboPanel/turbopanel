@@ -305,7 +305,7 @@ jobs:
   release:
     needs: [prepare, manifest]
     if: needs.prepare.outputs.channel != 'canary'
-    uses: TurboPanel/dev/.github/workflows/gh-release.yml@trunk
+    uses: TurboPanel/dev/.github/workflows/gh-release.yml@177d481666cce2e1dcfa76290b141b0149a6a0a9 # dev trunk 2026-09-25
     with:
       version: ${{ needs.prepare.outputs.version }}
       channel: ${{ needs.prepare.outputs.channel }}
@@ -316,7 +316,7 @@ jobs:
   canary:
     needs: [prepare, manifest]
     if: needs.prepare.outputs.channel == 'canary'
-    uses: TurboPanel/dev/.github/workflows/gh-canary.yml@trunk
+    uses: TurboPanel/dev/.github/workflows/gh-canary.yml@177d481666cce2e1dcfa76290b141b0149a6a0a9 # dev trunk 2026-09-25
     with:
       version: ${{ needs.prepare.outputs.version }}
       commit: ${{ needs.prepare.outputs.commit }}

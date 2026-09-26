@@ -7,13 +7,13 @@ import {
   type Scalar,
   type YAMLMap,
   type YAMLSeq,
-} from "yaml";
-import { COMPOSE_YAML_OPTIONS } from "./tags.ts";
+} from 'yaml'
+import { COMPOSE_YAML_OPTIONS } from './tags.ts'
 import {
   type ComposeServiceKind,
   SUPPORTED_NODE_SERIES,
   TURBOPANEL_SERVICE_EXTENSION_KEY,
-} from "./service-kind.ts";
+} from './service-kind.ts'
 import {
   HOSTING_HOSTNAME_REQUIRED_MESSAGE,
   HOSTING_TARGET_PORT_NOT_FOR_NODE_MESSAGE,
@@ -23,14 +23,14 @@ import {
   hostingTargetPortAuthorable,
   hostingTlsRefUnresolvedMessage,
   readHostingHostname,
-} from "./hosting-extension.ts";
-import { parseExactVariableRef } from "./variable-refs.ts";
+} from './hosting-extension.ts'
+import { parseExactVariableRef } from './variable-refs.ts'
 import {
   isNativeAppRestartCondition,
   isNativeAppRestartDuration,
   isNativeAppRestartMaxAttempts,
   NATIVE_APP_RESTART_CONDITIONS,
-} from "./native-app.ts";
+} from './native-app.ts'
 import {
   classifyDeployKey,
   classifyDeployResourcesKey,
@@ -43,11 +43,11 @@ import {
   unsupportedDeployReason,
   unsupportedDeployResourcesReason,
   unsupportedNetworkReason,
-} from "./field-policy.ts";
-import { validateAgainstUpstreamSchema } from "./upstream-schema.ts";
-import { collectHostAccessFindings } from "./host-access.ts";
+} from './field-policy.ts'
+import { validateAgainstUpstreamSchema } from './upstream-schema.ts'
+import { collectHostAccessFindings } from './host-access.ts'
 
-export type ComposeLintLevel = "error" | "warning";
+export type ComposeLintLevel = 'error' | 'warning'
 
 /**
  * Machine-readable rule identity, for the callers that need to act on *which*
@@ -60,26 +60,26 @@ export type ComposeLintLevel = "error" | "warning";
  * load-bearing.
  */
 export type ComposeLintCode =
-  | "field_unsupported"
-  | "turbofabric_required"
-  | "field_requires_org_opt_in"
-  | "field_recommends_resource_limits";
+  | 'field_unsupported'
+  | 'turbofabric_required'
+  | 'field_requires_org_opt_in'
+  | 'field_recommends_resource_limits'
 
 export type ComposeLintIssue = {
-  level: ComposeLintLevel;
-  message: string;
+  level: ComposeLintLevel
+  message: string
   /** Set only for rules a caller keys off; see {@link ComposeLintCode}. */
-  code?: ComposeLintCode;
+  code?: ComposeLintCode
   /** Dot-joined location within the compose tree (e.g. `services.nginx.imaage`). */
-  path: string;
+  path: string
   /** 1-based source line, when it can be resolved from the YAML. */
-  line?: number;
+  line?: number
   /**
    * When false, never blocks save even if the level is `warning`/`error`.
    * Used for advisory-only tags in the base layer.
    */
-  blocking?: false;
-};
+  blocking?: false
+}
 
 export type ComposeLintOptions = {
   /**
@@ -87,14 +87,14 @@ export type ComposeLintOptions = {
    * unchanged). Tags only take effect in an overlay; on base they emit a
    * non-blocking advisory warning.
    */
-  layer?: "base" | "overlay";
+  layer?: 'base' | 'overlay'
   /**
    * Every `source.id` visible to the caller's organization. The linter is pure
    * (no database), so the route layer queries the set once per request and
    * passes it in; when omitted the `sourceId` resolution check is **skipped**
    * entirely rather than false-flagging.
    */
-  knownSourceIds?: ReadonlySet<string>;
+  knownSourceIds?: ReadonlySet<string>
   /**
    * The repository this project is bound to, when it has one.
    *
@@ -115,7 +115,7 @@ export type ComposeLintOptions = {
    * {@link ComposeLintOptions.knownSourceIds} does: a caller with no project
    * context must not be made to false-flag.
    */
-  projectRepositoryId?: string | null;
+  projectRepositoryId?: string | null
   /**
    * Every principal alias in scope for this document — its own root
    * `x-turbopanel.principals`, plus (for an overlay) the project base's.
@@ -125,7 +125,7 @@ export type ComposeLintOptions = {
    * rather than false-flagging every service in a document whose sibling layer
    * the caller could not see.
    */
-  knownPrincipalAliases?: ReadonlySet<string>;
+  knownPrincipalAliases?: ReadonlySet<string>
   /**
    * Every `tls.id` visible to the caller's organization, for
    * `x-turbopanel.hosting[i].tls.certificateRef`.
@@ -136,13 +136,13 @@ export type ComposeLintOptions = {
    * document the caller could not resolve refs for. A ref may name a row by id
    * or by name, so the caller assembles both spellings into one set.
    */
-  knownTlsIds?: ReadonlySet<string>;
+  knownTlsIds?: ReadonlySet<string>
   /**
    * Every managed address visible to the caller's organization, for
    * `x-turbopanel.hosting[i].bind.ipRef`. Same contract as
    * {@link ComposeLintOptions.knownTlsIds}; ids and addresses share the set.
    */
-  knownIpIds?: ReadonlySet<string>;
+  knownIpIds?: ReadonlySet<string>
   /**
    * Deploy-time posture for the field-policy rules (`./field-policy.ts`).
    *
@@ -159,8 +159,8 @@ export type ComposeLintOptions = {
    * every other rule keeps the blocking behaviour it already had, so turning
    * this on cannot retroactively fail a document for an unrelated reason.
    */
-  strict?: boolean;
-};
+  strict?: boolean
+}
 
 /**
  * The DB-resolved sets a caller can hand the linter, bundled.
@@ -173,20 +173,19 @@ export type ComposeLintOptions = {
  * is how a caller ends up passing them in the wrong order.
  */
 type KnownComposeReferences = {
-  sourceIds?: ReadonlySet<string>;
-  principalAliases?: ReadonlySet<string>;
-  tlsIds?: ReadonlySet<string>;
-  ipIds?: ReadonlySet<string>;
-};
+  sourceIds?: ReadonlySet<string>
+  principalAliases?: ReadonlySet<string>
+  tlsIds?: ReadonlySet<string>
+  ipIds?: ReadonlySet<string>
+}
 
 /** Draft-only warnings that must not block saving a blank/empty compose. */
 const DRAFT_ALLOWED_LINT_MESSAGES = new Set([
   'Compose file has no "services" section',
-  "No services defined",
-]);
+  'No services defined',
+])
 
-const BASE_LAYER_TAG_ADVISORY =
-  "!reset / !override only take effect in an overlay compose file";
+const BASE_LAYER_TAG_ADVISORY = '!reset / !override only take effect in an overlay compose file'
 
 /**
  * Non-blocking notice. The block is no longer inert — deploy-prepare turns it
@@ -195,100 +194,90 @@ const BASE_LAYER_TAG_ADVISORY =
  * expects it to change how the service runs needs to hear that.
  */
 const SOURCE_INERT_ADVISORY =
-  "x-turbopanel.source builds and promotes a release, but does not yet change how this service is served or supervised";
+  'x-turbopanel.source builds and promotes a release, but does not yet change how this service is served or supervised'
 
 function isExtensionKey(key: string): boolean {
-  return key.startsWith("x-");
+  return key.startsWith('x-')
 }
 
 function levenshtein(a: string, b: string): number {
-  const rows = a.length + 1;
-  const cols = b.length + 1;
-  const dist = Array.from(
-    { length: rows },
-    () => new Array<number>(cols).fill(0),
-  );
-  for (let i = 0; i < rows; i += 1) dist[i]![0] = i;
-  for (let j = 0; j < cols; j += 1) dist[0]![j] = j;
+  const rows = a.length + 1
+  const cols = b.length + 1
+  const dist = Array.from({ length: rows }, () => new Array<number>(cols).fill(0))
+  for (let i = 0; i < rows; i += 1) dist[i]![0] = i
+  for (let j = 0; j < cols; j += 1) dist[0]![j] = j
   for (let i = 1; i < rows; i += 1) {
     for (let j = 1; j < cols; j += 1) {
-      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1
       dist[i]![j] = Math.min(
         dist[i - 1]![j]! + 1,
         dist[i]![j - 1]! + 1,
-        dist[i - 1]![j - 1]! + cost,
-      );
+        dist[i - 1]![j - 1]! + cost
+      )
     }
   }
-  return dist[a.length]![b.length]!;
+  return dist[a.length]![b.length]!
 }
 
 /** Nearest allowed key within edit distance 2, for "did you mean" hints. */
 function suggestKey(key: string, allowed: Iterable<string>): string | null {
-  let best: string | null = null;
-  let bestDistance = 3;
+  let best: string | null = null
+  let bestDistance = 3
   for (const candidate of allowed) {
-    const distance = levenshtein(key, candidate);
+    const distance = levenshtein(key, candidate)
     if (distance < bestDistance) {
-      best = candidate;
-      bestDistance = distance;
+      best = candidate
+      bestDistance = distance
     }
   }
-  return best;
+  return best
 }
 
-function unknownKeyMessage(
-  key: string,
-  kind: string,
-  allowed: Iterable<string>,
-): string {
-  const suggestion = suggestKey(key, allowed);
-  const base = `Unknown ${kind} key "${key}"`;
-  return suggestion ? `${base} — did you mean "${suggestion}"?` : base;
+function unknownKeyMessage(key: string, kind: string, allowed: Iterable<string>): string {
+  const suggestion = suggestKey(key, allowed)
+  const base = `Unknown ${kind} key "${key}"`
+  return suggestion ? `${base} — did you mean "${suggestion}"?` : base
 }
 
-function nodeLine(
-  node: Node | null | undefined,
-  lineCounter: LineCounter,
-): number | undefined {
-  const range = (node as { range?: [number, number, number] } | null)?.range;
-  if (!range) return undefined;
-  return lineCounter.linePos(range[0]).line;
+function nodeLine(node: Node | null | undefined, lineCounter: LineCounter): number | undefined {
+  const range = (node as { range?: [number, number, number] } | null)?.range
+  if (!range) return undefined
+  return lineCounter.linePos(range[0]).line
 }
 
 function stringKey(key: unknown): string | null {
-  if (key && typeof key === "object" && "value" in (key as object)) {
-    const value = (key as { value: unknown }).value;
-    if (typeof value === "string") return value;
+  if (key && typeof key === 'object' && 'value' in (key as object)) {
+    const value = (key as { value: unknown }).value
+    if (typeof value === 'string') return value
   }
-  return null;
+  return null
 }
 
 /** Raw scalar payload of a YAML node, or `undefined` when it is not a scalar. */
 function scalarValueOf(node: Node | null | undefined): unknown {
-  if (!node || typeof node !== "object" || !("value" in node)) return undefined;
-  return (node as Scalar).value;
+  if (!node || typeof node !== 'object' || !('value' in node)) return undefined
+  return (node as Scalar).value
 }
 
 function scalarString(node: Node | null | undefined): string | null {
-  if (!node || typeof node !== "object" || !("value" in node)) return null;
-  const value = (node as Scalar).value;
-  return typeof value === "string" ? value : null;
+  if (!node || typeof node !== 'object' || !('value' in node)) return null
+  const value = (node as Scalar).value
+  return typeof value === 'string' ? value : null
 }
 
 /** True when the YAML node carries Compose Spec `!reset` / `!override`. */
 function isTaggedNode(node: Node | null | undefined): boolean {
-  if (!node || typeof node !== "object") return false;
-  const tag = (node as { tag?: string }).tag;
-  return tag === "!reset" || tag === "!override";
+  if (!node || typeof node !== 'object') return false
+  const tag = (node as { tag?: string }).tag
+  return tag === '!reset' || tag === '!override'
 }
 
 /** True when an `image` key is present but empty/missing (not a real image ref). */
 function isEmptyImageValue(node: Node | null | undefined): boolean {
-  if (!node || typeof node !== "object" || !("value" in node)) return false;
-  const value = (node as Scalar).value;
-  if (value === null || value === undefined) return true;
-  return typeof value === "string" && value.trim().length === 0;
+  if (!node || typeof node !== 'object' || !('value' in node)) return false
+  const value = (node as Scalar).value
+  if (value === null || value === undefined) return true
+  return typeof value === 'string' && value.trim().length === 0
 }
 
 /**
@@ -296,30 +285,30 @@ function isEmptyImageValue(node: Node | null | undefined): boolean {
  * are served by a host engine and `node` apps are supervised from a Git
  * release, so neither declares one.
  */
-const HOST_NATIVE_SERVICE_KINDS = new Set(["site", "node"]);
+const HOST_NATIVE_SERVICE_KINDS = new Set(['site', 'node'])
 
 /** The `x-turbopanel` map on a service node, or null when absent or not a map. */
 function serviceExtensionMap(valueNode: YAMLMap): YAMLMap | null {
   for (const item of valueNode.items) {
-    if (stringKey(item.key) !== TURBOPANEL_SERVICE_EXTENSION_KEY) continue;
-    return isMap(item.value) ? (item.value as YAMLMap) : null;
+    if (stringKey(item.key) !== TURBOPANEL_SERVICE_EXTENSION_KEY) continue
+    return isMap(item.value) ? (item.value as YAMLMap) : null
   }
-  return null;
+  return null
 }
 
 /** Value node for `key` in a YAML map, or undefined when the key is absent. */
 function mapEntryValue(node: YAMLMap, key: string): Node | null | undefined {
   for (const item of node.items) {
-    if (stringKey(item.key) === key) return item.value as Node | null;
+    if (stringKey(item.key) === key) return item.value as Node | null
   }
-  return undefined;
+  return undefined
 }
 
 function serviceIsHostNative(valueNode: YAMLMap): boolean {
-  const extension = serviceExtensionMap(valueNode);
-  if (!extension) return false;
-  const kind = scalarString(mapEntryValue(extension, "serviceKind"));
-  return kind !== null && HOST_NATIVE_SERVICE_KINDS.has(kind);
+  const extension = serviceExtensionMap(valueNode)
+  if (!extension) return false
+  const kind = scalarString(mapEntryValue(extension, 'serviceKind'))
+  return kind !== null && HOST_NATIVE_SERVICE_KINDS.has(kind)
 }
 
 /**
@@ -332,10 +321,9 @@ function serviceIsHostNative(valueNode: YAMLMap): boolean {
  * policy to govern and a container service hands the whole block to Docker.
  */
 function serviceIsNativeApp(valueNode: YAMLMap): boolean {
-  const extension = serviceExtensionMap(valueNode);
-  if (!extension) return false;
-  return scalarString(mapEntryValue(extension, "serviceKind"))?.trim() ===
-    "node";
+  const extension = serviceExtensionMap(valueNode)
+  if (!extension) return false
+  return scalarString(mapEntryValue(extension, 'serviceKind'))?.trim() === 'node'
 }
 
 /**
@@ -347,14 +335,12 @@ function serviceIsNativeApp(valueNode: YAMLMap): boolean {
  * the built OCI image, so there is nothing for the author to type here.
  */
 function serviceIsRailpackBuilt(valueNode: YAMLMap): boolean {
-  const extension = serviceExtensionMap(valueNode);
-  if (!extension) return false;
-  const sourceNode = mapEntryValue(extension, "source");
-  if (!isMap(sourceNode)) return false;
-  const buildKind = scalarString(
-    mapEntryValue(sourceNode as YAMLMap, "buildKind"),
-  );
-  return buildKind?.trim() === "railpack";
+  const extension = serviceExtensionMap(valueNode)
+  if (!extension) return false
+  const sourceNode = mapEntryValue(extension, 'source')
+  if (!isMap(sourceNode)) return false
+  const buildKind = scalarString(mapEntryValue(sourceNode as YAMLMap, 'buildKind'))
+  return buildKind?.trim() === 'railpack'
 }
 
 /**
@@ -362,16 +348,16 @@ function serviceIsRailpackBuilt(valueNode: YAMLMap): boolean {
  * check can report the author's own line number.
  */
 function serviceSourceIdNode(
-  valueNode: YAMLMap,
+  valueNode: YAMLMap
 ): { sourceId: string | null; node: Node | null } | null {
-  const extension = serviceExtensionMap(valueNode);
-  if (!extension) return null;
-  const sourceNode = mapEntryValue(extension, "source");
-  if (sourceNode === undefined) return null;
-  if (!isMap(sourceNode)) return { sourceId: null, node: sourceNode };
-  const idNode = mapEntryValue(sourceNode as YAMLMap, "sourceId");
-  if (idNode === undefined) return { sourceId: null, node: sourceNode as Node };
-  return { sourceId: scalarString(idNode), node: idNode };
+  const extension = serviceExtensionMap(valueNode)
+  if (!extension) return null
+  const sourceNode = mapEntryValue(extension, 'source')
+  if (sourceNode === undefined) return null
+  if (!isMap(sourceNode)) return { sourceId: null, node: sourceNode }
+  const idNode = mapEntryValue(sourceNode as YAMLMap, 'sourceId')
+  if (idNode === undefined) return { sourceId: null, node: sourceNode as Node }
+  return { sourceId: scalarString(idNode), node: idNode }
 }
 
 /**
@@ -383,33 +369,33 @@ function lintServiceSource(
   valueNode: YAMLMap,
   known: KnownComposeReferences,
   lineCounter: LineCounter,
-  issues: ComposeLintIssue[],
+  issues: ComposeLintIssue[]
 ): void {
-  const found = serviceSourceIdNode(valueNode);
-  if (!found) return;
+  const found = serviceSourceIdNode(valueNode)
+  if (!found) return
 
-  const path = `services.${name}.x-turbopanel.source.sourceId`;
-  const line = nodeLine(found.node, lineCounter);
+  const path = `services.${name}.x-turbopanel.source.sourceId`
+  const line = nodeLine(found.node, lineCounter)
 
   issues.push({
-    level: "warning",
+    level: 'warning',
     message: SOURCE_INERT_ADVISORY,
     path: `services.${name}.x-turbopanel.source`,
     line,
     blocking: false,
-  });
+  })
 
-  const knownSourceIds = known.sourceIds;
-  if (!knownSourceIds || found.sourceId === null) return;
-  const sourceId = found.sourceId.trim();
-  if (sourceId.length === 0 || knownSourceIds.has(sourceId)) return;
+  const knownSourceIds = known.sourceIds
+  if (!knownSourceIds || found.sourceId === null) return
+  const sourceId = found.sourceId.trim()
+  if (sourceId.length === 0 || knownSourceIds.has(sourceId)) return
 
   issues.push({
-    level: "error",
+    level: 'error',
     message: `source '${sourceId}' was not found for this organization`,
     path,
     line,
-  });
+  })
 }
 
 /**
@@ -425,25 +411,24 @@ function lintServicePrincipal(
   valueNode: YAMLMap,
   known: KnownComposeReferences,
   lineCounter: LineCounter,
-  issues: ComposeLintIssue[],
+  issues: ComposeLintIssue[]
 ): void {
-  const knownPrincipalAliases = known.principalAliases;
-  if (!knownPrincipalAliases) return;
-  const extension = serviceExtensionMap(valueNode);
-  if (!extension) return;
-  const aliasNode = mapEntryValue(extension, "principal");
-  const alias = scalarString(aliasNode);
-  if (alias === null) return;
-  const trimmed = alias.trim();
-  if (trimmed.length === 0 || knownPrincipalAliases.has(trimmed)) return;
+  const knownPrincipalAliases = known.principalAliases
+  if (!knownPrincipalAliases) return
+  const extension = serviceExtensionMap(valueNode)
+  if (!extension) return
+  const aliasNode = mapEntryValue(extension, 'principal')
+  const alias = scalarString(aliasNode)
+  if (alias === null) return
+  const trimmed = alias.trim()
+  if (trimmed.length === 0 || knownPrincipalAliases.has(trimmed)) return
 
   issues.push({
-    level: "error",
-    message:
-      `principal '${trimmed}' is not declared in this document's x-turbopanel.principals`,
+    level: 'error',
+    message: `principal '${trimmed}' is not declared in this document's x-turbopanel.principals`,
     path: `services.${name}.x-turbopanel.principal`,
     line: nodeLine(aliasNode ?? undefined, lineCounter),
-  });
+  })
 }
 
 /**
@@ -468,16 +453,16 @@ function lintServiceHosting(
   valueNode: YAMLMap,
   known: KnownComposeReferences,
   lineCounter: LineCounter,
-  issues: ComposeLintIssue[],
+  issues: ComposeLintIssue[]
 ): void {
-  const extension = serviceExtensionMap(valueNode);
-  if (!extension) return;
-  const hostingNode = mapEntryValue(extension, "hosting");
-  if (!isSeq(hostingNode)) return;
-  const serviceKind = scalarString(mapEntryValue(extension, "serviceKind"));
+  const extension = serviceExtensionMap(valueNode)
+  if (!extension) return
+  const hostingNode = mapEntryValue(extension, 'hosting')
+  if (!isSeq(hostingNode)) return
+  const serviceKind = scalarString(mapEntryValue(extension, 'serviceKind'))
 
   for (const [index, item] of (hostingNode as YAMLSeq).items.entries()) {
-    if (!isMap(item)) continue;
+    if (!isMap(item)) continue
     lintHostingEntry({
       basePath: `services.${name}.x-turbopanel.hosting[${index}]`,
       entry: item as YAMLMap,
@@ -485,117 +470,112 @@ function lintServiceHosting(
       known,
       lineCounter,
       issues,
-    });
+    })
   }
 }
 
 /** `serviceKind` as authored, narrowed for the kind-gated hosting rules. */
-function hostingServiceKind(
-  serviceKind: string | null,
-): ComposeServiceKind | undefined {
-  const trimmed = serviceKind?.trim();
-  if (trimmed === "site" || trimmed === "node" || trimmed === "container") {
-    return trimmed;
+function hostingServiceKind(serviceKind: string | null): ComposeServiceKind | undefined {
+  const trimmed = serviceKind?.trim()
+  if (trimmed === 'site' || trimmed === 'node' || trimmed === 'container') {
+    return trimmed
   }
-  return undefined;
+  return undefined
 }
 
 function lintHostingEntry(params: {
-  basePath: string;
-  entry: YAMLMap;
-  serviceKind: string | null;
-  known: KnownComposeReferences;
-  lineCounter: LineCounter;
-  issues: ComposeLintIssue[];
+  basePath: string
+  entry: YAMLMap
+  serviceKind: string | null
+  known: KnownComposeReferences
+  lineCounter: LineCounter
+  issues: ComposeLintIssue[]
 }): void {
-  const { basePath, entry, serviceKind, known, lineCounter, issues } = params;
+  const { basePath, entry, serviceKind, known, lineCounter, issues } = params
 
-  const hostnameNode = mapEntryValue(entry, "hostname");
+  const hostnameNode = mapEntryValue(entry, 'hostname')
   if (!readHostingHostname(scalarString(hostnameNode))) {
     issues.push({
-      level: "error",
+      level: 'error',
       message: HOSTING_HOSTNAME_REQUIRED_MESSAGE,
       path: `${basePath}.hostname`,
       line: nodeLine(hostnameNode ?? (entry as Node), lineCounter),
-    });
+    })
   }
 
-  const targetPortNode = mapEntryValue(entry, "targetPort");
+  const targetPortNode = mapEntryValue(entry, 'targetPort')
   if (
     targetPortNode !== undefined &&
     !hostingTargetPortAuthorable(hostingServiceKind(serviceKind))
   ) {
     issues.push({
-      level: "error",
-      message: serviceKind === "site"
-        ? HOSTING_TARGET_PORT_NOT_FOR_SITE_MESSAGE
-        : HOSTING_TARGET_PORT_NOT_FOR_NODE_MESSAGE,
+      level: 'error',
+      message:
+        serviceKind === 'site'
+          ? HOSTING_TARGET_PORT_NOT_FOR_SITE_MESSAGE
+          : HOSTING_TARGET_PORT_NOT_FOR_NODE_MESSAGE,
       path: `${basePath}.targetPort`,
       line: nodeLine(targetPortNode ?? (entry as Node), lineCounter),
-    });
+    })
   }
 
   // `automatic` parses, so without this the editor would bless a document
   // deploy-prepare refuses — the one thing a linter must never do.
-  const tlsModeNode = nestedEntryValue(entry, "tls", "mode");
-  if (scalarString(tlsModeNode)?.trim() === "automatic") {
+  const tlsModeNode = nestedEntryValue(entry, 'tls', 'mode')
+  if (scalarString(tlsModeNode)?.trim() === 'automatic') {
     issues.push({
-      level: "error",
+      level: 'error',
       message: HOSTING_TLS_MODE_AUTOMATIC_UNSUPPORTED_MESSAGE,
       path: `${basePath}.tls.mode`,
       line: nodeLine(tlsModeNode ?? (entry as Node), lineCounter),
-    });
+    })
   }
 
   lintHostingRef({
     path: `${basePath}.tls.certificateRef`,
-    refNode: nestedEntryValue(entry, "tls", "certificateRef"),
+    refNode: nestedEntryValue(entry, 'tls', 'certificateRef'),
     resolvable: known.tlsIds,
     message: hostingTlsRefUnresolvedMessage,
     lineCounter,
     issues,
-  });
+  })
   lintHostingRef({
     path: `${basePath}.bind.ipRef`,
-    refNode: nestedEntryValue(entry, "bind", "ipRef"),
+    refNode: nestedEntryValue(entry, 'bind', 'ipRef'),
     resolvable: known.ipIds,
     message: hostingIpRefUnresolvedMessage,
     lineCounter,
     issues,
-  });
+  })
 }
 
 /** `entry.<block>.<key>` when both levels are maps, else undefined. */
-function nestedEntryValue(
-  entry: YAMLMap,
-  block: string,
-  key: string,
-): Node | null | undefined {
-  const blockNode = mapEntryValue(entry, block);
-  if (!isMap(blockNode)) return undefined;
-  return mapEntryValue(blockNode as YAMLMap, key);
+function nestedEntryValue(entry: YAMLMap, block: string, key: string): Node | null | undefined {
+  const blockNode = mapEntryValue(entry, block)
+  if (!isMap(blockNode)) return undefined
+  return mapEntryValue(blockNode as YAMLMap, key)
 }
 
 function lintHostingRef(params: {
-  path: string;
-  refNode: Node | null | undefined;
-  resolvable: ReadonlySet<string> | undefined;
-  message: (ref: string) => string;
-  lineCounter: LineCounter;
-  issues: ComposeLintIssue[];
+  path: string
+  refNode: Node | null | undefined
+  resolvable: ReadonlySet<string> | undefined
+  message: (ref: string) => string
+  lineCounter: LineCounter
+  issues: ComposeLintIssue[]
 }): void {
-  const { path, refNode, resolvable, message, lineCounter, issues } = params;
-  if (!resolvable) return;
-  const raw = scalarString(refNode);
-  if (raw === null) return;
-  const ref = raw.trim();
-  if (ref.length === 0 || resolvable.has(ref)) return;
+  const { path, refNode, resolvable, message, lineCounter, issues } = params
+  if (!resolvable) return
+  const raw = scalarString(refNode)
+  if (raw === null) return
+  const ref = raw.trim()
+  if (ref.length === 0 || resolvable.has(ref)) return
   issues.push({
-    level: "error",
+    level: 'error',
     message: message(ref),
     path,
     line: nodeLine(refNode ?? undefined, lineCounter),
-  });
+  })
 }
 
 /**
@@ -607,41 +587,41 @@ function lintServiceNodeVersion(
   name: string,
   valueNode: YAMLMap,
   lineCounter: LineCounter,
-  issues: ComposeLintIssue[],
+  issues: ComposeLintIssue[]
 ): void {
-  const extension = serviceExtensionMap(valueNode);
-  if (!extension) return;
-  const versionNode = mapEntryValue(extension, "nodeVersion");
-  const version = scalarString(versionNode);
-  if (version === null) return;
-  const series = version.trim().split(".")[0];
-  if (series.length === 0 || SUPPORTED_NODE_SERIES.includes(series)) return;
+  const extension = serviceExtensionMap(valueNode)
+  if (!extension) return
+  const versionNode = mapEntryValue(extension, 'nodeVersion')
+  const version = scalarString(versionNode)
+  if (version === null) return
+  const series = version.trim().split('.')[0]
+  if (series.length === 0 || SUPPORTED_NODE_SERIES.includes(series)) return
   issues.push({
-    level: "warning",
-    message: `Node ${version} is not an offered series (${
-      SUPPORTED_NODE_SERIES.join(", ")
-    }); the deploy uses whatever the host has vendored`,
+    level: 'warning',
+    message: `Node ${version} is not an offered series (${SUPPORTED_NODE_SERIES.join(
+      ', '
+    )}); the deploy uses whatever the host has vendored`,
     path: `services.${name}.x-turbopanel.nodeVersion`,
     line: nodeLine(versionNode ?? undefined, lineCounter),
     blocking: false,
-  });
+  })
 }
 
 function pushBaseTagAdvisory(
   node: Node | null | undefined,
   path: string,
-  layer: "base" | "overlay",
+  layer: 'base' | 'overlay',
   lineCounter: LineCounter,
-  issues: ComposeLintIssue[],
+  issues: ComposeLintIssue[]
 ): void {
-  if (layer !== "base" || !isTaggedNode(node)) return;
+  if (layer !== 'base' || !isTaggedNode(node)) return
   issues.push({
-    level: "warning",
+    level: 'warning',
     message: BASE_LAYER_TAG_ADVISORY,
     path,
     line: nodeLine(node, lineCounter),
     blocking: false,
-  });
+  })
 }
 
 /**
@@ -651,32 +631,32 @@ function pushBaseTagAdvisory(
 function walkTaggedAdvisories(
   node: Node | null | undefined,
   path: string,
-  layer: "base" | "overlay",
+  layer: 'base' | 'overlay',
   lineCounter: LineCounter,
-  issues: ComposeLintIssue[],
+  issues: ComposeLintIssue[]
 ): void {
-  if (!node || typeof node !== "object") return;
+  if (!node || typeof node !== 'object') return
   if (isTaggedNode(node)) {
-    pushBaseTagAdvisory(node, path, layer, lineCounter, issues);
-    return;
+    pushBaseTagAdvisory(node, path, layer, lineCounter, issues)
+    return
   }
-  if (!isMap(node)) return;
+  if (!isMap(node)) return
   for (const item of node.items) {
-    const key = stringKey(item.key);
-    if (key === null) continue;
-    const childPath = path ? `${path}.${key}` : key;
+    const key = stringKey(item.key)
+    if (key === null) continue
+    const childPath = path ? `${path}.${key}` : key
     walkTaggedAdvisories(
       item.value as Node | null | undefined,
       childPath,
       layer,
       lineCounter,
-      issues,
-    );
+      issues
+    )
   }
 }
 
 /** Whether a service field lint pass found an `image` / `build` key. */
-type ServiceFieldPresence = { hasImage: boolean; hasBuild: boolean };
+type ServiceFieldPresence = { hasImage: boolean; hasBuild: boolean }
 
 /**
  * Lint a single service field (unknown-key check + nested tag advisories) and
@@ -687,34 +667,34 @@ function lintServiceField(
   key: string,
   keyNode: Node | null | undefined,
   valueNode: Node | null | undefined,
-  layer: "base" | "overlay",
+  layer: 'base' | 'overlay',
   lineCounter: LineCounter,
-  issues: ComposeLintIssue[],
+  issues: ComposeLintIssue[]
 ): ServiceFieldPresence {
-  const fieldPath = `${servicePath}.${key}`;
+  const fieldPath = `${servicePath}.${key}`
 
   // Tagged subtree is intentional — skip unknown-key checks inside it. Tagged
   // image/build fields still count as present for the structural requirement
   // (an override still supplies a value; a reset is an explicit author choice).
   if (isTaggedNode(valueNode)) {
-    pushBaseTagAdvisory(valueNode, fieldPath, layer, lineCounter, issues);
-    return { hasImage: key === "image", hasBuild: key === "build" };
+    pushBaseTagAdvisory(valueNode, fieldPath, layer, lineCounter, issues)
+    return { hasImage: key === 'image', hasBuild: key === 'build' }
   }
 
-  const hasImage = key === "image" && !isEmptyImageValue(valueNode);
-  const hasBuild = key === "build";
+  const hasImage = key === 'image' && !isEmptyImageValue(valueNode)
+  const hasBuild = key === 'build'
 
-  const servicePolicy = classifyServiceKey(key);
+  const servicePolicy = classifyServiceKey(key)
   if (servicePolicy === undefined && !isExtensionKey(key)) {
     issues.push({
-      level: "warning",
-      message: unknownKeyMessage(key, "service", SERVICE_FIELD_KEYS),
+      level: 'warning',
+      message: unknownKeyMessage(key, 'service', SERVICE_FIELD_KEYS),
       path: fieldPath,
       line: nodeLine(keyNode, lineCounter),
-    });
+    })
   } else {
     // Nested advisories (e.g. healthcheck.test tagged).
-    walkTaggedAdvisories(valueNode, fieldPath, layer, lineCounter, issues);
+    walkTaggedAdvisories(valueNode, fieldPath, layer, lineCounter, issues)
   }
 
   // Always advisory, at both save and deploy time: whether this specific
@@ -722,26 +702,26 @@ function lintServiceField(
   // know (see `field-policy.ts`'s `gated` state doc). The actual deploy-time
   // refusal for an org that has not opted in is a separate check, run where
   // org context exists (`validateComposeForDeploy`'s caller).
-  if (servicePolicy?.state === "gated") {
+  if (servicePolicy?.state === 'gated') {
     issues.push({
-      level: "warning",
-      code: "field_requires_org_opt_in",
+      level: 'warning',
+      code: 'field_requires_org_opt_in',
       message: `${key} is not supported unless the organization has opted in${
-        servicePolicy.reason ? ` — ${servicePolicy.reason}` : ""
+        servicePolicy.reason ? ` — ${servicePolicy.reason}` : ''
       }`,
       path: fieldPath,
       line: nodeLine(keyNode, lineCounter),
       blocking: false,
-    });
+    })
   }
 
-  if (key === "environment") {
-    lintEnvOrArgsCollection(fieldPath, valueNode, lineCounter, issues);
-  } else if (key === "build") {
-    lintBuildArgs(fieldPath, valueNode, lineCounter, issues);
+  if (key === 'environment') {
+    lintEnvOrArgsCollection(fieldPath, valueNode, lineCounter, issues)
+  } else if (key === 'build') {
+    lintBuildArgs(fieldPath, valueNode, lineCounter, issues)
   }
 
-  return { hasImage, hasBuild };
+  return { hasImage, hasBuild }
 }
 
 /**
@@ -754,18 +734,18 @@ function lintServiceField(
 function lintHostAccess(
   doc: ReturnType<typeof parseDocument>,
   lineCounter: LineCounter,
-  issues: ComposeLintIssue[],
+  issues: ComposeLintIssue[]
 ): void {
   for (const finding of collectHostAccessFindings(doc.toJS())) {
-    const node = doc.getIn(finding.segments, true) as Node | undefined;
+    const node = doc.getIn(finding.segments, true) as Node | undefined
     issues.push({
-      level: "warning",
-      code: "field_requires_org_opt_in",
+      level: 'warning',
+      code: 'field_requires_org_opt_in',
       message: finding.message,
       path: finding.path,
       line: nodeLine(node, lineCounter),
       blocking: false,
-    });
+    })
   }
 }
 
@@ -774,44 +754,38 @@ function lintVariableRefScalar(
   path: string,
   node: Node | null | undefined,
   lineCounter: LineCounter,
-  issues: ComposeLintIssue[],
+  issues: ComposeLintIssue[]
 ): void {
-  const parsed = parseExactVariableRef(raw);
-  if (parsed.ok || parsed.error === "not_a_ref") return;
+  const parsed = parseExactVariableRef(raw)
+  if (parsed.ok || parsed.error === 'not_a_ref') return
   issues.push({
-    level: "error",
+    level: 'error',
     message: parsed.message,
     path,
     line: nodeLine(node, lineCounter),
-  });
+  })
 }
 
 function envSeqValueAfterSeparator(raw: string): string {
-  const eq = raw.indexOf("=");
-  const colon = raw.indexOf(":");
-  if (eq < 0 && colon < 0) return "";
-  if (eq < 0) return raw.slice(colon + 1);
-  if (colon < 0) return raw.slice(eq + 1);
-  return raw.slice(Math.min(eq, colon) + 1);
+  const eq = raw.indexOf('=')
+  const colon = raw.indexOf(':')
+  if (eq < 0 && colon < 0) return ''
+  if (eq < 0) return raw.slice(colon + 1)
+  if (colon < 0) return raw.slice(eq + 1)
+  return raw.slice(Math.min(eq, colon) + 1)
 }
 
 function lintEnvOrArgsMap(
   fieldPath: string,
   valueNode: YAMLMap,
   lineCounter: LineCounter,
-  issues: ComposeLintIssue[],
+  issues: ComposeLintIssue[]
 ): void {
   for (const item of valueNode.items) {
-    const key = stringKey(item.key);
-    const raw = scalarString(item.value as Node);
-    if (key === null || raw === null) continue;
-    lintVariableRefScalar(
-      raw,
-      `${fieldPath}.${key}`,
-      item.value as Node,
-      lineCounter,
-      issues,
-    );
+    const key = stringKey(item.key)
+    const raw = scalarString(item.value as Node)
+    if (key === null || raw === null) continue
+    lintVariableRefScalar(raw, `${fieldPath}.${key}`, item.value as Node, lineCounter, issues)
   }
 }
 
@@ -819,18 +793,18 @@ function lintEnvOrArgsSeq(
   fieldPath: string,
   valueNode: YAMLSeq,
   lineCounter: LineCounter,
-  issues: ComposeLintIssue[],
+  issues: ComposeLintIssue[]
 ): void {
   for (const [index, item] of valueNode.items.entries()) {
-    const raw = scalarString(item as Node);
-    if (raw === null) continue;
+    const raw = scalarString(item as Node)
+    if (raw === null) continue
     lintVariableRefScalar(
       envSeqValueAfterSeparator(raw),
       `${fieldPath}[${index}]`,
       item as Node,
       lineCounter,
-      issues,
-    );
+      issues
+    )
   }
 }
 
@@ -838,15 +812,15 @@ function lintEnvOrArgsCollection(
   fieldPath: string,
   valueNode: Node | null | undefined,
   lineCounter: LineCounter,
-  issues: ComposeLintIssue[],
+  issues: ComposeLintIssue[]
 ): void {
-  if (!valueNode || typeof valueNode !== "object") return;
+  if (!valueNode || typeof valueNode !== 'object') return
   if (isMap(valueNode)) {
-    lintEnvOrArgsMap(fieldPath, valueNode, lineCounter, issues);
-    return;
+    lintEnvOrArgsMap(fieldPath, valueNode, lineCounter, issues)
+    return
   }
   if (isSeq(valueNode)) {
-    lintEnvOrArgsSeq(fieldPath, valueNode, lineCounter, issues);
+    lintEnvOrArgsSeq(fieldPath, valueNode, lineCounter, issues)
   }
 }
 
@@ -854,17 +828,17 @@ function lintBuildArgs(
   fieldPath: string,
   valueNode: Node | null | undefined,
   lineCounter: LineCounter,
-  issues: ComposeLintIssue[],
+  issues: ComposeLintIssue[]
 ): void {
-  if (!isMap(valueNode)) return;
+  if (!isMap(valueNode)) return
   for (const item of valueNode.items) {
-    if (stringKey(item.key) !== "args") continue;
+    if (stringKey(item.key) !== 'args') continue
     lintEnvOrArgsCollection(
       `${fieldPath}.args`,
       item.value as Node | null | undefined,
       lineCounter,
-      issues,
-    );
+      issues
+    )
   }
 }
 
@@ -890,36 +864,34 @@ function lintDeployReplicas(
   deployNode: YAMLMap,
   valueNode: Node | null | undefined,
   lineCounter: LineCounter,
-  issues: ComposeLintIssue[],
+  issues: ComposeLintIssue[]
 ): void {
-  if (
-    isTaggedNode(valueNode) || valueNode === null || valueNode === undefined
-  ) return;
-  if (isMap(valueNode) || isSeq(valueNode)) return;
-  if (scalarString(mapEntryValue(deployNode, "mode")) === "global") return;
+  if (isTaggedNode(valueNode) || valueNode === null || valueNode === undefined) return
+  if (isMap(valueNode) || isSeq(valueNode)) return
+  if (scalarString(mapEntryValue(deployNode, 'mode')) === 'global') return
 
-  const value = scalarValueOf(valueNode);
-  if (typeof value === "number") {
+  const value = scalarValueOf(valueNode)
+  if (typeof value === 'number') {
     // A non-integer is the schema's to report.
-    if (!Number.isInteger(value) || value >= 1) return;
-  } else if (typeof value === "string") {
-    const trimmed = value.trim();
-    if (trimmed.length === 0) return;
+    if (!Number.isInteger(value) || value >= 1) return
+  } else if (typeof value === 'string') {
+    const trimmed = value.trim()
+    if (trimmed.length === 0) return
     // A placeholder stands for a value no linter can see; `apply-variables.ts`
     // substitutes it, and the compiled document is checked after that.
-    if (trimmed.includes("${") || trimmed.includes("{$")) return;
-    if (/^\d+$/.test(trimmed) && Number.parseInt(trimmed, 10) >= 1) return;
+    if (trimmed.includes('${') || trimmed.includes('{$')) return
+    if (/^\d+$/.test(trimmed) && Number.parseInt(trimmed, 10) >= 1) return
   } else {
-    return;
+    return
   }
 
   issues.push({
-    level: "error",
+    level: 'error',
     message:
-      "deploy.replicas must be a whole number of at least 1 \u2014 TurboPanel would otherwise ignore it and run a different number of replicas than this document asks for",
+      'deploy.replicas must be a whole number of at least 1 \u2014 TurboPanel would otherwise ignore it and run a different number of replicas than this document asks for',
     path: `services.${name}.deploy.replicas`,
     line: nodeLine(valueNode, lineCounter),
-  });
+  })
 }
 
 /**
@@ -940,34 +912,31 @@ function lintDeployReplicas(
  * {@link lintDeployReplicas} is — any *other* unrecognized value is the
  * upstream schema's to judge, not this rule's.
  */
-const UNSUPPORTED_DEPLOY_MODES: ReadonlySet<string> = new Set([
-  "replicated-job",
-  "global-job",
-]);
+const UNSUPPORTED_DEPLOY_MODES: ReadonlySet<string> = new Set(['replicated-job', 'global-job'])
 
 function lintDeployMode(
   name: string,
   valueNode: Node | null | undefined,
   strict: boolean,
   lineCounter: LineCounter,
-  issues: ComposeLintIssue[],
+  issues: ComposeLintIssue[]
 ): void {
-  if (isTaggedNode(valueNode)) return;
-  const value = scalarString(valueNode)?.trim();
-  if (value === undefined || !UNSUPPORTED_DEPLOY_MODES.has(value)) return;
+  if (isTaggedNode(valueNode)) return
+  const value = scalarString(valueNode)?.trim()
+  if (value === undefined || !UNSUPPORTED_DEPLOY_MODES.has(value)) return
 
   issues.push({
-    level: strict ? "error" : "warning",
-    code: "field_unsupported",
+    level: strict ? 'error' : 'warning',
+    code: 'field_unsupported',
     message:
       `deploy.mode: ${value} is not supported by TurboPanel \u2014 replicated-job and ` +
-      "global-job need a finite-job controller with completion semantics, and " +
-      "TurboPanel schedules long-running replicas it restarts when they exit",
+      'global-job need a finite-job controller with completion semantics, and ' +
+      'TurboPanel schedules long-running replicas it restarts when they exit',
     path: `services.${name}.deploy.mode`,
     line: nodeLine(valueNode, lineCounter),
     // Save-time keeps a draft editable; deploy-time refuses it.
     ...(strict ? {} : { blocking: false as const }),
-  });
+  })
 }
 
 /**
@@ -990,19 +959,19 @@ function lintDeployMode(
  * itself, and narrowing it there would refuse documents that work.
  */
 function nativeRestartExpectation(key: string, value: unknown): string | null {
-  if (key === "condition") {
-    if (isNativeAppRestartCondition(value)) return null;
-    return `must be one of ${[...NATIVE_APP_RESTART_CONDITIONS].join(", ")}`;
+  if (key === 'condition') {
+    if (isNativeAppRestartCondition(value)) return null
+    return `must be one of ${[...NATIVE_APP_RESTART_CONDITIONS].join(', ')}`
   }
-  if (key === "delay" || key === "window") {
-    if (isNativeAppRestartDuration(value)) return null;
-    return "must be a Compose duration such as 5s or 1m30s";
+  if (key === 'delay' || key === 'window') {
+    if (isNativeAppRestartDuration(value)) return null
+    return 'must be a Compose duration such as 5s or 1m30s'
   }
-  if (key === "max_attempts") {
-    if (isNativeAppRestartMaxAttempts(value)) return null;
-    return 'must be a whole number of at least 1 \u2014 0 would render as StartLimitBurst=0, which systemd reads as no rate limit at all, the opposite of "do not retry"';
+  if (key === 'max_attempts') {
+    if (isNativeAppRestartMaxAttempts(value)) return null
+    return 'must be a whole number of at least 1 \u2014 0 would render as StartLimitBurst=0, which systemd reads as no rate limit at all, the opposite of "do not retry"'
   }
-  return null;
+  return null
 }
 
 function lintNativeRestartPolicyField(
@@ -1011,28 +980,25 @@ function lintNativeRestartPolicyField(
   valueNode: Node | null | undefined,
   strict: boolean,
   lineCounter: LineCounter,
-  issues: ComposeLintIssue[],
+  issues: ComposeLintIssue[]
 ): void {
-  if (isTaggedNode(valueNode)) return;
-  if (valueNode === null || valueNode === undefined) return;
-  if (isMap(valueNode) || isSeq(valueNode)) return;
+  if (isTaggedNode(valueNode)) return
+  if (valueNode === null || valueNode === undefined) return
+  if (isMap(valueNode) || isSeq(valueNode)) return
 
-  const value = scalarValueOf(valueNode);
+  const value = scalarValueOf(valueNode)
   // A placeholder stands for a value no linter can see; `apply-variables.ts`
   // substitutes it and the compiled document is checked after that.
-  if (
-    typeof value === "string" &&
-    (value.includes("${") || value.includes("{$"))
-  ) {
-    return;
+  if (typeof value === 'string' && (value.includes('${') || value.includes('{$'))) {
+    return
   }
 
-  const expectation = nativeRestartExpectation(key, value);
-  if (expectation === null) return;
+  const expectation = nativeRestartExpectation(key, value)
+  if (expectation === null) return
 
   issues.push({
-    level: strict ? "error" : "warning",
-    code: "field_unsupported",
+    level: strict ? 'error' : 'warning',
+    code: 'field_unsupported',
     message:
       `deploy.restart_policy.${key} is not supported by TurboPanel on a ` +
       `serviceKind: node service \u2014 the generated systemd unit ${expectation}`,
@@ -1040,7 +1006,7 @@ function lintNativeRestartPolicyField(
     line: nodeLine(valueNode, lineCounter),
     // Save-time keeps a draft editable; deploy-time refuses it.
     ...(strict ? {} : { blocking: false as const }),
-  });
+  })
 }
 
 function lintNativeRestartPolicy(
@@ -1048,20 +1014,20 @@ function lintNativeRestartPolicy(
   restartPolicyNode: Node | null | undefined,
   strict: boolean,
   lineCounter: LineCounter,
-  issues: ComposeLintIssue[],
+  issues: ComposeLintIssue[]
 ): void {
-  if (!isMap(restartPolicyNode) || isTaggedNode(restartPolicyNode)) return;
+  if (!isMap(restartPolicyNode) || isTaggedNode(restartPolicyNode)) return
   for (const item of (restartPolicyNode as YAMLMap).items) {
-    const key = stringKey(item.key);
-    if (key === null || isExtensionKey(key)) continue;
+    const key = stringKey(item.key)
+    if (key === null || isExtensionKey(key)) continue
     lintNativeRestartPolicyField(
       name,
       key,
       item.value as Node | null | undefined,
       strict,
       lineCounter,
-      issues,
-    );
+      issues
+    )
   }
 }
 
@@ -1083,26 +1049,26 @@ function lintDeployResources(
   resourcesNode: Node | null | undefined,
   strict: boolean,
   lineCounter: LineCounter,
-  issues: ComposeLintIssue[],
+  issues: ComposeLintIssue[]
 ): void {
-  if (!isMap(resourcesNode) || isTaggedNode(resourcesNode)) return;
+  if (!isMap(resourcesNode) || isTaggedNode(resourcesNode)) return
 
   for (const item of (resourcesNode as YAMLMap).items) {
-    const key = stringKey(item.key);
-    if (key === null || isExtensionKey(key)) continue;
-    if (classifyDeployResourcesKey(key)?.state !== "unsupported") continue;
-    const reason = unsupportedDeployResourcesReason(key);
+    const key = stringKey(item.key)
+    if (key === null || isExtensionKey(key)) continue
+    if (classifyDeployResourcesKey(key)?.state !== 'unsupported') continue
+    const reason = unsupportedDeployResourcesReason(key)
     issues.push({
-      level: strict ? "error" : "warning",
-      code: "field_unsupported",
+      level: strict ? 'error' : 'warning',
+      code: 'field_unsupported',
       message: `deploy.resources.${key} is not supported by TurboPanel${
-        reason ? ` \u2014 ${reason}` : ""
+        reason ? ` \u2014 ${reason}` : ''
       }`,
       path: `services.${name}.deploy.resources.${key}`,
       line: nodeLine(item.key as Node, lineCounter),
       // Save-time keeps a draft editable; deploy-time refuses it.
       ...(strict ? {} : { blocking: false as const }),
-    });
+    })
   }
 }
 
@@ -1136,21 +1102,19 @@ function lintUnsupportedDeployKey(
   keyNode: Node,
   strict: boolean,
   lineCounter: LineCounter,
-  issues: ComposeLintIssue[],
+  issues: ComposeLintIssue[]
 ): void {
-  if (classifyDeployKey(key)?.state !== "unsupported") return;
-  const reason = unsupportedDeployReason(key);
+  if (classifyDeployKey(key)?.state !== 'unsupported') return
+  const reason = unsupportedDeployReason(key)
   issues.push({
-    level: strict ? "error" : "warning",
-    code: "field_unsupported",
-    message: `deploy.${key} is not supported by TurboPanel${
-      reason ? ` \u2014 ${reason}` : ""
-    }`,
+    level: strict ? 'error' : 'warning',
+    code: 'field_unsupported',
+    message: `deploy.${key} is not supported by TurboPanel${reason ? ` \u2014 ${reason}` : ''}`,
     path: `services.${name}.deploy.${key}`,
     line: nodeLine(keyNode, lineCounter),
     // Save-time keeps a draft editable; deploy-time refuses it.
     ...(strict ? {} : { blocking: false as const }),
-  });
+  })
 }
 
 function lintDeployBlock(
@@ -1159,56 +1123,37 @@ function lintDeployBlock(
   nativeApp: boolean,
   strict: boolean,
   lineCounter: LineCounter,
-  issues: ComposeLintIssue[],
+  issues: ComposeLintIssue[]
 ): void {
   // A tagged `deploy:` is an overlay instruction; the merged result is linted
   // where the merge happens.
-  if (!isMap(deployNode) || isTaggedNode(deployNode)) return;
+  if (!isMap(deployNode) || isTaggedNode(deployNode)) return
 
   for (const item of (deployNode as YAMLMap).items) {
-    const key = stringKey(item.key);
-    if (key === null || isExtensionKey(key)) continue;
-    if (key === "replicas") {
+    const key = stringKey(item.key)
+    if (key === null || isExtensionKey(key)) continue
+    if (key === 'replicas') {
       lintDeployReplicas(
         name,
         deployNode as YAMLMap,
         item.value as Node | null | undefined,
         lineCounter,
-        issues,
-      );
-    } else if (key === "mode") {
-      lintDeployMode(
-        name,
-        item.value as Node | null | undefined,
-        strict,
-        lineCounter,
-        issues,
-      );
-    } else if (key === "resources") {
-      lintDeployResources(
-        name,
-        item.value as Node | null | undefined,
-        strict,
-        lineCounter,
-        issues,
-      );
-    } else if (key === "restart_policy" && nativeApp) {
+        issues
+      )
+    } else if (key === 'mode') {
+      lintDeployMode(name, item.value as Node | null | undefined, strict, lineCounter, issues)
+    } else if (key === 'resources') {
+      lintDeployResources(name, item.value as Node | null | undefined, strict, lineCounter, issues)
+    } else if (key === 'restart_policy' && nativeApp) {
       lintNativeRestartPolicy(
         name,
         item.value as Node | null | undefined,
         strict,
         lineCounter,
-        issues,
-      );
+        issues
+      )
     }
-    lintUnsupportedDeployKey(
-      name,
-      key,
-      item.key as Node,
-      strict,
-      lineCounter,
-      issues,
-    );
+    lintUnsupportedDeployKey(name, key, item.key as Node, strict, lineCounter, issues)
   }
 }
 
@@ -1223,7 +1168,7 @@ function lintDeployBlock(
  * there is still time to change it.
  */
 const TURBOFABRIC_OVERLAY_ADVISORY =
-  "driver: overlay makes this a TurboFabric spanning network \u2014 the organization needs TurboFabric enabled before an environment can join it across more than one server";
+  'driver: overlay makes this a TurboFabric spanning network \u2014 the organization needs TurboFabric enabled before an environment can join it across more than one server'
 
 /**
  * Classify every key under one top-level `networks.<key>` entry.
@@ -1245,42 +1190,43 @@ function lintNetworkEntry(
   entryNode: Node | null | undefined,
   strict: boolean,
   lineCounter: LineCounter,
-  issues: ComposeLintIssue[],
+  issues: ComposeLintIssue[]
 ): void {
   // A tagged entry is an overlay instruction; the merged result is linted where
   // the merge happens.
-  if (!isMap(entryNode) || isTaggedNode(entryNode)) return;
+  if (!isMap(entryNode) || isTaggedNode(entryNode)) return
 
-  const driverNode = mapEntryValue(entryNode as YAMLMap, "driver");
-  const driver = scalarString(driverNode)?.trim();
-  if (driver !== SPANNING_NETWORK_DRIVER) return;
+  const driverNode = mapEntryValue(entryNode as YAMLMap, 'driver')
+  const driver = scalarString(driverNode)?.trim()
+  if (driver !== SPANNING_NETWORK_DRIVER) return
 
   issues.push({
-    level: "warning",
-    code: "turbofabric_required",
+    level: 'warning',
+    code: 'turbofabric_required',
     message: `networks.${key}.${TURBOFABRIC_OVERLAY_ADVISORY}`,
     path: `networks.${key}.driver`,
     line: nodeLine(driverNode as Node, lineCounter),
     // Never a refusal from here: the linter cannot see the fabric row.
     blocking: false,
-  });
+  })
 
   for (const item of (entryNode as YAMLMap).items) {
-    const field = stringKey(item.key);
-    if (field === null || isExtensionKey(field)) continue;
-    if (classifyNetworkKey(field, driver)?.state !== "unsupported") continue;
-    const reason = unsupportedNetworkReason(field, driver);
-    const reasonSuffix = reason ? ` \u2014 ${reason}` : "";
+    const field = stringKey(item.key)
+    if (field === null || isExtensionKey(field)) continue
+    if (classifyNetworkKey(field, driver)?.state !== 'unsupported') continue
+    const reason = unsupportedNetworkReason(field, driver)
+    const reasonSuffix = reason ? ` \u2014 ${reason}` : ''
     issues.push({
-      level: strict ? "error" : "warning",
-      code: "field_unsupported",
-      message: `networks.${key}.${field} is not supported by TurboPanel on a ` +
+      level: strict ? 'error' : 'warning',
+      code: 'field_unsupported',
+      message:
+        `networks.${key}.${field} is not supported by TurboPanel on a ` +
         `driver: overlay network${reasonSuffix}`,
       path: `networks.${key}.${field}`,
       line: nodeLine(item.key as Node, lineCounter),
       // Save-time keeps a draft editable; deploy-time refuses it.
       ...(strict ? {} : { blocking: false as const }),
-    });
+    })
   }
 }
 
@@ -1289,65 +1235,50 @@ function lintNetworks(
   networksNode: Node | null | undefined,
   strict: boolean,
   lineCounter: LineCounter,
-  issues: ComposeLintIssue[],
+  issues: ComposeLintIssue[]
 ): void {
-  if (!isMap(networksNode) || isTaggedNode(networksNode)) return;
+  if (!isMap(networksNode) || isTaggedNode(networksNode)) return
   for (const item of (networksNode as YAMLMap).items) {
-    const key = stringKey(item.key);
-    if (key === null || isExtensionKey(key)) continue;
-    lintNetworkEntry(
-      key,
-      item.value as Node | null | undefined,
-      strict,
-      lineCounter,
-      issues,
-    );
+    const key = stringKey(item.key)
+    if (key === null || isExtensionKey(key)) continue
+    lintNetworkEntry(key, item.value as Node | null | undefined, strict, lineCounter, issues)
   }
 }
 
 function lintService(params: {
-  name: string;
-  valueNode: Node | null | undefined;
-  keyLine: number | undefined;
-  lineCounter: LineCounter;
-  layer: "base" | "overlay";
-  strict: boolean;
-  known: KnownComposeReferences;
-  issues: ComposeLintIssue[];
+  name: string
+  valueNode: Node | null | undefined
+  keyLine: number | undefined
+  lineCounter: LineCounter
+  layer: 'base' | 'overlay'
+  strict: boolean
+  known: KnownComposeReferences
+  issues: ComposeLintIssue[]
 }): void {
-  const {
-    name,
-    valueNode,
-    keyLine,
-    lineCounter,
-    layer,
-    strict,
-    known,
-    issues,
-  } = params;
-  const path = `services.${name}`;
+  const { name, valueNode, keyLine, lineCounter, layer, strict, known, issues } = params
+  const path = `services.${name}`
 
   // Whole service body tagged — skip structural checks; still advisory on base.
   if (isTaggedNode(valueNode)) {
-    pushBaseTagAdvisory(valueNode, path, layer, lineCounter, issues);
-    return;
+    pushBaseTagAdvisory(valueNode, path, layer, lineCounter, issues)
+    return
   }
 
   if (!isMap(valueNode)) {
     issues.push({
-      level: "error",
+      level: 'error',
       message: `Service "${name}" must be a mapping`,
       path,
       line: keyLine,
-    });
-    return;
+    })
+    return
   }
 
-  let hasImage = false;
-  let hasBuild = false;
+  let hasImage = false
+  let hasBuild = false
   for (const item of valueNode.items) {
-    const key = stringKey(item.key);
-    if (key === null) continue;
+    const key = stringKey(item.key)
+    if (key === null) continue
     const presence = lintServiceField(
       path,
       key,
@@ -1355,35 +1286,35 @@ function lintService(params: {
       item.value as Node | null | undefined,
       layer,
       lineCounter,
-      issues,
-    );
-    hasImage = hasImage || presence.hasImage;
-    hasBuild = hasBuild || presence.hasBuild;
+      issues
+    )
+    hasImage = hasImage || presence.hasImage
+    hasBuild = hasBuild || presence.hasBuild
   }
 
   lintDeployBlock(
     name,
-    mapEntryValue(valueNode, "deploy"),
+    mapEntryValue(valueNode, 'deploy'),
     serviceIsNativeApp(valueNode),
     strict,
     lineCounter,
-    issues,
-  );
-  lintServiceSource(name, valueNode, known, lineCounter, issues);
-  lintServicePrincipal(name, valueNode, known, lineCounter, issues);
-  lintServiceHosting(name, valueNode, known, lineCounter, issues);
-  lintServiceNodeVersion(name, valueNode, lineCounter, issues);
-  lintServiceResourceLimits(name, valueNode, keyLine, lineCounter, issues);
+    issues
+  )
+  lintServiceSource(name, valueNode, known, lineCounter, issues)
+  lintServicePrincipal(name, valueNode, known, lineCounter, issues)
+  lintServiceHosting(name, valueNode, known, lineCounter, issues)
+  lintServiceNodeVersion(name, valueNode, lineCounter, issues)
+  lintServiceResourceLimits(name, valueNode, keyLine, issues)
 
-  const hostNative = serviceIsHostNative(valueNode);
-  const railpackBuilt = serviceIsRailpackBuilt(valueNode);
+  const hostNative = serviceIsHostNative(valueNode)
+  const railpackBuilt = serviceIsRailpackBuilt(valueNode)
   if (!hostNative && !railpackBuilt && !hasImage && !hasBuild) {
     issues.push({
-      level: "error",
+      level: 'error',
       message: `Service "${name}" must define "image" or "build"`,
       path,
       line: keyLine,
-    });
+    })
   }
 }
 
@@ -1405,74 +1336,72 @@ function lintServiceResourceLimits(
   name: string,
   valueNode: YAMLMap,
   keyLine: number | undefined,
-  lineCounter: LineCounter,
-  issues: ComposeLintIssue[],
+  issues: ComposeLintIssue[]
 ): void {
-  if (serviceIsHostNative(valueNode)) return;
-  if (serviceDeclaresResourceCeiling(valueNode)) return;
+  if (serviceIsHostNative(valueNode)) return
+  if (serviceDeclaresResourceCeiling(valueNode)) return
   issues.push({
-    level: "warning",
-    code: "field_recommends_resource_limits",
+    level: 'warning',
+    code: 'field_recommends_resource_limits',
     message:
       `Service "${name}" sets no memory or CPU ceiling (mem_limit / cpus / deploy.resources.limits), ` +
-      "so it can use everything the server has. Set one here, or let the organization apply a default.",
+      'so it can use everything the server has. Set one here, or let the organization apply a default.',
     path: `services.${name}`,
     line: keyLine,
     blocking: false,
-  });
+  })
 }
 
 /** Any of the four places Compose can express a ceiling (see `applyResourcesToComposeService`). */
 function serviceDeclaresResourceCeiling(valueNode: YAMLMap): boolean {
-  if (mapEntryValue(valueNode, "mem_limit") != null) return true;
-  if (mapEntryValue(valueNode, "cpus") != null) return true;
-  const deploy = mapEntryValue(valueNode, "deploy");
-  if (!isMap(deploy)) return false;
-  const resources = mapEntryValue(deploy, "resources");
-  if (!isMap(resources)) return false;
-  const limits = mapEntryValue(resources, "limits");
-  if (!isMap(limits)) return false;
-  return mapEntryValue(limits, "memory") != null ||
-    mapEntryValue(limits, "cpus") != null;
+  if (mapEntryValue(valueNode, 'mem_limit') != null) return true
+  if (mapEntryValue(valueNode, 'cpus') != null) return true
+  const deploy = mapEntryValue(valueNode, 'deploy')
+  if (!isMap(deploy)) return false
+  const resources = mapEntryValue(deploy, 'resources')
+  if (!isMap(resources)) return false
+  const limits = mapEntryValue(resources, 'limits')
+  if (!isMap(limits)) return false
+  return mapEntryValue(limits, 'memory') != null || mapEntryValue(limits, 'cpus') != null
 }
 
 function lintServices(
   servicesNode: Node | null | undefined,
   servicesKeyLine: number | undefined,
   lineCounter: LineCounter,
-  layer: "base" | "overlay",
+  layer: 'base' | 'overlay',
   strict: boolean,
   known: KnownComposeReferences,
-  issues: ComposeLintIssue[],
+  issues: ComposeLintIssue[]
 ): void {
   if (isTaggedNode(servicesNode)) {
-    pushBaseTagAdvisory(servicesNode, "services", layer, lineCounter, issues);
-    return;
+    pushBaseTagAdvisory(servicesNode, 'services', layer, lineCounter, issues)
+    return
   }
 
   if (!isMap(servicesNode)) {
     issues.push({
-      level: "error",
+      level: 'error',
       message: '"services" must be a mapping',
-      path: "services",
+      path: 'services',
       line: servicesKeyLine,
-    });
-    return;
+    })
+    return
   }
 
   if (servicesNode.items.length === 0) {
     issues.push({
-      level: "warning",
-      message: "No services defined",
-      path: "services",
+      level: 'warning',
+      message: 'No services defined',
+      path: 'services',
       line: servicesKeyLine,
-    });
-    return;
+    })
+    return
   }
 
   for (const item of servicesNode.items) {
-    const name = stringKey(item.key);
-    if (name === null) continue;
+    const name = stringKey(item.key)
+    if (name === null) continue
     lintService({
       name,
       valueNode: item.value as Node | null | undefined,
@@ -1482,7 +1411,7 @@ function lintServices(
       strict,
       known,
       issues,
-    });
+    })
   }
 }
 
@@ -1490,66 +1419,58 @@ function lintTopLevelEntry(
   key: string,
   keyNode: Node,
   valueNode: Node | null | undefined,
-  layer: "base" | "overlay",
+  layer: 'base' | 'overlay',
   strict: boolean,
   lineCounter: LineCounter,
-  issues: ComposeLintIssue[],
+  issues: ComposeLintIssue[]
 ): void {
-  if (key === "networks") {
-    lintNetworks(valueNode, strict, lineCounter, issues);
+  if (key === 'networks') {
+    lintNetworks(valueNode, strict, lineCounter, issues)
   }
   if (classifyTopLevelKey(key) === undefined && !isExtensionKey(key)) {
     issues.push({
-      level: "warning",
-      message: unknownKeyMessage(key, "top-level", TOP_LEVEL_FIELD_KEYS),
+      level: 'warning',
+      message: unknownKeyMessage(key, 'top-level', TOP_LEVEL_FIELD_KEYS),
       path: key,
       line: nodeLine(keyNode, lineCounter),
-    });
+    })
   } else {
-    walkTaggedAdvisories(valueNode, key, layer, lineCounter, issues);
+    walkTaggedAdvisories(valueNode, key, layer, lineCounter, issues)
   }
 }
 
 function lintTopLevel(
   root: YAMLMap,
   lineCounter: LineCounter,
-  layer: "base" | "overlay",
+  layer: 'base' | 'overlay',
   strict: boolean,
   known: KnownComposeReferences,
-  issues: ComposeLintIssue[],
+  issues: ComposeLintIssue[]
 ): void {
-  let servicesItem: (typeof root.items)[number] | null = null;
+  let servicesItem: (typeof root.items)[number] | null = null
   for (const item of root.items) {
-    const key = stringKey(item.key);
-    if (key === null) continue;
-    const valueNode = item.value as Node | null | undefined;
+    const key = stringKey(item.key)
+    if (key === null) continue
+    const valueNode = item.value as Node | null | undefined
     if (isTaggedNode(valueNode)) {
-      pushBaseTagAdvisory(valueNode, key, layer, lineCounter, issues);
-      if (key === "services") servicesItem = item;
-      continue;
+      pushBaseTagAdvisory(valueNode, key, layer, lineCounter, issues)
+      if (key === 'services') servicesItem = item
+      continue
     }
-    if (key === "services") {
-      servicesItem = item;
-      continue;
+    if (key === 'services') {
+      servicesItem = item
+      continue
     }
-    lintTopLevelEntry(
-      key,
-      item.key as Node,
-      valueNode,
-      layer,
-      strict,
-      lineCounter,
-      issues,
-    );
+    lintTopLevelEntry(key, item.key as Node, valueNode, layer, strict, lineCounter, issues)
   }
 
   if (!servicesItem) {
     issues.push({
-      level: "warning",
+      level: 'warning',
       message: 'Compose file has no "services" section',
-      path: "$",
-    });
-    return;
+      path: '$',
+    })
+    return
   }
 
   lintServices(
@@ -1559,21 +1480,21 @@ function lintTopLevel(
     layer,
     strict,
     known,
-    issues,
-  );
+    issues
+  )
 }
 
 /** Sort by source line (ascending); lineless last; errors before warnings on a tie. */
 function compareLintIssues(a: ComposeLintIssue, b: ComposeLintIssue): number {
-  const lineA = a.line ?? Number.POSITIVE_INFINITY;
-  const lineB = b.line ?? Number.POSITIVE_INFINITY;
+  const lineA = a.line ?? Number.POSITIVE_INFINITY
+  const lineB = b.line ?? Number.POSITIVE_INFINITY
   if (lineA !== lineB) {
-    return lineA - lineB;
+    return lineA - lineB
   }
   if (a.level !== b.level) {
-    return a.level === "error" ? -1 : 1;
+    return a.level === 'error' ? -1 : 1
   }
-  return a.path.localeCompare(b.path);
+  return a.path.localeCompare(b.path)
 }
 
 /**
@@ -1586,28 +1507,28 @@ function compareLintIssues(a: ComposeLintIssue, b: ComposeLintIssue): number {
  */
 function collectServiceSourceIds(
   root: YAMLMap,
-  lineCounter: LineCounter,
+  lineCounter: LineCounter
 ): { service: string; sourceId: string; line: number | undefined }[] {
-  const servicesNode = mapEntryValue(root, "services");
-  if (!isMap(servicesNode)) return [];
+  const servicesNode = mapEntryValue(root, 'services')
+  if (!isMap(servicesNode)) return []
   const found: {
-    service: string;
-    sourceId: string;
-    line: number | undefined;
-  }[] = [];
+    service: string
+    sourceId: string
+    line: number | undefined
+  }[] = []
   for (const item of servicesNode.items) {
-    const service = stringKey(item.key);
-    if (service === null) continue;
-    const valueNode = item.value as Node | null | undefined;
-    if (!isMap(valueNode)) continue;
+    const service = stringKey(item.key)
+    if (service === null) continue
+    const valueNode = item.value as Node | null | undefined
+    if (!isMap(valueNode)) continue
     // Takes the *service* map: the extension lookup is its own first step.
-    const entry = serviceSourceIdNode(valueNode as YAMLMap);
-    if (!entry?.sourceId) continue;
-    const sourceId = entry.sourceId.trim();
-    if (sourceId.length === 0) continue;
-    found.push({ service, sourceId, line: nodeLine(entry.node, lineCounter) });
+    const entry = serviceSourceIdNode(valueNode as YAMLMap)
+    if (!entry?.sourceId) continue
+    const sourceId = entry.sourceId.trim()
+    if (sourceId.length === 0) continue
+    found.push({ service, sourceId, line: nodeLine(entry.node, lineCounter) })
   }
-  return found;
+  return found
 }
 
 /**
@@ -1623,24 +1544,25 @@ function lintSingleRepository(
   root: YAMLMap,
   lineCounter: LineCounter,
   projectRepositoryId: string | null,
-  issues: ComposeLintIssue[],
+  issues: ComposeLintIssue[]
 ): void {
-  const bound = projectRepositoryId?.trim() || null;
-  let adopted = bound;
+  const bound = projectRepositoryId?.trim() || null
+  let adopted = bound
   for (const entry of collectServiceSourceIds(root, lineCounter)) {
     if (adopted === null) {
-      adopted = entry.sourceId;
-      continue;
+      adopted = entry.sourceId
+      continue
     }
-    if (entry.sourceId === adopted) continue;
+    if (entry.sourceId === adopted) continue
     issues.push({
-      level: "error",
-      message: bound === null
-        ? "a project builds from one repository — every service that names a source must name the same one"
-        : `source '${entry.sourceId}' is not this project's repository — a project builds from one repository`,
+      level: 'error',
+      message:
+        bound === null
+          ? 'a project builds from one repository — every service that names a source must name the same one'
+          : `source '${entry.sourceId}' is not this project's repository — a project builds from one repository`,
       path: `services.${entry.service}.x-turbopanel.source.sourceId`,
       line: entry.line,
-    });
+    })
   }
 }
 
@@ -1654,13 +1576,10 @@ function lintSingleRepository(
  */
 function mergeSchemaIssues(
   schemaIssues: readonly ComposeLintIssue[],
-  semanticIssues: readonly ComposeLintIssue[],
+  semanticIssues: readonly ComposeLintIssue[]
 ): ComposeLintIssue[] {
-  const spoken = new Set(semanticIssues.map((issue) => issue.path));
-  return [
-    ...semanticIssues,
-    ...schemaIssues.filter((issue) => !spoken.has(issue.path)),
-  ];
+  const spoken = new Set(semanticIssues.map((issue) => issue.path))
+  return [...semanticIssues, ...schemaIssues.filter((issue) => !spoken.has(issue.path))]
 }
 
 /**
@@ -1682,87 +1601,66 @@ function mergeSchemaIssues(
  * only YAML gets stages 1 and 2. Deploy-time strictness is stage 4 and lives in
  * `./validate-for-deploy.ts`.
  */
-export function lintComposeYaml(
-  source: string,
-  options?: ComposeLintOptions,
-): ComposeLintIssue[] {
-  const layer = options?.layer ?? "base";
+export function lintComposeYaml(source: string, options?: ComposeLintOptions): ComposeLintIssue[] {
+  const layer = options?.layer ?? 'base'
   const known: KnownComposeReferences = {
     ...(options?.knownSourceIds ? { sourceIds: options.knownSourceIds } : {}),
-    ...(options?.knownPrincipalAliases
-      ? { principalAliases: options.knownPrincipalAliases }
-      : {}),
+    ...(options?.knownPrincipalAliases ? { principalAliases: options.knownPrincipalAliases } : {}),
     ...(options?.knownTlsIds ? { tlsIds: options.knownTlsIds } : {}),
     ...(options?.knownIpIds ? { ipIds: options.knownIpIds } : {}),
-  };
-  const trimmed = source.trim();
-  if (!trimmed) return [];
+  }
+  const trimmed = source.trim()
+  if (!trimmed) return []
 
-  const lineCounter = new LineCounter();
+  const lineCounter = new LineCounter()
   const doc = parseDocument(source, {
     prettyErrors: true,
     lineCounter,
     ...COMPOSE_YAML_OPTIONS,
-  });
+  })
 
   if (doc.errors.length > 0) {
     return doc.errors
       .map((error) => ({
-        level: "error" as const,
-        message: error.message.split("\n")[0] ?? error.message,
-        path: "$",
+        level: 'error' as const,
+        message: error.message.split('\n')[0] ?? error.message,
+        path: '$',
         line: error.linePos?.[0]?.line,
       }))
-      .sort(compareLintIssues);
+      .sort(compareLintIssues)
   }
 
-  const root = doc.contents;
+  const root = doc.contents
   if (!isMap(root)) {
     return [
       {
-        level: "error",
-        message: "Compose file root must be a mapping",
-        path: "$",
+        level: 'error',
+        message: 'Compose file root must be a mapping',
+        path: '$',
         line: nodeLine(root as Node, lineCounter),
       },
-    ];
+    ]
   }
 
   // Stage 1 — upstream Compose Specification, before any TurboPanel opinion.
-  const schemaIssues = validateAgainstUpstreamSchema(root, lineCounter);
+  const schemaIssues = validateAgainstUpstreamSchema(root, lineCounter)
 
   // Stage 2 — TurboPanel's own semantics.
-  const issues: ComposeLintIssue[] = [];
-  lintTopLevel(
-    root,
-    lineCounter,
-    layer,
-    options?.strict ?? false,
-    known,
-    issues,
-  );
-  lintHostAccess(doc, lineCounter, issues);
+  const issues: ComposeLintIssue[] = []
+  lintTopLevel(root, lineCounter, layer, options?.strict ?? false, known, issues)
+  lintHostAccess(doc, lineCounter, issues)
   if (options?.projectRepositoryId !== undefined) {
-    lintSingleRepository(
-      root,
-      lineCounter,
-      options.projectRepositoryId,
-      issues,
-    );
+    lintSingleRepository(root, lineCounter, options.projectRepositoryId, issues)
   }
-  return mergeSchemaIssues(schemaIssues, issues).sort(compareLintIssues);
+  return mergeSchemaIssues(schemaIssues, issues).sort(compareLintIssues)
 }
 
 /**
  * Issues that must fail a save (everything except empty-draft warnings and
  * explicitly non-blocking advisories).
  */
-export function blockingComposeLintIssues(
-  issues: readonly ComposeLintIssue[],
-): ComposeLintIssue[] {
+export function blockingComposeLintIssues(issues: readonly ComposeLintIssue[]): ComposeLintIssue[] {
   return issues.filter(
-    (issue) =>
-      issue.blocking !== false &&
-      !DRAFT_ALLOWED_LINT_MESSAGES.has(issue.message),
-  );
+    (issue) => issue.blocking !== false && !DRAFT_ALLOWED_LINT_MESSAGES.has(issue.message)
+  )
 }

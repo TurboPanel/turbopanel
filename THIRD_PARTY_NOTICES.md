@@ -5,8 +5,8 @@ This file is generated from the resolved dependency graph. Do not edit it by han
 Third-party components remain under their own copyright and license terms and are not relicensed by TurboPanel Control Plane's repository license (AGPL-3.0-only).
 
 <!-- lockfiles
-deno.lock sha256:109467b1a121fc94dfef28a81487b0f506efd57d3d4ce247dae37ae3ead22eac
-pnpm-lock.yaml sha256:2de418f0c9b9739c74e5e55d7957ccf9c6602b3081ddcd7fbaa9702011c66ecc
+deno.lock sha256:1a88b99a83c2dce9715534253e1a6e688507204f8baac243f0e4834f82444905
+pnpm-lock.yaml sha256:e9f45a345fe3285aed9e104a8eb612ce0a1aa2e3f11c119fbccecfc88dcad81c
 -->
 
 ## Production dependencies
@@ -729,6 +729,12 @@ These packages are used for development, test, or build tooling and are not bund
 - Copyright: Andrey Sitnik
 - Homepage: https://postcss.org/
 
+### prettier@3.9.9
+
+- License: MIT
+- Copyright: James Long
+- Homepage: https://prettier.io
+
 ### resolve-pkg-maps@1.0.0
 
 - License: MIT
@@ -832,6 +838,12 @@ These packages are used for development, test, or build tooling and are not bund
 - License: MIT
 - Copyright: Hiroki Osame
 - Homepage: https://tsx.hirok.io
+
+### typescript@5.9.3
+
+- License: Apache-2.0
+- Copyright: Microsoft Corp.
+- Homepage: https://www.typescriptlang.org/
 
 ### undici@7.29.0
 
