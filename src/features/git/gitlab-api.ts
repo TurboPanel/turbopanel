@@ -20,7 +20,7 @@
  */
 
 import type { RepositorySummary, ResolvedSourceCommit } from './git-provider.ts'
-import { assertForgeUrlAllowed, ForgeUrlError } from './forge-url.ts'
+import { assertForgeUrlAllowed, forgeFetch, ForgeUrlError } from './forge-url.ts'
 import {
   commitSubject,
   COMMIT_AUTHOR_MAX_CHARS,
@@ -86,7 +86,7 @@ async function gitlabGet(
 ): Promise<unknown> {
   let response: Response
   try {
-    response = await fetch(`${gitlabApiBase(baseUrl)}${path}`, {
+    response = await forgeFetch(`${gitlabApiBase(baseUrl)}${path}`, {
       headers: gitlabApiHeaders(token),
     })
   } catch (error) {
@@ -115,7 +115,7 @@ export async function gitlabGetRaw(
   path: string,
 ): Promise<Response> {
   try {
-    return await fetch(`${gitlabApiBase(baseUrl)}${path}`, {
+    return await forgeFetch(`${gitlabApiBase(baseUrl)}${path}`, {
       headers: gitlabApiHeaders(token),
     })
   } catch (error) {

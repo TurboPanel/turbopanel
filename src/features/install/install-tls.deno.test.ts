@@ -1143,3 +1143,85 @@ test({
     );
   },
 });
+
+test("the public-trust check uses the host's default OpenSSL store, not a hard-coded Debian bundle", async () => {
+  const publicPem = await systemTrustedPem();
+  // SSL_CERT_FILE / SSL_CERT_DIR are how a host (or its distribution) points
+  // OpenSSL's default store elsewhere. An empty store must make the check
+  // fail; a hard-coded `-CAfile /etc/ssl/certs/…` ignored them, which is why
+  // RHEL-family hosts (whose bundle lives under /etc/pki) read every public
+  // upload as private.
+  const emptyDir = await Deno.makeTempDir({ prefix: "tp-empty-ca-" });
+  const emptyFile = `${emptyDir}/empty.pem`;
+  await Deno.writeTextFile(emptyFile, "");
+  const saved = {
+    file: Deno.env.get("SSL_CERT_FILE"),
+    dir: Deno.env.get("SSL_CERT_DIR"),
+  };
+  try {
+    Deno.env.set("SSL_CERT_FILE", emptyFile);
+    Deno.env.set("SSL_CERT_DIR", emptyDir);
+    assertEquals(await uploadedCertificateChainsToPublicRoot(publicPem), false);
+  } finally {
+    if (saved.file === undefined) Deno.env.delete("SSL_CERT_FILE");
+    else Deno.env.set("SSL_CERT_FILE", saved.file);
+    if (saved.dir === undefined) Deno.env.delete("SSL_CERT_DIR");
+    else Deno.env.set("SSL_CERT_DIR", saved.dir);
+    await Deno.remove(emptyDir, { recursive: true });
+  }
+  assertEquals(await uploadedCertificateChainsToPublicRoot(publicPem), true);
+});
+
+test("repeated uploaded-trust requests for one name do not spawn openssl again", async () => {
+  const ca = await mintOrganizationCa({ organizationId: "install-trust-cache" });
+  const leaf = await issueLeafCertificate(
+    ca.certificatePem,
+    ca.privateKeyPem,
+    ["cached.example.com"],
+  );
+  const origin = "https://cached.example.com:8443";
+  const db = memoryInstallDb(
+    [hostnameRow(origin, "uploaded", "cert-cached")],
+    [{ id: "cert-cached", certPem: `${leaf.certificatePem}\n${ca.certificatePem}` }],
+  );
+  const app = new Hono<AppEnv>();
+  app.use("*", (c, next) => {
+    c.set("db", db);
+    return next();
+  });
+  registerDaemonApiRoutes(app, { tlsPublic: true });
+
+  const Original = Deno.Command;
+  let spawns = 0;
+  class Counting extends Original {
+    constructor(command: string | URL, options?: Deno.CommandOptions) {
+      if (String(command).endsWith("openssl")) spawns += 1;
+      super(command, options);
+    }
+  }
+  Object.defineProperty(Deno, "Command", {
+    value: Counting,
+    configurable: true,
+    writable: true,
+  });
+  try {
+    const url =
+      `http://cached.example.com:8443${DAEMON_API_PREFIX}/instance/uploaded-trust`;
+    const first = await app.request(url);
+    assertEquals(first.status, 200);
+    const afterFirst = spawns;
+    assertEquals(afterFirst >= 1, true);
+    for (let i = 0; i < 3; i++) {
+      const again = await app.request(url);
+      assertEquals(again.status, 200);
+      assertEquals(await again.text(), await first.clone().text());
+    }
+    assertEquals(spawns, afterFirst);
+  } finally {
+    Object.defineProperty(Deno, "Command", {
+      value: Original,
+      configurable: true,
+      writable: true,
+    });
+  }
+});

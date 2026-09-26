@@ -176,8 +176,9 @@ test("an organization event lands in every member inbox and reaches a routed cha
     assertEquals(delivery, { status: "sent", attempts: 1 });
 
     // An audit-derived event goes to managers only (decided 2026-09-18): a
-    // plain member gets no inbox row for it — and an info event does not
-    // pass the channel's warning floor, so no delivery row either.
+    // plain member gets no inbox row for it. (The organization channel above
+    // has a warning floor, so this info event routes nowhere either; the
+    // audience rule for personal channels is pinned in its own test below.)
     const quiet = await emitNotification(db, enc, {
       event: "server.deleted",
       organizationId,
@@ -200,6 +201,136 @@ test("an organization event lands in every member inbox and reaches a routed cha
       context: { serverName: "db-1" },
     }, { fetchImpl: fakeFetch(200, captured) });
     assertEquals(managed.inbox, 1);
+  });
+});
+
+test("a managers-only event never reaches a plain member's personal channel", async () => {
+  await withFixture(async ({ db, organizationId, memberId }) => {
+    const enc = await secrets();
+    // The member's own channel, subscribed to everything from info up: the
+    // severity floor lets every event through, so only the audience decides.
+    const personal = await createNotificationChannel(db, enc, {
+      scope: "user",
+      userId: memberId,
+      kind: "webhook",
+      label: "Mine",
+      address: "https://member.example.com/hook",
+    });
+    await replaceRulesForChannel(db, personal.id, [{
+      event: "*",
+      minSeverity: "info",
+    }]);
+
+    const captured: Captured[] = [];
+    const hidden = await emitNotification(db, enc, {
+      event: "server.deleted",
+      organizationId,
+      context: { serverName: "db-1" },
+    }, { fetchImpl: fakeFetch(200, captured) });
+    assertEquals(hidden, { inbox: 0, deliveries: 0, sent: 0, failed: 0 });
+    assertEquals(captured.length, 0);
+
+    // A members event still reaches the same channel.
+    const shown = await emitNotification(db, enc, {
+      event: "server.offline",
+      organizationId,
+      context: { serverName: "db-1" },
+    }, { fetchImpl: fakeFetch(200, captured) });
+    assertEquals(shown.deliveries, 1);
+    assertEquals(captured.length, 1);
+
+    // Once the member manages the organization, the managers event reaches them.
+    await db.insert(grant).values({
+      entityType: "organization",
+      entityId: organizationId,
+      actorType: "user",
+      actorId: memberId,
+      permission: "organization:manage",
+    });
+    const managed = await emitNotification(db, enc, {
+      event: "server.deleted",
+      organizationId,
+      context: { serverName: "db-1" },
+    }, { fetchImpl: fakeFetch(200, captured) });
+    assertEquals(managed.deliveries, 1);
+    assertEquals(captured.length, 2);
+  });
+});
+
+test("rows for a paused channel never fill the retry batch and starve a live one", async () => {
+  await withFixture(async ({ db, organizationId }) => {
+    const enc = await secrets();
+    const paused = await createNotificationChannel(db, enc, {
+      scope: "organization",
+      organizationId,
+      kind: "webhook",
+      label: "Paused",
+      address: "https://paused.example.com/hook",
+    });
+    const live = await createNotificationChannel(db, enc, {
+      scope: "organization",
+      organizationId,
+      kind: "webhook",
+      label: "Live",
+      address: "https://live.example.com/hook",
+    });
+    await db
+      .update(notificationChannel)
+      .set({ disabledAt: new Date().toISOString() })
+      .where(eq(notificationChannel.id, paused.id));
+
+    const payload = {
+      event: "server.offline",
+      severity: "critical",
+      title: "Server db-1 went offline",
+      body: null,
+      organizationId,
+      organizationName: "Notify Org",
+      targetType: null,
+      targetId: null,
+      context: { serverName: "db-1" },
+      at: new Date().toISOString(),
+    };
+    // A full batch of older due rows for the paused channel, then one for the live one.
+    const older = new Date(Date.now() - 60 * 60_000).toISOString();
+    const newer = new Date(Date.now() - 60_000).toISOString();
+    await db.insert(notificationDelivery).values(
+      Array.from({ length: 5 }, () => ({
+        channelId: paused.id,
+        organizationId,
+        event: "server.offline",
+        severity: "critical",
+        payload,
+        status: "failed",
+        attempts: 1,
+        nextAttemptAt: older,
+      })),
+    );
+    await db.insert(notificationDelivery).values({
+      channelId: live.id,
+      organizationId,
+      event: "server.offline",
+      severity: "critical",
+      payload,
+      status: "failed",
+      attempts: 1,
+      nextAttemptAt: newer,
+    });
+
+    const captured: Captured[] = [];
+    const swept = await retryDueDeliveries(db, enc, {
+      fetchImpl: fakeFetch(200, captured),
+    }, 5);
+    assertEquals(swept.sent, 1);
+    assertEquals(captured.map((c) => c.url), ["https://live.example.com/hook"]);
+
+    // The paused channel's rows are left waiting, untouched, for it to resume.
+    const pausedRows = await db
+      .select({ status: notificationDelivery.status })
+      .from(notificationDelivery)
+      .where(eq(notificationDelivery.channelId, paused.id));
+    assertEquals(pausedRows.length, 5);
+    assertEquals(pausedRows.every((r) => r.status === "failed"), true);
   });
 });
 
