@@ -309,7 +309,7 @@ jobs:
           repository: TurboPanel/turbopaneld
           # turbopaneld trunk carrying scripts/sign-manifest.ts and the current
           # release public key pin. Bump it when the key is rotated.
-          ref: ff50f41be40a0ac8101fe3469ad6482d9d9f64a5
+          ref: 6d13d4652e7993a3cbba72232ae49edbf9037938
           path: .manifest-signer
           fetch-depth: 1
           persist-credentials: false
