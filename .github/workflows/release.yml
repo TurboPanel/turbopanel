@@ -42,7 +42,7 @@ on:
     # created by gh release create with no matching pre-existing tag) can't
     # re-trigger this same workflow via the tag-push path.
     tags:
-      - "v[0-9]*"
+      - 'v[0-9]*'
   workflow_dispatch:
     inputs:
       version:
@@ -64,6 +64,10 @@ on:
         description: The trunk commit to build (the head of the green Build run)
         required: true
         type: string
+    secrets:
+      RELEASE_SIGNING_KEY:
+        description: PKCS#8 PEM of the offline release key the manifest is signed with
+        required: true
 
 permissions:
   contents: write
@@ -294,6 +298,54 @@ jobs:
           print(json.dumps(manifest, indent=2))
           PY
 
+      # Sign the finished manifest with the offline release key, using the
+      # daemon repo's signer (src/update/signing.ts) so every package has one
+      # canonicaliser — the bytes run.sh and the daemon verify. The script
+      # refuses a missing key and a key that does not match the public key
+      # pinned in that checkout: never publish an unsigned manifest.
+      - name: Check out the manifest signer (turbopaneld)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: TurboPanel/turbopaneld
+          # turbopaneld trunk carrying scripts/sign-manifest.ts and the current
+          # release public key pin. Bump it when the key is rotated.
+          ref: 6d13d4652e7993a3cbba72232ae49edbf9037938
+          path: .manifest-signer
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Check out the runtime pin reader
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          # Its own path: a checkout at the workspace root would git-clean the
+          # downloaded release-assets/ and the signer checkout.
+          path: .pin-reader
+          fetch-depth: 1
+          persist-credentials: false
+          sparse-checkout: scripts/ci-runtime-pins.sh
+          sparse-checkout-cone-mode: false
+
+      - name: Read the signer's Deno pin
+        id: signer-pins
+        run: echo "deno-version=$(sh .pin-reader/scripts/ci-runtime-pins.sh .manifest-signer deno)" >> "$GITHUB_OUTPUT"
+
+      - name: Install Deno
+        uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
+        with:
+          deno-version: ${{ steps.signer-pins.outputs.deno-version }}
+
+      - name: Sign the manifest
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        run: |
+          set -eu
+          deno run --config .manifest-signer/deno.json \
+            --allow-read --allow-write=release-assets/manifest.json \
+            --allow-env=RELEASE_SIGNING_KEY \
+            .manifest-signer/scripts/sign-manifest.ts release-assets/manifest.json
+          python3 -c 'import json; s = json.load(open("release-assets/manifest.json"))["signature"]; print("manifest signed:", s["alg"], "keyId", s["keyId"])'
+
       - name: Upload release assets
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -311,7 +363,7 @@ jobs:
       channel: ${{ needs.prepare.outputs.channel }}
       assets-artifact-name: turbopanel-instance-release-assets
       manifest-filename: manifest.json
-      release-notes: "See https://github.com/${{ github.repository }}/commits/v${{ needs.prepare.outputs.version }} for changes."
+      release-notes: 'See https://github.com/${{ github.repository }}/commits/v${{ needs.prepare.outputs.version }} for changes.'
 
   canary:
     needs: [prepare, manifest]

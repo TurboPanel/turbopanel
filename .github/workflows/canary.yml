@@ -32,3 +32,7 @@ jobs:
     with:
       channel: canary
       ref: ${{ github.event.workflow_run.head_sha }}
+    # The manifest is signed in the called workflow; a called workflow sees
+    # only the secrets it is handed.
+    secrets:
+      RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
