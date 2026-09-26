@@ -515,7 +515,6 @@ test("email rows stay pending for the mailer; a disabled channel gets nothing; a
 
 test("emitting never throws: a broken database is a logged no-op", async () => {
   const broken = {
-    // deno-lint-ignore no-explicit-any
     transaction: () => Promise.reject(new Error("down")),
     select: () => {
       throw new Error("down");

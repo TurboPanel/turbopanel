@@ -76,6 +76,8 @@
         "npm:ioredis@^5.11.1",
         "npm:nodemailer@^9.1.1",
         "npm:postgres@^3.4.7",
+        "npm:prettier@^3.9.9",
+        "npm:typescript@^5.9.3",
         "npm:vitest@^4.1.11",
         "npm:wrangler@^4.124.0",
         "npm:yaml@^2.9.0"

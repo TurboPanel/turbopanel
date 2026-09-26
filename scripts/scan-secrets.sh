@@ -1,5 +1,7 @@
 #!/usr/bin/env sh
 # Scan staged/changed files for secret-like content and secret-bearing paths.
+# Pre-commit scans the staged (else modified) files; `--all` scans every
+# tracked file, which is what CI runs.
 #
 # Content patterns catch connection strings and secret env assignments.
 # Filenames like `license.token` / `server-key.json` only fail when *those files
@@ -8,6 +10,11 @@
 # Allowlist: exact "path:lineno:full line" fixture lines only (see
 # .secretscan-allowlist). Do not add broad wildcards.
 set -eu
+
+SCAN_ALL=0
+if [ "${1:-}" = "--all" ]; then
+  SCAN_ALL=1
+fi
 
 ROOT="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
@@ -19,8 +26,12 @@ if [ ! -f "$ALLOWLIST" ]; then
 fi
 
 if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  FILES="$(git diff --cached --name-only --diff-filter=ACM 2>/dev/null || true)"
-  if [ -z "$FILES" ]; then
+  if [ "$SCAN_ALL" = 1 ]; then
+    FILES="$(git ls-files)"
+  else
+    FILES="$(git diff --cached --name-only --diff-filter=ACM 2>/dev/null || true)"
+  fi
+  if [ -z "$FILES" ] && [ "$SCAN_ALL" = 0 ]; then
     FILES="$(git diff --name-only --diff-filter=ACM 2>/dev/null || true)"
   fi
 else

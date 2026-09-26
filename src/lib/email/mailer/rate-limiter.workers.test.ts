@@ -2,24 +2,26 @@ import { describe, expect, it, beforeEach, afterEach } from 'vitest'
 import { RateLimiter } from './rate-limiter.ts'
 
 const ORIGINAL_ENV = { ...process.env }
+const env = process.env as Record<string, string | undefined>
+const globals = globalThis as { Deno?: unknown }
 
 function setEnv(vars: Record<string, string | undefined>) {
   for (const [k, v] of Object.entries(vars)) {
-    if (v === undefined) delete (process.env as any)[k]
-    else (process.env as any)[k] = v
+    if (v === undefined) delete env[k]
+    else env[k] = v
   }
   // Provide a Deno shim for the module under test when running under vitest node env
-  ;(globalThis as any).Deno = {
+  globals.Deno = {
     env: {
-      get: (k: string) => (process.env as any)[k],
+      get: (k: string) => env[k],
     },
   }
 }
 
 function restoreEnv() {
-  for (const k of Object.keys(process.env)) delete (process.env as any)[k]
+  for (const k of Object.keys(env)) delete env[k]
   Object.assign(process.env, ORIGINAL_ENV)
-  delete (globalThis as any).Deno
+  delete globals.Deno
 }
 
 describe('RateLimiter', () => {

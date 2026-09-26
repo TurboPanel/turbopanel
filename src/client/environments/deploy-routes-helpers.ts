@@ -283,7 +283,6 @@ function mapComposeUnsupportedError(
 function mapComposeOptInError(
   prepared: Extract<DeployPrepareError, { kind: 'compose_field_requires_org_opt_in' }>,
 ): PrepareErrorResponse {
-  const count = prepared.issues.length
   return {
     status: 403,
     body: {

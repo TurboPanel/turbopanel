@@ -89,10 +89,6 @@ export function registerCommandRuntimePorts(impls: CommandRuntimePortImpls): voi
     )
   )
   setResolveFleetPresence((db, registry, serverIds) =>
-    impls.resolveFleetPresence(
-      db,
-      registry as DaemonCellRegistry | undefined,
-      serverIds,
-    )
+    impls.resolveFleetPresence(db, registry, serverIds)
   )
 }

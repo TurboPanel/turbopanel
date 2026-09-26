@@ -643,7 +643,7 @@ async function resolveSignupGate(
   // even if middleware omitted the queue.
   const emailQueue = getEmailQueue(c) ??
     (opts.runtime === "workers"
-      ? emailQueueFromResolvedSettings(emailSettings, env)
+      ? emailQueueFromResolvedSettings(emailSettings)
       : undefined);
   const emailFrom = emailSettings.from ||
     c.get("emailFrom") ||

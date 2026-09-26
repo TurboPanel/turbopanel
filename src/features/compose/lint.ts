@@ -1373,7 +1373,7 @@ function lintService(params: {
   lintServicePrincipal(name, valueNode, known, lineCounter, issues);
   lintServiceHosting(name, valueNode, known, lineCounter, issues);
   lintServiceNodeVersion(name, valueNode, lineCounter, issues);
-  lintServiceResourceLimits(name, valueNode, keyLine, lineCounter, issues);
+  lintServiceResourceLimits(name, valueNode, keyLine, issues);
 
   const hostNative = serviceIsHostNative(valueNode);
   const railpackBuilt = serviceIsRailpackBuilt(valueNode);
@@ -1405,7 +1405,6 @@ function lintServiceResourceLimits(
   name: string,
   valueNode: YAMLMap,
   keyLine: number | undefined,
-  lineCounter: LineCounter,
   issues: ComposeLintIssue[],
 ): void {
   if (serviceIsHostNative(valueNode)) return;

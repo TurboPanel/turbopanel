@@ -19,6 +19,8 @@
     "check:do-hibernation": "node scripts/check-durable-object-hibernation.mjs",
     "check:do-hibernation:fixtures": "node scripts/check-durable-object-hibernation.mjs --fixtures",
     "check:workers-bundle": "node scripts/check-workers-bundle.mjs",
+    "check:workers-types": "tsc -p tsconfig.workers.json",
+    "fmt:check:changed": "sh scripts/check-format-changed.sh",
     "check:vocabulary": "node scripts/check-vocabulary.mjs",
     "check:test-inventory": "node scripts/check-test-inventory.mjs",
     "notices:generate": "deno task notices:generate",
@@ -55,6 +57,8 @@
     "@types/node": "^26.2.0",
     "@vitest/coverage-istanbul": "^4.1.11",
     "drizzle-kit": "^0.31.1",
+    "prettier": "^3.9.9",
+    "typescript": "^5.9.3",
     "vitest": "^4.1.11",
     "wrangler": "^4.124.0"
   },

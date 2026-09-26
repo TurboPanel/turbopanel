@@ -73,7 +73,7 @@ export async function resolveWorkersEmailQueue(
   dataEncryptionSecrets?: DerivedSecretsConfig,
 ): Promise<EmailQueue> {
   const resolved = await resolveEmailSettings(db, env, dataEncryptionSecrets)
-  return emailQueueFromResolvedSettings(resolved, env)
+  return emailQueueFromResolvedSettings(resolved)
 }
 
 /**
@@ -84,7 +84,6 @@ export async function resolveWorkersEmailQueue(
  */
 export function emailQueueFromResolvedSettings(
   resolved: Awaited<ReturnType<typeof resolveEmailSettings>>,
-  env: Record<string, string | undefined>,
 ): EmailQueue {
   const workersProvider = resolved.provider
   if (workersProvider === 'mailpit-api') {

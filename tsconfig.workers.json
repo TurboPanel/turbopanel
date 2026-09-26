@@ -1,0 +1,5 @@
+{
+  "extends": "./tsconfig.json",
+  "include": [],
+  "files": ["src/workers.ts", "worker-configuration.d.ts", "ts-deno-globals.d.ts"]
+}

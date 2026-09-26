@@ -2,7 +2,7 @@ import { assertEquals } from '@std/assert'
 import { Hono } from 'hono'
 import type { AppEnv } from '../app/app.ts'
 import type { Db } from '../db/connection.ts'
-import { getDatabaseUrl } from '../db/url.ts'
+import { getDatabaseUrl, parsePostgresDatabaseUrl } from '../db/url.ts'
 import { createDenoDb } from '../db/connection.ts'
 import { registerDatabaseRoutes } from './database-routes.ts'
 import { testOnlyPostgresTcpUrl } from '../test-fixtures/database-url.ts'
@@ -98,7 +98,8 @@ test('GET /database/status returns connected postgres metadata', async () => {
   assertEquals(body.error, null)
   assertEquals(typeof body.version, 'string')
   assertEquals(body.version!.includes('PostgreSQL'), true)
-  assertEquals(body.database, 'turbopanel')
+  // The route reports current_database(); CI and local runs use scratch names.
+  assertEquals(body.database, parsePostgresDatabaseUrl(dbUrl)?.database)
 })
 
 test('GET /database/status surfaces query errors', async () => {

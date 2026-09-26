@@ -21,7 +21,17 @@ declare namespace Deno {
 
   namespace errors {
     class NotFound extends Error {}
+    class PermissionDenied extends Error {}
+    class NotCapable extends Error {}
   }
+
+  /** Synchronous writer used for structured log lines on the Deno runtime. */
+  interface SyncWriter {
+    writeSync(p: Uint8Array): number
+  }
+  const stdout: SyncWriter
+  const stderr: SyncWriter
+  function cwd(): string
 
   function addSignalListener(signal: 'SIGINT' | 'SIGTERM', handler: () => void): void
   function serve(
@@ -67,10 +77,10 @@ declare namespace Deno {
   function writeTextFile(
     path: string,
     data: string,
-    options?: { create?: boolean },
+    options?: { create?: boolean; mode?: number; append?: boolean },
   ): Promise<void>
   function readFile(path: string): Promise<Uint8Array>
-  function makeTempFile(options?: { suffix?: string }): Promise<string>
+  function makeTempFile(options?: { dir?: string; prefix?: string; suffix?: string }): Promise<string>
   function hostname(): string
   function networkInterfaces(): Iterable<{
     name: string
@@ -92,6 +102,7 @@ declare namespace Deno {
         stdout?: 'null' | 'piped' | 'inherit'
         stderr?: 'null' | 'piped' | 'inherit'
         stdin?: 'null' | 'piped' | 'inherit'
+        clearEnv?: boolean
       },
     )
     output(): Promise<{ success: boolean; code: number; stdout: Uint8Array; stderr: Uint8Array }>
@@ -100,6 +111,8 @@ declare namespace Deno {
 
   interface ChildProcess {
     status: Promise<{ success: boolean; code: number }>
+    /** Throws when the command was not spawned with `stdin: "piped"` (matches Deno). */
+    stdin: WritableStream<Uint8Array>
     stdout: ReadableStream<Uint8Array> | null
     stderr: ReadableStream<Uint8Array> | null
     kill(signo?: 'SIGTERM' | 'SIGINT'): void
