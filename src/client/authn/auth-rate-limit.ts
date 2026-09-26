@@ -110,7 +110,7 @@ const SHARED_POLICIES: Partial<
  * binding, a single Redis bucket) cannot express two limits from one
  * instance, so {@link createDurableAuthRateLimiter} dispatches by tier across
  * two backend instances instead. See `workers-bindings.ts` /
- * `deno-server.ts`.
+ * `platform/deno/server.ts`.
  */
 export type AuthRateLimitTier = "default" | "strict";
 

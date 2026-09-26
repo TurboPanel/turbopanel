@@ -10,7 +10,7 @@
  * A reservation is an admission requirement — "do not place this anywhere that
  * cannot promise me this much" — and admitting against one needs a per-host
  * capacity inventory (how much CPU and memory each server has, how much every
- * already-placed slot has claimed) that `lib/db/schema.ts` does not have. So
+ * already-placed slot has claimed) that `db/schema.ts` does not have. So
  * the field is **refused at deploy time** by `../compose/field-policy.ts`
  * rather than parsed here and quietly ignored by `./planner.ts`: a deploy that
  * succeeded would have told the operator the placement honoured it.

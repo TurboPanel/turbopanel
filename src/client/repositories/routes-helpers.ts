@@ -199,7 +199,7 @@ function parseOptionalJsonb(
  * `credential.provider` value for a generated read-only SSH deploy key.
  *
  * The one credential kind a `source` may point at: its sealed plaintext is the
- * OpenSSH private key verbatim (see `credential` in `lib/db/schema.ts`), which
+ * OpenSSH private key verbatim (see `credential` in `db/schema.ts`), which
  * is what the daemon writes to a `0600` identity file. Every other value in
  * that table is a storage credential holding provider-specific JSON.
  */

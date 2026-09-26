@@ -2,7 +2,7 @@
 
 Route modules for the versioned client REST surface (`/api/client/v1/*`), one
 directory per resource. Authz engine and permission catalog live in `authz/`
-(engine docs: `../lib/db/AGENTS.md` → **Authz engine** / **Catalog**; authn
+(engine docs: `../db/AGENTS.md` → **Authz engine** / **Catalog**; authn
 flows: `authn/AGENTS.md`). The tables below are the per-endpoint permission
 contract — keep them current when adding or changing routes.
 
@@ -255,7 +255,7 @@ changes.
   deferred: `runDatacenterRepinFanoutSweep`
   (`src/client/datacenters/repin-fanout.ts`) drains `pendingFanoutAt` from
   the shared maintenance tick (`runSystemReconcileSweepTick` in
-  `deno-server.ts`; the `tlsRenewal`-gated block in
+  `platform/deno/server.ts`; the `tlsRenewal`-gated block in
   `daemon/cell/offline-sweep.ts`), one `fanOutDatacenterRoutingChange`
   (`routing-fanout.ts`, the same core `PATCH /datacenters/:id` uses) per
   `(org, datacenter)` group plus the repinned servers' own clusters via

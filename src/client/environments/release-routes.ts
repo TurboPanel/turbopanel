@@ -2,7 +2,7 @@
  * Git-backed **release** reads and the rollback trigger for one environment.
  *
  * Releases are read from the append-only `command` history via
- * `lib/db/releases.ts` — see that module for why a release is not a deploy and
+ * `features/git/releases.ts` — see that module for why a release is not a deploy and
  * cannot be answered by `deployment` or by deploy-history grouping, and why a
  * multi-server fan-out reads back as one environment-scoped release rather than
  * one row per host.

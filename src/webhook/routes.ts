@@ -2,7 +2,7 @@
  * The webhook surface's one entrypoint.
  *
  * Both runtimes call this instead of registering each git kind by hand, so
- * adding a git webhook kind never touches `deno-server.ts` or `workers.ts`
+ * adding a git webhook kind never touches `platform/deno/server.ts` or `workers.ts`
  * again — it is a new adapter plus a line here.
  *
  * Stripe billing is **not** registered here. It is a hosted-only kind,

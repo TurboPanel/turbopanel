@@ -821,7 +821,7 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
 
   /**
    * Arm the periodic daily-archive check. Not auto-started by the
-   * constructor — the boot path (`deno-server.ts`) calls this once so tests
+   * constructor — the boot path (`platform/deno/server.ts`) calls this once so tests
    * can drive archiving deterministically via {@link runDailyArchiveOnce}.
    */
   startDailyArchiveTimer(): void {

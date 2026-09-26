@@ -372,7 +372,7 @@ new ones.
 reservation is a scheduler admission requirement — "do not place this anywhere
 that cannot promise me this much" — and admitting against one needs a per-host
 capacity inventory (how much each server has, how much every placed slot has
-claimed) that `lib/db/schema.ts` does not have. Parsing it onto the schedule
+claimed) that `db/schema.ts` does not have. Parsing it onto the schedule
 spec and letting `planEnvironmentSchedule` place the service exactly as if the
 block were absent is worse than refusing it: a successful deploy tells the
 operator the placement honoured it. `lib/schedule/interpret.ts` therefore does

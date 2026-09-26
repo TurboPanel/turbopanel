@@ -1,6 +1,6 @@
 /**
  * Append-only history of resolved v5 metrics-capability-plan generations
- * (`capabilityPlanGeneration` table, see `../../lib/db/schema.ts`) — one row
+ * (`capabilityPlanGeneration` table, see `../../db/schema.ts`) — one row
  * per `(server, generation)`, written lazily whenever a resolved plan is
  * needed — `POST /api/daemon/v1/metrics` (`../../daemon/api-routes.ts`)
  * calls this on every ingest — and a `capability-plan-update` cell push

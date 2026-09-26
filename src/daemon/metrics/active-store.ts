@@ -1,6 +1,6 @@
 /**
  * Module-level handle to the process's active server-metrics store, set once
- * at boot (`deno-server.ts`). Lets Deno-only developer routes reach the live
+ * at boot (`platform/deno/server.ts`). Lets Deno-only developer routes reach the live
  * DuckDB-backed store — the dev "Open DuckDB UI" action must run inside the
  * same embedded instance the store owns, since a second process opening the
  * database file would be a second writer. Mirrors the `status-events.ts`

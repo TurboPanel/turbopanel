@@ -1,6 +1,6 @@
 /**
  * Append-only history of daemon-reported topology generations
- * (`topologyGeneration` table, see `../../lib/db/schema.ts`) — one row per
+ * (`topologyGeneration` table, see `../../db/schema.ts`) — one row per
  * `(server, generation)`, meant to be written when the daemon's
  * fire-and-forget `topology-report` cell message lands (see
  * `../../daemon/cell/protocol.ts`) and never mutated in place afterward.
