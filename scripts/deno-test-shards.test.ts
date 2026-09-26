@@ -102,7 +102,8 @@ describe("build.yml fan-in", () => {
 
   it("keeps the required check named SonarQube and cancels stale trunk runs", () => {
     assertStringIncludes(workflow, "name: SonarQube");
-    assertStringIncludes(workflow, "needs: [checks, vitest, deno-hostfree, deno-db]");
+    // typecheck is in the fan-in: a type error blocks the required check.
+    assertStringIncludes(workflow, "needs: [checks, typecheck, vitest, deno-hostfree, deno-db]");
     assertStringIncludes(workflow, "if: ${{ !cancelled() }}");
     assertStringIncludes(workflow, 'all(.value.result == "success")');
     assertStringIncludes(workflow, "shard: [api-routes, db-1, db-2]");
