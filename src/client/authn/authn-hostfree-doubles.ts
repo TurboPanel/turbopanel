@@ -20,6 +20,7 @@ import type { DerivedSecretsConfig } from "../../lib/secrets/secrets.ts";
 import { IS_SIGNUP_ENABLED_CONFIG_KEY } from "./install-state.ts";
 import { SUPERADMIN_ROLE } from "./session-store.ts";
 import type { SessionData } from "./session-store.ts";
+import { rowMatchesWhere } from "../../test-fixtures/memory-db.ts";
 
 export async function readJsonBody<T = Record<string, unknown>>(
   response: Response,
@@ -723,42 +724,74 @@ function handleInsertValues(
   return { returning: () => Promise.resolve([{ id: crypto.randomUUID() }]) };
 }
 
-function applyUserPatch(
-  state: MockAuthState,
-  patch: Record<string, unknown>,
-): void {
-  for (const row of state.users) {
-    if (patch.isEmailVerified !== undefined) {
-      row.isEmailVerified = Boolean(patch.isEmailVerified);
-    }
-    if (patch.is2FaEnabled !== undefined) {
-      row.is2FaEnabled = Boolean(patch.is2FaEnabled);
-    }
-  }
+/**
+ * Rows of an authn table that satisfy the statement's `WHERE`, evaluated by
+ * the shared memory-db walker (so an update or delete can never hit a row the
+ * real SQL would not).
+ */
+function matchingRows<T extends Record<string, unknown>>(
+  table: Parameters<typeof rowMatchesWhere>[0],
+  rows: readonly T[],
+  condition: unknown,
+): T[] {
+  return rows.filter((row) => rowMatchesWhere(table, row, condition));
 }
 
-function applyTwoFactorPatch(
+/**
+ * Apply an `update … set … where` to the double once, and return the rows it
+ * matched (as they were matched, so a compare-and-set on `counter` sees the
+ * pre-update value). Tables outside the authn set keep their earlier,
+ * predicate-free handling.
+ */
+function applyUpdate(
   state: MockAuthState,
+  table: unknown,
   patch: Record<string, unknown>,
-): void {
-  const row = state.twoFactorRows[0];
-  if (!row) return;
-  if (patch.secret !== undefined) row.secret = String(patch.secret);
-  if (patch.isVerified !== undefined) {
-    row.isVerified = Boolean(patch.isVerified);
+  condition: unknown,
+): Row[] {
+  if (table === user) {
+    const rows = matchingRows(user, state.users, condition);
+    for (const row of rows) {
+      if (patch.isEmailVerified !== undefined) {
+        row.isEmailVerified = Boolean(patch.isEmailVerified);
+      }
+      if (patch.is2FaEnabled !== undefined) {
+        row.is2FaEnabled = Boolean(patch.is2FaEnabled);
+      }
+    }
+    return rows.map((row) => ({
+      id: row.id,
+      isEmailVerified: row.isEmailVerified,
+    }));
   }
-  if (patch.backupCodes !== undefined) {
-    row.backupCodes = String(patch.backupCodes);
+  if (table === twoFactor) {
+    const rows = matchingRows(twoFactor, state.twoFactorRows, condition);
+    for (const row of rows) {
+      if (patch.secret !== undefined) row.secret = String(patch.secret);
+      if (patch.isVerified !== undefined) {
+        row.isVerified = Boolean(patch.isVerified);
+      }
+      if (patch.backupCodes !== undefined) {
+        row.backupCodes = String(patch.backupCodes);
+      }
+    }
+    return rows.map((row) => ({ id: row.id }));
   }
-}
-
-function applyPasskeyPatch(
-  state: MockAuthState,
-  patch: Record<string, unknown>,
-): void {
-  const row = state.passkeys[0];
-  if (!row) return;
-  if (patch.counter !== undefined) row.counter = Number(patch.counter);
+  if (table === passkey) {
+    const rows = matchingRows(passkey, state.passkeys, condition);
+    for (const row of rows) {
+      if (patch.counter !== undefined) row.counter = Number(patch.counter);
+    }
+    return rows.map((row) => ({ id: row.id }));
+  }
+  if (table === account) {
+    const rows = matchingRows(account, state.accounts, condition);
+    for (const row of rows) {
+      if (patch.password !== undefined) row.password = String(patch.password);
+    }
+    return rows.map(() => ({ id: crypto.randomUUID() }));
+  }
+  return [];
 }
 
 function revokeFirstActiveLicense(
@@ -769,54 +802,6 @@ function revokeFirstActiveLicense(
   if (!row) return undefined;
   row.revokedAt = asString(patch.revokedAt, new Date().toISOString());
   return [{ id: row.id }];
-}
-
-function returningAfterUserUpdate(state: MockAuthState): Row[] {
-  const first = state.users[0];
-  return first
-    ? [{ id: first.id, isEmailVerified: first.isEmailVerified }]
-    : [];
-}
-
-function returningAfterAccountUpdate(
-  state: MockAuthState,
-  patch: Record<string, unknown>,
-): Row[] {
-  const accountRow = state.accounts[0];
-  if (!accountRow) return [];
-  if (patch.password !== undefined) {
-    accountRow.password = String(patch.password);
-  }
-  return [{ id: crypto.randomUUID() }];
-}
-
-function returningAfterPasskeyUpdate(
-  state: MockAuthState,
-  patch: Record<string, unknown>,
-): Row[] {
-  applyPasskeyPatch(state, patch);
-  const first = state.passkeys[0];
-  return first ? [{ id: first.id }] : [];
-}
-
-function returningAfterUpdate(
-  state: MockAuthState,
-  table: unknown,
-  patch: Record<string, unknown>,
-): Promise<Row[]> {
-  if (table === license) {
-    const licenseRows = revokeFirstActiveLicense(state, patch);
-    if (licenseRows) return Promise.resolve(licenseRows);
-  }
-  applyUserPatch(state, patch);
-  if (table === user) return Promise.resolve(returningAfterUserUpdate(state));
-  if (table === account) {
-    return Promise.resolve(returningAfterAccountUpdate(state, patch));
-  }
-  if (table === passkey) {
-    return Promise.resolve(returningAfterPasskeyUpdate(state, patch));
-  }
-  return Promise.resolve([]);
 }
 
 function deleteVerificationRows(
@@ -881,41 +866,48 @@ export function createMockAuthDb(state: MockAuthState): Db {
     }),
     update: (table: unknown) => ({
       set: (patch: Record<string, unknown>) => ({
-        where: (_cond: unknown) => {
-          const promise = Promise.resolve().then(() => {
-            if (table === user) applyUserPatch(state, patch);
-            if (table === twoFactor) applyTwoFactorPatch(state, patch);
-            if (table === passkey) applyPasskeyPatch(state, patch);
-          });
-          return Object.assign(promise, {
-            returning: () => returningAfterUpdate(state, table, patch),
+        where: (condition: unknown) => {
+          const applied = Promise.resolve().then(() =>
+            applyUpdate(state, table, patch, condition)
+          );
+          return Object.assign(applied.then(() => undefined), {
+            returning: async () => {
+              const matched = await applied;
+              if (table === license) {
+                return revokeFirstActiveLicense(state, patch) ?? [];
+              }
+              return matched;
+            },
           });
         },
       }),
     }),
     delete: (table: unknown) => ({
-      where: (_cond: unknown) => {
+      where: (condition: unknown) => {
         let returningRows: Row[] = [];
-        if (table === session) deleteSessionRows(state, _cond);
-        if (table === twoFactor) state.twoFactorRows = [];
+        if (table === session) deleteSessionRows(state, condition);
         if (table === verification) deleteVerificationRows(state, internal);
+        if (table === twoFactor) {
+          const gone = new Set(
+            matchingRows(twoFactor, state.twoFactorRows, condition),
+          );
+          state.twoFactorRows = state.twoFactorRows.filter((row) =>
+            !gone.has(row)
+          );
+        }
         if (table === passkey) {
-          returningRows = state.passkeys.map((row) => ({ id: row.id }));
-          state.passkeys = [];
+          const gone = matchingRows(passkey, state.passkeys, condition);
+          returningRows = gone.map((row) => ({ id: row.id }));
+          state.passkeys = state.passkeys.filter((row) => !gone.includes(row));
         }
         if (table === account) {
-          const oauth = state.accounts.filter((row) =>
-            row.providerId !== "credential"
-          );
-          if (oauth.length > 0) {
-            returningRows = oauth.map((row) => ({ id: row.userId }));
-            state.accounts = state.accounts.filter((row) =>
-              row.providerId === "credential"
-            );
-          } else {
-            returningRows = state.accounts.map((row) => ({ id: row.userId }));
-            state.accounts = [];
-          }
+          const gone = matchingRows(account, state.accounts, condition);
+          returningRows = gone.map((row) => ({ id: row.userId }));
+          state.accounts = state.accounts.filter((row) => !gone.includes(row));
+        }
+        if (table === user) {
+          const gone = matchingRows(user, state.users, condition);
+          state.users = state.users.filter((row) => !gone.includes(row));
         }
         const promise = Promise.resolve(undefined);
         return Object.assign(promise, {

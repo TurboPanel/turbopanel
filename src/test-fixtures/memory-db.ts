@@ -6,7 +6,7 @@
  * {inner,left}Join … where … groupBy … orderBy … limit`, `update … set …
  * where`, `delete … where` — against plain arrays of rows keyed by JS
  * property name. `where` clauses are evaluated by walking the drizzle SQL
- * tree: `eq`, `and`, `isNull`, `isNotNull`, `inArray`, a raw `<=` against a
+ * tree: `eq`, `ne`, `and`, `isNull`, `isNotNull`, `inArray`, a raw `<=` against a
  * `::timestamptz` param, and the `->>'key' =` json predicate. `set` values
  * that are SQL understand `coalesce(...)` and `+ make_interval(secs => n)`.
  *
@@ -183,6 +183,9 @@ function evaluateComparison(
   if (!right) throw new Error('memory-db: comparison without operand')
   const rightValue = operandValue(right, ctx)
   if (text === ' = ') return { ok: sameValue(left, rightValue), width: 3 }
+  if (text === ' <> ') {
+    return { ok: left != null && rightValue != null && !sameValue(left, rightValue), width: 3 }
+  }
   if (left == null || rightValue == null) return { ok: false, width: 3 }
   const holds = ORDERINGS.get(text)!
   return { ok: holds(compareValues(left, rightValue)), width: 3 }
@@ -199,7 +202,7 @@ function evaluateAtom(list: Token[], i: number, column: Column, ctx: RowContext)
   if (text.startsWith(' in ')) return evaluateIn(left, list[i + 2])
   const jsonMatch = JSON_PREDICATE.exec(text)
   if (jsonMatch) return evaluateJsonPredicate(left, jsonMatch[1]!, list[i + 2])
-  if (text === ' = ' || ORDERINGS.has(text)) {
+  if (text === ' = ' || text === ' <> ' || ORDERINGS.has(text)) {
     return evaluateComparison(text, left, list[i + 2], ctx)
   }
   throw new Error(`memory-db: unsupported where operator ${JSON.stringify(text)}`)
@@ -209,6 +212,10 @@ function evaluateAtom(list: Token[], i: number, column: Column, ctx: RowContext)
 function evaluateWhere(where: unknown, ctx: RowContext): boolean {
   if (where === undefined) return true
   const list = tokens(where)
+  // Atoms are conjoined; an `or` would silently read as `and`.
+  if (list.some((token) => token.kind === 'str' && / or /i.test(token.value))) {
+    throw new Error('memory-db: `or` in a where clause is not supported')
+  }
   let i = 0
   while (i < list.length) {
     const token = list[i]!
@@ -221,6 +228,14 @@ function evaluateWhere(where: unknown, ctx: RowContext): boolean {
     i += atom.width
   }
   return true
+}
+
+/**
+ * Whether `row` of `table` satisfies `where`, for doubles that keep their own
+ * row arrays. Throws on a clause shape outside the supported subset.
+ */
+export function rowMatchesWhere(table: Table, row: Row, where: unknown): boolean {
+  return evaluateWhere(where, singleRow(table, row))
 }
 
 // ---------------------------------------------------------------------------
