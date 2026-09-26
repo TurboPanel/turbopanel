@@ -112,6 +112,18 @@ export type DaemonUpdateMessage = {
 };
 
 /** Control-plane → daemon control-plane update. Optional pin fields are expand-only. */
+/** Daemon → instance: the outcome of an `instance-update`. Mirrors turbopaneld `cell-messages.ts`. */
+export type InstanceUpdateResultMessage = {
+  type: "instance-update-result";
+  id: string;
+  ok: boolean;
+  error?: string;
+  /** Why it failed or rolled back (a rollback reason, `preflight_in_progress`, …). */
+  errorCode?: string;
+  upgradeId?: string;
+  at: string;
+};
+
 export type InstanceUpdateMessage = {
   type: "instance-update";
   id: string;
@@ -524,16 +536,7 @@ export type DaemonMessage =
   }
   | InstanceUpdateMessage
   | UpdateProgressMessage
-  | {
-    type: "instance-update-result";
-    id: string;
-    ok: boolean;
-    error?: string;
-    /** Why it failed or rolled back (a rollback reason, `preflight_in_progress`, …). */
-    errorCode?: string;
-    upgradeId?: string;
-    at: string;
-  }
+  | InstanceUpdateResultMessage
   | {
     type: "command-dispatch";
     id: string;
