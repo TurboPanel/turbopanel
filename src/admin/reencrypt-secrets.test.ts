@@ -15,6 +15,7 @@ import { createDenoDb, type Db } from "../db/connection.ts";
 import {
   forge,
   gitConnection,
+  instanceUploadedCertificate,
   organization,
   principal,
   setting,
@@ -228,6 +229,17 @@ async function installIsolatedFixtureSchema(
       account_type text,
       suspended_at timestamptz(3),
       oauth_envelope jsonb
+    )
+  `));
+  await tx.execute(sql.raw(`
+    CREATE TABLE certificate (
+      id uuid PRIMARY KEY DEFAULT uuidv7() NOT NULL,
+      created_at timestamptz(3) DEFAULT now() NOT NULL,
+      label text NOT NULL,
+      cert_pem text NOT NULL,
+      key_pem text NOT NULL,
+      dns_names jsonb NOT NULL,
+      not_after timestamptz(3) NOT NULL
     )
   `));
 }
@@ -1000,5 +1012,56 @@ test("reencryptAtRestSecrets resumes across bounded batches via cursor", async (
     for (const row of rows) {
       assertEquals(parseSecretEnvelope(row.value), { keyVersion: 2 });
     }
+  });
+});
+
+test("reencryptAtRestSecrets reseals uploaded control-plane certificate keys", async () => {
+  const v1 = await createV1OnlySecrets();
+  const rotated = await createRotatedSecrets();
+  const v1Key = "uploaded-cert-key-sealed-under-v1";
+  const v2Key = "uploaded-cert-key-sealed-under-v2";
+  const v1Envelope = await encryptSecret(v1, v1Key);
+  const v2Envelope = await encryptSecret(rotated, v2Key);
+  const daemonBound = await encryptSecretForDaemon(
+    parseSecretsEnv(`2:${V2_SECRET},1:${V1_SECRET}`, "deno"),
+    { serverId: crypto.randomUUID(), keyId: crypto.randomUUID() },
+    "delivery-envelope-is-not-at-rest-material",
+  );
+
+  await withIsolatedFixture("reencrypt_certs", async (scoped) => {
+    const insertCert = async (keyPem: string) => {
+      const [row] = await scoped
+        .insert(instanceUploadedCertificate)
+        .values({
+          label: "fixture",
+          certPem: "cert-pem",
+          keyPem,
+          dnsNames: [],
+          notAfter: new Date(Date.now() + 86_400_000).toISOString(),
+        })
+        .returning({ id: instanceUploadedCertificate.id });
+      return row!.id;
+    };
+    const v1Id = await insertCert(v1Envelope);
+    const v2Id = await insertCert(v2Envelope);
+    const plainId = await insertCert("plaintext-key-never-migrated");
+    const daemonId = await insertCert(daemonBound);
+
+    await reencryptAtRestSecretsToCompletion(scoped, rotated);
+
+    const keyOf = async (id: string) => {
+      const [row] = await scoped
+        .select({ keyPem: instanceUploadedCertificate.keyPem })
+        .from(instanceUploadedCertificate)
+        .where(eq(instanceUploadedCertificate.id, id));
+      return row!.keyPem;
+    };
+    const resealed = await keyOf(v1Id);
+    assertEquals(parseSecretEnvelope(resealed)?.keyVersion, 2);
+    assertEquals(await decryptSecret(rotated, resealed), v1Key);
+    assertEquals(await keyOf(v2Id), v2Envelope);
+    // Plaintext and a daemon-bound envelope are not valid at rest: left as-is (counted failed).
+    assertEquals(await keyOf(plainId), "plaintext-key-never-migrated");
+    assertEquals(await keyOf(daemonId), daemonBound);
   });
 });

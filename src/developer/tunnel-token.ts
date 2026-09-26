@@ -7,6 +7,13 @@ import {
 } from '../contracts/cell-protocol.ts'
 import type { Db } from '../db/connection.ts'
 import { cellTrace } from '../lib/logger.ts'
+import { encryptSecretForDaemon } from '../lib/secrets/data-encryption.ts'
+import type { SecretsConfig } from '../lib/secrets/secrets.ts'
+import {
+  type InstanceSecretSealing,
+  InstanceSecretSealingError,
+  resolveInstanceSecretSealing,
+} from '../features/install/instance-secret-sealing.ts'
 
 const TUNNEL_TOKEN_TIMEOUT_MS = 30_000
 
@@ -30,11 +37,14 @@ export type TunnelTokenDispatch =
 /**
  * Push a tunnel token to the co-located daemon. An empty token tears the
  * tunnel down. Shared by the developer route and the admin Access route.
+ * A daemon that advertises `sealed-instance-secrets-v1` receives a non-empty
+ * token only as a `tpdaemon` envelope, so the cell outbox never holds it.
  */
 export async function dispatchInstanceTunnelToken(params: {
   db: Db
   registry: DaemonCellRegistry
   token: string
+  secretsConfig: SecretsConfig | undefined
 }): Promise<TunnelTokenDispatch> {
   const serverId = await resolveColocatedServerId(params.db, params.registry)
   if (!serverId) {
@@ -50,13 +60,37 @@ export async function dispatchInstanceTunnelToken(params: {
     return { ok: false, status: 503, error: 'co-located daemon disconnected' }
   }
 
-  return await waitForTunnelToken(params.registry, serverId, params.token)
+  let sealing: InstanceSecretSealing | null
+  try {
+    sealing = await resolveInstanceSecretSealing(params.db, serverId, params.secretsConfig)
+  } catch (err) {
+    if (err instanceof InstanceSecretSealingError) {
+      return { ok: false, status: 503, error: err.message }
+    }
+    throw err
+  }
+
+  return await sendInstanceTunnelToken(params.registry, serverId, params.token, sealing)
 }
 
-async function waitForTunnelToken(
+/** The token field(s) for the envelope: sealed when possible, never both. */
+async function tunnelTokenFields(
+  token: string,
+  sealing: InstanceSecretSealing | null,
+): Promise<{ token: string } | { tokenEnvelope: string }> {
+  // The empty teardown token carries no secret; every daemon reads it as-is.
+  if (!sealing || token === '') return { token }
+  return {
+    tokenEnvelope: await encryptSecretForDaemon(sealing.secretsConfig, sealing.recipient, token),
+  }
+}
+
+/** Enqueue the `tunnel-token` request on the server's cell and wait for the daemon. */
+export async function sendInstanceTunnelToken(
   registry: DaemonCellRegistry,
   serverId: string,
   token: string,
+  sealing: InstanceSecretSealing | null,
 ): Promise<TunnelTokenDispatch> {
   const requestId = generateRequestId()
   cellTrace('request-start', {
@@ -69,7 +103,7 @@ async function waitForTunnelToken(
     deliveryId: generateDeliveryId(),
     requestId,
     at: new Date().toISOString(),
-    token,
+    ...(await tunnelTokenFields(token, sealing)),
   }
   cellTrace('request-enqueued', {
     requestId,

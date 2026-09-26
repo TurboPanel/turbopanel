@@ -3,7 +3,9 @@
  *
  * A daemon below `instance-cert-sources-per-hostname` receives the flat
  * `urls` list only. Capable daemons also receive each hostname's source and,
- * for `uploaded`, the decrypted pair for this one hop.
+ * for `uploaded`, the certificate plus its key: sealed to the daemon as
+ * `keyEnvelope` when `sealing` is set (the daemon advertises
+ * `sealed-instance-secrets-v1`), otherwise the legacy plaintext `keyPem`.
  */
 
 import { inArray } from "drizzle-orm";
@@ -20,9 +22,13 @@ import {
   resolveInstanceAcmeSettings,
 } from "../features/install/instance-acme-settings.ts";
 import { listInstanceHostnames } from "../features/install/instance-hostnames.ts";
-import { decryptSecret } from "../lib/secrets/data-encryption.ts";
+import {
+  decryptSecret,
+  resealSecretForDaemon,
+} from "../lib/secrets/data-encryption.ts";
 import type { DerivedSecretsConfig } from "../lib/secrets/secrets.ts";
 import { resolveDaemonCapabilities } from "../lib/version-wire.ts";
+import type { InstanceSecretSealing } from "../features/install/instance-secret-sealing.ts";
 
 export class PublicUrlsApplyPayloadError extends Error {
   /** Set for refusals a client acts on; absent for server-side faults. */
@@ -44,6 +50,7 @@ export async function resolvePublicUrlsApplyPayload(
   daemonVersion: string | undefined,
   secrets: DerivedSecretsConfig | undefined,
   env: Record<string, string | undefined>,
+  sealing: InstanceSecretSealing | null = null,
 ): Promise<PublicUrlsApplyPayload> {
   const capable = resolveDaemonCapabilities(daemonVersion)[
     "instance-cert-sources-per-hostname"
@@ -58,7 +65,7 @@ export async function resolvePublicUrlsApplyPayload(
         .map((row) => row.uploadedCertId as string),
     ),
   ];
-  const decrypted = await decryptUploadedPairs(db, uploadedIds, secrets);
+  const decrypted = await loadUploadedPairs(db, uploadedIds, secrets, sealing);
   const hostnames: InstanceHostnameWireEntry[] = rows.map((row) => {
     const entry: InstanceHostnameWireEntry = {
       host: row.host,
@@ -75,7 +82,7 @@ export async function resolvePublicUrlsApplyPayload(
       ...entry,
       uploadedCertId: row.uploadedCertId,
       certPem: pair.certPem,
-      keyPem: pair.keyPem,
+      ...pair.key,
     };
   });
   const letsEncrypt = hostnames.some((entry) =>
@@ -105,12 +112,22 @@ async function loadInstanceAcme(
   };
 }
 
-async function decryptUploadedPairs(
+type UploadedPair = {
+  certPem: string;
+  key: { keyEnvelope: string } | { keyPem: string };
+};
+
+/**
+ * With `sealing`, the at-rest `tpsecret` key is re-sealed straight to the
+ * daemon (`keyEnvelope`) and never exists as plaintext in the payload.
+ */
+async function loadUploadedPairs(
   db: Db,
   ids: string[],
   secrets: DerivedSecretsConfig | undefined,
-): Promise<Map<string, { certPem: string; keyPem: string }>> {
-  const out = new Map<string, { certPem: string; keyPem: string }>();
+  sealing: InstanceSecretSealing | null,
+): Promise<Map<string, UploadedPair>> {
+  const out = new Map<string, UploadedPair>();
   if (ids.length === 0) return out;
   if (!secrets) {
     throw new PublicUrlsApplyPayloadError(
@@ -126,10 +143,17 @@ async function decryptUploadedPairs(
     .from(instanceUploadedCertificate)
     .where(inArray(instanceUploadedCertificate.id, ids));
   for (const row of rows) {
-    out.set(row.id, {
-      certPem: row.certPem,
-      keyPem: await decryptSecret(secrets, row.keyPem),
-    });
+    const key = sealing
+      ? {
+        keyEnvelope: await resealSecretForDaemon(
+          sealing.secretsConfig,
+          secrets,
+          sealing.recipient,
+          row.keyPem,
+        ),
+      }
+      : { keyPem: await decryptSecret(secrets, row.keyPem) };
+    out.set(row.id, { certPem: row.certPem, key });
   }
   return out;
 }

@@ -117,6 +117,7 @@ export function registerInstanceAccessAdminRoutes(
       db,
       registry,
       token: parsed.token,
+      secretsConfig: c.get("secretsConfig"),
     });
     if (!result.ok) return c.json({ ok: false, error: result.error }, result.status);
     return c.json({ ok: true });

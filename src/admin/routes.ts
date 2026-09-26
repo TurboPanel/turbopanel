@@ -86,6 +86,10 @@ import {
   resolvePublicUrlsApplyPayload,
 } from "./public-urls-apply-payload.ts";
 import {
+  InstanceSecretSealingError,
+  resolveInstanceSecretSealing,
+} from "../features/install/instance-secret-sealing.ts";
+import {
   extractAddresses,
   parseCellPurgeBatchBody,
   parseEmailSettingsUpdates,
@@ -624,14 +628,23 @@ export function registerAdminRoutes(app: Hono<AppEnv>, opts: {
 
     let applyPayload: Awaited<ReturnType<typeof resolvePublicUrlsApplyPayload>>;
     try {
+      const sealing = await resolveInstanceSecretSealing(
+        db,
+        serverId,
+        c.get("secretsConfig"),
+      );
       applyPayload = await resolvePublicUrlsApplyPayload(
         db,
         urlsResult.urls,
         snapshot.daemonBuild?.version,
         c.get("dataEncryptionSecrets"),
         resolvePlatformEnv(c, opts),
+        sealing,
       );
     } catch (err) {
+      if (err instanceof InstanceSecretSealingError) {
+        return c.json({ ok: false, error: err.message }, 503);
+      }
       if (err instanceof PublicUrlsApplyPayloadError) {
         if (err.code) {
           return c.json({ ok: false, error: err.message, code: err.code }, 422);

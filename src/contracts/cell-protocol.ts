@@ -187,8 +187,11 @@ export type UpdateProgressMessage = {
  */
 /**
  * One control-plane hostname on `public-urls-update`. Twin of
- * `turbopaneld/src/contracts/cell-messages.ts`. `certPem` / `keyPem` are
- * decrypted for this one hop and are never a stored plaintext column.
+ * `turbopaneld/src/contracts/cell-messages.ts`. An uploaded key travels as
+ * `keyEnvelope`, a `tpdaemon` envelope the recipient daemon opens through
+ * `POST /api/daemon/v1/secrets/decrypt`, when the daemon advertises
+ * `sealed-instance-secrets-v1`. `keyPem` (plaintext) is the legacy field for
+ * daemons that do not; it is never a stored column.
  */
 export type InstanceHostnameCertSource =
   | "lets-encrypt"
@@ -200,7 +203,22 @@ export type InstanceHostnameWireEntry = {
   source: InstanceHostnameCertSource;
   certPem?: string;
   keyPem?: string;
+  keyEnvelope?: string;
   uploadedCertId?: string;
+};
+
+/**
+ * Instance → co-located daemon: start (or, with an empty `token`, stop) the
+ * Cloudflare tunnel. A daemon that advertises `sealed-instance-secrets-v1`
+ * receives a non-empty token only as `tokenEnvelope` (`tpdaemon`); `token`
+ * is the legacy plaintext field. Twin of `turbopaneld/src/contracts/cell-messages.ts`.
+ */
+export type TunnelTokenMessage = {
+  type: "tunnel-token";
+  id: string;
+  token?: string;
+  tokenEnvelope?: string;
+  at: string;
 };
 
 /** Instance-wide ACME knobs for hostnames whose source is `lets-encrypt`. */
@@ -498,7 +516,7 @@ export type DaemonMessage =
     error?: string;
     at: string;
   }
-  | { type: "tunnel-token"; id: string; token: string; at: string }
+  | TunnelTokenMessage
   | {
     type: "tunnel-token-result";
     id: string;
@@ -1413,7 +1431,13 @@ export type DaemonOutboundEnvelope =
     data: string;
   })
   | (OutboundEnvelopeBase & { kind: "dev-sync"; phase: "end" })
-  | (OutboundEnvelopeBase & { kind: "tunnel-token"; token: string })
+  | (OutboundEnvelopeBase & {
+    kind: "tunnel-token";
+    /** Legacy plaintext; also the empty teardown token. */
+    token?: string;
+    /** `tpdaemon` envelope for a non-empty token (sealed-instance-secrets-v1). */
+    tokenEnvelope?: string;
+  })
   | (OutboundEnvelopeBase & {
     kind: "public-urls-update";
     urls: string[];
@@ -1987,7 +2011,10 @@ export function outboundEnvelopeToWireMessage(
       return {
         type: "tunnel-token",
         id: env.requestId,
-        token: env.token,
+        ...(env.token !== undefined ? { token: env.token } : {}),
+        ...(env.tokenEnvelope !== undefined
+          ? { tokenEnvelope: env.tokenEnvelope }
+          : {}),
         at: env.at,
       };
     case "public-urls-update":
