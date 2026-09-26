@@ -193,29 +193,37 @@ export async function startCommandConsumer(
 
   async function openSession(): Promise<ConsumerSession> {
     const connection = await connectAmqp(opts.amqpUrl)
-    const channel = await connection.createConfirmChannel()
-    await assertCommandAmqpTopology(channel)
-    await channel.prefetch(1)
-
-    const opened: ConsumerSession = {
+    // `channel` is filled in below; the object has to exist first so the
+    // connection's listeners can be attached before anything else awaits.
+    const opened = {
       connection,
-      channel,
       consumerTag: undefined,
       lost: false,
-    }
-    // Before consume(): a broker that dies during the first delivery still
-    // has to find a listener waiting for it.
+    } as ConsumerSession
+    // Before the first await on this connection: opening the channel, the
+    // topology and the prefetch all wait on the broker, and a broker that goes
+    // away in that window makes the connection emit `error` — with no
+    // listener, a thrown exception that exits the process.
     watchForLoss(connection, 'connection', opened)
-    watchForLoss(channel, 'channel', opened)
+    try {
+      const channel = await connection.createConfirmChannel()
+      opened.channel = channel
+      watchForLoss(channel, 'channel', opened)
+      await assertCommandAmqpTopology(channel)
+      await channel.prefetch(1)
 
-    const { consumerTag } = await channel.consume(
-      COMMAND_AMQP_QUEUE,
-      (msg) => {
-        void handleMessage(channel, msg)
-      },
-    )
-    opened.consumerTag = consumerTag
-    return opened
+      const { consumerTag } = await channel.consume(
+        COMMAND_AMQP_QUEUE,
+        (msg) => {
+          void handleMessage(channel, msg)
+        },
+      )
+      opened.consumerTag = consumerTag
+      return opened
+    } catch (error) {
+      await connection.close().catch(() => undefined)
+      throw error
+    }
   }
 
   /**
@@ -272,6 +280,11 @@ export async function startCommandConsumer(
     reconnecting = false
   }
 
+  async function discardSession(s: ConsumerSession): Promise<void> {
+    await s.channel.close().catch(() => undefined)
+    await s.connection.close().catch(() => undefined)
+  }
+
   async function handleMessage(
     channel: AmqpChannel,
     msg: AmqpMessage,
@@ -303,6 +316,16 @@ export async function startCommandConsumer(
   }
 
   session = await openSession()
+  if (session.lost) {
+    // The broker went away while the first session was being set up. Its
+    // listeners fired before it was the live session, so nothing else will
+    // rebuild it — hand it to the reconnect loop instead of keeping it.
+    // `reopen` marks the rebuild in progress before its first await, so the
+    // close events from discarding the dead session are ignored.
+    const dead = session
+    void reopen(dead, 'connection lost during start')
+    void discardSession(dead)
+  }
 
   return {
     async close(): Promise<void> {

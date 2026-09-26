@@ -121,6 +121,13 @@ in the execution-log store — there is no Postgres column for them. See
   key `command.dispatch`, DLX `turbopanel.commands.dlx` → DLQ
   `turbopanel.commands.dispatch.dlq`. Consumer: `startCommandConsumer()` in
   `src/features/commands/deno-consumer.ts`, started in-process from `src/deno.ts`.
+  A broker loss is ridden out, never a process exit: the connection's `error`
+  / `close` listeners are attached **before the first await on it** (channel,
+  topology and prefetch all wait on the broker, and an `error` with no listener
+  is a thrown exception), a failed setup closes the half-open connection, and a
+  first session lost during start goes through the same reconnect loop as a
+  later loss. The mailer consumer (`lib/email/mailer/deno-mailer-consumer.ts`)
+  follows the same rule.
   **TODO:** extract to a dedicated `turbopanel-command-consumer.service` systemd
   unit in a future pass (mirrors the mailer pattern).
 - Shared abstraction: `CommandQueue` interface in `src/features/commands/queue.ts`;

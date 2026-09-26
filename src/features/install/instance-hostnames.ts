@@ -453,16 +453,45 @@ export async function getInstanceHostnamesLegacyShim(
   return rows.map((row) => row.host);
 }
 
-/** Replace the flat public-URL list. Every entry is stored as `platform-ca`. */
-export async function replacePublicUrlsWithPlatformCa(
+/**
+ * Replace the flat public-URL list, in the order given. A name that is
+ * already published — under either spelling (`host` / `host:8443`, with or
+ * without a trailing dot) — keeps its certificate source, uploaded
+ * certificate and Let's Encrypt state; only a new name is stored as
+ * `platform-ca`. The flat list carries no source, so writing it must not
+ * reset the sources the per-hostname screens set.
+ */
+export async function replacePublicUrlList(
   db: Db,
   urls: string[],
 ): Promise<void> {
   const parsed = parsePublicUrlEntries(urls);
-  const stored = parsed.ok ? parsed.urls : [];
+  const seen = new Set<string>();
+  const stored = (parsed.ok ? parsed.urls : []).filter((host) => {
+    const key = canonicalHostKey(host);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  await migrateLegacyPublicUrls(db);
+  const current = await loadHostnameRows(db);
   await persistHostnameRows(
     db,
-    stored.map((host, index) => newPlatformCaRow(host, index)),
+    stored.map((host, index) => {
+      const previous = previousHostname(current, host);
+      if (!previous) return newPlatformCaRow(host, index);
+      const kept = rowFromEntry(
+        {
+          host,
+          source: previous.source,
+          uploadedCertId: previous.uploadedCertId,
+        },
+        previous,
+        index,
+        previous.notAfter,
+      );
+      return { ...kept, createdAt: stampAt(index) };
+    }),
   );
 }
 
@@ -560,9 +589,14 @@ function combineFailures(
 
 const DUPLICATE_HOSTNAME_ERROR = "The same hostname is listed more than once";
 
-/** Install origin, so a portless row and its `:8443` form are one hostname. */
+/**
+ * Install origin, so a portless row and its `:8443` form are one hostname —
+ * and so is the fully-qualified spelling with a trailing dot, which DNS
+ * treats as the same name.
+ */
 function canonicalHostKey(host: string): string {
-  return publicUrlEntryToInstallOrigin(host) ?? host;
+  const origin = publicUrlEntryToInstallOrigin(host) ?? host;
+  return origin.replace(/\.(?=:\d+$|$)/, "");
 }
 
 function sourcesConflict(
@@ -724,9 +758,10 @@ export async function removeInstanceHostname(
 ): Promise<void> {
   await migrateLegacyPublicUrls(db);
   const rows = await loadHostnameRows(db);
+  const key = canonicalHostKey(host);
   await persistHostnameRows(
     db,
-    rows.filter((row) => row.host !== host),
+    rows.filter((row) => canonicalHostKey(row.host) !== key),
   );
 }
 
@@ -741,7 +776,9 @@ export async function applyUploadedCertificateHosts(
 ): Promise<{ ok: true; hostnames: string[] } | InstanceHostnameFailure> {
   await migrateLegacyPublicUrls(db);
   const current = await loadHostnameRows(db);
-  const desired = new Set<string>();
+  // Keyed by the canonical host, so attaching to the other spelling of a name
+  // that is already published updates that row instead of adding a twin.
+  const desired = new Map<string, string>();
   const failures: InstanceHostnameFailure[] = [];
   for (const raw of hosts) {
     const parsed = parsePublicUrlEntries([raw]);
@@ -758,14 +795,17 @@ export async function applyUploadedCertificateHosts(
       failures.push(coverageFailure(host, true));
       continue;
     }
-    desired.add(host);
+    const key = canonicalHostKey(host);
+    if (!desired.has(key)) desired.set(key, host);
   }
   if (failures.length > 0) return combineFailures(failures);
 
   const next: StoredHostname[] = [];
   const seen = new Set<string>();
+  const attached: string[] = [];
   for (const row of current) {
-    if (desired.has(row.host)) {
+    const key = canonicalHostKey(row.host);
+    if (desired.has(key) && !seen.has(key)) {
       next.push(rowFromEntry(
         {
           host: row.host,
@@ -776,7 +816,8 @@ export async function applyUploadedCertificateHosts(
         next.length,
         cert.notAfter,
       ));
-      seen.add(row.host);
+      seen.add(key);
+      attached.push(row.host);
       continue;
     }
     if (row.uploadedCertId === cert.id) {
@@ -795,8 +836,9 @@ export async function applyUploadedCertificateHosts(
     next.push(row);
   }
   let index = next.length;
-  for (const host of desired) {
-    if (seen.has(host)) continue;
+  for (const [key, host] of desired) {
+    if (seen.has(key)) continue;
+    attached.push(host);
     next.push(rowFromEntry(
       {
         host,
@@ -812,6 +854,6 @@ export async function applyUploadedCertificateHosts(
   await persistHostnameRows(db, next);
   return {
     ok: true,
-    hostnames: [...desired].sort((a, b) => a.localeCompare(b)),
+    hostnames: attached.sort((a, b) => a.localeCompare(b)),
   };
 }

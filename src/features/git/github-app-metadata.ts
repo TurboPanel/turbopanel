@@ -22,6 +22,7 @@ import {
   signGithubAppJwt,
 } from './github-app-token.ts'
 import type { Forge } from './forge-records.ts'
+import { forgeFetch } from './forge-url.ts'
 
 /** The subset of `GET /app` worth storing. */
 export type GithubAppMetadata = {
@@ -73,7 +74,7 @@ export async function fetchGithubAppMetadata(app: Forge): Promise<GithubAppMetad
   const appJwt = await signGithubAppJwt(app.externalAppId, app.privateKeyPem)
   let response: Response
   try {
-    response = await fetch(`${githubApiBaseFor(app)}/app`, {
+    response = await forgeFetch(`${githubApiBaseFor(app)}/app`, {
       headers: githubApiHeaders(appJwt, 'Bearer'),
     })
   } catch (error) {

@@ -80,11 +80,11 @@ import {
   warnIfGitlabWebhookRateLimiterMissing,
   warnIfStripeWebhookRateLimiterMissing,
 } from "./platform/workers/workers-bindings.ts";
+import { fetchWithConnectionRetry } from "./platform/workers/connection-retry.ts";
 import {
   type createWorkersDb,
   type Db,
   endDbConnection,
-  isConnectionClosedError,
 } from "./db/connection.ts";
 import { compatLogWarn } from "./lib/log-compat.ts";
 import type { AuthRateLimiter } from "./client/authn/auth-rate-limit.ts";
@@ -438,37 +438,24 @@ export default {
       });
       requestApp.route("/", cachedApp!);
 
-      try {
-        return await requestApp.fetch(request, env, ctx);
-      } catch (err) {
-        // A primary restart or a failover drops the connections it is
-        // holding, and this runtime opens a fresh client per request — so
-        // the only request that can see it is the one in flight. Retry it
-        // once, on a new connection, for the methods HTTP already defines as
-        // safe: a GET that failed mid-flight has changed nothing, while
-        // replaying a POST could double a write. Anything that is not a
-        // connection-closed error propagates untouched.
-        const method = request.method.toUpperCase();
-        if (
-          !isConnectionClosedError(err) ||
-          (method !== "GET" && method !== "HEAD")
-        ) {
-          throw err;
-        }
-        compatLogWarn(
-          "db",
-          `connection lost mid-request on ${method} ${
-            new URL(request.url).pathname
-          }; retrying once on a fresh connection`,
-        );
-        const previousHandles = dbHandles;
-        ctx.waitUntil(closeWorkersRequestDb(previousHandles).catch(() => {}));
-        dbHandles = openWorkersRequestDb(env);
-        db = dbHandles.db;
-        queryCache = dbHandles.queryCache;
-        // The same request object: GET/HEAD carry no body to have consumed.
-        return await requestApp.fetch(request, env, ctx);
-      }
+      // A GET/HEAD that failed on a dropped database connection is replayed
+      // once on a fresh one (`platform/workers/connection-retry.ts`).
+      return await fetchWithConnectionRetry(requestApp, request, env, ctx, {
+        onRetry: (method, path) =>
+          compatLogWarn(
+            "db",
+            `connection lost mid-request on ${method} ${path}; retrying once on a fresh connection`,
+          ),
+        reopen: () => {
+          const previousHandles = dbHandles;
+          ctx.waitUntil(
+            closeWorkersRequestDb(previousHandles).catch(() => {}),
+          );
+          dbHandles = openWorkersRequestDb(env);
+          db = dbHandles.db;
+          queryCache = dbHandles.queryCache;
+        },
+      });
     } finally {
       ctx.waitUntil(closeWorkersRequestDb(dbHandles).catch(() => {}));
     }

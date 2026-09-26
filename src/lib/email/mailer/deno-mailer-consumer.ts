@@ -240,22 +240,30 @@ export async function startMailerConsumer(
 
   async function openSession(): Promise<ConsumerSession> {
     const connection = await connectAmqp(opts.amqpUrl)
-    const channel = await connection.createChannel()
-    await assertEmailAmqpTopology(channel)
-    await channel.prefetch(appliedPrefetch)
-
-    const opened: ConsumerSession = {
+    // `channel` is filled in below; the object has to exist first so the
+    // connection's listeners can be attached before anything else awaits.
+    const opened = {
       connection,
-      channel,
       consumerTag: undefined,
       lost: false,
-    }
-    // Before consume(): a broker that dies during the first delivery still
-    // has to find a listener waiting for it.
+    } as ConsumerSession
+    // Before the first await on this connection: opening the channel, the
+    // topology and the prefetch all wait on the broker, and a broker that goes
+    // away in that window makes the connection emit `error` — with no
+    // listener, a thrown exception that exits the process.
     watchForLoss(connection, 'connection', opened)
-    watchForLoss(channel, 'channel', opened)
-    await consumeOn(opened)
-    return opened
+    try {
+      const channel = await connection.createChannel()
+      opened.channel = channel
+      watchForLoss(channel, 'channel', opened)
+      await assertEmailAmqpTopology(channel)
+      await channel.prefetch(appliedPrefetch)
+      await consumeOn(opened)
+      return opened
+    } catch (error) {
+      await connection.close().catch(() => undefined)
+      throw error
+    }
   }
 
   async function discard(s: ConsumerSession): Promise<void> {
@@ -431,6 +439,15 @@ export async function startMailerConsumer(
   }
 
   session = await openSession()
+  if (session.lost) {
+    // The broker went away while the first session was being set up. Its
+    // listeners fired before it was the live session, so nothing else will
+    // rebuild it. `reopen` marks the rebuild in progress before its first
+    // await, so the close events from discarding it are ignored.
+    const dead = session
+    void reopen(dead, 'connection lost during start')
+    void discard(dead)
+  }
   logInfo(
     'mailer',
     `consuming from ${EMAIL_AMQP_QUEUE} at ${

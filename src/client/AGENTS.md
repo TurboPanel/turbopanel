@@ -435,7 +435,12 @@ changes.
   same check re-runs at the fetch-time choke points (`githubApiBaseFor`,
   `gitlabApiBase`, the GitLab token grant), surfaced as the provider error
   those callers already map, so a row written by anything else is still never
-  dialed with credentials attached. `GET /repositories/github/callback` is the
+  dialed with credentials attached. Every forge request itself goes through
+  `forgeFetch` (`forge-url.ts`): the name is resolved again before each
+  request on Deno (a private answer or a resolver failure other than "no such
+  name" refuses it), redirects are `manual`, a same-origin redirect is
+  re-checked and followed (at most 3), and a cross-origin one is refused so
+  the App's credentials never reach another host. `GET /repositories/github/callback` is the
   App's **callback URL** (the manifest requests user authorization during
   installation, which disables GitHub's Setup URL): it is per-user rate-limited
   (`forge-connect`, strict), requires the one-shot `code` GitHub sends beside

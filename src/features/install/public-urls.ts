@@ -1,7 +1,7 @@
 import type { Db } from "../../db/connection.ts";
 import {
   getInstanceHostnamesLegacyShim,
-  replacePublicUrlsWithPlatformCa,
+  replacePublicUrlList,
 } from "./instance-hostnames.ts";
 
 export const PUBLIC_URLS_SETTING_KEY = "TURBOPANEL_PUBLIC_URLS";
@@ -205,14 +205,15 @@ export function parsePublicUrlEntries(
 }
 
 /**
- * Flat public-URL list. Storage is the `hostname` table (`platform-ca` when
- * written here). `TURBOPANEL_PUBLIC_URLS` is kept as a projection of that list.
+ * Flat public-URL list. Storage is the `hostname` table; a new name written
+ * here is `platform-ca`, an existing one keeps its certificate source.
+ * `TURBOPANEL_PUBLIC_URLS` is kept as a projection of that list.
  */
 export async function getPublicUrls(db: Db): Promise<string[]> {
   return await getInstanceHostnamesLegacyShim(db);
 }
 
-/** Replace the published names. Entries written here use source `platform-ca`. */
+/** Replace the published names. Existing names keep their certificate source; new ones are `platform-ca`. */
 export async function setPublicUrls(db: Db, urls: string[]): Promise<void> {
-  await replacePublicUrlsWithPlatformCa(db, urls);
+  await replacePublicUrlList(db, urls);
 }

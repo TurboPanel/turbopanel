@@ -29,6 +29,7 @@ import {
   GITHUB_USER_AGENT,
 } from './github-app-token.ts'
 import { stripTrailingSlashes } from './origin.ts'
+import { forgeFetch } from './forge-url.ts'
 
 export class GithubManifestError extends Error {
   readonly status?: number
@@ -223,7 +224,7 @@ export async function convertGithubAppManifest(
 ): Promise<GithubManifestConversion> {
   let response: Response
   try {
-    response = await fetch(
+    response = await forgeFetch(
       `${apiBase}/app-manifests/${encodeURIComponent(code)}/conversions`,
       {
         method: 'POST',

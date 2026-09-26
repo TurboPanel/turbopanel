@@ -8,7 +8,19 @@
  * always sealed. The re-encrypt sweep (`src/admin/reencrypt-secrets.ts`)
  * re-seals both columns under the current key version.
  */
-import { and, desc, eq, gt, inArray, isNull, lt, or, sql } from "drizzle-orm";
+import {
+  and,
+  desc,
+  eq,
+  gt,
+  inArray,
+  isNotNull,
+  isNull,
+  lt,
+  notInArray,
+  or,
+  sql,
+} from "drizzle-orm";
 import type { Db } from "../../db/connection.ts";
 import {
   decryptSecret,
@@ -347,19 +359,22 @@ export async function replaceRulesForChannel(
 
 /**
  * Every enabled channel a rule routes this event to, within the scope the
- * event belongs to: the organization's own channels and its members' user
- * channels for an organization event; instance channels for everything.
+ * event belongs to: the organization's own channels and the user channels of
+ * the people the event is for, plus instance channels for everything.
+ *
+ * `recipientIds` is the event's audience — the same people who get the inbox
+ * row. A personal channel is a person's own copy of their inbox, so it may
+ * only carry what that person may see: a managers-only event never reaches a
+ * plain member's user channel.
  */
 export async function channelsForEvent(
   db: Db,
   event: NotificationEvent,
   severity: NotificationSeverity,
   organizationId: string | null,
+  recipientIds: readonly string[],
 ): Promise<NotificationChannelRecord[]> {
-  const memberIds = organizationId
-    ? await organizationMemberIds(db, organizationId)
-    : [];
-  const ownerFilter = channelOwnerFilter(organizationId, memberIds);
+  const ownerFilter = channelOwnerFilter(organizationId, recipientIds);
   const rows = await db
     .select({ channel: notificationChannel, rule: notificationRule })
     .from(notificationRule)
@@ -733,24 +748,48 @@ export async function recordDeliveryAttempt(
     .where(eq(notificationDelivery.id, id));
 }
 
-/** Failed deliveries whose retry time has come — the maintenance tick's batch. */
+/**
+ * Failed deliveries whose retry time has come — the maintenance tick's batch.
+ *
+ * Only rows this sweep can actually send are selected: the channel is not
+ * paused, is not push (the Expo transport owns those rows), and is email only
+ * when the tick has an email queue and the address is verified. A row the
+ * sweep would skip is never picked, so rows for a paused channel (which wait
+ * for it to resume) cannot fill the batch and starve every other channel.
+ */
 export async function listDueDeliveries(
   db: Db,
   limit = 50,
+  opts: { includeEmail?: boolean } = {},
 ): Promise<NotificationDeliveryRecord[]> {
   const now = new Date().toISOString();
+  const kindFilter = opts.includeEmail
+    ? or(
+      and(
+        eq(notificationChannel.kind, "email"),
+        isNotNull(notificationChannel.verifiedAt),
+      ),
+      notInArray(notificationChannel.kind, ["email", "push"]),
+    )
+    : notInArray(notificationChannel.kind, ["email", "push"]);
   const rows = await db
-    .select()
+    .select({ delivery: notificationDelivery })
     .from(notificationDelivery)
+    .innerJoin(
+      notificationChannel,
+      eq(notificationDelivery.channelId, notificationChannel.id),
+    )
     .where(
       and(
         inArray(notificationDelivery.status, ["pending", "failed"]),
         lt(notificationDelivery.nextAttemptAt, now),
+        isNull(notificationChannel.disabledAt),
+        kindFilter,
       ),
     )
     .orderBy(notificationDelivery.nextAttemptAt)
     .limit(limit);
-  return rows.map(asDelivery);
+  return rows.map((r) => asDelivery(r.delivery));
 }
 
 /** Deliveries newer than `since` for one channel — what a channel's detail row shows. */

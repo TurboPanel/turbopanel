@@ -21,7 +21,7 @@ import { gitConnection } from '../../db/schema.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { type Forge, loadForgeForConnection } from './forge-records.ts'
 import { stripTrailingSlashes } from './origin.ts'
-import { assertForgeUrlAllowed, ForgeUrlError } from './forge-url.ts'
+import { assertForgeUrlAllowed, forgeFetch, ForgeUrlError } from './forge-url.ts'
 import { base64urlEncode } from '../../lib/encoding/base64url.ts'
 
 const textEncoder = new TextEncoder()
@@ -264,7 +264,7 @@ export async function exchangeInstallationTokenAt(
   const id = encodeURIComponent(externalInstallationId)
   let response: Response
   try {
-    response = await fetch(`${apiBase}/app/installations/${id}/access_tokens`, {
+    response = await forgeFetch(`${apiBase}/app/installations/${id}/access_tokens`, {
       method: 'POST',
       headers: githubApiHeaders(appJwt, 'Bearer'),
     })
@@ -381,7 +381,7 @@ export async function verifyInstallationAuthorizedByUser(
 
   let tokenResponse: Response
   try {
-    tokenResponse = await fetch(tokenEndpoint, {
+    tokenResponse = await forgeFetch(tokenEndpoint, {
       method: 'POST',
       headers: { accept: 'application/json', 'content-type': 'application/x-www-form-urlencoded' },
       body: form.toString(),
@@ -405,7 +405,7 @@ export async function verifyInstallationAuthorizedByUser(
 
   let response: Response
   try {
-    response = await fetch(`${apiBase}/user/installations?per_page=100`, {
+    response = await forgeFetch(`${apiBase}/user/installations?per_page=100`, {
       headers: githubApiHeaders(userToken, 'Bearer'),
     })
   } catch (error) {

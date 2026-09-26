@@ -17,9 +17,11 @@
  * - {@link resolveOutboundHostScope} resolves the name, which a literal-only
  *   validator cannot do. Only the Deno instance has a resolver; elsewhere it
  *   is a no-op. A name that later re-points to a private address (rebinding)
- *   is therefore not caught at fetch time; the host firewall is the second
- *   wall there (the compiled instance runs with unrestricted `--allow-net`
- *   since 2026-09-18).
+ *   is only caught when the fetch-time check runs it again (`forgeFetch` in
+ *   `git/forge-url.ts` does, with `failClosed`); a rebind between that
+ *   lookup and the connection itself is not caught, and the host firewall
+ *   is the wall there (the compiled instance runs with unrestricted
+ *   `--allow-net` since 2026-09-18).
  *
  * `allowPrivate` lifts the address and reserved-name rules. Scheme and
  * credential rules stay. Who passes it is a per-caller decision:
@@ -43,6 +45,7 @@ export type OutboundUrlRejection =
   | 'credentials_in_url'
   | 'reserved_host'
   | 'address_not_public'
+  | 'dns_lookup_failed'
 
 /**
  * Names that never denote a host reachable by anyone but this box. `.local`
@@ -92,15 +95,26 @@ export function validateOutboundUrl(
   return null
 }
 
+export type ResolveOutboundHostOptions = OutboundUrlOptions & {
+  /**
+   * Fetch time: a resolver failure other than "no such name" (SERVFAIL, a
+   * timeout, a refused query) refuses the URL rather than letting the fetch
+   * run unjudged — an attacker who controls the zone could fail the check's
+   * lookup and answer the fetch's with a private address. A name that simply
+   * does not exist is still left to the fetch, which cannot connect to it.
+   */
+  failClosed?: boolean
+}
+
 /**
  * Resolve the name and refuse it if any answer is not a public address — the
- * write-time half of the check a literal-only validator cannot do. A name
- * that does not resolve at all is left to the fetch to fail on, not refused
- * here (the admin may be mid-DNS-setup).
+ * half of the check a literal-only validator cannot do. At write time a name
+ * that does not resolve is left to the fetch to fail on (the admin may be
+ * mid-DNS-setup); with `failClosed` (fetch time) a resolver error refuses it.
  */
 export async function resolveOutboundHostScope(
   raw: string,
-  opts: OutboundUrlOptions = {},
+  opts: ResolveOutboundHostOptions = {},
 ): Promise<OutboundUrlRejection | null> {
   if (opts.allowPrivate) return null
   const deno = (globalThis as { Deno?: { resolveDns?: unknown } }).Deno
@@ -120,12 +134,21 @@ export async function resolveOutboundHostScope(
   for (const recordType of ['A', 'AAAA'] as const) {
     try {
       answers.push(...(await resolveDns(hostname, recordType)))
-    } catch {
-      // NXDOMAIN / no records of this type / resolver unavailable: nothing to judge.
+    } catch (error) {
+      // NXDOMAIN / no records of this type: nothing to judge. Anything else
+      // (SERVFAIL, timeout, resolver unreachable) is unjudged at fetch time.
+      if (opts.failClosed && !isNoSuchRecord(error)) return 'dns_lookup_failed'
     }
   }
   for (const answer of answers) {
     if (ipAddressScope(answer) !== 'public') return 'address_not_public'
   }
   return null
+}
+
+/** Deno reports NXDOMAIN and "no records of this type" as `NotFound`. */
+function isNoSuchRecord(error: unknown): boolean {
+  const notFound = (globalThis as { Deno?: { errors?: { NotFound?: unknown } } }).Deno?.errors
+    ?.NotFound
+  return typeof notFound === 'function' && error instanceof (notFound as new () => Error)
 }

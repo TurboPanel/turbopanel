@@ -60,6 +60,7 @@ import {
   GITHUB_SIGNATURE_HEADER,
   verifyGithubWebhookSignature,
 } from './github-webhook.ts'
+import { forgeFetch } from './forge-url.ts'
 
 /** GitHub paginates installation repositories; walk a bounded number of pages. */
 const REPOSITORY_PAGE_SIZE = 100
@@ -144,7 +145,7 @@ export async function listGithubInstallationRepositories(
   for (let page = 1; page <= REPOSITORY_MAX_PAGES; page += 1) {
     const url = `${auth.apiBase}/installation/repositories` +
       `?per_page=${REPOSITORY_PAGE_SIZE}&page=${page}`
-    const response = await fetch(url, {
+    const response = await forgeFetch(url, {
       headers: githubApiHeaders(auth.token, 'token'),
     })
     if (!response.ok) {
@@ -208,7 +209,7 @@ export async function fetchPublicGithubDefaultBranch(
     encodeURIComponent(parsed.owner)
   }/${encodeURIComponent(parsed.repo)}`
   try {
-    const response = await fetch(url, {
+    const response = await forgeFetch(url, {
       headers: githubApiHeaders('', 'token'),
     })
     if (!response.ok) return null
@@ -276,7 +277,7 @@ async function readGithubFile(
 
   let response: Response
   try {
-    response = await fetch(url, {
+    response = await forgeFetch(url, {
       headers: {
         ...githubApiHeaders(auth.token, 'token'),
         Accept: 'application/vnd.github.raw',
@@ -344,7 +345,7 @@ export async function resolveGithubCommit(
     // `apiBase`, owner/repo/ref are percent-encoded per segment, and `ref`
     // passed the `isSafeGitRef` allow-list above — the value cannot reshape
     // the request URL.
-    response = await fetch(url, { // NOSONAR typescript:S5144 — validated above
+    response = await forgeFetch(url, { // NOSONAR typescript:S5144 — validated above
       headers: githubApiHeaders(auth.token, 'token'),
     })
   } catch (error) {
@@ -546,7 +547,7 @@ export const githubProvider: GitProvider = {
       // Same story as `resolveGithubCommit`: `params.path` passed the
       // `isSafeRepositoryPath` allow-list above and is encoded per segment;
       // `commitSha` is GitHub's own answer, not caller input.
-      response = await fetch(url, { // NOSONAR typescript:S5144 — validated above
+      response = await forgeFetch(url, { // NOSONAR typescript:S5144 — validated above
         headers: githubApiHeaders(auth.token, 'token'),
       })
     } catch (error) {

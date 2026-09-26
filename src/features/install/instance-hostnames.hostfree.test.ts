@@ -18,7 +18,7 @@ import {
   migrateLegacyPublicUrls,
   recordInstanceAcmeIssuance,
   replaceInstanceHostnames,
-  replacePublicUrlsWithPlatformCa,
+  replacePublicUrlList,
   upsertInstanceHostname,
   validateHostnameSource,
 } from "./instance-hostnames.ts";
@@ -289,7 +289,7 @@ test("replaceInstanceHostnames rejects two certificate sources for one hostname"
 
 test("replaceInstanceHostnames rejects Let's Encrypt on a private name and keeps the prior set", async () => {
   const { db, hostnames } = createMemoryDb();
-  await replacePublicUrlsWithPlatformCa(db, ["https://panel.example.com"]);
+  await replacePublicUrlList(db, ["https://panel.example.com"]);
   const rejected = await replaceInstanceHostnames(db, [
     { host: "10.1.2.3", source: "lets-encrypt", uploadedCertId: null },
   ]);
