@@ -9,7 +9,8 @@
  * missing. Rather than inventing expected hostnames, it reads the real
  * binding: wrangler.jsonc names the `HYPERDRIVE` config id for the env, and
  * the config's origin (host, port, database — never the password) comes from
- * the Cloudflare API when `CLOUDFLARE_API_TOKEN` is set, else
+ * the Cloudflare API when `TURBOPANEL_DEPLOY_CHECK_API_TOKEN` (Workers Builds)
+ * or `CLOUDFLARE_API_TOKEN` is set, else
  * `wrangler hyperdrive get` (wrangler login OAuth). The migrate URL must name
  * the same host, port, and database. The Postgres role may differ: migrate
  * runs as a dedicated user with broader grants than the Hyperdrive runtime
@@ -54,7 +55,10 @@ export function readHyperdriveIdForEnv(envName, wranglerPath = path.join(ROOT, '
 }
 
 async function readOriginFromApi(accountId, id) {
-  const token = process.env.CLOUDFLARE_API_TOKEN?.trim()
+  // Workers Builds keeps its own deploy token; a separate read-only
+  // Hyperdrive token avoids overriding it with a same-named build variable.
+  const token =
+    process.env.TURBOPANEL_DEPLOY_CHECK_API_TOKEN?.trim() || process.env.CLOUDFLARE_API_TOKEN?.trim()
   if (!token || !accountId) return null
   const response = await fetch(
     `https://api.cloudflare.com/client/v4/accounts/${accountId}/hyperdrive/configs/${id}`,

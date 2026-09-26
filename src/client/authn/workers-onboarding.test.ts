@@ -826,3 +826,23 @@ it('Workers email queue follows DB Mailgun settings without a Worker restart', a
     await cleanupUser(db, email)
   }
 })
+
+it('Workers status answers 200 on a freshly migrated database', async () => {
+  if (!dbUrl) {
+    console.warn('Skipping Workers status test: TURBOPANEL_DATABASE_URL not set')
+    return
+  }
+  // CI's db shards run against a database migrated from scratch — the same
+  // state a wiped TESTING database is in after `pnpm deploy:testing`.
+  const db = createDenoDb()
+  const app = await createClientRouteApp(db, 'workers')
+  const res = await app.request(`${CLIENT_API_PREFIX}/status`)
+  if (res.status !== 200) {
+    const body = await res.text()
+    throw new Error(`expected 200, got ${res.status}: ${body}`)
+  }
+  const payload = await res.json() as { ok: boolean; runtime: string }
+  if (payload.ok !== true || payload.runtime !== 'workers') {
+    throw new Error(`unexpected status payload ${JSON.stringify(payload)}`)
+  }
+})

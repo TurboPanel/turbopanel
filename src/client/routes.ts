@@ -10,6 +10,7 @@ import {
   resolveSignupEnvOverrideFromContext,
 } from "./authn/install-state.ts";
 import { getDb } from "../db/connection.ts";
+import { logError } from "../lib/logger.ts";
 import { isCustomerBillingOperational } from "../features/billing/config.ts";
 import { registerAccessRoutes } from "./access/routes.ts";
 import {
@@ -87,14 +88,28 @@ export function registerClientRoutes(app: Hono<AppEnv>, opts: ClientRouteOpts) {
     // resolveEffectiveSignupEnabled — same helper as sign-up / OTP auto-reg.
     // Prefer per-request platformEnv so dashboard force overrides apply without
     // an isolate recycle (do not rely on createApp()-captured signupEnvOverride).
-    const payload = await getClientPublicStatus(
-      db,
-      opts.runtime,
-      resolveSignupEnvOverrideFromContext(platformEnv, opts.signupEnvOverride),
-      platformEnv,
-      // Both Stripe secrets; an API-key-only config does not expose billing.
-      isCustomerBillingOperational(c.get("billingConfig")),
-    );
+    let payload: Awaited<ReturnType<typeof getClientPublicStatus>>;
+    try {
+      payload = await getClientPublicStatus(
+        db,
+        opts.runtime,
+        resolveSignupEnvOverrideFromContext(
+          platformEnv,
+          opts.signupEnvOverride,
+        ),
+        platformEnv,
+        // Both Stripe secrets; an API-key-only config does not expose billing.
+        isCustomerBillingOperational(c.get("billingConfig")),
+      );
+    } catch (error) {
+      // The console's first request: an unmigrated or unreachable database
+      // must read as "database unavailable", not an opaque 500.
+      logError("client-status", "status read failed", error);
+      return c.json(
+        { ok: false, error: "Database unavailable", code: "database_error" },
+        503,
+      );
+    }
     if (payload === null) {
       return c.json({ ok: false, error: "Database unavailable" }, 503);
     }

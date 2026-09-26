@@ -341,8 +341,24 @@ guard; `pnpm test:do` alone does not.
   (`CLOUDFLARE_ENV` required, e.g. `live` or `testing`). Works from any
   environment with internet access to the database — self-hosted dev, CI, or
   production. Requires **Node** only (`pnpm migrate` runs `drizzle-kit migrate`;
-  no Deno prerequisite). Equivalent to
-  `pnpm migrate && wrangler deploy --env $CLOUDFLARE_ENV --minify --var TURBOPANEL_REVISION:$(git rev-parse HEAD)`.
+  no Deno prerequisite). `scripts/deploy-workers.mjs` runs `pnpm migrate`
+  then `wrangler deploy --env $CLOUDFLARE_ENV --minify --var
+  TURBOPANEL_REVISION:<sha>`; the SHA is Workers Builds' `WORKERS_CI_COMMIT_SHA`,
+  else `git rev-parse HEAD`, and a deploy that cannot name a 40-hex commit is
+  refused (so `/api/health` never reports `revision: unknown`). A failed
+  migrate stops before wrangler runs.
+- **TESTING deploys from `trunk` via Cloudflare Workers Builds** on the
+  `testing-instance` worker (branch-based, like staging/live — not an Actions
+  API-token deploy). Deploy command `pnpm run deploy:testing` (sets
+  `CLOUDFLARE_ENV=testing`). Build variables (build-only, never runtime):
+  `TURBOPANEL_DATABASE_URL` — secret, the testing database's direct TCP URL
+  for the migrate role (Hyperdrive is not reachable from the build
+  container), and `TURBOPANEL_DEPLOY_CHECK_API_TOKEN` — secret, a token with
+  Hyperdrive Read so `check-deploy-env.mjs` can confirm the URL is testing's
+  Hyperdrive origin (it fails closed without it). Migrations run from zero on
+  a wiped database. `/api/client/v1/status` answers **503**
+  `{ code: "database_error" }` (not a bare 500) when the settings read fails
+  — the symptom of an unmigrated or unreachable database.
   Do not commit `TURBOPANEL_REVISION` in `wrangler.jsonc` — that would freeze a
   SHA. Self-hosted instance-launch writes it into `runtime.env` /
   `runtime.dev-vars` from `git rev-parse HEAD` in the instance checkout.
