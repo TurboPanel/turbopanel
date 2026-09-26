@@ -1,4 +1,4 @@
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertMatch } from "@std/assert";
 import type { Db } from "../../db/connection.ts";
 import {
   clampUpgradePruneLimit,
@@ -134,11 +134,17 @@ test("pruneUpgradeHistory issues three capped deletes and returns their counts",
   assert(statements[0]?.includes("counts is not null"));
   assert(statements[1]?.includes("parent.status"));
   assert(statements[0]?.includes("2026-06-01T00:00:00.000Z"));
-  assert(statements[0]?.includes("limit 7") || statements[0]?.includes("7"));
+  // The batch limit closes each subquery; a bare "7" anywhere would not do.
+  assertMatch(statements[0] ?? "", /limit\s+7\s*\)\s*$/);
+  assertMatch(statements[1] ?? "", /limit\s+7\s*\)\s*$/);
   assert(statements[1]?.includes("'rolled_back'"));
   assert(statements[1]?.includes("'needs_attention'"));
   assert(statements[2]?.includes("'partially_failed'"));
-  assert(statements[2]?.includes("limit 50") || statements[2]?.includes("50"));
+  assertMatch(
+    statements[2] ?? "",
+    new RegExp(`limit\\s+${UPGRADE_RUN_KEEP_NEWEST}\\s*\\)`),
+  );
+  assertMatch(statements[2] ?? "", /limit\s+7\s*\)\s*$/);
 });
 
 test("the active-step index lists UPGRADE_STEP_ACTIVE_STATUSES", async () => {

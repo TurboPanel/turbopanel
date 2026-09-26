@@ -12,7 +12,10 @@ import {
 } from "./persist.ts";
 import {
   createDrizzleUpgradeStore,
+  createMemoryUpgradeStore,
   UPGRADE_TICK_CURSOR_KEY,
+  type UpgradeStore,
+  type UpgradeTickCursor,
   type UpgradeRunRow,
   type UpgradeStepRow,
 } from "./store.ts";
@@ -458,3 +461,89 @@ test("Postgres upgrades: a control-plane rollback is recorded as rolled_back", a
     assertEquals(again?.attempts, 2);
   });
 });
+
+/**
+ * The coordinator's host-free suites run on `createMemoryUpgradeStore`, whose
+ * `tickWindow` re-implements `loadTickWindow`'s SQL in JavaScript. Seed the
+ * same steps into both and require the same window, page by page, so those
+ * suites exercise what Postgres returns.
+ */
+test("Postgres upgrades: the in-memory tick window matches the SQL one", async () => {
+  await withFixture("tick-window-parity", async (fx) => {
+    const servers: string[] = [];
+    for (let i = 0; i < 6; i++) {
+      servers.push(await addServer(fx, { connected: true, commit: "old" }));
+    }
+    // Ordered ids under one random prefix: batch-1 steps sort after batch 0,
+    // so the page after the last batch-0 step is where a window that ignored
+    // the batch would leak batch-1 rows.
+    const prefix = crypto.randomUUID().slice(0, 34);
+    const orderedId = (n: number) => `${prefix}${n.toString(16).padStart(2, "0")}`;
+    const plan = (runId: string): UpgradeStepRow[] => [
+      stepRow(runId, {
+        serverId: servers[0]!,
+        unit: "daemon",
+        phase: "colocated_daemon",
+        status: "done",
+      }),
+      stepRow(runId, {
+        serverId: servers[0]!,
+        unit: "instance",
+        phase: "control_plane",
+        status: "done",
+      }),
+      ...servers.slice(1).map((serverId, i) => ({
+        ...stepRow(runId, {
+          serverId,
+          unit: "daemon",
+          phase: "fleet",
+          status: i === 0 ? "done" : "pending",
+        }),
+        id: orderedId(i + 1),
+        batchIndex: i < 3 ? 0 : 1,
+      })),
+    ];
+    const runId = await seedRun(fx, "fleet", plan);
+    const sqlStore = createDrizzleUpgradeStore(fx.db, null);
+    const memoryStore = createMemoryUpgradeStore();
+    const run = await sqlStore.runById(runId);
+    await memoryStore.insertRun(run!, await sqlStore.stepsFor(runId));
+
+    const view = async (store: UpgradeStore, cursor: UpgradeTickCursor | null) => {
+      const window = await store.tickWindow(runId, cursor, 1);
+      return {
+        steps: window.steps.map((step) => [step.id, step.status]),
+        counts: window.counts,
+        phase: window.phase,
+        batchIndex: window.batchIndex,
+        failedPlatformPhase: window.failedPlatformPhase,
+        allTerminal: window.allTerminal,
+      };
+    };
+
+    let cursor: UpgradeTickCursor | null = null;
+    for (let page = 0; page < 4; page++) {
+      const fromSql = await view(sqlStore, cursor);
+      assertEquals(await view(memoryStore, cursor), fromSql, `page ${page}`);
+      const last = fromSql.steps.at(-1);
+      cursor = last && fromSql.phase && fromSql.batchIndex !== null
+        ? {
+          phase: fromSql.phase,
+          batchIndex: fromSql.batchIndex,
+          afterId: String(last[0]),
+        }
+        : null;
+    }
+
+    // Finish batch 0 in both stores: the window must move to batch 1 alike.
+    for (const store of [sqlStore, memoryStore]) {
+      for (const step of await store.stepsFor(runId)) {
+        if (step.phase === "fleet" && step.batchIndex === 0) {
+          await store.saveStep({ ...step, status: "done" });
+        }
+      }
+    }
+    assertEquals(await view(memoryStore, null), await view(sqlStore, null));
+  });
+});
+
