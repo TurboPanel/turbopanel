@@ -3,9 +3,18 @@
 # Pre-commit scans the staged (else modified) files; `--all` scans every
 # tracked file, which is what CI runs.
 #
-# Content patterns catch connection strings and secret env assignments.
-# Filenames like `license.token` / `server-key.json` only fail when *those files
-# themselves* are staged — mentioning the names in code or docs is not a leak.
+# This file is byte-identical in turbopanel, turbopaneld, ui, website and dev.
+# Change all five together; each repo's test checks the copy against the rules.
+#
+# Three checks, the union of what every copy used to do:
+#   1. A secret-bearing file (license.token, server-key.json, .pgpass, …)
+#      must never be committed, whatever it contains.
+#   2. Credential material on a line: a connection URL with user:password@,
+#      or an assignment / JSON binding of TURBOPANEL_SECRET(S).
+#   3. A line that names a secret-bearing file (license.token,
+#      server-key.json, .pgpass, .rabbitmq_pass). Most are docs or code that
+#      only mention the path; each such line is allowlisted exactly, so a new
+#      mention gets a second look before it lands.
 #
 # Allowlist: exact "path:lineno:full line" fixture lines only (see
 # .secretscan-allowlist). Do not add broad wildcards.
@@ -61,7 +70,7 @@ is_secret_bearing_path() {
   return 1
 }
 
-# True when the line looks like credential material (not a filename mention).
+# True when the line carries credential material or names a secret-bearing file.
 line_looks_like_secret() {
   line=$1
   case "$line" in
@@ -70,10 +79,20 @@ line_looks_like_secret() {
       return 0
       ;;
   esac
-  # Env-style assignment / JSON binding of the root secret (not bare mentions).
-  # Deliberately requires `=` so prose like "TURBOPANEL_SECRET is required" is clean.
+  # Env / YAML / JSON binding of the root secret (not bare mentions).
+  # Deliberately requires `=` or `:` right after the name so prose like
+  # "TURBOPANEL_SECRET is required" is clean.
   case "$line" in
-    *TURBOPANEL_SECRET=*|*TURBOPANEL_SECRETS=*|*"TURBOPANEL_SECRET":*|*"TURBOPANEL_SECRETS":*)
+    *TURBOPANEL_SECRET=*|*TURBOPANEL_SECRETS=*|*TURBOPANEL_SECRET:*|*TURBOPANEL_SECRETS:*)
+      return 0
+      ;;
+    *'"TURBOPANEL_SECRET":'*|*'"TURBOPANEL_SECRETS":'*)
+      return 0
+      ;;
+  esac
+  # Mentions of secret-bearing files: allowlisted line by line.
+  case "$line" in
+    *license.token*|*server-key.json*|*.rabbitmq_pass*|*.pgpass*)
       return 0
       ;;
   esac
@@ -84,7 +103,7 @@ line_is_allowlisted() {
   file=$1
   lineno=$2
   line=$3
-  grep -Fxq "$file:$lineno:$line" "$ALLOWLIST" 2>/dev/null
+  grep -Fxq -- "$file:$lineno:$line" "$ALLOWLIST" 2>/dev/null
 }
 
 fail=0
@@ -92,7 +111,8 @@ for file in $FILES; do
   [ -f "$file" ] || continue
   case "$file" in
     .secretscan-allowlist|scripts/scan-secrets.sh)
-      # Allowlist + scanner source quote patterns; skip self-scan.
+      # The allowlist echoes the exact fixture lines and this script names the
+      # patterns; skip both.
       continue
       ;;
     *.png|*.jpg|*.jpeg|*.gif|*.webp|*.ico|*.woff|*.woff2|*.ttf|*.otf|*.zip|*.tar|*.zst|*.gz)
