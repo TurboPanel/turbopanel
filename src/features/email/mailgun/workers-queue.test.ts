@@ -1,10 +1,7 @@
 import { assertEquals } from '@std/assert'
 import { resolveEmailSettings } from '../../settings/email-settings.ts'
 import { createNoopQueue, isNoopEmailQueue } from '../noop-queue.ts'
-import {
-  emailQueueFromResolvedSettings,
-  resolveWorkersEmailQueue,
-} from './workers-queue.ts'
+import { emailQueueFromResolvedSettings, resolveWorkersEmailQueue } from './workers-queue.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.

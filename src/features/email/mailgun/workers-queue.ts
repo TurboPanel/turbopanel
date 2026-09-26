@@ -1,6 +1,4 @@
-import {
-  resolveEmailSettings,
-} from '../../settings/email-settings.ts'
+import { resolveEmailSettings } from '../../settings/email-settings.ts'
 import type { DerivedSecretsConfig } from '../../../lib/secrets/secrets.ts'
 import type { Db } from '../../../db/connection.ts'
 import { resolveWorkersMailpitApiBaseUrl } from '../mailpit/env.ts'
@@ -70,7 +68,7 @@ export function createWorkersMailpitQueue(opts: WorkersMailpitQueueOptions): Ema
 export async function resolveWorkersEmailQueue(
   db: Db | undefined,
   env: Record<string, string | undefined>,
-  dataEncryptionSecrets?: DerivedSecretsConfig,
+  dataEncryptionSecrets?: DerivedSecretsConfig
 ): Promise<EmailQueue> {
   const resolved = await resolveEmailSettings(db, env, dataEncryptionSecrets)
   return emailQueueFromResolvedSettings(resolved)
@@ -83,13 +81,11 @@ export async function resolveWorkersEmailQueue(
  * settings once, then use this helper so gate and queue stay aligned.
  */
 export function emailQueueFromResolvedSettings(
-  resolved: Awaited<ReturnType<typeof resolveEmailSettings>>,
+  resolved: Awaited<ReturnType<typeof resolveEmailSettings>>
 ): EmailQueue {
   const workersProvider = resolved.provider
   if (workersProvider === 'mailpit-api') {
-    const apiBaseUrl = resolveWorkersMailpitApiBaseUrl(
-      resolved.keys.MAILPIT_API_URL.value,
-    )
+    const apiBaseUrl = resolveWorkersMailpitApiBaseUrl(resolved.keys.MAILPIT_API_URL.value)
     if (apiBaseUrl === undefined) {
       return createNoopQueue()
     }

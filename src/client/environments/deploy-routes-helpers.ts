@@ -76,9 +76,7 @@ export function composeProjectName(projectId: string): string {
   return projectId
 }
 
-export function tlsPinErrorCode(
-  error: 'pin_not_found' | 'pin_mismatch' | 'pin_not_ready',
-): string {
+export function tlsPinErrorCode(error: 'pin_not_found' | 'pin_mismatch' | 'pin_not_ready'): string {
   switch (error) {
     case 'pin_mismatch':
       return 'tls_pin_mismatch'
@@ -95,7 +93,7 @@ export type PrepareErrorResponse = {
 }
 
 export function fabricGateErrorResponse(
-  outcome: Exclude<FabricGateOutcome, { kind: 'ready' }>,
+  outcome: Exclude<FabricGateOutcome, { kind: 'ready' }>
 ): PrepareErrorResponse {
   if (outcome.kind === 'failed') {
     return {
@@ -133,7 +131,7 @@ export function fabricGateErrorResponse(
  */
 export function scheduleErrorResponse(
   error: ScheduleErrorCode,
-  message: string,
+  message: string
 ): PrepareErrorResponse {
   if (error === 'no_eligible_server') {
     return { status: 409, body: { error: 'server_placement_required' } }
@@ -148,7 +146,7 @@ export type QueuedCommandRef = {
 }
 
 export function queuedCommandsResponseBody(
-  commands: readonly QueuedCommandRef[],
+  commands: readonly QueuedCommandRef[]
 ): Record<string, unknown> {
   const first = commands[0]
   return {
@@ -166,23 +164,20 @@ export function queuedCommandsResponseBody(
 
 export function deployMaterialsErrorResponse(
   hostings: EnvironmentDeployHosting[],
-  storageMaterial: EnvironmentDeployStorageMaterial[],
+  storageMaterial: EnvironmentDeployStorageMaterial[]
 ): Response | null {
   const validationError = validateDeployMaterials(hostings, storageMaterial)
   if (!validationError) return null
   return Response.json(
     { error: validationError.error, message: validationError.message },
-    { status: 400 },
+    { status: 400 }
   )
 }
 
 type VariablePrepareError = Extract<
   DeployPrepareError,
   {
-    kind:
-      | 'variable_unresolved'
-      | 'variable_ref_invalid'
-      | 'variable_secret_interpolation'
+    kind: 'variable_unresolved' | 'variable_ref_invalid' | 'variable_secret_interpolation'
   }
 >
 
@@ -209,8 +204,7 @@ function variablePrepareErrorResponse(prepared: VariablePrepareError): PrepareEr
 }
 
 function storageLocationUnavailableMessage(prepared: StorageLocationUnavailableError): string {
-  const prefix =
-    `Storage "${prepared.storageName}" (${prepared.accessMode}) has no usable location on this server`
+  const prefix = `Storage "${prepared.storageName}" (${prepared.accessMode}) has no usable location on this server`
   if (!prepared.primaryServerId) {
     return prefix
   }
@@ -218,7 +212,7 @@ function storageLocationUnavailableMessage(prepared: StorageLocationUnavailableE
 }
 
 function storageLocationUnavailableResponse(
-  prepared: StorageLocationUnavailableError,
+  prepared: StorageLocationUnavailableError
 ): PrepareErrorResponse {
   return {
     status: 422,
@@ -252,21 +246,20 @@ function pronounWord(count: number): string {
 }
 
 function mapComposeMergeError(
-  prepared: Extract<DeployPrepareError, { kind: 'compose_merged_invalid' }>,
+  prepared: Extract<DeployPrepareError, { kind: 'compose_merged_invalid' }>
 ): PrepareErrorResponse {
   return {
     status: 422,
     body: {
       error: 'compose_merged_invalid',
       issues: prepared.issues,
-      message:
-        `The project and environment compose layers merge into a document TurboPanel cannot run: ${composeIssueDetails(prepared.issues)}. Each layer is valid on its own, so the fix is in how the overlay changes the base.`,
+      message: `The project and environment compose layers merge into a document TurboPanel cannot run: ${composeIssueDetails(prepared.issues)}. Each layer is valid on its own, so the fix is in how the overlay changes the base.`,
     },
   }
 }
 
 function mapComposeUnsupportedError(
-  prepared: Extract<DeployPrepareError, { kind: 'compose_field_unsupported' }>,
+  prepared: Extract<DeployPrepareError, { kind: 'compose_field_unsupported' }>
 ): PrepareErrorResponse {
   const count = prepared.issues.length
   return {
@@ -274,22 +267,20 @@ function mapComposeUnsupportedError(
     body: {
       error: 'compose_field_unsupported',
       issues: prepared.issues,
-      message:
-        `This compose document sets ${fieldNoun(count)} TurboPanel does not support: ${composeIssuePaths(prepared.issues)}. Remove ${pronounWord(count)} and deploy again — leaving ${pronounWord(count)} in place would deploy something different from what the document says.`,
+      message: `This compose document sets ${fieldNoun(count)} TurboPanel does not support: ${composeIssuePaths(prepared.issues)}. Remove ${pronounWord(count)} and deploy again — leaving ${pronounWord(count)} in place would deploy something different from what the document says.`,
     },
   }
 }
 
 function mapComposeOptInError(
-  prepared: Extract<DeployPrepareError, { kind: 'compose_field_requires_org_opt_in' }>,
+  prepared: Extract<DeployPrepareError, { kind: 'compose_field_requires_org_opt_in' }>
 ): PrepareErrorResponse {
   return {
     status: 403,
     body: {
       error: 'compose_field_requires_org_opt_in',
       issues: prepared.issues,
-      message:
-        `This compose document reaches the host through ${composeIssuePaths(prepared.issues)}. Host-level Compose features are off for this organization. An organization owner can turn them on under Manage Organization → Compose, and then only an organization manager or owner can deploy them.`,
+      message: `This compose document reaches the host through ${composeIssuePaths(prepared.issues)}. Host-level Compose features are off for this organization. An organization owner can turn them on under Manage Organization → Compose, and then only an organization manager or owner can deploy them.`,
     },
   }
 }
@@ -298,16 +289,15 @@ function mapComposeHostAccessActorError(
   prepared: Extract<
     DeployPrepareError,
     {
-      kind:
-        | 'compose_host_access_requires_manager'
-        | 'compose_host_access_requires_approval'
+      kind: 'compose_host_access_requires_manager' | 'compose_host_access_requires_approval'
     }
-  >,
+  >
 ): PrepareErrorResponse {
   const paths = composeIssuePaths(prepared.issues)
-  const message = prepared.kind === 'compose_host_access_requires_manager'
-    ? `This compose document reaches the host through ${paths}. Only an organization manager or owner can deploy host-level Compose features.`
-    : `This compose document reaches the host through ${paths}, and no organization manager or owner has deployed it in this form yet. Deploy it once from the console to approve it; automated deploys of the same content will then run.`
+  const message =
+    prepared.kind === 'compose_host_access_requires_manager'
+      ? `This compose document reaches the host through ${paths}. Only an organization manager or owner can deploy host-level Compose features.`
+      : `This compose document reaches the host through ${paths}, and no organization manager or owner has deployed it in this form yet. Deploy it once from the console to approve it; automated deploys of the same content will then run.`
   return {
     status: 403,
     body: { error: prepared.kind, issues: prepared.issues, message },
@@ -318,12 +308,9 @@ function mapSitePrepareError(
   prepared: Extract<
     DeployPrepareError,
     {
-      kind:
-        | 'site_principal_ambiguous'
-        | 'site_cron_unowned'
-        | 'site_managed_directory_unowned'
+      kind: 'site_principal_ambiguous' | 'site_cron_unowned' | 'site_managed_directory_unowned'
     }
-  >,
+  >
 ): PrepareErrorResponse {
   if (prepared.kind === 'site_principal_ambiguous') {
     return {
@@ -331,8 +318,7 @@ function mapSitePrepareError(
       body: {
         error: 'site_principal_ambiguous',
         composeServiceName: prepared.composeServiceName,
-        message:
-          `Site "${prepared.composeServiceName}" has more than one project principal assigned. Keep a single principal for site ownership.`,
+        message: `Site "${prepared.composeServiceName}" has more than one project principal assigned. Keep a single principal for site ownership.`,
       },
     }
   }
@@ -342,8 +328,7 @@ function mapSitePrepareError(
       body: {
         error: 'site_cron_unowned',
         composeServiceName: prepared.composeServiceName,
-        message:
-          `Site "${prepared.composeServiceName}" has scheduled jobs but no project principal to run them as. Assign a principal to the service — a timer with no account would run as root, which TurboPanel will not do.`,
+        message: `Site "${prepared.composeServiceName}" has scheduled jobs but no project principal to run them as. Assign a principal to the service — a timer with no account would run as root, which TurboPanel will not do.`,
       },
     }
   }
@@ -352,14 +337,13 @@ function mapSitePrepareError(
     body: {
       error: 'site_managed_directory_unowned',
       composeServiceName: prepared.composeServiceName,
-      message:
-        `Site "${prepared.composeServiceName}" serves an uploaded directory but has no project principal to own it. Assign a principal to the service — the directory is the account's, and without one there is nobody to upload as.`,
+      message: `Site "${prepared.composeServiceName}" serves an uploaded directory but has no project principal to own it. Assign a principal to the service — the directory is the account's, and without one there is nobody to upload as.`,
     },
   }
 }
 
 function hostingTlsRefUnresolvedMessage(
-  prepared: Extract<DeployPrepareError, { kind: 'hosting_tls_ref_unresolved' }>,
+  prepared: Extract<DeployPrepareError, { kind: 'hosting_tls_ref_unresolved' }>
 ): string {
   if (prepared.reason === 'ambiguous') {
     return `More than one certificate in this organization is named "${prepared.ref}", which "${prepared.composeServiceName}" pins for ${prepared.hostname}. Name it by id instead, or give the certificates distinct names.`
@@ -368,7 +352,7 @@ function hostingTlsRefUnresolvedMessage(
 }
 
 function hostingIpRefUnresolvedMessage(
-  prepared: Extract<DeployPrepareError, { kind: 'hosting_ip_ref_unresolved' }>,
+  prepared: Extract<DeployPrepareError, { kind: 'hosting_ip_ref_unresolved' }>
 ): string {
   if (prepared.reason === 'ambiguous') {
     return `More than one managed address in this organization matches "${prepared.ref}", which "${prepared.composeServiceName}" pins for ${prepared.hostname}. Name it by id instead.`
@@ -387,7 +371,7 @@ function mapHostingPrepareError(
         | 'hosting_route_conflict'
         | 'hosting_hostname_conflict'
     }
-  >,
+  >
 ): PrepareErrorResponse {
   if (prepared.kind === 'hosting_tls_ref_unresolved') {
     return {
@@ -423,8 +407,7 @@ function mapHostingPrepareError(
         composeServiceName: prepared.composeServiceName,
         hostname: prepared.hostname,
         mode: prepared.mode,
-        message:
-          `"${prepared.composeServiceName}" asks for tls.mode "${prepared.mode}" on ${prepared.hostname}, which this platform cannot issue yet. Use "internal" for a self-signed certificate, or "certificate" with tls.certificateRef to pin one from the TLS library.`,
+        message: `"${prepared.composeServiceName}" asks for tls.mode "${prepared.mode}" on ${prepared.hostname}, which this platform cannot issue yet. Use "internal" for a self-signed certificate, or "certificate" with tls.certificateRef to pin one from the TLS library.`,
       },
     }
   }
@@ -438,10 +421,9 @@ function mapHostingPrepareError(
         pathPrefix: prepared.pathPrefix,
         hostingId: prepared.hostingId,
         otherHostnames: prepared.otherHostnames,
-        message:
-          `"${prepared.composeServiceName}" declares ${prepared.hostname}${prepared.pathPrefix}, which an existing hosting already serves alongside ${
-            prepared.otherHostnames.join(', ')
-          }. Compose can only take over a hosting that serves this one hostname — split the other hostnames onto their own hosting, or drop the declaration and keep editing the route in the panel.`,
+        message: `"${prepared.composeServiceName}" declares ${prepared.hostname}${prepared.pathPrefix}, which an existing hosting already serves alongside ${prepared.otherHostnames.join(
+          ', '
+        )}. Compose can only take over a hosting that serves this one hostname — split the other hostnames onto their own hosting, or drop the declaration and keep editing the route in the panel.`,
       },
     }
   }
@@ -451,8 +433,7 @@ function mapHostingPrepareError(
       error: 'hosting_hostname_conflict',
       composeServiceName: prepared.composeServiceName,
       hostname: prepared.hostname,
-      message:
-        `"${prepared.composeServiceName}" declares ${prepared.hostname}, which another hosting in this organization already serves. A hostname can only route to one hosting per organization.`,
+      message: `"${prepared.composeServiceName}" declares ${prepared.hostname}, which another hosting in this organization already serves. A hostname can only route to one hosting per organization.`,
     },
   }
 }
@@ -467,7 +448,7 @@ function mapPrincipalPrepareError(
         | 'principal_required_for_service_kind'
         | 'source_ref_unresolved'
     }
-  >,
+  >
 ): PrepareErrorResponse {
   if (prepared.kind === 'source_principal_ambiguous') {
     return {
@@ -475,8 +456,7 @@ function mapPrincipalPrepareError(
       body: {
         error: 'source_principal_ambiguous',
         composeServiceName: prepared.composeServiceName,
-        message:
-          `Git-backed service "${prepared.composeServiceName}" has more than one project principal assigned. Keep a single principal for release ownership.`,
+        message: `Git-backed service "${prepared.composeServiceName}" has more than one project principal assigned. Keep a single principal for release ownership.`,
       },
     }
   }
@@ -487,8 +467,7 @@ function mapPrincipalPrepareError(
         error: 'principal_alias_unknown',
         composeServiceName: prepared.composeServiceName,
         alias: prepared.alias,
-        message:
-          `Service "${prepared.composeServiceName}" names principal "${prepared.alias}", which this document does not declare. Add "${prepared.alias}" under the top-level x-turbopanel.principals, or point x-turbopanel.principal at an alias that is already there.`,
+        message: `Service "${prepared.composeServiceName}" names principal "${prepared.alias}", which this document does not declare. Add "${prepared.alias}" under the top-level x-turbopanel.principals, or point x-turbopanel.principal at an alias that is already there.`,
       },
     }
   }
@@ -500,8 +479,7 @@ function mapPrincipalPrepareError(
         error: 'principal_required_for_service_kind',
         composeServiceName: prepared.composeServiceName,
         serviceKind: prepared.serviceKind,
-        message:
-          `${kindLabel} "${prepared.composeServiceName}" has no account to run as. Declare an alias under the top-level x-turbopanel.principals and name it from this service's x-turbopanel.principal.`,
+        message: `${kindLabel} "${prepared.composeServiceName}" has no account to run as. Declare an alias under the top-level x-turbopanel.principals and name it from this service's x-turbopanel.principal.`,
       },
     }
   }
@@ -512,15 +490,12 @@ function mapPrincipalPrepareError(
       composeServiceName: prepared.composeServiceName,
       sourceId: prepared.sourceId,
       ref: prepared.ref,
-      message:
-        `Could not resolve a commit for "${prepared.composeServiceName}" (ref "${prepared.ref}"): ${prepared.message}`,
+      message: `Could not resolve a commit for "${prepared.composeServiceName}" (ref "${prepared.ref}"): ${prepared.message}`,
     },
   }
 }
 
-function tryMapSitePrepareError(
-  prepared: DeployPrepareError,
-): PrepareErrorResponse | null {
+function tryMapSitePrepareError(prepared: DeployPrepareError): PrepareErrorResponse | null {
   if (
     prepared.kind !== 'site_principal_ambiguous' &&
     prepared.kind !== 'site_cron_unowned' &&
@@ -531,9 +506,7 @@ function tryMapSitePrepareError(
   return mapSitePrepareError(prepared)
 }
 
-function tryMapHostingPrepareError(
-  prepared: DeployPrepareError,
-): PrepareErrorResponse | null {
+function tryMapHostingPrepareError(prepared: DeployPrepareError): PrepareErrorResponse | null {
   if (
     prepared.kind !== 'hosting_tls_ref_unresolved' &&
     prepared.kind !== 'hosting_ip_ref_unresolved' &&
@@ -546,9 +519,7 @@ function tryMapHostingPrepareError(
   return mapHostingPrepareError(prepared)
 }
 
-function tryMapPrincipalPrepareError(
-  prepared: DeployPrepareError,
-): PrepareErrorResponse | null {
+function tryMapPrincipalPrepareError(prepared: DeployPrepareError): PrepareErrorResponse | null {
   if (
     prepared.kind !== 'source_principal_ambiguous' &&
     prepared.kind !== 'principal_alias_unknown' &&
@@ -561,10 +532,12 @@ function tryMapPrincipalPrepareError(
 }
 
 export function mapPrepareErrorResponse(prepared: DeployPrepareError): PrepareErrorResponse {
-  return tryMapSitePrepareError(prepared)
-    ?? tryMapPrincipalPrepareError(prepared)
-    ?? tryMapHostingPrepareError(prepared)
-    ?? mapCorePrepareError(prepared)
+  return (
+    tryMapSitePrepareError(prepared) ??
+    tryMapPrincipalPrepareError(prepared) ??
+    tryMapHostingPrepareError(prepared) ??
+    mapCorePrepareError(prepared)
+  )
 }
 
 function mapCorePrepareError(prepared: DeployPrepareError): PrepareErrorResponse {
@@ -680,9 +653,7 @@ export const DEPLOY_REF_INVALID: unique symbol = Symbol('deploy_ref_invalid')
  * source's own branch resolves to), the trimmed value when valid, or
  * {@link DEPLOY_REF_INVALID}.
  */
-export function parseDeployRef(
-  value: unknown,
-): string | null | typeof DEPLOY_REF_INVALID {
+export function parseDeployRef(value: unknown): string | null | typeof DEPLOY_REF_INVALID {
   if (value === undefined || value === null) return null
   if (typeof value !== 'string') return DEPLOY_REF_INVALID
   const trimmed = value.trim()
@@ -693,14 +664,12 @@ export function parseDeployRef(
   return trimmed
 }
 
-export function parseDeployRequestFlags(
-  body: unknown,
-):
+export function parseDeployRequestFlags(body: unknown):
   | {
-    acknowledgeHealthCheckWarnings: boolean
-    noCache: boolean
-    ref: string | null
-  }
+      acknowledgeHealthCheckWarnings: boolean
+      noCache: boolean
+      ref: string | null
+    }
   | 'invalid' {
   if (body === null || typeof body !== 'object' || Array.isArray(body)) {
     return 'invalid'
@@ -715,9 +684,7 @@ export function parseDeployRequestFlags(
   }
 }
 
-export function parseLifecycleAction(
-  body: unknown,
-): EnvironmentLifecycleAction | 'invalid' {
+export function parseLifecycleAction(body: unknown): EnvironmentLifecycleAction | 'invalid' {
   if (body === null || typeof body !== 'object' || Array.isArray(body)) {
     return 'invalid'
   }
@@ -734,7 +701,7 @@ export function parseLifecycleAction(
  */
 export function expandHostingsForComposeInstances(
   hostings: readonly EnvironmentDeployHosting[],
-  expansion: Readonly<Record<string, string[]>>,
+  expansion: Readonly<Record<string, string[]>>
 ): EnvironmentDeployHosting[] {
   const out: EnvironmentDeployHosting[] = []
   for (const entry of hostings) {
@@ -762,7 +729,7 @@ export function expandHostingsForComposeInstances(
  * {@link buildNativeAppServicesForDeploy}.
  */
 export function preferredListenPortsFromHostings(
-  hostings: readonly EnvironmentDeployHosting[],
+  hostings: readonly EnvironmentDeployHosting[]
 ): Map<string, number> {
   const preferredListenPorts = new Map<string, number>()
   for (const entry of hostings) {
@@ -776,15 +743,11 @@ export function preferredListenPortsFromHostings(
 export function buildSitesForDeploy(
   sites: EnvironmentDeploySite[],
   hostings: EnvironmentDeployHosting[],
-  used: Set<number> = new Set<number>(),
+  used: Set<number> = new Set<number>()
 ): EnvironmentDeploySite[] {
   return attachWebMetadataToSites(
-    assignSiteListenPorts(
-      sites,
-      preferredListenPortsFromHostings(hostings),
-      used,
-    ),
-    hostings,
+    assignSiteListenPorts(sites, preferredListenPortsFromHostings(hostings), used),
+    hostings
   )
 }
 
@@ -800,19 +763,15 @@ export function buildSitesForDeploy(
 export function resolveDeployReleaseServiceId(
   composeServiceName: string,
   hostings: readonly EnvironmentDeployHosting[],
-  ingressServices: readonly EnvironmentDeployIngressService[],
+  ingressServices: readonly EnvironmentDeployIngressService[]
 ): string {
   for (const hosting of hostings) {
-    if (
-      hosting.composeServiceName === composeServiceName && hosting.serviceId
-    ) {
+    if (hosting.composeServiceName === composeServiceName && hosting.serviceId) {
       return hosting.serviceId
     }
   }
   for (const ingress of ingressServices) {
-    if (
-      ingress.composeServiceName === composeServiceName && ingress.serviceId
-    ) {
+    if (ingress.composeServiceName === composeServiceName && ingress.serviceId) {
       return ingress.serviceId
     }
   }
@@ -840,21 +799,15 @@ export function buildNativeAppServicesForDeploy(
   nativeAppServices: readonly PreparedNativeAppService[],
   hostings: EnvironmentDeployHosting[],
   ingressServices: readonly EnvironmentDeployIngressService[],
-  used: Set<number> = new Set<number>(),
+  used: Set<number> = new Set<number>()
 ): EnvironmentDeployNativeAppService[] {
   if (nativeAppServices.length === 0) return []
-  return assignNativeAppListenPorts(
-    nativeAppServices,
-    new Map<string, number>(),
-    used,
-  ).map((app) => ({
-    ...app,
-    serviceId: resolveDeployReleaseServiceId(
-      app.composeServiceName,
-      hostings,
-      ingressServices,
-    ),
-  }))
+  return assignNativeAppListenPorts(nativeAppServices, new Map<string, number>(), used).map(
+    (app) => ({
+      ...app,
+      serviceId: resolveDeployReleaseServiceId(app.composeServiceName, hostings, ingressServices),
+    })
+  )
 }
 
 export type DeployMaterialValidationError = {
@@ -864,7 +817,7 @@ export type DeployMaterialValidationError = {
 
 export function validateDeployMaterials(
   hostings: EnvironmentDeployHosting[],
-  storageMaterial: EnvironmentDeployStorageMaterial[],
+  storageMaterial: EnvironmentDeployStorageMaterial[]
 ): DeployMaterialValidationError | null {
   const hostingValidationError = validateDeployHostings(hostings)
   if (hostingValidationError) {
@@ -885,7 +838,7 @@ export function validateDeployMaterials(
  * do not need that proxy.
  */
 export function hostingsNeedSharedHttpIngress(
-  hostings: readonly EnvironmentDeployHosting[],
+  hostings: readonly EnvironmentDeployHosting[]
 ): boolean {
   for (const hosting of hostings) {
     if (hosting.protocol === 'tcp' || hosting.protocol === 'udp') continue
@@ -943,7 +896,7 @@ export type DeployPreviewServerRow = {
 export function deployPreviewServerLabel(
   name: string | null | undefined,
   hostname: string | null | undefined,
-  serverId: string,
+  serverId: string
 ): string {
   const displayName = name?.trim()
   if (displayName) return displayName
@@ -964,7 +917,7 @@ export function buildDeployPreviewServers(
       replicaCounts: Record<string, number>
     }
   }>,
-  labelById: ReadonlyMap<string, { name: string | null; hostname: string | null }>,
+  labelById: ReadonlyMap<string, { name: string | null; hostname: string | null }>
 ): DeployPreviewServerRow[] | undefined {
   if (preparedByServer.length <= 1) return undefined
   return preparedByServer.map((row) => {
@@ -973,9 +926,7 @@ export function buildDeployPreviewServers(
       serverId: row.serverId,
       name: deployPreviewServerLabel(label?.name, label?.hostname, row.serverId),
       composeFiles: row.prepared.composeFiles,
-      services: Object.keys(row.prepared.replicaCounts).sort((a, b) =>
-        a.localeCompare(b)
-      ),
+      services: Object.keys(row.prepared.replicaCounts).sort((a, b) => a.localeCompare(b)),
     }
   })
 }

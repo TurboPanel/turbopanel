@@ -17,7 +17,7 @@ export type FleetPresencePortSnapshot = {
 export type ResolveFleetPresence = (
   db: Db,
   registry: DaemonCellRegistry | undefined,
-  serverIds: string[],
+  serverIds: string[]
 ) => Promise<Map<string, FleetPresencePortSnapshot>>
 
 let resolver: ResolveFleetPresence | null = null
