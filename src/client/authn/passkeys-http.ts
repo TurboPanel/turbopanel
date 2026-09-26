@@ -1,8 +1,6 @@
-import { getCookie } from "hono/cookie";
 import type { Context, Hono } from "hono";
 import type { AppEnv } from "../../app/app.ts";
 import { getDb } from "../../db/connection.ts";
-import { readBoundedBodyText } from "../../lib/http/bounded-body.ts";
 import { resolvePublicBaseUrl } from "../../features/install/resolve-public-base-url.ts";
 import { AUTH_RATE_LIMIT_IDENTITY_MAX_CHARS } from "./auth-rate-limit.ts";
 import {
@@ -12,10 +10,7 @@ import {
 } from "./auth-body-limits.ts";
 import {
   buildSignedCookie,
-  resolveRequestTls,
-  resolveSessionCookieName,
   SESSION_EXPIRES_IN_MS,
-  verifySignedCookie,
 } from "./crypto.ts";
 import {
   type AuthBodyValidation,
@@ -42,81 +37,8 @@ import {
   createSession,
   deleteOtherSessionsForUser,
   getSession,
-  type SessionData,
 } from "./session-store.ts";
-
-function requestTls(c: Context<AppEnv>, runtime: "deno" | "workers") {
-  return resolveRequestTls({
-    requestUrl: c.req.url,
-    runtime,
-    forwardedProto: c.req.header("x-forwarded-proto"),
-  });
-}
-
-function buildCookieHeader(
-  cookieValue: string,
-  maxAge: number,
-  cookieName: string,
-  isHttps: boolean,
-): string {
-  let header =
-    `${cookieName}=${cookieValue}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${maxAge}`;
-  if (isHttps) {
-    header += "; Secure";
-  }
-  return header;
-}
-
-async function readActiveSession(
-  c: Context<AppEnv>,
-  opts: AuthRouteOpts,
-): Promise<SessionData | null> {
-  const db = getDb(c);
-  const cookieName = resolveSessionCookieName({
-    requestUrl: c.req.url,
-    runtime: opts.runtime,
-    forwardedProto: c.req.header("x-forwarded-proto"),
-  });
-  const cookieValue = getCookie(c, cookieName) ?? null;
-
-  if (!cookieValue) return null;
-
-  const secrets = opts.secrets;
-  if (!secrets) return null;
-
-  const result = await verifySignedCookie(cookieValue, secrets);
-  if (!result) return null;
-
-  return getSession(db, result.token);
-}
-
-async function readOptionalJsonObject(
-  c: Context<AppEnv>,
-  maxBytes: number,
-): Promise<
-  | { ok: true; body: Record<string, unknown> }
-  | { ok: false; response: Response }
-> {
-  const read = await readBoundedBodyText(c, maxBytes);
-  if (!read.ok) return { ok: false, response: read.response };
-  if (!read.text.trim()) {
-    return { ok: true, body: {} };
-  }
-  try {
-    const parsed: unknown = JSON.parse(read.text);
-    if (
-      parsed === null || typeof parsed !== "object" || Array.isArray(parsed)
-    ) {
-      return { ok: true, body: {} };
-    }
-    return { ok: true, body: parsed as Record<string, unknown> };
-  } catch {
-    return {
-      ok: false,
-      response: c.json({ ok: false, error: "Invalid request" }, 400),
-    };
-  }
-}
+import { buildCookieHeader, readActiveSession, readOptionalJsonObject, requestTls } from "./request-context.ts";
 
 function mapPasskeyMutationError(
   c: Context<AppEnv>,

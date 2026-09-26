@@ -5,7 +5,6 @@ import type { Db } from '../../db/connection.ts'
 import { getDb } from '../../db/connection.ts'
 import {
   buildSignedCookie,
-  resolveRequestTls,
   SESSION_EXPIRES_IN_MS,
   verifySignedCookie,
 } from './crypto.ts'
@@ -17,6 +16,7 @@ import {
   isSuperadminRole,
   type SessionData,
 } from './session-store.ts'
+import { buildCookieHeader, requestTls } from './request-context.ts'
 
 function isSuperadmin(sessionData: SessionData): boolean {
   return isSuperadminRole(sessionData.role)
@@ -43,22 +43,14 @@ export function resolveRuntime(c: Context): 'deno' | 'workers' {
   return c.get('runtime') === 'deno' ? 'deno' : 'workers'
 }
 
-function requestTls(c: Context) {
-  return resolveRequestTls({
-    requestUrl: c.req.url,
-    runtime: resolveRuntime(c),
-    forwardedProto: c.req.header('x-forwarded-proto'),
-  })
-}
-
-function buildCookieHeader(cookieValue: string, c: Context): string {
-  const tls = requestTls(c)
-  let header =
-    `${tls.cookieName}=${cookieValue}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_EXPIRES_IN_MS / 1000}`
-  if (tls.isHttps) {
-    header += '; Secure'
-  }
-  return header
+function sessionCookieHeader(cookieValue: string, c: Context): string {
+  const tls = requestTls(c, resolveRuntime(c))
+  return buildCookieHeader(
+    cookieValue,
+    SESSION_EXPIRES_IN_MS / 1000,
+    tls.cookieName,
+    tls.isHttps,
+  )
 }
 
 async function applyRotatedCookie(
@@ -67,7 +59,7 @@ async function applyRotatedCookie(
   secrets: DerivedSecretsConfig,
 ): Promise<void> {
   const cookieValue = await buildSignedCookie(token, secrets)
-  c.header('Set-Cookie', buildCookieHeader(cookieValue, c))
+  c.header('Set-Cookie', sessionCookieHeader(cookieValue, c))
 }
 
 export async function resolveSession(
@@ -75,7 +67,7 @@ export async function resolveSession(
   secrets: DerivedSecretsConfig,
   db?: Db,
 ): Promise<ResolvedSession | null> {
-  const tls = requestTls(c)
+  const tls = requestTls(c, resolveRuntime(c))
   const cookieValue = getCookie(c, tls.cookieName)
   const result = cookieValue
     ? await verifySignedCookie(cookieValue, secrets)

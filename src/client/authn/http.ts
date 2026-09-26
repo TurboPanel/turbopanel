@@ -4,7 +4,6 @@ import { type Context, Hono } from "hono";
 import type { AppEnv } from "../../app/app.ts";
 import {
   buildSignedCookie,
-  resolveRequestTls,
   resolveSessionCookieName,
   SESSION_EXPIRES_IN_MS,
   verifySignedCookie,
@@ -66,6 +65,7 @@ import {
   MAX_AUTH_PASSWORD_CHARS,
 } from "./auth-body-limits.ts";
 import { isUniqueViolationOn } from "../../db/unique-violation.ts";
+import { buildCookieHeader, requestTls } from "./request-context.ts";
 
 export type AuthRouteOpts = {
   secrets?: DerivedSecretsConfig;
@@ -123,28 +123,6 @@ function readSessionCookie(
     forwardedProto: c.req.header("x-forwarded-proto"),
   });
   return getCookie(c, cookieName) ?? null;
-}
-
-function buildCookieHeader(
-  cookieValue: string,
-  maxAge: number,
-  cookieName: string,
-  isHttps: boolean,
-): string {
-  let header =
-    `${cookieName}=${cookieValue}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${maxAge}`;
-  if (isHttps) {
-    header += "; Secure";
-  }
-  return header;
-}
-
-function requestTls(c: Context, runtime: "deno" | "workers") {
-  return resolveRequestTls({
-    requestUrl: c.req.url,
-    runtime,
-    forwardedProto: c.req.header("x-forwarded-proto"),
-  });
 }
 
 /**
