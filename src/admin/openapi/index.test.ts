@@ -1,6 +1,7 @@
 import { assertEquals, assertExists } from "@std/assert";
 import { ADMIN_API_PREFIX } from "../../app/surfaces.ts";
 import { getAdminOpenApiSpec } from "./index.ts";
+import { REENCRYPT_STAGES } from "../reencrypt-secrets.ts";
 import { getWorkersAdminOpenApiSpec } from "./workers.ts";
 
 /**
@@ -121,16 +122,7 @@ test("getAdminOpenApiSpec documents public URL and reencrypt paths", () => {
   assertEquals(reencryptCursor?.required, ["stage"]);
   assertEquals(
     (reencryptCursor?.properties?.stage as SchemaObject).enum,
-    [
-      "variables",
-      "tls",
-      "principals",
-      "storage",
-      "secrets",
-      "twofactor",
-      "authproviders",
-      "email",
-    ],
+    [...REENCRYPT_STAGES],
   );
 
   const publicUrls = spec.components.schemas.PublicUrlsPutResponse;
