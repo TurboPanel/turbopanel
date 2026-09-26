@@ -129,6 +129,12 @@ change. Future agents read `AGENTS.md` first.
 
 ### SonarQube (CI-based analysis)
 
+`build.yml` ends in a `ci-ok` job that `needs:` every pull_request job (checks,
+typecheck, vitest, deno-hostfree, deno-db, sonarqube, metrics-legacy,
+data-dictionary) and fails unless all of them succeeded. It is the one context
+the branch rulesets will require; a new PR-time job must be added to its
+`needs:` or it never gates a merge.
+
 CI analysis config, the Vitest+Deno LCOV coverage merge, analysis-scope /
 exclusion rules, and the coverage-attribution traps moved to
 [`scripts/AGENTS.md`](./scripts/AGENTS.md). Read it before touching
