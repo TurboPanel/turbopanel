@@ -23,6 +23,7 @@ function thenable(rows: unknown[]) {
   const promise = Promise.resolve(rows)
   const chain: Record<string, unknown> = {
     from: () => chain,
+    innerJoin: () => chain,
     where: () => chain,
     limit: () => promise,
     orderBy: () => chain,

@@ -395,13 +395,18 @@ export function getAdminOpenApiSpec(
           properties: {
             stage: {
               type: "string",
+              // Pinned to REENCRYPT_STAGES by index.test.ts.
               enum: [
                 "variables",
                 "tls",
+                "certificates",
                 "principals",
                 "storage",
                 "secrets",
+                "forge",
+                "gitconnection",
                 "twofactor",
+                "notifications",
                 "authproviders",
                 "email",
               ],

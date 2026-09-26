@@ -182,6 +182,7 @@ type QueryChain<T> = {
   limit: () => QueryChain<T>;
   offset: () => QueryChain<T>;
   leftJoin: () => QueryChain<T>;
+  innerJoin: () => QueryChain<T>;
   then: Promise<T[]>[ "then" ];
   catch: Promise<T[]>[ "catch" ];
   finally: Promise<T[]>[ "finally" ];
@@ -195,6 +196,7 @@ function queryChain<T>(rows: T[]): QueryChain<T> {
     limit: () => chain,
     offset: () => chain,
     leftJoin: () => chain,
+    innerJoin: () => chain,
     then: promise.then.bind(promise),
     catch: promise.catch.bind(promise),
     finally: promise.finally.bind(promise),

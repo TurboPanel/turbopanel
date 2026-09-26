@@ -1,7 +1,8 @@
 /**
  * Superadmin at-rest secret re-encryption sweep.
  *
- * Re-seals `variable.value` (is_secret), `tls.privateKeyPem`,
+ * Re-seals `variable.value` (is_secret), `tls.privateKeyPem`, uploaded
+ * control-plane certificate keys (`certificate.key_pem`),
  * `principal.password`, `storage.content_envelope`, `secret.secret_envelope`,
  * `forge.envelopes` (private key / client secret / webhook secret),
  * `connection.oauth_envelope` (GitLab access/refresh token pair), `2fa.secret`,
@@ -45,6 +46,7 @@ import type { Db } from "../db/connection.ts";
 import {
   forge,
   gitConnection,
+  instanceUploadedCertificate,
   lease,
   principal,
   secret,
@@ -82,6 +84,7 @@ export type ReencryptSweepLock = Readonly<{
 export const REENCRYPT_STAGES = [
   "variables",
   "tls",
+  "certificates",
   "principals",
   "storage",
   "secrets",
@@ -407,6 +410,60 @@ async function sweepTlsPrivateKeysBatch(
         return updated.length > 0;
       },
       { allowDaemonBound: true },
+    );
+  }
+
+  return {
+    pageSize: rows.length,
+    lastId: rows.at(-1)?.id,
+  };
+}
+
+/**
+ * Uploaded control-plane certificate keys (`certificate.key_pem`). Sealed
+ * `tpsecret` at rest only — a daemon-bound envelope here is not valid.
+ */
+async function sweepInstanceCertificateKeysBatch(
+  db: Db,
+  secrets: DerivedSecretsConfig,
+  summary: ReencryptSweepSummary,
+  afterId: string | undefined,
+  limit: number,
+): Promise<StageBatchResult> {
+  const rows = await db
+    .select({
+      id: instanceUploadedCertificate.id,
+      keyPem: instanceUploadedCertificate.keyPem,
+    })
+    .from(instanceUploadedCertificate)
+    .where(
+      afterId === undefined
+        ? undefined
+        : gt(instanceUploadedCertificate.id, afterId),
+    )
+    .orderBy(asc(instanceUploadedCertificate.id))
+    .limit(limit);
+
+  for (const row of rows) {
+    const originalKey = row.keyPem;
+    await processBlob(
+      summary,
+      secrets,
+      originalKey,
+      async (resealed) => {
+        const updated = await db
+          .update(instanceUploadedCertificate)
+          .set({ keyPem: resealed })
+          .where(
+            and(
+              eq(instanceUploadedCertificate.id, row.id),
+              eq(instanceUploadedCertificate.keyPem, originalKey),
+            ),
+          )
+          .returning({ id: instanceUploadedCertificate.id });
+        return updated.length > 0;
+      },
+      { allowDaemonBound: false },
     );
   }
 
@@ -1024,6 +1081,14 @@ async function runTableStageBatch(
       );
     case "tls":
       return sweepTlsPrivateKeysBatch(
+        db,
+        dataEncryptionSecrets,
+        summary,
+        afterId,
+        remaining,
+      );
+    case "certificates":
+      return sweepInstanceCertificateKeysBatch(
         db,
         dataEncryptionSecrets,
         summary,

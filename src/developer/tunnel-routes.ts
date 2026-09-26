@@ -1,6 +1,6 @@
-import type { Env, Hono } from 'hono'
+import type { Context, Env, Hono } from 'hono'
 import { createDeveloperAccessMiddleware } from '../client/authn/middleware.ts'
-import type { DerivedSecretsConfig } from '../lib/secrets/secrets.ts'
+import type { DerivedSecretsConfig, SecretsConfig } from '../lib/secrets/secrets.ts'
 import { getDb, getDaemonCellRegistry } from '../db/connection.ts'
 import { DEVELOPER_API_PREFIX } from '../app/surfaces.ts'
 import {
@@ -42,6 +42,7 @@ export function registerTunnelRoutes<E extends Env>(
       db,
       registry,
       token: parsed.token,
+      secretsConfig: (c as Context).get('secretsConfig') as SecretsConfig | undefined,
     })
     if (!result.ok) {
       return c.json({ ok: false, error: result.error }, result.status)
