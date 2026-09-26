@@ -1,4 +1,5 @@
 import type { DaemonJwtKeyring } from "./daemon-jwt-keyring.ts";
+import { base64urlDecode, base64urlEncode } from "../../lib/encoding/base64url.ts";
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
@@ -18,28 +19,6 @@ export type DaemonJwtPayload = {
   iat: number;
   exp: number;
 };
-
-function base64urlEncode(bytes: Uint8Array): string {
-  let binary = "";
-  for (const byte of bytes) {
-    binary += String.fromCodePoint(byte);
-  }
-  return btoa(binary)
-    .replaceAll("+", "-")
-    .replaceAll("/", "_")
-    .replaceAll("=", "");
-}
-
-function base64urlDecode(input: string): Uint8Array<ArrayBuffer> {
-  const padded = input + "=".repeat((4 - (input.length % 4)) % 4);
-  const base64 = padded.replaceAll("-", "+").replaceAll("_", "/");
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i += 1) {
-    bytes[i] = binary.codePointAt(i)!;
-  }
-  return bytes;
-}
 
 function parseJson<T>(encoded: string): T | null {
   try {

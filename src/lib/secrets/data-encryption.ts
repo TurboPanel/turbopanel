@@ -34,6 +34,7 @@ import {
   hasEnvelopeScheme,
   parseEnvelope,
 } from "./envelope.ts";
+import { base64urlDecode, base64urlEncode } from "../encoding/base64url.ts";
 
 /** At-rest scheme identifier (`tpsecret`). Prefer {@link ENVELOPE_PREFIX_SECRET} for prefix checks. */
 export { ENVELOPE_SCHEME_SECRET as ENVELOPE_MAGIC } from "./envelope.ts";
@@ -59,28 +60,6 @@ export class DataEncryptionError extends Error {
     super(message);
     this.name = "DataEncryptionError";
   }
-}
-
-function base64urlEncode(bytes: Uint8Array): string {
-  let binary = "";
-  for (const byte of bytes) {
-    binary += String.fromCodePoint(byte);
-  }
-  return btoa(binary)
-    .replaceAll("+", "-")
-    .replaceAll("/", "_")
-    .replaceAll("=", "");
-}
-
-function base64urlDecode(input: string): Uint8Array {
-  const padded = input + "=".repeat((4 - (input.length % 4)) % 4);
-  const base64 = padded.replaceAll("-", "+").replaceAll("_", "/");
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i += 1) {
-    bytes[i] = binary.codePointAt(i) ?? 0;
-  }
-  return bytes;
 }
 
 function packPayload(iv: Uint8Array, ciphertext: Uint8Array): string {

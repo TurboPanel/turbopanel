@@ -1,6 +1,7 @@
 import type { Context } from 'hono'
 import { isDeveloperSurfaceEnabled } from '../app/dev-mode.ts'
 import { parseSecretsFromEnv } from '../lib/secrets/secrets.ts'
+import { constantTimeEqualBytes as constantTimeEqual } from '../lib/secrets/constant-time.ts'
 
 export const LOCAL_CONSOLE_SCHEME = 'Local-Console'
 export const LOCAL_CONSOLE_MAX_SKEW_MS = 60_000
@@ -54,15 +55,6 @@ function encodeBase64Url(bytes: Uint8Array): string {
     binary += String.fromCodePoint(byte)
   }
   return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '')
-}
-
-function constantTimeEqual(a: Uint8Array, b: Uint8Array): boolean {
-  if (a.length !== b.length) return false
-  let diff = 0
-  for (let i = 0; i < a.length; i++) {
-    diff |= a[i]! ^ b[i]!
-  }
-  return diff === 0
 }
 
 async function hmacSha256(keyMaterial: string, payload: string): Promise<Uint8Array> {

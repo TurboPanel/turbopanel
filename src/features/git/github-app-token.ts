@@ -22,6 +22,7 @@ import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { type Forge, loadForgeForConnection } from './forge-records.ts'
 import { stripTrailingSlashes } from './origin.ts'
 import { assertForgeUrlAllowed, ForgeUrlError } from './forge-url.ts'
+import { base64urlEncode } from '../../lib/encoding/base64url.ts'
 
 const textEncoder = new TextEncoder()
 
@@ -89,14 +90,6 @@ export function githubApiBaseFor(app: Pick<Forge, 'apiUrl' | 'baseUrl'>): string
     }
     throw error
   }
-}
-
-function base64urlEncode(bytes: Uint8Array): string {
-  let binary = ''
-  for (const byte of bytes) {
-    binary += String.fromCodePoint(byte)
-  }
-  return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '')
 }
 
 function base64Decode(input: string): Uint8Array {

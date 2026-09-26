@@ -1,4 +1,5 @@
 import type { SecretsConfig } from "../../lib/secrets/secrets.ts";
+import { base64urlEncode } from "../../lib/encoding/base64url.ts";
 
 const textEncoder = new TextEncoder();
 
@@ -6,17 +7,6 @@ const ED25519_PKCS8_PREFIX = new Uint8Array([
   0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70,
   0x04, 0x22, 0x04, 0x20,
 ]);
-
-function base64urlEncode(bytes: Uint8Array): string {
-  let binary = "";
-  for (const byte of bytes) {
-    binary += String.fromCodePoint(byte);
-  }
-  return btoa(binary)
-    .replaceAll("+", "-")
-    .replaceAll("/", "_")
-    .replaceAll("=", "");
-}
 
 async function deriveEd25519KeyPairFromSecret(rootSecret: string): Promise<{
   kid: string;

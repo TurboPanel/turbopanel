@@ -1,3 +1,4 @@
+import { constantTimeEqual } from "../../lib/secrets/constant-time.ts";
 /**
  * RFC 6238 TOTP (HMAC-SHA1, 30s step, 6 digits, \u00b11 window) plus RFC 4648
  * base32 without padding. Web Crypto only — no Node crypto, Workers-safe.
@@ -10,8 +11,6 @@ export const TOTP_DIGITS = 6;
 export const TOTP_SECRET_BYTES = 20;
 export const TOTP_WINDOW_STEPS = 1;
 export const TOTP_ISSUER = "TurboPanel";
-
-const textEncoder = new TextEncoder();
 
 /**
  * RFC 4648 base32, no padding. Output is uppercase.
@@ -92,17 +91,6 @@ function dynamicTruncate(hmac: Uint8Array, digits: number): string {
     (hmac[offset + 3]! & 0xff);
   const modulus = 10 ** digits;
   return String(binary % modulus).padStart(digits, "0");
-}
-
-function constantTimeEqual(a: string, b: string): boolean {
-  const aBytes = textEncoder.encode(a);
-  const bBytes = textEncoder.encode(b);
-  if (aBytes.length !== bBytes.length) return false;
-  let diff = 0;
-  for (let i = 0; i < aBytes.length; i += 1) {
-    diff |= aBytes[i]! ^ bBytes[i]!;
-  }
-  return diff === 0;
 }
 
 export type TotpGenerateOptions = Readonly<{
