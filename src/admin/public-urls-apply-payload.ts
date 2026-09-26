@@ -15,6 +15,7 @@ import type {
   InstanceHostnameWireEntry,
 } from "../contracts/cell-protocol.ts";
 import {
+  INSTANCE_ACME_TOS_NOT_ACCEPTED_CODE,
   INSTANCE_ACME_TOS_NOT_ACCEPTED_MESSAGE,
   resolveInstanceAcmeSettings,
 } from "../features/install/instance-acme-settings.ts";
@@ -24,9 +25,16 @@ import type { DerivedSecretsConfig } from "../lib/secrets/secrets.ts";
 import { resolveDaemonCapabilities } from "../lib/version-wire.ts";
 
 export class PublicUrlsApplyPayloadError extends Error {
-  constructor(message: string) {
+  /** Set for refusals a client acts on; absent for server-side faults. */
+  readonly code: typeof INSTANCE_ACME_TOS_NOT_ACCEPTED_CODE | undefined;
+
+  constructor(
+    message: string,
+    code?: typeof INSTANCE_ACME_TOS_NOT_ACCEPTED_CODE,
+  ) {
     super(message);
     this.name = "PublicUrlsApplyPayloadError";
+    this.code = code;
   }
 }
 
@@ -86,6 +94,7 @@ async function loadInstanceAcme(
   if (!resolved.tosAccepted) {
     throw new PublicUrlsApplyPayloadError(
       INSTANCE_ACME_TOS_NOT_ACCEPTED_MESSAGE,
+      INSTANCE_ACME_TOS_NOT_ACCEPTED_CODE,
     );
   }
   return {

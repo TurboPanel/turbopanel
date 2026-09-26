@@ -645,6 +645,7 @@ export async function startDenoServer(
     secrets: sessionSecrets,
     runtime: "deno",
     devSurface: developerSurface,
+    getEnv: () => Deno.env.toObject(),
     readPlatformCaBundle: () =>
       Deno.readTextFile(resolveInstanceTlsCaServePath()),
     collectInstanceIps: () => collectServerIps(readDefaultRouteInterfaces()),

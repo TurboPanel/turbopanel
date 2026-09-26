@@ -17,7 +17,10 @@ export const INSTANCE_UPDATES_PATHS = {
         "values as `/api/health`) and the co-located daemon's reported " +
         "version, each beside the channel manifest target. The UI package " +
         "target is included on the control-plane unit and is installed by " +
-        "the same upgrade.",
+        "the same upgrade. Each unit carries `updateAvailable`: the server's " +
+        "rule (the target names a commit the host is not running, and " +
+        "installing it would not downgrade). Clients render it rather than " +
+        "comparing versions or commits themselves.",
       security: [...cookieSecurity],
       responses: {
         "200": { description: "Installed versions and channel targets" },

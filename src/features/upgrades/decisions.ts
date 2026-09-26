@@ -174,6 +174,14 @@ export type ClientUpdateBlockError =
   | "control_plane_upgrade_required"
   | "upgrade_gate_unavailable";
 
+/**
+ * Why remote updates are refused for a server, as the machine code clients
+ * branch on (`updateBlockedCode`). `updateBlockedReason` carries the sentence.
+ */
+export type ServerUpdateBlockedCode =
+  | ClientUpdateBlockError
+  | "colocated_with_instance";
+
 export type ClientUpdateBlock =
   | { blocked: false; useCoordinator: boolean }
   | {

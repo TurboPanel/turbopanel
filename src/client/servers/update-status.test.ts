@@ -208,6 +208,7 @@ it("resolveServerUpdateStatus blocks remote updates for co-located daemons", asy
 
   assertEquals(resolved.updateAvailable, false);
   assertEquals(resolved.updateBlocked, true);
+  assertEquals(resolved.updateBlockedCode, "colocated_with_instance");
   assertEquals(
     resolved.updateBlockedReason,
     "The co-located development daemon cannot be updated from the control plane",

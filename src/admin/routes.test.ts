@@ -35,6 +35,11 @@ import {
 import { registerAdminRoutes } from "./routes.ts";
 import { SERVER_METRICS_LIVE_MAX_MINUTES_KEY } from "../features/settings/server-metrics-settings.ts";
 import { ALERT_WEBHOOK_URL_KEY } from "../features/alerts/alert-webhook-settings.ts";
+import { replaceInstanceHostnames } from "../features/install/instance-hostnames.ts";
+import {
+  INSTANCE_ACME_SETTINGS,
+  INSTANCE_ACME_TOS_NOT_ACCEPTED_CODE,
+} from "../features/install/instance-acme-settings.ts";
 
 const dbUrl = getDatabaseUrl();
 import { TEST_ONLY_TURBOPANEL_SECRET } from "../test-fixtures/secrets.ts";
@@ -141,6 +146,8 @@ function createTrackingRegistry(
     onlineIds?: string[];
     connectedSnapshots?: boolean;
     waitOverride?: WaitOverride;
+    /** Reported on every snapshot as `daemonBuild.version`. */
+    daemonVersion?: string;
   }> = {},
 ): {
   registry: DaemonCellRegistry;
@@ -170,6 +177,9 @@ function createTrackingRegistry(
           updatedAt: new Date().toISOString(),
           connected: true,
           lastInboundAt: new Date().toISOString(),
+          ...(opts.daemonVersion
+            ? { daemonBuild: { version: opts.daemonVersion, commit: "c0ffee" } }
+            : {}),
         });
       }
       return Promise.resolve(out);
@@ -188,6 +198,8 @@ async function createAdminTestApp(
     withDataEncryption?: boolean;
     withBrowserWriteProtection?: boolean;
     getEnv?: () => Record<string, string | undefined>;
+    /** Set on the request context, as `createApp`'s `getPlatformEnv` does on Deno. */
+    platformEnv?: Record<string, string | undefined>;
     devSurface?: boolean;
     runtime?: "deno" | "workers";
   }> = {},
@@ -211,6 +223,7 @@ async function createAdminTestApp(
   app.use("*", (c, next) => {
     c.set("db", appDb);
     c.set("daemonCellRegistry", registry);
+    if (options.platformEnv) c.set("platformEnv", options.platformEnv);
     if (dataEncryptionSecrets) {
       c.set("dataEncryptionSecrets", dataEncryptionSecrets);
     }
@@ -1499,4 +1512,187 @@ test("PUT /api/admin/v1/settings/alert-webhook accepts a private target on every
       }
     }, { runtime });
   }
+});
+
+/**
+ * One Let's Encrypt hostname on a capable co-located daemon, with the ACME
+ * settings row cleared, so every terms answer comes from `platformEnv` alone.
+ */
+async function withLetsEncryptColocated(
+  platformEnv: Record<string, string | undefined>,
+  fn: (ctx: { app: Hono<AppEnv>; cookie: string }) => Promise<void>,
+): Promise<void> {
+  if (!dbUrl) {
+    console.warn("Skipping admin route tests: TURBOPANEL_DATABASE_URL not set");
+    return;
+  }
+  const db = createDenoDb();
+  const previousHosts = await db.select().from(instanceHostname);
+  const previousAcme = await db
+    .select({ value: setting.value })
+    .from(setting)
+    .where(eq(setting.key, INSTANCE_ACME_SETTINGS))
+    .limit(1);
+  const [insertedUser] = await db
+    .insert(user)
+    .values({
+      email: `admin-acme-env-${crypto.randomUUID()}@example.com`,
+      isEmailVerified: true,
+      role: "superadmin",
+    })
+    .returning({ id: user.id });
+  const userId = insertedUser!.id;
+  const [insertedServer] = await db
+    .insert(server)
+    .values({
+      name: `admin-acme-env-${crypto.randomUUID()}`,
+      isConnected: true,
+      statusChangedAt: new Date().toISOString(),
+      daemon: {
+        key: {
+          id: crypto.randomUUID(),
+          algorithm: "Ed25519",
+          publicJwk: {
+            kty: "OKP",
+            crv: "Ed25519",
+            x: "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD",
+          },
+          fingerprint: "fp-acme-env",
+          createdAt: new Date().toISOString(),
+        },
+        projection: { remoteAddress: "__direct__", connected: true },
+      },
+    })
+    .returning({ id: server.id });
+  const serverId = insertedServer!.id;
+  const { registry } = createTrackingRegistry(new Set(), {
+    onlineIds: [serverId],
+    connectedSnapshots: true,
+    daemonVersion: "0.1.1",
+  });
+  const { app, secrets, appDb } = await createAdminTestApp(registry, {
+    platformEnv,
+  });
+  const cookie = await adminSessionCookie(db, secrets, userId);
+  try {
+    await db.delete(instanceHostname).where(isNotNull(instanceHostname.id));
+    await db.delete(setting).where(eq(setting.key, INSTANCE_ACME_SETTINGS));
+    const seeded = await replaceInstanceHostnames(db, [
+      {
+        host: "https://acme-env.example.com",
+        source: "lets-encrypt",
+        uploadedCertId: null,
+      },
+    ]);
+    assertEquals(seeded.ok, true);
+    await fn({ app, cookie });
+  } finally {
+    await db.delete(instanceHostname).where(isNotNull(instanceHostname.id));
+    if (previousHosts.length > 0) {
+      await db.insert(instanceHostname).values(previousHosts);
+    }
+    await db.delete(setting).where(eq(setting.key, INSTANCE_ACME_SETTINGS));
+    if (previousAcme.length > 0) {
+      await db.insert(setting).values({
+        key: INSTANCE_ACME_SETTINGS,
+        value: previousAcme[0]!.value,
+      });
+    }
+    await db.delete(server).where(eq(server.id, serverId));
+    await db.delete(user).where(eq(user.id, userId));
+    await endDbConnection(appDb);
+    await endDbConnection(db);
+  }
+}
+
+const ENV_TERMS_ACCEPTED = {
+  TURBOPANEL_INSTANCE_ACME__TOS_ACCEPTED: "true",
+  TURBOPANEL_INSTANCE_ACME__CONTACT_EMAIL: "ops@example.com",
+} as const;
+
+test("Let's Encrypt terms accepted only in the environment: reads say accepted and apply succeeds", async () => {
+  await withLetsEncryptColocated(ENV_TERMS_ACCEPTED, async ({ app, cookie }) => {
+    const apply = await app.request(
+      `${ADMIN_API_PREFIX}/instance/public-urls/apply`,
+      {
+        method: "POST",
+        headers: { Cookie: cookie, "content-type": "application/json" },
+        body: "{}",
+      },
+    );
+    assertEquals(await apply.json(), { ok: true, applied: true });
+    assertEquals(apply.status, 200);
+
+    const acme = await app.request(`${ADMIN_API_PREFIX}/instance/acme`, {
+      headers: { Cookie: cookie },
+    });
+    assertEquals(acme.status, 200);
+    assertEquals((await jsonBody<{ tosAccepted: boolean }>(acme)).tosAccepted, true);
+
+    const names = await app.request(`${ADMIN_API_PREFIX}/instance/hostnames`, {
+      headers: { Cookie: cookie },
+    });
+    assertEquals(names.status, 200);
+    assertEquals((await jsonBody<{ tosAccepted: boolean }>(names)).tosAccepted, true);
+  });
+});
+
+test("Let's Encrypt terms not accepted: apply refuses with a typed code, not only a sentence", async () => {
+  await withLetsEncryptColocated({}, async ({ app, cookie }) => {
+    const apply = await app.request(
+      `${ADMIN_API_PREFIX}/instance/public-urls/apply`,
+      {
+        method: "POST",
+        headers: { Cookie: cookie, "content-type": "application/json" },
+        body: "{}",
+      },
+    );
+    assertEquals(apply.status, 422);
+    const body = await jsonBody<{ ok: boolean; code?: string }>(apply);
+    assertEquals(body.ok, false);
+    assertEquals(body.code, INSTANCE_ACME_TOS_NOT_ACCEPTED_CODE);
+  });
+});
+
+test("PUT /instance/hostnames refuses to store a Let's Encrypt row while the terms are not accepted", async () => {
+  await withLetsEncryptColocated({}, async ({ app, cookie }) => {
+    const save = await app.request(`${ADMIN_API_PREFIX}/instance/hostnames`, {
+      method: "PUT",
+      headers: { Cookie: cookie, "content-type": "application/json" },
+      body: JSON.stringify({
+        hostnames: [
+          { host: "https://acme-env.example.com", source: "lets-encrypt" },
+          { host: "https://other.example.com", source: "platform-ca" },
+        ],
+      }),
+    });
+    assertEquals(save.status, 422);
+    const body = await jsonBody<{ code?: string }>(save);
+    assertEquals(body.code, INSTANCE_ACME_TOS_NOT_ACCEPTED_CODE);
+
+    const listed = await app.request(`${ADMIN_API_PREFIX}/instance/hostnames`, {
+      headers: { Cookie: cookie },
+    });
+    const listedBody = await jsonBody<{
+      hostnames: { host: string }[];
+      tosAccepted: boolean;
+    }>(listed);
+    assertEquals(listedBody.tosAccepted, false);
+    assertEquals(
+      listedBody.hostnames.map((row) => row.host),
+      ["https://acme-env.example.com:8443"],
+    );
+
+    const platformOnly = await app.request(
+      `${ADMIN_API_PREFIX}/instance/hostnames`,
+      {
+        method: "PUT",
+        headers: { Cookie: cookie, "content-type": "application/json" },
+        body: JSON.stringify({
+          hostnames: [{ host: "https://other.example.com", source: "platform-ca" }],
+        }),
+      },
+    );
+    assertEquals(platformOnly.status, 200);
+  });
 });

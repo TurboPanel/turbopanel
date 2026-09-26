@@ -629,14 +629,14 @@ export function registerAdminRoutes(app: Hono<AppEnv>, opts: {
         urlsResult.urls,
         snapshot.daemonBuild?.version,
         c.get("dataEncryptionSecrets"),
-        opts.getEnv?.() ?? {},
+        resolvePlatformEnv(c, opts),
       );
     } catch (err) {
       if (err instanceof PublicUrlsApplyPayloadError) {
-        const status = err.message.includes("terms have not been accepted")
-          ? 422
-          : 503;
-        return c.json({ ok: false, error: err.message }, status);
+        if (err.code) {
+          return c.json({ ok: false, error: err.message, code: err.code }, 422);
+        }
+        return c.json({ ok: false, error: err.message }, 503);
       }
       throw err;
     }

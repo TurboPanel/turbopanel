@@ -72,7 +72,10 @@ import type {
   UpgradeSource,
   UpgradeStepUnit,
 } from "./vocabulary.ts";
-import { UPGRADE_STEP_ACTIVE_STATUSES } from "./vocabulary.ts";
+import {
+  UPGRADE_STEP_ACTIVE_STATUSES,
+  type UpgradeStepErrorCode,
+} from "./vocabulary.ts";
 import type { UpgradeSettings } from "../settings/upgrade-settings.ts";
 
 export type UpgradePreflight = {
@@ -397,7 +400,7 @@ export function createUpgradeCoordinator(
     }
     if (step.unit === "instance" && !admitsFeature(fact)) {
       step.status = "needs_attention";
-      step.errorCode = "managed_upgrade_required";
+      step.errorCode = "managed_upgrade_required" satisfies UpgradeStepErrorCode;
       step.errorMessage = daemonOnlyUpdateCommand(
         unitTarget(run.target, "daemon")?.manifestUrl ?? null,
       );
@@ -1094,7 +1097,7 @@ function stepFromPlan(
     fromCommit: planned.unit === "instance" ? null : fact?.commit ?? null,
     toCommit: pin?.commit ?? null,
     lastStageAt: now,
-    errorCode: ahead ? "downgrade_refused" : null,
+    errorCode: ahead ? "downgrade_refused" satisfies UpgradeStepErrorCode : null,
     errorMessage: ahead
       ? `Runs ${fact?.version}, newer than the target ${pin?.version}. Managed updates never downgrade a server.`
       : null,

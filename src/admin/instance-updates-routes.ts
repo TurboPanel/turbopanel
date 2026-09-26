@@ -12,6 +12,7 @@ import { resolveUpdateManifest } from "../features/update/manifest.ts";
 import { isExplicitDevelopmentMode } from "../lib/dev-mode.ts";
 import { createUpgradeCoordinator } from "../features/upgrades/coordinator.ts";
 import { createDrizzleUpgradeStore } from "../features/upgrades/store.ts";
+import { updateAvailableFor } from "../features/upgrades/target.ts";
 import {
   normalizeUpgradeSettings,
 } from "../features/settings/upgrade-settings.ts";
@@ -90,6 +91,13 @@ export function registerInstanceUpdatesAdminRoutes(
       resolveUpdateManifest(channel, "daemon"),
       readColocatedDaemon(c),
     ]);
+    const instanceInstalled = {
+      version: INSTANCE_VERSION,
+      commit: revision.commit,
+    };
+    const daemonInstalled = daemon.serverId
+      ? { version: daemon.version, commit: daemon.commit }
+      : null;
     return c.json({
       ok: true,
       channel,
@@ -98,17 +106,18 @@ export function registerInstanceUpdatesAdminRoutes(
       updatesManaged: opts.runtime === "workers",
       units: {
         instance: {
-          installed: { version: INSTANCE_VERSION, commit: revision.commit },
+          installed: instanceInstalled,
           target: instanceTarget,
           uiTarget,
+          updateAvailable: updateAvailableFor(instanceInstalled, instanceTarget),
         },
         daemon: {
-          installed: daemon.serverId
-            ? { version: daemon.version, commit: daemon.commit }
-            : null,
+          installed: daemonInstalled,
           target: daemonTarget,
           serverId: daemon.serverId,
           connected: daemon.connected,
+          updateAvailable: daemonInstalled !== null &&
+            updateAvailableFor(daemonInstalled, daemonTarget),
         },
       },
     });

@@ -66,6 +66,7 @@ import {
   type ClientUpdateBlock,
   clientUpdateBlockReason,
   clientUpdateBlockStatus,
+  type ServerUpdateBlockedCode,
 } from "../../features/upgrades/decisions.ts";
 import { resolveUpdateManifest } from "../../features/update/manifest.ts";
 import {
@@ -233,11 +234,13 @@ function legacyUpdateAllowed(gate: ClientUpdateBlock): boolean {
 
 function gateFields(gate: ClientUpdateBlock): {
   updateBlocked?: boolean;
+  updateBlockedCode?: ServerUpdateBlockedCode;
   updateBlockedReason?: string;
 } {
   if (!gate.blocked) return {};
   return {
     updateBlocked: true,
+    updateBlockedCode: gate.error,
     updateBlockedReason: clientUpdateBlockReason(gate.error),
   };
 }
