@@ -306,41 +306,17 @@ export function isVerificationDevLoggingEnabled(opts: AuthRouteOpts): boolean {
   return isExplicitDevelopmentMode();
 }
 
-function resolveVerificationBaseUrl(
-  c: Context,
-  opts: AuthRouteOpts,
-): string {
-  if (opts.runtime === "deno") {
-    return opts.baseUrl?.trim() ||
-      (typeof Deno !== "undefined"
-        ? Deno.env.get("TURBOPANEL_BASE_URL")?.trim()
-        : undefined) ||
-      new URL(c.req.url).origin;
-  }
-  const platformEnv = c.get("platformEnv") as
-    | Record<string, string | undefined>
-    | undefined;
-  const fromEnv = platformEnv?.TURBOPANEL_BASE_URL?.trim();
-  if (fromEnv) return fromEnv.replace(/\/$/, "");
-  return new URL(c.req.url).origin;
-}
-
-/** Exported for direct unit testing only -- not part of the public route surface. */
+/**
+ * Origin for verification links: the one public-base-URL resolver, so stored
+ * public URLs win and a forwarded host is never consulted while any base URL
+ * is configured. Exported for direct unit testing only.
+ */
 export async function resolveVerificationBaseUrlAsync(
   c: Context,
   opts: AuthRouteOpts,
 ): Promise<string> {
-  // Both runtimes must fall through to resolvePublicBaseUrl when `direct`
-  // resolves to the literal origin string "null" -- new URL(c.req.url).origin
-  // is "null" behind a Unix socket (see resolve-public-base-url.ts's own
-  // warning), which on Deno this used to return unguarded, producing
-  // verification links like "null/verify-email?token=...".
-  const direct = resolveVerificationBaseUrl(c, opts).trim();
-  if (direct && direct !== "null" && !direct.includes("://null")) {
-    return direct.replace(/\/$/, "");
-  }
-  const fromPublic = await resolvePublicBaseUrl(c, { baseUrl: opts.baseUrl });
-  return fromPublic.replace(/\/$/, "");
+  const origin = await resolvePublicBaseUrl(c, { baseUrl: opts.baseUrl });
+  return origin.replace(/\/$/, "");
 }
 
 export async function buildSessionResponse(
