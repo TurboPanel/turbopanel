@@ -976,6 +976,14 @@ in `src/deno-compile-permissions.test.ts` and gated by `deno task duckdb:smoke`:
 The release package (`.github/workflows/release.yml`,
 `turbopanel-instance-<version>-<arch>.tar.zst`) is `bin/turbopanel` and
 `lib/libduckdb.so`, unpacked flat into `/opt/turbopanel` beside the daemon.
+Its `manifest.json` is **signed** before upload with the offline release key
+(`RELEASE_SIGNING_KEY`, a repo secret; the canary path passes it to the called
+workflow explicitly). The `manifest` job runs turbopaneld's
+`scripts/sign-manifest.ts` from a SHA-pinned checkout, so the control plane,
+UI and daemon share one signer and one canonicaliser. A missing key, or one
+that does not match the public key pinned in that turbopaneld commit, fails
+the publish. Bump that pin when the key rotates. `scripts/ci-runtime-pins.test.ts`
+guards the step order, the SHA pin and the secret hand-off.
 One binary: the server, the in-process email consumer (below) and the
 install-time verbs. Everything the installer used to reach into a source
 checkout for is now a verb of the instance binary,
