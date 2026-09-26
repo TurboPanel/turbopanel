@@ -33,6 +33,7 @@ import {
 } from "../../../lib/secrets/secrets.ts";
 import type { OAuthProviderId } from "./providers.ts";
 import { isOAuthProviderId } from "./providers.ts";
+import { base64urlDecode, base64urlEncode } from "../../../lib/encoding/base64url.ts";
 
 /** Distinct from install / 2FA / WebAuthn purposes so states are not interchangeable. */
 export const OAUTH_STATE_PURPOSE = "oauth-sign-in-state";
@@ -51,28 +52,6 @@ export type OAuthStateClaims = {
 };
 
 type OAuthStatePayload = OAuthStateClaims & { exp: number };
-
-function base64urlEncode(bytes: Uint8Array): string {
-  let binary = "";
-  for (const byte of bytes) {
-    binary += String.fromCodePoint(byte);
-  }
-  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replaceAll(
-    "=",
-    "",
-  );
-}
-
-function base64urlDecode(input: string): Uint8Array {
-  const padded = input + "=".repeat((4 - (input.length % 4)) % 4);
-  const base64 = padded.replaceAll("-", "+").replaceAll("_", "/");
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i += 1) {
-    bytes[i] = binary.codePointAt(i) ?? 0;
-  }
-  return bytes;
-}
 
 // C0 controls and DEL. Browsers drop TAB/CR/LF from URLs, so "/\t/evil.com"
 // becomes the protocol-relative "//evil.com".

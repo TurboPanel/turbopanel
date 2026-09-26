@@ -1,5 +1,6 @@
 import { argon2idAsync } from '@noble/hashes/argon2.js'
 import { compatLogWarn } from '../log-compat.ts'
+import { constantTimeEqualBytes as constantTimeEqual } from './constant-time.ts'
 
 /** OWASP 2026 minimum Argon2id baseline (KiB / iterations / parallelism). */
 export const ARGON2ID_MEMORY_KIB = 19_456
@@ -265,15 +266,6 @@ async function deriveArgon2id(
     dkLen: KEY_BYTES,
     version: ARGON2ID_VERSION,
   })
-}
-
-function constantTimeEqual(actual: Uint8Array, expected: Uint8Array): boolean {
-  if (actual.length !== expected.length) return false
-  let diff = 0
-  for (let i = 0; i < actual.length; i++) {
-    diff |= actual[i]! ^ expected[i]!
-  }
-  return diff === 0
 }
 
 export async function hashPassword(password: string): Promise<string> {

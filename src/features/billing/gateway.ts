@@ -41,12 +41,6 @@ export const BILLING_PROVIDER_IDS = ["stripe"] as const;
 
 export type BillingProviderId = (typeof BILLING_PROVIDER_IDS)[number];
 
-export function isBillingProviderId(
-  value: unknown,
-): value is BillingProviderId {
-  return (BILLING_PROVIDER_IDS as readonly string[]).includes(value as string);
-}
-
 /** The price a product bills at, as much as a tier needs to know. */
 export type ProviderPrice = Readonly<{
   id: string;

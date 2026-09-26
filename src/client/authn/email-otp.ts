@@ -9,6 +9,7 @@ import {
   parseEnvelope,
 } from '../../lib/secrets/envelope.ts'
 import { findKeyForVersion, type DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
+import { constantTimeEqual } from '../../lib/secrets/constant-time.ts'
 
 export const OTP_IDENTIFIER_PREFIX = 'otp'
 export const OTP_ATTEMPTS_IDENTIFIER_PREFIX = 'otp-attempts'
@@ -88,18 +89,6 @@ export function requireOtpVerifierSecrets(
   throw new Error(
     'OTP verifier secrets are required (deriveSecretsConfig with purpose email-otp-verifier)',
   )
-}
-
-function constantTimeEqual(a: string, b: string): boolean {
-  const enc = new TextEncoder()
-  const aBytes = enc.encode(a)
-  const bBytes = enc.encode(b)
-  if (aBytes.length !== bBytes.length) return false
-  let diff = 0
-  for (let i = 0; i < aBytes.length; i++) {
-    diff |= aBytes[i]! ^ bBytes[i]!
-  }
-  return diff === 0
 }
 
 /**

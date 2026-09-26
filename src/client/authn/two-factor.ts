@@ -24,6 +24,8 @@ import {
   TOTP_STEP_SECONDS,
   TOTP_WINDOW_STEPS,
 } from "./totp.ts";
+import { constantTimeEqual } from "../../lib/secrets/constant-time.ts";
+import { base64urlDecode, base64urlEncode } from "../../lib/encoding/base64url.ts";
 
 export const TWO_FACTOR_CHALLENGE_PURPOSE = "two-factor-challenge";
 export const BACKUP_CODE_VERIFIER_PURPOSE = "backup-code-verifier";
@@ -79,39 +81,6 @@ function bytesToHex(bytes: Uint8Array): string {
   return Array.from(bytes)
     .map((byte) => byte.toString(16).padStart(2, "0"))
     .join("");
-}
-
-function constantTimeEqual(a: string, b: string): boolean {
-  const aBytes = textEncoder.encode(a);
-  const bBytes = textEncoder.encode(b);
-  if (aBytes.length !== bBytes.length) return false;
-  let diff = 0;
-  for (let i = 0; i < aBytes.length; i += 1) {
-    diff |= aBytes[i]! ^ bBytes[i]!;
-  }
-  return diff === 0;
-}
-
-function base64urlEncode(bytes: Uint8Array): string {
-  let binary = "";
-  for (const byte of bytes) {
-    binary += String.fromCodePoint(byte);
-  }
-  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replaceAll(
-    "=",
-    "",
-  );
-}
-
-function base64urlDecode(input: string): Uint8Array {
-  const padded = input + "=".repeat((4 - (input.length % 4)) % 4);
-  const base64 = padded.replaceAll("-", "+").replaceAll("_", "/");
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i += 1) {
-    bytes[i] = binary.codePointAt(i) ?? 0;
-  }
-  return bytes;
 }
 
 function attemptsIdentifier(userId: string): string {

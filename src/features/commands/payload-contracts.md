@@ -98,7 +98,7 @@ all non-secret; `normalizeContextReleases` drops the whole array rather than
 persisting a partial one when a **required** field is missing, because a
 releases list with holes would offer a rollback target that was never built —
 the display-only commit subject/author are dropped individually instead. It is
-the read model behind `lib/db/releases.ts` (`listServiceReleases`) and therefore
+the read model behind `features/git/releases.ts` (`listServiceReleases`) and therefore
 behind `GET
 /environments/:id/releases` and the
 `POST /environments/:id/rollback` gate.

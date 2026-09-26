@@ -285,5 +285,9 @@ Client auth lives under `CLIENT_API_PREFIX` (`/api/client/v1`):
 | `src/install/routes.ts` | `registerInstallRoutes` — self-hosted install wizard (`/api/install/v1/*`; Deno entry only) |
 | `src/client/authn/install-state.ts` | Install detection, validation, `completeInstanceInstall`, colocated server assignment |
 | `src/client/authn/middleware.ts` | Session + superadmin middleware helpers |
+| `src/client/authn/request-context.ts` | The one copy of `requestTls`, `buildCookieHeader`, `readActiveSession`, `readOptionalJsonObject` for every authn route module — import these, never re-declare them |
+| `src/lib/encoding/base64url.ts` | The one base64url encode/decode (local, since the Workers bundle cannot take `@std/encoding`); `webauthn.ts` re-exports it |
+| `src/lib/secrets/constant-time.ts` | The one `constantTimeEqual` (strings) / `constantTimeEqualBytes` |
+| `src/client/authn/authn-hostfree-doubles.ts` | Test-only mock auth db. Updates and deletes on `user` / `twoFactor` / `passkey` / `account` match rows through `test-fixtures/memory-db.ts`'s `WHERE` walker (unsupported shapes, incl. `or`, throw) |
 
 Future: an instance-wide 2FA-required admin toggle is out of scope for this phase.

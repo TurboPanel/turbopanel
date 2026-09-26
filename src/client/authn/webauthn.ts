@@ -1,3 +1,9 @@
+import { base64urlEncode } from "../../lib/encoding/base64url.ts";
+
+export {
+  base64urlDecode,
+  base64urlEncode,
+} from "../../lib/encoding/base64url.ts";
 /**
  * Dependency-free WebAuthn helpers (CBOR, authenticator data, assertion
  * verify). Workers-bundle-safe: no `crypto.subtle` / `fetch` at module load.
@@ -62,28 +68,6 @@ export type ParsedAttestationObject = {
   authData: Uint8Array;
   attStmt: unknown;
 };
-
-export function base64urlEncode(bytes: Uint8Array): string {
-  let binary = "";
-  for (const byte of bytes) {
-    binary += String.fromCodePoint(byte);
-  }
-  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replaceAll(
-    "=",
-    "",
-  );
-}
-
-export function base64urlDecode(input: string): Uint8Array {
-  const padded = input + "=".repeat((4 - (input.length % 4)) % 4);
-  const base64 = padded.replaceAll("-", "+").replaceAll("_", "/");
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i += 1) {
-    bytes[i] = binary.codePointAt(i) ?? 0;
-  }
-  return bytes;
-}
 
 type CborDecode = { value: unknown; offset: number };
 

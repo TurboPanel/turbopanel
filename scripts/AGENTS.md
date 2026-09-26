@@ -34,7 +34,6 @@ imports):
 
 | Script | Purpose |
 | --- | --- |
-| `rewrite-imports.mjs` | `git mv` + specifier/path-token rewrite from an old→new map |
 | `generate-test-lists.mjs` | Rebuild suffix-glob inventories (`test-coverage.sh` + `vitest.config.ts`) |
 | `check-import-boundaries.mjs` | Kernel / feature / platform import graph (`pnpm check:import-boundaries`) |
 

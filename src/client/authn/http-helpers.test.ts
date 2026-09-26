@@ -654,6 +654,46 @@ test('resolveVerificationBaseUrlAsync falls back off a null Unix-socket origin o
   }
 })
 
+test('resolveVerificationBaseUrlAsync ignores a forged forwarded host when a base URL is configured', async () => {
+  const savedBaseUrl = Deno.env.get('TURBOPANEL_BASE_URL')
+  const savedPublicUrls = Deno.env.get('TURBOPANEL_PUBLIC_URLS')
+  try {
+    Deno.env.delete('TURBOPANEL_BASE_URL')
+    Deno.env.delete('TURBOPANEL_PUBLIC_URLS')
+    const resolveWith = async (opts: { baseUrl?: string }) => {
+      const app = new Hono()
+      let resolved = ''
+      app.get('/probe', async (c) => {
+        resolved = await resolveVerificationBaseUrlAsync(c, {
+          runtime: 'deno',
+          signupEnvOverride: undefined,
+          ...opts,
+        })
+        return c.text('ok')
+      })
+      await app.request(
+        new Request('https://panel.example.com/probe', {
+          headers: { 'x-forwarded-host': 'evil.example', 'x-forwarded-proto': 'https' },
+        }),
+      )
+      return resolved
+    }
+    // A configured base URL wins over the request and any forwarded host.
+    assertEquals(await resolveWith({ baseUrl: 'https://console.example.com' }), 'https://console.example.com')
+    Deno.env.set('TURBOPANEL_PUBLIC_URLS', 'https://stored.example.com')
+    // A stored public URL wins over the configured base URL.
+    assertEquals(await resolveWith({ baseUrl: 'https://console.example.com' }), 'https://stored.example.com')
+    // Plaintext http is never a verification origin.
+    Deno.env.delete('TURBOPANEL_PUBLIC_URLS')
+    assertEquals((await resolveWith({ baseUrl: 'http://console.example.com' })).startsWith('http://'), false)
+  } finally {
+    if (savedBaseUrl === undefined) Deno.env.delete('TURBOPANEL_BASE_URL')
+    else Deno.env.set('TURBOPANEL_BASE_URL', savedBaseUrl)
+    if (savedPublicUrls === undefined) Deno.env.delete('TURBOPANEL_PUBLIC_URLS')
+    else Deno.env.set('TURBOPANEL_PUBLIC_URLS', savedPublicUrls)
+  }
+})
+
 test('registerAuthnRoutes session returns 401 without cookie', async () => {
   const derived = await authSecrets()
   const app = new Hono<AppEnv>()

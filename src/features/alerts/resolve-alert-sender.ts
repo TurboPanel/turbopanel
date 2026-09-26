@@ -3,7 +3,7 @@
  *
  * Both runtimes' sweeps call this — the Workers cron (`offline-sweep.ts`) and
  * the self-hosted Deno/Redis timer (`control-plane-monitor.ts` via
- * `deno-server.ts`). Alerting that exists on only one of them is alerting
+ * `platform/deno/server.ts`). Alerting that exists on only one of them is alerting
  * most instances do not have.
  *
  * Since 2026-09-18 an alert is an event in the notifications pipeline

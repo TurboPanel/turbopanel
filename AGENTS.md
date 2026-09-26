@@ -1001,14 +1001,14 @@ the DuckDB addon at module evaluation and so needs the vendored `.so` on
   `--allow-write`) instead of beside a repo root the binary does not have.
 - The email consumer runs **in-process**
   (`src/lib/email/mailer/deno-mailer-consumer.ts`, started from
-  `src/deno-server.ts` beside the command consumer, closed on SIGTERM). It
+  `src/platform/deno/server.ts` beside the command consumer, closed on SIGTERM). It
   used to be a separate `turbopanel-mailer` binary and unit whose one reason
   to exist was an unrestricted outbound `--allow-net` kept away from the
   instance; the instance binary carries that flag itself since the egress
   allowlist was dropped (2026-09-18), so the split bought nothing but a second
   ~470 MB binary. The RabbitMQ queue stays (durability, rate limiting); the
   senders and job parser live in `src/lib/email/mailer/`. Only
-  `src/deno-server.ts` may import the consumer — it drags amqplib and the
+  `src/platform/deno/server.ts` may import the consumer — it drags amqplib and the
   nodemailer SMTP sender into the graph, which the Workers build shims out.
 
 `src/deno-compile-permissions.test.ts` pins all of the above. `deno compile`

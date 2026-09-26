@@ -307,7 +307,7 @@ async function initWorkerApp(env: CloudflareBindings) {
   cachedAuthRateLimiter = resolveWorkersClientAuthRateLimiter(env);
   const rateLimiters = resolveWorkersDaemonRateLimiters(env);
   // Daemon registrars are generic over the env — the app's `AppEnv` carries
-  // through without a cast (same as deno-server.ts).
+  // through without a cast (same as platform/deno/server.ts).
   const daemonRoutes = cachedApp;
   registerDaemonApiRoutes(daemonRoutes, {
     secrets: cachedDaemonJwtKeyring ?? undefined,
@@ -478,7 +478,7 @@ export default {
         : null,
       {
         // Hosted retention override, resolved at the entry point exactly like
-        // deno-server.ts does for the self-hosted path.
+        // platform/deno/server.ts does for the self-hosted path.
         executionLogRetentionDays: parseExecutionLogRetentionDays(
           env.TURBOPANEL_EXECUTION_LOG_RETENTION_DAYS,
         ),

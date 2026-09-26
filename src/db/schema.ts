@@ -3165,7 +3165,7 @@ export const hosting = pgTable(
  * does a full delete-then-insert replace of this hosting's rows in the same
  * transaction as the `hosting` write, mirroring `hostnames[]`'s own
  * replace-whole-array semantics — see `replaceHostingHostnames` in
- * `lib/db/hostname-records.ts`.
+ * `features/servers/hostname-records.ts`.
  *
  * `routing_organization_id` is named for the future cross-org-hosting feature
  * (hosting onto another organization's servers), where it would diverge from

@@ -29,7 +29,7 @@ import { redactUrlCredentials } from './redact-url.ts'
  * process, one unit, one binary. The queue stays: a durable RabbitMQ queue is
  * still what makes a send survive a restart and what bounds a burst.
  *
- * Only `src/deno-server.ts` may import this module. It pulls amqplib and the
+ * Only `src/platform/deno/server.ts` may import this module. It pulls amqplib and the
  * nodemailer-backed SMTP sender into the graph, both of which the Workers
  * build shims out (`smtp-sender-shim.ts`); wire it from the Deno entrypoint,
  * never from `src/app.ts`.

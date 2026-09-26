@@ -4,22 +4,12 @@ import {
   parseEnvelope,
 } from "../../lib/secrets/envelope.ts";
 import { findKeyForVersion, type DerivedSecretsConfig } from "../../lib/secrets/secrets.ts";
+import { base64urlEncode } from "../../lib/encoding/base64url.ts";
 
 export type VerifyResult = {
   token: string;
   rotated: boolean;
 };
-
-function base64urlEncode(bytes: Uint8Array): string {
-  let binary = "";
-  for (const byte of bytes) {
-    binary += String.fromCodePoint(byte);
-  }
-  return btoa(binary)
-    .replaceAll("+", "-")
-    .replaceAll("/", "_")
-    .replaceAll("=", "");
-}
 
 export const HTTP_SESSION_COOKIE_NAME = "turbopanel.session_token";
 

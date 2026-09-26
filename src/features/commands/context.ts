@@ -56,7 +56,7 @@ export type CommandContextReplicaCounts = Record<string, number>
  * *enqueued*, and a Railpack release's image tag, frontend version, and plan
  * version do not exist until the host has built it. They come back on the deploy
  * *result* (`command.result_summary`) instead, and
- * `lib/db/releases.ts` folds them onto the same release record — putting
+ * `features/git/releases.ts` folds them onto the same release record — putting
  * placeholder keys here would only invite a reader to trust a value that was
  * never filled in.
  */

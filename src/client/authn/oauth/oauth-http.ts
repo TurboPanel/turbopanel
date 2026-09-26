@@ -10,7 +10,6 @@ import type { Context, Hono } from "hono";
 import type { AppEnv } from "../../../app/app.ts";
 import { type Db, getDb } from "../../../db/connection.ts";
 import { account, passkey, user } from "../../../db/schema.ts";
-import { readBoundedBodyText } from "../../../lib/http/bounded-body.ts";
 import { resolvePublicBaseUrl } from "../../../features/install/resolve-public-base-url.ts";
 import {
   resolveAuthProviderSettings,
@@ -19,10 +18,7 @@ import { CLIENT_API_PREFIX } from "../../../app/surfaces.ts";
 import { AUTH_OAUTH_UNLINK_MAX_BODY_BYTES } from "../auth-body-limits.ts";
 import {
   buildSignedCookie,
-  resolveRequestTls,
-  resolveSessionCookieName,
   SESSION_EXPIRES_IN_MS,
-  verifySignedCookie,
 } from "../crypto.ts";
 import {
   type AuthRouteOpts,
@@ -43,7 +39,6 @@ import {
   createSession,
   deleteOtherSessionsForUser,
   getSession,
-  type SessionData,
 } from "../session-store.ts";
 import { issueTwoFactorChallenge } from "../two-factor.ts";
 import {
@@ -64,6 +59,7 @@ import {
 } from "./providers.ts";
 import type { OAuthStateClaims } from "./oauth-state.ts";
 import { isPostgresUniqueViolation } from "../../../db/unique-violation.ts";
+import { buildCookieHeader, readActiveSession, readOptionalJsonObject, requestTls } from "../request-context.ts";
 
 const DEFAULT_REDIRECT_TO = "/";
 
@@ -76,78 +72,6 @@ const OAUTH_FLOW_COOKIE_NAME_HTTPS = "__Host-turbopanel.oauth_flow";
 
 export function oauthFlowCookieName(isHttps: boolean): string {
   return isHttps ? OAUTH_FLOW_COOKIE_NAME_HTTPS : OAUTH_FLOW_COOKIE_NAME;
-}
-
-function requestTls(c: Context<AppEnv>, runtime: "deno" | "workers") {
-  return resolveRequestTls({
-    requestUrl: c.req.url,
-    runtime,
-    forwardedProto: c.req.header("x-forwarded-proto"),
-  });
-}
-
-function buildCookieHeader(
-  cookieValue: string,
-  maxAge: number,
-  cookieName: string,
-  isHttps: boolean,
-): string {
-  let header =
-    `${cookieName}=${cookieValue}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${maxAge}`;
-  if (isHttps) {
-    header += "; Secure";
-  }
-  return header;
-}
-
-async function readActiveSession(
-  c: Context<AppEnv>,
-  opts: AuthRouteOpts,
-): Promise<SessionData | null> {
-  const db = getDb(c);
-  const cookieName = resolveSessionCookieName({
-    requestUrl: c.req.url,
-    runtime: opts.runtime,
-    forwardedProto: c.req.header("x-forwarded-proto"),
-  });
-  const cookieValue = getCookie(c, cookieName) ?? null;
-
-  if (!cookieValue) return null;
-  const secrets = opts.secrets;
-  if (!secrets) return null;
-
-  const result = await verifySignedCookie(cookieValue, secrets);
-  if (!result) return null;
-
-  return getSession(db, result.token);
-}
-
-async function readOptionalJsonObject(
-  c: Context<AppEnv>,
-  maxBytes: number,
-): Promise<
-  | { ok: true; body: Record<string, unknown> }
-  | { ok: false; response: Response }
-> {
-  const read = await readBoundedBodyText(c, maxBytes);
-  if (!read.ok) return { ok: false, response: read.response };
-  if (!read.text.trim()) {
-    return { ok: true, body: {} };
-  }
-  try {
-    const parsed: unknown = JSON.parse(read.text);
-    if (
-      parsed === null || typeof parsed !== "object" || Array.isArray(parsed)
-    ) {
-      return { ok: true, body: {} };
-    }
-    return { ok: true, body: parsed as Record<string, unknown> };
-  } catch {
-    return {
-      ok: false,
-      response: c.json({ ok: false, error: "Invalid request" }, 400),
-    };
-  }
 }
 
 function signInErrorRedirect(c: Context<AppEnv>, code: string): Response {

@@ -382,7 +382,7 @@ retention. The sidecar marker is written after a successful open.
 
 **Daily Parquet archive**, partitioned per family
 (`parquet/<family-table>/year=YYYY/month=MM/day=DD/*.parquet`; timer armed by
-`deno-server.ts`'s `startDailyArchiveTimer()`): each completed UTC day is sealed
+`platform/deno/server.ts`'s `startDailyArchiveTimer()`): each completed UTC day is sealed
 out of the hot tables — export to `tmp/`, validate row count by re-reading,
 atomic rename, then delete hot rows. Interrupted exports (`tmp/*.parquet`) are
 swept on the next tick. Reads union the hot tables with overlapping partitions.

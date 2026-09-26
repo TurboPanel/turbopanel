@@ -1,12 +1,8 @@
 import { and, eq } from 'drizzle-orm'
-import { getCookie } from 'hono/cookie'
 import type { Context, Env, Hono } from 'hono'
 import {
   buildSignedCookie,
-  resolveRequestTls,
-  resolveSessionCookieName,
   SESSION_EXPIRES_IN_MS,
-  verifySignedCookie,
 } from './crypto.ts'
 import {
   createEmailOtp,
@@ -25,7 +21,6 @@ import {
   createSession,
   deleteSessionsByUserId,
   getSession,
-  type SessionData,
 } from './session-store.ts'
 import { issueTwoFactorChallenge } from './two-factor.ts'
 import {
@@ -50,6 +45,7 @@ import {
   MAX_AUTH_OTP_CHARS,
   MAX_AUTH_PASSWORD_CHARS,
 } from './auth-body-limits.ts'
+import { buildCookieHeader, readActiveSession, requestTls } from './request-context.ts'
 
 const VALID_OTP_TYPES = new Set<OtpType>([
   'sign-in',
@@ -63,51 +59,6 @@ function isOtpType(value: unknown): value is OtpType {
 
 function nowTs(): string {
   return new Date().toISOString()
-}
-
-function requestTls(c: Context, runtime: 'deno' | 'workers') {
-  return resolveRequestTls({
-    requestUrl: c.req.url,
-    runtime,
-    forwardedProto: c.req.header('x-forwarded-proto'),
-  })
-}
-
-function buildCookieHeader(
-  cookieValue: string,
-  maxAge: number,
-  cookieName: string,
-  isHttps: boolean,
-): string {
-  let header =
-    `${cookieName}=${cookieValue}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${maxAge}`
-  if (isHttps) {
-    header += '; Secure'
-  }
-  return header
-}
-
-async function readActiveSession(
-  c: Context,
-  opts: AuthRouteOpts,
-): Promise<SessionData | null> {
-  const db = getDb(c)
-  const cookieName = resolveSessionCookieName({
-    requestUrl: c.req.url,
-    runtime: opts.runtime,
-    forwardedProto: c.req.header('x-forwarded-proto'),
-  })
-  const cookieValue = getCookie(c, cookieName) ?? null
-
-  if (!cookieValue) return null
-
-  const secrets = opts.secrets
-  if (!secrets) return null
-
-  const result = await verifySignedCookie(cookieValue, secrets)
-  if (!result) return null
-
-  return getSession(db, result.token)
 }
 
 function mapVerifyResult(result: VerifyEmailOtpResult) {

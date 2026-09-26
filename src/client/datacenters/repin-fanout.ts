@@ -8,7 +8,7 @@
  * pass only stamps `ip.repin_pending_fanout_at`, and this sweep drains
  * those markers from the shared maintenance tick, which already holds a real
  * command queue and the secrets bundle (`runSystemReconcileSweepTick` in
- * `deno-server.ts`; the `tlsRenewal`-gated block in
+ * `platform/deno/server.ts`; the `tlsRenewal`-gated block in
  * `daemon/cell/offline-sweep.ts`).
  *
  * Per `(organizationId, datacenterId)` group — several pins moving in one

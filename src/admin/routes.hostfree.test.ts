@@ -672,8 +672,9 @@ test("POST /instance/public-urls/apply covers workers and short-circuit branches
   assertEquals(badBody.status, 400);
 });
 
-test("POST /instance/public-urls/apply returns 200 and fans out via commandQueue", async () => {
+test("POST /instance/public-urls/apply returns 200 and starts the platform-CA trust fan-out", async () => {
   const serverId = crypto.randomUUID();
+  let bundleReads = 0;
   const { app, cookie } = await buildApp({
     colocatedServerId: serverId,
     registry: createRegistry({
@@ -681,6 +682,12 @@ test("POST /instance/public-urls/apply returns 200 and fans out via commandQueue
     }),
     commandQueue: {
       enqueue: () => Promise.resolve(),
+    },
+    // The fan-out itself (one command per connected server) is covered by
+    // tls-trust-reconcile.hostfree.test.ts; here the route must start it.
+    readPlatformCaBundle: () => {
+      bundleReads += 1;
+      return Promise.resolve("-----BEGIN CERTIFICATE-----\n");
     },
   });
   const res = await app.request(
@@ -693,10 +700,12 @@ test("POST /instance/public-urls/apply returns 200 and fans out via commandQueue
   );
   assertEquals(res.status, 200);
   assertEquals(await res.json(), { ok: true, applied: true });
+  assertEquals(bundleReads, 1);
 });
 
 test("POST /instance/public-urls/apply returns the HTTP-01 preflight error", async () => {
   const serverId = crypto.randomUUID();
+  let bundleReads = 0;
   const error =
     "Let's Encrypt HTTP-01 preflight failed for panel.example.com: http://panel.example.com/.well-known/acme-challenge/abc did not reach the instance ACME issuer (HTTP 404)";
   const { app, cookie } = await buildApp({
@@ -714,6 +723,11 @@ test("POST /instance/public-urls/apply returns the HTTP-01 preflight error", asy
           error,
         }),
     }),
+    commandQueue: { enqueue: () => Promise.resolve() },
+    readPlatformCaBundle: () => {
+      bundleReads += 1;
+      return Promise.resolve("-----BEGIN CERTIFICATE-----\n");
+    },
   });
   const res = await app.request(
     `${ADMIN_API_PREFIX}/instance/public-urls/apply`,
@@ -725,6 +739,8 @@ test("POST /instance/public-urls/apply returns the HTTP-01 preflight error", asy
   );
   assertEquals(res.status, 500);
   assertEquals(await res.json(), { ok: false, applied: false, error });
+  // A failed apply never pushes a trust bundle to the fleet.
+  assertEquals(bundleReads, 0);
 });
 
 test("GET /daemon/addresses returns empty fleet list", async () => {

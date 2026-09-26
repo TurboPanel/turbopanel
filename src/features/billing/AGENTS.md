@@ -498,7 +498,7 @@ surface:
 
 The self-hosted OpenAPI builders (`src/client/openapi/index.ts`,
 `src/admin/openapi/index.ts`) do not import billing or tier definitions.
-`deno-server.ts` resolves no `BillingConfig`, builds no Stripe rate-limit
+`platform/deno/server.ts` resolves no `BillingConfig`, builds no Stripe rate-limit
 bucket, and its maintenance tick has no grace-clock, reconcile or tier-notice
 phase; the grace clock and reconcile run on the Workers cron
 (`src/daemon/cell/offline-sweep.ts`). `createApp` has no `billingConfig` option

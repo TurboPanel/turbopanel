@@ -33,7 +33,7 @@ import {
   DAEMON_CELL_PONG,
 } from "../contracts/cell-protocol.ts";
 import { issueDaemonJwt } from "./authn/daemon-jwt.ts";
-import { materializeDaemonJsonbWrite } from "../features/servers/daemon-jsonb-write.ts";
+import { materializeDaemonJsonbWrite } from "../test-fixtures/daemon-jsonb-simulator.ts";
 import {
   handleDaemonCellPing,
   isClosedConnectionError,

@@ -8,6 +8,7 @@ import {
   type DerivedSecretsConfig,
 } from "../../lib/secrets/secrets.ts";
 import type { DaemonChallenge } from "../authn/challenge.ts";
+import { base64urlDecode, base64urlEncode } from "../../lib/encoding/base64url.ts";
 
 export {
   DAEMON_CHALLENGE_TTL_MS,
@@ -41,28 +42,6 @@ export interface DaemonChallengeStore {
     keyId?: string;
   }): Promise<DaemonChallenge | null>;
   readonly ttlMs: number;
-}
-
-function base64urlEncode(bytes: Uint8Array): string {
-  let binary = "";
-  for (const byte of bytes) {
-    binary += String.fromCodePoint(byte);
-  }
-  return btoa(binary)
-    .replaceAll("+", "-")
-    .replaceAll("/", "_")
-    .replaceAll("=", "");
-}
-
-function base64urlDecode(input: string): Uint8Array {
-  const padded = input + "=".repeat((4 - (input.length % 4)) % 4);
-  const base64 = padded.replaceAll("-", "+").replaceAll("_", "/");
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i += 1) {
-    bytes[i] = binary.codePointAt(i) ?? 0;
-  }
-  return bytes;
 }
 
 function parsePayload(encoded: string): ChallengePayload | null {

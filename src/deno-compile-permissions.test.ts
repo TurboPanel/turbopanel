@@ -319,7 +319,7 @@ it("compile tasks emit the plain binary name and skip type-checking", async () =
   // pins it at /opt/turbopanel/bin/turbopanel, the CLI verbs are
   // `turbopanel migrate` and friends). There is no separate mailer binary:
   // the email consumer runs in-process (src/lib/email/mailer/
-  // deno-mailer-consumer.ts, wired from src/deno-server.ts).
+  // deno-mailer-consumer.ts, wired from src/platform/deno/server.ts).
   //
   // `--no-check`: type-checking is Build's job (and an explicit `deno check`
   // in the release job). The release job compiles against a production-only

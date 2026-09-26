@@ -308,7 +308,7 @@ const NETWORK_FIELD_POLICY = new Map<string, ComposeFieldPolicy>([
  * `network(kind='compose')` row whose per-server segments compile to
  * `external: true` + `name: tpn_<networkId>`, a routed bridge on each
  * participating host stitched together by the WireGuard fabric
- * (`lib/db/fabric-records.ts`, `./compile-runtime.ts`).
+ * (`features/fabric/fabric-records.ts`, `./compile-runtime.ts`).
  *
  * That substitution is honest about connectivity and dishonest about these five
  * attributes, so they are named rather than carried:
@@ -463,7 +463,7 @@ const DEPLOY_FIELD_POLICY = new Map<string, ComposeFieldPolicy>([
  * anywhere that cannot promise me this much" — and TurboPanel has nothing to
  * admit against. Reservation-aware placement needs a per-host capacity
  * inventory (how much CPU and memory each server has, and how much every
- * already-placed slot has claimed) and `lib/db/schema.ts` has no such table, so
+ * already-placed slot has claimed) and `db/schema.ts` has no such table, so
  * `lib/schedule/planner.ts` would place a reserving service onto any eligible
  * server exactly as if the block were absent.
  *

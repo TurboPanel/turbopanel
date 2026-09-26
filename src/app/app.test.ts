@@ -149,7 +149,7 @@ test('createApp wires serverMetricsStore through to POST /api/daemon/v1/metrics'
   }
 
   // Real bootstrap wiring: createApp() sets `serverMetricsStore` on the
-  // Hono context the same way `deno-server.ts` / `workers.ts` do, then
+  // Hono context the same way `platform/deno/server.ts` / `workers.ts` do, then
   // `registerDaemonApiRoutes` (also mounted by both entrypoints) is layered
   // on top — no `c.set("serverMetricsStore", ...)` in this test itself.
   const app = createApp({
