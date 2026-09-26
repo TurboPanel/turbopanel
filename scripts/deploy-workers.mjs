@@ -26,7 +26,7 @@ export function resolveRevision(env, gitHead) {
   const commit = env.WORKERS_CI_COMMIT_SHA?.trim() || gitHead()
   if (!commit || !COMMIT_RE.test(commit)) {
     throw new Error(
-      `cannot name the commit to stamp as TURBOPANEL_REVISION (got ${JSON.stringify(commit ?? '')})`,
+      `cannot name the commit to stamp as TURBOPANEL_REVISION (got ${JSON.stringify(commit ?? '')})`
     )
   }
   return commit
@@ -72,7 +72,10 @@ function runStep(argv, env) {
 }
 
 /** Run the plan in order; a failed step stops the deploy. */
-export function runDeploy(env = process.env, { gitHead = gitHeadFromCheckout, run = runStep } = {}) {
+export function runDeploy(
+  env = process.env,
+  { gitHead = gitHeadFromCheckout, run = runStep } = {}
+) {
   for (const step of planDeploy(env, gitHead)) {
     console.log(`deploy-workers: ${step.label}`)
     const status = run(step.argv, env)

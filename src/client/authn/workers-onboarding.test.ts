@@ -4,10 +4,7 @@ import { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
 import { createDenoDb } from '../../db/connection.ts'
-import {
-  createEmailOtp,
-  OTP_VERIFIER_SECRET_PURPOSE,
-} from './email-otp.ts'
+import { createEmailOtp, OTP_VERIFIER_SECRET_PURPOSE } from './email-otp.ts'
 import { registerAuthRoutes } from './http.ts'
 import {
   DEFAULT_WORKSPACE_NAME,
@@ -38,10 +35,7 @@ import { CLIENT_API_PREFIX } from '../../app/surfaces.ts'
 import type { EmailJob, EmailQueue } from '../../features/email/types.ts'
 import { createNoopQueue, isNoopEmailQueue } from '../../features/email/noop-queue.ts'
 import { resolveWorkersEmailQueue } from '../../features/email/mailgun/workers-queue.ts'
-import {
-  SYSTEM_EMAIL_DB_KEY,
-  updateEmailSettings,
-} from '../../features/settings/email-settings.ts'
+import { SYSTEM_EMAIL_DB_KEY, updateEmailSettings } from '../../features/settings/email-settings.ts'
 import { TEST_ONLY_TURBOPANEL_SECRET, parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 
 /** Generous limiter so multi-case Workers suites do not trip the shared IP bucket. */
@@ -70,7 +64,7 @@ const MAILPIT_PLATFORM_ENV = {
 
 async function setSignupEnabledSetting(
   db: ReturnType<typeof createDenoDb>,
-  value: '0' | '1' | null,
+  value: '0' | '1' | null
 ): Promise<void> {
   if (value === null) {
     await db.delete(setting).where(eq(setting.key, IS_SIGNUP_ENABLED_CONFIG_KEY))
@@ -93,14 +87,11 @@ async function createAuthRouteApp(
     emailQueue?: EmailQueue
     platformEnv?: Record<string, string | undefined>
     dataEncryptionSecrets?: Awaited<ReturnType<typeof deriveEncryptionSecretsConfig>>
-  },
+  }
 ) {
   const secretsConfig = parseTestSecretsConfig(runtime)
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
-  const otpVerifierSecrets = await deriveSecretsConfig(
-    secretsConfig,
-    OTP_VERIFIER_SECRET_PURPOSE,
-  )
+  const otpVerifierSecrets = await deriveSecretsConfig(secretsConfig, OTP_VERIFIER_SECRET_PURPOSE)
   const app = new Hono<AppEnv>()
   app.use('*', (c, next) => {
     c.set('db', db)
@@ -134,14 +125,11 @@ async function createClientRouteApp(
   db: ReturnType<typeof createDenoDb>,
   runtime: 'deno' | 'workers',
   signupEnvOverride?: SignupEnvOverride,
-  platformEnv?: Record<string, string | undefined>,
+  platformEnv?: Record<string, string | undefined>
 ) {
   const secretsConfig = parseTestSecretsConfig(runtime)
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
-  const otpVerifierSecrets = await deriveSecretsConfig(
-    secretsConfig,
-    OTP_VERIFIER_SECRET_PURPOSE,
-  )
+  const otpVerifierSecrets = await deriveSecretsConfig(secretsConfig, OTP_VERIFIER_SECRET_PURPOSE)
   const app = new Hono<AppEnv>()
   app.use('*', (c, next) => {
     c.set('db', db)
@@ -182,11 +170,7 @@ async function cleanupOrg(db: ReturnType<typeof createDenoDb>, userId: string) {
 }
 
 async function cleanupUser(db: ReturnType<typeof createDenoDb>, email: string) {
-  const rows = await db
-    .select({ id: user.id })
-    .from(user)
-    .where(eq(user.email, email))
-    .limit(1)
+  const rows = await db.select({ id: user.id }).from(user).where(eq(user.email, email)).limit(1)
   const userId = rows[0]?.id
   if (!userId) return
   await cleanupOrg(db, userId)
@@ -222,9 +206,7 @@ it('Workers password sign-up succeeds on a fresh database without install', asyn
 
 it('Workers duplicate sign-up is indistinguishable from a new sign-up', async () => {
   if (!dbUrl) {
-    console.warn(
-      'Skipping Workers duplicate sign-up test: TURBOPANEL_DATABASE_URL not set',
-    )
+    console.warn('Skipping Workers duplicate sign-up test: TURBOPANEL_DATABASE_URL not set')
     return
   }
 
@@ -242,7 +224,7 @@ it('Workers duplicate sign-up is indistinguishable from a new sign-up', async ()
     const firstJson = await first.json()
     if (first.status !== 201) {
       throw new Error(
-        `expected first sign-up 201, got ${first.status}: ${JSON.stringify(firstJson)}`,
+        `expected first sign-up 201, got ${first.status}: ${JSON.stringify(firstJson)}`
       )
     }
 
@@ -251,17 +233,17 @@ it('Workers duplicate sign-up is indistinguishable from a new sign-up', async ()
       headers: { 'content-type': 'application/json' },
       body,
     })
-    const secondJson = await second.json() as { ok?: boolean }
+    const secondJson = (await second.json()) as { ok?: boolean }
 
     // Anti-enumeration: caller must not be able to tell the account already exists.
     if (second.status !== first.status) {
       throw new Error(
-        `duplicate sign-up status ${second.status} differs from first ${first.status}`,
+        `duplicate sign-up status ${second.status} differs from first ${first.status}`
       )
     }
     if (JSON.stringify(secondJson) !== JSON.stringify(firstJson)) {
       throw new Error(
-        `duplicate sign-up body ${JSON.stringify(secondJson)} differs from first ${JSON.stringify(firstJson)}`,
+        `duplicate sign-up body ${JSON.stringify(secondJson)} differs from first ${JSON.stringify(firstJson)}`
       )
     }
     if (secondJson.ok !== true) {
@@ -311,7 +293,7 @@ it('Workers sign-up creates an organization for the new user', async () => {
       .where(eq(teammate.userId, userId))
     if (memberRows.length !== 1 || !memberRows[0]?.organizationId) {
       throw new Error(
-        `expected exactly one team membership with organizationId, got ${JSON.stringify(memberRows)}`,
+        `expected exactly one team membership with organizationId, got ${JSON.stringify(memberRows)}`
       )
     }
 
@@ -330,13 +312,11 @@ it('Workers sign-up creates an organization for the new user', async () => {
       .from(workspace)
       .where(eq(workspace.organizationId, organizationId))
     if (workspaceRows.length !== 1) {
-      throw new Error(
-        `expected exactly one workspace, got ${JSON.stringify(workspaceRows)}`,
-      )
+      throw new Error(`expected exactly one workspace, got ${JSON.stringify(workspaceRows)}`)
     }
     if (workspaceRows[0]?.name !== DEFAULT_WORKSPACE_NAME) {
       throw new Error(
-        `expected workspace displayName ${DEFAULT_WORKSPACE_NAME}, got ${workspaceRows[0]?.name}`,
+        `expected workspace displayName ${DEFAULT_WORKSPACE_NAME}, got ${workspaceRows[0]?.name}`
       )
     }
   } finally {
@@ -354,10 +334,7 @@ it('Workers OTP auto-registration succeeds without install completion', async ()
   const email = `workers-otp-${crypto.randomUUID()}@example.com`
   const app = await createAuthRouteApp(db, 'workers', '1')
   const secretsConfig = parseTestSecretsConfig('workers')
-  const otpVerifierSecrets = await deriveSecretsConfig(
-    secretsConfig,
-    OTP_VERIFIER_SECRET_PURPOSE,
-  )
+  const otpVerifierSecrets = await deriveSecretsConfig(secretsConfig, OTP_VERIFIER_SECRET_PURPOSE)
   const created = await createEmailOtp(db, email, 'sign-in', otpVerifierSecrets)
   const otp = created.status === 'created' ? created.otp : ''
 
@@ -373,7 +350,7 @@ it('Workers OTP auto-registration succeeds without install completion', async ()
       throw new Error(`expected 200, got ${res.status}: ${body}`)
     }
 
-    const payload = await res.json() as { ok: boolean; email: string | null }
+    const payload = (await res.json()) as { ok: boolean; email: string | null }
     if (!payload.ok || payload.email !== email) {
       throw new Error(`unexpected session payload: ${JSON.stringify(payload)}`)
     }
@@ -411,17 +388,13 @@ it('Deno sign-up still requires install completion on a fresh database', async (
 
 it('Deno status reflects email verification from resolved email settings', async () => {
   if (!dbUrl) {
-    console.warn(
-      'Skipping Deno email verification status test: TURBOPANEL_DATABASE_URL not set',
-    )
+    console.warn('Skipping Deno email verification status test: TURBOPANEL_DATABASE_URL not set')
     return
   }
 
   const db = createDenoDb()
   if (!(await isInstanceInstalled(db))) {
-    console.warn(
-      'Skipping Deno email verification status test: instance not installed',
-    )
+    console.warn('Skipping Deno email verification status test: instance not installed')
     return
   }
 
@@ -432,29 +405,25 @@ it('Deno status reflects email verification from resolved email settings', async
     throw new Error(`expected 200, got ${res.status}: ${body}`)
   }
 
-  const payload = await res.json() as {
+  const payload = (await res.json()) as {
     isSignupEmailVerificationEnabled: boolean
   }
   if (payload.isSignupEmailVerificationEnabled !== true) {
     throw new Error(
-      `expected email verification enabled via mailpit settings, got ${JSON.stringify(payload)}`,
+      `expected email verification enabled via mailpit settings, got ${JSON.stringify(payload)}`
     )
   }
 })
 
 it('Deno sign-up auto-verifies when email delivery is not configured', async () => {
   if (!dbUrl) {
-    console.warn(
-      'Skipping Deno sign-up auto-verify test: TURBOPANEL_DATABASE_URL not set',
-    )
+    console.warn('Skipping Deno sign-up auto-verify test: TURBOPANEL_DATABASE_URL not set')
     return
   }
 
   const db = createDenoDb()
   if (!(await isInstanceInstalled(db))) {
-    console.warn(
-      'Skipping Deno sign-up auto-verify test: instance not installed',
-    )
+    console.warn('Skipping Deno sign-up auto-verify test: instance not installed')
     return
   }
 
@@ -480,7 +449,7 @@ it('Deno sign-up auto-verifies when email delivery is not configured', async () 
       .limit(1)
     if (userRows[0]?.isEmailVerified !== true) {
       throw new Error(
-        `expected isEmailVerified=true when email is not configured, got ${JSON.stringify(userRows[0])}`,
+        `expected isEmailVerified=true when email is not configured, got ${JSON.stringify(userRows[0])}`
       )
     }
   } finally {
@@ -490,17 +459,13 @@ it('Deno sign-up auto-verifies when email delivery is not configured', async () 
 
 it('Deno sign-up rejects when verification is required but the queue is noop', async () => {
   if (!dbUrl) {
-    console.warn(
-      'Skipping Deno noop queue sign-up test: TURBOPANEL_DATABASE_URL not set',
-    )
+    console.warn('Skipping Deno noop queue sign-up test: TURBOPANEL_DATABASE_URL not set')
     return
   }
 
   const db = createDenoDb()
   if (!(await isInstanceInstalled(db))) {
-    console.warn(
-      'Skipping Deno noop queue sign-up test: instance not installed',
-    )
+    console.warn('Skipping Deno noop queue sign-up test: instance not installed')
     return
   }
 
@@ -522,10 +487,7 @@ it('Deno sign-up rejects when verification is required but the queue is noop', a
       throw new Error(`expected 503, got ${res.status}: ${body}`)
     }
 
-    const userRows = await db
-      .select({ id: user.id })
-      .from(user)
-      .where(eq(user.email, email))
+    const userRows = await db.select({ id: user.id }).from(user).where(eq(user.email, email))
     if (userRows.length !== 0) {
       throw new Error(`expected no user row after noop queue rejection, got ${userRows.length}`)
     }
@@ -536,9 +498,7 @@ it('Deno sign-up rejects when verification is required but the queue is noop', a
 
 it('Workers sign-up leaves no org residue when verification email enqueue fails', async () => {
   if (!dbUrl) {
-    console.warn(
-      'Skipping Workers enqueue rollback test: TURBOPANEL_DATABASE_URL not set',
-    )
+    console.warn('Skipping Workers enqueue rollback test: TURBOPANEL_DATABASE_URL not set')
     return
   }
 
@@ -549,8 +509,7 @@ it('Workers sign-up leaves no org residue when verification email enqueue fails'
     emailQueue: new FailingEmailQueue(),
   })
 
-  const orgCountBefore = (await db.select({ id: organization.id }).from(organization))
-    .length
+  const orgCountBefore = (await db.select({ id: organization.id }).from(organization)).length
   const grantCountBefore = (await db.select({ id: grant.id }).from(grant)).length
 
   try {
@@ -565,26 +524,22 @@ it('Workers sign-up leaves no org residue when verification email enqueue fails'
       throw new Error(`expected 503, got ${res.status}: ${body}`)
     }
 
-    const userRows = await db
-      .select({ id: user.id })
-      .from(user)
-      .where(eq(user.email, email))
+    const userRows = await db.select({ id: user.id }).from(user).where(eq(user.email, email))
     if (userRows.length !== 0) {
       throw new Error(`expected no user row after enqueue failure, got ${userRows.length}`)
     }
 
-    const orgCountAfter = (await db.select({ id: organization.id }).from(organization))
-      .length
+    const orgCountAfter = (await db.select({ id: organization.id }).from(organization)).length
     const grantCountAfter = (await db.select({ id: grant.id }).from(grant)).length
 
     if (orgCountAfter !== orgCountBefore) {
       throw new Error(
-        `expected no new organizations after enqueue failure (before=${orgCountBefore}, after=${orgCountAfter})`,
+        `expected no new organizations after enqueue failure (before=${orgCountBefore}, after=${orgCountAfter})`
       )
     }
     if (grantCountAfter !== grantCountBefore) {
       throw new Error(
-        `expected no new grants after enqueue failure (before=${grantCountBefore}, after=${grantCountAfter})`,
+        `expected no new grants after enqueue failure (before=${grantCountBefore}, after=${grantCountAfter})`
       )
     }
   } finally {
@@ -613,9 +568,7 @@ it('resolveIsSignupEnabled: env force overrides DB; unset defaults to disabled',
 it('live Wrangler must not force-enable public sign-up', async () => {
   const { assertLiveSignupNotForceEnabled, readLiveSignupEnvOverrideFromWranglerJsonc } =
     await import('./install-state.ts')
-  const wranglerText = await Deno.readTextFile(
-    new URL('../../../wrangler.jsonc', import.meta.url),
-  )
+  const wranglerText = await Deno.readTextFile(new URL('../../../wrangler.jsonc', import.meta.url))
   const liveValue = readLiveSignupEnvOverrideFromWranglerJsonc(wranglerText)
   assertLiveSignupNotForceEnabled(liveValue)
 
@@ -636,7 +589,7 @@ it('live Wrangler must not force-enable public sign-up', async () => {
 it('resolveSignupEnvOverrideFromContext prefers per-request platformEnv over createApp fallback', () => {
   const fromPlatform = resolveSignupEnvOverrideFromContext(
     { TURBOPANEL_IS_SIGNUP_ENABLED: '1' },
-    '0',
+    '0'
   )
   if (fromPlatform !== '1') {
     throw new Error(`expected platformEnv force-enable, got ${String(fromPlatform)}`)
@@ -671,7 +624,7 @@ it('Workers status, sign-up, and OTP auto-registration agree when DB signup is t
     if (statusOff.status !== 200) {
       throw new Error(`expected status 200, got ${statusOff.status}`)
     }
-    const offPayload = await statusOff.json() as { isSignupEnabled: boolean }
+    const offPayload = (await statusOff.json()) as { isSignupEnabled: boolean }
     if (offPayload.isSignupEnabled !== false) {
       throw new Error(`expected isSignupEnabled=false, got ${JSON.stringify(offPayload)}`)
     }
@@ -685,19 +638,13 @@ it('Workers status, sign-up, and OTP auto-registration agree when DB signup is t
       throw new Error(`expected sign-up 403 when disabled, got ${signUpOff.status}`)
     }
 
-    const otpSecretsConfig = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`,
-    'workers')
+    const otpSecretsConfig = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`, 'workers')
     const otpVerifierSecrets = await deriveSecretsConfig(
       otpSecretsConfig,
-      OTP_VERIFIER_SECRET_PURPOSE,
+      OTP_VERIFIER_SECRET_PURPOSE
     )
 
-    const otpOff = await createEmailOtp(
-      db,
-      emailOff,
-      'sign-in',
-      otpVerifierSecrets,
-    )
+    const otpOff = await createEmailOtp(db, emailOff, 'sign-in', otpVerifierSecrets)
     const otpOffCode = otpOff.status === 'created' ? otpOff.otp : ''
     const otpSignInOff = await authApp.request(`${CLIENT_API_PREFIX}/auth/sign-in/otp`, {
       method: 'POST',
@@ -705,17 +652,17 @@ it('Workers status, sign-up, and OTP auto-registration agree when DB signup is t
       body: JSON.stringify({ email: emailOff, otp: otpOffCode }),
     })
     if (otpSignInOff.status !== 403) {
-      throw new Error(
-        `expected OTP auto-reg 403 when signup disabled, got ${otpSignInOff.status}`,
-      )
+      throw new Error(`expected OTP auto-reg 403 when signup disabled, got ${otpSignInOff.status}`)
     }
 
     await setSignupEnabledSetting(db, '1')
 
     const statusOn = await statusApp.request(`${CLIENT_API_PREFIX}/status`)
-    const onPayload = await statusOn.json() as { isSignupEnabled: boolean }
+    const onPayload = (await statusOn.json()) as { isSignupEnabled: boolean }
     if (onPayload.isSignupEnabled !== true) {
-      throw new Error(`expected isSignupEnabled=true after toggle, got ${JSON.stringify(onPayload)}`)
+      throw new Error(
+        `expected isSignupEnabled=true after toggle, got ${JSON.stringify(onPayload)}`
+      )
     }
 
     const signUpOn = await authApp.request(`${CLIENT_API_PREFIX}/auth/sign-up`, {
@@ -725,17 +672,12 @@ it('Workers status, sign-up, and OTP auto-registration agree when DB signup is t
     })
     if (signUpOn.status !== 201) {
       throw new Error(
-        `expected sign-up 201 when enabled, got ${signUpOn.status}: ${await signUpOn.text()}`,
+        `expected sign-up 201 when enabled, got ${signUpOn.status}: ${await signUpOn.text()}`
       )
     }
 
     const otpEmail = `workers-otp-on-${crypto.randomUUID()}@example.com`
-    const otpOn = await createEmailOtp(
-      db,
-      otpEmail,
-      'sign-in',
-      otpVerifierSecrets,
-    )
+    const otpOn = await createEmailOtp(db, otpEmail, 'sign-in', otpVerifierSecrets)
     const otpOnCode = otpOn.status === 'created' ? otpOn.otp : ''
     const otpSignInOn = await authApp.request(`${CLIENT_API_PREFIX}/auth/sign-in/otp`, {
       method: 'POST',
@@ -744,7 +686,7 @@ it('Workers status, sign-up, and OTP auto-registration agree when DB signup is t
     })
     if (otpSignInOn.status !== 200) {
       throw new Error(
-        `expected OTP auto-reg 200 when signup enabled, got ${otpSignInOn.status}: ${await otpSignInOn.text()}`,
+        `expected OTP auto-reg 200 when signup enabled, got ${otpSignInOn.status}: ${await otpSignInOn.text()}`
       )
     }
     await cleanupUser(db, otpEmail)
@@ -765,7 +707,7 @@ it('Workers email queue follows DB Mailgun settings without a Worker restart', a
   const secretsConfig = parseTestSecretsConfig('workers')
   const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
     secretsConfig,
-    'data-encryption',
+    'data-encryption'
   )
   const email = `workers-mailgun-signup-${crypto.randomUUID()}@example.com`
 
@@ -786,7 +728,7 @@ it('Workers email queue follows DB Mailgun settings without a Worker restart', a
         MAILGUN_DOMAIN: 'mg.example.com',
         FROM: 'noreply@example.com',
       },
-      dataEncryptionSecrets,
+      dataEncryptionSecrets
     )
 
     const after = await resolveWorkersEmailQueue(db, {}, dataEncryptionSecrets)
@@ -811,10 +753,10 @@ it('Workers email queue follows DB Mailgun settings without a Worker restart', a
     // or 201 if enqueue somehow succeeds. Either proves we are past the
     // "email not configured" noop gate.
     if (res.status === 503) {
-      const body = await res.json() as { error?: string }
+      const body = (await res.json()) as { error?: string }
       if (body.error?.includes('not configured')) {
         throw new Error(
-          `sign-up still treated email as unconfigured after Mailgun save: ${JSON.stringify(body)}`,
+          `sign-up still treated email as unconfigured after Mailgun save: ${JSON.stringify(body)}`
         )
       }
     } else if (res.status !== 201) {
@@ -841,7 +783,7 @@ it('Workers status answers 200 on a freshly migrated database', async () => {
     const body = await res.text()
     throw new Error(`expected 200, got ${res.status}: ${body}`)
   }
-  const payload = await res.json() as { ok: boolean; runtime: string }
+  const payload = (await res.json()) as { ok: boolean; runtime: string }
   if (payload.ok !== true || payload.runtime !== 'workers') {
     throw new Error(`unexpected status payload ${JSON.stringify(payload)}`)
   }

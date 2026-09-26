@@ -43,7 +43,8 @@ function stripJsonc(text) {
 }
 
 export function readHyperdriveIdForEnv(envName, wranglerPath = path.join(ROOT, 'wrangler.jsonc')) {
-  if (!ENV_NAME_RE.test(envName)) throw new Error(`invalid CLOUDFLARE_ENV ${JSON.stringify(envName)}`)
+  if (!ENV_NAME_RE.test(envName))
+    throw new Error(`invalid CLOUDFLARE_ENV ${JSON.stringify(envName)}`)
   const config = JSON.parse(stripJsonc(fs.readFileSync(wranglerPath, 'utf8')))
   const env = config.env?.[envName]
   if (!env) throw new Error(`wrangler.jsonc has no env.${envName}`)
@@ -51,18 +52,22 @@ export function readHyperdriveIdForEnv(envName, wranglerPath = path.join(ROOT, '
   if (!binding || !HYPERDRIVE_ID_RE.test(binding.id)) {
     throw new Error(`wrangler.jsonc env.${envName} has no HYPERDRIVE binding with a config id`)
   }
-  return { id: binding.id, accountId: env.vars?.CLOUDFLARE_ACCOUNT_ID ?? config.vars?.CLOUDFLARE_ACCOUNT_ID }
+  return {
+    id: binding.id,
+    accountId: env.vars?.CLOUDFLARE_ACCOUNT_ID ?? config.vars?.CLOUDFLARE_ACCOUNT_ID,
+  }
 }
 
 async function readOriginFromApi(accountId, id) {
   // Workers Builds keeps its own deploy token; a separate read-only
   // Hyperdrive token avoids overriding it with a same-named build variable.
   const token =
-    process.env.TURBOPANEL_DEPLOY_CHECK_API_TOKEN?.trim() || process.env.CLOUDFLARE_API_TOKEN?.trim()
+    process.env.TURBOPANEL_DEPLOY_CHECK_API_TOKEN?.trim() ||
+    process.env.CLOUDFLARE_API_TOKEN?.trim()
   if (!token || !accountId) return null
   const response = await fetch(
     `https://api.cloudflare.com/client/v4/accounts/${accountId}/hyperdrive/configs/${id}`,
-    { headers: { Authorization: `Bearer ${token}` } },
+    { headers: { Authorization: `Bearer ${token}` } }
   )
   const body = await response.json()
   if (!response.ok || !body.success) {
@@ -109,8 +114,10 @@ export function compareTarget(target, origin) {
   const mismatches = []
   const originHost = String(origin.host ?? '').toLowerCase()
   if (target.host !== originHost) mismatches.push(`host ${target.host} ≠ ${originHost}`)
-  if (target.port !== Number(origin.port ?? 5432)) mismatches.push(`port ${target.port} ≠ ${origin.port ?? 5432}`)
-  if (target.database !== origin.database) mismatches.push(`database ${target.database} ≠ ${origin.database}`)
+  if (target.port !== Number(origin.port ?? 5432))
+    mismatches.push(`port ${target.port} ≠ ${origin.port ?? 5432}`)
+  if (target.database !== origin.database)
+    mismatches.push(`database ${target.database} ≠ ${origin.database}`)
   return mismatches
 }
 
@@ -120,16 +127,21 @@ export async function assertMigrateTargetMatchesEnv(env = process.env) {
   if (!envName) return 'CLOUDFLARE_ENV unset — environment check skipped'
   const url = env.TURBOPANEL_DATABASE_URL?.trim() || env.DATABASE_URL?.trim()
   const target = url ? migrateTargetFromUrl(url) : null
-  if (!target) throw new Error(`CLOUDFLARE_ENV=${envName} needs a TCP TURBOPANEL_DATABASE_URL to check against the Hyperdrive origin`)
+  if (!target)
+    throw new Error(
+      `CLOUDFLARE_ENV=${envName} needs a TCP TURBOPANEL_DATABASE_URL to check against the Hyperdrive origin`
+    )
   const { id, accountId } = readHyperdriveIdForEnv(envName)
   const origin = (await readOriginFromApi(accountId, id)) ?? readOriginFromWrangler(id)
   if (!origin?.host || !origin?.database || !origin?.user) {
-    throw new Error(`Hyperdrive ${id} (env ${envName}) has no readable origin — refusing to migrate blind`)
+    throw new Error(
+      `Hyperdrive ${id} (env ${envName}) has no readable origin — refusing to migrate blind`
+    )
   }
   const mismatches = compareTarget(target, origin)
   if (mismatches.length > 0) {
     throw new Error(
-      `TURBOPANEL_DATABASE_URL is not env ${envName}'s Hyperdrive origin (${mismatches.join('; ')}) — refusing`,
+      `TURBOPANEL_DATABASE_URL is not env ${envName}'s Hyperdrive origin (${mismatches.join('; ')}) — refusing`
     )
   }
   return `TURBOPANEL_DATABASE_URL matches env ${envName}'s Hyperdrive origin (${origin.host}/${origin.database}; migrate as ${target.user})`
@@ -141,6 +153,6 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     (err) => {
       console.error(`check-deploy-env: ${err.message}`)
       process.exit(1)
-    },
+    }
   )
 }
