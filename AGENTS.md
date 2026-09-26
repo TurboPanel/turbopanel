@@ -270,6 +270,7 @@ Unit tests use non-production secrets from `src/test-fixtures/secrets.ts`
 (`TEST_ONLY_TURBOPANEL_SECRET`). Vitest Workers config uses the same naming
 convention in `wrangler.vitest.jsonc`. The secret scanner allowlists only exact
 fixture lines in `.secretscan-allowlist` — do not add broad exclusions.
+`scripts/scan-secrets.sh` is byte-identical in turbopanel, turbopaneld, ui, website and dev — change all five together. It refuses a committed secret-bearing file (`license.token`, `server-key.json`, `.pgpass`, `.rabbitmq_pass`, …), flags credential URLs (`amqp(s)`/`postgres(ql)` with `user:pass@`) and `TURBOPANEL_SECRET(S)` bindings, and flags any line that names a secret-bearing file unless that exact `path:line:content` is in `.secretscan-allowlist`. dev's `src/lib/scan-secrets.test.ts` tests the rules and, with the siblings checked out in dev CI, fails if any copy drifts.
 
 **Where to run tests:** host VirtFS checkouts lack a usable Node/pnpm/Deno tree.
 Run suites **inside the Vagrant guest** from the host `dev` checkout
