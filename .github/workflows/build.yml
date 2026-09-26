@@ -401,3 +401,38 @@ jobs:
       - name: Check contract drift (metrics, hostname, machine-key, channels)
         working-directory: turbopanel
         run: node scripts/check-contract-drift.mjs
+
+  # Single aggregate check for the branch rulesets. It needs every job that
+  # runs on pull_request and fails unless all of them succeeded (a cancelled
+  # or skipped need is a failure too — no job above is conditional on PR
+  # events, so "skipped" can only mean a dependency failed). Required-check
+  # contexts move from the individual job names to this one context so a job
+  # rename or a new job never blocks merges on a name the ruleset still waits
+  # for.
+  ci-ok:
+    name: ci-ok
+    needs:
+      [
+        checks,
+        typecheck,
+        vitest,
+        deno-hostfree,
+        deno-db,
+        sonarqube,
+        metrics-legacy,
+        data-dictionary,
+      ]
+    if: always()
+    permissions: {}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency:
+      group: instance-ci-ok-${{ github.event_name }}-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - name: Fail unless every job succeeded
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          echo "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          echo "$NEEDS" | jq -e 'to_entries | all(.value.result == "success")' >/dev/null
