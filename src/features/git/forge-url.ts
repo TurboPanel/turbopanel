@@ -127,7 +127,10 @@ export async function forgeFetch(url: string, init: RequestInit = {}): Promise<R
   let body = init.body
   for (let hop = 0; ; hop += 1) {
     await assertForgeRequestAllowed(current)
-    const response = await fetch(current, { ...init, method, body, redirect: 'manual' })
+    // NOSONAR tssecurity:S8476 — `current` was re-validated on this hop by
+    // assertForgeRequestAllowed (literal check + DNS, fail-closed); redirects
+    // are manual and same-origin only. Residual: DNS rebinding between check and connect.
+    const response = await fetch(current, { ...init, method, body, redirect: 'manual' }) // NOSONAR tssecurity:S8476
     const location = response.headers.get('location')
     if (!isRedirect(response.status) || !location) return response
     await response.body?.cancel()
