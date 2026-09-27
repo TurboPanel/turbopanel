@@ -53,6 +53,11 @@ export type InvitationPreview = {
   organizationName: string
   teamName: string
   inviterName: string | null
+  /**
+   * Token path only: the id for the signed-in Accept button
+   * (`POST /invitations/:id/accept`). Not a secret — see the header.
+   */
+  invitationId?: string
   /** Token path + pending only. */
   email?: string
   /** Token path + pending only. */
@@ -145,7 +150,7 @@ async function publicPreview(db: Db, row: InvitationRow): Promise<InvitationPrev
 
 /** Token path only: adds the invited email and whether it has an account. */
 async function tokenPreview(db: Db, row: InvitationRow): Promise<InvitationPreview> {
-  const preview = await publicPreview(db, row)
+  const preview = { ...(await publicPreview(db, row)), invitationId: row.id }
   if (preview.status !== 'pending') return preview
   return {
     ...preview,

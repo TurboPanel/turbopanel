@@ -381,6 +381,11 @@ export function buildAuthSchemas(runtime?: 'deno' | 'workers') {
         organizationName: { type: 'string' },
         teamName: { type: 'string' },
         inviterName: { type: ['string', 'null'] },
+        invitationId: {
+          type: 'string',
+          description:
+            'Link-secret preview only: the id for `POST /api/client/v1/invitations/{id}/accept` (not a secret).',
+        },
         email: {
           type: 'string',
           format: 'email',

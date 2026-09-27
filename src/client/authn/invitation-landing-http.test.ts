@@ -245,6 +245,7 @@ test('token preview of a pending invitation to a new address: email, accountExis
     assertEquals(body.organizationName, 'Acme Test')
     assertEquals(body.email, email)
     assertEquals(body.accountExists, false)
+    assertEquals(body.invitationId, id)
     const [row] = await fx.db
       .select({ status: invitation.status })
       .from(invitation)
