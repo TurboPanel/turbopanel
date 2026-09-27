@@ -61,13 +61,33 @@ the cache.
   out the offline deadline. It is picked up by the first run after it
   reconnects.
 - **Never a downgrade.** Preflight refuses a run whose control-plane or
-  co-located daemon target is an older semver than what is installed
-  (`isDowngrade` in `target.ts`; equal versions and unparsable ones pass). A
-  fleet daemon already newer than the target gets a `skipped` step with
-  `errorCode` `downgrade_refused` and is not dispatched. Going back is the
-  explicit, logged rollback command, never a managed run.
+  co-located daemon target is older than what is installed (`isDowngrade` in
+  `target.ts`). A fleet daemon already newer than the target gets a `skipped`
+  step with `errorCode` `downgrade_refused` and is not dispatched. Going back
+  is the explicit, logged rollback command, never a managed run.
+  - **Only the base version orders releases.** Binaries report their plain
+    base version (`0.1.1`) whichever channel published them; only the manifest
+    carries the label (`0.1.1-canary.<id>`, `0.1.1-rc.1`). Plain semver would
+    rank every canary build of the installed base as older and refuse it —
+    which kept the hosted testing fleet from ever taking a canary daemon
+    (2026-09-27). So `isDowngrade` compares `major.minor.patch` only; on the
+    same base, the build times (`daemonBuild.builtAt` vs the manifest's
+    `builtAt`) decide when both are known, otherwise it is not a downgrade.
+    Equal and unparsable versions are not downgrades.
+  - `anyDaemonBehind(commit, builtAt)` applies the same rule in SQL, so a host
+    built after the target never reopens a no-op run on every tick.
 - **Single-server** — `planSingleServer`, one fleet step, for manual per-server
   updates.
+
+## Seeing what the tick decided
+
+Every maintenance tick reports one decision through the coordinator's `trace`
+dep: the resolved daemon target, `daemonDrift`, `targetDiffers`, the active
+run, and whether an automatic run started (with its step counts), was refused
+(with the first blocker) or was not attempted. `maintenance.ts` logs it as a
+single `upgrade-tick decision …` line when it changes and at most once an hour
+when it does not — in `wrangler tail` on Workers, the journal on Deno. A run
+whose steps are all `skipped` shows up there as `started … skipped=N`.
 
 ## Order (`planner.ts`)
 

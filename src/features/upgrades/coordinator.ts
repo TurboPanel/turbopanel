@@ -153,6 +153,25 @@ export type UpgradeCoordinatorDeps = {
   colocatedServerId: string | null
   instanceInstalled: { version: string; commit: string | null }
   resolveTarget?: () => Promise<UpgradeTarget>
+  /**
+   * One line per maintenance tick describing what it decided (target, drift,
+   * whether an automatic run started or why not). The tick caller rate-limits.
+   */
+  trace?: (decision: UpgradeTickDecision) => void
+}
+
+/** What one maintenance tick decided, for the operator log. */
+export type UpgradeTickDecision = {
+  channel: UpdateChannel
+  targetDaemon: { version: string | null; commit: string | null } | null
+  targetInstance: { version: string | null; commit: string | null } | null
+  daemonDrift: boolean
+  targetDiffers: boolean
+  activeRun: { id: string; status: string; phase: string | null } | null
+  autoStart:
+    | { decision: 'not-attempted' }
+    | { decision: 'started'; runId: string; steps: StepSummary }
+    | { decision: 'refused'; error: string; blockers: string[] }
 }
 
 const ACTIVE = new Set<string>(UPGRADE_STEP_ACTIVE_STATUSES)
@@ -283,7 +302,13 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
         `The channel's control-plane build ${target.instance?.version} is older than the installed ${deps.instanceInstalled.version}. ${rollback}`
       )
     }
-    if (colocated && isDowngrade(colocated.version, target.daemon?.version)) {
+    if (
+      colocated &&
+      isDowngrade(colocated.version, target.daemon?.version, {
+        installedBuiltAt: colocated.builtAt,
+        targetBuiltAt: target.daemon?.builtAt,
+      })
+    ) {
       out.push(
         `The channel's daemon build ${target.daemon?.version} is older than the co-located daemon's ${colocated.version}. ${rollback}`
       )
@@ -695,7 +720,9 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
           deps.store.activeRun(),
         ])
         const daemonCommit = target.daemon?.commit ?? null
-        const daemonDrift = daemonCommit ? await deps.store.anyDaemonBehind(daemonCommit) : false
+        const daemonDrift = daemonCommit
+          ? await deps.store.anyDaemonBehind(daemonCommit, target.daemon?.builtAt)
+          : false
         const differs =
           daemonDrift ||
           differsFromInstalled(
@@ -705,6 +732,7 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
             },
             target.instance
           )
+        let autoStart: UpgradeTickDecision['autoStart'] = { decision: 'not-attempted' }
         if (
           shouldAutoStartRun({
             runtime: deps.runtime,
@@ -714,11 +742,35 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
             runActive: active !== null,
           })
         ) {
-          await createUpgradeCoordinator(deps).start({
+          const started = await createUpgradeCoordinator({ ...deps, trace: undefined }).start({
             source: 'auto',
             startedBy: null,
           })
+          autoStart = started.ok
+            ? {
+                decision: 'started',
+                runId: started.runId,
+                steps: await deps.store.countSteps(started.runId),
+              }
+            : {
+                decision: 'refused',
+                error: started.error,
+                blockers: started.blockers ?? [],
+              }
         }
+        deps.trace?.({
+          channel: deps.channel,
+          targetDaemon: target.daemon
+            ? { version: target.daemon.version, commit: target.daemon.commit }
+            : null,
+          targetInstance: target.instance
+            ? { version: target.instance.version, commit: target.instance.commit }
+            : null,
+          daemonDrift,
+          targetDiffers: differs,
+          activeRun: active ? { id: active.id, status: active.status, phase: active.phase } : null,
+          autoStart,
+        })
       }
       const active = await deps.store.activeRun()
       if (!active) return
@@ -1030,7 +1082,13 @@ function stepFromPlan(
   )
   // A daemon already newer than the target is left alone. The platform units
   // never get here older: preflight refuses that run outright.
-  const ahead = !satisfied && planned.unit === 'daemon' && isDowngrade(fact?.version, pin?.version)
+  const ahead =
+    !satisfied &&
+    planned.unit === 'daemon' &&
+    isDowngrade(fact?.version, pin?.version, {
+      installedBuiltAt: fact?.builtAt,
+      targetBuiltAt: pin?.builtAt,
+    })
   return {
     id: newId(),
     upgradeId: run.id,
