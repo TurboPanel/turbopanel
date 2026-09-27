@@ -1,57 +1,50 @@
-import type {
-  MetricEvent,
-  MetricsSample,
-} from "../../contracts/metrics-contract.ts";
-import type { HostedFamily } from "./metric-descriptors.ts";
-import type { IngressDerivedValues } from "./query/derived-metrics.ts";
-import type { SlotMapping } from "../../contracts/topology-types.ts";
+import type { MetricEvent, MetricsSample } from '../../contracts/metrics-contract.ts'
+import type { HostedFamily } from './metric-descriptors.ts'
+import type { IngressDerivedValues } from './query/derived-metrics.ts'
+import type { SlotMapping } from '../../contracts/topology-types.ts'
 
-export type { SlotMapping } from "../../contracts/topology-types.ts";
+export type { SlotMapping } from '../../contracts/topology-types.ts'
 
-import { METRICS_LIVE_INTERVAL_SECONDS } from "../../contracts/capability-plan.ts";
+import { METRICS_LIVE_INTERVAL_SECONDS } from '../../contracts/capability-plan.ts'
 
-export { METRICS_LIVE_INTERVAL_SECONDS };
+export { METRICS_LIVE_INTERVAL_SECONDS }
 
 /** Success body of `POST /servers/:id/metrics/live` (start/renew a lease). */
 export type MetricsLiveLeaseStartResponse = {
-  ok: true;
-  leaseId: string;
-  intervalSeconds: typeof METRICS_LIVE_INTERVAL_SECONDS;
-  expiresAt: string;
-};
+  ok: true
+  leaseId: string
+  intervalSeconds: typeof METRICS_LIVE_INTERVAL_SECONDS
+  expiresAt: string
+}
 
 // Backend-neutral by design where these shared types are concerned: no
 // physical storage tokens (doubleN/blobN/indexN column names,
 // AnalyticsEngineDataPoint, DuckDB DDL) may appear here — those live in
 // per-backend field-map/schema files.
-export type MetricsBackendKind = "disabled" | "analytics-engine" | "duckdb";
+export type MetricsBackendKind = 'disabled' | 'analytics-engine' | 'duckdb'
 
 /** Why a `connected` boolean flipped — closed enum for status-stream rows. */
-export type ServerStatusTransitionReason =
-  | "connect"
-  | "disconnect"
-  | "sweep_stale"
-  | "self_heal";
+export type ServerStatusTransitionReason = 'connect' | 'disconnect' | 'sweep_stale' | 'self_heal'
 
 /** Validated connection-status transition written to AE / DuckDB. */
 export type ServerStatusEvent = {
-  serverId: string;
-  connected: boolean;
-  reason: ServerStatusTransitionReason;
-  at: string;
-};
+  serverId: string
+  connected: boolean
+  reason: ServerStatusTransitionReason
+  at: string
+}
 
 export type StatusHistoryQuery = {
-  serverId: string;
-  from: string;
-  to: string;
-};
+  serverId: string
+  from: string
+  to: string
+}
 
 export type StatusHistoryEvent = {
-  at: string;
-  connected: boolean;
-  reason: ServerStatusTransitionReason;
-};
+  at: string
+  connected: boolean
+  reason: ServerStatusTransitionReason
+}
 
 /**
  * Connection history + uptime totals for a range.
@@ -60,25 +53,25 @@ export type StatusHistoryEvent = {
  * accrues to `unknownSeconds`, never to uptime or downtime.
  */
 export type StatusHistoryResult = {
-  kind: MetricsBackendKind;
-  available: boolean;
-  serverId: string;
-  initialConnected: boolean | null;
-  events: StatusHistoryEvent[];
-  uptimeSeconds: number;
-  downtimeSeconds: number;
-  unknownSeconds: number;
-  uptimePercent: number | null;
-  truncated: boolean;
-};
+  kind: MetricsBackendKind
+  available: boolean
+  serverId: string
+  initialConnected: boolean | null
+  events: StatusHistoryEvent[]
+  uptimeSeconds: number
+  downtimeSeconds: number
+  unknownSeconds: number
+  uptimePercent: number | null
+  truncated: boolean
+}
 
 /** Authenticated v5 sample after validation — `serverId` always from auth context, never wire input. */
 export type AuthenticatedMetricsSample = MetricsSample & {
-  serverId: string;
-  receivedAt: string;
+  serverId: string
+  receivedAt: string
   /** Latest recorded capability-plan generation for this ingest, when known. */
-  capabilityPlanGeneration?: number;
-};
+  capabilityPlanGeneration?: number
+}
 
 /**
  * Per-entity metric families that can be queried by entity id via
@@ -97,14 +90,14 @@ export type AuthenticatedMetricsSample = MetricsSample & {
  */
 export type PerEntityHostedFamily = Extract<
   HostedFamily,
-  | "gpu"
-  | "network"
-  | "filesystem"
-  | "block"
-  | "hardware.physical"
-  | "managed.ingress"
-  | "managed.database_proxy"
->;
+  | 'gpu'
+  | 'network'
+  | 'filesystem'
+  | 'block'
+  | 'hardware.physical'
+  | 'managed.ingress'
+  | 'managed.database_proxy'
+>
 
 // ---------------------------------------------------------------------------
 // Host series / summary — host.system + host.io singleton metrics.
@@ -118,12 +111,12 @@ export type PerEntityHostedFamily = Extract<
  * exactly the canonical name.
  */
 export type HostSeriesQuery = {
-  serverId: string;
-  metrics: readonly string[];
-  from: string;
-  to: string;
-  resolutionSeconds?: number;
-};
+  serverId: string
+  metrics: readonly string[]
+  from: string
+  to: string
+  resolutionSeconds?: number
+}
 
 /**
  * One bucket timestamp with a values map keyed by requested canonical name.
@@ -133,60 +126,60 @@ export type HostSeriesQuery = {
  * when the backend doesn't track generations.
  */
 export type HostSeriesPoint = {
-  at: string;
-  values: Partial<Record<string, number | null>>;
+  at: string
+  values: Partial<Record<string, number | null>>
   /** Underlying samples contributing to this bucket. */
-  sampleCount?: number;
+  sampleCount?: number
   /** Expected samples for full bucket coverage (gap detection). */
-  expectedSampleCount?: number;
+  expectedSampleCount?: number
   /** Latest sample in the bucket (ISO) — where the next sample's due time counts from. */
-  lastSampleAt?: string;
+  lastSampleAt?: string
   /**
    * Seconds between stored samples in the bucket: the collection interval
    * times any storage sampling weight (an Analytics Engine row with
    * `_sample_interval = 2` stands for two samples, so the next stored row is
    * due two intervals later). Drives gap detection — see `computeSeriesCoverage`.
    */
-  sampleSpacingSeconds?: number;
-  topologyGeneration?: number | null;
-};
+  sampleSpacingSeconds?: number
+  topologyGeneration?: number | null
+}
 
 export type HostSeriesResult = {
-  kind: MetricsBackendKind;
-  available: boolean;
-  serverId: string;
+  kind: MetricsBackendKind
+  available: boolean
+  serverId: string
   /** Echo of the metrics requested. */
-  metrics: readonly string[];
-  points: HostSeriesPoint[];
-  resolutionSeconds: number | null;
+  metrics: readonly string[]
+  points: HostSeriesPoint[]
+  resolutionSeconds: number | null
   /** Missing samples in the resolved resolution grid (see `computeSeriesCoverage`). */
-  gapCount: number;
+  gapCount: number
   /** Starts (ISO) of the empty buckets where a sample was due and never arrived. */
-  gapBuckets?: string[];
+  gapBuckets?: string[]
   /** Number of underlying samples contributing to the series. */
-  sampleCount: number;
+  sampleCount: number
   /**
    * Distinct topology generations observed anywhere in the queried range,
    * sorted ascending — `length > 1` means the server's topology changed
    * during the window. Omitted when the backend doesn't track generations.
    */
-  topologyGenerations?: number[];
-};
+  topologyGenerations?: number[]
+}
 
 export type HostSummaryQuery = {
-  serverId: string;
-  from: string;
-  to: string;
-};
+  serverId: string
+  from: string
+  to: string
+}
 
 export type HostSummaryResult = {
-  kind: MetricsBackendKind;
-  available: boolean;
-  serverId: string;
-  sampleCount: number;
+  kind: MetricsBackendKind
+  available: boolean
+  serverId: string
+  sampleCount: number
   /** Latest sample timestamp in range, if any. */
-  latestAt: string | null;
-};
+  latestAt: string | null
+}
 
 // ---------------------------------------------------------------------------
 // Entity series — per-entity families (gpu/network/filesystem/block/
@@ -235,13 +228,13 @@ export type HostSummaryResult = {
  * `metrics-routes-helpers.ts`'s `findFabricNetworkEntityId`).
  */
 export type EntitySeriesQuery = {
-  serverId: string;
-  family: PerEntityHostedFamily;
-  entityIds: readonly string[];
-  metrics: readonly string[];
-  from: string;
-  to: string;
-  resolutionSeconds?: number;
+  serverId: string
+  family: PerEntityHostedFamily
+  entityIds: readonly string[]
+  metrics: readonly string[]
+  from: string
+  to: string
+  resolutionSeconds?: number
   /**
    * Current topology's `SlotMapping`, consulted only for `family: "network"`
    * — identifies which of `entityIds` (if any) are the first two
@@ -251,7 +244,7 @@ export type EntitySeriesQuery = {
    * generation yet) — every requested entity is then treated as independently
    * paged, matching pre-slot-mapping behavior.
    */
-  slotMapping?: SlotMapping;
+  slotMapping?: SlotMapping
   /**
    * The topology generation `slotMapping` was computed for. `host.io` rows
    * carry no per-row NIC identity (unlike a paged `network` row's blob10), so
@@ -261,15 +254,15 @@ export type EntitySeriesQuery = {
    * history as the new device. `null`/`undefined` (no recorded generation)
    * means the reconstruction finds no in-range rows rather than guessing.
    */
-  topologyGeneration?: number | null;
-};
+  topologyGeneration?: number | null
+}
 
 export type EntitySeriesPoint = {
-  at: string;
-  values: Partial<Record<string, number | null>>;
-  sampleCount?: number;
+  at: string
+  values: Partial<Record<string, number | null>>
+  sampleCount?: number
   /** Expected samples for full bucket coverage (gap detection) — see `HostSeriesPoint.expectedSampleCount`. */
-  expectedSampleCount?: number;
+  expectedSampleCount?: number
   /**
    * Route-attached derivations for `managed.ingress` points only — error rate
    * plus the mean/p50/p90/p99 latency figures that cannot be stored because
@@ -283,39 +276,39 @@ export type EntitySeriesPoint = {
    * whenever an input field wasn't part of the request's `metrics` selection
    * — the read path never widens the store query to fill them in.
    */
-  derived?: IngressDerivedValues;
-};
+  derived?: IngressDerivedValues
+}
 
 export type EntitySeriesEntityResult = {
-  entityId: string;
-  points: EntitySeriesPoint[];
-  sampleCount: number;
-  gapCount: number;
-};
+  entityId: string
+  points: EntitySeriesPoint[]
+  sampleCount: number
+  gapCount: number
+}
 
 export type EntitySeriesResult = {
-  kind: MetricsBackendKind;
-  available: boolean;
-  serverId: string;
-  family: PerEntityHostedFamily;
-  metrics: readonly string[];
-  resolutionSeconds: number | null;
-  entities: EntitySeriesEntityResult[];
-};
+  kind: MetricsBackendKind
+  available: boolean
+  serverId: string
+  family: PerEntityHostedFamily
+  metrics: readonly string[]
+  resolutionSeconds: number | null
+  entities: EntitySeriesEntityResult[]
+}
 
 /** Discover which entity ids of `family` were actually observed in a range — see `EntitySeriesQuery` doc comment for what "id" means per family. */
 export type EntityIdsSeenQuery = {
-  serverId: string;
-  family: PerEntityHostedFamily;
-  from: string;
-  to: string;
-};
+  serverId: string
+  family: PerEntityHostedFamily
+  from: string
+  to: string
+}
 
 export type EntityIdsSeenResult = {
-  kind: MetricsBackendKind;
-  available: boolean;
-  entityIds: string[];
-};
+  kind: MetricsBackendKind
+  available: boolean
+  entityIds: string[]
+}
 
 // ---------------------------------------------------------------------------
 // Fleet host snapshot — one query across many servers, host metrics only.
@@ -326,50 +319,50 @@ export type EntityIdsSeenResult = {
  * Used by the org servers overview — never N per-server chart calls.
  */
 export type FleetHostSnapshotQuery = {
-  serverIds: readonly string[];
-  metrics: readonly string[];
-  from: string;
-  to: string;
-};
+  serverIds: readonly string[]
+  metrics: readonly string[]
+  from: string
+  to: string
+}
 
 export type FleetHostSnapshotServer = {
-  serverId: string;
-  latestAt: string | null;
-  values: Partial<Record<string, number | null>>;
-  sampleCount: number;
+  serverId: string
+  latestAt: string | null
+  values: Partial<Record<string, number | null>>
+  sampleCount: number
   /**
    * Topology generation shared by every contributing sample in the queried
    * window, or `null` when unknown or mixed (a reassignment happened inside
    * the window). Omitted when the backend doesn't track generations.
    */
-  topologyGeneration?: number | null;
-};
+  topologyGeneration?: number | null
+}
 
 export type FleetHostSnapshotResult = {
-  kind: MetricsBackendKind;
-  available: boolean;
-  metrics: readonly string[];
-  servers: FleetHostSnapshotServer[];
-};
+  kind: MetricsBackendKind
+  available: boolean
+  metrics: readonly string[]
+  servers: FleetHostSnapshotServer[]
+}
 
 // ---------------------------------------------------------------------------
 // Metric events (`sample.events` — hardware-health / lifecycle notices).
 // ---------------------------------------------------------------------------
 
 export type MetricEventsQuery = {
-  serverId: string;
-  from: string;
-  to: string;
-};
+  serverId: string
+  from: string
+  to: string
+}
 
 export type MetricEventsResult = {
-  kind: MetricsBackendKind;
-  available: boolean;
-  serverId: string;
-  events: MetricEvent[];
+  kind: MetricsBackendKind
+  available: boolean
+  serverId: string
+  events: MetricEvent[]
   /** `true` when more events exist in range than the backend's cap returned — same discipline as `StatusHistoryResult.truncated`. */
-  truncated: boolean;
-};
+  truncated: boolean
+}
 
 /**
  * Backend-neutral write sink for v5 host metrics samples and connection
@@ -397,18 +390,13 @@ export type MetricEventsResult = {
  * topology-agnostic packing in that case (see `field-map.ts`).
  */
 export interface ServerMetricsStore {
-  writeSample(
-    input: AuthenticatedMetricsSample,
-    slotMapping?: SlotMapping,
-  ): void | Promise<void>;
-  writeStatusEvent(input: ServerStatusEvent): void | Promise<void>;
-  queryStatusHistory?(input: StatusHistoryQuery): Promise<StatusHistoryResult>;
-  queryHostSeries?(input: HostSeriesQuery): Promise<HostSeriesResult>;
-  queryHostSummary?(input: HostSummaryQuery): Promise<HostSummaryResult>;
-  queryEntitySeries?(input: EntitySeriesQuery): Promise<EntitySeriesResult>;
-  queryEntityIdsSeen?(input: EntityIdsSeenQuery): Promise<EntityIdsSeenResult>;
-  queryFleetHostSnapshot?(
-    input: FleetHostSnapshotQuery,
-  ): Promise<FleetHostSnapshotResult>;
-  queryMetricEvents?(input: MetricEventsQuery): Promise<MetricEventsResult>;
+  writeSample(input: AuthenticatedMetricsSample, slotMapping?: SlotMapping): void | Promise<void>
+  writeStatusEvent(input: ServerStatusEvent): void | Promise<void>
+  queryStatusHistory?(input: StatusHistoryQuery): Promise<StatusHistoryResult>
+  queryHostSeries?(input: HostSeriesQuery): Promise<HostSeriesResult>
+  queryHostSummary?(input: HostSummaryQuery): Promise<HostSummaryResult>
+  queryEntitySeries?(input: EntitySeriesQuery): Promise<EntitySeriesResult>
+  queryEntityIdsSeen?(input: EntityIdsSeenQuery): Promise<EntityIdsSeenResult>
+  queryFleetHostSnapshot?(input: FleetHostSnapshotQuery): Promise<FleetHostSnapshotResult>
+  queryMetricEvents?(input: MetricEventsQuery): Promise<MetricEventsResult>
 }

@@ -57,7 +57,7 @@ import {
   storageEngineFieldName,
   type StorageEngineKey,
   type StorageSample,
-} from "../../../../contracts/metrics-contract.ts";
+} from '../../../../contracts/metrics-contract.ts'
 import {
   DIAGNOSTICS_CPU_FIELD_NAMES,
   DIAGNOSTICS_MEMORY_FIELD_NAMES,
@@ -66,50 +66,46 @@ import {
   type HostedFamily,
   type HostMetricsMetricDescriptor,
   type MetricEntityScope,
-} from "../../metric-descriptors.ts";
-import type {
-  AuthenticatedMetricsSample,
-  ServerStatusEvent,
-  SlotMapping,
-} from "../../types.ts";
+} from '../../metric-descriptors.ts'
+import type { AuthenticatedMetricsSample, ServerStatusEvent, SlotMapping } from '../../types.ts'
 
 /** Analytics Engine dataset for the current metrics contract. */
-export const AE_DATASET_NAME = "turbopanel_server_metrics_v6";
+export const AE_DATASET_NAME = 'turbopanel_server_metrics_v6'
 
-export const AE_DOUBLE_COUNT = 20;
-export const AE_BLOB_COUNT = 20;
+export const AE_DOUBLE_COUNT = 20
+export const AE_BLOB_COUNT = 20
 
 /**
  * Physical AE row budget for metric-value double slots (double1..double19) —
  * one reserved interval slot on double20.
  */
-export const AE_METRIC_DOUBLE_SLOT_COUNT = 19;
+export const AE_METRIC_DOUBLE_SLOT_COUNT = 19
 
 /** double20 on every `"metrics"`-kind row — the sample's `intervalSeconds`. */
-export const AE_DOUBLE_INTERVAL_INDEX = 19;
+export const AE_DOUBLE_INTERVAL_INDEX = 19
 
 /** double1 on `"status"`-kind rows — connected (1) / disconnected (0). */
-export const AE_DOUBLE_STATUS_CONNECTED_INDEX = 0;
+export const AE_DOUBLE_STATUS_CONNECTED_INDEX = 0
 
 /**
  * Missing-metric sentinel (AE doubles have no null; 0 would silently skew
  * averages; all host metrics are >= 0).
  */
-export const AE_MISSING_METRIC_SENTINEL = -1e308;
+export const AE_MISSING_METRIC_SENTINEL = -1e308
 
 // ---------------------------------------------------------------------------
 // Envelope blob indexes (0-based — `blobColumn` maps to `blob<index+1>`).
 // ---------------------------------------------------------------------------
 
 /** blob1 — row-kind discriminator: `"metrics"` / `"event"` / `"status"`. */
-export const AE_BLOB_KIND_INDEX = 0;
+export const AE_BLOB_KIND_INDEX = 0
 /**
  * blob2 — on `"metrics"` rows, the {@link HostedFamily}; on `"event"` rows,
  * the event's `kind` (`MetricEventKind`); empty on `"status"` rows.
  */
-export const AE_BLOB_FAMILY_INDEX = 1;
+export const AE_BLOB_FAMILY_INDEX = 1
 /** blob3 — schema version (stringified integer, every row kind). */
-export const AE_BLOB_SCHEMA_VERSION_INDEX = 2;
+export const AE_BLOB_SCHEMA_VERSION_INDEX = 2
 /**
  * blob4 — reserved, always empty in v6. v5 stamped the sample's collection
  * mode (`"baseline"` / `"live"`) here; v6 dropped the concept — cadence is
@@ -117,26 +113,26 @@ export const AE_BLOB_SCHEMA_VERSION_INDEX = 2;
  * reader ever needed. The slot stays declared so a future envelope field can
  * take it without renumbering blob5+.
  */
-export const AE_BLOB_COLLECTION_MODE_INDEX = 3;
+export const AE_BLOB_COLLECTION_MODE_INDEX = 3
 /**
  * blob5 — sample timestamp. On `"metrics"` rows, `metadata.sampledAt`; on
  * `"event"` rows, the event's own `at` (more precise than the enclosing
  * sample's timestamp); empty on `"status"` rows (AE stamps its own ingestion
  * timestamp there, matching v3).
  */
-export const AE_BLOB_SAMPLED_AT_INDEX = 4;
+export const AE_BLOB_SAMPLED_AT_INDEX = 4
 /** blob6 — enclosing sample's sequence (stringified integer); empty on `"status"` rows. */
-export const AE_BLOB_SEQUENCE_INDEX = 5;
+export const AE_BLOB_SEQUENCE_INDEX = 5
 /** blob7 — `metadata.topologyGeneration` (stringified integer); empty on `"status"` rows. */
-export const AE_BLOB_TOPOLOGY_GENERATION_INDEX = 6;
+export const AE_BLOB_TOPOLOGY_GENERATION_INDEX = 6
 /**
  * blob8 — `AuthenticatedMetricsSample.capabilityPlanGeneration` (stringified
  * integer). Empty when ingest did not resolve a generation (record failure
  * or a store path that never ran plan resolution).
  */
-export const AE_BLOB_CAPABILITY_PLAN_GENERATION_INDEX = 7;
+export const AE_BLOB_CAPABILITY_PLAN_GENERATION_INDEX = 7
 /** blob9 — page index within a paged per-entity family (`"0"` for unpaged rows). */
-export const AE_BLOB_PAGE_INDEX = 8;
+export const AE_BLOB_PAGE_INDEX = 8
 /**
  * blob10 — family-conditional: `sourceId` for `managed.ingress` /
  * `managed.database_proxy` rows, comma-joined per-page entity ids (in the
@@ -146,52 +142,51 @@ export const AE_BLOB_PAGE_INDEX = 8;
  * `managed.storage` / `managed.docker` / `host.diagnostics` (the five
  * host-wide singleton families carry no entity identity of their own).
  */
-export const AE_BLOB_SOURCE_OR_IDENTITY_INDEX = 9;
+export const AE_BLOB_SOURCE_OR_IDENTITY_INDEX = 9
 /** blob11 — `"event"` rows only: `event.entityId` (empty when absent). */
-export const AE_BLOB_EVENT_ENTITY_ID_INDEX = 10;
+export const AE_BLOB_EVENT_ENTITY_ID_INDEX = 10
 /** blob12 — `"event"` rows only: `JSON.stringify(event.payload ?? {})`. */
-export const AE_BLOB_EVENT_PAYLOAD_INDEX = 11;
+export const AE_BLOB_EVENT_PAYLOAD_INDEX = 11
 /** blob13 — `"event"` rows only: `event.eventId`. Empty on every other row kind. */
-export const AE_BLOB_EVENT_ID_INDEX = 12;
+export const AE_BLOB_EVENT_ID_INDEX = 12
 /** blob14..blob16 stay reserved-empty on every row kind. */
-export const AE_RESERVED_MID_BLOB_COUNT = 3;
+export const AE_RESERVED_MID_BLOB_COUNT = 3
 /**
  * blob17 — `"status"` rows: {@link ServerStatusEvent.reason}. `"event"` rows:
  * the event's `severity`. Empty on `"metrics"` rows.
  */
-export const AE_BLOB_STATUS_OR_EVENT_REASON_INDEX = 16;
+export const AE_BLOB_STATUS_OR_EVENT_REASON_INDEX = 16
 /** blob18..blob20 stay reserved-empty on every row kind. */
-export const AE_RESERVED_TRAILING_BLOB_COUNT = 3;
+export const AE_RESERVED_TRAILING_BLOB_COUNT = 3
 
 /** blob1 discriminator values. */
-export const AE_KIND_METRICS = "metrics";
-export const AE_KIND_EVENT = "event";
-export const AE_KIND_STATUS = "status";
+export const AE_KIND_METRICS = 'metrics'
+export const AE_KIND_EVENT = 'event'
+export const AE_KIND_STATUS = 'status'
 
 /** blob2 discriminator values for `"metrics"` rows — mirrors {@link HostedFamily} exactly. */
-export const AE_FAMILY_HOST_SYSTEM: HostedFamily = "host.system";
-export const AE_FAMILY_HOST_IO: HostedFamily = "host.io";
-export const AE_FAMILY_GPU: HostedFamily = "gpu";
-export const AE_FAMILY_NETWORK: HostedFamily = "network";
-export const AE_FAMILY_FILESYSTEM: HostedFamily = "filesystem";
-export const AE_FAMILY_BLOCK: HostedFamily = "block";
-export const AE_FAMILY_HARDWARE_PHYSICAL: HostedFamily = "hardware.physical";
-export const AE_FAMILY_MANAGED_INGRESS: HostedFamily = "managed.ingress";
-export const AE_FAMILY_MANAGED_DATABASE_PROXY: HostedFamily =
-  "managed.database_proxy";
-export const AE_FAMILY_MANAGED_ROUTER: HostedFamily = "managed.router";
-export const AE_FAMILY_MANAGED_STORAGE: HostedFamily = "managed.storage";
-export const AE_FAMILY_MANAGED_DOCKER: HostedFamily = "managed.docker";
-export const AE_FAMILY_HOST_DIAGNOSTICS: HostedFamily = "host.diagnostics";
+export const AE_FAMILY_HOST_SYSTEM: HostedFamily = 'host.system'
+export const AE_FAMILY_HOST_IO: HostedFamily = 'host.io'
+export const AE_FAMILY_GPU: HostedFamily = 'gpu'
+export const AE_FAMILY_NETWORK: HostedFamily = 'network'
+export const AE_FAMILY_FILESYSTEM: HostedFamily = 'filesystem'
+export const AE_FAMILY_BLOCK: HostedFamily = 'block'
+export const AE_FAMILY_HARDWARE_PHYSICAL: HostedFamily = 'hardware.physical'
+export const AE_FAMILY_MANAGED_INGRESS: HostedFamily = 'managed.ingress'
+export const AE_FAMILY_MANAGED_DATABASE_PROXY: HostedFamily = 'managed.database_proxy'
+export const AE_FAMILY_MANAGED_ROUTER: HostedFamily = 'managed.router'
+export const AE_FAMILY_MANAGED_STORAGE: HostedFamily = 'managed.storage'
+export const AE_FAMILY_MANAGED_DOCKER: HostedFamily = 'managed.docker'
+export const AE_FAMILY_HOST_DIAGNOSTICS: HostedFamily = 'host.diagnostics'
 
 /**
  * Physical column name for the authenticated serverId identity slot
  * (`indexes[0]` on the write path, `index1` on the SQL read path).
  */
-export const AE_INDEX_SERVER_ID_COLUMN = "index1";
+export const AE_INDEX_SERVER_ID_COLUMN = 'index1'
 
 /** Index suffix for `"event"`-kind rows (see {@link aeIndexForFamily}). */
-export const AE_EVENT_INDEX_SUFFIX = "event";
+export const AE_EVENT_INDEX_SUFFIX = 'event'
 
 /**
  * The `index1` value a sample row is written under.
@@ -211,9 +206,9 @@ export const AE_EVENT_INDEX_SUFFIX = "event";
  */
 export function aeIndexForFamily(
   serverId: string,
-  family: HostedFamily | typeof AE_EVENT_INDEX_SUFFIX,
+  family: HostedFamily | typeof AE_EVENT_INDEX_SUFFIX
 ): string {
-  return family === AE_FAMILY_HOST_SYSTEM ? serverId : `${serverId}:${family}`;
+  return family === AE_FAMILY_HOST_SYSTEM ? serverId : `${serverId}:${family}`
 }
 
 /**
@@ -223,68 +218,64 @@ export function aeIndexForFamily(
  */
 export function aeIndexesForFamilies(
   serverId: string,
-  families: readonly (HostedFamily | typeof AE_EVENT_INDEX_SUFFIX)[],
+  families: readonly (HostedFamily | typeof AE_EVENT_INDEX_SUFFIX)[]
 ): string[] {
-  const indexes = new Set<string>([serverId]);
+  const indexes = new Set<string>([serverId])
   for (const family of families) {
-    indexes.add(aeIndexForFamily(serverId, family));
+    indexes.add(aeIndexForFamily(serverId, family))
   }
-  return [...indexes];
+  return [...indexes]
 }
 
 /** Physical column name for the AE ingestion timestamp. */
-export const AE_TIMESTAMP_COLUMN = "timestamp";
+export const AE_TIMESTAMP_COLUMN = 'timestamp'
 
 /** Narrow AE data-point shape mirroring Workers `AnalyticsEngineDataPoint`. */
 export type AnalyticsEngineDataPointLike = {
-  indexes: [string];
-  doubles: number[];
-  blobs: string[];
-};
+  indexes: [string]
+  doubles: number[]
+  blobs: string[]
+}
 
 export function blobColumn(index: number): string {
   if (!Number.isInteger(index) || index < 0 || index >= AE_BLOB_COUNT) {
-    throw new TypeError(`invalid AE v5 blob index: ${index}`);
+    throw new TypeError(`invalid AE v5 blob index: ${index}`)
   }
-  return `blob${index + 1}`;
+  return `blob${index + 1}`
 }
 
 export function doubleColumn(index: number): string {
   if (!Number.isInteger(index) || index < 0 || index >= AE_DOUBLE_COUNT) {
-    throw new TypeError(`invalid AE v5 double index: ${index}`);
+    throw new TypeError(`invalid AE v5 double index: ${index}`)
   }
-  return `double${index + 1}`;
+  return `double${index + 1}`
 }
 
 /** AE column for the interval-seconds weight slot (`double20`). */
 export function intervalSecondsColumn(): string {
-  return doubleColumn(AE_DOUBLE_INTERVAL_INDEX);
+  return doubleColumn(AE_DOUBLE_INTERVAL_INDEX)
 }
 
 /** AE column for status-row connected (1/0). */
 export function statusConnectedColumn(): string {
-  return doubleColumn(AE_DOUBLE_STATUS_CONNECTED_INDEX);
+  return doubleColumn(AE_DOUBLE_STATUS_CONNECTED_INDEX)
 }
 
 /** AE column for status-row transition reason / event-row severity. */
 export function statusReasonColumn(): string {
-  return blobColumn(AE_BLOB_STATUS_OR_EVENT_REASON_INDEX);
+  return blobColumn(AE_BLOB_STATUS_OR_EVENT_REASON_INDEX)
 }
 
 /** Test-only: assert doubles/blobs lengths (used by shape-drift tests). */
 export function assertAnalyticsEngineDataPointShape(point: {
-  doubles: number[];
-  blobs: string[];
+  doubles: number[]
+  blobs: string[]
 }): void {
   if (point.doubles.length !== AE_DOUBLE_COUNT) {
-    throw new TypeError(
-      `AE v5 doubles length ${point.doubles.length} !== ${AE_DOUBLE_COUNT}`,
-    );
+    throw new TypeError(`AE v5 doubles length ${point.doubles.length} !== ${AE_DOUBLE_COUNT}`)
   }
   if (point.blobs.length !== AE_BLOB_COUNT) {
-    throw new TypeError(
-      `AE v5 blobs length ${point.blobs.length} !== ${AE_BLOB_COUNT}`,
-    );
+    throw new TypeError(`AE v5 blobs length ${point.blobs.length} !== ${AE_BLOB_COUNT}`)
   }
 }
 
@@ -296,51 +287,45 @@ export function assertAnalyticsEngineDataPointShape(point: {
 // ---------------------------------------------------------------------------
 
 const HOST_CPU_FIELD_ORDER = [
-  "busyPercent",
-  "userPercent",
-  "systemPercent",
-  "iowaitPercent",
-  "stealPercent",
-  "softirqPercent",
-  "pressureSomePercent",
-  "saturatedCoreCount",
-  "procsRunning",
-  "procsBlocked",
-  "processCount",
-] as const;
+  'busyPercent',
+  'userPercent',
+  'systemPercent',
+  'iowaitPercent',
+  'stealPercent',
+  'softirqPercent',
+  'pressureSomePercent',
+  'saturatedCoreCount',
+  'procsRunning',
+  'procsBlocked',
+  'processCount',
+] as const
 
-const HOST_KERNEL_FIELD_ORDER = [
-  "fileHandlesUsedPercent",
-  "conntrackUsedPercent",
-] as const;
+const HOST_KERNEL_FIELD_ORDER = ['fileHandlesUsedPercent', 'conntrackUsedPercent'] as const
 
 const HOST_MEMORY_FIELD_ORDER = [
-  "usedBytes",
-  "cachedFilesBytes",
-  "swapUsedBytes",
-  "pressureSomePercent",
-  "pressureFullPercent",
-  "swapInBytesPerSecond",
-  "swapOutBytesPerSecond",
-  "majorPageFaultsPerSecond",
-] as const;
+  'usedBytes',
+  'cachedFilesBytes',
+  'swapUsedBytes',
+  'pressureSomePercent',
+  'pressureFullPercent',
+  'swapInBytesPerSecond',
+  'swapOutBytesPerSecond',
+  'majorPageFaultsPerSecond',
+] as const
 
 const HOST_STORAGE_FIELD_ORDER = [
-  "ioPressureSomePercent",
-  "ioPressureFullPercent",
-  "diskReadBytesPerSecond",
-  "diskWriteBytesPerSecond",
-  "diskLatencyMs",
-  "rootFilesystemAvailableBytes",
-  "rootFilesystemFreeInodes",
-] as const;
+  'ioPressureSomePercent',
+  'ioPressureFullPercent',
+  'diskReadBytesPerSecond',
+  'diskWriteBytesPerSecond',
+  'diskLatencyMs',
+  'rootFilesystemAvailableBytes',
+  'rootFilesystemFreeInodes',
+] as const
 
-const HOST_NETWORK_FIELD_ORDER = [
-  "tcpRetransmitPercent",
-  "softnetDropsPerSecond",
-] as const;
+const HOST_NETWORK_FIELD_ORDER = ['tcpRetransmitPercent', 'softnetDropsPerSecond'] as const
 
-type HostFieldRef = { scope: MetricEntityScope; field: string };
+type HostFieldRef = { scope: MetricEntityScope; field: string }
 
 /**
  * A deliberately-empty `host.io` double slot, reserved for the next field its
@@ -348,13 +333,10 @@ type HostFieldRef = { scope: MetricEntityScope; field: string };
  * fields after the NIC embed) is what lets storage or network gain a metric
  * without renumbering every slot the read path already resolves.
  */
-const HOST_IO_SPARE_SLOT = null;
+const HOST_IO_SPARE_SLOT = null
 
-function hostFieldRefs(
-  scope: MetricEntityScope,
-  fields: readonly string[],
-): HostFieldRef[] {
-  return fields.map((field) => ({ scope, field }));
+function hostFieldRefs(scope: MetricEntityScope, fields: readonly string[]): HostFieldRef[] {
+  return fields.map((field) => ({ scope, field }))
 }
 
 /**
@@ -365,9 +347,9 @@ function hostFieldRefs(
  * onto the host.io row to fit.
  */
 const HOST_SYSTEM_FIELD_ORDER: readonly HostFieldRef[] = [
-  ...hostFieldRefs("host.cpu", HOST_CPU_FIELD_ORDER),
-  ...hostFieldRefs("host.memory", HOST_MEMORY_FIELD_ORDER),
-];
+  ...hostFieldRefs('host.cpu', HOST_CPU_FIELD_ORDER),
+  ...hostFieldRefs('host.memory', HOST_MEMORY_FIELD_ORDER),
+]
 
 /**
  * host.io's 13 leading double slots (double1..double13): `host.kernel`
@@ -376,12 +358,12 @@ const HOST_SYSTEM_FIELD_ORDER: readonly HostFieldRef[] = [
  * The NIC embed starts immediately after, at double14.
  */
 const HOST_IO_FIELD_ORDER: readonly (HostFieldRef | null)[] = [
-  ...hostFieldRefs("host.kernel", HOST_KERNEL_FIELD_ORDER),
-  ...hostFieldRefs("host.storage", HOST_STORAGE_FIELD_ORDER),
+  ...hostFieldRefs('host.kernel', HOST_KERNEL_FIELD_ORDER),
+  ...hostFieldRefs('host.storage', HOST_STORAGE_FIELD_ORDER),
   HOST_IO_SPARE_SLOT,
-  ...hostFieldRefs("host.network", HOST_NETWORK_FIELD_ORDER),
+  ...hostFieldRefs('host.network', HOST_NETWORK_FIELD_ORDER),
   HOST_IO_SPARE_SLOT,
-];
+]
 
 /**
  * host.io's 6 NIC-embedded double slots (double14..double19): 3 values
@@ -391,79 +373,61 @@ const HOST_IO_FIELD_ORDER: readonly (HostFieldRef | null)[] = [
  * spare slots, and run up to but not including the reserved interval slot
  * (double20).
  */
-const HOST_IO_NIC_EMBED_SLOT_COUNT = 6;
+const HOST_IO_NIC_EMBED_SLOT_COUNT = 6
 
-function hostFieldValue(
-  sample: MetricsSample,
-  ref: HostFieldRef,
-): number | null {
-  const groupKey = ref.scope.slice(
-    "host.".length,
-  ) as keyof MetricsSample["host"];
-  const group = sample.host[groupKey] as unknown as Record<
-    string,
-    number | null
-  >;
-  return group[ref.field] ?? null;
+function hostFieldValue(sample: MetricsSample, ref: HostFieldRef): number | null {
+  const groupKey = ref.scope.slice('host.'.length) as keyof MetricsSample['host']
+  const group = sample.host[groupKey] as unknown as Record<string, number | null>
+  return group[ref.field] ?? null
 }
 
 /** Sum of a NIC's four error/drop rates, or the sentinel if any input is missing. */
-function combinedProblemPacketsPerSecond(
-  nic: NetworkDeviceSample | undefined,
-): number {
-  if (!nic) return AE_MISSING_METRIC_SENTINEL;
+function combinedProblemPacketsPerSecond(nic: NetworkDeviceSample | undefined): number {
+  if (!nic) return AE_MISSING_METRIC_SENTINEL
   const parts = [
     nic.receiveErrorsPerSecond,
     nic.transmitErrorsPerSecond,
     nic.receiveDropsPerSecond,
     nic.transmitDropsPerSecond,
-  ];
-  if (parts.includes(null)) return AE_MISSING_METRIC_SENTINEL;
-  return (parts as number[]).reduce((sum, value) => sum + value, 0);
+  ]
+  if (parts.includes(null)) return AE_MISSING_METRIC_SENTINEL
+  return (parts as number[]).reduce((sum, value) => sum + value, 0)
 }
 
 function packHostSystemDoubles(sample: MetricsSample): number[] {
-  const doubles = new Array<number>(AE_DOUBLE_COUNT).fill(
-    AE_MISSING_METRIC_SENTINEL,
-  );
+  const doubles = new Array<number>(AE_DOUBLE_COUNT).fill(AE_MISSING_METRIC_SENTINEL)
   HOST_SYSTEM_FIELD_ORDER.forEach((ref, i) => {
-    doubles[i] = hostFieldValue(sample, ref) ?? AE_MISSING_METRIC_SENTINEL;
-  });
-  doubles[AE_DOUBLE_INTERVAL_INDEX] = sample.metadata.intervalSeconds;
-  return doubles;
+    doubles[i] = hostFieldValue(sample, ref) ?? AE_MISSING_METRIC_SENTINEL
+  })
+  doubles[AE_DOUBLE_INTERVAL_INDEX] = sample.metadata.intervalSeconds
+  return doubles
 }
 
 function packHostIoDoubles(
   sample: MetricsSample,
   nic0: NetworkDeviceSample | undefined,
-  nic1: NetworkDeviceSample | undefined,
+  nic1: NetworkDeviceSample | undefined
 ): number[] {
-  const doubles = new Array<number>(AE_DOUBLE_COUNT).fill(
-    AE_MISSING_METRIC_SENTINEL,
-  );
+  const doubles = new Array<number>(AE_DOUBLE_COUNT).fill(AE_MISSING_METRIC_SENTINEL)
   HOST_IO_FIELD_ORDER.forEach((ref, i) => {
     // A spare slot stays at the sentinel the array was filled with.
     if (ref) {
-      doubles[i] = hostFieldValue(sample, ref) ?? AE_MISSING_METRIC_SENTINEL;
+      doubles[i] = hostFieldValue(sample, ref) ?? AE_MISSING_METRIC_SENTINEL
     }
-  });
-  const embedBase = HOST_IO_FIELD_ORDER.length;
-  doubles[embedBase] = nic0?.receiveBytesPerSecond ??
-    AE_MISSING_METRIC_SENTINEL;
-  doubles[embedBase + 1] = nic0?.transmitBytesPerSecond ??
-    AE_MISSING_METRIC_SENTINEL;
-  doubles[embedBase + 2] = combinedProblemPacketsPerSecond(nic0);
-  doubles[embedBase + 3] = nic1?.receiveBytesPerSecond ??
-    AE_MISSING_METRIC_SENTINEL;
-  doubles[embedBase + 4] = nic1?.transmitBytesPerSecond ??
-    AE_MISSING_METRIC_SENTINEL;
-  doubles[embedBase + 5] = combinedProblemPacketsPerSecond(nic1);
-  doubles[AE_DOUBLE_INTERVAL_INDEX] = sample.metadata.intervalSeconds;
-  return doubles;
+  })
+  const embedBase = HOST_IO_FIELD_ORDER.length
+  doubles[embedBase] = nic0?.receiveBytesPerSecond ?? AE_MISSING_METRIC_SENTINEL
+  doubles[embedBase + 1] = nic0?.transmitBytesPerSecond ?? AE_MISSING_METRIC_SENTINEL
+  doubles[embedBase + 2] = combinedProblemPacketsPerSecond(nic0)
+  doubles[embedBase + 3] = nic1?.receiveBytesPerSecond ?? AE_MISSING_METRIC_SENTINEL
+  doubles[embedBase + 4] = nic1?.transmitBytesPerSecond ?? AE_MISSING_METRIC_SENTINEL
+  doubles[embedBase + 5] = combinedProblemPacketsPerSecond(nic1)
+  doubles[AE_DOUBLE_INTERVAL_INDEX] = sample.metadata.intervalSeconds
+  return doubles
 }
 
 /** How many `normalNicSlots` entries `host.io` embeds — slots 1 and 2; every later slot pages. */
-export const HOST_IO_EMBEDDED_NIC_SLOT_COUNT = 2;
+export const HOST_IO_EMBEDDED_NIC_SLOT_COUNT = 2
 
 /**
  * Resolve which `networks[]` entries embed in `host.io` (slots 1/2) versus
@@ -483,36 +447,35 @@ export const HOST_IO_EMBEDDED_NIC_SLOT_COUNT = 2;
  */
 function resolveNetworkSlots(
   networks: readonly NetworkDeviceSample[],
-  slotMapping: SlotMapping | undefined,
+  slotMapping: SlotMapping | undefined
 ): {
-  nic0: NetworkDeviceSample | undefined;
-  nic1: NetworkDeviceSample | undefined;
-  paged: NetworkDeviceSample[];
+  nic0: NetworkDeviceSample | undefined
+  nic1: NetworkDeviceSample | undefined
+  paged: NetworkDeviceSample[]
 } {
   if (!slotMapping) {
-    return { nic0: networks[0], nic1: networks[1], paged: networks.slice(2) };
+    return { nic0: networks[0], nic1: networks[1], paged: networks.slice(2) }
   }
-  const byId = new Map(networks.map((device) => [device.deviceId, device]));
-  const [slot1, slot2] = slotMapping.normalNicSlots;
-  const nic0 = slot1 ? byId.get(slot1) : undefined;
-  const nic1 = slot2 ? byId.get(slot2) : undefined;
+  const byId = new Map(networks.map((device) => [device.deviceId, device]))
+  const [slot1, slot2] = slotMapping.normalNicSlots
+  const nic0 = slot1 ? byId.get(slot1) : undefined
+  const nic1 = slot2 ? byId.get(slot2) : undefined
   const excluded = new Set<string>([
     ...slotMapping.fabricDeviceIds,
     ...slotMapping.normalNicSlots.slice(0, HOST_IO_EMBEDDED_NIC_SLOT_COUNT),
-  ]);
+  ])
   const pagedSlots = slotMapping.normalNicSlots
     .slice(HOST_IO_EMBEDDED_NIC_SLOT_COUNT)
     .map((id) => byId.get(id))
-    .filter((device): device is NetworkDeviceSample => device !== undefined);
-  const pagedSlotIds = new Set(pagedSlots.map((device) => device.deviceId));
+    .filter((device): device is NetworkDeviceSample => device !== undefined)
+  const pagedSlotIds = new Set(pagedSlots.map((device) => device.deviceId))
   const paged = [
     ...pagedSlots,
     ...networks.filter(
-      (device) =>
-        !excluded.has(device.deviceId) && !pagedSlotIds.has(device.deviceId),
+      (device) => !excluded.has(device.deviceId) && !pagedSlotIds.has(device.deviceId)
     ),
-  ];
-  return { nic0, nic1, paged };
+  ]
+  return { nic0, nic1, paged }
 }
 
 /**
@@ -528,24 +491,22 @@ function resolveNetworkSlots(
 function orderByPageOrder<T>(
   entities: readonly T[],
   idOf: (entity: T) => string,
-  pageOrder: readonly string[] | undefined,
+  pageOrder: readonly string[] | undefined
 ): T[] {
-  if (!pageOrder) return [...entities];
-  const byId = new Map(
-    entities.map((entity) => [idOf(entity), entity] as const),
-  );
-  const ordered: T[] = [];
+  if (!pageOrder) return [...entities]
+  const byId = new Map(entities.map((entity) => [idOf(entity), entity] as const))
+  const ordered: T[] = []
   for (const id of pageOrder) {
-    const entity = byId.get(id);
+    const entity = byId.get(id)
     if (entity !== undefined) {
-      ordered.push(entity);
-      byId.delete(id);
+      ordered.push(entity)
+      byId.delete(id)
     }
   }
   for (const entity of entities) {
-    if (byId.has(idOf(entity))) ordered.push(entity);
+    if (byId.has(idOf(entity))) ordered.push(entity)
   }
-  return ordered;
+  return ordered
 }
 
 // ---------------------------------------------------------------------------
@@ -559,39 +520,39 @@ function orderByPageOrder<T>(
 // GPU temperature/memory-temperature/power are `hardware.physical` signals
 // keyed to the owning GPU, not `gpu` fields — 6 wide, so 3 GPUs per page.
 const GPU_FIELD_ORDER = [
-  "utilizationPercent",
-  "memoryUsedBytes",
-  "memoryActivityPercent",
-  "pcieReceiveBytesPerSecond",
-  "pcieTransmitBytesPerSecond",
-  "throttlePercent",
-] as const;
+  'utilizationPercent',
+  'memoryUsedBytes',
+  'memoryActivityPercent',
+  'pcieReceiveBytesPerSecond',
+  'pcieTransmitBytesPerSecond',
+  'throttlePercent',
+] as const
 
 const NETWORK_FIELD_ORDER = [
-  "receiveBytesPerSecond",
-  "transmitBytesPerSecond",
-  "receiveErrorsPerSecond",
-  "transmitErrorsPerSecond",
-  "receiveDropsPerSecond",
-  "transmitDropsPerSecond",
-] as const;
+  'receiveBytesPerSecond',
+  'transmitBytesPerSecond',
+  'receiveErrorsPerSecond',
+  'transmitErrorsPerSecond',
+  'receiveDropsPerSecond',
+  'transmitDropsPerSecond',
+] as const
 
-const FILESYSTEM_FIELD_ORDER = ["availableBytes", "freeInodes"] as const;
+const FILESYSTEM_FIELD_ORDER = ['availableBytes', 'freeInodes'] as const
 
 // Drive temperature is a `hardware.physical` signal keyed to the owning
 // drive, not a `block` field — 8 wide, still 2 drives per page.
 const BLOCK_FIELD_ORDER = [
-  "readBytesPerSecond",
-  "writeBytesPerSecond",
-  "readOpsPerSecond",
-  "writeOpsPerSecond",
-  "readLatencyMs",
-  "writeLatencyMs",
-  "utilizationPercent",
-  "queueDepth",
-] as const;
+  'readBytesPerSecond',
+  'writeBytesPerSecond',
+  'readOpsPerSecond',
+  'writeOpsPerSecond',
+  'readLatencyMs',
+  'writeLatencyMs',
+  'utilizationPercent',
+  'queueDepth',
+] as const
 
-const HARDWARE_SIGNAL_FIELD_ORDER = ["value"] as const;
+const HARDWARE_SIGNAL_FIELD_ORDER = ['value'] as const
 
 /**
  * A deliberately-empty single-row-family double slot, reserved for the next
@@ -600,7 +561,7 @@ const HARDWARE_SIGNAL_FIELD_ORDER = ["value"] as const;
  * fields at the end) is what lets a family gain a metric without renumbering
  * every slot the read path already resolves.
  */
-const SINGLE_ROW_SPARE_SLOT = null;
+const SINGLE_ROW_SPARE_SLOT = null
 
 /**
  * `managed.ingress`'s 19 double slots (double1..double19), filling the page
@@ -610,26 +571,26 @@ const SINGLE_ROW_SPARE_SLOT = null;
  * derived from these at read time (`query/derived-metrics.ts`), never stored.
  */
 const INGRESS_FIELD_ORDER: readonly (string | null)[] = [
-  "requests",
-  "responses2xx",
-  "responses3xx",
-  "responses4xx",
-  "responses5xx",
-  "requestErrors",
-  "requestBytes",
-  "responseBytes",
-  "requestDurationSecondsSum",
-  "bucket10ms",
-  "bucket50ms",
-  "bucket100ms",
-  "bucket500ms",
-  "bucket1s",
-  "bucket5s",
-  "requestsInFlight",
-  "upstreamsHealthy",
-  "upstreamsTotal",
-  "retries",
-];
+  'requests',
+  'responses2xx',
+  'responses3xx',
+  'responses4xx',
+  'responses5xx',
+  'requestErrors',
+  'requestBytes',
+  'responseBytes',
+  'requestDurationSecondsSum',
+  'bucket10ms',
+  'bucket50ms',
+  'bucket100ms',
+  'bucket500ms',
+  'bucket1s',
+  'bucket5s',
+  'requestsInFlight',
+  'upstreamsHealthy',
+  'upstreamsTotal',
+  'retries',
+]
 
 /**
  * `managed.database_proxy`'s 19 double slots: 17 fields grouped
@@ -638,26 +599,26 @@ const INGRESS_FIELD_ORDER: readonly (string | null)[] = [
  * end of the connection group (double15) so either can grow in place.
  */
 const DATABASE_PROXY_FIELD_ORDER: readonly (string | null)[] = [
-  "queries",
-  "slowQueries",
-  "queryLatencyMsAvg",
-  "backendLatencyMsAvg",
-  "activeTransactions",
+  'queries',
+  'slowQueries',
+  'queryLatencyMsAvg',
+  'backendLatencyMsAvg',
+  'activeTransactions',
   SINGLE_ROW_SPARE_SLOT,
-  "clientConnections",
-  "clientConnectionsCreated",
-  "clientConnectionsAborted",
-  "connectionsRejectedMaxConns",
-  "backendConnections",
-  "backendConnectionsCreated",
-  "backendConnectionsAborted",
-  "connectionErrors",
+  'clientConnections',
+  'clientConnectionsCreated',
+  'clientConnectionsAborted',
+  'connectionsRejectedMaxConns',
+  'backendConnections',
+  'backendConnectionsCreated',
+  'backendConnectionsAborted',
+  'connectionErrors',
   SINGLE_ROW_SPARE_SLOT,
-  "backendsUp",
-  "backendsTotal",
-  "bytesFromBackends",
-  "bytesToBackends",
-];
+  'backendsUp',
+  'backendsTotal',
+  'bytesFromBackends',
+  'bytesToBackends',
+]
 
 /**
  * `managed.router`'s 19 double slots: 12 fields plus 7 spares. Host-wide and
@@ -668,26 +629,26 @@ const DATABASE_PROXY_FIELD_ORDER: readonly (string | null)[] = [
  * renumbering resolved slots.
  */
 const ROUTER_FIELD_ORDER: readonly (string | null)[] = [
-  "backendsUp",
-  "backendsTotal",
-  "servicesTotal",
-  "routersTotal",
-  "retries",
-  "backendErrors5xx",
-  "backendLatencyMsAvg",
-  "backendRequests",
+  'backendsUp',
+  'backendsTotal',
+  'servicesTotal',
+  'routersTotal',
+  'retries',
+  'backendErrors5xx',
+  'backendLatencyMsAvg',
+  'backendRequests',
   SINGLE_ROW_SPARE_SLOT,
-  "httpOpenConnections",
-  SINGLE_ROW_SPARE_SLOT,
-  SINGLE_ROW_SPARE_SLOT,
-  "configReloads",
-  "configLastReloadAgeSeconds",
-  "tlsCertSoonestExpiryDays",
+  'httpOpenConnections',
   SINGLE_ROW_SPARE_SLOT,
   SINGLE_ROW_SPARE_SLOT,
+  'configReloads',
+  'configLastReloadAgeSeconds',
+  'tlsCertSoonestExpiryDays',
   SINGLE_ROW_SPARE_SLOT,
   SINGLE_ROW_SPARE_SLOT,
-];
+  SINGLE_ROW_SPARE_SLOT,
+  SINGLE_ROW_SPARE_SLOT,
+]
 
 /**
  * `managed.storage`'s 19 double slots, filling the page exactly with no
@@ -703,10 +664,10 @@ const ROUTER_FIELD_ORDER: readonly (string | null)[] = [
  * `instancesRunning` repeats across all three engines.
  */
 type StorageFieldRef = {
-  group: StorageEngineKey | null;
-  field: string;
-  name: string;
-};
+  group: StorageEngineKey | null
+  field: string
+  name: string
+}
 
 const STORAGE_FIELD_ORDER: readonly StorageFieldRef[] = [
   ...STORAGE_FLAT_FIELD_NAMES.map((field) => ({
@@ -721,13 +682,12 @@ const STORAGE_FIELD_ORDER: readonly StorageFieldRef[] = [
       name: storageEngineFieldName(engine, field),
     }))
   ),
-];
+]
 
 /** Flat `fieldName` list for `managed.storage`, in physical slot order. */
-export const STORAGE_SLOT_FIELD_NAMES: readonly string[] = STORAGE_FIELD_ORDER
-  .map(
-    (ref) => ref.name,
-  );
+export const STORAGE_SLOT_FIELD_NAMES: readonly string[] = STORAGE_FIELD_ORDER.map(
+  (ref) => ref.name
+)
 
 /**
  * `managed.docker`'s 19 double slots: the 10 `GET /system/df` breakdown
@@ -739,16 +699,16 @@ export const STORAGE_SLOT_FIELD_NAMES: readonly string[] = STORAGE_FIELD_ORDER
  * existing breakdown rather than widening one of its groups.
  */
 const DOCKER_USAGE_FIELD_ORDER: readonly (string | null)[] = [
-  "layersBytes",
-  "imagesCount",
-  "imagesReclaimableBytes",
-  "containersBytes",
-  "containersCount",
-  "volumesBytes",
-  "volumesCount",
-  "volumesReclaimableBytes",
-  "buildCacheBytes",
-  "buildCacheReclaimableBytes",
+  'layersBytes',
+  'imagesCount',
+  'imagesReclaimableBytes',
+  'containersBytes',
+  'containersCount',
+  'volumesBytes',
+  'volumesCount',
+  'volumesReclaimableBytes',
+  'buildCacheBytes',
+  'buildCacheReclaimableBytes',
   SINGLE_ROW_SPARE_SLOT,
   SINGLE_ROW_SPARE_SLOT,
   SINGLE_ROW_SPARE_SLOT,
@@ -758,11 +718,11 @@ const DOCKER_USAGE_FIELD_ORDER: readonly (string | null)[] = [
   SINGLE_ROW_SPARE_SLOT,
   SINGLE_ROW_SPARE_SLOT,
   SINGLE_ROW_SPARE_SLOT,
-];
+]
 
 /** A slot array's real (non-spare) field names — what descriptor-agreement checks compare against. */
 function declaredFields(order: readonly (string | null)[]): string[] {
-  return order.filter((field): field is string => field !== null);
+  return order.filter((field): field is string => field !== null)
 }
 
 /**
@@ -772,32 +732,31 @@ function declaredFields(order: readonly (string | null)[]): string[] {
  * `DiagnosticsSample` it reads from, since the merged family spans two
  * sub-objects but one flat AE row.
  */
-type DiagnosticsFieldRef = { group: keyof DiagnosticsSample; field: string };
+type DiagnosticsFieldRef = { group: keyof DiagnosticsSample; field: string }
 
 const DIAGNOSTICS_FIELD_ORDER: readonly DiagnosticsFieldRef[] = [
   ...DIAGNOSTICS_CPU_FIELD_NAMES.map((field) => ({
-    group: "cpu" as const,
+    group: 'cpu' as const,
     field,
   })),
   ...DIAGNOSTICS_MEMORY_FIELD_NAMES.map((field) => ({
-    group: "memory" as const,
+    group: 'memory' as const,
     field,
   })),
-];
+]
 
 /** Flat `fieldName` list for `host.diagnostics`, in physical slot order. */
-export const DIAGNOSTICS_FIELD_NAMES: readonly string[] =
-  DIAGNOSTICS_FIELD_ORDER.map(
-    (ref) => ref.field,
-  );
+export const DIAGNOSTICS_FIELD_NAMES: readonly string[] = DIAGNOSTICS_FIELD_ORDER.map(
+  (ref) => ref.field
+)
 
 function numericField<T>(entity: T, field: string): number | null {
-  return (entity as unknown as Record<string, number | null>)[field] ?? null;
+  return (entity as unknown as Record<string, number | null>)[field] ?? null
 }
 
 /** Entities-per-page for a per-entity family: how many `width`-wide entities fit in double1..19. */
 function entitiesPerPage(width: number): number {
-  return Math.floor(AE_METRIC_DOUBLE_SLOT_COUNT / width);
+  return Math.floor(AE_METRIC_DOUBLE_SLOT_COUNT / width)
 }
 
 /**
@@ -816,29 +775,24 @@ function packEntityPages<T>(
   fieldOrder: readonly string[],
   width: number,
   intervalSeconds: number,
-  idOf: (entity: T) => string,
+  idOf: (entity: T) => string
 ): { doubles: number[]; page: number; ids: string }[] {
-  if (entities.length === 0) return [];
-  const perPage = entitiesPerPage(width);
-  const pages: { doubles: number[]; page: number; ids: string }[] = [];
+  if (entities.length === 0) return []
+  const perPage = entitiesPerPage(width)
+  const pages: { doubles: number[]; page: number; ids: string }[] = []
   for (let pageIndex = 0; pageIndex * perPage < entities.length; pageIndex++) {
-    const chunk = entities.slice(
-      pageIndex * perPage,
-      pageIndex * perPage + perPage,
-    );
-    const doubles = new Array<number>(AE_DOUBLE_COUNT).fill(
-      AE_MISSING_METRIC_SENTINEL,
-    );
+    const chunk = entities.slice(pageIndex * perPage, pageIndex * perPage + perPage)
+    const doubles = new Array<number>(AE_DOUBLE_COUNT).fill(AE_MISSING_METRIC_SENTINEL)
     chunk.forEach((entity, entityIndex) => {
       fieldOrder.forEach((field, fieldIndex) => {
         doubles[entityIndex * width + fieldIndex] =
-          numericField(entity, field) ?? AE_MISSING_METRIC_SENTINEL;
-      });
-    });
-    doubles[AE_DOUBLE_INTERVAL_INDEX] = intervalSeconds;
-    pages.push({ doubles, page: pageIndex, ids: chunk.map(idOf).join(",") });
+          numericField(entity, field) ?? AE_MISSING_METRIC_SENTINEL
+      })
+    })
+    doubles[AE_DOUBLE_INTERVAL_INDEX] = intervalSeconds
+    pages.push({ doubles, page: pageIndex, ids: chunk.map(idOf).join(',') })
   }
-  return pages;
+  return pages
 }
 
 /**
@@ -851,17 +805,15 @@ function packEntityPages<T>(
 function packSingleEntityRow<T>(
   entity: T,
   fieldOrder: readonly (string | null)[],
-  intervalSeconds: number,
+  intervalSeconds: number
 ): number[] {
-  const doubles = new Array<number>(AE_DOUBLE_COUNT).fill(
-    AE_MISSING_METRIC_SENTINEL,
-  );
+  const doubles = new Array<number>(AE_DOUBLE_COUNT).fill(AE_MISSING_METRIC_SENTINEL)
   fieldOrder.forEach((field, i) => {
-    if (field === null) return;
-    doubles[i] = numericField(entity, field) ?? AE_MISSING_METRIC_SENTINEL;
-  });
-  doubles[AE_DOUBLE_INTERVAL_INDEX] = intervalSeconds;
-  return doubles;
+    if (field === null) return
+    doubles[i] = numericField(entity, field) ?? AE_MISSING_METRIC_SENTINEL
+  })
+  doubles[AE_DOUBLE_INTERVAL_INDEX] = intervalSeconds
+  return doubles
 }
 
 /**
@@ -870,11 +822,8 @@ function packSingleEntityRow<T>(
  * exactly like {@link packDiagnosticsDoubles}; reserved spare slots stay
  * sentinel the same way {@link packSingleEntityRow}'s do.
  */
-function packRouterDoubles(
-  router: RouterSample,
-  intervalSeconds: number,
-): number[] {
-  return packSingleEntityRow(router, ROUTER_FIELD_ORDER, intervalSeconds);
+function packRouterDoubles(router: RouterSample, intervalSeconds: number): number[] {
+  return packSingleEntityRow(router, ROUTER_FIELD_ORDER, intervalSeconds)
 }
 
 /**
@@ -883,19 +832,13 @@ function packRouterDoubles(
  * double8..double19, filling the page exactly. The family is host-scoped and
  * carries no entity identity, so blob10 stays empty.
  */
-function packDiagnosticsDoubles(
-  diagnostics: DiagnosticsSample,
-  intervalSeconds: number,
-): number[] {
-  const doubles = new Array<number>(AE_DOUBLE_COUNT).fill(
-    AE_MISSING_METRIC_SENTINEL,
-  );
+function packDiagnosticsDoubles(diagnostics: DiagnosticsSample, intervalSeconds: number): number[] {
+  const doubles = new Array<number>(AE_DOUBLE_COUNT).fill(AE_MISSING_METRIC_SENTINEL)
   DIAGNOSTICS_FIELD_ORDER.forEach((ref, i) => {
-    doubles[i] = numericField(diagnostics[ref.group], ref.field) ??
-      AE_MISSING_METRIC_SENTINEL;
-  });
-  doubles[AE_DOUBLE_INTERVAL_INDEX] = intervalSeconds;
-  return doubles;
+    doubles[i] = numericField(diagnostics[ref.group], ref.field) ?? AE_MISSING_METRIC_SENTINEL
+  })
+  doubles[AE_DOUBLE_INTERVAL_INDEX] = intervalSeconds
+  return doubles
 }
 
 /**
@@ -905,19 +848,14 @@ function packDiagnosticsDoubles(
  * its own nested sub-object; a flat ref reads the sample itself. Host-wide
  * with no entity identity, so blob10 stays empty.
  */
-function packStorageDoubles(
-  storage: StorageSample,
-  intervalSeconds: number,
-): number[] {
-  const doubles = new Array<number>(AE_DOUBLE_COUNT).fill(
-    AE_MISSING_METRIC_SENTINEL,
-  );
+function packStorageDoubles(storage: StorageSample, intervalSeconds: number): number[] {
+  const doubles = new Array<number>(AE_DOUBLE_COUNT).fill(AE_MISSING_METRIC_SENTINEL)
   STORAGE_FIELD_ORDER.forEach((ref, i) => {
-    const source = ref.group === null ? storage : storage[ref.group];
-    doubles[i] = numericField(source, ref.field) ?? AE_MISSING_METRIC_SENTINEL;
-  });
-  doubles[AE_DOUBLE_INTERVAL_INDEX] = intervalSeconds;
-  return doubles;
+    const source = ref.group === null ? storage : storage[ref.group]
+    doubles[i] = numericField(source, ref.field) ?? AE_MISSING_METRIC_SENTINEL
+  })
+  doubles[AE_DOUBLE_INTERVAL_INDEX] = intervalSeconds
+  return doubles
 }
 
 /**
@@ -926,15 +864,8 @@ function packStorageDoubles(
  * the way {@link packRouterDoubles} does; its 9 reserved spares stay sentinel
  * by the same rule.
  */
-function packDockerUsageDoubles(
-  dockerUsage: DockerUsageSample,
-  intervalSeconds: number,
-): number[] {
-  return packSingleEntityRow(
-    dockerUsage,
-    DOCKER_USAGE_FIELD_ORDER,
-    intervalSeconds,
-  );
+function packDockerUsageDoubles(dockerUsage: DockerUsageSample, intervalSeconds: number): number[] {
+  return packSingleEntityRow(dockerUsage, DOCKER_USAGE_FIELD_ORDER, intervalSeconds)
 }
 
 // ---------------------------------------------------------------------------
@@ -942,11 +873,11 @@ function packDockerUsageDoubles(
 // ---------------------------------------------------------------------------
 
 function capabilityPlanGenerationBlob(
-  sample: MetricsSample & { capabilityPlanGeneration?: number },
+  sample: MetricsSample & { capabilityPlanGeneration?: number }
 ): string {
   return sample.capabilityPlanGeneration === undefined
-    ? ""
-    : String(sample.capabilityPlanGeneration);
+    ? ''
+    : String(sample.capabilityPlanGeneration)
 }
 
 /** Shared envelope for a `"metrics"`-kind row. `sourceOrIdentity` is blob10 — see its index doc comment. */
@@ -954,95 +885,83 @@ export function buildMetricsBlobs(
   sample: MetricsSample & { capabilityPlanGeneration?: number },
   family: HostedFamily,
   page: number,
-  sourceOrIdentity: string,
+  sourceOrIdentity: string
 ): string[] {
-  const blobs: string[] = new Array(AE_BLOB_COUNT).fill("");
-  blobs[AE_BLOB_KIND_INDEX] = AE_KIND_METRICS;
-  blobs[AE_BLOB_FAMILY_INDEX] = family;
-  blobs[AE_BLOB_SCHEMA_VERSION_INDEX] = String(sample.metadata.version);
-  blobs[AE_BLOB_SAMPLED_AT_INDEX] = sample.metadata.sampledAt;
-  blobs[AE_BLOB_SEQUENCE_INDEX] = String(sample.metadata.sequence);
-  blobs[AE_BLOB_TOPOLOGY_GENERATION_INDEX] = String(
-    sample.metadata.topologyGeneration,
-  );
-  blobs[AE_BLOB_CAPABILITY_PLAN_GENERATION_INDEX] =
-    capabilityPlanGenerationBlob(sample);
-  blobs[AE_BLOB_PAGE_INDEX] = String(page);
-  blobs[AE_BLOB_SOURCE_OR_IDENTITY_INDEX] = sourceOrIdentity;
-  return blobs;
+  const blobs: string[] = new Array(AE_BLOB_COUNT).fill('')
+  blobs[AE_BLOB_KIND_INDEX] = AE_KIND_METRICS
+  blobs[AE_BLOB_FAMILY_INDEX] = family
+  blobs[AE_BLOB_SCHEMA_VERSION_INDEX] = String(sample.metadata.version)
+  blobs[AE_BLOB_SAMPLED_AT_INDEX] = sample.metadata.sampledAt
+  blobs[AE_BLOB_SEQUENCE_INDEX] = String(sample.metadata.sequence)
+  blobs[AE_BLOB_TOPOLOGY_GENERATION_INDEX] = String(sample.metadata.topologyGeneration)
+  blobs[AE_BLOB_CAPABILITY_PLAN_GENERATION_INDEX] = capabilityPlanGenerationBlob(sample)
+  blobs[AE_BLOB_PAGE_INDEX] = String(page)
+  blobs[AE_BLOB_SOURCE_OR_IDENTITY_INDEX] = sourceOrIdentity
+  return blobs
 }
 
 /** Envelope for a `"event"`-kind row — one per `sample.events` entry. */
 export function buildEventBlobs(
   sample: MetricsSample & { capabilityPlanGeneration?: number },
-  event: MetricEvent,
+  event: MetricEvent
 ): string[] {
-  const blobs: string[] = new Array(AE_BLOB_COUNT).fill("");
-  blobs[AE_BLOB_KIND_INDEX] = AE_KIND_EVENT;
-  blobs[AE_BLOB_FAMILY_INDEX] = event.kind;
-  blobs[AE_BLOB_SCHEMA_VERSION_INDEX] = String(sample.metadata.version);
-  blobs[AE_BLOB_SAMPLED_AT_INDEX] = event.at;
-  blobs[AE_BLOB_SEQUENCE_INDEX] = String(sample.metadata.sequence);
-  blobs[AE_BLOB_TOPOLOGY_GENERATION_INDEX] = String(
-    sample.metadata.topologyGeneration,
-  );
-  blobs[AE_BLOB_CAPABILITY_PLAN_GENERATION_INDEX] =
-    capabilityPlanGenerationBlob(sample);
-  blobs[AE_BLOB_PAGE_INDEX] = "0";
-  blobs[AE_BLOB_SOURCE_OR_IDENTITY_INDEX] = event.source ?? "";
-  blobs[AE_BLOB_EVENT_ENTITY_ID_INDEX] = event.entityId ?? "";
-  blobs[AE_BLOB_EVENT_PAYLOAD_INDEX] = JSON.stringify(event.payload ?? {});
-  blobs[AE_BLOB_EVENT_ID_INDEX] = event.eventId;
-  blobs[AE_BLOB_STATUS_OR_EVENT_REASON_INDEX] = event.severity;
-  return blobs;
+  const blobs: string[] = new Array(AE_BLOB_COUNT).fill('')
+  blobs[AE_BLOB_KIND_INDEX] = AE_KIND_EVENT
+  blobs[AE_BLOB_FAMILY_INDEX] = event.kind
+  blobs[AE_BLOB_SCHEMA_VERSION_INDEX] = String(sample.metadata.version)
+  blobs[AE_BLOB_SAMPLED_AT_INDEX] = event.at
+  blobs[AE_BLOB_SEQUENCE_INDEX] = String(sample.metadata.sequence)
+  blobs[AE_BLOB_TOPOLOGY_GENERATION_INDEX] = String(sample.metadata.topologyGeneration)
+  blobs[AE_BLOB_CAPABILITY_PLAN_GENERATION_INDEX] = capabilityPlanGenerationBlob(sample)
+  blobs[AE_BLOB_PAGE_INDEX] = '0'
+  blobs[AE_BLOB_SOURCE_OR_IDENTITY_INDEX] = event.source ?? ''
+  blobs[AE_BLOB_EVENT_ENTITY_ID_INDEX] = event.entityId ?? ''
+  blobs[AE_BLOB_EVENT_PAYLOAD_INDEX] = JSON.stringify(event.payload ?? {})
+  blobs[AE_BLOB_EVENT_ID_INDEX] = event.eventId
+  blobs[AE_BLOB_STATUS_OR_EVENT_REASON_INDEX] = event.severity
+  return blobs
 }
 
 /** Envelope for a `"status"`-kind row — connection-status transitions. */
 export function buildStatusBlobs(event: ServerStatusEvent): string[] {
-  const blobs: string[] = new Array(AE_BLOB_COUNT).fill("");
-  blobs[AE_BLOB_KIND_INDEX] = AE_KIND_STATUS;
-  blobs[AE_BLOB_SCHEMA_VERSION_INDEX] = String(METRICS_SCHEMA_VERSION);
-  blobs[AE_BLOB_STATUS_OR_EVENT_REASON_INDEX] = event.reason;
-  return blobs;
+  const blobs: string[] = new Array(AE_BLOB_COUNT).fill('')
+  blobs[AE_BLOB_KIND_INDEX] = AE_KIND_STATUS
+  blobs[AE_BLOB_SCHEMA_VERSION_INDEX] = String(METRICS_SCHEMA_VERSION)
+  blobs[AE_BLOB_STATUS_OR_EVENT_REASON_INDEX] = event.reason
+  return blobs
 }
 
 /** Build the AE v5 data point for a connection-status transition. */
-export function buildStatusDataPoint(
-  event: ServerStatusEvent,
-): AnalyticsEngineDataPointLike {
-  const doubles = new Array<number>(AE_DOUBLE_COUNT).fill(
-    AE_MISSING_METRIC_SENTINEL,
-  );
-  doubles[AE_DOUBLE_STATUS_CONNECTED_INDEX] = event.connected ? 1 : 0;
+export function buildStatusDataPoint(event: ServerStatusEvent): AnalyticsEngineDataPointLike {
+  const doubles = new Array<number>(AE_DOUBLE_COUNT).fill(AE_MISSING_METRIC_SENTINEL)
+  doubles[AE_DOUBLE_STATUS_CONNECTED_INDEX] = event.connected ? 1 : 0
 
   const point: AnalyticsEngineDataPointLike = {
     indexes: [event.serverId],
     doubles,
     blobs: buildStatusBlobs(event),
-  };
-  assertAnalyticsEngineDataPointShape(point);
-  return point;
+  }
+  assertAnalyticsEngineDataPointShape(point)
+  return point
 }
 
 function buildEventDataPoint(
   sample: AuthenticatedMetricsSample,
-  event: MetricEvent,
+  event: MetricEvent
 ): AnalyticsEngineDataPointLike {
-  const doubles = new Array<number>(AE_DOUBLE_COUNT).fill(
-    AE_MISSING_METRIC_SENTINEL,
-  );
+  const doubles = new Array<number>(AE_DOUBLE_COUNT).fill(AE_MISSING_METRIC_SENTINEL)
   // Event rows carry the interval weight like every other `"metrics"`-shaped
   // row. v4 left this slot at the sentinel, contradicting its own documented
   // invariant; the row-count test asserted the invariant but no fixture
   // carried an event, so it never fired.
-  doubles[AE_DOUBLE_INTERVAL_INDEX] = sample.metadata.intervalSeconds;
+  doubles[AE_DOUBLE_INTERVAL_INDEX] = sample.metadata.intervalSeconds
   const point: AnalyticsEngineDataPointLike = {
     indexes: [aeIndexForFamily(sample.serverId, AE_EVENT_INDEX_SUFFIX)],
     doubles,
     blobs: buildEventBlobs(sample, event),
-  };
-  assertAnalyticsEngineDataPointShape(point);
-  return point;
+  }
+  assertAnalyticsEngineDataPointShape(point)
+  return point
 }
 
 /**
@@ -1072,117 +991,95 @@ function buildEventDataPoint(
  */
 export function buildMetricsDataPoints(
   sample: AuthenticatedMetricsSample,
-  slotMapping?: SlotMapping,
+  slotMapping?: SlotMapping
 ): AnalyticsEngineDataPointLike[] {
-  const points: AnalyticsEngineDataPointLike[] = [];
-  const interval = sample.metadata.intervalSeconds;
+  const points: AnalyticsEngineDataPointLike[] = []
+  const interval = sample.metadata.intervalSeconds
 
   const pushMetricsPoint = (
     family: HostedFamily,
     page: number,
     sourceOrIdentity: string,
-    doubles: number[],
+    doubles: number[]
   ): void => {
     const point: AnalyticsEngineDataPointLike = {
       indexes: [aeIndexForFamily(sample.serverId, family)],
       doubles,
       blobs: buildMetricsBlobs(sample, family, page, sourceOrIdentity),
-    };
-    assertAnalyticsEngineDataPointShape(point);
-    points.push(point);
-  };
-
-  const { nic0, nic1, paged: pagedNetworks } = resolveNetworkSlots(
-    sample.networks,
-    slotMapping,
-  );
-
-  pushMetricsPoint(AE_FAMILY_HOST_SYSTEM, 0, "", packHostSystemDoubles(sample));
-  pushMetricsPoint(
-    AE_FAMILY_HOST_IO,
-    0,
-    "",
-    packHostIoDoubles(sample, nic0, nic1),
-  );
-
-  const orderedGpus = orderByPageOrder(
-    sample.gpus,
-    (gpu) => gpu.gpuId,
-    slotMapping?.gpuPageOrder,
-  );
-  for (
-    const { doubles, page, ids } of packEntityPages(
-      orderedGpus,
-      GPU_FIELD_ORDER,
-      GPU_FIELD_ORDER.length,
-      interval,
-      (gpu) => gpu.gpuId,
-    )
-  ) {
-    pushMetricsPoint(AE_FAMILY_GPU, page, ids, doubles);
+    }
+    assertAnalyticsEngineDataPointShape(point)
+    points.push(point)
   }
 
-  for (
-    const { doubles, page, ids } of packEntityPages(
-      pagedNetworks,
-      NETWORK_FIELD_ORDER,
-      NETWORK_FIELD_ORDER.length,
-      interval,
-      (device) => device.deviceId,
-    )
-  ) {
-    pushMetricsPoint(AE_FAMILY_NETWORK, page, ids, doubles);
+  const { nic0, nic1, paged: pagedNetworks } = resolveNetworkSlots(sample.networks, slotMapping)
+
+  pushMetricsPoint(AE_FAMILY_HOST_SYSTEM, 0, '', packHostSystemDoubles(sample))
+  pushMetricsPoint(AE_FAMILY_HOST_IO, 0, '', packHostIoDoubles(sample, nic0, nic1))
+
+  const orderedGpus = orderByPageOrder(sample.gpus, (gpu) => gpu.gpuId, slotMapping?.gpuPageOrder)
+  for (const { doubles, page, ids } of packEntityPages(
+    orderedGpus,
+    GPU_FIELD_ORDER,
+    GPU_FIELD_ORDER.length,
+    interval,
+    (gpu) => gpu.gpuId
+  )) {
+    pushMetricsPoint(AE_FAMILY_GPU, page, ids, doubles)
+  }
+
+  for (const { doubles, page, ids } of packEntityPages(
+    pagedNetworks,
+    NETWORK_FIELD_ORDER,
+    NETWORK_FIELD_ORDER.length,
+    interval,
+    (device) => device.deviceId
+  )) {
+    pushMetricsPoint(AE_FAMILY_NETWORK, page, ids, doubles)
   }
 
   const orderedFilesystems = orderByPageOrder(
     sample.filesystems,
     (fs) => fs.filesystemId,
-    slotMapping?.filesystemPageOrder,
-  );
-  for (
-    const { doubles, page, ids } of packEntityPages(
-      orderedFilesystems,
-      FILESYSTEM_FIELD_ORDER,
-      FILESYSTEM_FIELD_ORDER.length,
-      interval,
-      (fs) => fs.filesystemId,
-    )
-  ) {
-    pushMetricsPoint(AE_FAMILY_FILESYSTEM, page, ids, doubles);
+    slotMapping?.filesystemPageOrder
+  )
+  for (const { doubles, page, ids } of packEntityPages(
+    orderedFilesystems,
+    FILESYSTEM_FIELD_ORDER,
+    FILESYSTEM_FIELD_ORDER.length,
+    interval,
+    (fs) => fs.filesystemId
+  )) {
+    pushMetricsPoint(AE_FAMILY_FILESYSTEM, page, ids, doubles)
   }
 
   const orderedBlockDevices = orderByPageOrder(
     sample.blockDevices,
     (device) => device.deviceId,
-    slotMapping?.blockPageOrder,
-  );
-  for (
-    const { doubles, page, ids } of packEntityPages(
-      orderedBlockDevices,
-      BLOCK_FIELD_ORDER,
-      BLOCK_FIELD_ORDER.length,
-      interval,
-      (device) => device.deviceId,
-    )
-  ) {
-    pushMetricsPoint(AE_FAMILY_BLOCK, page, ids, doubles);
+    slotMapping?.blockPageOrder
+  )
+  for (const { doubles, page, ids } of packEntityPages(
+    orderedBlockDevices,
+    BLOCK_FIELD_ORDER,
+    BLOCK_FIELD_ORDER.length,
+    interval,
+    (device) => device.deviceId
+  )) {
+    pushMetricsPoint(AE_FAMILY_BLOCK, page, ids, doubles)
   }
 
   const orderedHardwareSignals = orderByPageOrder(
     sample.hardwareSignals,
     (signal) => signal.signalId,
-    slotMapping?.hardwareSignalPageOrder,
-  );
-  for (
-    const { doubles, page, ids } of packEntityPages(
-      orderedHardwareSignals,
-      HARDWARE_SIGNAL_FIELD_ORDER,
-      HARDWARE_SIGNAL_FIELD_ORDER.length,
-      interval,
-      (signal) => signal.signalId,
-    )
-  ) {
-    pushMetricsPoint(AE_FAMILY_HARDWARE_PHYSICAL, page, ids, doubles);
+    slotMapping?.hardwareSignalPageOrder
+  )
+  for (const { doubles, page, ids } of packEntityPages(
+    orderedHardwareSignals,
+    HARDWARE_SIGNAL_FIELD_ORDER,
+    HARDWARE_SIGNAL_FIELD_ORDER.length,
+    interval,
+    (signal) => signal.signalId
+  )) {
+    pushMetricsPoint(AE_FAMILY_HARDWARE_PHYSICAL, page, ids, doubles)
   }
 
   for (const ingress of sample.ingressSources) {
@@ -1190,8 +1087,8 @@ export function buildMetricsDataPoints(
       AE_FAMILY_MANAGED_INGRESS,
       0,
       ingress.sourceId,
-      packSingleEntityRow(ingress, INGRESS_FIELD_ORDER, interval),
-    );
+      packSingleEntityRow(ingress, INGRESS_FIELD_ORDER, interval)
+    )
   }
 
   for (const proxy of sample.databaseProxies) {
@@ -1199,51 +1096,41 @@ export function buildMetricsDataPoints(
       AE_FAMILY_MANAGED_DATABASE_PROXY,
       0,
       proxy.sourceId,
-      packSingleEntityRow(proxy, DATABASE_PROXY_FIELD_ORDER, interval),
-    );
+      packSingleEntityRow(proxy, DATABASE_PROXY_FIELD_ORDER, interval)
+    )
   }
 
   if (sample.router) {
-    pushMetricsPoint(
-      AE_FAMILY_MANAGED_ROUTER,
-      0,
-      "",
-      packRouterDoubles(sample.router, interval),
-    );
+    pushMetricsPoint(AE_FAMILY_MANAGED_ROUTER, 0, '', packRouterDoubles(sample.router, interval))
   }
 
   if (sample.storage) {
-    pushMetricsPoint(
-      AE_FAMILY_MANAGED_STORAGE,
-      0,
-      "",
-      packStorageDoubles(sample.storage, interval),
-    );
+    pushMetricsPoint(AE_FAMILY_MANAGED_STORAGE, 0, '', packStorageDoubles(sample.storage, interval))
   }
 
   if (sample.dockerUsage) {
     pushMetricsPoint(
       AE_FAMILY_MANAGED_DOCKER,
       0,
-      "",
-      packDockerUsageDoubles(sample.dockerUsage, interval),
-    );
+      '',
+      packDockerUsageDoubles(sample.dockerUsage, interval)
+    )
   }
 
   if (sample.diagnostics) {
     pushMetricsPoint(
       AE_FAMILY_HOST_DIAGNOSTICS,
       0,
-      "",
-      packDiagnosticsDoubles(sample.diagnostics, interval),
-    );
+      '',
+      packDiagnosticsDoubles(sample.diagnostics, interval)
+    )
   }
 
   for (const event of sample.events) {
-    points.push(buildEventDataPoint(sample, event));
+    points.push(buildEventDataPoint(sample, event))
   }
 
-  return capToInvocationLimit(points, sample.serverId);
+  return capToInvocationLimit(points, sample.serverId)
 }
 
 /**
@@ -1253,7 +1140,7 @@ export function buildMetricsDataPoints(
  *
  * https://developers.cloudflare.com/analytics/analytics-engine/limits/
  */
-export const AE_MAX_DATA_POINTS_PER_INVOCATION = 250;
+export const AE_MAX_DATA_POINTS_PER_INVOCATION = 250
 
 /**
  * Families kept first when a sample would otherwise breach the invocation
@@ -1267,16 +1154,16 @@ export const AE_MAX_DATA_POINTS_PER_INVOCATION = 250;
  * dropped entity row is one missing point in a continuous series.
  */
 function invocationPriority(point: AnalyticsEngineDataPointLike): number {
-  const kind = point.blobs?.[AE_BLOB_KIND_INDEX];
+  const kind = point.blobs?.[AE_BLOB_KIND_INDEX]
   if (kind === AE_KIND_METRICS) {
-    const family = point.blobs?.[AE_BLOB_FAMILY_INDEX];
+    const family = point.blobs?.[AE_BLOB_FAMILY_INDEX]
     if (family === AE_FAMILY_HOST_SYSTEM || family === AE_FAMILY_HOST_IO) {
-      return 0;
+      return 0
     }
-    return 2;
+    return 2
   }
-  if (kind === AE_KIND_EVENT) return 1;
-  return 2;
+  if (kind === AE_KIND_EVENT) return 1
+  return 2
 }
 
 /**
@@ -1301,9 +1188,9 @@ function invocationPriority(point: AnalyticsEngineDataPointLike): number {
  */
 function capToInvocationLimit(
   points: AnalyticsEngineDataPointLike[],
-  serverId: string,
+  serverId: string
 ): AnalyticsEngineDataPointLike[] {
-  if (points.length <= AE_MAX_DATA_POINTS_PER_INVOCATION) return points;
+  if (points.length <= AE_MAX_DATA_POINTS_PER_INVOCATION) return points
   const ordered = points
     .map((point, index) => ({
       point,
@@ -1313,13 +1200,13 @@ function capToInvocationLimit(
     .sort((a, b) => a.priority - b.priority || a.index - b.index)
     .slice(0, AE_MAX_DATA_POINTS_PER_INVOCATION)
     .sort((a, b) => a.index - b.index)
-    .map((entry) => entry.point);
+    .map((entry) => entry.point)
   console.warn(
     `metrics: sample for ${serverId} produced ${points.length} Analytics Engine data points, ` +
       `over the ${AE_MAX_DATA_POINTS_PER_INVOCATION}-per-invocation limit; ` +
-      `dropped ${points.length - ordered.length} lowest-priority rows`,
-  );
-  return ordered;
+      `dropped ${points.length - ordered.length} lowest-priority rows`
+  )
+  return ordered
 }
 
 // ---------------------------------------------------------------------------
@@ -1338,38 +1225,30 @@ function capToInvocationLimit(
  * public `HOST_METRICS_METRIC_DESCRIPTORS` map plus the physical
  * `AE_METRIC_DOUBLE_SLOT_COUNT` page-size constant instead.
  */
-function descriptorsForScope(
-  scope: MetricEntityScope,
-): HostMetricsMetricDescriptor[] {
+function descriptorsForScope(scope: MetricEntityScope): HostMetricsMetricDescriptor[] {
   return Object.values(HOST_METRICS_METRIC_DESCRIPTORS).filter(
-    (descriptor) => descriptor.entityScope === scope,
-  );
+    (descriptor) => descriptor.entityScope === scope
+  )
 }
 
 function assertFieldOrderMatchesDescriptors(
   label: string,
   scope: MetricEntityScope,
-  fields: readonly string[],
+  fields: readonly string[]
 ): void {
-  const expected = new Set(
-    descriptorsForScope(scope).map((descriptor) => descriptor.fieldName),
-  );
-  const actual = new Set(fields);
+  const expected = new Set(descriptorsForScope(scope).map((descriptor) => descriptor.fieldName))
+  const actual = new Set(fields)
   if (actual.size !== fields.length) {
-    throw new TypeError(`${label} field order has duplicate entries`);
+    throw new TypeError(`${label} field order has duplicate entries`)
   }
   for (const field of fields) {
     if (!expected.has(field)) {
-      throw new TypeError(
-        `${label} field order lists unknown field: ${scope}.${field}`,
-      );
+      throw new TypeError(`${label} field order lists unknown field: ${scope}.${field}`)
     }
   }
   for (const field of expected) {
     if (!actual.has(field)) {
-      throw new TypeError(
-        `${label} field order is missing descriptor field: ${scope}.${field}`,
-      );
+      throw new TypeError(`${label} field order is missing descriptor field: ${scope}.${field}`)
     }
   }
 }
@@ -1377,181 +1256,124 @@ function assertFieldOrderMatchesDescriptors(
 function assertWithinPageBudget(label: string, width: number): void {
   if (width > AE_METRIC_DOUBLE_SLOT_COUNT) {
     throw new TypeError(
-      `${label} has ${width} fields, exceeding the ${AE_METRIC_DOUBLE_SLOT_COUNT}-slot AE page budget`,
-    );
+      `${label} has ${width} fields, exceeding the ${AE_METRIC_DOUBLE_SLOT_COUNT}-slot AE page budget`
+    )
   }
 }
 
 function assertFieldOrderInvariants(): void {
   if (AE_DOUBLE_INTERVAL_INDEX !== 19) {
-    throw new TypeError("AE_DOUBLE_INTERVAL_INDEX must be 19 (double20)");
+    throw new TypeError('AE_DOUBLE_INTERVAL_INDEX must be 19 (double20)')
   }
 
-  assertFieldOrderMatchesDescriptors(
-    "host.cpu",
-    "host.cpu",
-    HOST_CPU_FIELD_ORDER,
-  );
-  assertFieldOrderMatchesDescriptors(
-    "host.memory",
-    "host.memory",
-    HOST_MEMORY_FIELD_ORDER,
-  );
+  assertFieldOrderMatchesDescriptors('host.cpu', 'host.cpu', HOST_CPU_FIELD_ORDER)
+  assertFieldOrderMatchesDescriptors('host.memory', 'host.memory', HOST_MEMORY_FIELD_ORDER)
   if (HOST_SYSTEM_FIELD_ORDER.length !== AE_METRIC_DOUBLE_SLOT_COUNT) {
     throw new TypeError(
-      `host.system field order has ${HOST_SYSTEM_FIELD_ORDER.length} fields, expected exactly ${AE_METRIC_DOUBLE_SLOT_COUNT}`,
-    );
+      `host.system field order has ${HOST_SYSTEM_FIELD_ORDER.length} fields, expected exactly ${AE_METRIC_DOUBLE_SLOT_COUNT}`
+    )
   }
 
-  assertFieldOrderMatchesDescriptors(
-    "host.kernel",
-    "host.kernel",
-    HOST_KERNEL_FIELD_ORDER,
-  );
-  assertFieldOrderMatchesDescriptors(
-    "host.storage",
-    "host.storage",
-    HOST_STORAGE_FIELD_ORDER,
-  );
-  assertFieldOrderMatchesDescriptors(
-    "host.network",
-    "host.network",
-    HOST_NETWORK_FIELD_ORDER,
-  );
+  assertFieldOrderMatchesDescriptors('host.kernel', 'host.kernel', HOST_KERNEL_FIELD_ORDER)
+  assertFieldOrderMatchesDescriptors('host.storage', 'host.storage', HOST_STORAGE_FIELD_ORDER)
+  assertFieldOrderMatchesDescriptors('host.network', 'host.network', HOST_NETWORK_FIELD_ORDER)
   // `HOST_IO_FIELD_ORDER` carries reserved spare slots between groups, so its
   // length is a slot count, not a field count — the per-scope checks above are
   // what pin the fields themselves.
-  const hostIoTotalSlots = HOST_IO_FIELD_ORDER.length +
-    HOST_IO_NIC_EMBED_SLOT_COUNT;
+  const hostIoTotalSlots = HOST_IO_FIELD_ORDER.length + HOST_IO_NIC_EMBED_SLOT_COUNT
   if (hostIoTotalSlots > AE_DOUBLE_INTERVAL_INDEX) {
     throw new TypeError(
-      `host.io consumes ${hostIoTotalSlots} slots, colliding with the reserved interval slot (double20)`,
-    );
+      `host.io consumes ${hostIoTotalSlots} slots, colliding with the reserved interval slot (double20)`
+    )
   }
 
-  assertFieldOrderMatchesDescriptors("gpu", "gpu", GPU_FIELD_ORDER);
-  assertFieldOrderMatchesDescriptors("network", "network", NETWORK_FIELD_ORDER);
+  assertFieldOrderMatchesDescriptors('gpu', 'gpu', GPU_FIELD_ORDER)
+  assertFieldOrderMatchesDescriptors('network', 'network', NETWORK_FIELD_ORDER)
+  assertFieldOrderMatchesDescriptors('filesystem', 'filesystem', FILESYSTEM_FIELD_ORDER)
+  assertFieldOrderMatchesDescriptors('block', 'block', BLOCK_FIELD_ORDER)
   assertFieldOrderMatchesDescriptors(
-    "filesystem",
-    "filesystem",
-    FILESYSTEM_FIELD_ORDER,
-  );
-  assertFieldOrderMatchesDescriptors("block", "block", BLOCK_FIELD_ORDER);
-  assertFieldOrderMatchesDescriptors(
-    "hardwareSignal",
-    "hardwareSignal",
-    HARDWARE_SIGNAL_FIELD_ORDER,
-  );
-  assertWithinPageBudget("gpu per-entity width", GPU_FIELD_ORDER.length);
-  assertWithinPageBudget(
-    "network per-entity width",
-    NETWORK_FIELD_ORDER.length,
-  );
-  assertWithinPageBudget(
-    "filesystem per-entity width",
-    FILESYSTEM_FIELD_ORDER.length,
-  );
-  assertWithinPageBudget("block per-entity width", BLOCK_FIELD_ORDER.length);
+    'hardwareSignal',
+    'hardwareSignal',
+    HARDWARE_SIGNAL_FIELD_ORDER
+  )
+  assertWithinPageBudget('gpu per-entity width', GPU_FIELD_ORDER.length)
+  assertWithinPageBudget('network per-entity width', NETWORK_FIELD_ORDER.length)
+  assertWithinPageBudget('filesystem per-entity width', FILESYSTEM_FIELD_ORDER.length)
+  assertWithinPageBudget('block per-entity width', BLOCK_FIELD_ORDER.length)
 
   // The three single-row families carry reserved spare slots, so their array
   // length is a slot count and only the non-spare entries are compared
   // against the descriptor set.
+  assertFieldOrderMatchesDescriptors('ingress', 'ingress', declaredFields(INGRESS_FIELD_ORDER))
   assertFieldOrderMatchesDescriptors(
-    "ingress",
-    "ingress",
-    declaredFields(INGRESS_FIELD_ORDER),
-  );
+    'databaseProxy',
+    'databaseProxy',
+    declaredFields(DATABASE_PROXY_FIELD_ORDER)
+  )
+  assertFieldOrderMatchesDescriptors('router', 'router', declaredFields(ROUTER_FIELD_ORDER))
+  assertFieldOrderMatchesDescriptors('storage', 'storage', STORAGE_SLOT_FIELD_NAMES)
   assertFieldOrderMatchesDescriptors(
-    "databaseProxy",
-    "databaseProxy",
-    declaredFields(DATABASE_PROXY_FIELD_ORDER),
-  );
-  assertFieldOrderMatchesDescriptors(
-    "router",
-    "router",
-    declaredFields(ROUTER_FIELD_ORDER),
-  );
-  assertFieldOrderMatchesDescriptors(
-    "storage",
-    "storage",
-    STORAGE_SLOT_FIELD_NAMES,
-  );
-  assertFieldOrderMatchesDescriptors(
-    "dockerUsage",
-    "dockerUsage",
-    declaredFields(DOCKER_USAGE_FIELD_ORDER),
-  );
-  assertWithinPageBudget("managed.ingress", INGRESS_FIELD_ORDER.length);
-  assertWithinPageBudget(
-    "managed.database_proxy",
-    DATABASE_PROXY_FIELD_ORDER.length,
-  );
-  assertWithinPageBudget("managed.router", ROUTER_FIELD_ORDER.length);
+    'dockerUsage',
+    'dockerUsage',
+    declaredFields(DOCKER_USAGE_FIELD_ORDER)
+  )
+  assertWithinPageBudget('managed.ingress', INGRESS_FIELD_ORDER.length)
+  assertWithinPageBudget('managed.database_proxy', DATABASE_PROXY_FIELD_ORDER.length)
+  assertWithinPageBudget('managed.router', ROUTER_FIELD_ORDER.length)
   // `managed.router` is a fixed-shape single row whose spares are declared
   // up front, so its slot array must span the page exactly — a field added
   // without consuming a spare fails at import rather than silently landing on
   // the reserved interval slot (same strictness as `host.diagnostics` below).
   if (ROUTER_FIELD_ORDER.length !== AE_METRIC_DOUBLE_SLOT_COUNT) {
     throw new TypeError(
-      `managed.router field order has ${ROUTER_FIELD_ORDER.length} slots, expected exactly ${AE_METRIC_DOUBLE_SLOT_COUNT}`,
-    );
+      `managed.router field order has ${ROUTER_FIELD_ORDER.length} slots, expected exactly ${AE_METRIC_DOUBLE_SLOT_COUNT}`
+    )
   }
 
   // The two v6 host-wide storage families are fixed-shape single rows whose
   // spares (nine on `managed.docker`, none on `managed.storage`) are declared
   // up front, so each slot array must span the page exactly — the same
   // strictness `managed.router` and `host.diagnostics` carry.
-  assertWithinPageBudget("managed.storage", STORAGE_FIELD_ORDER.length);
-  assertWithinPageBudget("managed.docker", DOCKER_USAGE_FIELD_ORDER.length);
+  assertWithinPageBudget('managed.storage', STORAGE_FIELD_ORDER.length)
+  assertWithinPageBudget('managed.docker', DOCKER_USAGE_FIELD_ORDER.length)
   if (STORAGE_FIELD_ORDER.length !== AE_METRIC_DOUBLE_SLOT_COUNT) {
     throw new TypeError(
-      `managed.storage field order has ${STORAGE_FIELD_ORDER.length} slots, expected exactly ${AE_METRIC_DOUBLE_SLOT_COUNT}`,
-    );
+      `managed.storage field order has ${STORAGE_FIELD_ORDER.length} slots, expected exactly ${AE_METRIC_DOUBLE_SLOT_COUNT}`
+    )
   }
   if (DOCKER_USAGE_FIELD_ORDER.length !== AE_METRIC_DOUBLE_SLOT_COUNT) {
     throw new TypeError(
-      `managed.docker field order has ${DOCKER_USAGE_FIELD_ORDER.length} slots, expected exactly ${AE_METRIC_DOUBLE_SLOT_COUNT}`,
-    );
+      `managed.docker field order has ${DOCKER_USAGE_FIELD_ORDER.length} slots, expected exactly ${AE_METRIC_DOUBLE_SLOT_COUNT}`
+    )
   }
-  if (
-    STORAGE_SLOT_FIELD_NAMES.length !== new Set(STORAGE_SLOT_FIELD_NAMES).size
-  ) {
-    throw new TypeError(
-      "managed.storage field order has duplicate flattened field names",
-    );
+  if (STORAGE_SLOT_FIELD_NAMES.length !== new Set(STORAGE_SLOT_FIELD_NAMES).size) {
+    throw new TypeError('managed.storage field order has duplicate flattened field names')
   }
-  if (
-    DOCKER_USAGE_FIELD_NAMES.length !==
-      declaredFields(DOCKER_USAGE_FIELD_ORDER).length
-  ) {
+  if (DOCKER_USAGE_FIELD_NAMES.length !== declaredFields(DOCKER_USAGE_FIELD_ORDER).length) {
     throw new TypeError(
-      "managed.docker field order does not declare every DockerUsageSample descriptor field",
-    );
+      'managed.docker field order does not declare every DockerUsageSample descriptor field'
+    )
   }
 
-  assertFieldOrderMatchesDescriptors(
-    "diagnostics",
-    "diagnostics",
-    DIAGNOSTICS_FIELD_NAMES,
-  );
+  assertFieldOrderMatchesDescriptors('diagnostics', 'diagnostics', DIAGNOSTICS_FIELD_NAMES)
   // The merged family fills its page exactly (7 CPU + 12 memory). The
   // assertion stays strict (`!==`, not `>`) so a field added on either half
   // without a matching drop elsewhere fails at import rather than silently
   // landing on the reserved interval slot.
   if (DIAGNOSTICS_FIELD_ORDER.length !== AE_METRIC_DOUBLE_SLOT_COUNT) {
     throw new TypeError(
-      `host.diagnostics field order has ${DIAGNOSTICS_FIELD_ORDER.length} fields, expected exactly ${AE_METRIC_DOUBLE_SLOT_COUNT}`,
-    );
+      `host.diagnostics field order has ${DIAGNOSTICS_FIELD_ORDER.length} fields, expected exactly ${AE_METRIC_DOUBLE_SLOT_COUNT}`
+    )
   }
 }
-assertFieldOrderInvariants();
+assertFieldOrderInvariants()
 
 /** Exposed for tests that need to exercise the throw behavior without waiting on module-load side effects. */
 export const _internalFieldMap = {
   assertFieldOrderMatchesDescriptors,
   assertWithinPageBudget,
   entitiesPerPage,
-};
+}
 
 // ---------------------------------------------------------------------------
 // Query-side lookups — the read path (`sql-api.ts`) resolves a requested
@@ -1559,22 +1381,19 @@ export const _internalFieldMap = {
 // field ordering declared above stays this module's only copy.
 // ---------------------------------------------------------------------------
 
-export { entitiesPerPage };
+export { entitiesPerPage }
 
 /** Per-entity-family field order + width, keyed by `HostedFamily`. */
 export const PER_ENTITY_FIELD_ORDER: Record<
-  Extract<
-    HostedFamily,
-    "gpu" | "network" | "filesystem" | "block" | "hardware.physical"
-  >,
+  Extract<HostedFamily, 'gpu' | 'network' | 'filesystem' | 'block' | 'hardware.physical'>,
   readonly string[]
 > = {
   gpu: GPU_FIELD_ORDER,
   network: NETWORK_FIELD_ORDER,
   filesystem: FILESYSTEM_FIELD_ORDER,
   block: BLOCK_FIELD_ORDER,
-  "hardware.physical": HARDWARE_SIGNAL_FIELD_ORDER,
-};
+  'hardware.physical': HARDWARE_SIGNAL_FIELD_ORDER,
+}
 
 /**
  * The only `network`-family fields individually reconstructable from
@@ -1588,9 +1407,9 @@ export const PER_ENTITY_FIELD_ORDER: Record<
  * combined rate.
  */
 export const HOST_IO_EMBEDDED_NIC_FIELDS = [
-  "receiveBytesPerSecond",
-  "transmitBytesPerSecond",
-] as const;
+  'receiveBytesPerSecond',
+  'transmitBytesPerSecond',
+] as const
 
 /**
  * 0-based `host.io` double index for slot-mapped NIC `slot` (`0` =
@@ -1605,11 +1424,11 @@ export const HOST_IO_EMBEDDED_NIC_FIELDS = [
  */
 export function hostIoEmbeddedNicDoubleIndex(
   slot: 0 | 1,
-  field: (typeof HOST_IO_EMBEDDED_NIC_FIELDS)[number],
+  field: (typeof HOST_IO_EMBEDDED_NIC_FIELDS)[number]
 ): number {
-  const embedBase = HOST_IO_FIELD_ORDER.length;
-  const slotBase = embedBase + slot * 3;
-  return field === "receiveBytesPerSecond" ? slotBase : slotBase + 1;
+  const embedBase = HOST_IO_FIELD_ORDER.length
+  const slotBase = embedBase + slot * 3
+  return field === 'receiveBytesPerSecond' ? slotBase : slotBase + 1
 }
 
 /**
@@ -1619,12 +1438,12 @@ export function hostIoEmbeddedNicDoubleIndex(
  * path resolves by `indexOf`, which skips spares for free.
  */
 export const SINGLE_ROW_FIELD_ORDER: Record<
-  Extract<HostedFamily, "managed.ingress" | "managed.database_proxy">,
+  Extract<HostedFamily, 'managed.ingress' | 'managed.database_proxy'>,
   readonly (string | null)[]
 > = {
-  "managed.ingress": INGRESS_FIELD_ORDER,
-  "managed.database_proxy": DATABASE_PROXY_FIELD_ORDER,
-};
+  'managed.ingress': INGRESS_FIELD_ORDER,
+  'managed.database_proxy': DATABASE_PROXY_FIELD_ORDER,
+}
 
 /**
  * Resolve a fixed-shape-family-scoped field to its physical AE double slot:
@@ -1639,37 +1458,37 @@ export const SINGLE_ROW_FIELD_ORDER: Record<
  */
 export function doubleIndexForHostField(
   scope: MetricEntityScope,
-  field: string,
+  field: string
 ): {
   family: Extract<
     HostedFamily,
-    | "host.system"
-    | "host.io"
-    | "host.diagnostics"
-    | "managed.router"
-    | "managed.storage"
-    | "managed.docker"
-  >;
-  doubleIndex: number;
+    | 'host.system'
+    | 'host.io'
+    | 'host.diagnostics'
+    | 'managed.router'
+    | 'managed.storage'
+    | 'managed.docker'
+  >
+  doubleIndex: number
 } {
   const systemIndex = HOST_SYSTEM_FIELD_ORDER.findIndex(
-    (ref) => ref.scope === scope && ref.field === field,
-  );
+    (ref) => ref.scope === scope && ref.field === field
+  )
   if (systemIndex !== -1) {
-    return { family: "host.system", doubleIndex: systemIndex };
+    return { family: 'host.system', doubleIndex: systemIndex }
   }
   // Spare slots are `null` and match nothing, so a hit's array position is
   // already the physical double index.
   const ioIndex = HOST_IO_FIELD_ORDER.findIndex(
-    (ref) => ref?.scope === scope && ref.field === field,
-  );
+    (ref) => ref?.scope === scope && ref.field === field
+  )
   if (ioIndex !== -1) {
-    return { family: "host.io", doubleIndex: ioIndex };
+    return { family: 'host.io', doubleIndex: ioIndex }
   }
-  if (scope === "diagnostics") {
-    const diagnosticsIndex = DIAGNOSTICS_FIELD_NAMES.indexOf(field);
+  if (scope === 'diagnostics') {
+    const diagnosticsIndex = DIAGNOSTICS_FIELD_NAMES.indexOf(field)
     if (diagnosticsIndex !== -1) {
-      return { family: "host.diagnostics", doubleIndex: diagnosticsIndex };
+      return { family: 'host.diagnostics', doubleIndex: diagnosticsIndex }
     }
   }
   // `managed.router` resolves here rather than through
@@ -1677,10 +1496,10 @@ export function doubleIndexForHostField(
   // entity), while the router is host-wide and singleton — the same shape
   // `host.diagnostics` has. Spares are `null` and match nothing, so a hit's
   // array position is already the physical double index.
-  if (scope === "router") {
-    const routerIndex = ROUTER_FIELD_ORDER.indexOf(field);
+  if (scope === 'router') {
+    const routerIndex = ROUTER_FIELD_ORDER.indexOf(field)
     if (routerIndex !== -1) {
-      return { family: "managed.router", doubleIndex: routerIndex };
+      return { family: 'managed.router', doubleIndex: routerIndex }
     }
   }
   // `managed.storage` / `managed.docker` resolve here for the same reason
@@ -1688,21 +1507,19 @@ export function doubleIndexForHostField(
   // Storage's slot names are already flattened (`postgresInstancesRunning`),
   // so its array position is the physical double index directly; docker's
   // spares are `null` and match nothing.
-  if (scope === "storage") {
-    const storageIndex = STORAGE_SLOT_FIELD_NAMES.indexOf(field);
+  if (scope === 'storage') {
+    const storageIndex = STORAGE_SLOT_FIELD_NAMES.indexOf(field)
     if (storageIndex !== -1) {
-      return { family: "managed.storage", doubleIndex: storageIndex };
+      return { family: 'managed.storage', doubleIndex: storageIndex }
     }
   }
-  if (scope === "dockerUsage") {
-    const dockerIndex = DOCKER_USAGE_FIELD_ORDER.indexOf(field);
+  if (scope === 'dockerUsage') {
+    const dockerIndex = DOCKER_USAGE_FIELD_ORDER.indexOf(field)
     if (dockerIndex !== -1) {
-      return { family: "managed.docker", doubleIndex: dockerIndex };
+      return { family: 'managed.docker', doubleIndex: dockerIndex }
     }
   }
-  throw new TypeError(
-    `no AE v6 host double slot for field "${scope}.${field}"`,
-  );
+  throw new TypeError(`no AE v6 host double slot for field "${scope}.${field}"`)
 }
 
 /**
@@ -1711,10 +1528,6 @@ export function doubleIndexForHostField(
  * field order). Callers must check `slotPosition < entitiesPerPage(width)`
  * themselves — this does not re-validate the page budget.
  */
-export function slotDoubleIndex(
-  width: number,
-  slotPosition: number,
-  fieldIndex: number,
-): number {
-  return slotPosition * width + fieldIndex;
+export function slotDoubleIndex(width: number, slotPosition: number, fieldIndex: number): number {
+  return slotPosition * width + fieldIndex
 }
