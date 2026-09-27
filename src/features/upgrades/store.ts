@@ -161,7 +161,14 @@ export type UpgradeStore = {
   anyDaemonBehind(commit: string | null, builtAt?: string | null): Promise<boolean>
   /** Facts for an already-bounded id list. Does not read the rest of the fleet. */
   factsFor(ids: readonly string[], colocatedServerId: string | null): Promise<FleetServerFact[]>
-  saveStep(step: UpgradeStepRow): Promise<void>
+  /**
+   * Write a step. When `expectedStatus` is given, the write only applies if
+   * the row's status in the store still matches it (returns `false`
+   * otherwise) — guards a tick's read-decide-write against a concurrent
+   * hello/progress report that already moved the row past the state the tick
+   * read.
+   */
+  saveStep(step: UpgradeStepRow, expectedStatus?: UpgradeStepStatus): Promise<boolean>
   history(offset: number, limit: number): Promise<{ runs: UpgradeRunRow[]; total: number }>
   fleetFacts(colocatedServerId: string | null): Promise<FleetServerFact[]>
   /** One SQL page. Does not wake daemon cells. */
@@ -408,9 +415,12 @@ export function createMemoryUpgradeStore(input?: {
           .map((fact) => markColocated(fact, colocatedServerId))
       )
     },
-    saveStep: (step) => {
+    saveStep: (step, expectedStatus) => {
+      if (expectedStatus !== undefined && steps.get(step.id)?.status !== expectedStatus) {
+        return Promise.resolve(false)
+      }
       steps.set(step.id, structuredClone(step))
-      return Promise.resolve()
+      return Promise.resolve(true)
     },
     history: (offset, limit) => {
       const terminal = [...runs.values()]
@@ -556,8 +566,8 @@ export function createDrizzleUpgradeStore(
     writeTickCursor: (runId, cursor) => writeTickCursor(db, runId, cursor),
     anyDaemonBehind: (commit, builtAt) => anyDaemonBehind(db, commit, builtAt),
     factsFor: (ids, colocatedServerId) => loadFactsFor(db, ids, colocatedServerId),
-    saveStep: async (step) => {
-      await db
+    saveStep: async (step, expectedStatus) => {
+      const rows = await db
         .update(upgradeStep)
         .set({
           status: step.status,
@@ -569,7 +579,13 @@ export function createDrizzleUpgradeStore(
           errorMessage: step.errorMessage,
           detail: detailWithPhase(step.phase, step.detail),
         })
-        .where(eq(upgradeStep.id, step.id))
+        .where(
+          expectedStatus !== undefined
+            ? and(eq(upgradeStep.id, step.id), eq(upgradeStep.status, expectedStatus))
+            : eq(upgradeStep.id, step.id)
+        )
+        .returning({ id: upgradeStep.id })
+      return rows.length > 0
     },
     history: async (offset, limit) => {
       const where = inArray(upgrade.status, [...UPGRADE_TERMINAL_STATUSES])

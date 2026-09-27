@@ -271,9 +271,9 @@ describe("managed upgrade HTTP", () => {
       return window;
     };
     const innerSave = store.saveStep.bind(store);
-    store.saveStep = async (step) => {
+    store.saveStep = async (step, expectedStatus) => {
       writes.push(step.id);
-      await innerSave(step);
+      return await innerSave(step, expectedStatus);
     };
     const innerRun = store.saveRun.bind(store);
     store.saveRun = async (row) => {

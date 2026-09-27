@@ -582,3 +582,41 @@ test('Postgres upgrades: the in-memory tick window matches the SQL one', async (
     assertEquals(await view(memoryStore, null), await view(sqlStore, null))
   })
 })
+
+test('Postgres upgrades: saveStep with expectedStatus refuses a stale write', async () => {
+  await withFixture('cas-refuses-stale-write', async (fx) => {
+    const server = await addServer(fx, { connected: true, commit: 'old-daemon' })
+    let stepId = ''
+    const runId = await seedRun(fx, 'colocated_daemon', (id) => {
+      const row = stepRow(id, {
+        serverId: server,
+        unit: 'daemon',
+        phase: 'colocated_daemon',
+        status: 'waiting',
+      })
+      stepId = row.id
+      return [row]
+    })
+    const store = createDrizzleUpgradeStore(fx.db, null)
+    const read = await stepById(fx, runId, stepId)
+    if (!read) throw new TypeError('step not seeded')
+
+    // The daemon's own hello lands first and marks the step done — the same
+    // write `noteDaemonCommit` makes outside the tick.
+    const applied = await store.saveStep({ ...read, status: 'done', lastStageAt: T0 })
+    assertEquals(applied, true)
+
+    // A tick that read the step before that hello landed now tries to
+    // redispatch it (the stale "waiting -> reconnect" decision). Guarded by
+    // the status it actually read, the write must be refused rather than
+    // clobbering the daemon's own "done" report.
+    const staleWrite = await store.saveStep(
+      { ...read, status: 'dispatched', attempts: read.attempts + 1, requestId: 'retry-1' },
+      'waiting'
+    )
+    assertEquals(staleWrite, false)
+
+    const final = await stepById(fx, runId, stepId)
+    assertEquals(final?.status, 'done')
+  })
+})
