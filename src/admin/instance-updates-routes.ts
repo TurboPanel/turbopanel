@@ -24,6 +24,7 @@ type ColocatedDaemon = {
   connected: boolean
   version: string | null
   commit: string | null
+  builtAt: string | null
 }
 
 function isInstancePackageChannel(channel: UpdateChannel): channel is 'canary' | 'rc' | 'release' {
@@ -40,6 +41,7 @@ async function readColocatedDaemon(c: Context<AppEnv>): Promise<ColocatedDaemon>
     connected: false,
     version: null,
     commit: null,
+    builtAt: null,
   }
   const db = getDb(c)
   const registry = getDaemonCellRegistry(c)
@@ -54,6 +56,7 @@ async function readColocatedDaemon(c: Context<AppEnv>): Promise<ColocatedDaemon>
     connected: snapshot?.connected === true,
     version: build?.version ?? null,
     commit: build?.commit ?? null,
+    builtAt: build?.builtAt ?? null,
   }
 }
 
@@ -85,7 +88,7 @@ export function registerInstanceUpdatesAdminRoutes(
       commit: revision.commit,
     }
     const daemonInstalled = daemon.serverId
-      ? { version: daemon.version, commit: daemon.commit }
+      ? { version: daemon.version, commit: daemon.commit, builtAt: daemon.builtAt }
       : null
     return c.json({
       ok: true,

@@ -11,31 +11,33 @@
  * Pure and host-free: no DB, no clock, no manifest fetch. The orchestrator
  * resolves manifests and hands the resolved pins in here.
  */
-import { compareSemver, parseSemver } from "../../lib/version-wire.ts";
-import type { UpgradeStepUnit } from "./vocabulary.ts";
+import { compareSemver, parseSemver } from '../../lib/version-wire.ts'
+import type { UpgradeStepUnit } from './vocabulary.ts'
 
 /** One resolved build for one unit, mirroring an `UpdateManifestTarget`. */
 export type UpgradeUnitTarget = {
-  version: string | null;
-  commit: string | null;
-  buildId: string | null;
-  builtAt: string | null;
+  version: string | null
+  commit: string | null
+  buildId: string | null
+  builtAt: string | null
   /** `pinnedChannelManifestUrl`, or the channel's built-in URL for trunk. */
-  manifestUrl: string | null;
-};
+  manifestUrl: string | null
+}
 
 /** Pins for every unit an upgrade run may install. */
 export type UpgradeTarget = {
-  daemon: UpgradeUnitTarget | null;
-  instance: UpgradeUnitTarget | null;
-  ui: UpgradeUnitTarget | null;
-};
+  daemon: UpgradeUnitTarget | null
+  instance: UpgradeUnitTarget | null
+  ui: UpgradeUnitTarget | null
+}
 
 /** What a host currently runs for one unit. */
 export type InstalledBuild = {
-  version: string | null;
-  commit: string | null;
-};
+  version: string | null
+  commit: string | null
+  /** When the installed build was made, if the host reports it. */
+  builtAt?: string | null
+}
 
 export const EMPTY_UNIT_TARGET: UpgradeUnitTarget = {
   version: null,
@@ -43,14 +45,14 @@ export const EMPTY_UNIT_TARGET: UpgradeUnitTarget = {
   buildId: null,
   builtAt: null,
   manifestUrl: null,
-};
+}
 
 /** The pin for a step's unit (`daemon` / `instance`); `ui` is not a step. */
 export function unitTarget(
   target: UpgradeTarget | null | undefined,
-  unit: UpgradeStepUnit,
+  unit: UpgradeStepUnit
 ): UpgradeUnitTarget | null {
-  return target?.[unit] ?? null;
+  return target?.[unit] ?? null
 }
 
 /**
@@ -60,11 +62,11 @@ export function unitTarget(
  */
 export function isOnTarget(
   installed: InstalledBuild | null | undefined,
-  target: UpgradeUnitTarget | null | undefined,
+  target: UpgradeUnitTarget | null | undefined
 ): boolean {
-  const want = target?.commit;
-  const have = installed?.commit;
-  return typeof want === "string" && want.length > 0 && have === want;
+  const want = target?.commit
+  const have = installed?.commit
+  return typeof want === 'string' && want.length > 0 && have === want
 }
 
 /**
@@ -73,21 +75,19 @@ export function isOnTarget(
  * an unknown target never differs (nothing to roll out).
  */
 /** A unit pin the installer can fetch: a commit and a manifest URL. */
-export function isPinnedManifest(
-  target: UpgradeUnitTarget | null | undefined,
-): boolean {
-  const commit = target?.commit?.trim() ?? "";
-  const url = target?.manifestUrl?.trim() ?? "";
-  return commit.length > 0 && url.length > 0;
+export function isPinnedManifest(target: UpgradeUnitTarget | null | undefined): boolean {
+  const commit = target?.commit?.trim() ?? ''
+  const url = target?.manifestUrl?.trim() ?? ''
+  return commit.length > 0 && url.length > 0
 }
 
 export function differsFromInstalled(
   installed: InstalledBuild | null | undefined,
-  target: UpgradeUnitTarget | null | undefined,
+  target: UpgradeUnitTarget | null | undefined
 ): boolean {
-  const want = target?.commit;
-  if (typeof want !== "string" || want.length === 0) return false;
-  return installed?.commit !== want;
+  const want = target?.commit
+  if (typeof want !== 'string' || want.length === 0) return false
+  return installed?.commit !== want
 }
 
 /**
@@ -97,28 +97,51 @@ export function differsFromInstalled(
  */
 export function updateAvailableFor(
   installed: InstalledBuild | null | undefined,
-  target: { commit?: string | null; version?: string | null } | null | undefined,
+  target:
+    { commit?: string | null; version?: string | null; builtAt?: string | null } | null | undefined
 ): boolean {
-  if (!target) return false;
-  const pin = { commit: target.commit ?? null, version: target.version ?? null };
+  if (!target) return false
+  const pin = { commit: target.commit ?? null, version: target.version ?? null }
   if (!differsFromInstalled(installed, { ...EMPTY_UNIT_TARGET, ...pin })) {
-    return false;
+    return false
   }
-  return !isDowngrade(installed?.version, pin.version);
+  return !isDowngrade(installed?.version, pin.version, {
+    installedBuiltAt: installed?.builtAt,
+    targetBuiltAt: target.builtAt,
+  })
 }
 
 /**
- * True when installing `target` would move a host to an older version. Equal
- * versions (a trunk rebuild on a new commit) and unparsable ones are not
- * downgrades. A managed run never downgrades; going back is the explicit,
- * logged rollback path (`controlPlaneRollbackCommand`).
+ * True when installing `target` would move a host to an older version. A
+ * managed run never downgrades; going back is the explicit, logged rollback
+ * path (`controlPlaneRollbackCommand`).
+ *
+ * Only the base version (`major.minor.patch`) orders builds across releases.
+ * Within one base the pre-release label says nothing about age: a binary
+ * reports its plain base version (`0.1.1`) whichever channel it was published
+ * on, while the canary / rc manifest carries the label (`0.1.1-canary.<id>`,
+ * `0.1.1-rc.1`) — so plain semver would rank every canary build of the
+ * installed base as older and refuse it. Same base: the build times decide
+ * when both are known; otherwise it is not a downgrade (like equal versions,
+ * a rebuild on a new commit). Unparsable versions are not downgrades.
  */
 export function isDowngrade(
   installedVersion: string | null | undefined,
   targetVersion: string | null | undefined,
+  builds: {
+    installedBuiltAt?: string | null
+    targetBuiltAt?: string | null
+  } = {}
 ): boolean {
-  const have = parseSemver(installedVersion);
-  const want = parseSemver(targetVersion);
-  if (!have || !want) return false;
-  return compareSemver(want, have) < 0;
+  const have = parseSemver(installedVersion)
+  const want = parseSemver(targetVersion)
+  if (!have || !want) return false
+  const base = compareSemver({ ...want, prerelease: [] }, { ...have, prerelease: [] })
+  if (base !== 0) return base < 0
+  const installedAt = Date.parse(builds.installedBuiltAt ?? '')
+  const targetAt = Date.parse(builds.targetBuiltAt ?? '')
+  if (Number.isFinite(installedAt) && Number.isFinite(targetAt)) {
+    return targetAt < installedAt
+  }
+  return false
 }
