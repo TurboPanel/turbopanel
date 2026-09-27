@@ -15,6 +15,7 @@ import { getEmailQueue } from '../../features/email/types.ts'
 import { isNoopEmailQueue } from '../../features/email/noop-queue.ts'
 import { resolvePublicBaseUrl } from '../../features/install/resolve-public-base-url.ts'
 import { getOrgId } from '../shared.ts'
+import { invitationAcceptUrl, mintInvitationToken } from './invitation-token.ts'
 import { parseCreateInvitationBody, type CreateInvitationInput } from './routes-helpers.ts'
 
 const INVITATION_TTL_MS = 7 * 24 * 60 * 60 * 1000
@@ -194,6 +195,9 @@ export async function handleCreateInvitation(c: Context, opts: AuthRouteOpts): P
   const names = await loadInvitationEmailNames(db, organizationId, parsed.teamId)
   const emailFrom = invitationEmailFrom(c, opts)
   const baseOrigin = await resolvePublicBaseUrl(c, { baseUrl: opts.baseUrl })
+  // The link secret: emailed once, stored only as its verifier, never
+  // returned — the invitation id below is not a secret (see invitation-token.ts).
+  const { token, tokenHash } = await mintInvitationToken()
 
   // The row is written first and the email sent after, never inside a
   // transaction: on Workers each request gets exactly one database
@@ -210,6 +214,7 @@ export async function handleCreateInvitation(c: Context, opts: AuthRouteOpts): P
       expiresAt,
       status: 'pending',
       grants: grantsResult.grants,
+      tokenHash,
     })
     .returning({ id: invitation.id, expiresAt: invitation.expiresAt })
   const inserted = rows[0]
@@ -225,7 +230,7 @@ export async function handleCreateInvitation(c: Context, opts: AuthRouteOpts): P
       inviterEmail: session.email,
       organizationName: names.organizationName,
       teamName: names.teamName,
-      acceptUrl: `${baseOrigin}/accept-invitation?id=${inserted.id}`,
+      acceptUrl: invitationAcceptUrl(baseOrigin, token),
     })
   } catch (err) {
     // No email went out: drop the row so a retry is not refused as
@@ -326,4 +331,76 @@ export async function handleRevokeInvitation(c: Context): Promise<Response> {
   if (!claimed[0]) return c.json({ error: 'Not found' }, 404)
 
   return c.json({ ok: true as const })
+}
+
+/**
+ * `POST /invitations/:id/resend` — mint a new link secret for a pending
+ * invitation, email it again and push the expiry out. The previous link stops
+ * working (its verifier is overwritten). Same permission as revoking.
+ */
+export async function handleResendInvitation(c: Context, opts: AuthRouteOpts): Promise<Response> {
+  const db = getDb(c)
+  if (!db) return c.json({ error: 'Database unavailable' }, 503)
+
+  const session = c.get('session')
+  if (!session?.userId) return c.json({ error: 'Unauthorized' }, 401)
+
+  const invitationId = c.req.param('id')
+  if (!invitationId) return c.json({ error: 'Not found' }, 404)
+  const rows = await db
+    .select({
+      id: invitation.id,
+      teamId: invitation.teamId,
+      email: invitation.email,
+      status: invitation.status,
+      organizationId: team.organizationId,
+    })
+    .from(invitation)
+    .innerJoin(team, eq(invitation.teamId, team.id))
+    .where(eq(invitation.id, invitationId))
+    .limit(1)
+  const invite = rows[0]
+  if (!invite) return c.json({ error: 'Not found' }, 404)
+
+  const allowed = await canInviteToTeam(db, session.userId, invite.teamId)
+  if (!allowed) return c.json({ error: 'Forbidden' }, 403)
+  if (invite.status !== 'pending') return c.json({ error: 'Not found' }, 404)
+
+  const queue = getEmailQueue(c)
+  if (isNoopEmailQueue(queue) || !queue) {
+    return c.json({ error: 'email_unavailable' }, 503)
+  }
+
+  const names = await loadInvitationEmailNames(db, invite.organizationId, invite.teamId)
+  const baseOrigin = await resolvePublicBaseUrl(c, { baseUrl: opts.baseUrl })
+  const { token, tokenHash } = await mintInvitationToken()
+  const expiresAt = new Date(Date.now() + INVITATION_TTL_MS).toISOString()
+
+  const updated = await db
+    .update(invitation)
+    .set({ tokenHash, expiresAt })
+    .where(and(eq(invitation.id, invitationId), eq(invitation.status, 'pending')))
+    .returning({ id: invitation.id, expiresAt: invitation.expiresAt })
+  const row = updated[0]
+  if (!row) return c.json({ error: 'Not found' }, 404)
+
+  try {
+    await queue.enqueue({
+      type: 'invitation',
+      to: invite.email,
+      from: invitationEmailFrom(c, opts),
+      inviterEmail: session.email,
+      organizationName: names.organizationName,
+      teamName: names.teamName,
+      acceptUrl: invitationAcceptUrl(baseOrigin, token),
+    })
+  } catch (err) {
+    // The old link is already void; say so rather than pretend it resent.
+    console.error('[TurboPanel access] invitation resend email failed', {
+      error: err instanceof Error ? err.message : String(err),
+    })
+    return c.json({ error: 'email_unavailable' }, 503)
+  }
+
+  return c.json({ ok: true as const, id: row.id, expiresAt: row.expiresAt })
 }

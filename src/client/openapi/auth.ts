@@ -372,6 +372,43 @@ export function buildAuthSchemas(runtime?: 'deno' | 'workers') {
         },
       },
     },
+    InvitationPreview: {
+      type: 'object',
+      required: ['ok', 'status', 'organizationName', 'teamName', 'inviterName'],
+      properties: {
+        ok: { type: 'boolean', enum: [true] },
+        status: { type: 'string', enum: ['pending', 'expired', 'accepted', 'revoked'] },
+        organizationName: { type: 'string' },
+        teamName: { type: 'string' },
+        inviterName: { type: ['string', 'null'] },
+        invitationId: {
+          type: 'string',
+          description:
+            'Link-secret preview only: the id for `POST /api/client/v1/invitations/{id}/accept` (not a secret).',
+        },
+        email: {
+          type: 'string',
+          format: 'email',
+          description: 'The invited address. Link-secret preview of a pending invitation only.',
+        },
+        accountExists: {
+          type: 'boolean',
+          description:
+            'Whether an account already uses the invited address (sign in, then accept) or not (create a password). Link-secret preview of a pending invitation only.',
+        },
+      },
+    },
+    InvitationSignUpRequest: {
+      type: 'object',
+      required: ['password'],
+      properties: {
+        password: {
+          type: 'string',
+          format: 'password',
+          description: "Same rules as sign-up. The email is the invitation's.",
+        },
+      },
+    },
     ResetPasswordLinkRequest: {
       type: 'object',
       required: ['newPassword', 'token'],
@@ -906,6 +943,64 @@ export const authPaths: Record<string, unknown> = {
           ...jsonBody('OkResponse'),
         },
         '400': { description: 'Invalid request body', ...jsonBody('ErrorResponse') },
+        '429': { description: 'Too many requests', ...jsonBody('ErrorResponse') },
+        '503': { description: 'Database unavailable', ...jsonBody('ErrorResponse') },
+      },
+    },
+  },
+  '/api/client/v1/auth/invitations/by-token/{token}': {
+    get: {
+      tags: ['Authentication'],
+      summary: 'Preview an invitation from its emailed link',
+      description:
+        'Unauthenticated. `token` is the secret emailed only in the accept link (`/accept-invitation?token=`); the server stores just its SHA-256 verifier and no API returns it. Never accepts. For a pending invitation also returns the invited `email` and whether an account already uses it, so the page can send the person to sign in or to create a password.',
+      parameters: [{ name: 'token', in: 'path', required: true, schema: { type: 'string' } }],
+      responses: {
+        '200': { description: 'The invitation', ...jsonBody('InvitationPreview') },
+        '404': {
+          description: '`not_found` — unknown, re-sent or malformed link',
+          ...jsonBody('ErrorResponse'),
+        },
+        '429': { description: 'Too many requests', ...jsonBody('ErrorResponse') },
+        '503': { description: 'Database unavailable', ...jsonBody('ErrorResponse') },
+      },
+    },
+  },
+  '/api/client/v1/auth/invitations/by-token/{token}/sign-up': {
+    post: {
+      tags: ['Authentication'],
+      summary: 'Create an account from an invitation link and accept it',
+      description:
+        "For an invited address with no account: creates the account with the invitation's email (verified by the emailed secret), accepts the invitation, and signs in — one step, no personal organization. The response is the session payload plus `organizationId`, with the session cookie set. Only the link secret can do this; the invitation id cannot.",
+      parameters: [{ name: 'token', in: 'path', required: true, schema: { type: 'string' } }],
+      requestBody: { required: true, ...jsonBody('InvitationSignUpRequest') },
+      responses: {
+        '200': { description: 'Signed in and joined', ...jsonBody('SessionResponse') },
+        '400': { description: 'Invalid body or weak password', ...jsonBody('ErrorResponse') },
+        '409': {
+          description: '`account_exists` — sign in and accept instead',
+          ...jsonBody('ErrorResponse'),
+        },
+        '410': {
+          description:
+            '`invitation_unavailable` — expired, revoked, re-sent, already used or unknown',
+          ...jsonBody('ErrorResponse'),
+        },
+        '429': { description: 'Too many requests', ...jsonBody('ErrorResponse') },
+        '503': { description: 'Database unavailable', ...jsonBody('ErrorResponse') },
+      },
+    },
+  },
+  '/api/client/v1/auth/invitations/{id}': {
+    get: {
+      tags: ['Authentication'],
+      summary: 'Preview an invitation from a link sent before link secrets',
+      description:
+        'For old `/accept-invitation?id=` links. Organization, team, inviter and status only — never the invited email or whether it has an account, because the id is not a secret (organization managers can list it). Those people sign in or sign up as usual and accept with `POST /api/client/v1/invitations/{id}/accept`.',
+      parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+      responses: {
+        '200': { description: 'The invitation (no email)', ...jsonBody('InvitationPreview') },
+        '404': { description: '`not_found`', ...jsonBody('ErrorResponse') },
         '429': { description: 'Too many requests', ...jsonBody('ErrorResponse') },
         '503': { description: 'Database unavailable', ...jsonBody('ErrorResponse') },
       },

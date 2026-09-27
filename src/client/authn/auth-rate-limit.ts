@@ -16,89 +16,93 @@
  * limiter when the binding is missing (see {@link createFailClosedAuthRateLimiter}).
  */
 
-import type { RateLimiter } from "../../daemon/rate-limit/contracts.ts";
+import type { RateLimiter } from '../../daemon/rate-limit/contracts.ts'
 
 export type AuthRateLimitPurpose =
-  | "sign-in"
-  | "sign-up"
-  | "send-otp"
-  | "verify-otp"
-  | "sign-in-otp"
-  | "sign-in-2fa"
-  | "passkey-login"
-  | "verify-email-otp"
-  | "reset-password-request"
-  | "reset-password"
-  | "install-bootstrap"
-  | "install-complete"
-  | "oauth-start"
-  | "oauth-callback"
-  | "forge-connect"
-  | "reauth";
+  | 'sign-in'
+  | 'sign-up'
+  | 'send-otp'
+  | 'verify-otp'
+  | 'sign-in-otp'
+  | 'sign-in-2fa'
+  | 'passkey-login'
+  | 'verify-email-otp'
+  | 'reset-password-request'
+  | 'reset-password'
+  | 'invitation-preview'
+  | 'invitation-sign-up'
+  | 'install-bootstrap'
+  | 'install-complete'
+  | 'oauth-start'
+  | 'oauth-callback'
+  | 'forge-connect'
+  | 'reauth'
 
 export type AuthRateLimitResult = {
-  allowed: boolean;
+  allowed: boolean
   /** Seconds until the current window resets (only meaningful when blocked). */
-  retryAfterSeconds: number;
-};
+  retryAfterSeconds: number
+}
 
 export type AuthRateLimitPolicy = {
   /** Max attempts per window for a single key. */
-  limit: number;
+  limit: number
   /** Window length in milliseconds. */
-  windowMs: number;
-};
+  windowMs: number
+}
 
 export type AuthRateLimiterOptions = {
-  defaultPolicy?: AuthRateLimitPolicy;
-  policies?: Partial<Record<AuthRateLimitPurpose, AuthRateLimitPolicy>>;
-  now?: () => number;
-};
+  defaultPolicy?: AuthRateLimitPolicy
+  policies?: Partial<Record<AuthRateLimitPurpose, AuthRateLimitPolicy>>
+  now?: () => number
+}
 
-const DEFAULT_POLICY: AuthRateLimitPolicy = { limit: 10, windowMs: 60_000 };
+const DEFAULT_POLICY: AuthRateLimitPolicy = { limit: 10, windowMs: 60_000 }
 
 /**
  * Retry-After (and window) applied by durable backends that only report
  * `success`/`fail` without a precise reset time (`RateLimit` binding, Redis
  * token bucket). Matches the 60s window used by {@link SHARED_POLICIES}.
  */
-export const DEFAULT_DURABLE_AUTH_WINDOW_SECONDS = 60;
+export const DEFAULT_DURABLE_AUTH_WINDOW_SECONDS = 60
 
 /**
  * Cap normalized identity / IP material before hashing so durable backends
  * never see unbounded key strings (and so digests stay stable).
  */
-export const AUTH_RATE_LIMIT_IDENTITY_MAX_CHARS = 320;
+export const AUTH_RATE_LIMIT_IDENTITY_MAX_CHARS = 320
 
 /**
  * Per-purpose defaults applied to the process-wide shared limiter. Not baked
  * into {@link createAuthRateLimiter} so callers (and tests) that pass an
  * explicit `defaultPolicy`/`policies` get exactly what they configure.
  */
-const SHARED_POLICIES: Partial<
-  Record<AuthRateLimitPurpose, AuthRateLimitPolicy>
-> = {
-  "sign-in": { limit: 10, windowMs: 60_000 },
-  "sign-up": { limit: 5, windowMs: 60_000 },
-  "send-otp": { limit: 5, windowMs: 60_000 },
-  "verify-otp": { limit: 10, windowMs: 60_000 },
-  "sign-in-otp": { limit: 10, windowMs: 60_000 },
-  "sign-in-2fa": { limit: 10, windowMs: 60_000 },
-  "passkey-login": { limit: 10, windowMs: 60_000 },
-  "verify-email-otp": { limit: 10, windowMs: 60_000 },
-  "reset-password-request": { limit: 5, windowMs: 60_000 },
-  "reset-password": { limit: 10, windowMs: 60_000 },
-  "install-bootstrap": { limit: 10, windowMs: 60_000 },
-  "install-complete": { limit: 10, windowMs: 60_000 },
-  "oauth-start": { limit: 20, windowMs: 60_000 },
-  "oauth-callback": { limit: 20, windowMs: 60_000 },
+const SHARED_POLICIES: Partial<Record<AuthRateLimitPurpose, AuthRateLimitPolicy>> = {
+  'sign-in': { limit: 10, windowMs: 60_000 },
+  'sign-up': { limit: 5, windowMs: 60_000 },
+  'send-otp': { limit: 5, windowMs: 60_000 },
+  'verify-otp': { limit: 10, windowMs: 60_000 },
+  'sign-in-otp': { limit: 10, windowMs: 60_000 },
+  'sign-in-2fa': { limit: 10, windowMs: 60_000 },
+  'passkey-login': { limit: 10, windowMs: 60_000 },
+  'verify-email-otp': { limit: 10, windowMs: 60_000 },
+  'reset-password-request': { limit: 5, windowMs: 60_000 },
+  'reset-password': { limit: 10, windowMs: 60_000 },
+  // Invitation landing page: the preview is keyed on the invitation id, the
+  // new-account accept (it creates a user) is strict like sign-up.
+  'invitation-preview': { limit: 10, windowMs: 60_000 },
+  'invitation-sign-up': { limit: 5, windowMs: 60_000 },
+  'install-bootstrap': { limit: 10, windowMs: 60_000 },
+  'install-complete': { limit: 10, windowMs: 60_000 },
+  'oauth-start': { limit: 20, windowMs: 60_000 },
+  'oauth-callback': { limit: 20, windowMs: 60_000 },
   // The forge connect callbacks take a provider-side installation id as a
   // plain query parameter; a low ceiling per user keeps guessing them slow.
-  "forge-connect": { limit: 5, windowMs: 60_000 },
+  'forge-connect': { limit: 5, windowMs: 60_000 },
   // Password step-up before a security change, keyed on the signed-in user:
   // a stolen session must not become an unthrottled password oracle.
   reauth: { limit: 5, windowMs: 60_000 },
-};
+}
 
 /**
  * Two policy tiers among {@link AuthRateLimitPurpose}s, mirroring
@@ -112,32 +116,31 @@ const SHARED_POLICIES: Partial<
  * two backend instances instead. See `workers-bindings.ts` /
  * `platform/deno/server.ts`.
  */
-export type AuthRateLimitTier = "default" | "strict";
+export type AuthRateLimitTier = 'default' | 'strict'
 
-export const AUTH_RATE_LIMIT_PURPOSE_TIERS: Record<
-  AuthRateLimitPurpose,
-  AuthRateLimitTier
-> = {
-  "sign-in": "default",
-  "sign-up": "strict",
-  "send-otp": "strict",
-  "verify-otp": "default",
-  "sign-in-otp": "default",
-  "sign-in-2fa": "default",
-  "passkey-login": "default",
-  "verify-email-otp": "default",
-  "reset-password-request": "strict",
-  "reset-password": "default",
-  "install-bootstrap": "default",
-  "install-complete": "default",
-  "oauth-start": "default",
-  "oauth-callback": "default",
-  "forge-connect": "strict",
-  reauth: "strict",
-};
+export const AUTH_RATE_LIMIT_PURPOSE_TIERS: Record<AuthRateLimitPurpose, AuthRateLimitTier> = {
+  'sign-in': 'default',
+  'sign-up': 'strict',
+  'send-otp': 'strict',
+  'verify-otp': 'default',
+  'sign-in-otp': 'default',
+  'sign-in-2fa': 'default',
+  'passkey-login': 'default',
+  'verify-email-otp': 'default',
+  'reset-password-request': 'strict',
+  'reset-password': 'default',
+  'invitation-preview': 'default',
+  'invitation-sign-up': 'strict',
+  'install-bootstrap': 'default',
+  'install-complete': 'default',
+  'oauth-start': 'default',
+  'oauth-callback': 'default',
+  'forge-connect': 'strict',
+  reauth: 'strict',
+}
 
 function tierForPurpose(purpose: AuthRateLimitPurpose): AuthRateLimitTier {
-  return AUTH_RATE_LIMIT_PURPOSE_TIERS[purpose] ?? "default";
+  return AUTH_RATE_LIMIT_PURPOSE_TIERS[purpose] ?? 'default'
 }
 
 export interface AuthRateLimiter {
@@ -148,36 +151,36 @@ export interface AuthRateLimiter {
   check(
     purpose: AuthRateLimitPurpose,
     identity: string | null | undefined,
-    ip: string | null | undefined,
-  ): Promise<AuthRateLimitResult>;
+    ip: string | null | undefined
+  ): Promise<AuthRateLimitResult>
   /** Clears all counters (in-memory limiter test isolation; noop for durable backends). */
-  reset(): void;
+  reset(): void
 }
 
-type WindowEntry = { windowStartMs: number; count: number };
+type WindowEntry = { windowStartMs: number; count: number }
 
 function normalizeIdentity(identity: string | null | undefined): string {
-  const trimmed = (identity ?? "").trim().toLowerCase();
-  if (!trimmed) return "anonymous";
+  const trimmed = (identity ?? '').trim().toLowerCase()
+  if (!trimmed) return 'anonymous'
   if (trimmed.length > AUTH_RATE_LIMIT_IDENTITY_MAX_CHARS) {
-    return trimmed.slice(0, AUTH_RATE_LIMIT_IDENTITY_MAX_CHARS);
+    return trimmed.slice(0, AUTH_RATE_LIMIT_IDENTITY_MAX_CHARS)
   }
-  return trimmed;
+  return trimmed
 }
 
 function normalizeIp(ip: string | null | undefined): string {
-  const trimmed = (ip ?? "").trim();
-  if (!trimmed) return "unknown";
+  const trimmed = (ip ?? '').trim()
+  if (!trimmed) return 'unknown'
   if (trimmed.length > AUTH_RATE_LIMIT_IDENTITY_MAX_CHARS) {
-    return trimmed.slice(0, AUTH_RATE_LIMIT_IDENTITY_MAX_CHARS);
+    return trimmed.slice(0, AUTH_RATE_LIMIT_IDENTITY_MAX_CHARS)
   }
-  return trimmed;
+  return trimmed
 }
 
 function bytesToHex(bytes: Uint8Array): string {
   return Array.from(bytes)
-    .map((byte) => byte.toString(16).padStart(2, "0"))
-    .join("");
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('')
 }
 
 /**
@@ -185,15 +188,9 @@ function bytesToHex(bytes: Uint8Array): string {
  * and IPs must never appear in durable backend keys or operator logs of those
  * keys.
  */
-async function digestKeyMaterial(
-  kind: "id" | "ip",
-  value: string,
-): Promise<string> {
-  const digest = await crypto.subtle.digest(
-    "SHA-256",
-    new TextEncoder().encode(`${kind}:${value}`),
-  );
-  return bytesToHex(new Uint8Array(digest));
+async function digestKeyMaterial(kind: 'id' | 'ip', value: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(`${kind}:${value}`))
+  return bytesToHex(new Uint8Array(digest))
 }
 
 /**
@@ -204,84 +201,72 @@ async function digestKeyMaterial(
 export async function authRateLimitKeys(
   purpose: AuthRateLimitPurpose,
   identity: string | null | undefined,
-  ip: string | null | undefined,
+  ip: string | null | undefined
 ): Promise<{ identityKey: string; ipKey: string }> {
   const [identityDigest, ipDigest] = await Promise.all([
-    digestKeyMaterial("id", normalizeIdentity(identity)),
-    digestKeyMaterial("ip", normalizeIp(ip)),
-  ]);
+    digestKeyMaterial('id', normalizeIdentity(identity)),
+    digestKeyMaterial('ip', normalizeIp(ip)),
+  ])
   return {
     identityKey: `${purpose}:id:${identityDigest}`,
     ipKey: `${purpose}:ip:${ipDigest}`,
-  };
+  }
 }
 
 /**
  * Per-process fixed-window limiter. Acceptable on Deno (single process) and in
  * tests; never the sole limiter on Workers (see module docs).
  */
-export function createAuthRateLimiter(
-  options: AuthRateLimiterOptions = {},
-): AuthRateLimiter {
-  const defaultPolicy = options.defaultPolicy ?? DEFAULT_POLICY;
-  const policies = { ...options.policies };
-  const now = options.now ?? Date.now;
-  const windows = new Map<string, WindowEntry>();
+export function createAuthRateLimiter(options: AuthRateLimiterOptions = {}): AuthRateLimiter {
+  const defaultPolicy = options.defaultPolicy ?? DEFAULT_POLICY
+  const policies = { ...options.policies }
+  const now = options.now ?? Date.now
+  const windows = new Map<string, WindowEntry>()
 
   function policyFor(purpose: AuthRateLimitPurpose): AuthRateLimitPolicy {
-    return policies[purpose] ?? defaultPolicy;
+    return policies[purpose] ?? defaultPolicy
   }
 
-  function record(
-    key: string,
-    policy: AuthRateLimitPolicy,
-  ): AuthRateLimitResult {
-    const current = now();
-    const existing = windows.get(key);
+  function record(key: string, policy: AuthRateLimitPolicy): AuthRateLimitResult {
+    const current = now()
+    const existing = windows.get(key)
 
     if (!existing || current - existing.windowStartMs >= policy.windowMs) {
-      windows.set(key, { windowStartMs: current, count: 1 });
-      return { allowed: true, retryAfterSeconds: 0 };
+      windows.set(key, { windowStartMs: current, count: 1 })
+      return { allowed: true, retryAfterSeconds: 0 }
     }
 
-    existing.count += 1;
+    existing.count += 1
     if (existing.count > policy.limit) {
-      const elapsed = current - existing.windowStartMs;
-      const remainingMs = Math.max(0, policy.windowMs - elapsed);
+      const elapsed = current - existing.windowStartMs
+      const remainingMs = Math.max(0, policy.windowMs - elapsed)
       return {
         allowed: false,
         retryAfterSeconds: Math.ceil(remainingMs / 1000),
-      };
+      }
     }
-    return { allowed: true, retryAfterSeconds: 0 };
+    return { allowed: true, retryAfterSeconds: 0 }
   }
 
   return {
     async check(purpose, identity, ip): Promise<AuthRateLimitResult> {
-      const policy = policyFor(purpose);
-      const { identityKey, ipKey } = await authRateLimitKeys(
-        purpose,
-        identity,
-        ip,
-      );
+      const policy = policyFor(purpose)
+      const { identityKey, ipKey } = await authRateLimitKeys(purpose, identity, ip)
       // Independent buckets — both must pass.
-      const identityResult = record(identityKey, policy);
-      const ipResult = record(ipKey, policy);
+      const identityResult = record(identityKey, policy)
+      const ipResult = record(ipKey, policy)
       if (identityResult.allowed && ipResult.allowed) {
-        return { allowed: true, retryAfterSeconds: 0 };
+        return { allowed: true, retryAfterSeconds: 0 }
       }
       return {
         allowed: false,
-        retryAfterSeconds: Math.max(
-          identityResult.retryAfterSeconds,
-          ipResult.retryAfterSeconds,
-        ),
-      };
+        retryAfterSeconds: Math.max(identityResult.retryAfterSeconds, ipResult.retryAfterSeconds),
+      }
     },
     reset(): void {
-      windows.clear();
+      windows.clear()
     },
-  };
+  }
 }
 
 /**
@@ -305,50 +290,41 @@ export function createAuthRateLimiter(
  */
 export function createDurableAuthRateLimiter(
   rateLimiter: RateLimiter | Partial<Record<AuthRateLimitTier, RateLimiter>>,
-  options: { windowSeconds?: number } = {},
+  options: { windowSeconds?: number } = {}
 ): AuthRateLimiter {
-  const retryAfterSeconds = options.windowSeconds ??
-    DEFAULT_DURABLE_AUTH_WINDOW_SECONDS;
+  const retryAfterSeconds = options.windowSeconds ?? DEFAULT_DURABLE_AUTH_WINDOW_SECONDS
 
   function resolveLimiter(purpose: AuthRateLimitPurpose): RateLimiter {
-    if (typeof (rateLimiter as RateLimiter).limit === "function") {
-      return rateLimiter as RateLimiter;
+    if (typeof (rateLimiter as RateLimiter).limit === 'function') {
+      return rateLimiter as RateLimiter
     }
-    const tiered = rateLimiter as Partial<
-      Record<AuthRateLimitTier, RateLimiter>
-    >;
-    const tier = tierForPurpose(purpose);
-    const chosen = tiered[tier] ?? tiered.default ?? tiered.strict;
+    const tiered = rateLimiter as Partial<Record<AuthRateLimitTier, RateLimiter>>
+    const tier = tierForPurpose(purpose)
+    const chosen = tiered[tier] ?? tiered.default ?? tiered.strict
     if (!chosen) {
-      throw new Error(
-        "createDurableAuthRateLimiter: no RateLimiter provided for either tier",
-      );
+      throw new Error('createDurableAuthRateLimiter: no RateLimiter provided for either tier')
     }
-    return chosen;
+    return chosen
   }
 
   return {
     async check(purpose, identity, ip): Promise<AuthRateLimitResult> {
-      const limiter = resolveLimiter(purpose);
-      const { identityKey, ipKey } = await authRateLimitKeys(
-        purpose,
-        identity,
-        ip,
-      );
+      const limiter = resolveLimiter(purpose)
+      const { identityKey, ipKey } = await authRateLimitKeys(purpose, identity, ip)
       // Independent buckets — both must pass. Prefix keeps auth counters from
       // colliding with daemon rate-limit keys in a shared backend namespace.
       const [identityOutcome, ipOutcome] = await Promise.all([
         limiter.limit({ key: `auth:${identityKey}` }),
         limiter.limit({ key: `auth:${ipKey}` }),
-      ]);
-      const allowed = identityOutcome.success && ipOutcome.success;
+      ])
+      const allowed = identityOutcome.success && ipOutcome.success
       return {
         allowed,
         retryAfterSeconds: allowed ? 0 : retryAfterSeconds,
-      };
+      }
     },
     reset(): void {},
-  };
+  }
 }
 
 /**
@@ -357,20 +333,19 @@ export function createDurableAuthRateLimiter(
  * silently degrading to a bypassable per-isolate limiter.
  */
 export function createFailClosedAuthRateLimiter(
-  options: { windowSeconds?: number } = {},
+  options: { windowSeconds?: number } = {}
 ): AuthRateLimiter {
-  const retryAfterSeconds = options.windowSeconds ??
-    DEFAULT_DURABLE_AUTH_WINDOW_SECONDS;
+  const retryAfterSeconds = options.windowSeconds ?? DEFAULT_DURABLE_AUTH_WINDOW_SECONDS
   return {
     // deno-lint-ignore require-await
     async check(): Promise<AuthRateLimitResult> {
-      return { allowed: false, retryAfterSeconds };
+      return { allowed: false, retryAfterSeconds }
     },
     reset(): void {},
-  };
+  }
 }
 
-let sharedLimiter: AuthRateLimiter | undefined;
+let sharedLimiter: AuthRateLimiter | undefined
 
 /**
  * Process-local shared limiter. Deno/dev/test fallback only — Workers inject a
@@ -378,13 +353,11 @@ let sharedLimiter: AuthRateLimiter | undefined;
  * reach this per-isolate instance in production.
  */
 export function getSharedAuthRateLimiter(): AuthRateLimiter {
-  sharedLimiter ??= createAuthRateLimiter({ policies: SHARED_POLICIES });
-  return sharedLimiter;
+  sharedLimiter ??= createAuthRateLimiter({ policies: SHARED_POLICIES })
+  return sharedLimiter
 }
 
 /** Test-only override / reset of the shared fallback limiter. */
-export function setSharedAuthRateLimiterForTests(
-  limiter: AuthRateLimiter | undefined,
-): void {
-  sharedLimiter = limiter;
+export function setSharedAuthRateLimiterForTests(limiter: AuthRateLimiter | undefined): void {
+  sharedLimiter = limiter
 }

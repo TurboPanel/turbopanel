@@ -23,8 +23,7 @@ export const accessSchemas = {
       'system:read',
       'system:operate',
     ],
-    description:
-      'Permission keys that may be written as access grants. Excludes `system:manage`.',
+    description: 'Permission keys that may be written as access grants. Excludes `system:manage`.',
   },
   InvitationGrantSpec: {
     type: 'object',
@@ -80,15 +79,7 @@ export const accessSchemas = {
   },
   InvitationRecord: {
     type: 'object',
-    required: [
-      'id',
-      'email',
-      'teamId',
-      'teamName',
-      'expiresAt',
-      'createdAt',
-      'invitedBy',
-    ],
+    required: ['id', 'email', 'teamId', 'teamName', 'expiresAt', 'createdAt', 'invitedBy'],
     properties: {
       id: { type: 'string', format: 'uuid' },
       email: { type: 'string' },
@@ -148,14 +139,7 @@ export const accessSchemas = {
   },
   AccessRecord: {
     type: 'object',
-    required: [
-      'id',
-      'subjectKind',
-      'subjectId',
-      'resourceId',
-      'effect',
-      'permissionKey',
-    ],
+    required: ['id', 'subjectKind', 'subjectId', 'resourceId', 'effect', 'permissionKey'],
     properties: {
       id: { type: 'string', format: 'uuid' },
       subjectKind: {
@@ -167,8 +151,7 @@ export const accessSchemas = {
       resourceId: {
         type: 'string',
         format: 'uuid',
-        description:
-          'UUID of the grant target entity (organization or team primary key).',
+        description: 'UUID of the grant target entity (organization or team primary key).',
       },
       effect: {
         type: 'string',
@@ -395,7 +378,7 @@ export const accessPaths: Record<string, unknown> = {
       tags: ['Authorization'],
       summary: 'Revoke a pending invitation',
       description:
-        'Sets status to revoked only while the invitation is still pending. Requires canInviteToTeam on the invitation\'s team.',
+        "Sets status to revoked only while the invitation is still pending. Requires canInviteToTeam on the invitation's team.",
       security: [{ cookieAuth: [] }],
       parameters: [
         {
@@ -465,12 +448,44 @@ export const accessPaths: Record<string, unknown> = {
       },
     },
   },
+  '/api/client/v1/invitations/{id}/resend': {
+    post: {
+      tags: ['Authorization'],
+      summary: 'Re-send an organization invitation',
+      description:
+        'Mints a new link secret for a pending invitation, emails it again and pushes the expiry out 7 days. The previous link stops working. Same permission as revoking (canInviteToTeam). The secret is never returned.',
+      security: [{ cookieAuth: [] }],
+      parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+      responses: {
+        '200': {
+          description: 'Re-sent',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['ok', 'id', 'expiresAt'],
+                properties: {
+                  ok: { type: 'boolean', enum: [true] },
+                  id: { type: 'string' },
+                  expiresAt: { type: 'string', format: 'date-time' },
+                },
+              },
+            },
+          },
+        },
+        '401': { description: 'Unauthorized' },
+        '403': { description: 'Forbidden' },
+        '404': { description: 'No pending invitation with that id' },
+        '503': { description: '`email_unavailable`' },
+      },
+    },
+  },
   '/api/client/v1/invitations/{id}/accept': {
     post: {
       tags: ['Authorization'],
       summary: 'Accept an organization invitation',
       description:
-        'Atomically claims a pending invitation, creates team membership, materializes the invitation\'s `grants` JSON into user-scoped grant rows, and returns the accepted organization id. When `grants` is null, a default `organization:manage` grant on the organization is applied. Grant targets must be organization or team entities with compatible permission keys.',
+        "Atomically claims a pending invitation, creates team membership, materializes the invitation's `grants` JSON into user-scoped grant rows, and returns the accepted organization id. Idempotent for the user who accepted it: repeating the call answers 200 again. The invitation landing page calls this only from its Accept button, never on load. When `grants` is null, a default `organization:manage` grant on the organization is applied. Grant targets must be organization or team entities with compatible permission keys.",
       security: [{ cookieAuth: [] }],
       parameters: [
         {
@@ -955,7 +970,7 @@ export const accessPaths: Record<string, unknown> = {
       tags: ['Authorization'],
       summary: 'Revoke an access grant',
       description:
-        'Requires `organization:own` on the grant\'s target resource (checked via `getAccessManagementPermission`).',
+        "Requires `organization:own` on the grant's target resource (checked via `getAccessManagementPermission`).",
       security: [{ cookieAuth: [] }],
       parameters: [
         {
