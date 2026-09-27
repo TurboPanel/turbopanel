@@ -787,3 +787,45 @@ test('a non-development gate fails closed when the target cannot be read', () =>
     { blocked: true, error: 'control_plane_upgrade_required' }
   )
 })
+
+test('a hello reporting the target commit while a tick is mid-redispatch is not clobbered', async () => {
+  const { coordinator, enqueued, store } = harness(['managed-upgrade-v1'])
+  const started = await coordinator.start({ source: 'manual', startedBy: null })
+  if (!started.ok) throw new TypeError(started.error)
+  const first = enqueued[0]
+  if (!first || first.kind !== 'update') throw new TypeError('expected update')
+
+  const active = await coordinator.activeRun()
+  const step = active?.steps.find((item) => item.unit === 'daemon')
+  if (!step) throw new TypeError('expected a daemon step')
+
+  // A co-located daemon's own self-restart mid-install drops it "offline"
+  // for a few seconds; the tick sees that and marks the step waiting
+  // (dispatched again once the server is seen connected).
+  step.status = 'waiting'
+  step.nextAttemptAt = null
+  await store.saveStep(step)
+
+  const innerSave = store.saveStep.bind(store)
+  let injected = false
+  store.saveStep = async (row, expectedStatus) => {
+    if (!injected && expectedStatus === 'waiting') {
+      injected = true
+      // The daemon's hello lands here — between this tick reading "waiting"
+      // and writing its redispatch — reporting it already reached the
+      // target commit. `fact.commit` (the fleet projection) hasn't caught
+      // up yet, same as production: they are two separate writes from one
+      // hello.
+      await coordinator.noteDaemonCommit(SERVER, 'new-daemon', '2026-09-24T12:01:00.000Z')
+    }
+    return await innerSave(row, expectedStatus)
+  }
+
+  await coordinator.tick({ resolveManifests: false })
+
+  // No second install command for a step the daemon already finished.
+  assertEquals(enqueued.length, 1)
+  const after = await coordinator.activeRun()
+  const finalStep = after?.steps.find((item) => item.unit === 'daemon')
+  assertEquals(finalStep?.status, 'done')
+})

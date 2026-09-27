@@ -68,7 +68,11 @@ import type {
   UpgradeStore,
 } from './store.ts'
 import type { UpgradePhase, UpgradeSource, UpgradeStepUnit } from './vocabulary.ts'
-import { UPGRADE_STEP_ACTIVE_STATUSES, type UpgradeStepErrorCode } from './vocabulary.ts'
+import {
+  UPGRADE_STEP_ACTIVE_STATUSES,
+  type UpgradeStepErrorCode,
+  type UpgradeStepStatus,
+} from './vocabulary.ts'
 import type { UpgradeSettings } from '../settings/upgrade-settings.ts'
 
 export type UpgradePreflight = {
@@ -321,15 +325,25 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
     step: UpgradeStepRow,
     fact: FleetServerFact | undefined
   ): Promise<void> {
+    // Guard against a concurrent hello/progress report that already moved
+    // this row past the status the tick read it as: a co-located daemon's
+    // own restart mid-install can drop it "offline" and back within seconds,
+    // and if its hello reporting the reached commit lands between this tick
+    // reading the step and writing this dispatch, a blind write here would
+    // clobber that report with a brand new, redundant install command —
+    // looping the same step forever. Claim the row first; only enqueue the
+    // command if that claim actually applied.
+    const expectedStatus = step.status
     const envelope = envelopeFor(run, step, fact)
-    await deps.enqueue(step.serverId, envelope)
     step.detail = withSupersededRequest(step.detail, step.requestId)
     step.status = 'dispatched'
     step.attempts += 1
     step.requestId = envelope.requestId
     step.lastStageAt = deps.now()
     step.nextAttemptAt = null
-    await deps.store.saveStep(step)
+    const claimed = await deps.store.saveStep(step, expectedStatus)
+    if (!claimed) return
+    await deps.enqueue(step.serverId, envelope)
   }
 
   function envelopeFor(
@@ -372,10 +386,13 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
     }
   }
 
-  async function saveStepIfChanged(step: UpgradeStepRow, before: string): Promise<boolean> {
+  async function saveStepIfChanged(
+    step: UpgradeStepRow,
+    before: string,
+    expectedStatus: UpgradeStepStatus
+  ): Promise<boolean> {
     if (stepPersistKey(step) === before) return false
-    await deps.store.saveStep(step)
-    return true
+    return await deps.store.saveStep(step, expectedStatus)
   }
 
   async function applyAction(
@@ -387,26 +404,31 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
   ): Promise<boolean> {
     if (action.kind === 'none') return false
     const before = stepPersistKey(step)
+    // The status the tick read this step as, before this action mutates it —
+    // the CAS guard on every write below, so a concurrent hello/progress
+    // report (which can settle a step while a tick pass is still deciding
+    // what to do with the copy it read earlier) always wins over this pass.
+    const readStatus = step.status
     if (action.kind === 'done') {
       step.status = 'done'
       step.lastStageAt = deps.now()
-      return await saveStepIfChanged(step, before)
+      return await saveStepIfChanged(step, before, readStatus)
     }
     if (action.kind === 'wait_offline') {
       // The offline deadline counts from here, not from the row's age.
       if (step.status !== 'waiting') step.lastStageAt = deps.now()
       step.status = 'waiting'
-      return await saveStepIfChanged(step, before)
+      return await saveStepIfChanged(step, before, readStatus)
     }
     if (action.kind === 'needs_attention') {
       step.status = 'needs_attention'
       step.errorCode = action.errorCode
-      return await saveStepIfChanged(step, before)
+      return await saveStepIfChanged(step, before, readStatus)
     }
     if (action.kind === 'retry') {
       step.status = 'pending'
       step.nextAttemptAt = action.nextAttemptAt
-      return await saveStepIfChanged(step, before)
+      return await saveStepIfChanged(step, before, readStatus)
     }
     if (step.unit === 'instance' && !admitsFeature(fact)) {
       step.status = 'needs_attention'
@@ -414,7 +436,7 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
       step.errorMessage = daemonOnlyUpdateCommand(
         unitTarget(run.target, 'daemon')?.manifestUrl ?? null
       )
-      return await saveStepIfChanged(step, before)
+      return await saveStepIfChanged(step, before, readStatus)
     }
     queue.push(step)
     return false
