@@ -13,9 +13,9 @@
  *     Sets the new password, uses the link up and signs the user out
  *     everywhere (owner decision 2026-09-27).
  *
- * The callback is only ever a same-origin console path: an absolute or
- * protocol-relative `redirectTo`/`callbackURL` falls back to the default so the
- * link can never bounce a token to another site.
+ * The callback is only ever an allowlisted console page (`RESET_PAGES`);
+ * anything else falls back to `/reset-password`, so the link can never bounce
+ * a token to another site.
  */
 import { and, eq } from 'drizzle-orm'
 import type { Context, Env, Hono } from 'hono'
@@ -55,27 +55,25 @@ export const INVALID_TOKEN = 'INVALID_TOKEN'
 const RESET_TOKEN_PATTERN = /^[0-9a-f]{64}$/
 
 /**
- * `path` when it is a same-origin console path (`/…`, not `//…`, no scheme,
- * no backslash), else the default reset page.
+ * Console pages a reset link may land on. `redirectTo` / `callbackURL` select
+ * one by exact match; anything else — another origin, `//host`, an unknown
+ * path — gets the default. The redirect target is therefore always one of
+ * these constants, never request text, so the link can't send a token
+ * off-site (open redirect).
  */
+const RESET_PAGES: ReadonlyMap<string, string> = new Map([
+  [DEFAULT_PASSWORD_RESET_PAGE, DEFAULT_PASSWORD_RESET_PAGE],
+])
+
+/** The allowlisted console reset page `path` names, else the default. */
 export function safeResetPagePath(path: unknown): string {
   if (typeof path !== 'string') return DEFAULT_PASSWORD_RESET_PAGE
-  const trimmed = path.trim()
-  if (
-    !trimmed.startsWith('/') ||
-    trimmed.startsWith('//') ||
-    trimmed.includes('\\') ||
-    trimmed.length > 512
-  ) {
-    return DEFAULT_PASSWORD_RESET_PAGE
-  }
-  return trimmed
+  return RESET_PAGES.get(path.trim()) ?? DEFAULT_PASSWORD_RESET_PAGE
 }
 
-/** `path` with `key=value` appended to its query string. */
-function withQueryParam(path: string, key: string, value: string): string {
-  const separator = path.includes('?') ? '&' : '?'
-  return `${path}${separator}${key}=${encodeURIComponent(value)}`
+/** `page` (an allowlisted constant) with `key=value` as its query string. */
+function resetPageUrl(page: string, key: 'token' | 'error', value: string): string {
+  return `${page}?${key}=${encodeURIComponent(value)}`
 }
 
 type RequestPasswordResetBody = { email: string; redirectTo: string }
@@ -182,8 +180,8 @@ export function registerPasswordResetRoutes<E extends Env>(
       RESET_TOKEN_PATTERN.test(token) &&
       (await peekPasswordResetToken(db, token)) !== null
     const target = live
-      ? withQueryParam(callback, 'token', token)
-      : withQueryParam(callback, 'error', INVALID_TOKEN)
+      ? resetPageUrl(callback, 'token', token)
+      : resetPageUrl(callback, 'error', INVALID_TOKEN)
     return c.redirect(target, 302)
   })
 

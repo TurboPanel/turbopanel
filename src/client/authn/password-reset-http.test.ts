@@ -220,12 +220,14 @@ test('reset-password refuses a weak password without using the link up', async (
   })
 })
 
-test('safeResetPagePath keeps same-origin paths and rejects everything else', () => {
-  assertEquals(safeResetPagePath('/reset-password?x=1'), '/reset-password?x=1')
+test('safeResetPagePath keeps an allowlisted console page and rejects everything else', () => {
+  assertEquals(safeResetPagePath(' /reset-password '), '/reset-password')
   for (const value of [
     'https://evil.example/x',
     '//evil.example',
     '/\\evil',
+    '/sign-in',
+    '/reset-password?x=1',
     'reset',
     42,
     undefined,

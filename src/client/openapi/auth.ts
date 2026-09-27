@@ -368,7 +368,7 @@ export function buildAuthSchemas(runtime?: 'deno' | 'workers') {
         redirectTo: {
           type: 'string',
           description:
-            'Same-origin console path the emailed link lands on (default /reset-password); anything else falls back to the default.',
+            'Console page the emailed link lands on; only allowlisted pages (today just /reset-password) are honoured, anything else falls back to /reset-password.',
         },
       },
     },
@@ -916,7 +916,7 @@ export const authPaths: Record<string, unknown> = {
       tags: ['Authentication'],
       summary: 'Open a password-reset link',
       description:
-        'The link in the email. Redirects to `callbackURL` (a same-origin path, default /reset-password) with `?token=` when the link is live, else `?error=INVALID_TOKEN`. Does not use the link up.',
+        'The link in the email. Redirects to `callbackURL` (an allowlisted console page, default /reset-password) with `?token=` when the link is live, else `?error=INVALID_TOKEN`. Does not use the link up.',
       parameters: [
         { name: 'token', in: 'path', required: true, schema: { type: 'string' } },
         { name: 'callbackURL', in: 'query', required: false, schema: { type: 'string' } },
