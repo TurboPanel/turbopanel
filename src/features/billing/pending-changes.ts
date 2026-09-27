@@ -221,6 +221,35 @@ export function restorableReleases(ledger: PendingChangeLedger, tierId: string):
     .map(({ intent }) => intent)
 }
 
+export type EndingLicenses = Readonly<{
+  /** Outstanding `release-seat` intents at the tier: licenses that end at the boundary and can be restored. */
+  count: number
+  /** The earliest boundary they end at (ISO), or `null` when none carries one. */
+  endsAt: string | null
+}>
+
+/**
+ * Per tier, the licenses that end at the period boundary — outstanding
+ * `release-seat` intents only. A pending downgrade also moves a seat off its
+ * tier, but it is not a license ending (it lands one tier down) and nothing
+ * restores it, so it is not counted here.
+ */
+export function endingLicensesByTier(ledger: PendingChangeLedger): Map<string, EndingLicenses> {
+  const out = new Map<string, EndingLicenses>()
+  for (const intent of ledger.intents) {
+    if (intent.kind !== 'release-seat') continue
+    const prev = out.get(intent.fromTierId)
+    const endsAt =
+      prev?.endsAt && intent.landsAt
+        ? prev.endsAt <= intent.landsAt
+          ? prev.endsAt
+          : intent.landsAt
+        : (prev?.endsAt ?? intent.landsAt)
+    out.set(intent.fromTierId, { count: (prev?.count ?? 0) + 1, endsAt })
+  }
+  return out
+}
+
 /** Every tier a deferred intent moves *to*, deduplicated. */
 export function deferredIntentTargets(ledger: PendingChangeLedger): string[] {
   const out = new Set<string>()

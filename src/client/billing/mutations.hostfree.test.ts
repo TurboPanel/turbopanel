@@ -21,9 +21,11 @@
  * refuses a reduction that would strand a licensed server or leave more
  * licenses held than purchased.
  *
- * Part three (T4): an increase at a tier with seats still leaving at the
- * boundary takes those back first — withdrawing their `release-seat`
- * intents and rebuilding the schedule, no charge — and buys only the rest.
+ * Part three (T4): restore before buy, per tier — an increase (or a tier
+ * move into a tier) with licenses ending there is refused before anything
+ * is written; `restoreSeats` takes ending licenses back by withdrawing
+ * their `release-seat` intents and rebuilding (or releasing) the schedule,
+ * no charge, and leaves them ending exactly as before if Stripe refuses.
  */
 
 import { assertEquals, assertRejects } from '@std/assert'
@@ -70,11 +72,14 @@ import {
   type BillingMutationOutcome,
   changeSeats,
   downgradeTier,
+  restoreSeats,
   upgradeTier,
 } from './mutations.ts'
 import {
+  LICENSES_ENDING_ERROR,
   LICENSES_IN_USE_ERROR,
   loadBillingOrgView,
+  NO_LICENSES_ENDING_ERROR,
   NO_SUBSCRIPTION_ERROR,
   NOT_A_DOWNGRADE_ERROR,
   NOT_AN_UPGRADE_ERROR,
@@ -1147,14 +1152,14 @@ test('T3 · a Stripe rejection of the decrease rolls back exactly the intents it
 
 // --- T4 -------------------------------------------------------------------
 
-/** `count` release-seat intents at S3, parked behind the period end, oldest first a minute apart. */
-async function parkReleases(db: MemoryDb, count: number, fromQuantity: number) {
+/** `count` release-seat intents at `tierId`, parked behind the period end, oldest first a minute apart. */
+async function parkReleases(db: MemoryDb, count: number, fromQuantity: number, tierId = S3) {
   let ledger = emptyLedger('sub_1')
   for (let i = 0; i < count; i += 1) {
     ledger = withIntent(
       ledger,
       newDeferredIntent('release-seat', {
-        fromTierId: S3,
+        fromTierId: tierId,
         toTierId: null,
         landsAt: PERIOD_END_ISO,
         fromQuantity,
@@ -1167,13 +1172,13 @@ async function parkReleases(db: MemoryDb, count: number, fromQuantity: number) {
 }
 
 /** Six S3 seats (the owner's shape), a schedule attached for the parked releases. */
-const sixSeatsLeaving = (): OrgSeed => ({
+const sixSeatsEnding = (): OrgSeed => ({
   seats: [{ tierId: S3, providerItemId: 'si_1', quantity: 6 }],
   scheduleId: 'sub_sched_1',
 })
 
-test('T4 · +1 with three seats leaving takes the newest back: no purchase, the schedule rebuilt for two leaving', async () => {
-  const db = orgDb(sixSeatsLeaving())
+test('T4 · restoring one of three ending licenses withdraws the newest: no purchase, the schedule rebuilt for two ending', async () => {
+  const db = orgDb(sixSeatsEnding())
   const parked = await parkReleases(db, 3, 6)
   const client = routedClient({
     'GET /v1/subscription_schedules/sub_sched_1': () =>
@@ -1183,16 +1188,15 @@ test('T4 · +1 with three seats leaving takes the newest back: no purchase, the 
   })
   const { deps, leases } = depsFor(db, client)
 
-  const outcome = await changeSeats(deps, { organizationId: ORG, tierId: S3, delta: 1 })
+  const outcome = await restoreSeats(deps, { organizationId: ORG, tierId: S3, count: 1 })
   assertEquals(outcome.ok && outcome.body, {
     ok: true,
-    pending: false,
-    deferred: false,
-    scheduleId: 'sub_sched_1',
     restored: 1,
+    ending: 2,
+    scheduleId: 'sub_sched_1',
   })
 
-  // The newest release is the one withdrawn; the two older ones still leave.
+  // The newest release is the one withdrawn; the two older ones still end.
   const ledger = await ledgerOf(db)
   assertEquals(
     ledger.intents.map((i) => i.id),
@@ -1212,50 +1216,51 @@ test('T4 · +1 with three seats leaving takes the newest back: no purchase, the 
   assertEquals(leases, ['begin', 'end'])
 })
 
-test('T4 · +4 with three seats leaving takes all three back, releases the schedule, then buys exactly one', async () => {
-  const db = orgDb(sixSeatsLeaving())
+test('T4 · restoring more than are ending restores them all and releases the schedule', async () => {
+  const db = orgDb(sixSeatsEnding())
   await parkReleases(db, 3, 6)
-  let committed = 6
   const client = routedClient({
     'POST /v1/subscription_schedules/sub_sched_1/release': () => ({
       id: 'sub_sched_1',
       object: 'subscription_schedule',
       status: 'released',
     }),
-    'POST /v1/subscriptions/sub_1': (call) => {
-      committed = Number(formOf(call, 'items[0][quantity]'))
-      return { id: 'sub_1', object: 'subscription', status: 'active' }
-    },
-    'GET /v1/subscriptions/sub_1': () =>
-      stripeSubscription([{ id: 'si_1', tierId: S3, quantity: committed }]),
   })
   const { deps } = depsFor(db, client)
 
-  const outcome = await changeSeats(deps, { organizationId: ORG, tierId: S3, delta: 4 })
-  assertEquals(outcome.ok && outcome.body, {
-    ok: true,
-    pending: false,
-    deferred: false,
-    restored: 3,
-  })
+  const outcome = await restoreSeats(deps, { organizationId: ORG, tierId: S3, count: 5 })
+  assertEquals(outcome.ok && outcome.body, { ok: true, restored: 3, ending: 0, scheduleId: null })
   assertEquals((await ledgerOf(db)).intents, [])
-  // The price is resolved before anything is withdrawn; the schedule goes
-  // (nothing is leaving any more), and one seat is bought on the plain subscription.
-  assertEquals(callsOf(client), [
-    'GET /v1/products/prod_s3',
-    'POST /v1/subscription_schedules/sub_sched_1/release',
-    'POST /v1/subscriptions/sub_1',
-    'GET /v1/subscriptions/sub_1',
-  ])
-  const buy = client.calls[2]!
-  assertEquals(formOf(buy, 'items[0][id]'), 'si_1')
-  assertEquals(formOf(buy, 'items[0][quantity]'), '7')
-  assertEquals(formOf(buy, 'proration_behavior'), 'always_invoice')
-  assertEquals(seatQuantities(db), { [S3]: 7 })
-  assertEquals(storedRecord(db), null)
+  assertEquals(callsOf(client), ['POST /v1/subscription_schedules/sub_sched_1/release'])
+  assertEquals(seatQuantities(db), { [S3]: 6 })
 })
 
-test('T4 · with nothing leaving, +1 is a plain purchase and the body carries no restored field', async () => {
+test('T4 · buying more at a tier with licenses ending is refused 409 licenses_ending before any Stripe call or write', async () => {
+  const db = orgDb(sixSeatsEnding())
+  const parked = await parkReleases(db, 3, 6)
+  const { client, posts, trace } = stripeDouble()
+  const { deps, leases } = depsFor(db, client)
+
+  const denied = refusalOf(await changeSeats(deps, { organizationId: ORG, tierId: S3, delta: 4 }))
+  assertEquals(denied.status, 409)
+  assertEquals(denied.body, {
+    error: LICENSES_ENDING_ERROR,
+    tierId: S3,
+    ending: 3,
+    endsAt: PERIOD_END_ISO,
+  })
+  assertEquals(trace, [])
+  assertEquals(posts, [])
+  assertEquals(
+    (await ledgerOf(db)).intents.map((i) => i.id),
+    parked.map((i) => i.id)
+  )
+  assertEquals(seatQuantities(db), { [S3]: 6 })
+  assertEquals(storedRecord(db), null)
+  assertEquals(leases, ['begin', 'end'])
+})
+
+test('T4 · licenses ending at another tier never block: +1 at S3 buys while an S1 release stays parked', async () => {
   const db = orgDb(twoSeats())
   const { client, posts } = stripeDouble()
   const outcome = await changeSeats(depsFor(db, client).deps, {
@@ -1265,28 +1270,14 @@ test('T4 · with nothing leaving, +1 is a plain purchase and the body carries no
   })
   assertEquals(outcome.ok && outcome.body, { ok: true, pending: false, deferred: false })
   assertEquals(posts.length, 1)
-  // A release parked at another tier is not taken back by an increase here.
+
   const other = orgDb({
     seats: [
       { tierId: S1, providerItemId: 'si_a', quantity: 2 },
       { tierId: S3, providerItemId: 'si_1', quantity: 2 },
     ],
   })
-  await writePendingChanges(
-    other,
-    ORG,
-    withIntent(
-      emptyLedger('sub_1'),
-      newDeferredIntent('release-seat', {
-        fromTierId: S1,
-        toTierId: null,
-        landsAt: PERIOD_END_ISO,
-        fromQuantity: 2,
-        nowMs: NOW_MS,
-      })
-    ),
-    NOW_MS
-  )
+  await parkReleases(other, 1, 2, S1)
   let committed = 2
   const c2 = routedClient({
     'POST /v1/subscriptions/sub_1': (call) => {
@@ -1320,12 +1311,56 @@ test('T4 · with nothing leaving, +1 is a plain purchase and the body carries no
   assertEquals((await ledgerOf(other)).intents.length, 1)
 })
 
-test('T4 · while past due, taking a leaving seat back is allowed (it charges nothing); buying beyond it is refused before anything is withdrawn', async () => {
-  const db = orgDb({ ...sixSeatsLeaving(), status: 'past_due' })
+test('T4 · an upgrade or a downgrade INTO a tier with licenses ending is refused the same way, before any Stripe call', async () => {
+  // Upgrade S3 → S5 while an S5 license is ending.
+  const up = orgDb({
+    seats: [
+      { tierId: S3, providerItemId: 'si_1', quantity: 2 },
+      { tierId: S5, providerItemId: 'si_5', quantity: 1 },
+    ],
+  })
+  await parkReleases(up, 1, 1, S5)
+  const upClient = routedClient({})
+  const upDenied = refusalOf(
+    await upgradeTier(depsFor(up, upClient).deps, {
+      organizationId: ORG,
+      fromTierId: S3,
+      toTierId: S5,
+      prorationDate: null,
+    })
+  )
+  assertEquals(upDenied.status, 409)
+  assertEquals(upDenied.body.error, LICENSES_ENDING_ERROR)
+  assertEquals(upDenied.body.tierId, S5)
+  assertEquals(upClient.calls, [])
+
+  // Downgrade S5 → S3 while an S3 license is ending.
+  const down = orgDb({
+    seats: [
+      { tierId: S3, providerItemId: 'si_1', quantity: 2 },
+      { tierId: S5, providerItemId: 'si_5', quantity: 1 },
+    ],
+  })
+  await parkReleases(down, 1, 2, S3)
+  const downClient = routedClient({})
+  const downDenied = refusalOf(
+    await downgradeTier(depsFor(down, downClient).deps, {
+      organizationId: ORG,
+      fromTierId: S5,
+      toTierId: S3,
+    })
+  )
+  assertEquals(downDenied.status, 409)
+  assertEquals(downDenied.body.error, LICENSES_ENDING_ERROR)
+  assertEquals(downDenied.body.tierId, S3)
+  assertEquals(downClient.calls, [])
+  assertEquals((await ledgerOf(down)).intents.length, 1)
+})
+
+test('T4 · while past due, restoring is allowed (it charges nothing); buying at that tier still asks for the restore first', async () => {
+  const db = orgDb({ ...sixSeatsEnding(), status: 'past_due' })
   const parked = await parkReleases(db, 1, 6)
   const client = routedClient({
-    'GET /v1/subscription_schedules/sub_sched_1': () =>
-      stripeSchedule([{ price: 'price_s3', quantity: 6 }]),
     'POST /v1/subscription_schedules/sub_sched_1/release': () => ({
       id: 'sub_sched_1',
       object: 'subscription_schedule',
@@ -1336,27 +1371,59 @@ test('T4 · while past due, taking a leaving seat back is allowed (it charges no
 
   const denied = refusalOf(await changeSeats(deps, { organizationId: ORG, tierId: S3, delta: 2 }))
   assertEquals(denied.status, 409)
-  assertEquals(denied.body.error, SUBSCRIPTION_PAST_DUE_ERROR)
+  assertEquals(denied.body.error, LICENSES_ENDING_ERROR)
   assertEquals(client.calls, [])
   assertEquals(
     (await ledgerOf(db)).intents.map((i) => i.id),
     [parked[0]!.id]
   )
 
-  const restored = await changeSeats(deps, { organizationId: ORG, tierId: S3, delta: 1 })
+  const restored = await restoreSeats(deps, { organizationId: ORG, tierId: S3, count: 1 })
   assertEquals(restored.ok && restored.body, {
     ok: true,
-    pending: false,
-    deferred: false,
-    scheduleId: null,
     restored: 1,
+    ending: 0,
+    scheduleId: null,
   })
   assertEquals(callsOf(client), ['POST /v1/subscription_schedules/sub_sched_1/release'])
   assertEquals((await ledgerOf(db)).intents, [])
+
+  // Nothing ending now: the purchase meets the delinquency gate instead.
+  const stillDenied = refusalOf(
+    await changeSeats(deps, { organizationId: ORG, tierId: S3, delta: 1 })
+  )
+  assertEquals(stillDenied.body.error, SUBSCRIPTION_PAST_DUE_ERROR)
 })
 
-test('T4 · a Stripe refusal of the withdrawal puts the leaving seats back exactly as they were and rethrows', async () => {
-  const db = orgDb(sixSeatsLeaving())
+test('T4 · restore refusals: 409 no_licenses_ending with nothing ending (another tier ending does not count), 409 no_subscription, 400 for a bad count', async () => {
+  const db = orgDb(sixSeatsEnding())
+  await parkReleases(db, 2, 2, S1)
+  const client = routedClient({})
+  const { deps } = depsFor(db, client)
+
+  const nothing = refusalOf(await restoreSeats(deps, { organizationId: ORG, tierId: S3, count: 1 }))
+  assertEquals(nothing.status, 409)
+  assertEquals(nothing.body, { error: NO_LICENSES_ENDING_ERROR, tierId: S3 })
+
+  for (const count of [0, -1, 1.5]) {
+    const bad = refusalOf(await restoreSeats(deps, { organizationId: ORG, tierId: S3, count }))
+    assertEquals(bad.status, 400)
+  }
+
+  const none = refusalOf(
+    await restoreSeats(depsFor(orgDb({ subscription: false }), client).deps, {
+      organizationId: ORG,
+      tierId: S3,
+      count: 1,
+    })
+  )
+  assertEquals(none.status, 409)
+  assertEquals(none.body.error, NO_SUBSCRIPTION_ERROR)
+  assertEquals(client.calls, [])
+})
+
+test('T4 · a Stripe refusal of the restore leaves the licenses ending exactly as they were and rethrows', async () => {
+  const db = orgDb(sixSeatsEnding())
   const parked = await parkReleases(db, 2, 6)
   const client = routedClient({
     'GET /v1/subscription_schedules/sub_sched_1': () =>
@@ -1368,7 +1435,7 @@ test('T4 · a Stripe refusal of the withdrawal puts the leaving seats back exact
   const { deps, leases } = depsFor(db, client)
 
   await assertRejects(
-    () => changeSeats(deps, { organizationId: ORG, tierId: S3, delta: 1 }),
+    () => restoreSeats(deps, { organizationId: ORG, tierId: S3, count: 1 }),
     StripeApiError
   )
   assertEquals(
