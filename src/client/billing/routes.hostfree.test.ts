@@ -40,6 +40,7 @@ import {
 } from '../authn/authn-hostfree-doubles.ts'
 import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from '../authn/crypto.ts'
 import { deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
+import { windowedIdempotencyKey } from '../../features/billing/idempotency.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { type BillingOrgView, summarizeLicenses, summarizeTiers } from './routes-helpers.ts'
 import { registerBillingRoutes } from './routes.ts'
@@ -536,7 +537,10 @@ test("POST /billing/checkout sends the product's default price from the gateway 
   assertEquals(formOf(session, 'line_items[0][price]'), 'price_s3_live')
   assertEquals(formOf(session, 'line_items[0][quantity]'), '2')
   assertEquals(formOf(session, 'cancel_url'), `${BASE_URL}/${ORG}/billing?checkout=cancel`)
-  assertEquals(session.idempotencyKey, `checkout:${ORG}:${S3}:2`)
+  assertEquals(
+    session.idempotencyKey,
+    windowedIdempotencyKey(`checkout:${ORG}:${S3}:2`, Date.parse(NOW))
+  )
   // The row's display cache followed the product.
   assertEquals(db.rows(tier).find((row) => row.id === S3)?.priceCents, 1234)
 })

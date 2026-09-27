@@ -97,6 +97,13 @@ owning the transport:
   one with `crypto.randomUUID()` when the caller supplies none, so it cannot be
   forgotten. A caller that retries a mutation must pass the _same_ key it used
   the first time — Stripe will otherwise happily create a second subscription.
+  Stripe also saves a **refusal** under its key and replays it for 24 hours, so
+  a key derived only from the request's shape (customer, first Checkout, portal
+  configuration) carries the current five-minute window (`idempotency.ts`):
+  retries inside the window replay, a retry after it re-executes. Mutations with
+  a persisted record (`seat-increase.ts`, the pending-change ledger) instead
+  reuse the stored key while a transient failure may have applied, and drop it
+  on a permanent refusal.
 - **`Stripe-Version` is pinned** (`DEFAULT_STRIPE_API_VERSION`). The account's
   dashboard default can be bumped by anyone with dashboard access, and a bump
   changes response shapes: in the `basil` line `current_period_end` moved from
