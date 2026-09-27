@@ -2,10 +2,11 @@ import { and, count, eq, inArray, isNotNull } from 'drizzle-orm'
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
+import { type OrgRequest, resolveOrgRequest } from '../org-request.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { assertCanOr403, listVisible } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
-import { type Db, getDb } from '../../db/connection.ts'
+import type { Db } from '../../db/connection.ts'
 import { datacenter, ip, network, server } from '../../db/schema.ts'
 import {
   type DatacenterPolicy,
@@ -42,7 +43,6 @@ import {
   assertCanManageOr403,
   assertCanReadOr403,
   buildPatchUpdateFields,
-  getOrgId,
   parseDescription,
   parseName,
   parseJsonbObject,
@@ -76,6 +76,34 @@ export {
   resolveOrCreateSubnetForAddress,
   resolveSeededFields,
 } from './create-input.ts'
+
+/**
+ * {@link resolveOrgRequest}, then the `:id` datacenter: `404` unless it belongs
+ * to the request's organization, then the access check — `read` for
+ * `datacenter` read, `manage` for `organization:manage` on it. Same responses,
+ * same order as the handlers wrote inline.
+ */
+async function resolveDatacenterRequest(
+  c: Context<AppEnv>,
+  access: 'read' | 'manage'
+): Promise<(OrgRequest & { id: string }) | Response> {
+  const scope = await resolveOrgRequest(c)
+  if (scope instanceof Response) return scope
+
+  const id = c.req.param('id') ?? ''
+  const entityOrgId = await resolveEntityOrganizationId(scope.db, 'datacenter', id)
+  if (entityOrgId !== scope.organizationId) {
+    return c.json({ error: 'Not found' }, 404)
+  }
+
+  const denied =
+    access === 'read'
+      ? await assertCanReadOr403(c, 'datacenter', id)
+      : await assertCanOr403(c, 'organization:manage', 'datacenter', id)
+  if (denied) return denied
+
+  return { ...scope, id }
+}
 
 function datacenterPolicyChanged(before: DatacenterPolicy, after: DatacenterPolicy): boolean {
   return before.priority !== after.priority || before.trusted !== after.trusted
@@ -473,15 +501,9 @@ export function registerDatacenterRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
   router.use('/datacenters/:id/subnets/:networkId', createSessionMiddleware(secrets))
 
   router.get('/datacenters', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const session = c.get('session')
-    if (!session) return c.json({ error: 'Unauthorized' }, 401)
-
-    const orgResult = await getOrgId(c, session.userId)
-    if (orgResult instanceof Response) return orgResult
-    const organizationId = orgResult
+    const scope = await resolveOrgRequest(c)
+    if (scope instanceof Response) return scope
+    const { db, session, organizationId } = scope
 
     const manageDenied = await assertCanManageOr403(c, 'organization', organizationId)
     if (manageDenied) return manageDenied
@@ -524,15 +546,9 @@ export function registerDatacenterRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
   })
 
   router.get('/datacenters/name-suggestions', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const session = c.get('session')
-    if (!session) return c.json({ error: 'Unauthorized' }, 401)
-
-    const orgResult = await getOrgId(c, session.userId)
-    if (orgResult instanceof Response) return orgResult
-    const organizationId = orgResult
+    const scope = await resolveOrgRequest(c)
+    if (scope instanceof Response) return scope
+    const { db, session, organizationId } = scope
 
     const manageDenied = await assertCanManageOr403(c, 'organization', organizationId)
     if (manageDenied) return manageDenied
@@ -590,24 +606,9 @@ export function registerDatacenterRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
   })
 
   router.get('/datacenters/:id', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const session = c.get('session')
-    if (!session) return c.json({ error: 'Unauthorized' }, 401)
-
-    const orgResult = await getOrgId(c, session.userId)
-    if (orgResult instanceof Response) return orgResult
-    const organizationId = orgResult
-
-    const id = c.req.param('id')
-    const entityOrgId = await resolveEntityOrganizationId(db, 'datacenter', id)
-    if (entityOrgId !== organizationId) {
-      return c.json({ error: 'Not found' }, 404)
-    }
-
-    const denied = await assertCanReadOr403(c, 'datacenter', id)
-    if (denied) return denied
+    const scope = await resolveDatacenterRequest(c, 'read')
+    if (scope instanceof Response) return scope
+    const { db, id } = scope
 
     const [row] = await db
       .select({
@@ -647,15 +648,9 @@ export function registerDatacenterRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
   })
 
   router.post('/datacenters', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const session = c.get('session')
-    if (!session) return c.json({ error: 'Unauthorized' }, 401)
-
-    const orgResult = await getOrgId(c, session.userId)
-    if (orgResult instanceof Response) return orgResult
-    const organizationId = orgResult
+    const scope = await resolveOrgRequest(c)
+    if (scope instanceof Response) return scope
+    const { db, session, organizationId } = scope
 
     const denied = await assertCanCreateOr403(c, 'organization', organizationId)
     if (denied) return denied
@@ -753,24 +748,9 @@ export function registerDatacenterRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
   })
 
   router.post('/datacenters/:id/members', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const session = c.get('session')
-    if (!session) return c.json({ error: 'Unauthorized' }, 401)
-
-    const orgResult = await getOrgId(c, session.userId)
-    if (orgResult instanceof Response) return orgResult
-    const organizationId = orgResult
-
-    const id = c.req.param('id')
-    const entityOrgId = await resolveEntityOrganizationId(db, 'datacenter', id)
-    if (entityOrgId !== organizationId) {
-      return c.json({ error: 'Not found' }, 404)
-    }
-
-    const denied = await assertCanOr403(c, 'organization:manage', 'datacenter', id)
-    if (denied) return denied
+    const scope = await resolveDatacenterRequest(c, 'manage')
+    if (scope instanceof Response) return scope
+    const { db, session, organizationId, id } = scope
 
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
@@ -855,25 +835,10 @@ export function registerDatacenterRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
   })
 
   router.delete('/datacenters/:id/members/:serverId', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const session = c.get('session')
-    if (!session) return c.json({ error: 'Unauthorized' }, 401)
-
-    const orgResult = await getOrgId(c, session.userId)
-    if (orgResult instanceof Response) return orgResult
-    const organizationId = orgResult
-
-    const id = c.req.param('id')
+    const scope = await resolveDatacenterRequest(c, 'manage')
+    if (scope instanceof Response) return scope
+    const { db, id } = scope
     const serverId = c.req.param('serverId')
-    const entityOrgId = await resolveEntityOrganizationId(db, 'datacenter', id)
-    if (entityOrgId !== organizationId) {
-      return c.json({ error: 'Not found' }, 404)
-    }
-
-    const denied = await assertCanOr403(c, 'organization:manage', 'datacenter', id)
-    if (denied) return denied
 
     const deleted = await db
       .delete(ip)
@@ -888,24 +853,9 @@ export function registerDatacenterRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
   })
 
   router.post('/datacenters/:id/subnets', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const session = c.get('session')
-    if (!session) return c.json({ error: 'Unauthorized' }, 401)
-
-    const orgResult = await getOrgId(c, session.userId)
-    if (orgResult instanceof Response) return orgResult
-    const organizationId = orgResult
-
-    const id = c.req.param('id')
-    const entityOrgId = await resolveEntityOrganizationId(db, 'datacenter', id)
-    if (entityOrgId !== organizationId) {
-      return c.json({ error: 'Not found' }, 404)
-    }
-
-    const denied = await assertCanOr403(c, 'organization:manage', 'datacenter', id)
-    if (denied) return denied
+    const scope = await resolveDatacenterRequest(c, 'manage')
+    if (scope instanceof Response) return scope
+    const { db, organizationId, id } = scope
 
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
@@ -949,25 +899,10 @@ export function registerDatacenterRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
   })
 
   router.patch('/datacenters/:id/subnets/:networkId', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const session = c.get('session')
-    if (!session) return c.json({ error: 'Unauthorized' }, 401)
-
-    const orgResult = await getOrgId(c, session.userId)
-    if (orgResult instanceof Response) return orgResult
-    const organizationId = orgResult
-
-    const id = c.req.param('id')
+    const scope = await resolveDatacenterRequest(c, 'manage')
+    if (scope instanceof Response) return scope
+    const { db, organizationId, id } = scope
     const networkId = c.req.param('networkId')
-    const entityOrgId = await resolveEntityOrganizationId(db, 'datacenter', id)
-    if (entityOrgId !== organizationId) {
-      return c.json({ error: 'Not found' }, 404)
-    }
-
-    const denied = await assertCanOr403(c, 'organization:manage', 'datacenter', id)
-    if (denied) return denied
 
     const site = await loadSiteNetworkRow(db, organizationId, id, networkId)
     if (!site) return c.json({ error: 'Not found' }, 404)
@@ -1002,25 +937,10 @@ export function registerDatacenterRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
   })
 
   router.delete('/datacenters/:id/subnets/:networkId', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const session = c.get('session')
-    if (!session) return c.json({ error: 'Unauthorized' }, 401)
-
-    const orgResult = await getOrgId(c, session.userId)
-    if (orgResult instanceof Response) return orgResult
-    const organizationId = orgResult
-
-    const id = c.req.param('id')
+    const scope = await resolveDatacenterRequest(c, 'manage')
+    if (scope instanceof Response) return scope
+    const { db, organizationId, id } = scope
     const networkId = c.req.param('networkId')
-    const entityOrgId = await resolveEntityOrganizationId(db, 'datacenter', id)
-    if (entityOrgId !== organizationId) {
-      return c.json({ error: 'Not found' }, 404)
-    }
-
-    const denied = await assertCanOr403(c, 'organization:manage', 'datacenter', id)
-    if (denied) return denied
 
     const site = await loadSiteNetworkRow(db, organizationId, id, networkId)
     if (!site) return c.json({ error: 'Not found' }, 404)
@@ -1039,24 +959,9 @@ export function registerDatacenterRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
   })
 
   router.patch('/datacenters/:id', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const session = c.get('session')
-    if (!session) return c.json({ error: 'Unauthorized' }, 401)
-
-    const orgResult = await getOrgId(c, session.userId)
-    if (orgResult instanceof Response) return orgResult
-    const organizationId = orgResult
-
-    const id = c.req.param('id')
-    const entityOrgId = await resolveEntityOrganizationId(db, 'datacenter', id)
-    if (entityOrgId !== organizationId) {
-      return c.json({ error: 'Not found' }, 404)
-    }
-
-    const denied = await assertCanOr403(c, 'organization:manage', 'datacenter', id)
-    if (denied) return denied
+    const scope = await resolveDatacenterRequest(c, 'manage')
+    if (scope instanceof Response) return scope
+    const { db, session, organizationId, id } = scope
 
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
@@ -1101,24 +1006,9 @@ export function registerDatacenterRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
   })
 
   router.delete('/datacenters/:id', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const session = c.get('session')
-    if (!session) return c.json({ error: 'Unauthorized' }, 401)
-
-    const orgResult = await getOrgId(c, session.userId)
-    if (orgResult instanceof Response) return orgResult
-    const organizationId = orgResult
-
-    const id = c.req.param('id')
-    const entityOrgId = await resolveEntityOrganizationId(db, 'datacenter', id)
-    if (entityOrgId !== organizationId) {
-      return c.json({ error: 'Not found' }, 404)
-    }
-
-    const denied = await assertCanOr403(c, 'organization:manage', 'datacenter', id)
-    if (denied) return denied
+    const scope = await resolveDatacenterRequest(c, 'manage')
+    if (scope instanceof Response) return scope
+    const { db, id } = scope
 
     const members = await loadDatacenterMembershipsForDatacenter(db, id)
     if (members.length > 0) {

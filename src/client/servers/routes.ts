@@ -89,6 +89,7 @@ import { UPDATE_REQUEST_TTL_MS } from '../../features/update/constants.ts'
 import { registerServerCommandRoutes } from './commands-routes.ts'
 import { registerServerMetricsRoutes } from './metrics-routes.ts'
 import { registerServerLabelRoutes } from './labels-routes.ts'
+import { resolveOrgRequest } from '../org-request.ts'
 import { cachedServersListReadModel } from '../../query-cache/read-models/servers-list.ts'
 import { applyLocationPatch, resolveLocation } from '../../features/geo/location-override.ts'
 import {
@@ -163,16 +164,19 @@ function instanceUpdateChannel(c: Context<AppEnv>): UpdateChannel {
   return resolveInstanceUpdateChannel(c.get('platformEnv'))
 }
 
-async function clientUpdateGate(
+/**
+ * The instance's upgrade coordinator for this request, plus the co-located
+ * server id it was built with (callers exclude that host from fleet runs).
+ */
+async function buildUpgradeCoordinator(
   c: Context<AppEnv>,
+  db: Db,
+  registry: DaemonCellRegistry,
   runtime: 'deno' | 'workers'
-): Promise<ClientUpdateBlock> {
-  if (runtime === 'workers') {
-    return { blocked: true, error: 'updates_managed' }
-  }
-  const db = getDb(c)
-  const registry = getDaemonCellRegistry(c)
-  if (!db || !registry) return { blocked: false, useCoordinator: false }
+): Promise<{
+  coordinator: ReturnType<typeof createUpgradeCoordinator>
+  colocated: Awaited<ReturnType<typeof resolveColocatedServerId>>
+}> {
   const revision = resolveInstanceRevision(c.get('platformEnv'))
   const colocated = await resolveColocatedServerId(db, registry)
   const coordinator = createUpgradeCoordinator({
@@ -185,6 +189,20 @@ async function clientUpdateGate(
     colocatedServerId: colocated,
     instanceInstalled: { version: INSTANCE_VERSION, commit: revision.commit },
   })
+  return { coordinator, colocated }
+}
+
+async function clientUpdateGate(
+  c: Context<AppEnv>,
+  runtime: 'deno' | 'workers'
+): Promise<ClientUpdateBlock> {
+  if (runtime === 'workers') {
+    return { blocked: true, error: 'updates_managed' }
+  }
+  const db = getDb(c)
+  const registry = getDaemonCellRegistry(c)
+  if (!db || !registry) return { blocked: false, useCoordinator: false }
+  const { coordinator } = await buildUpgradeCoordinator(c, db, registry, runtime)
   try {
     return await coordinator.updateGate()
   } catch {
@@ -695,15 +713,9 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
   router.use('/servers/*', createSessionMiddleware(secrets))
 
   router.get('/servers', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const session = c.get('session')
-    if (!session) return c.json({ error: 'Unauthorized' }, 401)
-
-    const orgResult = await getOrgId(c, session.userId)
-    if (orgResult instanceof Response) return orgResult
-    const organizationId = orgResult
+    const scope = await resolveOrgRequest(c)
+    if (scope instanceof Response) return scope
+    const { db, session, organizationId } = scope
 
     const visibleIds = await listVisible(db, {
       kind: 'server',
@@ -796,15 +808,9 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
   })
 
   router.get('/servers/updates', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const session = c.get('session')
-    if (!session) return c.json({ error: 'Unauthorized' }, 401)
-
-    const orgResult = await getOrgId(c, session.userId)
-    if (orgResult instanceof Response) return orgResult
-    const organizationId = orgResult
+    const scope = await resolveOrgRequest(c)
+    if (scope instanceof Response) return scope
+    const { db, session, organizationId } = scope
 
     const visibleIds = await listVisible(db, {
       kind: 'server',
@@ -868,15 +874,9 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
   })
 
   router.post('/servers/updates', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const session = c.get('session')
-    if (!session) return c.json({ error: 'Unauthorized' }, 401)
-
-    const orgResult = await getOrgId(c, session.userId)
-    if (orgResult instanceof Response) return orgResult
-    const organizationId = orgResult
+    const scope = await resolveOrgRequest(c)
+    if (scope instanceof Response) return scope
+    const { db, session, organizationId } = scope
 
     // Starting a fleet update opens the one instance-wide upgrade run: the
     // same organization:manage bar as updating a single server.
@@ -901,21 +901,12 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     const blocked = blockedUpdateResponse(c, gate)
     if (blocked) return blocked
     if (!gate.blocked && gate.useCoordinator) {
-      const revision = resolveInstanceRevision(c.get('platformEnv'))
-      const colocated = await resolveColocatedServerId(db, registry)
-      const coordinator = createUpgradeCoordinator({
-        store: createDrizzleUpgradeStore(db, registry),
-        enqueue: (serverId, envelope) => registry.getCell(serverId).enqueue(envelope),
-        runtime: opts.runtime,
-        channel: instanceUpdateChannel(c),
-        development: isExplicitDevelopmentMode(),
-        now: () => new Date().toISOString(),
-        colocatedServerId: colocated,
-        instanceInstalled: {
-          version: INSTANCE_VERSION,
-          commit: revision.commit,
-        },
-      })
+      const { coordinator, colocated } = await buildUpgradeCoordinator(
+        c,
+        db,
+        registry,
+        opts.runtime
+      )
       const started = await coordinator.start({
         source: 'server',
         startedBy: session.userId,
@@ -985,15 +976,9 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
   })
 
   router.get('/servers/status', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const session = c.get('session')
-    if (!session) return c.json({ error: 'Unauthorized' }, 401)
-
-    const orgResult = await getOrgId(c, session.userId)
-    if (orgResult instanceof Response) return orgResult
-    const organizationId = orgResult
+    const scope = await resolveOrgRequest(c)
+    if (scope instanceof Response) return scope
+    const { db, session, organizationId } = scope
 
     const visibleIds = await listVisible(db, {
       kind: 'server',
@@ -1234,21 +1219,7 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     const blocked = blockedUpdateResponse(c, gate)
     if (blocked) return blocked
     if (!gate.blocked && gate.useCoordinator) {
-      const revision = resolveInstanceRevision(c.get('platformEnv'))
-      const colocated = await resolveColocatedServerId(db, registry)
-      const coordinator = createUpgradeCoordinator({
-        store: createDrizzleUpgradeStore(db, registry),
-        enqueue: (serverId, envelope) => registry.getCell(serverId).enqueue(envelope),
-        runtime: opts.runtime,
-        channel: instanceUpdateChannel(c),
-        development: isExplicitDevelopmentMode(),
-        now: () => new Date().toISOString(),
-        colocatedServerId: colocated,
-        instanceInstalled: {
-          version: INSTANCE_VERSION,
-          commit: revision.commit,
-        },
-      })
+      const { coordinator } = await buildUpgradeCoordinator(c, db, registry, opts.runtime)
       const started = await coordinator.start({
         source: 'server',
         startedBy: c.get('session')?.userId ?? null,
@@ -1368,16 +1339,10 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
   })
 
   router.patch('/servers/:id', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const session = c.get('session')
-    if (!session) return c.json({ error: 'Unauthorized' }, 401)
-
+    const scope = await resolveOrgRequest(c)
+    if (scope instanceof Response) return scope
+    const { db, session, organizationId } = scope
     const id = c.req.param('id')
-    const orgResult = await getOrgId(c, session.userId)
-    if (orgResult instanceof Response) return orgResult
-    const organizationId = orgResult
 
     const [existing] = await db
       .select({ id: server.id, options: server.options })
@@ -1445,16 +1410,10 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
    * the host cannot re-enroll it — recovery is `DELETE /servers/:id`.
    */
   router.post('/servers/:id/daemon-key/revoke', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const session = c.get('session')
-    if (!session) return c.json({ error: 'Unauthorized' }, 401)
-
+    const scope = await resolveOrgRequest(c)
+    if (scope instanceof Response) return scope
+    const { db, session, organizationId } = scope
     const id = c.req.param('id')
-    const orgResult = await getOrgId(c, session.userId)
-    if (orgResult instanceof Response) return orgResult
-    const organizationId = orgResult
 
     const [row] = await db
       .select({ id: server.id, name: server.name, hostname: server.hostname })
@@ -1513,16 +1472,10 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
   })
 
   router.delete('/servers/:id', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const session = c.get('session')
-    if (!session) return c.json({ error: 'Unauthorized' }, 401)
-
+    const scope = await resolveOrgRequest(c)
+    if (scope instanceof Response) return scope
+    const { db, session, organizationId } = scope
     const id = c.req.param('id')
-    const orgResult = await getOrgId(c, session.userId)
-    if (orgResult instanceof Response) return orgResult
-    const organizationId = orgResult
 
     const [row] = await db
       .select({ id: server.id, name: server.name, hostname: server.hostname })
