@@ -39,13 +39,11 @@ export const serverSchemas = {
   },
   ServerCpuSocket: {
     type: 'object',
-    description:
-      'One physical CPU socket. resources.cpus is ordered 0, 1, … by physical id.',
+    description: 'One physical CPU socket. resources.cpus is ordered 0, 1, … by physical id.',
     properties: {
       vendorId: {
         type: 'string',
-        description:
-          'cpuinfo vendor_id (e.g. GenuineIntel) or ARM CPU implementer (e.g. 0x41).',
+        description: 'cpuinfo vendor_id (e.g. GenuineIntel) or ARM CPU implementer (e.g. 0x41).',
       },
       name: {
         type: 'string',
@@ -88,8 +86,7 @@ export const serverSchemas = {
       },
       cache: {
         type: 'object',
-        description:
-          'Cache sizes in bytes (per-core L1/L2; shared L3 when present).',
+        description: 'Cache sizes in bytes (per-core L1/L2; shared L3 when present).',
         properties: {
           l1: { type: 'integer', minimum: 1 },
           l1d: { type: 'integer', minimum: 1 },
@@ -102,8 +99,7 @@ export const serverSchemas = {
       speedMhz: {
         type: 'integer',
         minimum: 1,
-        description:
-          'Advertised base clock (base_frequency or model-name @ GHz).',
+        description: 'Advertised base clock (base_frequency or model-name @ GHz).',
       },
       turboMhz: {
         type: 'integer',
@@ -141,8 +137,7 @@ export const serverSchemas = {
       cpus: {
         type: 'array',
         items: { $ref: '#/components/schemas/ServerCpuSocket' },
-        description:
-          'Physical CPU sockets in physical-id order.',
+        description: 'Physical CPU sockets in physical-id order.',
       },
       gpus: {
         type: 'array',
@@ -164,8 +159,7 @@ export const serverSchemas = {
           totalBytes: {
             type: 'integer',
             minimum: 0,
-            description:
-              'SwapTotal from /proc/meminfo in bytes (0 when swap is disabled).',
+            description: 'SwapTotal from /proc/meminfo in bytes (0 when swap is disabled).',
           },
         },
       },
@@ -201,8 +195,7 @@ export const serverSchemas = {
       },
       composeVersion: {
         type: 'string',
-        description:
-          'Docker Compose plugin version (docker compose version), e.g. 2.39.1.',
+        description: 'Docker Compose plugin version (docker compose version), e.g. 2.39.1.',
       },
     },
   },
@@ -231,8 +224,7 @@ export const serverSchemas = {
     properties: {
       licenseTier: {
         type: ['string', 'null'],
-        description:
-          'Bound license `tier.label`, or null when unassigned / self-hosted.',
+        description: 'Bound license `tier.label`, or null when unassigned / self-hosted.',
       },
       requiredTier: {
         type: 'string',
@@ -240,8 +232,7 @@ export const serverSchemas = {
       },
       recommendedTier: {
         type: 'string',
-        description:
-          'Harder of required and discovered NIC / drive / GPU counts.',
+        description: 'Harder of required and discovered NIC / drive / GPU counts.',
       },
       unwatched: {
         type: 'object',
@@ -271,6 +262,62 @@ export const serverSchemas = {
       },
     },
   },
+  LocationFields: {
+    type: 'object',
+    required: ['city', 'region', 'regionCode', 'country', 'asn', 'asOrganization'],
+    properties: {
+      city: { type: ['string', 'null'] },
+      region: { type: ['string', 'null'], description: 'State / province name.' },
+      regionCode: { type: ['string', 'null'], description: 'State / province code, e.g. `TX`.' },
+      country: { type: ['string', 'null'], description: 'ISO 3166-1 alpha-2, upper-case.' },
+      asn: { type: ['integer', 'null'], description: 'Autonomous system number.' },
+      asOrganization: { type: ['string', 'null'], description: 'AS organization name.' },
+    },
+  },
+  Location: {
+    description:
+      "Effective location: each field is the operator override, else Cloudflare's detected value (a server's connect-time geo; a datacenter's geo seeded from its source server at creation), else null.",
+    allOf: [
+      { $ref: '#/components/schemas/LocationFields' },
+      {
+        type: 'object',
+        required: ['source', 'overridden', 'detected'],
+        properties: {
+          source: {
+            type: 'string',
+            enum: ['detected', 'custom'],
+            description: '`custom` when at least one field is overridden.',
+          },
+          overridden: {
+            type: 'array',
+            items: {
+              type: 'string',
+              enum: ['city', 'region', 'regionCode', 'country', 'asn', 'asOrganization'],
+            },
+            description: 'Fields currently overridden by the operator.',
+          },
+          detected: {
+            $ref: '#/components/schemas/LocationFields',
+            description: "Cloudflare's values, untouched by overrides.",
+          },
+        },
+      },
+    ],
+  },
+  LocationPatch: {
+    type: ['object', 'null'],
+    additionalProperties: false,
+    description:
+      'Location override. Each present field sets that field; `null` or `""` clears it back to the detected value; the whole `location: null` resets every field. Strings are trimmed (city/region ≤ 128, regionCode ≤ 16, asOrganization ≤ 256 chars); `country` is two letters (normalised to upper-case); `asn` is a positive integer (or `"AS13335"`). Unknown fields or invalid values → 400.',
+    properties: {
+      city: { type: ['string', 'null'] },
+      region: { type: ['string', 'null'] },
+      regionCode: { type: ['string', 'null'] },
+      country: { type: ['string', 'null'] },
+      asn: { type: ['integer', 'string', 'null'] },
+      asOrganization: { type: ['string', 'null'] },
+    },
+  },
   ServerRow: {
     type: 'object',
     properties: {
@@ -279,14 +326,12 @@ export const serverSchemas = {
       organizationId: { type: ['string', 'null'] },
       licenseId: { type: ['string', 'null'] },
       tierPlacement: {
-        oneOf: [
-          { $ref: '#/components/schemas/ServerTierPlacement' },
-          { type: 'null' },
-        ],
+        oneOf: [{ $ref: '#/components/schemas/ServerTierPlacement' }, { type: 'null' }],
         description:
           'License vs required/recommended hardware placement. List responses use unwatched counts; detail uses device ids.',
       },
       options: { type: ['object', 'null'], additionalProperties: true },
+      location: { $ref: '#/components/schemas/Location' },
       createdAt: { type: 'string', format: 'date-time' },
       connected: {
         type: 'boolean',
@@ -302,12 +347,12 @@ export const serverSchemas = {
         type: ['string', 'null'],
         enum: ['physical', 'virtual', null],
         description:
-          'Declared `server.machine_class` for metrics capability-plan resolution. Null until pinned via PATCH or inferred `physical` at ingest (sensors discovered, or the daemon\'s own verdict on its topology snapshot); never inferred `virtual`.',
+          "Declared `server.machine_class` for metrics capability-plan resolution. Null until pinned via PATCH or inferred `physical` at ingest (sensors discovered, or the daemon's own verdict on its topology snapshot); never inferred `virtual`.",
       },
       layoutPaths: {
         type: ['object', 'null'],
         description:
-          'Host layout paths the daemon reports on its latest topology snapshot: where managed-engine backups land (`TURBOPANEL_BACKUP_DIR`, `/backup` by default) and its log directory. Read-only — set by the daemon\'s environment on the host, not by this API. Null until a v6 daemon has reported topology.',
+          "Host layout paths the daemon reports on its latest topology snapshot: where managed-engine backups land (`TURBOPANEL_BACKUP_DIR`, `/backup` by default) and its log directory. Read-only — set by the daemon's environment on the host, not by this API. Null until a v6 daemon has reported topology.",
         properties: {
           backup: { type: 'string' },
           logs: { type: 'string' },
@@ -359,14 +404,10 @@ export const serverSchemas = {
       geo: {
         type: ['object', 'null'],
         additionalProperties: true,
-        description:
-          'Connecting-IP geolocation from server.metadata.geo when available.',
+        description: 'Connecting-IP geolocation from server.metadata.geo when available.',
       },
       os: {
-        oneOf: [
-          { $ref: '#/components/schemas/ServerOsMetadata' },
-          { type: 'null' },
-        ],
+        oneOf: [{ $ref: '#/components/schemas/ServerOsMetadata' }, { type: 'null' }],
         description:
           'Host OS from server.os_* columns (daemon hello). Null until the daemon has reported it.',
       },
@@ -381,10 +422,7 @@ export const serverSchemas = {
         description: 'Logo key for the UI OS column.',
       },
       resources: {
-        oneOf: [
-          { $ref: '#/components/schemas/ServerHostResources' },
-          { type: 'null' },
-        ],
+        oneOf: [{ $ref: '#/components/schemas/ServerHostResources' }, { type: 'null' }],
         description:
           'Host capacity (cpu / RAM / swap totals) plus ips from server.metadata.resources. Null until the daemon hello reports it.',
       },
@@ -400,18 +438,12 @@ export const serverSchemas = {
           'Host addresses from server.metadata.resources.ips (also nested on resources). Null until reported.',
       },
       timeSync: {
-        oneOf: [
-          { $ref: '#/components/schemas/ServerTimeSync' },
-          { type: 'null' },
-        ],
+        oneOf: [{ $ref: '#/components/schemas/ServerTimeSync' }, { type: 'null' }],
         description:
           'Host time-sync composed from server timezone / NTP columns. Null until reported.',
       },
       docker: {
-        oneOf: [
-          { $ref: '#/components/schemas/ServerDockerMetadata' },
-          { type: 'null' },
-        ],
+        oneOf: [{ $ref: '#/components/schemas/ServerDockerMetadata' }, { type: 'null' }],
         description:
           'Docker CLI / Compose plugin versions from server.metadata.docker. Null when Docker is not installed or has not been reported.',
       },
@@ -452,8 +484,7 @@ export const serverSchemas = {
       ntpDefaultsSource: {
         type: ['string', 'null'],
         enum: ['server', 'organization', 'datacenter', null],
-        description:
-          'Which configured layer supplied ntpDefaults (null when none are set).',
+        description: 'Which configured layer supplied ntpDefaults (null when none are set).',
       },
       colocatedWithInstance: {
         type: 'boolean',
@@ -486,8 +517,7 @@ export const serverSchemas = {
       },
       value: {
         type: 'string',
-        description:
-          'Label value, at most 255 characters (empty string allowed).',
+        description: 'Label value, at most 255 characters (empty string allowed).',
       },
     },
   },
@@ -537,6 +567,7 @@ export const serverSchemas = {
           },
         },
       },
+      location: { $ref: '#/components/schemas/LocationPatch' },
     },
   },
   ServerDetailResponse: {
@@ -607,13 +638,7 @@ export const serverSchemas = {
   },
   ServerStatusResponse: {
     type: 'object',
-    required: [
-      'serverId',
-      'connected',
-      'daemonStatus',
-      'connectedAt',
-      'statusChangedAt',
-    ],
+    required: ['serverId', 'connected', 'daemonStatus', 'connectedAt', 'statusChangedAt'],
     description:
       'Postgres-backed status row for `GET /servers/{id}/status` (`ServerStatusRecord`).',
     properties: {
@@ -622,8 +647,7 @@ export const serverSchemas = {
       daemonStatus: {
         type: ['string', 'null'],
         enum: ['online', 'offline', 'unknown', null],
-        description:
-          'Derived from `connected` + `statusChangedAt` — not stored.',
+        description: 'Derived from `connected` + `statusChangedAt` — not stored.',
       },
       connectedAt: { type: ['string', 'null'], format: 'date-time' },
       statusChangedAt: { type: ['string', 'null'], format: 'date-time' },
@@ -715,16 +739,10 @@ export const serverSchemas = {
           "The update channel this instance follows (TURBOPANEL_UPDATE_CHANNEL; default trunk) — the one every queued update targets. rc and release resolve from the daemon's GitHub Releases.",
       },
       current: {
-        oneOf: [
-          { $ref: '#/components/schemas/ServerUpdateCurrent' },
-          { type: 'null' },
-        ],
+        oneOf: [{ $ref: '#/components/schemas/ServerUpdateCurrent' }, { type: 'null' }],
       },
       target: {
-        oneOf: [
-          { $ref: '#/components/schemas/ServerUpdateTarget' },
-          { type: 'null' },
-        ],
+        oneOf: [{ $ref: '#/components/schemas/ServerUpdateTarget' }, { type: 'null' }],
       },
       updateAvailable: { type: 'boolean' },
       colocatedWithInstance: {
@@ -750,13 +768,11 @@ export const serverSchemas = {
       },
       updateBlockedReason: {
         type: 'string',
-        description:
-          'Human-readable reason remote updates are blocked for this server.',
+        description: 'Human-readable reason remote updates are blocked for this server.',
       },
       lastUpdateError: {
         type: 'string',
-        description:
-          'Error from the most recent terminal update attempt, when present.',
+        description: 'Error from the most recent terminal update attempt, when present.',
       },
       status: { type: 'string' },
       daemonSupport: { $ref: '#/components/schemas/DaemonSupport' },
@@ -788,8 +804,7 @@ export const serverSchemas = {
       deleted: { type: 'boolean', const: true },
       error: {
         type: 'string',
-        description:
-          'The Postgres row was deleted but daemon cell purge did not complete.',
+        description: 'The Postgres row was deleted but daemon cell purge did not complete.',
       },
     },
   },
@@ -809,8 +824,7 @@ export const serverSchemas = {
     properties: {
       error: {
         type: 'string',
-        const:
-          'Cannot delete this server while dependent resources still exist',
+        const: 'Cannot delete this server while dependent resources still exist',
       },
       code: { type: 'string', const: 'server_has_blockers' },
       blockers: {
@@ -956,8 +970,7 @@ export const serverPaths: Record<string, unknown> = {
           },
         },
         '403': {
-          description:
-            'Forbidden, or update blocked for the co-located development daemon',
+          description: 'Forbidden, or update blocked for the co-located development daemon',
           content: {
             'application/json': {
               schema: {
@@ -1081,8 +1094,7 @@ export const serverPaths: Record<string, unknown> = {
           },
         },
         '403': {
-          description:
-            'Forbidden, or update blocked for the co-located development daemon',
+          description: 'Forbidden, or update blocked for the co-located development daemon',
           content: {
             'application/json': {
               schema: {
@@ -1227,7 +1239,7 @@ export const serverPaths: Record<string, unknown> = {
       tags: ['Servers'],
       summary: 'Revoke the daemon identity key of a compromised server',
       description:
-        'The compromised-host cutoff. Marks the server\'s daemon key revoked (durable: POST /enroll, POST /auth/session and the daemon WebSocket connect all refuse it from then on), then purges the live daemon cell as best effort so an open socket and an unexpired 15-minute JWT do not outlive the revoke. Revocation is sticky — the license token still on the host cannot re-enroll it (refused atomically at the key row, not just by a pre-check). Recovery is DELETE /servers/{id} and a fresh enroll of the rebuilt host; delete itself requires first moving any environments pinned to this server and clearing its blocker resources (networks, containers, IPs) — intentional for a host you no longer trust, since those are suspect too. Idempotent: calling again re-attempts the purge and returns the original revokedAt. Requires server manage permission, same as DELETE.',
+        "The compromised-host cutoff. Marks the server's daemon key revoked (durable: POST /enroll, POST /auth/session and the daemon WebSocket connect all refuse it from then on), then purges the live daemon cell as best effort so an open socket and an unexpired 15-minute JWT do not outlive the revoke. Revocation is sticky — the license token still on the host cannot re-enroll it (refused atomically at the key row, not just by a pre-check). Recovery is DELETE /servers/{id} and a fresh enroll of the rebuilt host; delete itself requires first moving any environments pinned to this server and clearing its blocker resources (networks, containers, IPs) — intentional for a host you no longer trust, since those are suspect too. Idempotent: calling again re-attempts the purge and returns the original revokedAt. Requires server manage permission, same as DELETE.",
       security: [{ cookieAuth: [] }],
       parameters: [
         {
@@ -1239,7 +1251,8 @@ export const serverPaths: Record<string, unknown> = {
       ],
       responses: {
         '200': {
-          description: 'Key revoked. purged=false means the live cell could not be reached (purgeError is a fixed code — purge_failed or registry_unavailable; the driver\'s own message is logged, never returned, because it names registry internals). Even unpurged, the revoke bites at the next point the key is re-checked: self-hosted, the socket rejects the daemon\'s next inbound frame (close code key_revoked); hosted, an already-authenticated Durable Object socket is closed by the purge or by the daemon\'s next reconnect, and either runtime refuses the next session mint.',
+          description:
+            "Key revoked. purged=false means the live cell could not be reached (purgeError is a fixed code — purge_failed or registry_unavailable; the driver's own message is logged, never returned, because it names registry internals). Even unpurged, the revoke bites at the next point the key is re-checked: self-hosted, the socket rejects the daemon's next inbound frame (close code key_revoked); hosted, an already-authenticated Durable Object socket is closed by the purge or by the daemon's next reconnect, and either runtime refuses the next session mint.",
           content: {
             'application/json': {
               schema: {
@@ -1271,7 +1284,8 @@ export const serverPaths: Record<string, unknown> = {
           },
         },
         '403': {
-          description: 'Forbidden, or the co-located control plane server (revoking its key would sever the control plane from its own host)',
+          description:
+            'Forbidden, or the co-located control plane server (revoking its key would sever the control plane from its own host)',
           content: {
             'application/json': {
               schema: {
@@ -1373,7 +1387,7 @@ export const serverPaths: Record<string, unknown> = {
     },
     patch: {
       tags: ['Servers'],
-      summary: 'Update server display name or datacenter pin',
+      summary: 'Update server display name, options, machine class or location',
       security: [{ cookieAuth: [] }],
       parameters: [
         {
@@ -1537,8 +1551,7 @@ export const serverPaths: Record<string, unknown> = {
           },
         },
         '500': {
-          description:
-            'Server row deleted but daemon cell purge failed; cleanup is incomplete',
+          description: 'Server row deleted but daemon cell purge failed; cleanup is incomplete',
           content: {
             'application/json': {
               schema: {

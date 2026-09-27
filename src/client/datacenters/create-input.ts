@@ -7,6 +7,11 @@ import {
 import { suggestDatacenterDisplayNameFromGeo } from '../../features/datacenters/datacenter-name-suggestions.ts'
 import { parseServerGeo } from '../../features/geo/server-geo.ts'
 import {
+  datacenterDetectedGeo,
+  type ResolvedLocation,
+  resolveLocation,
+} from '../../features/geo/location-override.ts'
+import {
   alignedNetworkCidr,
   isValidCidr,
   isValidIpAddress,
@@ -18,14 +23,11 @@ import {
   type MemberPinSubnet,
 } from '../../features/net/datacenter-membership.ts'
 
-const UUID_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
 const MAX_MEMBERS = 64
 
-export type ParseResult<T> =
-  | { ok: true; value: T }
-  | { ok: false }
+export type ParseResult<T> = { ok: true; value: T } | { ok: false }
 
 export function parseOptionalUuid(value: unknown): ParseResult<string | null> {
   if (value === undefined || value === null) {
@@ -83,11 +85,11 @@ export type DerivedCidrGroup = {
 export type MemberPinLookupError =
   | { ok: false; status: 404 }
   | {
-    ok: false
-    status: 400
-    error: 'address_cidr_unreported'
-    serverId: string
-  }
+      ok: false
+      status: 400
+      error: 'address_cidr_unreported'
+      serverId: string
+    }
 
 /**
  * Group create/add members by the aligned site CIDR derived from each
@@ -95,7 +97,7 @@ export type MemberPinLookupError =
  */
 export function groupMembersByDerivedCidr(
   members: readonly ParsedMemberPin[],
-  rows: readonly SelectedServerRow[],
+  rows: readonly SelectedServerRow[]
 ): { ok: true; groups: DerivedCidrGroup[] } | MemberPinLookupError {
   const byId = new Map(rows.map((row) => [row.id, row]))
   const groups = new Map<string, ParsedMemberPin[]>()
@@ -140,7 +142,7 @@ export type SubnetResolutionOutcome =
 export function resolveOrCreateSubnetForAddress(
   address: string,
   serverMetadata: unknown,
-  subnets: readonly MemberPinSubnet[],
+  subnets: readonly MemberPinSubnet[]
 ): SubnetResolutionOutcome {
   const matched = resolveSubnetForAddress(subnets, address)
   if (matched) {
@@ -159,7 +161,7 @@ export function resolveOrCreateSubnetForAddress(
 
 export function mergeDatacenterMetadata(
   seededMetadata: Record<string, unknown> | null,
-  requestMetadata: Record<string, unknown> | null,
+  requestMetadata: Record<string, unknown> | null
 ): Record<string, unknown> | null {
   if (!seededMetadata) return requestMetadata
   if (!requestMetadata) return seededMetadata
@@ -182,13 +184,12 @@ export type SelectedServerRow = {
 
 export function resolveSeededFields(
   input: CreateDatacenterInput,
-  rows: SelectedServerRow[],
+  rows: SelectedServerRow[]
 ): {
   name: string | null
   metadata: Record<string, unknown> | null
 } {
-  const sourceServerId = input.sourceServerId ?? input.members[0]?.serverId ??
-    null
+  const sourceServerId = input.sourceServerId ?? input.members[0]?.serverId ?? null
   if (!sourceServerId) {
     return { name: input.name, metadata: input.metadata }
   }
@@ -196,30 +197,24 @@ export function resolveSeededFields(
   const sourceRow = rows.find((row) => row.id === sourceServerId)
   const rawMetadata = sourceRow?.metadata
   const geo = parseServerGeo(
-    typeof rawMetadata === 'object' &&
-      rawMetadata !== null &&
-      !Array.isArray(rawMetadata)
+    typeof rawMetadata === 'object' && rawMetadata !== null && !Array.isArray(rawMetadata)
       ? (rawMetadata as Record<string, unknown>).geo
-      : null,
+      : null
   )
   if (!geo) {
     return { name: input.name, metadata: input.metadata }
   }
 
-  const seededMetadata = buildSeededDatacenterMetadata(
-    geo,
-    sourceServerId,
-  )
+  const seededMetadata = buildSeededDatacenterMetadata(geo, sourceServerId)
   return {
-    name: input.name ??
-      suggestDatacenterDisplayNameFromGeo(geo),
+    name: input.name ?? suggestDatacenterDisplayNameFromGeo(geo),
     metadata: mergeDatacenterMetadata(seededMetadata, input.metadata),
   }
 }
 
 export function attachPrivateCidrs<T extends { id: string }>(
   rows: readonly T[],
-  cidrsByDc: ReadonlyMap<string, string[]>,
+  cidrsByDc: ReadonlyMap<string, string[]>
 ): Array<T & { privateCidrs: string[] }> {
   return rows.map((row) => ({
     ...row,
@@ -233,7 +228,7 @@ export function attachPrivateCidrs<T extends { id: string }>(
  * ladder does not read these yet.
  */
 export function attachEffectivePolicy<T extends { options: unknown }>(
-  rows: readonly T[],
+  rows: readonly T[]
 ): Array<T & DatacenterPolicy> {
   return rows.map((row) => ({
     ...row,
@@ -241,12 +236,23 @@ export function attachEffectivePolicy<T extends { options: unknown }>(
   }))
 }
 
+/**
+ * Surface the effective `location` (operator override ?? seeded Cloudflare
+ * geo) beside the raw `options` / `metadata`, so clients never merge the two.
+ */
+export function attachEffectiveLocation<T extends { options: unknown; metadata: unknown }>(
+  rows: readonly T[]
+): Array<T & { location: ResolvedLocation }> {
+  return rows.map((row) => ({
+    ...row,
+    location: resolveLocation(row.options, datacenterDetectedGeo(row.metadata)),
+  }))
+}
+
 export function parseNameSuggestionsQuery(
   unassignedOnlyRaw: string | undefined,
-  limitRaw: string | undefined,
-):
-  | { unassignedOnly: boolean; limit: number }
-  | 'invalid' {
+  limitRaw: string | undefined
+): { unassignedOnly: boolean; limit: number } | 'invalid' {
   const unassignedOnly = unassignedOnlyRaw !== '0'
   const limit = limitRaw === undefined ? 8 : Number(limitRaw)
   if (!Number.isInteger(limit) || limit < 0 || limit > 32) {

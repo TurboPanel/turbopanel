@@ -57,12 +57,9 @@ test('isServerUuid and SERVER_UUID_RE accept canonical UUIDs', () => {
 test('buildBatchStatusCoalesceKey sorts visible ids for stable keys', () => {
   assertEquals(
     buildBatchStatusCoalesceKey('u1', 'o1', [UUID_B, UUID]),
-    buildBatchStatusCoalesceKey('u1', 'o1', [UUID, UUID_B]),
+    buildBatchStatusCoalesceKey('u1', 'o1', [UUID, UUID_B])
   )
-  assertEquals(
-    buildBatchStatusCoalesceKey('u1', 'o1', [UUID]),
-    `u1:o1:${UUID}`,
-  )
+  assertEquals(buildBatchStatusCoalesceKey('u1', 'o1', [UUID]), `u1:o1:${UUID}`)
 })
 
 test('expiredBatchStatusCoalesceKeys skips in-flight promises', () => {
@@ -73,7 +70,7 @@ test('expiredBatchStatusCoalesceKeys skips in-flight promises', () => {
       ['b', { expiresAt: 500, promise: Promise.resolve() }],
       ['c', { expiresAt: 2_000 }],
     ],
-    now,
+    now
   )
   assertEquals(keys, ['a'])
 })
@@ -96,7 +93,7 @@ test('currentCommitFromDaemonBuild maps daemonBuild commit fields', () => {
       commit: 'abc',
       buildId: 'b1',
       builtAt: '2020-01-01T00:00:00.000Z',
-    },
+    }
   )
 })
 
@@ -115,10 +112,7 @@ test('parseServerPatchCore validates name, options, and emptiness', () => {
   if (rejectedDc.ok) throw new TypeError('expected datacenterId rejection')
   assertEquals(rejectedDc.error, 'Invalid request')
 
-  const withName = parseServerPatchCore(
-    { name: 'edge-1' },
-    '2020-01-01T00:00:00.000Z',
-  )
+  const withName = parseServerPatchCore({ name: 'edge-1' }, '2020-01-01T00:00:00.000Z')
   if (!withName.ok) throw new TypeError('expected name patch')
   assertEquals(withName.patch.name, 'edge-1')
   assertEquals(withName.patch.updatedAt, '2020-01-01T00:00:00.000Z')
@@ -163,17 +157,13 @@ test('shapeServerDatacenters dedupes and sorts memberships', () => {
   ])
   assertEquals(
     shapeServerDatacenters(
-      [
-        { datacenterId: 'dc-b' },
-        { datacenterId: 'dc-a' },
-        { datacenterId: 'dc-b' },
-      ],
-      names,
+      [{ datacenterId: 'dc-b' }, { datacenterId: 'dc-a' }, { datacenterId: 'dc-b' }],
+      names
     ),
     [
       { id: 'dc-a', name: 'Alpha' },
       { id: 'dc-b', name: 'Beta' },
-    ],
+    ]
   )
 })
 
@@ -187,19 +177,10 @@ test('hosting enable/disable transitions detect edges only', () => {
     updatedAt: 't',
   }
   assertEquals(isHostingEnableTransition(null, enablePatch), true)
-  assertEquals(
-    isHostingEnableTransition({ hosting: { enabled: true } }, enablePatch),
-    false,
-  )
-  assertEquals(
-    isHostingDisableTransition({ hosting: { enabled: true } }, disablePatch),
-    true,
-  )
+  assertEquals(isHostingEnableTransition({ hosting: { enabled: true } }, enablePatch), false)
+  assertEquals(isHostingDisableTransition({ hosting: { enabled: true } }, disablePatch), true)
   assertEquals(isHostingDisableTransition(null, disablePatch), false)
-  assertEquals(
-    isHostingDisableTransition({ hosting: { enabled: true } }, enablePatch),
-    false,
-  )
+  assertEquals(isHostingDisableTransition({ hosting: { enabled: true } }, enablePatch), false)
 })
 
 test('serverDeletedPayload and hostingHierarchyFailedBody shapes', () => {
@@ -224,10 +205,7 @@ test('serverDeletedPayload and hostingHierarchyFailedBody shapes', () => {
 })
 
 test('queueServerUpdateHttpStatus maps colocated vs other errors', () => {
-  assertEquals(
-    queueServerUpdateHttpStatus(colocatedServerUpdateBlockedReason()),
-    403,
-  )
+  assertEquals(queueServerUpdateHttpStatus(colocatedServerUpdateBlockedReason()), 403)
   assertEquals(queueServerUpdateHttpStatus('Daemon not connected'), 404)
 })
 
@@ -238,7 +216,7 @@ test('emptyServersUpdatesPayload and resolveTrunkTargetFields', () => {
   assertEquals(emptyServersUpdatesPayload('trunk').servers, [])
   assertEquals(
     emptyServersUpdatesPayload('release').targetError,
-    'Could not resolve release channel manifest',
+    'Could not resolve release channel manifest'
   )
 
   assertEquals(resolveTrunkTargetFields(null, 'trunk'), {
@@ -246,7 +224,10 @@ test('emptyServersUpdatesPayload and resolveTrunkTargetFields', () => {
     targetStatus: 'unknown',
     targetError: 'Could not resolve trunk channel manifest',
   })
-  assertEquals(resolveTrunkTargetFields(null, 'rc').targetError, 'Could not resolve rc channel manifest')
+  assertEquals(
+    resolveTrunkTargetFields(null, 'rc').targetError,
+    'Could not resolve rc channel manifest'
+  )
   const manifest = {
     commit: 'c1',
     buildId: 'b1',
@@ -259,10 +240,10 @@ test('emptyServersUpdatesPayload and resolveTrunkTargetFields', () => {
     targetError: undefined,
   })
   // A release manifest's version rides along so the UI can name the target.
-  assertEquals(
-    resolveTrunkTargetFields({ ...manifest, version: '0.1.1' }, 'release').target,
-    { ...manifest, version: '0.1.1' },
-  )
+  assertEquals(resolveTrunkTargetFields({ ...manifest, version: '0.1.1' }, 'release').target, {
+    ...manifest,
+    version: '0.1.1',
+  })
 })
 
 test('resolveBatchUpdateEligibility covers each rejection path', () => {
@@ -273,7 +254,7 @@ test('resolveBatchUpdateEligibility covers each rejection path', () => {
       current: null,
       targetCommit: 't',
     }),
-    { ok: false, error: 'Daemon not connected' },
+    { ok: false, error: 'Daemon not connected' }
   )
   assertEquals(
     resolveBatchUpdateEligibility({
@@ -282,7 +263,7 @@ test('resolveBatchUpdateEligibility covers each rejection path', () => {
       current: null,
       targetCommit: 't',
     }),
-    { ok: false, error: colocatedServerUpdateBlockedReason() },
+    { ok: false, error: colocatedServerUpdateBlockedReason() }
   )
   assertEquals(
     resolveBatchUpdateEligibility({
@@ -291,7 +272,7 @@ test('resolveBatchUpdateEligibility covers each rejection path', () => {
       current: { commit: 't', buildId: '' },
       targetCommit: 't',
     }),
-    { ok: false, error: 'Up to date' },
+    { ok: false, error: 'Up to date' }
   )
   assertEquals(
     resolveBatchUpdateEligibility({
@@ -300,7 +281,7 @@ test('resolveBatchUpdateEligibility covers each rejection path', () => {
       current: null,
       targetCommit: null,
     }),
-    { ok: false, error: 'Target unavailable' },
+    { ok: false, error: 'Target unavailable' }
   )
   assertEquals(
     resolveBatchUpdateEligibility({
@@ -309,7 +290,7 @@ test('resolveBatchUpdateEligibility covers each rejection path', () => {
       current: { commit: 'old', buildId: '' },
       targetCommit: 'new',
     }),
-    { ok: true, updateAvailable: true },
+    { ok: true, updateAvailable: true }
   )
 })
 
@@ -326,7 +307,7 @@ test('timezone and presence shaping helpers', () => {
     { timezone: 'UTC' },
     { enforceServerTimezone: false },
     undefined,
-    'America/Chicago',
+    'America/Chicago'
   )
   assertEquals(tz.timezone, 'UTC')
   assertEquals(tz.timezoneSource, 'server')
@@ -334,7 +315,7 @@ test('timezone and presence shaping helpers', () => {
   const inherited = resolveServerHostDefaultsFields(
     {},
     { sshPort: 22022, ntp: { enabled: true } },
-    { sshPort: 2222 },
+    { sshPort: 2222 }
   )
   assertEquals(inherited.sshPort, 2222)
   assertEquals(inherited.sshPortSource, 'datacenter')
@@ -357,7 +338,7 @@ test('timezone and presence shaping helpers', () => {
       os: { family: 'linux' },
       docker: { version: '28.3.3' },
     },
-    true,
+    true
   )
   assertEquals(presence.connected, true)
   assertEquals(presence.hostname, 'host')
@@ -376,7 +357,7 @@ test('the address a co-located daemon shows follows its transport, not its co-lo
   const socket = shapeServerPresenceFields(
     { connected: true, directAttach: true, remoteAddress: null, ips },
     true,
-    'self-hosted',
+    'self-hosted'
   )
   assertEquals([socket.address, socket.addressSource], [null, 'local'])
 
@@ -386,7 +367,7 @@ test('the address a co-located daemon shows follows its transport, not its co-lo
   const hosted = shapeServerPresenceFields(
     { connected: true, directAttach: true, remoteAddress: null, ips },
     true,
-    'hosted',
+    'hosted'
   )
   assertEquals([hosted.address, hosted.addressSource], ['10.1.2.3', 'interface'])
 
@@ -394,7 +375,7 @@ test('the address a co-located daemon shows follows its transport, not its co-lo
   const remote = shapeServerPresenceFields(
     { connected: true, remoteAddress: '203.0.113.7', ips },
     true,
-    'self-hosted',
+    'self-hosted'
   )
   assertEquals([remote.address, remote.addressSource], ['203.0.113.7', 'observed'])
 })
@@ -416,7 +397,7 @@ test('projected update repair helpers', () => {
       channel: 'trunk',
       queuedAt: 'q',
       finishedAt: 'f',
-    },
+    }
   )
   assertEquals(repairedUpdateIdleProjection(), { status: 'idle' })
 })
@@ -495,4 +476,19 @@ test('parseServerPatchCore accepts machineClass pins and rejects unknown classes
 
   const wrongType = parseServerPatchCore({ machineClass: 1 })
   if (wrongType.ok) throw new TypeError('expected non-string machineClass rejection')
+})
+
+test('parseServerPatchCore accepts a location-only patch and refuses a bad one', () => {
+  const set = parseServerPatchCore({ location: { city: ' Austin ', asn: 'AS13335' } })
+  if (!set.ok) throw new TypeError('expected location patch')
+  assertEquals(set.patch.locationPatch, { city: 'Austin', asn: 13335 })
+
+  const reset = parseServerPatchCore({ location: null })
+  if (!reset.ok) throw new TypeError('expected location reset')
+  assertEquals(reset.patch.locationPatch, null)
+
+  const bad = parseServerPatchCore({ location: { country: 'Texas' } })
+  if (bad.ok) throw new TypeError('expected invalid location rejection')
+  assertEquals(bad.error, 'Invalid location.country')
+  assertEquals(bad.status, 400)
 })

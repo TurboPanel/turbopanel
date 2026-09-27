@@ -3,11 +3,8 @@
  * client timezone, host-defaults, and routing-policy APIs.
  */
 
-import {
-  parseNtpDefaults,
-  parseSshPort,
-  type NtpDefaults,
-} from '../servers/host-defaults.ts'
+import { parseNtpDefaults, parseSshPort, type NtpDefaults } from '../servers/host-defaults.ts'
+import { type LocationFields, parseLocationOverride } from '../geo/location-override.ts'
 
 export type DatacenterOptions = {
   /** Datacenter-wide default timezone applied when a server has no override. */
@@ -45,6 +42,12 @@ export type DatacenterOptions = {
    * segments). The parser only returns the field when it was explicitly set.
    */
   trusted?: boolean
+  /**
+   * Operator overrides for the datacenter's location (city, state, country,
+   * ASN). The seeded `metadata.geo` supplies the defaults — see
+   * `resolveLocation` (`../geo/location-override.ts`).
+   */
+  location?: LocationFields
 }
 
 /** Effective `priority` when `datacenter.options.priority` is absent. */
@@ -107,5 +110,7 @@ export function parseDatacenterOptions(value: unknown): DatacenterOptions {
   const priority = parseDatacenterPriority(value.priority)
   if (priority !== undefined) options.priority = priority
   if (typeof value.trusted === 'boolean') options.trusted = value.trusted
+  const location = parseLocationOverride(value.location)
+  if (location) options.location = location
   return options
 }
