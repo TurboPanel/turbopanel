@@ -63,7 +63,7 @@ const TRANSIENT_CODES: ReadonlySet<string> = new Set([
 export function classifyStripeError(
   status: number,
   type: StripeErrorType,
-  code: string | null,
+  code: string | null
 ): StripeErrorClass {
   if (type === 'rate_limit_error' || type === 'api_error' || type === 'transport_error') {
     return 'transient'
@@ -108,6 +108,27 @@ export class StripeApiError extends Error {
   }
 }
 
+/** Anything shaped like a Stripe secret, in case a message ever echoes one. */
+const SECRET_LIKE = /\b(?:sk|rk)_(?:test|live)_[A-Za-z0-9]+|\bwhsec_[A-Za-z0-9]+/g
+
+/**
+ * One log line for an operator: every typed field plus Stripe's own message
+ * (the reason a client never sees — "Stripe Tax has not been activated", a
+ * missing param), with anything secret-shaped redacted. Stripe error bodies
+ * carry no card data; the request id finds the call in the Dashboard's logs.
+ */
+export function describeStripeError(err: StripeApiError): string {
+  const fields = [
+    `status=${err.status}`,
+    `type=${err.type}`,
+    `code=${err.code ?? '-'}`,
+    `param=${err.param ?? '-'}`,
+    `request=${err.requestId ?? '-'}`,
+  ]
+  const message = err.message.replace(SECRET_LIKE, '[redacted]')
+  return `${fields.join(' ')} message=${JSON.stringify(message)}`
+}
+
 /**
  * Build the error for one non-2xx response. `body` is whatever the response
  * parsed to (or `null` when it was not JSON) — never the raw text, which is
@@ -116,21 +137,19 @@ export class StripeApiError extends Error {
 export function stripeErrorFromResponse(
   status: number,
   body: unknown,
-  requestId: string | null,
+  requestId: string | null
 ): StripeApiError {
-  const envelope: StripeErrorEnvelope = isObject(body) && isObject(body.error)
-    ? (body.error as StripeErrorEnvelope)
-    : {}
+  const envelope: StripeErrorEnvelope =
+    isObject(body) && isObject(body.error) ? (body.error as StripeErrorEnvelope) : {}
   const rawType = typeof envelope.type === 'string' ? envelope.type : ''
-  const type: StripeErrorType = KNOWN_TYPES.has(rawType)
-    ? (rawType as StripeErrorType)
-    : 'unknown'
+  const type: StripeErrorType = KNOWN_TYPES.has(rawType) ? (rawType as StripeErrorType) : 'unknown'
   return new StripeApiError({
     status,
     type,
-    message: typeof envelope.message === 'string' && envelope.message.length > 0
-      ? envelope.message
-      : `stripe responded ${status}`,
+    message:
+      typeof envelope.message === 'string' && envelope.message.length > 0
+        ? envelope.message
+        : `stripe responded ${status}`,
     code: typeof envelope.code === 'string' ? envelope.code : null,
     param: typeof envelope.param === 'string' ? envelope.param : null,
     docUrl: typeof envelope.doc_url === 'string' ? envelope.doc_url : null,
