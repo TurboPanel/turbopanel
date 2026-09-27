@@ -27,7 +27,10 @@ import {
   AE_DOUBLE_COUNT,
 } from '../backends/cloudflare/field-map.ts'
 import type { AnalyticsEngineDatasetLike } from '../backends/cloudflare/store.ts'
-import type { CloudflareAnalyticsSqlConfig } from '../backends/cloudflare/sql-api.ts'
+import {
+  AE_SQL_MAX_LENGTH,
+  type CloudflareAnalyticsSqlConfig,
+} from '../backends/cloudflare/sql-api.ts'
 
 type FakeAeConnectionLike = {
   run(sql: string, values?: unknown[]): Promise<unknown>
@@ -76,6 +79,23 @@ async function installAeShims(connection: FakeAeConnectionLike): Promise<void> {
     `CREATE OR REPLACE MACRO toDateTime(x) AS CAST(to_timestamp(x) AS TIMESTAMP)`
   )
   await connection.run(`CREATE OR REPLACE MACRO argMax(val, ord) AS arg_max(val, ord)`)
+  await connection.run(`CREATE OR REPLACE MACRO toUInt32(x) AS CAST(x AS UINTEGER)`)
+}
+
+/**
+ * The two refusals the real AE SQL API answers with `422` that DuckDB would
+ * happily run — mirrored so parity tests catch a builder that regresses into
+ * either (both were live on testing before the fix that added this).
+ */
+export function aeSqlValidationFailure(sql: string): string | null {
+  if (sql.length > AE_SQL_MAX_LENGTH) {
+    return `Input was invalid: SQL was excessively long, exceeded maximum length: ${AE_SQL_MAX_LENGTH}`
+  }
+  const stringAggregate = /\b(min|max|sum|avg)\(\s*blob\d+\b/i.exec(sql)
+  if (stringAggregate) {
+    return `Input was invalid: cannot use the String type as argument 1 in ${stringAggregate[1].toLowerCase()}(`
+  }
+  return null
 }
 
 /** JSON can't serialize BigInt (DuckDB returns BIGINT-typed expressions, e.g. `intDiv`, as JS `bigint`) — normalize recursively before enveloping a query result. */
@@ -117,10 +137,7 @@ export async function createFakeAnalyticsEngine(options?: {
   await installAeShims(connection)
 
   const blobColumns = Array.from({ length: AE_BLOB_COUNT }, (_, i) => `blob${i + 1} VARCHAR`)
-  const doubleColumns = Array.from(
-    { length: AE_DOUBLE_COUNT },
-    (_, i) => `double${i + 1} DOUBLE`
-  )
+  const doubleColumns = Array.from({ length: AE_DOUBLE_COUNT }, (_, i) => `double${i + 1} DOUBLE`)
   await connection.run(
     `CREATE TABLE ${datasetName} (` +
       `index1 VARCHAR, "timestamp" TIMESTAMP, _sample_interval DOUBLE, ` +
@@ -177,6 +194,13 @@ export async function createFakeAnalyticsEngine(options?: {
   const fakeFetch: typeof fetch = async (_input, init) => {
     await flush()
     const sql = typeof init?.body === 'string' ? init.body : ''
+    const refusal = aeSqlValidationFailure(sql)
+    if (refusal !== null) {
+      return new Response(
+        JSON.stringify({ success: false, errors: [{ message: refusal }], messages: [] }),
+        { status: 422, headers: { 'content-type': 'application/json' } }
+      )
+    }
     try {
       const reader = await connection.runAndReadAll(sql)
       const data = reader.getRowObjectsJS().map((row) => normalizeForJson(row)) as Array<

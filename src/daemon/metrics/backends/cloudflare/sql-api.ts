@@ -61,7 +61,11 @@ import type {
   StatusHistoryQuery,
   StatusHistoryResult,
 } from '../../types.ts'
-import type { MetricEventKind, MetricEventSeverity, MetricEvent } from '../../../../contracts/metrics-contract.ts'
+import type {
+  MetricEventKind,
+  MetricEventSeverity,
+  MetricEvent,
+} from '../../../../contracts/metrics-contract.ts'
 import { computeStatusUptime } from '../../query/uptime.ts'
 import {
   computeSeriesGapCount,
@@ -305,10 +309,35 @@ export function parseCloudflareSqlResponse(body: unknown): AnalyticsEngineSqlRes
   return unwrapAeSqlSuccessResult(result)
 }
 
+/**
+ * Longest statement the AE SQL API accepts — longer ones answer
+ * `422 SQL was excessively long, exceeded maximum length: 10000`.
+ */
+export const AE_SQL_MAX_LENGTH = 10_000
+
+/**
+ * Length the chunking query builders pack against: headroom under
+ * {@link AE_SQL_MAX_LENGTH} so a slightly longer literal (a longer entity id,
+ * a wider time bound) never tips a packed statement over the hard limit.
+ */
+export const AE_SQL_CHUNK_BUDGET = 9_000
+
+/** Most chunked AE statements in flight at once for one logical query. */
+export const AE_SQL_CHUNK_CONCURRENCY = 4
+
 async function executeSql(
   config: CloudflareAnalyticsSqlConfig,
-  sql: string
+  sql: string,
+  label?: string
 ): Promise<AnalyticsEngineSqlResult> {
+  const labelSuffix = label ? ` (${label})` : ''
+  if (sql.length > AE_SQL_MAX_LENGTH) {
+    // Refuse before the round trip: AE would answer 422 anyway, and this
+    // names the builder that produced the oversized statement.
+    throw new Error(
+      `AE SQL too long${labelSuffix}: ${sql.length} chars exceeds ${AE_SQL_MAX_LENGTH}`
+    )
+  }
   const accountId = config.accountId.trim()
   if (!accountId) {
     throw new TypeError('CLOUDFLARE_ACCOUNT_ID is required for AE SQL')
@@ -332,7 +361,7 @@ async function executeSql(
   })
   if (!response.ok) {
     const body = await response.text()
-    throw new Error(`AE SQL HTTP ${response.status}: ${body.slice(0, 500)}`)
+    throw new Error(`AE SQL HTTP ${response.status}${labelSuffix}: ${body.slice(0, 500)}`)
   }
   return parseCloudflareSqlResponse(await response.json())
 }
@@ -349,9 +378,127 @@ export class CloudflareAnalyticsSqlClient {
     this.#config = config
   }
 
-  executeSql(sql: string): Promise<AnalyticsEngineSqlResult> {
-    return executeSql(this.#config, sql)
+  /** `label` names the query in error messages (never the token or the SQL). */
+  executeSql(sql: string, label?: string): Promise<AnalyticsEngineSqlResult> {
+    return executeSql(this.#config, sql, label)
   }
+}
+
+/**
+ * Greedy split of `items` into consecutive runs whose built statement stays
+ * within `budget` characters (`sqlLength` builds the statement for a
+ * candidate run). Order is preserved; a single item that cannot fit on its
+ * own is a builder bug, so it throws rather than sending a doomed query.
+ */
+export function packItemsBySqlLength<T>(
+  items: readonly T[],
+  sqlLength: (chunk: readonly T[]) => number,
+  budget: number = AE_SQL_CHUNK_BUDGET
+): T[][] {
+  const chunks: T[][] = []
+  let current: T[] = []
+  for (const item of items) {
+    const candidate = [...current, item]
+    if (sqlLength(candidate) <= budget) {
+      current = candidate
+      continue
+    }
+    if (current.length > 0) chunks.push(current)
+    current = [item]
+    if (sqlLength(current) > budget) {
+      throw new RangeError(`AE SQL for a single item exceeds the ${budget}-character budget`)
+    }
+  }
+  if (current.length > 0) chunks.push(current)
+  return chunks
+}
+
+/** `fn` over `items` with at most `limit` calls in flight; results keep `items` order. */
+export async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+  const results = new Array<R>(items.length)
+  let next = 0
+  const worker = async (): Promise<void> => {
+    while (next < items.length) {
+      const index = next++
+      results[index] = await fn(items[index], index)
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker))
+  return results
+}
+
+/**
+ * Two-axis packing for statements that grow with both a row filter (server
+ * ids, entity ids) and a column list (metrics, fields). When the whole row
+ * list fits beside the widest single column, only the columns are split;
+ * otherwise the rows are packed first — into the budget minus what the other
+ * columns add (never less than half) — and each row chunk's columns after.
+ */
+export function packRowsAndColumns<R, C>(
+  rows: readonly R[],
+  columns: readonly C[],
+  sqlLength: (rows: readonly R[], columns: readonly C[]) => number,
+  budget: number = AE_SQL_CHUNK_BUDGET
+): Array<{ rows: R[]; columns: C[] }> {
+  const probeRows = rows.slice(0, 1)
+  let widest = columns[0]
+  let widestLength = sqlLength(probeRows, [widest])
+  for (const column of columns.slice(1)) {
+    const length = sqlLength(probeRows, [column])
+    if (length > widestLength) {
+      widest = column
+      widestLength = length
+    }
+  }
+  // Reserve what the remaining columns add beyond the widest one (at least
+  // half the budget), so a row chunk usually carries every column at once.
+  const extraForAllColumns = sqlLength(probeRows, columns) - widestLength
+  const rowBudget = Math.max(Math.floor(budget / 2), budget - extraForAllColumns)
+  const rowChunks =
+    sqlLength(rows, [widest]) <= budget
+      ? [[...rows]]
+      : packItemsBySqlLength(rows, (chunk) => sqlLength(chunk, [widest]), rowBudget)
+  return rowChunks.flatMap((rowChunk) =>
+    packItemsBySqlLength(columns, (chunk) => sqlLength(rowChunk, chunk), budget).map(
+      (columnChunk) => ({ rows: rowChunk, columns: columnChunk })
+    )
+  )
+}
+
+/** `"<name> 2/3"` — chunk position for error labels; just `name` when unchunked. */
+function chunkLabel(name: string, index: number, total: number): string {
+  return total > 1 ? `${name} ${index + 1}/${total}` : name
+}
+
+type PointWithValues = { at: string; values: Partial<Record<string, number | null>> }
+
+/**
+ * Merge series points produced by column-chunked queries of the same
+ * buckets: points align on `at`, `values` are unioned, and every other
+ * property (sample counts, topology generation, …) comes from the first
+ * chunk that reported the bucket — those columns do not depend on which
+ * metrics a chunk selected. Result is ordered by `at` ascending.
+ */
+export function mergePointsByAt<P extends PointWithValues>(lists: readonly (readonly P[])[]): P[] {
+  if (lists.length === 1) return [...lists[0]]
+  const byAt = new Map<string, { point: P; values: PointWithValues['values'] }>()
+  for (const list of lists) {
+    for (const point of list) {
+      const existing = byAt.get(point.at)
+      if (existing) {
+        Object.assign(existing.values, point.values)
+      } else {
+        byAt.set(point.at, { point, values: { ...point.values } })
+      }
+    }
+  }
+  return [...byAt.values()]
+    .map(({ point, values }) => ({ ...point, values }))
+    .sort((a, b) => Date.parse(a.at) - Date.parse(b.at))
 }
 
 export function parseAeLatestAtMs(raw: unknown): number | null {
@@ -530,7 +677,11 @@ export async function queryRecentlyActiveServerIds(
     sinceSeconds: opts.sinceSeconds,
     dataset,
   })
-  const result = await executeSql({ ...config, signal: opts.signal }, sql)
+  const result = await executeSql(
+    { ...config, signal: opts.signal },
+    sql,
+    'recentlyActiveServerIds'
+  )
   const out = new Map<string, number>()
   for (const row of result.data) {
     const serverId = parseAeServerId(row.server_id)
@@ -610,10 +761,7 @@ export function stripAeSentinel(value: number): number | null {
  * Unlike v3, no cross-row recombination is needed first — `family` already
  * identifies the one row per sample that carries this column.
  */
-export function weightedAvgExpressionForColumn(
-  family: HostedFamily,
-  doubleIndex: number
-): string {
+export function weightedAvgExpressionForColumn(family: HostedFamily, doubleIndex: number): string {
   const col = doubleColumn(doubleIndex)
   const familyPred = familyPredicate(family)
   const sentinel = aeMissingMetricSentinelSql()
@@ -649,10 +797,7 @@ export function maxValueExpressionForColumn(family: HostedFamily, doubleIndex: n
  * row's own ingestion timestamp, with sentinel/other-family rows demoted to
  * ordering key `0` so any real observation always outranks them.
  */
-export function lastValueExpressionForColumn(
-  family: HostedFamily,
-  doubleIndex: number
-): string {
+export function lastValueExpressionForColumn(family: HostedFamily, doubleIndex: number): string {
   const col = doubleColumn(doubleIndex)
   const familyPred = familyPredicate(family)
   const sentinel = aeMissingMetricSentinelSql()
@@ -798,8 +943,8 @@ export async function queryStatusHistoryViaSqlApi(
   const eventsSql = buildStatusEventsSql(input, { dataset, maxRangeSeconds })
 
   const [priorResult, eventsResult] = await Promise.all([
-    client.executeSql(priorSql),
-    client.executeSql(eventsSql),
+    client.executeSql(priorSql, 'statusPriorState'),
+    client.executeSql(eventsSql, 'statusEvents'),
   ])
 
   const priorConnected = parseStatusConnected(priorResult.data[0]?.connected)
@@ -990,8 +1135,8 @@ function parseHostMetricValues(
 /**
  * A bucket/group's topology generation is the single value shared by every
  * contributing `host.system` row, or `null` when unknown (no rows) or mixed
- * (a reassignment happened inside the window). `MIN`/`MAX` over the raw
- * string blob are compared for equality only, never numeric order — same
+ * (a reassignment happened inside the window). `MIN`/`MAX` over the
+ * `toUInt32`-converted blob are compared for equality only — same
  * discipline as v3's `parseBucketHardwareProfileGeneration`.
  */
 function parseTopologyGeneration(row: Record<string, unknown>): number | null {
@@ -1047,12 +1192,14 @@ function buildHostSeriesSql(
     `  intDiv(toUnixTimestamp(${AE_TIMESTAMP_COLUMN}), ${bucketSeconds}) * ${bucketSeconds} AS bucket,`,
     `  ${sampleCountExpression()} AS sample_count,`,
     `  SUM(if(${hostSystemPred}, ${intervalSecondsColumn()} * _sample_interval, 0.0)) / ${sampleCountExpression()} AS avg_interval_seconds,`,
-    // Plain MIN/MAX, no if()-guard needed: WHERE already scopes every row to
-    // host.system/host.io, and both of one sample's rows carry the identical
-    // blob7 (topology generation) value — see field-map.ts's
-    // buildMetricsBlobs, which stamps it on every metrics-kind row.
-    `  MIN(${generationCol}) AS topology_gen_min,`,
-    `  MAX(${generationCol}) AS topology_gen_max,`,
+    // MIN/MAX over toUInt32(blob7), no if()-guard needed: WHERE already
+    // scopes every row to metrics-kind host families, and every one of a
+    // sample's rows carries the identical blob7 (topology generation, a
+    // stringified integer — see field-map.ts's buildMetricsBlobs). AE SQL
+    // refuses MIN/MAX over a String column (422 "cannot use the String type
+    // as argument 1 in max"), hence the documented toUInt32 conversion.
+    `  MIN(toUInt32(${generationCol})) AS topology_gen_min,`,
+    `  MAX(toUInt32(${generationCol})) AS topology_gen_max,`,
     `  ${allSelects.join(',\n  ')}`,
     `FROM ${opts.dataset}`,
     `WHERE ${serverIdPredicate(serverId)}`,
@@ -1154,25 +1301,31 @@ export async function queryHostSeriesViaSqlApi(
 ): Promise<HostSeriesResult> {
   const dataset = config.dataset ?? AE_DATASET_NAME
   const maxRangeSeconds = config.maxRangeSeconds ?? AE_DEFAULT_MAX_RANGE_SECONDS
-  const { sql, metrics, aliases, bucketSeconds } = buildHostSeriesSql(input, {
-    dataset,
-    maxRangeSeconds,
-  })
-  const generationsSql = buildTopologyGenerationsSql(input, {
-    dataset,
-    maxRangeSeconds,
-  })
-  const client = new CloudflareAnalyticsSqlClient(config)
-  const [seriesResult, generationsResult] = await Promise.all([
-    client.executeSql(sql),
-    client.executeSql(generationsSql),
-  ])
-  const { points, sampleCount } = parseHostSeriesRows(
+  const opts = { dataset, maxRangeSeconds }
+  const metrics = assertHostMetrics(input.metrics)
+  // One statement per metric chunk: every requested metric adds a long
+  // aggregate, and AE refuses statements over AE_SQL_MAX_LENGTH.
+  const built = packItemsBySqlLength(
     metrics,
-    aliases,
-    seriesResult.data,
-    bucketSeconds
+    (chunk) => buildHostSeriesSql({ ...input, metrics: chunk }, opts).sql.length
+  ).map((chunk) => buildHostSeriesSql({ ...input, metrics: chunk }, opts))
+  const bucketSeconds = built[0].bucketSeconds
+  const generationsSql = buildTopologyGenerationsSql(input, opts)
+  const client = new CloudflareAnalyticsSqlClient(config)
+  const [seriesResults, generationsResult] = await Promise.all([
+    mapWithConcurrency(built, AE_SQL_CHUNK_CONCURRENCY, (chunk, i) =>
+      client.executeSql(chunk.sql, chunkLabel('hostSeries', i, built.length))
+    ),
+    client.executeSql(generationsSql, 'topologyGenerations'),
+  ])
+  const points = mergePointsByAt(
+    built.map(
+      (chunk, i) =>
+        parseHostSeriesRows(chunk.metrics, chunk.aliases, seriesResults[i].data, bucketSeconds)
+          .points
+    )
   )
+  const sampleCount = points.reduce((sum, point) => sum + (point.sampleCount ?? 0), 0)
   const topologyGenerations = parseTopologyGenerationsRows(generationsResult.data)
   return finalizeHostSeriesResult(input.from, input.to, {
     kind: 'analytics-engine',
@@ -1240,7 +1393,7 @@ export async function queryHostSummaryViaSqlApi(
   const maxRangeSeconds = config.maxRangeSeconds ?? AE_DEFAULT_MAX_RANGE_SECONDS
   const sql = buildHostSummarySql(input, { dataset, maxRangeSeconds })
   const client = new CloudflareAnalyticsSqlClient(config)
-  const result = await client.executeSql(sql)
+  const result = await client.executeSql(sql, 'hostSummary')
   const { sampleCount, latestAt } = parseHostSummaryRow(result.data[0])
   return {
     kind: 'analytics-engine',
@@ -1274,12 +1427,14 @@ function buildFleetHostSnapshotSql(
     `  ${AE_INDEX_SERVER_ID_COLUMN} AS server_id,`,
     `  ${sampleCountExpression()} AS sample_count,`,
     `  ${latestAtExpression()} AS latest_at,`,
-    // Plain MIN/MAX, no if()-guard needed: WHERE already scopes every row to
-    // host.system/host.io, and both of one sample's rows carry the identical
-    // blob7 (topology generation) value — see field-map.ts's
-    // buildMetricsBlobs, which stamps it on every metrics-kind row.
-    `  MIN(${generationCol}) AS topology_gen_min,`,
-    `  MAX(${generationCol}) AS topology_gen_max,`,
+    // MIN/MAX over toUInt32(blob7), no if()-guard needed: WHERE already
+    // scopes every row to metrics-kind host families, and every one of a
+    // sample's rows carries the identical blob7 (topology generation, a
+    // stringified integer — see field-map.ts's buildMetricsBlobs). AE SQL
+    // refuses MIN/MAX over a String column (422 "cannot use the String type
+    // as argument 1 in max"), hence the documented toUInt32 conversion.
+    `  MIN(toUInt32(${generationCol})) AS topology_gen_min,`,
+    `  MAX(toUInt32(${generationCol})) AS topology_gen_max,`,
     `  ${metricSelects.join(',\n  ')}`,
     `FROM ${opts.dataset}`,
     `WHERE ${AE_INDEX_SERVER_ID_COLUMN} IN (${inList})`,
@@ -1335,18 +1490,59 @@ export async function queryFleetHostSnapshotViaSqlApi(
   }
   const dataset = config.dataset ?? AE_DATASET_NAME
   const maxRangeSeconds = config.maxRangeSeconds ?? AE_DEFAULT_MAX_RANGE_SECONDS
-  const { sql, metrics, aliases } = buildFleetHostSnapshotSql(input, {
-    dataset,
-    maxRangeSeconds,
-  })
+  const opts = { dataset, maxRangeSeconds }
+  const metrics = assertHostMetrics(input.metrics)
   const client = new CloudflareAnalyticsSqlClient(config)
-  const result = await client.executeSql(sql)
+  const tasks = planFleetSnapshotChunks(input, metrics, opts)
+  const results = await mapWithConcurrency(tasks, AE_SQL_CHUNK_CONCURRENCY, (task, i) =>
+    client.executeSql(task.sql, chunkLabel('fleetSnapshot', i, tasks.length))
+  )
+  const servers = mergeFleetSnapshotServers(
+    tasks.map((task, i) => parseFleetHostSnapshotRows(task.metrics, task.aliases, results[i].data))
+  )
   return {
     kind: 'analytics-engine',
     available: true,
     metrics,
-    servers: parseFleetHostSnapshotRows(metrics, aliases, result.data),
+    servers,
   }
+}
+
+/**
+ * The fleet snapshot's statements: its `IN (...)` server list and its metric
+ * selects both grow the SQL, so the request is packed along both axes.
+ */
+function planFleetSnapshotChunks(
+  input: FleetHostSnapshotQuery,
+  metrics: readonly string[],
+  opts: { dataset: string; maxRangeSeconds: number }
+): Array<{ sql: string; metrics: string[]; aliases: string[] }> {
+  const build = (serverIds: readonly string[], chunkMetrics: readonly string[]) =>
+    buildFleetHostSnapshotSql({ ...input, serverIds, metrics: chunkMetrics }, opts)
+  return packRowsAndColumns(
+    input.serverIds,
+    metrics,
+    (serverIds, chunkMetrics) => build(serverIds, chunkMetrics).sql.length
+  ).map(({ rows, columns }) => build(rows, columns))
+}
+
+/** One entry per server across chunked snapshot results: base fields from the first chunk, `values` unioned. */
+function mergeFleetSnapshotServers(
+  lists: readonly (readonly FleetHostSnapshotServer[])[]
+): FleetHostSnapshotServer[] {
+  if (lists.length === 1) return [...lists[0]]
+  const byId = new Map<string, FleetHostSnapshotServer>()
+  for (const list of lists) {
+    for (const server of list) {
+      const existing = byId.get(server.serverId)
+      if (existing) {
+        Object.assign(existing.values, server.values)
+      } else {
+        byId.set(server.serverId, { ...server, values: { ...server.values } })
+      }
+    }
+  }
+  return [...byId.values()].sort((a, b) => a.serverId.localeCompare(b.serverId))
 }
 
 // ---------------------------------------------------------------------------
@@ -1453,7 +1649,7 @@ export async function queryMetricEventsViaSqlApi(
   const maxRangeSeconds = config.maxRangeSeconds ?? AE_DEFAULT_MAX_RANGE_SECONDS
   const sql = buildMetricEventsSql(input, { dataset, maxRangeSeconds })
   const client = new CloudflareAnalyticsSqlClient(config)
-  const result = await client.executeSql(sql)
+  const result = await client.executeSql(sql, 'metricEvents')
   const { events, truncated } = parseMetricEventRows(result.data)
   return {
     kind: 'analytics-engine',
@@ -1512,10 +1708,7 @@ function resolveEntityFieldDescriptor(
 }
 
 /** Validate + de-dupe requested bare field names, in request order. */
-function assertEntityFields(
-  family: PerEntityHostedFamily,
-  fields: readonly string[]
-): string[] {
+function assertEntityFields(family: PerEntityHostedFamily, fields: readonly string[]): string[] {
   if (fields.length === 0) {
     throw new TypeError('metrics must be non-empty')
   }
@@ -2229,8 +2422,110 @@ export async function queryEntitySeriesViaSqlApi(
   const entityIds = assertEntityIds(input.entityIds)
   const dataset = config.dataset ?? AE_DATASET_NAME
   const maxRangeSeconds = config.maxRangeSeconds ?? AE_DEFAULT_MAX_RANGE_SECONDS
+  const opts = { dataset, maxRangeSeconds }
   const client = new CloudflareAnalyticsSqlClient(config)
+  // Entity predicates and per-slot field selects both grow the statement —
+  // pack along both axes so no statement exceeds AE_SQL_MAX_LENGTH.
+  const tasks = packRowsAndColumns(entityIds, fields, (ids, chunkFields) =>
+    entitySeriesSqlLength(input, chunkFields, ids, opts)
+  )
+  const chunks = await mapWithConcurrency(tasks, AE_SQL_CHUNK_CONCURRENCY, (task, i) =>
+    queryEntitySeriesChunk(
+      client,
+      input,
+      task.columns,
+      task.rows,
+      opts,
+      chunkLabel(`entitySeries ${input.family}`, i, tasks.length)
+    )
+  )
+  const bucketSeconds = chunks[0].bucketSeconds
+  const entities = mergeEntitySeriesChunks(
+    entityIds,
+    chunks.map((chunk) => chunk.entities)
+  )
 
+  return {
+    kind: 'analytics-engine',
+    available: true,
+    serverId: input.serverId,
+    family: input.family,
+    metrics: fields,
+    resolutionSeconds: bucketSeconds,
+    entities: withGapCounts(entities, input.from, input.to, bucketSeconds),
+  }
+}
+
+/** Longest statement one entity-series chunk would send — mirrors {@link queryEntitySeriesChunk}'s builder choice. */
+function entitySeriesSqlLength(
+  input: EntitySeriesQuery,
+  fields: readonly string[],
+  entityIds: readonly string[],
+  opts: { dataset: string; maxRangeSeconds: number }
+): number {
+  if (input.family === 'network') {
+    const embeddedSlotForId = embeddedNicSlotForEntityId(entityIds, input.slotMapping)
+    const pagedIds = entityIds.filter((id) => !embeddedSlotForId.has(id))
+    const pagedLength =
+      pagedIds.length > 0
+        ? buildPagedEntitySeriesSql(input, 'network', fields, pagedIds, opts).sql.length
+        : 0
+    const embeddedLength =
+      embeddedSlotForId.size > 0
+        ? (buildEmbeddedNicEntitySeriesSql(input, fields, opts)?.sql.length ?? 0)
+        : 0
+    return Math.max(pagedLength, embeddedLength)
+  }
+  if (SINGLE_ROW_FAMILIES.has(input.family)) {
+    const family = input.family as Extract<
+      PerEntityHostedFamily,
+      'managed.ingress' | 'managed.database_proxy'
+    >
+    return buildSingleRowEntitySeriesSql(input, family, fields, entityIds, opts).sql.length
+  }
+  const family = input.family as Exclude<
+    PerEntityHostedFamily,
+    'managed.ingress' | 'managed.database_proxy'
+  >
+  return buildPagedEntitySeriesSql(input, family, fields, entityIds, opts).sql.length
+}
+
+/** One entity per requested id across chunked results: points merged by bucket, sample count from the fullest chunk. */
+function mergeEntitySeriesChunks(
+  entityIds: readonly string[],
+  lists: readonly (readonly EntitySeriesEntityResult[])[]
+): EntitySeriesEntityResult[] {
+  const pointLists = new Map<string, EntitySeriesEntityResult['points'][]>()
+  const sampleCounts = new Map<string, number>()
+  for (const list of lists) {
+    for (const entity of list) {
+      const points = pointLists.get(entity.entityId) ?? []
+      points.push(entity.points)
+      pointLists.set(entity.entityId, points)
+      sampleCounts.set(
+        entity.entityId,
+        Math.max(sampleCounts.get(entity.entityId) ?? 0, entity.sampleCount)
+      )
+    }
+  }
+  return entityIds.map((entityId) => ({
+    entityId,
+    points: mergePointsByAt(pointLists.get(entityId) ?? [[]]),
+    sampleCount: sampleCounts.get(entityId) ?? 0,
+    gapCount: 0,
+  }))
+}
+
+/** One entity-series statement set for a chunk of `fields` × `entityIds` (gap counts are added after merging). */
+async function queryEntitySeriesChunk(
+  client: CloudflareAnalyticsSqlClient,
+  input: EntitySeriesQuery,
+  fields: readonly string[],
+  entityIds: readonly string[],
+  opts: { dataset: string; maxRangeSeconds: number },
+  label: string
+): Promise<{ bucketSeconds: number; entities: EntitySeriesEntityResult[] }> {
+  const { dataset, maxRangeSeconds } = opts
   let entities: EntitySeriesEntityResult[]
   let bucketSeconds: number
 
@@ -2246,7 +2541,7 @@ export async function queryEntitySeriesViaSqlApi(
               dataset,
               maxRangeSeconds,
             })
-            const result = await client.executeSql(built.sql)
+            const result = await client.executeSql(built.sql, label)
             return {
               bucketSeconds: built.bucketSeconds,
               entities: parsePagedEntitySeriesRows(
@@ -2290,7 +2585,7 @@ export async function queryEntitySeriesViaSqlApi(
                 })),
               }
             }
-            const result = await client.executeSql(built.sql)
+            const result = await client.executeSql(built.sql, label)
             return {
               bucketSeconds: built.bucketSeconds,
               entities: embeddedIds.map((entityId) => {
@@ -2333,7 +2628,7 @@ export async function queryEntitySeriesViaSqlApi(
       maxRangeSeconds,
     })
     bucketSeconds = built.bucketSeconds
-    const result = await client.executeSql(built.sql)
+    const result = await client.executeSql(built.sql, label)
     entities = parseSingleRowEntitySeriesRows(
       fields,
       built.aliases,
@@ -2351,7 +2646,7 @@ export async function queryEntitySeriesViaSqlApi(
       maxRangeSeconds,
     })
     bucketSeconds = built.bucketSeconds
-    const result = await client.executeSql(built.sql)
+    const result = await client.executeSql(built.sql, label)
     entities = parsePagedEntitySeriesRows(
       fields,
       built.plans,
@@ -2360,16 +2655,7 @@ export async function queryEntitySeriesViaSqlApi(
       bucketSeconds
     )
   }
-
-  return {
-    kind: 'analytics-engine',
-    available: true,
-    serverId: input.serverId,
-    family: input.family,
-    metrics: fields,
-    resolutionSeconds: bucketSeconds,
-    entities: withGapCounts(entities, input.from, input.to, bucketSeconds),
-  }
+  return { bucketSeconds, entities }
 }
 
 // ---------------------------------------------------------------------------
@@ -2435,7 +2721,7 @@ export async function queryEntityIdsSeenViaSqlApi(
   const maxRangeSeconds = config.maxRangeSeconds ?? AE_DEFAULT_MAX_RANGE_SECONDS
   const sql = buildEntityIdsSeenSql(input, { dataset, maxRangeSeconds })
   const client = new CloudflareAnalyticsSqlClient(config)
-  const result = await client.executeSql(sql)
+  const result = await client.executeSql(sql, 'entityIdsSeen')
   return {
     kind: 'analytics-engine',
     available: true,
