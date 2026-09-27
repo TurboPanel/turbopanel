@@ -9,6 +9,7 @@ import {
   type HostStorageMetrics,
   type MetricsSampleInput,
 } from "../../../../contracts/metrics-contract.ts";
+import type { HostedFamily } from "../../metric-descriptors.ts";
 import type { AuthenticatedMetricsSample } from "../../types.ts";
 import {
   _internalFieldMap,
@@ -25,6 +26,7 @@ import {
   AE_BLOB_STATUS_OR_EVENT_REASON_INDEX,
   AE_DOUBLE_COUNT,
   AE_DOUBLE_INTERVAL_INDEX,
+  AE_EVENT_INDEX_SUFFIX,
   AE_FAMILY_BLOCK,
   AE_FAMILY_FILESYSTEM,
   AE_FAMILY_GPU,
@@ -40,6 +42,8 @@ import {
   AE_KIND_METRICS,
   AE_MAX_DATA_POINTS_PER_INVOCATION,
   AE_MISSING_METRIC_SENTINEL,
+  aeIndexesForFamilies,
+  aeIndexForFamily,
   type AnalyticsEngineDataPointLike,
   buildMetricsDataPoints,
   doubleIndexForHostField,
@@ -574,8 +578,31 @@ it("every produced point has exactly AE_DOUBLE_COUNT doubles and AE_BLOB_COUNT b
   for (const point of points) {
     assertEquals(point.doubles.length, AE_DOUBLE_COUNT);
     assertEquals(point.blobs.length, AE_BLOB_COUNT);
-    assertEquals(point.indexes, [sample.serverId]);
+    // One index per family (host.system keeps the bare serverId) so AE's
+    // per-index write sampling never thins a sample's burst of rows.
+    const family = point.blobs[AE_BLOB_KIND_INDEX] === AE_KIND_EVENT
+      ? AE_EVENT_INDEX_SUFFIX
+      : point.blobs[AE_BLOB_FAMILY_INDEX] as HostedFamily;
+    assertEquals(point.indexes, [aeIndexForFamily(sample.serverId, family)]);
   }
+  const hostSystem = pointFor(points, AE_FAMILY_HOST_SYSTEM);
+  assertEquals(hostSystem.indexes, [sample.serverId]);
+  assertEquals(pointFor(points, AE_FAMILY_HOST_IO).indexes, [
+    `${sample.serverId}:host.io`,
+  ]);
+});
+
+it("aeIndexesForFamilies: bare serverId first (host.system + pre-split rows), then each family once", () => {
+  const sid = "01a0e07a-bbf5-75df-a846-53864fc8cee3";
+  assertEquals(aeIndexesForFamilies(sid, [AE_FAMILY_HOST_SYSTEM]), [sid]);
+  assertEquals(
+    aeIndexesForFamilies(sid, [
+      AE_FAMILY_HOST_IO,
+      AE_FAMILY_HOST_IO,
+      AE_EVENT_INDEX_SUFFIX,
+    ]),
+    [sid, `${sid}:host.io`, `${sid}:event`],
+  );
 });
 
 it("managed.ingress / managed.database_proxy: one unpaged row per entry, blob10 = sourceId", () => {

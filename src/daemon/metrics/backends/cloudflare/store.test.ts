@@ -194,10 +194,7 @@ function createFakeDataset(): {
   }
 }
 
-function writeCountFor(
-  overrides: Partial<MetricsSampleInput>,
-  slotMapping?: SlotMapping
-): number {
+function writeCountFor(overrides: Partial<MetricsSampleInput>, slotMapping?: SlotMapping): number {
   const fake = createFakeDataset()
   const store = new CloudflareAnalyticsEngineServerMetricsStore(fake.dataset)
   store.writeSample(buildSample(overrides), slotMapping)
@@ -345,14 +342,18 @@ it('writeSample: calls match buildMetricsDataPoints exactly, fire-and-forget', (
   assertEquals(fake.calls, buildMetricsDataPoints(sample))
 })
 
-it('writeSample: indexes is the authenticated serverId on every row', () => {
+it('writeSample: every row is indexed under the authenticated serverId (host.system bare, other families suffixed)', () => {
   const fake = createFakeDataset()
   const store = new CloudflareAnalyticsEngineServerMetricsStore(fake.dataset)
   const sample = buildSample({ gpus: [mkGpu('gpu0')] })
   store.writeSample(sample)
-  for (const call of fake.calls) {
-    assertEquals(call.indexes, [sample.serverId])
+  const indexes = fake.calls.map((call) => call.indexes?.[0] ?? '')
+  for (const index of indexes) {
+    assertEquals(index === sample.serverId || index.startsWith(`${sample.serverId}:`), true)
   }
+  // One bare row per sample (host.system), and the GPU burst on its own index.
+  assertEquals(indexes.filter((index) => index === sample.serverId).length, 1)
+  assertEquals(indexes.includes(`${sample.serverId}:gpu`), true)
 })
 
 it('writeStatusEvent: exactly one writeDataPoint, matching buildStatusDataPoint', () => {

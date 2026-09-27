@@ -190,6 +190,48 @@ export const AE_FAMILY_HOST_DIAGNOSTICS: HostedFamily = "host.diagnostics";
  */
 export const AE_INDEX_SERVER_ID_COLUMN = "index1";
 
+/** Index suffix for `"event"`-kind rows (see {@link aeIndexForFamily}). */
+export const AE_EVENT_INDEX_SUFFIX = "event";
+
+/**
+ * The `index1` value a sample row is written under.
+ *
+ * AE samples at write time per index value when points arrive "too quickly
+ * into one index" and equalizes what it stores across index values. One
+ * sample writes a burst of rows (host.system, host.io, one per NIC /
+ * filesystem / block device / GPU page, …), so a single `serverId` index was
+ * sampled about 1-in-2 on testing (2026-09-27: 30 of 60 minutely host
+ * buckets, each carrying `_sample_interval = 2`) — the charts' amber gaps.
+ *
+ * `host.system` — the one-row-per-sample anchor that liveness, sample counts
+ * and status rows key on — keeps the bare serverId. Every other family, and
+ * event rows, get their own index `<serverId>:<family>`, so no index sees more
+ * than one family's pages per sample. Readers match both spellings
+ * ({@link aeIndexesForFamilies}) so rows written before the split still count.
+ */
+export function aeIndexForFamily(
+  serverId: string,
+  family: HostedFamily | typeof AE_EVENT_INDEX_SUFFIX,
+): string {
+  return family === AE_FAMILY_HOST_SYSTEM ? serverId : `${serverId}:${family}`;
+}
+
+/**
+ * Every `index1` value a read over `families` for one server must match: the
+ * bare serverId (host.system, status rows, and every row written before the
+ * per-family split) plus each family's own index.
+ */
+export function aeIndexesForFamilies(
+  serverId: string,
+  families: readonly (HostedFamily | typeof AE_EVENT_INDEX_SUFFIX)[],
+): string[] {
+  const indexes = new Set<string>([serverId]);
+  for (const family of families) {
+    indexes.add(aeIndexForFamily(serverId, family));
+  }
+  return [...indexes];
+}
+
 /** Physical column name for the AE ingestion timestamp. */
 export const AE_TIMESTAMP_COLUMN = "timestamp";
 
@@ -995,7 +1037,7 @@ function buildEventDataPoint(
   // carried an event, so it never fired.
   doubles[AE_DOUBLE_INTERVAL_INDEX] = sample.metadata.intervalSeconds;
   const point: AnalyticsEngineDataPointLike = {
-    indexes: [sample.serverId],
+    indexes: [aeIndexForFamily(sample.serverId, AE_EVENT_INDEX_SUFFIX)],
     doubles,
     blobs: buildEventBlobs(sample, event),
   };
@@ -1042,7 +1084,7 @@ export function buildMetricsDataPoints(
     doubles: number[],
   ): void => {
     const point: AnalyticsEngineDataPointLike = {
-      indexes: [sample.serverId],
+      indexes: [aeIndexForFamily(sample.serverId, family)],
       doubles,
       blobs: buildMetricsBlobs(sample, family, page, sourceOrIdentity),
     };

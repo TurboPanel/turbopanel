@@ -24,7 +24,11 @@ import {
   type HostMetricsMetricDescriptor,
   type MetricEntityScope,
 } from '../../metric-descriptors.ts'
-import type { MetricEventKind, MetricEventSeverity, MetricEvent } from '../../../../contracts/metrics-contract.ts'
+import type {
+  MetricEventKind,
+  MetricEventSeverity,
+  MetricEvent,
+} from '../../../../contracts/metrics-contract.ts'
 import {
   AE_DEFAULT_MAX_RANGE_SECONDS,
   MAX_STATUS_EVENTS,
@@ -131,7 +135,10 @@ import {
   storageSamplesInsertColumns,
   storageSamplesMetricColumnNames,
 } from './schema.ts'
-import { STORAGE_ENGINE_FIELD_NAMES, STORAGE_ENGINE_KEYS } from '../../../../contracts/metrics-contract.ts'
+import {
+  STORAGE_ENGINE_FIELD_NAMES,
+  STORAGE_ENGINE_KEYS,
+} from '../../../../contracts/metrics-contract.ts'
 
 /** Flush when this many pending rows accumulate (small co-located fleet). */
 export const DUCKDB_WRITE_BATCH_MAX_ROWS = 10
@@ -407,10 +414,7 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
       const router = input.router
       rows.push({
         table: 'router',
-        values: [
-          ...common,
-          ...ROUTER_METRIC_FIELDS.map((field) => numericField(router, field)),
-        ],
+        values: [...common, ...ROUTER_METRIC_FIELDS.map((field) => numericField(router, field))],
       })
     }
 
@@ -421,21 +425,15 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
         table: 'storage',
         values: [
           ...common,
-          ...STORAGE_ROW_VALUE_PLAN.leadingFlatFields.map((field) =>
-            numericField(storage, field)
-          ),
+          ...STORAGE_ROW_VALUE_PLAN.leadingFlatFields.map((field) => numericField(storage, field)),
           // Real SQL NULLs when the Docker breakdown was absent or gated off
           // — "not reported", never zero bytes.
           ...DOCKER_USAGE_METRIC_FIELDS.map((field) =>
             dockerUsage ? numericField(dockerUsage, field) : null
           ),
-          ...STORAGE_ROW_VALUE_PLAN.trailingFlatFields.map((field) =>
-            numericField(storage, field)
-          ),
+          ...STORAGE_ROW_VALUE_PLAN.trailingFlatFields.map((field) => numericField(storage, field)),
           ...STORAGE_ENGINE_KEYS.flatMap((engine) =>
-            STORAGE_ENGINE_FIELD_NAMES.map((field) =>
-              numericField(storage[engine], field)
-            )
+            STORAGE_ENGINE_FIELD_NAMES.map((field) => numericField(storage[engine], field))
           ),
           // Topology filesystem ids: nothing on the wire carries them yet —
           // see `STORAGE_FILESYSTEM_ID_COLUMNS` in `schema.ts`.
@@ -608,7 +606,6 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
     const toMs = to.getTime()
     const hostSource = await this.#familySamplesSource(parquetFamily('host'), fromMs, toMs)
     const requiresMemoryDiagnostics = metrics.some(isMemoryDiagnosticsMetric)
-    const requiresCpuDiagnostics = metrics.some(isCpuDiagnosticsMetric)
     const requiresRouter = metrics.some(isRouterMetric)
     const requiresStorage = metrics.some(isStorageMetric)
     const requiresDockerUsage = metrics.some(isDockerUsageMetric)
@@ -625,31 +622,19 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
       )
     }
     if (requiresRouter) {
-      const routerSource = await this.#familySamplesSource(
-        parquetFamily('router'),
-        fromMs,
-        toMs
-      )
+      const routerSource = await this.#familySamplesSource(parquetFamily('router'), fromMs, toMs)
       joins.push(
         `LEFT JOIN ${routerSource} AS rt ON rt.server_id = h.server_id AND rt.sampled_at = h.sampled_at`
       )
     }
     if (requiresStorage) {
-      const storageSource = await this.#familySamplesSource(
-        parquetFamily('storage'),
-        fromMs,
-        toMs
-      )
+      const storageSource = await this.#familySamplesSource(parquetFamily('storage'), fromMs, toMs)
       joins.push(
         `LEFT JOIN ${storageSource} AS st ON st.server_id = h.server_id AND st.sampled_at = h.sampled_at`
       )
     }
     if (requiresDockerUsage) {
-      const dockerSource = await this.#familySamplesSource(
-        parquetFamily('docker'),
-        fromMs,
-        toMs
-      )
+      const dockerSource = await this.#familySamplesSource(parquetFamily('docker'), fromMs, toMs)
       joins.push(
         `LEFT JOIN ${dockerSource} AS dk ON dk.server_id = h.server_id AND dk.sampled_at = h.sampled_at`
       )
@@ -671,9 +656,7 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
       `  CAST(count(*) AS DOUBLE) AS sample_count,`,
       `  CAST(avg(h.interval_seconds) AS DOUBLE) AS avg_interval_seconds,`,
       `  string_agg(DISTINCT CAST(h.topology_generation AS VARCHAR), ',') AS topology_gen_raw,`,
-      ...(requiresCpuDiagnostics
-        ? [`  CAST(epoch_ms(max(h.sampled_at)) AS DOUBLE) AS last_sampled_at_ms,`]
-        : []),
+      `  CAST(epoch_ms(max(h.sampled_at)) AS DOUBLE) AS last_sampled_at_ms,`,
       `  ${metricSelects.join(',\n  ')}`,
       `FROM ${hostSource} AS h`,
       ...joins,
@@ -749,9 +732,7 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
   /**
    * Real per-descriptor aggregation over any `host.*` canonical metric name.
    */
-  async queryFleetHostSnapshot(
-    input: FleetHostSnapshotQuery
-  ): Promise<FleetHostSnapshotResult> {
+  async queryFleetHostSnapshot(input: FleetHostSnapshotQuery): Promise<FleetHostSnapshotResult> {
     if (input.serverIds.length === 0) {
       return {
         kind: 'duckdb',
@@ -1608,12 +1589,6 @@ function diagnosticsFieldName(metric: string): string | undefined {
   return descriptor?.entityScope === 'diagnostics' ? descriptor.fieldName : undefined
 }
 
-/** `true` when `metric` is a diagnostics field stored on the host row's `cpu_diagnostics_*` columns. */
-function isCpuDiagnosticsMetric(metric: string): boolean {
-  const field = diagnosticsFieldName(metric)
-  return field !== undefined && CPU_DIAGNOSTICS_FIELD_SET.has(field)
-}
-
 /** `true` when `metric` is a diagnostics field stored in the singleton memory-diagnostics table. */
 function isMemoryDiagnosticsMetric(metric: string): boolean {
   const field = diagnosticsFieldName(metric)
@@ -1728,11 +1703,19 @@ function parseHostSeriesRows(
         : defaultExpectedSamplesPerBucket(resolutionSeconds)
     const bucketGenerations = parseHardwareProfileGenerations(row.topology_gen_raw)
     for (const generation of bucketGenerations) allGenerations.add(generation)
+    const lastSampledAtMs = toFiniteNumber(row.last_sampled_at_ms)
     const point: HostSeriesPoint = {
       at: new Date(bucketEpochSeconds * 1000).toISOString(),
       values: parseMetricValues(metrics, row),
       sampleCount: rowSamples,
       expectedSampleCount,
+      ...(lastSampledAtMs !== null && lastSampledAtMs > 0
+        ? { lastSampleAt: new Date(lastSampledAtMs).toISOString() }
+        : {}),
+      // DuckDB stores every sample: rows are spaced one collection interval apart.
+      ...(avgIntervalSeconds !== null && avgIntervalSeconds > 0
+        ? { sampleSpacingSeconds: avgIntervalSeconds }
+        : {}),
       topologyGeneration: bucketGenerations.length === 1 ? bucketGenerations[0]! : null,
     }
     points.push(point)

@@ -1,11 +1,13 @@
 import { assertEquals } from '@std/assert'
 import type { HostSeriesResult } from '../types.ts'
 import {
+  computeSeriesCoverage,
   computeSeriesGapCount,
   computeTopologyGenerationBreaks,
   defaultExpectedSamplesPerBucket,
   finalizeHostSeriesResult,
   toHostSeriesChartResponse,
+  typicalSampleSpacingSeconds,
 } from './series-response.ts'
 
 /**
@@ -222,4 +224,153 @@ test('omitting capacitiesByGeneration keeps the previous single-capacity behavio
     },
   })
   assertEquals(response.points[0]!.derived.memoryUsedPercent, 50)
+})
+
+// --- Coverage (2026-09-27 testing: ~30 of 60 minutely buckets "missing") ---
+
+const COVERAGE_T0 = Date.parse('2026-09-27T20:00:00.000Z')
+const COVERAGE_NOW = COVERAGE_T0 + 24 * 3600_000 // a historical window: no ingest grace
+const at = (ms: number) => new Date(ms).toISOString()
+
+test('AE-sampled rows (one row standing for two samples) leave no gaps at 60 s', () => {
+  // Real testing shape: 60 samples in an hour came back as 30 rows, each
+  // _sample_interval = 2, in every other 60 s bucket.
+  const points = Array.from({ length: 30 }, (_, i) => {
+    const bucket = COVERAGE_T0 + i * 120_000
+    return {
+      at: at(bucket),
+      sampleCount: 2,
+      expectedSampleCount: 1,
+      lastSampleAt: at(bucket + 7_000),
+      sampleSpacingSeconds: 120,
+    }
+  })
+  const coverage = computeSeriesCoverage({
+    fromMs: COVERAGE_T0,
+    toMs: COVERAGE_T0 + 3600_000,
+    resolutionSeconds: 60,
+    points,
+    nowMs: COVERAGE_NOW,
+  })
+  assertEquals(coverage.gapBucketStarts, [])
+  assertEquals(coverage.gapCount, 0)
+})
+
+test('a 10 s grid over a 60 s cadence is not 5-in-6 missing', () => {
+  const points = Array.from({ length: 10 }, (_, i) => {
+    const bucket = COVERAGE_T0 + i * 60_000
+    return {
+      at: at(bucket),
+      sampleCount: 1,
+      expectedSampleCount: 1,
+      lastSampleAt: at(bucket + 3_000),
+      sampleSpacingSeconds: 60,
+    }
+  })
+  const coverage = computeSeriesCoverage({
+    fromMs: COVERAGE_T0,
+    toMs: COVERAGE_T0 + 600_000,
+    resolutionSeconds: 10,
+    points,
+    nowMs: COVERAGE_NOW,
+  })
+  assertEquals(coverage.gapCount, 0)
+})
+
+test('a genuinely missed sample is still a gap, counted in samples', () => {
+  // 60 s cadence, minute 2 never arrived.
+  const minutes = [0, 1, 3, 4]
+  const points = minutes.map((m) => {
+    const bucket = COVERAGE_T0 + m * 60_000
+    return {
+      at: at(bucket),
+      sampleCount: 1,
+      expectedSampleCount: 1,
+      lastSampleAt: at(bucket + 20_000),
+      sampleSpacingSeconds: 60,
+    }
+  })
+  const at60 = computeSeriesCoverage({
+    fromMs: COVERAGE_T0,
+    toMs: COVERAGE_T0 + 300_000,
+    resolutionSeconds: 60,
+    points,
+    nowMs: COVERAGE_NOW,
+  })
+  assertEquals(at60.gapBucketStarts, [COVERAGE_T0 + 120_000])
+  assertEquals(at60.gapCount, 1)
+
+  // Same data on a 10 s grid: the missed sample's bucket is the gap.
+  const at10 = computeSeriesCoverage({
+    fromMs: COVERAGE_T0,
+    toMs: COVERAGE_T0 + 300_000,
+    resolutionSeconds: 10,
+    points,
+    nowMs: COVERAGE_NOW,
+  })
+  assertEquals(at10.gapBucketStarts.includes(COVERAGE_T0 + 140_000), true)
+  assertEquals(at10.gapCount, 1)
+})
+
+test('leading empties count only when a sample was due; recent empties are pending', () => {
+  const points = [
+    {
+      at: at(COVERAGE_T0 + 120_000),
+      sampleCount: 1,
+      lastSampleAt: at(COVERAGE_T0 + 125_000),
+      sampleSpacingSeconds: 60,
+    },
+  ]
+  // Minute 0 had a sample due (first one arrived two spacings later); minute 1 did not need one.
+  const coverage = computeSeriesCoverage({
+    fromMs: COVERAGE_T0,
+    toMs: COVERAGE_T0 + 240_000,
+    resolutionSeconds: 60,
+    points,
+    nowMs: COVERAGE_T0 + 240_000,
+  })
+  // Minute 3 ends at "now": pending ingest, not missing.
+  assertEquals(coverage.gapBucketStarts, [COVERAGE_T0])
+})
+
+test('with no data at all every bucket is a gap', () => {
+  const coverage = computeSeriesCoverage({
+    fromMs: COVERAGE_T0,
+    toMs: COVERAGE_T0 + 180_000,
+    resolutionSeconds: 60,
+    points: [],
+    nowMs: COVERAGE_NOW,
+  })
+  assertEquals(coverage.gapBucketStarts.length, 3)
+  assertEquals(coverage.gapCount, 3)
+})
+
+test('typical spacing is the sample-weighted mean, defaulting to 60 s', () => {
+  assertEquals(typicalSampleSpacingSeconds([]), 60)
+  assertEquals(
+    typicalSampleSpacingSeconds([
+      { at: at(COVERAGE_T0), sampleCount: 1, sampleSpacingSeconds: 60 },
+      { at: at(COVERAGE_T0), sampleCount: 3, sampleSpacingSeconds: 20 },
+      { at: at(COVERAGE_T0), sampleCount: 0, sampleSpacingSeconds: 999 },
+    ]),
+    30
+  )
+})
+
+test('finalizeHostSeriesResult attaches the gap buckets', () => {
+  const result = finalizeHostSeriesResult(at(COVERAGE_T0), at(COVERAGE_T0 + 180_000), {
+    kind: 'analytics-engine',
+    available: true,
+    serverId: '01a0e07a-bbf5-75df-a846-53864fc8cee3',
+    metrics: [],
+    points: [
+      { at: at(COVERAGE_T0), values: {}, sampleCount: 1, sampleSpacingSeconds: 60 },
+      { at: at(COVERAGE_T0 + 120_000), values: {}, sampleCount: 1, sampleSpacingSeconds: 60 },
+    ],
+    resolutionSeconds: 60,
+    gapCount: 0,
+    sampleCount: 2,
+  })
+  assertEquals(result.gapBuckets, [at(COVERAGE_T0 + 60_000)])
+  assertEquals(result.gapCount, 1)
 })

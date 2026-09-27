@@ -1,13 +1,16 @@
-import type { MetricEvent, MetricsSample } from "../../contracts/metrics-contract.ts";
+import type {
+  MetricEvent,
+  MetricsSample,
+} from "../../contracts/metrics-contract.ts";
 import type { HostedFamily } from "./metric-descriptors.ts";
 import type { IngressDerivedValues } from "./query/derived-metrics.ts";
 import type { SlotMapping } from "../../contracts/topology-types.ts";
 
 export type { SlotMapping } from "../../contracts/topology-types.ts";
 
-import { METRICS_LIVE_INTERVAL_SECONDS } from '../../contracts/capability-plan.ts'
+import { METRICS_LIVE_INTERVAL_SECONDS } from "../../contracts/capability-plan.ts";
 
-export { METRICS_LIVE_INTERVAL_SECONDS }
+export { METRICS_LIVE_INTERVAL_SECONDS };
 
 /** Success body of `POST /servers/:id/metrics/live` (start/renew a lease). */
 export type MetricsLiveLeaseStartResponse = {
@@ -136,6 +139,15 @@ export type HostSeriesPoint = {
   sampleCount?: number;
   /** Expected samples for full bucket coverage (gap detection). */
   expectedSampleCount?: number;
+  /** Latest sample in the bucket (ISO) — where the next sample's due time counts from. */
+  lastSampleAt?: string;
+  /**
+   * Seconds between stored samples in the bucket: the collection interval
+   * times any storage sampling weight (an Analytics Engine row with
+   * `_sample_interval = 2` stands for two samples, so the next stored row is
+   * due two intervals later). Drives gap detection — see `computeSeriesCoverage`.
+   */
+  sampleSpacingSeconds?: number;
   topologyGeneration?: number | null;
 };
 
@@ -147,8 +159,10 @@ export type HostSeriesResult = {
   metrics: readonly string[];
   points: HostSeriesPoint[];
   resolutionSeconds: number | null;
-  /** Number of missing buckets in the resolved resolution grid. */
+  /** Missing samples in the resolved resolution grid (see `computeSeriesCoverage`). */
   gapCount: number;
+  /** Starts (ISO) of the empty buckets where a sample was due and never arrived. */
+  gapBuckets?: string[];
   /** Number of underlying samples contributing to the series. */
   sampleCount: number;
   /**

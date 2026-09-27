@@ -89,6 +89,7 @@ import {
   AE_FAMILY_MANAGED_DOCKER,
   AE_FAMILY_MANAGED_ROUTER,
   AE_FAMILY_MANAGED_STORAGE,
+  AE_EVENT_INDEX_SUFFIX,
   AE_INDEX_SERVER_ID_COLUMN,
   AE_KIND_EVENT,
   AE_KIND_METRICS,
@@ -106,6 +107,7 @@ import {
   slotDoubleIndex,
   statusConnectedColumn,
   statusReasonColumn,
+  aeIndexesForFamilies,
 } from './field-map.ts'
 
 export { AE_DATASET_NAME }
@@ -558,6 +560,24 @@ const STATUS_TRANSITION_REASONS = new Set<string>([
   'self_heal',
 ])
 
+/** Length of a canonical UUID serverId — the prefix every per-family index shares. */
+const SERVER_ID_LENGTH = 36
+
+/** Quoted `index1` values for a fleet host read: each server's host-family indexes. */
+function fleetHostIndexInList(serverIds: readonly string[], metrics: readonly string[]): string {
+  const families = hostFamiliesFor(metrics)
+  const seen = new Set<string>()
+  const quoted: string[] = []
+  for (const raw of serverIds) {
+    for (const index of aeIndexesForFamilies(assertSafeServerId(raw), families)) {
+      if (seen.has(index)) continue
+      seen.add(index)
+      quoted.push(quoteSqlString(index))
+    }
+  }
+  return quoted.join(', ')
+}
+
 function parseStatusConnected(raw: unknown): boolean | null {
   if (typeof raw === 'boolean') return raw
   const num = typeof raw === 'number' ? raw : Number(raw)
@@ -830,6 +850,22 @@ export function serverIdPredicate(serverId: string): string {
 }
 
 /**
+ * `index1` predicate for a read over `families` of one server: the bare
+ * serverId plus each family's own index (see `field-map.ts`'s
+ * `aeIndexForFamily` — rows are written per family so AE's per-index write
+ * sampling never halves a sample's burst). Collapses to
+ * {@link serverIdPredicate} when every family lives on the bare index.
+ */
+export function serverFamiliesPredicate(
+  serverId: string,
+  families: readonly (HostedFamily | typeof AE_EVENT_INDEX_SUFFIX)[]
+): string {
+  const indexes = aeIndexesForFamilies(serverId, families)
+  if (indexes.length === 1) return serverIdPredicate(serverId)
+  return `${AE_INDEX_SERVER_ID_COLUMN} IN (${indexes.map(quoteSqlString).join(', ')})`
+}
+
+/**
  * Predicate matching a paged row whose blob10 identity list (comma-joined
  * entity ids, same order as the page's doubles — see `field-map.ts`'s
  * module doc comment) contains `entityId`, whether that id is the row's only
@@ -1096,7 +1132,7 @@ function hostMetricSelectExpression(canonicalName: string, alias: string): strin
  * one of their fields, so a request that never touches a singleton family
  * doesn't pay to scan its rows.
  */
-function hostFamilyScopePredicate(metrics: readonly string[]): string {
+function hostFamiliesFor(metrics: readonly string[]): HostedFamily[] {
   const families: HostedFamily[] = [AE_FAMILY_HOST_SYSTEM, AE_FAMILY_HOST_IO]
   if (requiresDiagnosticsFamily(metrics)) {
     families.push(AE_FAMILY_HOST_DIAGNOSTICS)
@@ -1110,7 +1146,11 @@ function hostFamilyScopePredicate(metrics: readonly string[]): string {
   if (requiresDockerUsageFamily(metrics)) {
     families.push(AE_FAMILY_MANAGED_DOCKER)
   }
-  return `(${families.map(familyPredicate).join(' OR ')})`
+  return families
+}
+
+function hostFamilyScopePredicate(metrics: readonly string[]): string {
+  return `(${hostFamiliesFor(metrics).map(familyPredicate).join(' OR ')})`
 }
 
 function parseHostMetricValues(
@@ -1191,6 +1231,11 @@ function buildHostSeriesSql(
     `  intDiv(toUnixTimestamp(${AE_TIMESTAMP_COLUMN}), ${bucketSeconds}) * ${bucketSeconds} AS bucket,`,
     `  ${sampleCountExpression()} AS sample_count,`,
     `  SUM(if(${hostSystemPred}, ${intervalSecondsColumn()} * _sample_interval, 0.0)) / ${sampleCountExpression()} AS avg_interval_seconds,`,
+    // Stored host.system rows and the latest one: with sample_count (the
+    // _sample_interval-weighted total) they give the spacing between stored
+    // rows that gap detection needs (see computeSeriesCoverage).
+    `  SUM(if(${hostSystemPred}, 1.0, 0.0)) AS row_count,`,
+    `  ${latestAtExpression()} AS last_sample_at,`,
     // MIN/MAX over toUInt32(blob7), no if()-guard needed: WHERE already
     // scopes every row to metrics-kind host families, and every one of a
     // sample's rows carries the identical blob7 (topology generation, a
@@ -1201,7 +1246,7 @@ function buildHostSeriesSql(
     `  MAX(toUInt32(${generationCol})) AS topology_gen_max,`,
     `  ${allSelects.join(',\n  ')}`,
     `FROM ${opts.dataset}`,
-    `WHERE ${serverIdPredicate(serverId)}`,
+    `WHERE ${serverFamiliesPredicate(serverId, hostFamiliesFor(metrics))}`,
     `  AND ${discriminators[0]}`,
     `  AND ${discriminators[1]}`,
     `  AND ${hostFamilyScopePredicate(metrics)}`,
@@ -1288,10 +1333,37 @@ function parseHostSeriesRows(
       values: parseHostMetricValues(metrics, aliases, row),
       sampleCount: hasSamples ? rowSamples : undefined,
       expectedSampleCount,
+      ...storedSampleSpacing(row, rowSamples, avgIntervalSeconds),
       topologyGeneration: parseTopologyGeneration(row),
     })
   }
   return { points, sampleCount }
+}
+
+/**
+ * `lastSampleAt` / `sampleSpacingSeconds` for a host-series bucket. AE may
+ * store one row for several samples (`_sample_interval` > 1) when an index
+ * receives points too quickly, so the next stored row is due
+ * interval × (weighted samples ÷ stored rows) later, not one interval.
+ */
+export function storedSampleSpacing(
+  row: Record<string, unknown>,
+  weightedSamples: number,
+  avgIntervalSeconds: number
+): { lastSampleAt?: string; sampleSpacingSeconds?: number } {
+  const out: { lastSampleAt?: string; sampleSpacingSeconds?: number } = {}
+  const lastMs = parseAeLatestAtMs(row.last_sample_at)
+  if (lastMs !== null && lastMs > 0) out.lastSampleAt = new Date(lastMs).toISOString()
+  const rows = Number(row.row_count)
+  if (
+    Number.isFinite(avgIntervalSeconds) &&
+    avgIntervalSeconds > 0 &&
+    Number.isFinite(rows) &&
+    rows > 0
+  ) {
+    out.sampleSpacingSeconds = avgIntervalSeconds * Math.max(1, weightedSamples / rows)
+  }
+  return out
 }
 
 export async function queryHostSeriesViaSqlApi(
@@ -1358,7 +1430,7 @@ function buildHostSummarySql(
     `  ${sampleCountExpression()} AS sample_count,`,
     `  ${latestAtExpression()} AS latest_at`,
     `FROM ${opts.dataset}`,
-    `WHERE ${serverIdPredicate(serverId)}`,
+    `WHERE ${serverFamiliesPredicate(serverId, hostFamiliesFor([]))}`,
     `  AND ${discriminators[0]}`,
     `  AND ${discriminators[1]}`,
     // Host summary never selects `host.diagnostics` / `managed.router` fields
@@ -1412,7 +1484,12 @@ function buildFleetHostSnapshotSql(
   const to = assertIsoTimestamp('to', input.to)
   assertRange(from, to, opts.maxRangeSeconds)
   assertSafeDatasetName(opts.dataset)
-  const inList = quoteServerIdInList(input.serverIds)
+  // Validates the id list (non-empty, UUID-shaped, under the cap).
+  quoteServerIdInList(input.serverIds)
+  // Every server's host-family indexes (bare serverId + per-family, see
+  // serverFamiliesPredicate); rows group back to their server by the
+  // serverId prefix — assertSafeServerId pins it to a 36-char UUID.
+  const indexInList = fleetHostIndexInList(input.serverIds, metrics)
 
   const fromUnix = Math.floor(from.getTime() / 1000)
   const toUnix = Math.floor(to.getTime() / 1000)
@@ -1423,7 +1500,7 @@ function buildFleetHostSnapshotSql(
 
   const sql = [
     'SELECT',
-    `  ${AE_INDEX_SERVER_ID_COLUMN} AS server_id,`,
+    `  substring(${AE_INDEX_SERVER_ID_COLUMN}, 1, ${SERVER_ID_LENGTH}) AS server_id,`,
     `  ${sampleCountExpression()} AS sample_count,`,
     `  ${latestAtExpression()} AS latest_at,`,
     // MIN/MAX over toUInt32(blob7), no if()-guard needed: WHERE already
@@ -1436,7 +1513,7 @@ function buildFleetHostSnapshotSql(
     `  MAX(toUInt32(${generationCol})) AS topology_gen_max,`,
     `  ${metricSelects.join(',\n  ')}`,
     `FROM ${opts.dataset}`,
-    `WHERE ${AE_INDEX_SERVER_ID_COLUMN} IN (${inList})`,
+    `WHERE ${AE_INDEX_SERVER_ID_COLUMN} IN (${indexInList})`,
     `  AND ${discriminators[0]}`,
     `  AND ${discriminators[1]}`,
     `  AND ${hostFamilyScopePredicate(metrics)}`,
@@ -1631,7 +1708,7 @@ function buildMetricEventsSql(
     `  ${blobColumn(AE_BLOB_SOURCE_OR_IDENTITY_INDEX)} AS source,`,
     `  ${blobColumn(AE_BLOB_EVENT_PAYLOAD_INDEX)} AS payload`,
     `FROM ${opts.dataset}`,
-    `WHERE ${serverIdPredicate(serverId)}`,
+    `WHERE ${serverFamiliesPredicate(serverId, [AE_EVENT_INDEX_SUFFIX])}`,
     `  AND ${discriminators[0]}`,
     `  AND ${discriminators[1]}`,
     `  AND ${timeRangePredicate(fromUnix, toUnix)}`,
@@ -1906,7 +1983,7 @@ function buildSingleRowEntitySeriesSql(
     `  SUM(${intervalSecondsColumn()} * _sample_interval) / SUM(_sample_interval) AS avg_interval_seconds,`,
     `  ${metricSelects.join(',\n  ')}`,
     `FROM ${opts.dataset}`,
-    `WHERE ${serverIdPredicate(serverId)}`,
+    `WHERE ${serverFamiliesPredicate(serverId, [family])}`,
     `  AND ${discriminators[0]}`,
     `  AND ${discriminators[1]}`,
     `  AND ${familyPredicate(family)}`,
@@ -2095,7 +2172,7 @@ function buildPagedEntitySeriesSql(
     `  SUM(${intervalSecondsColumn()} * _sample_interval) / SUM(_sample_interval) AS avg_interval_seconds,`,
     `  ${selects.join(',\n  ')}`,
     `FROM ${opts.dataset}`,
-    `WHERE ${serverIdPredicate(serverId)}`,
+    `WHERE ${serverFamiliesPredicate(serverId, [family])}`,
     `  AND ${discriminators[0]}`,
     `  AND ${discriminators[1]}`,
     `  AND ${familyPredicate(family)}`,
@@ -2321,7 +2398,7 @@ function buildEmbeddedNicEntitySeriesSql(
     `  SUM(if(${hostIoPred}, ${intervalSecondsColumn()} * _sample_interval, 0.0)) / SUM(if(${hostIoPred}, _sample_interval * 1.0, 0.0)) AS avg_interval_seconds` +
       (selects.length > 0 ? `,\n  ${selects.join(',\n  ')}` : ''),
     `FROM ${opts.dataset}`,
-    `WHERE ${serverIdPredicate(serverId)}`,
+    `WHERE ${serverFamiliesPredicate(serverId, [AE_FAMILY_HOST_IO])}`,
     `  AND ${discriminators[0]}`,
     `  AND ${discriminators[1]}`,
     `  AND ${hostIoPred}`,
@@ -2682,7 +2759,7 @@ function buildEntityIdsSeenSql(
     'SELECT',
     `  ${idsCol} AS ids`,
     `FROM ${opts.dataset}`,
-    `WHERE ${serverIdPredicate(serverId)}`,
+    `WHERE ${serverFamiliesPredicate(serverId, [input.family])}`,
     `  AND ${discriminators[0]}`,
     `  AND ${discriminators[1]}`,
     `  AND ${familyPredicate(input.family)}`,

@@ -1,6 +1,6 @@
 import { assertEquals } from '@std/assert'
 import { it } from '@std/testing/bdd'
-import { AE_FAMILY_HOST_IO, AE_FAMILY_HOST_SYSTEM } from './field-map.ts'
+import { AE_EVENT_INDEX_SUFFIX, AE_FAMILY_HOST_IO, AE_FAMILY_HOST_SYSTEM } from './field-map.ts'
 import {
   HOST_METRICS_METRIC_DESCRIPTORS,
   type HostMetricsMetricDescriptor,
@@ -36,6 +36,8 @@ import {
   timeRangePredicate,
   kindDiscriminatorPredicates,
   weightedAvgExpressionForColumn,
+  serverFamiliesPredicate,
+  storedSampleSpacing,
 } from './sql-api.ts'
 
 it('AE_DATASET_NAME is the current dataset', () => {
@@ -493,6 +495,29 @@ it("queryFleetHostSnapshotViaSqlApi: one server's values and topology generation
   assertEquals(result.servers[0].serverId, HOST_SERVER_ID)
   assertEquals(result.servers[0].values['host.cpu.busyPercent'], 77)
   assertEquals(result.servers[0].topologyGeneration, 5)
+})
+
+it('queryFleetHostSnapshotViaSqlApi: reads every per-family host index and groups by the serverId prefix', async () => {
+  const bodies: string[] = []
+  await queryFleetHostSnapshotViaSqlApi(
+    {
+      accountId: 'acct123',
+      apiToken: 'token-xyz',
+      fetch: async (_url, init) => {
+        bodies.push(String(init?.body ?? ''))
+        return new Response(envelopedSqlResponse([]), { status: 200 })
+      },
+    },
+    {
+      serverIds: [HOST_SERVER_ID],
+      metrics: ['host.cpu.busyPercent'],
+      from: '2026-01-01T00:00:00.000Z',
+      to: '2026-01-01T00:05:00.000Z',
+    }
+  )
+  const sql = bodies.join('\n')
+  assertEquals(sql.includes(`substring(index1, 1, 36) AS server_id`), true)
+  assertEquals(sql.includes(`index1 IN ('${HOST_SERVER_ID}', '${HOST_SERVER_ID}:host.io')`), true)
 })
 
 // ---------------------------------------------------------------------------
@@ -1008,4 +1033,29 @@ it('AE SQL is posted to the Cloudflare client/v4 API — the only version that r
       url
     )
   }
+})
+
+it('serverFamiliesPredicate: bare index for host.system alone, IN over per-family indexes otherwise', () => {
+  const sid = '01a0e07a-bbf5-75df-a846-53864fc8cee3'
+  assertEquals(serverFamiliesPredicate(sid, [AE_FAMILY_HOST_SYSTEM]), `index1 = '${sid}'`)
+  assertEquals(
+    serverFamiliesPredicate(sid, [AE_FAMILY_HOST_SYSTEM, AE_FAMILY_HOST_IO]),
+    `index1 IN ('${sid}', '${sid}:host.io')`
+  )
+  assertEquals(
+    serverFamiliesPredicate(sid, [AE_EVENT_INDEX_SUFFIX]),
+    `index1 IN ('${sid}', '${sid}:event')`
+  )
+})
+
+it('storedSampleSpacing: AE-sampled rows are spaced interval × weight apart', () => {
+  // Testing 2026-09-27: one host.system row standing for two 60 s samples.
+  assertEquals(storedSampleSpacing({ row_count: 1, last_sample_at: 1790524807 }, 2, 60), {
+    lastSampleAt: '2026-09-27T16:00:07.000Z',
+    sampleSpacingSeconds: 120,
+  })
+  // Unsampled: spacing is the interval itself.
+  assertEquals(storedSampleSpacing({ row_count: 6 }, 6, 10), { sampleSpacingSeconds: 10 })
+  // No rows / no interval / zero latest: nothing to report.
+  assertEquals(storedSampleSpacing({ row_count: 0, last_sample_at: 0 }, 0, Number.NaN), {})
 })
