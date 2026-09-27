@@ -368,8 +368,22 @@ guard; `pnpm test:do` alone does not.
   Do not commit `TURBOPANEL_REVISION` in `wrangler.jsonc` — that would freeze a
   SHA. Self-hosted instance-launch writes it into `runtime.env` /
   `runtime.dev-vars` from `git rev-parse HEAD` in the instance checkout.
-  `GET /api/health` reports `{ license, version, revision: { commit, sourceUrl } }`
-  so a network user can identify Corresponding Source.
+  `GET /api/health` reports `{ license, version, revision: { commit, sourceUrl },
+  channel, build, environment }` (`src/app/build-info.ts`) so a network user can
+  identify Corresponding Source. `channel` is the resolved
+  `TURBOPANEL_UPDATE_CHANNEL` (default `trunk`); `build` is the installed
+  package's full label from `TURBOPANEL_BUILD_LABEL` (e.g.
+  `0.1.1-canary.<buildId>`, `0.1.1-rc.1`) or null — never baked into the
+  binary, because promotion reuses the canary bytes for rc and release, so the
+  installer that knows which manifest it installed has to supply it;
+  `environment` is `TURBOPANEL_ENVIRONMENT` (`testing` / `staging` / `live`,
+  set per env in wrangler.jsonc; null for local dev and self-hosted).
+  **Commit on a plain `wrangler deploy`:** wrangler.jsonc's `build.command`
+  runs `scripts/stamp-build-commit.mjs` before bundling whenever
+  `WORKERS_CI_COMMIT_SHA` is set (Workers Builds only), stamping
+  `BUILD_INFO.commit` in the throwaway build checkout — so the owner's own
+  deploy command (`pnpm migrate && pnpm wrangler deploy`) reports the commit
+  without `deploy:testing`. `TURBOPANEL_REVISION` still wins when set.
 - **Versions on the wires** (`src/app/version.ts`, `src/lib/version-wire.ts`) —
   `INSTANCE_VERSION` is a JSON import of `deno.json`'s `version`, the one place
   the number is typed (`package.json` and `sonar.projectVersion` mirror it;
