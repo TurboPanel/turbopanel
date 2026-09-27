@@ -1,0 +1,377 @@
+/**
+ * The AE SQL API refuses two things DuckDB-backed tests never noticed — both
+ * were live on testing (2026-09-27): statements over 10,000 characters
+ * (`422 SQL was excessively long`) and MIN/MAX over a String blob column
+ * (`422 cannot use the String type as argument 1 in max(`). These tests
+ * capture the real statements every query helper sends for the worst-case
+ * request and hold them to both limits, plus a small allowlist of the AE SQL
+ * functions Cloudflare documents, and check chunked results merge back
+ * into one answer.
+ */
+import { assert, assertEquals, assertRejects } from '@std/assert'
+import { it } from '@std/testing/bdd'
+import { MAX_NIC_SLOTS } from '../../../../contracts/topology-types.ts'
+import { HOST_METRICS_METRIC_DESCRIPTORS } from '../../metric-descriptors.ts'
+import { aeSqlValidationFailure } from '../../testing/fake-analytics-engine.ts'
+import type { PerEntityHostedFamily } from '../../types.ts'
+import {
+  AE_SQL_MAX_LENGTH,
+  CloudflareAnalyticsSqlClient,
+  type CloudflareAnalyticsSqlConfig,
+  MAX_FLEET_SNAPSHOT_SERVERS,
+  mapWithConcurrency,
+  mergePointsByAt,
+  packItemsBySqlLength,
+  packRowsAndColumns,
+  queryEntityIdsSeenViaSqlApi,
+  queryEntitySeriesViaSqlApi,
+  queryFleetHostSnapshotViaSqlApi,
+  queryHostSeriesViaSqlApi,
+  queryHostSummaryViaSqlApi,
+  queryMetricEventsViaSqlApi,
+  queryStatusHistoryViaSqlApi,
+} from './sql-api.ts'
+
+/**
+ * Functions Cloudflare documents for AE SQL (aggregate, conditional,
+ * mathematical, date-time and type-conversion reference pages) that the
+ * builders are allowed to emit. A new function must be checked against the
+ * docs before it is added here.
+ */
+const AE_SQL_FUNCTION_ALLOWLIST = new Set([
+  'SUM',
+  'MIN',
+  'MAX',
+  'argMax',
+  'argMin',
+  'count',
+  'if',
+  'intDiv',
+  'pow',
+  'toDateTime',
+  'toUnixTimestamp',
+  'toUInt32',
+  'CONCAT',
+])
+
+const HOST_SCOPES = new Set([
+  'host.cpu',
+  'host.kernel',
+  'host.memory',
+  'host.storage',
+  'host.network',
+  'diagnostics',
+  'router',
+  'storage',
+  'dockerUsage',
+])
+
+const ENTITY_SCOPE: Record<PerEntityHostedFamily, string> = {
+  gpu: 'gpu',
+  network: 'network',
+  filesystem: 'filesystem',
+  block: 'block',
+  'hardware.physical': 'hardwareSignal',
+  'managed.ingress': 'ingress',
+  'managed.database_proxy': 'databaseProxy',
+}
+
+/**
+ * Most entities one entity-series request can name, per family — the SX
+ * (largest) slot budgets from src/features/tiers/ladder.ts (GPU 8,
+ * filesystem 18, drive 24), the daemon's NIC cap, and 32 for managed.
+ */
+const WORST_CASE_ENTITIES: Record<PerEntityHostedFamily, number> = {
+  gpu: 8,
+  network: MAX_NIC_SLOTS,
+  filesystem: 18,
+  block: 24,
+  'hardware.physical': 24,
+  'managed.ingress': 32,
+  'managed.database_proxy': 32,
+}
+
+const SERVER_ID = '01a0e07a-bbf5-75df-a846-53864fc8cee3'
+const TO = '2026-09-27T00:00:00.000Z'
+const FROM = '2026-06-30T00:00:00.000Z'
+
+const HOST_METRICS = Object.entries(HOST_METRICS_METRIC_DESCRIPTORS)
+  .filter(([, descriptor]) => HOST_SCOPES.has(descriptor.entityScope))
+  .map(([name]) => name)
+
+function fieldsFor(family: PerEntityHostedFamily): string[] {
+  return Object.values(HOST_METRICS_METRIC_DESCRIPTORS)
+    .filter((descriptor) => descriptor.entityScope === ENTITY_SCOPE[family])
+    .map((descriptor) => descriptor.fieldName)
+}
+
+function entityIdsFor(family: PerEntityHostedFamily, count: number): string[] {
+  return Array.from({ length: count }, (_, i) =>
+    family === 'filesystem'
+      ? `/srv/volumes/a-rather-long-mount-point-name-${i}`
+      : `${family.replace(/\W/g, '')}-entity-${i}-0123456789abcdef`
+  )
+}
+
+function serverIds(count: number): string[] {
+  return Array.from(
+    { length: count },
+    (_, i) => `01a0e07a-bbf5-75df-a846-${String(i).padStart(12, '0')}`
+  )
+}
+
+type Answer = (sql: string) => Array<Record<string, unknown>>
+
+/** Config whose fetch records every statement and answers with `answer(sql)` rows. */
+function capturingConfig(answer: Answer = () => []): {
+  config: CloudflareAnalyticsSqlConfig
+  statements: string[]
+} {
+  const statements: string[] = []
+  const fetchStub = ((_url: string, init?: RequestInit) => {
+    const sql = String(init?.body ?? '')
+    statements.push(sql)
+    const data = answer(sql)
+    return Promise.resolve(
+      new Response(JSON.stringify({ data, meta: [], rows: data.length }), { status: 200 })
+    )
+  }) as unknown as typeof fetch
+  return {
+    config: {
+      accountId: 'account',
+      apiToken: 'token',
+      maxRangeSeconds: 90 * 24 * 60 * 60,
+      fetch: fetchStub,
+    },
+    statements,
+  }
+}
+
+function assertAcceptableToAe(statements: readonly string[]): void {
+  assert(statements.length > 0, 'no statement was sent')
+  for (const sql of statements) {
+    assert(sql.length < AE_SQL_MAX_LENGTH, `statement is ${sql.length} chars`)
+    assertEquals(aeSqlValidationFailure(sql), null)
+    for (const match of sql.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\(/g)) {
+      assert(
+        AE_SQL_FUNCTION_ALLOWLIST.has(match[1]),
+        `function ${match[1]}( is not on the documented AE SQL allowlist`
+      )
+    }
+  }
+}
+
+it('host series for every host metric over 90 days stays within AE limits', async () => {
+  const { config, statements } = capturingConfig()
+  await queryHostSeriesViaSqlApi(config, {
+    serverId: SERVER_ID,
+    metrics: HOST_METRICS,
+    from: FROM,
+    to: TO,
+  })
+  assert(statements.length > 2, 'expected the metric list to be split')
+  assertAcceptableToAe(statements)
+})
+
+it('fleet snapshot of the maximum fleet and every host metric stays within AE limits', async () => {
+  const { config, statements } = capturingConfig()
+  await queryFleetHostSnapshotViaSqlApi(config, {
+    serverIds: serverIds(MAX_FLEET_SNAPSHOT_SERVERS),
+    metrics: HOST_METRICS,
+    from: FROM,
+    to: TO,
+  })
+  assertAcceptableToAe(statements)
+})
+
+it('host summary, events, status and entity-id queries stay within AE limits', async () => {
+  const { config, statements } = capturingConfig()
+  const range = { serverId: SERVER_ID, from: FROM, to: TO }
+  await queryHostSummaryViaSqlApi(config, range)
+  await queryMetricEventsViaSqlApi(config, range)
+  await queryStatusHistoryViaSqlApi(config, range)
+  for (const family of Object.keys(ENTITY_SCOPE) as PerEntityHostedFamily[]) {
+    await queryEntityIdsSeenViaSqlApi(config, { ...range, family })
+  }
+  assertAcceptableToAe(statements)
+})
+
+for (const family of Object.keys(ENTITY_SCOPE) as PerEntityHostedFamily[]) {
+  it(`entity series (${family}) for every field and the most entities stays within AE limits`, async () => {
+    const { config, statements } = capturingConfig()
+    const result = await queryEntitySeriesViaSqlApi(config, {
+      serverId: SERVER_ID,
+      family,
+      entityIds: entityIdsFor(family, WORST_CASE_ENTITIES[family]),
+      metrics: fieldsFor(family),
+      from: FROM,
+      to: TO,
+    })
+    assertEquals(result.entities.length, WORST_CASE_ENTITIES[family])
+    assertAcceptableToAe(statements)
+  })
+}
+
+it('a chunked host series merges every metric back into one point per bucket', async () => {
+  const bucket = Date.parse('2026-09-26T00:00:00.000Z') / 1000
+  const { config, statements } = capturingConfig((sql) => {
+    const aliases = [...sql.matchAll(/ AS (m\d+)/g)].map((match) => match[1])
+    if (aliases.length === 0) return [{ generation: '4' }]
+    const row: Record<string, unknown> = {
+      bucket,
+      sample_count: 5,
+      avg_interval_seconds: 60,
+      topology_gen_min: 4,
+      topology_gen_max: 4,
+    }
+    for (const alias of aliases) row[alias] = 1
+    return [row]
+  })
+  const result = await queryHostSeriesViaSqlApi(config, {
+    serverId: SERVER_ID,
+    metrics: HOST_METRICS,
+    from: '2026-09-25T00:00:00.000Z',
+    to: TO,
+  })
+  assert(statements.length > 2)
+  assertEquals(result.points.length, 1)
+  assertEquals(result.sampleCount, 5)
+  assertEquals(result.points[0].topologyGeneration, 4)
+  assertEquals(result.topologyGenerations, [4])
+  for (const name of HOST_METRICS) {
+    assertEquals(result.points[0].values[name], 1, name)
+  }
+})
+
+it('a chunked fleet snapshot returns each server once with every metric', async () => {
+  const ids = serverIds(MAX_FLEET_SNAPSHOT_SERVERS)
+  const { config, statements } = capturingConfig((sql) => {
+    const aliases = [...sql.matchAll(/ AS (m\d+)/g)].map((match) => match[1])
+    const inList = [...sql.matchAll(/'([0-9a-f-]{36})'/g)].map((match) => match[1])
+    return inList.map((serverId) => {
+      const row: Record<string, unknown> = {
+        server_id: serverId,
+        sample_count: 3,
+        latest_at: 1_790_000_000,
+        topology_gen_min: 2,
+        topology_gen_max: 2,
+      }
+      for (const alias of aliases) row[alias] = 7
+      return row
+    })
+  })
+  const result = await queryFleetHostSnapshotViaSqlApi(config, {
+    serverIds: ids,
+    metrics: HOST_METRICS,
+    from: FROM,
+    to: TO,
+  })
+  assert(statements.length > 1)
+  assertEquals(result.servers.length, ids.length)
+  for (const server of result.servers) {
+    assertEquals(server.sampleCount, 3)
+    assertEquals(server.topologyGeneration, 2)
+    for (const name of HOST_METRICS) assertEquals(server.values[name], 7, name)
+  }
+})
+
+it('an over-long statement is refused before the request, naming the query', async () => {
+  const { config, statements } = capturingConfig()
+  const client = new CloudflareAnalyticsSqlClient(config)
+  await assertRejects(
+    () => client.executeSql(`SELECT ${'x'.repeat(AE_SQL_MAX_LENGTH)}`, 'hostSeries 2/3'),
+    Error,
+    'AE SQL too long (hostSeries 2/3)'
+  )
+  assertEquals(statements.length, 0)
+})
+
+it('an AE HTTP error names the query in the message', async () => {
+  const client = new CloudflareAnalyticsSqlClient({
+    accountId: 'account',
+    apiToken: 'token',
+    fetch: (() =>
+      Promise.resolve(
+        new Response('Input was invalid', { status: 422 })
+      )) as unknown as typeof fetch,
+  })
+  await assertRejects(
+    () => client.executeSql('SELECT 1', 'fleetSnapshot 1/4'),
+    Error,
+    'AE SQL HTTP 422 (fleetSnapshot 1/4): Input was invalid'
+  )
+})
+
+it('packItemsBySqlLength keeps order, fills each chunk, and refuses an item that cannot fit', () => {
+  const length = (chunk: readonly number[]) => chunk.reduce((sum, n) => sum + n, 0)
+  assertEquals(packItemsBySqlLength([3, 3, 3, 5, 1], length, 7), [[3, 3], [3], [5, 1]])
+  assertEquals(packItemsBySqlLength([], length, 7), [])
+  let refused = false
+  try {
+    packItemsBySqlLength([2, 9], length, 7)
+  } catch (error) {
+    refused = error instanceof RangeError
+  }
+  assert(refused)
+})
+
+it('packRowsAndColumns splits only columns when all rows fit, both axes otherwise', () => {
+  const length = (rows: readonly number[], cols: readonly number[]) =>
+    rows.length * 10 + cols.reduce((sum, n) => sum + n, 0)
+  assertEquals(packRowsAndColumns([1, 2], [40, 40, 40], length, 100), [
+    { rows: [1, 2], columns: [40, 40] },
+    { rows: [1, 2], columns: [40] },
+  ])
+  const split = packRowsAndColumns(
+    Array.from({ length: 12 }, (_, i) => i),
+    [20, 20],
+    length,
+    100
+  )
+  for (const chunk of split) assert(length(chunk.rows, chunk.columns) <= 100)
+  assertEquals(new Set(split.flatMap((chunk) => chunk.rows)).size, 12)
+  const columnsPerRowChunk = new Map<string, number[]>()
+  for (const chunk of split) {
+    const key = chunk.rows.join(',')
+    columnsPerRowChunk.set(key, [...(columnsPerRowChunk.get(key) ?? []), ...chunk.columns])
+  }
+  for (const columns of columnsPerRowChunk.values()) assertEquals(columns, [20, 20])
+})
+
+it('mapWithConcurrency keeps order and never exceeds its limit', async () => {
+  let inFlight = 0
+  let peak = 0
+  const results = await mapWithConcurrency([1, 2, 3, 4, 5, 6], 2, async (n) => {
+    inFlight++
+    peak = Math.max(peak, inFlight)
+    await new Promise((resolve) => setTimeout(resolve, 1))
+    inFlight--
+    return n * 10
+  })
+  assertEquals(results, [10, 20, 30, 40, 50, 60])
+  assertEquals(peak, 2)
+})
+
+it("mergePointsByAt unions values per bucket, keeps the first chunk's counts, and sorts", () => {
+  type Point = { at: string; values: Record<string, number>; sampleCount: number }
+  const merged = mergePointsByAt<Point>([
+    [
+      { at: '2026-09-26T00:05:00.000Z', values: { a: 1 }, sampleCount: 5 },
+      { at: '2026-09-26T00:00:00.000Z', values: { a: 2 }, sampleCount: 4 },
+    ],
+    [{ at: '2026-09-26T00:05:00.000Z', values: { b: 3 }, sampleCount: 9 }],
+  ])
+  assertEquals(merged, [
+    { at: '2026-09-26T00:00:00.000Z', values: { a: 2 }, sampleCount: 4 },
+    { at: '2026-09-26T00:05:00.000Z', values: { a: 1, b: 3 }, sampleCount: 5 },
+  ])
+})
+
+it('the fake AE engine refuses what the real one refuses', () => {
+  assertEquals(
+    aeSqlValidationFailure('SELECT MAX(blob7) FROM t'),
+    'Input was invalid: cannot use the String type as argument 1 in max('
+  )
+  assertEquals(aeSqlValidationFailure('SELECT MAX(toUInt32(blob7)) FROM t'), null)
+  assert(aeSqlValidationFailure('x'.repeat(AE_SQL_MAX_LENGTH + 1))?.includes('excessively long'))
+})

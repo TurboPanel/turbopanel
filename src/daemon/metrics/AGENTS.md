@@ -226,6 +226,23 @@ below).
 | SQL API          | `POST .../analytics_engine/sql` with `Authorization: Bearer <token>`; response envelope rows under `result.data`                                                                             |
 | Max range        | Default `AE_DEFAULT_MAX_RANGE_SECONDS` = 90 days; override via `TURBOPANEL_SERVER_METRICS_AE_MAX_RANGE_SECONDS`                                                                              |
 
+**AE SQL refusals DuckDB never shows** (both hit testing on 2026-09-27; the
+fake engine in `testing/fake-analytics-engine.ts` now mirrors them as `422`):
+
+- **10,000-character statement cap** (`AE_SQL_MAX_LENGTH`). Host series, the
+  fleet snapshot and entity series pack their metric/field lists (and server
+  / entity ids) into statements under `AE_SQL_CHUNK_BUDGET` (9,000) with
+  `packItemsBySqlLength` / `packRowsAndColumns`, run at most
+  `AE_SQL_CHUNK_CONCURRENCY` at once, and merge rows back by bucket / server /
+  entity. `executeSql` refuses an over-long statement before sending it.
+- **No aggregate over a String blob** (`cannot use the String type as argument
+1 in max(`). Aggregate `doubleN` columns only; the topology generation
+  (`blob7`, a stringified integer) is compared as `MIN/MAX(toUInt32(blob7))`.
+- Emit only functions on Cloudflare's AE SQL reference pages —
+  `sql-limits.test.ts` keeps an allowlist and checks every builder's
+  worst-case statements against all three rules. Errors name the query
+  (`AE SQL HTTP 422 (hostSeries 2/3): …`), never the token.
+
 **Envelope (every row kind: `"metrics"` / `"event"` / `"status"`)** —
 `AE_BLOB_*_INDEX` constants in `field-map.ts`:
 
@@ -416,14 +433,14 @@ older wire versions.
 
 Endpoints (`src/client/servers/metrics-routes.ts`):
 
-| Method | Path                                            | Notes                                                                               |
-| ------ | ----------------------------------------------- | ----------------------------------------------------------------------------------- |
-| `GET`  | `/api/client/v1/servers/:id/metrics/series`     | per-entity selectors (`parseSeriesMetricSelectors`) grouped by family               |
-| `GET`  | `/api/client/v1/servers/:id/metrics/summary`    | host summary + `cpuLimits`/`temperatureUnit` envelope                               |
-| `GET`  | `/api/client/v1/servers/:id/metrics/connection` | status-event history (uptime/downtime)                                              |
-| `GET`  | `/api/client/v1/servers/:id/metrics/events`     | metrics-event history; `available: false` (never 503) when unsupported by the store |
+| Method | Path                                              | Notes                                                                                           |
+| ------ | ------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `GET`  | `/api/client/v1/servers/:id/metrics/series`       | per-entity selectors (`parseSeriesMetricSelectors`) grouped by family                           |
+| `GET`  | `/api/client/v1/servers/:id/metrics/summary`      | host summary + `cpuLimits`/`temperatureUnit` envelope                                           |
+| `GET`  | `/api/client/v1/servers/:id/metrics/connection`   | status-event history (uptime/downtime)                                                          |
+| `GET`  | `/api/client/v1/servers/:id/metrics/events`       | metrics-event history; `available: false` (never 503) when unsupported by the store             |
 | `GET`  | `/api/client/v1/servers/:id/metrics/capabilities` | live daemon round trip for the hardware-profile picker (409 `server_offline` when disconnected) |
-| `GET`  | `/api/client/v1/servers/metrics/latest`         | one fleet snapshot per org server — never N per-server chart calls                  |
+| `GET`  | `/api/client/v1/servers/metrics/latest`           | one fleet snapshot per org server — never N per-server chart calls                              |
 
 Never authorize by bare UUID possession — session middleware + resource read
 grant required. Fleet latest never accepts client-supplied serverIds.
