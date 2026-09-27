@@ -38,7 +38,6 @@ import {
 } from './metrics/validation.ts'
 import {
   isServerMachineClass,
-  isUnmarkedLiveCadenceInterval,
   type MetricsCapabilityPlan,
   type MetricsDeploymentKind,
   metricsDeploymentKindForRuntime,
@@ -1543,22 +1542,16 @@ export function registerDaemonApiRoutes<E extends Env>(
         })
       }
 
-      const liveSessionActive = await isServerLiveSessionActive(metricsChartCache, serverId)
-      if (liveSessionActive) {
+      // A live session also buffers the sample for the chart's live overlay.
+      // It is STILL written durably: the daemon replaces its 60 s cadence
+      // with the 10 s one while any lease is active (turbopaneld
+      // `live-leases.ts`) rather than adding to it, so skipping these writes
+      // left the durable store empty for as long as anyone watched — the
+      // "huge gaps" on testing (2026-09-27). The marker lives in the
+      // colo-local Cache API, so a daemon ingesting through another colo
+      // never saw it at all, and its 10 s samples were dropped outright.
+      if (await isServerLiveSessionActive(metricsChartCache, serverId)) {
         await cacheLiveSample(metricsChartCache, sample)
-        return c.json({ ok: true }, 202)
-      }
-
-      // Backstop: a 10 s live sample whose marker expired/raced must not
-      // land in AE/DuckDB. Priming (~2 s) and baseline (60 s ± jitter) still
-      // write. Fail open to a no-op, same discipline as `logWriteFailed`.
-      if (isUnmarkedLiveCadenceInterval(sample.metadata.intervalSeconds)) {
-        rateLimitedMetricsLog(serverId, 'live_sample_unmarked', () => {
-          console.warn(
-            `metrics skipped durable write for ${serverId}: interval ${sample.metadata.intervalSeconds}s below baseline without an active live session`
-          )
-        })
-        return c.json({ ok: true }, 202)
       }
 
       // Fire-and-forget per `ServerMetricsStore`'s contract (types.ts) —

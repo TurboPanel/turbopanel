@@ -3,8 +3,6 @@ import {
   computeMetricsCapabilityPlanHash,
   inferServerMachineClass,
   isServerMachineClass,
-  isUnmarkedLiveCadenceInterval,
-  METRICS_BASELINE_INTERVAL_SECONDS,
   type MetricsCapabilityPlan,
   metricsCapabilityPlanFromTierEntitlements,
   type MetricsCapabilityTierEntitlements,
@@ -1051,17 +1049,4 @@ test('resolveServerMachineClass: NULL and out-of-range declarations fall back to
   assertEquals(resolveServerMachineClass(undefined, { hardwareSignals: [] }), 'virtual')
   assertEquals(resolveServerMachineClass('bare-metal', undefined, 1), 'physical')
   assertEquals(resolveServerMachineClass('', undefined, 0), 'virtual')
-})
-
-test('isUnmarkedLiveCadenceInterval flags 10 s live ticks and spares priming/baseline', () => {
-  assertEquals(isUnmarkedLiveCadenceInterval(10), true)
-  assertEquals(isUnmarkedLiveCadenceInterval(15), true)
-  assertEquals(isUnmarkedLiveCadenceInterval(8), true)
-  assertEquals(isUnmarkedLiveCadenceInterval(2), false)
-  assertEquals(isUnmarkedLiveCadenceInterval(7), false)
-  assertEquals(isUnmarkedLiveCadenceInterval(METRICS_BASELINE_INTERVAL_SECONDS), false)
-  assertEquals(isUnmarkedLiveCadenceInterval(55), false)
-  assertEquals(isUnmarkedLiveCadenceInterval(16), false)
-  assertEquals(isUnmarkedLiveCadenceInterval(0), false)
-  assertEquals(isUnmarkedLiveCadenceInterval(Number.NaN), false)
 })

@@ -1048,6 +1048,8 @@ export type SeriesQueryOutcome =
       ok: true
       hostResult: HostSeriesResult | null
       entityResults: EntitySeriesResult[]
+      /** Entity families whose query failed — answered as unavailable, never cached. */
+      failedFamilies: PerEntityHostedFamily[]
     }
   | { ok: false }
 
@@ -1090,20 +1092,71 @@ export function withIngressDerivedValues(result: EntitySeriesResult): EntitySeri
  * before they reach the response builder, so the cached payload already carries
  * the latency derivations.
  */
-export async function querySeriesResults(
-  input: SeriesQueryInput
-): Promise<SeriesQueryOutcome> {
+export async function querySeriesResults(input: SeriesQueryInput): Promise<SeriesQueryOutcome> {
   const hostOutcome = await queryHostSeriesForRoute(input)
   if (!hostOutcome.ok) return { ok: false }
 
+  // One family failing (a GPU query AE refuses, say) answers that family as
+  // unavailable; it must not blank the host charts and every other family —
+  // on testing (2026-09-27) one refused GPU query turned the whole series
+  // request into a 503 "Metrics store unavailable".
   const entityResults: EntitySeriesResult[] = []
+  const failedFamilies: PerEntityHostedFamily[] = []
   for (const [family, selection] of input.selectors.entityFamilies) {
     const outcome = await queryOneEntityFamilySeries(input, family, selection)
-    if (!outcome.ok) return { ok: false }
+    if (!outcome.ok) {
+      failedFamilies.push(family)
+      entityResults.push(
+        unavailableEntitySeriesResult({
+          serverId: input.serverId,
+          family,
+          metrics: [...selection.fields],
+          backend: input.backend,
+        })
+      )
+      continue
+    }
     entityResults.push(withIngressDerivedValues(outcome.result))
   }
 
-  return { ok: true, hostResult: hostOutcome.hostResult, entityResults }
+  return { ok: true, hostResult: hostOutcome.hostResult, entityResults, failedFamilies }
+}
+
+const SERIES_GAP_LOG_INTERVAL_MS = 60_000
+const lastSeriesGapLogAt = new Map<string, number>()
+
+/**
+ * One line per server per minute when a served series has holes or failed
+ * families — enough to tell a missing-data gap (buckets returned < expected)
+ * from a read failure in `wrangler tail`, without logging every chart poll.
+ */
+export function logSeriesGaps(
+  input: {
+    serverId: string
+    fromMs: number
+    toMs: number
+    resolutionSeconds: number
+    hostResult: HostSeriesResult | null
+    failedFamilies: readonly PerEntityHostedFamily[]
+  },
+  nowMs = Date.now(),
+  log: (line: string) => void = console.warn
+): boolean {
+  const expected = Math.max(
+    0,
+    Math.ceil((input.toMs - input.fromMs) / (input.resolutionSeconds * 1000))
+  )
+  const returned = input.hostResult?.points.length ?? 0
+  const gaps = input.hostResult?.gapCount ?? 0
+  if (gaps === 0 && input.failedFamilies.length === 0) return false
+  const last = lastSeriesGapLogAt.get(input.serverId)
+  if (last !== undefined && nowMs - last < SERIES_GAP_LOG_INTERVAL_MS) return false
+  if (lastSeriesGapLogAt.size > 1000) lastSeriesGapLogAt.clear()
+  lastSeriesGapLogAt.set(input.serverId, nowMs)
+  log(
+    `metrics series gaps serverId=${input.serverId} resolution=${input.resolutionSeconds}s expectedBuckets=${expected} returnedBuckets=${returned} gapCount=${gaps} samples=${input.hostResult?.sampleCount ?? 0} failedFamilies=${input.failedFamilies.join(',') || 'none'}`
+  )
+  return true
 }
 
 type HostSeriesQueryOutcome =
@@ -1113,9 +1166,7 @@ type HostSeriesQueryOutcome =
     }
   | { ok: false }
 
-async function queryHostSeriesForRoute(
-  input: SeriesQueryInput
-): Promise<HostSeriesQueryOutcome> {
+async function queryHostSeriesForRoute(input: SeriesQueryInput): Promise<HostSeriesQueryOutcome> {
   if (input.selectors.hostCanonicalNames.length === 0) {
     return { ok: true, hostResult: null }
   }
