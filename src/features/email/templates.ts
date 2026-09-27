@@ -20,7 +20,7 @@ const OTP_INTROS: Record<OtpType, string> = {
 
 export function createEmailVerificationLinkEmail(
   _recipientEmail: string,
-  verifyUrl: string,
+  verifyUrl: string
 ): TemplateResult {
   const subject = 'Verify your TurboPanel email'
   const safeUrl = escapeHtml(verifyUrl)
@@ -51,10 +51,60 @@ export function createEmailVerificationLinkEmail(
   return { subject, html, text }
 }
 
+export function createPasswordResetLinkEmail(resetUrl: string): TemplateResult {
+  const subject = 'Reset your TurboPanel password'
+  const safeUrl = escapeHtml(resetUrl)
+  const html = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${subject}</title>
+</head>
+<body style="margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f5f5f5;padding:24px;">
+  <div style="max-width:480px;margin:0 auto;background:#fff;border-radius:8px;box-shadow:0 1px 3px rgba(0,0,0,0.08);padding:32px;">
+    <h1 style="margin:0 0 16px;font-size:24px;color:#111;">Reset your password</h1>
+    <p style="margin:0 0 24px;color:#444;line-height:1.5;">Someone asked to reset the password for your TurboPanel account. The link works once and expires in one hour.</p>
+    <p style="margin:0 0 24px;">
+      <a href="${safeUrl}" style="display:inline-block;background:#2563eb;color:#fff;text-decoration:none;padding:12px 24px;border-radius:6px;font-weight:600;">Choose a new password</a>
+    </p>
+    <p style="margin:0;font-size:14px;color:#666;">If you didn't ask for this, you can ignore this email — your password stays the same.</p>
+    <p style="margin:16px 0 0;font-size:12px;color:#999;">TurboPanel – Self-hosted control plane</p>
+  </div>
+</body>
+</html>
+`.trim()
+  const text =
+    `Reset your TurboPanel password\n\nOpen this link to choose a new password (it works once and expires in one hour):\n${resetUrl}\n\n` +
+    `If you didn't ask for this, ignore this email — your password stays the same.\n\nTurboPanel – Self-hosted control plane`
+  return { subject, html, text }
+}
+
+/** The template for any queued job, or `null` for an unknown type — shared by every HTTP email sender. */
+export function resolveEmailTemplate(job: EmailJob): TemplateResult | null {
+  switch (job.type) {
+    case 'signup-verification':
+      return createEmailVerificationLinkEmail(job.to, job.verificationUrl)
+    case 'password-reset':
+      return createPasswordResetLinkEmail(job.resetUrl)
+    case 'email-otp':
+      return createEmailOtpEmail(job.to, job.otp, job.otpType)
+    case 'server-tier-notice':
+      return createServerTierNoticeEmail(job)
+    case 'invitation':
+      return createInvitationEmail(job)
+    case 'notification':
+      return createNotificationEmail(job)
+    default:
+      return null
+  }
+}
+
 export function createEmailOtpEmail(
   _recipientEmail: string,
   otp: string,
-  otpType: OtpType,
+  otpType: OtpType
 ): TemplateResult {
   const subject = OTP_SUBJECTS[otpType]
   const intro = OTP_INTROS[otpType]
@@ -85,7 +135,7 @@ export function createEmailOtpEmail(
 }
 
 export function createServerTierNoticeEmail(
-  job: Extract<EmailJob, { type: 'server-tier-notice' }>,
+  job: Extract<EmailJob, { type: 'server-tier-notice' }>
 ): TemplateResult {
   const exceeds = job.kind === 'exceeds'
   const subject = exceeds
@@ -104,9 +154,10 @@ export function createServerTierNoticeEmail(
   if (job.unwatched.gpus.length > 0) {
     unwatchedParts.push(`GPUs: ${job.unwatched.gpus.join(', ')}`)
   }
-  const unwatchedLine = unwatchedParts.length > 0
-    ? `Devices beyond the current monitoring slots — ${unwatchedParts.join('; ')}.`
-    : 'No devices sit beyond the current monitoring slots.'
+  const unwatchedLine =
+    unwatchedParts.length > 0
+      ? `Devices beyond the current monitoring slots — ${unwatchedParts.join('; ')}.`
+      : 'No devices sit beyond the current monitoring slots.'
   const safeSubject = escapeHtml(subject)
   const safeIntro = escapeHtml(intro)
   const safeUnwatched = escapeHtml(unwatchedLine)
@@ -139,7 +190,7 @@ export function createServerTierNoticeEmail(
 }
 
 export function createInvitationEmail(
-  job: Extract<EmailJob, { type: 'invitation' }>,
+  job: Extract<EmailJob, { type: 'invitation' }>
 ): TemplateResult {
   const subject = `You've been invited to ${job.organizationName} on TurboPanel`
   const safeSubject = escapeHtml(subject)
@@ -179,7 +230,7 @@ const SEVERITY_LABEL = { info: 'Notice', warning: 'Warning', critical: 'Critical
 const SEVERITY_COLOR = { info: '#2563eb', warning: '#b45309', critical: '#b91c1c' } as const
 
 export function createNotificationEmail(
-  job: Extract<EmailJob, { type: 'notification' }>,
+  job: Extract<EmailJob, { type: 'notification' }>
 ): TemplateResult {
   const scope = job.organizationName ? ` · ${job.organizationName}` : ''
   const subject = `[TurboPanel ${SEVERITY_LABEL[job.severity]}] ${job.title}`
@@ -187,7 +238,9 @@ export function createNotificationEmail(
   const safeTitle = escapeHtml(job.title)
   const safeBody = job.body ? escapeHtml(job.body) : ''
   const safeScope = escapeHtml(scope)
-  const safeDetails = job.details.map((d) => `<li style="margin:0 0 4px;">${escapeHtml(d)}</li>`).join('')
+  const safeDetails = job.details
+    .map((d) => `<li style="margin:0 0 4px;">${escapeHtml(d)}</li>`)
+    .join('')
   const safeUrl = job.consoleUrl ? escapeHtml(job.consoleUrl) : null
   const html = `
 <!DOCTYPE html>
@@ -204,10 +257,10 @@ export function createNotificationEmail(
     ${safeBody ? `<p style="margin:0 0 16px;color:#444;line-height:1.5;">${safeBody}</p>` : ''}
     ${safeDetails ? `<ul style="margin:0 0 16px;padding-left:20px;color:#444;font-family:ui-monospace,Menlo,monospace;font-size:13px;">${safeDetails}</ul>` : ''}
     ${
-    safeUrl
-      ? `<p style="margin:0 0 24px;"><a href="${safeUrl}" style="display:inline-block;background:#2563eb;color:#fff;text-decoration:none;padding:12px 24px;border-radius:6px;font-weight:600;">Open in TurboPanel</a></p>`
-      : ''
-  }
+      safeUrl
+        ? `<p style="margin:0 0 24px;"><a href="${safeUrl}" style="display:inline-block;background:#2563eb;color:#fff;text-decoration:none;padding:12px 24px;border-radius:6px;font-weight:600;">Open in TurboPanel</a></p>`
+        : ''
+    }
     <p style="margin:0;font-size:12px;color:#999;">${escapeHtml(job.event)} · ${escapeHtml(job.at)}</p>
     <p style="margin:16px 0 0;font-size:12px;color:#999;">TurboPanel – Self-hosted control plane</p>
   </div>

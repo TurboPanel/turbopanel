@@ -1,16 +1,16 @@
 import nodemailer from 'nodemailer'
+import { resolveEmailTemplate } from '../../../features/email/templates.ts'
 import {
-  createEmailOtpEmail,
-  createEmailVerificationLinkEmail,
-  createInvitationEmail,
-  createNotificationEmail,
-  createServerTierNoticeEmail,
-} from '../../../features/email/templates.ts'
-import { resolveEmailSettings, type ResolvedEmailSettings } from '../../../features/settings/email-settings.ts'
+  resolveEmailSettings,
+  type ResolvedEmailSettings,
+} from '../../../features/settings/email-settings.ts'
 import type { DerivedSecretsConfig } from '../../secrets/secrets.ts'
 import type { EmailJob } from '../../../features/email/types.ts'
 import type { MailerSendResult } from '../../../features/email/sender-types.ts'
-import { PermanentSendError, validateEmailAddress } from '../../../features/email/validate-address.ts'
+import {
+  PermanentSendError,
+  validateEmailAddress,
+} from '../../../features/email/validate-address.ts'
 import type { Db } from '../../../db/connection.ts'
 import { logError } from '../../logger.ts'
 import {
@@ -47,8 +47,7 @@ function smtpConfigAttempted(resolved: ResolvedEmailSettings): boolean {
     const meta = resolved.keys[key]
     if (meta.isEnvOverridden || meta.isDbSet) return true
   }
-  return resolved.keys.SMTP_HOST.value.trim() !== '' ||
-    resolved.keys.SMTP_PORT.value.trim() !== ''
+  return resolved.keys.SMTP_HOST.value.trim() !== '' || resolved.keys.SMTP_PORT.value.trim() !== ''
 }
 
 function validateResolvedSmtpConfig(resolved: ResolvedEmailSettings): SmtpConfig | undefined {
@@ -71,14 +70,14 @@ function validateResolvedSmtpConfig(resolved: ResolvedEmailSettings): SmtpConfig
 
 function buildTransport(
   cfg: SmtpConfig | undefined,
-  env: Record<string, string | undefined>,
+  env: Record<string, string | undefined>
 ): Transporter {
   if (cfg) {
     const auth =
       typeof cfg.user === 'string' &&
-        cfg.user.length > 0 &&
-        typeof cfg.pass === 'string' &&
-        cfg.pass.length > 0
+      cfg.user.length > 0 &&
+      typeof cfg.pass === 'string' &&
+      cfg.pass.length > 0
         ? { user: cfg.user, pass: cfg.pass }
         : undefined
     return nodemailer.createTransport({
@@ -109,10 +108,7 @@ function isPermanentSmtpError(error: unknown): boolean {
 
   const code = typeof maybeError.code === 'string' ? maybeError.code : ''
   const command = typeof maybeError.command === 'string' ? maybeError.command : ''
-  return code === 'EENVELOPE' ||
-    code === 'EAUTH' ||
-    command === 'API' ||
-    command === 'AUTH'
+  return code === 'EENVELOPE' || code === 'EAUTH' || command === 'API' || command === 'AUTH'
 }
 
 export class MailerSmtpSender {
@@ -208,96 +204,26 @@ export class MailerSmtpSender {
 
   async sendJob(job: EmailJob): Promise<MailerSendResult> {
     try {
-      switch (job.type) {
-        case 'signup-verification': {
-          const from = await this.resolveFromAddress()
-          validateEmailAddress(from, 'from')
-          validateEmailAddress(job.to, 'recipient')
-          const { subject, html, text } = createEmailVerificationLinkEmail(
-            job.to,
-            job.verificationUrl,
-          )
-          const transporter = await this.transporterForCurrentSmtp()
-          await transporter.sendMail({
-            from,
-            to: job.to,
-            subject,
-            html,
-            text: text ?? this.stripHtml(html),
-          })
-          return { success: true }
+      const template = resolveEmailTemplate(job)
+      if (!template) {
+        return {
+          success: false,
+          error: `unknown job type: ${(job as EmailJob).type}`,
+          permanent: true,
         }
-        case 'email-otp': {
-          const from = await this.resolveFromAddress()
-          validateEmailAddress(from, 'from')
-          validateEmailAddress(job.to, 'recipient')
-          const { subject, html, text } = createEmailOtpEmail(
-            job.to,
-            job.otp,
-            job.otpType,
-          )
-          const transporter = await this.transporterForCurrentSmtp()
-          await transporter.sendMail({
-            from,
-            to: job.to,
-            subject,
-            html,
-            text: text ?? this.stripHtml(html),
-          })
-          return { success: true }
-        }
-        case 'server-tier-notice': {
-          const from = await this.resolveFromAddress()
-          validateEmailAddress(from, 'from')
-          validateEmailAddress(job.to, 'recipient')
-          const { subject, html, text } = createServerTierNoticeEmail(job)
-          const transporter = await this.transporterForCurrentSmtp()
-          await transporter.sendMail({
-            from,
-            to: job.to,
-            subject,
-            html,
-            text: text ?? this.stripHtml(html),
-          })
-          return { success: true }
-        }
-        case 'invitation': {
-          const from = await this.resolveFromAddress()
-          validateEmailAddress(from, 'from')
-          validateEmailAddress(job.to, 'recipient')
-          const { subject, html, text } = createInvitationEmail(job)
-          const transporter = await this.transporterForCurrentSmtp()
-          await transporter.sendMail({
-            from,
-            to: job.to,
-            subject,
-            html,
-            text: text ?? this.stripHtml(html),
-          })
-          return { success: true }
-        }
-        case 'notification': {
-          const from = await this.resolveFromAddress()
-          validateEmailAddress(from, 'from')
-          validateEmailAddress(job.to, 'recipient')
-          const { subject, html, text } = createNotificationEmail(job)
-          const transporter = await this.transporterForCurrentSmtp()
-          await transporter.sendMail({
-            from,
-            to: job.to,
-            subject,
-            html,
-            text: text ?? this.stripHtml(html),
-          })
-          return { success: true }
-        }
-        default:
-          return {
-            success: false,
-            error: `unknown job type: ${(job as EmailJob).type}`,
-            permanent: true,
-          }
       }
+      const from = await this.resolveFromAddress()
+      validateEmailAddress(from, 'from')
+      validateEmailAddress(job.to, 'recipient')
+      const transporter = await this.transporterForCurrentSmtp()
+      await transporter.sendMail({
+        from,
+        to: job.to,
+        subject: template.subject,
+        html: template.html,
+        text: template.text ?? this.stripHtml(template.html),
+      })
+      return { success: true }
     } catch (e) {
       const errMsg = e instanceof Error ? e.message : String(e)
       logError('mailer', `send failed: ${errMsg}`)

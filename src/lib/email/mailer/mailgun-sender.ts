@@ -3,15 +3,21 @@ import { resolveEmailSettings } from '../../../features/settings/email-settings.
 import type { DerivedSecretsConfig } from '../../secrets/secrets.ts'
 import type { EmailJob } from '../../../features/email/types.ts'
 import type { MailerSendResult } from '../../../features/email/sender-types.ts'
-import { PermanentSendError, validateEmailAddress } from '../../../features/email/validate-address.ts'
+import {
+  PermanentSendError,
+  validateEmailAddress,
+} from '../../../features/email/validate-address.ts'
 import type { Db } from '../../../db/connection.ts'
 import { logError } from '../../logger.ts'
 
 class MailgunConfigError extends Error {}
 
-function validateMailgunSettings(
-  resolved: Awaited<ReturnType<typeof resolveEmailSettings>>,
-): { apiKey: string; domain: string; from: string; apiBase: string } {
+function validateMailgunSettings(resolved: Awaited<ReturnType<typeof resolveEmailSettings>>): {
+  apiKey: string
+  domain: string
+  from: string
+  apiBase: string
+} {
   if (resolved.provider !== 'mailgun') {
     throw new MailgunConfigError(`email provider is ${resolved.provider}, not mailgun`)
   }
@@ -54,11 +60,7 @@ export class MailerMailgunSender {
     from: string
     apiBase: string
   }> {
-    const resolved = await resolveEmailSettings(
-      this.db,
-      this.env,
-      this.dataEncryptionSecrets,
-    )
+    const resolved = await resolveEmailSettings(this.db, this.env, this.dataEncryptionSecrets)
     return validateMailgunSettings(resolved)
   }
 
@@ -68,6 +70,7 @@ export class MailerMailgunSender {
       validateEmailAddress(config.from, 'from')
       if (
         job.type === 'signup-verification' ||
+        job.type === 'password-reset' ||
         job.type === 'email-otp' ||
         job.type === 'server-tier-notice' ||
         job.type === 'invitation' ||
