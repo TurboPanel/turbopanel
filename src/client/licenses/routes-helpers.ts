@@ -83,30 +83,38 @@ type ExhaustedSummary = {
   purchased: number
   releasing: number
   held: number
+  inUse: number
+  provisioning: number
+  unusedKeys: number
   ending: number
   endsAt: string | null
   available: number
 }
 
 /**
- * The hosted mint refusal: every purchased license is held (bound or
- * waiting to connect) or ending at the boundary. Carries the counts — per
- * tier too — and a `message` that never calls an ending license "in use",
- * so the console can say "restore one" or "buy one" truthfully.
+ * The hosted mint refusal: every purchased license is bound to a server,
+ * held by an unused registration key, or ending at the boundary. Carries the
+ * counts — per tier too, and `unusedKeys` organization-wide (a key has no
+ * tier until its server connects) — and a `message` that never calls an
+ * ending license or an unused key "in use", so the console can say "use or
+ * delete the key", "restore one" or "buy one" truthfully.
  */
 export function noLicenseAvailableBody(
   summary: ExhaustedSummary,
   tiers: readonly LicenseTierCounts[] = [],
   message: string
 ) {
-  // Destructured, not spread: the route's summary also carries `bound` and
-  // `granted`, which are not part of this refusal's contract.
-  const { purchased, releasing, held, ending, endsAt, available } = summary
+  // Destructured, not spread: the route's summary also carries `granted`
+  // and `bound`, which are not part of this refusal's contract.
+  const { purchased, releasing, held, inUse, provisioning, unusedKeys, ending, endsAt, available } =
+    summary
   return {
     error: NO_LICENSE_AVAILABLE_ERROR,
     message,
     purchased,
-    inUse: held,
+    inUse,
+    provisioning,
+    unusedKeys,
     ending,
     endsAt,
     available,
@@ -120,7 +128,7 @@ export function noLicenseAvailableBody(
       available,
     })),
     // Deprecated aliases, kept one release for the console: `releasing`
-    // (use `ending`) and `held` (use `inUse`).
+    // (use `ending`) and `held` (use `inUse` + `unusedKeys`).
     releasing,
     held,
   }
@@ -161,6 +169,13 @@ export type LicenseListStatus = {
   connected: boolean
 }
 
+/** A key whose daemon has started enrolling: its server is being provisioned. */
+export type LicenseListProvisioning = {
+  /** When the daemon last tried to enrol with this key (ISO). */
+  since: string
+  hostname: string | null
+}
+
 export function serializeLicenseListEntry(params: {
   id: string
   name: string | null
@@ -168,12 +183,18 @@ export function serializeLicenseListEntry(params: {
   revocable: boolean
   bound: LicenseListBoundServer | undefined
   status: LicenseListStatus | undefined
+  provisioning?: LicenseListProvisioning | undefined
 }) {
   return {
     id: params.id,
     name: params.name,
     createdAt: params.createdAt,
     revocable: params.revocable,
+    // Only for an unbound key: once its server binds, `boundServer` says it all.
+    provisioning:
+      !params.bound && params.provisioning
+        ? { since: params.provisioning.since, hostname: params.provisioning.hostname }
+        : null,
     boundServer: params.bound
       ? {
           id: params.bound.id,

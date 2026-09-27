@@ -55,6 +55,7 @@ import { COLOCATED_SERVER_DISPLAY_NAME } from '../authn/install-state.ts'
 import { deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { registerLicenseRoutes } from './routes.ts'
+import { recordLicenseEnrollAttempt } from '../../features/licenses/enroll-attempt.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -364,6 +365,8 @@ type Refusal = {
 type RefusalBody = Refusal & {
   message: string
   inUse: number
+  provisioning: number
+  unusedKeys: number
   ending: number
   endsAt: string | null
   tiers: { label: string; purchased: number; ending: number }[]
@@ -376,7 +379,8 @@ type RefusalBody = Refusal & {
 function countsOf(body: unknown): Refusal & { ending: number } {
   const refusal = body as RefusalBody
   assertEquals(typeof refusal.message, 'string')
-  assertEquals(refusal.inUse, refusal.held)
+  // Every held license is either in use (bound or provisioning) or an unused key.
+  assertEquals(refusal.inUse + refusal.unusedKeys, refusal.held)
   assertEquals(Array.isArray(refusal.tiers), true)
   const { error, purchased, releasing, held, available, ending } = refusal
   return { error, purchased, releasing, held, available, ending }
@@ -390,7 +394,12 @@ test('T9 · every purchased license held is 409 no_license_available with the co
   const res = await mint(app, headers)
   assertEquals(res.status, 409)
   const full = (await res.json()) as RefusalBody
-  assertEquals(full.message, 'Your only license is in use — buy another to add this server.')
+  // Its only license is held by a key nobody has used: the way out is that key.
+  assertEquals(
+    full.message,
+    '1 held by an unused registration key — delete it or use it to add this server.'
+  )
+  assertEquals([full.inUse, full.unusedKeys, full.provisioning], [0, 1, 0])
   assertEquals(countsOf(full), {
     error: 'no_license_available',
     purchased: 1,
@@ -515,7 +524,7 @@ test('T9 · an outstanding release-seat intent counts against availability until
   // the way out, and the tier row carries it.
   assertEquals(
     refusal.message,
-    '1 in use, 1 ends at the end of the billing period — restore one to add this server.'
+    '1 held by an unused registration key, 1 ends at the end of the billing period — use or delete the unused key, or restore one, to add this server.'
   )
   assertEquals(
     refusal.tiers.map((t) => [t.label, t.purchased, t.ending]),
@@ -556,7 +565,7 @@ test('T9 · an outstanding release-seat intent counts against availability until
   // A downgrade is not an ending license (nothing to restore) — and not "in use" either.
   assertEquals(
     moving.message,
-    '0 in use, 1 changing tier at the end of the billing period — buy another to add this server now.'
+    '1 changing tier at the end of the billing period — buy another to add this server now.'
   )
 })
 
@@ -681,6 +690,35 @@ test('GET /licenses requires an organization id', async () => {
   const res = await listLicenses(app, { Cookie: headers.Cookie ?? '' })
   assertEquals(res.status, 400)
   assertEquals(await res.json(), { error: 'organizationId required' })
+})
+
+test('T9 · a key whose server is being provisioned is in use: never listed as unused, never a free license', async () => {
+  // The owner's case: the one unbound key belongs to a server whose daemon
+  // has already tried to enrol (here refused, so the key is still unbound).
+  const { app, headers, db } = await buildApp({
+    seats: [{ tierId: S3, quantity: 2 }],
+    servers: [{ id: SERVER, name: 'edge-1' }],
+    licenses: [{ id: L_ACTIVE }, { id: L_BOUND, serverId: SERVER }],
+  })
+  await recordLicenseEnrollAttempt(db as unknown as Db, L_ACTIVE, 'adrastea', Date.parse(NOW))
+
+  const refused = await mint(app, headers)
+  assertEquals(refused.status, 409)
+  const refusal = (await refused.json()) as RefusalBody
+  assertEquals(countsOf(refusal).available, 0)
+  assertEquals([refusal.inUse, refusal.provisioning, refusal.unusedKeys], [2, 1, 0])
+  assertEquals(
+    refusal.message,
+    'All 2 licenses are in use (1 provisioning) — buy another to add this server.'
+  )
+
+  const listed = await listLicenses(app, headers)
+  const body = (await listed.json()) as {
+    licenses: Array<{ id: string; provisioning: { since: string; hostname: string | null } | null }>
+  }
+  const byId = new Map(body.licenses.map((entry) => [entry.id, entry.provisioning]))
+  assertEquals(byId.get(L_ACTIVE), { since: NOW, hostname: 'adrastea' })
+  assertEquals(byId.get(L_BOUND), null)
 })
 
 test('GET /licenses returns 403 when the caller is not an owner', async () => {

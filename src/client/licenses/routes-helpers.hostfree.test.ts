@@ -154,6 +154,7 @@ test('serializeLicenseListEntry shapes bound and unbound rows', () => {
       createdAt: '2026-01-01T00:00:00.000Z',
       revocable: true,
       boundServer: null,
+      provisioning: null,
     }
   )
   assertEquals(
@@ -166,6 +167,24 @@ test('serializeLicenseListEntry shapes bound and unbound rows', () => {
       status: { serverId: 's1', connected: true },
     }).boundServer,
     { id: 's1', name: 'node', connected: true }
+  )
+})
+
+test('serializeLicenseListEntry marks an unbound key whose daemon is enrolling as provisioning, never a bound one', () => {
+  const attempt = { since: '2026-09-27T01:00:00.000Z', hostname: 'adrastea' }
+  const base = {
+    id: 'l1',
+    name: null,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    revocable: true,
+    status: undefined,
+    provisioning: attempt,
+  }
+  assertEquals(serializeLicenseListEntry({ ...base, bound: undefined }).provisioning, attempt)
+  // Bound: `boundServer` says it all; a stale record is not surfaced.
+  assertEquals(
+    serializeLicenseListEntry({ ...base, bound: { id: 's1', name: 'node' } }).provisioning,
+    null
   )
 })
 
@@ -223,6 +242,9 @@ test('noLicenseAvailableBody carries the message, the counts, trimmed tier rows 
         purchased: 6,
         releasing: 3,
         held: 3,
+        inUse: 3,
+        provisioning: 0,
+        unusedKeys: 0,
         ending: 3,
         endsAt: '2026-10-26T00:00:00.000Z',
         available: 0,
@@ -237,6 +259,8 @@ test('noLicenseAvailableBody carries the message, the counts, trimmed tier rows 
       message: '3 in use, 3 end Oct 26 — restore one to add this server.',
       purchased: 6,
       inUse: 3,
+      provisioning: 0,
+      unusedKeys: 0,
       ending: 3,
       endsAt: '2026-10-26T00:00:00.000Z',
       available: 0,

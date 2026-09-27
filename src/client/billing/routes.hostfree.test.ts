@@ -422,6 +422,8 @@ test('GET /billing/subscription summarises the projection: payer, subscription, 
     held: 1,
     inUse: 1,
     bound: 1,
+    provisioning: 0,
+    unusedKeys: 0,
     available: 1,
   })
   const { app, headers, stripeCalls } = await buildApp({ view })
@@ -467,6 +469,8 @@ test('GET /billing/subscription summarises the projection: payer, subscription, 
     held: 1,
     inUse: 1,
     bound: 1,
+    provisioning: 0,
+    unusedKeys: 0,
     available: 1,
   })
   assertEquals(body.servers, [
@@ -489,11 +493,97 @@ test('GET /billing/subscription summarises the projection: payer, subscription, 
   assertEquals(stripeCalls(), [])
 })
 
+test('Add Server and the billing page agree: an unused registration key makes the last license unavailable everywhere', () => {
+  // The owner's screen (2026-09-27): 6 purchased at one tier, 5 servers on
+  // it, 1 registration key minted and never used.
+  const servers = Array.from({ length: 5 }, (_, i) => ({
+    serverId: `srv-${i}`,
+    boundAt: NOW,
+    requiredRank: 3,
+    assignedTierId: S3,
+  }))
+  const view = viewWith(stateWith('active', [{ tierId: S3, quantity: 6 }]), {
+    licenses: { active: 6, bound: 5 },
+    servers,
+  })
+  const licenses = summarizeLicenses(view)
+  assertEquals(
+    [licenses.available, licenses.inUse, licenses.unusedKeys, licenses.provisioning],
+    [0, 5, 1, 0]
+  )
+  // The tier row can no longer say "1 free" while the mint gate refuses.
+  assertEquals(summarizeTiers(view)[0]?.available, 0)
+  assertEquals(
+    licenseExhaustionMessage(licenses),
+    '5 in use, 1 held by an unused registration key — delete it or use it to add this server.'
+  )
+})
+
+test('a key whose server is being provisioned is in use, not unused and not free', () => {
+  // Same screen, corrected: the "unused" key belongs to a server whose
+  // daemon has already tried to enrol.
+  const servers = Array.from({ length: 5 }, (_, i) => ({
+    serverId: `srv-${i}`,
+    boundAt: NOW,
+    requiredRank: 3,
+    assignedTierId: S3,
+  }))
+  const view = viewWith(stateWith('active', [{ tierId: S3, quantity: 6 }]), {
+    licenses: { active: 6, bound: 5, provisioning: 1 },
+    servers,
+  })
+  const licenses = summarizeLicenses(view)
+  assertEquals(
+    [licenses.available, licenses.inUse, licenses.unusedKeys, licenses.provisioning],
+    [0, 6, 0, 1]
+  )
+  assertEquals(summarizeTiers(view)[0]?.available, 0)
+  assertEquals(
+    licenseExhaustionMessage(licenses),
+    'All 6 licenses are in use (1 provisioning) — buy another to add this server.'
+  )
+})
+
+test('ending licenses, an unused key and a provisioning server are each named, cheapest way out first', () => {
+  const intents = [0, 1, 2].map(() =>
+    newDeferredIntent('release-seat', {
+      fromTierId: S3,
+      toTierId: null,
+      landsAt: '2026-10-26T00:00:00.000Z',
+      fromQuantity: 6,
+      nowMs: Date.parse(NOW),
+    })
+  )
+  let ledger = emptyLedger('sub_1')
+  for (const intent of intents) ledger = withIntent(ledger, intent)
+  const view = viewWith(stateWith('active', [{ tierId: S3, quantity: 6 }]), {
+    licenses: { active: 3, bound: 1, provisioning: 1 },
+    servers: [{ serverId: SRV, boundAt: NOW, requiredRank: 3, assignedTierId: S3 }],
+    ledger,
+  })
+  const licenses = summarizeLicenses(view)
+  assertEquals([licenses.available, licenses.unusedKeys, licenses.ending], [0, 1, 3])
+  assertEquals(
+    licenseExhaustionMessage(licenses),
+    '2 in use (1 provisioning), 1 held by an unused registration key, 3 end Oct 26 — use or delete the unused key, or restore one, to add this server.'
+  )
+  // A key can be provisioning only while it is active and unbound: a
+  // stale-high count is clamped.
+  const clamped = summarizeLicenses(
+    viewWith(stateWith('active', [{ tierId: S3, quantity: 2 }]), {
+      licenses: { active: 1, bound: 1, provisioning: 4 },
+    })
+  )
+  assertEquals([clamped.provisioning, clamped.unusedKeys, clamped.inUse], [0, 0, 1])
+})
+
 test('the exhaustion sentence never calls an ending license "in use" and names the way out', () => {
   const base = {
     purchased: 6,
     releasing: 3,
     held: 3,
+    bound: 3,
+    provisioning: 0,
     ending: 3,
     endsAt: '2026-10-26T00:00:00.000Z',
   }
@@ -505,21 +595,22 @@ test('the exhaustion sentence never calls an ending license "in use" and names t
     licenseExhaustionMessage({ ...base, purchased: 4, releasing: 1, ending: 1, endsAt: null }),
     '3 in use, 1 ends at the end of the billing period — restore one to add this server.'
   )
+  const none = { releasing: 0, provisioning: 0, ending: 0, endsAt: null }
   assertEquals(
-    licenseExhaustionMessage({ purchased: 3, releasing: 0, held: 3, ending: 0, endsAt: null }),
+    licenseExhaustionMessage({ ...none, purchased: 3, held: 3, bound: 3 }),
     'All 3 licenses are in use — buy another to add this server.'
   )
   assertEquals(
-    licenseExhaustionMessage({ purchased: 1, releasing: 0, held: 1, ending: 0, endsAt: null }),
+    licenseExhaustionMessage({ ...none, purchased: 1, held: 1, bound: 1 }),
     'Your only license is in use — buy another to add this server.'
   )
   assertEquals(
-    licenseExhaustionMessage({ purchased: 0, releasing: 0, held: 0, ending: 0, endsAt: null }),
+    licenseExhaustionMessage({ ...none, purchased: 0, held: 0, bound: 0 }),
     'No licenses yet — buy one to add this server.'
   )
   // Only a downgrade holds the last one back: it is changing tier, not ending and not in use.
   assertEquals(
-    licenseExhaustionMessage({ purchased: 2, releasing: 1, held: 1, ending: 0, endsAt: null }),
+    licenseExhaustionMessage({ ...none, purchased: 2, releasing: 1, held: 1, bound: 1 }),
     '1 in use, 1 changing tier at the end of the billing period — buy another to add this server now.'
   )
   // The boundary is a UTC instant: formatted in UTC, whatever the host zone.

@@ -8,18 +8,18 @@ contract — keep them current when adding or changing routes.
 
 ## Client API (authz integration)
 
-| Method   | Path                                                            | Purpose                                                                                                                                              |
-| -------- | --------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `POST`   | `/api/client/v1/invitations`                                     | Create a pending invitation (`canInviteToTeam`); optional `grants` require `organization:own`; emails the accept link; **409** `invitation_pending`, **503** `email_unavailable` |
-| `GET`    | `/api/client/v1/invitations`                                     | List pending, unexpired invitations across the org's teams (`organization:manage`); `{ invitations: [{ id, email, teamId, teamName, expiresAt, createdAt, invitedBy }] }` |
-| `DELETE` | `/api/client/v1/invitations/{id}`                                | Revoke a pending invitation (`canInviteToTeam`); atomic `pending` → `revoked`; **404** if missing or not pending |
-| `POST`   | `/api/client/v1/invitations/{id}/accept`                        | Accept a pending invitation; creates a `teammate` row, materializes `invitation.grants` into `grant` rows, updates session `organizationId`          |
-| `GET`    | `/api/client/v1/permissions`                                    | Permission catalog — static, no DB query (any authenticated user)                                                                                    |
-| `GET`    | `/api/client/v1/access?resourceId=<uuid>`                       | List access grants for a resource; returns `{ access: AccessRecord[] }` with `subjectKind`, `subjectId`, `resourceId`, `effect`, and `permissionKey` |
-| `GET`    | `/api/client/v1/access/check?resourceId=<uuid>&permissionKey=…` | Check a single permission for the signed-in user; returns `{ allowed: boolean }`                                                                     |
-| `GET`    | `/api/client/v1/access/resource-id?kind=<kind>&itemId=<uuid>`   | Resolve `resourceId` for an entity in the session org; returns `{ resourceId, kind, itemId }`                                                        |
-| `POST`   | `/api/client/v1/access`                                         | Create an access grant; body: `{ subjectKind, subjectId, resourceId, effect, permissionKey }`                                                        |
-| `DELETE` | `/api/client/v1/access/{id}`                                    | Revoke an access grant                                                                                                                               |
+| Method   | Path                                                            | Purpose                                                                                                                                                                          |
+| -------- | --------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST`   | `/api/client/v1/invitations`                                    | Create a pending invitation (`canInviteToTeam`); optional `grants` require `organization:own`; emails the accept link; **409** `invitation_pending`, **503** `email_unavailable` |
+| `GET`    | `/api/client/v1/invitations`                                    | List pending, unexpired invitations across the org's teams (`organization:manage`); `{ invitations: [{ id, email, teamId, teamName, expiresAt, createdAt, invitedBy }] }`        |
+| `DELETE` | `/api/client/v1/invitations/{id}`                               | Revoke a pending invitation (`canInviteToTeam`); atomic `pending` → `revoked`; **404** if missing or not pending                                                                 |
+| `POST`   | `/api/client/v1/invitations/{id}/accept`                        | Accept a pending invitation; creates a `teammate` row, materializes `invitation.grants` into `grant` rows, updates session `organizationId`                                      |
+| `GET`    | `/api/client/v1/permissions`                                    | Permission catalog — static, no DB query (any authenticated user)                                                                                                                |
+| `GET`    | `/api/client/v1/access?resourceId=<uuid>`                       | List access grants for a resource; returns `{ access: AccessRecord[] }` with `subjectKind`, `subjectId`, `resourceId`, `effect`, and `permissionKey`                             |
+| `GET`    | `/api/client/v1/access/check?resourceId=<uuid>&permissionKey=…` | Check a single permission for the signed-in user; returns `{ allowed: boolean }`                                                                                                 |
+| `GET`    | `/api/client/v1/access/resource-id?kind=<kind>&itemId=<uuid>`   | Resolve `resourceId` for an entity in the session org; returns `{ resourceId, kind, itemId }`                                                                                    |
+| `POST`   | `/api/client/v1/access`                                         | Create an access grant; body: `{ subjectKind, subjectId, resourceId, effect, permissionKey }`                                                                                    |
+| `DELETE` | `/api/client/v1/access/{id}`                                    | Revoke an access grant                                                                                                                                                           |
 
 The full per-route table (100+ routes: method, path, permission, behavior) is
 maintained in [`routes-contract.md`](./routes-contract.md) — **update it when
@@ -137,8 +137,9 @@ changes.
   cap. When billing is configured, `POST /licenses` takes no `tierId` — the
   tier is derived from the server once it enrols — and answers **409**
   `no_license_available` (a truthful `message`, org and per-tier counts with
-  `ending` / `endsAt`, so the console can say "restore one" or "buy one") when
-  every purchased license is bound, waiting to connect, or ending at the
+  `ending` / `endsAt`, `provisioning` and `unusedKeys`, so the console can say
+  "use or delete the key", "restore one" or "buy one") when every purchased
+  license is bound, provisioning, held by an unused key, or ending at the
   boundary (net of outstanding seat releases); `DELETE /licenses/:id` runs the
   detach-first refusal, then the billing gate (`authn/license-lifecycle.ts`),
   which records a deferred `release-seat` intent under the org's quantity lease
@@ -168,7 +169,7 @@ changes.
 - **Org managed-database defaults:** `organization.options.managedDatabase`
   (`src/features/managed/org-defaults.ts`).
   `GET`/`PUT
-  /organizations/:id/managed-defaults` (manage-gated) — today only
+/organizations/:id/managed-defaults` (manage-gated) — today only
   `sslMode`, the default client TLS policy inherited by managed SQL services
   that set no override; `null` clears it and services fall back to the platform
   `require`. These are **inheritance sources**, not applied configuration:
@@ -207,7 +208,7 @@ changes.
   mutually routable** — the datacenter _is_ the routing domain, there are no
   per-pair adjacency records. `POST /datacenters` body is
   `{ name?, description?, members: [{ serverId, address }],
-  sourceServerId? }`
+sourceServerId? }`
   — at least one member is required; addresses must be daemon-reported private
   IPs; the first subnet is **derived** from that seed member’s reported
   interface prefix (`ips[].cidr` where `scope='private'`, aligned network form)
@@ -326,7 +327,7 @@ changes.
   `ipRange` / `gateway` remain). The addressing rides `environment.deploy` as
   the additive `dockerNetworkAddressing[]` sibling of `dockerExternalNetworks`
   (resolved by `resolveRegisteredExternalDockerNetworks` from the same rows
-  the registration check loads) and is applied only when the daemon *creates*
+  the registration check loads) and is applied only when the daemon _creates_
   the network. **`fabric.options.containerPool` is operator-settable** via
   `PUT /organizations/:id/fabric` (`containerPool`, IPv4, prefix ≤ `/16`):
   validated through the same authority with the current pool excluded, and
@@ -456,7 +457,7 @@ changes.
   `uniq_connection_forge_external_github` (partial, `provider = 'github'`) makes
   a cross-organization claim that races past `assertConnectionUnclaimed` a
   `23505` the callback maps to `claimed`. **Apps registered before this rule
-  need two manual settings changes on GitHub** — enable *Request user
-  authorization (OAuth) during installation* and set the *Callback URL* to
+  need two manual settings changes on GitHub** — enable _Request user
+  authorization (OAuth) during installation_ and set the _Callback URL_ to
   `<origin>/api/client/v1/repositories/github/callback` — or every install ends
   in `install_authorization_required`.

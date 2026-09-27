@@ -193,12 +193,23 @@ and reported by the reconcile sweep.
 
 Because the tier is derived, a person adding a server needs to know which tier
 it will land in **before** it enrols. `GET /billing/catalog` carries
-`sizeCommand` (`src/features/tiers/size-command.ts`): a one-line POSIX awk
-command that, run on the server, prints its physical cores, RAM and tier
-(`8 cores, 31.3 GiB RAM -> S2`) — counting cores exactly as the daemon's host
-inventory does and banding them with the same ladder ceilings as
-`resolveRequiredTier`. Its tests run it under `sh` against fixture `/proc`
-files and compare to placement.
+`sizeCommand` (`src/features/tiers/size-command.ts`): a short one-line POSIX
+awk command that, run on the server, prints its physical cores and RAM
+(`8 cores, 31.3 GiB RAM`) — counting cores exactly as the daemon's host
+inventory does. It carries no thresholds: the console bands the numbers with
+each tier's `entitlements.maxCores` / `maxMemoryBytes`. Its tests run it under
+`sh` against fixture `/proc` files.
+
+**One availability, everywhere.** `summarizeLicenses` is the single source
+for the subscription view, Add Server and the `POST /licenses` mint gate:
+`inUse = bound + provisioning`, `unusedKeys = held − inUse`, `available =
+purchased − releasing − held`. A key is **provisioning** once an
+authenticated daemon has tried to enrol with it (`LICENSE_ENROLL_ATTEMPT:<id>`
+`setting` row, `src/features/licenses/enroll-attempt.ts`, written before the
+tier gate so a refused enrol still counts) — its server is being provisioned,
+so it is neither an unused key nor a free license. Unused and provisioning
+keys carry no tier, so they are charged organization-wide and each tier row's
+`available` is capped at the organization's.
 
 ## The mutation surface
 
@@ -209,7 +220,7 @@ server:
 - `changeSeats(tierId, +n)` — buys `n`, immediate and invoiced now. **Restore
   before buy, per tier:** while that tier has licenses ending at the boundary
   (outstanding `release-seat` intents at that tier) it is refused `409
-  licenses_ending` (`{ tierId, ending, endsAt }`) before anything is written,
+licenses_ending` (`{ tierId, ending, endsAt }`) before anything is written,
   and `POST /billing/preview` refuses the same way — nobody pays for a new
   license with one sitting there. Ending licenses at another tier never
   refuse. The same rule refuses `upgradeTier` / `downgradeTier` **into** a
@@ -500,7 +511,7 @@ records as delivered; `src/app/surfaces.test.ts` pins the path). Two ways:
 2. The optional **Stripe CLI** service (`turbopanel-stripe-listen`, off by
    default; Developer → _Optional services…_):
    `stripe listen
-   --forward-to https://<instance>/webhook/stripe`. It needs
+--forward-to https://<instance>/webhook/stripe`. It needs
    the test-mode key in `/etc/turbopanel/stripe-listen/stripe.env` as
    `TURBOPANEL_STRIPE_SECRET_KEY` and writes its own forwarding secret there as
    `TURBOPANEL_STRIPE_WEBHOOK_SIGNING_SECRET` (distinct from any Dashboard

@@ -38,11 +38,7 @@ export async function listAllTiers(db: Db): Promise<TierRow[]> {
 
 /** Active offerings in ladder order. */
 export async function listActiveTiers(db: Db): Promise<TierRow[]> {
-  return await db
-    .select()
-    .from(tier)
-    .where(eq(tier.isActive, true))
-    .orderBy(asc(tier.rank))
+  return await db.select().from(tier).where(eq(tier.isActive, true)).orderBy(asc(tier.rank))
 }
 
 export async function getTierById(db: Db, tierId: string): Promise<TierRow | null> {
@@ -118,7 +114,7 @@ export async function updateTierById(
   db: Db,
   tierId: string,
   patch: UpdateTierPatch,
-  now?: string,
+  now?: string
 ): Promise<TierRow | null> {
   const set: Record<string, unknown> = { updatedAt: now ?? new Date().toISOString() }
   for (const [key, value] of Object.entries(patch)) {
@@ -172,7 +168,7 @@ export async function getTiersByIds(db: Db, ids: readonly string[]): Promise<Map
 export async function mapProviderProductsToTierIds(
   db: Db,
   provider: BillingProviderId,
-  providerProductIds: readonly string[],
+  providerProductIds: readonly string[]
 ): Promise<Map<string, string>> {
   const out = new Map<string, string>()
   const unique = [...new Set(providerProductIds)].filter((id) => id.length > 0)
@@ -196,7 +192,7 @@ export async function mapProviderProductsToTierIds(
  */
 export async function resolvePurchasableTier(
   db: Db,
-  tierId: string,
+  tierId: string
 ): Promise<ResolvePurchasableTierResult> {
   const row = await getTierById(db, tierId)
   if (!row) return { ok: false, reason: 'not_found' }
@@ -211,6 +207,13 @@ export type LicenseCount = {
   active: number
   /** The subset already bound to a server (`server_id IS NOT NULL`). */
   bound: number
+  /**
+   * Of the unbound ones, the keys whose daemon has already tried to enrol
+   * (`licenses/enroll-attempt.ts`): their server is being provisioned, so
+   * the key is in use, not unused. Filled by the billing view only; absent
+   * reads as 0.
+   */
+  provisioning?: number
 }
 
 /**
