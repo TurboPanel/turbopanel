@@ -25,10 +25,7 @@ import {
   type MetricsDeploymentKind,
   type ServerMachineClass,
 } from '../../contracts/capability-plan.ts'
-import {
-  colocatedServerUpdateBlockedReason,
-  type ServerUpdateCommit,
-} from './update-status.ts'
+import { colocatedServerUpdateBlockedReason, type ServerUpdateCommit } from './update-status.ts'
 import {
   parseNtpDefaultsInput,
   parseSshPortInput,
@@ -36,16 +33,17 @@ import {
   resolveEffectiveSshPort,
   type NtpDefaults,
 } from '../../features/servers/host-defaults.ts'
-import {
-  DIRECT_ATTACH_SENTINEL,
-  resolveServerAddress,
-} from '../../lib/peer-address.ts'
+import { DIRECT_ATTACH_SENTINEL, resolveServerAddress } from '../../lib/peer-address.ts'
 import { parseServerIps } from '../../contracts/server-addresses.ts'
+import {
+  type LocationFields,
+  type LocationPatch,
+  parseLocationPatchInput,
+} from '../../features/geo/location-override.ts'
 import type { UpdateChannel } from '../../contracts/update-channel.ts'
 import { unresolvedTargetError } from './update-status.ts'
 
-export const SERVER_UUID_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+export const SERVER_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 export const STATUS_CACHE_CONTROL = 'private, max-age=5'
 export const STATUS_CACHE_MAX_AGE_MS = 5_000
@@ -61,7 +59,7 @@ export function isServerUuid(value: unknown): value is string {
 export function buildBatchStatusCoalesceKey(
   userId: string,
   organizationId: string,
-  visibleIds: string[],
+  visibleIds: string[]
 ): string {
   const sortedIds = [...visibleIds].sort((a, b) => a.localeCompare(b))
   return `${userId}:${organizationId}:${sortedIds.join(',')}`
@@ -75,7 +73,7 @@ export type BatchStatusCoalesceEntryLike = {
 /** Keys whose cached result may be dropped (in-flight promises are kept). */
 export function expiredBatchStatusCoalesceKeys(
   entries: Iterable<[string, BatchStatusCoalesceEntryLike]>,
-  now: number,
+  now: number
 ): string[] {
   const expired: string[] = []
   for (const [key, entry] of entries) {
@@ -86,17 +84,15 @@ export function expiredBatchStatusCoalesceKeys(
 }
 
 export function currentCommitFromDaemonBuild(
-  daemonBuild:
-    | { commit?: string; buildId?: string; builtAt?: string; version?: string }
-    | undefined,
+  daemonBuild: { commit?: string; buildId?: string; builtAt?: string; version?: string } | undefined
 ): ServerUpdateCommit | null {
   return daemonBuild?.commit
     ? {
-      commit: daemonBuild.commit,
-      buildId: daemonBuild.buildId ?? '',
-      builtAt: daemonBuild.builtAt ?? '',
-      ...(daemonBuild.version ? { version: daemonBuild.version } : {}),
-    }
+        commit: daemonBuild.commit,
+        buildId: daemonBuild.buildId ?? '',
+        builtAt: daemonBuild.builtAt ?? '',
+        ...(daemonBuild.version ? { version: daemonBuild.version } : {}),
+      }
     : null
 }
 
@@ -108,6 +104,14 @@ export type ServerPatchFields = {
     sshPort?: number | null
     ntp?: NtpDefaults | null
   }
+  /**
+   * The request's `location` as parsed: fields to set, `null` fields to clear,
+   * or `null` to reset every override. Resolved against the stored override
+   * into {@link ServerPatchFields.location} by the route.
+   */
+  locationPatch?: LocationPatch | null
+  /** The override to store (`null` removes `options.location`). */
+  location?: LocationFields | null
   updatedAt: string
 }
 
@@ -127,7 +131,7 @@ export type ServerDatacenterRef = {
  */
 export function shapeServerDatacenters(
   memberships: ReadonlyArray<{ datacenterId: string }>,
-  displayNamesById: ReadonlyMap<string, string | null>,
+  displayNamesById: ReadonlyMap<string, string | null>
 ): ServerDatacenterRef[] {
   const seen = new Set<string>()
   const out: ServerDatacenterRef[] = []
@@ -147,7 +151,7 @@ function invalidServerPatchRequest(): ServerRouteValidationError {
 }
 
 function parseServerPatchName(
-  body: Record<string, unknown>,
+  body: Record<string, unknown>
 ): { ok: true; name: string | null } | ServerRouteValidationError {
   try {
     return { ok: true, name: parseName(body) }
@@ -160,10 +164,8 @@ function parseServerPatchName(
  * Overlay sshPort / ntp onto parsed server options. `null` clears inherit.
  */
 function parseServerPatchOptions(
-  raw: unknown,
-):
-  | { ok: true; options: NonNullable<ServerPatchFields['options']> }
-  | ServerRouteValidationError {
+  raw: unknown
+): { ok: true; options: NonNullable<ServerPatchFields['options']> } | ServerRouteValidationError {
   const parsed = parseServerOptions(raw)
   if (!isRecord(raw) || parsed === null) {
     return invalidServerPatchRequest()
@@ -192,12 +194,12 @@ function parseServerPatchOptions(
  */
 export function parseServerPatchCore(
   body: Record<string, unknown>,
-  updatedAt = new Date().toISOString(),
+  updatedAt = new Date().toISOString()
 ):
   | {
-    ok: true
-    patch: ServerPatchFields
-  }
+      ok: true
+      patch: ServerPatchFields
+    }
   | ServerRouteValidationError {
   const patch: ServerPatchFields = { updatedAt }
 
@@ -224,10 +226,17 @@ export function parseServerPatchCore(
     patch.machineClass = body.machineClass
   }
 
+  if (body.location !== undefined) {
+    const location = parseLocationPatchInput(body.location)
+    if (!location.ok) return { ok: false, error: location.error, status: 400 }
+    patch.locationPatch = location.value
+  }
+
   if (
     patch.name === undefined &&
     patch.options === undefined &&
-    patch.machineClass === undefined
+    patch.machineClass === undefined &&
+    patch.locationPatch === undefined
   ) {
     return invalidServerPatchRequest()
   }
@@ -237,7 +246,7 @@ export function parseServerPatchCore(
 
 export function isHostingEnableTransition(
   previousOptions: ServerOptions | null,
-  patch: ServerPatchFields,
+  patch: ServerPatchFields
 ): boolean {
   const wasHostingEnabled = previousOptions?.hosting?.enabled === true
   return patch.options?.hosting?.enabled === true && !wasHostingEnabled
@@ -245,7 +254,7 @@ export function isHostingEnableTransition(
 
 export function isHostingDisableTransition(
   previousOptions: ServerOptions | null,
-  patch: ServerPatchFields,
+  patch: ServerPatchFields
 ): boolean {
   const wasHostingEnabled = previousOptions?.hosting?.enabled === true
   return patch.options?.hosting?.enabled === false && wasHostingEnabled
@@ -264,12 +273,12 @@ export function hostingHierarchyFailedBody(): {
 export type ServerDeletedPayload =
   | { ok: true; serverId: string; status: 200 }
   | {
-    ok: false
-    serverId: string
-    deleted: true
-    error: string
-    status: 500
-  }
+      ok: false
+      serverId: string
+      deleted: true
+      error: string
+      status: 500
+    }
 
 /**
  * `purgeError` is a fixed code, never the registry's own message — that names
@@ -278,7 +287,7 @@ export type ServerDeletedPayload =
  */
 export function serverDeletedPayload(
   serverId: string,
-  purgeError: string | null,
+  purgeError: string | null
 ): ServerDeletedPayload {
   if (purgeError) {
     return {
@@ -334,16 +343,16 @@ export function resolveTrunkTargetFields(
     manifestUrl: string
     version?: string
   } | null,
-  channel: UpdateChannel,
+  channel: UpdateChannel
 ): TrunkTargetFields {
   const target = targetManifest
     ? {
-      commit: targetManifest.commit,
-      buildId: targetManifest.buildId,
-      builtAt: targetManifest.builtAt,
-      manifestUrl: targetManifest.manifestUrl,
-      ...(targetManifest.version ? { version: targetManifest.version } : {}),
-    }
+        commit: targetManifest.commit,
+        buildId: targetManifest.buildId,
+        builtAt: targetManifest.builtAt,
+        manifestUrl: targetManifest.manifestUrl,
+        ...(targetManifest.version ? { version: targetManifest.version } : {}),
+      }
     : null
   return {
     target,
@@ -353,19 +362,20 @@ export function resolveTrunkTargetFields(
 }
 
 export type BatchUpdateEligibility =
-  | { ok: false; error: string }
-  | { ok: true; updateAvailable: true }
+  { ok: false; error: string } | { ok: true; updateAvailable: true }
 
 /**
  * Decision tree for POST /servers/updates before enqueueing.
  * Caller still performs the manage check and queueServerUpdate.
  */
-export function resolveBatchUpdateEligibility(params: Readonly<{
-  connected: boolean
-  colocated: boolean
-  current: ServerUpdateCommit | null
-  targetCommit: string | null
-}>): BatchUpdateEligibility {
+export function resolveBatchUpdateEligibility(
+  params: Readonly<{
+    connected: boolean
+    colocated: boolean
+    current: ServerUpdateCommit | null
+    targetCommit: string | null
+  }>
+): BatchUpdateEligibility {
   if (!params.connected) {
     return { ok: false, error: 'Daemon not connected' }
   }
@@ -406,7 +416,7 @@ export async function runPreparedServerUpdate(params: {
   } catch (err) {
     await params.markFailed(
       `Dev daemon rebuild failed: ${errorMessageFromUnknown(err)}`,
-      new Date().toISOString(),
+      new Date().toISOString()
     )
     return
   }
@@ -414,21 +424,12 @@ export async function runPreparedServerUpdate(params: {
     await params.enqueue()
     await params.markQueued(new Date().toISOString())
   } catch (err) {
-    await params.markFailed(
-      errorMessageFromUnknown(err),
-      new Date().toISOString(),
-    )
+    await params.markFailed(errorMessageFromUnknown(err), new Date().toISOString())
   }
 }
 
-export function distinctNonEmptyIds(
-  ids: Array<string | null | undefined>,
-): string[] {
-  return [
-    ...new Set(
-      ids.filter((id): id is string => typeof id === 'string' && id.length > 0),
-    ),
-  ]
+export function distinctNonEmptyIds(ids: Array<string | null | undefined>): string[] {
+  return [...new Set(ids.filter((id): id is string => typeof id === 'string' && id.length > 0))]
 }
 
 export function errorMessageFromUnknown(err: unknown): string {
@@ -478,15 +479,11 @@ export function resolveServerTimezoneFields(
   rowOptions: unknown,
   orgOptions: OrganizationOptions | null | undefined,
   dcOptions: DatacenterOptions | null | undefined,
-  observedTimezone: string | null | undefined,
+  observedTimezone: string | null | undefined
 ): ServerListTimezoneFields {
   const effective = resolveServerResponseTimezone(
-    resolveEffectiveServerTimezone(
-      parseServerOptions(rowOptions),
-      orgOptions ?? null,
-      dcOptions,
-    ),
-    observedTimezone,
+    resolveEffectiveServerTimezone(parseServerOptions(rowOptions), orgOptions ?? null, dcOptions),
+    observedTimezone
   )
   return {
     timezone: effective.timezone,
@@ -497,7 +494,7 @@ export function resolveServerTimezoneFields(
 export function resolveServerHostDefaultsFields(
   rowOptions: unknown,
   orgOptions: OrganizationOptions | null | undefined,
-  dcOptions: DatacenterOptions | null | undefined,
+  dcOptions: DatacenterOptions | null | undefined
 ): ServerHostDefaultsFields {
   const serverOptions = parseServerOptions(rowOptions)
   const ssh = resolveEffectiveSshPort(serverOptions, dcOptions, orgOptions)
@@ -545,7 +542,7 @@ export function shapeServerOsFields(os: ServerOsMetadata | null | undefined) {
 export function shapeServerPresenceFields(
   live: PresenceLike | null | undefined,
   colocated: boolean,
-  deployment: MetricsDeploymentKind = 'self-hosted',
+  deployment: MetricsDeploymentKind = 'self-hosted'
 ) {
   const os = live?.os ?? null
   const ips = parseServerIps(live?.ips) ?? null
@@ -584,17 +581,19 @@ export function shapeServerPresenceFields(
 }
 
 export function shouldSkipProjectedUpdateRepair(
-  projectedUpdate: { status?: string } | null | undefined,
+  projectedUpdate: { status?: string } | null | undefined
 ): boolean {
   return projectedUpdate?.status !== 'updating'
 }
 
-export function repairedUpdateDoneProjection(params: Readonly<{
-  requestId?: string
-  channel?: string
-  queuedAt?: string
-  finishedAt: string
-}>) {
+export function repairedUpdateDoneProjection(
+  params: Readonly<{
+    requestId?: string
+    channel?: string
+    queuedAt?: string
+    finishedAt: string
+  }>
+) {
   return {
     status: 'done' as const,
     requestId: params.requestId,
