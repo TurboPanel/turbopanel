@@ -1119,6 +1119,14 @@ export async function querySeriesResults(input: SeriesQueryInput): Promise<Serie
     entityResults.push(withIngressDerivedValues(outcome.result))
   }
 
+  logSeriesGaps({
+    serverId: input.serverId,
+    fromMs: Date.parse(input.fromIso),
+    toMs: Date.parse(input.toIso),
+    resolutionSeconds: input.resolutionSeconds,
+    hostResult: hostOutcome.hostResult,
+    failedFamilies,
+  })
   return { ok: true, hostResult: hostOutcome.hostResult, entityResults, failedFamilies }
 }
 
@@ -1153,8 +1161,10 @@ export function logSeriesGaps(
   if (last !== undefined && nowMs - last < SERIES_GAP_LOG_INTERVAL_MS) return false
   if (lastSeriesGapLogAt.size > 1000) lastSeriesGapLogAt.clear()
   lastSeriesGapLogAt.set(input.serverId, nowMs)
+  // The id reaches this line from the request path: keep only id characters.
+  const serverId = input.serverId.replace(/[^\w.-]/g, '?').slice(0, 64)
   log(
-    `metrics series gaps serverId=${input.serverId} resolution=${input.resolutionSeconds}s expectedBuckets=${expected} returnedBuckets=${returned} gapCount=${gaps} samples=${input.hostResult?.sampleCount ?? 0} failedFamilies=${input.failedFamilies.join(',') || 'none'}`
+    `metrics series gaps serverId=${serverId} resolution=${input.resolutionSeconds}s expectedBuckets=${expected} returnedBuckets=${returned} gapCount=${gaps} samples=${input.hostResult?.sampleCount ?? 0} failedFamilies=${input.failedFamilies.join(',') || 'none'}`
   )
   return true
 }
