@@ -63,3 +63,10 @@ export interface EmailQueue {
 export function getEmailQueue(c: Context): EmailQueue | undefined {
   return c.get('emailQueue')
 }
+
+/**
+ * Longest an email provider HTTP call may take before it is abandoned. A
+ * provider that never answers must fail the send, not hold the request (and
+ * whatever it holds) open until the platform kills it.
+ */
+export const EMAIL_PROVIDER_TIMEOUT_MS = 10_000

@@ -1,10 +1,7 @@
 import { and, eq, gt } from 'drizzle-orm'
 import type { Context } from 'hono'
 import type { AuthRouteOpts } from '../authn/http.ts'
-import {
-  parseInvitationGrants,
-  type InvitationGrantSpec,
-} from '../authn/invitation-grants.ts'
+import { parseInvitationGrants, type InvitationGrantSpec } from '../authn/invitation-grants.ts'
 import { isPermissionKey } from '../authz/catalog.ts'
 import {
   validateGrantEntityTarget,
@@ -13,32 +10,17 @@ import {
 import { can, canInviteToTeam, canManageOrganization } from '../authz/index.ts'
 import type { Db } from '../../db/connection.ts'
 import { getDb } from '../../db/connection.ts'
-import {
-  invitation,
-  organization,
-  team,
-  user,
-} from '../../db/schema.ts'
+import { invitation, organization, team, user } from '../../db/schema.ts'
 import { getEmailQueue } from '../../features/email/types.ts'
 import { isNoopEmailQueue } from '../../features/email/noop-queue.ts'
 import { resolvePublicBaseUrl } from '../../features/install/resolve-public-base-url.ts'
 import { getOrgId } from '../shared.ts'
-import {
-  parseCreateInvitationBody,
-  type CreateInvitationInput,
-} from './routes-helpers.ts'
+import { parseCreateInvitationBody, type CreateInvitationInput } from './routes-helpers.ts'
 
 const INVITATION_TTL_MS = 7 * 24 * 60 * 60 * 1000
 
-class InvitationEmailError extends Error {
-  constructor() {
-    super('email_unavailable')
-    this.name = 'InvitationEmailError'
-  }
-}
-
 async function parseCreateInvitationRequest(
-  c: Context,
+  c: Context
 ): Promise<CreateInvitationInput | { response: Response }> {
   let body: unknown
   try {
@@ -57,7 +39,7 @@ async function parseCreateInvitationRequest(
 async function loadTeamInOrganization(
   db: Db,
   teamId: string,
-  organizationId: string,
+  organizationId: string
 ): Promise<{ id: string; name: string | null } | null> {
   const rows = await db
     .select({
@@ -77,7 +59,7 @@ async function hasPendingInvitation(
   db: Db,
   teamId: string,
   email: string,
-  nowIso: string,
+  nowIso: string
 ): Promise<boolean> {
   const rows = await db
     .select({ id: invitation.id })
@@ -87,8 +69,8 @@ async function hasPendingInvitation(
         eq(invitation.teamId, teamId),
         eq(invitation.email, email),
         eq(invitation.status, 'pending'),
-        gt(invitation.expiresAt, nowIso),
-      ),
+        gt(invitation.expiresAt, nowIso)
+      )
     )
     .limit(1)
   return rows.length > 0
@@ -102,19 +84,13 @@ async function resolveCreateInvitationGrants(
   db: Db,
   userId: string,
   organizationId: string,
-  grants: unknown[] | undefined,
+  grants: unknown[] | undefined
 ): Promise<StoredGrantsResult> {
   if (grants === undefined) {
     return { ok: true, grants: null }
   }
 
-  const isOwner = await can(
-    db,
-    userId,
-    'organization:own',
-    'organization',
-    organizationId,
-  )
+  const isOwner = await can(db, userId, 'organization:own', 'organization', organizationId)
   if (!isOwner) {
     return { ok: false, error: 'grants_require_owner', status: 403 }
   }
@@ -130,7 +106,7 @@ async function resolveCreateInvitationGrants(
     }
     const permissionCompat = validatePermissionEntityCompatibility(
       spec.permissionKey,
-      spec.entityType,
+      spec.entityType
     )
     if (!permissionCompat.ok) {
       return { ok: false, error: permissionCompat.error, status: 400 }
@@ -140,7 +116,7 @@ async function resolveCreateInvitationGrants(
       db,
       spec.entityType,
       spec.entityId,
-      organizationId,
+      organizationId
     )
     if (!target.ok) {
       return { ok: false, error: target.error, status: target.status }
@@ -153,7 +129,7 @@ async function resolveCreateInvitationGrants(
 async function loadInvitationEmailNames(
   db: Db,
   organizationId: string,
-  teamId: string,
+  teamId: string
 ): Promise<{ organizationName: string; teamName: string }> {
   const [orgRows, teamRows] = await Promise.all([
     db
@@ -161,11 +137,7 @@ async function loadInvitationEmailNames(
       .from(organization)
       .where(eq(organization.id, organizationId))
       .limit(1),
-    db
-      .select({ name: team.name })
-      .from(team)
-      .where(eq(team.id, teamId))
-      .limit(1),
+    db.select({ name: team.name }).from(team).where(eq(team.id, teamId)).limit(1),
   ])
   return {
     organizationName: orgRows[0]?.name?.trim() || 'an organization',
@@ -177,10 +149,7 @@ function invitationEmailFrom(c: Context, opts: AuthRouteOpts): string {
   return c.get('emailFrom') || opts.emailFrom || 'noreply@turbopanel.local'
 }
 
-export async function handleCreateInvitation(
-  c: Context,
-  opts: AuthRouteOpts,
-): Promise<Response> {
+export async function handleCreateInvitation(c: Context, opts: AuthRouteOpts): Promise<Response> {
   const db = getDb(c)
   if (!db) return c.json({ error: 'Database unavailable' }, 503)
 
@@ -210,7 +179,7 @@ export async function handleCreateInvitation(
     db,
     session.userId,
     organizationId,
-    parsed.grants,
+    parsed.grants
   )
   if (!grantsResult.ok) {
     return c.json({ error: grantsResult.error }, grantsResult.status)
@@ -226,52 +195,53 @@ export async function handleCreateInvitation(
   const emailFrom = invitationEmailFrom(c, opts)
   const baseOrigin = await resolvePublicBaseUrl(c, { baseUrl: opts.baseUrl })
 
-  try {
-    const inserted = await db.transaction(async (tx) => {
-      const rows = await tx
-        .insert(invitation)
-        .values({
-          userId: session.userId,
-          teamId: parsed.teamId,
-          email: parsed.email,
-          expiresAt,
-          status: 'pending',
-          grants: grantsResult.grants,
-        })
-        .returning({ id: invitation.id, expiresAt: invitation.expiresAt })
-      const row = rows[0]
-      if (!row) {
-        throw new TypeError('invitation insert returned no row')
-      }
-
-      const acceptUrl = `${baseOrigin}/accept-invitation?id=${row.id}`
-      try {
-        await queue.enqueue({
-          type: 'invitation',
-          to: parsed.email,
-          from: emailFrom,
-          inviterEmail: session.email,
-          organizationName: names.organizationName,
-          teamName: names.teamName,
-          acceptUrl,
-        })
-      } catch {
-        throw new InvitationEmailError()
-      }
-      return row
+  // The row is written first and the email sent after, never inside a
+  // transaction: on Workers each request gets exactly one database
+  // connection (`max: 1`), and the lazy email queue reads the email settings
+  // from the database on first use — inside a transaction that read waits
+  // forever for the connection the transaction holds. Invite then spun with
+  // no response (testing, 2026-09-27).
+  const rows = await db
+    .insert(invitation)
+    .values({
+      userId: session.userId,
+      teamId: parsed.teamId,
+      email: parsed.email,
+      expiresAt,
+      status: 'pending',
+      grants: grantsResult.grants,
     })
+    .returning({ id: invitation.id, expiresAt: invitation.expiresAt })
+  const inserted = rows[0]
+  if (!inserted) {
+    throw new TypeError('invitation insert returned no row')
+  }
 
-    return c.json({
-      ok: true as const,
-      id: inserted.id,
-      expiresAt: inserted.expiresAt,
+  try {
+    await queue.enqueue({
+      type: 'invitation',
+      to: parsed.email,
+      from: emailFrom,
+      inviterEmail: session.email,
+      organizationName: names.organizationName,
+      teamName: names.teamName,
+      acceptUrl: `${baseOrigin}/accept-invitation?id=${inserted.id}`,
     })
   } catch (err) {
-    if (err instanceof InvitationEmailError) {
-      return c.json({ error: 'email_unavailable' }, 503)
-    }
-    throw err
+    // No email went out: drop the row so a retry is not refused as
+    // `invitation_pending` for an invitation nobody received.
+    console.error('[TurboPanel access] invitation email failed', {
+      error: err instanceof Error ? err.message : String(err),
+    })
+    await db.delete(invitation).where(eq(invitation.id, inserted.id))
+    return c.json({ error: 'email_unavailable' }, 503)
   }
+
+  return c.json({
+    ok: true as const,
+    id: inserted.id,
+    expiresAt: inserted.expiresAt,
+  })
 }
 
 export async function handleListInvitations(c: Context): Promise<Response> {
@@ -306,8 +276,8 @@ export async function handleListInvitations(c: Context): Promise<Response> {
       and(
         eq(team.organizationId, organizationId),
         eq(invitation.status, 'pending'),
-        gt(invitation.expiresAt, nowIso),
-      ),
+        gt(invitation.expiresAt, nowIso)
+      )
     )
 
   return c.json({
@@ -350,9 +320,7 @@ export async function handleRevokeInvitation(c: Context): Promise<Response> {
   const claimed = await db
     .update(invitation)
     .set({ status: 'revoked' })
-    .where(
-      and(eq(invitation.id, invitationId), eq(invitation.status, 'pending')),
-    )
+    .where(and(eq(invitation.id, invitationId), eq(invitation.status, 'pending')))
     .returning({ id: invitation.id })
 
   if (!claimed[0]) return c.json({ error: 'Not found' }, 404)

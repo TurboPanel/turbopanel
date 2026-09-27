@@ -4,10 +4,7 @@ import { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
 import { createDenoDb } from '../../db/connection.ts'
-import {
-  buildSignedCookie,
-  HTTP_SESSION_COOKIE_NAME,
-} from '../authn/crypto.ts'
+import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from '../authn/crypto.ts'
 import { createSession } from '../authn/session-store.ts'
 import { deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
 import {
@@ -32,7 +29,7 @@ const dbUrl = getDatabaseUrl()
 
 async function createAccessTestApp(
   db: ReturnType<typeof createDenoDb>,
-  opts?: { emailQueue?: EmailQueue },
+  opts?: { emailQueue?: EmailQueue }
 ) {
   const secretsConfig = parseTestSecretsConfig('deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
@@ -53,17 +50,14 @@ async function createAccessTestApp(
 async function sessionCookie(
   db: ReturnType<typeof createDenoDb>,
   secrets: Awaited<ReturnType<typeof deriveSecretsConfig>>,
-  userId: string,
+  userId: string
 ): Promise<string> {
   const { token } = await createSession(db, userId, {})
   const signed = await buildSignedCookie(token, secrets)
   return `${HTTP_SESSION_COOKIE_NAME}=${signed}`
 }
 
-function orgRequestHeaders(
-  cookie: string,
-  organizationId: string,
-): Record<string, string> {
+function orgRequestHeaders(cookie: string, organizationId: string): Record<string, string> {
   return {
     Cookie: cookie,
     [ORG_ID_HEADER]: organizationId,
@@ -81,7 +75,7 @@ async function withTestFixtures(
     workspaceId: string
     teamId: string
   }) => Promise<void>,
-  opts?: { emailQueue?: EmailQueue },
+  opts?: { emailQueue?: EmailQueue }
 ): Promise<void> {
   if (!dbUrl) {
     console.warn('Skipping access route tests: TURBOPANEL_DATABASE_URL not set')
@@ -114,7 +108,6 @@ async function withTestFixtures(
     .returning({ id: user.id })
 
   const targetId = insertedTarget[0]!.id
-
 
   const [insertedWorkspace] = await db
     .insert(workspace)
@@ -173,10 +166,9 @@ test('GET /access is forbidden for an organization manager', async () => {
     })
 
     const cookie = await sessionCookie(db, secrets, actorId)
-    const res = await app.request(
-      `/access?resourceId=${organizationId}`,
-      { headers: orgRequestHeaders(cookie, organizationId) },
-    )
+    const res = await app.request(`/access?resourceId=${organizationId}`, {
+      headers: orgRequestHeaders(cookie, organizationId),
+    })
 
     if (res.status !== 403) {
       throw new Error(`expected 403 listing access grants as org manager, got ${res.status}`)
@@ -217,10 +209,7 @@ test('POST /access is forbidden for an organization manager', async () => {
     const rows = await db
       .select({ id: grant.id })
       .from(grant)
-      .where(and(
-        eq(grant.entityId, organizationId),
-        eq(grant.actorId, targetId),
-      ))
+      .where(and(eq(grant.entityId, organizationId), eq(grant.actorId, targetId)))
     if (rows.length !== 0) {
       throw new Error('org manager must not be able to create an access grant')
     }
@@ -260,10 +249,7 @@ test('DELETE /access/:id is forbidden for an organization manager', async () => 
       throw new Error(`expected 403 revoking access grant as org manager, got ${res.status}`)
     }
 
-    const rows = await db
-      .select({ id: grant.id })
-      .from(grant)
-      .where(eq(grant.id, targetGrant!.id))
+    const rows = await db.select({ id: grant.id }).from(grant).where(eq(grant.id, targetGrant!.id))
     if (rows.length !== 1) {
       throw new Error('org manager must not be able to revoke an access grant')
     }
@@ -329,36 +315,38 @@ test('DELETE /access/:id allows revoking a non-final organization owner', async 
 })
 
 test('DELETE /access/:id rejects revoking the sole team owner', async () => {
-  await withTestFixtures(async ({ db, app, secrets, actorId, targetId, organizationId, teamId }) => {
-    await db.insert(grant).values({
-      entityType: 'organization',
-      entityId: organizationId,
-      actorType: 'user',
-      actorId: actorId,
-      permission: 'organization:own',
-    })
-
-    const [teamOwnerGrant] = await db
-      .insert(grant)
-      .values({
-        entityType: 'team',
-        entityId: teamId,
+  await withTestFixtures(
+    async ({ db, app, secrets, actorId, targetId, organizationId, teamId }) => {
+      await db.insert(grant).values({
+        entityType: 'organization',
+        entityId: organizationId,
         actorType: 'user',
-        actorId: targetId,
-        permission: 'team:own',
+        actorId: actorId,
+        permission: 'organization:own',
       })
-      .returning({ id: grant.id })
 
-    const cookie = await sessionCookie(db, secrets, actorId)
-    const res = await app.request(`/access/${teamOwnerGrant!.id}`, {
-      method: 'DELETE',
-      headers: orgRequestHeaders(cookie, organizationId),
-    })
+      const [teamOwnerGrant] = await db
+        .insert(grant)
+        .values({
+          entityType: 'team',
+          entityId: teamId,
+          actorType: 'user',
+          actorId: targetId,
+          permission: 'team:own',
+        })
+        .returning({ id: grant.id })
 
-    if (res.status !== 409) {
-      throw new Error(`expected 409 when revoking sole team owner, got ${res.status}`)
+      const cookie = await sessionCookie(db, secrets, actorId)
+      const res = await app.request(`/access/${teamOwnerGrant!.id}`, {
+        method: 'DELETE',
+        headers: orgRequestHeaders(cookie, organizationId),
+      })
+
+      if (res.status !== 409) {
+        throw new Error(`expected 409 when revoking sole team owner, got ${res.status}`)
+      }
     }
-  })
+  )
 })
 
 test('GET /access/check honors team-scoped grants without org grants', async () => {
@@ -372,16 +360,15 @@ test('GET /access/check honors team-scoped grants without org grants', async () 
     })
 
     const cookie = await sessionCookie(db, secrets, targetId)
-    const res = await app.request(
-      `/access/check?resourceId=${teamId}&permissionKey=team:manage`,
-      { headers: orgRequestHeaders(cookie, organizationId) },
-    )
+    const res = await app.request(`/access/check?resourceId=${teamId}&permissionKey=team:manage`, {
+      headers: orgRequestHeaders(cookie, organizationId),
+    })
 
     if (res.status !== 200) {
       throw new Error(`expected 200 from access/check, got ${res.status}`)
     }
 
-    const body = await res.json() as { allowed: boolean }
+    const body = (await res.json()) as { allowed: boolean }
     if (!body.allowed) {
       throw new Error('team:manage grant should allow access/check on team resource')
     }
@@ -389,54 +376,41 @@ test('GET /access/check honors team-scoped grants without org grants', async () 
 })
 
 test('POST /access rejects organization permission on workspace entity', async () => {
-  await withTestFixtures(async ({
-    db,
-    app,
-    secrets,
-    actorId,
-    targetId,
-    organizationId,
-    workspaceId,
-  }) => {
-    await db.insert(grant).values({
-      entityType: 'organization',
-      entityId: organizationId,
-      actorType: 'user',
-      actorId: actorId,
-      permission: 'organization:own',
-    })
+  await withTestFixtures(
+    async ({ db, app, secrets, actorId, targetId, organizationId, workspaceId }) => {
+      await db.insert(grant).values({
+        entityType: 'organization',
+        entityId: organizationId,
+        actorType: 'user',
+        actorId: actorId,
+        permission: 'organization:own',
+      })
 
-    const cookie = await sessionCookie(db, secrets, actorId)
-    const res = await app.request('/access', {
-      method: 'POST',
-      headers: {
-        ...orgRequestHeaders(cookie, organizationId),
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        subjectKind: 'user',
-        subjectId: targetId,
-        resourceId: workspaceId,
-        effect: 'allow',
-        permissionKey: 'organization:own',
-      }),
-    })
+      const cookie = await sessionCookie(db, secrets, actorId)
+      const res = await app.request('/access', {
+        method: 'POST',
+        headers: {
+          ...orgRequestHeaders(cookie, organizationId),
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          subjectKind: 'user',
+          subjectId: targetId,
+          resourceId: workspaceId,
+          effect: 'allow',
+          permissionKey: 'organization:own',
+        }),
+      })
 
-    if (res.status !== 404) {
-      throw new Error(`expected 404 for grant on workspace entity, got ${res.status}`)
+      if (res.status !== 404) {
+        throw new Error(`expected 404 for grant on workspace entity, got ${res.status}`)
+      }
     }
-  })
+  )
 })
 
 test('POST /access rejects deny grants with 400', async () => {
-  await withTestFixtures(async ({
-    db,
-    app,
-    secrets,
-    actorId,
-    targetId,
-    organizationId,
-  }) => {
+  await withTestFixtures(async ({ db, app, secrets, actorId, targetId, organizationId }) => {
     await db.insert(grant).values({
       entityType: 'organization',
       entityId: organizationId,
@@ -469,10 +443,7 @@ test('POST /access rejects deny grants with 400', async () => {
     const denyRows = await db
       .select({ id: grant.id })
       .from(grant)
-      .where(and(
-        eq(grant.entityId, organizationId),
-        eq(grant.actorId, targetId),
-      ))
+      .where(and(eq(grant.entityId, organizationId), eq(grant.actorId, targetId)))
 
     if (denyRows.length !== 0) {
       throw new Error('grant with non-allow effect should not be persisted')
@@ -481,14 +452,7 @@ test('POST /access rejects deny grants with 400', async () => {
 })
 
 test('POST /access creates an allow grant with the validated subject id', async () => {
-  await withTestFixtures(async ({
-    db,
-    app,
-    secrets,
-    actorId,
-    targetId,
-    organizationId,
-  }) => {
+  await withTestFixtures(async ({ db, app, secrets, actorId, targetId, organizationId }) => {
     await db.insert(grant).values({
       entityType: 'organization',
       entityId: organizationId,
@@ -520,11 +484,13 @@ test('POST /access creates an allow grant with the validated subject id', async 
     const rows = await db
       .select({ id: grant.id, actorId: grant.actorId })
       .from(grant)
-      .where(and(
-        eq(grant.entityId, organizationId),
-        eq(grant.actorId, targetId),
-        eq(grant.permission, 'organization:manage'),
-      ))
+      .where(
+        and(
+          eq(grant.entityId, organizationId),
+          eq(grant.actorId, targetId),
+          eq(grant.permission, 'organization:manage')
+        )
+      )
       .limit(1)
 
     const created = rows[0]
@@ -535,14 +501,7 @@ test('POST /access creates an allow grant with the validated subject id', async 
 })
 
 test('GET /access/check returns boolean for variable and managed resource ids', async () => {
-  await withTestFixtures(async ({
-    db,
-    app,
-    secrets,
-    actorId,
-    organizationId,
-    workspaceId,
-  }) => {
+  await withTestFixtures(async ({ db, app, secrets, actorId, organizationId, workspaceId }) => {
     const [insertedProject] = await db
       .insert(project)
       .values({ name: 'Access Route Project', workspaceId, organizationId })
@@ -585,16 +544,14 @@ test('GET /access/check returns boolean for variable and managed resource ids', 
       for (const resourceId of [managedId, variableId]) {
         const res = await app.request(
           `/access/check?resourceId=${resourceId}&permissionKey=organization:manage`,
-          { headers: orgRequestHeaders(cookie, organizationId) },
+          { headers: orgRequestHeaders(cookie, organizationId) }
         )
 
         if (res.status !== 200) {
-          throw new Error(
-            `expected 200 from access/check for ${resourceId}, got ${res.status}`,
-          )
+          throw new Error(`expected 200 from access/check for ${resourceId}, got ${res.status}`)
         }
 
-        const body = await res.json() as { allowed: boolean }
+        const body = (await res.json()) as { allowed: boolean }
         if (!body.allowed) {
           throw new Error(`organization:manage should allow access/check for ${resourceId}`)
         }
@@ -609,19 +566,11 @@ test('GET /access/check returns boolean for variable and managed resource ids', 
 })
 
 test('GET /access/resource-id rejects unsupported workspace kind', async () => {
-  await withTestFixtures(async ({
-    db,
-    app,
-    secrets,
-    actorId,
-    organizationId,
-    workspaceId,
-  }) => {
+  await withTestFixtures(async ({ db, app, secrets, actorId, organizationId, workspaceId }) => {
     const cookie = await sessionCookie(db, secrets, actorId)
-    const res = await app.request(
-      `/access/resource-id?kind=workspace&itemId=${workspaceId}`,
-      { headers: orgRequestHeaders(cookie, organizationId) },
-    )
+    const res = await app.request(`/access/resource-id?kind=workspace&itemId=${workspaceId}`, {
+      headers: orgRequestHeaders(cookie, organizationId),
+    })
 
     if (res.status !== 404) {
       throw new Error(`expected 404 for workspace resource-id kind, got ${res.status}`)
@@ -641,18 +590,16 @@ test('GET /access/resource-id allows admin session for team kind', async () => {
     const adminId = insertedAdmin[0]!.id
 
     try {
-
       const cookie = await sessionCookie(db, secrets, adminId)
-      const res = await app.request(
-        `/access/resource-id?kind=team&itemId=${teamId}`,
-        { headers: orgRequestHeaders(cookie, organizationId) },
-      )
+      const res = await app.request(`/access/resource-id?kind=team&itemId=${teamId}`, {
+        headers: orgRequestHeaders(cookie, organizationId),
+      })
 
       if (res.status !== 200) {
         throw new Error(`expected 200 for admin team resource-id, got ${res.status}`)
       }
 
-      const body = await res.json() as { resourceId: string; kind: string; itemId: string }
+      const body = (await res.json()) as { resourceId: string; kind: string; itemId: string }
       if (body.resourceId !== teamId || body.kind !== 'team' || body.itemId !== teamId) {
         throw new Error('admin team resource-id response did not echo team identifiers')
       }
@@ -663,14 +610,7 @@ test('GET /access/resource-id allows admin session for team kind', async () => {
 })
 
 test('POST /access rejects system:manage; system:operate grants remain usable', async () => {
-  await withTestFixtures(async ({
-    db,
-    app,
-    secrets,
-    actorId,
-    targetId,
-    organizationId,
-  }) => {
+  await withTestFixtures(async ({ db, app, secrets, actorId, targetId, organizationId }) => {
     await db.insert(grant).values({
       entityType: 'organization',
       entityId: organizationId,
@@ -699,7 +639,7 @@ test('POST /access rejects system:manage; system:operate grants remain usable', 
     if (manageRes.status !== 400) {
       throw new TypeError(`expected 400 creating system:manage grant, got ${manageRes.status}`)
     }
-    const manageBody = await manageRes.json() as { error: string }
+    const manageBody = (await manageRes.json()) as { error: string }
     assertEquals(manageBody.error, 'system:manage cannot be granted')
 
     await db.insert(grant).values({
@@ -712,12 +652,14 @@ test('POST /access rejects system:manage; system:operate grants remain usable', 
 
     const leftoverCheck = await app.request(
       `/access/check?resourceId=${organizationId}&permissionKey=system:manage`,
-      { headers: orgRequestHeaders(targetCookie, organizationId) },
+      { headers: orgRequestHeaders(targetCookie, organizationId) }
     )
     if (leftoverCheck.status !== 200) {
-      throw new TypeError(`expected 200 from access/check for leftover system:manage, got ${leftoverCheck.status}`)
+      throw new TypeError(
+        `expected 200 from access/check for leftover system:manage, got ${leftoverCheck.status}`
+      )
     }
-    const leftoverBody = await leftoverCheck.json() as { allowed: boolean }
+    const leftoverBody = (await leftoverCheck.json()) as { allowed: boolean }
     if (leftoverBody.allowed) {
       throw new TypeError('regular user with explicit system:manage grant must still be denied')
     }
@@ -743,12 +685,14 @@ test('POST /access rejects system:manage; system:operate grants remain usable', 
 
     const operateCheck = await app.request(
       `/access/check?resourceId=${organizationId}&permissionKey=system:operate`,
-      { headers: orgRequestHeaders(targetCookie, organizationId) },
+      { headers: orgRequestHeaders(targetCookie, organizationId) }
     )
     if (operateCheck.status !== 200) {
-      throw new TypeError(`expected 200 from access/check for system:operate, got ${operateCheck.status}`)
+      throw new TypeError(
+        `expected 200 from access/check for system:operate, got ${operateCheck.status}`
+      )
     }
-    const operateBody = await operateCheck.json() as { allowed: boolean }
+    const operateBody = (await operateCheck.json()) as { allowed: boolean }
     if (!operateBody.allowed) {
       throw new TypeError('system:operate grant should satisfy access/check for restart flows')
     }
@@ -770,110 +714,116 @@ function createRecordingEmailQueue(): { queue: EmailQueue; jobs: EmailJob[] } {
 
 test('POST /invitations create → list → revoke', async () => {
   const { queue, jobs } = createRecordingEmailQueue()
-  await withTestFixtures(async ({ db, app, secrets, actorId, organizationId, teamId }) => {
-    await db.insert(grant).values({
-      entityType: 'organization',
-      entityId: organizationId,
-      actorType: 'user',
-      actorId,
-      permission: 'organization:own',
-    })
+  await withTestFixtures(
+    async ({ db, app, secrets, actorId, organizationId, teamId }) => {
+      await db.insert(grant).values({
+        entityType: 'organization',
+        entityId: organizationId,
+        actorType: 'user',
+        actorId,
+        permission: 'organization:own',
+      })
 
-    const cookie = await sessionCookie(db, secrets, actorId)
-    const inviteEmail = `invitee-${crypto.randomUUID()}@example.com`
-    const created = await app.request('/invitations', {
-      method: 'POST',
-      headers: {
-        ...orgRequestHeaders(cookie, organizationId),
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ teamId, email: inviteEmail }),
-    })
-    if (created.status !== 200) {
-      throw new TypeError(`expected 200 creating invitation, got ${created.status}`)
-    }
-    const createdBody = await created.json() as { ok: true; id: string; expiresAt: string }
-    if (!createdBody.ok || !createdBody.id) {
-      throw new TypeError('create invitation response missing id')
-    }
-    if (jobs.length !== 1 || jobs[0]?.type !== 'invitation') {
-      throw new TypeError('expected one invitation email job')
-    }
+      const cookie = await sessionCookie(db, secrets, actorId)
+      const inviteEmail = `invitee-${crypto.randomUUID()}@example.com`
+      const created = await app.request('/invitations', {
+        method: 'POST',
+        headers: {
+          ...orgRequestHeaders(cookie, organizationId),
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ teamId, email: inviteEmail }),
+      })
+      if (created.status !== 200) {
+        throw new TypeError(`expected 200 creating invitation, got ${created.status}`)
+      }
+      const createdBody = (await created.json()) as { ok: true; id: string; expiresAt: string }
+      if (!createdBody.ok || !createdBody.id) {
+        throw new TypeError('create invitation response missing id')
+      }
+      if (jobs.length !== 1 || jobs[0]?.type !== 'invitation') {
+        throw new TypeError('expected one invitation email job')
+      }
 
-    const listed = await app.request('/invitations', {
-      headers: orgRequestHeaders(cookie, organizationId),
-    })
-    if (listed.status !== 200) {
-      throw new TypeError(`expected 200 listing invitations, got ${listed.status}`)
-    }
-    const listBody = await listed.json() as {
-      invitations: Array<{ id: string; email: string }>
-    }
-    if (listBody.invitations.length !== 1) {
-      throw new TypeError(`expected one pending invitation, got ${listBody.invitations.length}`)
-    }
-    if (listBody.invitations[0]?.email !== inviteEmail) {
-      throw new TypeError('listed invitation email mismatch')
-    }
+      const listed = await app.request('/invitations', {
+        headers: orgRequestHeaders(cookie, organizationId),
+      })
+      if (listed.status !== 200) {
+        throw new TypeError(`expected 200 listing invitations, got ${listed.status}`)
+      }
+      const listBody = (await listed.json()) as {
+        invitations: Array<{ id: string; email: string }>
+      }
+      if (listBody.invitations.length !== 1) {
+        throw new TypeError(`expected one pending invitation, got ${listBody.invitations.length}`)
+      }
+      if (listBody.invitations[0]?.email !== inviteEmail) {
+        throw new TypeError('listed invitation email mismatch')
+      }
 
-    const revoked = await app.request(`/invitations/${createdBody.id}`, {
-      method: 'DELETE',
-      headers: orgRequestHeaders(cookie, organizationId),
-    })
-    if (revoked.status !== 200) {
-      throw new TypeError(`expected 200 revoking invitation, got ${revoked.status}`)
-    }
+      const revoked = await app.request(`/invitations/${createdBody.id}`, {
+        method: 'DELETE',
+        headers: orgRequestHeaders(cookie, organizationId),
+      })
+      if (revoked.status !== 200) {
+        throw new TypeError(`expected 200 revoking invitation, got ${revoked.status}`)
+      }
 
-    const listedAfter = await app.request('/invitations', {
-      headers: orgRequestHeaders(cookie, organizationId),
-    })
-    const afterBody = await listedAfter.json() as { invitations: unknown[] }
-    if (afterBody.invitations.length !== 0) {
-      throw new TypeError('revoked invitation should not remain pending')
-    }
-  }, { emailQueue: queue })
+      const listedAfter = await app.request('/invitations', {
+        headers: orgRequestHeaders(cookie, organizationId),
+      })
+      const afterBody = (await listedAfter.json()) as { invitations: unknown[] }
+      if (afterBody.invitations.length !== 0) {
+        throw new TypeError('revoked invitation should not remain pending')
+      }
+    },
+    { emailQueue: queue }
+  )
 })
 
 test('POST /invitations returns 409 invitation_pending for a duplicate', async () => {
   const { queue } = createRecordingEmailQueue()
-  await withTestFixtures(async ({ db, app, secrets, actorId, organizationId, teamId }) => {
-    await db.insert(grant).values({
-      entityType: 'organization',
-      entityId: organizationId,
-      actorType: 'user',
-      actorId,
-      permission: 'organization:manage',
-    })
+  await withTestFixtures(
+    async ({ db, app, secrets, actorId, organizationId, teamId }) => {
+      await db.insert(grant).values({
+        entityType: 'organization',
+        entityId: organizationId,
+        actorType: 'user',
+        actorId,
+        permission: 'organization:manage',
+      })
 
-    const cookie = await sessionCookie(db, secrets, actorId)
-    const body = JSON.stringify({
-      teamId,
-      email: `dup-${crypto.randomUUID()}@example.com`,
-    })
-    const first = await app.request('/invitations', {
-      method: 'POST',
-      headers: {
-        ...orgRequestHeaders(cookie, organizationId),
-        'Content-Type': 'application/json',
-      },
-      body,
-    })
-    if (first.status !== 200) {
-      throw new TypeError(`expected 200 on first invite, got ${first.status}`)
-    }
-    const second = await app.request('/invitations', {
-      method: 'POST',
-      headers: {
-        ...orgRequestHeaders(cookie, organizationId),
-        'Content-Type': 'application/json',
-      },
-      body,
-    })
-    if (second.status !== 409) {
-      throw new TypeError(`expected 409 on duplicate invite, got ${second.status}`)
-    }
-    assertEquals(await second.json(), { error: 'invitation_pending' })
-  }, { emailQueue: queue })
+      const cookie = await sessionCookie(db, secrets, actorId)
+      const body = JSON.stringify({
+        teamId,
+        email: `dup-${crypto.randomUUID()}@example.com`,
+      })
+      const first = await app.request('/invitations', {
+        method: 'POST',
+        headers: {
+          ...orgRequestHeaders(cookie, organizationId),
+          'Content-Type': 'application/json',
+        },
+        body,
+      })
+      if (first.status !== 200) {
+        throw new TypeError(`expected 200 on first invite, got ${first.status}`)
+      }
+      const second = await app.request('/invitations', {
+        method: 'POST',
+        headers: {
+          ...orgRequestHeaders(cookie, organizationId),
+          'Content-Type': 'application/json',
+        },
+        body,
+      })
+      if (second.status !== 409) {
+        throw new TypeError(`expected 409 on duplicate invite, got ${second.status}`)
+      }
+      assertEquals(await second.json(), { error: 'invitation_pending' })
+    },
+    { emailQueue: queue }
+  )
 })
 
 test('POST /invitations returns 503 email_unavailable when the queue is noop', async () => {
@@ -903,4 +853,100 @@ test('POST /invitations returns 503 email_unavailable when the queue is noop', a
     }
     assertEquals(await res.json(), { error: 'email_unavailable' })
   })
+})
+
+async function postInvitation(
+  app: Hono<AppEnv>,
+  cookie: string,
+  organizationId: string,
+  teamId: string,
+  email: string
+): Promise<Response> {
+  return await app.request('/invitations', {
+    method: 'POST',
+    headers: {
+      ...orgRequestHeaders(cookie, organizationId),
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ teamId, email }),
+  })
+}
+
+test('POST /invitations sends the email only after the invitation is committed', async () => {
+  // On Workers a request has one database connection and the lazy email
+  // queue reads settings through it on first use; sending from inside a
+  // transaction deadlocked. A second connection can only see the row once
+  // it is committed, so this queue proves the send happens outside one.
+  const observer = createDenoDb()
+  let visibleAtSend: boolean | null = null
+  const queue: EmailQueue = {
+    enqueue: async (job) => {
+      const rows = await observer
+        .select({ id: invitation.id })
+        .from(invitation)
+        .where(eq(invitation.email, job.to))
+      visibleAtSend = rows.length === 1
+    },
+  }
+  await withTestFixtures(
+    async ({ db, app, secrets, actorId, organizationId, teamId }) => {
+      await db.insert(grant).values({
+        entityType: 'organization',
+        entityId: organizationId,
+        actorType: 'user',
+        actorId,
+        permission: 'organization:manage',
+      })
+      const cookie = await sessionCookie(db, secrets, actorId)
+      const res = await postInvitation(
+        app,
+        cookie,
+        organizationId,
+        teamId,
+        `committed-${crypto.randomUUID()}@example.com`
+      )
+      assertEquals(res.status, 200)
+      assertEquals(visibleAtSend, true)
+    },
+    { emailQueue: queue }
+  )
+})
+
+test('POST /invitations removes the invitation when the email fails, so a retry works', async () => {
+  let failNext = true
+  const queue: EmailQueue = {
+    enqueue: () => {
+      if (failNext) {
+        failNext = false
+        return Promise.reject(new Error('Mailpit did not answer within 10 s'))
+      }
+      return Promise.resolve()
+    },
+  }
+  await withTestFixtures(
+    async ({ db, app, secrets, actorId, organizationId, teamId }) => {
+      await db.insert(grant).values({
+        entityType: 'organization',
+        entityId: organizationId,
+        actorType: 'user',
+        actorId,
+        permission: 'organization:manage',
+      })
+      const cookie = await sessionCookie(db, secrets, actorId)
+      const email = `retry-${crypto.randomUUID()}@example.com`
+
+      const failed = await postInvitation(app, cookie, organizationId, teamId, email)
+      assertEquals(failed.status, 503)
+      assertEquals(await failed.json(), { error: 'email_unavailable' })
+      const leftover = await db
+        .select({ id: invitation.id })
+        .from(invitation)
+        .where(and(eq(invitation.teamId, teamId), eq(invitation.email, email)))
+      assertEquals(leftover.length, 0)
+
+      const retried = await postInvitation(app, cookie, organizationId, teamId, email)
+      assertEquals(retried.status, 200)
+    },
+    { emailQueue: queue }
+  )
 })
