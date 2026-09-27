@@ -34,7 +34,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const HYPERDRIVE_ID_RE = /^[0-9a-f]{32}$/
 const ENV_NAME_RE = /^[a-z][a-z0-9-]{0,31}$/
 
-function stripJsonc(text) {
+export function stripJsonc(text) {
   // wrangler.jsonc: block and line comments, trailing commas.
   return text
     .replace(/\/\*[\s\S]*?\*\//g, '')
