@@ -30,55 +30,152 @@ export function defaultExpectedSamplesPerBucket(
   return Math.max(1, Math.round(resolutionSeconds / interval))
 }
 
+/** Share of a sample's spacing tolerated as write-time jitter before an empty bucket counts as missed. */
+const COVERAGE_JITTER_FRACTION = 0.1
+
 /**
- * Count fully missing buckets and partial buckets on the canonical grid.
- *
- * The range is half-open `[from, to)` on bucket starts after floor alignment.
- * Inclusive end would always expect the in-progress `to` bucket on live charts
- * (e.g. 1 h @ 60 s → 61 slots), so coverage could almost never hit 100%.
+ * Ingest grace: an empty bucket ending less than this long ago is still
+ * pending, not missed — the store needs a moment to make a just-written
+ * sample readable (Analytics Engine lags about a minute).
  */
+const COVERAGE_TRAILING_INGEST_GRACE_MS = 60_000
+
+/** A bucketed series point as far as coverage is concerned. */
+export type CoveragePoint = {
+  at: string
+  sampleCount?: number
+  expectedSampleCount?: number
+  /** Latest sample in the bucket (ISO). Absent on older responses: the bucket start stands in. */
+  lastSampleAt?: string
+  /** Seconds between stored samples in the bucket — see {@link HostSeriesPoint.sampleSpacingSeconds}. */
+  sampleSpacingSeconds?: number
+}
+
+/**
+ * The series' typical spacing between stored samples: sample-weighted mean
+ * of the per-bucket spacings, or the 60 s baseline when none reported one.
+ */
+export function typicalSampleSpacingSeconds(points: readonly CoveragePoint[]): number {
+  let weighted = 0
+  let weight = 0
+  for (const point of points) {
+    const spacing = point.sampleSpacingSeconds
+    const samples = point.sampleCount ?? 0
+    if (spacing === undefined || !Number.isFinite(spacing) || spacing <= 0 || samples <= 0) {
+      continue
+    }
+    weighted += spacing * samples
+    weight += samples
+  }
+  return weight > 0 ? weighted / weight : 60
+}
+
+export type SeriesCoverage = {
+  /** Starts of the empty buckets where a sample was due and never arrived. */
+  gapBucketStarts: number[]
+  /** Missing samples: uncovered time over the typical spacing, plus partial-bucket shortfall. */
+  gapCount: number
+}
+
+/**
+ * Coverage on the canonical half-open `[from, to)` grid (bucket starts after
+ * floor alignment — an inclusive end would always expect the in-progress
+ * bucket, so live charts could never reach 100%).
+ *
+ * An empty bucket is a gap only when a sample was due inside it: after each
+ * bucket with data, the next sample is due one spacing after its latest
+ * sample. So a grid finer than the collection cadence (10 s buckets over
+ * 60 s samples), or rows a store sampled down (Analytics Engine weighting one
+ * row as two samples), leave empty buckets that are not missing data.
+ * Leading empties count only when the first sample came more than a spacing
+ * after them; empties ending within the store's ingest lag of now are still
+ * pending, not missing.
+ */
+export function computeSeriesCoverage(input: {
+  fromMs: number
+  toMs: number
+  resolutionSeconds: number
+  points: readonly CoveragePoint[]
+  /** Current time for the ingest grace; defaults to `Date.now()`. */
+  nowMs?: number
+}): SeriesCoverage {
+  const pendingFromMs = (input.nowMs ?? Date.now()) - COVERAGE_TRAILING_INGEST_GRACE_MS
+  const bucketMs = input.resolutionSeconds * 1000
+  const startMs = bucketFloor(input.fromMs, input.resolutionSeconds)
+  const endMs = bucketFloor(input.toMs, input.resolutionSeconds)
+  if (endMs <= startMs) return { gapBucketStarts: [], gapCount: 0 }
+
+  const byBucket = new Map<number, CoveragePoint>()
+  for (const point of input.points) {
+    const atMs = Date.parse(point.at)
+    if (!Number.isFinite(atMs) || (point.sampleCount ?? 0) <= 0) continue
+    byBucket.set(bucketFloor(atMs, input.resolutionSeconds), point)
+  }
+
+  const typicalSpacing = typicalSampleSpacingSeconds(input.points)
+  const spacingMsOf = (point: CoveragePoint): number => {
+    const spacing = point.sampleSpacingSeconds
+    return (
+      (spacing !== undefined && Number.isFinite(spacing) && spacing > 0
+        ? spacing
+        : typicalSpacing) * 1000
+    )
+  }
+  const lastSampleMsOf = (point: CoveragePoint, bucket: number): number => {
+    const last = point.lastSampleAt === undefined ? Number.NaN : Date.parse(point.lastSampleAt)
+    return Number.isFinite(last) ? last : bucket
+  }
+
+  const presentBuckets = [...byBucket.keys()]
+    .filter((b) => b >= startMs && b < endMs)
+    .sort((a, b) => a - b)
+  const firstPresent = presentBuckets[0]
+  const leadingDueMs =
+    firstPresent === undefined
+      ? Number.POSITIVE_INFINITY
+      : firstPresent - spacingMsOf(byBucket.get(firstPresent)!)
+
+  const gapBucketStarts: number[] = []
+  let shortfall = 0
+  let nextDueMs = Number.NEGATIVE_INFINITY
+  for (let bucket = startMs; bucket < endMs; bucket += bucketMs) {
+    const point = byBucket.get(bucket)
+    if (point) {
+      const samples = point.sampleCount ?? 0
+      const expected =
+        point.expectedSampleCount ?? defaultExpectedSamplesPerBucket(input.resolutionSeconds)
+      if (samples < expected) shortfall += expected - samples
+      const spacingMs = spacingMsOf(point)
+      nextDueMs = lastSampleMsOf(point, bucket) + spacingMs * (1 + COVERAGE_JITTER_FRACTION)
+      continue
+    }
+    const bucketEnd = bucket + bucketMs
+    if (firstPresent === undefined || bucket < firstPresent) {
+      // Before the first sample: missing only if one was due by this bucket's end.
+      if (bucketEnd <= leadingDueMs || firstPresent === undefined) gapBucketStarts.push(bucket)
+      continue
+    }
+    if (bucketEnd > pendingFromMs) continue
+    if (nextDueMs >= bucketEnd) continue
+    gapBucketStarts.push(bucket)
+  }
+
+  const gapSeconds = gapBucketStarts.length * input.resolutionSeconds
+  return {
+    gapBucketStarts,
+    gapCount: shortfall + Math.round(gapSeconds / typicalSpacing),
+  }
+}
+
+/** Missing samples on the canonical grid — see {@link computeSeriesCoverage}. */
 export function computeSeriesGapCount(input: {
   fromMs: number
   toMs: number
   resolutionSeconds: number
-  points: readonly {
-    at: string
-    sampleCount?: number
-    expectedSampleCount?: number
-  }[]
+  points: readonly CoveragePoint[]
+  nowMs?: number
 }): number {
-  const bucketMs = input.resolutionSeconds * 1000
-  const startMs = bucketFloor(input.fromMs, input.resolutionSeconds)
-  const endMs = bucketFloor(input.toMs, input.resolutionSeconds)
-  if (endMs <= startMs) return 0
-
-  const pointByBucket = new Map<number, { sampleCount: number; expectedSampleCount: number }>()
-  for (const point of input.points) {
-    const atMs = Date.parse(point.at)
-    if (!Number.isFinite(atMs)) continue
-    const bucketStart = bucketFloor(atMs, input.resolutionSeconds)
-    const expected =
-      point.expectedSampleCount ?? defaultExpectedSamplesPerBucket(input.resolutionSeconds)
-    const samples = point.sampleCount ?? 0
-    pointByBucket.set(bucketStart, {
-      sampleCount: samples,
-      expectedSampleCount: expected,
-    })
-  }
-
-  const defaultExpected = defaultExpectedSamplesPerBucket(input.resolutionSeconds)
-  let gapCount = 0
-  for (let bucket = startMs; bucket < endMs; bucket += bucketMs) {
-    const existing = pointByBucket.get(bucket)
-    if (!existing) {
-      gapCount += defaultExpected
-      continue
-    }
-    if (existing.sampleCount < existing.expectedSampleCount) {
-      gapCount += existing.expectedSampleCount - existing.sampleCount
-    }
-  }
-  return gapCount
+  return computeSeriesCoverage(input).gapCount
 }
 
 export type HostSummaryChartResponse = {
@@ -98,6 +195,8 @@ export type HostSeriesChartPoint = {
   derived: DerivedHostValues
   sampleCount: number
   expectedSampleCount?: number
+  /** Seconds between stored samples in this bucket — see `HostSeriesPoint.sampleSpacingSeconds`. */
+  sampleSpacingSeconds?: number
   topologyGeneration?: number | null
 }
 
@@ -112,6 +211,13 @@ export type HostSeriesChartResponse = {
   metrics: readonly string[]
   sampleCount: number
   gapCount: number
+  /**
+   * Starts (ISO) of the empty buckets where a sample was due and never
+   * arrived. Other empty buckets (a grid finer than the collection cadence,
+   * or rows the store sampled down) are not missing data — the chart draws
+   * through them instead of banding them.
+   */
+  gapBuckets: string[]
   points: HostSeriesChartPoint[]
   /**
    * Point indices where `topologyGeneration` differs from the previous known
@@ -137,14 +243,16 @@ export function finalizeHostSeriesResult(
   if (!Number.isFinite(fromMs) || !Number.isFinite(toMs)) {
     return result
   }
+  const coverage = computeSeriesCoverage({
+    fromMs,
+    toMs,
+    resolutionSeconds: result.resolutionSeconds,
+    points: result.points,
+  })
   return {
     ...result,
-    gapCount: computeSeriesGapCount({
-      fromMs,
-      toMs,
-      resolutionSeconds: result.resolutionSeconds,
-      points: result.points,
-    }),
+    gapCount: coverage.gapCount,
+    gapBuckets: coverage.gapBucketStarts.map((ms) => new Date(ms).toISOString()),
   }
 }
 
@@ -198,6 +306,9 @@ export function toHostSeriesChartResponse(input: {
     ...(point.expectedSampleCount !== undefined
       ? { expectedSampleCount: point.expectedSampleCount }
       : {}),
+    ...(point.sampleSpacingSeconds !== undefined
+      ? { sampleSpacingSeconds: point.sampleSpacingSeconds }
+      : {}),
     ...(point.topologyGeneration !== undefined
       ? { topologyGeneration: point.topologyGeneration }
       : {}),
@@ -214,6 +325,7 @@ export function toHostSeriesChartResponse(input: {
     metrics: result.metrics,
     sampleCount: result.sampleCount,
     gapCount: result.gapCount,
+    gapBuckets: result.gapBuckets ?? [],
     points,
     topologyGenerationBreaks: computeTopologyGenerationBreaks(points),
     ...(result.topologyGenerations !== undefined
