@@ -42,7 +42,17 @@ import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from '../authn/crypto.ts'
 import { deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { windowedIdempotencyKey } from '../../features/billing/idempotency.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
-import { type BillingOrgView, summarizeLicenses, summarizeTiers } from './routes-helpers.ts'
+import { SERVER_SIZE_COMMAND } from '../../features/tiers/size-command.ts'
+import {
+  type BillingOrgView,
+  formatEndsOn,
+  licenseExhaustionMessage,
+  LICENSES_ENDING_ERROR,
+  licensesEndingRefusal,
+  NO_LICENSES_ENDING_ERROR,
+  summarizeLicenses,
+  summarizeTiers,
+} from './routes-helpers.ts'
 import { registerBillingRoutes } from './routes.ts'
 
 /**
@@ -292,6 +302,7 @@ const PATHS = [
   ['POST', '/billing/portal'],
   ['POST', '/billing/preview'],
   ['POST', '/billing/seats'],
+  ['POST', '/billing/restore'],
   ['POST', '/billing/upgrade'],
   ['POST', '/billing/downgrade'],
 ] as const
@@ -376,6 +387,8 @@ test("GET /billing/catalog lists active tiers from Postgres in ladder order with
     filesystemSlots: 9,
   })
   assertEquals(body.tiers[1]!.entitlements.maxCores, 64)
+  // The size one-liner Add Server shows rides on the catalogue.
+  assertEquals((body as unknown as { sizeCommand: string }).sizeCommand, SERVER_SIZE_COMMAND)
   assertEquals(stripeCalls(), [])
 })
 
@@ -404,7 +417,10 @@ test('GET /billing/subscription summarises the projection: payer, subscription, 
     purchased: 3,
     granted: 0,
     releasing: 1,
+    ending: 1,
+    endsAt: PERIOD_END,
     held: 1,
+    inUse: 1,
     bound: 1,
     available: 1,
   })
@@ -435,6 +451,9 @@ test('GET /billing/subscription summarises the projection: payer, subscription, 
       rank: 3,
       purchased: 3,
       inUse: 1,
+      ending: 1,
+      endsAt: PERIOD_END,
+      available: 1,
       releasing: 1,
       priceCents: 3000,
       currency: 'usd',
@@ -443,7 +462,10 @@ test('GET /billing/subscription summarises the projection: payer, subscription, 
   assertEquals(body.licenses, {
     purchased: 3,
     releasing: 1,
+    ending: 1,
+    endsAt: PERIOD_END,
     held: 1,
+    inUse: 1,
     bound: 1,
     available: 1,
   })
@@ -465,6 +487,75 @@ test('GET /billing/subscription summarises the projection: payer, subscription, 
     },
   ])
   assertEquals(stripeCalls(), [])
+})
+
+test('the exhaustion sentence never calls an ending license "in use" and names the way out', () => {
+  const base = {
+    purchased: 6,
+    releasing: 3,
+    held: 3,
+    ending: 3,
+    endsAt: '2026-10-26T00:00:00.000Z',
+  }
+  assertEquals(
+    licenseExhaustionMessage(base),
+    '3 in use, 3 end Oct 26 — restore one to add this server.'
+  )
+  assertEquals(
+    licenseExhaustionMessage({ ...base, purchased: 4, releasing: 1, ending: 1, endsAt: null }),
+    '3 in use, 1 ends at the end of the billing period — restore one to add this server.'
+  )
+  assertEquals(
+    licenseExhaustionMessage({ purchased: 3, releasing: 0, held: 3, ending: 0, endsAt: null }),
+    'All 3 licenses are in use — buy another to add this server.'
+  )
+  assertEquals(
+    licenseExhaustionMessage({ purchased: 1, releasing: 0, held: 1, ending: 0, endsAt: null }),
+    'Your only license is in use — buy another to add this server.'
+  )
+  assertEquals(
+    licenseExhaustionMessage({ purchased: 0, releasing: 0, held: 0, ending: 0, endsAt: null }),
+    'No licenses yet — buy one to add this server.'
+  )
+  // Only a downgrade holds the last one back: it is changing tier, not ending and not in use.
+  assertEquals(
+    licenseExhaustionMessage({ purchased: 2, releasing: 1, held: 1, ending: 0, endsAt: null }),
+    '1 in use, 1 changing tier at the end of the billing period — buy another to add this server now.'
+  )
+  // The boundary is a UTC instant: formatted in UTC, whatever the host zone.
+  assertEquals(formatEndsOn('2026-10-01T00:00:00.000Z'), 'Oct 1')
+  assertEquals(formatEndsOn(null), null)
+  assertEquals(formatEndsOn('not a date'), null)
+})
+
+test('licensesEndingRefusal is per tier: only release-seat intents at that tier refuse', () => {
+  const ledger = withIntent(
+    withIntent(
+      emptyLedger('sub_1'),
+      newDeferredIntent('release-seat', {
+        fromTierId: S3,
+        toTierId: null,
+        landsAt: PERIOD_END,
+        fromQuantity: 2,
+        nowMs: Date.parse(NOW),
+      })
+    ),
+    newDeferredIntent('downgrade', {
+      fromTierId: S5,
+      toTierId: S3,
+      landsAt: PERIOD_END,
+      fromQuantity: 1,
+      nowMs: Date.parse(NOW),
+    })
+  )
+  assertEquals(licensesEndingRefusal(ledger, S3), {
+    error: LICENSES_ENDING_ERROR,
+    tierId: S3,
+    ending: 1,
+    endsAt: PERIOD_END,
+  })
+  // S5's only intent is a downgrade: nothing there is ending.
+  assertEquals(licensesEndingRefusal(ledger, S5), null)
 })
 
 test('entitlement-raising routes answer 409 subscription_past_due while delinquent, before any Stripe call', async () => {
@@ -705,8 +796,8 @@ test('POST /billing/preview accepts { tierId, delta } and pins a proration date 
   )
 })
 
-/** A ledger with `count` S3 seats leaving at the period boundary. */
-function leavingLedger(count: number) {
+/** A ledger with `count` S3 licenses ending at the period boundary. */
+function endingLedger(count: number) {
   let ledger = emptyLedger('sub_1')
   for (let i = 0; i < count; i += 1) {
     ledger = withIntent(
@@ -723,10 +814,10 @@ function leavingLedger(count: number) {
   return ledger
 }
 
-test('POST /billing/preview quotes $0 with no Stripe call when the increase only takes back seats still leaving — even while past due', async () => {
+test('POST /billing/preview refuses 409 licenses_ending for an increase at a tier with licenses ending — even while past due, with no Stripe call', async () => {
   for (const status of ['active', 'past_due']) {
     const view = viewWith(stateWith(status, [{ tierId: S3, quantity: 6 }]), {
-      ledger: leavingLedger(3),
+      ledger: endingLedger(3),
     })
     const { app, headers, stripeCalls } = await buildApp({ view })
     const res = await app.request('/billing/preview', {
@@ -734,49 +825,55 @@ test('POST /billing/preview quotes $0 with no Stripe call when the increase only
       headers,
       body: JSON.stringify({ tierId: S3, delta: 2 }),
     })
-    assertEquals(res.status, 200, status)
+    assertEquals(res.status, 409, status)
     assertEquals(await res.json(), {
-      prorationDate: Math.floor(Date.parse(NOW) / 1000),
-      currency: 'usd',
-      subtotal: 0,
-      tax: 0,
-      total: 0,
-      amountDue: 0,
-      lines: [],
-      restored: 2,
+      error: LICENSES_ENDING_ERROR,
+      tierId: S3,
+      ending: 3,
+      endsAt: PERIOD_END,
     })
     assertEquals(stripeCalls(), [], status)
   }
 })
 
-test('POST /billing/preview quotes only the seats an increase will buy after taking back the leaving ones', async () => {
-  const view = viewWith(stateWith('active', [{ tierId: S3, quantity: 6 }]), {
-    ledger: leavingLedger(3),
-  })
-  const { app, headers, client } = await buildApp({
+test('POST /billing/preview of a move INTO a tier with licenses ending is refused; a move out of it is quoted', async () => {
+  const view = viewWith(
+    stateWith('active', [
+      { tierId: S3, quantity: 6 },
+      { tierId: S5, quantity: 1 },
+    ]),
+    { ledger: endingLedger(2) }
+  )
+  const { app, headers, stripeCalls } = await buildApp({
     view,
     routes: {
       'POST /v1/invoices/create_preview': () => ({
         object: 'invoice',
         currency: 'usd',
-        subtotal: 1000,
-        total: 1000,
-        amount_due: 1000,
+        subtotal: 500,
+        total: 500,
+        amount_due: 500,
         lines: { data: [] },
       }),
     },
   })
-  const res = await app.request('/billing/preview', {
+  const into = await app.request('/billing/preview', {
     method: 'POST',
     headers,
-    body: JSON.stringify({ tierId: S3, delta: 4 }),
+    body: JSON.stringify({ fromTierId: S5, toTierId: S3 }),
   })
-  assertEquals(res.status, 200)
-  const body = (await res.json()) as { total: number; restored: number }
-  assertEquals(body.total, 1000)
-  assertEquals(body.restored, 3)
-  // Six seats plus the one actually bought.
-  assertEquals(formOf(client.calls[0]!, 'subscription_details[items][0][quantity]'), '7')
+  assertEquals(into.status, 409)
+  assertEquals(((await into.json()) as { error: string }).error, LICENSES_ENDING_ERROR)
+  assertEquals(stripeCalls(), [])
+
+  // S3 ending never blocks adding at S5.
+  const outOf = await app.request('/billing/preview', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ fromTierId: S3, toTierId: S5 }),
+  })
+  assertEquals(outOf.status, 200)
+  assertEquals(((await outOf.json()) as { total: number }).total, 500)
 })
 
 test("POST /billing/preview accepts { fromTierId, toTierId } as a −1/+1 swap, resolving the target's price through the gateway", async () => {
@@ -847,6 +944,50 @@ test('POST /billing/seats validates the body: a tier id, a non-zero integer delt
   }
   // Every refusal above happened before the lease.
   assertEquals(leases, [])
+})
+
+test('POST /billing/restore validates { tierId, count } before the lease', async () => {
+  const { app, headers, leases } = await buildApp()
+  for (const body of [
+    '{}',
+    JSON.stringify({ tierId: S3 }),
+    JSON.stringify({ tierId: S3, count: 0 }),
+    JSON.stringify({ tierId: S3, count: -2 }),
+    JSON.stringify({ tierId: S3, count: 1.5 }),
+    JSON.stringify({ tierId: 'x', count: 1 }),
+    'nope',
+  ]) {
+    const res = await app.request('/billing/restore', { method: 'POST', headers, body })
+    assertEquals(res.status, 400, body)
+  }
+  assertEquals(leases, [])
+})
+
+test('POST /billing/restore takes ending licenses back under the lease — no purchase — and answers 409 no_licenses_ending when none are', async () => {
+  // Three ending, no schedule attached in the view: restoring all three
+  // leaves nothing deferred, so there is nothing to tell Stripe.
+  const view = viewWith(stateWith('active', [{ tierId: S3, quantity: 6 }]), {
+    ledger: endingLedger(3),
+  })
+  const { app, headers, leases, stripeCalls } = await buildApp({ view })
+  const res = await app.request('/billing/restore', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ tierId: S3, count: 3 }),
+  })
+  assertEquals(res.status, 200)
+  assertEquals(await res.json(), { ok: true, restored: 3, ending: 0, scheduleId: null })
+  assertEquals(stripeCalls(), [])
+  assertEquals(leases, ['begin', 'end'])
+
+  const none = await buildApp()
+  const refused = await none.app.request('/billing/restore', {
+    method: 'POST',
+    headers: none.headers,
+    body: JSON.stringify({ tierId: S3, count: 1 }),
+  })
+  assertEquals(refused.status, 409)
+  assertEquals(await refused.json(), { error: NO_LICENSES_ENDING_ERROR, tierId: S3 })
 })
 
 test('POST /billing/upgrade validates { fromTierId, toTierId } and forwards to upgradeTier, which decides the direction', async () => {

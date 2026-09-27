@@ -54,6 +54,7 @@ import {
 } from '../../features/billing/subscriptions.ts'
 import { resolveTierPrice } from '../../features/billing/tier-prices.ts'
 import { listActiveTiers } from '../../features/tiers/tier-records.ts'
+import { SERVER_SIZE_COMMAND } from '../../features/tiers/size-command.ts'
 import { resolvePublicBaseUrl } from '../../features/install/resolve-public-base-url.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
@@ -64,7 +65,7 @@ import {
   type BillingMutationOutcome,
   changeSeats,
   downgradeTier,
-  splitSeatIncrease,
+  restoreSeats,
   upgradeTier,
 } from './mutations.ts'
 import {
@@ -74,6 +75,7 @@ import {
   type BillingOrgView,
   CHECKOUT_PENDING_ERROR,
   hasLiveSubscription,
+  licensesEndingRefusal,
   loadBillingOrgView,
   PARSE_UUID_INVALID,
   parseJsonObjectBody,
@@ -106,6 +108,7 @@ const BILLING_PATHS = [
   '/billing/portal',
   '/billing/preview',
   '/billing/seats',
+  '/billing/restore',
   '/billing/upgrade',
   '/billing/downgrade',
 ] as const
@@ -172,23 +175,6 @@ function deltasFromBody(c: Ctx, body: Record<string, unknown>): TierDelta[] | Re
   }
   if (tierId && delta !== null && delta !== 0) return [{ tierId, delta }]
   return c.json({ error: 'Invalid request' }, 400)
-}
-
-/**
- * The quote for an increase that only takes back leaving seats: nothing is
- * invoiced, so there is nothing to ask Stripe — zero amounts, no lines.
- */
-function freeRestoreQuote(view: BillingOrgView, tierId: string, nowMs: number, restored: number) {
-  return {
-    prorationDate: Math.floor(nowMs / 1000),
-    currency: view.state.seats.find((seat) => seat.tierId === tierId)?.tier.currency ?? null,
-    subtotal: 0,
-    tax: 0,
-    total: 0,
-    amountDue: 0,
-    lines: [],
-    restored,
-  }
 }
 
 /** Send a mutation's outcome verbatim; a Stripe failure maps as everywhere else. */
@@ -260,7 +246,10 @@ export function registerBillingRoutes(
     const auth = await authenticate(c)
     if (auth instanceof Response) return auth
     const tiers = await listActiveTiers(auth.db)
-    return c.json({ tiers: tiers.map(serializeTier) })
+    // `sizeCommand`: the one-liner Add Server shows — run on the server, it
+    // prints its physical cores, RAM and the tier they land in, measured the
+    // way placement measures them (`size-command.ts`).
+    return c.json({ tiers: tiers.map(serializeTier), sizeCommand: SERVER_SIZE_COMMAND })
   })
 
   router.get('/billing/subscription', async (c) => {
@@ -375,17 +364,15 @@ export function registerBillingRoutes(
     const deltas = deltasFromBody(c, body)
     if (deltas instanceof Response) return deltas
     const view = await loadView(auth.db, auth.organizationId, nowMs())
-    // A seat increase first takes back seats still leaving at the boundary
-    // (`changeSeats`), which costs nothing — quote only what it will buy.
-    let quoted = deltas
-    let restored = 0
-    const [single] = deltas
-    if (deltas.length === 1 && single && single.delta > 0 && hasLiveSubscription(view)) {
-      const split = splitSeatIncrease(view.ledger, single.tierId, single.delta)
-      restored = split.restoring.length
-      if (split.buying === 0)
-        return c.json(freeRestoreQuote(view, single.tierId, nowMs(), restored))
-      quoted = [{ tierId: single.tierId, delta: split.buying }]
+    // Restore before buy: anything that adds licenses at a tier where some
+    // are ending is refused exactly as the mutation would refuse it, so the
+    // console never shows a price for something it cannot buy.
+    if (hasLiveSubscription(view)) {
+      for (const { tierId, delta } of deltas) {
+        if (delta <= 0) continue
+        const ending = licensesEndingRefusal(view.ledger, tierId)
+        if (ending) return c.json(ending, 409)
+      }
     }
     const denied = assertTierChangeAllowed(c, view)
     if (denied) return denied
@@ -393,7 +380,7 @@ export function registerBillingRoutes(
     const gateway = resolveBillingGateway(client)
     const { lines, priceByTier } = seatLinesFromState(view.state)
     try {
-      for (const { tierId, delta } of quoted) {
+      for (const { tierId, delta } of deltas) {
         if (delta > 0 && !priceByTier.has(tierId)) {
           const price = await resolveTierPrice(auth.db, gateway, tierId)
           if (!price.ok) {
@@ -411,7 +398,7 @@ export function registerBillingRoutes(
       }
       let items
       try {
-        items = buildItemMutation(lines, quoted, priceByTier)
+        items = buildItemMutation(lines, deltas, priceByTier)
       } catch {
         return c.json({ error: 'Invalid request' }, 400)
       }
@@ -420,7 +407,7 @@ export function registerBillingRoutes(
         items,
         nowMs: nowMs(),
       })
-      return c.json(restored > 0 ? { ...preview, restored } : preview)
+      return c.json(preview)
     } catch (err) {
       return stripeErrorResponse(c, err)
     }
@@ -462,6 +449,31 @@ export function registerBillingRoutes(
         tierId,
         delta,
         prorationDate,
+      })
+    )
+  })
+
+  router.post('/billing/restore', async (c) => {
+    const auth = await authenticate(c)
+    if (auth instanceof Response) return auth
+    const body = await readBody(c)
+    if (body instanceof Response) return body
+    const tierId = readUuidField(body, 'tierId')
+    const count = readIntField(body, 'count')
+    if (
+      tierId === PARSE_UUID_INVALID ||
+      !tierId ||
+      count === 'invalid' ||
+      count === null ||
+      count < 1
+    ) {
+      return c.json({ error: 'Invalid request' }, 400)
+    }
+    return await answer(c, () =>
+      restoreSeats(mutationDeps(auth), {
+        organizationId: auth.organizationId,
+        tierId,
+        count,
       })
     )
   })

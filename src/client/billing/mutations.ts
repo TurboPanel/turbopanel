@@ -60,7 +60,9 @@ import {
   type BillingOrgView,
   coverageRefusal,
   hasLiveSubscription,
+  licensesEndingRefusal,
   loadBillingOrgView,
+  NO_LICENSES_ENDING_ERROR,
   NO_SUBSCRIPTION_ERROR,
   NOT_A_DOWNGRADE_ERROR,
   NOT_AN_UPGRADE_ERROR,
@@ -94,9 +96,9 @@ export type ChangeSeatsInput = Readonly<{
   organizationId: string
   tierId: string
   /**
-   * Positive: first takes back that many seats still leaving at the
-   * boundary (free), then buys the rest now, invoiced. Negative: deferred
-   * to the boundary.
+   * Positive: buys that many now, invoiced — refused (`licenses_ending`)
+   * while licenses at this tier are ending; restore those first. Negative:
+   * deferred to the boundary (the licenses end then).
    */
   delta: number
   /** The preview's pinned proration date; minted from `nowMs` when absent. */
@@ -109,11 +111,22 @@ export type ChangeSeatsBody = {
   pending: boolean
   deferred: boolean
   scheduleId?: string | null
-  /**
-   * Seats an increase took back from "leaving at the period boundary"
-   * instead of buying. Present only when non-zero.
-   */
-  restored?: number
+}
+
+export type RestoreSeatsInput = Readonly<{
+  organizationId: string
+  tierId: string
+  /** How many ending licenses to restore; more than are ending restores them all. */
+  count: number
+}>
+
+export type RestoreSeatsBody = {
+  ok: true
+  /** Licenses taken back from ending at the boundary. Never charged. */
+  restored: number
+  /** Still ending at this tier after the restore. */
+  ending: number
+  scheduleId: string | null
 }
 
 export type TierMoveInput = Readonly<{
@@ -332,21 +345,6 @@ async function applyDeferred(
 }
 
 /**
- * How a quantity increase of `delta` at `tierId` splits: the seats it takes
- * back from "leaving at the boundary" (newest release first) and how many
- * it must actually buy. Shared by the mutation and the preview, so the
- * quote is for exactly what the apply will charge.
- */
-export function splitSeatIncrease(
-  ledger: MutationContext['view']['ledger'],
-  tierId: string,
-  delta: number
-): { restoring: PendingIntent[]; buying: number } {
-  const restoring = restorableReleases(ledger, tierId).slice(0, Math.max(0, delta))
-  return { restoring, buying: delta - restoring.length }
-}
-
-/**
  * The reverse of {@link applyDeferred}: drop `intents` from the ledger and
  * rebuild the schedule from what is left (released when nothing is). The
  * ledger is written first and restored if Stripe refuses, so a failed
@@ -395,16 +393,15 @@ function isRefusal<T extends Record<string, unknown>>(
 }
 
 /**
- * `POST /billing/seats`. An increase first takes back seats at that tier
- * that are still leaving at the boundary — withdrawing their
- * `release-seat` intents and rebuilding the schedule, no charge — and buys
- * only the remainder, immediately (`always_invoice`, under
- * `pending_if_incomplete`). Taking a leaving seat back is allowed while
- * delinquent (it charges nothing and only reduces what is given back);
- * any purchase is refused then, before anything is withdrawn. A decrease is a
- * `release-seat` intent per seat and a schedule phase at the boundary,
- * refused when the future mix would strand a licensed server or leave the
- * organization holding more licenses than it pays for.
+ * `POST /billing/seats`. An increase buys immediately (`always_invoice`,
+ * under `pending_if_incomplete`) — but never while licenses at that tier
+ * are ending at the boundary: that is refused `409 licenses_ending` before
+ * anything is written, and the person restores those first
+ * ({@link restoreSeats}, free). Ending licenses at another tier do not
+ * refuse. A decrease is a `release-seat` intent per seat and a schedule
+ * phase at the boundary, refused when the future mix would strand a
+ * licensed server or leave the organization holding more licenses than it
+ * pays for.
  */
 export async function changeSeats(
   deps: BillingMutationDeps,
@@ -422,56 +419,29 @@ export async function changeSeats(
     const ctx: MutationContext = { lock, view, sub, lines, priceByTier }
 
     if (delta > 0) {
-      const { restoring, buying } = splitSeatIncrease(view.ledger, tierId, delta)
-      // Every refusal of the purchase happens before anything is withdrawn,
-      // so a refused request changes nothing.
-      if (buying > 0) {
-        const denied = tierChangeRefusal(view)
-        if (denied) return refuse(409, denied)
-        const price = await resolveTierPrice(deps.db, gateway, tierId)
-        if (!price.ok)
-          return refuse(400, {
-            error: TIER_NOT_PURCHASABLE_ERROR,
-            reason: price.reason,
-            failures: price.failures ?? [],
-          })
-        priceByTier.set(tierId, price.providerPriceId)
-      }
-      let buyCtx = ctx
-      let scheduleId: string | null = sub.scheduleId
-      if (restoring.length > 0) {
-        const withdrawn = await withdrawDeferred(deps, ctx, organizationId, restoring)
-        scheduleId = withdrawn.scheduleId
-        buyCtx = {
-          ...ctx,
-          view: { ...view, ledger: withdrawn.ledger },
-          sub: { ...sub, scheduleId },
-        }
-      }
-      const restored = restoring.length > 0 ? { restored: restoring.length } : {}
-      if (buying === 0) {
-        return succeed<ChangeSeatsBody>({
-          ok: true,
-          pending: false,
-          deferred: false,
-          scheduleId,
-          ...restored,
+      // Restore before buy: nobody pays for a new license at a tier where
+      // one is still sitting there, ending. Refused before anything is written.
+      const ending = licensesEndingRefusal(view.ledger, tierId)
+      if (ending) return refuse(409, ending)
+      const denied = tierChangeRefusal(view)
+      if (denied) return refuse(409, denied)
+      const price = await resolveTierPrice(deps.db, gateway, tierId)
+      if (!price.ok)
+        return refuse(400, {
+          error: TIER_NOT_PURCHASABLE_ERROR,
+          reason: price.reason,
+          failures: price.failures ?? [],
         })
-      }
+      priceByTier.set(tierId, price.providerPriceId)
       const applied = await applyImmediate(
         deps,
-        buyCtx,
+        ctx,
         organizationId,
-        [{ tierId, delta: buying }],
+        [{ tierId, delta }],
         input.prorationDate
       )
       if (isRefusal(applied)) return applied
-      return succeed<ChangeSeatsBody>({
-        ok: true,
-        pending: applied.pending,
-        deferred: false,
-        ...restored,
-      })
+      return succeed<ChangeSeatsBody>({ ok: true, pending: applied.pending, deferred: false })
     }
 
     const coverage = coverageRefusal(
@@ -500,6 +470,42 @@ export async function changeSeats(
       pending: false,
       deferred: true,
       scheduleId: result.scheduleId,
+    })
+  })
+}
+
+/**
+ * `POST /billing/restore`. Take back up to `count` of the licenses ending at
+ * `tierId` (newest release first): their `release-seat` intents are
+ * withdrawn and the schedule is rebuilt from what is still ending, or
+ * released when nothing is. Nothing is bought, so nothing is invoiced, and
+ * it is allowed while past due. A Stripe refusal leaves the licenses ending
+ * exactly as before. `409 no_licenses_ending` when nothing at that tier is
+ * ending.
+ */
+export async function restoreSeats(
+  deps: BillingMutationDeps,
+  input: RestoreSeatsInput
+): Promise<BillingMutationOutcome<RestoreSeatsBody>> {
+  const { loadView, nowMs } = resolveDeps(deps)
+  const { organizationId, tierId, count } = input
+  if (!Number.isInteger(count) || count < 1) return refuse(400, INVALID_REQUEST)
+
+  return await underLease(deps, organizationId, async (lock) => {
+    const view = await loadView(deps.db, organizationId, nowMs())
+    if (!hasLiveSubscription(view)) return refuse(409, { error: NO_SUBSCRIPTION_ERROR })
+    const endingHere = restorableReleases(view.ledger, tierId)
+    if (endingHere.length === 0) return refuse(409, { error: NO_LICENSES_ENDING_ERROR, tierId })
+    const restoring = endingHere.slice(0, count)
+    const { lines, priceByTier } = seatLinesFromState(view.state)
+    const sub = view.state.subscription!
+    const ctx: MutationContext = { lock, view, sub, lines, priceByTier }
+    const withdrawn = await withdrawDeferred(deps, ctx, organizationId, restoring)
+    return succeed<RestoreSeatsBody>({
+      ok: true,
+      restored: restoring.length,
+      ending: endingHere.length - restoring.length,
+      scheduleId: withdrawn.scheduleId,
     })
   })
 }
@@ -546,6 +552,10 @@ export async function upgradeTier(
 
   return await underLease(deps, input.organizationId, async (lock) => {
     const view = await loadView(deps.db, input.organizationId, nowMs())
+    // An upgrade adds a license at the higher tier: restore before buy
+    // applies there too.
+    const ending = licensesEndingRefusal(view.ledger, move.to.id)
+    if (ending) return refuse(409, ending)
     const denied = tierChangeRefusal(view)
     if (denied) return refuse(409, denied)
     const sub = view.state.subscription!
@@ -600,6 +610,12 @@ export async function downgradeTier(
   return await underLease(deps, input.organizationId, async (lock) => {
     const view = await loadView(deps.db, input.organizationId, nowMs())
     if (!hasLiveSubscription(view)) return refuse(409, { error: NO_SUBSCRIPTION_ERROR })
+    // A downgrade lands a license at the lower tier at the boundary; with
+    // licenses there already ending, restoring one of those (and removing
+    // the higher one) is the same result without a swap — so it is refused
+    // the same way.
+    const ending = licensesEndingRefusal(view.ledger, move.to.id)
+    if (ending) return refuse(409, ending)
     const sub = view.state.subscription!
     const { lines, priceByTier } = seatLinesFromState(view.state)
     const price = await resolveTierPrice(deps.db, gateway, move.to.id)

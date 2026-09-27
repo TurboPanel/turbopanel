@@ -183,11 +183,22 @@ license, so the same greedy assignment places every self-hosted server on `SX`
 rather than on nothing.
 
 A license therefore carries no tier. It is minted only inside "Add server"
-(gated on `purchased − releasing − held > 0`), embedded in the install command,
+(gated on `purchased − releasing − held > 0`; refused `no_license_available`
+with a truthful `message` and per-tier `ending` / `endsAt` counts),
+embedded in the install command,
 and revoked when its server is deleted — without touching Stripe. An uncovered
 licensed server is refused at its next `/auth/session` with
 `License tier below required` (byte-identical to the daemon's permanent list)
 and reported by the reconcile sweep.
+
+Because the tier is derived, a person adding a server needs to know which tier
+it will land in **before** it enrols. `GET /billing/catalog` carries
+`sizeCommand` (`src/features/tiers/size-command.ts`): a one-line POSIX awk
+command that, run on the server, prints its physical cores, RAM and tier
+(`8 cores, 31.3 GiB RAM -> S2`) — counting cores exactly as the daemon's host
+inventory does and banding them with the same ladder ceilings as
+`resolveRequiredTier`. Its tests run it under `sh` against fixture `/proc`
+files and compare to placement.
 
 ## The mutation surface
 
@@ -195,14 +206,22 @@ Quantities are bought through Stripe; keys are minted by the console against the
 total. Every mutation is a **quantity** change — nothing names a license or a
 server:
 
-- `changeSeats(tierId, +n)` — first takes back up to `n` of that tier's seats
-  still leaving at the boundary (newest `release-seat` intent first; withdrawn
+- `changeSeats(tierId, +n)` — buys `n`, immediate and invoiced now. **Restore
+  before buy, per tier:** while that tier has licenses ending at the boundary
+  (outstanding `release-seat` intents at that tier) it is refused `409
+  licenses_ending` (`{ tierId, ending, endsAt }`) before anything is written,
+  and `POST /billing/preview` refuses the same way — nobody pays for a new
+  license with one sitting there. Ending licenses at another tier never
+  refuse. The same rule refuses `upgradeTier` / `downgradeTier` **into** a
+  tier with licenses ending (restore there, then release the other one: the
+  same result without a swap).
+- `restoreSeats(tierId, n)` — `POST /billing/restore`: takes back up to `n` of
+  that tier's ending licenses (newest `release-seat` intent first; withdrawn
   from the ledger and the schedule rebuilt, or released when nothing is left
-  leaving — no charge, since the seat is paid through the period), then buys
-  only the rest, immediate and invoiced now. Taking a leaving seat back is
-  allowed while past due; any purchase is refused then, before anything is
-  withdrawn. `POST /billing/preview` quotes the same split (`restored`, and
-  zero amounts with no Stripe call when nothing is bought).
+  ending — no charge, since the seat is paid through the period). Allowed
+  while past due. A Stripe refusal writes the withdrawn intents back, so the
+  licenses end exactly as before. `409 no_licenses_ending` when there are
+  none.
 - `changeSeats(tierId, −n)` — one `release-seat` intent per unit, a schedule
   phase at the boundary.
 - `upgradeTier(from, to)` — `−1` at the lower and `+1` at the higher tier,
