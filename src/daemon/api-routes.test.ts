@@ -2757,6 +2757,28 @@ test('POST /metrics through a real CloudflareAnalyticsEngineServerMetricsStore: 
   assertEquals(eventRows.length, 1)
 })
 
+test('POST /metrics lands a 10 s live-cadence sample as AE rows through the real Cloudflare store', async () => {
+  // Seam test: the fake-store tests above prove the route calls writeSample;
+  // this proves a live-cadence sample survives the real AE projection too.
+  // While a live lease is active the daemon sends ONLY 10 s samples, so a
+  // projection that dropped them would leave the durable store empty.
+  const { app, points } = await createMetricsTestAppWithRealCloudflareStore()
+  const serverId = 'srv-metrics-cf-live-cadence'
+  const daemonToken = await issueDaemonToken(serverId, 'key-metrics-cf-live-cadence')
+  const response = await app.request('/api/daemon/v1/metrics', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${daemonToken}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(buildValidMetricsFrame({ metadata: { intervalSeconds: 10 } })),
+  })
+  assertEquals(response.status, 202)
+  const hostRows = points.filter((p) => p.blobs[AE_BLOB_FAMILY_INDEX] === 'host.system')
+  assertEquals(hostRows.length, 1)
+  assertEquals(hostRows[0]?.indexes?.[0], serverId)
+})
+
 test('POST /metrics does not await the store write before responding', async () => {
   const daemonToken = await issueDaemonToken(
     'srv-metrics-fire-and-forget',

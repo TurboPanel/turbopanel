@@ -31,6 +31,7 @@ import {
   queryHostSeriesViaSqlApi,
   queryHostSummaryViaSqlApi,
   queryMetricEventsViaSqlApi,
+  queryRecentlyActiveServerIds,
   queryStatusHistoryViaSqlApi,
 } from './sql-api.ts'
 
@@ -167,6 +168,17 @@ it('host summary, events, status and entity-id queries stay within AE limits', a
   for (const family of Object.keys(ENTITY_SCOPE) as PerEntityHostedFamily[]) {
     await queryEntityIdsSeenViaSqlApi(config, { ...range, family })
   }
+  assertAcceptableToAe(statements)
+})
+
+it('the offline sweep liveness query over the longest window stays within AE rules', async () => {
+  // The sweep's `ae-liveness` query runs every minute on Workers; a refusal
+  // there marks every server suspect, so it is held to the same dialect.
+  const { config, statements } = capturingConfig(() => [
+    { server_id: SERVER_ID, latest_at: '2026-09-27 00:00:00' },
+  ])
+  const active = await queryRecentlyActiveServerIds(config, { sinceSeconds: 7 * 24 * 60 * 60 })
+  assertEquals(active.size, 1)
   assertAcceptableToAe(statements)
 })
 
