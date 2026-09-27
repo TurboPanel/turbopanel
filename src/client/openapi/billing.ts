@@ -63,8 +63,15 @@ export const billingSchemas = {
   },
   BillingCatalogResponse: {
     type: 'object',
-    required: ['tiers'],
-    properties: { tiers: { type: 'array', items: { $ref: '#/components/schemas/BillingTier' } } },
+    required: ['tiers', 'sizeCommand'],
+    properties: {
+      tiers: { type: 'array', items: { $ref: '#/components/schemas/BillingTier' } },
+      sizeCommand: {
+        type: 'string',
+        description:
+          'One-line POSIX shell command to show on Add Server: run on the server, it prints its physical cores, RAM and the tier they land in, e.g. `8 cores, 31.3 GiB RAM -> S2` — measured the way placement measures them.',
+      },
+    },
   },
   BillingTierSummary: {
     type: 'object',
@@ -74,6 +81,9 @@ export const billingSchemas = {
       'rank',
       'purchased',
       'inUse',
+      'ending',
+      'endsAt',
+      'available',
       'releasing',
       'priceCents',
       'currency',
@@ -87,9 +97,26 @@ export const billingSchemas = {
         description: 'Committed provider quantity at this tier — the licenses bought here.',
       },
       inUse: { type: 'integer', description: 'Servers currently assigned this tier.' },
+      ending: {
+        type: 'integer',
+        description:
+          'Of `purchased`, the licenses that end at the period boundary (released seats). Restore them with `POST /billing/restore`; buying more at this tier is refused (`licenses_ending`) while this is non-zero.',
+      },
+      endsAt: {
+        type: ['string', 'null'],
+        format: 'date-time',
+        description: 'When they end; null when `ending` is 0.',
+      },
+      available: {
+        type: 'integer',
+        description:
+          '`purchased − ending − inUse`, floored at 0. Advisory — the mint gate is the organization-wide `licenses.available`.',
+      },
       releasing: {
         type: 'integer',
-        description: 'Of `purchased`, how many leave at the period boundary.',
+        deprecated: true,
+        description:
+          'Use `ending`. Every seat leaving this tier at the boundary, a pending downgrade included.',
       },
       priceCents: { type: ['integer', 'null'] },
       currency: { type: ['string', 'null'] },
@@ -97,11 +124,21 @@ export const billingSchemas = {
   },
   BillingLicenseSummary: {
     type: 'object',
-    required: ['purchased', 'releasing', 'held', 'bound', 'available'],
+    required: ['purchased', 'releasing', 'ending', 'endsAt', 'held', 'inUse', 'bound', 'available'],
     properties: {
       purchased: { type: 'integer', description: 'Total committed quantity across tiers.' },
-      releasing: { type: 'integer', description: 'Leaving at the period boundary.' },
+      releasing: {
+        type: 'integer',
+        description:
+          'Every seat leaving at the period boundary (ending licenses and pending downgrades).',
+      },
+      ending: {
+        type: 'integer',
+        description: 'Licenses ending at the period boundary, all tiers; restorable.',
+      },
+      endsAt: { type: ['string', 'null'], format: 'date-time' },
       held: { type: 'integer', description: 'Active licenses, bound or waiting to connect.' },
+      inUse: { type: 'integer', description: 'Same number as `held`, under the console name.' },
       bound: { type: 'integer', description: 'The subset bound to a server.' },
       available: {
         type: 'integer',
@@ -254,12 +291,6 @@ export const billingSchemas = {
           },
         },
       },
-      restored: {
-        type: 'integer',
-        minimum: 1,
-        description:
-          'Seat increases only, present when non-zero: how many of the requested seats are taken back from "leaving at the period boundary" at no charge. The amounts quote only the rest; all zero with no lines when nothing is bought.',
-      },
     },
   },
   BillingSeatsRequest: {
@@ -270,7 +301,7 @@ export const billingSchemas = {
       delta: {
         type: 'integer',
         description:
-          'Positive: first takes back seats at this tier still leaving at the period boundary (no charge), then buys the rest now, invoiced. Negative: deferred to the period boundary.',
+          'Positive: buys that many now, invoiced — refused `licenses_ending` while licenses at this tier are ending (restore those first with `POST /billing/restore`; other tiers never block). Negative: those licenses end at the period boundary.',
       },
       prorationDate: { type: 'integer', description: 'From the preview; increases only.' },
     },
@@ -299,12 +330,44 @@ export const billingSchemas = {
       deferred: { type: 'boolean', description: 'Parked on a schedule for the period boundary.' },
       intentId: { type: 'string' },
       scheduleId: { type: ['string', 'null'] },
-      restored: {
+    },
+  },
+  BillingRestoreRequest: {
+    type: 'object',
+    required: ['tierId', 'count'],
+    properties: {
+      tierId: { type: 'string', format: 'uuid' },
+      count: {
         type: 'integer',
         minimum: 1,
         description:
-          'Seat increases only, present when non-zero: seats taken back from "leaving at the period boundary" instead of bought.',
+          'How many ending licenses to take back; more than are ending restores them all.',
       },
+    },
+  },
+  BillingRestoreResponse: {
+    type: 'object',
+    required: ['ok', 'restored', 'ending', 'scheduleId'],
+    properties: {
+      ok: { type: 'boolean', const: true },
+      restored: { type: 'integer', minimum: 1, description: 'Taken back; never charged.' },
+      ending: { type: 'integer', description: 'Still ending at this tier afterwards.' },
+      scheduleId: {
+        type: ['string', 'null'],
+        description: 'The rebuilt schedule, or null when nothing is ending any more (released).',
+      },
+    },
+  },
+  BillingLicensesEndingError: {
+    type: 'object',
+    required: ['error', 'tierId', 'ending', 'endsAt'],
+    description:
+      'Buying more at a tier (seats, an upgrade or downgrade into it, or the preview of any of those) while licenses at that tier are ending. Restore them first.',
+    properties: {
+      error: { type: 'string', const: 'licenses_ending' },
+      tierId: { type: 'string', format: 'uuid' },
+      ending: { type: 'integer' },
+      endsAt: { type: ['string', 'null'], format: 'date-time' },
     },
   },
 } as const
@@ -467,7 +530,9 @@ export const billingPaths: Record<string, unknown> = {
         '400': errorResponse('Invalid request or `tier_not_purchasable`'),
         '401': unauthorized,
         '403': forbidden,
-        '409': conflict('`subscription_past_due`, `no_subscription`'),
+        '409': conflict(
+          '`licenses_ending` (BillingLicensesEndingError), `subscription_past_due`, `no_subscription`'
+        ),
         '502': errorResponse('`stripe_error`'),
         '503': notConfigured,
       },
@@ -476,16 +541,49 @@ export const billingPaths: Record<string, unknown> = {
   [`${CLIENT_PREFIX}/billing/seats`]: mutationPath(
     'Buy or release licenses at one tier',
     'BillingSeatsRequest',
-    '`subscription_past_due`, `no_subscription`, `servers_uncovered`, `licenses_in_use`'
+    '`licenses_ending` (BillingLicensesEndingError), `subscription_past_due`, `no_subscription`, `servers_uncovered`, `licenses_in_use`'
   ),
+  [`${CLIENT_PREFIX}/billing/restore`]: {
+    post: {
+      tags: ['Billing'],
+      summary: 'Take back licenses ending at one tier',
+      description:
+        'Withdraws up to `count` of the tier’s ending licenses (newest first). Nothing is bought or invoiced; allowed while past due. The schedule is rebuilt from what is still ending, or released when nothing is.',
+      security: [{ cookieAuth: [] }],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': { schema: { $ref: '#/components/schemas/BillingRestoreRequest' } },
+        },
+      },
+      responses: {
+        '200': {
+          description: 'Restored',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/BillingRestoreResponse' },
+            },
+          },
+        },
+        '400': errorResponse('Invalid request'),
+        '401': unauthorized,
+        '403': forbidden,
+        '409': conflict('`no_licenses_ending`, `no_subscription`, `billing_mutation_in_progress`'),
+        '502': errorResponse('Stripe refused the schedule change (`stripe_error`)'),
+        '503': errorResponse(
+          '`billing_not_configured`, or Stripe was unreachable (`stripe_error`, transient)'
+        ),
+      },
+    },
+  },
   [`${CLIENT_PREFIX}/billing/upgrade`]: mutationPath(
     'Move one purchased license to a higher tier, invoiced now',
     'BillingTierMoveRequest',
-    '`subscription_past_due`, `no_subscription`, `servers_uncovered`'
+    '`licenses_ending` (at the higher tier), `subscription_past_due`, `no_subscription`, `servers_uncovered`'
   ),
   [`${CLIENT_PREFIX}/billing/downgrade`]: mutationPath(
     'Move one purchased license to a lower tier at the period boundary',
     'BillingTierMoveRequest',
-    '`no_subscription`, `servers_uncovered`, `licenses_in_use`'
+    '`licenses_ending` (at the lower tier), `no_subscription`, `servers_uncovered`, `licenses_in_use`'
   ),
 }

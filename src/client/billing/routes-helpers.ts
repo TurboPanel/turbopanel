@@ -12,6 +12,7 @@ import { describeStripeError, StripeApiError } from '../../features/billing/erro
 import { logError, logWarn } from '../../lib/logger.ts'
 import {
   deferredDeltasByTier,
+  endingLicensesByTier,
   outstandingReleasesByTier,
   type PendingChangeLedger,
   readPendingChanges,
@@ -53,6 +54,14 @@ export const SERVERS_UNCOVERED_ERROR = 'servers_uncovered'
 export const LICENSES_IN_USE_ERROR = 'licenses_in_use'
 /** Nothing purchased is free for another server. */
 export const NO_LICENSE_AVAILABLE_ERROR = 'no_license_available'
+/**
+ * More of a tier was asked for while licenses at that tier are ending at the
+ * boundary: restore those first (`POST /billing/restore`, free). Ending
+ * licenses at another tier never refuse.
+ */
+export const LICENSES_ENDING_ERROR = 'licenses_ending'
+/** `POST /billing/restore` at a tier with nothing ending. */
+export const NO_LICENSES_ENDING_ERROR = 'no_licenses_ending'
 export const TIER_NOT_PURCHASABLE_ERROR = 'tier_not_purchasable'
 export const NOT_AN_UPGRADE_ERROR = 'not_an_upgrade'
 export const NOT_A_DOWNGRADE_ERROR = 'not_a_downgrade'
@@ -138,7 +147,20 @@ export type TierSummary = Readonly<{
   purchased: number
   /** Servers currently assigned this tier. */
   inUse: number
-  /** Of `purchased`, how many leave at the period boundary. */
+  /** Of `purchased`, the licenses that end at the period boundary and can be restored. */
+  ending: number
+  /** When they end (ISO), or `null` when nothing is ending. */
+  endsAt: string | null
+  /**
+   * `purchased − ending − inUse`, floored at zero. Advisory: a key waiting to
+   * connect holds a license but no tier yet, so the mint gate is the
+   * organization-wide `licenses.available`, not this.
+   */
+  available: number
+  /**
+   * @deprecated Use `ending`. Kept one release for the console: every seat
+   * leaving the tier at the boundary, a pending downgrade's included.
+   */
   releasing: number
   priceCents: number | null
   currency: string | null
@@ -148,6 +170,7 @@ export type TierSummary = Readonly<{
 export function summarizeTiers(view: BillingOrgView): TierSummary[] {
   const seats = seatQuantitiesByTier(view.state)
   const releases = outstandingReleasesByTier(view.ledger)
+  const ending = endingLicensesByTier(view.ledger)
   const inUse = new Map<string, number>()
   for (const server of view.servers) {
     if (server.assignedTierId) {
@@ -157,12 +180,18 @@ export function summarizeTiers(view: BillingOrgView): TierSummary[] {
   const out: TierSummary[] = []
   for (const seat of view.state.seats) {
     if (out.some((entry) => entry.tierId === seat.tierId)) continue
+    const purchased = seats.get(seat.tierId) ?? 0
+    const used = inUse.get(seat.tierId) ?? 0
+    const endingHere = ending.get(seat.tierId)
     out.push({
       tierId: seat.tierId,
       label: seat.tier.label,
       rank: seat.tier.rank,
-      purchased: seats.get(seat.tierId) ?? 0,
-      inUse: inUse.get(seat.tierId) ?? 0,
+      purchased,
+      inUse: used,
+      ending: endingHere?.count ?? 0,
+      endsAt: endingHere?.endsAt ?? null,
+      available: Math.max(0, purchased - (endingHere?.count ?? 0) - used),
       releasing: releases.get(seat.tierId) ?? 0,
       priceCents: seat.tier.priceCents,
       currency: seat.tier.currency,
@@ -183,8 +212,14 @@ export type LicenseSummary = Readonly<{
   granted: number
   /** Of `purchased`, how many leave at the period boundary. */
   releasing: number
+  /** Of `purchased`, the licenses that end at the boundary and can be restored (no downgrades). */
+  ending: number
+  /** The earliest date any of them ends (ISO), or `null`. */
+  endsAt: string | null
   /** Active licenses held, bound or waiting to connect. */
   held: number
+  /** The same number as `held`, under the name the console shows ("in use"). */
+  inUse: number
   bound: number
   /** `purchased − releasing − held`, floored at zero: how many more servers can be added. */
   available: number
@@ -203,11 +238,20 @@ export function summarizeLicenses(view: BillingOrgView): LicenseSummary {
     releasing += count
   }
   const held = view.licenses.active
+  let ending = 0
+  let endsAt: string | null = null
+  for (const entry of endingLicensesByTier(view.ledger).values()) {
+    ending += entry.count
+    if (entry.endsAt && (endsAt === null || entry.endsAt < endsAt)) endsAt = entry.endsAt
+  }
   return {
     purchased,
     granted,
     releasing,
+    ending,
+    endsAt,
     held,
+    inUse: held,
     bound: view.licenses.bound,
     available: Math.max(0, purchased - releasing - held),
   }
@@ -216,6 +260,65 @@ export function summarizeLicenses(view: BillingOrgView): LicenseSummary {
 /** The mint gate: one more license fits under what is purchased and not already leaving. */
 export function canMintLicense(view: BillingOrgView): boolean {
   return summarizeLicenses(view).available > 0
+}
+
+export type LicensesEndingRefusal = {
+  error: typeof LICENSES_ENDING_ERROR
+  tierId: string
+  ending: number
+  endsAt: string | null
+}
+
+/**
+ * Restore before buy, per tier: asking for more of `tierId` while licenses
+ * at that tier are ending is refused — the person restores those (free)
+ * first, so nobody pays for a new license with one sitting there. Only
+ * `release-seat` intents at that same tier count.
+ */
+export function licensesEndingRefusal(
+  ledger: PendingChangeLedger,
+  tierId: string
+): LicensesEndingRefusal | null {
+  const ending = endingLicensesByTier(ledger).get(tierId)
+  if (!ending || ending.count === 0) return null
+  return { error: LICENSES_ENDING_ERROR, tierId, ending: ending.count, endsAt: ending.endsAt }
+}
+
+/** `Oct 26` for an ISO instant, in UTC (the boundary Stripe bills on). */
+export function formatEndsOn(iso: string | null): string | null {
+  if (!iso) return null
+  const ms = Date.parse(iso)
+  if (!Number.isFinite(ms)) return null
+  return new Date(ms).toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    timeZone: 'UTC',
+  })
+}
+
+/**
+ * The sentence Add Server shows when no license is free. It never calls an
+ * ending license "in use": ending licenses are named with their date and the
+ * way out (restore); a license only moving tier at the boundary (a pending
+ * downgrade, which the mint gate also holds back) is named as such;
+ * otherwise the way out is buying one.
+ */
+export function licenseExhaustionMessage(
+  summary: Pick<LicenseSummary, 'purchased' | 'releasing' | 'held' | 'ending' | 'endsAt'>
+): string {
+  const { purchased, releasing, held, ending } = summary
+  if (ending > 0) {
+    const endsOn = formatEndsOn(summary.endsAt)
+    const when = endsOn ? ` ${endsOn}` : ' at the end of the billing period'
+    return `${held} in use, ${ending} ${ending === 1 ? 'ends' : 'end'}${when} — restore one to add this server.`
+  }
+  if (purchased === 0) return 'No licenses yet — buy one to add this server.'
+  const moving = Math.min(Math.max(0, releasing - ending), Math.max(0, purchased - held))
+  if (moving > 0) {
+    return `${held} in use, ${moving} changing tier at the end of the billing period — buy another to add this server now.`
+  }
+  const all = purchased === 1 ? 'Your only license is' : `All ${purchased} licenses are`
+  return `${all} in use — buy another to add this server.`
 }
 
 export function hasLiveSubscription(view: BillingOrgView): boolean {

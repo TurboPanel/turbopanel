@@ -136,9 +136,10 @@ changes.
   keys** page lists unbound keys (OpenAPI `name`). Self-hosted operators set the
   cap. When billing is configured, `POST /licenses` takes no `tierId` — the
   tier is derived from the server once it enrols — and answers **409**
-  `no_license_available` (with the held/purchased counts, so the console can
-  say "buy one more") when every purchased license is bound, waiting to
-  connect, or already leaving (net of outstanding seat releases); `DELETE /licenses/:id` runs the
+  `no_license_available` (a truthful `message`, org and per-tier counts with
+  `ending` / `endsAt`, so the console can say "restore one" or "buy one") when
+  every purchased license is bound, waiting to connect, or ending at the
+  boundary (net of outstanding seat releases); `DELETE /licenses/:id` runs the
   detach-first refusal, then the billing gate (`authn/license-lifecycle.ts`),
   which records a deferred `release-seat` intent under the org's quantity lease
   so the seat drops at the period boundary (**409**
@@ -150,7 +151,9 @@ changes.
   (first purchase → hosted Checkout URL, **409** `subscription_exists` after),
   `POST /billing/portal` (invoices + payment methods), `POST /billing/preview`
   (proration quote with a pinned `prorationDate`), `POST /billing/seats`
-  (increase → immediate invoice; decrease → deferred), `POST /billing/upgrade`
+  (increase → immediate invoice, refused `licenses_ending` while that tier
+  has licenses ending; decrease → deferred), `POST /billing/restore` (take
+  back ending licenses at a tier, free), `POST /billing/upgrade`
   and `POST /billing/downgrade` (one license, one tier move). Owner-only; every
   route is **503** `billing_not_configured` when customer billing is not
   operational (both Stripe secrets — `isCustomerBillingOperational`), so
