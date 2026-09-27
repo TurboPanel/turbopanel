@@ -196,7 +196,12 @@ grouped `count(*)`, not a materialised server or step list.
   because it opens the one instance-wide run.
 - Admin API (`../../admin/instance-updates-routes.ts` + `openapi/`): status,
   preflight (with the recovery command), runs, check, history, servers list,
-  step-retry, run-cancel, settings. The old `POST /instance/updates/instance`
+  step-retry, run-cancel, settings. `GET /instance/updates/run` answers
+  `{ run, lastRun }`: when nothing is active, `lastRun` is the most recent
+  finished run (steps, `error`, each step's `errorCode` / `errorMessage`) if it
+  ended within `UPGRADE_LAST_RUN_VISIBLE_MS` (24 h). A run leaves `activeRun`
+  the moment it fails, so without it the console dropped the failure and its
+  reason and went back to "update available". The old `POST /instance/updates/instance`
   and `/daemon` endpoints stay as aliases that start a platform run.
   `GET /instance/updates` gives each unit `updateAvailable` from
   `updateAvailableFor` (`target.ts`): the target names a commit the host is
