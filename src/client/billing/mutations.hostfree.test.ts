@@ -20,13 +20,21 @@
  * failure on either rolls the fresh intents back; and the coverage gate
  * refuses a reduction that would strand a licensed server or leave more
  * licenses held than purchased.
+ *
+ * Part three (T4): an increase at a tier with seats still leaving at the
+ * boundary takes those back first — withdrawing their `release-seat`
+ * intents and rebuilding the schedule, no charge — and buys only the rest.
  */
 
 import { assertEquals, assertRejects } from '@std/assert'
 import type { StripeClient } from '../../features/billing/client.ts'
 import { STRIPE_CUSTOMER_ORGANIZATION_METADATA_KEY } from '../../features/billing/customer-subject.ts'
 import { StripeApiError } from '../../features/billing/errors.ts'
-import { type BillingGateway, NO_TAX_DEFAULTS, type ProviderProduct } from '../../features/billing/gateway.ts'
+import {
+  type BillingGateway,
+  NO_TAX_DEFAULTS,
+  type ProviderProduct,
+} from '../../features/billing/gateway.ts'
 import {
   emptyLedger,
   newDeferredIntent,
@@ -34,13 +42,36 @@ import {
   withIntent,
   writePendingChanges,
 } from '../../features/billing/pending-changes.ts'
-import { billingSeatIncreaseKey, parseSeatIncreaseRecord } from '../../features/billing/seat-increase.ts'
+import {
+  billingSeatIncreaseKey,
+  parseSeatIncreaseRecord,
+} from '../../features/billing/seat-increase.ts'
 import { verifyStripeProduct } from '../../features/billing/stripe-products.ts'
-import { allowance, key, license, organization, payer, server, setting, subscription, subscriptionItem, tier } from '../../db/schema.ts'
+import {
+  allowance,
+  key,
+  license,
+  organization,
+  payer,
+  server,
+  setting,
+  subscription,
+  subscriptionItem,
+  tier,
+} from '../../db/schema.ts'
 import type { TierRow } from '../../features/tiers/tier-records.ts'
 import { createMemoryDb, type MemoryDb } from '../../test-fixtures/memory-db.ts'
-import { createStripeClientDouble, formOf, type StripeCall } from '../../test-fixtures/stripe-client.ts'
-import { type BillingMutationOutcome, changeSeats, downgradeTier, upgradeTier } from './mutations.ts'
+import {
+  createStripeClientDouble,
+  formOf,
+  type StripeCall,
+} from '../../test-fixtures/stripe-client.ts'
+import {
+  type BillingMutationOutcome,
+  changeSeats,
+  downgradeTier,
+  upgradeTier,
+} from './mutations.ts'
 import {
   LICENSES_IN_USE_ERROR,
   loadBillingOrgView,
@@ -96,8 +127,16 @@ const TIER_S3 = tierRow(S3, 'S3', 3, 1000)
 const TIER_S5 = tierRow(S5, 'S5', 5, 2000)
 
 /** The price each tier's product sells at — known only from the gateway, never stored on the row. */
-const PRICE_BY_TIER: Record<string, string> = { [S1]: 'price_s1', [S3]: 'price_s3', [S5]: 'price_s5' }
-const PRODUCT_BY_TIER: Record<string, string> = { [S1]: 'prod_s1', [S3]: 'prod_s3', [S5]: 'prod_s5' }
+const PRICE_BY_TIER: Record<string, string> = {
+  [S1]: 'price_s1',
+  [S3]: 'price_s3',
+  [S5]: 'price_s5',
+}
+const PRODUCT_BY_TIER: Record<string, string> = {
+  [S1]: 'prod_s1',
+  [S3]: 'prod_s3',
+  [S5]: 'prod_s5',
+}
 
 /** A Stripe Product with its default price expanded, satisfying every verification check. */
 function stripeProduct(label: string, unitAmount: number) {
@@ -131,7 +170,9 @@ const PRODUCTS: Record<string, unknown> = {
 
 /** Reported hardware, in the shape `touchServerMetadata` stores it. */
 function hardware(cores: number, memoryGib: number) {
-  return { resources: { cpus: [{ cores: { total: cores } }], memory: { totalBytes: memoryGib * GIB } } }
+  return {
+    resources: { cpus: [{ cores: { total: cores } }], memory: { totalBytes: memoryGib * GIB } },
+  }
 }
 
 type SeatSeed = { tierId: string; providerItemId: string; quantity: number }
@@ -147,37 +188,113 @@ type OrgSeed = {
   status?: string
   /** `false`: a payer with no subscription row. */
   subscription?: boolean
+  /** The projected attached schedule, when one is. */
+  scheduleId?: string | null
 }
 
 /** One projected organization with the given seats, licenses and servers; S1, S3 and S5 in the catalogue. */
 function orgDb(seed: OrgSeed = {}): MemoryDb {
   const servers = seed.servers ?? []
   const unbound = Array.from({ length: seed.unboundLicenses ?? 0 }, (_, i) => ({
-    id: `lic-free-${i}`, organizationId: ORG, serverId: null, name: null, token: `tok-free-${i}`, revokedAt: null, createdAt: NOW, updatedAt: NOW,
+    id: `lic-free-${i}`,
+    organizationId: ORG,
+    serverId: null,
+    name: null,
+    token: `tok-free-${i}`,
+    revokedAt: null,
+    createdAt: NOW,
+    updatedAt: NOW,
   }))
   const bound = servers.map((row) => ({
-    id: `lic-${row.id}`, organizationId: ORG, serverId: row.id, name: null, token: `tok-${row.id}`, revokedAt: null, createdAt: NOW, updatedAt: NOW,
+    id: `lic-${row.id}`,
+    organizationId: ORG,
+    serverId: row.id,
+    name: null,
+    token: `tok-${row.id}`,
+    revokedAt: null,
+    createdAt: NOW,
+    updatedAt: NOW,
   }))
   return createMemoryDb([
     [setting, []],
     [allowance, []],
     [key, []],
-    [organization, [{ id: ORG, name: 'Billing Org', slug: null, metadata: null, options: null, createdAt: NOW, updatedAt: NOW }]],
-    [payer, [{ id: 'payer-1', provider: 'stripe', providerCustomerId: 'cus_1', organizationId: ORG, userId: null, taxId: null, createdAt: NOW, updatedAt: NOW }]],
-    [subscription, seed.subscription === false ? [] : [{
-      id: 'sub-row', payerId: 'payer-1', providerSubscriptionId: 'sub_1', status: seed.status ?? 'active',
-      currentPeriodEnd: PERIOD_END_ISO, scheduleId: null, pastDueSince: null, graceExpiresAt: null, createdAt: NOW, updatedAt: NOW,
-    }]],
-    [subscriptionItem, (seed.seats ?? []).map((seat, i) => ({
-      id: `seat-${i}`, subscriptionId: 'sub-row', tierId: seat.tierId, providerItemId: seat.providerItemId,
-      providerPriceId: PRICE_BY_TIER[seat.tierId]!, quantity: seat.quantity, createdAt: NOW, updatedAt: NOW,
-    }))],
+    [
+      organization,
+      [
+        {
+          id: ORG,
+          name: 'Billing Org',
+          slug: null,
+          metadata: null,
+          options: null,
+          createdAt: NOW,
+          updatedAt: NOW,
+        },
+      ],
+    ],
+    [
+      payer,
+      [
+        {
+          id: 'payer-1',
+          provider: 'stripe',
+          providerCustomerId: 'cus_1',
+          organizationId: ORG,
+          userId: null,
+          taxId: null,
+          createdAt: NOW,
+          updatedAt: NOW,
+        },
+      ],
+    ],
+    [
+      subscription,
+      seed.subscription === false
+        ? []
+        : [
+            {
+              id: 'sub-row',
+              payerId: 'payer-1',
+              providerSubscriptionId: 'sub_1',
+              status: seed.status ?? 'active',
+              currentPeriodEnd: PERIOD_END_ISO,
+              scheduleId: seed.scheduleId ?? null,
+              pastDueSince: null,
+              graceExpiresAt: null,
+              createdAt: NOW,
+              updatedAt: NOW,
+            },
+          ],
+    ],
+    [
+      subscriptionItem,
+      (seed.seats ?? []).map((seat, i) => ({
+        id: `seat-${i}`,
+        subscriptionId: 'sub-row',
+        tierId: seat.tierId,
+        providerItemId: seat.providerItemId,
+        providerPriceId: PRICE_BY_TIER[seat.tierId]!,
+        quantity: seat.quantity,
+        createdAt: NOW,
+        updatedAt: NOW,
+      })),
+    ],
     [tier, [TIER_S1, TIER_S3, TIER_S5]],
     [license, [...unbound, ...bound]],
-    [server, servers.map((row) => ({
-      id: row.id, organizationId: ORG, name: row.id, createdAt: row.createdAt ?? NOW, updatedAt: NOW,
-      metadata: hardware(row.cores, row.memoryGib), assignedTierId: null, isConnected: false,
-    }))],
+    [
+      server,
+      servers.map((row) => ({
+        id: row.id,
+        organizationId: ORG,
+        name: row.id,
+        createdAt: row.createdAt ?? NOW,
+        updatedAt: NOW,
+        metadata: hardware(row.cores, row.memoryGib),
+        assignedTierId: null,
+        isConnected: false,
+      })),
+    ],
   ])
 }
 
@@ -251,7 +368,10 @@ function seatQuantities(db: MemoryDb): Record<string, number> {
 }
 
 function assignedTier(db: MemoryDb, serverId: string): string | null {
-  return (db.rows(server).find((row) => row.id === serverId)?.assignedTierId as string | null | undefined) ?? null
+  return (
+    (db.rows(server).find((row) => row.id === serverId)?.assignedTierId as
+      string | null | undefined) ?? null
+  )
 }
 
 /** Narrow a mutation outcome to its refusal body, failing loudly on a success. */
@@ -264,7 +384,11 @@ function refusalOf<T extends Record<string, unknown>>(outcome: BillingMutationOu
 // Part one: the immediate seat increase and its retry record.
 // ---------------------------------------------------------------------------
 
-type Post = { path: string; idempotencyKey: string | undefined; body: Record<string, unknown> | undefined }
+type Post = {
+  path: string
+  idempotencyKey: string | undefined
+  body: Record<string, unknown> | undefined
+}
 
 /**
  * A Stripe double whose `post` records every idempotency key and whose
@@ -273,7 +397,9 @@ type Post = { path: string; idempotencyKey: string | undefined; body: Record<str
  * completing. Products are answered from the catalogue above, so the real
  * gateway runs over it. `trace` is every call in order.
  */
-function stripeDouble(opts: { failRefetches?: number; postError?: () => Error; onPost?: () => void } = {}) {
+function stripeDouble(
+  opts: { failRefetches?: number; postError?: () => Error; onPost?: () => void } = {}
+) {
   const posts: Post[] = []
   const trace: string[] = []
   let refetches = 0
@@ -283,12 +409,18 @@ function stripeDouble(opts: { failRefetches?: number; postError?: () => Error; o
       trace.push(`GET ${path}`)
       if (path.startsWith('/v1/products/')) {
         const product = PRODUCTS[path.slice('/v1/products/'.length)]
-        return product ? Promise.resolve(product as never) : Promise.reject(new Error(`unexpected product ${path}`))
+        return product
+          ? Promise.resolve(product as never)
+          : Promise.reject(new Error(`unexpected product ${path}`))
       }
-      if (!path.startsWith('/v1/subscriptions/sub_1')) return Promise.reject(new Error(`unexpected get ${path}`))
+      if (!path.startsWith('/v1/subscriptions/sub_1'))
+        return Promise.reject(new Error(`unexpected get ${path}`))
       refetches += 1
-      if (refetches <= (opts.failRefetches ?? 0)) return Promise.reject(new Error('injected: refetch failed'))
-      return Promise.resolve(stripeSubscription([{ id: 'si_1', tierId: S3, quantity: committedQuantity }]) as never)
+      if (refetches <= (opts.failRefetches ?? 0))
+        return Promise.reject(new Error('injected: refetch failed'))
+      return Promise.resolve(
+        stripeSubscription([{ id: 'si_1', tierId: S3, quantity: committedQuantity }]) as never
+      )
     },
     post: (path, body, mutation) => {
       trace.push(`POST ${path}`)
@@ -312,7 +444,10 @@ const twoSeats = (): OrgSeed => ({ seats: [{ tierId: S3, providerItemId: 'si_1',
 test('a seat increase whose reprojection fails after Stripe accepted it is retried under the SAME idempotency key, then the record is cleared', async () => {
   const db = orgDb(twoSeats())
   const atPost: { record: ReturnType<typeof storedRecord> } = { record: null }
-  const { client, posts, trace } = stripeDouble({ failRefetches: 1, onPost: () => (atPost.record = storedRecord(db)) })
+  const { client, posts, trace } = stripeDouble({
+    failRefetches: 1,
+    onPost: () => (atPost.record = storedRecord(db)),
+  })
   const { deps, leases } = depsFor(db, client)
   const input = { organizationId: ORG, tierId: S3, delta: 1, prorationDate: 1_800_000_000 }
 
@@ -321,7 +456,11 @@ test('a seat increase whose reprojection fails after Stripe accepted it is retri
   assertEquals(posts.length, 1)
   assertEquals(posts[0]?.path, '/v1/subscriptions/sub_1')
   // The product's default price is resolved through the gateway before the write.
-  assertEquals(trace, ['GET /v1/products/prod_s3', 'POST /v1/subscriptions/sub_1', 'GET /v1/subscriptions/sub_1'])
+  assertEquals(trace, [
+    'GET /v1/products/prod_s3',
+    'POST /v1/subscriptions/sub_1',
+    'GET /v1/subscriptions/sub_1',
+  ])
   const firstKey = posts[0]?.idempotencyKey
   assertEquals(typeof firstKey, 'string')
   // The record was on disk when Stripe was called, carrying that very key…
@@ -354,7 +493,8 @@ test('a seat increase whose reprojection fails after Stripe accepted it is retri
 test('a permanent Stripe refusal clears the record, so the next attempt is a fresh request with a new key', async () => {
   const db = orgDb(twoSeats())
   const { client, posts } = stripeDouble({
-    postError: () => new StripeApiError({ status: 400, type: 'invalid_request_error', message: 'no such price' }),
+    postError: () =>
+      new StripeApiError({ status: 400, type: 'invalid_request_error', message: 'no such price' }),
   })
   const { deps } = depsFor(db, client)
   const input = { organizationId: ORG, tierId: S3, delta: 1 }
@@ -391,7 +531,11 @@ test('a different request after a transient failure is not a retry: it gets its 
   const db = orgDb(twoSeats())
   const { client, posts } = stripeDouble({ failRefetches: 1 })
   const { deps } = depsFor(db, client)
-  await assertRejects(() => changeSeats(deps, { organizationId: ORG, tierId: S3, delta: 1 }), Error, 'injected: refetch failed')
+  await assertRejects(
+    () => changeSeats(deps, { organizationId: ORG, tierId: S3, delta: 1 }),
+    Error,
+    'injected: refetch failed'
+  )
   const first = storedRecord(db)
   const outcome = await changeSeats(deps, { organizationId: ORG, tierId: S3, delta: 2 })
   assertEquals(outcome.ok, true)
@@ -442,24 +586,32 @@ test('a retry replays the stored items even after a webhook moved the seat rows 
 test('a seat increase is refused before any Stripe call or record: 409 subscription_past_due while delinquent (C8), 409 no_subscription without one', async () => {
   const pastDue = orgDb({ ...twoSeats(), status: 'past_due' })
   const { client, trace } = stripeDouble()
-  const denied = refusalOf(await changeSeats(depsFor(pastDue, client).deps, { organizationId: ORG, tierId: S3, delta: 1 }))
+  const denied = refusalOf(
+    await changeSeats(depsFor(pastDue, client).deps, { organizationId: ORG, tierId: S3, delta: 1 })
+  )
   assertEquals(denied.status, 409)
   assertEquals(denied.body.error, SUBSCRIPTION_PAST_DUE_ERROR)
   assertEquals(storedRecord(pastDue), null)
 
   const none = orgDb({ subscription: false })
-  const missing = refusalOf(await changeSeats(depsFor(none, client).deps, { organizationId: ORG, tierId: S3, delta: 1 }))
+  const missing = refusalOf(
+    await changeSeats(depsFor(none, client).deps, { organizationId: ORG, tierId: S3, delta: 1 })
+  )
   assertEquals(missing.status, 409)
   assertEquals(missing.body, { error: NO_SUBSCRIPTION_ERROR })
 
   // A decrease with nothing to decrease answers the same way.
-  const release = refusalOf(await changeSeats(depsFor(none, client).deps, { organizationId: ORG, tierId: S3, delta: -1 }))
+  const release = refusalOf(
+    await changeSeats(depsFor(none, client).deps, { organizationId: ORG, tierId: S3, delta: -1 })
+  )
   assertEquals(release.status, 409)
   assertEquals(release.body, { error: NO_SUBSCRIPTION_ERROR })
 
   // An ended subscription reads as none.
   const ended = orgDb({ ...twoSeats(), status: 'canceled' })
-  const gone = refusalOf(await changeSeats(depsFor(ended, client).deps, { organizationId: ORG, tierId: S3, delta: 1 }))
+  const gone = refusalOf(
+    await changeSeats(depsFor(ended, client).deps, { organizationId: ORG, tierId: S3, delta: 1 })
+  )
   assertEquals(gone.body, { error: NO_SUBSCRIPTION_ERROR })
 
   assertEquals(trace, [])
@@ -469,7 +621,13 @@ test('a tier whose product no longer sells is refused 400 tier_not_purchasable t
   const db = orgDb(twoSeats())
   const asked: string[] = []
   const unsellable: ProviderProduct = {
-    id: 'prod_s3', name: 'S3', active: true, livemode: false, metadata: {}, suggestedLabel: 'S3', defaultPrice: null,
+    id: 'prod_s3',
+    name: 'S3',
+    active: true,
+    livemode: false,
+    metadata: {},
+    suggestedLabel: 'S3',
+    defaultPrice: null,
   }
   const gateway: BillingGateway = {
     id: 'stripe',
@@ -538,21 +696,30 @@ function phaseItemFields(call: StripeCall): string[] {
     .filter((field): field is string => field !== undefined)
 }
 
-test('a seat increase on a tier with no item yet mints the item at the product\'s default price from the gateway and refreshes the cached display price', async () => {
+test("a seat increase on a tier with no item yet mints the item at the product's default price from the gateway and refreshes the cached display price", async () => {
   const db = orgDb({ ...twoSeats(), servers: [{ id: SRV_A, cores: 40, memoryGib: 64 }] })
   // The row's cache is stale: what Stripe is sent must come from the product, not from here.
   db.rows(tier).find((row) => row.id === S5)!.priceCents = 1
   const client = routedClient({
-    'POST /v1/subscriptions/sub_1': () => ({ id: 'sub_1', object: 'subscription', status: 'active' }),
-    'GET /v1/subscriptions/sub_1': () => stripeSubscription([
-      { id: 'si_1', tierId: S3, quantity: 2 },
-      { id: 'si_2', tierId: S5, quantity: 1 },
-    ]),
+    'POST /v1/subscriptions/sub_1': () => ({
+      id: 'sub_1',
+      object: 'subscription',
+      status: 'active',
+    }),
+    'GET /v1/subscriptions/sub_1': () =>
+      stripeSubscription([
+        { id: 'si_1', tierId: S3, quantity: 2 },
+        { id: 'si_2', tierId: S5, quantity: 1 },
+      ]),
   })
   const { deps } = depsFor(db, client)
   const outcome = await changeSeats(deps, { organizationId: ORG, tierId: S5, delta: 1 })
   assertEquals(outcome.ok, true)
-  assertEquals(callsOf(client), ['GET /v1/products/prod_s5', 'POST /v1/subscriptions/sub_1', 'GET /v1/subscriptions/sub_1'])
+  assertEquals(callsOf(client), [
+    'GET /v1/products/prod_s5',
+    'POST /v1/subscriptions/sub_1',
+    'GET /v1/subscriptions/sub_1',
+  ])
   const [product, post] = client.calls as [StripeCall, StripeCall]
   assertEquals(formOf(product, 'expand[0]'), 'default_price')
   assertEquals(formOf(post, 'items[0][id]'), 'si_1')
@@ -562,7 +729,10 @@ test('a seat increase on a tier with no item yet mints the item at the product\'
   assertEquals(db.rows(tier).find((row) => row.id === S5)?.priceCents, 2000)
   // The reprojection wrote the new seat and the assignment followed: the S5 server is covered now.
   assertEquals(seatQuantities(db), { [S3]: 2, [S5]: 1 })
-  assertEquals(db.rows(subscriptionItem).find((row) => row.tierId === S5)?.providerPriceId, 'price_s5')
+  assertEquals(
+    db.rows(subscriptionItem).find((row) => row.tierId === S5)?.providerPriceId,
+    'price_s5'
+  )
   assertEquals(assignedTier(db, SRV_A), S5)
   assertEquals(storedRecord(db), null)
 })
@@ -578,23 +748,36 @@ test('T1 · an upgrade is an immediate −1/+1 item swap under the seat-increase
       atPost.record = storedRecord(db)
       return { id: 'sub_1', object: 'subscription', status: 'active' }
     },
-    'GET /v1/subscriptions/sub_1': () => stripeSubscription([
-      { id: 'si_1', tierId: S3, quantity: 1 },
-      { id: 'si_2', tierId: S5, quantity: 1 },
-    ]),
+    'GET /v1/subscriptions/sub_1': () =>
+      stripeSubscription([
+        { id: 'si_1', tierId: S3, quantity: 1 },
+        { id: 'si_2', tierId: S5, quantity: 1 },
+      ]),
   })
   const { deps, leases } = depsFor(db, client)
   assertEquals(assignedTier(db, SRV_A), null)
 
-  const outcome = await upgradeTier(deps, { organizationId: ORG, fromTierId: S3, toTierId: S5, prorationDate: 1_800_000_000 })
+  const outcome = await upgradeTier(deps, {
+    organizationId: ORG,
+    fromTierId: S3,
+    toTierId: S5,
+    prorationDate: 1_800_000_000,
+  })
   assertEquals(outcome.ok, true)
   assertEquals(outcome.ok && outcome.body, { ok: true, pending: false })
 
   // The target's price came from the gateway; exactly one write; then the reprojection's refetch.
-  assertEquals(callsOf(client), ['GET /v1/products/prod_s5', 'POST /v1/subscriptions/sub_1', 'GET /v1/subscriptions/sub_1'])
+  assertEquals(callsOf(client), [
+    'GET /v1/products/prod_s5',
+    'POST /v1/subscriptions/sub_1',
+    'GET /v1/subscriptions/sub_1',
+  ])
   const post = client.calls[1]!
   // The record carried the swap and its key when Stripe was called.
-  assertEquals(atPost.record?.deltas, [{ tierId: S3, delta: -1 }, { tierId: S5, delta: 1 }])
+  assertEquals(atPost.record?.deltas, [
+    { tierId: S3, delta: -1 },
+    { tierId: S5, delta: 1 },
+  ])
   assertEquals(post.idempotencyKey, atPost.record?.idempotencyKey)
   assertEquals(formOf(post, 'payment_behavior'), 'pending_if_incomplete')
   assertEquals(formOf(post, 'proration_behavior'), 'always_invoice')
@@ -619,8 +802,14 @@ test('T1 · an upgrade is an immediate −1/+1 item swap under the seat-increase
 test('T1 · an upgrade Stripe parks under pending_update answers pending and leaves seats and the assignment where they were', async () => {
   const db = orgDb({ ...twoSeats(), servers: [{ id: SRV_A, cores: 40, memoryGib: 64 }] })
   const client = routedClient({
-    'POST /v1/subscriptions/sub_1': () => ({ id: 'sub_1', object: 'subscription', status: 'active', pending_update: { expires_at: 1 } }),
-    'GET /v1/subscriptions/sub_1': () => stripeSubscription([{ id: 'si_1', tierId: S3, quantity: 2 }], { pendingUpdate: true }),
+    'POST /v1/subscriptions/sub_1': () => ({
+      id: 'sub_1',
+      object: 'subscription',
+      status: 'active',
+      pending_update: { expires_at: 1 },
+    }),
+    'GET /v1/subscriptions/sub_1': () =>
+      stripeSubscription([{ id: 'si_1', tierId: S3, quantity: 2 }], { pendingUpdate: true }),
   })
   const { deps } = depsFor(db, client)
   const outcome = await upgradeTier(deps, { organizationId: ORG, fromTierId: S3, toTierId: S5 })
@@ -637,7 +826,13 @@ test('T1 · refusals: past due (C8), not an upgrade, the same tier, and a source
   // Past due: the C8 gate, with the grace deadline in the body, before any Stripe call.
   const pastDue = orgDb({ ...twoSeats(), status: 'past_due' })
   const client = routedClient({})
-  const denied = refusalOf(await upgradeTier(depsFor(pastDue, client).deps, { organizationId: ORG, fromTierId: S3, toTierId: S5 }))
+  const denied = refusalOf(
+    await upgradeTier(depsFor(pastDue, client).deps, {
+      organizationId: ORG,
+      fromTierId: S3,
+      toTierId: S5,
+    })
+  )
   assertEquals(denied.status, 409)
   assertEquals(denied.body.error, SUBSCRIPTION_PAST_DUE_ERROR)
   assertEquals(storedRecord(pastDue), null)
@@ -646,20 +841,29 @@ test('T1 · refusals: past due (C8), not an upgrade, the same tier, and a source
   // Not an upgrade: S5 → S3 through the upgrade path, refused before the lease.
   const db = orgDb(twoSeats())
   const { deps, leases } = depsFor(db, client)
-  const wrongWay = refusalOf(await upgradeTier(deps, { organizationId: ORG, fromTierId: S5, toTierId: S3 }))
+  const wrongWay = refusalOf(
+    await upgradeTier(deps, { organizationId: ORG, fromTierId: S5, toTierId: S3 })
+  )
   assertEquals(wrongWay.status, 400)
   assertEquals(wrongWay.body, { error: NOT_AN_UPGRADE_ERROR })
-  const same = refusalOf(await upgradeTier(deps, { organizationId: ORG, fromTierId: S3, toTierId: S3 }))
+  const same = refusalOf(
+    await upgradeTier(deps, { organizationId: ORG, fromTierId: S3, toTierId: S3 })
+  )
   assertEquals(same.status, 400)
   assertEquals(same.body, { error: 'Invalid request' })
   assertEquals(leases, [])
   assertEquals(client.calls, [])
 
   // S1 → S5 when nothing is held at S1: the item arithmetic refuses it.
-  const empty = refusalOf(await upgradeTier(deps, { organizationId: ORG, fromTierId: S1, toTierId: S5 }))
+  const empty = refusalOf(
+    await upgradeTier(deps, { organizationId: ORG, fromTierId: S1, toTierId: S5 })
+  )
   assertEquals(empty.status, 400)
   assertEquals(empty.body, { error: 'Invalid request' })
-  assertEquals(callsOf(client).filter((c) => c.startsWith('POST')), [])
+  assertEquals(
+    callsOf(client).filter((c) => c.startsWith('POST')),
+    []
+  )
   assertEquals(storedRecord(db), null)
 })
 
@@ -667,11 +871,15 @@ test('T1 · refusals: past due (C8), not an upgrade, the same tier, and a source
 
 test('T2 · a downgrade writes one downgrade intent and a schedule phase for the boundary; seats and the assignment stay put', async () => {
   // The target tier has no seat line yet, so the future phase must mint a new item by price.
-  const db = orgDb({ seats: [{ tierId: S5, providerItemId: 'si_5', quantity: 1 }], servers: [{ id: SRV_A, cores: 12, memoryGib: 32 }] })
+  const db = orgDb({
+    seats: [{ tierId: S5, providerItemId: 'si_5', quantity: 1 }],
+    servers: [{ id: SRV_A, cores: 12, memoryGib: 32 }],
+  })
   db.rows(server)[0]!.assignedTierId = S5
   const client = routedClient({
     'POST /v1/subscription_schedules': () => stripeSchedule([{ price: 'price_s5', quantity: 1 }]),
-    'POST /v1/subscription_schedules/sub_sched_1': () => stripeSchedule([{ price: 'price_s5', quantity: 1 }]),
+    'POST /v1/subscription_schedules/sub_sched_1': () =>
+      stripeSchedule([{ price: 'price_s5', quantity: 1 }]),
   })
   const { deps, leases } = depsFor(db, client)
 
@@ -698,7 +906,11 @@ test('T2 · a downgrade writes one downgrade intent and a schedule phase for the
   assertEquals(storedRecord(db), null)
 
   // The target's price from the gateway, a schedule from the subscription, then every phase rewritten.
-  assertEquals(callsOf(client), ['GET /v1/products/prod_s3', 'POST /v1/subscription_schedules', 'POST /v1/subscription_schedules/sub_sched_1'])
+  assertEquals(callsOf(client), [
+    'GET /v1/products/prod_s3',
+    'POST /v1/subscription_schedules',
+    'POST /v1/subscription_schedules/sub_sched_1',
+  ])
   const [, create, phases] = client.calls as [StripeCall, StripeCall, StripeCall]
   assertEquals(formOf(create, 'from_subscription'), 'sub_1')
   assertEquals(create.idempotencyKey, `${intent.idempotencyKey}:schedule`)
@@ -729,7 +941,8 @@ test('T2 · a Stripe failure rolls a fresh downgrade intent back; a later attemp
       if (fail) throw new StripeApiError({ status: 503, type: 'api_error', message: 'try again' })
       return stripeSchedule([{ price: 'price_s5', quantity: 1 }])
     },
-    'POST /v1/subscription_schedules/sub_sched_1': () => stripeSchedule([{ price: 'price_s5', quantity: 1 }]),
+    'POST /v1/subscription_schedules/sub_sched_1': () =>
+      stripeSchedule([{ price: 'price_s5', quantity: 1 }]),
   })
   const { deps, leases } = depsFor(db, client)
   const input = { organizationId: ORG, fromTierId: S5, toTierId: S3 }
@@ -752,19 +965,33 @@ test('T2 · a Stripe failure rolls a fresh downgrade intent back; a later attemp
 test('T2 · refusals: not a downgrade, and 409 servers_uncovered when a licensed server needs the higher tier', async () => {
   const client = routedClient({})
   const up = orgDb({ seats: [{ tierId: S3, providerItemId: 'si_1', quantity: 1 }] })
-  const wrongWay = refusalOf(await downgradeTier(depsFor(up, client).deps, { organizationId: ORG, fromTierId: S3, toTierId: S5 }))
+  const wrongWay = refusalOf(
+    await downgradeTier(depsFor(up, client).deps, {
+      organizationId: ORG,
+      fromTierId: S3,
+      toTierId: S5,
+    })
+  )
   assertEquals(wrongWay.status, 400)
   assertEquals(wrongWay.body, { error: NOT_A_DOWNGRADE_ERROR })
   assertEquals(client.calls, [])
 
   // One S5 seat covering one server that needs S5: S5 → S3 would strand it.
-  const db = orgDb({ seats: [{ tierId: S5, providerItemId: 'si_5', quantity: 1 }], servers: [{ id: SRV_A, cores: 40, memoryGib: 64 }] })
+  const db = orgDb({
+    seats: [{ tierId: S5, providerItemId: 'si_5', quantity: 1 }],
+    servers: [{ id: SRV_A, cores: 40, memoryGib: 64 }],
+  })
   const { deps, leases } = depsFor(db, client)
-  const denied = refusalOf(await downgradeTier(deps, { organizationId: ORG, fromTierId: S5, toTierId: S3 }))
+  const denied = refusalOf(
+    await downgradeTier(deps, { organizationId: ORG, fromTierId: S5, toTierId: S3 })
+  )
   assertEquals(denied.status, 409)
   assertEquals(denied.body, { error: SERVERS_UNCOVERED_ERROR, serverId: SRV_A, requiredTier: 'S5' })
   // The target's price was resolved (the gate runs after it); nothing was written to the provider.
-  assertEquals(callsOf(client).filter((c) => c.startsWith('POST')), [])
+  assertEquals(
+    callsOf(client).filter((c) => c.startsWith('POST')),
+    []
+  )
   assertEquals((await ledgerOf(db)).intents, [])
   assertEquals(leases, ['begin', 'end'])
 })
@@ -772,16 +999,25 @@ test('T2 · refusals: not a downgrade, and 409 servers_uncovered when a licensed
 // --- T3 -------------------------------------------------------------------
 
 test('T3 · a seat decrease is one release-seat intent per seat, parked behind the period end, plus a schedule phase at the reduced quantity; seats are untouched', async () => {
-  const db = orgDb({ seats: [{ tierId: S3, providerItemId: 'si_1', quantity: 3 }], unboundLicenses: 1 })
+  const db = orgDb({
+    seats: [{ tierId: S3, providerItemId: 'si_1', quantity: 3 }],
+    unboundLicenses: 1,
+  })
   const client = routedClient({
     'POST /v1/subscription_schedules': () => stripeSchedule([{ price: 'price_s3', quantity: 3 }]),
-    'POST /v1/subscription_schedules/sub_sched_1': () => stripeSchedule([{ price: 'price_s3', quantity: 3 }]),
+    'POST /v1/subscription_schedules/sub_sched_1': () =>
+      stripeSchedule([{ price: 'price_s3', quantity: 3 }]),
   })
   const { deps, leases } = depsFor(db, client)
 
   const outcome = await changeSeats(deps, { organizationId: ORG, tierId: S3, delta: -2 })
   assertEquals(outcome.ok, true)
-  assertEquals(outcome.ok && outcome.body, { ok: true, pending: false, deferred: true, scheduleId: 'sub_sched_1' })
+  assertEquals(outcome.ok && outcome.body, {
+    ok: true,
+    pending: false,
+    deferred: true,
+    scheduleId: 'sub_sched_1',
+  })
 
   const ledger = await ledgerOf(db)
   assertEquals(ledger.intents.length, 2)
@@ -796,7 +1032,10 @@ test('T3 · a seat decrease is one release-seat intent per seat, parked behind t
 
   assertEquals(seatQuantities(db), { [S3]: 3 })
   // No product lookup: every price the phase needs is on the seats already.
-  assertEquals(callsOf(client), ['POST /v1/subscription_schedules', 'POST /v1/subscription_schedules/sub_sched_1'])
+  assertEquals(callsOf(client), [
+    'POST /v1/subscription_schedules',
+    'POST /v1/subscription_schedules/sub_sched_1',
+  ])
   const [create, phases] = client.calls as [StripeCall, StripeCall]
   assertEquals(create.idempotencyKey, `${ledger.intents[0]!.idempotencyKey}:schedule`)
   assertEquals(formOf(phases, 'phases[1][items][0][price]'), 'price_s3')
@@ -807,11 +1046,18 @@ test('T3 · a seat decrease is one release-seat intent per seat, parked behind t
 
 test('T3 · a second release stacks on the parked one: the future phase is rebuilt from the whole ledger', async () => {
   const db = orgDb({ seats: [{ tierId: S3, providerItemId: 'si_1', quantity: 3 }] })
-  const parked = newDeferredIntent('release-seat', { fromTierId: S3, toTierId: null, landsAt: PERIOD_END_ISO, fromQuantity: 3, nowMs: NOW_MS })
+  const parked = newDeferredIntent('release-seat', {
+    fromTierId: S3,
+    toTierId: null,
+    landsAt: PERIOD_END_ISO,
+    fromQuantity: 3,
+    nowMs: NOW_MS,
+  })
   await writePendingChanges(db, ORG, withIntent(emptyLedger('sub_1'), parked), NOW_MS)
   const client = routedClient({
     'POST /v1/subscription_schedules': () => stripeSchedule([{ price: 'price_s3', quantity: 3 }]),
-    'POST /v1/subscription_schedules/sub_sched_1': () => stripeSchedule([{ price: 'price_s3', quantity: 3 }]),
+    'POST /v1/subscription_schedules/sub_sched_1': () =>
+      stripeSchedule([{ price: 'price_s3', quantity: 3 }]),
   })
   const { deps } = depsFor(db, client)
 
@@ -829,21 +1075,35 @@ test('T3 · a second release stacks on the parked one: the future phase is rebui
 test('T3 · a decrease that would strand a licensed server is refused 409 servers_uncovered naming the server and the tier it needs, before any Stripe call', async () => {
   // One S3 and one S1 seat; the only server needs S3. Releasing S3 leaves S1, which cannot hold it.
   const db = orgDb({
-    seats: [{ tierId: S1, providerItemId: 'si_a', quantity: 1 }, { tierId: S3, providerItemId: 'si_1', quantity: 1 }],
+    seats: [
+      { tierId: S1, providerItemId: 'si_a', quantity: 1 },
+      { tierId: S3, providerItemId: 'si_1', quantity: 1 },
+    ],
     servers: [{ id: SRV_A, cores: 12, memoryGib: 32 }],
   })
   const client = routedClient({})
-  const outcome = refusalOf(await changeSeats(depsFor(db, client).deps, { organizationId: ORG, tierId: S3, delta: -1 }))
+  const outcome = refusalOf(
+    await changeSeats(depsFor(db, client).deps, { organizationId: ORG, tierId: S3, delta: -1 })
+  )
   assertEquals(outcome.status, 409)
-  assertEquals(outcome.body, { error: SERVERS_UNCOVERED_ERROR, serverId: SRV_A, requiredTier: 'S3' })
+  assertEquals(outcome.body, {
+    error: SERVERS_UNCOVERED_ERROR,
+    serverId: SRV_A,
+    requiredTier: 'S3',
+  })
   assertEquals(client.calls, [])
   assertEquals((await ledgerOf(db)).intents, [])
 })
 
 test('T3 · a decrease below the licenses held is refused 409 licenses_in_use with the counts, before any Stripe call', async () => {
-  const db = orgDb({ seats: [{ tierId: S3, providerItemId: 'si_1', quantity: 3 }], unboundLicenses: 2 })
+  const db = orgDb({
+    seats: [{ tierId: S3, providerItemId: 'si_1', quantity: 3 }],
+    unboundLicenses: 2,
+  })
   const client = routedClient({})
-  const outcome = refusalOf(await changeSeats(depsFor(db, client).deps, { organizationId: ORG, tierId: S3, delta: -2 }))
+  const outcome = refusalOf(
+    await changeSeats(depsFor(db, client).deps, { organizationId: ORG, tierId: S3, delta: -2 })
+  )
   assertEquals(outcome.status, 409)
   assertEquals(outcome.body, { error: LICENSES_IN_USE_ERROR, purchasedAfter: 1, licensesHeld: 2 })
   assertEquals(client.calls, [])
@@ -851,9 +1111,18 @@ test('T3 · a decrease below the licenses held is refused 409 licenses_in_use wi
 })
 
 test('T3 · a Stripe rejection of the decrease rolls back exactly the intents it added and rethrows', async () => {
-  const db = orgDb({ seats: [{ tierId: S3, providerItemId: 'si_1', quantity: 4 }], unboundLicenses: 1 })
+  const db = orgDb({
+    seats: [{ tierId: S3, providerItemId: 'si_1', quantity: 4 }],
+    unboundLicenses: 1,
+  })
   // An unrelated intent already in the ledger must survive the rollback.
-  const parked = newDeferredIntent('release-seat', { fromTierId: S3, toTierId: null, landsAt: PERIOD_END_ISO, fromQuantity: 4, nowMs: NOW_MS })
+  const parked = newDeferredIntent('release-seat', {
+    fromTierId: S3,
+    toTierId: null,
+    landsAt: PERIOD_END_ISO,
+    fromQuantity: 4,
+    nowMs: NOW_MS,
+  })
   await writePendingChanges(db, ORG, withIntent(emptyLedger('sub_1'), parked), NOW_MS)
   const client = routedClient({
     'POST /v1/subscription_schedules': () => {
@@ -862,10 +1131,250 @@ test('T3 · a Stripe rejection of the decrease rolls back exactly the intents it
   })
   const { deps, leases } = depsFor(db, client)
 
-  await assertRejects(() => changeSeats(deps, { organizationId: ORG, tierId: S3, delta: -2 }), StripeApiError)
+  await assertRejects(
+    () => changeSeats(deps, { organizationId: ORG, tierId: S3, delta: -2 }),
+    StripeApiError
+  )
   const ledger = await ledgerOf(db)
-  assertEquals(ledger.intents.map((i) => i.id), [parked.id])
+  assertEquals(
+    ledger.intents.map((i) => i.id),
+    [parked.id]
+  )
   assertEquals(seatQuantities(db), { [S3]: 4 })
   assertEquals(client.calls.length, 1)
+  assertEquals(leases, ['begin', 'end'])
+})
+
+// --- T4 -------------------------------------------------------------------
+
+/** `count` release-seat intents at S3, parked behind the period end, oldest first a minute apart. */
+async function parkReleases(db: MemoryDb, count: number, fromQuantity: number) {
+  let ledger = emptyLedger('sub_1')
+  for (let i = 0; i < count; i += 1) {
+    ledger = withIntent(
+      ledger,
+      newDeferredIntent('release-seat', {
+        fromTierId: S3,
+        toTierId: null,
+        landsAt: PERIOD_END_ISO,
+        fromQuantity,
+        nowMs: NOW_MS - (count - i) * 60_000,
+      })
+    )
+  }
+  await writePendingChanges(db, ORG, ledger, NOW_MS)
+  return ledger.intents
+}
+
+/** Six S3 seats (the owner's shape), a schedule attached for the parked releases. */
+const sixSeatsLeaving = (): OrgSeed => ({
+  seats: [{ tierId: S3, providerItemId: 'si_1', quantity: 6 }],
+  scheduleId: 'sub_sched_1',
+})
+
+test('T4 · +1 with three seats leaving takes the newest back: no purchase, the schedule rebuilt for two leaving', async () => {
+  const db = orgDb(sixSeatsLeaving())
+  const parked = await parkReleases(db, 3, 6)
+  const client = routedClient({
+    'GET /v1/subscription_schedules/sub_sched_1': () =>
+      stripeSchedule([{ price: 'price_s3', quantity: 6 }]),
+    'POST /v1/subscription_schedules/sub_sched_1': () =>
+      stripeSchedule([{ price: 'price_s3', quantity: 6 }]),
+  })
+  const { deps, leases } = depsFor(db, client)
+
+  const outcome = await changeSeats(deps, { organizationId: ORG, tierId: S3, delta: 1 })
+  assertEquals(outcome.ok && outcome.body, {
+    ok: true,
+    pending: false,
+    deferred: false,
+    scheduleId: 'sub_sched_1',
+    restored: 1,
+  })
+
+  // The newest release is the one withdrawn; the two older ones still leave.
+  const ledger = await ledgerOf(db)
+  assertEquals(
+    ledger.intents.map((i) => i.id),
+    [parked[0]!.id, parked[1]!.id]
+  )
+  // Nothing bought, nothing invoiced: no product lookup, no subscription write.
+  assertEquals(callsOf(client), [
+    'GET /v1/subscription_schedules/sub_sched_1',
+    'POST /v1/subscription_schedules/sub_sched_1',
+  ])
+  const phases = client.calls[1]!
+  assertEquals(formOf(phases, 'end_behavior'), 'release')
+  assertEquals(formOf(phases, 'phases[1][items][0][price]'), 'price_s3')
+  assertEquals(formOf(phases, 'phases[1][items][0][quantity]'), '4')
+  assertEquals(seatQuantities(db), { [S3]: 6 })
+  assertEquals(storedRecord(db), null)
+  assertEquals(leases, ['begin', 'end'])
+})
+
+test('T4 · +4 with three seats leaving takes all three back, releases the schedule, then buys exactly one', async () => {
+  const db = orgDb(sixSeatsLeaving())
+  await parkReleases(db, 3, 6)
+  let committed = 6
+  const client = routedClient({
+    'POST /v1/subscription_schedules/sub_sched_1/release': () => ({
+      id: 'sub_sched_1',
+      object: 'subscription_schedule',
+      status: 'released',
+    }),
+    'POST /v1/subscriptions/sub_1': (call) => {
+      committed = Number(formOf(call, 'items[0][quantity]'))
+      return { id: 'sub_1', object: 'subscription', status: 'active' }
+    },
+    'GET /v1/subscriptions/sub_1': () =>
+      stripeSubscription([{ id: 'si_1', tierId: S3, quantity: committed }]),
+  })
+  const { deps } = depsFor(db, client)
+
+  const outcome = await changeSeats(deps, { organizationId: ORG, tierId: S3, delta: 4 })
+  assertEquals(outcome.ok && outcome.body, {
+    ok: true,
+    pending: false,
+    deferred: false,
+    restored: 3,
+  })
+  assertEquals((await ledgerOf(db)).intents, [])
+  // The price is resolved before anything is withdrawn; the schedule goes
+  // (nothing is leaving any more), and one seat is bought on the plain subscription.
+  assertEquals(callsOf(client), [
+    'GET /v1/products/prod_s3',
+    'POST /v1/subscription_schedules/sub_sched_1/release',
+    'POST /v1/subscriptions/sub_1',
+    'GET /v1/subscriptions/sub_1',
+  ])
+  const buy = client.calls[2]!
+  assertEquals(formOf(buy, 'items[0][id]'), 'si_1')
+  assertEquals(formOf(buy, 'items[0][quantity]'), '7')
+  assertEquals(formOf(buy, 'proration_behavior'), 'always_invoice')
+  assertEquals(seatQuantities(db), { [S3]: 7 })
+  assertEquals(storedRecord(db), null)
+})
+
+test('T4 · with nothing leaving, +1 is a plain purchase and the body carries no restored field', async () => {
+  const db = orgDb(twoSeats())
+  const { client, posts } = stripeDouble()
+  const outcome = await changeSeats(depsFor(db, client).deps, {
+    organizationId: ORG,
+    tierId: S3,
+    delta: 1,
+  })
+  assertEquals(outcome.ok && outcome.body, { ok: true, pending: false, deferred: false })
+  assertEquals(posts.length, 1)
+  // A release parked at another tier is not taken back by an increase here.
+  const other = orgDb({
+    seats: [
+      { tierId: S1, providerItemId: 'si_a', quantity: 2 },
+      { tierId: S3, providerItemId: 'si_1', quantity: 2 },
+    ],
+  })
+  await writePendingChanges(
+    other,
+    ORG,
+    withIntent(
+      emptyLedger('sub_1'),
+      newDeferredIntent('release-seat', {
+        fromTierId: S1,
+        toTierId: null,
+        landsAt: PERIOD_END_ISO,
+        fromQuantity: 2,
+        nowMs: NOW_MS,
+      })
+    ),
+    NOW_MS
+  )
+  let committed = 2
+  const c2 = routedClient({
+    'POST /v1/subscriptions/sub_1': (call) => {
+      committed = Number(formOf(call, 'items[1][quantity]'))
+      return { id: 'sub_1', object: 'subscription', status: 'active' }
+    },
+    'GET /v1/subscriptions/sub_1': () =>
+      stripeSubscription([
+        { id: 'si_a', tierId: S1, quantity: 2 },
+        { id: 'si_1', tierId: S3, quantity: committed },
+      ]),
+    'POST /v1/subscription_schedules': () =>
+      stripeSchedule([
+        { price: 'price_s1', quantity: 2 },
+        { price: 'price_s3', quantity: 3 },
+      ]),
+    'POST /v1/subscription_schedules/sub_sched_1': () =>
+      stripeSchedule([
+        { price: 'price_s1', quantity: 2 },
+        { price: 'price_s3', quantity: 3 },
+      ]),
+  })
+  const bought = await changeSeats(depsFor(other, c2).deps, {
+    organizationId: ORG,
+    tierId: S3,
+    delta: 1,
+  })
+  assertEquals(bought.ok && bought.body, { ok: true, pending: false, deferred: false })
+  // The S3 seat was bought; the S1 release is still parked and the schedule rebuilt around it.
+  assertEquals(committed, 3)
+  assertEquals((await ledgerOf(other)).intents.length, 1)
+})
+
+test('T4 · while past due, taking a leaving seat back is allowed (it charges nothing); buying beyond it is refused before anything is withdrawn', async () => {
+  const db = orgDb({ ...sixSeatsLeaving(), status: 'past_due' })
+  const parked = await parkReleases(db, 1, 6)
+  const client = routedClient({
+    'GET /v1/subscription_schedules/sub_sched_1': () =>
+      stripeSchedule([{ price: 'price_s3', quantity: 6 }]),
+    'POST /v1/subscription_schedules/sub_sched_1/release': () => ({
+      id: 'sub_sched_1',
+      object: 'subscription_schedule',
+      status: 'released',
+    }),
+  })
+  const { deps } = depsFor(db, client)
+
+  const denied = refusalOf(await changeSeats(deps, { organizationId: ORG, tierId: S3, delta: 2 }))
+  assertEquals(denied.status, 409)
+  assertEquals(denied.body.error, SUBSCRIPTION_PAST_DUE_ERROR)
+  assertEquals(client.calls, [])
+  assertEquals(
+    (await ledgerOf(db)).intents.map((i) => i.id),
+    [parked[0]!.id]
+  )
+
+  const restored = await changeSeats(deps, { organizationId: ORG, tierId: S3, delta: 1 })
+  assertEquals(restored.ok && restored.body, {
+    ok: true,
+    pending: false,
+    deferred: false,
+    scheduleId: null,
+    restored: 1,
+  })
+  assertEquals(callsOf(client), ['POST /v1/subscription_schedules/sub_sched_1/release'])
+  assertEquals((await ledgerOf(db)).intents, [])
+})
+
+test('T4 · a Stripe refusal of the withdrawal puts the leaving seats back exactly as they were and rethrows', async () => {
+  const db = orgDb(sixSeatsLeaving())
+  const parked = await parkReleases(db, 2, 6)
+  const client = routedClient({
+    'GET /v1/subscription_schedules/sub_sched_1': () =>
+      stripeSchedule([{ price: 'price_s3', quantity: 6 }]),
+    'POST /v1/subscription_schedules/sub_sched_1': () => {
+      throw new StripeApiError({ status: 400, type: 'invalid_request_error', message: 'no' })
+    },
+  })
+  const { deps, leases } = depsFor(db, client)
+
+  await assertRejects(
+    () => changeSeats(deps, { organizationId: ORG, tierId: S3, delta: 1 }),
+    StripeApiError
+  )
+  assertEquals(
+    (await ledgerOf(db)).intents.map((i) => i.id),
+    parked.map((i) => i.id)
+  )
+  assertEquals(seatQuantities(db), { [S3]: 6 })
   assertEquals(leases, ['begin', 'end'])
 })

@@ -20,6 +20,10 @@
  *   `release-seat`   one fewer at `fromTierId` at the boundary
  *   `downgrade`      one fewer at `fromTierId`, one more at `toTierId`
  *
+ * A quantity increase at a tier first **withdraws** that tier's
+ * `release-seat` intents (`restorableReleases`) — the seat is still paid
+ * through the period, so keeping it is free — and only buys the rest.
+ *
  * An intent **lands** when the period it was parked behind has rolled:
  * `landsAt` is the subscription's `current_period_end` when the intent was
  * written, and the projected `current_period_end` moving past it is the
@@ -85,8 +89,10 @@ function parseIntent(value: unknown): PendingIntent | null {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return null
   const r = value as Record<string, unknown>
   if (
-    typeof r.id !== 'string' || !isIntentKind(r.kind) ||
-    typeof r.fromTierId !== 'string' || typeof r.idempotencyKey !== 'string' ||
+    typeof r.id !== 'string' ||
+    !isIntentKind(r.kind) ||
+    typeof r.fromTierId !== 'string' ||
+    typeof r.idempotencyKey !== 'string' ||
     typeof r.createdAt !== 'string'
   ) {
     return null
@@ -101,7 +107,8 @@ function parseIntent(value: unknown): PendingIntent | null {
     idempotencyKey: r.idempotencyKey,
     createdAt: r.createdAt,
     landsAt: typeof r.landsAt === 'string' ? r.landsAt : null,
-    fromQuantity: typeof r.fromQuantity === 'number' && Number.isFinite(r.fromQuantity) ? r.fromQuantity : 0,
+    fromQuantity:
+      typeof r.fromQuantity === 'number' && Number.isFinite(r.fromQuantity) ? r.fromQuantity : 0,
   }
 }
 
@@ -121,7 +128,11 @@ export function parseLedger(value: unknown): PendingChangeLedger | null {
     const intent = parseIntent(raw)
     if (intent) intents.push(intent)
   }
-  return { version: PENDING_CHANGES_LEDGER_VERSION, providerSubscriptionId: r.providerSubscriptionId, intents }
+  return {
+    version: PENDING_CHANGES_LEDGER_VERSION,
+    providerSubscriptionId: r.providerSubscriptionId,
+    intents,
+  }
 }
 
 export type NewIntentInput = Readonly<{
@@ -150,13 +161,16 @@ export function newDeferredIntent(kind: PendingIntentKind, input: NewIntentInput
   }
 }
 
-export function withIntent(ledger: PendingChangeLedger, intent: PendingIntent): PendingChangeLedger {
+export function withIntent(
+  ledger: PendingChangeLedger,
+  intent: PendingIntent
+): PendingChangeLedger {
   return { ...ledger, intents: [...ledger.intents.filter((i) => i.id !== intent.id), intent] }
 }
 
 export function withoutIntents(
   ledger: PendingChangeLedger,
-  ids: Iterable<string>,
+  ids: Iterable<string>
 ): PendingChangeLedger {
   const drop = new Set(ids)
   if (drop.size === 0) return ledger
@@ -192,6 +206,21 @@ export function deferredDeltasByTier(ledger: PendingChangeLedger): Map<string, n
   return out
 }
 
+/**
+ * The outstanding `release-seat` intents at `tierId`, newest first — the
+ * seats a quantity increase at that tier takes back before it buys any.
+ * A seat still leaving at the boundary is paid through the period, so
+ * keeping it costs nothing; only downgrades are left alone (their seat
+ * moves to another tier rather than leaving).
+ */
+export function restorableReleases(ledger: PendingChangeLedger, tierId: string): PendingIntent[] {
+  return ledger.intents
+    .map((intent, index) => ({ intent, index }))
+    .filter(({ intent }) => intent.kind === 'release-seat' && intent.fromTierId === tierId)
+    .sort((a, b) => b.intent.createdAt.localeCompare(a.intent.createdAt) || b.index - a.index)
+    .map(({ intent }) => intent)
+}
+
 /** Every tier a deferred intent moves *to*, deduplicated. */
 export function deferredIntentTargets(ledger: PendingChangeLedger): string[] {
   const out = new Set<string>()
@@ -220,9 +249,10 @@ function periodRolledPast(landsAt: string | null, currentPeriodEnd: string | nul
 /** The intents whose change the committed items now show. */
 export function landedIntents(ledger: PendingChangeLedger, ctx: LandingContext): PendingIntent[] {
   if (ctx.ended) return [...ledger.intents]
-  return ledger.intents.filter((intent) =>
-    periodRolledPast(intent.landsAt, ctx.currentPeriodEnd) ||
-    ctx.seatsAt(intent.fromTierId) < intent.fromQuantity
+  return ledger.intents.filter(
+    (intent) =>
+      periodRolledPast(intent.landsAt, ctx.currentPeriodEnd) ||
+      ctx.seatsAt(intent.fromTierId) < intent.fromQuantity
   )
 }
 
@@ -234,7 +264,7 @@ export function landedIntents(ledger: PendingChangeLedger, ctx: LandingContext):
 export async function readPendingChanges(
   db: Db,
   organizationId: string,
-  providerSubscriptionId: string,
+  providerSubscriptionId: string
 ): Promise<{ ledger: PendingChangeLedger }> {
   const [row] = await db
     .select({ value: setting.value })
@@ -253,7 +283,7 @@ export async function writePendingChanges(
   db: Db,
   organizationId: string,
   ledger: PendingChangeLedger,
-  nowMs = Date.now(),
+  nowMs = Date.now()
 ): Promise<void> {
   const key = billingPendingChangesKey(organizationId)
   if (ledger.intents.length === 0) {

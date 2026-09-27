@@ -705,6 +705,80 @@ test('POST /billing/preview accepts { tierId, delta } and pins a proration date 
   )
 })
 
+/** A ledger with `count` S3 seats leaving at the period boundary. */
+function leavingLedger(count: number) {
+  let ledger = emptyLedger('sub_1')
+  for (let i = 0; i < count; i += 1) {
+    ledger = withIntent(
+      ledger,
+      newDeferredIntent('release-seat', {
+        fromTierId: S3,
+        toTierId: null,
+        landsAt: PERIOD_END,
+        fromQuantity: 6,
+        nowMs: Date.parse(NOW) - (count - i) * 60_000,
+      })
+    )
+  }
+  return ledger
+}
+
+test('POST /billing/preview quotes $0 with no Stripe call when the increase only takes back seats still leaving — even while past due', async () => {
+  for (const status of ['active', 'past_due']) {
+    const view = viewWith(stateWith(status, [{ tierId: S3, quantity: 6 }]), {
+      ledger: leavingLedger(3),
+    })
+    const { app, headers, stripeCalls } = await buildApp({ view })
+    const res = await app.request('/billing/preview', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ tierId: S3, delta: 2 }),
+    })
+    assertEquals(res.status, 200, status)
+    assertEquals(await res.json(), {
+      prorationDate: Math.floor(Date.parse(NOW) / 1000),
+      currency: 'usd',
+      subtotal: 0,
+      tax: 0,
+      total: 0,
+      amountDue: 0,
+      lines: [],
+      restored: 2,
+    })
+    assertEquals(stripeCalls(), [], status)
+  }
+})
+
+test('POST /billing/preview quotes only the seats an increase will buy after taking back the leaving ones', async () => {
+  const view = viewWith(stateWith('active', [{ tierId: S3, quantity: 6 }]), {
+    ledger: leavingLedger(3),
+  })
+  const { app, headers, client } = await buildApp({
+    view,
+    routes: {
+      'POST /v1/invoices/create_preview': () => ({
+        object: 'invoice',
+        currency: 'usd',
+        subtotal: 1000,
+        total: 1000,
+        amount_due: 1000,
+        lines: { data: [] },
+      }),
+    },
+  })
+  const res = await app.request('/billing/preview', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ tierId: S3, delta: 4 }),
+  })
+  assertEquals(res.status, 200)
+  const body = (await res.json()) as { total: number; restored: number }
+  assertEquals(body.total, 1000)
+  assertEquals(body.restored, 3)
+  // Six seats plus the one actually bought.
+  assertEquals(formOf(client.calls[0]!, 'subscription_details[items][0][quantity]'), '7')
+})
+
 test("POST /billing/preview accepts { fromTierId, toTierId } as a −1/+1 swap, resolving the target's price through the gateway", async () => {
   const { app, headers, client, stripeCalls } = await buildApp({
     routes: {

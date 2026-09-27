@@ -31,6 +31,7 @@ import {
   deferredIntentTargets,
   newDeferredIntent,
   type PendingIntent,
+  restorableReleases,
   withIntent,
   withoutIntents,
   writePendingChanges,
@@ -40,6 +41,7 @@ import {
   endQuantityMutation,
   tryBeginQuantityMutation,
 } from '../../features/billing/quantity-lock.ts'
+import { windowedIdempotencyKey } from '../../features/billing/idempotency.ts'
 import { mutateSubscription } from '../../features/billing/schedules.ts'
 import {
   clearSeatIncrease,
@@ -72,7 +74,11 @@ export type BillingMutationDeps = Readonly<{
   client: StripeClient
   gateway?: BillingGateway
   loadView?: (db: Db, organizationId: string, nowMs: number) => Promise<BillingOrgView>
-  beginMutation?: (db: Db, organizationId: string, nowMs: number) => Promise<BillingQuantityLock | null>
+  beginMutation?: (
+    db: Db,
+    organizationId: string,
+    nowMs: number
+  ) => Promise<BillingQuantityLock | null>
   endMutation?: (db: Db, lock: BillingQuantityLock) => Promise<void>
   nowMs?: () => number
 }>
@@ -87,7 +93,11 @@ export type BillingMutationOutcome<T extends Record<string, unknown>> =
 export type ChangeSeatsInput = Readonly<{
   organizationId: string
   tierId: string
-  /** Positive: immediate, invoiced now. Negative: deferred to the boundary. */
+  /**
+   * Positive: first takes back that many seats still leaving at the
+   * boundary (free), then buys the rest now, invoiced. Negative: deferred
+   * to the boundary.
+   */
   delta: number
   /** The preview's pinned proration date; minted from `nowMs` when absent. */
   prorationDate?: number | null
@@ -99,6 +109,11 @@ export type ChangeSeatsBody = {
   pending: boolean
   deferred: boolean
   scheduleId?: string | null
+  /**
+   * Seats an increase took back from "leaving at the period boundary"
+   * instead of buying. Present only when non-zero.
+   */
+  restored?: number
 }
 
 export type TierMoveInput = Readonly<{
@@ -111,13 +126,18 @@ export type TierMoveInput = Readonly<{
 
 export type UpgradeTierBody = { ok: true; pending: boolean }
 
-export type DowngradeTierBody = { ok: true; deferred: true; intentId: string; scheduleId: string | null }
+export type DowngradeTierBody = {
+  ok: true
+  deferred: true
+  intentId: string
+  scheduleId: string | null
+}
 
 const INVALID_REQUEST = { error: 'Invalid request' } as const
 
 function refuse(
   status: BillingRefusalStatus,
-  body: { error: string } & Record<string, unknown>,
+  body: { error: string } & Record<string, unknown>
 ): BillingMutationOutcome<never> {
   return { ok: false, status, body }
 }
@@ -140,7 +160,7 @@ function resolveDeps(deps: BillingMutationDeps) {
 async function underLease<T extends Record<string, unknown>>(
   deps: BillingMutationDeps,
   organizationId: string,
-  work: (lock: BillingQuantityLock) => Promise<BillingMutationOutcome<T>>,
+  work: (lock: BillingQuantityLock) => Promise<BillingMutationOutcome<T>>
 ): Promise<BillingMutationOutcome<T>> {
   const { beginMutation, endMutation, nowMs } = resolveDeps(deps)
   const lock = await beginMutation(deps.db, organizationId, nowMs())
@@ -160,13 +180,13 @@ async function underLease<T extends Record<string, unknown>>(
 async function syncAfterMutation(
   deps: BillingMutationDeps,
   lock: BillingQuantityLock,
-  providerSubscriptionId: string,
+  providerSubscriptionId: string
 ): Promise<void> {
   const { nowMs } = resolveDeps(deps)
   await projectSubscriptionById(
     { db: deps.db, client: deps.client, now: new Date(nowMs()).toISOString() },
     providerSubscriptionId,
-    { lock },
+    { lock }
   )
 }
 
@@ -179,7 +199,7 @@ async function syncAfterMutation(
 async function rankResolver(
   db: Db,
   view: BillingOrgView,
-  extra: readonly TierRow[],
+  extra: readonly TierRow[]
 ): Promise<(tierId: string) => number | undefined> {
   const ranks = new Map<string, number>()
   for (const seat of view.state.seats) ranks.set(seat.tierId, seat.tier.rank)
@@ -211,7 +231,7 @@ async function applyImmediate(
   ctx: MutationContext,
   organizationId: string,
   deltas: readonly TierDelta[],
-  prorationDate: number | null | undefined,
+  prorationDate: number | null | undefined
 ): Promise<{ pending: boolean } | BillingMutationOutcome<never>> {
   const { nowMs, gateway } = resolveDeps(deps)
   const { lock, view, sub, lines, priceByTier } = ctx
@@ -225,15 +245,22 @@ async function applyImmediate(
   // items and proration date — never the `items` rebuilt above, which a
   // webhook projecting the first attempt's own update can have moved;
   // anything else is a new request with a fresh record.
-  const stored = await readSeatIncrease(deps.db, organizationId, sub.providerSubscriptionId, nowMs())
+  const stored = await readSeatIncrease(
+    deps.db,
+    organizationId,
+    sub.providerSubscriptionId,
+    nowMs()
+  )
   const retry = stored && seatIncreaseMatches(stored, deltas) ? stored : null
-  const record = retry ?? newSeatIncreaseRecord({
-    providerSubscriptionId: sub.providerSubscriptionId,
-    deltas,
-    items,
-    prorationDate: prorationDate ?? Math.floor(nowMs() / 1000),
-    nowMs: nowMs(),
-  })
+  const record =
+    retry ??
+    newSeatIncreaseRecord({
+      providerSubscriptionId: sub.providerSubscriptionId,
+      deltas,
+      items,
+      prorationDate: prorationDate ?? Math.floor(nowMs() / 1000),
+      nowMs: nowMs(),
+    })
   if (!retry) await writeSeatIncrease(deps.db, organizationId, record, nowMs())
   let result
   try {
@@ -272,7 +299,7 @@ async function applyDeferred(
   deps: BillingMutationDeps,
   ctx: MutationContext,
   organizationId: string,
-  intents: readonly PendingIntent[],
+  intents: readonly PendingIntent[]
 ): Promise<{ scheduleId: string | null }> {
   const { nowMs, gateway } = resolveDeps(deps)
   const { view, sub, lines, priceByTier } = ctx
@@ -291,27 +318,97 @@ async function applyDeferred(
     })
   } catch (err) {
     // Roll the intents back: nothing was parked on the provider.
-    await writePendingChanges(deps.db, organizationId, withoutIntents(ledger, intents.map((i) => i.id)), nowMs())
+    await writePendingChanges(
+      deps.db,
+      organizationId,
+      withoutIntents(
+        ledger,
+        intents.map((i) => i.id)
+      ),
+      nowMs()
+    )
+    throw err
+  }
+}
+
+/**
+ * How a quantity increase of `delta` at `tierId` splits: the seats it takes
+ * back from "leaving at the boundary" (newest release first) and how many
+ * it must actually buy. Shared by the mutation and the preview, so the
+ * quote is for exactly what the apply will charge.
+ */
+export function splitSeatIncrease(
+  ledger: MutationContext['view']['ledger'],
+  tierId: string,
+  delta: number
+): { restoring: PendingIntent[]; buying: number } {
+  const restoring = restorableReleases(ledger, tierId).slice(0, Math.max(0, delta))
+  return { restoring, buying: delta - restoring.length }
+}
+
+/**
+ * The reverse of {@link applyDeferred}: drop `intents` from the ledger and
+ * rebuild the schedule from what is left (released when nothing is). The
+ * ledger is written first and restored if Stripe refuses, so a failed
+ * withdrawal leaves the seats leaving exactly as before. The key is
+ * windowed (`idempotency.ts`): a retry of the same withdrawal inside the
+ * window is the same request, and a refusal is not replayed past it.
+ */
+async function withdrawDeferred(
+  deps: BillingMutationDeps,
+  ctx: MutationContext,
+  organizationId: string,
+  intents: readonly PendingIntent[]
+): Promise<{ scheduleId: string | null; ledger: MutationContext['view']['ledger'] }> {
+  const { nowMs, gateway } = resolveDeps(deps)
+  const { view, sub, lines, priceByTier } = ctx
+  const ledger = withoutIntents(
+    view.ledger,
+    intents.map((i) => i.id)
+  )
+  await writePendingChanges(deps.db, organizationId, ledger, nowMs())
+  try {
+    const { scheduleId } = await mutateSubscription(deps.client, {
+      kind: 'deferred',
+      providerSubscriptionId: sub.providerSubscriptionId,
+      scheduleId: sub.scheduleId,
+      current: lines,
+      deltasByTier: deferredDeltasByTier(ledger),
+      priceByTier: await priceMapWithIntentTargets(deps.db, gateway, priceByTier, ledger),
+      idempotencyKey: windowedIdempotencyKey(
+        `withdraw:${intents.map((i) => i.id).join(',')}`,
+        nowMs()
+      ),
+    })
+    return { scheduleId, ledger }
+  } catch (err) {
+    // Nothing changed on the provider: the seats are still leaving.
+    await writePendingChanges(deps.db, organizationId, view.ledger, nowMs())
     throw err
   }
 }
 
 function isRefusal<T extends Record<string, unknown>>(
-  value: T | BillingMutationOutcome<never>,
+  value: T | BillingMutationOutcome<never>
 ): value is BillingMutationOutcome<never> {
   return 'ok' in value && value.ok === false
 }
 
 /**
- * `POST /billing/seats`. An increase is immediate (`always_invoice`, under
- * `pending_if_incomplete`) and refused while delinquent; a decrease is a
+ * `POST /billing/seats`. An increase first takes back seats at that tier
+ * that are still leaving at the boundary — withdrawing their
+ * `release-seat` intents and rebuilding the schedule, no charge — and buys
+ * only the remainder, immediately (`always_invoice`, under
+ * `pending_if_incomplete`). Taking a leaving seat back is allowed while
+ * delinquent (it charges nothing and only reduces what is given back);
+ * any purchase is refused then, before anything is withdrawn. A decrease is a
  * `release-seat` intent per seat and a schedule phase at the boundary,
  * refused when the future mix would strand a licensed server or leave the
  * organization holding more licenses than it pays for.
  */
 export async function changeSeats(
   deps: BillingMutationDeps,
-  input: ChangeSeatsInput,
+  input: ChangeSeatsInput
 ): Promise<BillingMutationOutcome<ChangeSeatsBody>> {
   const { loadView, nowMs, gateway } = resolveDeps(deps)
   const { organizationId, tierId, delta } = input
@@ -319,41 +416,91 @@ export async function changeSeats(
 
   return await underLease(deps, organizationId, async (lock) => {
     const view = await loadView(deps.db, organizationId, nowMs())
-    if (delta > 0) {
-      const denied = tierChangeRefusal(view)
-      if (denied) return refuse(409, denied)
-    } else if (!hasLiveSubscription(view)) {
-      return refuse(409, { error: NO_SUBSCRIPTION_ERROR })
-    }
+    if (!hasLiveSubscription(view)) return refuse(409, { error: NO_SUBSCRIPTION_ERROR })
     const { lines, priceByTier } = seatLinesFromState(view.state)
     const sub = view.state.subscription!
     const ctx: MutationContext = { lock, view, sub, lines, priceByTier }
 
     if (delta > 0) {
-      const price = await resolveTierPrice(deps.db, gateway, tierId)
-      if (!price.ok) return refuse(400, { error: TIER_NOT_PURCHASABLE_ERROR, reason: price.reason, failures: price.failures ?? [] })
-      priceByTier.set(tierId, price.providerPriceId)
-      const applied = await applyImmediate(deps, ctx, organizationId, [{ tierId, delta }], input.prorationDate)
+      const { restoring, buying } = splitSeatIncrease(view.ledger, tierId, delta)
+      // Every refusal of the purchase happens before anything is withdrawn,
+      // so a refused request changes nothing.
+      if (buying > 0) {
+        const denied = tierChangeRefusal(view)
+        if (denied) return refuse(409, denied)
+        const price = await resolveTierPrice(deps.db, gateway, tierId)
+        if (!price.ok)
+          return refuse(400, {
+            error: TIER_NOT_PURCHASABLE_ERROR,
+            reason: price.reason,
+            failures: price.failures ?? [],
+          })
+        priceByTier.set(tierId, price.providerPriceId)
+      }
+      let buyCtx = ctx
+      let scheduleId: string | null = sub.scheduleId
+      if (restoring.length > 0) {
+        const withdrawn = await withdrawDeferred(deps, ctx, organizationId, restoring)
+        scheduleId = withdrawn.scheduleId
+        buyCtx = {
+          ...ctx,
+          view: { ...view, ledger: withdrawn.ledger },
+          sub: { ...sub, scheduleId },
+        }
+      }
+      const restored = restoring.length > 0 ? { restored: restoring.length } : {}
+      if (buying === 0) {
+        return succeed<ChangeSeatsBody>({
+          ok: true,
+          pending: false,
+          deferred: false,
+          scheduleId,
+          ...restored,
+        })
+      }
+      const applied = await applyImmediate(
+        deps,
+        buyCtx,
+        organizationId,
+        [{ tierId, delta: buying }],
+        input.prorationDate
+      )
       if (isRefusal(applied)) return applied
-      return succeed<ChangeSeatsBody>({ ok: true, pending: applied.pending, deferred: false })
+      return succeed<ChangeSeatsBody>({
+        ok: true,
+        pending: applied.pending,
+        deferred: false,
+        ...restored,
+      })
     }
 
-    const coverage = coverageRefusal(view, [{ tierId, delta }], await rankResolver(deps.db, view, []))
+    const coverage = coverageRefusal(
+      view,
+      [{ tierId, delta }],
+      await rankResolver(deps.db, view, [])
+    )
     if (coverage) return refuse(409, coverage)
     const fromQuantity = seatQuantitiesByTier(view.state).get(tierId) ?? 0
     if (fromQuantity + delta < 0) return refuse(400, INVALID_REQUEST)
     const intents: PendingIntent[] = []
     for (let i = 0; i < -delta; i += 1) {
-      intents.push(newDeferredIntent('release-seat', {
-        fromTierId: tierId,
-        toTierId: null,
-        landsAt: sub.currentPeriodEnd,
-        fromQuantity,
-        nowMs: nowMs(),
-      }))
+      intents.push(
+        newDeferredIntent('release-seat', {
+          fromTierId: tierId,
+          toTierId: null,
+          landsAt: sub.currentPeriodEnd,
+          fromQuantity,
+          nowMs: nowMs(),
+        })
+      )
     }
     const result = await applyDeferred(deps, ctx, organizationId, intents)
-    return succeed<ChangeSeatsBody>({ ok: true, pending: false, deferred: true, scheduleId: result.scheduleId })
+    return succeed<ChangeSeatsBody>({
+      ok: true,
+      pending: false,
+      deferred: true,
+      scheduleId: result.scheduleId,
+    })
   })
 }
 
@@ -363,7 +510,7 @@ type ResolvedTierMove = { from: TierRow; to: TierRow }
 async function resolveTierMove(
   db: Db,
   input: TierMoveInput,
-  direction: 'upgrade' | 'downgrade',
+  direction: 'upgrade' | 'downgrade'
 ): Promise<ResolvedTierMove | BillingMutationOutcome<never>> {
   if (input.fromTierId === input.toTierId) return refuse(400, INVALID_REQUEST)
   const from = await getTierById(db, input.fromTierId)
@@ -375,7 +522,9 @@ async function resolveTierMove(
   return { from, to }
 }
 
-function isMoveRefusal(value: ResolvedTierMove | BillingMutationOutcome<never>): value is BillingMutationOutcome<never> {
+function isMoveRefusal(
+  value: ResolvedTierMove | BillingMutationOutcome<never>
+): value is BillingMutationOutcome<never> {
   return 'ok' in value
 }
 
@@ -389,7 +538,7 @@ function isMoveRefusal(value: ResolvedTierMove | BillingMutationOutcome<never>):
  */
 export async function upgradeTier(
   deps: BillingMutationDeps,
-  input: TierMoveInput,
+  input: TierMoveInput
 ): Promise<BillingMutationOutcome<UpgradeTierBody>> {
   const { loadView, nowMs, gateway } = resolveDeps(deps)
   const move = await resolveTierMove(deps.db, input, 'upgrade')
@@ -402,15 +551,33 @@ export async function upgradeTier(
     const sub = view.state.subscription!
     const { lines, priceByTier } = seatLinesFromState(view.state)
     const price = await resolveTierPrice(deps.db, gateway, move.to.id)
-    if (!price.ok) return refuse(400, { error: TIER_NOT_PURCHASABLE_ERROR, reason: price.reason, failures: price.failures ?? [] })
+    if (!price.ok)
+      return refuse(400, {
+        error: TIER_NOT_PURCHASABLE_ERROR,
+        reason: price.reason,
+        failures: price.failures ?? [],
+      })
     priceByTier.set(move.to.id, price.providerPriceId)
-    const deltas: TierDelta[] = [{ tierId: move.from.id, delta: -1 }, { tierId: move.to.id, delta: 1 }]
+    const deltas: TierDelta[] = [
+      { tierId: move.from.id, delta: -1 },
+      { tierId: move.to.id, delta: 1 },
+    ]
     // The swap never lowers coverage, but the lower tier must still have a
     // seat that is not already leaving at the boundary.
-    const coverage = coverageRefusal(view, deltas, await rankResolver(deps.db, view, [move.from, move.to]))
+    const coverage = coverageRefusal(
+      view,
+      deltas,
+      await rankResolver(deps.db, view, [move.from, move.to])
+    )
     if (coverage) return refuse(409, coverage)
     const ctx: MutationContext = { lock, view, sub, lines, priceByTier }
-    const applied = await applyImmediate(deps, ctx, input.organizationId, deltas, input.prorationDate)
+    const applied = await applyImmediate(
+      deps,
+      ctx,
+      input.organizationId,
+      deltas,
+      input.prorationDate
+    )
     if (isRefusal(applied)) return applied
     return succeed<UpgradeTierBody>({ ok: true, pending: applied.pending })
   })
@@ -424,7 +591,7 @@ export async function upgradeTier(
  */
 export async function downgradeTier(
   deps: BillingMutationDeps,
-  input: TierMoveInput,
+  input: TierMoveInput
 ): Promise<BillingMutationOutcome<DowngradeTierBody>> {
   const { loadView, nowMs, gateway } = resolveDeps(deps)
   const move = await resolveTierMove(deps.db, input, 'downgrade')
@@ -436,10 +603,22 @@ export async function downgradeTier(
     const sub = view.state.subscription!
     const { lines, priceByTier } = seatLinesFromState(view.state)
     const price = await resolveTierPrice(deps.db, gateway, move.to.id)
-    if (!price.ok) return refuse(400, { error: TIER_NOT_PURCHASABLE_ERROR, reason: price.reason, failures: price.failures ?? [] })
+    if (!price.ok)
+      return refuse(400, {
+        error: TIER_NOT_PURCHASABLE_ERROR,
+        reason: price.reason,
+        failures: price.failures ?? [],
+      })
     priceByTier.set(move.to.id, price.providerPriceId)
-    const deltas: TierDelta[] = [{ tierId: move.from.id, delta: -1 }, { tierId: move.to.id, delta: 1 }]
-    const coverage = coverageRefusal(view, deltas, await rankResolver(deps.db, view, [move.from, move.to]))
+    const deltas: TierDelta[] = [
+      { tierId: move.from.id, delta: -1 },
+      { tierId: move.to.id, delta: 1 },
+    ]
+    const coverage = coverageRefusal(
+      view,
+      deltas,
+      await rankResolver(deps.db, view, [move.from, move.to])
+    )
     if (coverage) return refuse(409, coverage)
     const intent = newDeferredIntent('downgrade', {
       fromTierId: move.from.id,
@@ -450,6 +629,11 @@ export async function downgradeTier(
     })
     const ctx: MutationContext = { lock, view, sub, lines, priceByTier }
     const result = await applyDeferred(deps, ctx, input.organizationId, [intent])
-    return succeed<DowngradeTierBody>({ ok: true, deferred: true, intentId: intent.id, scheduleId: result.scheduleId })
+    return succeed<DowngradeTierBody>({
+      ok: true,
+      deferred: true,
+      intentId: intent.id,
+      scheduleId: result.scheduleId,
+    })
   })
 }
