@@ -23,7 +23,7 @@ test('sendMailgunJob rejects unknown job types as permanent failures', async () 
       to: 'ops@example.com',
       from: 'noreply@example.com',
     } as unknown as EmailJob,
-    mailgunConfig,
+    mailgunConfig
   )
   assertEquals(outcome.ok, false)
   if (!outcome.ok) {
@@ -40,7 +40,7 @@ test('sendMailgunJob posts email-otp jobs to Mailgun with trimmed config', async
   globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     capturedUrl = String(input)
     capturedAuth = String(
-      (init?.headers as Record<string, string> | undefined)?.Authorization ?? '',
+      (init?.headers as Record<string, string> | undefined)?.Authorization ?? ''
     )
     capturedBody = String(init?.body ?? '')
     return Promise.resolve(new Response('', { status: 200 }))
@@ -60,13 +60,10 @@ test('sendMailgunJob posts email-otp jobs to Mailgun with trimmed config', async
         apiKey: ' key-test-only ',
         domain: ' mg.example.com ',
         apiBase: 'https://api.eu.mailgun.net/v3/',
-      },
+      }
     )
     assertEquals(outcome.ok, true)
-    assertEquals(
-      capturedUrl,
-      'https://api.eu.mailgun.net/v3/mg.example.com/messages',
-    )
+    assertEquals(capturedUrl, 'https://api.eu.mailgun.net/v3/mg.example.com/messages')
     assertEquals(capturedAuth.startsWith('Basic '), true)
     assertEquals(capturedBody.includes('Your+TurboPanel+sign-in+code'), true)
     assertEquals(capturedBody.includes('ops%40example.com'), true)
@@ -95,7 +92,7 @@ test('sendMailgunJob marks most 4xx responses as permanent but not 429', async (
         otp: '123456',
         otpType: 'forget-password',
       },
-      mailgunConfig,
+      mailgunConfig
     )
     assertEquals(outcome.ok, false)
     if (!outcome.ok) {
@@ -119,13 +116,42 @@ test('sendMailgunJob treats network errors as transient', async () => {
         from: 'noreply@example.com',
         verificationUrl: 'https://panel.example.com/verify?token=abc',
       },
-      mailgunConfig,
+      mailgunConfig
     )
     assertEquals(outcome.ok, false)
     if (!outcome.ok) {
       assertEquals(outcome.permanent, false)
       assertEquals(outcome.error, 'dns failure')
     }
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
+test('sendMailgunJob gives up on a Mailgun that never answers, as a transient failure', async () => {
+  const originalFetch = globalThis.fetch
+  let signalSeen = false
+  globalThis.fetch = ((_input: RequestInfo | URL, init?: RequestInit) => {
+    signalSeen = init?.signal instanceof AbortSignal
+    return Promise.reject(new DOMException('The operation timed out.', 'TimeoutError'))
+  }) as typeof fetch
+  try {
+    const outcome = await sendMailgunJob(
+      {
+        type: 'email-otp',
+        to: 'ops@example.com',
+        from: 'noreply@example.com',
+        otp: '123456',
+        otpType: 'sign-in',
+      },
+      mailgunConfig
+    )
+    assertEquals(signalSeen, true)
+    assertEquals(outcome, {
+      ok: false,
+      error: 'Mailgun did not answer within 10 s',
+      permanent: false,
+    })
   } finally {
     globalThis.fetch = originalFetch
   }

@@ -5,7 +5,7 @@ import {
   createNotificationEmail,
   createServerTierNoticeEmail,
 } from '../templates.ts'
-import type { EmailJob } from '../types.ts'
+import { EMAIL_PROVIDER_TIMEOUT_MS, type EmailJob } from '../types.ts'
 
 export type MailgunSendConfig = {
   apiKey: string
@@ -15,9 +15,7 @@ export type MailgunSendConfig = {
   apiBase?: string
 }
 
-export type MailgunSendOutcome =
-  | { ok: true }
-  | { ok: false; error: string; permanent: boolean }
+export type MailgunSendOutcome = { ok: true } | { ok: false; error: string; permanent: boolean }
 
 function isPermanentMailgunStatus(status: number): boolean {
   return status >= 400 && status < 500 && status !== 429
@@ -44,7 +42,7 @@ function resolveMailgunTemplate(job: EmailJob) {
 
 export async function sendMailgunJob(
   job: EmailJob,
-  config: MailgunSendConfig,
+  config: MailgunSendConfig
 ): Promise<MailgunSendOutcome> {
   const template = resolveMailgunTemplate(job)
   if (!template) {
@@ -73,13 +71,14 @@ export async function sendMailgunJob(
         'Content-Type': 'application/x-www-form-urlencoded',
       },
       body,
+      signal: AbortSignal.timeout(EMAIL_PROVIDER_TIMEOUT_MS),
     })
     if (!res.ok) {
       const message = await res.text()
       if (res.status === 401) {
         console.error(
           '[TurboPanel email] Mailgun 401 — verify the Private API key, sending domain, and region (set TURBOPANEL_SYSTEM_EMAIL__MAILGUN_REGION=eu for EU accounts)',
-          { apiBase, domain },
+          { apiBase, domain }
         )
       }
       return {
@@ -90,7 +89,12 @@ export async function sendMailgunJob(
     }
     return { ok: true }
   } catch (error) {
-    const errMsg = error instanceof Error ? error.message : String(error)
+    const timedOut = error instanceof DOMException && error.name === 'TimeoutError'
+    const errMsg = timedOut
+      ? `Mailgun did not answer within ${EMAIL_PROVIDER_TIMEOUT_MS / 1000} s`
+      : error instanceof Error
+        ? error.message
+        : String(error)
     return { ok: false, error: errMsg, permanent: false }
   }
 }

@@ -12,10 +12,10 @@ const SIGNUP_JOB: EmailJob = {
 }
 
 test('sendMailpitJob rejects unknown job types as permanent failures', async () => {
-  const outcome = await sendMailpitJob(
-    { type: 'bogus' } as unknown as EmailJob,
-    { apiBaseUrl: 'http://127.0.0.1:8025', from: 'noreply@example.com' },
-  )
+  const outcome = await sendMailpitJob({ type: 'bogus' } as unknown as EmailJob, {
+    apiBaseUrl: 'http://127.0.0.1:8025',
+    from: 'noreply@example.com',
+  })
   assertEquals(outcome.ok, false)
   if (outcome.ok) throw new Error('expected failure')
   assertEquals(outcome.permanent, true)
@@ -67,6 +67,29 @@ test('sendMailpitJob treats network errors as transient', async () => {
     assertEquals(outcome.ok, false)
     if (outcome.ok) throw new Error('expected failure')
     assertEquals(outcome.permanent, false)
+  } finally {
+    globalThis.fetch = original
+  }
+})
+
+test('sendMailpitJob gives up on a Mailpit that never answers, as a transient failure', async () => {
+  const original = globalThis.fetch
+  let signalSeen = false
+  globalThis.fetch = ((_input: RequestInfo | URL, init?: RequestInit) => {
+    signalSeen = init?.signal instanceof AbortSignal
+    return Promise.reject(new DOMException('The operation timed out.', 'TimeoutError'))
+  }) as typeof fetch
+  try {
+    const outcome = await sendMailpitJob(SIGNUP_JOB, {
+      apiBaseUrl: 'http://127.0.0.1:8025',
+      from: 'noreply@example.com',
+    })
+    assertEquals(signalSeen, true)
+    assertEquals(outcome, {
+      ok: false,
+      error: 'Mailpit did not answer within 10 s',
+      permanent: false,
+    })
   } finally {
     globalThis.fetch = original
   }
