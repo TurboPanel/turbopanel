@@ -16,6 +16,7 @@
  */
 
 import type { StripeClient } from './client.ts'
+import { windowedIdempotencyKey } from './idempotency.ts'
 
 type StripeObject = Record<string, unknown>
 
@@ -38,11 +39,24 @@ export const PORTAL_CONFIGURATION_FEATURES = {
   payment_method_update: { enabled: true },
 } as const
 
-/** Find or create this instance's portal configuration; returns its id. */
-export async function ensurePortalConfiguration(client: StripeClient): Promise<string> {
-  const existing = await client.listAll<StripeObject>('/v1/billing_portal/configurations', {
-    active: true,
-  }, { maxPages: 5 })
+/**
+ * Find or create this instance's portal configuration; returns its id. The
+ * create is keyed on the configuration version and the current idempotency
+ * window (`idempotency.ts`): a refused create is not replayed past the
+ * window, and a duplicate from a lost response is harmless because the
+ * lookup above returns the first match.
+ */
+export async function ensurePortalConfiguration(
+  client: StripeClient,
+  nowMs: number = Date.now()
+): Promise<string> {
+  const existing = await client.listAll<StripeObject>(
+    '/v1/billing_portal/configurations',
+    {
+      active: true,
+    },
+    { maxPages: 5 }
+  )
   for (const configuration of existing) {
     const metadata = isObject(configuration.metadata) ? configuration.metadata : null
     if (metadata?.[PORTAL_CONFIGURATION_LOOKUP_KEY] === PORTAL_CONFIGURATION_LOOKUP_VALUE) {
@@ -56,7 +70,12 @@ export async function ensurePortalConfiguration(client: StripeClient): Promise<s
       features: PORTAL_CONFIGURATION_FEATURES,
       metadata: { [PORTAL_CONFIGURATION_LOOKUP_KEY]: PORTAL_CONFIGURATION_LOOKUP_VALUE },
     },
-    { idempotencyKey: `portal-configuration:${PORTAL_CONFIGURATION_LOOKUP_VALUE}` },
+    {
+      idempotencyKey: windowedIdempotencyKey(
+        `portal-configuration:${PORTAL_CONFIGURATION_LOOKUP_VALUE}`,
+        nowMs
+      ),
+    }
   )
   const id = str(created.id)
   if (!id) throw new Error('stripe portal configuration returned no id')
@@ -70,7 +89,7 @@ export type CreatePortalSessionInput = Readonly<{
 
 export async function createPortalSession(
   client: StripeClient,
-  input: CreatePortalSessionInput,
+  input: CreatePortalSessionInput
 ): Promise<{ url: string }> {
   const configuration = await ensurePortalConfiguration(client)
   const session = await client.post<StripeObject>('/v1/billing_portal/sessions', {
