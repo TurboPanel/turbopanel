@@ -69,7 +69,7 @@ export const billingSchemas = {
       sizeCommand: {
         type: 'string',
         description:
-          'One-line POSIX shell command to show on Add Server: run on the server, it prints its physical cores, RAM and the tier they land in, e.g. `8 cores, 31.3 GiB RAM -> S2` — measured the way placement measures them.',
+          "One-line POSIX shell command to show on Add Server: run on the server, it prints its physical cores and RAM, e.g. `8 cores, 31.3 GiB RAM` — measured the way placement measures them. Map it to a tier with each tier's `entitlements.maxCores` / `maxMemoryBytes` (the harder of the two bands wins).",
       },
     },
   },
@@ -110,7 +110,7 @@ export const billingSchemas = {
       available: {
         type: 'integer',
         description:
-          '`purchased − ending − inUse`, floored at 0. Advisory — the mint gate is the organization-wide `licenses.available`.',
+          '`purchased − ending − inUse`, floored at 0 and capped at the organization-wide `licenses.available`, so a tier never shows a license free that the mint gate refuses (an unused or provisioning key holds a license but has no tier yet).',
       },
       releasing: {
         type: 'integer',
@@ -124,7 +124,18 @@ export const billingSchemas = {
   },
   BillingLicenseSummary: {
     type: 'object',
-    required: ['purchased', 'releasing', 'ending', 'endsAt', 'held', 'inUse', 'bound', 'available'],
+    required: [
+      'purchased',
+      'releasing',
+      'ending',
+      'endsAt',
+      'held',
+      'inUse',
+      'bound',
+      'provisioning',
+      'unusedKeys',
+      'available',
+    ],
     properties: {
       purchased: { type: 'integer', description: 'Total committed quantity across tiers.' },
       releasing: {
@@ -137,9 +148,27 @@ export const billingSchemas = {
         description: 'Licenses ending at the period boundary, all tiers; restorable.',
       },
       endsAt: { type: ['string', 'null'], format: 'date-time' },
-      held: { type: 'integer', description: 'Active licenses, bound or waiting to connect.' },
-      inUse: { type: 'integer', description: 'Same number as `held`, under the console name.' },
-      bound: { type: 'integer', description: 'The subset bound to a server.' },
+      held: {
+        type: 'integer',
+        description:
+          'Active licenses: `inUse + unusedKeys`. What the mint gate subtracts; show `inUse` and `unusedKeys` instead.',
+      },
+      inUse: {
+        type: 'integer',
+        description:
+          'Licenses in use: bound to a server, or provisioning (`bound + provisioning`).',
+      },
+      bound: { type: 'integer', description: 'Licenses bound to a server.' },
+      provisioning: {
+        type: 'integer',
+        description:
+          'Registration keys whose daemon has started enrolling but whose server is not bound yet — a server being provisioned. In use, never free.',
+      },
+      unusedKeys: {
+        type: 'integer',
+        description:
+          'Registration keys nobody has used yet. Each holds a license until it is used or deleted; organization-wide (a key has no tier until its server connects).',
+      },
       available: {
         type: 'integer',
         description: '`purchased − releasing − held`: how many more servers can be added.',

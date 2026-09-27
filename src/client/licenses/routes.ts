@@ -47,6 +47,10 @@ import {
   SERVER_CAPACITY_EXCEEDED_ERROR,
 } from '../../features/servers/server-capacity.ts'
 import { getOrgId } from '../shared.ts'
+import {
+  clearLicenseEnrollAttempt,
+  listProvisioningLicenses,
+} from '../../features/licenses/enroll-attempt.ts'
 import { resolveInstanceUpdateChannel } from '../../contracts/update-channel.ts'
 import {
   installBaseUrlValidationError,
@@ -190,11 +194,13 @@ export function registerLicenseRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         ? await loadServerStatusRecords(db, registry, boundServerIds)
         : []
     const statusByServerId = new Map(statusRecords.map((record) => [record.serverId, record]))
+    const provisioning = await listProvisioningLicenses(db, organizationId)
 
     return c.json({
       licenses: licenses.map(({ id, name, createdAt }) => {
         const bound = boundServers.get(id)
         const status = bound ? statusByServerId.get(bound.id) : undefined
+        const attempt = provisioning.get(id)
         return serializeLicenseListEntry({
           id,
           name,
@@ -202,6 +208,7 @@ export function registerLicenseRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
           revocable: !protectedIds.has(id),
           bound,
           status,
+          provisioning: attempt ? { since: attempt.at, hostname: attempt.hostname } : undefined,
         })
       }),
     })
@@ -360,6 +367,8 @@ export function registerLicenseRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     // Actively disconnect bound daemons — revoke alone leaves live sockets and
     // unexpired JWTs usable until they naturally expire.
     await purgeInvalidatedDaemonCells(registry, invalidated.serverIds)
+    // A revoked key is no longer provisioning anything.
+    await clearLicenseEnrollAttempt(db, id).catch(() => {})
 
     // The revoked key gave its granted unit back. Shrinking runs on **both**
     // runtimes: a grant left standing after a revoke is a license the hosted

@@ -1,10 +1,6 @@
 import { assert, assertEquals } from '@std/assert'
 import { join } from '@std/path'
-import { cpuBand, ramBand, resolveRequiredTier } from './tier-placement.ts'
-import { PRICED_LADDER } from './ladder.ts'
 import { buildServerSizeCommand, SERVER_SIZE_COMMAND } from './size-command.ts'
-
-const GIB = 1024 ** 3
 
 /** One `/proc/cpuinfo` processor block. */
 function processor(
@@ -42,25 +38,15 @@ async function runSize(cpuinfo: string, mem: string): Promise<string> {
   }
 }
 
-/** The tier placement would give a machine with these totals. */
-function placement(cores: number, memoryBytes: number): string {
-  return resolveRequiredTier({
-    cpus: [{ cores: { total: cores } }],
-    memory: { totalBytes: memoryBytes },
-  }).label
-}
-
-Deno.test('the console command reads /proc and carries no single quote inside the program', () => {
-  assert(SERVER_SIZE_COMMAND.endsWith(' /proc/cpuinfo /proc/meminfo'))
-  const program = SERVER_SIZE_COMMAND.split("'")
-  assertEquals(program.length, 3, 'exactly one single-quoted awk program')
-})
-
-Deno.test('the ladder is priced in whole GiB, so the GiB ceilings in the command are exact', () => {
-  for (const entry of PRICED_LADDER) {
-    assert(Number.isInteger(entry.maxMemoryBytes / GIB), entry.label)
+Deno.test(
+  'the console command reads /proc, is short, and carries no single quote inside the program',
+  () => {
+    assert(SERVER_SIZE_COMMAND.startsWith("awk -F: '"))
+    assert(SERVER_SIZE_COMMAND.endsWith(' /proc/cpuinfo /proc/meminfo'))
+    assertEquals(SERVER_SIZE_COMMAND.split("'").length, 3, 'exactly one single-quoted awk program')
+    assert(SERVER_SIZE_COMMAND.length <= 240, `${SERVER_SIZE_COMMAND.length} characters`)
   }
-})
+)
 
 Deno.test('hyperthreads never count: 2 sockets x 4 cores x 2 threads is 8 cores', async () => {
   let cpuinfo = ''
@@ -72,14 +58,12 @@ Deno.test('hyperthreads never count: 2 sockets x 4 cores x 2 threads is 8 cores'
       }
     }
   }
-  const out = await runSize(cpuinfo, meminfo(8 * 1024 * 1024))
-  assertEquals(out, '8 cores, 8.0 GiB RAM -> S2')
-  assertEquals(placement(8, 8 * GIB), 'S2')
+  assertEquals(await runSize(cpuinfo, meminfo(8 * 1024 * 1024)), '8 cores, 8.0 GiB RAM')
 })
 
 Deno.test('no topology (e.g. many ARM boards): every processor is a core', async () => {
   const cpuinfo = [0, 1, 2, 3].map((i) => processor(i)).join('') + 'Hardware\t: Test Board\n'
-  assertEquals(await runSize(cpuinfo, meminfo(4 * 1024 * 1024)), '4 cores, 4.0 GiB RAM -> S1')
+  assertEquals(await runSize(cpuinfo, meminfo(4 * 1024 * 1024)), '4 cores, 4.0 GiB RAM')
 })
 
 Deno.test('no core id: falls back to cpu cores per socket', async () => {
@@ -87,31 +71,12 @@ Deno.test('no core id: falls back to cpu cores per socket', async () => {
     .map((i) => processor(i, { physicalId: i < 4 ? 0 : 1, cpuCores: 2 }))
     .join('')
   // Two sockets reporting "cpu cores: 2" — 4 physical cores, not 8.
-  assertEquals(await runSize(cpuinfo, meminfo(1024 * 1024)), '4 cores, 1.0 GiB RAM -> S1')
+  assertEquals(await runSize(cpuinfo, meminfo(1024 * 1024)), '4 cores, 1.0 GiB RAM')
 })
 
-Deno.test('RAM bands at the ceiling edges match placement, and the harder band wins', async () => {
+Deno.test('RAM is MemTotal in GiB with one decimal, the unit placement reads', async () => {
   const oneCore = processor(0, { physicalId: 0, coreId: 0, cpuCores: 1 })
-  const cases: Array<[number, string]> = [
-    [16 * 1024 * 1024, 'S1'],
-    [16 * 1024 * 1024 + 1, 'S2'],
-    [64 * 1024 * 1024, 'S3'],
-    [1024 * 1024 * 1024, 'S7'],
-    [1024 * 1024 * 1024 + 4, 'SX'],
-  ]
-  for (const [kb, label] of cases) {
-    const out = await runSize(oneCore, meminfo(kb))
-    assert(out.endsWith(`-> ${label}`), `${kb} kB: ${out}`)
-    assertEquals(label, ramBand(kb * 1024).label)
-  }
-})
-
-Deno.test('CPU bands at the ceiling edges match placement, including SX past S7', async () => {
-  for (const cores of [4, 5, 10, 11, 256, 257]) {
-    const cpuinfo = Array.from({ length: cores }, (_, i) =>
-      processor(i, { physicalId: 0, coreId: i, cpuCores: cores })
-    ).join('')
-    const out = await runSize(cpuinfo, meminfo(1024 * 1024))
-    assertEquals(out, `${cores} cores, 1.0 GiB RAM -> ${cpuBand(cores).label}`)
-  }
+  assertEquals(await runSize(oneCore, meminfo(16 * 1024 * 1024)), '1 cores, 16.0 GiB RAM')
+  // A "32 GB" machine reports a little under 32 GiB.
+  assertEquals(await runSize(oneCore, meminfo(32_791_232)), '1 cores, 31.3 GiB RAM')
 })

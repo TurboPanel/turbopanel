@@ -41,6 +41,7 @@ import {
 } from '../../features/tiers/assignment-records.ts'
 import { ladderEntry, ladderEntryByRank } from '../../features/tiers/ladder.ts'
 import type { TierDelta } from '../../features/billing/subscriptions.ts'
+import { listProvisioningLicenses } from '../../features/licenses/enroll-attempt.ts'
 
 export const BILLING_NOT_CONFIGURED_ERROR = 'billing_not_configured'
 export const BILLING_MUTATION_IN_PROGRESS_ERROR = 'billing_mutation_in_progress'
@@ -129,7 +130,15 @@ export async function loadBillingOrgView(
   _nowMs: number
 ): Promise<BillingOrgView> {
   const state = await listSeatsForOrganization(db, organizationId)
-  const licenses = await countActiveLicenses(db, organizationId)
+  const counted = await countActiveLicenses(db, organizationId)
+  // Only read the enrol-attempt records when some key is still unbound.
+  const licenses = {
+    ...counted,
+    provisioning:
+      counted.active > counted.bound
+        ? (await listProvisioningLicenses(db, organizationId)).size
+        : 0,
+  }
   const servers = await loadAssignableServers(db, organizationId)
   const { ledger } = state.subscription
     ? await readPendingChanges(db, organizationId, state.subscription.providerSubscriptionId)
@@ -152,9 +161,11 @@ export type TierSummary = Readonly<{
   /** When they end (ISO), or `null` when nothing is ending. */
   endsAt: string | null
   /**
-   * `purchased − ending − inUse`, floored at zero. Advisory: a key waiting to
-   * connect holds a license but no tier yet, so the mint gate is the
-   * organization-wide `licenses.available`, not this.
+   * `purchased − ending − inUse`, floored at zero and capped at the
+   * organization-wide `licenses.available`. The cap is what keeps the two in
+   * agreement: an unused registration key holds a license but has no tier
+   * until its server connects, so it can only be charged org-wide — without
+   * the cap a tier would show a license "free" that the mint gate refuses.
    */
   available: number
   /**
@@ -168,6 +179,7 @@ export type TierSummary = Readonly<{
 
 /** Per-tier purchased vs in use, in ladder order. */
 export function summarizeTiers(view: BillingOrgView): TierSummary[] {
+  const orgAvailable = summarizeLicenses(view).available
   const seats = seatQuantitiesByTier(view.state)
   const releases = outstandingReleasesByTier(view.ledger)
   const ending = endingLicensesByTier(view.ledger)
@@ -191,7 +203,7 @@ export function summarizeTiers(view: BillingOrgView): TierSummary[] {
       inUse: used,
       ending: endingHere?.count ?? 0,
       endsAt: endingHere?.endsAt ?? null,
-      available: Math.max(0, purchased - (endingHere?.count ?? 0) - used),
+      available: Math.min(orgAvailable, Math.max(0, purchased - (endingHere?.count ?? 0) - used)),
       releasing: releases.get(seat.tierId) ?? 0,
       priceCents: seat.tier.priceCents,
       currency: seat.tier.currency,
@@ -216,11 +228,27 @@ export type LicenseSummary = Readonly<{
   ending: number
   /** The earliest date any of them ends (ISO), or `null`. */
   endsAt: string | null
-  /** Active licenses held, bound or waiting to connect. */
+  /**
+   * Active licenses held, bound or waiting to connect: `inUse + unusedKeys`.
+   * @deprecated for display — show `inUse` and `unusedKeys`; it stays the
+   * number the mint gate subtracts.
+   */
   held: number
-  /** The same number as `held`, under the name the console shows ("in use"). */
+  /** What the console calls "in use": `bound + provisioning`. */
   inUse: number
+  /** Licenses bound to a server. */
   bound: number
+  /**
+   * Registration keys whose daemon has started enrolling but whose server
+   * is not bound yet — a server being provisioned. In use, never free.
+   */
+  provisioning: number
+  /**
+   * Registration keys nobody has used yet (`held − bound − provisioning`).
+   * Each holds a license until it is used or deleted, and carries no tier
+   * until its server connects, so it is counted organization-wide only.
+   */
+  unusedKeys: number
   /** `purchased − releasing − held`, floored at zero: how many more servers can be added. */
   available: number
 }>
@@ -238,6 +266,11 @@ export function summarizeLicenses(view: BillingOrgView): LicenseSummary {
     releasing += count
   }
   const held = view.licenses.active
+  // Clamped: a key counts as provisioning only while it is active and unbound.
+  const provisioning = Math.min(
+    view.licenses.provisioning ?? 0,
+    Math.max(0, held - view.licenses.bound)
+  )
   let ending = 0
   let endsAt: string | null = null
   for (const entry of endingLicensesByTier(view.ledger).values()) {
@@ -251,8 +284,10 @@ export function summarizeLicenses(view: BillingOrgView): LicenseSummary {
     ending,
     endsAt,
     held,
-    inUse: held,
+    inUse: view.licenses.bound + provisioning,
     bound: view.licenses.bound,
+    provisioning,
+    unusedKeys: Math.max(0, held - view.licenses.bound - provisioning),
     available: Math.max(0, purchased - releasing - held),
   }
 }
@@ -297,28 +332,56 @@ export function formatEndsOn(iso: string | null): string | null {
 }
 
 /**
- * The sentence Add Server shows when no license is free. It never calls an
- * ending license "in use": ending licenses are named with their date and the
- * way out (restore); a license only moving tier at the boundary (a pending
- * downgrade, which the mint gate also holds back) is named as such;
- * otherwise the way out is buying one.
+ * The sentence Add Server shows when no license is free. It names every
+ * reason a purchased license is not available, never calling an ending
+ * license or an unused registration key "in use", and ends with the cheapest
+ * way out: use or delete the unused key, restore an ending license (both
+ * free), and only then buy one. A license only moving tier at the boundary
+ * (a pending downgrade, which the mint gate also holds back) is named as such.
  */
 export function licenseExhaustionMessage(
-  summary: Pick<LicenseSummary, 'purchased' | 'releasing' | 'held' | 'ending' | 'endsAt'>
+  summary: Pick<
+    LicenseSummary,
+    'purchased' | 'releasing' | 'held' | 'bound' | 'provisioning' | 'ending' | 'endsAt'
+  >
 ): string {
-  const { purchased, releasing, held, ending } = summary
+  const { purchased, releasing, held, bound, provisioning, ending } = summary
+  const unused = Math.max(0, held - bound - provisioning)
+  if (purchased === 0) return 'No licenses yet — buy one to add this server.'
+  const inUse = bound + provisioning
+  const parts: string[] = []
+  if (inUse > 0) {
+    parts.push(
+      provisioning > 0 ? `${inUse} in use (${provisioning} provisioning)` : `${inUse} in use`
+    )
+  }
+  if (unused > 0) {
+    parts.push(
+      unused === 1
+        ? '1 held by an unused registration key'
+        : `${unused} held by unused registration keys`
+    )
+  }
   if (ending > 0) {
     const endsOn = formatEndsOn(summary.endsAt)
     const when = endsOn ? ` ${endsOn}` : ' at the end of the billing period'
-    return `${held} in use, ${ending} ${ending === 1 ? 'ends' : 'end'}${when} — restore one to add this server.`
+    parts.push(`${ending} ${ending === 1 ? 'ends' : 'end'}${when}`)
   }
-  if (purchased === 0) return 'No licenses yet — buy one to add this server.'
   const moving = Math.min(Math.max(0, releasing - ending), Math.max(0, purchased - held))
-  if (moving > 0) {
-    return `${held} in use, ${moving} changing tier at the end of the billing period — buy another to add this server now.`
+  if (moving > 0) parts.push(`${moving} changing tier at the end of the billing period`)
+
+  if (unused > 0 && ending > 0) {
+    return `${parts.join(', ')} — use or delete the unused key, or restore one, to add this server.`
   }
+  if (unused > 0) {
+    const it = unused === 1 ? 'it' : 'one'
+    return `${parts.join(', ')} — delete ${it} or use ${it} to add this server.`
+  }
+  if (ending > 0) return `${parts.join(', ')} — restore one to add this server.`
+  if (moving > 0) return `${parts.join(', ')} — buy another to add this server now.`
   const all = purchased === 1 ? 'Your only license is' : `All ${purchased} licenses are`
-  return `${all} in use — buy another to add this server.`
+  const note = provisioning > 0 ? ` (${provisioning} provisioning)` : ''
+  return `${all} in use${note} — buy another to add this server.`
 }
 
 export function hasLiveSubscription(view: BillingOrgView): boolean {

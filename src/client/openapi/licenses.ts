@@ -2,7 +2,7 @@ export function buildLicenseSchemas(installCommandDescription: string) {
   return {
     LicenseRecord: {
       type: 'object',
-      required: ['id', 'name', 'createdAt', 'revocable', 'boundServer'],
+      required: ['id', 'name', 'createdAt', 'revocable', 'boundServer', 'provisioning'],
       properties: {
         id: { type: 'string' },
         name: { type: ['string', 'null'] },
@@ -27,6 +27,25 @@ export function buildLicenseSchemas(installCommandDescription: string) {
           ],
           description:
             'Bound server when exactly one server in the org references this license; null when unbound or ambiguously bound.',
+        },
+        provisioning: {
+          oneOf: [
+            {
+              type: 'object',
+              required: ['since', 'hostname'],
+              properties: {
+                since: {
+                  type: 'string',
+                  format: 'date-time',
+                  description: 'When the daemon last tried to enrol with this key.',
+                },
+                hostname: { type: ['string', 'null'] },
+              },
+            },
+            { type: 'null' },
+          ],
+          description:
+            'Set on an unbound key whose daemon has already tried to enrol (token and signature verified, even if the enrol was refused): its server is being provisioned, so the key is in use — not an unused key to delete. Null otherwise.',
         },
       },
     },
@@ -180,7 +199,7 @@ export function buildLicensePaths(_installCommandDescription: string): Record<st
           },
           '409': {
             description:
-              'Self-hosted: server seat capacity exceeded (maxServers; enrolled servers and unconsumed keys both count). Hosted: `no_license_available` — every purchased license is held (bound or waiting to connect) or ending at the period boundary; `message` is the sentence to show (it never calls an ending license "in use"), and the counts say whether to restore (`ending > 0`, `POST /billing/restore`) or buy. Also `billing_mutation_in_progress` while the organization quantity lease is held.',
+              'Self-hosted: server seat capacity exceeded (maxServers; enrolled servers and unconsumed keys both count). Hosted: `no_license_available` — every purchased license is in use (bound or provisioning), held by an unused registration key, or ending at the period boundary; `message` is the sentence to show (it never calls an ending license or an unused key "in use"), and the counts say whether to use or delete a key (`unusedKeys > 0`), restore (`ending > 0`, `POST /billing/restore`) or buy. Also `billing_mutation_in_progress` while the organization quantity lease is held.',
             content: {
               'application/json': {
                 schema: {
@@ -209,6 +228,8 @@ export function buildLicensePaths(_installCommandDescription: string): Record<st
                         'message',
                         'purchased',
                         'inUse',
+                        'provisioning',
+                        'unusedKeys',
                         'ending',
                         'endsAt',
                         'available',
@@ -219,12 +240,22 @@ export function buildLicensePaths(_installCommandDescription: string): Record<st
                         message: {
                           type: 'string',
                           description:
-                            'e.g. "3 in use, 3 end Oct 26 — restore one to add this server." or "All 3 licenses are in use — buy another to add this server."',
+                            'e.g. "5 in use, 1 held by an unused registration key — delete it or use it to add this server.", "3 in use, 3 end Oct 26 — restore one to add this server." or "All 3 licenses are in use — buy another to add this server."',
                         },
                         purchased: { type: 'integer' },
                         inUse: {
                           type: 'integer',
-                          description: 'Licenses held: bound to a server or waiting to connect.',
+                          description: 'Licenses in use: bound to a server, or provisioning.',
+                        },
+                        provisioning: {
+                          type: 'integer',
+                          description:
+                            'Of `inUse`, keys whose server is being provisioned (daemon enrolling, not bound yet).',
+                        },
+                        unusedKeys: {
+                          type: 'integer',
+                          description:
+                            'Registration keys nobody has used yet; each holds a license until used or deleted.',
                         },
                         ending: {
                           type: 'integer',
@@ -264,7 +295,12 @@ export function buildLicensePaths(_installCommandDescription: string): Record<st
                           deprecated: true,
                           description: 'Use `ending`.',
                         },
-                        held: { type: 'integer', deprecated: true, description: 'Use `inUse`.' },
+                        held: {
+                          type: 'integer',
+                          deprecated: true,
+                          description:
+                            'Use `inUse` and `unusedKeys` (`held = inUse + unusedKeys`).',
+                        },
                       },
                     },
                     {
