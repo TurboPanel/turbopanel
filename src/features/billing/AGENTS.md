@@ -195,7 +195,14 @@ Quantities are bought through Stripe; keys are minted by the console against the
 total. Every mutation is a **quantity** change — nothing names a license or a
 server:
 
-- `changeSeats(tierId, +n)` — immediate, invoiced now.
+- `changeSeats(tierId, +n)` — first takes back up to `n` of that tier's seats
+  still leaving at the boundary (newest `release-seat` intent first; withdrawn
+  from the ledger and the schedule rebuilt, or released when nothing is left
+  leaving — no charge, since the seat is paid through the period), then buys
+  only the rest, immediate and invoiced now. Taking a leaving seat back is
+  allowed while past due; any purchase is refused then, before anything is
+  withdrawn. `POST /billing/preview` quotes the same split (`restored`, and
+  zero amounts with no Stripe call when nothing is bought).
 - `changeSeats(tierId, −n)` — one `release-seat` intent per unit, a schedule
   phase at the boundary.
 - `upgradeTier(from, to)` — `−1` at the lower and `+1` at the higher tier,
