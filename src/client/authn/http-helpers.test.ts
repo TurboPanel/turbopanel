@@ -20,11 +20,7 @@ import {
   withMockLogin,
 } from './authn-hostfree-doubles.ts'
 import { createEmailVerificationToken } from './email-verification.ts'
-import {
-  buildSignedCookie,
-  HTTP_SESSION_COOKIE_NAME,
-  HTTPS_SESSION_COOKIE_NAME,
-} from './crypto.ts'
+import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME, HTTPS_SESSION_COOKIE_NAME } from './crypto.ts'
 import {
   buildSessionResponse,
   enforceAuthRateLimit,
@@ -70,7 +66,7 @@ async function buildAuthApp(
     signupEnvOverride?: '1' | '0'
     emailQueue?: { enqueue: (job: unknown) => Promise<void> }
     platformEnv?: Record<string, string | undefined>
-  } = {},
+  } = {}
 ) {
   const derived = await authSecrets()
   const app = new Hono<AppEnv>()
@@ -79,9 +75,12 @@ async function buildAuthApp(
     if (opts.db) c.set('db', opts.db)
     if (opts.emailQueue) c.set('emailQueue', opts.emailQueue)
     if (opts.platformEnv) c.set('platformEnv', opts.platformEnv)
-    c.set('authRateLimiter', createAuthRateLimiter({
-      defaultPolicy: { limit: 10_000, windowMs: 60_000 },
-    }))
+    c.set(
+      'authRateLimiter',
+      createAuthRateLimiter({
+        defaultPolicy: { limit: 10_000, windowMs: 60_000 },
+      })
+    )
     return next()
   })
   registerAuthRoutes(client, {
@@ -142,7 +141,7 @@ test('isVerificationDevLoggingEnabled stays false on Deno outside development mo
         runtime: 'deno',
         signupEnvOverride: undefined,
       }),
-      false,
+      false
     )
   } finally {
     for (const [key, value] of saved) {
@@ -158,7 +157,7 @@ test('isVerificationDevLoggingEnabled stays false on Workers', () => {
       runtime: 'workers',
       signupEnvOverride: undefined,
     }),
-    false,
+    false
   )
 })
 
@@ -176,7 +175,7 @@ test('isVerificationDevLoggingEnabled is true in explicit development mode', () 
         runtime: 'deno',
         signupEnvOverride: undefined,
       }),
-      true,
+      true
     )
   } finally {
     for (const [key, value] of saved) {
@@ -341,12 +340,15 @@ test('sign-out clears HTTP and HTTPS session cookies', async () => {
   })
   httpsApp.route(CLIENT_API_PREFIX, client)
 
-  const httpsRes2 = await httpsApp.request('https://panel.example.com/api/client/v1/auth/sign-out', {
-    method: 'POST',
-    headers: {
-      Cookie: `${HTTPS_SESSION_COOKIE_NAME}=${signed}`,
-    },
-  })
+  const httpsRes2 = await httpsApp.request(
+    'https://panel.example.com/api/client/v1/auth/sign-out',
+    {
+      method: 'POST',
+      headers: {
+        Cookie: `${HTTPS_SESSION_COOKIE_NAME}=${signed}`,
+      },
+    }
+  )
   assertEquals(httpsRes2.status, 200)
   const cookies = httpsRes2.headers.getSetCookie?.() ?? []
   const joined = cookies.join(';')
@@ -405,7 +407,7 @@ function wrapAuthDbWithInvitation(
     email: string
     status: string
     expiresAt: string
-  } | null,
+  } | null
 ) {
   const authDb = createMockAuthDb(state)
   const origSelect = (
@@ -508,6 +510,105 @@ test('Workers sign-up succeeds with mock db and no email verification', async ()
   assertEquals(state.organizations.length, 1)
 })
 
+/** Built at run time so secret scanners never read a fixture as a credential. */
+const INVITED_SIGNUP_CREDENTIAL = `Aa1-${crypto.randomUUID()}`
+
+test('Workers sign-up from an invitation to the same email creates no personal organization', async () => {
+  const state = createEmptyMockAuthState()
+  seedMockSignupEnabled(state, true)
+  const email = 'joining@example.com'
+  const { app } = await buildAuthApp({
+    db: wrapAuthDbWithInvitation(state, {
+      email,
+      status: 'pending',
+      expiresAt: '2099-01-01T00:00:00.000Z',
+    }),
+    runtime: 'workers',
+    signupEnvOverride: '1',
+  })
+
+  const res = await app.request(`${CLIENT_API_PREFIX}/auth/sign-up`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'CF-Connecting-IP': '203.0.113.21' },
+    body: JSON.stringify({
+      email,
+      password: INVITED_SIGNUP_CREDENTIAL,
+      invitationId: '11111111-1111-4111-8111-111111111111',
+    }),
+  })
+  assertEquals(res.status, 201)
+  assertEquals(state.users.length, 1)
+  assertEquals(state.organizations.length, 0)
+})
+
+test('verification email for an invitation sign-up links back to the invitation', async () => {
+  const state = createEmptyMockAuthState()
+  seedMockSignupEnabled(state, true)
+  const email = 'joining-verified@example.com'
+  const invitationId = '11111111-1111-4111-8111-111111111111'
+  const jobs: Array<{ type?: string; verificationUrl?: string }> = []
+  const { app } = await buildAuthApp({
+    db: wrapAuthDbWithInvitation(state, {
+      email,
+      status: 'pending',
+      expiresAt: '2099-01-01T00:00:00.000Z',
+    }),
+    runtime: 'workers',
+    signupEnvOverride: '1',
+    platformEnv: {
+      TURBOPANEL_SYSTEM_EMAIL__PROVIDER: 'mailpit-api',
+      TURBOPANEL_SYSTEM_EMAIL__MAILPIT_API_URL: 'https://mailpit.example.com',
+      TURBOPANEL_BASE_URL: 'https://panel.example.com',
+    },
+    emailQueue: {
+      enqueue: (job) => {
+        jobs.push(job as { type?: string; verificationUrl?: string })
+        return Promise.resolve()
+      },
+    },
+  })
+
+  const res = await app.request(`${CLIENT_API_PREFIX}/auth/sign-up`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'CF-Connecting-IP': '203.0.113.23' },
+    body: JSON.stringify({ email, password: INVITED_SIGNUP_CREDENTIAL, invitationId }),
+  })
+  assertEquals(res.status, 201)
+  assertEquals(jobs.length, 1)
+  assertEquals(jobs[0]?.type, 'signup-verification')
+  assertEquals(
+    new URL(jobs[0]?.verificationUrl ?? 'x:/').searchParams.get('invitationId'),
+    invitationId
+  )
+  assertEquals(state.organizations.length, 0)
+})
+
+test('Workers sign-up from an invitation to a different email still gets its own organization', async () => {
+  const state = createEmptyMockAuthState()
+  seedMockSignupEnabled(state, true)
+  const { app } = await buildAuthApp({
+    db: wrapAuthDbWithInvitation(state, {
+      email: 'invited@example.com',
+      status: 'pending',
+      expiresAt: '2099-01-01T00:00:00.000Z',
+    }),
+    runtime: 'workers',
+    signupEnvOverride: '1',
+  })
+
+  const res = await app.request(`${CLIENT_API_PREFIX}/auth/sign-up`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'CF-Connecting-IP': '203.0.113.22' },
+    body: JSON.stringify({
+      email: 'someone-else@example.com',
+      password: INVITED_SIGNUP_CREDENTIAL,
+      invitationId: '11111111-1111-4111-8111-111111111111',
+    }),
+  })
+  assertEquals(res.status, 201)
+  assertEquals(state.organizations.length, 1)
+})
+
 test('Workers duplicate sign-up is indistinguishable with mock db', async () => {
   const state = createEmptyMockAuthState()
   seedMockSignupEnabled(state, true)
@@ -548,7 +649,7 @@ test('verify-email consumes token and marks mock user verified', async () => {
   const { app } = await buildAuthApp({ db, runtime: 'workers' })
 
   const res = await app.request(
-    `${CLIENT_API_PREFIX}/auth/verify-email?token=${encodeURIComponent(token)}`,
+    `${CLIENT_API_PREFIX}/auth/verify-email?token=${encodeURIComponent(token)}`
   )
   assertEquals(res.status, 200)
   assertEquals(state.users[0]?.isEmailVerified, true)
@@ -571,7 +672,7 @@ test('verify-email returns 404 when user row is missing', async () => {
   const { app } = await buildAuthApp({ db, runtime: 'workers' })
 
   const res = await app.request(
-    `${CLIENT_API_PREFIX}/auth/verify-email?token=${encodeURIComponent(token)}`,
+    `${CLIENT_API_PREFIX}/auth/verify-email?token=${encodeURIComponent(token)}`
   )
   assertEquals(res.status, 404)
 })
@@ -674,18 +775,27 @@ test('resolveVerificationBaseUrlAsync ignores a forged forwarded host when a bas
       await app.request(
         new Request('https://panel.example.com/probe', {
           headers: { 'x-forwarded-host': 'evil.example', 'x-forwarded-proto': 'https' },
-        }),
+        })
       )
       return resolved
     }
     // A configured base URL wins over the request and any forwarded host.
-    assertEquals(await resolveWith({ baseUrl: 'https://console.example.com' }), 'https://console.example.com')
+    assertEquals(
+      await resolveWith({ baseUrl: 'https://console.example.com' }),
+      'https://console.example.com'
+    )
     Deno.env.set('TURBOPANEL_PUBLIC_URLS', 'https://stored.example.com')
     // A stored public URL wins over the configured base URL.
-    assertEquals(await resolveWith({ baseUrl: 'https://console.example.com' }), 'https://stored.example.com')
+    assertEquals(
+      await resolveWith({ baseUrl: 'https://console.example.com' }),
+      'https://stored.example.com'
+    )
     // Plaintext http is never a verification origin.
     Deno.env.delete('TURBOPANEL_PUBLIC_URLS')
-    assertEquals((await resolveWith({ baseUrl: 'http://console.example.com' })).startsWith('http://'), false)
+    assertEquals(
+      (await resolveWith({ baseUrl: 'http://console.example.com' })).startsWith('http://'),
+      false
+    )
   } finally {
     if (savedBaseUrl === undefined) Deno.env.delete('TURBOPANEL_BASE_URL')
     else Deno.env.set('TURBOPANEL_BASE_URL', savedBaseUrl)

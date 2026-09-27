@@ -470,20 +470,33 @@ async function provisionWorkersOrganization(
   }
 }
 
+/** Who a sign-up verification email is for, and the invitation it came from (if any). */
+type SignupVerificationTarget = {
+  trimmedEmail: string
+  userId: string
+  emailFrom: string
+  /**
+   * Set when the sign-up came from an invitation addressed to this email: the
+   * verification link carries it so the console can send the user on to
+   * accept it, and no personal organization is provisioned.
+   */
+  invitationId?: string
+}
+
 async function enqueueSignupVerification(
   c: Context,
   opts: AuthRouteOpts,
   db: Db,
   queue: EmailQueue,
-  trimmedEmail: string,
-  userId: string,
-  emailFrom: string
+  target: SignupVerificationTarget
 ): Promise<Response | null> {
+  const { trimmedEmail, userId, emailFrom, invitationId } = target
   const verificationToken = await createEmailVerificationToken(db, trimmedEmail)
   const baseOrigin = await resolveVerificationBaseUrlAsync(c, opts)
+  const invitationParam = invitationId ? `&invitationId=${encodeURIComponent(invitationId)}` : ''
   const verificationUrl = `${baseOrigin}/verify-email?token=${encodeURIComponent(
     verificationToken
-  )}`
+  )}${invitationParam}`
 
   try {
     await queue.enqueue({
@@ -492,7 +505,9 @@ async function enqueueSignupVerification(
       from: emailFrom,
       verificationUrl,
     })
-    await provisionWorkersOrganization(db, opts, userId)
+    if (!invitationId) {
+      await provisionWorkersOrganization(db, opts, userId)
+    }
     if (isVerificationDevLoggingEnabled(opts)) {
       compatLogInfo('dev', 'verification email queued')
     }
@@ -603,21 +618,19 @@ async function deliverSignupVerification(
   opts: AuthRouteOpts,
   db: Db,
   queue: EmailQueue | undefined,
-  trimmedEmail: string,
-  userId: string,
-  emailFrom: string
+  target: SignupVerificationTarget
 ): Promise<Response | null> {
   if (!queue) {
     compatLogWarn(
       'email',
-      `verification email not sent for ${trimmedEmail}: email queue unavailable`
+      `verification email not sent for ${target.trimmedEmail}: email queue unavailable`
     )
     return null
   }
 
   // Token generation must not roll back the already-committed user creation.
   try {
-    return await enqueueSignupVerification(c, opts, db, queue, trimmedEmail, userId, emailFrom)
+    return await enqueueSignupVerification(c, opts, db, queue, target)
   } catch (err) {
     compatLogError('auth', `verification token generation failed: ${err}`)
     return null
@@ -805,6 +818,15 @@ export function registerAuthRoutes(app: Hono<AppEnv>, opts: AuthRouteOpts) {
       return c.json({ ok: true }, 201)
     }
 
+    // Signing up from an invitation addressed to this very email joins the
+    // inviter's organization (the console accepts it after sign-in) — so no
+    // personal organization is created. A different email gets an ordinary
+    // account: it cannot claim an invitation sent to someone else.
+    const joiningInvitationId =
+      parsed.invitationId && (await invitationAllowsSignup(db, parsed.invitationId, trimmedEmail))
+        ? parsed.invitationId
+        : undefined
+
     const hashedPassword = await hashPassword(parsed.password)
     const created = await createSignupUser(
       db,
@@ -820,19 +842,18 @@ export function registerAuthRoutes(app: Hono<AppEnv>, opts: AuthRouteOpts) {
     }
 
     if (!emailVerificationEnabled) {
-      await provisionWorkersOrganization(db, opts, created.userId)
+      if (!joiningInvitationId) {
+        await provisionWorkersOrganization(db, opts, created.userId)
+      }
       return c.json({ ok: true }, 201)
     }
 
-    const verificationResponse = await deliverSignupVerification(
-      c,
-      opts,
-      db,
-      signupQueue,
+    const verificationResponse = await deliverSignupVerification(c, opts, db, signupQueue, {
       trimmedEmail,
-      created.userId,
-      emailFrom
-    )
+      userId: created.userId,
+      emailFrom,
+      invitationId: joiningInvitationId,
+    })
     if (verificationResponse) {
       return verificationResponse
     }
