@@ -77,6 +77,56 @@ export type SeriesCoverage = {
   gapCount: number
 }
 
+/** Milliseconds between stored samples around `point` — its own spacing, or the series' typical one. */
+function spacingMsOf(point: CoveragePoint, typicalSpacingSeconds: number): number {
+  const spacing = point.sampleSpacingSeconds
+  return (
+    (spacing !== undefined && Number.isFinite(spacing) && spacing > 0
+      ? spacing
+      : typicalSpacingSeconds) * 1000
+  )
+}
+
+/** `point`'s latest sample time, or `bucket`'s own start when it carries none. */
+function lastSampleMsOf(point: CoveragePoint, bucket: number): number {
+  const last = point.lastSampleAt === undefined ? Number.NaN : Date.parse(point.lastSampleAt)
+  return Number.isFinite(last) ? last : bucket
+}
+
+/** A present bucket's shortfall against its expected sample count, and the next-due time it sets. */
+function accountForPresentBucket(
+  point: CoveragePoint,
+  bucket: number,
+  resolutionSeconds: number,
+  typicalSpacingSeconds: number
+): { shortfall: number; nextDueMs: number } {
+  const samples = point.sampleCount ?? 0
+  const expected = point.expectedSampleCount ?? defaultExpectedSamplesPerBucket(resolutionSeconds)
+  const spacingMs = spacingMsOf(point, typicalSpacingSeconds)
+  return {
+    shortfall: samples < expected ? expected - samples : 0,
+    nextDueMs: lastSampleMsOf(point, bucket) + spacingMs * (1 + COVERAGE_JITTER_FRACTION),
+  }
+}
+
+/** Whether an empty bucket is a genuine gap, given what's known about the buckets around it. */
+function isEmptyBucketMissing(input: {
+  bucket: number
+  bucketEnd: number
+  firstPresent: number | undefined
+  leadingDueMs: number
+  pendingFromMs: number
+  nextDueMs: number
+}): boolean {
+  const { bucket, bucketEnd, firstPresent, leadingDueMs, pendingFromMs, nextDueMs } = input
+  if (firstPresent === undefined || bucket < firstPresent) {
+    // Before the first sample: missing only if one was due by this bucket's end.
+    return bucketEnd <= leadingDueMs || firstPresent === undefined
+  }
+  if (bucketEnd > pendingFromMs) return false
+  return nextDueMs < bucketEnd
+}
+
 /**
  * Coverage on the canonical half-open `[from, to)` grid (bucket starts after
  * floor alignment — an inclusive end would always expect the in-progress
@@ -113,19 +163,6 @@ export function computeSeriesCoverage(input: {
   }
 
   const typicalSpacing = typicalSampleSpacingSeconds(input.points)
-  const spacingMsOf = (point: CoveragePoint): number => {
-    const spacing = point.sampleSpacingSeconds
-    return (
-      (spacing !== undefined && Number.isFinite(spacing) && spacing > 0
-        ? spacing
-        : typicalSpacing) * 1000
-    )
-  }
-  const lastSampleMsOf = (point: CoveragePoint, bucket: number): number => {
-    const last = point.lastSampleAt === undefined ? Number.NaN : Date.parse(point.lastSampleAt)
-    return Number.isFinite(last) ? last : bucket
-  }
-
   const presentBuckets = [...byBucket.keys()]
     .filter((b) => b >= startMs && b < endMs)
     .sort((a, b) => a - b)
@@ -133,7 +170,7 @@ export function computeSeriesCoverage(input: {
   const leadingDueMs =
     firstPresent === undefined
       ? Number.POSITIVE_INFINITY
-      : firstPresent - spacingMsOf(byBucket.get(firstPresent)!)
+      : firstPresent - spacingMsOf(byBucket.get(firstPresent)!, typicalSpacing)
 
   const gapBucketStarts: number[] = []
   let shortfall = 0
@@ -141,23 +178,29 @@ export function computeSeriesCoverage(input: {
   for (let bucket = startMs; bucket < endMs; bucket += bucketMs) {
     const point = byBucket.get(bucket)
     if (point) {
-      const samples = point.sampleCount ?? 0
-      const expected =
-        point.expectedSampleCount ?? defaultExpectedSamplesPerBucket(input.resolutionSeconds)
-      if (samples < expected) shortfall += expected - samples
-      const spacingMs = spacingMsOf(point)
-      nextDueMs = lastSampleMsOf(point, bucket) + spacingMs * (1 + COVERAGE_JITTER_FRACTION)
+      const accounted = accountForPresentBucket(
+        point,
+        bucket,
+        input.resolutionSeconds,
+        typicalSpacing
+      )
+      shortfall += accounted.shortfall
+      nextDueMs = accounted.nextDueMs
       continue
     }
     const bucketEnd = bucket + bucketMs
-    if (firstPresent === undefined || bucket < firstPresent) {
-      // Before the first sample: missing only if one was due by this bucket's end.
-      if (bucketEnd <= leadingDueMs || firstPresent === undefined) gapBucketStarts.push(bucket)
-      continue
+    if (
+      isEmptyBucketMissing({
+        bucket,
+        bucketEnd,
+        firstPresent,
+        leadingDueMs,
+        pendingFromMs,
+        nextDueMs,
+      })
+    ) {
+      gapBucketStarts.push(bucket)
     }
-    if (bucketEnd > pendingFromMs) continue
-    if (nextDueMs >= bucketEnd) continue
-    gapBucketStarts.push(bucket)
   }
 
   const gapSeconds = gapBucketStarts.length * input.resolutionSeconds
