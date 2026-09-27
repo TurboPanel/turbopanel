@@ -4,15 +4,17 @@
  * (`422 SQL was excessively long`) and MIN/MAX over a String blob column
  * (`422 cannot use the String type as argument 1 in max(`). These tests
  * capture the real statements every query helper sends for the worst-case
- * request and hold them to both limits, plus a small allowlist of the AE SQL
- * functions Cloudflare documents, and check chunked results merge back
- * into one answer.
+ * request and hold them to every rule in `ae-sql-dialect.ts` (length, the
+ * functions Cloudflare documents, if() branch types, string aggregates — a
+ * hand-kept allowlist here once admitted CONCAT, which AE refuses), and
+ * check chunked results merge back into one answer.
  */
 import { assert, assertEquals, assertRejects } from '@std/assert'
 import { it } from '@std/testing/bdd'
 import { MAX_NIC_SLOTS } from '../../../../contracts/topology-types.ts'
 import { HOST_METRICS_METRIC_DESCRIPTORS } from '../../metric-descriptors.ts'
 import { aeSqlValidationFailure } from '../../testing/fake-analytics-engine.ts'
+import { aeSqlDialectFailures, inferAeExpressionType } from './ae-sql-dialect.ts'
 import type { PerEntityHostedFamily } from '../../types.ts'
 import {
   AE_SQL_MAX_LENGTH,
@@ -31,28 +33,6 @@ import {
   queryMetricEventsViaSqlApi,
   queryStatusHistoryViaSqlApi,
 } from './sql-api.ts'
-
-/**
- * Functions Cloudflare documents for AE SQL (aggregate, conditional,
- * mathematical, date-time and type-conversion reference pages) that the
- * builders are allowed to emit. A new function must be checked against the
- * docs before it is added here.
- */
-const AE_SQL_FUNCTION_ALLOWLIST = new Set([
-  'SUM',
-  'MIN',
-  'MAX',
-  'argMax',
-  'argMin',
-  'count',
-  'if',
-  'intDiv',
-  'pow',
-  'toDateTime',
-  'toUnixTimestamp',
-  'toUInt32',
-  'CONCAT',
-])
 
 const HOST_SCOPES = new Set([
   'host.cpu',
@@ -151,13 +131,7 @@ function assertAcceptableToAe(statements: readonly string[]): void {
   assert(statements.length > 0, 'no statement was sent')
   for (const sql of statements) {
     assert(sql.length < AE_SQL_MAX_LENGTH, `statement is ${sql.length} chars`)
-    assertEquals(aeSqlValidationFailure(sql), null)
-    for (const match of sql.matchAll(/\b([A-Za-z_][A-Za-z0-9_]*)\(/g)) {
-      assert(
-        AE_SQL_FUNCTION_ALLOWLIST.has(match[1]),
-        `function ${match[1]}( is not on the documented AE SQL allowlist`
-      )
-    }
+    assertEquals(aeSqlDialectFailures(sql), [], sql.slice(0, 400))
   }
 }
 
@@ -211,6 +185,38 @@ for (const family of Object.keys(ENTITY_SCOPE) as PerEntityHostedFamily[]) {
     assertAcceptableToAe(statements)
   })
 }
+
+it('network entity series with embedded NIC slots (the host.io path) stays within AE rules', async () => {
+  // The embedded-NIC builder only runs with a slot mapping and a resolved
+  // topology generation — the path whose Integer/Double if() was live on
+  // testing after #46, which the worst-case test above never reached.
+  const entityIds = entityIdsFor('network', WORST_CASE_ENTITIES.network)
+  const { config, statements } = capturingConfig()
+  const result = await queryEntitySeriesViaSqlApi(config, {
+    serverId: SERVER_ID,
+    family: 'network',
+    entityIds,
+    metrics: fieldsFor('network'),
+    from: FROM,
+    to: TO,
+    topologyGeneration: 3,
+    slotMapping: {
+      normalNicSlots: entityIds,
+      fabricDeviceIds: [],
+      rootFilesystemId: null,
+      gpuPageOrder: [],
+      blockPageOrder: [],
+      filesystemPageOrder: [],
+      hardwareSignalPageOrder: [],
+    },
+  })
+  assertEquals(result.entities.length, entityIds.length)
+  assert(
+    statements.some((sql) => sql.includes('nic0_')),
+    'the embedded-NIC statement was not sent'
+  )
+  assertAcceptableToAe(statements)
+})
 
 it('a chunked host series merges every metric back into one point per bucket', async () => {
   const bucket = Date.parse('2026-09-26T00:00:00.000Z') / 1000
@@ -374,4 +380,37 @@ it('the fake AE engine refuses what the real one refuses', () => {
   )
   assertEquals(aeSqlValidationFailure('SELECT MAX(toUInt32(blob7)) FROM t'), null)
   assert(aeSqlValidationFailure('x'.repeat(AE_SQL_MAX_LENGTH + 1))?.includes('excessively long'))
+  // Both live on testing after #46: CONCAT, and an Integer/Double if().
+  assertEquals(
+    aeSqlValidationFailure("SELECT 1 FROM t WHERE blob10 LIKE CONCAT('a,', '%')"),
+    'Input was invalid: unknown function call: CONCAT'
+  )
+  assert(
+    aeSqlValidationFailure("SELECT SUM(if(blob1 = 'x', _sample_interval, 0.0)) FROM t")?.includes(
+      'must have the same type but instead had Integer and Double'
+    )
+  )
+  assertEquals(
+    aeSqlValidationFailure("SELECT SUM(if(blob1 = 'x', _sample_interval * 1.0, 0.0)) FROM t"),
+    null
+  )
+  assertEquals(aeSqlValidationFailure("SELECT 1 FROM t WHERE position(',a,' IN blob10) > 0"), null)
+})
+
+it('infers the types AE compares in if() branches', () => {
+  assertEquals(inferAeExpressionType('_sample_interval'), 'Integer')
+  assertEquals(inferAeExpressionType('_sample_interval * 1.0'), 'Double')
+  assertEquals(inferAeExpressionType('0.0'), 'Double')
+  assertEquals(inferAeExpressionType('-1e308'), 'Double')
+  assertEquals(inferAeExpressionType('double3 * double1 * _sample_interval'), 'Double')
+  assertEquals(inferAeExpressionType('toUnixTimestamp(timestamp) * 0'), 'Integer')
+  assertEquals(inferAeExpressionType('toUnixTimestamp(timestamp)'), 'Integer')
+  assertEquals(inferAeExpressionType("'x'"), 'String')
+  assertEquals(inferAeExpressionType('blob7'), 'String')
+  assertEquals(inferAeExpressionType('SUM(double1) / SUM(double2)'), 'Double')
+  assertEquals(inferAeExpressionType('some_unknown_thing'), 'Unknown')
+})
+
+it('function names inside string literals are not function calls', () => {
+  assertEquals(aeSqlDialectFailures("SELECT 1 FROM t WHERE blob1 = 'CONCAT(a)'"), [])
 })

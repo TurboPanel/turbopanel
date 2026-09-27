@@ -156,10 +156,13 @@ it("serverIdPredicate: index1 = '<serverId>'", () => {
 
 it('entityIdInPageIdentityPredicate: matches exact, leading, trailing, and mid-list CSV positions', () => {
   const predicate = entityIdInPageIdentityPredicate('gpu1')
-  assertEquals(predicate.includes("blob10 = 'gpu1'"), true)
-  assertEquals(predicate.includes("CONCAT('gpu1,', '%')"), true)
-  assertEquals(predicate.includes("CONCAT('%', ',gpu1')"), true)
-  assertEquals(predicate.includes("CONCAT('%', ',gpu1,', '%')"), true)
+  assertEquals(
+    predicate,
+    "(blob10 = 'gpu1' OR startsWith(blob10, 'gpu1,') OR endsWith(blob10, ',gpu1') OR position(',gpu1,' IN blob10) > 0)"
+  )
+  // AE has no concat, and LIKE would treat `_` in an id as a wildcard.
+  assertEquals(predicate.includes('CONCAT'), false)
+  assertEquals(predicate.includes('LIKE'), false)
 })
 
 // ---------------------------------------------------------------------------
@@ -991,7 +994,11 @@ it('AE SQL is posted to the Cloudflare client/v4 API — the only version that r
         return new Response(envelopedSqlResponse([]), { status: 200 })
       },
     },
-    { serverId: '00000000-0000-4000-8000-000000000001', from: '2026-01-01T00:00:00.000Z', to: '2026-01-01T01:00:00.000Z' }
+    {
+      serverId: '00000000-0000-4000-8000-000000000001',
+      from: '2026-01-01T00:00:00.000Z',
+      to: '2026-01-01T01:00:00.000Z',
+    }
   )
   assertEquals(urls.length > 0, true)
   for (const url of urls) {

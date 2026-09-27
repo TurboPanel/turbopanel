@@ -32,6 +32,7 @@
  * all.
  */
 
+import { AE_SQL_MAX_LENGTH } from './ae-sql-dialect.ts'
 import {
   HOST_METRICS_METRIC_DESCRIPTORS,
   type HostedFamily,
@@ -309,11 +310,7 @@ export function parseCloudflareSqlResponse(body: unknown): AnalyticsEngineSqlRes
   return unwrapAeSqlSuccessResult(result)
 }
 
-/**
- * Longest statement the AE SQL API accepts — longer ones answer
- * `422 SQL was excessively long, exceeded maximum length: 10000`.
- */
-export const AE_SQL_MAX_LENGTH = 10_000
+export { AE_SQL_MAX_LENGTH }
 
 /**
  * Length the chunking query builders pack against: headroom under
@@ -838,8 +835,10 @@ export function serverIdPredicate(serverId: string): string {
  * module doc comment) contains `entityId`, whether that id is the row's only
  * entity or one of several sharing the page. AE SQL has no documented array
  * function to lean on here, so this matches the CSV list positionally
- * (exact single-id match, or a comma-delimited substring match at either
- * edge or in the middle) rather than parsing it.
+ * (exact single-id match, or a comma-delimited match at either edge or in
+ * the middle) rather than parsing it. Only documented string functions:
+ * AE has no `concat` (`422 unknown function call: CONCAT`), and `LIKE` would
+ * read `_` / `%` inside an entity id as wildcards.
  */
 export function entityIdInPageIdentityPredicate(entityId: string): string {
   const col = blobColumn(AE_BLOB_SOURCE_OR_IDENTITY_INDEX)
@@ -847,7 +846,7 @@ export function entityIdInPageIdentityPredicate(entityId: string): string {
   const prefix = quoteSqlString(`${entityId},`)
   const suffix = quoteSqlString(`,${entityId}`)
   const middle = quoteSqlString(`,${entityId},`)
-  return `(${col} = ${id} OR ${col} LIKE CONCAT(${prefix}, '%') OR ${col} LIKE CONCAT('%', ${suffix}) OR ${col} LIKE CONCAT('%', ${middle}, '%'))`
+  return `(${col} = ${id} OR startsWith(${col}, ${prefix}) OR endsWith(${col}, ${suffix}) OR position(${middle} IN ${col}) > 0)`
 }
 
 export { assertSafeDatasetName }
@@ -2316,8 +2315,10 @@ function buildEmbeddedNicEntitySeriesSql(
   const sql = [
     'SELECT',
     `  intDiv(toUnixTimestamp(${AE_TIMESTAMP_COLUMN}), ${bucketSeconds}) * ${bucketSeconds} AS bucket,`,
-    `  SUM(if(${hostIoPred}, _sample_interval, 0.0)) AS sample_count,`,
-    `  SUM(if(${hostIoPred}, ${intervalSecondsColumn()} * _sample_interval, 0.0)) / SUM(if(${hostIoPred}, _sample_interval, 0.0)) AS avg_interval_seconds` +
+    // `_sample_interval * 1.0`: AE's if() refuses an Integer branch beside
+    // a Double one (`422 … must have the same type`).
+    `  SUM(if(${hostIoPred}, _sample_interval * 1.0, 0.0)) AS sample_count,`,
+    `  SUM(if(${hostIoPred}, ${intervalSecondsColumn()} * _sample_interval, 0.0)) / SUM(if(${hostIoPred}, _sample_interval * 1.0, 0.0)) AS avg_interval_seconds` +
       (selects.length > 0 ? `,\n  ${selects.join(',\n  ')}` : ''),
     `FROM ${opts.dataset}`,
     `WHERE ${serverIdPredicate(serverId)}`,

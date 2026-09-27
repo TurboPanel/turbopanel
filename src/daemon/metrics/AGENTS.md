@@ -159,27 +159,33 @@ the store — never re-derived by the store itself. WebSocket
 
 #### Cadence — one interval everywhere
 
-Every family writes on every 60 s sample. There is no per-family cadence and no
+Every family writes on every sample. There is no per-family cadence and no
 ingest decimation step: `cadence-tiers.ts` is gone. Doubles inside a row are
-still free on Analytics Engine, but skipping a family no longer saves money once
-live samples are kept off the durable store (below), so the pipeline stopped
-choosing which families to drop.
+free on Analytics Engine, so the pipeline never chooses which families to drop.
 
-**Live samples are cached, never durably stored.** A live-session marker
+**Live samples are buffered for the overlay AND durably stored.** A live-session marker
 (`markServerLiveSessionActive`, keyed under `tp:metrics:live-session:` so a
 chart-cache eviction cannot clear it) tracks **active lease ids** per server and
 is add/removed by `POST`/`DELETE /servers/:id/metrics/live`. Concurrent viewers
 share the marker: stopping one lease must not resume durable writes while
-another remains. While any unexpired lease is present, ingest writes the sample
-into a short-lived live-sample buffer (`cacheLiveSample` / `readLiveSample`) and
-skips `store.writeSample` on both Analytics Engine and DuckDB. Query routes
-overlay the buffered point on the tail of a now-ranged live read **only while
-the marker is still active** — a stop of the last lease deletes the buffer, and
-a naturally expired marker is ignored even if the sample TTL has not elapsed.
-`interval_seconds` is the stray-row detector: a sample whose interval looks like
-the 10 s live cadence, arriving without an active marker, is logged
-(rate-limited) and not written — the one-predicate backstop for a stale/expired
-marker race, not the primary routing mechanism.
+another remains. While any unexpired lease is present, ingest also writes the
+sample into a short-lived live-sample buffer (`cacheLiveSample` /
+`readLiveSample`). Query routes overlay the buffered point on the tail of a
+now-ranged live read **only while the marker is still active** — a stop of the
+last lease deletes the buffer, and a naturally expired marker is ignored even if
+the sample TTL has not elapsed.
+
+`store.writeSample` runs for **every** validated sample, live cadence or not.
+The daemon _replaces_ its 60 s cadence with the 10 s one while a lease is active
+(turbopaneld `live-leases.ts`) — it does not add to it — so the old rule
+("live samples are cached, never durably stored", plus a backstop dropping any
+unmarked 10 s sample) left the durable store empty for as long as anyone watched
+a server, and the marker lives in the colo-local Cache API, so a daemon ingesting
+through another colo never saw it and its samples were dropped outright. Both
+were the "huge gaps" on testing (2026-09-27). The cost is ~6× the rows while a
+live lease is active; leases are capped and expire. Queries weight by
+`interval_seconds` and `_sample_interval`, so mixed 10 s / 60 s rows aggregate
+correctly.
 
 A missing bucket is always a genuine gap. There is no slow tier left to hold a
 reading across empty host-grid buckets.

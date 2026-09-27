@@ -27,10 +27,8 @@ import {
   AE_DOUBLE_COUNT,
 } from '../backends/cloudflare/field-map.ts'
 import type { AnalyticsEngineDatasetLike } from '../backends/cloudflare/store.ts'
-import {
-  AE_SQL_MAX_LENGTH,
-  type CloudflareAnalyticsSqlConfig,
-} from '../backends/cloudflare/sql-api.ts'
+import { aeSqlDialectFailures } from '../backends/cloudflare/ae-sql-dialect.ts'
+import type { CloudflareAnalyticsSqlConfig } from '../backends/cloudflare/sql-api.ts'
 
 type FakeAeConnectionLike = {
   run(sql: string, values?: unknown[]): Promise<unknown>
@@ -80,22 +78,18 @@ async function installAeShims(connection: FakeAeConnectionLike): Promise<void> {
   )
   await connection.run(`CREATE OR REPLACE MACRO argMax(val, ord) AS arg_max(val, ord)`)
   await connection.run(`CREATE OR REPLACE MACRO toUInt32(x) AS CAST(x AS UINTEGER)`)
+  // AE's documented string predicates, under their AE names.
+  await connection.run(`CREATE OR REPLACE MACRO startsWith(s, p) AS starts_with(s, p)`)
+  await connection.run(`CREATE OR REPLACE MACRO endsWith(s, p) AS ends_with(s, p)`)
 }
 
 /**
- * The two refusals the real AE SQL API answers with `422` that DuckDB would
- * happily run — mirrored so parity tests catch a builder that regresses into
- * either (both were live on testing before the fix that added this).
+ * The refusals the real AE SQL API answers with `422` that DuckDB would
+ * happily run (see `ae-sql-dialect.ts`) — mirrored so parity tests catch a
+ * builder that regresses into any of them. Every rule was live on testing.
  */
 export function aeSqlValidationFailure(sql: string): string | null {
-  if (sql.length > AE_SQL_MAX_LENGTH) {
-    return `Input was invalid: SQL was excessively long, exceeded maximum length: ${AE_SQL_MAX_LENGTH}`
-  }
-  const stringAggregate = /\b(min|max|sum|avg)\(\s*blob\d+\b/i.exec(sql)
-  if (stringAggregate) {
-    return `Input was invalid: cannot use the String type as argument 1 in ${stringAggregate[1].toLowerCase()}(`
-  }
-  return null
+  return aeSqlDialectFailures(sql)[0] ?? null
 }
 
 /** JSON can't serialize BigInt (DuckDB returns BIGINT-typed expressions, e.g. `intDiv`, as JS `bigint`) — normalize recursively before enveloping a query result. */

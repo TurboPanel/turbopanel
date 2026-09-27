@@ -52,22 +52,6 @@ export const METRICS_BASELINE_JITTER_MAX_SECONDS = 5
  */
 export const METRICS_PRIME_INTERVAL_SECONDS = 2
 
-/**
- * True when `intervalSeconds` looks like a 10 s live-cadence sample rather
- * than a baseline tick (60 s ± jitter) or the attach-time primed delta
- * (2 s + jitter). Used as the ingest backstop that refuses a durable write
- * when the live-session marker is missing — never as the primary live-routing
- * mechanism.
- */
-export function isUnmarkedLiveCadenceInterval(intervalSeconds: number): boolean {
-  if (!Number.isFinite(intervalSeconds) || intervalSeconds <= 0) return false
-  const baselineFloor = METRICS_BASELINE_INTERVAL_SECONDS - METRICS_BASELINE_JITTER_MAX_SECONDS
-  if (intervalSeconds >= baselineFloor) return false
-  const primingCeiling = METRICS_PRIME_INTERVAL_SECONDS + METRICS_BASELINE_JITTER_MAX_SECONDS
-  if (intervalSeconds <= primingCeiling) return false
-  return intervalSeconds <= METRICS_LIVE_INTERVAL_SECONDS + METRICS_BASELINE_JITTER_MAX_SECONDS
-}
-
 // ---------------------------------------------------------------------------
 // Plan shape
 // ---------------------------------------------------------------------------

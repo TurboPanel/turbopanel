@@ -2,7 +2,7 @@
  * Host-free coverage for server metrics route pure helpers (no Postgres).
  */
 
-import { assertAlmostEquals, assertEquals } from '@std/assert'
+import { assert, assertAlmostEquals, assertEquals } from '@std/assert'
 import { CloudflareAnalyticsEngineServerMetricsStore } from '../../daemon/metrics/backends/cloudflare/store.ts'
 import { DisabledServerMetricsStore } from '../../daemon/metrics/disabled-store.ts'
 import type {
@@ -39,6 +39,7 @@ import {
   parseIsoTimestampQuery,
   parseOptionalResolution,
   parseSeriesMetricSelectors,
+  logSeriesGaps,
   querySeriesResults,
   resolveStoreBackendKind,
   seriesCacheMetricsList,
@@ -338,10 +339,7 @@ test('findInvalidTopologyIdField matches assigned ids against the recorded topol
   )
   assertEquals(findUnmonitorableNicSlotId(['mac:a', 'mac:port'], snapshot), 'mac:port')
   assertEquals(nicSlotLimitViolation({ nicSlotDeviceIds: ['mac:a', 'mac:b'] }, 2), null)
-  assertEquals(
-    typeof nicSlotLimitViolation({ nicSlotDeviceIds: ['mac:a', 'mac:b'] }, 1),
-    'string'
-  )
+  assertEquals(typeof nicSlotLimitViolation({ nicSlotDeviceIds: ['mac:a', 'mac:b'] }, 1), 'string')
   assertEquals(machineClassFromTopologySnapshot(undefined), 'virtual')
   assertEquals(machineClassFromTopologySnapshot({ hardwareSignals: [] }), 'virtual')
   assertEquals(machineClassFromTopologySnapshot({ hardwareSignals: [{}] }), 'physical')
@@ -636,12 +634,37 @@ test('querySeriesResults returns ok:false when queryHostSeries throws', async ()
   assertEquals(outcome, { ok: false })
 })
 
-test('querySeriesResults returns ok:false when queryEntitySeries throws', async () => {
-  const parsed = parseSeriesMetricSelectors('network:eth0.receiveBytesPerSecond')
+test('querySeriesResults answers a failing entity family as unavailable and keeps the rest', async () => {
+  // Live on testing (2026-09-27): one refused GPU query 503'd every chart.
+  const parsed = parseSeriesMetricSelectors(
+    'host.cpu.busyPercent,network:eth0.receiveBytesPerSecond,gpu:gpu0.utilizationPercent'
+  )
   if (!parsed.ok) throw new TypeError('expected selectors to parse')
+  const hostResult: HostSeriesResult = {
+    kind: 'analytics-engine',
+    available: true,
+    serverId: 'srv-1',
+    metrics: ['host.cpu.busyPercent'],
+    points: [],
+    resolutionSeconds: 60,
+    gapCount: 0,
+    sampleCount: 3,
+  }
   const outcome = await querySeriesResults({
     store: fakeStore({
-      queryEntitySeries: () => Promise.reject(new Error('AE SQL unavailable')),
+      queryHostSeries: () => Promise.resolve(hostResult),
+      queryEntitySeries: (query) =>
+        query.family === 'gpu'
+          ? Promise.reject(new Error('AE SQL HTTP 422: unknown function call: CONCAT'))
+          : Promise.resolve({
+              kind: 'analytics-engine',
+              available: true,
+              serverId: 'srv-1',
+              family: query.family,
+              metrics: query.metrics,
+              resolutionSeconds: 60,
+              entities: [],
+            }),
     }),
     backend: 'analytics-engine',
     serverId: 'srv-1',
@@ -651,7 +674,58 @@ test('querySeriesResults returns ok:false when queryEntitySeries throws', async 
     resolutionSeconds: 60,
     context: buildTopologyContext(undefined, undefined),
   })
-  assertEquals(outcome, { ok: false })
+  if (!outcome.ok) throw new TypeError('expected the series query to succeed')
+  assertEquals(outcome.hostResult?.sampleCount, 3)
+  assertEquals(outcome.failedFamilies, ['gpu'])
+  const byFamily = new Map(outcome.entityResults.map((r) => [r.family, r]))
+  assertEquals(byFamily.get('network')?.available, true)
+  assertEquals(byFamily.get('gpu')?.available, false)
+})
+
+test('logSeriesGaps logs holes and failed families once per server per minute', () => {
+  const lines: string[] = []
+  const log = (line: string) => lines.push(line)
+  const hostResult: HostSeriesResult = {
+    kind: 'analytics-engine',
+    available: true,
+    serverId: 'srv-gaps',
+    metrics: [],
+    points: [],
+    resolutionSeconds: 60,
+    gapCount: 4,
+    sampleCount: 6,
+  }
+  const base = {
+    serverId: 'srv-gaps',
+    fromMs: 0,
+    toMs: 600_000,
+    resolutionSeconds: 60,
+    hostResult,
+    failedFamilies: ['gpu'] as const,
+  }
+  assertEquals(logSeriesGaps(base, 1_000_000, log), true)
+  assertEquals(logSeriesGaps(base, 1_030_000, log), false)
+  assertEquals(logSeriesGaps(base, 1_061_000, log), true)
+  assertEquals(lines.length, 2)
+  assert(
+    lines[0].includes(
+      'expectedBuckets=10 returnedBuckets=0 gapCount=4 samples=6 failedFamilies=gpu'
+    )
+  )
+  // Nothing to report: no line.
+  assertEquals(
+    logSeriesGaps(
+      {
+        ...base,
+        serverId: 'srv-clean',
+        hostResult: { ...hostResult, gapCount: 0 },
+        failedFamilies: [],
+      },
+      2_000_000,
+      log
+    ),
+    false
+  )
 })
 
 test('querySeriesResults forwards slotMapping/topologyGeneration for the network family', async () => {
