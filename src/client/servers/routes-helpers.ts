@@ -171,6 +171,10 @@ function parseServerPatchOptions(
     return invalidServerPatchRequest()
   }
   const options: NonNullable<ServerPatchFields['options']> = { ...parsed }
+  // The location override changes only through the explicit `location` field;
+  // `options` is merged into the stored blob, so leaving `location` out of it
+  // keeps the stored override.
+  delete options.location
   if ('sshPort' in raw) {
     const sshPort = parseSshPortInput(raw.sshPort)
     if (!sshPort.ok) {

@@ -101,22 +101,31 @@ function isOptionsRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Fold a `location` patch into the options the UPDATE writes: onto the
- * request's own `options` when it replaces them, else onto the stored
- * `options`. A reset (or clearing the last field) removes `location`.
+ * The `options` the UPDATE writes, with the location override handled apart
+ * from the rest: `options` is replace-all, but only an explicit `location`
+ * field (or `location: null`) may change the override. So the override always
+ * starts from the stored one — a `location` key inside the request's
+ * `options` is ignored, and replacing (or clearing) `options` keeps it — and
+ * `locationPatch` is applied on top when the request sent one.
+ *
+ * `patchOptions` is the request's replacement (`undefined` when it sent no
+ * `options`, `null` when it cleared them). Returns `null` only when the
+ * request cleared `options` and no override remains.
  */
 export function applyDatacenterLocationPatch(
   patchOptions: ReturnType<typeof parseDatacenterOptions> | null | undefined,
   storedOptions: unknown,
-  locationPatch: LocationPatch | null
-): ReturnType<typeof parseDatacenterOptions> {
-  const base =
-    patchOptions !== undefined
-      ? { ...(patchOptions ?? {}) }
-      : parseDatacenterOptions(isOptionsRecord(storedOptions) ? storedOptions : {})
-  const next = applyLocationPatch(parseLocationOverride(base.location), locationPatch)
+  locationPatch: LocationPatch | null | undefined
+): ReturnType<typeof parseDatacenterOptions> | null {
+  const stored = parseDatacenterOptions(isOptionsRecord(storedOptions) ? storedOptions : {})
+  const base = patchOptions === undefined ? { ...stored } : { ...(patchOptions ?? {}) }
   delete base.location
-  return next ? { ...base, location: next } : base
+  const next =
+    locationPatch === undefined
+      ? (stored.location ?? null)
+      : applyLocationPatch(stored.location, locationPatch)
+  if (next) return { ...base, location: next }
+  return patchOptions === null ? null : base
 }
 
 /**
@@ -1065,7 +1074,7 @@ export function registerDatacenterRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
     const policyBefore = resolveDatacenterPolicy(current.options)
 
     const { locationPatch, ...updateFields } = patchFields
-    if (locationPatch !== undefined) {
+    if (locationPatch !== undefined || 'options' in updateFields) {
       updateFields.options = applyDatacenterLocationPatch(
         'options' in updateFields ? updateFields.options : undefined,
         current.options,

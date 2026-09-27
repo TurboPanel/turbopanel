@@ -1191,3 +1191,25 @@ test('PATCH /servers/:id refuses an invalid location', async () => {
     error: 'Invalid location field: datacenter',
   })
 })
+
+test('PATCH /servers/:id options never carry a location override', async () => {
+  const capturedUpdates: Record<string, unknown>[] = []
+  const { app, cookie } = await buildSessionApp({
+    withServerRow: true,
+    defaultAllowed: true,
+    serverOptions: { location: { city: 'Austin' } },
+    capturedUpdates,
+  })
+  const res = await app.request(`/servers/${SERVER_ID}`, {
+    method: 'PATCH',
+    headers: { ...sessionHeaders(cookie), 'content-type': 'application/json' },
+    body: JSON.stringify({
+      options: { timezone: 'UTC', location: { city: 'Elsewhere' } },
+    }),
+  })
+  await expectJson(res, 200, { ok: true })
+  // A jsonb merge of `options` without `location`: the stored override stays.
+  const rendered = renderSql(capturedUpdates[0]?.options)
+  assertEquals(rendered.params, [JSON.stringify({ timezone: 'UTC' })])
+  assertEquals(rendered.sql.includes("- 'location'"), false)
+})

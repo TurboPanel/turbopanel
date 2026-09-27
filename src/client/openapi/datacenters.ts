@@ -140,7 +140,7 @@ export const datacenterSchemas = {
       options: {
         type: ['object', 'null'],
         description:
-          "Replace-all datacenter options; `null` clears the stored blob so the documented defaults apply again. `addressPreference` is `'ipv4'` or `'ipv6'`; `priority` is an integer 0–1000 (lower wins); `trusted` is a boolean. Replacing `options` without a `location` key drops the location override — send `location` instead to edit it.",
+          "Replace-all datacenter options; `null` clears the stored blob so the documented defaults apply again. `addressPreference` is `'ipv4'` or `'ipv6'`; `priority` is an integer 0–1000 (lower wins); `trusted` is a boolean. The location override is never changed through `options` (a `location` key there is ignored, and replacing or clearing `options` keeps it) — send the top-level `location` field to edit it.",
       },
       location: {
         $ref: '#/components/schemas/LocationPatch',

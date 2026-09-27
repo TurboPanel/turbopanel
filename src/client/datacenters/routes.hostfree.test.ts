@@ -1552,12 +1552,46 @@ test('PATCH /datacenters/:id applies location on top of a replaced options blob'
     }),
   })
   assertEquals(res.status, 200)
-  // Replace-all options without `location` drops the old override; the
-  // request's own `location` is then applied to the replacement.
+  // The stored override survives the replacement; the request's own
+  // `location` is merged on top of it.
   assertEquals(updates[0]?.options, {
     priority: 20,
-    location: { regionCode: 'VA' },
+    location: { city: 'Reston', regionCode: 'VA' },
   })
+})
+
+test('PATCH /datacenters/:id replacing options without location keeps the override', async () => {
+  const { app, cookie, updates } = await buildSessionApp({
+    withDatacenterRow: true,
+    manageAllowed: true,
+    datacenterOptions: { priority: 10, location: { city: 'Reston', asn: 64512 } },
+  })
+  const res = await app.request(`/datacenters/${id}`, {
+    method: 'PATCH',
+    headers: sessionHeaders(cookie, true),
+    // A `location` inside `options` is ignored: only the top-level field edits it.
+    body: JSON.stringify({ options: { trusted: false, location: { city: 'Elsewhere' } } }),
+  })
+  assertEquals(res.status, 200)
+  assertEquals(updates[0]?.options, {
+    trusted: false,
+    location: { city: 'Reston', asn: 64512 },
+  })
+})
+
+test('PATCH /datacenters/:id clearing options keeps the location override', async () => {
+  const { app, cookie, updates } = await buildSessionApp({
+    withDatacenterRow: true,
+    manageAllowed: true,
+    datacenterOptions: { priority: 10, location: { city: 'Reston' } },
+  })
+  const res = await app.request(`/datacenters/${id}`, {
+    method: 'PATCH',
+    headers: sessionHeaders(cookie, true),
+    body: JSON.stringify({ options: null }),
+  })
+  assertEquals(res.status, 200)
+  assertEquals(updates[0]?.options, { location: { city: 'Reston' } })
 })
 
 test('PATCH /datacenters/:id refuses an invalid location', async () => {
