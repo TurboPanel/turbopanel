@@ -1,40 +1,33 @@
-import { and, eq, gt } from "drizzle-orm";
-import { recordAuditAndNotify } from "../../features/notifications/audit-bridge.ts";
-import type { Context, Hono } from "hono";
-import type { AppEnv } from "../../app/app.ts";
-import type { AuthRouteOpts } from "../authn/http.ts";
-import {
-  InvitationGrantValidationError,
-  materializeInvitationGrants,
-  resolveInvitationGrants,
-} from "../authn/invitation-grants.ts";
-import { createSessionMiddleware } from "../authn/middleware.ts";
-import { mapGrantRows, revokeAccessGrant } from "../authz/access-grants.ts";
+import { and, eq } from 'drizzle-orm'
+import { recordAuditAndNotify } from '../../features/notifications/audit-bridge.ts'
+import type { Context, Hono } from 'hono'
+import type { AppEnv } from '../../app/app.ts'
+import type { AuthRouteOpts } from '../authn/http.ts'
+import { createSessionMiddleware } from '../authn/middleware.ts'
+import { mapGrantRows, revokeAccessGrant } from '../authz/access-grants.ts'
 import {
   createAccessGrant,
   isAccessGrantEntityType,
   resolveEntityOrganizationId,
-} from "../authz/create-access-grant.ts";
-import {
-  resolveEntityById,
-  resolveEntityByKindAndItemId,
-} from "../authz/entity-resolver.ts";
+} from '../authz/create-access-grant.ts'
+import { resolveEntityById, resolveEntityByKindAndItemId } from '../authz/entity-resolver.ts'
 import {
   assertNotLastOrgOwner,
   assertNotLastTeamOwner,
   assertOrgOwnerOr403,
   can,
   canManageOrganization,
-} from "../authz/index.ts";
-import { getPermissionCatalog } from "../authz/catalog.ts";
-import { getDb, type Db } from "../../db/connection.ts";
-import { grant, invitation, team, teammate } from "../../db/schema.ts";
-import { getOrgId } from "../shared.ts";
+} from '../authz/index.ts'
+import { getPermissionCatalog } from '../authz/catalog.ts'
+import { getDb, type Db } from '../../db/connection.ts'
+import { grant, invitation } from '../../db/schema.ts'
+import { getOrgId } from '../shared.ts'
+import { acceptInvitationForUser } from './invitation-accept.ts'
 import {
   handleCreateInvitation,
   handleListInvitations,
   handleRevokeInvitation,
-} from "./invitation-http.ts";
+} from './invitation-http.ts'
 import {
   type CreateAccessInput,
   invitationAcceptErrorPayload,
@@ -45,26 +38,23 @@ import {
   validateAccessCheckQuery,
   validateAccessListQuery,
   validateAccessResourceIdQuery,
-} from "./routes-helpers.ts";
+} from './routes-helpers.ts'
 
 async function assertRevocableAllowGrant(
   db: Db,
   accessRow: {
-    entityType: string;
-    entityId: string;
-    permission: string;
-    actorId: string;
-  },
-): Promise<void> {
-  if (
-    accessRow.entityType === "organization" &&
-    accessRow.permission === "organization:own"
-  ) {
-    await assertNotLastOrgOwner(db, accessRow.entityId, accessRow.actorId);
-    return;
+    entityType: string
+    entityId: string
+    permission: string
+    actorId: string
   }
-  if (accessRow.entityType === "team" && accessRow.permission === "team:own") {
-    await assertNotLastTeamOwner(db, accessRow.entityId, accessRow.actorId);
+): Promise<void> {
+  if (accessRow.entityType === 'organization' && accessRow.permission === 'organization:own') {
+    await assertNotLastOrgOwner(db, accessRow.entityId, accessRow.actorId)
+    return
+  }
+  if (accessRow.entityType === 'team' && accessRow.permission === 'team:own') {
+    await assertNotLastTeamOwner(db, accessRow.entityId, accessRow.actorId)
   }
 }
 
@@ -75,180 +65,113 @@ async function assertRevocableAllowGrant(
 async function assertCanManageAccessOr403(
   c: Context,
   db: Db,
-  resourceId: string,
+  resourceId: string
 ): Promise<Response | null> {
-  const entity = await resolveEntityById(db, resourceId);
+  const entity = await resolveEntityById(db, resourceId)
   if (!entity) {
-    return c.json({ error: "Not found" }, 404);
+    return c.json({ error: 'Not found' }, 404)
   }
 
-  return assertOrgOwnerOr403(c, entity.entityType, entity.entityId);
+  return assertOrgOwnerOr403(c, entity.entityType, entity.entityId)
 }
 
 async function parseCreateAccessBody(
-  c: Context,
+  c: Context
 ): Promise<CreateAccessInput | { response: Response }> {
-  let body: unknown;
+  let body: unknown
   try {
-    body = await c.req.json();
+    body = await c.req.json()
   } catch {
-    return { response: c.json({ error: "Invalid request" }, 400) };
+    return { response: c.json({ error: 'Invalid request' }, 400) }
   }
 
-  const parsed = parseCreateAccessBodyRecord(body);
-  if ("ok" in parsed) {
-    return { response: c.json({ error: parsed.error }, parsed.status) };
+  const parsed = parseCreateAccessBodyRecord(body)
+  if ('ok' in parsed) {
+    return { response: c.json({ error: parsed.error }, parsed.status) }
   }
 
-  return parsed;
+  return parsed
 }
 
-export function registerAccessRoutes(
-  router: Hono<AppEnv>,
-  opts: AuthRouteOpts,
-) {
+export function registerAccessRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
   if (!opts.secrets) {
-    throw new TypeError("session secrets are required for access routes");
+    throw new TypeError('session secrets are required for access routes')
   }
-  const secrets = opts.secrets;
+  const secrets = opts.secrets
 
-  router.use("/invitations", createSessionMiddleware(secrets));
-  router.use("/invitations/:id", createSessionMiddleware(secrets));
-  router.use("/invitations/:id/accept", createSessionMiddleware(secrets));
+  router.use('/invitations', createSessionMiddleware(secrets))
+  router.use('/invitations/:id', createSessionMiddleware(secrets))
+  router.use('/invitations/:id/accept', createSessionMiddleware(secrets))
 
-  router.post("/invitations", (c) => handleCreateInvitation(c, opts));
-  router.get("/invitations", (c) => handleListInvitations(c));
-  router.delete("/invitations/:id", (c) => handleRevokeInvitation(c));
+  router.post('/invitations', (c) => handleCreateInvitation(c, opts))
+  router.get('/invitations', (c) => handleListInvitations(c))
+  router.delete('/invitations/:id', (c) => handleRevokeInvitation(c))
 
-  router.post("/invitations/:id/accept", async (c) => {
-    const db = getDb(c);
-    if (!db) return c.json({ error: "Database unavailable" }, 503);
+  router.post('/invitations/:id/accept', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
 
-    const session = c.get("session");
-    if (!session?.userId) return c.json({ error: "Unauthorized" }, 401);
+    const session = c.get('session')
+    if (!session?.userId) return c.json({ error: 'Unauthorized' }, 401)
 
-    const invitationId = c.req.param("id");
-    const now = new Date().toISOString();
+    const invitationId = c.req.param('id')
 
     const inviteRows = await db
       .select()
       .from(invitation)
       .where(eq(invitation.id, invitationId))
-      .limit(1);
+      .limit(1)
 
-    const invitePreview = inviteRows[0];
+    const invitePreview = inviteRows[0]
     if (!invitePreview) {
-      return c.json({ error: "Not found" }, 404);
+      return c.json({ error: 'Not found' }, 404)
     }
 
     if (!invitationEmailsMatch(invitePreview.email, session.email)) {
-      return c.json({ error: "Forbidden" }, 403);
+      return c.json({ error: 'Forbidden' }, 403)
     }
 
-    type AcceptResult =
-      | { ok: true; organizationId: string }
-      | { error: "gone" | "invalid_grant" };
+    const result = await acceptInvitationForUser(db, invitationId, session.userId)
 
-    const result: AcceptResult = await db.transaction(async (tx) => {
-      const claimed = await tx
-        .update(invitation)
-        .set({ status: "accepted" })
-        .where(
-          and(
-            eq(invitation.id, invitationId),
-            eq(invitation.status, "pending"),
-            gt(invitation.expiresAt, now),
-          ),
-        )
-        .returning();
-
-      const invite = claimed[0];
-      if (!invite) {
-        return { error: "gone" as const };
-      }
-
-      const teamRows = await tx
-        .select({ organizationId: team.organizationId })
-        .from(team)
-        .where(eq(team.id, invite.teamId))
-        .limit(1);
-
-      const organizationId = teamRows[0]?.organizationId;
-      if (!organizationId) {
-        return { error: "gone" as const };
-      }
-
-      await tx
-        .insert(teammate)
-        .values({
-          teamId: invite.teamId,
-          userId: session.userId,
-        })
-        .onConflictDoNothing({
-          target: [teammate.teamId, teammate.userId],
-        });
-
-      const grants = resolveInvitationGrants(
-        invite.grants,
-        organizationId,
-      );
-
-      try {
-        await materializeInvitationGrants(
-          tx,
-          session.userId,
-          grants,
-          organizationId,
-        );
-      } catch (err) {
-        if (err instanceof InvitationGrantValidationError) {
-          return { error: "invalid_grant" as const };
-        }
-        throw err;
-      }
-
-      return { ok: true as const, organizationId };
-    });
-
-    if ("error" in result) {
-      const payload = invitationAcceptErrorPayload(result.error);
-      return c.json(payload.body, payload.status);
+    if ('error' in result) {
+      const payload = invitationAcceptErrorPayload(result.error)
+      return c.json(payload.body, payload.status)
     }
 
-    return c.json({ ok: true as const, organizationId: result.organizationId });
-  });
+    return c.json({ ok: true as const, organizationId: result.organizationId })
+  })
 
-  router.use("/permissions", createSessionMiddleware(secrets));
-  router.use("/access/check", createSessionMiddleware(secrets));
-  router.use("/access/resource-id", createSessionMiddleware(secrets));
-  router.use("/access", createSessionMiddleware(secrets));
-  router.use("/access/:id", createSessionMiddleware(secrets));
+  router.use('/permissions', createSessionMiddleware(secrets))
+  router.use('/access/check', createSessionMiddleware(secrets))
+  router.use('/access/resource-id', createSessionMiddleware(secrets))
+  router.use('/access', createSessionMiddleware(secrets))
+  router.use('/access/:id', createSessionMiddleware(secrets))
 
-  router.get("/permissions", (c) => {
-    const session = c.get("session");
-    if (!session) return c.json({ error: "Unauthorized" }, 401);
+  router.get('/permissions', (c) => {
+    const session = c.get('session')
+    if (!session) return c.json({ error: 'Unauthorized' }, 401)
 
-    const permissions = getPermissionCatalog();
-    return c.json({ permissions });
-  });
+    const permissions = getPermissionCatalog()
+    return c.json({ permissions })
+  })
 
-  router.get("/access/check", async (c) => {
-    const db = getDb(c);
-    if (!db) return c.json({ error: "Database unavailable" }, 503);
+  router.get('/access/check', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
 
-    const session = c.get("session");
-    if (!session) return c.json({ error: "Unauthorized" }, 401);
+    const session = c.get('session')
+    if (!session) return c.json({ error: 'Unauthorized' }, 401)
 
-    const resourceId = c.req.query("resourceId")?.trim();
-    const permissionKey = c.req.query("permissionKey")?.trim();
-    const validated = validateAccessCheckQuery(resourceId, permissionKey);
-    if (!("ok" in validated) || validated.ok === false) {
-      return c.json({ error: validated.error }, validated.status);
+    const resourceId = c.req.query('resourceId')?.trim()
+    const permissionKey = c.req.query('permissionKey')?.trim()
+    const validated = validateAccessCheckQuery(resourceId, permissionKey)
+    if (!('ok' in validated) || validated.ok === false) {
+      return c.json({ error: validated.error }, validated.status)
     }
 
-    const entity = await resolveEntityById(db, validated.resourceId);
+    const entity = await resolveEntityById(db, validated.resourceId)
     if (!entity) {
-      return c.json({ error: "Not found" }, 404);
+      return c.json({ error: 'Not found' }, 404)
     }
 
     const allowed = await can(
@@ -256,105 +179,87 @@ export function registerAccessRoutes(
       session.userId,
       validated.permissionKey,
       entity.entityType,
-      entity.entityId,
-    );
+      entity.entityId
+    )
 
-    return c.json({ allowed });
-  });
+    return c.json({ allowed })
+  })
 
-  router.get("/access/resource-id", async (c) => {
-    const db = getDb(c);
-    if (!db) return c.json({ error: "Database unavailable" }, 503);
+  router.get('/access/resource-id', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
 
-    const session = c.get("session");
-    if (!session) return c.json({ error: "Unauthorized" }, 401);
+    const session = c.get('session')
+    if (!session) return c.json({ error: 'Unauthorized' }, 401)
 
-    const kind = c.req.query("kind")?.trim();
-    const itemId = c.req.query("itemId")?.trim();
-    const validated = validateAccessResourceIdQuery(kind, itemId);
-    if (!("ok" in validated) || validated.ok === false) {
-      return c.json({ error: validated.error }, validated.status);
+    const kind = c.req.query('kind')?.trim()
+    const itemId = c.req.query('itemId')?.trim()
+    const validated = validateAccessResourceIdQuery(kind, itemId)
+    if (!('ok' in validated) || validated.ok === false) {
+      return c.json({ error: validated.error }, validated.status)
     }
 
     if (!isAccessGrantEntityType(validated.kind)) {
-      return c.json({ error: "Not found" }, 404);
+      return c.json({ error: 'Not found' }, 404)
     }
 
-    const orgResult = await getOrgId(c, session.userId);
-    if (orgResult instanceof Response) return orgResult;
-    const organizationId = orgResult;
+    const orgResult = await getOrgId(c, session.userId)
+    if (orgResult instanceof Response) return orgResult
+    const organizationId = orgResult
 
-    const entity = await resolveEntityByKindAndItemId(
-      db,
-      validated.kind,
-      validated.itemId,
-    );
+    const entity = await resolveEntityByKindAndItemId(db, validated.kind, validated.itemId)
     if (entity?.organizationId !== organizationId) {
-      return c.json({ error: "Not found" }, 404);
+      return c.json({ error: 'Not found' }, 404)
     }
 
-    if (
-      organizationResourceIdMismatch(
-        validated.kind,
-        validated.itemId,
-        organizationId,
-      )
-    ) {
-      return c.json({ error: "Not found" }, 404);
+    if (organizationResourceIdMismatch(validated.kind, validated.itemId, organizationId)) {
+      return c.json({ error: 'Not found' }, 404)
     }
-    if (validated.kind === "organization") {
+    if (validated.kind === 'organization') {
       return c.json({
         resourceId: entity.entityId,
         kind: validated.kind,
         itemId: validated.itemId,
-      });
+      })
     }
 
-    const visible = await canManageOrganization(
-      db,
-      session.userId,
-      organizationId,
-    );
+    const visible = await canManageOrganization(db, session.userId, organizationId)
 
     if (!visible) {
-      return c.json({ error: "Forbidden" }, 403);
+      return c.json({ error: 'Forbidden' }, 403)
     }
 
     return c.json({
       resourceId: entity.entityId,
       kind: validated.kind,
       itemId: validated.itemId,
-    });
-  });
+    })
+  })
 
-  router.get("/access", async (c) => {
-    const db = getDb(c);
-    if (!db) return c.json({ error: "Database unavailable" }, 503);
+  router.get('/access', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
 
-    const session = c.get("session");
-    if (!session) return c.json({ error: "Unauthorized" }, 401);
+    const session = c.get('session')
+    if (!session) return c.json({ error: 'Unauthorized' }, 401)
 
-    const resourceId = c.req.query("resourceId")?.trim();
-    const validated = validateAccessListQuery(resourceId);
-    if (!("ok" in validated) || validated.ok === false) {
-      return c.json({ error: validated.error }, validated.status);
+    const resourceId = c.req.query('resourceId')?.trim()
+    const validated = validateAccessListQuery(resourceId)
+    if (!('ok' in validated) || validated.ok === false) {
+      return c.json({ error: validated.error }, validated.status)
     }
 
-    const entity = await resolveEntityById(db, validated.resourceId);
+    const entity = await resolveEntityById(db, validated.resourceId)
     if (!entity) {
-      return c.json({ error: "Not found" }, 404);
+      return c.json({ error: 'Not found' }, 404)
     }
 
     if (!isAccessGrantEntityType(entity.entityType)) {
-      return c.json({ error: "Not found" }, 404);
+      return c.json({ error: 'Not found' }, 404)
     }
 
-    const denied = await assertCanManageAccessOr403(
-      c,
-      db,
-      validated.resourceId,
-    );
-    if (denied) return denied;
+    const denied = await assertCanManageAccessOr403(c, db, validated.resourceId)
+    if (denied) return denied
 
     const rows = await db
       .select({
@@ -366,41 +271,36 @@ export function registerAccessRoutes(
         permission: grant.permission,
       })
       .from(grant)
-      .where(
-        and(
-          eq(grant.entityType, entity.entityType),
-          eq(grant.entityId, entity.entityId),
-        ),
-      )
-      .orderBy(grant.createdAt);
+      .where(and(eq(grant.entityType, entity.entityType), eq(grant.entityId, entity.entityId)))
+      .orderBy(grant.createdAt)
 
-    return c.json({ access: mapGrantRows(rows) });
-  });
+    return c.json({ access: mapGrantRows(rows) })
+  })
 
-  router.post("/access", async (c) => {
-    const db = getDb(c);
-    if (!db) return c.json({ error: "Database unavailable" }, 503);
+  router.post('/access', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
 
-    const session = c.get("session");
-    if (!session) return c.json({ error: "Unauthorized" }, 401);
+    const session = c.get('session')
+    if (!session) return c.json({ error: 'Unauthorized' }, 401)
 
-    const parsed = await parseCreateAccessBody(c);
-    if ("response" in parsed) {
-      return parsed.response;
+    const parsed = await parseCreateAccessBody(c)
+    if ('response' in parsed) {
+      return parsed.response
     }
-    const { subjectKind, subjectId, resourceId, permissionKey } = parsed;
+    const { subjectKind, subjectId, resourceId, permissionKey } = parsed
 
-    const entity = await resolveEntityById(db, resourceId);
+    const entity = await resolveEntityById(db, resourceId)
     if (!entity) {
-      return c.json({ error: "Entity not found" }, 404);
+      return c.json({ error: 'Entity not found' }, 404)
     }
 
     if (!isAccessGrantEntityType(entity.entityType)) {
-      return c.json({ error: "Entity not found" }, 404);
+      return c.json({ error: 'Entity not found' }, 404)
     }
 
-    const denied = await assertCanManageAccessOr403(c, db, resourceId);
-    if (denied) return denied;
+    const denied = await assertCanManageAccessOr403(c, db, resourceId)
+    if (denied) return denied
 
     const result = await createAccessGrant(db, {
       entityType: entity.entityType,
@@ -408,23 +308,23 @@ export function registerAccessRoutes(
       actorType: subjectKind,
       actorId: subjectId,
       permissionKey,
-    });
+    })
 
     if (!result.ok) {
-      return c.json({ error: result.error }, result.status);
+      return c.json({ error: result.error }, result.status)
     }
 
     const grantOrganizationId = await resolveEntityOrganizationId(
       db,
       entity.entityType,
-      entity.entityId,
-    );
+      entity.entityId
+    )
     if (grantOrganizationId) {
       await recordAuditAndNotify(c, {
         organizationId: grantOrganizationId,
         actorUserId: session.userId,
         actorEmail: session.email,
-        action: "grant.create",
+        action: 'grant.create',
         targetType: entity.entityType,
         targetId: entity.entityId,
         context: {
@@ -433,24 +333,24 @@ export function registerAccessRoutes(
           permissionKey,
           created: result.created,
         },
-      });
+      })
     }
 
     return c.json({
       ok: true as const,
       id: result.ids[0]!,
       created: result.created,
-    });
-  });
+    })
+  })
 
-  router.delete("/access/:id", async (c) => {
-    const db = getDb(c);
-    if (!db) return c.json({ error: "Database unavailable" }, 503);
+  router.delete('/access/:id', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
 
-    const session = c.get("session");
-    if (!session) return c.json({ error: "Unauthorized" }, 401);
+    const session = c.get('session')
+    if (!session) return c.json({ error: 'Unauthorized' }, 401)
 
-    const accessId = c.req.param("id");
+    const accessId = c.req.param('id')
     const accessRows = await db
       .select({
         entityType: grant.entityType,
@@ -461,55 +361,59 @@ export function registerAccessRoutes(
       })
       .from(grant)
       .where(eq(grant.id, accessId))
-      .limit(1);
+      .limit(1)
 
-    const accessRow = accessRows[0];
+    const accessRow = accessRows[0]
     if (!accessRow) {
-      return c.json({ error: "Not found" }, 404);
+      return c.json({ error: 'Not found' }, 404)
     }
 
-    const denied = await assertCanManageAccessOr403(c, db, accessRow.entityId);
-    if (denied) return denied;
+    const denied = await assertCanManageAccessOr403(c, db, accessRow.entityId)
+    if (denied) return denied
 
     try {
-      await assertRevocableAllowGrant(db, accessRow);
+      await assertRevocableAllowGrant(db, accessRow)
     } catch (err) {
-      const conflict = ownerRemovalConflictMessage(err);
+      const conflict = ownerRemovalConflictMessage(err)
       if (conflict) {
-        return c.json({ error: conflict }, 409);
+        return c.json({ error: conflict }, 409)
       }
-      throw err;
+      throw err
     }
 
-    const revoked = await revokeAccessGrant(db, accessId);
+    const revoked = await revokeAccessGrant(db, accessId)
     if (!revoked) {
-      return c.json({ error: "Not found" }, 404);
+      return c.json({ error: 'Not found' }, 404)
     }
 
     const revokedOrganizationId = await resolveEntityOrganizationId(
       db,
       accessRow.entityType,
-      accessRow.entityId,
-    );
+      accessRow.entityId
+    )
     if (revokedOrganizationId) {
-      await recordAuditAndNotify(c, {
-        organizationId: revokedOrganizationId,
-        actorUserId: session.userId,
-        actorEmail: session.email,
-        action: "grant.delete",
-        targetType: accessRow.entityType,
-        targetId: accessRow.entityId,
-        context: {
-          permission: accessRow.permission,
-          actorId: accessRow.actorId,
+      await recordAuditAndNotify(
+        c,
+        {
+          organizationId: revokedOrganizationId,
+          actorUserId: session.userId,
+          actorEmail: session.email,
+          action: 'grant.delete',
+          targetType: accessRow.entityType,
+          targetId: accessRow.entityId,
+          context: {
+            permission: accessRow.permission,
+            actorId: accessRow.actorId,
+          },
         },
-      }, {
-        permissionKey: accessRow.permission,
-        subjectKind: accessRow.actorType,
-        subjectId: accessRow.actorId,
-      });
+        {
+          permissionKey: accessRow.permission,
+          subjectKind: accessRow.actorType,
+          subjectId: accessRow.actorId,
+        }
+      )
     }
 
-    return c.json({ ok: true as const });
-  });
+    return c.json({ ok: true as const })
+  })
 }

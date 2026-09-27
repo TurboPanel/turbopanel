@@ -293,6 +293,30 @@ Client auth lives under `CLIENT_API_PREFIX` (`/api/client/v1`):
 
 Future: an instance-wide 2FA-required admin toggle is out of scope for this phase.
 
+## Invitation landing page
+
+The emailed invitation link opens the console's `/accept-invitation?id=` page,
+which never accepts on load (owner decision 2026-09-27). Routes in
+`invitation-landing-http.ts`; the shared accept transaction is
+`client/access/invitation-accept.ts`.
+
+| Method | Path                                          | Notes                                                                                                                                                                                           |
+| ------ | --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET`  | `/api/client/v1/auth/invitations/:id`         | Unauthenticated preview: `status` (pending/expired/accepted/revoked), organization, team, inviter; for a pending one also `email` + `accountExists`. The id only reaches the invited address.   |
+| `POST` | `/api/client/v1/auth/invitations/:id/sign-up` | `{ password }`. No account for the invited email: creates it **verified** (the click proved the address), accepts, signs in; no personal organization. `409 account_exists`, `410` not pending. |
+| `POST` | `/api/client/v1/invitations/:id/accept`       | Signed-in Accept button (session email must match). Idempotent for the user who accepted it.                                                                                                    |
+
+- Page paths: signed in as the invited email → Accept button; signed in as
+  someone else → say so, offer switching; not signed in + `accountExists` →
+  sign in ("to accept your invitation to <org>"), then the Accept button; not
+  signed in + no account → "Create a password to sign in to <org>", which is
+  the accept (no confirm).
+- Rate limits: `invitation-preview` (default tier) keyed on the id,
+  `invitation-sign-up` (strict, like sign-up).
+- The password is hashed before any transaction (one DB connection per
+  request on Workers — see the invite send in `access/invitation-http.ts`).
+- Tests run against Postgres (`invitation-landing-http.test.ts`).
+
 ## Forgot password (emailed link)
 
 better-auth's `emailAndPassword` reset flow, in `password-reset-http.ts` (routes)

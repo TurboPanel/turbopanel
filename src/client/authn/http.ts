@@ -39,6 +39,7 @@ import {
   resolveEmailSettings,
 } from '../../features/settings/email-settings.ts'
 import { registerOAuthRoutes } from './oauth/oauth-http.ts'
+import { registerInvitationLandingRoutes } from './invitation-landing-http.ts'
 import { registerPasswordResetRoutes } from './password-reset-http.ts'
 import { registerOtpRoutes } from './otp-http.ts'
 import { registerPasskeyRoutes } from './passkeys-http.ts'
@@ -326,6 +327,39 @@ export async function buildSessionResponse(
   return base
 }
 
+/**
+ * Create a session for `userId`, set its cookie and answer with the session
+ * payload — how a successful sign-in ends, shared by every route that signs
+ * someone in (sign-in, accepting an invitation with a new password).
+ */
+export async function startSessionResponse(
+  c: Context,
+  opts: AuthRouteOpts,
+  db: Db | undefined,
+  secrets: NonNullable<AuthRouteOpts['secrets']>,
+  userId: string,
+  extra: Record<string, unknown> = {}
+): Promise<Response> {
+  const { token } = await createSession(db, userId, {
+    ipAddress: resolveClientIp(c, opts.runtime) ?? undefined,
+    userAgent: c.req.header('User-Agent') ?? undefined,
+  })
+  const cookieValue = await buildSignedCookie(token, secrets)
+  const tls = requestTls(c, opts.runtime)
+  const setCookieHeader = buildCookieHeader(
+    cookieValue,
+    SESSION_EXPIRES_IN_MS / 1000,
+    tls.cookieName,
+    tls.isHttps
+  )
+  const sessionData = await getSession(db, token)
+  if (!sessionData) {
+    throw new Error('Session creation failed')
+  }
+  const payload = await buildSessionResponse(db, opts.runtime, sessionData)
+  return c.json({ ...payload, ...extra }, 200, { 'Set-Cookie': setCookieHeader })
+}
+
 async function lookupIs2faEnabled(db: Db | undefined, userId: string): Promise<boolean> {
   if (db === undefined || typeof db.select !== 'function') {
     return false
@@ -413,7 +447,7 @@ export function parseSignInBody(body: unknown): ParsedSignInBody {
 
 type CreateSignupUserResult = { ok: true; userId: string } | { ok: false; conflict: boolean }
 
-async function createSignupUser(
+export async function createSignupUser(
   db: Db,
   trimmedEmail: string,
   hashedPassword: string,
@@ -710,28 +744,7 @@ export function registerAuthRoutes(app: Hono<AppEnv>, opts: AuthRouteOpts) {
       return c.json({ ok: true, requires2fa: true, challenge })
     }
 
-    const { token } = await createSession(db, result.userId, {
-      ipAddress: resolveClientIp(c, opts.runtime) ?? undefined,
-      userAgent: c.req.header('User-Agent') ?? undefined,
-    })
-    const cookieValue = await buildSignedCookie(token, secrets)
-    const tls = requestTls(c, opts.runtime)
-    const setCookieHeader = buildCookieHeader(
-      cookieValue,
-      SESSION_EXPIRES_IN_MS / 1000,
-      tls.cookieName,
-      tls.isHttps
-    )
-    const sessionData = await getSession(db, token)
-    if (!sessionData) {
-      throw new Error('Session creation failed')
-    }
-
-    const payload = await buildSessionResponse(db, opts.runtime, sessionData)
-
-    return c.json(payload, 200, {
-      'Set-Cookie': setCookieHeader,
-    })
+    return await startSessionResponse(c, opts, db, secrets, result.userId)
   })
 
   auth.post('/sign-out', async (c) => {
@@ -900,6 +913,7 @@ export function registerAuthRoutes(app: Hono<AppEnv>, opts: AuthRouteOpts) {
 
   registerOtpRoutes(auth, opts)
   registerPasswordResetRoutes(auth, opts)
+  registerInvitationLandingRoutes(auth, opts)
   registerTwoFactorRoutes(auth, opts)
   registerPasskeyRoutes(auth, opts)
   registerOAuthRoutes(auth, opts)

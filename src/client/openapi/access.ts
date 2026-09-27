@@ -23,8 +23,7 @@ export const accessSchemas = {
       'system:read',
       'system:operate',
     ],
-    description:
-      'Permission keys that may be written as access grants. Excludes `system:manage`.',
+    description: 'Permission keys that may be written as access grants. Excludes `system:manage`.',
   },
   InvitationGrantSpec: {
     type: 'object',
@@ -80,15 +79,7 @@ export const accessSchemas = {
   },
   InvitationRecord: {
     type: 'object',
-    required: [
-      'id',
-      'email',
-      'teamId',
-      'teamName',
-      'expiresAt',
-      'createdAt',
-      'invitedBy',
-    ],
+    required: ['id', 'email', 'teamId', 'teamName', 'expiresAt', 'createdAt', 'invitedBy'],
     properties: {
       id: { type: 'string', format: 'uuid' },
       email: { type: 'string' },
@@ -148,14 +139,7 @@ export const accessSchemas = {
   },
   AccessRecord: {
     type: 'object',
-    required: [
-      'id',
-      'subjectKind',
-      'subjectId',
-      'resourceId',
-      'effect',
-      'permissionKey',
-    ],
+    required: ['id', 'subjectKind', 'subjectId', 'resourceId', 'effect', 'permissionKey'],
     properties: {
       id: { type: 'string', format: 'uuid' },
       subjectKind: {
@@ -167,8 +151,7 @@ export const accessSchemas = {
       resourceId: {
         type: 'string',
         format: 'uuid',
-        description:
-          'UUID of the grant target entity (organization or team primary key).',
+        description: 'UUID of the grant target entity (organization or team primary key).',
       },
       effect: {
         type: 'string',
@@ -395,7 +378,7 @@ export const accessPaths: Record<string, unknown> = {
       tags: ['Authorization'],
       summary: 'Revoke a pending invitation',
       description:
-        'Sets status to revoked only while the invitation is still pending. Requires canInviteToTeam on the invitation\'s team.',
+        "Sets status to revoked only while the invitation is still pending. Requires canInviteToTeam on the invitation's team.",
       security: [{ cookieAuth: [] }],
       parameters: [
         {
@@ -470,7 +453,7 @@ export const accessPaths: Record<string, unknown> = {
       tags: ['Authorization'],
       summary: 'Accept an organization invitation',
       description:
-        'Atomically claims a pending invitation, creates team membership, materializes the invitation\'s `grants` JSON into user-scoped grant rows, and returns the accepted organization id. When `grants` is null, a default `organization:manage` grant on the organization is applied. Grant targets must be organization or team entities with compatible permission keys.',
+        "Atomically claims a pending invitation, creates team membership, materializes the invitation's `grants` JSON into user-scoped grant rows, and returns the accepted organization id. Idempotent for the user who accepted it: repeating the call answers 200 again. The invitation landing page calls this only from its Accept button, never on load. When `grants` is null, a default `organization:manage` grant on the organization is applied. Grant targets must be organization or team entities with compatible permission keys.",
       security: [{ cookieAuth: [] }],
       parameters: [
         {
@@ -955,7 +938,7 @@ export const accessPaths: Record<string, unknown> = {
       tags: ['Authorization'],
       summary: 'Revoke an access grant',
       description:
-        'Requires `organization:own` on the grant\'s target resource (checked via `getAccessManagementPermission`).',
+        "Requires `organization:own` on the grant's target resource (checked via `getAccessManagementPermission`).",
       security: [{ cookieAuth: [] }],
       parameters: [
         {
