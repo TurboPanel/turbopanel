@@ -136,19 +136,22 @@ function splitTopLevel(text: string, separator: RegExp): string[] {
   const parts: string[] = []
   let depth = 0
   let start = 0
-  for (let i = 0; i < text.length; i++) {
+  let i = 0
+  while (i < text.length) {
     const ch = text[i]
     if (ch === '(') depth++
     else if (ch === ')') depth--
     else if (depth === 0) {
       separator.lastIndex = i
       const match = separator.exec(text)
-      if (match && match.index === i) {
+      if (match?.index === i) {
         parts.push(text.slice(start, i))
         start = i + match[0].length
-        i = start - 1
+        i = start
+        continue
       }
     }
+    i++
   }
   parts.push(text.slice(start))
   return parts
@@ -183,6 +186,69 @@ const STRING_FUNCTIONS = new Set([
   'bin',
 ])
 
+/** Functions whose result type is simply their first argument's type. */
+const FIRST_ARG_TYPE_FUNCTIONS = new Set([
+  'sum',
+  'sumif',
+  'min',
+  'max',
+  'round',
+  'floor',
+  'ceil',
+  'argmax',
+  'argmin',
+])
+
+/**
+ * Type of a top-level `+`/`-` or `*`/`/`/`%` combination, or `undefined` when
+ * `text` is a single term (a literal, a column, or a function call) instead.
+ */
+function inferArithmeticType(text: string): AeType | undefined {
+  const additive = splitTopLevel(text, /\s[+-]\s/y)
+  const multiplicative = additive.length > 1 ? additive : splitTopLevel(text, /\s*[*/%]\s*/y)
+  if (multiplicative.length <= 1) return undefined
+  if (/(^|[^*])\/(?!\*)/.test(text.replace(/\([^()]*\)/g, ''))) return 'Double'
+  const types = multiplicative.map(inferAeExpressionType)
+  if (types.includes('Double')) return 'Double'
+  if (types.every((t) => t === 'Integer')) return 'Integer'
+  return 'Unknown'
+}
+
+/** Type of a literal or a bare column reference, or `undefined` when `text` is neither. */
+function inferLiteralType(text: string): AeType | undefined {
+  if (/^-?\d+$/.test(text)) return 'Integer'
+  if (/^-?(\d+\.\d*|\d*\.\d+)$/.test(text)) return 'Double'
+  if (/^-?\d+(\.\d+)?e[+-]?\d+$/i.test(text)) return 'Double'
+  if (/^'.*'$/s.test(text)) return 'String'
+  if (/^double\d+$/.test(text)) return 'Double'
+  if (/^blob\d+$/.test(text) || /^index\d+$/.test(text)) return 'String'
+  if (text === '_sample_interval') return 'Integer'
+  if (text === 'timestamp') return 'DateTime'
+  return undefined
+}
+
+/** Type of `if(cond, a, b)`'s result — the branch type when both agree, else `Unknown`. */
+function inferIfCallType(args: readonly string[]): AeType {
+  if (args.length !== 3) return 'Unknown'
+  const a = inferAeExpressionType(args[1])
+  const b = inferAeExpressionType(args[2])
+  return a === b ? a : 'Unknown'
+}
+
+/** Type of a function call already confirmed well-formed (name matched, parens balanced). */
+function inferFunctionCallType(name: string, args: readonly string[]): AeType {
+  const lower = name.toLowerCase()
+  if (INTEGER_FUNCTIONS.has(lower)) return 'Integer'
+  if (DOUBLE_FUNCTIONS.has(lower)) return 'Double'
+  if (STRING_FUNCTIONS.has(lower)) return 'String'
+  if (lower === 'todatetime' || lower === 'now') return 'DateTime'
+  if (lower === 'if') return inferIfCallType(args)
+  if (FIRST_ARG_TYPE_FUNCTIONS.has(lower)) {
+    return args[0] === undefined ? 'Unknown' : inferAeExpressionType(args[0])
+  }
+  return 'Unknown'
+}
+
 /**
  * Best-effort type of one expression, enough to hold `if()` branches to AE's
  * same-type rule for the shapes the builders emit. `Unknown` never fails a
@@ -192,63 +258,47 @@ export function inferAeExpressionType(expr: string): AeType {
   const text = stripOuterParens(expr)
   if (text === '') return 'Unknown'
 
-  const additive = splitTopLevel(text, /\s[+-]\s/y)
-  const multiplicative = additive.length > 1 ? additive : splitTopLevel(text, /\s*[*/%]\s*/y)
-  if (multiplicative.length > 1) {
-    if (/(^|[^*])\/(?!\*)/.test(text.replace(/\([^()]*\)/g, ''))) return 'Double'
-    const types = multiplicative.map(inferAeExpressionType)
-    if (types.includes('Double')) return 'Double'
-    if (types.every((t) => t === 'Integer')) return 'Integer'
-    return 'Unknown'
-  }
+  const arithmetic = inferArithmeticType(text)
+  if (arithmetic !== undefined) return arithmetic
 
-  if (/^-?\d+$/.test(text)) return 'Integer'
-  if (/^-?(\d+\.\d*|\d*\.\d+|\d+(\.\d+)?e[+-]?\d+)$/i.test(text)) return 'Double'
-  if (/^'.*'$/s.test(text)) return 'String'
-  if (/^double\d+$/.test(text)) return 'Double'
-  if (/^blob\d+$/.test(text) || /^index\d+$/.test(text)) return 'String'
-  if (text === '_sample_interval') return 'Integer'
-  if (text === 'timestamp') return 'DateTime'
+  const literal = inferLiteralType(text)
+  if (literal !== undefined) return literal
 
-  const call = /^([A-Za-z_][A-Za-z0-9_]*)\s*\(/.exec(text)
+  const call = /^([A-Za-z_]\w*)\s*\(/.exec(text)
   if (call && matchingParen(text, call[0].length - 1) === text.length - 1) {
-    const name = call[1].toLowerCase()
-    if (INTEGER_FUNCTIONS.has(name)) return 'Integer'
-    if (DOUBLE_FUNCTIONS.has(name)) return 'Double'
-    if (STRING_FUNCTIONS.has(name)) return 'String'
-    if (name === 'todatetime' || name === 'now') return 'DateTime'
     const args = splitTopLevel(text.slice(call[0].length, -1), /,/y)
-    if (name === 'if' && args.length === 3) {
-      const a = inferAeExpressionType(args[1])
-      const b = inferAeExpressionType(args[2])
-      return a === b ? a : 'Unknown'
-    }
-    if (
-      name === 'sum' ||
-      name === 'sumif' ||
-      name === 'min' ||
-      name === 'max' ||
-      name === 'round' ||
-      name === 'floor' ||
-      name === 'ceil'
-    ) {
-      return args[0] === undefined ? 'Unknown' : inferAeExpressionType(args[0])
-    }
-    if (name === 'argmax' || name === 'argmin') {
-      return args[0] === undefined ? 'Unknown' : inferAeExpressionType(args[0])
-    }
-    return 'Unknown'
+    return inferFunctionCallType(call[1], args)
   }
   return 'Unknown'
 }
 
 function* functionCalls(sql: string): Generator<{ name: string; start: number; open: number }> {
-  const pattern = /\b([A-Za-z_][A-Za-z0-9_]*)\s*\(/g
+  const pattern = /\b([A-Za-z_]\w*)\s*\(/g
   for (const match of sql.matchAll(pattern)) {
     const name = match[1]
     if (NON_FUNCTION_KEYWORDS.has(name.toLowerCase())) continue
     yield { name, start: match.index, open: match.index + match[0].length - 1 }
   }
+}
+
+/** Aggregates AE only accepts with one argument, and only over a numeric column. */
+const SINGLE_ARG_AGGREGATE_FUNCTIONS = new Set(['min', 'max', 'sum', 'avg'])
+
+/** The one dialect failure this already-documented, well-formed call produces, if any. */
+function functionCallFailure(lower: string, args: readonly string[]): string | undefined {
+  if (SINGLE_ARG_AGGREGATE_FUNCTIONS.has(lower) && args.length === 1) {
+    if (inferAeExpressionType(args[0]) === 'String') {
+      return `Input was invalid: cannot use the String type as argument 1 in ${lower}(`
+    }
+  }
+  if (lower === 'if' && args.length === 3) {
+    const a = inferAeExpressionType(args[1])
+    const b = inferAeExpressionType(args[2])
+    if (a !== 'Unknown' && b !== 'Unknown' && a !== b) {
+      return `Input was invalid: the 2nd and 3rd arguments to IF() function must have the same type but instead had ${a} and ${b}: if(${args.join(',').trim().slice(0, 120)}`
+    }
+  }
+  return undefined
 }
 
 /**
@@ -272,23 +322,8 @@ export function aeSqlDialectFailures(sql: string): string[] {
     const close = matchingParen(text, call.open)
     if (close < 0) continue
     const args = splitTopLevel(text.slice(call.open + 1, close), /,/y)
-    if (
-      (lower === 'min' || lower === 'max' || lower === 'sum' || lower === 'avg') &&
-      args.length === 1
-    ) {
-      if (inferAeExpressionType(args[0]) === 'String') {
-        failures.push(`Input was invalid: cannot use the String type as argument 1 in ${lower}(`)
-      }
-    }
-    if (lower === 'if' && args.length === 3) {
-      const a = inferAeExpressionType(args[1])
-      const b = inferAeExpressionType(args[2])
-      if (a !== 'Unknown' && b !== 'Unknown' && a !== b) {
-        failures.push(
-          `Input was invalid: the 2nd and 3rd arguments to IF() function must have the same type but instead had ${a} and ${b}: if(${args.join(',').trim().slice(0, 120)}`
-        )
-      }
-    }
+    const failure = functionCallFailure(lower, args)
+    if (failure !== undefined) failures.push(failure)
   }
   return failures
 }

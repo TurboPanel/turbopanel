@@ -77,4 +77,4 @@ export const OLDER_BASE: ReleaseBuild = {
  * must never be sent as a pin — the daemon treats it as "re-resolve".
  */
 export const EXACT_BUILD_MANIFEST_URL =
-  /^https:\/\/github\.com\/TurboPanel\/(turbopaneld|turbopanel|ui)\/releases\/download\/(canary\/manifest-[0-9][0-9A-Za-z._+-]*\.json|v[0-9][0-9A-Za-z._+-]*\/manifest\.json)$/
+  /^https:\/\/github\.com\/TurboPanel\/(turbopaneld|turbopanel|ui)\/releases\/download\/(canary\/manifest-\d[0-9A-Za-z._+-]*\.json|v\d[0-9A-Za-z._+-]*\/manifest\.json)$/
