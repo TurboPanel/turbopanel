@@ -69,8 +69,18 @@ export const invitation = pgTable(
     status: text().notNull(),
     /** Intended access grants materialized on accept — see `InvitationGrantSpec`. */
     grants: jsonb(),
+    /**
+     * SHA-256 verifier of the secret emailed in the accept link (never the
+     * secret itself, never returned by an API). Null for invitations created
+     * before the landing page, which only the signed-in accept can use.
+     */
+    tokenHash: text("token_hash"),
   },
   (table) => [
+    uniqueIndex("uniq_invitation_token_hash").using(
+      "btree",
+      table.tokenHash.asc().nullsLast().op("text_ops"),
+    ),
     index("idx_invitation_email").using(
       "btree",
       table.email.asc().nullsLast().op("text_ops"),

@@ -50,6 +50,12 @@
       "tag": "0007_add_upgrade_tables",
       "when": 1790263668545,
       "sha256": "f54bb8294ee4cf56e41dbca8e7a893a76e85190d68588f2889a4ae2e62d981fd"
+    },
+    {
+      "idx": 8,
+      "tag": "0008_invitation_token_hash",
+      "when": 1790530277576,
+      "sha256": "73d4541a2de6aa82fff53f7cb52f7689d2f07c5059dc7cf7bf5b8974444fad93"
     }
   ]
 }

@@ -448,6 +448,38 @@ export const accessPaths: Record<string, unknown> = {
       },
     },
   },
+  '/api/client/v1/invitations/{id}/resend': {
+    post: {
+      tags: ['Authorization'],
+      summary: 'Re-send an organization invitation',
+      description:
+        'Mints a new link secret for a pending invitation, emails it again and pushes the expiry out 7 days. The previous link stops working. Same permission as revoking (canInviteToTeam). The secret is never returned.',
+      security: [{ cookieAuth: [] }],
+      parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+      responses: {
+        '200': {
+          description: 'Re-sent',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['ok', 'id', 'expiresAt'],
+                properties: {
+                  ok: { type: 'boolean', enum: [true] },
+                  id: { type: 'string' },
+                  expiresAt: { type: 'string', format: 'date-time' },
+                },
+              },
+            },
+          },
+        },
+        '401': { description: 'Unauthorized' },
+        '403': { description: 'Forbidden' },
+        '404': { description: 'No pending invitation with that id' },
+        '503': { description: '`email_unavailable`' },
+      },
+    },
+  },
   '/api/client/v1/invitations/{id}/accept': {
     post: {
       tags: ['Authorization'],

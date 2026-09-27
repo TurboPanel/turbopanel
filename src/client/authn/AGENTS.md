@@ -295,27 +295,40 @@ Future: an instance-wide 2FA-required admin toggle is out of scope for this phas
 
 ## Invitation landing page
 
-The emailed invitation link opens the console's `/accept-invitation?id=` page,
-which never accepts on load (owner decision 2026-09-27). Routes in
-`invitation-landing-http.ts`; the shared accept transaction is
-`client/access/invitation-accept.ts`.
+The emailed invitation link opens the console's `/accept-invitation?token=`
+page, which never accepts on load (owner decision 2026-09-27). Routes in
+`invitation-landing-http.ts`; the link secret is `client/access/invitation-token.ts`;
+the shared accept transaction is `client/access/invitation-accept.ts`.
 
-| Method | Path                                          | Notes                                                                                                                                                                                           |
-| ------ | --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET`  | `/api/client/v1/auth/invitations/:id`         | Unauthenticated preview: `status` (pending/expired/accepted/revoked), organization, team, inviter; for a pending one also `email` + `accountExists`. The id only reaches the invited address.   |
-| `POST` | `/api/client/v1/auth/invitations/:id/sign-up` | `{ password }`. No account for the invited email: creates it **verified** (the click proved the address), accepts, signs in; no personal organization. `409 account_exists`, `410` not pending. |
-| `POST` | `/api/client/v1/invitations/:id/accept`       | Signed-in Accept button (session email must match). Idempotent for the user who accepted it.                                                                                                    |
+**The invitation id is not a secret** — `GET /invitations` lists it to
+organization managers, `POST /invitations` returns it to the inviter, and it is
+a time-ordered UUIDv7. Only the link secret may reveal the invited email or
+stand in for proof of the address.
 
+| Method | Path                                                      | Notes                                                                                                                                                                    |
+| ------ | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `GET`  | `/api/client/v1/auth/invitations/by-token/:token`         | Preview by link secret: status, organization, team, inviter; for a pending one also `email` + `accountExists`.                                                           |
+| `POST` | `/api/client/v1/auth/invitations/by-token/:token/sign-up` | `{ password }`. No account for the invited email: creates it **verified**, accepts, signs in; no personal organization. `409 account_exists`, `410` not pending/unknown. |
+| `GET`  | `/api/client/v1/auth/invitations/:id`                     | Old `?id=` links only: status, organization, team, inviter — never the email or `accountExists`.                                                                         |
+| `POST` | `/api/client/v1/invitations/:id/accept`                   | Signed-in Accept button (session email must match). Idempotent for the user who accepted it. The only path for old `?id=` links.                                         |
+| `POST` | `/api/client/v1/invitations/:id/resend`                   | New secret, new email, expiry +7 days; the old link stops working. `canInviteToTeam`.                                                                                    |
+
+- The secret: 256 random bits (`link-token.ts`), stored only as a
+  purpose-bound SHA-256 verifier in `invitation.token_hash` (unique). Never
+  returned by any API; the inviter never sees it. Invitations created before
+  it existed have a null verifier: no email preview and no sign-up — sign in or
+  sign up normally and press Accept, or re-send.
 - Page paths: signed in as the invited email → Accept button; signed in as
   someone else → say so, offer switching; not signed in + `accountExists` →
   sign in ("to accept your invitation to <org>"), then the Accept button; not
   signed in + no account → "Create a password to sign in to <org>", which is
   the accept (no confirm).
-- Rate limits: `invitation-preview` (default tier) keyed on the id,
-  `invitation-sign-up` (strict, like sign-up).
+- Rate limits: `invitation-preview` (default tier) keyed on a prefix of the
+  secret (or the id), `invitation-sign-up` (strict, like sign-up).
 - The password is hashed before any transaction (one DB connection per
   request on Workers — see the invite send in `access/invitation-http.ts`).
-- Tests run against Postgres (`invitation-landing-http.test.ts`).
+- Tests run against Postgres (`invitation-landing-http.test.ts`), including
+  sign-up-by-id refusal, secret absent from create/list, and rotation.
 
 ## Forgot password (emailed link)
 

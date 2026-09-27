@@ -26,6 +26,7 @@ import { acceptInvitationForUser } from './invitation-accept.ts'
 import {
   handleCreateInvitation,
   handleListInvitations,
+  handleResendInvitation,
   handleRevokeInvitation,
 } from './invitation-http.ts'
 import {
@@ -102,10 +103,12 @@ export function registerAccessRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
   router.use('/invitations', createSessionMiddleware(secrets))
   router.use('/invitations/:id', createSessionMiddleware(secrets))
   router.use('/invitations/:id/accept', createSessionMiddleware(secrets))
+  router.use('/invitations/:id/resend', createSessionMiddleware(secrets))
 
   router.post('/invitations', (c) => handleCreateInvitation(c, opts))
   router.get('/invitations', (c) => handleListInvitations(c))
   router.delete('/invitations/:id', (c) => handleRevokeInvitation(c))
+  router.post('/invitations/:id/resend', (c) => handleResendInvitation(c, opts))
 
   router.post('/invitations/:id/accept', async (c) => {
     const db = getDb(c)
