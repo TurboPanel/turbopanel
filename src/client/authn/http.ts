@@ -39,6 +39,7 @@ import {
   resolveEmailSettings,
 } from '../../features/settings/email-settings.ts'
 import { registerOAuthRoutes } from './oauth/oauth-http.ts'
+import { registerPasswordResetRoutes } from './password-reset-http.ts'
 import { registerOtpRoutes } from './otp-http.ts'
 import { registerPasskeyRoutes } from './passkeys-http.ts'
 import { registerTwoFactorRoutes } from './two-factor-http.ts'
@@ -877,6 +878,7 @@ export function registerAuthRoutes(app: Hono<AppEnv>, opts: AuthRouteOpts) {
   })
 
   registerOtpRoutes(auth, opts)
+  registerPasswordResetRoutes(auth, opts)
   registerTwoFactorRoutes(auth, opts)
   registerPasskeyRoutes(auth, opts)
   registerOAuthRoutes(auth, opts)

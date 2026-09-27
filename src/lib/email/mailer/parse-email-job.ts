@@ -1,10 +1,6 @@
 import type { EmailJob, OtpType } from '../../../features/email/types.ts'
 
-const VALID_OTP_TYPES = new Set<OtpType>([
-  'sign-in',
-  'email-verification',
-  'forget-password',
-])
+const VALID_OTP_TYPES = new Set<OtpType>(['sign-in', 'email-verification', 'forget-password'])
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
@@ -15,14 +11,10 @@ function isStringArray(value: unknown): value is string[] {
 }
 
 function parseUnwatched(
-  value: unknown,
+  value: unknown
 ): { nics: string[]; drives: string[]; gpus: string[] } | null {
   if (!isRecord(value)) return null
-  if (
-    !isStringArray(value.nics) ||
-    !isStringArray(value.drives) ||
-    !isStringArray(value.gpus)
-  ) {
+  if (!isStringArray(value.nics) || !isStringArray(value.drives) || !isStringArray(value.gpus)) {
     return null
   }
   return { nics: value.nics, drives: value.drives, gpus: value.gpus }
@@ -31,7 +23,7 @@ function parseUnwatched(
 function parseSignupVerification(
   job: Record<string, unknown>,
   to: string,
-  from: string,
+  from: string
 ): EmailJob | null {
   if (typeof job.verificationUrl !== 'string') return null
   return {
@@ -42,11 +34,16 @@ function parseSignupVerification(
   }
 }
 
-function parseEmailOtp(
+function parsePasswordReset(
   job: Record<string, unknown>,
   to: string,
-  from: string,
+  from: string
 ): EmailJob | null {
+  if (typeof job.resetUrl !== 'string') return null
+  return { type: 'password-reset', to, from, resetUrl: job.resetUrl }
+}
+
+function parseEmailOtp(job: Record<string, unknown>, to: string, from: string): EmailJob | null {
   if (typeof job.otp !== 'string') return null
   if (typeof job.otpType !== 'string' || !VALID_OTP_TYPES.has(job.otpType as OtpType)) {
     return null
@@ -63,7 +60,7 @@ function parseEmailOtp(
 function parseServerTierNotice(
   job: Record<string, unknown>,
   to: string,
-  from: string,
+  from: string
 ): EmailJob | null {
   const kind = job.kind
   if (kind !== 'exceeds' && kind !== 'overprovisioned') return null
@@ -103,11 +100,7 @@ function parseServerTierNotice(
   }
 }
 
-function parseInvitation(
-  job: Record<string, unknown>,
-  to: string,
-  from: string,
-): EmailJob | null {
+function parseInvitation(job: Record<string, unknown>, to: string, from: string): EmailJob | null {
   if (typeof job.inviterEmail !== 'string') return null
   if (typeof job.organizationName !== 'string') return null
   if (typeof job.teamName !== 'string') return null
@@ -126,10 +119,11 @@ function parseInvitation(
 function parseNotification(
   job: Record<string, unknown>,
   to: string,
-  from: string,
+  from: string
 ): EmailJob | null {
   if (typeof job.event !== 'string') return null
-  if (job.severity !== 'info' && job.severity !== 'warning' && job.severity !== 'critical') return null
+  if (job.severity !== 'info' && job.severity !== 'warning' && job.severity !== 'critical')
+    return null
   if (typeof job.title !== 'string') return null
   if (job.body !== null && typeof job.body !== 'string') return null
   if (!Array.isArray(job.details) || !job.details.every((d) => typeof d === 'string')) return null
@@ -158,6 +152,9 @@ export function parseEmailJob(raw: unknown): EmailJob | null {
 
   if (raw.type === 'signup-verification') {
     return parseSignupVerification(raw, raw.to, raw.from)
+  }
+  if (raw.type === 'password-reset') {
+    return parsePasswordReset(raw, raw.to, raw.from)
   }
   if (raw.type === 'email-otp') {
     return parseEmailOtp(raw, raw.to, raw.from)

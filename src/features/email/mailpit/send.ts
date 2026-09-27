@@ -1,10 +1,4 @@
-import {
-  createEmailOtpEmail,
-  createEmailVerificationLinkEmail,
-  createInvitationEmail,
-  createNotificationEmail,
-  createServerTierNoticeEmail,
-} from '../templates.ts'
+import { resolveEmailTemplate } from '../templates.ts'
 import { EMAIL_PROVIDER_TIMEOUT_MS, type EmailJob } from '../types.ts'
 
 export type MailpitSendConfig = {
@@ -18,30 +12,11 @@ function isPermanentMailpitStatus(status: number): boolean {
   return status >= 400 && status < 500
 }
 
-function resolveMailpitTemplate(job: EmailJob) {
-  if (job.type === 'signup-verification') {
-    return createEmailVerificationLinkEmail(job.to, job.verificationUrl)
-  }
-  if (job.type === 'email-otp') {
-    return createEmailOtpEmail(job.to, job.otp, job.otpType)
-  }
-  if (job.type === 'server-tier-notice') {
-    return createServerTierNoticeEmail(job)
-  }
-  if (job.type === 'invitation') {
-    return createInvitationEmail(job)
-  }
-  if (job.type === 'notification') {
-    return createNotificationEmail(job)
-  }
-  return null
-}
-
 export async function sendMailpitJob(
   job: EmailJob,
   config: MailpitSendConfig
 ): Promise<MailpitSendOutcome> {
-  const template = resolveMailpitTemplate(job)
+  const template = resolveEmailTemplate(job)
   if (!template) {
     return { ok: false, error: `unknown job type: ${(job as EmailJob).type}`, permanent: true }
   }

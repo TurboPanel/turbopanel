@@ -10,6 +10,13 @@ export type EmailJob =
       verificationUrl: string
     }
   | {
+      /** Password-reset link (better-auth `sendResetPassword`); valid for one hour. */
+      type: 'password-reset'
+      to: string
+      from: string
+      resetUrl: string
+    }
+  | {
       type: 'email-otp'
       to: string
       from: string

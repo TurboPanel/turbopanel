@@ -360,6 +360,26 @@ export function buildAuthSchemas(runtime?: 'deno' | 'workers') {
         email: { type: 'string', format: 'email' },
       },
     },
+    RequestPasswordResetLinkRequest: {
+      type: 'object',
+      required: ['email'],
+      properties: {
+        email: { type: 'string', format: 'email' },
+        redirectTo: {
+          type: 'string',
+          description:
+            'Same-origin console path the emailed link lands on (default /reset-password); anything else falls back to the default.',
+        },
+      },
+    },
+    ResetPasswordLinkRequest: {
+      type: 'object',
+      required: ['newPassword', 'token'],
+      properties: {
+        newPassword: { type: 'string', format: 'password' },
+        token: { type: 'string', description: 'The token from the reset page URL (?token=).' },
+      },
+    },
     ResetPasswordOtpRequest: {
       type: 'object',
       required: ['email', 'otp', 'password'],
@@ -376,6 +396,13 @@ export function buildAuthSchemas(runtime?: 'deno' | 'workers') {
         ok: { type: 'boolean', const: true },
       },
     },
+  }
+}
+
+/** `{ content: application/json → $ref }` for a request body or response. */
+function jsonBody(schema: string) {
+  return {
+    content: { 'application/json': { schema: { $ref: `#/components/schemas/${schema}` } } },
   }
 }
 
@@ -860,6 +887,64 @@ export const authPaths: Record<string, unknown> = {
             },
           },
         },
+      },
+    },
+  },
+  '/api/client/v1/auth/request-password-reset': {
+    post: {
+      tags: ['Authentication'],
+      summary: 'Email a password-reset link',
+      description:
+        'better-auth `requestPasswordReset`. Always answers ok; only an active user with a password gets the email, whose link is valid for one hour.',
+      requestBody: {
+        required: true,
+        ...jsonBody('RequestPasswordResetLinkRequest'),
+      },
+      responses: {
+        '200': {
+          description: 'Accepted (whether or not the account exists)',
+          ...jsonBody('OkResponse'),
+        },
+        '400': { description: 'Invalid request body', ...jsonBody('ErrorResponse') },
+        '429': { description: 'Too many requests', ...jsonBody('ErrorResponse') },
+        '503': { description: 'Database unavailable', ...jsonBody('ErrorResponse') },
+      },
+    },
+  },
+  '/api/client/v1/auth/reset-password/{token}': {
+    get: {
+      tags: ['Authentication'],
+      summary: 'Open a password-reset link',
+      description:
+        'The link in the email. Redirects to `callbackURL` (a same-origin path, default /reset-password) with `?token=` when the link is live, else `?error=INVALID_TOKEN`. Does not use the link up.',
+      parameters: [
+        { name: 'token', in: 'path', required: true, schema: { type: 'string' } },
+        { name: 'callbackURL', in: 'query', required: false, schema: { type: 'string' } },
+      ],
+      responses: {
+        '302': { description: 'Redirect to the console reset page' },
+      },
+    },
+  },
+  '/api/client/v1/auth/reset-password': {
+    post: {
+      tags: ['Authentication'],
+      summary: 'Set a new password with a reset link token',
+      description:
+        'better-auth `resetPassword`. Uses the link up and signs the user out on every device.',
+      requestBody: {
+        required: true,
+        ...jsonBody('ResetPasswordLinkRequest'),
+      },
+      responses: {
+        '200': { description: 'Password updated', ...jsonBody('OkResponse') },
+        '400': {
+          description:
+            'Invalid body or weak password, or `INVALID_TOKEN` (unknown, used or expired link)',
+          ...jsonBody('ErrorResponse'),
+        },
+        '429': { description: 'Too many requests', ...jsonBody('ErrorResponse') },
+        '503': { description: 'Database unavailable', ...jsonBody('ErrorResponse') },
       },
     },
   },

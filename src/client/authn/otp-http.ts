@@ -1,14 +1,7 @@
 import { and, eq } from 'drizzle-orm'
 import type { Context, Env, Hono } from 'hono'
-import {
-  buildSignedCookie,
-  SESSION_EXPIRES_IN_MS,
-} from './crypto.ts'
-import {
-  createEmailOtp,
-  verifyEmailOtp,
-  type VerifyEmailOtpResult,
-} from './email-otp.ts'
+import { buildSignedCookie, SESSION_EXPIRES_IN_MS } from './crypto.ts'
+import { createEmailOtp, verifyEmailOtp, type VerifyEmailOtpResult } from './email-otp.ts'
 import {
   isInstanceInstalled,
   resolveEffectiveSignupEnabled,
@@ -17,11 +10,7 @@ import {
   validateSuperadminPassword,
 } from './install-state.ts'
 import { hashPassword } from '../../lib/secrets/password.ts'
-import {
-  createSession,
-  deleteSessionsByUserId,
-  getSession,
-} from './session-store.ts'
+import { createSession, deleteSessionsByUserId, getSession } from './session-store.ts'
 import { issueTwoFactorChallenge } from './two-factor.ts'
 import {
   type AuthBodyValidation,
@@ -47,11 +36,7 @@ import {
 } from './auth-body-limits.ts'
 import { buildCookieHeader, readActiveSession, requestTls } from './request-context.ts'
 
-const VALID_OTP_TYPES = new Set<OtpType>([
-  'sign-in',
-  'email-verification',
-  'forget-password',
-])
+const VALID_OTP_TYPES = new Set<OtpType>(['sign-in', 'email-verification', 'forget-password'])
 
 function isOtpType(value: unknown): value is OtpType {
   return typeof value === 'string' && VALID_OTP_TYPES.has(value as OtpType)
@@ -88,11 +73,10 @@ function enqueueEmailOtp(
   opts: AuthRouteOpts,
   to: string,
   otp: string,
-  otpType: OtpType,
+  otpType: OtpType
 ): void {
   const queue = getEmailQueue(c)
-  const emailFrom =
-    c.get('emailFrom') ?? opts.emailFrom ?? 'noreply@turbopanel.local'
+  const emailFrom = c.get('emailFrom') ?? opts.emailFrom ?? 'noreply@turbopanel.local'
   if (!queue) {
     compatLogWarn('email', `OTP email not sent for ${to}: email queue unavailable`)
     return
@@ -115,7 +99,7 @@ async function resolveOtpSignInUserId(
   opts: AuthRouteOpts,
   db: Db,
   trimmedEmail: string,
-  name: string | undefined,
+  name: string | undefined
 ): Promise<{ userId: string; is2FaEnabled: boolean } | { response: Response }> {
   const existingUsers = await db
     .select({
@@ -148,8 +132,8 @@ async function resolveOtpSignInUserId(
       opts.runtime,
       resolveSignupEnvOverrideFromContext(
         c.get('platformEnv') as Record<string, string | undefined> | undefined,
-        opts.signupEnvOverride,
-      ),
+        opts.signupEnvOverride
+      )
     ))
   ) {
     // Future: invitation-gated OTP auto-register — not a one-line change at this call site.
@@ -192,7 +176,7 @@ async function isSignInOtpSendEligible(
   c: Context,
   opts: AuthRouteOpts,
   db: Db,
-  trimmedEmail: string,
+  trimmedEmail: string
 ): Promise<boolean> {
   const existingUsers = await db
     .select({ id: user.id, isDisabled: user.isDisabled })
@@ -210,25 +194,25 @@ async function isSignInOtpSendEligible(
     opts.runtime,
     resolveSignupEnvOverrideFromContext(
       c.get('platformEnv') as Record<string, string | undefined> | undefined,
-      opts.signupEnvOverride,
-    ),
+      opts.signupEnvOverride
+    )
   )
 }
 
 /**
- * Whether `reset-password/request-otp` should actually create and email an
- * OTP: only for an active user that has a credential account.
- * `reset-password/otp` later fails closed (404) for a missing/disabled user
- * or a missing credential account — sending the OTP email first for a flow
- * that can never complete would just be spamming the address.
+ * The user a password reset may be sent to: an active user with a credential
+ * (password) account, or `null`. Both reset flows — the email code
+ * (`reset-password/request-otp`) and the emailed link
+ * (`request-password-reset`) — fail closed later for anyone else, so sending
+ * them an email first would just be spamming the address.
  *
  * Callers must return the same `{ ok: true }` response regardless of the
  * result (anti-enumeration).
  */
-async function isResetPasswordRequestEligible(
+export async function findPasswordResetUserId(
   db: Db,
-  trimmedEmail: string,
-): Promise<boolean> {
+  trimmedEmail: string
+): Promise<string | null> {
   const existingUsers = await db
     .select({ id: user.id, isDisabled: user.isDisabled })
     .from(user)
@@ -236,17 +220,19 @@ async function isResetPasswordRequestEligible(
     .limit(1)
 
   const existingUser = existingUsers[0]
-  if (!existingUser || existingUser.isDisabled) return false
+  if (!existingUser || existingUser.isDisabled) return null
 
   const accountRows = await db
     .select({ id: account.id })
     .from(account)
-    .where(
-      and(eq(account.userId, existingUser.id), eq(account.providerId, 'credential')),
-    )
+    .where(and(eq(account.userId, existingUser.id), eq(account.providerId, 'credential')))
     .limit(1)
 
-  return accountRows.length > 0
+  return accountRows.length > 0 ? existingUser.id : null
+}
+
+async function isResetPasswordRequestEligible(db: Db, trimmedEmail: string): Promise<boolean> {
+  return (await findPasswordResetUserId(db, trimmedEmail)) !== null
 }
 
 type SendOtpBody = { email: string; type: OtpType }
@@ -342,7 +328,7 @@ function parseVerifyEmailOtpBody(body: unknown): AuthBodyValidation<VerifyEmailO
 type ResetPasswordRequestBody = { email: string }
 
 function parseResetPasswordRequestBody(
-  body: unknown,
+  body: unknown
 ): AuthBodyValidation<ResetPasswordRequestBody> {
   if (body === null || typeof body !== 'object' || Array.isArray(body)) {
     return { ok: false, error: 'Invalid request' }
@@ -358,9 +344,7 @@ function parseResetPasswordRequestBody(
 
 type ResetPasswordOtpBody = { email: string; otp: string; password: string }
 
-function parseResetPasswordOtpBody(
-  body: unknown,
-): AuthBodyValidation<ResetPasswordOtpBody> {
+function parseResetPasswordOtpBody(body: unknown): AuthBodyValidation<ResetPasswordOtpBody> {
   if (body === null || typeof body !== 'object' || Array.isArray(body)) {
     return { ok: false, error: 'Invalid request' }
   }
@@ -430,20 +414,14 @@ export function registerOtpRoutes<E extends Env>(auth: Hono<E>, opts: AuthRouteO
     // + auto-registration disabled, or a disabled account) — skip creating
     // and sending the OTP for those, but answer identically so the response
     // never reveals whether the address is reachable.
-    if (
-      type === 'sign-in' &&
-      !(await isSignInOtpSendEligible(c, opts, db, trimmedEmail))
-    ) {
+    if (type === 'sign-in' && !(await isSignInOtpSendEligible(c, opts, db, trimmedEmail))) {
       return c.json({ ok: true }, 200)
     }
 
     // `forget-password` goes through this same generic endpoint — apply the
     // same eligibility gate as `reset-password/request-otp` so it cannot be
     // used to spam an address that could never complete a reset.
-    if (
-      type === 'forget-password' &&
-      !(await isResetPasswordRequestEligible(db, trimmedEmail))
-    ) {
+    if (type === 'forget-password' && !(await isResetPasswordRequestEligible(db, trimmedEmail))) {
       return c.json({ ok: true }, 200)
     }
 
@@ -508,25 +486,13 @@ export function registerOtpRoutes<E extends Env>(auth: Hono<E>, opts: AuthRouteO
       return c.json({ ok: false, error: 'Not configured' }, 503)
     }
 
-    const verifyResult = await verifyEmailOtp(
-      db,
-      trimmedEmail,
-      'sign-in',
-      otp,
-      otpSecrets,
-    )
+    const verifyResult = await verifyEmailOtp(db, trimmedEmail, 'sign-in', otp, otpSecrets)
     const mapped = mapVerifyResult(verifyResult)
     if (mapped.status !== 200) {
       return c.json(mapped.body, mapped.status)
     }
 
-    const resolved = await resolveOtpSignInUserId(
-      c,
-      opts,
-      db,
-      trimmedEmail,
-      name,
-    )
+    const resolved = await resolveOtpSignInUserId(c, opts, db, trimmedEmail, name)
     if ('response' in resolved) {
       return resolved.response
     }
@@ -536,11 +502,7 @@ export function registerOtpRoutes<E extends Env>(auth: Hono<E>, opts: AuthRouteO
       if (!opts.twoFactorChallengeSecrets) {
         return c.json({ ok: false, error: 'Not configured' }, 503)
       }
-      const challenge = await issueTwoFactorChallenge(
-        db,
-        opts.twoFactorChallengeSecrets,
-        userId,
-      )
+      const challenge = await issueTwoFactorChallenge(db, opts.twoFactorChallengeSecrets, userId)
       return c.json({ ok: true, requires2fa: true, challenge })
     }
 
@@ -559,7 +521,7 @@ export function registerOtpRoutes<E extends Env>(auth: Hono<E>, opts: AuthRouteO
       cookieValue,
       SESSION_EXPIRES_IN_MS / 1000,
       tls.cookieName,
-      tls.isHttps,
+      tls.isHttps
     )
     const sessionData = await getSession(db, token)
     if (!sessionData) {
@@ -609,7 +571,7 @@ export function registerOtpRoutes<E extends Env>(auth: Hono<E>, opts: AuthRouteO
       sessionEmail,
       'email-verification',
       otp,
-      otpSecrets,
+      otpSecrets
     )
     const mapped = mapVerifyResult(verifyResult)
     if (mapped.status !== 200) {
@@ -653,12 +615,7 @@ export function registerOtpRoutes<E extends Env>(auth: Hono<E>, opts: AuthRouteO
       return c.json({ ok: true }, 200)
     }
 
-    const otpResult = await createEmailOtp(
-      db,
-      trimmedEmail,
-      'forget-password',
-      otpSecrets,
-    )
+    const otpResult = await createEmailOtp(db, trimmedEmail, 'forget-password', otpSecrets)
     if (otpResult.status === 'cooldown') {
       return c.json({ ok: true }, 200)
     }
@@ -689,13 +646,7 @@ export function registerOtpRoutes<E extends Env>(auth: Hono<E>, opts: AuthRouteO
       return c.json({ ok: false, error: 'Not configured' }, 503)
     }
 
-    const verifyResult = await verifyEmailOtp(
-      db,
-      trimmedEmail,
-      'forget-password',
-      otp,
-      otpSecrets,
-    )
+    const verifyResult = await verifyEmailOtp(db, trimmedEmail, 'forget-password', otp, otpSecrets)
     const mapped = mapVerifyResult(verifyResult)
     if (mapped.status !== 200) {
       return c.json(mapped.body, mapped.status)
@@ -722,12 +673,7 @@ export function registerOtpRoutes<E extends Env>(auth: Hono<E>, opts: AuthRouteO
       const rows = await tx
         .update(account)
         .set({ password: hashedPassword, updatedAt: nowTs() })
-        .where(
-          and(
-            eq(account.userId, foundUser.id),
-            eq(account.providerId, 'credential'),
-          ),
-        )
+        .where(and(eq(account.userId, foundUser.id), eq(account.providerId, 'credential')))
         .returning({ id: account.id })
 
       if (rows.length > 0) {

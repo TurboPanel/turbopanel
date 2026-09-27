@@ -292,3 +292,24 @@ Client auth lives under `CLIENT_API_PREFIX` (`/api/client/v1`):
 | `src/client/authn/authn-hostfree-doubles.ts` | Test-only mock auth db. Updates and deletes on `user` / `twoFactor` / `passkey` / `account` match rows through `test-fixtures/memory-db.ts`'s `WHERE` walker (unsupported shapes, incl. `or`, throw) |
 
 Future: an instance-wide 2FA-required admin toggle is out of scope for this phase.
+
+## Forgot password (emailed link)
+
+better-auth's `emailAndPassword` reset flow, in `password-reset-http.ts` (routes)
+and `password-reset.ts` (token store). The email-code reset
+(`reset-password/request-otp` + `reset-password/otp`) stays alongside it.
+
+| Method | Path | Notes |
+| --- | --- | --- |
+| `POST` | `/api/client/v1/auth/request-password-reset` | `{ email, redirectTo? }`. Always `{ ok: true }`; only an active user with a credential account (`findPasswordResetUserId`) gets a `password-reset` email. The send is not awaited (timing), `waitUntil` on Workers. |
+| `GET` | `/api/client/v1/auth/reset-password/:token?callbackURL=` | The emailed link. 302 to the callback with `?token=` when live, else `?error=INVALID_TOKEN`; does not use the link up. |
+| `POST` | `/api/client/v1/auth/reset-password` | `{ newPassword, token }`. Uses the link up, sets the credential password, deletes every session (owner decision 2026-09-27 — better-auth's `revokeSessionsOnPasswordReset: true`). |
+
+- Tokens: 256-bit (`link-token.ts`), stored only as a purpose-bound SHA-256
+  verifier in `verification`, identifier `reset-password:<userId>` — so a new
+  request replaces the old link. One hour (`PASSWORD_RESET_EXPIRES_IN_MS`).
+- `redirectTo` / `callbackURL` must be a same-origin console path
+  (`safeResetPagePath`); anything else falls back to `/reset-password`, so a
+  link can never carry a token off-site.
+- Tests run against Postgres (`password-reset-http.test.ts`): the in-memory
+  auth doubles ignore query predicates, so they cannot prove token matching.
