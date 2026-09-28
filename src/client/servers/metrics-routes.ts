@@ -149,6 +149,19 @@ function parseMetricsRangeQuery(
   }
 }
 
+/**
+ * `db` presence plus the shared range query, folded into one call — the
+ * db-then-range pair is otherwise still a same-shaped block repeated across
+ * `/series`, `/summary`, and `/connection`.
+ */
+function resolveDbAndRange(c: Parameters<typeof assertCanReadOr403>[0]) {
+  const db = getDb(c)
+  if (!db) return c.json({ error: 'Database unavailable' }, 503)
+  const range = parseMetricsRangeQuery(c)
+  if (range instanceof Response) return range
+  return { db, range }
+}
+
 /** Session + org resolution shared by the one fleet-scoped route below. */
 async function resolveSessionOrg(c: Parameters<typeof assertCanReadOr403>[0]) {
   const session = c.get('session')
@@ -528,11 +541,9 @@ export function registerServerMetricsRoutes(router: Hono<AppEnv>, opts: AuthRout
     const denied = await authorizeServerRead(c, serverId)
     if (denied) return denied
 
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const range = parseMetricsRangeQuery(c)
-    if (range instanceof Response) return range
+    const resolved = resolveDbAndRange(c)
+    if (resolved instanceof Response) return resolved
+    const { db, range } = resolved
 
     const selectorsParsed = parseSeriesMetricSelectors(c.req.query('metrics'))
     if (!selectorsParsed.ok) {
@@ -676,11 +687,9 @@ export function registerServerMetricsRoutes(router: Hono<AppEnv>, opts: AuthRout
     const denied = await authorizeServerRead(c, serverId)
     if (denied) return denied
 
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const range = parseMetricsRangeQuery(c)
-    if (range instanceof Response) return range
+    const resolved = resolveDbAndRange(c)
+    if (resolved instanceof Response) return resolved
+    const { db, range } = resolved
 
     const store = getServerMetricsStore(c)
     const backend = resolveStoreBackendKind(store, opts.runtime)
@@ -768,11 +777,9 @@ export function registerServerMetricsRoutes(router: Hono<AppEnv>, opts: AuthRout
     const denied = await authorizeServerRead(c, serverId)
     if (denied) return denied
 
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const range = parseMetricsRangeQuery(c)
-    if (range instanceof Response) return range
+    const resolved = resolveDbAndRange(c)
+    if (resolved instanceof Response) return resolved
+    const { db, range } = resolved
 
     // Status transitions are v6-only: `queryStatusHistory` is optional on
     // `ServerMetricsStore` (only `DisabledServerMetricsStore` omits it),
