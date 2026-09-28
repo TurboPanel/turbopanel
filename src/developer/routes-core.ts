@@ -6,7 +6,6 @@ import type { Db } from '../db/connection.ts'
 import { getDb, getDaemonCellRegistry } from '../db/connection.ts'
 import {
   fleetPresenceToConnection,
-  resolveFleetPresence,
   resolveOnlineFleetPresence,
   isServerConnected,
 } from '../daemon/cell/fleet-presence.ts'
@@ -21,12 +20,11 @@ import {
   fetchDaemonCellDiagnostics,
   fetchDaemonServerCell,
 } from '../daemon/cell/server-diagnostics.ts'
-import { isDaemonDebugEnabled, cellTrace } from '../lib/logger.ts'
 import {
-  generateDeliveryId,
-  generateRequestId,
-  type DaemonOutboundEnvelope,
-} from '../contracts/cell-protocol.ts'
+  fetchFleetAddressesRoute,
+  fetchServerAddressesRoute,
+} from '../daemon/cell/daemon-addresses-routes.ts'
+import { isDaemonDebugEnabled } from '../lib/logger.ts'
 import { organization, server } from '../db/schema.ts'
 import { redactServerOptions } from '../features/servers/server-metadata.ts'
 import {
@@ -36,8 +34,6 @@ import {
 import { DEVELOPER_API_PREFIX } from '../app/surfaces.ts'
 import { registerDatabaseRoutes } from './database-routes.ts'
 import {
-  addressesFetchErrorStatus,
-  extractAddresses,
   parseDisplayNameInput,
   parseOrganizationIdInput,
   parsePayloadBody,
@@ -49,15 +45,16 @@ import {
  * Deno-only routes (Drizzle Studio) live in developer/routes.ts.
  */
 
-const ADDRESSES_TIMEOUT_MS = 10_000
 function nowTs(): string {
   return new Date().toISOString()
 }
 
 /** Build the developer router without mounting — extend before {@link mountDeveloperRouter}. */
-export function buildDeveloperRouter(
-  opts: { secrets: DerivedSecretsConfig; db?: Db; authRequired?: boolean },
-): Hono {
+export function buildDeveloperRouter(opts: {
+  secrets: DerivedSecretsConfig
+  db?: Db
+  authRequired?: boolean
+}): Hono {
   const developer = new Hono()
   if (opts.authRequired !== false) {
     developer.use('*', createDeveloperAccessMiddleware(opts.secrets))
@@ -67,8 +64,9 @@ export function buildDeveloperRouter(
     const registry = getDaemonCellRegistry(c)
     const db = getDb(c)
     if (!registry || !db) return c.json({ connections: [] })
-    const connections = (await resolveOnlineFleetPresence(db, registry))
-      .map(fleetPresenceToConnection)
+    const connections = (await resolveOnlineFleetPresence(db, registry)).map(
+      fleetPresenceToConnection
+    )
     return c.json({ connections })
   })
 
@@ -99,7 +97,7 @@ export function buildDeveloperRouter(
     if (!parsedPayload.ok) {
       return c.json({ error: parsedPayload.error }, 400)
     }
-    if (!await isServerConnected(db, registry, id)) {
+    if (!(await isServerConnected(db, registry, id))) {
       return c.json({ error: 'daemon not connected' }, 404)
     }
     await enqueueEchoToServer(registry, id, parsedPayload.payload)
@@ -132,9 +130,7 @@ export function buildDeveloperRouter(
 
   developer.get('/daemon/:id/cell/diagnostics', async (c) => {
     const registry = getDaemonCellRegistry(c)
-    const debugEnabled = isDaemonDebugEnabled(
-      c.env as { TURBOPANEL_DAEMON_DEBUG?: string },
-    )
+    const debugEnabled = isDaemonDebugEnabled(c.env as { TURBOPANEL_DAEMON_DEBUG?: string })
     const id = c.req.param('id')
 
     const result = await fetchDaemonCellDiagnostics(registry, id, {
@@ -149,9 +145,7 @@ export function buildDeveloperRouter(
   developer.get('/daemon/diagnostics', async (c) => {
     const registry = getDaemonCellRegistry(c)
     const db = getDb(c)
-    const debugEnabled = isDaemonDebugEnabled(
-      c.env as { TURBOPANEL_DAEMON_DEBUG?: string },
-    )
+    const debugEnabled = isDaemonDebugEnabled(c.env as { TURBOPANEL_DAEMON_DEBUG?: string })
     if (!debugEnabled) {
       return c.json({ error: 'daemon debug disabled' }, 404)
     }
@@ -160,11 +154,7 @@ export function buildDeveloperRouter(
     }
 
     const serverIds = await listFleetServerIds(db)
-    const diagnostics = await collectFleetCellDiagnostics(
-      registry,
-      serverIds,
-      { debugEnabled },
-    )
+    const diagnostics = await collectFleetCellDiagnostics(registry, serverIds, { debugEnabled })
     return c.json({ ok: true, diagnostics })
   })
 
@@ -173,186 +163,9 @@ export function buildDeveloperRouter(
     return c.json({ ok: true, source: 'instance', ips })
   })
 
-  developer.get('/daemon/addresses', async (c) => {
-    const registry = getDaemonCellRegistry(c)
-    const db = getDb(c)
-    if (!registry || !db) return c.json({ servers: [] })
-    const online = await resolveOnlineFleetPresence(db, registry)
-    const servers = await Promise.all(
-      online.map(async (presence) => {
-        const serverId = presence.serverId
-        const requestId = generateRequestId()
-        cellTrace('request-start', {
-          requestId,
-          serverId,
-          kind: 'addresses-request',
-        })
-        const envelope: DaemonOutboundEnvelope = {
-          kind: 'addresses-request',
-          deliveryId: generateDeliveryId(),
-          requestId,
-          at: nowTs(),
-        }
-        cellTrace('request-enqueued', {
-          requestId,
-          serverId,
-          kind: 'addresses-request',
-          deliveryId: envelope.deliveryId,
-        })
-        try {
-          const record = await registry.getCell(serverId).createRequestAndWait(
-            envelope,
-            ADDRESSES_TIMEOUT_MS,
-          )
-          if (record.status === 'failed') {
-            const error = record.error ?? 'failed to fetch addresses'
-            cellTrace('request-result', {
-              requestId,
-              serverId,
-              kind: 'addresses-request',
-              pendingStatus: record.status,
-              resultStatus: 'failed',
-              error,
-            })
-            return {
-              daemonId: serverId,
-              hostname: presence.hostname,
-              error,
-            }
-          }
-          if (record.status === 'expired') {
-            const error = 'timeout waiting for addresses'
-            cellTrace('request-result', {
-              requestId,
-              serverId,
-              kind: 'addresses-request',
-              pendingStatus: record.status,
-              resultStatus: 'timeout',
-              error,
-            })
-            return {
-              daemonId: serverId,
-              hostname: presence.hostname,
-              error,
-            }
-          }
-          const ips = extractAddresses(record)
-          cellTrace('request-result', {
-            requestId,
-            serverId,
-            kind: 'addresses-request',
-            pendingStatus: record.status,
-            resultStatus: 'done',
-          })
-          return {
-            daemonId: serverId,
-            hostname: presence.hostname,
-            ips,
-          }
-        } catch (err) {
-          const error = err instanceof Error ? err.message : String(err)
-          cellTrace('request-result', {
-            requestId,
-            serverId,
-            kind: 'addresses-request',
-            resultStatus: 'error',
-            error,
-          })
-          return {
-            daemonId: serverId,
-            hostname: presence.hostname,
-            error,
-          }
-        }
-      }),
-    )
-    return c.json({ servers })
-  })
+  developer.get('/daemon/addresses', fetchFleetAddressesRoute)
 
-  developer.get('/daemon/:id/addresses', async (c) => {
-    const registry = getDaemonCellRegistry(c)
-    const db = getDb(c)
-    if (!registry || !db) return c.json({ error: 'Daemon cell registry unavailable' }, 503)
-    const id = c.req.param('id')
-    const presence = await resolveFleetPresence(db, registry, [id])
-    const live = presence.get(id)
-    if (!live?.connected) {
-      return c.json({ error: 'daemon not connected' }, 404)
-    }
-    const requestId = generateRequestId()
-    cellTrace('request-start', {
-      requestId,
-      serverId: id,
-      kind: 'addresses-request',
-    })
-    try {
-      const envelope: DaemonOutboundEnvelope = {
-        kind: 'addresses-request',
-        deliveryId: generateDeliveryId(),
-        requestId,
-        at: nowTs(),
-      }
-      cellTrace('request-enqueued', {
-        requestId,
-        serverId: id,
-        kind: 'addresses-request',
-        deliveryId: envelope.deliveryId,
-      })
-      const record = await registry.getCell(id).createRequestAndWait(
-        envelope,
-        ADDRESSES_TIMEOUT_MS,
-      )
-      if (record.status === 'failed') {
-        const error = record.error ?? 'failed to fetch addresses'
-        cellTrace('request-result', {
-          requestId,
-          serverId: id,
-          kind: 'addresses-request',
-          pendingStatus: record.status,
-          resultStatus: 'failed',
-          error,
-        })
-        return c.json({ error }, 500)
-      }
-      if (record.status === 'expired') {
-        const error = 'timeout waiting for addresses'
-        cellTrace('request-result', {
-          requestId,
-          serverId: id,
-          kind: 'addresses-request',
-          pendingStatus: record.status,
-          resultStatus: 'timeout',
-          error,
-        })
-        return c.json({ error }, 500)
-      }
-      const ips = extractAddresses(record)
-      cellTrace('request-result', {
-        requestId,
-        serverId: id,
-        kind: 'addresses-request',
-        pendingStatus: record.status,
-        resultStatus: 'done',
-      })
-      return c.json({
-        ok: true,
-        daemonId: id,
-        hostname: live.hostname ?? null,
-        ips,
-      })
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
-      cellTrace('request-result', {
-        requestId,
-        serverId: id,
-        kind: 'addresses-request',
-        resultStatus: 'error',
-        error: message,
-      })
-      const status = addressesFetchErrorStatus(message)
-      return c.json({ error: message }, status)
-    }
-  })
+  developer.get('/daemon/:id/addresses', fetchServerAddressesRoute)
 
   developer.get('/organizations', async (c) => {
     const db = getDb(c)
@@ -394,7 +207,7 @@ export function buildDeveloperRouter(
   developer.post('/servers', async (c) => {
     const db = getDb(c)
     if (!db) return c.json({ error: 'Database unavailable' }, 503)
-    const body = await c.req.json().catch(() => null) as {
+    const body = (await c.req.json().catch(() => null)) as {
       displayName?: string | null
       options?: Record<string, unknown> | null
     } | null
@@ -420,7 +233,7 @@ export function buildDeveloperRouter(
     const db = getDb(c)
     if (!db) return c.json({ error: 'Database unavailable' }, 503)
     const id = c.req.param('id')
-    const body = await c.req.json().catch(() => null) as {
+    const body = (await c.req.json().catch(() => null)) as {
       displayName?: string | null
       organizationId?: string | null
       options?: Record<string, unknown> | null
@@ -461,17 +274,14 @@ export function buildDeveloperRouter(
   return developer
 }
 
-export function mountDeveloperRouter<E extends Env>(
-  app: Hono<E>,
-  developer: Hono,
-): Hono {
+export function mountDeveloperRouter<E extends Env>(app: Hono<E>, developer: Hono): Hono {
   app.route(DEVELOPER_API_PREFIX, developer)
   return developer
 }
 
 export function registerDeveloperRoutesCore<E extends Env>(
   app: Hono<E>,
-  opts: { secrets: DerivedSecretsConfig; db?: Db; authRequired?: boolean },
+  opts: { secrets: DerivedSecretsConfig; db?: Db; authRequired?: boolean }
 ) {
   return mountDeveloperRouter(app, buildDeveloperRouter(opts))
 }

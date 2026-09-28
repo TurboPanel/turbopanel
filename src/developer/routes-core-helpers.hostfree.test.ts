@@ -2,8 +2,6 @@ import { assertEquals } from '@std/assert'
 import type { Db } from '../db/connection.ts'
 import { organization } from '../db/schema.ts'
 import {
-  addressesFetchErrorStatus,
-  extractAddresses,
   parseDisplayNameInput,
   parseOrganizationIdInput,
   parsePayloadBody,
@@ -87,48 +85,10 @@ test('parseOrganizationIdInput validates UUID and org existence', async () => {
     }),
   } as unknown as Db
   assertEquals(await parseOrganizationIdInput(foundDb, ORG_ID), { ok: true, value: ORG_ID })
-  assertEquals(
-    await parseOrganizationIdInput(foundDb, `  ${ORG_ID}  `),
-    { ok: true, value: ORG_ID },
-  )
-})
-
-test('extractAddresses and addressesFetchErrorStatus mirror admin behavior', () => {
-  const ips = [
-    { address: '203.0.113.10', version: 4 as const, scope: 'public' as const },
-  ]
-  assertEquals(extractAddresses({ status: 'done', result: { ips } }), ips)
-  assertEquals(addressesFetchErrorStatus('daemon not connected'), 404)
-  assertEquals(addressesFetchErrorStatus('timeout waiting for addresses'), 500)
-})
-
-test('extractAddresses rejects expired, failed, and missing ips', () => {
-  let expired: unknown
-  try {
-    extractAddresses({ status: 'expired' })
-  } catch (err) {
-    expired = err
-  }
-  if (!(expired instanceof Error)) throw new TypeError('expected Error')
-  assertEquals(expired.message, 'timeout waiting for addresses')
-
-  let failed: unknown
-  try {
-    extractAddresses({ status: 'failed' })
-  } catch (err) {
-    failed = err
-  }
-  if (!(failed instanceof Error)) throw new TypeError('expected Error')
-  assertEquals(failed.message, 'failed to fetch addresses')
-
-  let missing: unknown
-  try {
-    extractAddresses({ status: 'done', result: {} })
-  } catch (err) {
-    missing = err
-  }
-  if (!(missing instanceof Error)) throw new TypeError('expected Error')
-  assertEquals(missing.message, 'missing ips in daemon response')
+  assertEquals(await parseOrganizationIdInput(foundDb, `  ${ORG_ID}  `), {
+    ok: true,
+    value: ORG_ID,
+  })
 })
 
 test('parsePayloadBody and resolvePerServerLimit', () => {

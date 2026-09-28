@@ -4,7 +4,6 @@ import type { DaemonCell, DaemonCellRegistry, PendingRequestRecord } from '../co
 import { instanceHostname, setting } from '../db/schema.ts'
 import { REENCRYPT_BATCH_SIZE } from './reencrypt-secrets.ts'
 import {
-  extractAddresses,
   isReencryptStage,
   MAX_CELL_PURGE_BATCH_SIZE,
   parseCellPurgeBatchBody,
@@ -28,37 +27,6 @@ import {
  */
 const test = Deno.test.bind(Deno)
 
-test('extractAddresses returns ips when status is done', () => {
-  const ips = [
-    { address: '203.0.113.10', version: 4 as const, scope: 'public' as const },
-  ]
-  assertEquals(
-    extractAddresses({ status: 'done', result: { ips } }),
-    ips,
-  )
-})
-
-test('extractAddresses throws on expired, failed, and missing payload', () => {
-  try {
-    extractAddresses({ status: 'expired' })
-    throw new TypeError('expected throw')
-  } catch (err) {
-    assertEquals((err as Error).message, 'timeout waiting for addresses')
-  }
-  try {
-    extractAddresses({ status: 'failed' })
-    throw new TypeError('expected throw')
-  } catch (err) {
-    assertEquals((err as Error).message, 'failed to fetch addresses')
-  }
-  try {
-    extractAddresses({ status: 'done', result: {} })
-    throw new TypeError('expected throw')
-  } catch (err) {
-    assertEquals((err as Error).message, 'missing ips in daemon response')
-  }
-})
-
 test('parseReencryptRequestBody defaults and validates cursor/limit', () => {
   assertEquals(parseReencryptRequestBody(undefined), {
     ok: true,
@@ -72,7 +40,7 @@ test('parseReencryptRequestBody defaults and validates cursor/limit', () => {
   })
   assertEquals(
     parseReencryptRequestBody({ cursor: { stage: 'variables', afterId: 'abc' }, limit: 10 }),
-    { ok: true, cursor: { stage: 'variables', afterId: 'abc' }, limit: 10 },
+    { ok: true, cursor: { stage: 'variables', afterId: 'abc' }, limit: 10 }
   )
   assertEquals(parseReencryptRequestBody([]), { ok: false, error: 'expected { cursor?, limit? }' })
   assertEquals(parseReencryptRequestBody({ limit: 0 }), {
@@ -146,7 +114,7 @@ test('parseEmailSettingsUpdates keeps string/null entries only', () => {
   assertEquals(parseEmailSettingsUpdates(null), null)
   assertEquals(
     parseEmailSettingsUpdates({ SMTP_HOST: 'mail.example.com', SMTP_PORT: 587, BAD: true }),
-    { SMTP_HOST: 'mail.example.com' },
+    { SMTP_HOST: 'mail.example.com' }
   )
   assertEquals(parseEmailSettingsUpdates({ SMTP_PASS: null }), { SMTP_PASS: null })
 })
@@ -179,29 +147,30 @@ test('resolvePlatformEnv prefers context then opts.getEnv', () => {
       return undefined
     },
   }
-  assertEquals(
-    resolvePlatformEnv(context as never, { getEnv: () => ({ OTHER: '1' }) }),
-    { TURBOPANEL_MODE: 'development' },
-  )
+  assertEquals(resolvePlatformEnv(context as never, { getEnv: () => ({ OTHER: '1' }) }), {
+    TURBOPANEL_MODE: 'development',
+  })
   assertEquals(
     resolvePlatformEnv({ get: () => undefined } as never, { getEnv: () => ({ X: 'y' }) }),
-    { X: 'y' },
+    { X: 'y' }
   )
   assertEquals(resolvePlatformEnv({ get: () => undefined } as never, {}), {})
 })
 
 test('resolvePublicUrlsForApply validates, persists, or loads stored urls', async () => {
-  const hostnames: Array<Record<string, unknown>> = [{
-    id: 'host-0',
-    host: 'https://panel.example.com',
-    source: 'platform-ca',
-    uploadedCertId: null,
-    acmeLastAttemptAt: null,
-    acmeLastError: null,
-    notAfter: null,
-    createdAt: new Date(0).toISOString(),
-    updatedAt: new Date(0).toISOString(),
-  }]
+  const hostnames: Array<Record<string, unknown>> = [
+    {
+      id: 'host-0',
+      host: 'https://panel.example.com',
+      source: 'platform-ca',
+      uploadedCertId: null,
+      acmeLastAttemptAt: null,
+      acmeLastError: null,
+      notAfter: null,
+      createdAt: new Date(0).toISOString(),
+      updatedAt: new Date(0).toISOString(),
+    },
+  ]
   const settings: Array<Record<string, unknown>> = [
     { key: 'TURBOPANEL_PUBLIC_URLS', value: ['https://panel.example.com'] },
   ]
@@ -256,10 +225,7 @@ test('resolvePublicUrlsForApply validates, persists, or loads stored urls', asyn
   if (invalidUrl.ok) throw new TypeError('expected failure')
   assertEquals(invalidUrl.status, 422)
 
-  const applied = await resolvePublicUrlsForApply(
-    db,
-    { urls: ['https://new.example.com'] },
-  )
+  const applied = await resolvePublicUrlsForApply(db, { urls: ['https://new.example.com'] })
   assertEquals(applied.ok, true)
   if (!applied.ok) throw new TypeError('expected ok')
   assertEquals(applied.urls, ['https://new.example.com:8443'])
@@ -271,7 +237,7 @@ test('resolvePublicUrlsForApply validates, persists, or loads stored urls', asyn
 })
 
 function registryWithWait(
-  wait: (outbound: { requestId: string; at: string; kind: string }) => Promise<PendingRequestRecord>,
+  wait: (outbound: { requestId: string; at: string; kind: string }) => Promise<PendingRequestRecord>
 ): DaemonCellRegistry {
   const cell = {
     createRequestAndWait: wait,
@@ -299,9 +265,9 @@ test('waitForPublicUrlsApply maps done, failed, timeout, and thrown errors', asy
         expiresAt: outbound.at,
       })),
       serverId,
-      urls,
+      urls
     ),
-    { kind: 'done' },
+    { kind: 'done' }
   )
 
   assertEquals(
@@ -316,9 +282,9 @@ test('waitForPublicUrlsApply maps done, failed, timeout, and thrown errors', asy
         expiresAt: outbound.at,
       })),
       serverId,
-      urls,
+      urls
     ),
-    { kind: 'failed', error: 'apply blew up' },
+    { kind: 'failed', error: 'apply blew up' }
   )
 
   assertEquals(
@@ -332,9 +298,9 @@ test('waitForPublicUrlsApply maps done, failed, timeout, and thrown errors', asy
         expiresAt: outbound.at,
       })),
       serverId,
-      urls,
+      urls
     ),
-    { kind: 'failed', error: 'daemon reported failure' },
+    { kind: 'failed', error: 'daemon reported failure' }
   )
 
   assertEquals(
@@ -348,9 +314,9 @@ test('waitForPublicUrlsApply maps done, failed, timeout, and thrown errors', asy
         expiresAt: outbound.at,
       })),
       serverId,
-      urls,
+      urls
     ),
-    { kind: 'timeout' },
+    { kind: 'timeout' }
   )
 
   assertEquals(
@@ -359,9 +325,9 @@ test('waitForPublicUrlsApply maps done, failed, timeout, and thrown errors', asy
         throw new Error('cell offline')
       }),
       serverId,
-      urls,
+      urls
     ),
-    { kind: 'error', error: 'cell offline' },
+    { kind: 'error', error: 'cell offline' }
   )
 
   assertEquals(
@@ -370,8 +336,8 @@ test('waitForPublicUrlsApply maps done, failed, timeout, and thrown errors', asy
         throw 'string-fail'
       }),
       serverId,
-      urls,
+      urls
     ),
-    { kind: 'error', error: 'string-fail' },
+    { kind: 'error', error: 'string-fail' }
   )
 })
