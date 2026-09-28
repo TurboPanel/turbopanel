@@ -6,6 +6,9 @@ on:
       - trunk
   pull_request:
     types: [opened, synchronize, reopened]
+  # Manual re-run for a trunk push GitHub failed to deliver (2026-09-28: the
+  # 0.1.2 bump merge produced no run, so no canary followed).
+  workflow_dispatch:
 
 permissions:
   contents: read
