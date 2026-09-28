@@ -1,6 +1,5 @@
 import { eq } from 'drizzle-orm'
 import type { Db } from '../db/connection.ts'
-import type { ServerReportedIp } from '../contracts/server-addresses.ts'
 import { organization } from '../db/schema.ts'
 import {
   DISPLAY_NAME_MAX_LENGTH,
@@ -9,23 +8,9 @@ import {
   normalizeDisplayName,
 } from '../lib/display-name-format.ts'
 
-export const UUID_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+export const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
-export function extractAddresses(record: { status: string; result?: unknown }): ServerReportedIp[] {
-  if (record.status !== 'done') {
-    throw new Error(record.status === 'expired'
-      ? 'timeout waiting for addresses'
-      : 'failed to fetch addresses')
-  }
-  const result = record.result as { ips?: ServerReportedIp[] } | undefined
-  if (!result?.ips) throw new Error('missing ips in daemon response')
-  return result.ips
-}
-
-export type ParsedDisplayName =
-  | { ok: true; value: string | null }
-  | { ok: false; error: string }
+export type ParsedDisplayName = { ok: true; value: string | null } | { ok: false; error: string }
 
 export function parseDisplayNameInput(displayName: unknown): ParsedDisplayName {
   if (displayName === null) return { ok: true, value: null }
@@ -46,12 +31,11 @@ export function parseDisplayNameInput(displayName: unknown): ParsedDisplayName {
 }
 
 export type ParsedOrganizationId =
-  | { ok: true; value: string | null }
-  | { ok: false; error: string; status: 400 | 404 }
+  { ok: true; value: string | null } | { ok: false; error: string; status: 400 | 404 }
 
 export async function parseOrganizationIdInput(
   db: Db,
-  organizationId: unknown,
+  organizationId: unknown
 ): Promise<ParsedOrganizationId> {
   if (organizationId === null) return { ok: true, value: null }
   if (typeof organizationId === 'string') {
@@ -77,17 +61,11 @@ export function resolvePerServerLimit(limitRaw: string | undefined): number {
   return Number.isFinite(limit) ? limit : 50
 }
 
-export type PayloadBodyParse =
-  | { ok: true; payload: unknown }
-  | { ok: false; error: string }
+export type PayloadBodyParse = { ok: true; payload: unknown } | { ok: false; error: string }
 
 export function parsePayloadBody(body: unknown): PayloadBodyParse {
   if (!body || typeof body !== 'object' || !('payload' in body)) {
     return { ok: false, error: 'expected { payload: unknown }' }
   }
   return { ok: true, payload: (body as { payload: unknown }).payload }
-}
-
-export function addressesFetchErrorStatus(message: string): 404 | 500 {
-  return message === 'daemon not connected' ? 404 : 500
 }
