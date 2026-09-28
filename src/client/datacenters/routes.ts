@@ -7,7 +7,10 @@ import { createSessionMiddleware } from '../authn/middleware.ts'
 import { assertCanOr403, listVisible } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import type { Db } from '../../db/connection.ts'
+import { getDaemonCellRegistry } from '../../db/connection.ts'
 import { datacenter, ip, network, server } from '../../db/schema.ts'
+import { metricsDeploymentKindForRuntime } from '../../contracts/capability-plan.ts'
+import { autoMonitorNicsForDatacenterAttach } from '../../features/servers/nic-auto-monitor.ts'
 import {
   type DatacenterPolicy,
   parseDatacenterOptions,
@@ -492,6 +495,7 @@ export function registerDatacenterRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
     throw new TypeError('session secrets are required for datacenter routes')
   }
   const secrets = opts.secrets
+  const deployment = metricsDeploymentKindForRuntime(opts.runtime)
 
   router.use('/datacenters', createSessionMiddleware(secrets))
   router.use('/datacenters/:id', createSessionMiddleware(secrets))
@@ -738,6 +742,14 @@ export function registerDatacenterRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
         return inserted.id
       })
 
+      // Best-effort, additive only — never delays or fails the response.
+      void autoMonitorNicsForDatacenterAttach(
+        db,
+        getDaemonCellRegistry(c),
+        grouped.groups.flatMap((group) => group.members),
+        deployment
+      )
+
       return c.json({ ok: true as const, id })
     } catch (err) {
       if (isIpAddressUniqueViolation(err)) {
@@ -825,6 +837,15 @@ export function registerDatacenterRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
           })
         }
       })
+
+      // Best-effort, additive only — never delays or fails the response.
+      void autoMonitorNicsForDatacenterAttach(
+        db,
+        getDaemonCellRegistry(c),
+        resolved.pins.map((pin) => pin.member),
+        deployment
+      )
+
       return c.json({ ok: true as const })
     } catch (err) {
       if (isIpAddressUniqueViolation(err)) {
