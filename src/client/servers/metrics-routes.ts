@@ -1,26 +1,18 @@
-import type { Hono } from "hono";
-import { eq, sql } from "drizzle-orm";
-import type { AppEnv } from "../../app/app.ts";
-import type { AuthRouteOpts } from "../authn/http.ts";
-import { createSessionMiddleware } from "../authn/middleware.ts";
-import { listVisible } from "../authz/index.ts";
-import {
-  assertCanManageOr403,
-  assertCanReadOr403,
-  getOrgId,
-} from "../shared.ts";
-import {
-  getDaemonCellRegistry,
-  getDb,
-  getServerMetricsStore,
-} from "../../db/connection.ts";
+import type { Hono } from 'hono'
+import { eq, sql } from 'drizzle-orm'
+import type { AppEnv } from '../../app/app.ts'
+import type { AuthRouteOpts } from '../authn/http.ts'
+import { createSessionMiddleware } from '../authn/middleware.ts'
+import { listVisible } from '../authz/index.ts'
+import { assertCanManageOr403, assertCanReadOr403, getOrgId } from '../shared.ts'
+import { getDaemonCellRegistry, getDb, getServerMetricsStore } from '../../db/connection.ts'
 import {
   type DaemonOutboundEnvelope,
   generateDeliveryId,
   generateRequestId,
-} from "../../contracts/cell-protocol.ts";
-import { cellTrace } from "../../lib/logger.ts";
-import { organization, server, tier } from "../../db/schema.ts";
+} from '../../contracts/cell-protocol.ts'
+import { cellTrace } from '../../lib/logger.ts'
+import { organization, server, tier } from '../../db/schema.ts'
 import {
   mergeServerHardwareProfile,
   parseServerHardwareProfile,
@@ -29,22 +21,22 @@ import {
   resolveEffectiveMetricsCapabilityPlan,
   type ServerHardwareProfile,
   type ServerHardwareProfileUpdate,
-} from "../../features/servers/server-metadata.ts";
+} from '../../features/servers/server-metadata.ts'
 import {
   type MetricsCapabilityTierEntitlements,
   type MetricsDeploymentKind,
   metricsDeploymentKindForRuntime,
   resolveServerMachineClass,
-} from "../../contracts/capability-plan.ts";
-import { metricsCapabilityTierEntitlementsForRank } from "../../features/tiers/tier-entitlements.ts";
-import { parseOrganizationOptions } from "../../features/organizations/organization-options.ts";
-import { getServerMetricsLiveMaxMinutes } from "../../features/settings/server-metrics-settings.ts";
-import { loadServerStatusRecords } from "./update-status.ts";
+} from '../../contracts/capability-plan.ts'
+import { metricsCapabilityTierEntitlementsForRank } from '../../features/tiers/tier-entitlements.ts'
+import { parseOrganizationOptions } from '../../features/organizations/organization-options.ts'
+import { getServerMetricsLiveMaxMinutes } from '../../features/settings/server-metrics-settings.ts'
+import { loadServerStatusRecords } from './update-status.ts'
 import {
   createMetricsChartCache,
   metricsChartCacheKey,
   resolveChartCacheTtlSeconds,
-} from "../../daemon/metrics/query/cache.ts";
+} from '../../daemon/metrics/query/cache.ts'
 import {
   clearServerLiveSession,
   markServerLiveSessionActive,
@@ -53,17 +45,17 @@ import {
   mergeLiveSampleIntoHostSummary,
   metricsRangeTailIsNow,
   readLiveSample,
-} from "../../daemon/metrics/query/live-session.ts";
+} from '../../daemon/metrics/query/live-session.ts'
 import {
   canonicalizeMetricsRange,
   parseMaxPoints,
   selectResolutionSeconds,
   validateMetricsRange,
-} from "../../daemon/metrics/query/resolution.ts";
+} from '../../daemon/metrics/query/resolution.ts'
 import {
   type HostSummaryChartResponse,
   toHostSeriesChartResponse,
-} from "../../daemon/metrics/query/series-response.ts";
+} from '../../daemon/metrics/query/series-response.ts'
 import {
   type AuthenticatedMetricsSample,
   type EntitySeriesResult,
@@ -71,7 +63,7 @@ import {
   METRICS_LIVE_INTERVAL_SECONDS,
   type MetricsLiveLeaseStartResponse,
   type StatusHistoryResult,
-} from "../../daemon/metrics/types.ts";
+} from '../../daemon/metrics/types.ts'
 import {
   buildCapacitiesByGeneration,
   buildConnectionHistoryPayload,
@@ -102,30 +94,143 @@ import {
   resolveStoreBackendKind,
   seriesCacheMetricsList,
   type TopologyIdValidationSnapshot,
-} from "./metrics-routes-helpers.ts";
+} from './metrics-routes-helpers.ts'
 import {
   getLatestTopologyGeneration,
   getLatestTopologyGenerations,
   getTopologyGenerations,
-} from "../../features/servers/server-topology-records.ts";
+} from '../../features/servers/server-topology-records.ts'
 
 /** Fixed lookback for the org servers overview usage strip/bars (~1 sample/min). */
-export const FLEET_USAGE_LOOKBACK_MS = 10 * 60_000;
+export const FLEET_USAGE_LOOKBACK_MS = 10 * 60_000
 
 /** Correlated round-trip budget for live lease start/stop (cheap daemon work). */
-const METRICS_LIVE_TIMEOUT_MS = 5_000;
-const METRICS_CAPABILITIES_TIMEOUT_MS = 15_000;
+const METRICS_LIVE_TIMEOUT_MS = 5_000
+const METRICS_CAPABILITIES_TIMEOUT_MS = 15_000
 
 async function authorizeServerRead(
   c: Parameters<typeof assertCanReadOr403>[0],
-  serverId: string,
+  serverId: string
 ): Promise<Response | null> {
-  const denied = await assertCanReadOr403(c, "server", serverId);
-  if (denied) return denied;
-  if (!c.get("session")) {
-    return c.json({ error: "Unauthorized" }, 401);
+  const denied = await assertCanReadOr403(c, 'server', serverId)
+  if (denied) return denied
+  if (!c.get('session')) {
+    return c.json({ error: 'Unauthorized' }, 401)
   }
-  return null;
+  return null
+}
+
+/**
+ * Parse and validate the `from`/`to` ISO-timestamp query pair shared by
+ * every history-range route (`/series`, `/summary`, `/connection`,
+ * `/events`) — a bad `from`/`to`, or a range `validateMetricsRange` rejects
+ * (too wide, inverted, …), answers the same 400 shape everywhere.
+ */
+function parseMetricsRangeQuery(
+  c: Parameters<typeof assertCanReadOr403>[0]
+): { fromMs: number; toMs: number; fromIso: string; toIso: string } | Response {
+  const fromParsed = parseIsoTimestampQuery(c.req.query('from'), 'from')
+  if (!fromParsed.ok) {
+    return c.json({ ok: false, error: fromParsed.message }, 400)
+  }
+  const toParsed = parseIsoTimestampQuery(c.req.query('to'), 'to')
+  if (!toParsed.ok) {
+    return c.json({ ok: false, error: toParsed.message }, 400)
+  }
+  const rangeCheck = validateMetricsRange(fromParsed.ms, toParsed.ms)
+  if (!rangeCheck.ok) {
+    return c.json({ ok: false, error: rangeCheck.message }, 400)
+  }
+  return {
+    fromMs: fromParsed.ms,
+    toMs: toParsed.ms,
+    fromIso: fromParsed.iso,
+    toIso: toParsed.iso,
+  }
+}
+
+/**
+ * `db` presence plus the shared range query, folded into one call — the
+ * db-then-range pair is otherwise still a same-shaped block repeated across
+ * `/series`, `/summary`, and `/connection`.
+ */
+function resolveDbAndRange(c: Parameters<typeof assertCanReadOr403>[0]) {
+  const db = getDb(c)
+  if (!db) return c.json({ error: 'Database unavailable' }, 503)
+  const range = parseMetricsRangeQuery(c)
+  if (range instanceof Response) return range
+  return { db, range }
+}
+
+/** Session + org resolution shared by the one fleet-scoped route below. */
+async function resolveSessionOrg(c: Parameters<typeof assertCanReadOr403>[0]) {
+  const session = c.get('session')
+  if (!session) return c.json({ error: 'Unauthorized' }, 401)
+  const orgResult = await getOrgId(c, session.userId)
+  if (orgResult instanceof Response) return orgResult
+  return { session, organizationId: orgResult }
+}
+
+/**
+ * Correlated daemon cell round trip shared by the live-lease start/stop and
+ * capabilities routes: emits the `request-start` trace, awaits the cell,
+ * and turns an `expired`/`failed` record or a thrown error into the same
+ * timeout/failure/error `Response` shape every one of them already used.
+ * `onDone` builds the success `Response` from the resolved record — trace
+ * responsibility on that path stays with the caller (the capabilities route
+ * traces a validation failure differently than a clean result).
+ */
+async function awaitMetricsCellRequest(
+  c: Parameters<typeof assertCanReadOr403>[0],
+  registry: NonNullable<ReturnType<typeof getDaemonCellRegistry>>,
+  serverId: string,
+  envelope: DaemonOutboundEnvelope,
+  timeoutMs: number,
+  timeoutMessage: string,
+  failedFallbackMessage: string,
+  onDone: (
+    record: Awaited<ReturnType<ReturnType<typeof registry.getCell>['createRequestAndWait']>>
+  ) => Response | Promise<Response>
+): Promise<Response> {
+  const requestId = envelope.requestId
+  const kind = envelope.kind
+  cellTrace('request-start', { requestId, serverId, kind })
+  try {
+    const record = await registry.getCell(serverId).createRequestAndWait(envelope, timeoutMs)
+    if (record.status === 'expired') {
+      cellTrace('request-result', {
+        requestId,
+        serverId,
+        kind,
+        pendingStatus: record.status,
+        resultStatus: 'timeout',
+      })
+      return c.json({ error: timeoutMessage }, 503)
+    }
+    if (record.status === 'failed') {
+      const error = record.error ?? failedFallbackMessage
+      cellTrace('request-result', {
+        requestId,
+        serverId,
+        kind,
+        pendingStatus: record.status,
+        resultStatus: 'failed',
+        error,
+      })
+      return c.json({ error }, 500)
+    }
+    return onDone(record)
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    cellTrace('request-result', {
+      requestId,
+      serverId,
+      kind,
+      resultStatus: 'error',
+      error: message,
+    })
+    return c.json({ error: message }, 503)
+  }
 }
 
 /**
@@ -138,13 +243,13 @@ async function authorizeServerRead(
  */
 async function loadServerHardwareProfile(
   db: NonNullable<ReturnType<typeof getDb>>,
-  serverId: string,
+  serverId: string
 ): Promise<{
-  hardwareProfile: ServerHardwareProfile | undefined;
-  organizationId: string | null;
-  serverOptions: ReturnType<typeof parseServerOptions>;
+  hardwareProfile: ServerHardwareProfile | undefined
+  organizationId: string | null
+  serverOptions: ReturnType<typeof parseServerOptions>
   /** Declared `server.machine_class`; `null` until pinned or inferred physical. */
-  machineClass: string | null;
+  machineClass: string | null
 }> {
   const [serverRow] = await db
     .select({
@@ -155,15 +260,14 @@ async function loadServerHardwareProfile(
     })
     .from(server)
     .where(eq(server.id, serverId))
-    .limit(1);
-  const rawMetadata = serverRow?.metadata;
+    .limit(1)
+  const rawMetadata = serverRow?.metadata
   const metadata: Record<string, unknown> =
-    rawMetadata && typeof rawMetadata === "object" &&
-      !Array.isArray(rawMetadata)
+    rawMetadata && typeof rawMetadata === 'object' && !Array.isArray(rawMetadata)
       ? (rawMetadata as Record<string, unknown>)
-      : {};
-  const hardwareProfile = parseServerHardwareProfile(metadata.hardwareProfile);
-  const resources = parseServerHostResources(metadata.resources);
+      : {}
+  const hardwareProfile = parseServerHardwareProfile(metadata.hardwareProfile)
+  const resources = parseServerHostResources(metadata.resources)
 
   // `hardwareProfile.cpuModel` is only ever written by a host-facts
   // projection this codebase does not have yet — fall back to the raw
@@ -171,32 +275,32 @@ async function loadServerHardwareProfile(
   // hello/heartbeat (`resources.cpus[0].name`) so CPU-catalog lookups
   // resolve on real hosts instead of only in tests that set cpuModel by
   // hand. Never persisted — a per-request derivation only.
-  const detectedCpuModel = resources?.cpus?.[0]?.name;
+  const detectedCpuModel = resources?.cpus?.[0]?.name
   const effectiveHardwareProfile =
     hardwareProfile?.cpuModel || !detectedCpuModel
       ? hardwareProfile
-      : { ...hardwareProfile, cpuModel: detectedCpuModel };
+      : { ...hardwareProfile, cpuModel: detectedCpuModel }
 
   return {
     hardwareProfile: effectiveHardwareProfile,
     organizationId: serverRow?.organizationId ?? null,
     serverOptions: parseServerOptions(serverRow?.options),
     machineClass: serverRow?.machineClass ?? null,
-  };
+  }
 }
 
 /** One organization-options read, shared by the envelope and the NIC-slot limit. */
 async function loadOrganizationOptions(
   db: NonNullable<ReturnType<typeof getDb>>,
-  organizationId: string | null,
+  organizationId: string | null
 ) {
-  if (!organizationId) return null;
+  if (!organizationId) return null
   const [orgRow] = await db
     .select({ options: organization.options })
     .from(organization)
     .where(eq(organization.id, organizationId))
-    .limit(1);
-  return parseOrganizationOptions(orgRow?.options);
+    .limit(1)
+  return parseOrganizationOptions(orgRow?.options)
 }
 
 /**
@@ -208,16 +312,16 @@ async function loadOrganizationOptions(
 async function loadServerTierEntitlements(
   db: NonNullable<ReturnType<typeof getDb>>,
   serverId: string,
-  deployment: MetricsDeploymentKind,
+  deployment: MetricsDeploymentKind
 ): Promise<MetricsCapabilityTierEntitlements | undefined> {
-  if (deployment === "self-hosted") return undefined;
+  if (deployment === 'self-hosted') return undefined
   const [row] = await db
     .select({ rank: tier.rank })
     .from(server)
     .innerJoin(tier, eq(tier.id, server.assignedTierId))
     .where(eq(server.id, serverId))
-    .limit(1);
-  return metricsCapabilityTierEntitlementsForRank(row?.rank);
+    .limit(1)
+  return metricsCapabilityTierEntitlementsForRank(row?.rank)
 }
 
 /**
@@ -230,21 +334,21 @@ async function loadServerTierEntitlements(
  */
 function resolveNicSlotLimit(
   inputs: Readonly<{
-    machineClass: string | null;
-    latestSnapshot: unknown;
-    orgOptions: ReturnType<typeof parseOrganizationOptions> | null;
-    serverOptions: ReturnType<typeof parseServerOptions>;
-    deployment: MetricsDeploymentKind;
-    tier?: MetricsCapabilityTierEntitlements;
-  }>,
+    machineClass: string | null
+    latestSnapshot: unknown
+    orgOptions: ReturnType<typeof parseOrganizationOptions> | null
+    serverOptions: ReturnType<typeof parseServerOptions>
+    deployment: MetricsDeploymentKind
+    tier?: MetricsCapabilityTierEntitlements
+  }>
 ): number {
   return resolveEffectiveMetricsCapabilityPlan(
     resolveServerMachineClass(inputs.machineClass, inputs.latestSnapshot),
     inputs.orgOptions ?? undefined,
     inputs.serverOptions ?? undefined,
     inputs.deployment,
-    inputs.tier,
-  ).normalNicSlots;
+    inputs.tier
+  ).normalNicSlots
 }
 
 /**
@@ -255,19 +359,19 @@ function resolveNicSlotLimit(
 async function loadCpuLimitsEnvelope(
   db: NonNullable<ReturnType<typeof getDb>>,
   inputs: Readonly<{
-    serverId: string;
-    hardwareProfile: ServerHardwareProfile | undefined;
-    organizationId: string | null;
-    serverOptions: ReturnType<typeof parseServerOptions>;
-    machineClass: string | null;
-    latestSnapshot: unknown;
-    deployment: MetricsDeploymentKind;
-  }>,
+    serverId: string
+    hardwareProfile: ServerHardwareProfile | undefined
+    organizationId: string | null
+    serverOptions: ReturnType<typeof parseServerOptions>
+    machineClass: string | null
+    latestSnapshot: unknown
+    deployment: MetricsDeploymentKind
+  }>
 ): Promise<CpuLimitsEnvelope> {
   const [orgOptions, tier] = await Promise.all([
     loadOrganizationOptions(db, inputs.organizationId),
     loadServerTierEntitlements(db, inputs.serverId, inputs.deployment),
-  ]);
+  ])
   const nicSlotLimit = resolveNicSlotLimit({
     machineClass: inputs.machineClass,
     latestSnapshot: inputs.latestSnapshot,
@@ -275,12 +379,8 @@ async function loadCpuLimitsEnvelope(
     serverOptions: inputs.serverOptions,
     deployment: inputs.deployment,
     tier,
-  });
-  return buildCpuLimitsEnvelope(
-    inputs.hardwareProfile,
-    orgOptions,
-    nicSlotLimit,
-  );
+  })
+  return buildCpuLimitsEnvelope(inputs.hardwareProfile, orgOptions, nicSlotLimit)
 }
 
 /**
@@ -292,56 +392,38 @@ async function loadCpuLimitsEnvelope(
  * stored results pass through untouched.
  */
 function applyLiveSampleToSeries(input: {
-  storedHostResult: HostSeriesResult | null;
-  storedEntityResults: EntitySeriesResult[];
-  liveSample: AuthenticatedMetricsSample | null;
-  resolutionSeconds: number;
+  storedHostResult: HostSeriesResult | null
+  storedEntityResults: EntitySeriesResult[]
+  liveSample: AuthenticatedMetricsSample | null
+  resolutionSeconds: number
 }): {
-  hostResult: HostSeriesResult | null;
-  entityResults: EntitySeriesResult[];
+  hostResult: HostSeriesResult | null
+  entityResults: EntitySeriesResult[]
 } {
-  const {
-    storedHostResult,
-    storedEntityResults,
-    liveSample,
-    resolutionSeconds,
-  } = input;
+  const { storedHostResult, storedEntityResults, liveSample, resolutionSeconds } = input
   if (!liveSample) {
-    return { hostResult: storedHostResult, entityResults: storedEntityResults };
+    return { hostResult: storedHostResult, entityResults: storedEntityResults }
   }
   return {
     hostResult: storedHostResult
-      ? mergeLiveSampleIntoHostSeries(
-        storedHostResult,
-        liveSample,
-        resolutionSeconds,
-      )
+      ? mergeLiveSampleIntoHostSeries(storedHostResult, liveSample, resolutionSeconds)
       : storedHostResult,
     entityResults: storedEntityResults.map((entityResult) =>
-      mergeLiveSampleIntoEntitySeries(
-        entityResult,
-        liveSample,
-        resolutionSeconds,
-      )
+      mergeLiveSampleIntoEntitySeries(entityResult, liveSample, resolutionSeconds)
     ),
-  };
+  }
 }
 
-export function registerServerMetricsRoutes(
-  router: Hono<AppEnv>,
-  opts: AuthRouteOpts,
-) {
+export function registerServerMetricsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
   if (!opts.secrets) {
-    throw new TypeError(
-      "session secrets are required for server metrics routes",
-    );
+    throw new TypeError('session secrets are required for server metrics routes')
   }
-  const secrets = opts.secrets;
-  const cache = createMetricsChartCache(opts.runtime);
-  const deployment = metricsDeploymentKindForRuntime(opts.runtime);
+  const secrets = opts.secrets
+  const cache = createMetricsChartCache(opts.runtime)
+  const deployment = metricsDeploymentKindForRuntime(opts.runtime)
 
-  router.use("/servers/metrics/*", createSessionMiddleware(secrets));
-  router.use("/servers/:id/metrics/*", createSessionMiddleware(secrets));
+  router.use('/servers/metrics/*', createSessionMiddleware(secrets))
+  router.use('/servers/:id/metrics/*', createSessionMiddleware(secrets))
 
   /**
    * One fleet usage snapshot for the org servers overview.
@@ -353,30 +435,27 @@ export function registerServerMetricsRoutes(
    * this route exists to preserve. A per-server headroom readout belongs on
    * the single-server routes instead.
    */
-  router.get("/servers/metrics/latest", async (c) => {
-    const db = getDb(c);
-    if (!db) return c.json({ error: "Database unavailable" }, 503);
+  router.get('/servers/metrics/latest', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
 
-    const session = c.get("session");
-    if (!session) return c.json({ error: "Unauthorized" }, 401);
-
-    const orgResult = await getOrgId(c, session.userId);
-    if (orgResult instanceof Response) return orgResult;
-    const organizationId = orgResult;
+    const sessionOrg = await resolveSessionOrg(c)
+    if (sessionOrg instanceof Response) return sessionOrg
+    const { session, organizationId } = sessionOrg
 
     const visibleIds = await listVisible(db, {
-      kind: "server",
+      kind: 'server',
       userId: session.userId,
       organizationId,
-    });
+    })
 
-    const store = getServerMetricsStore(c);
-    const backend = resolveStoreBackendKind(store, opts.runtime);
-    const toMs = Date.now();
-    const fromMs = toMs - FLEET_USAGE_LOOKBACK_MS;
-    const fromIso = new Date(fromMs).toISOString();
-    const toIso = new Date(toMs).toISOString();
-    const metrics = [...FLEET_HOST_METRICS];
+    const store = getServerMetricsStore(c)
+    const backend = resolveStoreBackendKind(store, opts.runtime)
+    const toMs = Date.now()
+    const fromMs = toMs - FLEET_USAGE_LOOKBACK_MS
+    const fromIso = new Date(fromMs).toISOString()
+    const toIso = new Date(toMs).toISOString()
+    const metrics = [...FLEET_HOST_METRICS]
 
     if (visibleIds.length === 0) {
       return c.json({
@@ -387,7 +466,7 @@ export function registerServerMetricsRoutes(
         available: true,
         metrics,
         servers: [],
-      });
+      })
     }
 
     const cacheKey = metricsChartCacheKey({
@@ -398,13 +477,11 @@ export function registerServerMetricsRoutes(
       resolutionSeconds: 60,
       backend,
       schemaVersion: 6,
-      kind: "fleet-latest",
-    });
+      kind: 'fleet-latest',
+    })
 
-    const cached = await cache.get<ReturnType<typeof buildFleetLatestPayload>>(
-      cacheKey,
-    );
-    if (cached) return c.json(cached);
+    const cached = await cache.get<ReturnType<typeof buildFleetLatestPayload>>(cacheKey)
+    if (cached) return c.json(cached)
 
     if (!store?.queryFleetHostSnapshot) {
       const payload = buildFleetLatestPayload({
@@ -415,36 +492,34 @@ export function registerServerMetricsRoutes(
         metrics,
         servers: [],
         capacitiesByServer: new Map(),
-      });
-      return c.json(payload);
+      })
+      return c.json(payload)
     }
 
-    let result;
+    let result
     try {
       result = await store.queryFleetHostSnapshot({
         serverIds: visibleIds,
         metrics,
         from: fromIso,
         to: toIso,
-      });
+      })
     } catch (err) {
-      const message = metricsQueryErrorMessage(err);
-      console.error(
-        `metrics queryFleetHostSnapshot failed backend=${backend}: ${message}`,
-      );
-      return c.json(metricsBackendUnavailableResponse(backend), 503);
+      const message = metricsQueryErrorMessage(err)
+      console.error(`metrics queryFleetHostSnapshot failed backend=${backend}: ${message}`)
+      return c.json(metricsBackendUnavailableResponse(backend), 503)
     }
 
     // Batched — one query for every visible server's latest topology
     // generation, never N — keeps this route O(1) in server count (see
     // AGENTS.md's fleet-read invariant).
-    const topologyByServer = await getLatestTopologyGenerations(db, visibleIds);
+    const topologyByServer = await getLatestTopologyGenerations(db, visibleIds)
     const capacitiesByServer = new Map(
       [...topologyByServer].map(([serverId, record]) => [
         serverId,
         fleetHostCapacitiesFromSnapshot(record.snapshot),
-      ]),
-    );
+      ])
+    )
 
     const payload = buildFleetLatestPayload({
       from: fromIso,
@@ -454,73 +529,53 @@ export function registerServerMetricsRoutes(
       metrics: result.metrics,
       servers: result.servers,
       capacitiesByServer,
-    });
+    })
     if (result.available && result.servers.some((row) => row.sampleCount > 0)) {
-      await cache.set(cacheKey, payload, 45);
+      await cache.set(cacheKey, payload, 45)
     }
-    return c.json(payload);
-  });
+    return c.json(payload)
+  })
 
-  router.get("/servers/:id/metrics/series", async (c) => {
-    const serverId = c.req.param("id");
-    const denied = await authorizeServerRead(c, serverId);
-    if (denied) return denied;
+  router.get('/servers/:id/metrics/series', async (c) => {
+    const serverId = c.req.param('id')
+    const denied = await authorizeServerRead(c, serverId)
+    if (denied) return denied
 
-    const db = getDb(c);
-    if (!db) return c.json({ error: "Database unavailable" }, 503);
+    const resolved = resolveDbAndRange(c)
+    if (resolved instanceof Response) return resolved
+    const { db, range } = resolved
 
-    const fromParsed = parseIsoTimestampQuery(c.req.query("from"), "from");
-    if (!fromParsed.ok) {
-      return c.json({ ok: false, error: fromParsed.message }, 400);
-    }
-    const toParsed = parseIsoTimestampQuery(c.req.query("to"), "to");
-    if (!toParsed.ok) {
-      return c.json({ ok: false, error: toParsed.message }, 400);
-    }
-
-    const rangeCheck = validateMetricsRange(fromParsed.ms, toParsed.ms);
-    if (!rangeCheck.ok) {
-      return c.json({ ok: false, error: rangeCheck.message }, 400);
-    }
-
-    const selectorsParsed = parseSeriesMetricSelectors(c.req.query("metrics"));
+    const selectorsParsed = parseSeriesMetricSelectors(c.req.query('metrics'))
     if (!selectorsParsed.ok) {
-      return c.json({ ok: false, error: selectorsParsed.error }, 400);
+      return c.json({ ok: false, error: selectorsParsed.error }, 400)
     }
-    const selectors = selectorsParsed.value;
+    const selectors = selectorsParsed.value
 
-    const maxPointsParsed = parseMaxPoints(c.req.query("maxPoints"));
+    const maxPointsParsed = parseMaxPoints(c.req.query('maxPoints'))
     if (!maxPointsParsed.ok) {
-      return c.json({ ok: false, error: maxPointsParsed.message }, 400);
+      return c.json({ ok: false, error: maxPointsParsed.message }, 400)
     }
 
-    const store = getServerMetricsStore(c);
-    const backend = resolveStoreBackendKind(store, opts.runtime);
+    const store = getServerMetricsStore(c)
+    const backend = resolveStoreBackendKind(store, opts.runtime)
 
     const resolutionSeconds = selectResolutionSeconds({
-      fromMs: fromParsed.ms,
-      toMs: toParsed.ms,
-      requested: parseOptionalResolution(c.req.query("resolution")),
+      fromMs: range.fromMs,
+      toMs: range.toMs,
+      requested: parseOptionalResolution(c.req.query('resolution')),
       maxPoints: maxPointsParsed.value,
-    });
+    })
 
-    const queryRange = canonicalizeMetricsRange(
-      fromParsed.ms,
-      toParsed.ms,
-      resolutionSeconds,
-    );
+    const queryRange = canonicalizeMetricsRange(range.fromMs, range.toMs, resolutionSeconds)
 
     const { hardwareProfile, organizationId, serverOptions, machineClass } =
-      await loadServerHardwareProfile(db, serverId);
-    const latestGeneration = await getLatestTopologyGeneration(db, serverId);
-    const context = buildTopologyContext(latestGeneration, hardwareProfile);
+      await loadServerHardwareProfile(db, serverId)
+    const latestGeneration = await getLatestTopologyGeneration(db, serverId)
+    const context = buildTopologyContext(latestGeneration, hardwareProfile)
 
-    const fabricError = fabricNetworkSelectionError(
-      selectors,
-      context.inventory,
-    );
+    const fabricError = fabricNetworkSelectionError(selectors, context.inventory)
     if (fabricError) {
-      return c.json({ ok: false, error: fabricError }, 400);
+      return c.json({ ok: false, error: fabricError }, 400)
     }
 
     const cacheKey = metricsChartCacheKey({
@@ -531,15 +586,13 @@ export function registerServerMetricsRoutes(
       resolutionSeconds,
       backend,
       schemaVersion: 6,
-      kind: "series",
+      kind: 'series',
       topologyGeneration: context.topologyGeneration ?? undefined,
-    });
+    })
 
-    const cached = await cache.get<ReturnType<typeof buildSeriesRouteResponse>>(
-      cacheKey,
-    );
+    const cached = await cache.get<ReturnType<typeof buildSeriesRouteResponse>>(cacheKey)
     if (cached) {
-      return c.json(cached);
+      return c.json(cached)
     }
 
     const seriesQuery = await querySeriesResults({
@@ -551,23 +604,22 @@ export function registerServerMetricsRoutes(
       toIso: queryRange.toIso,
       resolutionSeconds,
       context,
-    });
+    })
     if (!seriesQuery.ok) {
-      return c.json(metricsBackendUnavailableResponse(backend), 503);
+      return c.json(metricsBackendUnavailableResponse(backend), 503)
     }
-    const { hostResult: storedHostResult, entityResults: storedEntityResults } =
-      seriesQuery;
+    const { hostResult: storedHostResult, entityResults: storedEntityResults } = seriesQuery
 
-    const liveSample = metricsRangeTailIsNow(queryRange.toMs) &&
-        resolutionSeconds <= METRICS_LIVE_INTERVAL_SECONDS
-      ? await readLiveSample(cache, serverId)
-      : null;
+    const liveSample =
+      metricsRangeTailIsNow(queryRange.toMs) && resolutionSeconds <= METRICS_LIVE_INTERVAL_SECONDS
+        ? await readLiveSample(cache, serverId)
+        : null
     const { hostResult, entityResults } = applyLiveSampleToSeries({
       storedHostResult,
       storedEntityResults,
       liveSample,
       resolutionSeconds,
-    });
+    })
 
     const envelope = await loadCpuLimitsEnvelope(db, {
       serverId,
@@ -577,30 +629,26 @@ export function registerServerMetricsRoutes(
       machineClass,
       latestSnapshot: latestGeneration?.snapshot,
       deployment,
-    });
+    })
     // Capacity totals are the denominator of every derived percentage, so
     // they must come from the generation each bucket was sampled under — not
     // from today's. Only the generations this range actually spans are
     // fetched, and a range that never crosses a topology change costs one
     // extra indexed lookup.
     const capacitiesByGeneration = buildCapacitiesByGeneration(
-      await getTopologyGenerations(
-        db,
-        serverId,
-        hostResult?.topologyGenerations ?? [],
-      ),
-      hardwareProfile,
-    );
+      await getTopologyGenerations(db, serverId, hostResult?.topologyGenerations ?? []),
+      hardwareProfile
+    )
     const hostChartResponse = hostResult
       ? toHostSeriesChartResponse({
-        serverId,
-        from: queryRange.fromIso,
-        to: queryRange.toIso,
-        result: hostResult,
-        capacities: context.capacities,
-        capacitiesByGeneration,
-      })
-      : null;
+          serverId,
+          from: queryRange.fromIso,
+          to: queryRange.toIso,
+          result: hostResult,
+          capacities: context.capacities,
+          capacitiesByGeneration,
+        })
+      : null
 
     const payload = buildSeriesRouteResponse({
       serverId,
@@ -612,62 +660,45 @@ export function registerServerMetricsRoutes(
       entities: entityResults,
       context,
       envelope,
-    });
+    })
 
     // Do not cache empty live series — the first sample often lands seconds
     // after the first chart fetch; a 45s empty cache keeps the UI stuck on
     // "No server metrics yet" despite successful daemon POSTs.
-    const totalSampleCount = (hostChartResponse?.sampleCount ?? 0) +
+    const totalSampleCount =
+      (hostChartResponse?.sampleCount ?? 0) +
       entityResults.reduce(
-        (sum, entity) =>
-          sum + entity.entities.reduce((s, e) => s + e.sampleCount, 0),
-        0,
-      );
+        (sum, entity) => sum + entity.entities.reduce((s, e) => s + e.sampleCount, 0),
+        0
+      )
     if (totalSampleCount > 0) {
       const ttlSeconds = resolveChartCacheTtlSeconds({
         toMs: queryRange.toMs,
         nowMs: Date.now(),
         resolutionSeconds,
-      });
-      await cache.set(cacheKey, payload, ttlSeconds);
+      })
+      await cache.set(cacheKey, payload, ttlSeconds)
     }
-    return c.json(payload);
-  });
+    return c.json(payload)
+  })
 
-  router.get("/servers/:id/metrics/summary", async (c) => {
-    const serverId = c.req.param("id");
-    const denied = await authorizeServerRead(c, serverId);
-    if (denied) return denied;
+  router.get('/servers/:id/metrics/summary', async (c) => {
+    const serverId = c.req.param('id')
+    const denied = await authorizeServerRead(c, serverId)
+    if (denied) return denied
 
-    const db = getDb(c);
-    if (!db) return c.json({ error: "Database unavailable" }, 503);
+    const resolved = resolveDbAndRange(c)
+    if (resolved instanceof Response) return resolved
+    const { db, range } = resolved
 
-    const fromParsed = parseIsoTimestampQuery(c.req.query("from"), "from");
-    if (!fromParsed.ok) {
-      return c.json({ ok: false, error: fromParsed.message }, 400);
-    }
-    const toParsed = parseIsoTimestampQuery(c.req.query("to"), "to");
-    if (!toParsed.ok) {
-      return c.json({ ok: false, error: toParsed.message }, 400);
-    }
-
-    const rangeCheck = validateMetricsRange(fromParsed.ms, toParsed.ms);
-    if (!rangeCheck.ok) {
-      return c.json({ ok: false, error: rangeCheck.message }, 400);
-    }
-
-    const store = getServerMetricsStore(c);
-    const backend = resolveStoreBackendKind(store, opts.runtime);
-    const summaryResolutionSeconds = 300;
-    const queryRange = canonicalizeMetricsRange(
-      fromParsed.ms,
-      toParsed.ms,
-      summaryResolutionSeconds,
-    );
+    const store = getServerMetricsStore(c)
+    const backend = resolveStoreBackendKind(store, opts.runtime)
+    const summaryResolutionSeconds = 300
+    const queryRange = canonicalizeMetricsRange(range.fromMs, range.toMs, summaryResolutionSeconds)
 
     const { hardwareProfile, organizationId, serverOptions, machineClass } =
-      await loadServerHardwareProfile(db, serverId);
-    const latestGeneration = await getLatestTopologyGeneration(db, serverId);
+      await loadServerHardwareProfile(db, serverId)
+    const latestGeneration = await getLatestTopologyGeneration(db, serverId)
 
     const cacheKey = metricsChartCacheKey({
       serverId,
@@ -677,46 +708,43 @@ export function registerServerMetricsRoutes(
       resolutionSeconds: summaryResolutionSeconds,
       backend,
       schemaVersion: 6,
-      kind: "summary",
+      kind: 'summary',
       topologyGeneration: latestGeneration?.generation,
-    });
+    })
 
-    const cached = await cache.get<
-      HostSummaryChartResponse & CpuLimitsEnvelope
-    >(cacheKey);
+    const cached = await cache.get<HostSummaryChartResponse & CpuLimitsEnvelope>(cacheKey)
     if (cached) {
-      return c.json(cached);
+      return c.json(cached)
     }
 
-    let result;
+    let result
     try {
       result = store?.queryHostSummary
         ? await store.queryHostSummary({
-          serverId,
-          from: queryRange.fromIso,
-          to: queryRange.toIso,
-        })
+            serverId,
+            from: queryRange.fromIso,
+            to: queryRange.toIso,
+          })
         : {
-          kind: backend,
-          available: false,
-          serverId,
-          sampleCount: 0,
-          latestAt: null,
-        };
+            kind: backend,
+            available: false,
+            serverId,
+            sampleCount: 0,
+            latestAt: null,
+          }
     } catch (err) {
-      const message = metricsQueryErrorMessage(err);
+      const message = metricsQueryErrorMessage(err)
       console.error(
-        `metrics queryHostSummary failed backend=${backend} serverId=${serverId}: ${message}`,
-      );
-      return c.json(metricsBackendUnavailableResponse(backend), 503);
+        `metrics queryHostSummary failed backend=${backend} serverId=${serverId}: ${message}`
+      )
+      return c.json(metricsBackendUnavailableResponse(backend), 503)
     }
 
     const liveSample = metricsRangeTailIsNow(queryRange.toMs)
       ? await readLiveSample(cache, serverId)
-      : null;
-    const summaryResult = liveSample && result.available
-      ? mergeLiveSampleIntoHostSummary(result, liveSample)
-      : result;
+      : null
+    const summaryResult =
+      liveSample && result.available ? mergeLiveSampleIntoHostSummary(result, liveSample) : result
 
     const envelope = await loadCpuLimitsEnvelope(db, {
       serverId,
@@ -726,67 +754,50 @@ export function registerServerMetricsRoutes(
       machineClass,
       latestSnapshot: latestGeneration?.snapshot,
       deployment,
-    });
+    })
     const payload = buildHostSummaryPayload({
       serverId,
       from: queryRange.fromIso,
       to: queryRange.toIso,
       result: summaryResult,
       envelope,
-    });
+    })
 
     const ttlSeconds = resolveChartCacheTtlSeconds({
       toMs: queryRange.toMs,
       nowMs: Date.now(),
       resolutionSeconds: summaryResolutionSeconds,
-    });
-    await cache.set(cacheKey, payload, ttlSeconds);
-    return c.json(payload);
-  });
+    })
+    await cache.set(cacheKey, payload, ttlSeconds)
+    return c.json(payload)
+  })
 
-  router.get("/servers/:id/metrics/connection", async (c) => {
-    const serverId = c.req.param("id");
-    const denied = await authorizeServerRead(c, serverId);
-    if (denied) return denied;
+  router.get('/servers/:id/metrics/connection', async (c) => {
+    const serverId = c.req.param('id')
+    const denied = await authorizeServerRead(c, serverId)
+    if (denied) return denied
 
-    const db = getDb(c);
-    if (!db) return c.json({ error: "Database unavailable" }, 503);
-
-    const fromParsed = parseIsoTimestampQuery(c.req.query("from"), "from");
-    if (!fromParsed.ok) {
-      return c.json({ ok: false, error: fromParsed.message }, 400);
-    }
-    const toParsed = parseIsoTimestampQuery(c.req.query("to"), "to");
-    if (!toParsed.ok) {
-      return c.json({ ok: false, error: toParsed.message }, 400);
-    }
-
-    const rangeCheck = validateMetricsRange(fromParsed.ms, toParsed.ms);
-    if (!rangeCheck.ok) {
-      return c.json({ ok: false, error: rangeCheck.message }, 400);
-    }
+    const resolved = resolveDbAndRange(c)
+    if (resolved instanceof Response) return resolved
+    const { db, range } = resolved
 
     // Status transitions are v6-only: `queryStatusHistory` is optional on
     // `ServerMetricsStore` (only `DisabledServerMetricsStore` omits it),
     // so an unconfigured backend falls back to an inline "disabled" result
     // below rather than reading from a v3 store.
-    const store = getServerMetricsStore(c);
-    const backend = resolveStoreBackendKind(store, opts.runtime);
+    const store = getServerMetricsStore(c)
+    const backend = resolveStoreBackendKind(store, opts.runtime)
 
     // Same resolution ladder as /series so cache keys round identically.
     const resolutionSeconds = selectResolutionSeconds({
-      fromMs: fromParsed.ms,
-      toMs: toParsed.ms,
-    });
-    const queryRange = canonicalizeMetricsRange(
-      fromParsed.ms,
-      toParsed.ms,
-      resolutionSeconds,
-    );
+      fromMs: range.fromMs,
+      toMs: range.toMs,
+    })
+    const queryRange = canonicalizeMetricsRange(range.fromMs, range.toMs, resolutionSeconds)
 
     // Only the generation is needed here (no cpuLimits envelope on this
     // route).
-    const latestGeneration = await getLatestTopologyGeneration(db, serverId);
+    const latestGeneration = await getLatestTopologyGeneration(db, serverId)
 
     const cacheKey = metricsChartCacheKey({
       serverId,
@@ -796,41 +807,41 @@ export function registerServerMetricsRoutes(
       resolutionSeconds,
       backend,
       schemaVersion: 6,
-      kind: "connection",
+      kind: 'connection',
       topologyGeneration: latestGeneration?.generation,
-    });
+    })
 
-    const cached = await cache.get<ConnectionHistoryChartResponse>(cacheKey);
+    const cached = await cache.get<ConnectionHistoryChartResponse>(cacheKey)
     if (cached) {
-      return c.json(cached);
+      return c.json(cached)
     }
 
-    let result: StatusHistoryResult;
+    let result: StatusHistoryResult
     try {
       result = store?.queryStatusHistory
         ? await store.queryStatusHistory({
-          serverId,
-          from: queryRange.fromIso,
-          to: queryRange.toIso,
-        })
+            serverId,
+            from: queryRange.fromIso,
+            to: queryRange.toIso,
+          })
         : {
-          kind: backend,
-          available: false,
-          serverId,
-          initialConnected: null,
-          events: [],
-          uptimeSeconds: 0,
-          downtimeSeconds: 0,
-          unknownSeconds: 0,
-          uptimePercent: null,
-          truncated: false,
-        };
+            kind: backend,
+            available: false,
+            serverId,
+            initialConnected: null,
+            events: [],
+            uptimeSeconds: 0,
+            downtimeSeconds: 0,
+            unknownSeconds: 0,
+            uptimePercent: null,
+            truncated: false,
+          }
     } catch (err) {
-      const message = metricsQueryErrorMessage(err);
+      const message = metricsQueryErrorMessage(err)
       console.error(
-        `metrics queryStatusHistory failed backend=${backend} serverId=${serverId}: ${message}`,
-      );
-      return c.json(metricsBackendUnavailableResponse(backend), 503);
+        `metrics queryStatusHistory failed backend=${backend} serverId=${serverId}: ${message}`
+      )
+      return c.json(metricsBackendUnavailableResponse(backend), 503)
     }
 
     const payload = buildConnectionHistoryPayload({
@@ -838,7 +849,7 @@ export function registerServerMetricsRoutes(
       from: queryRange.fromIso,
       to: queryRange.toIso,
       result,
-    });
+    })
 
     // Skip caching empty live ranges — same guard as series (no sampleCount;
     // treat zero known up/down + empty events as empty).
@@ -847,11 +858,11 @@ export function registerServerMetricsRoutes(
         toMs: queryRange.toMs,
         nowMs: Date.now(),
         resolutionSeconds,
-      });
-      await cache.set(cacheKey, payload, ttlSeconds);
+      })
+      await cache.set(cacheKey, payload, ttlSeconds)
     }
-    return c.json(payload);
-  });
+    return c.json(payload)
+  })
 
   /**
    * v6-only: hardware-health / lifecycle events (`sample.events`) for a
@@ -860,34 +871,23 @@ export function registerServerMetricsRoutes(
    * a 503) when the resolved v6 store has no `queryMetricEvents` (e.g.
    * `DisabledServerMetricsStore` — no backend binding configured).
    */
-  router.get("/servers/:id/metrics/events", async (c) => {
-    const serverId = c.req.param("id");
-    const denied = await authorizeServerRead(c, serverId);
-    if (denied) return denied;
+  router.get('/servers/:id/metrics/events', async (c) => {
+    const serverId = c.req.param('id')
+    const denied = await authorizeServerRead(c, serverId)
+    if (denied) return denied
 
-    const fromParsed = parseIsoTimestampQuery(c.req.query("from"), "from");
-    if (!fromParsed.ok) {
-      return c.json({ ok: false, error: fromParsed.message }, 400);
-    }
-    const toParsed = parseIsoTimestampQuery(c.req.query("to"), "to");
-    if (!toParsed.ok) {
-      return c.json({ ok: false, error: toParsed.message }, 400);
-    }
+    const range = parseMetricsRangeQuery(c)
+    if (range instanceof Response) return range
 
-    const rangeCheck = validateMetricsRange(fromParsed.ms, toParsed.ms);
-    if (!rangeCheck.ok) {
-      return c.json({ ok: false, error: rangeCheck.message }, 400);
-    }
-
-    const store = getServerMetricsStore(c);
-    const backend = resolveStoreBackendKind(store, opts.runtime);
+    const store = getServerMetricsStore(c)
+    const backend = resolveStoreBackendKind(store, opts.runtime)
 
     if (!store?.queryMetricEvents) {
       return c.json(
         buildMetricEventsPayload({
           serverId,
-          from: fromParsed.iso,
-          to: toParsed.iso,
+          from: range.fromIso,
+          to: range.toIso,
           result: {
             kind: backend,
             available: false,
@@ -895,21 +895,17 @@ export function registerServerMetricsRoutes(
             events: [],
             truncated: false,
           },
-        }),
-      );
+        })
+      )
     }
 
     // Same resolution ladder as /connection, purely for a stable cache key —
     // metric events are point-in-time rows, never bucketed.
     const resolutionSeconds = selectResolutionSeconds({
-      fromMs: fromParsed.ms,
-      toMs: toParsed.ms,
-    });
-    const queryRange = canonicalizeMetricsRange(
-      fromParsed.ms,
-      toParsed.ms,
-      resolutionSeconds,
-    );
+      fromMs: range.fromMs,
+      toMs: range.toMs,
+    })
+    const queryRange = canonicalizeMetricsRange(range.fromMs, range.toMs, resolutionSeconds)
 
     const cacheKey = metricsChartCacheKey({
       serverId,
@@ -919,27 +915,27 @@ export function registerServerMetricsRoutes(
       resolutionSeconds,
       backend,
       schemaVersion: 6,
-      kind: "events",
-    });
+      kind: 'events',
+    })
 
-    const cached = await cache.get<MetricEventsResponse>(cacheKey);
+    const cached = await cache.get<MetricEventsResponse>(cacheKey)
     if (cached) {
-      return c.json(cached);
+      return c.json(cached)
     }
 
-    let result;
+    let result
     try {
       result = await store.queryMetricEvents({
         serverId,
         from: queryRange.fromIso,
         to: queryRange.toIso,
-      });
+      })
     } catch (err) {
-      const message = metricsQueryErrorMessage(err);
+      const message = metricsQueryErrorMessage(err)
       console.error(
-        `metrics queryMetricEvents failed backend=${backend} serverId=${serverId}: ${message}`,
-      );
-      return c.json(metricsBackendUnavailableResponse(backend), 503);
+        `metrics queryMetricEvents failed backend=${backend} serverId=${serverId}: ${message}`
+      )
+      return c.json(metricsBackendUnavailableResponse(backend), 503)
     }
 
     const payload = buildMetricEventsPayload({
@@ -947,18 +943,18 @@ export function registerServerMetricsRoutes(
       from: queryRange.fromIso,
       to: queryRange.toIso,
       result,
-    });
+    })
 
     if (metricEventsHasCacheableData(result)) {
       const ttlSeconds = resolveChartCacheTtlSeconds({
         toMs: queryRange.toMs,
         nowMs: Date.now(),
         resolutionSeconds,
-      });
-      await cache.set(cacheKey, payload, ttlSeconds);
+      })
+      await cache.set(cacheKey, payload, ttlSeconds)
     }
-    return c.json(payload);
-  });
+    return c.json(payload)
+  })
 
   /**
    * Start (or explicitly renew) a live-metrics lease. Lease enforcement lives
@@ -970,218 +966,147 @@ export function registerServerMetricsRoutes(
    * LiveLeaseManager treats a known id as a renewal, so a later DELETE of the
    * same id returns cadence to baseline immediately.
    */
-  router.post("/servers/:id/metrics/live", async (c) => {
-    const serverId = c.req.param("id");
-    const denied = await authorizeServerRead(c, serverId);
-    if (denied) return denied;
+  router.post('/servers/:id/metrics/live', async (c) => {
+    const serverId = c.req.param('id')
+    const denied = await authorizeServerRead(c, serverId)
+    if (denied) return denied
 
-    const body = await c.req.json().catch(() => null);
+    const body = await c.req.json().catch(() => null)
     const requestedLeaseId =
-      body && typeof body === "object" && !Array.isArray(body)
+      body && typeof body === 'object' && !Array.isArray(body)
         ? (body as { leaseId?: unknown }).leaseId
-        : undefined;
+        : undefined
     if (
       requestedLeaseId !== undefined &&
-      (typeof requestedLeaseId !== "string" || requestedLeaseId.length === 0)
+      (typeof requestedLeaseId !== 'string' || requestedLeaseId.length === 0)
     ) {
-      return c.json(
-        { error: "expected leaseId to be a non-empty string" },
-        400,
-      );
+      return c.json({ error: 'expected leaseId to be a non-empty string' }, 400)
     }
 
-    const db = getDb(c);
-    if (!db) return c.json({ error: "Database unavailable" }, 503);
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
 
-    const maxMinutes = await getServerMetricsLiveMaxMinutes(db);
+    const maxMinutes = await getServerMetricsLiveMaxMinutes(db)
     if (maxMinutes === 0) {
-      return c.json({ error: "live_metrics_disabled" }, 409);
+      return c.json({ error: 'live_metrics_disabled' }, 409)
     }
 
-    const registry = getDaemonCellRegistry(c);
+    const registry = getDaemonCellRegistry(c)
     if (!registry) {
-      return c.json({ error: "Daemon cell registry unavailable" }, 503);
+      return c.json({ error: 'Daemon cell registry unavailable' }, 503)
     }
-    const records = await loadServerStatusRecords(db, registry, [serverId]);
+    const records = await loadServerStatusRecords(db, registry, [serverId])
     if (!records[0]?.connected) {
-      return c.json({ error: "server_offline" }, 409);
+      return c.json({ error: 'server_offline' }, 409)
     }
 
     // Renewals reuse the caller's id; only a first-time start mints a new one.
-    const leaseId = requestedLeaseId ?? generateRequestId();
-    const expiresAt = new Date(Date.now() + maxMinutes * 60_000).toISOString();
-    const requestId = generateRequestId();
+    const leaseId = requestedLeaseId ?? generateRequestId()
+    const expiresAt = new Date(Date.now() + maxMinutes * 60_000).toISOString()
     const envelope: DaemonOutboundEnvelope = {
-      kind: "metrics-live-start",
+      kind: 'metrics-live-start',
       deliveryId: generateDeliveryId(),
-      requestId,
+      requestId: generateRequestId(),
       leaseId,
       intervalSeconds: METRICS_LIVE_INTERVAL_SECONDS,
       expiresAt,
       at: new Date().toISOString(),
-    };
-    cellTrace("request-start", {
-      requestId,
-      serverId,
-      kind: "metrics-live-start",
-    });
-
-    try {
-      const record = await registry
-        .getCell(serverId)
-        .createRequestAndWait(envelope, METRICS_LIVE_TIMEOUT_MS);
-      if (record.status === "expired") {
-        cellTrace("request-result", {
-          requestId,
-          serverId,
-          kind: "metrics-live-start",
-          pendingStatus: record.status,
-          resultStatus: "timeout",
-        });
-        return c.json({ error: "timeout waiting for live lease start" }, 503);
-      }
-      if (record.status === "failed") {
-        const error = record.error ?? "failed to start live lease";
-        cellTrace("request-result", {
-          requestId,
-          serverId,
-          kind: "metrics-live-start",
-          pendingStatus: record.status,
-          resultStatus: "failed",
-          error,
-        });
-        return c.json({ error }, 500);
-      }
-      cellTrace("request-result", {
-        requestId,
-        serverId,
-        kind: "metrics-live-start",
-        pendingStatus: record.status,
-        resultStatus: "done",
-      });
-      const payload: MetricsLiveLeaseStartResponse = {
-        ok: true,
-        leaseId,
-        intervalSeconds: METRICS_LIVE_INTERVAL_SECONDS,
-        expiresAt,
-      };
-      await markServerLiveSessionActive(
-        cache,
-        serverId,
-        leaseId,
-        maxMinutes * 60,
-      );
-      return c.json(payload);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      cellTrace("request-result", {
-        requestId,
-        serverId,
-        kind: "metrics-live-start",
-        resultStatus: "error",
-        error: message,
-      });
-      return c.json({ error: message }, 503);
     }
-  });
+
+    return awaitMetricsCellRequest(
+      c,
+      registry,
+      serverId,
+      envelope,
+      METRICS_LIVE_TIMEOUT_MS,
+      'timeout waiting for live lease start',
+      'failed to start live lease',
+      async (record) => {
+        cellTrace('request-result', {
+          requestId: envelope.requestId,
+          serverId,
+          kind: envelope.kind,
+          pendingStatus: record.status,
+          resultStatus: 'done',
+        })
+        const payload: MetricsLiveLeaseStartResponse = {
+          ok: true,
+          leaseId,
+          intervalSeconds: METRICS_LIVE_INTERVAL_SECONDS,
+          expiresAt,
+        }
+        await markServerLiveSessionActive(cache, serverId, leaseId, maxMinutes * 60)
+        return c.json(payload)
+      }
+    )
+  })
 
   /**
    * Stop a live-metrics lease. A disconnected daemon is a soft success — its
    * local expiry timer returns cadence to baseline regardless.
    */
-  router.delete("/servers/:id/metrics/live", async (c) => {
-    const serverId = c.req.param("id");
-    const denied = await authorizeServerRead(c, serverId);
-    if (denied) return denied;
+  router.delete('/servers/:id/metrics/live', async (c) => {
+    const serverId = c.req.param('id')
+    const denied = await authorizeServerRead(c, serverId)
+    if (denied) return denied
 
-    const body = await c.req.json().catch(() => null);
-    const leaseId = body && typeof body === "object" && !Array.isArray(body)
-      ? (body as { leaseId?: unknown }).leaseId
-      : undefined;
-    if (typeof leaseId !== "string" || leaseId.length === 0) {
-      return c.json({ error: "expected { leaseId: string }" }, 400);
+    const body = await c.req.json().catch(() => null)
+    const leaseId =
+      body && typeof body === 'object' && !Array.isArray(body)
+        ? (body as { leaseId?: unknown }).leaseId
+        : undefined
+    if (typeof leaseId !== 'string' || leaseId.length === 0) {
+      return c.json({ error: 'expected { leaseId: string }' }, 400)
     }
 
     // Drop this lease from the ingest marker even when the daemon round
     // trip fails. Concurrent viewers share the marker: only the last
     // remaining lease clears it (and the live-sample buffer) so ingest
     // keeps buffering until every viewer has stopped.
-    await clearServerLiveSession(cache, serverId, leaseId);
+    await clearServerLiveSession(cache, serverId, leaseId)
 
-    const db = getDb(c);
-    if (!db) return c.json({ error: "Database unavailable" }, 503);
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
 
-    const registry = getDaemonCellRegistry(c);
+    const registry = getDaemonCellRegistry(c)
     if (!registry) {
-      return c.json({ ok: true });
+      return c.json({ ok: true })
     }
-    const records = await loadServerStatusRecords(db, registry, [serverId]);
+    const records = await loadServerStatusRecords(db, registry, [serverId])
     if (!records[0]?.connected) {
       // Daemon offline: the lease died with its socket session (and would
       // expire locally anyway) — nothing to stop.
-      return c.json({ ok: true });
+      return c.json({ ok: true })
     }
 
-    const requestId = generateRequestId();
     const envelope: DaemonOutboundEnvelope = {
-      kind: "metrics-live-stop",
+      kind: 'metrics-live-stop',
       deliveryId: generateDeliveryId(),
-      requestId,
+      requestId: generateRequestId(),
       leaseId,
       at: new Date().toISOString(),
-    };
-    cellTrace("request-start", {
-      requestId,
-      serverId,
-      kind: "metrics-live-stop",
-    });
-
-    try {
-      const record = await registry
-        .getCell(serverId)
-        .createRequestAndWait(envelope, METRICS_LIVE_TIMEOUT_MS);
-      if (record.status === "expired") {
-        cellTrace("request-result", {
-          requestId,
-          serverId,
-          kind: "metrics-live-stop",
-          pendingStatus: record.status,
-          resultStatus: "timeout",
-        });
-        return c.json({ error: "timeout waiting for live lease stop" }, 503);
-      }
-      if (record.status === "failed") {
-        const error = record.error ?? "failed to stop live lease";
-        cellTrace("request-result", {
-          requestId,
-          serverId,
-          kind: "metrics-live-stop",
-          pendingStatus: record.status,
-          resultStatus: "failed",
-          error,
-        });
-        return c.json({ error }, 500);
-      }
-      cellTrace("request-result", {
-        requestId,
-        serverId,
-        kind: "metrics-live-stop",
-        pendingStatus: record.status,
-        resultStatus: "done",
-      });
-      return c.json({ ok: true });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      cellTrace("request-result", {
-        requestId,
-        serverId,
-        kind: "metrics-live-stop",
-        resultStatus: "error",
-        error: message,
-      });
-      return c.json({ error: message }, 503);
     }
-  });
+
+    return awaitMetricsCellRequest(
+      c,
+      registry,
+      serverId,
+      envelope,
+      METRICS_LIVE_TIMEOUT_MS,
+      'timeout waiting for live lease stop',
+      'failed to stop live lease',
+      (record) => {
+        cellTrace('request-result', {
+          requestId: envelope.requestId,
+          serverId,
+          kind: envelope.kind,
+          pendingStatus: record.status,
+          resultStatus: 'done',
+        })
+        return c.json({ ok: true })
+      }
+    )
+  })
 
   /**
    * Live capability discovery for the hardware-profile picker: sensor
@@ -1189,100 +1114,65 @@ export function registerServerMetricsRoutes(
    * classification, and a `/proc` process-count probe. A correlated daemon
    * round trip — never polled, never served from topology/history.
    */
-  router.get("/servers/:id/metrics/capabilities", async (c) => {
-    const serverId = c.req.param("id");
-    const denied = await authorizeServerRead(c, serverId);
-    if (denied) return denied;
+  router.get('/servers/:id/metrics/capabilities', async (c) => {
+    const serverId = c.req.param('id')
+    const denied = await authorizeServerRead(c, serverId)
+    if (denied) return denied
 
-    const db = getDb(c);
-    if (!db) return c.json({ error: "Database unavailable" }, 503);
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
 
-    const registry = getDaemonCellRegistry(c);
+    const registry = getDaemonCellRegistry(c)
     if (!registry) {
-      return c.json({ error: "Daemon cell registry unavailable" }, 503);
+      return c.json({ error: 'Daemon cell registry unavailable' }, 503)
     }
-    const records = await loadServerStatusRecords(db, registry, [serverId]);
+    const records = await loadServerStatusRecords(db, registry, [serverId])
     if (!records[0]?.connected) {
-      return c.json({ error: "server_offline" }, 409);
+      return c.json({ error: 'server_offline' }, 409)
     }
 
-    const requestId = generateRequestId();
     const envelope: DaemonOutboundEnvelope = {
-      kind: "metrics-capabilities-request",
+      kind: 'metrics-capabilities-request',
       deliveryId: generateDeliveryId(),
-      requestId,
+      requestId: generateRequestId(),
       at: new Date().toISOString(),
-    };
-    cellTrace("request-start", {
-      requestId,
-      serverId,
-      kind: "metrics-capabilities-request",
-    });
-
-    try {
-      const record = await registry
-        .getCell(serverId)
-        .createRequestAndWait(envelope, METRICS_CAPABILITIES_TIMEOUT_MS);
-      if (record.status === "expired") {
-        cellTrace("request-result", {
-          requestId,
-          serverId,
-          kind: "metrics-capabilities-request",
-          pendingStatus: record.status,
-          resultStatus: "timeout",
-        });
-        return c.json({ error: "timeout waiting for capabilities" }, 503);
-      }
-      if (record.status === "failed") {
-        const error = record.error ?? "failed to collect capabilities";
-        cellTrace("request-result", {
-          requestId,
-          serverId,
-          kind: "metrics-capabilities-request",
-          pendingStatus: record.status,
-          resultStatus: "failed",
-          error,
-        });
-        return c.json({ error }, 500);
-      }
-      const result = record.result;
-      const capabilities =
-        result && typeof result === "object" && !Array.isArray(result)
-          ? (result as { capabilities?: unknown }).capabilities
-          : undefined;
-      if (
-        !capabilities || typeof capabilities !== "object" ||
-        Array.isArray(capabilities)
-      ) {
-        cellTrace("request-result", {
-          requestId,
-          serverId,
-          kind: "metrics-capabilities-request",
-          pendingStatus: record.status,
-          resultStatus: "invalid",
-        });
-        return c.json({ error: "invalid capabilities payload" }, 500);
-      }
-      cellTrace("request-result", {
-        requestId,
-        serverId,
-        kind: "metrics-capabilities-request",
-        pendingStatus: record.status,
-        resultStatus: "done",
-      });
-      return c.json({ ok: true, capabilities });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      cellTrace("request-result", {
-        requestId,
-        serverId,
-        kind: "metrics-capabilities-request",
-        resultStatus: "error",
-        error: message,
-      });
-      return c.json({ error: message }, 503);
     }
-  });
+
+    return awaitMetricsCellRequest(
+      c,
+      registry,
+      serverId,
+      envelope,
+      METRICS_CAPABILITIES_TIMEOUT_MS,
+      'timeout waiting for capabilities',
+      'failed to collect capabilities',
+      (record) => {
+        const result = record.result
+        const capabilities =
+          result && typeof result === 'object' && !Array.isArray(result)
+            ? (result as { capabilities?: unknown }).capabilities
+            : undefined
+        if (!capabilities || typeof capabilities !== 'object' || Array.isArray(capabilities)) {
+          cellTrace('request-result', {
+            requestId: envelope.requestId,
+            serverId,
+            kind: envelope.kind,
+            pendingStatus: record.status,
+            resultStatus: 'invalid',
+          })
+          return c.json({ error: 'invalid capabilities payload' }, 500)
+        }
+        cellTrace('request-result', {
+          requestId: envelope.requestId,
+          serverId,
+          kind: envelope.kind,
+          pendingStatus: record.status,
+          resultStatus: 'done',
+        })
+        return c.json({ ok: true, capabilities })
+      }
+    )
+  })
 
   /**
    * Persist the operator-assigned hardware profile (sensor/NIC slots,
@@ -1296,63 +1186,55 @@ export function registerServerMetricsRoutes(
    * (`validateHardwareProfileTopologyIds`) before persisting — a stale id no
    * longer present in the topology is rejected with 400.
    */
-  router.put("/servers/:id/metrics/hardware-profile", async (c) => {
-    const serverId = c.req.param("id");
+  router.put('/servers/:id/metrics/hardware-profile', async (c) => {
+    const serverId = c.req.param('id')
     // Operator setting, not a read — require organization:manage.
-    const denied = await assertCanManageOr403(c, "server", serverId);
-    if (denied) return denied;
-    if (!c.get("session")) {
-      return c.json({ error: "Unauthorized" }, 401);
+    const denied = await assertCanManageOr403(c, 'server', serverId)
+    if (denied) return denied
+    if (!c.get('session')) {
+      return c.json({ error: 'Unauthorized' }, 401)
     }
 
-    const db = getDb(c);
-    if (!db) return c.json({ error: "Database unavailable" }, 503);
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
 
-    const body = await c.req.json().catch(() => null);
-    const parsed = parseHardwareProfileBody(body);
+    const body = await c.req.json().catch(() => null)
+    const parsed = parseHardwareProfileBody(body)
     if (!parsed.ok) {
-      return c.json({ error: parsed.message }, 400);
+      return c.json({ error: parsed.message }, 400)
     }
 
-    const registry = getDaemonCellRegistry(c);
+    const registry = getDaemonCellRegistry(c)
     if (hardwareProfileUpdateNeedsTopologyValidation(parsed.update)) {
       const topologyError = await validateHardwareProfileTopologyIds(
         db,
         serverId,
         parsed.update,
-        deployment,
-      );
+        deployment
+      )
       if (topologyError) {
-        return c.json(topologyError.body, topologyError.status);
+        return c.json(topologyError.body, topologyError.status)
       }
     }
 
-    const persisted = await mergeAndPersistHardwareProfile(
-      db,
-      serverId,
-      parsed.update,
-    );
+    const persisted = await mergeAndPersistHardwareProfile(db, serverId, parsed.update)
     if (persisted.notFound) {
-      return c.json({ error: "Not found" }, 404);
+      return c.json({ error: 'Not found' }, 404)
     }
 
     // Best-effort push: a disconnected daemon must not block the settings
     // save. Fire-and-forget enqueue (not createRequestAndWait) — the daemon
     // replaces its cached profile when the envelope is delivered.
-    const pushed = await pushHardwareProfileUpdate(
-      registry,
-      serverId,
-      persisted.merged,
-    );
+    const pushed = await pushHardwareProfileUpdate(registry, serverId, persisted.merged)
 
-    return c.json({ ok: true, profile: persisted.merged ?? {}, pushed });
-  });
+    return c.json({ ok: true, profile: persisted.merged ?? {}, pushed })
+  })
 }
 
 type HardwareProfileValidationError = {
-  status: 503 | 409 | 400;
-  body: { error: string };
-};
+  status: 503 | 409 | 400
+  body: { error: string }
+}
 
 /**
  * Confirms a stable topology-id override (`hostingFilesystemId`, or every
@@ -1366,39 +1248,37 @@ async function validateHardwareProfileTopologyIds(
   db: NonNullable<ReturnType<typeof getDb>>,
   serverId: string,
   update: ServerHardwareProfileUpdate,
-  deployment: MetricsDeploymentKind,
+  deployment: MetricsDeploymentKind
 ): Promise<HardwareProfileValidationError | null> {
-  const latest = await getLatestTopologyGeneration(db, serverId);
-  const snapshot = latest?.snapshot as TopologyIdValidationSnapshot | undefined;
-  const invalidField = findInvalidTopologyIdField(update, snapshot);
-  if (invalidField === "nicSlotDeviceIds") {
+  const latest = await getLatestTopologyGeneration(db, serverId)
+  const snapshot = latest?.snapshot as TopologyIdValidationSnapshot | undefined
+  const invalidField = findInvalidTopologyIdField(update, snapshot)
+  if (invalidField === 'nicSlotDeviceIds') {
     return {
       status: 400,
       body: {
         error:
-          "nicSlotDeviceIds must only name physical uplinks from the recorded topology " +
-          "(bond/bridge members, VLAN children, tunnels, and container bridges cannot be monitored)",
+          'nicSlotDeviceIds must only name physical uplinks from the recorded topology ' +
+          '(bond/bridge members, VLAN children, tunnels, and container bridges cannot be monitored)',
       },
-    };
+    }
   }
   if (invalidField) {
     return {
       status: 400,
       body: {
-        error:
-          `${invalidField} does not match a device/filesystem in the recorded topology`,
+        error: `${invalidField} does not match a device/filesystem in the recorded topology`,
       },
-    };
+    }
   }
 
   if ((update.nicSlotDeviceIds?.length ?? 0) > 0) {
-    const { organizationId, serverOptions, machineClass } =
-      await loadServerHardwareProfile(
-        db,
-        serverId,
-      );
-    const orgOptions = await loadOrganizationOptions(db, organizationId);
-    const tier = await loadServerTierEntitlements(db, serverId, deployment);
+    const { organizationId, serverOptions, machineClass } = await loadServerHardwareProfile(
+      db,
+      serverId
+    )
+    const orgOptions = await loadOrganizationOptions(db, organizationId)
+    const tier = await loadServerTierEntitlements(db, serverId, deployment)
     const limitError = nicSlotLimitViolation(
       update,
       resolveNicSlotLimit({
@@ -1408,48 +1288,43 @@ async function validateHardwareProfileTopologyIds(
         serverOptions,
         deployment,
         tier,
-      }),
-    );
+      })
+    )
     if (limitError) {
-      return { status: 400, body: { error: limitError } };
+      return { status: 400, body: { error: limitError } }
     }
   }
-  return null;
+  return null
 }
 
 type HardwareProfilePersistResult =
   | { notFound: true }
   | {
-    notFound: false;
-    merged: ServerHardwareProfile | undefined;
-  };
+      notFound: false
+      merged: ServerHardwareProfile | undefined
+    }
 
 async function mergeAndPersistHardwareProfile(
   db: NonNullable<ReturnType<typeof getDb>>,
   serverId: string,
-  update: ServerHardwareProfileUpdate,
+  update: ServerHardwareProfileUpdate
 ): Promise<HardwareProfilePersistResult> {
   const rows = await db
     .select({ metadata: server.metadata })
     .from(server)
     .where(eq(server.id, serverId))
-    .limit(1);
+    .limit(1)
   if (rows.length === 0) {
-    return { notFound: true };
+    return { notFound: true }
   }
 
-  const rawMetadata = rows[0].metadata;
+  const rawMetadata = rows[0].metadata
   const metadata: Record<string, unknown> =
-    rawMetadata && typeof rawMetadata === "object" &&
-      !Array.isArray(rawMetadata)
+    rawMetadata && typeof rawMetadata === 'object' && !Array.isArray(rawMetadata)
       ? (rawMetadata as Record<string, unknown>)
-      : {};
-  const existing = parseServerHardwareProfile(metadata.hardwareProfile);
-  const { profile: merged } = mergeServerHardwareProfile(
-    existing,
-    update,
-    new Date().toISOString(),
-  );
+      : {}
+  const existing = parseServerHardwareProfile(metadata.hardwareProfile)
+  const { profile: merged } = mergeServerHardwareProfile(existing, update, new Date().toISOString())
   // Patch only the hardwareProfile subtree in SQL — the daemon projects
   // resources / docker / geo onto the same column concurrently, so a full
   // read-modify-write of `metadata` could write back a stale object and
@@ -1458,56 +1333,54 @@ async function mergeAndPersistHardwareProfile(
     .update(server)
     .set({
       metadata: merged
-        ? sql`jsonb_set(COALESCE(${server.metadata}, '{}'::jsonb), '{hardwareProfile}', ${
-          JSON.stringify(
-            merged,
-          )
-        }::jsonb)`
+        ? sql`jsonb_set(COALESCE(${server.metadata}, '{}'::jsonb), '{hardwareProfile}', ${JSON.stringify(
+            merged
+          )}::jsonb)`
         : sql`COALESCE(${server.metadata}, '{}'::jsonb) - 'hardwareProfile'`,
     })
-    .where(eq(server.id, serverId));
+    .where(eq(server.id, serverId))
 
-  return { notFound: false, merged };
+  return { notFound: false, merged }
 }
 
 async function pushHardwareProfileUpdate(
   registry: ReturnType<typeof getDaemonCellRegistry>,
   serverId: string,
-  merged: ServerHardwareProfile | undefined,
+  merged: ServerHardwareProfile | undefined
 ): Promise<boolean> {
-  if (!registry) return false;
+  if (!registry) return false
 
-  const requestId = generateRequestId();
+  const requestId = generateRequestId()
   const envelope: DaemonOutboundEnvelope = {
-    kind: "topology-overrides-update",
+    kind: 'topology-overrides-update',
     deliveryId: generateDeliveryId(),
     requestId,
     overrides: merged ?? {},
     at: new Date().toISOString(),
-  };
-  cellTrace("request-start", {
+  }
+  cellTrace('request-start', {
     requestId,
     serverId,
-    kind: "topology-overrides-update",
-  });
+    kind: 'topology-overrides-update',
+  })
   try {
-    await registry.getCell(serverId).enqueue(envelope);
-    cellTrace("request-enqueued", {
+    await registry.getCell(serverId).enqueue(envelope)
+    cellTrace('request-enqueued', {
       requestId,
       serverId,
-      kind: "topology-overrides-update",
+      kind: 'topology-overrides-update',
       deliveryId: envelope.deliveryId,
-    });
-    return true;
+    })
+    return true
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    cellTrace("request-result", {
+    const message = err instanceof Error ? err.message : String(err)
+    cellTrace('request-result', {
       requestId,
       serverId,
-      kind: "topology-overrides-update",
-      resultStatus: "error",
+      kind: 'topology-overrides-update',
+      resultStatus: 'error',
       error: message,
-    });
-    return false;
+    })
+    return false
   }
 }
