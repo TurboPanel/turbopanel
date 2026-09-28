@@ -15,6 +15,7 @@ import { deriveEncryptionSecretsConfig, deriveSecretsConfig } from '../lib/secre
 import type { DaemonCell, DaemonCellRegistry, PendingRequestRecord } from '../contracts/cell.ts'
 import type { DaemonOutboundEnvelope } from '../contracts/cell-protocol.ts'
 import { ADMIN_API_PREFIX } from '../app/surfaces.ts'
+import { INSTANCE_VERSION } from '../app/version.ts'
 import { parseTestSecretsConfig } from '../test-fixtures/secrets.ts'
 import type { Db } from '../db/connection.ts'
 import { server, upgrade, upgradeStep } from '../db/schema.ts'
@@ -1243,7 +1244,7 @@ test('legacy instance update refuses a daemon that cannot roll the control plane
           buildId: 'build-abc',
           builtAt: '2020-01-01T00:00:00.000Z',
           channel: 'release',
-          version: '0.1.1',
+          version: INSTANCE_VERSION,
         }),
         { status: 200, headers: { 'content-type': 'application/json' } }
       )
