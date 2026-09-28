@@ -96,6 +96,14 @@ export function registerInstanceAccessAdminRoutes(
   });
 
   admin.get("/instance/trusted-proxies", (c) => {
+    // resolvePeerAddress() (../lib/peer-address.ts) already ignores this
+    // setting entirely on Workers — the edge stamps CF-Connecting-IP and
+    // strips any client copy, so it is the only trustworthy value and no
+    // local proxy is ever in play. `applicable: false` lets the UI hide a
+    // setting that already has zero effect there rather than compute it.
+    if (opts.runtime === "workers") {
+      return c.json({ cidrs: [], isDefault: true, applicable: false });
+    }
     const raw = resolvePlatformEnv(c, opts).TURBOPANEL_TRUSTED_PROXY_CIDRS;
     const cidrs = parseTrustedProxyCidrs(raw);
     return c.json({ cidrs, isDefault: trustedProxiesAreDefault(cidrs) });
@@ -111,7 +119,10 @@ export function registerInstanceAccessAdminRoutes(
     if (!db) return c.json({ ok: false, error: "Database unavailable" }, 503);
     const registry = getDaemonCellRegistry(c);
     if (!registry) {
-      return c.json({ ok: false, error: "Daemon cell registry unavailable" }, 503);
+      return c.json(
+        { ok: false, error: "Daemon cell registry unavailable" },
+        503,
+      );
     }
     const result = await dispatchInstanceTunnelToken({
       db,
@@ -119,7 +130,9 @@ export function registerInstanceAccessAdminRoutes(
       token: parsed.token,
       secretsConfig: c.get("secretsConfig"),
     });
-    if (!result.ok) return c.json({ ok: false, error: result.error }, result.status);
+    if (!result.ok) {
+      return c.json({ ok: false, error: result.error }, result.status);
+    }
     return c.json({ ok: true });
   });
 }

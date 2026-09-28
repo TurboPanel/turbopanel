@@ -183,9 +183,9 @@ type QueryChain<T> = {
   offset: () => QueryChain<T>;
   leftJoin: () => QueryChain<T>;
   innerJoin: () => QueryChain<T>;
-  then: Promise<T[]>[ "then" ];
-  catch: Promise<T[]>[ "catch" ];
-  finally: Promise<T[]>[ "finally" ];
+  then: Promise<T[]>["then"];
+  catch: Promise<T[]>["catch"];
+  finally: Promise<T[]>["finally"];
 };
 
 function queryChain<T>(rows: T[]): QueryChain<T> {
@@ -1183,6 +1183,113 @@ test("instance access reads are runtime-scoped and capability-shaped", async () 
   );
   assertEquals(customBody.isDefault, false);
   assertEquals(customBody.cidrs, ["203.0.113.0/24"]);
+});
+
+test("hostnames, certificates, ACME, and trusted proxies are platform-managed on Workers", async () => {
+  const workers = await buildApp({
+    runtime: "workers",
+    getEnv: () => ({ TURBOPANEL_BASE_URL: "https://testing.turbopanel.dev" }),
+  });
+  const headers = {
+    Cookie: workers.cookie,
+    "content-type": "application/json",
+  };
+
+  const hostnames = await workers.app.request(
+    `${ADMIN_API_PREFIX}/instance/hostnames`,
+    { headers },
+  );
+  assertEquals(hostnames.status, 200);
+  assertEquals(await hostnames.json(), {
+    ok: true,
+    hostnames: [],
+    tosAccepted: false,
+    platformManagedOrigin: "https://testing.turbopanel.dev",
+  });
+
+  const hostnamesPut = await workers.app.request(
+    `${ADMIN_API_PREFIX}/instance/hostnames`,
+    {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({
+        hostnames: [{ host: "evil.example.com", source: "uploaded" }],
+      }),
+    },
+  );
+  assertEquals(hostnamesPut.status, 422);
+  const hostnamesPutBody = await jsonBody<{ ok: boolean; error: string }>(
+    hostnamesPut,
+  );
+  assertEquals(hostnamesPutBody.ok, false);
+
+  const certs = await workers.app.request(
+    `${ADMIN_API_PREFIX}/instance/certificates`,
+    { headers },
+  );
+  assertEquals(certs.status, 200);
+  assertEquals(await certs.json(), {
+    ok: true,
+    certificates: [],
+    applicable: false,
+  });
+
+  const certUpload = await workers.app.request(
+    `${ADMIN_API_PREFIX}/instance/certificates`,
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ label: "leaf", certPem: "x", keyPem: "y" }),
+    },
+  );
+  assertEquals(certUpload.status, 422);
+
+  const certAttach = await workers.app.request(
+    `${ADMIN_API_PREFIX}/instance/certificates/${crypto.randomUUID()}/hostnames`,
+    {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({ hosts: ["testing.turbopanel.dev"] }),
+    },
+  );
+  assertEquals(certAttach.status, 422);
+
+  const acme = await workers.app.request(`${ADMIN_API_PREFIX}/instance/acme`, {
+    headers,
+  });
+  assertEquals(acme.status, 200);
+  const acmeBody = await jsonBody<{
+    settings: Record<string, { source: string; value: string | null }>;
+    tosAccepted: boolean;
+    applicable: boolean;
+  }>(acme);
+  assertEquals(acmeBody.applicable, false);
+  assertEquals(acmeBody.tosAccepted, false);
+  assertEquals(
+    acmeBody.settings.TURBOPANEL_INSTANCE_ACME__DIRECTORY_URL,
+    { source: "default", value: null },
+  );
+
+  const acmePut = await workers.app.request(
+    `${ADMIN_API_PREFIX}/instance/acme`,
+    {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({ contactEmail: "ops@example.com" }),
+    },
+  );
+  assertEquals(acmePut.status, 422);
+
+  const proxies = await workers.app.request(
+    `${ADMIN_API_PREFIX}/instance/trusted-proxies`,
+    { headers },
+  );
+  assertEquals(proxies.status, 200);
+  assertEquals(await proxies.json(), {
+    cidrs: [],
+    isDefault: true,
+    applicable: false,
+  });
 });
 
 test("instance updates: workers refuses the control plane, GET still reports its version", async () => {

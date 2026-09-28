@@ -225,6 +225,22 @@ export function instanceAcmeSettingsToApiShape(
   return out;
 }
 
+/**
+ * The unresolved shape (every key `null`, source `"default"`): Workers has
+ * no per-organization ACME to run — Cloudflare terminates every hostname's
+ * TLS at the edge — so there is nothing to resolve, only a schema to echo.
+ */
+export function emptyInstanceAcmeApiShape(): Record<
+  string,
+  InstanceAcmeSettingApiEntry
+> {
+  const out: Record<string, InstanceAcmeSettingApiEntry> = {};
+  for (const shortKey of INSTANCE_ACME_SETTING_SHORT_KEYS) {
+    out[fullKey(shortKey)] = { source: "default", value: null };
+  }
+  return out;
+}
+
 function isHttpsUrl(value: string): boolean {
   try {
     return new URL(value).protocol === "https:";

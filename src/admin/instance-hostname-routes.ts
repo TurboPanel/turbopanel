@@ -2,6 +2,7 @@ import type { Context, Hono } from "hono";
 import type { AppEnv } from "../app/app.ts";
 import { type Db, getDb } from "../db/connection.ts";
 import {
+  emptyInstanceAcmeApiShape,
   INSTANCE_ACME_TOS_NOT_ACCEPTED_CODE,
   INSTANCE_ACME_TOS_NOT_ACCEPTED_MESSAGE,
   instanceAcmeSettingsToApiShape,
@@ -19,6 +20,7 @@ import {
   replaceInstanceHostnames,
   validateHostnameSource,
 } from "../features/install/instance-hostnames.ts";
+import { publicHttpsOrigin } from "../features/install/public-urls.ts";
 import {
   parseCertificateHostnamesBody,
   parseCertificateUploadBody,
@@ -30,6 +32,25 @@ import {
 const ENCRYPTION_UNAVAILABLE = {
   error: "Encryption unavailable — no encryption key configured",
 } as const;
+
+/**
+ * On Workers there is no per-hostname trust to configure: Cloudflare
+ * terminates TLS for the exact hostname `TURBOPANEL_BASE_URL` names (a fixed
+ * Worker route per environment, e.g. `testing.turbopanel.dev`), and nothing
+ * else is reachable. A hostname row, an uploaded certificate, or an ACME
+ * setting saved here would be pure fiction — a hostname is matched by string
+ * alone (`certificateSourceForInstallOrigin`) with no relation to what's
+ * actually serving TLS, and could silently change
+ * `installOriginNeedsInsecureTls`'s verdict for generated install commands
+ * (an "uploaded" or "lets-encrypt" source with no real certificate behind it
+ * reads as untrusted, adding `-k`). Refusing writes here keeps the
+ * `instanceHostname` / `instanceUploadedCertificate` tables and the ACME
+ * settings empty on Workers, which is the state every other reader already
+ * treats as "no override, trust the platform" — these routes are a display
+ * concern only.
+ */
+const PLATFORM_MANAGED_TLS_ERROR =
+  "certificates and hostnames are platform-managed on this runtime";
 
 function failureStatus(error: string): 404 | 422 {
   if (error === "Certificate not found") return 404;
@@ -44,6 +65,7 @@ function failureStatus(error: string): 404 | 422 {
 export function registerInstanceHostnameAdminRoutes(
   admin: Hono<AppEnv>,
   opts: {
+    runtime: "deno" | "workers";
     getEnv?: () => Record<string, string | undefined>;
   },
 ): void {
@@ -63,13 +85,32 @@ export function registerInstanceHostnameAdminRoutes(
     )).tosAccepted;
 
   admin.get("/instance/hostnames", async (c) => {
+    if (opts.runtime === "workers") {
+      const env = resolvePlatformEnv(c, opts);
+      const platformManagedOrigin = env.TURBOPANEL_BASE_URL
+        ? publicHttpsOrigin(env.TURBOPANEL_BASE_URL)
+        : null;
+      return c.json({
+        ok: true,
+        hostnames: [],
+        tosAccepted: false,
+        platformManagedOrigin,
+      });
+    }
     const db = getDb(c);
     if (!db) return c.json({ ok: true, hostnames: [] });
     const hostnames = await listInstanceHostnames(db);
-    return c.json({ ok: true, hostnames, tosAccepted: await tosAccepted(c, db) });
+    return c.json({
+      ok: true,
+      hostnames,
+      tosAccepted: await tosAccepted(c, db),
+    });
   });
 
   admin.put("/instance/hostnames", async (c) => {
+    if (opts.runtime === "workers") {
+      return c.json({ ok: false, error: PLATFORM_MANAGED_TLS_ERROR }, 422);
+    }
     const db = getDb(c);
     if (!db) return c.json({ ok: false, error: "Database unavailable" }, 503);
     const body = await c.req.json().catch(() => null);
@@ -99,6 +140,9 @@ export function registerInstanceHostnameAdminRoutes(
   });
 
   admin.get("/instance/certificates", async (c) => {
+    if (opts.runtime === "workers") {
+      return c.json({ ok: true, certificates: [], applicable: false });
+    }
     const db = getDb(c);
     if (!db) return c.json({ ok: true, certificates: [] });
     const certificates = await listUploadedCertificates(db);
@@ -106,6 +150,9 @@ export function registerInstanceHostnameAdminRoutes(
   });
 
   admin.post("/instance/certificates", async (c) => {
+    if (opts.runtime === "workers") {
+      return c.json({ ok: false, error: PLATFORM_MANAGED_TLS_ERROR }, 422);
+    }
     const db = getDb(c);
     if (!db) return c.json({ ok: false, error: "Database unavailable" }, 503);
     const dataEncryptionSecrets = c.get("dataEncryptionSecrets");
@@ -131,6 +178,9 @@ export function registerInstanceHostnameAdminRoutes(
   });
 
   admin.patch("/instance/certificates/:id/hostnames", async (c) => {
+    if (opts.runtime === "workers") {
+      return c.json({ ok: false, error: PLATFORM_MANAGED_TLS_ERROR }, 422);
+    }
     const db = getDb(c);
     if (!db) return c.json({ ok: false, error: "Database unavailable" }, 503);
     const body = await c.req.json().catch(() => null);
@@ -146,6 +196,13 @@ export function registerInstanceHostnameAdminRoutes(
   });
 
   admin.get("/instance/acme", async (c) => {
+    if (opts.runtime === "workers") {
+      return c.json({
+        settings: emptyInstanceAcmeApiShape(),
+        tosAccepted: false,
+        applicable: false,
+      });
+    }
     const db = getDb(c);
     if (!db) return c.json({ error: "Database unavailable" }, 503);
     const resolved = await resolveInstanceAcmeSettings(
@@ -160,6 +217,9 @@ export function registerInstanceHostnameAdminRoutes(
   });
 
   admin.put("/instance/acme", async (c) => {
+    if (opts.runtime === "workers") {
+      return c.json({ error: PLATFORM_MANAGED_TLS_ERROR }, 422);
+    }
     const db = getDb(c);
     if (!db) return c.json({ error: "Database unavailable" }, 503);
     const body = await c.req.json().catch(() => null);

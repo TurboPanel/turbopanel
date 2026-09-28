@@ -244,6 +244,7 @@ export function registerAdminRoutes(
   })
 
   registerInstanceHostnameAdminRoutes(admin, {
+    runtime: opts.runtime,
     ...(opts.getEnv ? { getEnv: opts.getEnv } : {}),
   })
 
