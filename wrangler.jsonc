@@ -120,9 +120,14 @@
   // Offline sweep (see src/daemon/cell/offline-sweep.ts) — 1 minute is Cloudflare's
   // finest cron granularity, matching the 60s daemon idle-ping cadence.
   "triggers": { "crons": ["* * * * *"] },
-  // Host metrics (Workers Analytics Engine). Dataset name is reused across
-  // envs — AE datasets are account-scoped and auto-created on first write;
-  // docs do not require globally unique names. Rows are keyed by index1=serverId.
+  // Host metrics (Workers Analytics Engine). AE datasets are account-scoped and
+  // auto-created on first write. Each environment (testing, staging, live) has
+  // its OWN dataset, `turbopanel_server_metrics_v6_<env>`, so their rows, retention
+  // and any reset never mix; the top level (local `wrangler dev`) keeps the bare
+  // name. The binding's `dataset` is what is written; the read side (SQL API) takes
+  // its table from `TURBOPANEL_SERVER_METRICS_AE_DATASET` — an env must set both to
+  // the same value (guarded by src/daemon/metrics/backends/cloudflare/wrangler-datasets.test.ts).
+  // Rows are keyed by index1=serverId.
   // The current contract is family-based: every sample writes one always-present
   // host.system row, one always-present host.io row, plus presence-gated pages
   // for gpu/network/filesystem/block/hardware.physical and one row per
@@ -237,7 +242,7 @@
       "analytics_engine_datasets": [
         {
           "binding": "SERVER_METRICS",
-          "dataset": "turbopanel_server_metrics_v6"
+          "dataset": "turbopanel_server_metrics_v6_testing"
         }
       ],
       "r2_buckets": [
@@ -285,6 +290,8 @@
         // Which deployment this is; /api/health reports it and the UI labels
         // non-production builds with it (live shows no label).
         "TURBOPANEL_ENVIRONMENT": "testing",
+        // Read side of SERVER_METRICS above: must name the same dataset.
+        "TURBOPANEL_SERVER_METRICS_AE_DATASET": "turbopanel_server_metrics_v6_testing",
         "TURBOPANEL_EXECUTION_LOG_RETENTION_DAYS": "90"
       }
     },
@@ -378,7 +385,7 @@
       "analytics_engine_datasets": [
         {
           "binding": "SERVER_METRICS",
-          "dataset": "turbopanel_server_metrics_v6"
+          "dataset": "turbopanel_server_metrics_v6_staging"
         }
       ],
       "r2_buckets": [
@@ -426,6 +433,8 @@
         // Which deployment this is; /api/health reports it and the UI labels
         // non-production builds with it (live shows no label).
         "TURBOPANEL_ENVIRONMENT": "staging",
+        // Read side of SERVER_METRICS above: must name the same dataset.
+        "TURBOPANEL_SERVER_METRICS_AE_DATASET": "turbopanel_server_metrics_v6_staging",
         "TURBOPANEL_EXECUTION_LOG_RETENTION_DAYS": "90"
       }
     },
@@ -499,7 +508,7 @@
       "analytics_engine_datasets": [
         {
           "binding": "SERVER_METRICS",
-          "dataset": "turbopanel_server_metrics_v6"
+          "dataset": "turbopanel_server_metrics_v6_live"
         }
       ],
       "r2_buckets": [
@@ -542,6 +551,8 @@
         "CLOUDFLARE_ACCOUNT_ID": "a574c2793baa3e2276ac16e96097bc8c",
         "TURBOPANEL_UPDATE_CHANNEL": "release",
         "TURBOPANEL_ENVIRONMENT": "live",
+        // Read side of SERVER_METRICS above: must name the same dataset.
+        "TURBOPANEL_SERVER_METRICS_AE_DATASET": "turbopanel_server_metrics_v6_live",
         "TURBOPANEL_EXECUTION_LOG_RETENTION_DAYS": "90"
       }
     }
