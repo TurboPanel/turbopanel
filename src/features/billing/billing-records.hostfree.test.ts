@@ -42,10 +42,19 @@ const TIER_S1 = '11111111-1111-4111-8111-111111111111'
 const TIER_S2 = '22222222-2222-4222-8222-222222222222'
 const SUB_ROW = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
 
-type Insert = { table: unknown; values: Record<string, unknown>; conflict: { target: unknown; set?: unknown } | null }
+type Insert = {
+  table: unknown
+  values: Record<string, unknown>
+  conflict: { target: unknown; set?: unknown } | null
+}
 type Delete = { table: unknown; where: unknown }
 
-type RecordingDb = Db & { inserts: Insert[]; deletes: Delete[]; selectsFrom: unknown[]; ops: string[] }
+type RecordingDb = Db & {
+  inserts: Insert[]
+  deletes: Delete[]
+  selectsFrom: unknown[]
+  ops: string[]
+}
 
 function tableName(table: unknown): string {
   if (table === payer) return 'payer'
@@ -87,10 +96,12 @@ function flattenSql(query: unknown): string {
   return parts.join('')
 }
 
-function createRecordingDb(opts: {
-  tiers?: { id: string; providerProductId: string | null }[]
-  rows?: unknown[]
-} = {}): RecordingDb {
+function createRecordingDb(
+  opts: {
+    tiers?: { id: string; providerProductId: string | null }[]
+    rows?: unknown[]
+  } = {}
+): RecordingDb {
   const inserts: Insert[] = []
   const deletes: Delete[] = []
   const selectsFrom: unknown[] = []
@@ -205,10 +216,25 @@ test('replaceSubscriptionItems clears the subscription first, then inserts every
       { id: TIER_S2, providerProductId: 'prod_s2' },
     ],
   })
-  const result = await replaceSubscriptionItems(db, SUB_ROW, [
-    { providerItemId: 'si_1', providerPriceId: 'price_s1', providerProductId: 'prod_s1', quantity: 3 },
-    { providerItemId: 'si_2', providerPriceId: 'price_s2_v2', providerProductId: 'prod_s2', quantity: 1 },
-  ], { now: '2026-09-07T00:00:00.000Z', provider: 'stripe' })
+  const result = await replaceSubscriptionItems(
+    db,
+    SUB_ROW,
+    [
+      {
+        providerItemId: 'si_1',
+        providerPriceId: 'price_s1',
+        providerProductId: 'prod_s1',
+        quantity: 3,
+      },
+      {
+        providerItemId: 'si_2',
+        providerPriceId: 'price_s2_v2',
+        providerProductId: 'prod_s2',
+        quantity: 1,
+      },
+    ],
+    { now: '2026-09-07T00:00:00.000Z', provider: 'stripe' }
+  )
   assertEquals(result, { written: 2, skipped: [] })
   // Order is the point: the prune must land before the first insert, or a
   // replaced item at the same tier trips `uniq_seat_subscription_tier`.
@@ -218,7 +244,10 @@ test('replaceSubscriptionItems clears the subscription first, then inserts every
   // The item's own price is written beside the tier: a mutation restates it, and the tier does not know it.
   assertEquals(db.inserts[0]?.values.providerPriceId, 'price_s1')
   assertEquals(db.inserts[0]?.conflict?.target, subscriptionItem.providerItemId)
-  assertEquals((db.inserts[0]?.conflict?.set as Record<string, unknown>).providerPriceId, 'price_s1')
+  assertEquals(
+    (db.inserts[0]?.conflict?.set as Record<string, unknown>).providerPriceId,
+    'price_s1'
+  )
   assertEquals(db.inserts[1]?.values.tierId, TIER_S2)
   assertEquals(db.inserts[1]?.values.providerPriceId, 'price_s2_v2')
   // The prune is scoped to the subscription and nothing else.
@@ -232,31 +261,72 @@ test('replaceSubscriptionItems clears the subscription first, then inserts every
 test('an item whose product maps to no tier is skipped, never inserted with a null tier', async () => {
   const db = createRecordingDb({ tiers: [{ id: TIER_S1, providerProductId: 'prod_s1' }] })
   const result = await replaceSubscriptionItems(db, SUB_ROW, [
-    { providerItemId: 'si_known', providerPriceId: 'price_s1', providerProductId: 'prod_s1', quantity: 2 },
-    { providerItemId: 'si_unknown', providerPriceId: 'price_nope', providerProductId: 'prod_nope', quantity: 5 },
-    { providerItemId: 'si_bad_qty', providerPriceId: 'price_s1_old', providerProductId: 'prod_s1', quantity: -1 },
+    {
+      providerItemId: 'si_known',
+      providerPriceId: 'price_s1',
+      providerProductId: 'prod_s1',
+      quantity: 2,
+    },
+    {
+      providerItemId: 'si_unknown',
+      providerPriceId: 'price_nope',
+      providerProductId: 'prod_nope',
+      quantity: 5,
+    },
+    {
+      providerItemId: 'si_bad_qty',
+      providerPriceId: 'price_s1_old',
+      providerProductId: 'prod_s1',
+      quantity: -1,
+    },
   ])
   assertEquals(result, { written: 1, skipped: ['si_unknown', 'si_bad_qty'] })
   assertEquals(db.inserts.length, 1)
   assertEquals(db.inserts[0]?.values.providerItemId, 'si_known')
   assertEquals(db.inserts[0]?.values.quantity, 2)
-  assertEquals(db.inserts.every((i) => i.values.tierId !== null), true)
+  assertEquals(
+    db.inserts.every((i) => i.values.tierId !== null),
+    true
+  )
   // The prune ran first and covered the whole subscription, so a stale row
   // for the skipped item is gone too.
   assertEquals(db.ops[0], 'delete:seat')
 })
 
 test('two items on one tier are summed under the first item id; the second lands in skipped', async () => {
-  const db = createRecordingDb({ tiers: [{ id: TIER_S1, providerProductId: 'prod_s1' }, { id: TIER_S2, providerProductId: 'prod_s2' }] })
+  const db = createRecordingDb({
+    tiers: [
+      { id: TIER_S1, providerProductId: 'prod_s1' },
+      { id: TIER_S2, providerProductId: 'prod_s2' },
+    ],
+  })
   const result = await replaceSubscriptionItems(db, SUB_ROW, [
-    { providerItemId: 'si_old_price', providerPriceId: 'price_s1_v1', providerProductId: 'prod_s1', quantity: 2 },
-    { providerItemId: 'si_other', providerPriceId: 'price_s2', providerProductId: 'prod_s2', quantity: 1 },
-    { providerItemId: 'si_new_price', providerPriceId: 'price_s1_v2', providerProductId: 'prod_s1', quantity: 3 },
+    {
+      providerItemId: 'si_old_price',
+      providerPriceId: 'price_s1_v1',
+      providerProductId: 'prod_s1',
+      quantity: 2,
+    },
+    {
+      providerItemId: 'si_other',
+      providerPriceId: 'price_s2',
+      providerProductId: 'prod_s2',
+      quantity: 1,
+    },
+    {
+      providerItemId: 'si_new_price',
+      providerPriceId: 'price_s1_v2',
+      providerProductId: 'prod_s1',
+      quantity: 3,
+    },
   ])
   assertEquals(result, { written: 2, skipped: ['si_new_price'] })
   assertEquals(db.ops, ['delete:seat', 'insert:seat', 'insert:seat'])
   const s1 = db.inserts.find((i) => i.values.tierId === TIER_S1)
-  assertEquals([s1?.values.providerItemId, s1?.values.providerPriceId, s1?.values.quantity], ['si_old_price', 'price_s1_v1', 5])
+  assertEquals(
+    [s1?.values.providerItemId, s1?.values.providerPriceId, s1?.values.quantity],
+    ['si_old_price', 'price_s1_v1', 5]
+  )
   const s2 = db.inserts.find((i) => i.values.tierId === TIER_S2)
   assertEquals([s2?.values.providerItemId, s2?.values.quantity], ['si_other', 1])
 })
@@ -340,11 +410,32 @@ const ENT_NOW = '2026-09-07T12:00:00.000Z'
 const EARLIER = '2026-09-01T00:00:00.000Z'
 
 const entTier = (id: string, label: string, rank: number, isActive = true) => ({
-  id, createdAt: ENT_NOW, updatedAt: ENT_NOW, label, rank, provider: 'stripe', providerProductId: `prod_${label}`,
-  priceCents: 1000 * rank, currency: 'usd', isCustom: false, isActive,
+  id,
+  createdAt: ENT_NOW,
+  updatedAt: ENT_NOW,
+  label,
+  rank,
+  provider: 'stripe',
+  providerProductId: `prod_${label}`,
+  priceCents: 1000 * rank,
+  currency: 'usd',
+  isCustom: false,
+  isActive,
 })
-const entLicense = (id: string, serverId: string | null, overrides: Record<string, unknown> = {}) => ({
-  id, organizationId: ORG_ID, serverId, name: null, token: 'x', revokedAt: null, createdAt: ENT_NOW, updatedAt: ENT_NOW, ...overrides,
+const entLicense = (
+  id: string,
+  serverId: string | null,
+  overrides: Record<string, unknown> = {}
+) => ({
+  id,
+  organizationId: ORG_ID,
+  serverId,
+  name: null,
+  token: 'x',
+  revokedAt: null,
+  createdAt: ENT_NOW,
+  updatedAt: ENT_NOW,
+  ...overrides,
 })
 
 function entitlementDb(opts: {
@@ -357,19 +448,64 @@ function entitlementDb(opts: {
     // The self-hosted grant lives in the `self_hosted_grant` table; every
     // entitlement read looks for a row (`src/features/tiers/self-hosted-grant.ts`).
     [allowance, []],
-    [payer, [{ id: PAYER_ROW, organizationId: ORG_ID, userId: null, provider: 'stripe', providerCustomerId: 'cus_1', taxId: null, createdAt: ENT_NOW, updatedAt: ENT_NOW }]],
-    [subscription, [{ id: SUB_ROW, payerId: PAYER_ROW, providerSubscriptionId: 'sub_1', status: opts.status ?? 'active', currentPeriodEnd: null, scheduleId: null, graceExpiresAt: null, pastDueSince: null, createdAt: ENT_NOW, updatedAt: ENT_NOW }]],
-    [subscriptionItem, opts.seats.map((seat, index) => ({
-      id: `seat-${index}`, subscriptionId: SUB_ROW, tierId: seat.tierId, providerItemId: `si_${index}`,
-      providerPriceId: seat.providerPriceId === undefined ? `price_${index}` : seat.providerPriceId,
-      quantity: seat.quantity, createdAt: ENT_NOW, updatedAt: ENT_NOW,
-    }))],
+    [
+      payer,
+      [
+        {
+          id: PAYER_ROW,
+          organizationId: ORG_ID,
+          userId: null,
+          provider: 'stripe',
+          providerCustomerId: 'cus_1',
+          taxId: null,
+          createdAt: ENT_NOW,
+          updatedAt: ENT_NOW,
+        },
+      ],
+    ],
+    [
+      subscription,
+      [
+        {
+          id: SUB_ROW,
+          payerId: PAYER_ROW,
+          providerSubscriptionId: 'sub_1',
+          status: opts.status ?? 'active',
+          currentPeriodEnd: null,
+          scheduleId: null,
+          graceExpiresAt: null,
+          pastDueSince: null,
+          createdAt: ENT_NOW,
+          updatedAt: ENT_NOW,
+        },
+      ],
+    ],
+    [
+      subscriptionItem,
+      opts.seats.map((seat, index) => ({
+        id: `seat-${index}`,
+        subscriptionId: SUB_ROW,
+        tierId: seat.tierId,
+        providerItemId: `si_${index}`,
+        providerPriceId:
+          seat.providerPriceId === undefined ? `price_${index}` : seat.providerPriceId,
+        quantity: seat.quantity,
+        createdAt: ENT_NOW,
+        updatedAt: ENT_NOW,
+      })),
+    ],
     [license, opts.licenses],
   ])
 }
 
 test('listSeatsForOrganization joins payer → subscription → seats with their tier, in rank order', async () => {
-  const db = entitlementDb({ seats: [{ tierId: TIER_S2, quantity: 1 }, { tierId: TIER_S1, quantity: 3, providerPriceId: null }], licenses: [] })
+  const db = entitlementDb({
+    seats: [
+      { tierId: TIER_S2, quantity: 1 },
+      { tierId: TIER_S1, quantity: 3, providerPriceId: null },
+    ],
+    licenses: [],
+  })
   const state = await listSeatsForOrganization(db, ORG_ID)
   assertEquals(state.payer?.id, PAYER_ROW)
   assertEquals(state.subscription?.providerSubscriptionId, 'sub_1')
@@ -380,7 +516,14 @@ test('listSeatsForOrganization joins payer → subscription → seats with their
       providerItemId: 'si_1',
       providerPriceId: null,
       quantity: 3,
-      tier: { label: 'S1', rank: 1, priceCents: 1000, currency: 'usd', providerProductId: 'prod_S1', isActive: true },
+      tier: {
+        label: 'S1',
+        rank: 1,
+        priceCents: 1000,
+        currency: 'usd',
+        providerProductId: 'prod_S1',
+        isActive: true,
+      },
     },
     {
       seatId: 'seat-0',
@@ -389,10 +532,22 @@ test('listSeatsForOrganization joins payer → subscription → seats with their
       providerPriceId: 'price_0',
       quantity: 1,
       // A retired tier is still read: existing seats may hold it, they just cannot buy more.
-      tier: { label: 'S2', rank: 2, priceCents: 2000, currency: 'usd', providerProductId: 'prod_S2', isActive: false },
+      tier: {
+        label: 'S2',
+        rank: 2,
+        priceCents: 2000,
+        currency: 'usd',
+        providerProductId: 'prod_S2',
+        isActive: false,
+      },
     },
   ])
-  assertEquals(await listSeatsForOrganization(db, OTHER_ORG), { payer: null, subscription: null, seats: [], grant: null })
+  assertEquals(await listSeatsForOrganization(db, OTHER_ORG), {
+    payer: null,
+    subscription: null,
+    seats: [],
+    grant: null,
+  })
   // A payer with no subscription yet (Checkout not completed) reads as no seats.
   db.rows(subscription).splice(0)
   const early = await listSeatsForOrganization(db, ORG_ID)
@@ -400,11 +555,34 @@ test('listSeatsForOrganization joins payer → subscription → seats with their
 })
 
 test('seatQuantitiesByTier sums per tier and reads every tier as zero once the subscription ended', async () => {
-  const live = entitlementDb({ seats: [{ tierId: TIER_S1, quantity: 3 }, { tierId: TIER_S2, quantity: 1 }, { tierId: TIER_S1, quantity: 2 }], licenses: [] })
-  assertEquals([...seatQuantitiesByTier(await listSeatsForOrganization(live, ORG_ID))], [[TIER_S1, 5], [TIER_S2, 1]])
-  const ended = entitlementDb({ status: 'canceled', seats: [{ tierId: TIER_S1, quantity: 3 }], licenses: [] })
-  assertEquals([...seatQuantitiesByTier(await listSeatsForOrganization(ended, ORG_ID))], [[TIER_S1, 0]])
-  assertEquals(seatQuantitiesByTier({ payer: null, subscription: null, seats: [], grant: null }), new Map())
+  const live = entitlementDb({
+    seats: [
+      { tierId: TIER_S1, quantity: 3 },
+      { tierId: TIER_S2, quantity: 1 },
+      { tierId: TIER_S1, quantity: 2 },
+    ],
+    licenses: [],
+  })
+  assertEquals(
+    [...seatQuantitiesByTier(await listSeatsForOrganization(live, ORG_ID))],
+    [
+      [TIER_S1, 5],
+      [TIER_S2, 1],
+    ]
+  )
+  const ended = entitlementDb({
+    status: 'canceled',
+    seats: [{ tierId: TIER_S1, quantity: 3 }],
+    licenses: [],
+  })
+  assertEquals(
+    [...seatQuantitiesByTier(await listSeatsForOrganization(ended, ORG_ID))],
+    [[TIER_S1, 0]]
+  )
+  assertEquals(
+    seatQuantitiesByTier({ payer: null, subscription: null, seats: [], grant: null }),
+    new Map()
+  )
 })
 
 test('revokeAllLicensesForOrganization revokes bound and unbound keys, names the bound servers, and leaves other rows alone', async () => {
@@ -436,8 +614,14 @@ test('revokeAllLicensesForOrganization revokes bound and unbound keys, names the
   assertEquals(byId.get('other-org-key')?.revokedAt, null)
   // Bound rows keep their server id for audit; nothing else is written.
   assertEquals(byId.get(LIC_BOUND)?.serverId, SERVER_A)
-  assertEquals(db.ops.filter((op) => op.startsWith('update:')), ['update:license', 'update:license', 'update:license'])
-  assertEquals(db.ops.filter((op) => op.startsWith('delete:') || op.startsWith('insert:')), [])
+  assertEquals(
+    db.ops.filter((op) => op.startsWith('update:')),
+    ['update:license', 'update:license', 'update:license']
+  )
+  assertEquals(
+    db.ops.filter((op) => op.startsWith('delete:') || op.startsWith('insert:')),
+    []
+  )
 
   // A second pass finds nothing to revoke and calls no hook.
   const again = await revokeAllLicensesForOrganization(db, ORG_ID, {
@@ -488,7 +672,10 @@ test('revokeAllLicensesForOrganization stops at the first failing hook and touch
   assertEquals(byId.get(LIC_BOUND)?.revokedAt, ENT_NOW)
   assertEquals(byId.get(LIC_FREE)?.revokedAt, null)
   assertEquals(byId.get(LIC_BOUND_2)?.revokedAt, null)
-  assertEquals(db.ops.filter((op) => op.startsWith('update:')), ['update:license'])
+  assertEquals(
+    db.ops.filter((op) => op.startsWith('update:')),
+    ['update:license']
+  )
 })
 
 // ---------------------------------------------------------------------------
@@ -520,7 +707,14 @@ test('T8 · the past-due latch and the 65-day grace deadline are set for the del
   const deadline = new Date(Date.parse(now) + BILLING_GRACE_WINDOW_MS).toISOString()
   for (const status of EVERY_STATUS) {
     const db = createRecordingDb()
-    await upsertSubscriptionFromProvider(db, { payerId: 'payer-row', providerSubscriptionId: 'sub_1', status, currentPeriodEnd: null, scheduleId: null, now })
+    await upsertSubscriptionFromProvider(db, {
+      payerId: 'payer-row',
+      providerSubscriptionId: 'sub_1',
+      status,
+      currentPeriodEnd: null,
+      scheduleId: null,
+      now,
+    })
     const [insert] = db.inserts
     const set = insert?.conflict?.set as Record<string, unknown>
     if (DELINQUENT.includes(status)) {

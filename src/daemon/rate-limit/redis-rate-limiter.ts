@@ -59,148 +59,157 @@ export const DEFAULT_STRIPE_WEBHOOK_RATE_PERIOD_SECONDS = 60
 
 const MIN_BUCKET_TTL_MS = 1_000
 
-function parsePositiveIntEnv(
-  raw: string | undefined,
-  fallback: number,
-): number {
+function parsePositiveIntEnv(raw: string | undefined, fallback: number): number {
   if (raw === undefined || raw.trim() === '') return fallback
   const parsed = Number.parseInt(raw, 10)
   if (!Number.isFinite(parsed) || parsed <= 0) return fallback
   return parsed
 }
 
-export function resolveDaemonConnectRateLimit(env: {
-  get(key: string): string | undefined
-} = Deno.env): { limit: number; periodSeconds: number } {
+export function resolveDaemonConnectRateLimit(
+  env: {
+    get(key: string): string | undefined
+  } = Deno.env
+): { limit: number; periodSeconds: number } {
   return {
     limit: parsePositiveIntEnv(
       env.get('TURBOPANEL_DAEMON_CONNECT_RATE_LIMIT'),
-      DEFAULT_DAEMON_CONNECT_RATE_LIMIT,
+      DEFAULT_DAEMON_CONNECT_RATE_LIMIT
     ),
     periodSeconds: parsePositiveIntEnv(
       env.get('TURBOPANEL_DAEMON_CONNECT_RATE_PERIOD'),
-      DEFAULT_DAEMON_CONNECT_RATE_PERIOD_SECONDS,
+      DEFAULT_DAEMON_CONNECT_RATE_PERIOD_SECONDS
     ),
   }
 }
 
-export function resolveDaemonRestRateLimit(env: {
-  get(key: string): string | undefined
-} = Deno.env): { limit: number; periodSeconds: number } {
+export function resolveDaemonRestRateLimit(
+  env: {
+    get(key: string): string | undefined
+  } = Deno.env
+): { limit: number; periodSeconds: number } {
   return {
     limit: parsePositiveIntEnv(
       env.get('TURBOPANEL_DAEMON_REST_RATE_LIMIT'),
-      DEFAULT_DAEMON_REST_RATE_LIMIT,
+      DEFAULT_DAEMON_REST_RATE_LIMIT
     ),
     periodSeconds: parsePositiveIntEnv(
       env.get('TURBOPANEL_DAEMON_REST_RATE_PERIOD'),
-      DEFAULT_DAEMON_REST_RATE_PERIOD_SECONDS,
+      DEFAULT_DAEMON_REST_RATE_PERIOD_SECONDS
     ),
   }
 }
 
-export function resolveDaemonMetricsRateLimit(env: {
-  get(key: string): string | undefined
-} = Deno.env): { limit: number; periodSeconds: number } {
+export function resolveDaemonMetricsRateLimit(
+  env: {
+    get(key: string): string | undefined
+  } = Deno.env
+): { limit: number; periodSeconds: number } {
   return {
     limit: parsePositiveIntEnv(
       env.get('TURBOPANEL_DAEMON_METRICS_RATE_LIMIT'),
-      DEFAULT_DAEMON_METRICS_RATE_LIMIT,
+      DEFAULT_DAEMON_METRICS_RATE_LIMIT
     ),
     periodSeconds: parsePositiveIntEnv(
       env.get('TURBOPANEL_DAEMON_METRICS_RATE_PERIOD'),
-      DEFAULT_DAEMON_METRICS_RATE_PERIOD_SECONDS,
+      DEFAULT_DAEMON_METRICS_RATE_PERIOD_SECONDS
     ),
   }
 }
 
-export function resolveClientAuthRateLimit(env: {
-  get(key: string): string | undefined
-} = Deno.env): { limit: number; periodSeconds: number } {
+export function resolveClientAuthRateLimit(
+  env: {
+    get(key: string): string | undefined
+  } = Deno.env
+): { limit: number; periodSeconds: number } {
   return {
     limit: parsePositiveIntEnv(
       env.get('TURBOPANEL_CLIENT_AUTH_RATE_LIMIT'),
-      DEFAULT_CLIENT_AUTH_RATE_LIMIT,
+      DEFAULT_CLIENT_AUTH_RATE_LIMIT
     ),
     periodSeconds: parsePositiveIntEnv(
       env.get('TURBOPANEL_CLIENT_AUTH_RATE_PERIOD'),
-      DEFAULT_CLIENT_AUTH_RATE_PERIOD_SECONDS,
+      DEFAULT_CLIENT_AUTH_RATE_PERIOD_SECONDS
     ),
   }
 }
 
-export function resolveClientAuthStrictRateLimit(env: {
-  get(key: string): string | undefined
-} = Deno.env): { limit: number; periodSeconds: number } {
+export function resolveClientAuthStrictRateLimit(
+  env: {
+    get(key: string): string | undefined
+  } = Deno.env
+): { limit: number; periodSeconds: number } {
   return {
     limit: parsePositiveIntEnv(
       env.get('TURBOPANEL_CLIENT_AUTH_STRICT_RATE_LIMIT'),
-      DEFAULT_CLIENT_AUTH_STRICT_RATE_LIMIT,
+      DEFAULT_CLIENT_AUTH_STRICT_RATE_LIMIT
     ),
     periodSeconds: parsePositiveIntEnv(
       env.get('TURBOPANEL_CLIENT_AUTH_STRICT_RATE_PERIOD'),
-      DEFAULT_CLIENT_AUTH_STRICT_RATE_PERIOD_SECONDS,
+      DEFAULT_CLIENT_AUTH_STRICT_RATE_PERIOD_SECONDS
     ),
   }
 }
 
-export function resolveGithubWebhookRateLimit(env: {
-  get(key: string): string | undefined
-} = Deno.env): { limit: number; periodSeconds: number } {
+export function resolveGithubWebhookRateLimit(
+  env: {
+    get(key: string): string | undefined
+  } = Deno.env
+): { limit: number; periodSeconds: number } {
   return {
     limit: parsePositiveIntEnv(
       env.get('TURBOPANEL_GITHUB_WEBHOOK_RATE_LIMIT'),
-      DEFAULT_GITHUB_WEBHOOK_RATE_LIMIT,
+      DEFAULT_GITHUB_WEBHOOK_RATE_LIMIT
     ),
     periodSeconds: parsePositiveIntEnv(
       env.get('TURBOPANEL_GITHUB_WEBHOOK_RATE_PERIOD'),
-      DEFAULT_GITHUB_WEBHOOK_RATE_PERIOD_SECONDS,
+      DEFAULT_GITHUB_WEBHOOK_RATE_PERIOD_SECONDS
     ),
   }
 }
 
-export function resolveGitlabWebhookRateLimit(env: {
-  get(key: string): string | undefined
-} = Deno.env): { limit: number; periodSeconds: number } {
+export function resolveGitlabWebhookRateLimit(
+  env: {
+    get(key: string): string | undefined
+  } = Deno.env
+): { limit: number; periodSeconds: number } {
   return {
     limit: parsePositiveIntEnv(
       env.get('TURBOPANEL_GITLAB_WEBHOOK_RATE_LIMIT'),
-      DEFAULT_GITLAB_WEBHOOK_RATE_LIMIT,
+      DEFAULT_GITLAB_WEBHOOK_RATE_LIMIT
     ),
     periodSeconds: parsePositiveIntEnv(
       env.get('TURBOPANEL_GITLAB_WEBHOOK_RATE_PERIOD'),
-      DEFAULT_GITLAB_WEBHOOK_RATE_PERIOD_SECONDS,
+      DEFAULT_GITLAB_WEBHOOK_RATE_PERIOD_SECONDS
     ),
   }
 }
 
-export function resolveStripeWebhookRateLimit(env: {
-  get(key: string): string | undefined
-} = Deno.env): { limit: number; periodSeconds: number } {
+export function resolveStripeWebhookRateLimit(
+  env: {
+    get(key: string): string | undefined
+  } = Deno.env
+): { limit: number; periodSeconds: number } {
   return {
     limit: parsePositiveIntEnv(
       env.get('TURBOPANEL_STRIPE_WEBHOOK_RATE_LIMIT'),
-      DEFAULT_STRIPE_WEBHOOK_RATE_LIMIT,
+      DEFAULT_STRIPE_WEBHOOK_RATE_LIMIT
     ),
     periodSeconds: parsePositiveIntEnv(
       env.get('TURBOPANEL_STRIPE_WEBHOOK_RATE_PERIOD'),
-      DEFAULT_STRIPE_WEBHOOK_RATE_PERIOD_SECONDS,
+      DEFAULT_STRIPE_WEBHOOK_RATE_PERIOD_SECONDS
     ),
   }
 }
 
-export function resolveDaemonWsInboundLimits(env: {
-  get(key: string): string | undefined
-} = Deno.env): { limit: number; windowMs: number } {
+export function resolveDaemonWsInboundLimits(
+  env: {
+    get(key: string): string | undefined
+  } = Deno.env
+): { limit: number; windowMs: number } {
   return {
-    limit: parsePositiveIntEnv(
-      env.get('TURBOPANEL_DAEMON_WS_INBOUND_LIMIT'),
-      120,
-    ),
-    windowMs: parsePositiveIntEnv(
-      env.get('TURBOPANEL_DAEMON_WS_INBOUND_WINDOW_MS'),
-      60_000,
-    ),
+    limit: parsePositiveIntEnv(env.get('TURBOPANEL_DAEMON_WS_INBOUND_LIMIT'), 120),
+    windowMs: parsePositiveIntEnv(env.get('TURBOPANEL_DAEMON_WS_INBOUND_WINDOW_MS'), 60_000),
   }
 }
 
@@ -248,18 +257,16 @@ export function createRedisRateLimiter(opts: {
 }): RateLimiter {
   const capacity = opts.limit
   const msPerToken = (opts.periodSeconds * 1000) / opts.limit
-  const ttlMs = Math.max(
-    Math.ceil(capacity * msPerToken),
-    MIN_BUCKET_TTL_MS,
-  )
+  const ttlMs = Math.max(Math.ceil(capacity * msPerToken), MIN_BUCKET_TTL_MS)
   const { client } = opts
   const onError = opts.onError ?? 'open'
-  const local = onError === 'local'
-    ? createLocalTokenBucketLimiter({
-      limit: opts.limit,
-      periodSeconds: opts.periodSeconds,
-    })
-    : null
+  const local =
+    onError === 'local'
+      ? createLocalTokenBucketLimiter({
+          limit: opts.limit,
+          periodSeconds: opts.periodSeconds,
+        })
+      : null
 
   return {
     async limit(args: { key: string }): Promise<{ success: boolean }> {
@@ -271,14 +278,11 @@ export function createRedisRateLimiter(opts: {
           capacity,
           msPerToken,
           Date.now(),
-          ttlMs,
+          ttlMs
         )
         return { success: result === 1 }
       } catch (err) {
-        logWarn(
-          'daemon-rate-limit',
-          `eval failed for ${args.key}: ${String(err)}`,
-        )
+        logWarn('daemon-rate-limit', `eval failed for ${args.key}: ${String(err)}`)
         if (local) return await local.limit(args)
         return { success: onError === 'open' }
       }

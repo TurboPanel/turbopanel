@@ -148,5 +148,8 @@ test('autoMonitorNicsForDatacenterAttach works through the pins one at a time, i
   ]
   await autoMonitorNicsForDatacenterAttach(db, {} as never, pins, 'self-hosted')
   assertEquals(events, ['start:1', 'end:1', 'start:2', 'end:2', 'start:3', 'end:3'])
-  assertEquals(await autoMonitorNicsForDatacenterAttach(db, {} as never, [], 'self-hosted'), undefined)
+  assertEquals(
+    await autoMonitorNicsForDatacenterAttach(db, {} as never, [], 'self-hosted'),
+    undefined
+  )
 })

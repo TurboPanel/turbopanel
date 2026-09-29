@@ -6,7 +6,7 @@ class NoopCommandQueue implements CommandQueue {
   enqueue(envelope: CommandEnvelope): Promise<void> {
     compatLogWarn(
       'command-queue',
-      `command queue unavailable — ${envelope.type} for server ${envelope.serverId} dropped`,
+      `command queue unavailable — ${envelope.type} for server ${envelope.serverId} dropped`
     )
     return Promise.reject(new Error('Command queue unavailable'))
   }

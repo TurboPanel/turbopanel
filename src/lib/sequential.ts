@@ -50,8 +50,7 @@ export function firstSequential<T, R>(
   step: (item: T, index: number) => Promise<R | undefined> | R | undefined
 ): Promise<R | undefined> {
   return [...items].reduce<Promise<R | undefined>>(
-    (chain, item, index) =>
-      chain.then((found) => found ?? step(item, index)),
+    (chain, item, index) => chain.then((found) => found ?? step(item, index)),
     Promise.resolve(undefined)
   )
 }
