@@ -14,6 +14,7 @@ import {
   type FabricPathWireCandidate,
 } from '../../contracts/cell-protocol.ts'
 import { cellTrace } from '../../lib/logger.ts'
+import { forEachSequential } from '../../lib/sequential.ts'
 import { getLoadServerStatusRecords } from '../../platform/ports/load-server-status.ts'
 import type { FabricPeerHealth } from '../../contracts/commands/schemas.ts'
 import {
@@ -33,10 +34,7 @@ import {
 const FABRIC_PATHS_TIMEOUT_MS = 20_000
 const FABRIC_PATHS_PROBE_MS = 3_000
 const FABRIC_PATHS_CONCURRENCY = 8
-const DIRECT_HEALTHY_KINDS = new Set<RelayPathKind>([
-  'direct_lan',
-  'direct_public',
-])
+const DIRECT_HEALTHY_KINDS = new Set<RelayPathKind>(['direct_lan', 'direct_public'])
 
 /** Process-local strike counters keyed by fabric id then pair. */
 const pathStateCacheByFabric = new Map<string, Map<string, FabricPathState>>()
@@ -51,15 +49,13 @@ export type CollectFabricPathObservationsParams = {
 }
 
 type CollectFabricPathObservationsFn = (
-  params: CollectFabricPathObservationsParams,
+  params: CollectFabricPathObservationsParams
 ) => Promise<Map<string, ObservedPeerPath[]>>
 
-let collectFabricPathObservationsOverride:
-  | CollectFabricPathObservationsFn
-  | null = null
+let collectFabricPathObservationsOverride: CollectFabricPathObservationsFn | null = null
 
 export function setCollectFabricPathObservationsForTests(
-  fn: CollectFabricPathObservationsFn | null,
+  fn: CollectFabricPathObservationsFn | null
 ): void {
   collectFabricPathObservationsOverride = fn
 }
@@ -105,10 +101,7 @@ function parseObservedPeerPath(row: unknown): ObservedPeerPath | null {
   if (typeof row !== 'object' || row === null || Array.isArray(row)) return null
   const record = row as Record<string, unknown>
   if (typeof record.publicKey !== 'string') return null
-  if (
-    record.health !== 'healthy' && record.health !== 'stale' &&
-    record.health !== 'never'
-  ) {
+  if (record.health !== 'healthy' && record.health !== 'stale' && record.health !== 'never') {
     return null
   }
   const path: ObservedPeerPath = {
@@ -140,21 +133,22 @@ function extractPaths(result: unknown): ObservedPeerPath[] | null {
 async function mapPool<T, R>(
   items: readonly T[],
   limit: number,
-  fn: (item: T) => Promise<R>,
+  fn: (item: T) => Promise<R>
 ): Promise<R[]> {
   if (items.length === 0) return []
   const results: R[] = new Array(items.length)
   let cursor = 0
   const workers = Math.min(limit, items.length)
-  await Promise.all(Array.from({ length: workers }, async () => {
-    while (cursor < items.length) {
-      const index = cursor
-      cursor += 1
-      const item = items[index]
-      if (item === undefined) continue
-      results[index] = await fn(item)
-    }
-  }))
+  // Each worker claims the next unclaimed index, runs it, then claims again.
+  const worker = async (): Promise<void> => {
+    if (cursor >= items.length) return
+    const index = cursor
+    cursor += 1
+    const item = items[index]
+    if (item !== undefined) results[index] = await fn(item)
+    await worker()
+  }
+  await Promise.all(Array.from({ length: workers }, worker))
   return results
 }
 
@@ -165,7 +159,7 @@ export async function requestFabricPaths(
   registry: DaemonCellRegistry,
   serverId: string,
   payload: FabricPathRequestPayload,
-  timeoutMs = FABRIC_PATHS_TIMEOUT_MS,
+  timeoutMs = FABRIC_PATHS_TIMEOUT_MS
 ): Promise<
   | { ok: true; paths: ObservedPeerPath[] }
   | { ok: false; error: string; status: 'expired' | 'failed' | 'malformed' }
@@ -194,10 +188,7 @@ export async function requestFabricPaths(
   })
 
   try {
-    const record = await registry.getCell(serverId).createRequestAndWait(
-      envelope,
-      timeoutMs,
-    )
+    const record = await registry.getCell(serverId).createRequestAndWait(envelope, timeoutMs)
 
     if (record.status === 'expired') {
       cellTrace('request-result', {
@@ -273,11 +264,9 @@ export async function collectFabricPathObservations(params: {
   const records = await getLoadServerStatusRecords()(
     params.db,
     params.registry,
-    keyed.map((row) => row.serverId),
+    keyed.map((row) => row.serverId)
   )
-  const online = new Set(
-    records.filter((row) => row.connected).map((row) => row.serverId),
-  )
+  const online = new Set(records.filter((row) => row.connected).map((row) => row.serverId))
   const liveRelays = keyed.filter((row) => online.has(row.serverId))
   const observations = new Map<string, ObservedPeerPath[]>()
   if (liveRelays.length === 0) return observations
@@ -300,14 +289,12 @@ export async function collectFabricPathObservations(params: {
  */
 export function classifyNatMapping(
   observationsByObserver: ReadonlyMap<string, readonly ObservedPeerPath[]>,
-  targetPublicKey: string,
+  targetPublicKey: string
 ): NatClass {
   const ports: string[] = []
   const observers = new Set<string>()
   for (const [observerId, paths] of observationsByObserver) {
-    const match = paths.find((row) =>
-      row.publicKey === targetPublicKey && row.endpoint
-    )
+    const match = paths.find((row) => row.publicKey === targetPublicKey && row.endpoint)
     if (!match?.endpoint) continue
     const port = endpointPort(match.endpoint)
     if (!port) continue
@@ -323,7 +310,7 @@ export function classifyNatMapping(
 function observedEndpointForKey(
   observations: ReadonlyMap<string, readonly ObservedPeerPath[]>,
   publicKey: string,
-  excludeObserverId?: string,
+  excludeObserverId?: string
 ): string | undefined {
   const counts = new Map<string, number>()
   for (const [observerId, paths] of observations) {
@@ -347,7 +334,7 @@ function observedEndpointForKey(
 function pathStateForPair(
   pathStates: ReadonlyMap<string, FabricPathState>,
   fromServerId: string,
-  toServerId: string,
+  toServerId: string
 ): FabricPathState | undefined {
   return pathStates.get(fabricPairCacheKey(fromServerId, toServerId))
 }
@@ -355,7 +342,7 @@ function pathStateForPair(
 function pairAlreadyHealthyDirect(
   pathStates: ReadonlyMap<string, FabricPathState>,
   fromServerId: string,
-  toServerId: string,
+  toServerId: string
 ): boolean {
   const state = pathStateForPair(pathStates, fromServerId, toServerId)
   if (!state || state.degraded) return false
@@ -372,7 +359,7 @@ type KeyedPeer = { serverId: string; publicKey: string }
 function addNatCandidate(
   byServerId: Map<string, FabricPathWireCandidate[]>,
   serverId: string,
-  candidate: FabricPathWireCandidate,
+  candidate: FabricPathWireCandidate
 ): void {
   const list = byServerId.get(serverId) ?? []
   const existing = list.find((row) => row.publicKey === candidate.publicKey)
@@ -390,7 +377,7 @@ function shouldExchangeNatCandidates(
   left: KeyedPeer,
   right: KeyedPeer,
   natClass: ReadonlyMap<string, NatClass>,
-  pathStates: ReadonlyMap<string, FabricPathState>,
+  pathStates: ReadonlyMap<string, FabricPathState>
 ): boolean {
   const leftClass = natClass.get(left.serverId) ?? 'unknown'
   const rightClass = natClass.get(right.serverId) ?? 'unknown'
@@ -405,18 +392,10 @@ function exchangeNatCandidatesForPair(
   byServerId: Map<string, FabricPathWireCandidate[]>,
   observations: ReadonlyMap<string, readonly ObservedPeerPath[]>,
   left: KeyedPeer,
-  right: KeyedPeer,
+  right: KeyedPeer
 ): void {
-  const rightEndpoint = observedEndpointForKey(
-    observations,
-    right.publicKey,
-    left.serverId,
-  )
-  const leftEndpoint = observedEndpointForKey(
-    observations,
-    left.publicKey,
-    right.serverId,
-  )
+  const rightEndpoint = observedEndpointForKey(observations, right.publicKey, left.serverId)
+  const leftEndpoint = observedEndpointForKey(observations, left.publicKey, right.serverId)
   if (rightEndpoint) {
     addNatCandidate(byServerId, left.serverId, {
       publicKey: right.publicKey,
@@ -431,9 +410,7 @@ function exchangeNatCandidatesForPair(
   }
 }
 
-function keyedPeers(
-  relays: readonly Pick<RelayRecord, 'serverId' | 'publicKey'>[],
-): KeyedPeer[] {
+function keyedPeers(relays: readonly Pick<RelayRecord, 'serverId' | 'publicKey'>[]): KeyedPeer[] {
   const out: KeyedPeer[] = []
   for (const row of relays) {
     if (!row.publicKey) continue
@@ -457,14 +434,7 @@ export function buildNatCandidateExchange(params: {
     for (let j = i + 1; j < keyed.length; j += 1) {
       const right = keyed[j]
       if (!right) continue
-      if (
-        !shouldExchangeNatCandidates(
-          left,
-          right,
-          params.natClass,
-          params.pathStates,
-        )
-      ) {
+      if (!shouldExchangeNatCandidates(left, right, params.natClass, params.pathStates)) {
         continue
       }
       exchangeNatCandidatesForPair(byServerId, params.observations, left, right)
@@ -475,7 +445,7 @@ export function buildNatCandidateExchange(params: {
 
 function observationForPeer(
   paths: readonly ObservedPeerPath[] | undefined,
-  publicKey: string,
+  publicKey: string
 ): ObservedPeerPath | undefined {
   return paths?.find((row) => row.publicKey === publicKey)
 }
@@ -483,7 +453,7 @@ function observationForPeer(
 function probedNatEndpoint(
   seen: ObservedPeerPath | undefined,
   candidates: readonly FabricPathWireCandidate[] | undefined,
-  otherPublicKey: string,
+  otherPublicKey: string
 ): string | undefined {
   if (seen?.health !== 'healthy' || !seen.endpoint) return undefined
   const match = candidates?.find((row) => row.publicKey === otherPublicKey)
@@ -492,8 +462,7 @@ function probedNatEndpoint(
 }
 
 function isDirectPathKind(kind: RelayPathKind): boolean {
-  return kind === 'direct_lan' || kind === 'direct_public' ||
-    kind === 'direct_nat'
+  return kind === 'direct_lan' || kind === 'direct_public' || kind === 'direct_nat'
 }
 
 function summaryFromState(state: FabricPathState): FabricPathSummaryEntry {
@@ -511,15 +480,12 @@ function summaryFromState(state: FabricPathState): FabricPathSummaryEntry {
 
 function classifyRelayNatMappings(
   relays: readonly RelayRecord[],
-  observations: ReadonlyMap<string, readonly ObservedPeerPath[]>,
+  observations: ReadonlyMap<string, readonly ObservedPeerPath[]>
 ): Map<string, NatClass> {
   const natClassByServerId = new Map<string, NatClass>()
   for (const row of relays) {
     if (!row.publicKey) continue
-    natClassByServerId.set(
-      row.serverId,
-      classifyNatMapping(observations, row.publicKey),
-    )
+    natClassByServerId.set(row.serverId, classifyNatMapping(observations, row.publicKey))
   }
   return natClassByServerId
 }
@@ -527,7 +493,7 @@ function classifyRelayNatMappings(
 function resolvePathKindHint(
   natProbeSucceeded: boolean,
   health: FabricPeerHealth,
-  previousSelected: RelayPathKind,
+  previousSelected: RelayPathKind
 ): RelayPathKind | undefined {
   if (natProbeSucceeded) return 'direct_nat'
   if (health === 'healthy') return previousSelected
@@ -537,11 +503,14 @@ function resolvePathKindHint(
 function hasAlternateGateway(
   relays: readonly RelayRecord[],
   selfServerId: string,
-  peerServerId: string,
+  peerServerId: string
 ): boolean {
-  return relays.some((row) =>
-    row.role === 'gateway' && row.serverId !== selfServerId &&
-    row.serverId !== peerServerId && Boolean(row.publicKey)
+  return relays.some(
+    (row) =>
+      row.role === 'gateway' &&
+      row.serverId !== selfServerId &&
+      row.serverId !== peerServerId &&
+      Boolean(row.publicKey)
   )
 }
 
@@ -568,29 +537,29 @@ function computePairPathState(
   policy: FabricPathPolicy,
   selfServerId: string,
   other: KeyedPeer,
-  previous: FabricPathState,
+  previous: FabricPathState
 ): PairPathOutcome {
   const seen = observationForPeer(ctx.merged.get(selfServerId), other.publicKey)
   const health = seen?.health ?? 'never'
   const natEndpoint = probedNatEndpoint(
     seen,
     ctx.candidatesByServerId.get(selfServerId),
-    other.publicKey,
+    other.publicKey
   )
   const natProbeSucceeded = natEndpoint !== undefined
-  const next = nextFabricPathState(previous, {
-    health,
-    kind: resolvePathKindHint(natProbeSucceeded, health, previous.selected),
-    endpoint: natProbeSucceeded ? natEndpoint : seen?.endpoint,
-    lastHandshakeAt: seen?.lastHandshakeAt,
-    latencyMs: seen?.latencyMs,
-    ...(natProbeSucceeded ? { natEndpoint, natProbeSucceeded: true } : {}),
-    gatewayAvailable: hasAlternateGateway(
-      ctx.keyed,
-      selfServerId,
-      other.serverId,
-    ),
-  }, policy)
+  const next = nextFabricPathState(
+    previous,
+    {
+      health,
+      kind: resolvePathKindHint(natProbeSucceeded, health, previous.selected),
+      endpoint: natProbeSucceeded ? natEndpoint : seen?.endpoint,
+      lastHandshakeAt: seen?.lastHandshakeAt,
+      latencyMs: seen?.latencyMs,
+      ...(natProbeSucceeded ? { natEndpoint, natProbeSucceeded: true } : {}),
+      gatewayAvailable: hasAlternateGateway(ctx.keyed, selfServerId, other.serverId),
+    },
+    policy
+  )
   return { next, health }
 }
 
@@ -598,7 +567,7 @@ function computePairPathState(
 function directPathFailed(
   previous: FabricPathState,
   next: FabricPathState,
-  health: FabricPeerHealth,
+  health: FabricPeerHealth
 ): boolean {
   if (!isDirectPathKind(previous.selected)) return false
   return health !== 'healthy' || previous.selected !== next.selected
@@ -609,7 +578,7 @@ function applyPairOutcome(
   entries: FabricPathSummaryEntry[],
   pairKey: string,
   previous: FabricPathState,
-  outcome: PairPathOutcome,
+  outcome: PairPathOutcome
 ): void {
   const { next, health } = outcome
   acc.pathStates.set(pairKey, next)
@@ -627,7 +596,7 @@ function applyPairOutcome(
 function summarizeRelayPaths(
   ctx: RendezvousPairContext,
   acc: RendezvousAccumulator,
-  self: RelayRecord,
+  self: RelayRecord
 ): void {
   const entries: FabricPathSummaryEntry[] = []
   const policy: FabricPathPolicy = {
@@ -637,14 +606,13 @@ function summarizeRelayPaths(
   for (const other of ctx.keyed) {
     if (other.serverId === self.serverId || !other.publicKey) continue
     const pairKey = fabricPairCacheKey(self.serverId, other.serverId)
-    const previous = acc.pathStates.get(pairKey) ??
-      initialFabricPathState(other.serverId)
+    const previous = acc.pathStates.get(pairKey) ?? initialFabricPathState(other.serverId)
     const outcome = computePairPathState(
       ctx,
       policy,
       self.serverId,
       { serverId: other.serverId, publicKey: other.publicKey },
-      previous,
+      previous
     )
     applyPairOutcome(acc, entries, pairKey, previous, outcome)
   }
@@ -680,16 +648,17 @@ export async function runFabricRendezvousRound(params: {
     pathStates,
   })
 
-  const probed = candidatesByServerId.size === 0
-    ? observations
-    : await collectFabricPathObservations({
-      db: params.db,
-      registry: params.registry,
-      relays: keyed,
-      fabricId: params.fabricId,
-      candidatesByServerId,
-      probeMs: FABRIC_PATHS_PROBE_MS,
-    })
+  const probed =
+    candidatesByServerId.size === 0
+      ? observations
+      : await collectFabricPathObservations({
+          db: params.db,
+          registry: params.registry,
+          relays: keyed,
+          fabricId: params.fabricId,
+          candidatesByServerId,
+          probeMs: FABRIC_PATHS_PROBE_MS,
+        })
 
   const merged = new Map(observations)
   for (const [serverId, paths] of probed) merged.set(serverId, paths)
@@ -714,13 +683,13 @@ export async function runFabricRendezvousRound(params: {
     summarizeRelayPaths(ctx, acc, self)
   }
 
-  for (const [serverId, entries] of acc.summariesByServerId) {
-    await stampRelayPathSummary(params.db, {
+  await forEachSequential(acc.summariesByServerId, ([serverId, entries]) =>
+    stampRelayPathSummary(params.db, {
       fabricId: params.fabricId,
       serverId,
       entries,
     })
-  }
+  )
 
   rememberFabricPathStates(params.fabricId, pathStates)
 
@@ -739,7 +708,7 @@ export async function runFabricRendezvousRound(params: {
 function recordFailedKind(
   failedPathKindsByPair: Map<string, Set<RelayPathKind>>,
   pairKey: string,
-  kind: RelayPathKind,
+  kind: RelayPathKind
 ): void {
   const failed = failedPathKindsByPair.get(pairKey) ?? new Set()
   failed.add(kind)
@@ -762,7 +731,7 @@ export function fabricNeedsRendezvous(relays: readonly RelayRecord[]): boolean {
 }
 
 export function pathStatesFromRelayMetadata(
-  relays: readonly RelayRecord[],
+  relays: readonly RelayRecord[]
 ): Map<string, FabricPathState> {
   const states = new Map<string, FabricPathState>()
   for (const row of relays) {
@@ -785,10 +754,7 @@ export function pathStatesFromRelayMetadata(
   return states
 }
 
-function pairServersLive(
-  pairKey: string,
-  live: ReadonlySet<string>,
-): boolean {
+function pairServersLive(pairKey: string, live: ReadonlySet<string>): boolean {
   const sep = pairKey.indexOf('>')
   if (sep <= 0) return false
   return live.has(pairKey.slice(0, sep)) && live.has(pairKey.slice(sep + 1))
@@ -796,7 +762,7 @@ function pairServersLive(
 
 function overlayMetadataOnCache(
   cached: FabricPathState,
-  fromMeta: FabricPathState,
+  fromMeta: FabricPathState
 ): FabricPathState {
   const next: FabricPathState = {
     ...cached,
@@ -819,7 +785,7 @@ function overlayMetadataOnCache(
 
 export function rememberFabricPathStates(
   fabricId: string,
-  pathStates: ReadonlyMap<string, FabricPathState>,
+  pathStates: ReadonlyMap<string, FabricPathState>
 ): void {
   pathStateCacheByFabric.set(fabricId, new Map(pathStates))
 }
@@ -830,7 +796,7 @@ export function rememberFabricPathStates(
  */
 function pruneCachedPathStates(
   fabricId: string,
-  live: ReadonlySet<string>,
+  live: ReadonlySet<string>
 ): Map<string, FabricPathState> | undefined {
   const cached = pathStateCacheByFabric.get(fabricId)
   if (!cached) return undefined
@@ -844,7 +810,7 @@ function pruneCachedPathStates(
 
 function mergeHydratedPathState(
   meta: FabricPathState | undefined,
-  cache: FabricPathState | undefined,
+  cache: FabricPathState | undefined
 ): FabricPathState | undefined {
   if (meta && cache) return overlayMetadataOnCache(cache, meta)
   if (meta) return meta
@@ -854,24 +820,16 @@ function mergeHydratedPathState(
 
 export function hydrateFabricPathStates(
   fabricId: string,
-  relays: readonly RelayRecord[],
+  relays: readonly RelayRecord[]
 ): Map<string, FabricPathState> {
   const fromMeta = pathStatesFromRelayMetadata(relays)
-  const live = new Set(
-    relays.filter((row) => row.publicKey).map((row) => row.serverId),
-  )
+  const live = new Set(relays.filter((row) => row.publicKey).map((row) => row.serverId))
   const liveCache = pruneCachedPathStates(fabricId, live)
-  const pairKeys = new Set<string>([
-    ...fromMeta.keys(),
-    ...(liveCache?.keys() ?? []),
-  ])
+  const pairKeys = new Set<string>([...fromMeta.keys(), ...(liveCache?.keys() ?? [])])
   const hydrated = new Map<string, FabricPathState>()
   for (const pairKey of pairKeys) {
     if (!pairServersLive(pairKey, live)) continue
-    const state = mergeHydratedPathState(
-      fromMeta.get(pairKey),
-      liveCache?.get(pairKey),
-    )
+    const state = mergeHydratedPathState(fromMeta.get(pairKey), liveCache?.get(pairKey))
     if (state) hydrated.set(pairKey, state)
   }
   return hydrated
