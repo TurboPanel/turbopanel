@@ -5,13 +5,17 @@ import { unitTargetFromManifest } from './target-resolve.ts'
 import {
   CANARY_EARLIER,
   CANARY_LATE,
+  COUNTER_CANARY,
+  COUNTER_CANARY_LATER,
   canaryBuildId,
   EXACT_BUILD_MANIFEST_URL,
   INSTALLED_EARLY,
   NEXT_BASE_CANARY,
   OLDER_BASE,
   RC_ONE,
+  RC_PLAIN,
   RELEASE,
+  RELEASE_NEXT,
   type ReleaseBuild,
   TAG_FORM,
 } from './testing/release-labels.ts'
@@ -50,6 +54,36 @@ test('isDowngrade over the labels production actually compares', () => {
   for (const [label, installed, target, expected] of cases) {
     assertEquals(downgrade(installed, target), expected, label)
   }
+})
+
+test('counter canaries, the plain rc and the release of one base order the way they ship', () => {
+  const cases: Array<[string, ReleaseBuild, ReleaseBuild, boolean]> = [
+    ['later counter canary of the installed base', COUNTER_CANARY, COUNTER_CANARY_LATER, false],
+    ['earlier counter canary of the installed base', COUNTER_CANARY_LATER, COUNTER_CANARY, true],
+    ['plain rc of the installed counter base, no build times', COUNTER_CANARY, RC_PLAIN, false],
+    ['release of the installed counter base', COUNTER_CANARY, RELEASE_NEXT, false],
+    [
+      'counter canary after a timestamped canary of the previous base',
+      CANARY_LATE,
+      COUNTER_CANARY,
+      false,
+    ],
+    [
+      'timestamped canary of an older base than a counter build',
+      COUNTER_CANARY,
+      NEXT_BASE_CANARY,
+      true,
+    ],
+  ]
+  for (const [label, installed, target, expected] of cases) {
+    assertEquals(downgrade(installed, target), expected, label)
+  }
+})
+
+test('a counter canary label is a semver pre-release and the fixture spells it plainly', () => {
+  assertEquals(COUNTER_CANARY.version, '0.1.3-canary.416')
+  assertEquals(COUNTER_CANARY_LATER.version, '0.1.3-canary.417')
+  assertEquals(RC_PLAIN.version, '0.1.3-rc')
 })
 
 test('a v-prefixed tag spells the same version as the plain base', () => {
@@ -91,8 +125,11 @@ test('every pinned unit target names one exact build the daemon accepts as a pin
   const kinds: ReleaseArtifactKind[] = ['daemon', 'instance', 'ui']
   const byChannel: Array<[UpdateChannel, ReleaseBuild]> = [
     ['canary', CANARY_LATE],
+    ['canary', COUNTER_CANARY],
     ['rc', RC_ONE],
+    ['rc', RC_PLAIN],
     ['release', RELEASE],
+    ['release', RELEASE_NEXT],
   ]
   for (const kind of kinds) {
     for (const [channel, build] of byChannel) {

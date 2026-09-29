@@ -25,7 +25,7 @@
 #
 # The canary channel reuses this same build: canary.yml calls this workflow
 # (workflow_call, channel=canary) after every green Build on trunk. The
-# version is then deno.json's number plus `-canary.<buildId>`, and the
+# version is then deno.json's number plus `-canary.<run number>`, and the
 # packages go to the rolling `canary` pre-release through TurboPanel/dev's
 # gh-canary.yml instead of a versioned release.
 #
@@ -100,12 +100,11 @@ jobs:
           echo "commit=${_commit}" >> "$GITHUB_OUTPUT"
           if [ "${{ inputs.channel }}" = "canary" ] && [ -n "${{ inputs.ref }}" ]; then
             # The rolling trunk build: deno.json's number (what the binary
-            # reports) plus a pre-release suffix that carries the build id,
-            # so every asset name is unique per build and semver orders it
-            # below the release it leads to.
+            # reports) plus a `-canary.<run number>` pre-release suffix, so every
+            # asset name is unique per build and semver orders it below the
+            # release it leads to.
             _pkg_version="$(python3 -c 'import json; print(json.load(open("deno.json"))["version"])')"
-            _build_id="$(date -u '+%Y%m%d-%H%M%S')-$(git rev-parse --short=7 HEAD)"
-            echo "version=${_pkg_version}-canary.${_build_id}" >> "$GITHUB_OUTPUT"
+            echo "version=${_pkg_version}-canary.${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
             echo "channel=canary" >> "$GITHUB_OUTPUT"
           elif [ -n "${{ inputs.version }}" ]; then
             echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
@@ -285,8 +284,10 @@ jobs:
                   "size": len(data),
               }
           now = time.gmtime()
-          # A canary version already carries its build id; reuse it so the
-          # manifest, the asset names and the release notes all agree.
+          # A pre-2026-09-28 canary version carries its build id; reuse it so the
+          # manifest, the asset names and the release notes all agree. A
+          # counter canary (`-canary.<run number>`) has none, so the id is
+          # stamped from the clock and the commit.
           m = re.search(r"-canary\.(\d{8}-\d{6}-[0-9a-f]{7})$", version)
           build_id = m.group(1) if m else f"{time.strftime('%Y%m%d-%H%M%S', now)}-{commit[:7]}"
           manifest = {
@@ -374,7 +375,7 @@ jobs:
   canary:
     needs: [prepare, manifest]
     if: needs.prepare.outputs.channel == 'canary'
-    uses: TurboPanel/dev/.github/workflows/gh-canary.yml@177d481666cce2e1dcfa76290b141b0149a6a0a9 # dev trunk 2026-09-25
+    uses: TurboPanel/dev/.github/workflows/gh-canary.yml@e701cabcbedc113d6e230cf18f2f82f146bbc6b1 # dev#20
     with:
       version: ${{ needs.prepare.outputs.version }}
       commit: ${{ needs.prepare.outputs.commit }}
