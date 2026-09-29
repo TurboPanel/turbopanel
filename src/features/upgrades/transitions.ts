@@ -40,29 +40,29 @@ export const UPGRADE_BACKOFF_MAX_MS = 30 * 60 * 1000;
 export const UPGRADE_OFFLINE_DEADLINE_MS = 60 * 60 * 1000;
 
 /** Statuses that are settled — the tick leaves them alone. */
-const SETTLED: readonly UpgradeStepStatus[] = [
+const SETTLED: ReadonlySet<UpgradeStepStatus> = new Set<UpgradeStepStatus>([
   "done",
   "skipped",
   "failed",
   "needs_attention",
-];
+]);
 
 /** Stages that mean an install is in flight on the daemon. */
-const IN_FLIGHT: readonly UpgradeStepStatus[] = [
+const IN_FLIGHT: ReadonlySet<UpgradeStepStatus> = new Set<UpgradeStepStatus>([
   "dispatched",
   "preparing",
   "downloading",
   "installing",
   "restarting",
   "verifying",
-];
+]);
 
 export function isSettledStepStatus(status: UpgradeStepStatus): boolean {
-  return SETTLED.includes(status);
+  return SETTLED.has(status);
 }
 
 export function isInFlightStepStatus(status: UpgradeStepStatus): boolean {
-  return IN_FLIGHT.includes(status);
+  return IN_FLIGHT.has(status);
 }
 
 export type StepView = {
