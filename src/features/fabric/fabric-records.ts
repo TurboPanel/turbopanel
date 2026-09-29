@@ -1645,7 +1645,8 @@ function stableJson(value: unknown): string {
   }
   const record = value as Record<string, unknown>
   const keys = Object.keys(record).sort((a, b) => a.localeCompare(b))
-  return `{${keys.map((key) => `${JSON.stringify(key)}:${stableJson(record[key])}`).join(',')}}`
+  const members = keys.map((key) => JSON.stringify(key) + ':' + stableJson(record[key]))
+  return `{${members.join(',')}}`
 }
 
 export async function hashFabricReconcileDesired(value: unknown): Promise<string> {
