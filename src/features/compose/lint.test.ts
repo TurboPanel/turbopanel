@@ -1279,6 +1279,24 @@ for (const mode of ["replicated-job", "global-job"]) {
   });
 }
 
+test("lintComposeYaml words an unsupported deploy key exactly, reason included", () => {
+  const source = `services:
+  worker:
+    image: nginx:alpine
+    deploy:
+      endpoint_mode: dnsrr
+`;
+  const found = lintComposeYaml(source).find(
+    (row) => row.path === "services.worker.deploy.endpoint_mode",
+  );
+  assertEquals(
+    found?.message,
+    "deploy.endpoint_mode is not supported by TurboPanel \u2014 " +
+      "service discovery is Docker DNS plus TurboPanel-managed networks; " +
+      "there is no VIP/dnsrr switch to set",
+  );
+});
+
 test("lintComposeYaml leaves the two modes TurboPanel schedules alone", () => {
   for (const mode of ["replicated", "global"]) {
     const source = `services:
