@@ -101,7 +101,7 @@ type ExhaustedSummary = {
  */
 export function noLicenseAvailableBody(
   summary: ExhaustedSummary,
-  tiers: readonly LicenseTierCounts[] = [],
+  tiers: readonly LicenseTierCounts[],
   message: string
 ) {
   // Destructured, not spread: the route's summary also carries `granted`
@@ -183,7 +183,7 @@ export function serializeLicenseListEntry(params: {
   revocable: boolean
   bound: LicenseListBoundServer | undefined
   status: LicenseListStatus | undefined
-  provisioning?: LicenseListProvisioning | undefined
+  provisioning?: LicenseListProvisioning
 }) {
   return {
     id: params.id,

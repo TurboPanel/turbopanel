@@ -331,6 +331,72 @@ export function formatEndsOn(iso: string | null): string | null {
   })
 }
 
+type ExhaustionSummary = Pick<
+  LicenseSummary,
+  'purchased' | 'releasing' | 'inUse' | 'provisioning' | 'unusedKeys' | 'ending' | 'endsAt'
+>
+
+function inUsePart({ inUse, provisioning }: ExhaustionSummary): string | null {
+  if (inUse <= 0) return null
+  return provisioning > 0 ? `${inUse} in use (${provisioning} provisioning)` : `${inUse} in use`
+}
+
+function unusedKeysPart({ unusedKeys }: ExhaustionSummary): string | null {
+  if (unusedKeys <= 0) return null
+  return unusedKeys === 1
+    ? '1 held by an unused registration key'
+    : `${unusedKeys} held by unused registration keys`
+}
+
+function endingPart({ ending, endsAt }: ExhaustionSummary): string | null {
+  if (ending <= 0) return null
+  const endsOn = formatEndsOn(endsAt)
+  const when = endsOn ? ` ${endsOn}` : ' at the end of the billing period'
+  return `${ending} ${ending === 1 ? 'ends' : 'end'}${when}`
+}
+
+/**
+ * Licenses that only move tier at the boundary: leaving, but not ending
+ * (a pending downgrade) and not already taken by a held license. This is the
+ * mint gate's arithmetic (`purchased` minus what is held). What is held is
+ * `inUse + unusedKeys`: a bound license is always an active one (both come
+ * from one `countActiveLicenses` query), so `bound <= held` and the two
+ * display fields sum to the deprecated `held` exactly.
+ */
+function changingTierCount(summary: ExhaustionSummary): number {
+  const held = summary.inUse + summary.unusedKeys
+  return Math.min(
+    Math.max(0, summary.releasing - summary.ending),
+    Math.max(0, summary.purchased - held)
+  )
+}
+
+function changingTierPart(moving: number): string | null {
+  return moving > 0 ? `${moving} changing tier at the end of the billing period` : null
+}
+
+/** The cheapest way out for what the parts name, or `null` when they name only licenses in use. */
+function exhaustionAdvice(summary: ExhaustionSummary, moving: number): string | null {
+  const { unusedKeys, ending } = summary
+  if (unusedKeys > 0 && ending > 0) {
+    return 'use or delete the unused key, or restore one, to add this server.'
+  }
+  if (unusedKeys > 0) {
+    const it = unusedKeys === 1 ? 'it' : 'one'
+    return `delete ${it} or use ${it} to add this server.`
+  }
+  if (ending > 0) return 'restore one to add this server.'
+  if (moving > 0) return 'buy another to add this server now.'
+  return null
+}
+
+/** Every license is in use: the closing sentence when nothing else is named. */
+function allInUseSentence({ purchased, provisioning }: ExhaustionSummary): string {
+  const all = purchased === 1 ? 'Your only license is' : `All ${purchased} licenses are`
+  const note = provisioning > 0 ? ` (${provisioning} provisioning)` : ''
+  return `${all} in use${note} — buy another to add this server.`
+}
+
 /**
  * The sentence Add Server shows when no license is free. It names every
  * reason a purchased license is not available, never calling an ending
@@ -338,50 +404,21 @@ export function formatEndsOn(iso: string | null): string | null {
  * way out: use or delete the unused key, restore an ending license (both
  * free), and only then buy one. A license only moving tier at the boundary
  * (a pending downgrade, which the mint gate also holds back) is named as such.
+ *
+ * The parts are built from `inUse` and `unusedKeys` (the display fields).
  */
-export function licenseExhaustionMessage(
-  summary: Pick<
-    LicenseSummary,
-    'purchased' | 'releasing' | 'held' | 'bound' | 'provisioning' | 'ending' | 'endsAt'
-  >
-): string {
-  const { purchased, releasing, held, bound, provisioning, ending } = summary
-  const unused = Math.max(0, held - bound - provisioning)
-  if (purchased === 0) return 'No licenses yet — buy one to add this server.'
-  const inUse = bound + provisioning
-  const parts: string[] = []
-  if (inUse > 0) {
-    parts.push(
-      provisioning > 0 ? `${inUse} in use (${provisioning} provisioning)` : `${inUse} in use`
-    )
-  }
-  if (unused > 0) {
-    parts.push(
-      unused === 1
-        ? '1 held by an unused registration key'
-        : `${unused} held by unused registration keys`
-    )
-  }
-  if (ending > 0) {
-    const endsOn = formatEndsOn(summary.endsAt)
-    const when = endsOn ? ` ${endsOn}` : ' at the end of the billing period'
-    parts.push(`${ending} ${ending === 1 ? 'ends' : 'end'}${when}`)
-  }
-  const moving = Math.min(Math.max(0, releasing - ending), Math.max(0, purchased - held))
-  if (moving > 0) parts.push(`${moving} changing tier at the end of the billing period`)
-
-  if (unused > 0 && ending > 0) {
-    return `${parts.join(', ')} — use or delete the unused key, or restore one, to add this server.`
-  }
-  if (unused > 0) {
-    const it = unused === 1 ? 'it' : 'one'
-    return `${parts.join(', ')} — delete ${it} or use ${it} to add this server.`
-  }
-  if (ending > 0) return `${parts.join(', ')} — restore one to add this server.`
-  if (moving > 0) return `${parts.join(', ')} — buy another to add this server now.`
-  const all = purchased === 1 ? 'Your only license is' : `All ${purchased} licenses are`
-  const note = provisioning > 0 ? ` (${provisioning} provisioning)` : ''
-  return `${all} in use${note} — buy another to add this server.`
+export function licenseExhaustionMessage(summary: ExhaustionSummary): string {
+  if (summary.purchased === 0) return 'No licenses yet — buy one to add this server.'
+  const moving = changingTierCount(summary)
+  const parts = [
+    inUsePart(summary),
+    unusedKeysPart(summary),
+    endingPart(summary),
+    changingTierPart(moving),
+  ].filter((part): part is string => part !== null)
+  const advice = exhaustionAdvice(summary, moving)
+  if (advice === null) return allInUseSentence(summary)
+  return `${parts.join(', ')} — ${advice}`
 }
 
 export function hasLiveSubscription(view: BillingOrgView): boolean {

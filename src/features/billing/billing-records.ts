@@ -23,11 +23,23 @@
  * into one seat row under the first item's id.
  */
 
-import { and, desc, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm'
+import {
+  and,
+  desc,
+  eq,
+  type ExtractTablesWithRelations,
+  inArray,
+  isNotNull,
+  isNull,
+  sql,
+} from 'drizzle-orm'
+import type { PgTransaction } from 'drizzle-orm/pg-core'
+import type { PostgresJsQueryResultHKT } from 'drizzle-orm/postgres-js'
 import type { BillingProviderId } from './gateway.ts'
 import type { Db } from '../../db/connection.ts'
 import { logWarn } from '../../lib/logger.ts'
 import type { PayerSubject } from './customer-subject.ts'
+import type * as schema from '../../db/schema.ts'
 import { license, payer, allowance, subscription, subscriptionItem, tier } from '../../db/schema.ts'
 import { mapProviderProductsToTierIds } from '../tiers/tier-records.ts'
 import type { SelfHostedGrant } from '../tiers/self-hosted-grant.ts'
@@ -38,8 +50,17 @@ import type { SelfHostedGrant } from '../tiers/self-hosted-grant.ts'
  * `subscription` → `seat` under one transaction so a reader never sees the
  * seats of a subscription half-replaced; the write helpers below accept
  * either handle so the same code serves the transaction and a plain call.
+ *
+ * Spelled as drizzle's `PgTransaction` over the postgres-js query result
+ * (identical to the `Db['transaction']` callback parameter) rather than
+ * derived through `Parameters<…>`, so tooling that cannot resolve the
+ * derivation does not see `never` inside the `Db | BillingDbTx` union below.
  */
-export type BillingDbTx = Parameters<Parameters<Db['transaction']>[0]>[0]
+export type BillingDbTx = PgTransaction<
+  PostgresJsQueryResultHKT,
+  typeof schema,
+  ExtractTablesWithRelations<typeof schema>
+>
 
 export type BillingWriteDb = Db | BillingDbTx
 

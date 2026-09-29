@@ -34,7 +34,7 @@ import {
   ensureCustomerForOrganization,
 } from '../../features/billing/checkout.ts'
 import { seatLinesFromState } from '../../features/billing/entitlements.ts'
-import { resolveBillingGateway } from '../../features/billing/gateway.ts'
+import { type BillingGateway, resolveBillingGateway } from '../../features/billing/gateway.ts'
 import {
   newPendingCheckoutRecord,
   pendingCheckoutMatches,
@@ -50,6 +50,7 @@ import {
 import {
   buildItemMutation,
   previewSubscriptionChange,
+  type SeatLine,
   type TierDelta,
 } from '../../features/billing/subscriptions.ts'
 import { resolveTierPrice } from '../../features/billing/tier-prices.ts'
@@ -204,6 +205,60 @@ function readTierMove(c: Ctx, body: Record<string, unknown>, withProration: bool
     return c.json({ error: 'Invalid request' }, 400)
   }
   return { fromTierId, toTierId, prorationDate }
+}
+
+/**
+ * The first `licenses_ending` refusal an increase in `deltas` earns while the
+ * subscription is live, or `null`. Decreases never count.
+ */
+function firstLicensesEndingRefusal(view: BillingOrgView, deltas: readonly TierDelta[]) {
+  if (!hasLiveSubscription(view)) return null
+  for (const { tierId, delta } of deltas) {
+    if (delta <= 0) continue
+    const ending = licensesEndingRefusal(view.ledger, tierId)
+    if (ending) return ending
+  }
+  return null
+}
+
+/**
+ * Resolve, through the gateway, the price of every tier `deltas` adds to that
+ * the subscription has no item for, recording each in `priceByTier`. Answers
+ * the `400` body for the first tier that cannot be sold, or `null`. A
+ * provider failure propagates to the route's Stripe error mapping.
+ */
+async function resolveMissingTierPrices(
+  db: Db,
+  gateway: BillingGateway,
+  deltas: readonly TierDelta[],
+  priceByTier: Map<string, string>
+) {
+  for (const { tierId, delta } of deltas) {
+    if (delta <= 0 || priceByTier.has(tierId)) continue
+    const price = await resolveTierPrice(db, gateway, tierId)
+    if (!price.ok) {
+      return {
+        error: TIER_NOT_PURCHASABLE_ERROR,
+        reason: price.reason,
+        failures: price.failures ?? [],
+      }
+    }
+    priceByTier.set(tierId, price.providerPriceId)
+  }
+  return null
+}
+
+/** The items for a quote, or `null` when the deltas do not fit the seats (a caller error, not Stripe's). */
+function tryBuildItemMutation(
+  lines: readonly SeatLine[],
+  deltas: readonly TierDelta[],
+  priceByTier: ReadonlyMap<string, string>
+) {
+  try {
+    return buildItemMutation(lines, deltas, priceByTier)
+  } catch {
+    return null
+  }
 }
 
 export function registerBillingRoutes(
@@ -367,41 +422,18 @@ export function registerBillingRoutes(
     // Restore before buy: anything that adds licenses at a tier where some
     // are ending is refused exactly as the mutation would refuse it, so the
     // console never shows a price for something it cannot buy.
-    if (hasLiveSubscription(view)) {
-      for (const { tierId, delta } of deltas) {
-        if (delta <= 0) continue
-        const ending = licensesEndingRefusal(view.ledger, tierId)
-        if (ending) return c.json(ending, 409)
-      }
-    }
+    const ending = firstLicensesEndingRefusal(view, deltas)
+    if (ending) return c.json(ending, 409)
     const denied = assertTierChangeAllowed(c, view)
     if (denied) return denied
     const client = createClient(auth.config)
     const gateway = resolveBillingGateway(client)
     const { lines, priceByTier } = seatLinesFromState(view.state)
     try {
-      for (const { tierId, delta } of deltas) {
-        if (delta > 0 && !priceByTier.has(tierId)) {
-          const price = await resolveTierPrice(auth.db, gateway, tierId)
-          if (!price.ok) {
-            return c.json(
-              {
-                error: TIER_NOT_PURCHASABLE_ERROR,
-                reason: price.reason,
-                failures: price.failures ?? [],
-              },
-              400
-            )
-          }
-          priceByTier.set(tierId, price.providerPriceId)
-        }
-      }
-      let items
-      try {
-        items = buildItemMutation(lines, deltas, priceByTier)
-      } catch {
-        return c.json({ error: 'Invalid request' }, 400)
-      }
+      const notPurchasable = await resolveMissingTierPrices(auth.db, gateway, deltas, priceByTier)
+      if (notPurchasable) return c.json(notPurchasable, 400)
+      const items = tryBuildItemMutation(lines, deltas, priceByTier)
+      if (!items) return c.json({ error: 'Invalid request' }, 400)
       const preview = await previewSubscriptionChange(client, {
         providerSubscriptionId: view.state.subscription!.providerSubscriptionId,
         items,
