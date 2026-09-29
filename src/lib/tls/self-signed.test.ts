@@ -3,6 +3,7 @@
  */
 
 import { assertEquals, assertRejects } from '@std/assert'
+import { randomSerial } from './self-signed.ts'
 import {
   buildBasicConstraintsExtension,
   buildKeyUsageExtension,
@@ -13,7 +14,6 @@ import {
   KEY_USAGE_KEY_CERT_SIGN,
   KEY_USAGE_KEY_ENCIPHERMENT,
   mintOrganizationCa,
-  randomSerial,
   mintSelfSignedCertificate,
   ORGANIZATION_CA_LEAF_VALID_DAYS,
   ORGANIZATION_CA_ORG_NAME,
