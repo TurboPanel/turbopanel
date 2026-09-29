@@ -5,8 +5,8 @@ This file is generated from the resolved dependency graph. Do not edit it by han
 Third-party components remain under their own copyright and license terms and are not relicensed by TurboPanel Control Plane's repository license (AGPL-3.0-only).
 
 <!-- lockfiles
-deno.lock sha256:1a88b99a83c2dce9715534253e1a6e688507204f8baac243f0e4834f82444905
-pnpm-lock.yaml sha256:3589df00fb76e7b62dd74052d639b85b9a79c28c27d926107d5677b8da68c058
+deno.lock sha256:84f36313e2c987ea686111014fe2c0e871d53e19288719e9c8db31b0ec0aa1c9
+pnpm-lock.yaml sha256:1a09a9e6c4aa8d1eaab49c64acf8febb90a4605282082782d006962d15a6f9ac
 -->
 
 ## Production dependencies
@@ -91,7 +91,7 @@ pnpm-lock.yaml sha256:3589df00fb76e7b62dd74052d639b85b9a79c28c27d926107d5677b8da
 - License: MIT
 - Homepage: https://github.com/vercel/ms#readme
 
-### nodemailer@9.1.1
+### nodemailer@10.0.11
 
 - License: MIT-0
 - Copyright: Andris Reinman
