@@ -229,6 +229,18 @@ export type EndingLicenses = Readonly<{
 }>
 
 /**
+ * The earlier of two ISO boundaries; when only one is set, that one (`null`
+ * when neither is). A tie keeps `current`.
+ */
+function earlierBoundary(
+  current: string | null | undefined,
+  candidate: string | null
+): string | null {
+  if (current && candidate) return current <= candidate ? current : candidate
+  return current ?? candidate
+}
+
+/**
  * Per tier, the licenses that end at the period boundary — outstanding
  * `release-seat` intents only. A pending downgrade also moves a seat off its
  * tier, but it is not a license ending (it lands one tier down) and nothing
@@ -239,12 +251,7 @@ export function endingLicensesByTier(ledger: PendingChangeLedger): Map<string, E
   for (const intent of ledger.intents) {
     if (intent.kind !== 'release-seat') continue
     const prev = out.get(intent.fromTierId)
-    const endsAt =
-      prev?.endsAt && intent.landsAt
-        ? prev.endsAt <= intent.landsAt
-          ? prev.endsAt
-          : intent.landsAt
-        : (prev?.endsAt ?? intent.landsAt)
+    const endsAt = earlierBoundary(prev?.endsAt, intent.landsAt)
     out.set(intent.fromTierId, { count: (prev?.count ?? 0) + 1, endsAt })
   }
   return out
