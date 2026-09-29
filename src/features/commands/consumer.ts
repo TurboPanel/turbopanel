@@ -9,6 +9,7 @@
  */
 import { and, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "../../db/connection.ts";
+import { forEachSequential } from "../../lib/sequential.ts";
 import type {
   DaemonCellRegistry,
   PendingRequestRecord,
@@ -1107,21 +1108,21 @@ async function enqueuePendingStandbyApplies(
   if (!Array.isArray(raw) || raw.length === 0) return;
 
   const commandQueue = deps.commandQueue!;
-  for (const entry of raw) {
+  await forEachSequential(raw, async (entry) => {
     if (
       typeof entry !== "object" ||
       entry === null ||
       typeof (entry as PendingStandbyApply).serverId !== "string" ||
       typeof (entry as PendingStandbyApply).memberId !== "string"
     ) {
-      continue;
+      return;
     }
     const standby = entry as PendingStandbyApply;
     let payload: unknown;
     try {
       payload = parseManagedApplyPayload(standby.payload);
     } catch {
-      continue;
+      return;
     }
     const expiresAt = new Date(Date.now() + 600_000).toISOString();
     const pendingTlsLeaf = parsePendingTlsLeafValue(standby.pendingTlsLeaf);
@@ -1160,7 +1161,7 @@ async function enqueuePendingStandbyApplies(
         `standby apply follow-up failed for command ${record.id}: ${message}`,
       );
     }
-  }
+  });
 }
 
 /**
@@ -1215,12 +1216,12 @@ async function enqueuePendingManagedDestroys(
   if (!claimed) return;
 
   const commandQueue = deps.commandQueue;
-  for (const followup of gate.followups) {
+  await forEachSequential(gate.followups, async (followup) => {
     let payload: unknown;
     try {
       payload = parseManagedDestroyPayload(followup.payload);
     } catch {
-      continue;
+      return;
     }
     const expiresAt = new Date(Date.now() + 600_000).toISOString();
     try {
@@ -1254,7 +1255,7 @@ async function enqueuePendingManagedDestroys(
         `primary destroy follow-up failed for command ${record.id}: ${message}`,
       );
     }
-  }
+  });
 }
 
 /**
@@ -1444,9 +1445,10 @@ async function applyManagedBackupSideEffect(
     const payload = parseManagedBackupPayload(record.payload);
     const backupResult = parseManagedBackupResult(result);
 
-    for (const prunedId of backupResult.pruned ?? []) {
-      await deleteManagedBackup(db, payload.managedId, prunedId);
-    }
+    await forEachSequential(
+      backupResult.pruned ?? [],
+      (prunedId) => deleteManagedBackup(db, payload.managedId, prunedId),
+    );
 
     if (payload.action === "delete") {
       await deleteManagedBackup(db, payload.managedId, payload.backupId);

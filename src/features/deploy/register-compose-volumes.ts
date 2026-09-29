@@ -12,6 +12,7 @@ import { and, eq } from "drizzle-orm";
 import type { Db } from "../../db/connection.ts";
 import type { ComposeDocument } from "../compose/types.ts";
 import { resolveDockerVolumeName } from "../../lib/naming.ts";
+import { forEachSequential } from "../../lib/sequential.ts";
 import { storage, storageCopy } from "../../db/schema.ts";
 
 export type RegisteredComposeVolume = {
@@ -218,7 +219,7 @@ export async function registerComposeVolumes(
   const registered: RegisteredComposeVolume[] = [];
 
   await db.transaction(async (tx) => {
-    for (const spec of specs) {
+    await forEachSequential(specs, async (spec) => {
       let existing = byComposeKey.get(spec.composeKey);
 
       if (!existing) {
@@ -278,7 +279,7 @@ export async function registerComposeVolumes(
         volumeName: resolvedVolumeName(existing, spec),
         managed: spec.managed,
       });
-    }
+    });
   });
 
   return registered;

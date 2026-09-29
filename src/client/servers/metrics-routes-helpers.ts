@@ -1100,10 +1100,18 @@ export async function querySeriesResults(input: SeriesQueryInput): Promise<Serie
   // unavailable; it must not blank the host charts and every other family —
   // on testing (2026-09-27) one refused GPU query turned the whole series
   // request into a 503 "Metrics store unavailable".
+  // The family queries are independent reads (a handful at most), so they run
+  // together; results keep the selector order.
+  const familyOutcomes = await Promise.all(
+    [...input.selectors.entityFamilies].map(async ([family, selection]) => ({
+      family,
+      selection,
+      outcome: await queryOneEntityFamilySeries(input, family, selection),
+    }))
+  )
   const entityResults: EntitySeriesResult[] = []
   const failedFamilies: PerEntityHostedFamily[] = []
-  for (const [family, selection] of input.selectors.entityFamilies) {
-    const outcome = await queryOneEntityFamilySeries(input, family, selection)
+  for (const { family, selection, outcome } of familyOutcomes) {
     if (!outcome.ok) {
       failedFamilies.push(family)
       entityResults.push(

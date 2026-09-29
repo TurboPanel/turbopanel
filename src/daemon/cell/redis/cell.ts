@@ -24,6 +24,7 @@ import { TERMINAL_UPDATE_RETENTION_MS } from "../../../features/update/constants
 import { cellTrace, isDaemonDebugEnabled, logDebug, logInfo } from "../../../lib/logger.ts";
 import { onDaemonUpdateExpired } from "../control-plane-monitor.ts";
 import type { Db } from "../../../db/connection.ts";
+import { forEachSequential } from "../../../lib/sequential.ts";
 import { mergeSnapshotPresence } from "../snapshot-merge.ts";
 import type { RedisCellClient, StreamEntry } from "./client.ts";
 import {
@@ -1192,12 +1193,14 @@ export class RedisDaemonCell implements DaemonCell {
   ): Promise<PendingRequestRecord | null> {
     this.#bumpMethodRoute("waitForRequest");
     const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
+    const poll = async (): Promise<PendingRequestRecord | null> => {
+      if (Date.now() >= deadline) return null;
       const record = await this.getRequest(requestId);
       if (record && isTerminalStatus(record.status)) return record;
       await new Promise((resolve) => setTimeout(resolve, 250));
-    }
-    return null;
+      return poll();
+    };
+    return poll();
   }
 
   async createRequestAndWait(
@@ -1376,14 +1379,14 @@ export class RedisDaemonCell implements DaemonCell {
     const redis = this.#redis("ackOutbox");
     // Correlation state is not discarded here — it lives on the request HASH
     // until terminal+retention. xack+xdel only marks delivery done.
-    const streamIds: string[] = [];
-    for (const deliveryId of deliveryIds) {
-      const streamId = await this.#resolveStreamIdForDelivery(
-        deliveryId,
-        "ackOutbox",
-      );
-      if (streamId) streamIds.push(streamId);
-    }
+    const resolvedStreamIds = await Promise.all(
+      deliveryIds.map((deliveryId) =>
+        this.#resolveStreamIdForDelivery(deliveryId, "ackOutbox")
+      ),
+    );
+    const streamIds = resolvedStreamIds.filter(
+      (streamId): streamId is string => Boolean(streamId),
+    );
     if (streamIds.length > 0) {
       await redis.xack(
         outboxKey(this.#serverId),
@@ -1413,10 +1416,10 @@ export class RedisDaemonCell implements DaemonCell {
       "+inf",
     );
     let cleared = 0;
-    for (const requestId of requestIds) {
+    await forEachSequential(requestIds, async (requestId) => {
       const reqKey = requestKey(this.#serverId, requestId);
       const fields = await redis.hgetall(reqKey);
-      if (fields?.requestKind !== "update") continue;
+      if (fields?.requestKind !== "update") return;
       const status = fields.status as PendingRequestStatus;
       if (!isTerminalStatus(status)) {
         if (isStaleInFlightUpdate(fields, opts)) {
@@ -1434,14 +1437,14 @@ export class RedisDaemonCell implements DaemonCell {
           });
           this.#terminalResults.delete(requestId);
           cleared++;
-          continue;
+          return;
         }
         throw new Error("update in progress");
       }
       await this.#purgeRequestRecord(requestId, "clearUpdateStatus", fields);
       this.#terminalResults.delete(requestId);
       cleared++;
-    }
+    });
     return { cleared };
   }
 
@@ -1484,13 +1487,13 @@ export class RedisDaemonCell implements DaemonCell {
       "+inf",
     );
     const expiredUpdates: ExpiredUpdateRequest[] = [];
-    for (const requestId of requestIds) {
+    await forEachSequential(requestIds, async (requestId) => {
       const fields = await redis.hgetall(
         requestKey(this.#serverId, requestId),
       );
       if (!fields) {
         await this.#purgeRequestRecord(requestId, "prune");
-        continue;
+        return;
       }
       const expiresAtMs = Date.parse(fields.expiresAt ?? "");
       if (!Number.isNaN(expiresAtMs) && expiresAtMs <= now) {
@@ -1505,7 +1508,7 @@ export class RedisDaemonCell implements DaemonCell {
         // Prune merged correlation row + any leftover outbox Stream entries.
         await this.#purgeRequestRecord(requestId, "prune", fields);
       }
-    }
+    });
     return expiredUpdates;
   }
 

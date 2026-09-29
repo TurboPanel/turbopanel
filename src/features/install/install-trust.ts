@@ -10,6 +10,7 @@
 import { inArray } from "drizzle-orm";
 import type { Db } from "../../db/connection.ts";
 import { instanceUploadedCertificate } from "../../db/schema.ts";
+import { forEachSequential } from "../../lib/sequential.ts";
 import { coversHostname } from "../../lib/tls/match.ts";
 import { parseCertificatePem } from "../../lib/tls/parse.ts";
 import { verifyCertificateSignature } from "../../lib/tls/self-signed.ts";
@@ -164,9 +165,9 @@ async function publicTrustByCertificate(
     })
     .from(instanceUploadedCertificate)
     .where(inArray(instanceUploadedCertificate.id, ids));
-  for (const row of rows) {
+  await forEachSequential(rows, async (row) => {
     trust.set(row.id, await uploadedCertificateChainsToPublicRoot(row.certPem));
-  }
+  });
   return trust;
 }
 
@@ -274,9 +275,9 @@ export async function privateUploadedTrustMaterial(
   }
   if (!coversHostname(names, hostname)) return null;
   const issuers: string[] = [];
-  for (const block of blocks.slice(1)) {
+  await forEachSequential(blocks.slice(1), async (block) => {
     if (await issuerSignsLeaf(leaf, block)) issuers.push(block.trim());
-  }
+  });
   if (issuers.length === 0) return null;
   return `${issuers.join("\n")}\n`;
 }

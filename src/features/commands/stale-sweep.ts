@@ -28,6 +28,7 @@
 import { and, eq, inArray, lt, notExists, sql } from "drizzle-orm";
 import type { Db } from "../../db/connection.ts";
 import { command, managed } from "../../db/schema.ts";
+import { forEachSequential } from "../../lib/sequential.ts";
 import { transitionCommand } from "./command-records.ts";
 import { nowIso } from "./ids.ts";
 import { commandTimeoutMs } from "./consumer.ts";
@@ -141,8 +142,8 @@ export async function sweepStaleCommands(
     .limit(limit);
 
   let swept = 0;
-  for (const row of candidates) {
-    if (!isStaleCommand(row, nowMs, graceMs)) continue;
+  await forEachSequential(candidates, async (row) => {
+    if (!isStaleCommand(row, nowMs, graceMs)) return;
     // Two different situations, and the operator's next move differs:
     // re-issuing an undelivered command is free, while re-issuing one the
     // daemon acknowledged may race work still running on the host.
@@ -157,7 +158,7 @@ export async function sweepStaleCommands(
         : "command stalled: the daemon never acknowledged it, so nothing ran on the host. Safe to run again.",
     });
     if (record) swept += 1;
-  }
+  });
   return swept;
 }
 

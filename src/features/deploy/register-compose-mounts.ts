@@ -8,6 +8,7 @@ import type { Db } from "../../db/connection.ts";
 import type { ComposeDocument } from "../compose/types.ts";
 import { mount, service, storage, storageCopy } from "../../db/schema.ts";
 import { scratchCopyNotMountable } from "../storage/scratch.ts";
+import { forEachSequential } from "../../lib/sequential.ts";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -157,18 +158,19 @@ export async function registerComposeMounts(
       );
     }
 
-    for (const svc of serviceRows) {
-      const specs = specsByComposeName.get(svc.composeServiceName) ?? [];
-      for (const spec of specs) {
-        const storageId = storageByKey.get(spec.composeKey);
-        if (!storageId || scratchOnlyIds.has(storageId)) continue;
-        await tx.insert(mount).values({
-          storageId,
-          serviceId: svc.id,
-          destinationPath: spec.destinationPath,
-          isReadOnly: spec.readOnly,
-        });
-      }
-    }
+    await forEachSequential(serviceRows, (svc) =>
+      forEachSequential(
+        specsByComposeName.get(svc.composeServiceName) ?? [],
+        async (spec) => {
+          const storageId = storageByKey.get(spec.composeKey);
+          if (!storageId || scratchOnlyIds.has(storageId)) return;
+          await tx.insert(mount).values({
+            storageId,
+            serviceId: svc.id,
+            destinationPath: spec.destinationPath,
+            isReadOnly: spec.readOnly,
+          });
+        },
+      ));
   });
 }

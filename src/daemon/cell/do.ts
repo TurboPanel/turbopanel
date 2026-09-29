@@ -10,6 +10,7 @@ import {
   raceWithTimeout,
   runWithDbTimeout,
 } from "../../db/connection.ts";
+import { forEachSequential } from "../../lib/sequential.ts";
 import { evaluateSocketHealth } from "./socket-health.ts";
 import type { ServerGeo } from "../../features/geo/server-geo.ts";
 import { parseServerGeo } from "../../features/geo/server-geo.ts";
@@ -1537,9 +1538,10 @@ export class DaemonCellObject {
     });
     if (batch.length === 0) return;
 
-    for (const ws of sockets) {
-      await this.#deliverOutboxBatchToSocket(serverId, ws, batch);
-    }
+    await forEachSequential(
+      sockets,
+      (ws) => this.#deliverOutboxBatchToSocket(serverId, ws, batch),
+    );
 
     if (this.#hasDeliverableOutbox()) {
       await this.#scheduleOutboxRetryIfNeeded();
@@ -1559,7 +1561,7 @@ export class DaemonCellObject {
     } | null;
     if (attachment?.serverId !== serverId) return;
 
-    for (const envelope of batch) {
+    await forEachSequential(batch, async (envelope) => {
       try {
         const wireMsg = outboundEnvelopeToWireMessage(envelope);
         this.#trace("outbox-send", {
@@ -1582,7 +1584,7 @@ export class DaemonCellObject {
       } catch {
         this.#requeueOutbox(envelope.deliveryId);
       }
-    }
+    });
   }
 
   /**
@@ -2246,17 +2248,19 @@ export class DaemonCellObject {
         await this.#withProjectionDb(
           "alarm-update-expired",
           serverId,
-          async (db) => {
-            for (const { requestId } of expiringUpdates) {
-              await onDaemonUpdateExpired(db, serverId, requestId, now);
-            }
-          },
+          (db) =>
+            forEachSequential(
+              expiringUpdates,
+              ({ requestId }) =>
+                onDaemonUpdateExpired(db, serverId, requestId, now),
+            ),
         );
       }
 
-      for (const staleServerId of staleDemotions) {
-        await this.#projectDisconnected(staleServerId);
-      }
+      await forEachSequential(
+        staleDemotions,
+        (staleServerId) => this.#projectDisconnected(staleServerId),
+      );
 
       if (serverId) {
         this.#requeueExpiredInflightOutbox(nowMs);
@@ -3202,7 +3206,7 @@ export class DaemonCellObject {
     }
 
     const finishedAt = nowIso();
-    for (const requestId of staleRequestIds) {
+    await forEachSequential(staleRequestIds, async (requestId) => {
       this.#sql(
         "clear-update-status",
         `UPDATE request SET status = 'expired', finished_at = ?, updated_at = ?
@@ -3214,7 +3218,7 @@ export class DaemonCellObject {
       this.#reclaimTerminalOutbox(requestId);
       await this.#projectUpdateExpired(serverId, requestId, finishedAt);
       cleared++;
-    }
+    });
 
     const terminalCursor = this.#sql(
       "clear-update-status",

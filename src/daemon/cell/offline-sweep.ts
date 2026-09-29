@@ -284,12 +284,11 @@ async function withBoundedConcurrency<T>(
 ): Promise<void> {
   let cursor = 0;
   async function worker(): Promise<void> {
-    for (;;) {
-      if (shouldStop?.()) return;
-      const index = cursor++;
-      if (index >= items.length) return;
-      await fn(items[index]);
-    }
+    if (shouldStop?.()) return;
+    const index = cursor++;
+    if (index >= items.length) return;
+    await fn(items[index]);
+    await worker();
   }
   await Promise.all(
     Array.from({ length: Math.min(limit, items.length) }, () => worker()),

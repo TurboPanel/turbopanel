@@ -24,6 +24,7 @@
  */
 import { type Db, runWithDbTimeout } from "../../db/connection.ts";
 import type { DerivedSecretsConfig } from "../../lib/secrets/secrets.ts";
+import { forEachSequential, mapSequential } from "../../lib/sequential.ts";
 import { compatLogWarn } from "../../lib/log-compat.ts";
 import { validateOutboundUrl } from "../../lib/http/outbound-url.ts";
 import {
@@ -325,13 +326,15 @@ async function attemptDeliveries(
   const deadline = (deps.now?.() ?? Date.now()) + budgetMs;
   let sent = 0;
   let failed = 0;
-  for (const { delivery, channel } of items) {
-    if (!deliverableHere(channel, deps)) continue;
+  let budgetSpent = false;
+  await forEachSequential(items, async ({ delivery, channel }) => {
+    if (budgetSpent || !deliverableHere(channel, deps)) return;
     if ((deps.now?.() ?? Date.now()) >= deadline) {
       deps.trace?.("notification-delivery-deferred", {
         remaining: items.length - sent - failed,
       });
-      break;
+      budgetSpent = true;
+      return;
     }
     const outcome = await attemptOne(secrets, channel, delivery, deps);
     if (outcome.ok) sent += 1;
@@ -349,7 +352,7 @@ async function attemptDeliveries(
         }`,
       );
     }
-  }
+  });
   return { sent, failed };
 }
 
@@ -369,19 +372,13 @@ export async function retryDueDeliveries(
       (tx) =>
         listDueDeliveries(tx, limit, { includeEmail: deps.email !== undefined }),
     );
-    const items: Array<
-      {
-        delivery: NotificationDeliveryRecord;
-        channel: NotificationChannelRecord | null;
-      }
-    > = [];
-    for (const delivery of due) {
+    const items = await mapSequential(due, async (delivery) => {
       const channel = await runWithDbTimeout(
         db,
         (tx) => getChannel(tx, delivery.channelId),
       );
-      items.push({ delivery, channel });
-    }
+      return { delivery, channel };
+    });
     const outcome = await attemptDeliveries(
       db,
       secrets,

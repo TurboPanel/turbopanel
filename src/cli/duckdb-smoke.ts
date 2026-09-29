@@ -15,6 +15,7 @@
  *             and read the file back
  */
 import { DuckDBInstance } from '@duckdb/node-api'
+import { forEachSequential } from '../lib/sequential.ts'
 import { resolveMetricsDir } from '../platform/deno/server-paths.ts'
 import {
   buildSchemaStatements,
@@ -34,9 +35,7 @@ export async function runDuckdbSmoke(mode: string): Promise<void> {
   const connection = await instance.connect()
 
   try {
-    for (const statement of buildSchemaStatements()) {
-      await connection.run(statement)
-    }
+    await forEachSequential(buildSchemaStatements(), (statement) => connection.run(statement))
 
     switch (mode) {
       case 'write': {

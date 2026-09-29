@@ -27,6 +27,7 @@ import {
   shapeExecutionLogRead,
   type ExecutionLogIndex,
 } from '../../../features/execution-logs/index-model.ts'
+import { firstSequential, forEachSequential } from '../../../lib/sequential.ts'
 import type {
   ExecutionLogAppendResult,
   ExecutionLogChunk,
@@ -135,10 +136,11 @@ export class FilesystemExecutionLogStore implements ExecutionLogStore {
       // instead of double-appending and desyncing every later offset.
       await file.truncate(index.totalBytes)
       await file.seek(index.totalBytes, Deno.SeekMode.Start)
-      let written = 0
-      while (written < bytes.byteLength) {
-        written += await file.write(bytes.subarray(written))
+      const writeRest = async (written: number): Promise<void> => {
+        if (written >= bytes.byteLength) return
+        await writeRest(written + (await file.write(bytes.subarray(written))))
       }
+      await writeRest(0)
     } finally {
       file.close()
     }
@@ -271,20 +273,28 @@ export class FilesystemExecutionLogStore implements ExecutionLogStore {
     const dataRoot = `${this.#root}/data`
     const progress = { removed: 0, partitionsScanned: 0 }
 
-    for (const year of await this.#sortedSubdirs(dataRoot, /^\d{4}$/)) {
-      for (const month of await this.#sortedSubdirs(`${dataRoot}/${year}`, /^\d{2}$/)) {
-        const exhausted = await this.#sweepMonthPartitions(
-          `${dataRoot}/${year}/${month}`,
-          `${year}/${month}`,
-          cutoffPartition,
-          limit,
-          progress
-        )
-        if (exhausted) return progress.removed
-        await this.#removeIfEmptyDir(`${dataRoot}/${year}/${month}`)
-      }
+    // Oldest first; the first month that reports "stop" ends the whole tick
+    // without touching the year directory it sits in.
+    await firstSequential(await this.#sortedSubdirs(dataRoot, /^\d{4}$/), async (year) => {
+      const exhausted = await firstSequential(
+        await this.#sortedSubdirs(`${dataRoot}/${year}`, /^\d{2}$/),
+        async (month) => {
+          const stop = await this.#sweepMonthPartitions(
+            `${dataRoot}/${year}/${month}`,
+            `${year}/${month}`,
+            cutoffPartition,
+            limit,
+            progress
+          )
+          if (stop) return true
+          await this.#removeIfEmptyDir(`${dataRoot}/${year}/${month}`)
+          return undefined
+        }
+      )
+      if (exhausted) return true
       await this.#removeIfEmptyDir(`${dataRoot}/${year}`)
-    }
+      return undefined
+    })
     return progress.removed
   }
 
@@ -300,21 +310,27 @@ export class FilesystemExecutionLogStore implements ExecutionLogStore {
     limit: number,
     progress: { removed: number; partitionsScanned: number }
   ): Promise<boolean> {
-    for (const day of await this.#sortedSubdirs(monthDir, /^\d{2}$/)) {
-      const partition = `${monthPartition}/${day}`
-      // Ascending order: the first unexpired partition ends the sweep.
-      if (partition > cutoffPartition) return true
-      if (parseExecutionLogDatePartition(partition) === null) continue
-      if (
-        progress.removed >= limit ||
-        progress.partitionsScanned >= SWEEP_MAX_PARTITIONS_PER_TICK
-      ) {
-        return true
+    const stop = await firstSequential(
+      await this.#sortedSubdirs(monthDir, /^\d{2}$/),
+      async (day) => {
+        const partition = `${monthPartition}/${day}`
+        // Ascending order: the first unexpired partition ends the sweep.
+        if (partition > cutoffPartition) return true
+        if (parseExecutionLogDatePartition(partition) === null) {
+          return undefined
+        }
+        if (
+          progress.removed >= limit ||
+          progress.partitionsScanned >= SWEEP_MAX_PARTITIONS_PER_TICK
+        ) {
+          return true
+        }
+        progress.partitionsScanned++
+        progress.removed += await this.#sweepPartition(partition, limit - progress.removed)
+        return undefined
       }
-      progress.partitionsScanned++
-      progress.removed += await this.#sweepPartition(partition, limit - progress.removed)
-    }
-    return false
+    )
+    return stop === true
   }
 
   /** Delete up to `budget` transcripts in one partition, dropping the dir when it empties. */
@@ -332,11 +348,11 @@ export class FilesystemExecutionLogStore implements ExecutionLogStore {
     }
 
     let removed = 0
-    for (const commandId of commandIds) {
-      if (removed >= budget) break
+    await forEachSequential(commandIds, async (commandId) => {
+      if (removed >= budget) return
       await this.#deleteTranscript(partition, commandId)
       removed++
-    }
+    })
     // Drop the drained partition so later ticks do not re-walk empty days.
     await this.#removeIfEmptyDir(this.#partitionDir(partition))
     return removed

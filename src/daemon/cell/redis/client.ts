@@ -142,8 +142,8 @@ export class RedisCellClient {
 
   async scanKeys(pattern: string): Promise<string[]> {
     const keys: string[] = [];
-    let cursor = "0";
-    do {
+    // SCAN pages are cursor-dependent: each page needs the previous cursor.
+    const scanFrom = async (cursor: string): Promise<void> => {
       const [nextCursor, batch] = await this.#cmd.scan(
         cursor,
         "MATCH",
@@ -151,11 +151,12 @@ export class RedisCellClient {
         "COUNT",
         100,
       );
-      cursor = nextCursor;
       if (Array.isArray(batch) && batch.length > 0) {
         keys.push(...batch.map(String));
       }
-    } while (cursor !== "0");
+      if (nextCursor !== "0") await scanFrom(nextCursor);
+    };
+    await scanFrom("0");
     return keys;
   }
 

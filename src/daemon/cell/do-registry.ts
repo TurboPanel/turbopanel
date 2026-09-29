@@ -299,14 +299,16 @@ class DurableObjectStubDaemonCell implements DaemonCell {
     timeoutMs: number,
   ): Promise<PendingRequestRecord | null> {
     const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
+    const poll = async (): Promise<PendingRequestRecord | null> => {
+      if (Date.now() >= deadline) return null;
       const record = await this.getRequest(requestId);
       if (record && isTerminalRequestStatus(record.status)) {
         return record;
       }
       await jitteredSleep();
-    }
-    return null;
+      return poll();
+    };
+    return poll();
   }
 
   /**

@@ -682,6 +682,41 @@ test('querySeriesResults answers a failing entity family as unavailable and keep
   assertEquals(byFamily.get('gpu')?.available, false)
 })
 
+test('querySeriesResults keeps selector order when a later family answers first', async () => {
+  const parsed = parseSeriesMetricSelectors(
+    'network:eth0.receiveBytesPerSecond,gpu:gpu0.utilizationPercent'
+  )
+  if (!parsed.ok) throw new TypeError('expected selectors to parse')
+  const outcome = await querySeriesResults({
+    store: fakeStore({
+      queryEntitySeries: async (query) => {
+        if (query.family === 'network') await new Promise((resolve) => setTimeout(resolve, 20))
+        return {
+          kind: 'analytics-engine',
+          available: true,
+          serverId: 'srv-1',
+          family: query.family,
+          metrics: query.metrics,
+          resolutionSeconds: 60,
+          entities: [],
+        }
+      },
+    }),
+    backend: 'analytics-engine',
+    serverId: 'srv-1',
+    selectors: parsed.value,
+    fromIso: FROM,
+    toIso: TO,
+    resolutionSeconds: 60,
+    context: buildTopologyContext(undefined, undefined),
+  })
+  if (!outcome.ok) throw new TypeError('expected the series query to succeed')
+  assertEquals(
+    outcome.entityResults.map((r) => r.family),
+    ['network', 'gpu']
+  )
+})
+
 test('logSeriesGaps logs holes and failed families once per server per minute', () => {
   const lines: string[] = []
   const log = (line: string) => lines.push(line)

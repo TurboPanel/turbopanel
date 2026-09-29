@@ -67,7 +67,7 @@ function sleep(ms: number): Promise<void> {
 
 async function connectAmqp(url: string): Promise<AmqpConnection> {
   const maxAttempts = 30
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+  const tryConnect = async (attempt: number): Promise<AmqpConnection> => {
     try {
       return await amqplib.connect(url)
     } catch (error) {
@@ -77,10 +77,11 @@ async function connectAmqp(url: string): Promise<AmqpConnection> {
         'command-consumer',
         `AMQP connect failed (attempt ${attempt}/${maxAttempts}): ${errMsg}`,
       )
-      await sleep(1000)
     }
+    await sleep(1000)
+    return tryConnect(attempt + 1)
   }
-  throw new Error('connectAmqp: unreachable')
+  return tryConnect(1)
 }
 
 /**
@@ -239,8 +240,8 @@ export async function startCommandConsumer(
     session = undefined
     compatLogWarn('command-consumer', `AMQP ${reason} — reconnecting`)
 
-    let delay = RECONNECT_BASE_DELAY_MS
-    while (!closed) {
+    const attempt = async (delay: number): Promise<void> => {
+      if (closed) return
       try {
         const rebuilt = await openSession()
         if (closed) {
@@ -248,35 +249,33 @@ export async function startCommandConsumer(
           // leave a consumer running past shutdown.
           await rebuilt.channel.close().catch(() => undefined)
           await rebuilt.connection.close().catch(() => undefined)
-          break
+          return
         }
-        if (rebuilt.lost) {
-          // The broker went away again while this session was being set up.
-          // Its own listeners already fired and found `session` unset, so
-          // nothing else will retry — installing it would leave a dead
-          // session that never emits again.
-          compatLogWarn(
-            'command-consumer',
-            'AMQP connection was lost again during reconnect — retrying',
-          )
-          await rebuilt.channel.close().catch(() => undefined)
-          await rebuilt.connection.close().catch(() => undefined)
-          await sleep(delay)
-          delay = Math.min(delay * 2, RECONNECT_MAX_DELAY_MS)
-          continue
+        if (!rebuilt.lost) {
+          session = rebuilt
+          compatLogWarn('command-consumer', 'AMQP reconnected, consuming again')
+          return
         }
-        session = rebuilt
-        compatLogWarn('command-consumer', 'AMQP reconnected, consuming again')
-        break
+        // The broker went away again while this session was being set up.
+        // Its own listeners already fired and found `session` unset, so
+        // nothing else will retry — installing it would leave a dead
+        // session that never emits again.
+        compatLogWarn(
+          'command-consumer',
+          'AMQP connection was lost again during reconnect — retrying',
+        )
+        await rebuilt.channel.close().catch(() => undefined)
+        await rebuilt.connection.close().catch(() => undefined)
       } catch (error) {
         compatLogError(
           'command-consumer',
           `AMQP reconnect failed: ${errorMessage(error)} — retrying in ${delay}ms`,
         )
-        await sleep(delay)
-        delay = Math.min(delay * 2, RECONNECT_MAX_DELAY_MS)
       }
+      await sleep(delay)
+      return attempt(Math.min(delay * 2, RECONNECT_MAX_DELAY_MS))
     }
+    await attempt(RECONNECT_BASE_DELAY_MS)
     reconnecting = false
   }
 

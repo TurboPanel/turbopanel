@@ -28,6 +28,7 @@ import { inetAddressToString } from '../../lib/ip-address.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
 import type { ServerReportedIp } from '../../contracts/server-addresses.ts'
 import { isUniqueViolationOn } from '../../db/unique-violation.ts'
+import { forEachSequential } from '../../lib/sequential.ts'
 import {
   type DatacenterMembershipPinDetailRow,
   loadDatacenterMembershipPinDetailsForServers,
@@ -233,9 +234,9 @@ export async function applyReportedAddressRepin(
     const serverMetadata = { resources: { ips: reportedIps ?? [] } }
     const nowIso = new Date().toISOString()
     const applied: RepinAction[] = []
-    for (const action of decided) {
+    await forEachSequential(decided, async (action) => {
       const pin = byIpId.get(action.ipId)
-      if (!pin) continue
+      if (!pin) return
       try {
         applied.push(
           await applyAction(db, pin, action, serverMetadata, nowIso),
@@ -248,7 +249,7 @@ export async function applyReportedAddressRepin(
           }`,
         )
       }
-    }
+    })
     return applied
   } catch (err) {
     compatLogWarn(

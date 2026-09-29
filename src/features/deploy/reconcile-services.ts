@@ -2,6 +2,7 @@ import { eq } from 'drizzle-orm'
 import type { ComposeDocument } from '../compose/index.ts'
 import type { Db } from '../../db/connection.ts'
 import { service } from '../../db/schema.ts'
+import { forEachSequential } from '../../lib/sequential.ts'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -42,8 +43,8 @@ export async function reconcileServicesFromCompose(
   }
 
   const created: string[] = []
-  for (const composeServiceName of composeNames) {
-    if (existingByComposeName.has(composeServiceName)) continue
+  await forEachSequential(composeNames, async (composeServiceName) => {
+    if (existingByComposeName.has(composeServiceName)) return
 
     const [inserted] = await db.insert(service).values({
       name: composeServiceName,
@@ -56,7 +57,7 @@ export async function reconcileServicesFromCompose(
       id: inserted.id,
       composeServiceName,
     })
-  }
+  })
 
   const composeNameSet = new Set(composeNames)
   const orphans = existingRows
