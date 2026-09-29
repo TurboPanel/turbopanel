@@ -433,7 +433,12 @@ guard; `pnpm test:do` alone does not.
   `version-wire.ts` files) and the daemon checks `instanceSupports()` before
   treating the peer as able to speak it. `update-progress`
   (`update-progress-v1`) is the worked example — fire-and-forget progress,
-  ignored by a peer that does not list the feature.
+  ignored by a peer that does not list the feature. `managed-health-v1` is
+  the worked example in the other direction, a control-plane-initiated
+  correlated request (`managed-health-request` / `managed-health-result`): the
+  control plane reads the daemon's stored `hello.features` and sends the
+  request only to a daemon that lists it, otherwise it keeps the stored
+  observation (`src/client/managed/health-probe.ts`).
   Both wires are expand-only by convention.
 - **`pnpm notices:generate` / `notices:check`** — `THIRD_PARTY_NOTICES.md` from
   `pnpm-lock.yaml` plus the JSR/npm graph in `deno.lock`. Wired into `test:hook`
