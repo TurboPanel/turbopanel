@@ -1,5 +1,5 @@
 # BREAK-GLASS promotion for this repo. The normal path is the two automatic
-# PRs (promote-prs.yml -> cut-rc.yml, then cut-release.yml): merge "Release candidate
+# PRs (promote-prs.yml -> cut-rc.yml, then cut-release.yml): merge "Release Candidate
 # x.y.z-rc.N" to cut the next rc, merge "Release x.y.z" to ship it. Use this form
 # only when those cannot run.
 #
