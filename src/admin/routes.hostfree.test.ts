@@ -1167,6 +1167,36 @@ test('hostnames, certificates, ACME, and trusted proxies are platform-managed on
   })
 })
 
+test('instance updates: the installed control plane carries its build label when the installer recorded one', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (() =>
+    Promise.resolve(new Response('missing', { status: 404 }))) as typeof fetch
+  try {
+    for (const [label, expected] of [
+      ['0.1.3-canary.417', '0.1.3-canary.417'],
+      [undefined, undefined],
+      ['not a version', undefined],
+    ] as const) {
+      const { app, cookie } = await buildApp({
+        runtime: 'workers',
+        getEnv: () => ({
+          TURBOPANEL_UPDATE_CHANNEL: 'canary',
+          ...(label === undefined ? {} : { TURBOPANEL_BUILD_LABEL: label }),
+        }),
+      })
+      const res = await app.request(`${ADMIN_API_PREFIX}/instance/updates`, {
+        headers: { Cookie: cookie },
+      })
+      const body = await jsonBody<{
+        units: { instance: { installed: { label?: string } } }
+      }>(res)
+      assertEquals(body.units.instance.installed.label, expected)
+    }
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('instance updates: workers refuses the control plane, GET still reports its version', async () => {
   const originalFetch = globalThis.fetch
   globalThis.fetch = (() =>

@@ -1,6 +1,6 @@
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../app/app.ts'
-import { resolveInstanceRevision } from '../app/build-info.ts'
+import { resolveBuildLabel, resolveInstanceRevision } from '../app/build-info.ts'
 import { INSTANCE_VERSION } from '../app/version.ts'
 import { resolveColocatedServerId } from '../client/authn/install-state.ts'
 import { resolveInstanceUpdateChannel, type UpdateChannel } from '../contracts/update-channel.ts'
@@ -87,6 +87,10 @@ export function registerInstanceUpdatesAdminRoutes(
       version: INSTANCE_VERSION,
       commit: revision.commit,
     }
+    // The exact label of the installed bytes (`0.1.3-canary.417`, `0.1.3-rc.2`),
+    // written by the installer from the manifest it installed. INSTANCE_VERSION
+    // is the plain deno.json number, which cannot tell a canary from its rc.
+    const buildLabel = resolveBuildLabel(env)
     const daemonInstalled = daemon.serverId
       ? { version: daemon.version, commit: daemon.commit, builtAt: daemon.builtAt }
       : null
@@ -98,7 +102,7 @@ export function registerInstanceUpdatesAdminRoutes(
       updatesManaged: opts.runtime === 'workers',
       units: {
         instance: {
-          installed: instanceInstalled,
+          installed: buildLabel ? { ...instanceInstalled, label: buildLabel } : instanceInstalled,
           target: instanceTarget,
           uiTarget,
           updateAvailable: updateAvailableFor(instanceInstalled, instanceTarget),

@@ -14,7 +14,9 @@ export const INSTANCE_UPDATES_PATHS = {
       summary: 'Read control-plane and co-located daemon update status',
       description:
         'Returns the installed `INSTANCE_VERSION` and commit (the same ' +
-        "values as `/api/health`) and the co-located daemon's reported " +
+        'values as `/api/health`), plus `label` (the installed build label, ' +
+        'for example `0.1.3-canary.417`, when the installer recorded it), ' +
+        "and the co-located daemon's reported " +
         'version, each beside the channel manifest target. The UI package ' +
         'target is included on the control-plane unit and is installed by ' +
         "the same upgrade. Each unit carries `updateAvailable`: the server's " +
