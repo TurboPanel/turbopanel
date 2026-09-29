@@ -1,8 +1,5 @@
 import { join } from '@std/path'
-import {
-  drizzleStudioBrowserUrl,
-  DRIZZLE_STUDIO_PORT,
-} from './drizzle-studio-probe.ts'
+import { drizzleStudioBrowserUrl, DRIZZLE_STUDIO_PORT } from './drizzle-studio-probe.ts'
 
 export function drizzleKitBinPath(instanceRepoRoot: string): string {
   return join(instanceRepoRoot, 'node_modules', 'drizzle-kit', 'bin.cjs')
@@ -37,7 +34,7 @@ export function studioStartWhenNotReady(detail: string | undefined): { ok: false
 }
 
 export async function childErrorDetail(
-  child: Deno.ChildProcess | null,
+  child: Deno.ChildProcess | null
 ): Promise<string | undefined> {
   if (!child) return undefined
   const status = await Promise.race([
@@ -51,7 +48,7 @@ export async function childErrorDetail(
 export async function waitForStudioPort(
   probe: (host: string) => Promise<boolean>,
   host: string,
-  timeoutMs: number,
+  timeoutMs: number
 ): Promise<boolean> {
   const deadline = Date.now() + timeoutMs
   const poll = async (): Promise<boolean> => {

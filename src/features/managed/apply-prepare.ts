@@ -9,10 +9,7 @@ import {
   resealSecretForDaemon,
 } from '../../lib/secrets/data-encryption.ts'
 import type { DerivedSecretsConfig, SecretsConfig } from '../../lib/secrets/secrets.ts'
-import {
-  getServerDaemonStateByServerId,
-  isDaemonKeyActive,
-} from '../servers/server-identity-db.ts'
+import { getServerDaemonStateByServerId, isDaemonKeyActive } from '../servers/server-identity-db.ts'
 import type {
   ManagedApplyCommandPayload,
   ManagedApplyOrgTlsMaterial,
@@ -48,10 +45,7 @@ import {
   splitTlsMetadata,
 } from '../../lib/tls/index.ts'
 import type { Db } from '../../db/connection.ts'
-import {
-  isManagedAccessAddressError,
-  resolveManagedBindAddress,
-} from './access-address.ts'
+import { isManagedAccessAddressError, resolveManagedBindAddress } from './access-address.ts'
 import {
   ensureManagedReplicationPrincipal,
   listManagedPrincipals,
@@ -86,10 +80,7 @@ import {
   updateMemberReplicationTransport,
 } from './members.ts'
 import { parseManagedResidual } from './serialize.ts'
-import {
-  MANAGED_DESTROY_GATE_METADATA_KEY,
-  type ManagedDestroyGate,
-} from './destroy-gate.ts'
+import { MANAGED_DESTROY_GATE_METADATA_KEY, type ManagedDestroyGate } from './destroy-gate.ts'
 
 export {
   MANAGED_DESTROY_GATE_CLAIM_KEY,
@@ -125,7 +116,7 @@ export async function awaitCommandTerminal(
     pollMs?: number
     loadCommand?: (db: Db, commandId: string) => Promise<CommandRecord | null>
     sleep?: (ms: number) => Promise<void>
-  },
+  }
 ): Promise<CommandRecord | null> {
   const timeoutMs = options?.timeoutMs ?? APPLY_EXPIRES_MS
   const pollMs = options?.pollMs ?? COMMAND_AWAIT_POLL_MS
@@ -144,9 +135,7 @@ export async function awaitCommandTerminal(
   return poll()
 }
 
-function isPrimaryMemberPayload(
-  member: PreparedManagedMemberApply,
-): boolean {
+function isPrimaryMemberPayload(member: PreparedManagedMemberApply): boolean {
   if (member.payload.memberRole === 'primary') return true
   if (member.payload.replication?.role === 'primary') return true
   // Single-member / payloads without replication treat as primary.
@@ -156,11 +145,9 @@ function isPrimaryMemberPayload(
 
 function metadataForManagedApplyMember(
   member: PreparedManagedMemberApply,
-  extraMetadata?: Record<string, unknown>,
+  extraMetadata?: Record<string, unknown>
 ): Record<string, unknown> | undefined {
-  const pending = member.pendingTlsLeaf
-    ? pendingTlsLeafMetadata(member.pendingTlsLeaf)
-    : {}
+  const pending = member.pendingTlsLeaf ? pendingTlsLeafMetadata(member.pendingTlsLeaf) : {}
   const merged = { ...extraMetadata, ...pending }
   return Object.keys(merged).length > 0 ? merged : undefined
 }
@@ -172,7 +159,7 @@ async function enqueueOneManagedApplyMember(
     userId: string
     member: PreparedManagedMemberApply
     extraMetadata?: Record<string, unknown>
-  },
+  }
 ): Promise<ManagedApplyEnqueueResult> {
   const { member } = params
   const expiresAt = new Date(Date.now() + APPLY_EXPIRES_MS).toISOString()
@@ -299,7 +286,7 @@ export async function preflightManagedApplyInfrastructure(
   params: {
     serverId: string
     scope: ManagedSettings['exposure']['scope']
-  },
+  }
 ): Promise<ManagedApplyPrepareError | null> {
   const secretsConfig = c.get('secretsConfig')
   const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
@@ -324,16 +311,11 @@ export async function preflightManagedApplyInfrastructure(
   return null
 }
 
-export function isPrepareError(
-  value: unknown,
-): value is ManagedApplyPrepareError {
+export function isPrepareError(value: unknown): value is ManagedApplyPrepareError {
   return typeof value === 'object' && value !== null && 'kind' in value
 }
 
-export function prepareErrorResponse(
-  c: Context,
-  error: ManagedApplyPrepareError,
-): Response {
+export function prepareErrorResponse(c: Context, error: ManagedApplyPrepareError): Response {
   switch (error.kind) {
     case 'datacenter_ip_required':
       return c.json({ error: 'datacenter_ip_required' }, 422)
@@ -358,10 +340,7 @@ export function prepareErrorResponse(
   }
 }
 
-export function mapManagedApplyPrepareError(
-  c: Context,
-  error: ManagedApplyPrepareError,
-): Response {
+export function mapManagedApplyPrepareError(c: Context, error: ManagedApplyPrepareError): Response {
   return prepareErrorResponse(c, error)
 }
 
@@ -389,7 +368,7 @@ function principalPrivileges(metadata: unknown): string[] | undefined {
   if (!isRecord(metadata)) return undefined
   if (!Array.isArray(metadata.privileges)) return undefined
   const privileges = metadata.privileges.filter(
-    (entry): entry is string => typeof entry === 'string',
+    (entry): entry is string => typeof entry === 'string'
   )
   return privileges.length > 0 ? privileges : undefined
 }
@@ -401,7 +380,7 @@ function composeFromRuntimeSpec(
   rootUsername: string,
   member?: BuildRuntimeSpecInput['member'],
   useOrgTls?: boolean,
-  memberCount?: number,
+  memberCount?: number
 ): {
   composeYaml: string
   runtime: ReturnType<ManagedEngineSpec['buildRuntimeSpec']>
@@ -429,10 +408,7 @@ function composeFromRuntimeSpec(
       ...(Object.keys(volumes).length > 0 ? { volumes } : {}),
     },
     presentation: {
-      keyOrder: [
-        'services',
-        ...(Object.keys(volumes).length > 0 ? ['volumes'] : []),
-      ],
+      keyOrder: ['services', ...(Object.keys(volumes).length > 0 ? ['volumes'] : [])],
       comments: {},
     },
   }
@@ -446,13 +422,10 @@ async function buildCredentials(
   dataEncryptionSecrets: DerivedSecretsConfig,
   managedId: string,
   serverId: string,
-  omitPrincipalIds?: string[],
-): Promise<
-  ManagedApplyCommandPayload['credentials'] | ManagedApplyPrepareError
-> {
+  omitPrincipalIds?: string[]
+): Promise<ManagedApplyCommandPayload['credentials'] | ManagedApplyPrepareError> {
   const omit = new Set(omitPrincipalIds ?? [])
-  const rows = (await listManagedPrincipals(db, managedId))
-    .filter((row) => !omit.has(row.id))
+  const rows = (await listManagedPrincipals(db, managedId)).filter((row) => !omit.has(row.id))
   if (rows.length === 0) {
     return { kind: 'managed_credential_not_sealed' }
   }
@@ -473,9 +446,7 @@ async function buildCredentials(
       .where(eq(principal.id, row.id))
       .limit(1)
     const sealed = passwordRow?.password
-    if (
-      typeof sealed !== 'string' || !sealed.startsWith(ENVELOPE_PREFIX_SECRET)
-    ) {
+    if (typeof sealed !== 'string' || !sealed.startsWith(ENVELOPE_PREFIX_SECRET)) {
       return { kind: 'managed_credential_not_sealed' } as const
     }
 
@@ -483,7 +454,7 @@ async function buildCredentials(
       secretsConfig,
       dataEncryptionSecrets,
       { serverId, keyId: daemonState.key.id },
-      sealed,
+      sealed
     )
 
     const role = isManagedRootPrincipal(row.metadata) ? 'root' : 'user'
@@ -506,7 +477,7 @@ async function buildCredentials(
 }
 
 function organizationCaSetOrSealedError(
-  set: OrganizationCaSet | null,
+  set: OrganizationCaSet | null
 ): OrganizationCaSet | ManagedApplyPrepareError {
   if (
     !set ||
@@ -526,22 +497,17 @@ function organizationCaSetOrSealedError(
 export async function ensureActiveOrganizationCa(
   db: Db,
   dataEncryptionSecrets: DerivedSecretsConfig,
-  organizationId: string,
+  organizationId: string
 ): Promise<OrganizationCaSet | ManagedApplyPrepareError> {
   const existingSet = await loadOrganizationCaSet(db, organizationId)
   if (existingSet) return organizationCaSetOrSealedError(existingSet)
 
   const material = await mintOrganizationCa({ organizationId })
-  const privateKeyPemSealed = await encryptSecret(
-    dataEncryptionSecrets,
-    material.privateKeyPem,
-  )
+  const privateKeyPemSealed = await encryptSecret(dataEncryptionSecrets, material.privateKeyPem)
   if (!privateKeyPemSealed.startsWith(ENVELOPE_PREFIX_SECRET)) {
     return { kind: 'managed_credential_not_sealed' }
   }
-  const { columns, residual } = splitTlsMetadata(
-    metadataFromParsed(material.parsed, 'ready'),
-  )
+  const { columns, residual } = splitTlsMetadata(metadataFromParsed(material.parsed, 'ready'))
 
   try {
     await db.transaction(async (tx) => {
@@ -568,9 +534,7 @@ export async function ensureActiveOrganizationCa(
     if (!isOrganizationCaUniqueViolation(err)) throw err
   }
 
-  return organizationCaSetOrSealedError(
-    await loadOrganizationCaSet(db, organizationId),
-  )
+  return organizationCaSetOrSealedError(await loadOrganizationCaSet(db, organizationId))
 }
 
 /**
@@ -593,7 +557,7 @@ export async function buildManagedOrgTlsMaterial(
   },
   managedId: string,
   extraSans: readonly string[] = [],
-  ipAddresses: readonly string[] = [],
+  ipAddresses: readonly string[] = []
 ): Promise<ManagedApplyOrgTlsMaterial> {
   const leafName = `managed-${managedId}`
   const sans = [
@@ -601,29 +565,21 @@ export async function buildManagedOrgTlsMaterial(
     'localhost',
     ...extraSans.filter((s) => s.length > 0 && s !== leafName && s !== 'localhost'),
   ]
-  const leaf = await issueLeafCertificate(
-    ca.certificatePem,
-    ca.privateKeyPem,
-    sans,
-    {
-      commonName: leafName,
-      // ProxySQL presents this leaf as a *client* cert on proxy-to-server
-      // connections (ssl_p2s_cert), and Postgres verifies client certs
-      // whenever ssl_ca_file is set — without clientAuth EKU the handshake
-      // fails with "unsuitable certificate purpose".
-      includeClientAuth: true,
-      ...(ipAddresses.length > 0 ? { ipAddresses: [...ipAddresses] } : {}),
-    },
-  )
-  const sealedLeafKey = await encryptSecret(
-    dataEncryptionSecrets,
-    leaf.privateKeyPem,
-  )
+  const leaf = await issueLeafCertificate(ca.certificatePem, ca.privateKeyPem, sans, {
+    commonName: leafName,
+    // ProxySQL presents this leaf as a *client* cert on proxy-to-server
+    // connections (ssl_p2s_cert), and Postgres verifies client certs
+    // whenever ssl_ca_file is set — without clientAuth EKU the handshake
+    // fails with "unsuitable certificate purpose".
+    includeClientAuth: true,
+    ...(ipAddresses.length > 0 ? { ipAddresses: [...ipAddresses] } : {}),
+  })
+  const sealedLeafKey = await encryptSecret(dataEncryptionSecrets, leaf.privateKeyPem)
   const privateKeyEnvelope = await resealSecretForDaemon(
     secretsConfig,
     dataEncryptionSecrets,
     recipient,
-    sealedLeafKey,
+    sealedLeafKey
   )
   return {
     certificatePem: leaf.certificatePem,
@@ -643,7 +599,7 @@ async function buildOrgTlsMaterialForServer(
     replicaId: string
     extraSans?: readonly string[]
     ipAddresses?: readonly string[]
-  },
+  }
 ): Promise<
   | { material: ManagedApplyOrgTlsMaterial; pendingTlsLeaf: UpsertTlsLeafTrackingParams }
   | ManagedApplyPrepareError
@@ -661,17 +617,10 @@ async function buildOrgTlsMaterialForServer(
     return { kind: 'daemon_key_unavailable', serverId }
   }
 
-  const ca = await ensureActiveOrganizationCa(
-    db,
-    dataEncryptionSecrets,
-    organizationId,
-  )
+  const ca = await ensureActiveOrganizationCa(db, dataEncryptionSecrets, organizationId)
   if ('kind' in ca) return ca
 
-  const caPrivateKeyPem = await decryptSecret(
-    dataEncryptionSecrets,
-    ca.signer.privateKeyPemSealed,
-  )
+  const caPrivateKeyPem = await decryptSecret(dataEncryptionSecrets, ca.signer.privateKeyPemSealed)
   const material = await buildManagedOrgTlsMaterial(
     secretsConfig,
     dataEncryptionSecrets,
@@ -683,7 +632,7 @@ async function buildOrgTlsMaterialForServer(
     },
     managedId,
     extraSans,
-    ipAddresses,
+    ipAddresses
   )
   return {
     material,
@@ -700,9 +649,7 @@ async function buildOrgTlsMaterialForServer(
   }
 }
 
-function resolveRootUsername(
-  input: BuildManagedApplyInput,
-): string {
+function resolveRootUsername(input: BuildManagedApplyInput): string {
   const residual = parseManagedResidual(input.managedRow.metadata)
   return residual.rootUsername ?? input.rootUsername ?? input.spec.rootUsername
 }
@@ -736,10 +683,10 @@ type ResolvedMemberPrivateBind = {
 export async function resolveMemberPrivateBindAddress(
   db: Db,
   member: ManagedMemberRow,
-  members: readonly ManagedMemberRow[],
+  members: readonly ManagedMemberRow[]
 ): Promise<ResolvedMemberPrivateBind | undefined | ManagedApplyPrepareError> {
   const remotePeers = members.filter(
-    (row) => row.id !== member.id && row.serverId !== member.serverId,
+    (row) => row.id !== member.id && row.serverId !== member.serverId
   )
   if (remotePeers.length === 0) return undefined
 
@@ -761,10 +708,7 @@ export async function resolveMemberPrivateBindAddress(
       bind = candidate
       continue
     }
-    if (
-      bind.address !== candidate.address ||
-      bind.transport !== candidate.transport
-    ) {
+    if (bind.address !== candidate.address || bind.transport !== candidate.transport) {
       return {
         kind: 'managed_listener_bind_conflict',
         serverId: member.serverId,
@@ -793,31 +737,15 @@ async function resolveMemberReplicationInput(
     replicationUsername: string | null
     multiMember: boolean
     peers: ManagedMemberPeer[]
-  },
-): Promise<
-  BuildRuntimeSpecInput['member'] | undefined | ManagedApplyPrepareError
-> {
-  const {
-    members,
-    member,
-    roleForSpec,
-    replicationUsername,
-    multiMember,
-    peers,
-  } = params
+  }
+): Promise<BuildRuntimeSpecInput['member'] | undefined | ManagedApplyPrepareError> {
+  const { members, member, roleForSpec, replicationUsername, multiMember, peers } = params
   if (!multiMember || !replicationUsername) return undefined
 
   let privateListener:
-    | NonNullable<
-      NonNullable<BuildRuntimeSpecInput['member']>['privateListener']
-    >
-    | undefined
+    NonNullable<NonNullable<BuildRuntimeSpecInput['member']>['privateListener']> | undefined
   if (member.privatePort !== null) {
-    const privateBind = await resolveMemberPrivateBindAddress(
-      db,
-      member,
-      members,
-    )
+    const privateBind = await resolveMemberPrivateBindAddress(db, member, members)
     if (isPrepareError(privateBind)) return privateBind
     if (privateBind) {
       privateListener = {
@@ -885,7 +813,7 @@ async function attachReplicationCredential(
     multiMember: boolean
     replicationUsername: string | null
     credentials: ManagedApplyCommandPayload['credentials']
-  },
+  }
 ): Promise<ManagedApplyPrepareError | null> {
   const { managedId, serverId, multiMember, replicationUsername, credentials } = params
   if (!multiMember || !replicationUsername) return null
@@ -904,16 +832,14 @@ async function attachReplicationCredential(
     .where(eq(principal.id, repl.id))
     .limit(1)
   const sealed = passwordRow?.password
-  if (
-    typeof sealed !== 'string' || !sealed.startsWith(ENVELOPE_PREFIX_SECRET)
-  ) {
+  if (typeof sealed !== 'string' || !sealed.startsWith(ENVELOPE_PREFIX_SECRET)) {
     return { kind: 'managed_credential_not_sealed' }
   }
   const resealed = await resealSecretForDaemon(
     secretsConfig,
     dataEncryptionSecrets,
     { serverId, keyId: daemonState.key.id },
-    sealed,
+    sealed
   )
   credentials.push({
     principalId: repl.id,
@@ -927,7 +853,7 @@ async function attachReplicationCredential(
 
 /** Build the payload `replication` field from a resolved member input, if any. */
 function buildReplicationPayloadField(
-  memberInput: BuildRuntimeSpecInput['member'] | undefined,
+  memberInput: BuildRuntimeSpecInput['member'] | undefined
 ): ManagedApplyCommandPayload['replication'] | undefined {
   if (!memberInput?.replication) return undefined
   return {
@@ -959,7 +885,7 @@ function attachOptionalPayloadFields(
     memberId: string
     roleForSpec: 'primary' | 'standby'
     monitorUsers?: NonNullable<ManagedApplyCommandPayload['monitorUsers']>
-  },
+  }
 ): void {
   if (memberInput?.privateListener) {
     payload.privateListener = memberInput.privateListener
@@ -987,7 +913,7 @@ function attachMemberApplyFlags(
     memberId: string
     roleForSpec: 'primary' | 'standby'
     monitorUsers?: NonNullable<ManagedApplyCommandPayload['monitorUsers']>
-  },
+  }
 ): void {
   if (extra.monitorUsers !== undefined) payload.monitorUsers = extra.monitorUsers
   if (
@@ -1009,7 +935,7 @@ function attachMemberApplyFlags(
 async function resolveMemberOrganizationId(
   db: Db,
   input: BuildManagedApplyInput,
-  member: ManagedMemberRow,
+  member: ManagedMemberRow
 ): Promise<string> {
   const [memberServer] = await db
     .select({ organizationId: serverTable.organizationId })
@@ -1035,11 +961,8 @@ async function attachManagedOrgTlsMaterial(
     containerName: string
     memberOrganizationId: string
     payload: ManagedApplyCommandPayload
-  },
-): Promise<
-  | { pendingTlsLeaf: UpsertTlsLeafTrackingParams }
-  | ManagedApplyPrepareError
-> {
+  }
+): Promise<{ pendingTlsLeaf: UpsertTlsLeafTrackingParams } | ManagedApplyPrepareError> {
   const {
     input,
     member,
@@ -1068,7 +991,7 @@ async function attachManagedOrgTlsMaterial(
       // Private listener IP must be an IP SAN so remote MySQL/MariaDB replicas
       // using hostaddr + VERIFY_IDENTITY match the primary leaf.
       ipAddresses: memberInput?.privateListener ? [memberInput.privateListener.address] : [],
-    },
+    }
   )
   if ('kind' in orgTlsMaterial) return orgTlsMaterial
   payload.orgTlsMaterial = orgTlsMaterial.material
@@ -1076,7 +999,7 @@ async function attachManagedOrgTlsMaterial(
 }
 
 function buildApplyPeersField(
-  peers: readonly ManagedMemberPeer[],
+  peers: readonly ManagedMemberPeer[]
 ): ManagedApplyCommandPayload['peers'] {
   return peers.map((p) => ({
     memberId: p.memberId,
@@ -1101,11 +1024,12 @@ async function attachConsumerSourceAddresses(
   input: BuildManagedApplyInput,
   members: readonly ManagedMemberRow[],
   member: ManagedMemberRow,
-  memberInput: NonNullable<BuildRuntimeSpecInput['member']>,
+  memberInput: NonNullable<BuildRuntimeSpecInput['member']>
 ): Promise<void> {
   const memberServerIds = new Set(members.map((m) => m.serverId))
-  const consumerIds = (await consumerServerIdsForManaged(db, input.managedRow.id))
-    .filter((id) => !memberServerIds.has(id) && id !== member.serverId)
+  const consumerIds = (await consumerServerIdsForManaged(db, input.managedRow.id)).filter(
+    (id) => !memberServerIds.has(id) && id !== member.serverId
+  )
   if (consumerIds.length === 0) return
 
   const endpoints = await resolvePrivateEndpoints(db, {
@@ -1119,9 +1043,7 @@ async function attachConsumerSourceAddresses(
     if (!addresses.includes(resolved.address)) addresses.push(resolved.address)
   }
   if (addresses.length > 0) {
-    memberInput.clientSourceAddresses = addresses.toSorted((a, b) =>
-      a.localeCompare(b)
-    )
+    memberInput.clientSourceAddresses = addresses.toSorted((a, b) => a.localeCompare(b))
   }
 }
 
@@ -1137,42 +1059,30 @@ async function buildPrimaryMonitorUsers(
   dataEncryptionSecrets: DerivedSecretsConfig,
   input: BuildManagedApplyInput,
   members: readonly ManagedMemberRow[],
-  member: ManagedMemberRow,
+  member: ManagedMemberRow
 ): Promise<
   | { monitorUsers: NonNullable<ManagedApplyCommandPayload['monitorUsers']> }
   | ManagedApplyPrepareError
 > {
   const frontingServerIds = new Set<string>(members.map((m) => m.serverId))
-  for (
-    const consumerId of await consumerServerIdsForManaged(
-      db,
-      input.managedRow.id,
-    )
-  ) {
+  for (const consumerId of await consumerServerIdsForManaged(db, input.managedRow.id)) {
     frontingServerIds.add(consumerId)
   }
   const daemonState = await getServerDaemonStateByServerId(db, member.serverId)
   if (!daemonState || !isDaemonKeyActive(daemonState.key)) {
     return { kind: 'daemon_key_unavailable', serverId: member.serverId }
   }
-  const monitorUsers: NonNullable<ManagedApplyCommandPayload['monitorUsers']> =
-    []
-  const sortedFrontingServerIds = [...frontingServerIds].toSorted((a, b) =>
-    a.localeCompare(b)
-  )
+  const monitorUsers: NonNullable<ManagedApplyCommandPayload['monitorUsers']> = []
+  const sortedFrontingServerIds = [...frontingServerIds].toSorted((a, b) => a.localeCompare(b))
   await forEachSequential(sortedFrontingServerIds, async (frontingServerId) => {
-    const cred = await ensureServerMonitorCredential(
-      db,
-      dataEncryptionSecrets,
-      frontingServerId,
-    )
+    const cred = await ensureServerMonitorCredential(db, dataEncryptionSecrets, frontingServerId)
     monitorUsers.push({
       username: cred.username,
       password: await resealSecretForDaemon(
         secretsConfig,
         dataEncryptionSecrets,
         { serverId: member.serverId, keyId: daemonState.key.id },
-        cred.passwordSealed,
+        cred.passwordSealed
       ),
     })
   })
@@ -1190,20 +1100,13 @@ async function resolvePayloadMonitorUsers(
   input: BuildManagedApplyInput,
   members: readonly ManagedMemberRow[],
   member: ManagedMemberRow,
-  roleForSpec: 'primary' | 'standby',
+  roleForSpec: 'primary' | 'standby'
 ): Promise<
   | { monitorUsers?: NonNullable<ManagedApplyCommandPayload['monitorUsers']> }
   | ManagedApplyPrepareError
 > {
   if (roleForSpec !== 'primary') return {}
-  return buildPrimaryMonitorUsers(
-    db,
-    secretsConfig,
-    dataEncryptionSecrets,
-    input,
-    members,
-    member,
-  )
+  return buildPrimaryMonitorUsers(db, secretsConfig, dataEncryptionSecrets, input, members, member)
 }
 
 async function buildPayloadForMember(
@@ -1216,7 +1119,7 @@ async function buildPayloadForMember(
     multiMember: boolean
     replicationUsername: string | null
     containerSans: readonly string[]
-  },
+  }
 ): Promise<
   | { payload: ManagedApplyCommandPayload; pendingTlsLeaf: UpsertTlsLeafTrackingParams }
   | ManagedApplyPrepareError
@@ -1243,22 +1146,18 @@ async function buildPayloadForMember(
     members,
     member,
     // Engine-native backend port (5432/3306), not the ProxySQL client listener.
-    input.spec.defaultPort,
+    input.spec.defaultPort
   )
   if (isPrivateEndpointError(peers)) return peers
 
-  const resolvedMemberInput = await resolveMemberReplicationInput(
-    db,
-    input.managedRow.id,
-    {
-      members,
-      member,
-      roleForSpec,
-      replicationUsername,
-      multiMember,
-      peers,
-    },
-  )
+  const resolvedMemberInput = await resolveMemberReplicationInput(db, input.managedRow.id, {
+    members,
+    member,
+    roleForSpec,
+    replicationUsername,
+    multiMember,
+    peers,
+  })
   if (isPrepareError(resolvedMemberInput)) return resolvedMemberInput
   const memberInput = resolvedMemberInput
 
@@ -1274,7 +1173,7 @@ async function buildPayloadForMember(
     rootUsername,
     memberInput,
     multiMember,
-    members.length,
+    members.length
   )
 
   // Both the payload's `managedNetwork` and the org-CA leaf below are scoped
@@ -1307,22 +1206,17 @@ async function buildPayloadForMember(
     dataEncryptionSecrets,
     input.managedRow.id,
     member.serverId,
-    input.omitPrincipalIds,
+    input.omitPrincipalIds
   )
   if (!Array.isArray(credentials)) return credentials
 
-  const replError = await attachReplicationCredential(
-    db,
-    secretsConfig,
-    dataEncryptionSecrets,
-    {
-      managedId: input.managedRow.id,
-      serverId: member.serverId,
-      multiMember,
-      replicationUsername,
-      credentials,
-    },
-  )
+  const replError = await attachReplicationCredential(db, secretsConfig, dataEncryptionSecrets, {
+    managedId: input.managedRow.id,
+    serverId: member.serverId,
+    multiMember,
+    replicationUsername,
+    credentials,
+  })
   if (replError) return replError
 
   const databases: NonNullable<ManagedApplyCommandPayload['databases']> = [
@@ -1340,7 +1234,7 @@ async function buildPayloadForMember(
     input,
     members,
     member,
-    roleForSpec,
+    roleForSpec
   )
   if (isPrepareError(builtMonitorUsers)) return builtMonitorUsers
 
@@ -1374,20 +1268,15 @@ async function buildPayloadForMember(
     monitorUsers: builtMonitorUsers.monitorUsers,
   })
 
-  const tlsResult = await attachManagedOrgTlsMaterial(
-    db,
-    secretsConfig,
-    dataEncryptionSecrets,
-    {
-      input,
-      member,
-      memberInput,
-      containerSans,
-      containerName: allocation.containerName,
-      memberOrganizationId,
-      payload,
-    },
-  )
+  const tlsResult = await attachManagedOrgTlsMaterial(db, secretsConfig, dataEncryptionSecrets, {
+    input,
+    member,
+    memberInput,
+    containerSans,
+    containerName: allocation.containerName,
+    memberOrganizationId,
+    payload,
+  })
   if (isPrepareError(tlsResult)) return tlsResult
 
   return { payload, pendingTlsLeaf: tlsResult.pendingTlsLeaf }
@@ -1400,10 +1289,8 @@ async function buildPayloadForMember(
 export async function prepareManagedApplyPayloads(
   c: Context,
   db: Db,
-  input: BuildManagedApplyInput,
-): Promise<
-  { members: PreparedManagedMemberApply[] } | ManagedApplyPrepareError
-> {
+  input: BuildManagedApplyInput
+): Promise<{ members: PreparedManagedMemberApply[] } | ManagedApplyPrepareError> {
   await ensureManagedPrimaryMember(db, {
     managedId: input.managedRow.id,
     serverId: input.serverId,
@@ -1427,11 +1314,7 @@ export async function prepareManagedApplyPayloads(
   const multiMember = members.length > 1
   let replicationUsername: string | null = null
   if (multiMember) {
-    const usernameOrError = await ensureClusterReplicationUsername(
-      c,
-      db,
-      input,
-    )
+    const usernameOrError = await ensureClusterReplicationUsername(c, db, input)
     if (isPrepareError(usernameOrError)) return usernameOrError
     replicationUsername = usernameOrError
   }
@@ -1458,45 +1341,33 @@ export async function prepareManagedApplyPayloads(
 async function ensureClusterReplicationUsername(
   c: Context,
   db: Db,
-  input: BuildManagedApplyInput,
+  input: BuildManagedApplyInput
 ): Promise<string | ManagedApplyPrepareError> {
   const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
   if (!c.get('secretsConfig') || !dataEncryptionSecrets) {
     return { kind: 'daemon_key_unavailable', serverId: input.serverId }
   }
 
-  const repl = await ensureManagedReplicationPrincipal(
-    db,
-    dataEncryptionSecrets,
-    {
-      managedId: input.managedRow.id,
-      preferredUsername: 'tp_repl',
-      provider: input.spec.principalProvider,
-      identifier: input.spec.userOperations.identifier,
-      randomizeSuffix: await loadRandomizedUsernamesDefault(
-        db,
-        input.organizationId,
-      ),
-    },
-  )
+  const repl = await ensureManagedReplicationPrincipal(db, dataEncryptionSecrets, {
+    managedId: input.managedRow.id,
+    preferredUsername: 'tp_repl',
+    provider: input.spec.principalProvider,
+    identifier: input.spec.userOperations.identifier,
+    randomizeSuffix: await loadRandomizedUsernamesDefault(db, input.organizationId),
+  })
 
   // MySQL caps `CHANGE REPLICATION SOURCE … SOURCE_PASSWORD` at 32 chars
   // (error 3056). Pre-fix replication principals were minted at 48 —
   // self-heal by rotating to a compliant password. mysql-family only:
   // rotating a Postgres cluster's replication password would strand
   // streaming standbys whose seeded primary_conninfo holds the old one.
-  if (
-    input.spec.engine === 'mysql' || input.spec.engine === 'mariadb'
-  ) {
+  if (input.spec.engine === 'mysql' || input.spec.engine === 'mariadb') {
     const [pwRow] = await db
       .select({ password: principal.password })
       .from(principal)
       .where(eq(principal.id, repl.principalId))
       .limit(1)
-    if (
-      typeof pwRow?.password === 'string' &&
-      pwRow.password.startsWith(ENVELOPE_PREFIX_SECRET)
-    ) {
+    if (typeof pwRow?.password === 'string' && pwRow.password.startsWith(ENVELOPE_PREFIX_SECRET)) {
       const plain = await decryptSecret(dataEncryptionSecrets, pwRow.password)
       if (plain.length > REPLICATION_PASSWORD_LENGTH) {
         await setPrincipalPassword(db, dataEncryptionSecrets, repl.principalId, {
@@ -1532,7 +1403,7 @@ async function prepareOneMemberApply(
     multiMember: boolean
     replicationUsername: string | null
     containerSans: readonly string[]
-  },
+  }
 ): Promise<PreparedManagedMemberApply | ManagedApplyPrepareError> {
   const { member } = params
   const built = await buildPayloadForMember(c, db, input, params)
@@ -1541,11 +1412,7 @@ async function prepareOneMemberApply(
   if (member.role === 'replica' && built.payload.peers.length > 0) {
     const primaryPeer = built.payload.peers.find((p) => p.role === 'primary')
     if (primaryPeer) {
-      await updateMemberReplicationTransport(
-        db,
-        member.id,
-        primaryPeer.transport,
-      )
+      await updateMemberReplicationTransport(db, member.id, primaryPeer.transport)
     }
   }
 
@@ -1577,11 +1444,8 @@ export async function enqueueTypedCommand(
     managedId?: string
     setApplying?: boolean
     metadata?: Record<string, unknown>
-  },
-): Promise<
-  | { ok: true; commandId: string; status: 'queued'; serverId: string }
-  | Response
-> {
+  }
+): Promise<{ ok: true; commandId: string; status: 'queued'; serverId: string } | Response> {
   if (params.setApplying && params.managedId) {
     await db
       .update(managed)
@@ -1649,7 +1513,7 @@ export async function enqueuePreparedManagedApply(
     userId: string
     managedId: string
     members: PreparedManagedMemberApply[]
-  },
+  }
 ): Promise<ManagedApplyEnqueueResult[] | Response> {
   if (params.members.length === 0) {
     return []
@@ -1689,7 +1553,7 @@ async function enqueueSinglePhaseManagedApply(
     userId: string
     managedId: string
     members: PreparedManagedMemberApply[]
-  },
+  }
 ): Promise<ManagedApplyEnqueueResult[] | Response> {
   const results = await Promise.all(
     params.members.map((member) =>
@@ -1697,7 +1561,7 @@ async function enqueueSinglePhaseManagedApply(
         userId: params.userId,
         member,
       })
-    ),
+    )
   )
   return finalizePreparedManagedApplyResults(c, db, commandQueue, {
     userId: params.userId,
@@ -1719,7 +1583,7 @@ async function enqueueTwoPhaseManagedApply(
     managedId: string
     primaryMembers: PreparedManagedMemberApply[]
     standbyMembers: PreparedManagedMemberApply[]
-  },
+  }
 ): Promise<ManagedApplyEnqueueResult[] | Response> {
   const { primaryMembers, standbyMembers } = params
   const results: ManagedApplyEnqueueResult[] = []
@@ -1744,9 +1608,7 @@ async function enqueueTwoPhaseManagedApply(
     serverId: member.serverId,
     memberId: member.memberId,
     payload: member.payload,
-    ...(member.pendingTlsLeaf
-      ? { pendingTlsLeaf: member.pendingTlsLeaf }
-      : {}),
+    ...(member.pendingTlsLeaf ? { pendingTlsLeaf: member.pendingTlsLeaf } : {}),
   }))
 
   let queuedPrimary = false
@@ -1800,7 +1662,7 @@ async function finalizePreparedManagedApplyResults(
     userId: string
     managedId: string
     results: ManagedApplyEnqueueResult[]
-  },
+  }
 ): Promise<ManagedApplyEnqueueResult[] | Response> {
   const allFailed = params.results.every((r) => r.status === 'failed')
   if (allFailed) {
@@ -1815,9 +1677,7 @@ async function finalizePreparedManagedApplyResults(
   const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
   if (secretsConfig && dataEncryptionSecrets) {
     const serverIds = new Set(
-      params.results
-        .filter((r) => r.status === 'queued')
-        .map((r) => r.serverId),
+      params.results.filter((r) => r.status === 'queued').map((r) => r.serverId)
     )
     const { enqueueManagedHaReconcile } = await import('./ha-desired.ts')
     await forEachSequential(serverIds, async (serverId) => {
@@ -1851,7 +1711,7 @@ export async function enqueueManagedLifecycleFanout(
     action: 'start' | 'stop' | 'restart'
     members: ManagedMemberRow[]
     engine?: string
-  },
+  }
 ): Promise<ManagedApplyEnqueueResult[] | Response> {
   const results = await Promise.all(
     params.members.map(async (member): Promise<ManagedApplyEnqueueResult> => {
@@ -1881,7 +1741,7 @@ export async function enqueueManagedLifecycleFanout(
         commandId: enqueued.commandId,
         status: 'queued',
       }
-    }),
+    })
   )
   return results
 }
@@ -1893,7 +1753,7 @@ function buildManagedDestroyPayload(
     deleteAfterDestroy?: boolean
     environmentId?: string
   },
-  member: ManagedMemberRow,
+  member: ManagedMemberRow
 ): Record<string, unknown> {
   const payload: Record<string, unknown> = {
     managedId: params.managedId,
@@ -1933,11 +1793,11 @@ export async function enqueueManagedDestroyFanout(
      * enqueue everything at once and let sweeps mop up leftovers.
      */
     force?: boolean
-  },
+  }
 ): Promise<ManagedApplyEnqueueResult[] | Response> {
   const enqueueOne = async (
     member: ManagedMemberRow,
-    metadata?: Record<string, unknown>,
+    metadata?: Record<string, unknown>
   ): Promise<ManagedApplyEnqueueResult> => {
     const enqueued = await enqueueTypedCommand(c, db, commandQueue, {
       userId: params.userId,
@@ -1969,12 +1829,8 @@ export async function enqueueManagedDestroyFanout(
   // Nothing to sequence: no replica to tear down first, or a force-delete that
   // deliberately skips the gate because a member host may be broken or offline.
   if (params.force || replicas.length === 0 || primaries.length === 0) {
-    const replicaResults = await Promise.all(
-      replicas.map((member) => enqueueOne(member)),
-    )
-    const primaryResults = await Promise.all(
-      primaries.map((member) => enqueueOne(member)),
-    )
+    const replicaResults = await Promise.all(replicas.map((member) => enqueueOne(member)))
+    const primaryResults = await Promise.all(primaries.map((member) => enqueueOne(member)))
     return [...replicaResults, ...primaryResults]
   }
 
@@ -1988,9 +1844,7 @@ export async function enqueueManagedDestroyFanout(
   // `src/features/commands/consumer.ts`), mirroring `pendingStandbyApplies`. A
   // replica that fails or expires simply never opens the gate, which leaves the
   // primary — and the `managed` row — intact for a retry or a force-delete.
-  const memberIds = replicas.map((member) => member.id).toSorted((a, b) =>
-    a.localeCompare(b)
-  )
+  const memberIds = replicas.map((member) => member.id).toSorted((a, b) => a.localeCompare(b))
   const gate: ManagedDestroyGate = {
     gateId: crypto.randomUUID(),
     memberIds,
@@ -2002,9 +1856,7 @@ export async function enqueueManagedDestroyFanout(
   }
 
   const replicaResults = await Promise.all(
-    replicas.map((member) =>
-      enqueueOne(member, { [MANAGED_DESTROY_GATE_METADATA_KEY]: gate })
-    ),
+    replicas.map((member) => enqueueOne(member, { [MANAGED_DESTROY_GATE_METADATA_KEY]: gate }))
   )
 
   if (replicaResults.some((result) => result.status === 'failed')) {
@@ -2045,11 +1897,8 @@ export function enqueueManagedApply(
     serverId: string
     managedId: string
     payload: ManagedApplyCommandPayload
-  },
-): Promise<
-  | { ok: true; commandId: string; status: 'queued'; serverId: string }
-  | Response
-> {
+  }
+): Promise<{ ok: true; commandId: string; status: 'queued'; serverId: string } | Response> {
   return enqueueTypedCommand(c, db, commandQueue, {
     userId: params.userId,
     serverId: params.serverId,
@@ -2072,11 +1921,8 @@ export function enqueueManagedLifecycle(
     action: 'start' | 'stop' | 'restart'
     memberId?: string
     engine?: string
-  },
-): Promise<
-  | { ok: true; commandId: string; status: 'queued'; serverId: string }
-  | Response
-> {
+  }
+): Promise<{ ok: true; commandId: string; status: 'queued'; serverId: string } | Response> {
   const payload: Record<string, unknown> = {
     managedId: params.managedId,
     action: params.action,
@@ -2103,11 +1949,8 @@ export function enqueueManagedDestroy(
     removeVolumes: boolean
     deleteAfterDestroy?: boolean
     memberId?: string
-  },
-): Promise<
-  | { ok: true; commandId: string; status: 'queued'; serverId: string }
-  | Response
-> {
+  }
+): Promise<{ ok: true; commandId: string; status: 'queued'; serverId: string } | Response> {
   const payload: Record<string, unknown> = {
     managedId: params.managedId,
     removeVolumes: params.removeVolumes,

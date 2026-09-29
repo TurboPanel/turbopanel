@@ -38,7 +38,8 @@ import {
 const test = Deno.test.bind(Deno)
 
 function member(
-  overrides: Partial<ManagedMemberRow> & Pick<ManagedMemberRow, 'id' | 'serverId' | 'role' | 'ordinal'>,
+  overrides: Partial<ManagedMemberRow> &
+    Pick<ManagedMemberRow, 'id' | 'serverId' | 'role' | 'ordinal'>
 ): ManagedMemberRow {
   return {
     managedId: 'managed-1',
@@ -80,13 +81,16 @@ function selectListDb(rows: ManagedMemberRow[]): Db {
 
 test('nextReplicaOrdinal assigns the smallest unused ordinal at or above 2', () => {
   assertEquals(nextReplicaOrdinal([]), 2)
-  assertEquals(nextReplicaOrdinal([member({ id: 'p', serverId: 's', role: 'primary', ordinal: 1 })]), 2)
+  assertEquals(
+    nextReplicaOrdinal([member({ id: 'p', serverId: 's', role: 'primary', ordinal: 1 })]),
+    2
+  )
   assertEquals(
     nextReplicaOrdinal([
       member({ id: 'p', serverId: 's', role: 'primary', ordinal: 1 }),
       member({ id: 'r2', serverId: 's2', role: 'replica', ordinal: 2 }),
     ]),
-    3,
+    3
   )
   assertEquals(
     nextReplicaOrdinal([
@@ -94,7 +98,7 @@ test('nextReplicaOrdinal assigns the smallest unused ordinal at or above 2', () 
       member({ id: 'r2', serverId: 's2', role: 'replica', ordinal: 2 }),
       member({ id: 'r3', serverId: 's3', role: 'replica', ordinal: 3 }),
     ]),
-    4,
+    4
   )
   assertEquals(
     nextReplicaOrdinal([
@@ -103,7 +107,7 @@ test('nextReplicaOrdinal assigns the smallest unused ordinal at or above 2', () 
       member({ id: 'r3', serverId: 's3', role: 'replica', ordinal: 3 }),
       member({ id: 'r4', serverId: 's4', role: 'replica', ordinal: 4 }),
     ]),
-    5,
+    5
   )
 })
 
@@ -114,7 +118,7 @@ test('countReplicas ignores primary members', () => {
       member({ id: 'p', serverId: 's', role: 'primary', ordinal: 1 }),
       member({ id: 'r', serverId: 's2', role: 'replica', ordinal: 2 }),
     ]),
-    1,
+    1
   )
 })
 
@@ -124,7 +128,7 @@ test('isManagedPrivatePortExhaustedError narrows only the exhausted shape', () =
       kind: 'managed_private_port_exhausted',
       serverId: 'srv',
     }),
-    true,
+    true
   )
   assertEquals(isManagedPrivatePortExhaustedError({ kind: 'other' }), false)
   assertEquals(isManagedPrivatePortExhaustedError(null), false)
@@ -178,7 +182,7 @@ test('serializeManagedMember maps role transport and replication health', () => 
       replicationTransport: 'not-a-transport',
       metadata: { replication: { state: 1 } },
     }),
-    null,
+    null
   )
   assertEquals(primaryish.role, 'primary')
   assertEquals(primaryish.replicaClass, null)
@@ -201,7 +205,7 @@ test('serializeManagedMember maps role transport and replication health', () => 
         },
       },
     }),
-    'p',
+    'p'
   )
   assertEquals(transportLocal.replicationTransport, 'local')
   assertEquals(transportLocal.replication, {
@@ -218,7 +222,7 @@ test('serializeManagedMember maps role transport and replication health', () => 
       replicationTransport: 'fabric',
       metadata: null,
     }),
-    'v',
+    'v'
   )
   assertEquals(transportVpn.replicationTransport, 'fabric')
 
@@ -231,7 +235,7 @@ test('serializeManagedMember maps role transport and replication health', () => 
       replicationTransport: 'public',
       metadata: null,
     }),
-    'pub',
+    'pub'
   )
   assertEquals(transportPublic.replicationTransport, 'public')
 
@@ -244,7 +248,7 @@ test('serializeManagedMember maps role transport and replication health', () => 
       replicaClass: 'read',
       replicationTransport: 'public',
     }),
-    'edge',
+    'edge'
   )
   assertEquals(readReplica.replicaClass, 'read')
   assertEquals(readReplica.replicationTransport, 'public')
@@ -281,7 +285,10 @@ test('listSerializedManagedMembers joins server display names', async () => {
   } as unknown as Db
 
   const serialized = await listSerializedManagedMembers(db, 'managed-1')
-  assertEquals(serialized.map((m) => m.serverDisplayName), ['Primary Host', null])
+  assertEquals(
+    serialized.map((m) => m.serverDisplayName),
+    ['Primary Host', null]
+  )
   assertEquals(serialized[1]?.role, 'replica')
 })
 
@@ -297,7 +304,7 @@ test('ensureManagedPrimaryMember returns existing primary or rehomes serverId', 
       managedId: 'managed-1',
       serverId: 'old',
     }),
-    existing,
+    existing
   )
 
   let updatedServerId: string | null = null
@@ -314,8 +321,7 @@ test('ensureManagedPrimaryMember returns existing primary or rehomes serverId', 
         updatedServerId = patch.serverId
         return {
           where: () => ({
-            returning: () =>
-              Promise.resolve([{ ...existing, serverId: patch.serverId }]),
+            returning: () => Promise.resolve([{ ...existing, serverId: patch.serverId }]),
           }),
         }
       },
@@ -362,7 +368,7 @@ test('ensureManagedPrimaryMember inserts primary and recovers race re-read', asy
       managedId: 'managed-1',
       serverId: 's',
     }),
-    insertedRow,
+    insertedRow
   )
   assertEquals(listed, 1)
 
@@ -397,7 +403,7 @@ test('ensureManagedPrimaryMember inserts primary and recovers race re-read', asy
       managedId: 'managed-1',
       serverId: 's',
     }),
-    racedPrimary,
+    racedPrimary
   )
 
   const missingDb = {
@@ -423,7 +429,7 @@ test('ensureManagedPrimaryMember inserts primary and recovers race re-read', asy
         serverId: 's',
       }),
     Error,
-    'managed primary member missing after upsert',
+    'managed primary member missing after upsert'
   )
 })
 
@@ -435,11 +441,7 @@ type MembershipPinRow = {
   address: string
 }
 
-function membershipPin(
-  serverId: string,
-  datacenterId: string,
-  address: string,
-): MembershipPinRow {
+function membershipPin(serverId: string, datacenterId: string, address: string): MembershipPinRow {
   return {
     ipId: `ip-${serverId}-${datacenterId}`,
     serverId,
@@ -463,11 +465,9 @@ type PrivateEndpointFixtureOpts = {
 }
 
 /** Route projected field keys the same way private-endpoint pure tests do. */
-function privateEndpointSelect(
-  memberships: MembershipPinRow[],
-  opts?: PrivateEndpointFixtureOpts,
-) {
-  const datacenterOptions = opts?.datacenterOptions ??
+function privateEndpointSelect(memberships: MembershipPinRow[], opts?: PrivateEndpointFixtureOpts) {
+  const datacenterOptions =
+    opts?.datacenterOptions ??
     [...new Set(memberships.map((row) => row.datacenterId))]
       .sort((a, b) => a.localeCompare(b))
       .map((id) => ({ id, options: {} }))
@@ -494,11 +494,7 @@ function privateEndpointSelect(
       }
     }
 
-    if (
-      keys.length === 2 &&
-      keySet.has('serverId') &&
-      keySet.has('address')
-    ) {
+    if (keys.length === 2 && keySet.has('serverId') && keySet.has('address')) {
       return {
         from() {
           return {
@@ -519,9 +515,7 @@ function privateEndpointSelect(
         from() {
           return {
             where() {
-              return thenableRows(
-                opts?.fabricId ? [{ fabricId: opts.fabricId }] : [],
-              )
+              return thenableRows(opts?.fabricId ? [{ fabricId: opts.fabricId }] : [])
             },
           }
         },
@@ -566,10 +560,7 @@ function privateEndpointSelect(
 }
 
 /** Minimal double covering private-endpoint batch queries used by members.ts. */
-function privateEndpointDb(
-  memberships: MembershipPinRow[],
-  opts?: PrivateEndpointFixtureOpts,
-): Db {
+function privateEndpointDb(memberships: MembershipPinRow[], opts?: PrivateEndpointFixtureOpts): Db {
   return {
     select: privateEndpointSelect(memberships, opts),
   } as unknown as Db
@@ -579,15 +570,17 @@ function privateEndpointDb(
  * Combines container-name lookup with private-endpoint fixture selects.
  * `select` routes by projected field keys (same approach as private-endpoint pure tests).
  */
-function peerResolutionDb(opts: {
-  containers: Array<{
-    serverId: string
-    containerName: string
-    role: string
-    ordinal: number
-  }>
-  memberships?: MembershipPinRow[]
-} & PrivateEndpointFixtureOpts): Db {
+function peerResolutionDb(
+  opts: {
+    containers: Array<{
+      serverId: string
+      containerName: string
+      role: string
+      ordinal: number
+    }>
+    memberships?: MembershipPinRow[]
+  } & PrivateEndpointFixtureOpts
+): Db {
   const endpointSelect = privateEndpointSelect(opts.memberships ?? [], opts)
   return {
     select(fields: Record<string, unknown>) {
@@ -616,11 +609,7 @@ function peerResolutionDb(opts: {
 
 test('resolveMemberTransports maps primary local and replica path results', async () => {
   const primary = member({ id: 'p', serverId: 's1', role: 'primary', ordinal: 1 })
-  const primaryOnly = await resolveMemberTransports(
-    {} as Db,
-    [primary],
-    'read-replication',
-  )
+  const primaryOnly = await resolveMemberTransports({} as Db, [primary], 'read-replication')
   if (!('size' in primaryOnly)) {
     throw new TypeError(`expected transport map, got ${JSON.stringify(primaryOnly)}`)
   }
@@ -636,7 +625,7 @@ test('resolveMemberTransports maps primary local and replica path results', asyn
   const transports = await resolveMemberTransports(
     privateEndpointDb([]),
     [primary, replicaSame],
-    'read-replication',
+    'read-replication'
   )
   if (!('size' in transports)) {
     throw new TypeError(`expected transport map, got ${JSON.stringify(transports)}`)
@@ -656,7 +645,7 @@ test('resolveMemberTransports maps primary local and replica path results', asyn
       membershipPin('s2', 'dc-a', '10.0.0.2'),
     ]),
     [primary, remote],
-    'read-replication',
+    'read-replication'
   )
   if (!('size' in remoteTransports)) {
     throw new TypeError(JSON.stringify(remoteTransports))
@@ -685,30 +674,27 @@ test('resolveMemberTransports uses fabric when relays exist without datacenter I
     ordinal: 2,
   })
   const transports = await resolveMemberTransports(
-    privateEndpointDb(
-      [],
-      {
-        fabricId: 'fab-1',
-        relays: [
-          {
-            relayId: 'rel-1',
-            serverId: 's1',
-            fabricId: 'fab-1',
-            fabricCreatedAt: '2020-01-01T00:00:00.000Z',
-            address: '203.0.113.10',
-          },
-          {
-            relayId: 'rel-2',
-            serverId: 's2',
-            fabricId: 'fab-1',
-            fabricCreatedAt: '2020-01-01T00:00:00.000Z',
-            address: '203.0.113.11',
-          },
-        ],
-      },
-    ),
+    privateEndpointDb([], {
+      fabricId: 'fab-1',
+      relays: [
+        {
+          relayId: 'rel-1',
+          serverId: 's1',
+          fabricId: 'fab-1',
+          fabricCreatedAt: '2020-01-01T00:00:00.000Z',
+          address: '203.0.113.10',
+        },
+        {
+          relayId: 'rel-2',
+          serverId: 's2',
+          fabricId: 'fab-1',
+          fabricCreatedAt: '2020-01-01T00:00:00.000Z',
+          address: '203.0.113.11',
+        },
+      ],
+    }),
     [primary, replica],
-    'read-replication',
+    'read-replication'
   )
   if (!('size' in transports)) {
     throw new TypeError(JSON.stringify(transports))
@@ -743,7 +729,7 @@ test('resolveMemberTransports walks shared datacenters in priority order', async
   const transports = await resolveMemberTransports(
     privateEndpointDb(memberships, { datacenterOptions }),
     [primary, failover],
-    'failover-replication',
+    'failover-replication'
   )
   if (!('size' in transports)) {
     throw new TypeError(JSON.stringify(transports))
@@ -754,7 +740,7 @@ test('resolveMemberTransports walks shared datacenters in priority order', async
     peerResolutionDb({ containers: [], memberships, datacenterOptions }),
     [primary, failover],
     primary,
-    5432,
+    5432
   )
   if (!Array.isArray(peers)) {
     throw new TypeError(JSON.stringify(peers))
@@ -773,33 +759,23 @@ test('resolveMemberTransports surfaces failover_requires_trusted_datacenter for 
     privatePort: 45_100,
   })
   const db = privateEndpointDb(
-    [
-      membershipPin('s1', 'dc-shared', '10.0.0.1'),
-      membershipPin('s2', 'dc-shared', '10.0.0.2'),
-    ],
+    [membershipPin('s1', 'dc-shared', '10.0.0.1'), membershipPin('s2', 'dc-shared', '10.0.0.2')],
     {
       datacenterOptions: [{ id: 'dc-shared', options: { trusted: false } }],
       publicAddresses: [
         { serverId: 's1', address: '203.0.113.1' },
         { serverId: 's2', address: '203.0.113.2' },
       ],
-    },
+    }
   )
-  assertEquals(
-    await resolveMemberTransports(db, [primary, failover], 'failover-replication'),
-    {
-      kind: 'failover_requires_trusted_datacenter',
-      fromServerId: 's1',
-      toServerId: 's2',
-      datacenterId: 'dc-shared',
-    },
-  )
+  assertEquals(await resolveMemberTransports(db, [primary, failover], 'failover-replication'), {
+    kind: 'failover_requires_trusted_datacenter',
+    fromServerId: 's1',
+    toServerId: 's2',
+    datacenterId: 'dc-shared',
+  })
   // The same pair as a read replica skips the untrusted LAN and rides public.
-  const readTransports = await resolveMemberTransports(
-    db,
-    [primary, failover],
-    'read-replication',
-  )
+  const readTransports = await resolveMemberTransports(db, [primary, failover], 'read-replication')
   if (!('size' in readTransports)) {
     throw new TypeError(JSON.stringify(readTransports))
   }
@@ -911,10 +887,7 @@ test('ensureMemberPrivatePorts allocates free private ports per server', async (
             ])
           }
           return {
-            orderBy: () =>
-              Promise.resolve(
-                selectN === 1 ? [primary, replica] : assigned,
-              ),
+            orderBy: () => Promise.resolve(selectN === 1 ? [primary, replica] : assigned),
           }
         },
       }),
@@ -936,17 +909,17 @@ test('ensureMemberPrivatePorts allocates free private ports per server', async (
   const result = await ensureMemberPrivatePorts(db, [primary, replica])
   assertEquals(Array.isArray(result), true)
   if (Array.isArray(result)) {
-    assertEquals(result.map((m) => m.privatePort), [
-      MANAGED_PRIVATE_PORT_MIN,
-      MANAGED_PRIVATE_PORT_MIN,
-    ])
+    assertEquals(
+      result.map((m) => m.privatePort),
+      [MANAGED_PRIVATE_PORT_MIN, MANAGED_PRIVATE_PORT_MIN]
+    )
   }
   assertEquals(updates.length, 2)
   // s1 skips occupied min → min+1; s2 takes min
-  assertEquals(updates.map((u) => u.port).sort((a, b) => a - b), [
-    MANAGED_PRIVATE_PORT_MIN,
-    MANAGED_PRIVATE_PORT_MIN + 1,
-  ])
+  assertEquals(
+    updates.map((u) => u.port).sort((a, b) => a - b),
+    [MANAGED_PRIVATE_PORT_MIN, MANAGED_PRIVATE_PORT_MIN + 1]
+  )
 })
 
 test('ensureMemberPrivatePorts returns exhausted when the range is full', async () => {
@@ -1240,10 +1213,7 @@ test('resolvePeersForMember surfaces private endpoint resolution failures', asyn
   // Different DCs, no VPN → private_path_unavailable on remote peer
   const db = peerResolutionDb({
     containers: [],
-    memberships: [
-      membershipPin('s1', 'dc-a', '10.0.0.1'),
-      membershipPin('s2', 'dc-b', '10.1.0.2'),
-    ],
+    memberships: [membershipPin('s1', 'dc-a', '10.0.0.1'), membershipPin('s2', 'dc-b', '10.1.0.2')],
   })
   assertEquals(await resolvePeersForMember(db, [primary, replica], primary, 5432), {
     kind: 'private_path_unavailable',
@@ -1276,18 +1246,9 @@ test('replicationPurposeForMemberPair keeps failover links off fabric and public
     replicaClass: null,
   })
 
-  assertEquals(
-    replicationPurposeForMemberPair(primary, failover),
-    'failover-replication',
-  )
-  assertEquals(
-    replicationPurposeForMemberPair(failover, primary),
-    'failover-replication',
-  )
-  assertEquals(
-    replicationPurposeForMemberPair(failover, legacy),
-    'failover-replication',
-  )
+  assertEquals(replicationPurposeForMemberPair(primary, failover), 'failover-replication')
+  assertEquals(replicationPurposeForMemberPair(failover, primary), 'failover-replication')
+  assertEquals(replicationPurposeForMemberPair(failover, legacy), 'failover-replication')
   assertEquals(replicationPurposeForMemberPair(primary, read), 'read-replication')
   assertEquals(replicationPurposeForMemberPair(read, failover), 'read-replication')
 })
@@ -1333,7 +1294,7 @@ test('resolvePeersForMember routes each peer by its replica class', async () => 
     [
       ['f', 'datacenter', '10.0.0.22'],
       ['r', 'public', '203.0.113.3'],
-    ],
+    ]
   )
 })
 
@@ -1416,7 +1377,7 @@ test('crud helpers: insert update delete find mark and observed replication', as
         replicationTransport: null,
       }),
     Error,
-    'Failed to insert managed replica member',
+    'Failed to insert managed replica member'
   )
 
   const updatedRow = member({
@@ -1539,11 +1500,7 @@ test('crud helpers: insert update delete find mark and observed replication', as
         where: () => ({
           limit: () => {
             metaSelect += 1
-            return Promise.resolve(
-              metaSelect === 1
-                ? [{ metadata: { keep: true } }]
-                : [],
-            )
+            return Promise.resolve(metaSelect === 1 ? [{ metadata: { keep: true } }] : [])
           },
         }),
       }),

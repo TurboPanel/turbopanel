@@ -1,10 +1,7 @@
 import { and, eq, inArray } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import type { EnvironmentDeployContainer } from '../../contracts/commands/schemas.ts'
-import {
-  parseServiceOptions,
-  resolveServiceInstances,
-} from '../projects/service-options.ts'
+import { parseServiceOptions, resolveServiceInstances } from '../projects/service-options.ts'
 import { container, service } from '../../db/schema.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 
@@ -70,7 +67,7 @@ function buildServiceComposeIndex(serviceRows: ServiceRow[]): {
     serviceIdByComposeName.set(row.composeServiceName, row.id)
     maxOrdinalByServiceId.set(
       row.id,
-      resolveServiceInstances(parseServiceOptions(row.options) ?? {}),
+      resolveServiceInstances(parseServiceOptions(row.options) ?? {})
     )
   }
   return { serviceIds, serviceIdByComposeName, maxOrdinalByServiceId }
@@ -95,7 +92,7 @@ function parseCloneOrdinal(composeServiceName: string): number | null {
  * for callers that construct report rows in tests.
  */
 function resolveReportedRole(
-  reported: EnvironmentDeployContainer,
+  reported: EnvironmentDeployContainer
 ): 'service' | 'ingress' | 'turbopanel' {
   if (
     reported.role === 'service' ||
@@ -121,17 +118,14 @@ async function ensureServicesForReportedContainers(
   db: Db,
   environmentId: string,
   containers: EnvironmentDeployContainer[],
-  serviceRows: ServiceRow[],
+  serviceRows: ServiceRow[]
 ): Promise<ServiceRow[]> {
   const { serviceIds, serviceIdByComposeName } = buildServiceComposeIndex(serviceRows)
 
   const missingNames = new Set<string>()
   for (const reported of containers) {
     if (resolveReportedRole(reported) === 'ingress') continue
-    if (
-      reported.serviceId !== undefined &&
-      serviceIds.has(reported.serviceId)
-    ) {
+    if (reported.serviceId !== undefined && serviceIds.has(reported.serviceId)) {
       continue
     }
     if (serviceIdByComposeName.has(reported.composeServiceName)) continue
@@ -155,7 +149,7 @@ async function ensureServicesForReportedContainers(
         environmentId,
         name: composeServiceName,
         composeServiceName,
-      })),
+      }))
     )
     .returning({
       id: service.id,
@@ -169,7 +163,7 @@ async function ensureServicesForReportedContainers(
 function resolveReportedServiceId(
   reported: EnvironmentDeployContainer,
   serviceIds: Set<string>,
-  serviceIdByComposeName: Map<string, string>,
+  serviceIdByComposeName: Map<string, string>
 ): string | undefined {
   if (reported.serviceId !== undefined && serviceIds.has(reported.serviceId)) {
     return reported.serviceId
@@ -187,7 +181,7 @@ function resolveReportedServiceId(
  */
 function isExpectedPendingAllocation(
   row: ExistingContainerRow,
-  maxOrdinalByServiceId: Map<string, number>,
+  maxOrdinalByServiceId: Map<string, number>
 ): boolean {
   if (row.status !== 'pending' || row.containerId !== null) return false
   if (row.role === 'ingress') return true
@@ -230,7 +224,7 @@ export type ReconcileEnvironmentContainersParams = {
  */
 export async function reconcileEnvironmentContainers(
   db: Db,
-  params: ReconcileEnvironmentContainersParams,
+  params: ReconcileEnvironmentContainersParams
 ): Promise<void> {
   const { serverId, environmentId, containers, expectedAllocations } = params
 
@@ -251,7 +245,7 @@ export async function reconcileEnvironmentContainers(
     db,
     environmentId,
     containers,
-    serviceRows,
+    serviceRows
   )
 
   if (serviceRows.length === 0) return
@@ -272,12 +266,7 @@ export async function reconcileEnvironmentContainers(
       ordinal: container.ordinal,
     })
     .from(container)
-    .where(
-      and(
-        eq(container.serverId, serverId),
-        inArray(container.serviceId, allServiceIdList),
-      ),
-    )
+    .where(and(eq(container.serverId, serverId), inArray(container.serviceId, allServiceIdList)))
 
   if (containers.length === 0) {
     await resetContainersOnEmptyReport(db, existingRows)
@@ -297,7 +286,7 @@ export async function reconcileEnvironmentContainers(
 
 async function resetContainersOnEmptyReport(
   db: Db,
-  existingRows: ExistingContainerRow[],
+  existingRows: ExistingContainerRow[]
 ): Promise<void> {
   if (existingRows.length === 0) return
   await db
@@ -309,8 +298,8 @@ async function resetContainersOnEmptyReport(
     .where(
       inArray(
         container.id,
-        existingRows.map((row) => row.id),
-      ),
+        existingRows.map((row) => row.id)
+      )
     )
 }
 
@@ -331,16 +320,12 @@ function matchUnmatchedExistingContainer(params: {
   byServiceOrdinal: Map<string, ExistingContainerRow>
   matchedIds: Set<string>
 }): ExistingContainerRow | undefined {
-  const { reported, serviceId, role, byName, byServiceOrdinal, matchedIds } =
-    params
+  const { reported, serviceId, role, byName, byServiceOrdinal, matchedIds } = params
   const cloneOrdinal = parseCloneOrdinal(reported.composeServiceName)
-  const cloneRow = cloneOrdinal === null
-    ? undefined
-    : byServiceOrdinal.get(`${serviceId}:${role}:${cloneOrdinal}`)
+  const cloneRow =
+    cloneOrdinal === null ? undefined : byServiceOrdinal.get(`${serviceId}:${role}:${cloneOrdinal}`)
   const primary =
-    byName.get(reported.containerName) ??
-    cloneRow ??
-    byServiceOrdinal.get(`${serviceId}:${role}:1`)
+    byName.get(reported.containerName) ?? cloneRow ?? byServiceOrdinal.get(`${serviceId}:${role}:1`)
 
   if (!primary) return undefined
   if (!matchedIds.has(primary.id)) return primary
@@ -354,7 +339,7 @@ function unmatchedStaleExistingIds(
   existingRows: ExistingContainerRow[],
   matchedIds: Set<string>,
   maxOrdinalByServiceId: Map<string, number>,
-  expectedKeys: Set<string> | null,
+  expectedKeys: Set<string> | null
 ): { deleteIds: string[]; resetIds: string[] } {
   const deleteIds: string[] = []
   const resetIds: string[] = []
@@ -383,14 +368,11 @@ async function upsertReportedContainers(
     serviceIdByComposeName: Map<string, string>
     maxOrdinalByServiceId: Map<string, number>
     expectedAllocations?: ReadonlyArray<ExpectedContainerAllocation>
-  },
+  }
 ): Promise<void> {
   const byName = new Map(params.existingRows.map((row) => [row.containerName, row]))
   const byServiceOrdinal = new Map(
-    params.existingRows.map((row) => [
-      `${row.serviceId}:${row.role}:${row.ordinal}`,
-      row,
-    ]),
+    params.existingRows.map((row) => [`${row.serviceId}:${row.role}:${row.ordinal}`, row])
   )
   const matchedIds = new Set<string>()
   const nextOrdinalByService = new Map<string, number>()
@@ -410,10 +392,8 @@ async function upsertReportedContainers(
 
   const expectedKeys = params.expectedAllocations
     ? new Set(
-      params.expectedAllocations.map(
-        (row) => `${row.serviceId}:${row.role}:${row.ordinal}`,
-      ),
-    )
+        params.expectedAllocations.map((row) => `${row.serviceId}:${row.role}:${row.ordinal}`)
+      )
     : null
 
   await db.transaction(async (tx) => {
@@ -421,7 +401,7 @@ async function upsertReportedContainers(
       const serviceId = resolveReportedServiceId(
         reported,
         params.serviceIds,
-        params.serviceIdByComposeName,
+        params.serviceIdByComposeName
       )
       if (serviceId === undefined) return
 
@@ -476,7 +456,7 @@ async function upsertReportedContainers(
       params.existingRows,
       matchedIds,
       params.maxOrdinalByServiceId,
-      expectedKeys,
+      expectedKeys
     )
     if (resetIds.length > 0) {
       await tx

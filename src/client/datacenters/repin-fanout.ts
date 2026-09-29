@@ -34,64 +34,58 @@
  * (`client/environments/repin-needs-redeploy.ts`).
  */
 
-import { eq, sql } from "drizzle-orm";
-import type { Db } from "../../db/connection.ts";
-import type { CommandQueue } from "../../features/commands/queue.ts";
-import { ip } from "../../db/schema.ts";
-import { compatLogWarn } from "../../lib/log-compat.ts";
-import type {
-  DerivedSecretsConfig,
-  SecretsConfig,
-} from "../../lib/secrets/secrets.ts";
-import { listManagedIdsForServer } from "../../features/bindings/resolve-endpoint.ts";
-import { fanOutDatacenterRoutingChange } from "./routing-fanout.ts";
-import { forEachSequential } from "../../lib/sequential.ts";
+import { eq, sql } from 'drizzle-orm'
+import type { Db } from '../../db/connection.ts'
+import type { CommandQueue } from '../../features/commands/queue.ts'
+import { ip } from '../../db/schema.ts'
+import { compatLogWarn } from '../../lib/log-compat.ts'
+import type { DerivedSecretsConfig, SecretsConfig } from '../../lib/secrets/secrets.ts'
+import { listManagedIdsForServer } from '../../features/bindings/resolve-endpoint.ts'
+import { fanOutDatacenterRoutingChange } from './routing-fanout.ts'
+import { forEachSequential } from '../../lib/sequential.ts'
 
 /** Bounded batch for one repin fan-out sweep tick. */
-export const DATACENTER_REPIN_FANOUT_SWEEP_CAP = 25;
+export const DATACENTER_REPIN_FANOUT_SWEEP_CAP = 25
 
 /** Injectable collaborators (host-free tests swap the enqueueing core). */
 export type DatacenterRepinFanoutDeps = Readonly<{
-  fanOut?: typeof fanOutDatacenterRoutingChange;
-  listManagedIdsForServer?: typeof listManagedIdsForServer;
-}>;
+  fanOut?: typeof fanOutDatacenterRoutingChange
+  listManagedIdsForServer?: typeof listManagedIdsForServer
+}>
 
 type PendingPinRow = {
-  id: string;
-  organization_id: string;
-  datacenter_id: string;
-  server_id: string;
-};
+  id: string
+  organization_id: string
+  datacenter_id: string
+  server_id: string
+}
 
 type PendingGroup = {
-  organizationId: string;
-  datacenterId: string;
-  pins: PendingPinRow[];
-};
+  organizationId: string
+  datacenterId: string
+  pins: PendingPinRow[]
+}
 
 function groupKey(row: PendingPinRow): string {
-  return `${row.organization_id}:${row.datacenter_id}`;
+  return `${row.organization_id}:${row.datacenter_id}`
 }
 
 function groupPendingPins(rows: readonly PendingPinRow[]): PendingGroup[] {
-  const groups = new Map<string, PendingGroup>();
+  const groups = new Map<string, PendingGroup>()
   for (const row of rows) {
-    const key = groupKey(row);
+    const key = groupKey(row)
     const group = groups.get(key) ?? {
       organizationId: row.organization_id,
       datacenterId: row.datacenter_id,
       pins: [],
-    };
-    group.pins.push(row);
-    groups.set(key, group);
+    }
+    group.pins.push(row)
+    groups.set(key, group)
   }
-  return [...groups.values()];
+  return [...groups.values()]
 }
 
-async function loadPendingPins(
-  db: Db,
-  budget: number,
-): Promise<PendingPinRow[]> {
+async function loadPendingPins(db: Db, budget: number): Promise<PendingPinRow[]> {
   const rows = await db.execute<PendingPinRow>(sql`
     SELECT i.id, i.organization_id, i.datacenter_id, i.server_id
     FROM ip i
@@ -101,14 +95,14 @@ async function loadPendingPins(
       AND i.repin_pending_fanout_at IS NOT NULL
     ORDER BY i.repin_pending_fanout_at, i.id
     LIMIT ${budget}
-  `);
-  return [...rows];
+  `)
+  return [...rows]
 }
 
 async function clearPendingFanout(
   db: Db,
   pins: readonly PendingPinRow[],
-  nowIso: string,
+  nowIso: string
 ): Promise<void> {
   await forEachSequential(pins, async (pin) => {
     await db
@@ -117,8 +111,8 @@ async function clearPendingFanout(
         repinPendingFanoutAt: null,
         updatedAt: nowIso,
       })
-      .where(eq(ip.id, pin.id));
-  });
+      .where(eq(ip.id, pin.id))
+  })
 }
 
 async function fanOutGroup(
@@ -126,30 +120,31 @@ async function fanOutGroup(
   commandQueue: CommandQueue,
   group: PendingGroup,
   params: Readonly<{
-    secretsConfig: SecretsConfig;
-    dataEncryptionSecrets: DerivedSecretsConfig;
+    secretsConfig: SecretsConfig
+    dataEncryptionSecrets: DerivedSecretsConfig
   }>,
-  deps: DatacenterRepinFanoutDeps,
+  deps: DatacenterRepinFanoutDeps
 ): Promise<void> {
-  const serverIds = [...new Set(group.pins.map((pin) => pin.server_id))]
-    .sort((a, b) => a.localeCompare(b));
-  const listForServer = deps.listManagedIdsForServer ?? listManagedIdsForServer;
-  const extraManagedIds = new Set<string>();
+  const serverIds = [...new Set(group.pins.map((pin) => pin.server_id))].sort((a, b) =>
+    a.localeCompare(b)
+  )
+  const listForServer = deps.listManagedIdsForServer ?? listManagedIdsForServer
+  const extraManagedIds = new Set<string>()
   await forEachSequential(serverIds, async (serverId) => {
     for (const managedId of await listForServer(db, serverId)) {
-      extraManagedIds.add(managedId);
+      extraManagedIds.add(managedId)
     }
-  });
-  const fanOut = deps.fanOut ?? fanOutDatacenterRoutingChange;
+  })
+  const fanOut = deps.fanOut ?? fanOutDatacenterRoutingChange
   await fanOut(db, commandQueue, {
     datacenterId: group.datacenterId,
     organizationId: group.organizationId,
-    actorType: "system",
+    actorType: 'system',
     actorId: serverIds[0] ?? group.datacenterId,
     secretsConfig: params.secretsConfig,
     dataEncryptionSecrets: params.dataEncryptionSecrets,
     extraManagedIds: [...extraManagedIds],
-  });
+  })
 }
 
 /**
@@ -161,35 +156,35 @@ export async function runDatacenterRepinFanoutSweep(
   db: Db,
   commandQueue: CommandQueue,
   params: Readonly<{
-    secretsConfig: SecretsConfig;
-    dataEncryptionSecrets: DerivedSecretsConfig;
-    budget?: number;
+    secretsConfig: SecretsConfig
+    dataEncryptionSecrets: DerivedSecretsConfig
+    budget?: number
   }>,
-  deps: DatacenterRepinFanoutDeps = {},
+  deps: DatacenterRepinFanoutDeps = {}
 ): Promise<{ processed: number }> {
   const budget = Math.min(
     Math.max(1, params.budget ?? DATACENTER_REPIN_FANOUT_SWEEP_CAP),
-    DATACENTER_REPIN_FANOUT_SWEEP_CAP,
-  );
-  const pending = await loadPendingPins(db, budget);
-  if (pending.length === 0) return { processed: 0 };
+    DATACENTER_REPIN_FANOUT_SWEEP_CAP
+  )
+  const pending = await loadPendingPins(db, budget)
+  if (pending.length === 0) return { processed: 0 }
 
-  let processed = 0;
+  let processed = 0
   await forEachSequential(groupPendingPins(pending), async (group) => {
     try {
-      await fanOutGroup(db, commandQueue, group, params, deps);
+      await fanOutGroup(db, commandQueue, group, params, deps)
     } catch (err) {
       // Marker stays; the next tick retries this group.
       compatLogWarn(
-        "datacenter-repin",
+        'datacenter-repin',
         `repin fan-out failed for datacenter ${group.datacenterId}: ${
           err instanceof Error ? err.message : String(err)
-        }`,
-      );
-      return;
+        }`
+      )
+      return
     }
-    await clearPendingFanout(db, group.pins, new Date().toISOString());
-    processed += group.pins.length;
-  });
-  return { processed };
+    await clearPendingFanout(db, group.pins, new Date().toISOString())
+    processed += group.pins.length
+  })
+  return { processed }
 }

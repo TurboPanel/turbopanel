@@ -14,10 +14,7 @@
 
 import { and, eq, gt, inArray, isNull, ne, notInArray } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import {
-  containerNameFromService,
-  ingressContainerNameFromService,
-} from '../../lib/naming.ts'
+import { containerNameFromService, ingressContainerNameFromService } from '../../lib/naming.ts'
 import type { ContainerNamingMode } from '../projects/project-options.ts'
 import { parseServiceOptions } from '../projects/service-options.ts'
 import type { ComposeDocument } from '../compose/types.ts'
@@ -61,7 +58,7 @@ export type ServiceIngressAllocation = {
 
 function shouldAllocateService(
   containerNaming: ContainerNamingMode,
-  explicitContainerName: string | undefined,
+  explicitContainerName: string | undefined
 ): boolean {
   if (containerNaming === 'uuid') return true
   // custom: only when an explicit per-service name is known up front
@@ -82,10 +79,7 @@ export function resolveAllocatedContainerName(input: {
   ordinal: number
   instances: number
 }): string {
-  if (
-    typeof input.explicitContainerName === 'string' &&
-    input.explicitContainerName.length > 0
-  ) {
+  if (typeof input.explicitContainerName === 'string' && input.explicitContainerName.length > 0) {
     if (input.instances === 1) return input.explicitContainerName
     return `${input.explicitContainerName}-${input.ordinal}`
   }
@@ -106,7 +100,7 @@ export async function pruneUnexpectedPendingContainers(
   params: {
     serviceIds: readonly string[]
     keepIds: ReadonlySet<string>
-  },
+  }
 ): Promise<void> {
   if (params.serviceIds.length === 0) return
 
@@ -127,7 +121,7 @@ async function allocateServiceContainers(
   params: {
     serverId: string
     service: ContainerServiceSpec
-  },
+  }
 ): Promise<ContainerAllocation[]> {
   const { serverId, service: svc } = params
   const instances = svc.instances
@@ -168,14 +162,14 @@ async function allocateServiceContainers(
           and(
             eq(container.serviceId, svc.serviceId),
             eq(container.role, role),
-            eq(container.ordinal, ordinal),
-          ),
+            eq(container.ordinal, ordinal)
+          )
         )
         .limit(1)
 
       if (!row) {
         throw new Error(
-          `container allocation missing after upsert (service=${svc.serviceId} ordinal=${ordinal})`,
+          `container allocation missing after upsert (service=${svc.serviceId} ordinal=${ordinal})`
         )
       }
 
@@ -219,8 +213,8 @@ async function allocateServiceContainers(
         and(
           eq(container.serviceId, svc.serviceId),
           eq(container.role, role),
-          gt(container.ordinal, instances),
-        ),
+          gt(container.ordinal, instances)
+        )
       )
   })
 
@@ -241,7 +235,7 @@ export async function ensureServiceIngressContainerAllocation(
     serviceId: string
     serverId: string
     composeServiceName: string
-  },
+  }
 ): Promise<ServiceIngressAllocation> {
   const { serviceId, serverId, composeServiceName } = params
 
@@ -275,14 +269,14 @@ export async function ensureServiceIngressContainerAllocation(
       and(
         eq(container.serviceId, serviceId),
         eq(container.role, 'ingress'),
-        eq(container.ordinal, 1),
-      ),
+        eq(container.ordinal, 1)
+      )
     )
     .limit(1)
 
   if (!row) {
     throw new Error(
-      `service ingress container allocation missing after upsert (service=${serviceId})`,
+      `service ingress container allocation missing after upsert (service=${serviceId})`
     )
   }
 
@@ -320,8 +314,8 @@ export async function ensureServiceIngressContainerAllocation(
         eq(container.role, 'ingress'),
         isNull(container.containerId),
         eq(container.status, 'pending'),
-        ne(container.id, row.id),
-      ),
+        ne(container.id, row.id)
+      )
     )
 
   return {
@@ -361,7 +355,7 @@ export async function allocateEnvironmentContainers(
      * tcp/udp ingress allocations that must survive alongside service rows).
      */
     extraKeepIds?: ReadonlySet<string>
-  },
+  }
 ): Promise<ContainerAllocation[]> {
   const allocations: ContainerAllocation[] = []
 
@@ -376,8 +370,8 @@ export async function allocateEnvironmentContainers(
     allocations.push(...serviceAllocations)
   })
 
-  const pruneServiceIds = params.environmentServiceIds ??
-    params.containerServices.map((svc) => svc.serviceId)
+  const pruneServiceIds =
+    params.environmentServiceIds ?? params.containerServices.map((svc) => svc.serviceId)
   const keepIds = new Set(allocations.map((row) => row.containerRowId))
   if (params.extraKeepIds) {
     for (const id of params.extraKeepIds) keepIds.add(id)
@@ -398,9 +392,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * Read explicit `container_name` values from a merged compose document,
  * keyed by compose service name.
  */
-export function readComposeContainerNames(
-  document: ComposeDocument,
-): Map<string, string> {
+export function readComposeContainerNames(document: ComposeDocument): Map<string, string> {
   const map = new Map<string, string>()
   const services = document.data.services
   if (!isRecord(services)) return map
@@ -424,7 +416,7 @@ export function readComposeContainerNames(
  */
 export function authoredContainerNamesForAllocation(
   containerNaming: ContainerNamingMode,
-  document: ComposeDocument,
+  document: ComposeDocument
 ): Map<string, string> | undefined {
   if (containerNaming === 'uuid') return undefined
   return readComposeContainerNames(document)
@@ -442,7 +434,7 @@ export function buildContainerServiceSpecs(
    * Explicit container names keyed by compose service name (from
    * `services.<key>.container_name` on the merged compose document).
    */
-  explicitContainerNames?: ReadonlyMap<string, string>,
+  explicitContainerNames?: ReadonlyMap<string, string>
 ): ContainerServiceSpec[] {
   const specs: ContainerServiceSpec[] = []
   for (const row of serviceRows) {

@@ -39,10 +39,7 @@ import {
   isProductionEnvironmentName,
   loadDefaultEnvironmentName,
 } from './empty-setup.ts'
-import {
-  isProjectDisplayNameTaken,
-  PROJECT_NAME_IN_USE_ERROR,
-} from '../display-name-uniqueness.ts'
+import { isProjectDisplayNameTaken, PROJECT_NAME_IN_USE_ERROR } from '../display-name-uniqueness.ts'
 import { isReservedSystemProjectName } from '../../features/system/hierarchy.ts'
 import { UUID_RE } from '../repositories/routes-helpers.ts'
 import {
@@ -50,9 +47,7 @@ import {
   loadOrganizationRepositoryIds,
   loadProjectRepositoryId,
 } from '../../features/git/repository-records.ts'
-import {
-  composePrincipalAliases,
-} from '../../features/principals/principal-alias-records.ts'
+import { composePrincipalAliases } from '../../features/principals/principal-alias-records.ts'
 import {
   assertDefaultServerIdShape,
   catalogProjectOptions,
@@ -79,7 +74,7 @@ export async function scaffoldCatalogEnvironments(
   entry: CatalogEntry,
   dataEncryptionSecrets: DerivedSecretsConfig,
   serverId?: string | null,
-  defaultEnvironmentName?: string,
+  defaultEnvironmentName?: string
 ) {
   await forEachSequential(entry.environments, async (env) => {
     const displayName = isProductionEnvironmentName(env.displayName)
@@ -132,7 +127,7 @@ function runCreateProjectTransaction(
     dataEncryptionSecrets: DerivedSecretsConfig | undefined
     serverId: string | null
     defaultEnvironmentName: string
-  },
+  }
 ): Promise<string> {
   return db.transaction((tx) => {
     if (input.projectType === 'empty') {
@@ -203,7 +198,7 @@ async function resolveWorkspaceTarget(
   c: Context<AppEnv>,
   db: Db,
   workspaceId: string,
-  organizationId: string,
+  organizationId: string
 ): Promise<string | Response> {
   const workspaceRows = await db
     .select({ id: workspace.id })
@@ -228,7 +223,7 @@ function resolveWorkspaceIdForCreate(
   c: Context<AppEnv>,
   db: Db,
   body: Record<string, unknown>,
-  organizationId: string,
+  organizationId: string
 ): Promise<string | Response> {
   const workspaceId = requireStringField(c, body, 'workspaceId')
   if (workspaceId instanceof Response) return Promise.resolve(workspaceId)
@@ -238,7 +233,7 @@ function resolveWorkspaceIdForCreate(
 
 function parseNameAndDescription(
   c: Context<AppEnv>,
-  body: Record<string, unknown>,
+  body: Record<string, unknown>
 ): { name: string | null; description: string | null } | Response {
   const parsed = parseCreateProjectNames(body)
   if (!parsed.ok) {
@@ -251,7 +246,7 @@ async function resolveServerIdForCreate(
   c: Context<AppEnv>,
   db: Db,
   body: Record<string, unknown>,
-  organizationId: string,
+  organizationId: string
 ): Promise<string | null | Response> {
   const parsed = parseCreateProjectServerIdField(body)
   if (!parsed.ok) {
@@ -268,7 +263,7 @@ async function resolveServerIdForCreate(
 async function parseCreateProjectInput(
   c: Context<AppEnv>,
   db: Db,
-  organizationId: string,
+  organizationId: string
 ): Promise<CreateProjectInput | Response> {
   const body = await parseJsonBody(c)
   if (body instanceof Response) return body
@@ -321,10 +316,7 @@ async function parseCreateProjectInput(
   const serverId = await resolveServerIdForCreate(c, db, body, organizationId)
   if (serverId instanceof Response) return serverId
 
-  const defaultEnvironmentName = await loadDefaultEnvironmentName(
-    db,
-    organizationId,
-  )
+  const defaultEnvironmentName = await loadDefaultEnvironmentName(db, organizationId)
 
   return {
     name,
@@ -348,7 +340,7 @@ function parseProjectMoveTarget(
   c: Context<AppEnv>,
   db: Db,
   body: Record<string, unknown>,
-  organizationId: string,
+  organizationId: string
 ): Promise<string | Response | undefined> {
   if (body.workspaceId === undefined) return Promise.resolve(undefined)
 
@@ -380,7 +372,7 @@ function parseProjectMoveTarget(
  */
 function parseProjectRepositoryRebind(
   c: Context<AppEnv>,
-  body: Record<string, unknown>,
+  body: Record<string, unknown>
 ): string | null | undefined | Response {
   if (!('repositoryId' in body)) return undefined
   const value = body.repositoryId
@@ -396,7 +388,7 @@ function parseProjectPatchOptions(
   body: Record<string, unknown>,
   knownSourceIds: ReadonlySet<string>,
   projectRepositoryId: string | null,
-  knownPrincipalAliases: ReadonlySet<string>,
+  knownPrincipalAliases: ReadonlySet<string>
 ): Record<string, unknown> | null | Response {
   const optionsResult = parseJsonbField(body, 'options')
   if (optionsResult === 'invalid') {
@@ -433,7 +425,7 @@ function buildProjectPatchFields(
   moveTarget: string | undefined,
   knownSourceIds: ReadonlySet<string>,
   projectRepositoryId: string | null,
-  knownPrincipalAliases: ReadonlySet<string>,
+  knownPrincipalAliases: ReadonlySet<string>
 ): ProjectPatchFields | Response {
   let patchFields: ProjectPatchFields
   try {
@@ -447,7 +439,7 @@ function buildProjectPatchFields(
     body,
     knownSourceIds,
     projectRepositoryId,
-    knownPrincipalAliases,
+    knownPrincipalAliases
   )
   if (optionsResult instanceof Response) return optionsResult
   if (optionsResult !== null) {
@@ -465,7 +457,7 @@ async function assertDefaultServerIdInOrg(
   c: Context<AppEnv>,
   db: Db,
   organizationId: string,
-  options: Record<string, unknown> | null | undefined,
+  options: Record<string, unknown> | null | undefined
 ): Promise<Response | undefined> {
   const shapeError = assertDefaultServerIdShape(options)
   if (shapeError) {
@@ -494,7 +486,7 @@ type ManageableProject = {
  */
 async function resolveManageableProject(
   c: Context<AppEnv>,
-  id: string,
+  id: string
 ): Promise<ManageableProject | Response> {
   const db = getDb(c)
   if (!db) return c.json({ error: 'Database unavailable' }, 503)
@@ -531,7 +523,7 @@ async function resolveProjectRepositoryBinding(
   db: Db,
   body: Record<string, unknown>,
   id: string,
-  knownSourceIds: ReadonlySet<string>,
+  knownSourceIds: ReadonlySet<string>
 ): Promise<ProjectRepositoryBinding | Response> {
   const rebind = parseProjectRepositoryRebind(c, body)
   if (rebind instanceof Response) return rebind
@@ -557,12 +549,10 @@ async function insertDockerComposeProject(
     options: Record<string, unknown> | null
     serverId: string | null
     defaultEnvironmentName: string
-  },
+  }
 ): Promise<string> {
   const compose =
-    fields.options && 'compose' in fields.options
-      ? fields.options.compose
-      : emptyComposeDocument()
+    fields.options && 'compose' in fields.options ? fields.options.compose : emptyComposeDocument()
   const [inserted] = await tx
     .insert(project)
     .values({
@@ -600,10 +590,9 @@ async function insertCatalogProject(
     dataEncryptionSecrets: DerivedSecretsConfig
     serverId: string | null
     defaultEnvironmentName: string
-  },
+  }
 ): Promise<string> {
-  const isEngine =
-    fields.projectType === 'managed' && isManagedEngineCatalogEntry(fields.entry)
+  const isEngine = fields.projectType === 'managed' && isManagedEngineCatalogEntry(fields.entry)
 
   const [inserted] = await tx
     .insert(project)
@@ -628,7 +617,7 @@ async function insertCatalogProject(
     fields.entry,
     fields.dataEncryptionSecrets,
     fields.serverId,
-    fields.defaultEnvironmentName,
+    fields.defaultEnvironmentName
   )
   return inserted.id
 }
@@ -759,11 +748,7 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     // it (a losing racer surfaces as the same 409 via mapCreateProjectError).
     if (
       isReservedSystemProjectName(input.name) ||
-      (await isProjectDisplayNameTaken(
-        db,
-        input.organizationId,
-        input.name,
-      ))
+      (await isProjectDisplayNameTaken(db, input.organizationId, input.name))
     ) {
       return c.json({ error: PROJECT_NAME_IN_USE_ERROR }, 409)
     }
@@ -811,10 +796,7 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const serverId = await resolveServerIdForCreate(c, db, body, organizationId)
     if (serverId instanceof Response) return serverId
 
-    const defaultEnvironmentName = await loadDefaultEnvironmentName(
-      db,
-      organizationId,
-    )
+    const defaultEnvironmentName = await loadDefaultEnvironmentName(db, organizationId)
 
     const result = await configureProjectType(db, {
       projectId: id,
@@ -848,13 +830,7 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     if (moveTarget instanceof Response) return moveTarget
 
     const knownSourceIds = await loadOrganizationRepositoryIds(db, organizationId)
-    const binding = await resolveProjectRepositoryBinding(
-      c,
-      db,
-      body,
-      id,
-      knownSourceIds,
-    )
+    const binding = await resolveProjectRepositoryBinding(c, db, body, id, knownSourceIds)
     if (binding instanceof Response) return binding
     const { rebind, projectRepositoryId } = binding
 
@@ -864,7 +840,7 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       moveTarget,
       knownSourceIds,
       projectRepositoryId,
-      composePrincipalAliases(body.options),
+      composePrincipalAliases(body.options)
     )
     if (patchFields instanceof Response) return patchFields
     if (rebind !== undefined) patchFields.repositoryId = rebind
@@ -872,12 +848,7 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     if (
       patchFields.name !== undefined &&
       (isReservedSystemProjectName(patchFields.name) ||
-        (await isProjectDisplayNameTaken(
-          db,
-          organizationId,
-          patchFields.name,
-          id,
-        )))
+        (await isProjectDisplayNameTaken(db, organizationId, patchFields.name, id)))
     ) {
       return c.json({ error: PROJECT_NAME_IN_USE_ERROR }, 409)
     }
@@ -886,15 +857,12 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       c,
       db,
       organizationId,
-      patchFields.options,
+      patchFields.options
     )
     if (defaultServerError) return defaultServerError
 
     try {
-      await db
-        .update(project)
-        .set(patchFields)
-        .where(eq(project.id, id))
+      await db.update(project).set(patchFields).where(eq(project.id, id))
     } catch (err) {
       if (isProjectNameUniqueViolation(err)) {
         return c.json({ error: PROJECT_NAME_IN_USE_ERROR }, 409)
@@ -924,7 +892,7 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       .where(eq(environment.projectId, id))
     const teardownPlans = await planEnvironmentsTeardown(
       db,
-      environmentIds.map((row) => row.id),
+      environmentIds.map((row) => row.id)
     )
 
     const result = await deleteProjectCascade(db, id)
@@ -932,12 +900,7 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       return c.json({ error: result.error }, 409)
     }
 
-    await reclaimDeletedEnvironmentHosts(
-      c,
-      db,
-      teardownPlans,
-      userId,
-    )
+    await reclaimDeletedEnvironmentHosts(c, db, teardownPlans, userId)
 
     return c.json({ ok: true as const })
   })
