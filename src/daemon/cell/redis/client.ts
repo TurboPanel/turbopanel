@@ -1,217 +1,201 @@
 /** Deno-only — uses ioredis and Deno.env; not imported by the Workers bundle. */
-import { Redis } from "ioredis";
+import { Redis } from 'ioredis'
 
 export type RedisConnectionOptions = {
-  path: string;
-  maxRetriesPerRequest: number | null;
-};
+  path: string
+  maxRetriesPerRequest: number | null
+}
 
 export type RedisClientOptions = {
-  socketPath?: string;
+  socketPath?: string
   /**
    * Optional Redis constructor override for host-free unit tests. Production
    * callers omit this and get `new Redis(options)`.
    */
-  redisFactory?: (options: RedisConnectionOptions) => Redis;
-};
+  redisFactory?: (options: RedisConnectionOptions) => Redis
+}
 
 export type StreamEntry = {
-  id: string;
-  fields: Record<string, string>;
-};
+  id: string
+  fields: Record<string, string>
+}
 
-const DEFAULT_SOCKET_PATH = "/run/turbopanel/redis.sock";
+const DEFAULT_SOCKET_PATH = '/run/turbopanel/redis.sock'
 
 export function resolveSocketPath(opts?: RedisClientOptions): string {
-  return opts?.socketPath ??
-    Deno.env.get("TURBOPANEL_REDIS_SOCKET") ??
-    DEFAULT_SOCKET_PATH;
+  return opts?.socketPath ?? Deno.env.get('TURBOPANEL_REDIS_SOCKET') ?? DEFAULT_SOCKET_PATH
 }
 
 function attachErrorLogging(redis: Redis, label: string): void {
-  redis.on("error", (err: Error) => {
-    console.error(`[redis:${label}]`, err.message);
-  });
+  redis.on('error', (err: Error) => {
+    console.error(`[redis:${label}]`, err.message)
+  })
 }
 
 export function parseStreamFields(fieldList: unknown): Record<string, string> {
-  const fields: Record<string, string> = {};
-  if (!Array.isArray(fieldList)) return fields;
+  const fields: Record<string, string> = {}
+  if (!Array.isArray(fieldList)) return fields
   for (let i = 0; i < fieldList.length; i += 2) {
-    fields[String(fieldList[i])] = String(fieldList[i + 1] ?? "");
+    fields[String(fieldList[i])] = String(fieldList[i + 1] ?? '')
   }
-  return fields;
+  return fields
 }
 
 export function parseStreamMessage(message: unknown): StreamEntry | null {
-  if (!Array.isArray(message) || message.length < 2) return null;
-  return { id: String(message[0]), fields: parseStreamFields(message[1]) };
+  if (!Array.isArray(message) || message.length < 2) return null
+  return { id: String(message[0]), fields: parseStreamFields(message[1]) }
 }
 
 export function parseMessageList(messages: unknown): StreamEntry[] {
-  if (!Array.isArray(messages)) return [];
-  const entries: StreamEntry[] = [];
+  if (!Array.isArray(messages)) return []
+  const entries: StreamEntry[] = []
   for (const message of messages) {
-    const entry = parseStreamMessage(message);
-    if (entry) entries.push(entry);
+    const entry = parseStreamMessage(message)
+    if (entry) entries.push(entry)
   }
-  return entries;
+  return entries
 }
 
 export function parseStreamEntries(raw: unknown): StreamEntry[] {
-  if (!Array.isArray(raw) || raw.length === 0) return [];
+  if (!Array.isArray(raw) || raw.length === 0) return []
 
-  const entries: StreamEntry[] = [];
+  const entries: StreamEntry[] = []
   for (const streamBlock of raw) {
-    if (!Array.isArray(streamBlock) || streamBlock.length < 2) continue;
-    entries.push(...parseMessageList(streamBlock[1]));
+    if (!Array.isArray(streamBlock) || streamBlock.length < 2) continue
+    entries.push(...parseMessageList(streamBlock[1]))
   }
-  return entries;
+  return entries
 }
 
 export function parseAutoClaimEntries(raw: unknown): StreamEntry[] {
-  if (!Array.isArray(raw) || raw.length < 2) return [];
-  return parseMessageList(raw[1]);
+  if (!Array.isArray(raw) || raw.length < 2) return []
+  return parseMessageList(raw[1])
 }
 
 export class RedisCellClient {
-  readonly #cmd: Redis;
-  readonly #block: Redis;
-  readonly #maint: Redis;
+  readonly #cmd: Redis
+  readonly #block: Redis
+  readonly #maint: Redis
 
   constructor(opts?: RedisClientOptions) {
-    const path = resolveSocketPath(opts);
+    const path = resolveSocketPath(opts)
     const options: RedisConnectionOptions = {
       path,
       maxRetriesPerRequest: null,
-    };
-    const create = opts?.redisFactory ??
-      ((connectionOptions) => new Redis(connectionOptions));
+    }
+    const create = opts?.redisFactory ?? ((connectionOptions) => new Redis(connectionOptions))
 
-    this.#cmd = create(options);
-    this.#block = create(options);
-    this.#maint = create(options);
+    this.#cmd = create(options)
+    this.#block = create(options)
+    this.#maint = create(options)
 
-    attachErrorLogging(this.#cmd, "cmd");
-    attachErrorLogging(this.#block, "block");
-    attachErrorLogging(this.#maint, "maint");
+    attachErrorLogging(this.#cmd, 'cmd')
+    attachErrorLogging(this.#block, 'block')
+    attachErrorLogging(this.#maint, 'maint')
   }
 
   async hset(key: string, fields: Record<string, string>): Promise<void> {
-    if (Object.keys(fields).length === 0) return;
-    await this.#cmd.hset(key, fields);
+    if (Object.keys(fields).length === 0) return
+    await this.#cmd.hset(key, fields)
   }
 
   async hgetall(key: string): Promise<Record<string, string> | null> {
-    const result = await this.#cmd.hgetall(key);
-    if (!result || Object.keys(result).length === 0) return null;
-    return result;
+    const result = await this.#cmd.hgetall(key)
+    if (!result || Object.keys(result).length === 0) return null
+    return result
   }
 
   async set(key: string, value: string, pxMs?: number): Promise<void> {
     if (pxMs != null && pxMs > 0) {
-      await this.#cmd.set(key, value, "PX", pxMs);
+      await this.#cmd.set(key, value, 'PX', pxMs)
     } else {
-      await this.#cmd.set(key, value);
+      await this.#cmd.set(key, value)
     }
   }
 
   async setnx(key: string, value: string, pxMs: number): Promise<boolean> {
-    const result = await this.#cmd.set(key, value, "PX", pxMs, "NX");
-    return result === "OK";
+    const result = await this.#cmd.set(key, value, 'PX', pxMs, 'NX')
+    return result === 'OK'
   }
 
   async setnxPersistent(key: string, value: string): Promise<boolean> {
-    const result = await this.#cmd.set(key, value, "NX");
-    return result === "OK";
+    const result = await this.#cmd.set(key, value, 'NX')
+    return result === 'OK'
   }
 
   async get(key: string): Promise<string | null> {
-    const result = await this.#cmd.get(key);
-    return result ?? null;
+    const result = await this.#cmd.get(key)
+    return result ?? null
   }
 
   async pttl(key: string): Promise<number> {
-    return await this.#cmd.pttl(key);
+    return await this.#cmd.pttl(key)
   }
 
   async del(...keys: string[]): Promise<number> {
-    if (keys.length === 0) return 0;
-    return await this.#cmd.del(...keys);
+    if (keys.length === 0) return 0
+    return await this.#cmd.del(...keys)
   }
 
   async scanKeys(pattern: string): Promise<string[]> {
-    const keys: string[] = [];
+    const keys: string[] = []
     // SCAN pages are cursor-dependent: each page needs the previous cursor.
     const scanFrom = async (cursor: string): Promise<void> => {
-      const [nextCursor, batch] = await this.#cmd.scan(
-        cursor,
-        "MATCH",
-        pattern,
-        "COUNT",
-        100,
-      );
+      const [nextCursor, batch] = await this.#cmd.scan(cursor, 'MATCH', pattern, 'COUNT', 100)
       if (Array.isArray(batch) && batch.length > 0) {
-        keys.push(...batch.map(String));
+        keys.push(...batch.map(String))
       }
-      if (nextCursor !== "0") await scanFrom(nextCursor);
-    };
-    await scanFrom("0");
-    return keys;
+      if (nextCursor !== '0') await scanFrom(nextCursor)
+    }
+    await scanFrom('0')
+    return keys
   }
 
   async deleteByPattern(pattern: string): Promise<number> {
-    const keys = await this.scanKeys(pattern);
-    if (keys.length === 0) return 0;
-    return await this.del(...keys);
+    const keys = await this.scanKeys(pattern)
+    if (keys.length === 0) return 0
+    return await this.del(...keys)
   }
 
-  async expire(
-    key: string,
-    seconds: number,
-    mode?: "GT",
-  ): Promise<boolean> {
-    if (mode === "GT") {
-      const result = await this.#cmd.expire(key, seconds, "GT");
-      return result === 1;
+  async expire(key: string, seconds: number, mode?: 'GT'): Promise<boolean> {
+    if (mode === 'GT') {
+      const result = await this.#cmd.expire(key, seconds, 'GT')
+      return result === 1
     }
-    const result = await this.#cmd.expire(key, seconds);
-    return result === 1;
+    const result = await this.#cmd.expire(key, seconds)
+    return result === 1
   }
 
   async sadd(key: string, ...members: string[]): Promise<number> {
-    if (members.length === 0) return 0;
-    return await this.#cmd.sadd(key, ...members);
+    if (members.length === 0) return 0
+    return await this.#cmd.sadd(key, ...members)
   }
 
   async srem(key: string, ...members: string[]): Promise<number> {
-    if (members.length === 0) return 0;
-    return await this.#cmd.srem(key, ...members);
+    if (members.length === 0) return 0
+    return await this.#cmd.srem(key, ...members)
   }
 
   async smembers(key: string): Promise<string[]> {
-    return await this.#cmd.smembers(key);
+    return await this.#cmd.smembers(key)
   }
 
   async xadd(
     key: string,
     id: string,
     fields: Record<string, string>,
-    maxlen?: number,
+    maxlen?: number
   ): Promise<string> {
-    const args: (string | number)[] = [];
+    const args: (string | number)[] = []
     if (maxlen != null) {
-      args.push("MAXLEN", "~", maxlen);
+      args.push('MAXLEN', '~', maxlen)
     }
-    args.push(id);
+    args.push(id)
     for (const [field, value] of Object.entries(fields)) {
-      args.push(field, value);
+      args.push(field, value)
     }
-    const result = await this.#cmd.xadd(
-      key,
-      ...(args as [string | number, ...(string | number)[]]),
-    );
-    return result ?? "";
+    const result = await this.#cmd.xadd(key, ...(args as [string | number, ...(string | number)[]]))
+    return result ?? ''
   }
 
   async xreadgroup(
@@ -220,31 +204,25 @@ export class RedisCellClient {
     streamKey: string,
     count: number,
     blockMs?: number,
-    streamId: ">" | "0" = ">",
+    streamId: '>' | '0' = '>'
   ): Promise<StreamEntry[]> {
-    const cmdArgs: string[] = [
-      "GROUP",
-      group,
-      consumer,
-      "COUNT",
-      String(count),
-    ];
+    const cmdArgs: string[] = ['GROUP', group, consumer, 'COUNT', String(count)]
     if (blockMs != null && blockMs > 0) {
-      cmdArgs.push("BLOCK", String(blockMs));
+      cmdArgs.push('BLOCK', String(blockMs))
     }
-    cmdArgs.push("STREAMS", streamKey, streamId);
-    const raw = await this.#block.call("XREADGROUP", ...cmdArgs);
-    return parseStreamEntries(raw);
+    cmdArgs.push('STREAMS', streamKey, streamId)
+    const raw = await this.#block.call('XREADGROUP', ...cmdArgs)
+    return parseStreamEntries(raw)
   }
 
   async xack(key: string, group: string, ...ids: string[]): Promise<number> {
-    if (ids.length === 0) return 0;
-    return await this.#cmd.xack(key, group, ...ids);
+    if (ids.length === 0) return 0
+    return await this.#cmd.xack(key, group, ...ids)
   }
 
   async xdel(key: string, ...ids: string[]): Promise<number> {
-    if (ids.length === 0) return 0;
-    return await this.#cmd.xdel(key, ...ids);
+    if (ids.length === 0) return 0
+    return await this.#cmd.xdel(key, ...ids)
   }
 
   async xautoclaim(
@@ -253,7 +231,7 @@ export class RedisCellClient {
     consumer: string,
     minIdleMs: number,
     startId: string,
-    count: number,
+    count: number
   ): Promise<StreamEntry[]> {
     const raw = await this.#maint.xautoclaim(
       key,
@@ -261,102 +239,75 @@ export class RedisCellClient {
       consumer,
       minIdleMs,
       startId,
-      "COUNT",
-      count,
-    );
-    return parseAutoClaimEntries(raw);
+      'COUNT',
+      count
+    )
+    return parseAutoClaimEntries(raw)
   }
 
-  async xrange(
-    key: string,
-    start: string,
-    end: string,
-    count?: number,
-  ): Promise<StreamEntry[]> {
-    const raw = count != null
-      ? await this.#cmd.xrange(key, start, end, "COUNT", count)
-      : await this.#cmd.xrange(key, start, end);
+  async xrange(key: string, start: string, end: string, count?: number): Promise<StreamEntry[]> {
+    const raw =
+      count != null
+        ? await this.#cmd.xrange(key, start, end, 'COUNT', count)
+        : await this.#cmd.xrange(key, start, end)
 
-    return parseMessageList(raw);
+    return parseMessageList(raw)
   }
 
-  async xrevrange(
-    key: string,
-    end: string,
-    start: string,
-    count?: number,
-  ): Promise<StreamEntry[]> {
-    const raw = count != null
-      ? await this.#cmd.xrevrange(key, end, start, "COUNT", count)
-      : await this.#cmd.xrevrange(key, end, start);
+  async xrevrange(key: string, end: string, start: string, count?: number): Promise<StreamEntry[]> {
+    const raw =
+      count != null
+        ? await this.#cmd.xrevrange(key, end, start, 'COUNT', count)
+        : await this.#cmd.xrevrange(key, end, start)
 
-    return parseMessageList(raw);
+    return parseMessageList(raw)
   }
 
   async xlen(key: string): Promise<number> {
-    return await this.#cmd.xlen(key);
+    return await this.#cmd.xlen(key)
   }
 
   async xtrimMaxLen(key: string, maxlen: number): Promise<number> {
-    return await this.#cmd.xtrim(key, "MAXLEN", "~", maxlen);
+    return await this.#cmd.xtrim(key, 'MAXLEN', '~', maxlen)
   }
 
-  async xgroupCreate(
-    key: string,
-    group: string,
-    startId: string,
-    mkstream = true,
-  ): Promise<void> {
+  async xgroupCreate(key: string, group: string, startId: string, mkstream = true): Promise<void> {
     try {
-      const cmdArgs = ["CREATE", key, group, startId];
-      if (mkstream) cmdArgs.push("MKSTREAM");
-      await this.#cmd.call("XGROUP", ...cmdArgs);
+      const cmdArgs = ['CREATE', key, group, startId]
+      if (mkstream) cmdArgs.push('MKSTREAM')
+      await this.#cmd.call('XGROUP', ...cmdArgs)
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      if (!message.includes("BUSYGROUP")) throw err;
+      const message = err instanceof Error ? err.message : String(err)
+      if (!message.includes('BUSYGROUP')) throw err
     }
   }
 
   async zadd(key: string, score: number, member: string): Promise<number> {
-    return await this.#cmd.zadd(key, score, member);
+    return await this.#cmd.zadd(key, score, member)
   }
 
   async zrem(key: string, ...members: string[]): Promise<number> {
-    if (members.length === 0) return 0;
-    return await this.#cmd.zrem(key, ...members);
+    if (members.length === 0) return 0
+    return await this.#cmd.zrem(key, ...members)
   }
 
-  async zrangebyscore(
-    key: string,
-    min: number | string,
-    max: number | string,
-  ): Promise<string[]> {
-    return await this.#cmd.zrangebyscore(key, min, max);
+  async zrangebyscore(key: string, min: number | string, max: number | string): Promise<string[]> {
+    return await this.#cmd.zrangebyscore(key, min, max)
   }
 
   async zcard(key: string): Promise<number> {
-    return await this.#cmd.zcard(key);
+    return await this.#cmd.zcard(key)
   }
 
-  async eval(
-    script: string,
-    numkeys: number,
-    ...args: (string | number)[]
-  ): Promise<unknown> {
-    return await this.#cmd.eval(script, numkeys, ...args);
+  async eval(script: string, numkeys: number, ...args: (string | number)[]): Promise<unknown> {
+    return await this.#cmd.eval(script, numkeys, ...args)
   }
 
   async close(): Promise<void> {
-    await Promise.all([
-      this.#cmd.quit(),
-      this.#block.quit(),
-      this.#maint.quit(),
-    ]);
+    await Promise.all([this.#cmd.quit(), this.#block.quit(), this.#maint.quit()])
   }
 }
 
-export function createRedisCellClient(
-  opts?: RedisClientOptions,
-): RedisCellClient {
-  return new RedisCellClient(opts);
+export function createRedisCellClient(opts?: RedisClientOptions): RedisCellClient {
+  return new RedisCellClient(opts)
 }

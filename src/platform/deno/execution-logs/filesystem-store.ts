@@ -103,12 +103,7 @@ export class FilesystemExecutionLogStore implements ExecutionLogStore {
       if (plan.marker) {
         await this.#appendBytes(index, plan.marker)
       }
-      const next = applyExecutionLogTruncation(
-        index,
-        plan.seq,
-        plan.marker?.byteLength ?? null,
-        at
-      )
+      const next = applyExecutionLogTruncation(index, plan.seq, plan.marker?.byteLength ?? null, at)
       await this.#writeIndex(next)
       return { nextSeq: next.nextSeq }
     }
@@ -266,10 +261,7 @@ export class FilesystemExecutionLogStore implements ExecutionLogStore {
    * window) — while a tick stays bounded by `limit` and
    * {@link SWEEP_MAX_PARTITIONS_PER_TICK}.
    */
-  async #sweepFromOldestPartition(
-    cutoffPartition: string,
-    limit: number
-  ): Promise<number> {
+  async #sweepFromOldestPartition(cutoffPartition: string, limit: number): Promise<number> {
     const dataRoot = `${this.#root}/data`
     const progress = { removed: 0, partitionsScanned: 0 }
 

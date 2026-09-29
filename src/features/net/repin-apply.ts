@@ -53,9 +53,7 @@ type PinDetail = DatacenterMembershipPinDetailRow & {
   subnetCidr: string
 }
 
-function isRepinablePin(
-  pin: DatacenterMembershipPinDetailRow,
-): pin is PinDetail {
+function isRepinablePin(pin: DatacenterMembershipPinDetailRow): pin is PinDetail {
   return pin.networkId !== null && pin.subnetCidr !== null
 }
 
@@ -81,19 +79,14 @@ async function loadAddressesInUse(
   db: Db,
   organizationId: string,
   candidates: readonly string[],
-  ownPinIds: ReadonlySet<string>,
+  ownPinIds: ReadonlySet<string>
 ): Promise<Set<string>> {
   const inUse = new Set<string>()
   if (candidates.length === 0) return inUse
   const rows = await db
     .select({ id: ip.id, address: ip.address })
     .from(ip)
-    .where(
-      and(
-        eq(ip.organizationId, organizationId),
-        inArray(ip.address, [...candidates]),
-      ),
-    )
+    .where(and(eq(ip.organizationId, organizationId), inArray(ip.address, [...candidates])))
   for (const row of rows) {
     if (ownPinIds.has(row.id)) continue
     const address = inetAddressToString(row.address)
@@ -107,17 +100,13 @@ async function writeRepin(
   pin: PinDetail,
   action: Extract<RepinAction, { kind: 'repin' }>,
   serverMetadata: unknown,
-  nowIso: string,
+  nowIso: string
 ): Promise<RepinAction> {
-  const validated = validateMemberPinAddress(
-    action.to,
-    pin.subnetCidr,
-    serverMetadata,
-  )
+  const validated = validateMemberPinAddress(action.to, pin.subnetCidr, serverMetadata)
   if (!validated.ok) {
     compatLogWarn(
       LOG_COMPONENT,
-      `repin ${pin.ipId} ${action.from} -> ${action.to} rejected: ${validated.error}`,
+      `repin ${pin.ipId} ${action.from} -> ${action.to} rejected: ${validated.error}`
     )
     return writeStale(db, pin, 'address_gone_no_candidate', nowIso)
   }
@@ -147,7 +136,7 @@ async function writeStale(
   db: Db,
   pin: PinDetail,
   reason: RepinStaleReason,
-  nowIso: string,
+  nowIso: string
 ): Promise<RepinAction> {
   await db
     .update(ip)
@@ -159,11 +148,7 @@ async function writeStale(
   return { kind: 'mark_stale', ipId: pin.ipId, reason }
 }
 
-async function writeClearStale(
-  db: Db,
-  pin: PinDetail,
-  nowIso: string,
-): Promise<RepinAction> {
+async function writeClearStale(db: Db, pin: PinDetail, nowIso: string): Promise<RepinAction> {
   await db
     .update(ip)
     .set({
@@ -179,7 +164,7 @@ async function applyAction(
   pin: PinDetail,
   action: RepinAction,
   serverMetadata: unknown,
-  nowIso: string,
+  nowIso: string
 ): Promise<RepinAction> {
   switch (action.kind) {
     case 'repin':
@@ -203,12 +188,10 @@ async function applyAction(
 export async function applyReportedAddressRepin(
   db: Db,
   serverId: string,
-  reportedIps: ServerReportedIp[] | null | undefined,
+  reportedIps: ServerReportedIp[] | null | undefined
 ): Promise<RepinAction[]> {
   try {
-    const byServer = await loadDatacenterMembershipPinDetailsForServers(db, [
-      serverId,
-    ])
+    const byServer = await loadDatacenterMembershipPinDetailsForServers(db, [serverId])
     const pins = (byServer.get(serverId) ?? []).filter(isRepinablePin)
     if (pins.length === 0) return []
 
@@ -216,12 +199,7 @@ export async function applyReportedAddressRepin(
     const ownPinIds = new Set(pins.map((pin) => pin.ipId))
     const organizationId = pins[0]?.organizationId
     if (!organizationId) return []
-    const addressesInUse = await loadAddressesInUse(
-      db,
-      organizationId,
-      reported,
-      ownPinIds,
-    )
+    const addressesInUse = await loadAddressesInUse(db, organizationId, reported, ownPinIds)
 
     const decided = decideRepinActions({
       pins: pins.map(toRepinInput),
@@ -238,15 +216,13 @@ export async function applyReportedAddressRepin(
       const pin = byIpId.get(action.ipId)
       if (!pin) return
       try {
-        applied.push(
-          await applyAction(db, pin, action, serverMetadata, nowIso),
-        )
+        applied.push(await applyAction(db, pin, action, serverMetadata, nowIso))
       } catch (err) {
         compatLogWarn(
           LOG_COMPONENT,
           `${action.kind} for pin ${action.ipId} on server ${serverId} failed: ${
             err instanceof Error ? err.message : String(err)
-          }`,
+          }`
         )
       }
     })
@@ -256,7 +232,7 @@ export async function applyReportedAddressRepin(
       LOG_COMPONENT,
       `repin pass for server ${serverId} failed: ${
         err instanceof Error ? err.message : String(err)
-      }`,
+      }`
     )
     return []
   }

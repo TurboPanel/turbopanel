@@ -3,105 +3,95 @@
  * Named volumes only (host binds are not registered this slice).
  */
 
-import { and, eq, inArray } from "drizzle-orm";
-import type { Db } from "../../db/connection.ts";
-import type { ComposeDocument } from "../compose/types.ts";
-import { mount, service, storage, storageCopy } from "../../db/schema.ts";
-import { scratchCopyNotMountable } from "../storage/scratch.ts";
-import { forEachSequential } from "../../lib/sequential.ts";
+import { and, eq, inArray } from 'drizzle-orm'
+import type { Db } from '../../db/connection.ts'
+import type { ComposeDocument } from '../compose/types.ts'
+import { mount, service, storage, storageCopy } from '../../db/schema.ts'
+import { scratchCopyNotMountable } from '../storage/scratch.ts'
+import { forEachSequential } from '../../lib/sequential.ts'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 export type ParsedNamedVolumeMount = {
-  composeKey: string;
-  destinationPath: string;
-  readOnly: boolean;
-};
-
-function isHostPathSource(source: string): boolean {
-  return source.startsWith("/") || source.startsWith(".") ||
-    source.startsWith("~");
+  composeKey: string
+  destinationPath: string
+  readOnly: boolean
 }
 
-export function parseNamedVolumeMount(
-  spec: unknown,
-): ParsedNamedVolumeMount | null {
-  if (typeof spec === "string") {
-    const parts = spec.split(":");
-    if (parts.length < 2) return null;
-    const source = parts[0] ?? "";
-    const destinationPath = parts[1] ?? "";
-    if (!source || !destinationPath || isHostPathSource(source)) return null;
-    const mode = parts[2] ?? "";
+function isHostPathSource(source: string): boolean {
+  return source.startsWith('/') || source.startsWith('.') || source.startsWith('~')
+}
+
+export function parseNamedVolumeMount(spec: unknown): ParsedNamedVolumeMount | null {
+  if (typeof spec === 'string') {
+    const parts = spec.split(':')
+    if (parts.length < 2) return null
+    const source = parts[0] ?? ''
+    const destinationPath = parts[1] ?? ''
+    if (!source || !destinationPath || isHostPathSource(source)) return null
+    const mode = parts[2] ?? ''
     return {
       composeKey: source,
       destinationPath,
-      readOnly: mode.split(",").includes("ro"),
-    };
+      readOnly: mode.split(',').includes('ro'),
+    }
   }
-  if (!isRecord(spec)) return null;
-  if (spec.type === "bind") return null;
-  const source = typeof spec.source === "string" ? spec.source : "";
-  let destinationPath = "";
-  if (typeof spec.target === "string") {
-    destinationPath = spec.target;
-  } else if (typeof spec.destination === "string") {
-    destinationPath = spec.destination;
+  if (!isRecord(spec)) return null
+  if (spec.type === 'bind') return null
+  const source = typeof spec.source === 'string' ? spec.source : ''
+  let destinationPath = ''
+  if (typeof spec.target === 'string') {
+    destinationPath = spec.target
+  } else if (typeof spec.destination === 'string') {
+    destinationPath = spec.destination
   }
-  if (!source || !destinationPath || isHostPathSource(source)) return null;
+  if (!source || !destinationPath || isHostPathSource(source)) return null
   return {
     composeKey: source,
     destinationPath,
     readOnly: spec.read_only === true,
-  };
-}
-
-function listServiceVolumeSpecs(
-  document: ComposeDocument,
-): Map<string, ParsedNamedVolumeMount[]> {
-  const byService = new Map<string, ParsedNamedVolumeMount[]>();
-  if (!isRecord(document.data.services)) return byService;
-  for (const [composeName, body] of Object.entries(document.data.services)) {
-    if (!isRecord(body) || !Array.isArray(body.volumes)) continue;
-    const mounts: ParsedNamedVolumeMount[] = [];
-    for (const spec of body.volumes) {
-      const parsed = parseNamedVolumeMount(spec);
-      if (parsed) mounts.push(parsed);
-    }
-    if (mounts.length > 0) byService.set(composeName, mounts);
   }
-  return byService;
 }
 
-async function loadScratchOnlyStorageIds(
-  db: Db,
-  storageIds: string[],
-): Promise<Set<string>> {
-  const scratchOnly = new Set<string>();
-  if (storageIds.length === 0) return scratchOnly;
+function listServiceVolumeSpecs(document: ComposeDocument): Map<string, ParsedNamedVolumeMount[]> {
+  const byService = new Map<string, ParsedNamedVolumeMount[]>()
+  if (!isRecord(document.data.services)) return byService
+  for (const [composeName, body] of Object.entries(document.data.services)) {
+    if (!isRecord(body) || !Array.isArray(body.volumes)) continue
+    const mounts: ParsedNamedVolumeMount[] = []
+    for (const spec of body.volumes) {
+      const parsed = parseNamedVolumeMount(spec)
+      if (parsed) mounts.push(parsed)
+    }
+    if (mounts.length > 0) byService.set(composeName, mounts)
+  }
+  return byService
+}
+
+async function loadScratchOnlyStorageIds(db: Db, storageIds: string[]): Promise<Set<string>> {
+  const scratchOnly = new Set<string>()
+  if (storageIds.length === 0) return scratchOnly
   const locRows = await db
     .select({
       storageId: storageCopy.storageId,
       role: storageCopy.role,
     })
     .from(storageCopy)
-    .where(inArray(storageCopy.storageId, storageIds));
-  const rolesByStorage = new Map<string, string[]>();
+    .where(inArray(storageCopy.storageId, storageIds))
+  const rolesByStorage = new Map<string, string[]>()
   for (const row of locRows) {
-    const roles = rolesByStorage.get(row.storageId) ?? [];
-    roles.push(row.role);
-    rolesByStorage.set(row.storageId, roles);
+    const roles = rolesByStorage.get(row.storageId) ?? []
+    roles.push(row.role)
+    rolesByStorage.set(row.storageId, roles)
   }
   for (const [storageId, roles] of rolesByStorage) {
-    if (
-      roles.length > 0 && roles.every((role) => scratchCopyNotMountable(role))
-    ) {
-      scratchOnly.add(storageId);
+    if (roles.length > 0 && roles.every((role) => scratchCopyNotMountable(role))) {
+      scratchOnly.add(storageId)
     }
   }
-  return scratchOnly;
+  return scratchOnly
 }
 
 /**
@@ -112,18 +102,18 @@ async function loadScratchOnlyStorageIds(
 export async function registerComposeMounts(
   db: Db,
   params: {
-    document: ComposeDocument;
-    environmentId: string;
-  },
+    document: ComposeDocument
+    environmentId: string
+  }
 ): Promise<void> {
-  const specsByComposeName = listServiceVolumeSpecs(params.document);
+  const specsByComposeName = listServiceVolumeSpecs(params.document)
   const serviceRows = await db
     .select({
       id: service.id,
       composeServiceName: service.composeServiceName,
     })
     .from(service)
-    .where(eq(service.environmentId, params.environmentId));
+    .where(eq(service.environmentId, params.environmentId))
 
   const storageRows = await db
     .select({
@@ -131,46 +121,38 @@ export async function registerComposeMounts(
       composeVolumeKey: storage.composeVolumeKey,
     })
     .from(storage)
-    .where(
-      and(
-        eq(storage.environmentId, params.environmentId),
-        eq(storage.kind, "volume"),
-      ),
-    );
-  const storageByKey = new Map<string, string>();
+    .where(and(eq(storage.environmentId, params.environmentId), eq(storage.kind, 'volume')))
+  const storageByKey = new Map<string, string>()
   for (const row of storageRows) {
-    if (row.composeVolumeKey) storageByKey.set(row.composeVolumeKey, row.id);
+    if (row.composeVolumeKey) storageByKey.set(row.composeVolumeKey, row.id)
   }
 
-  const serviceIds = serviceRows.map((row) => row.id);
-  if (serviceIds.length === 0) return;
+  const serviceIds = serviceRows.map((row) => row.id)
+  if (serviceIds.length === 0) return
 
-  const composeStorageIds = [...storageByKey.values()];
-  const scratchOnlyIds = await loadScratchOnlyStorageIds(db, composeStorageIds);
+  const composeStorageIds = [...storageByKey.values()]
+  const scratchOnlyIds = await loadScratchOnlyStorageIds(db, composeStorageIds)
 
   await db.transaction(async (tx) => {
     if (composeStorageIds.length > 0) {
-      await tx.delete(mount).where(
-        and(
-          inArray(mount.serviceId, serviceIds),
-          inArray(mount.storageId, composeStorageIds),
-        ),
-      );
+      await tx
+        .delete(mount)
+        .where(
+          and(inArray(mount.serviceId, serviceIds), inArray(mount.storageId, composeStorageIds))
+        )
     }
 
     await forEachSequential(serviceRows, (svc) =>
-      forEachSequential(
-        specsByComposeName.get(svc.composeServiceName) ?? [],
-        async (spec) => {
-          const storageId = storageByKey.get(spec.composeKey);
-          if (!storageId || scratchOnlyIds.has(storageId)) return;
-          await tx.insert(mount).values({
-            storageId,
-            serviceId: svc.id,
-            destinationPath: spec.destinationPath,
-            isReadOnly: spec.readOnly,
-          });
-        },
-      ));
-  });
+      forEachSequential(specsByComposeName.get(svc.composeServiceName) ?? [], async (spec) => {
+        const storageId = storageByKey.get(spec.composeKey)
+        if (!storageId || scratchOnlyIds.has(storageId)) return
+        await tx.insert(mount).values({
+          storageId,
+          serviceId: svc.id,
+          destinationPath: spec.destinationPath,
+          isReadOnly: spec.readOnly,
+        })
+      })
+    )
+  })
 }

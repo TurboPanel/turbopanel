@@ -26,7 +26,7 @@ export type ReconcileServicesResult = {
 export async function reconcileServicesFromCompose(
   db: Db,
   environmentId: string,
-  merged: ComposeDocument,
+  merged: ComposeDocument
 ): Promise<ReconcileServicesResult> {
   const composeNames = listComposeServiceNames(merged)
   const existingRows = await db
@@ -37,7 +37,7 @@ export async function reconcileServicesFromCompose(
     .from(service)
     .where(eq(service.environmentId, environmentId))
 
-  const existingByComposeName = new Map<string, typeof existingRows[number]>()
+  const existingByComposeName = new Map<string, (typeof existingRows)[number]>()
   for (const row of existingRows) {
     existingByComposeName.set(row.composeServiceName, row)
   }
@@ -46,11 +46,14 @@ export async function reconcileServicesFromCompose(
   await forEachSequential(composeNames, async (composeServiceName) => {
     if (existingByComposeName.has(composeServiceName)) return
 
-    const [inserted] = await db.insert(service).values({
-      name: composeServiceName,
-      environmentId,
-      composeServiceName,
-    }).returning({ id: service.id })
+    const [inserted] = await db
+      .insert(service)
+      .values({
+        name: composeServiceName,
+        environmentId,
+        composeServiceName,
+      })
+      .returning({ id: service.id })
 
     created.push(inserted.id)
     existingByComposeName.set(composeServiceName, {

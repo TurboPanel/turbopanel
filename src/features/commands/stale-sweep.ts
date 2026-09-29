@@ -25,41 +25,41 @@
  * timed it out anyway.
  */
 
-import { and, eq, inArray, lt, notExists, sql } from "drizzle-orm";
-import type { Db } from "../../db/connection.ts";
-import { command, managed } from "../../db/schema.ts";
-import { forEachSequential } from "../../lib/sequential.ts";
-import { transitionCommand } from "./command-records.ts";
-import { nowIso } from "./ids.ts";
-import { commandTimeoutMs } from "./consumer.ts";
-import { COMMAND_STATUSES, TERMINAL_COMMAND_STATUSES } from "./types.ts";
+import { and, eq, inArray, lt, notExists, sql } from 'drizzle-orm'
+import type { Db } from '../../db/connection.ts'
+import { command, managed } from '../../db/schema.ts'
+import { forEachSequential } from '../../lib/sequential.ts'
+import { transitionCommand } from './command-records.ts'
+import { nowIso } from './ids.ts'
+import { commandTimeoutMs } from './consumer.ts'
+import { COMMAND_STATUSES, TERMINAL_COMMAND_STATUSES } from './types.ts'
 
 /** Extra slack past the consumer budget before a row counts as stranded. */
-export const STALE_COMMAND_GRACE_MS = 5 * 60_000;
+export const STALE_COMMAND_GRACE_MS = 5 * 60_000
 
 /** Bounded rows per tick — leftovers are picked up next tick. */
-export const STALE_COMMAND_SWEEP_LIMIT = 50;
+export const STALE_COMMAND_SWEEP_LIMIT = 50
 
 const NON_TERMINAL_STATUSES = COMMAND_STATUSES.filter(
-  (status) => !TERMINAL_COMMAND_STATUSES.has(status),
-);
+  (status) => !TERMINAL_COMMAND_STATUSES.has(status)
+)
 
 export type StaleCommandCandidate = {
-  id: string;
+  id: string
   /** Command type (`command.name` column). */
-  name: string;
-  createdAt: string;
-  queuedAt: string | null;
-  dispatchStartedAt: string | null;
-  sentAt: string | null;
-  ackedAt: string | null;
-  startedAt: string | null;
-};
+  name: string
+  createdAt: string
+  queuedAt: string | null
+  dispatchStartedAt: string | null
+  sentAt: string | null
+  ackedAt: string | null
+  startedAt: string | null
+}
 
 function toMs(value: string | null): number | null {
-  if (value === null) return null;
-  const ms = Date.parse(value);
-  return Number.isFinite(ms) ? ms : null;
+  if (value === null) return null
+  const ms = Date.parse(value)
+  return Number.isFinite(ms) ? ms : null
 }
 
 /**
@@ -69,16 +69,17 @@ function toMs(value: string | null): number | null {
 export function isStaleCommand(
   row: StaleCommandCandidate,
   nowMs: number,
-  graceMs = STALE_COMMAND_GRACE_MS,
+  graceMs = STALE_COMMAND_GRACE_MS
 ): boolean {
-  const reference = toMs(row.startedAt) ??
+  const reference =
+    toMs(row.startedAt) ??
     toMs(row.ackedAt) ??
     toMs(row.sentAt) ??
     toMs(row.dispatchStartedAt) ??
     toMs(row.queuedAt) ??
-    toMs(row.createdAt);
-  if (reference === null) return false;
-  return nowMs >= reference + commandTimeoutMs(row.name) + graceMs;
+    toMs(row.createdAt)
+  if (reference === null) return false
+  return nowMs >= reference + commandTimeoutMs(row.name) + graceMs
 }
 
 /**
@@ -93,15 +94,15 @@ export function isStaleCommand(
  * arrive"; `sentAt` only says the control plane put it on the wire.
  */
 export function daemonEverHadCommand(row: StaleCommandCandidate): boolean {
-  return row.ackedAt !== null || row.startedAt !== null;
+  return row.ackedAt !== null || row.startedAt !== null
 }
 
 /**
  * Why a stalled command stalled, in a form the operator and any later
  * re-drive can act on rather than having to re-derive.
  */
-export const STALLED_UNDELIVERED_ERROR_CODE = "stalled_undelivered";
-export const STALLED_IN_FLIGHT_ERROR_CODE = "stalled";
+export const STALLED_UNDELIVERED_ERROR_CODE = 'stalled_undelivered'
+export const STALLED_IN_FLIGHT_ERROR_CODE = 'stalled'
 
 /**
  * Transition stranded non-terminal commands to `timed_out`. Returns the
@@ -109,18 +110,15 @@ export const STALLED_IN_FLIGHT_ERROR_CODE = "stalled";
  */
 export async function sweepStaleCommands(
   db: Db,
-  opts?: { limit?: number; now?: number; graceMs?: number },
+  opts?: { limit?: number; now?: number; graceMs?: number }
 ): Promise<number> {
-  const limit = Math.min(
-    Math.max(opts?.limit ?? STALE_COMMAND_SWEEP_LIMIT, 1),
-    200,
-  );
-  const nowMs = opts?.now ?? Date.now();
-  const graceMs = opts?.graceMs ?? STALE_COMMAND_GRACE_MS;
+  const limit = Math.min(Math.max(opts?.limit ?? STALE_COMMAND_SWEEP_LIMIT, 1), 200)
+  const nowMs = opts?.now ?? Date.now()
+  const graceMs = opts?.graceMs ?? STALE_COMMAND_GRACE_MS
 
   // Cheap pre-filter: nothing younger than the grace window can be stale for
   // any type, and `updated_at` is bumped on every status transition.
-  const cutoff = new Date(nowMs - graceMs).toISOString();
+  const cutoff = new Date(nowMs - graceMs).toISOString()
   const candidates = await db
     .select({
       id: command.id,
@@ -133,33 +131,26 @@ export async function sweepStaleCommands(
       startedAt: command.startedAt,
     })
     .from(command)
-    .where(
-      and(
-        inArray(command.status, NON_TERMINAL_STATUSES),
-        lt(command.updatedAt, cutoff),
-      ),
-    )
-    .limit(limit);
+    .where(and(inArray(command.status, NON_TERMINAL_STATUSES), lt(command.updatedAt, cutoff)))
+    .limit(limit)
 
-  let swept = 0;
+  let swept = 0
   await forEachSequential(candidates, async (row) => {
-    if (!isStaleCommand(row, nowMs, graceMs)) return;
+    if (!isStaleCommand(row, nowMs, graceMs)) return
     // Two different situations, and the operator's next move differs:
     // re-issuing an undelivered command is free, while re-issuing one the
     // daemon acknowledged may race work still running on the host.
-    const delivered = daemonEverHadCommand(row);
+    const delivered = daemonEverHadCommand(row)
     const record = await transitionCommand(db, row.id, {
-      status: "timed_out",
-      errorCode: delivered
-        ? STALLED_IN_FLIGHT_ERROR_CODE
-        : STALLED_UNDELIVERED_ERROR_CODE,
+      status: 'timed_out',
+      errorCode: delivered ? STALLED_IN_FLIGHT_ERROR_CODE : STALLED_UNDELIVERED_ERROR_CODE,
       error: delivered
-        ? "command stalled: the daemon acknowledged it but never reported an outcome (control plane or daemon restarted mid-run). It may still be running on the host — check before re-running."
-        : "command stalled: the daemon never acknowledged it, so nothing ran on the host. Safe to run again.",
-    });
-    if (record) swept += 1;
-  });
-  return swept;
+        ? 'command stalled: the daemon acknowledged it but never reported an outcome (control plane or daemon restarted mid-run). It may still be running on the host — check before re-running.'
+        : 'command stalled: the daemon never acknowledged it, so nothing ran on the host. Safe to run again.',
+    })
+    if (record) swept += 1
+  })
+  return swept
 }
 
 /**
@@ -168,18 +159,18 @@ export async function sweepStaleCommands(
  */
 export async function releaseStuckManagedApplying(
   db: Db,
-  opts?: { now?: number; graceMs?: number },
+  opts?: { now?: number; graceMs?: number }
 ): Promise<string[]> {
-  const nowMs = opts?.now ?? Date.now();
-  const graceMs = opts?.graceMs ?? STALE_COMMAND_GRACE_MS;
-  const cutoff = new Date(nowMs - graceMs).toISOString();
+  const nowMs = opts?.now ?? Date.now()
+  const graceMs = opts?.graceMs ?? STALE_COMMAND_GRACE_MS
+  const cutoff = new Date(nowMs - graceMs).toISOString()
 
   const rows = await db
     .update(managed)
-    .set({ status: "failed", updatedAt: nowIso() })
+    .set({ status: 'failed', updatedAt: nowIso() })
     .where(
       and(
-        eq(managed.status, "applying"),
+        eq(managed.status, 'applying'),
         lt(managed.updatedAt, cutoff),
         notExists(
           db
@@ -188,13 +179,13 @@ export async function releaseStuckManagedApplying(
             .where(
               and(
                 inArray(command.status, NON_TERMINAL_STATUSES),
-                sql`${command.context}->>'managedId' = ${managed.id}::text`,
-              ),
-            ),
-        ),
-      ),
+                sql`${command.context}->>'managedId' = ${managed.id}::text`
+              )
+            )
+        )
+      )
     )
-    .returning({ id: managed.id });
+    .returning({ id: managed.id })
 
-  return rows.map((row) => row.id);
+  return rows.map((row) => row.id)
 }
