@@ -80,3 +80,9 @@ Deno.test('RAM is MemTotal in GiB with one decimal, the unit placement reads', a
   // A "32 GB" machine reports a little under 32 GiB.
   assertEquals(await runSize(oneCore, meminfo(32_791_232)), '1 cores, 31.3 GiB RAM')
 })
+
+Deno.test('the awk program ends its printf with a literal backslash-n for awk to expand', () => {
+  // The shell sees `\n` (two characters); awk turns it into the newline.
+  assert(SERVER_SIZE_COMMAND.includes('GiB RAM\\n",(k?k:n),m/1048576}\''))
+  assert(!SERVER_SIZE_COMMAND.includes('\n'))
+})

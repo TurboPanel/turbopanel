@@ -109,6 +109,28 @@ test('pinnedChannelManifestUrl pins canary and versioned releases and leaves tru
   assertEquals(pinnedChannelManifestUrl('daemon', 'release', '0.1.0/evil'), null)
 })
 
+test('pinnedChannelManifestUrl accepts a version only when it starts with an ASCII digit', () => {
+  const pinned = (version: string) => pinnedChannelManifestUrl('daemon', 'release', version)
+  for (const version of ['0', '9', '0.1.0', '7-rc.1', '1.2.3-canary.412+build_5']) {
+    assertEquals(pinned(version) !== null, true, version)
+  }
+  for (const version of [
+    '',
+    'v0.1.0',
+    '.1',
+    '-1',
+    'a1',
+    '\u0661.0.0', // Arabic-Indic digit one is not an ASCII digit
+    '\uFF11.0.0', // fullwidth digit one
+    ' 1.0.0',
+    '1.0.0\n',
+    '1 0',
+    '1/2',
+  ]) {
+    assertEquals(pinned(version), null, JSON.stringify(version))
+  }
+})
+
 test("builtinChannelManifestUrl matches the daemon's table when the daemon checkout is beside this one", async () => {
   let daemon: {
     builtinChannelManifestUrl: (

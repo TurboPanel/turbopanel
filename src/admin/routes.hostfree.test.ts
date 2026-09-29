@@ -692,6 +692,45 @@ test('POST /instance/public-urls/apply returns the HTTP-01 preflight error', asy
   assertEquals(bundleReads, 0)
 })
 
+test('POST /instance/public-urls/apply returns 503 when the co-located daemon is disconnected', async () => {
+  const serverId = crypto.randomUUID()
+  const { app, cookie } = await buildApp({
+    colocatedServerId: serverId,
+    registry: createRegistry({
+      snapshots: new Map([[serverId, { connected: false }]]),
+    }),
+  })
+  const res = await app.request(`${ADMIN_API_PREFIX}/instance/public-urls/apply`, {
+    method: 'POST',
+    headers: { Cookie: cookie, 'content-type': 'application/json' },
+    body: '{}',
+  })
+  assertEquals(res.status, 503)
+  assertEquals(await res.json(), { ok: false, error: 'co-located daemon disconnected' })
+})
+
+test('POST /instance/public-urls/apply skips the trust fan-out without a command queue', async () => {
+  const serverId = crypto.randomUUID()
+  let bundleReads = 0
+  const { app, cookie } = await buildApp({
+    colocatedServerId: serverId,
+    registry: createRegistry({
+      snapshots: new Map([[serverId, { connected: true }]]),
+    }),
+    readPlatformCaBundle: () => {
+      bundleReads += 1
+      return Promise.resolve('-----BEGIN CERTIFICATE-----\n')
+    },
+  })
+  const res = await app.request(`${ADMIN_API_PREFIX}/instance/public-urls/apply`, {
+    method: 'POST',
+    headers: { Cookie: cookie, 'content-type': 'application/json' },
+    body: '{}',
+  })
+  assertEquals(res.status, 200)
+  assertEquals(bundleReads, 0)
+})
+
 test('GET /daemon/addresses returns empty fleet list', async () => {
   const { app, cookie } = await buildApp()
   const res = await app.request(`${ADMIN_API_PREFIX}/daemon/addresses`, {

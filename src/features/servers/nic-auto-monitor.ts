@@ -17,8 +17,7 @@
  * hand in server settings exactly as before.
  */
 import { eq } from 'drizzle-orm'
-import type { Db } from '../../db/connection.ts'
-import type { getDaemonCellRegistry } from '../../db/connection.ts'
+import type { Db, getDaemonCellRegistry } from '../../db/connection.ts'
 import { server } from '../../db/schema.ts'
 import { normalizeIpAddress } from '../../lib/ip-address.ts'
 import { parseServerHostResources } from './server-metadata.ts'
