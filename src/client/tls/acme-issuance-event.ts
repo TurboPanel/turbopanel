@@ -12,6 +12,7 @@ import type { Db } from "../../db/connection.ts";
 import { server, tls } from "../../db/schema.ts";
 import { coversHostname, normalizeHostname } from "../../lib/tls/match.ts";
 import type { TlsAcmeMetadata } from "../../lib/tls/types.ts";
+import { forEachSequential } from "../../lib/sequential.ts";
 
 export type AcmeIssuanceEventInput = {
   /** The server that reported the outcome — scopes the write to its organization. */
@@ -82,10 +83,10 @@ export async function handleAcmeIssuanceEvent(
     );
 
   let updated = false;
-  for (const row of rows) {
-    if (row.status !== "managed") continue;
-    if (!isResidualMetadata(row.metadata)) continue;
-    if (!coversHostname(row.metadata.dnsNames, hostname)) continue;
+  await forEachSequential(rows, async (row) => {
+    if (row.status !== "managed") return;
+    if (!isResidualMetadata(row.metadata)) return;
+    if (!coversHostname(row.metadata.dnsNames, hostname)) return;
 
     const nextAcme: TlsAcmeMetadata = { ...row.metadata.acme };
     if (input.ok) {
@@ -102,7 +103,7 @@ export async function handleAcmeIssuanceEvent(
       })
       .where(eq(tls.id, row.id));
     updated = true;
-  }
+  });
 
   return { updated };
 }

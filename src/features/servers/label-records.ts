@@ -6,6 +6,7 @@ import {
   displayNameCodePointLength,
 } from '../../lib/display-name-format.ts'
 import { label } from '../../db/schema.ts'
+import { forEachSequential } from '../../lib/sequential.ts'
 
 const LABEL_KEY_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
 const MAX_LABEL_KEY_LENGTH = 255
@@ -139,8 +140,8 @@ export async function setServerLabels(
   const keys = labels.map((item) => item.key)
 
   return db.transaction(async (tx) => {
-    for (const item of labels) {
-      await tx
+    await forEachSequential(labels, (item) =>
+      tx
         .insert(label)
         .values({
           serverId,
@@ -155,7 +156,7 @@ export async function setServerLabels(
             updatedAt: now,
           },
         })
-    }
+    )
 
     if (keys.length === 0) {
       await tx.delete(label).where(eq(label.serverId, serverId))

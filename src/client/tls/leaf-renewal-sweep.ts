@@ -21,6 +21,7 @@ import { leaf, lease, tls } from "../../db/schema.ts";
 import { ORGANIZATION_CA_LEAF_VALID_DAYS } from "../../lib/tls/self-signed.ts";
 import { enqueueManagedIngressReconcile } from "../../features/managed/ingress-desired.ts";
 import { enqueueApplyForManagedCluster } from "./changeover-fanout.ts";
+import { forEachSequential } from "../../lib/sequential.ts";
 
 const MS_PER_DAY = 86_400_000;
 
@@ -441,7 +442,7 @@ export async function renewDueTlsLeaves(
   const seenManaged = new Set<string>();
   const context = leafRenewalContext(deps);
 
-  for (const row of rows) {
+  await forEachSequential(rows, async (row) => {
     const outcome = await enqueueOneDueLeaf(
       context,
       db,
@@ -453,7 +454,7 @@ export async function renewDueTlsLeaves(
     );
     if (outcome === "enqueued") summary.enqueued += 1;
     if (outcome === "failed") summary.failed += 1;
-  }
+  });
   return summary;
 }
 

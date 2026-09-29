@@ -8,6 +8,7 @@ import { eq } from "drizzle-orm";
 import type { Db } from "../../db/connection.ts";
 import { hostname } from "../../db/schema.ts";
 import { isUniqueViolationOn } from "../../db/unique-violation.ts";
+import { forEachSequential } from "../../lib/sequential.ts";
 
 /**
  * Full-replace sync of a hosting's `hostname` rows, mirroring
@@ -21,13 +22,13 @@ export async function replaceHostingHostnames(
   hostnames: readonly string[],
 ): Promise<void> {
   await db.delete(hostname).where(eq(hostname.hostingId, hostingId));
-  for (const value of hostnames) {
-    await db.insert(hostname).values({
+  await forEachSequential(hostnames, (value) =>
+    db.insert(hostname).values({
       hostingId,
       routingOrganizationId,
       hostname: value,
-    });
-  }
+    })
+  );
 }
 
 /** `uniq_hostname_routing_organization_id_hostname` firing — see `unique-violation.ts` for the `.cause` walk. */

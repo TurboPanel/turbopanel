@@ -1,4 +1,4 @@
-import { assertEquals } from '@std/assert'
+import { assertEquals, assertRejects } from '@std/assert'
 import type { Context } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import type { Db } from '../../db/connection.ts'
@@ -855,4 +855,54 @@ test('applyProviderInstallationEvent suspends resumes or ignores the action', as
     }),
     { updated: 0 },
   )
+})
+
+const ENV_ID_2 = '8d0f7780-8536-41ef-955c-d44d0e5b1f8f'
+
+test('resolvePushTrigger deploys environments one at a time, in order', async () => {
+  const events: string[] = []
+  const result = await resolvePushTrigger(
+    unusedCtx,
+    unusedDb,
+    unusedQueue,
+    samplePush,
+    triggerDeps([sourceRow()], {
+      resolveRepositoryEnvironmentIds: async () => [ENV_ID, ENV_ID_2],
+      resolveEnvironmentPlacement: async (_db, environmentId) => {
+        events.push(`start:${environmentId}`)
+        // The first environment is slower; the second must still wait for it.
+        await new Promise((resolve) => setTimeout(resolve, environmentId === ENV_ID ? 20 : 0))
+        events.push(`end:${environmentId}`)
+        return { serverId: SERVER_ID, organizationId: ORG_ID }
+      },
+    }),
+  )
+  assertEquals(events, [`start:${ENV_ID}`, `end:${ENV_ID}`, `start:${ENV_ID_2}`, `end:${ENV_ID_2}`])
+  assertEquals(
+    result.outcomes.map((outcome) => outcome.environmentId),
+    [ENV_ID, ENV_ID_2],
+  )
+})
+
+test('resolvePushTrigger stops at the first source whose lookup throws', async () => {
+  const started: string[] = []
+  const second = sourceRow({ id: '22222222-2222-4333-8444-555555555555' })
+  await assertRejects(
+    () =>
+      resolvePushTrigger(
+        unusedCtx,
+        unusedDb,
+        unusedQueue,
+        samplePush,
+        triggerDeps([sourceRow(), second], {
+          resolveRepositoryEnvironmentIds: async (_db, row) => {
+            started.push(row.id)
+            throw new TypeError('lookup failed')
+          },
+        }),
+      ),
+    TypeError,
+    'lookup failed',
+  )
+  assertEquals(started, [SOURCE_ID])
 })

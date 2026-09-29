@@ -33,6 +33,7 @@
  */
 
 import { and, asc, eq, gt, isNotNull, isNull, sql } from "drizzle-orm";
+import { forEachSequential } from "../lib/sequential.ts";
 import {
   decryptSecret,
   encryptSecret,
@@ -348,7 +349,7 @@ async function sweepSecretVariablesBatch(
     .orderBy(asc(variable.id))
     .limit(limit);
 
-  for (const row of rows) {
+  await forEachSequential(rows, async (row) => {
     const originalValue = row.value;
     await processBlob(
       summary,
@@ -366,7 +367,7 @@ async function sweepSecretVariablesBatch(
       },
       { allowDaemonBound: true },
     );
-  }
+  });
 
   return {
     pageSize: rows.length,
@@ -392,9 +393,9 @@ async function sweepTlsPrivateKeysBatch(
     .orderBy(asc(tls.id))
     .limit(limit);
 
-  for (const row of rows) {
+  await forEachSequential(rows, async (row) => {
     if (row.privateKeyPem === null) {
-      continue;
+      return;
     }
     const originalKey = row.privateKeyPem;
     await processBlob(
@@ -411,7 +412,7 @@ async function sweepTlsPrivateKeysBatch(
       },
       { allowDaemonBound: true },
     );
-  }
+  });
 
   return {
     pageSize: rows.length,
@@ -444,7 +445,7 @@ async function sweepInstanceCertificateKeysBatch(
     .orderBy(asc(instanceUploadedCertificate.id))
     .limit(limit);
 
-  for (const row of rows) {
+  await forEachSequential(rows, async (row) => {
     const originalKey = row.keyPem;
     await processBlob(
       summary,
@@ -465,7 +466,7 @@ async function sweepInstanceCertificateKeysBatch(
       },
       { allowDaemonBound: false },
     );
-  }
+  });
 
   return {
     pageSize: rows.length,
@@ -491,9 +492,9 @@ async function sweepPrincipalPasswordsBatch(
     .orderBy(asc(principal.id))
     .limit(limit);
 
-  for (const row of rows) {
+  await forEachSequential(rows, async (row) => {
     if (row.password === null) {
-      continue;
+      return;
     }
     const originalPassword = row.password;
     await processBlob(
@@ -515,7 +516,7 @@ async function sweepPrincipalPasswordsBatch(
       },
       { allowDaemonBound: true },
     );
-  }
+  });
 
   return {
     pageSize: rows.length,
@@ -541,9 +542,9 @@ async function sweepStorageContentBatch(
     .orderBy(asc(storage.id))
     .limit(limit);
 
-  for (const row of rows) {
+  await forEachSequential(rows, async (row) => {
     if (row.contentEnvelope === null) {
-      continue;
+      return;
     }
     const original = row.contentEnvelope;
     await processBlob(
@@ -562,7 +563,7 @@ async function sweepStorageContentBatch(
       },
       { allowDaemonBound: true },
     );
-  }
+  });
 
   return {
     pageSize: rows.length,
@@ -588,7 +589,7 @@ async function sweepSecretTableBatch(
     .orderBy(asc(secret.id))
     .limit(limit);
 
-  for (const row of rows) {
+  await forEachSequential(rows, async (row) => {
     const original = row.secretEnvelope;
     await processBlob(
       summary,
@@ -609,7 +610,7 @@ async function sweepSecretTableBatch(
       },
       { allowDaemonBound: true },
     );
-  }
+  });
 
   return {
     pageSize: rows.length,
@@ -656,20 +657,20 @@ async function resealJsonbEnvelopeRow(
   const nextObj: Record<string, unknown> = { ...originalObj };
   let resealedCount = 0;
 
-  for (const key of keys) {
+  await forEachSequential(keys, async (key) => {
     const raw = nextObj[key];
-    if (typeof raw !== "string" || raw === "") continue;
+    if (typeof raw !== "string" || raw === "") return;
 
     summary.scanned += 1;
     const parsed = parseSecretEnvelope(raw);
     if (parsed === null) {
       // Plaintext or malformed — invalid/unsupported for these envelopes at rest.
       summary.failed += 1;
-      continue;
+      return;
     }
     if (parsed.keyVersion === secrets.current.version) {
       summary.skipped += 1;
-      continue;
+      return;
     }
 
     try {
@@ -679,7 +680,7 @@ async function resealJsonbEnvelopeRow(
     } catch {
       summary.failed += 1;
     }
-  }
+  });
 
   if (resealedCount === 0) return;
 
@@ -706,7 +707,7 @@ async function sweepForgeEnvelopesBatch(
     .orderBy(asc(forge.id))
     .limit(limit);
 
-  for (const row of rows) {
+  await forEachSequential(rows, async (row) => {
     const original = row.envelopes;
     await resealJsonbEnvelopeRow(
       summary,
@@ -722,7 +723,7 @@ async function sweepForgeEnvelopesBatch(
         return updated.length > 0;
       },
     );
-  }
+  });
 
   return {
     pageSize: rows.length,
@@ -752,9 +753,9 @@ async function sweepGitConnectionEnvelopesBatch(
     .orderBy(asc(gitConnection.id))
     .limit(limit);
 
-  for (const row of rows) {
+  await forEachSequential(rows, async (row) => {
     if (row.oauthEnvelope === null) {
-      continue;
+      return;
     }
     const original = row.oauthEnvelope;
     await resealJsonbEnvelopeRow(
@@ -776,7 +777,7 @@ async function sweepGitConnectionEnvelopesBatch(
         return updated.length > 0;
       },
     );
-  }
+  });
 
   return {
     pageSize: rows.length,
@@ -802,7 +803,7 @@ async function sweepTwoFactorSecretsBatch(
     .orderBy(asc(twoFactor.id))
     .limit(limit);
 
-  for (const row of rows) {
+  await forEachSequential(rows, async (row) => {
     const original = row.secret;
     await processBlob(
       summary,
@@ -823,7 +824,7 @@ async function sweepTwoFactorSecretsBatch(
       },
       { allowDaemonBound: false },
     );
-  }
+  });
 
   return {
     pageSize: rows.length,
@@ -855,7 +856,7 @@ async function sweepNotificationChannelSecretsBatch(
     .orderBy(asc(notificationChannel.id))
     .limit(limit);
 
-  for (const row of rows) {
+  await forEachSequential(rows, async (row) => {
     if (row.kind !== "email") {
       const original = row.address;
       await processBlob(
@@ -900,7 +901,7 @@ async function sweepNotificationChannelSecretsBatch(
         { allowDaemonBound: false },
       );
     }
-  }
+  });
 
   return {
     pageSize: rows.length,
@@ -940,20 +941,20 @@ async function sweepAuthProviderSettingSecrets(
   const nextObj: Record<string, unknown> = { ...originalObj };
   let resealedCount = 0;
 
-  for (const shortKey of AUTH_PROVIDER_SECRET_KEYS) {
+  await forEachSequential(AUTH_PROVIDER_SECRET_KEYS, async (shortKey) => {
     const raw = nextObj[shortKey];
-    if (typeof raw !== "string" || raw === "") continue;
+    if (typeof raw !== "string" || raw === "") return;
 
     summary.scanned += 1;
     const parsed = parseSecretEnvelope(raw);
     if (parsed === null) {
       // Plaintext, tpdaemon, or malformed — invalid/unsupported for auth providers at rest.
       summary.failed += 1;
-      continue;
+      return;
     }
     if (parsed.keyVersion === secrets.current.version) {
       summary.skipped += 1;
-      continue;
+      return;
     }
 
     try {
@@ -963,7 +964,7 @@ async function sweepAuthProviderSettingSecrets(
     } catch {
       summary.failed += 1;
     }
-  }
+  });
 
   if (resealedCount === 0) return;
 
@@ -1017,20 +1018,20 @@ async function sweepEmailSettingSecrets(
   const nextObj: Record<string, unknown> = { ...originalObj };
   let resealedCount = 0;
 
-  for (const shortKey of EMAIL_SECRET_KEYS) {
+  await forEachSequential(EMAIL_SECRET_KEYS, async (shortKey) => {
     const raw = nextObj[shortKey];
-    if (typeof raw !== "string" || raw === "") continue;
+    if (typeof raw !== "string" || raw === "") return;
 
     summary.scanned += 1;
     const parsed = parseSecretEnvelope(raw);
     if (parsed === null) {
       // Plaintext, tpdaemon, or malformed — invalid/unsupported for email at rest.
       summary.failed += 1;
-      continue;
+      return;
     }
     if (parsed.keyVersion === secrets.current.version) {
       summary.skipped += 1;
-      continue;
+      return;
     }
 
     try {
@@ -1040,7 +1041,7 @@ async function sweepEmailSettingSecrets(
     } catch {
       summary.failed += 1;
     }
-  }
+  });
 
   if (resealedCount === 0) return;
 

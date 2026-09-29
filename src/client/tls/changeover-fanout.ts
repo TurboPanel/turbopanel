@@ -38,6 +38,7 @@ import {
   workspace,
 } from "../../db/schema.ts";
 import { updateCaRotationJournal } from "./changeover-lease.ts";
+import { forEachSequential } from "../../lib/sequential.ts";
 
 export const ROTATION_FANOUT_BATCH_SIZE = 10;
 
@@ -560,8 +561,8 @@ async function fanOutIngressForServers(
   },
 ): Promise<CaRotationResultRow[]> {
   const results: CaRotationResultRow[] = [];
-  for (const serverId of params.serverIds) {
-    if (params.alreadyQueued.has(serverId)) continue;
+  await forEachSequential(params.serverIds, async (serverId) => {
+    if (params.alreadyQueued.has(serverId)) return;
     params.alreadyQueued.add(serverId);
     const enqueued = await enqueueManagedIngressReconcile(db, commandQueue, {
       serverId,
@@ -572,16 +573,16 @@ async function fanOutIngressForServers(
     });
     if (enqueued.ok) {
       results.push(ingressResultRow(serverId, "queued", enqueued.commandId));
-      continue;
+      return;
     }
-    if (enqueued.reason === "not_needed") continue;
+    if (enqueued.reason === "not_needed") return;
     results.push(ingressResultRow(
       serverId,
       "failed",
       undefined,
       enqueued.reason,
     ));
-  }
+  });
   return results;
 }
 

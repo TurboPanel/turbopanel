@@ -36,6 +36,7 @@ import type {
   ExecutionLogStore,
   ExecutionLogSweepOptions,
 } from './types.ts'
+import { forEachSequential } from '../../lib/sequential.ts'
 
 /** Minimal object-store surface an execution-log backend must provide. */
 export interface ExecutionLogObjectBackend {
@@ -276,13 +277,15 @@ export class ObjectExecutionLogStore implements ExecutionLogStore {
     }
 
     let removed = 0
-    for (const [partition, commandIds] of expired) {
-      for (const commandId of commandIds) {
-        if (removed >= limit) return removed
-        await this.#deleteTranscript(partition, commandId, null)
-        removed++
-      }
-    }
+    // Oldest partition first; once `limit` is reached no further delete starts.
+    const pending = [...expired].flatMap(([partition, commandIds]) =>
+      [...commandIds].map((commandId) => ({ partition, commandId }))
+    )
+    await forEachSequential(pending, async ({ partition, commandId }) => {
+      if (removed >= limit) return
+      await this.#deleteTranscript(partition, commandId, null)
+      removed++
+    })
     return removed
   }
 }

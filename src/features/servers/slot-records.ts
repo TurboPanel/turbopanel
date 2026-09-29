@@ -3,6 +3,7 @@ import type { Db } from '../../db/connection.ts'
 import { nowIso } from '../commands/ids.ts'
 import { inetAddressToString } from '../../lib/ip-address.ts'
 import { slot } from '../../db/schema.ts'
+import { forEachSequential } from '../../lib/sequential.ts'
 
 /**
  * Scheduled instances of a logical service. Row identity and `created_at`
@@ -119,8 +120,8 @@ export async function replaceEnvironmentSlotsInTx(
     .from(slot)
     .where(eq(slot.environmentId, params.environmentId))
 
-  for (const item of params.slots) {
-    await db
+  await forEachSequential(params.slots, (item) =>
+    db
       .insert(slot)
       .values({
         environmentId: params.environmentId,
@@ -142,7 +143,7 @@ export async function replaceEnvironmentSlotsInTx(
           updatedAt: now,
         },
       })
-  }
+  )
 
   const staleIds = existing
     .filter((row) => !desiredKeys.has(slotKey(row.serviceId, row.slot)))

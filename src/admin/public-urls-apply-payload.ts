@@ -142,18 +142,22 @@ async function loadUploadedPairs(
     })
     .from(instanceUploadedCertificate)
     .where(inArray(instanceUploadedCertificate.id, ids));
-  for (const row of rows) {
-    const key = sealing
-      ? {
-        keyEnvelope: await resealSecretForDaemon(
-          sealing.secretsConfig,
-          secrets,
-          sealing.recipient,
-          row.keyPem,
-        ),
-      }
-      : { keyPem: await decryptSecret(secrets, row.keyPem) };
-    out.set(row.id, { certPem: row.certPem, key });
-  }
+  // Each row is sealed/decrypted on its own; nothing is shared between them.
+  const pairs = await Promise.all(
+    rows.map(async (row): Promise<[string, UploadedPair]> => {
+      const key = sealing
+        ? {
+          keyEnvelope: await resealSecretForDaemon(
+            sealing.secretsConfig,
+            secrets,
+            sealing.recipient,
+            row.keyPem,
+          ),
+        }
+        : { keyPem: await decryptSecret(secrets, row.keyPem) };
+      return [row.id, { certPem: row.certPem, key }];
+    }),
+  );
+  for (const [id, pair] of pairs) out.set(id, pair);
   return out;
 }

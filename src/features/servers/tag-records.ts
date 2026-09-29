@@ -4,6 +4,7 @@ import { nowIso } from '../commands/ids.ts'
 import { isValidDisplayName, normalizeDisplayName } from '../../lib/display-name-format.ts'
 import { marker, tag } from '../../db/schema.ts'
 import { uniqueViolationMessage } from '../../db/unique-violation.ts'
+import { forEachSequential } from '../../lib/sequential.ts'
 
 export const TAGGABLE_PARENTS = [
   { bodyKey: 'serverId', column: 'serverId', entityKind: 'server' },
@@ -248,8 +249,8 @@ export async function setEntityTags(
 ): Promise<TagRecord[]> {
   return db.transaction(async (tx) => {
     const now = nowIso()
-    for (const tagId of tagIds) {
-      await tx
+    await forEachSequential(tagIds, (tagId) =>
+      tx
         .insert(marker)
         .values({
           tagId,
@@ -260,7 +261,7 @@ export async function setEntityTags(
           target: [marker.tagId, marker[column]],
           where: sql`${marker[column]} IS NOT NULL`,
         })
-    }
+    )
 
     if (tagIds.length === 0) {
       await tx.delete(marker).where(eq(marker[column], entityId))

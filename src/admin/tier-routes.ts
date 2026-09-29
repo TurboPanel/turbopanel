@@ -58,6 +58,7 @@ import {
   type TierPatchFields,
 } from './tier-routes-helpers.ts'
 import { isPostgresUniqueViolation } from '../db/unique-violation.ts'
+import { mapSequential } from '../lib/sequential.ts'
 
 export const BILLING_NOT_CONFIGURED_ERROR = 'billing_not_configured'
 /** Log scope for a provider failure behind Admin → Tiers. */
@@ -256,10 +257,9 @@ export function registerAdminTierRoutes(
     const resolved = resolve(c)
     if (resolved instanceof Response) return resolved
     const rows = await listAllTiers(resolved.db)
-    const tiers = []
-    for (const row of rows) {
-      tiers.push(serializeAdminTier(row, await countTierReferences(resolved.db, row.id)))
-    }
+    const tiers = await mapSequential(rows, async (row) =>
+      serializeAdminTier(row, await countTierReferences(resolved.db, row.id))
+    )
     return c.json({ tiers, ladder: ladderWithRows(rows) })
   })
 
@@ -317,8 +317,7 @@ export function registerAdminTierRoutes(
     if (resolved instanceof Response) return resolved
     const gateway = gatewayFor(resolved.config)
     const rows = (await listAllTiers(resolved.db)).filter((row) => row.providerProductId !== null)
-    const results = []
-    for (const row of rows) {
+    const results = await mapSequential(rows, async (row) => {
       const verified = await verify(
         gateway,
         row.providerProductId,
@@ -329,17 +328,16 @@ export function registerAdminTierRoutes(
           priceCents: verified.priceCents,
           currency: verified.currency,
         })
-        results.push({ id: row.id, label: row.label, ...verified.payload! })
-      } else {
-        results.push({
-          id: row.id,
-          label: row.label,
-          ok: false,
-          failures: [verified.body.message],
-          product: null,
-        })
+        return { id: row.id, label: row.label, ...verified.payload! }
       }
-    }
+      return {
+        id: row.id,
+        label: row.label,
+        ok: false,
+        failures: [verified.body.message],
+        product: null,
+      }
+    })
     return c.json({ results })
   })
 

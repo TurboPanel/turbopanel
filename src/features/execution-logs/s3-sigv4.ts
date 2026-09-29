@@ -140,12 +140,11 @@ export async function signS3Request(
     await sha256Hex(encoder.encode(canonicalRequest)),
   ].join('\n')
 
-  let signingKey: Uint8Array<ArrayBuffer> = encoder.encode(
-    `AWS4${credentials.secretAccessKey}`
+  // Each HMAC keys the next one, so the chain is inherently serial.
+  const signingKey = await [dateStamp, credentials.region, SERVICE, 'aws4_request'].reduce(
+    async (key, part) => hmac(await key, part),
+    Promise.resolve<Uint8Array<ArrayBuffer>>(encoder.encode(`AWS4${credentials.secretAccessKey}`))
   )
-  for (const part of [dateStamp, credentials.region, SERVICE, 'aws4_request']) {
-    signingKey = await hmac(signingKey, part)
-  }
   const signature = toHex(await hmac(signingKey, stringToSign))
 
   return {

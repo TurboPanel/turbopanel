@@ -9,6 +9,7 @@ import {
   workspace,
 } from '../../db/schema.ts'
 import type { VariableRefScope } from '../compose/variable-refs.ts'
+import { forEachSequential } from '../../lib/sequential.ts'
 
 export type ResolvedVariableEntry = {
   value: string
@@ -150,11 +151,11 @@ export async function mergeHostingVariablesForService(
     .sort((a, b) => a.localeCompare(b))
 
   const hostingMerged: ResolvedVariableMap = new Map()
-  for (const hostingId of hostingIds) {
+  await forEachSequential(hostingIds, async (hostingId) => {
     const rows = await loadVariablesForParent(db, 'hostingId', hostingId)
     mergeVariables(hostingMerged, rows)
     mergeVariables(target, rows)
-  }
+  })
   return hostingMerged
 }
 

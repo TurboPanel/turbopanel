@@ -23,6 +23,7 @@
  */
 import type { AlertSender } from './alert-sender.ts'
 import { massDisconnectText, serverOfflineText } from './offline-copy.ts'
+import { firstSequential } from '../../lib/sequential.ts'
 
 /** Ceiling on what one sweep will spend telling an operator what it did. */
 export const ALERT_DELIVERY_BUDGET_MS = 5_000
@@ -64,17 +65,19 @@ export async function notifyDemotions(
         detail: massDisconnect,
       })
     }
-    for (let i = 0; i < demoted.length; i++) {
+    // A step returning `true` means the budget ran out: nothing later starts.
+    await firstSequential(demoted, async (serverId, i) => {
       if (Date.now() >= deadlineMs) {
         trace?.('alerts-truncated', { remaining: demoted.length - i })
-        return
+        return true
       }
       await alertSender({
         kind: 'server.offline',
-        text: serverOfflineText(demoted[i]),
-        detail: { serverId: demoted[i] },
+        text: serverOfflineText(serverId),
+        detail: { serverId },
       })
-    }
+      return undefined
+    })
   }
 
   // A plain one-shot `setTimeout(resolve, …)` sleep and nothing else:

@@ -13,6 +13,7 @@ import { buildCommandEnqueueEnvelope } from '../client/servers/command-dispatch-
 import { createCommandRecord } from '../features/commands/command-records.ts'
 import { parseCertificatePem } from '../lib/tls/parse.ts'
 import { logWarn } from '../lib/logger.ts'
+import { forEachSequential } from '../lib/sequential.ts'
 
 const TLS_TRUST_TTL_MS = 300_000
 
@@ -52,7 +53,7 @@ export async function enqueuePlatformCaTrustReconcile(
   ).toISOString()
 
   let enqueued = 0
-  for (const serverId of serverIds) {
+  await forEachSequential(serverIds, async (serverId) => {
     const record = await (params.createCommand ?? createCommandRecord)(params.db, {
       serverId,
       actorType: 'user',
@@ -70,7 +71,7 @@ export async function enqueuePlatformCaTrustReconcile(
       }),
     )
     enqueued += 1
-  }
+  })
   return { enqueued }
 }
 

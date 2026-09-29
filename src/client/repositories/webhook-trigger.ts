@@ -57,6 +57,7 @@ import {
 } from '../environments/deploy-routes.ts'
 import type { WebhookGitProviderName } from '../../features/git/git-provider.ts'
 import { COMPOSE_SOURCE_JSONPATH } from './routes-helpers.ts'
+import { forEachSequential, mapSequential } from '../../lib/sequential.ts'
 
 /** Why a matched repository did not produce a deploy. */
 export type TriggerSkipReason =
@@ -482,18 +483,16 @@ async function deployAllEnvironmentsForSource(
     }]
   }
 
-  const outcomes: TriggerOutcome[] = []
-  for (const environmentId of environmentIds) {
-    outcomes.push(
-      await deployEnvironmentForSource(c, db, commandQueue, {
+  return await mapSequential(
+    environmentIds,
+    (environmentId) =>
+      deployEnvironmentForSource(c, db, commandQueue, {
         row: params.row,
         environmentId,
         commitSha: params.commitSha,
         ref: params.ref,
       }, io),
-    )
-  }
-  return outcomes
+  )
 }
 
 /** What a verified delivery knows about the connection it came from. */
@@ -618,7 +617,7 @@ export async function resolvePushTrigger(
   )
 
   const outcomes: TriggerOutcome[] = []
-  for (const row of rows) {
+  await forEachSequential(rows, async (row) => {
     if (row.autoDeploy === 'disabled') {
       outcomes.push({
         kind: 'skipped',
@@ -626,7 +625,7 @@ export async function resolvePushTrigger(
         environmentId: null,
         reason: 'auto_deploy_disabled',
       })
-      continue
+      return
     }
     if (!sourceWatchesBranch(row.defaultBranch, push.branch)) {
       outcomes.push({
@@ -635,7 +634,7 @@ export async function resolvePushTrigger(
         environmentId: null,
         reason: 'branch_not_watched',
       })
-      continue
+      return
     }
     if (row.autoDeploy === 'checks_passed') {
       // Park the SHA and wait for the matching check_suite / check_run. A push
@@ -654,7 +653,7 @@ export async function resolvePushTrigger(
         environmentId: null,
         reason: 'awaiting_checks',
       })
-      continue
+      return
     }
 
     if (!push.commitSha) {
@@ -669,7 +668,7 @@ export async function resolvePushTrigger(
         environmentId: null,
         reason: 'branch_deleted',
       })
-      continue
+      return
     }
 
     outcomes.push(
@@ -679,7 +678,7 @@ export async function resolvePushTrigger(
         ref: push.ref,
       }, io),
     )
-  }
+  })
 
   const summary = summarize(outcomes, rows.length)
   logInfo(
@@ -747,11 +746,11 @@ export async function resolveCheckTrigger(
 
   const outcomes: TriggerOutcome[] = []
   let matched = 0
-  for (const row of rows) {
-    if (row.autoDeploy !== 'checks_passed') continue
+  await forEachSequential(rows, async (row) => {
+    if (row.autoDeploy !== 'checks_passed') return
     const pending = readPendingChecks(row.options)
-    if (pending?.commitSha !== check.commitSha) continue
-    if (pending.ref && pending.ref !== check.ref) continue
+    if (pending?.commitSha !== check.commitSha) return
+    if (pending.ref && pending.ref !== check.ref) return
     matched += 1
 
     // Clear first: a deploy that fails to enqueue must not leave the SHA parked
@@ -769,7 +768,7 @@ export async function resolveCheckTrigger(
       await io.setPendingChecks(db, row, pending)
     }
     outcomes.push(...results)
-  }
+  })
 
   const summary = summarize(outcomes, matched)
   if (matched > 0) {

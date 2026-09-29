@@ -9,6 +9,7 @@
 import { ObjectExecutionLogStore } from './object-store.ts'
 import type { ExecutionLogObjectBackend } from './object-store.ts'
 import { signS3Request, sigV4Encode, type S3Credentials } from './s3-sigv4.ts'
+import { forEachSequential } from '../../lib/sequential.ts'
 
 export type S3ExecutionLogConfig = S3Credentials & {
   /** Endpoint origin, e.g. `https://s3.us-east-1.amazonaws.com` or a MinIO URL. */
@@ -117,9 +118,12 @@ function createS3Backend(config: S3ExecutionLogConfig): ExecutionLogObjectBacken
       // One request per key: `DeleteObjects` needs a Content-MD5 header that
       // WebCrypto cannot produce (no MD5 digest in either runtime), and delete
       // volume here is bounded by the sweep limit.
-      for (let index = 0; index < keys.length; index += S3_DELETE_BATCH) {
-        const batch = keys.slice(index, index + S3_DELETE_BATCH)
-        await Promise.all(
+      const batches = Array.from({ length: Math.ceil(keys.length / S3_DELETE_BATCH) }, (_, n) =>
+        keys.slice(n * S3_DELETE_BATCH, (n + 1) * S3_DELETE_BATCH)
+      )
+      // Batches run one after another so at most one batch is in flight.
+      await forEachSequential(batches, (batch) =>
+        Promise.all(
           batch.map(async (key) => {
             const response = await send(config, 'DELETE', objectUrl(config, key))
             await response.body?.cancel().catch(() => {})
@@ -128,7 +132,7 @@ function createS3Backend(config: S3ExecutionLogConfig): ExecutionLogObjectBacken
             }
           })
         )
-      }
+      )
     },
     async list(prefix, limit) {
       const out: string[] = []
