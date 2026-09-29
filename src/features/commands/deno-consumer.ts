@@ -2,10 +2,7 @@ import amqplib from 'amqplib'
 import type { Db } from '../../db/connection.ts'
 import type { DaemonCellRegistry } from '../../contracts/cell.ts'
 import { compatLogError, compatLogWarn } from '../../lib/log-compat.ts'
-import {
-  assertCommandAmqpTopology,
-  COMMAND_AMQP_QUEUE,
-} from './command-amqp-topology.ts'
+import { assertCommandAmqpTopology, COMMAND_AMQP_QUEUE } from './command-amqp-topology.ts'
 import {
   isTransientError,
   processCommandEnvelope,
@@ -38,7 +35,7 @@ export function buildCommandConsumerDeps(
   opts: Pick<
     StartCommandConsumerOpts,
     'commandQueue' | 'resealDeps' | 'secretsConfig' | 'dataEncryptionSecrets'
-  >,
+  >
 ): CommandConsumerDeps | undefined {
   if (!(opts.commandQueue || opts.resealDeps || opts.secretsConfig)) {
     return undefined
@@ -55,7 +52,7 @@ export function buildCommandConsumerDeps(
  * Host-free: map success / transient / permanent errors to AMQP ack/nack.
  */
 export function commandMessageDisposition(
-  outcome: { ok: true } | { ok: false; error: unknown },
+  outcome: { ok: true } | { ok: false; error: unknown }
 ): CommandMessageDisposition {
   if (outcome.ok) return 'ack'
   return isTransientError(outcome.error) ? 'nack_requeue' : 'nack_dead'
@@ -67,7 +64,7 @@ function sleep(ms: number): Promise<void> {
 
 async function connectAmqp(url: string): Promise<AmqpConnection> {
   const maxAttempts = 30
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+  const tryConnect = async (attempt: number): Promise<AmqpConnection> => {
     try {
       return await amqplib.connect(url)
     } catch (error) {
@@ -75,12 +72,13 @@ async function connectAmqp(url: string): Promise<AmqpConnection> {
       const errMsg = error instanceof Error ? error.message : String(error)
       compatLogWarn(
         'command-consumer',
-        `AMQP connect failed (attempt ${attempt}/${maxAttempts}): ${errMsg}`,
+        `AMQP connect failed (attempt ${attempt}/${maxAttempts}): ${errMsg}`
       )
-      await sleep(1000)
     }
+    await sleep(1000)
+    return tryConnect(attempt + 1)
   }
-  throw new Error('connectAmqp: unreachable')
+  return tryConnect(1)
 }
 
 /**
@@ -104,7 +102,7 @@ function errorMessage(error: unknown): string {
 export function applyCommandMessageDisposition(
   channel: Pick<AmqpChannel, 'ack' | 'nack'>,
   msg: NonNullable<AmqpMessage>,
-  disposition: CommandMessageDisposition,
+  disposition: CommandMessageDisposition
 ): void {
   if (disposition === 'ack') {
     channel.ack(msg)
@@ -126,16 +124,16 @@ export function applyCommandMessageDisposition(
 function disposeSafely(
   channel: AmqpChannel,
   msg: NonNullable<AmqpMessage>,
-  disposition: CommandMessageDisposition,
+  disposition: CommandMessageDisposition
 ): void {
   try {
     applyCommandMessageDisposition(channel, msg, disposition)
   } catch (error) {
     compatLogWarn(
       'command-consumer',
-      `could not ${disposition} a delivery: ${
-        errorMessage(error)
-      } — the channel is gone; the broker will redeliver`,
+      `could not ${disposition} a delivery: ${errorMessage(
+        error
+      )} — the channel is gone; the broker will redeliver`
     )
   }
 }
@@ -149,7 +147,7 @@ type ConsumerSession = {
 }
 
 export async function startCommandConsumer(
-  opts: StartCommandConsumerOpts,
+  opts: StartCommandConsumerOpts
 ): Promise<{ close(): Promise<void> }> {
   const consumerDeps = buildCommandConsumerDeps(opts)
 
@@ -173,16 +171,13 @@ export async function startCommandConsumer(
   function watchForLoss(
     target: AmqpConnection | AmqpChannel,
     label: string,
-    owner: ConsumerSession,
+    owner: ConsumerSession
   ): void {
     const emitter = target as AmqpEmitter
     if (typeof emitter.on !== 'function') return
     emitter.on('error', (error) => {
       owner.lost = true
-      compatLogWarn(
-        'command-consumer',
-        `AMQP ${label} error: ${errorMessage(error)}`,
-      )
+      compatLogWarn('command-consumer', `AMQP ${label} error: ${errorMessage(error)}`)
       void reopen(owner, `${label} error`)
     })
     emitter.on('close', () => {
@@ -212,12 +207,9 @@ export async function startCommandConsumer(
       await assertCommandAmqpTopology(channel)
       await channel.prefetch(1)
 
-      const { consumerTag } = await channel.consume(
-        COMMAND_AMQP_QUEUE,
-        (msg) => {
-          void handleMessage(channel, msg)
-        },
-      )
+      const { consumerTag } = await channel.consume(COMMAND_AMQP_QUEUE, (msg) => {
+        void handleMessage(channel, msg)
+      })
       opened.consumerTag = consumerTag
       return opened
     } catch (error) {
@@ -239,8 +231,8 @@ export async function startCommandConsumer(
     session = undefined
     compatLogWarn('command-consumer', `AMQP ${reason} — reconnecting`)
 
-    let delay = RECONNECT_BASE_DELAY_MS
-    while (!closed) {
+    const attempt = async (delay: number): Promise<void> => {
+      if (closed) return
       try {
         const rebuilt = await openSession()
         if (closed) {
@@ -248,35 +240,33 @@ export async function startCommandConsumer(
           // leave a consumer running past shutdown.
           await rebuilt.channel.close().catch(() => undefined)
           await rebuilt.connection.close().catch(() => undefined)
-          break
+          return
         }
-        if (rebuilt.lost) {
-          // The broker went away again while this session was being set up.
-          // Its own listeners already fired and found `session` unset, so
-          // nothing else will retry — installing it would leave a dead
-          // session that never emits again.
-          compatLogWarn(
-            'command-consumer',
-            'AMQP connection was lost again during reconnect — retrying',
-          )
-          await rebuilt.channel.close().catch(() => undefined)
-          await rebuilt.connection.close().catch(() => undefined)
-          await sleep(delay)
-          delay = Math.min(delay * 2, RECONNECT_MAX_DELAY_MS)
-          continue
+        if (!rebuilt.lost) {
+          session = rebuilt
+          compatLogWarn('command-consumer', 'AMQP reconnected, consuming again')
+          return
         }
-        session = rebuilt
-        compatLogWarn('command-consumer', 'AMQP reconnected, consuming again')
-        break
+        // The broker went away again while this session was being set up.
+        // Its own listeners already fired and found `session` unset, so
+        // nothing else will retry — installing it would leave a dead
+        // session that never emits again.
+        compatLogWarn(
+          'command-consumer',
+          'AMQP connection was lost again during reconnect — retrying'
+        )
+        await rebuilt.channel.close().catch(() => undefined)
+        await rebuilt.connection.close().catch(() => undefined)
       } catch (error) {
         compatLogError(
           'command-consumer',
-          `AMQP reconnect failed: ${errorMessage(error)} — retrying in ${delay}ms`,
+          `AMQP reconnect failed: ${errorMessage(error)} — retrying in ${delay}ms`
         )
-        await sleep(delay)
-        delay = Math.min(delay * 2, RECONNECT_MAX_DELAY_MS)
       }
+      await sleep(delay)
+      return attempt(Math.min(delay * 2, RECONNECT_MAX_DELAY_MS))
     }
+    await attempt(RECONNECT_BASE_DELAY_MS)
     reconnecting = false
   }
 
@@ -285,21 +275,13 @@ export async function startCommandConsumer(
     await s.connection.close().catch(() => undefined)
   }
 
-  async function handleMessage(
-    channel: AmqpChannel,
-    msg: AmqpMessage,
-  ): Promise<void> {
+  async function handleMessage(channel: AmqpChannel, msg: AmqpMessage): Promise<void> {
     if (!msg) return
 
     let disposition: CommandMessageDisposition
     try {
       const envelope = parseCommandEnvelope(msg.content.toString())
-      await processCommandEnvelope(
-        opts.db,
-        opts.registry,
-        envelope,
-        consumerDeps,
-      )
+      await processCommandEnvelope(opts.db, opts.registry, envelope, consumerDeps)
       disposition = commandMessageDisposition({ ok: true })
     } catch (error) {
       const errMsg = errorMessage(error)
