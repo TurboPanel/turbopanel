@@ -47,7 +47,11 @@ import {
   withoutIntents,
   writePendingChanges,
 } from './pending-changes.ts'
-import { type BillingQuantityLock, endQuantityMutation, tryBeginQuantityMutation } from './quantity-lock.ts'
+import {
+  type BillingQuantityLock,
+  endQuantityMutation,
+  tryBeginQuantityMutation,
+} from './quantity-lock.ts'
 import { syncDeferredSchedule } from './schedules.ts'
 import type { SeatLine } from './subscriptions.ts'
 import { priceMapWithIntentTargets } from './tier-prices.ts'
@@ -73,16 +77,19 @@ async function acquireLeaseWithRetry(
   db: Db,
   organizationId: string,
   nowMs: number,
-  retry: Readonly<{ attempts: number; delayMs: number }>,
+  retry: Readonly<{ attempts: number; delayMs: number }>
 ): Promise<BillingQuantityLock | null> {
-  for (let attempt = 0; attempt < Math.max(1, retry.attempts); attempt += 1) {
+  const attempts = Math.max(1, retry.attempts)
+  const tryFrom = async (attempt: number): Promise<BillingQuantityLock | null> => {
+    if (attempt >= attempts) return null
     const lock = await tryBeginQuantityMutation(db, organizationId, nowMs + attempt * retry.delayMs)
     if (lock) return lock
     if (attempt + 1 < retry.attempts) {
       await new Promise((resolve) => setTimeout(resolve, retry.delayMs))
     }
+    return await tryFrom(attempt + 1)
   }
-  return null
+  return await tryFrom(0)
 }
 
 export type EntitlementSyncInput = Readonly<{
@@ -134,7 +141,7 @@ export function seatLinesFromState(state: OrganizationBillingState): {
 /** An ended subscription has nothing left to defer. */
 function clearLedgerIfSubscriptionEnded(
   ledger: PendingChangeLedger,
-  state: OrganizationBillingState,
+  state: OrganizationBillingState
 ): PendingChangeLedger {
   if (!state.subscription || !isEndedStatus(state.subscription.status)) return ledger
   return { ...ledger, intents: [] }
@@ -145,14 +152,18 @@ async function rebuildDeferredScheduleIfNeeded(
   input: EntitlementSyncInput,
   state: OrganizationBillingState,
   ledger: PendingChangeLedger,
-  logScope: string,
+  logScope: string
 ): Promise<boolean> {
   const deltas = deferredDeltasByTier(ledger)
   const needsSchedule = [...deltas.values()].some((delta) => delta !== 0)
   const subscription = state.subscription
   if (
-    !deps.client || !needsSchedule || input.pendingUpdate || !subscription ||
-    subscription.scheduleId || isEndedStatus(subscription.status)
+    !deps.client ||
+    !needsSchedule ||
+    input.pendingUpdate ||
+    !subscription ||
+    subscription.scheduleId ||
+    isEndedStatus(subscription.status)
   ) {
     return false
   }
@@ -163,14 +174,22 @@ async function rebuildDeferredScheduleIfNeeded(
       scheduleId: null,
       current: lines,
       deltasByTier: deltas,
-      priceByTier: await priceMapWithIntentTargets(deps.db, resolveBillingGateway(deps.client), priceByTier, ledger),
+      priceByTier: await priceMapWithIntentTargets(
+        deps.db,
+        resolveBillingGateway(deps.client),
+        priceByTier,
+        ledger
+      ),
       // Keyed on the newest intent: fixed length (Stripe caps keys at 255).
       idempotencyKey: `${ledger.intents.at(-1)!.idempotencyKey}:rebuild`,
     })
     return true
   } catch (err) {
     // The intents survive in the ledger; the next mutation or sync retries.
-    logWarn(logScope, `organization ${input.organizationId}: schedule rebuild failed: ${String(err)}`)
+    logWarn(
+      logScope,
+      `organization ${input.organizationId}: schedule rebuild failed: ${String(err)}`
+    )
     return false
   }
 }
@@ -186,25 +205,34 @@ function seatsAtFromState(state: OrganizationBillingState): (tierId: string) => 
 
 export async function syncEntitlementsForOrganization(
   deps: EntitlementSyncDeps,
-  input: EntitlementSyncInput,
+  input: EntitlementSyncInput
 ): Promise<EntitlementSyncOutcome> {
   const logScope = deps.logScope ?? 'billing-entitlements'
   const nowMs = deps.nowMs ?? Date.now()
   const now = new Date(nowMs).toISOString()
   const ownLock = input.lock
     ? null
-    : await acquireLeaseWithRetry(deps.db, input.organizationId, nowMs, deps.leaseRetry ?? DEFAULT_LEASE_RETRY)
+    : await acquireLeaseWithRetry(
+        deps.db,
+        input.organizationId,
+        nowMs,
+        deps.leaseRetry ?? DEFAULT_LEASE_RETRY
+      )
   if (!input.lock && !ownLock) {
     logWarn(
       logScope,
-      `organization ${input.organizationId}: quantity lease held; entitlement sync deferred to the holder`,
+      `organization ${input.organizationId}: quantity lease held; entitlement sync deferred to the holder`
     )
     return { action: 'skipped', reason: 'lease_held' }
   }
   try {
-    const state = input.state ?? await listSeatsForOrganization(deps.db, input.organizationId)
+    const state = input.state ?? (await listSeatsForOrganization(deps.db, input.organizationId))
     const ended = Boolean(state.subscription) && isEndedStatus(state.subscription!.status)
-    let { ledger } = await readPendingChanges(deps.db, input.organizationId, input.providerSubscriptionId)
+    let { ledger } = await readPendingChanges(
+      deps.db,
+      input.organizationId,
+      input.providerSubscriptionId
+    )
 
     // 1. Intents whose change the committed items show.
     const landed = landedIntents(ledger, {
@@ -212,7 +240,10 @@ export async function syncEntitlementsForOrganization(
       currentPeriodEnd: state.subscription?.currentPeriodEnd ?? null,
       seatsAt: seatsAtFromState(state),
     })
-    ledger = withoutIntents(ledger, landed.map((intent) => intent.id))
+    ledger = withoutIntents(
+      ledger,
+      landed.map((intent) => intent.id)
+    )
     ledger = clearLedgerIfSubscriptionEnded(ledger, state)
     await writePendingChanges(deps.db, input.organizationId, ledger, nowMs)
 
@@ -228,10 +259,19 @@ export async function syncEntitlementsForOrganization(
     }
 
     // 2. The derived assignment.
-    const assignment = await recomputeOrganizationAssignments(deps.db, input.organizationId, { state, now })
+    const assignment = await recomputeOrganizationAssignments(deps.db, input.organizationId, {
+      state,
+      now,
+    })
 
     // 4. The schedule, when the ledger still needs one.
-    const scheduleRebuilt = await rebuildDeferredScheduleIfNeeded(deps, input, state, ledger, logScope)
+    const scheduleRebuilt = await rebuildDeferredScheduleIfNeeded(
+      deps,
+      input,
+      state,
+      ledger,
+      logScope
+    )
 
     const result: EntitlementSyncResult = {
       landedIntentIds: landed.map((intent) => intent.id),
@@ -243,14 +283,18 @@ export async function syncEntitlementsForOrganization(
       logWarn(
         logScope,
         `organization ${input.organizationId}: ${assignment.uncovered.length} licensed server(s) not covered by any purchased tier`,
-        JSON.stringify(assignment.uncovered),
+        JSON.stringify(assignment.uncovered)
       )
     } else {
-      logInfo(logScope, `organization ${input.organizationId}: entitlements synced`, JSON.stringify({
-        landed: result.landedIntentIds.length,
-        moved: assignment.changed.length,
-        revoked: revoked.licenseIds.length,
-      }))
+      logInfo(
+        logScope,
+        `organization ${input.organizationId}: entitlements synced`,
+        JSON.stringify({
+          landed: result.landedIntentIds.length,
+          moved: assignment.changed.length,
+          revoked: revoked.licenseIds.length,
+        })
+      )
     }
     return { action: 'synced', result, scheduleRebuilt }
   } finally {

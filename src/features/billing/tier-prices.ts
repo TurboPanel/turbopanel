@@ -11,6 +11,7 @@
  * Workers-bundleable: nothing at module load.
  */
 
+import { forEachSequential } from '../../lib/sequential.ts'
 import type { Db } from '../../db/connection.ts'
 import { logWarn } from '../../lib/logger.ts'
 import {
@@ -35,7 +36,11 @@ export type ResolveTierPriceResult =
   | { ok: false; reason: TierPriceRefusal; failures?: readonly string[] }
 
 /** Refresh the row's display price from the product; best-effort, never throws. */
-export async function cacheTierPrice(db: Db, tierId: string, product: ProviderProduct): Promise<void> {
+export async function cacheTierPrice(
+  db: Db,
+  tierId: string,
+  product: ProviderProduct
+): Promise<void> {
   const price = product.defaultPrice
   if (price?.unitAmount == null) return
   try {
@@ -53,12 +58,14 @@ export async function cacheTierPrice(db: Db, tierId: string, product: ProviderPr
 export async function resolveTierPrice(
   db: Db,
   gateway: BillingGateway,
-  tierId: string,
+  tierId: string
 ): Promise<ResolveTierPriceResult> {
   const purchasable = await resolvePurchasableTier(db, tierId)
   if (!purchasable.ok) return purchasable
   const product = await gateway.getProduct(purchasable.tier.providerProductId)
-  const taxDefaults = needsAccountTaxDefaults(product) ? await gateway.getTaxDefaults() : NO_TAX_DEFAULTS
+  const taxDefaults = needsAccountTaxDefaults(product)
+    ? await gateway.getTaxDefaults()
+    : NO_TAX_DEFAULTS
   const verification = gateway.verifyProduct(product, taxDefaults)
   if (!verification.ok || !product.defaultPrice) {
     return { ok: false, reason: 'product_unsellable', failures: verification.failures }
@@ -76,16 +83,16 @@ export async function priceMapWithIntentTargets(
   db: Db,
   gateway: BillingGateway,
   priceByTier: ReadonlyMap<string, string>,
-  ledger: PendingChangeLedger,
+  ledger: PendingChangeLedger
 ): Promise<Map<string, string>> {
   const out = new Map(priceByTier)
   const missing = deferredIntentTargets(ledger).filter((tierId) => !out.has(tierId))
   if (missing.length === 0) return out
   const rows = await getTiersByIds(db, missing)
-  for (const [tierId, row] of rows) {
-    if (!row.providerProductId) continue
+  await forEachSequential(rows, async ([tierId, row]) => {
+    if (!row.providerProductId) return
     const product = await gateway.getProduct(row.providerProductId)
     if (product.defaultPrice) out.set(tierId, product.defaultPrice.id)
-  }
+  })
   return out
 }

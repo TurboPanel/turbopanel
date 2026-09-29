@@ -1,3 +1,4 @@
+import { mapSequential } from '../lib/sequential.ts'
 import { Hono } from 'hono'
 import type { Context, Env, Next } from 'hono'
 import { and, eq, isNull } from 'drizzle-orm'
@@ -1623,10 +1624,9 @@ export function registerDaemonApiRoutes<E extends Env>(
 
       // Sequential decryption — bounded work, no unbounded parallelism over the
       // whole batch (each entry does an AES-GCM decrypt of daemon key material).
-      const plaintexts: (string | null)[] = []
-      for (const ciphertext of body.ciphertexts as string[]) {
-        plaintexts.push(await decryptDaemonCiphertext(secretsConfig, recipient, ciphertext))
-      }
+      const plaintexts = await mapSequential(body.ciphertexts as string[], (ciphertext) =>
+        decryptDaemonCiphertext(secretsConfig, recipient, ciphertext)
+      )
 
       return c.json({ plaintexts }, 200)
     }
