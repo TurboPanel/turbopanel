@@ -393,6 +393,75 @@ test("POST /daemon/:id/sync-dev streams a multi-chunk tarball", async () => {
   assertEquals(await response.json(), { ok: true, daemonId: SERVER_ID })
 })
 
+function recordingRegistry(
+  onEnqueue: (phase: string, index?: number) => Promise<unknown>,
+): DaemonCellRegistry {
+  const base = createRegistry();
+  return {
+    ...base,
+    getCell: () =>
+      ({
+        enqueue: (envelope: { phase: string; index?: number }) =>
+          onEnqueue(envelope.phase, envelope.index),
+        waitForRequest: () => Promise.resolve({ status: "done" }),
+      }) as unknown as DaemonCell,
+  };
+}
+
+test("sync-dev enqueues begin, each chunk, then end strictly in order", async () => {
+  const started: string[] = [];
+  const finished: string[] = [];
+  const registry = recordingRegistry(async (phase, index) => {
+    const label = index === undefined ? phase : `${phase}:${index}`;
+    started.push(label);
+    // Earlier chunks take longer, so an out-of-order fan-out would show.
+    await new Promise((resolve) => setTimeout(resolve, index === 0 ? 20 : 1));
+    finished.push(label);
+    return {};
+  });
+  const app = await createApp({
+    packager: stubPackager({
+      buildTarball: () => Promise.resolve(new Uint8Array(200 * 1024)),
+    }),
+    registry,
+  });
+  const response = await app.request(
+    `${DEVELOPER_API_PREFIX}/daemon/${SERVER_ID}/sync-dev`,
+    { method: "POST" },
+  );
+  assertEquals(response.status, 200);
+  assertEquals(started, finished);
+  assertEquals(started[0], "begin");
+  assertEquals(started.at(-1), "end");
+  assertEquals(started.length > 3, true);
+  assertEquals(
+    started.slice(1, -1),
+    started.slice(1, -1).map((_, i) => `chunk:${i}`),
+  );
+});
+
+test("sync-dev stops enqueueing after a chunk fails", async () => {
+  const started: string[] = [];
+  const registry = recordingRegistry((phase, index) => {
+    started.push(index === undefined ? phase : `${phase}:${index}`);
+    if (phase === "chunk" && index === 1) {
+      return Promise.reject(new Error("enqueue failed"));
+    }
+    return Promise.resolve({});
+  });
+  const app = await createApp({
+    packager: stubPackager({
+      buildTarball: () => Promise.resolve(new Uint8Array(200 * 1024)),
+    }),
+    registry,
+  });
+  await app.request(
+    `${DEVELOPER_API_PREFIX}/daemon/${SERVER_ID}/sync-dev`,
+    { method: "POST" },
+  );
+  assertEquals(started, ["begin", "chunk:0", "chunk:1"]);
+});
+
 test("POST /daemon/sync-dev fans out success, managed skip, and failure", async () => {
   const remoteB = "00000000-0000-4000-8000-0000000000b1";
   const remoteC = "00000000-0000-4000-8000-0000000000c1";

@@ -135,6 +135,7 @@ export {
   hostgroupsForClusterIndex,
   unionExposureScopes,
 } from "./ingress-desired-pure.ts";
+import { firstSequential, forEachSequential } from "../../lib/sequential.ts";
 
 export { loadBoundManagedIdsForServer } from "./ingress-bound-consumers.ts";
 
@@ -279,12 +280,14 @@ async function loadClusterUsersForManagedIds(
     .from(principal)
     .where(inArray(principal.managedId, [...managedIds]));
 
-  for (const row of rows) {
-    if (!row.managedId) continue;
-    if (shouldSkipIngressFrontendUser(row.username, row.metadata)) continue;
+  const failure = await firstSequential(rows, async (row) => {
+    if (!row.managedId) return undefined;
+    if (shouldSkipIngressFrontendUser(row.username, row.metadata)) {
+      return undefined;
+    }
     const sealed = row.password;
     if (!isAtRestSealedPassword(sealed, ENVELOPE_PREFIX_SECRET)) {
-      return { kind: "managed_credential_not_sealed" };
+      return { kind: "managed_credential_not_sealed" } as const;
     }
     const resealed = await resealSecretForDaemon(
       params.secretsConfig,
@@ -304,7 +307,9 @@ async function loadClusterUsersForManagedIds(
     const list = byManaged.get(row.managedId) ?? [];
     list.push(user);
     byManaged.set(row.managedId, list);
-  }
+    return undefined;
+  });
+  if (failure) return failure;
   for (const [managedId, users] of byManaged) {
     users.sort((a, b) => a.username.localeCompare(b.username));
     byManaged.set(managedId, users);
@@ -987,10 +992,10 @@ async function recomputeManagedMemberTransports(
       );
       return;
     }
-    for (const member of subset) {
+    await forEachSequential(subset, async (member) => {
       const transport = transports.get(member.id) ?? null;
       await updateMemberReplicationTransport(db, member.id, transport);
-    }
+    });
   };
 
   await persist(failoverSubset, "failover-replication");
@@ -1011,7 +1016,7 @@ async function rematerializeManagedBindings(
     .select({ id: principal.id })
     .from(principal)
     .where(eq(principal.managedId, managedId));
-  for (const row of principals) {
+  await forEachSequential(principals, async (row) => {
     const result = await materializeBindingsForPrincipal(
       db,
       dataEncryptionSecrets,
@@ -1023,7 +1028,7 @@ async function rematerializeManagedBindings(
         `binding rematerialize failed during promote fan-out managedId=${managedId} principalId=${row.id} kind=${result.kind}`,
       );
     }
-  }
+  });
 }
 
 /**
@@ -1066,7 +1071,7 @@ export async function fanOutManagedIngressReconcile(
     ...(params.extraServerIds ?? []),
   ]);
 
-  for (const serverId of serverIds) {
+  await forEachSequential(serverIds, async (serverId) => {
     await enqueueManagedIngressReconcile(db, commandQueue, {
       serverId,
       actorType: params.actorType,
@@ -1074,7 +1079,7 @@ export async function fanOutManagedIngressReconcile(
       secretsConfig: params.secretsConfig,
       dataEncryptionSecrets: params.dataEncryptionSecrets,
     });
-  }
+  });
 }
 
 /** Bounded batch for one orphaned-frontend sweep tick. */
@@ -1148,7 +1153,7 @@ export async function runManagedIngressOrphanSweep(
   `);
 
   let enqueued = 0;
-  for (const row of candidates) {
+  await forEachSequential(candidates, async (row) => {
     const result = await enqueueManagedIngressReconcile(db, commandQueue, {
       serverId: row.server_id,
       actorType: "system",
@@ -1157,6 +1162,6 @@ export async function runManagedIngressOrphanSweep(
       dataEncryptionSecrets: params.dataEncryptionSecrets,
     });
     if (result.ok) enqueued += 1;
-  }
+  });
   return { enqueued };
 }

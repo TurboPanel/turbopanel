@@ -22,6 +22,7 @@ import type { ContainerNamingMode } from '../projects/project-options.ts'
 import { parseServiceOptions } from '../projects/service-options.ts'
 import type { ComposeDocument } from '../compose/types.ts'
 import { container } from '../../db/schema.ts'
+import { forEachSequential } from '../../lib/sequential.ts'
 
 export type ContainerWorkloadRole = 'service' | 'turbopanel'
 
@@ -134,7 +135,8 @@ async function allocateServiceContainers(
   const allocations: ContainerAllocation[] = []
 
   await db.transaction(async (tx) => {
-    for (let ordinal = 1; ordinal <= instances; ordinal += 1) {
+    const ordinals = Array.from({ length: instances }, (_, i) => i + 1)
+    await forEachSequential(ordinals, async (ordinal) => {
       const cloneName = svc.composeServiceName
       const placementServerId = svc.serverIdByOrdinal?.get(ordinal) ?? serverId
 
@@ -209,7 +211,7 @@ async function allocateServiceContainers(
         instances,
         serverId: placementServerId,
       })
-    }
+    })
 
     await tx
       .delete(container)
@@ -363,16 +365,16 @@ export async function allocateEnvironmentContainers(
 ): Promise<ContainerAllocation[]> {
   const allocations: ContainerAllocation[] = []
 
-  for (const svc of params.containerServices) {
+  await forEachSequential(params.containerServices, async (svc) => {
     if (!shouldAllocateService(params.containerNaming, svc.explicitContainerName)) {
-      continue
+      return
     }
     const serviceAllocations = await allocateServiceContainers(db, {
       serverId: params.serverId,
       service: svc,
     })
     allocations.push(...serviceAllocations)
-  }
+  })
 
   const pruneServiceIds = params.environmentServiceIds ??
     params.containerServices.map((svc) => svc.serviceId)

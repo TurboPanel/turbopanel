@@ -138,7 +138,10 @@ export function carryOverRateLimiter(
 }
 
 async function connectAmqp(url: string): Promise<AmqpConnection> {
-  for (let attempt = 1; attempt <= CONNECT_ATTEMPTS; attempt++) {
+  const tryConnect = async (attempt: number): Promise<AmqpConnection> => {
+    if (attempt > CONNECT_ATTEMPTS) {
+      throw new Error('connectAmqp: unreachable')
+    }
     try {
       return await amqplib.connect(url)
     } catch (error) {
@@ -151,8 +154,9 @@ async function connectAmqp(url: string): Promise<AmqpConnection> {
       )
       await sleep(1000)
     }
+    return tryConnect(attempt + 1)
   }
-  throw new Error('connectAmqp: unreachable')
+  return tryConnect(1)
 }
 
 export async function startMailerConsumer(
@@ -279,27 +283,26 @@ export async function startMailerConsumer(
     session = undefined
     logWarn('mailer', `AMQP ${reason} — reconnecting`)
 
-    let delay = RECONNECT_BASE_DELAY_MS
-    while (!closed) {
+    const reconnectWithBackoff = async (delay: number): Promise<void> => {
+      if (closed) return
+      let finished = false
       try {
         const rebuilt = await openSession()
         if (closed) {
           await discard(rebuilt)
-          break
-        }
-        if (rebuilt.lost) {
+          finished = true
+        } else if (rebuilt.lost) {
           logWarn(
             'mailer',
             'AMQP connection was lost again during reconnect — retrying',
           )
           await discard(rebuilt)
           await sleep(delay)
-          delay = Math.min(delay * 2, RECONNECT_MAX_DELAY_MS)
-          continue
+        } else {
+          session = rebuilt
+          logWarn('mailer', 'AMQP reconnected, consuming again')
+          finished = true
         }
-        session = rebuilt
-        logWarn('mailer', 'AMQP reconnected, consuming again')
-        break
       } catch (error) {
         logError(
           'mailer',
@@ -308,9 +311,11 @@ export async function startMailerConsumer(
           } — retrying in ${delay}ms`,
         )
         await sleep(delay)
-        delay = Math.min(delay * 2, RECONNECT_MAX_DELAY_MS)
       }
+      if (finished) return
+      return reconnectWithBackoff(Math.min(delay * 2, RECONNECT_MAX_DELAY_MS))
     }
+    await reconnectWithBackoff(RECONNECT_BASE_DELAY_MS)
     reconnecting = false
   }
 

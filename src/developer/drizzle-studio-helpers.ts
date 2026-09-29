@@ -54,11 +54,11 @@ export async function waitForStudioPort(
   timeoutMs: number,
 ): Promise<boolean> {
   const deadline = Date.now() + timeoutMs
-  while (Date.now() < deadline) {
-    if (await probe(host)) {
-      return true
-    }
+  const poll = async (): Promise<boolean> => {
+    if (Date.now() >= deadline) return false
+    if (await probe(host)) return true
     await new Promise((resolve) => setTimeout(() => resolve(null), 200))
+    return poll()
   }
-  return false
+  return poll()
 }

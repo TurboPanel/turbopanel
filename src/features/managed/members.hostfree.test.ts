@@ -997,6 +997,52 @@ test('ensureMemberPrivatePorts returns exhausted when the range is full', async 
   }
 })
 
+test('ensureMemberPrivatePorts stops at the first exhausted member and skips later ones', async () => {
+  const first = member({ id: 'a', serverId: 's1', role: 'primary', ordinal: 1, privatePort: null })
+  const second = member({ id: 'b', serverId: 's1', role: 'replica', ordinal: 2, privatePort: null })
+  const third = member({ id: 'c', serverId: 's2', role: 'replica', ordinal: 3, privatePort: null })
+  // Every port on s1 but the last is taken: `a` gets it, `b` exhausts the range.
+  const occupied = Array.from({ length: 999 }, (_, i) => ({
+    serverId: 's1',
+    privatePort: MANAGED_PRIVATE_PORT_MIN + i,
+    id: `other-${i}`,
+  }))
+  let selectN = 0
+  const updatedPorts: number[] = []
+  const tx = {
+    select: () => ({
+      from: () => ({
+        where: () => {
+          selectN += 1
+          if (selectN === 2) return Promise.resolve(occupied)
+          return { orderBy: () => Promise.resolve([first, second, third]) }
+        },
+      }),
+    }),
+    update: () => ({
+      set: (patch: { privatePort: number }) => ({
+        where: () => {
+          updatedPorts.push(patch.privatePort)
+          return Promise.resolve([])
+        },
+      }),
+    }),
+  }
+  const db = {
+    transaction: (fn: (inner: typeof tx) => Promise<unknown>) => fn(tx),
+  } as unknown as Db
+
+  const result = await ensureMemberPrivatePorts(db, [first, second, third])
+  assertEquals(isManagedPrivatePortExhaustedError(result), true)
+  if (isManagedPrivatePortExhaustedError(result)) {
+    assertEquals(result.serverId, 's1')
+  }
+  // Only the first member was written; the third (s2, would have fit) was never reached.
+  assertEquals(updatedPorts, [MANAGED_PRIVATE_PORT_MIN + 999])
+  // No re-read after the early return.
+  assertEquals(selectN, 2)
+})
+
 test('resolvePeersForMember returns empty for sole members and co-resident peers', async () => {
   const sole = member({ id: 'p', serverId: 's1', role: 'primary', ordinal: 1 })
   assertEquals(await resolvePeersForMember({} as Db, [sole], sole, 5432), [])

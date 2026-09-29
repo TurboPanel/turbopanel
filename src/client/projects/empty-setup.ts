@@ -24,6 +24,7 @@ import {
   type CatalogVariable,
   type CreateProjectType,
 } from './catalog/index.ts'
+import { forEachSequential } from '../../lib/sequential.ts'
 
 export const DEFAULT_PRODUCTION_ENVIRONMENT_NAME = DEFAULT_ENVIRONMENT_NAME
 export const DEFAULT_PRODUCTION_ENVIRONMENT_DESCRIPTION =
@@ -242,8 +243,8 @@ async function applyCatalogVariablesToEnvironment(
   const existingKeys = new Set(existing.map((row) => row.key))
 
   const sharedCredentials = new Map<string, string>()
-  for (const v of catalogEnv.variables) {
-    if (existingKeys.has(v.key)) continue
+  await forEachSequential(catalogEnv.variables, async (v) => {
+    if (existingKeys.has(v.key)) return
     const plaintext = resolveCatalogVariablePlaintext(v, sharedCredentials)
     const storedValue = v.isSecret
       ? await encryptSecret(dataEncryptionSecrets, plaintext)
@@ -254,7 +255,7 @@ async function applyCatalogVariablesToEnvironment(
       value: storedValue,
       isSecret: v.isSecret,
     })
-  }
+  })
 }
 
 function catalogConfigureOptions(
@@ -321,7 +322,7 @@ async function insertCatalogEnvVariables(
   dataEncryptionSecrets: DerivedSecretsConfig,
 ): Promise<void> {
   const sharedCredentials = new Map<string, string>()
-  for (const v of vars) {
+  await forEachSequential(vars, async (v) => {
     const plaintext = resolveCatalogVariablePlaintext(v, sharedCredentials)
     const storedValue = v.isSecret
       ? await encryptSecret(dataEncryptionSecrets, plaintext)
@@ -332,7 +333,7 @@ async function insertCatalogEnvVariables(
       value: storedValue,
       isSecret: v.isSecret,
     })
-  }
+  })
 }
 
 async function insertExtraCatalogEnvironments(
@@ -344,8 +345,8 @@ async function insertExtraCatalogEnvironments(
     dataEncryptionSecrets: DerivedSecretsConfig
   },
 ): Promise<void> {
-  for (const env of input.entry.environments) {
-    if (isProductionEnvironmentName(env.displayName)) continue
+  await forEachSequential(input.entry.environments, async (env) => {
+    if (isProductionEnvironmentName(env.displayName)) return
     const existingExtra = await tx
       .select({ id: environment.id })
       .from(environment)
@@ -356,7 +357,7 @@ async function insertExtraCatalogEnvironments(
         ),
       )
       .limit(1)
-    if (existingExtra[0]) continue
+    if (existingExtra[0]) return
     const [insertedEnv] = await tx
       .insert(environment)
       .values({
@@ -367,14 +368,14 @@ async function insertExtraCatalogEnvironments(
         options: env.compose ? { compose: env.compose } : null,
       })
       .returning({ id: environment.id })
-    if (!env.variables?.length) continue
+    if (!env.variables?.length) return
     await insertCatalogEnvVariables(
       tx,
       insertedEnv.id,
       env.variables,
       input.dataEncryptionSecrets,
     )
-  }
+  })
 }
 
 function buildCatalogProjectMetadata(

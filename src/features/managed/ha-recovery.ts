@@ -58,6 +58,7 @@ import {
   type RecoveryRecord,
 } from './recovery.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
+import { forEachSequential } from '../../lib/sequential.ts'
 
 export type RecoveryEnqueueOk = {
   ok: true
@@ -376,8 +377,8 @@ async function enqueueFenceCommands(
 ): Promise<RecoveryEnqueueResult> {
   const fenceCommandIds: string[] = []
   const drainServers = [...new Set(params.members.map((row) => row.serverId))]
-  for (const serverId of drainServers) {
-    if (!(await isServerConnected(db, serverId))) continue
+  await forEachSequential(drainServers, async (serverId) => {
+    if (!(await isServerConnected(db, serverId))) return
     const payload = await failoverPayload(db, serverId, {
       managedId: params.recovery.managedId,
       source: params.source,
@@ -394,7 +395,7 @@ async function enqueueFenceCommands(
       metadata: { recoveryId: params.recovery.id, fencePhase: 'drain' },
     })
     if (queued) fenceCommandIds.push(queued.commandId)
-  }
+  })
 
   const stopQueued = await enqueueCommand(db, commandQueue, {
     serverId: params.source.serverId,
@@ -753,7 +754,7 @@ async function reclassifyAfterDisasterRecovery(
   if (!newPrimary) return
   const dcSets = await loadDatacenterSets(db, members)
   const primaryDcs = dcSets.get(newPrimary.serverId) ?? new Set()
-  for (const member of members) {
+  await forEachSequential(members, async (member) => {
     const dcs = dcSets.get(member.serverId) ?? new Set()
     let same = false
     for (const id of dcs) {
@@ -768,12 +769,12 @@ async function reclassifyAfterDisasterRecovery(
         replicaClass: member.replicaClass,
         sameDatacenterAsNewPrimary: same,
       })
-    if (nextClass === null || nextClass === member.replicaClass) continue
+    if (nextClass === null || nextClass === member.replicaClass) return
     await db
       .update(replica)
       .set({ replicaClass: nextClass, updatedAt: new Date().toISOString() })
       .where(eq(replica.id, member.id))
-  }
+  })
 }
 
 export async function onPromoteSucceeded(

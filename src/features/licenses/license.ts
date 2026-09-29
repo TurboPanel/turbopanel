@@ -4,6 +4,7 @@ import { revokeBoundDaemonKey } from './revoke-bound-daemon-key.ts'
 import { license, server } from '../../db/schema.ts'
 import { generatePassword } from '../../lib/secrets/generate-secret.ts'
 import { hashPassword, verifyPassword } from '../../lib/secrets/password.ts'
+import { forEachSequential } from '../../lib/sequential.ts'
 
 export type LicenseRecord = {
   id: string
@@ -96,10 +97,10 @@ export async function disconnectServersBoundToLicense(
     ))
 
   const serverIds: string[] = []
-  for (const row of rows) {
+  await forEachSequential(rows, async (row) => {
     serverIds.push(row.id)
     await revokeBoundDaemonKey(db, row.id)
-  }
+  })
   return serverIds
 }
 

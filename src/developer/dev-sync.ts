@@ -15,6 +15,7 @@ import { getDaemonRepoPath } from "../daemon/version.ts";
 import { cellTrace } from "../lib/logger.ts";
 import { DEVELOPER_API_PREFIX } from "../app/surfaces.ts";
 import { buildDevSyncTarArgs } from "./dev-sync-archive.ts";
+import { forEachSequential } from "../lib/sequential.ts";
 
 export const COLOCATED_DEV_SYNC_SKIPPED_REASON =
   "The co-located development daemon is not updated by dev-sync — edit the local checkout directly";
@@ -156,7 +157,8 @@ async function syncDevToDaemonWithRegistry(
     totalChunks,
   });
 
-  for (let i = 0; i < totalChunks; i++) {
+  const chunkIndexes = Array.from({ length: totalChunks }, (_, i) => i);
+  await forEachSequential(chunkIndexes, async (i) => {
     const chunk: DaemonOutboundEnvelope = {
       kind: "dev-sync",
       deliveryId: generateDeliveryId(),
@@ -167,7 +169,7 @@ async function syncDevToDaemonWithRegistry(
       data: base64.slice(i * CHUNK_CHARS, (i + 1) * CHUNK_CHARS),
     };
     await cell.enqueue(chunk);
-  }
+  });
 
   const end: DaemonOutboundEnvelope = {
     kind: "dev-sync",

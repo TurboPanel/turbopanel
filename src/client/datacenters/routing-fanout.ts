@@ -26,6 +26,7 @@ import type {
 import { reconcileFabricMembership } from "../../features/fabric/enqueue.ts";
 import { listManagedIdsForDatacenter } from "../../features/bindings/resolve-endpoint.ts";
 import { fanOutManagedIngressReconcile } from "../../features/managed/ingress-desired.ts";
+import { forEachSequential } from "../../lib/sequential.ts";
 
 export type DatacenterRoutingFanoutParams = Readonly<{
   datacenterId: string;
@@ -48,7 +49,7 @@ export async function fanOutDatacenterRoutingChange(
     ...new Set([...pinned, ...(params.extraManagedIds ?? [])]),
   ].sort((a, b) => a.localeCompare(b));
 
-  for (const managedId of managedIds) {
+  await forEachSequential(managedIds, async (managedId) => {
     await fanOutManagedIngressReconcile(db, commandQueue, {
       managedId,
       actorType: params.actorType,
@@ -56,7 +57,7 @@ export async function fanOutDatacenterRoutingChange(
       secretsConfig: params.secretsConfig,
       dataEncryptionSecrets: params.dataEncryptionSecrets,
     });
-  }
+  });
   await reconcileFabricMembership({
     db,
     commandQueue,

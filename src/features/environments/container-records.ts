@@ -6,6 +6,7 @@ import {
   resolveServiceInstances,
 } from '../projects/service-options.ts'
 import { container, service } from '../../db/schema.ts'
+import { forEachSequential } from '../../lib/sequential.ts'
 
 /** Matches compose service-key charset used when minting from daemon reports. */
 const SERVICE_NAME_RE = /^[A-Za-z0-9._-]+$/
@@ -416,13 +417,13 @@ async function upsertReportedContainers(
     : null
 
   await db.transaction(async (tx) => {
-    for (const reported of reportedSorted) {
+    await forEachSequential(reportedSorted, async (reported) => {
       const serviceId = resolveReportedServiceId(
         reported,
         params.serviceIds,
         params.serviceIdByComposeName,
       )
-      if (serviceId === undefined) continue
+      if (serviceId === undefined) return
 
       const role = resolveReportedRole(reported)
       const existing = matchUnmatchedExistingContainer({
@@ -445,7 +446,7 @@ async function upsertReportedContainers(
             composeServiceName: reported.composeServiceName,
           })
           .where(eq(container.id, existing.id))
-        continue
+        return
       }
 
       let ordinal: number
@@ -469,7 +470,7 @@ async function upsertReportedContainers(
         })
         .returning({ id: container.id })
       matchedIds.add(inserted!.id)
-    }
+    })
 
     const { deleteIds, resetIds } = unmatchedStaleExistingIds(
       params.existingRows,

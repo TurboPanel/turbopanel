@@ -51,6 +51,7 @@ export {
   type ManagedEffectiveExposure,
   resolveManagedEffectiveExposure,
 } from "./host-exposure.ts";
+import { forEachSequential } from "../../lib/sequential.ts";
 
 /** One reachable client endpoint on the shared ProxySQL frontend. */
 export type ManagedAccessEndpoint = {
@@ -143,15 +144,15 @@ export async function resolveManagedAccessEndpoints(
   const port = await resolveListenerPortForServer(db, params);
   const endpoints: ManagedAccessEndpoint[] = [];
   const seenHosts = new Set<string>();
-  for (const scope of scopes) {
+  await forEachSequential(scopes, async (scope) => {
     const host = await resolveManagedDialHost(db, {
       serverId: params.serverId,
       scope,
     });
-    if (host === null || seenHosts.has(host)) continue;
+    if (host === null || seenHosts.has(host)) return;
     seenHosts.add(host);
     endpoints.push({ scope, host, port });
-  }
+  });
   return endpoints;
 }
 

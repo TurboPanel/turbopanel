@@ -98,6 +98,7 @@ export {
   parseManagedDestroyGate,
   type PendingManagedDestroy,
 } from './destroy-gate.ts'
+import { firstSequential, forEachSequential } from '../../lib/sequential.ts'
 
 const APPLY_EXPIRES_MS = 600_000
 /** Polling cadence while awaiting primary apply before standby enqueue. */
@@ -131,14 +132,16 @@ export async function awaitCommandTerminal(
   const loadCommand = options?.loadCommand ?? getCommandRecord
   const sleep = options?.sleep ?? sleepMs
   const deadline = Date.now() + timeoutMs
-  while (Date.now() < deadline) {
+  const poll = async (): Promise<CommandRecord | null> => {
+    if (Date.now() >= deadline) return await loadCommand(db, commandId)
     const record = await loadCommand(db, commandId)
     if (record && TERMINAL_COMMAND_STATUSES.has(record.status)) {
       return record
     }
     await sleep(pollMs)
+    return poll()
   }
-  return await loadCommand(db, commandId)
+  return poll()
 }
 
 function isPrimaryMemberPayload(
@@ -460,9 +463,9 @@ async function buildCredentials(
   }
 
   const credentials: ManagedApplyCommandPayload['credentials'] = []
-  for (const row of rows) {
+  const failure = await firstSequential(rows, async (row) => {
     // Replication principals are attached separately when multi-member.
-    if (isManagedReplicationPrincipal(row.metadata)) continue
+    if (isManagedReplicationPrincipal(row.metadata)) return undefined
 
     const [passwordRow] = await db
       .select({ password: principal.password })
@@ -473,7 +476,7 @@ async function buildCredentials(
     if (
       typeof sealed !== 'string' || !sealed.startsWith(ENVELOPE_PREFIX_SECRET)
     ) {
-      return { kind: 'managed_credential_not_sealed' }
+      return { kind: 'managed_credential_not_sealed' } as const
     }
 
     const resealed = await resealSecretForDaemon(
@@ -495,7 +498,9 @@ async function buildCredentials(
     const privileges = principalPrivileges(row.metadata)
     if (privileges !== undefined) credential.privileges = privileges
     credentials.push(credential)
-  }
+    return undefined
+  })
+  if (failure) return failure
 
   return credentials
 }
@@ -1152,11 +1157,10 @@ async function buildPrimaryMonitorUsers(
   }
   const monitorUsers: NonNullable<ManagedApplyCommandPayload['monitorUsers']> =
     []
-  for (
-    const frontingServerId of [...frontingServerIds].toSorted((a, b) =>
-      a.localeCompare(b)
-    )
-  ) {
+  const sortedFrontingServerIds = [...frontingServerIds].toSorted((a, b) =>
+    a.localeCompare(b)
+  )
+  await forEachSequential(sortedFrontingServerIds, async (frontingServerId) => {
     const cred = await ensureServerMonitorCredential(
       db,
       dataEncryptionSecrets,
@@ -1171,7 +1175,7 @@ async function buildPrimaryMonitorUsers(
         cred.passwordSealed,
       ),
     })
-  }
+  })
   return { monitorUsers }
 }
 
@@ -1816,7 +1820,7 @@ async function finalizePreparedManagedApplyResults(
         .map((r) => r.serverId),
     )
     const { enqueueManagedHaReconcile } = await import('./ha-desired.ts')
-    for (const serverId of serverIds) {
+    await forEachSequential(serverIds, async (serverId) => {
       await enqueueManagedIngressReconcile(db, commandQueue, {
         serverId,
         actorType: 'user',
@@ -1831,7 +1835,7 @@ async function finalizePreparedManagedApplyResults(
         secretsConfig,
         dataEncryptionSecrets,
       })
-    }
+    })
   }
 
   return params.results

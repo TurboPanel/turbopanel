@@ -69,6 +69,7 @@ import {
   resolveCreateProjectType,
   stampCreateProjectMetadata,
 } from './routes-helpers.ts'
+import { forEachSequential } from '../../lib/sequential.ts'
 
 type DbTx = Parameters<Parameters<Db['transaction']>[0]>[0]
 
@@ -80,7 +81,7 @@ export async function scaffoldCatalogEnvironments(
   serverId?: string | null,
   defaultEnvironmentName?: string,
 ) {
-  for (const env of entry.environments) {
+  await forEachSequential(entry.environments, async (env) => {
     const displayName = isProductionEnvironmentName(env.displayName)
       ? (defaultEnvironmentName ?? env.displayName)
       : env.displayName
@@ -95,12 +96,12 @@ export async function scaffoldCatalogEnvironments(
       })
       .returning({ id: environment.id })
 
-    if (!env.variables) continue
+    if (!env.variables) return
 
     // One map per environment so sharedCredentialId only aliases within that env.
     const sharedCredentials = new Map<string, string>()
 
-    for (const v of env.variables) {
+    await forEachSequential(env.variables, async (v) => {
       const plaintext = resolveCatalogVariablePlaintext(v, sharedCredentials)
       const storedValue = v.isSecret
         ? await encryptSecret(dataEncryptionSecrets, plaintext)
@@ -111,8 +112,8 @@ export async function scaffoldCatalogEnvironments(
         value: storedValue,
         isSecret: v.isSecret,
       })
-    }
-  }
+    })
+  })
 }
 
 type ResolvedCreateProjectType = import('./routes-helpers.ts').ResolvedCreateProjectType

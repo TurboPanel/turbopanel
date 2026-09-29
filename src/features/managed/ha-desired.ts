@@ -62,6 +62,7 @@ import {
   SYSTEM_ORCHESTRATOR_COMPOSE_SERVICE_NAME,
   type SystemHierarchyIds,
 } from '../system/hierarchy.ts'
+import { forEachSequential } from '../../lib/sequential.ts'
 
 export const MANAGED_HA_RECONCILE_TTL_MS = 300_000
 
@@ -397,10 +398,10 @@ async function buildHaClustersForServer(
   const managedIds = [...new Set(localMembers.map((row) => row.managedId))]
     .toSorted((a, b) => a.localeCompare(b))
   const clusters: ManagedHaCluster[] = []
-  for (const managedId of managedIds) {
+  await forEachSequential(managedIds, async (managedId) => {
     const cluster = await buildHaClusterIfReady(db, params, managedId)
     if (cluster) clusters.push(cluster)
-  }
+  })
   return clusters
 }
 
@@ -587,7 +588,7 @@ export async function fanOutManagedHaReconcile(
   for (const row of memberIds) {
     if (serverHostsManagedHa([row])) serverIds.add(row.serverId)
   }
-  for (const serverId of serverIds) {
+  await forEachSequential(serverIds, async (serverId) => {
     const result = await enqueueManagedHaReconcile(db, commandQueue, {
       serverId,
       actorType: params.actorType,
@@ -601,5 +602,5 @@ export async function fanOutManagedHaReconcile(
         `ha reconcile enqueue failed managedId=${params.managedId} serverId=${serverId}`,
       )
     }
-  }
+  })
 }

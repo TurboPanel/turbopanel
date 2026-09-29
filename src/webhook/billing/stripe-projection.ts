@@ -57,6 +57,7 @@ import {
 import { mapProviderProductsToTierIds } from "../../features/tiers/tier-records.ts";
 import { resolveBillingGateway } from "../../features/billing/gateway.ts";
 import { cacheTierPrice } from "../../features/billing/tier-prices.ts";
+import { forEachSequential } from "../../lib/sequential.ts";
 
 export const STRIPE_PROJECTION_LOG_SCOPE = "billing-webhook";
 
@@ -493,9 +494,9 @@ export async function runPendingStripeProjections(
     limit: opts.limit ?? STRIPE_PROJECTION_RETRY_LIMIT,
   });
   let completed = 0;
-  for (const event of pending) {
+  await forEachSequential(pending, async (event) => {
     const settled = await projectAndSettleStripeEvent(deps, event);
     if (settled === "completed") completed += 1;
-  }
+  });
   return { attempted: pending.length, completed };
 }

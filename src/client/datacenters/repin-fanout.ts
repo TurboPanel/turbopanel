@@ -45,6 +45,7 @@ import type {
 } from "../../lib/secrets/secrets.ts";
 import { listManagedIdsForServer } from "../../features/bindings/resolve-endpoint.ts";
 import { fanOutDatacenterRoutingChange } from "./routing-fanout.ts";
+import { forEachSequential } from "../../lib/sequential.ts";
 
 /** Bounded batch for one repin fan-out sweep tick. */
 export const DATACENTER_REPIN_FANOUT_SWEEP_CAP = 25;
@@ -109,7 +110,7 @@ async function clearPendingFanout(
   pins: readonly PendingPinRow[],
   nowIso: string,
 ): Promise<void> {
-  for (const pin of pins) {
+  await forEachSequential(pins, async (pin) => {
     await db
       .update(ip)
       .set({
@@ -117,7 +118,7 @@ async function clearPendingFanout(
         updatedAt: nowIso,
       })
       .where(eq(ip.id, pin.id));
-  }
+  });
 }
 
 async function fanOutGroup(
@@ -134,11 +135,11 @@ async function fanOutGroup(
     .sort((a, b) => a.localeCompare(b));
   const listForServer = deps.listManagedIdsForServer ?? listManagedIdsForServer;
   const extraManagedIds = new Set<string>();
-  for (const serverId of serverIds) {
+  await forEachSequential(serverIds, async (serverId) => {
     for (const managedId of await listForServer(db, serverId)) {
       extraManagedIds.add(managedId);
     }
-  }
+  });
   const fanOut = deps.fanOut ?? fanOutDatacenterRoutingChange;
   await fanOut(db, commandQueue, {
     datacenterId: group.datacenterId,
@@ -174,7 +175,7 @@ export async function runDatacenterRepinFanoutSweep(
   if (pending.length === 0) return { processed: 0 };
 
   let processed = 0;
-  for (const group of groupPendingPins(pending)) {
+  await forEachSequential(groupPendingPins(pending), async (group) => {
     try {
       await fanOutGroup(db, commandQueue, group, params, deps);
     } catch (err) {
@@ -185,10 +186,10 @@ export async function runDatacenterRepinFanoutSweep(
           err instanceof Error ? err.message : String(err)
         }`,
       );
-      continue;
+      return;
     }
     await clearPendingFanout(db, group.pins, new Date().toISOString());
     processed += group.pins.length;
-  }
+  });
   return { processed };
 }
