@@ -238,6 +238,43 @@ async function restorePreviousPrincipalPassword(
     .where(eq(principal.id, principalId))
 }
 
+type ManagedDb = NonNullable<ReturnType<typeof getDb>>
+
+/** Shared route prologue: database, environment id, and `manage` authorization. */
+async function loadManagedAuthScope(c: Context<AppEnv>): Promise<
+  | Response
+  | {
+      db: ManagedDb
+      environmentId: string
+      auth: Exclude<Awaited<ReturnType<typeof authorizeManagedRequest>>, Response>
+    }
+> {
+  const db = getDb(c)
+  if (!db) return c.json({ error: 'Database unavailable' }, 503)
+  const environmentId = c.req.param('id') as string
+  const auth = await authorizeManagedRequest(c, db, environmentId, 'manage')
+  if (auth instanceof Response) return auth
+  return { db, environmentId, auth }
+}
+
+/** {@link loadManagedAuthScope} plus the managed context for the environment. */
+async function loadManagedContextScope(c: Context<AppEnv>) {
+  const scope = await loadManagedAuthScope(c)
+  if (scope instanceof Response) return scope
+  const ctx = await loadManagedContext(c, scope.db, scope.environmentId, scope.auth.organizationId)
+  if (ctx instanceof Response) return ctx
+  return { ...scope, ctx }
+}
+
+/** {@link loadManagedContextScope} plus the environment's managed row (404 when absent). */
+async function loadManagedRowScope(c: Context<AppEnv>) {
+  const scope = await loadManagedContextScope(c)
+  if (scope instanceof Response) return scope
+  const row = await findManagedForEnvironment(scope.db, scope.environmentId)
+  if (!row) return c.json({ error: 'Not found' }, 404)
+  return { ...scope, row }
+}
+
 /**
  * Gate a promote request behind replication-lag freshness unless the caller
  * explicitly forced it. Returns a 409 response when the gate blocks, null
@@ -1013,15 +1050,9 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
   }
 
   router.post('/environments/:id/managed', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const environmentId = c.req.param('id')
-    const auth = await authorizeManagedRequest(c, db, environmentId, 'manage')
-    if (auth instanceof Response) return auth
-
-    const ctx = await loadManagedContext(c, db, environmentId, auth.organizationId)
-    if (ctx instanceof Response) return ctx
+    const scope = await loadManagedContextScope(c)
+    if (scope instanceof Response) return scope
+    const { db, environmentId, auth, ctx } = scope
 
     const existing = await findManagedForEnvironment(db, environmentId)
     if (existing) {
@@ -1076,15 +1107,9 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
   })
 
   router.get('/environments/:id/managed', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const environmentId = c.req.param('id')
-    const auth = await authorizeManagedRequest(c, db, environmentId, 'manage')
-    if (auth instanceof Response) return auth
-
-    const ctx = await loadManagedContext(c, db, environmentId, auth.organizationId)
-    if (ctx instanceof Response) return ctx
+    const scope = await loadManagedContextScope(c)
+    if (scope instanceof Response) return scope
+    const { db, environmentId, ctx } = scope
 
     const row = await findManagedForEnvironment(db, environmentId)
     if (!row) {
@@ -1170,18 +1195,9 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
   })
 
   router.patch('/environments/:id/managed', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const environmentId = c.req.param('id')
-    const auth = await authorizeManagedRequest(c, db, environmentId, 'manage')
-    if (auth instanceof Response) return auth
-
-    const ctx = await loadManagedContext(c, db, environmentId, auth.organizationId)
-    if (ctx instanceof Response) return ctx
-
-    const row = await findManagedForEnvironment(db, environmentId)
-    if (!row) return c.json({ error: 'Not found' }, 404)
+    const scope = await loadManagedRowScope(c)
+    if (scope instanceof Response) return scope
+    const { db, auth, ctx, row } = scope
 
     const busy = assertManagedNotBusy(c, row.status)
     if (busy) return busy
@@ -1240,18 +1256,9 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
   })
 
   router.post('/environments/:id/managed/apply', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const environmentId = c.req.param('id')
-    const auth = await authorizeManagedRequest(c, db, environmentId, 'manage')
-    if (auth instanceof Response) return auth
-
-    const ctx = await loadManagedContext(c, db, environmentId, auth.organizationId)
-    if (ctx instanceof Response) return ctx
-
-    const row = await findManagedForEnvironment(db, environmentId)
-    if (!row) return c.json({ error: 'Not found' }, 404)
+    const scope = await loadManagedRowScope(c)
+    if (scope instanceof Response) return scope
+    const { db, auth, ctx, row } = scope
 
     const options = parseManagedRowOptions(ctx.spec, row.options)
     if (!options) return c.json({ error: 'Invalid managed options' }, 400)
@@ -1269,18 +1276,9 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
   })
 
   router.post('/environments/:id/managed/lifecycle', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const environmentId = c.req.param('id')
-    const auth = await authorizeManagedRequest(c, db, environmentId, 'manage')
-    if (auth instanceof Response) return auth
-
-    const ctx = await loadManagedContext(c, db, environmentId, auth.organizationId)
-    if (ctx instanceof Response) return ctx
-
-    const row = await findManagedForEnvironment(db, environmentId)
-    if (!row) return c.json({ error: 'Not found' }, 404)
+    const scope = await loadManagedRowScope(c)
+    if (scope instanceof Response) return scope
+    const { db, auth, ctx, row } = scope
 
     const busy = assertManagedNotBusy(c, row.status)
     if (busy) return busy
@@ -1322,18 +1320,9 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
   })
 
   router.delete('/environments/:id/managed', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const environmentId = c.req.param('id')
-    const auth = await authorizeManagedRequest(c, db, environmentId, 'manage')
-    if (auth instanceof Response) return auth
-
-    const ctx = await loadManagedContext(c, db, environmentId, auth.organizationId)
-    if (ctx instanceof Response) return ctx
-
-    const row = await findManagedForEnvironment(db, environmentId)
-    if (!row) return c.json({ error: 'Not found' }, 404)
+    const scope = await loadManagedRowScope(c)
+    if (scope instanceof Response) return scope
+    const { db, environmentId, auth, row } = scope
 
     const busy = assertManagedNotBusy(c, row.status)
     if (busy) return busy
@@ -1370,18 +1359,9 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
   })
 
   router.post('/environments/:id/managed/root-password', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const environmentId = c.req.param('id')
-    const auth = await authorizeManagedRequest(c, db, environmentId, 'manage')
-    if (auth instanceof Response) return auth
-
-    const ctx = await loadManagedContext(c, db, environmentId, auth.organizationId)
-    if (ctx instanceof Response) return ctx
-
-    const row = await findManagedForEnvironment(db, environmentId)
-    if (!row) return c.json({ error: 'Not found' }, 404)
+    const scope = await loadManagedRowScope(c)
+    if (scope instanceof Response) return scope
+    const { db, auth, ctx, row } = scope
 
     const residual = parseManagedResidual(row.metadata)
     const rootPrincipalId = residual.rootPrincipalId
@@ -1467,12 +1447,9 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
   })
 
   router.get('/environments/:id/managed/users', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const environmentId = c.req.param('id')
-    const auth = await authorizeManagedRequest(c, db, environmentId, 'manage')
-    if (auth instanceof Response) return auth
+    const scope = await loadManagedAuthScope(c)
+    if (scope instanceof Response) return scope
+    const { db, environmentId } = scope
 
     const row = await findManagedForEnvironment(db, environmentId)
     if (!row) return c.json({ users: [] })
@@ -1490,18 +1467,9 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
   })
 
   router.post('/environments/:id/managed/users', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const environmentId = c.req.param('id')
-    const auth = await authorizeManagedRequest(c, db, environmentId, 'manage')
-    if (auth instanceof Response) return auth
-
-    const ctx = await loadManagedContext(c, db, environmentId, auth.organizationId)
-    if (ctx instanceof Response) return ctx
-
-    const row = await findManagedForEnvironment(db, environmentId)
-    if (!row) return c.json({ error: 'Not found' }, 404)
+    const scope = await loadManagedRowScope(c)
+    if (scope instanceof Response) return scope
+    const { db, auth, ctx, row } = scope
 
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
@@ -1831,15 +1799,9 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
   })
 
   router.get('/environments/:id/managed/databases', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const environmentId = c.req.param('id')
-    const auth = await authorizeManagedRequest(c, db, environmentId, 'manage')
-    if (auth instanceof Response) return auth
-
-    const ctx = await loadManagedContext(c, db, environmentId, auth.organizationId)
-    if (ctx instanceof Response) return ctx
+    const scope = await loadManagedContextScope(c)
+    if (scope instanceof Response) return scope
+    const { db, environmentId, ctx } = scope
 
     const row = await findManagedForEnvironment(db, environmentId)
     if (!row) return c.json({ databases: [] })
@@ -1850,18 +1812,9 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
   })
 
   router.post('/environments/:id/managed/databases', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const environmentId = c.req.param('id')
-    const auth = await authorizeManagedRequest(c, db, environmentId, 'manage')
-    if (auth instanceof Response) return auth
-
-    const ctx = await loadManagedContext(c, db, environmentId, auth.organizationId)
-    if (ctx instanceof Response) return ctx
-
-    const row = await findManagedForEnvironment(db, environmentId)
-    if (!row) return c.json({ error: 'Not found' }, 404)
+    const scope = await loadManagedRowScope(c)
+    if (scope instanceof Response) return scope
+    const { db, auth, ctx, row } = scope
 
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
@@ -2032,12 +1985,9 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
   })
 
   router.get('/environments/:id/managed/members', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const environmentId = c.req.param('id')
-    const auth = await authorizeManagedRequest(c, db, environmentId, 'manage')
-    if (auth instanceof Response) return auth
+    const scope = await loadManagedAuthScope(c)
+    if (scope instanceof Response) return scope
+    const { db, environmentId } = scope
 
     const row = await findManagedForEnvironment(db, environmentId)
     if (!row) return c.json({ members: [] })
@@ -2047,18 +1997,9 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
   })
 
   router.post('/environments/:id/managed/members', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const environmentId = c.req.param('id')
-    const auth = await authorizeManagedRequest(c, db, environmentId, 'manage')
-    if (auth instanceof Response) return auth
-
-    const ctx = await loadManagedContext(c, db, environmentId, auth.organizationId)
-    if (ctx instanceof Response) return ctx
-
-    const row = await findManagedForEnvironment(db, environmentId)
-    if (!row) return c.json({ error: 'Not found' }, 404)
+    const scope = await loadManagedRowScope(c)
+    if (scope instanceof Response) return scope
+    const { db, auth, ctx, row } = scope
 
     const busy = assertManagedNotBusy(c, row.status)
     if (busy) return busy
@@ -2438,18 +2379,9 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
   })
 
   router.post('/environments/:id/managed/disaster-recovery/promote', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const environmentId = c.req.param('id')
-    const auth = await authorizeManagedRequest(c, db, environmentId, 'manage')
-    if (auth instanceof Response) return auth
-
-    const ctx = await loadManagedContext(c, db, environmentId, auth.organizationId)
-    if (ctx instanceof Response) return ctx
-
-    const row = await findManagedForEnvironment(db, environmentId)
-    if (!row) return c.json({ error: 'Not found' }, 404)
+    const scope = await loadManagedRowScope(c)
+    if (scope instanceof Response) return scope
+    const { db, auth, ctx, row } = scope
 
     const busy = assertManagedNotBusy(c, row.status)
     if (busy) return busy
@@ -2524,12 +2456,9 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
   })
 
   router.get('/environments/:id/managed/status', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const environmentId = c.req.param('id')
-    const auth = await authorizeManagedRequest(c, db, environmentId, 'manage')
-    if (auth instanceof Response) return auth
+    const scope = await loadManagedAuthScope(c)
+    if (scope instanceof Response) return scope
+    const { db, environmentId } = scope
 
     const row = await findManagedForEnvironment(db, environmentId)
     const residual = parseManagedResidual(row?.metadata)
@@ -2572,12 +2501,9 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
   })
 
   router.get('/environments/:id/managed/logs', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const environmentId = c.req.param('id')
-    const auth = await authorizeManagedRequest(c, db, environmentId, 'manage')
-    if (auth instanceof Response) return auth
+    const scope = await loadManagedAuthScope(c)
+    if (scope instanceof Response) return scope
+    const { db, environmentId } = scope
 
     const row = await findManagedForEnvironment(db, environmentId)
     if (!row) return c.json({ error: 'Not found' }, 404)
@@ -2596,15 +2522,9 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
   })
 
   router.get('/environments/:id/managed/backups', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const environmentId = c.req.param('id')
-    const auth = await authorizeManagedRequest(c, db, environmentId, 'manage')
-    if (auth instanceof Response) return auth
-
-    const ctx = await loadManagedContext(c, db, environmentId, auth.organizationId)
-    if (ctx instanceof Response) return ctx
+    const scope = await loadManagedContextScope(c)
+    if (scope instanceof Response) return scope
+    const { db, environmentId } = scope
 
     const row = await findManagedForEnvironment(db, environmentId)
     if (!row) return c.json({ backups: [] })
@@ -2614,18 +2534,9 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
   })
 
   router.post('/environments/:id/managed/backups', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const environmentId = c.req.param('id')
-    const auth = await authorizeManagedRequest(c, db, environmentId, 'manage')
-    if (auth instanceof Response) return auth
-
-    const ctx = await loadManagedContext(c, db, environmentId, auth.organizationId)
-    if (ctx instanceof Response) return ctx
-
-    const row = await findManagedForEnvironment(db, environmentId)
-    if (!row) return c.json({ error: 'Not found' }, 404)
+    const scope = await loadManagedRowScope(c)
+    if (scope instanceof Response) return scope
+    const { db, auth, ctx, row } = scope
 
     const options = parseManagedRowOptions(ctx.spec, row.options)
     if (!options) return c.json({ error: 'Invalid managed options' }, 400)
