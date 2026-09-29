@@ -13,10 +13,7 @@ import type {
   ManagedPromoteCommandPayload,
 } from '../../contracts/commands/schemas.ts'
 import type { ManagedEngineCode } from './types.ts'
-import {
-  createCommandRecord,
-  transitionCommand,
-} from '../commands/command-records.ts'
+import { createCommandRecord, transitionCommand } from '../commands/command-records.ts'
 import {
   findInFlightRecovery,
   findLatestRecovery,
@@ -37,19 +34,13 @@ import { fanOutManagedHaReconcile } from './ha-desired.ts'
 import { listManagedMembers, type ManagedMemberRow } from './members.ts'
 import { findManagedHaHierarchy } from '../system/hierarchy.ts'
 import { loadDatacenterMembershipsForServers } from '../net/datacenter-membership.ts'
-import {
-  isPrivateEndpointError,
-  resolvePrivateEndpoints,
-} from '../net/private-endpoint.ts'
+import { isPrivateEndpointError, resolvePrivateEndpoints } from '../net/private-endpoint.ts'
 import {
   automaticFailoverBlockCause,
   automaticFailoverBlockedReason,
   type HaMemberCandidateInput,
 } from './ha-policy.ts'
-import {
-  isAutomaticFailoverHealthy,
-  replicationFromMemberMetadata,
-} from './promote-lag.ts'
+import { isAutomaticFailoverHealthy, replicationFromMemberMetadata } from './promote-lag.ts'
 import {
   AUTOMATIC_FAILOVER_BLOCKED_ERROR,
   isTerminalRecoveryState,
@@ -58,6 +49,7 @@ import {
   type RecoveryRecord,
 } from './recovery.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
+import { forEachSequential } from '../../lib/sequential.ts'
 
 export type RecoveryEnqueueOk = {
   ok: true
@@ -116,7 +108,7 @@ async function enqueueCommand(
     expiresAtMs: number
     actor: RecoveryCommandActor
     metadata?: Record<string, unknown>
-  },
+  }
 ): Promise<{ commandId: string; serverId: string } | null> {
   const expiresAt = new Date(Date.now() + params.expiresAtMs).toISOString()
   const record = await createCommandRecord(db, {
@@ -146,10 +138,7 @@ async function enqueueCommand(
   return { commandId: record.id, serverId: params.serverId }
 }
 
-async function detectHaPresent(
-  db: Db,
-  members: readonly ManagedMemberRow[],
-): Promise<boolean> {
+async function detectHaPresent(db: Db, members: readonly ManagedMemberRow[]): Promise<boolean> {
   for (const member of members) {
     const hierarchy = await findManagedHaHierarchy(db, {
       serverId: member.serverId,
@@ -162,7 +151,7 @@ async function detectHaPresent(
 function candidateInputs(
   members: readonly ManagedMemberRow[],
   primary: ManagedMemberRow,
-  datacenterByServer: Map<string, Set<string>>,
+  datacenterByServer: Map<string, Set<string>>
 ): HaMemberCandidateInput[] {
   const primaryDcs = datacenterByServer.get(primary.serverId) ?? new Set()
   return members.map((member) => {
@@ -180,16 +169,14 @@ function candidateInputs(
       replicaClass: member.replicaClass,
       ordinal: member.ordinal,
       sameDatacenterAsPrimary: same,
-      healthy: isAutomaticFailoverHealthy(
-        replicationFromMemberMetadata(member.metadata),
-      ),
+      healthy: isAutomaticFailoverHealthy(replicationFromMemberMetadata(member.metadata)),
     }
   })
 }
 
 export async function loadDatacenterSets(
   db: Db,
-  members: readonly ManagedMemberRow[],
+  members: readonly ManagedMemberRow[]
 ): Promise<Map<string, Set<string>>> {
   const serverIds = [...new Set(members.map((row) => row.serverId))]
   const pins = await loadDatacenterMembershipsForServers(db, serverIds)
@@ -202,10 +189,7 @@ export async function loadDatacenterSets(
   return sets
 }
 
-export function firstDatacenterId(
-  sets: Map<string, Set<string>>,
-  serverId: string,
-): string | null {
+export function firstDatacenterId(sets: Map<string, Set<string>>, serverId: string): string | null {
   const ids = [...(sets.get(serverId) ?? [])].sort((a, b) => a.localeCompare(b))
   return ids[0] ?? null
 }
@@ -220,7 +204,7 @@ async function markNeedsResync(db: Db, memberId: string): Promise<void> {
 async function memberDialHost(
   db: Db,
   observerServerId: string,
-  member: ManagedMemberRow,
+  member: ManagedMemberRow
 ): Promise<string | undefined> {
   if (member.serverId === observerServerId) {
     const [row] = await db
@@ -233,8 +217,8 @@ async function memberDialHost(
           eq(managed.id, member.managedId),
           eq(container.serverId, observerServerId),
           eq(container.role, 'service'),
-          eq(container.ordinal, member.ordinal),
-        ),
+          eq(container.ordinal, member.ordinal)
+        )
       )
       .limit(1)
     return row?.containerName ?? undefined
@@ -258,7 +242,7 @@ async function failoverPayload(
     target: ManagedMemberRow
     engine: ManagedEngineCode
     phase: 'drain' | 'recover'
-  },
+  }
 ): Promise<ManagedHaFailoverCommandPayload> {
   const sourceHost = await memberDialHost(db, observerServerId, params.source)
   const targetHost = await memberDialHost(db, observerServerId, params.target)
@@ -269,13 +253,9 @@ async function failoverPayload(
     engine: params.engine,
     phase: params.phase,
     ...(sourceHost ? { sourceHost } : {}),
-    ...(params.source.privatePort !== null
-      ? { sourcePort: params.source.privatePort }
-      : {}),
+    ...(params.source.privatePort !== null ? { sourcePort: params.source.privatePort } : {}),
     ...(targetHost ? { targetHost } : {}),
-    ...(params.target.privatePort !== null
-      ? { targetPort: params.target.privatePort }
-      : {}),
+    ...(params.target.privatePort !== null ? { targetPort: params.target.privatePort } : {}),
   }
 }
 
@@ -289,7 +269,7 @@ async function enqueuePromoteOrRecover(
     target: ManagedMemberRow
     actor: RecoveryCommandActor
     haPresent: boolean
-  },
+  }
 ): Promise<RecoveryEnqueueResult> {
   const authority = OrchestratorManagedHaAuthority
   const metadata: RecoveryMetadata = {
@@ -372,12 +352,12 @@ async function enqueueFenceCommands(
     members: readonly ManagedMemberRow[]
     actor: RecoveryCommandActor
     haPresent: boolean
-  },
+  }
 ): Promise<RecoveryEnqueueResult> {
   const fenceCommandIds: string[] = []
   const drainServers = [...new Set(params.members.map((row) => row.serverId))]
-  for (const serverId of drainServers) {
-    if (!(await isServerConnected(db, serverId))) continue
+  await forEachSequential(drainServers, async (serverId) => {
+    if (!(await isServerConnected(db, serverId))) return
     const payload = await failoverPayload(db, serverId, {
       managedId: params.recovery.managedId,
       source: params.source,
@@ -394,7 +374,7 @@ async function enqueueFenceCommands(
       metadata: { recoveryId: params.recovery.id, fencePhase: 'drain' },
     })
     if (queued) fenceCommandIds.push(queued.commandId)
-  }
+  })
 
   const stopQueued = await enqueueCommand(db, commandQueue, {
     serverId: params.source.serverId,
@@ -552,7 +532,8 @@ export async function beginAutomaticFailover(params: {
   const inflight = await findInFlightRecovery(params.db, params.managedId)
   if (inflight) return inflight
 
-  const primary = params.members.find((row) => row.role === 'primary') ??
+  const primary =
+    params.members.find((row) => row.role === 'primary') ??
     params.members.find((row) => row.id === params.sourceMemberId)
   if (!primary) return null
 
@@ -613,10 +594,7 @@ export async function beginAutomaticFailover(params: {
   return findRecoveryById(params.db, result.recoveryId)
 }
 
-async function loadRecovery(
-  db: Db,
-  recoveryId: string,
-): Promise<RecoveryRecord | null> {
+async function loadRecovery(db: Db, recoveryId: string): Promise<RecoveryRecord | null> {
   const current = await findRecoveryById(db, recoveryId)
   if (!current || isTerminalRecoveryState(current.state)) return null
   return current
@@ -637,7 +615,7 @@ async function maybeAdvanceAfterFence(
     current: RecoveryRecord
     engine: ManagedEngineCode
     actor: RecoveryCommandActor
-  },
+  }
 ): Promise<void> {
   const pending = params.current.metadata.fenceCommandIds ?? []
   if (pending.length > 0) {
@@ -663,9 +641,7 @@ async function maybeAdvanceAfterFence(
   if (!commandQueue || advance.state !== 'promoting') return
 
   const members = await listManagedMembers(db, params.current.managedId)
-  const source = members.find((row) =>
-    row.id === params.current.sourcePrimaryMemberId
-  )
+  const source = members.find((row) => row.id === params.current.sourcePrimaryMemberId)
   const target = params.current.targetMemberId
     ? members.find((row) => row.id === params.current.targetMemberId)
     : null
@@ -694,21 +670,17 @@ export async function onFenceCommandSucceeded(
     fencePhase: 'drain' | 'stop'
     engine: ManagedEngineCode
     actor: RecoveryCommandActor
-  },
+  }
 ): Promise<void> {
   const current = await loadRecovery(db, params.recoveryId)
   if (!current) return
 
-  const pending = (current.metadata.fenceCommandIds ?? []).filter(
-    (id) => id !== params.commandId,
-  )
+  const pending = (current.metadata.fenceCommandIds ?? []).filter((id) => id !== params.commandId)
   const metadata: RecoveryMetadata = {
     ...current.metadata,
     fenceCommandIds: pending,
-    drainApplied: params.fencePhase === 'drain' ||
-      Boolean(current.metadata.drainApplied),
-    stopApplied: params.fencePhase === 'stop' ||
-      Boolean(current.metadata.stopApplied),
+    drainApplied: params.fencePhase === 'drain' || Boolean(current.metadata.drainApplied),
+    stopApplied: params.fencePhase === 'stop' || Boolean(current.metadata.stopApplied),
   }
   await maybeAdvanceAfterFence(db, commandQueue, {
     current: { ...current, metadata },
@@ -725,14 +697,12 @@ export async function onFenceCommandFailed(
     commandId: string
     engine: ManagedEngineCode
     actor: RecoveryCommandActor
-  },
+  }
 ): Promise<void> {
   const current = await loadRecovery(db, params.recoveryId)
   if (!current) return
 
-  const pending = (current.metadata.fenceCommandIds ?? []).filter(
-    (id) => id !== params.commandId,
-  )
+  const pending = (current.metadata.fenceCommandIds ?? []).filter((id) => id !== params.commandId)
   const metadata: RecoveryMetadata = {
     ...current.metadata,
     fenceCommandIds: pending,
@@ -744,16 +714,13 @@ export async function onFenceCommandFailed(
   })
 }
 
-async function reclassifyAfterDisasterRecovery(
-  db: Db,
-  record: RecoveryRecord,
-): Promise<void> {
+async function reclassifyAfterDisasterRecovery(db: Db, record: RecoveryRecord): Promise<void> {
   const members = await listManagedMembers(db, record.managedId)
   const newPrimary = members.find((row) => row.id === record.targetMemberId)
   if (!newPrimary) return
   const dcSets = await loadDatacenterSets(db, members)
   const primaryDcs = dcSets.get(newPrimary.serverId) ?? new Set()
-  for (const member of members) {
+  await forEachSequential(members, async (member) => {
     const dcs = dcSets.get(member.serverId) ?? new Set()
     let same = false
     for (const id of dcs) {
@@ -762,18 +729,17 @@ async function reclassifyAfterDisasterRecovery(
         break
       }
     }
-    const nextClass = OrchestratorManagedHaAuthority
-      .replicaClassAfterDisasterRecovery({
-        role: member.role,
-        replicaClass: member.replicaClass,
-        sameDatacenterAsNewPrimary: same,
-      })
-    if (nextClass === null || nextClass === member.replicaClass) continue
+    const nextClass = OrchestratorManagedHaAuthority.replicaClassAfterDisasterRecovery({
+      role: member.role,
+      replicaClass: member.replicaClass,
+      sameDatacenterAsNewPrimary: same,
+    })
+    if (nextClass === null || nextClass === member.replicaClass) return
     await db
       .update(replica)
       .set({ replicaClass: nextClass, updatedAt: new Date().toISOString() })
       .where(eq(replica.id, member.id))
-  }
+  })
 }
 
 export async function onPromoteSucceeded(
@@ -784,7 +750,7 @@ export async function onPromoteSucceeded(
     dataEncryptionSecrets?: DerivedSecretsConfig
   },
   recoveryId: string,
-  actorId: string,
+  actorId: string
 ): Promise<void> {
   const record = await findRecoveryById(db, recoveryId)
   if (!record || isTerminalRecoveryState(record.state)) return
@@ -799,12 +765,8 @@ export async function onPromoteSucceeded(
     metadata: afterPromote.metadata,
   })
 
-  if (
-    commandQueue && secrets.secretsConfig && secrets.dataEncryptionSecrets
-  ) {
-    const { fanOutManagedIngressReconcile } = await import(
-      './ingress-desired.ts'
-    )
+  if (commandQueue && secrets.secretsConfig && secrets.dataEncryptionSecrets) {
+    const { fanOutManagedIngressReconcile } = await import('./ingress-desired.ts')
     await fanOutManagedIngressReconcile(db, commandQueue, {
       managedId: record.managedId,
       actorType: 'system',
@@ -834,24 +796,21 @@ export async function onPromoteSucceeded(
   })
 }
 
-export async function onRecoveryCommandFailed(
-  db: Db,
-  recoveryId: string,
-): Promise<void> {
+export async function onRecoveryCommandFailed(db: Db, recoveryId: string): Promise<void> {
   const latest = await findRecoveryById(db, recoveryId)
   if (!latest || isTerminalRecoveryState(latest.state)) return
   await updateRecovery(db, recoveryId, { state: 'failed' })
 }
 
 export function recoveryIdFromCommandMetadata(
-  metadata: Record<string, unknown> | null | undefined,
+  metadata: Record<string, unknown> | null | undefined
 ): string | null {
   const value = metadata?.recoveryId
   return typeof value === 'string' && value.length > 0 ? value : null
 }
 
 export function fencePhaseFromCommandMetadata(
-  metadata: Record<string, unknown> | null | undefined,
+  metadata: Record<string, unknown> | null | undefined
 ): 'drain' | 'stop' | null {
   const value = metadata?.fencePhase
   if (value === 'drain' || value === 'stop') return value
@@ -860,12 +819,6 @@ export function fencePhaseFromCommandMetadata(
 
 export { isServerConnected }
 
-export function logRecoveryAdvanceFailure(
-  commandId: string,
-  message: string,
-): void {
-  compatLogWarn(
-    'managed-ha',
-    `recovery advance failed for command ${commandId}: ${message}`,
-  )
+export function logRecoveryAdvanceFailure(commandId: string, message: string): void {
+  compatLogWarn('managed-ha', `recovery advance failed for command ${commandId}: ${message}`)
 }

@@ -17,46 +17,44 @@
  * and decide whether a failure is logged or propagated.
  */
 
-import type { Db } from "../../db/connection.ts";
-import type { CommandQueue } from "../../features/commands/queue.ts";
-import type {
-  DerivedSecretsConfig,
-  SecretsConfig,
-} from "../../lib/secrets/secrets.ts";
-import { reconcileFabricMembership } from "../../features/fabric/enqueue.ts";
-import { listManagedIdsForDatacenter } from "../../features/bindings/resolve-endpoint.ts";
-import { fanOutManagedIngressReconcile } from "../../features/managed/ingress-desired.ts";
+import type { Db } from '../../db/connection.ts'
+import type { CommandQueue } from '../../features/commands/queue.ts'
+import type { DerivedSecretsConfig, SecretsConfig } from '../../lib/secrets/secrets.ts'
+import { reconcileFabricMembership } from '../../features/fabric/enqueue.ts'
+import { listManagedIdsForDatacenter } from '../../features/bindings/resolve-endpoint.ts'
+import { fanOutManagedIngressReconcile } from '../../features/managed/ingress-desired.ts'
+import { forEachSequential } from '../../lib/sequential.ts'
 
 export type DatacenterRoutingFanoutParams = Readonly<{
-  datacenterId: string;
-  organizationId: string;
-  actorType: "user" | "system";
-  actorId: string;
-  secretsConfig: SecretsConfig;
-  dataEncryptionSecrets: DerivedSecretsConfig;
+  datacenterId: string
+  organizationId: string
+  actorType: 'user' | 'system'
+  actorId: string
+  secretsConfig: SecretsConfig
+  dataEncryptionSecrets: DerivedSecretsConfig
   /** Clusters to re-converge beyond those pinned into the datacenter. */
-  extraManagedIds?: readonly string[];
-}>;
+  extraManagedIds?: readonly string[]
+}>
 
 export async function fanOutDatacenterRoutingChange(
   db: Db,
   commandQueue: CommandQueue,
-  params: DatacenterRoutingFanoutParams,
+  params: DatacenterRoutingFanoutParams
 ): Promise<{ managedIds: string[] }> {
-  const pinned = await listManagedIdsForDatacenter(db, params.datacenterId);
-  const managedIds = [
-    ...new Set([...pinned, ...(params.extraManagedIds ?? [])]),
-  ].sort((a, b) => a.localeCompare(b));
+  const pinned = await listManagedIdsForDatacenter(db, params.datacenterId)
+  const managedIds = [...new Set([...pinned, ...(params.extraManagedIds ?? [])])].sort((a, b) =>
+    a.localeCompare(b)
+  )
 
-  for (const managedId of managedIds) {
+  await forEachSequential(managedIds, async (managedId) => {
     await fanOutManagedIngressReconcile(db, commandQueue, {
       managedId,
       actorType: params.actorType,
       actorId: params.actorId,
       secretsConfig: params.secretsConfig,
       dataEncryptionSecrets: params.dataEncryptionSecrets,
-    });
-  }
+    })
+  })
   await reconcileFabricMembership({
     db,
     commandQueue,
@@ -65,6 +63,6 @@ export async function fanOutDatacenterRoutingChange(
     organizationId: params.organizationId,
     secretsConfig: params.secretsConfig,
     dataEncryptionSecrets: params.dataEncryptionSecrets,
-  });
-  return { managedIds };
+  })
+  return { managedIds }
 }

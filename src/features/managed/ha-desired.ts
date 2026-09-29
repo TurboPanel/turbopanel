@@ -13,10 +13,7 @@ import {
   resealSecretForDaemon,
 } from '../../lib/secrets/data-encryption.ts'
 import type { DerivedSecretsConfig, SecretsConfig } from '../../lib/secrets/secrets.ts'
-import {
-  getServerDaemonStateByServerId,
-  isDaemonKeyActive,
-} from '../servers/server-identity-db.ts'
+import { getServerDaemonStateByServerId, isDaemonKeyActive } from '../servers/server-identity-db.ts'
 import type { CommandEnvelope } from '../commands/envelope.ts'
 import type { CommandQueue } from '../commands/queue.ts'
 import type {
@@ -26,16 +23,10 @@ import type {
   ManagedHaRaftPeer,
   ManagedHaReconcileCommandPayload,
 } from '../../contracts/commands/schemas.ts'
-import {
-  createCommandRecord,
-  transitionCommand,
-} from '../commands/command-records.ts'
+import { createCommandRecord, transitionCommand } from '../commands/command-records.ts'
 import { ensureOrganizationManagedNetwork } from '../fabric/fabric-records.ts'
 import { container, managed, replica, principal, server, service } from '../../db/schema.ts'
-import {
-  MANAGED_HA_HTTP_PORT,
-  MANAGED_HA_RAFT_PORT,
-} from './ha-ports.ts'
+import { MANAGED_HA_HTTP_PORT, MANAGED_HA_RAFT_PORT } from './ha-ports.ts'
 import {
   orchestratorPromotionRule,
   pickHaAdvertiseAddress,
@@ -52,16 +43,14 @@ import {
 import { compatLogWarn } from '../../lib/log-compat.ts'
 import { isManagedReplicationPrincipal } from './ingress-desired-pure.ts'
 import { listManagedMembers, type ManagedMemberRow } from './members.ts'
-import {
-  buildManagedOrgTlsMaterial,
-  ensureActiveOrganizationCa,
-} from './apply-prepare.ts'
+import { buildManagedOrgTlsMaterial, ensureActiveOrganizationCa } from './apply-prepare.ts'
 import {
   ensureManagedHaHierarchy,
   findManagedHaHierarchy,
   SYSTEM_ORCHESTRATOR_COMPOSE_SERVICE_NAME,
   type SystemHierarchyIds,
 } from '../system/hierarchy.ts'
+import { forEachSequential } from '../../lib/sequential.ts'
 
 export const MANAGED_HA_RECONCILE_TTL_MS = 300_000
 
@@ -72,7 +61,7 @@ export type EnqueueManagedHaReconcileResult =
 function haTeardownPayload(
   serverId: string,
   identity: ManagedHaReconcileCommandPayload['identity'],
-  managedNetwork: string,
+  managedNetwork: string
 ): ManagedHaReconcileCommandPayload {
   return {
     serverId,
@@ -84,14 +73,8 @@ function haTeardownPayload(
   }
 }
 
-async function loadHaMembersOnServer(
-  db: Db,
-  serverId: string,
-): Promise<ManagedMemberRow[]> {
-  const rows = await db
-    .select()
-    .from(replica)
-    .where(eq(replica.serverId, serverId))
+async function loadHaMembersOnServer(db: Db, serverId: string): Promise<ManagedMemberRow[]> {
+  const rows = await db.select().from(replica).where(eq(replica.serverId, serverId))
   return rows.map((row) => ({
     id: row.id,
     managedId: row.managedId,
@@ -115,7 +98,7 @@ async function resealReplicationPassword(
   secretsConfig: SecretsConfig,
   dataEncryptionSecrets: DerivedSecretsConfig,
   managedId: string,
-  serverId: string,
+  serverId: string
 ): Promise<{ username: string; envelope: string } | null> {
   const principals = await db
     .select({
@@ -136,7 +119,7 @@ async function resealReplicationPassword(
     secretsConfig,
     dataEncryptionSecrets,
     { serverId, keyId: daemonState.key.id },
-    repl.password,
+    repl.password
   )
   return { username: repl.username, envelope: resealed }
 }
@@ -144,7 +127,7 @@ async function resealReplicationPassword(
 async function loadLocalEngineContainerNames(
   db: Db,
   managedId: string,
-  serverId: string,
+  serverId: string
 ): Promise<Map<number, string>> {
   const rows = await db
     .select({
@@ -158,8 +141,8 @@ async function loadLocalEngineContainerNames(
       and(
         eq(managed.id, managedId),
         eq(container.serverId, serverId),
-        eq(container.role, 'service'),
-      ),
+        eq(container.role, 'service')
+      )
     )
   const names = new Map<number, string>()
   for (const row of rows) {
@@ -187,7 +170,7 @@ export function haClusterMemberRole(role: string): ManagedHaClusterMember['role'
 }
 
 export function haClusterReplicaClass(
-  replicaClass: string | null,
+  replicaClass: string | null
 ): ManagedHaClusterMember['replicaClass'] {
   if (replicaClass === 'read' || replicaClass === 'failover') return replicaClass
   return null
@@ -196,7 +179,7 @@ export function haClusterReplicaClass(
 function loadHaRemoteEndpoints(
   db: Db,
   thisServerId: string,
-  members: readonly ManagedMemberRow[],
+  members: readonly ManagedMemberRow[]
 ): Promise<HaEndpointMap> {
   const remoteIds = members
     .filter((member) => member.serverId !== thisServerId)
@@ -212,7 +195,7 @@ function loadHaRemoteEndpoints(
 export function resolveLocalHaMemberDial(
   member: ManagedMemberRow,
   localNames: ReadonlyMap<number, string>,
-  defaultPort: number,
+  defaultPort: number
 ): HaMemberDial {
   const name = localNames.get(member.ordinal)
   return {
@@ -224,7 +207,7 @@ export function resolveLocalHaMemberDial(
 
 export function resolveRemoteHaMemberDial(
   member: ManagedMemberRow,
-  endpoints: HaEndpointMap,
+  endpoints: HaEndpointMap
 ): HaMemberDial | null {
   const resolved = endpoints.get(member.serverId)
   if (!resolved || isPrivateEndpointError(resolved)) return null
@@ -237,7 +220,7 @@ export function resolveHaMemberDial(
   thisServerId: string,
   localNames: ReadonlyMap<number, string>,
   defaultPort: number,
-  endpoints: HaEndpointMap,
+  endpoints: HaEndpointMap
 ): HaMemberDial | null {
   if (member.serverId === thisServerId) {
     return resolveLocalHaMemberDial(member, localNames, defaultPort)
@@ -247,7 +230,7 @@ export function resolveHaMemberDial(
 
 export function toHaClusterMember(
   member: ManagedMemberRow,
-  dial: HaMemberDial,
+  dial: HaMemberDial
 ): ManagedHaClusterMember {
   return {
     memberId: member.id,
@@ -264,7 +247,7 @@ async function buildHaClusterMembers(
   db: Db,
   thisServerId: string,
   members: readonly ManagedMemberRow[],
-  defaultPort: number,
+  defaultPort: number
 ): Promise<ManagedHaClusterMember[]> {
   const managedId = members[0]?.managedId
   const localNames = managedId
@@ -274,13 +257,7 @@ async function buildHaClusterMembers(
 
   const result: ManagedHaClusterMember[] = []
   for (const member of members) {
-    const dial = resolveHaMemberDial(
-      member,
-      thisServerId,
-      localNames,
-      defaultPort,
-      endpoints,
-    )
+    const dial = resolveHaMemberDial(member, thisServerId, localNames, defaultPort, endpoints)
     if (!dial) continue
     result.push(toHaClusterMember(member, dial))
   }
@@ -290,7 +267,7 @@ async function buildHaClusterMembers(
 async function buildRaftConfig(
   db: Db,
   organizationId: string,
-  thisServerId: string,
+  thisServerId: string
 ): Promise<ManagedHaRaftConfig | null> {
   const orgMembers = await db
     .select({
@@ -345,7 +322,7 @@ async function buildRaftConfig(
 
 async function loadManagedEngineSpecById(
   db: Db,
-  managedId: string,
+  managedId: string
 ): Promise<ManagedEngineSpec | null> {
   const [managedRow] = await db
     .select({ engine: managed.engine })
@@ -358,7 +335,7 @@ async function loadManagedEngineSpecById(
 async function buildHaClusterIfReady(
   db: Db,
   params: HaSecretsParams,
-  managedId: string,
+  managedId: string
 ): Promise<ManagedHaCluster | null> {
   const members = await listManagedMembers(db, managedId)
   if (members.length < 2) return null
@@ -369,15 +346,10 @@ async function buildHaClusterIfReady(
     params.secretsConfig,
     params.dataEncryptionSecrets,
     managedId,
-    params.serverId,
+    params.serverId
   )
   if (!repl) return null
-  const haMembers = await buildHaClusterMembers(
-    db,
-    params.serverId,
-    members,
-    spec.defaultPort,
-  )
+  const haMembers = await buildHaClusterMembers(db, params.serverId, members, spec.defaultPort)
   if (haMembers.length < 2) return null
   return {
     managedId,
@@ -392,21 +364,22 @@ async function buildHaClusterIfReady(
 async function buildHaClustersForServer(
   db: Db,
   params: HaSecretsParams,
-  localMembers: readonly ManagedMemberRow[],
+  localMembers: readonly ManagedMemberRow[]
 ): Promise<ManagedHaCluster[]> {
-  const managedIds = [...new Set(localMembers.map((row) => row.managedId))]
-    .toSorted((a, b) => a.localeCompare(b))
+  const managedIds = [...new Set(localMembers.map((row) => row.managedId))].toSorted((a, b) =>
+    a.localeCompare(b)
+  )
   const clusters: ManagedHaCluster[] = []
-  for (const managedId of managedIds) {
+  await forEachSequential(managedIds, async (managedId) => {
     const cluster = await buildHaClusterIfReady(db, params, managedId)
     if (cluster) clusters.push(cluster)
-  }
+  })
   return clusters
 }
 
 export function haIdentity(
   serviceId: string,
-  containerName: string,
+  containerName: string
 ): ManagedHaReconcileCommandPayload['identity'] {
   return {
     serviceId,
@@ -418,19 +391,19 @@ export function haIdentity(
 export function haTeardownIfPresent(
   serverId: string,
   existing: SystemHierarchyIds | null,
-  managedNetwork: string,
+  managedNetwork: string
 ): ManagedHaReconcileCommandPayload | null {
   if (!existing) return null
   return haTeardownPayload(
     serverId,
     haIdentity(existing.serviceId, existing.containerName ?? existing.serviceId),
-    managedNetwork,
+    managedNetwork
   )
 }
 
 export async function buildManagedHaReconcilePayload(
   db: Db,
-  params: HaSecretsParams,
+  params: HaSecretsParams
 ): Promise<ManagedHaReconcileCommandPayload | null> {
   const [serverRow] = await db
     .select({ organizationId: server.organizationId })
@@ -453,11 +426,7 @@ export async function buildManagedHaReconcilePayload(
 
   if (!hostsHa) {
     if (!existing) return null
-    return haTeardownIfPresent(
-      params.serverId,
-      existing,
-      await resolveManagedNetworkName(),
-    )
+    return haTeardownIfPresent(params.serverId, existing, await resolveManagedNetworkName())
   }
 
   const hierarchy = await ensureManagedHaHierarchy(db, {
@@ -469,11 +438,7 @@ export async function buildManagedHaReconcilePayload(
   const raft = await buildRaftConfig(db, organizationId, params.serverId)
   if (!raft) {
     return {
-      ...haTeardownPayload(
-        params.serverId,
-        identity,
-        await resolveManagedNetworkName(),
-      ),
+      ...haTeardownPayload(params.serverId, identity, await resolveManagedNetworkName()),
       desired: 'absent',
     }
   }
@@ -482,15 +447,11 @@ export async function buildManagedHaReconcilePayload(
 
   const daemonState = await getServerDaemonStateByServerId(db, params.serverId)
   if (!daemonState || !isDaemonKeyActive(daemonState.key)) return null
-  const ca = await ensureActiveOrganizationCa(
-    db,
-    params.dataEncryptionSecrets,
-    organizationId,
-  )
+  const ca = await ensureActiveOrganizationCa(db, params.dataEncryptionSecrets, organizationId)
   if ('kind' in ca) return null
   const caPrivateKeyPem = await decryptSecret(
     params.dataEncryptionSecrets,
-    ca.signer.privateKeyPemSealed,
+    ca.signer.privateKeyPemSealed
   )
   const orgTlsMaterial = await buildManagedOrgTlsMaterial(
     params.secretsConfig,
@@ -503,7 +464,7 @@ export async function buildManagedHaReconcilePayload(
     },
     `ha-${params.serverId}`,
     [identity.containerName],
-    [raft.advertiseAddress],
+    [raft.advertiseAddress]
   )
 
   return {
@@ -526,7 +487,7 @@ export async function enqueueManagedHaReconcile(
     actorId: string
     secretsConfig: SecretsConfig
     dataEncryptionSecrets: DerivedSecretsConfig
-  }>,
+  }>
 ): Promise<EnqueueManagedHaReconcileResult> {
   const built = await buildManagedHaReconcilePayload(db, {
     serverId: params.serverId,
@@ -573,7 +534,7 @@ export async function fanOutManagedHaReconcile(
     secretsConfig: SecretsConfig
     dataEncryptionSecrets: DerivedSecretsConfig
     extraServerIds?: readonly string[]
-  }>,
+  }>
 ): Promise<void> {
   const memberIds = await db
     .select({
@@ -587,7 +548,7 @@ export async function fanOutManagedHaReconcile(
   for (const row of memberIds) {
     if (serverHostsManagedHa([row])) serverIds.add(row.serverId)
   }
-  for (const serverId of serverIds) {
+  await forEachSequential(serverIds, async (serverId) => {
     const result = await enqueueManagedHaReconcile(db, commandQueue, {
       serverId,
       actorType: params.actorType,
@@ -598,8 +559,8 @@ export async function fanOutManagedHaReconcile(
     if (!result.ok && result.reason === 'enqueue_failed') {
       compatLogWarn(
         'managed-ha',
-        `ha reconcile enqueue failed managedId=${params.managedId} serverId=${serverId}`,
+        `ha reconcile enqueue failed managedId=${params.managedId} serverId=${serverId}`
       )
     }
-  }
+  })
 }

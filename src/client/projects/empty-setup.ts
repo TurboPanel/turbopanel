@@ -24,10 +24,10 @@ import {
   type CatalogVariable,
   type CreateProjectType,
 } from './catalog/index.ts'
+import { forEachSequential } from '../../lib/sequential.ts'
 
 export const DEFAULT_PRODUCTION_ENVIRONMENT_NAME = DEFAULT_ENVIRONMENT_NAME
-export const DEFAULT_PRODUCTION_ENVIRONMENT_DESCRIPTION =
-  'Default environment'
+export const DEFAULT_PRODUCTION_ENVIRONMENT_DESCRIPTION = 'Default environment'
 
 type DbTx = Parameters<Parameters<Db['transaction']>[0]>[0]
 
@@ -37,28 +37,20 @@ export type ProjectTypeMetadata = {
 }
 
 /** True when the project has not yet chosen compose / template / managed. */
-export function projectNeedsSetup(
-  metadata: ProjectTypeMetadata | null | undefined,
-): boolean {
+export function projectNeedsSetup(metadata: ProjectTypeMetadata | null | undefined): boolean {
   const type = metadata?.type
   return type == null || type === '' || type === 'empty'
 }
 
-export function isConfiguredProjectType(
-  value: string,
-): value is CreateProjectType {
-  return (
-    value === 'docker-compose' || value === 'template' || value === 'managed'
-  )
+export function isConfiguredProjectType(value: string): value is CreateProjectType {
+  return value === 'docker-compose' || value === 'template' || value === 'managed'
 }
 
 function normalizeEnvName(name: string | null | undefined): string {
   return (name ?? '').trim().toLowerCase()
 }
 
-export function isProductionEnvironmentName(
-  name: string | null | undefined,
-): boolean {
+export function isProductionEnvironmentName(name: string | null | undefined): boolean {
   return normalizeEnvName(name) === 'production'
 }
 
@@ -66,10 +58,7 @@ export function isProductionEnvironmentName(
  * Resolve the org-wide default environment display name used when scaffolding
  * new projects. Falls back to the platform constant when the org row is missing.
  */
-export async function loadDefaultEnvironmentName(
-  db: Db,
-  organizationId: string,
-): Promise<string> {
+export async function loadDefaultEnvironmentName(db: Db, organizationId: string): Promise<string> {
   const [orgRow] = await db
     .select({ options: organization.options })
     .from(organization)
@@ -92,10 +81,9 @@ export async function insertEmptyProject(
     organizationId: string
     serverId: string | null
     defaultEnvironmentName?: string
-  },
+  }
 ): Promise<string> {
-  const envName =
-    fields.defaultEnvironmentName ?? DEFAULT_PRODUCTION_ENVIRONMENT_NAME
+  const envName = fields.defaultEnvironmentName ?? DEFAULT_PRODUCTION_ENVIRONMENT_NAME
   const [inserted] = await tx
     .insert(project)
     .values({
@@ -122,10 +110,8 @@ export async function insertEmptyProject(
 async function findProductionEnvironment(
   tx: DbTx,
   projectId: string,
-  defaultEnvironmentName: string,
-): Promise<
-  { id: string; name: string | null; serverId: string | null } | null
-> {
+  defaultEnvironmentName: string
+): Promise<{ id: string; name: string | null; serverId: string | null } | null> {
   const rows = await tx
     .select({
       id: environment.id,
@@ -138,15 +124,11 @@ async function findProductionEnvironment(
 
   // Prefer a literal Production row so catalog production config never lands
   // on a non-production environment that merely matches the org default.
-  const production = rows.find((row) =>
-    isProductionEnvironmentName(row.name)
-  )
+  const production = rows.find((row) => isProductionEnvironmentName(row.name))
   if (production) return production
 
   const normalizedDefault = normalizeEnvName(defaultEnvironmentName)
-  const exactDefault = rows.find(
-    (row) => normalizeEnvName(row.name) === normalizedDefault,
-  )
+  const exactDefault = rows.find((row) => normalizeEnvName(row.name) === normalizedDefault)
   if (exactDefault) return exactDefault
 
   // Empty projects scaffold one default environment under the then-current
@@ -157,7 +139,7 @@ async function findProductionEnvironment(
   }
 
   const scaffolded = rows.find(
-    (row) => row.description === DEFAULT_PRODUCTION_ENVIRONMENT_DESCRIPTION,
+    (row) => row.description === DEFAULT_PRODUCTION_ENVIRONMENT_DESCRIPTION
   )
   return scaffolded ?? null
 }
@@ -174,15 +156,10 @@ export async function ensureProductionEnvironment(
   tx: DbTx,
   projectId: string,
   serverId?: string | null,
-  defaultEnvironmentName?: string,
+  defaultEnvironmentName?: string
 ): Promise<string> {
-  const effectiveName =
-    defaultEnvironmentName ?? DEFAULT_PRODUCTION_ENVIRONMENT_NAME
-  const existing = await findProductionEnvironment(
-    tx,
-    projectId,
-    effectiveName,
-  )
+  const effectiveName = defaultEnvironmentName ?? DEFAULT_PRODUCTION_ENVIRONMENT_NAME
+  const existing = await findProductionEnvironment(tx, projectId, effectiveName)
   if (existing) {
     // Normalize casing only when the existing name is a case variant of the
     // effective name — never clobber a custom default or a pre-existing
@@ -190,8 +167,7 @@ export async function ensureProductionEnvironment(
     const shouldNormalizeName =
       existing.name !== effectiveName &&
       normalizeEnvName(existing.name) === normalizeEnvName(effectiveName)
-    const shouldPinServer =
-      serverId != null && existing.serverId !== serverId
+    const shouldPinServer = serverId != null && existing.serverId !== serverId
     if (shouldNormalizeName || shouldPinServer) {
       await tx
         .update(environment)
@@ -220,9 +196,8 @@ export async function ensureProductionEnvironment(
 
 function resolveCatalogProductionEnv(entry: CatalogEntry) {
   return (
-    entry.environments.find((env) =>
-      isProductionEnvironmentName(env.displayName)
-    ) ?? entry.environments[0]
+    entry.environments.find((env) => isProductionEnvironmentName(env.displayName)) ??
+    entry.environments[0]
   )
 }
 
@@ -230,7 +205,7 @@ async function applyCatalogVariablesToEnvironment(
   tx: DbTx,
   environmentId: string,
   entry: CatalogEntry,
-  dataEncryptionSecrets: DerivedSecretsConfig,
+  dataEncryptionSecrets: DerivedSecretsConfig
 ): Promise<void> {
   const catalogEnv = resolveCatalogProductionEnv(entry)
   if (!catalogEnv?.variables?.length) return
@@ -242,8 +217,8 @@ async function applyCatalogVariablesToEnvironment(
   const existingKeys = new Set(existing.map((row) => row.key))
 
   const sharedCredentials = new Map<string, string>()
-  for (const v of catalogEnv.variables) {
-    if (existingKeys.has(v.key)) continue
+  await forEachSequential(catalogEnv.variables, async (v) => {
+    if (existingKeys.has(v.key)) return
     const plaintext = resolveCatalogVariablePlaintext(v, sharedCredentials)
     const storedValue = v.isSecret
       ? await encryptSecret(dataEncryptionSecrets, plaintext)
@@ -254,12 +229,10 @@ async function applyCatalogVariablesToEnvironment(
       value: storedValue,
       isSecret: v.isSecret,
     })
-  }
+  })
 }
 
-function catalogConfigureOptions(
-  entry: CatalogEntry,
-): Record<string, unknown> {
+function catalogConfigureOptions(entry: CatalogEntry): Record<string, unknown> {
   if (entry.options) {
     return { compose: entry.compose, ...entry.options }
   }
@@ -267,13 +240,12 @@ function catalogConfigureOptions(
 }
 
 export type ConfigureProjectResult =
-  | { ok: true; alreadyConfigured: boolean }
-  | { ok: false; error: string; status: 400 | 409 | 503 }
+  { ok: true; alreadyConfigured: boolean } | { ok: false; error: string; status: 400 | 409 | 503 }
 
 function alreadyConfiguredResult(
   metadata: ProjectTypeMetadata,
   projectType: CreateProjectType,
-  catalogCode?: string,
+  catalogCode?: string
 ): ConfigureProjectResult {
   if (metadata.type !== projectType) {
     return {
@@ -282,10 +254,7 @@ function alreadyConfiguredResult(
       status: 409,
     }
   }
-  if (
-    (projectType === 'template' || projectType === 'managed') &&
-    metadata.code !== catalogCode
-  ) {
+  if ((projectType === 'template' || projectType === 'managed') && metadata.code !== catalogCode) {
     return {
       ok: false,
       error: 'Project type already configured',
@@ -298,7 +267,7 @@ function alreadyConfiguredResult(
 async function applyCatalogEnvCompose(
   tx: DbTx,
   productionId: string,
-  entry: CatalogEntry,
+  entry: CatalogEntry
 ): Promise<void> {
   const catalogEnv = resolveCatalogProductionEnv(entry)
   if (!catalogEnv?.compose) return
@@ -306,9 +275,7 @@ async function applyCatalogEnvCompose(
     .update(environment)
     .set({
       options: { compose: catalogEnv.compose },
-      description:
-        catalogEnv.description ??
-        DEFAULT_PRODUCTION_ENVIRONMENT_DESCRIPTION,
+      description: catalogEnv.description ?? DEFAULT_PRODUCTION_ENVIRONMENT_DESCRIPTION,
       updatedAt: new Date().toISOString(),
     })
     .where(eq(environment.id, productionId))
@@ -318,10 +285,10 @@ async function insertCatalogEnvVariables(
   tx: DbTx,
   environmentId: string,
   vars: CatalogVariable[],
-  dataEncryptionSecrets: DerivedSecretsConfig,
+  dataEncryptionSecrets: DerivedSecretsConfig
 ): Promise<void> {
   const sharedCredentials = new Map<string, string>()
-  for (const v of vars) {
+  await forEachSequential(vars, async (v) => {
     const plaintext = resolveCatalogVariablePlaintext(v, sharedCredentials)
     const storedValue = v.isSecret
       ? await encryptSecret(dataEncryptionSecrets, plaintext)
@@ -332,7 +299,7 @@ async function insertCatalogEnvVariables(
       value: storedValue,
       isSecret: v.isSecret,
     })
-  }
+  })
 }
 
 async function insertExtraCatalogEnvironments(
@@ -342,21 +309,16 @@ async function insertExtraCatalogEnvironments(
     serverId?: string | null
     entry: CatalogEntry
     dataEncryptionSecrets: DerivedSecretsConfig
-  },
+  }
 ): Promise<void> {
-  for (const env of input.entry.environments) {
-    if (isProductionEnvironmentName(env.displayName)) continue
+  await forEachSequential(input.entry.environments, async (env) => {
+    if (isProductionEnvironmentName(env.displayName)) return
     const existingExtra = await tx
       .select({ id: environment.id })
       .from(environment)
-      .where(
-        and(
-          eq(environment.projectId, input.projectId),
-          eq(environment.name, env.displayName),
-        ),
-      )
+      .where(and(eq(environment.projectId, input.projectId), eq(environment.name, env.displayName)))
       .limit(1)
-    if (existingExtra[0]) continue
+    if (existingExtra[0]) return
     const [insertedEnv] = await tx
       .insert(environment)
       .values({
@@ -367,20 +329,15 @@ async function insertExtraCatalogEnvironments(
         options: env.compose ? { compose: env.compose } : null,
       })
       .returning({ id: environment.id })
-    if (!env.variables?.length) continue
-    await insertCatalogEnvVariables(
-      tx,
-      insertedEnv.id,
-      env.variables,
-      input.dataEncryptionSecrets,
-    )
-  }
+    if (!env.variables?.length) return
+    await insertCatalogEnvVariables(tx, insertedEnv.id, env.variables, input.dataEncryptionSecrets)
+  })
 }
 
 function buildCatalogProjectMetadata(
   projectType: CreateProjectType,
   entry: CatalogEntry,
-  isEngine: boolean,
+  isEngine: boolean
 ): ProjectTypeMetadata {
   if (isEngine || projectType === 'template') {
     return { type: projectType, code: entry.code }
@@ -397,20 +354,15 @@ async function configureCatalogProject(
     dataEncryptionSecrets: DerivedSecretsConfig
     serverId?: string | null
     defaultEnvironmentName?: string
-  },
+  }
 ): Promise<ConfigureProjectResult> {
   const entry = getCatalogEntry(input.catalogCode)
   if (entry?.kind !== input.projectType) {
     return { ok: false, error: 'Unknown catalog code', status: 400 }
   }
 
-  const isEngine =
-    input.projectType === 'managed' && isManagedEngineCatalogEntry(entry)
-  const nextMetadata = buildCatalogProjectMetadata(
-    input.projectType,
-    entry,
-    isEngine,
-  )
+  const isEngine = input.projectType === 'managed' && isManagedEngineCatalogEntry(entry)
+  const nextMetadata = buildCatalogProjectMetadata(input.projectType, entry, isEngine)
 
   try {
     await db.transaction(async (tx) => {
@@ -418,15 +370,10 @@ async function configureCatalogProject(
         tx,
         input.projectId,
         input.serverId,
-        input.defaultEnvironmentName,
+        input.defaultEnvironmentName
       )
       await applyCatalogEnvCompose(tx, productionId, entry)
-      await applyCatalogVariablesToEnvironment(
-        tx,
-        productionId,
-        entry,
-        input.dataEncryptionSecrets,
-      )
+      await applyCatalogVariablesToEnvironment(tx, productionId, entry, input.dataEncryptionSecrets)
       await insertExtraCatalogEnvironments(tx, {
         projectId: input.projectId,
         serverId: input.serverId,
@@ -456,15 +403,10 @@ async function configureDockerComposeProject(
   db: Db,
   projectId: string,
   serverId?: string | null,
-  defaultEnvironmentName?: string,
+  defaultEnvironmentName?: string
 ): Promise<ConfigureProjectResult> {
   await db.transaction(async (tx) => {
-    await ensureProductionEnvironment(
-      tx,
-      projectId,
-      serverId,
-      defaultEnvironmentName,
-    )
+    await ensureProductionEnvironment(tx, projectId, serverId, defaultEnvironmentName)
     await tx
       .update(project)
       .set({
@@ -491,7 +433,7 @@ export async function configureProjectType(
     dataEncryptionSecrets: DerivedSecretsConfig | undefined
     serverId?: string | null
     defaultEnvironmentName?: string
-  },
+  }
 ): Promise<ConfigureProjectResult> {
   const [row] = await db
     .select({
@@ -509,11 +451,7 @@ export async function configureProjectType(
 
   const metadata = (row.metadata ?? {}) as ProjectTypeMetadata
   if (!projectNeedsSetup(metadata)) {
-    return alreadyConfiguredResult(
-      metadata,
-      input.projectType,
-      input.catalogCode,
-    )
+    return alreadyConfiguredResult(metadata, input.projectType, input.catalogCode)
   }
 
   if (input.projectType === 'docker-compose') {
@@ -521,7 +459,7 @@ export async function configureProjectType(
       db,
       input.projectId,
       input.serverId,
-      input.defaultEnvironmentName,
+      input.defaultEnvironmentName
     )
   }
 

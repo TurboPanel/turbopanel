@@ -15,6 +15,7 @@ import {
 import { container, replica, server } from '../../db/schema.ts'
 import type { ManagedReplicationHealth } from '../../contracts/commands/schemas.ts'
 import { MANAGED_PRIVATE_PORT_MAX, MANAGED_PRIVATE_PORT_MIN } from './ingress-ports.ts'
+import { firstSequential, forEachSequential } from '../../lib/sequential.ts'
 
 /**
  * High contiguous host-port range for multi-member private listeners
@@ -377,14 +378,14 @@ export async function ensureMemberPrivatePorts(
   const inputIds = new Set(members.map((m) => m.id))
 
   if (members.length <= 1) {
-    for (const member of members) {
+    await forEachSequential(members, async (member) => {
       if (member.privatePort !== null) {
         await db
           .update(replica)
           .set({ privatePort: null, updatedAt: new Date().toISOString() })
           .where(eq(replica.id, member.id))
       }
-    }
+    })
     return (await listManagedMembers(db, members[0]!.managedId)).filter((m) => inputIds.has(m.id))
   }
 
@@ -412,15 +413,15 @@ export async function ensureMemberPrivatePorts(
 
     const usedByServer = buildUsedPrivatePortsByServer(current, occupied)
 
-    for (const member of current) {
-      if (member.privatePort !== null) continue
+    const exhausted = await firstSequential(current, async (member) => {
+      if (member.privatePort !== null) return undefined
       const used = usedByServer.get(member.serverId) ?? new Set()
       const assigned = findFreePrivatePort(used)
       if (assigned === null) {
         return {
           kind: 'managed_private_port_exhausted',
           serverId: member.serverId,
-        }
+        } as const
       }
       used.add(assigned)
       await tx
@@ -430,7 +431,9 @@ export async function ensureMemberPrivatePorts(
           updatedAt: new Date().toISOString(),
         })
         .where(eq(replica.id, member.id))
-    }
+      return undefined
+    })
+    if (exhausted) return exhausted
 
     return (
       await tx
@@ -546,7 +549,7 @@ async function resolvePeerEndpointsByPurpose(
   }
 
   const endpoints = new Map<string, ResolvedPrivateEndpoint | PrivateEndpointError>()
-  for (const [purpose, toServerIds] of byPurpose) {
+  await forEachSequential(byPurpose, async ([purpose, toServerIds]) => {
     const resolved = await resolvePrivateEndpoints(db, {
       fromServerId: fromMember.serverId,
       toServerIds,
@@ -556,7 +559,7 @@ async function resolvePeerEndpointsByPurpose(
       const entry = resolved.get(serverId)
       if (entry) endpoints.set(serverId, entry)
     }
-  }
+  })
   return endpoints
 }
 
