@@ -821,6 +821,17 @@ function validateHelloFields(record: Record<string, unknown>): string | null {
 const UPDATE_PROGRESS_UNIT_SET = new Set<string>(UPDATE_PROGRESS_UNITS)
 const UPDATE_PROGRESS_STAGE_SET = new Set<string>(UPDATE_PROGRESS_STAGES)
 
+function validateOptionalBoundedString(
+  value: unknown,
+  field: string,
+  maxChars: number
+): string | null {
+  if (value === undefined) return null
+  if (typeof value !== 'string') return `${field} must be a string`
+  if (value.length > maxChars) return `${field} exceeds max length`
+  return null
+}
+
 function validateUpdateProgressFields(record: Record<string, unknown>): string | null {
   if (!isBoundedId(record.id)) return 'invalid id'
   if (record.upgradeId !== undefined && !isBoundedId(record.upgradeId)) {
@@ -833,21 +844,10 @@ function validateUpdateProgressFields(record: Record<string, unknown>): string |
     return 'invalid stage'
   }
   if (!isIsoTimestamp(record.at)) return 'invalid at timestamp'
-  if (record.detail !== undefined) {
-    if (typeof record.detail !== 'string') return 'detail must be a string'
-    if (record.detail.length > MAX_DAEMON_WS_ERROR_CHARS) {
-      return 'detail exceeds max length'
-    }
-  }
-  if (record.errorCode !== undefined) {
-    if (typeof record.errorCode !== 'string') {
-      return 'errorCode must be a string'
-    }
-    if (record.errorCode.length > MAX_DAEMON_WS_ERROR_CODE_CHARS) {
-      return 'errorCode exceeds max length'
-    }
-  }
-  return null
+  return (
+    validateOptionalBoundedString(record.detail, 'detail', MAX_DAEMON_WS_ERROR_CHARS) ??
+    validateOptionalBoundedString(record.errorCode, 'errorCode', MAX_DAEMON_WS_ERROR_CODE_CHARS)
+  )
 }
 
 function validateAddressesResultFields(record: Record<string, unknown>): string | null {
@@ -1721,46 +1721,6 @@ export function wireMessageToInboundEnvelope(msg: DaemonMessage): DaemonInboundE
         paths: msg.paths,
         error: msg.error,
       }
-    case 'dev-sync-result':
-      return {
-        kind: 'dev-sync-result',
-        requestId: msg.id,
-        at: msg.at,
-        ok: msg.ok,
-        error: msg.error,
-      }
-    case 'tunnel-token-result':
-      return {
-        kind: 'tunnel-token-result',
-        requestId: msg.id,
-        at: msg.at,
-        ok: msg.ok,
-        error: msg.error,
-      }
-    case 'public-urls-update-result':
-      return {
-        kind: 'public-urls-update-result',
-        requestId: msg.id,
-        at: msg.at,
-        ok: msg.ok,
-        error: msg.error,
-      }
-    case 'metrics-live-start-result':
-      return {
-        kind: 'metrics-live-start-result',
-        requestId: msg.id,
-        at: msg.at,
-        ok: msg.ok,
-        error: msg.error,
-      }
-    case 'metrics-live-stop-result':
-      return {
-        kind: 'metrics-live-stop-result',
-        requestId: msg.id,
-        at: msg.at,
-        ok: msg.ok,
-        error: msg.error,
-      }
     case 'metrics-capabilities-result':
       return {
         kind: 'metrics-capabilities-result',
@@ -1770,30 +1730,21 @@ export function wireMessageToInboundEnvelope(msg: DaemonMessage): DaemonInboundE
         capabilities: msg.capabilities,
         error: msg.error,
       }
+    case 'dev-sync-result':
+    case 'tunnel-token-result':
+    case 'public-urls-update-result':
+    case 'metrics-live-start-result':
+    case 'metrics-live-stop-result':
     case 'topology-overrides-update-result':
-      return {
-        kind: 'topology-overrides-update-result',
-        requestId: msg.id,
-        at: msg.at,
-        ok: msg.ok,
-        error: msg.error,
-      }
     case 'capability-plan-update-result':
-      return {
-        kind: 'capability-plan-update-result',
-        requestId: msg.id,
-        at: msg.at,
-        ok: msg.ok,
-        error: msg.error,
-      }
     case 'capability-plan-clear-result':
       return {
-        kind: 'capability-plan-clear-result',
+        kind: msg.type,
         requestId: msg.id,
         at: msg.at,
         ok: msg.ok,
         error: msg.error,
-      }
+      } as DaemonInboundEnvelope
     case 'update-result':
       return {
         kind: 'update-result',
