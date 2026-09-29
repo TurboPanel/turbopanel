@@ -162,6 +162,28 @@ it('resolveCloudflareAnalyticsSqlConfig honors TURBOPANEL_SERVER_METRICS_AE_MAX_
   assertEquals(config?.maxRangeSeconds, 3600)
 })
 
+it("resolveCloudflareAnalyticsSqlConfig reads this environment's dataset", () => {
+  const base = {
+    CLOUDFLARE_ACCOUNT_ID: 'acct123',
+    TURBOPANEL_ANALYTICS_ENGINE_API_TOKEN: 'token-xyz',
+  }
+  assertEquals(
+    resolveCloudflareAnalyticsSqlConfig({
+      ...base,
+      TURBOPANEL_SERVER_METRICS_AE_DATASET: ' staging_turbopanel_server_metrics_v6 ',
+    })?.dataset,
+    'staging_turbopanel_server_metrics_v6'
+  )
+  // Not a plain SQL identifier: ignored, so the reader keeps its default dataset.
+  for (const bad of ['', 'drop table x', 'a-b', '1abc', "x'; --"]) {
+    assertEquals(
+      resolveCloudflareAnalyticsSqlConfig({ ...base, TURBOPANEL_SERVER_METRICS_AE_DATASET: bad })
+        ?.dataset,
+      undefined
+    )
+  }
+})
+
 it('resolveCloudflareAnalyticsSqlConfig returns null when credentials missing', () => {
   assertEquals(
     resolveCloudflareAnalyticsSqlConfig({

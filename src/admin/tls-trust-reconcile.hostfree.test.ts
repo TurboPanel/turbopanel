@@ -1,4 +1,4 @@
-import { assertEquals } from '@std/assert'
+import { assertEquals, assertRejects } from '@std/assert'
 import type { Db } from '../db/connection.ts'
 import type { CommandQueue } from '../features/commands/queue.ts'
 import { mintOrganizationCa } from '../lib/tls/self-signed.ts'
@@ -156,4 +156,53 @@ test('enqueuePlatformCaTrustReconcileBestEffort swallows fan-out failures', asyn
     },
     listServerIds: async () => [SERVER_A],
   })
+})
+
+test('enqueuePlatformCaTrustReconcile handles servers strictly in order', async () => {
+  const { queue, envelopes } = recordingQueue()
+  const events: string[] = []
+  await enqueuePlatformCaTrustReconcile({
+    db: unusedDb,
+    commandQueue: queue,
+    actorId: ACTOR,
+    readBundle: sampleBundle,
+    listServerIds: async () => [SERVER_A, SERVER_B],
+    createCommand: async (_db, input) => {
+      events.push(`start:${input.serverId}`)
+      // The first server is slower; the second must still wait for it.
+      await new Promise((resolve) => setTimeout(resolve, input.serverId === SERVER_A ? 20 : 0))
+      events.push(`end:${input.serverId}`)
+      return { id: `cmd-${input.serverId}`, queuedAt: null, createdAt: '2026-01-01T00:00:00.000Z' }
+    },
+  })
+  assertEquals(events, [
+    `start:${SERVER_A}`,
+    `end:${SERVER_A}`,
+    `start:${SERVER_B}`,
+    `end:${SERVER_B}`,
+  ])
+  assertEquals(envelopes.length, 2)
+})
+
+test('enqueuePlatformCaTrustReconcile stops at the first failing server', async () => {
+  const { queue, envelopes } = recordingQueue()
+  const created: string[] = []
+  await assertRejects(
+    () =>
+      enqueuePlatformCaTrustReconcile({
+        db: unusedDb,
+        commandQueue: queue,
+        actorId: ACTOR,
+        readBundle: sampleBundle,
+        listServerIds: async () => [SERVER_A, SERVER_B],
+        createCommand: async (_db, input) => {
+          created.push(input.serverId)
+          throw new TypeError('database unavailable')
+        },
+      }),
+    TypeError,
+    'database unavailable'
+  )
+  assertEquals(created, [SERVER_A])
+  assertEquals(envelopes, [])
 })

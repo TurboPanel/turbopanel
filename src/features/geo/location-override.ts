@@ -129,6 +129,23 @@ export function parseLocationOverride(value: unknown): LocationFields | undefine
 export type LocationPatchParseResult =
   { ok: true; value: LocationPatch | null } | { ok: false; error: string }
 
+function isLocationField(key: string): key is LocationField {
+  return (LOCATION_FIELDS as readonly string[]).includes(key)
+}
+
+type LocationPatchFieldParse =
+  { ok: true; value: string | number | null } | { ok: false; error: string }
+
+/** One present field of a PATCH body: `null` / blank text clears, else it must be valid. */
+function parseLocationPatchField(field: LocationField, value: unknown): LocationPatchFieldParse {
+  if (value === null || (typeof value === 'string' && value.trim() === '')) {
+    return { ok: true, value: null }
+  }
+  const parsed = field === 'asn' ? normalizeAsn(value) : normalizeStringField(field, value)
+  if (parsed === null) return { ok: false, error: `Invalid location.${field}` }
+  return { ok: true, value: parsed }
+}
+
 /**
  * Strict parser for a request's `location`: unknown keys and invalid values
  * are refused (400) rather than silently dropped. `null` → reset everything.
@@ -136,31 +153,19 @@ export type LocationPatchParseResult =
 export function parseLocationPatchInput(raw: unknown): LocationPatchParseResult {
   if (raw === null) return { ok: true, value: null }
   if (!isRecord(raw)) return { ok: false, error: 'Invalid location' }
-  const patch: LocationPatch = {}
-  for (const key of Object.keys(raw)) {
-    if (!(LOCATION_FIELDS as readonly string[]).includes(key)) {
-      return { ok: false, error: `Invalid location field: ${key}` }
-    }
+  const unknownKey = Object.keys(raw).find((key) => !isLocationField(key))
+  if (unknownKey !== undefined) {
+    return { ok: false, error: `Invalid location field: ${unknownKey}` }
   }
+  const patch: Record<string, string | number | null> = {}
   for (const field of LOCATION_FIELDS) {
     if (!(field in raw)) continue
-    const value = raw[field]
-    if (value === null || (typeof value === 'string' && value.trim() === '')) {
-      patch[field] = null
-      continue
-    }
-    if (field === 'asn') {
-      const asn = normalizeAsn(value)
-      if (asn === null) return { ok: false, error: 'Invalid location.asn' }
-      patch.asn = asn
-      continue
-    }
-    const text = normalizeStringField(field, value)
-    if (text === null) return { ok: false, error: `Invalid location.${field}` }
-    patch[field] = text
+    const parsed = parseLocationPatchField(field, raw[field])
+    if (!parsed.ok) return parsed
+    patch[field] = parsed.value
   }
   if (Object.keys(patch).length === 0) return { ok: false, error: 'Invalid location' }
-  return { ok: true, value: patch }
+  return { ok: true, value: patch as LocationPatch }
 }
 
 /**

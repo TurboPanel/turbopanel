@@ -229,6 +229,36 @@ test('endingLicensesByTier counts release-seat intents only (a downgrade is not 
   assertEquals(endingLicensesByTier(emptyLedger('sub_1')), new Map())
 })
 
+test('endingLicensesByTier keeps the earliest boundary whatever order the intents arrive in, and an unknown one never erases a known one', () => {
+  const EARLIER = '2026-09-30T00:00:00.000Z'
+  const endsAtAfter = (...intents: ReturnType<typeof release>[]) =>
+    endingLicensesByTier(
+      intents.reduce((acc, intent) => withIntent(acc, intent), emptyLedger('sub_1'))
+    ).get(S1)
+  // known, then later: the first stays.
+  assertEquals(endsAtAfter(release(S1, 2, EARLIER), release(S1, 2)), {
+    count: 2,
+    endsAt: EARLIER,
+  })
+  // the same boundary twice.
+  assertEquals(endsAtAfter(release(S1, 2), release(S1, 2)), { count: 2, endsAt: PERIOD_END })
+  // known, then unknown: the known one stays.
+  assertEquals(endsAtAfter(release(S1, 2, EARLIER), release(S1, 2, null)), {
+    count: 2,
+    endsAt: EARLIER,
+  })
+  // unknown, then known: the known one is taken.
+  assertEquals(endsAtAfter(release(S1, 2, null), release(S1, 2, EARLIER)), {
+    count: 2,
+    endsAt: EARLIER,
+  })
+  // unknown throughout.
+  assertEquals(endsAtAfter(release(S1, 2, null), release(S1, 2, null)), {
+    count: 2,
+    endsAt: null,
+  })
+})
+
 test('landedIntents: an ended subscription lands everything', () => {
   const ledger = withIntent(
     withIntent(emptyLedger('sub_1'), release(S3, 3)),

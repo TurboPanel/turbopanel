@@ -3,7 +3,8 @@
  *
  * A binary reports its plain base version (`0.1.1`) whichever channel it was
  * published on; the canary / rc manifests carry the label
- * (`0.1.1-canary.<yyyymmdd-hhmmss-sha7>`, `0.1.1-rc.1`), and git tags add a
+ * (`0.1.1-canary.<yyyymmdd-hhmmss-sha7>` and `0.1.1-rc.1` until 2026-09-28;
+ * `0.1.3-canary.<run number>` and `0.1.3-rc` since), and git tags add a
  * leading `v`. Plain semver ranks every canary of the installed base below
  * the release, which on 2026-09-27 refused every canary rollout as a
  * downgrade. Suites that compare builds take their inputs from here so the
@@ -25,6 +26,16 @@ export function canaryBuildId(builtAt: string, commit: string): string {
 /** A canary build of `base` built at `builtAt` from `commit`. */
 export function canaryBuild(base: string, builtAt: string, commit: string): ReleaseBuild {
   return { version: `${base}-canary.${canaryBuildId(builtAt, commit)}`, commit, builtAt }
+}
+
+/** A counter canary (2026-09-28 naming): `<base>-canary.<run number>`, no timestamp in the label. */
+export function counterCanaryBuild(
+  base: string,
+  runNumber: number,
+  builtAt: string,
+  commit: string
+): ReleaseBuild {
+  return { version: `${base}-canary.${runNumber}`, commit, builtAt }
 }
 
 /** The installed daemons on testing before the 2026-09-27 rollout. */
@@ -64,6 +75,30 @@ export const NEXT_BASE_CANARY: ReleaseBuild = canaryBuild(
   '2026-10-01T09:00:00Z',
   'c0ffee0000000000000000000000000000000000'
 )
+/** The first counter canaries of 0.1.3 (the daemon published .416 and .417 on 2026-09-29). */
+export const COUNTER_CANARY: ReleaseBuild = counterCanaryBuild(
+  '0.1.3',
+  416,
+  '2026-09-29T01:28:49Z',
+  'f013dc60000000000000000000000000000000000'
+)
+export const COUNTER_CANARY_LATER: ReleaseBuild = counterCanaryBuild(
+  '0.1.3',
+  417,
+  '2026-09-29T02:31:00Z',
+  '61d6af60000000000000000000000000000000000'
+)
+/** The plain rc (one per number, no `.1`) and the release it becomes. */
+export const RC_PLAIN: ReleaseBuild = {
+  version: '0.1.3-rc',
+  commit: '61d6af60000000000000000000000000000000000',
+  builtAt: null,
+}
+export const RELEASE_NEXT: ReleaseBuild = {
+  version: '0.1.3',
+  commit: '61d6af60000000000000000000000000000000000',
+  builtAt: null,
+}
 export const OLDER_BASE: ReleaseBuild = {
   version: '0.1.0',
   commit: 'a1b2c3d000000000000000000000000000000000',

@@ -23,6 +23,7 @@
 
 import type { Db } from '../../db/connection.ts'
 import { logError, logInfo } from '../../lib/logger.ts'
+import { forEachSequential } from '../../lib/sequential.ts'
 import { listGraceExpiredSubscriptions, type SubscriptionRow } from './billing-records.ts'
 import type { StripeClient } from './client.ts'
 import { StripeApiError } from './errors.ts'
@@ -60,11 +61,16 @@ export type GraceClockResult = {
 /** The maintenance tick: every grace-expired subscription in the database, up to the batch limit. */
 export async function runGraceClock(deps: GraceClockDeps): Promise<GraceClockResult> {
   const nowIso = new Date(deps.nowMs ?? Date.now()).toISOString()
-  const rows = await listGraceExpiredSubscriptions(deps.db, nowIso, deps.limit ?? GRACE_CLOCK_BATCH_LIMIT)
+  const rows = await listGraceExpiredSubscriptions(
+    deps.db,
+    nowIso,
+    deps.limit ?? GRACE_CLOCK_BATCH_LIMIT
+  )
   return await cancelGraceExpired(deps, rows)
 }
 
-export type ScopedGraceClockDeps = Omit<GraceClockDeps, 'limit'> & Readonly<{ providerSubscriptionId: string }>
+export type ScopedGraceClockDeps = Omit<GraceClockDeps, 'limit'> &
+  Readonly<{ providerSubscriptionId: string }>
 
 /**
  * The same cancel-and-reproject step for **one** subscription, by provider
@@ -75,7 +81,9 @@ export type ScopedGraceClockDeps = Omit<GraceClockDeps, 'limit'> & Readonly<{ pr
  * subscription is delinquent past its expiry at `nowMs`, else `0`; the
  * production tick never calls this.
  */
-export async function runGraceClockForSubscription(deps: ScopedGraceClockDeps): Promise<GraceClockResult> {
+export async function runGraceClockForSubscription(
+  deps: ScopedGraceClockDeps
+): Promise<GraceClockResult> {
   const nowIso = new Date(deps.nowMs ?? Date.now()).toISOString()
   const rows = await listGraceExpiredSubscriptions(deps.db, nowIso, 1, {
     providerSubscriptionId: deps.providerSubscriptionId,
@@ -85,12 +93,12 @@ export async function runGraceClockForSubscription(deps: ScopedGraceClockDeps): 
 
 async function cancelGraceExpired(
   deps: Pick<GraceClockDeps, 'client' | 'reproject'>,
-  rows: readonly SubscriptionRow[],
+  rows: readonly SubscriptionRow[]
 ): Promise<GraceClockResult> {
   const result: GraceClockResult = { scanned: rows.length, canceled: [], failed: [] }
-  for (const row of rows) {
+  await forEachSequential(rows, async (row) => {
     const graceExpiresAt = row.graceExpiresAt
-    if (!graceExpiresAt) continue
+    if (!graceExpiresAt) return
     try {
       await cancelSubscription(deps.client, {
         providerSubscriptionId: row.providerSubscriptionId,
@@ -99,23 +107,32 @@ async function cancelGraceExpired(
       result.canceled.push(row.providerSubscriptionId)
       logInfo(
         GRACE_CLOCK_LOG_SCOPE,
-        `subscription ${row.providerSubscriptionId}: grace expired ${graceExpiresAt}; cancelled`,
+        `subscription ${row.providerSubscriptionId}: grace expired ${graceExpiresAt}; cancelled`
       )
     } catch (err) {
       // A subscription Stripe already cancelled is done — reproject to say so.
       const alreadyGone = err instanceof StripeApiError && err.status === 404
       if (!alreadyGone) {
-        result.failed.push({ providerSubscriptionId: row.providerSubscriptionId, error: String(err) })
-        logError(GRACE_CLOCK_LOG_SCOPE, `subscription ${row.providerSubscriptionId}: cancel failed: ${String(err)}`)
-        continue
+        result.failed.push({
+          providerSubscriptionId: row.providerSubscriptionId,
+          error: String(err),
+        })
+        logError(
+          GRACE_CLOCK_LOG_SCOPE,
+          `subscription ${row.providerSubscriptionId}: cancel failed: ${String(err)}`
+        )
+        return
       }
     }
     try {
       await deps.reproject(row.providerSubscriptionId)
     } catch (err) {
       // The next `customer.subscription.deleted` delivery reprojects anyway.
-      logError(GRACE_CLOCK_LOG_SCOPE, `subscription ${row.providerSubscriptionId}: reproject failed: ${String(err)}`)
+      logError(
+        GRACE_CLOCK_LOG_SCOPE,
+        `subscription ${row.providerSubscriptionId}: reproject failed: ${String(err)}`
+      )
     }
-  }
+  })
   return result
 }

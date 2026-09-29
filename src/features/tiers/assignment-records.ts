@@ -19,6 +19,7 @@
  * Workers-bundleable: nothing at module load.
  */
 
+import { forEachSequential } from '../../lib/sequential.ts'
 import { and, eq, inArray, isNull } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import {
@@ -42,7 +43,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /** Hardware is "known" once cores or bytes are reported; until then the entry rank is assumed. */
-export function requiredRankFromResources(resources: ServerHostResources | undefined): number | null {
+export function requiredRankFromResources(
+  resources: ServerHostResources | undefined
+): number | null {
   if (!resources) return null
   const known = totalPhysicalCores(resources) > 0 || (resources.memory?.totalBytes ?? 0) > 0
   return known ? resolveRequiredTier(resources).rank : null
@@ -84,7 +87,10 @@ export function tierQuantitiesFromState(state: OrganizationBillingState): TierQu
 export type AssignedServerRow = AssignableServer & Readonly<{ assignedTierId: string | null }>
 
 /** Every server in the organization holding an active license, with its requirement and current assignment. */
-export async function loadAssignableServers(db: Db, organizationId: string): Promise<AssignedServerRow[]> {
+export async function loadAssignableServers(
+  db: Db,
+  organizationId: string
+): Promise<AssignedServerRow[]> {
   const rows = await db
     .select({
       serverId: server.id,
@@ -124,22 +130,22 @@ export type RecomputeAssignmentsOpts = Readonly<{
 export async function recomputeOrganizationAssignments(
   db: Db,
   organizationId: string,
-  opts: RecomputeAssignmentsOpts = {},
+  opts: RecomputeAssignmentsOpts = {}
 ): Promise<RecomputeAssignmentsResult> {
-  const state = opts.state ?? await listSeatsForOrganization(db, organizationId)
+  const state = opts.state ?? (await listSeatsForOrganization(db, organizationId))
   const servers = await loadAssignableServers(db, organizationId)
   const assignment = computeAssignment(tierQuantitiesFromState(state), servers)
   const now = opts.now ?? new Date().toISOString()
   const changed: string[] = []
-  for (const row of servers) {
+  await forEachSequential(servers, async (row) => {
     const next = assignment.byServer.get(row.serverId) ?? null
-    if (next === row.assignedTierId) continue
+    if (next === row.assignedTierId) return
     await db
       .update(server)
       .set({ assignedTierId: next, updatedAt: now })
       .where(eq(server.id, row.serverId))
     changed.push(row.serverId)
-  }
+  })
   return { assignment, changed, uncovered: assignment.uncovered }
 }
 
@@ -154,7 +160,7 @@ export async function recomputeOrganizationAssignments(
  */
 export async function recomputeAssignmentsForServer(
   db: Db,
-  serverId: string,
+  serverId: string
 ): Promise<RecomputeAssignmentsResult | null> {
   const [row] = await db
     .select({ organizationId: server.organizationId })
@@ -166,7 +172,10 @@ export async function recomputeAssignmentsForServer(
 }
 
 /** Clear the assignment on servers that no longer hold a license (a revoke or delete path). */
-export async function clearAssignmentsForServers(db: Db, serverIds: readonly string[]): Promise<void> {
+export async function clearAssignmentsForServers(
+  db: Db,
+  serverIds: readonly string[]
+): Promise<void> {
   if (serverIds.length === 0) return
   await db
     .update(server)

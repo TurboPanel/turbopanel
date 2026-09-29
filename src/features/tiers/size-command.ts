@@ -34,7 +34,7 @@ const PROGRAM =
   '/^processor/{n++}/^physical id/{p=$2}/^core id/{c[p","$2]}/^cpu cores/{q[p]=$2}' +
   '/^MemTotal/{m=$2}' +
   'END{for(x in c)k++;if(!k)for(x in q)k+=q[x];' +
-  'printf "%d cores, %.1f GiB RAM\\n",(k?k:n),m/1048576}'
+  String.raw`printf "%d cores, %.1f GiB RAM\n",(k?k:n),m/1048576}`
 
 /**
  * Build the command. `sources` exists for tests, which point it at fixture

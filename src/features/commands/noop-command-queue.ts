@@ -3,12 +3,12 @@ import type { CommandEnvelope } from './envelope.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
 
 class NoopCommandQueue implements CommandQueue {
-  async enqueue(envelope: CommandEnvelope): Promise<void> {
+  enqueue(envelope: CommandEnvelope): Promise<void> {
     compatLogWarn(
       'command-queue',
-      `command queue unavailable — ${envelope.type} for server ${envelope.serverId} dropped`,
+      `command queue unavailable — ${envelope.type} for server ${envelope.serverId} dropped`
     )
-    throw new Error('Command queue unavailable')
+    return Promise.reject(new Error('Command queue unavailable'))
   }
 }
 

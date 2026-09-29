@@ -442,7 +442,24 @@ destroys, hard-deletes the runtime rows, and returns `deleted: true` (sweeps
 mop up leftover containers).
 `POST …/members/:memberId/promote`
 (lag-gated; **failover** class required — `{ force: true }` bypasses lag/health
-only, never class). Read-class promotion is
+only, never class). **On-demand health probe:** replica health is only observed
+when an apply/lifecycle result returns, so an idle healthy cluster's
+observation ages past the gate's 120s window. When the stored observation is
+missing, unparseable, or stale (`isManagedReplicaObservationStale` — keyed on
+age, not on the gate's error code, because the gate answers
+`managed_replica_not_streaming` *before* it reads `observedAt`), the route asks
+the target's daemon for a fresh reading first (`managed-health-request`, 8s,
+`src/client/managed/health-probe.ts`, feature `managed-health-v1`) and runs the
+**unchanged** gate on it. **Fail-closed is preserved:** timeout, offline host,
+a daemon without the feature, a daemon error, a malformed reply, or a reply for
+another member all fall back to the gate on the stored observation — today's
+409. `force` never probes. `GET …/managed/status?refresh=1` (the panel's
+Refresh) probes every **replica** in parallel and returns
+`healthRefresh: { observed, unavailable }`; a plain GET stays DB-only. The probe
+writes replication only (never `replica.status`). **Automatic failover never
+probes** and never honours `force`: `isAutomaticFailoverHealthy` reads only the
+stored, fresh observation (a test pins that the failover modules do not import
+the probe). Read-class promotion is
 `POST …/managed/disaster-recovery/promote` (`{ memberId, confirm: true }`).
 Automatic failover of same-DC `failover` replicas is TurboPanel-gated after
 fencing (journal table `recovery`). Candidate pick requires `replica` +

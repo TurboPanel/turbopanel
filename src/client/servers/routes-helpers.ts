@@ -192,6 +192,27 @@ function parseServerPatchOptions(
   return { ok: true, options }
 }
 
+/** `null` clears the pin; anything else must be a known machine class. */
+function parseServerPatchMachineClass(
+  raw: unknown
+): { ok: true; value: ServerMachineClass | null } | ServerRouteValidationError {
+  if (raw === null) return { ok: true, value: null }
+  if (!isServerMachineClass(raw)) {
+    return { ok: false, error: 'Invalid machineClass', status: 400 }
+  }
+  return { ok: true, value: raw }
+}
+
+/** A PATCH that changed no field (only `updatedAt` is set). */
+function isEmptyServerPatch(patch: ServerPatchFields): boolean {
+  return (
+    patch.name === undefined &&
+    patch.options === undefined &&
+    patch.machineClass === undefined &&
+    patch.locationPatch === undefined
+  )
+}
+
 /**
  * Validate name / options / emptiness for a server PATCH body.
  * Datacenter membership is managed via IP pins, not server PATCH.
@@ -224,10 +245,9 @@ export function parseServerPatchCore(
   }
 
   if (body.machineClass !== undefined) {
-    if (body.machineClass !== null && !isServerMachineClass(body.machineClass)) {
-      return { ok: false, error: 'Invalid machineClass', status: 400 }
-    }
-    patch.machineClass = body.machineClass
+    const machineClass = parseServerPatchMachineClass(body.machineClass)
+    if (!machineClass.ok) return machineClass
+    patch.machineClass = machineClass.value
   }
 
   if (body.location !== undefined) {
@@ -236,12 +256,7 @@ export function parseServerPatchCore(
     patch.locationPatch = location.value
   }
 
-  if (
-    patch.name === undefined &&
-    patch.options === undefined &&
-    patch.machineClass === undefined &&
-    patch.locationPatch === undefined
-  ) {
+  if (isEmptyServerPatch(patch)) {
     return invalidServerPatchRequest()
   }
 

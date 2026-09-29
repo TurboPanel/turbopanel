@@ -3,6 +3,7 @@ import type { Db } from '../../db/connection.ts'
 import { nowIso } from '../commands/ids.ts'
 import { inetAddressToString } from '../../lib/ip-address.ts'
 import { slot } from '../../db/schema.ts'
+import { forEachSequential } from '../../lib/sequential.ts'
 
 /**
  * Scheduled instances of a logical service. Row identity and `created_at`
@@ -11,9 +12,7 @@ import { slot } from '../../db/schema.ts'
  * `updatedAt`) — this helper never re-homes a slot the caller did not move.
  * The planner owns movement decisions by passing a different `serverId`.
  */
-export const SLOT_DESIRED_STATES = Object.freeze(
-  ['running', 'stopped', 'removed'] as const,
-)
+export const SLOT_DESIRED_STATES = Object.freeze(['running', 'stopped', 'removed'] as const)
 
 export type SlotDesiredState = (typeof SLOT_DESIRED_STATES)[number]
 
@@ -93,7 +92,7 @@ type ReplaceEnvironmentSlotsParams = {
  */
 export async function replaceEnvironmentSlots(
   db: Db,
-  params: ReplaceEnvironmentSlotsParams,
+  params: ReplaceEnvironmentSlotsParams
 ): Promise<void> {
   await db.transaction(async (tx) => {
     await replaceEnvironmentSlotsInTx(tx, params)
@@ -103,12 +102,10 @@ export async function replaceEnvironmentSlots(
 /** Same writes as {@link replaceEnvironmentSlots} without opening a nested transaction. */
 export async function replaceEnvironmentSlotsInTx(
   db: Db,
-  params: ReplaceEnvironmentSlotsParams,
+  params: ReplaceEnvironmentSlotsParams
 ): Promise<void> {
   const now = nowIso()
-  const desiredKeys = new Set(
-    params.slots.map((item) => slotKey(item.serviceId, item.slot)),
-  )
+  const desiredKeys = new Set(params.slots.map((item) => slotKey(item.serviceId, item.slot)))
 
   const existing = await db
     .select({
@@ -119,8 +116,8 @@ export async function replaceEnvironmentSlotsInTx(
     .from(slot)
     .where(eq(slot.environmentId, params.environmentId))
 
-  for (const item of params.slots) {
-    await db
+  await forEachSequential(params.slots, (item) =>
+    db
       .insert(slot)
       .values({
         environmentId: params.environmentId,
@@ -142,7 +139,7 @@ export async function replaceEnvironmentSlotsInTx(
           updatedAt: now,
         },
       })
-  }
+  )
 
   const staleIds = existing
     .filter((row) => !desiredKeys.has(slotKey(row.serviceId, row.slot)))
@@ -155,36 +152,28 @@ export async function replaceEnvironmentSlotsInTx(
 export async function listEnvironmentSlots(
   db: Db,
   environmentId: string,
-  opts?: { generation?: number },
+  opts?: { generation?: number }
 ): Promise<SlotRecord[]> {
-  const filter = opts?.generation === undefined ? eq(slot.environmentId, environmentId) : and(
-    eq(slot.environmentId, environmentId),
-    eq(slot.generation, opts.generation),
-  )
+  const filter =
+    opts?.generation === undefined
+      ? eq(slot.environmentId, environmentId)
+      : and(eq(slot.environmentId, environmentId), eq(slot.generation, opts.generation))
 
-  const rows = await db
-    .select()
-    .from(slot)
-    .where(filter)
-    .orderBy(slot.serviceId, slot.slot)
+  const rows = await db.select().from(slot).where(filter).orderBy(slot.serviceId, slot.slot)
 
   return sortSlots(rows.map(serializeSlot))
 }
 
 export async function listSlotsForServer(
   db: Db,
-  params: { serverId: string; environmentId?: string },
+  params: { serverId: string; environmentId?: string }
 ): Promise<SlotRecord[]> {
-  const filter = params.environmentId === undefined ? eq(slot.serverId, params.serverId) : and(
-    eq(slot.serverId, params.serverId),
-    eq(slot.environmentId, params.environmentId),
-  )
+  const filter =
+    params.environmentId === undefined
+      ? eq(slot.serverId, params.serverId)
+      : and(eq(slot.serverId, params.serverId), eq(slot.environmentId, params.environmentId))
 
-  const rows = await db
-    .select()
-    .from(slot)
-    .where(filter)
-    .orderBy(slot.serviceId, slot.slot)
+  const rows = await db.select().from(slot).where(filter).orderBy(slot.serviceId, slot.slot)
 
   return sortSlots(rows.map(serializeSlot))
 }

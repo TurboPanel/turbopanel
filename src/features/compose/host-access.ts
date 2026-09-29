@@ -97,8 +97,7 @@ function outsideReason(path: string): string | null {
   }
   if (trimmed.startsWith('/')) return 'is an absolute path on the host'
   if (trimmed.startsWith('~')) return 'is in a home directory on the host'
-  const segments = trimmed.split('/')
-  if (segments.some((segment) => segment === '..')) {
+  if (trimmed.split('/').includes('..')) {
     return "climbs out of the service's directory with `..`"
   }
   return null
@@ -248,42 +247,47 @@ function checkFileList(
   })
 }
 
-function checkBuild(out: Collector, serviceSegments: string[], build: unknown): void {
-  const at = [...serviceSegments, 'build']
-  if (build === undefined || build === null) return
-  if (typeof build === 'string') {
-    if (!isRemoteContext(build)) out.path(at, 'build context', build)
-    return
-  }
-  if (!isRecord(build)) return
-  const context = build.context
-  if (typeof context === 'string' && !isRemoteContext(context)) {
-    out.path([...at, 'context'], 'build context', context)
-  } else if (context !== undefined && typeof context !== 'string') {
-    out.path([...at, 'context'], 'build context', context)
-  }
-  if (build.dockerfile !== undefined) {
-    out.path([...at, 'dockerfile'], 'Dockerfile', build.dockerfile)
-  }
-  if (isRecord(build.additional_contexts)) {
-    for (const [name, value] of Object.entries(build.additional_contexts)) {
-      if (
-        typeof value === 'string' &&
-        (isRemoteContext(value) ||
-          value.startsWith('docker-image://') ||
-          value.startsWith('service:'))
-      )
-        continue
+/**
+ * A build context. A URL-shaped one names a remote source, not a host path, so
+ * only a string that is not remote — or a value that is not a string at all —
+ * is judged as a path.
+ */
+function checkBuildContext(out: Collector, segments: Array<string | number>, context: unknown) {
+  if (context === undefined) return
+  if (typeof context === 'string' && isRemoteContext(context)) return
+  out.path(segments, 'build context', context)
+}
+
+/** Build contexts that name another service or image, or a remote source. */
+function isNonPathAdditionalContext(value: unknown): boolean {
+  return (
+    typeof value === 'string' &&
+    (isRemoteContext(value) || value.startsWith('docker-image://') || value.startsWith('service:'))
+  )
+}
+
+function checkAdditionalContexts(out: Collector, at: Array<string | number>, contexts: unknown) {
+  if (isRecord(contexts)) {
+    for (const [name, value] of Object.entries(contexts)) {
+      if (isNonPathAdditionalContext(value)) continue
       out.path([...at, 'additional_contexts', name], 'additional build context', value)
     }
-  } else if (Array.isArray(build.additional_contexts)) {
+  } else if (Array.isArray(contexts)) {
     out.add(
       [...at, 'additional_contexts'],
       'additional build contexts',
       'are a list, so the paths they name cannot be checked',
-      build.additional_contexts
+      contexts
     )
   }
+}
+
+/** What a build can reach on the host besides files: `ssh`, the host network, privileges. */
+function checkBuildPrivileges(
+  out: Collector,
+  at: Array<string | number>,
+  build: Record<string, unknown>
+) {
   if (build.ssh !== undefined) {
     out.add(
       [...at, 'ssh'],
@@ -318,11 +322,46 @@ function checkBuild(out: Collector, serviceSegments: string[], build: unknown): 
   }
 }
 
+function checkBuild(out: Collector, serviceSegments: string[], build: unknown): void {
+  const at = [...serviceSegments, 'build']
+  if (build === undefined || build === null) return
+  if (typeof build === 'string') {
+    checkBuildContext(out, at, build)
+    return
+  }
+  if (!isRecord(build)) return
+  checkBuildContext(out, [...at, 'context'], build.context)
+  if (build.dockerfile !== undefined) {
+    out.path([...at, 'dockerfile'], 'Dockerfile', build.dockerfile)
+  }
+  checkAdditionalContexts(out, at, build.additional_contexts)
+  checkBuildPrivileges(out, at, build)
+}
+
+/**
+ * How an `extends.file` is named in a message: the text as written, or a
+ * primitive (a number, `null`) spelled out. Anything else (a mapping or list
+ * the schema would refuse) has no text to quote, and stringifying it would
+ * print `[object Object]`.
+ */
+function extendsFileLabel(file: unknown): string {
+  if (
+    file === null ||
+    typeof file === 'string' ||
+    typeof file === 'number' ||
+    typeof file === 'boolean' ||
+    typeof file === 'bigint'
+  ) {
+    return `extends file \`${file}\``
+  }
+  return 'extends file'
+}
+
 function checkExtends(out: Collector, serviceSegments: string[], value: unknown): void {
   if (isRecord(value) && value.file !== undefined) {
     out.add(
       [...serviceSegments, 'extends', 'file'],
-      `extends file \`${String(value.file)}\``,
+      extendsFileLabel(value.file),
       PULLS_UNCHECKED_COMPOSE,
       value.file
     )
@@ -337,8 +376,8 @@ function checkTopLevelVolumes(out: Collector, volumes: unknown): void {
     const at = ['volumes', name, 'driver_opts']
     const type = typeof opts.type === 'string' ? opts.type.trim() : undefined
     const o = typeof opts.o === 'string' ? opts.o : ''
-    const mountFlags = o.split(',').map((flag) => flag.trim())
-    const bindFlag = mountFlags.includes('bind') || mountFlags.includes('rbind')
+    const mountFlags = new Set(o.split(',').map((flag) => flag.trim()))
+    const bindFlag = mountFlags.has('bind') || mountFlags.has('rbind')
     const device = opts.device
     if (bindFlag || type === 'none' || type === 'bind') {
       out.add(at, `volume \`${name}\``, 'is a bind mount of a host path in disguise', opts)
@@ -406,25 +445,34 @@ export function collectHostAccessFindings(data: unknown): HostAccessFinding[] {
 }
 
 /**
+ * Every gated key set on a service, in service order then registry order: its
+ * dot path, the key and the authored value. Shared by the refusal list and the
+ * approval fingerprint so the two can never disagree about which keys count.
+ */
+function gatedServiceKeys(root: unknown): Array<{ path: string; key: string; value: unknown }> {
+  const found: Array<{ path: string; key: string; value: unknown }> = []
+  if (!isRecord(root) || !isRecord(root.services)) return found
+  for (const [name, body] of Object.entries(root.services)) {
+    if (!isRecord(body)) continue
+    for (const key of GATED_SERVICE_FIELD_KEYS) {
+      if (key in body) found.push({ path: `services.${name}.${key}`, key, value: body[key] })
+    }
+  }
+  return found
+}
+
+/**
  * Every host-level path in a document — gated keys and value-level reaches —
  * as the issue list a refusal carries.
  */
 export function hostAccessIssues(data: unknown): Array<{ path: string; message: string }> {
   const root = resolveComposeTags(data)
-  const issues: Array<{ path: string; message: string }> = []
-  if (isRecord(root) && isRecord(root.services)) {
-    for (const [name, body] of Object.entries(root.services)) {
-      if (!isRecord(body)) continue
-      for (const key of GATED_SERVICE_FIELD_KEYS) {
-        if (key in body) {
-          issues.push({
-            path: `services.${name}.${key}`,
-            message: `${key} grants root-equivalent access to the shared daemon host`,
-          })
-        }
-      }
-    }
-  }
+  const issues: Array<{ path: string; message: string }> = gatedServiceKeys(root).map(
+    ({ path, key }) => ({
+      path,
+      message: `${key} grants root-equivalent access to the shared daemon host`,
+    })
+  )
   for (const finding of collectHostAccessFindings(root)) {
     issues.push({ path: finding.path, message: finding.message })
   }
@@ -440,15 +488,10 @@ export function hostAccessIssues(data: unknown): Array<{ path: string; message: 
  */
 export function hostAccessCanonical(data: unknown): string {
   const root = resolveComposeTags(data)
-  const entries: Array<[string, unknown]> = []
-  if (isRecord(root) && isRecord(root.services)) {
-    for (const [name, body] of Object.entries(root.services)) {
-      if (!isRecord(body)) continue
-      for (const key of GATED_SERVICE_FIELD_KEYS) {
-        if (key in body) entries.push([`services.${name}.${key}`, body[key]])
-      }
-    }
-  }
+  const entries: Array<[string, unknown]> = gatedServiceKeys(root).map(({ path, value }) => [
+    path,
+    value,
+  ])
   for (const finding of collectHostAccessFindings(root)) {
     entries.push([finding.path, finding.value])
   }

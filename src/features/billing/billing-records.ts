@@ -23,11 +23,24 @@
  * into one seat row under the first item's id.
  */
 
-import { and, desc, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm'
+import {
+  and,
+  desc,
+  eq,
+  type ExtractTablesWithRelations,
+  inArray,
+  isNotNull,
+  isNull,
+  sql,
+} from 'drizzle-orm'
+import type { PgTransaction } from 'drizzle-orm/pg-core'
+import type { PostgresJsQueryResultHKT } from 'drizzle-orm/postgres-js'
 import type { BillingProviderId } from './gateway.ts'
 import type { Db } from '../../db/connection.ts'
 import { logWarn } from '../../lib/logger.ts'
+import { forEachSequential } from '../../lib/sequential.ts'
 import type { PayerSubject } from './customer-subject.ts'
+import type * as schema from '../../db/schema.ts'
 import { license, payer, allowance, subscription, subscriptionItem, tier } from '../../db/schema.ts'
 import { mapProviderProductsToTierIds } from '../tiers/tier-records.ts'
 import type { SelfHostedGrant } from '../tiers/self-hosted-grant.ts'
@@ -38,8 +51,17 @@ import type { SelfHostedGrant } from '../tiers/self-hosted-grant.ts'
  * `subscription` → `seat` under one transaction so a reader never sees the
  * seats of a subscription half-replaced; the write helpers below accept
  * either handle so the same code serves the transaction and a plain call.
+ *
+ * Spelled as drizzle's `PgTransaction` over the postgres-js query result
+ * (identical to the `Db['transaction']` callback parameter) rather than
+ * derived through `Parameters<…>`, so tooling that cannot resolve the
+ * derivation does not see `never` inside the `Db | BillingDbTx` union below.
  */
-export type BillingDbTx = Parameters<Parameters<Db['transaction']>[0]>[0]
+export type BillingDbTx = PgTransaction<
+  PostgresJsQueryResultHKT,
+  typeof schema,
+  ExtractTablesWithRelations<typeof schema>
+>
 
 export type BillingWriteDb = Db | BillingDbTx
 
@@ -125,7 +147,7 @@ export type UpsertPayerInput = Readonly<{
  */
 export async function upsertPayer(
   db: BillingWriteDb,
-  input: UpsertPayerInput,
+  input: UpsertPayerInput
 ): Promise<{ id: string }> {
   const now = input.now ?? new Date().toISOString()
   const [row] = await db
@@ -169,7 +191,7 @@ export type UpsertSubscriptionInput = Readonly<{
  */
 export async function upsertSubscriptionFromProvider(
   db: BillingWriteDb,
-  input: UpsertSubscriptionInput,
+  input: UpsertSubscriptionInput
 ): Promise<{ id: string }> {
   const now = input.now ?? new Date().toISOString()
   const pastDue = isDelinquentStatus(input.status)
@@ -253,14 +275,14 @@ export async function replaceSubscriptionItems(
   db: BillingWriteDb,
   subscriptionId: string,
   items: readonly ProviderSubscriptionItem[],
-  opts: { now?: string; logScope?: string; provider?: BillingProvider } = {},
+  opts: { now?: string; logScope?: string; provider?: BillingProvider } = {}
 ): Promise<ReplaceSubscriptionItemsResult> {
   const now = opts.now ?? new Date().toISOString()
   const logScope = opts.logScope ?? 'billing-records'
   const tierByProduct = await mapProviderProductsToTierIds(
     db as Db,
     opts.provider ?? 'stripe',
-    items.map((item) => item.providerProductId),
+    items.map((item) => item.providerProductId)
   )
 
   // Prune first — see the doc comment. Everything on this subscription goes,
@@ -268,20 +290,26 @@ export async function replaceSubscriptionItems(
   await db.delete(subscriptionItem).where(eq(subscriptionItem.subscriptionId, subscriptionId))
 
   const skipped: string[] = []
-  const byTier = new Map<string, { providerItemId: string; providerPriceId: string; quantity: number }>()
+  const byTier = new Map<
+    string,
+    { providerItemId: string; providerPriceId: string; quantity: number }
+  >()
   for (const item of items) {
     const tierId = tierByProduct.get(item.providerProductId)
     if (!tierId) {
       // Never a null tier: the assignment is per tier.
       logWarn(
         logScope,
-        `subscription item ${item.providerItemId} names product ${item.providerProductId}, which maps to no tier; skipped`,
+        `subscription item ${item.providerItemId} names product ${item.providerProductId}, which maps to no tier; skipped`
       )
       skipped.push(item.providerItemId)
       continue
     }
     if (!Number.isInteger(item.quantity) || item.quantity < 0) {
-      logWarn(logScope, `subscription item ${item.providerItemId} has quantity ${item.quantity}; skipped`)
+      logWarn(
+        logScope,
+        `subscription item ${item.providerItemId} has quantity ${item.quantity}; skipped`
+      )
       skipped.push(item.providerItemId)
       continue
     }
@@ -289,16 +317,22 @@ export async function replaceSubscriptionItems(
     if (existing) {
       logWarn(
         logScope,
-        `subscription item ${item.providerItemId} maps to the same tier as ${existing.providerItemId}; quantities summed under the first`,
+        `subscription item ${item.providerItemId} maps to the same tier as ${existing.providerItemId}; quantities summed under the first`
       )
       existing.quantity += item.quantity
       skipped.push(item.providerItemId)
       continue
     }
-    byTier.set(tierId, { providerItemId: item.providerItemId, providerPriceId: item.providerPriceId, quantity: item.quantity })
+    byTier.set(tierId, {
+      providerItemId: item.providerItemId,
+      providerPriceId: item.providerPriceId,
+      quantity: item.quantity,
+    })
   }
 
-  for (const [tierId, line] of byTier) {
+  // One connection, strictly in map order: the caller runs this inside a
+  // transaction, so the upserts must not overlap.
+  await forEachSequential(byTier, async ([tierId, line]) => {
     // The `provider_item_id` conflict target is belt-and-braces: item ids are
     // globally unique on the provider side, so it can only fire if an id was
     // somehow projected under a different subscription — re-home it.
@@ -315,9 +349,15 @@ export async function replaceSubscriptionItems(
       })
       .onConflictDoUpdate({
         target: subscriptionItem.providerItemId,
-        set: { subscriptionId, tierId, providerPriceId: line.providerPriceId, quantity: line.quantity, updatedAt: now },
+        set: {
+          subscriptionId,
+          tierId,
+          providerPriceId: line.providerPriceId,
+          quantity: line.quantity,
+          updatedAt: now,
+        },
       })
-  }
+  })
 
   return { written: byTier.size, skipped }
 }
@@ -325,7 +365,7 @@ export async function replaceSubscriptionItems(
 export async function getPayerForOrganization(
   db: Db,
   organizationId: string,
-  provider: BillingProvider = 'stripe',
+  provider: BillingProvider = 'stripe'
 ): Promise<PayerRow | null> {
   const [row] = await db
     .select()
@@ -338,7 +378,7 @@ export async function getPayerForOrganization(
 /** The most recently created subscription for a payer (a payer holds at most a few). */
 export async function getSubscriptionForPayer(
   db: Db,
-  payerId: string,
+  payerId: string
 ): Promise<SubscriptionRow | null> {
   const [row] = await db
     .select()
@@ -351,7 +391,7 @@ export async function getSubscriptionForPayer(
 
 export async function listSubscriptionItems(
   db: Db,
-  subscriptionId: string,
+  subscriptionId: string
 ): Promise<SubscriptionItemRow[]> {
   return await db
     .select()
@@ -400,7 +440,7 @@ export type OrganizationBillingState = Readonly<{
  */
 export async function listSeatsForOrganization(
   db: Db,
-  organizationId: string,
+  organizationId: string
 ): Promise<OrganizationBillingState> {
   // The grant is read alongside the payer, not instead of it: a self-hosted
   // organization has a grant and no payer, and an instance moved to the
@@ -456,7 +496,7 @@ export async function listSeatsForOrganization(
  */
 async function readGrantForOrganization(
   db: Db,
-  organizationId: string,
+  organizationId: string
 ): Promise<SelfHostedGrant | null> {
   const [row] = await db
     .select({ tierId: allowance.tierId, quantity: allowance.quantity })
@@ -500,7 +540,7 @@ export type RevokedLicenses = Readonly<{
 export async function revokeAllLicensesForOrganization(
   db: Db,
   organizationId: string,
-  opts: { now?: string; onRevokeBound?: (serverId: string) => Promise<void> } = {},
+  opts: { now?: string; onRevokeBound?: (serverId: string) => Promise<void> } = {}
 ): Promise<RevokedLicenses> {
   const now = opts.now ?? new Date().toISOString()
   const rows = await db
@@ -508,7 +548,8 @@ export async function revokeAllLicensesForOrganization(
     .from(license)
     .where(and(eq(license.organizationId, organizationId), isNull(license.revokedAt)))
   const out: { licenseIds: string[]; serverIds: string[] } = { licenseIds: [], serverIds: [] }
-  for (const row of rows) {
+  // In row order, each license written and its hook run before the next one.
+  await forEachSequential(rows, async (row) => {
     await db
       .update(license)
       .set({ revokedAt: now, updatedAt: now })
@@ -518,7 +559,7 @@ export async function revokeAllLicensesForOrganization(
       out.serverIds.push(row.serverId)
       if (opts.onRevokeBound) await opts.onRevokeBound(row.serverId)
     }
-  }
+  })
   return out
 }
 
@@ -532,7 +573,7 @@ export async function listGraceExpiredSubscriptions(
   db: Db,
   nowIso: string,
   limit: number,
-  opts: ListGraceExpiredOpts = {},
+  opts: ListGraceExpiredOpts = {}
 ): Promise<SubscriptionRow[]> {
   return await db
     .select()
@@ -544,8 +585,8 @@ export async function listGraceExpiredSubscriptions(
         sql`${subscription.graceExpiresAt} <= ${nowIso}::timestamptz`,
         ...(opts.providerSubscriptionId
           ? [eq(subscription.providerSubscriptionId, opts.providerSubscriptionId)]
-          : []),
-      ),
+          : [])
+      )
     )
     .orderBy(subscription.graceExpiresAt)
     .limit(limit)
@@ -554,7 +595,7 @@ export async function listGraceExpiredSubscriptions(
 /** Every organization with a projected payer, for the reconciliation sweep. */
 export async function listOrganizationIdsWithPayer(
   db: Db,
-  provider: BillingProvider = 'stripe',
+  provider: BillingProvider = 'stripe'
 ): Promise<string[]> {
   const rows = await db
     .select({ organizationId: payer.organizationId })

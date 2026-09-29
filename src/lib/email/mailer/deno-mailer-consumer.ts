@@ -103,13 +103,12 @@ function parsePositiveInt(value: string | undefined, fallback: number): number {
 }
 
 /** Host-free: rate + burst from the resolved settings, defaults 60/rate. */
-export function mailerRateAndBurst(
-  settings: ResolvedEmailSettings,
-): { rate: number; burst: number } {
-  const rate =
-    parsePositiveInt(settings.keys.RATE_LIMIT_PER_MINUTE?.value, 0) || 60
-  const burst = parsePositiveInt(settings.keys.RATE_LIMIT_BURST?.value, 0) ||
-    rate
+export function mailerRateAndBurst(settings: ResolvedEmailSettings): {
+  rate: number
+  burst: number
+} {
+  const rate = parsePositiveInt(settings.keys.RATE_LIMIT_PER_MINUTE?.value, 0) || 60
+  const burst = parsePositiveInt(settings.keys.RATE_LIMIT_BURST?.value, 0) || rate
   return { rate, burst }
 }
 
@@ -126,57 +125,48 @@ export function mailerPrefetch(settings: ResolvedEmailSettings): number {
 export function carryOverRateLimiter(
   previous: RateLimiter,
   rate: number,
-  burst: number,
+  burst: number
 ): RateLimiter {
   const next = new RateLimiter(rate, burst)
   const oldTokens = (previous as unknown as { tokens?: number }).tokens ?? rate
-  ;(next as unknown as { tokens: number }).tokens = Math.min(
-    Math.max(0, oldTokens),
-    burst,
-  )
+  ;(next as unknown as { tokens: number }).tokens = Math.min(Math.max(0, oldTokens), burst)
   return next
 }
 
 async function connectAmqp(url: string): Promise<AmqpConnection> {
-  for (let attempt = 1; attempt <= CONNECT_ATTEMPTS; attempt++) {
+  const tryConnect = async (attempt: number): Promise<AmqpConnection> => {
+    if (attempt > CONNECT_ATTEMPTS) {
+      throw new Error('connectAmqp: unreachable')
+    }
     try {
       return await amqplib.connect(url)
     } catch (error) {
       if (attempt === CONNECT_ATTEMPTS) throw error
       logWarn(
         'mailer',
-        `AMQP connect failed (attempt ${attempt}/${CONNECT_ATTEMPTS}): ${
-          errorMessage(error)
-        }`,
+        `AMQP connect failed (attempt ${attempt}/${CONNECT_ATTEMPTS}): ${errorMessage(error)}`
       )
       await sleep(1000)
     }
+    return tryConnect(attempt + 1)
   }
-  throw new Error('connectAmqp: unreachable')
+  return tryConnect(1)
 }
 
-export async function startMailerConsumer(
-  opts: StartMailerConsumerOpts,
-): Promise<MailerConsumer> {
+export async function startMailerConsumer(opts: StartMailerConsumerOpts): Promise<MailerConsumer> {
   const settingsTtlMs = opts.settingsTtlMs ?? DEFAULT_SETTINGS_TTL_MS
 
   let closed = false
   let reconnecting = false
   let session: ConsumerSession | undefined
 
-  let cachedSettings:
-    | { value: ResolvedEmailSettings; fetchedAt: number }
-    | undefined
+  let cachedSettings: { value: ResolvedEmailSettings; fetchedAt: number } | undefined
   async function currentSettings(): Promise<ResolvedEmailSettings> {
     const now = Date.now()
     if (cachedSettings && now - cachedSettings.fetchedAt < settingsTtlMs) {
       return cachedSettings.value
     }
-    const fresh = await resolveEmailSettings(
-      opts.db,
-      opts.env,
-      opts.dataEncryptionSecrets,
-    )
+    const fresh = await resolveEmailSettings(opts.db, opts.env, opts.dataEncryptionSecrets)
     cachedSettings = { value: fresh, fetchedAt: now }
     return fresh
   }
@@ -212,7 +202,7 @@ export async function startMailerConsumer(
   function watchForLoss(
     target: AmqpConnection | AmqpChannel,
     label: string,
-    owner: ConsumerSession,
+    owner: ConsumerSession
   ): void {
     const emitter = target as AmqpEmitter
     if (typeof emitter.on !== 'function') return
@@ -229,12 +219,9 @@ export async function startMailerConsumer(
 
   async function consumeOn(owner: ConsumerSession): Promise<void> {
     if (owner.consumerTag) return
-    const { consumerTag } = await owner.channel.consume(
-      EMAIL_AMQP_QUEUE,
-      (msg) => {
-        void handleMessage(owner, msg)
-      },
-    )
+    const { consumerTag } = await owner.channel.consume(EMAIL_AMQP_QUEUE, (msg) => {
+      void handleMessage(owner, msg)
+    })
     owner.consumerTag = consumerTag
   }
 
@@ -279,38 +266,31 @@ export async function startMailerConsumer(
     session = undefined
     logWarn('mailer', `AMQP ${reason} — reconnecting`)
 
-    let delay = RECONNECT_BASE_DELAY_MS
-    while (!closed) {
+    const reconnectWithBackoff = async (delay: number): Promise<void> => {
+      if (closed) return
+      let finished = false
       try {
         const rebuilt = await openSession()
         if (closed) {
           await discard(rebuilt)
-          break
-        }
-        if (rebuilt.lost) {
-          logWarn(
-            'mailer',
-            'AMQP connection was lost again during reconnect — retrying',
-          )
+          finished = true
+        } else if (rebuilt.lost) {
+          logWarn('mailer', 'AMQP connection was lost again during reconnect — retrying')
           await discard(rebuilt)
           await sleep(delay)
-          delay = Math.min(delay * 2, RECONNECT_MAX_DELAY_MS)
-          continue
+        } else {
+          session = rebuilt
+          logWarn('mailer', 'AMQP reconnected, consuming again')
+          finished = true
         }
-        session = rebuilt
-        logWarn('mailer', 'AMQP reconnected, consuming again')
-        break
       } catch (error) {
-        logError(
-          'mailer',
-          `AMQP reconnect failed: ${
-            errorMessage(error)
-          } — retrying in ${delay}ms`,
-        )
+        logError('mailer', `AMQP reconnect failed: ${errorMessage(error)} — retrying in ${delay}ms`)
         await sleep(delay)
-        delay = Math.min(delay * 2, RECONNECT_MAX_DELAY_MS)
       }
+      if (finished) return
+      return reconnectWithBackoff(Math.min(delay * 2, RECONNECT_MAX_DELAY_MS))
     }
+    await reconnectWithBackoff(RECONNECT_BASE_DELAY_MS)
     reconnecting = false
   }
 
@@ -325,7 +305,7 @@ export async function startMailerConsumer(
   function disposeSafely(
     owner: ConsumerSession,
     msg: NonNullable<AmqpMessage>,
-    disposition: Disposition,
+    disposition: Disposition
   ): void {
     try {
       if (disposition === 'ack') owner.channel.ack(msg)
@@ -333,9 +313,9 @@ export async function startMailerConsumer(
     } catch (error) {
       logWarn(
         'mailer',
-        `could not ${disposition} a delivery: ${
-          errorMessage(error)
-        } — the channel is gone; the broker will redeliver`,
+        `could not ${disposition} a delivery: ${errorMessage(
+          error
+        )} — the channel is gone; the broker will redeliver`
       )
     }
   }
@@ -348,7 +328,7 @@ export async function startMailerConsumer(
   async function pauseForRateLimit(
     owner: ConsumerSession,
     msg: NonNullable<AmqpMessage>,
-    waitMs: number,
+    waitMs: number
   ): Promise<void> {
     const tag = owner.consumerTag
     if (tag) {
@@ -358,10 +338,7 @@ export async function startMailerConsumer(
       })
     }
     disposeSafely(owner, msg, 'nack_requeue')
-    logWarn(
-      'mailer',
-      `rate limit exhausted, requeueing and pausing for ${waitMs}ms`,
-    )
+    logWarn('mailer', `rate limit exhausted, requeueing and pausing for ${waitMs}ms`)
     await sleep(waitMs)
     if (closed || owner.lost || session !== owner) return
     await consumeOn(owner).catch((error: unknown) => {
@@ -369,10 +346,7 @@ export async function startMailerConsumer(
     })
   }
 
-  async function handleMessage(
-    owner: ConsumerSession,
-    msg: AmqpMessage,
-  ): Promise<void> {
+  async function handleMessage(owner: ConsumerSession, msg: AmqpMessage): Promise<void> {
     if (!msg) {
       // Broker-initiated cancel (queue deleted, node failover): the
       // session's own listeners handle the loss.
@@ -450,9 +424,9 @@ export async function startMailerConsumer(
   }
   logInfo(
     'mailer',
-    `consuming from ${EMAIL_AMQP_QUEUE} at ${
-      redactUrlCredentials(opts.amqpUrl)
-    } (prefetch=${appliedPrefetch})`,
+    `consuming from ${EMAIL_AMQP_QUEUE} at ${redactUrlCredentials(
+      opts.amqpUrl
+    )} (prefetch=${appliedPrefetch})`
   )
 
   return {

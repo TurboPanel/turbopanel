@@ -4,6 +4,7 @@ import { revokeBoundDaemonKey } from './revoke-bound-daemon-key.ts'
 import { license, server } from '../../db/schema.ts'
 import { generatePassword } from '../../lib/secrets/generate-secret.ts'
 import { hashPassword, verifyPassword } from '../../lib/secrets/password.ts'
+import { forEachSequential } from '../../lib/sequential.ts'
 
 export type LicenseRecord = {
   id: string
@@ -25,10 +26,7 @@ export async function generateLicenseToken(): Promise<{
   return { plaintext, hashed }
 }
 
-export async function verifyLicenseToken(
-  plaintext: string,
-  hashed: string,
-): Promise<boolean> {
+export async function verifyLicenseToken(plaintext: string, hashed: string): Promise<boolean> {
   return verifyPassword(plaintext, hashed)
 }
 
@@ -39,7 +37,7 @@ export async function verifyLicenseToken(
  */
 export async function createLicense(
   db: Db,
-  opts: { organizationId: string; name?: string },
+  opts: { organizationId: string; name?: string }
 ): Promise<{ licenseId: string; licenseToken: string }> {
   const { plaintext, hashed } = await generateLicenseToken()
   const now = nowTs()
@@ -66,16 +64,18 @@ export async function createLicense(
 export async function revokeLicense(
   db: Db,
   licenseId: string,
-  organizationId: string,
+  organizationId: string
 ): Promise<boolean> {
   const updated = await db
     .update(license)
     .set({ revokedAt: nowTs(), updatedAt: nowTs() })
-    .where(and(
-      eq(license.id, licenseId),
-      eq(license.organizationId, organizationId),
-      isNull(license.revokedAt),
-    ))
+    .where(
+      and(
+        eq(license.id, licenseId),
+        eq(license.organizationId, organizationId),
+        isNull(license.revokedAt)
+      )
+    )
     .returning({ id: license.id })
 
   return updated.length > 0
@@ -84,22 +84,19 @@ export async function revokeLicense(
 export async function disconnectServersBoundToLicense(
   db: Db,
   licenseId: string,
-  organizationId: string,
+  organizationId: string
 ): Promise<string[]> {
   const rows = await db
     .select({ id: server.id })
     .from(license)
     .innerJoin(server, eq(server.id, license.serverId))
-    .where(and(
-      eq(license.id, licenseId),
-      eq(license.organizationId, organizationId),
-    ))
+    .where(and(eq(license.id, licenseId), eq(license.organizationId, organizationId)))
 
   const serverIds: string[] = []
-  for (const row of rows) {
+  await forEachSequential(rows, async (row) => {
     serverIds.push(row.id)
     await revokeBoundDaemonKey(db, row.id)
-  }
+  })
   return serverIds
 }
 
@@ -111,7 +108,7 @@ export type LicenseAttachment =
 export async function inspectLicenseAttachment(
   db: Db,
   licenseId: string,
-  organizationId: string,
+  organizationId: string
 ): Promise<LicenseAttachment> {
   const rows = await db
     .select({
@@ -121,11 +118,13 @@ export async function inspectLicenseAttachment(
     })
     .from(license)
     .leftJoin(server, eq(server.id, license.serverId))
-    .where(and(
-      eq(license.id, licenseId),
-      eq(license.organizationId, organizationId),
-      isNull(license.revokedAt),
-    ))
+    .where(
+      and(
+        eq(license.id, licenseId),
+        eq(license.organizationId, organizationId),
+        isNull(license.revokedAt)
+      )
+    )
     .limit(1)
   const row = rows[0]
   if (!row) return { ok: false, reason: 'not_found' }
@@ -139,10 +138,10 @@ export async function inspectLicenseAttachment(
 export type InvalidateLicenseResult =
   | { ok: false; reason: 'not_found' }
   | {
-    ok: false
-    reason: 'attached'
-    boundServer: { id: string; name: string | null }
-  }
+      ok: false
+      reason: 'attached'
+      boundServer: { id: string; name: string | null }
+    }
   | { ok: true; serverIds: string[] }
 
 /**
@@ -156,7 +155,7 @@ export async function invalidateLicense(
   db: Db,
   licenseId: string,
   organizationId: string,
-  opts?: { force?: boolean },
+  opts?: { force?: boolean }
 ): Promise<InvalidateLicenseResult> {
   const rows = await db
     .select({
@@ -167,11 +166,13 @@ export async function invalidateLicense(
     })
     .from(license)
     .leftJoin(server, eq(server.id, license.serverId))
-    .where(and(
-      eq(license.id, licenseId),
-      eq(license.organizationId, organizationId),
-      isNull(license.revokedAt),
-    ))
+    .where(
+      and(
+        eq(license.id, licenseId),
+        eq(license.organizationId, organizationId),
+        isNull(license.revokedAt)
+      )
+    )
     .limit(1)
   const row = rows[0]
   if (!row) return { ok: false, reason: 'not_found' }
@@ -188,11 +189,7 @@ export async function invalidateLicense(
   const revoked = await revokeLicense(db, licenseId, organizationId)
   if (!revoked) return { ok: false, reason: 'not_found' }
   if (!opts?.force) return { ok: true, serverIds: [] }
-  const serverIds = await disconnectServersBoundToLicense(
-    db,
-    licenseId,
-    organizationId,
-  )
+  const serverIds = await disconnectServersBoundToLicense(db, licenseId, organizationId)
   return { ok: true, serverIds }
 }
 
@@ -204,7 +201,7 @@ export type LicenseBoundServer = {
 export async function listServersBoundToLicenses(
   db: Db,
   organizationId: string,
-  licenseIds: string[],
+  licenseIds: string[]
 ): Promise<Map<string, LicenseBoundServer>> {
   const bound = new Map<string, LicenseBoundServer>()
   if (licenseIds.length === 0) return bound
@@ -217,10 +214,7 @@ export async function listServersBoundToLicenses(
     })
     .from(license)
     .innerJoin(server, eq(server.id, license.serverId))
-    .where(and(
-      eq(license.organizationId, organizationId),
-      inArray(license.id, licenseIds),
-    ))
+    .where(and(eq(license.organizationId, organizationId), inArray(license.id, licenseIds)))
 
   for (const row of rows) {
     bound.set(row.licenseId, { id: row.id, name: row.name })
@@ -229,11 +223,8 @@ export async function listServersBoundToLicenses(
   return bound
 }
 
-export async function listLicenses(
-  db: Db,
-  organizationId: string,
-): Promise<LicenseRecord[]> {
-  return db
+export async function listLicenses(db: Db, organizationId: string): Promise<LicenseRecord[]> {
+  return await db
     .select({
       id: license.id,
       organizationId: license.organizationId,
@@ -241,15 +232,12 @@ export async function listLicenses(
       createdAt: license.createdAt,
     })
     .from(license)
-    .where(and(
-      eq(license.organizationId, organizationId),
-      isNull(license.revokedAt),
-    ))
+    .where(and(eq(license.organizationId, organizationId), isNull(license.revokedAt)))
 }
 
 export async function lookupActiveLicense(
   db: Db,
-  licenseId: string,
+  licenseId: string
 ): Promise<{ organizationId: string; token: string } | null> {
   const rows = await db
     .select({

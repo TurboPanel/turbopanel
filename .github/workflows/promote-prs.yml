@@ -1,0 +1,83 @@
+# Keeps the trunk → staging promotion PR open (Road to 0.2.x, versioning flow).
+#
+# Every green trunk canary ("Canary" succeeded, so a canary build exists for
+# that commit) makes sure a PR "Release Candidate <version>-rc.N" from trunk into
+# staging is open. Merging it is the one human act: cut-rc.yml then cuts the
+# next x.y.z-rc.N from that exact canary's bytes. The PR is opened with the
+# Release App's token, because a PR created with GITHUB_TOKEN never starts the
+# required `ci-ok` check.
+
+name: Keep the rc PR open
+
+on:
+  workflow_run:
+    workflows: [Canary]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: promote-prs
+  cancel-in-progress: false
+
+jobs:
+  rc-pr:
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      || (github.event.workflow_run.conclusion == 'success'
+          && github.event.workflow_run.head_branch == 'trunk')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mint a Release App token
+        id: app
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
+      - name: Check out the changelog script (TurboPanel/dev)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: TurboPanel/dev
+          ref: 5464e72c40aec3528fb10e6fc660583ad963b3cb
+          path: .promote
+          fetch-depth: 1
+          persist-credentials: false
+          sparse-checkout: scripts/promote
+          sparse-checkout-cone-mode: false
+
+      - name: Open or refresh the trunk → staging PR
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -eu
+          ahead="$(gh api "repos/$REPO/compare/staging...trunk" --jq .ahead_by)"
+          existing="$(gh pr list --repo "$REPO" --base staging --head trunk --state open --json number --jq '.[0].number // empty')"
+          if [ "$ahead" = "0" ]; then
+            echo "trunk has nothing staging lacks — no rc PR needed"
+            exit 0
+          fi
+          version="$(gh api "repos/$REPO/contents/deno.json?ref=trunk" --jq .content | base64 -d | jq -r .version)"
+          # The number after -rc. is the next one for this version: one past the
+          # highest rc tag that already exists.
+          last="$(gh api --paginate "repos/$REPO/git/matching-refs/tags/v$version-rc." --jq '.[].ref' | sed -E 's#.*-rc\.([0-9]+)$#\1#' | sort -n | tail -n 1)"
+          rc="$version-rc.$(( ${last:-0} + 1 ))"
+          title="Release Candidate $rc"
+          {
+            echo "Merging this cuts \`v$rc\` from the exact canary build of the merged trunk commit (same bytes, re-signed) and moves \`staging\`. It runs automatically after the merge (\`cut-rc.yml\`)."
+            echo
+            echo "**$ahead commit(s) on trunk not yet on staging:**"
+            echo
+            sh .promote/scripts/promote/changelog.sh "$REPO" staging trunk 50
+            echo
+            echo "Merge with a merge commit (staging takes merge commits only). Wait for \`ci-ok\` first."
+          } > body.md
+          if [ -n "$existing" ]; then
+            gh pr edit "$existing" --repo "$REPO" --title "$title" --body-file body.md
+            echo "refreshed #$existing"
+          else
+            gh pr create --repo "$REPO" --base staging --head trunk --title "$title" --body-file body.md
+          fi

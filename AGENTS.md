@@ -408,7 +408,7 @@ guard; `pnpm test:do` alone does not.
   daemon keeps reconnecting; `unknown` (no header and no field — an older
   instance) passes silently. Each floor tolerates every peer semver at or
   above the constant. Today both floors are **`0.1.0`** against package
-  **`0.1.2`**, so a `0.1.x` peer is in window and a `0.0.x` peer is not. The
+  **`0.1.3`**, so a `0.1.x` peer is in window and a `0.0.x` peer is not. The
   window is allowed to trail the current release by several minor versions;
   it is not a same-version lock and it does not impose an upgrade order.
   Bump `MIN_SUPPORTED_DAEMON_VERSION` and `MIN_SUPPORTED_INSTANCE_VERSION`
@@ -433,7 +433,12 @@ guard; `pnpm test:do` alone does not.
   `version-wire.ts` files) and the daemon checks `instanceSupports()` before
   treating the peer as able to speak it. `update-progress`
   (`update-progress-v1`) is the worked example — fire-and-forget progress,
-  ignored by a peer that does not list the feature.
+  ignored by a peer that does not list the feature. `managed-health-v1` is
+  the worked example in the other direction, a control-plane-initiated
+  correlated request (`managed-health-request` / `managed-health-result`): the
+  control plane reads the daemon's stored `hello.features` and sends the
+  request only to a daemon that lists it, otherwise it keeps the stored
+  observation (`src/client/managed/health-probe.ts`).
   Both wires are expand-only by convention.
 - **`pnpm notices:generate` / `notices:check`** — `THIRD_PARTY_NOTICES.md` from
   `pnpm-lock.yaml` plus the JSR/npm graph in `deno.lock`. Wired into `test:hook`
@@ -1027,7 +1032,9 @@ routed by `src/deno.ts` and imported lazily so the server path (which loads
 the DuckDB addon at module evaluation and so needs the vendored `.so` on
 `LD_LIBRARY_PATH`) is never touched by an install-time run:
 
-**Promotion (`.github/workflows/promote.yml`):** one click moves a tested build up a channel — `to=rc` turns a canary build (`source` = build id, canary version or `manifest-<version>.json` from the rolling canary release) into `v<base>-rc.1` and fast-forwards `staging`; `to=release` turns `v<base>-rc.1` into `v<base>` (`releases/latest`; the rolling `rc` pointer is re-pointed at it) and fast-forwards `live`. Same bytes: the source manifest's signature and every asset's sha256/size are verified first, the assets are renamed, the manifest rewritten and re-signed, and the tag is created at the source commit (an existing tag elsewhere = burned version, fails). The three jobs are `TurboPanel/dev`'s `gh-promote.yml` → `gh-release.yml` → `gh-promote-finalize.yml` pinned to ONE dev sha, passed again as `dev-ref`; `signer-ref` is the turbopaneld commit carrying `scripts/sign-manifest.ts` + the key pin — bump it together with the signer pin in `release.yml`. Approval = the `release` environment (prepare, then finalize). `to=release` needs the TurboPanel Release App secrets (`RELEASE_APP_ID` / `RELEASE_APP_PRIVATE_KEY`: bare tags and the `live` push are ruleset-bypass only) and refuses to start without them; `to=rc` runs on `GITHUB_TOKEN` and only its `staging` push fails — with the exact manual `git push` — until the App exists. An rc is refused while `.changeset/*.md` are pending at the source commit (no `.changeset/` → skipped with a notice). `release.yml` ignores tag pushes by `[bot]` actors so an App-created tag does not race the promotion with a from-source rebuild. Order across repos: turbopaneld → turbopanel → ui → website → dev. Full contract: `../dev/AGENTS.md` → Release promotion.
+**Automatic promotion (two PRs, the normal path):** `promote-prs.yml` keeps a trunk → staging PR "Release Candidate x.y.z-rc.N" open after every green `Canary` run (opened with the Release App token so `ci-ok` runs). Merging it (merge commit) fires `cut-rc.yml` on the push to `staging`: it finds the merged PR's head commit, waits for the canary manifest whose `.commit` is that commit, and promotes those exact bytes to the next `x.y.z-rc.N` (no approval gate), then opens/refreshes the staging → live PR "Release x.y.z". Merging that fires `cut-release.yml`: newest rc.N → `vx.y.z` (`releases/latest`), behind the `release` environment approval (allowed branches: `trunk` and `live`), then a "Start <next>" PR bumps `deno.json` / `package.json` / `sonar-project.properties` (patch by default, `minor` label = minor, never below the highest minor across the repos). **Repos release independently — no release waits on a matching release in another repo, except a new minor (x.y.0):** turbopanel and ui each need an rc of it, then the daemon releases it, then turbopanel and ui release it. `minor-gate` in `build.yml` (dev `gh-minor-gate.yml`, role=dependent) keeps a minor Release PR red until the daemon's `vx.y.0` release exists; patches are never gated. `cut-rc.yml` re-runs the daemon's waiting Release PR check after cutting an rc. PRs into staging/live pair with sibling `trunk` (not sibling `staging`) in `build.yml`, and skip Sonar.
+
+**Promotion, break-glass (`.github/workflows/promote.yml`):** the same three jobs as a manual form, for when the automatic path cannot run: `to=rc` turns a canary build (`source` = build id, canary version or `manifest-<version>.json` from the rolling canary release) into the next `v<base>-rc.<N>` and fast-forwards `staging`; `to=release` turns the newest `v<base>-rc.<N>` into `v<base>` (`releases/latest`; the rolling `rc` pointer is re-pointed at it) and fast-forwards `live`. Same bytes: the source manifest's signature and every asset's sha256/size are verified first, the assets are renamed, the manifest rewritten and re-signed, and the tag is created at the source commit (an existing tag elsewhere = burned version, fails). The three jobs are `TurboPanel/dev`'s `gh-promote.yml` → `gh-release.yml` → `gh-promote-finalize.yml` pinned to ONE dev sha, passed again as `dev-ref`; `signer-ref` is the turbopaneld commit carrying `scripts/sign-manifest.ts` + the key pin — bump it together with the signer pin in `release.yml`. Approval = the `release` environment (prepare, then finalize). `to=release` needs the TurboPanel Release App secrets (`RELEASE_APP_ID` / `RELEASE_APP_PRIVATE_KEY`: bare tags and the `live` push are ruleset-bypass only) and refuses to start without them; `to=rc` runs on `GITHUB_TOKEN` and only its `staging` push fails — with the exact manual `git push` — until the App exists. `release.yml` ignores tag pushes by `[bot]` actors so an App-created tag does not race the promotion with a from-source rebuild. Full contract: `../dev/AGENTS.md` → Release promotion.
 
 - `migrate` (`src/cli/migrate.ts`) — the same two gates as `pnpm migrate`:
   refuse a server without `uuidv7()` (PostgreSQL 18+), then apply the

@@ -1106,10 +1106,11 @@ function lintUnsupportedDeployKey(
 ): void {
   if (classifyDeployKey(key)?.state !== 'unsupported') return
   const reason = unsupportedDeployReason(key)
+  const because = reason ? ` \u2014 ${reason}` : ''
   issues.push({
     level: strict ? 'error' : 'warning',
     code: 'field_unsupported',
-    message: `deploy.${key} is not supported by TurboPanel${reason ? ` \u2014 ${reason}` : ''}`,
+    message: `deploy.${key} is not supported by TurboPanel${because}`,
     path: `services.${name}.deploy.${key}`,
     line: nodeLine(keyNode, lineCounter),
     // Save-time keeps a draft editable; deploy-time refuses it.

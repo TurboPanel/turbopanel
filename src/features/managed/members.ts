@@ -14,10 +14,8 @@ import {
 } from '../net/private-endpoint.ts'
 import { container, replica, server } from '../../db/schema.ts'
 import type { ManagedReplicationHealth } from '../../contracts/commands/schemas.ts'
-import {
-  MANAGED_PRIVATE_PORT_MAX,
-  MANAGED_PRIVATE_PORT_MIN,
-} from './ingress-ports.ts'
+import { MANAGED_PRIVATE_PORT_MAX, MANAGED_PRIVATE_PORT_MIN } from './ingress-ports.ts'
+import { firstSequential, forEachSequential } from '../../lib/sequential.ts'
 
 /**
  * High contiguous host-port range for multi-member private listeners
@@ -96,15 +94,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-function parseReplicationHealth(
-  metadata: unknown,
-): ManagedReplicationHealth | undefined {
+function parseReplicationHealth(metadata: unknown): ManagedReplicationHealth | undefined {
   if (!isRecord(metadata) || !isRecord(metadata.replication)) return undefined
   const r = metadata.replication
-  if (
-    typeof r.state !== 'string' ||
-    typeof r.observedAt !== 'string'
-  ) {
+  if (typeof r.state !== 'string' || typeof r.observedAt !== 'string') {
     return undefined
   }
   const health: ManagedReplicationHealth = {
@@ -127,7 +120,7 @@ function parseReplicationHealth(
  */
 export async function ensureManagedPrimaryMember(
   db: Db,
-  params: { managedId: string; serverId: string },
+  params: { managedId: string; serverId: string }
 ): Promise<ManagedMemberRow> {
   const { managedId, serverId } = params
 
@@ -169,17 +162,12 @@ export async function ensureManagedPrimaryMember(
   const again = await listManagedMembers(db, managedId)
   const raced = again.find((row) => row.role === 'primary' || row.ordinal === 1)
   if (!raced) {
-    throw new Error(
-      `managed primary member missing after upsert (managedId=${managedId})`,
-    )
+    throw new Error(`managed primary member missing after upsert (managedId=${managedId})`)
   }
   return raced
 }
 
-export async function listManagedMembers(
-  db: Db,
-  managedId: string,
-): Promise<ManagedMemberRow[]> {
+export async function listManagedMembers(db: Db, managedId: string): Promise<ManagedMemberRow[]> {
   return await db
     .select(MEMBER_RETURNING)
     .from(replica)
@@ -190,7 +178,7 @@ export async function listManagedMembers(
 /** List members for many managed ids in one query (org list path). */
 export async function listManagedMembersForManagedIds(
   db: Db,
-  managedIds: readonly string[],
+  managedIds: readonly string[]
 ): Promise<ManagedMemberRow[]> {
   if (managedIds.length === 0) return []
   return await db
@@ -201,9 +189,7 @@ export async function listManagedMembersForManagedIds(
 }
 
 /** Smallest unused ordinal ≥ 2 (no replica-count ceiling). */
-export function nextReplicaOrdinal(
-  members: readonly ManagedMemberRow[],
-): number {
+export function nextReplicaOrdinal(members: readonly ManagedMemberRow[]): number {
   const used = new Set(members.map((m) => m.ordinal))
   let ordinal = 2
   while (used.has(ordinal)) {
@@ -214,19 +200,20 @@ export function nextReplicaOrdinal(
 
 export function serializeManagedMember(
   row: ManagedMemberRow,
-  serverDisplayName: string | null,
+  serverDisplayName: string | null
 ): SerializedManagedMember {
   const role: ManagedMemberRole = row.role === 'replica' ? 'replica' : 'primary'
-  const replicaClass = role === 'replica' &&
-      (row.replicaClass === 'failover' || row.replicaClass === 'read')
-    ? row.replicaClass
-    : null
-  const transport = row.replicationTransport === 'local' ||
-      row.replicationTransport === 'datacenter' ||
-      row.replicationTransport === 'fabric' ||
-      row.replicationTransport === 'public'
-    ? row.replicationTransport
-    : null
+  const replicaClass =
+    role === 'replica' && (row.replicaClass === 'failover' || row.replicaClass === 'read')
+      ? row.replicaClass
+      : null
+  const transport =
+    row.replicationTransport === 'local' ||
+    row.replicationTransport === 'datacenter' ||
+    row.replicationTransport === 'fabric' ||
+    row.replicationTransport === 'public'
+      ? row.replicationTransport
+      : null
   const out: SerializedManagedMember = {
     id: row.id,
     serverId: row.serverId,
@@ -249,7 +236,7 @@ export function serializeManagedMember(
  */
 export async function listSerializedManagedMembers(
   db: Db,
-  managedId: string,
+  managedId: string
 ): Promise<SerializedManagedMember[]> {
   const rows = await db
     .select({
@@ -265,9 +252,7 @@ export async function listSerializedManagedMembers(
 }
 
 /** A read replica is the only member allowed on the fabric/public ladder. */
-function isReadMember(
-  row: Readonly<Pick<ManagedMemberRow, 'role' | 'replicaClass'>>,
-): boolean {
+function isReadMember(row: Readonly<Pick<ManagedMemberRow, 'role' | 'replicaClass'>>): boolean {
   return row.role === 'replica' && row.replicaClass === 'read'
 }
 
@@ -285,7 +270,7 @@ function isReadMember(
  */
 export function replicationPurposeForMemberPair(
   a: Readonly<Pick<ManagedMemberRow, 'role' | 'replicaClass'>>,
-  b: Readonly<Pick<ManagedMemberRow, 'role' | 'replicaClass'>>,
+  b: Readonly<Pick<ManagedMemberRow, 'role' | 'replicaClass'>>
 ): PrivateEndpointPurpose {
   return isReadMember(a) || isReadMember(b) ? 'read-replication' : 'failover-replication'
 }
@@ -297,11 +282,8 @@ export function replicationPurposeForMemberPair(
 export async function resolveMemberTransports(
   db: Db,
   members: readonly ManagedMemberRow[],
-  purpose: PrivateEndpointPurpose,
-): Promise<
-  | Map<string, PrivateEndpointTransport>
-  | PrivateEndpointError
-> {
+  purpose: PrivateEndpointPurpose
+): Promise<Map<string, PrivateEndpointTransport> | PrivateEndpointError> {
   const primary = members.find((m) => m.role === 'primary')
   if (!primary) {
     return new Map()
@@ -347,7 +329,7 @@ type OccupiedPrivatePortRow = {
  */
 function buildUsedPrivatePortsByServer(
   current: readonly ManagedMemberRow[],
-  occupied: readonly OccupiedPrivatePortRow[],
+  occupied: readonly OccupiedPrivatePortRow[]
 ): Map<string, Set<number>> {
   const usedByServer = new Map<string, Set<number>>()
   for (const member of current) {
@@ -371,11 +353,7 @@ function buildUsedPrivatePortsByServer(
 
 /** Smallest free port in the managed private-port range, or null when full. */
 function findFreePrivatePort(used: ReadonlySet<number>): number | null {
-  for (
-    let port = MANAGED_PRIVATE_PORT_MIN;
-    port <= MANAGED_PRIVATE_PORT_MAX;
-    port++
-  ) {
+  for (let port = MANAGED_PRIVATE_PORT_MIN; port <= MANAGED_PRIVATE_PORT_MAX; port++) {
     if (!used.has(port)) return port
   }
   return null
@@ -388,7 +366,7 @@ function findFreePrivatePort(used: ReadonlySet<number>): number | null {
  */
 export async function ensureMemberPrivatePorts(
   db: Db,
-  members: readonly ManagedMemberRow[],
+  members: readonly ManagedMemberRow[]
 ): Promise<ManagedMemberRow[] | ManagedPrivatePortExhaustedError> {
   if (members.length === 0) return []
 
@@ -400,28 +378,28 @@ export async function ensureMemberPrivatePorts(
   const inputIds = new Set(members.map((m) => m.id))
 
   if (members.length <= 1) {
-    for (const member of members) {
+    await forEachSequential(members, async (member) => {
       if (member.privatePort !== null) {
         await db
           .update(replica)
           .set({ privatePort: null, updatedAt: new Date().toISOString() })
           .where(eq(replica.id, member.id))
       }
-    }
-    return (await listManagedMembers(db, members[0]!.managedId))
-      .filter((m) => inputIds.has(m.id))
+    })
+    return (await listManagedMembers(db, members[0]!.managedId)).filter((m) => inputIds.has(m.id))
   }
 
   const managedId = members[0]!.managedId
   return await db.transaction(async (tx) => {
     // Full member list only for occupied-port accounting — excluded members'
     // ports must still count as taken on their servers.
-    const current = (await tx
-      .select(MEMBER_RETURNING)
-      .from(replica)
-      .where(eq(replica.managedId, managedId))
-      .orderBy(asc(replica.ordinal)))
-      .filter((m) => inputIds.has(m.id))
+    const current = (
+      await tx
+        .select(MEMBER_RETURNING)
+        .from(replica)
+        .where(eq(replica.managedId, managedId))
+        .orderBy(asc(replica.ordinal))
+    ).filter((m) => inputIds.has(m.id))
 
     const serverIds = [...new Set(current.map((m) => m.serverId))]
     const occupied = await tx
@@ -431,24 +409,19 @@ export async function ensureMemberPrivatePorts(
         id: replica.id,
       })
       .from(replica)
-      .where(
-        and(
-          inArray(replica.serverId, serverIds),
-          isNotNull(replica.privatePort),
-        ),
-      )
+      .where(and(inArray(replica.serverId, serverIds), isNotNull(replica.privatePort)))
 
     const usedByServer = buildUsedPrivatePortsByServer(current, occupied)
 
-    for (const member of current) {
-      if (member.privatePort !== null) continue
+    const exhausted = await firstSequential(current, async (member) => {
+      if (member.privatePort !== null) return undefined
       const used = usedByServer.get(member.serverId) ?? new Set()
       const assigned = findFreePrivatePort(used)
       if (assigned === null) {
         return {
           kind: 'managed_private_port_exhausted',
           serverId: member.serverId,
-        }
+        } as const
       }
       used.add(assigned)
       await tx
@@ -458,20 +431,23 @@ export async function ensureMemberPrivatePorts(
           updatedAt: new Date().toISOString(),
         })
         .where(eq(replica.id, member.id))
-    }
+      return undefined
+    })
+    if (exhausted) return exhausted
 
-    return (await tx
-      .select(MEMBER_RETURNING)
-      .from(replica)
-      .where(eq(replica.managedId, managedId))
-      .orderBy(asc(replica.ordinal)))
-      .filter((m) => inputIds.has(m.id))
+    return (
+      await tx
+        .select(MEMBER_RETURNING)
+        .from(replica)
+        .where(eq(replica.managedId, managedId))
+        .orderBy(asc(replica.ordinal))
+    ).filter((m) => inputIds.has(m.id))
   })
 }
 
 async function loadMemberContainerNames(
   db: Db,
-  members: readonly ManagedMemberRow[],
+  members: readonly ManagedMemberRow[]
 ): Promise<Map<string, string>> {
   const out = new Map<string, string>()
   if (members.length === 0) return out
@@ -485,12 +461,7 @@ async function loadMemberContainerNames(
       ordinal: container.ordinal,
     })
     .from(container)
-    .where(
-      and(
-        inArray(container.serverId, serverIds),
-        eq(container.role, 'service'),
-      ),
-    )
+    .where(and(inArray(container.serverId, serverIds), eq(container.role, 'service')))
 
   for (const member of members) {
     const match = rows.find(
@@ -498,7 +469,7 @@ async function loadMemberContainerNames(
         r.serverId === member.serverId &&
         r.ordinal === member.ordinal &&
         typeof r.containerName === 'string' &&
-        r.containerName.length > 0,
+        r.containerName.length > 0
     )
     if (match?.containerName) {
       out.set(member.id, match.containerName)
@@ -509,7 +480,7 @@ async function loadMemberContainerNames(
 
 function unavailablePeerError(
   fromMember: ManagedMemberRow,
-  other: ManagedMemberRow,
+  other: ManagedMemberRow
 ): PrivateEndpointError {
   return {
     kind: 'private_path_unavailable',
@@ -522,7 +493,7 @@ function resolveCoResidentPeer(
   fromMember: ManagedMemberRow,
   other: ManagedMemberRow,
   containerNames: ReadonlyMap<string, string>,
-  defaultPort: number,
+  defaultPort: number
 ): ManagedMemberPeer | PrivateEndpointError {
   const containerName = containerNames.get(other.id)
   if (!containerName) return unavailablePeerError(fromMember, other)
@@ -540,10 +511,7 @@ function resolveCoResidentPeer(
 function resolveRemotePeer(
   fromMember: ManagedMemberRow,
   other: ManagedMemberRow,
-  endpoints: ReadonlyMap<
-    string,
-    ResolvedPrivateEndpoint | PrivateEndpointError
-  >,
+  endpoints: ReadonlyMap<string, ResolvedPrivateEndpoint | PrivateEndpointError>
 ): ManagedMemberPeer | PrivateEndpointError {
   // Address is the peer's `tp0` relay address when transport is `fabric`,
   // matching the address the peer actually publishes.
@@ -570,7 +538,7 @@ function resolveRemotePeer(
 async function resolvePeerEndpointsByPurpose(
   db: Db,
   fromMember: ManagedMemberRow,
-  remotePeers: readonly ManagedMemberRow[],
+  remotePeers: readonly ManagedMemberRow[]
 ): Promise<Map<string, ResolvedPrivateEndpoint | PrivateEndpointError>> {
   const byPurpose = new Map<PrivateEndpointPurpose, string[]>()
   for (const peer of remotePeers) {
@@ -580,11 +548,8 @@ async function resolvePeerEndpointsByPurpose(
     else byPurpose.set(purpose, [peer.serverId])
   }
 
-  const endpoints = new Map<
-    string,
-    ResolvedPrivateEndpoint | PrivateEndpointError
-  >()
-  for (const [purpose, toServerIds] of byPurpose) {
+  const endpoints = new Map<string, ResolvedPrivateEndpoint | PrivateEndpointError>()
+  await forEachSequential(byPurpose, async ([purpose, toServerIds]) => {
     const resolved = await resolvePrivateEndpoints(db, {
       fromServerId: fromMember.serverId,
       toServerIds,
@@ -594,7 +559,7 @@ async function resolvePeerEndpointsByPurpose(
       const entry = resolved.get(serverId)
       if (entry) endpoints.set(serverId, entry)
     }
-  }
+  })
   return endpoints
 }
 
@@ -612,7 +577,7 @@ export async function resolvePeersForMember(
   db: Db,
   members: readonly ManagedMemberRow[],
   fromMember: ManagedMemberRow,
-  defaultPort: number,
+  defaultPort: number
 ): Promise<ManagedMemberPeer[] | PrivateEndpointError> {
   const others = members.filter((m) => m.id !== fromMember.id)
   if (others.length === 0) return []
@@ -621,14 +586,15 @@ export async function resolvePeersForMember(
   const endpoints = await resolvePeerEndpointsByPurpose(
     db,
     fromMember,
-    others.filter((m) => m.serverId !== fromMember.serverId),
+    others.filter((m) => m.serverId !== fromMember.serverId)
   )
 
   const peers: ManagedMemberPeer[] = []
   for (const other of others) {
-    const peer = other.serverId === fromMember.serverId
-      ? resolveCoResidentPeer(fromMember, other, containerNames, defaultPort)
-      : resolveRemotePeer(fromMember, other, endpoints)
+    const peer =
+      other.serverId === fromMember.serverId
+        ? resolveCoResidentPeer(fromMember, other, containerNames, defaultPort)
+        : resolveRemotePeer(fromMember, other, endpoints)
     if ('kind' in peer) return peer
     peers.push(peer)
   }
@@ -644,7 +610,7 @@ export async function insertManagedReplicaMember(
     replicaClass: ManagedReplicaClass
     readEligible: boolean
     replicationTransport: PrivateEndpointTransport | null
-  },
+  }
 ): Promise<ManagedMemberRow> {
   const [inserted] = await db
     .insert(replica)
@@ -668,7 +634,7 @@ export async function insertManagedReplicaMember(
 export async function updateManagedMemberReadEligible(
   db: Db,
   memberId: string,
-  readEligible: boolean,
+  readEligible: boolean
 ): Promise<ManagedMemberRow | null> {
   const [updated] = await db
     .update(replica)
@@ -684,7 +650,7 @@ export async function updateManagedMemberReadEligible(
 export async function updateManagedMemberReplicaClass(
   db: Db,
   memberId: string,
-  replicaClass: ManagedReplicaClass,
+  replicaClass: ManagedReplicaClass
 ): Promise<ManagedMemberRow | null> {
   const [updated] = await db
     .update(replica)
@@ -697,16 +663,13 @@ export async function updateManagedMemberReplicaClass(
   return updated ?? null
 }
 
-export async function deleteManagedMember(
-  db: Db,
-  memberId: string,
-): Promise<void> {
+export async function deleteManagedMember(db: Db, memberId: string): Promise<void> {
   await db.delete(replica).where(eq(replica.id, memberId))
 }
 
 export async function findManagedMember(
   db: Db,
-  memberId: string,
+  memberId: string
 ): Promise<ManagedMemberRow | null> {
   const [row] = await db
     .select(MEMBER_RETURNING)
@@ -722,10 +685,7 @@ export function countReplicas(members: readonly ManagedMemberRow[]): number {
 }
 
 /** Mark all members applying (best-effort status stamp before fan-out). */
-export async function markMembersApplying(
-  db: Db,
-  managedId: string,
-): Promise<void> {
+export async function markMembersApplying(db: Db, managedId: string): Promise<void> {
   await db
     .update(replica)
     .set({
@@ -738,7 +698,7 @@ export async function markMembersApplying(
 export async function updateMemberReplicationTransport(
   db: Db,
   memberId: string,
-  transport: PrivateEndpointTransport | null,
+  transport: PrivateEndpointTransport | null
 ): Promise<void> {
   await db
     .update(replica)
@@ -757,9 +717,10 @@ export async function updateManagedMemberObservedReplication(
   db: Db,
   memberId: string,
   observed: {
-    status: string
+    /** Omitted by the on-demand probe: it observes replication, not lifecycle. */
+    status?: string
     replication?: ManagedReplicationHealth
-  },
+  }
 ): Promise<void> {
   const [existing] = await db
     .select({ metadata: replica.metadata })
@@ -776,7 +737,7 @@ export async function updateManagedMemberObservedReplication(
   await db
     .update(replica)
     .set({
-      status: observed.status,
+      ...(observed.status !== undefined ? { status: observed.status } : {}),
       metadata: prev,
       updatedAt: new Date().toISOString(),
     })
@@ -784,7 +745,7 @@ export async function updateManagedMemberObservedReplication(
 }
 
 export function isManagedPrivatePortExhaustedError(
-  value: unknown,
+  value: unknown
 ): value is ManagedPrivatePortExhaustedError {
   return (
     typeof value === 'object' &&

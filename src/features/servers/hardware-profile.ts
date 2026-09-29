@@ -8,8 +8,7 @@
  * feature → surface boundary (`scripts/check-import-boundaries.mjs`).
  */
 import { eq, sql } from 'drizzle-orm'
-import type { Db } from '../../db/connection.ts'
-import type { getDaemonCellRegistry } from '../../db/connection.ts'
+import type { Db, getDaemonCellRegistry } from '../../db/connection.ts'
 import { organization, server, tier } from '../../db/schema.ts'
 import {
   type DaemonOutboundEnvelope,

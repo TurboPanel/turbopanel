@@ -8,6 +8,10 @@ export type MailpitSendConfig = {
 
 export type MailpitSendOutcome = { ok: true } | { ok: false; error: string; permanent: boolean }
 
+function thrownErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
 function isPermanentMailpitStatus(status: number): boolean {
   return status >= 400 && status < 500
 }
@@ -49,11 +53,12 @@ export async function sendMailpitJob(
     }
   } catch (error) {
     const timedOut = error instanceof DOMException && error.name === 'TimeoutError'
-    const errMsg = timedOut
-      ? `Mailpit did not answer within ${EMAIL_PROVIDER_TIMEOUT_MS / 1000} s`
-      : error instanceof Error
-        ? error.message
-        : String(error)
-    return { ok: false, error: errMsg, permanent: false }
+    return {
+      ok: false,
+      error: timedOut
+        ? `Mailpit did not answer within ${EMAIL_PROVIDER_TIMEOUT_MS / 1000} s`
+        : thrownErrorMessage(error),
+      permanent: false,
+    }
   }
 }

@@ -14,6 +14,7 @@ import {
   MAX_EXECUTION_LOG_TOTAL_BYTES,
   type ExecutionLogStore,
 } from './types.ts'
+import { forEachSequential } from '../../lib/sequential.ts'
 
 /** Fresh, isolated store per case. May allocate a temp dir / fake bucket. */
 export type ExecutionLogStoreFactory = () => Promise<{
@@ -34,10 +35,7 @@ function assertEquals(actual: unknown, expected: unknown, message: string): void
   }
 }
 
-async function readAllText(
-  store: ExecutionLogStore,
-  commandId: string
-): Promise<string> {
+async function readAllText(store: ExecutionLogStore, commandId: string): Promise<string> {
   const result = await store.readFrom(commandId, 0, MAX_EXECUTION_LOG_TOTAL_BYTES)
   return result ? decoder.decode(result.bytes) : ''
 }
@@ -123,7 +121,11 @@ export const executionLogStoreConformanceCases: ExecutionLogConformanceCase[] = 
 
       const read = await store.readFrom(COMMAND_ID, 0, 1024)
       assert(read, 'sealed read present')
-      assertEquals(decoder.decode(read.bytes), 'start\nend\n', 'sealed transcript survives compaction')
+      assertEquals(
+        decoder.decode(read.bytes),
+        'start\nend\n',
+        'sealed transcript survives compaction'
+      )
       assertEquals(read.sealed, true, 'sealed flag set')
 
       let thrown: unknown
@@ -156,7 +158,11 @@ export const executionLogStoreConformanceCases: ExecutionLogConformanceCase[] = 
       const second = await store.seal(COMMAND_ID)
       assert(first && second, 'both seals return a result')
       assertEquals(second.bytes, first.bytes, 'repeat seal reports the same size')
-      assertEquals(await readAllText(store, COMMAND_ID), 'x', 'repeat seal preserves the transcript')
+      assertEquals(
+        await readAllText(store, COMMAND_ID),
+        'x',
+        'repeat seal preserves the transcript'
+      )
     },
   },
   {
@@ -165,9 +171,10 @@ export const executionLogStoreConformanceCases: ExecutionLogConformanceCase[] = 
       // Fill exactly to the cap with the largest chunks the contract allows.
       const chunk = new Uint8Array(256 * 1024).fill(0x61)
       const chunkCount = MAX_EXECUTION_LOG_TOTAL_BYTES / chunk.byteLength
-      for (let seq = 0; seq < chunkCount; seq++) {
-        await store.appendChunk(COMMAND_ID, { seq, bytes: chunk })
-      }
+      await forEachSequential(
+        Array.from({ length: chunkCount }, (_, seq) => seq),
+        (seq) => store.appendChunk(COMMAND_ID, { seq, bytes: chunk })
+      )
 
       const overflow = await store.appendChunk(COMMAND_ID, {
         seq: chunkCount,
@@ -222,9 +229,9 @@ export const executionLogStoreConformanceCases: ExecutionLogConformanceCase[] = 
       // Interleave sizes so a mis-assembled read (concatenating whatever came
       // back instead of honoring offsets) produces visibly wrong output.
       const chunks = ['a', 'bbbb', 'cc', 'dddddddd', 'e']
-      for (const [seq, text] of chunks.entries()) {
-        await store.appendChunk(COMMAND_ID, { seq, bytes: encoder.encode(text) })
-      }
+      await forEachSequential(chunks, (text, seq) =>
+        store.appendChunk(COMMAND_ID, { seq, bytes: encoder.encode(text) })
+      )
       assertEquals(await readAllText(store, COMMAND_ID), chunks.join(''), 'offsets are stable')
 
       await store.seal(COMMAND_ID)
@@ -307,7 +314,7 @@ export const executionLogStoreConformanceCases: ExecutionLogConformanceCase[] = 
 export async function runExecutionLogStoreConformance(
   factory: ExecutionLogStoreFactory
 ): Promise<void> {
-  for (const testCase of executionLogStoreConformanceCases) {
+  await forEachSequential(executionLogStoreConformanceCases, async (testCase) => {
     const { store, cleanup } = await factory()
     try {
       await testCase.run(store)
@@ -316,5 +323,5 @@ export async function runExecutionLogStoreConformance(
     } finally {
       await cleanup?.()
     }
-  }
+  })
 }

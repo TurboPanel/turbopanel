@@ -436,7 +436,8 @@ export function createMemoryUpgradeStore(input?: {
     pageFleet: (query, colocatedServerId) => {
       const rows = facts.filter((fact) => memoryFleetStatus(fact, query.status, query.targetCommit))
       const limit = clampPageLimit(query.limit)
-      const offset = query.offset > 0 ? query.offset : 0
+      // `|| 0` first: NaN must land on 0, as `offset > 0 ? offset : 0` had it (Math.max(NaN, 0) is NaN).
+      const offset = Math.max(query.offset || 0, 0)
       return Promise.resolve({
         total: rows.length,
         facts: rows
@@ -747,7 +748,8 @@ async function pageFleetFacts(
 ): Promise<{ total: number; facts: FleetServerFact[] }> {
   const where = fleetStatusWhere(query.status, query.targetCommit)
   const limit = clampPageLimit(query.limit)
-  const offset = query.offset > 0 ? query.offset : 0
+  // `|| 0` first: NaN must land on 0, as `offset > 0 ? offset : 0` had it (Math.max(NaN, 0) is NaN).
+  const offset = Math.max(query.offset || 0, 0)
   const [rows, counted] = await Promise.all([
     db
       .select(FLEET_ROW)
@@ -885,13 +887,52 @@ function memoryTickWindow(
     }
   }
   const phase = first.phase
-  let batchIndex = first.batchIndex
+  const batchIndex = lowestOpenBatch(open, phase, first.batchIndex)
+  const afterId = cursorAfterId(cursor, phase, batchIndex)
+  return {
+    steps: memoryTickPage(open, phase, batchIndex, afterId, cap),
+    counts,
+    phase,
+    batchIndex,
+    failedPlatformPhase: failedPhase,
+    allTerminal: false,
+  }
+}
+
+/** The lowest batch still open in `phase`, starting from the head step's. */
+function lowestOpenBatch(
+  open: readonly UpgradeStepRow[],
+  phase: UpgradePhase,
+  headBatchIndex: number
+): number {
+  let batchIndex = headBatchIndex
   for (const step of open) {
     if (step.phase !== phase) continue
     if (step.batchIndex < batchIndex) batchIndex = step.batchIndex
   }
-  const afterId =
-    cursor && cursor.phase === phase && cursor.batchIndex === batchIndex ? cursor.afterId : null
+  return batchIndex
+}
+
+/**
+ * Where the last tick stopped: the cursor's `afterId`, but only while it
+ * still names this phase and batch. Any other cursor is stale and ignored.
+ */
+function cursorAfterId(
+  cursor: UpgradeTickCursor | null,
+  phase: UpgradePhase,
+  batchIndex: number
+): string | null {
+  return cursor?.phase === phase && cursor.batchIndex === batchIndex ? cursor.afterId : null
+}
+
+/** Up to `cap` open steps of one phase and batch, in order, after `afterId`. */
+function memoryTickPage(
+  open: readonly UpgradeStepRow[],
+  phase: UpgradePhase,
+  batchIndex: number,
+  afterId: string | null,
+  cap: number
+): UpgradeStepRow[] {
   const page: UpgradeStepRow[] = []
   for (const step of open) {
     if (page.length >= cap) break
@@ -899,14 +940,7 @@ function memoryTickWindow(
     if (afterId && step.id.localeCompare(afterId) <= 0) continue
     page.push(structuredClone(step))
   }
-  return {
-    steps: page,
-    counts,
-    phase,
-    batchIndex,
-    failedPlatformPhase: failedPhase,
-    allTerminal: false,
-  }
+  return page
 }
 
 async function countUpgradeSteps(db: Db, upgradeId: string): Promise<StepSummary> {
@@ -979,8 +1013,7 @@ async function loadTickWindow(
   }
   const phase = asTickPhase(opened.phase)
   const batchIndex = opened.batchIndex
-  const afterId =
-    cursor && cursor.phase === phase && cursor.batchIndex === batchIndex ? cursor.afterId : null
+  const afterId = cursorAfterId(cursor, phase, batchIndex)
   const filters = [
     eq(upgradeStep.upgradeId, upgradeId),
     sql`coalesce(${upgradeStep.detail}->>'phase', 'fleet') = ${phase}`,

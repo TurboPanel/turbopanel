@@ -66,14 +66,18 @@ import type {
   UpgradeRunRow,
   UpgradeStepRow,
   UpgradeStore,
+  UpgradeTickWindow,
 } from './store.ts'
-import type { UpgradePhase, UpgradeSource, UpgradeStepUnit } from './vocabulary.ts'
 import {
   UPGRADE_STEP_ACTIVE_STATUSES,
+  type UpgradePhase,
+  type UpgradeSource,
   type UpgradeStepErrorCode,
   type UpgradeStepStatus,
+  type UpgradeStepUnit,
 } from './vocabulary.ts'
 import type { UpgradeSettings } from '../settings/upgrade-settings.ts'
+import { forEachSequential } from '../../lib/sequential.ts'
 
 export type UpgradePreflight = {
   ok: true
@@ -191,6 +195,26 @@ function admitsFeature(fact: FleetServerFact | undefined): boolean {
   return fact?.features.includes(MANAGED_UPGRADE_FEATURE) === true
 }
 
+function checkManagedFeature(
+  target: UpgradeTarget,
+  colocated: FleetServerFact | undefined,
+  checks: UpgradePreflight['checks'],
+  blockers: string[]
+): void {
+  const managed = admitsFeature(colocated)
+  checks.push({
+    id: 'managed-upgrade-v1',
+    label: 'Co-located daemon can back up and roll back',
+    passed: managed,
+    detail: managed ? undefined : daemonOnlyUpdateCommand(target.daemon?.manifestUrl ?? null),
+  })
+  if (!managed) {
+    blockers.push(
+      'The co-located daemon does not advertise managed-upgrade-v1. Update only that daemon with a pinned manifest, then start again.'
+    )
+  }
+}
+
 export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeCoordinator {
   const resolveTarget = deps.resolveTarget ?? (() => resolveUpgradeTarget(deps.channel))
 
@@ -204,10 +228,6 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
     if (!run) return null
     const steps = await deps.store.stepsFor(run.id)
     return { ...run, steps }
-  }
-
-  function rollbackCommand(upgradeId: string): string {
-    return controlPlaneRollbackCommand(upgradeId)
   }
 
   async function buildPreflight(
@@ -249,34 +269,7 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
     })
     for (const gap of manifestGaps) blockers.push(gap)
     if (deps.runtime === 'deno' && !deps.development) {
-      const downgrades = downgradeBlockers(target, colocated, hasInstance)
-      checks.push({
-        id: 'no-downgrade',
-        label: 'Target is not older than what is installed',
-        passed: downgrades.length === 0,
-      })
-      blockers.push(...downgrades)
-      const connected = colocated?.connected === true
-      checks.push({
-        id: 'colocated',
-        label: 'Co-located daemon is connected',
-        passed: connected,
-      })
-      if (!connected) blockers.push('The co-located daemon is not connected.')
-      if (hasInstance) {
-        const managed = admitsFeature(colocated)
-        checks.push({
-          id: 'managed-upgrade-v1',
-          label: 'Co-located daemon can back up and roll back',
-          passed: managed,
-          detail: managed ? undefined : daemonOnlyUpdateCommand(target.daemon?.manifestUrl ?? null),
-        })
-        if (!managed) {
-          blockers.push(
-            'The co-located daemon does not advertise managed-upgrade-v1. Update only that daemon with a pinned manifest, then start again.'
-          )
-        }
-      }
+      checkSelfHostedControlPlane(target, colocated, hasInstance, checks, blockers)
     }
     const runId = active?.id ?? (await ensureReservedRunId(deps.store))
     return {
@@ -287,10 +280,35 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
       backupPath: controlPlaneBackupPath(runId),
       recoveryCommand:
         admitsFeature(colocated) || !hasInstance
-          ? rollbackCommand(runId)
+          ? controlPlaneRollbackCommand(runId)
           : daemonOnlyUpdateCommand(target.daemon?.manifestUrl ?? null),
       blockers,
     }
+  }
+
+  /** The co-located host checks of a self-hosted run, appended in blocker order. */
+  function checkSelfHostedControlPlane(
+    target: UpgradeTarget,
+    colocated: FleetServerFact | undefined,
+    hasInstance: boolean,
+    checks: UpgradePreflight['checks'],
+    blockers: string[]
+  ): void {
+    const downgrades = downgradeBlockers(target, colocated, hasInstance)
+    checks.push({
+      id: 'no-downgrade',
+      label: 'Target is not older than what is installed',
+      passed: downgrades.length === 0,
+    })
+    blockers.push(...downgrades)
+    const connected = colocated?.connected === true
+    checks.push({
+      id: 'colocated',
+      label: 'Co-located daemon is connected',
+      passed: connected,
+    })
+    if (!connected) blockers.push('The co-located daemon is not connected.')
+    if (hasInstance) checkManagedFeature(target, colocated, checks, blockers)
   }
 
   function downgradeBlockers(
@@ -442,27 +460,84 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
     return false
   }
 
-  async function advance(
-    run: UpgradeRunRow,
-    steps: UpgradeStepRow[],
-    fleet: FleetServerFact[]
-  ): Promise<void> {
-    const gateOpen = isFleetGateSatisfied({
+  /** Whether the fleet hard-gate is open for `target` given the co-located host and this control plane. */
+  function fleetGateOpen(fleet: FleetServerFact[], target: UpgradeTarget): boolean {
+    return isFleetGateSatisfied({
       development: deps.development,
       runtime: deps.runtime,
       channelHasInstancePackage: channelHasInstancePackage(deps.channel),
       colocatedDaemonOnTarget: isOnTarget(
         installedOf(fleet.find((fact) => fact.colocated)),
-        run.target.daemon
+        target.daemon
       ),
       controlPlaneOnTarget: isOnTarget(
         {
           version: deps.instanceInstalled.version,
           commit: deps.instanceInstalled.commit,
         },
-        run.target.instance
+        target.instance
       ),
     })
+  }
+
+  /** The stored fleet facts with the live cell probe of the steps this pass may act on laid over them. */
+  async function fleetViewFor(
+    fleet: FleetServerFact[],
+    candidateIds: readonly string[]
+  ): Promise<FleetServerFact[]> {
+    const probeIds = fleetCellProbeIds(deps.colocatedServerId, candidateIds)
+    const probes =
+      probeIds.length === 0
+        ? new Map<string, FleetProbe>()
+        : await deps.store.probeCandidates(probeIds)
+    return overlayProbes(fleet, probes)
+  }
+
+  function stepActionFor(step: UpgradeStepRow, fact: FleetServerFact | undefined): StepAction {
+    return planStepAction(
+      {
+        status: step.status,
+        attempts: step.attempts,
+        nextAttemptAt: step.nextAttemptAt,
+        lastStageAt: step.lastStageAt,
+        toCommit: step.toCommit,
+      },
+      {
+        serverConnected: fact?.connected === true,
+        currentCommit: currentCommit(step, fact),
+      },
+      { now: deps.now() }
+    )
+  }
+
+  /**
+   * Decide and apply each step's next action, then dispatch what was queued
+   * (capped on Workers). True when any step was written or dispatched.
+   */
+  async function processSteps(
+    run: UpgradeRunRow,
+    steps: readonly UpgradeStepRow[],
+    fleetView: readonly FleetServerFact[]
+  ): Promise<boolean> {
+    const queue: UpgradeStepRow[] = []
+    let dirty = false
+    await forEachSequential(steps, async (step) => {
+      const fact = factOf(fleetView, step)
+      if (await applyAction(run, step, stepActionFor(step, fact), fact, queue)) dirty = true
+    })
+    await forEachSequential(capWorkersDispatch(deps.runtime, queue), async (step) => {
+      await dispatchStep(run, step, factOf(fleetView, step))
+      dirty = true
+    })
+    return dirty
+  }
+
+  async function advance(
+    run: UpgradeRunRow,
+    steps: UpgradeStepRow[],
+    fleet: FleetServerFact[]
+  ): Promise<void> {
+    const gateOpen = fleetGateOpen(fleet, run.target)
     const batch = activeBatchIndex(
       steps.map((step) => ({
         batchIndex: step.batchIndex,
@@ -470,44 +545,12 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
       }))
     )
     const currentPhase = earliestOpenPhase(steps)
-    const candidateIds = steps
-      .filter((step) => stepInCurrentWave(step, currentPhase, gateOpen, batch))
-      .map((step) => step.serverId)
-    const probeIds = fleetCellProbeIds(deps.colocatedServerId, candidateIds)
-    const fleetView = await overlayProbes(
+    const wave = steps.filter((step) => stepInCurrentWave(step, currentPhase, gateOpen, batch))
+    const fleetView = await fleetViewFor(
       fleet,
-      probeIds.length === 0 ? new Map() : await deps.store.probeCandidates(probeIds)
+      wave.map((step) => step.serverId)
     )
-    const queue: UpgradeStepRow[] = []
-    for (const step of steps) {
-      if (isTerminal(step.status)) continue
-      if (step.phase === 'fleet' && !gateOpen) continue
-      if (currentPhase && step.phase !== currentPhase) continue
-      if (batch !== null && step.batchIndex !== batch && step.phase === 'fleet') {
-        continue
-      }
-      const fact = fleetView.find((item) => item.serverId === step.serverId)
-      const action = planStepAction(
-        {
-          status: step.status,
-          attempts: step.attempts,
-          nextAttemptAt: step.nextAttemptAt,
-          lastStageAt: step.lastStageAt,
-          toCommit: step.toCommit,
-        },
-        {
-          serverConnected: fact?.connected === true,
-          currentCommit: currentCommit(step, fact),
-        },
-        { now: deps.now() }
-      )
-      await applyAction(run, step, action, fact, queue)
-    }
-    const capped = capWorkersDispatch(deps.runtime, queue)
-    for (const step of capped) {
-      const fact = fleetView.find((item) => item.serverId === step.serverId)
-      await dispatchStep(run, step, fact)
-    }
+    await processSteps(run, wave, fleetView)
     const failedPhase = failedPlatformPhase(steps)
     if (failedPhase) {
       await failRun(run, failedPhase, summarizeSteps(steps))
@@ -553,6 +596,41 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
     await deps.store.writeTickCursor(run.id, null)
   }
 
+  /** Facts for the window's servers, plus the co-located host the gate reads. */
+  async function factsForWindow(window: UpgradeTickWindow): Promise<FleetServerFact[]> {
+    const ids = window.steps.map((step) => step.serverId)
+    if (deps.colocatedServerId && !ids.includes(deps.colocatedServerId)) {
+      ids.push(deps.colocatedServerId)
+    }
+    return await deps.store.factsFor(ids, deps.colocatedServerId)
+  }
+
+  /** Persist the run's status, phase and counts only when the tick changed one of them. */
+  async function saveRunIfChanged(
+    run: UpgradeRunRow,
+    phase: UpgradePhase | null,
+    counts: StepSummary
+  ): Promise<void> {
+    if (run.status === 'running' && run.phase === phase && sameSummary(run.counts, counts)) return
+    run.status = 'running'
+    run.phase = phase
+    run.counts = counts
+    await deps.store.saveRun(run)
+  }
+
+  /** Remember where this window stopped; a short (wrapped) window starts the batch over next tick. */
+  async function writeWindowCursor(run: UpgradeRunRow, window: UpgradeTickWindow): Promise<void> {
+    const { phase, batchIndex } = window
+    if (phase === null || batchIndex === null) return
+    const last = window.steps.at(-1)
+    const wrapped = window.steps.length < UPGRADE_TICK_STEP_BUDGET
+    await deps.store.writeTickCursor(run.id, {
+      phase,
+      batchIndex,
+      afterId: wrapped || !last ? null : last.id,
+    })
+  }
+
   async function advanceWindow(run: UpgradeRunRow): Promise<void> {
     const cursor = await deps.store.readTickCursor(run.id)
     const window = await deps.store.tickWindow(run.id, cursor, UPGRADE_TICK_STEP_BUDGET)
@@ -565,86 +643,22 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
       await finishRun(run, window.counts)
       return
     }
-    const ids = window.steps.map((step) => step.serverId)
-    if (deps.colocatedServerId && !ids.includes(deps.colocatedServerId)) {
-      ids.push(deps.colocatedServerId)
-    }
-    const fleet = await deps.store.factsFor(ids, deps.colocatedServerId)
-    const gateOpen = isFleetGateSatisfied({
-      development: deps.development,
-      runtime: deps.runtime,
-      channelHasInstancePackage: channelHasInstancePackage(deps.channel),
-      colocatedDaemonOnTarget: isOnTarget(
-        installedOf(fleet.find((fact) => fact.colocated)),
-        run.target.daemon
-      ),
-      controlPlaneOnTarget: isOnTarget(
-        {
-          version: deps.instanceInstalled.version,
-          commit: deps.instanceInstalled.commit,
-        },
-        run.target.instance
-      ),
-    })
-    const candidateIds = window.steps
-      .filter((step) => !isTerminal(step.status))
-      .filter((step) => step.phase !== 'fleet' || gateOpen)
-      .map((step) => step.serverId)
-    const probeIds = fleetCellProbeIds(deps.colocatedServerId, candidateIds)
-    const fleetView = await overlayProbes(
+    const fleet = await factsForWindow(window)
+    const gateOpen = fleetGateOpen(fleet, run.target)
+    const open = window.steps.filter((step) => isOpenInWindow(step, gateOpen))
+    const fleetView = await fleetViewFor(
       fleet,
-      probeIds.length === 0 ? new Map() : await deps.store.probeCandidates(probeIds)
+      open.map((step) => step.serverId)
     )
-    const queue: UpgradeStepRow[] = []
-    let dirty = false
-    for (const step of window.steps) {
-      if (isTerminal(step.status)) continue
-      if (step.phase === 'fleet' && !gateOpen) continue
-      const fact = fleetView.find((item) => item.serverId === step.serverId)
-      const action = planStepAction(
-        {
-          status: step.status,
-          attempts: step.attempts,
-          nextAttemptAt: step.nextAttemptAt,
-          lastStageAt: step.lastStageAt,
-          toCommit: step.toCommit,
-        },
-        {
-          serverConnected: fact?.connected === true,
-          currentCommit: currentCommit(step, fact),
-        },
-        { now: deps.now() }
-      )
-      if (await applyAction(run, step, action, fact, queue)) dirty = true
-    }
-    const capped = capWorkersDispatch(deps.runtime, queue)
-    for (const step of capped) {
-      const fact = fleetView.find((item) => item.serverId === step.serverId)
-      await dispatchStep(run, step, fact)
-      dirty = true
-    }
+    const dirty = await processSteps(run, open, fleetView)
     const counts = dirty ? await deps.store.countSteps(run.id) : window.counts
     if (counts.total > 0 && counts.inProgress === 0) {
       // This tick settled the last open step (counts cover the whole run).
       await finishRun(run, counts)
       return
     }
-    const phase = window.phase
-    if (run.status !== 'running' || run.phase !== phase || !sameSummary(run.counts, counts)) {
-      run.status = 'running'
-      run.phase = phase
-      run.counts = counts
-      await deps.store.saveRun(run)
-    }
-    const last = window.steps[window.steps.length - 1]
-    const wrapped = window.steps.length < UPGRADE_TICK_STEP_BUDGET
-    if (phase !== null && window.batchIndex !== null) {
-      await deps.store.writeTickCursor(run.id, {
-        phase,
-        batchIndex: window.batchIndex,
-        afterId: wrapped || !last ? null : last.id,
-      })
-    }
+    await saveRunIfChanged(run, window.phase, counts)
+    await writeWindowCursor(run, window)
   }
 
   async function markInProgressRefused(step: UpgradeStepRow, at: string): Promise<void> {
@@ -804,7 +818,8 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
       const latest = runs[0]
       if (!latest?.finishedAt) return null
       const age = Date.parse(deps.now()) - Date.parse(latest.finishedAt)
-      if (!(age <= UPGRADE_LAST_RUN_VISIBLE_MS)) return null
+      // NaN (an unparseable finish time) hides the run, as `!(age <= limit)` did.
+      if (Number.isNaN(age) || age > UPGRADE_LAST_RUN_VISIBLE_MS) return null
       return await withSteps(latest)
     },
     run: async (id) => withSteps(await deps.store.runById(id)),
@@ -837,11 +852,11 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
         return { ok: false, error: 'upgrade_not_active' }
       }
       const steps = await deps.store.stepsFor(run.id)
-      for (const step of steps) {
-        if (isTerminal(step.status)) continue
+      await forEachSequential(steps, async (step) => {
+        if (isTerminal(step.status)) return
         step.status = 'skipped'
         await deps.store.saveStep(step)
-      }
+      })
       run.status = 'cancelled'
       run.finishedAt = deps.now()
       run.counts = summarizeSteps(steps)
@@ -901,41 +916,16 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
       step.status = status
       step.lastStageAt = input.at
       if (input.errorCode) step.errorCode = input.errorCode
-      if (input.detail) {
-        step.detail = {
-          ...(typeof step.detail === 'object' && step.detail !== null ? step.detail : {}),
-          phase: step.phase,
-          progressDetail: input.detail,
-        }
-        if (isProgressTerminal(status) && status !== 'done') {
-          step.errorMessage = input.detail
-        }
-      }
+      if (input.detail) recordProgressDetail(step, status, input.detail)
       await deps.store.saveStep(step)
     },
     updateGate: async () => {
       const [target, fleet] = await Promise.all([resolveTarget(), facts()])
-      const open = isFleetGateSatisfied({
-        development: deps.development,
-        runtime: deps.runtime,
-        channelHasInstancePackage: channelHasInstancePackage(deps.channel),
-        colocatedDaemonOnTarget: isOnTarget(
-          installedOf(fleet.find((fact) => fact.colocated)),
-          target.daemon
-        ),
-        controlPlaneOnTarget: isOnTarget(
-          {
-            version: deps.instanceInstalled.version,
-            commit: deps.instanceInstalled.commit,
-          },
-          target.instance
-        ),
-      })
       return clientUpdateBlock({
         runtime: deps.runtime,
         development: deps.development,
         targetCommitKnown: Boolean(target.daemon?.commit),
-        gateOpen: open,
+        gateOpen: fleetGateOpen(fleet, target),
       })
     },
     noteOutcome: async (input) => {
@@ -978,6 +968,32 @@ async function ensureReservedRunId(store: UpgradeStore): Promise<string> {
   const id = newId()
   await store.reserveRunId(id)
   return id
+}
+
+/** Fold a progress report's free-text detail into the step; a failed or rolled-back one is also its error message. */
+function recordProgressDetail(
+  step: UpgradeStepRow,
+  status: UpgradeStepStatus,
+  detail: string
+): void {
+  step.detail = {
+    ...(typeof step.detail === 'object' && step.detail !== null ? step.detail : {}),
+    phase: step.phase,
+    progressDetail: detail,
+  }
+  if (isProgressTerminal(status) && status !== 'done') step.errorMessage = detail
+}
+
+/** A window step the tick may act on: still open, and not a fleet step behind a closed gate. */
+function isOpenInWindow(step: UpgradeStepRow, gateOpen: boolean): boolean {
+  return !isTerminal(step.status) && (step.phase !== 'fleet' || gateOpen)
+}
+
+function factOf(
+  fleet: readonly FleetServerFact[],
+  step: UpgradeStepRow
+): FleetServerFact | undefined {
+  return fleet.find((item) => item.serverId === step.serverId)
 }
 
 function stepInCurrentWave(
