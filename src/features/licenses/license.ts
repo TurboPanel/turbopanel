@@ -224,7 +224,7 @@ export async function listServersBoundToLicenses(
 }
 
 export async function listLicenses(db: Db, organizationId: string): Promise<LicenseRecord[]> {
-  return db
+  return await db
     .select({
       id: license.id,
       organizationId: license.organizationId,
