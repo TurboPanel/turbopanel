@@ -447,6 +447,50 @@ test('revokeAllLicensesForOrganization revokes bound and unbound keys, names the
   assertEquals(again, { licenseIds: [], serverIds: [] })
 })
 
+/** Two bound licenses with an unbound one between them, in row order. */
+function threeLicenseDb() {
+  return entitlementDb({
+    seats: [{ tierId: TIER_S1, quantity: 2 }],
+    licenses: [
+      entLicense(LIC_BOUND, SERVER_A),
+      entLicense(LIC_FREE, null),
+      entLicense(LIC_BOUND_2, SERVER_B),
+    ],
+  })
+}
+
+test('revokeAllLicensesForOrganization writes each license, then runs its hook, before the next license', async () => {
+  const db = threeLicenseDb()
+  await revokeAllLicensesForOrganization(db, ORG_ID, {
+    now: ENT_NOW,
+    onRevokeBound: (serverId) => {
+      db.ops.push(`hook:${serverId}`)
+      return Promise.resolve()
+    },
+  })
+  assertEquals(
+    db.ops.filter((op) => op.startsWith('update:') || op.startsWith('hook:')),
+    ['update:license', `hook:${SERVER_A}`, 'update:license', 'update:license', `hook:${SERVER_B}`]
+  )
+})
+
+test('revokeAllLicensesForOrganization stops at the first failing hook and touches no later license', async () => {
+  const db = threeLicenseDb()
+  const failure = await revokeAllLicensesForOrganization(db, ORG_ID, {
+    now: ENT_NOW,
+    onRevokeBound: () => Promise.reject(new Error('daemon key revoke failed')),
+  }).then(
+    () => null,
+    (error: unknown) => error
+  )
+  assertEquals(failure instanceof Error ? failure.message : failure, 'daemon key revoke failed')
+  const byId = new Map(db.rows(license).map((row) => [row.id, row]))
+  assertEquals(byId.get(LIC_BOUND)?.revokedAt, ENT_NOW)
+  assertEquals(byId.get(LIC_FREE)?.revokedAt, null)
+  assertEquals(byId.get(LIC_BOUND_2)?.revokedAt, null)
+  assertEquals(db.ops.filter((op) => op.startsWith('update:')), ['update:license'])
+})
+
 // ---------------------------------------------------------------------------
 // T8 · status semantics, one table over every known status plus one unknown.
 // ---------------------------------------------------------------------------

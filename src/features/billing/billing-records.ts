@@ -38,6 +38,7 @@ import type { PostgresJsQueryResultHKT } from 'drizzle-orm/postgres-js'
 import type { BillingProviderId } from './gateway.ts'
 import type { Db } from '../../db/connection.ts'
 import { logWarn } from '../../lib/logger.ts'
+import { forEachSequential } from '../../lib/sequential.ts'
 import type { PayerSubject } from './customer-subject.ts'
 import type * as schema from '../../db/schema.ts'
 import { license, payer, allowance, subscription, subscriptionItem, tier } from '../../db/schema.ts'
@@ -329,7 +330,9 @@ export async function replaceSubscriptionItems(
     })
   }
 
-  for (const [tierId, line] of byTier) {
+  // One connection, strictly in map order: the caller runs this inside a
+  // transaction, so the upserts must not overlap.
+  await forEachSequential(byTier, async ([tierId, line]) => {
     // The `provider_item_id` conflict target is belt-and-braces: item ids are
     // globally unique on the provider side, so it can only fire if an id was
     // somehow projected under a different subscription — re-home it.
@@ -354,7 +357,7 @@ export async function replaceSubscriptionItems(
           updatedAt: now,
         },
       })
-  }
+  })
 
   return { written: byTier.size, skipped }
 }
@@ -545,7 +548,8 @@ export async function revokeAllLicensesForOrganization(
     .from(license)
     .where(and(eq(license.organizationId, organizationId), isNull(license.revokedAt)))
   const out: { licenseIds: string[]; serverIds: string[] } = { licenseIds: [], serverIds: [] }
-  for (const row of rows) {
+  // In row order, each license written and its hook run before the next one.
+  await forEachSequential(rows, async (row) => {
     await db
       .update(license)
       .set({ revokedAt: now, updatedAt: now })
@@ -555,7 +559,7 @@ export async function revokeAllLicensesForOrganization(
       out.serverIds.push(row.serverId)
       if (opts.onRevokeBound) await opts.onRevokeBound(row.serverId)
     }
-  }
+  })
   return out
 }
 

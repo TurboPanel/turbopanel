@@ -1371,6 +1371,150 @@ test("POST /datacenters/:id/members returns 409 when auto-derived prefixes in on
   });
 });
 
+type MemberFixtureDb = ReturnType<typeof createDenoDb>;
+
+/** One server per `[address, cidr]`, each reporting that private address. */
+async function insertReportingServers(
+  db: MemberFixtureDb,
+  organizationId: string,
+  addresses: readonly (readonly [string, string])[],
+): Promise<string[]> {
+  const now = new Date().toISOString();
+  const rows = await db
+    .insert(server)
+    .values(
+      addresses.map(([address, cidr]) => ({
+        organizationId,
+        metadata: reportedPrivateAddress(address, cidr),
+        createdAt: now,
+        updatedAt: now,
+      })),
+    )
+    .returning({ id: server.id });
+  return rows.map((row) => row.id);
+}
+
+/** Every datacenter pin as `[address, cidr of its network]`, plus the CIDRs the datacenter now has. */
+async function pinsByCidr(db: MemberFixtureDb, datacenterId: string) {
+  const nets = await db
+    .select({ id: network.id, cidr: network.cidr })
+    .from(network)
+    .where(eq(network.datacenterId, datacenterId));
+  const pins = await db
+    .select({ address: ip.address, networkId: ip.networkId })
+    .from(ip)
+    .where(eq(ip.datacenterId, datacenterId));
+  const cidrOf = new Map(nets.map((net) => [net.id, net.cidr]));
+  return {
+    cidrs: nets.map((net) => net.cidr).sort(),
+    pins: pins
+      .map((pin) => [String(pin.address), cidrOf.get(pin.networkId ?? "")])
+      .sort(),
+    networkIds: new Map(nets.map((net) => [net.cidr, net.id])),
+  };
+}
+
+const SHARED_SUBNET_ADDRESSES = [
+  ["10.0.0.10", "10.0.0.0/24"],
+  ["10.0.0.11", "10.0.0.0/24"],
+  ["10.0.1.12", "10.0.1.0/24"],
+] as const;
+
+test("POST /datacenters writes one network per subnet group and one pin per member", async () => {
+  await withDatacenterFixtures(async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+  }) => {
+    const serverIds = await insertReportingServers(
+      db,
+      organizationId,
+      SHARED_SUBNET_ADDRESSES,
+    );
+
+    const cookie = await sessionCookie(db, secrets, userId);
+    const res = await app.request("/datacenters", {
+      method: "POST",
+      headers: {
+        cookie,
+        [ORG_ID_HEADER]: organizationId,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        sourceServerId: serverIds[0],
+        members: serverIds.map((serverId, i) => ({
+          serverId,
+          address: SHARED_SUBNET_ADDRESSES[i][0],
+        })),
+      }),
+    });
+
+    assertEquals(res.status, 200);
+    const body = await res.json() as { ok: true; id: string };
+    const written = await pinsByCidr(db, body.id);
+    assertEquals(written.cidrs, ["10.0.0.0/24", "10.0.1.0/24"]);
+    assertEquals(written.pins, SHARED_SUBNET_ADDRESSES.map((pair) => [...pair]));
+  });
+});
+
+test("POST /datacenters/:id/members reuses one new network for pins that share a subnet", async () => {
+  await withDatacenterFixtures(async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+  }) => {
+    const now = new Date().toISOString();
+    const [dc] = await db
+      .insert(datacenter)
+      .values({ organizationId, name: "Grow DC", createdAt: now, updatedAt: now })
+      .returning({ id: datacenter.id });
+    const [oldNet] = await db
+      .insert(network)
+      .values({
+        organizationId,
+        datacenterId: dc!.id,
+        kind: "datacenter",
+        cidr: "10.0.0.0/24",
+        name: "Grow LAN",
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning({ id: network.id });
+    const addresses = [
+      ["10.0.0.20", "10.0.0.0/24"],
+      ["10.0.5.21", "10.0.5.0/24"],
+      ["10.0.5.22", "10.0.5.0/24"],
+    ] as const;
+    const serverIds = await insertReportingServers(db, organizationId, addresses);
+
+    const cookie = await sessionCookie(db, secrets, userId);
+    const res = await app.request(`/datacenters/${dc!.id}/members`, {
+      method: "POST",
+      headers: {
+        cookie,
+        [ORG_ID_HEADER]: organizationId,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        members: serverIds.map((serverId, i) => ({
+          serverId,
+          address: addresses[i][0],
+        })),
+      }),
+    });
+
+    assertEquals(res.status, 200);
+    const written = await pinsByCidr(db, dc!.id);
+    assertEquals(written.cidrs, ["10.0.0.0/24", "10.0.5.0/24"]);
+    assertEquals(written.pins, addresses.map((pair) => [...pair]));
+    assertEquals(written.networkIds.get("10.0.0.0/24"), oldNet!.id);
+  });
+});
+
 test("DELETE /datacenters/:id/members/:serverId removes every pin for that server", async () => {
   await withDatacenterFixtures(async ({
     db,

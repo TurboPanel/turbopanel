@@ -127,7 +127,7 @@ export async function listServerLabelsForServers(
   return result
 }
 
-export async function setServerLabels(
+export function setServerLabels(
   db: Db,
   serverId: string,
   labels: readonly ParsedServerLabel[]

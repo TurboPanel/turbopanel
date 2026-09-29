@@ -190,21 +190,21 @@ type ProviderCallbackSession = {
   dataEncryptionSecrets: DerivedSecretsConfig | undefined
 }
 
-export async function resolveProviderCallbackSession(
+export function resolveProviderCallbackSession(
   c: Context<AppEnv>,
 ): Promise<ProviderCallbackSession | Response> {
   const db = getDb(c)
-  if (!db) return c.json({ error: 'Database unavailable' }, 503)
+  if (!db) return Promise.resolve(c.json({ error: 'Database unavailable' }, 503))
 
   const session = c.get('session')
-  if (!session) return c.json({ error: 'Unauthorized' }, 401)
+  if (!session) return Promise.resolve(c.json({ error: 'Unauthorized' }, 401))
 
-  return {
+  return Promise.resolve({
     db,
     userId: session.userId,
     secretsConfig: c.get('secretsConfig'),
     dataEncryptionSecrets: c.get('dataEncryptionSecrets'),
-  }
+  })
 }
 
 async function authorizeClaimedOrganization(

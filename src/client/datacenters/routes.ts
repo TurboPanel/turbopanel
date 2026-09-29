@@ -19,6 +19,7 @@ import {
 import { getCommandQueue } from '../../features/commands/queue.ts'
 import { isNoopCommandQueue } from '../../features/commands/noop-command-queue.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
+import { forEachSequential } from '../../lib/sequential.ts'
 import { fanOutDatacenterRoutingChange } from './routing-fanout.ts'
 import { suggestDatacenterNames } from '../../features/datacenters/datacenter-name-suggestions.ts'
 import {
@@ -469,6 +470,33 @@ function isFreshAddMemberPin(
   return 'cidr' in pin
 }
 
+/**
+ * The network an add-member pin lands on: the one it names, or the fresh site
+ * network for its subnet (inserted by the first pin that needs it, then reused
+ * through `networkIdByCidr`).
+ */
+async function networkIdForAddMemberPin(
+  tx: Db,
+  scope: { organizationId: string; datacenterId: string },
+  pin: ResolvedAddMember,
+  networkIdByCidr: Map<string, string>
+): Promise<string> {
+  if (!isFreshAddMemberPin(pin)) return pin.networkId
+  const reused = networkIdByCidr.get(pin.cidr)
+  if (reused) return reused
+  const [created] = await tx
+    .insert(network)
+    .values({
+      organizationId: scope.organizationId,
+      datacenterId: scope.datacenterId,
+      kind: 'datacenter',
+      cidr: pin.cidr,
+    })
+    .returning({ id: network.id })
+  networkIdByCidr.set(pin.cidr, created.id)
+  return created.id
+}
+
 async function loadSiteNetworkRow(
   db: Db,
   organizationId: string,
@@ -714,7 +742,8 @@ export function registerDatacenterRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
           })
           .returning({ id: datacenter.id })
 
-        for (const group of grouped.groups) {
+        // One connection, strictly in order: each network row before its pins.
+        await forEachSequential(grouped.groups, async (group) => {
           const [siteNetwork] = await tx
             .insert(network)
             .values({
@@ -726,7 +755,7 @@ export function registerDatacenterRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
             })
             .returning({ id: network.id })
 
-          for (const member of group.members) {
+          await forEachSequential(group.members, async (member) => {
             await tx.insert(ip).values({
               organizationId,
               datacenterId: inserted.id,
@@ -736,8 +765,8 @@ export function registerDatacenterRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
               allocation: 'dedicated',
               scope: 'datacenter',
             })
-          }
-        }
+          })
+        })
 
         return inserted.id
       })
@@ -804,28 +833,15 @@ export function registerDatacenterRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
     try {
       await db.transaction(async (tx) => {
         const networkIdByCidr = new Map<string, string>()
-        for (const pin of resolved.pins) {
-          let networkId: string
-          if ('networkId' in pin) {
-            networkId = pin.networkId
-          } else {
-            const reused = networkIdByCidr.get(pin.cidr)
-            if (reused) {
-              networkId = reused
-            } else {
-              const [created] = await tx
-                .insert(network)
-                .values({
-                  organizationId,
-                  datacenterId: id,
-                  kind: 'datacenter',
-                  cidr: pin.cidr,
-                })
-                .returning({ id: network.id })
-              networkId = created.id
-              networkIdByCidr.set(pin.cidr, networkId)
-            }
-          }
+        // One connection, strictly in order: a fresh subnet's network row is
+        // created by its first pin and reused by the later ones.
+        await forEachSequential(resolved.pins, async (pin) => {
+          const networkId = await networkIdForAddMemberPin(
+            tx,
+            { organizationId, datacenterId: id },
+            pin,
+            networkIdByCidr
+          )
           await tx.insert(ip).values({
             organizationId,
             datacenterId: id,
@@ -835,7 +851,7 @@ export function registerDatacenterRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
             allocation: 'dedicated',
             scope: 'datacenter',
           })
-        }
+        })
       })
 
       // Best-effort, additive only — never delays or fails the response.

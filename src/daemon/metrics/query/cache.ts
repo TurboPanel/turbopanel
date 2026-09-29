@@ -118,16 +118,16 @@ function evictOldestDenoEntry(cache: Map<string, DenoCacheEntry>): void {
 function createDenoMetricsChartCache(): MetricsChartCache {
   const cache = getDenoCacheMap();
   return {
-    async get<T>(key: string): Promise<T | null> {
+    get<T>(key: string): Promise<T | null> {
       const entry = cache.get(key);
-      if (!entry) return null;
+      if (!entry) return Promise.resolve(null);
       if (Date.now() >= entry.expiresAtMs) {
         cache.delete(key);
-        return null;
+        return Promise.resolve(null);
       }
-      return entry.value as T;
+      return Promise.resolve(entry.value as T);
     },
-    async set<T>(key: string, value: T, ttlSeconds: number): Promise<void> {
+    set<T>(key: string, value: T, ttlSeconds: number): Promise<void> {
       if (cache.size >= DENO_CACHE_MAX_ENTRIES && !cache.has(key)) {
         evictOldestDenoEntry(cache);
       }
@@ -135,9 +135,11 @@ function createDenoMetricsChartCache(): MetricsChartCache {
         value,
         expiresAtMs: Date.now() + Math.max(1, ttlSeconds) * 1000,
       });
+      return Promise.resolve();
     },
-    async delete(key: string): Promise<void> {
+    delete(key: string): Promise<void> {
       cache.delete(key);
+      return Promise.resolve();
     },
   };
 }

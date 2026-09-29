@@ -53,3 +53,24 @@ test('firstSequential returns the first defined result and stops trying', async 
   assertEquals(await firstSequential([1, 2], () => undefined), undefined)
   assertEquals(await firstSequential([], () => 'never'), undefined)
 })
+
+test('firstSequential treats null like undefined and keeps falsy results such as false, 0 and empty string', async () => {
+  const tried: number[] = []
+  const results = [undefined, null, 'three']
+  const skipped = await firstSequential([0, 1, 2], (i) => {
+    tried.push(i)
+    return results[i]
+  })
+  assertEquals(skipped, 'three')
+  assertEquals(tried, [0, 1, 2])
+
+  for (const falsy of [false, 0, ''] as const) {
+    const attempts: number[] = []
+    const found = await firstSequential([1, 2], (n) => {
+      attempts.push(n)
+      return falsy
+    })
+    assertEquals(found, falsy)
+    assertEquals(attempts, [1])
+  }
+})

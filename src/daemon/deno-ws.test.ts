@@ -2748,6 +2748,86 @@ test('live WS outbox pump logs non-closed errors and continues', async () => {
   )
 })
 
+function outboxEnvelope(deliveryId: string): DaemonOutboundEnvelope {
+  return {
+    kind: 'echo',
+    requestId: `req-${deliveryId}`,
+    at: '2020-01-01T00:00:00.000Z',
+    payload: { ping: true },
+    deliveryId,
+  }
+}
+
+/** A cell whose first outbox read returns `first`; later reads block briefly and return nothing. */
+function outboxCellWithBatch(
+  serverId: string,
+  first: DaemonOutboundEnvelope[],
+  failAckOf?: string
+) {
+  const tracking = createTrackingDaemonCell(serverId)
+  const events: string[] = []
+  let reads = 0
+  tracking.cell.readOutboxBatch = async () => {
+    reads += 1
+    events.push(`read:${reads}`)
+    if (reads === 1) return first
+    await new Promise((resolve) => setTimeout(resolve, 15))
+    return []
+  }
+  tracking.cell.markSent = (deliveryId) => {
+    events.push(`mark:${deliveryId}`)
+    return Promise.resolve()
+  }
+  tracking.cell.ackOutbox = (deliveryIds) => {
+    events.push(`ack:${deliveryIds.join(',')}`)
+    if (deliveryIds.includes(failAckOf ?? '')) {
+      return Promise.reject(new Error('transient ack failure'))
+    }
+    return Promise.resolve()
+  }
+  return { tracking, events }
+}
+
+/** Attach a daemon whose first outbox read is `first`, and return the first `count` cell events. */
+async function outboxEventsAfterAttach(params: {
+  serverId: string
+  first: DaemonOutboundEnvelope[]
+  count: number
+  failAckOf?: string
+}): Promise<string[]> {
+  const secrets = await createDaemonJwtSecrets()
+  const { tracking, events } = outboxCellWithBatch(params.serverId, params.first, params.failAckOf)
+  await withLiveDaemonServer(
+    { secrets, db: createMockDb(), registry: createTrackingRegistry(tracking.cell) },
+    async ({ port }) => {
+      const issued = await issueDaemonJwt({ sub: params.serverId, kid: 'key-test' }, secrets)
+      const ws = await openLiveDaemonWs({ port, token: issued.token, remoteIp: LIVE_REMOTE_IP })
+      ws.close(1000, 'done')
+      await waitForWsClose(ws)
+    }
+  )
+  return events.slice(0, params.count)
+}
+
+test('live WS outbox pump sends a batch one envelope at a time, in order', async () => {
+  const events = await outboxEventsAfterAttach({
+    serverId: 'srv-live-outbox-order',
+    first: [outboxEnvelope('del-1'), outboxEnvelope('del-2')],
+    count: 6,
+  })
+  assertEquals(events, ['read:1', 'mark:del-1', 'ack:del-1', 'mark:del-2', 'ack:del-2', 'read:2'])
+})
+
+test('live WS outbox pump abandons the rest of a batch on an error, then reads again', async () => {
+  const events = await outboxEventsAfterAttach({
+    serverId: 'srv-live-outbox-midbatch',
+    first: [outboxEnvelope('del-1'), outboxEnvelope('del-2')],
+    count: 4,
+    failAckOf: 'del-1',
+  })
+  assertEquals(events, ['read:1', 'mark:del-1', 'ack:del-1', 'read:2'])
+})
+
 test('live WS detach ignores closed-connection errors from detachDaemonSocket', async () => {
   const secrets = await createDaemonJwtSecrets()
   const serverId = 'srv-live-detach-closed'

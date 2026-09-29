@@ -238,9 +238,15 @@ export async function createFakeAnalyticsEngine(options?: {
     setNow(atMs: number) {
       nowMs = atMs
     },
-    async close() {
-      connection.closeSync()
-      instance.closeSync()
+    close() {
+      // A failing close still surfaces as a rejection, as it did when this was async.
+      try {
+        connection.closeSync()
+        instance.closeSync()
+        return Promise.resolve()
+      } catch (err) {
+        return Promise.reject(err)
+      }
     },
   }
 }

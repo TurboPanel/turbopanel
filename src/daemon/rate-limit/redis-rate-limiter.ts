@@ -213,7 +213,7 @@ export function createLocalTokenBucketLimiter(opts: {
   const msPerToken = (opts.periodSeconds * 1000) / opts.limit
 
   return {
-    async limit(args: { key: string }): Promise<{ success: boolean }> {
+    limit(args: { key: string }): Promise<{ success: boolean }> {
       const now = Date.now()
       let bucket = buckets.get(args.key)
       if (!bucket) {
@@ -223,9 +223,9 @@ export function createLocalTokenBucketLimiter(opts: {
       const elapsed = now - bucket.lastMs
       bucket.tokens = Math.min(capacity, bucket.tokens + elapsed / msPerToken)
       bucket.lastMs = now
-      if (bucket.tokens < 1) return { success: false }
+      if (bucket.tokens < 1) return Promise.resolve({ success: false })
       bucket.tokens -= 1
-      return { success: true }
+      return Promise.resolve({ success: true })
     },
   }
 }

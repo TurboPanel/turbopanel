@@ -187,7 +187,7 @@ describe('managed upgrade HTTP', () => {
     expect(pageLimits).toEqual([50])
     expect(probes).toEqual([])
     await api.start({ source: 'manual', startedBy: null })
-    expect(probes.length).toBe(1)
+    expect(probes).toHaveLength(1)
     expect(probes[0]).toBeLessThanOrEqual(FLEET_CELL_PROBE_BUDGET)
   })
 

@@ -1,5 +1,10 @@
 import { assertEquals } from '@std/assert'
-import { decideNicAutoMonitor, resolveUplinkDeviceIdByInterface } from './nic-auto-monitor.ts'
+import type { Db } from '../../db/connection.ts'
+import {
+  autoMonitorNicsForDatacenterAttach,
+  decideNicAutoMonitor,
+  resolveUplinkDeviceIdByInterface,
+} from './nic-auto-monitor.ts'
 import type { NetworkDeviceTopology, TopologySnapshot } from '../../contracts/topology-types.ts'
 
 /**
@@ -113,4 +118,35 @@ test('decideNicAutoMonitor chains across multiple pins against a shrinking budge
   const nextOverride = first.action === 'add' ? first.nicSlotDeviceIds : []
   const second = decideNicAutoMonitor(nextOverride, snapWithThird, 'mac:d', 2)
   assertEquals(second, { action: 'skip', reason: 'no-free-slot' })
+})
+
+test('autoMonitorNicsForDatacenterAttach works through the pins one at a time, in order', async () => {
+  const events: string[] = []
+  let started = 0
+  // Each pin reads its server row first; an empty result ends that pin early.
+  const query = {
+    from: () => query,
+    where: () => query,
+    limit: async () => {
+      const n = started
+      await new Promise((resolve) => setTimeout(resolve, n === 1 ? 15 : 1))
+      events.push(`end:${n}`)
+      return []
+    },
+  }
+  const db = {
+    select: () => {
+      started += 1
+      events.push(`start:${started}`)
+      return query
+    },
+  } as unknown as Db
+  const pins = [
+    { serverId: 'srv-a', address: '10.0.0.10' },
+    { serverId: 'srv-a', address: '10.0.0.11' },
+    { serverId: 'srv-b', address: '10.0.1.10' },
+  ]
+  await autoMonitorNicsForDatacenterAttach(db, {} as never, pins, 'self-hosted')
+  assertEquals(events, ['start:1', 'end:1', 'start:2', 'end:2', 'start:3', 'end:3'])
+  assertEquals(await autoMonitorNicsForDatacenterAttach(db, {} as never, [], 'self-hosted'), undefined)
 })

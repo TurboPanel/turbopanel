@@ -436,7 +436,8 @@ export function createMemoryUpgradeStore(input?: {
     pageFleet: (query, colocatedServerId) => {
       const rows = facts.filter((fact) => memoryFleetStatus(fact, query.status, query.targetCommit))
       const limit = clampPageLimit(query.limit)
-      const offset = query.offset > 0 ? query.offset : 0
+      // `|| 0` first: NaN must land on 0, as `offset > 0 ? offset : 0` had it (Math.max(NaN, 0) is NaN).
+      const offset = Math.max(query.offset || 0, 0)
       return Promise.resolve({
         total: rows.length,
         facts: rows
@@ -747,7 +748,8 @@ async function pageFleetFacts(
 ): Promise<{ total: number; facts: FleetServerFact[] }> {
   const where = fleetStatusWhere(query.status, query.targetCommit)
   const limit = clampPageLimit(query.limit)
-  const offset = query.offset > 0 ? query.offset : 0
+  // `|| 0` first: NaN must land on 0, as `offset > 0 ? offset : 0` had it (Math.max(NaN, 0) is NaN).
+  const offset = Math.max(query.offset || 0, 0)
   const [rows, counted] = await Promise.all([
     db
       .select(FLEET_ROW)
@@ -920,9 +922,7 @@ function cursorAfterId(
   phase: UpgradePhase,
   batchIndex: number
 ): string | null {
-  return cursor && cursor.phase === phase && cursor.batchIndex === batchIndex
-    ? cursor.afterId
-    : null
+  return cursor?.phase === phase && cursor.batchIndex === batchIndex ? cursor.afterId : null
 }
 
 /** Up to `cap` open steps of one phase and batch, in order, after `afterId`. */
