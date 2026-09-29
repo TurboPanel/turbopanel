@@ -148,7 +148,7 @@ export function applyDatacenterLocationPatch(
   locationPatch: LocationPatch | null | undefined
 ): ReturnType<typeof parseDatacenterOptions> | null {
   const stored = parseDatacenterOptions(isOptionsRecord(storedOptions) ? storedOptions : {})
-  const base = patchOptions === undefined ? { ...stored } : { ...(patchOptions ?? {}) }
+  const base = patchOptions === undefined ? { ...stored } : { ...patchOptions }
   delete base.location
   const next =
     locationPatch === undefined

@@ -7,13 +7,10 @@ import {
 } from "../lib/display-name-format.ts";
 import { can } from "./authz/index.ts";
 import { resolveOrgId } from "./org-context.ts";
-import {
-  BadRequestError,
-  parseName,
-  requireStringField,
-} from "../lib/http/request-fields.ts";
+import { BadRequestError } from "../lib/http/request-fields.ts";
 
-export { BadRequestError, parseName, requireStringField };
+export { BadRequestError };
+export { parseName, requireStringField } from "../lib/http/request-fields.ts";
 
 export {
   assertNotSystemOwnedOr403,

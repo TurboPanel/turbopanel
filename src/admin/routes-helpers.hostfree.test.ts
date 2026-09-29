@@ -3,6 +3,9 @@ import type { Db } from '../db/connection.ts'
 import type { DaemonCell, DaemonCellRegistry, PendingRequestRecord } from '../contracts/cell.ts'
 import { instanceHostname, setting } from '../db/schema.ts'
 import { REENCRYPT_BATCH_SIZE } from './reencrypt-secrets.ts'
+import { PublicUrlsApplyPayloadError } from './public-urls-apply-payload.ts'
+import { InstanceSecretSealingError } from '../features/install/instance-secret-sealing.ts'
+import { INSTANCE_ACME_TOS_NOT_ACCEPTED_CODE } from '../features/install/instance-acme-settings.ts'
 import {
   isReencryptStage,
   MAX_CELL_PURGE_BATCH_SIZE,
@@ -12,6 +15,7 @@ import {
   parseReencryptRequestBody,
   parseServerMetricsLiveSettingsBody,
   parseSignupEnabledBody,
+  publicUrlsApplyErrorResponse,
   publicUrlsApplyWaitToResponse,
   resolvePerServerLimit,
   resolvePlatformEnv,
@@ -138,6 +142,28 @@ test('publicUrlsApplyWaitToResponse maps wait outcomes to HTTP payloads', () => 
     status: 500,
     body: { ok: false, applied: false, error: 'boom' },
   })
+})
+
+test('publicUrlsApplyErrorResponse maps apply refusals to HTTP and ignores other errors', () => {
+  assertEquals(publicUrlsApplyErrorResponse(new InstanceSecretSealingError('cannot seal')), {
+    status: 503,
+    body: { ok: false, error: 'cannot seal' },
+  })
+  assertEquals(publicUrlsApplyErrorResponse(new PublicUrlsApplyPayloadError('cert missing')), {
+    status: 503,
+    body: { ok: false, error: 'cert missing' },
+  })
+  assertEquals(
+    publicUrlsApplyErrorResponse(
+      new PublicUrlsApplyPayloadError('terms', INSTANCE_ACME_TOS_NOT_ACCEPTED_CODE)
+    ),
+    {
+      status: 422,
+      body: { ok: false, error: 'terms', code: INSTANCE_ACME_TOS_NOT_ACCEPTED_CODE },
+    }
+  )
+  assertEquals(publicUrlsApplyErrorResponse(new Error('unrelated')), null)
+  assertEquals(publicUrlsApplyErrorResponse('nope'), null)
 })
 
 test('resolvePlatformEnv prefers context then opts.getEnv', () => {

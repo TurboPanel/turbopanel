@@ -3,7 +3,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { Hono } from "hono";
 import type { AppEnv } from "../../app/app.ts";
 import { getDatabaseUrl } from "../../db/url.ts";
-import { createDenoDb } from "../../db/connection.ts";
+import { createDenoDb, endDbConnection } from "../../db/connection.ts";
 import { it } from "@std/testing/bdd";
 import {
   buildSignedCookie,
@@ -349,6 +349,9 @@ async function withMetricsFixtures(
     );
     await db.delete(user).where(eq(user.id, userId));
     await db.delete(organization).where(eq(organization.id, organizationId));
+    // Release the pool: every fixture opens its own, and the suite outgrows
+    // Postgres' connection limit if they are left open.
+    await endDbConnection(db);
   }
 }
 
@@ -419,6 +422,120 @@ it("GET /servers/:id/metrics/capabilities returns the daemon payload on a connec
     assertEquals(registry.sent[0]?.kind, "metrics-capabilities-request");
   }, registry);
 });
+
+// Every route that goes through the shared daemon-cell round trip maps an
+// expired record, a failed record (with or without a daemon message) and a
+// thrown error to the same response shapes.
+const CELL_ROUND_TRIP_FAILURES: ReadonlyArray<{
+  name: string;
+  method: "GET" | "POST" | "DELETE";
+  path: string;
+  body?: string;
+  respond: () => FakeCellResponse;
+  status: number;
+  error: string;
+}> = [
+  {
+    name: "capabilities expired",
+    method: "GET",
+    path: "capabilities",
+    respond: () => ({ status: "expired" }),
+    status: 503,
+    error: "timeout waiting for capabilities",
+  },
+  {
+    name: "capabilities failed with a daemon error",
+    method: "GET",
+    path: "capabilities",
+    respond: () => ({ status: "failed", error: "probe exploded" }),
+    status: 500,
+    error: "probe exploded",
+  },
+  {
+    name: "capabilities failed without a daemon error",
+    method: "GET",
+    path: "capabilities",
+    respond: () => ({ status: "failed" }),
+    status: 500,
+    error: "failed to collect capabilities",
+  },
+  {
+    name: "capabilities request throws an Error",
+    method: "GET",
+    path: "capabilities",
+    respond: () => {
+      throw new Error("cell unreachable");
+    },
+    status: 503,
+    error: "cell unreachable",
+  },
+  {
+    name: "capabilities request throws a non-Error",
+    method: "GET",
+    path: "capabilities",
+    respond: () => {
+      throw "cell gone";
+    },
+    status: 503,
+    error: "cell gone",
+  },
+  {
+    name: "live start expired",
+    method: "POST",
+    path: "live",
+    respond: () => ({ status: "expired" }),
+    status: 503,
+    error: "timeout waiting for live lease start",
+  },
+  {
+    name: "live start failed without a daemon error",
+    method: "POST",
+    path: "live",
+    respond: () => ({ status: "failed" }),
+    status: 500,
+    error: "failed to start live lease",
+  },
+  {
+    name: "live stop expired",
+    method: "DELETE",
+    path: "live",
+    body: JSON.stringify({ leaseId: "lease-1" }),
+    respond: () => ({ status: "expired" }),
+    status: 503,
+    error: "timeout waiting for live lease stop",
+  },
+  {
+    name: "live stop failed without a daemon error",
+    method: "DELETE",
+    path: "live",
+    body: JSON.stringify({ leaseId: "lease-1" }),
+    respond: () => ({ status: "failed" }),
+    status: 500,
+    error: "failed to stop live lease",
+  },
+];
+
+for (const row of CELL_ROUND_TRIP_FAILURES) {
+  it(`daemon cell round trip: ${row.name} maps to ${row.status} ${row.error}`, async () => {
+    const registry = createFakeDaemonRegistry(row.respond);
+    await withMetricsFixtures(async ({ app, db, serverId, cookie }) => {
+      await markServerConnected(db, serverId);
+      const res = await app.request(
+        `/servers/${serverId}/metrics/${row.path}`,
+        {
+          method: row.method,
+          headers: { cookie, "content-type": "application/json" },
+          ...(row.body === undefined ? {} : { body: row.body }),
+        },
+      );
+      assertEquals(res.status, row.status);
+      assertEquals(
+        ((await res.json()) as { error?: string }).error,
+        row.error,
+      );
+    }, registry);
+  });
+}
 
 it("GET /servers/:id/metrics/series returns 403 without read access", async () => {
   if (!dbUrl) return;
