@@ -6,9 +6,10 @@
  */
 
 export type ManagedPromoteLagGateError =
-  | 'managed_replica_not_streaming'
-  | 'managed_replica_lagging'
-  | 'managed_replica_health_stale'
+  'managed_replica_not_streaming' | 'managed_replica_lagging' | 'managed_replica_health_stale'
+
+/** Default max age of a replica observation for the promote gate. */
+export const DEFAULT_MANAGED_PROMOTE_STALE_MS = 120_000
 
 export type ManagedPromoteLagGateOptions = {
   /** Max age of the observation (default 120s). */
@@ -25,17 +26,13 @@ export type ManagedPromoteLagGateOptions = {
 export function evaluateManagedPromoteLagGate(
   replication: unknown,
   nowMs: number = Date.now(),
-  options?: ManagedPromoteLagGateOptions,
+  options?: ManagedPromoteLagGateOptions
 ): null | ManagedPromoteLagGateError {
-  const staleMs = options?.staleMs ?? 120_000
+  const staleMs = options?.staleMs ?? DEFAULT_MANAGED_PROMOTE_STALE_MS
   const maxLagBytes = options?.maxLagBytes ?? 64 * 1024 * 1024
   const maxLagSeconds = options?.maxLagSeconds ?? 30
 
-  if (
-    typeof replication !== 'object' ||
-    replication === null ||
-    Array.isArray(replication)
-  ) {
+  if (typeof replication !== 'object' || replication === null || Array.isArray(replication)) {
     return 'managed_replica_not_streaming'
   }
   const r = replication as Record<string, unknown>
@@ -52,11 +49,7 @@ export function evaluateManagedPromoteLagGate(
   if (!Number.isFinite(observedMs) || nowMs - observedMs > staleMs) {
     return 'managed_replica_health_stale'
   }
-  if (
-    typeof r.lagBytes === 'number' &&
-    Number.isFinite(r.lagBytes) &&
-    r.lagBytes > maxLagBytes
-  ) {
+  if (typeof r.lagBytes === 'number' && Number.isFinite(r.lagBytes) && r.lagBytes > maxLagBytes) {
     return 'managed_replica_lagging'
   }
   if (
@@ -69,10 +62,34 @@ export function evaluateManagedPromoteLagGate(
   return null
 }
 
+/**
+ * True when the stored observation is missing, unparseable, or older than the
+ * gate's staleness window — i.e. a fresh reading could change the verdict.
+ *
+ * Deliberately keyed on age, not on the gate's error code: the gate answers
+ * `managed_replica_not_streaming` *before* it looks at `observedAt`, so a
+ * replica last seen catching up (or never observed) would otherwise never be
+ * re-probed. Used only to decide whether the operator promote route asks the
+ * daemon; automatic failover never probes.
+ */
+export function isManagedReplicaObservationStale(
+  replication: unknown,
+  nowMs: number = Date.now(),
+  staleMs: number = DEFAULT_MANAGED_PROMOTE_STALE_MS
+): boolean {
+  if (typeof replication !== 'object' || replication === null || Array.isArray(replication)) {
+    return true
+  }
+  const observedAt = (replication as Record<string, unknown>).observedAt
+  if (typeof observedAt !== 'string' || observedAt.length === 0) return true
+  const observedMs = Date.parse(observedAt)
+  return !Number.isFinite(observedMs) || nowMs - observedMs > staleMs
+}
+
 /** Fail-closed health for automatic failover — never honors `force`. */
 export function isAutomaticFailoverHealthy(
   replication: unknown,
-  nowMs: number = Date.now(),
+  nowMs: number = Date.now()
 ): boolean {
   return evaluateManagedPromoteLagGate(replication, nowMs) === null
 }

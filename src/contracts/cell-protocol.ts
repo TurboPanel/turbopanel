@@ -1,64 +1,59 @@
-import type { ServerReportedIp } from "./server-addresses.ts";
+import type { ServerReportedIp } from './server-addresses.ts'
 import type {
   ServerDockerMetadata,
   ServerHardwareProfile,
   ServerHostResources,
   ServerOsMetadata,
   ServerTimeSync,
-} from "../features/servers/server-metadata.ts";
-import type { MetricsCapabilityPlan } from "./capability-plan.ts";
-import {
-  isValidWireguardEndpoint,
-  isValidWireguardPublicKey,
-} from "../features/fabric/wg.ts";
+} from '../features/servers/server-metadata.ts'
+import type { MetricsCapabilityPlan } from './capability-plan.ts'
+import { isValidWireguardEndpoint, isValidWireguardPublicKey } from '../features/fabric/wg.ts'
 
 export type DaemonBuildInfo = {
-  commit: string;
-  buildId: string;
-  builtAt?: string;
-  channel?: string;
+  commit: string
+  buildId: string
+  builtAt?: string
+  channel?: string
   /** The daemon's semver (turbopaneld src/app/version.ts); absent from builds before 0.1.0. */
-  version?: string;
-};
+  version?: string
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 function isString(value: unknown): value is string {
-  return typeof value === "string";
+  return typeof value === 'string'
 }
 
-export function parseDaemonBuildInfo(
-  value: unknown,
-): DaemonBuildInfo | undefined {
-  if (!isRecord(value)) return undefined;
-  if (!isString(value.commit) || value.commit.length === 0) return undefined;
-  if (!isString(value.buildId) || value.buildId.length === 0) return undefined;
+export function parseDaemonBuildInfo(value: unknown): DaemonBuildInfo | undefined {
+  if (!isRecord(value)) return undefined
+  if (!isString(value.commit) || value.commit.length === 0) return undefined
+  if (!isString(value.buildId) || value.buildId.length === 0) return undefined
   const daemonBuild: DaemonBuildInfo = {
     commit: value.commit,
     buildId: value.buildId,
-  };
-  if (isString(value.builtAt)) daemonBuild.builtAt = value.builtAt;
-  if (isString(value.channel)) daemonBuild.channel = value.channel;
-  if (isString(value.version)) daemonBuild.version = value.version;
-  return daemonBuild;
+  }
+  if (isString(value.builtAt)) daemonBuild.builtAt = value.builtAt
+  if (isString(value.channel)) daemonBuild.channel = value.channel
+  if (isString(value.version)) daemonBuild.version = value.version
+  return daemonBuild
 }
 
-export type FabricPathPeerHealth = "healthy" | "stale" | "never";
+export type FabricPathPeerHealth = 'healthy' | 'stale' | 'never'
 
 export type FabricPathWireCandidate = {
-  publicKey: string;
-  endpoints: string[];
-};
+  publicKey: string
+  endpoints: string[]
+}
 
 export type FabricPathWireObservation = {
-  publicKey: string;
-  endpoint?: string;
-  lastHandshakeAt?: string;
-  health: FabricPathPeerHealth;
-  latencyMs?: number;
-};
+  publicKey: string
+  endpoint?: string
+  lastHandshakeAt?: string
+  health: FabricPathPeerHealth
+  latencyMs?: number
+}
 
 /**
  * Hardware profile (sensor/NIC slots, topology device/filesystem ids,
@@ -68,13 +63,13 @@ export type FabricPathWireObservation = {
  * of truth. Carries `generation` so the daemon can stamp subsequent samples
  * with `hardwareProfileGeneration`.
  */
-export type TopologyOverridesUpdatePayload = ServerHardwareProfile;
+export type TopologyOverridesUpdatePayload = ServerHardwareProfile
 
 /**
  * Capability plan pushed to the daemon so it can truncate the metrics sample
  * before POST. Full replacement of the persisted plan+generation pair.
  */
-export type CapabilityPlanUpdatePayload = MetricsCapabilityPlan;
+export type CapabilityPlanUpdatePayload = MetricsCapabilityPlan
 
 /**
  * Sent once on cell attach, the counterpart to the daemon's `hello`.
@@ -82,101 +77,101 @@ export type CapabilityPlanUpdatePayload = MetricsCapabilityPlan;
  * predate the field — the daemon treats that as `unknown`.
  */
 export type CellAttachVersionMessage = {
-  type: "version";
-  commit: string;
-  branch: string;
-  at: string;
-  instanceVersion?: string;
+  type: 'version'
+  commit: string
+  branch: string
+  at: string
+  instanceVersion?: string
   /**
    * Features this control plane advertises (`DAEMON_WIRE_FEATURES`).
    * Omitted by a peer that predates the field; the daemon treats that as
    * none (`instanceSupports` stays closed).
    */
-  features?: string[];
-};
+  features?: string[]
+}
 
 /** Control-plane → daemon self-update. Optional pin fields are expand-only. */
 export type DaemonUpdateMessage = {
-  type: "update";
-  id: string;
-  channel?: string;
-  updateUrl?: string;
-  updateSha256?: string;
+  type: 'update'
+  id: string
+  channel?: string
+  updateUrl?: string
+  updateSha256?: string
   /** Correlates progress frames for one upgrade. */
-  upgradeId?: string;
+  upgradeId?: string
   /** Pinned manifest URL (`pinnedChannelManifestUrl`). */
-  manifestUrl?: string;
+  manifestUrl?: string
   /** Git commit the pin names, when the manifest carries one. */
-  targetCommit?: string;
-  at: string;
-};
+  targetCommit?: string
+  at: string
+}
 
 /** Control-plane → daemon control-plane update. Optional pin fields are expand-only. */
 /** Daemon → instance: the outcome of an `instance-update`. Mirrors turbopaneld `cell-messages.ts`. */
 export type InstanceUpdateResultMessage = {
-  type: "instance-update-result";
-  id: string;
-  ok: boolean;
-  error?: string;
+  type: 'instance-update-result'
+  id: string
+  ok: boolean
+  error?: string
   /** Why it failed or rolled back (a rollback reason, `preflight_in_progress`, …). */
-  errorCode?: string;
-  upgradeId?: string;
-  at: string;
-};
+  errorCode?: string
+  upgradeId?: string
+  at: string
+}
 
 export type InstanceUpdateMessage = {
-  type: "instance-update";
-  id: string;
-  channel?: string;
-  manifestUrl?: string;
+  type: 'instance-update'
+  id: string
+  channel?: string
+  manifestUrl?: string
   /** UI package pin. Passed to run.sh as `--ui-manifest-url`. */
-  uiManifestUrl?: string;
+  uiManifestUrl?: string
   /** Semver the control plane is about to install, when the manifest names one. */
-  targetVersion?: string;
+  targetVersion?: string
   /** Correlates progress frames for one upgrade. */
-  upgradeId?: string;
+  upgradeId?: string
   /** Git commit the pin names, when the manifest carries one. */
-  targetCommit?: string;
-  at: string;
-};
+  targetCommit?: string
+  at: string
+}
 
-export const UPDATE_PROGRESS_UNITS = ["daemon", "instance"] as const;
-export type UpdateProgressUnit = "daemon" | "instance";
+export const UPDATE_PROGRESS_UNITS = ['daemon', 'instance'] as const
+export type UpdateProgressUnit = 'daemon' | 'instance'
 
 export const UPDATE_PROGRESS_STAGES = [
-  "preparing",
-  "downloading",
-  "installing",
-  "restarting",
-  "verifying",
-  "done",
-  "failed",
-  "rolled-back",
-] as const;
+  'preparing',
+  'downloading',
+  'installing',
+  'restarting',
+  'verifying',
+  'done',
+  'failed',
+  'rolled-back',
+] as const
 export type UpdateProgressStage =
-  | "preparing"
-  | "downloading"
-  | "installing"
-  | "restarting"
-  | "verifying"
-  | "done"
-  | "failed"
-  | "rolled-back";
+  | 'preparing'
+  | 'downloading'
+  | 'installing'
+  | 'restarting'
+  | 'verifying'
+  | 'done'
+  | 'failed'
+  | 'rolled-back'
 
 /**
  * Fire-and-forget upgrade progress. No correlated request: it must not
  * complete a pending `update` / `instance-update`.
  */
 export type UpdateProgressMessage = {
-  type: "update-progress";
-  id: string;
-  upgradeId?: string;
-  unit: UpdateProgressUnit;
-  stage: UpdateProgressStage;
-  at: string;
-  detail?: string;
-  errorCode?: string;
-};
+  type: 'update-progress'
+  id: string
+  upgradeId?: string
+  unit: UpdateProgressUnit
+  stage: UpdateProgressStage
+  at: string
+  detail?: string
+  errorCode?: string
+}
 
 /**
  * JSON messages exchanged between the instance and daemon over /ws.
@@ -193,19 +188,16 @@ export type UpdateProgressMessage = {
  * `sealed-instance-secrets-v1`. `keyPem` (plaintext) is the legacy field for
  * daemons that do not; it is never a stored column.
  */
-export type InstanceHostnameCertSource =
-  | "lets-encrypt"
-  | "platform-ca"
-  | "uploaded";
+export type InstanceHostnameCertSource = 'lets-encrypt' | 'platform-ca' | 'uploaded'
 
 export type InstanceHostnameWireEntry = {
-  host: string;
-  source: InstanceHostnameCertSource;
-  certPem?: string;
-  keyPem?: string;
-  keyEnvelope?: string;
-  uploadedCertId?: string;
-};
+  host: string
+  source: InstanceHostnameCertSource
+  certPem?: string
+  keyPem?: string
+  keyEnvelope?: string
+  uploadedCertId?: string
+}
 
 /**
  * Instance → co-located daemon: start (or, with an empty `token`, stop) the
@@ -214,434 +206,470 @@ export type InstanceHostnameWireEntry = {
  * is the legacy plaintext field. Twin of `turbopaneld/src/contracts/cell-messages.ts`.
  */
 export type TunnelTokenMessage = {
-  type: "tunnel-token";
-  id: string;
-  token?: string;
-  tokenEnvelope?: string;
-  at: string;
-};
+  type: 'tunnel-token'
+  id: string
+  token?: string
+  tokenEnvelope?: string
+  at: string
+}
 
 /** Instance-wide ACME knobs for hostnames whose source is `lets-encrypt`. */
 export type InstanceAcmeWireSettings = {
-  contactEmail: string;
-  tosAccepted: boolean;
-  directoryUrl: string;
-  useStaging: boolean;
-};
+  contactEmail: string
+  tosAccepted: boolean
+  directoryUrl: string
+  useStaging: boolean
+}
+
+/**
+ * One member's observed replication health, as carried on
+ * `managed-health-result`. Twin of the daemon's `ManagedMemberObservedResult`.
+ */
+export type ManagedHealthObservedMember = {
+  memberId: string
+  role: string
+  status: string
+  replication?: {
+    state: string
+    lagBytes?: number
+    lagSeconds?: number
+    observedAt: string
+  }
+}
 
 export type DaemonMessage =
   | {
-    type: "hello";
-    at: string;
-    daemonBuild: DaemonBuildInfo;
-    hostname?: string;
-    machineKey?: string;
-    /** Host OS from `/etc/os-release` (+ Deno build); persisted to `server.os_*` columns. */
-    os?: ServerOsMetadata;
-    /**
-     * Host capacity (cpu / RAM / swap totals) plus `ips` from `/proc` /
-     * `Deno.networkInterfaces`; persisted to `server.metadata.resources`.
-     */
-    resources?: ServerHostResources;
-    /** Host timezone + NTP state; persisted to timezone / NTP columns. */
-    timeSync?: ServerTimeSync;
-    /**
-     * Docker CLI / Compose plugin versions; persisted to `server.metadata.docker`.
-     * Omit when Docker is not installed.
-     */
-    docker?: ServerDockerMetadata;
-    /**
-     * Advertised wire features (`DAEMON_WIRE_FEATURES`). Omitted by a daemon
-     * that predates the field; persistence stores `[]`.
-     */
-    features?: string[];
-  }
+      type: 'hello'
+      at: string
+      daemonBuild: DaemonBuildInfo
+      hostname?: string
+      machineKey?: string
+      /** Host OS from `/etc/os-release` (+ Deno build); persisted to `server.os_*` columns. */
+      os?: ServerOsMetadata
+      /**
+       * Host capacity (cpu / RAM / swap totals) plus `ips` from `/proc` /
+       * `Deno.networkInterfaces`; persisted to `server.metadata.resources`.
+       */
+      resources?: ServerHostResources
+      /** Host timezone + NTP state; persisted to timezone / NTP columns. */
+      timeSync?: ServerTimeSync
+      /**
+       * Docker CLI / Compose plugin versions; persisted to `server.metadata.docker`.
+       * Omit when Docker is not installed.
+       */
+      docker?: ServerDockerMetadata
+      /**
+       * Advertised wire features (`DAEMON_WIRE_FEATURES`). Omitted by a daemon
+       * that predates the field; persistence stores `[]`.
+       */
+      features?: string[]
+    }
   | {
-    type: "heartbeat";
-    at: string;
-    daemonBuild?: DaemonBuildInfo;
-    /** Change-detected time-sync facts; persisted to timezone / NTP columns. */
-    timeSync?: ServerTimeSync;
-    /**
-     * Change-detected host resources (typically `{ ips }`); persisted to
-     * `server.metadata.resources`.
-     */
-    resources?: ServerHostResources;
-    /**
-     * Change-detected Docker facts; persisted to `server.metadata.docker`.
-     * Omit when Docker is not installed.
-     */
-    docker?: ServerDockerMetadata;
-  }
-  | { type: "echo"; payload: unknown; at: string }
+      type: 'heartbeat'
+      at: string
+      daemonBuild?: DaemonBuildInfo
+      /** Change-detected time-sync facts; persisted to timezone / NTP columns. */
+      timeSync?: ServerTimeSync
+      /**
+       * Change-detected host resources (typically `{ ips }`); persisted to
+       * `server.metadata.resources`.
+       */
+      resources?: ServerHostResources
+      /**
+       * Change-detected Docker facts; persisted to `server.metadata.docker`.
+       * Omit when Docker is not installed.
+       */
+      docker?: ServerDockerMetadata
+    }
+  | { type: 'echo'; payload: unknown; at: string }
   | CellAttachVersionMessage
-  | { type: "addresses-request"; id: string; at: string }
+  | { type: 'addresses-request'; id: string; at: string }
   | {
-    type: "addresses-result";
-    id: string;
-    ips: ServerReportedIp[];
-    at: string;
-  }
+      type: 'addresses-result'
+      id: string
+      ips: ServerReportedIp[]
+      at: string
+    }
   | {
-    type: "managed-logs-request";
-    id: string;
-    managedId: string;
-    tail: number;
-    at: string;
-  }
+      type: 'managed-logs-request'
+      id: string
+      managedId: string
+      tail: number
+      at: string
+    }
   | {
-    type: "managed-logs-result";
-    id: string;
-    logs: string;
-    error?: string;
-    at: string;
-  }
+      type: 'managed-logs-result'
+      id: string
+      logs: string
+      error?: string
+      at: string
+    }
   | {
-    type: "container-logs-request";
-    id: string;
-    containerId: string;
-    tail: number;
-    at: string;
-  }
+      type: 'managed-health-request'
+      id: string
+      managedId: string
+      memberId: string
+      /** The member's real role — the daemon reads a `replica` as a standby. */
+      role: 'primary' | 'replica'
+      engine: string
+      at: string
+    }
   | {
-    type: "container-logs-result";
-    id: string;
-    logs: string;
-    error?: string;
-    at: string;
-  }
+      type: 'managed-health-result'
+      id: string
+      ok: boolean
+      member?: ManagedHealthObservedMember
+      error?: string
+      at: string
+    }
   | {
-    type: "repo-read-request";
-    id: string;
-    cloneUrl: string;
-    ref: string;
-    paths: string[];
-    listPath?: string;
-    maxBytesPerFile: number;
-    credential?: string;
-    credentialKind?: string;
-    credentialUsername?: string;
-    at: string;
-  }
+      type: 'container-logs-request'
+      id: string
+      containerId: string
+      tail: number
+      at: string
+    }
   | {
-    type: "repo-read-result";
-    id: string;
-    ok: boolean;
-    commitSha?: string;
-    files?: {
-      path: string;
-      found: boolean;
-      content?: string;
-      bytes?: number;
-      reason?: string;
-    }[];
-    entries?: { path: string; kind: string; bytes?: number }[];
-    error?: string;
-    at: string;
-  }
+      type: 'container-logs-result'
+      id: string
+      logs: string
+      error?: string
+      at: string
+    }
   | {
-    type: "repo-default-branch-request";
-    id: string;
-    /** Anonymous only — the control plane never sends a credential here. */
-    cloneUrl: string;
-    at: string;
-  }
+      type: 'repo-read-request'
+      id: string
+      cloneUrl: string
+      ref: string
+      paths: string[]
+      listPath?: string
+      maxBytesPerFile: number
+      credential?: string
+      credentialKind?: string
+      credentialUsername?: string
+      at: string
+    }
   | {
-    type: "repo-default-branch-result";
-    id: string;
-    ok: boolean;
-    /** `null` when the remote answered but named no branch (an empty repo). */
-    defaultBranch?: string | null;
-    error?: string;
-    at: string;
-  }
+      type: 'repo-read-result'
+      id: string
+      ok: boolean
+      commitSha?: string
+      files?: {
+        path: string
+        found: boolean
+        content?: string
+        bytes?: number
+        reason?: string
+      }[]
+      entries?: { path: string; kind: string; bytes?: number }[]
+      error?: string
+      at: string
+    }
   | {
-    type: "metrics-live-start";
-    id: string;
-    leaseId: string;
-    intervalSeconds: number;
-    expiresAt: string;
-    at: string;
-  }
+      type: 'repo-default-branch-request'
+      id: string
+      /** Anonymous only — the control plane never sends a credential here. */
+      cloneUrl: string
+      at: string
+    }
   | {
-    type: "metrics-live-start-result";
-    id: string;
-    ok: boolean;
-    error?: string;
-    at: string;
-  }
-  | { type: "metrics-live-stop"; id: string; leaseId: string; at: string }
+      type: 'repo-default-branch-result'
+      id: string
+      ok: boolean
+      /** `null` when the remote answered but named no branch (an empty repo). */
+      defaultBranch?: string | null
+      error?: string
+      at: string
+    }
   | {
-    type: "metrics-live-stop-result";
-    id: string;
-    ok: boolean;
-    error?: string;
-    at: string;
-  }
-  | { type: "metrics-capabilities-request"; id: string; at: string }
+      type: 'metrics-live-start'
+      id: string
+      leaseId: string
+      intervalSeconds: number
+      expiresAt: string
+      at: string
+    }
   | {
-    type: "metrics-capabilities-result";
-    id: string;
-    ok: boolean;
-    capabilities?: Record<string, unknown>;
-    error?: string;
-    at: string;
-  }
+      type: 'metrics-live-start-result'
+      id: string
+      ok: boolean
+      error?: string
+      at: string
+    }
+  | { type: 'metrics-live-stop'; id: string; leaseId: string; at: string }
   | {
-    type: "topology-overrides-update";
-    id: string;
-    overrides: TopologyOverridesUpdatePayload;
-    at: string;
-  }
+      type: 'metrics-live-stop-result'
+      id: string
+      ok: boolean
+      error?: string
+      at: string
+    }
+  | { type: 'metrics-capabilities-request'; id: string; at: string }
   | {
-    type: "topology-overrides-update-result";
-    id: string;
-    ok: boolean;
-    error?: string;
-    at: string;
-  }
+      type: 'metrics-capabilities-result'
+      id: string
+      ok: boolean
+      capabilities?: Record<string, unknown>
+      error?: string
+      at: string
+    }
   | {
-    type: "capability-plan-update";
-    id: string;
-    plan: CapabilityPlanUpdatePayload;
-    generation: number;
-    at: string;
-  }
+      type: 'topology-overrides-update'
+      id: string
+      overrides: TopologyOverridesUpdatePayload
+      at: string
+    }
   | {
-    type: "capability-plan-update-result";
-    id: string;
-    ok: boolean;
-    error?: string;
-    at: string;
-  }
+      type: 'topology-overrides-update-result'
+      id: string
+      ok: boolean
+      error?: string
+      at: string
+    }
   | {
-    type: "capability-plan-clear";
-    id: string;
-    at: string;
-  }
+      type: 'capability-plan-update'
+      id: string
+      plan: CapabilityPlanUpdatePayload
+      generation: number
+      at: string
+    }
   | {
-    type: "capability-plan-clear-result";
-    id: string;
-    ok: boolean;
-    error?: string;
-    at: string;
-  }
+      type: 'capability-plan-update-result'
+      id: string
+      ok: boolean
+      error?: string
+      at: string
+    }
   | {
-    type: "managed-ha-event";
-    managedId: string;
-    sourceMemberId?: string;
-    at: string;
-  }
+      type: 'capability-plan-clear'
+      id: string
+      at: string
+    }
   | {
-    /**
-     * Daemon-initiated, fire-and-forget (no correlated request/result, same
-     * shape as `managed-ha-event`): the daemon's `topology/` module reporting
-     * a new topology generation (stable device/filesystem/GPU/signal
-     * identity). Server identity comes from the authenticated connection, not
-     * a wire field — see `managed-ha-event`'s precedent.
-     */
-    type: "topology-report";
-    generation: number;
-    bootGeneration: number;
-    snapshot: unknown;
-    at: string;
-  }
+      type: 'capability-plan-clear-result'
+      id: string
+      ok: boolean
+      error?: string
+      at: string
+    }
   | {
-    /**
-     * Daemon-initiated, fire-and-forget (no correlated request/result, same
-     * shape as `managed-ha-event`): `AcmeIssuanceObserver`'s live TLS-probe
-     * verdict for one `tlsMode: 'acme'` hostname on this server, sent only on
-     * a state change — a failure after a short debounce, or a recovery.
-     * Merge-patched onto `tls.metadata.acme.lastError`; never writes
-     * `tls.status`, so it cannot itself flip a `managed` row's
-     * deploy-readiness (see `handleAcmeIssuanceEvent`).
-     */
-    type: "acme-issuance-event";
-    hostname: string;
-    ok: boolean;
-    errorMessage?: string;
-    at: string;
-  }
+      type: 'managed-ha-event'
+      managedId: string
+      sourceMemberId?: string
+      at: string
+    }
   | {
-    /**
-     * Daemon-initiated, fire-and-forget. Issuance state for the control
-     * plane's own hostnames (`origin`), reported by
-     * `InstanceAcmeRenewalScheduler` for each renewal attempt. Not
-     * `acme-issuance-event`: that stream merge-patches an organization's
-     * `tls` row, and the two must stay distinct so a consumer cannot
-     * conflate them.
-     */
-    type: "instance-acme-issuance-event";
-    hostname: string;
-    ok: boolean;
-    errorMessage?: string;
-    /** Leaf notAfter from the installed certificate file. */
-    notAfter?: string;
-    at: string;
-  }
+      /**
+       * Daemon-initiated, fire-and-forget (no correlated request/result, same
+       * shape as `managed-ha-event`): the daemon's `topology/` module reporting
+       * a new topology generation (stable device/filesystem/GPU/signal
+       * identity). Server identity comes from the authenticated connection, not
+       * a wire field — see `managed-ha-event`'s precedent.
+       */
+      type: 'topology-report'
+      generation: number
+      bootGeneration: number
+      snapshot: unknown
+      at: string
+    }
   | {
-    type: "fabric-paths-request";
-    id: string;
-    fabricId: string;
-    probeMs: number;
-    candidates: FabricPathWireCandidate[];
-    at: string;
-  }
+      /**
+       * Daemon-initiated, fire-and-forget (no correlated request/result, same
+       * shape as `managed-ha-event`): `AcmeIssuanceObserver`'s live TLS-probe
+       * verdict for one `tlsMode: 'acme'` hostname on this server, sent only on
+       * a state change — a failure after a short debounce, or a recovery.
+       * Merge-patched onto `tls.metadata.acme.lastError`; never writes
+       * `tls.status`, so it cannot itself flip a `managed` row's
+       * deploy-readiness (see `handleAcmeIssuanceEvent`).
+       */
+      type: 'acme-issuance-event'
+      hostname: string
+      ok: boolean
+      errorMessage?: string
+      at: string
+    }
   | {
-    type: "fabric-paths-result";
-    id: string;
-    paths: FabricPathWireObservation[];
-    error?: string;
-    at: string;
-  }
+      /**
+       * Daemon-initiated, fire-and-forget. Issuance state for the control
+       * plane's own hostnames (`origin`), reported by
+       * `InstanceAcmeRenewalScheduler` for each renewal attempt. Not
+       * `acme-issuance-event`: that stream merge-patches an organization's
+       * `tls` row, and the two must stay distinct so a consumer cannot
+       * conflate them.
+       */
+      type: 'instance-acme-issuance-event'
+      hostname: string
+      ok: boolean
+      errorMessage?: string
+      /** Leaf notAfter from the installed certificate file. */
+      notAfter?: string
+      at: string
+    }
   | {
-    type: "dev-sync-begin";
-    id: string;
-    totalChunks: number;
-    totalBytes: number;
-    at: string;
-  }
+      type: 'fabric-paths-request'
+      id: string
+      fabricId: string
+      probeMs: number
+      candidates: FabricPathWireCandidate[]
+      at: string
+    }
   | {
-    type: "dev-sync-chunk";
-    id: string;
-    index: number;
-    data: string;
-    at: string;
-  }
-  | { type: "dev-sync-end"; id: string; at: string }
+      type: 'fabric-paths-result'
+      id: string
+      paths: FabricPathWireObservation[]
+      error?: string
+      at: string
+    }
   | {
-    type: "dev-sync-result";
-    id: string;
-    ok: boolean;
-    error?: string;
-    at: string;
-  }
+      type: 'dev-sync-begin'
+      id: string
+      totalChunks: number
+      totalBytes: number
+      at: string
+    }
+  | {
+      type: 'dev-sync-chunk'
+      id: string
+      index: number
+      data: string
+      at: string
+    }
+  | { type: 'dev-sync-end'; id: string; at: string }
+  | {
+      type: 'dev-sync-result'
+      id: string
+      ok: boolean
+      error?: string
+      at: string
+    }
   | TunnelTokenMessage
   | {
-    type: "tunnel-token-result";
-    id: string;
-    ok: boolean;
-    error?: string;
-    at: string;
-  }
+      type: 'tunnel-token-result'
+      id: string
+      ok: boolean
+      error?: string
+      at: string
+    }
   | {
-    type: "public-urls-update";
-    id: string;
-    /** Flat compatibility list. Daemons below the per-hostname floor read only this. */
-    urls: string[];
-    /** Present when the daemon can render per-hostname certificate sources. */
-    hostnames?: InstanceHostnameWireEntry[];
-    /** Present when any hostname uses `lets-encrypt`. */
-    instanceAcme?: InstanceAcmeWireSettings;
-    at: string;
-  }
+      type: 'public-urls-update'
+      id: string
+      /** Flat compatibility list. Daemons below the per-hostname floor read only this. */
+      urls: string[]
+      /** Present when the daemon can render per-hostname certificate sources. */
+      hostnames?: InstanceHostnameWireEntry[]
+      /** Present when any hostname uses `lets-encrypt`. */
+      instanceAcme?: InstanceAcmeWireSettings
+      at: string
+    }
   | {
-    type: "public-urls-update-result";
-    id: string;
-    ok: boolean;
-    error?: string;
-    at: string;
-  }
+      type: 'public-urls-update-result'
+      id: string
+      ok: boolean
+      error?: string
+      at: string
+    }
   | DaemonUpdateMessage
   | {
-    type: "update-result";
-    id: string;
-    ok: boolean;
-    error?: string;
-    errorCode?: string;
-    upgradeId?: string;
-    at: string;
-  }
+      type: 'update-result'
+      id: string
+      ok: boolean
+      error?: string
+      errorCode?: string
+      upgradeId?: string
+      at: string
+    }
   | InstanceUpdateMessage
   | UpdateProgressMessage
   | InstanceUpdateResultMessage
   | {
-    type: "command-dispatch";
-    id: string;
-    commandId: string;
-    commandType: string;
-    payload: unknown;
-    at: string;
-  }
+      type: 'command-dispatch'
+      id: string
+      commandId: string
+      commandType: string
+      payload: unknown
+      at: string
+    }
   | {
-    type: "command-ack";
-    id: string;
-    at: string;
-    daemonReceivedAt: string;
-  }
+      type: 'command-ack'
+      id: string
+      at: string
+      daemonReceivedAt: string
+    }
   | {
-    type: "command-outcome";
-    id: string;
-    ok: boolean;
-    result?: unknown;
-    error?: string;
-    at: string;
-    daemonReceivedAt?: string;
-    daemonRespondedAt?: string;
-  };
+      type: 'command-outcome'
+      id: string
+      ok: boolean
+      result?: unknown
+      error?: string
+      at: string
+      daemonReceivedAt?: string
+      daemonRespondedAt?: string
+    }
 
 /** Read-time stale window when no inbound traffic is recorded on the cell. */
-export const DAEMON_STALE_MS = 60_000;
+export const DAEMON_STALE_MS = 60_000
 /** Background sweep threshold for marking connected cells offline (DO alarm + Redis maintain). */
-export const DAEMON_OFFLINE_SWEEP_MS = 150_000;
+export const DAEMON_OFFLINE_SWEEP_MS = 150_000
 /** Redis cell registry maintenance interval (prune); not used for liveness. */
-export const DAEMON_CELL_MAINTAIN_MS = 60_000;
+export const DAEMON_CELL_MAINTAIN_MS = 60_000
 
 /** Message types accepted from daemons after authentication succeeds. */
-export const DAEMON_INBOUND_ALLOWED = new Set(
-  [
-    "hello",
-    "heartbeat",
-    "addresses-result",
-    "managed-logs-result",
-    "container-logs-result",
-    "metrics-live-start-result",
-    "metrics-live-stop-result",
-    "metrics-capabilities-result",
-    "topology-overrides-update-result",
-    "capability-plan-update-result",
-    "capability-plan-clear-result",
-    "repo-read-result",
-    "repo-default-branch-result",
-    "managed-ha-event",
-    "topology-report",
-    "acme-issuance-event",
-    "instance-acme-issuance-event",
-    "fabric-paths-result",
-    "dev-sync-result",
-    "tunnel-token-result",
-    "public-urls-update-result",
-    "update-result",
-    "instance-update-result",
-    "update-progress",
-    "command-ack",
-    "command-outcome",
-  ] as const,
-);
+export const DAEMON_INBOUND_ALLOWED = new Set([
+  'hello',
+  'heartbeat',
+  'addresses-result',
+  'managed-logs-result',
+  'managed-health-result',
+  'container-logs-result',
+  'metrics-live-start-result',
+  'metrics-live-stop-result',
+  'metrics-capabilities-result',
+  'topology-overrides-update-result',
+  'capability-plan-update-result',
+  'capability-plan-clear-result',
+  'repo-read-result',
+  'repo-default-branch-result',
+  'managed-ha-event',
+  'topology-report',
+  'acme-issuance-event',
+  'instance-acme-issuance-event',
+  'fabric-paths-result',
+  'dev-sync-result',
+  'tunnel-token-result',
+  'public-urls-update-result',
+  'update-result',
+  'instance-update-result',
+  'update-progress',
+  'command-ack',
+  'command-outcome',
+] as const)
 
 /** Hard cap on a single inbound WebSocket text/binary frame (UTF-8 bytes). */
-export const MAX_DAEMON_WS_FRAME_BYTES = 256 * 1024;
+export const MAX_DAEMON_WS_FRAME_BYTES = 256 * 1024
 
 /** Max characters for correlation / delivery identifiers (`id`, `requestId`). */
-export const MAX_DAEMON_WS_ID_CHARS = 128;
+export const MAX_DAEMON_WS_ID_CHARS = 128
 
 /** Max advertised feature names on `hello` / the attach `version` frame. */
-export const MAX_DAEMON_WS_FEATURES = 32;
+export const MAX_DAEMON_WS_FEATURES = 32
 
 /** Max characters for one advertised feature name. */
-export const MAX_DAEMON_WS_FEATURE_CHARS = 64;
+export const MAX_DAEMON_WS_FEATURE_CHARS = 64
 
 /** Max characters for `update-progress.errorCode`. */
-export const MAX_DAEMON_WS_ERROR_CODE_CHARS = 64;
+export const MAX_DAEMON_WS_ERROR_CODE_CHARS = 64
 
 /** Max characters for daemon-reported error strings. */
-export const MAX_DAEMON_WS_ERROR_CHARS = 4 * 1024;
+export const MAX_DAEMON_WS_ERROR_CHARS = 4 * 1024
 
 /** Max characters for `managed-logs-result` / `container-logs-result.logs`. */
-export const MAX_DAEMON_WS_LOGS_CHARS = 200 * 1024;
+export const MAX_DAEMON_WS_LOGS_CHARS = 200 * 1024
+
+/** Max characters for the string fields of `managed-health-result.member`. */
+export const MAX_DAEMON_WS_MANAGED_HEALTH_FIELD_CHARS = 128
 
 /** Max UTF-8 bytes of `metrics-capabilities-result.capabilities` JSON. */
-export const MAX_DAEMON_WS_CAPABILITIES_BYTES = 96 * 1024;
+export const MAX_DAEMON_WS_CAPABILITIES_BYTES = 96 * 1024
 
 /**
  * Max UTF-8 bytes across every file in one `repo-read-result`.
@@ -650,226 +678,193 @@ export const MAX_DAEMON_WS_CAPABILITIES_BYTES = 96 * 1024;
  * cannot be mistaken for a framing violation, and small enough that a
  * misbehaving daemon cannot push a repository through this channel.
  */
-export const MAX_DAEMON_WS_REPO_READ_BYTES = 128 * 1024;
+export const MAX_DAEMON_WS_REPO_READ_BYTES = 128 * 1024
 
 /** Max directory entries in one `repo-read-result`. */
-export const MAX_DAEMON_WS_REPO_READ_ENTRIES = 256;
+export const MAX_DAEMON_WS_REPO_READ_ENTRIES = 256
 
 /** Max characters for `repo-default-branch-result.defaultBranch`. */
-export const MAX_DAEMON_WS_DEFAULT_BRANCH_CHARS = 255;
+export const MAX_DAEMON_WS_DEFAULT_BRANCH_CHARS = 255
 
 /** Max paths one `repo-read-request` may ask for. */
-export const MAX_DAEMON_WS_REPO_READ_PATHS = 16;
+export const MAX_DAEMON_WS_REPO_READ_PATHS = 16
 
 /** Max `fabric-paths-request.candidates` / `fabric-paths-result.paths` entries. */
-export const MAX_DAEMON_WS_FABRIC_PATH_ENTRIES = 256;
+export const MAX_DAEMON_WS_FABRIC_PATH_ENTRIES = 256
 
 /** Max candidate endpoints per `fabric-paths-request` entry. */
-export const MAX_DAEMON_WS_FABRIC_PATH_CANDIDATES = 8;
+export const MAX_DAEMON_WS_FABRIC_PATH_CANDIDATES = 8
 
-const FABRIC_PEER_HEALTH = new Set(["healthy", "stale", "never"]);
+const FABRIC_PEER_HEALTH = new Set(['healthy', 'stale', 'never'])
 
 /** Max UTF-8 bytes for JSON-serialized `command-outcome.result`. */
-export const MAX_DAEMON_WS_RESULT_JSON_BYTES = 64 * 1024;
+export const MAX_DAEMON_WS_RESULT_JSON_BYTES = 64 * 1024
 
 /** Max UTF-8 bytes for JSON-serialized `topology-report.snapshot`. */
-export const MAX_DAEMON_WS_TOPOLOGY_REPORT_JSON_BYTES = 64 * 1024;
+export const MAX_DAEMON_WS_TOPOLOGY_REPORT_JSON_BYTES = 64 * 1024
 
 /** Max characters for optional hostname / machineKey fields on hello. */
-export const MAX_DAEMON_WS_HOST_FIELD_CHARS = 255;
+export const MAX_DAEMON_WS_HOST_FIELD_CHARS = 255
 
 /** WebSocket close code for policy / size violations (RFC 6455). */
-export const DAEMON_WS_POLICY_VIOLATION_CLOSE = 1008;
+export const DAEMON_WS_POLICY_VIOLATION_CLOSE = 1008
 
-const ISO_TIMESTAMP_RE =
-  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/;
+const ISO_TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/
 
 function utf8ByteLength(value: string): number {
-  return new TextEncoder().encode(value).byteLength;
+  return new TextEncoder().encode(value).byteLength
 }
 
 function isIsoTimestamp(value: unknown): value is string {
   return (
-    typeof value === "string" &&
+    typeof value === 'string' &&
     value.length <= 40 &&
     ISO_TIMESTAMP_RE.test(value) &&
     Number.isFinite(Date.parse(value))
-  );
+  )
 }
 
 function isBoundedId(value: unknown): value is string {
-  return typeof value === "string" && value.length > 0 &&
-    value.length <= MAX_DAEMON_WS_ID_CHARS;
+  return typeof value === 'string' && value.length > 0 && value.length <= MAX_DAEMON_WS_ID_CHARS
 }
 
 function validateOptionalError(value: unknown): string | null {
-  if (value === undefined) return null;
-  if (typeof value !== "string") return "error must be a string";
+  if (value === undefined) return null
+  if (typeof value !== 'string') return 'error must be a string'
   if (value.length > MAX_DAEMON_WS_ERROR_CHARS) {
-    return "error exceeds max length";
+    return 'error exceeds max length'
   }
-  return null;
+  return null
 }
 
-function validateBoundedJson(
-  value: unknown,
-  maxBytes: number,
-  label: string,
-): string | null {
-  if (value === undefined) return null;
+function validateBoundedJson(value: unknown, maxBytes: number, label: string): string | null {
+  if (value === undefined) return null
   try {
-    const encoded = JSON.stringify(value);
-    if (encoded === undefined) return `${label} is not JSON-serializable`;
+    const encoded = JSON.stringify(value)
+    if (encoded === undefined) return `${label} is not JSON-serializable`
     if (utf8ByteLength(encoded) > maxBytes) {
-      return `${label} exceeds max size`;
+      return `${label} exceeds max size`
     }
   } catch {
-    return `${label} is not JSON-serializable`;
+    return `${label} is not JSON-serializable`
   }
-  return null;
+  return null
 }
 
 function validateCommandResult(value: unknown): string | null {
-  return validateBoundedJson(value, MAX_DAEMON_WS_RESULT_JSON_BYTES, "result");
+  return validateBoundedJson(value, MAX_DAEMON_WS_RESULT_JSON_BYTES, 'result')
 }
 
 function validateTopologyReportSnapshot(value: unknown): string | null {
-  return validateBoundedJson(
-    value,
-    MAX_DAEMON_WS_TOPOLOGY_REPORT_JSON_BYTES,
-    "snapshot",
-  );
+  return validateBoundedJson(value, MAX_DAEMON_WS_TOPOLOGY_REPORT_JSON_BYTES, 'snapshot')
 }
 
-function validatePresenceFields(
-  record: Record<string, unknown>,
-): string | null {
-  if (!isIsoTimestamp(record.at)) return "invalid at timestamp";
+function validatePresenceFields(record: Record<string, unknown>): string | null {
+  if (!isIsoTimestamp(record.at)) return 'invalid at timestamp'
   if (
     record.hostname !== undefined &&
-    (typeof record.hostname !== "string" ||
-      record.hostname.length > MAX_DAEMON_WS_HOST_FIELD_CHARS)
+    (typeof record.hostname !== 'string' || record.hostname.length > MAX_DAEMON_WS_HOST_FIELD_CHARS)
   ) {
-    return "invalid hostname";
+    return 'invalid hostname'
   }
   if (
     record.machineKey !== undefined &&
-    (typeof record.machineKey !== "string" ||
+    (typeof record.machineKey !== 'string' ||
       record.machineKey.length > MAX_DAEMON_WS_HOST_FIELD_CHARS)
   ) {
-    return "invalid machineKey";
+    return 'invalid machineKey'
   }
-  if (
-    record.daemonBuild !== undefined &&
-    !parseDaemonBuildInfo(record.daemonBuild)
-  ) {
-    return "invalid daemonBuild";
+  if (record.daemonBuild !== undefined && !parseDaemonBuildInfo(record.daemonBuild)) {
+    return 'invalid daemonBuild'
   }
-  return null;
+  return null
 }
 
-function validateResultEnvelopeFields(
-  record: Record<string, unknown>,
-): string | null {
-  if (!isBoundedId(record.id)) return "invalid id";
-  if (!isIsoTimestamp(record.at)) return "invalid at timestamp";
-  const errorIssue = validateOptionalError(record.error);
-  if (errorIssue) return errorIssue;
-  return null;
+function validateResultEnvelopeFields(record: Record<string, unknown>): string | null {
+  if (!isBoundedId(record.id)) return 'invalid id'
+  if (!isIsoTimestamp(record.at)) return 'invalid at timestamp'
+  const errorIssue = validateOptionalError(record.error)
+  if (errorIssue) return errorIssue
+  return null
 }
 
-function validateOptionalIsoTimestamp(
-  value: unknown,
-  field: string,
-): string | null {
-  if (value === undefined) return null;
-  if (!isIsoTimestamp(value)) return `invalid ${field}`;
-  return null;
+function validateOptionalIsoTimestamp(value: unknown, field: string): string | null {
+  if (value === undefined) return null
+  if (!isIsoTimestamp(value)) return `invalid ${field}`
+  return null
 }
 
 function validateHelloFeatures(value: unknown): string | null {
-  if (value === undefined) return null;
-  if (!Array.isArray(value)) return "invalid features";
+  if (value === undefined) return null
+  if (!Array.isArray(value)) return 'invalid features'
   if (value.length > MAX_DAEMON_WS_FEATURES) {
-    return "features exceed max entries";
+    return 'features exceed max entries'
   }
   for (const entry of value) {
-    if (typeof entry !== "string" || entry.length === 0) {
-      return "invalid features";
+    if (typeof entry !== 'string' || entry.length === 0) {
+      return 'invalid features'
     }
     if (entry.length > MAX_DAEMON_WS_FEATURE_CHARS) {
-      return "features exceed max length";
+      return 'features exceed max length'
     }
   }
-  return null;
+  return null
 }
 
 function validateHelloFields(record: Record<string, unknown>): string | null {
-  if (!parseDaemonBuildInfo(record.daemonBuild)) return "invalid daemonBuild";
-  const presence = validatePresenceFields(record);
-  if (presence) return presence;
-  return validateHelloFeatures(record.features);
+  if (!parseDaemonBuildInfo(record.daemonBuild)) return 'invalid daemonBuild'
+  const presence = validatePresenceFields(record)
+  if (presence) return presence
+  return validateHelloFeatures(record.features)
 }
 
-const UPDATE_PROGRESS_UNIT_SET = new Set<string>(UPDATE_PROGRESS_UNITS);
-const UPDATE_PROGRESS_STAGE_SET = new Set<string>(UPDATE_PROGRESS_STAGES);
+const UPDATE_PROGRESS_UNIT_SET = new Set<string>(UPDATE_PROGRESS_UNITS)
+const UPDATE_PROGRESS_STAGE_SET = new Set<string>(UPDATE_PROGRESS_STAGES)
 
-function validateUpdateProgressFields(
-  record: Record<string, unknown>,
-): string | null {
-  if (!isBoundedId(record.id)) return "invalid id";
+function validateUpdateProgressFields(record: Record<string, unknown>): string | null {
+  if (!isBoundedId(record.id)) return 'invalid id'
   if (record.upgradeId !== undefined && !isBoundedId(record.upgradeId)) {
-    return "invalid upgradeId";
+    return 'invalid upgradeId'
   }
-  if (
-    typeof record.unit !== "string" ||
-    !UPDATE_PROGRESS_UNIT_SET.has(record.unit)
-  ) {
-    return "invalid unit";
+  if (typeof record.unit !== 'string' || !UPDATE_PROGRESS_UNIT_SET.has(record.unit)) {
+    return 'invalid unit'
   }
-  if (
-    typeof record.stage !== "string" ||
-    !UPDATE_PROGRESS_STAGE_SET.has(record.stage)
-  ) {
-    return "invalid stage";
+  if (typeof record.stage !== 'string' || !UPDATE_PROGRESS_STAGE_SET.has(record.stage)) {
+    return 'invalid stage'
   }
-  if (!isIsoTimestamp(record.at)) return "invalid at timestamp";
+  if (!isIsoTimestamp(record.at)) return 'invalid at timestamp'
   if (record.detail !== undefined) {
-    if (typeof record.detail !== "string") return "detail must be a string";
+    if (typeof record.detail !== 'string') return 'detail must be a string'
     if (record.detail.length > MAX_DAEMON_WS_ERROR_CHARS) {
-      return "detail exceeds max length";
+      return 'detail exceeds max length'
     }
   }
   if (record.errorCode !== undefined) {
-    if (typeof record.errorCode !== "string") {
-      return "errorCode must be a string";
+    if (typeof record.errorCode !== 'string') {
+      return 'errorCode must be a string'
     }
     if (record.errorCode.length > MAX_DAEMON_WS_ERROR_CODE_CHARS) {
-      return "errorCode exceeds max length";
+      return 'errorCode exceeds max length'
     }
   }
-  return null;
+  return null
 }
 
-function validateAddressesResultFields(
-  record: Record<string, unknown>,
-): string | null {
-  const base = validateResultEnvelopeFields(record);
-  if (base) return base;
-  if (!Array.isArray(record.ips)) return "invalid ips";
-  return null;
+function validateAddressesResultFields(record: Record<string, unknown>): string | null {
+  const base = validateResultEnvelopeFields(record)
+  if (base) return base
+  if (!Array.isArray(record.ips)) return 'invalid ips'
+  return null
 }
 
-function validateManagedLogsResultFields(
-  record: Record<string, unknown>,
-): string | null {
-  const base = validateResultEnvelopeFields(record);
-  if (base) return base;
-  if (typeof record.logs !== "string") return "invalid logs";
+function validateManagedLogsResultFields(record: Record<string, unknown>): string | null {
+  const base = validateResultEnvelopeFields(record)
+  if (base) return base
+  if (typeof record.logs !== 'string') return 'invalid logs'
   if (record.logs.length > MAX_DAEMON_WS_LOGS_CHARS) {
-    return "logs exceed max length";
+    return 'logs exceed max length'
   }
-  return null;
+  return null
 }
 
 /**
@@ -879,248 +874,254 @@ function validateManagedLogsResultFields(
  * runs on the raw frame, before anything is handed onward.
  */
 function validateRepoReadFiles(value: unknown): string | null {
-  if (!Array.isArray(value)) return "invalid files";
+  if (!Array.isArray(value)) return 'invalid files'
   if (value.length > MAX_DAEMON_WS_REPO_READ_PATHS) {
-    return "files exceed max entries";
+    return 'files exceed max entries'
   }
-  let bytes = 0;
+  let bytes = 0
   for (const file of value) {
-    if (typeof file !== "object" || file === null) return "invalid file entry";
-    const entry = file as Record<string, unknown>;
-    if (typeof entry.path !== "string") return "invalid file path";
-    if (typeof entry.found !== "boolean") return "invalid file found";
-    if (entry.content === undefined) continue;
-    if (typeof entry.content !== "string") return "invalid file content";
-    bytes += utf8ByteLength(entry.content);
+    if (typeof file !== 'object' || file === null) return 'invalid file entry'
+    const entry = file as Record<string, unknown>
+    if (typeof entry.path !== 'string') return 'invalid file path'
+    if (typeof entry.found !== 'boolean') return 'invalid file found'
+    if (entry.content === undefined) continue
+    if (typeof entry.content !== 'string') return 'invalid file content'
+    bytes += utf8ByteLength(entry.content)
     if (bytes > MAX_DAEMON_WS_REPO_READ_BYTES) {
-      return "repo read exceeds max bytes";
+      return 'repo read exceeds max bytes'
     }
   }
-  return null;
+  return null
 }
 
 /** The `entries[]` array — a listing, so only its size is bounded here. */
 function validateRepoReadEntries(value: unknown): string | null {
-  if (!Array.isArray(value)) return "invalid entries";
+  if (!Array.isArray(value)) return 'invalid entries'
   if (value.length > MAX_DAEMON_WS_REPO_READ_ENTRIES) {
-    return "entries exceed max";
+    return 'entries exceed max'
   }
-  return null;
+  return null
 }
 
-function validateRepoReadResultFields(
-  record: Record<string, unknown>,
-): string | null {
-  const base = validateResultEnvelopeFields(record);
-  if (base) return base;
-  if (typeof record.ok !== "boolean") return "invalid ok";
+function validateRepoReadResultFields(record: Record<string, unknown>): string | null {
+  const base = validateResultEnvelopeFields(record)
+  if (base) return base
+  if (typeof record.ok !== 'boolean') return 'invalid ok'
   if (record.files !== undefined) {
-    const issue = validateRepoReadFiles(record.files);
-    if (issue) return issue;
+    const issue = validateRepoReadFiles(record.files)
+    if (issue) return issue
   }
   if (record.entries !== undefined) {
-    const issue = validateRepoReadEntries(record.entries);
-    if (issue) return issue;
+    const issue = validateRepoReadEntries(record.entries)
+    if (issue) return issue
   }
-  return null;
+  return null
 }
 
-function validateRepoDefaultBranchResultFields(
-  record: Record<string, unknown>,
-): string | null {
-  const base = validateResultEnvelopeFields(record);
-  if (base) return base;
-  if (typeof record.ok !== "boolean") return "invalid ok";
+function validateRepoDefaultBranchResultFields(record: Record<string, unknown>): string | null {
+  const base = validateResultEnvelopeFields(record)
+  if (base) return base
+  if (typeof record.ok !== 'boolean') return 'invalid ok'
   if (record.defaultBranch === undefined || record.defaultBranch === null) {
-    return null;
+    return null
   }
-  if (typeof record.defaultBranch !== "string") return "invalid defaultBranch";
+  if (typeof record.defaultBranch !== 'string') return 'invalid defaultBranch'
   if (record.defaultBranch.length > MAX_DAEMON_WS_DEFAULT_BRANCH_CHARS) {
-    return "defaultBranch exceeds max length";
+    return 'defaultBranch exceeds max length'
   }
-  return null;
+  return null
 }
 
-const MANAGED_HA_EVENT_ID_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const MANAGED_HA_EVENT_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
-function validateManagedHaEventFields(
-  record: Record<string, unknown>,
-): string | null {
-  if (!isIsoTimestamp(record.at)) return "invalid at timestamp";
-  if (
-    typeof record.managedId !== "string" ||
-    !MANAGED_HA_EVENT_ID_RE.test(record.managedId)
-  ) {
-    return "invalid managedId";
+function validateManagedHaEventFields(record: Record<string, unknown>): string | null {
+  if (!isIsoTimestamp(record.at)) return 'invalid at timestamp'
+  if (typeof record.managedId !== 'string' || !MANAGED_HA_EVENT_ID_RE.test(record.managedId)) {
+    return 'invalid managedId'
   }
   if (
     record.sourceMemberId !== undefined &&
-    (typeof record.sourceMemberId !== "string" ||
+    (typeof record.sourceMemberId !== 'string' ||
       !MANAGED_HA_EVENT_ID_RE.test(record.sourceMemberId))
   ) {
-    return "invalid sourceMemberId";
+    return 'invalid sourceMemberId'
   }
-  return null;
+  return null
 }
 
 function isNonNegativeInt(value: unknown): value is number {
-  return typeof value === "number" && Number.isInteger(value) && value >= 0;
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0
 }
 
-function validateTopologyReportFields(
-  record: Record<string, unknown>,
-): string | null {
-  if (!isIsoTimestamp(record.at)) return "invalid at timestamp";
-  if (!isNonNegativeInt(record.generation)) return "invalid generation";
+function validateTopologyReportFields(record: Record<string, unknown>): string | null {
+  if (!isIsoTimestamp(record.at)) return 'invalid at timestamp'
+  if (!isNonNegativeInt(record.generation)) return 'invalid generation'
   if (!isNonNegativeInt(record.bootGeneration)) {
-    return "invalid bootGeneration";
+    return 'invalid bootGeneration'
   }
-  return validateTopologyReportSnapshot(record.snapshot);
+  return validateTopologyReportSnapshot(record.snapshot)
 }
 
-function validateAcmeIssuanceEventFields(
-  record: Record<string, unknown>,
-): string | null {
-  if (!isIsoTimestamp(record.at)) return "invalid at timestamp";
+function validateAcmeIssuanceEventFields(record: Record<string, unknown>): string | null {
+  if (!isIsoTimestamp(record.at)) return 'invalid at timestamp'
   if (
-    typeof record.hostname !== "string" ||
+    typeof record.hostname !== 'string' ||
     record.hostname.length === 0 ||
     record.hostname.length > MAX_DAEMON_WS_HOST_FIELD_CHARS
   ) {
-    return "invalid hostname";
+    return 'invalid hostname'
   }
-  if (typeof record.ok !== "boolean") return "invalid ok";
+  if (typeof record.ok !== 'boolean') return 'invalid ok'
   if (record.notAfter !== undefined && !isIsoTimestamp(record.notAfter)) {
-    return "invalid notAfter";
+    return 'invalid notAfter'
   }
-  return validateOptionalError(record.errorMessage);
+  return validateOptionalError(record.errorMessage)
 }
 
 function isFabricPeerHealth(value: unknown): value is FabricPathPeerHealth {
-  return typeof value === "string" && FABRIC_PEER_HEALTH.has(value);
+  return typeof value === 'string' && FABRIC_PEER_HEALTH.has(value)
 }
 
 function validateFabricPathObservation(value: unknown): string | null {
-  if (!isRecord(value)) return "invalid path entry";
+  if (!isRecord(value)) return 'invalid path entry'
   if (!isValidWireguardPublicKey(value.publicKey)) {
-    return "invalid path publicKey";
+    return 'invalid path publicKey'
   }
-  if (!isFabricPeerHealth(value.health)) return "invalid path health";
-  if (
-    value.endpoint !== undefined && !isValidWireguardEndpoint(value.endpoint)
-  ) {
-    return "invalid path endpoint";
+  if (!isFabricPeerHealth(value.health)) return 'invalid path health'
+  if (value.endpoint !== undefined && !isValidWireguardEndpoint(value.endpoint)) {
+    return 'invalid path endpoint'
   }
-  const handshakeIssue = validateOptionalIsoTimestamp(
-    value.lastHandshakeAt,
-    "path lastHandshakeAt",
-  );
-  if (handshakeIssue) return handshakeIssue;
+  const handshakeIssue = validateOptionalIsoTimestamp(value.lastHandshakeAt, 'path lastHandshakeAt')
+  if (handshakeIssue) return handshakeIssue
   if (value.latencyMs !== undefined) {
     if (
-      typeof value.latencyMs !== "number" ||
+      typeof value.latencyMs !== 'number' ||
       !Number.isFinite(value.latencyMs) ||
       value.latencyMs < 0
     ) {
-      return "invalid path latencyMs";
+      return 'invalid path latencyMs'
     }
   }
-  return null;
+  return null
 }
 
-function validateFabricPathsResultFields(
-  record: Record<string, unknown>,
-): string | null {
-  const base = validateResultEnvelopeFields(record);
-  if (base) return base;
-  if (!Array.isArray(record.paths)) return "invalid paths";
+function validateFabricPathsResultFields(record: Record<string, unknown>): string | null {
+  const base = validateResultEnvelopeFields(record)
+  if (base) return base
+  if (!Array.isArray(record.paths)) return 'invalid paths'
   if (record.paths.length > MAX_DAEMON_WS_FABRIC_PATH_ENTRIES) {
-    return "paths exceed max entries";
+    return 'paths exceed max entries'
   }
   for (const entry of record.paths) {
-    const issue = validateFabricPathObservation(entry);
-    if (issue) return issue;
+    const issue = validateFabricPathObservation(entry)
+    if (issue) return issue
   }
-  return null;
+  return null
 }
 
-function validateOkResultFields(
-  record: Record<string, unknown>,
-): string | null {
-  const base = validateResultEnvelopeFields(record);
-  if (base) return base;
-  if (typeof record.ok !== "boolean") return "invalid ok";
-  return null;
+function isBoundedHealthString(value: unknown): value is string {
+  return (
+    typeof value === 'string' &&
+    value.length > 0 &&
+    value.length <= MAX_DAEMON_WS_MANAGED_HEALTH_FIELD_CHARS
+  )
 }
 
-function validateUpdateResultFields(
-  record: Record<string, unknown>,
-): string | null {
-  const base = validateOkResultFields(record);
-  if (base) return base;
+function validateOptionalFiniteNumber(value: unknown, field: string): string | null {
+  if (value === undefined) return null
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return `invalid ${field}`
+  }
+  return null
+}
+
+function validateManagedHealthMember(value: unknown): string | null {
+  if (!isRecord(value)) return 'invalid member'
+  if (!isBoundedHealthString(value.memberId)) return 'invalid member.memberId'
+  if (!isBoundedHealthString(value.role)) return 'invalid member.role'
+  if (!isBoundedHealthString(value.status)) return 'invalid member.status'
+  if (value.replication === undefined) return null
+  const replication = value.replication
+  if (!isRecord(replication)) return 'invalid member.replication'
+  if (!isBoundedHealthString(replication.state)) {
+    return 'invalid member.replication.state'
+  }
+  if (!isIsoTimestamp(replication.observedAt)) {
+    return 'invalid member.replication.observedAt'
+  }
+  return (
+    validateOptionalFiniteNumber(replication.lagBytes, 'member.replication.lagBytes') ??
+    validateOptionalFiniteNumber(replication.lagSeconds, 'member.replication.lagSeconds')
+  )
+}
+
+function validateManagedHealthResultFields(record: Record<string, unknown>): string | null {
+  const base = validateOkResultFields(record)
+  if (base) return base
+  if (record.member === undefined) return null
+  return validateManagedHealthMember(record.member)
+}
+
+function validateOkResultFields(record: Record<string, unknown>): string | null {
+  const base = validateResultEnvelopeFields(record)
+  if (base) return base
+  if (typeof record.ok !== 'boolean') return 'invalid ok'
+  return null
+}
+
+function validateUpdateResultFields(record: Record<string, unknown>): string | null {
+  const base = validateOkResultFields(record)
+  if (base) return base
   if (record.upgradeId !== undefined && !isBoundedId(record.upgradeId)) {
-    return "invalid upgradeId";
+    return 'invalid upgradeId'
   }
   if (record.errorCode !== undefined) {
-    if (typeof record.errorCode !== "string") {
-      return "errorCode must be a string";
+    if (typeof record.errorCode !== 'string') {
+      return 'errorCode must be a string'
     }
     if (record.errorCode.length > MAX_DAEMON_WS_ERROR_CODE_CHARS) {
-      return "errorCode exceeds max length";
+      return 'errorCode exceeds max length'
     }
   }
-  return null;
+  return null
 }
 
-function validateCapabilitiesResultFields(
-  record: Record<string, unknown>,
-): string | null {
-  const base = validateOkResultFields(record);
-  if (base) return base;
-  const errorIssue = validateOptionalError(record.error);
-  if (errorIssue) return errorIssue;
+function validateCapabilitiesResultFields(record: Record<string, unknown>): string | null {
+  const base = validateOkResultFields(record)
+  if (base) return base
+  const errorIssue = validateOptionalError(record.error)
+  if (errorIssue) return errorIssue
   if (record.capabilities === undefined) {
-    return record.ok ? "missing capabilities" : null;
+    return record.ok ? 'missing capabilities' : null
   }
-  if (!isRecord(record.capabilities)) return "invalid capabilities";
-  if (
-    utf8ByteLength(JSON.stringify(record.capabilities)) >
-      MAX_DAEMON_WS_CAPABILITIES_BYTES
-  ) {
-    return "capabilities exceed max size";
+  if (!isRecord(record.capabilities)) return 'invalid capabilities'
+  if (utf8ByteLength(JSON.stringify(record.capabilities)) > MAX_DAEMON_WS_CAPABILITIES_BYTES) {
+    return 'capabilities exceed max size'
   }
-  return null;
+  return null
 }
 
-function validateCommandAckFields(
-  record: Record<string, unknown>,
-): string | null {
-  if (!isBoundedId(record.id)) return "invalid id";
-  if (!isIsoTimestamp(record.at)) return "invalid at timestamp";
+function validateCommandAckFields(record: Record<string, unknown>): string | null {
+  if (!isBoundedId(record.id)) return 'invalid id'
+  if (!isIsoTimestamp(record.at)) return 'invalid at timestamp'
   if (!isIsoTimestamp(record.daemonReceivedAt)) {
-    return "invalid daemonReceivedAt";
+    return 'invalid daemonReceivedAt'
   }
-  return null;
+  return null
 }
 
-function validateCommandOutcomeFields(
-  record: Record<string, unknown>,
-): string | null {
-  if (!isBoundedId(record.id)) return "invalid id";
-  if (!isIsoTimestamp(record.at)) return "invalid at timestamp";
-  if (typeof record.ok !== "boolean") return "invalid ok";
-  const errorIssue = validateOptionalError(record.error);
-  if (errorIssue) return errorIssue;
-  const resultIssue = validateCommandResult(record.result);
-  if (resultIssue) return resultIssue;
+function validateCommandOutcomeFields(record: Record<string, unknown>): string | null {
+  if (!isBoundedId(record.id)) return 'invalid id'
+  if (!isIsoTimestamp(record.at)) return 'invalid at timestamp'
+  if (typeof record.ok !== 'boolean') return 'invalid ok'
+  const errorIssue = validateOptionalError(record.error)
+  if (errorIssue) return errorIssue
+  const resultIssue = validateCommandResult(record.result)
+  if (resultIssue) return resultIssue
   return (
-    validateOptionalIsoTimestamp(record.daemonReceivedAt, "daemonReceivedAt") ??
-      validateOptionalIsoTimestamp(
-        record.daemonRespondedAt,
-        "daemonRespondedAt",
-      )
-  );
+    validateOptionalIsoTimestamp(record.daemonReceivedAt, 'daemonReceivedAt') ??
+    validateOptionalIsoTimestamp(record.daemonRespondedAt, 'daemonRespondedAt')
+  )
 }
 
 /**
@@ -1132,18 +1133,14 @@ function validateCommandOutcomeFields(
 export type DaemonInboundFrameResult =
   | { ok: true; message: DaemonMessage }
   | { ok: false; ignored: true; reason: string }
-  | { ok: false; ignored: false; reason: string };
+  | { ok: false; ignored: false; reason: string }
 
-function rejectedInboundFrame(
-  reason: string,
-): { ok: false; ignored: false; reason: string } {
-  return { ok: false, ignored: false, reason };
+function rejectedInboundFrame(reason: string): { ok: false; ignored: false; reason: string } {
+  return { ok: false, ignored: false, reason }
 }
 
-function ignoredInboundFrame(
-  reason: string,
-): { ok: false; ignored: true; reason: string } {
-  return { ok: false, ignored: true, reason };
+function ignoredInboundFrame(reason: string): { ok: false; ignored: true; reason: string } {
+  return { ok: false, ignored: true, reason }
 }
 
 /**
@@ -1156,94 +1153,89 @@ function ignoredInboundFrame(
  * invalid JSON, a non-object body, and a known type that fails field
  * validation stay rejections.
  */
-export function validateDaemonInboundFrame(
-  raw: string,
-): DaemonInboundFrameResult {
+export function validateDaemonInboundFrame(raw: string): DaemonInboundFrameResult {
   if (utf8ByteLength(raw) > MAX_DAEMON_WS_FRAME_BYTES) {
-    return rejectedInboundFrame("frame exceeds max size");
+    return rejectedInboundFrame('frame exceeds max size')
   }
 
-  let parsed: unknown;
+  let parsed: unknown
   try {
-    parsed = JSON.parse(raw);
+    parsed = JSON.parse(raw)
   } catch {
-    return rejectedInboundFrame("invalid json");
+    return rejectedInboundFrame('invalid json')
   }
-  if (!isRecord(parsed) || typeof parsed.type !== "string") {
-    return rejectedInboundFrame("invalid message shape");
+  if (!isRecord(parsed) || typeof parsed.type !== 'string') {
+    return rejectedInboundFrame('invalid message shape')
   }
 
   if (!(DAEMON_INBOUND_ALLOWED as ReadonlySet<string>).has(parsed.type)) {
-    return ignoredInboundFrame(`disallowed type ${parsed.type}`);
+    return ignoredInboundFrame(`disallowed type ${parsed.type}`)
   }
 
-  const typeIssue = validateInboundMessageFields(parsed);
-  if (typeIssue) return rejectedInboundFrame(typeIssue);
+  const typeIssue = validateInboundMessageFields(parsed)
+  if (typeIssue) return rejectedInboundFrame(typeIssue)
 
-  return { ok: true, message: parsed as DaemonMessage };
+  return { ok: true, message: parsed as DaemonMessage }
 }
 
-function validateInboundMessageFields(
-  record: Record<string, unknown>,
-): string | null {
+function validateInboundMessageFields(record: Record<string, unknown>): string | null {
   switch (record.type) {
-    case "hello":
-      return validateHelloFields(record);
-    case "heartbeat":
-      return validatePresenceFields(record);
-    case "addresses-result":
-      return validateAddressesResultFields(record);
-    case "managed-logs-result":
-    case "container-logs-result":
-      return validateManagedLogsResultFields(record);
-    case "repo-read-result":
-      return validateRepoReadResultFields(record);
-    case "repo-default-branch-result":
-      return validateRepoDefaultBranchResultFields(record);
-    case "managed-ha-event":
-      return validateManagedHaEventFields(record);
-    case "topology-report":
-      return validateTopologyReportFields(record);
-    case "acme-issuance-event":
-    case "instance-acme-issuance-event":
-      return validateAcmeIssuanceEventFields(record);
-    case "fabric-paths-result":
-      return validateFabricPathsResultFields(record);
-    case "dev-sync-result":
-    case "tunnel-token-result":
-    case "public-urls-update-result":
-    case "metrics-live-start-result":
-    case "metrics-live-stop-result":
-    case "topology-overrides-update-result":
-    case "capability-plan-update-result":
-    case "capability-plan-clear-result":
-      return validateOkResultFields(record);
-    case "update-result":
-    case "instance-update-result":
-      return validateUpdateResultFields(record);
-    case "metrics-capabilities-result":
-      return validateCapabilitiesResultFields(record);
-    case "command-ack":
-      return validateCommandAckFields(record);
-    case "command-outcome":
-      return validateCommandOutcomeFields(record);
-    case "update-progress":
-      return validateUpdateProgressFields(record);
+    case 'hello':
+      return validateHelloFields(record)
+    case 'heartbeat':
+      return validatePresenceFields(record)
+    case 'addresses-result':
+      return validateAddressesResultFields(record)
+    case 'managed-logs-result':
+    case 'container-logs-result':
+      return validateManagedLogsResultFields(record)
+    case 'managed-health-result':
+      return validateManagedHealthResultFields(record)
+    case 'repo-read-result':
+      return validateRepoReadResultFields(record)
+    case 'repo-default-branch-result':
+      return validateRepoDefaultBranchResultFields(record)
+    case 'managed-ha-event':
+      return validateManagedHaEventFields(record)
+    case 'topology-report':
+      return validateTopologyReportFields(record)
+    case 'acme-issuance-event':
+    case 'instance-acme-issuance-event':
+      return validateAcmeIssuanceEventFields(record)
+    case 'fabric-paths-result':
+      return validateFabricPathsResultFields(record)
+    case 'dev-sync-result':
+    case 'tunnel-token-result':
+    case 'public-urls-update-result':
+    case 'metrics-live-start-result':
+    case 'metrics-live-stop-result':
+    case 'topology-overrides-update-result':
+    case 'capability-plan-update-result':
+    case 'capability-plan-clear-result':
+      return validateOkResultFields(record)
+    case 'update-result':
+    case 'instance-update-result':
+      return validateUpdateResultFields(record)
+    case 'metrics-capabilities-result':
+      return validateCapabilitiesResultFields(record)
+    case 'command-ack':
+      return validateCommandAckFields(record)
+    case 'command-outcome':
+      return validateCommandOutcomeFields(record)
+    case 'update-progress':
+      return validateUpdateProgressFields(record)
     default:
-      return `disallowed type ${String(record.type)}`;
+      return `disallowed type ${String(record.type)}`
   }
 }
 
 function validateManagedLogsEnvelope(
-  inbound: Extract<
-    DaemonInboundEnvelope,
-    { kind: "managed-logs-result" | "container-logs-result" }
-  >,
+  inbound: Extract<DaemonInboundEnvelope, { kind: 'managed-logs-result' | 'container-logs-result' }>
 ): string | null {
   if (inbound.logs.length > MAX_DAEMON_WS_LOGS_CHARS) {
-    return "logs exceed max length";
+    return 'logs exceed max length'
   }
-  return validateOptionalError(inbound.error);
+  return validateOptionalError(inbound.error)
 }
 
 /**
@@ -1253,95 +1245,87 @@ function validateManagedLogsEnvelope(
  * under a per-file limit would still be a frame nobody asked for.
  */
 function validateRepoReadEnvelope(
-  inbound: Extract<DaemonInboundEnvelope, { kind: "repo-read-result" }>,
+  inbound: Extract<DaemonInboundEnvelope, { kind: 'repo-read-result' }>
 ): string | null {
-  let bytes = 0;
+  let bytes = 0
   for (const file of inbound.files ?? []) {
-    bytes += utf8ByteLength(file.content ?? "");
+    bytes += utf8ByteLength(file.content ?? '')
     if (bytes > MAX_DAEMON_WS_REPO_READ_BYTES) {
-      return "repo read exceeds max bytes";
+      return 'repo read exceeds max bytes'
     }
   }
   if ((inbound.entries ?? []).length > MAX_DAEMON_WS_REPO_READ_ENTRIES) {
-    return "repo read entries exceed max";
+    return 'repo read entries exceed max'
   }
-  return validateOptionalError(inbound.error);
+  return validateOptionalError(inbound.error)
 }
 
 function validateFabricPathsEnvelope(
-  inbound: Extract<DaemonInboundEnvelope, { kind: "fabric-paths-result" }>,
+  inbound: Extract<DaemonInboundEnvelope, { kind: 'fabric-paths-result' }>
 ): string | null {
   if (inbound.paths.length > MAX_DAEMON_WS_FABRIC_PATH_ENTRIES) {
-    return "paths exceed max entries";
+    return 'paths exceed max entries'
   }
   for (const entry of inbound.paths) {
-    const issue = validateFabricPathObservation(entry);
-    if (issue) return issue;
+    const issue = validateFabricPathObservation(entry)
+    if (issue) return issue
   }
-  return validateOptionalError(inbound.error);
+  return validateOptionalError(inbound.error)
 }
 
 function validateCommandAckEnvelope(
-  inbound: Extract<DaemonInboundEnvelope, { kind: "command-ack" }>,
+  inbound: Extract<DaemonInboundEnvelope, { kind: 'command-ack' }>
 ): string | null {
   if (!isIsoTimestamp(inbound.daemonReceivedAt)) {
-    return "invalid daemonReceivedAt";
+    return 'invalid daemonReceivedAt'
   }
-  return null;
+  return null
 }
 
 function validateCapabilitiesEnvelope(
-  inbound: Extract<
-    DaemonInboundEnvelope,
-    { kind: "metrics-capabilities-result" }
-  >,
+  inbound: Extract<DaemonInboundEnvelope, { kind: 'metrics-capabilities-result' }>
 ): string | null {
   if (inbound.capabilities !== undefined) {
-    if (
-      utf8ByteLength(JSON.stringify(inbound.capabilities)) >
-        MAX_DAEMON_WS_CAPABILITIES_BYTES
-    ) {
-      return "capabilities exceed max size";
+    if (utf8ByteLength(JSON.stringify(inbound.capabilities)) > MAX_DAEMON_WS_CAPABILITIES_BYTES) {
+      return 'capabilities exceed max size'
     }
   }
-  return validateOptionalError(inbound.error);
+  return validateOptionalError(inbound.error)
 }
 
-function validateInboundEnvelopeKind(
-  inbound: DaemonInboundEnvelope,
-): string | null {
+function validateInboundEnvelopeKind(inbound: DaemonInboundEnvelope): string | null {
   switch (inbound.kind) {
-    case "managed-logs-result":
-    case "container-logs-result":
-      return validateManagedLogsEnvelope(inbound);
-    case "repo-read-result":
-      return validateRepoReadEnvelope(inbound);
-    case "repo-default-branch-result":
-      return validateOptionalError(inbound.error);
-    case "fabric-paths-result":
-      return validateFabricPathsEnvelope(inbound);
-    case "command-outcome":
-      return validateOptionalError(inbound.error) ??
-        validateCommandResult(inbound.result);
-    case "dev-sync-result":
-    case "tunnel-token-result":
-    case "public-urls-update-result":
-    case "update-result":
-    case "instance-update-result":
-    case "metrics-live-start-result":
-    case "metrics-live-stop-result":
-    case "topology-overrides-update-result":
-    case "capability-plan-update-result":
-    case "capability-plan-clear-result":
-      return validateOptionalError(inbound.error);
-    case "metrics-capabilities-result":
-      return validateCapabilitiesEnvelope(inbound);
-    case "command-ack":
-      return validateCommandAckEnvelope(inbound);
-    case "addresses-result":
-      return null;
+    case 'managed-logs-result':
+    case 'container-logs-result':
+      return validateManagedLogsEnvelope(inbound)
+    case 'repo-read-result':
+      return validateRepoReadEnvelope(inbound)
+    case 'repo-default-branch-result':
+    case 'managed-health-result':
+      return validateOptionalError(inbound.error)
+    case 'fabric-paths-result':
+      return validateFabricPathsEnvelope(inbound)
+    case 'command-outcome':
+      return validateOptionalError(inbound.error) ?? validateCommandResult(inbound.result)
+    case 'dev-sync-result':
+    case 'tunnel-token-result':
+    case 'public-urls-update-result':
+    case 'update-result':
+    case 'instance-update-result':
+    case 'metrics-live-start-result':
+    case 'metrics-live-stop-result':
+    case 'topology-overrides-update-result':
+    case 'capability-plan-update-result':
+    case 'capability-plan-clear-result':
+      return validateOptionalError(inbound.error)
+    case 'metrics-capabilities-result':
+      return validateCapabilitiesEnvelope(inbound)
+    case 'command-ack':
+      return validateCommandAckEnvelope(inbound)
+    case 'addresses-result':
+      return null
     default:
-      return "unknown envelope kind";
+      return 'unknown envelope kind'
   }
 }
 
@@ -1351,345 +1335,367 @@ function validateInboundEnvelopeKind(
  * cheap guard so a forged envelope cannot bypass wire validation.
  */
 export function validateDaemonInboundEnvelope(
-  inbound: DaemonInboundEnvelope,
+  inbound: DaemonInboundEnvelope
 ): { ok: true } | { ok: false; reason: string } {
   if (!isBoundedId(inbound.requestId)) {
-    return { ok: false, reason: "invalid requestId" };
+    return { ok: false, reason: 'invalid requestId' }
   }
   if (!isIsoTimestamp(inbound.at)) {
-    return { ok: false, reason: "invalid at timestamp" };
+    return { ok: false, reason: 'invalid at timestamp' }
   }
-  const kindIssue = validateInboundEnvelopeKind(inbound);
-  if (kindIssue) return { ok: false, reason: kindIssue };
-  return { ok: true };
+  const kindIssue = validateInboundEnvelopeKind(inbound)
+  if (kindIssue) return { ok: false, reason: kindIssue }
+  return { ok: true }
 }
 
 /** Auto-response ping/pong pair — handled by the runtime without waking the DO. */
-export const DAEMON_CELL_PING = '{"type":"ping"}';
-export const DAEMON_CELL_PONG = '{"type":"pong"}';
+export const DAEMON_CELL_PING = '{"type":"ping"}'
+export const DAEMON_CELL_PONG = '{"type":"pong"}'
 
 /** Per-outbox-entry identity for queue send/ack/resend semantics. */
-export type OutboxDeliveryId = string; // NOSONAR typescript:S6564 — semantic alias for delivery queue keys
+export type OutboxDeliveryId = string // NOSONAR typescript:S6564 — semantic alias for delivery queue keys
 
 /** Correlation/idempotency key shared by all frames in a multi-message request. */
-export type OutboundRequestId = string; // NOSONAR typescript:S6564 — semantic alias for request correlation
+export type OutboundRequestId = string // NOSONAR typescript:S6564 — semantic alias for request correlation
 
 type OutboundEnvelopeBase = {
   /** Unique outbox entry key; distinct for every queued delivery. */
-  deliveryId: OutboxDeliveryId;
+  deliveryId: OutboxDeliveryId
   /** Correlates multi-frame requests (e.g. dev-sync chunks) and inbound acks. */
-  requestId: OutboundRequestId;
-  at: string;
-};
+  requestId: OutboundRequestId
+  at: string
+}
 
 /** Cell-internal outbound envelope (normalized form, distinct from wire `DaemonMessage`). */
 export type DaemonOutboundEnvelope =
-  | (OutboundEnvelopeBase & { kind: "addresses-request" })
+  | (OutboundEnvelopeBase & { kind: 'addresses-request' })
   | (OutboundEnvelopeBase & {
-    kind: "managed-logs-request";
-    managedId: string;
-    tail: number;
-  })
+      kind: 'managed-logs-request'
+      managedId: string
+      tail: number
+    })
   | (OutboundEnvelopeBase & {
-    kind: "container-logs-request";
-    containerId: string;
-    tail: number;
-  })
+      kind: 'managed-health-request'
+      managedId: string
+      memberId: string
+      role: 'primary' | 'replica'
+      engine: string
+    })
   | (OutboundEnvelopeBase & {
-    kind: "repo-read-request";
-    cloneUrl: string;
-    ref: string;
-    paths: string[];
-    listPath?: string;
-    maxBytesPerFile: number;
-    /** `tpdaemon.…` sealed clone secret, or absent for a public repo. */
-    credential?: string;
-    credentialKind?: string;
-    credentialUsername?: string;
-  })
+      kind: 'container-logs-request'
+      containerId: string
+      tail: number
+    })
   | (OutboundEnvelopeBase & {
-    kind: "repo-default-branch-request";
-    /** Anonymous only — no credential field, unlike `repo-read-request`. */
-    cloneUrl: string;
-  })
+      kind: 'repo-read-request'
+      cloneUrl: string
+      ref: string
+      paths: string[]
+      listPath?: string
+      maxBytesPerFile: number
+      /** `tpdaemon.…` sealed clone secret, or absent for a public repo. */
+      credential?: string
+      credentialKind?: string
+      credentialUsername?: string
+    })
   | (OutboundEnvelopeBase & {
-    kind: "fabric-paths-request";
-    fabricId: string;
-    probeMs: number;
-    candidates: FabricPathWireCandidate[];
-  })
+      kind: 'repo-default-branch-request'
+      /** Anonymous only — no credential field, unlike `repo-read-request`. */
+      cloneUrl: string
+    })
   | (OutboundEnvelopeBase & {
-    kind: "dev-sync";
-    phase: "begin";
-    totalChunks: number;
-    totalBytes: number;
-  })
+      kind: 'fabric-paths-request'
+      fabricId: string
+      probeMs: number
+      candidates: FabricPathWireCandidate[]
+    })
   | (OutboundEnvelopeBase & {
-    kind: "dev-sync";
-    phase: "chunk";
-    index: number;
-    data: string;
-  })
-  | (OutboundEnvelopeBase & { kind: "dev-sync"; phase: "end" })
+      kind: 'dev-sync'
+      phase: 'begin'
+      totalChunks: number
+      totalBytes: number
+    })
   | (OutboundEnvelopeBase & {
-    kind: "tunnel-token";
-    /** Legacy plaintext; also the empty teardown token. */
-    token?: string;
-    /** `tpdaemon` envelope for a non-empty token (sealed-instance-secrets-v1). */
-    tokenEnvelope?: string;
-  })
+      kind: 'dev-sync'
+      phase: 'chunk'
+      index: number
+      data: string
+    })
+  | (OutboundEnvelopeBase & { kind: 'dev-sync'; phase: 'end' })
   | (OutboundEnvelopeBase & {
-    kind: "public-urls-update";
-    urls: string[];
-    hostnames?: InstanceHostnameWireEntry[];
-    instanceAcme?: InstanceAcmeWireSettings;
-  })
+      kind: 'tunnel-token'
+      /** Legacy plaintext; also the empty teardown token. */
+      token?: string
+      /** `tpdaemon` envelope for a non-empty token (sealed-instance-secrets-v1). */
+      tokenEnvelope?: string
+    })
   | (OutboundEnvelopeBase & {
-    kind: "metrics-live-start";
-    leaseId: string;
-    intervalSeconds: number;
-    expiresAt: string;
-  })
-  | (OutboundEnvelopeBase & { kind: "metrics-live-stop"; leaseId: string })
-  | (OutboundEnvelopeBase & { kind: "metrics-capabilities-request" })
+      kind: 'public-urls-update'
+      urls: string[]
+      hostnames?: InstanceHostnameWireEntry[]
+      instanceAcme?: InstanceAcmeWireSettings
+    })
   | (OutboundEnvelopeBase & {
-    kind: "topology-overrides-update";
-    overrides: TopologyOverridesUpdatePayload;
-  })
+      kind: 'metrics-live-start'
+      leaseId: string
+      intervalSeconds: number
+      expiresAt: string
+    })
+  | (OutboundEnvelopeBase & { kind: 'metrics-live-stop'; leaseId: string })
+  | (OutboundEnvelopeBase & { kind: 'metrics-capabilities-request' })
   | (OutboundEnvelopeBase & {
-    kind: "capability-plan-update";
-    plan: CapabilityPlanUpdatePayload;
-    generation: number;
-  })
-  | (OutboundEnvelopeBase & { kind: "capability-plan-clear" })
+      kind: 'topology-overrides-update'
+      overrides: TopologyOverridesUpdatePayload
+    })
   | (OutboundEnvelopeBase & {
-    kind: "update";
-    channel?: string;
-    updateUrl?: string;
-    updateSha256?: string;
-    upgradeId?: string;
-    manifestUrl?: string;
-    targetCommit?: string;
-  })
+      kind: 'capability-plan-update'
+      plan: CapabilityPlanUpdatePayload
+      generation: number
+    })
+  | (OutboundEnvelopeBase & { kind: 'capability-plan-clear' })
   | (OutboundEnvelopeBase & {
-    kind: "instance-update";
-    channel?: string;
-    manifestUrl?: string;
-    uiManifestUrl?: string;
-    targetVersion?: string;
-    upgradeId?: string;
-    targetCommit?: string;
-  })
-  | (OutboundEnvelopeBase & { kind: "echo"; payload: unknown })
+      kind: 'update'
+      channel?: string
+      updateUrl?: string
+      updateSha256?: string
+      upgradeId?: string
+      manifestUrl?: string
+      targetCommit?: string
+    })
   | (OutboundEnvelopeBase & {
-    kind: "command-dispatch";
-    commandId: string;
-    commandType: string;
-    payload: unknown;
-  });
+      kind: 'instance-update'
+      channel?: string
+      manifestUrl?: string
+      uiManifestUrl?: string
+      targetVersion?: string
+      upgradeId?: string
+      targetCommit?: string
+    })
+  | (OutboundEnvelopeBase & { kind: 'echo'; payload: unknown })
+  | (OutboundEnvelopeBase & {
+      kind: 'command-dispatch'
+      commandId: string
+      commandType: string
+      payload: unknown
+    })
 
 /** Cell-internal inbound envelope (normalized form, distinct from wire `DaemonMessage`). */
 export type DaemonInboundEnvelope =
   | {
-    kind: "addresses-result";
-    requestId: string;
-    at: string;
-    ips: ServerReportedIp[];
-  }
+      kind: 'addresses-result'
+      requestId: string
+      at: string
+      ips: ServerReportedIp[]
+    }
   | {
-    kind: "managed-logs-result";
-    requestId: string;
-    at: string;
-    logs: string;
-    error?: string;
-  }
+      kind: 'managed-logs-result'
+      requestId: string
+      at: string
+      logs: string
+      error?: string
+    }
   | {
-    kind: "container-logs-result";
-    requestId: string;
-    at: string;
-    logs: string;
-    error?: string;
-  }
+      kind: 'managed-health-result'
+      requestId: string
+      at: string
+      ok: boolean
+      member?: ManagedHealthObservedMember
+      error?: string
+    }
   | {
-    kind: "repo-read-result";
-    requestId: string;
-    at: string;
-    ok: boolean;
-    commitSha?: string;
-    files?: {
-      path: string;
-      found: boolean;
-      content?: string;
-      bytes?: number;
-      reason?: string;
-    }[];
-    entries?: { path: string; kind: string; bytes?: number }[];
-    error?: string;
-  }
+      kind: 'container-logs-result'
+      requestId: string
+      at: string
+      logs: string
+      error?: string
+    }
   | {
-    kind: "repo-default-branch-result";
-    requestId: string;
-    at: string;
-    ok: boolean;
-    defaultBranch?: string | null;
-    error?: string;
-  }
+      kind: 'repo-read-result'
+      requestId: string
+      at: string
+      ok: boolean
+      commitSha?: string
+      files?: {
+        path: string
+        found: boolean
+        content?: string
+        bytes?: number
+        reason?: string
+      }[]
+      entries?: { path: string; kind: string; bytes?: number }[]
+      error?: string
+    }
   | {
-    kind: "fabric-paths-result";
-    requestId: string;
-    at: string;
-    paths: FabricPathWireObservation[];
-    error?: string;
-  }
+      kind: 'repo-default-branch-result'
+      requestId: string
+      at: string
+      ok: boolean
+      defaultBranch?: string | null
+      error?: string
+    }
   | {
-    kind: "dev-sync-result";
-    requestId: string;
-    at: string;
-    ok: boolean;
-    error?: string;
-  }
+      kind: 'fabric-paths-result'
+      requestId: string
+      at: string
+      paths: FabricPathWireObservation[]
+      error?: string
+    }
   | {
-    kind: "tunnel-token-result";
-    requestId: string;
-    at: string;
-    ok: boolean;
-    error?: string;
-  }
+      kind: 'dev-sync-result'
+      requestId: string
+      at: string
+      ok: boolean
+      error?: string
+    }
   | {
-    kind: "public-urls-update-result";
-    requestId: string;
-    at: string;
-    ok: boolean;
-    error?: string;
-  }
+      kind: 'tunnel-token-result'
+      requestId: string
+      at: string
+      ok: boolean
+      error?: string
+    }
   | {
-    kind: "metrics-live-start-result";
-    requestId: string;
-    at: string;
-    ok: boolean;
-    error?: string;
-  }
+      kind: 'public-urls-update-result'
+      requestId: string
+      at: string
+      ok: boolean
+      error?: string
+    }
   | {
-    kind: "metrics-live-stop-result";
-    requestId: string;
-    at: string;
-    ok: boolean;
-    error?: string;
-  }
+      kind: 'metrics-live-start-result'
+      requestId: string
+      at: string
+      ok: boolean
+      error?: string
+    }
   | {
-    kind: "metrics-capabilities-result";
-    requestId: string;
-    at: string;
-    ok: boolean;
-    capabilities?: Record<string, unknown>;
-    error?: string;
-  }
+      kind: 'metrics-live-stop-result'
+      requestId: string
+      at: string
+      ok: boolean
+      error?: string
+    }
   | {
-    kind: "topology-overrides-update-result";
-    requestId: string;
-    at: string;
-    ok: boolean;
-    error?: string;
-  }
+      kind: 'metrics-capabilities-result'
+      requestId: string
+      at: string
+      ok: boolean
+      capabilities?: Record<string, unknown>
+      error?: string
+    }
   | {
-    kind: "capability-plan-update-result";
-    requestId: string;
-    at: string;
-    ok: boolean;
-    error?: string;
-  }
+      kind: 'topology-overrides-update-result'
+      requestId: string
+      at: string
+      ok: boolean
+      error?: string
+    }
   | {
-    kind: "capability-plan-clear-result";
-    requestId: string;
-    at: string;
-    ok: boolean;
-    error?: string;
-  }
+      kind: 'capability-plan-update-result'
+      requestId: string
+      at: string
+      ok: boolean
+      error?: string
+    }
   | {
-    kind: "update-result";
-    requestId: string;
-    at: string;
-    ok: boolean;
-    error?: string;
-    errorCode?: string;
-    upgradeId?: string;
-  }
+      kind: 'capability-plan-clear-result'
+      requestId: string
+      at: string
+      ok: boolean
+      error?: string
+    }
   | {
-    kind: "instance-update-result";
-    requestId: string;
-    at: string;
-    ok: boolean;
-    error?: string;
-    errorCode?: string;
-    upgradeId?: string;
-  }
+      kind: 'update-result'
+      requestId: string
+      at: string
+      ok: boolean
+      error?: string
+      errorCode?: string
+      upgradeId?: string
+    }
   | {
-    kind: "command-ack";
-    requestId: string;
-    at: string;
-    daemonReceivedAt: string;
-  }
+      kind: 'instance-update-result'
+      requestId: string
+      at: string
+      ok: boolean
+      error?: string
+      errorCode?: string
+      upgradeId?: string
+    }
   | {
-    kind: "command-outcome";
-    requestId: string;
-    at: string;
-    ok: boolean;
-    result?: unknown;
-    error?: string;
-    daemonReceivedAt?: string;
-    daemonRespondedAt?: string;
-  };
+      kind: 'command-ack'
+      requestId: string
+      at: string
+      daemonReceivedAt: string
+    }
+  | {
+      kind: 'command-outcome'
+      requestId: string
+      at: string
+      ok: boolean
+      result?: unknown
+      error?: string
+      daemonReceivedAt?: string
+      daemonRespondedAt?: string
+    }
 
 export function parseDaemonMessage(raw: string): DaemonMessage | null {
   try {
-    return JSON.parse(raw) as DaemonMessage;
+    return JSON.parse(raw) as DaemonMessage
   } catch {
-    return null;
+    return null
   }
 }
 
-export function wireMessageToInboundEnvelope(
-  msg: DaemonMessage,
-): DaemonInboundEnvelope | null {
+export function wireMessageToInboundEnvelope(msg: DaemonMessage): DaemonInboundEnvelope | null {
   switch (msg.type) {
-    case "hello":
-    case "heartbeat":
-    case "managed-ha-event":
-    case "topology-report":
-    case "acme-issuance-event":
-    case "instance-acme-issuance-event":
-    case "update-progress":
+    case 'hello':
+    case 'heartbeat':
+    case 'managed-ha-event':
+    case 'topology-report':
+    case 'acme-issuance-event':
+    case 'instance-acme-issuance-event':
+    case 'update-progress':
       // Fire-and-forget (or session setup). Not a correlated request.
       // `update-progress` must stay in this list: it never completes a
       // pending update.
-      return null;
+      return null
 
-    case "addresses-result":
+    case 'addresses-result':
       return {
-        kind: "addresses-result",
+        kind: 'addresses-result',
         requestId: msg.id,
         at: msg.at,
         ips: msg.ips,
-      };
-    case "managed-logs-result":
+      }
+    case 'managed-logs-result':
       return {
-        kind: "managed-logs-result",
+        kind: 'managed-logs-result',
         requestId: msg.id,
         at: msg.at,
         logs: msg.logs,
         error: msg.error,
-      };
-    case "container-logs-result":
+      }
+    case 'managed-health-result':
       return {
-        kind: "container-logs-result",
+        kind: 'managed-health-result',
+        requestId: msg.id,
+        at: msg.at,
+        ok: msg.ok,
+        member: msg.member,
+        error: msg.error,
+      }
+    case 'container-logs-result':
+      return {
+        kind: 'container-logs-result',
         requestId: msg.id,
         at: msg.at,
         logs: msg.logs,
         error: msg.error,
-      };
-    case "repo-read-result":
+      }
+    case 'repo-read-result':
       return {
-        kind: "repo-read-result",
+        kind: 'repo-read-result',
         requestId: msg.id,
         at: msg.at,
         ok: msg.ok,
@@ -1697,127 +1703,127 @@ export function wireMessageToInboundEnvelope(
         files: msg.files,
         entries: msg.entries,
         error: msg.error,
-      };
-    case "repo-default-branch-result":
+      }
+    case 'repo-default-branch-result':
       return {
-        kind: "repo-default-branch-result",
+        kind: 'repo-default-branch-result',
         requestId: msg.id,
         at: msg.at,
         ok: msg.ok,
         defaultBranch: msg.defaultBranch,
         error: msg.error,
-      };
-    case "fabric-paths-result":
+      }
+    case 'fabric-paths-result':
       return {
-        kind: "fabric-paths-result",
+        kind: 'fabric-paths-result',
         requestId: msg.id,
         at: msg.at,
         paths: msg.paths,
         error: msg.error,
-      };
-    case "dev-sync-result":
+      }
+    case 'dev-sync-result':
       return {
-        kind: "dev-sync-result",
+        kind: 'dev-sync-result',
         requestId: msg.id,
         at: msg.at,
         ok: msg.ok,
         error: msg.error,
-      };
-    case "tunnel-token-result":
+      }
+    case 'tunnel-token-result':
       return {
-        kind: "tunnel-token-result",
+        kind: 'tunnel-token-result',
         requestId: msg.id,
         at: msg.at,
         ok: msg.ok,
         error: msg.error,
-      };
-    case "public-urls-update-result":
+      }
+    case 'public-urls-update-result':
       return {
-        kind: "public-urls-update-result",
+        kind: 'public-urls-update-result',
         requestId: msg.id,
         at: msg.at,
         ok: msg.ok,
         error: msg.error,
-      };
-    case "metrics-live-start-result":
+      }
+    case 'metrics-live-start-result':
       return {
-        kind: "metrics-live-start-result",
+        kind: 'metrics-live-start-result',
         requestId: msg.id,
         at: msg.at,
         ok: msg.ok,
         error: msg.error,
-      };
-    case "metrics-live-stop-result":
+      }
+    case 'metrics-live-stop-result':
       return {
-        kind: "metrics-live-stop-result",
+        kind: 'metrics-live-stop-result',
         requestId: msg.id,
         at: msg.at,
         ok: msg.ok,
         error: msg.error,
-      };
-    case "metrics-capabilities-result":
+      }
+    case 'metrics-capabilities-result':
       return {
-        kind: "metrics-capabilities-result",
+        kind: 'metrics-capabilities-result',
         requestId: msg.id,
         at: msg.at,
         ok: msg.ok,
         capabilities: msg.capabilities,
         error: msg.error,
-      };
-    case "topology-overrides-update-result":
+      }
+    case 'topology-overrides-update-result':
       return {
-        kind: "topology-overrides-update-result",
+        kind: 'topology-overrides-update-result',
         requestId: msg.id,
         at: msg.at,
         ok: msg.ok,
         error: msg.error,
-      };
-    case "capability-plan-update-result":
+      }
+    case 'capability-plan-update-result':
       return {
-        kind: "capability-plan-update-result",
+        kind: 'capability-plan-update-result',
         requestId: msg.id,
         at: msg.at,
         ok: msg.ok,
         error: msg.error,
-      };
-    case "capability-plan-clear-result":
+      }
+    case 'capability-plan-clear-result':
       return {
-        kind: "capability-plan-clear-result",
+        kind: 'capability-plan-clear-result',
         requestId: msg.id,
         at: msg.at,
         ok: msg.ok,
         error: msg.error,
-      };
-    case "update-result":
+      }
+    case 'update-result':
       return {
-        kind: "update-result",
-        requestId: msg.id,
-        at: msg.at,
-        ok: msg.ok,
-        error: msg.error,
-        ...(msg.errorCode !== undefined ? { errorCode: msg.errorCode } : {}),
-        ...(msg.upgradeId !== undefined ? { upgradeId: msg.upgradeId } : {}),
-      };
-    case "instance-update-result":
-      return {
-        kind: "instance-update-result",
+        kind: 'update-result',
         requestId: msg.id,
         at: msg.at,
         ok: msg.ok,
         error: msg.error,
         ...(msg.errorCode !== undefined ? { errorCode: msg.errorCode } : {}),
         ...(msg.upgradeId !== undefined ? { upgradeId: msg.upgradeId } : {}),
-      };
-    case "command-ack":
+      }
+    case 'instance-update-result':
       return {
-        kind: "command-ack",
+        kind: 'instance-update-result',
+        requestId: msg.id,
+        at: msg.at,
+        ok: msg.ok,
+        error: msg.error,
+        ...(msg.errorCode !== undefined ? { errorCode: msg.errorCode } : {}),
+        ...(msg.upgradeId !== undefined ? { upgradeId: msg.upgradeId } : {}),
+      }
+    case 'command-ack':
+      return {
+        kind: 'command-ack',
         requestId: msg.id,
         at: msg.at,
         daemonReceivedAt: msg.daemonReceivedAt,
-      };
-    case "command-outcome":
+      }
+    case 'command-outcome':
       return {
-        kind: "command-outcome",
+        kind: 'command-outcome',
         requestId: msg.id,
         at: msg.at,
         ok: msg.ok,
@@ -1825,28 +1831,26 @@ export function wireMessageToInboundEnvelope(
         error: msg.error,
         daemonReceivedAt: msg.daemonReceivedAt,
         daemonRespondedAt: msg.daemonRespondedAt,
-      };
+      }
     default:
-      return null;
+      return null
   }
 }
 
 /** One envelope variant, addressed by its `kind`. */
-type OutboundEnvelopeOf<K extends DaemonOutboundEnvelope["kind"]> = Extract<
+type OutboundEnvelopeOf<K extends DaemonOutboundEnvelope['kind']> = Extract<
   DaemonOutboundEnvelope,
   { kind: K }
->;
+>
 
 /**
  * The credential fields ride along only when the source has one — a `null` or
  * an empty string would read as "clone anonymously", which is a different
  * request.
  */
-function repoReadRequestMessage(
-  env: OutboundEnvelopeOf<"repo-read-request">,
-): DaemonMessage {
+function repoReadRequestMessage(env: OutboundEnvelopeOf<'repo-read-request'>): DaemonMessage {
   return {
-    type: "repo-read-request",
+    type: 'repo-read-request',
     id: env.requestId,
     cloneUrl: env.cloneUrl,
     ref: env.ref,
@@ -1854,230 +1858,214 @@ function repoReadRequestMessage(
     ...(env.listPath === undefined ? {} : { listPath: env.listPath }),
     maxBytesPerFile: env.maxBytesPerFile,
     ...(env.credential === undefined ? {} : { credential: env.credential }),
-    ...(env.credentialKind === undefined
-      ? {}
-      : { credentialKind: env.credentialKind }),
-    ...(env.credentialUsername === undefined
-      ? {}
-      : { credentialUsername: env.credentialUsername }),
+    ...(env.credentialKind === undefined ? {} : { credentialKind: env.credentialKind }),
+    ...(env.credentialUsername === undefined ? {} : { credentialUsername: env.credentialUsername }),
     at: env.at,
-  };
+  }
 }
 
 /** One dev-sync envelope carries the phase; the wire has a type per phase. */
-function devSyncMessage(env: OutboundEnvelopeOf<"dev-sync">): DaemonMessage {
-  if (env.phase === "begin") {
+function devSyncMessage(env: OutboundEnvelopeOf<'dev-sync'>): DaemonMessage {
+  if (env.phase === 'begin') {
     return {
-      type: "dev-sync-begin",
+      type: 'dev-sync-begin',
       id: env.requestId,
       totalChunks: env.totalChunks,
       totalBytes: env.totalBytes,
       at: env.at,
-    };
+    }
   }
-  if (env.phase === "chunk") {
+  if (env.phase === 'chunk') {
     return {
-      type: "dev-sync-chunk",
+      type: 'dev-sync-chunk',
       id: env.requestId,
       index: env.index,
       data: env.data,
       at: env.at,
-    };
+    }
   }
-  return { type: "dev-sync-end", id: env.requestId, at: env.at };
+  return { type: 'dev-sync-end', id: env.requestId, at: env.at }
 }
 
 /**
  * Omit `hostnames` and `instanceAcme` when absent so an older daemon sees
  * the flat `urls` list it already understands.
  */
-function publicUrlsUpdateMessage(
-  env: OutboundEnvelopeOf<"public-urls-update">,
-): DaemonMessage {
+function publicUrlsUpdateMessage(env: OutboundEnvelopeOf<'public-urls-update'>): DaemonMessage {
   const message = {
-    type: "public-urls-update" as const,
+    type: 'public-urls-update' as const,
     id: env.requestId,
     urls: env.urls,
     at: env.at,
-  };
-  if (env.hostnames === undefined) return message;
+  }
+  if (env.hostnames === undefined) return message
   if (env.instanceAcme === undefined) {
-    return { ...message, hostnames: env.hostnames };
+    return { ...message, hostnames: env.hostnames }
   }
   return {
     ...message,
     hostnames: env.hostnames,
     instanceAcme: env.instanceAcme,
-  };
+  }
 }
 
 /** An absent field means "keep what you have", not "clear it". */
-function instanceUpdateMessage(
-  env: OutboundEnvelopeOf<"instance-update">,
-): DaemonMessage {
+function instanceUpdateMessage(env: OutboundEnvelopeOf<'instance-update'>): DaemonMessage {
   return {
-    type: "instance-update",
+    type: 'instance-update',
     id: env.requestId,
     at: env.at,
     ...(env.channel !== undefined ? { channel: env.channel } : {}),
     ...(env.manifestUrl !== undefined ? { manifestUrl: env.manifestUrl } : {}),
-    ...(env.uiManifestUrl !== undefined
-      ? { uiManifestUrl: env.uiManifestUrl }
-      : {}),
-    ...(env.targetVersion !== undefined
-      ? { targetVersion: env.targetVersion }
-      : {}),
+    ...(env.uiManifestUrl !== undefined ? { uiManifestUrl: env.uiManifestUrl } : {}),
+    ...(env.targetVersion !== undefined ? { targetVersion: env.targetVersion } : {}),
     ...(env.upgradeId !== undefined ? { upgradeId: env.upgradeId } : {}),
-    ...(env.targetCommit !== undefined
-      ? { targetCommit: env.targetCommit }
-      : {}),
-  };
+    ...(env.targetCommit !== undefined ? { targetCommit: env.targetCommit } : {}),
+  }
 }
 
-function updateMessage(env: OutboundEnvelopeOf<"update">): DaemonMessage {
+function updateMessage(env: OutboundEnvelopeOf<'update'>): DaemonMessage {
   return {
-    type: "update",
+    type: 'update',
     id: env.requestId,
     at: env.at,
     ...(env.channel !== undefined ? { channel: env.channel } : {}),
     ...(env.updateUrl !== undefined ? { updateUrl: env.updateUrl } : {}),
-    ...(env.updateSha256 !== undefined
-      ? { updateSha256: env.updateSha256 }
-      : {}),
+    ...(env.updateSha256 !== undefined ? { updateSha256: env.updateSha256 } : {}),
     ...(env.upgradeId !== undefined ? { upgradeId: env.upgradeId } : {}),
     ...(env.manifestUrl !== undefined ? { manifestUrl: env.manifestUrl } : {}),
-    ...(env.targetCommit !== undefined
-      ? { targetCommit: env.targetCommit }
-      : {}),
-  };
+    ...(env.targetCommit !== undefined ? { targetCommit: env.targetCommit } : {}),
+  }
 }
 
-export function outboundEnvelopeToWireMessage(
-  env: DaemonOutboundEnvelope,
-): DaemonMessage {
+export function outboundEnvelopeToWireMessage(env: DaemonOutboundEnvelope): DaemonMessage {
   switch (env.kind) {
-    case "addresses-request":
-      return { type: "addresses-request", id: env.requestId, at: env.at };
-    case "metrics-capabilities-request":
+    case 'addresses-request':
+      return { type: 'addresses-request', id: env.requestId, at: env.at }
+    case 'metrics-capabilities-request':
       return {
-        type: "metrics-capabilities-request",
+        type: 'metrics-capabilities-request',
         id: env.requestId,
         at: env.at,
-      };
-    case "managed-logs-request":
+      }
+    case 'managed-logs-request':
       return {
-        type: "managed-logs-request",
+        type: 'managed-logs-request',
         id: env.requestId,
         managedId: env.managedId,
         tail: env.tail,
         at: env.at,
-      };
-    case "container-logs-request":
+      }
+    case 'managed-health-request':
       return {
-        type: "container-logs-request",
+        type: 'managed-health-request',
+        id: env.requestId,
+        managedId: env.managedId,
+        memberId: env.memberId,
+        role: env.role,
+        engine: env.engine,
+        at: env.at,
+      }
+    case 'container-logs-request':
+      return {
+        type: 'container-logs-request',
         id: env.requestId,
         containerId: env.containerId,
         tail: env.tail,
         at: env.at,
-      };
-    case "repo-read-request":
-      return repoReadRequestMessage(env);
-    case "repo-default-branch-request":
+      }
+    case 'repo-read-request':
+      return repoReadRequestMessage(env)
+    case 'repo-default-branch-request':
       return {
-        type: "repo-default-branch-request",
+        type: 'repo-default-branch-request',
         id: env.requestId,
         cloneUrl: env.cloneUrl,
         at: env.at,
-      };
-    case "fabric-paths-request":
+      }
+    case 'fabric-paths-request':
       return {
-        type: "fabric-paths-request",
+        type: 'fabric-paths-request',
         id: env.requestId,
         fabricId: env.fabricId,
         probeMs: env.probeMs,
-        candidates: env.candidates.slice(0, MAX_DAEMON_WS_FABRIC_PATH_ENTRIES)
-          .map((candidate) => ({
-            publicKey: candidate.publicKey,
-            endpoints: candidate.endpoints.slice(
-              0,
-              MAX_DAEMON_WS_FABRIC_PATH_CANDIDATES,
-            ),
-          })),
+        candidates: env.candidates.slice(0, MAX_DAEMON_WS_FABRIC_PATH_ENTRIES).map((candidate) => ({
+          publicKey: candidate.publicKey,
+          endpoints: candidate.endpoints.slice(0, MAX_DAEMON_WS_FABRIC_PATH_CANDIDATES),
+        })),
         at: env.at,
-      };
-    case "dev-sync":
-      return devSyncMessage(env);
-    case "tunnel-token":
+      }
+    case 'dev-sync':
+      return devSyncMessage(env)
+    case 'tunnel-token':
       return {
-        type: "tunnel-token",
+        type: 'tunnel-token',
         id: env.requestId,
         ...(env.token !== undefined ? { token: env.token } : {}),
-        ...(env.tokenEnvelope !== undefined
-          ? { tokenEnvelope: env.tokenEnvelope }
-          : {}),
+        ...(env.tokenEnvelope !== undefined ? { tokenEnvelope: env.tokenEnvelope } : {}),
         at: env.at,
-      };
-    case "public-urls-update":
-      return publicUrlsUpdateMessage(env);
-    case "metrics-live-start":
+      }
+    case 'public-urls-update':
+      return publicUrlsUpdateMessage(env)
+    case 'metrics-live-start':
       return {
-        type: "metrics-live-start",
+        type: 'metrics-live-start',
         id: env.requestId,
         leaseId: env.leaseId,
         intervalSeconds: env.intervalSeconds,
         expiresAt: env.expiresAt,
         at: env.at,
-      };
-    case "metrics-live-stop":
+      }
+    case 'metrics-live-stop':
       return {
-        type: "metrics-live-stop",
+        type: 'metrics-live-stop',
         id: env.requestId,
         leaseId: env.leaseId,
         at: env.at,
-      };
-    case "topology-overrides-update":
+      }
+    case 'topology-overrides-update':
       return {
-        type: "topology-overrides-update",
+        type: 'topology-overrides-update',
         id: env.requestId,
         overrides: env.overrides,
         at: env.at,
-      };
-    case "capability-plan-update":
+      }
+    case 'capability-plan-update':
       return {
-        type: "capability-plan-update",
+        type: 'capability-plan-update',
         id: env.requestId,
         plan: env.plan,
         generation: env.generation,
         at: env.at,
-      };
-    case "capability-plan-clear":
+      }
+    case 'capability-plan-clear':
       return {
-        type: "capability-plan-clear",
+        type: 'capability-plan-clear',
         id: env.requestId,
         at: env.at,
-      };
-    case "update":
-      return updateMessage(env);
-    case "instance-update":
-      return instanceUpdateMessage(env);
-    case "echo":
-      return { type: "echo", payload: env.payload, at: env.at };
-    case "command-dispatch":
+      }
+    case 'update':
+      return updateMessage(env)
+    case 'instance-update':
+      return instanceUpdateMessage(env)
+    case 'echo':
+      return { type: 'echo', payload: env.payload, at: env.at }
+    case 'command-dispatch':
       return {
-        type: "command-dispatch",
+        type: 'command-dispatch',
         id: env.requestId,
         commandId: env.commandId,
         commandType: env.commandType,
         payload: env.payload,
         at: env.at,
-      };
+      }
   }
 }
 
 export function generateRequestId(): OutboundRequestId {
-  return crypto.randomUUID();
+  return crypto.randomUUID()
 }
 
 export function generateDeliveryId(): OutboxDeliveryId {
-  return crypto.randomUUID();
+  return crypto.randomUUID()
 }
