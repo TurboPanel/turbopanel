@@ -83,11 +83,12 @@ function buildInstallPipeline(opts: {
   if (opts.host) envParts.push(`TURBOPANEL_HOST=${opts.host}`)
   if (opts.insecureTls) envParts.push('TURBOPANEL_INSECURE_TLS=1')
   if (opts.dlBase) envParts.push(`TURBOPANEL_DL_BASE=${opts.dlBase}`)
-  // The daemon follows the channel this instance follows. run.sh's own
-  // default is trunk, so a control plane on rc/release must say so, or a
-  // freshly enrolled host installs the per-merge drop and drifts
-  // (install-rehearsal, Road to 0.1.x). trunk stays implicit.
-  if (opts.updateChannel && opts.updateChannel !== 'trunk') {
+  // The daemon follows the channel this instance follows. Always said, trunk
+  // included: the channel also picks the installer host (testing./staging.),
+  // and run.sh re-fetches itself from the host its channel names when it
+  // re-runs under sudo, so leaving it out would send a testing install back
+  // to the release installer.
+  if (opts.updateChannel) {
     envParts.push(`TURBOPANEL_UPDATE_CHANNEL=${opts.updateChannel}`)
   }
   return `${curl} ${opts.curlUrl} | ${envParts.join(' ')} sh`

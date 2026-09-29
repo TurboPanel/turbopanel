@@ -175,7 +175,7 @@ test('license arg round-trips through base64url decoding', () => {
   assertEquals(atob(padded), `${licenseId}:${licenseToken}`)
 })
 
-test('buildLicenseInstallCommand carries the instance channel so enrolled daemons follow it, trunk implicit', () => {
+test('buildLicenseInstallCommand carries the instance channel so enrolled daemons follow it', () => {
   const base = {
     runtime: 'deno' as const,
     instanceUrl: 'https://panel.example',
@@ -189,10 +189,12 @@ test('buildLicenseInstallCommand carries the instance channel so enrolled daemon
   assertEquals(release.includes(' TURBOPANEL_UPDATE_CHANNEL=release sh'), true)
   const rc = buildLicenseInstallCommand({ ...base, updateChannel: 'rc' })
   assertEquals(rc.includes('TURBOPANEL_UPDATE_CHANNEL=rc'), true)
-  // run.sh already defaults to trunk; the command stays as short as it was.
+  // trunk is said too: it picks testing.turbopanel.sh and run.sh's sudo re-run follows it.
   assertEquals(
-    buildLicenseInstallCommand({ ...base, updateChannel: 'trunk' }).includes('UPDATE_CHANNEL'),
-    false
+    buildLicenseInstallCommand({ ...base, updateChannel: 'trunk' }).includes(
+      'TURBOPANEL_UPDATE_CHANNEL=trunk'
+    ),
+    true
   )
   assertEquals(buildLicenseInstallCommand(base).includes('UPDATE_CHANNEL'), false)
   // Workers too.
