@@ -408,7 +408,7 @@ guard; `pnpm test:do` alone does not.
   daemon keeps reconnecting; `unknown` (no header and no field — an older
   instance) passes silently. Each floor tolerates every peer semver at or
   above the constant. Today both floors are **`0.1.0`** against package
-  **`0.1.2`**, so a `0.1.x` peer is in window and a `0.0.x` peer is not. The
+  **`0.1.3`**, so a `0.1.x` peer is in window and a `0.0.x` peer is not. The
   window is allowed to trail the current release by several minor versions;
   it is not a same-version lock and it does not impose an upgrade order.
   Bump `MIN_SUPPORTED_DAEMON_VERSION` and `MIN_SUPPORTED_INSTANCE_VERSION`
