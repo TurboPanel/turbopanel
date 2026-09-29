@@ -71,6 +71,10 @@ type Options = {
   colocatedServerId?: string | null
   now?: () => string
   probes?: Map<string, FleetProbe>
+  /** Record every enqueue in `calls` too, so store and queue order can be compared. */
+  traceEnqueue?: boolean
+  /** Reject the enqueue for this server. */
+  failEnqueueFor?: string
 }
 
 function build(options: Options = {}) {
@@ -103,6 +107,8 @@ function build(options: Options = {}) {
   const coordinator = createUpgradeCoordinator({
     store,
     enqueue: (serverId, envelope) => {
+      if (options.traceEnqueue) calls.push(`enqueue:${serverId}`)
+      if (serverId === options.failEnqueueFor) return Promise.reject(new Error('queue down'))
       enqueued.push({ serverId, envelope })
       return Promise.resolve()
     },
@@ -761,4 +767,104 @@ test('step status sets: settled and in-flight cover exactly their members', () =
     assertEquals(isSettledStepStatus(status), settled.includes(status), `settled ${status}`)
     assertEquals(isInFlightStepStatus(status), inFlight.includes(status), `in flight ${status}`)
   }
+})
+
+// --- tick and cancel: several steps in one pass ------------------------------
+
+const THREE_HOSTS = ['srv-a', 'srv-b', 'srv-c']
+
+/** A run of one pending step per host in `THREE_HOSTS`, with the fleet gate open. */
+async function threeHostRun(options: Options = {}) {
+  const built = build({
+    development: true,
+    colocatedServerId: null,
+    facts: THREE_HOSTS.map((id) => factFor(id, { colocated: false })),
+    ...options,
+  })
+  await built.store.insertRun(
+    runRow(),
+    THREE_HOSTS.map((serverId, i) => stepRow(`step-${i}`, { serverId }))
+  )
+  built.calls.length = 0
+  return built
+}
+
+/** The message of whatever `work` rejects with, or null when it resolves. */
+function rejection(work: Promise<unknown>): Promise<string | null> {
+  return work.then(
+    () => null,
+    (error: unknown) => (error instanceof Error ? error.message : String(error))
+  )
+}
+
+test('tick: several pending steps are claimed and dispatched one after another, in step order', async () => {
+  const { coordinator, calls } = await threeHostRun({ traceEnqueue: true })
+  await coordinator.tick({ resolveManifests: false })
+  assertEquals(
+    calls.filter((call) => call === 'saveStep' || call.startsWith('enqueue:')),
+    ['saveStep', 'enqueue:srv-a', 'saveStep', 'enqueue:srv-b', 'saveStep', 'enqueue:srv-c']
+  )
+})
+
+test('tick: a failing enqueue stops the pass and later steps are never dispatched', async () => {
+  const { coordinator, store, enqueued } = await threeHostRun({
+    traceEnqueue: true,
+    failEnqueueFor: 'srv-b',
+  })
+  assertEquals(await rejection(coordinator.tick({ resolveManifests: false })), 'queue down')
+  assertEquals(
+    enqueued.map((item) => item.serverId),
+    ['srv-a']
+  )
+  const statuses = (await store.stepsFor('upgrade-run-1')).map((step) => step.status)
+  assertEquals(statuses[2], 'pending')
+})
+
+test('cancel: skips open steps in order, leaves settled ones alone, then records the run', async () => {
+  const { coordinator, store, calls } = build({ colocatedServerId: null, facts: [] })
+  await store.insertRun(runRow(), [
+    stepRow('step-0', { status: 'pending' }),
+    stepRow('step-1', { status: 'done' }),
+    stepRow('step-2', { status: 'dispatched' }),
+    stepRow('step-3', { status: 'failed' }),
+  ])
+  calls.length = 0
+  assertEquals(await coordinator.cancel('upgrade-run-1'), { ok: true })
+  assertEquals(calls, ['runById', 'stepsFor', 'saveStep', 'saveStep', 'saveRun'])
+  const steps = await store.stepsFor('upgrade-run-1')
+  assertEquals(
+    steps.map((step) => step.status),
+    ['skipped', 'done', 'skipped', 'failed']
+  )
+  const run = await store.runById('upgrade-run-1')
+  assertEquals(run?.status, 'cancelled')
+  assertEquals(run?.counts?.skipped, 2)
+})
+
+test('cancel: a failing save stops at that step and the run is not recorded as cancelled', async () => {
+  const { coordinator, store } = await threeHostRun()
+  const saved: string[] = []
+  const innerSave = store.saveStep.bind(store)
+  store.saveStep = (row, expectedStatus) => {
+    saved.push(row.id)
+    if (row.id === 'step-1') return Promise.reject(new Error('write failed'))
+    return innerSave(row, expectedStatus)
+  }
+  assertEquals(await rejection(coordinator.cancel('upgrade-run-1')), 'write failed')
+  assertEquals(saved, ['step-0', 'step-1'])
+  assertEquals((await store.runById('upgrade-run-1'))?.status, 'running')
+})
+
+test('memory pageFleet: a negative, NaN or missing offset starts at the first row', async () => {
+  const facts = ['srv-a', 'srv-b', 'srv-c'].map((id) => factFor(id, { colocated: false }))
+  const store = createMemoryUpgradeStore({ facts, latest: TARGET })
+  const ids = async (offset: number, limit: number) =>
+    (await store.pageFleet({ offset, limit, status: 'all', targetCommit: null }, null)).facts.map(
+      (fact) => fact.serverId
+    )
+  assertEquals(await ids(-3, 2), ['srv-a', 'srv-b'])
+  assertEquals(await ids(Number.NaN, 2), ['srv-a', 'srv-b'])
+  assertEquals(await ids(0, 2), ['srv-a', 'srv-b'])
+  assertEquals(await ids(1, 2), ['srv-b', 'srv-c'])
+  assertEquals(await ids(3, 2), [])
 })

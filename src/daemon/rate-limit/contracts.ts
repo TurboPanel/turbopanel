@@ -10,8 +10,8 @@ export interface RateLimiter {
 /** Always allows — used when a binding is absent (Deno/tests) so call sites stay runtime-agnostic. */
 export function createNoopRateLimiter(): RateLimiter {
   return {
-    async limit(_args: { key: string }): Promise<{ success: boolean }> {
-      return { success: true }
+    limit(_args: { key: string }): Promise<{ success: boolean }> {
+      return Promise.resolve({ success: true })
     },
   }
 }
@@ -23,8 +23,8 @@ export function createNoopRateLimiter(): RateLimiter {
  */
 export function createFailClosedRateLimiter(): RateLimiter {
   return {
-    async limit(_args: { key: string }): Promise<{ success: boolean }> {
-      return { success: false }
+    limit(_args: { key: string }): Promise<{ success: boolean }> {
+      return Promise.resolve({ success: false })
     },
   }
 }

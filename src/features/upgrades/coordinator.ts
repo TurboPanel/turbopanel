@@ -77,6 +77,7 @@ import {
   type UpgradeStepUnit,
 } from './vocabulary.ts'
 import type { UpgradeSettings } from '../settings/upgrade-settings.ts'
+import { forEachSequential } from '../../lib/sequential.ts'
 
 export type UpgradePreflight = {
   ok: true
@@ -194,6 +195,26 @@ function admitsFeature(fact: FleetServerFact | undefined): boolean {
   return fact?.features.includes(MANAGED_UPGRADE_FEATURE) === true
 }
 
+function checkManagedFeature(
+  target: UpgradeTarget,
+  colocated: FleetServerFact | undefined,
+  checks: UpgradePreflight['checks'],
+  blockers: string[]
+): void {
+  const managed = admitsFeature(colocated)
+  checks.push({
+    id: 'managed-upgrade-v1',
+    label: 'Co-located daemon can back up and roll back',
+    passed: managed,
+    detail: managed ? undefined : daemonOnlyUpdateCommand(target.daemon?.manifestUrl ?? null),
+  })
+  if (!managed) {
+    blockers.push(
+      'The co-located daemon does not advertise managed-upgrade-v1. Update only that daemon with a pinned manifest, then start again.'
+    )
+  }
+}
+
 export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeCoordinator {
   const resolveTarget = deps.resolveTarget ?? (() => resolveUpgradeTarget(deps.channel))
 
@@ -288,26 +309,6 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
     })
     if (!connected) blockers.push('The co-located daemon is not connected.')
     if (hasInstance) checkManagedFeature(target, colocated, checks, blockers)
-  }
-
-  function checkManagedFeature(
-    target: UpgradeTarget,
-    colocated: FleetServerFact | undefined,
-    checks: UpgradePreflight['checks'],
-    blockers: string[]
-  ): void {
-    const managed = admitsFeature(colocated)
-    checks.push({
-      id: 'managed-upgrade-v1',
-      label: 'Co-located daemon can back up and roll back',
-      passed: managed,
-      detail: managed ? undefined : daemonOnlyUpdateCommand(target.daemon?.manifestUrl ?? null),
-    })
-    if (!managed) {
-      blockers.push(
-        'The co-located daemon does not advertise managed-upgrade-v1. Update only that daemon with a pinned manifest, then start again.'
-      )
-    }
   }
 
   function downgradeBlockers(
@@ -520,14 +521,14 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
   ): Promise<boolean> {
     const queue: UpgradeStepRow[] = []
     let dirty = false
-    for (const step of steps) {
+    await forEachSequential(steps, async (step) => {
       const fact = factOf(fleetView, step)
       if (await applyAction(run, step, stepActionFor(step, fact), fact, queue)) dirty = true
-    }
-    for (const step of capWorkersDispatch(deps.runtime, queue)) {
+    })
+    await forEachSequential(capWorkersDispatch(deps.runtime, queue), async (step) => {
       await dispatchStep(run, step, factOf(fleetView, step))
       dirty = true
-    }
+    })
     return dirty
   }
 
@@ -851,11 +852,11 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
         return { ok: false, error: 'upgrade_not_active' }
       }
       const steps = await deps.store.stepsFor(run.id)
-      for (const step of steps) {
-        if (isTerminal(step.status)) continue
+      await forEachSequential(steps, async (step) => {
+        if (isTerminal(step.status)) return
         step.status = 'skipped'
         await deps.store.saveStep(step)
-      }
+      })
       run.status = 'cancelled'
       run.finishedAt = deps.now()
       run.counts = summarizeSteps(steps)

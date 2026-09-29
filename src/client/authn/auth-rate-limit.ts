@@ -337,9 +337,8 @@ export function createFailClosedAuthRateLimiter(
 ): AuthRateLimiter {
   const retryAfterSeconds = options.windowSeconds ?? DEFAULT_DURABLE_AUTH_WINDOW_SECONDS
   return {
-    // deno-lint-ignore require-await
-    async check(): Promise<AuthRateLimitResult> {
-      return { allowed: false, retryAfterSeconds }
+    check(): Promise<AuthRateLimitResult> {
+      return Promise.resolve({ allowed: false, retryAfterSeconds })
     },
     reset(): void {},
   }

@@ -6,6 +6,7 @@ import type {
   DaemonInboundEnvelope,
   DaemonInboundFrameResult,
   DaemonMessage,
+  DaemonOutboundEnvelope,
 } from '../contracts/cell-protocol.ts'
 import {
   DAEMON_CELL_PING,
@@ -27,6 +28,7 @@ import {
 import { getDb } from '../db/connection.ts'
 import type { Db } from '../db/connection.ts'
 import { compatLogError, compatLogWarn } from '../lib/log-compat.ts'
+import { forEachSequential } from '../lib/sequential.ts'
 import { cellTrace, daemonCellLog } from '../lib/logger.ts'
 import {
   onDaemonConnected,
@@ -101,54 +103,76 @@ async function assertDaemonKeyStillActive(
   return true
 }
 
-function startDaemonOutboxPump(params: {
+type DaemonOutboxPumpParams = {
   cell: ReturnType<DaemonCellRegistry['getCell']>
   serverId: string
   connectionId: string
   consumer: string
   ws: WSContext<WebSocket>
   abortRef: { abort: boolean }
-}): void {
-  const { cell, serverId, connectionId, consumer, ws, abortRef } = params
+}
 
-  void (async () => {
-    while (!abortRef.abort) {
-      try {
-        const batch = await cell.readOutboxBatch({
-          consumer,
-          count: 50,
-          blockMs: OUTBOX_PUMP_BLOCK_MS,
-        })
-        for (const envelope of batch) {
-          const wireMsg = outboundEnvelopeToWireMessage(envelope)
-          await cell.markSent(envelope.deliveryId, connectionId)
-          cellTrace('outbox-send', {
-            serverId,
-            conn: connectionId,
-            deliveryId: envelope.deliveryId,
-            requestId: envelope.requestId,
-            kind: envelope.kind,
-          })
-          ws.send(JSON.stringify(wireMsg))
-          await cell.ackOutbox([envelope.deliveryId], consumer)
-        }
-        if (batch.length > 0) {
-          await cell.putSnapshot({
-            lastOutboundAt: new Date().toISOString(),
-          })
-        }
-      } catch (err) {
-        if (abortRef.abort) {
-          break
-        }
-        if (isClosedConnectionError(err)) {
-          abortRef.abort = true
-          break
-        }
-        compatLogWarn('ws', `outbox pump error: ${String(err)}`)
-      }
+/** Send one outbox batch to the socket: mark sent, send, then ack, one envelope at a time. */
+async function sendOutboxBatch(
+  params: DaemonOutboxPumpParams,
+  batch: DaemonOutboundEnvelope[]
+): Promise<void> {
+  const { cell, serverId, connectionId, consumer, ws } = params
+  await forEachSequential(batch, async (envelope) => {
+    const wireMsg = outboundEnvelopeToWireMessage(envelope)
+    await cell.markSent(envelope.deliveryId, connectionId)
+    cellTrace('outbox-send', {
+      serverId,
+      conn: connectionId,
+      deliveryId: envelope.deliveryId,
+      requestId: envelope.requestId,
+      kind: envelope.kind,
+    })
+    ws.send(JSON.stringify(wireMsg))
+    await cell.ackOutbox([envelope.deliveryId], consumer)
+  })
+  if (batch.length > 0) {
+    await cell.putSnapshot({
+      lastOutboundAt: new Date().toISOString(),
+    })
+  }
+}
+
+/**
+ * One turn of the outbox pump: read a batch and send it. True when the pump
+ * must keep going, false once it was aborted or the connection is closed. A
+ * failed turn is logged and the pump goes on.
+ */
+async function pumpOutboxOnce(params: DaemonOutboxPumpParams): Promise<boolean> {
+  const { cell, consumer, abortRef } = params
+  try {
+    const batch = await cell.readOutboxBatch({
+      consumer,
+      count: 50,
+      blockMs: OUTBOX_PUMP_BLOCK_MS,
+    })
+    await sendOutboxBatch(params, batch)
+    return true
+  } catch (err) {
+    if (abortRef.abort) return false
+    if (isClosedConnectionError(err)) {
+      abortRef.abort = true
+      return false
     }
-  })()
+    compatLogWarn('ws', `outbox pump error: ${String(err)}`)
+    return true
+  }
+}
+
+/**
+ * Nothing awaits the pump: it lives as long as the socket, so each turn
+ * schedules the next one detached instead of looping inside one promise.
+ */
+function startDaemonOutboxPump(params: DaemonOutboxPumpParams): void {
+  if (params.abortRef.abort) return
+  void pumpOutboxOnce(params).then((keepGoing) => {
+    if (keepGoing) startDaemonOutboxPump(params)
+  })
 }
 
 function detachDaemonSocketSafe(
@@ -761,9 +785,7 @@ export function registerDaemonWebSocket<E extends Env>(
           })
 
           attachReady = true
-          for (const raw of pendingMessages.splice(0)) {
-            await handleInboundMessage(raw, ws)
-          }
+          await forEachSequential(pendingMessages.splice(0), (raw) => handleInboundMessage(raw, ws))
         },
         async onMessage(event, ws) {
           const raw = await wsMessageDataToString(event.data)

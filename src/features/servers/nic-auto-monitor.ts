@@ -20,6 +20,7 @@ import { eq } from 'drizzle-orm'
 import type { Db, getDaemonCellRegistry } from '../../db/connection.ts'
 import { server } from '../../db/schema.ts'
 import { normalizeIpAddress } from '../../lib/ip-address.ts'
+import { forEachSequential } from '../../lib/sequential.ts'
 import { parseServerHostResources } from './server-metadata.ts'
 import { getLatestTopologyGeneration } from './server-topology-records.ts'
 import type { NetworkDeviceTopology, TopologySnapshot } from '../../contracts/topology-types.ts'
@@ -175,7 +176,7 @@ export async function autoMonitorNicsForDatacenterAttach(
   pins: ReadonlyArray<{ serverId: string; address: string }>,
   deployment: MetricsDeploymentKind
 ): Promise<void> {
-  for (const pin of pins) {
-    await autoMonitorNicForDatacenterAttach(db, registry, pin.serverId, pin.address, deployment)
-  }
+  await forEachSequential(pins, (pin) =>
+    autoMonitorNicForDatacenterAttach(db, registry, pin.serverId, pin.address, deployment)
+  )
 }

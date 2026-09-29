@@ -223,7 +223,7 @@ export async function deleteTag(db: Db, id: string): Promise<void> {
   await db.delete(tag).where(eq(tag.id, id))
 }
 
-export async function setEntityTags(
+export function setEntityTags(
   db: Db,
   column: TaggableParentColumn,
   entityId: string,
