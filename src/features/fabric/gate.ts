@@ -37,9 +37,7 @@ function defaultSleep(ms: number): Promise<void> {
  * Classify watched reconcile rows. `succeeded` is ready; any other terminal
  * status is failed; everything else is pending. Failed wins over pending.
  */
-export function classifyFabricGate(
-  records: readonly FabricGateRecord[],
-): FabricGateOutcome {
+export function classifyFabricGate(records: readonly FabricGateRecord[]): FabricGateOutcome {
   const pending: FabricGateCommand[] = []
   let failed: Extract<FabricGateOutcome, { kind: 'failed' }> | null = null
   for (const row of records) {
@@ -62,7 +60,7 @@ export function classifyFabricGate(
 
 function padMissingCommands(
   commands: readonly FabricGateCommand[],
-  records: readonly FabricGateRecord[],
+  records: readonly FabricGateRecord[]
 ): FabricGateRecord[] {
   const byId = new Map(records.map((row) => [row.id, row]))
   return commands.map((command) => {
@@ -85,7 +83,7 @@ export async function awaitFabricReconcile(
     pollIntervalMs?: number
     sleep?: (ms: number) => Promise<void>
     now?: () => number
-  },
+  }
 ): Promise<FabricGateOutcome> {
   if (params.commands.length === 0) return { kind: 'ready' }
 
@@ -96,11 +94,13 @@ export async function awaitFabricReconcile(
   const startedAt = now()
   const ids = params.commands.map((row) => row.commandId)
 
-  while (true) {
+  const poll = async (): Promise<FabricGateOutcome> => {
     const records = await listCommandRecordsByIds(db, ids)
     const outcome = classifyFabricGate(padMissingCommands(params.commands, records))
     if (outcome.kind !== 'pending') return outcome
     if (now() - startedAt >= timeoutMs) return outcome
     await sleep(pollIntervalMs)
+    return poll()
   }
+  return poll()
 }

@@ -66,6 +66,7 @@ export function resolveCloudflareAnalyticsSqlConfig(env: {
   CLOUDFLARE_ACCOUNT_ID?: string
   TURBOPANEL_ANALYTICS_ENGINE_API_TOKEN?: string
   TURBOPANEL_SERVER_METRICS_AE_MAX_RANGE_SECONDS?: string | number
+  TURBOPANEL_SERVER_METRICS_AE_DATASET?: string
 }): CloudflareAnalyticsSqlConfig | null {
   const accountId = env.CLOUDFLARE_ACCOUNT_ID?.trim()
   const apiToken = env.TURBOPANEL_ANALYTICS_ENGINE_API_TOKEN?.trim()
@@ -73,7 +74,21 @@ export function resolveCloudflareAnalyticsSqlConfig(env: {
   const maxRangeSeconds =
     parseAnalyticsEngineMaxRangeSeconds(env.TURBOPANEL_SERVER_METRICS_AE_MAX_RANGE_SECONDS) ??
     AE_DEFAULT_MAX_RANGE_SECONDS
-  return { accountId, apiToken, maxRangeSeconds }
+  const dataset = parseAnalyticsEngineDatasetName(env.TURBOPANEL_SERVER_METRICS_AE_DATASET)
+  return dataset
+    ? { accountId, apiToken, maxRangeSeconds, dataset }
+    : { accountId, apiToken, maxRangeSeconds }
+}
+
+/**
+ * The Analytics Engine dataset this environment reads (`SERVER_METRICS`'s
+ * `dataset` in wrangler.jsonc, one per environment, repeated as
+ * `TURBOPANEL_SERVER_METRICS_AE_DATASET`). A value that is not a plain SQL
+ * identifier is ignored, so the reader falls back to the default dataset.
+ */
+export function parseAnalyticsEngineDatasetName(value: string | undefined): string | null {
+  const name = value?.trim()
+  return name && /^[a-zA-Z_]\w*$/.test(name) ? name : null
 }
 
 /**

@@ -13,6 +13,7 @@ import { buildCommandEnqueueEnvelope } from '../client/servers/command-dispatch-
 import { createCommandRecord } from '../features/commands/command-records.ts'
 import { parseCertificatePem } from '../lib/tls/parse.ts'
 import { logWarn } from '../lib/logger.ts'
+import { forEachSequential } from '../lib/sequential.ts'
 
 const TLS_TRUST_TTL_MS = 300_000
 
@@ -32,12 +33,12 @@ export type EnqueuePlatformCaTrustReconcileParams = Readonly<{
       type: string
       payload: unknown
       expiresAt: string
-    },
+    }
   ) => Promise<{ id: string; queuedAt: string | null; createdAt: string }>
 }>
 
 export async function enqueuePlatformCaTrustReconcile(
-  params: EnqueuePlatformCaTrustReconcileParams,
+  params: EnqueuePlatformCaTrustReconcileParams
 ): Promise<{ enqueued: number }> {
   if (!params.readBundle) {
     throw new Error('readBundle is required')
@@ -45,14 +46,11 @@ export async function enqueuePlatformCaTrustReconcile(
   const bundlePem = await params.readBundle()
   const parsed = await parseCertificatePem(bundlePem)
   const fingerprint = parsed.fingerprintSha256
-  const serverIds = await (params.listServerIds ??
-    listConnectedServerIdsFromProjection)(params.db)
-  const expiresAt = new Date(
-    (params.nowMs ?? Date.now()) + TLS_TRUST_TTL_MS,
-  ).toISOString()
+  const serverIds = await (params.listServerIds ?? listConnectedServerIdsFromProjection)(params.db)
+  const expiresAt = new Date((params.nowMs ?? Date.now()) + TLS_TRUST_TTL_MS).toISOString()
 
   let enqueued = 0
-  for (const serverId of serverIds) {
+  await forEachSequential(serverIds, async (serverId) => {
     const record = await (params.createCommand ?? createCommandRecord)(params.db, {
       serverId,
       actorType: 'user',
@@ -67,30 +65,24 @@ export async function enqueuePlatformCaTrustReconcile(
         serverId,
         type: 'server.tls.trust.reconcile',
         queuedAt: record.queuedAt ?? record.createdAt,
-      }),
+      })
     )
     enqueued += 1
-  }
+  })
   return { enqueued }
 }
 
 export async function enqueuePlatformCaTrustReconcileBestEffort(
-  params: EnqueuePlatformCaTrustReconcileParams,
+  params: EnqueuePlatformCaTrustReconcileParams
 ): Promise<void> {
   if (!params.readBundle) return
   try {
     const { enqueued } = await enqueuePlatformCaTrustReconcile(params)
     if (enqueued === 0) {
-      logWarn(
-        'tls-trust',
-        'no connected servers to receive the platform CA bundle',
-      )
+      logWarn('tls-trust', 'no connected servers to receive the platform CA bundle')
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
-    logWarn(
-      'tls-trust',
-      `failed to fan out server.tls.trust.reconcile: ${message}`,
-    )
+    logWarn('tls-trust', `failed to fan out server.tls.trust.reconcile: ${message}`)
   }
 }

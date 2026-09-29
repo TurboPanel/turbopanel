@@ -46,6 +46,7 @@ import { SERVER_SIZE_COMMAND } from '../../features/tiers/size-command.ts'
 import {
   type BillingOrgView,
   formatEndsOn,
+  type LicenseSummary,
   licenseExhaustionMessage,
   LICENSES_ENDING_ERROR,
   licensesEndingRefusal,
@@ -588,35 +589,132 @@ test('the exhaustion sentence never calls an ending license "in use" and names t
     endsAt: '2026-10-26T00:00:00.000Z',
   }
   assertEquals(
-    licenseExhaustionMessage(base),
+    licenseExhaustionMessage(summaryFor(base)),
     '3 in use, 3 end Oct 26 — restore one to add this server.'
   )
   assertEquals(
-    licenseExhaustionMessage({ ...base, purchased: 4, releasing: 1, ending: 1, endsAt: null }),
+    licenseExhaustionMessage(
+      summaryFor({ ...base, purchased: 4, releasing: 1, ending: 1, endsAt: null })
+    ),
     '3 in use, 1 ends at the end of the billing period — restore one to add this server.'
   )
   const none = { releasing: 0, provisioning: 0, ending: 0, endsAt: null }
   assertEquals(
-    licenseExhaustionMessage({ ...none, purchased: 3, held: 3, bound: 3 }),
+    licenseExhaustionMessage(summaryFor({ ...none, purchased: 3, held: 3, bound: 3 })),
     'All 3 licenses are in use — buy another to add this server.'
   )
   assertEquals(
-    licenseExhaustionMessage({ ...none, purchased: 1, held: 1, bound: 1 }),
+    licenseExhaustionMessage(summaryFor({ ...none, purchased: 1, held: 1, bound: 1 })),
     'Your only license is in use — buy another to add this server.'
   )
   assertEquals(
-    licenseExhaustionMessage({ ...none, purchased: 0, held: 0, bound: 0 }),
+    licenseExhaustionMessage(summaryFor({ ...none, purchased: 0, held: 0, bound: 0 })),
     'No licenses yet — buy one to add this server.'
   )
   // Only a downgrade holds the last one back: it is changing tier, not ending and not in use.
   assertEquals(
-    licenseExhaustionMessage({ ...none, purchased: 2, releasing: 1, held: 1, bound: 1 }),
+    licenseExhaustionMessage(
+      summaryFor({ ...none, purchased: 2, releasing: 1, held: 1, bound: 1 })
+    ),
     '1 in use, 1 changing tier at the end of the billing period — buy another to add this server now.'
   )
   // The boundary is a UTC instant: formatted in UTC, whatever the host zone.
   assertEquals(formatEndsOn('2026-10-01T00:00:00.000Z'), 'Oct 1')
   assertEquals(formatEndsOn(null), null)
   assertEquals(formatEndsOn('not a date'), null)
+})
+
+/** A summary as `summarizeLicenses` would produce it: `inUse` and `unusedKeys` derived from `held`, `bound`, `provisioning`. */
+function summaryFor(
+  fields: Pick<LicenseSummary, 'purchased' | 'releasing' | 'ending' | 'endsAt'> &
+    Partial<Pick<LicenseSummary, 'held' | 'bound' | 'provisioning'>>
+): Pick<
+  LicenseSummary,
+  | 'purchased'
+  | 'releasing'
+  | 'held'
+  | 'bound'
+  | 'provisioning'
+  | 'ending'
+  | 'endsAt'
+  | 'inUse'
+  | 'unusedKeys'
+> {
+  const held = fields.held ?? 0
+  const bound = fields.bound ?? 0
+  const provisioning = fields.provisioning ?? 0
+  return {
+    ...fields,
+    held,
+    bound,
+    provisioning,
+    inUse: bound + provisioning,
+    unusedKeys: Math.max(0, held - bound - provisioning),
+  }
+}
+
+test('the exhaustion sentence: every combination of in use, unused keys, ending and changing-tier picks its parts, plurals and closing line', () => {
+  const ENDS = '2026-10-26T00:00:00.000Z'
+  const cases: [string, Parameters<typeof summaryFor>[0], string][] = [
+    [
+      'several unused keys, nothing else leaving',
+      { purchased: 5, releasing: 0, ending: 0, endsAt: null, held: 5, bound: 2 },
+      '2 in use, 3 held by unused registration keys — delete one or use one to add this server.',
+    ],
+    [
+      'unused keys only',
+      { purchased: 2, releasing: 0, ending: 0, endsAt: null, held: 2, bound: 0 },
+      '2 held by unused registration keys — delete one or use one to add this server.',
+    ],
+    [
+      'a single unused key with provisioning beside it',
+      { purchased: 3, releasing: 0, ending: 0, endsAt: null, held: 3, bound: 1, provisioning: 1 },
+      '2 in use (1 provisioning), 1 held by an unused registration key — delete it or use it to add this server.',
+    ],
+    [
+      'several unused keys and several ending: the unused-and-ending line wins',
+      { purchased: 8, releasing: 2, ending: 2, endsAt: ENDS, held: 6, bound: 3 },
+      '3 in use, 3 held by unused registration keys, 2 end Oct 26 — use or delete the unused key, or restore one, to add this server.',
+    ],
+    [
+      'ending with no known date',
+      { purchased: 4, releasing: 1, ending: 1, endsAt: null, held: 3, bound: 3 },
+      '3 in use, 1 ends at the end of the billing period — restore one to add this server.',
+    ],
+    [
+      'a downgrade holding the last license back, ending and unused keys absent',
+      { purchased: 5, releasing: 2, ending: 0, endsAt: null, held: 3, bound: 3 },
+      '3 in use, 2 changing tier at the end of the billing period — buy another to add this server now.',
+    ],
+    [
+      'changing tier is what releasing has beyond ending, capped by what is not held',
+      { purchased: 5, releasing: 4, ending: 1, endsAt: ENDS, held: 4, bound: 4 },
+      '4 in use, 1 ends Oct 26, 1 changing tier at the end of the billing period — restore one to add this server.',
+    ],
+    [
+      'unused keys take the closing line over a downgrade',
+      { purchased: 5, releasing: 2, ending: 0, endsAt: null, held: 4, bound: 3 },
+      '3 in use, 1 held by an unused registration key, 1 changing tier at the end of the billing period — delete it or use it to add this server.',
+    ],
+    [
+      'nothing changing when releasing is all ending',
+      { purchased: 4, releasing: 2, ending: 2, endsAt: ENDS, held: 2, bound: 2 },
+      '2 in use, 2 end Oct 26 — restore one to add this server.',
+    ],
+    [
+      'no license held, all leaving: only the ending part',
+      { purchased: 2, releasing: 2, ending: 2, endsAt: ENDS },
+      '2 end Oct 26 — restore one to add this server.',
+    ],
+    [
+      'fully used, provisioning noted in the closing line',
+      { purchased: 3, releasing: 0, ending: 0, endsAt: null, held: 3, bound: 2, provisioning: 1 },
+      'All 3 licenses are in use (1 provisioning) — buy another to add this server.',
+    ],
+  ]
+  for (const [name, fields, expected] of cases) {
+    assertEquals(licenseExhaustionMessage(summaryFor(fields)), expected, name)
+  }
 })
 
 test('licensesEndingRefusal is per tier: only release-seat intents at that tier refuse', () => {
@@ -1013,6 +1111,114 @@ test('POST /billing/preview answers 400 on an empty body, a zero delta, half of 
     assertEquals(await res.json(), { error: 'Invalid request' }, body)
   }
   assertEquals(stripeCalls(), [])
+})
+
+const EMPTY_PREVIEW = () => ({
+  object: 'invoice',
+  currency: 'usd',
+  subtotal: 500,
+  total: 500,
+  amount_due: 500,
+  lines: { data: [] },
+})
+
+test('POST /billing/preview refuses what cannot be quoted, each with its own body and before any quote is asked for', async () => {
+  const previewBody = (body: Record<string, unknown>) => JSON.stringify(body)
+
+  // No live subscription: 409 no_subscription, no Stripe call.
+  const none = await buildApp({ view: viewWith(stateWith(null, [])) })
+  const noSub = await none.app.request('/billing/preview', {
+    method: 'POST',
+    headers: none.headers,
+    body: previewBody({ tierId: S3, delta: 1 }),
+  })
+  assertEquals(noSub.status, 409)
+  assertEquals(await noSub.json(), { error: 'no_subscription' })
+  assertEquals(none.stripeCalls(), [])
+
+  // A target tier the provider cannot sell (retired): 400 tier_not_purchasable.
+  const retired = await buildApp({ routes: { 'POST /v1/invoices/create_preview': EMPTY_PREVIEW } })
+  retired.db.rows(tier).find((row) => row.id === S5)!.isActive = false
+  const notPurchasable = await retired.app.request('/billing/preview', {
+    method: 'POST',
+    headers: retired.headers,
+    body: previewBody({ fromTierId: S3, toTierId: S5 }),
+  })
+  assertEquals(notPurchasable.status, 400)
+  assertEquals(await notPurchasable.json(), {
+    error: 'tier_not_purchasable',
+    reason: 'inactive',
+    failures: [],
+  })
+  assertEquals(
+    retired.stripeCalls().filter((call) => call === 'POST /v1/invoices/create_preview'),
+    []
+  )
+
+  // Removing more seats than the tier has: 400 Invalid request from the item arithmetic.
+  const over = await buildApp({ routes: { 'POST /v1/invoices/create_preview': EMPTY_PREVIEW } })
+  const tooMany = await over.app.request('/billing/preview', {
+    method: 'POST',
+    headers: over.headers,
+    body: previewBody({ tierId: S3, delta: -5 }),
+  })
+  assertEquals(tooMany.status, 400)
+  assertEquals(await tooMany.json(), { error: 'Invalid request' })
+  assertEquals(over.stripeCalls(), [])
+})
+
+test('POST /billing/preview: restore-before-buy only stops an increase — a decrease at a tier with licenses ending is quoted', async () => {
+  const view = viewWith(stateWith('active', [{ tierId: S3, quantity: 6 }]), {
+    ledger: endingLedger(3),
+  })
+  const { app, headers } = await buildApp({
+    view,
+    routes: { 'POST /v1/invoices/create_preview': EMPTY_PREVIEW },
+  })
+  const res = await app.request('/billing/preview', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ tierId: S3, delta: -1 }),
+  })
+  assertEquals(res.status, 200)
+  assertEquals(((await res.json()) as { total: number }).total, 500)
+})
+
+test('POST /billing/preview maps a Stripe refusal to 502 stripe_error, whether the price lookup or the quote failed', async () => {
+  const refuse = () => {
+    throw new StripeApiError({
+      status: 400,
+      type: 'invalid_request_error',
+      message: 'refused',
+      code: 'resource_missing',
+      param: null,
+      requestId: 'req_9',
+    })
+  }
+  for (const routes of [
+    { 'POST /v1/invoices/create_preview': refuse },
+    { 'GET /v1/products/prod_s5': refuse, 'POST /v1/invoices/create_preview': EMPTY_PREVIEW },
+  ]) {
+    const { app, headers } = await buildApp({ routes })
+    const writeStub = stub(Deno.stderr, 'writeSync', (data) => data.byteLength)
+    let res: Response
+    try {
+      res = await app.request('/billing/preview', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ fromTierId: S3, toTierId: S5 }),
+      })
+    } finally {
+      writeStub.restore()
+    }
+    assertEquals(res.status, 502, Object.keys(routes).join())
+    assertEquals(await res.json(), {
+      error: 'stripe_error',
+      type: 'invalid_request_error',
+      code: 'resource_missing',
+      transient: false,
+    })
+  }
 })
 
 test('POST /billing/seats validates the body: a tier id, a non-zero integer delta, an optional integer proration date', async () => {

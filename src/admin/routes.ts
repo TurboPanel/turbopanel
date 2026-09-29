@@ -1,4 +1,4 @@
-import { Hono } from 'hono'
+import { type Context, Hono } from 'hono'
 import type { AppEnv } from '../app/app.ts'
 import {
   createAdminAccessMiddleware,
@@ -75,14 +75,8 @@ import { registerInstanceAccessAdminRoutes } from './instance-access-routes.ts'
 import { registerInstanceUpdatesAdminRoutes } from './instance-updates-routes.ts'
 import { registerInstanceHostnameAdminRoutes } from './instance-hostname-routes.ts'
 import { recordInstanceAcmePreflightFailure } from '../features/install/instance-hostnames.ts'
-import {
-  PublicUrlsApplyPayloadError,
-  resolvePublicUrlsApplyPayload,
-} from './public-urls-apply-payload.ts'
-import {
-  InstanceSecretSealingError,
-  resolveInstanceSecretSealing,
-} from '../features/install/instance-secret-sealing.ts'
+import { resolvePublicUrlsApplyPayload } from './public-urls-apply-payload.ts'
+import { resolveInstanceSecretSealing } from '../features/install/instance-secret-sealing.ts'
 import {
   parseCellPurgeBatchBody,
   parseEmailSettingsUpdates,
@@ -90,6 +84,8 @@ import {
   parseReencryptRequestBody,
   parseServerMetricsLiveSettingsBody,
   parseSignupEnabledBody,
+  publicUrlsApplyErrorResponse,
+  type PublicUrlsApplyErrorResponse,
   publicUrlsApplyWaitToResponse,
   resolvePerServerLimit,
   resolvePlatformEnv,
@@ -102,6 +98,49 @@ import {
   isValidServerMetricsLiveMaxMinutes,
   setServerMetricsLiveMaxMinutes,
 } from '../features/settings/server-metrics-settings.ts'
+
+type PublicUrlsApplyPayloadOutcome =
+  | { ok: true; payload: Awaited<ReturnType<typeof resolvePublicUrlsApplyPayload>> }
+  | ({ ok: false } & PublicUrlsApplyErrorResponse)
+
+/** Seal secrets for the daemon and build the apply body, mapping known refusals to HTTP. */
+async function buildPublicUrlsApplyPayload(
+  c: Context<AppEnv>,
+  opts: { getEnv?: () => Record<string, string | undefined> },
+  db: NonNullable<ReturnType<typeof getDb>>,
+  serverId: string,
+  urls: string[],
+  daemonVersion: string | undefined
+): Promise<PublicUrlsApplyPayloadOutcome> {
+  try {
+    const sealing = await resolveInstanceSecretSealing(db, serverId, c.get('secretsConfig'))
+    const payload = await resolvePublicUrlsApplyPayload(
+      db,
+      urls,
+      daemonVersion,
+      c.get('dataEncryptionSecrets'),
+      resolvePlatformEnv(c, opts),
+      sealing
+    )
+    return { ok: true, payload }
+  } catch (err) {
+    const refusal = publicUrlsApplyErrorResponse(err)
+    if (!refusal) throw err
+    return { ok: false, ...refusal }
+  }
+}
+
+/** After a successful apply, push the platform CA to the fleet when a queue and actor exist. */
+async function reconcilePlatformCaTrustAfterApply(
+  c: Context<AppEnv>,
+  db: NonNullable<ReturnType<typeof getDb>>,
+  readBundle: (() => Promise<string>) | undefined
+): Promise<void> {
+  const commandQueue = getCommandQueue(c)
+  const actorId = c.get('session')?.userId
+  if (!commandQueue || !actorId) return
+  await enqueuePlatformCaTrustReconcileBestEffort({ db, commandQueue, actorId, readBundle })
+}
 
 /**
  * Admin UI surface: fleet diagnostics, public URL management, and (dev-only) shell.
@@ -567,46 +606,25 @@ export function registerAdminRoutes(
       return c.json({ ok: false, error: 'co-located daemon disconnected' }, 503)
     }
 
-    let applyPayload: Awaited<ReturnType<typeof resolvePublicUrlsApplyPayload>>
-    try {
-      const sealing = await resolveInstanceSecretSealing(db, serverId, c.get('secretsConfig'))
-      applyPayload = await resolvePublicUrlsApplyPayload(
-        db,
-        urlsResult.urls,
-        snapshot.daemonBuild?.version,
-        c.get('dataEncryptionSecrets'),
-        resolvePlatformEnv(c, opts),
-        sealing
-      )
-    } catch (err) {
-      if (err instanceof InstanceSecretSealingError) {
-        return c.json({ ok: false, error: err.message }, 503)
-      }
-      if (err instanceof PublicUrlsApplyPayloadError) {
-        if (err.code) {
-          return c.json({ ok: false, error: err.message, code: err.code }, 422)
-        }
-        return c.json({ ok: false, error: err.message }, 503)
-      }
-      throw err
+    const applied = await buildPublicUrlsApplyPayload(
+      c,
+      opts,
+      db,
+      serverId,
+      urlsResult.urls,
+      snapshot.daemonBuild?.version
+    )
+    if (!applied.ok) {
+      return c.json(applied.body, applied.status)
     }
 
-    const result = await waitForPublicUrlsApply(registry, serverId, applyPayload)
+    const result = await waitForPublicUrlsApply(registry, serverId, applied.payload)
     if (result.kind === 'failed' || result.kind === 'error') {
       await recordInstanceAcmePreflightFailure(db, result.error)
     }
     const response = publicUrlsApplyWaitToResponse(result)
     if (response.status === 200) {
-      const commandQueue = getCommandQueue(c)
-      const actorId = c.get('session')?.userId
-      if (commandQueue && actorId) {
-        await enqueuePlatformCaTrustReconcileBestEffort({
-          db,
-          commandQueue,
-          actorId,
-          readBundle: opts.readPlatformCaBundle,
-        })
-      }
+      await reconcilePlatformCaTrustAfterApply(c, db, opts.readPlatformCaBundle)
     }
     return c.json(response.body, response.status)
   })

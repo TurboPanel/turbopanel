@@ -10,6 +10,7 @@ import {
   generateDeliveryId,
   generateRequestId,
 } from '../../contracts/cell-protocol.ts'
+import type { PendingRequestRecord } from '../../contracts/cell.ts'
 import { cellTrace } from '../../lib/logger.ts'
 import type {
   parseServerOptions,
@@ -169,6 +170,17 @@ async function resolveSessionOrg(c: Parameters<typeof assertCanReadOr403>[0]) {
   return { session, organizationId: orgResult }
 }
 
+type MetricsCellRequestOptions = {
+  c: Parameters<typeof assertCanReadOr403>[0]
+  registry: NonNullable<ReturnType<typeof getDaemonCellRegistry>>
+  serverId: string
+  envelope: DaemonOutboundEnvelope
+  timeoutMs: number
+  timeoutMessage: string
+  failedFallbackMessage: string
+  onDone: (record: PendingRequestRecord) => Response | Promise<Response>
+}
+
 /**
  * Correlated daemon cell round trip shared by the live-lease start/stop and
  * capabilities routes: emits the `request-start` trace, awaits the cell,
@@ -178,18 +190,17 @@ async function resolveSessionOrg(c: Parameters<typeof assertCanReadOr403>[0]) {
  * responsibility on that path stays with the caller (the capabilities route
  * traces a validation failure differently than a clean result).
  */
-async function awaitMetricsCellRequest(
-  c: Parameters<typeof assertCanReadOr403>[0],
-  registry: NonNullable<ReturnType<typeof getDaemonCellRegistry>>,
-  serverId: string,
-  envelope: DaemonOutboundEnvelope,
-  timeoutMs: number,
-  timeoutMessage: string,
-  failedFallbackMessage: string,
-  onDone: (
-    record: Awaited<ReturnType<ReturnType<typeof registry.getCell>['createRequestAndWait']>>
-  ) => Response | Promise<Response>
-): Promise<Response> {
+async function awaitMetricsCellRequest(options: MetricsCellRequestOptions): Promise<Response> {
+  const {
+    c,
+    registry,
+    serverId,
+    envelope,
+    timeoutMs,
+    timeoutMessage,
+    failedFallbackMessage,
+    onDone,
+  } = options
   const requestId = envelope.requestId
   const kind = envelope.kind
   cellTrace('request-start', { requestId, serverId, kind })
@@ -893,15 +904,15 @@ export function registerServerMetricsRoutes(router: Hono<AppEnv>, opts: AuthRout
       at: new Date().toISOString(),
     }
 
-    return awaitMetricsCellRequest(
+    return awaitMetricsCellRequest({
       c,
       registry,
       serverId,
       envelope,
-      METRICS_LIVE_TIMEOUT_MS,
-      'timeout waiting for live lease start',
-      'failed to start live lease',
-      async (record) => {
+      timeoutMs: METRICS_LIVE_TIMEOUT_MS,
+      timeoutMessage: 'timeout waiting for live lease start',
+      failedFallbackMessage: 'failed to start live lease',
+      onDone: async (record) => {
         cellTrace('request-result', {
           requestId: envelope.requestId,
           serverId,
@@ -917,8 +928,8 @@ export function registerServerMetricsRoutes(router: Hono<AppEnv>, opts: AuthRout
         }
         await markServerLiveSessionActive(cache, serverId, leaseId, maxMinutes * 60)
         return c.json(payload)
-      }
-    )
+      },
+    })
   })
 
   /**
@@ -967,15 +978,15 @@ export function registerServerMetricsRoutes(router: Hono<AppEnv>, opts: AuthRout
       at: new Date().toISOString(),
     }
 
-    return awaitMetricsCellRequest(
+    return awaitMetricsCellRequest({
       c,
       registry,
       serverId,
       envelope,
-      METRICS_LIVE_TIMEOUT_MS,
-      'timeout waiting for live lease stop',
-      'failed to stop live lease',
-      (record) => {
+      timeoutMs: METRICS_LIVE_TIMEOUT_MS,
+      timeoutMessage: 'timeout waiting for live lease stop',
+      failedFallbackMessage: 'failed to stop live lease',
+      onDone: (record) => {
         cellTrace('request-result', {
           requestId: envelope.requestId,
           serverId,
@@ -984,8 +995,8 @@ export function registerServerMetricsRoutes(router: Hono<AppEnv>, opts: AuthRout
           resultStatus: 'done',
         })
         return c.json({ ok: true })
-      }
-    )
+      },
+    })
   })
 
   /**
@@ -1018,15 +1029,15 @@ export function registerServerMetricsRoutes(router: Hono<AppEnv>, opts: AuthRout
       at: new Date().toISOString(),
     }
 
-    return awaitMetricsCellRequest(
+    return awaitMetricsCellRequest({
       c,
       registry,
       serverId,
       envelope,
-      METRICS_CAPABILITIES_TIMEOUT_MS,
-      'timeout waiting for capabilities',
-      'failed to collect capabilities',
-      (record) => {
+      timeoutMs: METRICS_CAPABILITIES_TIMEOUT_MS,
+      timeoutMessage: 'timeout waiting for capabilities',
+      failedFallbackMessage: 'failed to collect capabilities',
+      onDone: (record) => {
         const result = record.result
         const capabilities =
           result && typeof result === 'object' && !Array.isArray(result)
@@ -1050,8 +1061,8 @@ export function registerServerMetricsRoutes(router: Hono<AppEnv>, opts: AuthRout
           resultStatus: 'done',
         })
         return c.json({ ok: true, capabilities })
-      }
-    )
+      },
+    })
   })
 
   /**

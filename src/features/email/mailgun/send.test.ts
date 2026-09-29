@@ -156,3 +156,23 @@ test('sendMailgunJob gives up on a Mailgun that never answers, as a transient fa
     globalThis.fetch = originalFetch
   }
 })
+
+test('sendMailgunJob stringifies a non-Error rejection and keeps it transient', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (() => Promise.reject('socket hang up')) as typeof fetch
+  try {
+    const outcome = await sendMailgunJob(
+      {
+        type: 'email-otp',
+        to: 'ops@example.com',
+        from: 'noreply@example.com',
+        otp: '123456',
+        otpType: 'sign-in',
+      },
+      mailgunConfig
+    )
+    assertEquals(outcome, { ok: false, error: 'socket hang up', permanent: false })
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})

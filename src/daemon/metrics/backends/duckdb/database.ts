@@ -11,6 +11,7 @@
 
 import { DuckDBInstance } from '@duckdb/node-api'
 import { resolveMetricsDir } from '../../../../platform/deno/server-paths.ts'
+import { forEachSequential } from '../../../../lib/sequential.ts'
 import { buildSchemaStatements, DUCKDB_SCHEMA_MARKER_VERSION } from './schema.ts'
 
 /** One result row as plain JS values (via `getRowObjectsJS`). */
@@ -133,9 +134,7 @@ export async function openDuckDb(options: OpenDuckDbOptions): Promise<DuckDbHand
       )}MiB'`
     )
     await connection.run(`SET temp_directory = '${escapeSqlString(paths.tmpDir)}'`)
-    for (const statement of buildSchemaStatements()) {
-      await connection.run(statement)
-    }
+    await forEachSequential(buildSchemaStatements(), (statement) => connection.run(statement))
   } catch (error) {
     connection.closeSync()
     instance.closeSync()

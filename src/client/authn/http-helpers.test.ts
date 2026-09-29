@@ -19,6 +19,7 @@ import {
   seedMockUser,
   withMockLogin,
 } from './authn-hostfree-doubles.ts'
+import { createNoopQueue } from '../../features/email/noop-queue.ts'
 import { createEmailVerificationToken } from './email-verification.ts'
 import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME, HTTPS_SESSION_COOKIE_NAME } from './crypto.ts'
 import {
@@ -631,6 +632,104 @@ test('Workers duplicate sign-up is indistinguishable with mock db', async () => 
   })
   assertEquals(first.status, 201)
   assertEquals(second.status, 201)
+})
+
+/** A mock auth db whose account-creating transaction fails with `error`. */
+function dbFailingTransaction(state: ReturnType<typeof createEmptyMockAuthState>, error: unknown) {
+  return Object.assign(createMockAuthDb(state), {
+    transaction: () => Promise.reject(error),
+  })
+}
+
+async function postSignUp(
+  app: Hono<AppEnv>,
+  ip: string,
+  email: string,
+  extra: Record<string, unknown> = {}
+) {
+  return await app.request(`${CLIENT_API_PREFIX}/auth/sign-up`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'CF-Connecting-IP': ip },
+    body: JSON.stringify({ email, password: INVITED_SIGNUP_CREDENTIAL, ...extra }),
+  })
+}
+
+test('sign-up answers by how account creation ended: a lost email race looks like success, anything else is 500 Sign-up failed', async () => {
+  const uniqueViolation = (constraint: string) =>
+    Object.assign(new Error('Failed query'), {
+      cause: Object.assign(
+        new Error(`duplicate key value violates unique constraint "${constraint}"`),
+        { code: '23505' }
+      ),
+    })
+  const cases: [string, unknown, number, unknown][] = [
+    [
+      'the email unique index (a parallel sign-up won)',
+      uniqueViolation('user_email_unique'),
+      201,
+      { ok: true },
+    ],
+    [
+      'a different unique index',
+      uniqueViolation('user_pkey'),
+      500,
+      { ok: false, error: 'Sign-up failed' },
+    ],
+    [
+      'an unrelated failure',
+      new Error('connection reset'),
+      500,
+      { ok: false, error: 'Sign-up failed' },
+    ],
+  ]
+  for (const [name, error, status, expected] of cases) {
+    const state = createEmptyMockAuthState()
+    seedMockSignupEnabled(state, true)
+    const { app } = await buildAuthApp({
+      db: dbFailingTransaction(state, error),
+      runtime: 'workers',
+      signupEnvOverride: '1',
+    })
+    const res = await postSignUp(app, '203.0.113.31', 'racer@example.com')
+    assertEquals(res.status, status, name)
+    assertEquals(await res.json(), expected, name)
+    assertEquals(state.users.length, 0, name)
+  }
+})
+
+test('sign-up is 503 before the existing-user check when verification is required but email cannot be delivered', async () => {
+  const platformEnv = {
+    TURBOPANEL_SYSTEM_EMAIL__PROVIDER: 'mailgun',
+    TURBOPANEL_SYSTEM_EMAIL__MAILGUN_API_KEY: 'key-test',
+    TURBOPANEL_SYSTEM_EMAIL__MAILGUN_DOMAIN: 'example.com',
+    TURBOPANEL_SYSTEM_EMAIL__FROM: 'noreply@example.com',
+  }
+  const state = createEmptyMockAuthState()
+  seedMockSignupEnabled(state, true)
+  seedMockUser(state, {
+    id: crypto.randomUUID(),
+    email: 'taken@example.com',
+    isDisabled: false,
+    isEmailVerified: true,
+    role: 'user',
+  })
+  const { app } = await buildAuthApp({
+    db: createMockAuthDb(state),
+    runtime: 'workers',
+    signupEnvOverride: '1',
+    platformEnv,
+    emailQueue: createNoopQueue() as never, // the fixture types the queue as `unknown` jobs
+  })
+  // A new address and an already-registered one see the same refusal.
+  for (const email of ['fresh@example.com', 'taken@example.com']) {
+    const res = await postSignUp(app, '203.0.113.32', email)
+    assertEquals(res.status, 503, email)
+    assertEquals(await res.json(), {
+      ok: false,
+      error: 'Sign-up is temporarily unavailable — email delivery is not configured.',
+    })
+  }
+  assertEquals(state.users.length, 1)
 })
 
 test('verify-email consumes token and marks mock user verified', async () => {

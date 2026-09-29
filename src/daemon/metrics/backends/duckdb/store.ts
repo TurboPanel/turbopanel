@@ -40,6 +40,7 @@ import {
   finalizeHostSeriesResult,
 } from '../../query/series-response.ts'
 import { computeStatusUptime } from '../../query/uptime.ts'
+import { forEachSequential } from '../../../../lib/sequential.ts'
 import type {
   AuthenticatedMetricsSample,
   EntityIdsSeenQuery,
@@ -836,7 +837,7 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
     await cleanupTmpParquetFiles(this.#paths.tmpDir)
 
     const todayStartMs = utcDayStartMs(nowMs)
-    for (const family of PARQUET_FAMILIES) {
+    await forEachSequential(PARQUET_FAMILIES, async (family) => {
       const reader = await handle.connection.runAndReadAll(
         `SELECT DISTINCT CAST(epoch_ms(${family.timestampColumn}) // ${MS_PER_DAY} AS DOUBLE) AS day ` +
           `FROM ${family.table} ` +
@@ -847,17 +848,17 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
         .map((row) => toFiniteNumber(row.day))
         .filter((day): day is number => day !== null)
         .sort((a, b) => a - b)
-      for (const day of days) {
+      await forEachSequential(days, (day) => {
         const dayStartMs = day * MS_PER_DAY
-        await sealDayToParquet(handle.connection, {
+        return sealDayToParquet(handle.connection, {
           family,
           dayStartMs,
           dayEndMs: dayStartMs + MS_PER_DAY,
           parquetRoot: this.#paths.parquetRoot,
           tmpDir: this.#paths.tmpDir,
         })
-      }
-    }
+      })
+    })
 
     await pruneExpiredPartitions(handle.connection, {
       retentionDays: this.#retentionDays,
@@ -1225,10 +1226,10 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
     try {
       await connection.run('BEGIN TRANSACTION')
       try {
-        for (const [table, rows] of byTable) {
+        await forEachSequential(byTable, ([table, rows]) => {
           const { sql, values } = buildInsertForTable(table, rows)
-          await connection.run(sql, values)
-        }
+          return connection.run(sql, values)
+        })
         await connection.run('COMMIT')
       } catch (error) {
         await connection.run('ROLLBACK').catch(() => {})

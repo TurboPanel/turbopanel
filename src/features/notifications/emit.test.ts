@@ -377,6 +377,64 @@ test('rows for a paused channel never fill the retry batch and starve a live one
   })
 })
 
+test('the retry sweep stops starting deliveries once its time budget is spent', async () => {
+  await withFixture(async ({ db, organizationId }) => {
+    const enc = await secrets()
+    const channel = await createNotificationChannel(db, enc, {
+      scope: 'organization',
+      organizationId,
+      kind: 'webhook',
+      label: 'Slow receiver',
+      address: 'https://slow.example.com/hook',
+    })
+    const payload = {
+      event: 'server.offline',
+      severity: 'critical',
+      title: 'Server db-1 went offline',
+      body: null,
+      organizationId,
+      organizationName: 'Notify Org',
+      targetType: null,
+      targetId: null,
+      context: { serverName: 'db-1' },
+      at: new Date().toISOString(),
+    }
+    const due = new Date(Date.now() - 60_000).toISOString()
+    await db.insert(notificationDelivery).values(
+      Array.from({ length: 3 }, () => ({
+        channelId: channel.id,
+        organizationId,
+        event: 'server.offline',
+        severity: 'critical',
+        payload,
+        status: 'failed',
+        attempts: 1,
+        nextAttemptAt: due,
+      }))
+    )
+
+    // The first send takes "an hour": every later delivery must be deferred.
+    let clock = Date.now()
+    const captured: Captured[] = []
+    const inner = fakeFetch(200, captured)
+    const slowFetch = ((url: string | URL | Request, init?: RequestInit) => {
+      clock += 3_600_000
+      return inner(url, init)
+    }) as typeof fetch
+    const swept = await retryDueDeliveries(db, enc, { fetchImpl: slowFetch, now: () => clock })
+    assertEquals(swept.attempted, 3)
+    assertEquals(swept.sent, 1)
+    assertEquals(captured.length, 1)
+
+    const rows = await db
+      .select({ status: notificationDelivery.status, attempts: notificationDelivery.attempts })
+      .from(notificationDelivery)
+      .where(eq(notificationDelivery.channelId, channel.id))
+    assertEquals(rows.filter((r) => r.status === 'sent').length, 1)
+    assertEquals(rows.filter((r) => r.status === 'failed' && r.attempts === 1).length, 2)
+  })
+})
+
 test('a failed delivery is a failed ledger row with a retry time, then the sweep resends it', async () => {
   await withFixture(async ({ db, organizationId }) => {
     const enc = await secrets()

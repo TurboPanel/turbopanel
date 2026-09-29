@@ -14,13 +14,8 @@ import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { assertCanOr403 } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import { getDb, type Db } from '../../db/connection.ts'
-import {
-  binding,
-  managed,
-  principal,
-  service,
-  slot,
-} from '../../db/schema.ts'
+import { forEachSequential, mapSequential } from '../../lib/sequential.ts'
+import { binding, managed, principal, service, slot } from '../../db/schema.ts'
 import { isNoopCommandQueue } from '../../features/commands/noop-command-queue.ts'
 import { getCommandQueue } from '../../features/commands/queue.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
@@ -81,7 +76,7 @@ async function enqueueIngressForBindingChange(
     serviceId: string
     managedId: string
     actorId: string
-  }>,
+  }>
 ): Promise<void> {
   const secretsConfig = c.get('secretsConfig')
   const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
@@ -98,10 +93,7 @@ async function enqueueIngressForBindingChange(
   const serverIds = new Set<string>()
   const placement = await loadServicePlacementServerId(db, params.serviceId)
   if (placement) serverIds.add(placement)
-  for (const memberServerId of await memberServerIdsForManaged(
-    db,
-    params.managedId,
-  )) {
+  for (const memberServerId of await memberServerIdsForManaged(db, params.managedId)) {
     serverIds.add(memberServerId)
   }
   const consumerTasks = await db
@@ -112,7 +104,7 @@ async function enqueueIngressForBindingChange(
     serverIds.add(row.serverId)
   }
 
-  for (const serverId of serverIds) {
+  await forEachSequential(serverIds, async (serverId) => {
     try {
       await enqueueManagedIngressReconcile(db, commandQueue, {
         serverId,
@@ -125,10 +117,10 @@ async function enqueueIngressForBindingChange(
       const message = err instanceof Error ? err.message : String(err)
       compatLogWarn(
         'bindings',
-        `managed.ingress.reconcile after binding change failed for ${serverId}: ${message}`,
+        `managed.ingress.reconcile after binding change failed for ${serverId}: ${message}`
       )
     }
-  }
+  })
 }
 
 /** Shared 404 guard: the entity must resolve to the caller's organization. */
@@ -137,7 +129,7 @@ async function assertEntityInOrgOr404(
   db: Db,
   entityType: string,
   entityId: string,
-  organizationId: string,
+  organizationId: string
 ): Promise<Response | null> {
   const entityOrgId = await resolveEntityOrganizationId(db, entityType, entityId)
   if (!entityOrgId || entityOrgId !== organizationId) {
@@ -151,7 +143,7 @@ async function assertServiceCreatable(
   c: Context<AppEnv>,
   db: Db,
   organizationId: string,
-  serviceId: string,
+  serviceId: string
 ): Promise<Response | null> {
   const notFound = await assertEntityInOrgOr404(c, db, 'service', serviceId, organizationId)
   if (notFound) return notFound
@@ -165,7 +157,7 @@ async function assertServiceMutable(
   c: Context<AppEnv>,
   db: Db,
   organizationId: string,
-  serviceId: string,
+  serviceId: string
 ): Promise<Response | null> {
   const notFound = await assertEntityInOrgOr404(c, db, 'service', serviceId, organizationId)
   if (notFound) return notFound
@@ -177,7 +169,7 @@ async function assertServiceMutable(
 /** Maps a `materializeBinding` failure onto the wire error shape. */
 function materializeErrorResponse(
   c: Context<AppEnv>,
-  materializeResult: MaterializeBindingError,
+  materializeResult: MaterializeBindingError
 ): Response {
   const mapped = bindingMaterializeHttpPayload(materializeResult)
   return c.json(mapped.body, mapped.status)
@@ -187,7 +179,7 @@ async function selectBindingsByServiceId(
   c: Context<AppEnv>,
   db: Db,
   organizationId: string,
-  serviceId: string,
+  serviceId: string
 ): Promise<Response | BindingRow[]> {
   const notFound = await assertEntityInOrgOr404(c, db, 'service', serviceId, organizationId)
   if (notFound) return notFound
@@ -205,14 +197,14 @@ async function selectBindingsByManagedEnvironmentId(
   c: Context<AppEnv>,
   db: Db,
   organizationId: string,
-  managedEnvironmentId: string,
+  managedEnvironmentId: string
 ): Promise<Response | BindingRow[]> {
   const notFound = await assertEntityInOrgOr404(
     c,
     db,
     'environment',
     managedEnvironmentId,
-    organizationId,
+    organizationId
   )
   if (notFound) return notFound
   const denied = await assertCanReadOr403(c, 'environment', managedEnvironmentId)
@@ -244,7 +236,7 @@ async function selectBindingsByConsumerEnvironmentId(
   c: Context<AppEnv>,
   db: Db,
   organizationId: string,
-  environmentId: string,
+  environmentId: string
 ): Promise<Response | BindingRow[]> {
   const notFound = await assertEntityInOrgOr404(c, db, 'environment', environmentId, organizationId)
   if (notFound) return notFound
@@ -273,9 +265,7 @@ type CreateBindingInput = {
   emitEngineDefaults: boolean
 }
 
-async function parseCreateBindingInput(
-  c: Context<AppEnv>,
-): Promise<CreateBindingInput | Response> {
+async function parseCreateBindingInput(c: Context<AppEnv>): Promise<CreateBindingInput | Response> {
   const body = await parseJsonBody(c)
   if (body instanceof Response) return body
 
@@ -304,7 +294,7 @@ async function parseCreateBindingInput(
 async function loadBindablePrincipal(
   c: Context<AppEnv>,
   db: Db,
-  principalId: string,
+  principalId: string
 ): Promise<{ id: string; managedId: string } | Response> {
   const [principalRow] = await db
     .select({
@@ -333,7 +323,7 @@ async function loadManagedForBindingOrg(
   c: Context<AppEnv>,
   db: Db,
   organizationId: string,
-  managedId: string,
+  managedId: string
 ) {
   const [managedRow] = await db
     .select({
@@ -358,7 +348,7 @@ async function loadManagedForBindingOrg(
 function requireBindingEngineCode(
   c: Context<AppEnv>,
   managedRow: { engine: string | null; options: unknown },
-  databaseName: string,
+  databaseName: string
 ): string | Response {
   const error = checkBindingDatabaseTarget(managedRow, databaseName)
   if (error || !managedRow.engine) {
@@ -376,7 +366,7 @@ async function assertBindingCreateConflicts(
     emitEngineDefaults: boolean
     engineCode: string
   }>,
-  c: Context<AppEnv>,
+  c: Context<AppEnv>
 ): Promise<Response | null> {
   const conflict = await detectBindingCreateConflicts(db, params)
   if (!conflict) return null
@@ -398,7 +388,7 @@ async function insertAndMaterializeBinding(
     emitEngineDefaults: boolean
     managedId: string
     actorId: string
-  }>,
+  }>
 ): Promise<Response> {
   try {
     const id = await db.transaction(async (tx) => {
@@ -443,7 +433,7 @@ async function insertAndMaterializeBinding(
 function parsePatchBindingFields(
   c: Context<AppEnv>,
   body: Record<string, unknown>,
-  row: Readonly<{ keyPrefix: string; emitEngineDefaults: boolean }>,
+  row: Readonly<{ keyPrefix: string; emitEngineDefaults: boolean }>
 ): { keyPrefix: string; emitEngineDefaults: boolean } | Response {
   const parsed = resolvePatchBindingFields(body, row)
   if (!parsed.ok) return c.json({ error: parsed.error }, 400)
@@ -464,7 +454,7 @@ async function assertBindingUpdateConflicts(
     nextEmitEngineDefaults: boolean
     engineCode: string
   }>,
-  c: Context<AppEnv>,
+  c: Context<AppEnv>
 ): Promise<Response | null> {
   const conflict = await detectBindingUpdateConflicts(db, params)
   if (!conflict) return null
@@ -474,13 +464,9 @@ async function assertBindingUpdateConflicts(
 async function loadBindingRowForMutation(
   c: Context<AppEnv>,
   db: Db,
-  id: string,
+  id: string
 ): Promise<BindingRow | Response> {
-  const [row] = await db
-    .select(BINDING_SELECT)
-    .from(binding)
-    .where(eq(binding.id, id))
-    .limit(1)
+  const [row] = await db.select(BINDING_SELECT).from(binding).where(eq(binding.id, id)).limit(1)
   if (!row) return c.json({ error: 'Not found' }, 404)
   return row
 }
@@ -523,29 +509,26 @@ export function registerBindingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         c,
         db,
         organizationId,
-        filterResult.filter.serviceId,
+        filterResult.filter.serviceId
       )
     } else if (filterResult.filter.kind === 'managedEnvironment') {
       rowsResult = await selectBindingsByManagedEnvironmentId(
         c,
         db,
         organizationId,
-        filterResult.filter.managedEnvironmentId,
+        filterResult.filter.managedEnvironmentId
       )
     } else {
       rowsResult = await selectBindingsByConsumerEnvironmentId(
         c,
         db,
         organizationId,
-        filterResult.filter.environmentId,
+        filterResult.filter.environmentId
       )
     }
     if (rowsResult instanceof Response) return rowsResult
 
-    const serialized = []
-    for (const row of rowsResult) {
-      serialized.push(await serializeBindingRow(db, row))
-    }
+    const serialized = await mapSequential(rowsResult, (row) => serializeBindingRow(db, row))
     return c.json({ bindings: serialized })
   })
 
@@ -573,7 +556,7 @@ export function registerBindingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       c,
       db,
       organizationId,
-      principalResult.managedId,
+      principalResult.managedId
     )
     if (managedResult instanceof Response) return managedResult
 
@@ -588,7 +571,7 @@ export function registerBindingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         emitEngineDefaults: input.emitEngineDefaults,
         engineCode,
       },
-      c,
+      c
     )
     if (conflictDenied) return conflictDenied
 
@@ -647,7 +630,7 @@ export function registerBindingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         nextEmitEngineDefaults: nextEmit,
         engineCode,
       },
-      c,
+      c
     )
     if (conflictDenied) return conflictDenied
 

@@ -672,6 +672,34 @@ async function deliverSignupVerification(
   }
 }
 
+/** The invitation (if any) a sign-up names, keyed with the address it is signing up as. */
+function signupInvitationGate(
+  trimmedEmail: string,
+  invitationId: string | undefined
+): { invitationId?: string; email: string } {
+  return invitationId ? { invitationId, email: trimmedEmail } : { email: trimmedEmail }
+}
+
+/** The invitation this sign-up joins: named, pending, unexpired and addressed to this very email. */
+async function joiningInvitationIdFor(
+  db: Db,
+  invitationId: string | undefined,
+  trimmedEmail: string
+): Promise<string | undefined> {
+  if (!invitationId) return undefined
+  return (await invitationAllowsSignup(db, invitationId, trimmedEmail)) ? invitationId : undefined
+}
+
+/**
+ * The answer for a sign-up whose account creation failed. Losing the race on
+ * the email's unique index reads as success (anti-enumeration: the same
+ * outward shape as a new registration); anything else is a 500.
+ */
+function signupCreateFailureResponse(c: Context, failure: { conflict: boolean }): Response {
+  if (failure.conflict) return c.json({ ok: true }, 201)
+  return c.json({ ok: false, error: 'Sign-up failed' }, 500)
+}
+
 export function registerAuthRoutes(app: Hono<AppEnv>, opts: AuthRouteOpts) {
   const auth = new Hono<AppEnv>()
 
@@ -794,13 +822,12 @@ export function registerAuthRoutes(app: Hono<AppEnv>, opts: AuthRouteOpts) {
     const parsed = gated.value
     const trimmedEmail = parsed.email.trim().toLowerCase()
 
-    const signupInvitationGate: { invitationId?: string; email: string } = {
-      email: trimmedEmail,
-    }
-    if (parsed.invitationId) {
-      signupInvitationGate.invitationId = parsed.invitationId
-    }
-    const gate = await resolveSignupGate(c, opts, db, signupInvitationGate)
+    const gate = await resolveSignupGate(
+      c,
+      opts,
+      db,
+      signupInvitationGate(trimmedEmail, parsed.invitationId)
+    )
     if (!gate.ok) {
       return gate.response
     }
@@ -836,10 +863,7 @@ export function registerAuthRoutes(app: Hono<AppEnv>, opts: AuthRouteOpts) {
     // inviter's organization (the console accepts it after sign-in) — so no
     // personal organization is created. A different email gets an ordinary
     // account: it cannot claim an invitation sent to someone else.
-    const joiningInvitationId =
-      parsed.invitationId && (await invitationAllowsSignup(db, parsed.invitationId, trimmedEmail))
-        ? parsed.invitationId
-        : undefined
+    const joiningInvitationId = await joiningInvitationIdFor(db, parsed.invitationId, trimmedEmail)
 
     const hashedPassword = await hashPassword(parsed.password)
     const created = await createSignupUser(
@@ -848,12 +872,7 @@ export function registerAuthRoutes(app: Hono<AppEnv>, opts: AuthRouteOpts) {
       hashedPassword,
       emailVerificationEnabled
     )
-    if (!created.ok) {
-      if (created.conflict) {
-        return c.json({ ok: true }, 201)
-      }
-      return c.json({ ok: false, error: 'Sign-up failed' }, 500)
-    }
+    if (!created.ok) return signupCreateFailureResponse(c, created)
 
     if (!emailVerificationEnabled) {
       if (!joiningInvitationId) {

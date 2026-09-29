@@ -2,6 +2,7 @@ import { assertEquals } from '@std/assert'
 import {
   evaluateManagedPromoteLagGate,
   isAutomaticFailoverHealthy,
+  isManagedReplicaObservationStale,
   replicationFromMemberMetadata,
 } from './promote-lag.ts'
 
@@ -19,25 +20,19 @@ const FRESH = '2026-08-19T11:59:00.000Z'
 test('missing replication is not healthy enough for automatic failover', () => {
   assertEquals(isAutomaticFailoverHealthy(undefined, NOW), false)
   assertEquals(isAutomaticFailoverHealthy(null, NOW), false)
-  assertEquals(
-    isAutomaticFailoverHealthy({ state: 'stopped', observedAt: FRESH }, NOW),
-    false,
-  )
-  assertEquals(
-    evaluateManagedPromoteLagGate(undefined, NOW),
-    'managed_replica_not_streaming',
-  )
+  assertEquals(isAutomaticFailoverHealthy({ state: 'stopped', observedAt: FRESH }, NOW), false)
+  assertEquals(evaluateManagedPromoteLagGate(undefined, NOW), 'managed_replica_not_streaming')
   assertEquals(
     evaluateManagedPromoteLagGate(['not-an-object'], NOW),
-    'managed_replica_not_streaming',
+    'managed_replica_not_streaming'
   )
   assertEquals(
     evaluateManagedPromoteLagGate({ state: '', observedAt: FRESH }, NOW),
-    'managed_replica_not_streaming',
+    'managed_replica_not_streaming'
   )
   assertEquals(
     evaluateManagedPromoteLagGate({ state: 12, observedAt: FRESH }, NOW),
-    'managed_replica_not_streaming',
+    'managed_replica_not_streaming'
   )
 })
 
@@ -45,33 +40,24 @@ test('fresh streaming under threshold is healthy for automatic failover', () => 
   assertEquals(
     isAutomaticFailoverHealthy(
       { state: 'streaming', observedAt: FRESH, lagBytes: 12, lagSeconds: 1 },
-      NOW,
+      NOW
     ),
-    true,
+    true
   )
 })
 
 test('stale or lagging observations fail closed', () => {
   assertEquals(
-    isAutomaticFailoverHealthy(
-      { state: 'streaming', observedAt: '2026-08-19T11:00:00.000Z' },
-      NOW,
-    ),
-    false,
+    isAutomaticFailoverHealthy({ state: 'streaming', observedAt: '2026-08-19T11:00:00.000Z' }, NOW),
+    false
   )
   assertEquals(
-    evaluateManagedPromoteLagGate(
-      { state: 'streaming', observedAt: '' },
-      NOW,
-    ),
-    'managed_replica_health_stale',
+    evaluateManagedPromoteLagGate({ state: 'streaming', observedAt: '' }, NOW),
+    'managed_replica_health_stale'
   )
   assertEquals(
-    evaluateManagedPromoteLagGate(
-      { state: 'streaming', observedAt: 'not-a-date' },
-      NOW,
-    ),
-    'managed_replica_health_stale',
+    evaluateManagedPromoteLagGate({ state: 'streaming', observedAt: 'not-a-date' }, NOW),
+    'managed_replica_health_stale'
   )
   assertEquals(
     isAutomaticFailoverHealthy(
@@ -80,9 +66,9 @@ test('stale or lagging observations fail closed', () => {
         observedAt: FRESH,
         lagBytes: 65 * 1024 * 1024,
       },
-      NOW,
+      NOW
     ),
-    false,
+    false
   )
   assertEquals(
     evaluateManagedPromoteLagGate(
@@ -91,9 +77,9 @@ test('stale or lagging observations fail closed', () => {
         observedAt: FRESH,
         lagSeconds: 31,
       },
-      NOW,
+      NOW
     ),
-    'managed_replica_lagging',
+    'managed_replica_lagging'
   )
 })
 
@@ -108,9 +94,9 @@ test('evaluateManagedPromoteLagGate honors custom stale and lag ceilings', () =>
         lagSeconds: 5,
       },
       NOW,
-      { staleMs: 180_000, maxLagBytes: 50, maxLagSeconds: 10 },
+      { staleMs: 180_000, maxLagBytes: 50, maxLagSeconds: 10 }
     ),
-    'managed_replica_lagging',
+    'managed_replica_lagging'
   )
   assertEquals(
     evaluateManagedPromoteLagGate(
@@ -121,9 +107,9 @@ test('evaluateManagedPromoteLagGate honors custom stale and lag ceilings', () =>
         lagSeconds: 20,
       },
       NOW,
-      { staleMs: 180_000, maxLagBytes: 50, maxLagSeconds: 10 },
+      { staleMs: 180_000, maxLagBytes: 50, maxLagSeconds: 10 }
     ),
-    'managed_replica_lagging',
+    'managed_replica_lagging'
   )
   assertEquals(
     evaluateManagedPromoteLagGate(
@@ -134,18 +120,16 @@ test('evaluateManagedPromoteLagGate honors custom stale and lag ceilings', () =>
         lagSeconds: 5,
       },
       NOW,
-      { staleMs: 180_000, maxLagBytes: 50, maxLagSeconds: 10 },
+      { staleMs: 180_000, maxLagBytes: 50, maxLagSeconds: 10 }
     ),
-    null,
+    null
   )
   // Custom staleMs tighter than the default fails a one-minute-old sample.
   assertEquals(
-    evaluateManagedPromoteLagGate(
-      { state: 'streaming', observedAt: FRESH },
-      NOW,
-      { staleMs: 30_000 },
-    ),
-    'managed_replica_health_stale',
+    evaluateManagedPromoteLagGate({ state: 'streaming', observedAt: FRESH }, NOW, {
+      staleMs: 30_000,
+    }),
+    'managed_replica_health_stale'
   )
 })
 
@@ -156,6 +140,51 @@ test('replicationFromMemberMetadata reads node.metadata.replication', () => {
     replicationFromMemberMetadata({
       replication: { state: 'streaming', observedAt: FRESH },
     }),
-    { state: 'streaming', observedAt: FRESH },
+    { state: 'streaming', observedAt: FRESH }
   )
+})
+
+test('observation staleness is keyed on age, not on the gate verdict', () => {
+  // Missing, malformed, unparseable and old observations are stale.
+  assertEquals(isManagedReplicaObservationStale(undefined, NOW), true)
+  assertEquals(isManagedReplicaObservationStale(['x'], NOW), true)
+  assertEquals(isManagedReplicaObservationStale({ state: 'streaming' }, NOW), true)
+  assertEquals(
+    isManagedReplicaObservationStale({ state: 'streaming', observedAt: 'nope' }, NOW),
+    true
+  )
+  assertEquals(
+    isManagedReplicaObservationStale(
+      { state: 'streaming', observedAt: '2020-01-01T00:00:00.000Z' },
+      NOW
+    ),
+    true
+  )
+  // A replica last seen catching up is judged `not_streaming` by the gate
+  // before it looks at age, yet it is stale and must still be re-probed.
+  const catchingUp = { state: 'catchup', observedAt: '2020-01-01T00:00:00.000Z' }
+  assertEquals(evaluateManagedPromoteLagGate(catchingUp, NOW), 'managed_replica_not_streaming')
+  assertEquals(isManagedReplicaObservationStale(catchingUp, NOW), true)
+  // Fresh is fresh whatever the state; the gate stays the only verdict.
+  assertEquals(
+    isManagedReplicaObservationStale({ state: 'stopped', observedAt: FRESH }, NOW),
+    false
+  )
+  assertEquals(
+    isManagedReplicaObservationStale({ state: 'streaming', observedAt: FRESH }, NOW),
+    false
+  )
+})
+
+test('automatic failover still fails closed on a stale observation and never probes', async () => {
+  const stale = { state: 'streaming', observedAt: '2020-01-01T00:00:00.000Z' }
+  assertEquals(isAutomaticFailoverHealthy(stale, NOW), false)
+  assertEquals(isAutomaticFailoverHealthy({ state: 'streaming', observedAt: FRESH }, NOW), true)
+  // The probe is an operator-route concern: nothing on the automatic-failover
+  // path may import it.
+  for (const file of ['ha-recovery.ts', 'ha-recovery-pure.ts', 'promote-lag.ts']) {
+    const source = await Deno.readTextFile(new URL(`./${file}`, import.meta.url))
+    assertEquals(source.includes('health-probe'), false, file)
+    assertEquals(source.includes('managed-health-request'), false, file)
+  }
 })

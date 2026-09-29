@@ -17,16 +17,14 @@
  * rows recorded — so a Git-backed service that was removed from the compose
  * before the delete is still named here, rather than orphaned on the host.
  */
+import { mapSequential, forEachSequential } from '../../lib/sequential.ts'
 import { eq } from 'drizzle-orm'
 import type { Context } from 'hono'
 import type { Db } from '../../db/connection.ts'
 import { environment, project } from '../../db/schema.ts'
 import type { CommandEnvelope } from '../../features/commands/envelope.ts'
 import type { CommandQueue } from '../../features/commands/queue.ts'
-import {
-  createCommandRecord,
-  transitionCommand,
-} from '../../features/commands/command-records.ts'
+import { createCommandRecord, transitionCommand } from '../../features/commands/command-records.ts'
 import {
   composeNetworkNamesByServer,
   listEnvironmentComposeNetworks,
@@ -40,10 +38,7 @@ import { compatLogWarn } from '../../lib/log-compat.ts'
 import { assertDispatchInfrastructure } from '../servers/command-dispatch.ts'
 import { retireHostingIngressIfIdle } from '../../features/system/reconcile.ts'
 import { composeProjectName } from './deploy-routes-helpers.ts'
-import {
-  type EnvironmentSiteRelease,
-  resolveEnvironmentSiteReleases,
-} from './site-releases.ts'
+import { type EnvironmentSiteRelease, resolveEnvironmentSiteReleases } from './site-releases.ts'
 import { resolveTcpUdpIngressServices } from './tcp-udp-ingress.ts'
 
 export type EnvironmentTeardownPlan = {
@@ -68,17 +63,17 @@ async function resolveTeardownServerIds(
   db: Db,
   environmentId: string,
   environmentServerId: string | null,
-  projectOptions: unknown,
+  projectOptions: unknown
 ): Promise<string[]> {
   const deployments = await listEnvironmentDeploymentTargets(db, environmentId)
-  const fromDeployments = [
-    ...new Set(deployments.map((row) => row.serverId)),
-  ].sort((a, b) => a.localeCompare(b))
+  const fromDeployments = [...new Set(deployments.map((row) => row.serverId))].sort((a, b) =>
+    a.localeCompare(b)
+  )
   if (fromDeployments.length > 0) return fromDeployments
 
   const pin = resolveEffectivePlacementServerId(
     environmentServerId,
-    parseProjectOptions(projectOptions),
+    parseProjectOptions(projectOptions)
   )
   return pin ? [pin] : []
 }
@@ -90,7 +85,7 @@ async function resolveTeardownServerIds(
  */
 export async function planEnvironmentTeardown(
   db: Db,
-  environmentId: string,
+  environmentId: string
 ): Promise<EnvironmentTeardownPlan | null> {
   const [envRow] = await db
     .select({
@@ -114,15 +109,12 @@ export async function planEnvironmentTeardown(
     db,
     environmentId,
     envRow.serverId,
-    projectRow.options,
+    projectRow.options
   )
   if (serverIds.length === 0) return null
 
   const tcpUdpServices = await resolveTcpUdpIngressServices(db, environmentId)
-  const composeNetworks = await listEnvironmentComposeNetworks(
-    db,
-    environmentId,
-  )
+  const composeNetworks = await listEnvironmentComposeNetworks(db, environmentId)
   const siteReleases = await resolveEnvironmentSiteReleases(db, environmentId)
 
   return {
@@ -139,14 +131,12 @@ export async function planEnvironmentTeardown(
 /** Plan teardown for several environments, dropping the ones with no target. */
 export async function planEnvironmentsTeardown(
   db: Db,
-  environmentIds: readonly string[],
+  environmentIds: readonly string[]
 ): Promise<EnvironmentTeardownPlan[]> {
-  const plans: EnvironmentTeardownPlan[] = []
-  for (const environmentId of environmentIds) {
-    const plan = await planEnvironmentTeardown(db, environmentId)
-    if (plan) plans.push(plan)
-  }
-  return plans
+  const planned = await mapSequential(environmentIds, (environmentId) =>
+    planEnvironmentTeardown(db, environmentId)
+  )
+  return planned.filter((plan): plan is EnvironmentTeardownPlan => !!plan)
 }
 
 async function enqueueTeardownStop(
@@ -156,7 +146,7 @@ async function enqueueTeardownStop(
     serverId: string
     actorId: string
     plan: EnvironmentTeardownPlan
-  }>,
+  }>
 ): Promise<void> {
   const { plan, serverId } = params
   const fabricNetworks = plan.fabricNetworksByServer.get(serverId) ?? []
@@ -169,13 +159,9 @@ async function enqueueTeardownStop(
       environmentId: plan.environmentId,
       projectId: plan.projectId,
       projectName: plan.projectName,
-      ...(plan.ingressServices.length > 0
-        ? { ingressServices: plan.ingressServices }
-        : {}),
+      ...(plan.ingressServices.length > 0 ? { ingressServices: plan.ingressServices } : {}),
       ...(fabricNetworks.length > 0 ? { fabricNetworks } : {}),
-      ...(plan.siteReleases.length > 0
-        ? { siteReleases: plan.siteReleases }
-        : {}),
+      ...(plan.siteReleases.length > 0 ? { siteReleases: plan.siteReleases } : {}),
     },
     expiresAt: new Date(Date.now() + 120_000).toISOString(),
   })
@@ -209,15 +195,12 @@ export async function dispatchEnvironmentTeardown(
   db: Db,
   commandQueue: CommandQueue,
   plans: readonly EnvironmentTeardownPlan[],
-  actorId: string,
+  actorId: string
 ): Promise<string[]> {
   const reached = new Set<string>()
-  for (const plan of plans) {
-    const serverIds = new Set<string>([
-      ...plan.serverIds,
-      ...plan.fabricNetworksByServer.keys(),
-    ])
-    for (const serverId of serverIds) {
+  await forEachSequential(plans, async (plan) => {
+    const serverIds = new Set<string>([...plan.serverIds, ...plan.fabricNetworksByServer.keys()])
+    await forEachSequential(serverIds, async (serverId) => {
       try {
         await enqueueTeardownStop(db, commandQueue, {
           serverId,
@@ -229,11 +212,11 @@ export async function dispatchEnvironmentTeardown(
         const message = err instanceof Error ? err.message : String(err)
         compatLogWarn(
           'environments',
-          `environment.stop teardown enqueue failed for environment ${plan.environmentId} on server ${serverId}: ${message}`,
+          `environment.stop teardown enqueue failed for environment ${plan.environmentId} on server ${serverId}: ${message}`
         )
       }
-    }
-  }
+    })
+  })
   return [...reached].sort((a, b) => a.localeCompare(b))
 }
 
@@ -248,7 +231,7 @@ export async function reclaimDeletedEnvironmentHosts(
   c: Context,
   db: Db,
   plans: readonly EnvironmentTeardownPlan[],
-  actorId: string,
+  actorId: string
 ): Promise<void> {
   if (plans.length === 0) return
 
@@ -256,22 +239,17 @@ export async function reclaimDeletedEnvironmentHosts(
   if (commandQueue instanceof Response) {
     compatLogWarn(
       'environments',
-      `host teardown skipped for ${plans.length} deleted environment(s): dispatch infrastructure unavailable`,
+      `host teardown skipped for ${plans.length} deleted environment(s): dispatch infrastructure unavailable`
     )
     return
   }
 
-  const serverIds = await dispatchEnvironmentTeardown(
-    db,
-    commandQueue,
-    plans,
-    actorId,
-  )
-  for (const serverId of serverIds) {
-    await retireHostingIngressIfIdle(db, commandQueue, {
+  const serverIds = await dispatchEnvironmentTeardown(db, commandQueue, plans, actorId)
+  await forEachSequential(serverIds, (serverId) =>
+    retireHostingIngressIfIdle(db, commandQueue, {
       serverId,
       actorType: 'user',
       actorId,
     })
-  }
+  )
 }

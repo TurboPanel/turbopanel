@@ -2,17 +2,18 @@
  * TurboFabric desired-state helpers (`fabric` / `relay` / `subnet`).
  */
 
-import { and, asc, eq, inArray } from "drizzle-orm";
-import type { Db } from "../../db/connection.ts";
-import { nowIso } from "../commands/ids.ts";
+import { and, asc, eq, inArray } from 'drizzle-orm'
+import type { Db } from '../../db/connection.ts'
+import { forEachSequential } from '../../lib/sequential.ts'
+import { nowIso } from '../commands/ids.ts'
 import {
   cidrsOverlap,
   inetAddressToString,
   isValidIpAddress,
   nextFreeHostAddress,
   stripInetPrefixSuffix,
-} from "../../lib/ip-address.ts";
-import { fabric, ip, network, relay, server, subnet } from "../../db/schema.ts";
+} from '../../lib/ip-address.ts'
+import { fabric, ip, network, relay, server, subnet } from '../../db/schema.ts'
 import {
   composeNetworkHostName,
   hostRoute32,
@@ -24,125 +25,119 @@ import {
   parseFabricOptions,
   pickDefaultFabricHostCidr,
   RELAY_PREFIX_LENGTH,
-} from "./cidr.ts";
-import { managedNetworkName } from "../../lib/naming.ts";
+} from './cidr.ts'
+import { managedNetworkName } from '../../lib/naming.ts'
 import {
   collectSpanningComposeNetworkKeys,
   participatingServerIdsForNetwork,
   type PlatformAttachment,
-} from "./spanning.ts";
-import type { ComposeDocument } from "../compose/types.ts";
+} from './spanning.ts'
+import type { ComposeDocument } from '../compose/types.ts'
 import type {
   FabricReconcileCommandPayload,
   FabricReconcileObservedPeer,
-} from "../../contracts/commands/schemas.ts";
-import { sha256HexUtf8 } from "../compose/desired-hash.ts";
+} from '../../contracts/commands/schemas.ts'
+import { sha256HexUtf8 } from '../compose/desired-hash.ts'
 import {
   publicIpv4FromIps,
   reportedIpsFromServerMetadata,
   type ServerReportedIp,
-} from "../../contracts/server-addresses.ts";
+} from '../../contracts/server-addresses.ts'
 import {
   type DatacenterPolicyRow,
   defaultDatacenterPolicyRow,
   loadDatacenterPolicies,
   loadDatacenterSubnetsForServers,
   resolveDerivedAdvertisedCidrsByRelay,
-} from "../net/datacenter-networks.ts";
+} from '../net/datacenter-networks.ts'
 import {
   type DatacenterMembershipRow,
   loadDatacenterMembershipsForServers,
-} from "../net/datacenter-membership.ts";
-import {
-  partitionSharedDatacenters,
-  pinAddressForDatacenter,
-} from "../net/private-endpoint.ts";
-import { loadCidrAllocationExclusions } from "../net/cidr-collisions.ts";
-import { WIREGUARD_PERSISTENT_KEEPALIVE } from "./wg.ts";
+} from '../net/datacenter-membership.ts'
+import { partitionSharedDatacenters, pinAddressForDatacenter } from '../net/private-endpoint.ts'
+import { loadCidrAllocationExclusions } from '../net/cidr-collisions.ts'
+import { WIREGUARD_PERSISTENT_KEEPALIVE } from './wg.ts'
 import {
   type FabricPolicy,
   mergeRelayPolicyOptions,
   parseFabricPolicy,
   parseRelayPolicy,
-} from "./policy.ts";
+} from './policy.ts'
 
 export type FabricRecord = {
-  id: string;
-  organizationId: string;
-  cidr: string;
-  options: unknown;
-};
+  id: string
+  organizationId: string
+  cidr: string
+  options: unknown
+}
 
-export type RelayRole = "gateway" | "member";
+export type RelayRole = 'gateway' | 'member'
 
-export type RelayObservedPeer = FabricReconcileObservedPeer;
+export type RelayObservedPeer = FabricReconcileObservedPeer
 
 export type RelayMetadata = {
-  appliedPayloadHash?: string;
-  appliedAt?: string;
+  appliedPayloadHash?: string
+  appliedAt?: string
   observed?: {
-    at: string;
-    peers: RelayObservedPeer[];
-  };
+    at: string
+    peers: RelayObservedPeer[]
+  }
   /** Diagnostics-only path summary; never hashed into desired reconcile state. */
   paths?: {
-    at: string;
-    entries: FabricPathSummaryEntry[];
-  };
-};
+    at: string
+    entries: FabricPathSummaryEntry[]
+  }
+}
 
 export type FabricPathSummaryEntry = {
-  peerServerId: string;
-  selected: RelayPathKind;
-  endpoint?: string;
-  viaServerId?: string;
-  lastHandshakeAt?: string;
-  latencyMs?: number;
-  degraded: boolean;
-};
+  peerServerId: string
+  selected: RelayPathKind
+  endpoint?: string
+  viaServerId?: string
+  lastHandshakeAt?: string
+  latencyMs?: number
+  degraded: boolean
+}
 
 export type RelayRecord = {
-  id: string;
-  fabricId: string;
-  serverId: string;
-  address: string;
-  role: RelayRole;
-  keepalive: number | null;
-  endpointAddress: string | null;
-  publicKey: string | null;
-  prefix: string;
-  advertisedCidrs: string[];
-  metadata: RelayMetadata;
-  allowRelay: boolean | null;
-  preferredGatewayIds: string[];
-};
+  id: string
+  fabricId: string
+  serverId: string
+  address: string
+  role: RelayRole
+  keepalive: number | null
+  endpointAddress: string | null
+  publicKey: string | null
+  prefix: string
+  advertisedCidrs: string[]
+  metadata: RelayMetadata
+  allowRelay: boolean | null
+  preferredGatewayIds: string[]
+}
 
 export type FabricAllocationErrorKind =
-  | "fabric_address_pool_exhausted"
-  | "fabric_prefix_pool_exhausted"
+  | 'fabric_address_pool_exhausted'
+  | 'fabric_prefix_pool_exhausted'
   /** Compose-bridge subnet pool (table `subnet`); error code kept as-is. */
-  | "fabric_segment_pool_exhausted"
-  | "relay_missing"
-  | "relay_endpoint_unavailable";
+  | 'fabric_segment_pool_exhausted'
+  | 'relay_missing'
+  | 'relay_endpoint_unavailable'
 
 const ALLOCATION_MESSAGES: Record<FabricAllocationErrorKind, string> = {
-  fabric_address_pool_exhausted: "TurboFabric address pool exhausted",
-  fabric_prefix_pool_exhausted: "TurboFabric prefix address pool exhausted",
-  fabric_segment_pool_exhausted: "TurboFabric segment address pool exhausted",
-  relay_missing: "TurboFabric relay missing",
-  relay_endpoint_unavailable: "TurboFabric relay endpoint unavailable",
-};
+  fabric_address_pool_exhausted: 'TurboFabric address pool exhausted',
+  fabric_prefix_pool_exhausted: 'TurboFabric prefix address pool exhausted',
+  fabric_segment_pool_exhausted: 'TurboFabric segment address pool exhausted',
+  relay_missing: 'TurboFabric relay missing',
+  relay_endpoint_unavailable: 'TurboFabric relay endpoint unavailable',
+}
 
 export class FabricAllocationError extends Error {
-  readonly kind: FabricAllocationErrorKind;
+  readonly kind: FabricAllocationErrorKind
 
-  constructor(
-    kind: FabricAllocationErrorKind,
-    message = ALLOCATION_MESSAGES[kind],
-  ) {
-    super(message);
-    this.name = "FabricAllocationError";
-    this.kind = kind;
+  constructor(kind: FabricAllocationErrorKind, message = ALLOCATION_MESSAGES[kind]) {
+    super(message)
+    this.name = 'FabricAllocationError'
+    this.kind = kind
   }
 }
 
@@ -153,10 +148,10 @@ export class FabricAllocationError extends Error {
  * from the requested pool rather than the default one.
  */
 export type FabricEnablePolicy = {
-  allowRelay?: boolean;
+  allowRelay?: boolean
   /** Replacement `fabric.options.containerPool` (validated by the route). */
-  containerPool?: string;
-};
+  containerPool?: string
+}
 
 /**
  * A first-time enable picks the `tp0` host range automatically; when that
@@ -164,41 +159,36 @@ export type FabricEnablePolicy = {
  * route reports `cidr_overlaps_fabric` with both ranges.
  */
 export class FabricContainerPoolOverlapError extends Error {
-  readonly containerPool: string;
-  readonly fabricCidr: string;
+  readonly containerPool: string
+  readonly fabricCidr: string
 
   constructor(containerPool: string, fabricCidr: string) {
-    super("TurboFabric container pool overlaps the host range");
-    this.name = "FabricContainerPoolOverlapError";
-    this.containerPool = containerPool;
-    this.fabricCidr = fabricCidr;
+    super('TurboFabric container pool overlaps the host range')
+    this.name = 'FabricContainerPoolOverlapError'
+    this.containerPool = containerPool
+    this.fabricCidr = fabricCidr
   }
 }
 
 export type RelayPathKind =
-  | "direct_lan"
-  | "direct_public"
-  | "direct_nat"
-  | "gateway"
-  | "relay"
-  | "unreachable";
+  'direct_lan' | 'direct_public' | 'direct_nat' | 'gateway' | 'relay' | 'unreachable'
 
 export type RelayPathCandidate = {
-  kind: RelayPathKind;
-  address?: string;
-  datacenterId?: string;
-  viaServerId?: string;
-  viaRelayId?: string;
-};
+  kind: RelayPathKind
+  address?: string
+  datacenterId?: string
+  viaServerId?: string
+  viaRelayId?: string
+}
 
 export type RelayPathSelected = {
-  kind: RelayPathKind;
+  kind: RelayPathKind
   /** Present for emitted direct kinds (`direct_lan` / `direct_public` / `direct_nat`). */
-  endpoint?: string;
-  datacenterId?: string;
-  viaServerId?: string;
-  viaRelayId?: string;
-};
+  endpoint?: string
+  datacenterId?: string
+  viaServerId?: string
+  viaRelayId?: string
+}
 
 /**
  * Ranked viable candidates plus the selected path. `gateway` /
@@ -206,83 +196,77 @@ export type RelayPathSelected = {
  * changing the top-level return.
  */
 export type RelayPathPlan = {
-  candidates: RelayPathCandidate[];
-  selected: RelayPathSelected;
-  directNat: RelayPathCandidate | null;
-  gateway: RelayPathCandidate | null;
-  relay: RelayPathCandidate | null;
-};
+  candidates: RelayPathCandidate[]
+  selected: RelayPathSelected
+  directNat: RelayPathCandidate | null
+  gateway: RelayPathCandidate | null
+  relay: RelayPathCandidate | null
+}
 
 export type RelayPeerMaterial = {
-  publicKey: string;
-  allowedIPs: string[];
-  endpoint: string;
-  keepalive: number | null;
-  sealedPresharedKey: string | null;
-  presharedKey: string | null;
-  pathKind: RelayPathKind;
-  viaServerId?: string;
-};
+  publicKey: string
+  allowedIPs: string[]
+  endpoint: string
+  keepalive: number | null
+  sealedPresharedKey: string | null
+  presharedKey: string | null
+  pathKind: RelayPathKind
+  viaServerId?: string
+}
 
 export type EndpointAddressCaches = {
-  publicAddressByServer: Map<string, string>;
-  reportedByServer: Map<string, ServerReportedIp[] | undefined>;
-  datacenterMembershipsByServer: Map<string, DatacenterMembershipRow[]>;
+  publicAddressByServer: Map<string, string>
+  reportedByServer: Map<string, ServerReportedIp[] | undefined>
+  datacenterMembershipsByServer: Map<string, DatacenterMembershipRow[]>
   /**
    * Effective routing policy per datacenter (`addressPreference`, `priority`,
    * `trusted`). Shared with the private-endpoint ladder so LAN path planning
    * honors the same trust gate and priority order.
    */
-  policyByDatacenter: Map<string, DatacenterPolicyRow>;
+  policyByDatacenter: Map<string, DatacenterPolicyRow>
   /** Runtime-only NAT hole-punch endpoints; never loaded from Postgres. */
-  natEndpointByPair: Map<string, string>;
+  natEndpointByPair: Map<string, string>
   /** Runtime-only demoted kinds so the planner falls through. */
-  failedPathKindsByPair: Map<string, Set<RelayPathKind>>;
-};
+  failedPathKindsByPair: Map<string, Set<RelayPathKind>>
+}
 
 /** Pair cache key: `${fromServerId}>${toServerId}`. */
-export function fabricPairCacheKey(
-  fromServerId: string,
-  toServerId: string,
-): string {
-  return `${fromServerId}>${toServerId}`;
+export function fabricPairCacheKey(fromServerId: string, toServerId: string): string {
+  return `${fromServerId}>${toServerId}`
 }
 
 function emptyPairPlanningCaches(): Pick<
   EndpointAddressCaches,
-  | "datacenterMembershipsByServer"
-  | "policyByDatacenter"
-  | "natEndpointByPair"
-  | "failedPathKindsByPair"
+  | 'datacenterMembershipsByServer'
+  | 'policyByDatacenter'
+  | 'natEndpointByPair'
+  | 'failedPathKindsByPair'
 > {
   return {
     datacenterMembershipsByServer: new Map(),
     policyByDatacenter: new Map(),
     natEndpointByPair: new Map(),
     failedPathKindsByPair: new Map(),
-  };
+  }
 }
 
 const EMITTED_RELAY_PATH_KINDS = new Set<RelayPathKind>([
-  "direct_lan",
-  "direct_public",
-  "direct_nat",
-]);
+  'direct_lan',
+  'direct_public',
+  'direct_nat',
+])
 
-function isEmittedDirectPath(
-  selected: RelayPathSelected,
-): selected is RelayPathSelected & {
-  kind: "direct_lan" | "direct_public" | "direct_nat";
-  endpoint: string;
+function isEmittedDirectPath(selected: RelayPathSelected): selected is RelayPathSelected & {
+  kind: 'direct_lan' | 'direct_public' | 'direct_nat'
+  endpoint: string
 } {
-  return EMITTED_RELAY_PATH_KINDS.has(selected.kind) &&
-    typeof selected.endpoint === "string";
+  return EMITTED_RELAY_PATH_KINDS.has(selected.kind) && typeof selected.endpoint === 'string'
 }
 
 type ServerEndpointRow = {
-  id: string;
-  metadata: unknown;
-};
+  id: string
+  metadata: unknown
+}
 
 /**
  * Every range the org already holds: each CIDR-bearing `network` row (site
@@ -291,16 +275,13 @@ type ServerEndpointRow = {
  * `pickDefaultFabricHostCidr` stepping around an operator's reserved range —
  * shares one definition with the forward checks.
  */
-function occupiedCidrs(
-  db: Db,
-  organizationId: string,
-): Promise<string[]> {
-  return loadCidrAllocationExclusions(db, organizationId);
+function occupiedCidrs(db: Db, organizationId: string): Promise<string[]> {
+  return loadCidrAllocationExclusions(db, organizationId)
 }
 
 export async function getOrganizationFabric(
   db: Db,
-  organizationId: string,
+  organizationId: string
 ): Promise<FabricRecord | null> {
   const [row] = await db
     .select({
@@ -311,15 +292,12 @@ export async function getOrganizationFabric(
     })
     .from(fabric)
     .where(eq(fabric.organizationId, organizationId))
-    .limit(1);
-  if (!row) return null;
-  return serializeFabric(row);
+    .limit(1)
+  if (!row) return null
+  return serializeFabric(row)
 }
 
-export async function getFabricById(
-  db: Db,
-  fabricId: string,
-): Promise<FabricRecord | null> {
+export async function getFabricById(db: Db, fabricId: string): Promise<FabricRecord | null> {
   const [row] = await db
     .select({
       id: fabric.id,
@@ -329,81 +307,76 @@ export async function getFabricById(
     })
     .from(fabric)
     .where(eq(fabric.id, fabricId))
-    .limit(1);
-  if (!row) return null;
-  return serializeFabric(row);
+    .limit(1)
+  if (!row) return null
+  return serializeFabric(row)
 }
 
 function serializeFabric(row: {
-  id: string;
-  organizationId: string;
-  cidr: unknown;
-  options: unknown;
+  id: string
+  organizationId: string
+  cidr: unknown
+  options: unknown
 }): FabricRecord {
   return {
     id: row.id,
     organizationId: row.organizationId,
-    cidr: typeof row.cidr === "string" ? row.cidr : String(row.cidr),
+    cidr: typeof row.cidr === 'string' ? row.cidr : String(row.cidr),
     options: row.options,
-  };
+  }
 }
 
 function serializeRelayRole(value: string): RelayRole {
-  return value === "gateway" ? "gateway" : "member";
+  return value === 'gateway' ? 'gateway' : 'member'
 }
 
 function serializeAdvertisedCidrs(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  return value.filter((item): item is string =>
-    typeof item === "string" && item.length > 0
-  );
+  if (!Array.isArray(value)) return []
+  return value.filter((item): item is string => typeof item === 'string' && item.length > 0)
 }
 
 function serializeRelayMetadata(value: unknown): RelayMetadata {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return {};
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return {}
   }
-  return value as RelayMetadata;
+  return value as RelayMetadata
 }
 
 function serializeRelay(row: {
-  id: string;
-  fabricId: string;
-  serverId: string;
-  address: unknown;
-  role: string;
-  keepalive: number | null;
-  endpointAddress: unknown;
-  publicKey: string | null;
-  prefix: unknown;
-  advertisedCidrs: unknown;
-  metadata: unknown;
-  options?: unknown;
+  id: string
+  fabricId: string
+  serverId: string
+  address: unknown
+  role: string
+  keepalive: number | null
+  endpointAddress: unknown
+  publicKey: string | null
+  prefix: unknown
+  advertisedCidrs: unknown
+  metadata: unknown
+  options?: unknown
 }): RelayRecord {
-  const role = serializeRelayRole(row.role);
-  const policy = parseRelayPolicy(row.options);
+  const role = serializeRelayRole(row.role)
+  const policy = parseRelayPolicy(row.options)
   return {
     id: row.id,
     fabricId: row.fabricId,
     serverId: row.serverId,
     address: stripInetPrefixSuffix(
-      typeof row.address === "string" ? row.address : String(row.address),
+      typeof row.address === 'string' ? row.address : String(row.address)
     ),
     role,
     keepalive: row.keepalive,
-    endpointAddress: inetAddressToString(row.endpointAddress) ??
-      (typeof row.endpointAddress === "string"
-        ? stripInetPrefixSuffix(row.endpointAddress)
-        : null),
+    endpointAddress:
+      inetAddressToString(row.endpointAddress) ??
+      (typeof row.endpointAddress === 'string' ? stripInetPrefixSuffix(row.endpointAddress) : null),
     publicKey: row.publicKey,
-    prefix: typeof row.prefix === "string" ? row.prefix : String(row.prefix),
-    advertisedCidrs: role === "member"
-      ? []
-      : serializeAdvertisedCidrs(row.advertisedCidrs),
+    prefix: typeof row.prefix === 'string' ? row.prefix : String(row.prefix),
+    advertisedCidrs: role === 'member' ? [] : serializeAdvertisedCidrs(row.advertisedCidrs),
     metadata: serializeRelayMetadata(row.metadata),
     allowRelay: policy.allowRelay,
     preferredGatewayIds: policy.preferredGatewayIds,
-  };
+  }
 }
 
 const RELAY_SELECT = {
@@ -419,18 +392,12 @@ const RELAY_SELECT = {
   advertisedCidrs: relay.advertisedCidrs,
   metadata: relay.metadata,
   options: relay.options,
-};
+}
 
-export async function listFabricRelays(
-  db: Db,
-  fabricId: string,
-): Promise<RelayRecord[]> {
-  const rows = await db
-    .select(RELAY_SELECT)
-    .from(relay)
-    .where(eq(relay.fabricId, fabricId));
+export async function listFabricRelays(db: Db, fabricId: string): Promise<RelayRecord[]> {
+  const rows = await db.select(RELAY_SELECT).from(relay).where(eq(relay.fabricId, fabricId))
 
-  return rows.map((row) => serializeRelay(row));
+  return rows.map((row) => serializeRelay(row))
 }
 
 /**
@@ -439,49 +406,43 @@ export async function listFabricRelays(
  */
 export async function loadRelayAddressesForServers(
   db: Db,
-  serverIds: readonly string[],
+  serverIds: readonly string[]
 ): Promise<Map<string, string>> {
-  const out = new Map<string, string>();
-  if (serverIds.length === 0) return out;
-  const uniqueIds = [...new Set(serverIds)];
+  const out = new Map<string, string>()
+  if (serverIds.length === 0) return out
+  const uniqueIds = [...new Set(serverIds)]
   const rows = await db
     .select({
       serverId: relay.serverId,
       address: relay.address,
     })
     .from(relay)
-    .where(inArray(relay.serverId, uniqueIds));
+    .where(inArray(relay.serverId, uniqueIds))
   for (const row of rows) {
     const address = stripInetPrefixSuffix(
-      typeof row.address === "string" ? row.address : String(row.address),
-    );
-    if (address.length > 0) out.set(row.serverId, address);
+      typeof row.address === 'string' ? row.address : String(row.address)
+    )
+    if (address.length > 0) out.set(row.serverId, address)
   }
-  return out;
+  return out
 }
 
 /** Sealed `tpsecret` only — never surface on {@link RelayRecord}. */
-export async function loadRelayPresharedKey(
-  db: Db,
-  relayId: string,
-): Promise<string | null> {
+export async function loadRelayPresharedKey(db: Db, relayId: string): Promise<string | null> {
   const [row] = await db
     .select({ presharedKey: relay.presharedKey })
     .from(relay)
     .where(eq(relay.id, relayId))
-    .limit(1);
-  return row?.presharedKey ?? null;
+    .limit(1)
+  return row?.presharedKey ?? null
 }
 
-export function requireRelayHostAddress(
-  cidrValue: string,
-  occupied: readonly string[],
-): string {
-  const address = nextFreeHostAddress(cidrValue, occupied);
+export function requireRelayHostAddress(cidrValue: string, occupied: readonly string[]): string {
+  const address = nextFreeHostAddress(cidrValue, occupied)
   if (!address) {
-    throw new FabricAllocationError("fabric_address_pool_exhausted");
+    throw new FabricAllocationError('fabric_address_pool_exhausted')
   }
-  return address;
+  return address
 }
 
 /**
@@ -494,18 +455,13 @@ export function requireRelayHostAddress(
 export function requireRelayPrefix(
   containerPool: string,
   occupied: readonly string[],
-  exclusions: readonly string[] = [],
+  exclusions: readonly string[] = []
 ): string {
-  const prefix = nextFreeSubnet(
-    containerPool,
-    RELAY_PREFIX_LENGTH,
-    occupied,
-    exclusions,
-  );
+  const prefix = nextFreeSubnet(containerPool, RELAY_PREFIX_LENGTH, occupied, exclusions)
   if (!prefix) {
-    throw new FabricAllocationError("fabric_prefix_pool_exhausted");
+    throw new FabricAllocationError('fabric_prefix_pool_exhausted')
   }
-  return prefix;
+  return prefix
 }
 
 /**
@@ -516,99 +472,84 @@ export function requireRelayPrefix(
 export function requireSubnetCidr(
   relayPrefix: string,
   takenCidrs: readonly string[],
-  exclusions: readonly string[] = [],
+  exclusions: readonly string[] = []
 ): string {
-  const cidrValue = nextFreeSubnetCidr(relayPrefix, takenCidrs, exclusions);
+  const cidrValue = nextFreeSubnetCidr(relayPrefix, takenCidrs, exclusions)
   if (!cidrValue) {
-    throw new FabricAllocationError("fabric_segment_pool_exhausted");
+    throw new FabricAllocationError('fabric_segment_pool_exhausted')
   }
-  return cidrValue;
+  return cidrValue
 }
 
-async function occupiedRelayAddresses(
-  db: Db,
-  fabricId: string,
-): Promise<string[]> {
+async function occupiedRelayAddresses(db: Db, fabricId: string): Promise<string[]> {
   const rows = await db
     .select({ address: relay.address })
     .from(relay)
-    .where(eq(relay.fabricId, fabricId));
+    .where(eq(relay.fabricId, fabricId))
   return rows.map((row) =>
-    stripInetPrefixSuffix(
-      typeof row.address === "string" ? row.address : String(row.address),
-    )
-  );
+    stripInetPrefixSuffix(typeof row.address === 'string' ? row.address : String(row.address))
+  )
 }
 
-async function occupiedRelayPrefixes(
-  db: Db,
-  fabricId: string,
-): Promise<string[]> {
+async function occupiedRelayPrefixes(db: Db, fabricId: string): Promise<string[]> {
   const rows = await db
     .select({ prefix: relay.prefix })
     .from(relay)
-    .where(eq(relay.fabricId, fabricId));
-  return rows.map((row) =>
-    typeof row.prefix === "string" ? row.prefix : String(row.prefix)
-  );
+    .where(eq(relay.fabricId, fabricId))
+  return rows.map((row) => (typeof row.prefix === 'string' ? row.prefix : String(row.prefix)))
 }
 
 async function insertRelayOnce(
   tx: Db,
   params: {
-    fabric: FabricRecord;
-    serverId: string;
-    containerPool: string;
+    fabric: FabricRecord
+    serverId: string
+    containerPool: string
     /** Org ranges the relay prefix must not overlap (reserved / site / docker). */
-    exclusions: readonly string[];
-  },
+    exclusions: readonly string[]
+  }
 ): Promise<void> {
   const [addresses, prefixes] = await Promise.all([
     occupiedRelayAddresses(tx, params.fabric.id),
     occupiedRelayPrefixes(tx, params.fabric.id),
-  ]);
-  const address = requireRelayHostAddress(params.fabric.cidr, addresses);
-  const prefix = requireRelayPrefix(
-    params.containerPool,
-    prefixes,
-    params.exclusions,
-  );
+  ])
+  const address = requireRelayHostAddress(params.fabric.cidr, addresses)
+  const prefix = requireRelayPrefix(params.containerPool, prefixes, params.exclusions)
   await tx.insert(relay).values({
     fabricId: params.fabric.id,
     serverId: params.serverId,
     address,
     prefix,
-  });
+  })
 }
 
 function isRelayInsertUniqueViolation(err: unknown): boolean {
-  return isRelayAddressUniqueViolation(err) ||
-    isRelayPrefixUniqueViolation(err);
+  return isRelayAddressUniqueViolation(err) || isRelayPrefixUniqueViolation(err)
 }
 
 async function insertRelayWithRetry(
   db: Db,
   params: {
-    fabric: FabricRecord;
-    serverId: string;
-    containerPool: string;
-    exclusions: readonly string[];
-  },
+    fabric: FabricRecord
+    serverId: string
+    containerPool: string
+    exclusions: readonly string[]
+  }
 ): Promise<void> {
   try {
-    await insertRelayOnce(db, params);
+    await insertRelayOnce(db, params)
   } catch (err) {
-    if (!isRelayInsertUniqueViolation(err)) throw err;
+    if (!isRelayInsertUniqueViolation(err)) throw err
     try {
-      await insertRelayOnce(db, params);
+      await insertRelayOnce(db, params)
     } catch (retryErr) {
       if (isRelayAddressUniqueViolation(retryErr)) {
-        throw new FabricAllocationError("fabric_address_pool_exhausted");
+        throw new FabricAllocationError('fabric_address_pool_exhausted')
       }
       if (isRelayPrefixUniqueViolation(retryErr)) {
-        throw new FabricAllocationError("fabric_prefix_pool_exhausted");
+        throw new FabricAllocationError('fabric_prefix_pool_exhausted')
       }
-      throw retryErr;
+      throw retryErr
     }
   }
 }
@@ -616,40 +557,37 @@ async function insertRelayWithRetry(
 export async function ensureFabricRelays(
   db: Db,
   params: {
-    fabric: FabricRecord;
-    organizationId: string;
-  },
+    fabric: FabricRecord
+    organizationId: string
+  }
 ): Promise<RelayRecord[]> {
-  const options = parseFabricOptions(params.fabric.options);
+  const options = parseFabricOptions(params.fabric.options)
   const orgServers = await db
     .select({ id: server.id })
     .from(server)
-    .where(eq(server.organizationId, params.organizationId));
+    .where(eq(server.organizationId, params.organizationId))
 
-  const existing = await listFabricRelays(db, params.fabric.id);
-  const have = new Set(existing.map((row) => row.serverId));
+  const existing = await listFabricRelays(db, params.fabric.id)
+  const have = new Set(existing.map((row) => row.serverId))
 
-  let exclusions: readonly string[] | null = null;
-  for (const row of orgServers) {
-    if (have.has(row.id)) continue;
+  let exclusions: readonly string[] | null = null
+  await forEachSequential(orgServers, async (row) => {
+    if (have.has(row.id)) return
     // Loaded lazily: most calls find every server already has a relay.
-    exclusions ??= await loadCidrAllocationExclusions(
-      db,
-      params.organizationId,
-    );
+    exclusions ??= await loadCidrAllocationExclusions(db, params.organizationId)
     await insertRelayWithRetry(db, {
       fabric: params.fabric,
       serverId: row.id,
       containerPool: options.containerPool,
       exclusions,
-    });
-  }
+    })
+  })
 
-  return listFabricRelays(db, params.fabric.id);
+  return listFabricRelays(db, params.fabric.id)
 }
 
 function hasFabricEnablePolicy(policy: FabricEnablePolicy): boolean {
-  return policy.allowRelay !== undefined || policy.containerPool !== undefined;
+  return policy.allowRelay !== undefined || policy.containerPool !== undefined
 }
 
 /**
@@ -669,192 +607,147 @@ function hasFabricEnablePolicy(policy: FabricEnablePolicy): boolean {
 export async function enableOrganizationFabric(
   db: Db,
   organizationId: string,
-  policy: FabricEnablePolicy = {},
+  policy: FabricEnablePolicy = {}
 ): Promise<FabricRecord> {
-  const existing = await getOrganizationFabric(db, organizationId);
+  const existing = await getOrganizationFabric(db, organizationId)
   if (existing) {
     return db.transaction(async (tx) => {
-      let record = existing;
+      let record = existing
       if (hasFabricEnablePolicy(policy)) {
-        record = (await updateFabricPolicy(tx, {
-          fabricId: existing.id,
-          ...policy,
-        })) ?? existing;
+        record =
+          (await updateFabricPolicy(tx, {
+            fabricId: existing.id,
+            ...policy,
+          })) ?? existing
       }
-      await ensureFabricRelays(tx, { fabric: record, organizationId });
-      return record;
-    });
+      await ensureFabricRelays(tx, { fabric: record, organizationId })
+      return record
+    })
   }
 
-  const cidr = pickDefaultFabricHostCidr(
-    await occupiedCidrs(db, organizationId),
-  );
+  const cidr = pickDefaultFabricHostCidr(await occupiedCidrs(db, organizationId))
   if (!cidr) {
-    throw new Error("No free CIDR for TurboFabric");
+    throw new Error('No free CIDR for TurboFabric')
   }
-  if (
-    policy.containerPool !== undefined &&
-    cidrsOverlap(cidr, policy.containerPool)
-  ) {
-    throw new FabricContainerPoolOverlapError(policy.containerPool, cidr);
+  if (policy.containerPool !== undefined && cidrsOverlap(cidr, policy.containerPool)) {
+    throw new FabricContainerPoolOverlapError(policy.containerPool, cidr)
   }
 
-  const defaults = parseFabricOptions(null);
+  const defaults = parseFabricOptions(null)
   const options = {
     ...defaults,
     allowRelay: policy.allowRelay ?? defaults.allowRelay,
     containerPool: policy.containerPool ?? defaults.containerPool,
-  };
+  }
 
   return db.transaction(async (tx) => {
-    const [row] = await tx
-      .insert(fabric)
-      .values({ organizationId, cidr, options })
-      .returning({
-        id: fabric.id,
-        organizationId: fabric.organizationId,
-        cidr: fabric.cidr,
-        options: fabric.options,
-      });
-    if (!row) throw new Error("TurboFabric insert failed");
+    const [row] = await tx.insert(fabric).values({ organizationId, cidr, options }).returning({
+      id: fabric.id,
+      organizationId: fabric.organizationId,
+      cidr: fabric.cidr,
+      options: fabric.options,
+    })
+    if (!row) throw new Error('TurboFabric insert failed')
 
     const record: FabricRecord = {
       id: row.id,
       organizationId: row.organizationId,
-      cidr: typeof row.cidr === "string" ? row.cidr : String(row.cidr),
+      cidr: typeof row.cidr === 'string' ? row.cidr : String(row.cidr),
       options: row.options,
-    };
-    await ensureFabricRelays(tx, { fabric: record, organizationId });
-    return record;
-  });
+    }
+    await ensureFabricRelays(tx, { fabric: record, organizationId })
+    return record
+  })
 }
 
-export async function disableOrganizationFabric(
-  db: Db,
-  organizationId: string,
-): Promise<string[]> {
-  const existing = await getOrganizationFabric(db, organizationId);
-  if (!existing) return [];
-  const relays = await listFabricRelays(db, existing.id);
-  const serverIds = relays.map((row) => row.serverId);
-  await db.delete(fabric).where(eq(fabric.id, existing.id));
-  return serverIds;
+export async function disableOrganizationFabric(db: Db, organizationId: string): Promise<string[]> {
+  const existing = await getOrganizationFabric(db, organizationId)
+  if (!existing) return []
+  const relays = await listFabricRelays(db, existing.id)
+  const serverIds = relays.map((row) => row.serverId)
+  await db.delete(fabric).where(eq(fabric.id, existing.id))
+  return serverIds
 }
 
 export async function stampRelayPublicKey(
   db: Db,
-  params: { fabricId: string; serverId: string; publicKey: string },
+  params: { fabricId: string; serverId: string; publicKey: string }
 ): Promise<boolean> {
   const [existing] = await db
     .select({ publicKey: relay.publicKey })
     .from(relay)
-    .where(
-      and(
-        eq(relay.fabricId, params.fabricId),
-        eq(relay.serverId, params.serverId),
-      ),
-    )
-    .limit(1);
-  if (!existing) return false;
-  const filledNullKey = !existing.publicKey;
+    .where(and(eq(relay.fabricId, params.fabricId), eq(relay.serverId, params.serverId)))
+    .limit(1)
+  if (!existing) return false
+  const filledNullKey = !existing.publicKey
   await db
     .update(relay)
     .set({ publicKey: params.publicKey, updatedAt: nowIso() })
-    .where(
-      and(
-        eq(relay.fabricId, params.fabricId),
-        eq(relay.serverId, params.serverId),
-      ),
-    );
-  return filledNullKey;
+    .where(and(eq(relay.fabricId, params.fabricId), eq(relay.serverId, params.serverId)))
+  return filledNullKey
 }
 
-function mergeRelayMetadata(
-  existing: unknown,
-  patch: RelayMetadata,
-): RelayMetadata {
-  const base = serializeRelayMetadata(existing);
-  const next: RelayMetadata = { ...base, ...patch };
-  if (patch.observed) next.observed = patch.observed;
-  return next;
+function mergeRelayMetadata(existing: unknown, patch: RelayMetadata): RelayMetadata {
+  const base = serializeRelayMetadata(existing)
+  const next: RelayMetadata = { ...base, ...patch }
+  if (patch.observed) next.observed = patch.observed
+  return next
 }
 
 export async function stampRelayPathSummary(
   db: Db,
   params: {
-    fabricId: string;
-    serverId: string;
-    entries: FabricPathSummaryEntry[];
-  },
+    fabricId: string
+    serverId: string
+    entries: FabricPathSummaryEntry[]
+  }
 ): Promise<void> {
   const [existing] = await db
     .select({ metadata: relay.metadata })
     .from(relay)
-    .where(
-      and(
-        eq(relay.fabricId, params.fabricId),
-        eq(relay.serverId, params.serverId),
-      ),
-    )
-    .limit(1);
-  if (!existing) return;
+    .where(and(eq(relay.fabricId, params.fabricId), eq(relay.serverId, params.serverId)))
+    .limit(1)
+  if (!existing) return
 
   const metadata = mergeRelayMetadata(existing.metadata, {
     paths: { at: nowIso(), entries: params.entries },
-  });
+  })
   await db
     .update(relay)
     .set({ metadata, updatedAt: nowIso() })
-    .where(
-      and(
-        eq(relay.fabricId, params.fabricId),
-        eq(relay.serverId, params.serverId),
-      ),
-    );
+    .where(and(eq(relay.fabricId, params.fabricId), eq(relay.serverId, params.serverId)))
 }
 
 export async function stampRelayReconcileSuccess(
   db: Db,
   params: {
-    fabricId: string;
-    serverId: string;
-    appliedPayloadHash: string;
-    observedPeers?: RelayObservedPeer[];
-  },
+    fabricId: string
+    serverId: string
+    appliedPayloadHash: string
+    observedPeers?: RelayObservedPeer[]
+  }
 ): Promise<void> {
   const [existing] = await db
     .select({ metadata: relay.metadata })
     .from(relay)
-    .where(
-      and(
-        eq(relay.fabricId, params.fabricId),
-        eq(relay.serverId, params.serverId),
-      ),
-    )
-    .limit(1);
-  if (!existing) return;
+    .where(and(eq(relay.fabricId, params.fabricId), eq(relay.serverId, params.serverId)))
+    .limit(1)
+  if (!existing) return
 
   const metadata = mergeRelayMetadata(existing.metadata, {
     appliedPayloadHash: params.appliedPayloadHash,
     appliedAt: nowIso(),
-    ...(params.observedPeers
-      ? { observed: { at: nowIso(), peers: params.observedPeers } }
-      : {}),
-  });
+    ...(params.observedPeers ? { observed: { at: nowIso(), peers: params.observedPeers } } : {}),
+  })
   await db
     .update(relay)
     .set({ metadata, updatedAt: nowIso() })
-    .where(
-      and(
-        eq(relay.fabricId, params.fabricId),
-        eq(relay.serverId, params.serverId),
-      ),
-    );
+    .where(and(eq(relay.fabricId, params.fabricId), eq(relay.serverId, params.serverId)))
 }
 
 export async function clearRelayAppliedPayloadHash(
   db: Db,
-  params: { serverId: string; fabricId?: string },
+  params: { serverId: string; fabricId?: string }
 ): Promise<void> {
   const rows = await db
     .select({
@@ -865,93 +758,73 @@ export async function clearRelayAppliedPayloadHash(
     .from(relay)
     .where(
       params.fabricId
-        ? and(
-          eq(relay.serverId, params.serverId),
-          eq(relay.fabricId, params.fabricId),
-        )
-        : eq(relay.serverId, params.serverId),
-    );
-  for (const row of rows) {
-    const current = serializeRelayMetadata(row.metadata);
-    if (current.appliedPayloadHash === undefined) continue;
-    const { appliedPayloadHash: _removed, ...rest } = current;
-    await db
-      .update(relay)
-      .set({ metadata: rest, updatedAt: nowIso() })
-      .where(eq(relay.id, row.id));
-  }
+        ? and(eq(relay.serverId, params.serverId), eq(relay.fabricId, params.fabricId))
+        : eq(relay.serverId, params.serverId)
+    )
+  await forEachSequential(rows, async (row) => {
+    const current = serializeRelayMetadata(row.metadata)
+    if (current.appliedPayloadHash === undefined) return
+    const { appliedPayloadHash: _removed, ...rest } = current
+    await db.update(relay).set({ metadata: rest, updatedAt: nowIso() }).where(eq(relay.id, row.id))
+  })
 }
 
 export async function updateFabricRelay(
   db: Db,
   params: {
-    fabricId: string;
-    serverId: string;
-    role?: RelayRole;
-    advertisedCidrs?: string[];
-    keepalive?: number | null;
-    endpointAddress?: string | null;
-    presharedKey?: string | null;
-    allowRelay?: boolean | null;
-    preferredGatewayIds?: string[];
-  },
+    fabricId: string
+    serverId: string
+    role?: RelayRole
+    advertisedCidrs?: string[]
+    keepalive?: number | null
+    endpointAddress?: string | null
+    presharedKey?: string | null
+    allowRelay?: boolean | null
+    preferredGatewayIds?: string[]
+  }
 ): Promise<RelayRecord | null> {
   const patch: {
-    role?: RelayRole;
-    advertisedCidrs?: string[];
-    keepalive?: number | null;
-    endpointAddress?: string | null;
-    presharedKey?: string | null;
-    options?: unknown;
-    updatedAt: string;
-  } = { updatedAt: nowIso() };
-  if (params.role !== undefined) patch.role = params.role;
+    role?: RelayRole
+    advertisedCidrs?: string[]
+    keepalive?: number | null
+    endpointAddress?: string | null
+    presharedKey?: string | null
+    options?: unknown
+    updatedAt: string
+  } = { updatedAt: nowIso() }
+  if (params.role !== undefined) patch.role = params.role
   if (params.advertisedCidrs !== undefined) {
-    patch.advertisedCidrs = params.advertisedCidrs;
+    patch.advertisedCidrs = params.advertisedCidrs
   }
-  if (params.keepalive !== undefined) patch.keepalive = params.keepalive;
+  if (params.keepalive !== undefined) patch.keepalive = params.keepalive
   if (params.endpointAddress !== undefined) {
-    patch.endpointAddress = params.endpointAddress;
+    patch.endpointAddress = params.endpointAddress
   }
   if (params.presharedKey !== undefined) {
-    patch.presharedKey = params.presharedKey;
+    patch.presharedKey = params.presharedKey
   }
-  if (
-    params.allowRelay !== undefined || params.preferredGatewayIds !== undefined
-  ) {
+  if (params.allowRelay !== undefined || params.preferredGatewayIds !== undefined) {
     const [current] = await db
       .select({ options: relay.options })
       .from(relay)
-      .where(
-        and(
-          eq(relay.fabricId, params.fabricId),
-          eq(relay.serverId, params.serverId),
-        ),
-      )
-      .limit(1);
-    if (!current) return null;
+      .where(and(eq(relay.fabricId, params.fabricId), eq(relay.serverId, params.serverId)))
+      .limit(1)
+    if (!current) return null
     patch.options = mergeRelayPolicyOptions(current.options, {
-      ...(params.allowRelay !== undefined
-        ? { allowRelay: params.allowRelay }
-        : {}),
+      ...(params.allowRelay !== undefined ? { allowRelay: params.allowRelay } : {}),
       ...(params.preferredGatewayIds !== undefined
         ? { preferredGatewayIds: params.preferredGatewayIds }
         : {}),
-    });
+    })
   }
 
   const [row] = await db
     .update(relay)
     .set(patch)
-    .where(
-      and(
-        eq(relay.fabricId, params.fabricId),
-        eq(relay.serverId, params.serverId),
-      ),
-    )
-    .returning(RELAY_SELECT);
-  if (!row) return null;
-  return serializeRelay(row);
+    .where(and(eq(relay.fabricId, params.fabricId), eq(relay.serverId, params.serverId)))
+    .returning(RELAY_SELECT)
+  if (!row) return null
+  return serializeRelay(row)
 }
 
 const FABRIC_RECORD_SELECT = {
@@ -959,7 +832,7 @@ const FABRIC_RECORD_SELECT = {
   organizationId: fabric.organizationId,
   cidr: fabric.cidr,
   options: fabric.options,
-};
+}
 
 /**
  * Write the operator-settable fabric policy keys into `fabric.options`.
@@ -969,60 +842,54 @@ const FABRIC_RECORD_SELECT = {
  */
 export async function updateFabricPolicy(
   db: Db,
-  params: { fabricId: string; allowRelay?: boolean; containerPool?: string },
+  params: { fabricId: string; allowRelay?: boolean; containerPool?: string }
 ): Promise<FabricRecord | null> {
   const [existing] = await db
     .select({ options: fabric.options })
     .from(fabric)
     .where(eq(fabric.id, params.fabricId))
-    .limit(1);
-  if (!existing) return null;
-  const current = parseFabricOptions(existing.options);
+    .limit(1)
+  if (!existing) return null
+  const current = parseFabricOptions(existing.options)
   const options = {
     ...current,
     allowRelay: params.allowRelay ?? current.allowRelay,
     containerPool: params.containerPool ?? current.containerPool,
-  };
+  }
   const [row] = await db
     .update(fabric)
     .set({ options, updatedAt: nowIso() })
     .where(eq(fabric.id, params.fabricId))
-    .returning(FABRIC_RECORD_SELECT);
-  if (!row) return null;
-  return serializeFabric(row);
+    .returning(FABRIC_RECORD_SELECT)
+  if (!row) return null
+  return serializeFabric(row)
 }
 
-export async function deleteServerFabricMembership(
-  db: Db,
-  serverId: string,
-): Promise<void> {
-  await db.delete(subnet).where(eq(subnet.serverId, serverId));
-  await db.delete(relay).where(eq(relay.serverId, serverId));
+export async function deleteServerFabricMembership(db: Db, serverId: string): Promise<void> {
+  await db.delete(subnet).where(eq(subnet.serverId, serverId))
+  await db.delete(relay).where(eq(relay.serverId, serverId))
 }
 
 export type EnvironmentComposeNetworkSubnet = {
-  serverId: string;
-  subnet: string;
-};
+  serverId: string
+  subnet: string
+}
 
 export type EnvironmentComposeNetwork = {
-  networkId: string;
-  hostName: string;
-  segments: EnvironmentComposeNetworkSubnet[];
-};
+  networkId: string
+  hostName: string
+  segments: EnvironmentComposeNetworkSubnet[]
+}
 
-async function deleteComposeNetworkIds(
-  db: Db,
-  ids: readonly string[],
-): Promise<void> {
-  if (ids.length === 0) return;
-  await db.delete(subnet).where(inArray(subnet.networkId, [...ids]));
-  await db.delete(network).where(inArray(network.id, [...ids]));
+async function deleteComposeNetworkIds(db: Db, ids: readonly string[]): Promise<void> {
+  if (ids.length === 0) return
+  await db.delete(subnet).where(inArray(subnet.networkId, [...ids]))
+  await db.delete(network).where(inArray(network.id, [...ids]))
 }
 
 export async function listEnvironmentComposeNetworks(
   db: Db,
-  environmentId: string,
+  environmentId: string
 ): Promise<EnvironmentComposeNetwork[]> {
   const rows = await db
     .select({
@@ -1032,81 +899,70 @@ export async function listEnvironmentComposeNetworks(
     })
     .from(network)
     .leftJoin(subnet, eq(subnet.networkId, network.id))
-    .where(
-      and(
-        eq(network.environmentId, environmentId),
-        eq(network.kind, "compose"),
-      ),
-    );
+    .where(and(eq(network.environmentId, environmentId), eq(network.kind, 'compose')))
 
-  const grouped = new Map<string, EnvironmentComposeNetwork>();
+  const grouped = new Map<string, EnvironmentComposeNetwork>()
   for (const row of rows) {
-    let entry = grouped.get(row.networkId);
+    let entry = grouped.get(row.networkId)
     if (!entry) {
       entry = {
         networkId: row.networkId,
         hostName: composeNetworkHostName(row.networkId),
         segments: [],
-      };
-      grouped.set(row.networkId, entry);
+      }
+      grouped.set(row.networkId, entry)
     }
-    if (row.serverId && typeof row.subnet === "string") {
+    if (row.serverId && typeof row.subnet === 'string') {
       entry.segments.push({
         serverId: row.serverId,
-        subnet: typeof row.subnet === "string"
-          ? row.subnet
-          : String(row.subnet),
-      });
+        subnet: typeof row.subnet === 'string' ? row.subnet : String(row.subnet),
+      })
     }
   }
 
-  return [...grouped.values()].sort((a, b) =>
-    a.hostName.localeCompare(b.hostName)
-  );
+  return [...grouped.values()].sort((a, b) => a.hostName.localeCompare(b.hostName))
 }
 
 export function composeNetworkNamesByServer(
-  rows: readonly EnvironmentComposeNetwork[],
+  rows: readonly EnvironmentComposeNetwork[]
 ): Map<string, string[]> {
-  const map = new Map<string, string[]>();
+  const map = new Map<string, string[]>()
   for (const row of rows) {
     for (const seg of row.segments) {
-      const names = map.get(seg.serverId) ?? [];
-      names.push(row.hostName);
-      map.set(seg.serverId, names);
+      const names = map.get(seg.serverId) ?? []
+      names.push(row.hostName)
+      map.set(seg.serverId, names)
     }
   }
   for (const [serverId, names] of map) {
     map.set(
       serverId,
-      [...new Set(names)].sort((a, b) => a.localeCompare(b)),
-    );
+      [...new Set(names)].sort((a, b) => a.localeCompare(b))
+    )
   }
-  return map;
+  return map
 }
 
 export async function purgeEnvironmentsComposeNetworks(
   db: Db,
-  environmentIds: readonly string[],
+  environmentIds: readonly string[]
 ): Promise<void> {
-  if (environmentIds.length === 0) return;
+  if (environmentIds.length === 0) return
   const rows = await db
     .select({ id: network.id })
     .from(network)
-    .where(
-      and(
-        inArray(network.environmentId, [...environmentIds]),
-        eq(network.kind, "compose"),
-      ),
-    );
-  await deleteComposeNetworkIds(db, rows.map((row) => row.id));
+    .where(and(inArray(network.environmentId, [...environmentIds]), eq(network.kind, 'compose')))
+  await deleteComposeNetworkIds(
+    db,
+    rows.map((row) => row.id)
+  )
 }
 
 export async function purgeEnvironmentComposeNetworks(
   db: Db,
-  environmentId: string,
+  environmentId: string
 ): Promise<void> {
-  await purgeEnvironmentsComposeNetworks(db, [environmentId]);
+  await purgeEnvironmentsComposeNetworks(db, [environmentId])
 }
 
 /**
@@ -1117,109 +973,91 @@ export async function purgeEnvironmentComposeNetworks(
 export async function purgeComposeNetworksCreatedAfter(
   db: Db,
   environmentId: string,
-  prior: readonly EnvironmentComposeNetwork[],
+  prior: readonly EnvironmentComposeNetwork[]
 ): Promise<void> {
-  const priorIds = new Set(prior.map((row) => row.networkId));
-  const priorSegments = new Map<string, Set<string>>();
+  const priorIds = new Set(prior.map((row) => row.networkId))
+  const priorSegments = new Map<string, Set<string>>()
   for (const row of prior) {
-    priorSegments.set(
-      row.networkId,
-      new Set(row.segments.map((segmentRow) => segmentRow.serverId)),
-    );
+    priorSegments.set(row.networkId, new Set(row.segments.map((segmentRow) => segmentRow.serverId)))
   }
 
-  const current = await listEnvironmentComposeNetworks(db, environmentId);
-  const createdNetworkIds = current
-    .map((row) => row.networkId)
-    .filter((id) => !priorIds.has(id));
-  await deleteComposeNetworkIds(db, createdNetworkIds);
+  const current = await listEnvironmentComposeNetworks(db, environmentId)
+  const createdNetworkIds = current.map((row) => row.networkId).filter((id) => !priorIds.has(id))
+  await deleteComposeNetworkIds(db, createdNetworkIds)
 
-  for (const row of current) {
-    if (!priorIds.has(row.networkId)) continue;
-    const known = priorSegments.get(row.networkId) ?? new Set<string>();
+  await forEachSequential(current, async (row) => {
+    if (!priorIds.has(row.networkId)) return
+    const known = priorSegments.get(row.networkId) ?? new Set<string>()
     const extraServerIds = row.segments
       .map((segmentRow) => segmentRow.serverId)
-      .filter((serverId) => !known.has(serverId));
-    if (extraServerIds.length === 0) continue;
-    await db.delete(subnet).where(
-      and(
-        eq(subnet.networkId, row.networkId),
-        inArray(subnet.serverId, extraServerIds),
-      ),
-    );
-  }
+      .filter((serverId) => !known.has(serverId))
+    if (extraServerIds.length === 0) return
+    await db
+      .delete(subnet)
+      .where(and(eq(subnet.networkId, row.networkId), inArray(subnet.serverId, extraServerIds)))
+  })
 }
 
 export async function releaseSubnetsForServer(
   db: Db,
-  params: { environmentId: string; serverId: string },
+  params: { environmentId: string; serverId: string }
 ): Promise<void> {
   const networks = await db
     .select({ id: network.id })
     .from(network)
-    .where(
-      and(
-        eq(network.environmentId, params.environmentId),
-        eq(network.kind, "compose"),
-      ),
-    );
-  const ids = networks.map((row) => row.id);
-  if (ids.length === 0) return;
-  await db.delete(subnet).where(
-    and(
-      eq(subnet.serverId, params.serverId),
-      inArray(subnet.networkId, ids),
-    ),
-  );
+    .where(and(eq(network.environmentId, params.environmentId), eq(network.kind, 'compose')))
+  const ids = networks.map((row) => row.id)
+  if (ids.length === 0) return
+  await db
+    .delete(subnet)
+    .where(and(eq(subnet.serverId, params.serverId), inArray(subnet.networkId, ids)))
   const remaining = await db
     .select({ networkId: subnet.networkId })
     .from(subnet)
-    .where(inArray(subnet.networkId, ids));
-  const remainingIds = new Set(remaining.map((row) => row.networkId));
+    .where(inArray(subnet.networkId, ids))
+  const remainingIds = new Set(remaining.map((row) => row.networkId))
   await deleteComposeNetworkIds(
     db,
-    ids.filter((id) => !remainingIds.has(id)),
-  );
+    ids.filter((id) => !remainingIds.has(id))
+  )
 }
 
 export async function purgeOrganizationComposeNetworks(
   db: Db,
-  organizationId: string,
+  organizationId: string
 ): Promise<void> {
   const rows = await db
     .select({ id: network.id })
     .from(network)
-    .where(
-      and(
-        eq(network.organizationId, organizationId),
-        eq(network.kind, "compose"),
-      ),
-    );
-  await deleteComposeNetworkIds(db, rows.map((row) => row.id));
+    .where(and(eq(network.organizationId, organizationId), eq(network.kind, 'compose')))
+  await deleteComposeNetworkIds(
+    db,
+    rows.map((row) => row.id)
+  )
 }
 
 export async function loadRelayPresharedKeyPresence(
   db: Db,
-  relayIds: readonly string[],
+  relayIds: readonly string[]
 ): Promise<Set<string>> {
-  const present = new Set<string>();
-  if (relayIds.length === 0) return present;
-  const rows = await loadRelayPresharedKeyRows(db, relayIds);
+  const present = new Set<string>()
+  if (relayIds.length === 0) return present
+  const rows = await loadRelayPresharedKeyRows(db, relayIds)
   for (const row of rows) {
-    if (row.presharedKey) present.add(row.id);
+    if (row.presharedKey) present.add(row.id)
   }
-  return present;
+  return present
 }
 
 async function loadRelayPresharedKeyRows(
   db: Db,
-  relayIds: readonly string[],
+  relayIds: readonly string[]
 ): Promise<Array<{ id: string; presharedKey: string | null }>> {
-  if (relayIds.length === 0) return [];
+  if (relayIds.length === 0) return []
   return await db
     .select({ id: relay.id, presharedKey: relay.presharedKey })
     .from(relay)
-    .where(inArray(relay.id, [...relayIds]));
+    .where(inArray(relay.id, [...relayIds]))
 }
 
 /**
@@ -1231,20 +1069,15 @@ async function loadRelayPresharedKeyRows(
 export function selectPairPresharedEnvelope(
   selfRelayId: string,
   otherRelayId: string,
-  sealedByRelayId: ReadonlyMap<string, string | null>,
+  sealedByRelayId: ReadonlyMap<string, string | null>
 ): string | null {
-  const ownerId = selfRelayId.localeCompare(otherRelayId) <= 0
-    ? selfRelayId
-    : otherRelayId;
-  const fallbackId = ownerId === selfRelayId ? otherRelayId : selfRelayId;
-  return sealedByRelayId.get(ownerId) ?? sealedByRelayId.get(fallbackId) ??
-    null;
+  const ownerId = selfRelayId.localeCompare(otherRelayId) <= 0 ? selfRelayId : otherRelayId
+  const fallbackId = ownerId === selfRelayId ? otherRelayId : selfRelayId
+  return sealedByRelayId.get(ownerId) ?? sealedByRelayId.get(fallbackId) ?? null
 }
 
-function reportedIpsFromMetadata(
-  metadata: unknown,
-): ServerReportedIp[] | undefined {
-  return reportedIpsFromServerMetadata(metadata);
+function reportedIpsFromMetadata(metadata: unknown): ServerReportedIp[] | undefined {
+  return reportedIpsFromServerMetadata(metadata)
 }
 
 /**
@@ -1264,18 +1097,15 @@ function reportedIpsFromMetadata(
  * path summary reports.
  */
 export function resolveRelayGlobalEndpointAddress(
-  row: Pick<RelayRecord, "serverId" | "endpointAddress">,
-  caches: Pick<
-    EndpointAddressCaches,
-    "publicAddressByServer" | "reportedByServer"
-  >,
+  row: Pick<RelayRecord, 'serverId' | 'endpointAddress'>,
+  caches: Pick<EndpointAddressCaches, 'publicAddressByServer' | 'reportedByServer'>
 ): string | null {
-  if (row.endpointAddress) return row.endpointAddress;
+  if (row.endpointAddress) return row.endpointAddress
 
-  const publicAddress = caches.publicAddressByServer.get(row.serverId);
-  if (publicAddress) return publicAddress;
+  const publicAddress = caches.publicAddressByServer.get(row.serverId)
+  if (publicAddress) return publicAddress
 
-  return publicIpv4FromIps(caches.reportedByServer.get(row.serverId)) ?? null;
+  return publicIpv4FromIps(caches.reportedByServer.get(row.serverId)) ?? null
 }
 
 /**
@@ -1288,177 +1118,155 @@ export function resolveRelayGlobalEndpointAddress(
 function lanPathCandidate(
   selfServerId: string,
   otherServerId: string,
-  caches: EndpointAddressCaches,
+  caches: EndpointAddressCaches
 ): RelayPathCandidate | null {
-  const fromPins = caches.datacenterMembershipsByServer.get(selfServerId) ?? [];
-  const toPins = caches.datacenterMembershipsByServer.get(otherServerId) ?? [];
-  const { trusted } = partitionSharedDatacenters(
-    fromPins,
-    toPins,
-    caches.policyByDatacenter,
-  );
+  const fromPins = caches.datacenterMembershipsByServer.get(selfServerId) ?? []
+  const toPins = caches.datacenterMembershipsByServer.get(otherServerId) ?? []
+  const { trusted } = partitionSharedDatacenters(fromPins, toPins, caches.policyByDatacenter)
   for (const datacenterId of trusted) {
-    const policy = caches.policyByDatacenter.get(datacenterId) ??
-      defaultDatacenterPolicyRow();
+    const policy = caches.policyByDatacenter.get(datacenterId) ?? defaultDatacenterPolicyRow()
     const address = pinAddressForDatacenter(
       fromPins,
       toPins,
       datacenterId,
-      policy.addressPreference,
-    );
-    if (address) return { kind: "direct_lan", address, datacenterId };
+      policy.addressPreference
+    )
+    if (address) return { kind: 'direct_lan', address, datacenterId }
   }
-  return null;
+  return null
 }
 
-function reportedPublicIpv4(
-  ips: ServerReportedIp[] | undefined,
-): string | undefined {
-  return ips?.find((row) => row.scope === "public" && row.version === 4)
-    ?.address;
+function reportedPublicIpv4(ips: ServerReportedIp[] | undefined): string | undefined {
+  return ips?.find((row) => row.scope === 'public' && row.version === 4)?.address
 }
 
 function publicPathCandidate(
-  other: Pick<RelayRecord, "serverId" | "endpointAddress">,
-  caches: EndpointAddressCaches,
+  other: Pick<RelayRecord, 'serverId' | 'endpointAddress'>,
+  caches: EndpointAddressCaches
 ): RelayPathCandidate | null {
   if (other.endpointAddress) {
-    return { kind: "direct_public", address: other.endpointAddress };
+    return { kind: 'direct_public', address: other.endpointAddress }
   }
-  const publicAddress = caches.publicAddressByServer.get(other.serverId);
-  if (publicAddress) return { kind: "direct_public", address: publicAddress };
-  const reported = reportedPublicIpv4(
-    caches.reportedByServer.get(other.serverId),
-  );
-  if (reported) return { kind: "direct_public", address: reported };
-  return null;
+  const publicAddress = caches.publicAddressByServer.get(other.serverId)
+  if (publicAddress) return { kind: 'direct_public', address: publicAddress }
+  const reported = reportedPublicIpv4(caches.reportedByServer.get(other.serverId))
+  if (reported) return { kind: 'direct_public', address: reported }
+  return null
 }
 
 function natPathCandidate(
   selfServerId: string,
-  other: Pick<RelayRecord, "serverId">,
-  caches: EndpointAddressCaches,
+  other: Pick<RelayRecord, 'serverId'>,
+  caches: EndpointAddressCaches
 ): RelayPathCandidate | null {
-  const endpoint = caches.natEndpointByPair.get(
-    fabricPairCacheKey(selfServerId, other.serverId),
-  );
-  if (!endpoint) return null;
-  return { kind: "direct_nat", address: endpoint };
+  const endpoint = caches.natEndpointByPair.get(fabricPairCacheKey(selfServerId, other.serverId))
+  if (!endpoint) return null
+  return { kind: 'direct_nat', address: endpoint }
 }
 
 function failedKindsForPair(
   selfServerId: string,
   otherServerId: string,
-  caches: EndpointAddressCaches,
+  caches: EndpointAddressCaches
 ): Set<RelayPathKind> | undefined {
-  return caches.failedPathKindsByPair.get(
-    fabricPairCacheKey(selfServerId, otherServerId),
-  );
+  return caches.failedPathKindsByPair.get(fabricPairCacheKey(selfServerId, otherServerId))
 }
 
 /** Direct LAN then public then NAT candidates for an arbitrary `(from → to)` pair. */
 export function directCandidates(
   selfServerId: string,
-  other: Pick<RelayRecord, "serverId" | "endpointAddress">,
-  caches: EndpointAddressCaches,
+  other: Pick<RelayRecord, 'serverId' | 'endpointAddress'>,
+  caches: EndpointAddressCaches
 ): RelayPathCandidate[] {
-  const failed = failedKindsForPair(selfServerId, other.serverId, caches);
-  const candidates: RelayPathCandidate[] = [];
-  const lan = lanPathCandidate(selfServerId, other.serverId, caches);
-  if (lan && !failed?.has("direct_lan")) candidates.push(lan);
-  const pub = publicPathCandidate(other, caches);
-  if (pub && !failed?.has("direct_public")) candidates.push(pub);
-  const nat = natPathCandidate(selfServerId, other, caches);
-  if (nat && !failed?.has("direct_nat")) candidates.push(nat);
-  return candidates;
+  const failed = failedKindsForPair(selfServerId, other.serverId, caches)
+  const candidates: RelayPathCandidate[] = []
+  const lan = lanPathCandidate(selfServerId, other.serverId, caches)
+  if (lan && !failed?.has('direct_lan')) candidates.push(lan)
+  const pub = publicPathCandidate(other, caches)
+  if (pub && !failed?.has('direct_public')) candidates.push(pub)
+  const nat = natPathCandidate(selfServerId, other, caches)
+  if (nat && !failed?.has('direct_nat')) candidates.push(nat)
+  return candidates
 }
 
-function selectedFromCandidate(
-  candidate: RelayPathCandidate,
-): RelayPathSelected {
+function selectedFromCandidate(candidate: RelayPathCandidate): RelayPathSelected {
   if (
-    (candidate.kind === "direct_lan" ||
-      candidate.kind === "direct_public" ||
-      candidate.kind === "direct_nat") &&
+    (candidate.kind === 'direct_lan' ||
+      candidate.kind === 'direct_public' ||
+      candidate.kind === 'direct_nat') &&
     candidate.address
   ) {
     return {
       kind: candidate.kind,
       endpoint: candidate.address,
-      ...(candidate.datacenterId
-        ? { datacenterId: candidate.datacenterId }
-        : {}),
-    };
+      ...(candidate.datacenterId ? { datacenterId: candidate.datacenterId } : {}),
+    }
   }
-  if (candidate.kind === "gateway") {
+  if (candidate.kind === 'gateway') {
     return {
-      kind: "gateway",
+      kind: 'gateway',
       ...(candidate.viaServerId ? { viaServerId: candidate.viaServerId } : {}),
       ...(candidate.viaRelayId ? { viaRelayId: candidate.viaRelayId } : {}),
-    };
+    }
   }
-  return { kind: candidate.kind };
+  return { kind: candidate.kind }
 }
 
-const UNIMPLEMENTED_PATH_CANDIDATES: Pick<
-  RelayPathPlan,
-  "gateway" | "relay"
-> = {
+const UNIMPLEMENTED_PATH_CANDIDATES: Pick<RelayPathPlan, 'gateway' | 'relay'> = {
   gateway: null,
   relay: null,
-};
+}
 
 function relayPathPlan(
   candidates: RelayPathCandidate[],
   selected: RelayPathSelected,
-  extras?: Partial<Pick<RelayPathPlan, "directNat" | "gateway" | "relay">>,
+  extras?: Partial<Pick<RelayPathPlan, 'directNat' | 'gateway' | 'relay'>>
 ): RelayPathPlan {
-  const directNat = extras?.directNat ??
-    candidates.find((row) => row.kind === "direct_nat") ??
-    null;
+  const directNat = extras?.directNat ?? candidates.find((row) => row.kind === 'direct_nat') ?? null
   return {
     candidates,
     selected,
     directNat,
     ...UNIMPLEMENTED_PATH_CANDIDATES,
     ...extras,
-  };
+  }
 }
 
 function selectRelayPath(
   candidates: readonly RelayPathCandidate[],
-  operatorPin: string | null,
+  operatorPin: string | null
 ): RelayPathSelected {
   if (operatorPin) {
-    const pinned = candidates.find((row) =>
-      row.kind === "direct_public" && row.address === operatorPin
-    );
-    if (pinned) return selectedFromCandidate(pinned);
+    const pinned = candidates.find(
+      (row) => row.kind === 'direct_public' && row.address === operatorPin
+    )
+    if (pinned) return selectedFromCandidate(pinned)
   }
-  const first = candidates[0];
-  if (first) return selectedFromCandidate(first);
-  return { kind: "unreachable" };
+  const first = candidates[0]
+  if (first) return selectedFromCandidate(first)
+  return { kind: 'unreachable' }
 }
 
 /** Public-keyed `role === 'gateway'` relays (a keyless gateway cannot be a peer). */
 export type GatewayCandidateRelay = Pick<
   RelayRecord,
-  "id" | "serverId" | "role" | "publicKey" | "endpointAddress"
->;
+  'id' | 'serverId' | 'role' | 'publicKey' | 'endpointAddress'
+>
 
-const MAX_GATEWAY_HOPS = 2;
+const MAX_GATEWAY_HOPS = 2
 
 function gatewayCandidateRelays(
   relays: readonly GatewayCandidateRelay[],
   selfServerId: string,
-  otherServerId: string,
+  otherServerId: string
 ): GatewayCandidateRelay[] {
-  return relays.filter((row) =>
-    row.role === "gateway" &&
-    Boolean(row.publicKey) &&
-    row.serverId !== selfServerId &&
-    row.serverId !== otherServerId
-  );
+  return relays.filter(
+    (row) =>
+      row.role === 'gateway' &&
+      Boolean(row.publicKey) &&
+      row.serverId !== selfServerId &&
+      row.serverId !== otherServerId
+  )
 }
 
 // Gateway locality (`datacenterIdSet` / `sharesDatacenterIds` /
@@ -1469,91 +1277,78 @@ function gatewayCandidateRelays(
 // shared datacenter can make a gateway *look* nearby without ever yielding a
 // `direct_lan` endpoint on that segment. Do not "fix" this by trust-filtering
 // locality.
-function datacenterIdSet(
-  serverId: string,
-  caches: EndpointAddressCaches,
-): Set<string> {
-  const ids = new Set<string>();
+function datacenterIdSet(serverId: string, caches: EndpointAddressCaches): Set<string> {
+  const ids = new Set<string>()
   for (const pin of caches.datacenterMembershipsByServer.get(serverId) ?? []) {
-    ids.add(pin.datacenterId);
+    ids.add(pin.datacenterId)
   }
-  return ids;
+  return ids
 }
 
 function sharesDatacenterIds(
   serverId: string,
   ids: ReadonlySet<string>,
-  caches: EndpointAddressCaches,
+  caches: EndpointAddressCaches
 ): boolean {
   for (const pin of caches.datacenterMembershipsByServer.get(serverId) ?? []) {
-    if (ids.has(pin.datacenterId)) return true;
+    if (ids.has(pin.datacenterId)) return true
   }
-  return false;
+  return false
 }
 
 function gatewayReachesDestination(
   from: GatewayCandidateRelay,
-  dest: Pick<RelayRecord, "serverId" | "endpointAddress">,
+  dest: Pick<RelayRecord, 'serverId' | 'endpointAddress'>,
   gateways: readonly GatewayCandidateRelay[],
   caches: EndpointAddressCaches,
   remainingHops: number,
-  visited: ReadonlySet<string>,
+  visited: ReadonlySet<string>
 ): boolean {
-  if (remainingHops < 1) return false;
-  if (visited.has(from.serverId)) return false;
-  const nextVisited = new Set(visited);
-  nextVisited.add(from.serverId);
-  if (directCandidates(from.serverId, dest, caches).length > 0) return true;
-  if (remainingHops < 2) return false;
+  if (remainingHops < 1) return false
+  if (visited.has(from.serverId)) return false
+  const nextVisited = new Set(visited)
+  nextVisited.add(from.serverId)
+  if (directCandidates(from.serverId, dest, caches).length > 0) return true
+  if (remainingHops < 2) return false
   for (const hop of gateways) {
     if (hop.serverId === from.serverId || hop.serverId === dest.serverId) {
-      continue;
+      continue
     }
-    if (hop.role !== "gateway" || !hop.publicKey) continue;
-    if (directCandidates(from.serverId, hop, caches).length === 0) continue;
-    if (
-      gatewayReachesDestination(
-        hop,
-        dest,
-        gateways,
-        caches,
-        remainingHops - 1,
-        nextVisited,
-      )
-    ) {
-      return true;
+    if (hop.role !== 'gateway' || !hop.publicKey) continue
+    if (directCandidates(from.serverId, hop, caches).length === 0) continue
+    if (gatewayReachesDestination(hop, dest, gateways, caches, remainingHops - 1, nextVisited)) {
+      return true
     }
   }
-  return false;
+  return false
 }
 
 function gatewayLocalityAllowed(
   gateway: GatewayCandidateRelay,
   destDcIds: ReadonlySet<string>,
   selfDcIds: ReadonlySet<string>,
-  caches: EndpointAddressCaches,
+  caches: EndpointAddressCaches
 ): boolean {
-  return sharesDatacenterIds(gateway.serverId, destDcIds, caches) ||
-    sharesDatacenterIds(gateway.serverId, selfDcIds, caches);
+  return (
+    sharesDatacenterIds(gateway.serverId, destDcIds, caches) ||
+    sharesDatacenterIds(gateway.serverId, selfDcIds, caches)
+  )
 }
 
 function gatewayRankTier(
   gateway: GatewayCandidateRelay,
   destDcIds: ReadonlySet<string>,
   selfDcIds: ReadonlySet<string>,
-  caches: EndpointAddressCaches,
+  caches: EndpointAddressCaches
 ): number {
-  if (sharesDatacenterIds(gateway.serverId, destDcIds, caches)) return 0;
-  if (sharesDatacenterIds(gateway.serverId, selfDcIds, caches)) return 1;
-  return 2;
+  if (sharesDatacenterIds(gateway.serverId, destDcIds, caches)) return 0
+  if (sharesDatacenterIds(gateway.serverId, selfDcIds, caches)) return 1
+  return 2
 }
 
-function preferredGatewayRank(
-  serverId: string,
-  preferredGatewayIds: readonly string[],
-): number {
-  const index = preferredGatewayIds.indexOf(serverId);
-  return index === -1 ? preferredGatewayIds.length : index;
+function preferredGatewayRank(serverId: string, preferredGatewayIds: readonly string[]): number {
+  const index = preferredGatewayIds.indexOf(serverId)
+  return index === -1 ? preferredGatewayIds.length : index
 }
 
 function compareGatewayNextHops(
@@ -1562,36 +1357,35 @@ function compareGatewayNextHops(
   destDcIds: ReadonlySet<string>,
   selfDcIds: ReadonlySet<string>,
   caches: EndpointAddressCaches,
-  preferredGatewayIds: readonly string[],
+  preferredGatewayIds: readonly string[]
 ): number {
-  const tierDiff = gatewayRankTier(a, destDcIds, selfDcIds, caches) -
-    gatewayRankTier(b, destDcIds, selfDcIds, caches);
-  if (tierDiff !== 0) return tierDiff;
-  const preferredDiff = preferredGatewayRank(a.serverId, preferredGatewayIds) -
-    preferredGatewayRank(b.serverId, preferredGatewayIds);
-  if (preferredDiff !== 0) return preferredDiff;
-  return a.id.localeCompare(b.id);
+  const tierDiff =
+    gatewayRankTier(a, destDcIds, selfDcIds, caches) -
+    gatewayRankTier(b, destDcIds, selfDcIds, caches)
+  if (tierDiff !== 0) return tierDiff
+  const preferredDiff =
+    preferredGatewayRank(a.serverId, preferredGatewayIds) -
+    preferredGatewayRank(b.serverId, preferredGatewayIds)
+  if (preferredDiff !== 0) return preferredDiff
+  return a.id.localeCompare(b.id)
 }
 
 export function resolveGatewayNextHop(params: {
-  self: Pick<RelayRecord, "serverId">;
-  other: Pick<RelayRecord, "serverId" | "endpointAddress">;
-  gateways: readonly GatewayCandidateRelay[];
-  caches: EndpointAddressCaches;
-  preferredGatewayIds: readonly string[];
+  self: Pick<RelayRecord, 'serverId'>
+  other: Pick<RelayRecord, 'serverId' | 'endpointAddress'>
+  gateways: readonly GatewayCandidateRelay[]
+  caches: EndpointAddressCaches
+  preferredGatewayIds: readonly string[]
 }): GatewayCandidateRelay | null {
-  const destDcIds = datacenterIdSet(params.other.serverId, params.caches);
-  const selfDcIds = datacenterIdSet(params.self.serverId, params.caches);
+  const destDcIds = datacenterIdSet(params.other.serverId, params.caches)
+  const selfDcIds = datacenterIdSet(params.self.serverId, params.caches)
   const candidates = gatewayCandidateRelays(
     params.gateways,
     params.self.serverId,
-    params.other.serverId,
+    params.other.serverId
   ).filter((gateway) => {
-    if (
-      directCandidates(params.self.serverId, gateway, params.caches).length ===
-        0
-    ) {
-      return false;
+    if (directCandidates(params.self.serverId, gateway, params.caches).length === 0) {
+      return false
     }
     if (
       !gatewayReachesDestination(
@@ -1600,29 +1394,17 @@ export function resolveGatewayNextHop(params: {
         params.gateways,
         params.caches,
         MAX_GATEWAY_HOPS,
-        new Set(),
+        new Set()
       )
     ) {
-      return false;
+      return false
     }
-    return gatewayLocalityAllowed(
-      gateway,
-      destDcIds,
-      selfDcIds,
-      params.caches,
-    );
-  });
+    return gatewayLocalityAllowed(gateway, destDcIds, selfDcIds, params.caches)
+  })
   candidates.sort((a, b) =>
-    compareGatewayNextHops(
-      a,
-      b,
-      destDcIds,
-      selfDcIds,
-      params.caches,
-      params.preferredGatewayIds,
-    )
-  );
-  return candidates[0] ?? null;
+    compareGatewayNextHops(a, b, destDcIds, selfDcIds, params.caches, params.preferredGatewayIds)
+  )
+  return candidates[0] ?? null
 }
 
 /**
@@ -1635,26 +1417,19 @@ export function resolveGatewayNextHop(params: {
  * loosen gateway locality.
  */
 export function planRelayPath(params: {
-  self: Pick<RelayRecord, "serverId">;
-  other: Pick<RelayRecord, "serverId" | "endpointAddress">;
-  caches: EndpointAddressCaches;
-  gateways?: readonly GatewayCandidateRelay[];
-  allowRelay?: boolean;
-  preferredGatewayIds?: readonly string[];
+  self: Pick<RelayRecord, 'serverId'>
+  other: Pick<RelayRecord, 'serverId' | 'endpointAddress'>
+  caches: EndpointAddressCaches
+  gateways?: readonly GatewayCandidateRelay[]
+  allowRelay?: boolean
+  preferredGatewayIds?: readonly string[]
 }): RelayPathPlan {
-  const candidates = directCandidates(
-    params.self.serverId,
-    params.other,
-    params.caches,
-  );
+  const candidates = directCandidates(params.self.serverId, params.other, params.caches)
   if (candidates.length > 0) {
-    return relayPathPlan(
-      candidates,
-      selectRelayPath(candidates, params.other.endpointAddress),
-    );
+    return relayPathPlan(candidates, selectRelayPath(candidates, params.other.endpointAddress))
   }
   if (!params.gateways) {
-    return relayPathPlan(candidates, { kind: "unreachable" });
+    return relayPathPlan(candidates, { kind: 'unreachable' })
   }
   const hop = resolveGatewayNextHop({
     self: params.self,
@@ -1662,31 +1437,29 @@ export function planRelayPath(params: {
     gateways: params.gateways,
     caches: params.caches,
     preferredGatewayIds: params.preferredGatewayIds ?? [],
-  });
-  if (!hop) return relayPathPlan(candidates, { kind: "unreachable" });
+  })
+  if (!hop) return relayPathPlan(candidates, { kind: 'unreachable' })
   const gateway: RelayPathCandidate = {
-    kind: "gateway",
+    kind: 'gateway',
     viaServerId: hop.serverId,
     viaRelayId: hop.id,
-  };
-  return relayPathPlan(candidates, selectedFromCandidate(gateway), { gateway });
+  }
+  return relayPathPlan(candidates, selectedFromCandidate(gateway), { gateway })
 }
 
 export async function loadEndpointCaches(
   db: Db,
-  serverIds: readonly string[],
-): Promise<
-  { caches: EndpointAddressCaches; serversById: Map<string, ServerEndpointRow> }
-> {
+  serverIds: readonly string[]
+): Promise<{ caches: EndpointAddressCaches; serversById: Map<string, ServerEndpointRow> }> {
   const caches: EndpointAddressCaches = {
     publicAddressByServer: new Map(),
     reportedByServer: new Map(),
     ...emptyPairPlanningCaches(),
-  };
-  const serversById = new Map<string, ServerEndpointRow>();
-  if (serverIds.length === 0) return { caches, serversById };
+  }
+  const serversById = new Map<string, ServerEndpointRow>()
+  if (serverIds.length === 0) return { caches, serversById }
 
-  const ids = [...serverIds];
+  const ids = [...serverIds]
   const [ipRows, serverRows] = await Promise.all([
     // Public pins only. Datacenter pins are pair-aware — path planning reads
     // them through `datacenterMembershipsByServer` so it can require *shared*
@@ -1699,7 +1472,7 @@ export async function loadEndpointCaches(
         createdAt: ip.createdAt,
       })
       .from(ip)
-      .where(and(inArray(ip.serverId, ids), eq(ip.scope, "public")))
+      .where(and(inArray(ip.serverId, ids), eq(ip.scope, 'public')))
       .orderBy(asc(ip.createdAt)),
     db
       .select({
@@ -1708,130 +1481,116 @@ export async function loadEndpointCaches(
       })
       .from(server)
       .where(inArray(server.id, ids)),
-  ]);
+  ])
 
   for (const row of ipRows) {
-    if (!row.serverId) continue;
-    const address = inetAddressToString(row.address);
-    if (!address) continue;
-    if (
-      row.scope === "public" && !caches.publicAddressByServer.has(row.serverId)
-    ) {
-      caches.publicAddressByServer.set(row.serverId, address);
+    if (!row.serverId) continue
+    const address = inetAddressToString(row.address)
+    if (!address) continue
+    if (row.scope === 'public' && !caches.publicAddressByServer.has(row.serverId)) {
+      caches.publicAddressByServer.set(row.serverId, address)
     }
   }
 
   for (const row of serverRows) {
-    serversById.set(row.id, row);
-    caches.reportedByServer.set(
-      row.id,
-      reportedIpsFromMetadata(row.metadata),
-    );
+    serversById.set(row.id, row)
+    caches.reportedByServer.set(row.id, reportedIpsFromMetadata(row.metadata))
   }
-  return { caches, serversById };
+  return { caches, serversById }
 }
 
-function appendUniqueCidrs(
-  target: string[],
-  values: readonly string[],
-): void {
+function appendUniqueCidrs(target: string[], values: readonly string[]): void {
   for (const value of values) {
-    if (value.length === 0 || target.includes(value)) continue;
-    target.push(value);
+    if (value.length === 0 || target.includes(value)) continue
+    target.push(value)
   }
 }
 
-export async function buildPeerMaterial(
-  params: {
-    self: Pick<RelayRecord, "serverId">;
-    other: RelayRecord;
-    listenPort: number;
-    caches: EndpointAddressCaches;
-    sealedPresharedKey: string | null;
-    plan: RelayPathPlan;
-    extraAllowedIPs?: readonly string[];
-    resealPresharedKey?: (sealed: string) => Promise<string | null>;
-    advertisedCidrs?: readonly string[];
-  },
-): Promise<RelayPeerMaterial | null> {
-  if (!isEmittedDirectPath(params.plan.selected)) return null;
+export async function buildPeerMaterial(params: {
+  self: Pick<RelayRecord, 'serverId'>
+  other: RelayRecord
+  listenPort: number
+  caches: EndpointAddressCaches
+  sealedPresharedKey: string | null
+  plan: RelayPathPlan
+  extraAllowedIPs?: readonly string[]
+  resealPresharedKey?: (sealed: string) => Promise<string | null>
+  advertisedCidrs?: readonly string[]
+}): Promise<RelayPeerMaterial | null> {
+  if (!isEmittedDirectPath(params.plan.selected)) return null
 
-  const host32 = hostRoute32(params.other.address);
-  const allowedIPs: string[] = [];
+  const host32 = hostRoute32(params.other.address)
+  const allowedIPs: string[] = []
   appendUniqueCidrs(
     allowedIPs,
-    [host32, params.other.prefix].filter(
-      (value): value is string => typeof value === "string",
-    ),
-  );
-  if (params.other.role === "gateway") {
-    const advertised = params.advertisedCidrs ?? params.other.advertisedCidrs;
-    appendUniqueCidrs(allowedIPs, advertised);
+    [host32, params.other.prefix].filter((value): value is string => typeof value === 'string')
+  )
+  if (params.other.role === 'gateway') {
+    const advertised = params.advertisedCidrs ?? params.other.advertisedCidrs
+    appendUniqueCidrs(allowedIPs, advertised)
   }
-  const extra = [...(params.extraAllowedIPs ?? [])].sort((a, b) =>
-    a.localeCompare(b)
-  );
-  appendUniqueCidrs(allowedIPs, extra);
+  const extra = [...(params.extraAllowedIPs ?? [])].sort((a, b) => a.localeCompare(b))
+  appendUniqueCidrs(allowedIPs, extra)
 
-  let presharedKey: string | null = null;
+  let presharedKey: string | null = null
   if (params.sealedPresharedKey && params.resealPresharedKey) {
-    presharedKey = await params.resealPresharedKey(params.sealedPresharedKey);
+    presharedKey = await params.resealPresharedKey(params.sealedPresharedKey)
   }
 
-  const carriesTransit = extra.length > 0;
-  const keepalive = params.other.keepalive ??
-    (params.plan.selected.kind === "direct_nat"
-      ? WIREGUARD_PERSISTENT_KEEPALIVE
-      : null);
-  const endpoint = params.plan.selected.kind === "direct_nat"
-    ? params.plan.selected.endpoint
-    : `${params.plan.selected.endpoint}:${String(params.listenPort)}`;
+  const carriesTransit = extra.length > 0
+  const keepalive =
+    params.other.keepalive ??
+    (params.plan.selected.kind === 'direct_nat' ? WIREGUARD_PERSISTENT_KEEPALIVE : null)
+  const endpoint =
+    params.plan.selected.kind === 'direct_nat'
+      ? params.plan.selected.endpoint
+      : `${params.plan.selected.endpoint}:${String(params.listenPort)}`
   const material: RelayPeerMaterial = {
-    publicKey: params.other.publicKey ?? "",
+    publicKey: params.other.publicKey ?? '',
     allowedIPs,
     endpoint,
     keepalive,
     sealedPresharedKey: params.sealedPresharedKey,
     presharedKey,
-    pathKind: carriesTransit ? "gateway" : params.plan.selected.kind,
-  };
-  if (carriesTransit) material.viaServerId = params.other.serverId;
-  return material;
+    pathKind: carriesTransit ? 'gateway' : params.plan.selected.kind,
+  }
+  if (carriesTransit) material.viaServerId = params.other.serverId
+  return material
 }
 
 export type FabricSegmentMaterial = {
-  name: string;
-  subnet: string;
-  mtu?: number;
-  gateway?: string;
-};
+  name: string
+  subnet: string
+  mtu?: number
+  gateway?: string
+}
 
 function parseSegmentNetworkExtras(
-  options: unknown,
-): Pick<FabricSegmentMaterial, "mtu" | "gateway"> {
-  if (!isOptionsRecord(options)) return {};
-  const extras: Pick<FabricSegmentMaterial, "mtu" | "gateway"> = {};
+  options: unknown
+): Pick<FabricSegmentMaterial, 'mtu' | 'gateway'> {
+  if (!isOptionsRecord(options)) return {}
+  const extras: Pick<FabricSegmentMaterial, 'mtu' | 'gateway'> = {}
   if (
-    typeof options.mtu === "number" &&
+    typeof options.mtu === 'number' &&
     Number.isInteger(options.mtu) &&
     options.mtu >= 1280 &&
     options.mtu <= 9000
   ) {
-    extras.mtu = options.mtu;
+    extras.mtu = options.mtu
   }
   if (
-    typeof options.gateway === "string" &&
+    typeof options.gateway === 'string' &&
     isValidIpAddress(options.gateway) &&
-    !options.gateway.includes(":")
+    !options.gateway.includes(':')
   ) {
-    extras.gateway = options.gateway;
+    extras.gateway = options.gateway
   }
-  return extras;
+  return extras
 }
 
 export async function listServerSubnets(
   db: Db,
-  serverId: string,
+  serverId: string
 ): Promise<FabricSegmentMaterial[]> {
   const rows = await db
     .select({
@@ -1840,22 +1599,22 @@ export async function listServerSubnets(
       options: subnet.options,
     })
     .from(subnet)
-    .where(eq(subnet.serverId, serverId));
+    .where(eq(subnet.serverId, serverId))
 
   return rows.map((row) => ({
     name: composeNetworkHostName(row.networkId),
-    subnet: typeof row.cidr === "string" ? row.cidr : String(row.cidr),
+    subnet: typeof row.cidr === 'string' ? row.cidr : String(row.cidr),
     ...parseSegmentNetworkExtras(row.options),
-  }));
+  }))
 }
 
 export async function listSubnetsForServers(
   db: Db,
-  serverIds: readonly string[],
+  serverIds: readonly string[]
 ): Promise<Map<string, FabricSegmentMaterial[]>> {
-  const byServer = new Map<string, FabricSegmentMaterial[]>();
-  for (const serverId of serverIds) byServer.set(serverId, []);
-  if (serverIds.length === 0) return byServer;
+  const byServer = new Map<string, FabricSegmentMaterial[]>()
+  for (const serverId of serverIds) byServer.set(serverId, [])
+  if (serverIds.length === 0) return byServer
 
   const rows = await db
     .select({
@@ -1865,55 +1624,47 @@ export async function listSubnetsForServers(
       options: subnet.options,
     })
     .from(subnet)
-    .where(inArray(subnet.serverId, [...serverIds]));
+    .where(inArray(subnet.serverId, [...serverIds]))
 
   for (const row of rows) {
-    const list = byServer.get(row.serverId) ?? [];
+    const list = byServer.get(row.serverId) ?? []
     list.push({
       name: composeNetworkHostName(row.networkId),
-      subnet: typeof row.cidr === "string" ? row.cidr : String(row.cidr),
+      subnet: typeof row.cidr === 'string' ? row.cidr : String(row.cidr),
       ...parseSegmentNetworkExtras(row.options),
-    });
-    byServer.set(row.serverId, list);
+    })
+    byServer.set(row.serverId, list)
   }
-  return byServer;
+  return byServer
 }
 
 function stableJson(value: unknown): string {
-  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (value === null || typeof value !== 'object') return JSON.stringify(value)
   if (Array.isArray(value)) {
-    return `[${value.map((entry) => stableJson(entry)).join(",")}]`;
+    return `[${value.map((entry) => stableJson(entry)).join(',')}]`
   }
-  const record = value as Record<string, unknown>;
-  const keys = Object.keys(record).sort((a, b) => a.localeCompare(b));
-  return `{${
-    keys
-      .map((key) => `${JSON.stringify(key)}:${stableJson(record[key])}`)
-      .join(",")
-  }}`;
+  const record = value as Record<string, unknown>
+  const keys = Object.keys(record).sort((a, b) => a.localeCompare(b))
+  const members = keys.map((key) => JSON.stringify(key) + ':' + stableJson(record[key]))
+  return `{${members.join(',')}}`
 }
 
-export async function hashFabricReconcileDesired(
-  value: unknown,
-): Promise<string> {
-  return await sha256HexUtf8(stableJson(value));
+export async function hashFabricReconcileDesired(value: unknown): Promise<string> {
+  return await sha256HexUtf8(stableJson(value))
 }
 
 export type FabricReconcileSnapshot = {
-  fabric: FabricRecord;
-  relays: RelayRecord[];
-  caches: EndpointAddressCaches;
-  sealedPresharedKeyByRelayId: Map<string, string | null>;
-  segmentsByServer: Map<string, FabricSegmentMaterial[]>;
-  derivedAdvertisedCidrsByRelayId: Map<string, string[]>;
-  policy: FabricPolicy;
-};
+  fabric: FabricRecord
+  relays: RelayRecord[]
+  caches: EndpointAddressCaches
+  sealedPresharedKeyByRelayId: Map<string, string | null>
+  segmentsByServer: Map<string, FabricSegmentMaterial[]>
+  derivedAdvertisedCidrsByRelayId: Map<string, string[]>
+  policy: FabricPolicy
+}
 
-type EnabledFabricReconcilePayload = Extract<
-  FabricReconcileCommandPayload,
-  { enabled: true }
->;
-type FabricReconcilePeer = EnabledFabricReconcilePayload["peers"][number];
+type EnabledFabricReconcilePayload = Extract<FabricReconcileCommandPayload, { enabled: true }>
+type FabricReconcilePeer = EnabledFabricReconcilePayload['peers'][number]
 
 /**
  * Relays that can appear in `buildReconcilePeerLists` (non-empty WireGuard
@@ -1923,7 +1674,7 @@ type FabricReconcilePeer = EnabledFabricReconcilePayload["peers"][number];
  * without keys.
  */
 function publicKeyedRelays(relays: readonly RelayRecord[]): RelayRecord[] {
-  return relays.filter((row) => row.publicKey);
+  return relays.filter((row) => row.publicKey)
 }
 
 /**
@@ -1935,11 +1686,11 @@ function publicKeyedRelays(relays: readonly RelayRecord[]): RelayRecord[] {
  */
 export async function loadFabricReconcileSnapshot(
   db: Db,
-  fabric: FabricRecord,
+  fabric: FabricRecord
 ): Promise<FabricReconcileSnapshot> {
-  const relays = await listFabricRelays(db, fabric.id);
-  const serverIds = relays.map((row) => row.serverId);
-  const relayIds = relays.map((row) => row.id);
+  const relays = await listFabricRelays(db, fabric.id)
+  const serverIds = relays.map((row) => row.serverId)
+  const relayIds = relays.map((row) => row.id)
   const [
     { caches: endpointCaches },
     sealedRows,
@@ -1952,24 +1703,21 @@ export async function loadFabricReconcileSnapshot(
     listSubnetsForServers(db, serverIds),
     loadDatacenterSubnetsForServers(db, serverIds),
     loadDatacenterMembershipsForServers(db, serverIds),
-  ]);
-  const datacenterIds = new Set<string>();
+  ])
+  const datacenterIds = new Set<string>()
   for (const pins of datacenterMembershipsByServer.values()) {
-    for (const pin of pins) datacenterIds.add(pin.datacenterId);
+    for (const pin of pins) datacenterIds.add(pin.datacenterId)
   }
-  const policyByDatacenter = await loadDatacenterPolicies(
-    db,
-    [...datacenterIds],
-  );
-  const sealedPresharedKeyByRelayId = new Map<string, string | null>();
+  const policyByDatacenter = await loadDatacenterPolicies(db, [...datacenterIds])
+  const sealedPresharedKeyByRelayId = new Map<string, string | null>()
   for (const row of sealedRows) {
-    sealedPresharedKeyByRelayId.set(row.id, row.presharedKey);
+    sealedPresharedKeyByRelayId.set(row.id, row.presharedKey)
   }
   const caches: EndpointAddressCaches = {
     ...endpointCaches,
     datacenterMembershipsByServer,
     policyByDatacenter,
-  };
+  }
   return {
     fabric,
     relays,
@@ -1978,81 +1726,81 @@ export async function loadFabricReconcileSnapshot(
     segmentsByServer,
     derivedAdvertisedCidrsByRelayId: resolveDerivedAdvertisedCidrsByRelay(
       publicKeyedRelays(relays),
-      subnetsByServer,
+      subnetsByServer
     ),
     policy: parseFabricPolicy(fabric.options),
-  };
+  }
 }
 
-function optionalNetworksField(
-  networks: FabricSegmentMaterial[],
-): { networks?: FabricSegmentMaterial[] } {
-  if (networks.length === 0) return {};
-  return { networks };
+function optionalNetworksField(networks: FabricSegmentMaterial[]): {
+  networks?: FabricSegmentMaterial[]
+} {
+  if (networks.length === 0) return {}
+  return { networks }
 }
 
 function reconcilePeerViews(material: RelayPeerMaterial): {
-  peer: FabricReconcilePeer;
-  hashPeer: Record<string, unknown>;
+  peer: FabricReconcilePeer
+  hashPeer: Record<string, unknown>
 } {
   const peer: FabricReconcilePeer = {
     publicKey: material.publicKey,
     allowedIPs: material.allowedIPs,
     endpoint: material.endpoint,
-  };
+  }
   const hashPeer: Record<string, unknown> = {
     publicKey: material.publicKey,
     allowedIPs: material.allowedIPs,
     endpoint: material.endpoint,
     pathKind: material.pathKind,
-  };
+  }
   if (
-    material.pathKind === "direct_lan" ||
-    material.pathKind === "direct_public" ||
-    material.pathKind === "direct_nat" ||
-    material.pathKind === "gateway"
+    material.pathKind === 'direct_lan' ||
+    material.pathKind === 'direct_public' ||
+    material.pathKind === 'direct_nat' ||
+    material.pathKind === 'gateway'
   ) {
-    peer.pathKind = material.pathKind;
+    peer.pathKind = material.pathKind
   }
   if (material.viaServerId) {
-    peer.viaServerId = material.viaServerId;
-    hashPeer.viaServerId = material.viaServerId;
+    peer.viaServerId = material.viaServerId
+    hashPeer.viaServerId = material.viaServerId
   }
   if (material.presharedKey) {
-    peer.presharedKeyEnvelope = material.presharedKey;
+    peer.presharedKeyEnvelope = material.presharedKey
   }
   if (material.keepalive != null) {
-    peer.keepalive = material.keepalive;
-    hashPeer.keepalive = material.keepalive;
+    peer.keepalive = material.keepalive
+    hashPeer.keepalive = material.keepalive
   }
   if (material.sealedPresharedKey) {
-    hashPeer.presharedKey = material.sealedPresharedKey;
+    hashPeer.presharedKey = material.sealedPresharedKey
   }
-  return { peer, hashPeer };
+  return { peer, hashPeer }
 }
 
 function destinationOwnedCidrs(other: RelayRecord): string[] {
-  const host32 = hostRoute32(other.address);
-  const cidrs: string[] = [];
-  if (host32) cidrs.push(host32);
-  cidrs.push(other.prefix);
-  return cidrs;
+  const host32 = hostRoute32(other.address)
+  const cidrs: string[] = []
+  if (host32) cidrs.push(host32)
+  cidrs.push(other.prefix)
+  return cidrs
 }
 
-export type GatewayRoutedPeer = { serverId: string; viaServerId: string };
+export type GatewayRoutedPeer = { serverId: string; viaServerId: string }
 
 type PeerListBuild = {
-  peers: FabricReconcilePeer[];
-  hashPeers: unknown[];
-  unreachablePeers: Array<{ serverId: string }>;
-  gatewayRoutedPeers: GatewayRoutedPeer[];
-};
+  peers: FabricReconcilePeer[]
+  hashPeers: unknown[]
+  unreachablePeers: Array<{ serverId: string }>
+  gatewayRoutedPeers: GatewayRoutedPeer[]
+}
 
 function planPathToOther(
   snapshot: FabricReconcileSnapshot,
   self: RelayRecord,
   other: RelayRecord,
-  gateways: readonly RelayRecord[],
+  gateways: readonly RelayRecord[]
 ): RelayPathPlan {
   return planRelayPath({
     self,
@@ -2060,7 +1808,7 @@ function planPathToOther(
     caches: snapshot.caches,
     gateways,
     preferredGatewayIds: self.preferredGatewayIds,
-  });
+  })
 }
 
 async function emitPeerStanza(
@@ -2070,17 +1818,15 @@ async function emitPeerStanza(
   plan: RelayPathPlan,
   extraAllowedIPs: readonly string[],
   params: {
-    resealPresharedKey?: (sealed: string) => Promise<string | null>;
+    resealPresharedKey?: (sealed: string) => Promise<string | null>
   },
-  listenPort: number,
-): Promise<
-  { peer: FabricReconcilePeer; hashPeer: Record<string, unknown> } | null
-> {
+  listenPort: number
+): Promise<{ peer: FabricReconcilePeer; hashPeer: Record<string, unknown> } | null> {
   const sealedPresharedKey = selectPairPresharedEnvelope(
     self.id,
     other.id,
-    snapshot.sealedPresharedKeyByRelayId,
-  );
+    snapshot.sealedPresharedKeyByRelayId
+  )
   const material = await buildPeerMaterial({
     self,
     other,
@@ -2089,120 +1835,103 @@ async function emitPeerStanza(
     sealedPresharedKey,
     plan,
     extraAllowedIPs,
-    advertisedCidrs: snapshot.derivedAdvertisedCidrsByRelayId.get(other.id) ??
-      other.advertisedCidrs,
-    ...(params.resealPresharedKey
-      ? { resealPresharedKey: params.resealPresharedKey }
-      : {}),
-  });
-  if (!material) return null;
-  return reconcilePeerViews(material);
+    advertisedCidrs:
+      snapshot.derivedAdvertisedCidrsByRelayId.get(other.id) ?? other.advertisedCidrs,
+    ...(params.resealPresharedKey ? { resealPresharedKey: params.resealPresharedKey } : {}),
+  })
+  if (!material) return null
+  return reconcilePeerViews(material)
 }
 
 async function buildReconcilePeerLists(
   snapshot: FabricReconcileSnapshot,
   self: RelayRecord,
   params: {
-    serverId: string;
-    resealPresharedKey?: (sealed: string) => Promise<string | null>;
+    serverId: string
+    resealPresharedKey?: (sealed: string) => Promise<string | null>
   },
-  listenPort: number,
+  listenPort: number
 ): Promise<PeerListBuild> {
-  const peers: FabricReconcilePeer[] = [];
-  const hashPeers: unknown[] = [];
-  const unreachablePeers: Array<{ serverId: string }> = [];
-  const gatewayRoutedPeers: GatewayRoutedPeer[] = [];
+  const peers: FabricReconcilePeer[] = []
+  const hashPeers: unknown[] = []
+  const unreachablePeers: Array<{ serverId: string }> = []
+  const gatewayRoutedPeers: GatewayRoutedPeer[] = []
   const peerRelays = snapshot.relays.filter(
-    (row) => row.serverId !== params.serverId && row.publicKey,
-  );
-  const gateways = snapshot.relays.filter((row) =>
-    row.role === "gateway" && Boolean(row.publicKey)
-  );
-  const extraByNextHopId = new Map<string, string[]>();
-  const emitIds = new Set<string>();
-  const plansByRelayId = new Map<string, RelayPathPlan>();
+    (row) => row.serverId !== params.serverId && row.publicKey
+  )
+  const gateways = snapshot.relays.filter((row) => row.role === 'gateway' && Boolean(row.publicKey))
+  const extraByNextHopId = new Map<string, string[]>()
+  const emitIds = new Set<string>()
+  const plansByRelayId = new Map<string, RelayPathPlan>()
 
   for (const other of peerRelays) {
-    const plan = planPathToOther(snapshot, self, other, gateways);
-    plansByRelayId.set(other.id, plan);
+    const plan = planPathToOther(snapshot, self, other, gateways)
+    plansByRelayId.set(other.id, plan)
     if (isEmittedDirectPath(plan.selected)) {
-      emitIds.add(other.id);
-      continue;
+      emitIds.add(other.id)
+      continue
     }
-    if (
-      plan.selected.kind === "gateway" && plan.selected.viaRelayId &&
-      plan.selected.viaServerId
-    ) {
-      const extra = extraByNextHopId.get(plan.selected.viaRelayId) ?? [];
-      appendUniqueCidrs(extra, destinationOwnedCidrs(other));
-      extraByNextHopId.set(plan.selected.viaRelayId, extra);
-      emitIds.add(plan.selected.viaRelayId);
+    if (plan.selected.kind === 'gateway' && plan.selected.viaRelayId && plan.selected.viaServerId) {
+      const extra = extraByNextHopId.get(plan.selected.viaRelayId) ?? []
+      appendUniqueCidrs(extra, destinationOwnedCidrs(other))
+      extraByNextHopId.set(plan.selected.viaRelayId, extra)
+      emitIds.add(plan.selected.viaRelayId)
       gatewayRoutedPeers.push({
         serverId: other.serverId,
         viaServerId: plan.selected.viaServerId,
-      });
-      continue;
+      })
+      continue
     }
-    unreachablePeers.push({ serverId: other.serverId });
+    unreachablePeers.push({ serverId: other.serverId })
   }
 
-  for (const other of peerRelays) {
-    if (!emitIds.has(other.id)) continue;
-    const plan = plansByRelayId.get(other.id) ??
-      planPathToOther(snapshot, self, other, gateways);
-    const extra = extraByNextHopId.get(other.id) ?? [];
-    extra.sort((a, b) => a.localeCompare(b));
-    const views = await emitPeerStanza(
-      snapshot,
-      self,
-      other,
-      plan,
-      extra,
-      params,
-      listenPort,
-    );
+  await forEachSequential(peerRelays, async (other) => {
+    if (!emitIds.has(other.id)) return
+    const plan = plansByRelayId.get(other.id) ?? planPathToOther(snapshot, self, other, gateways)
+    const extra = extraByNextHopId.get(other.id) ?? []
+    extra.sort((a, b) => a.localeCompare(b))
+    const views = await emitPeerStanza(snapshot, self, other, plan, extra, params, listenPort)
     if (!views) {
-      unreachablePeers.push({ serverId: other.serverId });
-      continue;
+      unreachablePeers.push({ serverId: other.serverId })
+      return
     }
-    peers.push(views.peer);
-    hashPeers.push(views.hashPeer);
-  }
-  return { peers, hashPeers, unreachablePeers, gatewayRoutedPeers };
+    peers.push(views.peer)
+    hashPeers.push(views.hashPeer)
+  })
+  return { peers, hashPeers, unreachablePeers, gatewayRoutedPeers }
 }
 
 type FabricReconcileBuild = {
-  payload: FabricReconcileCommandPayload;
-  desiredHash: string;
-  unreachablePeers: Array<{ serverId: string }>;
-  gatewayRoutedPeers: GatewayRoutedPeer[];
-};
+  payload: FabricReconcileCommandPayload
+  desiredHash: string
+  unreachablePeers: Array<{ serverId: string }>
+  gatewayRoutedPeers: GatewayRoutedPeer[]
+}
 
 export async function buildFabricReconcilePayloadFromSnapshot(
   snapshot: FabricReconcileSnapshot,
   params: {
-    serverId: string;
-    mtu?: number;
-    resealPresharedKey?: (sealed: string) => Promise<string | null>;
-  },
+    serverId: string
+    mtu?: number
+    resealPresharedKey?: (sealed: string) => Promise<string | null>
+  }
 ): Promise<FabricReconcileBuild | null> {
-  const self = snapshot.relays.find((row) => row.serverId === params.serverId);
-  if (!self) return null;
+  const self = snapshot.relays.find((row) => row.serverId === params.serverId)
+  if (!self) return null
 
-  const host32 = hostRoute32(self.address);
-  if (!host32) return null;
+  const host32 = hostRoute32(self.address)
+  if (!host32) return null
 
-  const options = parseFabricOptions(snapshot.fabric.options);
-  const mtu = params.mtu ?? options.mtu;
-  const { peers, hashPeers, unreachablePeers, gatewayRoutedPeers } =
-    await buildReconcilePeerLists(
-      snapshot,
-      self,
-      params,
-      options.listenPort,
-    );
-  const networks = snapshot.segmentsByServer.get(params.serverId) ?? [];
-  const gatewayFlag = self.role === "gateway" ? { gateway: true as const } : {};
+  const options = parseFabricOptions(snapshot.fabric.options)
+  const mtu = params.mtu ?? options.mtu
+  const { peers, hashPeers, unreachablePeers, gatewayRoutedPeers } = await buildReconcilePeerLists(
+    snapshot,
+    self,
+    params,
+    options.listenPort
+  )
+  const networks = snapshot.segmentsByServer.get(params.serverId) ?? []
+  const gatewayFlag = self.role === 'gateway' ? { gateway: true as const } : {}
   const shared = {
     enabled: true as const,
     fabricId: snapshot.fabric.id,
@@ -2212,41 +1941,39 @@ export async function buildFabricReconcilePayloadFromSnapshot(
     prefix: self.prefix,
     ...optionalNetworksField(networks),
     ...gatewayFlag,
-  };
-  const payload: EnabledFabricReconcilePayload = { ...shared, peers };
+  }
+  const payload: EnabledFabricReconcilePayload = { ...shared, peers }
   const desiredHash = await hashFabricReconcileDesired({
     ...shared,
     peers: hashPeers,
-  });
-  return { payload, desiredHash, unreachablePeers, gatewayRoutedPeers };
+  })
+  return { payload, desiredHash, unreachablePeers, gatewayRoutedPeers }
 }
 
 export async function buildFabricReconcilePayload(
   db: Db,
   params: {
-    fabric: FabricRecord;
-    serverId: string;
-    mtu?: number;
-    resealPresharedKey?: (sealed: string) => Promise<string | null>;
-  },
+    fabric: FabricRecord
+    serverId: string
+    mtu?: number
+    resealPresharedKey?: (sealed: string) => Promise<string | null>
+  }
 ): Promise<FabricReconcileBuild | null> {
-  const snapshot = await loadFabricReconcileSnapshot(db, params.fabric);
+  const snapshot = await loadFabricReconcileSnapshot(db, params.fabric)
   return await buildFabricReconcilePayloadFromSnapshot(snapshot, {
     serverId: params.serverId,
     ...(params.mtu !== undefined ? { mtu: params.mtu } : {}),
-    ...(params.resealPresharedKey
-      ? { resealPresharedKey: params.resealPresharedKey }
-      : {}),
-  });
+    ...(params.resealPresharedKey ? { resealPresharedKey: params.resealPresharedKey } : {}),
+  })
 }
 
 export async function ensureComposeNetworkRow(
   db: Db,
   params: {
-    organizationId: string;
-    environmentId: string;
-    composeKey: string;
-  },
+    organizationId: string
+    environmentId: string
+    composeKey: string
+  }
 ): Promise<{ id: string; hostName: string }> {
   const [existing] = await db
     .select({ id: network.id, options: network.options })
@@ -2254,34 +1981,35 @@ export async function ensureComposeNetworkRow(
     .where(
       and(
         eq(network.organizationId, params.organizationId),
-        eq(network.kind, "compose"),
+        eq(network.kind, 'compose'),
         eq(network.environmentId, params.environmentId),
-        eq(network.composeKey, params.composeKey),
-      ),
+        eq(network.composeKey, params.composeKey)
+      )
     )
-    .limit(1);
+    .limit(1)
 
   if (existing) {
-    const options = isOptionsRecord(existing.options) ? existing.options : {};
-    const hostName = typeof options.dockerNetworkName === "string"
-      ? options.dockerNetworkName
-      : composeNetworkHostName(existing.id);
-    return { id: existing.id, hostName };
+    const options = isOptionsRecord(existing.options) ? existing.options : {}
+    const hostName =
+      typeof options.dockerNetworkName === 'string'
+        ? options.dockerNetworkName
+        : composeNetworkHostName(existing.id)
+    return { id: existing.id, hostName }
   }
 
   const [inserted] = await db
     .insert(network)
     .values({
       organizationId: params.organizationId,
-      kind: "compose",
+      kind: 'compose',
       environmentId: params.environmentId,
       name: params.composeKey,
       composeKey: params.composeKey,
     })
     .onConflictDoNothing()
-    .returning({ id: network.id });
+    .returning({ id: network.id })
 
-  let row = inserted;
+  let row = inserted
   if (!row) {
     // Lost a race for `(environment_id, compose_key)` against the new
     // `uniq_network_environment_compose_key` constraint (schema-sql-keys,
@@ -2292,47 +2020,41 @@ export async function ensureComposeNetworkRow(
       .where(
         and(
           eq(network.environmentId, params.environmentId),
-          eq(network.composeKey, params.composeKey),
-        ),
+          eq(network.composeKey, params.composeKey)
+        )
       )
-      .limit(1);
-    row = winner;
+      .limit(1)
+    row = winner
   }
-  if (!row) throw new Error("compose network insert failed");
+  if (!row) throw new Error('compose network insert failed')
 
-  const hostName = composeNetworkHostName(row.id);
+  const hostName = composeNetworkHostName(row.id)
   await db
     .update(network)
     .set({
       options: { dockerNetworkName: hostName },
       updatedAt: nowIso(),
     })
-    .where(eq(network.id, row.id));
-  return { id: row.id, hostName };
+    .where(eq(network.id, row.id))
+  return { id: row.id, hostName }
 }
 
 async function loadManagedNetworkRow(
   db: Db,
-  organizationId: string,
+  organizationId: string
 ): Promise<{ id: string; hostName: string } | null> {
   const [row] = await db
     .select({ id: network.id, options: network.options })
     .from(network)
-    .where(
-      and(
-        eq(network.organizationId, organizationId),
-        eq(network.kind, "managed"),
-      ),
-    )
-    .limit(1);
-  if (!row) return null;
+    .where(and(eq(network.organizationId, organizationId), eq(network.kind, 'managed')))
+    .limit(1)
+  if (!row) return null
 
-  const options = isOptionsRecord(row.options) ? row.options : {};
-  const pinned = options.dockerNetworkName;
-  const hostName = typeof pinned === "string" && pinned.length > 0
-    ? pinned
-    : managedNetworkName(row.id);
-  return { id: row.id, hostName };
+  const options = isOptionsRecord(row.options) ? row.options : {}
+  const pinned = options.dockerNetworkName
+  const hostName =
+    typeof pinned === 'string' && pinned.length > 0 ? pinned : managedNetworkName(row.id)
+  return { id: row.id, hostName }
 }
 
 /**
@@ -2344,50 +2066,50 @@ async function loadManagedNetworkRow(
  */
 export async function ensureOrganizationManagedNetwork(
   db: Db,
-  params: { organizationId: string },
+  params: { organizationId: string }
 ): Promise<{ id: string; hostName: string }> {
-  const existing = await loadManagedNetworkRow(db, params.organizationId);
-  if (existing) return existing;
+  const existing = await loadManagedNetworkRow(db, params.organizationId)
+  if (existing) return existing
 
   const [row] = await db
     .insert(network)
     .values({
       organizationId: params.organizationId,
-      kind: "managed",
+      kind: 'managed',
     })
     .onConflictDoNothing()
-    .returning({ id: network.id });
+    .returning({ id: network.id })
 
   if (!row) {
     // A concurrent caller won the partial unique index — converge on its row
     // instead of failing the allocation.
-    const raced = await loadManagedNetworkRow(db, params.organizationId);
-    if (!raced) throw new Error("managed network insert failed");
-    return raced;
+    const raced = await loadManagedNetworkRow(db, params.organizationId)
+    if (!raced) throw new Error('managed network insert failed')
+    return raced
   }
 
-  const hostName = managedNetworkName(row.id);
+  const hostName = managedNetworkName(row.id)
   await db
     .update(network)
     .set({
       options: { dockerNetworkName: hostName },
       updatedAt: nowIso(),
     })
-    .where(eq(network.id, row.id));
-  return { id: row.id, hostName };
+    .where(eq(network.id, row.id))
+  return { id: row.id, hostName }
 }
 
 function isOptionsRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 export async function ensureNetworkSubnet(
   db: Db,
   params: {
-    networkId: string;
-    serverId: string;
-    cidr: string;
-  },
+    networkId: string
+    serverId: string
+    cidr: string
+  }
 ): Promise<void> {
   await db
     .insert(subnet)
@@ -2398,94 +2120,83 @@ export async function ensureNetworkSubnet(
     })
     .onConflictDoNothing({
       target: [subnet.networkId, subnet.serverId],
-    });
+    })
 }
 
 export async function materializeSpanningNetworks(
   db: Db,
   params: {
-    organizationId: string;
-    environmentId: string;
-    fabric: FabricRecord;
-    document: ComposeDocument;
-    slots: ReadonlyArray<{ serviceId: string; serverId: string }>;
-    serviceRows: ReadonlyArray<{ id: string; composeServiceName: string }>;
-    platformAttachments?: readonly PlatformAttachment[];
-  },
+    organizationId: string
+    environmentId: string
+    fabric: FabricRecord
+    document: ComposeDocument
+    slots: ReadonlyArray<{ serviceId: string; serverId: string }>
+    serviceRows: ReadonlyArray<{ id: string; composeServiceName: string }>
+    platformAttachments?: readonly PlatformAttachment[]
+  }
 ): Promise<Map<string, string>> {
-  const attachments = params.platformAttachments ?? [];
+  const attachments = params.platformAttachments ?? []
   const keys = collectSpanningComposeNetworkKeys(
     params.document,
     params.slots,
     params.serviceRows,
-    attachments,
-  );
-  const spanning = new Map<string, string>();
-  if (keys.length === 0) return spanning;
+    attachments
+  )
+  const spanning = new Map<string, string>()
+  if (keys.length === 0) return spanning
 
   await ensureFabricRelays(db, {
     fabric: params.fabric,
     organizationId: params.organizationId,
-  });
-  const relays = await listFabricRelays(db, params.fabric.id);
-  const relayByServer = new Map(relays.map((row) => [row.serverId, row]));
-  const exclusions = await loadCidrAllocationExclusions(
-    db,
-    params.organizationId,
-  );
+  })
+  const relays = await listFabricRelays(db, params.fabric.id)
+  const relayByServer = new Map(relays.map((row) => [row.serverId, row]))
+  const exclusions = await loadCidrAllocationExclusions(db, params.organizationId)
 
-  for (const composeKey of keys) {
+  await forEachSequential(keys, async (composeKey) => {
     const networkRow = await ensureComposeNetworkRow(db, {
       organizationId: params.organizationId,
       environmentId: params.environmentId,
       composeKey,
-    });
-    spanning.set(composeKey, networkRow.hostName);
+    })
+    spanning.set(composeKey, networkRow.hostName)
 
     const serverIds = participatingServerIdsForNetwork(
       params.document,
       params.slots,
       params.serviceRows,
       composeKey,
-      attachments,
-    );
-    for (const serverId of serverIds) {
-      const relayRow = relayByServer.get(serverId);
+      attachments
+    )
+    await forEachSequential(serverIds, async (serverId) => {
+      const relayRow = relayByServer.get(serverId)
       if (!relayRow) {
-        throw new FabricAllocationError("relay_missing");
+        throw new FabricAllocationError('relay_missing')
       }
       const [have] = await db
         .select({ id: subnet.id })
         .from(subnet)
-        .where(
-          and(
-            eq(subnet.networkId, networkRow.id),
-            eq(subnet.serverId, serverId),
-          ),
-        )
-        .limit(1);
-      if (have) continue;
+        .where(and(eq(subnet.networkId, networkRow.id), eq(subnet.serverId, serverId)))
+        .limit(1)
+      if (have) return
       const existing = await db
         .select({ cidr: subnet.cidr })
         .from(subnet)
-        .where(eq(subnet.serverId, serverId));
+        .where(eq(subnet.serverId, serverId))
       const taken = existing.map((row) =>
-        typeof row.cidr === "string" ? row.cidr : String(row.cidr)
-      );
-      const cidrValue = requireSubnetCidr(relayRow.prefix, taken, exclusions);
+        typeof row.cidr === 'string' ? row.cidr : String(row.cidr)
+      )
+      const cidrValue = requireSubnetCidr(relayRow.prefix, taken, exclusions)
       await ensureNetworkSubnet(db, {
         networkId: networkRow.id,
         serverId,
         cidr: cidrValue,
-      });
-    }
-  }
-  return spanning;
+      })
+    })
+  })
+  return spanning
 }
 
-export function nthSubnetCidr(
-  relayPrefix: string,
-  index: number,
-): string | null {
-  return nthSubnet(relayPrefix, 24, index);
+export function nthSubnetCidr(relayPrefix: string, index: number): string | null {
+  return nthSubnet(relayPrefix, 24, index)
 }

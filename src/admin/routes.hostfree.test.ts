@@ -692,6 +692,45 @@ test('POST /instance/public-urls/apply returns the HTTP-01 preflight error', asy
   assertEquals(bundleReads, 0)
 })
 
+test('POST /instance/public-urls/apply returns 503 when the co-located daemon is disconnected', async () => {
+  const serverId = crypto.randomUUID()
+  const { app, cookie } = await buildApp({
+    colocatedServerId: serverId,
+    registry: createRegistry({
+      snapshots: new Map([[serverId, { connected: false }]]),
+    }),
+  })
+  const res = await app.request(`${ADMIN_API_PREFIX}/instance/public-urls/apply`, {
+    method: 'POST',
+    headers: { Cookie: cookie, 'content-type': 'application/json' },
+    body: '{}',
+  })
+  assertEquals(res.status, 503)
+  assertEquals(await res.json(), { ok: false, error: 'co-located daemon disconnected' })
+})
+
+test('POST /instance/public-urls/apply skips the trust fan-out without a command queue', async () => {
+  const serverId = crypto.randomUUID()
+  let bundleReads = 0
+  const { app, cookie } = await buildApp({
+    colocatedServerId: serverId,
+    registry: createRegistry({
+      snapshots: new Map([[serverId, { connected: true }]]),
+    }),
+    readPlatformCaBundle: () => {
+      bundleReads += 1
+      return Promise.resolve('-----BEGIN CERTIFICATE-----\n')
+    },
+  })
+  const res = await app.request(`${ADMIN_API_PREFIX}/instance/public-urls/apply`, {
+    method: 'POST',
+    headers: { Cookie: cookie, 'content-type': 'application/json' },
+    body: '{}',
+  })
+  assertEquals(res.status, 200)
+  assertEquals(bundleReads, 0)
+})
+
 test('GET /daemon/addresses returns empty fleet list', async () => {
   const { app, cookie } = await buildApp()
   const res = await app.request(`${ADMIN_API_PREFIX}/daemon/addresses`, {
@@ -1165,6 +1204,36 @@ test('hostnames, certificates, ACME, and trusted proxies are platform-managed on
     isDefault: true,
     applicable: false,
   })
+})
+
+test('instance updates: the installed control plane carries its build label when the installer recorded one', async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (() =>
+    Promise.resolve(new Response('missing', { status: 404 }))) as typeof fetch
+  try {
+    for (const [label, expected] of [
+      ['0.1.3-canary.417', '0.1.3-canary.417'],
+      [undefined, undefined],
+      ['not a version', undefined],
+    ] as const) {
+      const { app, cookie } = await buildApp({
+        runtime: 'workers',
+        getEnv: () => ({
+          TURBOPANEL_UPDATE_CHANNEL: 'canary',
+          ...(label === undefined ? {} : { TURBOPANEL_BUILD_LABEL: label }),
+        }),
+      })
+      const res = await app.request(`${ADMIN_API_PREFIX}/instance/updates`, {
+        headers: { Cookie: cookie },
+      })
+      const body = await jsonBody<{
+        units: { instance: { installed: { label?: string } } }
+      }>(res)
+      assertEquals(body.units.instance.installed.label, expected)
+    }
+  } finally {
+    globalThis.fetch = originalFetch
+  }
 })
 
 test('instance updates: workers refuses the control plane, GET still reports its version', async () => {

@@ -15,8 +15,8 @@ export class MailerSmtpSender {
     throw new Error(SMTP_UNAVAILABLE)
   }
 
-  async sendJob(_job: EmailJob): Promise<MailerSendResult> {
-    throw new Error(SMTP_UNAVAILABLE)
+  sendJob(_job: EmailJob): Promise<MailerSendResult> {
+    return Promise.reject(new Error(SMTP_UNAVAILABLE))
   }
 }
 

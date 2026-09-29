@@ -120,9 +120,14 @@
   // Offline sweep (see src/daemon/cell/offline-sweep.ts) — 1 minute is Cloudflare's
   // finest cron granularity, matching the 60s daemon idle-ping cadence.
   "triggers": { "crons": ["* * * * *"] },
-  // Host metrics (Workers Analytics Engine). Dataset name is reused across
-  // envs — AE datasets are account-scoped and auto-created on first write;
-  // docs do not require globally unique names. Rows are keyed by index1=serverId.
+  // Host metrics (Workers Analytics Engine). AE datasets are account-scoped and
+  // auto-created on first write. Each environment (testing, staging, live) has
+  // its OWN dataset, `<env>_turbopanel_server_metrics_v6`, so their rows, retention
+  // and any reset never mix; the top level (local `wrangler dev`) keeps the bare
+  // name. The binding's `dataset` is what is written; the read side (SQL API) takes
+  // its table from `TURBOPANEL_SERVER_METRICS_AE_DATASET` — an env must set both to
+  // the same value (guarded by src/daemon/metrics/backends/cloudflare/wrangler-datasets.test.ts).
+  // Rows are keyed by index1=serverId.
   // The current contract is family-based: every sample writes one always-present
   // host.system row, one always-present host.io row, plus presence-gated pages
   // for gpu/network/filesystem/block/hardware.physical and one row per
@@ -237,7 +242,7 @@
       "analytics_engine_datasets": [
         {
           "binding": "SERVER_METRICS",
-          "dataset": "turbopanel_server_metrics_v6"
+          "dataset": "testing_turbopanel_server_metrics_v6"
         }
       ],
       "r2_buckets": [
@@ -285,6 +290,146 @@
         // Which deployment this is; /api/health reports it and the UI labels
         // non-production builds with it (live shows no label).
         "TURBOPANEL_ENVIRONMENT": "testing",
+        // Read side of SERVER_METRICS above: must name the same dataset.
+        "TURBOPANEL_SERVER_METRICS_AE_DATASET": "testing_turbopanel_server_metrics_v6",
+        "TURBOPANEL_EXECUTION_LOG_RETENTION_DAYS": "90"
+      }
+    },
+    // Staging: the release-candidate environment. Same shape as testing and live,
+    // its own everything — queue, Durable Object storage (per worker name), R2
+    // bucket, rate-limit namespaces (4xxx; dev 1xxx, testing 2xxx, live 3xxx), and
+    // a third Postgres reached through its own Hyperdrive pair. Follows the `rc`
+    // channel. Deployed from the `staging` branch by Workers Builds.
+    //
+    // BEFORE THE FIRST DEPLOY (the Hyperdrive pair below already exists):
+    //   1. `wrangler queues create staging-daemon-commands` and
+    //      `staging-daemon-commands-dlq`.
+    //   2. `wrangler r2 bucket create staging-turbopanel-execution-logs`.
+    //   3. Set the secrets (BETTER_AUTH_SECRET etc.) and the Stripe / OAuth / email
+    //      credentials for staging — separate from testing and live.
+    // TURBOPANEL_IS_SIGNUP_ENABLED is deliberately not committed here (like live):
+    // sign-up is opened from the dashboard or the admin console.
+    "staging": {
+      "name": "staging-instance",
+      "queues": {
+        "producers": [
+          { "binding": "TURBOPANEL_COMMAND_QUEUE", "queue": "staging-daemon-commands" }
+        ],
+        "consumers": [
+          {
+            "queue": "staging-daemon-commands",
+            "dead_letter_queue": "staging-daemon-commands-dlq",
+            "max_batch_size": 1,
+            "max_batch_timeout": 0,
+            "max_retries": 3
+          }
+        ]
+      },
+      "durable_objects": {
+        "bindings": [
+          {
+            "name": "DAEMON_CELL",
+            "class_name": "DaemonCellObject"
+          }
+        ]
+      },
+      "ratelimits": [
+        {
+          "name": "DAEMON_CONNECT_RATE_LIMITER",
+          "namespace_id": "4001",
+          "simple": { "limit": 6, "period": 60 }
+        },
+        {
+          "name": "DAEMON_REST_RATE_LIMITER",
+          "namespace_id": "4002",
+          "simple": { "limit": 30, "period": 60 }
+        },
+        {
+          "name": "CLIENT_AUTH_RATE_LIMITER",
+          "namespace_id": "4003",
+          "simple": { "limit": 10, "period": 60 }
+        },
+        {
+          "name": "CLIENT_AUTH_STRICT_RATE_LIMITER",
+          "namespace_id": "4008",
+          "simple": { "limit": 5, "period": 60 }
+        },
+        {
+          "name": "DAEMON_METRICS_RATE_LIMITER",
+          "namespace_id": "4004",
+          "simple": { "limit": 3, "period": 60 }
+        },
+        {
+          "name": "GITHUB_WEBHOOK_RATE_LIMITER",
+          "namespace_id": "4006",
+          "simple": { "limit": 120, "period": 60 }
+        },
+        {
+          "name": "GITLAB_WEBHOOK_RATE_LIMITER",
+          "namespace_id": "4007",
+          "simple": { "limit": 120, "period": 60 }
+        },
+        {
+          // Inbound Stripe events (`/webhook/stripe`). Same gate, its own bucket,
+          // and a modest budget — Stripe delivery volume is far below a push fan-out.
+          "name": "STRIPE_WEBHOOK_RATE_LIMITER",
+          "namespace_id": "4009",
+          "simple": { "limit": 60, "period": 60 }
+        }
+      ],
+      "triggers": { "crons": ["* * * * *"] },
+      "analytics_engine_datasets": [
+        {
+          "binding": "SERVER_METRICS",
+          "dataset": "staging_turbopanel_server_metrics_v6"
+        }
+      ],
+      "r2_buckets": [
+        {
+          "binding": "EXECUTION_LOGS",
+          "bucket_name": "staging-turbopanel-execution-logs"
+        }
+      ],
+      "hyperdrive": [
+        {
+          "binding": "HYPERDRIVE",
+          "id": "b1147c2f45c04f85a09131c586dc8e4b"
+        },
+        {
+          // A dedicated cached config for the staging Postgres origin (not the
+          // primary HYPERDRIVE id).
+          "binding": "HYPERDRIVE_CACHED",
+          "id": "0d759561de73482ab13ea79f416f99f7"
+        }
+      ],
+      "routes": [
+        {
+          "pattern": "staging.turbopanel.dev/api/*",
+          "zone_name": "turbopanel.dev"
+        },
+        {
+          "pattern": "staging.turbopanel.dev/ws/*",
+          "zone_name": "turbopanel.dev"
+        },
+        // Inbound Git provider webhooks. A prefix missing from this list never
+        // reaches the Worker at all — the UI Worker holds the apex as a custom
+        // domain and answers unknown paths with index.html and HTTP 200, which
+        // a Git provider reads as a delivered webhook and never retries.
+        {
+          "pattern": "staging.turbopanel.dev/webhook/*",
+          "zone_name": "turbopanel.dev"
+        }
+      ],
+      "vars": {
+        "TURBOPANEL_BASE_URL": "https://staging.turbopanel.dev",
+        "TURBOPANEL_UI_CORS_ORIGINS": "https://staging.turbopanel.io",
+        "CLOUDFLARE_ACCOUNT_ID": "a574c2793baa3e2276ac16e96097bc8c",
+        "TURBOPANEL_UPDATE_CHANNEL": "rc",
+        // Which deployment this is; /api/health reports it and the UI labels
+        // non-production builds with it (live shows no label).
+        "TURBOPANEL_ENVIRONMENT": "staging",
+        // Read side of SERVER_METRICS above: must name the same dataset.
+        "TURBOPANEL_SERVER_METRICS_AE_DATASET": "staging_turbopanel_server_metrics_v6",
         "TURBOPANEL_EXECUTION_LOG_RETENTION_DAYS": "90"
       }
     },
@@ -358,7 +503,7 @@
       "analytics_engine_datasets": [
         {
           "binding": "SERVER_METRICS",
-          "dataset": "turbopanel_server_metrics_v6"
+          "dataset": "live_turbopanel_server_metrics_v6"
         }
       ],
       "r2_buckets": [
@@ -401,6 +546,8 @@
         "CLOUDFLARE_ACCOUNT_ID": "a574c2793baa3e2276ac16e96097bc8c",
         "TURBOPANEL_UPDATE_CHANNEL": "release",
         "TURBOPANEL_ENVIRONMENT": "live",
+        // Read side of SERVER_METRICS above: must name the same dataset.
+        "TURBOPANEL_SERVER_METRICS_AE_DATASET": "live_turbopanel_server_metrics_v6",
         "TURBOPANEL_EXECUTION_LOG_RETENTION_DAYS": "90"
       }
     }

@@ -1,0 +1,24 @@
+name: Feature request
+description: Suggest an improvement
+labels: [enhancement]
+body:
+  - type: dropdown
+    id: component
+    attributes:
+      label: Which part is affected?
+      description: Issues for every TurboPanel repository are tracked here.
+      options:
+        - Control plane (this repository)
+        - Daemon (turbopaneld)
+        - Console UI
+        - Website or docs
+        - Dev tooling and release workflows
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like, and why?
+    validations:
+      required: true

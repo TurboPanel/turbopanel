@@ -41,14 +41,14 @@ type CapturedTransport = {
 
 function installTransportStub(
   sendMail: (mail: Record<string, unknown>) => Promise<unknown> = () =>
-    Promise.resolve({ messageId: 'test' }),
+    Promise.resolve({ messageId: 'test' })
 ): { transports: CapturedTransport[]; restore: () => void } {
   const transports: CapturedTransport[] = []
   const createStub = stub(nodemailer, 'createTransport', ((options: Record<string, unknown>) => {
     const transport = { options, sendMail }
     transports.push(transport)
     return transport
-  }) as typeof nodemailer.createTransport)
+  }) as unknown as typeof nodemailer.createTransport)
   return {
     transports,
     restore: () => createStub.restore(),
@@ -59,9 +59,10 @@ function smtpSender(env: Record<string, string | undefined> = SMTP_ENV): MailerS
   return createMailerSmtpSender({ db: undefined, env })
 }
 
-function assertFailure(
-  result: { success: boolean; error?: string; permanent?: boolean },
-): { error: string; permanent: boolean } {
+function assertFailure(result: { success: boolean; error?: string; permanent?: boolean }): {
+  error: string
+  permanent: boolean
+} {
   if (result.success) throw new TypeError('expected a failed send')
   if (typeof result.error !== 'string') throw new TypeError('expected an error string')
   if (typeof result.permanent !== 'boolean') {

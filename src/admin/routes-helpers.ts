@@ -9,6 +9,8 @@ import {
   type InstanceHostnameWireEntry,
 } from '../contracts/cell-protocol.ts'
 import { cellTrace } from '../lib/logger.ts'
+import { PublicUrlsApplyPayloadError } from './public-urls-apply-payload.ts'
+import { InstanceSecretSealingError } from '../features/install/instance-secret-sealing.ts'
 import {
   INSTANCE_HOSTNAME_SOURCES,
   type InstanceHostnameSource,
@@ -389,6 +391,26 @@ export function publicUrlsApplyWaitToResponse(
         body: { ok: false, applied: false, error: result.error },
       }
   }
+}
+
+export type PublicUrlsApplyErrorResponse =
+  | { status: 422; body: { ok: false; error: string; code: string } }
+  | { status: 503; body: { ok: false; error: string } }
+
+/**
+ * Map the apply-payload refusals to HTTP: sealing faults and code-less payload
+ * faults are 503, a typed client-actionable refusal is 422. `null` for anything
+ * else so the caller rethrows.
+ */
+export function publicUrlsApplyErrorResponse(err: unknown): PublicUrlsApplyErrorResponse | null {
+  if (err instanceof InstanceSecretSealingError) {
+    return { status: 503, body: { ok: false, error: err.message } }
+  }
+  if (!(err instanceof PublicUrlsApplyPayloadError)) return null
+  if (err.code) {
+    return { status: 422, body: { ok: false, error: err.message, code: err.code } }
+  }
+  return { status: 503, body: { ok: false, error: err.message } }
 }
 
 /**

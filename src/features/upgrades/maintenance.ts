@@ -97,7 +97,7 @@ export function traceUpgradeTick(
 ): void {
   const line = formatUpgradeTickDecision(decision)
   const key = line
-  if (lastTickLog && lastTickLog.key === key && now - lastTickLog.at < UPGRADE_TICK_LOG_REPEAT_MS) {
+  if (lastTickLog?.key === key && now - lastTickLog.at < UPGRADE_TICK_LOG_REPEAT_MS) {
     return
   }
   lastTickLog = { key, at: now }

@@ -40,81 +40,76 @@
  * Workers and Deno both import this module — no Deno APIs.
  */
 
-export const INSTANCE_VERSION_HEADER = "x-turbopanel-version";
-export const INSTANCE_REVISION_HEADER = "x-turbopanel-revision";
-export const CLIENT_VERSION_HEADER = "x-turbopanel-client-version";
+export const INSTANCE_VERSION_HEADER = 'x-turbopanel-version'
+export const INSTANCE_REVISION_HEADER = 'x-turbopanel-revision'
+export const CLIENT_VERSION_HEADER = 'x-turbopanel-client-version'
 
 /**
  * The oldest daemon this control plane will dispatch commands to. Bump when
  * a wire change stops being expand-only — never past what the current
  * release's installer ships.
  */
-export const MIN_SUPPORTED_DAEMON_VERSION = "0.1.0";
+export const MIN_SUPPORTED_DAEMON_VERSION = '0.1.0'
 
-const SEMVER_RE =
-  /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/;
+const SEMVER_RE = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/
 
 export type ParsedSemver = {
-  major: number;
-  minor: number;
-  patch: number;
-  prerelease: string[];
-};
+  major: number
+  minor: number
+  patch: number
+  prerelease: string[]
+}
 
-export function parseSemver(
-  value: string | undefined | null,
-): ParsedSemver | null {
-  const trimmed = value?.trim();
-  if (!trimmed) return null;
-  const m = SEMVER_RE.exec(
-    trimmed.startsWith("v") ? trimmed.slice(1) : trimmed,
-  );
-  if (!m) return null;
+export function parseSemver(value: string | undefined | null): ParsedSemver | null {
+  const trimmed = value?.trim()
+  if (!trimmed) return null
+  const m = SEMVER_RE.exec(trimmed.startsWith('v') ? trimmed.slice(1) : trimmed)
+  if (!m) return null
   return {
     major: Number(m[1]),
     minor: Number(m[2]),
     patch: Number(m[3]),
-    prerelease: m[4] ? m[4].split(".") : [],
-  };
+    prerelease: m[4] ? m[4].split('.') : [],
+  }
 }
 
 function compareIdentifiers(a: string, b: string): number {
-  const na = /^\d+$/.test(a);
-  const nb = /^\d+$/.test(b);
-  if (na && nb) return Number(a) - Number(b);
+  const na = /^\d+$/.test(a)
+  const nb = /^\d+$/.test(b)
+  if (na && nb) return Number(a) - Number(b)
   // Numeric identifiers sort before alphanumeric ones (semver §11.4.3).
-  if (na) return -1;
-  if (nb) return 1;
-  if (a < b) return -1;
-  if (a > b) return 1;
-  return 0;
+  if (na) return -1
+  if (nb) return 1
+  if (a < b) return -1
+  if (a > b) return 1
+  return 0
 }
 
 /** semver precedence: negative when `a` < `b`, zero when equal, positive when `a` > `b`. */
 export function compareSemver(a: ParsedSemver, b: ParsedSemver): number {
-  if (a.major !== b.major) return a.major - b.major;
-  if (a.minor !== b.minor) return a.minor - b.minor;
-  if (a.patch !== b.patch) return a.patch - b.patch;
+  if (a.major !== b.major) return a.major - b.major
+  if (a.minor !== b.minor) return a.minor - b.minor
+  if (a.patch !== b.patch) return a.patch - b.patch
   // A pre-release sorts before the release it precedes.
-  if (a.prerelease.length === 0 && b.prerelease.length === 0) return 0;
-  if (a.prerelease.length === 0) return 1;
-  if (b.prerelease.length === 0) return -1;
-  const n = Math.min(a.prerelease.length, b.prerelease.length);
+  if (a.prerelease.length === 0 && b.prerelease.length === 0) return 0
+  if (a.prerelease.length === 0) return 1
+  if (b.prerelease.length === 0) return -1
+  const n = Math.min(a.prerelease.length, b.prerelease.length)
   for (let i = 0; i < n; i += 1) {
-    const c = compareIdentifiers(a.prerelease[i], b.prerelease[i]);
-    if (c !== 0) return c;
+    const c = compareIdentifiers(a.prerelease[i], b.prerelease[i])
+    if (c !== 0) return c
   }
-  return a.prerelease.length - b.prerelease.length;
+  return a.prerelease.length - b.prerelease.length
 }
 
-export type DaemonSupportStatus = "supported" | "unsupported" | "unknown";
+export type DaemonSupportStatus = 'supported' | 'unsupported' | 'unknown'
 
 export type DaemonSupport = {
-  status: DaemonSupportStatus;
+  status: DaemonSupportStatus
   /** The version the daemon reported, verbatim; `null` when it sent none or something unparsable. */
-  version: string | null;
-  minVersion: string;
-};
+  version: string | null
+  minVersion: string
+}
 
 /**
  * Hold a daemon's reported version against `MIN_SUPPORTED_DAEMON_VERSION`.
@@ -123,29 +118,29 @@ export type DaemonSupport = {
  */
 export function resolveDaemonSupport(
   reportedVersion: string | undefined | null,
-  minVersion: string = MIN_SUPPORTED_DAEMON_VERSION,
+  minVersion: string = MIN_SUPPORTED_DAEMON_VERSION
 ): DaemonSupport {
-  const parsed = parseSemver(reportedVersion);
-  const floor = parseSemver(minVersion);
+  const parsed = parseSemver(reportedVersion)
+  const floor = parseSemver(minVersion)
   if (!parsed || !floor) {
     return {
-      status: "unknown",
+      status: 'unknown',
       version: parsed ? reportedVersion!.trim() : null,
       minVersion,
-    };
+    }
   }
   return {
-    status: compareSemver(parsed, floor) < 0 ? "unsupported" : "supported",
+    status: compareSemver(parsed, floor) < 0 ? 'unsupported' : 'supported',
     version: reportedVersion!.trim(),
     minVersion,
-  };
+  }
 }
 
 /** The command consumer's refusal, and the servers page's explanation. */
 export function daemonUnsupportedReason(support: DaemonSupport): string {
   return `Daemon version ${
-    support.version ?? "unknown"
-  } is below the supported minimum ${support.minVersion} — update the daemon`;
+    support.version ?? 'unknown'
+  } is below the supported minimum ${support.minVersion} — update the daemon`
 }
 
 /**
@@ -161,8 +156,8 @@ export function daemonUnsupportedReason(support: DaemonSupport): string {
  * re-implement semver comparison. An unknown peer version is not supported.
  */
 export const DAEMON_FEATURE_MIN_VERSIONS: Readonly<Record<string, string>> = {
-  "instance-cert-sources-per-hostname": "0.1.1",
-};
+  'instance-cert-sources-per-hostname': '0.1.1',
+}
 
 /**
  * Features this process advertises on the cell wire. Twin of
@@ -174,59 +169,62 @@ export const DAEMON_FEATURE_MIN_VERSIONS: Readonly<Record<string, string>> = {
  * them as the same gate.
  */
 export const DAEMON_WIRE_FEATURES = [
-  "managed-upgrade-v1",
-  "update-progress-v1",
-  "sealed-instance-secrets-v1",
-] as const;
+  'managed-upgrade-v1',
+  'update-progress-v1',
+  'sealed-instance-secrets-v1',
+  'managed-health-v1',
+] as const
 
-export type DaemonWireFeature = (typeof DAEMON_WIRE_FEATURES)[number];
+export type DaemonWireFeature = (typeof DAEMON_WIRE_FEATURES)[number]
 
 /**
  * The daemon opens `tpdaemon` envelopes on `public-urls-update`
  * (`keyEnvelope`) and `tunnel-token` (`tokenEnvelope`). Without it the
  * control plane still sends the legacy plaintext fields.
  */
-export const SEALED_INSTANCE_SECRETS_FEATURE: DaemonWireFeature =
-  "sealed-instance-secrets-v1";
+export const SEALED_INSTANCE_SECRETS_FEATURE: DaemonWireFeature = 'sealed-instance-secrets-v1'
+
+/**
+ * The daemon answers `managed-health-request` with `managed-health-result`
+ * (a fresh replication observation for one member). Without it the control
+ * plane never sends the request and keeps using the stored observation.
+ */
+export const MANAGED_HEALTH_FEATURE: DaemonWireFeature = 'managed-health-v1'
 
 /** Features that need an instance at or above a semver. Empty until one lands. */
-export const INSTANCE_FEATURE_MIN_VERSIONS: Readonly<Record<string, string>> =
-  {};
+export const INSTANCE_FEATURE_MIN_VERSIONS: Readonly<Record<string, string>> = {}
 
-function peerSupportsFeature(
-  parsed: ParsedSemver | null,
-  minVersion: string,
-): boolean {
-  if (!parsed) return false;
-  const floor = parseSemver(minVersion);
-  if (!floor) return false;
-  return compareSemver(parsed, floor) >= 0;
+function peerSupportsFeature(parsed: ParsedSemver | null, minVersion: string): boolean {
+  if (!parsed) return false
+  const floor = parseSemver(minVersion)
+  if (!floor) return false
+  return compareSemver(parsed, floor) >= 0
 }
 
 function resolvePeerCapabilities(
   reportedVersion: string | undefined | null,
-  floors: Readonly<Record<string, string>>,
+  floors: Readonly<Record<string, string>>
 ): Record<string, boolean> {
-  const parsed = parseSemver(reportedVersion);
-  const out: Record<string, boolean> = {};
+  const parsed = parseSemver(reportedVersion)
+  const out: Record<string, boolean> = {}
   for (const [feature, minVersion] of Object.entries(floors)) {
-    out[feature] = peerSupportsFeature(parsed, minVersion);
+    out[feature] = peerSupportsFeature(parsed, minVersion)
   }
-  return out;
+  return out
 }
 
 /** Which daemon-rendered features a reported daemon version can serve. */
 export function resolveDaemonCapabilities(
   reportedVersion: string | undefined | null,
-  floors: Readonly<Record<string, string>> = DAEMON_FEATURE_MIN_VERSIONS,
+  floors: Readonly<Record<string, string>> = DAEMON_FEATURE_MIN_VERSIONS
 ): Record<string, boolean> {
-  return resolvePeerCapabilities(reportedVersion, floors);
+  return resolvePeerCapabilities(reportedVersion, floors)
 }
 
 /** Which instance-side features a reported control-plane version can serve. */
 export function resolveInstanceCapabilities(
   reportedVersion: string | undefined | null,
-  floors: Readonly<Record<string, string>> = INSTANCE_FEATURE_MIN_VERSIONS,
+  floors: Readonly<Record<string, string>> = INSTANCE_FEATURE_MIN_VERSIONS
 ): Record<string, boolean> {
-  return resolvePeerCapabilities(reportedVersion, floors);
+  return resolvePeerCapabilities(reportedVersion, floors)
 }

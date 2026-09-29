@@ -1,4 +1,5 @@
 import type { Db } from '../../db/connection.ts'
+import { forEachSequential } from '../../lib/sequential.ts'
 import { grant } from '../../db/schema.ts'
 import { isGrantablePermissionKey, type PermissionKey } from '../authz/catalog.ts'
 import {
@@ -24,9 +25,7 @@ export type InvitationGrantSpec = {
   permissionKey: string
 }
 
-export function defaultInvitationGrants(
-  organizationId: string,
-): InvitationGrantSpec[] {
+export function defaultInvitationGrants(organizationId: string): InvitationGrantSpec[] {
   return [
     {
       entityType: 'organization',
@@ -37,10 +36,9 @@ export function defaultInvitationGrants(
 }
 
 function parseGrantTarget(
-  record: Record<string, unknown>,
+  record: Record<string, unknown>
 ): Pick<InvitationGrantSpec, 'permissionKey'> | null {
-  const permissionKey =
-    typeof record.permissionKey === 'string' ? record.permissionKey : undefined
+  const permissionKey = typeof record.permissionKey === 'string' ? record.permissionKey : undefined
 
   if (!permissionKey) return null
   if (!isGrantablePermissionKey(permissionKey)) return null
@@ -48,17 +46,13 @@ function parseGrantTarget(
   return { permissionKey }
 }
 
-function parseInvitationGrantEntry(
-  entry: unknown,
-): InvitationGrantSpec | null | 'invalid' {
+function parseInvitationGrantEntry(entry: unknown): InvitationGrantSpec | null | 'invalid' {
   if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
     return 'invalid'
   }
   const record = entry as Record<string, unknown>
-  const entityType =
-    typeof record.entityType === 'string' ? record.entityType : null
-  const entityId =
-    typeof record.entityId === 'string' ? record.entityId : null
+  const entityType = typeof record.entityType === 'string' ? record.entityType : null
+  const entityId = typeof record.entityId === 'string' ? record.entityId : null
 
   if (!entityType || !entityId) {
     return 'invalid'
@@ -81,9 +75,7 @@ function parseInvitationGrantEntry(
   }
 }
 
-export function parseInvitationGrants(
-  raw: unknown,
-): InvitationGrantSpec[] | null {
+export function parseInvitationGrants(raw: unknown): InvitationGrantSpec[] | null {
   if (raw == null) return null
   if (!Array.isArray(raw)) return null
 
@@ -99,7 +91,7 @@ export function parseInvitationGrants(
 
 export function resolveInvitationGrants(
   raw: unknown,
-  organizationId: string,
+  organizationId: string
 ): InvitationGrantSpec[] {
   return parseInvitationGrants(raw) ?? defaultInvitationGrants(organizationId)
 }
@@ -109,14 +101,14 @@ export async function materializeInvitationGrants(
   db: Db,
   userId: string,
   grants: InvitationGrantSpec[],
-  organizationId: string,
+  organizationId: string
 ): Promise<void> {
-  for (const grantSpec of grants) {
+  await forEachSequential(grants, async (grantSpec) => {
     const targetResult = await validateGrantEntityTarget(
       db,
       grantSpec.entityType,
       grantSpec.entityId,
-      organizationId,
+      organizationId
     )
     if (!targetResult.ok) {
       throw new InvitationGrantValidationError(targetResult.error, targetResult.status)
@@ -124,7 +116,7 @@ export async function materializeInvitationGrants(
 
     const permissionCompat = validatePermissionEntityCompatibility(
       grantSpec.permissionKey as PermissionKey,
-      grantSpec.entityType,
+      grantSpec.entityType
     )
     if (!permissionCompat.ok) {
       throw new InvitationGrantValidationError(permissionCompat.error, 400)
@@ -148,5 +140,5 @@ export async function materializeInvitationGrants(
           grant.permission,
         ],
       })
-  }
+  })
 }

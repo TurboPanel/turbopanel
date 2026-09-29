@@ -4,6 +4,7 @@ import { nowIso } from '../commands/ids.ts'
 import { isValidDisplayName, normalizeDisplayName } from '../../lib/display-name-format.ts'
 import { marker, tag } from '../../db/schema.ts'
 import { uniqueViolationMessage } from '../../db/unique-violation.ts'
+import { forEachSequential } from '../../lib/sequential.ts'
 
 export const TAGGABLE_PARENTS = [
   { bodyKey: 'serverId', column: 'serverId', entityKind: 'server' },
@@ -15,8 +16,8 @@ export const TAGGABLE_PARENTS = [
   { bodyKey: 'storageId', column: 'storageId', entityKind: 'storage' },
 ] as const
 
-export type TaggableParentColumn = typeof TAGGABLE_PARENTS[number]['column']
-export type TaggableEntityKind = typeof TAGGABLE_PARENTS[number]['entityKind']
+export type TaggableParentColumn = (typeof TAGGABLE_PARENTS)[number]['column']
+export type TaggableEntityKind = (typeof TAGGABLE_PARENTS)[number]['entityKind']
 
 export type ParsedTagParent = {
   column: TaggableParentColumn
@@ -56,9 +57,7 @@ const TAG_SELECT = {
 
 const TAG_UNIQUE_INDEX = 'uniq_tag_organization_name'
 
-export type ParseTagNameResult =
-  | { ok: true; name: string }
-  | { ok: false; error: string }
+export type ParseTagNameResult = { ok: true; name: string } | { ok: false; error: string }
 
 /** Parse/normalize a tag label. Schema has no name-format CHECK. */
 export function parseTagNameInput(value: unknown): ParseTagNameResult {
@@ -117,14 +116,8 @@ export function isTagUniqueViolation(err: unknown): boolean {
   return message.includes(TAG_UNIQUE_INDEX)
 }
 
-export async function listOrganizationTags(
-  db: Db,
-  organizationId: string,
-): Promise<TagRecord[]> {
-  const rows = await db
-    .select()
-    .from(tag)
-    .where(eq(tag.organizationId, organizationId))
+export async function listOrganizationTags(db: Db, organizationId: string): Promise<TagRecord[]> {
+  const rows = await db.select().from(tag).where(eq(tag.organizationId, organizationId))
 
   return sortTagRecords(rows.map(serializeTag))
 }
@@ -132,7 +125,7 @@ export async function listOrganizationTags(
 export async function listTagsForEntity(
   db: Db,
   column: TaggableParentColumn,
-  entityId: string,
+  entityId: string
 ): Promise<TagRecord[]> {
   const rows = await db
     .select(TAG_SELECT)
@@ -146,7 +139,7 @@ export async function listTagsForEntity(
 export async function listTagsForEntities(
   db: Db,
   column: TaggableParentColumn,
-  entityIds: readonly string[],
+  entityIds: readonly string[]
 ): Promise<Map<string, TagRecord[]>> {
   const result = new Map<string, TagRecord[]>()
   if (entityIds.length === 0) return result
@@ -178,14 +171,8 @@ export async function listTagsForEntities(
   return result
 }
 
-export async function listMarkersForTag(
-  db: Db,
-  tagId: string,
-): Promise<MarkerRecord[]> {
-  const rows = await db
-    .select()
-    .from(marker)
-    .where(eq(marker.tagId, tagId))
+export async function listMarkersForTag(db: Db, tagId: string): Promise<MarkerRecord[]> {
+  const rows = await db.select().from(marker).where(eq(marker.tagId, tagId))
 
   return rows.map(serializeMarker)
 }
@@ -197,7 +184,7 @@ export async function createTag(
     name: string
     description: string | null
     color: string | null
-  },
+  }
 ): Promise<string> {
   const name = requireTagName(values.name)
   const [inserted] = await db
@@ -224,11 +211,7 @@ export type TagUpdateFields = {
   updatedAt: string
 }
 
-export async function updateTag(
-  db: Db,
-  id: string,
-  fields: TagUpdateFields,
-): Promise<void> {
+export async function updateTag(db: Db, id: string, fields: TagUpdateFields): Promise<void> {
   const patch: TagUpdateFields = { ...fields }
   if (patch.name !== undefined) {
     patch.name = requireTagName(patch.name)
@@ -240,16 +223,16 @@ export async function deleteTag(db: Db, id: string): Promise<void> {
   await db.delete(tag).where(eq(tag.id, id))
 }
 
-export async function setEntityTags(
+export function setEntityTags(
   db: Db,
   column: TaggableParentColumn,
   entityId: string,
-  tagIds: readonly string[],
+  tagIds: readonly string[]
 ): Promise<TagRecord[]> {
   return db.transaction(async (tx) => {
     const now = nowIso()
-    for (const tagId of tagIds) {
-      await tx
+    await forEachSequential(tagIds, (tagId) =>
+      tx
         .insert(marker)
         .values({
           tagId,
@@ -260,16 +243,14 @@ export async function setEntityTags(
           target: [marker.tagId, marker[column]],
           where: sql`${marker[column]} IS NOT NULL`,
         })
-    }
+    )
 
     if (tagIds.length === 0) {
       await tx.delete(marker).where(eq(marker[column], entityId))
     } else {
       await tx
         .delete(marker)
-        .where(
-          and(eq(marker[column], entityId), notInArray(marker.tagId, [...tagIds])),
-        )
+        .where(and(eq(marker[column], entityId), notInArray(marker.tagId, [...tagIds])))
     }
 
     return listTagsForEntity(tx, column, entityId)
