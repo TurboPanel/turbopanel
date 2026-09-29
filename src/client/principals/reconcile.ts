@@ -35,26 +35,18 @@ export type PrincipalsReconcileActor = {
  * the account can have been materialized. An environment with no server
  * assigned yet has nothing to reconcile.
  */
-export async function serversForPrincipal(
-  db: Db,
-  principalId: string,
-): Promise<string[]> {
+export async function serversForPrincipal(db: Db, principalId: string): Promise<string[]> {
   const rows = await db
     .select({ serverId: environment.serverId })
     .from(principal)
     .innerJoin(project, eq(principal.projectId, project.id))
     .innerJoin(environment, eq(environment.projectId, project.id))
-    .where(
-      and(eq(principal.id, principalId), isNotNull(environment.serverId)),
-    )
+    .where(and(eq(principal.id, principalId), isNotNull(environment.serverId)))
   return [...new Set(rows.map((row) => row.serverId as string))]
 }
 
 /** Every principal TurboPanel manages on one server — the completeness rule. */
-export async function principalIdsOnServer(
-  db: Db,
-  serverId: string,
-): Promise<string[]> {
+export async function principalIdsOnServer(db: Db, serverId: string): Promise<string[]> {
   const rows = await db
     .select({ principalId: principal.id })
     .from(principal)
@@ -84,7 +76,7 @@ export async function enqueuePrincipalsReconcile(
   db: Db,
   queue: CommandQueue | undefined,
   actor: PrincipalsReconcileActor,
-  serverIds: readonly string[],
+  serverIds: readonly string[]
 ): Promise<PrincipalsReconcileOutcome> {
   const queued: string[] = []
   const failed: string[] = []
@@ -132,7 +124,7 @@ export async function reconcilePrincipalAccess(
   db: Db,
   queue: CommandQueue | undefined,
   actor: PrincipalsReconcileActor,
-  principalId: string,
+  principalId: string
 ): Promise<PrincipalsReconcileOutcome> {
   const serverIds = await serversForPrincipal(db, principalId)
   return await enqueuePrincipalsReconcile(db, queue, actor, serverIds)
@@ -143,7 +135,7 @@ export async function reconcilePrincipalsAccess(
   db: Db,
   queue: CommandQueue | undefined,
   actor: PrincipalsReconcileActor,
-  principalIds: readonly string[],
+  principalIds: readonly string[]
 ): Promise<PrincipalsReconcileOutcome> {
   if (principalIds.length === 0) {
     return { queuedServerIds: [], failedServerIds: [] }
@@ -153,12 +145,7 @@ export async function reconcilePrincipalsAccess(
     .from(principal)
     .innerJoin(project, eq(principal.projectId, project.id))
     .innerJoin(environment, eq(environment.projectId, project.id))
-    .where(
-      and(
-        inArray(principal.id, [...principalIds]),
-        isNotNull(environment.serverId),
-      ),
-    )
+    .where(and(inArray(principal.id, [...principalIds]), isNotNull(environment.serverId)))
   const serverIds = [...new Set(rows.map((row) => row.serverId as string))]
   return await enqueuePrincipalsReconcile(db, queue, actor, serverIds)
 }

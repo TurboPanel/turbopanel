@@ -87,7 +87,7 @@ export type CreateTestClockInput = Readonly<{
 
 export async function createTestClock(
   client: StripeClient,
-  input: CreateTestClockInput,
+  input: CreateTestClockInput
 ): Promise<TestClock> {
   const body: StripeFormParams = { frozen_time: Math.floor(input.frozenTime) }
   if (input.name) body.name = input.name
@@ -99,7 +99,7 @@ export async function createTestClock(
 
 export async function getTestClock(client: StripeClient, clockId: string): Promise<TestClock> {
   const raw = await client.get<StripeObject>(
-    `/v1/test_helpers/test_clocks/${encodeURIComponent(clockId)}`,
+    `/v1/test_helpers/test_clocks/${encodeURIComponent(clockId)}`
   )
   return parseClock(raw)
 }
@@ -111,7 +111,7 @@ export async function getTestClock(client: StripeClient, clockId: string): Promi
 export async function waitForTestClockReady(
   client: StripeClient,
   clockId: string,
-  opts: TestClockPollOpts = {},
+  opts: TestClockPollOpts = {}
 ): Promise<TestClock> {
   const pollIntervalMs = opts.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS
@@ -155,12 +155,12 @@ export type AdvanceTestClockInput = Readonly<{
 export async function advanceTestClock(
   client: StripeClient,
   input: AdvanceTestClockInput,
-  opts: TestClockPollOpts = {},
+  opts: TestClockPollOpts = {}
 ): Promise<TestClock> {
   await client.post<StripeObject>(
     `/v1/test_helpers/test_clocks/${encodeURIComponent(input.clockId)}/advance`,
     { frozen_time: Math.floor(input.frozenTime) },
-    { ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {}) },
+    { ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey } : {}) }
   )
   return await waitForTestClockReady(client, input.clockId, opts)
 }

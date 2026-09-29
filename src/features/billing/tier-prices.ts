@@ -36,7 +36,11 @@ export type ResolveTierPriceResult =
   | { ok: false; reason: TierPriceRefusal; failures?: readonly string[] }
 
 /** Refresh the row's display price from the product; best-effort, never throws. */
-export async function cacheTierPrice(db: Db, tierId: string, product: ProviderProduct): Promise<void> {
+export async function cacheTierPrice(
+  db: Db,
+  tierId: string,
+  product: ProviderProduct
+): Promise<void> {
   const price = product.defaultPrice
   if (price?.unitAmount == null) return
   try {
@@ -54,12 +58,14 @@ export async function cacheTierPrice(db: Db, tierId: string, product: ProviderPr
 export async function resolveTierPrice(
   db: Db,
   gateway: BillingGateway,
-  tierId: string,
+  tierId: string
 ): Promise<ResolveTierPriceResult> {
   const purchasable = await resolvePurchasableTier(db, tierId)
   if (!purchasable.ok) return purchasable
   const product = await gateway.getProduct(purchasable.tier.providerProductId)
-  const taxDefaults = needsAccountTaxDefaults(product) ? await gateway.getTaxDefaults() : NO_TAX_DEFAULTS
+  const taxDefaults = needsAccountTaxDefaults(product)
+    ? await gateway.getTaxDefaults()
+    : NO_TAX_DEFAULTS
   const verification = gateway.verifyProduct(product, taxDefaults)
   if (!verification.ok || !product.defaultPrice) {
     return { ok: false, reason: 'product_unsellable', failures: verification.failures }
@@ -77,7 +83,7 @@ export async function priceMapWithIntentTargets(
   db: Db,
   gateway: BillingGateway,
   priceByTier: ReadonlyMap<string, string>,
-  ledger: PendingChangeLedger,
+  ledger: PendingChangeLedger
 ): Promise<Map<string, string>> {
   const out = new Map(priceByTier)
   const missing = deferredIntentTargets(ledger).filter((tierId) => !out.has(tierId))

@@ -95,7 +95,7 @@ export function isEmailActive(settings: ResolvedEmailSettings): boolean {
 /** Settings-based signup verification gate and enqueue guards (runtime-specific). */
 export function isEmailActiveForRuntime(
   settings: ResolvedEmailSettings,
-  runtime: 'deno' | 'workers',
+  runtime: 'deno' | 'workers'
 ): boolean {
   if (settings.provider === 'mailgun') {
     const apiKey = settings.mailgunApiKey?.trim() ?? ''
@@ -138,7 +138,7 @@ function parseProvider(value: string): EmailProvider {
   if (normalized === 'mailpit') {
     compatLogWarn(
       'email',
-      'PROVIDER mailpit is deprecated; use mailpit-api (Workers) or mailpit-smtp (Deno)',
+      'PROVIDER mailpit is deprecated; use mailpit-api (Workers) or mailpit-smtp (Deno)'
     )
     return 'mailpit-smtp'
   }
@@ -148,7 +148,7 @@ function parseProvider(value: string): EmailProvider {
 function metaFromResolved(
   shortKey: EmailSettingShortKey,
   resolved: ResolvedSetting,
-  resolver: SettingsResolver,
+  resolver: SettingsResolver
 ): EmailSettingMeta {
   return {
     fullKey: fullEmailSettingKey(shortKey),
@@ -168,9 +168,7 @@ function readSystemEmailObject(value: unknown): Record<string, string> {
   for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
     if (typeof raw === 'string') {
       out[key] = raw
-    } else if (
-      typeof raw === 'number' || typeof raw === 'boolean' || typeof raw === 'bigint'
-    ) {
+    } else if (typeof raw === 'number' || typeof raw === 'boolean' || typeof raw === 'bigint') {
       out[key] = `${raw}`
     } else if (raw != null) {
       out[key] = JSON.stringify(raw)
@@ -194,16 +192,15 @@ type EmailSettingMutation = {
   value: string | null
 }
 
-function isAllowedEmailSettingValue(
-  shortKey: EmailSettingShortKey,
-  trimmed: string,
-): boolean {
+function isAllowedEmailSettingValue(shortKey: EmailSettingShortKey, trimmed: string): boolean {
   if (shortKey === 'PROVIDER') {
-    return trimmed === 'smtp' ||
+    return (
+      trimmed === 'smtp' ||
       trimmed === 'mailgun' ||
       trimmed === 'mailpit-api' ||
       trimmed === 'mailpit-smtp' ||
       trimmed === 'mailpit'
+    )
   }
   if (shortKey === 'MAILGUN_REGION') {
     return trimmed === 'us' || trimmed === 'eu'
@@ -213,7 +210,7 @@ function isAllowedEmailSettingValue(
 
 function collectEmailSettingMutations(
   resolver: SettingsResolver,
-  updates: Record<string, string | null>,
+  updates: Record<string, string | null>
 ): EmailSettingMutation[] {
   const mutations: EmailSettingMutation[] = []
 
@@ -246,14 +243,12 @@ function collectEmailSettingMutations(
  */
 async function sealEmailMutation(
   mutation: EmailSettingMutation,
-  dataEncryptionSecrets: DerivedSecretsConfig | undefined,
+  dataEncryptionSecrets: DerivedSecretsConfig | undefined
 ): Promise<EmailSettingMutation> {
   if (mutation.value === null) return mutation
   if (!EMAIL_SECRET_KEYS.has(mutation.shortKey)) return mutation
   if (!dataEncryptionSecrets) {
-    throw new Error(
-      'data encryption secrets required to store email secret settings',
-    )
+    throw new Error('data encryption secrets required to store email secret settings')
   }
   return {
     shortKey: mutation.shortKey,
@@ -264,12 +259,12 @@ async function sealEmailMutation(
 async function applyEmailSettingMutations(
   db: Db,
   mutations: EmailSettingMutation[],
-  dataEncryptionSecrets: DerivedSecretsConfig | undefined,
+  dataEncryptionSecrets: DerivedSecretsConfig | undefined
 ): Promise<void> {
   if (mutations.length === 0) return
 
   const sealed = await Promise.all(
-    mutations.map((mutation) => sealEmailMutation(mutation, dataEncryptionSecrets)),
+    mutations.map((mutation) => sealEmailMutation(mutation, dataEncryptionSecrets))
   )
 
   await db.transaction(async (tx) => {
@@ -319,7 +314,7 @@ async function applyEmailSettingMutations(
  */
 async function decryptEmailSecretValue(
   value: string,
-  dataEncryptionSecrets: DerivedSecretsConfig | undefined,
+  dataEncryptionSecrets: DerivedSecretsConfig | undefined
 ): Promise<string | undefined> {
   if (!isSealedEnvelope(value)) {
     return undefined
@@ -336,7 +331,7 @@ async function decryptEmailSecretValue(
 
 async function loadEmailSettingDbValues(
   db: Db,
-  dataEncryptionSecrets: DerivedSecretsConfig | undefined,
+  dataEncryptionSecrets: DerivedSecretsConfig | undefined
 ): Promise<Map<string, string>> {
   const obj = await loadSystemEmailObject(db)
   const out = new Map<string, string>()
@@ -363,7 +358,7 @@ async function loadEmailSettingDbValues(
 async function createEmailSettingsResolver(
   db: Db | undefined,
   env: Record<string, string | undefined>,
-  dataEncryptionSecrets: DerivedSecretsConfig | undefined,
+  dataEncryptionSecrets: DerivedSecretsConfig | undefined
 ): Promise<SettingsResolver> {
   const dbValues = db
     ? await loadEmailSettingDbValues(db, dataEncryptionSecrets)
@@ -406,11 +401,9 @@ async function loadEmailSettingPresenceDbValues(db: Db): Promise<Map<string, str
 
 async function createEmailPresenceResolver(
   db: Db | undefined,
-  env: Record<string, string | undefined>,
+  env: Record<string, string | undefined>
 ): Promise<SettingsResolver> {
-  const dbValues = db
-    ? await loadEmailSettingPresenceDbValues(db)
-    : new Map<string, string>()
+  const dbValues = db ? await loadEmailSettingPresenceDbValues(db) : new Map<string, string>()
   return new SettingsResolver({
     prefix: EMAIL_SETTINGS_PREFIX,
     keys: EMAIL_SETTINGS_SCHEMA,
@@ -431,13 +424,12 @@ async function createEmailPresenceResolver(
 export async function resolveEmailActivePresence(
   db: Db | undefined,
   env: Record<string, string | undefined>,
-  runtime: 'deno' | 'workers' = 'deno',
+  runtime: 'deno' | 'workers' = 'deno'
 ): Promise<boolean> {
   const resolver = await createEmailPresenceResolver(db, normalizeMailpitApiEnv(env))
   const provider = parseProvider(resolver.resolve('PROVIDER').value)
   if (provider === 'mailpit-api') {
-    return runtime === 'workers' &&
-      resolver.resolve('MAILPIT_API_URL').value.trim() !== ''
+    return runtime === 'workers' && resolver.resolve('MAILPIT_API_URL').value.trim() !== ''
   }
   if (provider === 'mailpit-smtp') {
     return runtime === 'deno'
@@ -449,8 +441,10 @@ export async function resolveEmailActivePresence(
     return host !== '' && port !== '' && !Number.isNaN(Number.parseInt(port, 10))
   }
   if (provider === 'mailgun') {
-    return resolver.resolve('MAILGUN_API_KEY').value.trim() !== '' &&
+    return (
+      resolver.resolve('MAILGUN_API_KEY').value.trim() !== '' &&
       resolver.resolve('MAILGUN_DOMAIN').value.trim() !== ''
+    )
   }
   return false
 }
@@ -458,7 +452,7 @@ export async function resolveEmailActivePresence(
 export async function resolveEmailSettings(
   db: Db | undefined,
   env: Record<string, string | undefined>,
-  dataEncryptionSecrets?: DerivedSecretsConfig,
+  dataEncryptionSecrets?: DerivedSecretsConfig
 ): Promise<ResolvedEmailSettings> {
   const runtimeEnv = normalizeMailpitRuntimeEnv(env)
   const resolver = await createEmailSettingsResolver(db, runtimeEnv, dataEncryptionSecrets)
@@ -470,13 +464,12 @@ export async function resolveEmailSettings(
 
   const provider = parseProvider(keys.PROVIDER.value)
   const from = keys.FROM.value.trim() || EMAIL_SETTINGS_SCHEMA.FROM!
-  const ratePerMinute = keys.RATE_LIMIT_PER_MINUTE.value.trim() ||
-    EMAIL_SETTINGS_SCHEMA.RATE_LIMIT_PER_MINUTE!
+  const ratePerMinute =
+    keys.RATE_LIMIT_PER_MINUTE.value.trim() || EMAIL_SETTINGS_SCHEMA.RATE_LIMIT_PER_MINUTE!
   const burstRaw = keys.RATE_LIMIT_BURST.value.trim()
   const burstParsed = Number.parseInt(burstRaw, 10)
-  const effectiveBurst = burstRaw !== '' && Number.isFinite(burstParsed) && burstParsed > 0
-    ? burstRaw
-    : ratePerMinute
+  const effectiveBurst =
+    burstRaw !== '' && Number.isFinite(burstParsed) && burstParsed > 0 ? burstRaw : ratePerMinute
   if (keys.RATE_LIMIT_BURST.value !== effectiveBurst) {
     keys.RATE_LIMIT_BURST = {
       ...keys.RATE_LIMIT_BURST,
@@ -486,23 +479,24 @@ export async function resolveEmailSettings(
   const mailgunApiKey = keys.MAILGUN_API_KEY.value.trim()
   const mailgunDomain = keys.MAILGUN_DOMAIN.value.trim()
   const mailgunRegion = parseMailgunRegion(
-    keys.MAILGUN_REGION.value.trim() || EMAIL_SETTINGS_SCHEMA.MAILGUN_REGION!,
+    keys.MAILGUN_REGION.value.trim() || EMAIL_SETTINGS_SCHEMA.MAILGUN_REGION!
   )
   const mailgunApiBase = resolveMailgunApiBase(mailgunRegion)
-  const smtp = provider === 'mailpit-smtp'
-    ? buildMailpitSmtpConfig(
-      keys.SMTP_HOST.value,
-      keys.SMTP_PORT.value,
-      keys.MAILPIT_SMTP_PORT.value,
-      keys.SMTP_USER.value,
-      keys.SMTP_PASS.value,
-    )
-    : parseExplicitSmtpConfig(
-      keys.SMTP_HOST.value,
-      keys.SMTP_PORT.value,
-      keys.SMTP_USER.value,
-      keys.SMTP_PASS.value,
-    )
+  const smtp =
+    provider === 'mailpit-smtp'
+      ? buildMailpitSmtpConfig(
+          keys.SMTP_HOST.value,
+          keys.SMTP_PORT.value,
+          keys.MAILPIT_SMTP_PORT.value,
+          keys.SMTP_USER.value,
+          keys.SMTP_PASS.value
+        )
+      : parseExplicitSmtpConfig(
+          keys.SMTP_HOST.value,
+          keys.SMTP_PORT.value,
+          keys.SMTP_USER.value,
+          keys.SMTP_PASS.value
+        )
 
   return {
     provider,
@@ -522,7 +516,7 @@ export type EmailSettingApiEntry = {
 }
 
 export function emailSettingsToApiShape(
-  resolved: ResolvedEmailSettings,
+  resolved: ResolvedEmailSettings
 ): Record<string, EmailSettingApiEntry> {
   const out: Record<string, EmailSettingApiEntry> = {}
 
@@ -554,7 +548,7 @@ export async function updateEmailSettings(
   db: Db,
   env: Record<string, string | undefined>,
   updates: Record<string, string | null>,
-  dataEncryptionSecrets?: DerivedSecretsConfig,
+  dataEncryptionSecrets?: DerivedSecretsConfig
 ): Promise<ResolvedEmailSettings> {
   const resolver = await createEmailSettingsResolver(db, env, dataEncryptionSecrets)
   const mutations = collectEmailSettingMutations(resolver, updates)
@@ -567,9 +561,7 @@ export async function updateEmailSettings(
  * which requires data-encryption secrets to seal at rest. Used by the admin
  * route to gate DB-backed secret writes, mirroring TLS / variable secret writes.
  */
-export function emailUpdatesRequireEncryption(
-  updates: Record<string, string | null>,
-): boolean {
+export function emailUpdatesRequireEncryption(updates: Record<string, string | null>): boolean {
   for (const [key, value] of Object.entries(updates)) {
     if (typeof value !== 'string') continue
     if (value.trim() === '') continue

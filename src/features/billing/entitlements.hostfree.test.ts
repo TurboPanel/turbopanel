@@ -6,7 +6,18 @@
 
 import { assertEquals } from '@std/assert'
 import { isNull } from 'drizzle-orm'
-import { allowance, key, lease, license, payer, server, setting, subscription, subscriptionItem, tier } from '../../db/schema.ts'
+import {
+  allowance,
+  key,
+  lease,
+  license,
+  payer,
+  server,
+  setting,
+  subscription,
+  subscriptionItem,
+  tier,
+} from '../../db/schema.ts'
 import { createMemoryDb } from '../../test-fixtures/memory-db.ts'
 import { syncEntitlementsForOrganization } from './entitlements.ts'
 import {
@@ -31,10 +42,21 @@ const NOW_MS = Date.parse(NOW)
 const GIB = 1024 ** 3
 
 const tierRow = (id: string, label: string, rank: number) => ({
-  id, createdAt: NOW, updatedAt: NOW, label, rank, provider: 'stripe', providerProductId: `prod_${label}`,
-  priceCents: 1000 * rank, currency: 'usd', isCustom: false, isActive: true,
+  id,
+  createdAt: NOW,
+  updatedAt: NOW,
+  label,
+  rank,
+  provider: 'stripe',
+  providerProductId: `prod_${label}`,
+  priceCents: 1000 * rank,
+  currency: 'usd',
+  isCustom: false,
+  isActive: true,
 })
-const hardware = (cores: number) => ({ resources: { cpus: [{ cores: { total: cores } }], memory: { totalBytes: 8 * GIB } } })
+const hardware = (cores: number) => ({
+  resources: { cpus: [{ cores: { total: cores } }], memory: { totalBytes: 8 * GIB } },
+})
 
 function seed(opts: {
   seats: { tierId: string; quantity: number }[]
@@ -44,28 +66,121 @@ function seed(opts: {
 }) {
   return createMemoryDb([
     [tier, [tierRow(S1, 'S1', 1), tierRow(S3, 'S3', 3)]],
-    [payer, [{ id: PAYER, organizationId: ORG, userId: null, provider: 'stripe', providerCustomerId: 'cus_1', taxId: null, createdAt: NOW, updatedAt: NOW }]],
-    [subscription, [{
-      id: SUB, payerId: PAYER, providerSubscriptionId: 'sub_1', status: opts.status ?? 'active',
-      currentPeriodEnd: opts.currentPeriodEnd ?? '2026-10-01T00:00:00.000Z', scheduleId: null,
-      graceExpiresAt: null, pastDueSince: null, createdAt: NOW, updatedAt: NOW,
-    }]],
-    [subscriptionItem, opts.seats.map((seat, index) => ({
-      id: `seat-${index}`, subscriptionId: SUB, tierId: seat.tierId, providerItemId: `si_${index}`,
-      providerPriceId: `price_${index}`, quantity: seat.quantity, createdAt: NOW, updatedAt: NOW,
-    }))],
-    [server, [
-      { id: SERVER_A, organizationId: ORG, createdAt: '2026-09-01T00:00:00.000Z', updatedAt: NOW, metadata: hardware(2), assignedTierId: null },
-      { id: SERVER_B, organizationId: ORG, createdAt: '2026-09-02T00:00:00.000Z', updatedAt: NOW, metadata: hardware(12), assignedTierId: S1 },
-    ]],
-    [license, [
-      { id: 'l-a', organizationId: ORG, serverId: SERVER_A, name: null, token: 'x', revokedAt: null, createdAt: NOW, updatedAt: NOW },
-      { id: 'l-b', organizationId: ORG, serverId: SERVER_B, name: null, token: 'x', revokedAt: null, createdAt: NOW, updatedAt: NOW },
-      { id: 'l-free', organizationId: ORG, serverId: null, name: null, token: 'x', revokedAt: null, createdAt: NOW, updatedAt: NOW },
-    ]],
-    [setting, opts.ledger
-      ? [{ id: 'set-1', key: billingPendingChangesKey(ORG), value: opts.ledger, createdAt: NOW, updatedAt: NOW }]
-      : []],
+    [
+      payer,
+      [
+        {
+          id: PAYER,
+          organizationId: ORG,
+          userId: null,
+          provider: 'stripe',
+          providerCustomerId: 'cus_1',
+          taxId: null,
+          createdAt: NOW,
+          updatedAt: NOW,
+        },
+      ],
+    ],
+    [
+      subscription,
+      [
+        {
+          id: SUB,
+          payerId: PAYER,
+          providerSubscriptionId: 'sub_1',
+          status: opts.status ?? 'active',
+          currentPeriodEnd: opts.currentPeriodEnd ?? '2026-10-01T00:00:00.000Z',
+          scheduleId: null,
+          graceExpiresAt: null,
+          pastDueSince: null,
+          createdAt: NOW,
+          updatedAt: NOW,
+        },
+      ],
+    ],
+    [
+      subscriptionItem,
+      opts.seats.map((seat, index) => ({
+        id: `seat-${index}`,
+        subscriptionId: SUB,
+        tierId: seat.tierId,
+        providerItemId: `si_${index}`,
+        providerPriceId: `price_${index}`,
+        quantity: seat.quantity,
+        createdAt: NOW,
+        updatedAt: NOW,
+      })),
+    ],
+    [
+      server,
+      [
+        {
+          id: SERVER_A,
+          organizationId: ORG,
+          createdAt: '2026-09-01T00:00:00.000Z',
+          updatedAt: NOW,
+          metadata: hardware(2),
+          assignedTierId: null,
+        },
+        {
+          id: SERVER_B,
+          organizationId: ORG,
+          createdAt: '2026-09-02T00:00:00.000Z',
+          updatedAt: NOW,
+          metadata: hardware(12),
+          assignedTierId: S1,
+        },
+      ],
+    ],
+    [
+      license,
+      [
+        {
+          id: 'l-a',
+          organizationId: ORG,
+          serverId: SERVER_A,
+          name: null,
+          token: 'x',
+          revokedAt: null,
+          createdAt: NOW,
+          updatedAt: NOW,
+        },
+        {
+          id: 'l-b',
+          organizationId: ORG,
+          serverId: SERVER_B,
+          name: null,
+          token: 'x',
+          revokedAt: null,
+          createdAt: NOW,
+          updatedAt: NOW,
+        },
+        {
+          id: 'l-free',
+          organizationId: ORG,
+          serverId: null,
+          name: null,
+          token: 'x',
+          revokedAt: null,
+          createdAt: NOW,
+          updatedAt: NOW,
+        },
+      ],
+    ],
+    [
+      setting,
+      opts.ledger
+        ? [
+            {
+              id: 'set-1',
+              key: billingPendingChangesKey(ORG),
+              value: opts.ledger,
+              createdAt: NOW,
+              updatedAt: NOW,
+            },
+          ]
+        : [],
+    ],
     [allowance, []],
     [key, []],
     [lease, []],
@@ -73,15 +188,22 @@ function seed(opts: {
 }
 
 async function assignments(db: ReturnType<typeof seed>) {
-  const rows = await db.select({ id: server.id, assignedTierId: server.assignedTierId }).from(server)
+  const rows = await db
+    .select({ id: server.id, assignedTierId: server.assignedTierId })
+    .from(server)
   return Object.fromEntries(rows.map((row) => [row.id, row.assignedTierId]))
 }
 
 test('a live subscription: the assignment follows the committed seats and a stale row moves', async () => {
-  const db = seed({ seats: [{ tierId: S1, quantity: 1 }, { tierId: S3, quantity: 1 }] })
+  const db = seed({
+    seats: [
+      { tierId: S1, quantity: 1 },
+      { tierId: S3, quantity: 1 },
+    ],
+  })
   const outcome = await syncEntitlementsForOrganization(
     { db, client: null, nowMs: NOW_MS },
-    { organizationId: ORG, providerSubscriptionId: 'sub_1', pendingUpdate: false },
+    { organizationId: ORG, providerSubscriptionId: 'sub_1', pendingUpdate: false }
   )
   assertEquals(outcome.action, 'synced')
   if (outcome.action !== 'synced') return
@@ -94,29 +216,65 @@ test('a live subscription: the assignment follows the committed seats and a stal
 })
 
 test('a landed intent is dropped from the ledger; an outstanding one survives', async () => {
-  const landed = newDeferredIntent('release-seat', { fromTierId: S3, toTierId: null, landsAt: '2026-09-01T00:00:00.000Z', fromQuantity: 2, nowMs: NOW_MS })
-  const parked = newDeferredIntent('release-seat', { fromTierId: S1, toTierId: null, landsAt: '2026-10-01T00:00:00.000Z', fromQuantity: 1, nowMs: NOW_MS })
+  const landed = newDeferredIntent('release-seat', {
+    fromTierId: S3,
+    toTierId: null,
+    landsAt: '2026-09-01T00:00:00.000Z',
+    fromQuantity: 2,
+    nowMs: NOW_MS,
+  })
+  const parked = newDeferredIntent('release-seat', {
+    fromTierId: S1,
+    toTierId: null,
+    landsAt: '2026-10-01T00:00:00.000Z',
+    fromQuantity: 1,
+    nowMs: NOW_MS,
+  })
   const db = seed({
-    seats: [{ tierId: S1, quantity: 1 }, { tierId: S3, quantity: 1 }],
-    ledger: { version: PENDING_CHANGES_LEDGER_VERSION, providerSubscriptionId: 'sub_1', intents: [landed, parked] },
+    seats: [
+      { tierId: S1, quantity: 1 },
+      { tierId: S3, quantity: 1 },
+    ],
+    ledger: {
+      version: PENDING_CHANGES_LEDGER_VERSION,
+      providerSubscriptionId: 'sub_1',
+      intents: [landed, parked],
+    },
   })
   const outcome = await syncEntitlementsForOrganization(
     { db, client: null, nowMs: NOW_MS },
-    { organizationId: ORG, providerSubscriptionId: 'sub_1', pendingUpdate: false },
+    { organizationId: ORG, providerSubscriptionId: 'sub_1', pendingUpdate: false }
   )
   assertEquals(outcome.action, 'synced')
   if (outcome.action !== 'synced') return
   assertEquals(outcome.result.landedIntentIds, [landed.id])
   const { ledger } = await readPendingChanges(db, ORG, 'sub_1')
-  assertEquals(ledger.intents.map((intent) => intent.id), [parked.id])
+  assertEquals(
+    ledger.intents.map((intent) => intent.id),
+    [parked.id]
+  )
 })
 
 test('an ended subscription revokes every license, bound ones included, and clears every assignment', async () => {
-  const db = seed({ seats: [{ tierId: S1, quantity: 1 }, { tierId: S3, quantity: 1 }], status: 'canceled' })
+  const db = seed({
+    seats: [
+      { tierId: S1, quantity: 1 },
+      { tierId: S3, quantity: 1 },
+    ],
+    status: 'canceled',
+  })
   const disconnected: string[] = []
   const outcome = await syncEntitlementsForOrganization(
-    { db, client: null, nowMs: NOW_MS, onRevokeBound: (serverId) => { disconnected.push(serverId); return Promise.resolve() } },
-    { organizationId: ORG, providerSubscriptionId: 'sub_1', pendingUpdate: false },
+    {
+      db,
+      client: null,
+      nowMs: NOW_MS,
+      onRevokeBound: (serverId) => {
+        disconnected.push(serverId)
+        return Promise.resolve()
+      },
+    },
+    { organizationId: ORG, providerSubscriptionId: 'sub_1', pendingUpdate: false }
   )
   assertEquals(outcome.action, 'synced')
   if (outcome.action !== 'synced') return
@@ -134,7 +292,7 @@ test('a held lease makes the sync yield to the holder without writing', async ()
   assertEquals(lock !== null, true)
   const outcome = await syncEntitlementsForOrganization(
     { db, client: null, nowMs: NOW_MS, leaseRetry: { attempts: 1, delayMs: 0 } },
-    { organizationId: ORG, providerSubscriptionId: 'sub_1', pendingUpdate: false },
+    { organizationId: ORG, providerSubscriptionId: 'sub_1', pendingUpdate: false }
   )
   assertEquals(outcome, { action: 'skipped', reason: 'lease_held' })
   assertEquals(await assignments(db), { [SERVER_A]: null, [SERVER_B]: S1 })
@@ -148,7 +306,7 @@ test('a lease that lapses between attempts is taken on the retry', async () => {
   assertEquals(lock !== null, true)
   const outcome = await syncEntitlementsForOrganization(
     { db, client: null, nowMs: NOW_MS, leaseRetry: { attempts: 3, delayMs: 2 } },
-    { organizationId: ORG, providerSubscriptionId: 'sub_1', pendingUpdate: false },
+    { organizationId: ORG, providerSubscriptionId: 'sub_1', pendingUpdate: false }
   )
   assertEquals(outcome.action, 'synced')
 })
@@ -160,7 +318,7 @@ test('a lease that stays held is given up on after the configured attempts', asy
   const started = Date.now()
   const outcome = await syncEntitlementsForOrganization(
     { db, client: null, nowMs: NOW_MS, leaseRetry: { attempts: 3, delayMs: 15 } },
-    { organizationId: ORG, providerSubscriptionId: 'sub_1', pendingUpdate: false },
+    { organizationId: ORG, providerSubscriptionId: 'sub_1', pendingUpdate: false }
   )
   assertEquals(outcome, { action: 'skipped', reason: 'lease_held' })
   // Two waits between three attempts, none after the last.

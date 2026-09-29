@@ -94,7 +94,8 @@ export function compareSeatsToLicenses(input: {
   }
   if (input.serversUncovered.length > 0) out.push({ ...base, kind: 'servers_uncovered' })
   if (input.licensesHeld > input.purchased) out.push({ ...base, kind: 'licenses_exceed_purchased' })
-  else if (input.purchased - input.releasing > input.licensesHeld) out.push({ ...base, kind: 'purchased_unused' })
+  else if (input.purchased - input.releasing > input.licensesHeld)
+    out.push({ ...base, kind: 'purchased_unused' })
   return out
 }
 
@@ -107,25 +108,31 @@ export type ReconcileDeps = Readonly<{
 
 export async function runReconcile(deps: ReconcileDeps): Promise<ReconcileReport> {
   const nowMs = deps.nowMs ?? Date.now()
-  const organizationIds = deps.organizationIds ?? await listOrganizationIdsWithPayer(deps.db)
+  const organizationIds = deps.organizationIds ?? (await listOrganizationIdsWithPayer(deps.db))
   const drift: ReconcileDrift[] = []
   await forEachSequential(organizationIds, async (organizationId) => {
     const state = await listSeatsForOrganization(deps.db, organizationId)
     if (!state.subscription || isEndedStatus(state.subscription.status)) return
     const licenses = await countActiveLicenses(deps.db, organizationId)
-    const { ledger } = await readPendingChanges(deps.db, organizationId, state.subscription.providerSubscriptionId)
+    const { ledger } = await readPendingChanges(
+      deps.db,
+      organizationId,
+      state.subscription.providerSubscriptionId
+    )
     const quantities = tierQuantitiesFromState(state)
     const servers = await loadAssignableServers(deps.db, organizationId)
     const assignment = computeAssignment(quantities, servers)
     let releasing = 0
     for (const count of outstandingReleasesByTier(ledger).values()) releasing += count
-    drift.push(...compareSeatsToLicenses({
-      organizationId,
-      purchased: quantities.reduce((sum, entry) => sum + entry.quantity, 0),
-      releasing,
-      licensesHeld: licenses.active,
-      serversUncovered: assignment.uncovered,
-    }))
+    drift.push(
+      ...compareSeatsToLicenses({
+        organizationId,
+        purchased: quantities.reduce((sum, entry) => sum + entry.quantity, 0),
+        releasing,
+        licensesHeld: licenses.active,
+        serversUncovered: assignment.uncovered,
+      })
+    )
   })
   const report: ReconcileReport = {
     ranAt: new Date(nowMs).toISOString(),

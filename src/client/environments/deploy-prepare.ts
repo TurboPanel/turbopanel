@@ -1,6 +1,6 @@
-import type { Context } from "hono";
-import { and, eq, inArray, or } from "drizzle-orm";
-import type { AppEnv } from "../../app/app.ts";
+import type { Context } from 'hono'
+import { and, eq, inArray, or } from 'drizzle-orm'
+import type { AppEnv } from '../../app/app.ts'
 import {
   decryptSecret,
   encryptSecretForDaemon,
@@ -8,30 +8,30 @@ import {
   isDaemonSealedEnvelope,
   isSealedEnvelope,
   resealSecretForDaemon,
-} from "../../lib/secrets/data-encryption.ts";
+} from '../../lib/secrets/data-encryption.ts'
 import {
   getServerDaemonStateByServerId,
   isDaemonKeyActive,
-} from "../../features/servers/server-identity-db.ts";
+} from '../../features/servers/server-identity-db.ts'
 import {
   applyServiceOptionsToComposeDocument,
   buildServiceOptionsMap,
   collectHealthCheckWarnings,
   type ServiceDeployHook,
   type ServiceOptionsByComposeName,
-} from "../../features/compose/apply-service-options.ts";
+} from '../../features/compose/apply-service-options.ts'
 import {
   compileRuntimeCompose,
   type CompileRuntimeOptions,
-} from "../../features/compose/compile-runtime.ts";
-import { sha256HexUtf8 } from "../../features/compose/desired-hash.ts";
+} from '../../features/compose/compile-runtime.ts'
+import { sha256HexUtf8 } from '../../features/compose/desired-hash.ts'
 import {
   parseOrganizationOptions,
   resolveAcmeEnabled,
   resolveComposeDefaultResourceLimits,
   resolveComposeGatedFieldsEnabled,
   resolveDeployHooksEnabled,
-} from "../../features/organizations/organization-options.ts";
+} from '../../features/organizations/organization-options.ts'
 import {
   type ApplyVariablesError,
   applyVariablesToComposeDocument,
@@ -39,8 +39,8 @@ import {
   type DeployVariableMaterial,
   isApplyVariablesError,
   type VariableScopeEntryMap,
-} from "../../features/compose/apply-variables.ts";
-import type { DeploySecretPlanEntry } from "../../features/compose/secret-files.ts";
+} from '../../features/compose/apply-variables.ts'
+import type { DeploySecretPlanEntry } from '../../features/compose/secret-files.ts'
 import {
   type ComposeDeployValidationError,
   type ComposeDocument,
@@ -55,8 +55,8 @@ import {
   splitNativeAppServices,
   splitSiteServices,
   validateComposeForDeploy,
-} from "../../features/compose/index.ts";
-import type { ComposeServiceCronJob } from "../../features/compose/service-kind.ts";
+} from '../../features/compose/index.ts'
+import type { ComposeServiceCronJob } from '../../features/compose/service-kind.ts'
 import {
   type Application,
   buildApplicationModel,
@@ -67,71 +67,61 @@ import {
   type ResolvedService,
   type ServerDeployment,
   serviceIdsOnServer,
-} from "../../features/compose/ir.ts";
+} from '../../features/compose/ir.ts'
 import {
   environmentComposeFilename,
   renderRuntimeComposeFiles,
-} from "../../features/deploy/deploy-layers.ts";
-import { stripReservedDeployVariableKeys } from "../../features/compose/platform-variables.ts";
-import { renameComposeVolumes } from "../../features/compose/rename-volumes.ts";
+} from '../../features/deploy/deploy-layers.ts'
+import { stripReservedDeployVariableKeys } from '../../features/compose/platform-variables.ts'
+import { renameComposeVolumes } from '../../features/compose/rename-volumes.ts'
 import {
   collectComposeExternalDockerNetworkNames,
   pruneUnreferencedComposeNetworks,
-} from "../../features/compose/docker-external-networks.ts";
-import {
-  principalHomeDir,
-  principalVolumePath,
-  resolveDockerVolumeName,
-} from "../../lib/naming.ts";
-import { accessGroupsFor } from "../../features/principals/principal-access.ts";
-import { SHA512_CRYPT_HASH_RE } from "../../lib/sha512-crypt.ts";
+} from '../../features/compose/docker-external-networks.ts'
+import { principalHomeDir, principalVolumePath, resolveDockerVolumeName } from '../../lib/naming.ts'
+import { accessGroupsFor } from '../../features/principals/principal-access.ts'
+import { SHA512_CRYPT_HASH_RE } from '../../lib/sha512-crypt.ts'
 import {
   CRON_JOB_NAME_RE,
   cronJobUnitName,
   cronToOnCalendar,
   MAX_CRON_JOBS_PER_SERVICE,
   parseCronCommand,
-} from "../../features/deploy/cron.ts";
-import {
-  listTasksForServices,
-  type TaskRecord,
-} from "../../features/schedule/task-records.ts";
-import { loadSshKeysByPrincipalIds } from "../principals/ssh-keys.ts";
+} from '../../features/deploy/cron.ts'
+import { listTasksForServices, type TaskRecord } from '../../features/schedule/task-records.ts'
+import { loadSshKeysByPrincipalIds } from '../principals/ssh-keys.ts'
 import {
   parsePrincipalOptions,
   resolvePrincipalIdOverride,
   resolvePrincipalShell,
-} from "../../features/principals/principal-options.ts";
+} from '../../features/principals/principal-options.ts'
 import {
   insertDeployEntitlementsIfMissing,
   loadEntitlementsByPrincipalIds,
-} from "../../features/principals/store.ts";
-import { renderPhpForDeploy } from "../../features/hostings/php-settings.ts";
+} from '../../features/principals/store.ts'
+import { renderPhpForDeploy } from '../../features/hostings/php-settings.ts'
 import {
   isComposeChainError,
   resolveComposeLayerChain,
-} from "../../features/compose/layer-chain.ts";
+} from '../../features/compose/layer-chain.ts'
 import {
   ALLOWED_PHP_EXTENSIONS,
   SUPPORTED_PHP_SERIES,
-} from "../../features/compose/service-kind.ts";
+} from '../../features/compose/service-kind.ts'
 import {
   parseProjectOptions,
   resolveContainerNaming,
   resolveEffectivePlacementServerId,
-} from "../../features/projects/project-options.ts";
+} from '../../features/projects/project-options.ts'
 import {
   parseServiceOptions,
   resolveServiceInstances,
-} from "../../features/projects/service-options.ts";
-import { resolveRegisteredExternalDockerNetworks } from "./validate-docker-external-networks.ts";
-import { ensureOrganizationManagedNetwork } from "../../features/fabric/fabric-records.ts";
-import type { DesiredSlotInput } from "../../features/servers/slot-records.ts";
-import {
-  localReplicaCounts,
-  localServiceNames,
-} from "../../features/schedule/planner.ts";
-import type { SpanningHostsForService } from "../../features/schedule/slot-addresses.ts";
+} from '../../features/projects/service-options.ts'
+import { resolveRegisteredExternalDockerNetworks } from './validate-docker-external-networks.ts'
+import { ensureOrganizationManagedNetwork } from '../../features/fabric/fabric-records.ts'
+import type { DesiredSlotInput } from '../../features/servers/slot-records.ts'
+import { localReplicaCounts, localServiceNames } from '../../features/schedule/planner.ts'
+import type { SpanningHostsForService } from '../../features/schedule/slot-addresses.ts'
 import {
   allocateEnvironmentContainers,
   authoredContainerNamesForAllocation,
@@ -139,13 +129,13 @@ import {
   type ContainerAllocation,
   type ContainerServiceSpec,
   ensureServiceIngressContainerAllocation,
-} from "../../features/environments/allocate-containers.ts";
-import { resolveTcpUdpIngressServices } from "./tcp-udp-ingress.ts";
+} from '../../features/environments/allocate-containers.ts'
+import { resolveTcpUdpIngressServices } from './tcp-udp-ingress.ts'
 import {
   registerComposeVolumes,
   type RegisteredComposeVolume,
-} from "../../features/deploy/register-compose-volumes.ts";
-import { registerComposeMounts } from "../../features/deploy/register-compose-mounts.ts";
+} from '../../features/deploy/register-compose-volumes.ts'
+import { registerComposeMounts } from '../../features/deploy/register-compose-mounts.ts'
 import type {
   EnvironmentDeployComposeFile,
   EnvironmentDeployCronJob,
@@ -162,13 +152,13 @@ import type {
   EnvironmentDeployStorageMount,
   EnvironmentDeployTlsMaterial,
   EnvironmentDeployVariableMaterial,
-} from "../../contracts/commands/schemas.ts";
+} from '../../contracts/commands/schemas.ts'
 import {
   type DeployRollbackRequest,
   type DeploySourcePrepareError,
   type ReleaseIdAllocator,
   resolveDeploySourceMaterial,
-} from "./deploy-sources.ts";
+} from './deploy-sources.ts'
 import {
   binding,
   environment,
@@ -183,26 +173,23 @@ import {
   storage,
   storageCopy,
   tls,
-} from "../../db/schema.ts";
+} from '../../db/schema.ts'
 import {
   checkResourceLimits,
   parseResourceLimits,
   sumServiceResourceUsage,
-} from "../../features/organizations/resource-limits.ts";
+} from '../../features/organizations/resource-limits.ts'
 import {
   type HostingBindScope,
   parseHostingOptions,
   resolveHostingBind,
   resolveHostingProxy,
-} from "../../features/hostings/hosting-options.ts";
-import { inetAddressToString } from "../../lib/ip-address.ts";
-import { loadServerDatacenterAddress } from "../../features/net/private-endpoint.ts";
-import { reconcileServicesFromCompose } from "../../features/deploy/reconcile-services.ts";
-import {
-  type ComposeHostingError,
-  reconcileHostingsFromCompose,
-} from "./reconcile-hostings.ts";
-import type { Db } from "../../db/connection.ts";
+} from '../../features/hostings/hosting-options.ts'
+import { inetAddressToString } from '../../lib/ip-address.ts'
+import { loadServerDatacenterAddress } from '../../features/net/private-endpoint.ts'
+import { reconcileServicesFromCompose } from '../../features/deploy/reconcile-services.ts'
+import { type ComposeHostingError, reconcileHostingsFromCompose } from './reconcile-hostings.ts'
+import type { Db } from '../../db/connection.ts'
 import {
   mergeHostingVariablesForService,
   type ResolvedVariableMap,
@@ -210,20 +197,20 @@ import {
   resolveInheritedVariableBundleForService,
   resolveInheritedVariablesForEnvironment,
   resolveServerScopedVariables,
-} from "../../features/variables/resolve-inherited.ts";
+} from '../../features/variables/resolve-inherited.ts'
 import {
   type ComposePrincipalResolution,
   loadPrincipalIdsByServiceIdForEnvironment,
   loadTenancyPrincipalIdsForEnvironment,
   pickSolePrincipalId,
   reconcilePrincipalsFromCompose,
-} from "../principals/tenancies.ts";
+} from '../principals/tenancies.ts'
 import {
   materializeBindingsForServices,
   reapplyBindingOwnedVariables,
-} from "../../features/bindings/materialize.ts";
-import type { DerivedSecretsConfig } from "../../lib/secrets/secrets.ts";
-import { resolveHostingDeployWeb } from "../../features/hostings/hosting-web-env.ts";
+} from '../../features/bindings/materialize.ts'
+import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
+import { resolveHostingDeployWeb } from '../../features/hostings/hosting-web-env.ts'
 import {
   assembleTlsMetadata,
   parseTlsOptions,
@@ -232,7 +219,7 @@ import {
   type TlsCandidate,
   type TlsSource,
   type TlsStatus,
-} from "../../lib/tls/index.ts";
+} from '../../lib/tls/index.ts'
 import {
   deployMaterialsErrorResponse,
   expandHostingsForComposeInstances,
@@ -243,57 +230,55 @@ import {
   readPathPrefix,
   readTargetPort,
   tlsPinErrorCode,
-} from "./deploy-routes-helpers.ts";
+} from './deploy-routes-helpers.ts'
 import {
   type DeployRuntimeEntitlement,
   mergeDeployPrincipalRuntimes,
-} from "./merge-deploy-principal-runtimes.ts";
+} from './merge-deploy-principal-runtimes.ts'
 import {
   ensureSystemHierarchy,
   SYSTEM_TRAEFIK_COMPOSE_SERVICE_NAME,
-} from "../../features/system/hierarchy.ts";
-import { forEachSequential } from "../../lib/sequential.ts";
-import { loadManagedIngressPorts } from "../../features/managed/load-org-defaults.ts";
-import { DEFAULT_MANAGED_INGRESS_PORTS } from "../../features/managed/ingress-ports.ts";
+} from '../../features/system/hierarchy.ts'
+import { forEachSequential } from '../../lib/sequential.ts'
+import { loadManagedIngressPorts } from '../../features/managed/load-org-defaults.ts'
+import { DEFAULT_MANAGED_INGRESS_PORTS } from '../../features/managed/ingress-ports.ts'
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 /** True when `serverId` belongs to `organizationId`. */
 export async function verifyServerInOrg(
   db: Db,
   serverId: string,
-  organizationId: string,
+  organizationId: string
 ): Promise<boolean> {
   const [row] = await db
     .select({ id: server.id })
     .from(server)
-    .where(
-      and(eq(server.id, serverId), eq(server.organizationId, organizationId)),
-    )
-    .limit(1);
-  return Boolean(row);
+    .where(and(eq(server.id, serverId), eq(server.organizationId, organizationId)))
+    .limit(1)
+  return Boolean(row)
 }
 
 function extractComposeFromOptions(options: unknown): unknown {
-  if (!isPlainObject(options)) return null;
-  return options.compose ?? null;
+  if (!isPlainObject(options)) return null
+  return options.compose ?? null
 }
 
 export type DeployPrepareWarningCode =
-  | "empty_compose"
-  | "resource_limit_exceeded"
-  | "health_check_missing"
-  | "docker_external_network_unregistered"
-  | "site_principal_ambiguous"
-  | "site_managed_directory_unowned"
-  | "site_cron_unowned"
-  | "source_principal_ambiguous"
-  | "principal_alias_unknown"
-  | "principal_required_for_service_kind"
-  | "binding_endpoint_unavailable"
-  | "php_series_not_installed";
+  | 'empty_compose'
+  | 'resource_limit_exceeded'
+  | 'health_check_missing'
+  | 'docker_external_network_unregistered'
+  | 'site_principal_ambiguous'
+  | 'site_managed_directory_unowned'
+  | 'site_cron_unowned'
+  | 'source_principal_ambiguous'
+  | 'principal_alias_unknown'
+  | 'principal_required_for_service_kind'
+  | 'binding_endpoint_unavailable'
+  | 'php_series_not_installed'
 
 /**
  * Gate a deploy's PHP series against what the target host actually reports.
@@ -312,45 +297,44 @@ export type DeployPrepareWarningCode =
  * evidence.
  */
 export function checkPhpSeriesAvailability(params: {
-  sites: readonly { composeServiceName: string; php?: { version?: string } }[];
-  reportedSeries: readonly string[] | null;
+  sites: readonly { composeServiceName: string; php?: { version?: string } }[]
+  reportedSeries: readonly string[] | null
 }): { errors: string[]; warnings: DeployPrepareWarning[] } {
-  const errors: string[] = [];
-  const warnings: DeployPrepareWarning[] = [];
+  const errors: string[] = []
+  const warnings: DeployPrepareWarning[] = []
   for (const site of params.sites) {
-    const version = site.php?.version?.trim();
-    if (!version) continue;
+    const version = site.php?.version?.trim()
+    if (!version) continue
     if (!SUPPORTED_PHP_SERIES.includes(version)) {
       errors.push(
-        `Service "${site.composeServiceName}" requests PHP ${version}, which is not supported. Supported: ${
-          SUPPORTED_PHP_SERIES.join(", ")
-        }.`,
-      );
-      continue;
+        `Service "${site.composeServiceName}" requests PHP ${version}, which is not supported. Supported: ${SUPPORTED_PHP_SERIES.join(
+          ', '
+        )}.`
+      )
+      continue
     }
     // No report at all means "unknown", not "missing" — do not warn on silence.
-    if (params.reportedSeries === null) continue;
+    if (params.reportedSeries === null) continue
     if (!params.reportedSeries.includes(version)) {
       warnings.push({
-        code: "php_series_not_installed",
-        message:
-          `PHP ${version} is not installed on the target server yet; the deploy will install it.`,
+        code: 'php_series_not_installed',
+        message: `PHP ${version} is not installed on the target server yet; the deploy will install it.`,
         details: {
           composeServiceName: site.composeServiceName,
           series: version,
           installed: [...params.reportedSeries],
         },
-      });
+      })
     }
   }
-  return { errors, warnings };
+  return { errors, warnings }
 }
 
 export type DeployPrepareWarning = {
-  code: DeployPrepareWarningCode;
-  message: string;
-  details?: Record<string, unknown>;
-};
+  code: DeployPrepareWarningCode
+  message: string
+  details?: Record<string, unknown>
+}
 
 /**
  * Which commit a deploy should build, and **which source** that commit belongs
@@ -375,15 +359,15 @@ export type DeployPrepareWarning = {
  * dropped at the route boundary.
  */
 export type DeploySourceSelection = {
-  ref: string | null;
-  commitSha: string | null;
+  ref: string | null
+  commitSha: string | null
   /**
    * `source.id` the trigger fired for, or `null` when the request names no
    * single source (the manual `POST /environments/:id/deploy` path). A
    * `commitSha` with no `sourceId` matches nothing and is therefore ignored.
    */
-  sourceId: string | null;
-};
+  sourceId: string | null
+}
 
 /**
  * Can this phase actually build a **requested ref**?
@@ -400,22 +384,22 @@ export type DeploySourceSelection = {
  * /environments/:id/deploy` does. This flips in one place when ref-directed
  * deploys land.
  */
-export const PREPARE_HONORS_SOURCE_SELECTION = false;
+export const PREPARE_HONORS_SOURCE_SELECTION = false
 
 /**
  * Re-exported here because the rollback route builds one and hands it straight
  * to {@link prepareDeployCompose} — the same way the deploy route hands over a
  * {@link DeploySourceSelection}.
  */
-export type { DeployRollbackRequest };
+export type { DeployRollbackRequest }
 
 /**
  * Re-exported here because the deploy route creates the allocator *before* the
  * per-server prepare loop and hands the same instance to every
  * {@link prepareDeployCompose} call in that fan-out.
  */
-export { createReleaseIdAllocator } from "./deploy-sources.ts";
-export type { ReleaseIdAllocator };
+export { createReleaseIdAllocator } from './deploy-sources.ts'
+export type { ReleaseIdAllocator }
 
 /**
  * A native app row before its release-tree `serviceId` is resolved.
@@ -423,7 +407,7 @@ export type { ReleaseIdAllocator };
  * Declared with the rest of the compiler's IR in `lib/compose/ir.ts` and
  * re-exported here, where every existing caller already reaches for it.
  */
-export type { PreparedNativeAppService };
+export type { PreparedNativeAppService }
 
 /**
  * One server's slice of a prepared deploy.
@@ -444,16 +428,16 @@ export type PreparedDeployCompose = ServerDeployment & {
    * Compiled runtime YAML (internal prepare output for hashing/preview).
    * Wire payloads use required `composeFiles` with `role: 'runtime'`.
    */
-  composeYaml: string;
-  hooks: ServiceDeployHook[];
+  composeYaml: string
+  hooks: ServiceDeployHook[]
   /** Pre-allocated container rows for this deploy (uuid / explicit-name paths). */
-  containers: ContainerAllocation[];
+  containers: ContainerAllocation[]
   /** Original compose service key → clone keys after multi-instance expansion. */
-  composeServiceExpansion: Record<string, string[]>;
+  composeServiceExpansion: Record<string, string[]>
   /** Auto-registered compose named volumes (storage rows + resolved Docker names). */
-  volumes: RegisteredComposeVolume[];
+  volumes: RegisteredComposeVolume[]
   /** Soft prepare issues (preview mode); empty for deploy. */
-  warnings: DeployPrepareWarning[];
+  warnings: DeployPrepareWarning[]
   /**
    * The {@link DeploySourceSelection} this prepare ran for, when one was given.
    *
@@ -462,15 +446,15 @@ export type PreparedDeployCompose = ServerDeployment & {
    * commit attached to the prepared result, so the release-engine phase reads it
    * from the same object it already reads compose material from.
    */
-  sourceSelection?: DeploySourceSelection;
+  sourceSelection?: DeploySourceSelection
   /** Non-secret Compose project `.env` next to compose.yaml. */
-  envFile?: string;
+  envFile?: string
   /** File-only secret mounts (no plaintext). */
-  secretPlan?: DeploySecretPlanEntry[];
-};
+  secretPlan?: DeploySecretPlanEntry[]
+}
 
 export type DeployPrepareError =
-  | { kind: "health_check"; required: boolean; services: string[] }
+  | { kind: 'health_check'; required: boolean; services: string[] }
   /**
    * The merged effective document failed deploy-time compose validation.
    *
@@ -485,13 +469,13 @@ export type DeployPrepareError =
    */
   | ComposeDeployValidationError
   | {
-    kind: "resource_limit";
-    violations: ReturnType<typeof checkResourceLimits>;
-  }
-  | { kind: "empty_compose" }
-  | { kind: "datacenter_ip_required"; serverId: string }
-  | { kind: "docker_external_network_unregistered"; names: string[] }
-  | { kind: "site_principal_ambiguous"; composeServiceName: string }
+      kind: 'resource_limit'
+      violations: ReturnType<typeof checkResourceLimits>
+    }
+  | { kind: 'empty_compose' }
+  | { kind: 'datacenter_ip_required'; serverId: string }
+  | { kind: 'docker_external_network_unregistered'; names: string[] }
+  | { kind: 'site_principal_ambiguous'; composeServiceName: string }
   /**
    * A service names an alias the document's root never declared.
    *
@@ -500,20 +484,20 @@ export type DeployPrepareError =
    * ignoring it would run the service as nobody.
    */
   | {
-    kind: "principal_alias_unknown";
-    composeServiceName: string;
-    alias: string;
-  }
+      kind: 'principal_alias_unknown'
+      composeServiceName: string
+      alias: string
+    }
   /**
    * A host-native service declares no alias **and** has no steward to fall back
    * on. `site_principal_ambiguous` / `source_principal_ambiguous` stay the
    * answer for *too many* owners; this one is for none at all.
    */
   | {
-    kind: "principal_required_for_service_kind";
-    composeServiceName: string;
-    serviceKind: "site" | "node";
-  }
+      kind: 'principal_required_for_service_kind'
+      composeServiceName: string
+      serviceKind: 'site' | 'node'
+    }
   /**
    * A `x-turbopanel.hosting` entry named a certificate or a managed address
    * this organization does not have (or names two by the same label).
@@ -533,68 +517,68 @@ export type DeployPrepareError =
    * drop the other hostnames it serves).
    */
   | ComposeHostingError
-  | { kind: "site_managed_directory_unowned"; composeServiceName: string }
-  | { kind: "site_cron_unowned"; composeServiceName: string }
-  | { kind: "source_principal_ambiguous"; composeServiceName: string }
+  | { kind: 'site_managed_directory_unowned'; composeServiceName: string }
+  | { kind: 'site_cron_unowned'; composeServiceName: string }
+  | { kind: 'source_principal_ambiguous'; composeServiceName: string }
   | {
-    kind: "source_ref_unresolved";
-    composeServiceName: string;
-    sourceId: string;
-    ref: string;
-    message: string;
-  }
-  | { kind: "binding_endpoint_unavailable" }
+      kind: 'source_ref_unresolved'
+      composeServiceName: string
+      sourceId: string
+      ref: string
+      message: string
+    }
+  | { kind: 'binding_endpoint_unavailable' }
   | {
-    kind: "variable_unresolved";
-    message: string;
-    ref?: string;
-    composeServiceName?: string;
-    envKey?: string;
-  }
+      kind: 'variable_unresolved'
+      message: string
+      ref?: string
+      composeServiceName?: string
+      envKey?: string
+    }
   | {
-    kind: "variable_ref_invalid";
-    message: string;
-    composeServiceName?: string;
-    envKey?: string;
-  }
+      kind: 'variable_ref_invalid'
+      message: string
+      composeServiceName?: string
+      envKey?: string
+    }
   | {
-    kind: "variable_secret_interpolation";
-    message: string;
-    composeServiceName?: string;
-    envKey?: string;
-  }
+      kind: 'variable_secret_interpolation'
+      message: string
+      composeServiceName?: string
+      envKey?: string
+    }
   | {
-    kind: "storage_location_unavailable";
-    storageId: string;
-    storageName: string;
-    accessMode: string;
-    primaryServerId: string | null;
-    scheduledServerId: string;
-    serviceId: string;
-  };
+      kind: 'storage_location_unavailable'
+      storageId: string
+      storageName: string
+      accessMode: string
+      primaryServerId: string | null
+      scheduledServerId: string
+      serviceId: string
+    }
 
-export type DeployPrepareMode = "deploy" | "preview";
+export type DeployPrepareMode = 'deploy' | 'preview'
 
 /** Per-server slice of a scheduled environment deploy. */
 export type DeployScheduleSlice = {
-  serverId: string;
-  slots: readonly DesiredSlotInput[];
-  serviceIdToName: ReadonlyMap<string, string>;
-  spanningNetworks?: ReadonlyMap<string, string>;
-  taskAddresses?: ReadonlyMap<string, ReadonlyMap<number, string>>;
-  spanningHosts?: ReadonlyMap<string, SpanningHostsForService>;
-  fabricNetworks?: readonly EnvironmentDeployFabricNetwork[];
+  serverId: string
+  slots: readonly DesiredSlotInput[]
+  serviceIdToName: ReadonlyMap<string, string>
+  spanningNetworks?: ReadonlyMap<string, string>
+  taskAddresses?: ReadonlyMap<string, ReadonlyMap<number, string>>
+  spanningHosts?: ReadonlyMap<string, SpanningHostsForService>
+  fabricNetworks?: readonly EnvironmentDeployFabricNetwork[]
   /** Per-service ProxySQL listener extra_hosts for non-co-resident consumers. */
   managedIngressHostsByService?: ReadonlyMap<
     string,
     ReadonlyArray<{ name: string; address: string }>
-  >;
-};
+  >
+}
 
 async function emptyPreparedCompose(
-  warnings: DeployPrepareWarning[],
+  warnings: DeployPrepareWarning[]
 ): Promise<PreparedDeployCompose> {
-  const emptyYaml = emptyContainerComposeYaml();
+  const emptyYaml = emptyContainerComposeYaml()
   return {
     composeYaml: emptyYaml,
     composeFiles: renderRuntimeComposeFiles(emptyYaml),
@@ -622,139 +606,132 @@ async function emptyPreparedCompose(
     composeServiceExpansion: {},
     volumes: [],
     warnings,
-  };
+  }
 }
 
 type HardDeployPrepareError =
-  | { kind: "datacenter_ip_required"; serverId: string }
+  | { kind: 'datacenter_ip_required'; serverId: string }
   // Hard in preview too: previewing a deploy that would silently ignore a field
   // — or that would be refused the moment it was run for real — is exactly the
   // reassurance an operator must not be given.
   | ComposeDeployValidationError
   | ComposeHostingError
   | {
-    kind: "source_ref_unresolved";
-    composeServiceName: string;
-    sourceId: string;
-    ref: string;
-    message: string;
-  }
+      kind: 'source_ref_unresolved'
+      composeServiceName: string
+      sourceId: string
+      ref: string
+      message: string
+    }
   | {
-    kind: "variable_unresolved";
-    message: string;
-    ref?: string;
-    composeServiceName?: string;
-    envKey?: string;
-  }
+      kind: 'variable_unresolved'
+      message: string
+      ref?: string
+      composeServiceName?: string
+      envKey?: string
+    }
   | {
-    kind: "variable_ref_invalid";
-    message: string;
-    composeServiceName?: string;
-    envKey?: string;
-  }
+      kind: 'variable_ref_invalid'
+      message: string
+      composeServiceName?: string
+      envKey?: string
+    }
   | {
-    kind: "variable_secret_interpolation";
-    message: string;
-    composeServiceName?: string;
-    envKey?: string;
-  }
+      kind: 'variable_secret_interpolation'
+      message: string
+      composeServiceName?: string
+      envKey?: string
+    }
   | {
-    kind: "storage_location_unavailable";
-    storageId: string;
-    storageName: string;
-    accessMode: string;
-    primaryServerId: string | null;
-    scheduledServerId: string;
-    serviceId: string;
-  };
+      kind: 'storage_location_unavailable'
+      storageId: string
+      storageName: string
+      accessMode: string
+      primaryServerId: string | null
+      scheduledServerId: string
+      serviceId: string
+    }
 
 function warningFromPrepareError(
-  error: Exclude<DeployPrepareError, HardDeployPrepareError>,
+  error: Exclude<DeployPrepareError, HardDeployPrepareError>
 ): DeployPrepareWarning {
   switch (error.kind) {
-    case "empty_compose":
+    case 'empty_compose':
       return {
-        code: "empty_compose",
-        message: "Compose has no services to deploy.",
-      };
-    case "resource_limit":
+        code: 'empty_compose',
+        message: 'Compose has no services to deploy.',
+      }
+    case 'resource_limit':
       return {
-        code: "resource_limit_exceeded",
-        message: "Requested resources exceed organization or server limits.",
+        code: 'resource_limit_exceeded',
+        message: 'Requested resources exceed organization or server limits.',
         details: { violations: error.violations },
-      };
-    case "health_check":
+      }
+    case 'health_check':
       return {
-        code: "health_check_missing",
+        code: 'health_check_missing',
         message: error.required
-          ? "One or more services require a health check before deploy."
-          : "One or more services are missing a health check (warn policy).",
+          ? 'One or more services require a health check before deploy.'
+          : 'One or more services are missing a health check (warn policy).',
         details: {
           required: error.required,
           services: error.services,
         },
-      };
-    case "docker_external_network_unregistered":
+      }
+    case 'docker_external_network_unregistered':
       return {
-        code: "docker_external_network_unregistered",
+        code: 'docker_external_network_unregistered',
         message:
-          "Compose references external Docker network(s) that are not registered for this server.",
+          'Compose references external Docker network(s) that are not registered for this server.',
         details: { names: error.names },
-      };
-    case "site_principal_ambiguous":
+      }
+    case 'site_principal_ambiguous':
       return {
-        code: "site_principal_ambiguous",
-        message:
-          `Site "${error.composeServiceName}" has more than one project principal assigned.`,
+        code: 'site_principal_ambiguous',
+        message: `Site "${error.composeServiceName}" has more than one project principal assigned.`,
         details: { composeServiceName: error.composeServiceName },
-      };
-    case "site_managed_directory_unowned":
+      }
+    case 'site_managed_directory_unowned':
       return {
-        code: "site_managed_directory_unowned",
-        message:
-          `Site "${error.composeServiceName}" serves an uploaded directory but has no project principal to own it.`,
+        code: 'site_managed_directory_unowned',
+        message: `Site "${error.composeServiceName}" serves an uploaded directory but has no project principal to own it.`,
         details: { composeServiceName: error.composeServiceName },
-      };
-    case "site_cron_unowned":
+      }
+    case 'site_cron_unowned':
       return {
-        code: "site_cron_unowned",
-        message:
-          `Site "${error.composeServiceName}" has scheduled jobs but no project principal to run them as.`,
+        code: 'site_cron_unowned',
+        message: `Site "${error.composeServiceName}" has scheduled jobs but no project principal to run them as.`,
         details: { composeServiceName: error.composeServiceName },
-      };
-    case "source_principal_ambiguous":
+      }
+    case 'source_principal_ambiguous':
       return {
-        code: "source_principal_ambiguous",
-        message:
-          `Git-backed service "${error.composeServiceName}" has more than one project principal assigned.`,
+        code: 'source_principal_ambiguous',
+        message: `Git-backed service "${error.composeServiceName}" has more than one project principal assigned.`,
         details: { composeServiceName: error.composeServiceName },
-      };
-    case "binding_endpoint_unavailable":
+      }
+    case 'binding_endpoint_unavailable':
       return {
-        code: "binding_endpoint_unavailable",
-        message:
-          "A service binding could not resolve a ProxySQL listener for its managed cluster.",
-      };
-    case "principal_alias_unknown":
+        code: 'binding_endpoint_unavailable',
+        message: 'A service binding could not resolve a ProxySQL listener for its managed cluster.',
+      }
+    case 'principal_alias_unknown':
       return {
-        code: "principal_alias_unknown",
-        message:
-          `Service "${error.composeServiceName}" names principal "${error.alias}", which this document's x-turbopanel.principals does not declare.`,
+        code: 'principal_alias_unknown',
+        message: `Service "${error.composeServiceName}" names principal "${error.alias}", which this document's x-turbopanel.principals does not declare.`,
         details: {
           composeServiceName: error.composeServiceName,
           alias: error.alias,
         },
-      };
-    case "principal_required_for_service_kind":
+      }
+    case 'principal_required_for_service_kind':
       return {
-        code: "principal_required_for_service_kind",
-        message:
-          `${error.serviceKind} service "${error.composeServiceName}" has no principal — declare one under x-turbopanel.principals and name it with x-turbopanel.principal.`,
+        code: 'principal_required_for_service_kind',
+        message: `${error.serviceKind} service "${error.composeServiceName}" has no principal — declare one under x-turbopanel.principals and name it with x-turbopanel.principal.`,
         details: {
           composeServiceName: error.composeServiceName,
           serviceKind: error.serviceKind,
         },
-      };
+      }
   }
 }
 
@@ -762,45 +739,47 @@ async function sealVariableMaterialForDaemon(
   c: Context<AppEnv>,
   db: Db,
   serverId: string,
-  material: DeployVariableMaterial[],
+  material: DeployVariableMaterial[]
 ): Promise<EnvironmentDeployVariableMaterial[] | Response> {
-  if (material.length === 0) return [];
+  if (material.length === 0) return []
 
-  const dataEncryptionSecrets = c.get("dataEncryptionSecrets");
-  const secretsConfig = c.get("secretsConfig");
+  const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
+  const secretsConfig = c.get('secretsConfig')
   if (!dataEncryptionSecrets || !secretsConfig) {
-    return Response.json({
-      error: "Encryption unavailable — no encryption key configured",
-    }, { status: 503 });
+    return Response.json(
+      {
+        error: 'Encryption unavailable — no encryption key configured',
+      },
+      { status: 503 }
+    )
   }
 
-  const daemonState = await getServerDaemonStateByServerId(db, serverId);
+  const daemonState = await getServerDaemonStateByServerId(db, serverId)
   if (!daemonState || !isDaemonKeyActive(daemonState.key)) {
-    return Response.json({
-      error: "No encryption-capable daemon key on target server",
-    }, { status: 422 });
+    return Response.json(
+      {
+        error: 'No encryption-capable daemon key on target server',
+      },
+      { status: 422 }
+    )
   }
-  const keyId = daemonState.key.id;
+  const keyId = daemonState.key.id
 
-  const recipient = { serverId, keyId };
+  const recipient = { serverId, keyId }
   // Pure crypto per entry (no DB, no shared state): seal them concurrently.
   return await Promise.all(
     material.map(async (entry) => {
-      let envelope = entry.valueEnvelope;
+      let envelope = entry.valueEnvelope
       if (!isDaemonSealedEnvelope(envelope)) {
         if (isSealedEnvelope(envelope)) {
           envelope = await resealSecretForDaemon(
             secretsConfig,
             dataEncryptionSecrets,
             recipient,
-            envelope,
-          );
+            envelope
+          )
         } else {
-          envelope = await encryptSecretForDaemon(
-            secretsConfig,
-            recipient,
-            envelope,
-          );
+          envelope = await encryptSecretForDaemon(secretsConfig, recipient, envelope)
         }
       }
       return {
@@ -810,134 +789,119 @@ async function sealVariableMaterialForDaemon(
         forRuntime: entry.forRuntime,
         isLiteral: entry.isLiteral,
         valueEnvelope: envelope,
-      };
-    }),
-  );
+      }
+    })
+  )
 }
 
 function readPinnedDockerVolumeName(metadata: unknown): string | null {
-  if (!isPlainObject(metadata)) return null;
-  if (typeof metadata.dockerVolumeName !== "string") return null;
-  return metadata.dockerVolumeName.length > 0
-    ? metadata.dockerVolumeName
-    : null;
+  if (!isPlainObject(metadata)) return null
+  if (typeof metadata.dockerVolumeName !== 'string') return null
+  return metadata.dockerVolumeName.length > 0 ? metadata.dockerVolumeName : null
 }
 
 function readLocationFlags(options: unknown): {
-  managed?: boolean;
-  externalName?: string;
+  managed?: boolean
+  externalName?: string
 } {
-  if (!isPlainObject(options)) return {};
-  const flags: { managed?: boolean; externalName?: string } = {};
+  if (!isPlainObject(options)) return {}
+  const flags: { managed?: boolean; externalName?: string } = {}
   if (options.managed === true || options.managed === false) {
-    flags.managed = options.managed;
+    flags.managed = options.managed
   }
-  if (
-    typeof options.externalName === "string" && options.externalName.length > 0
-  ) {
-    flags.externalName = options.externalName;
+  if (typeof options.externalName === 'string' && options.externalName.length > 0) {
+    flags.externalName = options.externalName
   }
-  return flags;
+  return flags
 }
 
-function locationUsableOnServer(
-  locationServerId: string | null,
-  serverId: string,
-): boolean {
-  return locationServerId === null || locationServerId === serverId;
+function locationUsableOnServer(locationServerId: string | null, serverId: string): boolean {
+  return locationServerId === null || locationServerId === serverId
 }
 
 type LocationJoinRow = {
-  storageId: string;
-  locationId: string;
-  kind: string;
-  name: string;
-  accessMode: string;
-  principalId: string | null;
-  principalUsername: string | null;
-  contentEnvelope: string | null;
-  locationServerId: string | null;
-  provider: string;
-  role: string;
-  path: string | null;
-  locationOptions: unknown;
-  metadata: unknown;
-};
+  storageId: string
+  locationId: string
+  kind: string
+  name: string
+  accessMode: string
+  principalId: string | null
+  principalUsername: string | null
+  contentEnvelope: string | null
+  locationServerId: string | null
+  provider: string
+  role: string
+  path: string | null
+  locationOptions: unknown
+  metadata: unknown
+}
 
 type MountJoinRow = {
-  storageId: string;
-  serviceId: string;
-  composeServiceName: string;
-  destinationPath: string;
-  subpath: string | null;
-  readOnly: boolean;
-};
+  storageId: string
+  serviceId: string
+  composeServiceName: string
+  destinationPath: string
+  subpath: string | null
+  readOnly: boolean
+}
 
-function isDeployStorageKind(
-  kind: string,
-): kind is EnvironmentDeployStorageMaterial["kind"] {
-  return kind === "volume" || kind === "directory" || kind === "file";
+function isDeployStorageKind(kind: string): kind is EnvironmentDeployStorageMaterial['kind'] {
+  return kind === 'volume' || kind === 'directory' || kind === 'file'
 }
 
 function isDeployStorageProvider(
-  provider: string,
-): provider is EnvironmentDeployStorageMaterial["provider"] {
-  return provider === "docker" || provider === "path";
+  provider: string
+): provider is EnvironmentDeployStorageMaterial['provider'] {
+  return provider === 'docker' || provider === 'path'
 }
 
-function resolvePathLocationSource(
-  row: LocationJoinRow,
-): string | undefined {
-  if (row.provider !== "path") return undefined;
-  if (typeof row.path === "string" && row.path.length > 0) return row.path;
+function resolvePathLocationSource(row: LocationJoinRow): string | undefined {
+  if (row.provider !== 'path') return undefined
+  if (typeof row.path === 'string' && row.path.length > 0) return row.path
   if (
-    typeof row.principalId !== "string" ||
+    typeof row.principalId !== 'string' ||
     row.principalId.length === 0 ||
-    typeof row.principalUsername !== "string" ||
+    typeof row.principalUsername !== 'string' ||
     row.principalUsername.length === 0
   ) {
-    return undefined;
+    return undefined
   }
-  return principalVolumePath(row.principalUsername, row.storageId);
+  return principalVolumePath(row.principalUsername, row.storageId)
 }
 
 function expandMountsForClones(
   mounts: MountJoinRow[],
-  cloneNamesByServiceId: Map<string, string[]>,
+  cloneNamesByServiceId: Map<string, string[]>
 ): EnvironmentDeployStorageMount[] {
-  const expanded: EnvironmentDeployStorageMount[] = [];
+  const expanded: EnvironmentDeployStorageMount[] = []
   for (const row of mounts) {
-    const clones = cloneNamesByServiceId.get(row.serviceId);
-    const names = clones && clones.length > 0
-      ? clones
-      : [row.composeServiceName];
+    const clones = cloneNamesByServiceId.get(row.serviceId)
+    const names = clones && clones.length > 0 ? clones : [row.composeServiceName]
     for (const composeServiceName of names) {
       const mountEntry: EnvironmentDeployStorageMount = {
         serviceId: row.serviceId,
         composeServiceName,
         destinationPath: row.destinationPath,
-      };
-      if (typeof row.subpath === "string" && row.subpath.length > 0) {
-        mountEntry.subpath = row.subpath;
       }
-      if (row.readOnly) mountEntry.readOnly = true;
-      expanded.push(mountEntry);
+      if (typeof row.subpath === 'string' && row.subpath.length > 0) {
+        mountEntry.subpath = row.subpath
+      }
+      if (row.readOnly) mountEntry.readOnly = true
+      expanded.push(mountEntry)
     }
   }
-  return expanded;
+  return expanded
 }
 
 function toStorageMaterialEntry(
   row: LocationJoinRow,
   serverId: string,
-  mounts: EnvironmentDeployStorageMount[],
+  mounts: EnvironmentDeployStorageMount[]
 ): EnvironmentDeployStorageMaterial | null {
-  if (
-    !isDeployStorageKind(row.kind) || !isDeployStorageProvider(row.provider)
-  ) {
-    return null;
+  if (!isDeployStorageKind(row.kind) || !isDeployStorageProvider(row.provider)) {
+    return null
   }
-  const flags = readLocationFlags(row.locationOptions);
+  const flags = readLocationFlags(row.locationOptions)
   const entry: EnvironmentDeployStorageMaterial = {
     storageId: row.storageId,
     locationId: row.locationId,
@@ -946,63 +910,63 @@ function toStorageMaterialEntry(
     provider: row.provider,
     serverId,
     mounts,
-  };
-  const sourcePath = resolvePathLocationSource(row);
-  if (sourcePath) entry.sourcePath = sourcePath;
-  if (row.principalId) entry.principalId = row.principalId;
-  if (row.contentEnvelope) entry.contentEnvelope = row.contentEnvelope;
-  if (row.provider === "docker") {
+  }
+  const sourcePath = resolvePathLocationSource(row)
+  if (sourcePath) entry.sourcePath = sourcePath
+  if (row.principalId) entry.principalId = row.principalId
+  if (row.contentEnvelope) entry.contentEnvelope = row.contentEnvelope
+  if (row.provider === 'docker') {
     entry.volumeName = resolveDockerVolumeName({
       storageId: row.storageId,
       pinnedName: readPinnedDockerVolumeName(row.metadata),
-    });
+    })
   }
-  if (flags.managed !== undefined) entry.managed = flags.managed;
-  if (flags.externalName) entry.externalName = flags.externalName;
-  return entry;
+  if (flags.managed !== undefined) entry.managed = flags.managed
+  if (flags.externalName) entry.externalName = flags.externalName
+  return entry
 }
 
 function appendUnseenRegisteredVolumes(
   material: EnvironmentDeployStorageMaterial[],
   seenStorageIds: ReadonlySet<string>,
   registeredVolumes: readonly RegisteredComposeVolume[],
-  serverId: string,
+  serverId: string
 ): void {
   for (const registered of registeredVolumes) {
-    if (seenStorageIds.has(registered.storageId)) continue;
+    if (seenStorageIds.has(registered.storageId)) continue
     material.push({
       storageId: registered.storageId,
       locationId: registered.locationId,
-      kind: "volume",
+      kind: 'volume',
       name: registered.composeKey,
-      provider: "docker",
+      provider: 'docker',
       serverId,
       volumeName: registered.volumeName,
       managed: registered.managed,
       mounts: [],
-    });
+    })
   }
 }
 
 export async function loadStorageMaterial(
   db: Db,
   params: {
-    environmentId: string;
-    projectId: string;
-    organizationId: string;
-    serverId: string;
-    serviceIds: string[];
+    environmentId: string
+    projectId: string
+    organizationId: string
+    serverId: string
+    serviceIds: string[]
     /** Origin service id → clone compose keys (for service-scoped fan-out). */
-    cloneNamesByServiceId: Map<string, string[]>;
-    registeredVolumes: readonly RegisteredComposeVolume[];
-  },
+    cloneNamesByServiceId: Map<string, string[]>
+    registeredVolumes: readonly RegisteredComposeVolume[]
+  }
 ): Promise<EnvironmentDeployStorageMaterial[]> {
   const scopeConditions = [
     eq(storage.environmentId, params.environmentId),
     eq(storage.projectId, params.projectId),
-  ];
+  ]
   if (params.serviceIds.length > 0) {
-    scopeConditions.push(inArray(storage.serviceId, params.serviceIds));
+    scopeConditions.push(inArray(storage.serviceId, params.serviceIds))
   }
 
   const locationRows = await db
@@ -1026,69 +990,62 @@ export async function loadStorageMaterial(
     .from(storage)
     .innerJoin(storageCopy, eq(storageCopy.storageId, storage.id))
     .leftJoin(principal, eq(storage.principalId, principal.id))
-    .where(or(...scopeConditions));
+    .where(or(...scopeConditions))
 
-  const usable = locationRows.filter((row) =>
-    row.role !== "scratch" &&
-    locationUsableOnServer(row.locationServerId, params.serverId)
-  );
-  const usableStorageIds = [...new Set(usable.map((row) => row.storageId))];
+  const usable = locationRows.filter(
+    (row) => row.role !== 'scratch' && locationUsableOnServer(row.locationServerId, params.serverId)
+  )
+  const usableStorageIds = [...new Set(usable.map((row) => row.storageId))]
 
-  const mountRows: MountJoinRow[] = usableStorageIds.length === 0
-    ? []
-    : await db
-      .select({
-        storageId: mount.storageId,
-        serviceId: mount.serviceId,
-        composeServiceName: service.composeServiceName,
-        destinationPath: mount.destinationPath,
-        subpath: mount.subpath,
-        readOnly: mount.isReadOnly,
-      })
-      .from(mount)
-      .innerJoin(service, eq(mount.serviceId, service.id))
-      .where(inArray(mount.storageId, usableStorageIds));
+  const mountRows: MountJoinRow[] =
+    usableStorageIds.length === 0
+      ? []
+      : await db
+          .select({
+            storageId: mount.storageId,
+            serviceId: mount.serviceId,
+            composeServiceName: service.composeServiceName,
+            destinationPath: mount.destinationPath,
+            subpath: mount.subpath,
+            readOnly: mount.isReadOnly,
+          })
+          .from(mount)
+          .innerJoin(service, eq(mount.serviceId, service.id))
+          .where(inArray(mount.storageId, usableStorageIds))
 
-  const mountsByStorage = new Map<string, MountJoinRow[]>();
+  const mountsByStorage = new Map<string, MountJoinRow[]>()
   for (const row of mountRows) {
-    const list = mountsByStorage.get(row.storageId) ?? [];
-    list.push(row);
-    mountsByStorage.set(row.storageId, list);
+    const list = mountsByStorage.get(row.storageId) ?? []
+    list.push(row)
+    mountsByStorage.set(row.storageId, list)
   }
 
-  const material: EnvironmentDeployStorageMaterial[] = [];
-  const seenStorageIds = new Set<string>();
+  const material: EnvironmentDeployStorageMaterial[] = []
+  const seenStorageIds = new Set<string>()
 
   for (const row of usable) {
-    seenStorageIds.add(row.storageId);
+    seenStorageIds.add(row.storageId)
     const mounts = expandMountsForClones(
       mountsByStorage.get(row.storageId) ?? [],
-      params.cloneNamesByServiceId,
-    );
-    const entry = toStorageMaterialEntry(row, params.serverId, mounts);
-    if (entry) material.push(entry);
+      params.cloneNamesByServiceId
+    )
+    const entry = toStorageMaterialEntry(row, params.serverId, mounts)
+    if (entry) material.push(entry)
   }
 
-  appendUnseenRegisteredVolumes(
-    material,
-    seenStorageIds,
-    params.registeredVolumes,
-    params.serverId,
-  );
-  return material;
+  appendUnseenRegisteredVolumes(material, seenStorageIds, params.registeredVolumes, params.serverId)
+  return material
 }
 
 export async function findUnavailableStorageCopy(
   db: Db,
   params: {
-    environmentId: string;
-    scheduledServerId: string;
-    serviceIds: string[];
-  },
-): Promise<
-  Extract<DeployPrepareError, { kind: "storage_location_unavailable" }> | null
-> {
-  if (params.serviceIds.length === 0) return null;
+    environmentId: string
+    scheduledServerId: string
+    serviceIds: string[]
+  }
+): Promise<Extract<DeployPrepareError, { kind: 'storage_location_unavailable' }> | null> {
+  if (params.serviceIds.length === 0) return null
 
   const rows = await db
     .select({
@@ -1105,20 +1062,20 @@ export async function findUnavailableStorageCopy(
     .where(
       and(
         eq(storage.environmentId, params.environmentId),
-        inArray(mount.serviceId, params.serviceIds),
-      ),
-    );
+        inArray(mount.serviceId, params.serviceIds)
+      )
+    )
 
   type Acc = {
-    storageName: string;
-    accessMode: string;
-    serviceId: string;
-    primaryServerId: string | null;
-    usable: boolean;
-  };
-  const byStorage = new Map<string, Acc>();
+    storageName: string
+    accessMode: string
+    serviceId: string
+    primaryServerId: string | null
+    usable: boolean
+  }
+  const byStorage = new Map<string, Acc>()
   for (const row of rows) {
-    let acc = byStorage.get(row.storageId);
+    let acc = byStorage.get(row.storageId)
     if (!acc) {
       acc = {
         storageName: row.storageName,
@@ -1126,91 +1083,97 @@ export async function findUnavailableStorageCopy(
         serviceId: row.serviceId,
         primaryServerId: null,
         usable: false,
-      };
-      byStorage.set(row.storageId, acc);
+      }
+      byStorage.set(row.storageId, acc)
     }
-    if (row.locationRole === "primary" && row.locationServerId) {
-      acc.primaryServerId = row.locationServerId;
+    if (row.locationRole === 'primary' && row.locationServerId) {
+      acc.primaryServerId = row.locationServerId
     }
     if (
-      row.locationRole !== "scratch" &&
+      row.locationRole !== 'scratch' &&
       locationUsableOnServer(row.locationServerId, params.scheduledServerId)
     ) {
-      acc.usable = true;
+      acc.usable = true
     }
   }
 
   for (const [storageId, acc] of byStorage) {
-    if (acc.usable) continue;
+    if (acc.usable) continue
     return {
-      kind: "storage_location_unavailable",
+      kind: 'storage_location_unavailable',
       storageId,
       storageName: acc.storageName,
       accessMode: acc.accessMode,
       primaryServerId: acc.primaryServerId,
       scheduledServerId: params.scheduledServerId,
       serviceId: acc.serviceId,
-    };
+    }
   }
-  return null;
+  return null
 }
 
 async function sealStorageMaterialForDaemon(
   c: Context<AppEnv>,
   db: Db,
   serverId: string,
-  material: EnvironmentDeployStorageMaterial[],
+  material: EnvironmentDeployStorageMaterial[]
 ): Promise<EnvironmentDeployStorageMaterial[] | Response> {
-  if (material.length === 0) return [];
+  if (material.length === 0) return []
 
-  const dataEncryptionSecrets = c.get("dataEncryptionSecrets");
-  const secretsConfig = c.get("secretsConfig");
+  const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
+  const secretsConfig = c.get('secretsConfig')
   const needsReseal = material.some((entry) =>
     entry.contentEnvelope?.startsWith(`${ENVELOPE_MAGIC}.`)
-  );
-  if (!needsReseal) return material;
+  )
+  if (!needsReseal) return material
 
   if (!dataEncryptionSecrets || !secretsConfig) {
-    return Response.json({
-      error: "Encryption unavailable — no encryption key configured",
-    }, { status: 503 });
+    return Response.json(
+      {
+        error: 'Encryption unavailable — no encryption key configured',
+      },
+      { status: 503 }
+    )
   }
 
-  const daemonState = await getServerDaemonStateByServerId(db, serverId);
+  const daemonState = await getServerDaemonStateByServerId(db, serverId)
   if (!daemonState || !isDaemonKeyActive(daemonState.key)) {
-    return Response.json({
-      error: "No encryption-capable daemon key on target server",
-    }, { status: 422 });
+    return Response.json(
+      {
+        error: 'No encryption-capable daemon key on target server',
+      },
+      { status: 422 }
+    )
   }
-  const keyId = daemonState.key.id;
+  const keyId = daemonState.key.id
 
   // Pure crypto per entry (no DB, no shared state): reseal them concurrently.
   return await Promise.all(
     material.map(async (entry) => {
-      let contentEnvelope = entry.contentEnvelope;
+      let contentEnvelope = entry.contentEnvelope
       if (contentEnvelope?.startsWith(`${ENVELOPE_MAGIC}.`)) {
         contentEnvelope = await resealSecretForDaemon(
           secretsConfig,
           dataEncryptionSecrets,
           { serverId, keyId },
-          contentEnvelope,
-        );
+          contentEnvelope
+        )
       }
       return {
         ...entry,
         ...(contentEnvelope ? { contentEnvelope } : {}),
-      };
-    }),
-  );
+      }
+    })
+  )
 }
 
 export async function loadPrincipalMaterial(
   db: Db,
-  principalIds: string[],
+  principalIds: string[]
 ): Promise<EnvironmentDeployPrincipalMaterial[]> {
-  if (principalIds.length === 0) return [];
+  if (principalIds.length === 0) return []
 
-  const uniqueIds = [...new Set(principalIds)];
+  const uniqueIds = [...new Set(principalIds)]
   const rows = await db
     .select({
       id: principal.id,
@@ -1221,34 +1184,34 @@ export async function loadPrincipalMaterial(
       password: principal.password,
     })
     .from(principal)
-    .where(inArray(principal.id, uniqueIds));
+    .where(inArray(principal.id, uniqueIds))
 
   // Explicit grants. The daemon reconciles unix group membership from exactly
   // this set — it never derives entitlements itself, because a derived grant
   // could only ever be added and would therefore never be revocable.
-  const entitlements = await loadEntitlementsByPrincipalIds(db, uniqueIds);
+  const entitlements = await loadEntitlementsByPrincipalIds(db, uniqueIds)
   // Always present for every id asked about, so `[]` genuinely means "this
   // account holds no keys" rather than "we did not look".
-  const sshKeys = await loadSshKeysByPrincipalIds(db, uniqueIds);
+  const sshKeys = await loadSshKeysByPrincipalIds(db, uniqueIds)
 
-  const material: EnvironmentDeployPrincipalMaterial[] = [];
+  const material: EnvironmentDeployPrincipalMaterial[] = []
   for (const row of rows) {
-    const options = parsePrincipalOptions(row.options);
-    const override = resolvePrincipalIdOverride(options);
+    const options = parsePrincipalOptions(row.options)
+    const override = resolvePrincipalIdOverride(options)
     const runtimes = (entitlements.get(row.id) ?? []).map((entry) => ({
       runtime: entry.runtime,
       series: entry.series,
-    }));
-    const shell = resolvePrincipalShell(options);
-    const keys = sshKeys.get(row.id) ?? [];
+    }))
+    const shell = resolvePrincipalShell(options)
+    const keys = sshKeys.get(row.id) ?? []
     // Password sign-in is on exactly when the row holds a crypt hash. The
     // format gate matters: for a server principal the column only ever holds
     // a sha512-crypt hash, but anything else (or a value from before this
     // gate) must not be forwarded to `chpasswd -e` on a host.
-    const passwordHash = typeof row.password === "string" &&
-        SHA512_CRYPT_HASH_RE.test(row.password)
-      ? row.password
-      : undefined;
+    const passwordHash =
+      typeof row.password === 'string' && SHA512_CRYPT_HASH_RE.test(row.password)
+        ? row.password
+        : undefined
     // naming.ts is the single source of truth for home; metadata.home is a
     // mirror for display only.
     material.push({
@@ -1259,16 +1222,14 @@ export async function loadPrincipalMaterial(
       // The effective set, decided here: an account with no credential at all
       // gets no access group whatever its shell says, because there would be
       // nothing for it to authenticate with. See `lib/principal-access.ts`.
-      accessGroups: [
-        ...accessGroupsFor(shell, keys.length, passwordHash !== undefined),
-      ],
+      accessGroups: [...accessGroupsFor(shell, keys.length, passwordHash !== undefined)],
       sshKeys: keys,
       ...(passwordHash === undefined ? {} : { passwordHash }),
       ...(override ? { uid: override.uid, gid: override.gid } : {}),
       ...(runtimes.length > 0 ? { runtimes } : {}),
-    });
+    })
   }
-  return material;
+  return material
 }
 
 /**
@@ -1278,76 +1239,76 @@ export async function loadPrincipalMaterial(
 export function resolveProjectEnvironmentComposeLayers(
   projectOptions: unknown,
   environmentOptions: unknown,
-  environmentFilename: string,
+  environmentFilename: string
 ): ComposeLayer[] | Response {
   // One chain builder for every caller; this keeps only the Response mapping.
   const chain = resolveComposeLayerChain({
     projectOptions,
     environmentOptions,
     environmentFilename,
-  });
+  })
   if (isComposeChainError(chain)) {
-    return Response.json({ error: "Invalid compose document" }, {
-      status: 400,
-    });
+    return Response.json(
+      { error: 'Invalid compose document' },
+      {
+        status: 400,
+      }
+    )
   }
-  return chain;
+  return chain
 }
 
 export function mergeProjectEnvironmentCompose(
   projectOptions: unknown,
-  environmentOptions: unknown,
+  environmentOptions: unknown
 ): ComposeDocument | Response {
   // Filename is unused by mergeComposeLayers (document fold only); use a
   // placeholder that cannot collide with the project basename.
   const layers = resolveProjectEnvironmentComposeLayers(
     projectOptions,
     environmentOptions,
-    "docker-compose.environment.yml",
-  );
-  if (layers instanceof Response) return layers;
-  return mergeComposeLayers(layers);
+    'docker-compose.environment.yml'
+  )
+  if (layers instanceof Response) return layers
+  return mergeComposeLayers(layers)
 }
 
 function evaluateHealthCheckGates(
   merged: ComposeDocument,
   optionsByComposeName: ReturnType<typeof buildServiceOptionsMap>,
-  acknowledgeHealthCheckWarnings: boolean | undefined,
-): Extract<DeployPrepareError, { kind: "health_check" }> | null {
-  const healthWarnings = collectHealthCheckWarnings(
-    merged,
-    optionsByComposeName,
-  );
-  const requiredMissing = healthWarnings.filter((w) => w.policy === "required");
+  acknowledgeHealthCheckWarnings: boolean | undefined
+): Extract<DeployPrepareError, { kind: 'health_check' }> | null {
+  const healthWarnings = collectHealthCheckWarnings(merged, optionsByComposeName)
+  const requiredMissing = healthWarnings.filter((w) => w.policy === 'required')
   if (requiredMissing.length > 0) {
     return {
-      kind: "health_check",
+      kind: 'health_check',
       required: true,
       services: requiredMissing.map((w) => w.composeServiceName),
-    };
+    }
   }
-  const warnMissing = healthWarnings.filter((w) => w.policy === "warn");
+  const warnMissing = healthWarnings.filter((w) => w.policy === 'warn')
   if (warnMissing.length > 0 && !acknowledgeHealthCheckWarnings) {
     return {
-      kind: "health_check",
+      kind: 'health_check',
       required: false,
       services: warnMissing.map((w) => w.composeServiceName),
-    };
+    }
   }
-  return null;
+  return null
 }
 
 async function mapResolvedVariablesToDeployEntries(
   map: ResolvedVariableMap,
-  dataEncryptionSecrets: Parameters<typeof decryptSecret>[0] | undefined,
+  dataEncryptionSecrets: Parameters<typeof decryptSecret>[0] | undefined
 ): Promise<DeployVariableEntry[]> {
   // Pure crypto per entry (no DB, no shared state): decrypt concurrently;
   // Promise.all keeps the map's iteration order.
   return await Promise.all(
     [...map].map(async ([key, entry]) => {
-      let value = entry.value;
+      let value = entry.value
       if (entry.isSecret && dataEncryptionSecrets) {
-        value = await decryptSecret(dataEncryptionSecrets, entry.value);
+        value = await decryptSecret(dataEncryptionSecrets, entry.value)
       }
       return {
         key,
@@ -1357,181 +1318,158 @@ async function mapResolvedVariablesToDeployEntries(
         forBuild: entry.forBuild,
         forRuntime: entry.forRuntime,
         ...(entry.bindingId ? { bindingId: entry.bindingId } : {}),
-      };
-    }),
-  );
+      }
+    })
+  )
 }
 
 type ServiceRow = {
-  id: string;
-  composeServiceName: string;
-  options: unknown;
-};
+  id: string
+  composeServiceName: string
+  options: unknown
+}
 
 async function resolveDeployVariableBuckets(
   db: Db,
   params: {
-    environmentId: string;
-    serverId: string;
-    composeServiceNames: readonly string[];
+    environmentId: string
+    serverId: string
+    composeServiceNames: readonly string[]
     /** Clone compose key → origin service row (same row for every clone). */
-    serviceRowByComposeName: Map<string, ServiceRow>;
-    dataEncryptionSecrets: Parameters<
-      typeof mapResolvedVariablesToDeployEntries
-    >[1];
-  },
+    serviceRowByComposeName: Map<string, ServiceRow>
+    dataEncryptionSecrets: Parameters<typeof mapResolvedVariablesToDeployEntries>[1]
+  }
 ): Promise<{
-  globalEntries: DeployVariableEntry[];
-  perServiceEntries: Map<string, DeployVariableEntry[]>;
-  perServiceScopes: Map<string, VariableScopeEntryMap>;
+  globalEntries: DeployVariableEntry[]
+  perServiceEntries: Map<string, DeployVariableEntry[]>
+  perServiceScopes: Map<string, VariableScopeEntryMap>
 }> {
-  const envVars = await resolveInheritedVariablesForEnvironment(
-    db,
-    params.environmentId,
-  );
-  const serverVars = await resolveServerScopedVariables(db, params.serverId);
-  const fallbackGlobal = new Map([...envVars, ...serverVars]);
+  const envVars = await resolveInheritedVariablesForEnvironment(db, params.environmentId)
+  const serverVars = await resolveServerScopedVariables(db, params.serverId)
+  const fallbackGlobal = new Map([...envVars, ...serverVars])
   const fallbackEntries = await mapResolvedVariablesToDeployEntries(
     fallbackGlobal,
-    params.dataEncryptionSecrets,
-  );
+    params.dataEncryptionSecrets
+  )
   const serverScopeEntries = await mapResolvedVariablesToDeployEntries(
     serverVars,
-    params.dataEncryptionSecrets,
-  );
-  const serverScopeMap = new Map(
-    serverScopeEntries.map((entry) => [entry.key, entry]),
-  );
+    params.dataEncryptionSecrets
+  )
+  const serverScopeMap = new Map(serverScopeEntries.map((entry) => [entry.key, entry]))
 
-  const composeServices = params.composeServiceNames;
-  const globalEntries: DeployVariableEntry[] = composeServices.length === 0
-    ? fallbackEntries
-    : [];
-  const perServiceEntries = new Map<string, DeployVariableEntry[]>();
-  const perServiceScopes = new Map<string, VariableScopeEntryMap>();
+  const composeServices = params.composeServiceNames
+  const globalEntries: DeployVariableEntry[] = composeServices.length === 0 ? fallbackEntries : []
+  const perServiceEntries = new Map<string, DeployVariableEntry[]>()
+  const perServiceScopes = new Map<string, VariableScopeEntryMap>()
 
   if (composeServices.length === 0) {
-    return { globalEntries, perServiceEntries, perServiceScopes };
+    return { globalEntries, perServiceEntries, perServiceScopes }
   }
   if (params.serviceRowByComposeName.size === 0) {
-    globalEntries.push(...fallbackEntries);
-    return { globalEntries, perServiceEntries, perServiceScopes };
+    globalEntries.push(...fallbackEntries)
+    return { globalEntries, perServiceEntries, perServiceScopes }
   }
 
-  const userEntriesByServiceId = new Map<string, DeployVariableEntry[]>();
-  const scopesByServiceId = new Map<string, VariableScopeEntryMap>();
+  const userEntriesByServiceId = new Map<string, DeployVariableEntry[]>()
+  const scopesByServiceId = new Map<string, VariableScopeEntryMap>()
 
   await forEachSequential(composeServices, async (composeServiceName) => {
-    const row = params.serviceRowByComposeName.get(composeServiceName);
-    let userEntries: DeployVariableEntry[];
-    let scopes: VariableScopeEntryMap;
+    const row = params.serviceRowByComposeName.get(composeServiceName)
+    let userEntries: DeployVariableEntry[]
+    let scopes: VariableScopeEntryMap
     if (row) {
-      let cached = userEntriesByServiceId.get(row.id);
-      let cachedScopes = scopesByServiceId.get(row.id);
+      let cached = userEntriesByServiceId.get(row.id)
+      let cachedScopes = scopesByServiceId.get(row.id)
       if (!cached || !cachedScopes) {
-        const bundle = await resolveInheritedVariableBundleForService(
-          db,
-          row.id,
-        );
-        const hostingMap = await mergeHostingVariablesForService(
-          db,
-          row.id,
-          bundle.inherited,
-        );
-        await reapplyBindingOwnedVariables(db, row.id, bundle.inherited);
-        const mergedServer = new Map([...bundle.inherited, ...serverVars]);
+        const bundle = await resolveInheritedVariableBundleForService(db, row.id)
+        const hostingMap = await mergeHostingVariablesForService(db, row.id, bundle.inherited)
+        await reapplyBindingOwnedVariables(db, row.id, bundle.inherited)
+        const mergedServer = new Map([...bundle.inherited, ...serverVars])
         cached = await mapResolvedVariablesToDeployEntries(
           mergedServer,
-          params.dataEncryptionSecrets,
-        );
+          params.dataEncryptionSecrets
+        )
         const scopeMaps: ResolvedVariableScopes = {
           ...bundle.scopes,
           hosting: hostingMap,
           server: serverVars,
-        };
+        }
         cachedScopes = await mapResolvedScopesToDeployEntries(
           scopeMaps,
-          params.dataEncryptionSecrets,
-        );
-        cachedScopes.server = serverScopeMap;
-        userEntriesByServiceId.set(row.id, cached);
-        scopesByServiceId.set(row.id, cachedScopes);
+          params.dataEncryptionSecrets
+        )
+        cachedScopes.server = serverScopeMap
+        userEntriesByServiceId.set(row.id, cached)
+        scopesByServiceId.set(row.id, cachedScopes)
       }
-      userEntries = cached;
-      scopes = cachedScopes;
+      userEntries = cached
+      scopes = cachedScopes
     } else {
-      userEntries = fallbackEntries;
-      scopes = { server: serverScopeMap };
+      userEntries = fallbackEntries
+      scopes = { server: serverScopeMap }
     }
-    perServiceEntries.set(composeServiceName, userEntries);
-    perServiceScopes.set(composeServiceName, scopes);
-  });
-  return { globalEntries, perServiceEntries, perServiceScopes };
+    perServiceEntries.set(composeServiceName, userEntries)
+    perServiceScopes.set(composeServiceName, scopes)
+  })
+  return { globalEntries, perServiceEntries, perServiceScopes }
 }
 
 async function mapResolvedScopesToDeployEntries(
   scopes: ResolvedVariableScopes,
-  dataEncryptionSecrets: Parameters<
-    typeof mapResolvedVariablesToDeployEntries
-  >[1],
+  dataEncryptionSecrets: Parameters<typeof mapResolvedVariablesToDeployEntries>[1]
 ): Promise<VariableScopeEntryMap> {
-  const out: VariableScopeEntryMap = {};
+  const out: VariableScopeEntryMap = {}
   // Pure crypto per scope (no DB, no shared state): decrypt scopes
   // concurrently, then fill `out` in scope order.
   const decrypted = await Promise.all(
     Object.entries(scopes).map(async ([scope, map]) => {
-      if (!map) return undefined;
-      const entries = await mapResolvedVariablesToDeployEntries(
-        map,
-        dataEncryptionSecrets,
-      );
-      return [scope, entries] as const;
-    }),
-  );
+      if (!map) return undefined
+      const entries = await mapResolvedVariablesToDeployEntries(map, dataEncryptionSecrets)
+      return [scope, entries] as const
+    })
+  )
   for (const item of decrypted) {
-    if (!item) continue;
-    const [scope, entries] = item;
-    out[scope as keyof VariableScopeEntryMap] = new Map(
-      entries.map((entry) => [entry.key, entry]),
-    );
+    if (!item) continue
+    const [scope, entries] = item
+    out[scope as keyof VariableScopeEntryMap] = new Map(entries.map((entry) => [entry.key, entry]))
   }
-  return out;
+  return out
 }
 
 function listContainerComposeNames(document: ComposeDocument): Set<string> {
   const services = isPlainObject(document.data.services)
     ? (document.data.services as Record<string, unknown>)
-    : {};
-  const names = new Set<string>();
+    : {}
+  const names = new Set<string>()
   for (const [name, raw] of Object.entries(services)) {
     if (!isPlainObject(raw)) {
-      names.add(name);
-      continue;
+      names.add(name)
+      continue
     }
     // Host-native kinds never become containers, so they must not claim a
     // container allocation, a replica count, or a container_name.
     if (isSiteComposeService(raw) || isNodeComposeService(raw)) {
-      continue;
+      continue
     }
-    names.add(name);
+    names.add(name)
   }
-  return names;
+  return names
 }
 
 function buildExpandedServiceOptionsMap(
   serviceRows: ServiceRow[],
-  expansion: Map<string, string[]>,
+  expansion: Map<string, string[]>
 ): ServiceOptionsByComposeName {
-  const originOptions = buildServiceOptionsMap(serviceRows);
-  const map: ServiceOptionsByComposeName = new Map();
+  const originOptions = buildServiceOptionsMap(serviceRows)
+  const map: ServiceOptionsByComposeName = new Map()
 
   for (const [originName, clones] of expansion) {
-    const origin = originOptions.get(originName) ?? {};
+    const origin = originOptions.get(originName) ?? {}
     for (const cloneName of clones) {
-      map.set(cloneName, { ...origin });
+      map.set(cloneName, { ...origin })
     }
   }
-  return map;
+  return map
 }
 
 /**
@@ -1545,29 +1483,29 @@ function buildExpandedServiceOptionsMap(
  * carry and line up one-to-one with {@link ResolvedService.composeServiceName}.
  */
 function resolvedResourcesByComposeName(
-  optionsByComposeName: ServiceOptionsByComposeName,
+  optionsByComposeName: ServiceOptionsByComposeName
 ): Map<string, ResolvedResources> {
-  const map = new Map<string, ResolvedResources>();
+  const map = new Map<string, ResolvedResources>()
   for (const [composeServiceName, options] of optionsByComposeName) {
-    if (options.resources) map.set(composeServiceName, options.resources);
+    if (options.resources) map.set(composeServiceName, options.resources)
   }
-  return map;
+  return map
 }
 
 /** Build clone compose name → allocated container_name map for apply-service-options. */
 function buildContainerNameByComposeName(
   allocations: readonly ContainerAllocation[],
   localCounts: ReadonlyMap<string, number> | undefined,
-  localServerId: string | undefined,
+  localServerId: string | undefined
 ): Map<string, string> {
-  const map = new Map<string, string>();
+  const map = new Map<string, string>()
   for (const row of allocations) {
-    const count = localCounts?.get(row.composeServiceName) ?? row.instances;
-    if (count > 1) continue;
-    if (localServerId && row.serverId !== localServerId) continue;
-    map.set(row.cloneComposeServiceName, row.containerName);
+    const count = localCounts?.get(row.composeServiceName) ?? row.instances
+    if (count > 1) continue
+    if (localServerId && row.serverId !== localServerId) continue
+    map.set(row.cloneComposeServiceName, row.containerName)
   }
-  return map;
+  return map
 }
 
 /**
@@ -1576,119 +1514,102 @@ function buildContainerNameByComposeName(
  * for a future opt-in variable feature.
  */
 function stripReservedKeysFromEntries(
-  perServiceEntries: Map<string, DeployVariableEntry[]>,
+  perServiceEntries: Map<string, DeployVariableEntry[]>
 ): Map<string, DeployVariableEntry[]> {
-  const next = new Map<string, DeployVariableEntry[]>();
+  const next = new Map<string, DeployVariableEntry[]>()
   for (const [cloneName, userEntries] of perServiceEntries) {
-    next.set(cloneName, stripReservedDeployVariableKeys(userEntries));
+    next.set(cloneName, stripReservedDeployVariableKeys(userEntries))
   }
-  return next;
+  return next
 }
 
-function expansionToRecord(
-  expansion: Map<string, string[]>,
-): Record<string, string[]> {
-  const out: Record<string, string[]> = {};
+function expansionToRecord(expansion: Map<string, string[]>): Record<string, string[]> {
+  const out: Record<string, string[]> = {}
   for (const [key, value] of expansion) {
-    out[key] = value;
+    out[key] = value
   }
-  return out;
+  return out
 }
 
 function buildCloneNamesByServiceId(
   serviceRows: ServiceRow[],
-  expansion: Map<string, string[]>,
+  expansion: Map<string, string[]>
 ): Map<string, string[]> {
-  const map = new Map<string, string[]>();
+  const map = new Map<string, string[]>()
   for (const row of serviceRows) {
-    map.set(
-      row.id,
-      expansion.get(row.composeServiceName) ?? [row.composeServiceName],
-    );
+    map.set(row.id, expansion.get(row.composeServiceName) ?? [row.composeServiceName])
   }
-  return map;
+  return map
 }
 
 /** Soft prepare errors that preview can absorb into `warnings`. */
-type SoftDeployPrepareError = Exclude<
-  DeployPrepareError,
-  HardDeployPrepareError
->;
+type SoftDeployPrepareError = Exclude<DeployPrepareError, HardDeployPrepareError>
 
 function absorbSoftPrepareError(
   mode: DeployPrepareMode,
   warnings: DeployPrepareWarning[],
-  error: SoftDeployPrepareError | null | undefined,
+  error: SoftDeployPrepareError | null | undefined
 ): SoftDeployPrepareError | null {
-  if (!error) return null;
-  if (mode === "preview") {
-    warnings.push(warningFromPrepareError(error));
-    return null;
+  if (!error) return null
+  if (mode === 'preview') {
+    warnings.push(warningFromPrepareError(error))
+    return null
   }
-  return error;
+  return error
 }
 
 /** Merged `services:` mapping, or `{}` when the document has none. */
-function composeServicesRecord(
-  document: ComposeDocument,
-): Record<string, unknown> {
-  if (!isPlainObject(document.data.services)) return {};
-  return document.data.services as Record<string, unknown>;
+function composeServicesRecord(document: ComposeDocument): Record<string, unknown> {
+  if (!isPlainObject(document.data.services)) return {}
+  return document.data.services as Record<string, unknown>
 }
 
 function listComposeServiceKeys(document: ComposeDocument): string[] {
-  if (!isPlainObject(document.data.services)) return [];
-  return Object.keys(document.data.services as Record<string, unknown>);
+  if (!isPlainObject(document.data.services)) return []
+  return Object.keys(document.data.services as Record<string, unknown>)
 }
 
 async function emptyComposePrepareResult(
-  mode: DeployPrepareMode,
+  mode: DeployPrepareMode
 ): Promise<PreparedDeployCompose | DeployPrepareError> {
-  if (mode === "preview") {
-    return await emptyPreparedCompose([
-      warningFromPrepareError({ kind: "empty_compose" }),
-    ]);
+  if (mode === 'preview') {
+    return await emptyPreparedCompose([warningFromPrepareError({ kind: 'empty_compose' })])
   }
-  return { kind: "empty_compose" };
+  return { kind: 'empty_compose' }
 }
 
 function buildInstancesByComposeName(
   composeServiceNames: readonly string[],
   containerServices: ReturnType<typeof buildContainerServiceSpecs>,
-  serviceRows: ServiceRow[],
+  serviceRows: ServiceRow[]
 ): Map<string, number> {
-  const instancesByComposeName = new Map<string, number>();
+  const instancesByComposeName = new Map<string, number>()
   for (const spec of containerServices) {
-    instancesByComposeName.set(spec.composeServiceName, spec.instances);
+    instancesByComposeName.set(spec.composeServiceName, spec.instances)
   }
   // A site keeps count 1 (expansion skips them regardless).
   for (const name of composeServiceNames) {
-    if (instancesByComposeName.has(name)) continue;
-    const row = serviceRows.find((serviceRow) =>
-      serviceRow.composeServiceName === name
-    );
+    if (instancesByComposeName.has(name)) continue
+    const row = serviceRows.find((serviceRow) => serviceRow.composeServiceName === name)
     instancesByComposeName.set(
       name,
-      resolveServiceInstances(parseServiceOptions(row?.options) ?? {}),
-    );
+      resolveServiceInstances(parseServiceOptions(row?.options) ?? {})
+    )
   }
-  return instancesByComposeName;
+  return instancesByComposeName
 }
 
 function buildServiceRowByCloneName(
   serviceRows: ServiceRow[],
-  expansion: Map<string, string[]>,
+  expansion: Map<string, string[]>
 ): Map<string, ServiceRow> {
-  const serviceRowByCloneName = new Map<string, ServiceRow>();
+  const serviceRowByCloneName = new Map<string, ServiceRow>()
   for (const row of serviceRows) {
-    for (
-      const cloneName of expansion.get(row.composeServiceName) ??
-        [row.composeServiceName]
-    ) {
-      serviceRowByCloneName.set(cloneName, row);
+    for (const cloneName of expansion.get(row.composeServiceName) ?? [row.composeServiceName]) {
+      serviceRowByCloneName.set(cloneName, row)
     }
   }
-  return serviceRowByCloneName;
+  return serviceRowByCloneName
 }
 
 /**
@@ -1705,11 +1626,11 @@ function buildServiceRowByCloneName(
 async function loadServiceIdsWithBindings(
   db: Db,
   serviceIds: readonly string[],
-  serverId: string,
+  serverId: string
 ): Promise<{ bound: Set<string>; coResident: Set<string> }> {
-  const bound = new Set<string>();
-  const coResident = new Set<string>();
-  if (serviceIds.length === 0) return { bound, coResident };
+  const bound = new Set<string>()
+  const coResident = new Set<string>()
+  if (serviceIds.length === 0) return { bound, coResident }
   const rows = await db
     .select({
       serviceId: binding.serviceId,
@@ -1720,16 +1641,16 @@ async function loadServiceIdsWithBindings(
     .innerJoin(service, eq(binding.serviceId, service.id))
     .innerJoin(environment, eq(service.environmentId, environment.id))
     .innerJoin(project, eq(environment.projectId, project.id))
-    .where(inArray(binding.serviceId, [...serviceIds]));
+    .where(inArray(binding.serviceId, [...serviceIds]))
   for (const row of rows) {
-    bound.add(row.serviceId);
+    bound.add(row.serviceId)
     const listener = resolveEffectivePlacementServerId(
       row.environmentServerId,
-      parseProjectOptions(row.projectOptions),
-    );
-    if (listener === serverId) coResident.add(row.serviceId);
+      parseProjectOptions(row.projectOptions)
+    )
+    if (listener === serverId) coResident.add(row.serviceId)
   }
-  return { bound, coResident };
+  return { bound, coResident }
 }
 
 /**
@@ -1743,33 +1664,30 @@ async function resolveManagedNetworkComposeServiceNames(
   db: Db,
   serviceRows: ServiceRow[],
   expansion: Map<string, string[]>,
-  serverId: string,
+  serverId: string
 ): Promise<{ bound: string[]; coResident: Set<string> }> {
   const boundServiceIds = await loadServiceIdsWithBindings(
     db,
     serviceRows.map((row) => row.id),
-    serverId,
-  );
+    serverId
+  )
   if (boundServiceIds.bound.size === 0) {
-    return { bound: [], coResident: new Set() };
+    return { bound: [], coResident: new Set() }
   }
 
-  const names = new Set<string>();
-  const coResident = new Set<string>();
+  const names = new Set<string>()
+  const coResident = new Set<string>()
   for (const row of serviceRows) {
-    if (!boundServiceIds.bound.has(row.id)) continue;
-    for (
-      const cloneName of expansion.get(row.composeServiceName) ??
-        [row.composeServiceName]
-    ) {
-      names.add(cloneName);
-      if (boundServiceIds.coResident.has(row.id)) coResident.add(cloneName);
+    if (!boundServiceIds.bound.has(row.id)) continue
+    for (const cloneName of expansion.get(row.composeServiceName) ?? [row.composeServiceName]) {
+      names.add(cloneName)
+      if (boundServiceIds.coResident.has(row.id)) coResident.add(cloneName)
     }
   }
   return {
     bound: [...names].sort((a, b) => a.localeCompare(b)),
     coResident,
-  };
+  }
 }
 
 /**
@@ -1782,14 +1700,14 @@ async function resolveManagedNetworkComposeServiceNames(
 function localManagedNetworkServiceNames(
   boundLogicalNames: readonly string[],
   remoteHostsByService: ReadonlyMap<string, unknown> | undefined,
-  coResidentNames?: ReadonlySet<string>,
+  coResidentNames?: ReadonlySet<string>
 ): string[] {
   if (!remoteHostsByService || remoteHostsByService.size === 0) {
-    return [...boundLogicalNames];
+    return [...boundLogicalNames]
   }
-  return boundLogicalNames.filter((name) =>
-    coResidentNames?.has(name) === true || !remoteHostsByService.has(name)
-  );
+  return boundLogicalNames.filter(
+    (name) => coResidentNames?.has(name) === true || !remoteHostsByService.has(name)
+  )
 }
 
 /**
@@ -1801,29 +1719,24 @@ function localManagedNetworkServiceNames(
  */
 function effectiveAccountLimits(
   orgOptions: unknown,
-  serverOptions: unknown,
-): EnvironmentDeployNativeAppService["accountLimits"] | undefined {
-  const orgLimits = parseResourceLimits(
-    isPlainObject(orgOptions) ? orgOptions.resourceLimits : null,
-  ) ?? {};
-  const serverLimits = parseResourceLimits(
-    isPlainObject(serverOptions) ? serverOptions.resourceLimits : null,
-  ) ?? {};
+  serverOptions: unknown
+): EnvironmentDeployNativeAppService['accountLimits'] | undefined {
+  const orgLimits =
+    parseResourceLimits(isPlainObject(orgOptions) ? orgOptions.resourceLimits : null) ?? {}
+  const serverLimits =
+    parseResourceLimits(isPlainObject(serverOptions) ? serverOptions.resourceLimits : null) ?? {}
   const pick = (a?: number, b?: number): number | undefined => {
-    if (a === undefined) return b;
-    if (b === undefined) return a;
-    return Math.min(a, b);
-  };
-  const cpus = pick(orgLimits.maxCpus, serverLimits.maxCpus);
-  const memoryBytes = pick(
-    orgLimits.maxMemoryBytes,
-    serverLimits.maxMemoryBytes,
-  );
-  if (cpus === undefined && memoryBytes === undefined) return undefined;
+    if (a === undefined) return b
+    if (b === undefined) return a
+    return Math.min(a, b)
+  }
+  const cpus = pick(orgLimits.maxCpus, serverLimits.maxCpus)
+  const memoryBytes = pick(orgLimits.maxMemoryBytes, serverLimits.maxMemoryBytes)
+  if (cpus === undefined && memoryBytes === undefined) return undefined
   return {
     ...(cpus === undefined ? {} : { cpus }),
     ...(memoryBytes === undefined ? {} : { memoryBytes }),
-  };
+  }
 }
 
 /**
@@ -1841,52 +1754,40 @@ function nativeAppServicesForDeploy(
   resolvedServices: readonly ResolvedService[],
   orgOptions: unknown,
   serverOptions: unknown,
-  tasksByComposeName: ReadonlyMap<string, readonly TaskRecord[]> = new Map(),
+  tasksByComposeName: ReadonlyMap<string, readonly TaskRecord[]> = new Map()
 ): PreparedNativeAppService[] {
-  if (apps.length === 0) return [];
-  const accountLimits = effectiveAccountLimits(orgOptions, serverOptions);
+  if (apps.length === 0) return []
+  const accountLimits = effectiveAccountLimits(orgOptions, serverOptions)
   const resourcesByComposeName = new Map(
-    resolvedServices.map((entry) =>
-      [entry.composeServiceName, entry.resources] as const
-    ),
-  );
+    resolvedServices.map((entry) => [entry.composeServiceName, entry.resources] as const)
+  )
   return apps.map((app) => {
-    const cron = renderCronForDeploy(
-      app.cron,
-      tasksByComposeName.get(app.composeServiceName),
-    );
-    const resources = resourcesByComposeName.get(app.composeServiceName);
-    const cpus = resources?.cpus;
-    const memoryBytes = resources?.memoryBytes;
-    const perApp = cpus === undefined && memoryBytes === undefined
-      ? undefined
-      : {
-        ...(cpus === undefined ? {} : { cpus }),
-        ...(memoryBytes === undefined ? {} : { memoryBytes }),
-      };
+    const cron = renderCronForDeploy(app.cron, tasksByComposeName.get(app.composeServiceName))
+    const resources = resourcesByComposeName.get(app.composeServiceName)
+    const cpus = resources?.cpus
+    const memoryBytes = resources?.memoryBytes
+    const perApp =
+      cpus === undefined && memoryBytes === undefined
+        ? undefined
+        : {
+            ...(cpus === undefined ? {} : { cpus }),
+            ...(memoryBytes === undefined ? {} : { memoryBytes }),
+          }
     return {
       composeServiceName: app.composeServiceName,
       listenPort: app.listenPort,
       framework: app.framework,
-      ...(app.nodeVersion === undefined
-        ? {}
-        : { nodeVersion: app.nodeVersion }),
+      ...(app.nodeVersion === undefined ? {} : { nodeVersion: app.nodeVersion }),
       ...(app.appMode === undefined ? {} : { appMode: app.appMode }),
       ...(app.enabled === undefined ? {} : { enabled: app.enabled }),
-      ...(app.startupFile === undefined
-        ? {}
-        : { startupFile: app.startupFile }),
+      ...(app.startupFile === undefined ? {} : { startupFile: app.startupFile }),
       // Plain Compose keys, read off the service body by the native split
       // before the service left the compose document. They ride the payload
       // rather than stopping here: the `node` service is removed from runtime
       // compose entirely, so the generated unit is the only thing left that
       // can honour a restart policy or record service labels.
-      ...(app.restartPolicy === undefined
-        ? {}
-        : { restartPolicy: app.restartPolicy }),
-      ...(app.serviceLabels === undefined
-        ? {}
-        : { serviceLabels: app.serviceLabels }),
+      ...(app.restartPolicy === undefined ? {} : { restartPolicy: app.restartPolicy }),
+      ...(app.serviceLabels === undefined ? {} : { serviceLabels: app.serviceLabels }),
       ...(perApp === undefined ? {} : { resources: perApp }),
       ...(accountLimits === undefined ? {} : { accountLimits }),
       // A node app always runs as the principal that owns its release tree, so
@@ -1894,8 +1795,8 @@ function nativeAppServicesForDeploy(
       // resolves the account from the same binding it builds for the app's own
       // unit. Translation still happens exactly once, in `renderCronForDeploy`.
       ...(cron.length === 0 ? {} : { cron }),
-    };
-  });
+    }
+  })
 }
 
 /**
@@ -1910,43 +1811,42 @@ function resourceLimitPrepareError(
   resolvedServices: readonly ResolvedService[],
   serviceCount: number,
   orgOptions: unknown,
-  serverOptions: unknown,
+  serverOptions: unknown
 ): SoftDeployPrepareError | null {
-  const orgLimits = parseResourceLimits(
-    isPlainObject(orgOptions) ? orgOptions.resourceLimits : null,
-  ) ?? {};
-  const serverLimits = parseResourceLimits(
-    isPlainObject(serverOptions) ? serverOptions.resourceLimits : null,
-  ) ?? {};
+  const orgLimits =
+    parseResourceLimits(isPlainObject(orgOptions) ? orgOptions.resourceLimits : null) ?? {}
+  const serverLimits =
+    parseResourceLimits(isPlainObject(serverOptions) ? serverOptions.resourceLimits : null) ?? {}
   const usage = sumServiceResourceUsage(
     new Map(
-      resolvedServices.map((entry) =>
-        [
-          entry.composeServiceName,
-          entry.resources === undefined ? {} : { resources: entry.resources },
-        ] as const
-      ),
+      resolvedServices.map(
+        (entry) =>
+          [
+            entry.composeServiceName,
+            entry.resources === undefined ? {} : { resources: entry.resources },
+          ] as const
+      )
     ),
-    serviceCount,
-  );
-  const violations = checkResourceLimits(usage, orgLimits, serverLimits);
-  if (violations.length === 0) return null;
-  return { kind: "resource_limit", violations };
+    serviceCount
+  )
+  const violations = checkResourceLimits(usage, orgLimits, serverLimits)
+  if (violations.length === 0) return null
+  return { kind: 'resource_limit', violations }
 }
 
 async function loadDeployEnvAndProject(
   db: Db,
-  environmentId: string,
+  environmentId: string
 ): Promise<
   | {
-    envRow: {
-      id: string;
-      projectId: string;
-      options: unknown;
-      name: string | null;
-    };
-    projectRow: { id: string; options: unknown };
-  }
+      envRow: {
+        id: string
+        projectId: string
+        options: unknown
+        name: string | null
+      }
+      projectRow: { id: string; options: unknown }
+    }
   | Response
 > {
   const [envRow] = await db
@@ -1958,8 +1858,8 @@ async function loadDeployEnvAndProject(
     })
     .from(environment)
     .where(eq(environment.id, environmentId))
-    .limit(1);
-  if (!envRow) return Response.json({ error: "Not found" }, { status: 404 });
+    .limit(1)
+  if (!envRow) return Response.json({ error: 'Not found' }, { status: 404 })
 
   const [projectRow] = await db
     .select({
@@ -1968,78 +1868,71 @@ async function loadDeployEnvAndProject(
     })
     .from(project)
     .where(eq(project.id, envRow.projectId))
-    .limit(1);
+    .limit(1)
   if (!projectRow) {
-    return Response.json({ error: "Not found" }, { status: 404 });
+    return Response.json({ error: 'Not found' }, { status: 404 })
   }
 
-  return { envRow, projectRow };
+  return { envRow, projectRow }
 }
 
 type DeployExpandPipeline = {
-  containers: ContainerAllocation[];
-  ingressServices: EnvironmentDeployIngressService[];
-  registeredVolumes: RegisteredComposeVolume[];
+  containers: ContainerAllocation[]
+  ingressServices: EnvironmentDeployIngressService[]
+  registeredVolumes: RegisteredComposeVolume[]
   /** composeKey → Docker volume name applied by the merged pipeline. */
-  volumeRenames: Map<string, string>;
-  expandedDocument: ComposeDocument;
-  expansion: Map<string, string[]>;
-  expandedServiceNames: string[];
-  optionsByComposeName: ServiceOptionsByComposeName;
-  localReplicaCounts: Map<string, number>;
-  localServiceNames?: Set<string>;
-};
+  volumeRenames: Map<string, string>
+  expandedDocument: ComposeDocument
+  expansion: Map<string, string[]>
+  expandedServiceNames: string[]
+  optionsByComposeName: ServiceOptionsByComposeName
+  localReplicaCounts: Map<string, number>
+  localServiceNames?: Set<string>
+}
 
 async function allocateExpandDeployPipeline(
   db: Db,
   params: {
-    environmentId: string;
-    serverId: string;
-    organizationId: string;
-    projectOptions: unknown;
-    merged: ComposeDocument;
-    composeServiceNames: readonly string[];
-    serviceRows: ServiceRow[];
-    schedule?: DeployScheduleSlice;
-  },
+    environmentId: string
+    serverId: string
+    organizationId: string
+    projectOptions: unknown
+    merged: ComposeDocument
+    composeServiceNames: readonly string[]
+    serviceRows: ServiceRow[]
+    schedule?: DeployScheduleSlice
+  }
 ): Promise<DeployExpandPipeline> {
-  const containerNaming = resolveContainerNaming(
-    parseProjectOptions(params.projectOptions),
-  );
-  const containerComposeNames = listContainerComposeNames(params.merged);
+  const containerNaming = resolveContainerNaming(parseProjectOptions(params.projectOptions))
+  const containerComposeNames = listContainerComposeNames(params.merged)
   const containerServices = applyScheduleToContainerSpecs(
     buildContainerServiceSpecs(
       params.serviceRows,
       containerComposeNames,
-      authoredContainerNamesForAllocation(containerNaming, params.merged),
+      authoredContainerNamesForAllocation(containerNaming, params.merged)
     ),
-    params.schedule,
-  );
+    params.schedule
+  )
 
-  const tcpUdpServices = await resolveTcpUdpIngressServices(
-    db,
-    params.environmentId,
-  );
-  const ingressServices: EnvironmentDeployIngressService[] = [];
-  const ingressKeepIds = new Set<string>();
+  const tcpUdpServices = await resolveTcpUdpIngressServices(db, params.environmentId)
+  const ingressServices: EnvironmentDeployIngressService[] = []
+  const ingressKeepIds = new Set<string>()
   await forEachSequential(tcpUdpServices, async (svc) => {
-    if (
-      !ownsIngressForService(params.schedule, svc.serviceId, params.serverId)
-    ) {
-      return;
+    if (!ownsIngressForService(params.schedule, svc.serviceId, params.serverId)) {
+      return
     }
     const alloc = await ensureServiceIngressContainerAllocation(db, {
       serviceId: svc.serviceId,
       serverId: params.serverId,
       composeServiceName: svc.composeServiceName,
-    });
-    ingressKeepIds.add(alloc.containerRowId);
+    })
+    ingressKeepIds.add(alloc.containerRowId)
     ingressServices.push({
       serviceId: alloc.serviceId,
       composeServiceName: alloc.composeServiceName,
       containerName: alloc.containerName,
-    });
-  });
+    })
+  })
 
   const containers = await allocateEnvironmentContainers(db, {
     environmentId: params.environmentId,
@@ -2048,41 +1941,27 @@ async function allocateExpandDeployPipeline(
     containerNaming,
     environmentServiceIds: params.serviceRows.map((row) => row.id),
     extraKeepIds: ingressKeepIds,
-  });
+  })
 
   const registeredVolumes = await registerComposeVolumes(db, {
     document: params.merged,
     organizationId: params.organizationId,
     environmentId: params.environmentId,
     serverId: params.serverId,
-  });
+  })
   await registerComposeMounts(db, {
     document: params.merged,
     environmentId: params.environmentId,
-  });
-  const volumeRenames = new Map(
-    registeredVolumes.map((row) => [row.composeKey, row.volumeName]),
-  );
-  const withRenamedVolumes = renameComposeVolumes(params.merged, volumeRenames);
-  const expansion = identityComposeExpansion(params.composeServiceNames);
+  })
+  const volumeRenames = new Map(registeredVolumes.map((row) => [row.composeKey, row.volumeName]))
+  const withRenamedVolumes = renameComposeVolumes(params.merged, volumeRenames)
+  const expansion = identityComposeExpansion(params.composeServiceNames)
   const localCounts = params.schedule
-    ? localReplicaCounts(
-      params.schedule.slots,
-      params.schedule.serviceIdToName,
-      params.serverId,
-    )
-    : new Map(
-      containerServices.map((
-        spec,
-      ) => [spec.composeServiceName, spec.instances]),
-    );
+    ? localReplicaCounts(params.schedule.slots, params.schedule.serviceIdToName, params.serverId)
+    : new Map(containerServices.map((spec) => [spec.composeServiceName, spec.instances]))
   const localNames = params.schedule
-    ? localServiceNames(
-      params.schedule.slots,
-      params.schedule.serviceIdToName,
-      params.serverId,
-    )
-    : undefined;
+    ? localServiceNames(params.schedule.slots, params.schedule.serviceIdToName, params.serverId)
+    : undefined
 
   return {
     containers,
@@ -2092,20 +1971,17 @@ async function allocateExpandDeployPipeline(
     expandedDocument: withRenamedVolumes,
     expansion,
     expandedServiceNames: listComposeServiceKeys(withRenamedVolumes),
-    optionsByComposeName: buildExpandedServiceOptionsMap(
-      params.serviceRows,
-      expansion,
-    ),
+    optionsByComposeName: buildExpandedServiceOptionsMap(params.serviceRows, expansion),
     localReplicaCounts: localCounts,
     ...(localNames ? { localServiceNames: localNames } : {}),
-  };
+  }
 }
 
 function documentForServiceOptions(
   _mode: DeployPrepareMode,
-  withVariables: { document: ComposeDocument },
+  withVariables: { document: ComposeDocument }
 ): ComposeDocument {
-  return withVariables.document;
+  return withVariables.document
 }
 
 async function maybeSealDeployMaterials(
@@ -2114,39 +1990,29 @@ async function maybeSealDeployMaterials(
   db: Db,
   serverId: string,
   secretMaterial: DeployVariableMaterial[],
-  storageMaterialRaw: EnvironmentDeployStorageMaterial[],
+  storageMaterialRaw: EnvironmentDeployStorageMaterial[]
 ): Promise<
   | {
-    variableMaterial: EnvironmentDeployVariableMaterial[];
-    storageMaterial: EnvironmentDeployStorageMaterial[];
-  }
+      variableMaterial: EnvironmentDeployVariableMaterial[]
+      storageMaterial: EnvironmentDeployStorageMaterial[]
+    }
   | Response
 > {
   // Preview must not require an online daemon — skip sealing / daemon-key steps.
-  if (mode === "preview") {
-    return { variableMaterial: [], storageMaterial: storageMaterialRaw };
+  if (mode === 'preview') {
+    return { variableMaterial: [], storageMaterial: storageMaterialRaw }
   }
-  const variableMaterial = await sealVariableMaterialForDaemon(
-    c,
-    db,
-    serverId,
-    secretMaterial,
-  );
-  if (variableMaterial instanceof Response) return variableMaterial;
-  const storageMaterial = await sealStorageMaterialForDaemon(
-    c,
-    db,
-    serverId,
-    storageMaterialRaw,
-  );
-  if (storageMaterial instanceof Response) return storageMaterial;
-  return { variableMaterial, storageMaterial };
+  const variableMaterial = await sealVariableMaterialForDaemon(c, db, serverId, secretMaterial)
+  if (variableMaterial instanceof Response) return variableMaterial
+  const storageMaterial = await sealStorageMaterialForDaemon(c, db, serverId, storageMaterialRaw)
+  if (storageMaterial instanceof Response) return storageMaterial
+  return { variableMaterial, storageMaterial }
 }
 
 type BindingMaterializationOutcome =
-  | { kind: "ok" }
-  | { kind: "warn"; warning: DeployPrepareWarning }
-  | { kind: "error"; error: DeployPrepareError };
+  | { kind: 'ok' }
+  | { kind: 'warn'; warning: DeployPrepareWarning }
+  | { kind: 'error'; error: DeployPrepareError }
 
 /**
  * Apply a classified binding outcome: warnings are collected, an error is
@@ -2154,11 +2020,11 @@ type BindingMaterializationOutcome =
  */
 function absorbBindingOutcome(
   warnings: DeployPrepareWarning[],
-  outcome: BindingMaterializationOutcome,
+  outcome: BindingMaterializationOutcome
 ): DeployPrepareError | null {
-  if (outcome.kind === "error") return outcome.error;
-  if (outcome.kind === "warn") warnings.push(outcome.warning);
-  return null;
+  if (outcome.kind === 'error') return outcome.error
+  if (outcome.kind === 'warn') warnings.push(outcome.warning)
+  return null
 }
 
 /**
@@ -2169,62 +2035,58 @@ async function resolveBindingMaterializationOutcome(
   db: Db,
   dataEncryptionSecrets: Parameters<typeof decryptSecret>[0] | undefined,
   serviceIds: string[],
-  mode: DeployPrepareMode,
+  mode: DeployPrepareMode
 ): Promise<BindingMaterializationOutcome> {
-  if (!dataEncryptionSecrets) return { kind: "ok" };
+  if (!dataEncryptionSecrets) return { kind: 'ok' }
 
-  const bindResult = await materializeBindingsForServices(
-    db,
-    dataEncryptionSecrets,
-    serviceIds,
-  );
-  if ("ok" in bindResult) return { kind: "ok" };
+  const bindResult = await materializeBindingsForServices(db, dataEncryptionSecrets, serviceIds)
+  if ('ok' in bindResult) return { kind: 'ok' }
 
   const isSoftBindingError =
-    bindResult.kind === "binding_endpoint_unavailable" ||
-    bindResult.kind === "datacenter_ip_required" ||
-    bindResult.kind === "private_path_unavailable" ||
+    bindResult.kind === 'binding_endpoint_unavailable' ||
+    bindResult.kind === 'datacenter_ip_required' ||
+    bindResult.kind === 'private_path_unavailable' ||
     // `client-backend` never raises this; listed so the mapping over
     // `PrivateEndpointError` stays total.
-    bindResult.kind === "failover_requires_trusted_datacenter";
+    bindResult.kind === 'failover_requires_trusted_datacenter'
 
-  const error: DeployPrepareError = { kind: "binding_endpoint_unavailable" };
+  const error: DeployPrepareError = { kind: 'binding_endpoint_unavailable' }
   if (isSoftBindingError) {
-    return mode === "preview"
-      ? { kind: "warn", warning: warningFromPrepareError(error) }
-      : { kind: "error", error };
+    return mode === 'preview'
+      ? { kind: 'warn', warning: warningFromPrepareError(error) }
+      : { kind: 'error', error }
   }
 
-  if (mode !== "preview") return { kind: "error", error };
+  if (mode !== 'preview') return { kind: 'error', error }
 
   return {
-    kind: "warn",
+    kind: 'warn',
     warning: {
-      code: "binding_endpoint_unavailable",
+      code: 'binding_endpoint_unavailable',
       message: `Binding materialization failed: ${bindResult.kind}`,
     },
-  };
+  }
 }
 
 function resolveSitesForMode(
   mode: DeployPrepareMode,
   warnings: DeployPrepareWarning[],
   sitesOrError: EnvironmentDeploySite[] | SitePrincipalError,
-  fallbackSites: readonly SiteSpec[],
+  fallbackSites: readonly SiteSpec[]
 ): EnvironmentDeploySite[] | SoftDeployPrepareError {
-  if (!("kind" in sitesOrError)) return sitesOrError;
-  if (mode === "preview") {
-    warnings.push(warningFromPrepareError(sitesOrError));
+  if (!('kind' in sitesOrError)) return sitesOrError
+  if (mode === 'preview') {
+    warnings.push(warningFromPrepareError(sitesOrError))
     // Preview drops the ambiguous principal pin but must still render the same
     // validated php and cron the real deploy would carry. Cron is *dropped*
     // rather than rendered without an owner: the preview should show what would
     // actually run, and without a principal these jobs would not.
     return fallbackSites.map(({ php, cron: _unowned, ...rest }) => {
-      const rendered = renderPhpForDeploy(php, ALLOWED_PHP_EXTENSIONS);
-      return { ...rest, ...(rendered ? { php: rendered } : {}) };
-    });
+      const rendered = renderPhpForDeploy(php, ALLOWED_PHP_EXTENSIONS)
+      return { ...rest, ...(rendered ? { php: rendered } : {}) }
+    })
   }
-  return sitesOrError;
+  return sitesOrError
 }
 
 /**
@@ -2238,14 +2100,14 @@ function resolveSitesForMode(
 function resolveSourceMaterialForMode(
   mode: DeployPrepareMode,
   warnings: DeployPrepareWarning[],
-  resolved: EnvironmentDeploySource[] | DeploySourcePrepareError,
+  resolved: EnvironmentDeploySource[] | DeploySourcePrepareError
 ): EnvironmentDeploySource[] | DeployPrepareError {
-  if (Array.isArray(resolved)) return resolved;
-  if (resolved.kind === "source_principal_ambiguous" && mode === "preview") {
-    warnings.push(warningFromPrepareError(resolved));
-    return [];
+  if (Array.isArray(resolved)) return resolved
+  if (resolved.kind === 'source_principal_ambiguous' && mode === 'preview') {
+    warnings.push(warningFromPrepareError(resolved))
+    return []
   }
-  return resolved;
+  return resolved
 }
 
 /**
@@ -2258,17 +2120,17 @@ async function prepareLocalSourceMaterial(
   c: Context<AppEnv>,
   db: Db,
   args: {
-    mode: DeployPrepareMode;
-    warnings: DeployPrepareWarning[];
-    params: Parameters<typeof prepareDeployCompose>[2];
-    merged: ComposeDocument;
-    serviceRows: ReadonlyArray<{ id: string; composeServiceName: string }>;
-    principalMaterial: readonly EnvironmentDeployPrincipalMaterial[];
-    principalResolution: ComposePrincipalResolution;
-    localServiceNames?: ReadonlySet<string>;
-  },
+    mode: DeployPrepareMode
+    warnings: DeployPrepareWarning[]
+    params: Parameters<typeof prepareDeployCompose>[2]
+    merged: ComposeDocument
+    serviceRows: ReadonlyArray<{ id: string; composeServiceName: string }>
+    principalMaterial: readonly EnvironmentDeployPrincipalMaterial[]
+    principalResolution: ComposePrincipalResolution
+    localServiceNames?: ReadonlySet<string>
+  }
 ): Promise<EnvironmentDeploySource[] | DeployPrepareError | Response> {
-  const { params } = args;
+  const { params } = args
   const resolved = await resolveDeploySourceMaterial(c, db, {
     mode: args.mode,
     organizationId: params.organizationId,
@@ -2278,22 +2140,14 @@ async function prepareLocalSourceMaterial(
     serviceRows: args.serviceRows,
     principalMaterial: args.principalMaterial,
     principalResolution: args.principalResolution,
-    ...(params.sourceSelection === undefined
-      ? {}
-      : { sourceSelection: params.sourceSelection }),
+    ...(params.sourceSelection === undefined ? {} : { sourceSelection: params.sourceSelection }),
     ...(params.rollback === undefined ? {} : { rollback: params.rollback }),
-    ...(params.releaseIds === undefined
-      ? {}
-      : { releaseIds: params.releaseIds }),
-  });
-  if (resolved instanceof Response) return resolved;
-  const forMode = resolveSourceMaterialForMode(
-    args.mode,
-    args.warnings,
-    resolved,
-  );
-  if (!Array.isArray(forMode)) return forMode;
-  return sitesOnScheduledServer(forMode, args.localServiceNames);
+    ...(params.releaseIds === undefined ? {} : { releaseIds: params.releaseIds }),
+  })
+  if (resolved instanceof Response) return resolved
+  const forMode = resolveSourceMaterialForMode(args.mode, args.warnings, resolved)
+  if (!Array.isArray(forMode)) return forMode
+  return sitesOnScheduledServer(forMode, args.localServiceNames)
 }
 
 /**
@@ -2306,112 +2160,104 @@ async function resolveExternalNetworks(
   db: Db,
   organizationId: string,
   serverId: string,
-  dockerExternalNetworks: string[],
+  dockerExternalNetworks: string[]
 ): Promise<{
-  error: SoftDeployPrepareError | null;
-  addressing: EnvironmentDeployDockerNetwork[];
+  error: SoftDeployPrepareError | null
+  addressing: EnvironmentDeployDockerNetwork[]
 }> {
   const resolved = await resolveRegisteredExternalDockerNetworks(
     db,
     organizationId,
     serverId,
-    dockerExternalNetworks,
-  );
+    dockerExternalNetworks
+  )
   return {
     error: resolved.missing
       ? {
-        kind: "docker_external_network_unregistered",
-        names: resolved.missing,
-      }
+          kind: 'docker_external_network_unregistered',
+          names: resolved.missing,
+        }
       : null,
     addressing: resolved.addressing,
-  };
+  }
 }
 
-function replicaCountsFromMap(
-  counts: ReadonlyMap<string, number>,
-): Record<string, number> {
-  return Object.fromEntries(
-    [...counts.entries()].sort((a, b) => a[0].localeCompare(b[0])),
-  );
+function replicaCountsFromMap(counts: ReadonlyMap<string, number>): Record<string, number> {
+  return Object.fromEntries([...counts.entries()].sort((a, b) => a[0].localeCompare(b[0])))
 }
 
-function identityComposeExpansion(
-  names: readonly string[],
-): Map<string, string[]> {
-  const map = new Map<string, string[]>();
-  for (const name of names) map.set(name, [name]);
-  return map;
+function identityComposeExpansion(names: readonly string[]): Map<string, string[]> {
+  const map = new Map<string, string[]>()
+  for (const name of names) map.set(name, [name])
+  return map
 }
 
 function overlayCompiledExpansion(
   identity: ReadonlyMap<string, string[]>,
-  compiled: ReadonlyMap<string, string[]>,
+  compiled: ReadonlyMap<string, string[]>
 ): Map<string, string[]> {
-  const next = new Map(identity);
-  for (const [name, clones] of compiled) next.set(name, clones);
-  return next;
+  const next = new Map(identity)
+  for (const [name, clones] of compiled) next.set(name, clones)
+  return next
 }
 
 function applyExpansionToNames(
   names: readonly string[],
-  expansion: ReadonlyMap<string, readonly string[]>,
+  expansion: ReadonlyMap<string, readonly string[]>
 ): string[] {
-  const out = new Set<string>();
+  const out = new Set<string>()
   for (const name of names) {
-    const clones = expansion.get(name);
+    const clones = expansion.get(name)
     if (!clones || clones.length === 0) {
-      out.add(name);
-      continue;
+      out.add(name)
+      continue
     }
-    for (const clone of clones) out.add(clone);
+    for (const clone of clones) out.add(clone)
   }
-  return [...out].sort((a, b) => a.localeCompare(b));
+  return [...out].sort((a, b) => a.localeCompare(b))
 }
 
 function applyScheduleToContainerSpecs(
   specs: ContainerServiceSpec[],
-  schedule: DeployScheduleSlice | undefined,
+  schedule: DeployScheduleSlice | undefined
 ): ContainerServiceSpec[] {
-  if (!schedule) return specs;
-  const tasksByService = new Map<string, DesiredSlotInput[]>();
+  if (!schedule) return specs
+  const tasksByService = new Map<string, DesiredSlotInput[]>()
   for (const task of schedule.slots) {
-    const list = tasksByService.get(task.serviceId) ?? [];
-    list.push(task);
-    tasksByService.set(task.serviceId, list);
+    const list = tasksByService.get(task.serviceId) ?? []
+    list.push(task)
+    tasksByService.set(task.serviceId, list)
   }
-  const next: ContainerServiceSpec[] = [];
+  const next: ContainerServiceSpec[] = []
   for (const spec of specs) {
-    const slots = tasksByService.get(spec.serviceId);
-    if (!slots || slots.length === 0) continue;
-    const serverIdByOrdinal = new Map<number, string>();
+    const slots = tasksByService.get(spec.serviceId)
+    if (!slots || slots.length === 0) continue
+    const serverIdByOrdinal = new Map<number, string>()
     for (const task of slots) {
-      serverIdByOrdinal.set(task.slot + 1, task.serverId);
+      serverIdByOrdinal.set(task.slot + 1, task.serverId)
     }
     next.push({
       ...spec,
       instances: slots.length,
       serverIdByOrdinal,
-    });
+    })
   }
-  return next;
+  return next
 }
 
 function ownsIngressForService(
   schedule: DeployScheduleSlice | undefined,
   serviceId: string,
-  serverId: string,
+  serverId: string
 ): boolean {
-  if (!schedule) return true;
-  const slots = schedule.slots.filter((task) => task.serviceId === serviceId);
-  if (slots.length === 0) return false;
-  let minSlot = slots[0]!.slot;
+  if (!schedule) return true
+  const slots = schedule.slots.filter((task) => task.serviceId === serviceId)
+  if (slots.length === 0) return false
+  let minSlot = slots[0]!.slot
   for (const task of slots) {
-    if (task.slot < minSlot) minSlot = task.slot;
+    if (task.slot < minSlot) minSlot = task.slot
   }
-  return slots.some((task) =>
-    task.slot === minSlot && task.serverId === serverId
-  );
+  return slots.some((task) => task.slot === minSlot && task.serverId === serverId)
 }
 
 /**
@@ -2427,25 +2273,24 @@ function ownsIngressForService(
 async function deployDesiredHash(
   composeYaml: string,
   sourceMaterial: readonly EnvironmentDeploySource[],
-  nativeAppServices: readonly PreparedNativeAppService[] = [],
+  nativeAppServices: readonly PreparedNativeAppService[] = []
 ): Promise<string> {
-  const parts: string[] = [];
+  const parts: string[] = []
   if (sourceMaterial.length > 0) {
     parts.push(
       [...sourceMaterial]
-        .sort((a, b) =>
-          a.composeServiceName.localeCompare(b.composeServiceName)
-        )
+        .sort((a, b) => a.composeServiceName.localeCompare(b.composeServiceName))
         // A rollback re-promotes an *existing* release of a commit this
         // environment may already have deployed, so the commit alone would hash
         // identically to that earlier deploy and could be taken for a no-op.
         // The release id is what actually differs, so it participates.
-        .map((entry) =>
-          `${entry.composeServiceName}=${entry.commitSha}` +
-          (entry.rollbackToReleaseId ? `@${entry.rollbackToReleaseId}` : "")
+        .map(
+          (entry) =>
+            `${entry.composeServiceName}=${entry.commitSha}` +
+            (entry.rollbackToReleaseId ? `@${entry.rollbackToReleaseId}` : '')
         )
-        .join("\n"),
-    );
+        .join('\n')
+    )
   }
   // The resolved loopback port participates for the same reason the commit
   // does: a native app whose port moved is a different desired state even
@@ -2454,17 +2299,13 @@ async function deployDesiredHash(
   if (nativeAppServices.length > 0) {
     parts.push(
       [...nativeAppServices]
-        .sort((a, b) =>
-          a.composeServiceName.localeCompare(b.composeServiceName)
-        )
-        .map((app) =>
-          `${app.composeServiceName}=${app.framework}:${app.listenPort}`
-        )
-        .join("\n"),
-    );
+        .sort((a, b) => a.composeServiceName.localeCompare(b.composeServiceName))
+        .map((app) => `${app.composeServiceName}=${app.framework}:${app.listenPort}`)
+        .join('\n')
+    )
   }
-  if (parts.length === 0) return await sha256HexUtf8(composeYaml);
-  return await sha256HexUtf8([composeYaml, ...parts].join("\n"));
+  if (parts.length === 0) return await sha256HexUtf8(composeYaml)
+  return await sha256HexUtf8([composeYaml, ...parts].join('\n'))
 }
 
 async function toPreparedDeployResult(
@@ -2476,40 +2317,40 @@ async function toPreparedDeployResult(
      * Optional here (and only here) because the host-free coverage of this
      * assembler builds parts without one; every real prepare passes it.
      */
-    serverId?: string;
-    composeYaml: string;
-    composeFiles: EnvironmentDeployComposeFile[];
-    hooks: ServiceDeployHook[];
-    variableMaterial: EnvironmentDeployVariableMaterial[];
-    storageMaterial: EnvironmentDeployStorageMaterial[];
-    principalMaterial: EnvironmentDeployPrincipalMaterial[];
-    sites: EnvironmentDeploySite[];
-    nativeAppServices: PreparedNativeAppService[];
-    sourceMaterial: EnvironmentDeploySource[];
-    dockerExternalNetworks: string[];
-    dockerNetworkAddressing?: readonly EnvironmentDeployDockerNetwork[];
-    fabricNetworks?: readonly EnvironmentDeployFabricNetwork[];
-    managedNetworkServices: string[];
-    managedNetwork?: string;
-    containers: ContainerAllocation[];
-    ingressServices: EnvironmentDeployIngressService[];
+    serverId?: string
+    composeYaml: string
+    composeFiles: EnvironmentDeployComposeFile[]
+    hooks: ServiceDeployHook[]
+    variableMaterial: EnvironmentDeployVariableMaterial[]
+    storageMaterial: EnvironmentDeployStorageMaterial[]
+    principalMaterial: EnvironmentDeployPrincipalMaterial[]
+    sites: EnvironmentDeploySite[]
+    nativeAppServices: PreparedNativeAppService[]
+    sourceMaterial: EnvironmentDeploySource[]
+    dockerExternalNetworks: string[]
+    dockerNetworkAddressing?: readonly EnvironmentDeployDockerNetwork[]
+    fabricNetworks?: readonly EnvironmentDeployFabricNetwork[]
+    managedNetworkServices: string[]
+    managedNetwork?: string
+    containers: ContainerAllocation[]
+    ingressServices: EnvironmentDeployIngressService[]
     /**
      * The edge half of the deployment. Optional only for the assemblers that
      * genuinely have none — the empty-compose short-circuit and the host-free
      * coverage of this function — never as a licence for a caller with routes
      * to leave them behind.
      */
-    edge?: ServerEdgeDeployment;
-    expansion: Map<string, string[]>;
-    registeredVolumes: RegisteredComposeVolume[];
-    warnings: DeployPrepareWarning[];
-    replicaCounts: Record<string, number>;
-    envFile?: string;
-    secretPlan?: DeploySecretPlanEntry[];
-    sourceSelection?: DeploySourceSelection;
-  },
+    edge?: ServerEdgeDeployment
+    expansion: Map<string, string[]>
+    registeredVolumes: RegisteredComposeVolume[]
+    warnings: DeployPrepareWarning[]
+    replicaCounts: Record<string, number>
+    envFile?: string
+    secretPlan?: DeploySecretPlanEntry[]
+    sourceSelection?: DeploySourceSelection
+  }
 ): Promise<PreparedDeployCompose> {
-  const omitSecrets = mode === "preview";
+  const omitSecrets = mode === 'preview'
   return {
     ...(parts.serverId === undefined ? {} : { serverId: parts.serverId }),
     composeYaml: parts.composeYaml,
@@ -2517,7 +2358,7 @@ async function toPreparedDeployResult(
     desiredHash: await deployDesiredHash(
       parts.composeYaml,
       parts.sourceMaterial,
-      parts.nativeAppServices,
+      parts.nativeAppServices
     ),
     replicaCounts: parts.replicaCounts,
     hooks: parts.hooks,
@@ -2533,9 +2374,7 @@ async function toPreparedDeployResult(
       : [],
     fabricNetworks: parts.fabricNetworks ? [...parts.fabricNetworks] : [],
     managedNetworkServices: parts.managedNetworkServices,
-    ...(parts.managedNetwork === undefined
-      ? {}
-      : { managedNetwork: parts.managedNetwork }),
+    ...(parts.managedNetwork === undefined ? {} : { managedNetwork: parts.managedNetwork }),
     containers: parts.containers,
     ingressServices: parts.ingressServices,
     hostings: parts.edge?.hostings ?? [],
@@ -2552,93 +2391,82 @@ async function toPreparedDeployResult(
     warnings: parts.warnings,
     ...(parts.envFile !== undefined ? { envFile: parts.envFile } : {}),
     ...(parts.secretPlan !== undefined ? { secretPlan: parts.secretPlan } : {}),
-    ...(parts.sourceSelection === undefined
-      ? {}
-      : { sourceSelection: parts.sourceSelection }),
-  };
+    ...(parts.sourceSelection === undefined ? {} : { sourceSelection: parts.sourceSelection }),
+  }
 }
 
-function toApplyVariablesPrepareError(
-  error: ApplyVariablesError,
-): DeployPrepareError {
-  const { kind, message, ref, composeServiceName, envKey } = error;
-  if (kind === "variable_unresolved") {
+function toApplyVariablesPrepareError(error: ApplyVariablesError): DeployPrepareError {
+  const { kind, message, ref, composeServiceName, envKey } = error
+  if (kind === 'variable_unresolved') {
     return {
       kind,
       message,
       ...(ref === undefined ? {} : { ref }),
       ...(composeServiceName === undefined ? {} : { composeServiceName }),
       ...(envKey === undefined ? {} : { envKey }),
-    };
+    }
   }
   return {
     kind,
     message,
     ...(composeServiceName === undefined ? {} : { composeServiceName }),
     ...(envKey === undefined ? {} : { envKey }),
-  };
+  }
 }
 
 function compileRuntimeOptionsForServer(
   environmentId: string,
-  pipeline: Pick<
-    DeployExpandPipeline,
-    "localReplicaCounts" | "localServiceNames"
-  >,
-  schedule?: DeployScheduleSlice,
+  pipeline: Pick<DeployExpandPipeline, 'localReplicaCounts' | 'localServiceNames'>,
+  schedule?: DeployScheduleSlice
 ): CompileRuntimeOptions {
   const options: CompileRuntimeOptions = {
     environmentId,
     localReplicaCounts: pipeline.localReplicaCounts,
-  };
-  if (pipeline.localServiceNames) {
-    options.localServiceNames = pipeline.localServiceNames;
   }
-  if (!schedule) return options;
+  if (pipeline.localServiceNames) {
+    options.localServiceNames = pipeline.localServiceNames
+  }
+  if (!schedule) return options
   if (schedule.spanningNetworks) {
-    options.spanningNetworks = schedule.spanningNetworks;
+    options.spanningNetworks = schedule.spanningNetworks
   }
   if (schedule.taskAddresses) {
-    options.taskAddressesByService = schedule.taskAddresses;
+    options.taskAddressesByService = schedule.taskAddresses
   }
   if (schedule.spanningHosts) {
-    options.spanningHostsByService = schedule.spanningHosts;
+    options.spanningHostsByService = schedule.spanningHosts
   }
-  if (
-    schedule.managedIngressHostsByService &&
-    schedule.managedIngressHostsByService.size > 0
-  ) {
-    options.managedIngressHostsByService =
-      schedule.managedIngressHostsByService;
+  if (schedule.managedIngressHostsByService && schedule.managedIngressHostsByService.size > 0) {
+    options.managedIngressHostsByService = schedule.managedIngressHostsByService
   }
-  return options;
+  return options
 }
 
 /** Runtime YAML for the container document — the empty stanza when it has no services. */
 function runtimeComposeYamlOrEmpty(document: ComposeDocument): string {
-  return composeDocumentToRuntimeYaml(document) || emptyContainerComposeYaml();
+  return composeDocumentToRuntimeYaml(document) || emptyContainerComposeYaml()
 }
 
 function sitesOnScheduledServer<T extends { composeServiceName: string }>(
   sites: readonly T[],
-  localNames?: ReadonlySet<string>,
+  localNames?: ReadonlySet<string>
 ): T[] {
-  if (!localNames) return [...sites];
-  return sites.filter((site) => localNames.has(site.composeServiceName));
+  if (!localNames) return [...sites]
+  return sites.filter((site) => localNames.has(site.composeServiceName))
 }
 
 function healthCheckAcknowledge(
   mode: DeployPrepareMode,
-  acknowledge?: boolean,
+  acknowledge?: boolean
 ): boolean | undefined {
-  if (mode === "preview") return false;
-  return acknowledge;
+  if (mode === 'preview') return false
+  return acknowledge
 }
 
 function fabricNetworksFromSchedule(
-  schedule?: DeployScheduleSlice,
+  schedule?: DeployScheduleSlice
 ): readonly EnvironmentDeployFabricNetwork[] {
-  return schedule?.fabricNetworks ?? [];
+  return schedule?.fabricNetworks ?? []
 }
 
 /**
@@ -2648,36 +2476,36 @@ function fabricNetworksFromSchedule(
 async function loadDeployComposeContext(
   db: Db,
   params: {
-    environmentId: string;
-    serverId: string;
-    organizationId: string;
-    composeValidated?: boolean;
-  },
+    environmentId: string
+    serverId: string
+    organizationId: string
+    composeValidated?: boolean
+  }
 ): Promise<
   | {
-    ok: true;
-    envRow: {
-      id: string;
-      projectId: string;
-      options: unknown;
-      name: string | null;
-    };
-    projectRow: { id: string; options: unknown };
-    orgRow: { options: unknown } | undefined;
-    serverRow: { options: unknown; organizationId: string | null } | undefined;
-    merged: ComposeDocument;
-  }
+      ok: true
+      envRow: {
+        id: string
+        projectId: string
+        options: unknown
+        name: string | null
+      }
+      projectRow: { id: string; options: unknown }
+      orgRow: { options: unknown } | undefined
+      serverRow: { options: unknown; organizationId: string | null } | undefined
+      merged: ComposeDocument
+    }
   | { ok: false; failure: DeployPrepareError | Response }
 > {
-  const loaded = await loadDeployEnvAndProject(db, params.environmentId);
-  if (loaded instanceof Response) return { ok: false, failure: loaded };
-  const { envRow, projectRow } = loaded;
+  const loaded = await loadDeployEnvAndProject(db, params.environmentId)
+  if (loaded instanceof Response) return { ok: false, failure: loaded }
+  const { envRow, projectRow } = loaded
 
   const [orgRow] = await db
     .select({ options: organization.options })
     .from(organization)
     .where(eq(organization.id, params.organizationId))
-    .limit(1);
+    .limit(1)
 
   const [serverRow] = await db
     .select({
@@ -2686,21 +2514,21 @@ async function loadDeployComposeContext(
     })
     .from(server)
     .where(eq(server.id, params.serverId))
-    .limit(1);
+    .limit(1)
 
   const environmentFilename = environmentComposeFilename({
     id: envRow.id,
     name: envRow.name,
-  });
+  })
   const rawComposeLayers = resolveProjectEnvironmentComposeLayers(
     projectRow.options,
     envRow.options,
-    environmentFilename,
-  );
+    environmentFilename
+  )
   if (rawComposeLayers instanceof Response) {
-    return { ok: false, failure: rawComposeLayers };
+    return { ok: false, failure: rawComposeLayers }
   }
-  const merged = mergeComposeLayers(rawComposeLayers);
+  const merged = mergeComposeLayers(rawComposeLayers)
 
   // Validation pipeline, in order (see `lib/compose/validate-for-deploy.ts`):
   // upstream Compose schema -> `x-turbopanel` extension schema -> semantic
@@ -2716,15 +2544,15 @@ async function loadDeployComposeContext(
   // registry says we handle, and before the reconciles below write rows.
   if (!params.composeValidated) {
     const composeGatedFieldsEnabled = resolveComposeGatedFieldsEnabled(
-      parseOrganizationOptions(orgRow?.options),
-    );
+      parseOrganizationOptions(orgRow?.options)
+    )
     const rejected = validateComposeForDeploy(merged, {
       composeGatedFieldsEnabled,
-    });
-    if (rejected) return { ok: false, failure: rejected };
+    })
+    if (rejected) return { ok: false, failure: rejected }
   }
 
-  return { ok: true, envRow, projectRow, orgRow, serverRow, merged };
+  return { ok: true, envRow, projectRow, orgRow, serverRow, merged }
 }
 
 /**
@@ -2736,22 +2564,22 @@ async function reconcileComposeDeclaredRows(
   c: Context<AppEnv>,
   db: Db,
   args: {
-    environmentId: string;
-    organizationId: string;
-    projectId: string;
-    merged: ComposeDocument;
-    mode: DeployPrepareMode;
-    warnings: DeployPrepareWarning[];
-  },
+    environmentId: string
+    organizationId: string
+    projectId: string
+    merged: ComposeDocument
+    mode: DeployPrepareMode
+    warnings: DeployPrepareWarning[]
+  }
 ): Promise<
   | {
-    ok: true;
-    serviceRows: ServiceRow[];
-    principalResolution: ComposePrincipalResolution;
-  }
+      ok: true
+      serviceRows: ServiceRow[]
+      principalResolution: ComposePrincipalResolution
+    }
   | { ok: false; failure: DeployPrepareError }
 > {
-  await reconcileServicesFromCompose(db, args.environmentId, args.merged);
+  await reconcileServicesFromCompose(db, args.environmentId, args.merged)
 
   const serviceRows = await db
     .select({
@@ -2760,7 +2588,7 @@ async function reconcileComposeDeclaredRows(
       options: service.options,
     })
     .from(service)
-    .where(eq(service.environmentId, args.environmentId));
+    .where(eq(service.environmentId, args.environmentId))
 
   // Materialize the accounts compose declares before either ownership lane
   // resolves — the site pin and the release owner both read the map this
@@ -2771,16 +2599,16 @@ async function reconcileComposeDeclaredRows(
     projectId: args.projectId,
     merged: args.merged,
     serviceRows,
-  });
+  })
   if (!principalReconcile.ok) {
     return {
       ok: false,
       failure: {
-        kind: "principal_alias_unknown",
+        kind: 'principal_alias_unknown',
         composeServiceName: principalReconcile.composeServiceName,
         alias: principalReconcile.alias,
       },
-    };
+    }
   }
 
   // Materialize the ingress compose declares, in the same slot and for the same
@@ -2793,26 +2621,26 @@ async function reconcileComposeDeclaredRows(
     environmentId: args.environmentId,
     merged: args.merged,
     serviceRows,
-  });
+  })
   if (!hostingReconcile.ok) {
-    return { ok: false, failure: hostingReconcile.error };
+    return { ok: false, failure: hostingReconcile.error }
   }
 
   // Re-materialize bindings so endpoint / CA / topology drift is picked up.
   const bindingOutcome = await resolveBindingMaterializationOutcome(
     db,
-    c.get("dataEncryptionSecrets"),
+    c.get('dataEncryptionSecrets'),
     serviceRows.map((r) => r.id),
-    args.mode,
-  );
-  const bindingErr = absorbBindingOutcome(args.warnings, bindingOutcome);
-  if (bindingErr) return { ok: false, failure: bindingErr };
+    args.mode
+  )
+  const bindingErr = absorbBindingOutcome(args.warnings, bindingOutcome)
+  if (bindingErr) return { ok: false, failure: bindingErr }
 
   return {
     ok: true,
     serviceRows,
     principalResolution: principalReconcile.resolution,
-  };
+  }
 }
 
 /**
@@ -2823,26 +2651,26 @@ async function reconcileComposeDeclaredRows(
 async function resolvedPlacementGateError(
   db: Db,
   args: {
-    mode: DeployPrepareMode;
-    warnings: DeployPrepareWarning[];
-    environmentId: string;
-    serverId: string;
-    acknowledgeHealthCheckWarnings: boolean | undefined;
-    resolved: ResolvedApplication;
+    mode: DeployPrepareMode
+    warnings: DeployPrepareWarning[]
+    environmentId: string
+    serverId: string
+    acknowledgeHealthCheckWarnings: boolean | undefined
+    resolved: ResolvedApplication
     pipeline: Pick<
       DeployExpandPipeline,
-      "expandedDocument" | "expandedServiceNames" | "optionsByComposeName"
-    >;
-    orgOptions: unknown;
-    serverOptions: unknown;
-  },
+      'expandedDocument' | 'expandedServiceNames' | 'optionsByComposeName'
+    >
+    orgOptions: unknown
+    serverOptions: unknown
+  }
 ): Promise<DeployPrepareError | null> {
   const locationErr = await findUnavailableStorageCopy(db, {
     environmentId: args.environmentId,
     scheduledServerId: args.serverId,
     serviceIds: serviceIdsOnServer(args.resolved),
-  });
-  if (locationErr) return locationErr;
+  })
+  if (locationErr) return locationErr
 
   const limitErr = absorbSoftPrepareError(
     args.mode,
@@ -2851,10 +2679,10 @@ async function resolvedPlacementGateError(
       args.resolved.services,
       args.pipeline.expandedServiceNames.length,
       args.orgOptions,
-      args.serverOptions,
-    ),
-  );
-  if (limitErr) return limitErr;
+      args.serverOptions
+    )
+  )
+  if (limitErr) return limitErr
 
   return absorbSoftPrepareError(
     args.mode,
@@ -2862,9 +2690,9 @@ async function resolvedPlacementGateError(
     evaluateHealthCheckGates(
       args.pipeline.expandedDocument,
       args.pipeline.optionsByComposeName,
-      healthCheckAcknowledge(args.mode, args.acknowledgeHealthCheckWarnings),
-    ),
-  );
+      healthCheckAcknowledge(args.mode, args.acknowledgeHealthCheckWarnings)
+    )
+  )
 }
 
 /**
@@ -2877,13 +2705,13 @@ async function resolvedPlacementGateError(
 async function resolveManagedNetworkHostName(
   db: Db,
   managedNetworkServices: readonly string[],
-  organizationId: string,
+  organizationId: string
 ): Promise<string | undefined> {
-  if (managedNetworkServices.length === 0) return undefined;
+  if (managedNetworkServices.length === 0) return undefined
   const network = await ensureOrganizationManagedNetwork(db, {
     organizationId,
-  });
-  return network.hostName;
+  })
+  return network.hostName
 }
 
 /**
@@ -2894,34 +2722,34 @@ async function resolveManagedNetworkHostName(
 async function persistDeployRuntimeEntitlements(
   db: Db,
   mode: DeployPrepareMode,
-  entitlements: readonly DeployRuntimeEntitlement[],
+  entitlements: readonly DeployRuntimeEntitlement[]
 ): Promise<void> {
-  if (mode === "preview") return;
-  await insertDeployEntitlementsIfMissing(db, entitlements);
+  if (mode === 'preview') return
+  await insertDeployEntitlementsIfMissing(db, entitlements)
 }
 
 export async function prepareDeployCompose(
   c: Context<AppEnv>,
   db: Db,
   params: {
-    environmentId: string;
-    serverId: string;
-    organizationId: string;
-    acknowledgeHealthCheckWarnings?: boolean;
+    environmentId: string
+    serverId: string
+    organizationId: string
+    acknowledgeHealthCheckWarnings?: boolean
     /**
      * `preview` skips daemon sealing, softens prepare gates into `warnings`,
      * and redacts secret values in the returned YAML. Allocation + volume
      * registration still run (idempotent) so previewed UUIDs match deploy.
      */
-    mode?: DeployPrepareMode;
+    mode?: DeployPrepareMode
     /** When set, compile and allocate from the scheduler plan instead of YAML expansion. */
-    schedule?: DeployScheduleSlice;
+    schedule?: DeployScheduleSlice
     /**
      * Commit the caller asked to build. Threaded in from the deploy route and
      * the webhook trigger so the request reaches the layer that will resolve it;
      * this phase only carries it (see {@link PREPARE_HONORS_SOURCE_SELECTION}).
      */
-    sourceSelection?: DeploySourceSelection;
+    sourceSelection?: DeploySourceSelection
     /**
      * Roll one Git-backed service back to an already-published release.
      *
@@ -2932,7 +2760,7 @@ export async function prepareDeployCompose(
      * service is pinned to a release it already has (see `deploy-sources.ts`
      * for why the whole set, not just the one being undone).
      */
-    rollback?: DeployRollbackRequest;
+    rollback?: DeployRollbackRequest
     /**
      * Release ids allocated once for the whole deploy, shared by every server.
      *
@@ -2941,7 +2769,7 @@ export async function prepareDeployCompose(
      * describe the environment's release — see {@link ReleaseIdAllocator}.
      * Omitted by preview, which resolves one host in isolation.
      */
-    releaseIds?: ReleaseIdAllocator;
+    releaseIds?: ReleaseIdAllocator
     /**
      * The scheduler already validated this exact merged document for this
      * request (`PlannedDeploy.composeValidated`).
@@ -2953,15 +2781,15 @@ export async function prepareDeployCompose(
      * caller that has not validated leaves it unset and prepare gates here,
      * which is what keeps every path that reaches the compiler gated.
      */
-    composeValidated?: boolean;
-  },
+    composeValidated?: boolean
+  }
 ): Promise<PreparedDeployCompose | DeployPrepareError | Response> {
-  const mode = params.mode ?? "deploy";
-  const warnings: DeployPrepareWarning[] = [];
+  const mode = params.mode ?? 'deploy'
+  const warnings: DeployPrepareWarning[] = []
 
-  const context = await loadDeployComposeContext(db, params);
-  if (!context.ok) return context.failure;
-  const { envRow, projectRow, orgRow, serverRow, merged } = context;
+  const context = await loadDeployComposeContext(db, params)
+  if (!context.ok) return context.failure
+  const { envRow, projectRow, orgRow, serverRow, merged } = context
 
   // Stage 2 of the compiler IR (`lib/compose/ir.ts`): read the merged document
   // once into named parts — kind, `x-turbopanel`, interpreted `deploy:`,
@@ -2970,10 +2798,10 @@ export async function prepareDeployCompose(
   // existing parsers; it decides nothing and touches no database.
   const application: Application = buildApplicationModel(merged, {
     project: { id: envRow.projectId },
-  });
-  const composeServiceNames = application.services.map((entry) => entry.name);
+  })
+  const composeServiceNames = application.services.map((entry) => entry.name)
   if (composeServiceNames.length === 0) {
-    return await emptyComposePrepareResult(mode);
+    return await emptyComposePrepareResult(mode)
   }
 
   const declared = await reconcileComposeDeclaredRows(c, db, {
@@ -2983,9 +2811,9 @@ export async function prepareDeployCompose(
     merged,
     mode,
     warnings,
-  });
-  if (!declared.ok) return declared.failure;
-  const { serviceRows, principalResolution } = declared;
+  })
+  if (!declared.ok) return declared.failure
+  const { serviceRows, principalResolution } = declared
 
   const pipeline = await allocateExpandDeployPipeline(db, {
     environmentId: params.environmentId,
@@ -2996,7 +2824,7 @@ export async function prepareDeployCompose(
     composeServiceNames,
     serviceRows,
     schedule: params.schedule,
-  });
+  })
 
   // Stage 3: the same services after the control plane answered what the
   // document could not — which `service.id` each compose key became, which
@@ -3011,10 +2839,8 @@ export async function prepareDeployCompose(
     containers: pipeline.containers,
     expansion: pipeline.expansion,
     principals: principalResolution,
-    resourcesByComposeServiceName: resolvedResourcesByComposeName(
-      pipeline.optionsByComposeName,
-    ),
-  });
+    resourcesByComposeServiceName: resolvedResourcesByComposeName(pipeline.optionsByComposeName),
+  })
 
   const gateErr = await resolvedPlacementGateError(db, {
     mode,
@@ -3026,36 +2852,33 @@ export async function prepareDeployCompose(
     pipeline,
     orgOptions: orgRow?.options,
     serverOptions: serverRow?.options,
-  });
-  if (gateErr) return gateErr;
+  })
+  if (gateErr) return gateErr
 
-  const serviceRowByCloneName = buildServiceRowByCloneName(
-    serviceRows,
-    pipeline.expansion,
-  );
-  const { globalEntries, perServiceEntries: userPerService, perServiceScopes } =
-    await resolveDeployVariableBuckets(db, {
-      environmentId: params.environmentId,
-      serverId: params.serverId,
-      composeServiceNames: pipeline.expandedServiceNames,
-      serviceRowByComposeName: serviceRowByCloneName,
-      dataEncryptionSecrets: c.get("dataEncryptionSecrets"),
-    });
+  const serviceRowByCloneName = buildServiceRowByCloneName(serviceRows, pipeline.expansion)
+  const {
+    globalEntries,
+    perServiceEntries: userPerService,
+    perServiceScopes,
+  } = await resolveDeployVariableBuckets(db, {
+    environmentId: params.environmentId,
+    serverId: params.serverId,
+    composeServiceNames: pipeline.expandedServiceNames,
+    serviceRowByComposeName: serviceRowByCloneName,
+    dataEncryptionSecrets: c.get('dataEncryptionSecrets'),
+  })
 
-  const perServiceEntries = stripReservedKeysFromEntries(userPerService);
+  const perServiceEntries = stripReservedKeysFromEntries(userPerService)
 
-  const withVariables = applyVariablesToComposeDocument(
-    pipeline.expandedDocument,
-    {
-      globalEntries,
-      perServiceEntries,
-      perServiceScopes,
-      projectId: envRow.projectId,
-      environmentId: params.environmentId,
-    },
-  );
+  const withVariables = applyVariablesToComposeDocument(pipeline.expandedDocument, {
+    globalEntries,
+    perServiceEntries,
+    perServiceScopes,
+    projectId: envRow.projectId,
+    environmentId: params.environmentId,
+  })
   if (isApplyVariablesError(withVariables)) {
-    return toApplyVariablesPrepareError(withVariables);
+    return toApplyVariablesPrepareError(withVariables)
   }
   const withServiceOptions = applyServiceOptionsToComposeDocument(
     documentForServiceOptions(mode, withVariables),
@@ -3063,21 +2886,17 @@ export async function prepareDeployCompose(
     buildContainerNameByComposeName(
       pipeline.containers,
       pipeline.localReplicaCounts,
-      params.serverId,
+      params.serverId
     ),
     // Opt-in per organization; fills a ceiling only where the service sets
     // none of its own (tenant-resource-limits-lint, decided 2026-09-16).
-    resolveComposeDefaultResourceLimits(
-      parseOrganizationOptions(orgRow?.options),
-    ),
+    resolveComposeDefaultResourceLimits(parseOrganizationOptions(orgRow?.options)),
     // Deploy hooks ride along only when the organization's owner enabled
     // them; otherwise service options are read without their command fields.
     {
-      enabled: resolveDeployHooksEnabled(
-        parseOrganizationOptions(orgRow?.options),
-      ),
-    },
-  );
+      enabled: resolveDeployHooksEnabled(parseOrganizationOptions(orgRow?.options)),
+    }
+  )
 
   const storageMaterialRaw = await loadStorageMaterial(db, {
     environmentId: params.environmentId,
@@ -3085,55 +2904,44 @@ export async function prepareDeployCompose(
     organizationId: params.organizationId,
     serverId: params.serverId,
     serviceIds: serviceRows.map((row) => row.id),
-    cloneNamesByServiceId: buildCloneNamesByServiceId(
-      serviceRows,
-      pipeline.expansion,
-    ),
+    cloneNamesByServiceId: buildCloneNamesByServiceId(serviceRows, pipeline.expansion),
     registeredVolumes: pipeline.registeredVolumes,
-  });
+  })
   const sealed = await maybeSealDeployMaterials(
     mode,
     c,
     db,
     params.serverId,
     withVariables.secretMaterial,
-    storageMaterialRaw,
-  );
-  if (sealed instanceof Response) return sealed;
-  const { variableMaterial, storageMaterial } = sealed;
+    storageMaterialRaw
+  )
+  if (sealed instanceof Response) return sealed
+  const { variableMaterial, storageMaterial } = sealed
 
-  const stewardPrincipalIds = await loadTenancyPrincipalIdsForEnvironment(
-    db,
-    params.environmentId,
-  );
+  const stewardPrincipalIds = await loadTenancyPrincipalIdsForEnvironment(db, params.environmentId)
   const storagePrincipalIds = storageMaterial
     .map((entry) => entry.principalId)
-    .filter((id): id is string => typeof id === "string");
+    .filter((id): id is string => typeof id === 'string')
   const principalMaterial = await loadPrincipalMaterial(db, [
     ...stewardPrincipalIds,
     ...storagePrincipalIds,
-  ]);
+  ])
 
-  const split = splitHostNativeFromDocument(withServiceOptions.document);
+  const split = splitHostNativeFromDocument(withServiceOptions.document)
   // Drop host-native hooks — neither sites nor native apps are
   // Docker compose services, so a compose-scoped hook has nothing to run in.
-  const siteNames = new Set(
-    split.sites.map((site) => site.composeServiceName),
-  );
+  const siteNames = new Set(split.sites.map((site) => site.composeServiceName))
   const hostNativeNames = new Set([
     ...siteNames,
     ...split.nativeApps.map((app) => app.composeServiceName),
-  ]);
+  ])
   const hooks = withServiceOptions.hooks.filter(
-    (hook) => !hostNativeNames.has(hook.composeServiceName),
-  );
+    (hook) => !hostNativeNames.has(hook.composeServiceName)
+  )
 
   // Task rows (`POST /tasks`) join compose-authored cron on the wire for
   // sites and native apps alike — loaded once here, keyed by compose name.
-  const tasksByComposeName = await loadTasksByComposeServiceName(
-    db,
-    serviceRows,
-  );
+  const tasksByComposeName = await loadTasksByComposeServiceName(db, serviceRows)
   const siteResolved = resolveSitesForMode(
     mode,
     warnings,
@@ -3144,15 +2952,12 @@ export async function prepareDeployCompose(
       principalMaterial,
       split.sites,
       principalResolution,
-      tasksByComposeName,
+      tasksByComposeName
     ),
-    split.sites,
-  );
-  if ("kind" in siteResolved) return siteResolved;
-  const localSite = sitesOnScheduledServer(
-    siteResolved,
-    pipeline.localServiceNames,
-  );
+    split.sites
+  )
+  if ('kind' in siteResolved) return siteResolved
+  const localSite = sitesOnScheduledServer(siteResolved, pipeline.localServiceNames)
 
   const localNativeApps = sitesOnScheduledServer(
     nativeAppServicesForDeploy(
@@ -3160,10 +2965,10 @@ export async function prepareDeployCompose(
       resolved.services,
       orgRow?.options,
       serverRow?.options,
-      tasksByComposeName,
+      tasksByComposeName
     ),
-    pipeline.localServiceNames,
-  );
+    pipeline.localServiceNames
+  )
 
   const localSourceMaterial = await prepareLocalSourceMaterial(c, db, {
     mode,
@@ -3174,34 +2979,26 @@ export async function prepareDeployCompose(
     principalMaterial,
     principalResolution,
     localServiceNames: pipeline.localServiceNames,
-  });
-  if (!Array.isArray(localSourceMaterial)) return localSourceMaterial;
+  })
+  if (!Array.isArray(localSourceMaterial)) return localSourceMaterial
 
-  const {
-    principalMaterial: principalMaterialWithRuntimes,
-    deployEntitlements,
-  } = mergeDeployPrincipalRuntimes({
-    principalMaterial,
-    nativeAppServices: localNativeApps,
-    sourceMaterial: localSourceMaterial,
-  });
-  await persistDeployRuntimeEntitlements(db, mode, deployEntitlements);
+  const { principalMaterial: principalMaterialWithRuntimes, deployEntitlements } =
+    mergeDeployPrincipalRuntimes({
+      principalMaterial,
+      nativeAppServices: localNativeApps,
+      sourceMaterial: localSourceMaterial,
+    })
+  await persistDeployRuntimeEntitlements(db, mode, deployEntitlements)
 
-  const dockerExternalNetworks = collectComposeExternalDockerNetworkNames(
-    split.composeYaml,
-  );
+  const dockerExternalNetworks = collectComposeExternalDockerNetworkNames(split.composeYaml)
   const externalNetworks = await resolveExternalNetworks(
     db,
     params.organizationId,
     params.serverId,
-    dockerExternalNetworks,
-  );
-  const networkErr = absorbSoftPrepareError(
-    mode,
-    warnings,
-    externalNetworks.error,
-  );
-  if (networkErr) return networkErr;
+    dockerExternalNetworks
+  )
+  const networkErr = absorbSoftPrepareError(mode, warnings, externalNetworks.error)
+  if (networkErr) return networkErr
 
   // Sites and native `node` apps are host-native (stripped from
   // `composeYaml` above) and never join a Docker network — exclude them even if
@@ -3210,47 +3007,32 @@ export async function prepareDeployCompose(
     db,
     serviceRows,
     pipeline.expansion,
-    params.serverId,
-  );
-  const boundNames = managedBindings.bound.filter(
-    (name) => !hostNativeNames.has(name),
-  );
+    params.serverId
+  )
+  const boundNames = managedBindings.bound.filter((name) => !hostNativeNames.has(name))
   const managedLogicalNames = localManagedNetworkServiceNames(
     boundNames,
     params.schedule?.managedIngressHostsByService,
-    managedBindings.coResident,
-  );
+    managedBindings.coResident
+  )
 
   // Effective document = the same post-split container document serialized as
   // composeYaml today. Compile one runtime snapshot; daemons never see
   // project/environment/platform layers.
-  const effective = split.containerDocument;
-  const compiled = compileRuntimeCompose(
-    effective,
-    {
-      ...compileRuntimeOptionsForServer(
-        params.environmentId,
-        pipeline,
-        params.schedule,
-      ),
-      placementServerId: params.serverId,
-    },
-  );
-  const expansion = overlayCompiledExpansion(
-    pipeline.expansion,
-    compiled.expansion,
-  );
-  const managedNetworkServices = applyExpansionToNames(
-    managedLogicalNames,
-    expansion,
-  );
+  const effective = split.containerDocument
+  const compiled = compileRuntimeCompose(effective, {
+    ...compileRuntimeOptionsForServer(params.environmentId, pipeline, params.schedule),
+    placementServerId: params.serverId,
+  })
+  const expansion = overlayCompiledExpansion(pipeline.expansion, compiled.expansion)
+  const managedNetworkServices = applyExpansionToNames(managedLogicalNames, expansion)
   const managedNetwork = await resolveManagedNetworkHostName(
     db,
     managedNetworkServices,
-    serverRow?.organizationId ?? params.organizationId,
-  );
-  const composeYaml = runtimeComposeYamlOrEmpty(compiled.document);
-  const composeFiles = renderRuntimeComposeFiles(composeYaml);
+    serverRow?.organizationId ?? params.organizationId
+  )
+  const composeYaml = runtimeComposeYamlOrEmpty(compiled.document)
+  const composeFiles = renderRuntimeComposeFiles(composeYaml)
 
   // Stage 4's remaining half. Compiled here, on the final expansion, so what
   // this function returns is the whole `ServerDeployment` a daemon is sent —
@@ -3259,15 +3041,13 @@ export async function prepareDeployCompose(
     mode,
     environmentId: params.environmentId,
     organizationId: params.organizationId,
-    ...(serverRow?.organizationId
-      ? { serverOrganizationId: serverRow.organizationId }
-      : {}),
+    ...(serverRow?.organizationId ? { serverOrganizationId: serverRow.organizationId } : {}),
     serverId: params.serverId,
     expansion: expansionToRecord(expansion),
     storageMaterial,
-  });
-  if (edge instanceof Response) return edge;
-  if ("kind" in edge) return edge;
+  })
+  if (edge instanceof Response) return edge
+  if ('kind' in edge) return edge
 
   return await toPreparedDeployResult(mode, {
     serverId: resolved.serverId,
@@ -3295,23 +3075,20 @@ export async function prepareDeployCompose(
     envFile: withVariables.envFileContent,
     secretPlan: withVariables.secretPlan,
     sourceSelection: params.sourceSelection,
-  });
+  })
 }
 
 /** Why one site could not be pinned to a principal. */
 export type SitePrincipalError =
   | {
-    kind:
-      | "site_principal_ambiguous"
-      | "site_managed_directory_unowned"
-      | "site_cron_unowned";
-    composeServiceName: string;
-  }
+      kind: 'site_principal_ambiguous' | 'site_managed_directory_unowned' | 'site_cron_unowned'
+      composeServiceName: string
+    }
   | {
-    kind: "principal_required_for_service_kind";
-    composeServiceName: string;
-    serviceKind: "site" | "node";
-  };
+      kind: 'principal_required_for_service_kind'
+      composeServiceName: string
+      serviceKind: 'site' | 'node'
+    }
 
 /**
  * The material for the account one site runs as, or the ownership refusal.
@@ -3325,30 +3102,31 @@ function resolveSitePrincipalMaterial(
   site: SiteSpec,
   assignedIds: readonly string[],
   principalById: ReadonlyMap<string, EnvironmentDeployPrincipalMaterial>,
-  declared: { alias: string; principalId: string | undefined } | undefined,
-): { ok: true; material: EnvironmentDeployPrincipalMaterial | undefined } | {
-  ok: false;
-  error: SitePrincipalError;
-} {
+  declared: { alias: string; principalId: string | undefined } | undefined
+):
+  | { ok: true; material: EnvironmentDeployPrincipalMaterial | undefined }
+  | {
+      ok: false
+      error: SitePrincipalError
+    } {
   if (declared) {
     return {
       ok: true,
-      material: declared.principalId === undefined
-        ? undefined
-        : principalById.get(declared.principalId),
-    };
+      material:
+        declared.principalId === undefined ? undefined : principalById.get(declared.principalId),
+    }
   }
-  const sole = pickSolePrincipalId(assignedIds);
-  if (sole.status === "ambiguous") {
+  const sole = pickSolePrincipalId(assignedIds)
+  if (sole.status === 'ambiguous') {
     return {
       ok: false,
       error: {
-        kind: "site_principal_ambiguous",
+        kind: 'site_principal_ambiguous',
         composeServiceName: site.composeServiceName,
       },
-    };
+    }
   }
-  if (sole.status === "none") {
+  if (sole.status === 'none') {
     // No alias and no steward at all. A site's tree belongs to an account, so
     // this is refused rather than deployed as a daemon-owned directory no
     // tenant can reach. Asked of the *pick*, not of the material: a steward
@@ -3357,13 +3135,13 @@ function resolveSitePrincipalMaterial(
     return {
       ok: false,
       error: {
-        kind: "principal_required_for_service_kind",
+        kind: 'principal_required_for_service_kind',
         composeServiceName: site.composeServiceName,
-        serviceKind: "site",
+        serviceKind: 'site',
       },
-    };
+    }
   }
-  return { ok: true, material: principalById.get(sole.principalId) };
+  return { ok: true, material: principalById.get(sole.principalId) }
 }
 
 /**
@@ -3379,45 +3157,39 @@ function prepareSiteForDeploy(
   principalById: ReadonlyMap<string, EnvironmentDeployPrincipalMaterial>,
   /** `principal.id` the service's declared alias resolved to, if it declared one. */
   declared: { alias: string; principalId: string | undefined } | undefined,
-  tasks: readonly TaskRecord[] = [],
-): { ok: true; site: EnvironmentDeploySite } | {
-  ok: false;
-  error: SitePrincipalError;
-} {
+  tasks: readonly TaskRecord[] = []
+):
+  | { ok: true; site: EnvironmentDeploySite }
+  | {
+      ok: false
+      error: SitePrincipalError
+    } {
   const fail = (
-    kind: Exclude<
-      SitePrincipalError["kind"],
-      "principal_required_for_service_kind"
-    >,
+    kind: Exclude<SitePrincipalError['kind'], 'principal_required_for_service_kind'>
   ) => ({
     ok: false as const,
     error: { kind, composeServiceName: site.composeServiceName },
-  });
+  })
 
-  const resolvedMaterial = resolveSitePrincipalMaterial(
-    site,
-    assignedIds,
-    principalById,
-    declared,
-  );
-  if (!resolvedMaterial.ok) return resolvedMaterial;
-  const { material } = resolvedMaterial;
-  const principalPin = material ? toSitePrincipal(material) : undefined;
+  const resolvedMaterial = resolveSitePrincipalMaterial(site, assignedIds, principalById, declared)
+  if (!resolvedMaterial.ok) return resolvedMaterial
+  const { material } = resolvedMaterial
+  const principalPin = material ? toSitePrincipal(material) : undefined
 
   // "A directory and a principal" needs both — falling back to the
   // daemon-owned tree would serve fine and be unreachable over SFTP forever.
-  if (site.sourceKind === "managed-directory" && !principalPin) {
-    return fail("site_managed_directory_unowned");
+  if (site.sourceKind === 'managed-directory' && !principalPin) {
+    return fail('site_managed_directory_unowned')
   }
 
   // Compose carries what the operator authored; the wire carries what was
   // validated and translated. Anything that fails its spec is dropped rather
   // than escaped — the save-time linter is what tells them why.
-  const { php: authoredPhp, cron: authoredCron, ...rest } = site;
-  const php = renderPhpForDeploy(authoredPhp, ALLOWED_PHP_EXTENSIONS);
-  const cron = renderCronForDeploy(authoredCron, tasks);
+  const { php: authoredPhp, cron: authoredCron, ...rest } = site
+  const php = renderPhpForDeploy(authoredPhp, ALLOWED_PHP_EXTENSIONS)
+  const cron = renderCronForDeploy(authoredCron, tasks)
   // A timer with no `User=` runs as root; the wire refuses that.
-  if (cron.length > 0 && !principalPin) return fail("site_cron_unowned");
+  if (cron.length > 0 && !principalPin) return fail('site_cron_unowned')
 
   return {
     ok: true,
@@ -3427,7 +3199,7 @@ function prepareSiteForDeploy(
       ...(cron.length > 0 ? { cron } : {}),
       ...(principalPin ? { principal: principalPin } : {}),
     },
-  };
+  }
 }
 
 /**
@@ -3444,46 +3216,38 @@ export async function attachPrincipalsToSites(
   principalMaterial: readonly EnvironmentDeployPrincipalMaterial[],
   sites: readonly SiteSpec[],
   principalResolution: ComposePrincipalResolution,
-  tasksByComposeName: ReadonlyMap<string, readonly TaskRecord[]> = new Map(),
+  tasksByComposeName: ReadonlyMap<string, readonly TaskRecord[]> = new Map()
 ): Promise<EnvironmentDeploySite[] | SitePrincipalError> {
-  if (sites.length === 0) return [];
+  if (sites.length === 0) return []
 
-  const principalById = new Map(
-    principalMaterial.map((entry) => [entry.principalId, entry]),
-  );
-  const principalIdsByServiceId =
-    await loadPrincipalIdsByServiceIdForEnvironment(
-      db,
-      environmentId,
-    );
-  const serviceIdByComposeName = new Map<string, string>();
+  const principalById = new Map(principalMaterial.map((entry) => [entry.principalId, entry]))
+  const principalIdsByServiceId = await loadPrincipalIdsByServiceIdForEnvironment(db, environmentId)
+  const serviceIdByComposeName = new Map<string, string>()
   for (const row of serviceRows) {
-    serviceIdByComposeName.set(row.composeServiceName, row.id);
+    serviceIdByComposeName.set(row.composeServiceName, row.id)
   }
 
-  const out: EnvironmentDeploySite[] = [];
+  const out: EnvironmentDeploySite[] = []
   for (const site of sites) {
-    const serviceId = serviceIdByComposeName.get(site.composeServiceName);
-    const assignedIds = serviceId
-      ? (principalIdsByServiceId.get(serviceId) ?? [])
-      : [];
-    const alias = principalResolution.aliasByComposeServiceName.get(
-      site.composeServiceName,
-    );
+    const serviceId = serviceIdByComposeName.get(site.composeServiceName)
+    const assignedIds = serviceId ? (principalIdsByServiceId.get(serviceId) ?? []) : []
+    const alias = principalResolution.aliasByComposeServiceName.get(site.composeServiceName)
     const prepared = prepareSiteForDeploy(
       site,
       assignedIds,
       principalById,
-      alias === undefined ? undefined : {
-        alias,
-        principalId: principalResolution.principalIdByAlias.get(alias),
-      },
-      tasksByComposeName.get(site.composeServiceName),
-    );
-    if (!prepared.ok) return prepared.error;
-    out.push(prepared.site);
+      alias === undefined
+        ? undefined
+        : {
+            alias,
+            principalId: principalResolution.principalIdByAlias.get(alias),
+          },
+      tasksByComposeName.get(site.composeServiceName)
+    )
+    if (!prepared.ok) return prepared.error
+    out.push(prepared.site)
   }
-  return out;
+  return out
 }
 
 /**
@@ -3505,91 +3269,89 @@ export async function attachPrincipalsToSites(
  */
 export function renderCronForDeploy(
   jobs: readonly ComposeServiceCronJob[] | undefined,
-  tasks: readonly TaskRecord[] = [],
+  tasks: readonly TaskRecord[] = []
 ): EnvironmentDeployCronJob[] {
-  const out: EnvironmentDeployCronJob[] = [];
-  const seen = new Set<string>();
-  for (const job of jobs ?? []) tryPushComposeCronJob(job, seen, out);
-  for (const row of tasks) tryPushTaskCronJob(row, seen, out);
-  return out;
+  const out: EnvironmentDeployCronJob[] = []
+  const seen = new Set<string>()
+  for (const job of jobs ?? []) tryPushComposeCronJob(job, seen, out)
+  for (const row of tasks) tryPushTaskCronJob(row, seen, out)
+  return out
 }
 
 function tryPushComposeCronJob(
   job: ComposeServiceCronJob,
   seen: Set<string>,
-  out: EnvironmentDeployCronJob[],
+  out: EnvironmentDeployCronJob[]
 ): void {
-  if (out.length >= MAX_CRON_JOBS_PER_SERVICE) return;
-  if (!CRON_JOB_NAME_RE.test(job.name) || seen.has(job.name)) return;
-  const schedule = cronToOnCalendar(job.schedule);
-  if (!schedule.ok) return;
-  const command = parseCronCommand(job.command);
-  if (!command.ok) return;
-  seen.add(job.name);
+  if (out.length >= MAX_CRON_JOBS_PER_SERVICE) return
+  if (!CRON_JOB_NAME_RE.test(job.name) || seen.has(job.name)) return
+  const schedule = cronToOnCalendar(job.schedule)
+  if (!schedule.ok) return
+  const command = parseCronCommand(job.command)
+  if (!command.ok) return
+  seen.add(job.name)
   out.push({
     name: job.name,
     schedule: schedule.value,
     command: command.value,
-  });
+  })
 }
 
 function tryPushTaskCronJob(
   row: TaskRecord,
   seen: Set<string>,
-  out: EnvironmentDeployCronJob[],
+  out: EnvironmentDeployCronJob[]
 ): void {
-  if (out.length >= MAX_CRON_JOBS_PER_SERVICE) return;
-  if (!row.isEnabled) return;
-  const name = cronJobUnitName(row.name);
-  if (name === null || seen.has(name)) return;
-  const schedule = cronToOnCalendar(row.schedule, row.timezone);
-  if (!schedule.ok) return;
-  const command = parseCronCommand(row.command);
-  if (!command.ok) return;
-  seen.add(name);
-  const extra: Partial<EnvironmentDeployCronJob> = {};
-  if (row.timeoutSeconds !== null) extra.timeoutSeconds = row.timeoutSeconds;
+  if (out.length >= MAX_CRON_JOBS_PER_SERVICE) return
+  if (!row.isEnabled) return
+  const name = cronJobUnitName(row.name)
+  if (name === null || seen.has(name)) return
+  const schedule = cronToOnCalendar(row.schedule, row.timezone)
+  if (!schedule.ok) return
+  const command = parseCronCommand(row.command)
+  if (!command.ok) return
+  seen.add(name)
+  const extra: Partial<EnvironmentDeployCronJob> = {}
+  if (row.timeoutSeconds !== null) extra.timeoutSeconds = row.timeoutSeconds
   // The wire carries `forbid` only (see EnvironmentDeployCronJob); a row
   // holding another policy is rendered without one, which is systemd's
   // own behaviour for a still-active unit — the same thing as forbid.
-  if (row.concurrencyPolicy === "forbid") extra.concurrencyPolicy = "forbid";
+  if (row.concurrencyPolicy === 'forbid') extra.concurrencyPolicy = 'forbid'
   out.push({
     name,
     schedule: schedule.value,
     command: command.value,
     ...extra,
-  });
+  })
 }
 
 /** Task rows for an environment's services, keyed by compose service name. */
 export async function loadTasksByComposeServiceName(
   db: Db,
-  serviceRows: ReadonlyArray<{ id: string; composeServiceName: string }>,
+  serviceRows: ReadonlyArray<{ id: string; composeServiceName: string }>
 ): Promise<ReadonlyMap<string, TaskRecord[]>> {
-  const byServiceId = new Map(
-    serviceRows.map((row) => [row.id, row.composeServiceName]),
-  );
-  const out = new Map<string, TaskRecord[]>();
-  if (byServiceId.size === 0) return out;
+  const byServiceId = new Map(serviceRows.map((row) => [row.id, row.composeServiceName]))
+  const out = new Map<string, TaskRecord[]>()
+  if (byServiceId.size === 0) return out
   for (const row of await listTasksForServices(db, [...byServiceId.keys()])) {
-    const composeName = byServiceId.get(row.serviceId);
-    if (composeName === undefined) continue;
-    const list = out.get(composeName) ?? [];
-    list.push(row);
-    out.set(composeName, list);
+    const composeName = byServiceId.get(row.serviceId)
+    if (composeName === undefined) continue
+    const list = out.get(composeName) ?? []
+    list.push(row)
+    out.set(composeName, list)
   }
-  return out;
+  return out
 }
 
 function toSitePrincipal(
-  material: EnvironmentDeployPrincipalMaterial,
+  material: EnvironmentDeployPrincipalMaterial
 ): EnvironmentDeploySitePrincipal {
   return {
     principalId: material.principalId,
     username: material.username,
     ...(material.uid !== undefined ? { uid: material.uid } : {}),
     ...(material.gid !== undefined ? { gid: material.gid } : {}),
-  };
+  }
 }
 
 /**
@@ -3602,69 +3364,62 @@ function toSitePrincipal(
  * cause.
  */
 function splitHostNativeFromDocument(document: ComposeDocument): {
-  composeYaml: string;
+  composeYaml: string
   /** Post-split / pruned container document (same body as `composeYaml`). */
-  containerDocument: ComposeDocument;
-  sites: SiteSpec[];
-  nativeApps: NativeAppServiceSpec[];
+  containerDocument: ComposeDocument
+  sites: SiteSpec[]
+  nativeApps: NativeAppServiceSpec[]
 } {
   const services = isPlainObject(document.data.services)
     ? (document.data.services as Record<string, unknown>)
-    : {};
-  const usedPorts = new Set<number>();
-  const split = splitSiteServices(
-    services,
-    new Map(),
-    usedPorts,
-  );
-  const sites = split.sites;
+    : {}
+  const usedPorts = new Set<number>()
+  const split = splitSiteServices(services, new Map(), usedPorts)
+  const sites = split.sites
   const { containerServices, apps: nativeApps } = splitNativeAppServices(
     split.containerServices,
-    usedPorts,
-  );
+    usedPorts
+  )
 
   if (Object.keys(containerServices).length === 0) {
     const emptyDocument: ComposeDocument = {
       version: 1,
       data: { services: {} },
-      presentation: { keyOrder: ["services"], comments: {} },
-    };
+      presentation: { keyOrder: ['services'], comments: {} },
+    }
     return {
       composeYaml: emptyContainerComposeYaml(),
       containerDocument: emptyDocument,
       sites,
       nativeApps,
-    };
+    }
   }
 
   const existingNetworks = isPlainObject(document.data.networks)
     ? (document.data.networks as Record<string, unknown>)
-    : undefined;
-  const prunedNetworks = pruneUnreferencedComposeNetworks(
-    containerServices,
-    existingNetworks,
-  );
+    : undefined
+  const prunedNetworks = pruneUnreferencedComposeNetworks(containerServices, existingNetworks)
 
   const nextData: Record<string, unknown> = {
     ...document.data,
     services: containerServices,
-  };
+  }
   if (prunedNetworks) {
-    nextData.networks = prunedNetworks;
+    nextData.networks = prunedNetworks
   } else {
-    delete nextData.networks;
+    delete nextData.networks
   }
 
   const containerDocument: ComposeDocument = {
     ...document,
     data: nextData,
-  };
+  }
   return {
     composeYaml: composeDocumentToRuntimeYaml(containerDocument),
     containerDocument,
     sites,
     nativeApps,
-  };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -3677,29 +3432,29 @@ function splitHostNativeFromDocument(document: ComposeDocument): {
 // enqueues the result. `ServerDeployment` (`lib/compose/ir.ts`) is then the
 // whole per-server contract, and the transport layer assembles nothing.
 
-type DeployHostingPayload = EnvironmentDeployHosting;
+type DeployHostingPayload = EnvironmentDeployHosting
 
 type BuildHostingResult =
   | {
-    hostings: DeployHostingPayload[];
-    resolvedTlsIds: string[];
-  }
+      hostings: DeployHostingPayload[]
+      resolvedTlsIds: string[]
+    }
   | { error: Response }
-  | { prepareError: DeployPrepareError };
+  | { prepareError: DeployPrepareError }
 
 function isTlsSource(value: string): value is TlsSource {
-  return (TLS_SOURCES as readonly string[]).includes(value);
+  return (TLS_SOURCES as readonly string[]).includes(value)
 }
 
 type OrgTlsCandidate = TlsCandidate & {
-  certificatePem: string | null;
-  privateKeyPem: string | null;
-};
+  certificatePem: string | null
+  privateKeyPem: string | null
+}
 
 export type HostingTlsWire =
-  | { ok: true; tlsId: string | null; tlsMode?: "acme" }
-  | { ok: false; error: "acme_requires_public_bind" }
-  | { ok: false; error: "acme_requires_org_opt_in" };
+  | { ok: true; tlsId: string | null; tlsMode?: 'acme' }
+  | { ok: false; error: 'acme_requires_public_bind' }
+  | { ok: false; error: 'acme_requires_org_opt_in' }
 
 /**
  * ACME-managed Let's Encrypt pins omit `tlsId` on the wire so older daemons
@@ -3711,35 +3466,35 @@ export type HostingTlsWire =
  * because a `managed` row can predate the org later disabling the gate.
  */
 export function hostingTlsWireFromResolved(params: {
-  tlsId: string | null;
-  status: TlsStatus | undefined;
-  bindScope: HostingBindScope;
-  acmeEnabled: boolean;
+  tlsId: string | null
+  status: TlsStatus | undefined
+  bindScope: HostingBindScope
+  acmeEnabled: boolean
 }): HostingTlsWire {
-  if (params.status !== "managed") {
-    return { ok: true, tlsId: params.tlsId };
+  if (params.status !== 'managed') {
+    return { ok: true, tlsId: params.tlsId }
   }
   if (!params.acmeEnabled) {
-    return { ok: false, error: "acme_requires_org_opt_in" };
+    return { ok: false, error: 'acme_requires_org_opt_in' }
   }
-  if (params.bindScope === "local" || params.bindScope === "datacenter") {
-    return { ok: false, error: "acme_requires_public_bind" };
+  if (params.bindScope === 'local' || params.bindScope === 'datacenter') {
+    return { ok: false, error: 'acme_requires_public_bind' }
   }
-  return { ok: true, tlsId: null, tlsMode: "acme" };
+  return { ok: true, tlsId: null, tlsMode: 'acme' }
 }
 
 /** The `service` columns a hosting fan-out needs. */
 type HostingServiceRow = {
-  id: string;
-  composeServiceName: string;
-};
+  id: string
+  composeServiceName: string
+}
 
 type HostingRow = {
-  id: string;
-  options: unknown;
-  tlsId: string | null;
-  ipId: string | null;
-};
+  id: string
+  options: unknown
+  tlsId: string | null
+  ipId: string | null
+}
 
 async function resolveHttpHostingEntry(
   db: Db,
@@ -3748,15 +3503,15 @@ async function resolveHttpHostingEntry(
   svc: Readonly<{ id: string; composeServiceName: string }>,
   candidates: OrgTlsCandidate[],
   serverId: string,
-  acmeEnabled: boolean,
+  acmeEnabled: boolean
 ): Promise<
   | { entry: DeployHostingPayload }
   | { skip: true }
   | { error: Response }
   | { prepareError: DeployPrepareError }
 > {
-  const hostnames = readHostnames(h.options);
-  if (hostnames.length === 0) return { skip: true };
+  const hostnames = readHostnames(h.options)
+  if (hostnames.length === 0) return { skip: true }
 
   // A revoked Let's Encrypt pin resolves as internal (`tlsId: null`) here —
   // do not treat it as `tls_pin_not_ready`. Deleted / mismatched pins still fail.
@@ -3764,53 +3519,42 @@ async function resolveHttpHostingEntry(
     pinId: h.tlsId,
     hostnames,
     candidates,
-  });
+  })
   if (!resolved.ok) {
     return {
       error: Response.json(
         { error: tlsPinErrorCode(resolved.error), hostingId: h.id },
-        { status: 400 },
+        { status: 400 }
       ),
-    };
+    }
   }
 
-  const bindScope = resolveHostingBind(parseHostingOptions(h.options));
+  const bindScope = resolveHostingBind(parseHostingOptions(h.options))
   const pinned = resolved.tlsId
     ? candidates.find((candidate) => candidate.id === resolved.tlsId)
-    : undefined;
+    : undefined
   const tlsWire = hostingTlsWireFromResolved({
     tlsId: resolved.tlsId,
     status: pinned?.metadata.status,
     bindScope,
     acmeEnabled,
-  });
+  })
   if (!tlsWire.ok) {
     return {
-      error: Response.json(
-        { error: tlsWire.error, hostingId: h.id },
-        { status: 400 },
-      ),
-    };
+      error: Response.json({ error: tlsWire.error, hostingId: h.id }, { status: 400 }),
+    }
   }
 
   const bindResolved = await resolveHostingBindAddress(db, {
     serverId,
     options: h.options,
     ipId: h.ipId,
-  });
-  if (
-    typeof bindResolved === "object" && bindResolved !== null &&
-    "kind" in bindResolved
-  ) {
-    return { prepareError: bindResolved };
+  })
+  if (typeof bindResolved === 'object' && bindResolved !== null && 'kind' in bindResolved) {
+    return { prepareError: bindResolved }
   }
 
-  const web = await resolveHostingDeployWeb(
-    db,
-    dataEncryptionSecrets,
-    h.id,
-    h.options,
-  );
+  const web = await resolveHostingDeployWeb(db, dataEncryptionSecrets, h.id, h.options)
 
   return {
     entry: {
@@ -3826,7 +3570,7 @@ async function resolveHttpHostingEntry(
       ...(bindResolved === undefined ? {} : { bindAddress: bindResolved }),
       ...(web === undefined ? {} : { web }),
     },
-  };
+  }
 }
 
 /**
@@ -3837,26 +3581,21 @@ async function resolveTcpUdpHostingEntry(
   db: Db,
   h: HostingRow,
   svc: Readonly<{ id: string; composeServiceName: string }>,
-  protocol: "tcp" | "udp",
-  serverId: string,
+  protocol: 'tcp' | 'udp',
+  serverId: string
 ): Promise<
-  | { entry: DeployHostingPayload }
-  | { skip: true }
-  | { prepareError: DeployPrepareError }
+  { entry: DeployHostingPayload } | { skip: true } | { prepareError: DeployPrepareError }
 > {
-  const ports = readHostingPorts(h.options);
-  if (ports.length === 0) return { skip: true };
+  const ports = readHostingPorts(h.options)
+  if (ports.length === 0) return { skip: true }
 
   const bindResolved = await resolveHostingBindAddress(db, {
     serverId,
     options: h.options,
     ipId: h.ipId,
-  });
-  if (
-    typeof bindResolved === "object" && bindResolved !== null &&
-    "kind" in bindResolved
-  ) {
-    return { prepareError: bindResolved };
+  })
+  if (typeof bindResolved === 'object' && bindResolved !== null && 'kind' in bindResolved) {
+    return { prepareError: bindResolved }
   }
 
   return {
@@ -3869,7 +3608,7 @@ async function resolveTcpUdpHostingEntry(
       ports,
       ...(bindResolved === undefined ? {} : { bindAddress: bindResolved }),
     },
-  };
+  }
 }
 
 function resolveHostingEntry(
@@ -3879,15 +3618,15 @@ function resolveHostingEntry(
   svc: Readonly<{ id: string; composeServiceName: string }>,
   candidates: OrgTlsCandidate[],
   serverId: string,
-  acmeEnabled: boolean,
+  acmeEnabled: boolean
 ): Promise<
   | { entry: DeployHostingPayload }
   | { skip: true }
   | { error: Response }
   | { prepareError: DeployPrepareError }
 > {
-  const protocol = readHostingProtocol(h.options);
-  if (protocol === "http") {
+  const protocol = readHostingProtocol(h.options)
+  if (protocol === 'http') {
     return resolveHttpHostingEntry(
       db,
       dataEncryptionSecrets,
@@ -3895,16 +3634,13 @@ function resolveHostingEntry(
       svc,
       candidates,
       serverId,
-      acmeEnabled,
-    );
+      acmeEnabled
+    )
   }
-  return resolveTcpUdpHostingEntry(db, h, svc, protocol, serverId);
+  return resolveTcpUdpHostingEntry(db, h, svc, protocol, serverId)
 }
 
-async function loadOrgTlsCandidates(
-  db: Db,
-  organizationId: string,
-): Promise<OrgTlsCandidate[]> {
+async function loadOrgTlsCandidates(db: Db, organizationId: string): Promise<OrgTlsCandidate[]> {
   const rows = await db
     .select({
       id: tls.id,
@@ -3918,9 +3654,9 @@ async function loadOrgTlsCandidates(
       privateKeyPem: tls.privateKeyPem,
     })
     .from(tls)
-    .where(eq(tls.organizationId, organizationId));
+    .where(eq(tls.organizationId, organizationId))
 
-  const out: OrgTlsCandidate[] = [];
+  const out: OrgTlsCandidate[] = []
   for (const row of rows) {
     const metadata = assembleTlsMetadata(
       {
@@ -3928,9 +3664,9 @@ async function loadOrgTlsCandidates(
         notAfter: row.notAfter,
         fingerprintSha256: row.fingerprintSha256,
       },
-      row.metadata,
-    );
-    if (!metadata) continue;
+      row.metadata
+    )
+    if (!metadata) continue
     out.push({
       id: row.id,
       metadata,
@@ -3938,9 +3674,9 @@ async function loadOrgTlsCandidates(
       ...(isTlsSource(row.source) ? { source: row.source } : {}),
       certificatePem: row.certificatePem,
       privateKeyPem: row.privateKeyPem,
-    });
+    })
   }
-  return out;
+  return out
 }
 
 async function buildHostingsForService(
@@ -3949,13 +3685,13 @@ async function buildHostingsForService(
   svc: HostingServiceRow,
   candidates: OrgTlsCandidate[],
   serverId: string,
-  acmeEnabled: boolean,
+  acmeEnabled: boolean
 ): Promise<
   | { hostings: DeployHostingPayload[]; tlsIds: string[] }
   | { error: Response }
   | { prepareError: DeployPrepareError }
 > {
-  const composeServiceName = svc.composeServiceName;
+  const composeServiceName = svc.composeServiceName
   const hostingRows = await db
     .select({
       id: hosting.id,
@@ -3964,10 +3700,10 @@ async function buildHostingsForService(
       ipId: hosting.ipId,
     })
     .from(hosting)
-    .where(eq(hosting.serviceId, svc.id));
+    .where(eq(hosting.serviceId, svc.id))
 
-  const hostings: DeployHostingPayload[] = [];
-  const tlsIds: string[] = [];
+  const hostings: DeployHostingPayload[] = []
+  const tlsIds: string[] = []
   for (const h of hostingRows) {
     const result = await resolveHostingEntry(
       db,
@@ -3976,17 +3712,17 @@ async function buildHostingsForService(
       { id: svc.id, composeServiceName },
       candidates,
       serverId,
-      acmeEnabled,
-    );
-    if ("skip" in result) continue;
-    if ("error" in result) return result;
-    if ("prepareError" in result) return result;
-    hostings.push(result.entry);
-    if (result.entry.tlsId && result.entry.tlsMode !== "acme") {
-      tlsIds.push(result.entry.tlsId);
+      acmeEnabled
+    )
+    if ('skip' in result) continue
+    if ('error' in result) return result
+    if ('prepareError' in result) return result
+    hostings.push(result.entry)
+    if (result.entry.tlsId && result.entry.tlsMode !== 'acme') {
+      tlsIds.push(result.entry.tlsId)
     }
   }
-  return { hostings, tlsIds };
+  return { hostings, tlsIds }
 }
 
 async function buildHostingPayload(
@@ -3994,7 +3730,7 @@ async function buildHostingPayload(
   environmentId: string,
   organizationId: string,
   serverId: string,
-  dataEncryptionSecrets: DerivedSecretsConfig,
+  dataEncryptionSecrets: DerivedSecretsConfig
 ): Promise<BuildHostingResult> {
   const serviceRows = await db
     .select({
@@ -4002,19 +3738,17 @@ async function buildHostingPayload(
       composeServiceName: service.composeServiceName,
     })
     .from(service)
-    .where(eq(service.environmentId, environmentId));
+    .where(eq(service.environmentId, environmentId))
 
-  const candidates = await loadOrgTlsCandidates(db, organizationId);
+  const candidates = await loadOrgTlsCandidates(db, organizationId)
   const [orgRow] = await db
     .select({ options: organization.options })
     .from(organization)
     .where(eq(organization.id, organizationId))
-    .limit(1);
-  const acmeEnabled = resolveAcmeEnabled(
-    parseOrganizationOptions(orgRow?.options),
-  );
-  const hostingPayload: DeployHostingPayload[] = [];
-  const resolvedTlsIds = new Set<string>();
+    .limit(1)
+  const acmeEnabled = resolveAcmeEnabled(parseOrganizationOptions(orgRow?.options))
+  const hostingPayload: DeployHostingPayload[] = []
+  const resolvedTlsIds = new Set<string>()
 
   for (const svc of serviceRows) {
     const built = await buildHostingsForService(
@@ -4023,15 +3757,15 @@ async function buildHostingPayload(
       svc,
       candidates,
       serverId,
-      acmeEnabled,
-    );
-    if ("error" in built) return built;
-    if ("prepareError" in built) return built;
-    hostingPayload.push(...built.hostings);
-    for (const tlsId of built.tlsIds) resolvedTlsIds.add(tlsId);
+      acmeEnabled
+    )
+    if ('error' in built) return built
+    if ('prepareError' in built) return built
+    hostingPayload.push(...built.hostings)
+    for (const tlsId of built.tlsIds) resolvedTlsIds.add(tlsId)
   }
 
-  return { hostings: hostingPayload, resolvedTlsIds: [...resolvedTlsIds] };
+  return { hostings: hostingPayload, resolvedTlsIds: [...resolvedTlsIds] }
 }
 
 async function sealTlsMaterialForDaemon(
@@ -4039,27 +3773,33 @@ async function sealTlsMaterialForDaemon(
   db: Db,
   serverId: string,
   organizationId: string,
-  tlsIds: string[],
+  tlsIds: string[]
 ): Promise<EnvironmentDeployTlsMaterial[] | Response> {
   // `managed` / `tlsMode: 'acme'` ids are excluded from `tlsIds` by
   // `buildHostingsForService` — this set is only PEM-backed pins.
-  if (tlsIds.length === 0) return [];
+  if (tlsIds.length === 0) return []
 
-  const dataEncryptionSecrets = c.get("dataEncryptionSecrets");
-  const secretsConfig = c.get("secretsConfig");
+  const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
+  const secretsConfig = c.get('secretsConfig')
   if (!dataEncryptionSecrets || !secretsConfig) {
-    return c.json({
-      error: "Encryption unavailable — no encryption key configured",
-    }, 503);
+    return c.json(
+      {
+        error: 'Encryption unavailable — no encryption key configured',
+      },
+      503
+    )
   }
 
-  const daemonState = await getServerDaemonStateByServerId(db, serverId);
+  const daemonState = await getServerDaemonStateByServerId(db, serverId)
   if (!daemonState || !isDaemonKeyActive(daemonState.key)) {
-    return c.json({
-      error: "No encryption-capable daemon key on target server",
-    }, 422);
+    return c.json(
+      {
+        error: 'No encryption-capable daemon key on target server',
+      },
+      422
+    )
   }
-  const keyId = daemonState.key.id;
+  const keyId = daemonState.key.id
 
   const rows = await db
     .select({
@@ -4069,72 +3809,72 @@ async function sealTlsMaterialForDaemon(
       organizationId: tls.organizationId,
     })
     .from(tls)
-    .where(and(eq(tls.organizationId, organizationId)));
+    .where(and(eq(tls.organizationId, organizationId)))
 
-  const byId = new Map(rows.map((row) => [row.id, row]));
-  const material: EnvironmentDeployTlsMaterial[] = [];
+  const byId = new Map(rows.map((row) => [row.id, row]))
+  const material: EnvironmentDeployTlsMaterial[] = []
 
   for (const tlsId of tlsIds) {
-    const row = byId.get(tlsId);
+    const row = byId.get(tlsId)
     if (!row?.certificatePem || !row.privateKeyPem) {
-      return c.json({ error: "tls_material_missing", tlsId }, 400);
+      return c.json({ error: 'tls_material_missing', tlsId }, 400)
     }
     // Refuse plaintext / non-tpsecret rows — keys must be sealed at rest.
     if (
       !row.privateKeyPem.startsWith(`${ENVELOPE_MAGIC}.`) ||
-      row.privateKeyPem.includes("BEGIN")
+      row.privateKeyPem.includes('BEGIN')
     ) {
-      return c.json({ error: "tls_key_not_sealed", tlsId }, 500);
+      return c.json({ error: 'tls_key_not_sealed', tlsId }, 500)
     }
-    let privateKeyEnvelope: string;
+    let privateKeyEnvelope: string
     try {
       privateKeyEnvelope = await resealSecretForDaemon(
         secretsConfig,
         dataEncryptionSecrets,
         { serverId, keyId },
-        row.privateKeyPem,
-      );
+        row.privateKeyPem
+      )
     } catch {
-      return c.json({ error: "tls_decrypt_failed", tlsId }, 500);
+      return c.json({ error: 'tls_decrypt_failed', tlsId }, 500)
     }
     material.push({
       tlsId,
       certificatePem: row.certificatePem,
       privateKeyEnvelope,
-    });
+    })
   }
 
-  return material;
+  return material
 }
 
 type ResolvedHostingIngress = {
   /** HTTP proxy identity — set only when an HTTP hosting actually routes. */
-  hostingIngress?: EnvironmentDeployIngressService;
+  hostingIngress?: EnvironmentDeployIngressService
   /**
    * Shared ingress Docker network / compose project name: the same
    * `hosting-ingress` component `serviceId`. Set whenever this deploy carries
    * hostings at all — a tcp/udp-only deploy has no HTTP proxy identity but its
    * per-service Traefik still joins this network.
    */
-  hostingIngressNetwork?: string;
-};
+  hostingIngressNetwork?: string
+}
 
 async function resolveSharedHttpHostingIngress(
   db: Db,
   organizationId: string,
   serverId: string,
-  hostings: readonly DeployHostingPayload[],
+  hostings: readonly DeployHostingPayload[]
 ): Promise<ResolvedHostingIngress> {
-  if (hostings.length === 0) return {};
+  if (hostings.length === 0) return {}
   const hierarchy = await ensureSystemHierarchy(db, {
     organizationId,
     serverId,
-  });
+  })
   // The network name is the component's own serviceId — never a literal.
   const resolved: ResolvedHostingIngress = {
     hostingIngressNetwork: hierarchy.serviceId,
-  };
-  if (!hostingsNeedSharedHttpIngress(hostings)) return resolved;
+  }
+  if (!hostingsNeedSharedHttpIngress(hostings)) return resolved
   return {
     ...resolved,
     hostingIngress: {
@@ -4142,7 +3882,7 @@ async function resolveSharedHttpHostingIngress(
       composeServiceName: SYSTEM_TRAEFIK_COMPOSE_SERVICE_NAME,
       containerName: hierarchy.containerName,
     },
-  };
+  }
 }
 
 /**
@@ -4153,12 +3893,8 @@ async function resolveSharedHttpHostingIngress(
  */
 type ServerEdgeDeployment = Pick<
   ServerDeployment,
-  | "hostings"
-  | "tlsMaterial"
-  | "listenerPorts"
-  | "hostingIngress"
-  | "hostingIngressNetwork"
->;
+  'hostings' | 'tlsMaterial' | 'listenerPorts' | 'hostingIngress' | 'hostingIngressNetwork'
+>
 
 /**
  * Compile the edge: routes, certificates, shared ingress, listener ports.
@@ -4177,32 +3913,35 @@ async function compileServerEdgeDeployment(
   c: Context<AppEnv>,
   db: Db,
   params: {
-    mode: DeployPrepareMode;
-    environmentId: string;
-    organizationId: string;
+    mode: DeployPrepareMode
+    environmentId: string
+    organizationId: string
     /** Owner of the target host; falls back to the requesting organization. */
-    serverOrganizationId?: string;
-    serverId: string;
+    serverOrganizationId?: string
+    serverId: string
     /** Final compose expansion, so a clone routes like the key it came from. */
-    expansion: Record<string, string[]>;
-    storageMaterial: EnvironmentDeployStorageMaterial[];
-  },
+    expansion: Record<string, string[]>
+    storageMaterial: EnvironmentDeployStorageMaterial[]
+  }
 ): Promise<ServerEdgeDeployment | DeployPrepareError | Response> {
   // Scoped to the server's owner, matching the ProxySQL frontend the joining
   // services dial — the same rule `managedNetwork` follows above.
   const listenerPorts = await loadManagedIngressPorts(
     db,
-    params.serverOrganizationId ?? params.organizationId,
-  );
-  if (params.mode === "preview") {
-    return { hostings: [], tlsMaterial: [], listenerPorts };
+    params.serverOrganizationId ?? params.organizationId
+  )
+  if (params.mode === 'preview') {
+    return { hostings: [], tlsMaterial: [], listenerPorts }
   }
 
-  const dataEncryptionSecrets = c.get("dataEncryptionSecrets");
+  const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
   if (!dataEncryptionSecrets) {
-    return c.json({
-      error: "Encryption unavailable — no encryption key configured",
-    }, 503);
+    return c.json(
+      {
+        error: 'Encryption unavailable — no encryption key configured',
+      },
+      503
+    )
   }
 
   const built = await buildHostingPayload(
@@ -4210,39 +3949,32 @@ async function compileServerEdgeDeployment(
     params.environmentId,
     params.organizationId,
     params.serverId,
-    dataEncryptionSecrets,
-  );
-  if ("prepareError" in built) return built.prepareError;
-  if ("error" in built) return built.error;
+    dataEncryptionSecrets
+  )
+  if ('prepareError' in built) return built.prepareError
+  if ('error' in built) return built.error
 
-  const hostings = expandHostingsForComposeInstances(
-    built.hostings,
-    params.expansion,
-  );
+  const hostings = expandHostingsForComposeInstances(built.hostings, params.expansion)
   const tlsMaterial = await sealTlsMaterialForDaemon(
     c,
     db,
     params.serverId,
     params.organizationId,
-    built.resolvedTlsIds,
-  );
-  if (tlsMaterial instanceof Response) return tlsMaterial;
+    built.resolvedTlsIds
+  )
+  if (tlsMaterial instanceof Response) return tlsMaterial
 
   // Both halves at once: a route and the storage it serves from are validated
   // against each other, so this cannot move to either side alone.
-  const materialsError = deployMaterialsErrorResponse(
-    hostings,
-    params.storageMaterial,
-  );
-  if (materialsError) return materialsError;
+  const materialsError = deployMaterialsErrorResponse(hostings, params.storageMaterial)
+  if (materialsError) return materialsError
 
-  const { hostingIngress, hostingIngressNetwork } =
-    await resolveSharedHttpHostingIngress(
-      db,
-      params.organizationId,
-      params.serverId,
-      hostings,
-    );
+  const { hostingIngress, hostingIngressNetwork } = await resolveSharedHttpHostingIngress(
+    db,
+    params.organizationId,
+    params.serverId,
+    hostings
+  )
 
   return {
     hostings,
@@ -4250,22 +3982,20 @@ async function compileServerEdgeDeployment(
     listenerPorts,
     ...(hostingIngress ? { hostingIngress } : {}),
     ...(hostingIngressNetwork ? { hostingIngressNetwork } : {}),
-  };
+  }
 }
 
-export function readHostingProxyFromOptions(
-  options: unknown,
-): EnvironmentDeployHosting["proxy"] {
-  if (!isPlainObject(options)) return undefined;
+export function readHostingProxyFromOptions(options: unknown): EnvironmentDeployHosting['proxy'] {
+  if (!isPlainObject(options)) return undefined
   const proxy = resolveHostingProxy({
     proxy: isPlainObject(options.proxy) ? options.proxy : undefined,
-  });
+  })
   return {
     forceHttps: proxy.forceHttps,
     gzip: proxy.gzip,
     brotli: proxy.brotli,
     ...(proxy.stripPrefix ? { stripPrefix: proxy.stripPrefix } : {}),
-  };
+  }
 }
 
 /**
@@ -4276,49 +4006,45 @@ export function readHostingProxyFromOptions(
 export async function resolveHostingBindAddress(
   db: Db,
   params: Readonly<{
-    serverId: string;
-    options: unknown;
-    ipId: string | null;
-  }>,
-): Promise<
-  | string
-  | undefined
-  | Extract<DeployPrepareError, { kind: "datacenter_ip_required" }>
-> {
-  const bind = resolveHostingBind(parseHostingOptions(params.options));
+    serverId: string
+    options: unknown
+    ipId: string | null
+  }>
+): Promise<string | undefined | Extract<DeployPrepareError, { kind: 'datacenter_ip_required' }>> {
+  const bind = resolveHostingBind(parseHostingOptions(params.options))
 
-  if (bind === "local") return "127.0.0.1";
+  if (bind === 'local') return '127.0.0.1'
 
-  if (bind === "datacenter") {
-    const address = await loadServerDatacenterAddress(db, params.serverId);
+  if (bind === 'datacenter') {
+    const address = await loadServerDatacenterAddress(db, params.serverId)
     if (!address) {
-      return { kind: "datacenter_ip_required", serverId: params.serverId };
+      return { kind: 'datacenter_ip_required', serverId: params.serverId }
     }
-    return address;
+    return address
   }
 
   // public (default)
-  if (!params.ipId) return undefined;
+  if (!params.ipId) return undefined
 
   const [row] = await db
     .select({ address: ip.address, serverId: ip.serverId })
     .from(ip)
     .where(eq(ip.id, params.ipId))
-    .limit(1);
+    .limit(1)
   if (!row) {
-    throw new Error("hosting ip pin not found");
+    throw new Error('hosting ip pin not found')
   }
   if (row.serverId !== null && row.serverId !== params.serverId) {
-    throw new Error("hosting ip pin server mismatch");
+    throw new Error('hosting ip pin server mismatch')
   }
-  const address = inetAddressToString(row.address);
+  const address = inetAddressToString(row.address)
   if (!address) {
-    throw new Error("hosting ip pin address invalid");
+    throw new Error('hosting ip pin address invalid')
   }
-  return address;
+  return address
 }
 
-export { extractComposeFromOptions };
+export { extractComposeFromOptions }
 
 /** Pure helpers exported for host-free unit coverage of prepare gates. */
 export {
@@ -4347,7 +4073,7 @@ export {
   toApplyVariablesPrepareError,
   toPreparedDeployResult,
   warningFromPrepareError,
-};
+}
 
 // Re-export layer builders used by prepare for host-free coverage imports.
 export {
@@ -4355,4 +4081,4 @@ export {
   PROJECT_COMPOSE_FILENAME,
   renderRuntimeComposeFiles,
   RUNTIME_COMPOSE_FILENAME,
-} from "../../features/deploy/deploy-layers.ts";
+} from '../../features/deploy/deploy-layers.ts'

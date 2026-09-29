@@ -22,7 +22,7 @@ const MAX_WEB_ENV_ENTRIES = 64
 const MAX_WEB_ENV_VALUE_LENGTH = 4096
 
 export function sanitizeHostingWebEnv(
-  raw: Record<string, string> | undefined,
+  raw: Record<string, string> | undefined
 ): Record<string, string> | undefined {
   if (!raw) return undefined
   const env: Record<string, string> = {}
@@ -45,7 +45,7 @@ function isUsableWebEnvValue(value: string): boolean {
 async function mergeRuntimeVariablesIntoEnv(
   env: Record<string, string>,
   varMap: ResolvedVariableMap,
-  dataEncryptionSecrets: DerivedSecretsConfig,
+  dataEncryptionSecrets: DerivedSecretsConfig
 ): Promise<void> {
   // Pure crypto per entry: decrypt concurrently, then merge in map order.
   const resolved = await Promise.all(
@@ -66,7 +66,7 @@ async function mergeRuntimeVariablesIntoEnv(
 
 function buildDeployWeb(
   env: Record<string, string>,
-  php: EnvironmentDeployHostingPhp | undefined,
+  php: EnvironmentDeployHostingPhp | undefined
 ): EnvironmentDeployHostingWeb | undefined {
   const hasEnv = Object.keys(env).length > 0
   if (!hasEnv && !php) return undefined
@@ -84,7 +84,7 @@ export async function resolveHostingDeployWeb(
   db: Db,
   dataEncryptionSecrets: DerivedSecretsConfig,
   hostingId: string,
-  options: unknown,
+  options: unknown
 ): Promise<EnvironmentDeployHostingWeb | undefined> {
   const parsed = parseHostingOptions(options)
   if (parsed === null) return undefined
@@ -113,7 +113,7 @@ export async function resolveHostingDeployWeb(
  */
 export function attachWebMetadataToSites(
   sites: EnvironmentDeploySite[],
-  hostings: readonly { composeServiceName: string; web?: EnvironmentDeployHostingWeb }[],
+  hostings: readonly { composeServiceName: string; web?: EnvironmentDeployHostingWeb }[]
 ): EnvironmentDeploySite[] {
   const byService = new Map<string, Record<string, string>>()
 

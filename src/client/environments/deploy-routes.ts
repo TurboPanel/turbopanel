@@ -1,15 +1,11 @@
-import {
-  firstSequential,
-  forEachSequential,
-  mapSequential,
-} from "../../lib/sequential.ts";
-import { eq, inArray } from "drizzle-orm";
-import type { Context, Hono } from "hono";
-import type { AppEnv } from "../../app/app.ts";
-import type { AuthRouteOpts } from "../authn/http.ts";
-import { createSessionMiddleware } from "../authn/middleware.ts";
-import { resolveEntityOrganizationId } from "../authz/create-access-grant.ts";
-import { can } from "../authz/evaluator.ts";
+import { firstSequential, forEachSequential, mapSequential } from '../../lib/sequential.ts'
+import { eq, inArray } from 'drizzle-orm'
+import type { Context, Hono } from 'hono'
+import type { AppEnv } from '../../app/app.ts'
+import type { AuthRouteOpts } from '../authn/http.ts'
+import { createSessionMiddleware } from '../authn/middleware.ts'
+import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
+import { can } from '../authz/evaluator.ts'
 import {
   createReleaseIdAllocator,
   type DeployPrepareError,
@@ -20,13 +16,10 @@ import {
   type PreparedDeployCompose,
   prepareDeployCompose,
   type ReleaseIdAllocator,
-} from "./deploy-prepare.ts";
-import {
-  definedFields,
-  presentFields,
-} from "../../lib/optional-fields.ts";
-import type { DerivedSecretsConfig } from "../../lib/secrets/secrets.ts";
-import type { CommandEnvelope } from "../../features/commands/envelope.ts";
+} from './deploy-prepare.ts'
+import { definedFields, presentFields } from '../../lib/optional-fields.ts'
+import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
+import type { CommandEnvelope } from '../../features/commands/envelope.ts'
 import type {
   EnvironmentDeployComposeFile,
   EnvironmentDeployDockerNetwork,
@@ -42,7 +35,7 @@ import type {
   EnvironmentDeploySite,
   EnvironmentDeployVariableMaterial,
   EnvironmentLifecycleAction,
-} from "../../contracts/commands/schemas.ts";
+} from '../../contracts/commands/schemas.ts'
 import {
   buildDeployPreviewContainers,
   buildDeployPreviewServers,
@@ -56,40 +49,34 @@ import {
   type QueuedCommandRef,
   queuedCommandsResponseBody,
   scheduleErrorResponse,
-} from "./deploy-routes-helpers.ts";
-import { resolveTcpUdpIngressServices } from "./tcp-udp-ingress.ts";
+} from './deploy-routes-helpers.ts'
+import { resolveTcpUdpIngressServices } from './tcp-udp-ingress.ts'
 import {
   type EnvironmentSiteRelease,
   resolveEnvironmentSiteReleases,
   resolveSourcedEnvironmentSiteReleases,
-} from "./site-releases.ts";
-import { isNoopCommandQueue } from "../../features/commands/noop-command-queue.ts";
+} from './site-releases.ts'
+import { isNoopCommandQueue } from '../../features/commands/noop-command-queue.ts'
 import {
   type CommandContextRelease,
   normalizeContextReleases,
   normalizeReplicaCounts,
-} from "../../features/commands/context.ts";
-import {
-  type CommandQueue,
-  getCommandQueue,
-} from "../../features/commands/queue.ts";
-import {
-  createCommandRecord,
-  transitionCommand,
-} from "../../features/commands/command-records.ts";
-import { bumpEnvironmentGeneration } from "../../features/deploy/environment-generation.ts";
+} from '../../features/commands/context.ts'
+import { type CommandQueue, getCommandQueue } from '../../features/commands/queue.ts'
+import { createCommandRecord, transitionCommand } from '../../features/commands/command-records.ts'
+import { bumpEnvironmentGeneration } from '../../features/deploy/environment-generation.ts'
 import {
   type DeploymentTargetInput,
   listEnvironmentDeploymentTargets,
   markDeploymentFailed,
   pruneDrainedDeployments,
   upsertDeploymentTargets,
-} from "../../features/deploy/deployment-records.ts";
+} from '../../features/deploy/deployment-records.ts'
 import {
   type DesiredSlotInput,
   listEnvironmentSlots,
   replaceEnvironmentSlotsInTx,
-} from "../../features/servers/slot-records.ts";
+} from '../../features/servers/slot-records.ts'
 import {
   composeNetworkNamesByServer,
   type FabricSegmentMaterial,
@@ -100,59 +87,59 @@ import {
   purgeComposeNetworksCreatedAfter,
   purgeEnvironmentComposeNetworks,
   releaseSubnetsForServer,
-} from "../../features/fabric/fabric-records.ts";
+} from '../../features/fabric/fabric-records.ts'
 import {
   awaitParticipatingFabricConvergence,
   isFabricEnqueueTypedError,
-} from "../../features/fabric/enqueue.ts";
-import type { FabricGateOutcome } from "../../features/fabric/gate.ts";
+} from '../../features/fabric/enqueue.ts'
+import type { FabricGateOutcome } from '../../features/fabric/gate.ts'
 import {
   assignSlotAddresses,
   buildCompileAddressMaps,
   type HostAccessActor,
   planEnvironmentDeploy,
   type PlannedDeploy,
-} from "../../features/schedule/index.ts";
-import { enqueueManagedIngressReconcile } from "../../features/managed/ingress-desired.ts";
+} from '../../features/schedule/index.ts'
+import { enqueueManagedIngressReconcile } from '../../features/managed/ingress-desired.ts'
 import {
   loadManagedIngressPlatformAttachments,
   type ManagedIngressConsumer,
   reservedIngressHostsForServer,
-} from "../../features/managed/ingress-attachments.ts";
-import type { ManagedIngressPorts } from "../../features/managed/ingress-ports.ts";
-import { ensureManagedIngressHierarchy } from "../../features/system/hierarchy.ts";
+} from '../../features/managed/ingress-attachments.ts'
+import type { ManagedIngressPorts } from '../../features/managed/ingress-ports.ts'
+import { ensureManagedIngressHierarchy } from '../../features/system/hierarchy.ts'
 import {
   composeServiceNetworkKeys,
   type PlatformAttachment,
-} from "../../features/fabric/spanning.ts";
-import { environment, project, server } from "../../db/schema.ts";
-import { type Db, getDaemonCellRegistry, getDb } from "../../db/connection.ts";
+} from '../../features/fabric/spanning.ts'
+import { environment, project, server } from '../../db/schema.ts'
+import { type Db, getDaemonCellRegistry, getDb } from '../../db/connection.ts'
 import {
   assertCanManageOr403,
   assertNotSystemOwnedOr403,
   getOrgId,
   parseJsonBody,
-} from "../shared.ts";
+} from '../shared.ts'
 import {
   parseProjectOptions,
   resolveEffectivePlacementServerId,
-} from "../../features/projects/project-options.ts";
+} from '../../features/projects/project-options.ts'
 
-type DeployHostingPayload = EnvironmentDeployHosting;
+type DeployHostingPayload = EnvironmentDeployHosting
 
 function responseForScheduleError(
   c: Context<AppEnv>,
   error: Parameters<typeof scheduleErrorResponse>[0],
-  message: string,
+  message: string
 ): Response {
-  const mapped = scheduleErrorResponse(error, message);
-  return c.json(mapped.body, { status: mapped.status as 409 | 422 });
+  const mapped = scheduleErrorResponse(error, message)
+  return c.json(mapped.body, { status: mapped.status as 409 | 422 })
 }
 
 function serviceIdToNameMap(
-  rows: ReadonlyArray<{ id: string; composeServiceName: string }>,
+  rows: ReadonlyArray<{ id: string; composeServiceName: string }>
 ): Map<string, string> {
-  return new Map(rows.map((row) => [row.id, row.composeServiceName]));
+  return new Map(rows.map((row) => [row.id, row.composeServiceName]))
 }
 
 function scheduleSliceForServer(
@@ -165,7 +152,7 @@ function scheduleSliceForServer(
   managedIngressHostsByService?: ReadonlyMap<
     string,
     ReadonlyArray<{ name: string; address: string }>
-  >,
+  >
 ): DeployScheduleSlice {
   return {
     serverId,
@@ -182,39 +169,35 @@ function scheduleSliceForServer(
     ...(managedIngressHostsByService && managedIngressHostsByService.size > 0
       ? { managedIngressHostsByService }
       : {}),
-  };
+  }
 }
 
 async function loadSpanningNetworks(
   db: Db,
   planned: PlannedDeploy,
   organizationId: string,
-  environmentId: string,
+  environmentId: string
 ): Promise<{
-  spanning: Map<string, string>;
-  attachments: PlatformAttachment[];
-  consumers: ManagedIngressConsumer[];
+  spanning: Map<string, string>
+  attachments: PlatformAttachment[]
+  consumers: ManagedIngressConsumer[]
 }> {
   const empty = {
     spanning: new Map<string, string>(),
     attachments: [],
     consumers: [],
-  };
-  if (!planned.plan.ok || !planned.fabricEnabled) {
-    return empty;
   }
-  const fabricRow = await getOrganizationFabric(db, organizationId);
-  if (!fabricRow) return empty;
-  const { attachments, consumers } =
-    await loadManagedIngressPlatformAttachments(
-      db,
-      {
-        environmentId,
-        document: planned.merged,
-        slots: planned.plan.slots,
-        serviceRows: planned.serviceRows,
-      },
-    );
+  if (!planned.plan.ok || !planned.fabricEnabled) {
+    return empty
+  }
+  const fabricRow = await getOrganizationFabric(db, organizationId)
+  if (!fabricRow) return empty
+  const { attachments, consumers } = await loadManagedIngressPlatformAttachments(db, {
+    environmentId,
+    document: planned.merged,
+    slots: planned.plan.slots,
+    serviceRows: planned.serviceRows,
+  })
   const spanning = await materializeSpanningNetworks(db, {
     organizationId,
     environmentId,
@@ -223,58 +206,54 @@ async function loadSpanningNetworks(
     slots: planned.plan.slots,
     serviceRows: planned.serviceRows,
     platformAttachments: attachments,
-  });
-  return { spanning, attachments, consumers };
+  })
+  return { spanning, attachments, consumers }
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 function networkServiceIdsForSpanning(
   planned: PlannedDeploy,
-  spanningKeys: readonly string[],
+  spanningKeys: readonly string[]
 ): Map<string, Set<string>> {
-  const nameToId = new Map(
-    planned.serviceRows.map((row) => [row.composeServiceName, row.id]),
-  );
-  const services = isPlainObject(planned.merged.data.services)
-    ? planned.merged.data.services
-    : {};
-  const out = new Map<string, Set<string>>();
+  const nameToId = new Map(planned.serviceRows.map((row) => [row.composeServiceName, row.id]))
+  const services = isPlainObject(planned.merged.data.services) ? planned.merged.data.services : {}
+  const out = new Map<string, Set<string>>()
   for (const composeKey of spanningKeys) {
-    const ids = new Set<string>();
+    const ids = new Set<string>()
     for (const [name, body] of Object.entries(services)) {
-      if (!composeServiceNetworkKeys(body).includes(composeKey)) continue;
-      const serviceId = nameToId.get(name);
-      if (serviceId) ids.add(serviceId);
+      if (!composeServiceNetworkKeys(body).includes(composeKey)) continue
+      const serviceId = nameToId.get(name)
+      if (serviceId) ids.add(serviceId)
     }
-    out.set(composeKey, ids);
+    out.set(composeKey, ids)
   }
-  return out;
+  return out
 }
 
 function networkSegmentsFromMaterial(
   spanning: ReadonlyMap<string, string>,
-  segmentsByServer: Map<string, FabricSegmentMaterial[]>,
+  segmentsByServer: Map<string, FabricSegmentMaterial[]>
 ): Map<string, Map<string, string>> {
-  const out = new Map<string, Map<string, string>>();
+  const out = new Map<string, Map<string, string>>()
   for (const [composeKey, hostName] of spanning) {
-    const byServer = new Map<string, string>();
+    const byServer = new Map<string, string>()
     for (const [serverId, segments] of segmentsByServer) {
-      const match = segments.find((segment) => segment.name === hostName);
-      if (match) byServer.set(serverId, match.subnet);
+      const match = segments.find((segment) => segment.name === hostName)
+      if (match) byServer.set(serverId, match.subnet)
     }
-    out.set(composeKey, byServer);
+    out.set(composeKey, byServer)
   }
-  return out;
+  return out
 }
 
 function fabricNetworksForServer(
   segments: readonly FabricSegmentMaterial[] | undefined,
-  spanningHostNames: ReadonlySet<string>,
+  spanningHostNames: ReadonlySet<string>
 ): EnvironmentDeployFabricNetwork[] {
-  if (!segments || spanningHostNames.size === 0) return [];
+  if (!segments || spanningHostNames.size === 0) return []
   return segments
     .filter((segment) => spanningHostNames.has(segment.name))
     .map((segment) => ({
@@ -283,7 +262,7 @@ function fabricNetworksForServer(
       ...(segment.mtu !== undefined ? { mtu: segment.mtu } : {}),
       ...(segment.gateway !== undefined ? { gateway: segment.gateway } : {}),
     }))
-    .sort((a, b) => a.name.localeCompare(b.name));
+    .sort((a, b) => a.name.localeCompare(b.name))
 }
 
 async function enrichPlannedTaskAddresses(
@@ -291,23 +270,24 @@ async function enrichPlannedTaskAddresses(
   planned: PlannedDeploy,
   spanning: ReadonlyMap<string, string>,
   environmentId: string,
-  extraServerIds: readonly string[] = [],
+  extraServerIds: readonly string[] = []
 ): Promise<{
-  slots: DesiredSlotInput[];
-  segmentsByServer: Map<string, FabricSegmentMaterial[]>;
-  networkServiceIds: Map<string, Set<string>>;
+  slots: DesiredSlotInput[]
+  segmentsByServer: Map<string, FabricSegmentMaterial[]>
+  networkServiceIds: Map<string, Set<string>>
 }> {
-  const baseTasks = planned.plan.ok ? planned.plan.slots : [];
+  const baseTasks = planned.plan.ok ? planned.plan.slots : []
   if (!planned.plan.ok) {
     return {
       slots: baseTasks,
       segmentsByServer: new Map(),
       networkServiceIds: new Map(),
-    };
+    }
   }
-  const networkServiceIds = spanning.size === 0
-    ? new Map<string, Set<string>>()
-    : networkServiceIdsForSpanning(planned, [...spanning.keys()]);
+  const networkServiceIds =
+    spanning.size === 0
+      ? new Map<string, Set<string>>()
+      : networkServiceIdsForSpanning(planned, [...spanning.keys()])
   if (spanning.size === 0) {
     return {
       slots: assignSlotAddresses({
@@ -318,72 +298,62 @@ async function enrichPlannedTaskAddresses(
       }),
       segmentsByServer: new Map(),
       networkServiceIds,
-    };
+    }
   }
-  const existing = await listEnvironmentSlots(db, environmentId);
-  const segmentServerIds = [
-    ...new Set([...planned.plan.serverIds, ...extraServerIds]),
-  ];
-  const segmentsByServer = await listSubnetsForServers(
-    db,
-    segmentServerIds,
-  );
+  const existing = await listEnvironmentSlots(db, environmentId)
+  const segmentServerIds = [...new Set([...planned.plan.serverIds, ...extraServerIds])]
+  const segmentsByServer = await listSubnetsForServers(db, segmentServerIds)
   const slots = assignSlotAddresses({
     slots: baseTasks,
     existing,
     networkSegments: networkSegmentsFromMaterial(spanning, segmentsByServer),
     networkServiceIds,
-  });
-  return { slots, segmentsByServer, networkServiceIds };
+  })
+  return { slots, segmentsByServer, networkServiceIds }
 }
 
 async function listenerNamesForAttachments(
   db: Db,
   organizationId: string,
-  attachments: readonly PlatformAttachment[],
+  attachments: readonly PlatformAttachment[]
 ): Promise<Map<string, string>> {
-  const names = new Map<string, string>();
-  const uniqueIds = [...new Set(attachments.map((row) => row.serverId))];
+  const names = new Map<string, string>()
+  const uniqueIds = [...new Set(attachments.map((row) => row.serverId))]
   await forEachSequential(uniqueIds, async (serverId) => {
     const hierarchy = await ensureManagedIngressHierarchy(db, {
       organizationId,
       serverId,
-    });
-    names.set(serverId, hierarchy.containerName);
-  });
-  return names;
+    })
+    names.set(serverId, hierarchy.containerName)
+  })
+  return names
 }
 
-function assertDispatchInfrastructure(
-  c: Context<AppEnv>,
-): CommandQueue | Response {
-  const registry = getDaemonCellRegistry(c);
+function assertDispatchInfrastructure(c: Context<AppEnv>): CommandQueue | Response {
+  const registry = getDaemonCellRegistry(c)
   if (!registry) {
-    return c.json({ error: "Daemon cell registry unavailable" }, 503);
+    return c.json({ error: 'Daemon cell registry unavailable' }, 503)
   }
 
-  const commandQueue = getCommandQueue(c);
+  const commandQueue = getCommandQueue(c)
   if (!commandQueue || isNoopCommandQueue(commandQueue)) {
-    return c.json({ error: "Command queue unavailable" }, 503);
+    return c.json({ error: 'Command queue unavailable' }, 503)
   }
 
-  return commandQueue;
+  return commandQueue
 }
 
-function responseForPrepareError(
-  c: Context<AppEnv>,
-  prepared: DeployPrepareError,
-): Response {
-  const mapped = mapPrepareErrorResponse(prepared);
-  return c.json(mapped.body, { status: mapped.status as 400 | 409 | 422 });
+function responseForPrepareError(c: Context<AppEnv>, prepared: DeployPrepareError): Response {
+  const mapped = mapPrepareErrorResponse(prepared)
+  return c.json(mapped.body, { status: mapped.status as 400 | 409 | 422 })
 }
 
 function responseForFabricGate(
   c: Context<AppEnv>,
-  outcome: Exclude<FabricGateOutcome, { kind: "ready" }>,
+  outcome: Exclude<FabricGateOutcome, { kind: 'ready' }>
 ): Response {
-  const mapped = fabricGateErrorResponse(outcome);
-  return c.json(mapped.body, { status: mapped.status as 409 | 422 });
+  const mapped = fabricGateErrorResponse(outcome)
+  return c.json(mapped.body, { status: mapped.status as 409 | 422 })
 }
 
 /**
@@ -393,37 +363,29 @@ function responseForFabricGate(
 export async function authorizeEnvironmentManage(
   c: Context<AppEnv>,
   db: Db,
-  environmentId: string,
+  environmentId: string
 ): Promise<{ userId: string; organizationId: string } | Response> {
-  const session = c.get("session");
-  if (!session) return c.json({ error: "Unauthorized" }, 401);
+  const session = c.get('session')
+  if (!session) return c.json({ error: 'Unauthorized' }, 401)
 
-  const orgResult = await getOrgId(c, session.userId);
-  if (orgResult instanceof Response) return orgResult;
+  const orgResult = await getOrgId(c, session.userId)
+  if (orgResult instanceof Response) return orgResult
 
-  const entityOrgId = await resolveEntityOrganizationId(
-    db,
-    "environment",
-    environmentId,
-  );
+  const entityOrgId = await resolveEntityOrganizationId(db, 'environment', environmentId)
   if (!entityOrgId || entityOrgId !== orgResult) {
-    return c.json({ error: "Not found" }, 404);
+    return c.json({ error: 'Not found' }, 404)
   }
 
-  const denied = await assertCanManageOr403(c, "environment", environmentId);
-  if (denied) return denied;
+  const denied = await assertCanManageOr403(c, 'environment', environmentId)
+  if (denied) return denied
 
-  const immutable = await assertNotSystemOwnedOr403(
-    c,
-    "environment",
-    environmentId,
-  );
-  if (immutable) return immutable;
+  const immutable = await assertNotSystemOwnedOr403(c, 'environment', environmentId)
+  if (immutable) return immutable
 
   return {
     userId: session.userId,
     organizationId: orgResult,
-  };
+  }
 }
 
 /**
@@ -437,9 +399,9 @@ export async function authorizeEnvironmentManage(
  * guarantee holds for webhook-driven deploys exactly as it does for manual ones.
  */
 export type DeployActor = {
-  actorType: "user" | "system";
-  actorId: string;
-};
+  actorType: 'user' | 'system'
+  actorId: string
+}
 
 /**
  * Which commit a deploy should build — defined next to
@@ -456,7 +418,7 @@ export type DeployActor = {
  * so such a request is refused rather than quietly deployed as the declared
  * branch.
  */
-export type { DeploySourceSelection };
+export type { DeploySourceSelection }
 
 /**
  * Deploy-only authz: {@link authorizeEnvironmentManage} plus deploy request flags.
@@ -465,30 +427,31 @@ export type { DeploySourceSelection };
 export async function authorizeDeployRequest(
   c: Context<AppEnv>,
   db: Db,
-  environmentId: string,
+  environmentId: string
 ): Promise<
-  {
-    actorType: "user";
-    actorId: string;
-    organizationId: string;
-    acknowledgeHealthCheckWarnings: boolean;
-    noCache: boolean;
-    selection: DeploySourceSelection;
-  } | Response
+  | {
+      actorType: 'user'
+      actorId: string
+      organizationId: string
+      acknowledgeHealthCheckWarnings: boolean
+      noCache: boolean
+      selection: DeploySourceSelection
+    }
+  | Response
 > {
-  const auth = await authorizeEnvironmentManage(c, db, environmentId);
-  if (auth instanceof Response) return auth;
+  const auth = await authorizeEnvironmentManage(c, db, environmentId)
+  if (auth instanceof Response) return auth
 
-  const body = await parseJsonBody(c);
-  if (body instanceof Response) return body;
+  const body = await parseJsonBody(c)
+  if (body instanceof Response) return body
 
-  const flags = parseDeployRequestFlags(body);
-  if (flags === "invalid") {
-    return c.json({ error: "Invalid request" }, 400);
+  const flags = parseDeployRequestFlags(body)
+  if (flags === 'invalid') {
+    return c.json({ error: 'Invalid request' }, 400)
   }
 
   return {
-    actorType: "user",
+    actorType: 'user',
     actorId: auth.userId,
     organizationId: auth.organizationId,
     acknowledgeHealthCheckWarnings: flags.acknowledgeHealthCheckWarnings,
@@ -497,46 +460,46 @@ export async function authorizeDeployRequest(
     // not "deploy this repository's commit". `sourceId` stays `null`, so no
     // source binding is pinned to a caller-supplied SHA.
     selection: { ref: flags.ref, commitSha: null, sourceId: null },
-  };
+  }
 }
 
 type DeployCommandCreateParams = DeployActor & {
-  serverId: string;
-  environmentId: string;
-  projectId: string;
-  organizationId: string;
-  projectName: string;
-  composeFiles: EnvironmentDeployComposeFile[];
-  hostings: DeployHostingPayload[];
-  sites: EnvironmentDeploySite[];
-  nativeAppServices: EnvironmentDeployNativeAppService[];
-  sourceMaterial: EnvironmentDeploySource[];
-  ingressServices: EnvironmentDeployIngressService[];
-  hostingIngress?: EnvironmentDeployIngressService;
+  serverId: string
+  environmentId: string
+  projectId: string
+  organizationId: string
+  projectName: string
+  composeFiles: EnvironmentDeployComposeFile[]
+  hostings: DeployHostingPayload[]
+  sites: EnvironmentDeploySite[]
+  nativeAppServices: EnvironmentDeployNativeAppService[]
+  sourceMaterial: EnvironmentDeploySource[]
+  ingressServices: EnvironmentDeployIngressService[]
+  hostingIngress?: EnvironmentDeployIngressService
   /** Set only when `hostings` is non-empty (see prepare). */
-  hostingIngressNetwork?: string;
-  tlsMaterial: EnvironmentDeployTlsMaterial[];
-  variableMaterial: EnvironmentDeployVariableMaterial[];
-  storageMaterial: EnvironmentDeployStorageMaterial[];
-  principalMaterial: EnvironmentDeployPrincipalMaterial[];
-  serviceHooks: EnvironmentDeployServiceHook[];
-  dockerExternalNetworks: string[];
-  dockerNetworkAddressing: EnvironmentDeployDockerNetwork[];
-  fabricNetworks: EnvironmentDeployFabricNetwork[];
-  managedNetworkServices: string[];
+  hostingIngressNetwork?: string
+  tlsMaterial: EnvironmentDeployTlsMaterial[]
+  variableMaterial: EnvironmentDeployVariableMaterial[]
+  storageMaterial: EnvironmentDeployStorageMaterial[]
+  principalMaterial: EnvironmentDeployPrincipalMaterial[]
+  serviceHooks: EnvironmentDeployServiceHook[]
+  dockerExternalNetworks: string[]
+  dockerNetworkAddressing: EnvironmentDeployDockerNetwork[]
+  fabricNetworks: EnvironmentDeployFabricNetwork[]
+  managedNetworkServices: string[]
   /** Set only when `managedNetworkServices` is non-empty (see prepare). */
-  managedNetwork?: string;
-  noCache: boolean;
+  managedNetwork?: string
+  noCache: boolean
   /** The planner's host-level verdict (`PlannedDeploy.hostLevelApproved`). */
-  hostLevelApproved: boolean;
-  generation: number;
-  desiredHash: string;
-  replicaCounts: Record<string, number>;
-  listenerPorts: ManagedIngressPorts;
-  selection: DeploySourceSelection;
-};
+  hostLevelApproved: boolean
+  generation: number
+  desiredHash: string
+  replicaCounts: Record<string, number>
+  listenerPorts: ManagedIngressPorts
+  selection: DeploySourceSelection
+}
 
-type CreatedDeployCommand = QueuedCommandRef & { queuedAt: string };
+type CreatedDeployCommand = QueuedCommandRef & { queuedAt: string }
 
 /**
  * One compiled server deployment, tagged with the host it is for.
@@ -547,9 +510,9 @@ type CreatedDeployCommand = QueuedCommandRef & { queuedAt: string };
  * finish building it.
  */
 type PreparedServerDeploy = {
-  serverId: string;
-  prepared: PreparedDeployCompose;
-};
+  serverId: string
+  prepared: PreparedDeployCompose
+}
 
 /**
  * The requested ref / pre-resolved SHA, as durable command metadata.
@@ -560,11 +523,11 @@ type PreparedServerDeploy = {
  * to the commit that caused it. `undefined` when the request named nothing —
  * there is no attribution to keep.
  */
-function deploySelectionMetadata(
-  selection: DeploySourceSelection,
-): {
-  sourceSelection: { ref?: string; commitSha?: string; sourceId?: string };
-} | undefined {
+function deploySelectionMetadata(selection: DeploySourceSelection):
+  | {
+      sourceSelection: { ref?: string; commitSha?: string; sourceId?: string }
+    }
+  | undefined {
   const sourceSelection = definedFields({
     ref: selection.ref ?? undefined,
     commitSha: selection.commitSha ?? undefined,
@@ -572,15 +535,13 @@ function deploySelectionMetadata(
     // say *what* was deployed when the environment binds more than one
     // repository.
     sourceId: selection.sourceId ?? undefined,
-  });
-  if (Object.keys(sourceSelection).length === 0) return undefined;
-  return { sourceSelection };
+  })
+  if (Object.keys(sourceSelection).length === 0) return undefined
+  return { sourceSelection }
 }
 
 /** One `sourceMaterial[]` entry as the durable `command.context` records it. */
-function contextReleaseFromSource(
-  entry: EnvironmentDeploySource,
-): CommandContextRelease {
+function contextReleaseFromSource(entry: EnvironmentDeploySource): CommandContextRelease {
   return definedFields({
     composeServiceName: entry.composeServiceName,
     releaseId: entry.releaseId,
@@ -593,25 +554,23 @@ function contextReleaseFromSource(
     commitMessage: entry.commitMessage,
     commitAuthor: entry.commitAuthor,
     rollbackToReleaseId: entry.rollbackToReleaseId,
-  }) satisfies CommandContextRelease;
+  }) satisfies CommandContextRelease
 }
 
 async function createDeployCommand(
   db: Db,
-  params: DeployCommandCreateParams,
+  params: DeployCommandCreateParams
 ): Promise<CreatedDeployCommand> {
-  const expiresAt = new Date(Date.now() + 600_000).toISOString();
-  const replicaCounts = normalizeReplicaCounts(params.replicaCounts);
-  const releases = normalizeContextReleases(
-    params.sourceMaterial.map(contextReleaseFromSource),
-  );
-  const metadata = deploySelectionMetadata(params.selection);
+  const expiresAt = new Date(Date.now() + 600_000).toISOString()
+  const replicaCounts = normalizeReplicaCounts(params.replicaCounts)
+  const releases = normalizeContextReleases(params.sourceMaterial.map(contextReleaseFromSource))
+  const metadata = deploySelectionMetadata(params.selection)
   const record = await createCommandRecord(db, {
     serverId: params.serverId,
     actorType: params.actorType,
     actorId: params.actorId,
     ...(metadata === undefined ? {} : { metadata }),
-    type: "environment.deploy",
+    type: 'environment.deploy',
     payload: {
       environmentId: params.environmentId,
       projectId: params.projectId,
@@ -667,76 +626,79 @@ async function createDeployCommand(
       releases: releases ?? undefined,
     }),
     expiresAt,
-  });
+  })
 
   return {
     commandId: record.id,
     serverId: params.serverId,
-    status: "queued",
+    status: 'queued',
     queuedAt: record.queuedAt ?? record.createdAt,
-  };
+  }
 }
 
 async function deliverDeployCommand(
   db: Db,
   commandQueue: CommandQueue,
   params: {
-    commandId: string;
-    serverId: string;
-    environmentId: string;
-    queuedAt: string;
-  },
+    commandId: string
+    serverId: string
+    environmentId: string
+    queuedAt: string
+  }
 ): Promise<QueuedCommandRef | Response> {
   const envelope: CommandEnvelope = {
     commandId: params.commandId,
     serverId: params.serverId,
-    type: "environment.deploy",
+    type: 'environment.deploy',
     attempt: 1,
     queuedAt: params.queuedAt,
-  };
+  }
 
   try {
-    await commandQueue.enqueue(envelope);
+    await commandQueue.enqueue(envelope)
   } catch {
     await transitionCommand(db, params.commandId, {
-      status: "failed",
-      error: "Command queue unavailable",
-    });
+      status: 'failed',
+      error: 'Command queue unavailable',
+    })
     await markDeploymentFailed(db, {
       environmentId: params.environmentId,
       serverId: params.serverId,
-      error: "Command queue unavailable",
+      error: 'Command queue unavailable',
       commandId: params.commandId,
-    });
-    return Response.json({ error: "Command queue unavailable" }, {
-      status: 503,
-    });
+    })
+    return Response.json(
+      { error: 'Command queue unavailable' },
+      {
+        status: 503,
+      }
+    )
   }
 
   return {
     commandId: params.commandId,
     serverId: params.serverId,
-    status: "queued",
-  };
+    status: 'queued',
+  }
 }
 
 function createParamsForPreparedServer(
   row: PreparedServerDeploy,
   params: DeployActor & {
-    environmentId: string;
-    projectId: string;
-    organizationId: string;
-    projectName: string;
-    generation: number;
-    noCache: boolean;
-    hostLevelApproved: boolean;
-    selection: DeploySourceSelection;
-  },
+    environmentId: string
+    projectId: string
+    organizationId: string
+    projectName: string
+    generation: number
+    noCache: boolean
+    hostLevelApproved: boolean
+    selection: DeploySourceSelection
+  }
 ): DeployCommandCreateParams {
   // One loopback-port ledger for both host-native lanes: site vhosts
   // and native `node` apps are both reverse-proxied on 127.0.0.1, so allocating
   // them separately could hand the same port to a site and an app.
-  const usedListenPorts = new Set<number>();
+  const usedListenPorts = new Set<number>()
   return {
     serverId: row.serverId,
     actorType: params.actorType,
@@ -748,22 +710,16 @@ function createParamsForPreparedServer(
     projectName: params.projectName,
     composeFiles: row.prepared.composeFiles,
     hostings: row.prepared.hostings,
-    sites: buildSitesForDeploy(
-      row.prepared.sites,
-      row.prepared.hostings,
-      usedListenPorts,
-    ),
+    sites: buildSitesForDeploy(row.prepared.sites, row.prepared.hostings, usedListenPorts),
     nativeAppServices: buildNativeAppServicesForDeploy(
       row.prepared.nativeAppServices,
       row.prepared.hostings,
       row.prepared.ingressServices,
-      usedListenPorts,
+      usedListenPorts
     ),
     sourceMaterial: row.prepared.sourceMaterial,
     ingressServices: row.prepared.ingressServices,
-    ...(row.prepared.hostingIngress
-      ? { hostingIngress: row.prepared.hostingIngress }
-      : {}),
+    ...(row.prepared.hostingIngress ? { hostingIngress: row.prepared.hostingIngress } : {}),
     ...(row.prepared.hostingIngressNetwork
       ? { hostingIngressNetwork: row.prepared.hostingIngressNetwork }
       : {}),
@@ -785,7 +741,7 @@ function createParamsForPreparedServer(
     desiredHash: row.prepared.desiredHash,
     replicaCounts: row.prepared.replicaCounts,
     listenerPorts: row.prepared.listenerPorts,
-  };
+  }
 }
 
 /**
@@ -795,44 +751,38 @@ function createParamsForPreparedServer(
  * document names its `<principalHome>/sites/<serviceId>` tree any more, so a
  * later stop or delete would leave it behind. See `site-releases.ts`.
  */
-function deploymentTargetsForFanOut(
-  params: {
-    preparedByServer: readonly PreparedServerDeploy[];
-    planServerIds: readonly string[];
-    drainedIds: readonly string[];
-    generation: number;
-    created: readonly CreatedDeployCommand[];
-    /** Release trees the current compose declares, recorded per target. */
-    siteReleases: readonly EnvironmentSiteRelease[];
-  },
-): DeploymentTargetInput[] {
-  const preparedByServerId = new Map(
-    params.preparedByServer.map((row) => [row.serverId, row]),
-  );
-  const commandByServer = new Map(
-    params.created.map((row) => [row.serverId, row.commandId]),
-  );
+function deploymentTargetsForFanOut(params: {
+  preparedByServer: readonly PreparedServerDeploy[]
+  planServerIds: readonly string[]
+  drainedIds: readonly string[]
+  generation: number
+  created: readonly CreatedDeployCommand[]
+  /** Release trees the current compose declares, recorded per target. */
+  siteReleases: readonly EnvironmentSiteRelease[]
+}): DeploymentTargetInput[] {
+  const preparedByServerId = new Map(params.preparedByServer.map((row) => [row.serverId, row]))
+  const commandByServer = new Map(params.created.map((row) => [row.serverId, row.commandId]))
   return [
     ...params.planServerIds.map((serverId) => {
-      const prepared = preparedByServerId.get(serverId)?.prepared;
+      const prepared = preparedByServerId.get(serverId)?.prepared
       return {
         serverId,
         desiredGeneration: params.generation,
         desiredHash: prepared?.desiredHash ?? null,
-        status: "applying" as const,
+        status: 'applying' as const,
         lastCommandId: commandByServer.get(serverId) ?? null,
         options: {
           secretPlan: prepared?.secretPlan ?? [],
           siteReleases: params.siteReleases,
         },
-      };
+      }
     }),
     ...params.drainedIds.map((serverId) => ({
       serverId,
       desiredGeneration: params.generation,
-      status: "draining" as const,
+      status: 'draining' as const,
     })),
-  ];
+  ]
 }
 
 /**
@@ -844,28 +794,28 @@ function deploymentTargetsForFanOut(
 async function persistDeployFanOut(
   db: Db,
   params: DeployActor & {
-    preparedByServer: readonly PreparedServerDeploy[];
-    planServerIds: readonly string[];
-    drainedIds: readonly string[];
-    environmentId: string;
-    projectId: string;
-    organizationId: string;
-    projectName: string;
-    slots: readonly DesiredSlotInput[];
-    noCache: boolean;
-    hostLevelApproved: boolean;
-    selection: DeploySourceSelection;
+    preparedByServer: readonly PreparedServerDeploy[]
+    planServerIds: readonly string[]
+    drainedIds: readonly string[]
+    environmentId: string
+    projectId: string
+    organizationId: string
+    projectName: string
+    slots: readonly DesiredSlotInput[]
+    noCache: boolean
+    hostLevelApproved: boolean
+    selection: DeploySourceSelection
     /** Release trees to record on each target — see `deploymentTargetsForFanOut`. */
-    siteReleases: readonly EnvironmentSiteRelease[];
-  },
+    siteReleases: readonly EnvironmentSiteRelease[]
+  }
 ): Promise<CreatedDeployCommand[]> {
   return await db.transaction(async (tx) => {
-    const generation = await bumpEnvironmentGeneration(tx, params.environmentId);
+    const generation = await bumpEnvironmentGeneration(tx, params.environmentId)
     await replaceEnvironmentSlotsInTx(tx, {
       environmentId: params.environmentId,
       generation,
       slots: params.slots,
-    });
+    })
 
     // One transaction connection: the writes must stay ordered.
     const created = await mapSequential(
@@ -884,9 +834,9 @@ async function persistDeployFanOut(
             noCache: params.noCache,
             hostLevelApproved: params.hostLevelApproved,
             selection: params.selection,
-          }),
-        ),
-    );
+          })
+        )
+    )
 
     await upsertDeploymentTargets(tx, {
       environmentId: params.environmentId,
@@ -898,9 +848,9 @@ async function persistDeployFanOut(
         created,
         siteReleases: params.siteReleases,
       }),
-    });
-    return created;
-  });
+    })
+    return created
+  })
 }
 
 /**
@@ -912,26 +862,26 @@ async function deliverDeployFanOut(
   db: Db,
   commandQueue: CommandQueue,
   params: {
-    created: readonly CreatedDeployCommand[];
-    environmentId: string;
-  },
+    created: readonly CreatedDeployCommand[]
+    environmentId: string
+  }
 ): Promise<{ queued: QueuedCommandRef[]; enqueueError: Response | null }> {
-  const queued: QueuedCommandRef[] = [];
-  let enqueueError: Response | null = null;
+  const queued: QueuedCommandRef[] = []
+  let enqueueError: Response | null = null
   await forEachSequential(params.created, async (ref) => {
     const delivered = await deliverDeployCommand(db, commandQueue, {
       commandId: ref.commandId,
       serverId: ref.serverId,
       environmentId: params.environmentId,
       queuedAt: ref.queuedAt,
-    });
+    })
     if (delivered instanceof Response) {
-      enqueueError ??= delivered;
-      return;
+      enqueueError ??= delivered
+      return
     }
-    queued.push(delivered);
-  });
-  return { queued, enqueueError };
+    queued.push(delivered)
+  })
+  return { queued, enqueueError }
 }
 
 export {
@@ -948,19 +898,19 @@ export {
   readTargetPort,
   scheduleErrorResponse,
   validateDeployMaterials,
-} from "./deploy-routes-helpers.ts";
+} from './deploy-routes-helpers.ts'
 
 /** One Git-backed release a preview reports the deploy would publish. */
 type DeployPreviewSource = {
-  composeServiceName: string;
-  sourceId: string;
-  provider: string;
-  cloneUrl: string;
-  ref: string;
-  commitSha: string;
-  releaseId: string;
-  subdirectory?: string;
-};
+  composeServiceName: string
+  sourceId: string
+  provider: string
+  cloneUrl: string
+  ref: string
+  commitSha: string
+  releaseId: string
+  subdirectory?: string
+}
 
 /**
  * Preview prepare for every scheduled server, sharing one release-id allocator.
@@ -974,31 +924,29 @@ async function preparePreviewByServer(
   c: Context<AppEnv>,
   db: Db,
   args: {
-    environmentId: string;
-    organizationId: string;
-    planned: SuccessfulPlannedDeploy;
-    networks: Awaited<ReturnType<typeof loadSpanningNetworks>>;
-    enriched: Awaited<ReturnType<typeof enrichPlannedTaskAddresses>>;
-    serviceIdToName: ReturnType<typeof serviceIdToNameMap>;
-    listenerNames: Awaited<ReturnType<typeof listenerNamesForAttachments>>;
-  },
-): Promise<
-  Array<{ serverId: string; prepared: PreparedDeployCompose }> | Response
-> {
-  const { planned, enriched } = args;
-  const { spanning, attachments, consumers } = args.networks;
-  const spanningHostNames = new Set(spanning.values());
-  const releaseIds = createReleaseIdAllocator();
+    environmentId: string
+    organizationId: string
+    planned: SuccessfulPlannedDeploy
+    networks: Awaited<ReturnType<typeof loadSpanningNetworks>>
+    enriched: Awaited<ReturnType<typeof enrichPlannedTaskAddresses>>
+    serviceIdToName: ReturnType<typeof serviceIdToNameMap>
+    listenerNames: Awaited<ReturnType<typeof listenerNamesForAttachments>>
+  }
+): Promise<Array<{ serverId: string; prepared: PreparedDeployCompose }> | Response> {
+  const { planned, enriched } = args
+  const { spanning, attachments, consumers } = args.networks
+  const spanningHostNames = new Set(spanning.values())
+  const releaseIds = createReleaseIdAllocator()
   const preparedByServer: Array<{
-    serverId: string;
-    prepared: PreparedDeployCompose;
-  }> = [];
+    serverId: string
+    prepared: PreparedDeployCompose
+  }> = []
   for (const serverId of planned.plan.serverIds) {
     const prepared = await prepareDeployCompose(c, db, {
       environmentId: args.environmentId,
       serverId,
       organizationId: args.organizationId,
-      mode: "preview",
+      mode: 'preview',
       composeValidated: planned.composeValidated,
       releaseIds,
       schedule: scheduleSliceForServer(
@@ -1012,10 +960,7 @@ async function preparePreviewByServer(
           serverId,
           networkServiceIds: enriched.networkServiceIds,
         }),
-        fabricNetworksForServer(
-          enriched.segmentsByServer.get(serverId),
-          spanningHostNames,
-        ),
+        fabricNetworksForServer(enriched.segmentsByServer.get(serverId), spanningHostNames),
         reservedIngressHostsForServer({
           thisServerId: serverId,
           attachments,
@@ -1023,14 +968,14 @@ async function preparePreviewByServer(
           spanning,
           segmentsByServer: enriched.segmentsByServer,
           listenerNameByServer: args.listenerNames,
-        }),
+        })
       ),
-    });
-    if (prepared instanceof Response) return prepared;
-    if ("kind" in prepared) return responseForPrepareError(c, prepared);
-    preparedByServer.push({ serverId, prepared });
+    })
+    if (prepared instanceof Response) return prepared
+    if ('kind' in prepared) return responseForPrepareError(c, prepared)
+    preparedByServer.push({ serverId, prepared })
   }
-  return preparedByServer;
+  return preparedByServer
 }
 
 /**
@@ -1047,13 +992,13 @@ async function preparePreviewByServer(
  * are about to run.
  */
 function deployPreviewSources(
-  preparedByServer: ReadonlyArray<{ prepared: PreparedDeployCompose }>,
+  preparedByServer: ReadonlyArray<{ prepared: PreparedDeployCompose }>
 ): DeployPreviewSource[] {
-  const byRelease = new Map<string, DeployPreviewSource>();
+  const byRelease = new Map<string, DeployPreviewSource>()
   for (const row of preparedByServer) {
     for (const entry of row.prepared.sourceMaterial) {
-      const key = `${entry.composeServiceName} ${entry.releaseId}`;
-      if (byRelease.has(key)) continue;
+      const key = `${entry.composeServiceName} ${entry.releaseId}`
+      if (byRelease.has(key)) continue
       byRelease.set(
         key,
         definedFields({
@@ -1065,11 +1010,11 @@ function deployPreviewSources(
           commitSha: entry.commitSha,
           releaseId: entry.releaseId,
           subdirectory: entry.subdirectory,
-        }),
-      );
+        })
+      )
     }
   }
-  return [...byRelease.values()];
+  return [...byRelease.values()]
 }
 
 /**
@@ -1081,27 +1026,19 @@ function deployPreviewSources(
  * them; deploy reuses the same rows and the previewed UUIDs stay truthful.
  * Sealing / daemon-key steps are skipped so an online daemon is not required.
  */
-export function registerEnvironmentDeployPreviewRoutes(
-  router: Hono<AppEnv>,
-  opts: AuthRouteOpts,
-) {
+export function registerEnvironmentDeployPreviewRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
   if (!opts.secrets) {
-    throw new TypeError(
-      "session secrets are required for environment deploy-preview routes",
-    );
+    throw new TypeError('session secrets are required for environment deploy-preview routes')
   }
-  router.use(
-    "/environments/:id/deploy-preview",
-    createSessionMiddleware(opts.secrets),
-  );
+  router.use('/environments/:id/deploy-preview', createSessionMiddleware(opts.secrets))
 
-  router.get("/environments/:id/deploy-preview", async (c) => {
-    const db = getDb(c);
-    if (!db) return c.json({ error: "Database unavailable" }, 503);
+  router.get('/environments/:id/deploy-preview', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
 
-    const environmentId = c.req.param("id");
-    const auth = await authorizeEnvironmentManage(c, db, environmentId);
-    if (auth instanceof Response) return auth;
+    const environmentId = c.req.param('id')
+    const auth = await authorizeEnvironmentManage(c, db, environmentId)
+    if (auth instanceof Response) return auth
 
     const planned = await resolveSuccessfulPlan(
       c,
@@ -1111,26 +1048,21 @@ export function registerEnvironmentDeployPreviewRoutes(
       // A preview changes nothing, so it approves nothing.
       await resolveHostAccessActor(
         db,
-        { actorType: "user", actorId: auth.userId },
+        { actorType: 'user', actorId: auth.userId },
         auth.organizationId,
-        false,
-      ),
-    );
-    if (planned instanceof Response) return planned;
+        false
+      )
+    )
+    if (planned instanceof Response) return planned
 
-    const networks = await loadSpanningNetworks(
-      db,
-      planned,
-      auth.organizationId,
-      environmentId,
-    );
+    const networks = await loadSpanningNetworks(db, planned, auth.organizationId, environmentId)
     const enriched = await enrichPlannedTaskAddresses(
       db,
       planned,
       networks.spanning,
       environmentId,
-      networks.attachments.map((row) => row.serverId),
-    );
+      networks.attachments.map((row) => row.serverId)
+    )
     const preparedByServer = await preparePreviewByServer(c, db, {
       environmentId,
       organizationId: auth.organizationId,
@@ -1141,26 +1073,27 @@ export function registerEnvironmentDeployPreviewRoutes(
       listenerNames: await listenerNamesForAttachments(
         db,
         auth.organizationId,
-        networks.attachments,
+        networks.attachments
       ),
-    });
-    if (preparedByServer instanceof Response) return preparedByServer;
+    })
+    if (preparedByServer instanceof Response) return preparedByServer
 
-    const first = preparedByServer[0];
-    const serverRows = planned.plan.serverIds.length === 0 ? [] : await db
-      .select({ id: server.id, name: server.name, hostname: server.hostname })
-      .from(server)
-      .where(inArray(server.id, planned.plan.serverIds));
+    const first = preparedByServer[0]
+    const serverRows =
+      planned.plan.serverIds.length === 0
+        ? []
+        : await db
+            .select({ id: server.id, name: server.name, hostname: server.hostname })
+            .from(server)
+            .where(inArray(server.id, planned.plan.serverIds))
     const labelById = new Map(
-      serverRows.map((row) => [row.id, { name: row.name, hostname: row.hostname }]),
-    );
-    const projectName = composeProjectName(planned.projectId);
-    const ingress = preparedByServer.flatMap((row) =>
-      row.prepared.ingressServices
-    );
-    const appContainers = first?.prepared.containers ?? [];
-    const servers = buildDeployPreviewServers(preparedByServer, labelById);
-    const sources = deployPreviewSources(preparedByServer);
+      serverRows.map((row) => [row.id, { name: row.name, hostname: row.hostname }])
+    )
+    const projectName = composeProjectName(planned.projectId)
+    const ingress = preparedByServer.flatMap((row) => row.prepared.ingressServices)
+    const appContainers = first?.prepared.containers ?? []
+    const servers = buildDeployPreviewServers(preparedByServer, labelById)
+    const sources = deployPreviewSources(preparedByServer)
 
     return c.json({
       ok: true as const,
@@ -1177,15 +1110,15 @@ export function registerEnvironmentDeployPreviewRoutes(
         volumeName: row.volumeName,
       })),
       warnings: preparedByServer.flatMap((row) => row.prepared.warnings),
-      envFile: first?.prepared.envFile ?? "",
+      envFile: first?.prepared.envFile ?? '',
       secretPlan: first?.prepared.secretPlan ?? [],
-    });
-  });
+    })
+  })
 }
 
 type SuccessfulPlannedDeploy = PlannedDeploy & {
-  plan: Extract<PlannedDeploy["plan"], { ok: true }>;
-};
+  plan: Extract<PlannedDeploy['plan'], { ok: true }>
+}
 
 /**
  * Everything {@link runEnvironmentDeploy} needs that is *not* derivable from
@@ -1195,10 +1128,10 @@ type SuccessfulPlannedDeploy = PlannedDeploy & {
  * ({@link runEnvironmentDeployForActor}) supplies `'system'`.
  */
 export type DeployRequestAuth = DeployActor & {
-  organizationId: string;
-  acknowledgeHealthCheckWarnings: boolean;
-  noCache: boolean;
-  selection: DeploySourceSelection;
+  organizationId: string
+  acknowledgeHealthCheckWarnings: boolean
+  noCache: boolean
+  selection: DeploySourceSelection
   /**
    * Present only for `POST /environments/:id/rollback`.
    *
@@ -1208,20 +1141,18 @@ export type DeployRequestAuth = DeployActor & {
    * through it. All the field changes is which releases the prepare layer pins
    * into `sourceMaterial[]` (see `deploy-sources.ts`).
    */
-  rollback?: DeployRollbackRequest;
-};
+  rollback?: DeployRollbackRequest
+}
 
-type EnrichedTaskAddresses = Awaited<
-  ReturnType<typeof enrichPlannedTaskAddresses>
->;
+type EnrichedTaskAddresses = Awaited<ReturnType<typeof enrichPlannedTaskAddresses>>
 
 type DeploySpanningContext = {
-  spanning: Map<string, string>;
-  attachments: PlatformAttachment[];
-  consumers: ManagedIngressConsumer[];
-  enriched: EnrichedTaskAddresses;
-  listenerNames: Map<string, string>;
-};
+  spanning: Map<string, string>
+  attachments: PlatformAttachment[]
+  consumers: ManagedIngressConsumer[]
+  enriched: EnrichedTaskAddresses
+  listenerNames: Map<string, string>
+}
 
 /**
  * The host-level Compose gate's view of who is deploying. Evaluated here, with
@@ -1235,19 +1166,19 @@ async function resolveHostAccessActor(
   db: Db,
   actor: DeployActor,
   organizationId: string,
-  recordApproval: boolean,
+  recordApproval: boolean
 ): Promise<HostAccessActor> {
-  if (actor.actorType === "system") return { kind: "automated" };
+  if (actor.actorType === 'system') return { kind: 'automated' }
   const isManager = await can(
     db,
     actor.actorId,
-    "organization:manage",
-    "organization",
-    organizationId,
-  );
+    'organization:manage',
+    'organization',
+    organizationId
+  )
   return isManager
-    ? { kind: "manager", userId: actor.actorId, recordApproval }
-    : { kind: "not_manager" };
+    ? { kind: 'manager', userId: actor.actorId, recordApproval }
+    : { kind: 'not_manager' }
 }
 
 async function resolveSuccessfulPlan(
@@ -1255,64 +1186,59 @@ async function resolveSuccessfulPlan(
   db: Db,
   environmentId: string,
   organizationId: string,
-  hostAccess: HostAccessActor,
+  hostAccess: HostAccessActor
 ): Promise<SuccessfulPlannedDeploy | Response> {
   const planned = await planEnvironmentDeploy(db, {
     environmentId,
     organizationId,
     hostAccess,
-  });
-  if ("kind" in planned) {
-    if (planned.kind === "not_found") {
-      return c.json({ error: "Not found" }, 404);
+  })
+  if ('kind' in planned) {
+    if (planned.kind === 'not_found') {
+      return c.json({ error: 'Not found' }, 404)
     }
     // The merged document was refused before planning wrote anything. Answer
     // with the prepare-error body, so the diagnosis does not depend on which
     // stage of the deploy noticed first.
-    if (planned.kind === "compose_rejected") {
-      return responseForPrepareError(c, planned.error);
+    if (planned.kind === 'compose_rejected') {
+      return responseForPrepareError(c, planned.error)
     }
-    return c.json({ error: "Invalid compose document" }, 400);
+    return c.json({ error: 'Invalid compose document' }, 400)
   }
-  const { plan } = planned;
+  const { plan } = planned
   if (!plan.ok) {
-    return responseForScheduleError(c, plan.error, plan.message);
+    return responseForScheduleError(c, plan.error, plan.message)
   }
-  return { ...planned, plan };
+  return { ...planned, plan }
 }
 
-export function attachmentServerIds(
-  attachments: readonly PlatformAttachment[],
-): string[] {
-  return attachments.map((row) => row.serverId);
+export function attachmentServerIds(attachments: readonly PlatformAttachment[]): string[] {
+  return attachments.map((row) => row.serverId)
 }
 
 export function tcpUdpIngressServiceRefs(
-  services: ReadonlyArray<{ serviceId: string }>,
+  services: ReadonlyArray<{ serviceId: string }>
 ): Array<{ serviceId: string }> {
-  return services.map((svc) => ({ serviceId: svc.serviceId }));
+  return services.map((svc) => ({ serviceId: svc.serviceId }))
 }
 
 export function deployParticipation(params: {
-  planServerIds: readonly string[];
-  attachments: readonly PlatformAttachment[];
-  previous: ReadonlyArray<{ serverId: string }>;
+  planServerIds: readonly string[]
+  attachments: readonly PlatformAttachment[]
+  previous: ReadonlyArray<{ serverId: string }>
 }): {
-  attachmentServers: Set<string>;
-  participating: Set<string>;
-  drainedIds: string[];
+  attachmentServers: Set<string>
+  participating: Set<string>
+  drainedIds: string[]
 } {
-  const attachmentServers = new Set(attachmentServerIds(params.attachments));
-  const participating = new Set([
-    ...params.planServerIds,
-    ...attachmentServers,
-  ]);
-  const activeDeployIds = new Set(params.planServerIds);
-  const drainedIds: string[] = [];
+  const attachmentServers = new Set(attachmentServerIds(params.attachments))
+  const participating = new Set([...params.planServerIds, ...attachmentServers])
+  const activeDeployIds = new Set(params.planServerIds)
+  const drainedIds: string[] = []
   for (const row of params.previous) {
-    if (!activeDeployIds.has(row.serverId)) drainedIds.push(row.serverId);
+    if (!activeDeployIds.has(row.serverId)) drainedIds.push(row.serverId)
   }
-  return { attachmentServers, participating, drainedIds };
+  return { attachmentServers, participating, drainedIds }
 }
 
 async function awaitDeployFabricGate(
@@ -1320,25 +1246,22 @@ async function awaitDeployFabricGate(
   db: Db,
   commandQueue: CommandQueue,
   params: {
-    planned: SuccessfulPlannedDeploy;
-    auth: DeployRequestAuth;
-    attachments: readonly PlatformAttachment[];
-    dataEncryptionSecrets: DerivedSecretsConfig;
-  },
+    planned: SuccessfulPlannedDeploy
+    auth: DeployRequestAuth
+    attachments: readonly PlatformAttachment[]
+    dataEncryptionSecrets: DerivedSecretsConfig
+  }
 ): Promise<Response | null> {
   const fabricServerIds = [
-    ...new Set([
-      ...params.planned.plan.serverIds,
-      ...attachmentServerIds(params.attachments),
-    ]),
-  ];
+    ...new Set([...params.planned.plan.serverIds, ...attachmentServerIds(params.attachments)]),
+  ]
   if (!params.planned.fabricEnabled || fabricServerIds.length <= 1) {
-    return null;
+    return null
   }
-  const fabricRow = await getOrganizationFabric(db, params.auth.organizationId);
-  if (!fabricRow) return null;
+  const fabricRow = await getOrganizationFabric(db, params.auth.organizationId)
+  if (!fabricRow) return null
 
-  const secretsConfig = c.get("secretsConfig");
+  const secretsConfig = c.get('secretsConfig')
   const fabricGate = await awaitParticipatingFabricConvergence({
     db,
     commandQueue,
@@ -1348,30 +1271,28 @@ async function awaitDeployFabricGate(
     serverIds: fabricServerIds,
     ...(secretsConfig ? { secretsConfig } : {}),
     dataEncryptionSecrets: params.dataEncryptionSecrets,
-  });
-  if (fabricGate.kind === "ready") return null;
+  })
+  if (fabricGate.kind === 'ready') return null
   if (
-    fabricGate.kind === "failed" &&
+    fabricGate.kind === 'failed' &&
     fabricGate.error &&
     isFabricEnqueueTypedError(fabricGate.error)
   ) {
-    return c.json({ error: fabricGate.error }, 422);
+    return c.json({ error: fabricGate.error }, 422)
   }
-  return responseForFabricGate(c, fabricGate);
+  return responseForFabricGate(c, fabricGate)
 }
 
-function scheduleSliceForPreparedServer(
-  params: {
-    planned: SuccessfulPlannedDeploy;
-    spanning: Map<string, string>;
-    enriched: EnrichedTaskAddresses;
-    attachments: PlatformAttachment[];
-    consumers: ManagedIngressConsumer[];
-    listenerNames: Map<string, string>;
-    spanningHostNames: Set<string>;
-    serverId: string;
-  },
-): ReturnType<typeof scheduleSliceForServer> {
+function scheduleSliceForPreparedServer(params: {
+  planned: SuccessfulPlannedDeploy
+  spanning: Map<string, string>
+  enriched: EnrichedTaskAddresses
+  attachments: PlatformAttachment[]
+  consumers: ManagedIngressConsumer[]
+  listenerNames: Map<string, string>
+  spanningHostNames: Set<string>
+  serverId: string
+}): ReturnType<typeof scheduleSliceForServer> {
   return scheduleSliceForServer(
     params.planned,
     params.serverId,
@@ -1385,7 +1306,7 @@ function scheduleSliceForPreparedServer(
     }),
     fabricNetworksForServer(
       params.enriched.segmentsByServer.get(params.serverId),
-      params.spanningHostNames,
+      params.spanningHostNames
     ),
     reservedIngressHostsForServer({
       thisServerId: params.serverId,
@@ -1394,8 +1315,8 @@ function scheduleSliceForPreparedServer(
       spanning: params.spanning,
       segmentsByServer: params.enriched.segmentsByServer,
       listenerNameByServer: params.listenerNames,
-    }),
-  );
+    })
+  )
 }
 
 /**
@@ -1410,26 +1331,26 @@ async function prepareOneServerDeploy(
   c: Context<AppEnv>,
   db: Db,
   params: {
-    planned: SuccessfulPlannedDeploy;
-    environmentId: string;
-    auth: DeployRequestAuth;
-    spanning: Map<string, string>;
-    attachments: PlatformAttachment[];
-    consumers: ManagedIngressConsumer[];
-    enriched: EnrichedTaskAddresses;
-    listenerNames: Map<string, string>;
-    spanningHostNames: Set<string>;
-    serverId: string;
+    planned: SuccessfulPlannedDeploy
+    environmentId: string
+    auth: DeployRequestAuth
+    spanning: Map<string, string>
+    attachments: PlatformAttachment[]
+    consumers: ManagedIngressConsumer[]
+    enriched: EnrichedTaskAddresses
+    listenerNames: Map<string, string>
+    spanningHostNames: Set<string>
+    serverId: string
     /** Commit this deploy was asked to build; `prepareDeployCompose` consumes it. */
-    selection: DeploySourceSelection;
+    selection: DeploySourceSelection
     /**
      * Release ids for this deploy, allocated once for the whole fan-out. Every
      * server's prepare gets the *same* allocator, which is what makes one
      * release id describe one release of the environment rather than one per
      * host — see {@link ReleaseIdAllocator}.
      */
-    releaseIds: ReleaseIdAllocator;
-  },
+    releaseIds: ReleaseIdAllocator
+  }
 ): Promise<PreparedServerDeploy | Response> {
   const prepared = await prepareDeployCompose(c, db, {
     environmentId: params.environmentId,
@@ -1440,79 +1361,68 @@ async function prepareOneServerDeploy(
     schedule: scheduleSliceForPreparedServer(params),
     sourceSelection: params.selection,
     releaseIds: params.releaseIds,
-    ...(params.auth.rollback === undefined
-      ? {}
-      : { rollback: params.auth.rollback }),
-  });
-  if (prepared instanceof Response) return prepared;
-  if ("kind" in prepared) return responseForPrepareError(c, prepared);
+    ...(params.auth.rollback === undefined ? {} : { rollback: params.auth.rollback }),
+  })
+  if (prepared instanceof Response) return prepared
+  if ('kind' in prepared) return responseForPrepareError(c, prepared)
 
-  return { serverId: params.serverId, prepared };
+  return { serverId: params.serverId, prepared }
 }
 
 async function prepareAllServerDeploys(
   c: Context<AppEnv>,
   db: Db,
   params: {
-    planned: SuccessfulPlannedDeploy;
-    environmentId: string;
-    auth: DeployRequestAuth;
-    dataEncryptionSecrets: DerivedSecretsConfig;
-    selection: DeploySourceSelection;
-  } & DeploySpanningContext,
+    planned: SuccessfulPlannedDeploy
+    environmentId: string
+    auth: DeployRequestAuth
+    dataEncryptionSecrets: DerivedSecretsConfig
+    selection: DeploySourceSelection
+  } & DeploySpanningContext
 ): Promise<PreparedServerDeploy[] | Response> {
-  const spanningHostNames = new Set(params.spanning.values());
+  const spanningHostNames = new Set(params.spanning.values())
   // One allocator for the whole fan-out, created *before* the loop: every
   // server below resolves the same compose services, and each of them must come
   // out carrying the same release id for a given service. Creating it per
   // iteration (or letting the resolver mint ids on its own) is precisely the bug
   // that makes an environment release un-rollbackable — see
   // {@link ReleaseIdAllocator}.
-  const releaseIds = createReleaseIdAllocator();
-  const preparedByServer: PreparedServerDeploy[] = [];
+  const releaseIds = createReleaseIdAllocator()
+  const preparedByServer: PreparedServerDeploy[] = []
   for (const serverId of params.planned.plan.serverIds) {
     const row = await prepareOneServerDeploy(c, db, {
       ...params,
       spanningHostNames,
       serverId,
       releaseIds,
-    });
-    if (row instanceof Response) return row;
-    preparedByServer.push(row);
+    })
+    if (row instanceof Response) return row
+    preparedByServer.push(row)
   }
-  return preparedByServer;
+  return preparedByServer
 }
 
 async function stopDrainedDeployments(
   db: Db,
   commandQueue: CommandQueue,
   params: DeployActor & {
-    drainedIds: readonly string[];
-    attachmentServers: ReadonlySet<string>;
-    environmentId: string;
-    projectId: string;
-    projectName: string;
-  },
+    drainedIds: readonly string[]
+    attachmentServers: ReadonlySet<string>
+    environmentId: string
+    projectId: string
+    projectName: string
+  }
 ): Promise<Response | null> {
-  if (params.drainedIds.length === 0) return null;
+  if (params.drainedIds.length === 0) return null
 
-  const tcpUdpServices = await resolveTcpUdpIngressServices(
-    db,
-    params.environmentId,
-  );
-  const composeNetworks = await listEnvironmentComposeNetworks(
-    db,
-    params.environmentId,
-  );
-  const namesByServer = composeNetworkNamesByServer(composeNetworks);
-  const ingressServices = tcpUdpIngressServiceRefs(tcpUdpServices);
+  const tcpUdpServices = await resolveTcpUdpIngressServices(db, params.environmentId)
+  const composeNetworks = await listEnvironmentComposeNetworks(db, params.environmentId)
+  const namesByServer = composeNetworkNamesByServer(composeNetworks)
+  const ingressServices = tcpUdpIngressServiceRefs(tcpUdpServices)
   // A drained server no longer runs this environment, so its release trees go
   // with the rest of the stack — the rows still describe them because the
   // environment lives on elsewhere.
-  const siteReleases = await resolveEnvironmentSiteReleases(
-    db,
-    params.environmentId,
-  );
+  const siteReleases = await resolveEnvironmentSiteReleases(db, params.environmentId)
   // Stop at the first failed enqueue: later servers are not touched.
   const failed = await firstSequential(
     params.drainedIds,
@@ -1527,59 +1437,54 @@ async function stopDrainedDeployments(
         ingressServices,
         fabricNetworks: namesByServer.get(serverId) ?? [],
         siteReleases,
-      });
-      if (stopped instanceof Response) return stopped;
+      })
+      if (stopped instanceof Response) return stopped
       if (!params.attachmentServers.has(serverId)) {
         await releaseSubnetsForServer(db, {
           environmentId: params.environmentId,
           serverId,
-        });
+        })
       }
-      return undefined;
-    },
-  );
-  if (failed) return failed;
+      return undefined
+    }
+  )
+  if (failed) return failed
   await pruneDrainedDeployments(db, {
     environmentId: params.environmentId,
     serverIds: params.drainedIds,
-  });
-  return null;
+  })
+  return null
 }
 
 async function releaseOrphanedComposeNetworks(
   db: Db,
   environmentId: string,
-  participating: ReadonlySet<string>,
+  participating: ReadonlySet<string>
 ): Promise<string[]> {
-  const leftoverNetworks = await listEnvironmentComposeNetworks(
-    db,
-    environmentId,
-  );
-  const leftoverByServer = composeNetworkNamesByServer(leftoverNetworks);
-  const releasedListeners: string[] = [];
+  const leftoverNetworks = await listEnvironmentComposeNetworks(db, environmentId)
+  const leftoverByServer = composeNetworkNamesByServer(leftoverNetworks)
+  const releasedListeners: string[] = []
   await forEachSequential(leftoverByServer.keys(), async (serverId) => {
     if (!participating.has(serverId)) {
-      await releaseSubnetsForServer(db, { environmentId, serverId });
-      releasedListeners.push(serverId);
+      await releaseSubnetsForServer(db, { environmentId, serverId })
+      releasedListeners.push(serverId)
     }
-  });
-  return releasedListeners;
+  })
+  return releasedListeners
 }
 
 function serverNeedsIngressReconcile(
   serverId: string,
   params: {
-    preparedByServer: readonly PreparedServerDeploy[];
-    attachments: readonly PlatformAttachment[];
-    consumers: readonly ManagedIngressConsumer[];
-    spanning: ReadonlyMap<string, string>;
-    segmentsByServer: Map<string, FabricSegmentMaterial[]>;
-    listenerNames: Map<string, string>;
-  },
+    preparedByServer: readonly PreparedServerDeploy[]
+    attachments: readonly PlatformAttachment[]
+    consumers: readonly ManagedIngressConsumer[]
+    spanning: ReadonlyMap<string, string>
+    segmentsByServer: Map<string, FabricSegmentMaterial[]>
+    listenerNames: Map<string, string>
+  }
 ): boolean {
-  const prepared = params.preparedByServer.find((row) =>
-    row.serverId === serverId
-  );
+  const prepared = params.preparedByServer.find((row) => row.serverId === serverId)
   const hosts = reservedIngressHostsForServer({
     thisServerId: serverId,
     attachments: params.attachments,
@@ -1587,31 +1492,31 @@ function serverNeedsIngressReconcile(
     spanning: params.spanning,
     segmentsByServer: params.segmentsByServer,
     listenerNameByServer: params.listenerNames,
-  });
-  const managedCount = prepared?.prepared.managedNetworkServices.length ?? 0;
-  return managedCount > 0 || hosts.size > 0;
+  })
+  const managedCount = prepared?.prepared.managedNetworkServices.length ?? 0
+  return managedCount > 0 || hosts.size > 0
 }
 
 export function ingressServerIdsForDeploy(params: {
-  planServerIds: readonly string[];
-  preparedByServer: readonly PreparedServerDeploy[];
-  attachments: readonly PlatformAttachment[];
-  consumers: readonly ManagedIngressConsumer[];
-  spanning: ReadonlyMap<string, string>;
-  segmentsByServer: Map<string, FabricSegmentMaterial[]>;
-  listenerNames: Map<string, string>;
-  releasedListeners: readonly string[];
+  planServerIds: readonly string[]
+  preparedByServer: readonly PreparedServerDeploy[]
+  attachments: readonly PlatformAttachment[]
+  consumers: readonly ManagedIngressConsumer[]
+  spanning: ReadonlyMap<string, string>
+  segmentsByServer: Map<string, FabricSegmentMaterial[]>
+  listenerNames: Map<string, string>
+  releasedListeners: readonly string[]
 }): Set<string> {
   const ingressServerIds = new Set<string>([
     ...attachmentServerIds(params.attachments),
     ...params.releasedListeners,
-  ]);
+  ])
   for (const serverId of params.planServerIds) {
     if (serverNeedsIngressReconcile(serverId, params)) {
-      ingressServerIds.add(serverId);
+      ingressServerIds.add(serverId)
     }
   }
-  return ingressServerIds;
+  return ingressServerIds
 }
 
 async function enqueueIngressReconcileAfterDeploy(
@@ -1619,15 +1524,15 @@ async function enqueueIngressReconcileAfterDeploy(
   db: Db,
   commandQueue: CommandQueue,
   params: {
-    auth: DeployRequestAuth;
-    dataEncryptionSecrets: DerivedSecretsConfig;
-    planServerIds: readonly string[];
-    preparedByServer: readonly PreparedServerDeploy[];
-    releasedListeners: readonly string[];
-  } & DeploySpanningContext,
+    auth: DeployRequestAuth
+    dataEncryptionSecrets: DerivedSecretsConfig
+    planServerIds: readonly string[]
+    preparedByServer: readonly PreparedServerDeploy[]
+    releasedListeners: readonly string[]
+  } & DeploySpanningContext
 ): Promise<void> {
-  const secretsConfig = c.get("secretsConfig");
-  if (!secretsConfig) return;
+  const secretsConfig = c.get('secretsConfig')
+  if (!secretsConfig) return
 
   const ingressServerIds = ingressServerIdsForDeploy({
     planServerIds: params.planServerIds,
@@ -1638,45 +1543,39 @@ async function enqueueIngressReconcileAfterDeploy(
     segmentsByServer: params.enriched.segmentsByServer,
     listenerNames: params.listenerNames,
     releasedListeners: params.releasedListeners,
-  });
-  await forEachSequential(
-    ingressServerIds,
-    (serverId) =>
-      enqueueManagedIngressReconcile(db, commandQueue, {
-        serverId,
-        actorType: params.auth.actorType,
-        actorId: params.auth.actorId,
-        secretsConfig,
-        dataEncryptionSecrets: params.dataEncryptionSecrets,
-      }),
-  );
+  })
+  await forEachSequential(ingressServerIds, (serverId) =>
+    enqueueManagedIngressReconcile(db, commandQueue, {
+      serverId,
+      actorType: params.auth.actorType,
+      actorId: params.auth.actorId,
+      secretsConfig,
+      dataEncryptionSecrets: params.dataEncryptionSecrets,
+    })
+  )
 }
 
 async function loadDeploySpanningContext(
   db: Db,
   planned: SuccessfulPlannedDeploy,
   organizationId: string,
-  environmentId: string,
+  environmentId: string
 ): Promise<DeploySpanningContext> {
   const { spanning, attachments, consumers } = await loadSpanningNetworks(
     db,
     planned,
     organizationId,
-    environmentId,
-  );
+    environmentId
+  )
   const enriched = await enrichPlannedTaskAddresses(
     db,
     planned,
     spanning,
     environmentId,
-    attachmentServerIds(attachments),
-  );
-  const listenerNames = await listenerNamesForAttachments(
-    db,
-    organizationId,
-    attachments,
-  );
-  return { spanning, attachments, consumers, enriched, listenerNames };
+    attachmentServerIds(attachments)
+  )
+  const listenerNames = await listenerNamesForAttachments(db, organizationId, attachments)
+  return { spanning, attachments, consumers, enriched, listenerNames }
 }
 
 async function runEnvironmentDeploy(
@@ -1684,32 +1583,29 @@ async function runEnvironmentDeploy(
   db: Db,
   commandQueue: CommandQueue,
   environmentId: string,
-  auth: DeployRequestAuth,
+  auth: DeployRequestAuth
 ): Promise<Response> {
   const planned = await resolveSuccessfulPlan(
     c,
     db,
     environmentId,
     auth.organizationId,
-    await resolveHostAccessActor(db, auth, auth.organizationId, true),
-  );
-  if (planned instanceof Response) return planned;
+    await resolveHostAccessActor(db, auth, auth.organizationId, true)
+  )
+  if (planned instanceof Response) return planned
 
-  const priorNetworks = await listEnvironmentComposeNetworks(
-    db,
-    environmentId,
-  );
-  let spanningCommitted = false;
+  const priorNetworks = await listEnvironmentComposeNetworks(db, environmentId)
+  let spanningCommitted = false
   try {
     const spanningCtx = await loadDeploySpanningContext(
       db,
       planned,
       auth.organizationId,
-      environmentId,
-    );
-    const dataEncryptionSecrets = c.get("dataEncryptionSecrets");
+      environmentId
+    )
+    const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
     if (!dataEncryptionSecrets) {
-      return c.json({ error: "Encryption unavailable" }, 503);
+      return c.json({ error: 'Encryption unavailable' }, 503)
     }
 
     const fabricGateError = await awaitDeployFabricGate(c, db, commandQueue, {
@@ -1717,8 +1613,8 @@ async function runEnvironmentDeploy(
       auth,
       attachments: spanningCtx.attachments,
       dataEncryptionSecrets,
-    });
-    if (fabricGateError) return fabricGateError;
+    })
+    if (fabricGateError) return fabricGateError
 
     const preparedByServer = await prepareAllServerDeploys(c, db, {
       planned,
@@ -1727,28 +1623,19 @@ async function runEnvironmentDeploy(
       selection: auth.selection,
       dataEncryptionSecrets,
       ...spanningCtx,
-    });
-    if (preparedByServer instanceof Response) return preparedByServer;
+    })
+    if (preparedByServer instanceof Response) return preparedByServer
 
-    const previous = await listEnvironmentDeploymentTargets(
-      db,
-      environmentId,
-    );
-    const { attachmentServers, participating, drainedIds } =
-      deployParticipation(
-      {
-        planServerIds: planned.plan.serverIds,
-        attachments: spanningCtx.attachments,
-        previous,
-      },
-      );
-    const projectName = composeProjectName(planned.projectId);
+    const previous = await listEnvironmentDeploymentTargets(db, environmentId)
+    const { attachmentServers, participating, drainedIds } = deployParticipation({
+      planServerIds: planned.plan.serverIds,
+      attachments: spanningCtx.attachments,
+      previous,
+    })
+    const projectName = composeProjectName(planned.projectId)
     // Recorded, not consumed, here: the current compose still names these, so
     // this is the snapshot a later stop/delete falls back to once it does not.
-    const siteReleases = await resolveSourcedEnvironmentSiteReleases(
-      db,
-      environmentId,
-    );
+    const siteReleases = await resolveSourcedEnvironmentSiteReleases(db, environmentId)
     const created = await persistDeployFanOut(db, {
       preparedByServer,
       planServerIds: planned.plan.serverIds,
@@ -1764,14 +1651,13 @@ async function runEnvironmentDeploy(
       hostLevelApproved: planned.hostLevelApproved,
       selection: auth.selection,
       siteReleases,
-    });
-    spanningCommitted = true;
-    const { queued, enqueueError } = await deliverDeployFanOut(
-      db,
-      commandQueue,
-      { created, environmentId },
-    );
-    if (queued.length === 0 && enqueueError) return enqueueError;
+    })
+    spanningCommitted = true
+    const { queued, enqueueError } = await deliverDeployFanOut(db, commandQueue, {
+      created,
+      environmentId,
+    })
+    if (queued.length === 0 && enqueueError) return enqueueError
 
     const drainedError = await stopDrainedDeployments(db, commandQueue, {
       drainedIds,
@@ -1781,14 +1667,10 @@ async function runEnvironmentDeploy(
       environmentId,
       projectId: planned.projectId,
       projectName,
-    });
-    if (drainedError) return drainedError;
+    })
+    if (drainedError) return drainedError
 
-    const releasedListeners = await releaseOrphanedComposeNetworks(
-      db,
-      environmentId,
-      participating,
-    );
+    const releasedListeners = await releaseOrphanedComposeNetworks(db, environmentId, participating)
     await enqueueIngressReconcileAfterDeploy(c, db, commandQueue, {
       auth,
       dataEncryptionSecrets,
@@ -1796,16 +1678,12 @@ async function runEnvironmentDeploy(
       preparedByServer,
       releasedListeners,
       ...spanningCtx,
-    });
+    })
 
-    return Response.json(queuedCommandsResponseBody(queued));
+    return Response.json(queuedCommandsResponseBody(queued))
   } finally {
     if (!spanningCommitted) {
-      await purgeComposeNetworksCreatedAfter(
-        db,
-        environmentId,
-        priorNetworks,
-      );
+      await purgeComposeNetworksCreatedAfter(db, environmentId, priorNetworks)
     }
   }
 }
@@ -1828,67 +1706,63 @@ export async function runEnvironmentDeployForActor(
   db: Db,
   commandQueue: CommandQueue,
   environmentId: string,
-  auth: DeployRequestAuth,
+  auth: DeployRequestAuth
 ): Promise<Response> {
-  return await runEnvironmentDeploy(c, db, commandQueue, environmentId, auth);
+  return await runEnvironmentDeploy(c, db, commandQueue, environmentId, auth)
 }
 
 /** Shared with the webhook trigger so it fails the same way on missing infra. */
-export function assertDeployDispatchInfrastructure(
-  c: Context<AppEnv>,
-): CommandQueue | Response {
-  return assertDispatchInfrastructure(c);
+export function assertDeployDispatchInfrastructure(c: Context<AppEnv>): CommandQueue | Response {
+  return assertDispatchInfrastructure(c)
 }
 
-export function registerEnvironmentDeployRoutes(
-  router: Hono<AppEnv>,
-  opts: AuthRouteOpts,
-) {
+export function registerEnvironmentDeployRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
   if (!opts.secrets) {
-    throw new TypeError(
-      "session secrets are required for environment deploy routes",
-    );
+    throw new TypeError('session secrets are required for environment deploy routes')
   }
-  router.use("/environments/:id/deploy", createSessionMiddleware(opts.secrets));
+  router.use('/environments/:id/deploy', createSessionMiddleware(opts.secrets))
 
-  router.post("/environments/:id/deploy", async (c) => {
-    const db = getDb(c);
-    if (!db) return c.json({ error: "Database unavailable" }, 503);
+  router.post('/environments/:id/deploy', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
 
-    const environmentId = c.req.param("id");
-    const auth = await authorizeDeployRequest(c, db, environmentId);
-    if (auth instanceof Response) return auth;
+    const environmentId = c.req.param('id')
+    const auth = await authorizeDeployRequest(c, db, environmentId)
+    if (auth instanceof Response) return auth
 
     // Prepare pins each service to its compose-declared branch, not to a ref
     // named on the request. Accepting one would answer `queued` to "deploy
     // release/1.4" and build the declared branch instead — the one outcome a
     // caller reaching for this field cannot detect. Refuse loudly.
     if (!PREPARE_HONORS_SOURCE_SELECTION && auth.selection.ref !== null) {
-      return c.json({
-        error: "source_ref_unsupported",
-        message:
-          "Deploying an explicit ref is not supported yet; omit `ref` to deploy " +
-          "the environment's current state.",
-        ref: auth.selection.ref,
-      }, 501);
+      return c.json(
+        {
+          error: 'source_ref_unsupported',
+          message:
+            'Deploying an explicit ref is not supported yet; omit `ref` to deploy ' +
+            "the environment's current state.",
+          ref: auth.selection.ref,
+        },
+        501
+      )
     }
 
-    const commandQueue = assertDispatchInfrastructure(c);
-    if (commandQueue instanceof Response) return commandQueue;
+    const commandQueue = assertDispatchInfrastructure(c)
+    if (commandQueue instanceof Response) return commandQueue
 
-    return runEnvironmentDeploy(c, db, commandQueue, environmentId, auth);
-  });
+    return runEnvironmentDeploy(c, db, commandQueue, environmentId, auth)
+  })
 }
 
 async function loadLifecycleTargets(
   db: Db,
-  environmentId: string,
+  environmentId: string
 ): Promise<
   | {
-    projectId: string;
-    projectName: string;
-    serverIds: string[];
-  }
+      projectId: string
+      projectName: string
+      serverIds: string[]
+    }
   | Response
 > {
   const [envRow] = await db
@@ -1899,8 +1773,8 @@ async function loadLifecycleTargets(
     })
     .from(environment)
     .where(eq(environment.id, environmentId))
-    .limit(1);
-  if (!envRow) return Response.json({ error: "Not found" }, { status: 404 });
+    .limit(1)
+  if (!envRow) return Response.json({ error: 'Not found' }, { status: 404 })
 
   const [projectRow] = await db
     .select({
@@ -1909,157 +1783,139 @@ async function loadLifecycleTargets(
     })
     .from(project)
     .where(eq(project.id, envRow.projectId))
-    .limit(1);
+    .limit(1)
   if (!projectRow) {
-    return Response.json({ error: "Not found" }, { status: 404 });
+    return Response.json({ error: 'Not found' }, { status: 404 })
   }
 
-  const deployments = await listEnvironmentDeploymentTargets(db, environmentId);
+  const deployments = await listEnvironmentDeploymentTargets(db, environmentId)
   const fromDeployments = [
-    ...new Set(
-      deployments
-        .filter((row) => row.status !== "draining")
-        .map((row) => row.serverId),
-    ),
-  ].sort((a, b) => a.localeCompare(b));
+    ...new Set(deployments.filter((row) => row.status !== 'draining').map((row) => row.serverId)),
+  ].sort((a, b) => a.localeCompare(b))
   if (fromDeployments.length > 0) {
     return {
       projectId: projectRow.id,
       projectName: composeProjectName(projectRow.id),
       serverIds: fromDeployments,
-    };
+    }
   }
 
   const pin = resolveEffectivePlacementServerId(
     envRow.serverId,
-    parseProjectOptions(projectRow.options),
-  );
+    parseProjectOptions(projectRow.options)
+  )
   if (!pin) {
-    return Response.json({ error: "server_placement_required" }, {
-      status: 409,
-    });
+    return Response.json(
+      { error: 'server_placement_required' },
+      {
+        status: 409,
+      }
+    )
   }
   return {
     projectId: projectRow.id,
     projectName: composeProjectName(projectRow.id),
     serverIds: [pin],
-  };
+  }
 }
 
 async function enqueueStopCommand(
   db: Db,
   commandQueue: CommandQueue,
   params: DeployActor & {
-    serverId: string;
-    environmentId: string;
-    projectId: string;
-    projectName: string;
-    ingressServices: Array<{ serviceId: string }>;
-    fabricNetworks: string[];
+    serverId: string
+    environmentId: string
+    projectId: string
+    projectName: string
+    ingressServices: Array<{ serviceId: string }>
+    fabricNetworks: string[]
     /** Per-service release trees to reclaim (generic, not site only). */
-    siteReleases: EnvironmentSiteRelease[];
-  },
+    siteReleases: EnvironmentSiteRelease[]
+  }
 ): Promise<QueuedCommandRef | Response> {
-  const expiresAt = new Date(Date.now() + 120_000).toISOString();
+  const expiresAt = new Date(Date.now() + 120_000).toISOString()
   const record = await createCommandRecord(db, {
     serverId: params.serverId,
     actorType: params.actorType,
     actorId: params.actorId,
-    type: "environment.stop",
+    type: 'environment.stop',
     payload: {
       environmentId: params.environmentId,
       projectId: params.projectId,
       projectName: params.projectName,
-      ...(params.ingressServices.length > 0
-        ? { ingressServices: params.ingressServices }
-        : {}),
-      ...(params.fabricNetworks.length > 0
-        ? { fabricNetworks: params.fabricNetworks }
-        : {}),
-      ...(params.siteReleases.length > 0
-        ? { siteReleases: params.siteReleases }
-        : {}),
+      ...(params.ingressServices.length > 0 ? { ingressServices: params.ingressServices } : {}),
+      ...(params.fabricNetworks.length > 0 ? { fabricNetworks: params.fabricNetworks } : {}),
+      ...(params.siteReleases.length > 0 ? { siteReleases: params.siteReleases } : {}),
     },
     expiresAt,
-  });
+  })
 
   const envelope: CommandEnvelope = {
     commandId: record.id,
     serverId: params.serverId,
-    type: "environment.stop",
+    type: 'environment.stop',
     attempt: 1,
     queuedAt: record.queuedAt ?? record.createdAt,
-  };
+  }
 
   try {
-    await commandQueue.enqueue(envelope);
+    await commandQueue.enqueue(envelope)
   } catch {
     await transitionCommand(db, record.id, {
-      status: "failed",
-      error: "Command queue unavailable",
-    });
-    return Response.json({ error: "Command queue unavailable" }, {
-      status: 503,
-    });
+      status: 'failed',
+      error: 'Command queue unavailable',
+    })
+    return Response.json(
+      { error: 'Command queue unavailable' },
+      {
+        status: 503,
+      }
+    )
   }
 
   return {
     commandId: record.id,
     serverId: params.serverId,
-    status: "queued",
-  };
+    status: 'queued',
+  }
 }
 
 /**
  * Register `POST /environments/:id/stop` — compose down (+ volumes) teardown.
  * Status is polled via existing `GET /servers/:serverId/commands/:commandId`.
  */
-export function registerEnvironmentStopRoutes(
-  router: Hono<AppEnv>,
-  opts: AuthRouteOpts,
-) {
+export function registerEnvironmentStopRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
   if (!opts.secrets) {
-    throw new TypeError(
-      "session secrets are required for environment stop routes",
-    );
+    throw new TypeError('session secrets are required for environment stop routes')
   }
-  router.use("/environments/:id/stop", createSessionMiddleware(opts.secrets));
+  router.use('/environments/:id/stop', createSessionMiddleware(opts.secrets))
 
-  router.post("/environments/:id/stop", async (c) => {
-    const db = getDb(c);
-    if (!db) return c.json({ error: "Database unavailable" }, 503);
+  router.post('/environments/:id/stop', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
 
-    const environmentId = c.req.param("id");
-    const auth = await authorizeEnvironmentManage(c, db, environmentId);
-    if (auth instanceof Response) return auth;
+    const environmentId = c.req.param('id')
+    const auth = await authorizeEnvironmentManage(c, db, environmentId)
+    if (auth instanceof Response) return auth
 
-    const commandQueue = assertDispatchInfrastructure(c);
-    if (commandQueue instanceof Response) return commandQueue;
+    const commandQueue = assertDispatchInfrastructure(c)
+    if (commandQueue instanceof Response) return commandQueue
 
-    const loaded = await loadLifecycleTargets(db, environmentId);
-    if (loaded instanceof Response) return loaded;
+    const loaded = await loadLifecycleTargets(db, environmentId)
+    if (loaded instanceof Response) return loaded
 
-    const tcpUdpServices = await resolveTcpUdpIngressServices(
-      db,
-      environmentId,
-    );
-    const composeNetworks = await listEnvironmentComposeNetworks(
-      db,
-      environmentId,
-    );
-    const namesByServer = composeNetworkNamesByServer(composeNetworks);
+    const tcpUdpServices = await resolveTcpUdpIngressServices(db, environmentId)
+    const composeNetworks = await listEnvironmentComposeNetworks(db, environmentId)
+    const namesByServer = composeNetworkNamesByServer(composeNetworks)
     // Captured before the daemon runs: an explicit stop leaves the rows in
     // place, but this is the same set delete teardown has to snapshot, so both
     // paths resolve it the same way.
-    const siteReleases = await resolveEnvironmentSiteReleases(
-      db,
-      environmentId,
-    );
-    const queued: QueuedCommandRef[] = [];
+    const siteReleases = await resolveEnvironmentSiteReleases(db, environmentId)
+    const queued: QueuedCommandRef[] = []
     for (const serverId of loaded.serverIds) {
       const enqueued = await enqueueStopCommand(db, commandQueue, {
         serverId,
-        actorType: "user",
+        actorType: 'user',
         actorId: auth.userId,
         environmentId,
         projectId: loaded.projectId,
@@ -2069,52 +1925,47 @@ export function registerEnvironmentStopRoutes(
         })),
         fabricNetworks: namesByServer.get(serverId) ?? [],
         siteReleases,
-      });
-      if (enqueued instanceof Response) return enqueued;
-      queued.push(enqueued);
+      })
+      if (enqueued instanceof Response) return enqueued
+      queued.push(enqueued)
     }
-    await purgeEnvironmentComposeNetworks(db, environmentId);
-    const secretsConfig = c.get("secretsConfig");
-    const dataEncryptionSecrets = c.get("dataEncryptionSecrets");
+    await purgeEnvironmentComposeNetworks(db, environmentId)
+    const secretsConfig = c.get('secretsConfig')
+    const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
     if (secretsConfig && dataEncryptionSecrets) {
-      const ingressServerIds = new Set<string>([
-        ...loaded.serverIds,
-        ...namesByServer.keys(),
-      ]);
-      await forEachSequential(
-        ingressServerIds,
-        (serverId) =>
-          enqueueManagedIngressReconcile(db, commandQueue, {
-            serverId,
-            actorType: "user",
-            actorId: auth.userId,
-            secretsConfig,
-            dataEncryptionSecrets,
-          }),
-      );
+      const ingressServerIds = new Set<string>([...loaded.serverIds, ...namesByServer.keys()])
+      await forEachSequential(ingressServerIds, (serverId) =>
+        enqueueManagedIngressReconcile(db, commandQueue, {
+          serverId,
+          actorType: 'user',
+          actorId: auth.userId,
+          secretsConfig,
+          dataEncryptionSecrets,
+        })
+      )
     }
-    return Response.json(queuedCommandsResponseBody(queued));
-  });
+    return Response.json(queuedCommandsResponseBody(queued))
+  })
 }
 
 async function enqueueLifecycleCommand(
   db: Db,
   commandQueue: CommandQueue,
   params: {
-    serverId: string;
-    userId: string;
-    environmentId: string;
-    projectId: string;
-    projectName: string;
-    action: EnvironmentLifecycleAction;
-  },
+    serverId: string
+    userId: string
+    environmentId: string
+    projectId: string
+    projectName: string
+    action: EnvironmentLifecycleAction
+  }
 ): Promise<QueuedCommandRef | Response> {
-  const expiresAt = new Date(Date.now() + 120_000).toISOString();
+  const expiresAt = new Date(Date.now() + 120_000).toISOString()
   const record = await createCommandRecord(db, {
     serverId: params.serverId,
-    actorType: "user",
+    actorType: 'user',
     actorId: params.userId,
-    type: "environment.lifecycle",
+    type: 'environment.lifecycle',
     payload: {
       environmentId: params.environmentId,
       projectId: params.projectId,
@@ -2122,76 +1973,71 @@ async function enqueueLifecycleCommand(
       action: params.action,
     },
     expiresAt,
-  });
+  })
 
   const envelope: CommandEnvelope = {
     commandId: record.id,
     serverId: params.serverId,
-    type: "environment.lifecycle",
+    type: 'environment.lifecycle',
     attempt: 1,
     queuedAt: record.queuedAt ?? record.createdAt,
-  };
+  }
 
   try {
-    await commandQueue.enqueue(envelope);
+    await commandQueue.enqueue(envelope)
   } catch {
     await transitionCommand(db, record.id, {
-      status: "failed",
-      error: "Command queue unavailable",
-    });
-    return Response.json({ error: "Command queue unavailable" }, {
-      status: 503,
-    });
+      status: 'failed',
+      error: 'Command queue unavailable',
+    })
+    return Response.json(
+      { error: 'Command queue unavailable' },
+      {
+        status: 503,
+      }
+    )
   }
 
   return {
     commandId: record.id,
     serverId: params.serverId,
-    status: "queued",
-  };
+    status: 'queued',
+  }
 }
 
 /**
  * Register `POST /environments/:id/lifecycle` — non-destructive compose
  * start|stop|restart. Status is polled via existing command GET.
  */
-export function registerEnvironmentLifecycleRoutes(
-  router: Hono<AppEnv>,
-  opts: AuthRouteOpts,
-) {
+export function registerEnvironmentLifecycleRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
   if (!opts.secrets) {
-    throw new TypeError(
-      "session secrets are required for environment lifecycle routes",
-    );
+    throw new TypeError('session secrets are required for environment lifecycle routes')
   }
-  router.use(
-    "/environments/:id/lifecycle",
-    createSessionMiddleware(opts.secrets),
-  );
+  router.use('/environments/:id/lifecycle', createSessionMiddleware(opts.secrets))
 
-  router.post("/environments/:id/lifecycle", async (c) => {
-    const db = getDb(c);
-    if (!db) return c.json({ error: "Database unavailable" }, 503);
+  router.post('/environments/:id/lifecycle', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
 
-    const environmentId = c.req.param("id");
-    const auth = await authorizeEnvironmentManage(c, db, environmentId);
-    if (auth instanceof Response) return auth;
+    const environmentId = c.req.param('id')
+    const auth = await authorizeEnvironmentManage(c, db, environmentId)
+    if (auth instanceof Response) return auth
 
-    const body = await parseJsonBody(c);
-    if (body instanceof Response) return body;
+    const body = await parseJsonBody(c)
+    if (body instanceof Response) return body
 
-    const action = parseLifecycleAction(body);
-    if (action === "invalid") {
-      return c.json({ error: "Invalid request" }, 400);
+    const action = parseLifecycleAction(body)
+    if (action === 'invalid') {
+      return c.json({ error: 'Invalid request' }, 400)
     }
 
-    const commandQueue = assertDispatchInfrastructure(c);
-    if (commandQueue instanceof Response) return commandQueue;
+    const commandQueue = assertDispatchInfrastructure(c)
+    if (commandQueue instanceof Response) return commandQueue
 
-    const loaded = await loadLifecycleTargets(db, environmentId);
-    if (loaded instanceof Response) return loaded;
+    const loaded = await loadLifecycleTargets(db, environmentId)
+    if (loaded instanceof Response) return loaded
 
-    const queued: QueuedCommandRef[] = [];
+    const queued: QueuedCommandRef[] = []
     for (const serverId of loaded.serverIds) {
       const enqueued = await enqueueLifecycleCommand(db, commandQueue, {
         serverId,
@@ -2200,10 +2046,10 @@ export function registerEnvironmentLifecycleRoutes(
         projectId: loaded.projectId,
         projectName: loaded.projectName,
         action,
-      });
-      if (enqueued instanceof Response) return enqueued;
-      queued.push(enqueued);
+      })
+      if (enqueued instanceof Response) return enqueued
+      queued.push(enqueued)
     }
-    return Response.json(queuedCommandsResponseBody(queued));
-  });
+    return Response.json(queuedCommandsResponseBody(queued))
+  })
 }

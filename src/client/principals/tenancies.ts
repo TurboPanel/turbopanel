@@ -14,7 +14,7 @@ import { ensureComposePrincipal, isUuid } from '../../features/principals/store.
 /** Service ids linked to each principal (empty array when none). */
 export async function loadServiceIdsByPrincipalIds(
   db: Db,
-  principalIds: readonly string[],
+  principalIds: readonly string[]
 ): Promise<Map<string, string[]>> {
   const map = new Map<string, string[]>()
   for (const id of principalIds) {
@@ -49,7 +49,7 @@ export async function loadServiceIdsByPrincipalIds(
 export async function servicesBelongToProject(
   db: Db,
   projectId: string,
-  serviceIds: readonly string[],
+  serviceIds: readonly string[]
 ): Promise<boolean> {
   if (serviceIds.length === 0) return true
   const unique = [...new Set(serviceIds)]
@@ -59,12 +59,7 @@ export async function servicesBelongToProject(
     .select({ id: service.id })
     .from(service)
     .innerJoin(environment, eq(service.environmentId, environment.id))
-    .where(
-      and(
-        eq(environment.projectId, projectId),
-        inArray(service.id, unique),
-      ),
-    )
+    .where(and(eq(environment.projectId, projectId), inArray(service.id, unique)))
 
   return rows.length === unique.length
 }
@@ -72,7 +67,7 @@ export async function servicesBelongToProject(
 /** Distinct principal ids that tenancy any service in the environment. */
 export async function loadTenancyPrincipalIdsForEnvironment(
   db: Db,
-  environmentId: string,
+  environmentId: string
 ): Promise<string[]> {
   const rows = await db
     .selectDistinct({ principalId: tenancy.principalId })
@@ -80,9 +75,7 @@ export async function loadTenancyPrincipalIdsForEnvironment(
     .innerJoin(service, eq(tenancy.serviceId, service.id))
     .where(eq(service.environmentId, environmentId))
 
-  return rows
-    .map((row) => row.principalId)
-    .sort((a, b) => a.localeCompare(b))
+  return rows.map((row) => row.principalId).sort((a, b) => a.localeCompare(b))
 }
 
 /**
@@ -91,7 +84,7 @@ export async function loadTenancyPrincipalIdsForEnvironment(
  */
 export async function loadPrincipalIdsByServiceIdForEnvironment(
   db: Db,
-  environmentId: string,
+  environmentId: string
 ): Promise<Map<string, string[]>> {
   const rows = await db
     .select({
@@ -117,17 +110,13 @@ export async function loadPrincipalIdsByServiceIdForEnvironment(
 
 /** Result of picking at most one principal for a site ownership pin. */
 export type SolePrincipalPick =
-  | { status: 'none' }
-  | { status: 'one'; principalId: string }
-  | { status: 'ambiguous' }
+  { status: 'none' } | { status: 'one'; principalId: string } | { status: 'ambiguous' }
 
 /**
  * Pick the single principal for a site service ownership pin.
  * Zero → `{ status: 'none' }`; one → that principal; more than one → ambiguous.
  */
-export function pickSolePrincipalId(
-  principalIds: readonly string[],
-): SolePrincipalPick {
+export function pickSolePrincipalId(principalIds: readonly string[]): SolePrincipalPick {
   if (principalIds.length === 0) return { status: 'none' }
   const [sole] = principalIds
   if (principalIds.length === 1 && sole !== undefined) {
@@ -147,7 +136,6 @@ export function parseServiceIdsField(body: Record<string, unknown>): string[] | 
   }
   return [...new Set(ids)].sort((a, b) => a.localeCompare(b))
 }
-
 
 /**
  * What one compose document says about ownership, once its aliases have been
@@ -175,12 +163,8 @@ function isPlainMapping(value: unknown): value is Record<string, unknown> {
 }
 
 /** Every `x-turbopanel.principal` in a merged document, in stable key order. */
-function collectDeclaredAliases(
-  merged: ComposeDocument,
-): Map<string, string> {
-  const services = isPlainMapping(merged.data.services)
-    ? merged.data.services
-    : {}
+function collectDeclaredAliases(merged: ComposeDocument): Map<string, string> {
+  const services = isPlainMapping(merged.data.services) ? merged.data.services : {}
   const out = new Map<string, string>()
   for (const name of Object.keys(services).toSorted((a, b) => a.localeCompare(b))) {
     const raw = services[name]
@@ -220,7 +204,7 @@ export async function reconcilePrincipalsFromCompose(
     projectId: string
     merged: ComposeDocument
     serviceRows: ReadonlyArray<{ id: string; composeServiceName: string }>
-  },
+  }
 ): Promise<ComposePrincipalReconcileResult> {
   const aliasByComposeServiceName = collectDeclaredAliases(params.merged)
   if (aliasByComposeServiceName.size === 0) {
@@ -234,9 +218,7 @@ export async function reconcilePrincipalsFromCompose(
   }
 
   const root = parseRootExtension(
-    (params.merged.data as Record<string, unknown>)[
-      TURBOPANEL_ROOT_EXTENSION_KEY
-    ],
+    (params.merged.data as Record<string, unknown>)[TURBOPANEL_ROOT_EXTENSION_KEY]
   )
   const specs: Record<string, PrincipalSpec> = root?.principals ?? {}
 
@@ -250,7 +232,7 @@ export async function reconcilePrincipalsFromCompose(
   }
 
   const serviceIdByComposeName = new Map(
-    params.serviceRows.map((row) => [row.composeServiceName, row.id]),
+    params.serviceRows.map((row) => [row.composeServiceName, row.id])
   )
 
   const principalIdByAlias = new Map<string, string>()

@@ -15,7 +15,7 @@ import { reconcileServicesFromCompose } from '../../features/deploy/reconcile-se
  */
 export async function reconcileServicesForEnvironment(
   db: Db,
-  environmentId: string,
+  environmentId: string
 ): Promise<void> {
   try {
     const [envRow] = await db
@@ -42,10 +42,7 @@ export async function reconcileServicesForEnvironment(
 }
 
 /** Reconcile every environment of a project (e.g. after project base compose save). */
-export async function reconcileServicesForProject(
-  db: Db,
-  projectId: string,
-): Promise<void> {
+export async function reconcileServicesForProject(db: Db, projectId: string): Promise<void> {
   try {
     const rows = await db
       .select({ id: environment.id })

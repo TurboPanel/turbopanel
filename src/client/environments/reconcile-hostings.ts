@@ -98,9 +98,7 @@ export type ComposeHostingIpRefError = {
   reason: 'not_found' | 'ambiguous'
 }
 
-export type ComposeHostingRefError =
-  | ComposeHostingTlsRefError
-  | ComposeHostingIpRefError
+export type ComposeHostingRefError = ComposeHostingTlsRefError | ComposeHostingIpRefError
 
 /**
  * An entry asked for a TLS mode nothing downstream can perform.
@@ -162,18 +160,18 @@ export type ComposeHostingError =
 
 export type ComposeHostingReconcileResult =
   | {
-    ok: true
-    /** `hosting.id` of rows this pass minted. */
-    created: string[]
-    /** `hosting.id` of compose-owned rows this pass re-asserted. */
-    updated: string[]
-    /** `hosting.id` of panel rows this pass took over for a matching route. */
-    adopted: string[]
-    /** `hosting.id` of compose-owned rows whose declaration disappeared. */
-    removed: string[]
-    /** `hosting.id` of adopted rows handed back to the panel. */
-    released: string[]
-  }
+      ok: true
+      /** `hosting.id` of rows this pass minted. */
+      created: string[]
+      /** `hosting.id` of compose-owned rows this pass re-asserted. */
+      updated: string[]
+      /** `hosting.id` of panel rows this pass took over for a matching route. */
+      adopted: string[]
+      /** `hosting.id` of compose-owned rows whose declaration disappeared. */
+      removed: string[]
+      /** `hosting.id` of adopted rows handed back to the panel. */
+      released: string[]
+    }
   | { ok: false; error: ComposeHostingError }
 
 type DeclaredRoute = {
@@ -209,15 +207,9 @@ function isPlainMapping(value: unknown): value is Record<string, unknown> {
  * same sequence every time.
  */
 function collectDeclaredRoutes(merged: ComposeDocument): DeclaredRoute[] {
-  const services = isPlainMapping(merged.data.services)
-    ? merged.data.services
-    : {}
+  const services = isPlainMapping(merged.data.services) ? merged.data.services : {}
   const routes: DeclaredRoute[] = []
-  for (
-    const composeServiceName of Object.keys(services).toSorted((a, b) =>
-      a.localeCompare(b)
-    )
-  ) {
+  for (const composeServiceName of Object.keys(services).toSorted((a, b) => a.localeCompare(b))) {
     const raw = services[composeServiceName]
     if (!isPlainMapping(raw)) continue
     const extension = readServiceTurbopanelExtension(raw)
@@ -238,7 +230,7 @@ function collectDeclaredRoutes(merged: ComposeDocument): DeclaredRoute[] {
 /** Refs, deduped, in the order the document names them. */
 function collectRefs(
   routes: readonly DeclaredRoute[],
-  read: (entry: ComposeHostingExtensionEntry) => string | undefined,
+  read: (entry: ComposeHostingExtensionEntry) => string | undefined
 ): string[] {
   const refs: string[] = []
   const seen = new Set<string>()
@@ -259,13 +251,10 @@ function collectRefs(
  * not a UUID. A label two rows share resolves to neither — picking one would be
  * a coin flip about which certificate serves production traffic.
  */
-type RefResolution =
-  | { kind: 'ok'; id: string }
-  | { kind: 'not_found' }
-  | { kind: 'ambiguous' }
+type RefResolution = { kind: 'ok'; id: string } | { kind: 'not_found' } | { kind: 'ambiguous' }
 
 function buildRefIndex(
-  rows: ReadonlyArray<{ id: string; label: string | null }>,
+  rows: ReadonlyArray<{ id: string; label: string | null }>
 ): (ref: string) => RefResolution {
   const byId = new Map<string, string>()
   const byLabel = new Map<string, string[]>()
@@ -290,7 +279,7 @@ function buildRefIndex(
 async function loadTlsIndex(
   db: Db,
   organizationId: string,
-  needed: boolean,
+  needed: boolean
 ): Promise<(ref: string) => RefResolution> {
   if (!needed) return () => ({ kind: 'not_found' })
   const rows = await db
@@ -303,7 +292,7 @@ async function loadTlsIndex(
 async function loadIpIndex(
   db: Db,
   organizationId: string,
-  needed: boolean,
+  needed: boolean
 ): Promise<(ref: string) => RefResolution> {
   if (!needed) return () => ({ kind: 'not_found' })
   const rows = await db
@@ -332,7 +321,7 @@ async function loadIpIndex(
 function mergeComposeHostingOptions(
   existing: unknown,
   entry: ComposeHostingExtensionEntry,
-  serviceKind: ComposeServiceKind | undefined,
+  serviceKind: ComposeServiceKind | undefined
 ): HostingOptions {
   const options: HostingOptions = { ...parseHostingOptions(existing) }
 
@@ -340,9 +329,7 @@ function mergeComposeHostingOptions(
   options.pathPrefix = hostingPathPrefixOf(entry)
   options.bind = hostingBindScopeOf(entry)
 
-  if (
-    entry.targetPort === undefined || !hostingTargetPortAuthorable(serviceKind)
-  ) {
+  if (entry.targetPort === undefined || !hostingTargetPortAuthorable(serviceKind)) {
     delete options.targetPort
   } else {
     options.targetPort = entry.targetPort
@@ -367,7 +354,7 @@ function refErrorFor(
   kind: ComposeHostingRefError['kind'],
   route: DeclaredRoute,
   ref: string,
-  resolution: Extract<RefResolution, { kind: 'not_found' | 'ambiguous' }>,
+  resolution: Extract<RefResolution, { kind: 'not_found' | 'ambiguous' }>
 ): ComposeHostingRefError {
   return {
     kind,
@@ -388,7 +375,7 @@ function refErrorFor(
  */
 async function loadEnvironmentHostingRows(
   db: Db,
-  environmentId: string,
+  environmentId: string
 ): Promise<{ composeOwned: ExistingRow[]; panelAuthored: ExistingRow[] }> {
   const rows = await db
     .select({
@@ -431,7 +418,7 @@ function matchPanelAuthoredRow(
     hostname: string
     pathPrefix: string
     excludeIds: ReadonlySet<string>
-  },
+  }
 ): PanelRowMatch {
   for (const row of rows) {
     if (row.serviceId !== params.serviceId) continue
@@ -488,7 +475,7 @@ type RouteReconcileContext = {
 function matchOrAdoptExistingRow(
   ctx: RouteReconcileContext,
   serviceId: string,
-  route: DeclaredRoute,
+  route: DeclaredRoute
 ): { existing: ExistingRow | undefined; isAdoption: boolean } | ComposeHostingError {
   const existing = ctx.existingByKey.get(existingRowKey(serviceId, route.route))
   if (existing) return { existing, isAdoption: false }
@@ -516,7 +503,7 @@ function matchOrAdoptExistingRow(
 }
 
 function isComposeHostingError(
-  value: { existing: ExistingRow | undefined; isAdoption: boolean } | ComposeHostingError,
+  value: { existing: ExistingRow | undefined; isAdoption: boolean } | ComposeHostingError
 ): value is ComposeHostingError {
   return 'kind' in value
 }
@@ -524,7 +511,7 @@ function isComposeHostingError(
 async function reconcileDeclaredRoute(
   db: Db,
   route: DeclaredRoute,
-  ctx: RouteReconcileContext,
+  ctx: RouteReconcileContext
 ): Promise<ComposeHostingError | null> {
   const serviceId = ctx.serviceIdByComposeName.get(route.composeServiceName)
   // A service with no row is a service `reconcileServicesFromCompose` did not
@@ -542,11 +529,7 @@ async function reconcileDeclaredRoute(
   if (isComposeHostingError(matched)) return matched
   const { existing, isAdoption } = matched
 
-  const options = mergeComposeHostingOptions(
-    existing?.options,
-    route.entry,
-    route.serviceKind,
-  )
+  const options = mergeComposeHostingOptions(existing?.options, route.entry, route.serviceKind)
   const metadata = withHostingComposeOwner(existing?.metadata, {
     composeServiceName: route.composeServiceName,
     route: route.route,
@@ -581,8 +564,7 @@ async function persistExistingDeclaredRoute(input: {
   options: ExistingRow['options']
   isAdoption: boolean
 }): Promise<ComposeHostingError | null> {
-  const { db, route, ctx, existingId, serviceId, pins, metadata, options, isAdoption } =
-    input
+  const { db, route, ctx, existingId, serviceId, pins, metadata, options, isAdoption } = input
   try {
     await db.transaction(async (tx) => {
       await tx
@@ -596,9 +578,7 @@ async function persistExistingDeclaredRoute(input: {
           updatedAt: new Date().toISOString(),
         })
         .where(eq(hosting.id, existingId))
-      await replaceHostingHostnames(tx, existingId, ctx.organizationId, [
-        route.entry.hostname,
-      ])
+      await replaceHostingHostnames(tx, existingId, ctx.organizationId, [route.entry.hostname])
     })
   } catch (err) {
     if (isHostnameUniqueViolation(err)) {
@@ -629,7 +609,7 @@ async function insertDeclaredRoute(
   serviceId: string,
   pins: Extract<ReturnType<typeof resolvePins>, { ok: true }>,
   metadata: ExistingRow['metadata'],
-  options: ExistingRow['options'],
+  options: ExistingRow['options']
 ): Promise<ComposeHostingError | null> {
   let insertedId: string
   try {
@@ -645,9 +625,7 @@ async function insertDeclaredRoute(
           options,
         })
         .returning({ id: hosting.id })
-      await replaceHostingHostnames(tx, inserted.id, ctx.organizationId, [
-        route.entry.hostname,
-      ])
+      await replaceHostingHostnames(tx, inserted.id, ctx.organizationId, [route.entry.hostname])
       return inserted.id
     })
   } catch (err) {
@@ -681,12 +659,10 @@ async function insertDeclaredRoute(
 async function pruneOrphanedComposeRows(
   db: Db,
   existingRows: readonly ExistingRow[],
-  keptIds: ReadonlySet<string>,
+  keptIds: ReadonlySet<string>
 ): Promise<{ removed: string[]; released: string[] }> {
   const orphaned = existingRows.filter((row) => !keptIds.has(row.id))
-  const releasedRows = orphaned.filter((row) =>
-    isAdoptedComposeHosting(row.metadata)
-  )
+  const releasedRows = orphaned.filter((row) => isAdoptedComposeHosting(row.metadata))
   await forEachSequential(releasedRows, async (row) => {
     await db
       .update(hosting)
@@ -724,11 +700,13 @@ export async function reconcileHostingsFromCompose(
     environmentId: string
     merged: ComposeDocument
     serviceRows: ReadonlyArray<{ id: string; composeServiceName: string }>
-  },
+  }
 ): Promise<ComposeHostingReconcileResult> {
   const routes = collectDeclaredRoutes(params.merged)
-  const { composeOwned: existingRows, panelAuthored } =
-    await loadEnvironmentHostingRows(db, params.environmentId)
+  const { composeOwned: existingRows, panelAuthored } = await loadEnvironmentHostingRows(
+    db,
+    params.environmentId
+  )
   if (routes.length === 0 && existingRows.length === 0) {
     return {
       ok: true,
@@ -742,19 +720,11 @@ export async function reconcileHostingsFromCompose(
 
   const tlsRefs = collectRefs(routes, (entry) => entry.tls?.certificateRef)
   const ipRefs = collectRefs(routes, (entry) => entry.bind?.ipRef)
-  const resolveTls = await loadTlsIndex(
-    db,
-    params.organizationId,
-    tlsRefs.length > 0,
-  )
-  const resolveIp = await loadIpIndex(
-    db,
-    params.organizationId,
-    ipRefs.length > 0,
-  )
+  const resolveTls = await loadTlsIndex(db, params.organizationId, tlsRefs.length > 0)
+  const resolveIp = await loadIpIndex(db, params.organizationId, ipRefs.length > 0)
 
   const serviceIdByComposeName = new Map(
-    params.serviceRows.map((row) => [row.composeServiceName, row.id]),
+    params.serviceRows.map((row) => [row.composeServiceName, row.id])
   )
   const existingByKey = new Map<string, ExistingRow>()
   for (const row of existingRows) {
@@ -781,11 +751,7 @@ export async function reconcileHostingsFromCompose(
     if (error) return { ok: false, error }
   }
 
-  const { removed, released } = await pruneOrphanedComposeRows(
-    db,
-    existingRows,
-    ctx.keptIds,
-  )
+  const { removed, released } = await pruneOrphanedComposeRows(db, existingRows, ctx.keptIds)
 
   return {
     ok: true,
@@ -804,9 +770,7 @@ export async function reconcileHostingsFromCompose(
  * next to {@link ComposeHostingTlsModeError} rather than in the middle of the
  * upsert loop.
  */
-function unsupportedTlsModeError(
-  route: DeclaredRoute,
-): ComposeHostingTlsModeError | null {
+function unsupportedTlsModeError(route: DeclaredRoute): ComposeHostingTlsModeError | null {
   const mode = hostingTlsModeOf(route.entry)
   if (mode !== 'automatic') return null
   return {
@@ -834,7 +798,7 @@ type ResolvedPins =
 function resolvePins(
   route: DeclaredRoute,
   resolveTls: (ref: string) => RefResolution,
-  resolveIp: (ref: string) => RefResolution,
+  resolveIp: (ref: string) => RefResolution
 ): ResolvedPins {
   let tlsId: string | null = null
   const certificateRef = route.entry.tls?.certificateRef
@@ -843,12 +807,7 @@ function resolvePins(
     if (resolution.kind !== 'ok') {
       return {
         ok: false,
-        error: refErrorFor(
-          'hosting_tls_ref_unresolved',
-          route,
-          certificateRef,
-          resolution,
-        ),
+        error: refErrorFor('hosting_tls_ref_unresolved', route, certificateRef, resolution),
       }
     }
     tlsId = resolution.id
