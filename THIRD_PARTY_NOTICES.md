@@ -6,7 +6,7 @@ Third-party components remain under their own copyright and license terms and ar
 
 <!-- lockfiles
 deno.lock sha256:1a88b99a83c2dce9715534253e1a6e688507204f8baac243f0e4834f82444905
-pnpm-lock.yaml sha256:e9f45a345fe3285aed9e104a8eb612ce0a1aa2e3f11c119fbccecfc88dcad81c
+pnpm-lock.yaml sha256:3589df00fb76e7b62dd74052d639b85b9a79c28c27d926107d5677b8da68c058
 -->
 
 ## Production dependencies
@@ -845,10 +845,9 @@ These packages are used for development, test, or build tooling and are not bund
 - Copyright: Microsoft Corp.
 - Homepage: https://www.typescriptlang.org/
 
-### undici@7.29.0
+### undici@7.29.1
 
 - License: MIT
-- Homepage: https://undici.nodejs.org
 
 ### undici-types@8.3.0
 
