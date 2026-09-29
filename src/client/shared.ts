@@ -1,56 +1,50 @@
-import type { Context } from "hono";
-import { getDb } from "../db/connection.ts";
+import type { Context } from 'hono'
+import { getDb } from '../db/connection.ts'
 import {
   isValidDescription,
   isValidDisplayName,
   normalizeDisplayName,
-} from "../lib/display-name-format.ts";
-import { can } from "./authz/index.ts";
-import { resolveOrgId } from "./org-context.ts";
-import { BadRequestError } from "../lib/http/request-fields.ts";
+} from '../lib/display-name-format.ts'
+import { can } from './authz/index.ts'
+import { resolveOrgId } from './org-context.ts'
+import { BadRequestError } from '../lib/http/request-fields.ts'
 
-export { BadRequestError };
-export { parseName, requireStringField } from "../lib/http/request-fields.ts";
+export { BadRequestError }
+export { parseName, requireStringField } from '../lib/http/request-fields.ts'
 
-export {
-  assertNotSystemOwnedOr403,
-  SYSTEM_RESOURCE_IMMUTABLE_ERROR,
-} from "./authz/http.ts";
+export { assertNotSystemOwnedOr403, SYSTEM_RESOURCE_IMMUTABLE_ERROR } from './authz/http.ts'
 
-export function getOrgId(
-  c: Context,
-  userId: string,
-): Promise<string | Response> {
-  return resolveOrgId(c, userId);
+export function getOrgId(c: Context, userId: string): Promise<string | Response> {
+  return resolveOrgId(c, userId)
 }
 
 export function parseDescription(body: Record<string, unknown>): string | null {
   if (body.description === undefined) {
-    return null;
+    return null
   }
-  if (typeof body.description !== "string") {
-    throw new BadRequestError("Invalid request");
+  if (typeof body.description !== 'string') {
+    throw new BadRequestError('Invalid request')
   }
-  const description = normalizeDisplayName(body.description);
+  const description = normalizeDisplayName(body.description)
   if (!isValidDescription(description)) {
-    throw new BadRequestError("Invalid request");
+    throw new BadRequestError('Invalid request')
   }
-  return description.length === 0 ? null : description;
+  return description.length === 0 ? null : description
 }
 
 export function parseJsonbObject(
   c: Context,
   body: Record<string, unknown>,
-  field: string,
+  field: string
 ): Record<string, unknown> | null | Response {
   if (body[field] === undefined) {
-    return null;
+    return null
   }
-  const value = body[field];
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    return c.json({ error: "Invalid request" }, 400);
+  const value = body[field]
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    return c.json({ error: 'Invalid request' }, 400)
   }
-  return value as Record<string, unknown>;
+  return value as Record<string, unknown>
 }
 
 /**
@@ -60,49 +54,51 @@ export function parseJsonbObject(
  */
 export function stripPromotedMetadataKeys(
   metadata: Record<string, unknown>,
-  keys: readonly string[],
+  keys: readonly string[]
 ): Record<string, unknown> {
-  const next: Record<string, unknown> = { ...metadata };
+  const next: Record<string, unknown> = { ...metadata }
   for (const key of keys) {
-    delete next[key];
+    delete next[key]
   }
-  return next;
+  return next
 }
 
 /** PATCH payload: omit `name` when absent so partial updates do not clear it. */
-export function buildPatchUpdateFields(
-  body: Record<string, unknown>,
-): { name?: string | null; description?: string | null; updatedAt: string } {
-  const updatedAt = new Date().toISOString();
+export function buildPatchUpdateFields(body: Record<string, unknown>): {
+  name?: string | null
+  description?: string | null
+  updatedAt: string
+} {
+  const updatedAt = new Date().toISOString()
   const result: {
-    name?: string | null;
-    description?: string | null;
-    updatedAt: string;
-  } = { updatedAt };
+    name?: string | null
+    description?: string | null
+    updatedAt: string
+  } = { updatedAt }
 
   if (body.name !== undefined) {
-    if (typeof body.name !== "string") {
-      throw new BadRequestError("Invalid request");
+    if (typeof body.name !== 'string') {
+      throw new BadRequestError('Invalid request')
     }
-    const name = normalizeDisplayName(body.name);
+    const name = normalizeDisplayName(body.name)
     if (!isValidDisplayName(name)) {
-      throw new BadRequestError("Invalid request");
+      throw new BadRequestError('Invalid request')
     }
-    result.name = name;
+    result.name = name
   }
 
   if (body.description !== undefined) {
-    if (typeof body.description !== "string") {
-      throw new BadRequestError("Invalid request");
+    if (typeof body.description !== 'string') {
+      throw new BadRequestError('Invalid request')
     }
-    const description = normalizeDisplayName(body.description);
+    const description = normalizeDisplayName(body.description)
     if (!isValidDescription(description)) {
-      throw new BadRequestError("Invalid request");
+      throw new BadRequestError('Invalid request')
     }
-    result.description = description.length === 0 ? null : description;
+    result.description = description.length === 0 ? null : description
   }
 
-  return result;
+  return result
 }
 
 /**
@@ -115,26 +111,20 @@ export function buildPatchUpdateFields(
 export async function assertCanManageOr403(
   c: Context,
   kind: string,
-  entityId: string,
+  entityId: string
 ): Promise<Response | null> {
-  const db = getDb(c);
-  if (!db) return c.json({ error: "Database unavailable" }, 503);
+  const db = getDb(c)
+  if (!db) return c.json({ error: 'Database unavailable' }, 503)
 
-  const session = c.get("session");
-  if (!session) return c.json({ error: "Unauthorized" }, 401);
+  const session = c.get('session')
+  if (!session) return c.json({ error: 'Unauthorized' }, 401)
 
-  const allowed = await can(
-    db,
-    session.userId,
-    "organization:manage",
-    kind,
-    entityId,
-  );
+  const allowed = await can(db, session.userId, 'organization:manage', kind, entityId)
 
   if (!allowed) {
-    return c.json({ error: "Forbidden" }, 403);
+    return c.json({ error: 'Forbidden' }, 403)
   }
-  return null;
+  return null
 }
 
 /**
@@ -146,9 +136,9 @@ export async function assertCanManageOr403(
 export function assertCanReadOr403(
   c: Context,
   kind: string,
-  entityId: string,
+  entityId: string
 ): Promise<Response | null> {
-  return assertCanManageOr403(c, kind, entityId);
+  return assertCanManageOr403(c, kind, entityId)
 }
 
 /**
@@ -160,26 +150,24 @@ export function assertCanReadOr403(
 export function assertCanCreateOr403(
   c: Context,
   parentKind: string,
-  parentId: string,
+  parentId: string
 ): Promise<Response | null> {
-  return assertCanManageOr403(c, parentKind, parentId);
+  return assertCanManageOr403(c, parentKind, parentId)
 }
 
-export async function parseJsonBody(
-  c: Context,
-): Promise<Record<string, unknown> | Response> {
-  const rawBody = await c.req.text().catch(() => "");
+export async function parseJsonBody(c: Context): Promise<Record<string, unknown> | Response> {
+  const rawBody = await c.req.text().catch(() => '')
   if (!rawBody.trim()) {
-    return {};
+    return {}
   }
-  let body: unknown;
+  let body: unknown
   try {
-    body = JSON.parse(rawBody);
+    body = JSON.parse(rawBody)
   } catch {
-    return c.json({ error: "Invalid request" }, 400);
+    return c.json({ error: 'Invalid request' }, 400)
   }
-  if (body === null || typeof body !== "object" || Array.isArray(body)) {
-    return c.json({ error: "Invalid request" }, 400);
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+    return c.json({ error: 'Invalid request' }, 400)
   }
-  return body as Record<string, unknown>;
+  return body as Record<string, unknown>
 }

@@ -1,191 +1,184 @@
 export type ServerDaemonKey = {
-  id: string;
-  algorithm: "Ed25519";
-  publicJwk: JsonWebKey;
-  fingerprint: string;
-  createdAt: string;
-  revokedAt?: string | null;
+  id: string
+  algorithm: 'Ed25519'
+  publicJwk: JsonWebKey
+  fingerprint: string
+  createdAt: string
+  revokedAt?: string | null
   /** Updated on JWT session issuance — canonical Postgres key-use tracking. */
-  lastUsedAt?: string | null;
-};
+  lastUsedAt?: string | null
+}
 
 export type UpdateProjection = {
-  status: "idle" | "updating" | "done" | "failed" | "expired";
-  channel?: string;
-  requestId?: string;
-  queuedAt?: string;
-  finishedAt?: string;
-  error?: string;
-};
+  status: 'idle' | 'updating' | 'done' | 'failed' | 'expired'
+  channel?: string
+  requestId?: string
+  queuedAt?: string
+  finishedAt?: string
+  error?: string
+}
 
 /** sparse Postgres projection of daemon identity (never full resource graph). */
 export type ServerDaemonProjection = {
-  hostname?: string;
-  machineKey?: string;
-  remoteAddress?: string;
-  keyId?: string;
+  hostname?: string
+  machineKey?: string
+  remoteAddress?: string
+  keyId?: string
   daemonBuild?: {
-    commit?: string;
-    buildId?: string;
-    builtAt?: string;
-    channel?: string;
-    version?: string;
-  };
-  update?: UpdateProjection;
+    commit?: string
+    buildId?: string
+    builtAt?: string
+    channel?: string
+    version?: string
+  }
+  update?: UpdateProjection
   /** Advertised wire features from `hello`. Missing on disk means none. */
-  features?: string[];
-};
+  features?: string[]
+}
 
 /** Fleet liveness — stored on dedicated `server` columns, not `server.daemon`. */
 export type ServerDaemonStatus = {
-  connected: boolean;
+  connected: boolean
   /** Derived from `connected` + `statusChangedAt` — never stored. */
-  daemonStatus: "online" | "offline" | "unknown" | null;
-  statusChangedAt: string | null;
-};
+  daemonStatus: 'online' | 'offline' | 'unknown' | null
+  statusChangedAt: string | null
+}
 
 /**
  * The assembled daemon identity: the `key` table row plus the sparse
  * `server.daemon` jsonb projection. Status lives in dedicated columns.
  */
 export type ServerDaemonState = {
-  key: ServerDaemonKey;
-  projection?: ServerDaemonProjection;
-};
+  key: ServerDaemonKey
+  projection?: ServerDaemonProjection
+}
 
 /** What `server.daemon` jsonb actually stores now — the key lives in the `key` table. */
 export type ServerDaemonJsonb = {
-  projection?: ServerDaemonProjection;
-};
+  projection?: ServerDaemonProjection
+}
 
 /** Row shape selected from the `key` table. */
 export type KeyTableRow = {
-  id: string;
-  algorithm: string;
-  publicJwk: unknown;
-  fingerprint: string;
-  createdAt: string;
-  revokedAt: string | null;
-  lastUsedAt: string | null;
-};
+  id: string
+  algorithm: string
+  publicJwk: unknown
+  fingerprint: string
+  createdAt: string
+  revokedAt: string | null
+  lastUsedAt: string | null
+}
 
 /** Column row shape used by {@link mapServerDaemonStatusFromColumns}. */
 export type ServerDaemonStatusColumns = {
-  connected: boolean | null | undefined;
-  statusChangedAt: string | null | undefined;
-};
+  connected: boolean | null | undefined
+  statusChangedAt: string | null | undefined
+}
 
 function isNonEmptyString(value: unknown): value is string {
-  return typeof value === "string" && value.trim().length > 0;
+  return typeof value === 'string' && value.trim().length > 0
 }
 
 function isPublicJwk(value: unknown): value is JsonWebKey {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return false;
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false
   }
-  const jwk = value as JsonWebKey;
-  return isNonEmptyString(jwk.kty) && isNonEmptyString(jwk.crv) &&
-    isNonEmptyString(jwk.x);
+  const jwk = value as JsonWebKey
+  return isNonEmptyString(jwk.kty) && isNonEmptyString(jwk.crv) && isNonEmptyString(jwk.x)
 }
 
-const UPDATE_PROJECTION_STATUSES = new Set<UpdateProjection["status"]>([
-  "idle",
-  "updating",
-  "done",
-  "failed",
-  "expired",
-]);
+const UPDATE_PROJECTION_STATUSES = new Set<UpdateProjection['status']>([
+  'idle',
+  'updating',
+  'done',
+  'failed',
+  'expired',
+])
 
 function parseUpdateProjection(raw: unknown): UpdateProjection | undefined {
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
-    return undefined;
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    return undefined
   }
-  const update = raw as Record<string, unknown>;
+  const update = raw as Record<string, unknown>
   if (
-    typeof update.status !== "string" ||
-    !UPDATE_PROJECTION_STATUSES.has(update.status as UpdateProjection["status"])
+    typeof update.status !== 'string' ||
+    !UPDATE_PROJECTION_STATUSES.has(update.status as UpdateProjection['status'])
   ) {
-    return undefined;
+    return undefined
   }
   const parsed: UpdateProjection = {
-    status: update.status as UpdateProjection["status"],
-  };
-  if (isNonEmptyString(update.channel)) parsed.channel = update.channel;
-  if (isNonEmptyString(update.requestId)) parsed.requestId = update.requestId;
-  if (isNonEmptyString(update.queuedAt)) parsed.queuedAt = update.queuedAt;
-  if (isNonEmptyString(update.finishedAt)) parsed.finishedAt = update.finishedAt;
-  if (isNonEmptyString(update.error)) parsed.error = update.error;
-  return parsed;
+    status: update.status as UpdateProjection['status'],
+  }
+  if (isNonEmptyString(update.channel)) parsed.channel = update.channel
+  if (isNonEmptyString(update.requestId)) parsed.requestId = update.requestId
+  if (isNonEmptyString(update.queuedAt)) parsed.queuedAt = update.queuedAt
+  if (isNonEmptyString(update.finishedAt)) parsed.finishedAt = update.finishedAt
+  if (isNonEmptyString(update.error)) parsed.error = update.error
+  return parsed
 }
 
 function parseProjectionDaemonBuild(
-  raw: unknown,
-): ServerDaemonProjection["daemonBuild"] | undefined {
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
-    return undefined;
+  raw: unknown
+): ServerDaemonProjection['daemonBuild'] | undefined {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    return undefined
   }
-  const daemonBuild = raw as Record<string, unknown>;
-  const result: NonNullable<ServerDaemonProjection["daemonBuild"]> = {};
-  if (isNonEmptyString(daemonBuild.commit)) result.commit = daemonBuild.commit;
-  if (isNonEmptyString(daemonBuild.buildId)) result.buildId = daemonBuild.buildId;
-  if (isNonEmptyString(daemonBuild.builtAt)) result.builtAt = daemonBuild.builtAt;
-  if (isNonEmptyString(daemonBuild.channel)) result.channel = daemonBuild.channel;
-  if (isNonEmptyString(daemonBuild.version)) result.version = daemonBuild.version;
-  if (Object.keys(result).length === 0) return undefined;
-  return result;
+  const daemonBuild = raw as Record<string, unknown>
+  const result: NonNullable<ServerDaemonProjection['daemonBuild']> = {}
+  if (isNonEmptyString(daemonBuild.commit)) result.commit = daemonBuild.commit
+  if (isNonEmptyString(daemonBuild.buildId)) result.buildId = daemonBuild.buildId
+  if (isNonEmptyString(daemonBuild.builtAt)) result.builtAt = daemonBuild.builtAt
+  if (isNonEmptyString(daemonBuild.channel)) result.channel = daemonBuild.channel
+  if (isNonEmptyString(daemonBuild.version)) result.version = daemonBuild.version
+  if (Object.keys(result).length === 0) return undefined
+  return result
 }
 
 function parseProjectionFeatures(raw: unknown): string[] | undefined {
-  if (!Array.isArray(raw)) return undefined;
-  const features: string[] = [];
+  if (!Array.isArray(raw)) return undefined
+  const features: string[] = []
   for (const entry of raw) {
-    if (typeof entry !== "string") return undefined;
-    features.push(entry);
+    if (typeof entry !== 'string') return undefined
+    features.push(entry)
   }
-  return features;
+  return features
 }
 
 /** True when the stored list is the same sequence as `next`. A missing list is not `[]`. */
 export function featuresMatch(
   current: readonly string[] | undefined,
-  next: readonly string[],
+  next: readonly string[]
 ): boolean {
-  if (current?.length !== next.length) return false;
+  if (current?.length !== next.length) return false
   for (let i = 0; i < current.length; i += 1) {
-    if (current[i] !== next[i]) return false;
+    if (current[i] !== next[i]) return false
   }
-  return true;
+  return true
 }
 
 /** Copy `current` and set `features`. Does not drop hostname, daemonBuild, or update. */
 export function projectionWithFeatures(
   current: ServerDaemonProjection | undefined,
-  features: readonly string[],
+  features: readonly string[]
 ): ServerDaemonProjection {
   return {
     ...current,
     features: [...features],
-  };
+  }
 }
 
-function parseServerDaemonProjection(
-  raw: unknown,
-): ServerDaemonProjection | null {
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
-    return null;
+function parseServerDaemonProjection(raw: unknown): ServerDaemonProjection | null {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    return null
   }
-  const projection = raw as Record<string, unknown>;
-  const parsedDaemonBuild = parseProjectionDaemonBuild(projection.daemonBuild);
-  const parsedUpdate = parseUpdateProjection(projection.update);
-  const parsedFeatures = parseProjectionFeatures(projection.features);
+  const projection = raw as Record<string, unknown>
+  const parsedDaemonBuild = parseProjectionDaemonBuild(projection.daemonBuild)
+  const parsedUpdate = parseUpdateProjection(projection.update)
+  const parsedFeatures = parseProjectionFeatures(projection.features)
 
   const parsed: ServerDaemonProjection = {
-    hostname: isNonEmptyString(projection.hostname)
-      ? projection.hostname
-      : undefined,
-    machineKey: isNonEmptyString(projection.machineKey)
-      ? projection.machineKey
-      : undefined,
+    hostname: isNonEmptyString(projection.hostname) ? projection.hostname : undefined,
+    machineKey: isNonEmptyString(projection.machineKey) ? projection.machineKey : undefined,
     remoteAddress: isNonEmptyString(projection.remoteAddress)
       ? projection.remoteAddress
       : undefined,
@@ -193,7 +186,7 @@ function parseServerDaemonProjection(
     ...(parsedDaemonBuild ? { daemonBuild: parsedDaemonBuild } : {}),
     ...(parsedUpdate ? { update: parsedUpdate } : {}),
     ...(parsedFeatures !== undefined ? { features: parsedFeatures } : {}),
-  };
+  }
 
   if (
     parsed.hostname === undefined &&
@@ -204,51 +197,51 @@ function parseServerDaemonProjection(
     parsed.update === undefined &&
     parsed.features === undefined
   ) {
-    return null;
+    return null
   }
 
-  return parsed;
+  return parsed
 }
 
 /** Validate and narrow a `key` table row into the stable {@link ServerDaemonKey} DTO. */
 export function parseServerDaemonKeyRow(row: KeyTableRow): ServerDaemonKey | null {
-  if (row.algorithm !== "Ed25519" || !isPublicJwk(row.publicJwk)) {
-    return null;
+  if (row.algorithm !== 'Ed25519' || !isPublicJwk(row.publicJwk)) {
+    return null
   }
   return {
     id: row.id,
-    algorithm: "Ed25519",
+    algorithm: 'Ed25519',
     publicJwk: row.publicJwk,
     fingerprint: row.fingerprint,
     createdAt: row.createdAt,
     revokedAt: row.revokedAt,
     lastUsedAt: row.lastUsedAt,
-  };
+  }
 }
 
 export function buildDefaultDaemonStatus(): ServerDaemonStatus {
   return {
     connected: false,
-    daemonStatus: "unknown",
+    daemonStatus: 'unknown',
     statusChangedAt: null,
-  };
+  }
 }
 
 /** Map dedicated `server` status columns into the stable status DTO. */
 export function mapServerDaemonStatusFromColumns(
-  columns: ServerDaemonStatusColumns,
+  columns: ServerDaemonStatusColumns
 ): ServerDaemonStatus {
-  const statusChangedAt = columns.statusChangedAt ?? null;
-  const connected = columns.connected === true;
-  let daemonStatus: ServerDaemonStatus["daemonStatus"] = "unknown";
-  if (statusChangedAt != null && String(statusChangedAt).trim() !== "") {
-    daemonStatus = connected ? "online" : "offline";
+  const statusChangedAt = columns.statusChangedAt ?? null
+  const connected = columns.connected === true
+  let daemonStatus: ServerDaemonStatus['daemonStatus'] = 'unknown'
+  if (statusChangedAt != null && String(statusChangedAt).trim() !== '') {
+    daemonStatus = connected ? 'online' : 'offline'
   }
   return {
     connected,
     daemonStatus,
     statusChangedAt,
-  };
+  }
 }
 
 /**
@@ -257,21 +250,20 @@ export function mapServerDaemonStatusFromColumns(
  * jsonb — use {@link mapServerDaemonStatusFromColumns}.
  */
 export function parseServerDaemonState(raw: unknown): ServerDaemonJsonb | null {
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
-    return null;
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    return null
   }
-  const state = raw as Record<string, unknown>;
-  const parsedProjection = state.projection != null
-    ? parseServerDaemonProjection(state.projection)
-    : undefined;
+  const state = raw as Record<string, unknown>
+  const parsedProjection =
+    state.projection != null ? parseServerDaemonProjection(state.projection) : undefined
 
   return {
     ...(parsedProjection ? { projection: parsedProjection } : {}),
-  };
+  }
 }
 
 export function isDaemonKeyActive(key: ServerDaemonKey): boolean {
-  return key.revokedAt === null || key.revokedAt === undefined;
+  return key.revokedAt === null || key.revokedAt === undefined
 }
 
 /**
@@ -280,4 +272,4 @@ export function isDaemonKeyActive(key: ServerDaemonKey): boolean {
  * enrollment list (turbopaneld `src/instance/connect-failure.ts`), so a
  * revoked host stops retrying instead of looping on enroll.
  */
-export const SERVER_KEY_REVOKED_ERROR = "Server key revoked";
+export const SERVER_KEY_REVOKED_ERROR = 'Server key revoked'
