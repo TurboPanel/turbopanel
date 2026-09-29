@@ -848,6 +848,7 @@ These packages are used for development, test, or build tooling and are not bund
 ### undici@7.29.1
 
 - License: MIT
+- Homepage: https://undici.nodejs.org
 
 ### undici-types@8.3.0
 
