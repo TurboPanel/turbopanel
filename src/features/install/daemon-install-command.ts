@@ -1,41 +1,68 @@
-import { formatInstanceDlBase } from "./install-tls.ts";
+import { formatInstanceDlBase } from './install-tls.ts'
 
-export function encodeLicenseArg(
-  licenseId: string,
-  licenseToken: string,
-): string {
-  const combined = `${licenseId}:${licenseToken}`;
+export function encodeLicenseArg(licenseId: string, licenseToken: string): string {
+  const combined = `${licenseId}:${licenseToken}`
   // `=` only appears as base64 padding, so stripping all equals is safe.
-  return btoa(combined)
-    .replaceAll("+", "-")
-    .replaceAll("/", "_")
-    .replaceAll("=", "");
+  return btoa(combined).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '')
 }
 
 /** CDN bootstrap host shown in production install commands (HTTP→HTTPS via CF). */
-export const CDN_INSTALL_HOST = "turbopanel.sh";
+export const CDN_INSTALL_HOST = 'turbopanel.sh'
+
+/**
+ * Installer hosts per environment. All three behave like `turbopanel.sh` (a
+ * redirect to that branch's `run.sh`); they differ only in which branch: the
+ * bare host serves the release, `staging.` the staging branch, `testing.` trunk.
+ */
+export const STAGING_INSTALL_HOST = 'staging.turbopanel.sh'
+export const TESTING_INSTALL_HOST = 'testing.turbopanel.sh'
+
+const INSTALL_HOSTS: ReadonlySet<string> = new Set([
+  CDN_INSTALL_HOST,
+  STAGING_INSTALL_HOST,
+  TESTING_INSTALL_HOST,
+])
+
+/**
+ * The installer host for an update channel: `rc` (staging) gets `staging.`,
+ * the canary rail (`trunk`, `edge`, `canary`; testing) gets `testing.`, and a
+ * release, or a channel we do not know, gets the bare host. Same mapping as
+ * the daemon's `installerHostForChannel`.
+ */
+export function installScriptHostForChannel(channel: string | undefined): string {
+  switch (channel) {
+    case 'rc':
+      return STAGING_INSTALL_HOST
+    case 'trunk':
+    case 'edge':
+    case 'canary':
+      return TESTING_INSTALL_HOST
+    default:
+      return CDN_INSTALL_HOST
+  }
+}
 
 /**
  * Curl target for the installer script: bare `turbopanel.sh` on the CDN, otherwise
  * the validated origin with `/run.sh` appended (dev overlay only).
  */
 export function formatInstallScriptCurlUrl(origin: string): string {
-  const trimmed = origin.replace(/\/$/, "");
+  const trimmed = origin.replace(/\/$/, '')
   // Bare CDN host must stay bare — `new URL('turbopanel.sh')` throws and the
   // catch path would otherwise append `/run.sh` (invalid CDN contract).
-  if (trimmed === CDN_INSTALL_HOST) {
-    return CDN_INSTALL_HOST;
+  if (INSTALL_HOSTS.has(trimmed)) {
+    return trimmed
   }
   try {
-    const url = new URL(trimmed);
-    if (url.hostname === CDN_INSTALL_HOST && !url.port) {
-      return CDN_INSTALL_HOST;
+    const url = new URL(trimmed)
+    if (INSTALL_HOSTS.has(url.hostname) && !url.port) {
+      return url.hostname
     }
-    return `${trimmed}/run.sh`;
+    return `${trimmed}/run.sh`
   } catch {
     // fall through
   }
-  return `${trimmed}/run.sh`;
+  return `${trimmed}/run.sh`
 }
 
 /**
@@ -43,53 +70,53 @@ export function formatInstallScriptCurlUrl(origin: string): string {
  * base64url license (no shell metacharacters) — values are emitted unquoted.
  */
 function buildInstallPipeline(opts: {
-  curlUrl: string;
-  licenseArg: string;
-  host?: string;
-  insecureTls?: boolean;
-  curlInsecure?: boolean;
-  dlBase?: string;
-  updateChannel?: string;
+  curlUrl: string
+  licenseArg: string
+  host?: string
+  insecureTls?: boolean
+  curlInsecure?: boolean
+  dlBase?: string
+  updateChannel?: string
 }): string {
-  const curl = opts.curlInsecure ? "curl -fsSLk" : "curl -fsSL";
-  const envParts = [`TURBOPANEL_LICENSE=${opts.licenseArg}`];
-  if (opts.host) envParts.push(`TURBOPANEL_HOST=${opts.host}`);
-  if (opts.insecureTls) envParts.push("TURBOPANEL_INSECURE_TLS=1");
-  if (opts.dlBase) envParts.push(`TURBOPANEL_DL_BASE=${opts.dlBase}`);
+  const curl = opts.curlInsecure ? 'curl -fsSLk' : 'curl -fsSL'
+  const envParts = [`TURBOPANEL_LICENSE=${opts.licenseArg}`]
+  if (opts.host) envParts.push(`TURBOPANEL_HOST=${opts.host}`)
+  if (opts.insecureTls) envParts.push('TURBOPANEL_INSECURE_TLS=1')
+  if (opts.dlBase) envParts.push(`TURBOPANEL_DL_BASE=${opts.dlBase}`)
   // The daemon follows the channel this instance follows. run.sh's own
   // default is trunk, so a control plane on rc/release must say so, or a
   // freshly enrolled host installs the per-merge drop and drifts
   // (install-rehearsal, Road to 0.1.x). trunk stays implicit.
-  if (opts.updateChannel && opts.updateChannel !== "trunk") {
-    envParts.push(`TURBOPANEL_UPDATE_CHANNEL=${opts.updateChannel}`);
+  if (opts.updateChannel && opts.updateChannel !== 'trunk') {
+    envParts.push(`TURBOPANEL_UPDATE_CHANNEL=${opts.updateChannel}`)
   }
-  return `${curl} ${opts.curlUrl} | ${envParts.join(" ")} sh`;
+  return `${curl} ${opts.curlUrl} | ${envParts.join(' ')} sh`
 }
 
 export function buildLicenseInstallCommand(opts: {
-  runtime: "deno" | "workers";
-  instanceUrl: string;
-  licenseId: string;
-  licenseToken: string;
+  runtime: 'deno' | 'workers'
+  instanceUrl: string
+  licenseId: string
+  licenseToken: string
   /**
    * Dev/self-signed installs only: curl -k and pass TURBOPANEL_INSECURE_TLS to
    * run.sh. Callers must not set this for production HTTPS origins.
    */
-  insecureTls?: boolean;
+  insecureTls?: boolean
   /**
    * Dev overlay only: fetch the installer from the instance host `/run.sh`
    * (served by the dev Caddyfile). Production / self-hosted Deno installs must
    * leave this unset so the command curls `CDN_INSTALL_HOST` and passes
    * `TURBOPANEL_HOST`.
    */
-  useInstanceRunScript?: boolean;
+  useInstanceRunScript?: boolean
   /**
    * Local artifact catalog origin (`…/downloads/daemon`). Set on the developer
    * overlay so remote servers never hit the public CDN.
    */
-  dlBase?: string;
+  dlBase?: string
   /** The channel this instance follows (TURBOPANEL_UPDATE_CHANNEL); enrolled daemons follow it too. */
-  updateChannel?: string;
+  updateChannel?: string
 }): string {
   const {
     runtime,
@@ -100,20 +127,18 @@ export function buildLicenseInstallCommand(opts: {
     useInstanceRunScript = false,
     dlBase,
     updateChannel,
-  } = opts;
-  const insecureTls = insecureTlsOpt;
-  const licenseArg = encodeLicenseArg(licenseId, licenseToken);
-  const includeHost = instanceUrl !== "https://turbopanel.app";
-  const scriptBase = instanceUrl.replace(/\/$/, ""); // origin for curl URL + TURBOPANEL_HOST
-  const host = includeHost ? instanceUrl : undefined;
-  const overlayDlBase = useInstanceRunScript
-    ? (dlBase ?? formatInstanceDlBase(scriptBase))
-    : dlBase;
+  } = opts
+  const insecureTls = insecureTlsOpt
+  const licenseArg = encodeLicenseArg(licenseId, licenseToken)
+  const includeHost = instanceUrl !== 'https://turbopanel.app'
+  const scriptBase = instanceUrl.replace(/\/$/, '') // origin for curl URL + TURBOPANEL_HOST
+  const host = includeHost ? instanceUrl : undefined
+  const overlayDlBase = useInstanceRunScript ? (dlBase ?? formatInstanceDlBase(scriptBase)) : dlBase
 
-  if (runtime === "deno") {
+  if (runtime === 'deno') {
     const curlUrl = useInstanceRunScript
       ? formatInstallScriptCurlUrl(scriptBase)
-      : CDN_INSTALL_HOST;
+      : installScriptHostForChannel(updateChannel)
     return buildInstallPipeline({
       curlUrl,
       licenseArg,
@@ -122,13 +147,13 @@ export function buildLicenseInstallCommand(opts: {
       curlInsecure: insecureTls,
       dlBase: overlayDlBase,
       updateChannel,
-    });
+    })
   }
 
   return buildInstallPipeline({
-    curlUrl: CDN_INSTALL_HOST,
+    curlUrl: installScriptHostForChannel(updateChannel),
     licenseArg,
     host,
     updateChannel,
-  });
+  })
 }
