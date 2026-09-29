@@ -684,3 +684,26 @@ test('gitlab readRepositoryFiles maps a non-404 file failure and a tree transpor
     )
   })
 })
+
+test('gitlab readRepositoryFiles stops at the first failing file and never fetches later paths', async () => {
+  const ctx = await mintedCtx()
+  const fetched: string[] = []
+  await withFetch((url) => {
+    if (url.includes('/repository/commits/')) {
+      return new Response(JSON.stringify({ id: SHA }), { status: 200 })
+    }
+    fetched.push(url)
+    return new Response('denied', { status: 403 })
+  }, async () => {
+    assertEquals(
+      await gitlabProvider.readRepositoryFiles(ctx, {
+        row: oauthRow,
+        ref: 'main',
+        paths: ['first.md', 'second.md', 'third.md'],
+      }),
+      { failure: 'gitlab file read failed', status: 403 },
+    )
+  })
+  assertEquals(fetched.length, 1)
+  assertEquals(fetched[0]!.includes('first.md'), true)
+})

@@ -9,6 +9,7 @@ import { and, eq, inArray, isNotNull } from 'drizzle-orm'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { decryptSecret, encryptSecret } from '../../lib/secrets/data-encryption.ts'
 import type { Db } from '../../db/connection.ts'
+import { forEachSequential } from '../../lib/sequential.ts'
 import {
   binding,
   environment,
@@ -178,7 +179,7 @@ export async function upsertBindingOwnedVariables(
 
     const existingByKey = new Map(existing.map((e) => [e.key, e.id]))
 
-    for (const entry of params.desired) {
+    await forEachSequential(params.desired, async (entry) => {
       const sealed = await sealIfNeeded(
         dataEncryptionSecrets,
         entry.value,
@@ -211,7 +212,7 @@ export async function upsertBindingOwnedVariables(
           isForRuntime: true,
         })
       }
-    }
+    })
 
     // Drop binding-owned keys that are no longer emitted (prefix / flags flip).
     const staleIds = [...existingByKey.entries()]

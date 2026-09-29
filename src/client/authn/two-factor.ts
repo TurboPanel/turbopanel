@@ -222,10 +222,9 @@ async function sealBackupCodes(
   codes: string[],
   secrets: DerivedSecretsConfig,
 ): Promise<string> {
-  const envelopes: string[] = [];
-  for (const code of codes) {
-    envelopes.push(await deriveBackupCodeVerifier(userId, code, secrets));
-  }
+  const envelopes = await Promise.all(
+    codes.map((code) => deriveBackupCodeVerifier(userId, code, secrets)),
+  );
   return JSON.stringify(envelopes);
 }
 
@@ -781,18 +780,17 @@ async function consumeMatchingBackupCode(
     backupCodeVerifierSecrets: DerivedSecretsConfig;
   },
 ): Promise<boolean> {
-  let matchedIndex = -1;
-  for (let i = 0; i < params.envelopes.length; i += 1) {
-    const matched = await verifyBackupCodeVerifier(
+  // Every envelope is checked (no early exit); the HMAC checks are
+  // independent, so they run together and the earliest match still wins.
+  const matches = await Promise.all(params.envelopes.map((envelope) =>
+    verifyBackupCodeVerifier(
       params.userId,
       params.submitted,
-      params.envelopes[i]!,
+      envelope,
       params.backupCodeVerifierSecrets,
-    );
-    if (matched && matchedIndex < 0) {
-      matchedIndex = i;
-    }
-  }
+    )
+  ));
+  const matchedIndex = matches.indexOf(true);
   if (matchedIndex < 0) return false;
 
   const remaining = params.envelopes.filter((_, index) =>

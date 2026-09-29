@@ -18,6 +18,7 @@
 
 import { type SQL, sql } from "drizzle-orm";
 import type { Db } from "../../db/connection.ts";
+import { forEachSequential } from "../../lib/sequential.ts";
 import type { CommandEnvelope } from "../commands/envelope.ts";
 import type { CommandQueue } from "../commands/queue.ts";
 import type {
@@ -477,7 +478,7 @@ export async function enqueueSystemReconcile(
     .toISOString();
 
   const commandIds: string[] = [];
-  for (const built of scoped) {
+  await forEachSequential(scoped, async (built) => {
     const payload: SystemReconcileCommandPayload = { ...built, action };
 
     const record = await createCommandRecord(db, {
@@ -506,7 +507,7 @@ export async function enqueueSystemReconcile(
         error: "Command queue unavailable",
       });
     }
-  }
+  });
 
   if (commandIds.length === 0) return { ok: false, reason: "enqueue_failed" };
 
@@ -739,7 +740,7 @@ export async function runSystemReconcileSweep(
   `);
 
   let enqueued = 0;
-  for (const row of candidates) {
+  await forEachSequential(candidates, async (row) => {
     const result = await enqueueSystemReconcile(db, commandQueue, {
       serverId: row.server_id,
       actorType: "system",
@@ -747,6 +748,6 @@ export async function runSystemReconcileSweep(
       action: "reconcile",
     });
     if (result.ok) enqueued += 1;
-  }
+  });
   return { enqueued };
 }

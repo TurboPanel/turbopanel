@@ -54,6 +54,7 @@ import type {
   WebhookHeaders,
 } from './git-provider.ts'
 import { normalizeCheckRef } from './check-ref.ts'
+import { firstSequential } from '../../lib/sequential.ts'
 import { branchFromGitRef, isCommitSha } from './clone-url.ts'
 import {
   gitlabGetJson,
@@ -302,41 +303,47 @@ export const gitlabProvider: GitProvider = {
 
     const maxBytes = params.maxBytesPerFile ?? MAX_REPOSITORY_FILE_BYTES
     const files: RepositoryFileEntry[] = []
-    for (const path of params.paths.slice(0, MAX_REPOSITORY_READ_PATHS)) {
-      // GitLab wants the whole path URL-encoded as ONE segment, slashes and
-      // all — `%2F`, not `/`. Encoding per segment 404s every nested file.
-      const url = `/projects/${encodeURIComponent(auth.projectId)}/repository/files/${
-        encodeURIComponent(path)
-      }/raw?ref=${encodeURIComponent(commitSha)}`
-      let response: Response
-      try {
-        response = await gitlabGetRaw(auth.baseUrl, auth.token, url)
-      } catch (error) {
-        return gitlabReadFailure(error)
+    // Stops at the first failing file: no later path is fetched after it.
+    const failure = await firstSequential<string, GitProviderFailure>(
+      params.paths.slice(0, MAX_REPOSITORY_READ_PATHS),
+      async (path) => {
+        // GitLab wants the whole path URL-encoded as ONE segment, slashes and
+        // all — `%2F`, not `/`. Encoding per segment 404s every nested file.
+        const url = `/projects/${encodeURIComponent(auth.projectId)}/repository/files/${
+          encodeURIComponent(path)
+        }/raw?ref=${encodeURIComponent(commitSha)}`
+        let response: Response
+        try {
+          response = await gitlabGetRaw(auth.baseUrl, auth.token, url)
+        } catch (error) {
+          return gitlabReadFailure(error)
+        }
+        if (response.status === 404) {
+          files.push({ path, found: false, reason: 'not_found' })
+          return undefined
+        }
+        if (!response.ok) {
+          return { failure: 'gitlab file read failed', status: response.status }
+        }
+        const buffer = new Uint8Array(await response.arrayBuffer())
+        if (buffer.byteLength > maxBytes) {
+          files.push({ path, found: false, reason: 'too_large' })
+          return undefined
+        }
+        if (buffer.includes(0)) {
+          files.push({ path, found: false, reason: 'binary' })
+          return undefined
+        }
+        files.push({
+          path,
+          found: true,
+          content: new TextDecoder().decode(buffer),
+          bytes: buffer.byteLength,
+        })
+        return undefined
       }
-      if (response.status === 404) {
-        files.push({ path, found: false, reason: 'not_found' })
-        continue
-      }
-      if (!response.ok) {
-        return { failure: 'gitlab file read failed', status: response.status }
-      }
-      const buffer = new Uint8Array(await response.arrayBuffer())
-      if (buffer.byteLength > maxBytes) {
-        files.push({ path, found: false, reason: 'too_large' })
-        continue
-      }
-      if (buffer.includes(0)) {
-        files.push({ path, found: false, reason: 'binary' })
-        continue
-      }
-      files.push({
-        path,
-        found: true,
-        content: new TextDecoder().decode(buffer),
-        bytes: buffer.byteLength,
-      })
-    }
+    )
+    if (failure) return failure
     return { commitSha, files }
   },
 

@@ -3,6 +3,7 @@
  */
 
 import type { Db } from "../../db/connection.ts";
+import { forEachSequential, mapSequential } from "../../lib/sequential.ts";
 import type { DaemonCellRegistry } from "../../contracts/cell.ts";
 import type {
   DerivedSecretsConfig,
@@ -354,7 +355,7 @@ async function desiredHashesForServers(params: {
   secrets: FabricSecretDeps;
 }): Promise<Map<string, string>> {
   const desiredHashByServer = new Map<string, string>();
-  for (const serverId of params.serverIds) {
+  await forEachSequential(params.serverIds, async (serverId) => {
     const built = await buildEnabledReconcilePayloadFromSnapshot({
       db: params.db,
       snapshot: params.snapshot,
@@ -362,7 +363,7 @@ async function desiredHashesForServers(params: {
       secrets: params.secrets,
     });
     if (built.ok) desiredHashByServer.set(serverId, built.desiredHash);
-  }
+  });
   return desiredHashByServer;
 }
 
@@ -663,26 +664,21 @@ export async function enqueueFabricReconcileForServers(params: {
     snapshot,
     params.skipConverged,
   );
-  const results: FabricEnqueueResult[] = [];
-  for (const serverId of params.serverIds) {
-    results.push(
-      await enqueueFabricReconcileForServer({
-        db: params.db,
-        commandQueue: params.commandQueue,
-        actorType: params.actorType,
-        actorId: params.actorId,
-        expiresAt,
-        secrets,
-        enabled: params.enabled,
-        fabric: params.fabric,
-        snapshot,
-        serverId,
-        skipConverged: params.skipConverged === true,
-        appliedHashByServer,
-      }),
-    );
-  }
-  return results;
+  return mapSequential(params.serverIds, (serverId) =>
+    enqueueFabricReconcileForServer({
+      db: params.db,
+      commandQueue: params.commandQueue,
+      actorType: params.actorType,
+      actorId: params.actorId,
+      expiresAt,
+      secrets,
+      enabled: params.enabled,
+      fabric: params.fabric,
+      snapshot,
+      serverId,
+      skipConverged: params.skipConverged === true,
+      appliedHashByServer,
+    }));
 }
 
 export async function reconcileFabricMembership(params: {
@@ -728,7 +724,7 @@ export async function reconcileFabricMembership(params: {
   const results: FabricEnqueueResult[] = [];
   const force = params.force === true;
 
-  for (const row of snapshot.relays) {
+  await forEachSequential(snapshot.relays, async (row) => {
     const built = await buildEnabledReconcilePayloadFromSnapshot({
       db: params.db,
       snapshot,
@@ -741,7 +737,7 @@ export async function reconcileFabricMembership(params: {
         ...enqueueResultFromBuildFailure(row.serverId, built),
         ...counts,
       });
-      continue;
+      return;
     }
     if (
       !relayNeedsFabricEnqueue(
@@ -759,7 +755,7 @@ export async function reconcileFabricMembership(params: {
           counts,
         ),
       });
-      continue;
+      return;
     }
     results.push({
       ...(await enqueueOne({
@@ -778,6 +774,6 @@ export async function reconcileFabricMembership(params: {
       })),
       ...counts,
     });
-  }
+  });
   return results;
 }

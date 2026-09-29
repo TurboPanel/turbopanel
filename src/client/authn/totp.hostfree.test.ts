@@ -5,6 +5,7 @@ import {
   encodeBase32,
   generateTotp,
   generateTotpSecret,
+  matchTotpStep,
   TOTP_ISSUER,
   verifyTotp,
 } from "./totp.ts";
@@ -65,6 +66,19 @@ test("verifyTotp accepts the previous and next 30-second step", async () => {
   const next = await generateTotp(secret, { unixSeconds: now + 30 });
   assertEquals(await verifyTotp(secret, previous, now), true);
   assertEquals(await verifyTotp(secret, next, now), true);
+});
+
+test("matchTotpStep reports the matched step, or null when nothing in the window matches", async () => {
+  const secret = decodeBase32(generateTotpSecret());
+  const now = Math.floor(Date.now() / 1000);
+  const current = Math.floor(now / 30);
+  for (const delta of [-1, 0, 1]) {
+    const code = await generateTotp(secret, { unixSeconds: now + delta * 30 });
+    assertEquals(await matchTotpStep(secret, code, now), current + delta);
+  }
+  const outside = await generateTotp(secret, { unixSeconds: now + 5 * 30 });
+  assertEquals(await matchTotpStep(secret, outside, now), null);
+  assertEquals(await matchTotpStep(secret, "12345", now), null);
 });
 
 test("buildOtpAuthUri uses TurboPanel issuer and SHA1 parameters", () => {

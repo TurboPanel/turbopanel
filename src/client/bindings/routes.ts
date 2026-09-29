@@ -14,6 +14,7 @@ import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { assertCanOr403 } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import { getDb, type Db } from '../../db/connection.ts'
+import { forEachSequential, mapSequential } from '../../lib/sequential.ts'
 import {
   binding,
   managed,
@@ -112,7 +113,7 @@ async function enqueueIngressForBindingChange(
     serverIds.add(row.serverId)
   }
 
-  for (const serverId of serverIds) {
+  await forEachSequential(serverIds, async (serverId) => {
     try {
       await enqueueManagedIngressReconcile(db, commandQueue, {
         serverId,
@@ -128,7 +129,7 @@ async function enqueueIngressForBindingChange(
         `managed.ingress.reconcile after binding change failed for ${serverId}: ${message}`,
       )
     }
-  }
+  })
 }
 
 /** Shared 404 guard: the entity must resolve to the caller's organization. */
@@ -542,10 +543,7 @@ export function registerBindingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     }
     if (rowsResult instanceof Response) return rowsResult
 
-    const serialized = []
-    for (const row of rowsResult) {
-      serialized.push(await serializeBindingRow(db, row))
-    }
+    const serialized = await mapSequential(rowsResult, (row) => serializeBindingRow(db, row))
     return c.json({ bindings: serialized })
   })
 

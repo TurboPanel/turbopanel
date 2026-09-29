@@ -17,6 +17,7 @@ import {
 } from "../../lib/secrets/data-encryption.ts";
 import type { DerivedSecretsConfig } from "../../lib/secrets/secrets.ts";
 import type { Db } from "../../db/connection.ts";
+import { forEachSequential } from "../../lib/sequential.ts";
 import {
   entitlement,
   environment,
@@ -944,12 +945,12 @@ export async function lockOrganizationsForUpdate(
 ): Promise<void> {
   if (organizationIds.length === 0) return;
   const ordered = [...organizationIds].sort((a, b) => a.localeCompare(b));
-  for (const organizationId of ordered) {
+  await forEachSequential(ordered, async (organizationId) => {
     await db
       .select({ id: organization.id })
       .from(organization)
       .where(eq(organization.id, organizationId))
       .for("update")
       .limit(1);
-  }
+  });
 }

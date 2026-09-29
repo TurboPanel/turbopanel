@@ -1,5 +1,6 @@
 import { and, eq, isNotNull, isNull, sql } from "drizzle-orm";
 import type { Db } from "../../db/connection.ts";
+import { forEachSequential } from "../../lib/sequential.ts";
 import type { DaemonCellRegistry } from "../../contracts/cell.ts";
 import { resolveFleetPresence } from "../../daemon/cell/fleet-presence.ts";
 import {
@@ -311,13 +312,13 @@ export async function clearColocatedDaemonIdentityFiles(): Promise<void> {
   if (typeof Deno === "undefined") return;
 
   const stateDir = resolveColocatedLicenseCredentialsDir();
-  for (const file of COLOCATED_DAEMON_IDENTITY_FILES) {
+  await Promise.all(COLOCATED_DAEMON_IDENTITY_FILES.map(async (file) => {
     try {
       await Deno.remove(`${stateDir}/${file}`);
     } catch {
       // Missing files are fine.
     }
-  }
+  }));
 }
 
 function resolveColocatedLicenseCredentialsDir(): string {
@@ -875,15 +876,15 @@ async function addSelfHostBoundLicenseIds(
     .select({ id: license.id, serverId: license.serverId })
     .from(license)
     .where(boundFilter);
-  for (const row of boundRows) {
-    if (!row.serverId || ids.has(row.id)) continue;
+  await forEachSequential(boundRows, async (row) => {
+    if (!row.serverId || ids.has(row.id)) return;
     const envId = await findSystemEnvironmentForServer(
       db,
       row.serverId,
       SYSTEM_SELF_HOST_COMPONENT,
     );
     if (envId) ids.add(row.id);
-  }
+  });
 }
 
 /**
@@ -1303,9 +1304,10 @@ async function revokeActiveColocatedLicenses(
       isNull(license.revokedAt),
     ));
 
-  for (const row of active) {
-    await invalidateLicense(db, row.id, organizationId, { force: true });
-  }
+  await forEachSequential(
+    active,
+    (row) => invalidateLicense(db, row.id, organizationId, { force: true }),
+  );
 }
 
 /**

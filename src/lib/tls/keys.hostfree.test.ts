@@ -56,6 +56,19 @@ test('privateKeyMatchesCertificate verifies an EC P-256 key against its SPKI', a
   )
 })
 
+test('privateKeyMatchesCertificate falls through to the next curve until one imports', async () => {
+  const material = await mintEcMaterial('P-384')
+  assertEquals(
+    await privateKeyMatchesCertificate(material.privateKeyPem, material.parsed),
+    true,
+  )
+  const other = await mintEcMaterial('P-384')
+  assertEquals(
+    await privateKeyMatchesCertificate(other.privateKeyPem, material.parsed),
+    false,
+  )
+})
+
 test('privateKeyMatchesCertificate returns false for mismatched EC keys', async () => {
   const first = await mintEcMaterial('P-256')
   const second = await mintEcMaterial('P-256')

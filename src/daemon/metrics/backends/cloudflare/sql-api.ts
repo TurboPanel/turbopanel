@@ -420,11 +420,12 @@ export async function mapWithConcurrency<T, R>(
 ): Promise<R[]> {
   const results = new Array<R>(items.length)
   let next = 0
+  // Each worker claims the next unclaimed index, runs it, then claims again.
   const worker = async (): Promise<void> => {
-    while (next < items.length) {
-      const index = next++
-      results[index] = await fn(items[index], index)
-    }
+    if (next >= items.length) return
+    const index = next++
+    results[index] = await fn(items[index], index)
+    await worker()
   }
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker))
   return results

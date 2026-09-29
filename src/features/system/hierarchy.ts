@@ -46,6 +46,7 @@
 
 import { and, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "../../db/connection.ts";
+import { forEachSequential } from "../../lib/sequential.ts";
 import {
   container,
   environment,
@@ -832,12 +833,15 @@ async function ensureSelfHostSystemHierarchyImpl(
       SystemSelfHostComposeServiceName,
       string
     >();
-    for (const composeServiceName of SYSTEM_SELF_HOST_COMPOSE_SERVICE_NAMES) {
-      composeServiceIds.set(
-        composeServiceName,
-        await ensureComposeService(tx, environmentId, composeServiceName),
-      );
-    }
+    await forEachSequential(
+      SYSTEM_SELF_HOST_COMPOSE_SERVICE_NAMES,
+      async (composeServiceName) => {
+        composeServiceIds.set(
+          composeServiceName,
+          await ensureComposeService(tx, environmentId, composeServiceName),
+        );
+      },
+    );
 
     const containerServices: ContainerServiceSpec[] =
       SYSTEM_SELF_HOST_COMPOSE_SERVICE_NAMES

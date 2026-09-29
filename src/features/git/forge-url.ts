@@ -122,10 +122,14 @@ function redirectDropsBody(status: number, method: string): boolean {
  * callers' existing `try { await fetch… } catch` maps it like a network error.
  */
 export async function forgeFetch(url: string, init: RequestInit = {}): Promise<Response> {
-  let current = url
-  let method = (init.method ?? 'GET').toUpperCase()
-  let body = init.body
-  for (let hop = 0; ; hop += 1) {
+  // One hop per call; a redirect recurses into the next hop with the
+  // already re-validated target, so every hop still passes the guard first.
+  const followHop = async (
+    hop: number,
+    current: string,
+    method: string,
+    body: RequestInit['body']
+  ): Promise<Response> => {
     await assertForgeRequestAllowed(current)
     // NOSONAR tssecurity:S8476 — `current` was re-validated on this hop by
     // assertForgeRequestAllowed (literal check + DNS, fail-closed); redirects
@@ -139,10 +143,13 @@ export async function forgeFetch(url: string, init: RequestInit = {}): Promise<R
     if (next.origin !== new URL(current).origin) {
       throw new ForgeUrlError('request', 'cross_origin_redirect')
     }
-    if (redirectDropsBody(response.status, method)) {
-      method = 'GET'
-      body = undefined
-    }
-    current = next.toString()
+    const dropsBody = redirectDropsBody(response.status, method)
+    return followHop(
+      hop + 1,
+      next.toString(),
+      dropsBody ? 'GET' : method,
+      dropsBody ? undefined : body
+    )
   }
+  return followHop(0, url, (init.method ?? 'GET').toUpperCase(), init.body)
 }

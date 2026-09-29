@@ -1,4 +1,5 @@
 import type { Db } from '../../db/connection.ts'
+import { forEachSequential } from '../../lib/sequential.ts'
 import { grant } from '../../db/schema.ts'
 import { isGrantablePermissionKey, type PermissionKey } from '../authz/catalog.ts'
 import {
@@ -111,7 +112,7 @@ export async function materializeInvitationGrants(
   grants: InvitationGrantSpec[],
   organizationId: string,
 ): Promise<void> {
-  for (const grantSpec of grants) {
+  await forEachSequential(grants, async (grantSpec) => {
     const targetResult = await validateGrantEntityTarget(
       db,
       grantSpec.entityType,
@@ -148,5 +149,5 @@ export async function materializeInvitationGrants(
           grant.permission,
         ],
       })
-  }
+  })
 }

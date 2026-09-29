@@ -155,16 +155,24 @@ export async function matchTotpStep(
   if (!/^\d{6}$/.test(normalized)) return null;
 
   const current = Math.floor(unixSeconds / TOTP_STEP_SECONDS);
-  let matched: number | null = null;
-  for (let delta = -TOTP_WINDOW_STEPS; delta <= TOTP_WINDOW_STEPS; delta += 1) {
-    const candidate = await generateTotp(secret, {
-      unixSeconds: unixSeconds + delta * TOTP_STEP_SECONDS,
-    });
-    if (constantTimeEqual(candidate, normalized) && matched === null) {
-      matched = current + delta;
-    }
-  }
-  return matched;
+  // Every window step is computed (constant work, no early exit); the HMACs
+  // are independent, so they run together and the earliest match still wins.
+  const deltas = Array.from(
+    { length: 2 * TOTP_WINDOW_STEPS + 1 },
+    (_, index) => index - TOTP_WINDOW_STEPS,
+  );
+  const candidates = await Promise.all(
+    deltas.map((delta) =>
+      generateTotp(secret, {
+        unixSeconds: unixSeconds + delta * TOTP_STEP_SECONDS,
+      })
+    ),
+  );
+  const hits = candidates.map((candidate) =>
+    constantTimeEqual(candidate, normalized)
+  );
+  const hit = hits.indexOf(true);
+  return hit < 0 ? null : current + deltas[hit]!;
 }
 
 /**

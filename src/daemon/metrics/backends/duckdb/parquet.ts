@@ -21,6 +21,7 @@
 
 import type { DuckDbConnectionLike } from './database.ts'
 import { escapeSqlString } from './database.ts'
+import { forEachSequential } from '../../../../lib/sequential.ts'
 import {
   BLOCK_SAMPLES_TABLE,
   DATABASE_PROXY_SAMPLES_TABLE,
@@ -468,15 +469,24 @@ export async function listPartitionDays(
   subdir: string
 ): Promise<PartitionDay[]> {
   const base = `${parquetRoot}/${subdir}`
-  const days: PartitionDay[] = []
-  for (const year of await listNumericSubdirs(base, 'year=')) {
-    for (const month of await listNumericSubdirs(year.path, 'month=')) {
-      for (const day of await listNumericSubdirs(month.path, 'day=')) {
-        const partition = await sealedPartitionDay(year.value, month.value, day.value, day.path)
-        if (partition) days.push(partition)
-      }
-    }
-  }
+  // Read-only directory walk: sibling directories are independent, and
+  // `Promise.all` keeps their order, so the result matches a serial walk.
+  const years = await listNumericSubdirs(base, 'year=')
+  const perYear = await Promise.all(
+    years.map(async (year) => {
+      const months = await listNumericSubdirs(year.path, 'month=')
+      const perMonth = await Promise.all(
+        months.map(async (month) => {
+          const dayDirs = await listNumericSubdirs(month.path, 'day=')
+          return Promise.all(
+            dayDirs.map((day) => sealedPartitionDay(year.value, month.value, day.value, day.path))
+          )
+        })
+      )
+      return perMonth.flat()
+    })
+  )
+  const days = perYear.flat().filter((partition): partition is PartitionDay => partition !== null)
   days.sort((a, b) => a.dayStartMs - b.dayStartMs)
   return days
 }
@@ -524,16 +534,18 @@ export async function pruneExpiredPartitions(
   const cutoffMs = utcDayStartMs(nowMs) - input.retentionDays * MS_PER_DAY
   const cutoffLiteral = timestampLiteralFromMs(cutoffMs)
 
-  for (const family of PARQUET_FAMILIES) {
-    for (const day of await listPartitionDays(input.parquetRoot, family.subdir)) {
-      if (day.dayStartMs + MS_PER_DAY <= cutoffMs) {
-        await Deno.remove(day.dir, { recursive: true }).catch(() => {})
-      }
-    }
+  await forEachSequential(PARQUET_FAMILIES, async (family) => {
+    const partitions = await listPartitionDays(input.parquetRoot, family.subdir)
+    // Distinct day directories: removals are independent of one another.
+    await Promise.all(
+      partitions
+        .filter((day) => day.dayStartMs + MS_PER_DAY <= cutoffMs)
+        .map((day) => Deno.remove(day.dir, { recursive: true }).catch(() => {}))
+    )
     await connection.run(
       `DELETE FROM ${family.table} WHERE ${family.timestampColumn} < ${cutoffLiteral}`
     )
-  }
+  })
 
   await connection.run(`DELETE FROM ${STATUS_EVENTS_TABLE} WHERE "at" < ${cutoffLiteral}`)
 }

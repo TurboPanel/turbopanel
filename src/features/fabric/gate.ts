@@ -96,11 +96,13 @@ export async function awaitFabricReconcile(
   const startedAt = now()
   const ids = params.commands.map((row) => row.commandId)
 
-  while (true) {
+  const poll = async (): Promise<FabricGateOutcome> => {
     const records = await listCommandRecordsByIds(db, ids)
     const outcome = classifyFabricGate(padMissingCommands(params.commands, records))
     if (outcome.kind !== 'pending') return outcome
     if (now() - startedAt >= timeoutMs) return outcome
     await sleep(pollIntervalMs)
+    return poll()
   }
+  return poll()
 }

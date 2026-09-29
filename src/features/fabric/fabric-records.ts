@@ -4,6 +4,7 @@
 
 import { and, asc, eq, inArray } from "drizzle-orm";
 import type { Db } from "../../db/connection.ts";
+import { forEachSequential } from "../../lib/sequential.ts";
 import { nowIso } from "../commands/ids.ts";
 import {
   cidrsOverlap,
@@ -630,8 +631,8 @@ export async function ensureFabricRelays(
   const have = new Set(existing.map((row) => row.serverId));
 
   let exclusions: readonly string[] | null = null;
-  for (const row of orgServers) {
-    if (have.has(row.id)) continue;
+  await forEachSequential(orgServers, async (row) => {
+    if (have.has(row.id)) return;
     // Loaded lazily: most calls find every server already has a relay.
     exclusions ??= await loadCidrAllocationExclusions(
       db,
@@ -643,7 +644,7 @@ export async function ensureFabricRelays(
       containerPool: options.containerPool,
       exclusions,
     });
-  }
+  });
 
   return listFabricRelays(db, params.fabric.id);
 }
@@ -871,15 +872,15 @@ export async function clearRelayAppliedPayloadHash(
         )
         : eq(relay.serverId, params.serverId),
     );
-  for (const row of rows) {
+  await forEachSequential(rows, async (row) => {
     const current = serializeRelayMetadata(row.metadata);
-    if (current.appliedPayloadHash === undefined) continue;
+    if (current.appliedPayloadHash === undefined) return;
     const { appliedPayloadHash: _removed, ...rest } = current;
     await db
       .update(relay)
       .set({ metadata: rest, updatedAt: nowIso() })
       .where(eq(relay.id, row.id));
-  }
+  });
 }
 
 export async function updateFabricRelay(
@@ -1134,20 +1135,20 @@ export async function purgeComposeNetworksCreatedAfter(
     .filter((id) => !priorIds.has(id));
   await deleteComposeNetworkIds(db, createdNetworkIds);
 
-  for (const row of current) {
-    if (!priorIds.has(row.networkId)) continue;
+  await forEachSequential(current, async (row) => {
+    if (!priorIds.has(row.networkId)) return;
     const known = priorSegments.get(row.networkId) ?? new Set<string>();
     const extraServerIds = row.segments
       .map((segmentRow) => segmentRow.serverId)
       .filter((serverId) => !known.has(serverId));
-    if (extraServerIds.length === 0) continue;
+    if (extraServerIds.length === 0) return;
     await db.delete(subnet).where(
       and(
         eq(subnet.networkId, row.networkId),
         inArray(subnet.serverId, extraServerIds),
       ),
     );
-  }
+  });
 }
 
 export async function releaseSubnetsForServer(
@@ -2146,8 +2147,8 @@ async function buildReconcilePeerLists(
     unreachablePeers.push({ serverId: other.serverId });
   }
 
-  for (const other of peerRelays) {
-    if (!emitIds.has(other.id)) continue;
+  await forEachSequential(peerRelays, async (other) => {
+    if (!emitIds.has(other.id)) return;
     const plan = plansByRelayId.get(other.id) ??
       planPathToOther(snapshot, self, other, gateways);
     const extra = extraByNextHopId.get(other.id) ?? [];
@@ -2163,11 +2164,11 @@ async function buildReconcilePeerLists(
     );
     if (!views) {
       unreachablePeers.push({ serverId: other.serverId });
-      continue;
+      return;
     }
     peers.push(views.peer);
     hashPeers.push(views.hashPeer);
-  }
+  });
   return { peers, hashPeers, unreachablePeers, gatewayRoutedPeers };
 }
 
@@ -2434,7 +2435,7 @@ export async function materializeSpanningNetworks(
     params.organizationId,
   );
 
-  for (const composeKey of keys) {
+  await forEachSequential(keys, async (composeKey) => {
     const networkRow = await ensureComposeNetworkRow(db, {
       organizationId: params.organizationId,
       environmentId: params.environmentId,
@@ -2449,7 +2450,7 @@ export async function materializeSpanningNetworks(
       composeKey,
       attachments,
     );
-    for (const serverId of serverIds) {
+    await forEachSequential(serverIds, async (serverId) => {
       const relayRow = relayByServer.get(serverId);
       if (!relayRow) {
         throw new FabricAllocationError("relay_missing");
@@ -2464,7 +2465,7 @@ export async function materializeSpanningNetworks(
           ),
         )
         .limit(1);
-      if (have) continue;
+      if (have) return;
       const existing = await db
         .select({ cidr: subnet.cidr })
         .from(subnet)
@@ -2478,8 +2479,8 @@ export async function materializeSpanningNetworks(
         serverId,
         cidr: cidrValue,
       });
-    }
-  }
+    });
+  });
   return spanning;
 }
 

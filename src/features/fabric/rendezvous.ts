@@ -14,6 +14,7 @@ import {
   type FabricPathWireCandidate,
 } from '../../contracts/cell-protocol.ts'
 import { cellTrace } from '../../lib/logger.ts'
+import { forEachSequential } from '../../lib/sequential.ts'
 import { getLoadServerStatusRecords } from '../../platform/ports/load-server-status.ts'
 import type { FabricPeerHealth } from '../../contracts/commands/schemas.ts'
 import {
@@ -146,15 +147,16 @@ async function mapPool<T, R>(
   const results: R[] = new Array(items.length)
   let cursor = 0
   const workers = Math.min(limit, items.length)
-  await Promise.all(Array.from({ length: workers }, async () => {
-    while (cursor < items.length) {
-      const index = cursor
-      cursor += 1
-      const item = items[index]
-      if (item === undefined) continue
-      results[index] = await fn(item)
-    }
-  }))
+  // Each worker claims the next unclaimed index, runs it, then claims again.
+  const worker = async (): Promise<void> => {
+    if (cursor >= items.length) return
+    const index = cursor
+    cursor += 1
+    const item = items[index]
+    if (item !== undefined) results[index] = await fn(item)
+    await worker()
+  }
+  await Promise.all(Array.from({ length: workers }, worker))
   return results
 }
 
@@ -714,13 +716,12 @@ export async function runFabricRendezvousRound(params: {
     summarizeRelayPaths(ctx, acc, self)
   }
 
-  for (const [serverId, entries] of acc.summariesByServerId) {
-    await stampRelayPathSummary(params.db, {
+  await forEachSequential(acc.summariesByServerId, ([serverId, entries]) =>
+    stampRelayPathSummary(params.db, {
       fabricId: params.fabricId,
       serverId,
       entries,
-    })
-  }
+    }))
 
   rememberFabricPathStates(params.fabricId, pathStates)
 

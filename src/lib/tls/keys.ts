@@ -4,6 +4,7 @@
 
 import { decodePrivateKeyToPkcs8, PemError } from './pem.ts'
 import type { ParsedCertificate } from './types.ts'
+import { firstSequential } from '../sequential.ts'
 
 export class TlsKeyError extends Error {
   constructor(message: string) {
@@ -60,38 +61,32 @@ export async function privateKeyMatchesCertificate(
     }
 
     if (decoded.algorithm === 'ec') {
-      for (const namedCurve of ['P-256', 'P-384', 'P-521'] as const) {
-        try {
-          const algo = { name: 'ECDSA', namedCurve } as const
-          const privateKey = await crypto.subtle.importKey(
-            'pkcs8',
-            pkcs8,
-            algo,
-            false,
-            ['sign'],
-          )
-          const publicKey = await crypto.subtle.importKey(
-            'spki',
-            spki,
-            algo,
-            false,
-            ['verify'],
-          )
-          const signature = await crypto.subtle.sign(
-            { name: 'ECDSA', hash: 'SHA-256' },
-            privateKey,
-            challenge,
-          )
-          return await crypto.subtle.verify(
-            { name: 'ECDSA', hash: 'SHA-256' },
-            publicKey,
-            signature,
-            challenge,
-          )
-        } catch {
-          // try next curve
-        }
-      }
+      // First curve that imports wins (its verify result, even `false`, is
+      // final); a curve that fails to import falls through to the next.
+      const verified = await firstSequential(
+        ['P-256', 'P-384', 'P-521'] as const,
+        async (namedCurve) => {
+          try {
+            const algo = { name: 'ECDSA', namedCurve } as const
+            const privateKey = await crypto.subtle.importKey('pkcs8', pkcs8, algo, false, ['sign'])
+            const publicKey = await crypto.subtle.importKey('spki', spki, algo, false, ['verify'])
+            const signature = await crypto.subtle.sign(
+              { name: 'ECDSA', hash: 'SHA-256' },
+              privateKey,
+              challenge,
+            )
+            return await crypto.subtle.verify(
+              { name: 'ECDSA', hash: 'SHA-256' },
+              publicKey,
+              signature,
+              challenge,
+            )
+          } catch {
+            return undefined // try next curve
+          }
+        },
+      )
+      if (verified !== undefined) return verified
       throw new TlsKeyError('failed to import EC private key')
     }
 
