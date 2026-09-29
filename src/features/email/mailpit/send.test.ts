@@ -94,3 +94,17 @@ test('sendMailpitJob gives up on a Mailpit that never answers, as a transient fa
     globalThis.fetch = original
   }
 })
+
+test('sendMailpitJob stringifies a non-Error rejection and keeps it transient', async () => {
+  const original = globalThis.fetch
+  globalThis.fetch = () => Promise.reject('socket hang up')
+  try {
+    const outcome = await sendMailpitJob(SIGNUP_JOB, {
+      apiBaseUrl: 'http://127.0.0.1:8025',
+      from: 'noreply@example.com',
+    })
+    assertEquals(outcome, { ok: false, error: 'socket hang up', permanent: false })
+  } finally {
+    globalThis.fetch = original
+  }
+})
