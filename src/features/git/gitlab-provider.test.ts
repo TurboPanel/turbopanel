@@ -57,26 +57,18 @@ test('a GitLab push names no connection — every live one is a candidate', () =
 })
 
 test('a branch delete carries no head and is reported as deleted', () => {
-  const deleted = parseGitlabPush(
-    pushPayload({ after: NULL_SHA, checkout_sha: null }),
-  )
+  const deleted = parseGitlabPush(pushPayload({ after: NULL_SHA, checkout_sha: null }))
   assertEquals(deleted?.deleted, true)
   assertEquals(deleted?.commitSha, null)
 })
 
 test('a tag push and a non-branch ref are not push triggers', () => {
   assertEquals(parseGitlabPush(pushPayload({ ref: 'refs/tags/v1' })), null)
-  assertEquals(
-    parseGitlabPush(pushPayload({ object_kind: 'tag_push' })),
-    null,
-  )
+  assertEquals(parseGitlabPush(pushPayload({ object_kind: 'tag_push' })), null)
 })
 
 test('a push with no identifiable project is dropped', () => {
-  assertEquals(
-    parseGitlabPush(pushPayload({ project_id: undefined, project: {} })),
-    null,
-  )
+  assertEquals(parseGitlabPush(pushPayload({ project_id: undefined, project: {} })), null)
 })
 
 test('parseGitlabPipeline releases only a succeeded pipeline', () => {
@@ -89,7 +81,12 @@ test('parseGitlabPipeline releases only a succeeded pipeline', () => {
       ...base,
       object_attributes: { id: 31, ref: 'main', sha: SHA, status: 'success' },
     }),
-    { externalInstallationId: null, repositoryExternalId: '15', commitSha: SHA, ref: 'refs/heads/main' },
+    {
+      externalInstallationId: null,
+      repositoryExternalId: '15',
+      commitSha: SHA,
+      ref: 'refs/heads/main',
+    }
   )
   // Anything short of a finished green pipeline is not an all-checks-green
   // signal, which is the whole point of `autoDeploy: 'checks_passed'`.
@@ -99,7 +96,7 @@ test('parseGitlabPipeline releases only a succeeded pipeline', () => {
         ...base,
         object_attributes: { sha: SHA, status },
       }),
-      null,
+      null
     )
   }
 })
@@ -113,7 +110,7 @@ test('a job hook is never a release signal', () => {
       sha: SHA,
       project: { id: 15 },
     }),
-    null,
+    null
   )
 })
 
@@ -146,7 +143,7 @@ test('gitlab prepareClone preview and deploy-key lanes', async () => {
       needsCredential: false,
       requestedCommitSha: SHA,
     }),
-    { commit: { commitSha: SHA } },
+    { commit: { commitSha: SHA } }
   )
 
   assertEquals(
@@ -155,7 +152,7 @@ test('gitlab prepareClone preview and deploy-key lanes', async () => {
       ref: 'main',
       needsCredential: true,
     }),
-    { commit: { commitSha: 'main' } },
+    { commit: { commitSha: 'main' } }
   )
 
   assertEquals(
@@ -164,7 +161,7 @@ test('gitlab prepareClone preview and deploy-key lanes', async () => {
       ref: 'main',
       needsCredential: true,
     }),
-    { failure: 'gitlab source has neither an oauth connection nor a deploy key' },
+    { failure: 'gitlab source has neither an oauth connection nor a deploy key' }
   )
 })
 
@@ -179,7 +176,7 @@ test('gitlab parseCheck is the pipeline hook', () => {
       project: { id: 15 },
       object_attributes: { sha: SHA, status: 'success' },
     }),
-    { externalInstallationId: null, repositoryExternalId: '15', commitSha: SHA, ref: null },
+    { externalInstallationId: null, repositoryExternalId: '15', commitSha: SHA, ref: null }
   )
   assertEquals(
     gitlabProvider.parseCheck('Pipeline Hook', {
@@ -187,7 +184,12 @@ test('gitlab parseCheck is the pipeline hook', () => {
       project: { id: 15 },
       object_attributes: { sha: SHA, status: 'success', ref: 'main' },
     }),
-    { externalInstallationId: null, repositoryExternalId: '15', commitSha: SHA, ref: 'refs/heads/main' },
+    {
+      externalInstallationId: null,
+      repositoryExternalId: '15',
+      commitSha: SHA,
+      ref: 'refs/heads/main',
+    }
   )
 })
 
@@ -215,11 +217,11 @@ test('gitlab repository reads are unsupported without an oauth connection', asyn
       ref: 'main',
       paths: ['README.md'],
     }),
-    { unsupported: true },
+    { unsupported: true }
   )
   assertEquals(
     await gitlabProvider.listRepositoryEntries(ctx, { row: sourceRow, ref: 'main', path: '' }),
-    { unsupported: true },
+    { unsupported: true }
   )
 })
 
@@ -232,28 +234,30 @@ test('gitlab repository reads fail when sealed secrets are unreadable', async ()
       ref: 'main',
       paths: ['README.md'],
     }),
-    { failure: 'gitlab oauth credentials are unreadable' },
+    { failure: 'gitlab oauth credentials are unreadable' }
   )
-  assertEquals(
-    await gitlabProvider.listRepositoryEntries(ctx, { row, ref: 'main', path: '' }),
-    { failure: 'gitlab oauth credentials are unreadable' },
-  )
+  assertEquals(await gitlabProvider.listRepositoryEntries(ctx, { row, ref: 'main', path: '' }), {
+    failure: 'gitlab oauth credentials are unreadable',
+  })
 })
 
 test('gitlab prepareClone without secrets cannot mint an oauth token', async () => {
   assertEquals(
-    await gitlabProvider.prepareClone({ db: null as never }, {
-      row: { ...sourceRow, connectionId: 'inst-1' },
-      ref: 'main',
-      needsCredential: true,
-    }),
-    { failure: 'gitlab oauth credentials are unreadable' },
+    await gitlabProvider.prepareClone(
+      { db: null as never },
+      {
+        row: { ...sourceRow, connectionId: 'inst-1' },
+        ref: 'main',
+        needsCredential: true,
+      }
+    ),
+    { failure: 'gitlab oauth credentials are unreadable' }
   )
 })
 
 function withFetch(
   handler: (url: string) => Response | Promise<Response>,
-  fn: () => Promise<void>,
+  fn: () => Promise<void>
 ): Promise<void> {
   const original = globalThis.fetch
   globalThis.fetch = ((input: RequestInfo | URL) => {
@@ -294,7 +298,7 @@ function gitlabDb(opts: {
 async function mintedCtx(): Promise<GitProviderContext> {
   const secrets = await deriveEncryptionSecretsConfig(
     parseTestSecretsConfig('deno'),
-    'data-encryption',
+    'data-encryption'
   )
   const access = await encryptSecret(secrets, 'glpat-x')
   return {
@@ -337,211 +341,235 @@ const oauthRow = { ...sourceRow, connectionId: 'inst-1' }
 
 test('gitlab listRepositories mints a token and lists projects', async () => {
   const ctx = await mintedCtx()
-  await withFetch((url) => {
-    assertEquals(url.includes('/projects?'), true)
-    return new Response(
-      JSON.stringify([
-        { id: 15, path_with_namespace: 'group/app', visibility: 'public' },
-      ]),
-      { status: 200 },
-    )
-  }, async () => {
-    assertEquals(await gitlabProvider.listRepositories(ctx, 'inst-1'), [{
-      id: '15',
-      fullName: 'group/app',
-      defaultBranch: null,
-      private: false,
-      cloneUrl: null,
-    }])
-  })
+  await withFetch(
+    (url) => {
+      assertEquals(url.includes('/projects?'), true)
+      return new Response(
+        JSON.stringify([{ id: 15, path_with_namespace: 'group/app', visibility: 'public' }]),
+        { status: 200 }
+      )
+    },
+    async () => {
+      assertEquals(await gitlabProvider.listRepositories(ctx, 'inst-1'), [
+        {
+          id: '15',
+          fullName: 'group/app',
+          defaultBranch: null,
+          private: false,
+          cloneUrl: null,
+        },
+      ])
+    }
+  )
 })
 
 test('gitlab listRepositories requires secrets and a configured app', async () => {
   await assertRejects(
     () => gitlabProvider.listRepositories({ db: null as never }, 'inst-1'),
     GitlabOauthTokenError,
-    'gitlab oauth credentials are unreadable',
+    'gitlab oauth credentials are unreadable'
   )
   const secrets = await deriveEncryptionSecretsConfig(
     parseTestSecretsConfig('deno'),
-    'data-encryption',
+    'data-encryption'
   )
   await assertRejects(
     () =>
       gitlabProvider.listRepositories(
         { db: gitlabDb({}), dataEncryptionSecrets: secrets },
-        'inst-1',
+        'inst-1'
       ),
     GitlabOauthTokenError,
-    'gitlab oauth application is not configured',
+    'gitlab oauth application is not configured'
   )
 })
 
 test('gitlab listRepositoryEntries maps tree entries and 404s', async () => {
   const ctx = await mintedCtx()
-  await withFetch((url) => {
-    if (url.includes('/repository/commits/')) {
-      return new Response(JSON.stringify({ id: SHA }), { status: 200 })
-    }
-    if (url.includes('/repository/tree')) {
-      return new Response(
-        JSON.stringify([
-          { path: 'src', type: 'tree' },
-          { path: 'README.md', type: 'blob' },
-          { type: 'blob' },
-          null,
-        ]),
-        { status: 200 },
+  await withFetch(
+    (url) => {
+      if (url.includes('/repository/commits/')) {
+        return new Response(JSON.stringify({ id: SHA }), { status: 200 })
+      }
+      if (url.includes('/repository/tree')) {
+        return new Response(
+          JSON.stringify([
+            { path: 'src', type: 'tree' },
+            { path: 'README.md', type: 'blob' },
+            { type: 'blob' },
+            null,
+          ]),
+          { status: 200 }
+        )
+      }
+      throw new TypeError(`unexpected ${url}`)
+    },
+    async () => {
+      assertEquals(
+        await gitlabProvider.listRepositoryEntries(ctx, {
+          row: oauthRow,
+          ref: 'main',
+          path: 'src',
+        }),
+        {
+          commitSha: SHA,
+          entries: [
+            { path: 'src', kind: 'dir' },
+            { path: 'README.md', kind: 'file' },
+          ],
+        }
       )
     }
-    throw new TypeError(`unexpected ${url}`)
-  }, async () => {
-    assertEquals(
-      await gitlabProvider.listRepositoryEntries(ctx, {
-        row: oauthRow,
-        ref: 'main',
-        path: 'src',
-      }),
-      {
-        commitSha: SHA,
-        entries: [
-          { path: 'src', kind: 'dir' },
-          { path: 'README.md', kind: 'file' },
-        ],
-      },
-    )
-  })
+  )
 
-  await withFetch((url) => {
-    if (url.includes('/repository/commits/')) {
-      return new Response(JSON.stringify({ id: SHA }), { status: 200 })
+  await withFetch(
+    (url) => {
+      if (url.includes('/repository/commits/')) {
+        return new Response(JSON.stringify({ id: SHA }), { status: 200 })
+      }
+      return new Response('missing', { status: 404 })
+    },
+    async () => {
+      assertEquals(
+        await gitlabProvider.listRepositoryEntries(ctx, {
+          row: oauthRow,
+          ref: 'main',
+          path: '',
+        }),
+        { commitSha: SHA, entries: [] }
+      )
     }
-    return new Response('missing', { status: 404 })
-  }, async () => {
-    assertEquals(
-      await gitlabProvider.listRepositoryEntries(ctx, {
-        row: oauthRow,
-        ref: 'main',
-        path: '',
-      }),
-      { commitSha: SHA, entries: [] },
-    )
-  })
+  )
 })
 
 test('gitlab readRepositoryFiles classifies missing, binary, and oversized files', async () => {
   const ctx = await mintedCtx()
-  await withFetch((url) => {
-    if (url.includes('/repository/commits/')) {
-      return new Response(JSON.stringify({ id: SHA }), { status: 200 })
+  await withFetch(
+    (url) => {
+      if (url.includes('/repository/commits/')) {
+        return new Response(JSON.stringify({ id: SHA }), { status: 200 })
+      }
+      if (url.includes('README.md')) {
+        return new Response('hello', { status: 200 })
+      }
+      if (url.includes('missing.txt')) {
+        return new Response('nope', { status: 404 })
+      }
+      if (url.includes('big.txt')) {
+        return new Response('0123456789abcdef', { status: 200 })
+      }
+      if (url.includes('bin.dat')) {
+        return new Response(new Uint8Array([0, 1, 2]), { status: 200 })
+      }
+      throw new TypeError(`unexpected ${url}`)
+    },
+    async () => {
+      assertEquals(
+        await gitlabProvider.readRepositoryFiles(ctx, {
+          row: oauthRow,
+          ref: 'main',
+          paths: ['README.md', 'missing.txt', 'big.txt', 'bin.dat'],
+          maxBytesPerFile: 8,
+        }),
+        {
+          commitSha: SHA,
+          files: [
+            { path: 'README.md', found: true, content: 'hello', bytes: 5 },
+            { path: 'missing.txt', found: false, reason: 'not_found' },
+            { path: 'big.txt', found: false, reason: 'too_large' },
+            { path: 'bin.dat', found: false, reason: 'binary' },
+          ],
+        }
+      )
     }
-    if (url.includes('README.md')) {
-      return new Response('hello', { status: 200 })
-    }
-    if (url.includes('missing.txt')) {
-      return new Response('nope', { status: 404 })
-    }
-    if (url.includes('big.txt')) {
-      return new Response('0123456789abcdef', { status: 200 })
-    }
-    if (url.includes('bin.dat')) {
-      return new Response(new Uint8Array([0, 1, 2]), { status: 200 })
-    }
-    throw new TypeError(`unexpected ${url}`)
-  }, async () => {
-    assertEquals(
-      await gitlabProvider.readRepositoryFiles(ctx, {
-        row: oauthRow,
-        ref: 'main',
-        paths: ['README.md', 'missing.txt', 'big.txt', 'bin.dat'],
-        maxBytesPerFile: 8,
-      }),
-      {
-        commitSha: SHA,
-        files: [
-          { path: 'README.md', found: true, content: 'hello', bytes: 5 },
-          { path: 'missing.txt', found: false, reason: 'not_found' },
-          { path: 'big.txt', found: false, reason: 'too_large' },
-          { path: 'bin.dat', found: false, reason: 'binary' },
-        ],
-      },
-    )
-  })
+  )
 })
 
 test('gitlab read auth maps API failures with and without a status', async () => {
   const ctx = await mintedCtx()
-  await withFetch(() => new Response('gitlab said no', { status: 401 }), async () => {
-    assertEquals(
-      await gitlabProvider.listRepositoryEntries(ctx, {
-        row: oauthRow,
-        ref: 'main',
-        path: '',
-      }),
-      { failure: 'gitlab request failed (401)', status: 401 },
-    )
-  })
+  await withFetch(
+    () => new Response('gitlab said no', { status: 401 }),
+    async () => {
+      assertEquals(
+        await gitlabProvider.listRepositoryEntries(ctx, {
+          row: oauthRow,
+          ref: 'main',
+          path: '',
+        }),
+        { failure: 'gitlab request failed (401)', status: 401 }
+      )
+    }
+  )
 
-  await withFetch(() => {
-    throw new Error('could not reach gitlab')
-  }, async () => {
-    assertEquals(
-      await gitlabProvider.listRepositoryEntries(ctx, {
-        row: oauthRow,
-        ref: 'main',
-        path: '',
-      }),
-      { failure: 'gitlab request failed: gitlab request failed: could not reach gitlab' },
-    )
-  })
+  await withFetch(
+    () => {
+      throw new Error('could not reach gitlab')
+    },
+    async () => {
+      assertEquals(
+        await gitlabProvider.listRepositoryEntries(ctx, {
+          row: oauthRow,
+          ref: 'main',
+          path: '',
+        }),
+        { failure: 'gitlab request failed: gitlab request failed: could not reach gitlab' }
+      )
+    }
+  )
 })
 
 test('gitlab listRepositoryEntries maps a listing failure and a non-array payload', async () => {
   const ctx = await mintedCtx()
-  await withFetch((url) => {
-    if (url.includes('/repository/commits/')) {
-      return new Response(JSON.stringify({ id: SHA }), { status: 200 })
+  await withFetch(
+    (url) => {
+      if (url.includes('/repository/commits/')) {
+        return new Response(JSON.stringify({ id: SHA }), { status: 200 })
+      }
+      return new Response('busy', { status: 503 })
+    },
+    async () => {
+      assertEquals(
+        await gitlabProvider.listRepositoryEntries(ctx, {
+          row: oauthRow,
+          ref: 'main',
+          path: '',
+        }),
+        { failure: 'gitlab listing failed', status: 503 }
+      )
     }
-    return new Response('busy', { status: 503 })
-  }, async () => {
-    assertEquals(
-      await gitlabProvider.listRepositoryEntries(ctx, {
-        row: oauthRow,
-        ref: 'main',
-        path: '',
-      }),
-      { failure: 'gitlab listing failed', status: 503 },
-    )
-  })
+  )
 
-  await withFetch((url) => {
-    if (url.includes('/repository/commits/')) {
-      return new Response(JSON.stringify({ id: SHA }), { status: 200 })
+  await withFetch(
+    (url) => {
+      if (url.includes('/repository/commits/')) {
+        return new Response(JSON.stringify({ id: SHA }), { status: 200 })
+      }
+      return new Response(JSON.stringify({ tree: [] }), { status: 200 })
+    },
+    async () => {
+      assertEquals(
+        await gitlabProvider.listRepositoryEntries(ctx, {
+          row: oauthRow,
+          ref: 'main',
+          path: '',
+        }),
+        { commitSha: SHA, entries: [] }
+      )
     }
-    return new Response(JSON.stringify({ tree: [] }), { status: 200 })
-  }, async () => {
-    assertEquals(
-      await gitlabProvider.listRepositoryEntries(ctx, {
-        row: oauthRow,
-        ref: 'main',
-        path: '',
-      }),
-      { commitSha: SHA, entries: [] },
-    )
-  })
+  )
 })
 
 test('gitlab read auth maps a missing app and a bad clone url', async () => {
   const secrets = await deriveEncryptionSecretsConfig(
     parseTestSecretsConfig('deno'),
-    'data-encryption',
+    'data-encryption'
   )
   assertEquals(
     await gitlabProvider.listRepositoryEntries(
       { db: gitlabDb({}), dataEncryptionSecrets: secrets },
-      { row: oauthRow, ref: 'main', path: '' },
+      { row: oauthRow, ref: 'main', path: '' }
     ),
-    { failure: 'gitlab oauth application is not configured' },
+    { failure: 'gitlab oauth application is not configured' }
   )
 
   const ctx = await mintedCtx()
@@ -551,21 +579,21 @@ test('gitlab read auth maps a missing app and a bad clone url', async () => {
       ref: 'main',
       path: '',
     }),
-    { failure: 'source repository url is not a gitlab project path' },
+    { failure: 'source repository url is not a gitlab project path' }
   )
 })
 
 test('gitlab prepareClone maps a missing app, a bad clone url, and oauth errors', async () => {
   const secrets = await deriveEncryptionSecretsConfig(
     parseTestSecretsConfig('deno'),
-    'data-encryption',
+    'data-encryption'
   )
   assertEquals(
     await gitlabProvider.prepareClone(
       { db: gitlabDb({}), dataEncryptionSecrets: secrets },
-      { row: oauthRow, ref: 'main', needsCredential: true },
+      { row: oauthRow, ref: 'main', needsCredential: true }
     ),
-    { failure: 'gitlab oauth application is not configured' },
+    { failure: 'gitlab oauth application is not configured' }
   )
 
   const ctx = await mintedCtx()
@@ -575,7 +603,7 @@ test('gitlab prepareClone maps a missing app, a bad clone url, and oauth errors'
       ref: 'main',
       needsCredential: true,
     }),
-    { failure: 'source repository url is not a gitlab project path' },
+    { failure: 'source repository url is not a gitlab project path' }
   )
 
   assertEquals(
@@ -605,35 +633,34 @@ test('gitlab prepareClone maps a missing app, a bad clone url, and oauth errors'
         }),
         dataEncryptionSecrets: secrets,
       },
-      { row: oauthRow, ref: 'main', needsCredential: true },
+      { row: oauthRow, ref: 'main', needsCredential: true }
     ),
-    { failure: 'installation not found', status: 404 },
+    { failure: 'installation not found', status: 404 }
   )
 })
 
 test('gitlab prepareClone mints oauth2 credentials and pins a known sha', async () => {
   const ctx = await mintedCtx()
-  await withFetch(() => new Response('nope', { status: 404 }), async () => {
-    assertEquals(
-      await gitlabProvider.prepareClone(ctx, {
-        row: oauthRow,
-        ref: 'main',
-        needsCredential: true,
-        requestedCommitSha: SHA,
-      }),
-      {
-        commit: { commitSha: SHA },
-        minted: { secret: 'glpat-x', kind: 'token', username: 'oauth2' },
-      },
-    )
-  })
+  await withFetch(
+    () => new Response('nope', { status: 404 }),
+    async () => {
+      assertEquals(
+        await gitlabProvider.prepareClone(ctx, {
+          row: oauthRow,
+          ref: 'main',
+          needsCredential: true,
+          requestedCommitSha: SHA,
+        }),
+        {
+          commit: { commitSha: SHA },
+          minted: { secret: 'glpat-x', kind: 'token', username: 'oauth2' },
+        }
+      )
+    }
+  )
 
   await withFetch(
-    () =>
-      new Response(
-        JSON.stringify({ id: SHA, title: 'feat: ship' }),
-        { status: 200 },
-      ),
+    () => new Response(JSON.stringify({ id: SHA, title: 'feat: ship' }), { status: 200 }),
     async () => {
       assertEquals(
         await gitlabProvider.prepareClone(ctx, {
@@ -644,66 +671,75 @@ test('gitlab prepareClone mints oauth2 credentials and pins a known sha', async 
         {
           commit: { commitSha: SHA, commitMessage: 'feat: ship' },
           minted: { secret: 'glpat-x', kind: 'token', username: 'oauth2' },
-        },
+        }
       )
-    },
+    }
   )
 })
 
 test('gitlab readRepositoryFiles maps a non-404 file failure and a tree transport error', async () => {
   const ctx = await mintedCtx()
-  await withFetch((url) => {
-    if (url.includes('/repository/commits/')) {
-      return new Response(JSON.stringify({ id: SHA }), { status: 200 })
+  await withFetch(
+    (url) => {
+      if (url.includes('/repository/commits/')) {
+        return new Response(JSON.stringify({ id: SHA }), { status: 200 })
+      }
+      return new Response('denied', { status: 403 })
+    },
+    async () => {
+      assertEquals(
+        await gitlabProvider.readRepositoryFiles(ctx, {
+          row: oauthRow,
+          ref: 'main',
+          paths: ['README.md'],
+        }),
+        { failure: 'gitlab file read failed', status: 403 }
+      )
     }
-    return new Response('denied', { status: 403 })
-  }, async () => {
-    assertEquals(
-      await gitlabProvider.readRepositoryFiles(ctx, {
-        row: oauthRow,
-        ref: 'main',
-        paths: ['README.md'],
-      }),
-      { failure: 'gitlab file read failed', status: 403 },
-    )
-  })
+  )
 
-  await withFetch((url) => {
-    if (url.includes('/repository/commits/')) {
-      return new Response(JSON.stringify({ id: SHA }), { status: 200 })
+  await withFetch(
+    (url) => {
+      if (url.includes('/repository/commits/')) {
+        return new Response(JSON.stringify({ id: SHA }), { status: 200 })
+      }
+      throw new Error('reset')
+    },
+    async () => {
+      assertEquals(
+        await gitlabProvider.listRepositoryEntries(ctx, {
+          row: oauthRow,
+          ref: 'main',
+          path: '',
+        }),
+        { failure: 'gitlab request failed: gitlab request failed: reset' }
+      )
     }
-    throw new Error('reset')
-  }, async () => {
-    assertEquals(
-      await gitlabProvider.listRepositoryEntries(ctx, {
-        row: oauthRow,
-        ref: 'main',
-        path: '',
-      }),
-      { failure: 'gitlab request failed: gitlab request failed: reset' },
-    )
-  })
+  )
 })
 
 test('gitlab readRepositoryFiles stops at the first failing file and never fetches later paths', async () => {
   const ctx = await mintedCtx()
   const fetched: string[] = []
-  await withFetch((url) => {
-    if (url.includes('/repository/commits/')) {
-      return new Response(JSON.stringify({ id: SHA }), { status: 200 })
+  await withFetch(
+    (url) => {
+      if (url.includes('/repository/commits/')) {
+        return new Response(JSON.stringify({ id: SHA }), { status: 200 })
+      }
+      fetched.push(url)
+      return new Response('denied', { status: 403 })
+    },
+    async () => {
+      assertEquals(
+        await gitlabProvider.readRepositoryFiles(ctx, {
+          row: oauthRow,
+          ref: 'main',
+          paths: ['first.md', 'second.md', 'third.md'],
+        }),
+        { failure: 'gitlab file read failed', status: 403 }
+      )
     }
-    fetched.push(url)
-    return new Response('denied', { status: 403 })
-  }, async () => {
-    assertEquals(
-      await gitlabProvider.readRepositoryFiles(ctx, {
-        row: oauthRow,
-        ref: 'main',
-        paths: ['first.md', 'second.md', 'third.md'],
-      }),
-      { failure: 'gitlab file read failed', status: 403 },
-    )
-  })
+  )
   assertEquals(fetched.length, 1)
   assertEquals(fetched[0]!.includes('first.md'), true)
 })

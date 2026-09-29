@@ -30,10 +30,7 @@
  * and never learn that GitLab exists.
  */
 
-import {
-  MAX_REPOSITORY_FILE_BYTES,
-  MAX_REPOSITORY_READ_PATHS,
-} from './repository-read.ts'
+import { MAX_REPOSITORY_FILE_BYTES, MAX_REPOSITORY_READ_PATHS } from './repository-read.ts'
 import type {
   GitProviderSourceRow,
   ListRepositoryEntriesParams,
@@ -65,14 +62,8 @@ import {
   resolveGitlabCommit,
 } from './gitlab-api.ts'
 import { loadForgeForConnection } from './forge-records.ts'
-import {
-  GitlabOauthTokenError,
-  mintGitlabAccessToken,
-} from './gitlab-oauth-token.ts'
-import {
-  GITLAB_TOKEN_HEADER,
-  verifyGitlabWebhookToken,
-} from './gitlab-webhook.ts'
+import { GitlabOauthTokenError, mintGitlabAccessToken } from './gitlab-oauth-token.ts'
+import { GITLAB_TOKEN_HEADER, verifyGitlabWebhookToken } from './gitlab-webhook.ts'
 
 export { fetchGitlabAccount } from './gitlab-api.ts'
 
@@ -104,9 +95,7 @@ function externalId(value: unknown): string | null {
  * `project.id` on the pipeline events, and both are present on most payloads —
  * read whichever answers.
  */
-export function gitlabRepositoryExternalId(
-  payload: Record<string, unknown>,
-): string | null {
+export function gitlabRepositoryExternalId(payload: Record<string, unknown>): string | null {
   const direct = externalId(payload.project_id)
   if (direct) return direct
   const project = payload.project
@@ -120,9 +109,7 @@ export function gitlabRepositoryExternalId(
  * `null` `checkout_sha`, the same shape GitHub uses, so it is reported as
  * `deleted` and never becomes a deploy trigger.
  */
-export function parseGitlabPush(
-  payload: Record<string, unknown>,
-): ProviderPushEvent | null {
+export function parseGitlabPush(payload: Record<string, unknown>): ProviderPushEvent | null {
   if (payload.object_kind !== undefined && payload.object_kind !== 'push') {
     return null
   }
@@ -158,9 +145,7 @@ export function parseGitlabPush(
  * deploy a commit whose remaining jobs are still running, which is the policy
  * `autoDeploy: 'checks_passed'` exists to prevent.
  */
-export function parseGitlabPipeline(
-  payload: Record<string, unknown>,
-): ProviderCheckEvent | null {
+export function parseGitlabPipeline(payload: Record<string, unknown>): ProviderCheckEvent | null {
   if (payload.object_kind !== 'pipeline') return null
   const attributes = payload.object_attributes
   if (!isPlainObject(attributes)) return null
@@ -185,7 +170,7 @@ export function parseGitlabPipeline(
  * can state that explicitly instead of silently having no case for it.
  */
 export function parseGitlabInstallationEvent(
-  _payload: Record<string, unknown>,
+  _payload: Record<string, unknown>
 ): ProviderInstallationEvent | null {
   return null
 }
@@ -199,9 +184,7 @@ function gitlabReadFailure(error: unknown): GitProviderFailure {
     return { failure: error.message, status: error.status }
   }
   return {
-    failure: `gitlab request failed: ${
-      error instanceof Error ? error.message : 'network error'
-    }`,
+    failure: `gitlab request failed: ${error instanceof Error ? error.message : 'network error'}`,
   }
 }
 
@@ -215,7 +198,7 @@ function gitlabReadFailure(error: unknown): GitProviderFailure {
  */
 async function gitlabReadAuth(
   ctx: GitProviderContext,
-  row: GitProviderSourceRow,
+  row: GitProviderSourceRow
 ): Promise<
   | { token: string; baseUrl: string; projectId: string }
   | GitProviderFailure
@@ -228,16 +211,12 @@ async function gitlabReadAuth(
   try {
     // The origin comes from the connection's own application, so an instance
     // may hold connections to gitlab.com and to a self-managed GitLab at once.
-    const app = await loadForgeForConnection(
-      ctx.db,
-      ctx.dataEncryptionSecrets,
-      row.connectionId,
-    )
+    const app = await loadForgeForConnection(ctx.db, ctx.dataEncryptionSecrets, row.connectionId)
     if (!app) return { failure: 'gitlab oauth application is not configured' }
     const { token } = await mintGitlabAccessToken(
       ctx.db,
       ctx.dataEncryptionSecrets,
-      row.connectionId,
+      row.connectionId
     )
     // `null` for the recorded id, matching `prepareClone`: GitProviderSourceRow
     // does not carry `repositoryExternalId`, so both paths resolve the project
@@ -257,33 +236,23 @@ export const gitlabProvider: GitProvider = {
 
   async listRepositories(
     ctx: GitProviderContext,
-    connectionId: string,
+    connectionId: string
   ): Promise<RepositorySummary[]> {
     if (!ctx.dataEncryptionSecrets) {
       throw new GitlabOauthTokenError('gitlab oauth credentials are unreadable')
     }
-    const app = await loadForgeForConnection(
-      ctx.db,
-      ctx.dataEncryptionSecrets,
-      connectionId,
-    )
+    const app = await loadForgeForConnection(ctx.db, ctx.dataEncryptionSecrets, connectionId)
     if (!app) {
       throw new GitlabOauthTokenError('gitlab oauth application is not configured')
     }
-    const { token } = await mintGitlabAccessToken(
-      ctx.db,
-      ctx.dataEncryptionSecrets,
-      connectionId,
-    )
+    const { token } = await mintGitlabAccessToken(ctx.db, ctx.dataEncryptionSecrets, connectionId)
     return await listGitlabProjects(app.baseUrl, token)
   },
 
   async readRepositoryFiles(
     ctx: GitProviderContext,
-    params: ReadRepositoryFilesParams,
-  ): Promise<
-    RepositoryFileSet | GitProviderFailure | RepositoryReadUnsupported
-  > {
+    params: ReadRepositoryFilesParams
+  ): Promise<RepositoryFileSet | GitProviderFailure | RepositoryReadUnsupported> {
     const auth = await gitlabReadAuth(ctx, params.row)
     if ('unsupported' in auth || 'failure' in auth) return auth
 
@@ -291,12 +260,8 @@ export const gitlabProvider: GitProvider = {
     // mid-wizard produce a torn view across files.
     let commitSha: string
     try {
-      commitSha = (await resolveGitlabCommit(
-        auth.baseUrl,
-        auth.token,
-        auth.projectId,
-        params.ref,
-      )).commitSha
+      commitSha = (await resolveGitlabCommit(auth.baseUrl, auth.token, auth.projectId, params.ref))
+        .commitSha
     } catch (error) {
       return gitlabReadFailure(error)
     }
@@ -309,9 +274,9 @@ export const gitlabProvider: GitProvider = {
       async (path) => {
         // GitLab wants the whole path URL-encoded as ONE segment, slashes and
         // all — `%2F`, not `/`. Encoding per segment 404s every nested file.
-        const url = `/projects/${encodeURIComponent(auth.projectId)}/repository/files/${
-          encodeURIComponent(path)
-        }/raw?ref=${encodeURIComponent(commitSha)}`
+        const url = `/projects/${encodeURIComponent(auth.projectId)}/repository/files/${encodeURIComponent(
+          path
+        )}/raw?ref=${encodeURIComponent(commitSha)}`
         let response: Response
         try {
           response = await gitlabGetRaw(auth.baseUrl, auth.token, url)
@@ -349,7 +314,7 @@ export const gitlabProvider: GitProvider = {
 
   async listRepositoryEntries(
     ctx: GitProviderContext,
-    params: ListRepositoryEntriesParams,
+    params: ListRepositoryEntriesParams
   ): Promise<
     | { commitSha: string; entries: RepositoryEntry[] }
     | GitProviderFailure
@@ -360,18 +325,15 @@ export const gitlabProvider: GitProvider = {
 
     let commitSha: string
     try {
-      commitSha = (await resolveGitlabCommit(
-        auth.baseUrl,
-        auth.token,
-        auth.projectId,
-        params.ref,
-      )).commitSha
+      commitSha = (await resolveGitlabCommit(auth.baseUrl, auth.token, auth.projectId, params.ref))
+        .commitSha
     } catch (error) {
       return gitlabReadFailure(error)
     }
 
     const maxEntries = params.maxEntries ?? 256
-    const url = `/projects/${encodeURIComponent(auth.projectId)}/repository/tree` +
+    const url =
+      `/projects/${encodeURIComponent(auth.projectId)}/repository/tree` +
       `?ref=${encodeURIComponent(commitSha)}&per_page=${maxEntries}` +
       (params.path ? `&path=${encodeURIComponent(params.path)}` : '')
     let result: { ok: true; payload: unknown } | { ok: false; status: number }
@@ -402,7 +364,7 @@ export const gitlabProvider: GitProvider = {
 
   async prepareClone(
     ctx: GitProviderContext,
-    params: PrepareCloneParams,
+    params: PrepareCloneParams
   ): Promise<PreparedClone | GitProviderFailure> {
     const { row, ref } = params
     // Preview never mints a token — shape only, ref as the placeholder.
@@ -427,11 +389,7 @@ export const gitlabProvider: GitProvider = {
     }
 
     try {
-      const app = await loadForgeForConnection(
-        ctx.db,
-        ctx.dataEncryptionSecrets,
-        row.connectionId,
-      )
+      const app = await loadForgeForConnection(ctx.db, ctx.dataEncryptionSecrets, row.connectionId)
       if (!app) {
         return { failure: 'gitlab oauth application is not configured' }
       }
@@ -440,7 +398,7 @@ export const gitlabProvider: GitProvider = {
       const { token } = await mintGitlabAccessToken(
         ctx.db,
         ctx.dataEncryptionSecrets,
-        row.connectionId,
+        row.connectionId
       )
 
       const projectId = gitlabProjectId(null, row.repositoryUrl)
@@ -451,14 +409,15 @@ export const gitlabProvider: GitProvider = {
       // Same rule as GitHub: without a known SHA the lookup is load-bearing;
       // with one it is decoration for the release surface and must not fail a
       // deploy that already has everything it needs to build.
-      const commit = params.requestedCommitSha === undefined
-        ? await resolveGitlabCommit(app.baseUrl, token, projectId, ref)
-        : await resolveGitlabCommit(
-          app.baseUrl,
-          token,
-          projectId,
-          params.requestedCommitSha,
-        ).catch(() => ({ commitSha: params.requestedCommitSha as string }))
+      const commit =
+        params.requestedCommitSha === undefined
+          ? await resolveGitlabCommit(app.baseUrl, token, projectId, ref)
+          : await resolveGitlabCommit(
+              app.baseUrl,
+              token,
+              projectId,
+              params.requestedCommitSha
+            ).catch(() => ({ commitSha: params.requestedCommitSha as string }))
 
       return {
         commit: {
@@ -484,7 +443,7 @@ export const gitlabProvider: GitProvider = {
   async verifyWebhook(
     secret: string | null | undefined,
     _rawBody: Uint8Array,
-    headers: WebhookHeaders,
+    headers: WebhookHeaders
   ): Promise<boolean> {
     // GitLab does not sign the body — possession of the shared token is the
     // whole credential. See `./gitlab-webhook.ts`.
@@ -495,10 +454,7 @@ export const gitlabProvider: GitProvider = {
     return parseGitlabPush(payload)
   },
 
-  parseCheck(
-    _event: string,
-    payload: Record<string, unknown>,
-  ): ProviderCheckEvent | null {
+  parseCheck(_event: string, payload: Record<string, unknown>): ProviderCheckEvent | null {
     return parseGitlabPipeline(payload)
   },
 }

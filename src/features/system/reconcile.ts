@@ -16,25 +16,22 @@
  * payload (optionally scoped to a single `environmentId`).
  */
 
-import { type SQL, sql } from "drizzle-orm";
-import type { Db } from "../../db/connection.ts";
-import { forEachSequential } from "../../lib/sequential.ts";
-import type { CommandEnvelope } from "../commands/envelope.ts";
-import type { CommandQueue } from "../commands/queue.ts";
+import { type SQL, sql } from 'drizzle-orm'
+import type { Db } from '../../db/connection.ts'
+import { forEachSequential } from '../../lib/sequential.ts'
+import type { CommandEnvelope } from '../commands/envelope.ts'
+import type { CommandQueue } from '../commands/queue.ts'
 import type {
   SystemReconcileAction,
   SystemReconcileCommandPayload,
   SystemReconcileComponent,
-} from "../../contracts/commands/schemas.ts";
-import {
-  createCommandRecord,
-  transitionCommand,
-} from "../commands/command-records.ts";
+} from '../../contracts/commands/schemas.ts'
+import { createCommandRecord, transitionCommand } from '../commands/command-records.ts'
 import {
   ingressContainerNameFromService,
   managedHaContainerNameFromService,
-} from "../../lib/naming.ts";
-import { WORKSPACE_KIND_TURBOPANEL } from "../../db/workspace-kind.ts";
+} from '../../lib/naming.ts'
+import { WORKSPACE_KIND_TURBOPANEL } from '../../db/workspace-kind.ts'
 import {
   findSystemEnvironmentForServer,
   isSystemSelfHostComposeServiceName,
@@ -46,64 +43,64 @@ import {
   SYSTEM_SELF_HOST_COMPONENT,
   SYSTEM_SELF_HOST_COMPOSE_SERVICE_NAMES,
   SYSTEM_TRAEFIK_COMPOSE_SERVICE_NAME,
-} from "./hierarchy.ts";
+} from './hierarchy.ts'
 
 /** Matches the consumer timeout for `system.reconcile` (300 s). */
-export const SYSTEM_RECONCILE_TTL_MS = 300_000;
+export const SYSTEM_RECONCILE_TTL_MS = 300_000
 
 /** Minimum gap between sweep-driven enqueues for the same server. */
-export const SYSTEM_RECONCILE_MIN_INTERVAL_MS = 5 * 60_000;
+export const SYSTEM_RECONCILE_MIN_INTERVAL_MS = 5 * 60_000
 
-const SYSTEM_RECONCILE_SWEEP_CAP = 100;
+const SYSTEM_RECONCILE_SWEEP_CAP = 100
 
 type SystemReconcileEnvironmentRow = {
-  environment_id: string;
-  project_component: string | null;
-  service_id: string;
-  name: string;
-};
+  environment_id: string
+  project_component: string | null
+  service_id: string
+  name: string
+}
 
 type SystemReconcileQueryRow = SystemReconcileEnvironmentRow & {
-  server_options: unknown;
-  is_hosting_enabled: boolean | null;
-  has_http_ingress_demand: boolean;
-  has_managed_members: boolean;
-  has_ha_members: boolean;
-  has_bound_managed_consumers: boolean;
-  ingress_container_id: string | null;
-  ingress_status: string | null;
-};
+  server_options: unknown
+  is_hosting_enabled: boolean | null
+  has_http_ingress_demand: boolean
+  has_managed_members: boolean
+  has_ha_members: boolean
+  has_bound_managed_consumers: boolean
+  ingress_container_id: string | null
+  ingress_status: string | null
+}
 
 type SystemReconcileEnvironmentEntry = {
-  component: string | null;
-  hostingEnabled: boolean;
+  component: string | null
+  hostingEnabled: boolean
   /**
    * True when at least one HTTP hosting with hostnames is placed on this
    * server — the shared Traefik is only desired after something needs it.
    */
-  hasHttpIngressDemand: boolean;
+  hasHttpIngressDemand: boolean
   /**
    * True when the ingress row was observed on Docker before (container id
    * stamped or status running) — keep self-healing after first start even
    * if hostings are temporarily cleared, until hosting is disabled.
    */
-  ingressObserved: boolean;
+  ingressObserved: boolean
   /**
    * True when this server hosts at least one managed cluster `node` row.
    */
-  hasManagedMembers: boolean;
+  hasManagedMembers: boolean
   /**
    * True when this server is a bound consumer of a managed cluster
    * (environment pin, project default, or slot pin) — ProxySQL is desired
    * even with no local members.
    */
-  hasBoundManagedConsumers: boolean;
+  hasBoundManagedConsumers: boolean
   /**
    * True when this server hosts a primary or failover replica (Orchestrator Raft).
    */
-  hasHaMembers: boolean;
-  services: Array<{ serviceId: string; composeServiceName: string }>;
-};
+  hasHaMembers: boolean
+  services: Array<{ serviceId: string; composeServiceName: string }>
+}
 
 /**
  * Shared loopback Traefik should be running only when hosting is enabled and
@@ -113,14 +110,14 @@ type SystemReconcileEnvironmentEntry = {
  */
 export function resolveHostingIngressDesired(
   params: Readonly<{
-    hostingEnabled: boolean;
-    hasHttpIngressDemand: boolean;
-    ingressObserved: boolean;
-  }>,
-): "present" | "absent" {
-  if (!params.hostingEnabled) return "absent";
-  if (params.hasHttpIngressDemand || params.ingressObserved) return "present";
-  return "absent";
+    hostingEnabled: boolean
+    hasHttpIngressDemand: boolean
+    ingressObserved: boolean
+  }>
+): 'present' | 'absent' {
+  if (!params.hostingEnabled) return 'absent'
+  if (params.hasHttpIngressDemand || params.ingressObserved) return 'present'
+  return 'absent'
 }
 
 /**
@@ -131,23 +128,23 @@ export function resolveHostingIngressDesired(
  */
 export function resolveManagedIngressDesired(
   params: Readonly<{
-    hasManagedMembers: boolean;
-    hasBoundManagedConsumers: boolean;
-  }>,
-): "present" | "absent" {
+    hasManagedMembers: boolean
+    hasBoundManagedConsumers: boolean
+  }>
+): 'present' | 'absent' {
   if (params.hasManagedMembers || params.hasBoundManagedConsumers) {
-    return "present";
+    return 'present'
   }
-  return "absent";
+  return 'absent'
 }
 
 /** Orchestrator is desired only on servers that host a primary or failover replica. */
 export function resolveManagedHaDesired(
   params: Readonly<{
-    hasHaMembers: boolean;
-  }>,
-): "present" | "absent" {
-  return params.hasHaMembers ? "present" : "absent";
+    hasHaMembers: boolean
+  }>
+): 'present' | 'absent' {
+  return params.hasHaMembers ? 'present' : 'absent'
 }
 
 /**
@@ -161,7 +158,7 @@ export function managedMembersExists(serverIdExpr: SQL): SQL {
         SELECT 1
         FROM replica mm
         WHERE mm.server_id = ${serverIdExpr}
-      )`;
+      )`
 }
 
 /**
@@ -176,10 +173,7 @@ export function managedMembersExists(serverIdExpr: SQL): SQL {
  * would never let post-boot self-heal run there. Also negated by
  * `runManagedIngressOrphanSweep` to find frontends whose demand is gone.
  */
-export function boundManagedConsumersExists(
-  serverIdExpr: SQL,
-  organizationIdExpr: SQL,
-): SQL {
+export function boundManagedConsumersExists(serverIdExpr: SQL, organizationIdExpr: SQL): SQL {
   return sql`EXISTS (
         SELECT 1
         FROM binding b
@@ -199,80 +193,77 @@ export function boundManagedConsumersExists(
               AND bp.options->>'defaultServerId' = (${serverIdExpr})::text
             )
           )
-      )`;
+      )`
 }
 
 /** Build the per-environment component list from its identity + service rows. */
 function buildSystemReconcileComponents(
-  entry: SystemReconcileEnvironmentEntry,
+  entry: SystemReconcileEnvironmentEntry
 ): SystemReconcileComponent[] {
   if (entry.component === SYSTEM_HOSTING_INGRESS_COMPONENT) {
     const traefik = entry.services.find(
-      (svc) => svc.composeServiceName === SYSTEM_TRAEFIK_COMPOSE_SERVICE_NAME,
-    );
-    if (!traefik) return [];
+      (svc) => svc.composeServiceName === SYSTEM_TRAEFIK_COMPOSE_SERVICE_NAME
+    )
+    if (!traefik) return []
     return [
       {
         component: SYSTEM_HOSTING_INGRESS_COMPONENT,
         serviceId: traefik.serviceId,
         composeServiceName: SYSTEM_TRAEFIK_COMPOSE_SERVICE_NAME,
         containerName: ingressContainerNameFromService(traefik.serviceId),
-        role: "ingress",
+        role: 'ingress',
         desired: resolveHostingIngressDesired({
           hostingEnabled: entry.hostingEnabled,
           hasHttpIngressDemand: entry.hasHttpIngressDemand,
           ingressObserved: entry.ingressObserved,
         }),
       },
-    ];
+    ]
   }
 
   if (entry.component === SYSTEM_MANAGED_INGRESS_COMPONENT) {
     const proxysql = entry.services.find(
-      (svc) => svc.composeServiceName === SYSTEM_PROXYSQL_COMPOSE_SERVICE_NAME,
-    );
-    if (!proxysql) return [];
+      (svc) => svc.composeServiceName === SYSTEM_PROXYSQL_COMPOSE_SERVICE_NAME
+    )
+    if (!proxysql) return []
     return [
       {
         component: SYSTEM_MANAGED_INGRESS_COMPONENT,
         serviceId: proxysql.serviceId,
         composeServiceName: SYSTEM_PROXYSQL_COMPOSE_SERVICE_NAME,
         containerName: ingressContainerNameFromService(proxysql.serviceId),
-        role: "ingress",
+        role: 'ingress',
         desired: resolveManagedIngressDesired({
           hasManagedMembers: entry.hasManagedMembers,
           hasBoundManagedConsumers: entry.hasBoundManagedConsumers,
         }),
       },
-    ];
+    ]
   }
 
   if (entry.component === SYSTEM_MANAGED_HA_COMPONENT) {
     const orchestrator = entry.services.find(
-      (svc) =>
-        svc.composeServiceName === SYSTEM_ORCHESTRATOR_COMPOSE_SERVICE_NAME,
-    );
-    if (!orchestrator) return [];
+      (svc) => svc.composeServiceName === SYSTEM_ORCHESTRATOR_COMPOSE_SERVICE_NAME
+    )
+    if (!orchestrator) return []
     return [
       {
         component: SYSTEM_MANAGED_HA_COMPONENT,
         serviceId: orchestrator.serviceId,
         composeServiceName: SYSTEM_ORCHESTRATOR_COMPOSE_SERVICE_NAME,
-        containerName: managedHaContainerNameFromService(
-          orchestrator.serviceId,
-        ),
-        role: "turbopanel",
+        containerName: managedHaContainerNameFromService(orchestrator.serviceId),
+        role: 'turbopanel',
         desired: resolveManagedHaDesired({
           hasHaMembers: entry.hasHaMembers,
         }),
       },
-    ];
+    ]
   }
 
   if (entry.component === SYSTEM_SELF_HOST_COMPONENT) {
-    const components: SystemReconcileComponent[] = [];
+    const components: SystemReconcileComponent[] = []
     for (const svc of entry.services) {
-      if (!isSystemSelfHostComposeServiceName(svc.composeServiceName)) continue;
+      if (!isSystemSelfHostComposeServiceName(svc.composeServiceName)) continue
       // Self-host database/queue are always desired — there is no
       // enable/disable toggle like hosting-ingress.
       components.push({
@@ -280,23 +271,21 @@ function buildSystemReconcileComponents(
         serviceId: svc.serviceId,
         composeServiceName: svc.composeServiceName,
         containerName: svc.serviceId,
-        role: "turbopanel",
-        desired: "present",
-      });
+        role: 'turbopanel',
+        desired: 'present',
+      })
     }
-    return components;
+    return components
   }
 
-  return [];
+  return []
 }
 
 function rowShowsIngressObserved(row: SystemReconcileQueryRow): boolean {
-  return row.ingress_container_id != null || row.ingress_status === "running";
+  return row.ingress_container_id != null || row.ingress_status === 'running'
 }
 
-function newEnvironmentEntry(
-  row: SystemReconcileQueryRow,
-): SystemReconcileEnvironmentEntry {
+function newEnvironmentEntry(row: SystemReconcileQueryRow): SystemReconcileEnvironmentEntry {
   return {
     component: row.project_component,
     hostingEnabled: row.is_hosting_enabled === true,
@@ -306,49 +295,49 @@ function newEnvironmentEntry(
     hasBoundManagedConsumers: row.has_bound_managed_consumers === true,
     ingressObserved: rowShowsIngressObserved(row),
     services: [],
-  };
+  }
 }
 
 function mergeEnvironmentRowFlags(
   entry: SystemReconcileEnvironmentEntry,
-  row: SystemReconcileQueryRow,
+  row: SystemReconcileQueryRow
 ): void {
-  entry.hasHttpIngressDemand ||= row.has_http_ingress_demand === true;
-  entry.hasManagedMembers ||= row.has_managed_members === true;
-  entry.hasHaMembers ||= row.has_ha_members === true;
-  entry.hasBoundManagedConsumers ||= row.has_bound_managed_consumers === true;
-  entry.ingressObserved ||= rowShowsIngressObserved(row);
+  entry.hasHttpIngressDemand ||= row.has_http_ingress_demand === true
+  entry.hasManagedMembers ||= row.has_managed_members === true
+  entry.hasHaMembers ||= row.has_ha_members === true
+  entry.hasBoundManagedConsumers ||= row.has_bound_managed_consumers === true
+  entry.ingressObserved ||= rowShowsIngressObserved(row)
 }
 
 function groupSystemReconcileRows(
-  rows: readonly SystemReconcileQueryRow[],
+  rows: readonly SystemReconcileQueryRow[]
 ): Map<string, SystemReconcileEnvironmentEntry> {
-  const byEnvironment = new Map<string, SystemReconcileEnvironmentEntry>();
+  const byEnvironment = new Map<string, SystemReconcileEnvironmentEntry>()
   for (const row of rows) {
-    let entry = byEnvironment.get(row.environment_id);
+    let entry = byEnvironment.get(row.environment_id)
     if (!entry) {
-      entry = newEnvironmentEntry(row);
-      byEnvironment.set(row.environment_id, entry);
+      entry = newEnvironmentEntry(row)
+      byEnvironment.set(row.environment_id, entry)
     }
-    mergeEnvironmentRowFlags(entry, row);
+    mergeEnvironmentRowFlags(entry, row)
     entry.services.push({
       serviceId: row.service_id,
       composeServiceName: row.name,
-    });
+    })
   }
-  return byEnvironment;
+  return byEnvironment
 }
 
 function payloadsFromEnvironmentEntries(
-  byEnvironment: Map<string, SystemReconcileEnvironmentEntry>,
+  byEnvironment: Map<string, SystemReconcileEnvironmentEntry>
 ): SystemReconcileCommandPayload[] {
-  const payloads: SystemReconcileCommandPayload[] = [];
+  const payloads: SystemReconcileCommandPayload[] = []
   for (const [environmentId, entry] of byEnvironment) {
-    const components = buildSystemReconcileComponents(entry);
-    if (components.length === 0) continue;
-    payloads.push({ environmentId, action: "reconcile", components });
+    const components = buildSystemReconcileComponents(entry)
+    if (components.length === 0) continue
+    payloads.push({ environmentId, action: 'reconcile', components })
   }
-  return payloads;
+  return payloads
 }
 
 /**
@@ -368,13 +357,10 @@ function payloadsFromEnvironmentEntries(
  */
 export async function buildSystemReconcilePayload(
   db: Db,
-  params: Readonly<{ serverId: string }>,
+  params: Readonly<{ serverId: string }>
 ): Promise<SystemReconcileCommandPayload[]> {
-  const serverIdExpr = sql`${params.serverId}::uuid`;
-  const boundConsumers = boundManagedConsumersExists(
-    serverIdExpr,
-    sql`srv.organization_id`,
-  );
+  const serverIdExpr = sql`${params.serverId}::uuid`
+  const boundConsumers = boundManagedConsumersExists(serverIdExpr, sql`srv.organization_id`)
 
   const rows = await db.execute<SystemReconcileQueryRow>(sql`
     SELECT
@@ -421,37 +407,36 @@ export async function buildSystemReconcilePayload(
     WHERE e.server_id = ${params.serverId}::uuid
       AND w.kind = ${WORKSPACE_KIND_TURBOPANEL}
     ORDER BY e.id, s.name
-  `);
+  `)
 
-  return payloadsFromEnvironmentEntries(groupSystemReconcileRows(rows));
+  return payloadsFromEnvironmentEntries(groupSystemReconcileRows(rows))
 }
 
 export type EnqueueSystemReconcileParams = Readonly<{
-  serverId: string;
-  actorType: "user" | "system";
-  actorId: string;
-  action?: SystemReconcileAction;
+  serverId: string
+  actorType: 'user' | 'system'
+  actorId: string
+  action?: SystemReconcileAction
   /**
    * Scope enqueue to a single system environment (e.g. the operate/restart
    * route, which only ever targets hosting-ingress). Omit to enqueue one
    * command per system environment resolved for the server.
    */
-  environmentId?: string;
-}>;
+  environmentId?: string
+}>
 
 export type EnqueueSystemReconcileResult =
   | {
-    ok: true;
-    /** First enqueued command id — kept for back-compat with single-command callers. */
-    commandId: string;
-    commandIds: string[];
-    serverId: string;
-  }
-  | { ok: false; reason: "not_provisioned" | "enqueue_failed" };
+      ok: true
+      /** First enqueued command id — kept for back-compat with single-command callers. */
+      commandId: string
+      commandIds: string[]
+      serverId: string
+    }
+  | { ok: false; reason: 'not_provisioned' | 'enqueue_failed' }
 
 export type EnqueueSystemReconcileIfConnectedResult =
-  | EnqueueSystemReconcileResult
-  | { ok: false; reason: "not_connected" };
+  EnqueueSystemReconcileResult | { ok: false; reason: 'not_connected' }
 
 /**
  * Create + enqueue one `system.reconcile` command per resolved system
@@ -463,60 +448,59 @@ export type EnqueueSystemReconcileIfConnectedResult =
 export async function enqueueSystemReconcile(
   db: Db,
   commandQueue: CommandQueue,
-  params: EnqueueSystemReconcileParams,
+  params: EnqueueSystemReconcileParams
 ): Promise<EnqueueSystemReconcileResult> {
   const built = await buildSystemReconcilePayload(db, {
     serverId: params.serverId,
-  });
+  })
   const scoped = params.environmentId
     ? built.filter((payload) => payload.environmentId === params.environmentId)
-    : built;
-  if (scoped.length === 0) return { ok: false, reason: "not_provisioned" };
+    : built
+  if (scoped.length === 0) return { ok: false, reason: 'not_provisioned' }
 
-  const action = params.action ?? "reconcile";
-  const expiresAt = new Date(Date.now() + SYSTEM_RECONCILE_TTL_MS)
-    .toISOString();
+  const action = params.action ?? 'reconcile'
+  const expiresAt = new Date(Date.now() + SYSTEM_RECONCILE_TTL_MS).toISOString()
 
-  const commandIds: string[] = [];
+  const commandIds: string[] = []
   await forEachSequential(scoped, async (built) => {
-    const payload: SystemReconcileCommandPayload = { ...built, action };
+    const payload: SystemReconcileCommandPayload = { ...built, action }
 
     const record = await createCommandRecord(db, {
       serverId: params.serverId,
       actorType: params.actorType,
       actorId: params.actorId,
-      type: "system.reconcile",
+      type: 'system.reconcile',
       payload,
       expiresAt,
-    });
+    })
 
     const envelope: CommandEnvelope = {
       commandId: record.id,
       serverId: params.serverId,
-      type: "system.reconcile",
+      type: 'system.reconcile',
       attempt: 1,
       queuedAt: record.queuedAt ?? record.createdAt,
-    };
+    }
 
     try {
-      await commandQueue.enqueue(envelope);
-      commandIds.push(record.id);
+      await commandQueue.enqueue(envelope)
+      commandIds.push(record.id)
     } catch {
       await transitionCommand(db, record.id, {
-        status: "failed",
-        error: "Command queue unavailable",
-      });
+        status: 'failed',
+        error: 'Command queue unavailable',
+      })
     }
-  });
+  })
 
-  if (commandIds.length === 0) return { ok: false, reason: "enqueue_failed" };
+  if (commandIds.length === 0) return { ok: false, reason: 'enqueue_failed' }
 
   return {
     ok: true,
     commandId: commandIds[0],
     commandIds,
     serverId: params.serverId,
-  };
+  }
 }
 
 /**
@@ -524,10 +508,7 @@ export async function enqueueSystemReconcile(
  * server — the same demand test `buildSystemReconcilePayload` derives
  * `hosting-ingress` desired state from.
  */
-export async function hasHttpIngressDemand(
-  db: Db,
-  serverId: string,
-): Promise<boolean> {
+export async function hasHttpIngressDemand(db: Db, serverId: string): Promise<boolean> {
   const rows = await db.execute<{ has_demand: boolean }>(sql`
     SELECT EXISTS (
       SELECT 1
@@ -539,8 +520,8 @@ export async function hasHttpIngressDemand(
         AND jsonb_typeof(h.options->'hostnames') = 'array'
         AND jsonb_array_length(h.options->'hostnames') > 0
     ) AS has_demand
-  `);
-  return rows[0]?.has_demand === true;
+  `)
+  return rows[0]?.has_demand === true
 }
 
 /**
@@ -557,33 +538,33 @@ export async function retireHostingIngressIfIdle(
   db: Db,
   commandQueue: CommandQueue,
   params: Readonly<{
-    serverId: string;
-    actorType: "user" | "system";
-    actorId: string;
-  }>,
-): Promise<"stopped" | "demand_remains" | "skipped"> {
+    serverId: string
+    actorType: 'user' | 'system'
+    actorId: string
+  }>
+): Promise<'stopped' | 'demand_remains' | 'skipped'> {
   try {
     if (await hasHttpIngressDemand(db, params.serverId)) {
-      return "demand_remains";
+      return 'demand_remains'
     }
 
     const environmentId = await findSystemEnvironmentForServer(
       db,
       params.serverId,
-      SYSTEM_HOSTING_INGRESS_COMPONENT,
-    );
-    if (!environmentId) return "skipped";
+      SYSTEM_HOSTING_INGRESS_COMPONENT
+    )
+    if (!environmentId) return 'skipped'
 
     const enqueued = await enqueueSystemReconcile(db, commandQueue, {
       serverId: params.serverId,
       actorType: params.actorType,
       actorId: params.actorId,
-      action: "stop",
+      action: 'stop',
       environmentId,
-    });
-    return enqueued.ok ? "stopped" : "skipped";
+    })
+    return enqueued.ok ? 'stopped' : 'skipped'
   } catch {
-    return "skipped";
+    return 'skipped'
   }
 }
 
@@ -598,23 +579,23 @@ export async function retireHostingIngressIfIdle(
 export async function enqueueSystemReconcileIfConnected(
   db: Db,
   commandQueue: CommandQueue,
-  serverId: string,
+  serverId: string
 ): Promise<EnqueueSystemReconcileIfConnectedResult> {
   const rows = await db.execute<{ is_connected: boolean }>(sql`
     SELECT is_connected
     FROM server
     WHERE id = ${serverId}::uuid
     LIMIT 1
-  `);
+  `)
   if (rows[0]?.is_connected !== true) {
-    return { ok: false, reason: "not_connected" };
+    return { ok: false, reason: 'not_connected' }
   }
   return enqueueSystemReconcile(db, commandQueue, {
     serverId,
-    actorType: "system",
+    actorType: 'system',
     actorId: serverId,
-    action: "reconcile",
-  });
+    action: 'reconcile',
+  })
 }
 
 /**
@@ -649,26 +630,21 @@ export async function enqueueSystemReconcileIfConnected(
 export async function runSystemReconcileSweep(
   db: Db,
   commandQueue: CommandQueue,
-  params: Readonly<{ budget?: number }> = {},
+  params: Readonly<{ budget?: number }> = {}
 ): Promise<{ enqueued: number }> {
   const budget = Math.min(
     Math.max(1, params.budget ?? SYSTEM_RECONCILE_SWEEP_CAP),
-    SYSTEM_RECONCILE_SWEEP_CAP,
-  );
-  const throttleCutoff = new Date(
-    Date.now() - SYSTEM_RECONCILE_MIN_INTERVAL_MS,
-  ).toISOString();
+    SYSTEM_RECONCILE_SWEEP_CAP
+  )
+  const throttleCutoff = new Date(Date.now() - SYSTEM_RECONCILE_MIN_INTERVAL_MS).toISOString()
   const selfHostComposeServiceNameList = sql.join(
     SYSTEM_SELF_HOST_COMPOSE_SERVICE_NAMES.map((name) => sql`${name}`),
-    sql.raw(", "),
-  );
+    sql.raw(', ')
+  )
 
   // Consumer-only servers host no `replica` rows; the same bound-consumer test
   // `buildSystemReconcilePayload` uses keeps them sweep candidates.
-  const sweepBoundConsumers = boundManagedConsumersExists(
-    sql`srv.id`,
-    sql`srv.organization_id`,
-  );
+  const sweepBoundConsumers = boundManagedConsumersExists(sql`srv.id`, sql`srv.organization_id`)
 
   const candidates = await db.execute<{ server_id: string }>(sql`
     SELECT DISTINCT srv.id AS server_id
@@ -737,17 +713,17 @@ export async function runSystemReconcileSweep(
       )
     ORDER BY srv.id
     LIMIT ${budget}
-  `);
+  `)
 
-  let enqueued = 0;
+  let enqueued = 0
   await forEachSequential(candidates, async (row) => {
     const result = await enqueueSystemReconcile(db, commandQueue, {
       serverId: row.server_id,
-      actorType: "system",
+      actorType: 'system',
       actorId: row.server_id,
-      action: "reconcile",
-    });
-    if (result.ok) enqueued += 1;
-  });
-  return { enqueued };
+      action: 'reconcile',
+    })
+    if (result.ok) enqueued += 1
+  })
+  return { enqueued }
 }

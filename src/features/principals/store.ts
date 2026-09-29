@@ -1,23 +1,20 @@
-import { and, asc, eq, inArray, isNotNull, ne, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, ne, sql } from 'drizzle-orm'
 import {
   isReservedPrincipalUsername,
   MAX_PRINCIPAL_USERNAME_LENGTH,
   MAX_SUFFIXED_PRINCIPAL_USERNAME_LENGTH,
   principalHomeDir,
   randomPrincipalUsernameSuffix,
-} from "../../lib/naming.ts";
+} from '../../lib/naming.ts'
 import {
   type PrincipalAccessLevel,
   shellForAccessLevel,
-} from "../../features/principals/principal-access.ts";
-import { loadRandomizedUsernamesDefault } from "../../features/managed/load-org-defaults.ts";
-import {
-  encryptSecret,
-  generateSealedSecret,
-} from "../../lib/secrets/data-encryption.ts";
-import type { DerivedSecretsConfig } from "../../lib/secrets/secrets.ts";
-import type { Db } from "../../db/connection.ts";
-import { forEachSequential } from "../../lib/sequential.ts";
+} from '../../features/principals/principal-access.ts'
+import { loadRandomizedUsernamesDefault } from '../../features/managed/load-org-defaults.ts'
+import { encryptSecret, generateSealedSecret } from '../../lib/secrets/data-encryption.ts'
+import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
+import type { Db } from '../../db/connection.ts'
+import { forEachSequential } from '../../lib/sequential.ts'
 import {
   entitlement,
   environment,
@@ -29,23 +26,16 @@ import {
   server,
   tenancy,
   workspace,
-} from "../../db/schema.ts";
+} from '../../db/schema.ts'
 
-export const PRINCIPAL_PROVIDERS = new Set([
-  "server",
-  "postgres",
-  "mysql",
-  "redis",
-  "clickhouse",
-]);
-export const SERVER_PRINCIPAL_PROVIDER = "server";
-export const USERNAME_IN_USE_ERROR = "username_in_use";
-export const USERNAME_RE = /^[A-Za-z_][A-Za-z0-9_-]*$/;
-const UUID_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export const PRINCIPAL_PROVIDERS = new Set(['server', 'postgres', 'mysql', 'redis', 'clickhouse'])
+export const SERVER_PRINCIPAL_PROVIDER = 'server'
+export const USERNAME_IN_USE_ERROR = 'username_in_use'
+export const USERNAME_RE = /^[A-Za-z_][A-Za-z0-9_-]*$/
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 export function isUuid(value: string): boolean {
-  return UUID_RE.test(value);
+  return UUID_RE.test(value)
 }
 
 /**
@@ -58,18 +48,18 @@ export async function isServerPrincipalUsernameTaken(
   db: Db,
   organizationId: string,
   username: string,
-  excludePrincipalId?: string,
+  excludePrincipalId?: string
 ): Promise<boolean> {
-  const key = username.trim().toLowerCase();
-  if (!key) return false;
+  const key = username.trim().toLowerCase()
+  if (!key) return false
 
   const conditions = [
     eq(workspace.organizationId, organizationId),
     eq(principal.provider, SERVER_PRINCIPAL_PROVIDER),
     sql`(lower(btrim(${principal.username})) = ${key} OR lower(btrim(${principal.appliedUsername})) = ${key})`,
-  ];
+  ]
   if (excludePrincipalId) {
-    conditions.push(ne(principal.id, excludePrincipalId));
+    conditions.push(ne(principal.id, excludePrincipalId))
   }
 
   const rows = await db
@@ -78,36 +68,31 @@ export async function isServerPrincipalUsernameTaken(
     .innerJoin(project, eq(principal.projectId, project.id))
     .innerJoin(workspace, eq(project.workspaceId, workspace.id))
     .where(and(...conditions))
-    .limit(1);
+    .limit(1)
 
-  return rows.length > 0;
+  return rows.length > 0
 }
 
 export async function replaceTenancies(
   tx: Db,
   principalId: string,
-  nextServiceIds: string[],
+  nextServiceIds: string[]
 ): Promise<void> {
   const existing = await tx
     .select({ serviceId: tenancy.serviceId })
     .from(tenancy)
-    .where(eq(tenancy.principalId, principalId));
+    .where(eq(tenancy.principalId, principalId))
 
-  const current = new Set(existing.map((row) => row.serviceId));
-  const next = new Set(nextServiceIds);
+  const current = new Set(existing.map((row) => row.serviceId))
+  const next = new Set(nextServiceIds)
 
-  const toDelete = [...current].filter((id) => !next.has(id));
-  const toInsert = [...next].filter((id) => !current.has(id));
+  const toDelete = [...current].filter((id) => !next.has(id))
+  const toInsert = [...next].filter((id) => !current.has(id))
 
   if (toDelete.length > 0) {
     await tx
       .delete(tenancy)
-      .where(
-        and(
-          eq(tenancy.principalId, principalId),
-          inArray(tenancy.serviceId, toDelete),
-        ),
-      );
+      .where(and(eq(tenancy.principalId, principalId), inArray(tenancy.serviceId, toDelete)))
   }
 
   if (toInsert.length > 0) {
@@ -115,24 +100,24 @@ export async function replaceTenancies(
       toInsert.map((serviceId) => ({
         principalId,
         serviceId,
-      })),
-    );
+      }))
+    )
   }
 }
 
 /** One runtime series a principal may execute, with its provenance. */
 export type PrincipalEntitlementRow = {
-  runtime: string;
-  series: string;
-  grantedBy: "operator" | "deploy";
-};
+  runtime: string
+  series: string
+  grantedBy: 'operator' | 'deploy'
+}
 
 export async function loadEntitlementsByPrincipalIds(
   tx: Db,
-  principalIds: readonly string[],
+  principalIds: readonly string[]
 ): Promise<Map<string, PrincipalEntitlementRow[]>> {
-  const byPrincipal = new Map<string, PrincipalEntitlementRow[]>();
-  if (principalIds.length === 0) return byPrincipal;
+  const byPrincipal = new Map<string, PrincipalEntitlementRow[]>()
+  if (principalIds.length === 0) return byPrincipal
   const rows = await tx
     .select({
       principalId: entitlement.principalId,
@@ -141,18 +126,18 @@ export async function loadEntitlementsByPrincipalIds(
       grantedBy: entitlement.grantedBy,
     })
     .from(entitlement)
-    .where(inArray(entitlement.principalId, [...principalIds]));
+    .where(inArray(entitlement.principalId, [...principalIds]))
 
   for (const row of rows) {
-    const list = byPrincipal.get(row.principalId) ?? [];
+    const list = byPrincipal.get(row.principalId) ?? []
     list.push({
       runtime: row.runtime,
       series: row.series,
-      grantedBy: row.grantedBy as "operator" | "deploy",
-    });
-    byPrincipal.set(row.principalId, list);
+      grantedBy: row.grantedBy as 'operator' | 'deploy',
+    })
+    byPrincipal.set(row.principalId, list)
   }
-  return byPrincipal;
+  return byPrincipal
 }
 
 /**
@@ -165,32 +150,30 @@ export async function loadEntitlementsByPrincipalIds(
 export async function replaceEntitlements(
   tx: Db,
   principalId: string,
-  next: readonly PrincipalEntitlementRow[],
+  next: readonly PrincipalEntitlementRow[]
 ): Promise<void> {
-  const key = (e: { runtime: string; series: string }) =>
-    `${e.runtime}@${e.series}`;
+  const key = (e: { runtime: string; series: string }) => `${e.runtime}@${e.series}`
   const existing = await tx
     .select({
       runtime: entitlement.runtime,
       series: entitlement.series,
     })
     .from(entitlement)
-    .where(eq(entitlement.principalId, principalId));
+    .where(eq(entitlement.principalId, principalId))
 
-  const current = new Set(existing.map(key));
-  const desired = new Map(next.map((entry) => [key(entry), entry]));
+  const current = new Set(existing.map(key))
+  const desired = new Map(next.map((entry) => [key(entry), entry]))
 
-  const toDelete = [...current].filter((k) => !desired.has(k));
+  const toDelete = [...current].filter((k) => !desired.has(k))
   if (toDelete.length > 0) {
-    await tx.delete(entitlement).where(
-      and(
-        eq(entitlement.principalId, principalId),
-        inArray(
-          sql`${entitlement.runtime} || '@' || ${entitlement.series}`,
-          toDelete,
-        ),
-      ),
-    );
+    await tx
+      .delete(entitlement)
+      .where(
+        and(
+          eq(entitlement.principalId, principalId),
+          inArray(sql`${entitlement.runtime} || '@' || ${entitlement.series}`, toDelete)
+        )
+      )
   }
 
   const toInsert = [...desired.entries()]
@@ -200,9 +183,9 @@ export async function replaceEntitlements(
       runtime: entry.runtime,
       series: entry.series,
       grantedBy: entry.grantedBy,
-    }));
+    }))
   if (toInsert.length > 0) {
-    await tx.insert(entitlement).values(toInsert);
+    await tx.insert(entitlement).values(toInsert)
   }
 }
 
@@ -216,49 +199,39 @@ export async function replaceEntitlements(
 export async function insertDeployEntitlementsIfMissing(
   db: Db,
   entries: readonly {
-    principalId: string;
-    runtime: string;
-    series: string;
-  }[],
+    principalId: string
+    runtime: string
+    series: string
+  }[]
 ): Promise<void> {
-  if (entries.length === 0) return;
-  const unique = new Map<
-    string,
-    PrincipalEntitlementRow & { principalId: string }
-  >();
+  if (entries.length === 0) return
+  const unique = new Map<string, PrincipalEntitlementRow & { principalId: string }>()
   for (const entry of entries) {
-    unique.set(
-      `${entry.principalId}@${entry.runtime}@${entry.series}`,
-      {
-        principalId: entry.principalId,
-        runtime: entry.runtime,
-        series: entry.series,
-        grantedBy: "deploy",
-      },
-    );
+    unique.set(`${entry.principalId}@${entry.runtime}@${entry.series}`, {
+      principalId: entry.principalId,
+      runtime: entry.runtime,
+      series: entry.series,
+      grantedBy: 'deploy',
+    })
   }
   await db
     .insert(entitlement)
     .values([...unique.values()])
     .onConflictDoNothing({
-      target: [
-        entitlement.principalId,
-        entitlement.runtime,
-        entitlement.series,
-      ],
-    });
+      target: [entitlement.principalId, entitlement.runtime, entitlement.series],
+    })
 }
 
 export type CreatePrincipalFields = {
-  organizationId: string;
-  kind: string;
-  provider: string;
-  username: string;
+  organizationId: string
+  kind: string
+  provider: string
+  username: string
   /** Applied login (short name + optional random suffix); defaults to `username`. */
-  appliedUsername?: string;
-  metadata?: Record<string, unknown> | null;
-  options?: Record<string, unknown> | null;
-};
+  appliedUsername?: string
+  metadata?: Record<string, unknown> | null
+  options?: Record<string, unknown> | null
+}
 
 /**
  * Insert a principal row and its initial tenancy edges in one transaction.
@@ -267,7 +240,7 @@ export type CreatePrincipalFields = {
 export async function createPrincipal(
   db: Db,
   fields: CreatePrincipalFields,
-  serviceIds: string[],
+  serviceIds: string[]
 ): Promise<string> {
   return await db.transaction(async (tx) => {
     const [inserted] = await tx
@@ -281,19 +254,19 @@ export async function createPrincipal(
         ...(fields.metadata != null ? { metadata: fields.metadata } : {}),
         ...(fields.options != null ? { options: fields.options } : {}),
       })
-      .returning({ id: principal.id });
+      .returning({ id: principal.id })
 
     if (serviceIds.length > 0) {
       await tx.insert(tenancy).values(
         serviceIds.map((serviceId) => ({
           principalId: inserted.id,
           serviceId,
-        })),
-      );
+        }))
+      )
     }
 
-    return inserted.id;
-  });
+    return inserted.id
+  })
 }
 
 /**
@@ -307,12 +280,14 @@ export async function createPrincipal(
  * SFTP client. A row whose alias key is absent was created by hand in the UI
  * and is never adopted by a reconcile.
  */
-export const COMPOSE_ALIAS_METADATA_KEY = "composeAlias";
+export const COMPOSE_ALIAS_METADATA_KEY = 'composeAlias'
 
 /** How a compose `access:` level maps onto the stored shell encoding. */
-const ACCESS_LEVEL_FOR_COMPOSE: Readonly<
-  Record<"none" | "sftp" | "ssh", PrincipalAccessLevel>
-> = { none: "none", sftp: "sftp", ssh: "shell" };
+const ACCESS_LEVEL_FOR_COMPOSE: Readonly<Record<'none' | 'sftp' | 'ssh', PrincipalAccessLevel>> = {
+  none: 'none',
+  sftp: 'sftp',
+  ssh: 'shell',
+}
 
 /**
  * The short username an alias becomes.
@@ -326,23 +301,26 @@ const ACCESS_LEVEL_FOR_COMPOSE: Readonly<
  * namespace is not theirs to know about.
  */
 export function composeAliasShortUsername(alias: string): string {
-  const folded = alias.trim().toLowerCase().replace(/[^a-z0-9_-]/g, "");
-  const seeded = /^[a-z_]/.test(folded) ? folded : `u${folded}`;
-  const capped = seeded.slice(0, MAX_SUFFIXED_PRINCIPAL_USERNAME_LENGTH);
-  const safe = capped.length > 0 ? capped : "user";
+  const folded = alias
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]/g, '')
+  const seeded = /^[a-z_]/.test(folded) ? folded : `u${folded}`
+  const capped = seeded.slice(0, MAX_SUFFIXED_PRINCIPAL_USERNAME_LENGTH)
+  const safe = capped.length > 0 ? capped : 'user'
   return isReservedPrincipalUsername(safe)
     ? `u${safe}`.slice(0, MAX_SUFFIXED_PRINCIPAL_USERNAME_LENGTH)
-    : safe;
+    : safe
 }
 
 export type EnsureComposePrincipalInput = {
-  organizationId: string;
-  projectId: string;
+  organizationId: string
+  projectId: string
   /** Alias as declared in the document's root `x-turbopanel.principals`. */
-  alias: string;
+  alias: string
   /** Requested access level from the alias entry. Seeds the shell on create. */
-  access?: "none" | "sftp" | "ssh";
-};
+  access?: 'none' | 'sftp' | 'ssh'
+}
 
 /**
  * The `principal` row a compose alias names, creating it when it does not
@@ -361,10 +339,10 @@ export type EnsureComposePrincipalInput = {
  */
 export async function ensureComposePrincipal(
   db: Db,
-  input: EnsureComposePrincipalInput,
+  input: EnsureComposePrincipalInput
 ): Promise<{ principalId: string; created: boolean }> {
-  const existing = await findComposePrincipal(db, input.projectId, input.alias);
-  if (existing) return { principalId: existing, created: false };
+  const existing = await findComposePrincipal(db, input.projectId, input.alias)
+  if (existing) return { principalId: existing, created: false }
 
   return await db.transaction(async (tx) => {
     // Same org-wide serialization the interactive create path takes: two
@@ -373,24 +351,20 @@ export async function ensureComposePrincipal(
       .select({ id: organization.id })
       .from(organization)
       .where(eq(organization.id, input.organizationId))
-      .for("update")
-      .limit(1);
+      .for('update')
+      .limit(1)
 
-    const raced = await findComposePrincipal(tx, input.projectId, input.alias);
-    if (raced) return { principalId: raced, created: false };
+    const raced = await findComposePrincipal(tx, input.projectId, input.alias)
+    if (raced) return { principalId: raced, created: false }
 
-    const username = composeAliasShortUsername(input.alias);
-    const appliedUsername = await resolveComposeAppliedUsername(
-      tx,
-      input.organizationId,
-      username,
-    );
+    const username = composeAliasShortUsername(input.alias)
+    const appliedUsername = await resolveComposeAppliedUsername(tx, input.organizationId, username)
 
     const [row] = await tx
       .insert(principal)
       .values({
         organizationId: input.organizationId,
-        kind: "system",
+        kind: 'system',
         provider: SERVER_PRINCIPAL_PROVIDER,
         username,
         appliedUsername,
@@ -400,22 +374,20 @@ export async function ensureComposePrincipal(
           [COMPOSE_ALIAS_METADATA_KEY]: input.alias,
         },
         options: {
-          shell: shellForAccessLevel(
-            ACCESS_LEVEL_FOR_COMPOSE[input.access ?? "none"],
-          ),
+          shell: shellForAccessLevel(ACCESS_LEVEL_FOR_COMPOSE[input.access ?? 'none']),
         },
       })
-      .returning({ id: principal.id });
+      .returning({ id: principal.id })
 
-    return { principalId: row.id, created: true };
-  });
+    return { principalId: row.id, created: true }
+  })
 }
 
 /** The row this project already materialized for `alias`, if any. */
 async function findComposePrincipal(
   db: Db,
   projectId: string,
-  alias: string,
+  alias: string
 ): Promise<string | undefined> {
   const [row] = await db
     .select({ id: principal.id })
@@ -424,11 +396,11 @@ async function findComposePrincipal(
       and(
         eq(principal.projectId, projectId),
         eq(principal.provider, SERVER_PRINCIPAL_PROVIDER),
-        sql`${principal.metadata} ->> ${COMPOSE_ALIAS_METADATA_KEY} = ${alias}`,
-      ),
+        sql`${principal.metadata} ->> ${COMPOSE_ALIAS_METADATA_KEY} = ${alias}`
+      )
     )
-    .limit(1);
-  return row?.id;
+    .limit(1)
+  return row?.id
 }
 
 /**
@@ -444,38 +416,32 @@ async function findComposePrincipal(
 async function resolveComposeAppliedUsername(
   tx: Db,
   organizationId: string,
-  username: string,
+  username: string
 ): Promise<string> {
-  const randomize = await loadRandomizedUsernamesDefault(tx, organizationId);
-  if (
-    !randomize &&
-    !(await isServerPrincipalUsernameTaken(tx, organizationId, username))
-  ) {
-    return username;
+  const randomize = await loadRandomizedUsernamesDefault(tx, organizationId)
+  if (!randomize && !(await isServerPrincipalUsernameTaken(tx, organizationId, username))) {
+    return username
   }
   for (let attempt = 0; attempt < 3; attempt += 1) {
-    const candidate = `${username}${randomPrincipalUsernameSuffix()}`
-      .slice(0, MAX_PRINCIPAL_USERNAME_LENGTH);
-    if (
-      !(await isServerPrincipalUsernameTaken(tx, organizationId, candidate))
-    ) {
-      return candidate;
+    const candidate = `${username}${randomPrincipalUsernameSuffix()}`.slice(
+      0,
+      MAX_PRINCIPAL_USERNAME_LENGTH
+    )
+    if (!(await isServerPrincipalUsernameTaken(tx, organizationId, candidate))) {
+      return candidate
     }
   }
   // 36^11 odds three times over. Returning the last candidate unprobed beats
   // throwing on a live namespace mid-deploy.
-  return `${username}${randomPrincipalUsernameSuffix()}`
-    .slice(0, MAX_PRINCIPAL_USERNAME_LENGTH);
+  return `${username}${randomPrincipalUsernameSuffix()}`.slice(0, MAX_PRINCIPAL_USERNAME_LENGTH)
 }
 
-export type SetPrincipalPasswordInput =
-  | { readonly generate: true }
-  | { readonly password: string };
+export type SetPrincipalPasswordInput = { readonly generate: true } | { readonly password: string }
 
 async function persistPrincipalPassword(
   db: Db,
   principalId: string,
-  sealed: string,
+  sealed: string
 ): Promise<void> {
   const updated = await db
     .update(principal)
@@ -484,10 +450,10 @@ async function persistPrincipalPassword(
       updatedAt: new Date().toISOString(),
     })
     .where(eq(principal.id, principalId))
-    .returning({ id: principal.id });
+    .returning({ id: principal.id })
 
   if (updated.length !== 1) {
-    throw new Error("Principal not found");
+    throw new Error('Principal not found')
   }
 }
 
@@ -502,24 +468,22 @@ export async function setPrincipalPassword(
   db: Db,
   dataEncryptionSecrets: DerivedSecretsConfig,
   principalId: string,
-  input: SetPrincipalPasswordInput,
+  input: SetPrincipalPasswordInput
 ): Promise<{ plaintext?: string }> {
-  if ("generate" in input && input.generate) {
-    const { plaintext, sealed } = await generateSealedSecret(
-      dataEncryptionSecrets,
-    );
-    await persistPrincipalPassword(db, principalId, sealed);
-    return { plaintext };
+  if ('generate' in input && input.generate) {
+    const { plaintext, sealed } = await generateSealedSecret(dataEncryptionSecrets)
+    await persistPrincipalPassword(db, principalId, sealed)
+    return { plaintext }
   }
 
-  if (!("password" in input)) {
-    throw new TypeError("password or generate:true is required");
+  if (!('password' in input)) {
+    throw new TypeError('password or generate:true is required')
   }
 
-  const sealed = await encryptSecret(dataEncryptionSecrets, input.password);
-  await persistPrincipalPassword(db, principalId, sealed);
+  const sealed = await encryptSecret(dataEncryptionSecrets, input.password)
+  await persistPrincipalPassword(db, principalId, sealed)
 
-  return {};
+  return {}
 }
 
 /**
@@ -536,9 +500,9 @@ export async function setPrincipalPassword(
 export async function setServerPrincipalPasswordHash(
   db: Db,
   principalId: string,
-  passwordHash: string,
+  passwordHash: string
 ): Promise<void> {
-  await persistPrincipalPassword(db, principalId, passwordHash);
+  await persistPrincipalPassword(db, principalId, passwordHash)
 }
 
 /**
@@ -548,17 +512,14 @@ export async function setServerPrincipalPasswordHash(
  * SSH keys, because a password is re-typed while a key would have to be
  * re-collected from every device.
  */
-export async function clearServerPrincipalPassword(
-  db: Db,
-  principalId: string,
-): Promise<void> {
+export async function clearServerPrincipalPassword(db: Db, principalId: string): Promise<void> {
   const updated = await db
     .update(principal)
     .set({ password: null, updatedAt: new Date().toISOString() })
     .where(eq(principal.id, principalId))
-    .returning({ id: principal.id });
+    .returning({ id: principal.id })
   if (updated.length !== 1) {
-    throw new Error("Principal not found");
+    throw new Error('Principal not found')
   }
 }
 
@@ -569,41 +530,36 @@ export async function clearServerPrincipalPassword(
  */
 export async function passwordEnabledByPrincipalIds(
   db: Db,
-  principalIds: readonly string[],
+  principalIds: readonly string[]
 ): Promise<Set<string>> {
-  const enabled = new Set<string>();
-  if (principalIds.length === 0) return enabled;
+  const enabled = new Set<string>()
+  if (principalIds.length === 0) return enabled
   const rows = await db
     .select({ id: principal.id })
     .from(principal)
-    .where(
-      and(
-        inArray(principal.id, [...principalIds]),
-        isNotNull(principal.password),
-      ),
-    );
-  for (const row of rows) enabled.add(row.id);
-  return enabled;
+    .where(and(inArray(principal.id, [...principalIds]), isNotNull(principal.password)))
+  for (const row of rows) enabled.add(row.id)
+  return enabled
 }
 
 export type CreateManagedPrincipalInput = {
-  managedId: string;
-  provider: string;
-  username: string;
+  managedId: string
+  provider: string
+  username: string
   /** Applied engine login (short name + optional random suffix); defaults to `username`. */
-  appliedUsername?: string;
-  kind?: string;
-  metadata?: Record<string, unknown> | null;
+  appliedUsername?: string
+  kind?: string
+  metadata?: Record<string, unknown> | null
   /**
    * Override the generated password length. Replication principals use
    * {@link REPLICATION_PASSWORD_LENGTH} — MySQL caps `SOURCE_PASSWORD` in
    * `CHANGE REPLICATION SOURCE` at 32 chars (error 3056).
    */
-  passwordLength?: number;
-};
+  passwordLength?: number
+}
 
 /** MySQL rejects replication passwords longer than 32 chars (error 3056). */
-export const REPLICATION_PASSWORD_LENGTH = 32;
+export const REPLICATION_PASSWORD_LENGTH = 32
 
 /**
  * The managed row's home organization — resolved through
@@ -612,10 +568,7 @@ export const REPLICATION_PASSWORD_LENGTH = 32;
  * which returns the (possibly plural, possibly empty) set of orgs whose
  * servers currently host the cluster's replicas.
  */
-async function resolveManagedHomeOrganizationId(
-  db: Db,
-  managedId: string,
-): Promise<string> {
+async function resolveManagedHomeOrganizationId(db: Db, managedId: string): Promise<string> {
   const [row] = await db
     .select({ organizationId: workspace.organizationId })
     .from(managed)
@@ -623,9 +576,9 @@ async function resolveManagedHomeOrganizationId(
     .innerJoin(project, eq(project.id, environment.projectId))
     .innerJoin(workspace, eq(workspace.id, project.workspaceId))
     .where(eq(managed.id, managedId))
-    .limit(1);
-  if (!row) throw new TypeError("managed row not found");
-  return row.organizationId;
+    .limit(1)
+  if (!row) throw new TypeError('managed row not found')
+  return row.organizationId
 }
 
 /**
@@ -636,34 +589,29 @@ async function resolveManagedHomeOrganizationId(
 export async function createManagedPrincipal(
   db: Db,
   dataEncryptionSecrets: DerivedSecretsConfig,
-  input: CreateManagedPrincipalInput,
+  input: CreateManagedPrincipalInput
 ): Promise<{ principalId: string; password: string }> {
   if (!USERNAME_RE.test(input.username)) {
-    throw new TypeError("invalid username");
+    throw new TypeError('invalid username')
   }
-  const appliedUsername = input.appliedUsername ?? input.username;
+  const appliedUsername = input.appliedUsername ?? input.username
   if (!USERNAME_RE.test(appliedUsername)) {
-    throw new TypeError("invalid applied username");
+    throw new TypeError('invalid applied username')
   }
   if (!PRINCIPAL_PROVIDERS.has(input.provider)) {
-    throw new TypeError("invalid provider");
+    throw new TypeError('invalid provider')
   }
 
-  const organizationId = await resolveManagedHomeOrganizationId(
-    db,
-    input.managedId,
-  );
+  const organizationId = await resolveManagedHomeOrganizationId(db, input.managedId)
   const { plaintext, sealed } = await generateSealedSecret(
     dataEncryptionSecrets,
-    input.passwordLength !== undefined
-      ? { length: input.passwordLength }
-      : undefined,
-  );
+    input.passwordLength !== undefined ? { length: input.passwordLength } : undefined
+  )
   const [inserted] = await db
     .insert(principal)
     .values({
       organizationId,
-      kind: input.kind ?? "database",
+      kind: input.kind ?? 'database',
       provider: input.provider,
       username: input.username,
       appliedUsername,
@@ -671,9 +619,9 @@ export async function createManagedPrincipal(
       password: sealed,
       ...(input.metadata != null ? { metadata: input.metadata } : {}),
     })
-    .returning({ id: principal.id });
+    .returning({ id: principal.id })
 
-  return { principalId: inserted.id, password: plaintext };
+  return { principalId: inserted.id, password: plaintext }
 }
 
 /**
@@ -683,37 +631,34 @@ export async function createManagedPrincipal(
 export async function rotatePrincipalPassword(
   db: Db,
   dataEncryptionSecrets: DerivedSecretsConfig,
-  principalId: string,
+  principalId: string
 ): Promise<{ plaintext: string }> {
-  const result = await setPrincipalPassword(
-    db,
-    dataEncryptionSecrets,
-    principalId,
-    { generate: true },
-  );
+  const result = await setPrincipalPassword(db, dataEncryptionSecrets, principalId, {
+    generate: true,
+  })
   if (result.plaintext === undefined) {
-    throw new TypeError("expected generated plaintext");
+    throw new TypeError('expected generated plaintext')
   }
-  return { plaintext: result.plaintext };
+  return { plaintext: result.plaintext }
 }
 
 /** Managed principals for listing — never selects `password`. */
 export type ManagedPrincipalListRow = {
-  id: string;
-  kind: string;
-  provider: string;
-  username: string;
-  appliedUsername: string;
-  managedId: string | null;
-  metadata: unknown;
-  options: unknown;
-  createdAt: string;
-  updatedAt: string;
-};
+  id: string
+  kind: string
+  provider: string
+  username: string
+  appliedUsername: string
+  managedId: string | null
+  metadata: unknown
+  options: unknown
+  createdAt: string
+  updatedAt: string
+}
 
 export async function listManagedPrincipals(
   db: Db,
-  managedId: string,
+  managedId: string
 ): Promise<ManagedPrincipalListRow[]> {
   return await db
     .select({
@@ -730,7 +675,7 @@ export async function listManagedPrincipals(
     })
     .from(principal)
     .where(eq(principal.managedId, managedId))
-    .orderBy(asc(principal.username));
+    .orderBy(asc(principal.username))
 }
 
 /**
@@ -742,35 +687,30 @@ export async function resolveManagedOwningOrganizationIds(
   db: Db,
   managedId: string,
   /** Prospective member server still being added (not yet in `replica`). */
-  extraServerIds: readonly string[] = [],
+  extraServerIds: readonly string[] = []
 ): Promise<string[]> {
   const memberOrgs = await db
     .selectDistinct({ organizationId: server.organizationId })
     .from(replica)
     .innerJoin(server, eq(replica.serverId, server.id))
-    .where(
-      and(
-        eq(replica.managedId, managedId),
-        isNotNull(server.organizationId),
-      ),
-    );
+    .where(and(eq(replica.managedId, managedId), isNotNull(server.organizationId)))
 
-  const ids = new Set<string>();
+  const ids = new Set<string>()
   for (const row of memberOrgs) {
-    if (row.organizationId) ids.add(row.organizationId);
+    if (row.organizationId) ids.add(row.organizationId)
   }
 
   if (extraServerIds.length > 0) {
     const extra = await db
       .select({ organizationId: server.organizationId })
       .from(server)
-      .where(inArray(server.id, [...extraServerIds]));
+      .where(inArray(server.id, [...extraServerIds]))
     for (const row of extra) {
-      if (row.organizationId) ids.add(row.organizationId);
+      if (row.organizationId) ids.add(row.organizationId)
     }
   }
 
-  return [...ids].sort((a, b) => a.localeCompare(b));
+  return [...ids].sort((a, b) => a.localeCompare(b))
 }
 
 /**
@@ -784,18 +724,18 @@ export async function isManagedUsernameTaken(
   db: Db,
   owningOrganizationIds: readonly string[],
   username: string,
-  excludePrincipalId?: string,
+  excludePrincipalId?: string
 ): Promise<boolean> {
-  const key = username.trim().toLowerCase();
-  if (!key || owningOrganizationIds.length === 0) return false;
+  const key = username.trim().toLowerCase()
+  if (!key || owningOrganizationIds.length === 0) return false
 
   const conditions = [
     isNotNull(principal.managedId),
     inArray(server.organizationId, [...owningOrganizationIds]),
     sql`(lower(btrim(${principal.username})) = ${key} OR lower(btrim(${principal.appliedUsername})) = ${key})`,
-  ];
+  ]
   if (excludePrincipalId) {
-    conditions.push(ne(principal.id, excludePrincipalId));
+    conditions.push(ne(principal.id, excludePrincipalId))
   }
 
   const rows = await db
@@ -804,9 +744,9 @@ export async function isManagedUsernameTaken(
     .innerJoin(replica, eq(principal.managedId, replica.managedId))
     .innerJoin(server, eq(replica.serverId, server.id))
     .where(and(...conditions))
-    .limit(1);
+    .limit(1)
 
-  return rows.length > 0;
+  return rows.length > 0
 }
 
 /**
@@ -829,44 +769,39 @@ export async function resolveManagedAppliedUsername(
   owningOrganizationIds: readonly string[],
   shortUsername: string,
   identifier: { pattern: RegExp; maxLength: number },
-  opts: { suffix: boolean },
+  opts: { suffix: boolean }
 ): Promise<string> {
   if (
     !USERNAME_RE.test(shortUsername) ||
     !identifier.pattern.test(shortUsername) ||
     shortUsername.length > identifier.maxLength
   ) {
-    throw new TypeError(
-      `invalid managed short username: ${shortUsername}`,
-    );
+    throw new TypeError(`invalid managed short username: ${shortUsername}`)
   }
 
-  if (
-    !opts.suffix &&
-    !(await isManagedUsernameTaken(db, owningOrganizationIds, shortUsername))
-  ) {
-    return shortUsername;
+  if (!opts.suffix && !(await isManagedUsernameTaken(db, owningOrganizationIds, shortUsername))) {
+    return shortUsername
   }
 
   const suffixed = (): string => {
-    const candidate = `${shortUsername}${randomPrincipalUsernameSuffix()}`;
+    const candidate = `${shortUsername}${randomPrincipalUsernameSuffix()}`
     if (
       !USERNAME_RE.test(candidate) ||
       !identifier.pattern.test(candidate) ||
       candidate.length > identifier.maxLength
     ) {
       throw new TypeError(
-        `suffixed managed username does not fit engine identifier limits: ${shortUsername}`,
-      );
+        `suffixed managed username does not fit engine identifier limits: ${shortUsername}`
+      )
     }
-    return candidate;
-  };
-
-  const candidate = suffixed();
-  if (!(await isManagedUsernameTaken(db, owningOrganizationIds, candidate))) {
-    return candidate;
+    return candidate
   }
-  return suffixed();
+
+  const candidate = suffixed()
+  if (!(await isManagedUsernameTaken(db, owningOrganizationIds, candidate))) {
+    return candidate
+  }
+  return suffixed()
 }
 
 /**
@@ -880,41 +815,35 @@ export async function ensureManagedReplicationPrincipal(
   db: Db,
   dataEncryptionSecrets: DerivedSecretsConfig,
   params: {
-    managedId: string;
-    preferredUsername?: string;
-    provider: string;
-    identifier: { pattern: RegExp; maxLength: number };
+    managedId: string
+    preferredUsername?: string
+    provider: string
+    identifier: { pattern: RegExp; maxLength: number }
     /** Org randomized-usernames default (`resolveRandomizedPrincipalUsernames`). */
-    randomizeSuffix: boolean;
-  },
+    randomizeSuffix: boolean
+  }
 ): Promise<{ principalId: string; appliedUsername: string; created: boolean }> {
-  const rows = await listManagedPrincipals(db, params.managedId);
+  const rows = await listManagedPrincipals(db, params.managedId)
   for (const row of rows) {
-    if (
-      isRecord(row.metadata) &&
-      row.metadata.managedReplication === true
-    ) {
+    if (isRecord(row.metadata) && row.metadata.managedReplication === true) {
       return {
         principalId: row.id,
         appliedUsername: row.appliedUsername,
         created: false,
-      };
+      }
     }
   }
 
-  const preferred = params.preferredUsername ?? "tp_repl";
-  const owningOrgIds = await resolveManagedOwningOrganizationIds(
-    db,
-    params.managedId,
-  );
-  await lockOrganizationsForUpdate(db, owningOrgIds);
+  const preferred = params.preferredUsername ?? 'tp_repl'
+  const owningOrgIds = await resolveManagedOwningOrganizationIds(db, params.managedId)
+  await lockOrganizationsForUpdate(db, owningOrgIds)
   const appliedUsername = await resolveManagedAppliedUsername(
     db,
     owningOrgIds,
     preferred,
     params.identifier,
-    { suffix: params.randomizeSuffix },
-  );
+    { suffix: params.randomizeSuffix }
+  )
   const created = await createManagedPrincipal(db, dataEncryptionSecrets, {
     managedId: params.managedId,
     provider: params.provider,
@@ -922,16 +851,16 @@ export async function ensureManagedReplicationPrincipal(
     appliedUsername,
     passwordLength: REPLICATION_PASSWORD_LENGTH,
     metadata: { managedReplication: true },
-  });
+  })
   return {
     principalId: created.principalId,
     appliedUsername,
     created: true,
-  };
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 /**
@@ -941,16 +870,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  */
 export async function lockOrganizationsForUpdate(
   db: Db,
-  organizationIds: readonly string[],
+  organizationIds: readonly string[]
 ): Promise<void> {
-  if (organizationIds.length === 0) return;
-  const ordered = [...organizationIds].sort((a, b) => a.localeCompare(b));
+  if (organizationIds.length === 0) return
+  const ordered = [...organizationIds].sort((a, b) => a.localeCompare(b))
   await forEachSequential(ordered, async (organizationId) => {
     await db
       .select({ id: organization.id })
       .from(organization)
       .where(eq(organization.id, organizationId))
-      .for("update")
-      .limit(1);
-  });
+      .for('update')
+      .limit(1)
+  })
 }

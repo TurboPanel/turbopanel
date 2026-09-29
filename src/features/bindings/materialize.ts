@@ -71,7 +71,7 @@ export function computeBindingVariableSet(
      * default → platform), already resolved by the caller.
      */
     sslMode: ManagedSslMode
-  }>,
+  }>
 ): DesiredBindingVariable[] | { kind: 'binding_engine_unsupported' } {
   const spec = getManagedEngineSpec(params.engineCode)
   if (!spec?.binding) {
@@ -110,7 +110,7 @@ export function computeBindingVariableSet(
       { key: u.port, value: String(params.port), isSecret: false },
       { key: u.database, value: params.databaseName, isSecret: false },
       { key: u.user, value: params.username, isSecret: false },
-      { key: u.password, value: params.password, isSecret: true },
+      { key: u.password, value: params.password, isSecret: true }
     )
     if (u.sslMode) {
       rows.push({
@@ -130,7 +130,7 @@ export function listBindingEmittedKeys(
     keyPrefix: string
     emitEngineDefaults: boolean
     engineCode: string
-  }>,
+  }>
 ): string[] | null {
   const spec = getManagedEngineSpec(params.engineCode)
   if (!spec?.binding) return null
@@ -147,7 +147,7 @@ export function listBindingEmittedKeys(
 async function sealIfNeeded(
   dataEncryptionSecrets: DerivedSecretsConfig,
   value: string,
-  isSecret: boolean,
+  isSecret: boolean
 ): Promise<string> {
   if (!isSecret) return value
   return await encryptSecret(dataEncryptionSecrets, value)
@@ -164,7 +164,7 @@ export async function upsertBindingOwnedVariables(
     bindingId: string
     serviceId: string
     desired: DesiredBindingVariable[]
-  }>,
+  }>
 ): Promise<void> {
   const desiredKeys = new Set(params.desired.map((d) => d.key))
 
@@ -180,11 +180,7 @@ export async function upsertBindingOwnedVariables(
     const existingByKey = new Map(existing.map((e) => [e.key, e.id]))
 
     await forEachSequential(params.desired, async (entry) => {
-      const sealed = await sealIfNeeded(
-        dataEncryptionSecrets,
-        entry.value,
-        entry.isSecret,
-      )
+      const sealed = await sealIfNeeded(dataEncryptionSecrets, entry.value, entry.isSecret)
       const existingId = existingByKey.get(entry.key)
       if (existingId) {
         await tx
@@ -227,7 +223,7 @@ export async function upsertBindingOwnedVariables(
 export async function materializeBinding(
   db: Db,
   dataEncryptionSecrets: DerivedSecretsConfig,
-  bindingId: string,
+  bindingId: string
 ): Promise<{ ok: true } | MaterializeBindingError> {
   const [row] = await db
     .select({
@@ -261,11 +257,7 @@ export async function materializeBinding(
 
   if (!row) return { kind: 'binding_not_found' }
 
-  if (
-    row.principalKind !== 'database' ||
-    !row.principalManagedId ||
-    !row.principalUsername
-  ) {
+  if (row.principalKind !== 'database' || !row.principalManagedId || !row.principalUsername) {
     return { kind: 'binding_principal_invalid' }
   }
 
@@ -287,25 +279,17 @@ export async function materializeBinding(
 
   let plaintextPassword: string
   try {
-    plaintextPassword = await decryptSecret(
-      dataEncryptionSecrets,
-      row.principalPassword,
-    )
+    plaintextPassword = await decryptSecret(dataEncryptionSecrets, row.principalPassword)
   } catch {
     return { kind: 'binding_password_unavailable' }
   }
 
-  const ca = await ensureActiveOrganizationCa(
-    db,
-    dataEncryptionSecrets,
-    row.organizationId,
-  )
+  const ca = await ensureActiveOrganizationCa(db, dataEncryptionSecrets, row.organizationId)
   if ('kind' in ca) {
     return { kind: 'binding_ca_unavailable' }
   }
 
-  const orgManagedDefaults = parseOrganizationOptions(row.organizationOptions)
-    .managedDatabase
+  const orgManagedDefaults = parseOrganizationOptions(row.organizationOptions).managedDatabase
 
   // The listener port is resolved from the server-owner org inside
   // `resolveBindingEndpoint`, not from this consuming project's org.
@@ -330,10 +314,7 @@ export async function materializeBinding(
     caCertPem: ca.trustBundlePem,
     readSplit: endpoint.readSplit,
     engineCode: row.managedEngine,
-    sslMode: resolveManagedSslMode(
-      options.settings.ssl.mode,
-      orgManagedDefaults?.sslMode,
-    ),
+    sslMode: resolveManagedSslMode(options.settings.ssl.mode, orgManagedDefaults?.sslMode),
   })
   if ('kind' in desired) return desired
 
@@ -349,7 +330,7 @@ export async function materializeBinding(
 export async function materializeBindingsForServices(
   db: Db,
   dataEncryptionSecrets: DerivedSecretsConfig,
-  serviceIds: readonly string[],
+  serviceIds: readonly string[]
 ): Promise<{ ok: true } | MaterializeBindingError> {
   if (serviceIds.length === 0) return { ok: true }
   const rows = await db
@@ -366,7 +347,7 @@ export async function materializeBindingsForServices(
 export async function materializeBindingsForPrincipal(
   db: Db,
   dataEncryptionSecrets: DerivedSecretsConfig,
-  principalId: string,
+  principalId: string
 ): Promise<{ ok: true } | MaterializeBindingError> {
   const rows = await db
     .select({ id: binding.id })
@@ -386,7 +367,7 @@ export async function materializeBindingsForPrincipal(
 export async function reapplyBindingOwnedVariables(
   db: Db,
   serviceId: string,
-  map: ResolvedVariableMap,
+  map: ResolvedVariableMap
 ): Promise<void> {
   const rows = await db
     .select({
@@ -399,12 +380,7 @@ export async function reapplyBindingOwnedVariables(
       bindingId: variable.bindingId,
     })
     .from(variable)
-    .where(
-      and(
-        eq(variable.serviceId, serviceId),
-        isNotNull(variable.bindingId),
-      ),
-    )
+    .where(and(eq(variable.serviceId, serviceId), isNotNull(variable.bindingId)))
 
   for (const row of rows) {
     const entry: ResolvedVariableEntry = {
@@ -422,16 +398,11 @@ export async function reapplyBindingOwnedVariables(
 /** Binding-owned keys currently stored for a service (for strip/collision). */
 export async function loadBindingOwnedKeysForService(
   db: Db,
-  serviceId: string,
+  serviceId: string
 ): Promise<Set<string>> {
   const rows = await db
     .select({ key: variable.key })
     .from(variable)
-    .where(
-      and(
-        eq(variable.serviceId, serviceId),
-        isNotNull(variable.bindingId),
-      ),
-    )
+    .where(and(eq(variable.serviceId, serviceId), isNotNull(variable.bindingId)))
   return new Set(rows.map((r) => r.key))
 }

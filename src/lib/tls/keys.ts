@@ -23,7 +23,7 @@ function asBufferSource(bytes: Uint8Array): Uint8Array<ArrayBuffer> {
  */
 export async function privateKeyMatchesCertificate(
   privateKeyPem: string,
-  parsed: ParsedCertificate,
+  parsed: ParsedCertificate
 ): Promise<boolean> {
   let decoded: { pkcs8: Uint8Array; algorithm: 'rsa' | 'ec' | 'okp' }
   try {
@@ -42,20 +42,8 @@ export async function privateKeyMatchesCertificate(
   try {
     if (decoded.algorithm === 'rsa') {
       const algo = { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' } as const
-      const privateKey = await crypto.subtle.importKey(
-        'pkcs8',
-        pkcs8,
-        algo,
-        false,
-        ['sign'],
-      )
-      const publicKey = await crypto.subtle.importKey(
-        'spki',
-        spki,
-        algo,
-        false,
-        ['verify'],
-      )
+      const privateKey = await crypto.subtle.importKey('pkcs8', pkcs8, algo, false, ['sign'])
+      const publicKey = await crypto.subtle.importKey('spki', spki, algo, false, ['verify'])
       const signature = await crypto.subtle.sign(algo, privateKey, challenge)
       return await crypto.subtle.verify(algo, publicKey, signature, challenge)
     }
@@ -73,37 +61,29 @@ export async function privateKeyMatchesCertificate(
             const signature = await crypto.subtle.sign(
               { name: 'ECDSA', hash: 'SHA-256' },
               privateKey,
-              challenge,
+              challenge
             )
             return await crypto.subtle.verify(
               { name: 'ECDSA', hash: 'SHA-256' },
               publicKey,
               signature,
-              challenge,
+              challenge
             )
           } catch {
             return undefined // try next curve
           }
-        },
+        }
       )
       if (verified !== undefined) return verified
       throw new TlsKeyError('failed to import EC private key')
     }
 
-    const privateKey = await crypto.subtle.importKey(
-      'pkcs8',
-      pkcs8,
-      { name: 'Ed25519' },
-      false,
-      ['sign'],
-    )
-    const publicKey = await crypto.subtle.importKey(
-      'spki',
-      spki,
-      { name: 'Ed25519' },
-      false,
-      ['verify'],
-    )
+    const privateKey = await crypto.subtle.importKey('pkcs8', pkcs8, { name: 'Ed25519' }, false, [
+      'sign',
+    ])
+    const publicKey = await crypto.subtle.importKey('spki', spki, { name: 'Ed25519' }, false, [
+      'verify',
+    ])
     const signature = await crypto.subtle.sign('Ed25519', privateKey, challenge)
     return await crypto.subtle.verify('Ed25519', publicKey, signature, challenge)
   } catch (err) {
@@ -111,7 +91,7 @@ export async function privateKeyMatchesCertificate(
     throw new TlsKeyError(
       err instanceof Error
         ? `failed to match private key: ${err.message}`
-        : 'failed to match private key',
+        : 'failed to match private key'
     )
   }
 }

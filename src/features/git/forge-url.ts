@@ -50,9 +50,7 @@ export type ForgeUrlField = 'baseUrl' | 'apiUrl' | 'webhookOrigin'
 
 /** The forge fields' name for {@link OutboundUrlRejection}, plus the fetch-time refusals. */
 export type ForgeUrlRejection =
-  | OutboundUrlRejection
-  | 'cross_origin_redirect'
-  | 'too_many_redirects'
+  OutboundUrlRejection | 'cross_origin_redirect' | 'too_many_redirects'
 
 export class ForgeUrlError extends Error {
   /** The stored field refused, or `request` for a URL built from one at fetch time. */
@@ -88,9 +86,7 @@ export function assertForgeUrlAllowed(field: ForgeUrlField, raw: string): string
  * resolves to `null`. A name that does not resolve at all is left to the
  * fetch to fail on, not refused here (the admin may be mid-DNS-setup).
  */
-export async function resolveForgeHostScope(
-  raw: string,
-): Promise<ForgeUrlRejection | null> {
+export async function resolveForgeHostScope(raw: string): Promise<ForgeUrlRejection | null> {
   return await resolveOutboundHostScope(raw)
 }
 
