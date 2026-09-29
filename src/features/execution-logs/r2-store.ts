@@ -8,6 +8,7 @@
 
 import { ObjectExecutionLogStore } from './object-store.ts'
 import type { ExecutionLogObjectBackend } from './object-store.ts'
+import { forEachSequential } from '../../lib/sequential.ts'
 
 /**
  * Structural subset of Cloudflare's `R2Bucket` this driver uses. Declared here
@@ -18,11 +19,7 @@ export type R2BucketLike = {
   get(key: string): Promise<{ arrayBuffer(): Promise<ArrayBuffer> } | null>
   put(key: string, value: ArrayBuffer | Uint8Array, options?: unknown): Promise<unknown>
   delete(keys: string | string[]): Promise<void>
-  list(options: {
-    prefix?: string
-    limit?: number
-    cursor?: string
-  }): Promise<{
+  list(options: { prefix?: string; limit?: number; cursor?: string }): Promise<{
     objects: { key: string }[]
     truncated: boolean
     cursor?: string
@@ -46,9 +43,10 @@ function createR2Backend(bucket: R2BucketLike): ExecutionLogObjectBackend {
       await bucket.put(key, body, { httpMetadata: { contentType } })
     },
     async delete(keys) {
-      for (let index = 0; index < keys.length; index += R2_DELETE_BATCH) {
-        await bucket.delete(keys.slice(index, index + R2_DELETE_BATCH))
-      }
+      const batches = Array.from({ length: Math.ceil(keys.length / R2_DELETE_BATCH) }, (_, n) =>
+        keys.slice(n * R2_DELETE_BATCH, (n + 1) * R2_DELETE_BATCH)
+      )
+      await forEachSequential(batches, (batch) => bucket.delete(batch))
     },
     async list(prefix, limit) {
       const out: string[] = []

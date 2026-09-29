@@ -6,6 +6,7 @@ import {
   displayNameCodePointLength,
 } from '../../lib/display-name-format.ts'
 import { label } from '../../db/schema.ts'
+import { forEachSequential } from '../../lib/sequential.ts'
 
 const LABEL_KEY_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
 const MAX_LABEL_KEY_LENGTH = 255
@@ -28,8 +29,7 @@ export type ParsedServerLabel = {
 }
 
 export type ParseServerLabelResult =
-  | { ok: true; labels: ParsedServerLabel[] }
-  | { ok: false; error: string }
+  { ok: true; labels: ParsedServerLabel[] } | { ok: false; error: string }
 
 export function serializeServerLabel(row: LabelDbRow): ServerLabelRecord {
   return {
@@ -81,7 +81,10 @@ export function parseServerLabelInput(value: unknown): ParseServerLabelResult {
       return { ok: false, error: `Duplicate label key "${key}"` }
     }
     if (displayNameCodePointLength(rawValue) > DESCRIPTION_MAX_LENGTH) {
-      return { ok: false, error: `Label value for "${key}" exceeds ${String(DESCRIPTION_MAX_LENGTH)} characters` }
+      return {
+        ok: false,
+        error: `Label value for "${key}" exceeds ${String(DESCRIPTION_MAX_LENGTH)} characters`,
+      }
     }
     seen.add(key)
     labels.push({ key, value: rawValue })
@@ -90,21 +93,15 @@ export function parseServerLabelInput(value: unknown): ParseServerLabelResult {
   return { ok: true, labels }
 }
 
-export async function listServerLabels(
-  db: Db,
-  serverId: string,
-): Promise<ServerLabelRecord[]> {
-  const rows = await db
-    .select()
-    .from(label)
-    .where(eq(label.serverId, serverId))
+export async function listServerLabels(db: Db, serverId: string): Promise<ServerLabelRecord[]> {
+  const rows = await db.select().from(label).where(eq(label.serverId, serverId))
 
   return sortLabelRecords(rows.map(serializeServerLabel))
 }
 
 export async function listServerLabelsForServers(
   db: Db,
-  serverIds: readonly string[],
+  serverIds: readonly string[]
 ): Promise<Map<string, ServerLabelRecord[]>> {
   const result = new Map<string, ServerLabelRecord[]>()
   if (serverIds.length === 0) return result
@@ -133,14 +130,14 @@ export async function listServerLabelsForServers(
 export async function setServerLabels(
   db: Db,
   serverId: string,
-  labels: readonly ParsedServerLabel[],
+  labels: readonly ParsedServerLabel[]
 ): Promise<ServerLabelRecord[]> {
   const now = nowIso()
   const keys = labels.map((item) => item.key)
 
   return db.transaction(async (tx) => {
-    for (const item of labels) {
-      await tx
+    await forEachSequential(labels, (item) =>
+      tx
         .insert(label)
         .values({
           serverId,
@@ -155,14 +152,12 @@ export async function setServerLabels(
             updatedAt: now,
           },
         })
-    }
+    )
 
     if (keys.length === 0) {
       await tx.delete(label).where(eq(label.serverId, serverId))
     } else {
-      await tx
-        .delete(label)
-        .where(and(eq(label.serverId, serverId), notInArray(label.key, keys)))
+      await tx.delete(label).where(and(eq(label.serverId, serverId), notInArray(label.key, keys)))
     }
 
     return listServerLabels(tx, serverId)
