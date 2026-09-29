@@ -1,13 +1,6 @@
 import { and, eq, isNotNull } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import {
-  environment,
-  hosting,
-  project,
-  service,
-  variable,
-  workspace,
-} from '../../db/schema.ts'
+import { environment, hosting, project, service, variable, workspace } from '../../db/schema.ts'
 import type { VariableRefScope } from '../compose/variable-refs.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 
@@ -21,9 +14,7 @@ export type ResolvedVariableEntry = {
 }
 
 export type ResolvedVariableMap = Map<string, ResolvedVariableEntry>
-export type ResolvedVariableScopes = Partial<
-  Record<VariableRefScope, ResolvedVariableMap>
->
+export type ResolvedVariableScopes = Partial<Record<VariableRefScope, ResolvedVariableMap>>
 
 type VariableRow = {
   key: string
@@ -36,17 +27,9 @@ type VariableRow = {
 }
 
 type VariableParentColumn =
-  | 'organizationId'
-  | 'workspaceId'
-  | 'projectId'
-  | 'environmentId'
-  | 'serviceId'
-  | 'hostingId'
+  'organizationId' | 'workspaceId' | 'projectId' | 'environmentId' | 'serviceId' | 'hostingId'
 
-function mergeVariables(
-  target: ResolvedVariableMap,
-  rows: VariableRow[],
-): void {
+function mergeVariables(target: ResolvedVariableMap, rows: VariableRow[]): void {
   for (const row of rows) {
     target.set(row.key, {
       value: row.value,
@@ -59,10 +42,7 @@ function mergeVariables(
   }
 }
 
-function overlayMap(
-  target: ResolvedVariableMap,
-  source: ResolvedVariableMap,
-): void {
+function overlayMap(target: ResolvedVariableMap, source: ResolvedVariableMap): void {
   for (const [key, entry] of source) {
     target.set(key, entry)
   }
@@ -77,7 +57,7 @@ function mapFromRows(rows: VariableRow[]): ResolvedVariableMap {
 function loadVariablesForParent(
   db: Db,
   column: VariableParentColumn,
-  id: string,
+  id: string
 ): Promise<VariableRow[]> {
   const columnRef = variable[column]
   return db
@@ -102,19 +82,17 @@ async function mergeOrganizationChain(
     projectId: string
     environmentId: string
   },
-  merged: ResolvedVariableMap,
+  merged: ResolvedVariableMap
 ): Promise<ResolvedVariableScopes> {
   const organization = mapFromRows(
-    await loadVariablesForParent(db, 'organizationId', chain.organizationId),
+    await loadVariablesForParent(db, 'organizationId', chain.organizationId)
   )
   const workspaceScope = mapFromRows(
-    await loadVariablesForParent(db, 'workspaceId', chain.workspaceId),
+    await loadVariablesForParent(db, 'workspaceId', chain.workspaceId)
   )
-  const projectScope = mapFromRows(
-    await loadVariablesForParent(db, 'projectId', chain.projectId),
-  )
+  const projectScope = mapFromRows(await loadVariablesForParent(db, 'projectId', chain.projectId))
   const environmentScope = mapFromRows(
-    await loadVariablesForParent(db, 'environmentId', chain.environmentId),
+    await loadVariablesForParent(db, 'environmentId', chain.environmentId)
   )
   overlayMap(merged, organization)
   overlayMap(merged, workspaceScope)
@@ -139,16 +117,14 @@ async function mergeOrganizationChain(
 export async function mergeHostingVariablesForService(
   db: Db,
   serviceId: string,
-  target: ResolvedVariableMap,
+  target: ResolvedVariableMap
 ): Promise<ResolvedVariableMap> {
   const hostingRows = await db
     .select({ id: hosting.id })
     .from(hosting)
     .where(eq(hosting.serviceId, serviceId))
 
-  const hostingIds = hostingRows
-    .map((row) => row.id)
-    .sort((a, b) => a.localeCompare(b))
+  const hostingIds = hostingRows.map((row) => row.id).sort((a, b) => a.localeCompare(b))
 
   const hostingMerged: ResolvedVariableMap = new Map()
   await forEachSequential(hostingIds, async (hostingId) => {
@@ -172,7 +148,7 @@ export type InheritedVariableBundle = {
  */
 export async function resolveInheritedVariablesForService(
   db: Db,
-  serviceId: string,
+  serviceId: string
 ): Promise<ResolvedVariableMap> {
   const bundle = await resolveInheritedVariableBundleForService(db, serviceId)
   return bundle.inherited
@@ -180,7 +156,7 @@ export async function resolveInheritedVariablesForService(
 
 export async function resolveInheritedVariableBundleForService(
   db: Db,
-  serviceId: string,
+  serviceId: string
 ): Promise<InheritedVariableBundle> {
   const chainRows = await db
     .select({
@@ -203,9 +179,7 @@ export async function resolveInheritedVariableBundleForService(
 
   const inherited: ResolvedVariableMap = new Map()
   const scopes = await mergeOrganizationChain(db, chain, inherited)
-  const serviceScope = mapFromRows(
-    await loadVariablesForParent(db, 'serviceId', serviceId),
-  )
+  const serviceScope = mapFromRows(await loadVariablesForParent(db, 'serviceId', serviceId))
   overlayMap(inherited, serviceScope)
   return {
     inherited,
@@ -219,7 +193,7 @@ export async function resolveInheritedVariableBundleForService(
  */
 export async function resolveInheritedVariablesForHosting(
   db: Db,
-  hostingId: string,
+  hostingId: string
 ): Promise<ResolvedVariableMap> {
   const chainRows = await db
     .select({
@@ -254,7 +228,7 @@ export async function resolveInheritedVariablesForHosting(
  */
 export async function resolveInheritedVariablesForEnvironment(
   db: Db,
-  environmentId: string,
+  environmentId: string
 ): Promise<ResolvedVariableMap> {
   const chainRows = await db
     .select({
@@ -288,7 +262,7 @@ export async function resolveInheritedVariablesForEnvironment(
  */
 export async function resolveServerScopedVariables(
   db: Db,
-  serverId: string,
+  serverId: string
 ): Promise<ResolvedVariableMap> {
   const rows = await db
     .select({

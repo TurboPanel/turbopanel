@@ -30,7 +30,7 @@ export const ALERT_DELIVERY_BUDGET_MS = 5_000
 
 export type DemotionAlertTrace = (
   event: 'alerts-skipped' | 'alerts-truncated' | 'alerts-deadline-reached',
-  detail: Record<string, unknown>,
+  detail: Record<string, unknown>
 ) => void
 
 export type MassDisconnectFacts = {
@@ -43,7 +43,7 @@ export async function notifyDemotions(
   massDisconnect: MassDisconnectFacts | null,
   alertSender: AlertSender,
   budgetMs: number = ALERT_DELIVERY_BUDGET_MS,
-  trace?: DemotionAlertTrace,
+  trace?: DemotionAlertTrace
 ): Promise<void> {
   if (!massDisconnect && demoted.length === 0) return
   if (budgetMs <= 0) {
@@ -58,10 +58,7 @@ export async function notifyDemotions(
     if (massDisconnect) {
       await alertSender({
         kind: 'fleet.mass_disconnect',
-        text: massDisconnectText(
-          massDisconnect.staleCount,
-          massDisconnect.connectedBefore,
-        ),
+        text: massDisconnectText(massDisconnect.staleCount, massDisconnect.connectedBefore),
         detail: massDisconnect,
       })
     }

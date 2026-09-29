@@ -76,9 +76,7 @@ export function parseS3ListKeys(xml: string): {
   keys: string[]
   nextContinuationToken: string | null
 } {
-  const keys = [...xml.matchAll(/<Key>([^<]*)<\/Key>/g)].map((match) =>
-    decodeXmlText(match[1])
-  )
+  const keys = [...xml.matchAll(/<Key>([^<]*)<\/Key>/g)].map((match) => decodeXmlText(match[1]))
   const token = /<NextContinuationToken>([^<]*)<\/NextContinuationToken>/.exec(xml)
   return { keys, nextContinuationToken: token ? decodeXmlText(token[1]) : null }
 }

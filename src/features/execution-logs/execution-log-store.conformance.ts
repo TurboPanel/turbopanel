@@ -35,10 +35,7 @@ function assertEquals(actual: unknown, expected: unknown, message: string): void
   }
 }
 
-async function readAllText(
-  store: ExecutionLogStore,
-  commandId: string
-): Promise<string> {
+async function readAllText(store: ExecutionLogStore, commandId: string): Promise<string> {
   const result = await store.readFrom(commandId, 0, MAX_EXECUTION_LOG_TOTAL_BYTES)
   return result ? decoder.decode(result.bytes) : ''
 }
@@ -124,7 +121,11 @@ export const executionLogStoreConformanceCases: ExecutionLogConformanceCase[] = 
 
       const read = await store.readFrom(COMMAND_ID, 0, 1024)
       assert(read, 'sealed read present')
-      assertEquals(decoder.decode(read.bytes), 'start\nend\n', 'sealed transcript survives compaction')
+      assertEquals(
+        decoder.decode(read.bytes),
+        'start\nend\n',
+        'sealed transcript survives compaction'
+      )
       assertEquals(read.sealed, true, 'sealed flag set')
 
       let thrown: unknown
@@ -157,7 +158,11 @@ export const executionLogStoreConformanceCases: ExecutionLogConformanceCase[] = 
       const second = await store.seal(COMMAND_ID)
       assert(first && second, 'both seals return a result')
       assertEquals(second.bytes, first.bytes, 'repeat seal reports the same size')
-      assertEquals(await readAllText(store, COMMAND_ID), 'x', 'repeat seal preserves the transcript')
+      assertEquals(
+        await readAllText(store, COMMAND_ID),
+        'x',
+        'repeat seal preserves the transcript'
+      )
     },
   },
   {

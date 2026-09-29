@@ -19,11 +19,7 @@ export type R2BucketLike = {
   get(key: string): Promise<{ arrayBuffer(): Promise<ArrayBuffer> } | null>
   put(key: string, value: ArrayBuffer | Uint8Array, options?: unknown): Promise<unknown>
   delete(keys: string | string[]): Promise<void>
-  list(options: {
-    prefix?: string
-    limit?: number
-    cursor?: string
-  }): Promise<{
+  list(options: { prefix?: string; limit?: number; cursor?: string }): Promise<{
     objects: { key: string }[]
     truncated: boolean
     cursor?: string

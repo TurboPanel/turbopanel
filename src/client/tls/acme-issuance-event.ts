@@ -7,34 +7,31 @@
  * not become a second, accidental deploy gate by touching that column.
  */
 
-import { and, eq } from "drizzle-orm";
-import type { Db } from "../../db/connection.ts";
-import { server, tls } from "../../db/schema.ts";
-import { coversHostname, normalizeHostname } from "../../lib/tls/match.ts";
-import type { TlsAcmeMetadata } from "../../lib/tls/types.ts";
-import { forEachSequential } from "../../lib/sequential.ts";
+import { and, eq } from 'drizzle-orm'
+import type { Db } from '../../db/connection.ts'
+import { server, tls } from '../../db/schema.ts'
+import { coversHostname, normalizeHostname } from '../../lib/tls/match.ts'
+import type { TlsAcmeMetadata } from '../../lib/tls/types.ts'
+import { forEachSequential } from '../../lib/sequential.ts'
 
 export type AcmeIssuanceEventInput = {
   /** The server that reported the outcome — scopes the write to its organization. */
-  serverId: string;
-  hostname: string;
-  ok: boolean;
-  errorMessage?: string;
-};
+  serverId: string
+  hostname: string
+  ok: boolean
+  errorMessage?: string
+}
 
-function isResidualMetadata(
-  value: unknown,
-): value is {
-  dnsNames: string[];
-  acme?: TlsAcmeMetadata;
-  [key: string]: unknown;
+function isResidualMetadata(value: unknown): value is {
+  dnsNames: string[]
+  acme?: TlsAcmeMetadata
+  [key: string]: unknown
 } {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return false;
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return false
   }
-  const record = value as Record<string, unknown>;
-  return Array.isArray(record.dnsNames) &&
-    record.dnsNames.every((n) => typeof n === "string");
+  const record = value as Record<string, unknown>
+  return Array.isArray(record.dnsNames) && record.dnsNames.every((n) => typeof n === 'string')
 }
 
 /**
@@ -57,42 +54,37 @@ function isResidualMetadata(
  */
 export async function handleAcmeIssuanceEvent(
   db: Db,
-  input: AcmeIssuanceEventInput,
+  input: AcmeIssuanceEventInput
 ): Promise<{ updated: boolean }> {
-  const hostname = normalizeHostname(input.hostname);
-  if (hostname.length === 0) return { updated: false };
+  const hostname = normalizeHostname(input.hostname)
+  if (hostname.length === 0) return { updated: false }
 
   const [serverRow] = await db
     .select({ organizationId: server.organizationId })
     .from(server)
     .where(eq(server.id, input.serverId))
-    .limit(1);
+    .limit(1)
   // An unassigned server (enrolled, not yet placed in an organization) has no
   // scope to write in — and no tenant rows of its own to be about.
-  const organizationId = serverRow?.organizationId;
-  if (!organizationId) return { updated: false };
+  const organizationId = serverRow?.organizationId
+  if (!organizationId) return { updated: false }
 
   const rows = await db
     .select({ id: tls.id, status: tls.status, metadata: tls.metadata })
     .from(tls)
-    .where(
-      and(
-        eq(tls.source, "lets_encrypt"),
-        eq(tls.organizationId, organizationId),
-      ),
-    );
+    .where(and(eq(tls.source, 'lets_encrypt'), eq(tls.organizationId, organizationId)))
 
-  let updated = false;
+  let updated = false
   await forEachSequential(rows, async (row) => {
-    if (row.status !== "managed") return;
-    if (!isResidualMetadata(row.metadata)) return;
-    if (!coversHostname(row.metadata.dnsNames, hostname)) return;
+    if (row.status !== 'managed') return
+    if (!isResidualMetadata(row.metadata)) return
+    if (!coversHostname(row.metadata.dnsNames, hostname)) return
 
-    const nextAcme: TlsAcmeMetadata = { ...row.metadata.acme };
+    const nextAcme: TlsAcmeMetadata = { ...row.metadata.acme }
     if (input.ok) {
-      delete nextAcme.lastError;
+      delete nextAcme.lastError
     } else {
-      nextAcme.lastError = input.errorMessage ?? "ACME issuance failed";
+      nextAcme.lastError = input.errorMessage ?? 'ACME issuance failed'
     }
 
     await db
@@ -101,9 +93,9 @@ export async function handleAcmeIssuanceEvent(
         metadata: { ...row.metadata, acme: nextAcme },
         updatedAt: new Date().toISOString(),
       })
-      .where(eq(tls.id, row.id));
-    updated = true;
-  });
+      .where(eq(tls.id, row.id))
+    updated = true
+  })
 
-  return { updated };
+  return { updated }
 }

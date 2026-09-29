@@ -8,39 +8,33 @@
  * `sealed-instance-secrets-v1`), otherwise the legacy plaintext `keyPem`.
  */
 
-import { inArray } from "drizzle-orm";
-import type { PublicUrlsApplyPayload } from "./routes-helpers.ts";
-import type { Db } from "../db/connection.ts";
-import { instanceUploadedCertificate } from "../db/schema.ts";
+import { inArray } from 'drizzle-orm'
+import type { PublicUrlsApplyPayload } from './routes-helpers.ts'
+import type { Db } from '../db/connection.ts'
+import { instanceUploadedCertificate } from '../db/schema.ts'
 import type {
   InstanceAcmeWireSettings,
   InstanceHostnameWireEntry,
-} from "../contracts/cell-protocol.ts";
+} from '../contracts/cell-protocol.ts'
 import {
   INSTANCE_ACME_TOS_NOT_ACCEPTED_CODE,
   INSTANCE_ACME_TOS_NOT_ACCEPTED_MESSAGE,
   resolveInstanceAcmeSettings,
-} from "../features/install/instance-acme-settings.ts";
-import { listInstanceHostnames } from "../features/install/instance-hostnames.ts";
-import {
-  decryptSecret,
-  resealSecretForDaemon,
-} from "../lib/secrets/data-encryption.ts";
-import type { DerivedSecretsConfig } from "../lib/secrets/secrets.ts";
-import { resolveDaemonCapabilities } from "../lib/version-wire.ts";
-import type { InstanceSecretSealing } from "../features/install/instance-secret-sealing.ts";
+} from '../features/install/instance-acme-settings.ts'
+import { listInstanceHostnames } from '../features/install/instance-hostnames.ts'
+import { decryptSecret, resealSecretForDaemon } from '../lib/secrets/data-encryption.ts'
+import type { DerivedSecretsConfig } from '../lib/secrets/secrets.ts'
+import { resolveDaemonCapabilities } from '../lib/version-wire.ts'
+import type { InstanceSecretSealing } from '../features/install/instance-secret-sealing.ts'
 
 export class PublicUrlsApplyPayloadError extends Error {
   /** Set for refusals a client acts on; absent for server-side faults. */
-  readonly code: typeof INSTANCE_ACME_TOS_NOT_ACCEPTED_CODE | undefined;
+  readonly code: typeof INSTANCE_ACME_TOS_NOT_ACCEPTED_CODE | undefined
 
-  constructor(
-    message: string,
-    code?: typeof INSTANCE_ACME_TOS_NOT_ACCEPTED_CODE,
-  ) {
-    super(message);
-    this.name = "PublicUrlsApplyPayloadError";
-    this.code = code;
+  constructor(message: string, code?: typeof INSTANCE_ACME_TOS_NOT_ACCEPTED_CODE) {
+    super(message)
+    this.name = 'PublicUrlsApplyPayloadError'
+    this.code = code
   }
 }
 
@@ -50,72 +44,67 @@ export async function resolvePublicUrlsApplyPayload(
   daemonVersion: string | undefined,
   secrets: DerivedSecretsConfig | undefined,
   env: Record<string, string | undefined>,
-  sealing: InstanceSecretSealing | null = null,
+  sealing: InstanceSecretSealing | null = null
 ): Promise<PublicUrlsApplyPayload> {
-  const capable = resolveDaemonCapabilities(daemonVersion)[
-    "instance-cert-sources-per-hostname"
-  ] === true;
-  if (!capable) return { urls };
+  const capable =
+    resolveDaemonCapabilities(daemonVersion)['instance-cert-sources-per-hostname'] === true
+  if (!capable) return { urls }
 
-  const rows = await listInstanceHostnames(db);
+  const rows = await listInstanceHostnames(db)
   const uploadedIds = [
     ...new Set(
       rows
-        .filter((row) => row.source === "uploaded" && row.uploadedCertId)
-        .map((row) => row.uploadedCertId as string),
+        .filter((row) => row.source === 'uploaded' && row.uploadedCertId)
+        .map((row) => row.uploadedCertId as string)
     ),
-  ];
-  const decrypted = await loadUploadedPairs(db, uploadedIds, secrets, sealing);
+  ]
+  const decrypted = await loadUploadedPairs(db, uploadedIds, secrets, sealing)
   const hostnames: InstanceHostnameWireEntry[] = rows.map((row) => {
     const entry: InstanceHostnameWireEntry = {
       host: row.host,
       source: row.source,
-    };
-    if (row.source !== "uploaded" || !row.uploadedCertId) return entry;
-    const pair = decrypted.get(row.uploadedCertId);
+    }
+    if (row.source !== 'uploaded' || !row.uploadedCertId) return entry
+    const pair = decrypted.get(row.uploadedCertId)
     if (!pair) {
-      throw new PublicUrlsApplyPayloadError(
-        `uploaded certificate ${row.uploadedCertId} is missing`,
-      );
+      throw new PublicUrlsApplyPayloadError(`uploaded certificate ${row.uploadedCertId} is missing`)
     }
     return {
       ...entry,
       uploadedCertId: row.uploadedCertId,
       certPem: pair.certPem,
       ...pair.key,
-    };
-  });
-  const letsEncrypt = hostnames.some((entry) =>
-    entry.source === "lets-encrypt"
-  );
-  if (!letsEncrypt) return { urls, hostnames };
-  const instanceAcme = await loadInstanceAcme(db, env);
-  return { urls, hostnames, instanceAcme };
+    }
+  })
+  const letsEncrypt = hostnames.some((entry) => entry.source === 'lets-encrypt')
+  if (!letsEncrypt) return { urls, hostnames }
+  const instanceAcme = await loadInstanceAcme(db, env)
+  return { urls, hostnames, instanceAcme }
 }
 
 async function loadInstanceAcme(
   db: Db,
-  env: Record<string, string | undefined>,
+  env: Record<string, string | undefined>
 ): Promise<InstanceAcmeWireSettings> {
-  const resolved = await resolveInstanceAcmeSettings(db, env);
+  const resolved = await resolveInstanceAcmeSettings(db, env)
   if (!resolved.tosAccepted) {
     throw new PublicUrlsApplyPayloadError(
       INSTANCE_ACME_TOS_NOT_ACCEPTED_MESSAGE,
-      INSTANCE_ACME_TOS_NOT_ACCEPTED_CODE,
-    );
+      INSTANCE_ACME_TOS_NOT_ACCEPTED_CODE
+    )
   }
   return {
     contactEmail: resolved.contactEmail,
     tosAccepted: resolved.tosAccepted,
     directoryUrl: resolved.directoryUrl,
     useStaging: resolved.useStaging,
-  };
+  }
 }
 
 type UploadedPair = {
-  certPem: string;
-  key: { keyEnvelope: string } | { keyPem: string };
-};
+  certPem: string
+  key: { keyEnvelope: string } | { keyPem: string }
+}
 
 /**
  * With `sealing`, the at-rest `tpsecret` key is re-sealed straight to the
@@ -125,14 +114,14 @@ async function loadUploadedPairs(
   db: Db,
   ids: string[],
   secrets: DerivedSecretsConfig | undefined,
-  sealing: InstanceSecretSealing | null,
+  sealing: InstanceSecretSealing | null
 ): Promise<Map<string, UploadedPair>> {
-  const out = new Map<string, UploadedPair>();
-  if (ids.length === 0) return out;
+  const out = new Map<string, UploadedPair>()
+  if (ids.length === 0) return out
   if (!secrets) {
     throw new PublicUrlsApplyPayloadError(
-      "data encryption secrets are required to apply an uploaded certificate",
-    );
+      'data encryption secrets are required to apply an uploaded certificate'
+    )
   }
   const rows = await db
     .select({
@@ -141,23 +130,23 @@ async function loadUploadedPairs(
       keyPem: instanceUploadedCertificate.keyPem,
     })
     .from(instanceUploadedCertificate)
-    .where(inArray(instanceUploadedCertificate.id, ids));
+    .where(inArray(instanceUploadedCertificate.id, ids))
   // Each row is sealed/decrypted on its own; nothing is shared between them.
   const pairs = await Promise.all(
     rows.map(async (row): Promise<[string, UploadedPair]> => {
       const key = sealing
         ? {
-          keyEnvelope: await resealSecretForDaemon(
-            sealing.secretsConfig,
-            secrets,
-            sealing.recipient,
-            row.keyPem,
-          ),
-        }
-        : { keyPem: await decryptSecret(secrets, row.keyPem) };
-      return [row.id, { certPem: row.certPem, key }];
-    }),
-  );
-  for (const [id, pair] of pairs) out.set(id, pair);
-  return out;
+            keyEnvelope: await resealSecretForDaemon(
+              sealing.secretsConfig,
+              secrets,
+              sealing.recipient,
+              row.keyPem
+            ),
+          }
+        : { keyPem: await decryptSecret(secrets, row.keyPem) }
+      return [row.id, { certPem: row.certPem, key }]
+    })
+  )
+  for (const [id, pair] of pairs) out.set(id, pair)
+  return out
 }

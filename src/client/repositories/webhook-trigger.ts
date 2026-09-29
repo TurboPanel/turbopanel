@@ -40,13 +40,7 @@ import { and, eq, inArray, sql } from 'drizzle-orm'
 import type { Context } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import type { Db } from '../../db/connection.ts'
-import {
-  environment,
-  gitConnection,
-  project,
-  repository,
-  workspace,
-} from '../../db/schema.ts'
+import { environment, gitConnection, project, repository, workspace } from '../../db/schema.ts'
 import { resolveEffectivePlacementServerId } from '../../features/projects/project-options.ts'
 import type { ProjectOptions } from '../../features/projects/project-options.ts'
 import type { CommandQueue } from '../../features/commands/queue.ts'
@@ -92,31 +86,31 @@ export type TriggerSkipReason =
  */
 export type TriggerFailureReason =
   /** The deploy pipeline answered 5xx — command queue, database, or encryption. */
-  | 'deploy_unavailable'
+  'deploy_unavailable'
 
 export type TriggerOutcome =
   | {
-    kind: 'queued'
-    sourceId: string
-    environmentId: string
-    commitSha: string | null
-  }
+      kind: 'queued'
+      sourceId: string
+      environmentId: string
+      commitSha: string | null
+    }
   | {
-    kind: 'skipped'
-    sourceId: string | null
-    environmentId: string | null
-    reason: TriggerSkipReason
-    /** Status the deploy pipeline returned, when `reason` is `deploy_rejected`. */
-    status?: number
-  }
+      kind: 'skipped'
+      sourceId: string | null
+      environmentId: string | null
+      reason: TriggerSkipReason
+      /** Status the deploy pipeline returned, when `reason` is `deploy_rejected`. */
+      status?: number
+    }
   | {
-    kind: 'failed'
-    sourceId: string
-    environmentId: string
-    reason: TriggerFailureReason
-    /** Status the deploy pipeline returned (always 5xx). */
-    status: number
-  }
+      kind: 'failed'
+      sourceId: string
+      environmentId: string
+      reason: TriggerFailureReason
+      /** Status the deploy pipeline returned (always 5xx). */
+      status: number
+    }
 
 export type TriggerSummary = {
   matchedSources: number
@@ -175,7 +169,7 @@ export type TriggerRepositoryRow = {
 async function findSourcesForRepository(
   db: Db,
   installationIds: readonly string[],
-  repositoryExternalId: string,
+  repositoryExternalId: string
 ): Promise<TriggerRepositoryRow[]> {
   if (installationIds.length === 0) return []
   return await db
@@ -184,8 +178,8 @@ async function findSourcesForRepository(
     .where(
       and(
         inArray(repository.connectionId, [...installationIds]),
-        eq(repository.repositoryExternalId, repositoryExternalId),
-      ),
+        eq(repository.repositoryExternalId, repositoryExternalId)
+      )
     )
     .orderBy(repository.createdAt)
 }
@@ -202,25 +196,22 @@ async function findSourcesForRepository(
 export type WebhookTriggerDeps = {
   loadInstallations?: (
     db: Db,
-    query: InstallationQuery,
+    query: InstallationQuery
   ) => Promise<{ live: string[]; suspended: number }>
   findSources?: (
     db: Db,
     installationIds: readonly string[],
-    repositoryExternalId: string,
+    repositoryExternalId: string
   ) => Promise<TriggerRepositoryRow[]>
   setPendingChecks?: (
     db: Db,
     row: TriggerRepositoryRow,
-    pending: PendingChecks | null,
+    pending: PendingChecks | null
   ) => Promise<void>
-  resolveRepositoryEnvironmentIds?: (
-    db: Db,
-    row: TriggerRepositoryRow,
-  ) => Promise<string[]>
+  resolveRepositoryEnvironmentIds?: (db: Db, row: TriggerRepositoryRow) => Promise<string[]>
   resolveEnvironmentPlacement?: (
     db: Db,
-    environmentId: string,
+    environmentId: string
   ) => Promise<{ serverId: string | null; organizationId: string } | null>
   runDeploy?: typeof runEnvironmentDeployForActor
 }
@@ -230,18 +221,14 @@ function resolveTriggerIo(deps: WebhookTriggerDeps = {}) {
     loadInstallations: deps.loadInstallations ?? loadInstallations,
     findSources: deps.findSources ?? findSourcesForRepository,
     setPendingChecks: deps.setPendingChecks ?? setPendingChecks,
-    resolveRepositoryEnvironmentIds: deps.resolveRepositoryEnvironmentIds ??
-      resolveRepositoryEnvironmentIds,
-    resolveEnvironmentPlacement: deps.resolveEnvironmentPlacement ??
-      resolveEnvironmentPlacement,
+    resolveRepositoryEnvironmentIds:
+      deps.resolveRepositoryEnvironmentIds ?? resolveRepositoryEnvironmentIds,
+    resolveEnvironmentPlacement: deps.resolveEnvironmentPlacement ?? resolveEnvironmentPlacement,
     runDeploy: deps.runDeploy ?? runEnvironmentDeployForActor,
   }
 }
 
-export function sourceWatchesBranch(
-  defaultBranch: string | null,
-  pushedBranch: string,
-): boolean {
+export function sourceWatchesBranch(defaultBranch: string | null, pushedBranch: string): boolean {
   if (defaultBranch === null || defaultBranch.trim().length === 0) return true
   return defaultBranch.trim() === pushedBranch
 }
@@ -268,9 +255,8 @@ export function readPendingChecks(options: unknown): PendingChecks | null {
   return {
     commitSha: record.commitSha,
     ref: typeof record.ref === 'string' ? record.ref : null,
-    recordedAt: typeof record.recordedAt === 'string'
-      ? record.recordedAt
-      : new Date().toISOString(),
+    recordedAt:
+      typeof record.recordedAt === 'string' ? record.recordedAt : new Date().toISOString(),
   }
 }
 
@@ -285,7 +271,7 @@ export function readPendingChecks(options: unknown): PendingChecks | null {
 async function setPendingChecks(
   db: Db,
   row: TriggerRepositoryRow,
-  pending: PendingChecks | null,
+  pending: PendingChecks | null
 ): Promise<void> {
   const options = readOptions(row.options)
   if (pending === null) delete options.pendingChecks
@@ -312,7 +298,7 @@ async function setPendingChecks(
  */
 export async function resolveRepositoryEnvironmentIds(
   db: Db,
-  row: TriggerRepositoryRow,
+  row: TriggerRepositoryRow
 ): Promise<string[]> {
   const ids = new Set<string>()
 
@@ -344,7 +330,7 @@ export async function resolveRepositoryEnvironmentIds(
  */
 async function resolveEnvironmentPlacement(
   db: Db,
-  environmentId: string,
+  environmentId: string
 ): Promise<{ serverId: string | null; organizationId: string } | null> {
   const [row] = await db
     .select({
@@ -362,7 +348,7 @@ async function resolveEnvironmentPlacement(
   return {
     serverId: resolveEffectivePlacementServerId(
       row.serverId,
-      row.projectOptions as ProjectOptions | null,
+      row.projectOptions as ProjectOptions | null
     ),
     organizationId: row.organizationId,
   }
@@ -387,7 +373,7 @@ async function deployEnvironmentForSource(
     commitSha: string | null
     ref: string | null
   },
-  io: ReturnType<typeof resolveTriggerIo>,
+  io: ReturnType<typeof resolveTriggerIo>
 ): Promise<TriggerOutcome> {
   const placement = await io.resolveEnvironmentPlacement(db, params.environmentId)
   if (!placement) {
@@ -423,13 +409,7 @@ async function deployEnvironmentForSource(
     },
   }
 
-  const response = await io.runDeploy(
-    c,
-    db,
-    commandQueue,
-    params.environmentId,
-    auth,
-  )
+  const response = await io.runDeploy(c, db, commandQueue, params.environmentId, auth)
   if (!response.ok) {
     // 5xx from the shared pipeline is this instance failing (queue down,
     // database or encryption unavailable), not the request being wrong. The
@@ -471,27 +451,33 @@ async function deployAllEnvironmentsForSource(
     commitSha: string | null
     ref: string | null
   },
-  io: ReturnType<typeof resolveTriggerIo>,
+  io: ReturnType<typeof resolveTriggerIo>
 ): Promise<TriggerOutcome[]> {
   const environmentIds = await io.resolveRepositoryEnvironmentIds(db, params.row)
   if (environmentIds.length === 0) {
-    return [{
-      kind: 'skipped',
-      sourceId: params.row.id,
-      environmentId: null,
-      reason: 'no_environment',
-    }]
+    return [
+      {
+        kind: 'skipped',
+        sourceId: params.row.id,
+        environmentId: null,
+        reason: 'no_environment',
+      },
+    ]
   }
 
-  return await mapSequential(
-    environmentIds,
-    (environmentId) =>
-      deployEnvironmentForSource(c, db, commandQueue, {
+  return await mapSequential(environmentIds, (environmentId) =>
+    deployEnvironmentForSource(
+      c,
+      db,
+      commandQueue,
+      {
         row: params.row,
         environmentId,
         commitSha: params.commitSha,
         ref: params.ref,
-      }, io),
+      },
+      io
+    )
   )
 }
 
@@ -544,16 +530,14 @@ export type InstallationQuery = {
  */
 async function loadInstallations(
   db: Db,
-  query: InstallationQuery,
+  query: InstallationQuery
 ): Promise<{ live: string[]; suspended: number }> {
   const conditions = [
     eq(gitConnection.provider, query.provider),
     eq(gitConnection.forgeId, query.forgeId),
   ]
   if (query.externalInstallationId) {
-    conditions.push(
-      eq(gitConnection.externalInstallationId, query.externalInstallationId),
-    )
+    conditions.push(eq(gitConnection.externalInstallationId, query.externalInstallationId))
   }
 
   const rows = await db
@@ -591,7 +575,7 @@ export async function resolvePushTrigger(
   db: Db,
   commandQueue: CommandQueue,
   push: PushTrigger,
-  deps: WebhookTriggerDeps = {},
+  deps: WebhookTriggerDeps = {}
 ): Promise<TriggerSummary> {
   const io = resolveTriggerIo(deps)
   const installations = await io.loadInstallations(db, {
@@ -600,21 +584,20 @@ export async function resolvePushTrigger(
     externalInstallationId: push.externalInstallationId,
   })
   if (installations.live.length === 0) {
-    return summarize([{
-      kind: 'skipped',
-      sourceId: null,
-      environmentId: null,
-      reason: installations.suspended > 0
-        ? 'installation_suspended'
-        : 'installation_unknown',
-    }], 0)
+    return summarize(
+      [
+        {
+          kind: 'skipped',
+          sourceId: null,
+          environmentId: null,
+          reason: installations.suspended > 0 ? 'installation_suspended' : 'installation_unknown',
+        },
+      ],
+      0
+    )
   }
 
-  const rows = await io.findSources(
-    db,
-    installations.live,
-    push.repositoryExternalId,
-  )
+  const rows = await io.findSources(db, installations.live, push.repositoryExternalId)
 
   const outcomes: TriggerOutcome[] = []
   await forEachSequential(rows, async (row) => {
@@ -672,11 +655,17 @@ export async function resolvePushTrigger(
     }
 
     outcomes.push(
-      ...await deployAllEnvironmentsForSource(c, db, commandQueue, {
-        row,
-        commitSha: push.commitSha,
-        ref: push.ref,
-      }, io),
+      ...(await deployAllEnvironmentsForSource(
+        c,
+        db,
+        commandQueue,
+        {
+          row,
+          commitSha: push.commitSha,
+          ref: push.ref,
+        },
+        io
+      ))
     )
   })
 
@@ -684,7 +673,7 @@ export async function resolvePushTrigger(
   logInfo(
     'git-webhook',
     `push ${push.repositoryExternalId}@${push.branch}: ` +
-      `${summary.queued} queued, ${summary.skipped} skipped, ${summary.failed} failed`,
+      `${summary.queued} queued, ${summary.skipped} skipped, ${summary.failed} failed`
   )
   return summary
 }
@@ -719,7 +708,7 @@ export async function resolveCheckTrigger(
   db: Db,
   commandQueue: CommandQueue,
   check: CheckTrigger,
-  deps: WebhookTriggerDeps = {},
+  deps: WebhookTriggerDeps = {}
 ): Promise<TriggerSummary> {
   const io = resolveTriggerIo(deps)
   const installations = await io.loadInstallations(db, {
@@ -728,21 +717,20 @@ export async function resolveCheckTrigger(
     externalInstallationId: check.externalInstallationId,
   })
   if (installations.live.length === 0) {
-    return summarize([{
-      kind: 'skipped',
-      sourceId: null,
-      environmentId: null,
-      reason: installations.suspended > 0
-        ? 'installation_suspended'
-        : 'installation_unknown',
-    }], 0)
+    return summarize(
+      [
+        {
+          kind: 'skipped',
+          sourceId: null,
+          environmentId: null,
+          reason: installations.suspended > 0 ? 'installation_suspended' : 'installation_unknown',
+        },
+      ],
+      0
+    )
   }
 
-  const rows = await io.findSources(
-    db,
-    installations.live,
-    check.repositoryExternalId,
-  )
+  const rows = await io.findSources(db, installations.live, check.repositoryExternalId)
 
   const outcomes: TriggerOutcome[] = []
   let matched = 0
@@ -756,11 +744,17 @@ export async function resolveCheckTrigger(
     // Clear first: a deploy that fails to enqueue must not leave the SHA parked
     // so a later unrelated success replays it.
     await io.setPendingChecks(db, row, null)
-    const results = await deployAllEnvironmentsForSource(c, db, commandQueue, {
-      row,
-      commitSha: pending.commitSha,
-      ref: pending.ref,
-    }, io)
+    const results = await deployAllEnvironmentsForSource(
+      c,
+      db,
+      commandQueue,
+      {
+        row,
+        commitSha: pending.commitSha,
+        ref: pending.ref,
+      },
+      io
+    )
     // ...but an instance-side failure is not a replay risk, it is lost work: the
     // delivery is about to be answered 5xx, and GitHub's redelivery has nothing
     // to release unless the SHA goes back. Restore exactly what was parked.
@@ -775,7 +769,7 @@ export async function resolveCheckTrigger(
     logInfo(
       'git-webhook',
       `checks passed ${check.repositoryExternalId}@${check.commitSha.slice(0, 7)}: ` +
-        `${summary.queued} queued, ${summary.skipped} skipped, ${summary.failed} failed`,
+        `${summary.queued} queued, ${summary.skipped} skipped, ${summary.failed} failed`
     )
   }
   return summary
@@ -808,7 +802,7 @@ export async function applyProviderInstallationEvent(
     forgeId: string
     externalInstallationId: string
     action: string
-  },
+  }
 ): Promise<{ updated: number }> {
   const suspendActions = new Set(['suspend', 'deleted'])
   const resumeActions = new Set(['unsuspend', 'created', 'new_permissions_accepted'])
@@ -825,19 +819,15 @@ export async function applyProviderInstallationEvent(
       and(
         eq(gitConnection.provider, params.provider),
         eq(gitConnection.forgeId, params.forgeId),
-        eq(
-          gitConnection.externalInstallationId,
-          params.externalInstallationId,
-        ),
-      ),
+        eq(gitConnection.externalInstallationId, params.externalInstallationId)
+      )
     )
     .returning({ id: gitConnection.id })
 
   if (updated.length === 0) {
     logWarn(
       'git-webhook',
-      `installation ${params.action} for unknown installation ` +
-        params.externalInstallationId,
+      `installation ${params.action} for unknown installation ` + params.externalInstallationId
     )
   }
   return { updated: updated.length }
@@ -856,15 +846,9 @@ export function resolveGithubPushTrigger(
   db: Db,
   commandQueue: CommandQueue,
   push: Omit<PushTrigger, 'provider'>,
-  deps?: WebhookTriggerDeps,
+  deps?: WebhookTriggerDeps
 ): Promise<TriggerSummary> {
-  return resolvePushTrigger(
-    c,
-    db,
-    commandQueue,
-    { provider: 'github', ...push },
-    deps,
-  )
+  return resolvePushTrigger(c, db, commandQueue, { provider: 'github', ...push }, deps)
 }
 
 export function resolveGithubCheckTrigger(
@@ -872,20 +856,14 @@ export function resolveGithubCheckTrigger(
   db: Db,
   commandQueue: CommandQueue,
   check: Omit<CheckTrigger, 'provider'>,
-  deps?: WebhookTriggerDeps,
+  deps?: WebhookTriggerDeps
 ): Promise<TriggerSummary> {
-  return resolveCheckTrigger(
-    c,
-    db,
-    commandQueue,
-    { provider: 'github', ...check },
-    deps,
-  )
+  return resolveCheckTrigger(c, db, commandQueue, { provider: 'github', ...check }, deps)
 }
 
 export function applyGithubInstallationEvent(
   db: Db,
-  params: { forgeId: string; externalInstallationId: string; action: string },
+  params: { forgeId: string; externalInstallationId: string; action: string }
 ): Promise<{ updated: number }> {
   return applyProviderInstallationEvent(db, { provider: 'github', ...params })
 }

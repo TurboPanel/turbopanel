@@ -32,8 +32,8 @@
  * rotation is left untouched rather than overwritten with a stale reseal.
  */
 
-import { and, asc, eq, gt, isNotNull, isNull, sql } from "drizzle-orm";
-import { forEachSequential } from "../lib/sequential.ts";
+import { and, asc, eq, gt, isNotNull, isNull, sql } from 'drizzle-orm'
+import { forEachSequential } from '../lib/sequential.ts'
 import {
   decryptSecret,
   encryptSecret,
@@ -41,9 +41,9 @@ import {
   isDaemonSealedEnvelope,
   parseDaemonSecretEnvelope,
   parseSecretEnvelope,
-} from "../lib/secrets/data-encryption.ts";
-import type { DerivedSecretsConfig } from "../lib/secrets/secrets.ts";
-import type { Db } from "../db/connection.ts";
+} from '../lib/secrets/data-encryption.ts'
+import type { DerivedSecretsConfig } from '../lib/secrets/secrets.ts'
+import type { Db } from '../db/connection.ts'
 import {
   forge,
   gitConnection,
@@ -57,104 +57,99 @@ import {
   notificationChannel,
   twoFactor,
   variable,
-} from "../db/schema.ts";
-import {
-  EMAIL_SECRET_KEYS,
-  SYSTEM_EMAIL_DB_KEY,
-} from "../features/settings/email-settings.ts";
+} from '../db/schema.ts'
+import { EMAIL_SECRET_KEYS, SYSTEM_EMAIL_DB_KEY } from '../features/settings/email-settings.ts'
 import {
   AUTH_PROVIDER_SECRET_KEYS,
   SYSTEM_AUTH_PROVIDERS_DB_KEY,
-} from "../features/settings/auth-provider-settings.ts";
+} from '../features/settings/auth-provider-settings.ts'
 
-export const REENCRYPT_BATCH_SIZE = 200;
+export const REENCRYPT_BATCH_SIZE = 200
 
 /**
  * `lease.name` for the cross-isolate re-encrypt sweep lease — globally
  * scoped (schema-child-tables, Road-to-0.1.x — promoted out of `setting`).
  */
-export const REENCRYPT_SWEEP_LOCK_KEY = "REENCRYPT_SWEEP_LOCK";
+export const REENCRYPT_SWEEP_LOCK_KEY = 'REENCRYPT_SWEEP_LOCK'
 
 /** Lease TTL so a crashed isolate cannot block sweeps indefinitely. */
-export const REENCRYPT_SWEEP_LEASE_MS = 120_000;
+export const REENCRYPT_SWEEP_LEASE_MS = 120_000
 
 export type ReencryptSweepLock = Readonly<{
-  owner: string;
-}>;
+  owner: string
+}>
 
 export const REENCRYPT_STAGES = [
-  "variables",
-  "tls",
-  "certificates",
-  "principals",
-  "storage",
-  "secrets",
-  "forge",
-  "gitconnection",
-  "twofactor",
-  "notifications",
-  "authproviders",
-  "email",
-] as const;
+  'variables',
+  'tls',
+  'certificates',
+  'principals',
+  'storage',
+  'secrets',
+  'forge',
+  'gitconnection',
+  'twofactor',
+  'notifications',
+  'authproviders',
+  'email',
+] as const
 
-export type ReencryptStage = (typeof REENCRYPT_STAGES)[number];
+export type ReencryptStage = (typeof REENCRYPT_STAGES)[number]
 
 export type ReencryptCursor = {
-  stage: ReencryptStage;
+  stage: ReencryptStage
   /** Last processed row id within `stage` (exclusive lower bound for the next page). */
-  afterId?: string;
-};
+  afterId?: string
+}
 
 export type ReencryptSweepSummary = {
-  scanned: number;
-  reencrypted: number;
-  skipped: number;
-  failed: number;
-};
+  scanned: number
+  reencrypted: number
+  skipped: number
+  failed: number
+}
 
 export type ReencryptSweepResult = ReencryptSweepSummary & {
-  completed: boolean;
-  cursor: ReencryptCursor | null;
-};
+  completed: boolean
+  cursor: ReencryptCursor | null
+}
 
 export type ReencryptSweepOptions = Readonly<{
-  cursor?: ReencryptCursor | null;
+  cursor?: ReencryptCursor | null
   /** Max blobs to scan in this call (default {@link REENCRYPT_BATCH_SIZE}). */
-  limit?: number;
-}>;
+  limit?: number
+}>
 
 function emptySummary(): ReencryptSweepSummary {
-  return { scanned: 0, reencrypted: 0, skipped: 0, failed: 0 };
+  return { scanned: 0, reencrypted: 0, skipped: 0, failed: 0 }
 }
 
 function nowIso(): string {
-  return new Date().toISOString();
+  return new Date().toISOString()
 }
 
 function nextStage(stage: ReencryptStage): ReencryptStage | null {
-  const index = REENCRYPT_STAGES.indexOf(stage);
+  const index = REENCRYPT_STAGES.indexOf(stage)
   if (index < 0 || index >= REENCRYPT_STAGES.length - 1) {
-    return null;
+    return null
   }
-  return REENCRYPT_STAGES[index + 1]!;
+  return REENCRYPT_STAGES[index + 1]!
 }
 
-function normalizeCursor(
-  cursor: ReencryptCursor | null | undefined,
-): ReencryptCursor {
+function normalizeCursor(cursor: ReencryptCursor | null | undefined): ReencryptCursor {
   if (!cursor || !REENCRYPT_STAGES.includes(cursor.stage)) {
-    return { stage: "variables" };
+    return { stage: 'variables' }
   }
   return {
     stage: cursor.stage,
     ...(cursor.afterId ? { afterId: cursor.afterId } : {}),
-  };
+  }
 }
 
 function sweepLockIsExpired(expiresAt: string, nowMs = Date.now()): boolean {
-  const expires = Date.parse(expiresAt);
-  if (!Number.isFinite(expires)) return true;
-  return expires <= nowMs;
+  const expires = Date.parse(expiresAt)
+  if (!Number.isFinite(expires)) return true
+  return expires <= nowMs
 }
 
 /**
@@ -164,10 +159,10 @@ function sweepLockIsExpired(expiresAt: string, nowMs = Date.now()): boolean {
  */
 export async function tryBeginReencryptSweep(
   db: Db,
-  nowMs = Date.now(),
+  nowMs = Date.now()
 ): Promise<ReencryptSweepLock | null> {
-  const owner = crypto.randomUUID();
-  const expiresAt = new Date(nowMs + REENCRYPT_SWEEP_LEASE_MS).toISOString();
+  const owner = crypto.randomUUID()
+  const expiresAt = new Date(nowMs + REENCRYPT_SWEEP_LEASE_MS).toISOString()
 
   const inserted = await db
     .insert(lease)
@@ -178,20 +173,18 @@ export async function tryBeginReencryptSweep(
       expiresAt,
     })
     .onConflictDoNothing({ target: [lease.name, lease.organizationId] })
-    .returning({ id: lease.id });
+    .returning({ id: lease.id })
   if (inserted.length > 0) {
-    return { owner };
+    return { owner }
   }
 
   const [existing] = await db
     .select({ owner: lease.owner, expiresAt: lease.expiresAt })
     .from(lease)
-    .where(
-      and(eq(lease.name, REENCRYPT_SWEEP_LOCK_KEY), isNull(lease.organizationId)),
-    )
-    .limit(1);
+    .where(and(eq(lease.name, REENCRYPT_SWEEP_LOCK_KEY), isNull(lease.organizationId)))
+    .limit(1)
   if (!existing || !sweepLockIsExpired(existing.expiresAt, nowMs)) {
-    return null;
+    return null
   }
 
   const stolen = await db
@@ -202,57 +195,52 @@ export async function tryBeginReencryptSweep(
         eq(lease.name, REENCRYPT_SWEEP_LOCK_KEY),
         isNull(lease.organizationId),
         eq(lease.owner, existing.owner),
-        eq(lease.expiresAt, existing.expiresAt),
-      ),
+        eq(lease.expiresAt, existing.expiresAt)
+      )
     )
-    .returning({ id: lease.id });
+    .returning({ id: lease.id })
   if (stolen.length > 0) {
-    return { owner };
+    return { owner }
   }
-  return null;
+  return null
 }
 
-export async function endReencryptSweep(
-  db: Db,
-  lock: ReencryptSweepLock,
-): Promise<void> {
+export async function endReencryptSweep(db: Db, lock: ReencryptSweepLock): Promise<void> {
   await db
     .delete(lease)
     .where(
       and(
         eq(lease.name, REENCRYPT_SWEEP_LOCK_KEY),
         isNull(lease.organizationId),
-        eq(lease.owner, lock.owner),
-      ),
-    );
+        eq(lease.owner, lock.owner)
+      )
+    )
 }
 
 /** Test-only: drop the durable sweep lock row when `db` is provided. */
 export async function resetReencryptSweepLockForTests(db?: Db): Promise<void> {
-  if (!db) return;
+  if (!db) return
   await db
     .delete(lease)
-    .where(
-      and(eq(lease.name, REENCRYPT_SWEEP_LOCK_KEY), isNull(lease.organizationId)),
-    );
+    .where(and(eq(lease.name, REENCRYPT_SWEEP_LOCK_KEY), isNull(lease.organizationId)))
 }
 
 type ProcessBlobOptions = Readonly<{
   /** Skip valid daemon-bound `tpdaemon` envelopes (variable/TLS/principal paths). */
-  allowDaemonBound: boolean;
-}>;
+  allowDaemonBound: boolean
+}>
 
 async function applyResealedBlob(
   summary: ReencryptSweepSummary,
   update: (resealed: string) => Promise<boolean>,
-  resealed: string,
+  resealed: string
 ): Promise<void> {
-  const applied = await update(resealed);
+  const applied = await update(resealed)
   if (applied) {
-    summary.reencrypted += 1;
+    summary.reencrypted += 1
   } else {
     // Concurrent writer changed the row; leave the newer value untouched.
-    summary.skipped += 1;
+    summary.skipped += 1
   }
 }
 
@@ -264,29 +252,29 @@ async function applyResealedBlob(
 function classifyBlobForSweep(
   blob: string,
   currentKeyVersion: number,
-  options: ProcessBlobOptions,
-): "skip" | "fail" | null {
-  const daemonParsed = parseDaemonSecretEnvelope(blob);
+  options: ProcessBlobOptions
+): 'skip' | 'fail' | null {
+  const daemonParsed = parseDaemonSecretEnvelope(blob)
   if (daemonParsed !== null) {
-    return options.allowDaemonBound ? "skip" : "fail";
+    return options.allowDaemonBound ? 'skip' : 'fail'
   }
   if (isDaemonSealedEnvelope(blob)) {
     // Malformed daemon envelope — not intentional `tpdaemon` material.
-    return "fail";
+    return 'fail'
   }
 
-  const parsed = parseSecretEnvelope(blob);
+  const parsed = parseSecretEnvelope(blob)
   if (parsed !== null) {
-    return parsed.keyVersion === currentKeyVersion ? "skip" : null;
+    return parsed.keyVersion === currentKeyVersion ? 'skip' : null
   }
 
   if (blob.startsWith(ENVELOPE_PREFIX_SECRET)) {
     // Looks like `tpsecret` but failed structural parse → malformed at-rest material.
-    return "fail";
+    return 'fail'
   }
 
   // Non-envelope plaintext is invalid — never auto-migrated.
-  return "fail";
+  return 'fail'
 }
 
 /**
@@ -298,45 +286,41 @@ async function processBlob(
   secrets: DerivedSecretsConfig,
   blob: string,
   update: (resealed: string) => Promise<boolean>,
-  options: ProcessBlobOptions,
+  options: ProcessBlobOptions
 ): Promise<void> {
-  summary.scanned += 1;
+  summary.scanned += 1
 
-  const classification = classifyBlobForSweep(
-    blob,
-    secrets.current.version,
-    options,
-  );
-  if (classification === "skip") {
-    summary.skipped += 1;
-    return;
+  const classification = classifyBlobForSweep(blob, secrets.current.version, options)
+  if (classification === 'skip') {
+    summary.skipped += 1
+    return
   }
-  if (classification === "fail") {
-    summary.failed += 1;
-    return;
+  if (classification === 'fail') {
+    summary.failed += 1
+    return
   }
 
   try {
-    const plaintext = await decryptSecret(secrets, blob);
-    const resealed = await encryptSecret(secrets, plaintext);
-    await applyResealedBlob(summary, update, resealed);
+    const plaintext = await decryptSecret(secrets, blob)
+    const resealed = await encryptSecret(secrets, plaintext)
+    await applyResealedBlob(summary, update, resealed)
   } catch {
-    summary.failed += 1;
+    summary.failed += 1
   }
 }
 
 type StageBatchResult = {
   /** Rows examined in this page (may be less than scanned when null columns skipped). */
-  pageSize: number;
-  lastId: string | undefined;
-};
+  pageSize: number
+  lastId: string | undefined
+}
 
 async function sweepSecretVariablesBatch(
   db: Db,
   secrets: DerivedSecretsConfig,
   summary: ReencryptSweepSummary,
   afterId: string | undefined,
-  limit: number,
+  limit: number
 ): Promise<StageBatchResult> {
   const rows = await db
     .select({ id: variable.id, value: variable.value })
@@ -344,13 +328,13 @@ async function sweepSecretVariablesBatch(
     .where(
       afterId === undefined
         ? eq(variable.isSecret, true)
-        : and(eq(variable.isSecret, true), gt(variable.id, afterId)),
+        : and(eq(variable.isSecret, true), gt(variable.id, afterId))
     )
     .orderBy(asc(variable.id))
-    .limit(limit);
+    .limit(limit)
 
   await forEachSequential(rows, async (row) => {
-    const originalValue = row.value;
+    const originalValue = row.value
     await processBlob(
       summary,
       secrets,
@@ -359,20 +343,18 @@ async function sweepSecretVariablesBatch(
         const updated = await db
           .update(variable)
           .set({ value: resealed, updatedAt: nowIso() })
-          .where(
-            and(eq(variable.id, row.id), eq(variable.value, originalValue)),
-          )
-          .returning({ id: variable.id });
-        return updated.length > 0;
+          .where(and(eq(variable.id, row.id), eq(variable.value, originalValue)))
+          .returning({ id: variable.id })
+        return updated.length > 0
       },
-      { allowDaemonBound: true },
-    );
-  });
+      { allowDaemonBound: true }
+    )
+  })
 
   return {
     pageSize: rows.length,
     lastId: rows.at(-1)?.id,
-  };
+  }
 }
 
 async function sweepTlsPrivateKeysBatch(
@@ -380,7 +362,7 @@ async function sweepTlsPrivateKeysBatch(
   secrets: DerivedSecretsConfig,
   summary: ReencryptSweepSummary,
   afterId: string | undefined,
-  limit: number,
+  limit: number
 ): Promise<StageBatchResult> {
   const rows = await db
     .select({ id: tls.id, privateKeyPem: tls.privateKeyPem })
@@ -388,16 +370,16 @@ async function sweepTlsPrivateKeysBatch(
     .where(
       afterId === undefined
         ? isNotNull(tls.privateKeyPem)
-        : and(isNotNull(tls.privateKeyPem), gt(tls.id, afterId)),
+        : and(isNotNull(tls.privateKeyPem), gt(tls.id, afterId))
     )
     .orderBy(asc(tls.id))
-    .limit(limit);
+    .limit(limit)
 
   await forEachSequential(rows, async (row) => {
     if (row.privateKeyPem === null) {
-      return;
+      return
     }
-    const originalKey = row.privateKeyPem;
+    const originalKey = row.privateKeyPem
     await processBlob(
       summary,
       secrets,
@@ -407,17 +389,17 @@ async function sweepTlsPrivateKeysBatch(
           .update(tls)
           .set({ privateKeyPem: resealed, updatedAt: nowIso() })
           .where(and(eq(tls.id, row.id), eq(tls.privateKeyPem, originalKey)))
-          .returning({ id: tls.id });
-        return updated.length > 0;
+          .returning({ id: tls.id })
+        return updated.length > 0
       },
-      { allowDaemonBound: true },
-    );
-  });
+      { allowDaemonBound: true }
+    )
+  })
 
   return {
     pageSize: rows.length,
     lastId: rows.at(-1)?.id,
-  };
+  }
 }
 
 /**
@@ -429,7 +411,7 @@ async function sweepInstanceCertificateKeysBatch(
   secrets: DerivedSecretsConfig,
   summary: ReencryptSweepSummary,
   afterId: string | undefined,
-  limit: number,
+  limit: number
 ): Promise<StageBatchResult> {
   const rows = await db
     .select({
@@ -437,16 +419,12 @@ async function sweepInstanceCertificateKeysBatch(
       keyPem: instanceUploadedCertificate.keyPem,
     })
     .from(instanceUploadedCertificate)
-    .where(
-      afterId === undefined
-        ? undefined
-        : gt(instanceUploadedCertificate.id, afterId),
-    )
+    .where(afterId === undefined ? undefined : gt(instanceUploadedCertificate.id, afterId))
     .orderBy(asc(instanceUploadedCertificate.id))
-    .limit(limit);
+    .limit(limit)
 
   await forEachSequential(rows, async (row) => {
-    const originalKey = row.keyPem;
+    const originalKey = row.keyPem
     await processBlob(
       summary,
       secrets,
@@ -458,20 +436,20 @@ async function sweepInstanceCertificateKeysBatch(
           .where(
             and(
               eq(instanceUploadedCertificate.id, row.id),
-              eq(instanceUploadedCertificate.keyPem, originalKey),
-            ),
+              eq(instanceUploadedCertificate.keyPem, originalKey)
+            )
           )
-          .returning({ id: instanceUploadedCertificate.id });
-        return updated.length > 0;
+          .returning({ id: instanceUploadedCertificate.id })
+        return updated.length > 0
       },
-      { allowDaemonBound: false },
-    );
-  });
+      { allowDaemonBound: false }
+    )
+  })
 
   return {
     pageSize: rows.length,
     lastId: rows.at(-1)?.id,
-  };
+  }
 }
 
 async function sweepPrincipalPasswordsBatch(
@@ -479,7 +457,7 @@ async function sweepPrincipalPasswordsBatch(
   secrets: DerivedSecretsConfig,
   summary: ReencryptSweepSummary,
   afterId: string | undefined,
-  limit: number,
+  limit: number
 ): Promise<StageBatchResult> {
   const rows = await db
     .select({ id: principal.id, password: principal.password })
@@ -487,16 +465,16 @@ async function sweepPrincipalPasswordsBatch(
     .where(
       afterId === undefined
         ? isNotNull(principal.password)
-        : and(isNotNull(principal.password), gt(principal.id, afterId)),
+        : and(isNotNull(principal.password), gt(principal.id, afterId))
     )
     .orderBy(asc(principal.id))
-    .limit(limit);
+    .limit(limit)
 
   await forEachSequential(rows, async (row) => {
     if (row.password === null) {
-      return;
+      return
     }
-    const originalPassword = row.password;
+    const originalPassword = row.password
     await processBlob(
       summary,
       secrets,
@@ -505,23 +483,18 @@ async function sweepPrincipalPasswordsBatch(
         const updated = await db
           .update(principal)
           .set({ password: resealed, updatedAt: nowIso() })
-          .where(
-            and(
-              eq(principal.id, row.id),
-              eq(principal.password, originalPassword),
-            ),
-          )
-          .returning({ id: principal.id });
-        return updated.length > 0;
+          .where(and(eq(principal.id, row.id), eq(principal.password, originalPassword)))
+          .returning({ id: principal.id })
+        return updated.length > 0
       },
-      { allowDaemonBound: true },
-    );
-  });
+      { allowDaemonBound: true }
+    )
+  })
 
   return {
     pageSize: rows.length,
     lastId: rows.at(-1)?.id,
-  };
+  }
 }
 
 async function sweepStorageContentBatch(
@@ -529,7 +502,7 @@ async function sweepStorageContentBatch(
   secrets: DerivedSecretsConfig,
   summary: ReencryptSweepSummary,
   afterId: string | undefined,
-  limit: number,
+  limit: number
 ): Promise<StageBatchResult> {
   const rows = await db
     .select({ id: storage.id, contentEnvelope: storage.contentEnvelope })
@@ -537,16 +510,16 @@ async function sweepStorageContentBatch(
     .where(
       afterId === undefined
         ? isNotNull(storage.contentEnvelope)
-        : and(isNotNull(storage.contentEnvelope), gt(storage.id, afterId)),
+        : and(isNotNull(storage.contentEnvelope), gt(storage.id, afterId))
     )
     .orderBy(asc(storage.id))
-    .limit(limit);
+    .limit(limit)
 
   await forEachSequential(rows, async (row) => {
     if (row.contentEnvelope === null) {
-      return;
+      return
     }
-    const original = row.contentEnvelope;
+    const original = row.contentEnvelope
     await processBlob(
       summary,
       secrets,
@@ -555,20 +528,18 @@ async function sweepStorageContentBatch(
         const updated = await db
           .update(storage)
           .set({ contentEnvelope: resealed, updatedAt: nowIso() })
-          .where(
-            and(eq(storage.id, row.id), eq(storage.contentEnvelope, original)),
-          )
-          .returning({ id: storage.id });
-        return updated.length > 0;
+          .where(and(eq(storage.id, row.id), eq(storage.contentEnvelope, original)))
+          .returning({ id: storage.id })
+        return updated.length > 0
       },
-      { allowDaemonBound: true },
-    );
-  });
+      { allowDaemonBound: true }
+    )
+  })
 
   return {
     pageSize: rows.length,
     lastId: rows.at(-1)?.id,
-  };
+  }
 }
 
 async function sweepSecretTableBatch(
@@ -576,7 +547,7 @@ async function sweepSecretTableBatch(
   secrets: DerivedSecretsConfig,
   summary: ReencryptSweepSummary,
   afterId: string | undefined,
-  limit: number,
+  limit: number
 ): Promise<StageBatchResult> {
   const rows = await db
     .select({ id: secret.id, secretEnvelope: secret.secretEnvelope })
@@ -584,13 +555,13 @@ async function sweepSecretTableBatch(
     .where(
       afterId === undefined
         ? isNotNull(secret.secretEnvelope)
-        : and(isNotNull(secret.secretEnvelope), gt(secret.id, afterId)),
+        : and(isNotNull(secret.secretEnvelope), gt(secret.id, afterId))
     )
     .orderBy(asc(secret.id))
-    .limit(limit);
+    .limit(limit)
 
   await forEachSequential(rows, async (row) => {
-    const original = row.secretEnvelope;
+    const original = row.secretEnvelope
     await processBlob(
       summary,
       secrets,
@@ -599,37 +570,29 @@ async function sweepSecretTableBatch(
         const updated = await db
           .update(secret)
           .set({ secretEnvelope: resealed, updatedAt: nowIso() })
-          .where(
-            and(
-              eq(secret.id, row.id),
-              eq(secret.secretEnvelope, original),
-            ),
-          )
-          .returning({ id: secret.id });
-        return updated.length > 0;
+          .where(and(eq(secret.id, row.id), eq(secret.secretEnvelope, original)))
+          .returning({ id: secret.id })
+        return updated.length > 0
       },
-      { allowDaemonBound: true },
-    );
-  });
+      { allowDaemonBound: true }
+    )
+  })
 
   return {
     pageSize: rows.length,
     lastId: rows.at(-1)?.id,
-  };
+  }
 }
 
 /** `forge.envelopes` keys holding `tpsecret` material (see schema.ts). */
 const FORGE_ENVELOPE_KEYS = [
-  "privateKeyEnvelope",
-  "clientSecretEnvelope",
-  "webhookSecretEnvelope",
-] as const;
+  'privateKeyEnvelope',
+  'clientSecretEnvelope',
+  'webhookSecretEnvelope',
+] as const
 
 /** `connection.oauth_envelope` keys holding `tpsecret` material (GitLab only). */
-const GITCONNECTION_ENVELOPE_KEYS = [
-  "accessTokenEnvelope",
-  "refreshTokenEnvelope",
-] as const;
+const GITCONNECTION_ENVELOPE_KEYS = ['accessTokenEnvelope', 'refreshTokenEnvelope'] as const
 
 /**
  * Re-seal the `tpsecret` values at `keys` inside a single row's jsonb
@@ -642,54 +605,54 @@ async function resealJsonbEnvelopeRow(
   secrets: DerivedSecretsConfig,
   original: unknown,
   keys: readonly string[],
-  update: (next: Record<string, unknown>) => Promise<boolean>,
+  update: (next: Record<string, unknown>) => Promise<boolean>
 ): Promise<void> {
   if (
     original === undefined ||
     original === null ||
-    typeof original !== "object" ||
+    typeof original !== 'object' ||
     Array.isArray(original)
   ) {
-    return;
+    return
   }
 
-  const originalObj = original as Record<string, unknown>;
-  const nextObj: Record<string, unknown> = { ...originalObj };
-  let resealedCount = 0;
+  const originalObj = original as Record<string, unknown>
+  const nextObj: Record<string, unknown> = { ...originalObj }
+  let resealedCount = 0
 
   await forEachSequential(keys, async (key) => {
-    const raw = nextObj[key];
-    if (typeof raw !== "string" || raw === "") return;
+    const raw = nextObj[key]
+    if (typeof raw !== 'string' || raw === '') return
 
-    summary.scanned += 1;
-    const parsed = parseSecretEnvelope(raw);
+    summary.scanned += 1
+    const parsed = parseSecretEnvelope(raw)
     if (parsed === null) {
       // Plaintext or malformed — invalid/unsupported for these envelopes at rest.
-      summary.failed += 1;
-      return;
+      summary.failed += 1
+      return
     }
     if (parsed.keyVersion === secrets.current.version) {
-      summary.skipped += 1;
-      return;
+      summary.skipped += 1
+      return
     }
 
     try {
-      const plaintext = await decryptSecret(secrets, raw);
-      nextObj[key] = await encryptSecret(secrets, plaintext);
-      resealedCount += 1;
+      const plaintext = await decryptSecret(secrets, raw)
+      nextObj[key] = await encryptSecret(secrets, plaintext)
+      resealedCount += 1
     } catch {
-      summary.failed += 1;
+      summary.failed += 1
     }
-  });
+  })
 
-  if (resealedCount === 0) return;
+  if (resealedCount === 0) return
 
-  const applied = await update(nextObj);
+  const applied = await update(nextObj)
   if (applied) {
-    summary.reencrypted += resealedCount;
+    summary.reencrypted += resealedCount
   } else {
     // Concurrent writer changed the row; leave the newer values untouched.
-    summary.skipped += resealedCount;
+    summary.skipped += resealedCount
   }
 }
 
@@ -698,17 +661,17 @@ async function sweepForgeEnvelopesBatch(
   secrets: DerivedSecretsConfig,
   summary: ReencryptSweepSummary,
   afterId: string | undefined,
-  limit: number,
+  limit: number
 ): Promise<StageBatchResult> {
   const rows = await db
     .select({ id: forge.id, envelopes: forge.envelopes })
     .from(forge)
     .where(afterId === undefined ? sql`true` : gt(forge.id, afterId))
     .orderBy(asc(forge.id))
-    .limit(limit);
+    .limit(limit)
 
   await forEachSequential(rows, async (row) => {
-    const original = row.envelopes;
+    const original = row.envelopes
     await resealJsonbEnvelopeRow(
       summary,
       secrets,
@@ -719,16 +682,16 @@ async function sweepForgeEnvelopesBatch(
           .update(forge)
           .set({ envelopes: resealed, updatedAt: nowIso() })
           .where(and(eq(forge.id, row.id), eq(forge.envelopes, original)))
-          .returning({ id: forge.id });
-        return updated.length > 0;
-      },
-    );
-  });
+          .returning({ id: forge.id })
+        return updated.length > 0
+      }
+    )
+  })
 
   return {
     pageSize: rows.length,
     lastId: rows.at(-1)?.id,
-  };
+  }
 }
 
 async function sweepGitConnectionEnvelopesBatch(
@@ -736,7 +699,7 @@ async function sweepGitConnectionEnvelopesBatch(
   secrets: DerivedSecretsConfig,
   summary: ReencryptSweepSummary,
   afterId: string | undefined,
-  limit: number,
+  limit: number
 ): Promise<StageBatchResult> {
   const rows = await db
     .select({
@@ -745,19 +708,18 @@ async function sweepGitConnectionEnvelopesBatch(
     })
     .from(gitConnection)
     .where(
-      afterId === undefined ? isNotNull(gitConnection.oauthEnvelope) : and(
-        isNotNull(gitConnection.oauthEnvelope),
-        gt(gitConnection.id, afterId),
-      ),
+      afterId === undefined
+        ? isNotNull(gitConnection.oauthEnvelope)
+        : and(isNotNull(gitConnection.oauthEnvelope), gt(gitConnection.id, afterId))
     )
     .orderBy(asc(gitConnection.id))
-    .limit(limit);
+    .limit(limit)
 
   await forEachSequential(rows, async (row) => {
     if (row.oauthEnvelope === null) {
-      return;
+      return
     }
-    const original = row.oauthEnvelope;
+    const original = row.oauthEnvelope
     await resealJsonbEnvelopeRow(
       summary,
       secrets,
@@ -767,22 +729,17 @@ async function sweepGitConnectionEnvelopesBatch(
         const updated = await db
           .update(gitConnection)
           .set({ oauthEnvelope: resealed, updatedAt: nowIso() })
-          .where(
-            and(
-              eq(gitConnection.id, row.id),
-              eq(gitConnection.oauthEnvelope, original),
-            ),
-          )
-          .returning({ id: gitConnection.id });
-        return updated.length > 0;
-      },
-    );
-  });
+          .where(and(eq(gitConnection.id, row.id), eq(gitConnection.oauthEnvelope, original)))
+          .returning({ id: gitConnection.id })
+        return updated.length > 0
+      }
+    )
+  })
 
   return {
     pageSize: rows.length,
     lastId: rows.at(-1)?.id,
-  };
+  }
 }
 
 async function sweepTwoFactorSecretsBatch(
@@ -790,7 +747,7 @@ async function sweepTwoFactorSecretsBatch(
   secrets: DerivedSecretsConfig,
   summary: ReencryptSweepSummary,
   afterId: string | undefined,
-  limit: number,
+  limit: number
 ): Promise<StageBatchResult> {
   const rows = await db
     .select({ id: twoFactor.id, secret: twoFactor.secret })
@@ -798,13 +755,13 @@ async function sweepTwoFactorSecretsBatch(
     .where(
       afterId === undefined
         ? isNotNull(twoFactor.secret)
-        : and(isNotNull(twoFactor.secret), gt(twoFactor.id, afterId)),
+        : and(isNotNull(twoFactor.secret), gt(twoFactor.id, afterId))
     )
     .orderBy(asc(twoFactor.id))
-    .limit(limit);
+    .limit(limit)
 
   await forEachSequential(rows, async (row) => {
-    const original = row.secret;
+    const original = row.secret
     await processBlob(
       summary,
       secrets,
@@ -813,23 +770,18 @@ async function sweepTwoFactorSecretsBatch(
         const updated = await db
           .update(twoFactor)
           .set({ secret: resealed })
-          .where(
-            and(
-              eq(twoFactor.id, row.id),
-              eq(twoFactor.secret, original),
-            ),
-          )
-          .returning({ id: twoFactor.id });
-        return updated.length > 0;
+          .where(and(eq(twoFactor.id, row.id), eq(twoFactor.secret, original)))
+          .returning({ id: twoFactor.id })
+        return updated.length > 0
       },
-      { allowDaemonBound: false },
-    );
-  });
+      { allowDaemonBound: false }
+    )
+  })
 
   return {
     pageSize: rows.length,
     lastId: rows.at(-1)?.id,
-  };
+  }
 }
 
 /**
@@ -842,7 +794,7 @@ async function sweepNotificationChannelSecretsBatch(
   secrets: DerivedSecretsConfig,
   summary: ReencryptSweepSummary,
   afterId: string | undefined,
-  limit: number,
+  limit: number
 ): Promise<StageBatchResult> {
   const rows = await db
     .select({
@@ -854,11 +806,11 @@ async function sweepNotificationChannelSecretsBatch(
     .from(notificationChannel)
     .where(afterId === undefined ? undefined : gt(notificationChannel.id, afterId))
     .orderBy(asc(notificationChannel.id))
-    .limit(limit);
+    .limit(limit)
 
   await forEachSequential(rows, async (row) => {
-    if (row.kind !== "email") {
-      const original = row.address;
+    if (row.kind !== 'email') {
+      const original = row.address
       await processBlob(
         summary,
         secrets,
@@ -868,19 +820,16 @@ async function sweepNotificationChannelSecretsBatch(
             .update(notificationChannel)
             .set({ address: resealed })
             .where(
-              and(
-                eq(notificationChannel.id, row.id),
-                eq(notificationChannel.address, original),
-              ),
+              and(eq(notificationChannel.id, row.id), eq(notificationChannel.address, original))
             )
-            .returning({ id: notificationChannel.id });
-          return updated.length > 0;
+            .returning({ id: notificationChannel.id })
+          return updated.length > 0
         },
-        { allowDaemonBound: false },
-      );
+        { allowDaemonBound: false }
+      )
     }
     if (row.signingSecret) {
-      const original = row.signingSecret;
+      const original = row.signingSecret
       await processBlob(
         summary,
         secrets,
@@ -892,21 +841,21 @@ async function sweepNotificationChannelSecretsBatch(
             .where(
               and(
                 eq(notificationChannel.id, row.id),
-                eq(notificationChannel.signingSecret, original),
-              ),
+                eq(notificationChannel.signingSecret, original)
+              )
             )
-            .returning({ id: notificationChannel.id });
-          return updated.length > 0;
+            .returning({ id: notificationChannel.id })
+          return updated.length > 0
         },
-        { allowDaemonBound: false },
-      );
+        { allowDaemonBound: false }
+      )
     }
-  });
+  })
 
   return {
     pageSize: rows.length,
     lastId: rows.at(-1)?.id,
-  };
+  }
 }
 
 /**
@@ -919,71 +868,66 @@ async function sweepNotificationChannelSecretsBatch(
 async function sweepAuthProviderSettingSecrets(
   db: Db,
   secrets: DerivedSecretsConfig,
-  summary: ReencryptSweepSummary,
+  summary: ReencryptSweepSummary
 ): Promise<void> {
   const rows = await db
     .select({ value: setting.value })
     .from(setting)
     .where(eq(setting.key, SYSTEM_AUTH_PROVIDERS_DB_KEY))
-    .limit(1);
+    .limit(1)
 
-  const original = rows[0]?.value;
+  const original = rows[0]?.value
   if (
     original === undefined ||
     original === null ||
-    typeof original !== "object" ||
+    typeof original !== 'object' ||
     Array.isArray(original)
   ) {
-    return;
+    return
   }
 
-  const originalObj = original as Record<string, unknown>;
-  const nextObj: Record<string, unknown> = { ...originalObj };
-  let resealedCount = 0;
+  const originalObj = original as Record<string, unknown>
+  const nextObj: Record<string, unknown> = { ...originalObj }
+  let resealedCount = 0
 
   await forEachSequential(AUTH_PROVIDER_SECRET_KEYS, async (shortKey) => {
-    const raw = nextObj[shortKey];
-    if (typeof raw !== "string" || raw === "") return;
+    const raw = nextObj[shortKey]
+    if (typeof raw !== 'string' || raw === '') return
 
-    summary.scanned += 1;
-    const parsed = parseSecretEnvelope(raw);
+    summary.scanned += 1
+    const parsed = parseSecretEnvelope(raw)
     if (parsed === null) {
       // Plaintext, tpdaemon, or malformed — invalid/unsupported for auth providers at rest.
-      summary.failed += 1;
-      return;
+      summary.failed += 1
+      return
     }
     if (parsed.keyVersion === secrets.current.version) {
-      summary.skipped += 1;
-      return;
+      summary.skipped += 1
+      return
     }
 
     try {
-      const plaintext = await decryptSecret(secrets, raw);
-      nextObj[shortKey] = await encryptSecret(secrets, plaintext);
-      resealedCount += 1;
+      const plaintext = await decryptSecret(secrets, raw)
+      nextObj[shortKey] = await encryptSecret(secrets, plaintext)
+      resealedCount += 1
     } catch {
-      summary.failed += 1;
+      summary.failed += 1
     }
-  });
+  })
 
-  if (resealedCount === 0) return;
+  if (resealedCount === 0) return
 
   const updated = await db
     .update(setting)
     .set({ value: nextObj, updatedAt: nowIso() })
-    .where(
-      and(
-        eq(setting.key, SYSTEM_AUTH_PROVIDERS_DB_KEY),
-        eq(setting.value, original),
-      ),
-    )
-    .returning({ key: setting.key });
+    .where(and(eq(setting.key, SYSTEM_AUTH_PROVIDERS_DB_KEY), eq(setting.value, original)))
+    .returning({ key: setting.key })
 
   if (updated.length > 0) {
-    summary.reencrypted += resealedCount;
+    summary.reencrypted += resealedCount
   } else {
     // Concurrent writer changed the row; leave the newer values untouched.
-    summary.skipped += resealedCount;
+    summary.skipped += resealedCount
   }
 }
 
@@ -996,72 +940,70 @@ async function sweepAuthProviderSettingSecrets(
 async function sweepEmailSettingSecrets(
   db: Db,
   secrets: DerivedSecretsConfig,
-  summary: ReencryptSweepSummary,
+  summary: ReencryptSweepSummary
 ): Promise<void> {
   const rows = await db
     .select({ value: setting.value })
     .from(setting)
     .where(eq(setting.key, SYSTEM_EMAIL_DB_KEY))
-    .limit(1);
+    .limit(1)
 
-  const original = rows[0]?.value;
+  const original = rows[0]?.value
   if (
     original === undefined ||
     original === null ||
-    typeof original !== "object" ||
+    typeof original !== 'object' ||
     Array.isArray(original)
   ) {
-    return;
+    return
   }
 
-  const originalObj = original as Record<string, unknown>;
-  const nextObj: Record<string, unknown> = { ...originalObj };
-  let resealedCount = 0;
+  const originalObj = original as Record<string, unknown>
+  const nextObj: Record<string, unknown> = { ...originalObj }
+  let resealedCount = 0
 
   await forEachSequential(EMAIL_SECRET_KEYS, async (shortKey) => {
-    const raw = nextObj[shortKey];
-    if (typeof raw !== "string" || raw === "") return;
+    const raw = nextObj[shortKey]
+    if (typeof raw !== 'string' || raw === '') return
 
-    summary.scanned += 1;
-    const parsed = parseSecretEnvelope(raw);
+    summary.scanned += 1
+    const parsed = parseSecretEnvelope(raw)
     if (parsed === null) {
       // Plaintext, tpdaemon, or malformed — invalid/unsupported for email at rest.
-      summary.failed += 1;
-      return;
+      summary.failed += 1
+      return
     }
     if (parsed.keyVersion === secrets.current.version) {
-      summary.skipped += 1;
-      return;
+      summary.skipped += 1
+      return
     }
 
     try {
-      const plaintext = await decryptSecret(secrets, raw);
-      nextObj[shortKey] = await encryptSecret(secrets, plaintext);
-      resealedCount += 1;
+      const plaintext = await decryptSecret(secrets, raw)
+      nextObj[shortKey] = await encryptSecret(secrets, plaintext)
+      resealedCount += 1
     } catch {
-      summary.failed += 1;
+      summary.failed += 1
     }
-  });
+  })
 
-  if (resealedCount === 0) return;
+  if (resealedCount === 0) return
 
   const updated = await db
     .update(setting)
     .set({ value: nextObj, updatedAt: nowIso() })
-    .where(
-      and(eq(setting.key, SYSTEM_EMAIL_DB_KEY), eq(setting.value, original)),
-    )
-    .returning({ key: setting.key });
+    .where(and(eq(setting.key, SYSTEM_EMAIL_DB_KEY), eq(setting.value, original)))
+    .returning({ key: setting.key })
 
   if (updated.length > 0) {
-    summary.reencrypted += resealedCount;
+    summary.reencrypted += resealedCount
   } else {
     // Concurrent writer changed the row; leave the newer values untouched.
-    summary.skipped += resealedCount;
+    summary.skipped += resealedCount
   }
 }
 
-type TableStage = Exclude<ReencryptStage, "authproviders" | "email">;
+type TableStage = Exclude<ReencryptStage, 'authproviders' | 'email'>
 
 async function runTableStageBatch(
   db: Db,
@@ -1069,118 +1011,75 @@ async function runTableStageBatch(
   summary: ReencryptSweepSummary,
   stage: TableStage,
   afterId: string | undefined,
-  remaining: number,
+  remaining: number
 ): Promise<StageBatchResult> {
   switch (stage) {
-    case "variables":
-      return sweepSecretVariablesBatch(
-        db,
-        dataEncryptionSecrets,
-        summary,
-        afterId,
-        remaining,
-      );
-    case "tls":
-      return sweepTlsPrivateKeysBatch(
-        db,
-        dataEncryptionSecrets,
-        summary,
-        afterId,
-        remaining,
-      );
-    case "certificates":
+    case 'variables':
+      return sweepSecretVariablesBatch(db, dataEncryptionSecrets, summary, afterId, remaining)
+    case 'tls':
+      return sweepTlsPrivateKeysBatch(db, dataEncryptionSecrets, summary, afterId, remaining)
+    case 'certificates':
       return sweepInstanceCertificateKeysBatch(
         db,
         dataEncryptionSecrets,
         summary,
         afterId,
-        remaining,
-      );
-    case "principals":
-      return sweepPrincipalPasswordsBatch(
-        db,
-        dataEncryptionSecrets,
-        summary,
-        afterId,
-        remaining,
-      );
-    case "storage":
-      return sweepStorageContentBatch(
-        db,
-        dataEncryptionSecrets,
-        summary,
-        afterId,
-        remaining,
-      );
-    case "secrets":
-      return sweepSecretTableBatch(
-        db,
-        dataEncryptionSecrets,
-        summary,
-        afterId,
-        remaining,
-      );
-    case "forge":
-      return sweepForgeEnvelopesBatch(
-        db,
-        dataEncryptionSecrets,
-        summary,
-        afterId,
-        remaining,
-      );
-    case "gitconnection":
+        remaining
+      )
+    case 'principals':
+      return sweepPrincipalPasswordsBatch(db, dataEncryptionSecrets, summary, afterId, remaining)
+    case 'storage':
+      return sweepStorageContentBatch(db, dataEncryptionSecrets, summary, afterId, remaining)
+    case 'secrets':
+      return sweepSecretTableBatch(db, dataEncryptionSecrets, summary, afterId, remaining)
+    case 'forge':
+      return sweepForgeEnvelopesBatch(db, dataEncryptionSecrets, summary, afterId, remaining)
+    case 'gitconnection':
       return sweepGitConnectionEnvelopesBatch(
         db,
         dataEncryptionSecrets,
         summary,
         afterId,
-        remaining,
-      );
-    case "twofactor":
-      return sweepTwoFactorSecretsBatch(
-        db,
-        dataEncryptionSecrets,
-        summary,
-        afterId,
-        remaining,
-      );
-    case "notifications":
+        remaining
+      )
+    case 'twofactor':
+      return sweepTwoFactorSecretsBatch(db, dataEncryptionSecrets, summary, afterId, remaining)
+    case 'notifications':
       return sweepNotificationChannelSecretsBatch(
         db,
         dataEncryptionSecrets,
         summary,
         afterId,
-        remaining,
-      );
+        remaining
+      )
   }
 }
 
 type BatchOutcome =
-  | { kind: "continue"; cursor: ReencryptCursor }
-  | { kind: "done"; result: ReencryptSweepResult };
+  { kind: 'continue'; cursor: ReencryptCursor } | { kind: 'done'; result: ReencryptSweepResult }
 
 /** Decide whether the sweep advances to the next stage, stops for now, or completes. */
 function resolveBatchOutcome(
   summary: ReencryptSweepSummary,
   cursor: ReencryptCursor,
   batch: StageBatchResult,
-  requested: number,
+  requested: number
 ): BatchOutcome {
   if (batch.pageSize === 0 || batch.pageSize < requested) {
     // No more rows in this stage — advance to the next (email when table stages end).
-    const following = nextStage(cursor.stage);
+    const following = nextStage(cursor.stage)
     if (following === null) {
       return {
-        kind: "done",
+        kind: 'done',
         result: { ...summary, completed: true, cursor: null },
-      };
+      }
     }
-    return { kind: "continue", cursor: { stage: following } };
+    return { kind: 'continue', cursor: { stage: following } }
   }
 
   // Full page consumed the remaining budget; more rows may exist.
   return {
-    kind: "done",
+    kind: 'done',
     result: {
       ...summary,
       completed: false,
@@ -1189,7 +1088,7 @@ function resolveBatchOutcome(
         ...(batch.lastId ? { afterId: batch.lastId } : {}),
       },
     },
-  };
+  }
 }
 
 /**
@@ -1201,27 +1100,27 @@ function resolveBatchOutcome(
 export async function reencryptAtRestSecrets(
   db: Db,
   dataEncryptionSecrets: DerivedSecretsConfig,
-  options: ReencryptSweepOptions = {},
+  options: ReencryptSweepOptions = {}
 ): Promise<ReencryptSweepResult> {
-  const limit = options.limit ?? REENCRYPT_BATCH_SIZE;
+  const limit = options.limit ?? REENCRYPT_BATCH_SIZE
   if (!Number.isInteger(limit) || limit < 1) {
-    throw new TypeError("reencrypt limit must be a positive integer");
+    throw new TypeError('reencrypt limit must be a positive integer')
   }
 
-  const summary = emptySummary();
-  let cursor = normalizeCursor(options.cursor);
-  let remaining = limit;
+  const summary = emptySummary()
+  let cursor = normalizeCursor(options.cursor)
+  let remaining = limit
 
   while (remaining > 0) {
-    if (cursor.stage === "authproviders") {
-      await sweepAuthProviderSettingSecrets(db, dataEncryptionSecrets, summary);
-      cursor = { stage: "email" };
-      continue;
+    if (cursor.stage === 'authproviders') {
+      await sweepAuthProviderSettingSecrets(db, dataEncryptionSecrets, summary)
+      cursor = { stage: 'email' }
+      continue
     }
 
-    if (cursor.stage === "email") {
-      await sweepEmailSettingSecrets(db, dataEncryptionSecrets, summary);
-      return { ...summary, completed: true, cursor: null };
+    if (cursor.stage === 'email') {
+      await sweepEmailSettingSecrets(db, dataEncryptionSecrets, summary)
+      return { ...summary, completed: true, cursor: null }
     }
 
     const batch = await runTableStageBatch(
@@ -1230,15 +1129,15 @@ export async function reencryptAtRestSecrets(
       summary,
       cursor.stage,
       cursor.afterId,
-      remaining,
-    );
+      remaining
+    )
 
-    const requested = remaining;
-    remaining -= batch.pageSize;
+    const requested = remaining
+    remaining -= batch.pageSize
 
-    const outcome = resolveBatchOutcome(summary, cursor, batch, requested);
-    if (outcome.kind === "done") return outcome.result;
-    cursor = outcome.cursor;
+    const outcome = resolveBatchOutcome(summary, cursor, batch, requested)
+    if (outcome.kind === 'done') return outcome.result
+    cursor = outcome.cursor
   }
 
   return {
@@ -1248,7 +1147,7 @@ export async function reencryptAtRestSecrets(
       stage: cursor.stage,
       ...(cursor.afterId ? { afterId: cursor.afterId } : {}),
     },
-  };
+  }
 }
 
 /**
@@ -1258,26 +1157,26 @@ export async function reencryptAtRestSecrets(
  */
 export async function reencryptAtRestSecretsToCompletion(
   db: Db,
-  dataEncryptionSecrets: DerivedSecretsConfig,
+  dataEncryptionSecrets: DerivedSecretsConfig
 ): Promise<ReencryptSweepSummary> {
-  const totals = emptySummary();
-  let cursor: ReencryptCursor | null = null;
+  const totals = emptySummary()
+  let cursor: ReencryptCursor | null = null
 
   for (;;) {
     const batch = await reencryptAtRestSecrets(db, dataEncryptionSecrets, {
       cursor,
       limit: REENCRYPT_BATCH_SIZE,
-    });
-    totals.scanned += batch.scanned;
-    totals.reencrypted += batch.reencrypted;
-    totals.skipped += batch.skipped;
-    totals.failed += batch.failed;
+    })
+    totals.scanned += batch.scanned
+    totals.reencrypted += batch.reencrypted
+    totals.skipped += batch.skipped
+    totals.failed += batch.failed
     if (batch.completed) {
-      return totals;
+      return totals
     }
-    cursor = batch.cursor;
+    cursor = batch.cursor
     if (cursor === null) {
-      return totals;
+      return totals
     }
   }
 }

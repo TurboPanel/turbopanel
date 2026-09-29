@@ -97,12 +97,7 @@ export class ObjectExecutionLogStore implements ExecutionLogStore {
           PART_CONTENT_TYPE
         )
       }
-      const next = applyExecutionLogTruncation(
-        index,
-        plan.seq,
-        plan.marker?.byteLength ?? null,
-        at
-      )
+      const next = applyExecutionLogTruncation(index, plan.seq, plan.marker?.byteLength ?? null, at)
       await this.#writeIndex(next)
       return { nextSeq: next.nextSeq }
     }
@@ -134,9 +129,7 @@ export class ObjectExecutionLogStore implements ExecutionLogStore {
     }
 
     if (index.sealed) {
-      const sealed = await this.#backend.get(
-        executionLogSealedKey(index.datePartition, commandId)
-      )
+      const sealed = await this.#backend.get(executionLogSealedKey(index.datePartition, commandId))
       if (!sealed) return shapeExecutionLogRead(index, window, new Uint8Array(0))
       const plain = await gunzipBytes(sealed)
       return shapeExecutionLogRead(index, window, plain.slice(window.start, window.end))
@@ -183,10 +176,7 @@ export class ObjectExecutionLogStore implements ExecutionLogStore {
         const copyStart = Math.max(start, part.offset)
         const copyEnd = Math.min(end, part.offset + part.length)
         if (copyEnd <= copyStart) return
-        out.set(
-          body.subarray(copyStart - part.offset, copyEnd - part.offset),
-          copyStart - start
-        )
+        out.set(body.subarray(copyStart - part.offset, copyEnd - part.offset), copyStart - start)
       })
     )
     return out
@@ -217,9 +207,7 @@ export class ObjectExecutionLogStore implements ExecutionLogStore {
     // mid-seal never leaves a transcript with neither representation.
     await this.#writeIndex({ ...index, sealed: true, updatedAt: this.#now().toISOString() })
     await this.#backend.delete(
-      index.parts.map((part) =>
-        executionLogPartKey(index.datePartition, commandId, part.seq)
-      )
+      index.parts.map((part) => executionLogPartKey(index.datePartition, commandId, part.seq))
     )
     return { bytes: transcript.byteLength }
   }

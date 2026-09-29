@@ -71,7 +71,7 @@ test('readPendingChecks requires a non-empty commitSha', () => {
       commitSha: 'abc123',
       ref: 'refs/heads/trunk',
       recordedAt: '2026-01-15T12:00:00.000Z',
-    },
+    }
   )
 
   const withoutRef = readPendingChecks({
@@ -106,7 +106,7 @@ function sourceRow(overrides: Partial<TriggerRepositoryRow> = {}): TriggerReposi
 
 function triggerDeps(
   rows: TriggerRepositoryRow[],
-  overrides: WebhookTriggerDeps = {},
+  overrides: WebhookTriggerDeps = {}
 ): WebhookTriggerDeps {
   return {
     loadInstallations: async () => ({ live: ['inst-row'], suspended: 0 }),
@@ -156,13 +156,9 @@ test('summarize counts queued skipped and failed outcomes', () => {
 })
 
 test('resolvePushTrigger skips unknown or suspended installations', async () => {
-  const unknown = await resolvePushTrigger(
-    unusedCtx,
-    unusedDb,
-    unusedQueue,
-    samplePush,
-    { loadInstallations: async () => ({ live: [], suspended: 0 }) },
-  )
+  const unknown = await resolvePushTrigger(unusedCtx, unusedDb, unusedQueue, samplePush, {
+    loadInstallations: async () => ({ live: [], suspended: 0 }),
+  })
   assertEquals(unknown.matchedSources, 0)
   assertEquals(unknown.skipped, 1)
   assertEquals(unknown.outcomes[0], {
@@ -172,14 +168,13 @@ test('resolvePushTrigger skips unknown or suspended installations', async () => 
     reason: 'installation_unknown',
   })
 
-  const suspended = await resolvePushTrigger(
-    unusedCtx,
-    unusedDb,
-    unusedQueue,
-    samplePush,
-    { loadInstallations: async () => ({ live: [], suspended: 2 }) },
+  const suspended = await resolvePushTrigger(unusedCtx, unusedDb, unusedQueue, samplePush, {
+    loadInstallations: async () => ({ live: [], suspended: 2 }),
+  })
+  assertEquals(
+    suspended.outcomes[0]?.kind === 'skipped' && suspended.outcomes[0].reason,
+    'installation_suspended'
   )
-  assertEquals(suspended.outcomes[0]?.kind === 'skipped' && suspended.outcomes[0].reason, 'installation_suspended')
 })
 
 test('resolvePushTrigger skips disabled unwatched parked and deleted heads', async () => {
@@ -189,18 +184,24 @@ test('resolvePushTrigger skips disabled unwatched parked and deleted heads', asy
     unusedDb,
     unusedQueue,
     samplePush,
-    triggerDeps([sourceRow({ autoDeploy: 'disabled' })]),
+    triggerDeps([sourceRow({ autoDeploy: 'disabled' })])
   )
-  assertEquals(disabled.outcomes[0]?.kind === 'skipped' && disabled.outcomes[0].reason, 'auto_deploy_disabled')
+  assertEquals(
+    disabled.outcomes[0]?.kind === 'skipped' && disabled.outcomes[0].reason,
+    'auto_deploy_disabled'
+  )
 
   const unwatched = await resolvePushTrigger(
     unusedCtx,
     unusedDb,
     unusedQueue,
     samplePush,
-    triggerDeps([sourceRow({ defaultBranch: 'main' })]),
+    triggerDeps([sourceRow({ defaultBranch: 'main' })])
   )
-  assertEquals(unwatched.outcomes[0]?.kind === 'skipped' && unwatched.outcomes[0].reason, 'branch_not_watched')
+  assertEquals(
+    unwatched.outcomes[0]?.kind === 'skipped' && unwatched.outcomes[0].reason,
+    'branch_not_watched'
+  )
 
   const awaiting = await resolvePushTrigger(
     unusedCtx,
@@ -211,9 +212,12 @@ test('resolvePushTrigger skips disabled unwatched parked and deleted heads', asy
       setPendingChecks: async (_db, _row, pending) => {
         parked.push({ sha: pending?.commitSha ?? null })
       },
-    }),
+    })
   )
-  assertEquals(awaiting.outcomes[0]?.kind === 'skipped' && awaiting.outcomes[0].reason, 'awaiting_checks')
+  assertEquals(
+    awaiting.outcomes[0]?.kind === 'skipped' && awaiting.outcomes[0].reason,
+    'awaiting_checks'
+  )
   assertEquals(parked, [{ sha: 'abc123def' }])
 
   const deletedChecks = await resolvePushTrigger(
@@ -225,11 +229,11 @@ test('resolvePushTrigger skips disabled unwatched parked and deleted heads', asy
       setPendingChecks: async () => {
         throw new TypeError('branch delete must not park a SHA')
       },
-    }),
+    })
   )
   assertEquals(
     deletedChecks.outcomes[0]?.kind === 'skipped' && deletedChecks.outcomes[0].reason,
-    'awaiting_checks',
+    'awaiting_checks'
   )
 
   const deletedImmediate = await resolvePushTrigger(
@@ -237,11 +241,11 @@ test('resolvePushTrigger skips disabled unwatched parked and deleted heads', asy
     unusedDb,
     unusedQueue,
     { ...samplePush, commitSha: null },
-    triggerDeps([sourceRow()]),
+    triggerDeps([sourceRow()])
   )
   assertEquals(
     deletedImmediate.outcomes[0]?.kind === 'skipped' && deletedImmediate.outcomes[0].reason,
-    'branch_deleted',
+    'branch_deleted'
   )
 })
 
@@ -253,7 +257,7 @@ test('resolvePushTrigger deploys placed environments and maps pipeline status', 
     samplePush,
     triggerDeps([sourceRow()], {
       resolveRepositoryEnvironmentIds: async () => [],
-    }),
+    })
   )
   assertEquals(none.outcomes[0], {
     kind: 'skipped',
@@ -269,7 +273,7 @@ test('resolvePushTrigger deploys placed environments and maps pipeline status', 
     samplePush,
     triggerDeps([sourceRow()], {
       resolveEnvironmentPlacement: async () => null,
-    }),
+    })
   )
   assertEquals(missing.outcomes[0], {
     kind: 'skipped',
@@ -288,7 +292,7 @@ test('resolvePushTrigger deploys placed environments and maps pipeline status', 
         serverId: null,
         organizationId: ORG_ID,
       }),
-    }),
+    })
   )
   assertEquals(unplaced.outcomes[0], {
     kind: 'skipped',
@@ -304,7 +308,7 @@ test('resolvePushTrigger deploys placed environments and maps pipeline status', 
     samplePush,
     triggerDeps([sourceRow()], {
       runDeploy: async () => new Response(null, { status: 422 }),
-    }),
+    })
   )
   assertEquals(rejected.outcomes[0], {
     kind: 'skipped',
@@ -321,7 +325,7 @@ test('resolvePushTrigger deploys placed environments and maps pipeline status', 
     samplePush,
     triggerDeps([sourceRow()], {
       runDeploy: async () => new Response(null, { status: 503 }),
-    }),
+    })
   )
   assertEquals(failed.failed, 1)
   assertEquals(failed.outcomes[0], {
@@ -337,19 +341,21 @@ test('resolvePushTrigger deploys placed environments and maps pipeline status', 
     unusedDb,
     unusedQueue,
     samplePush,
-    triggerDeps([sourceRow()]),
+    triggerDeps([sourceRow()])
   )
   assertEquals(queued, {
     matchedSources: 1,
     queued: 1,
     skipped: 0,
     failed: 0,
-    outcomes: [{
-      kind: 'queued',
-      sourceId: SOURCE_ID,
-      environmentId: ENV_ID,
-      commitSha: 'abc123def',
-    }],
+    outcomes: [
+      {
+        kind: 'queued',
+        sourceId: SOURCE_ID,
+        environmentId: ENV_ID,
+        commitSha: 'abc123def',
+      },
+    ],
   })
 })
 
@@ -383,7 +389,7 @@ test('resolveCheckTrigger releases only the parked SHA and restores it on 5xx', 
         autoDeploy: 'checks_passed',
         options: { pendingChecks: { commitSha: 'other-sha' } },
       }),
-    ]),
+    ])
   )
   assertEquals(ignored.matchedSources, 0)
   assertEquals(ignored.outcomes, [])
@@ -405,7 +411,7 @@ test('resolveCheckTrigger releases only the parked SHA and restores it on 5xx', 
       setPendingChecks: async (_db, _row, next) => {
         writes.push(next?.commitSha ?? null)
       },
-    }),
+    })
   )
   assertEquals(released.queued, 1)
   assertEquals(writes, [null])
@@ -428,7 +434,7 @@ test('resolveCheckTrigger releases only the parked SHA and restores it on 5xx', 
         restored.push(next?.commitSha ?? null)
       },
       runDeploy: async () => new Response(null, { status: 503 }),
-    }),
+    })
   )
   assertEquals(retried.failed, 1)
   assertEquals(restored, [null, 'abc123def'])
@@ -458,7 +464,7 @@ test('resolveCheckTrigger skips a parked SHA when the CI ref does not match', as
       commitSha: 'abc123def',
       ref: 'refs/heads/feature',
     },
-    triggerDeps([parkedRow]),
+    triggerDeps([parkedRow])
   )
   assertEquals(mismatched.matchedSources, 0)
   assertEquals(mismatched.outcomes, [])
@@ -475,7 +481,7 @@ test('resolveCheckTrigger skips a parked SHA when the CI ref does not match', as
       commitSha: 'abc123def',
       ref: null,
     },
-    triggerDeps([parkedRow]),
+    triggerDeps([parkedRow])
   )
   assertEquals(omittedRef.matchedSources, 0)
 
@@ -491,7 +497,7 @@ test('resolveCheckTrigger skips a parked SHA when the CI ref does not match', as
       commitSha: 'abc123def',
       ref: 'refs/heads/trunk',
     },
-    triggerDeps([parkedRow]),
+    triggerDeps([parkedRow])
   )
   assertEquals(matching.queued, 1)
 })
@@ -504,21 +510,33 @@ test('GitHub aliases bind the github provider discriminant', async () => {
       return { live: [], suspended: 0 }
     },
   }
-  await resolveGithubPushTrigger(unusedCtx, unusedDb, unusedQueue, {
-    forgeId: APP_ID,
-    externalInstallationId: '42',
-    repositoryExternalId: '99',
-    ref: 'refs/heads/trunk',
-    branch: 'trunk',
-    commitSha: 'abc',
-  }, deps)
-  await resolveGithubCheckTrigger(unusedCtx, unusedDb, unusedQueue, {
-    forgeId: APP_ID,
-    externalInstallationId: '42',
-    repositoryExternalId: '99',
-    commitSha: 'abc',
-    ref: null,
-  }, deps)
+  await resolveGithubPushTrigger(
+    unusedCtx,
+    unusedDb,
+    unusedQueue,
+    {
+      forgeId: APP_ID,
+      externalInstallationId: '42',
+      repositoryExternalId: '99',
+      ref: 'refs/heads/trunk',
+      branch: 'trunk',
+      commitSha: 'abc',
+    },
+    deps
+  )
+  await resolveGithubCheckTrigger(
+    unusedCtx,
+    unusedDb,
+    unusedQueue,
+    {
+      forgeId: APP_ID,
+      externalInstallationId: '42',
+      repositoryExternalId: '99',
+      commitSha: 'abc',
+      ref: null,
+    },
+    deps
+  )
   assertEquals(seen, ['github', 'github'])
 })
 
@@ -531,14 +549,14 @@ test('resolveRepositoryEnvironmentIds resolves compose refs and dedupes them', a
     ],
   } as unknown as Db
   const ids = await resolveRepositoryEnvironmentIds(db, sourceRow())
-  assertEquals([...ids].toSorted((a, b) => a.localeCompare(b)), [
-    ENV_ID,
-    'compose-env',
-  ])
+  assertEquals(
+    [...ids].toSorted((a, b) => a.localeCompare(b)),
+    [ENV_ID, 'compose-env']
+  )
 
   const empty = await resolveRepositoryEnvironmentIds(
     { execute: async () => [] } as unknown as Db,
-    sourceRow(),
+    sourceRow()
   )
   assertEquals(empty, [])
 })
@@ -589,8 +607,8 @@ test('installation lookup is scoped to the app that signed the delivery', async 
           const forgeId = bound.includes(APP_ID)
             ? APP_ID
             : bound.includes(OTHER_APP)
-            ? OTHER_APP
-            : null
+              ? OTHER_APP
+              : null
           return Promise.resolve(forgeId ? rowsByApp[forgeId] : [])
         },
       }),
@@ -598,18 +616,12 @@ test('installation lookup is scoped to the app that signed the delivery', async 
   } as unknown as Db
 
   const seenInstallations: string[][] = []
-  const summary = await resolvePushTrigger(
-    unusedCtx,
-    scopedDb,
-    unusedQueue,
-    samplePush,
-    {
-      findSources: async (_db, installationIds) => {
-        seenInstallations.push([...installationIds])
-        return []
-      },
+  const summary = await resolvePushTrigger(unusedCtx, scopedDb, unusedQueue, samplePush, {
+    findSources: async (_db, installationIds) => {
+      seenInstallations.push([...installationIds])
+      return []
     },
-  )
+  })
 
   assertEquals(summary.matchedSources, 0)
   // Only the signing app's installation is a candidate; `theirs` never appears.
@@ -638,7 +650,7 @@ test('a gitlab delivery still narrows to the app, not to every connection', asyn
     db,
     unusedQueue,
     { ...samplePush, provider: 'gitlab', externalInstallationId: null },
-    { findSources: async () => [] },
+    { findSources: async () => [] }
   )
   assertEquals(sawAppPredicate, true)
 })
@@ -660,18 +672,14 @@ test('resolvePushTrigger default loaders read a fake installation and source cha
     installationDb,
     unusedQueue,
     { ...samplePush, provider: 'gitlab', externalInstallationId: null },
-    { findSources: async () => [] },
+    { findSources: async () => [] }
   )
   assertEquals(gitlab.matchedSources, 0)
   assertEquals(gitlab.outcomes, [])
 
-  const github = await resolvePushTrigger(
-    unusedCtx,
-    installationDb,
-    unusedQueue,
-    samplePush,
-    { findSources: async () => [] },
-  )
+  const github = await resolvePushTrigger(unusedCtx, installationDb, unusedQueue, samplePush, {
+    findSources: async () => [],
+  })
   assertEquals(github.outcomes, [])
 
   const parkedDb = {
@@ -681,17 +689,14 @@ test('resolvePushTrigger default loaders read a fake installation and source cha
       }),
     }),
   } as unknown as Db
-  const parked = await resolvePushTrigger(
-    unusedCtx,
-    parkedDb,
-    unusedQueue,
-    samplePush,
-    {
-      loadInstallations: async () => ({ live: ['inst-row'], suspended: 0 }),
-      findSources: async () => [sourceRow({ autoDeploy: 'checks_passed' })],
-    },
+  const parked = await resolvePushTrigger(unusedCtx, parkedDb, unusedQueue, samplePush, {
+    loadInstallations: async () => ({ live: ['inst-row'], suspended: 0 }),
+    findSources: async () => [sourceRow({ autoDeploy: 'checks_passed' })],
+  })
+  assertEquals(
+    parked.outcomes[0]?.kind === 'skipped' && parked.outcomes[0].reason,
+    'awaiting_checks'
   )
-  assertEquals(parked.outcomes[0]?.kind === 'skipped' && parked.outcomes[0].reason, 'awaiting_checks')
 
   const unknownCheck = await resolveCheckTrigger(
     unusedCtx,
@@ -705,11 +710,11 @@ test('resolvePushTrigger default loaders read a fake installation and source cha
       commitSha: 'abc123def',
       ref: null,
     },
-    { loadInstallations: async () => ({ live: [], suspended: 1 }) },
+    { loadInstallations: async () => ({ live: [], suspended: 1 }) }
   )
   assertEquals(
     unknownCheck.outcomes[0]?.kind === 'skipped' && unknownCheck.outcomes[0].reason,
-    'installation_suspended',
+    'installation_suspended'
   )
 
   const sourcesDb = {
@@ -722,38 +727,30 @@ test('resolvePushTrigger default loaders read a fake installation and source cha
           innerJoin: () => ({
             where: () => ({
               limit: () =>
-                Promise.resolve([{
-                  serverId: SERVER_ID,
-                  projectOptions: null,
-                  organizationId: ORG_ID,
-                }]),
+                Promise.resolve([
+                  {
+                    serverId: SERVER_ID,
+                    projectOptions: null,
+                    organizationId: ORG_ID,
+                  },
+                ]),
             }),
           }),
         }),
       }),
     }),
   } as unknown as Db
-  const noSources = await resolvePushTrigger(
-    unusedCtx,
-    sourcesDb,
-    unusedQueue,
-    samplePush,
-    { loadInstallations: async () => ({ live: ['inst-row'], suspended: 0 }) },
-  )
+  const noSources = await resolvePushTrigger(unusedCtx, sourcesDb, unusedQueue, samplePush, {
+    loadInstallations: async () => ({ live: ['inst-row'], suspended: 0 }),
+  })
   assertEquals(noSources.matchedSources, 0)
 
-  const placed = await resolvePushTrigger(
-    unusedCtx,
-    sourcesDb,
-    unusedQueue,
-    samplePush,
-    {
-      loadInstallations: async () => ({ live: ['inst-row'], suspended: 0 }),
-      findSources: async () => [sourceRow()],
-      resolveRepositoryEnvironmentIds: async () => [ENV_ID],
-      runDeploy: async () => new Response(null, { status: 204 }),
-    },
-  )
+  const placed = await resolvePushTrigger(unusedCtx, sourcesDb, unusedQueue, samplePush, {
+    loadInstallations: async () => ({ live: ['inst-row'], suspended: 0 }),
+    findSources: async () => [sourceRow()],
+    resolveRepositoryEnvironmentIds: async () => [ENV_ID],
+    runDeploy: async () => new Response(null, { status: 204 }),
+  })
   assertEquals(placed.queued, 1)
 
   const missingPlacementDb = {
@@ -778,7 +775,7 @@ test('resolvePushTrigger default loaders read a fake installation and source cha
       loadInstallations: async () => ({ live: ['inst-row'], suspended: 0 }),
       findSources: async () => [sourceRow()],
       resolveRepositoryEnvironmentIds: async () => [ENV_ID],
-    },
+    }
   )
   assertEquals(missingPlacement.outcomes[0], {
     kind: 'skipped',
@@ -810,7 +807,7 @@ test('applyProviderInstallationEvent suspends resumes or ignores the action', as
       externalInstallationId: '42',
       action: 'new_permissions_granted',
     }),
-    { updated: 0 },
+    { updated: 0 }
   )
   assertEquals(calls.length, 0)
 
@@ -821,7 +818,7 @@ test('applyProviderInstallationEvent suspends resumes or ignores the action', as
       externalInstallationId: '42',
       action: 'suspend',
     }),
-    { updated: 1 },
+    { updated: 1 }
   )
   if (calls[0]?.suspendedAt === null) {
     throw new TypeError('suspend must stamp suspendedAt')
@@ -833,7 +830,7 @@ test('applyProviderInstallationEvent suspends resumes or ignores the action', as
       externalInstallationId: '42',
       action: 'unsuspend',
     }),
-    { updated: 1 },
+    { updated: 1 }
   )
   assertEquals(calls[1]?.suspendedAt, null)
 
@@ -853,7 +850,7 @@ test('applyProviderInstallationEvent suspends resumes or ignores the action', as
       externalInstallationId: '99',
       action: 'deleted',
     }),
-    { updated: 0 },
+    { updated: 0 }
   )
 })
 
@@ -875,12 +872,12 @@ test('resolvePushTrigger deploys environments one at a time, in order', async ()
         events.push(`end:${environmentId}`)
         return { serverId: SERVER_ID, organizationId: ORG_ID }
       },
-    }),
+    })
   )
   assertEquals(events, [`start:${ENV_ID}`, `end:${ENV_ID}`, `start:${ENV_ID_2}`, `end:${ENV_ID_2}`])
   assertEquals(
     result.outcomes.map((outcome) => outcome.environmentId),
-    [ENV_ID, ENV_ID_2],
+    [ENV_ID, ENV_ID_2]
   )
 })
 
@@ -899,10 +896,10 @@ test('resolvePushTrigger stops at the first source whose lookup throws', async (
             started.push(row.id)
             throw new TypeError('lookup failed')
           },
-        }),
+        })
       ),
     TypeError,
-    'lookup failed',
+    'lookup failed'
   )
   assertEquals(started, [SOURCE_ID])
 })
