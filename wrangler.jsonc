@@ -294,15 +294,11 @@
     // a third Postgres reached through its own Hyperdrive pair. Follows the `rc`
     // channel. Deployed from the `staging` branch by Workers Builds.
     //
-    // BEFORE THE FIRST DEPLOY (the ids below are placeholders that make a deploy
-    // fail loudly instead of reaching another environment's database):
-    //   1. Create the staging Postgres and both Hyperdrive configs
-    //      (HYPERDRIVE, and a dedicated cached one for HYPERDRIVE_CACHED — see
-    //      scripts/ensure-testing-hyperdrive-cached.sh), then put their ids below.
-    //   2. `wrangler queues create staging-daemon-commands` and
+    // BEFORE THE FIRST DEPLOY (the Hyperdrive pair below already exists):
+    //   1. `wrangler queues create staging-daemon-commands` and
     //      `staging-daemon-commands-dlq`.
-    //   3. `wrangler r2 bucket create staging-turbopanel-execution-logs`.
-    //   4. Set the secrets (BETTER_AUTH_SECRET etc.) and the Stripe / OAuth / email
+    //   2. `wrangler r2 bucket create staging-turbopanel-execution-logs`.
+    //   3. Set the secrets (BETTER_AUTH_SECRET etc.) and the Stripe / OAuth / email
     //      credentials for staging — separate from testing and live.
     // TURBOPANEL_IS_SIGNUP_ENABLED is deliberately not committed here (like live):
     // sign-up is opened from the dashboard or the admin console.
@@ -389,15 +385,14 @@
       ],
       "hyperdrive": [
         {
-          // PLACEHOLDER — replace with the staging Hyperdrive config id.
           "binding": "HYPERDRIVE",
-          "id": "0000000000000000000000000000stg0"
+          "id": "b1147c2f45c04f85a09131c586dc8e4b"
         },
         {
-          // PLACEHOLDER — replace with a dedicated cached config for the staging
-          // Postgres origin (not the primary HYPERDRIVE id).
+          // A dedicated cached config for the staging Postgres origin (not the
+          // primary HYPERDRIVE id).
           "binding": "HYPERDRIVE_CACHED",
-          "id": "0000000000000000000000000000stg1"
+          "id": "0d759561de73482ab13ea79f416f99f7"
         }
       ],
       "routes": [
