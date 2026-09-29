@@ -128,12 +128,12 @@ jobs:
   prepare:
     needs: resolve
     if: needs.resolve.outputs.proceed == 'true'
-    uses: TurboPanel/dev/.github/workflows/gh-promote.yml@b15365e63ddb42e96b9fe3b7594b8bc0b03a2b49 # dev#24
+    uses: TurboPanel/dev/.github/workflows/gh-promote.yml@d5d3d0b14af8d0788c9341fccd0c3e729e2614c7 # dev#27
     with:
       repo-kind: instance
       to: rc
       source: ${{ needs.resolve.outputs.build }}
-      dev-ref: b15365e63ddb42e96b9fe3b7594b8bc0b03a2b49
+      dev-ref: d5d3d0b14af8d0788c9341fccd0c3e729e2614c7
       # Same signer pin as promote.yml.
       signer-ref: 93c4f94510c9499e6bf04366a9500fe9f8e38aaa
       # The merge of the promotion PR is the approval.
@@ -142,7 +142,7 @@ jobs:
 
   publish:
     needs: prepare
-    uses: TurboPanel/dev/.github/workflows/gh-release.yml@b15365e63ddb42e96b9fe3b7594b8bc0b03a2b49 # dev#24
+    uses: TurboPanel/dev/.github/workflows/gh-release.yml@d5d3d0b14af8d0788c9341fccd0c3e729e2614c7 # dev#27
     with:
       version: ${{ needs.prepare.outputs.version }}
       channel: rc
@@ -154,7 +154,7 @@ jobs:
 
   finalize:
     needs: [prepare, publish]
-    uses: TurboPanel/dev/.github/workflows/gh-promote-finalize.yml@b15365e63ddb42e96b9fe3b7594b8bc0b03a2b49 # dev#24
+    uses: TurboPanel/dev/.github/workflows/gh-promote-finalize.yml@d5d3d0b14af8d0788c9341fccd0c3e729e2614c7 # dev#27
     with:
       to: rc
       version: ${{ needs.prepare.outputs.version }}
@@ -198,3 +198,34 @@ jobs:
           else
             gh pr create --repo "$REPO" --base live --head staging --title "$title" --body-file body.md
           fi
+
+  # A new minor's daemon Release PR waits for an rc of it in this repo
+  # (gh-minor-gate.yml): re-run its failed checks now that the rc exists. Best
+  # effort — if the App cannot, re-run the failed check by hand.
+  rerun-daemon:
+    needs: [prepare, finalize]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mint a Release App token
+        id: app
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: TurboPanel
+          repositories: turbopaneld
+
+      - name: Check out the promotion scripts
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: TurboPanel/dev
+          ref: d5d3d0b14af8d0788c9341fccd0c3e729e2614c7
+          path: .promote
+          persist-credentials: false
+          sparse-checkout: scripts/promote
+          sparse-checkout-cone-mode: false
+
+      - name: Re-run the daemon's waiting Release PR checks
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+        run: sh .promote/scripts/promote/rerun-release-pr-checks.sh turbopaneld

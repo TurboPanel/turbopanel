@@ -416,6 +416,19 @@ jobs:
         working-directory: turbopanel
         run: node scripts/check-contract-drift.mjs
 
+  # A new minor (x.y.0) needs the daemon released first (TurboPanel/dev
+  # gh-minor-gate.yml, role=dependent). Only ever red on a minor Release PR into
+  # live while turbopaneld has no v<x.y.0> release; a patch or any other PR
+  # passes at once.
+  minor-gate:
+    uses: TurboPanel/dev/.github/workflows/gh-minor-gate.yml@d5d3d0b14af8d0788c9341fccd0c3e729e2614c7 # dev#27
+    with:
+      role: dependent
+      version-file: deno.json
+    secrets:
+      RELEASE_APP_ID: ${{ secrets.RELEASE_APP_ID }}
+      RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
   # Single aggregate check for the branch rulesets. It needs every job that
   # runs on pull_request and fails unless all of them succeeded (a cancelled
   # or skipped need is a failure too — no job above is conditional on PR
@@ -435,6 +448,7 @@ jobs:
         sonarqube,
         metrics-legacy,
         data-dictionary,
+        minor-gate,
       ]
     if: always()
     permissions: {}
