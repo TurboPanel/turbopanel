@@ -4,6 +4,7 @@ import type { WSContext } from "hono/ws";
 import type { DaemonCellRegistry } from "../contracts/cell.ts";
 import type {
   DaemonInboundEnvelope,
+  DaemonInboundFrameResult,
   DaemonMessage,
 } from "../contracts/cell-protocol.ts";
 import {
@@ -434,6 +435,89 @@ async function applyDaemonInboundEnvelope(params: {
   }
 }
 
+/** Everything the per-type inbound handlers need for one validated frame. */
+type DaemonInboundDispatch = {
+  cell: ReturnType<DaemonCellRegistry["getCell"]>;
+  db: Db;
+  serverId: string;
+  connectionId: string | undefined;
+  commandQueue?: CommandQueue;
+  message: DaemonMessage;
+};
+
+/**
+ * Route one validated, key-checked daemon frame to its handler. Types with no
+ * dedicated handler record liveness and, when they carry a correlated result,
+ * apply the inbound envelope to the cell.
+ */
+async function dispatchDaemonInboundMessage(
+  params: DaemonInboundDispatch,
+): Promise<void> {
+  const { cell, db, serverId, connectionId, message } = params;
+  switch (message.type) {
+    case "hello":
+    case "heartbeat":
+      await handleDaemonPresenceInbound({
+        cell,
+        db,
+        serverId,
+        connectionId,
+        message,
+      });
+      return;
+    case "managed-ha-event":
+      await handleDaemonManagedHaInbound({
+        cell,
+        db,
+        connectionId,
+        message,
+        commandQueue: params.commandQueue,
+        reporterServerId: serverId,
+      });
+      return;
+    case "topology-report":
+      await handleDaemonTopologyReportInbound({
+        cell,
+        db,
+        connectionId,
+        message,
+        reporterServerId: serverId,
+      });
+      return;
+    case "instance-acme-issuance-event":
+      await handleInstanceAcmeIssuanceInbound({
+        cell,
+        db,
+        connectionId,
+        message,
+      });
+      return;
+    case "update-progress":
+      await handleUpdateProgressInbound({
+        cell,
+        db,
+        serverId,
+        connectionId,
+        message,
+      });
+      return;
+    default:
+      await cell.recordInbound({ connectionId, at: message.at });
+      await applyWireMessageEnvelope(cell, db, serverId, message);
+  }
+}
+
+async function applyWireMessageEnvelope(
+  cell: ReturnType<DaemonCellRegistry["getCell"]>,
+  db: Db,
+  serverId: string,
+  message: DaemonMessage,
+): Promise<void> {
+  const envelope = wireMessageToInboundEnvelope(message);
+  if (!envelope) return;
+  await applyDaemonInboundEnvelope({ cell, db, serverId, envelope });
+}
+
 export type DaemonWebSocketOptions = {
   developerSurface?: boolean;
   db?: Db;
@@ -563,67 +647,65 @@ export function registerDaemonWebSocket<E extends Env>(
         }
       };
 
+      const keyStillActive = (ws: WSContext<WebSocket>): Promise<boolean> =>
+        assertDaemonKeyStillActive(db, payload.sub, payload.kid, ws);
+
+      const handlePingFrame = async (
+        ws: WSContext<WebSocket>,
+      ): Promise<void> => {
+        if (!(await keyStillActive(ws))) return;
+        await handleDaemonCellPing({
+          cell: registry.getCell(payload.sub),
+          db,
+          serverId: payload.sub,
+          connectionId,
+          ws,
+        });
+      };
+
+      const handleUnacceptedFrame = async (
+        failure: Extract<DaemonInboundFrameResult, { ok: false }>,
+        ws: WSContext<WebSocket>,
+      ): Promise<void> => {
+        if (!failure.ignored) {
+          rejectDaemonInboundFrame(
+            ws,
+            payload.sub,
+            connectionId,
+            failure.reason,
+          );
+          return;
+        }
+        // Unknown types stay on the socket, but they are still the next
+        // inbound frame — a revoked key must close here. Redis purge
+        // cannot drop the live socket, and a peer that sends only
+        // unrecognized types would otherwise stay up inside the rate cap.
+        // The inbound gate already ran in onMessage, ahead of validation.
+        if (!(await keyStillActive(ws))) return;
+        traceIgnoredUnknownInboundType(
+          payload.sub,
+          connectionId,
+          failure.reason,
+        );
+      };
+
       const handleInboundMessageBody = async (
         raw: string,
         ws: WSContext<WebSocket>,
       ): Promise<void> => {
         if (raw === DAEMON_CELL_PING) {
-          const keyStillActive = await assertDaemonKeyStillActive(
-            db,
-            payload.sub,
-            payload.kid,
-            ws,
-          );
-          if (!keyStillActive) return;
-          await handleDaemonCellPing({
-            cell: registry.getCell(payload.sub),
-            db,
-            serverId: payload.sub,
-            connectionId,
-            ws,
-          });
+          await handlePingFrame(ws);
           return;
         }
 
         const validated = validateDaemonInboundFrame(raw);
         if (!validated.ok) {
-          if (validated.ignored) {
-            // Unknown types stay on the socket, but they are still the next
-            // inbound frame — a revoked key must close here. Redis purge
-            // cannot drop the live socket, and a peer that sends only
-            // unrecognized types would otherwise stay up inside the rate cap.
-            // The inbound gate already ran in onMessage, ahead of validation.
-            const keyStillActive = await assertDaemonKeyStillActive(
-              db,
-              payload.sub,
-              payload.kid,
-              ws,
-            );
-            if (!keyStillActive) return;
-            traceIgnoredUnknownInboundType(
-              payload.sub,
-              connectionId,
-              validated.reason,
-            );
-            return;
-          }
-          rejectDaemonInboundFrame(
-            ws,
-            payload.sub,
-            connectionId,
-            validated.reason,
-          );
+          await handleUnacceptedFrame(validated, ws);
           return;
         }
         const message = validated.message;
 
-        const keyStillActive = await assertDaemonKeyStillActive(
-          db,
-          payload.sub,
-          payload.kid,
-          ws,
-        );
-        if (!keyStillActive) return;
+        if (!(await keyStillActive(ws))) return;
 
         cellTrace("inbound", {
           serverId: payload.sub,
@@ -631,74 +713,14 @@ export function registerDaemonWebSocket<E extends Env>(
           type: message.type,
         });
 
-        const cell = registry.getCell(payload.sub);
-
-        if (message.type === "hello" || message.type === "heartbeat") {
-          await handleDaemonPresenceInbound({
-            cell,
-            db,
-            serverId: payload.sub,
-            connectionId,
-            message,
-          });
-          return;
-        }
-
-        if (message.type === "managed-ha-event") {
-          await handleDaemonManagedHaInbound({
-            cell,
-            db,
-            connectionId,
-            message,
-            commandQueue: options.commandQueue,
-            reporterServerId: payload.sub,
-          });
-          return;
-        }
-
-        if (message.type === "topology-report") {
-          await handleDaemonTopologyReportInbound({
-            cell,
-            db,
-            connectionId,
-            message,
-            reporterServerId: payload.sub,
-          });
-          return;
-        }
-
-        if (message.type === "instance-acme-issuance-event") {
-          await handleInstanceAcmeIssuanceInbound({
-            cell,
-            db,
-            connectionId,
-            message,
-          });
-          return;
-        }
-
-        if (message.type === "update-progress") {
-          await handleUpdateProgressInbound({
-            cell,
-            db,
-            serverId: payload.sub,
-            connectionId,
-            message,
-          });
-          return;
-        }
-
-        await cell.recordInbound({ connectionId, at: message.at });
-
-        const envelope = wireMessageToInboundEnvelope(message);
-        if (envelope) {
-          await applyDaemonInboundEnvelope({
-            cell,
-            db,
-            serverId: payload.sub,
-            envelope,
-          });
-        }
+        await dispatchDaemonInboundMessage({
+          cell: registry.getCell(payload.sub),
+          db,
+          serverId: payload.sub,
+          connectionId,
+          commandQueue: options.commandQueue,
+          message,
+        });
       };
 
       return {

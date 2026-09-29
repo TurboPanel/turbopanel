@@ -766,6 +766,119 @@ export async function removeInstanceHostname(
 }
 
 /**
+ * Normalise one requested host for an uploaded pair: the stored spelling when
+ * the pair covers it, otherwise the failure to report.
+ */
+function checkUploadedCertificateHost(
+  cert: UploadedCertHit,
+  raw: string,
+): string | InstanceHostnameFailure {
+  const parsed = parsePublicUrlEntries([raw]);
+  const host = parsed.ok ? parsed.urls[0] : undefined;
+  if (!host) {
+    return {
+      ok: false,
+      error: "One or more public URL entries are invalid",
+      invalid: [raw],
+    };
+  }
+  if (!uploadedCertificateCoversHost(cert.dnsNames, host)) {
+    return coverageFailure(host, true);
+  }
+  return host;
+}
+
+/**
+ * Keyed by the canonical host, so attaching to the other spelling of a name
+ * that is already published updates that row instead of adding a twin.
+ */
+function desiredUploadedCertificateHosts(
+  cert: UploadedCertHit,
+  hosts: string[],
+): { ok: true; desired: Map<string, string> } | InstanceHostnameFailure {
+  const desired = new Map<string, string>();
+  const failures: InstanceHostnameFailure[] = [];
+  for (const raw of hosts) {
+    const checked = checkUploadedCertificateHost(cert, raw);
+    if (typeof checked !== "string") {
+      failures.push(checked);
+      continue;
+    }
+    const key = canonicalHostKey(checked);
+    if (!desired.has(key)) desired.set(key, checked);
+  }
+  if (failures.length > 0) return combineFailures(failures);
+  return { ok: true, desired };
+}
+
+/** The row's `uploaded` twin for `cert`. */
+function attachedToCertificate(
+  row: StoredHostname,
+  cert: UploadedCertHit,
+  index: number,
+): StoredHostname {
+  return rowFromEntry(
+    { host: row.host, source: "uploaded", uploadedCertId: cert.id },
+    row,
+    index,
+    cert.notAfter,
+  );
+}
+
+/** The row's `platform-ca` twin, once it no longer lists the pair. */
+function detachedFromCertificate(
+  row: StoredHostname,
+  index: number,
+): StoredHostname {
+  return rowFromEntry(
+    { host: row.host, source: "platform-ca", uploadedCertId: null },
+    row,
+    index,
+    null,
+  );
+}
+
+/**
+ * Rewrite the stored rows for an attach: listed hosts take the pair, rows that
+ * carried it but are no longer listed fall back to the platform CA, names not
+ * yet published are appended.
+ */
+function rowsWithUploadedCertificate(
+  current: StoredHostname[],
+  desired: Map<string, string>,
+  cert: UploadedCertHit,
+): { next: StoredHostname[]; attached: string[] } {
+  const next: StoredHostname[] = [];
+  const seen = new Set<string>();
+  const attached: string[] = [];
+  for (const row of current) {
+    const key = canonicalHostKey(row.host);
+    if (desired.has(key) && !seen.has(key)) {
+      next.push(attachedToCertificate(row, cert, next.length));
+      seen.add(key);
+      attached.push(row.host);
+    } else if (row.uploadedCertId === cert.id) {
+      next.push(detachedFromCertificate(row, next.length));
+    } else {
+      next.push(row);
+    }
+  }
+  for (const [key, host] of desired) {
+    if (seen.has(key)) continue;
+    attached.push(host);
+    next.push(
+      rowFromEntry(
+        { host, source: "uploaded", uploadedCertId: cert.id },
+        undefined,
+        next.length,
+        cert.notAfter,
+      ),
+    );
+  }
+  return { next, attached };
+}
+
+/**
  * Apply an uploaded pair onto the given hosts and detach it from any hostname
  * that no longer lists it. Detached names stay published as `platform-ca`.
  */
@@ -776,84 +889,17 @@ export async function applyUploadedCertificateHosts(
 ): Promise<{ ok: true; hostnames: string[] } | InstanceHostnameFailure> {
   await migrateLegacyPublicUrls(db);
   const current = await loadHostnameRows(db);
-  // Keyed by the canonical host, so attaching to the other spelling of a name
-  // that is already published updates that row instead of adding a twin.
-  const desired = new Map<string, string>();
-  const failures: InstanceHostnameFailure[] = [];
-  for (const raw of hosts) {
-    const parsed = parsePublicUrlEntries([raw]);
-    if (!parsed.ok || !parsed.urls[0]) {
-      failures.push({
-        ok: false,
-        error: "One or more public URL entries are invalid",
-        invalid: [raw],
-      });
-      continue;
-    }
-    const host = parsed.urls[0];
-    if (!uploadedCertificateCoversHost(cert.dnsNames, host)) {
-      failures.push(coverageFailure(host, true));
-      continue;
-    }
-    const key = canonicalHostKey(host);
-    if (!desired.has(key)) desired.set(key, host);
-  }
-  if (failures.length > 0) return combineFailures(failures);
+  const resolved = desiredUploadedCertificateHosts(cert, hosts);
+  if (!resolved.ok) return resolved;
 
-  const next: StoredHostname[] = [];
-  const seen = new Set<string>();
-  const attached: string[] = [];
-  for (const row of current) {
-    const key = canonicalHostKey(row.host);
-    if (desired.has(key) && !seen.has(key)) {
-      next.push(rowFromEntry(
-        {
-          host: row.host,
-          source: "uploaded",
-          uploadedCertId: cert.id,
-        },
-        row,
-        next.length,
-        cert.notAfter,
-      ));
-      seen.add(key);
-      attached.push(row.host);
-      continue;
-    }
-    if (row.uploadedCertId === cert.id) {
-      next.push(rowFromEntry(
-        {
-          host: row.host,
-          source: "platform-ca",
-          uploadedCertId: null,
-        },
-        row,
-        next.length,
-        null,
-      ));
-      continue;
-    }
-    next.push(row);
-  }
-  let index = next.length;
-  for (const [key, host] of desired) {
-    if (seen.has(key)) continue;
-    attached.push(host);
-    next.push(rowFromEntry(
-      {
-        host,
-        source: "uploaded",
-        uploadedCertId: cert.id,
-      },
-      undefined,
-      index,
-      cert.notAfter,
-    ));
-    index += 1;
-  }
+  const { next, attached } = rowsWithUploadedCertificate(
+    current,
+    resolved.desired,
+    cert,
+  );
   await persistHostnameRows(db, next);
   return {
     ok: true,
-    hostnames: attached.sort((a, b) => a.localeCompare(b)),
+    hostnames: attached.toSorted((a, b) => a.localeCompare(b)),
   };
 }

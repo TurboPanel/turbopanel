@@ -2634,6 +2634,107 @@ test("live WS topology-report writes the daemon-reported snapshot and its own ti
   );
 });
 
+const INBOUND_DISPATCH_AT = "2026-01-01T00:07:00.000Z";
+
+const INBOUND_DISPATCH_CASES: ReadonlyArray<{
+  name: string;
+  frame: Record<string, unknown>;
+  correlatedResult: boolean;
+}> = [
+  {
+    name: "managed-ha-event",
+    frame: {
+      type: "managed-ha-event",
+      managedId: "00000000-0000-4000-8000-000000000001",
+    },
+    correlatedResult: false,
+  },
+  {
+    name: "instance-acme-issuance-event",
+    frame: {
+      type: "instance-acme-issuance-event",
+      hostname: "panel.example.test",
+      ok: true,
+    },
+    correlatedResult: false,
+  },
+  {
+    name: "update-progress",
+    frame: {
+      type: "update-progress",
+      id: "req-progress",
+      unit: "daemon",
+      stage: "downloading",
+    },
+    correlatedResult: false,
+  },
+  {
+    // Fire-and-forget type with no dedicated handler: liveness only.
+    name: "acme-issuance-event",
+    frame: {
+      type: "acme-issuance-event",
+      hostname: "app.example.test",
+      ok: true,
+    },
+    correlatedResult: false,
+  },
+  {
+    // Correlated result: liveness first, then the envelope reaches the cell.
+    name: "addresses-result",
+    frame: { type: "addresses-result", id: "req-addr", ok: true, ips: [] },
+    correlatedResult: true,
+  },
+];
+
+for (const dispatchCase of INBOUND_DISPATCH_CASES) {
+  test(`live WS dispatches ${dispatchCase.name} to the cell`, async () => {
+    const secrets = await createDaemonJwtSecrets();
+    const serverId = `srv-live-dispatch-${dispatchCase.name}`;
+    const tracking = createTrackingDaemonCell(serverId);
+    const recordedAt: Array<string | undefined> = [];
+    tracking.cell.recordInbound = (params) => {
+      tracking.calls.recordInbound += 1;
+      recordedAt.push(params.at);
+      return Promise.resolve();
+    };
+    tracking.cell.handleInbound = () => {
+      tracking.calls.handleInbound += 1;
+      return Promise.resolve(null);
+    };
+
+    await withLiveDaemonServer(
+      {
+        secrets,
+        db: createMockDb(),
+        registry: createTrackingRegistry(tracking.cell),
+      },
+      async ({ port }) => {
+        const issued = await issueDaemonJwt(
+          { sub: serverId, kid: "key-test" },
+          secrets,
+        );
+        const ws = await openLiveDaemonWs({
+          port,
+          token: issued.token,
+          remoteIp: LIVE_REMOTE_IP,
+        });
+        ws.send(
+          JSON.stringify({ ...dispatchCase.frame, at: INBOUND_DISPATCH_AT }),
+        );
+        await new Promise((resolve) => setTimeout(resolve, 60));
+        assertEquals(ws.readyState, WebSocket.OPEN);
+        assertEquals(recordedAt, [INBOUND_DISPATCH_AT]);
+        assertEquals(
+          tracking.calls.handleInbound,
+          dispatchCase.correlatedResult ? 1 : 0,
+        );
+        ws.close(1000, "done");
+        await waitForWsClose(ws);
+      },
+    );
+  });
+}
+
 test("live WS swallows inbound handler errors without tearing down the socket", async () => {
   const secrets = await createDaemonJwtSecrets();
   const serverId = "srv-live-inbound-err";

@@ -74,7 +74,7 @@ function preservedHttpsPort(url: URL): string | undefined {
  */
 export function publicHttpsOrigin(entry: string): string | null {
   const trimmed = entry.trim();
-  if (!trimmed || !trimmed.includes("://")) return null;
+  if (!trimmed.includes("://")) return null;
   try {
     const url = new URL(trimmed);
     if (!isHttpsOriginUrl(url)) return null;

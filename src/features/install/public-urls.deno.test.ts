@@ -217,3 +217,140 @@ test("attaching an uploaded certificate to the other spelling of a published hos
       .where(eq(instanceUploadedCertificate.id, cert!.id));
   }
 });
+
+const UPLOAD_NAMES = ["a.example.com", "b.example.com", "c.example.com"];
+
+async function withUploadedCertificate(
+  fn: (
+    cert: { id: string; dnsNames: string[]; notAfter: string },
+    db: ReturnType<typeof createDenoDb>,
+  ) => Promise<void>,
+): Promise<void> {
+  if (!dbUrl) return;
+  const db = createDenoDb();
+  const [inserted] = await db
+    .insert(instanceUploadedCertificate)
+    .values({
+      label: "attach-matrix",
+      certPem: "-----BEGIN CERTIFICATE-----\nx\n-----END CERTIFICATE-----",
+      keyPem: "sealed",
+      dnsNames: UPLOAD_NAMES,
+      notAfter: "2030-01-01T00:00:00.000Z",
+    })
+    .returning({ id: instanceUploadedCertificate.id });
+  const cert = {
+    id: inserted!.id,
+    dnsNames: UPLOAD_NAMES,
+    notAfter: "2030-01-01T00:00:00.000Z",
+  };
+  try {
+    await withPublicUrlsFixture(async (fixtureDb) => {
+      await fixtureDb.delete(instanceHostname);
+      await fn(cert, fixtureDb);
+    });
+  } finally {
+    await db.delete(instanceUploadedCertificate).where(
+      eq(instanceUploadedCertificate.id, cert.id),
+    );
+  }
+}
+
+test("attaching an uploaded certificate detaches dropped hosts, adds new ones, and returns the names sorted", async () => {
+  await withUploadedCertificate(async (cert, db) => {
+    await setPublicUrls(db, ["https://a.example.com", "https://b.example.com"]);
+    const first = await applyUploadedCertificateHosts(db, cert, [
+      "b.example.com",
+      "c.example.com",
+      "a.example.com",
+      // A second spelling of an already listed name is one attachment.
+      "a.example.com.",
+    ]);
+    assertEquals(first.ok, true);
+    assertEquals(first.ok && first.hostnames, [
+      "c.example.com",
+      "https://a.example.com:8443",
+      "https://b.example.com:8443",
+    ]);
+    assertEquals(await hostnameRows(db), [
+      {
+        host: "c.example.com",
+        source: "uploaded",
+        uploadedCertId: cert.id,
+      },
+      {
+        host: "https://a.example.com:8443",
+        source: "uploaded",
+        uploadedCertId: cert.id,
+      },
+      {
+        host: "https://b.example.com:8443",
+        source: "uploaded",
+        uploadedCertId: cert.id,
+      },
+    ]);
+
+    // Listing only `c` detaches the others back to the platform CA, and an
+    // unrelated row with no certificate is left exactly as it was.
+    const second = await applyUploadedCertificateHosts(db, cert, [
+      "c.example.com",
+    ]);
+    assertEquals(second.ok, true);
+    assertEquals(second.ok && second.hostnames.length, 1);
+    assertEquals(await hostnameRows(db), [
+      {
+        host: "c.example.com",
+        source: "uploaded",
+        uploadedCertId: cert.id,
+      },
+      {
+        host: "https://a.example.com:8443",
+        source: "platform-ca",
+        uploadedCertId: null,
+      },
+      {
+        host: "https://b.example.com:8443",
+        source: "platform-ca",
+        uploadedCertId: null,
+      },
+    ]);
+  });
+});
+
+test("attaching an uploaded certificate reports invalid and uncovered hosts without writing", async () => {
+  await withUploadedCertificate(async (cert, db) => {
+    await setPublicUrls(db, ["https://a.example.com"]);
+    const before = await hostnameRows(db);
+
+    const invalidOnly = await applyUploadedCertificateHosts(db, cert, [
+      "not a host",
+    ]);
+    assertEquals(invalidOnly, {
+      ok: false,
+      error: "One or more public URL entries are invalid",
+      invalid: ["not a host"],
+    });
+
+    const uncoveredOnly = await applyUploadedCertificateHosts(db, cert, [
+      "a.example.com",
+      "other.example.org",
+    ]);
+    assertEquals(uncoveredOnly.ok, false);
+    assertEquals(
+      !uncoveredOnly.ok && uncoveredOnly.error,
+      "Uploaded certificate does not cover the hostname",
+    );
+    assertEquals(!uncoveredOnly.ok && uncoveredOnly.invalid.length, 1);
+
+    // Two different failure kinds collapse into the generic message and keep
+    // every offending entry.
+    const mixed = await applyUploadedCertificateHosts(db, cert, [
+      "not a host",
+      "other.example.org",
+    ]);
+    assertEquals(mixed.ok, false);
+    assertEquals(!mixed.ok && mixed.error, "One or more hostnames are invalid");
+    assertEquals(!mixed.ok && mixed.invalid.length, 2);
+
+    assertEquals(await hostnameRows(db), before);
+  });
+});
