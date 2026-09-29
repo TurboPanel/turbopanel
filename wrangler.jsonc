@@ -122,7 +122,7 @@
   "triggers": { "crons": ["* * * * *"] },
   // Host metrics (Workers Analytics Engine). AE datasets are account-scoped and
   // auto-created on first write. Each environment (testing, staging, live) has
-  // its OWN dataset, `turbopanel_server_metrics_v6_<env>`, so their rows, retention
+  // its OWN dataset, `<env>_turbopanel_server_metrics_v6`, so their rows, retention
   // and any reset never mix; the top level (local `wrangler dev`) keeps the bare
   // name. The binding's `dataset` is what is written; the read side (SQL API) takes
   // its table from `TURBOPANEL_SERVER_METRICS_AE_DATASET` — an env must set both to
@@ -242,7 +242,7 @@
       "analytics_engine_datasets": [
         {
           "binding": "SERVER_METRICS",
-          "dataset": "turbopanel_server_metrics_v6_testing"
+          "dataset": "testing_turbopanel_server_metrics_v6"
         }
       ],
       "r2_buckets": [
@@ -291,7 +291,7 @@
         // non-production builds with it (live shows no label).
         "TURBOPANEL_ENVIRONMENT": "testing",
         // Read side of SERVER_METRICS above: must name the same dataset.
-        "TURBOPANEL_SERVER_METRICS_AE_DATASET": "turbopanel_server_metrics_v6_testing",
+        "TURBOPANEL_SERVER_METRICS_AE_DATASET": "testing_turbopanel_server_metrics_v6",
         "TURBOPANEL_EXECUTION_LOG_RETENTION_DAYS": "90"
       }
     },
@@ -385,7 +385,7 @@
       "analytics_engine_datasets": [
         {
           "binding": "SERVER_METRICS",
-          "dataset": "turbopanel_server_metrics_v6_staging"
+          "dataset": "staging_turbopanel_server_metrics_v6"
         }
       ],
       "r2_buckets": [
@@ -434,7 +434,7 @@
         // non-production builds with it (live shows no label).
         "TURBOPANEL_ENVIRONMENT": "staging",
         // Read side of SERVER_METRICS above: must name the same dataset.
-        "TURBOPANEL_SERVER_METRICS_AE_DATASET": "turbopanel_server_metrics_v6_staging",
+        "TURBOPANEL_SERVER_METRICS_AE_DATASET": "staging_turbopanel_server_metrics_v6",
         "TURBOPANEL_EXECUTION_LOG_RETENTION_DAYS": "90"
       }
     },
@@ -508,7 +508,7 @@
       "analytics_engine_datasets": [
         {
           "binding": "SERVER_METRICS",
-          "dataset": "turbopanel_server_metrics_v6_live"
+          "dataset": "live_turbopanel_server_metrics_v6"
         }
       ],
       "r2_buckets": [
@@ -552,7 +552,7 @@
         "TURBOPANEL_UPDATE_CHANNEL": "release",
         "TURBOPANEL_ENVIRONMENT": "live",
         // Read side of SERVER_METRICS above: must name the same dataset.
-        "TURBOPANEL_SERVER_METRICS_AE_DATASET": "turbopanel_server_metrics_v6_live",
+        "TURBOPANEL_SERVER_METRICS_AE_DATASET": "live_turbopanel_server_metrics_v6",
         "TURBOPANEL_EXECUTION_LOG_RETENTION_DAYS": "90"
       }
     }
