@@ -234,3 +234,25 @@ test("parseServerDaemonKeyRow rejects a malformed publicJwk", () => {
   );
   assertEquals(parseServerDaemonKeyRow({ ...baseKey, publicJwk: [] }), null);
 });
+
+Deno.test("featuresMatch compares the stored list as an ordered sequence", () => {
+  const cases: ReadonlyArray<
+    readonly [readonly string[] | undefined, readonly string[], boolean]
+  > = [
+    [undefined, [], false],
+    [undefined, ["a"], false],
+    [[], [], true],
+    [["a", "b"], ["a", "b"], true],
+    [["a", "b"], ["b", "a"], false],
+    [["a"], ["a", "b"], false],
+    [["a", "b"], ["a"], false],
+    [["a", "b"], ["a", "c"], false],
+  ];
+  for (const [current, next, expected] of cases) {
+    assertEquals(
+      featuresMatch(current, next),
+      expected,
+      JSON.stringify([current, next]),
+    );
+  }
+});

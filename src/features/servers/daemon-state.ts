@@ -150,7 +150,7 @@ export function featuresMatch(
   current: readonly string[] | undefined,
   next: readonly string[],
 ): boolean {
-  if (current === undefined || current.length !== next.length) return false;
+  if (current?.length !== next.length) return false;
   for (let i = 0; i < current.length; i += 1) {
     if (current[i] !== next[i]) return false;
   }

@@ -334,6 +334,20 @@ export async function touchServerMetadata(
 
   await db.update(server).set(update).where(eq(server.id, serverId));
 
+  await reconcileAfterHardwareReport(db, serverId, base, delta);
+}
+
+/**
+ * Best-effort follow-ups once a hello wrote its delta: re-derive tier
+ * assignment and re-point datacenter pins. A failure in either must not reject
+ * the hello.
+ */
+async function reconcileAfterHardwareReport(
+  db: Db,
+  serverId: string,
+  base: ServerMetadata | null | undefined,
+  delta: Partial<ServerMetadata>,
+): Promise<void> {
   // A hardware report can move the server's tier requirement: re-derive the
   // organization's assignment. Best-effort — a failure here must not reject
   // the hello, and the next session check recomputes again.

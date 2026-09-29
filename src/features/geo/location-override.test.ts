@@ -134,6 +134,52 @@ test('parseLocationPatchInput refuses unknown fields, bad values and empty objec
   assertEquals(parseLocationPatchInput([]).ok, false)
 })
 
+test('parseLocationPatchInput reports which part of the body was refused', () => {
+  const cases: ReadonlyArray<readonly [unknown, unknown]> = [
+    [{ datacenter: 'DFW' }, { ok: false, error: 'Invalid location field: datacenter' }],
+    [
+      { city: 'Austin', bogus: 1 },
+      { ok: false, error: 'Invalid location field: bogus' },
+    ],
+    // Unknown keys are refused before any value is looked at.
+    [
+      { asn: 0, bogus: 1 },
+      { ok: false, error: 'Invalid location field: bogus' },
+    ],
+    [{ asn: 0 }, { ok: false, error: 'Invalid location.asn' }],
+    [{ asn: 'AS0' }, { ok: false, error: 'Invalid location.asn' }],
+    [{ country: 'USA' }, { ok: false, error: 'Invalid location.country' }],
+    [{ city: 42 }, { ok: false, error: 'Invalid location.city' }],
+    [{ regionCode: 'x'.repeat(17) }, { ok: false, error: 'Invalid location.regionCode' }],
+    [{}, { ok: false, error: 'Invalid location' }],
+    ['Austin', { ok: false, error: 'Invalid location' }],
+    [[], { ok: false, error: 'Invalid location' }],
+    [undefined, { ok: false, error: 'Invalid location' }],
+  ]
+  for (const [input, expected] of cases) {
+    assertEquals(parseLocationPatchInput(input), expected, JSON.stringify(input))
+  }
+})
+
+test('parseLocationPatchInput clears a field with null or blank text, whatever its type', () => {
+  assertEquals(parseLocationPatchInput({ asn: null }), { ok: true, value: { asn: null } })
+  assertEquals(parseLocationPatchInput({ asn: '  ' }), { ok: true, value: { asn: null } })
+  assertEquals(parseLocationPatchInput({ city: '   ' }), { ok: true, value: { city: null } })
+  assertEquals(parseLocationPatchInput({ asOrganization: null, country: '' }), {
+    ok: true,
+    value: { asOrganization: null, country: null },
+  })
+  // A clear does not stop later fields from being validated.
+  assertEquals(parseLocationPatchInput({ city: null, country: 'USA' }), {
+    ok: false,
+    error: 'Invalid location.country',
+  })
+  assertEquals(parseLocationPatchInput({ asn: 64512, asOrganization: ' Home lab ' }), {
+    ok: true,
+    value: { asn: 64512, asOrganization: 'Home lab' },
+  })
+})
+
 test('applyLocationPatch merges, clears fields, and resets', () => {
   const previous = { city: 'Austin', asn: 64512 }
   assertEquals(applyLocationPatch(previous, { country: 'US' }), {
