@@ -15,7 +15,7 @@ import {
   PENDING_CHANGES_LEDGER_VERSION,
   readPendingChanges,
 } from './pending-changes.ts'
-import { tryBeginQuantityMutation } from './quantity-lock.ts'
+import { BILLING_QUANTITY_LEASE_MS, tryBeginQuantityMutation } from './quantity-lock.ts'
 
 const test = Deno.test.bind(Deno)
 
@@ -137,5 +137,34 @@ test('a held lease makes the sync yield to the holder without writing', async ()
     { organizationId: ORG, providerSubscriptionId: 'sub_1', pendingUpdate: false },
   )
   assertEquals(outcome, { action: 'skipped', reason: 'lease_held' })
+  assertEquals(await assignments(db), { [SERVER_A]: null, [SERVER_B]: S1 })
+})
+
+test('a lease that lapses between attempts is taken on the retry', async () => {
+  const db = seed({ seats: [{ tierId: S3, quantity: 1 }] })
+  // Held until NOW_MS + 1: the first attempt (at NOW_MS) sees it held, the
+  // second (at NOW_MS + 2) sees it expired, after one delay in between.
+  const lock = await tryBeginQuantityMutation(db, ORG, NOW_MS - BILLING_QUANTITY_LEASE_MS + 1)
+  assertEquals(lock !== null, true)
+  const outcome = await syncEntitlementsForOrganization(
+    { db, client: null, nowMs: NOW_MS, leaseRetry: { attempts: 3, delayMs: 2 } },
+    { organizationId: ORG, providerSubscriptionId: 'sub_1', pendingUpdate: false },
+  )
+  assertEquals(outcome.action, 'synced')
+})
+
+test('a lease that stays held is given up on after the configured attempts', async () => {
+  const db = seed({ seats: [{ tierId: S3, quantity: 1 }] })
+  const lock = await tryBeginQuantityMutation(db, ORG, NOW_MS)
+  assertEquals(lock !== null, true)
+  const started = Date.now()
+  const outcome = await syncEntitlementsForOrganization(
+    { db, client: null, nowMs: NOW_MS, leaseRetry: { attempts: 3, delayMs: 15 } },
+    { organizationId: ORG, providerSubscriptionId: 'sub_1', pendingUpdate: false },
+  )
+  assertEquals(outcome, { action: 'skipped', reason: 'lease_held' })
+  // Two waits between three attempts, none after the last.
+  const elapsed = Date.now() - started
+  assertEquals(elapsed >= 25 && elapsed < 1000, true)
   assertEquals(await assignments(db), { [SERVER_A]: null, [SERVER_B]: S1 })
 })

@@ -20,6 +20,7 @@
  * Workers-bundleable: nothing at module load.
  */
 
+import { forEachSequential } from '../../lib/sequential.ts'
 import { eq } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { logError, logInfo } from '../../lib/logger.ts'
@@ -108,9 +109,9 @@ export async function runReconcile(deps: ReconcileDeps): Promise<ReconcileReport
   const nowMs = deps.nowMs ?? Date.now()
   const organizationIds = deps.organizationIds ?? await listOrganizationIdsWithPayer(deps.db)
   const drift: ReconcileDrift[] = []
-  for (const organizationId of organizationIds) {
+  await forEachSequential(organizationIds, async (organizationId) => {
     const state = await listSeatsForOrganization(deps.db, organizationId)
-    if (!state.subscription || isEndedStatus(state.subscription.status)) continue
+    if (!state.subscription || isEndedStatus(state.subscription.status)) return
     const licenses = await countActiveLicenses(deps.db, organizationId)
     const { ledger } = await readPendingChanges(deps.db, organizationId, state.subscription.providerSubscriptionId)
     const quantities = tierQuantitiesFromState(state)
@@ -125,7 +126,7 @@ export async function runReconcile(deps: ReconcileDeps): Promise<ReconcileReport
       licensesHeld: licenses.active,
       serversUncovered: assignment.uncovered,
     }))
-  }
+  })
   const report: ReconcileReport = {
     ranAt: new Date(nowMs).toISOString(),
     organizations: organizationIds.length,

@@ -6,6 +6,7 @@
  * Hosted only. Self-hosted short-circuits. Throttle lives on
  * `server.metadata.tierNotice` (system-owned bag — never `server.options`).
  */
+import { forEachSequential } from "../../lib/sequential.ts";
 import { and, eq, gt, inArray, isNull, sql } from "drizzle-orm";
 import type { Db } from "../../db/connection.ts";
 import { grant, license, server, setting, tier, user } from "../../db/schema.ts";
@@ -283,7 +284,7 @@ async function notifyOwners(input: {
   consoleUrl: string;
 }): Promise<number> {
   let sent = 0;
-  for (const to of input.emails) {
+  await forEachSequential(input.emails, async (to) => {
     await input.emailQueue.enqueue({
       type: "server-tier-notice",
       to,
@@ -298,7 +299,7 @@ async function notifyOwners(input: {
       consoleUrl: input.consoleUrl,
     });
     sent += 1;
-  }
+  });
   return sent;
 }
 
@@ -407,7 +408,7 @@ export async function sweepTierNotices(
   const nowIso = new Date(nowMs).toISOString();
   let sent = 0;
 
-  for (const row of eligible) {
+  await forEachSequential(eligible, async (row) => {
     sent += await applyTierNoticeForRow({
       db: opts.db,
       emailQueue: opts.emailQueue,
@@ -422,7 +423,7 @@ export async function sweepTierNotices(
       nowMs,
       nowIso,
     });
-  }
+  });
 
   return { considered: eligible.length, sent };
 }

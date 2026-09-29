@@ -35,6 +35,7 @@
  * untouched, which is what makes this additive rather than a migration.
  */
 
+import { forEachSequential } from '../../lib/sequential.ts'
 import { eq, inArray } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import {
@@ -686,7 +687,7 @@ async function pruneOrphanedComposeRows(
   const releasedRows = orphaned.filter((row) =>
     isAdoptedComposeHosting(row.metadata)
   )
-  for (const row of releasedRows) {
+  await forEachSequential(releasedRows, async (row) => {
     await db
       .update(hosting)
       .set({
@@ -694,7 +695,7 @@ async function pruneOrphanedComposeRows(
         updatedAt: new Date().toISOString(),
       })
       .where(eq(hosting.id, row.id))
-  }
+  })
   const released = releasedRows.map((row) => row.id)
 
   const removed = orphaned

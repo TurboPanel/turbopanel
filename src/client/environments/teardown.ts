@@ -17,6 +17,7 @@
  * rows recorded — so a Git-backed service that was removed from the compose
  * before the delete is still named here, rather than orphaned on the host.
  */
+import { mapSequential, forEachSequential } from '../../lib/sequential.ts'
 import { eq } from 'drizzle-orm'
 import type { Context } from 'hono'
 import type { Db } from '../../db/connection.ts'
@@ -141,12 +142,10 @@ export async function planEnvironmentsTeardown(
   db: Db,
   environmentIds: readonly string[],
 ): Promise<EnvironmentTeardownPlan[]> {
-  const plans: EnvironmentTeardownPlan[] = []
-  for (const environmentId of environmentIds) {
-    const plan = await planEnvironmentTeardown(db, environmentId)
-    if (plan) plans.push(plan)
-  }
-  return plans
+  const planned = await mapSequential(environmentIds, (environmentId) =>
+    planEnvironmentTeardown(db, environmentId)
+  )
+  return planned.filter((plan): plan is EnvironmentTeardownPlan => !!plan)
 }
 
 async function enqueueTeardownStop(
@@ -212,12 +211,12 @@ export async function dispatchEnvironmentTeardown(
   actorId: string,
 ): Promise<string[]> {
   const reached = new Set<string>()
-  for (const plan of plans) {
+  await forEachSequential(plans, async (plan) => {
     const serverIds = new Set<string>([
       ...plan.serverIds,
       ...plan.fabricNetworksByServer.keys(),
     ])
-    for (const serverId of serverIds) {
+    await forEachSequential(serverIds, async (serverId) => {
       try {
         await enqueueTeardownStop(db, commandQueue, {
           serverId,
@@ -232,8 +231,8 @@ export async function dispatchEnvironmentTeardown(
           `environment.stop teardown enqueue failed for environment ${plan.environmentId} on server ${serverId}: ${message}`,
         )
       }
-    }
-  }
+    })
+  })
   return [...reached].sort((a, b) => a.localeCompare(b))
 }
 
@@ -267,11 +266,11 @@ export async function reclaimDeletedEnvironmentHosts(
     plans,
     actorId,
   )
-  for (const serverId of serverIds) {
-    await retireHostingIngressIfIdle(db, commandQueue, {
+  await forEachSequential(serverIds, (serverId) =>
+    retireHostingIngressIfIdle(db, commandQueue, {
       serverId,
       actorType: 'user',
       actorId,
     })
-  }
+  )
 }

@@ -1,3 +1,4 @@
+import { forEachSequential } from '../../lib/sequential.ts'
 import { and, eq, inArray } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import {
@@ -253,11 +254,10 @@ export async function reconcilePrincipalsFromCompose(
   )
 
   const principalIdByAlias = new Map<string, string>()
-  for (
-    const alias of [...new Set(aliasByComposeServiceName.values())].sort(
-      (a, b) => a.localeCompare(b),
-    )
-  ) {
+  const aliases = [...new Set(aliasByComposeServiceName.values())].sort((a, b) =>
+    a.localeCompare(b)
+  )
+  await forEachSequential(aliases, async (alias) => {
     const spec = specs[alias]
     const { principalId } = await ensureComposePrincipal(db, {
       organizationId: params.organizationId,
@@ -266,7 +266,7 @@ export async function reconcilePrincipalsFromCompose(
       ...(spec.access === undefined ? {} : { access: spec.access }),
     })
     principalIdByAlias.set(alias, principalId)
-  }
+  })
 
   const edges: { principalId: string; serviceId: string }[] = []
   for (const [composeServiceName, alias] of aliasByComposeServiceName) {

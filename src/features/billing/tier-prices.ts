@@ -11,6 +11,7 @@
  * Workers-bundleable: nothing at module load.
  */
 
+import { forEachSequential } from '../../lib/sequential.ts'
 import type { Db } from '../../db/connection.ts'
 import { logWarn } from '../../lib/logger.ts'
 import {
@@ -82,10 +83,10 @@ export async function priceMapWithIntentTargets(
   const missing = deferredIntentTargets(ledger).filter((tierId) => !out.has(tierId))
   if (missing.length === 0) return out
   const rows = await getTiersByIds(db, missing)
-  for (const [tierId, row] of rows) {
-    if (!row.providerProductId) continue
+  await forEachSequential(rows, async ([tierId, row]) => {
+    if (!row.providerProductId) return
     const product = await gateway.getProduct(row.providerProductId)
     if (product.defaultPrice) out.set(tierId, product.defaultPrice.id)
-  }
+  })
   return out
 }

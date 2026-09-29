@@ -117,7 +117,7 @@ export async function waitForTestClockReady(
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS
   const sleep = opts.sleep ?? defaultSleep
   const deadline = Date.now() + timeoutMs
-  for (;;) {
+  const poll = async (): Promise<TestClock> => {
     const clock = await getTestClock(client, clockId)
     if (clock.status === 'ready') return clock
     if (clock.status === 'internal_failure') {
@@ -135,7 +135,9 @@ export async function waitForTestClockReady(
       })
     }
     await sleep(pollIntervalMs)
+    return await poll()
   }
+  return await poll()
 }
 
 export type AdvanceTestClockInput = Readonly<{

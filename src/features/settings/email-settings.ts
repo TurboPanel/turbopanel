@@ -341,19 +341,20 @@ async function loadEmailSettingDbValues(
   const obj = await loadSystemEmailObject(db)
   const out = new Map<string, string>()
 
-  for (const shortKey of EMAIL_SETTING_SHORT_KEYS) {
-    const stored = obj[shortKey]
-    if (stored === undefined || stored === '') continue
-
-    if (EMAIL_SECRET_KEYS.has(shortKey)) {
+  // Secret values decrypt concurrently (pure crypto, failures already map to
+  // undefined); the map is then filled in key order.
+  const resolved = await Promise.all(
+    EMAIL_SETTING_SHORT_KEYS.map(async (shortKey) => {
+      const stored = obj[shortKey]
+      if (stored === undefined || stored === '') return undefined
+      if (!EMAIL_SECRET_KEYS.has(shortKey)) return [shortKey, stored] as const
       const plaintext = await decryptEmailSecretValue(stored, dataEncryptionSecrets)
-      if (plaintext !== undefined && plaintext !== '') {
-        out.set(fullEmailSettingKey(shortKey), plaintext)
-      }
-      continue
-    }
-
-    out.set(fullEmailSettingKey(shortKey), stored)
+      if (plaintext === undefined || plaintext === '') return undefined
+      return [shortKey, plaintext] as const
+    })
+  )
+  for (const item of resolved) {
+    if (item) out.set(fullEmailSettingKey(item[0]), item[1])
   }
 
   return out

@@ -23,6 +23,7 @@
 
 import type { Db } from '../../db/connection.ts'
 import { logError, logInfo } from '../../lib/logger.ts'
+import { forEachSequential } from '../../lib/sequential.ts'
 import { listGraceExpiredSubscriptions, type SubscriptionRow } from './billing-records.ts'
 import type { StripeClient } from './client.ts'
 import { StripeApiError } from './errors.ts'
@@ -88,9 +89,9 @@ async function cancelGraceExpired(
   rows: readonly SubscriptionRow[],
 ): Promise<GraceClockResult> {
   const result: GraceClockResult = { scanned: rows.length, canceled: [], failed: [] }
-  for (const row of rows) {
+  await forEachSequential(rows, async (row) => {
     const graceExpiresAt = row.graceExpiresAt
-    if (!graceExpiresAt) continue
+    if (!graceExpiresAt) return
     try {
       await cancelSubscription(deps.client, {
         providerSubscriptionId: row.providerSubscriptionId,
@@ -107,7 +108,7 @@ async function cancelGraceExpired(
       if (!alreadyGone) {
         result.failed.push({ providerSubscriptionId: row.providerSubscriptionId, error: String(err) })
         logError(GRACE_CLOCK_LOG_SCOPE, `subscription ${row.providerSubscriptionId}: cancel failed: ${String(err)}`)
-        continue
+        return
       }
     }
     try {
@@ -116,6 +117,6 @@ async function cancelGraceExpired(
       // The next `customer.subscription.deleted` delivery reprojects anyway.
       logError(GRACE_CLOCK_LOG_SCOPE, `subscription ${row.providerSubscriptionId}: reproject failed: ${String(err)}`)
     }
-  }
+  })
   return result
 }

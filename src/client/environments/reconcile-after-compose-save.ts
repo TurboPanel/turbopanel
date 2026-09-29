@@ -1,3 +1,4 @@
+import { forEachSequential } from '../../lib/sequential.ts'
 import { eq } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { environment, project } from '../../db/schema.ts'
@@ -50,9 +51,7 @@ export async function reconcileServicesForProject(
       .select({ id: environment.id })
       .from(environment)
       .where(eq(environment.projectId, projectId))
-    for (const row of rows) {
-      await reconcileServicesForEnvironment(db, row.id)
-    }
+    await forEachSequential(rows, (row) => reconcileServicesForEnvironment(db, row.id))
   } catch {
     // Best-effort side effect of saving compose — never fail the save.
   }

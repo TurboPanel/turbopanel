@@ -252,6 +252,7 @@ import {
   ensureSystemHierarchy,
   SYSTEM_TRAEFIK_COMPOSE_SERVICE_NAME,
 } from "../../features/system/hierarchy.ts";
+import { forEachSequential } from "../../lib/sequential.ts";
 import { loadManagedIngressPorts } from "../../features/managed/load-org-defaults.ts";
 import { DEFAULT_MANAGED_INGRESS_PORTS } from "../../features/managed/ingress-ports.ts";
 
@@ -781,36 +782,37 @@ async function sealVariableMaterialForDaemon(
   }
   const keyId = daemonState.key.id;
 
-  const sealed: EnvironmentDeployVariableMaterial[] = [];
   const recipient = { serverId, keyId };
-  for (const entry of material) {
-    let envelope = entry.valueEnvelope;
-    if (!isDaemonSealedEnvelope(envelope)) {
-      if (isSealedEnvelope(envelope)) {
-        envelope = await resealSecretForDaemon(
-          secretsConfig,
-          dataEncryptionSecrets,
-          recipient,
-          envelope,
-        );
-      } else {
-        envelope = await encryptSecretForDaemon(
-          secretsConfig,
-          recipient,
-          envelope,
-        );
+  // Pure crypto per entry (no DB, no shared state): seal them concurrently.
+  return await Promise.all(
+    material.map(async (entry) => {
+      let envelope = entry.valueEnvelope;
+      if (!isDaemonSealedEnvelope(envelope)) {
+        if (isSealedEnvelope(envelope)) {
+          envelope = await resealSecretForDaemon(
+            secretsConfig,
+            dataEncryptionSecrets,
+            recipient,
+            envelope,
+          );
+        } else {
+          envelope = await encryptSecretForDaemon(
+            secretsConfig,
+            recipient,
+            envelope,
+          );
+        }
       }
-    }
-    sealed.push({
-      key: entry.key,
-      composeServiceName: entry.composeServiceName,
-      forBuild: entry.forBuild,
-      forRuntime: entry.forRuntime,
-      isLiteral: entry.isLiteral,
-      valueEnvelope: envelope,
-    });
-  }
-  return sealed;
+      return {
+        key: entry.key,
+        composeServiceName: entry.composeServiceName,
+        forBuild: entry.forBuild,
+        forRuntime: entry.forRuntime,
+        isLiteral: entry.isLiteral,
+        valueEnvelope: envelope,
+      };
+    }),
+  );
 }
 
 function readPinnedDockerVolumeName(metadata: unknown): string | null {
@@ -1182,23 +1184,24 @@ async function sealStorageMaterialForDaemon(
   }
   const keyId = daemonState.key.id;
 
-  const sealed: EnvironmentDeployStorageMaterial[] = [];
-  for (const entry of material) {
-    let contentEnvelope = entry.contentEnvelope;
-    if (contentEnvelope?.startsWith(`${ENVELOPE_MAGIC}.`)) {
-      contentEnvelope = await resealSecretForDaemon(
-        secretsConfig,
-        dataEncryptionSecrets,
-        { serverId, keyId },
-        contentEnvelope,
-      );
-    }
-    sealed.push({
-      ...entry,
-      ...(contentEnvelope ? { contentEnvelope } : {}),
-    });
-  }
-  return sealed;
+  // Pure crypto per entry (no DB, no shared state): reseal them concurrently.
+  return await Promise.all(
+    material.map(async (entry) => {
+      let contentEnvelope = entry.contentEnvelope;
+      if (contentEnvelope?.startsWith(`${ENVELOPE_MAGIC}.`)) {
+        contentEnvelope = await resealSecretForDaemon(
+          secretsConfig,
+          dataEncryptionSecrets,
+          { serverId, keyId },
+          contentEnvelope,
+        );
+      }
+      return {
+        ...entry,
+        ...(contentEnvelope ? { contentEnvelope } : {}),
+      };
+    }),
+  );
 }
 
 export async function loadPrincipalMaterial(
@@ -1338,23 +1341,25 @@ async function mapResolvedVariablesToDeployEntries(
   map: ResolvedVariableMap,
   dataEncryptionSecrets: Parameters<typeof decryptSecret>[0] | undefined,
 ): Promise<DeployVariableEntry[]> {
-  const entries: DeployVariableEntry[] = [];
-  for (const [key, entry] of map) {
-    let value = entry.value;
-    if (entry.isSecret && dataEncryptionSecrets) {
-      value = await decryptSecret(dataEncryptionSecrets, entry.value);
-    }
-    entries.push({
-      key,
-      value,
-      isSecret: entry.isSecret,
-      isLiteral: entry.isLiteral,
-      forBuild: entry.forBuild,
-      forRuntime: entry.forRuntime,
-      ...(entry.bindingId ? { bindingId: entry.bindingId } : {}),
-    });
-  }
-  return entries;
+  // Pure crypto per entry (no DB, no shared state): decrypt concurrently;
+  // Promise.all keeps the map's iteration order.
+  return await Promise.all(
+    [...map].map(async ([key, entry]) => {
+      let value = entry.value;
+      if (entry.isSecret && dataEncryptionSecrets) {
+        value = await decryptSecret(dataEncryptionSecrets, entry.value);
+      }
+      return {
+        key,
+        value,
+        isSecret: entry.isSecret,
+        isLiteral: entry.isLiteral,
+        forBuild: entry.forBuild,
+        forRuntime: entry.forRuntime,
+        ...(entry.bindingId ? { bindingId: entry.bindingId } : {}),
+      };
+    }),
+  );
 }
 
 type ServiceRow = {
@@ -1416,7 +1421,7 @@ async function resolveDeployVariableBuckets(
   const userEntriesByServiceId = new Map<string, DeployVariableEntry[]>();
   const scopesByServiceId = new Map<string, VariableScopeEntryMap>();
 
-  for (const composeServiceName of composeServices) {
+  await forEachSequential(composeServices, async (composeServiceName) => {
     const row = params.serviceRowByComposeName.get(composeServiceName);
     let userEntries: DeployVariableEntry[];
     let scopes: VariableScopeEntryMap;
@@ -1460,7 +1465,7 @@ async function resolveDeployVariableBuckets(
     }
     perServiceEntries.set(composeServiceName, userEntries);
     perServiceScopes.set(composeServiceName, scopes);
-  }
+  });
   return { globalEntries, perServiceEntries, perServiceScopes };
 }
 
@@ -1471,12 +1476,21 @@ async function mapResolvedScopesToDeployEntries(
   >[1],
 ): Promise<VariableScopeEntryMap> {
   const out: VariableScopeEntryMap = {};
-  for (const [scope, map] of Object.entries(scopes)) {
-    if (!map) continue;
-    const entries = await mapResolvedVariablesToDeployEntries(
-      map,
-      dataEncryptionSecrets,
-    );
+  // Pure crypto per scope (no DB, no shared state): decrypt scopes
+  // concurrently, then fill `out` in scope order.
+  const decrypted = await Promise.all(
+    Object.entries(scopes).map(async ([scope, map]) => {
+      if (!map) return undefined;
+      const entries = await mapResolvedVariablesToDeployEntries(
+        map,
+        dataEncryptionSecrets,
+      );
+      return [scope, entries] as const;
+    }),
+  );
+  for (const item of decrypted) {
+    if (!item) continue;
+    const [scope, entries] = item;
     out[scope as keyof VariableScopeEntryMap] = new Map(
       entries.map((entry) => [entry.key, entry]),
     );
@@ -2008,11 +2022,11 @@ async function allocateExpandDeployPipeline(
   );
   const ingressServices: EnvironmentDeployIngressService[] = [];
   const ingressKeepIds = new Set<string>();
-  for (const svc of tcpUdpServices) {
+  await forEachSequential(tcpUdpServices, async (svc) => {
     if (
       !ownsIngressForService(params.schedule, svc.serviceId, params.serverId)
     ) {
-      continue;
+      return;
     }
     const alloc = await ensureServiceIngressContainerAllocation(db, {
       serviceId: svc.serviceId,
@@ -2025,7 +2039,7 @@ async function allocateExpandDeployPipeline(
       composeServiceName: alloc.composeServiceName,
       containerName: alloc.containerName,
     });
-  }
+  });
 
   const containers = await allocateEnvironmentContainers(db, {
     environmentId: params.environmentId,

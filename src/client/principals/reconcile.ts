@@ -14,6 +14,7 @@
  * everyone else's key files.
  */
 
+import { forEachSequential } from '../../lib/sequential.ts'
 import { and, eq, inArray, isNotNull } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { environment, principal, project } from '../../db/schema.ts'
@@ -89,7 +90,7 @@ export async function enqueuePrincipalsReconcile(
   const failed: string[] = []
   if (!queue) return { queuedServerIds: queued, failedServerIds: [...serverIds] }
 
-  for (const serverId of serverIds) {
+  await forEachSequential(serverIds, async (serverId) => {
     try {
       const principalIds = await principalIdsOnServer(db, serverId)
       const principals = await loadPrincipalMaterial(db, principalIds)
@@ -122,7 +123,7 @@ export async function enqueuePrincipalsReconcile(
     } catch {
       failed.push(serverId)
     }
-  }
+  })
   return { queuedServerIds: queued, failedServerIds: failed }
 }
 

@@ -1,3 +1,8 @@
+import {
+  firstSequential,
+  forEachSequential,
+  mapSequential,
+} from "../../lib/sequential.ts";
 import { eq, inArray } from "drizzle-orm";
 import type { Context, Hono } from "hono";
 import type { AppEnv } from "../../app/app.ts";
@@ -339,13 +344,13 @@ async function listenerNamesForAttachments(
 ): Promise<Map<string, string>> {
   const names = new Map<string, string>();
   const uniqueIds = [...new Set(attachments.map((row) => row.serverId))];
-  for (const serverId of uniqueIds) {
+  await forEachSequential(uniqueIds, async (serverId) => {
     const hierarchy = await ensureManagedIngressHierarchy(db, {
       organizationId,
       serverId,
     });
     names.set(serverId, hierarchy.containerName);
-  }
+  });
   return names;
 }
 
@@ -862,10 +867,11 @@ async function persistDeployFanOut(
       slots: params.slots,
     });
 
-    const created: CreatedDeployCommand[] = [];
-    for (const row of params.preparedByServer) {
-      created.push(
-        await createDeployCommand(
+    // One transaction connection: the writes must stay ordered.
+    const created = await mapSequential(
+      params.preparedByServer,
+      (row): Promise<CreatedDeployCommand> =>
+        createDeployCommand(
           tx,
           createParamsForPreparedServer(row, {
             actorType: params.actorType,
@@ -880,8 +886,7 @@ async function persistDeployFanOut(
             selection: params.selection,
           }),
         ),
-      );
-    }
+    );
 
     await upsertDeploymentTargets(tx, {
       environmentId: params.environmentId,
@@ -913,7 +918,7 @@ async function deliverDeployFanOut(
 ): Promise<{ queued: QueuedCommandRef[]; enqueueError: Response | null }> {
   const queued: QueuedCommandRef[] = [];
   let enqueueError: Response | null = null;
-  for (const ref of params.created) {
+  await forEachSequential(params.created, async (ref) => {
     const delivered = await deliverDeployCommand(db, commandQueue, {
       commandId: ref.commandId,
       serverId: ref.serverId,
@@ -922,10 +927,10 @@ async function deliverDeployFanOut(
     });
     if (delivered instanceof Response) {
       enqueueError ??= delivered;
-      continue;
+      return;
     }
     queued.push(delivered);
-  }
+  });
   return { queued, enqueueError };
 }
 
@@ -1508,26 +1513,32 @@ async function stopDrainedDeployments(
     db,
     params.environmentId,
   );
-  for (const serverId of params.drainedIds) {
-    const stopped = await enqueueStopCommand(db, commandQueue, {
-      serverId,
-      actorType: params.actorType,
-      actorId: params.actorId,
-      environmentId: params.environmentId,
-      projectId: params.projectId,
-      projectName: params.projectName,
-      ingressServices,
-      fabricNetworks: namesByServer.get(serverId) ?? [],
-      siteReleases,
-    });
-    if (stopped instanceof Response) return stopped;
-    if (!params.attachmentServers.has(serverId)) {
-      await releaseSubnetsForServer(db, {
-        environmentId: params.environmentId,
+  // Stop at the first failed enqueue: later servers are not touched.
+  const failed = await firstSequential(
+    params.drainedIds,
+    async (serverId): Promise<Response | undefined> => {
+      const stopped = await enqueueStopCommand(db, commandQueue, {
         serverId,
+        actorType: params.actorType,
+        actorId: params.actorId,
+        environmentId: params.environmentId,
+        projectId: params.projectId,
+        projectName: params.projectName,
+        ingressServices,
+        fabricNetworks: namesByServer.get(serverId) ?? [],
+        siteReleases,
       });
-    }
-  }
+      if (stopped instanceof Response) return stopped;
+      if (!params.attachmentServers.has(serverId)) {
+        await releaseSubnetsForServer(db, {
+          environmentId: params.environmentId,
+          serverId,
+        });
+      }
+      return undefined;
+    },
+  );
+  if (failed) return failed;
   await pruneDrainedDeployments(db, {
     environmentId: params.environmentId,
     serverIds: params.drainedIds,
@@ -1546,12 +1557,12 @@ async function releaseOrphanedComposeNetworks(
   );
   const leftoverByServer = composeNetworkNamesByServer(leftoverNetworks);
   const releasedListeners: string[] = [];
-  for (const serverId of leftoverByServer.keys()) {
+  await forEachSequential(leftoverByServer.keys(), async (serverId) => {
     if (!participating.has(serverId)) {
       await releaseSubnetsForServer(db, { environmentId, serverId });
       releasedListeners.push(serverId);
     }
-  }
+  });
   return releasedListeners;
 }
 
@@ -1628,15 +1639,17 @@ async function enqueueIngressReconcileAfterDeploy(
     listenerNames: params.listenerNames,
     releasedListeners: params.releasedListeners,
   });
-  for (const serverId of ingressServerIds) {
-    await enqueueManagedIngressReconcile(db, commandQueue, {
-      serverId,
-      actorType: params.auth.actorType,
-      actorId: params.auth.actorId,
-      secretsConfig,
-      dataEncryptionSecrets: params.dataEncryptionSecrets,
-    });
-  }
+  await forEachSequential(
+    ingressServerIds,
+    (serverId) =>
+      enqueueManagedIngressReconcile(db, commandQueue, {
+        serverId,
+        actorType: params.auth.actorType,
+        actorId: params.auth.actorId,
+        secretsConfig,
+        dataEncryptionSecrets: params.dataEncryptionSecrets,
+      }),
+  );
 }
 
 async function loadDeploySpanningContext(
@@ -2068,15 +2081,17 @@ export function registerEnvironmentStopRoutes(
         ...loaded.serverIds,
         ...namesByServer.keys(),
       ]);
-      for (const serverId of ingressServerIds) {
-        await enqueueManagedIngressReconcile(db, commandQueue, {
-          serverId,
-          actorType: "user",
-          actorId: auth.userId,
-          secretsConfig,
-          dataEncryptionSecrets,
-        });
-      }
+      await forEachSequential(
+        ingressServerIds,
+        (serverId) =>
+          enqueueManagedIngressReconcile(db, commandQueue, {
+            serverId,
+            actorType: "user",
+            actorId: auth.userId,
+            secretsConfig,
+            dataEncryptionSecrets,
+          }),
+      );
     }
     return Response.json(queuedCommandsResponseBody(queued));
   });

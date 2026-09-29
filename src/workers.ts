@@ -1,3 +1,4 @@
+import { forEachSequential } from "./lib/sequential.ts";
 import { Hono } from "hono";
 import type { DaemonJwtKeyring } from "./daemon/authn/daemon-jwt-keyring.ts";
 import { deriveDaemonJwtKeyring } from "./daemon/authn/daemon-jwt-keyring.ts";
@@ -503,7 +504,7 @@ export default {
       const registry = cachedDaemonCellRegistryFactory(env, db);
 
       try {
-        for (const msg of batch.messages) {
+        await forEachSequential(batch.messages, async (msg) => {
           try {
             const envelope = parseCommandEnvelope(msg.body);
             await processCommandEnvelope(db, registry, envelope, {
@@ -525,7 +526,7 @@ export default {
               msg.ack();
             }
           }
-        }
+        });
       } catch {
         batch.retryAll();
       }

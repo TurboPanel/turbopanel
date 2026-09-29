@@ -1,3 +1,4 @@
+import { forEachSequential } from "../lib/sequential.ts";
 import { and, eq } from "drizzle-orm";
 import type { Context } from "hono";
 import {
@@ -179,7 +180,7 @@ export async function buildDeploymentSecretsRehydrate(
   }
 
   const results: RehydrateDeploymentResult[] = [];
-  for (const item of requested) {
+  await forEachSequential(requested, async (item) => {
     const result = await rehydrateOneDeployment(
       db,
       item,
@@ -189,7 +190,7 @@ export async function buildDeploymentSecretsRehydrate(
       secretsConfig,
     );
     if (result) results.push(result);
-  }
+  });
 
   return { deployments: results };
 }
@@ -206,7 +207,7 @@ async function collectRehydrateVariableMaterial(
   const variableMaterial: EnvironmentDeployVariableMaterial[] = [];
   const maps = new Map<string, ResolvedVariableMap>();
 
-  for (const plan of secretPlan) {
+  await forEachSequential(secretPlan, async (plan) => {
     let varMap = maps.get(plan.composeServiceName);
     if (!varMap) {
       varMap = await resolveServiceVariableMap(
@@ -218,7 +219,7 @@ async function collectRehydrateVariableMaterial(
       maps.set(plan.composeServiceName, varMap);
     }
     const entry = varMap.get(plan.key);
-    if (!entry?.isSecret) continue;
+    if (!entry?.isSecret) return;
     requireAtRestSecretEnvelope(plan.key, entry.value);
     const valueEnvelope = await resealSecretForDaemon(
       secretsConfig,
@@ -234,7 +235,7 @@ async function collectRehydrateVariableMaterial(
       isLiteral: entry.isLiteral,
       valueEnvelope,
     });
-  }
+  });
   return variableMaterial;
 }
 

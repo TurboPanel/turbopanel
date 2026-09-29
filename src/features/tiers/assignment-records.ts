@@ -19,6 +19,7 @@
  * Workers-bundleable: nothing at module load.
  */
 
+import { forEachSequential } from '../../lib/sequential.ts'
 import { and, eq, inArray, isNull } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import {
@@ -131,15 +132,15 @@ export async function recomputeOrganizationAssignments(
   const assignment = computeAssignment(tierQuantitiesFromState(state), servers)
   const now = opts.now ?? new Date().toISOString()
   const changed: string[] = []
-  for (const row of servers) {
+  await forEachSequential(servers, async (row) => {
     const next = assignment.byServer.get(row.serverId) ?? null
-    if (next === row.assignedTierId) continue
+    if (next === row.assignedTierId) return
     await db
       .update(server)
       .set({ assignedTierId: next, updatedAt: now })
       .where(eq(server.id, row.serverId))
     changed.push(row.serverId)
-  }
+  })
   return { assignment, changed, uncovered: assignment.uncovered }
 }
 

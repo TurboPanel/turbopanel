@@ -47,12 +47,18 @@ async function mergeRuntimeVariablesIntoEnv(
   varMap: ResolvedVariableMap,
   dataEncryptionSecrets: DerivedSecretsConfig,
 ): Promise<void> {
-  for (const [key, entry] of varMap) {
-    if (!entry.forRuntime || !HOSTING_WEB_ENV_KEY_RE.test(key)) continue
-    let value = entry.value
-    if (entry.isSecret) {
-      value = await decryptSecret(dataEncryptionSecrets, entry.value)
-    }
+  // Pure crypto per entry: decrypt concurrently, then merge in map order.
+  const resolved = await Promise.all(
+    [...varMap]
+      .filter(([key, entry]) => entry.forRuntime && HOSTING_WEB_ENV_KEY_RE.test(key))
+      .map(async ([key, entry]) => {
+        const value = entry.isSecret
+          ? await decryptSecret(dataEncryptionSecrets, entry.value)
+          : entry.value
+        return [key, value] as const
+      })
+  )
+  for (const [key, value] of resolved) {
     if (!isUsableWebEnvValue(value)) continue
     env[key] = value.trim()
   }

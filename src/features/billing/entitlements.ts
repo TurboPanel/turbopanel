@@ -75,14 +75,17 @@ async function acquireLeaseWithRetry(
   nowMs: number,
   retry: Readonly<{ attempts: number; delayMs: number }>,
 ): Promise<BillingQuantityLock | null> {
-  for (let attempt = 0; attempt < Math.max(1, retry.attempts); attempt += 1) {
+  const attempts = Math.max(1, retry.attempts)
+  const tryFrom = async (attempt: number): Promise<BillingQuantityLock | null> => {
+    if (attempt >= attempts) return null
     const lock = await tryBeginQuantityMutation(db, organizationId, nowMs + attempt * retry.delayMs)
     if (lock) return lock
     if (attempt + 1 < retry.attempts) {
       await new Promise((resolve) => setTimeout(resolve, retry.delayMs))
     }
+    return await tryFrom(attempt + 1)
   }
-  return null
+  return await tryFrom(0)
 }
 
 export type EntitlementSyncInput = Readonly<{
