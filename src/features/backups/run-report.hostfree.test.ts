@@ -63,11 +63,25 @@ function failed(overrides: Partial<BackupRunReportMessage> = {}): BackupRunRepor
   }
 }
 
+const COPY_ID = '0192a3b4-c5d6-7e8f-9a0b-dddddddddddd'
+
 const MANAGED_ON_A: BackupPolicyTarget = {
   targetKind: 'managed',
   managedId: MANAGED_ID,
   managedServerId: SERVER_A,
+  copyId: null,
+  copyServerId: null,
 }
+
+const COPY_ON_A: BackupPolicyTarget = {
+  targetKind: 'copy',
+  managedId: null,
+  managedServerId: null,
+  copyId: COPY_ID,
+  copyServerId: SERVER_A,
+}
+
+const COPY_PATH = `/backup/copies/${COPY_ID}/policy-${POLICY_ID}/${BACKUP_ID}.tar.gz`
 
 function fakeStore(target: BackupPolicyTarget | undefined): {
   store: BackupRunReportStore
@@ -104,7 +118,7 @@ test('a succeeded run from the engine’s own server is recorded with its artifa
   assertEquals(recorded.length, 1)
   assertEquals(recorded[0], {
     policyId: POLICY_ID,
-    managedId: MANAGED_ID,
+    target: { kind: 'managed', managedId: MANAGED_ID },
     serverId: SERVER_A,
     runId: 'run_1',
     startedAt: '2026-09-30T03:00:00.000Z',
@@ -137,14 +151,68 @@ test('an unknown policy is refused and nothing is written', async () => {
   assertEquals(recorded.length, 0)
 })
 
-test('a storage-copy policy is refused until copy targets are supported', async () => {
+test('a policy with no target left is refused', async () => {
   const { outcome, recorded } = await outcomeOf(succeeded(), {
     targetKind: 'copy',
     managedId: null,
     managedServerId: null,
+    copyId: null,
+    copyServerId: null,
   })
-  assertEquals(outcome, { ok: false, error: 'storage-copy backups are not accepted yet' })
+  assertEquals(outcome, { ok: false, error: 'the policy has no target' })
   assertEquals(recorded.length, 0)
+})
+
+test('a storage-copy run from the copy’s own server is recorded against that copy', async () => {
+  const { outcome, recorded } = await outcomeOf(
+    succeeded({ path: COPY_PATH, pruned: ['bk_old1'] }),
+    COPY_ON_A
+  )
+  assertEquals(outcome, { ok: true })
+  assertEquals(recorded[0]?.target, { kind: 'copy', copyId: COPY_ID })
+  assertEquals(recorded[0]?.artifact?.path, COPY_PATH)
+  assertEquals(recorded[0]?.pruned, ['bk_old1'])
+})
+
+test('a storage-copy report from another server, or a copy with none, is refused', async () => {
+  const other = await outcomeOf(succeeded({ path: COPY_PATH }), COPY_ON_A, SERVER_B)
+  assertEquals(other.outcome, {
+    ok: false,
+    error: 'the policy targets a storage copy placed on another server',
+  })
+  assertEquals(other.recorded.length, 0)
+  const unplaced = await outcomeOf(succeeded({ path: COPY_PATH }), {
+    ...COPY_ON_A,
+    copyServerId: null,
+  })
+  assertEquals(unplaced.outcome.ok, false)
+  assertEquals(unplaced.recorded.length, 0)
+})
+
+test('a storage-copy artifact must sit in this policy’s own copy directory as .tar.gz', async () => {
+  const otherCopy = '0192a3b4-c5d6-7e8f-9a0b-eeeeeeeeeeee'
+  const otherPolicy = '0192a3b4-c5d6-7e8f-9a0b-cccccccccccc'
+  const cases: [string, string][] = [
+    [`/backup/copies/${otherCopy}/policy-${POLICY_ID}/${BACKUP_ID}.tar.gz`, 'outside'],
+    [`/backup/copies/${COPY_ID}/policy-${otherPolicy}/${BACKUP_ID}.tar.gz`, 'outside'],
+    [`/backup/copies/${COPY_ID}/${BACKUP_ID}.tar.gz`, 'outside'],
+    // The engine layout for a copy's id is not the copy layout.
+    [`/backup/${COPY_ID}/policy-${POLICY_ID}/${BACKUP_ID}.tar.gz`, 'outside'],
+    [`/backup/copies/${COPY_ID}/policy-${POLICY_ID}/${BACKUP_ID}.dump`, 'extension'],
+    [`/backup/copies/${COPY_ID}/policy-${POLICY_ID}/${BACKUP_ID}.tar`, 'extension'],
+  ]
+  await forEachSequential(cases, async ([path, fragment]) => {
+    const { outcome, recorded } = await outcomeOf(succeeded({ path }), COPY_ON_A)
+    assert(!outcome.ok && outcome.error.includes(fragment), `${path}: ${JSON.stringify(outcome)}`)
+    assertEquals(recorded.length, 0)
+  })
+})
+
+test('a managed report whose path is laid out like a copy’s is refused', async () => {
+  const { outcome } = await outcomeOf(
+    succeeded({ path: `/backup/copies/${MANAGED_ID}/policy-${POLICY_ID}/${BACKUP_ID}.tar.gz` })
+  )
+  assertEquals(outcome.ok, false)
 })
 
 test('a report from a server other than the engine’s placement is refused', async () => {

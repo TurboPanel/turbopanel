@@ -18,6 +18,10 @@ import {
 } from '../shared.ts'
 import { serializeCopy, serializeMount, serializeStorage } from './serialize.ts'
 import {
+  captureCopyBackupHosts,
+  reconcileBackupsAfterCopyChange,
+} from '../../features/backups/reconcile.ts'
+import {
   buildStorageUpdateFields,
   dockerVolumeMetadataWithId,
   isStorageContentTooLarge,
@@ -143,7 +147,7 @@ function parentInsertValues(parent: StorageParentRef): {
   }
 }
 
-async function resolveStorageSessionContext(
+export async function resolveStorageSessionContext(
   c: Context<AppEnv>
 ): Promise<StorageSessionContext | Response> {
   const db = getDb(c)
@@ -156,6 +160,25 @@ async function resolveStorageSessionContext(
   if (orgId instanceof Response) return orgId
 
   return { db, orgId }
+}
+
+/**
+ * After a write to storage copies: push a fresh backup set to every host
+ * captured before it, and to the new host of any copy in `copyIds` that moved.
+ * Best-effort, never throws — the write already succeeded.
+ */
+async function repushCopyBackups(
+  c: Context<AppEnv>,
+  db: StorageDb,
+  copyIds: readonly string[],
+  previousServerIds: readonly string[]
+): Promise<void> {
+  const session = c.get('session')
+  await reconcileBackupsAfterCopyChange(db, c.get('commandQueue'), {
+    copyIds,
+    previousServerIds,
+    actor: { actorType: 'user', actorId: session?.userId ?? 'unknown' },
+  })
 }
 
 async function authorizeStorageMutation(
@@ -442,7 +465,7 @@ async function patchStorageRecord(
   return c.json({ ok: true as const })
 }
 
-async function requireStorageForNested(
+export async function requireStorageForNested(
   c: Context<AppEnv>,
   db: StorageDb,
   orgId: string,
@@ -611,7 +634,13 @@ export function registerStorageRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
 
-    return patchStorageRecord(c, ctx.db, id, existing!, body)
+    // A new principal or pinned volume name moves where a copy's bytes live.
+    const backupHosts = await captureCopyBackupHosts(ctx.db, c.get('commandQueue'), {
+      storageId: id,
+    })
+    const response = await patchStorageRecord(c, ctx.db, id, existing!, body)
+    if (response.ok) await repushCopyBackups(c, ctx.db, [], backupHosts)
+    return response
   })
 
   router.delete('/storage/:id', async (c) => {
@@ -624,7 +653,11 @@ export function registerStorageRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const authorized = await authorizeStorageMutation(c, existing, ctx.orgId)
     if (authorized instanceof Response) return authorized
 
+    const backupHosts = await captureCopyBackupHosts(ctx.db, c.get('commandQueue'), {
+      storageId: id,
+    })
     await ctx.db.delete(storage).where(eq(storage.id, id))
+    await repushCopyBackups(c, ctx.db, [], backupHosts)
     return c.json({ ok: true as const })
   })
 
@@ -701,12 +734,18 @@ export function registerStorageRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       if (serverError) return serverError
     }
 
+    // A move, a new path or provider changes which host runs the copy's
+    // backup timers, and what they read.
+    const backupHosts = await captureCopyBackupHosts(ctx.db, c.get('commandQueue'), {
+      copyIds: [copyId],
+    })
     try {
       await ctx.db.update(storageCopy).set(updateFields).where(eq(storageCopy.id, copyId))
-      return c.json({ ok: true as const })
     } catch (err) {
       return uniqueViolationResponse(c, err)
     }
+    await repushCopyBackups(c, ctx.db, [copyId], backupHosts)
+    return c.json({ ok: true as const })
   })
 
   router.delete('/storage/:id/copies/:copyId', async (c) => {
@@ -717,11 +756,16 @@ export function registerStorageRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const row = await requireStorageForNested(c, ctx.db, ctx.orgId, storageId, 'manage')
     if (row instanceof Response) return row
 
+    const backupHosts = await captureCopyBackupHosts(ctx.db, c.get('commandQueue'), {
+      copyIds: [copyId],
+    })
     const deleted = await ctx.db
       .delete(storageCopy)
       .where(and(eq(storageCopy.id, copyId), eq(storageCopy.storageId, storageId)))
       .returning({ id: storageCopy.id })
     if (deleted.length === 0) return c.json({ error: 'Not found' }, 404)
+    // Its policies cascaded away; the host drops their timers.
+    await repushCopyBackups(c, ctx.db, [], backupHosts)
     return c.json({ ok: true as const })
   })
 

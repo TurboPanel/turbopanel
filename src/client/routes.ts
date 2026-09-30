@@ -34,6 +34,7 @@ import {
   registerServerLimitsRoutes,
 } from './principals/routes.ts'
 import { registerStorageRoutes } from './storage/routes.ts'
+import { registerStorageBackupRoutes } from './storage/backup-routes.ts'
 import { registerRepositoryRoutes } from './repositories/routes.ts'
 import { registerForgeRoutes } from './forges/routes.ts'
 import { registerNetworkRoutes } from './networks/routes.ts'
@@ -129,6 +130,7 @@ export function registerClientRoutes(app: Hono<AppEnv>, opts: ClientRouteOpts) {
   registerContainerRoutes(client, opts)
   registerDockerRunRoutes(client, opts)
   registerStorageRoutes(client, opts)
+  registerStorageBackupRoutes(client, opts)
   registerRepositoryRoutes(client, opts)
   registerForgeRoutes(client, opts)
   registerProjectPrincipalRoutes(client, opts)

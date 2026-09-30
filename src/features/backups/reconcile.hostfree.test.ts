@@ -6,16 +6,19 @@
 
 import { assertEquals, assertRejects } from '@std/assert'
 import type { Db } from '../../db/connection.ts'
-import { retention, command, dispatch, managed } from '../../db/schema.ts'
+import { retention, command, dispatch, managed, storageCopy } from '../../db/schema.ts'
 import type { CommandEnvelope } from '../commands/envelope.ts'
 import type { CommandQueue } from '../commands/queue.ts'
 import { createNoopCommandQueue } from '../commands/noop-command-queue.ts'
 import {
   buildBackupPolicySetForServer,
+  captureCopyBackupHosts,
   captureManagedBackupHost,
   enqueueBackupsReconcile,
+  reconcileBackupsAfterCopyChange,
   reconcileBackupsAfterManagedMove,
 } from './reconcile.ts'
+import type { CopyTargetRow } from './copy-targets.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -60,14 +63,59 @@ function chain(rows: unknown[]): Record<string, unknown> {
     catch: promise.catch.bind(promise),
     finally: promise.finally.bind(promise),
   }
-  for (const method of ['where', 'limit', 'orderBy', 'innerJoin', 'set', 'values', 'returning']) {
+  for (const method of [
+    'where',
+    'limit',
+    'orderBy',
+    'innerJoin',
+    'leftJoin',
+    'set',
+    'values',
+    'returning',
+  ]) {
     next[method] = () => chain(rows)
   }
   return next
 }
 
+type CopyPolicyRow = CopyTargetRow & {
+  id: string
+  schedule: string
+  timezone: string | null
+  retentionKeep: number
+  isEnabled: boolean
+}
+
+const COPY_ID = '0192d6a0-0000-7000-8000-0000000000c1'
+const STORAGE_ID = '0192d6a0-0000-7000-8000-0000000000d1'
+const ORG_ID = '0192d6a0-0000-7000-8000-0000000000f1'
+
+function copyPolicyRow(overrides: Partial<CopyPolicyRow> = {}): CopyPolicyRow {
+  return {
+    id: '0192d6a0-0000-7000-8000-0000000000b1',
+    copyId: COPY_ID,
+    serverId: SERVER_A,
+    provider: 'docker',
+    copyPath: null,
+    copyOptions: { managed: true },
+    storageId: STORAGE_ID,
+    organizationId: ORG_ID,
+    storageKind: 'volume',
+    storageMetadata: null,
+    principalUsername: null,
+    schedule: '0 * * * *',
+    timezone: null,
+    retentionKeep: 24,
+    isEnabled: true,
+    ...overrides,
+  }
+}
+
 type FakeState = {
   policyRows: PolicyRow[]
+  copyPolicyRows: CopyPolicyRow[]
+  /** `copy.server_id` of copies with a policy, consumed in order (the last one repeats). */
+  copyHostAnswers: string[][]
   hasPolicy: boolean
   /** `managed.server_id` answers, consumed in order (the last one repeats). */
   managedServerIds: Array<string | null>
@@ -78,6 +126,8 @@ type FakeState = {
 function fakeDb(state: Partial<FakeState> = {}): { db: Db; state: FakeState } {
   const full: FakeState = {
     policyRows: state.policyRows ?? [],
+    copyPolicyRows: state.copyPolicyRows ?? [],
+    copyHostAnswers: state.copyHostAnswers ?? [[]],
     hasPolicy: state.hasPolicy ?? true,
     managedServerIds: state.managedServerIds ?? [SERVER_A],
     dispatchPayloads: [],
@@ -89,13 +139,23 @@ function fakeDb(state: Partial<FakeState> = {}): { db: Db; state: FakeState } {
       ? (full.managedServerIds.shift() ?? null)
       : (full.managedServerIds[0] ?? null)
 
+  const nextCopyHosts = (): string[] =>
+    full.copyHostAnswers.length > 1
+      ? (full.copyHostAnswers.shift() ?? [])
+      : (full.copyHostAnswers[0] ?? [])
+
   const db = {
+    selectDistinct: () => ({
+      from: () => chain(nextCopyHosts().map((serverId) => ({ serverId }))),
+    }),
     select: () => ({
       from: (table: unknown) => {
         if (table === retention) {
-          // The policy set joins `managed`; the existence check does not.
+          // The managed set joins `managed`, the copy set joins `copy`; the
+          // existence check joins nothing.
           const base = chain(full.hasPolicy ? [{ id: 'p' }] : [])
-          base.innerJoin = () => chain(full.policyRows)
+          base.innerJoin = (joined: unknown) =>
+            chain(joined === storageCopy ? full.copyPolicyRows : full.policyRows)
           return base
         }
         if (table === managed) return chain([{ serverId: nextServerId() }])
@@ -284,4 +344,107 @@ test('a move reconciles both hosts; an unchanged pin reconciles none', async () 
     actorId: SERVER_A,
   })
   assertEquals(quiet.envelopes.length, 0)
+})
+
+test('copy policies join the set with where their bytes live', async () => {
+  const { db } = fakeDb({
+    copyPolicyRows: [
+      copyPolicyRow(),
+      copyPolicyRow({
+        id: '0192d6a0-0000-7000-8000-0000000000b2',
+        provider: 'path',
+        storageKind: 'directory',
+        principalUsername: 'acme',
+        isEnabled: false,
+      }),
+      copyPolicyRow({
+        id: '0192d6a0-0000-7000-8000-0000000000b3',
+        provider: 'path',
+        storageKind: 'directory',
+      }),
+    ],
+  })
+  const set = await buildBackupPolicySetForServer(db, SERVER_A)
+  assertEquals(set, [
+    {
+      policyId: '0192d6a0-0000-7000-8000-0000000000b1',
+      targetKind: 'copy',
+      onCalendar: '*-*-* *:0:00',
+      retentionKeep: 24,
+      enabled: true,
+      copyId: COPY_ID,
+      copyProvider: 'docker',
+      volumeName: STORAGE_ID,
+    },
+    {
+      policyId: '0192d6a0-0000-7000-8000-0000000000b2',
+      targetKind: 'copy',
+      onCalendar: '*-*-* *:0:00',
+      retentionKeep: 24,
+      enabled: false,
+      copyId: COPY_ID,
+      copyProvider: 'path',
+      hostPath: `/srv/users/acme/volumes/${STORAGE_ID}`,
+    },
+    {
+      policyId: '0192d6a0-0000-7000-8000-0000000000b3',
+      targetKind: 'copy',
+      onCalendar: '*-*-* *:0:00',
+      retentionKeep: 24,
+      enabled: true,
+      copyId: COPY_ID,
+      copyProvider: 'path',
+      organizationId: ORG_ID,
+      storageId: STORAGE_ID,
+    },
+  ])
+})
+
+test('copies that can no longer be backed up are left out of the set', async () => {
+  const { db } = fakeDb({
+    copyPolicyRows: [
+      copyPolicyRow({ provider: 's3' }),
+      copyPolicyRow({ id: '0192d6a0-0000-7000-8000-0000000000b2', storageKind: 'file' }),
+      copyPolicyRow({
+        id: '0192d6a0-0000-7000-8000-0000000000b3',
+        provider: 'path',
+        storageKind: 'directory',
+        copyPath: '/etc',
+      }),
+    ],
+  })
+  assertEquals(await buildBackupPolicySetForServer(db, SERVER_A), [])
+})
+
+test('a copy change pushes the old hosts and the copy’s current host, once each', async () => {
+  const { db } = fakeDb({ copyHostAnswers: [[SERVER_A], [SERVER_B]] })
+  const queue = capturingQueue()
+  const before = await captureCopyBackupHosts(db, queue, { copyIds: [COPY_ID] })
+  assertEquals(before, [SERVER_A])
+  await reconcileBackupsAfterCopyChange(db, queue, {
+    copyIds: [COPY_ID],
+    previousServerIds: before,
+    actor: ACTOR,
+  })
+  assertEquals(
+    queue.envelopes.map((envelope) => envelope.serverId),
+    [SERVER_A, SERVER_B]
+  )
+})
+
+test('a copy change with no policy anywhere pushes nothing', async () => {
+  const { db } = fakeDb({ copyHostAnswers: [[]] })
+  const queue = capturingQueue()
+  const before = await captureCopyBackupHosts(db, queue, { storageId: STORAGE_ID })
+  assertEquals(before, [])
+  await reconcileBackupsAfterCopyChange(db, queue, {
+    copyIds: [],
+    previousServerIds: [],
+    actor: ACTOR,
+  })
+  assertEquals(queue.envelopes, [])
+  assertEquals(
+    await captureCopyBackupHosts(db, createNoopCommandQueue(), { copyIds: [COPY_ID] }),
+    []
+  )
 })

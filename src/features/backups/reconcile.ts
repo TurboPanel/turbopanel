@@ -4,8 +4,9 @@
  * The payload is the **complete** set for the server (the same rule as
  * `server.principals.reconcile`): a policy absent from it is one the host no
  * longer runs, so its timer goes. A managed policy's host is its engine's
- * `managed.server_id`, resolved here at push time, so moving an engine only
- * needs both servers reconciled — nothing on the policy row changes.
+ * `managed.server_id`, and a copy policy's is its copy's `copy.server_id`,
+ * both resolved here at push time, so moving an engine or a copy only needs
+ * both servers reconciled — nothing on the policy row changes.
  *
  * Every enqueue here is best-effort and **never throws**: it runs after the
  * write that changed the set, and that write has already succeeded. A server
@@ -13,9 +14,9 @@
  * {@link runBackupsReconcileSweep}, which pushes once after each reconnect.
  */
 
-import { and, eq, sql } from 'drizzle-orm'
+import { and, eq, inArray, isNotNull, type SQL, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import { retention, managed } from '../../db/schema.ts'
+import { retention, managed, principal, storage, storageCopy } from '../../db/schema.ts'
 import {
   type BackupPolicyWireEntry,
   parseBackupsReconcilePayload,
@@ -29,6 +30,7 @@ import { isNoopCommandQueue } from '../commands/noop-command-queue.ts'
 import { getManagedBackupDescriptor } from '../managed/index.ts'
 import { managedHasBackupPolicies } from './policy-records.ts'
 import { translateBackupSchedule } from './schedules.ts'
+import { COPY_TARGET_SELECT, type CopyTargetRow, resolveCopyBackupSource } from './copy-targets.ts'
 
 export const BACKUPS_RECONCILE_COMMAND = 'server.backups.reconcile'
 
@@ -81,15 +83,41 @@ function toWireEntry(row: ManagedPolicyRow): BackupPolicyWireEntry | null {
   }
 }
 
-/**
- * Every policy one server runs — the completeness rule. Disabled policies are
- * included with `enabled: false` so the host drops their timers.
- */
-export async function buildBackupPolicySetForServer(
-  db: Db,
-  serverId: string
-): Promise<BackupPolicyWireEntry[]> {
-  const rows: ManagedPolicyRow[] = await db
+type CopyPolicyRow = CopyTargetRow & {
+  id: string
+  schedule: string
+  timezone: string | null
+  retentionKeep: number
+  isEnabled: boolean
+}
+
+/** A copy policy as its host runs it; null (and a warning) when the copy can no longer be backed up. */
+function toCopyWireEntry(row: CopyPolicyRow): BackupPolicyWireEntry | null {
+  const source = resolveCopyBackupSource(row)
+  if (!source.ok) {
+    compatLogWarn('backups', `backup policy ${row.id} skipped: ${source.error}`)
+    return null
+  }
+  const onCalendar = translateBackupSchedule(row.schedule, row.timezone)
+  if (!onCalendar.ok) {
+    compatLogWarn(
+      'backups',
+      `backup policy ${row.id} skipped: its schedule no longer translates (${onCalendar.error})`
+    )
+    return null
+  }
+  return {
+    policyId: row.id,
+    targetKind: 'copy',
+    ...source.source,
+    onCalendar: onCalendar.value,
+    retentionKeep: row.retentionKeep,
+    enabled: row.isEnabled,
+  }
+}
+
+async function loadManagedPolicyRows(db: Db, serverId: string): Promise<ManagedPolicyRow[]> {
+  return await db
     .select({
       id: retention.id,
       managedId: retention.managedId,
@@ -102,9 +130,43 @@ export async function buildBackupPolicySetForServer(
     .from(retention)
     .innerJoin(managed, eq(managed.id, retention.managedId))
     .where(and(eq(managed.serverId, serverId), eq(retention.targetKind, 'managed')))
+}
+
+/** Copy policies whose copy is placed on `serverId` (`copy.server_id`, like a managed engine's). */
+async function loadCopyPolicyRows(db: Db, serverId: string): Promise<CopyPolicyRow[]> {
+  return await db
+    .select({
+      ...COPY_TARGET_SELECT,
+      id: retention.id,
+      schedule: retention.schedule,
+      timezone: retention.timezone,
+      retentionKeep: retention.retentionKeep,
+      isEnabled: retention.isEnabled,
+    })
+    .from(retention)
+    .innerJoin(storageCopy, eq(storageCopy.id, retention.copyId))
+    .innerJoin(storage, eq(storage.id, storageCopy.storageId))
+    .leftJoin(principal, eq(principal.id, storage.principalId))
+    .where(and(eq(storageCopy.serverId, serverId), eq(retention.targetKind, 'copy')))
+}
+
+/**
+ * Every policy one server runs — the completeness rule. Disabled policies are
+ * included with `enabled: false` so the host drops their timers.
+ */
+export async function buildBackupPolicySetForServer(
+  db: Db,
+  serverId: string
+): Promise<BackupPolicyWireEntry[]> {
+  const managedRows = await loadManagedPolicyRows(db, serverId)
+  const copyRows = await loadCopyPolicyRows(db, serverId)
   const entries: BackupPolicyWireEntry[] = []
-  for (const row of rows) {
+  for (const row of managedRows) {
     const entry = toWireEntry(row)
+    if (entry) entries.push(entry)
+  }
+  for (const row of copyRows) {
+    const entry = toCopyWireEntry(row)
     if (entry) entries.push(entry)
   }
   // The same parser the command carries is run here, so a set the daemon
@@ -229,6 +291,69 @@ export async function reconcileBackupsAfterManagedMove(
   }
 }
 
+/** Servers that run a backup policy for the copies `where` selects. */
+async function readCopyBackupHosts(db: Db, where: SQL | undefined): Promise<string[]> {
+  const rows = await db
+    .selectDistinct({ serverId: storageCopy.serverId })
+    .from(storageCopy)
+    .innerJoin(retention, eq(retention.copyId, storageCopy.id))
+    .where(and(where, isNotNull(storageCopy.serverId)))
+  return rows.flatMap((row) => (row.serverId ? [row.serverId] : []))
+}
+
+/**
+ * Before a write that may move, change or remove storage copies: the servers
+ * running a backup policy for any of them (all copies of `storageId`, or the
+ * copies in `copyIds`). Empty when there is no queue to push with. Never throws.
+ */
+export async function captureCopyBackupHosts(
+  db: Db,
+  queue: CommandQueue | undefined,
+  target: { copyIds: readonly string[] } | { storageId: string }
+): Promise<string[]> {
+  if (!canEnqueue(queue)) return []
+  if ('copyIds' in target && target.copyIds.length === 0) return []
+  const where =
+    'storageId' in target
+      ? eq(storageCopy.storageId, target.storageId)
+      : inArray(storageCopy.id, [...target.copyIds])
+  try {
+    return await readCopyBackupHosts(db, where)
+  } catch (err) {
+    compatLogWarn('backups', `backup host lookup for storage copies failed: ${String(err)}`)
+    return []
+  }
+}
+
+/**
+ * After that write: push every server captured before it, plus the current
+ * server of each copy that still has a policy (a copy that moved gains its
+ * timers on the new host; a deleted one's policies cascaded away, so its old
+ * host drops them). Never throws.
+ */
+export async function reconcileBackupsAfterCopyChange(
+  db: Db,
+  queue: CommandQueue | undefined,
+  params: {
+    copyIds: readonly string[]
+    previousServerIds: readonly string[]
+    actor: BackupsReconcileActor
+  }
+): Promise<void> {
+  if (!canEnqueue(queue)) return
+  try {
+    const current =
+      params.copyIds.length === 0
+        ? []
+        : await readCopyBackupHosts(db, inArray(storageCopy.id, [...params.copyIds]))
+    const servers = [...params.previousServerIds, ...current]
+    if (servers.length === 0) return
+    await enqueueBackupsReconcile(db, queue, params.actor, servers)
+  } catch (err) {
+    compatLogWarn('backups', `backups reconcile after a storage copy change: ${String(err)}`)
+  }
+}
+
 /**
  * Reconnect trigger: push each connected server's set once after it
  * (re)connects — any server with a policy, or one that was ever sent a set
@@ -261,6 +386,12 @@ export async function runBackupsReconcileSweep(
           FROM retention bp
           JOIN managed m ON m.id = bp.managed_id
           WHERE m.server_id = srv.id
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM retention bp
+          JOIN copy cp ON cp.id = bp.copy_id
+          WHERE cp.server_id = srv.id
         )
         OR EXISTS (
           SELECT 1

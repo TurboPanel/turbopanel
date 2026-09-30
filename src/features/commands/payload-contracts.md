@@ -79,6 +79,32 @@ that re-pins `managed.server_id` (both old and new host); managed delete
 reconnect by `runBackupsReconcileSweep` (Workers cron + Deno maintenance tick),
 which also reaches a server whose policies were all deleted while it was away.
 
+A `copy` entry (added 2026-09-30, Road row `r2-backup-tenant-volumes`) also
+carries where the storage copy's bytes live, so a run never asks the control
+plane: `copyProvider: docker` + `volumeName` (the Docker volume deploy mounts),
+or `copyProvider: path` + `hostPath` (an absolute, normalized directory; the
+control plane only sends ones under `/srv/users/`), or `copyProvider: path` +
+`organizationId` + `storageId` (the host's default
+`<stateDir>/storage/<org>/<storage>/<copy>/data`). A copy policy's host is its
+copy's `copy.server_id`; `src/features/backups/copy-targets.ts` decides which
+copies can be backed up (docker or path copies of `volume` / `directory`
+storage, placed on a server). Also enqueued when a copy is moved, re-pathed or
+deleted, and when its storage is edited or deleted (every host that held one of
+its copies' policies).
+
+`storage.backup` (added 2026-09-30) is a manual backup of one storage copy:
+`{ copyId, copyProvider, volumeName? | hostPath? | organizationId? + storageId?,
+action: create | delete, backupId, policyId? }` — the same copy-source fields as
+a `copy` policy entry. `create` writes a live gzipped tar (no pause) to
+`<backupDir>/copies/<copyId>/<backupId>.tar.gz`; `delete` removes one, and
+`policyId` (delete only) locates a scheduled run's artifact under
+`…/copies/<copyId>/policy-<policyId>/`. Result: `{ backupId, deleted?, path?,
+sizeBytes?, checksum?, completedAt?, summary? }`. 1800 s consumer timeout, like
+`managed.backup`. Success records or removes the `archive` row for the
+payload's copy (`src/features/backups/storage-command-effects.ts`); a result
+naming another backup id is ignored. Queued from
+`/storage/:id/copies/:copyId/backups` (org owners and managers).
+
 `server.reboot` requires `organization:manage`, carries an empty payload, uses a
 120s consumer timeout, has no `touchServerMetadata` side-effect, and is executed
 daemon-side via `sudo systemctl reboot` (handler implemented in a separate

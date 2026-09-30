@@ -36,6 +36,8 @@ const copyEntry: BackupPolicyWireEntry = {
   policyId: POLICY_B,
   targetKind: 'copy',
   copyId: COPY_ID,
+  copyProvider: 'docker',
+  volumeName: 'uploads_data',
   onCalendar: 'hourly',
   retentionKeep: 24,
   enabled: false,
@@ -196,4 +198,69 @@ test('managed.restore carries an optional policy id for a scheduled artifact', (
     Error,
     'policyId'
   )
+})
+
+const ORG_ID = '0192d6a0-0000-7000-8000-0000000000f1'
+const STORAGE_ID = '0192d6a0-0000-7000-8000-0000000000d1'
+
+function pathEntry(fields: Record<string, unknown>): Record<string, unknown> {
+  return {
+    policyId: copyEntry.policyId,
+    targetKind: 'copy',
+    copyId: COPY_ID,
+    copyProvider: 'path',
+    onCalendar: copyEntry.onCalendar,
+    retentionKeep: copyEntry.retentionKeep,
+    enabled: copyEntry.enabled,
+    ...fields,
+  }
+}
+
+test('a copy entry names where its bytes live: a volume, a host path, or the default directory', () => {
+  const hostPath = `/srv/users/acme/volumes/${STORAGE_ID}`
+  const principalDir = pathEntry({ hostPath })
+  const parsed: unknown = parseBackupsReconcilePayload({ policies: [principalDir] }).policies[0]
+  assertEquals(parsed, principalDir)
+  const defaultDir = pathEntry({ organizationId: ORG_ID, storageId: STORAGE_ID })
+  const parsedDefault: unknown = parseBackupsReconcilePayload({ policies: [defaultDir] })
+    .policies[0]
+  assertEquals(parsedDefault, defaultDir)
+})
+
+test('a copy entry refuses an ambiguous or unsafe source', () => {
+  const cases: Record<string, unknown>[] = [
+    { ...copyEntry, volumeName: undefined },
+    { ...copyEntry, volumeName: '-x' },
+    { ...copyEntry, volumeName: 'a/b' },
+    { ...copyEntry, hostPath: '/srv/users/a' },
+    { ...copyEntry, copyProvider: 's3' },
+    { ...copyEntry, copyProvider: undefined },
+    pathEntry({}),
+    pathEntry({ organizationId: ORG_ID }),
+    pathEntry({ hostPath: '/srv/users/a', volumeName: 'x' }),
+    pathEntry({ hostPath: '/srv/users/a', organizationId: ORG_ID, storageId: STORAGE_ID }),
+    pathEntry({ hostPath: 'srv/users/a' }),
+    pathEntry({ hostPath: '/srv/users/../etc' }),
+    pathEntry({ hostPath: '/srv/users/./a' }),
+    pathEntry({ hostPath: '/srv//users' }),
+    pathEntry({ hostPath: '/srv/users/a,b' }),
+    pathEntry({ hostPath: '/srv/users/a b' }),
+    pathEntry({ hostPath: '/srv/users/a\nx' }),
+    pathEntry({ hostPath: '/srv/users/a\n' }),
+    pathEntry({ hostPath: '/' }),
+    pathEntry({ hostPath: `/${'a'.repeat(1024)}` }),
+  ]
+  for (const entry of cases) {
+    assertThrows(() => parseBackupsReconcilePayload({ policies: [entry] }), Error)
+  }
+})
+
+test('a managed entry cannot carry copy source fields', () => {
+  for (const field of ['copyProvider', 'volumeName', 'hostPath', 'organizationId', 'storageId']) {
+    assertThrows(
+      () => parseBackupsReconcilePayload({ policies: [{ ...managedEntry, [field]: 'x' }] }),
+      Error,
+      'managed target'
+    )
+  }
 })

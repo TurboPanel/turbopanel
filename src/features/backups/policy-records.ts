@@ -1,9 +1,9 @@
 /**
- * `retention` / `snapshot` reads and writes for managed-engine targets.
+ * `retention` / `snapshot` reads and writes.
  *
- * A policy belongs to one managed engine; its host is that engine's
- * `managed.server_id`, resolved when the policy set is pushed
- * (`./reconcile.ts`), never stored on the policy.
+ * A policy belongs to one target — a managed engine or a storage copy; its
+ * host is that target's `managed.server_id` / `copy.server_id`, resolved when
+ * the policy set is pushed (`./reconcile.ts`), never stored on the policy.
  */
 
 import { and, asc, desc, eq, inArray } from 'drizzle-orm'
@@ -41,6 +41,13 @@ export type NewManagedBackupPolicy = {
   createdBy: string | null
 }
 
+/** The one target a set of policy routes reads and writes. */
+export type BackupPolicyTargetRef =
+  { kind: 'managed'; managedId: string } | { kind: 'copy'; copyId: string }
+
+/** A new policy's fields, apart from its target. */
+export type NewBackupPolicy = Omit<NewManagedBackupPolicy, 'managedId'>
+
 export type BackupPolicyPatch = Partial<
   Pick<BackupPolicyRow, 'name' | 'schedule' | 'timezone' | 'retentionKeep' | 'isEnabled'>
 >
@@ -57,28 +64,34 @@ function toRunRecord(row: typeof snapshot.$inferSelect): BackupRunRecord {
   }
 }
 
-export async function listBackupPoliciesForManaged(
+function targetCondition(target: BackupPolicyTargetRef) {
+  return target.kind === 'managed'
+    ? and(eq(retention.managedId, target.managedId), eq(retention.targetKind, 'managed'))
+    : and(eq(retention.copyId, target.copyId), eq(retention.targetKind, 'copy'))
+}
+
+export async function listBackupPoliciesForTarget(
   db: Db,
-  managedId: string
+  target: BackupPolicyTargetRef
 ): Promise<BackupPolicyRow[]> {
   return await db
     .select()
     .from(retention)
-    .where(and(eq(retention.managedId, managedId), eq(retention.targetKind, 'managed')))
+    .where(targetCondition(target))
     .orderBy(asc(retention.createdAt))
 }
 
 /** A path id that is not a uuid is simply not found (Postgres would reject the cast). */
-export async function findBackupPolicyForManaged(
+export async function findBackupPolicyForTarget(
   db: Db,
-  managedId: string,
+  target: BackupPolicyTargetRef,
   policyId: string
 ): Promise<BackupPolicyRow | null> {
   if (!isUuid(policyId)) return null
   const [row] = await db
     .select()
     .from(retention)
-    .where(and(eq(retention.id, policyId), eq(retention.managedId, managedId)))
+    .where(and(eq(retention.id, policyId), targetCondition(target)))
     .limit(1)
   return row ?? null
 }
@@ -100,6 +113,22 @@ export async function insertManagedBackupPolicy(
   const [row] = await db
     .insert(retention)
     .values({ ...values, targetKind: 'managed' })
+    .returning()
+  if (!row) throw new Error('backup policy insert returned no row')
+  return row
+}
+
+export async function insertBackupPolicy(
+  db: Db,
+  target: BackupPolicyTargetRef,
+  values: NewBackupPolicy
+): Promise<BackupPolicyRow> {
+  if (target.kind === 'managed') {
+    return await insertManagedBackupPolicy(db, { ...values, managedId: target.managedId })
+  }
+  const [row] = await db
+    .insert(retention)
+    .values({ ...values, targetKind: 'copy', copyId: target.copyId })
     .returning()
   if (!row) throw new Error('backup policy insert returned no row')
   return row
