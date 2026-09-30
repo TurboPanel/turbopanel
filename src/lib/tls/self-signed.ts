@@ -7,13 +7,7 @@
  * scoped to hosting/managed-DB leaves and cannot affect daemon trust.
  */
 
-import {
-  children,
-  content,
-  expectTag,
-  readNode,
-  type Asn1Node,
-} from './asn1.ts'
+import { children, content, expectTag, readNode, type Asn1Node } from './asn1.ts'
 import { decodeFirstCertificate, decodePrivateKeyToPkcs8, encodePemBlock } from './pem.ts'
 import { parseCertificatePem } from './parse.ts'
 import type { ParsedCertificate } from './types.ts'
@@ -88,12 +82,7 @@ function boolean(value: boolean): Uint8Array {
 }
 
 function bitString(bits: Uint8Array, unusedBits = 0): Uint8Array {
-  return concat(
-    Uint8Array.of(0x03),
-    encLen(bits.length + 1),
-    Uint8Array.of(unusedBits),
-    bits,
-  )
+  return concat(Uint8Array.of(0x03), encLen(bits.length + 1), Uint8Array.of(unusedBits), bits)
 }
 
 const OID_CN = Uint8Array.of(0x55, 0x04, 0x03)
@@ -107,17 +96,7 @@ export const ORGANIZATION_CA_ORG_NAME = 'TurboPanel'
 /** Branding in Organization CA `OU=` — CN is the organization id. */
 export const ORGANIZATION_CA_ORG_UNIT = 'Organization CA'
 
-const OID_SHA256_RSA = Uint8Array.of(
-  0x2a,
-  0x86,
-  0x48,
-  0x86,
-  0xf7,
-  0x0d,
-  0x01,
-  0x01,
-  0x0b,
-)
+const OID_SHA256_RSA = Uint8Array.of(0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0b)
 const OID_SAN = Uint8Array.of(0x55, 0x1d, 0x11)
 /** 2.5.29.19 basicConstraints */
 const OID_BASIC_CONSTRAINTS = Uint8Array.of(0x55, 0x1d, 0x13)
@@ -150,8 +129,8 @@ function organizationCaNameDer(organizationId: string): Uint8Array {
     concat(
       rdn(OID_O, ORGANIZATION_CA_ORG_NAME),
       rdn(OID_OU, ORGANIZATION_CA_ORG_UNIT),
-      rdn(OID_CN, organizationId),
-    ),
+      rdn(OID_CN, organizationId)
+    )
   )
 }
 
@@ -220,11 +199,7 @@ export function buildBasicConstraintsExtension(opts: {
   }
   const value = seq(concat(...innerParts))
   return seq(
-    concat(
-      oid(OID_BASIC_CONSTRAINTS),
-      Uint8Array.of(0x01, 0x01, 0xff),
-      octetString(value),
-    ),
+    concat(oid(OID_BASIC_CONSTRAINTS), Uint8Array.of(0x01, 0x01, 0xff), octetString(value))
   )
 }
 
@@ -255,18 +230,14 @@ export function buildKeyUsageExtension(bits: readonly number[]): Uint8Array {
     concat(
       oid(OID_KEY_USAGE),
       Uint8Array.of(0x01, 0x01, 0xff),
-      octetString(bitString(usageBytes, unusedBits)),
-    ),
+      octetString(bitString(usageBytes, unusedBits))
+    )
   )
 }
 
-function buildExtendedKeyUsageExtension(
-  purposes: readonly Uint8Array[],
-): Uint8Array {
+function buildExtendedKeyUsageExtension(purposes: readonly Uint8Array[]): Uint8Array {
   const purposeSeq = seq(concat(...purposes.map((p) => oid(p))))
-  return seq(
-    concat(oid(OID_EXT_KEY_USAGE), octetString(purposeSeq)),
-  )
+  return seq(concat(oid(OID_EXT_KEY_USAGE), octetString(purposeSeq)))
 }
 
 function asBufferSource(bytes: Uint8Array): Uint8Array<ArrayBuffer> {
@@ -282,13 +253,20 @@ function generateRsaKeyPair(): Promise<CryptoKeyPair> {
       hash: 'SHA-256',
     },
     true,
-    ['sign', 'verify'],
+    ['sign', 'verify']
   )
 }
 
-function randomSerial(): Uint8Array {
+/**
+ * A certificate serial that is a valid, minimal DER INTEGER: 8 random bytes,
+ * positive (top bit clear) and with a non-zero first byte. A leading 0x00 in
+ * front of a byte below 0x80 is a non-minimal encoding, which OpenSSL rejects
+ * — about one certificate in 512 used to come out that way.
+ */
+export function randomSerial(): Uint8Array {
   const serial = new Uint8Array(8)
   crypto.getRandomValues(serial)
+  serial[0] = (serial[0]! & 0x7f) | 0x40
   return serial
 }
 
@@ -301,28 +279,17 @@ function validityWindow(validDays: number): { notBefore: Date; notAfter: Date } 
 }
 
 function signBitString(signature: Uint8Array): Uint8Array {
-  return concat(
-    Uint8Array.of(0x03),
-    encLen(signature.length + 1),
-    Uint8Array.of(0x00),
-    signature,
-  )
+  return concat(Uint8Array.of(0x03), encLen(signature.length + 1), Uint8Array.of(0x00), signature)
 }
 
 async function assembleCertificate(
   tbs: Uint8Array,
-  signingKey: CryptoKey,
+  signingKey: CryptoKey
 ): Promise<{ certificatePem: string; certDer: Uint8Array }> {
   const signature = new Uint8Array(
-    await crypto.subtle.sign(
-      { name: 'RSASSA-PKCS1-v1_5' },
-      signingKey,
-      new Uint8Array(tbs),
-    ),
+    await crypto.subtle.sign({ name: 'RSASSA-PKCS1-v1_5' }, signingKey, new Uint8Array(tbs))
   )
-  const certDer = seq(
-    concat(tbs, algorithmIdentifier(OID_SHA256_RSA), signBitString(signature)),
-  )
+  const certDer = seq(concat(tbs, algorithmIdentifier(OID_SHA256_RSA), signBitString(signature)))
   return {
     certificatePem: encodePemBlock('CERTIFICATE', certDer),
     certDer,
@@ -344,10 +311,7 @@ export function extractSubjectNameDer(certificatePem: string): Uint8Array {
     throw new TypeError('truncated TBSCertificate')
   }
   const subjectNode = tbsChildren[idx + 4]!
-  return leafDer.subarray(
-    subjectNode.contentOffset - subjectNode.headerLength,
-    subjectNode.end,
-  )
+  return leafDer.subarray(subjectNode.contentOffset - subjectNode.headerLength, subjectNode.end)
 }
 
 /** Full subjectPublicKeyInfo DER TLV from a leaf certificate PEM. */
@@ -361,10 +325,7 @@ export function extractSpkiDer(certificatePem: string): Uint8Array {
   let idx = 0
   if (tbsChildren[0]?.tag === 0xa0) idx = 1
   const spkiNode = tbsChildren[idx + 5]!
-  return leafDer.subarray(
-    spkiNode.contentOffset - spkiNode.headerLength,
-    spkiNode.end,
-  )
+  return leafDer.subarray(spkiNode.contentOffset - spkiNode.headerLength, spkiNode.end)
 }
 
 /** Whether an extension OID appears with a critical-flag style presentation. */
@@ -407,10 +368,7 @@ function readOidBytes(oidNode: Asn1Node): string {
  * (handling the optional intervening `critical` BOOLEAN), or `null` when the
  * extension is absent.
  */
-function findExtensionValueNode(
-  leafDer: Uint8Array,
-  oidDotted: string,
-): Asn1Node | null {
+function findExtensionValueNode(leafDer: Uint8Array, oidDotted: string): Asn1Node | null {
   for (const ext of extensionNodes(leafDer)) {
     const kids = children(ext)
     if (kids.length < 2) continue
@@ -472,7 +430,7 @@ export function readKeyUsageBits(certificatePem: string): number[] | null {
  */
 export async function verifyCertificateSignature(
   leafCertificatePem: string,
-  caCertificatePem: string,
+  caCertificatePem: string
 ): Promise<boolean> {
   const leafDer = decodeFirstCertificate(leafCertificatePem)
   const cert = readNode(leafDer, 0)
@@ -485,10 +443,7 @@ export async function verifyCertificateSignature(
   const sigContent = content(sigNode)
   // First byte is unused-bits count.
   const signature = sigContent.subarray(1)
-  const tbsDer = leafDer.subarray(
-    tbs.contentOffset - tbs.headerLength,
-    tbs.end,
-  )
+  const tbsDer = leafDer.subarray(tbs.contentOffset - tbs.headerLength, tbs.end)
   const caSpki = extractSpkiDer(caCertificatePem)
   try {
     const publicKey = await crypto.subtle.importKey(
@@ -496,22 +451,20 @@ export async function verifyCertificateSignature(
       asBufferSource(caSpki),
       { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' },
       false,
-      ['verify'],
+      ['verify']
     )
     return await crypto.subtle.verify(
       { name: 'RSASSA-PKCS1-v1_5' },
       publicKey,
       asBufferSource(signature),
-      asBufferSource(tbsDer),
+      asBufferSource(tbsDer)
     )
   } catch {
     return false
   }
 }
 
-function importRsaPrivateKeyFromPem(
-  privateKeyPem: string,
-): Promise<CryptoKey> {
+function importRsaPrivateKeyFromPem(privateKeyPem: string): Promise<CryptoKey> {
   const decoded = decodePrivateKeyToPkcs8(privateKeyPem)
   if (decoded.algorithm !== 'rsa') {
     throw new TypeError('organization CA private key must be RSA')
@@ -521,7 +474,7 @@ function importRsaPrivateKeyFromPem(
     asBufferSource(decoded.pkcs8),
     { name: 'RSASSA-PKCS1-v1_5', hash: 'SHA-256' },
     false,
-    ['sign'],
+    ['sign']
   )
 }
 
@@ -536,20 +489,16 @@ export type SelfSignedMaterial = {
  */
 export async function mintSelfSignedCertificate(
   dnsNames: string[],
-  opts?: { validDays?: number; commonName?: string },
+  opts?: { validDays?: number; commonName?: string }
 ): Promise<SelfSignedMaterial> {
-  const names = dnsNames
-    .map((n) => n.trim().toLowerCase())
-    .filter((n) => n.length > 0)
+  const names = dnsNames.map((n) => n.trim().toLowerCase()).filter((n) => n.length > 0)
   if (names.length === 0) {
     throw new TypeError('at least one DNS name is required')
   }
 
   const keyPair = await generateRsaKeyPair()
   const spki = new Uint8Array(await crypto.subtle.exportKey('spki', keyPair.publicKey))
-  const pkcs8 = new Uint8Array(
-    await crypto.subtle.exportKey('pkcs8', keyPair.privateKey),
-  )
+  const pkcs8 = new Uint8Array(await crypto.subtle.exportKey('pkcs8', keyPair.privateKey))
 
   const validDays = opts?.validDays ?? 90
   const { notBefore, notAfter } = validityWindow(validDays)
@@ -563,9 +512,7 @@ export async function mintSelfSignedCertificate(
   const subject = seq(rdnCn(cn))
   const extensions = context(3, seq(buildSanExtension({ dnsNames: names })))
 
-  const tbs = seq(
-    concat(version, serialInt, sigAlg, issuer, validity, subject, spki, extensions),
-  )
+  const tbs = seq(concat(version, serialInt, sigAlg, issuer, validity, subject, spki, extensions))
 
   const { certificatePem } = await assembleCertificate(tbs, keyPair.privateKey)
   const privateKeyPem = encodePemBlock('PRIVATE KEY', pkcs8)
@@ -592,9 +539,7 @@ export async function mintOrganizationCa(opts: {
 
   const keyPair = await generateRsaKeyPair()
   const spki = new Uint8Array(await crypto.subtle.exportKey('spki', keyPair.publicKey))
-  const pkcs8 = new Uint8Array(
-    await crypto.subtle.exportKey('pkcs8', keyPair.privateKey),
-  )
+  const pkcs8 = new Uint8Array(await crypto.subtle.exportKey('pkcs8', keyPair.privateKey))
 
   const validDays = opts.validDays ?? 3650
   const { notBefore, notAfter } = validityWindow(validDays)
@@ -609,26 +554,12 @@ export async function mintOrganizationCa(opts: {
     seq(
       concat(
         buildBasicConstraintsExtension({ ca: true, pathLen: 0 }),
-        buildKeyUsageExtension([
-          KEY_USAGE_KEY_CERT_SIGN,
-          KEY_USAGE_CRL_SIGN,
-        ]),
-      ),
-    ),
+        buildKeyUsageExtension([KEY_USAGE_KEY_CERT_SIGN, KEY_USAGE_CRL_SIGN])
+      )
+    )
   )
 
-  const tbs = seq(
-    concat(
-      version,
-      serialInt,
-      sigAlg,
-      nameDer,
-      validity,
-      nameDer,
-      spki,
-      extensions,
-    ),
-  )
+  const tbs = seq(concat(version, serialInt, sigAlg, nameDer, validity, nameDer, spki, extensions))
 
   const { certificatePem } = await assembleCertificate(tbs, keyPair.privateKey)
   const privateKeyPem = encodePemBlock('PRIVATE KEY', pkcs8)
@@ -658,11 +589,9 @@ export async function issueLeafCertificate(
     commonName?: string
     includeClientAuth?: boolean
     ipAddresses?: readonly string[]
-  },
+  }
 ): Promise<SelfSignedMaterial> {
-  const names = dnsNames
-    .map((n) => n.trim().toLowerCase())
-    .filter((n) => n.length > 0)
+  const names = dnsNames.map((n) => n.trim().toLowerCase()).filter((n) => n.length > 0)
   if (names.length === 0) {
     throw new TypeError('at least one DNS name is required')
   }
@@ -670,9 +599,7 @@ export async function issueLeafCertificate(
 
   const keyPair = await generateRsaKeyPair()
   const spki = new Uint8Array(await crypto.subtle.exportKey('spki', keyPair.publicKey))
-  const pkcs8 = new Uint8Array(
-    await crypto.subtle.exportKey('pkcs8', keyPair.privateKey),
-  )
+  const pkcs8 = new Uint8Array(await crypto.subtle.exportKey('pkcs8', keyPair.privateKey))
   const caSigningKey = await importRsaPrivateKeyFromPem(caPrivateKeyPem)
   const issuerNameDer = extractSubjectNameDer(caCertPem)
 
@@ -695,27 +622,15 @@ export async function issueLeafCertificate(
     seq(
       concat(
         buildBasicConstraintsExtension({ ca: false }),
-        buildKeyUsageExtension([
-          KEY_USAGE_DIGITAL_SIGNATURE,
-          KEY_USAGE_KEY_ENCIPHERMENT,
-        ]),
+        buildKeyUsageExtension([KEY_USAGE_DIGITAL_SIGNATURE, KEY_USAGE_KEY_ENCIPHERMENT]),
         buildExtendedKeyUsageExtension(ekuOids),
-        buildSanExtension({ dnsNames: names, ipAddresses }),
-      ),
-    ),
+        buildSanExtension({ dnsNames: names, ipAddresses })
+      )
+    )
   )
 
   const tbs = seq(
-    concat(
-      version,
-      serialInt,
-      sigAlg,
-      issuerNameDer,
-      validity,
-      subject,
-      spki,
-      extensions,
-    ),
+    concat(version, serialInt, sigAlg, issuerNameDer, validity, subject, spki, extensions)
   )
 
   const { certificatePem } = await assembleCertificate(tbs, caSigningKey)
