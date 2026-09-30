@@ -136,3 +136,15 @@ test('logError writes the cause on its own line', () => {
     ' ERROR client-status  caused by: PostgresError: permission denied for table setting (code 42501, severity ERROR)'
   )
 })
+
+test('URL masking leaves URLs without a password alone and masks every URL that has one', () => {
+  const noPassword = `${SCHEME}turbopanel@db.internal:5432/turbopanel`
+  const atInPath = `https://example.com/users/a@b`
+  const err = new Error('wrapper', {
+    cause: new Error(`from ${DATABASE_URL} and ${DATABASE_URL}, not ${noPassword} or ${atInPath}`),
+  })
+  assertEquals(
+    describeErrorCauses(err),
+    `caused by: Error: from ${MASKED_URL} and ${MASKED_URL}, not ${noPassword} or ${atInPath}`
+  )
+})

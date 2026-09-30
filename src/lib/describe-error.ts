@@ -18,11 +18,25 @@
 /** Same cap as `isConnectionClosedError` in `src/db/connection.ts`. */
 const MAX_CAUSE_DEPTH = 4
 
-/** `scheme://user:password@` — the password part is masked. */
-const URL_PASSWORD = /([a-z][a-z\d+.-]*:\/\/[^\s/:@]*):[^\s/@]*@/gi
+/**
+ * `scheme://user:password@host` in one whitespace-free token becomes
+ * `scheme://user:***@host`. Plain string scanning, no backtracking regex.
+ */
+function maskTokenPassword(token: string): string {
+  const scheme = token.indexOf('://')
+  if (scheme < 0) return token
+  const authorityStart = scheme + 3
+  const slash = token.indexOf('/', authorityStart)
+  const authorityEnd = slash < 0 ? token.length : slash
+  const at = token.lastIndexOf('@', authorityEnd - 1)
+  if (at < authorityStart) return token
+  const colon = token.indexOf(':', authorityStart)
+  if (colon < 0 || colon > at) return token
+  return `${token.slice(0, colon + 1)}***${token.slice(at)}`
+}
 
 function maskUrlPasswords(text: string): string {
-  return text.replaceAll(URL_PASSWORD, '$1:***@')
+  return text.split(/(\s+)/).map(maskTokenPassword).join('')
 }
 
 function readString(value: object, key: string): string | undefined {
