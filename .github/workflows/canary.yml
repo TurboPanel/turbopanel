@@ -2,7 +2,7 @@
 # from that exact commit and publish it to the rolling `canary` pre-release
 # (Road to 0.1.x, `trunk-canary`). The build itself is release.yml's —
 # called here with channel=canary — so a canary package is bit-for-bit the
-# shape a release package has, only versioned <X.Y.Z>-canary.<buildId> and
+# shape a release package has, only versioned <X.Y.Z>-canary.<N> (from tags) and
 # replaced on the next merge instead of pinned to a tag.
 #
 # workflow_run (not push) so the compile never starts before the test suite
