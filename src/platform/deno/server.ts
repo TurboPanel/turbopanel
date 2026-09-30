@@ -46,6 +46,7 @@ import { registerWebhookRoutes } from '../../webhook/routes.ts'
 import { runManagedIngressOrphanSweep } from '../../features/managed/ingress-desired.ts'
 import { runDatacenterRepinFanoutSweep } from '../../client/datacenters/repin-fanout.ts'
 import { runSystemReconcileSweep } from '../../features/system/reconcile.ts'
+import { runBackupsReconcileSweep } from '../../features/backups/reconcile.ts'
 import {
   LEAF_RENEWAL_SWEEP_INTERVAL_MS,
   runLeafRenewalSweepTick,
@@ -620,6 +621,10 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
       dataEncryptionSecrets,
     }).catch((err) => {
       logWarn('daemon-cell', `datacenter repin fan-out sweep error: ${String(err)}`)
+    })
+    // Backup policy sets once after each reconnect (hello must not enqueue).
+    void runBackupsReconcileSweep(db, commandQueue).catch((err) => {
+      logWarn('daemon-cell', `backups reconcile sweep error: ${String(err)}`)
     })
   }
   // Observe pending self-host inventory on boot, not only after the first

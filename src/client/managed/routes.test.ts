@@ -1,5 +1,5 @@
 import { assertEquals } from '@std/assert'
-import { and, eq, inArray, isNull } from 'drizzle-orm'
+import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
@@ -21,6 +21,8 @@ import type { ComposeDocument } from '../../features/compose/types.ts'
 import { getManagedEngineSpec } from '../../features/managed/index.ts'
 import {
   backup,
+  backupPolicy,
+  backupRun,
   binding,
   command,
   container,
@@ -40,6 +42,7 @@ import { createCommandRecord, transitionCommand } from '../../features/commands/
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { getCatalogEntry, readManagedEngineOptions } from '../projects/catalog/index.ts'
 import { registerManagedRoutes } from './routes.ts'
+import { runBackupsReconcileSweep } from '../../features/backups/reconcile.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 
 const dbUrl = getDatabaseUrl()
@@ -602,11 +605,13 @@ test('managed create returns rootPassword once, seals principal, is idempotent',
       assertEquals(firstBody.managed.serverId, serverId)
       // A successful apply also self-heals ProxySQL ingress and Orchestrator HA
       // reconcile for the same server, so managed.apply plus both whole-server
-      // reconciles get enqueued.
-      assertEquals(commandQueue.envelopes.length, 3)
+      // reconciles get enqueued — then the host's backup policy set, which now
+      // holds the engine's automatic daily policy.
+      assertEquals(commandQueue.envelopes.length, 4)
       assertEquals(commandQueue.envelopes[0]?.type, 'managed.apply')
       assertEquals(commandQueue.envelopes[1]?.type, 'managed.ingress.reconcile')
       assertEquals(commandQueue.envelopes[2]?.type, 'managed.ha.reconcile')
+      assertEquals(commandQueue.envelopes[3]?.type, 'server.backups.reconcile')
       assertEquals(
         commandQueue.envelopes.every((envelope) => envelope.serverId === serverId),
         true
@@ -631,6 +636,34 @@ test('managed create returns rootPassword once, seals principal, is idempotent',
       assertEquals(principals.length, 1)
       assertEquals(principals[0]!.password?.startsWith('tpsecret.'), true)
 
+      // Every new managed database gets one automatic daily policy, keep 7.
+      const policies = await db
+        .select()
+        .from(backupPolicy)
+        .where(eq(backupPolicy.managedId, managedRow!.id))
+      assertEquals(policies.length, 1)
+      assertEquals(policies[0]!.name, 'Daily')
+      assertEquals(policies[0]!.targetKind, 'managed')
+      assertEquals(policies[0]!.organizationId, organizationId)
+      assertEquals(policies[0]!.retentionKeep, 7)
+      assertEquals(policies[0]!.isEnabled, true)
+      assertEquals(policies[0]!.createdBy, null)
+      assertEquals(policies[0]!.timezone, null)
+      assertEquals(/^\d{1,2} 3 \* \* \*$/.test(policies[0]!.schedule), true)
+
+      const [reconcileDispatch] = await db
+        .select({ payload: dispatch.payload })
+        .from(dispatch)
+        .innerJoin(command, eq(command.id, dispatch.commandId))
+        .where(and(eq(command.serverId, serverId), eq(command.name, 'server.backups.reconcile')))
+        .limit(1)
+      const pushed = reconcileDispatch?.payload as { policies?: Array<Record<string, unknown>> }
+      assertEquals(pushed.policies?.length, 1)
+      assertEquals(pushed.policies?.[0]?.policyId, policies[0]!.id)
+      assertEquals(pushed.policies?.[0]?.engine, 'postgres')
+      assertEquals(pushed.policies?.[0]?.artifactExtension, 'dump')
+      assertEquals(pushed.policies?.[0]?.enabled, true)
+
       const second = await app.request(`/environments/${environmentId}/managed`, {
         method: 'POST',
         headers,
@@ -646,7 +679,7 @@ test('managed create returns rootPassword once, seals principal, is idempotent',
       assertEquals(secondBody.alreadyProvisioned, true)
       assertEquals(secondBody.rootPassword, undefined)
       assertEquals(secondBody.commandId, undefined)
-      assertEquals(commandQueue.envelopes.length, 3)
+      assertEquals(commandQueue.envelopes.length, 4)
 
       const getRes = await app.request(`/environments/${environmentId}/managed`, {
         headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
@@ -2243,4 +2276,229 @@ test('registerManagedRoutes requires session secrets', () => {
     assertEquals((error as Error).message, 'session secrets are required for managed routes')
   }
   assertEquals(threw, true)
+})
+
+type PolicyBody = {
+  id: string
+  name: string
+  schedule: string
+  preset: unknown
+  timezone: string | null
+  retentionKeep: number
+  enabled: boolean
+  automatic: boolean
+  lastRun: { runId: string; status: string; backupId: string | null } | null
+}
+
+async function latestBackupsReconcilePayload(
+  db: ReturnType<typeof createDenoDb>,
+  serverId: string
+): Promise<Array<Record<string, unknown>>> {
+  const [row] = await db
+    .select({ payload: dispatch.payload })
+    .from(dispatch)
+    .innerJoin(command, eq(command.id, dispatch.commandId))
+    .where(and(eq(command.serverId, serverId), eq(command.name, 'server.backups.reconcile')))
+    .orderBy(desc(command.createdAt), desc(command.id))
+    .limit(1)
+  return ((row?.payload as { policies?: Array<Record<string, unknown>> }) ?? {}).policies ?? []
+}
+
+test('backup policy routes: create, list with last run, update, delete, runs', async () => {
+  await withManagedFixtures(
+    {},
+    async ({ db, app, secrets, commandQueue, userId, organizationId, environmentId, serverId }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      }
+      const created = await app.request(`/environments/${environmentId}/managed`, {
+        method: 'POST',
+        headers,
+        body: '{}',
+      })
+      assertEquals(created.status, 200)
+      const base = `/environments/${environmentId}/managed/backup-policies`
+
+      const before = commandQueue.envelopes.length
+      const hourly = await app.request(base, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          name: 'Hourly',
+          schedule: { preset: 'hourly' },
+          retentionKeep: 24,
+        }),
+      })
+      assertEquals(hourly.status, 201)
+      const hourlyBody = (await hourly.json()) as {
+        policy: PolicyBody
+        reconcile: { queuedServerIds: string[] }
+      }
+      assertEquals(hourlyBody.policy.schedule, '0 * * * *')
+      assertEquals(hourlyBody.policy.preset, { preset: 'hourly' })
+      assertEquals(hourlyBody.policy.automatic, false)
+      assertEquals(hourlyBody.reconcile.queuedServerIds, [serverId])
+      assertEquals(commandQueue.envelopes.length, before + 1)
+      assertEquals(commandQueue.envelopes.at(-1)?.type, 'server.backups.reconcile')
+      // The push is the full set: the automatic daily policy plus this one.
+      assertEquals((await latestBackupsReconcilePayload(db, serverId)).length, 2)
+
+      await db.insert(backupRun).values({
+        policyId: hourlyBody.policy.id,
+        serverId,
+        runId: 'run_first',
+        startedAt: '2026-09-30T01:00:00.000Z',
+        finishedAt: '2026-09-30T01:00:05.000Z',
+        status: 'failed',
+        error: 'disk full',
+      })
+      await db.insert(backupRun).values({
+        policyId: hourlyBody.policy.id,
+        serverId,
+        runId: 'run_second',
+        startedAt: '2026-09-30T02:00:00.000Z',
+        finishedAt: '2026-09-30T02:00:05.000Z',
+        status: 'succeeded',
+        backupRef: 'bk_second',
+      })
+
+      const list = await app.request(base, { headers })
+      assertEquals(list.status, 200)
+      const listBody = (await list.json()) as { policies: PolicyBody[] }
+      assertEquals(listBody.policies.length, 2)
+      assertEquals(listBody.policies[0]?.automatic, true)
+      assertEquals(listBody.policies[0]?.lastRun, null)
+      assertEquals(listBody.policies[1]?.lastRun?.runId, 'run_second')
+      assertEquals(listBody.policies[1]?.lastRun?.backupId, 'bk_second')
+
+      const runs = await app.request(`${base}/${hourlyBody.policy.id}/runs?limit=1`, { headers })
+      assertEquals(runs.status, 200)
+      const runsBody = (await runs.json()) as { runs: Array<{ runId: string }> }
+      assertEquals(
+        runsBody.runs.map((run) => run.runId),
+        ['run_second']
+      )
+
+      const renameBefore = commandQueue.envelopes.length
+      const renamed = await app.request(`${base}/${hourlyBody.policy.id}`, {
+        method: 'PATCH',
+        headers,
+        body: JSON.stringify({ name: 'Every hour' }),
+      })
+      assertEquals(renamed.status, 200)
+      const renamedBody = (await renamed.json()) as { policy: PolicyBody; reconcile: unknown }
+      assertEquals(renamedBody.policy.name, 'Every hour')
+      assertEquals(renamedBody.reconcile, null)
+      assertEquals(commandQueue.envelopes.length, renameBefore)
+
+      const rescheduled = await app.request(`${base}/${hourlyBody.policy.id}`, {
+        method: 'PATCH',
+        headers,
+        body: JSON.stringify({
+          schedule: { preset: 'daily', time: '02:30' },
+          timezone: 'America/Chicago',
+          enabled: false,
+        }),
+      })
+      assertEquals(rescheduled.status, 200)
+      const rescheduledBody = (await rescheduled.json()) as { policy: PolicyBody }
+      assertEquals(rescheduledBody.policy.schedule, '30 2 * * *')
+      assertEquals(rescheduledBody.policy.preset, { preset: 'daily', time: '02:30' })
+      assertEquals(rescheduledBody.policy.timezone, 'America/Chicago')
+      assertEquals(rescheduledBody.policy.enabled, false)
+      const pushed = await latestBackupsReconcilePayload(db, serverId)
+      const pushedHourly = pushed.find((entry) => entry.policyId === hourlyBody.policy.id)
+      assertEquals(pushedHourly?.enabled, false)
+      assertEquals(String(pushedHourly?.onCalendar).endsWith(' America/Chicago'), true)
+
+      const invalid = await app.request(`${base}/${hourlyBody.policy.id}`, {
+        method: 'PATCH',
+        headers,
+        body: JSON.stringify({ schedule: '0 0 1 * 1' }),
+      })
+      assertEquals(invalid.status, 400)
+      assertEquals(((await invalid.json()) as { error: string }).error, 'backup_schedule_invalid')
+
+      const removed = await app.request(`${base}/${hourlyBody.policy.id}`, {
+        method: 'DELETE',
+        headers,
+      })
+      assertEquals(removed.status, 200)
+      assertEquals((await latestBackupsReconcilePayload(db, serverId)).length, 1)
+      const runRows = await db
+        .select({ id: backupRun.id })
+        .from(backupRun)
+        .where(eq(backupRun.policyId, hourlyBody.policy.id))
+      assertEquals(runRows.length, 0)
+
+      const gone = await app.request(`${base}/${hourlyBody.policy.id}`, {
+        method: 'DELETE',
+        headers,
+      })
+      assertEquals(gone.status, 404)
+    }
+  )
+})
+
+test('backups reconcile sweep pushes once per reconnect, including after all policies go', async () => {
+  await withManagedFixtures(
+    {},
+    async ({ db, app, secrets, userId, organizationId, environmentId, serverId }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const created = await app.request(`/environments/${environmentId}/managed`, {
+        method: 'POST',
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+          'Content-Type': 'application/json',
+        },
+        body: '{}',
+      })
+      assertEquals(created.status, 200)
+      const queue: CommandQueue & { envelopes: CommandEnvelope[] } = {
+        envelopes: [],
+        enqueue(envelope) {
+          this.envelopes.push(envelope)
+          return Promise.resolve()
+        },
+      }
+      const reconnect = async () => {
+        await db.execute(sql`
+          UPDATE server
+          SET is_connected = true,
+              status_changed_at = (
+                SELECT max(created_at) FROM command WHERE server_id = ${serverId}::uuid
+              ) + interval '1 millisecond'
+          WHERE id = ${serverId}::uuid
+        `)
+      }
+      const ownServer = () =>
+        queue.envelopes.filter(
+          (envelope) =>
+            envelope.serverId === serverId && envelope.type === 'server.backups.reconcile'
+        ).length
+
+      await reconnect()
+      await runBackupsReconcileSweep(db, queue)
+      assertEquals(ownServer(), 1)
+      // Already pushed since this connect: nothing more until the next one.
+      await runBackupsReconcileSweep(db, queue)
+      assertEquals(ownServer(), 1)
+
+      // Every policy deleted while the host was away: it still gets the
+      // (now empty) set on reconnect, because it was sent one before.
+      await db.delete(backupPolicy).where(eq(backupPolicy.organizationId, organizationId))
+      await reconnect()
+      await runBackupsReconcileSweep(db, queue)
+      assertEquals(ownServer(), 2)
+      assertEquals((await latestBackupsReconcilePayload(db, serverId)).length, 0)
+
+      await db.execute(sql`UPDATE server SET is_connected = false WHERE id = ${serverId}::uuid`)
+      await runBackupsReconcileSweep(db, queue)
+      assertEquals(ownServer(), 2)
+    }
+  )
 })

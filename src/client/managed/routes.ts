@@ -107,6 +107,19 @@ import {
 } from '../../features/managed/options.ts'
 import { findManagedBackupById, listManagedBackups } from '../../features/backups/backup-records.ts'
 import {
+  createBackupPolicyResponse,
+  deleteBackupPolicyResponse,
+  listBackupPoliciesResponse,
+  listBackupRunsResponse,
+  updateBackupPolicyResponse,
+} from './backup-policies.ts'
+import {
+  captureManagedBackupHost,
+  enqueueBackupsReconcile,
+} from '../../features/backups/reconcile.ts'
+import { insertManagedBackupPolicy } from '../../features/backups/policy-records.ts'
+import { defaultBackupSchedule } from '../../features/backups/schedules.ts'
+import {
   assertFailoverReplicaTransportAllowed,
   buildDisasterRecoveryQueuedResponse,
   buildEmptyManagedDetailResponse,
@@ -504,9 +517,14 @@ async function runManagedDeleteFanout(
   if (force) {
     // Hard-delete now: clear the runtime rows so `deleteProjectCascade`
     // stops gating on them, regardless of destroy outcomes. Report as
-    // deleted — the UI has nothing left to track.
+    // deleted — the UI has nothing left to track. The engine's backup
+    // policies cascade with the row, so its host gets the smaller set.
+    const backupHost = await captureManagedBackupHost(db, commandQueue, managedId)
     await clearPendingNullIdContainersForEnvironment(db, environmentId)
     await deleteManagedRuntimeRows(db, environmentId, managedId)
+    await enqueueBackupsReconcile(db, commandQueue, { actorType: 'user', actorId: userId }, [
+      backupHost,
+    ])
     return c.json(buildManagedDeleteHardResponse())
   }
 
@@ -619,6 +637,7 @@ async function insertManagedCreateTransaction(
   row: ManagedRow
   rootPassword: string
   prepared: PreparedManagedMemberApply[]
+  hasDefaultBackupPolicy: boolean
 }> {
   const { environmentId, ctx, serverId, name, rowOptions, initialDatabase, dataEncryptionSecrets } =
     params
@@ -702,11 +721,40 @@ async function insertManagedCreateTransaction(
     throw new ManagedPrepareRollbackError(prepared)
   }
 
+  const hasDefaultBackupPolicy = await insertDefaultBackupPolicy(tx, ctx, managedId)
+
   return {
     row,
     rootPassword: password,
     prepared: prepared.members,
+    hasDefaultBackupPolicy,
   }
+}
+
+/**
+ * Every new managed database gets one daily backup policy, keep the engine's
+ * default (owner decision 2026-09-30; storage volumes stay opt-in). Created in
+ * the engine's own transaction so a rolled-back create leaves no policy, and
+ * marked automatic by a null `created_by`. Existing engines are not backfilled.
+ */
+async function insertDefaultBackupPolicy(
+  tx: NonNullable<ReturnType<typeof getDb>>,
+  ctx: ManagedContext,
+  managedId: string
+): Promise<boolean> {
+  const backup = ctx.spec.backup
+  if (!backup) return false
+  await insertManagedBackupPolicy(tx, {
+    organizationId: ctx.organizationId,
+    managedId,
+    name: 'Daily',
+    schedule: defaultBackupSchedule(managedId),
+    timezone: null,
+    retentionKeep: Math.min(backup.defaultRetentionKeep, backup.maxRetentionKeep),
+    isEnabled: true,
+    createdBy: null,
+  })
+  return true
 }
 
 type PreparedManagedApply = {
@@ -870,6 +918,14 @@ async function createManagedAndEnqueueApply(
   if (enqueued instanceof Response) {
     await deleteManagedCompensation(db, created.row.id, environmentId)
     return enqueued
+  }
+
+  // Only after the create stuck: a compensated create cascades its policy away
+  // and must never have reached the host.
+  if (created.hasDefaultBackupPolicy) {
+    await enqueueBackupsReconcile(db, commandQueue, { actorType: 'user', actorId: userId }, [
+      createServerId,
+    ])
   }
 
   const primary = pickPrimaryCommandResult(enqueued)
@@ -2684,6 +2740,42 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       commandId: enqueued.commandId,
       serverId: enqueued.serverId,
     })
+  })
+
+  router.get('/environments/:id/managed/backup-policies', async (c) => {
+    const scope = await loadManagedContextScope(c)
+    if (scope instanceof Response) return scope
+    const row = await findManagedForEnvironment(scope.db, scope.environmentId)
+    if (!row) return c.json({ policies: [] })
+    return await listBackupPoliciesResponse(c, scope.db, row.id)
+  })
+
+  router.post('/environments/:id/managed/backup-policies', async (c) => {
+    const scope = await loadManagedRowScope(c)
+    if (scope instanceof Response) return scope
+    const body = await parseJsonBody(c)
+    if (body instanceof Response) return body
+    return await createBackupPolicyResponse(c, scope, body)
+  })
+
+  router.patch('/environments/:id/managed/backup-policies/:policyId', async (c) => {
+    const scope = await loadManagedRowScope(c)
+    if (scope instanceof Response) return scope
+    const body = await parseJsonBody(c)
+    if (body instanceof Response) return body
+    return await updateBackupPolicyResponse(c, scope, c.req.param('policyId'), body)
+  })
+
+  router.delete('/environments/:id/managed/backup-policies/:policyId', async (c) => {
+    const scope = await loadManagedRowScope(c)
+    if (scope instanceof Response) return scope
+    return await deleteBackupPolicyResponse(c, scope, c.req.param('policyId'))
+  })
+
+  router.get('/environments/:id/managed/backup-policies/:policyId/runs', async (c) => {
+    const scope = await loadManagedRowScope(c)
+    if (scope instanceof Response) return scope
+    return await listBackupRunsResponse(c, scope.db, scope.row.id, c.req.param('policyId'))
   })
 
   router.get('/organizations/:id/managed', async (c) => {

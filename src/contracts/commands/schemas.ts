@@ -2602,7 +2602,7 @@ const CRON_JOB_NAME_RE = /^[a-z0-9][a-z0-9-]{0,31}$/
  * answers to one question. This only ensures nothing structural can reach a
  * unit file.
  */
-const ON_CALENDAR_RE = /^[A-Za-z0-9 ,.:*/_-]{1,200}$/
+export const ON_CALENDAR_RE = /^[A-Za-z0-9 ,.:*/_-]{1,200}$/
 
 function parseDeployCronJobs(value: unknown): EnvironmentDeployCronJob[] | undefined {
   if (value === undefined) return undefined

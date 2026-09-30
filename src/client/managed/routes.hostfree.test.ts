@@ -558,6 +558,20 @@ test('GET org managed returns 401 without session', async () => {
   assertEquals(res.status, 401)
 })
 
+const POLICY_ID = '0192d6a0-0000-7000-8000-00000000b0b1'
+
+const BACKUP_POLICY_ROUTES: Array<{ method: string; path: string; body?: unknown }> = [
+  { method: 'GET', path: envPath('/backup-policies') },
+  {
+    method: 'POST',
+    path: envPath('/backup-policies'),
+    body: { name: 'Hourly', schedule: { preset: 'hourly' }, retentionKeep: 24 },
+  },
+  { method: 'PATCH', path: envPath(`/backup-policies/${POLICY_ID}`), body: { name: 'Renamed' } },
+  { method: 'DELETE', path: envPath(`/backup-policies/${POLICY_ID}`) },
+  { method: 'GET', path: envPath(`/backup-policies/${POLICY_ID}/runs`) },
+]
+
 const ENV_METHODS: Array<{ method: string; path: string; body?: unknown }> = [
   { method: 'GET', path: envPath() },
   { method: 'POST', path: envPath(), body: {} },
@@ -593,6 +607,7 @@ const ENV_METHODS: Array<{ method: string; path: string; body?: unknown }> = [
   { method: 'POST', path: envPath('/backups'), body: {} },
   { method: 'DELETE', path: envPath(`/backups/${BACKUP_ID}`) },
   { method: 'POST', path: envPath(`/backups/${BACKUP_ID}/restore`) },
+  ...BACKUP_POLICY_ROUTES,
 ]
 
 test('authenticated managed routes require an organization header', async () => {
@@ -644,6 +659,146 @@ test('authorizeManagedRequest returns 403 when manage is denied', async () => {
   await expectJson(await app.request(envPath(), { headers: authHeaders(cookie) }), 403, {
     error: 'Forbidden',
   })
+})
+
+function requestRoute(
+  app: Awaited<ReturnType<typeof buildApp>>['app'],
+  cookie: string,
+  route: { method: string; path: string; body?: unknown }
+): Promise<Response> {
+  return Promise.resolve(
+    app.request(route.path, {
+      method: route.method,
+      headers: authHeaders(
+        cookie,
+        route.body === undefined ? undefined : { 'content-type': 'application/json' }
+      ),
+      body: route.body === undefined ? undefined : JSON.stringify(route.body),
+    })
+  )
+}
+
+function capturingQueue(): CommandQueue & { envelopes: CommandEnvelope[] } {
+  const envelopes: CommandEnvelope[] = []
+  return {
+    envelopes,
+    enqueue: (envelope: CommandEnvelope) => {
+      envelopes.push(envelope)
+      return Promise.resolve()
+    },
+  }
+}
+
+test('backup policy routes hide a foreign environment as 404', async () => {
+  const db = fakeDb({
+    executeRows: [{ allowed: true, organization_id: OTHER_ORG, kind: 'user' }],
+  })
+  const { app, cookie } = await buildApp({ db })
+  for (const route of BACKUP_POLICY_ROUTES) {
+    const res = await requestRoute(app, cookie, route)
+    assertEquals(res.status, 404, `${route.method} ${route.path}`)
+  }
+})
+
+test('backup policy routes refuse a member without organization:manage with 403', async () => {
+  for (const route of BACKUP_POLICY_ROUTES) {
+    let executeCalls = 0
+    const db = {
+      ...fakeDb({ managedRows: [managedRow()] }),
+      execute: () => {
+        executeCalls += 1
+        if (executeCalls === 1) {
+          return Promise.resolve([{ organization_id: ORG_ID, kind: 'user' }])
+        }
+        return Promise.resolve([{ allowed: false, organization_id: ORG_ID, kind: 'user' }])
+      },
+    } as unknown as Db
+    const { app, cookie } = await buildApp({ db })
+    await expectJson(await requestRoute(app, cookie, route), 403, { error: 'Forbidden' })
+  }
+})
+
+test('backup policy routes let org owners and managers (organization:manage) list and create', async () => {
+  // Owners and managers both hold `organization:manage`; the fake answers the
+  // `can()` check with allowed=true, exactly as the real query does for them.
+  const commandQueue = capturingQueue()
+  const { app, cookie } = await buildApp({
+    db: fakeDb({ managedRows: [managedRow()] }),
+    commandQueue,
+  })
+
+  await expectJson(await requestRoute(app, cookie, BACKUP_POLICY_ROUTES[0]!), 200, {
+    policies: [],
+  })
+
+  const created = await requestRoute(app, cookie, BACKUP_POLICY_ROUTES[1]!)
+  assertEquals(created.status, 201)
+  const body = await jsonOf(created)
+  const policy = body.policy as Record<string, unknown>
+  assertEquals(policy.name, 'Hourly')
+  assertEquals(policy.schedule, '0 * * * *')
+  assertEquals(policy.preset, { preset: 'hourly' })
+  assertEquals(policy.retentionKeep, 24)
+  assertEquals(policy.automatic, false)
+  assertEquals(body.reconcile, { queuedServerIds: [SERVER_ID], failedServerIds: [] })
+  assertEquals(commandQueue.envelopes.length, 1)
+  assertEquals(commandQueue.envelopes[0]?.type, 'server.backups.reconcile')
+  assertEquals(commandQueue.envelopes[0]?.serverId, SERVER_ID)
+})
+
+test('backup policy create validates the body before writing', async () => {
+  const commandQueue = capturingQueue()
+  const { app, cookie } = await buildApp({
+    db: fakeDb({ managedRows: [managedRow()] }),
+    commandQueue,
+  })
+  const post = (body: Record<string, unknown>) =>
+    requestRoute(app, cookie, { method: 'POST', path: envPath('/backup-policies'), body })
+  const base = { name: 'Nightly', schedule: '0 2 * * *', retentionKeep: 7 }
+
+  const unionDays = await jsonOf(await post({ ...base, schedule: '0 0 1 * 1' }))
+  assertEquals(unionDays.error, 'backup_schedule_invalid')
+  const reboot = await jsonOf(await post({ ...base, schedule: '@reboot' }))
+  assertEquals(reboot.error, 'backup_schedule_invalid')
+  const badTime = await jsonOf(
+    await post({ ...base, schedule: { preset: 'daily', time: '25:00' } })
+  )
+  assertEquals(badTime.error, 'backup_schedule_invalid')
+  const badZone = await jsonOf(await post({ ...base, timezone: 'Not/AZone' }))
+  assertEquals(badZone.error, 'backup_timezone_invalid')
+  const tooMany = await jsonOf(await post({ ...base, retentionKeep: 51 }))
+  assertEquals(tooMany.error, 'backup_policy_invalid')
+  assertEquals(tooMany.field, 'retentionKeep')
+  const noName = await jsonOf(await post({ ...base, name: '  ' }))
+  assertEquals(noName.field, 'name')
+  await expectJson(await post({ ...base, targetKind: 'copy' }), 400, {
+    error: 'backup_target_unsupported',
+  })
+  assertEquals(commandQueue.envelopes.length, 0)
+})
+
+test('backup policy item routes answer 404 for an id that is not a policy', async () => {
+  const { app, cookie } = await buildApp({ db: fakeDb({ managedRows: [managedRow()] }) })
+  for (const route of BACKUP_POLICY_ROUTES.slice(2)) {
+    for (const policyId of [POLICY_ID, 'not-a-uuid']) {
+      const res = await requestRoute(app, cookie, {
+        ...route,
+        path: route.path.replace(POLICY_ID, policyId),
+      })
+      await expectJson(res, 404, { error: 'backup_policy_not_found' })
+    }
+  }
+})
+
+test('backup policy routes need a managed engine in the environment', async () => {
+  const { app, cookie } = await buildApp({ db: fakeDb({ managedRows: [] }) })
+  await expectJson(await requestRoute(app, cookie, BACKUP_POLICY_ROUTES[0]!), 200, {
+    policies: [],
+  })
+  for (const route of BACKUP_POLICY_ROUTES.slice(1)) {
+    const res = await requestRoute(app, cookie, route)
+    assertEquals(res.status, 404, `${route.method} ${route.path}`)
+  }
 })
 
 test('authorizeManagedRequest rejects a TurboPanel workspace as immutable', async () => {
