@@ -1,4 +1,4 @@
-# Cuts a GitHub Release on a v* tag: the compiled self-hosted instance,
+# Publishes a GitHub Release on a v* tag: the compiled self-hosted instance,
 # built natively on each architecture (no cross-compiling the DuckDB addon)
 # and packaged once in CI as turbopanel-instance-<version>-<arch>.tar.zst —
 # bin/turbopanel (the one binary: the server with the in-process email
@@ -80,7 +80,7 @@ jobs:
     # A tag pushed by a `[bot]` actor is the TurboPanel Release App
     # promoting a tested build (promote.yml → TurboPanel/dev gh-promote.yml);
     # that flow publishes the release itself, so this from-source path must
-    # not race it. A person pushing a tag still gets the classic cut; trunk
+    # not race it. A person pushing a tag still gets the classic from-source release; trunk
     # pushes (canary) are unaffected.
     if: github.event_name != 'push' || !startsWith(github.ref, 'refs/tags/') || !endsWith(github.actor, '[bot]')
     runs-on: ubuntu-latest
@@ -122,7 +122,7 @@ jobs:
 
       - name: Require the tag to match deno.json's version
         # The number the binary reports (src/app/version.ts reads deno.json) and
-        # the number on the release must be the same number — a tag cut
+        # the number on the release must be the same number — a tag pushed
         # before the bump is a release that lies about itself. Dry runs and
         # canary builds skip this.
         if: inputs.version == '' && steps.resolve.outputs.channel != 'canary'
