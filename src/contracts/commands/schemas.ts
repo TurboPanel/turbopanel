@@ -5581,7 +5581,7 @@ export type ManagedRestoreCommandPayload = {
   checksum: string
   sizeBytes?: number
   /**
-   * The `backuppolicy` that made the artifact, when a scheduled run did: the
+   * The `retention` that made the artifact, when a scheduled run did: the
    * daemon keeps each policy's artifacts in their own directory, so it needs
    * this to find the file. Omitted for a manual backup.
    */

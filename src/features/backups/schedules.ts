@@ -1,5 +1,5 @@
 /**
- * Backup policy schedules: what the API accepts, what `backuppolicy.schedule`
+ * Backup policy schedules: what the API accepts, what `retention.schedule`
  * stores, and what a host is sent.
  *
  * The API takes either a preset (`hourly`, `daily` at a time, `weekly` on a

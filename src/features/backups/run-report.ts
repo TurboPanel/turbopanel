@@ -27,7 +27,7 @@ import type {
   BackupRunReportResultMessage,
 } from '../../contracts/cell-protocol.ts'
 import type { Db } from '../../db/connection.ts'
-import { backup, backupPolicy, backupRun, managed } from '../../db/schema.ts'
+import { backup, retention, snapshot, managed } from '../../db/schema.ts'
 import { isManagedBackupArtifactExtension } from '../managed/types.ts'
 import { insertManagedBackup } from './backup-records.ts'
 
@@ -205,28 +205,28 @@ export function backupRunReportResultMessage(
 async function loadPolicyTarget(db: Db, policyId: string): Promise<BackupPolicyTarget | undefined> {
   const [row] = await db
     .select({
-      targetKind: backupPolicy.targetKind,
-      managedId: backupPolicy.managedId,
+      targetKind: retention.targetKind,
+      managedId: retention.managedId,
       managedServerId: managed.serverId,
     })
-    .from(backupPolicy)
-    .leftJoin(managed, eq(managed.id, backupPolicy.managedId))
-    .where(eq(backupPolicy.id, policyId))
+    .from(retention)
+    .leftJoin(managed, eq(managed.id, retention.managedId))
+    .where(eq(retention.id, policyId))
     .limit(1)
   return row
 }
 
 /**
  * One transaction, every query through `tx` (Workers has a single
- * connection per request). The run row goes first: when `(policy_id,
+ * connection per request). The run row goes first: when `(retention_id,
  * run_id)` already exists this is a resend, and nothing else is touched.
  */
 export async function recordBackupRun(db: Db, record: BackupRunRecord): Promise<void> {
   await db.transaction(async (tx) => {
     const inserted = await tx
-      .insert(backupRun)
+      .insert(snapshot)
       .values({
-        policyId: record.policyId,
+        retentionId: record.policyId,
         serverId: record.serverId,
         runId: record.runId,
         startedAt: record.startedAt,
@@ -235,8 +235,8 @@ export async function recordBackupRun(db: Db, record: BackupRunRecord): Promise<
         error: record.error ?? null,
         backupRef: record.artifact?.backupId ?? null,
       })
-      .onConflictDoNothing({ target: [backupRun.policyId, backupRun.runId] })
-      .returning({ id: backupRun.id })
+      .onConflictDoNothing({ target: [snapshot.retentionId, snapshot.runId] })
+      .returning({ id: snapshot.id })
     if (inserted.length === 0) return
 
     if (record.artifact) {
@@ -247,7 +247,7 @@ export async function recordBackupRun(db: Db, record: BackupRunRecord): Promise<
         checksum: record.artifact.checksum,
         path: record.artifact.path,
         createdAt: record.finishedAt,
-        policyId: record.policyId,
+        retentionId: record.policyId,
       })
     }
     if (record.pruned.length > 0) {
@@ -256,17 +256,17 @@ export async function recordBackupRun(db: Db, record: BackupRunRecord): Promise<
         .where(
           and(
             eq(backup.managedId, record.managedId),
-            eq(backup.policyId, record.policyId),
+            eq(backup.retentionId, record.policyId),
             inArray(backup.backupId, record.pruned)
           )
         )
     }
     if (record.nextRunAt !== undefined) {
       await tx
-        .update(backupPolicy)
+        .update(retention)
         // A report is not an edit: keep `updated_at` as the operator left it.
-        .set({ nextRunAt: record.nextRunAt, updatedAt: sql`${backupPolicy.updatedAt}` })
-        .where(eq(backupPolicy.id, record.policyId))
+        .set({ nextRunAt: record.nextRunAt, updatedAt: sql`${retention.updatedAt}` })
+        .where(eq(retention.id, record.policyId))
     }
   })
 }

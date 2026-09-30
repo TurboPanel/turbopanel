@@ -15,7 +15,7 @@
 
 import { and, eq, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import { backupPolicy, managed } from '../../db/schema.ts'
+import { retention, managed } from '../../db/schema.ts'
 import {
   type BackupPolicyWireEntry,
   parseBackupsReconcilePayload,
@@ -91,17 +91,17 @@ export async function buildBackupPolicySetForServer(
 ): Promise<BackupPolicyWireEntry[]> {
   const rows: ManagedPolicyRow[] = await db
     .select({
-      id: backupPolicy.id,
-      managedId: backupPolicy.managedId,
-      schedule: backupPolicy.schedule,
-      timezone: backupPolicy.timezone,
-      retentionKeep: backupPolicy.retentionKeep,
-      isEnabled: backupPolicy.isEnabled,
+      id: retention.id,
+      managedId: retention.managedId,
+      schedule: retention.schedule,
+      timezone: retention.timezone,
+      retentionKeep: retention.retentionKeep,
+      isEnabled: retention.isEnabled,
       engine: managed.engine,
     })
-    .from(backupPolicy)
-    .innerJoin(managed, eq(managed.id, backupPolicy.managedId))
-    .where(and(eq(managed.serverId, serverId), eq(backupPolicy.targetKind, 'managed')))
+    .from(retention)
+    .innerJoin(managed, eq(managed.id, retention.managedId))
+    .where(and(eq(managed.serverId, serverId), eq(retention.targetKind, 'managed')))
   const entries: BackupPolicyWireEntry[] = []
   for (const row of rows) {
     const entry = toWireEntry(row)
@@ -258,7 +258,7 @@ export async function runBackupsReconcileSweep(
       AND (
         EXISTS (
           SELECT 1
-          FROM backuppolicy bp
+          FROM retention bp
           JOIN managed m ON m.id = bp.managed_id
           WHERE m.server_id = srv.id
         )

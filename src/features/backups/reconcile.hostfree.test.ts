@@ -6,7 +6,7 @@
 
 import { assertEquals, assertRejects } from '@std/assert'
 import type { Db } from '../../db/connection.ts'
-import { backupPolicy, command, dispatch, managed } from '../../db/schema.ts'
+import { retention, command, dispatch, managed } from '../../db/schema.ts'
 import type { CommandEnvelope } from '../commands/envelope.ts'
 import type { CommandQueue } from '../commands/queue.ts'
 import { createNoopCommandQueue } from '../commands/noop-command-queue.ts'
@@ -92,7 +92,7 @@ function fakeDb(state: Partial<FakeState> = {}): { db: Db; state: FakeState } {
   const db = {
     select: () => ({
       from: (table: unknown) => {
-        if (table === backupPolicy) {
+        if (table === retention) {
           // The policy set joins `managed`; the existence check does not.
           const base = chain(full.hasPolicy ? [{ id: 'p' }] : [])
           base.innerJoin = () => chain(full.policyRows)
