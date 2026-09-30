@@ -1,3 +1,5 @@
+import { describeError } from './describe-error.ts'
+
 const encoder = new TextEncoder()
 
 type LogLevel = 'DEBUG' | 'INFO' | 'WARN' | 'ERROR'
@@ -14,8 +16,13 @@ const LOG_DEBUG_ENABLED =
   readEnv('TURBOPANEL_DAEMON_DEBUG') === 'true' ||
   readEnv('TURBOPANEL_LOG_LEVEL') === 'debug'
 
+/** An Error part also logs its code and wrapped cause (see describeError). */
+function formatPart(part: unknown): string {
+  return part instanceof Error ? describeError(part) : String(part)
+}
+
 function formatParts(parts: unknown[]): string {
-  return parts.map(String).join(' ')
+  return parts.map(formatPart).join(' ')
 }
 
 function splitMessageLines(message: string): string[] {
@@ -27,18 +34,11 @@ function splitMessageLines(message: string): string[] {
   return lines.length > 0 ? lines : ['']
 }
 
-function formatStructuredLine(
-  level: LogLevel,
-  component: string,
-  message: string,
-): string {
+function formatStructuredLine(level: LogLevel, component: string, message: string): string {
   return `${new Date().toISOString()} ${level} ${component}  ${message}\n`
 }
 
-function writeLogLine(
-  stream: 'stdout' | 'stderr',
-  line: string,
-): void {
+function writeLogLine(stream: 'stdout' | 'stderr', line: string): void {
   if (typeof Deno !== 'undefined') {
     const out = stream === 'stdout' ? Deno.stdout : Deno.stderr
     out.writeSync(encoder.encode(line))
@@ -48,11 +48,7 @@ function writeLogLine(
   out.write(line)
 }
 
-export function log(
-  level: LogLevel,
-  component: string,
-  ...parts: unknown[]
-): void {
+export function log(level: LogLevel, component: string, ...parts: unknown[]): void {
   const message = formatParts(parts)
   const stream = level === 'INFO' || level === 'DEBUG' ? 'stdout' : 'stderr'
 
@@ -65,13 +61,11 @@ export function logInfo(component: string, ...parts: unknown[]): void {
   log('INFO', component, ...parts)
 }
 
-export function isDaemonDebugEnabled(
-  env?: {
-    TURBOPANEL_DAEMON_DEBUG?: string
-    /** Ignored — cell trace uses {@link TURBOPANEL_DAEMON_DEBUG} only. */
-    TURBOPANEL_LOG_LEVEL?: string
-  },
-): boolean {
+export function isDaemonDebugEnabled(env?: {
+  TURBOPANEL_DAEMON_DEBUG?: string
+  /** Ignored — cell trace uses {@link TURBOPANEL_DAEMON_DEBUG} only. */
+  TURBOPANEL_LOG_LEVEL?: string
+}): boolean {
   const value = env?.TURBOPANEL_DAEMON_DEBUG ?? readEnv('TURBOPANEL_DAEMON_DEBUG')
   return value === '1' || value === 'true'
 }
@@ -85,32 +79,27 @@ export function daemonCellLog(
   level: LogLevel,
   serverId: string,
   connectionId: string | undefined,
-  message: string,
+  message: string
 ): void {
   if (level === 'DEBUG' && !isDaemonDebugEnabled()) return
   const conn = connectionId ?? 'unknown'
-  log(
-    level,
-    'daemon-cell',
-    `[daemon-cell serverId=${serverId} conn=${conn}] ${message}`,
-  )
+  log(level, 'daemon-cell', `[daemon-cell serverId=${serverId} conn=${conn}] ${message}`)
 }
 
 /** Serialize a trace detail value without Object's default `[object Object]`. */
 function serializeTraceValue(value: unknown): string {
   if (
-    typeof value === 'string' || typeof value === 'number' ||
-    typeof value === 'boolean' || typeof value === 'bigint'
+    typeof value === 'string' ||
+    typeof value === 'number' ||
+    typeof value === 'boolean' ||
+    typeof value === 'bigint'
   ) {
     return `${value}`
   }
   return JSON.stringify(value)
 }
 
-function formatTraceEvent(
-  event: string,
-  fields: Record<string, unknown>,
-): string {
+function formatTraceEvent(event: string, fields: Record<string, unknown>): string {
   const parts: string[] = [`event=${event}`]
   for (const key of Object.keys(fields).sort((a, b) => a.localeCompare(b))) {
     const value = fields[key]
@@ -123,23 +112,17 @@ function formatTraceEvent(
 export function componentTrace(
   component: string,
   event: string,
-  fields: Record<string, unknown>,
+  fields: Record<string, unknown>
 ): void {
   if (!isDaemonDebugEnabled()) return
   log('DEBUG', component, formatTraceEvent(event, fields))
 }
 
-export function cellTrace(
-  event: string,
-  fields: Record<string, unknown>,
-): void {
+export function cellTrace(event: string, fields: Record<string, unknown>): void {
   componentTrace('daemon-cell', event, fields)
 }
 
-export function commandConsumerTrace(
-  event: string,
-  fields: Record<string, unknown>,
-): void {
+export function commandConsumerTrace(event: string, fields: Record<string, unknown>): void {
   componentTrace('command-consumer', event, fields)
 }
 
