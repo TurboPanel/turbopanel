@@ -364,6 +364,7 @@ jobs:
           retention-days: 7
 
       - name: SonarQube Scan
+        id: sonar
         # Pull requests only; the quality gate blocks pull requests only. A
         # trunk push is analysed by sonar-trunk.yml after Build completes, from
         # the instance-coverage-lcov artifact uploaded above, so the scan does
@@ -383,6 +384,13 @@ jobs:
         with:
           args: >
             -Dsonar.qualitygate.wait=true
+
+      # The Sonar way gate fails only on ratings, so one new code smell passes
+      # it; this fails the PR on any new issue (owner rule, 2026-09-30). Runs
+      # only where the PR scan above ran, so it skips the promotion PRs too.
+      - name: No new Sonar issues
+        if: github.event_name == 'pull_request' && steps.sonar.outcome == 'success'
+        uses: TurboPanel/dev/.github/actions/sonar-new-issues@2db1bbfa3cff89a52fac3ee4a53bd495dc1c79b1 # dev#47
 
   # ClickHouse/Tabix metrics infrastructure is retired (DuckDB + Parquet /
   # Analytics Engine replaced it). The guard lives in TurboPanel/turbopaneld
