@@ -45,9 +45,9 @@ jobs:
       || (github.event_name == 'workflow_run'
           && github.event.workflow_run.event != 'pull_request'
           && github.event.workflow_run.conclusion != 'skipped')
-    uses: TurboPanel/dev/.github/workflows/gh-promote-ok-recheck.yml@2e0291995207bfd01fd911c1200d72fc3a17f4e0 # dev#41
+    uses: TurboPanel/dev/.github/workflows/gh-promote-ok-recheck.yml@387788e9e64344fc5de32f6b93abd178e956d6a1 # dev#42
     with:
-      dev-ref: 2e0291995207bfd01fd911c1200d72fc3a17f4e0
+      dev-ref: 387788e9e64344fc5de32f6b93abd178e956d6a1 # dev#42
       dry-run: ${{ github.event_name == 'workflow_dispatch' && !inputs.rerun }}
     # gh-promote-ok-recheck.yml finds the open PRs (pull-requests) and re-runs
     # their failed promote-ok run (actions: write).
@@ -58,12 +58,11 @@ jobs:
 
   dry-run:
     if: github.event_name == 'workflow_dispatch' && inputs.pr != ''
-    uses: TurboPanel/dev/.github/workflows/gh-promote-ok.yml@2e0291995207bfd01fd911c1200d72fc3a17f4e0 # dev#41
+    uses: TurboPanel/dev/.github/workflows/gh-promote-ok.yml@387788e9e64344fc5de32f6b93abd178e956d6a1 # dev#42
     with:
       repo-kind: instance
       ci-workflow: build.yml
-      version-file: deno.json
-      dev-ref: 2e0291995207bfd01fd911c1200d72fc3a17f4e0
+      dev-ref: 387788e9e64344fc5de32f6b93abd178e956d6a1 # dev#42
       pr-number: ${{ inputs.pr }}
     permissions:
       contents: read
