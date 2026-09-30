@@ -31,6 +31,7 @@ import { normalizeMachineKey } from '../../lib/machine-key.ts'
 import { daemonFeaturesColumnPatch } from './daemon-jsonb-write.ts'
 import { featuresMatch, parseServerDaemonState } from './daemon-state.ts'
 import { ensureSystemHierarchy } from '../system/hierarchy.ts'
+import { describeError } from '../../lib/describe-error.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
 import type { CommandQueue } from '../commands/queue.ts'
 import { isNoopCommandQueue } from '../commands/noop-command-queue.ts'
@@ -334,7 +335,7 @@ async function reconcileAfterHardwareReport(
   // the hello, and the next session check recomputes again.
   if (delta.resources !== undefined) {
     await recomputeAssignmentsForServer(db, serverId).catch((err) => {
-      console.warn(`tier assignment recompute failed for ${serverId}: ${String(err)}`)
+      console.warn(`tier assignment recompute failed for ${serverId}: ${describeError(err)}`)
     })
   }
 
@@ -350,7 +351,10 @@ async function reconcileAfterHardwareReport(
     !serverIpsEquals(delta.resources.ips, base?.resources?.ips)
   ) {
     await applyReportedAddressRepin(db, serverId, delta.resources.ips).catch((err) => {
-      compatLogWarn('server-registry', `membership repin failed for ${serverId}: ${String(err)}`)
+      compatLogWarn(
+        'server-registry',
+        `membership repin failed for ${serverId}: ${describeError(err)}`
+      )
     })
   }
 }

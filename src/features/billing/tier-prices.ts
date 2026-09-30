@@ -13,6 +13,7 @@
 
 import { forEachSequential } from '../../lib/sequential.ts'
 import type { Db } from '../../db/connection.ts'
+import { describeError } from '../../lib/describe-error.ts'
 import { logWarn } from '../../lib/logger.ts'
 import {
   getTiersByIds,
@@ -46,7 +47,10 @@ export async function cacheTierPrice(
   try {
     await updateTierById(db, tierId, { priceCents: price.unitAmount, currency: price.currency })
   } catch (err) {
-    logWarn('billing-tier-prices', `tier ${tierId}: price cache refresh failed: ${String(err)}`)
+    logWarn(
+      'billing-tier-prices',
+      `tier ${tierId}: price cache refresh failed: ${describeError(err)}`
+    )
   }
 }
 
