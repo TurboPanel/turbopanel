@@ -109,12 +109,12 @@ describe('build.yml fan-in', () => {
       assertStringIncludes(workflow, `needs.${shard}.result == 'success'`)
     }
     assertEquals(workflow.includes('Fail unless every upstream job succeeded'), false)
-    // The gate blocks pull requests only; a trunk push must not hold the canary.
-    assertStringIncludes(workflow, "continue-on-error: ${{ github.event_name != 'pull_request' }}")
-    assertStringIncludes(
-      workflow,
-      "-Dsonar.qualitygate.wait=${{ github.event_name == 'pull_request' }}"
-    )
+    // Build scans pull requests only and waits for their gate; a trunk push
+    // only uploads the merged LCOV (sonar-trunk.yml analyses it), so Sonar
+    // never holds back the canary.
+    assertStringIncludes(workflow, "&& github.event_name == 'pull_request'")
+    assertStringIncludes(workflow, '-Dsonar.qualitygate.wait=true')
+    assertStringIncludes(workflow, 'name: instance-coverage-lcov')
     // ci-ok: a cancelled PR run still fails it; a cancelled push run skips it.
     assertStringIncludes(workflow, "(github.event_name == 'pull_request' && always())")
     assertStringIncludes(workflow, "!contains(needs.*.result, 'cancelled')")
@@ -141,5 +141,31 @@ describe('build.yml fan-in', () => {
     const guard = 'staging:* | live:* | *:staging | *:live) REF=trunk ;;'
     assertEquals(workflow.split(guard).length - 1, 2)
     assertEquals(workflow.includes('REF="${{'), false)
+  })
+})
+
+describe('sonar-trunk.yml', () => {
+  const workflow = Deno.readTextFileSync(join(repoRoot, '.github/workflows/sonar-trunk.yml'))
+
+  it('analyses the trunk commit Build tested, beside the canary', () => {
+    assertStringIncludes(workflow, 'name: Sonar Trunk Analysis')
+    assertStringIncludes(workflow, 'workflows: [Build]')
+    assertStringIncludes(workflow, 'branches: [trunk]')
+    // Same filter as canary.yml: never the trunk -> staging PR's Build.
+    assertStringIncludes(workflow, "github.event.workflow_run.event == 'push'")
+    assertStringIncludes(workflow, "github.event.workflow_run.event == 'workflow_dispatch'")
+    // The LCOV Build merged, from that Build run.
+    assertStringIncludes(workflow, 'name: instance-coverage-lcov')
+    assertStringIncludes(workflow, 'run-id: ${{ github.event.workflow_run.id }}')
+    // The Build's commit, not GITHUB_SHA (the tip of trunk by the time it runs).
+    assertStringIncludes(workflow, 'ref: ${{ github.event.workflow_run.head_sha }}')
+    assertStringIncludes(workflow, 'fetch-depth: 0')
+    assertStringIncludes(workflow, '-Dsonar.branch.name=trunk')
+    assertStringIncludes(workflow, '-Dsonar.scm.revision=${{ github.event.workflow_run.head_sha }}')
+    assertStringIncludes(workflow, '-Dsonar.qualitygate.wait=false')
+    // Every trunk commit keeps its analysis: queued in order, never cancelled.
+    assertStringIncludes(workflow, 'cancel-in-progress: false')
+    assertStringIncludes(workflow, 'queue: max')
+    assertStringIncludes(workflow, 'permissions: {}')
   })
 })
