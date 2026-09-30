@@ -595,6 +595,8 @@ export type DaemonMessage =
       error?: string
       at: string
     }
+  | BackupRunReportMessage
+  | BackupRunReportResultMessage
   | {
       type: 'public-urls-update'
       id: string
@@ -683,6 +685,7 @@ export const DAEMON_INBOUND_ALLOWED = new Set([
   'topology-report',
   'acme-issuance-event',
   'instance-acme-issuance-event',
+  'backup-run-report',
   'fabric-paths-result',
   'dev-sync-result',
   'tunnel-token-result',
@@ -1028,6 +1031,85 @@ function validateAcmeIssuanceEventFields(record: Record<string, unknown>): strin
   return validateOptionalError(record.errorMessage)
 }
 
+/** A backup policy id: lower-case, because the host also uses it as a systemd unit name. */
+const BACKUP_POLICY_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+/** Daemon-minted run and artifact ids (`run_<hex>`, `bk_<hex>`); both become filenames. */
+const BACKUP_RUN_TOKEN_RE = /^[\w-]{1,64}$/
+const BACKUP_CHECKSUM_RE = /^[a-f0-9]{64}$/
+const BACKUP_RUN_STATUSES = new Set(['succeeded', 'failed'])
+
+/** Max characters for `backup-run-report.path`. */
+export const MAX_DAEMON_WS_BACKUP_PATH_CHARS = 1024
+
+/** Max `backup-run-report.pruned` entries (a policy keeps at most 100 artifacts). */
+export const MAX_DAEMON_WS_BACKUP_PRUNED = 256
+
+function isBackupRunToken(value: unknown): value is string {
+  return typeof value === 'string' && BACKUP_RUN_TOKEN_RE.test(value)
+}
+
+function isBackupPrunedList(value: unknown): boolean {
+  return (
+    Array.isArray(value) &&
+    value.length <= MAX_DAEMON_WS_BACKUP_PRUNED &&
+    value.every((entry) => isBackupRunToken(entry))
+  )
+}
+
+function validateBackupRunReportRun(record: Record<string, unknown>): string | null {
+  if (!isBoundedId(record.id)) return 'invalid id'
+  if (!isIsoTimestamp(record.at)) return 'invalid at timestamp'
+  if (typeof record.policyId !== 'string' || !BACKUP_POLICY_ID_RE.test(record.policyId)) {
+    return 'invalid policyId'
+  }
+  if (!isBackupRunToken(record.runId)) return 'invalid runId'
+  if (!isIsoTimestamp(record.startedAt)) return 'invalid startedAt'
+  if (!isIsoTimestamp(record.finishedAt)) return 'invalid finishedAt'
+  if (typeof record.status !== 'string' || !BACKUP_RUN_STATUSES.has(record.status)) {
+    return 'invalid status'
+  }
+  return (
+    validateOptionalIsoTimestamp(record.nextRunAt, 'nextRunAt') ??
+    validateOptionalError(record.error)
+  )
+}
+
+function validateBackupRunReportArtifact(record: Record<string, unknown>): string | null {
+  if (record.backupId !== undefined && !isBackupRunToken(record.backupId)) {
+    return 'invalid backupId'
+  }
+  if (
+    record.sizeBytes !== undefined &&
+    !(isNonNegativeInt(record.sizeBytes) && Number.isSafeInteger(record.sizeBytes))
+  ) {
+    return 'invalid sizeBytes'
+  }
+  if (
+    record.checksum !== undefined &&
+    (typeof record.checksum !== 'string' || !BACKUP_CHECKSUM_RE.test(record.checksum))
+  ) {
+    return 'invalid checksum'
+  }
+  if (
+    record.path !== undefined &&
+    (typeof record.path !== 'string' || record.path.length > MAX_DAEMON_WS_BACKUP_PATH_CHARS)
+  ) {
+    return 'invalid path'
+  }
+  if (record.pruned !== undefined && !isBackupPrunedList(record.pruned)) return 'invalid pruned'
+  return null
+}
+
+/**
+ * Shape only. Whether the report is believed (the policy exists, targets an
+ * engine on the reporting server, the artifact path is that policy's own) is
+ * decided by `handleBackupRunReport`, which answers `ok: false` rather than
+ * closing the socket, so one bad spool file cannot keep a daemon disconnected.
+ */
+function validateBackupRunReportFields(record: Record<string, unknown>): string | null {
+  return validateBackupRunReportRun(record) ?? validateBackupRunReportArtifact(record)
+}
+
 function isFabricPeerHealth(value: unknown): value is FabricPathPeerHealth {
   return typeof value === 'string' && FABRIC_PEER_HEALTH.has(value)
 }
@@ -1252,6 +1334,8 @@ function validateInboundMessageFields(record: Record<string, unknown>): string |
     case 'acme-issuance-event':
     case 'instance-acme-issuance-event':
       return validateAcmeIssuanceEventFields(record)
+    case 'backup-run-report':
+      return validateBackupRunReportFields(record)
     case 'fabric-paths-result':
       return validateFabricPathsResultFields(record)
     case 'dev-sync-result':

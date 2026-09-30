@@ -54,6 +54,8 @@ export async function insertManagedBackup(
     path: string
     /** Daemon-reported completion time, when available; defaults to now(). */
     createdAt?: string
+    /** The `backuppolicy` whose scheduled run made it; omitted for a manual backup. */
+    policyId?: string
   }
 ): Promise<ManagedBackupRecord> {
   const [row] = await db
@@ -65,6 +67,7 @@ export async function insertManagedBackup(
       checksum: params.checksum,
       database: params.database ?? null,
       path: params.path,
+      policyId: params.policyId ?? null,
       ...(params.createdAt !== undefined ? { createdAt: params.createdAt } : {}),
     })
     .onConflictDoNothing({ target: [backup.managedId, backup.backupId] })
