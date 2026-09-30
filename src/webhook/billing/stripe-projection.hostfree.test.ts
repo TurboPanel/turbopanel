@@ -368,6 +368,69 @@ test('T6 · an ended subscription revokes every license the organization holds �
   assertEquals(seatRows(db), [['si_1', S1, 2, 'price_S1']])
 })
 
+test('T6 · a past_due subscription keeps every license and its assignment while Stripe retries', async () => {
+  const db = emptyDb({
+    licenses: [licenseRow(LICENSE_BOUND, SERVER), licenseRow(LICENSE_SPARE, null)],
+    servers: [serverRow(SERVER, S1)],
+  })
+  const client = routedClient({
+    [SUB_ROUTE]: () => stripeSubscription({ status: 'past_due' }),
+  })
+  const entitlements = synced(
+    await projectStripeEvent(
+      { db, client, now: NOW },
+      {
+        id: 'evt_payment_failed',
+        type: 'customer.subscription.updated',
+        objectId: 'sub_1',
+        objectType: 'subscription',
+      }
+    )
+  )
+  assertEquals(entitlements.result.revokedLicenseIds, [])
+  assertEquals(entitlements.result.disconnectedServerIds, [])
+  assertEquals(
+    db.rows(license).every((row) => row.revokedAt === null),
+    true
+  )
+  assertEquals(db.rows(server)[0]?.assignedTierId, S1)
+  assertEquals(db.rows(subscription)[0]?.status, 'past_due')
+  assertEquals(db.rows(subscription)[0]?.pastDueSince, NOW)
+})
+
+test("T6 · customer.subscription.deleted — Stripe's dunning ending the subscription — revokes every license, bound ones included", async () => {
+  const db = emptyDb({
+    licenses: [licenseRow(LICENSE_BOUND, SERVER), licenseRow(LICENSE_SPARE, null)],
+    servers: [serverRow(SERVER, S1)],
+  })
+  const client = routedClient({
+    [SUB_ROUTE]: () => stripeSubscription({ status: 'canceled' }),
+  })
+  const entitlements = synced(
+    await projectStripeEvent(
+      { db, client, now: NOW },
+      {
+        id: 'evt_deleted',
+        type: 'customer.subscription.deleted',
+        objectId: 'sub_1',
+        objectType: 'subscription',
+      }
+    )
+  )
+  assertEquals(
+    [...entitlements.result.revokedLicenseIds].sort(),
+    [LICENSE_BOUND, LICENSE_SPARE].sort()
+  )
+  assertEquals(entitlements.result.disconnectedServerIds, [SERVER])
+  assertEquals(
+    db.rows(license).every((row) => row.revokedAt === NOW),
+    true
+  )
+  assertEquals(db.rows(server)[0]?.assignedTierId, null)
+  assertEquals(db.rows(subscription)[0]?.status, 'canceled')
+  assertEquals(db.rows(subscription)[0]?.pastDueSince, null)
+})
+
 test('T6 · a refetch that fails writes nothing — the rows are only ever written from a successful read', async () => {
   const db = emptyDb()
   const client = routedClient({
