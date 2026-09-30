@@ -15,7 +15,7 @@
 # finalize fast-forward) does nothing. workflow_dispatch re-runs a release cut
 # for a given rc tag.
 
-name: Cut release
+name: Cut Release
 
 on:
   push:
@@ -27,10 +27,12 @@ on:
         required: true
         type: string
 
+# Read-only by default. Writes (contents: write) only in the three promote
+# jobs: the v<x.y.z> tag, the GitHub release + rolling rc pointer, and the
+# live fast-forward. The "Start <next>" PR is opened with the Release App's
+# token (gh-next-version.yml), so no job needs pull-requests: write.
 permissions:
-  contents: write
-  actions: read
-  pull-requests: write
+  contents: read
 
 concurrency:
   group: cut-release
@@ -97,6 +99,8 @@ jobs:
       # Same signer pin as promote.yml.
       signer-ref: 93c4f94510c9499e6bf04366a9500fe9f8e38aaa
       # Default: the `release` environment approval stays for the release hop.
+    permissions:
+      contents: write # the v<x.y.z> tag
     secrets: inherit
 
   publish:
@@ -109,6 +113,8 @@ jobs:
       assets-artifact-name: ${{ needs.prepare.outputs.assets-artifact-name }}
       manifest-filename: ${{ needs.prepare.outputs.manifest-filename }}
       target-commit: ${{ needs.prepare.outputs.commit }}
+    permissions:
+      contents: write # the GitHub release
     secrets: inherit
 
   finalize:
@@ -120,6 +126,8 @@ jobs:
       commit: ${{ needs.prepare.outputs.commit }}
       branch: ${{ needs.prepare.outputs.branch }}
       manifest-filename: ${{ needs.prepare.outputs.manifest-filename }}
+    permissions:
+      contents: write # releases/latest, the rolling rc pointer, the live fast-forward
     secrets: inherit
 
   next-version:

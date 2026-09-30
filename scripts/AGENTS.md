@@ -71,8 +71,11 @@ imports):
     `src/features/install/public-urls.ts`, …).
   - **Deno** (`coverage/deno.lcov`) — host-free Deno suites listed in
     `scripts/test-coverage.sh`, via `deno coverage --lcov` (native V8). Then the
-    scan runs with `sonar.qualitygate.wait=true`; if the quality gate fails, the
-    workflow stops. **Coverage attribution (three independent traps — check all
+    scan runs; on a pull request it waits for the quality gate
+    (`sonar.qualitygate.wait=true`) and a failed gate fails the job. On a trunk
+    push it uploads without waiting and a scan error does not fail Build, so
+    Sonar never holds back the canary. The job is skipped (not failed) when a
+    coverage shard did not succeed. **Coverage attribution (three independent traps — check all
     when Sonar shows 0% / low % while local Vitest is healthy):** (1) a new Deno
     `*.test.ts` file must use a Deno suffix (not `.workers.test.ts`) so
     `scripts/test-coverage.sh` picks it up — prefer host-free unit suites there;

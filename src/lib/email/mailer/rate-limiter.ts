@@ -22,19 +22,28 @@ function readBurstFromEnv(defaultRate: number): number {
   return defaultRate
 }
 
+/** Milliseconds since the epoch; `Date.now` in production, a fake in tests. */
+export type RateLimiterClock = () => number
+
 export class RateLimiter {
   private readonly capacity: number
   private readonly msPerToken: number
+  private readonly now: RateLimiterClock
   private tokens: number
   private lastRefillMs: number
 
-  constructor(ratePerMinute?: number, burstCapacity?: number) {
+  /**
+   * `now` is the clock the bucket refills against. Tests pass a fake one so
+   * the token count never depends on how long the test itself took.
+   */
+  constructor(ratePerMinute?: number, burstCapacity?: number, now: RateLimiterClock = Date.now) {
     const rate = ratePerMinute && ratePerMinute > 0 ? ratePerMinute : readRateFromEnv()
     const burst = burstCapacity && burstCapacity > 0 ? burstCapacity : readBurstFromEnv(rate)
     this.capacity = burst
     this.msPerToken = 60_000 / rate
+    this.now = now
     this.tokens = burst
-    this.lastRefillMs = Date.now()
+    this.lastRefillMs = now()
   }
 
   tryAcquire(): boolean {
@@ -53,7 +62,7 @@ export class RateLimiter {
   }
 
   private refill(): void {
-    const now = Date.now()
+    const now = this.now()
     const elapsed = now - this.lastRefillMs
     if (elapsed <= 0) return
     this.tokens = Math.min(this.capacity, this.tokens + elapsed / this.msPerToken)
