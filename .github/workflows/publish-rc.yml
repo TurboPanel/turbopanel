@@ -3,9 +3,11 @@
 # runs the workflow file from the pushed commit, so the very first merge (which
 # brings this file into staging) already works.
 #
-#   1. resolve  the merged PR's head commit, the canary that was built from it
-#               (waits for it if it is still building), and a sanity check that
-#               the canary manifest names exactly that commit
+#   1. resolve  the merged PR's head commit and the canary that was built from
+#               it (waits for it if it is still building): the manifest copy on
+#               the rolling canary release that names exactly that commit. Its
+#               version (<base>-canary.<N>) came from tags, not a version file,
+#               and the manifest copy's name is what gh-promote is handed.
 #   2. prepare / publish / finalize   the shared promote workflows
 #               (TurboPanel/dev) with NO approval gate — the merge was the
 #               deliberate act; the rc is the canary's bytes re-signed
@@ -47,7 +49,7 @@ jobs:
     outputs:
       proceed: ${{ steps.r.outputs.proceed }}
       commit: ${{ steps.r.outputs.commit }}
-      build: ${{ steps.r.outputs.build }}
+      canary: ${{ steps.r.outputs.canary }}
       version: ${{ steps.r.outputs.version }}
     steps:
       - name: Find the merged PR, its canary build, and check they match
@@ -85,7 +87,6 @@ jobs:
           # and each names the commit it was built from. The build may still be
           # running (the PR can merge while the newest trunk commit is being
           # built) — wait, up to 45 minutes.
-          number=""
           manifest=""
           : > checked.txt
           for _ in $(seq 1 90); do
@@ -104,14 +105,13 @@ jobs:
             [ -n "$manifest" ] && break
             # A failed test run on that commit will never produce a canary. Push
           # runs only: a pull_request run tested a merge, not this commit.
-            if [ "$(gh run list --repo "$REPO" --workflow build.yml --commit "$commit" --event push --limit 1 --json conclusion --jq '.[0].conclusion // empty')" = "failure" ]; then
+            if [ "$(gh run list --repo "$REPO" --workflow build.yml --commit "$commit" --limit 10 --json event,conclusion --jq '[.[] | select(.event == "push" or .event == "workflow_dispatch")][0].conclusion // empty')" = "failure" ]; then
               echo "::error::the Build of $commit failed, so it has no canary — fix trunk and re-run this workflow with workflow_dispatch"
               exit 1
             fi
             sleep 30
           done
           [ -n "$manifest" ] || { echo "::error::no canary built from $commit after 45 minutes (superseded by a newer trunk merge, or pruned — the rail keeps the newest 20). Re-run this workflow with workflow_dispatch for a commit that has one."; exit 1; }
-          number="$(echo "$manifest" | sed -E 's/^.*-canary\.([0-9]+)\.json$/\1/')"
           version="$(jq -r .version manifest.json | sed 's/-canary\..*$//')"
 
           # Idempotence: this commit already has an rc (a re-run) — do not publish rc.N+1 of the same bytes.
@@ -126,20 +126,20 @@ jobs:
           {
             echo "proceed=true"
             echo "commit=$commit"
-            echo "build=$number"
+            echo "canary=$manifest"
             echo "version=$version"
           } >> "$GITHUB_OUTPUT"
-          echo "publishing an rc of $version from canary build $number ($commit)"
+          echo "publishing an rc of $version from canary $manifest ($commit)"
 
   prepare:
     needs: resolve
     if: needs.resolve.outputs.proceed == 'true'
-    uses: TurboPanel/dev/.github/workflows/gh-promote.yml@5464e72c40aec3528fb10e6fc660583ad963b3cb # dev#35
+    uses: TurboPanel/dev/.github/workflows/gh-promote.yml@ac03b76f3b1f3416f711c55b010a06daaf875dcd # dev#42
     with:
       repo-kind: instance
       to: rc
-      source: ${{ needs.resolve.outputs.build }}
-      dev-ref: 5464e72c40aec3528fb10e6fc660583ad963b3cb
+      source: ${{ needs.resolve.outputs.canary }}
+      dev-ref: ac03b76f3b1f3416f711c55b010a06daaf875dcd
       # Same signer pin as promote.yml.
       signer-ref: 93c4f94510c9499e6bf04366a9500fe9f8e38aaa
       # The merge of the promotion PR is the approval.
@@ -150,7 +150,7 @@ jobs:
 
   publish:
     needs: prepare
-    uses: TurboPanel/dev/.github/workflows/gh-release.yml@5464e72c40aec3528fb10e6fc660583ad963b3cb # dev#35
+    uses: TurboPanel/dev/.github/workflows/gh-release.yml@ac03b76f3b1f3416f711c55b010a06daaf875dcd # dev#42
     with:
       version: ${{ needs.prepare.outputs.version }}
       channel: rc
@@ -164,7 +164,7 @@ jobs:
 
   finalize:
     needs: [prepare, publish]
-    uses: TurboPanel/dev/.github/workflows/gh-promote-finalize.yml@5464e72c40aec3528fb10e6fc660583ad963b3cb # dev#35
+    uses: TurboPanel/dev/.github/workflows/gh-promote-finalize.yml@ac03b76f3b1f3416f711c55b010a06daaf875dcd # dev#42
     with:
       to: rc
       version: ${{ needs.prepare.outputs.version }}
@@ -190,7 +190,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: TurboPanel/dev
-          ref: 5464e72c40aec3528fb10e6fc660583ad963b3cb
+          ref: ac03b76f3b1f3416f711c55b010a06daaf875dcd
           path: .promote
           fetch-depth: 1
           persist-credentials: false
@@ -221,34 +221,3 @@ jobs:
           else
             gh pr create --repo "$REPO" --base live --head staging --title "$title" --body-file body.md
           fi
-
-  # A new minor's daemon Release PR waits for an rc of it in this repo
-  # (gh-minor-gate.yml): re-run its failed checks now that the rc exists. Best
-  # effort — if the App cannot, re-run the failed check by hand.
-  rerun-daemon:
-    needs: [prepare, finalize]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Mint a Release App token
-        id: app
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        with:
-          app-id: ${{ secrets.RELEASE_APP_ID }}
-          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
-          owner: TurboPanel
-          repositories: turbopaneld
-
-      - name: Check out the promotion scripts
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: TurboPanel/dev
-          ref: 5464e72c40aec3528fb10e6fc660583ad963b3cb
-          path: .promote
-          persist-credentials: false
-          sparse-checkout: scripts/promote
-          sparse-checkout-cone-mode: false
-
-      - name: Re-run the daemon's waiting Release PR checks
-        env:
-          GH_TOKEN: ${{ steps.app.outputs.token }}
-        run: sh .promote/scripts/promote/rerun-release-pr-checks.sh turbopaneld

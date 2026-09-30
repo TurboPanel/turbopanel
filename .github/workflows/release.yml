@@ -19,15 +19,19 @@
 #
 # Build (the Postgres-backed test suite and Sonar, ~25 min) is not re-run
 # here: the tag must sit on a commit whose Build already went green — the
-# prepare job checks that and refuses otherwise. Dry runs (workflow_dispatch
-# with a throwaway version) skip the tag ↔ deno.json check but still require
-# a green Build on the commit they build.
+# prepare job checks that and refuses otherwise (dry runs too).
 #
 # The canary channel reuses this same build: canary.yml calls this workflow
 # (workflow_call, channel=canary) after every green Build on trunk. The
-# version is then deno.json's number plus `-canary.<run number>`, and the
-# packages go to the rolling `canary` pre-release through TurboPanel/dev's
+# version then comes from git tags (TurboPanel/dev's Version From Tags
+# action): the base X.Y.Z is the newest release's next patch, or a started /
+# in-flight version, plus `-canary.<N>` with N restarting at 1 for each base.
+# The packages go to the rolling `canary` pre-release through TurboPanel/dev's
 # gh-canary.yml instead of a versioned release.
+#
+# Whatever the path, the binary reports the plain base X.Y.Z: it is stamped
+# into this checkout's deno.json (and package.json) before compiling, so
+# deno.json's committed number is only what a local build reports.
 #
 # Each binary is smoke-tested before it is packaged: the `duckdb-smoke`
 # subcommand opens embedded DuckDB with the permission shape the binary
@@ -89,6 +93,7 @@ jobs:
       actions: read # gh run list: the green Build for this commit
     outputs:
       version: ${{ steps.resolve.outputs.version }}
+      base: ${{ steps.resolve.outputs.base }}
       channel: ${{ steps.resolve.outputs.channel }}
       commit: ${{ steps.resolve.outputs.commit }}
     steps:
@@ -97,42 +102,45 @@ jobs:
         with:
           ref: ${{ inputs.ref || github.sha }}
 
+      - name: Work out the canary version from the tags
+        id: canary
+        if: inputs.channel == 'canary' && inputs.ref != ''
+        uses: TurboPanel/dev/.github/actions/version@ac03b76f3b1f3416f711c55b010a06daaf875dcd # dev#42
+        with:
+          mode: canary
+
       - name: Resolve version, channel and commit
         id: resolve
+        env:
+          CANARY_VERSION: ${{ steps.canary.outputs.version }}
+          CANARY_BASE: ${{ steps.canary.outputs.base }}
         run: |
           set -eu
           _commit="$(git rev-parse HEAD)"
           echo "commit=${_commit}" >> "$GITHUB_OUTPUT"
           if [ "${{ inputs.channel }}" = "canary" ] && [ -n "${{ inputs.ref }}" ]; then
-            # The rolling trunk build: deno.json's number (what the binary
-            # reports) plus a `-canary.<run number>` pre-release suffix, so every
-            # asset name is unique per build and semver orders it below the
-            # release it leads to.
-            _pkg_version="$(python3 -c 'import json; print(json.load(open("deno.json"))["version"])')"
-            echo "version=${_pkg_version}-canary.${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+            # The rolling trunk build: the base from the tags (what the binary
+            # reports) plus a `-canary.<N>` pre-release suffix, so every asset
+            # name is unique per build and semver orders it below the release
+            # it leads to.
+            case "$CANARY_VERSION" in
+              *-canary.*) ;;
+              *) echo "::error::no canary version worked out (got '${CANARY_VERSION}')"; exit 1 ;;
+            esac
+            echo "version=${CANARY_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "base=${CANARY_BASE}" >> "$GITHUB_OUTPUT"
             echo "channel=canary" >> "$GITHUB_OUTPUT"
           elif [ -n "${{ inputs.version }}" ]; then
             echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+            echo "base=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
             echo "channel=${{ inputs.channel }}" >> "$GITHUB_OUTPUT"
           else
+            # A tag pushed by hand: its number is the version (stamped below,
+            # not checked against deno.json — versions come from tags).
             _ref="${{ github.ref_name }}"
             echo "version=${_ref#v}" >> "$GITHUB_OUTPUT"
+            echo "base=${_ref#v}" >> "$GITHUB_OUTPUT"
             echo "channel=release" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Require the tag to match deno.json's version
-        # The number the binary reports (src/app/version.ts reads deno.json) and
-        # the number on the release must be the same number — a tag pushed
-        # before the bump is a release that lies about itself. Dry runs and
-        # canary builds skip this.
-        if: inputs.version == '' && steps.resolve.outputs.channel != 'canary'
-        run: |
-          set -eu
-          _tag_version="${{ steps.resolve.outputs.version }}"
-          _pkg_version="$(python3 -c 'import json; print(json.load(open("deno.json"))["version"])')"
-          if [ "$_tag_version" != "$_pkg_version" ]; then
-            echo "::error::tag v${_tag_version} does not match deno.json version ${_pkg_version} — bump deno.json (and package.json, sonar.projectVersion) first"
-            exit 1
           fi
 
       - name: Require a green Build on this commit
@@ -170,6 +178,7 @@ jobs:
     env:
       TP_ARCH: ${{ matrix.arch }}
       TP_VERSION: ${{ needs.prepare.outputs.version }}
+      TP_BASE_VERSION: ${{ needs.prepare.outputs.base }}
       TP_COMMIT: ${{ needs.prepare.outputs.commit }}
     steps:
       - name: Check out repository
@@ -195,12 +204,31 @@ jobs:
         run: pnpm install --prod --frozen-lockfile --ignore-scripts
 
       - name: Stamp the build identity
-        # The version already comes from deno.json (src/app/version.ts); only the
-        # commit is empty in source (BUILD_INFO in src/app/build-info.ts) — it is
-        # what /api/health reports as the Corresponding Source revision when
-        # no TURBOPANEL_REVISION env is set. Transient in this checkout only.
+        # The version: src/app/version.ts reads deno.json, so the base X.Y.Z
+        # (never the -canary.N label) is written into deno.json and
+        # package.json here; a dry run's throwaway version (not X.Y.Z) leaves
+        # them alone. The commit is empty in source (BUILD_INFO in
+        # src/app/build-info.ts) — it is what /api/health reports as the
+        # Corresponding Source revision when no TURBOPANEL_REVISION env is
+        # set. Transient in this checkout only.
         run: |
           set -eu
+          case "$TP_BASE_VERSION" in
+            [0-9]*.[0-9]*.[0-9]*)
+              python3 - <<'PY'
+          import json, os
+          for path in ("deno.json", "package.json"):
+              with open(path) as f:
+                  config = json.load(f)
+              config["version"] = os.environ["TP_BASE_VERSION"]
+              with open(path, "w") as f:
+                  json.dump(config, f, indent=2)
+                  f.write("\n")
+          PY
+              echo "building ${TP_BASE_VERSION} (${TP_VERSION})"
+              ;;
+            *) echo "dry run ${TP_BASE_VERSION}: deno.json keeps its number" ;;
+          esac
           grep -q "commit: ''," src/app/build-info.ts
           sed -i "s/commit: '',/commit: '${TP_COMMIT}',/" src/app/build-info.ts
           grep -q "commit: '${TP_COMMIT}'," src/app/build-info.ts
@@ -389,7 +417,7 @@ jobs:
     if: needs.prepare.outputs.channel == 'canary'
     permissions:
       contents: write # gh-canary.yml: rolling `canary` release assets + tag move
-    uses: TurboPanel/dev/.github/workflows/gh-canary.yml@60fd59793793a2c8e8d5f30536e3036dc628d6da # dev#40
+    uses: TurboPanel/dev/.github/workflows/gh-canary.yml@ac03b76f3b1f3416f711c55b010a06daaf875dcd # dev#42
     with:
       version: ${{ needs.prepare.outputs.version }}
       commit: ${{ needs.prepare.outputs.commit }}
