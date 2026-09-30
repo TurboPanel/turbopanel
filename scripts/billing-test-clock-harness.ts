@@ -82,7 +82,7 @@
  *  - A test clock advances at most a couple of billing intervals per call;
  *    the retry window is walked a week at a time.
  */
-import { and, eq, inArray, isNull } from 'drizzle-orm'
+import { and, eq, isNull } from 'drizzle-orm'
 import { createDenoDb, type Db, endDbConnection } from '../src/db/connection.ts'
 import { createLicense } from '../src/features/licenses/license.ts'
 import { changeSeats, downgradeTier, upgradeTier } from '../src/client/billing/mutations.ts'
@@ -95,7 +95,10 @@ import {
   billingPendingChangesKey,
   readPendingChanges,
 } from '../src/features/billing/pending-changes.ts'
-import { billingQuantityLockKey } from '../src/features/billing/quantity-lock.ts'
+import {
+  BILLING_QUANTITY_LOCK_NAME,
+  resetBillingQuantityLockForTests,
+} from '../src/features/billing/quantity-lock.ts'
 import { createSubscription } from '../src/features/billing/subscriptions.ts'
 import {
   advanceTestClock,
@@ -111,7 +114,7 @@ import {
   type OrganizationBillingState,
   seatQuantitiesByTier,
 } from '../src/features/billing/billing-records.ts'
-import { license, organization, server, setting } from '../src/db/schema.ts'
+import { lease, license, organization, server, setting } from '../src/db/schema.ts'
 import { listActiveTiers, type TierRow } from '../src/features/tiers/tier-records.ts'
 import { ladderEntry } from '../src/features/tiers/ladder.ts'
 import { projectSubscriptionById } from '../src/webhook/billing/stripe-projection.ts'
@@ -307,10 +310,10 @@ export async function openHarness(
 }
 
 async function createScenarioOrganization(db: Db, name: string): Promise<string> {
-  const slug = `harness-${name}-${crypto.randomUUID().slice(0, 8)}`
+  const suffix = crypto.randomUUID().slice(0, 8)
   const [row] = await db
     .insert(organization)
-    .values({ name: `Billing harness: ${name}`, slug })
+    .values({ name: `Billing harness: ${name} (${suffix})` })
     .returning({ id: organization.id })
   if (!row) throw new Error('organization insert returned no row')
   return row.id
@@ -352,15 +355,13 @@ export async function runScenario(harness: Harness, scenario: Scenario): Promise
   } finally {
     await harness.db
       .delete(setting)
-      .where(
-        inArray(setting.key, [
-          billingPendingChangesKey(organizationId),
-          billingQuantityLockKey(organizationId),
-        ])
-      )
+      .where(eq(setting.key, billingPendingChangesKey(organizationId)))
       .catch((err) => {
-        log(`cleanup: ledger/lease delete failed: ${String(err)}`)
+        log(`cleanup: ledger delete failed: ${String(err)}`)
       })
+    await resetBillingQuantityLockForTests(harness.db, organizationId).catch((err) => {
+      log(`cleanup: lease delete failed: ${String(err)}`)
+    })
     await harness.db
       .delete(server)
       .where(eq(server.organizationId, organizationId))
@@ -1092,11 +1093,16 @@ const upgradeWhilePastDue: Scenario = {
       0,
       'no intent recorded behind a refusal'
     )
-    const [lease] = await ctx.db
-      .select({ key: setting.key })
-      .from(setting)
-      .where(eq(setting.key, billingQuantityLockKey(ctx.organizationId)))
-    checkEqual(lease, undefined, 'the lease was released after the refusal')
+    const [leaseRow] = await ctx.db
+      .select({ id: lease.id })
+      .from(lease)
+      .where(
+        and(
+          eq(lease.name, BILLING_QUANTITY_LOCK_NAME),
+          eq(lease.organizationId, ctx.organizationId)
+        )
+      )
+    checkEqual(leaseRow, undefined, 'the lease was released after the refusal')
     let state = await listSeatsForOrganization(ctx.db, ctx.organizationId)
     checkEqual(quantity(state, s3.id), 1, 'entitlement unchanged by the refusals')
     checkEqual(await assignedTierOf(ctx, serverId), s3.id, 'assignment unchanged by the refusals')
