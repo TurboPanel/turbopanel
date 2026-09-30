@@ -389,7 +389,7 @@ jobs:
     if: needs.prepare.outputs.channel == 'canary'
     permissions:
       contents: write # gh-canary.yml: rolling `canary` release assets + tag move
-    uses: TurboPanel/dev/.github/workflows/gh-canary.yml@e701cabcbedc113d6e230cf18f2f82f146bbc6b1 # dev#20
+    uses: TurboPanel/dev/.github/workflows/gh-canary.yml@60fd59793793a2c8e8d5f30536e3036dc628d6da # dev#40
     with:
       version: ${{ needs.prepare.outputs.version }}
       commit: ${{ needs.prepare.outputs.commit }}
