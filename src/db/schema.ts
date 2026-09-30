@@ -2246,6 +2246,12 @@ export const backup = pgTable(
     database: text(),
     /** Artifact path on the host filesystem. */
     path: text().notNull(),
+    /**
+     * The {@link backupPolicy} whose scheduled run made this artifact; null for
+     * a manual backup. `set null` so deleting a policy keeps the record of an
+     * artifact that is still on disk.
+     */
+    policyId: uuid('policy_id'),
   },
   (table) => [
     index('idx_backup_managed_id_created_at').using(
@@ -2253,11 +2259,17 @@ export const backup = pgTable(
       table.managedId.asc(),
       table.createdAt.desc()
     ),
+    index('idx_backup_policy_id').using('btree', table.policyId.asc().nullsLast()),
     foreignKey({
       columns: [table.managedId],
       foreignColumns: [managed.id],
       name: 'backup_managed_id_managed_id_fk',
     }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.policyId],
+      foreignColumns: [backupPolicy.id],
+      name: 'backup_policy_id_backuppolicy_id_fk',
+    }).onDelete('set null'),
     uniqueIndex('uniq_backup_managed_backup_id').on(table.managedId, table.backupId),
     check('backup_id_format_check', sql`backup_id ~ '^[A-Za-z0-9_-]+$'`),
     check('backup_checksum_format_check', sql`checksum ~ '^[a-f0-9]{64}$'`),
@@ -3914,6 +3926,202 @@ export const storageCopy = pgTable(
       'copy_state_check',
       sql`state IN ('pending', 'materializing', 'ready', 'syncing', 'stale', 'failed', 'retiring')`
     ),
+  ]
+)
+/**
+ * A scheduled backup of one target — a managed engine or one local storage
+ * copy. The control plane owns the row; each host receives the full set of
+ * policies whose target lives on it (`server.backups.reconcile`) and runs
+ * them from its own systemd timers, so a run never waits on the control plane.
+ *
+ * `organization_id` is denormalized, unlike {@link backup}: the target is
+ * polymorphic (`managed` or `copy`), so there is no single parent chain to
+ * resolve it through, and the policy list is read per organization.
+ */
+export const backupPolicy = pgTable(
+  'backuppolicy',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .$onUpdate(() => sql`now()`)
+      .notNull(),
+    organizationId: uuid('organization_id').notNull(),
+    targetKind: text('target_kind').notNull(),
+    managedId: uuid('managed_id'),
+    copyId: uuid('copy_id'),
+    name: text().notNull(),
+    /** As authored: a cron expression or alias; translated to `OnCalendar` when pushed. */
+    schedule: text().notNull(),
+    /** IANA zone the schedule is read in; null means the host's local time. */
+    timezone: text(),
+    retentionKeep: integer('retention_keep').notNull(),
+    isEnabled: boolean('is_enabled').default(true).notNull(),
+    nextRunAt: timestamp('next_run_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }),
+    createdBy: uuid('created_by'),
+  },
+  (table) => [
+    index('idx_backuppolicy_organization_id').using('btree', table.organizationId.asc()),
+    index('idx_backuppolicy_managed_id').using('btree', table.managedId.asc().nullsLast()),
+    index('idx_backuppolicy_copy_id').using('btree', table.copyId.asc().nullsLast()),
+    foreignKey({
+      columns: [table.organizationId],
+      foreignColumns: [organization.id],
+      name: 'backuppolicy_organization_id_organization_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.managedId],
+      foreignColumns: [managed.id],
+      name: 'backuppolicy_managed_id_managed_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.copyId],
+      foreignColumns: [storageCopy.id],
+      name: 'backuppolicy_copy_id_copy_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.createdBy],
+      foreignColumns: [user.id],
+      name: 'backuppolicy_created_by_user_id_fk',
+    }).onDelete('set null'),
+    // Mirror BACKUP_TARGET_KINDS (src/features/backups/vocabulary.ts) — pinned by enum-checks.test.ts.
+    check('backuppolicy_target_kind_check', sql`target_kind IN ('managed', 'copy')`),
+    check(
+      'backuppolicy_target_check',
+      sql`(target_kind = 'managed' AND managed_id IS NOT NULL AND copy_id IS NULL) OR (target_kind = 'copy' AND copy_id IS NOT NULL AND managed_id IS NULL)`
+    ),
+    check('backuppolicy_retention_keep_check', sql`retention_keep BETWEEN 1 AND 100`),
+  ]
+)
+/**
+ * One finished scheduled run of a {@link backupPolicy}, reported by the host
+ * that ran it. `run_id` is minted by the daemon and unique per policy, not
+ * globally, for the same reason `backup.backup_id` is: a global key would let
+ * one host's report shadow another organization's record of the same string.
+ */
+export const backupRun = pgTable(
+  'backuprun',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .notNull(),
+    policyId: uuid('policy_id').notNull(),
+    serverId: uuid('server_id').notNull(),
+    runId: text('run_id').notNull(),
+    startedAt: timestamp('started_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }).notNull(),
+    finishedAt: timestamp('finished_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }).notNull(),
+    status: text().notNull(),
+    error: text(),
+    /** The `bk_` id of the artifact the run produced; null when it failed. */
+    backupRef: text('backup_ref'),
+  },
+  (table) => [
+    index('idx_backuprun_policy_id_started_at').using(
+      'btree',
+      table.policyId.asc(),
+      table.startedAt.desc()
+    ),
+    index('idx_backuprun_server_id').using('btree', table.serverId.asc()),
+    uniqueIndex('uniq_backuprun_policy_run_id').on(table.policyId, table.runId),
+    foreignKey({
+      columns: [table.policyId],
+      foreignColumns: [backupPolicy.id],
+      name: 'backuprun_policy_id_backuppolicy_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.serverId],
+      foreignColumns: [server.id],
+      name: 'backuprun_server_id_server_id_fk',
+    }).onDelete('cascade'),
+    check('backuprun_run_id_format_check', sql`run_id ~ '^[A-Za-z0-9_-]+$'`),
+    // Mirror BACKUP_RUN_STATUSES (src/features/backups/vocabulary.ts) — pinned by enum-checks.test.ts.
+    check('backuprun_status_check', sql`status IN ('succeeded', 'failed')`),
+    check(
+      'backuprun_backup_ref_format_check',
+      sql`backup_ref IS NULL OR backup_ref ~ '^[A-Za-z0-9_-]+$'`
+    ),
+  ]
+)
+/**
+ * One completed backup artifact of a local storage copy — the volume twin of
+ * {@link backup}, with the same per-target uniqueness and format checks.
+ */
+export const volumeBackup = pgTable(
+  'volumebackup',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .notNull(),
+    copyId: uuid('copy_id').notNull(),
+    policyId: uuid('policy_id'),
+    backupId: text('backup_id').notNull(),
+    sizeBytes: bigint('size_bytes', { mode: 'number' }).notNull(),
+    checksum: text().notNull(),
+    path: text().notNull(),
+  },
+  (table) => [
+    index('idx_volumebackup_copy_id_created_at').using(
+      'btree',
+      table.copyId.asc(),
+      table.createdAt.desc()
+    ),
+    index('idx_volumebackup_policy_id').using('btree', table.policyId.asc().nullsLast()),
+    uniqueIndex('uniq_volumebackup_copy_backup_id').on(table.copyId, table.backupId),
+    foreignKey({
+      columns: [table.copyId],
+      foreignColumns: [storageCopy.id],
+      name: 'volumebackup_copy_id_copy_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.policyId],
+      foreignColumns: [backupPolicy.id],
+      name: 'volumebackup_policy_id_backuppolicy_id_fk',
+    }).onDelete('set null'),
+    check('volumebackup_backup_id_format_check', sql`backup_id ~ '^[A-Za-z0-9_-]+$'`),
+    check('volumebackup_checksum_format_check', sql`checksum ~ '^[a-f0-9]{64}$'`),
+    check('volumebackup_size_bytes_check', sql`size_bytes >= 0`),
   ]
 )
 /**

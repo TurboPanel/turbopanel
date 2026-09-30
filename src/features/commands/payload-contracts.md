@@ -53,6 +53,24 @@ consumer timeout. **Nothing in the control plane enqueues this command yet**
 (`fw-derived-rules` builds the desired-state derivation); the contract lands
 first so both repos agree before either side depends on it.
 
+`server.backups.reconcile` (added 2026-09-30, Road row `r2-backup-schema`)
+carries the **complete** set of scheduled backup policies whose target lives on
+one server, the same full-set contract as `server.principals.reconcile`:
+`{ policies[] }`, each `{ policyId, targetKind: managed | copy, managedId? +
+engine? + artifactExtension? (managed), copyId? (copy), onCalendar,
+retentionKeep 1–100, enabled }`. Exactly one target is set for the kind;
+`policyId` is a lower-case UUID because it becomes the unit name
+`turbopanel-backup-<policyId>.timer`; `onCalendar` is already translated from
+the authored schedule (`cronToOnCalendar`) and checked only for charset, like
+cron jobs. The host renders one timer + oneshot service per enabled policy,
+removes every `turbopanel-backup-*` unit not in the set, and each run happens
+on the host with no control-plane round trip. Result: `{ policiesApplied,
+unitsChanged[], unitsRemoved[], nextRuns[]: { policyId, nextRunAt? },
+warnings[] }`. 120s consumer timeout. `managed.restore` gains an optional
+`policyId` so the daemon can find an artifact in that policy's own directory.
+**Nothing in the control plane enqueues this command yet** (Road row
+`r2-backup-policy-api`); the contract lands first, as the firewall one did.
+
 `server.reboot` requires `organization:manage`, carries an empty payload, uses a
 120s consumer timeout, has no `touchServerMetadata` side-effect, and is executed
 daemon-side via `sudo systemctl reboot` (handler implemented in a separate

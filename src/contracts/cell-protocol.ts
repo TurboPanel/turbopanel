@@ -213,6 +213,51 @@ export type TunnelTokenMessage = {
   at: string
 }
 
+/**
+ * Daemon → control plane: one finished scheduled backup run, read from the
+ * host's result spool. Correlated by `id`: the daemon deletes the spooled
+ * result only when a {@link BackupRunReportResultMessage} with the same `id`
+ * arrives, so a report lost in a disconnect is simply sent again, and
+ * `runId` (unique per policy) makes the second copy a no-op. The artifact
+ * fields are present when `status` is `succeeded`. Twin of
+ * `turbopaneld/src/contracts/cell-messages.ts`; not yet accepted inbound
+ * (Road row `r2-backup-status-report` wires it).
+ */
+export type BackupRunReportMessage = {
+  type: 'backup-run-report'
+  id: string
+  policyId: string
+  runId: string
+  startedAt: string
+  finishedAt: string
+  status: 'succeeded' | 'failed'
+  error?: string
+  backupId?: string
+  sizeBytes?: number
+  checksum?: string
+  path?: string
+  /** `bk_` ids this run's retention removed from the policy's directory. */
+  pruned?: string[]
+  /** When the policy's timer next fires, read from systemd after the run. */
+  nextRunAt?: string
+  at: string
+}
+
+/**
+ * Control plane → daemon: the report with this `id` is stored (`ok: true`) or
+ * refused for good (`ok: false`, e.g. the policy is gone or targets another
+ * server) — either way the daemon drops the spooled result. No reply means a
+ * transient failure, and the report is sent again. Twin of
+ * `turbopaneld/src/contracts/cell-messages.ts`.
+ */
+export type BackupRunReportResultMessage = {
+  type: 'backup-run-report-result'
+  id: string
+  ok: boolean
+  error?: string
+  at: string
+}
+
 /** Instance-wide ACME knobs for hostnames whose source is `lets-encrypt`. */
 export type InstanceAcmeWireSettings = {
   contactEmail: string
