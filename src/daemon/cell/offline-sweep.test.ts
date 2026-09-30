@@ -6,14 +6,14 @@
  * and collides with `lib.deno.ns` + DOM. Excluded from `deno task check:types`;
  * the Workers toolchain owns this file's types.
  */
-import { assertEquals } from "@std/assert";
-import { it } from "@std/testing/bdd";
+import { assertEquals } from '@std/assert'
+import { it } from '@std/testing/bdd'
 import type {
   DaemonCell,
   DaemonCellLiveness,
   DaemonCellRegistry,
   DaemonCellSnapshot,
-} from "../../contracts/cell.ts";
+} from '../../contracts/cell.ts'
 import {
   canDirectHealFromAeEvidence,
   ALERT_DELIVERY_BUDGET_MS,
@@ -35,258 +35,237 @@ import {
   sweepOnce,
   takeLastOfflineSweepScheduledTimeForTests,
   updateNullGraceBookkeeping,
-} from "./offline-sweep.ts";
-import type { Alert } from "../../features/alerts/alert-sender.ts";
-import { WEBHOOK_DELIVERY_SWEEP_LIMIT } from "../../features/webhook-delivery/webhook-delivery-records.ts";
-import type { ExecutionLogStore } from "../../features/execution-logs/types.ts";
+} from './offline-sweep.ts'
+import type { Alert } from '../../features/alerts/alert-sender.ts'
+import { WEBHOOK_DELIVERY_SWEEP_LIMIT } from '../../features/webhook-delivery/webhook-delivery-records.ts'
+import type { ExecutionLogStore } from '../../features/execution-logs/types.ts'
 import {
   endOfflineSweep,
   OFFLINE_SWEEP_LEASE_MS,
   tryBeginOfflineSweep,
-} from "./offline-sweep-lease.ts";
-import type { Db } from "../../db/connection.ts";
-import { COMMAND_DISPATCH_SWEEP_LIMIT } from "../../features/commands/command-records.ts";
+} from './offline-sweep-lease.ts'
+import type { Db } from '../../db/connection.ts'
+import { COMMAND_DISPATCH_SWEEP_LIMIT } from '../../features/commands/command-records.ts'
 
-const serverId = "srv-offline-sweep-null-grace";
+const serverId = 'srv-offline-sweep-null-grace'
 
 function connectedWithNullPing(): DaemonCellLiveness {
-  return { connected: true, lastPingAtMs: null };
+  return { connected: true, lastPingAtMs: null }
 }
 
 function connectedWithWarmPing(nowMs: number): DaemonCellLiveness {
-  return { connected: true, lastPingAtMs: nowMs - 30_000 };
+  return { connected: true, lastPingAtMs: nowMs - 30_000 }
 }
 
-it("canDirectHealFromAeEvidence requires a sample newer than offlineAt", () => {
-  const offlineAt = "2020-01-01T00:01:00.000Z";
-  const offlineMs = Date.parse(offlineAt);
+it('canDirectHealFromAeEvidence requires a sample newer than offlineAt', () => {
+  const offlineAt = '2020-01-01T00:01:00.000Z'
+  const offlineMs = Date.parse(offlineAt)
 
-  assertEquals(canDirectHealFromAeEvidence(offlineAt, undefined), false);
-  assertEquals(canDirectHealFromAeEvidence(offlineAt, offlineMs), false);
-  assertEquals(canDirectHealFromAeEvidence(offlineAt, offlineMs - 1), false);
-  assertEquals(canDirectHealFromAeEvidence(offlineAt, offlineMs + 1), true);
-});
+  assertEquals(canDirectHealFromAeEvidence(offlineAt, undefined), false)
+  assertEquals(canDirectHealFromAeEvidence(offlineAt, offlineMs), false)
+  assertEquals(canDirectHealFromAeEvidence(offlineAt, offlineMs - 1), false)
+  assertEquals(canDirectHealFromAeEvidence(offlineAt, offlineMs + 1), true)
+})
 
-it("canDirectHealFromAeEvidence rejects non-finite offlineAt", () => {
-  assertEquals(canDirectHealFromAeEvidence("not-a-date", Date.now()), false);
-  assertEquals(canDirectHealFromAeEvidence("", 1_700_000_000_000), false);
-});
+it('canDirectHealFromAeEvidence rejects non-finite offlineAt', () => {
+  assertEquals(canDirectHealFromAeEvidence('not-a-date', Date.now()), false)
+  assertEquals(canDirectHealFromAeEvidence('', 1_700_000_000_000), false)
+})
 
-it("offline sweep first null auto-response observation is not stale", () => {
-  resetOfflineSweepNullGraceForTests();
-  const nowMs = 1_700_000_000_000;
-  const liveness = connectedWithNullPing();
-  const connectedAt = new Date(nowMs - 30_000).toISOString();
+it('offline sweep first null auto-response observation is not stale', () => {
+  resetOfflineSweepNullGraceForTests()
+  const nowMs = 1_700_000_000_000
+  const liveness = connectedWithNullPing()
+  const connectedAt = new Date(nowMs - 30_000).toISOString()
 
-  updateNullGraceBookkeeping(serverId, liveness, nowMs);
+  updateNullGraceBookkeeping(serverId, liveness, nowMs)
 
-  assertEquals(isStale(serverId, liveness, nowMs, connectedAt), false);
-});
+  assertEquals(isStale(serverId, liveness, nowMs, connectedAt), false)
+})
 
-it("offline sweep repeated null past grace is stale", () => {
-  resetOfflineSweepNullGraceForTests();
-  const firstTickMs = 1_700_000_000_000;
-  const liveness = connectedWithNullPing();
-  const connectedAt = new Date(firstTickMs - 30_000).toISOString();
+it('offline sweep repeated null past grace is stale', () => {
+  resetOfflineSweepNullGraceForTests()
+  const firstTickMs = 1_700_000_000_000
+  const liveness = connectedWithNullPing()
+  const connectedAt = new Date(firstTickMs - 30_000).toISOString()
 
-  updateNullGraceBookkeeping(serverId, liveness, firstTickMs);
+  updateNullGraceBookkeeping(serverId, liveness, firstTickMs)
 
-  const laterMs = firstTickMs + OFFLINE_SWEEP_STALE_MS + 1;
-  updateNullGraceBookkeeping(serverId, liveness, laterMs);
+  const laterMs = firstTickMs + OFFLINE_SWEEP_STALE_MS + 1
+  updateNullGraceBookkeeping(serverId, liveness, laterMs)
 
-  assertEquals(isStale(serverId, liveness, laterMs, connectedAt), true);
-});
+  assertEquals(isStale(serverId, liveness, laterMs, connectedAt), true)
+})
 
-it("offline sweep warm live ping is not stale within grace", () => {
-  resetOfflineSweepNullGraceForTests();
-  const nowMs = 1_700_000_000_000;
-  const liveness = connectedWithWarmPing(nowMs);
+it('offline sweep warm live ping is not stale within grace', () => {
+  resetOfflineSweepNullGraceForTests()
+  const nowMs = 1_700_000_000_000
+  const liveness = connectedWithWarmPing(nowMs)
 
-  updateNullGraceBookkeeping(serverId, liveness, nowMs);
+  updateNullGraceBookkeeping(serverId, liveness, nowMs)
 
-  assertEquals(isStale(serverId, liveness, nowMs, null), false);
-});
+  assertEquals(isStale(serverId, liveness, nowMs, null), false)
+})
 
-it("offline sweep warm live ping clears null grace bookkeeping", () => {
-  resetOfflineSweepNullGraceForTests();
-  const firstTickMs = 1_700_000_000_000;
-  const nullLiveness = connectedWithNullPing();
-  const connectedAt = new Date(firstTickMs - 30_000).toISOString();
+it('offline sweep warm live ping clears null grace bookkeeping', () => {
+  resetOfflineSweepNullGraceForTests()
+  const firstTickMs = 1_700_000_000_000
+  const nullLiveness = connectedWithNullPing()
+  const connectedAt = new Date(firstTickMs - 30_000).toISOString()
 
-  updateNullGraceBookkeeping(serverId, nullLiveness, firstTickMs);
-  assertEquals(
-    isStale(serverId, nullLiveness, firstTickMs, connectedAt),
-    false,
-  );
+  updateNullGraceBookkeeping(serverId, nullLiveness, firstTickMs)
+  assertEquals(isStale(serverId, nullLiveness, firstTickMs, connectedAt), false)
 
-  const warmMs = firstTickMs + OFFLINE_SWEEP_STALE_MS + 1;
-  const warmLiveness = connectedWithWarmPing(warmMs);
-  updateNullGraceBookkeeping(serverId, warmLiveness, warmMs);
+  const warmMs = firstTickMs + OFFLINE_SWEEP_STALE_MS + 1
+  const warmLiveness = connectedWithWarmPing(warmMs)
+  updateNullGraceBookkeeping(serverId, warmLiveness, warmMs)
 
-  assertEquals(isStale(serverId, warmLiveness, warmMs, connectedAt), false);
-});
+  assertEquals(isStale(serverId, warmLiveness, warmMs, connectedAt), false)
+})
 
-it("offline sweep disconnected liveness is stale immediately", () => {
-  resetOfflineSweepNullGraceForTests();
-  const nowMs = 1_700_000_000_000;
+it('offline sweep disconnected liveness is stale immediately', () => {
+  resetOfflineSweepNullGraceForTests()
+  const nowMs = 1_700_000_000_000
 
-  updateNullGraceBookkeeping(
-    serverId,
-    { connected: false, lastPingAtMs: null },
-    nowMs,
-  );
+  updateNullGraceBookkeeping(serverId, { connected: false, lastPingAtMs: null }, nowMs)
 
-  assertEquals(
-    isStale(serverId, { connected: false, lastPingAtMs: null }, nowMs, null),
-    true,
-  );
-});
+  assertEquals(isStale(serverId, { connected: false, lastPingAtMs: null }, nowMs, null), true)
+})
 
-it("offline sweep old connectedAt with null ping is not stale on first observation", () => {
-  resetOfflineSweepNullGraceForTests();
-  const nowMs = 1_700_000_000_000;
-  const liveness = connectedWithNullPing();
-  const oldConnectedAt = new Date(
-    nowMs - OFFLINE_SWEEP_STALE_MS - 1,
-  ).toISOString();
+it('offline sweep old connectedAt with null ping is not stale on first observation', () => {
+  resetOfflineSweepNullGraceForTests()
+  const nowMs = 1_700_000_000_000
+  const liveness = connectedWithNullPing()
+  const oldConnectedAt = new Date(nowMs - OFFLINE_SWEEP_STALE_MS - 1).toISOString()
 
-  assertEquals(isStale(serverId, liveness, nowMs, oldConnectedAt), false);
-});
+  assertEquals(isStale(serverId, liveness, nowMs, oldConnectedAt), false)
+})
 
-it("offline sweep old connectedAt becomes stale after null grace persists", () => {
-  resetOfflineSweepNullGraceForTests();
-  const firstTickMs = 1_700_000_000_000;
-  const liveness = connectedWithNullPing();
-  const oldConnectedAt = new Date(
-    firstTickMs - OFFLINE_SWEEP_STALE_MS - 1,
-  ).toISOString();
+it('offline sweep old connectedAt becomes stale after null grace persists', () => {
+  resetOfflineSweepNullGraceForTests()
+  const firstTickMs = 1_700_000_000_000
+  const liveness = connectedWithNullPing()
+  const oldConnectedAt = new Date(firstTickMs - OFFLINE_SWEEP_STALE_MS - 1).toISOString()
 
-  updateNullGraceBookkeeping(serverId, liveness, firstTickMs);
+  updateNullGraceBookkeeping(serverId, liveness, firstTickMs)
 
-  const laterMs = firstTickMs + OFFLINE_SWEEP_STALE_MS + 1;
-  updateNullGraceBookkeeping(serverId, liveness, laterMs);
+  const laterMs = firstTickMs + OFFLINE_SWEEP_STALE_MS + 1
+  updateNullGraceBookkeeping(serverId, liveness, laterMs)
 
-  assertEquals(isStale(serverId, liveness, laterMs, oldConnectedAt), true);
-});
+  assertEquals(isStale(serverId, liveness, laterMs, oldConnectedAt), true)
+})
 
 // --- sweepOnce AE short-circuit cases ---
 
-const ID_A = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
-const ID_B = "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff";
+const ID_A = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'
+const ID_B = 'bbbbbbbb-cccc-4ddd-8eee-ffffffffffff'
 
 type FakeCell = DaemonCell & {
-  checkLivenessCalls: number;
-  liveness: DaemonCellLiveness;
-};
+  checkLivenessCalls: number
+  liveness: DaemonCellLiveness
+}
 
 function createFakeCell(liveness: DaemonCellLiveness): FakeCell {
   const cell = {
     checkLivenessCalls: 0,
     liveness,
     checkLiveness(): Promise<DaemonCellLiveness> {
-      cell.checkLivenessCalls += 1;
-      return Promise.resolve(cell.liveness);
+      cell.checkLivenessCalls += 1
+      return Promise.resolve(cell.liveness)
     },
-  } as FakeCell;
+  } as FakeCell
   return new Proxy(cell, {
     get(target, prop, receiver) {
-      if (prop in target) return Reflect.get(target, prop, receiver);
-      if (typeof prop === "string") {
+      if (prop in target) return Reflect.get(target, prop, receiver)
+      if (typeof prop === 'string') {
         return () => {
-          throw new Error(
-            `unexpected DaemonCell.${prop} call in sweepOnce test`,
-          );
-        };
+          throw new Error(`unexpected DaemonCell.${prop} call in sweepOnce test`)
+        }
       }
-      return undefined;
+      return undefined
     },
-  });
+  })
 }
 
-function createFakeRegistry(
-  cells: Map<string, FakeCell>,
-): DaemonCellRegistry {
+function createFakeRegistry(cells: Map<string, FakeCell>): DaemonCellRegistry {
   return {
     getCell(id: string): DaemonCell {
-      const cell = cells.get(id);
-      if (!cell) throw new Error(`no fake cell for ${id}`);
-      return cell;
+      const cell = cells.get(id)
+      if (!cell) throw new Error(`no fake cell for ${id}`)
+      return cell
     },
     listOnlineServerIds(): Promise<string[]> {
-      return Promise.resolve([...cells.keys()]);
+      return Promise.resolve([...cells.keys()])
     },
     getSnapshots(): Promise<Map<string, DaemonCellSnapshot>> {
-      return Promise.resolve(new Map());
+      return Promise.resolve(new Map())
     },
     purge(): Promise<void> {
-      return Promise.resolve();
+      return Promise.resolve()
     },
-  };
+  }
 }
 
 function inertEnv(): CloudflareBindings {
-  return {} as CloudflareBindings;
+  return {} as CloudflareBindings
 }
 
 function inertDb(): Db {
-  return {} as Db;
+  return {} as Db
 }
 
-it("sweepOnce: AE-active connected server skips checkLiveness", async () => {
-  resetOfflineSweepNullGraceForTests();
-  const cell = createFakeCell({ connected: true, lastPingAtMs: Date.now() });
-  const cells = new Map([[ID_A, cell]]);
-  const disconnected: string[] = [];
+it('sweepOnce: AE-active connected server skips checkLiveness', async () => {
+  resetOfflineSweepNullGraceForTests()
+  const cell = createFakeCell({ connected: true, lastPingAtMs: Date.now() })
+  const cells = new Map([[ID_A, cell]])
+  const disconnected: string[] = []
 
   await sweepOnce(inertEnv(), inertDb(), {
     registry: createFakeRegistry(cells),
-    resolveActiveServerIds: () =>
-      Promise.resolve(new Map([[ID_A, Date.now()]])),
-    listConnected: () =>
-      Promise.resolve([{ id: ID_A, connectedAt: new Date().toISOString() }]),
+    resolveActiveServerIds: () => Promise.resolve(new Map([[ID_A, Date.now()]])),
+    listConnected: () => Promise.resolve([{ id: ID_A, connectedAt: new Date().toISOString() }]),
     listRecentlyOffline: () => Promise.resolve([]),
     onDisconnected: (_db, id) => {
-      disconnected.push(id);
-      return Promise.resolve();
+      disconnected.push(id)
+      return Promise.resolve()
     },
     onConnected: () => Promise.resolve(),
-  });
+  })
 
-  assertEquals(cell.checkLivenessCalls, 0);
-  assertEquals(disconnected, []);
-});
+  assertEquals(cell.checkLivenessCalls, 0)
+  assertEquals(disconnected, [])
+})
 
-it("sweepOnce: connected absent from AE set is probed and demoted", async () => {
-  resetOfflineSweepNullGraceForTests();
-  const cell = createFakeCell({ connected: false, lastPingAtMs: null });
-  const cells = new Map([[ID_A, cell]]);
-  const disconnected: string[] = [];
+it('sweepOnce: connected absent from AE set is probed and demoted', async () => {
+  resetOfflineSweepNullGraceForTests()
+  const cell = createFakeCell({ connected: false, lastPingAtMs: null })
+  const cells = new Map([[ID_A, cell]])
+  const disconnected: string[] = []
 
   await sweepOnce(inertEnv(), inertDb(), {
     registry: createFakeRegistry(cells),
     resolveActiveServerIds: () => Promise.resolve(new Map()),
-    listConnected: () =>
-      Promise.resolve([{ id: ID_A, connectedAt: new Date().toISOString() }]),
+    listConnected: () => Promise.resolve([{ id: ID_A, connectedAt: new Date().toISOString() }]),
     listRecentlyOffline: () => Promise.resolve([]),
     onDisconnected: (_db, id) => {
-      disconnected.push(id);
-      return Promise.resolve();
+      disconnected.push(id)
+      return Promise.resolve()
     },
     onConnected: () => Promise.resolve(),
-  });
+  })
 
-  assertEquals(cell.checkLivenessCalls, 1);
-  assertEquals(disconnected, [ID_A]);
-});
+  assertEquals(cell.checkLivenessCalls, 1)
+  assertEquals(disconnected, [ID_A])
+})
 
-it("sweepOnce: AE unavailable (null) falls back to check-all", async () => {
-  resetOfflineSweepNullGraceForTests();
-  const cellA = createFakeCell({ connected: true, lastPingAtMs: Date.now() });
-  const cellB = createFakeCell({ connected: true, lastPingAtMs: Date.now() });
+it('sweepOnce: AE unavailable (null) falls back to check-all', async () => {
+  resetOfflineSweepNullGraceForTests()
+  const cellA = createFakeCell({ connected: true, lastPingAtMs: Date.now() })
+  const cellB = createFakeCell({ connected: true, lastPingAtMs: Date.now() })
   const cells = new Map([
     [ID_A, cellA],
     [ID_B, cellB],
-  ]);
+  ])
 
   await sweepOnce(inertEnv(), inertDb(), {
     registry: createFakeRegistry(cells),
@@ -299,24 +278,24 @@ it("sweepOnce: AE unavailable (null) falls back to check-all", async () => {
     listRecentlyOffline: () => Promise.resolve([]),
     onDisconnected: () => Promise.resolve(),
     onConnected: () => Promise.resolve(),
-  });
+  })
 
-  assertEquals(cellA.checkLivenessCalls, 1);
-  assertEquals(cellB.checkLivenessCalls, 1);
-});
+  assertEquals(cellA.checkLivenessCalls, 1)
+  assertEquals(cellB.checkLivenessCalls, 1)
+})
 
-it("sweepOnce: AE resolve throws falls back to check-all", async () => {
-  resetOfflineSweepNullGraceForTests();
-  const cellA = createFakeCell({ connected: true, lastPingAtMs: Date.now() });
-  const cellB = createFakeCell({ connected: true, lastPingAtMs: Date.now() });
+it('sweepOnce: AE resolve throws falls back to check-all', async () => {
+  resetOfflineSweepNullGraceForTests()
+  const cellA = createFakeCell({ connected: true, lastPingAtMs: Date.now() })
+  const cellB = createFakeCell({ connected: true, lastPingAtMs: Date.now() })
   const cells = new Map([
     [ID_A, cellA],
     [ID_B, cellB],
-  ]);
+  ])
 
   await sweepOnce(inertEnv(), inertDb(), {
     registry: createFakeRegistry(cells),
-    resolveActiveServerIds: () => Promise.reject(new Error("ae boom")),
+    resolveActiveServerIds: () => Promise.reject(new Error('ae boom')),
     listConnected: () =>
       Promise.resolve([
         { id: ID_A, connectedAt: new Date().toISOString() },
@@ -325,35 +304,33 @@ it("sweepOnce: AE resolve throws falls back to check-all", async () => {
     listRecentlyOffline: () => Promise.resolve([]),
     onDisconnected: () => Promise.resolve(),
     onConnected: () => Promise.resolve(),
-  });
+  })
 
-  assertEquals(cellA.checkLivenessCalls, 1);
-  assertEquals(cellB.checkLivenessCalls, 1);
-});
+  assertEquals(cellA.checkLivenessCalls, 1)
+  assertEquals(cellB.checkLivenessCalls, 1)
+})
 
-it("sweepOnce: AE-active self-heal is capped by SELF_HEAL_SWEEP_BUDGET", async () => {
-  resetOfflineSweepNullGraceForTests();
-  const overBudget = SELF_HEAL_SWEEP_BUDGET + 50;
-  const sampleAtMs = Date.now();
-  const offlineAt = new Date(sampleAtMs - 60_000).toISOString();
+it('sweepOnce: AE-active self-heal is capped by SELF_HEAL_SWEEP_BUDGET', async () => {
+  resetOfflineSweepNullGraceForTests()
+  const overBudget = SELF_HEAL_SWEEP_BUDGET + 50
+  const sampleAtMs = Date.now()
+  const offlineAt = new Date(sampleAtMs - 60_000).toISOString()
   const recentlyOffline = Array.from({ length: overBudget }, (_, i) => {
-    const id = `00000000-0000-4000-8000-${String(i).padStart(12, "0")}`;
+    const id = `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`
     return {
       id,
       connectedAt: new Date().toISOString(),
       offlineAt,
-    };
-  });
-  const activeById = new Map(
-    recentlyOffline.map((r) => [r.id, sampleAtMs] as const),
-  );
+    }
+  })
+  const activeById = new Map(recentlyOffline.map((r) => [r.id, sampleAtMs] as const))
   const cells = new Map(
     recentlyOffline.map((r) => [
       r.id,
       createFakeCell({ connected: true, lastPingAtMs: Date.now() }),
-    ]),
-  );
-  const healed: string[] = [];
+    ])
+  )
+  const healed: string[] = []
 
   await sweepOnce(inertEnv(), inertDb(), {
     registry: createFakeRegistry(cells),
@@ -362,80 +339,74 @@ it("sweepOnce: AE-active self-heal is capped by SELF_HEAL_SWEEP_BUDGET", async (
     listRecentlyOffline: () => Promise.resolve(recentlyOffline),
     onDisconnected: () => Promise.resolve(),
     onConnected: () => {
-      throw new Error(
-        "AE-direct heal must not call onConnected (cell path)",
-      );
+      throw new Error('AE-direct heal must not call onConnected (cell path)')
     },
     onConnectedFromEvidence: (_db, id) => {
-      healed.push(id);
-      return Promise.resolve();
+      healed.push(id)
+      return Promise.resolve()
     },
-  });
+  })
 
-  assertEquals(healed.length, SELF_HEAL_SWEEP_BUDGET);
+  assertEquals(healed.length, SELF_HEAL_SWEEP_BUDGET)
   // Direct AE heal skips checkLiveness — none of the budgeted cells should
   // have been probed (all were AE-active with post-offline evidence).
   for (const cell of cells.values()) {
-    assertEquals(cell.checkLivenessCalls, 0);
+    assertEquals(cell.checkLivenessCalls, 0)
   }
-});
+})
 
-it("sweepOnce: AE-direct self-heal never calls registry.getCell or getSnapshot", async () => {
-  resetOfflineSweepNullGraceForTests();
-  const connectedAt = "2020-01-01T00:00:00.000Z";
-  const offlineAt = "2020-01-01T00:00:00.000Z";
-  const aeLatestMs = Date.parse("2020-01-01T00:01:00.000Z");
-  const getCellCalls: string[] = [];
-  const healed: Array<{ id: string; connectedAt?: string | null }> = [];
+it('sweepOnce: AE-direct self-heal never calls registry.getCell or getSnapshot', async () => {
+  resetOfflineSweepNullGraceForTests()
+  const connectedAt = '2020-01-01T00:00:00.000Z'
+  const offlineAt = '2020-01-01T00:00:00.000Z'
+  const aeLatestMs = Date.parse('2020-01-01T00:01:00.000Z')
+  const getCellCalls: string[] = []
+  const healed: Array<{ id: string; connectedAt?: string | null }> = []
 
   const registry: DaemonCellRegistry = {
     getCell(id: string): DaemonCell {
-      getCellCalls.push(id);
-      throw new Error(
-        `AE-direct heal must not call registry.getCell(${id})`,
-      );
+      getCellCalls.push(id)
+      throw new Error(`AE-direct heal must not call registry.getCell(${id})`)
     },
     listOnlineServerIds(): Promise<string[]> {
-      return Promise.resolve([]);
+      return Promise.resolve([])
     },
     getSnapshots(): Promise<Map<string, DaemonCellSnapshot>> {
-      throw new Error("getSnapshots must not be called");
+      throw new Error('getSnapshots must not be called')
     },
     purge(): Promise<void> {
-      return Promise.resolve();
+      return Promise.resolve()
     },
-  };
+  }
 
   await sweepOnce(inertEnv(), inertDb(), {
     registry,
-    resolveActiveServerIds: () =>
-      Promise.resolve(new Map([[ID_A, aeLatestMs]])),
+    resolveActiveServerIds: () => Promise.resolve(new Map([[ID_A, aeLatestMs]])),
     listConnected: () => Promise.resolve([]),
-    listRecentlyOffline: () =>
-      Promise.resolve([{ id: ID_A, connectedAt, offlineAt }]),
+    listRecentlyOffline: () => Promise.resolve([{ id: ID_A, connectedAt, offlineAt }]),
     onDisconnected: () => Promise.resolve(),
     onConnected: () => {
-      throw new Error("AE-direct heal must not call onConnected");
+      throw new Error('AE-direct heal must not call onConnected')
     },
     onConnectedFromEvidence: (_db, id, at) => {
-      healed.push({ id, connectedAt: at });
-      return Promise.resolve();
+      healed.push({ id, connectedAt: at })
+      return Promise.resolve()
     },
-  });
+  })
 
-  assertEquals(getCellCalls, []);
-  assertEquals(healed, [{ id: ID_A, connectedAt }]);
-});
+  assertEquals(getCellCalls, [])
+  assertEquals(healed, [{ id: ID_A, connectedAt }])
+})
 
-it("sweepOnce: probed self-heal still uses onConnected after checkLiveness", async () => {
-  resetOfflineSweepNullGraceForTests();
+it('sweepOnce: probed self-heal still uses onConnected after checkLiveness', async () => {
+  resetOfflineSweepNullGraceForTests()
   const cell = createFakeCell({
     connected: true,
     lastPingAtMs: Date.now() - 30_000,
-  });
-  const cells = new Map([[ID_A, cell]]);
-  const probedHealed: string[] = [];
-  const directHealed: string[] = [];
+  })
+  const cells = new Map([[ID_A, cell]])
+  const probedHealed: string[] = []
+  const directHealed: string[] = []
 
   await sweepOnce(inertEnv(), inertDb(), {
     registry: createFakeRegistry(cells),
@@ -444,180 +415,178 @@ it("sweepOnce: probed self-heal still uses onConnected after checkLiveness", asy
     resolveActiveServerIds: () => Promise.resolve(new Map()),
     listConnected: () => Promise.resolve([]),
     listRecentlyOffline: () =>
-      Promise.resolve([{
-        id: ID_A,
-        connectedAt: new Date().toISOString(),
-        offlineAt: new Date().toISOString(),
-      }]),
+      Promise.resolve([
+        {
+          id: ID_A,
+          connectedAt: new Date().toISOString(),
+          offlineAt: new Date().toISOString(),
+        },
+      ]),
     onDisconnected: () => Promise.resolve(),
     onConnected: (_db, id) => {
-      probedHealed.push(id);
-      return Promise.resolve();
+      probedHealed.push(id)
+      return Promise.resolve()
     },
     onConnectedFromEvidence: (_db, id) => {
-      directHealed.push(id);
-      return Promise.resolve();
+      directHealed.push(id)
+      return Promise.resolve()
     },
-  });
+  })
 
-  assertEquals(cell.checkLivenessCalls, 1);
-  assertEquals(probedHealed, [ID_A]);
-  assertEquals(directHealed, []);
-});
+  assertEquals(cell.checkLivenessCalls, 1)
+  assertEquals(probedHealed, [ID_A])
+  assertEquals(directHealed, [])
+})
 
-it(
-  "sweepOnce: clean disconnect after metrics sample does not AE-direct heal",
-  async () => {
-    resetOfflineSweepNullGraceForTests();
-    // Metrics sample lands, then a clean webSocketClose projects offline.
-    // The pre-disconnect sample is still inside the AE liveness window — that
-    // alone must not undo the offline projection without checkLiveness.
-    const nowMs = 1_700_000_000_000;
-    const sampleAtMs = nowMs - 30_000;
-    const offlineAt = new Date(nowMs - 20_000).toISOString();
-    const cell = createFakeCell({ connected: false, lastPingAtMs: null });
-    const cells = new Map([[ID_A, cell]]);
-    const directHealed: string[] = [];
-    const probedHealed: string[] = [];
+it('sweepOnce: clean disconnect after metrics sample does not AE-direct heal', async () => {
+  resetOfflineSweepNullGraceForTests()
+  // Metrics sample lands, then a clean webSocketClose projects offline.
+  // The pre-disconnect sample is still inside the AE liveness window — that
+  // alone must not undo the offline projection without checkLiveness.
+  const nowMs = 1_700_000_000_000
+  const sampleAtMs = nowMs - 30_000
+  const offlineAt = new Date(nowMs - 20_000).toISOString()
+  const cell = createFakeCell({ connected: false, lastPingAtMs: null })
+  const cells = new Map([[ID_A, cell]])
+  const directHealed: string[] = []
+  const probedHealed: string[] = []
 
-    await sweepOnce(inertEnv(), inertDb(), {
-      registry: createFakeRegistry(cells),
-      resolveActiveServerIds: () =>
-        Promise.resolve(new Map([[ID_A, sampleAtMs]])),
-      listConnected: () => Promise.resolve([]),
-      listRecentlyOffline: () =>
-        Promise.resolve([{
+  await sweepOnce(inertEnv(), inertDb(), {
+    registry: createFakeRegistry(cells),
+    resolveActiveServerIds: () => Promise.resolve(new Map([[ID_A, sampleAtMs]])),
+    listConnected: () => Promise.resolve([]),
+    listRecentlyOffline: () =>
+      Promise.resolve([
+        {
           id: ID_A,
           connectedAt: new Date(nowMs - 120_000).toISOString(),
           offlineAt,
-        }]),
-      onDisconnected: () => Promise.resolve(),
-      onConnected: (_db, id) => {
-        probedHealed.push(id);
-        return Promise.resolve();
-      },
-      onConnectedFromEvidence: (_db, id) => {
-        directHealed.push(id);
-        return Promise.resolve();
-      },
-    });
+        },
+      ]),
+    onDisconnected: () => Promise.resolve(),
+    onConnected: (_db, id) => {
+      probedHealed.push(id)
+      return Promise.resolve()
+    },
+    onConnectedFromEvidence: (_db, id) => {
+      directHealed.push(id)
+      return Promise.resolve()
+    },
+  })
 
-    assertEquals(directHealed, []);
-    assertEquals(cell.checkLivenessCalls, 1);
-    // Cell reports disconnected — probed path must not heal either.
-    assertEquals(probedHealed, []);
-  },
-);
+  assertEquals(directHealed, [])
+  assertEquals(cell.checkLivenessCalls, 1)
+  // Cell reports disconnected — probed path must not heal either.
+  assertEquals(probedHealed, [])
+})
 
-it("dispatch-expiry sweep runs on the passed db, bounded per tick", async () => {
-  let limit: number | undefined;
-  let deleteCalls = 0;
+it('dispatch-expiry sweep runs on the passed db, bounded per tick', async () => {
+  let limit: number | undefined
+  let deleteCalls = 0
   const db = {
     delete: () => ({
       where: (condition: { queryChunks?: unknown[] }) => {
-        deleteCalls += 1;
+        deleteCalls += 1
         // The bounded limit rides in the delete's subquery parameters.
-        limit = (condition.queryChunks ?? []).find(
-          (chunk) => typeof chunk === "number",
-        ) as number | undefined;
-        return { returning: () => Promise.resolve([{ commandId: "cmd-1" }]) };
+        limit = (condition.queryChunks ?? []).find((chunk) => typeof chunk === 'number') as
+          number | undefined
+        return { returning: () => Promise.resolve([{ commandId: 'cmd-1' }]) }
       },
     }),
-  } as unknown as Db;
+  } as unknown as Db
 
-  await sweepExpiredCommandDispatchSafely(db);
+  await sweepExpiredCommandDispatchSafely(db)
 
-  assertEquals(deleteCalls, 1);
-  assertEquals(limit, COMMAND_DISPATCH_SWEEP_LIMIT);
-});
+  assertEquals(deleteCalls, 1)
+  assertEquals(limit, COMMAND_DISPATCH_SWEEP_LIMIT)
+})
 
-it("dispatch-expiry sweep failures stay isolated from the rest of the tick", async () => {
+it('dispatch-expiry sweep failures stay isolated from the rest of the tick', async () => {
   const db = {
     delete: () => {
-      throw new Error("postgres unavailable");
+      throw new Error('postgres unavailable')
     },
-  } as unknown as Db;
+  } as unknown as Db
 
   // Resolves instead of throwing — the cron's other sweeps must still run.
-  await sweepExpiredCommandDispatchSafely(db);
-});
+  await sweepExpiredCommandDispatchSafely(db)
+})
 
-it("stale-command sweep failures stay isolated after a successful dispatch delete", async () => {
-  const traces: string[] = [];
-  const originalInfo = console.info;
+it('stale-command sweep failures stay isolated after a successful dispatch delete', async () => {
+  const traces: string[] = []
+  const originalInfo = console.info
   console.info = (...args: unknown[]) => {
-    traces.push(args.map(String).join(" "));
-  };
+    traces.push(args.map(String).join(' '))
+  }
   const db = {
     delete: () => ({
       where: () => ({
-        returning: () => Promise.resolve([{ commandId: "cmd-1" }]),
+        returning: () => Promise.resolve([{ commandId: 'cmd-1' }]),
       }),
     }),
     select: () => {
-      throw new TypeError("stale select failed");
+      throw new TypeError('stale select failed')
     },
-  } as unknown as Db;
+  } as unknown as Db
 
   try {
-    await sweepExpiredCommandDispatchSafely(db);
+    await sweepExpiredCommandDispatchSafely(db)
   } finally {
-    console.info = originalInfo;
+    console.info = originalInfo
   }
 
   assertEquals(
-    traces.some((line) =>
-      line.includes("event=command-dispatch-swept") &&
-      line.includes("deleted=1")
+    traces.some(
+      (line) => line.includes('event=command-dispatch-swept') && line.includes('deleted=1')
     ),
-    true,
-  );
+    true
+  )
   assertEquals(
-    traces.some((line) => line.includes("event=stale-command-sweep-failed")),
-    true,
-  );
-});
+    traces.some((line) => line.includes('event=stale-command-sweep-failed')),
+    true
+  )
+})
 
 type SweepLockValue = {
-  owner: string;
-  expiresAt: string;
-};
+  owner: string
+  expiresAt: string
+}
 
 function applySweepLockUpdate(
   lock: { current: SweepLockValue | null },
-  row: { owner?: string; expiresAt?: string },
+  row: { owner?: string; expiresAt?: string }
 ): Promise<{ id: string }[]> {
-  if (lock.current === null) return Promise.resolve([]);
-  const expires = Date.parse(lock.current.expiresAt);
-  const expired = !Number.isFinite(expires) || expires <= Date.now();
-  const stealable = lock.current.owner.length === 0 || expired;
-  const sameOwner = row.owner === undefined || row.owner === lock.current.owner;
-  const releasing = row.owner === "";
+  if (lock.current === null) return Promise.resolve([])
+  const expires = Date.parse(lock.current.expiresAt)
+  const expired = !Number.isFinite(expires) || expires <= Date.now()
+  const stealable = lock.current.owner.length === 0 || expired
+  const sameOwner = row.owner === undefined || row.owner === lock.current.owner
+  const releasing = row.owner === ''
   if (!stealable && !sameOwner && !releasing) {
-    return Promise.resolve([]);
+    return Promise.resolve([])
   }
   lock.current = {
     owner: row.owner ?? lock.current.owner,
     expiresAt: row.expiresAt ?? lock.current.expiresAt,
-  };
-  return Promise.resolve([{ id: "lease-1" }]);
+  }
+  return Promise.resolve([{ id: 'lease-1' }])
 }
 
 function thenableRows(rows: Promise<{ id: string }[]>) {
-  return Object.assign(rows, { returning: () => rows });
+  return Object.assign(rows, { returning: () => rows })
 }
 
 function createOfflineSweepLockMemoryDb(initial?: SweepLockValue): Db {
-  const lock = { current: initial ?? null };
+  const lock = { current: initial ?? null }
 
   return {
     insert: () => ({
       values: (row: { owner: string; expiresAt: string }) => ({
         onConflictDoNothing: () => ({
           returning: () => {
-            if (lock.current !== null) return Promise.resolve([]);
-            lock.current = { owner: row.owner, expiresAt: row.expiresAt };
-            return Promise.resolve([{ id: "lease-1" }]);
+            if (lock.current !== null) return Promise.resolve([])
+            lock.current = { owner: row.owner, expiresAt: row.expiresAt }
+            return Promise.resolve([{ id: 'lease-1' }])
           },
         }),
       }),
@@ -628,11 +597,13 @@ function createOfflineSweepLockMemoryDb(initial?: SweepLockValue): Db {
           limit: () =>
             Promise.resolve(
               lock.current
-                ? [{
-                  owner: lock.current.owner,
-                  expiresAt: lock.current.expiresAt,
-                }]
-                : [],
+                ? [
+                    {
+                      owner: lock.current.owner,
+                      expiresAt: lock.current.expiresAt,
+                    },
+                  ]
+                : []
             ),
         }),
       }),
@@ -648,261 +619,231 @@ function createOfflineSweepLockMemoryDb(initial?: SweepLockValue): Db {
       }),
     }),
     $client: { end: () => Promise.resolve() },
-  } as unknown as Db;
+  } as unknown as Db
 }
 
-it("shouldSweepExecutionLogs is true on every 15th UTC minute", () => {
-  assertEquals(
-    shouldSweepExecutionLogs(Date.parse("2026-01-01T00:00:00.000Z")),
-    true,
-  );
-  assertEquals(
-    shouldSweepExecutionLogs(Date.parse("2026-01-01T00:15:00.000Z")),
-    true,
-  );
-  assertEquals(
-    shouldSweepExecutionLogs(Date.parse("2026-01-01T00:01:00.000Z")),
-    false,
-  );
-});
+it('shouldSweepExecutionLogs is true on every 15th UTC minute', () => {
+  assertEquals(shouldSweepExecutionLogs(Date.parse('2026-01-01T00:00:00.000Z')), true)
+  assertEquals(shouldSweepExecutionLogs(Date.parse('2026-01-01T00:15:00.000Z')), true)
+  assertEquals(shouldSweepExecutionLogs(Date.parse('2026-01-01T00:01:00.000Z')), false)
+})
 
-it("shouldSweepUpgradeHistory is true on every 15th UTC minute", () => {
-  assertEquals(
-    shouldSweepUpgradeHistory(Date.parse("2026-01-01T00:00:00.000Z")),
-    true,
-  );
-  assertEquals(
-    shouldSweepUpgradeHistory(Date.parse("2026-01-01T00:15:00.000Z")),
-    true,
-  );
-  assertEquals(
-    shouldSweepUpgradeHistory(Date.parse("2026-01-01T00:01:00.000Z")),
-    false,
-  );
-});
+it('shouldSweepUpgradeHistory is true on every 15th UTC minute', () => {
+  assertEquals(shouldSweepUpgradeHistory(Date.parse('2026-01-01T00:00:00.000Z')), true)
+  assertEquals(shouldSweepUpgradeHistory(Date.parse('2026-01-01T00:15:00.000Z')), true)
+  assertEquals(shouldSweepUpgradeHistory(Date.parse('2026-01-01T00:01:00.000Z')), false)
+})
 
-it("shouldSweepTierNotices is true on every UTC hour", () => {
-  assertEquals(
-    shouldSweepTierNotices(Date.parse("2026-01-01T00:00:00.000Z")),
-    true,
-  );
-  assertEquals(
-    shouldSweepTierNotices(Date.parse("2026-01-01T01:00:00.000Z")),
-    true,
-  );
-  assertEquals(
-    shouldSweepTierNotices(Date.parse("2026-01-01T00:15:00.000Z")),
-    false,
-  );
-});
+it('shouldSweepTierNotices is true on every UTC hour', () => {
+  assertEquals(shouldSweepTierNotices(Date.parse('2026-01-01T00:00:00.000Z')), true)
+  assertEquals(shouldSweepTierNotices(Date.parse('2026-01-01T01:00:00.000Z')), true)
+  assertEquals(shouldSweepTierNotices(Date.parse('2026-01-01T00:15:00.000Z')), false)
+})
 
-it("second tick skips while the offline-sweep lease is held", async () => {
-  const db = createOfflineSweepLockMemoryDb();
-  const first = await tryBeginOfflineSweep(db);
-  assertEquals(first !== null, true);
-  assertEquals(await tryBeginOfflineSweep(db), null);
+it('second tick skips while the offline-sweep lease is held', async () => {
+  const db = createOfflineSweepLockMemoryDb()
+  const first = await tryBeginOfflineSweep(db)
+  assertEquals(first !== null, true)
+  assertEquals(await tryBeginOfflineSweep(db), null)
 
-  const traces: string[] = [];
-  const originalInfo = console.info;
+  const traces: string[] = []
+  const originalInfo = console.info
   console.info = (...args: unknown[]) => {
-    traces.push(args.map(String).join(" "));
-  };
+    traces.push(args.map(String).join(' '))
+  }
   try {
-    await runOfflineSweep(inertEnv(), null, { db });
+    await runOfflineSweep(inertEnv(), null, { db })
   } finally {
-    console.info = originalInfo;
+    console.info = originalInfo
   }
   assertEquals(
-    traces.some((line) => line.includes("event=skipped-lease-held")),
-    true,
-  );
-  await endOfflineSweep(db, first!);
-  assertEquals((await tryBeginOfflineSweep(db)) !== null, true);
-});
+    traces.some((line) => line.includes('event=skipped-lease-held')),
+    true
+  )
+  await endOfflineSweep(db, first!)
+  assertEquals((await tryBeginOfflineSweep(db)) !== null, true)
+})
 
-it("runOfflineSweep isolates a listConnected throw as sweep-failed", async () => {
-  const db = createOfflineSweepLockMemoryDb();
-  const traces: string[] = [];
-  const originalInfo = console.info;
+it('runOfflineSweep isolates a listConnected throw as sweep-failed', async () => {
+  const db = createOfflineSweepLockMemoryDb()
+  const traces: string[] = []
+  const originalInfo = console.info
   console.info = (...args: unknown[]) => {
-    traces.push(args.map(String).join(" "));
-  };
+    traces.push(args.map(String).join(' '))
+  }
   try {
     await runOfflineSweep(inertEnv(), null, {
       db,
       sweepOnceDeps: {
         listConnected: () => {
-          throw new TypeError("listConnected boom");
+          throw new TypeError('listConnected boom')
         },
         listRecentlyOffline: () => Promise.resolve([]),
         resolveActiveServerIds: () => Promise.resolve(new Map()),
         onDisconnected: () => Promise.resolve(),
         onConnected: () => Promise.resolve(),
       },
-    });
+    })
   } finally {
-    console.info = originalInfo;
+    console.info = originalInfo
   }
   assertEquals(
-    traces.some((line) => line.includes("event=sweep-failed")),
-    true,
-  );
+    traces.some((line) => line.includes('event=sweep-failed')),
+    true
+  )
   assertEquals(
-    traces.some((line) => line.includes("event=tick-complete")),
-    true,
-  );
-  assertEquals((await tryBeginOfflineSweep(db)) !== null, true);
-});
+    traces.some((line) => line.includes('event=tick-complete')),
+    true
+  )
+  assertEquals((await tryBeginOfflineSweep(db)) !== null, true)
+})
 
-it("runOfflineSweep skips liveness when the tick deadline is already due", async () => {
-  const db = createOfflineSweepLockMemoryDb();
-  let listed = 0;
-  const traces: string[] = [];
-  const originalInfo = console.info;
+it('runOfflineSweep skips liveness when the tick deadline is already due', async () => {
+  const db = createOfflineSweepLockMemoryDb()
+  let listed = 0
+  const traces: string[] = []
+  const originalInfo = console.info
   console.info = (...args: unknown[]) => {
-    traces.push(args.map(String).join(" "));
-  };
+    traces.push(args.map(String).join(' '))
+  }
   try {
     await runOfflineSweep(inertEnv(), null, {
       db,
       deadlineMs: Date.now() - 1,
       sweepOnceDeps: {
         listConnected: () => {
-          listed += 1;
-          return Promise.resolve([]);
+          listed += 1
+          return Promise.resolve([])
         },
         listRecentlyOffline: () => Promise.resolve([]),
         resolveActiveServerIds: () => Promise.resolve(new Map()),
         onDisconnected: () => Promise.resolve(),
         onConnected: () => Promise.resolve(),
       },
-    });
+    })
   } finally {
-    console.info = originalInfo;
+    console.info = originalInfo
   }
-  assertEquals(listed, 0);
+  assertEquals(listed, 0)
   assertEquals(
-    traces.some((line) =>
-      line.includes("event=budget-exhausted") && line.includes("phase=liveness")
+    traces.some(
+      (line) => line.includes('event=budget-exhausted') && line.includes('phase=liveness')
     ),
-    true,
-  );
+    true
+  )
   assertEquals(
-    traces.some((line) => line.includes("event=tick-complete")),
-    true,
-  );
-});
+    traces.some((line) => line.includes('event=tick-complete')),
+    true
+  )
+})
 
-it("offline-sweep lease is released when a phase throws", async () => {
-  const db = createOfflineSweepLockMemoryDb();
+it('offline-sweep lease is released when a phase throws', async () => {
+  const db = createOfflineSweepLockMemoryDb()
   await runOfflineSweep(inertEnv(), null, {
     db,
     sweepOnceDeps: {
       listConnected: () => {
-        throw new Error("phase boom");
+        throw new Error('phase boom')
       },
       listRecentlyOffline: () => Promise.resolve([]),
       resolveActiveServerIds: () => Promise.resolve(new Map()),
       onDisconnected: () => Promise.resolve(),
       onConnected: () => Promise.resolve(),
     },
-  });
-  assertEquals((await tryBeginOfflineSweep(db)) !== null, true);
-});
+  })
+  assertEquals((await tryBeginOfflineSweep(db)) !== null, true)
+})
 
-it("expired offline-sweep lease is stealable", async () => {
+it('expired offline-sweep lease is stealable', async () => {
   const db = createOfflineSweepLockMemoryDb({
-    owner: "expired-owner",
+    owner: 'expired-owner',
     expiresAt: new Date(Date.now() - 1).toISOString(),
-  });
-  const stolen = await tryBeginOfflineSweep(db);
-  assertEquals(stolen !== null, true);
-  assertEquals(await tryBeginOfflineSweep(db), null);
-});
+  })
+  const stolen = await tryBeginOfflineSweep(db)
+  assertEquals(stolen !== null, true)
+  assertEquals(await tryBeginOfflineSweep(db), null)
+})
 
-it(
-  "second tick skips while a stalled optional phase still holds the lease past TTL",
-  async () => {
-    const startedAt = Date.now();
-    let hangStarted = false;
-    let resolveHang: (rows: { commandId: string }[]) => void = () => {};
-    const hang = new Promise<{ commandId: string }[]>((resolve) => {
-      resolveHang = resolve;
-    });
-    const db = createOfflineSweepLockMemoryDb();
-    const hangingDb = {
-      ...db,
-      delete: () => {
-        hangStarted = true;
-        return {
-          where: () => ({
-            returning: () => hang,
-          }),
-        };
-      },
-    } as unknown as Db;
-
-    const first = runOfflineSweep(inertEnv(), null, {
-      db: hangingDb,
-      nowMs: startedAt,
-      deadlineMs: startedAt + OFFLINE_SWEEP_LEASE_MS + 30_000,
-      sweepOnceDeps: {
-        listConnected: () => Promise.resolve([]),
-        listRecentlyOffline: () => Promise.resolve([]),
-        resolveActiveServerIds: () => Promise.resolve(new Map()),
-        onDisconnected: () => Promise.resolve(),
-        onConnected: () => Promise.resolve(),
-      },
-    });
-
-    try {
-      const waitUntil = startedAt + 2_000;
-      while (!hangStarted && Date.now() < waitUntil) {
-        await Promise.resolve();
+it('second tick skips while a stalled optional phase still holds the lease past TTL', async () => {
+  const startedAt = Date.now()
+  let hangStarted = false
+  let resolveHang: (rows: { commandId: string }[]) => void = () => {}
+  const hang = new Promise<{ commandId: string }[]>((resolve) => {
+    resolveHang = resolve
+  })
+  const db = createOfflineSweepLockMemoryDb()
+  const hangingDb = {
+    ...db,
+    delete: () => {
+      hangStarted = true
+      return {
+        where: () => ({
+          returning: () => hang,
+        }),
       }
-      assertEquals(hangStarted, true);
+    },
+  } as unknown as Db
 
-      const traces: string[] = [];
-      const originalInfo = console.info;
-      console.info = (...args: unknown[]) => {
-        traces.push(args.map(String).join(" "));
-      };
-      try {
-        await runOfflineSweep(inertEnv(), null, {
-          db: hangingDb,
-          nowMs: startedAt + OFFLINE_SWEEP_LEASE_MS + 1,
-        });
-      } finally {
-        console.info = originalInfo;
-      }
-      assertEquals(
-        traces.some((line) => line.includes("event=skipped-lease-held")),
-        true,
-      );
-    } finally {
-      resolveHang([]);
-      await first;
+  const first = runOfflineSweep(inertEnv(), null, {
+    db: hangingDb,
+    nowMs: startedAt,
+    deadlineMs: startedAt + OFFLINE_SWEEP_LEASE_MS + 30_000,
+    sweepOnceDeps: {
+      listConnected: () => Promise.resolve([]),
+      listRecentlyOffline: () => Promise.resolve([]),
+      resolveActiveServerIds: () => Promise.resolve(new Map()),
+      onDisconnected: () => Promise.resolve(),
+      onConnected: () => Promise.resolve(),
+    },
+  })
+
+  try {
+    const waitUntil = startedAt + 2_000
+    while (!hangStarted && Date.now() < waitUntil) {
+      await Promise.resolve()
     }
-  },
-);
+    assertEquals(hangStarted, true)
+
+    const traces: string[] = []
+    const originalInfo = console.info
+    console.info = (...args: unknown[]) => {
+      traces.push(args.map(String).join(' '))
+    }
+    try {
+      await runOfflineSweep(inertEnv(), null, {
+        db: hangingDb,
+        nowMs: startedAt + OFFLINE_SWEEP_LEASE_MS + 1,
+      })
+    } finally {
+      console.info = originalInfo
+    }
+    assertEquals(
+      traces.some((line) => line.includes('event=skipped-lease-held')),
+      true
+    )
+  } finally {
+    resolveHang([])
+    await first
+  }
+})
 
 it("probe stops at the deadline; the next tick's rotation covers the remainder", async () => {
-  resetOfflineSweepNullGraceForTests();
-  const idC = "cccccccc-dddd-4eee-8fff-000000000000";
-  const cellA = createFakeCell({ connected: true, lastPingAtMs: Date.now() });
-  const cellB = createFakeCell({ connected: true, lastPingAtMs: Date.now() });
-  const cellC = createFakeCell({ connected: true, lastPingAtMs: Date.now() });
+  resetOfflineSweepNullGraceForTests()
+  const idC = 'cccccccc-dddd-4eee-8fff-000000000000'
+  const cellA = createFakeCell({ connected: true, lastPingAtMs: Date.now() })
+  const cellB = createFakeCell({ connected: true, lastPingAtMs: Date.now() })
+  const cellC = createFakeCell({ connected: true, lastPingAtMs: Date.now() })
   const cells = new Map([
     [ID_A, cellA],
     [ID_B, cellB],
     [idC, cellC],
-  ]);
+  ])
   const connected = [
     { id: ID_A, connectedAt: new Date().toISOString() },
     { id: ID_B, connectedAt: new Date().toISOString() },
     { id: idC, connectedAt: new Date().toISOString() },
-  ];
-  const registry = createFakeRegistry(cells);
+  ]
+  const registry = createFakeRegistry(cells)
 
   await sweepOnce(inertEnv(), inertDb(), {
     registry,
@@ -913,10 +854,10 @@ it("probe stops at the deadline; the next tick's rotation covers the remainder",
     listRecentlyOffline: () => Promise.resolve([]),
     onDisconnected: () => Promise.resolve(),
     onConnected: () => Promise.resolve(),
-  });
-  assertEquals(cellA.checkLivenessCalls, 0);
-  assertEquals(cellB.checkLivenessCalls, 0);
-  assertEquals(cellC.checkLivenessCalls, 0);
+  })
+  assertEquals(cellA.checkLivenessCalls, 0)
+  assertEquals(cellB.checkLivenessCalls, 0)
+  assertEquals(cellC.checkLivenessCalls, 0)
 
   await sweepOnce(inertEnv(), inertDb(), {
     registry,
@@ -927,56 +868,53 @@ it("probe stops at the deadline; the next tick's rotation covers the remainder",
     listRecentlyOffline: () => Promise.resolve([]),
     onDisconnected: () => Promise.resolve(),
     onConnected: () => Promise.resolve(),
-  });
-  assertEquals(cellA.checkLivenessCalls, 1);
-  assertEquals(cellB.checkLivenessCalls, 1);
-  assertEquals(cellC.checkLivenessCalls, 1);
-});
+  })
+  assertEquals(cellA.checkLivenessCalls, 1)
+  assertEquals(cellB.checkLivenessCalls, 1)
+  assertEquals(cellC.checkLivenessCalls, 1)
+})
 
-it("sweepOnce: AE timeout takes the fallback path", async () => {
-  resetOfflineSweepNullGraceForTests();
-  const cell = createFakeCell({ connected: true, lastPingAtMs: Date.now() });
-  const cells = new Map([[ID_A, cell]]);
+it('sweepOnce: AE timeout takes the fallback path', async () => {
+  resetOfflineSweepNullGraceForTests()
+  const cell = createFakeCell({ connected: true, lastPingAtMs: Date.now() })
+  const cells = new Map([[ID_A, cell]])
 
   await sweepOnce(inertEnv(), inertDb(), {
     registry: createFakeRegistry(cells),
     resolveActiveServerIds: () =>
-      Promise.reject(
-        new DOMException("The operation was aborted.", "TimeoutError"),
-      ),
-    listConnected: () =>
-      Promise.resolve([{ id: ID_A, connectedAt: new Date().toISOString() }]),
+      Promise.reject(new DOMException('The operation was aborted.', 'TimeoutError')),
+    listConnected: () => Promise.resolve([{ id: ID_A, connectedAt: new Date().toISOString() }]),
     listRecentlyOffline: () => Promise.resolve([]),
     onDisconnected: () => Promise.resolve(),
     onConnected: () => Promise.resolve(),
-  });
+  })
 
-  assertEquals(cell.checkLivenessCalls, 1);
-});
+  assertEquals(cell.checkLivenessCalls, 1)
+})
 
-it("sweepOnce: empty candidate lists return before the AE resolver", async () => {
-  resetOfflineSweepNullGraceForTests();
-  let aeCalled = false;
+it('sweepOnce: empty candidate lists return before the AE resolver', async () => {
+  resetOfflineSweepNullGraceForTests()
+  let aeCalled = false
 
   await sweepOnce(inertEnv(), inertDb(), {
     registry: createFakeRegistry(new Map()),
     resolveActiveServerIds: () => {
-      aeCalled = true;
-      return Promise.resolve(new Map());
+      aeCalled = true
+      return Promise.resolve(new Map())
     },
     listConnected: () => Promise.resolve([]),
     listRecentlyOffline: () => Promise.resolve([]),
     onDisconnected: () => Promise.resolve(),
     onConnected: () => Promise.resolve(),
-  });
+  })
 
-  assertEquals(aeCalled, false);
-});
+  assertEquals(aeCalled, false)
+})
 
-it("takeLastOfflineSweepScheduledTimeForTests returns the last cron stamp once", async () => {
-  takeLastOfflineSweepScheduledTimeForTests();
-  const scheduledTime = Date.parse("2026-01-01T00:00:00.000Z");
-  const db = createOfflineSweepLockMemoryDb();
+it('takeLastOfflineSweepScheduledTimeForTests returns the last cron stamp once', async () => {
+  takeLastOfflineSweepScheduledTimeForTests()
+  const scheduledTime = Date.parse('2026-01-01T00:00:00.000Z')
+  const db = createOfflineSweepLockMemoryDb()
   await runOfflineSweep(inertEnv(), null, {
     db,
     scheduledTime,
@@ -987,292 +925,281 @@ it("takeLastOfflineSweepScheduledTimeForTests returns the last cron stamp once",
       onDisconnected: () => Promise.resolve(),
       onConnected: () => Promise.resolve(),
     },
-  });
-  assertEquals(takeLastOfflineSweepScheduledTimeForTests(), scheduledTime);
-  assertEquals(takeLastOfflineSweepScheduledTimeForTests(), undefined);
-});
+  })
+  assertEquals(takeLastOfflineSweepScheduledTimeForTests(), scheduledTime)
+  assertEquals(takeLastOfflineSweepScheduledTimeForTests(), undefined)
+})
 
-it("sweepOnce: default AE resolver is unavailable without SQL credentials", async () => {
-  resetOfflineSweepNullGraceForTests();
-  const cell = createFakeCell({ connected: true, lastPingAtMs: Date.now() });
-  const cells = new Map([[ID_A, cell]]);
-  const traces: string[] = [];
-  const originalInfo = console.info;
+it('sweepOnce: default AE resolver is unavailable without SQL credentials', async () => {
+  resetOfflineSweepNullGraceForTests()
+  const cell = createFakeCell({ connected: true, lastPingAtMs: Date.now() })
+  const cells = new Map([[ID_A, cell]])
+  const traces: string[] = []
+  const originalInfo = console.info
   console.info = (...args: unknown[]) => {
-    traces.push(args.map(String).join(" "));
-  };
+    traces.push(args.map(String).join(' '))
+  }
   try {
     await sweepOnce(inertEnv(), inertDb(), {
       registry: createFakeRegistry(cells),
-      listConnected: () =>
-        Promise.resolve([{ id: ID_A, connectedAt: new Date().toISOString() }]),
+      listConnected: () => Promise.resolve([{ id: ID_A, connectedAt: new Date().toISOString() }]),
       listRecentlyOffline: () => Promise.resolve([]),
       onDisconnected: () => Promise.resolve(),
       onConnected: () => Promise.resolve(),
-    });
+    })
   } finally {
-    console.info = originalInfo;
+    console.info = originalInfo
   }
-  assertEquals(cell.checkLivenessCalls, 1);
+  assertEquals(cell.checkLivenessCalls, 1)
   assertEquals(
-    traces.some((line) => line.includes("event=ae-unavailable")),
-    true,
-  );
-});
+    traces.some((line) => line.includes('event=ae-unavailable')),
+    true
+  )
+})
 
-it("sweepOnce: default AE resolver failure falls back to check-all", async () => {
-  resetOfflineSweepNullGraceForTests();
-  const cell = createFakeCell({ connected: true, lastPingAtMs: Date.now() });
-  const cells = new Map([[ID_A, cell]]);
+it('sweepOnce: default AE resolver failure falls back to check-all', async () => {
+  resetOfflineSweepNullGraceForTests()
+  const cell = createFakeCell({ connected: true, lastPingAtMs: Date.now() })
+  const cells = new Map([[ID_A, cell]])
   const env = {
-    CLOUDFLARE_ACCOUNT_ID: "acct123",
-    TURBOPANEL_ANALYTICS_ENGINE_API_TOKEN: "token-xyz",
-  } as CloudflareBindings;
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = () => Promise.reject(new TypeError("ae sql boom"));
-  const traces: string[] = [];
-  const originalInfo = console.info;
+    CLOUDFLARE_ACCOUNT_ID: 'acct123',
+    TURBOPANEL_ANALYTICS_ENGINE_API_TOKEN: 'token-xyz',
+  } as CloudflareBindings
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = () => Promise.reject(new TypeError('ae sql boom'))
+  const traces: string[] = []
+  const originalInfo = console.info
   console.info = (...args: unknown[]) => {
-    traces.push(args.map(String).join(" "));
-  };
+    traces.push(args.map(String).join(' '))
+  }
   try {
     await sweepOnce(env, inertDb(), {
       registry: createFakeRegistry(cells),
-      listConnected: () =>
-        Promise.resolve([{ id: ID_A, connectedAt: new Date().toISOString() }]),
+      listConnected: () => Promise.resolve([{ id: ID_A, connectedAt: new Date().toISOString() }]),
       listRecentlyOffline: () => Promise.resolve([]),
       onDisconnected: () => Promise.resolve(),
       onConnected: () => Promise.resolve(),
-    });
+    })
   } finally {
-    globalThis.fetch = originalFetch;
-    console.info = originalInfo;
+    globalThis.fetch = originalFetch
+    console.info = originalInfo
   }
-  assertEquals(cell.checkLivenessCalls, 1);
+  assertEquals(cell.checkLivenessCalls, 1)
   assertEquals(
-    traces.some((line) => line.includes("event=ae-query-failed")),
-    true,
-  );
-});
+    traces.some((line) => line.includes('event=ae-query-failed')),
+    true
+  )
+})
 
-it("sweepOnce: checkLiveness throw is isolated and does not demote", async () => {
-  resetOfflineSweepNullGraceForTests();
-  const cell = createFakeCell({ connected: true, lastPingAtMs: Date.now() });
-  cell.checkLiveness = () => Promise.reject(new TypeError("rpc boom"));
-  const cells = new Map([[ID_A, cell]]);
-  const disconnected: string[] = [];
+it('sweepOnce: checkLiveness throw is isolated and does not demote', async () => {
+  resetOfflineSweepNullGraceForTests()
+  const cell = createFakeCell({ connected: true, lastPingAtMs: Date.now() })
+  cell.checkLiveness = () => Promise.reject(new TypeError('rpc boom'))
+  const cells = new Map([[ID_A, cell]])
+  const disconnected: string[] = []
 
   await sweepOnce(inertEnv(), inertDb(), {
     registry: createFakeRegistry(cells),
     resolveActiveServerIds: () => Promise.resolve(new Map()),
-    listConnected: () =>
-      Promise.resolve([{ id: ID_A, connectedAt: new Date().toISOString() }]),
+    listConnected: () => Promise.resolve([{ id: ID_A, connectedAt: new Date().toISOString() }]),
     listRecentlyOffline: () => Promise.resolve([]),
     onDisconnected: (_db, id) => {
-      disconnected.push(id);
-      return Promise.resolve();
+      disconnected.push(id)
+      return Promise.resolve()
     },
     onConnected: () => Promise.resolve(),
-  });
+  })
 
-  assertEquals(disconnected, []);
-});
+  assertEquals(disconnected, [])
+})
 
-it("sweepOnce: missing checkLiveness treats the cell as stale", async () => {
-  resetOfflineSweepNullGraceForTests();
-  const disconnected: string[] = [];
+it('sweepOnce: missing checkLiveness treats the cell as stale', async () => {
+  resetOfflineSweepNullGraceForTests()
+  const disconnected: string[] = []
   const registry: DaemonCellRegistry = {
     getCell(): DaemonCell {
-      return {} as DaemonCell;
+      return {} as DaemonCell
     },
     listOnlineServerIds(): Promise<string[]> {
-      return Promise.resolve([ID_A]);
+      return Promise.resolve([ID_A])
     },
     getSnapshots(): Promise<Map<string, DaemonCellSnapshot>> {
-      return Promise.resolve(new Map());
+      return Promise.resolve(new Map())
     },
     purge(): Promise<void> {
-      return Promise.resolve();
+      return Promise.resolve()
     },
-  };
+  }
 
   await sweepOnce(inertEnv(), inertDb(), {
     registry,
     resolveActiveServerIds: () => Promise.resolve(new Map()),
-    listConnected: () =>
-      Promise.resolve([{ id: ID_A, connectedAt: new Date().toISOString() }]),
+    listConnected: () => Promise.resolve([{ id: ID_A, connectedAt: new Date().toISOString() }]),
     listRecentlyOffline: () => Promise.resolve([]),
     onDisconnected: (_db, id) => {
-      disconnected.push(id);
-      return Promise.resolve();
+      disconnected.push(id)
+      return Promise.resolve()
     },
     onConnected: () => Promise.resolve(),
-  });
+  })
 
-  assertEquals(disconnected, [ID_A]);
-});
+  assertEquals(disconnected, [ID_A])
+})
 
-it("sweepOnce: onDisconnected throw is isolated", async () => {
-  resetOfflineSweepNullGraceForTests();
-  const cell = createFakeCell({ connected: false, lastPingAtMs: null });
-  const cells = new Map([[ID_A, cell]]);
+it('sweepOnce: onDisconnected throw is isolated', async () => {
+  resetOfflineSweepNullGraceForTests()
+  const cell = createFakeCell({ connected: false, lastPingAtMs: null })
+  const cells = new Map([[ID_A, cell]])
 
   await sweepOnce(inertEnv(), inertDb(), {
     registry: createFakeRegistry(cells),
     resolveActiveServerIds: () => Promise.resolve(new Map()),
-    listConnected: () =>
-      Promise.resolve([{ id: ID_A, connectedAt: new Date().toISOString() }]),
+    listConnected: () => Promise.resolve([{ id: ID_A, connectedAt: new Date().toISOString() }]),
     listRecentlyOffline: () => Promise.resolve([]),
-    onDisconnected: () => Promise.reject(new TypeError("projection failed")),
+    onDisconnected: () => Promise.reject(new TypeError('projection failed')),
     onConnected: () => Promise.resolve(),
-  });
+  })
 
-  assertEquals(cell.checkLivenessCalls, 1);
-});
+  assertEquals(cell.checkLivenessCalls, 1)
+})
 
-it("sweepOnce: probed self-heal throw is isolated", async () => {
-  resetOfflineSweepNullGraceForTests();
+it('sweepOnce: probed self-heal throw is isolated', async () => {
+  resetOfflineSweepNullGraceForTests()
   const cell = createFakeCell({
     connected: true,
     lastPingAtMs: Date.now() - 30_000,
-  });
-  const cells = new Map([[ID_A, cell]]);
+  })
+  const cells = new Map([[ID_A, cell]])
 
   await sweepOnce(inertEnv(), inertDb(), {
     registry: createFakeRegistry(cells),
     resolveActiveServerIds: () => Promise.resolve(new Map()),
     listConnected: () => Promise.resolve([]),
     listRecentlyOffline: () =>
-      Promise.resolve([{
-        id: ID_A,
-        connectedAt: new Date().toISOString(),
-        offlineAt: new Date().toISOString(),
-      }]),
+      Promise.resolve([
+        {
+          id: ID_A,
+          connectedAt: new Date().toISOString(),
+          offlineAt: new Date().toISOString(),
+        },
+      ]),
     onDisconnected: () => Promise.resolve(),
-    onConnected: () => Promise.reject(new TypeError("heal failed")),
+    onConnected: () => Promise.reject(new TypeError('heal failed')),
     onConnectedFromEvidence: () => Promise.resolve(),
-  });
+  })
 
-  assertEquals(cell.checkLivenessCalls, 1);
-});
+  assertEquals(cell.checkLivenessCalls, 1)
+})
 
-it("sweepOnce: AE-direct self-heal throw is isolated", async () => {
-  resetOfflineSweepNullGraceForTests();
-  const connectedAt = "2020-01-01T00:00:00.000Z";
-  const offlineAt = "2020-01-01T00:00:00.000Z";
-  const aeLatestMs = Date.parse("2020-01-01T00:01:00.000Z");
+it('sweepOnce: AE-direct self-heal throw is isolated', async () => {
+  resetOfflineSweepNullGraceForTests()
+  const connectedAt = '2020-01-01T00:00:00.000Z'
+  const offlineAt = '2020-01-01T00:00:00.000Z'
+  const aeLatestMs = Date.parse('2020-01-01T00:01:00.000Z')
 
   await sweepOnce(inertEnv(), inertDb(), {
     registry: createFakeRegistry(new Map()),
-    resolveActiveServerIds: () =>
-      Promise.resolve(new Map([[ID_A, aeLatestMs]])),
+    resolveActiveServerIds: () => Promise.resolve(new Map([[ID_A, aeLatestMs]])),
     listConnected: () => Promise.resolve([]),
-    listRecentlyOffline: () =>
-      Promise.resolve([{ id: ID_A, connectedAt, offlineAt }]),
+    listRecentlyOffline: () => Promise.resolve([{ id: ID_A, connectedAt, offlineAt }]),
     onDisconnected: () => Promise.resolve(),
     onConnected: () => {
-      throw new TypeError("AE-direct heal must not call onConnected");
+      throw new TypeError('AE-direct heal must not call onConnected')
     },
-    onConnectedFromEvidence: () =>
-      Promise.reject(new TypeError("evidence heal failed")),
-  });
-});
+    onConnectedFromEvidence: () => Promise.reject(new TypeError('evidence heal failed')),
+  })
+})
 
-it("sweepOnce: recently-offline id already connected is not merged twice", async () => {
-  resetOfflineSweepNullGraceForTests();
-  const cell = createFakeCell({ connected: true, lastPingAtMs: Date.now() });
-  const cells = new Map([[ID_A, cell]]);
+it('sweepOnce: recently-offline id already connected is not merged twice', async () => {
+  resetOfflineSweepNullGraceForTests()
+  const cell = createFakeCell({ connected: true, lastPingAtMs: Date.now() })
+  const cells = new Map([[ID_A, cell]])
 
   await sweepOnce(inertEnv(), inertDb(), {
     registry: createFakeRegistry(cells),
     resolveActiveServerIds: () => Promise.resolve(null),
-    listConnected: () =>
-      Promise.resolve([{ id: ID_A, connectedAt: new Date().toISOString() }]),
+    listConnected: () => Promise.resolve([{ id: ID_A, connectedAt: new Date().toISOString() }]),
     listRecentlyOffline: () =>
-      Promise.resolve([{
-        id: ID_A,
-        connectedAt: new Date().toISOString(),
-        offlineAt: new Date().toISOString(),
-      }]),
+      Promise.resolve([
+        {
+          id: ID_A,
+          connectedAt: new Date().toISOString(),
+          offlineAt: new Date().toISOString(),
+        },
+      ]),
     onDisconnected: () => Promise.resolve(),
     onConnected: () => Promise.resolve(),
-  });
+  })
 
-  assertEquals(cell.checkLivenessCalls, 1);
-});
+  assertEquals(cell.checkLivenessCalls, 1)
+})
 
-it("sweepOnce: null-grace bookkeeping is pruned when a server leaves the batch", async () => {
-  resetOfflineSweepNullGraceForTests();
-  const t0 = 1_700_000_000_000;
-  const nullCell = createFakeCell({ connected: true, lastPingAtMs: null });
+it('sweepOnce: null-grace bookkeeping is pruned when a server leaves the batch', async () => {
+  resetOfflineSweepNullGraceForTests()
+  const t0 = 1_700_000_000_000
+  const nullCell = createFakeCell({ connected: true, lastPingAtMs: null })
   const warmCell = createFakeCell({
     connected: true,
     lastPingAtMs: t0 - 30_000,
-  });
+  })
   const cells = new Map([
     [ID_A, nullCell],
     [ID_B, warmCell],
-  ]);
-  const registry = createFakeRegistry(cells);
-  const disconnected: string[] = [];
+  ])
+  const registry = createFakeRegistry(cells)
+  const disconnected: string[] = []
 
   await sweepOnce(inertEnv(), inertDb(), {
     registry,
     nowMs: t0,
     resolveActiveServerIds: () => Promise.resolve(null),
-    listConnected: () =>
-      Promise.resolve([{ id: ID_A, connectedAt: new Date(t0).toISOString() }]),
+    listConnected: () => Promise.resolve([{ id: ID_A, connectedAt: new Date(t0).toISOString() }]),
     listRecentlyOffline: () => Promise.resolve([]),
     onDisconnected: () => Promise.resolve(),
     onConnected: () => Promise.resolve(),
-  });
+  })
 
   await sweepOnce(inertEnv(), inertDb(), {
     registry,
     nowMs: t0 + 1_000,
     resolveActiveServerIds: () => Promise.resolve(null),
-    listConnected: () =>
-      Promise.resolve([{ id: ID_B, connectedAt: new Date(t0).toISOString() }]),
+    listConnected: () => Promise.resolve([{ id: ID_B, connectedAt: new Date(t0).toISOString() }]),
     listRecentlyOffline: () => Promise.resolve([]),
     onDisconnected: () => Promise.resolve(),
     onConnected: () => Promise.resolve(),
-  });
+  })
 
   await sweepOnce(inertEnv(), inertDb(), {
     registry,
     nowMs: t0 + OFFLINE_SWEEP_STALE_MS + 1,
     resolveActiveServerIds: () => Promise.resolve(null),
-    listConnected: () =>
-      Promise.resolve([{ id: ID_A, connectedAt: new Date(t0).toISOString() }]),
+    listConnected: () => Promise.resolve([{ id: ID_A, connectedAt: new Date(t0).toISOString() }]),
     listRecentlyOffline: () => Promise.resolve([]),
     onDisconnected: (_db, id) => {
-      disconnected.push(id);
-      return Promise.resolve();
+      disconnected.push(id)
+      return Promise.resolve()
     },
     onConnected: () => Promise.resolve(),
-  });
+  })
 
-  assertEquals(disconnected, []);
-});
+  assertEquals(disconnected, [])
+})
 
-it("sweepOnce fallback logs truncated when the connected budget is exceeded", async () => {
-  resetOfflineSweepNullGraceForTests();
-  const overBudget = CONNECTED_SWEEP_BUDGET + 1;
+it('sweepOnce fallback logs truncated when the connected budget is exceeded', async () => {
+  resetOfflineSweepNullGraceForTests()
+  const overBudget = CONNECTED_SWEEP_BUDGET + 1
   const connected = Array.from({ length: overBudget }, (_, i) => ({
-    id: `00000000-0000-4000-8000-${String(i).padStart(12, "0")}`,
+    id: `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`,
     connectedAt: new Date().toISOString(),
-  }));
+  }))
   const cells = new Map(
-    connected.map((row) => [
-      row.id,
-      createFakeCell({ connected: true, lastPingAtMs: Date.now() }),
-    ]),
-  );
-  const traces: string[] = [];
-  const originalInfo = console.info;
+    connected.map((row) => [row.id, createFakeCell({ connected: true, lastPingAtMs: Date.now() })])
+  )
+  const traces: string[] = []
+  const originalInfo = console.info
   console.info = (...args: unknown[]) => {
-    traces.push(args.map(String).join(" "));
-  };
+    traces.push(args.map(String).join(' '))
+  }
   try {
     await sweepOnce(inertEnv(), inertDb(), {
       registry: createFakeRegistry(cells),
@@ -1282,25 +1209,25 @@ it("sweepOnce fallback logs truncated when the connected budget is exceeded", as
       listRecentlyOffline: () => Promise.resolve([]),
       onDisconnected: () => Promise.resolve(),
       onConnected: () => Promise.resolve(),
-    });
+    })
   } finally {
-    console.info = originalInfo;
+    console.info = originalInfo
   }
   assertEquals(
-    traces.some((line) => line.includes("event=truncated")),
-    true,
-  );
-});
+    traces.some((line) => line.includes('event=truncated')),
+    true
+  )
+})
 
-it("sweepOnce: an already-due deadline skips demote as budget-exhausted", async () => {
-  resetOfflineSweepNullGraceForTests();
-  const cell = createFakeCell({ connected: false, lastPingAtMs: null });
-  const cells = new Map([[ID_A, cell]]);
-  const traces: string[] = [];
-  const originalInfo = console.info;
+it('sweepOnce: an already-due deadline skips demote as budget-exhausted', async () => {
+  resetOfflineSweepNullGraceForTests()
+  const cell = createFakeCell({ connected: false, lastPingAtMs: null })
+  const cells = new Map([[ID_A, cell]])
+  const traces: string[] = []
+  const originalInfo = console.info
   console.info = (...args: unknown[]) => {
-    traces.push(args.map(String).join(" "));
-  };
+    traces.push(args.map(String).join(' '))
+  }
   try {
     await sweepOnce(inertEnv(), inertDb(), {
       registry: createFakeRegistry(cells),
@@ -1308,65 +1235,59 @@ it("sweepOnce: an already-due deadline skips demote as budget-exhausted", async 
       // phases immediately (left <= 0) instead of hanging a callback.
       deadlineMs: 0,
       resolveActiveServerIds: () => Promise.resolve(new Map()),
-      listConnected: () =>
-        Promise.resolve([{ id: ID_A, connectedAt: new Date().toISOString() }]),
+      listConnected: () => Promise.resolve([{ id: ID_A, connectedAt: new Date().toISOString() }]),
       listRecentlyOffline: () => Promise.resolve([]),
       onDisconnected: () => Promise.resolve(),
       onConnected: () => Promise.resolve(),
-    });
+    })
   } finally {
-    console.info = originalInfo;
+    console.info = originalInfo
   }
   assertEquals(
-    traces.some((line) =>
-      line.includes("event=budget-exhausted") && line.includes("phase=demote")
-    ),
-    true,
-  );
-});
+    traces.some((line) => line.includes('event=budget-exhausted') && line.includes('phase=demote')),
+    true
+  )
+})
 
-it("sweepOnce AE: heal-direct phase timeout is budget-exhausted", async () => {
-  resetOfflineSweepNullGraceForTests();
-  const connectedAt = "2020-01-01T00:00:00.000Z";
-  const offlineAt = "2020-01-01T00:00:00.000Z";
-  const aeLatestMs = Date.parse("2020-01-01T00:01:00.000Z");
-  const traces: string[] = [];
-  const originalInfo = console.info;
+it('sweepOnce AE: heal-direct phase timeout is budget-exhausted', async () => {
+  resetOfflineSweepNullGraceForTests()
+  const connectedAt = '2020-01-01T00:00:00.000Z'
+  const offlineAt = '2020-01-01T00:00:00.000Z'
+  const aeLatestMs = Date.parse('2020-01-01T00:01:00.000Z')
+  const traces: string[] = []
+  const originalInfo = console.info
   console.info = (...args: unknown[]) => {
-    traces.push(args.map(String).join(" "));
-  };
+    traces.push(args.map(String).join(' '))
+  }
   try {
     await sweepOnce(inertEnv(), inertDb(), {
       registry: createFakeRegistry(new Map()),
       deadlineMs: Date.now() + 25,
-      resolveActiveServerIds: () =>
-        Promise.resolve(new Map([[ID_A, aeLatestMs]])),
+      resolveActiveServerIds: () => Promise.resolve(new Map([[ID_A, aeLatestMs]])),
       listConnected: () => Promise.resolve([]),
-      listRecentlyOffline: () =>
-        Promise.resolve([{ id: ID_A, connectedAt, offlineAt }]),
+      listRecentlyOffline: () => Promise.resolve([{ id: ID_A, connectedAt, offlineAt }]),
       onDisconnected: () => Promise.resolve(),
       onConnected: () => Promise.resolve(),
       onConnectedFromEvidence: () => new Promise(() => {}),
-    });
+    })
   } finally {
-    console.info = originalInfo;
+    console.info = originalInfo
   }
   assertEquals(
-    traces.some((line) =>
-      line.includes("event=budget-exhausted") &&
-      line.includes("phase=heal-direct")
+    traces.some(
+      (line) => line.includes('event=budget-exhausted') && line.includes('phase=heal-direct')
     ),
-    true,
-  );
-});
+    true
+  )
+})
 
-it("sweepOnce fallback: an already-due deadline skips heal after demote", async () => {
-  resetOfflineSweepNullGraceForTests();
-  const traces: string[] = [];
-  const originalInfo = console.info;
+it('sweepOnce fallback: an already-due deadline skips heal after demote', async () => {
+  resetOfflineSweepNullGraceForTests()
+  const traces: string[] = []
+  const originalInfo = console.info
   console.info = (...args: unknown[]) => {
-    traces.push(args.map(String).join(" "));
-  };
+    traces.push(args.map(String).join(' '))
+  }
   try {
     await sweepOnce(inertEnv(), inertDb(), {
       registry: createFakeRegistry(new Map()),
@@ -1374,155 +1295,152 @@ it("sweepOnce fallback: an already-due deadline skips heal after demote", async 
       resolveActiveServerIds: () => Promise.resolve(null),
       listConnected: () => Promise.resolve([]),
       listRecentlyOffline: () =>
-        Promise.resolve([{
-          id: ID_A,
-          connectedAt: new Date().toISOString(),
-          offlineAt: new Date().toISOString(),
-        }]),
+        Promise.resolve([
+          {
+            id: ID_A,
+            connectedAt: new Date().toISOString(),
+            offlineAt: new Date().toISOString(),
+          },
+        ]),
       onDisconnected: () => Promise.resolve(),
       onConnected: () => Promise.resolve(),
-    });
+    })
   } finally {
-    console.info = originalInfo;
+    console.info = originalInfo
   }
   // Fallback still enters runBoundedPhase("demote") first; an already-due
   // deadline never reaches heal. The hanging heal-direct case covers the
   // timeout catch on a later phase.
   assertEquals(
-    traces.some((line) =>
-      line.includes("event=budget-exhausted") && line.includes("phase=demote")
-    ),
-    true,
-  );
+    traces.some((line) => line.includes('event=budget-exhausted') && line.includes('phase=demote')),
+    true
+  )
   assertEquals(
-    traces.some((line) => line.includes("phase=heal")),
-    false,
-  );
-});
+    traces.some((line) => line.includes('phase=heal')),
+    false
+  )
+})
 
-it("webhook-delivery sweep runs on the passed db, bounded per tick", async () => {
-  let limit: number | undefined;
-  let deleteCalls = 0;
+it('webhook-delivery sweep runs on the passed db, bounded per tick', async () => {
+  let limit: number | undefined
+  let deleteCalls = 0
   const db = {
     delete: () => ({
       where: (condition: { queryChunks?: unknown[] }) => {
-        deleteCalls += 1;
-        limit = (condition.queryChunks ?? []).find(
-          (chunk) => typeof chunk === "number",
-        ) as number | undefined;
-        return { returning: () => Promise.resolve([{ id: "delivery-1" }]) };
+        deleteCalls += 1
+        limit = (condition.queryChunks ?? []).find((chunk) => typeof chunk === 'number') as
+          number | undefined
+        return { returning: () => Promise.resolve([{ id: 'delivery-1' }]) }
       },
     }),
-  } as unknown as Db;
+  } as unknown as Db
 
-  await sweepExpiredWebhookDeliveriesSafely(db);
+  await sweepExpiredWebhookDeliveriesSafely(db)
 
-  assertEquals(deleteCalls, 1);
-  assertEquals(limit, WEBHOOK_DELIVERY_SWEEP_LIMIT);
-});
+  assertEquals(deleteCalls, 1)
+  assertEquals(limit, WEBHOOK_DELIVERY_SWEEP_LIMIT)
+})
 
-it("webhook-delivery sweep failures stay isolated from the rest of the tick", async () => {
+it('webhook-delivery sweep failures stay isolated from the rest of the tick', async () => {
   const db = {
     delete: () => {
-      throw new TypeError("postgres unavailable");
+      throw new TypeError('postgres unavailable')
     },
-  } as unknown as Db;
+  } as unknown as Db
 
-  await sweepExpiredWebhookDeliveriesSafely(db);
-});
+  await sweepExpiredWebhookDeliveriesSafely(db)
+})
 
-function fakeExecutionLogStore(
-  sweep: ExecutionLogStore["sweepExpired"],
-): ExecutionLogStore {
+function fakeExecutionLogStore(sweep: ExecutionLogStore['sweepExpired']): ExecutionLogStore {
   return {
     appendChunk: () => {
-      throw new TypeError("unused");
+      throw new TypeError('unused')
     },
     readFrom: () => {
-      throw new TypeError("unused");
+      throw new TypeError('unused')
     },
     exists: () => {
-      throw new TypeError("unused");
+      throw new TypeError('unused')
     },
     seal: () => {
-      throw new TypeError("unused");
+      throw new TypeError('unused')
     },
     delete: () => {
-      throw new TypeError("unused");
+      throw new TypeError('unused')
     },
     sweepExpired: sweep,
-  };
+  }
 }
 
-it("execution-log sweep traces when transcripts were deleted", async () => {
-  const traces: string[] = [];
-  const originalInfo = console.info;
+it('execution-log sweep traces when transcripts were deleted', async () => {
+  const traces: string[] = []
+  const originalInfo = console.info
   console.info = (...args: unknown[]) => {
-    traces.push(args.map(String).join(" "));
-  };
+    traces.push(args.map(String).join(' '))
+  }
   try {
     await sweepExpiredExecutionLogsSafely(
       fakeExecutionLogStore(() => Promise.resolve(3)),
-      90,
-    );
+      90
+    )
   } finally {
-    console.info = originalInfo;
+    console.info = originalInfo
   }
   assertEquals(
-    traces.some((line) =>
-      line.includes("event=execution-logs-swept") && line.includes("deleted=3")
+    traces.some(
+      (line) => line.includes('event=execution-logs-swept') && line.includes('deleted=3')
     ),
-    true,
-  );
-});
+    true
+  )
+})
 
-it("execution-log sweep failures stay isolated from the rest of the tick", async () => {
+it('execution-log sweep failures stay isolated from the rest of the tick', async () => {
   await sweepExpiredExecutionLogsSafely(
-    fakeExecutionLogStore(() => Promise.reject(new TypeError("r2 down"))),
-    90,
-  );
-});
+    fakeExecutionLogStore(() => Promise.reject(new TypeError('r2 down'))),
+    90
+  )
+})
 
-it("runOfflineSweep logs lease-acquire-failed and returns", async () => {
+it('runOfflineSweep logs lease-acquire-failed and returns', async () => {
   const db = {
     insert: () => {
-      throw new TypeError("lease db down");
+      throw new TypeError('lease db down')
     },
     $client: { end: () => Promise.resolve() },
-  } as unknown as Db;
-  const traces: string[] = [];
-  const originalInfo = console.info;
+  } as unknown as Db
+  const traces: string[] = []
+  const originalInfo = console.info
   console.info = (...args: unknown[]) => {
-    traces.push(args.map(String).join(" "));
-  };
+    traces.push(args.map(String).join(' '))
+  }
   try {
-    await runOfflineSweep(inertEnv(), null, { db });
+    await runOfflineSweep(inertEnv(), null, { db })
   } finally {
-    console.info = originalInfo;
+    console.info = originalInfo
   }
   assertEquals(
-    traces.some((line) => line.includes("event=lease-acquire-failed")),
-    true,
-  );
-});
+    traces.some((line) => line.includes('event=lease-acquire-failed')),
+    true
+  )
+})
 
-it("runOfflineSweep logs lease-release-failed and still finishes the tick", async () => {
-  const lock = createOfflineSweepLockMemoryDb();
+it('runOfflineSweep logs lease-release-failed and still finishes the tick', async () => {
+  const lock = createOfflineSweepLockMemoryDb()
   const db = {
     ...lock,
     update: () => ({
       set: () => ({
         where: () => {
-          throw new TypeError("release failed");
+          throw new TypeError('release failed')
         },
       }),
     }),
-  } as unknown as Db;
-  const traces: string[] = [];
-  const originalInfo = console.info;
+  } as unknown as Db
+  const traces: string[] = []
+  const originalInfo = console.info
   console.info = (...args: unknown[]) => {
-    traces.push(args.map(String).join(" "));
-  };
+    traces.push(args.map(String).join(' '))
+  }
   try {
     await runOfflineSweep(inertEnv(), null, {
       db,
@@ -1533,29 +1451,26 @@ it("runOfflineSweep logs lease-release-failed and still finishes the tick", asyn
         onDisconnected: () => Promise.resolve(),
         onConnected: () => Promise.resolve(),
       },
-    });
+    })
   } finally {
-    console.info = originalInfo;
+    console.info = originalInfo
   }
   assertEquals(
-    traces.some((line) => line.includes("event=lease-release-failed")),
-    true,
-  );
+    traces.some((line) => line.includes('event=lease-release-failed')),
+    true
+  )
   assertEquals(
-    traces.some((line) => line.includes("event=tick-complete")),
-    true,
-  );
-});
+    traces.some((line) => line.includes('event=tick-complete')),
+    true
+  )
+})
 
 // ---------------------------------------------------------------------------
 // T12 · the billing phases on the cron tick: skipped wholesale without a key,
-// run in order with one, and what a throwing grace clock does to the rest.
+// run in order with one, and what a throwing billing phase does to the rest.
 // ---------------------------------------------------------------------------
 
-import {
-  createMemoryDb,
-  type MemoryDb,
-} from "../../test-fixtures/memory-db.ts";
+import { createMemoryDb, type MemoryDb } from '../../test-fixtures/memory-db.ts'
 import {
   allowance,
   key,
@@ -1569,13 +1484,13 @@ import {
   subscriptionItem,
   tier,
   webhookDelivery,
-} from "../../db/schema.ts";
-import { BILLING_RECONCILE_REPORT_KEY } from "../../features/billing/reconcile.ts";
-import { deriveEncryptionSecretsConfig } from "../../lib/secrets/secrets.ts";
-import { parseTestSecretsConfig } from "../../test-fixtures/secrets.ts";
+} from '../../db/schema.ts'
+import { BILLING_RECONCILE_REPORT_KEY } from '../../features/billing/reconcile.ts'
+import { deriveEncryptionSecretsConfig } from '../../lib/secrets/secrets.ts'
+import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 
-/** Every scheduled phase fires on the hour: execution logs, tier notices, grace clock, reconcile. */
-const ON_THE_HOUR = Date.parse("2026-01-01T00:00:00.000Z");
+/** Every scheduled phase fires on the hour: execution logs, tier notices, reconcile. */
+const ON_THE_HOUR = Date.parse('2026-01-01T00:00:00.000Z')
 
 const inertSweep = {
   listConnected: () => Promise.resolve([]),
@@ -1583,10 +1498,10 @@ const inertSweep = {
   resolveActiveServerIds: () => Promise.resolve(new Map<string, number>()),
   onDisconnected: () => Promise.resolve(),
   onConnected: () => Promise.resolve(),
-};
+}
 
-/** A projection-shaped memory db; `withSubscription: false` leaves that table unregistered so its first read throws. */
-function billingSweepDb(opts: { withSubscription: boolean }): MemoryDb {
+/** A projection-shaped memory db; `withPayer: false` leaves that table unregistered so reconcile's first read throws. */
+function billingSweepDb(opts: { withPayer: boolean }): MemoryDb {
   return createMemoryDb([
     [setting, []],
     [allowance, []],
@@ -1596,26 +1511,24 @@ function billingSweepDb(opts: { withSubscription: boolean }): MemoryDb {
     [server, []],
     [license, []],
     [tier, []],
-    [payer, []],
-    ...(opts.withSubscription
-      ? [[subscription, []] as [typeof subscription, Record<string, unknown>[]]]
-      : []),
+    ...(opts.withPayer ? [[payer, []] as [typeof payer, Record<string, unknown>[]]] : []),
+    [subscription, []],
     [subscriptionItem, []],
     [webhookDelivery, []],
-  ]);
+  ])
 }
 
 async function runTickCapturingTrace(
   env: CloudflareBindings,
   db: Db,
   tlsRenewal?: Parameters<typeof runOfflineSweep>[1],
-  scheduledTime: number = ON_THE_HOUR,
+  scheduledTime: number = ON_THE_HOUR
 ): Promise<string[]> {
-  const traces: string[] = [];
-  const originalInfo = console.info;
+  const traces: string[] = []
+  const originalInfo = console.info
   console.info = (...args: unknown[]) => {
-    traces.push(args.map(String).join(" "));
-  };
+    traces.push(args.map(String).join(' '))
+  }
   try {
     // `scheduledTime` picks the phases; the budget clock is the real one, so
     // `nowMs` must be live or every phase reads as over budget before it runs.
@@ -1624,297 +1537,272 @@ async function runTickCapturingTrace(
       scheduledTime,
       nowMs: Date.now(),
       sweepOnceDeps: inertSweep,
-    });
+    })
   } finally {
-    console.info = originalInfo;
+    console.info = originalInfo
   }
-  return traces;
+  return traces
 }
 
 const tickComplete = (traces: string[]) =>
-  traces.find((line) => line.includes("event=tick-complete")) ?? "";
+  traces.find((line) => line.includes('event=tick-complete')) ?? ''
 const reconcileReport = (db: MemoryDb) =>
-  db.rows(setting).find((row) => row.key === BILLING_RECONCILE_REPORT_KEY) ??
-    null;
+  db.rows(setting).find((row) => row.key === BILLING_RECONCILE_REPORT_KEY) ?? null
 
-it("T12 · with no Stripe key neither billing phase runs: no projection read, no reconcile report, nothing marked skipped", async () => {
-  const db = billingSweepDb({ withSubscription: false });
-  const traces = await runTickCapturingTrace(inertEnv(), db);
-  // The grace clock would have read `subscription` (unregistered here, so it
-  // would have thrown) and reconcile would have listed payers.
-  assertEquals(db.ops.includes("select:subscription"), false);
-  assertEquals(db.ops.includes("select:payer"), false);
-  assertEquals(reconcileReport(db), null);
-  assertEquals(tickComplete(traces).includes("phasesSkipped=[]"), true);
-});
+it('T12 · with no Stripe key neither billing phase runs: no payer read, no reconcile report, nothing marked skipped', async () => {
+  const db = billingSweepDb({ withPayer: false })
+  const traces = await runTickCapturingTrace(inertEnv(), db)
+  // Reconcile would have listed payers (unregistered here, so it would have
+  // thrown).
+  assertEquals(db.ops.includes('select:payer'), false)
+  assertEquals(reconcileReport(db), null)
+  assertEquals(tickComplete(traces).includes('phasesSkipped=[]'), true)
+})
 
-it("T12 · with a key both billing phases run on their tick: the grace clock scans subscriptions, reconcile lists payers and writes its report", async () => {
-  const db = billingSweepDb({ withSubscription: true });
+it('T12 · with a key both billing phases run on their tick: pending projections are retried, reconcile lists payers and writes its report', async () => {
+  const db = billingSweepDb({ withPayer: true })
   const env = {
-    TURBOPANEL_STRIPE_SECRET_KEY: "sk_test_x",
-  } as unknown as CloudflareBindings;
-  const traces = await runTickCapturingTrace(env, db);
-  assertEquals(db.ops.includes("select:subscription"), true);
-  assertEquals(db.ops.includes("select:payer"), true);
-  assertEquals(reconcileReport(db) !== null, true);
-  assertEquals(tickComplete(traces).includes("phasesSkipped=[]"), true);
-});
+    TURBOPANEL_STRIPE_SECRET_KEY: 'sk_test_x',
+  } as unknown as CloudflareBindings
+  const traces = await runTickCapturingTrace(env, db)
+  assertEquals(db.ops.includes('select:payer'), true)
+  assertEquals(reconcileReport(db) !== null, true)
+  assertEquals(tickComplete(traces).includes('phasesSkipped=[]'), true)
+})
 
-it("T12 · finding: a throwing grace clock is NOT isolated — reconcile and the queued sweeps after it are skipped on that tick", async () => {
-  // `subscription` is unregistered, so the grace clock's first read throws.
-  const db = billingSweepDb({ withSubscription: false });
+it('T12 · finding: a throwing billing phase is NOT isolated — the queued sweeps after it are skipped on that tick', async () => {
+  // `payer` is unregistered, so billing reconcile's first read throws.
+  const db = billingSweepDb({ withPayer: false })
   const env = {
-    TURBOPANEL_STRIPE_SECRET_KEY: "sk_test_x",
-  } as unknown as CloudflareBindings;
-  const traces = await runTickCapturingTrace(env, db);
+    TURBOPANEL_STRIPE_SECRET_KEY: 'sk_test_x',
+  } as unknown as CloudflareBindings
+  const traces = await runTickCapturingTrace(env, db)
   assertEquals(
-    traces.some((line) =>
-      line.includes("event=budget-exhausted") &&
-      line.includes("phase=billing-grace-clock")
+    traces.some(
+      (line) => line.includes('event=budget-exhausted') && line.includes('phase=billing-reconcile')
     ),
-    true,
-  );
+    true
+  )
   // The code comment promises each billing phase is isolated; the optional
   // phase runner aborts the chain instead, exactly as it does for the other
-  // optional phases. Reconcile is Postgres-only and did not need Stripe.
-  const done = tickComplete(traces);
-  for (
-    const phase of ["billing-grace-clock", "billing-reconcile", "reconcile"]
-  ) {
-    assertEquals(done.includes(phase), true, phase);
+  // optional phases.
+  const done = tickComplete(traces)
+  for (const phase of ['billing-reconcile', 'reconcile']) {
+    assertEquals(done.includes(phase), true, phase)
   }
-  assertEquals(db.ops.includes("select:payer"), false);
-  assertEquals(reconcileReport(db), null);
+  assertEquals(reconcileReport(db), null)
   // The tick lease is still released.
-  assertEquals((await tryBeginOfflineSweep(db)) !== null, true);
-});
+  assertEquals((await tryBeginOfflineSweep(db)) !== null, true)
+})
 
 function commandQueueEnv(): CloudflareBindings {
   return {
     TURBOPANEL_COMMAND_QUEUE: { send: () => Promise.resolve() },
-  } as unknown as CloudflareBindings;
+  } as unknown as CloudflareBindings
 }
 
-async function testTlsRenewal(): Promise<
-  NonNullable<Parameters<typeof runOfflineSweep>[1]>
-> {
-  const secretsConfig = parseTestSecretsConfig("workers");
+async function testTlsRenewal(): Promise<NonNullable<Parameters<typeof runOfflineSweep>[1]>> {
+  const secretsConfig = parseTestSecretsConfig('workers')
   return {
     secretsConfig,
-    dataEncryptionSecrets: await deriveEncryptionSecretsConfig(
-      secretsConfig,
-      "data-encryption",
-    ),
-  };
+    dataEncryptionSecrets: await deriveEncryptionSecretsConfig(secretsConfig, 'data-encryption'),
+  }
 }
 
 /** Off the hour / :15 so scheduled billing, tier-notices, and execution-logs stay idle. */
-const MID_HOUR = Date.parse("2026-01-01T00:01:00.000Z");
+const MID_HOUR = Date.parse('2026-01-01T00:01:00.000Z')
 
-it("queued cron: system reconcile execute throw is isolated as system-reconcile-sweep-failed", async () => {
+it('queued cron: system reconcile execute throw is isolated as system-reconcile-sweep-failed', async () => {
   // MemoryDb has no `execute`; runSystemReconcileSweep's raw SQL throws and
   // the outer catch traces without aborting the tick.
-  const db = billingSweepDb({ withSubscription: true });
-  const traces = await runTickCapturingTrace(
-    commandQueueEnv(),
-    db,
-    null,
-    MID_HOUR,
-  );
+  const db = billingSweepDb({ withPayer: true })
+  const traces = await runTickCapturingTrace(commandQueueEnv(), db, null, MID_HOUR)
   assertEquals(
-    traces.some((line) => line.includes("event=system-reconcile-sweep-failed")),
-    true,
-  );
-  assertEquals(tickComplete(traces).includes("phasesSkipped=[]"), true);
-});
+    traces.some((line) => line.includes('event=system-reconcile-sweep-failed')),
+    true
+  )
+  assertEquals(tickComplete(traces).includes('phasesSkipped=[]'), true)
+})
 
-it("queued cron: leaf renewal and managed-ingress orphan failures are isolated after reconcile succeeds", async () => {
-  const db = billingSweepDb({ withSubscription: true });
-  let executeCalls = 0;
+it('queued cron: leaf renewal and managed-ingress orphan failures are isolated after reconcile succeeds', async () => {
+  const db = billingSweepDb({ withPayer: true })
+  let executeCalls = 0
   Object.assign(db, {
     execute: () => {
-      executeCalls += 1;
-      if (executeCalls === 1) return Promise.resolve([]);
-      return Promise.reject(new TypeError("orphan boom"));
+      executeCalls += 1
+      if (executeCalls === 1) return Promise.resolve([])
+      return Promise.reject(new TypeError('orphan boom'))
     },
-  });
+  })
   const traces = await runTickCapturingTrace(
     commandQueueEnv(),
     db,
     await testTlsRenewal(),
-    MID_HOUR,
-  );
+    MID_HOUR
+  )
   assertEquals(
-    traces.some((line) => line.includes("event=system-reconcile-sweep-failed")),
-    false,
-  );
+    traces.some((line) => line.includes('event=system-reconcile-sweep-failed')),
+    false
+  )
   assertEquals(
-    traces.some((line) => line.includes("event=leaf-renewal-sweep-failed")),
-    true,
-  );
+    traces.some((line) => line.includes('event=leaf-renewal-sweep-failed')),
+    true
+  )
   assertEquals(
-    traces.some((line) =>
-      line.includes("event=managed-ingress-orphan-sweep-failed")
-    ),
-    true,
-  );
-  assertEquals(tickComplete(traces).includes("phasesSkipped=[]"), true);
-});
+    traces.some((line) => line.includes('event=managed-ingress-orphan-sweep-failed')),
+    true
+  )
+  assertEquals(tickComplete(traces).includes('phasesSkipped=[]'), true)
+})
 
-it("a mass disconnect is distinguished from unrelated host failures", () => {
+it('a mass disconnect is distinguished from unrelated host failures', () => {
   // Below the floor: two hosts going quiet is two hosts, whatever the fleet
   // size — never a systemic alarm.
-  assertEquals(isMassDisconnect(1, 1), false);
-  assertEquals(isMassDisconnect(2, 2), false);
+  assertEquals(isMassDisconnect(1, 1), false)
+  assertEquals(isMassDisconnect(2, 2), false)
 
   // A small fleet going dark at once crosses the ratio.
-  assertEquals(isMassDisconnect(3, 4), true);
-  assertEquals(isMassDisconnect(3, 20), false);
+  assertEquals(isMassDisconnect(3, 4), true)
+  assertEquals(isMassDisconnect(3, 20), false)
 
   // A large fleet losing a chunk crosses the absolute count even though the
   // ratio is low — ten hosts at once is a shared cause, not ten coincidences.
-  assertEquals(isMassDisconnect(10, 500), true);
-  assertEquals(isMassDisconnect(9, 500), false);
+  assertEquals(isMassDisconnect(10, 500), true)
+  assertEquals(isMassDisconnect(9, 500), false)
 
   // A fleet with nothing connected cannot produce a ratio; the absolute
   // count is the only bound that can fire.
-  assertEquals(isMassDisconnect(3, 0), false);
-  assertEquals(isMassDisconnect(MASS_DISCONNECT_ABSOLUTE, 0), true);
-});
+  assertEquals(isMassDisconnect(3, 0), false)
+  assertEquals(isMassDisconnect(MASS_DISCONNECT_ABSOLUTE, 0), true)
+})
 
-it("a demoted server reaches the operator, not only the log", async () => {
+it('a demoted server reaches the operator, not only the log', async () => {
   // The delivery half of daemon-offline-alerting: notifyServerWentOffline was
   // a structured log line and nothing else, so a host going dark at 3am paged
   // nobody.
-  resetOfflineSweepNullGraceForTests();
-  const cell = createFakeCell({ connected: false, lastPingAtMs: null });
-  const alerts: Alert[] = [];
+  resetOfflineSweepNullGraceForTests()
+  const cell = createFakeCell({ connected: false, lastPingAtMs: null })
+  const alerts: Alert[] = []
 
   await sweepOnce(inertEnv(), inertDb(), {
     registry: createFakeRegistry(new Map([[ID_A, cell]])),
     resolveActiveServerIds: () => Promise.resolve(new Map()),
-    listConnected: () =>
-      Promise.resolve([{ id: ID_A, connectedAt: new Date().toISOString() }]),
+    listConnected: () => Promise.resolve([{ id: ID_A, connectedAt: new Date().toISOString() }]),
     listRecentlyOffline: () => Promise.resolve([]),
     onDisconnected: () => Promise.resolve(),
     onConnected: () => Promise.resolve(),
     alertSender: (alert) => {
-      alerts.push(alert);
-      return Promise.resolve();
+      alerts.push(alert)
+      return Promise.resolve()
     },
-  });
+  })
 
-  assertEquals(alerts.length, 1);
-  assertEquals(alerts[0].kind, "server.offline");
-  assertEquals(alerts[0].detail, { serverId: ID_A });
-});
+  assertEquals(alerts.length, 1)
+  assertEquals(alerts[0].kind, 'server.offline')
+  assertEquals(alerts[0].detail, { serverId: ID_A })
+})
 
-it("a mass disconnect sends the aggregate alert as well as the per-server ones", async () => {
-  resetOfflineSweepNullGraceForTests();
-  const ids = [ID_A, ID_B, "cccccccc-dddd-4eee-8fff-aaaaaaaaaaaa"];
+it('a mass disconnect sends the aggregate alert as well as the per-server ones', async () => {
+  resetOfflineSweepNullGraceForTests()
+  const ids = [ID_A, ID_B, 'cccccccc-dddd-4eee-8fff-aaaaaaaaaaaa']
   const cells = new Map(
-    ids.map((id) => [id, createFakeCell({ connected: false, lastPingAtMs: null })]),
-  );
-  const alerts: Alert[] = [];
+    ids.map((id) => [id, createFakeCell({ connected: false, lastPingAtMs: null })])
+  )
+  const alerts: Alert[] = []
 
   await sweepOnce(inertEnv(), inertDb(), {
     registry: createFakeRegistry(cells),
     resolveActiveServerIds: () => Promise.resolve(new Map()),
     listConnected: () =>
-      Promise.resolve(
-        ids.map((id) => ({ id, connectedAt: new Date().toISOString() })),
-      ),
+      Promise.resolve(ids.map((id) => ({ id, connectedAt: new Date().toISOString() }))),
     listRecentlyOffline: () => Promise.resolve([]),
     onDisconnected: () => Promise.resolve(),
     onConnected: () => Promise.resolve(),
     alertSender: (alert) => {
-      alerts.push(alert);
-      return Promise.resolve();
+      alerts.push(alert)
+      return Promise.resolve()
     },
-  });
+  })
 
   // The aggregate goes first: it is the one that explains the three that follow.
-  assertEquals(alerts[0].kind, "fleet.mass_disconnect");
-  assertEquals(alerts[0].detail, { staleCount: 3, connectedBefore: 3 });
+  assertEquals(alerts[0].kind, 'fleet.mass_disconnect')
+  assertEquals(alerts[0].detail, { staleCount: 3, connectedBefore: 3 })
   assertEquals(
     alerts.slice(1).map((alert) => alert.kind),
-    ["server.offline", "server.offline", "server.offline"],
-  );
-});
+    ['server.offline', 'server.offline', 'server.offline']
+  )
+})
 
-it("an instance with no webhook configured still sweeps", async () => {
+it('an instance with no webhook configured still sweeps', async () => {
   // The default is a no-op sender; a sweep must never depend on one existing.
-  resetOfflineSweepNullGraceForTests();
-  const cell = createFakeCell({ connected: false, lastPingAtMs: null });
-  const disconnected: string[] = [];
+  resetOfflineSweepNullGraceForTests()
+  const cell = createFakeCell({ connected: false, lastPingAtMs: null })
+  const disconnected: string[] = []
 
   await sweepOnce(inertEnv(), inertDb(), {
     registry: createFakeRegistry(new Map([[ID_A, cell]])),
     resolveActiveServerIds: () => Promise.resolve(new Map()),
-    listConnected: () =>
-      Promise.resolve([{ id: ID_A, connectedAt: new Date().toISOString() }]),
+    listConnected: () => Promise.resolve([{ id: ID_A, connectedAt: new Date().toISOString() }]),
     listRecentlyOffline: () => Promise.resolve([]),
     onDisconnected: (_db, id) => {
-      disconnected.push(id);
-      return Promise.resolve();
+      disconnected.push(id)
+      return Promise.resolve()
     },
     onConnected: () => Promise.resolve(),
-  });
+  })
 
-  assertEquals(disconnected, [ID_A]);
-});
+  assertEquals(disconnected, [ID_A])
+})
 
-it("a slow webhook cannot stop hosts from being demoted", async () => {
+it('a slow webhook cannot stop hosts from being demoted', async () => {
   // The fan-out's shouldStop gates claiming the next index, so an alert
   // awaited inside a worker spends tick budget. A hanging webhook times N
   // stale hosts would blow the deadline with hosts still marked online —
   // the alerting path causing the outage it exists to report. Demotion runs
   // first and alerting gets whatever budget is left.
-  resetOfflineSweepNullGraceForTests();
+  resetOfflineSweepNullGraceForTests()
   const ids = [
     ID_A,
     ID_B,
-    "cccccccc-dddd-4eee-8fff-aaaaaaaaaaaa",
-    "dddddddd-eeee-4fff-8aaa-bbbbbbbbbbbb",
-  ];
+    'cccccccc-dddd-4eee-8fff-aaaaaaaaaaaa',
+    'dddddddd-eeee-4fff-8aaa-bbbbbbbbbbbb',
+  ]
   const cells = new Map(
-    ids.map((id) => [id, createFakeCell({ connected: false, lastPingAtMs: null })]),
-  );
-  const disconnected: string[] = [];
-  let alertsStarted = 0;
+    ids.map((id) => [id, createFakeCell({ connected: false, lastPingAtMs: null })])
+  )
+  const disconnected: string[] = []
+  let alertsStarted = 0
 
-  const startedAt = Date.now();
+  const startedAt = Date.now()
   await sweepOnce(inertEnv(), inertDb(), {
     registry: createFakeRegistry(cells),
     resolveActiveServerIds: () => Promise.resolve(new Map()),
     listConnected: () =>
-      Promise.resolve(
-        ids.map((id) => ({ id, connectedAt: new Date().toISOString() })),
-      ),
+      Promise.resolve(ids.map((id) => ({ id, connectedAt: new Date().toISOString() }))),
     listRecentlyOffline: () => Promise.resolve([]),
     onDisconnected: (_db, id) => {
-      disconnected.push(id);
-      return Promise.resolve();
+      disconnected.push(id)
+      return Promise.resolve()
     },
     onConnected: () => Promise.resolve(),
     // Never settles: the worst a webhook can do.
     alertSender: () => {
-      alertsStarted++;
-      return new Promise<void>(() => {});
+      alertsStarted++
+      return new Promise<void>(() => {})
     },
     // Probing reserves DEMOTION_RESERVE_MS of this; alerting then gets the
     // smaller of what is left and ALERT_DELIVERY_BUDGET_MS.
     deadlineMs: startedAt + DEMOTION_RESERVE_MS + 400,
-  });
+  })
 
   // Every host was demoted, and the tick did not hang on the first alert:
   // it returned at the deadline rather than waiting on a promise that never
   // settles.
-  const byId = (a: string, b: string) => a.localeCompare(b);
-  assertEquals(disconnected.sort(byId), [...ids].sort(byId));
-  assertEquals(alertsStarted >= 1, true);
-  const elapsed = Date.now() - startedAt;
-  assertEquals(elapsed < DEMOTION_RESERVE_MS + 3_000, true);
+  const byId = (a: string, b: string) => a.localeCompare(b)
+  assertEquals(disconnected.sort(byId), [...ids].sort(byId))
+  assertEquals(alertsStarted >= 1, true)
+  const elapsed = Date.now() - startedAt
+  assertEquals(elapsed < DEMOTION_RESERVE_MS + 3_000, true)
   // And the wait was the alert budget, not the whole tick deadline.
-  assertEquals(elapsed < ALERT_DELIVERY_BUDGET_MS + 3_000, true);
-});
+  assertEquals(elapsed < ALERT_DELIVERY_BUDGET_MS + 3_000, true)
+})

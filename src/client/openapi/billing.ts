@@ -243,7 +243,7 @@ export const billingSchemas = {
                 type: ['string', 'null'],
                 format: 'date-time',
                 description:
-                  'Entitlement survives until this moment while past due; the grace clock cancels after it.',
+                  "Always null. Stripe's dunning ends a past-due subscription (it arrives as `canceled`), so TurboPanel keeps no expiry; kept in the shape until the console stops reading it.",
               },
               scheduleAttached: {
                 type: 'boolean',
@@ -466,7 +466,7 @@ export const billingPaths: Record<string, unknown> = {
       tags: ['Billing'],
       summary: 'Projection summary for the organization',
       description:
-        "Status, period end, per-tier purchased vs in use, the license totals the mint gate reads, each licensed server's derived tier, grace clock, schedule flag and outstanding deferred changes. Postgres only.",
+        "Status, period end, per-tier purchased vs in use, the license totals the mint gate reads, each licensed server's derived tier, past-due state, schedule flag and outstanding deferred changes. Postgres only.",
       security: [{ cookieAuth: [] }],
       responses: {
         '200': {
