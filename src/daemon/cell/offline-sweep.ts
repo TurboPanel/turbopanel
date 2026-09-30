@@ -60,6 +60,7 @@ import { resolveWorkersDb } from '../../platform/workers/workers-bindings.ts'
 import { runManagedIngressOrphanSweep } from '../../features/managed/ingress-desired.ts'
 import { runDatacenterRepinFanoutSweep } from '../../client/datacenters/repin-fanout.ts'
 import { runSystemReconcileSweep } from '../../features/system/reconcile.ts'
+import { runBackupsReconcileSweep } from '../../features/backups/reconcile.ts'
 import { runLeafRenewalSweepTick } from '../../client/tls/leaf-renewal-sweep.ts'
 import { type AlertSender, NOOP_ALERT_SENDER } from '../../features/alerts/alert-sender.ts'
 import { resolveAlertSender } from '../../features/alerts/resolve-alert-sender.ts'
@@ -1009,6 +1010,15 @@ async function runQueuedCronSweeps(
   try {
     const commandQueue = createWorkersCommandQueue(queue)
     await runSystemReconcileSweep(db, commandQueue)
+    // Backup policy sets after a reconnect; isolated so a failure never
+    // aborts the other sweeps.
+    try {
+      await runBackupsReconcileSweep(db, commandQueue)
+    } catch (err) {
+      sweepTrace('backups-reconcile-sweep-failed', {
+        error: sweepErrorMessage(err),
+      })
+    }
     if (tlsRenewal) {
       await runLeafRenewalSweepTickSafely(db, commandQueue, tlsRenewal)
       // Orphaned ProxySQL frontends: teardown needs a full

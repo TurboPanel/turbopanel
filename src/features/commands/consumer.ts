@@ -49,6 +49,11 @@ import { deleteManagedBackup, insertManagedBackup } from '../backups/backup-reco
 import type { CommandEnvelope } from './envelope.ts'
 import { nowIso } from './ids.ts'
 import { isNoopCommandQueue } from './noop-command-queue.ts'
+import {
+  captureManagedBackupHost,
+  enqueueBackupsReconcile,
+  reconcileBackupsAfterManagedMove,
+} from '../backups/reconcile.ts'
 import type { CommandQueue } from './queue.ts'
 import {
   type ManagedDestroyCommandPayload,
@@ -943,10 +948,16 @@ async function applyManagedApplySideEffect(
     const payload = parseManagedApplyPayload(record.payload)
     const applyResult = parseManagedApplyResult(result)
     const updatedAt = nowIso()
+    const isPrimary = payload.memberRole === 'primary'
+    // Captured before a primary apply can re-pin the engine, so its backup
+    // policies can follow it to the new host.
+    const backupHost = isPrimary
+      ? await captureManagedBackupHost(db, deps?.commandQueue, payload.managedId)
+      : null
     // `managed.server_id` is the primary placement pin. Fan-out apply sends one
     // command per member — only the primary member may update the pin / host /
     // port so a late replica success cannot re-home the cluster.
-    if (payload.memberRole === 'primary') {
+    if (isPrimary) {
       await db
         .update(managed)
         .set({
@@ -982,13 +993,14 @@ async function applyManagedApplySideEffect(
       )
     }
     await projectManagedMemberObservedStatus(db, applyResult.member, record.id, record.type)
+    await reconcileBackupsAfterManagedMove(db, deps?.commandQueue, {
+      managedId: payload.managedId,
+      previousServerId: backupHost,
+      actorId: envelope.serverId,
+    })
 
     // Primary success → enqueue deferred standby applies (if any).
-    if (
-      payload.memberRole === 'primary' &&
-      deps?.commandQueue &&
-      !isNoopCommandQueue(deps.commandQueue)
-    ) {
+    if (isPrimary && deps?.commandQueue && !isNoopCommandQueue(deps.commandQueue)) {
       await enqueuePendingStandbyApplies(db, record, deps)
     }
   } catch (err) {
@@ -1562,7 +1574,16 @@ async function applyManagedDestroySideEffect(
     // the API-delete completion, distinct from any future "destroy runtime
     // only" action that would omit the marker and leave the row in place.
     if (payload.deleteAfterDestroy) {
+      // The engine's backup policies cascade with the row; its host gets the
+      // smaller set so no timer outlives the engine.
+      const backupHost = await captureManagedBackupHost(db, deps?.commandQueue, payload.managedId)
       await db.delete(managed).where(eq(managed.id, payload.managedId))
+      await enqueueBackupsReconcile(
+        db,
+        deps?.commandQueue,
+        { actorType: 'system', actorId: envelope.serverId },
+        [backupHost]
+      )
     }
 
     await cleanupDestroyedMember(db, record, payload, deps)
@@ -1825,6 +1846,7 @@ async function applyManagedPromoteSideEffect(
     const promotedMemberId = promoteResult.promotedMemberId || payload.memberId
     const demotedMemberId = promoteResult.demotedMemberId ?? payload.demoteMemberId
     const updatedAt = nowIso()
+    const backupHost = await captureManagedBackupHost(db, deps?.commandQueue, managedId)
 
     await db.transaction(async (tx) => {
       // Demote first so the partial unique primary index stays satisfied.
@@ -1879,6 +1901,11 @@ async function applyManagedPromoteSideEffect(
         replication: promoteResult.replication,
       })
     }
+    await reconcileBackupsAfterManagedMove(db, deps?.commandQueue, {
+      managedId,
+      previousServerId: backupHost,
+      actorId: envelope.serverId,
+    })
 
     if (!hasManagedFollowUpDeps(deps)) {
       const meta = await getCommandMetadata(db, record.id)
@@ -2019,12 +2046,18 @@ async function applyManagedHaFailoverSideEffect(
       return
     }
 
+    const backupHost = await captureManagedBackupHost(db, deps?.commandQueue, payload.managedId)
     await applyManagedRoleFlip(db, {
       managedId: payload.managedId,
       promotedMemberId: payload.targetMemberId,
       demotedMemberId: payload.sourceMemberId,
       status: 'ready',
       updatedAt: nowIso(),
+    })
+    await reconcileBackupsAfterManagedMove(db, deps?.commandQueue, {
+      managedId: payload.managedId,
+      previousServerId: backupHost,
+      actorId: envelope.serverId,
     })
 
     if (recoveryId) {

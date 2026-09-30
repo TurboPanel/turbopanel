@@ -352,9 +352,23 @@ also validates identifiers before they reach argv).
 
 Postgres backs up via `pg_dump -Fc` (custom format), per-database only —
 `supportsInstanceScope: false` documents `pg_dumpall` as an explicit future
-seam. **Scheduled backups are also an explicit future seam** — this pass adds
-on-demand create/delete/restore only; no timers, no cron, no retention sweep
-outside of the retention-keep pruning that runs on every successful backup.
+seam.
+
+**Scheduled backups** are `backuppolicy` rows (routes under
+`/environments/:id/managed/backup-policies`, org owners and managers only;
+`src/client/managed/backup-policies.ts`). The control plane never queues a
+run: it pushes each host its full policy set as `server.backups.reconcile`
+(`src/features/backups/reconcile.ts`, triggers listed in
+`src/features/commands/payload-contracts.md`), and a systemd timer on the host
+runs each backup. Schedules are stored as cron — presets (`hourly`, `daily` at
+HH:MM, `weekly` on a day at HH:MM) normalize to cron and read back out for
+display (`src/features/backups/schedules.ts`) — and are translated to
+`OnCalendar` at push time; a schedule that cannot translate is refused on
+write. Every new managed database gets one automatic daily policy ("Daily",
+03:MM host time, keep the engine's `defaultRetentionKeep`, `created_by`
+null), created in the engine's own create transaction; existing engines are
+not backfilled. Policy retention is capped at the engine's
+`maxRetentionKeep`, and prunes only that policy's own directory on the host.
 
 ## Container naming
 

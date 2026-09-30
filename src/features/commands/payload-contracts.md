@@ -68,8 +68,16 @@ on the host with no control-plane round trip. Result: `{ policiesApplied,
 unitsChanged[], unitsRemoved[], nextRuns[]: { policyId, nextRunAt? },
 warnings[] }`. 120s consumer timeout. `managed.restore` gains an optional
 `policyId` so the daemon can find an artifact in that policy's own directory.
-**Nothing in the control plane enqueues this command yet** (Road row
-`r2-backup-policy-api`); the contract lands first, as the firewall one did.
+Built and enqueued by `src/features/backups/reconcile.ts` (the set is run
+through `parseBackupsReconcilePayload` before it is queued, so a set the daemon
+would refuse is never sent). A managed policy's host is its engine's
+`managed.server_id`, resolved at push time. Enqueued, best-effort, on: policy
+create / schedule / timezone / retention / enabled change / delete; managed
+create (the automatic daily policy); a managed apply, promote or HA failover
+that re-pins `managed.server_id` (both old and new host); managed delete
+(force delete in the route, `deleteAfterDestroy` in the consumer); and once per
+reconnect by `runBackupsReconcileSweep` (Workers cron + Deno maintenance tick),
+which also reaches a server whose policies were all deleted while it was away.
 
 `server.reboot` requires `organization:manage`, carries an empty payload, uses a
 120s consumer timeout, has no `touchServerMetadata` side-effect, and is executed
