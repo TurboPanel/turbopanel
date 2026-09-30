@@ -24,6 +24,135 @@ const test = Deno.test.bind(Deno)
  */
 const PHYSICAL_TABLE_NAME_EXCEPTIONS = new Set<string>(['2fa'])
 
+/**
+ * Every physical table name the owner has approved. The regex below only
+ * rejects underscores, so on its own it let glued compounds through
+ * (`backuppolicy`, `backuprun`, `volumebackup`, 2026-09-30) — names that are
+ * one token but not one word. A new table fails here until its name is added
+ * to this list, in the same pull request, so the name is visible in review:
+ * it must be a single real word the owner has agreed is unambiguous.
+ */
+const APPROVED_TABLE_NAMES = new Set<string>([
+  'account',
+  'allowance',
+  'archive',
+  'attempt',
+  'audit',
+  'backup',
+  'binding',
+  'capability',
+  'certificate',
+  'changeover',
+  'channel',
+  'command',
+  'connection',
+  'container',
+  'copy',
+  'datacenter',
+  'delivery',
+  'deployment',
+  'dispatch',
+  'entitlement',
+  'environment',
+  'fabric',
+  'forge',
+  'generation',
+  'grant',
+  'hosting',
+  'hostname',
+  'invitation',
+  'ip',
+  'key',
+  'label',
+  'leaf',
+  'lease',
+  'license',
+  'managed',
+  'marker',
+  'monitor',
+  'mount',
+  'network',
+  'notification',
+  'organization',
+  'origin',
+  'passkey',
+  'payer',
+  'principal',
+  'project',
+  'recovery',
+  'relay',
+  'replica',
+  'repository',
+  'retention',
+  'rule',
+  'seat',
+  'secret',
+  'server',
+  'service',
+  'session',
+  'setting',
+  'slot',
+  'snapshot',
+  'ssh',
+  'storage',
+  'subnet',
+  'subscription',
+  'tag',
+  'task',
+  'team',
+  'teammate',
+  'tenancy',
+  'tier',
+  'tls',
+  'upgrade',
+  'user',
+  'variable',
+  'verification',
+  'workspace',
+])
+
+/**
+ * Glued names still on disk, each with the reason its rename is held. Listed
+ * so they stay visible instead of silently approved; remove an entry by
+ * renaming the table in a forward migration.
+ */
+const PENDING_RENAMES = new Map<string, string>([
+  [
+    'upgradestep',
+    "owner chose `phase` (2026-09-30); held because `phase` already names UpgradePhase (colocated_daemon / control_plane / fleet), stored in each step's detail",
+  ],
+])
+
+/** Names a replayed database must never hold again. */
+const RETIRED_TABLE_NAMES = new Set<string>([
+  'member',
+  'membership',
+  'managed_member',
+  'router',
+  'attachment',
+  'span',
+  'assignment',
+  'bridge',
+  'vpn',
+  'peer',
+  'tlsleaf',
+  'tlsrotation',
+  'principal_entitlement',
+  'principal_ssh_key',
+  'gitapp',
+  'installation',
+  'source',
+  'steward',
+  'location',
+  'credential',
+  'node',
+  'segment',
+  'rotation',
+  'backuppolicy',
+  'backuprun',
+  'volumebackup',
+])
+
 /** One standalone lower-case word: letter-first, alphanumeric only, no underscores. */
 const PHYSICAL_TABLE_NAME_RE = /^[a-z][a-z0-9]*$/
 
@@ -74,7 +203,7 @@ function assertPhysicalTableName(name: string): void {
   if (!PHYSICAL_TABLE_NAME_RE.test(name)) {
     throw new TypeError(
       `physical table "${name}" must be one lower-case word (no underscores); ` +
-        `add an explicit exception only for external compatibility`,
+        `add an explicit exception only for external compatibility`
     )
   }
   if (name.includes('_')) {
@@ -107,7 +236,7 @@ test('migrations/ CREATE TABLE names are single lower-case words', async () => {
   const accumulated = accumulatePhysicalTableNames(sqlInOrder)
   if (accumulated.size === 0) {
     throw new TypeError(
-      'expected at least one CREATE TABLE in scanned migration SQL files under migrations/',
+      'expected at least one CREATE TABLE in scanned migration SQL files under migrations/'
     )
   }
 
@@ -138,7 +267,11 @@ test('migrations/ CREATE TABLE names are single lower-case words', async () => {
   if (!unique.includes('tenancy')) {
     throw new TypeError('expected principal-service table "tenancy"')
   }
-  if (!unique.includes('forge') || !unique.includes('connection') || !unique.includes('repository')) {
+  if (
+    !unique.includes('forge') ||
+    !unique.includes('connection') ||
+    !unique.includes('repository')
+  ) {
     throw new TypeError('expected Git tables forge / connection / repository')
   }
   if (!unique.includes('slot')) {
@@ -168,48 +301,56 @@ test('migrations/ CREATE TABLE names are single lower-case words', async () => {
   if (unique.includes('subscription_item') || unique.includes('subscriptionitem')) {
     throw new TypeError('subscription items are the one-word physical table "seat"')
   }
-  if (
-    unique.includes('member') ||
-    unique.includes('membership') ||
-    unique.includes('managed_member') ||
-    unique.includes('router') ||
-    unique.includes('attachment') ||
-    unique.includes('span') ||
-    unique.includes('assignment') ||
-    unique.includes('bridge') ||
-    unique.includes('vpn') ||
-    unique.includes('peer') ||
-    unique.includes('tlsleaf') ||
-    unique.includes('tlsrotation') ||
-    unique.includes('principal_entitlement') ||
-    unique.includes('principal_ssh_key') ||
-    unique.includes('gitapp') ||
-    unique.includes('installation') ||
-    unique.includes('source') ||
-    unique.includes('steward') ||
-    unique.includes('location') ||
-    unique.includes('credential') ||
-    unique.includes('node') ||
-    unique.includes('segment') ||
-    unique.includes('rotation')
-  ) {
-    throw new TypeError(
-      'retired table names member / membership / managed_member / router / attachment / span / assignment / bridge / vpn / peer / tlsleaf / tlsrotation / principal_entitlement / principal_ssh_key / gitapp / installation / source / steward / location / credential / node / segment / rotation must not reappear',
-    )
+  const reappeared = unique.filter((name) => RETIRED_TABLE_NAMES.has(name))
+  if (reappeared.length > 0) {
+    throw new TypeError(`retired table names must not reappear: ${reappeared.join(', ')}`)
   }
 
   // Every listed exception must still exist in the migration (no stale exceptions)
-  for (const exception of [...PHYSICAL_TABLE_NAME_EXCEPTIONS].sort((a, b) =>
-    a.localeCompare(b)
-  )) {
+  for (const exception of [...PHYSICAL_TABLE_NAME_EXCEPTIONS].sort((a, b) => a.localeCompare(b))) {
     if (!unique.includes(exception)) {
       throw new TypeError(
-        `exception "${exception}" is not present in scanned migration SQL files under migrations/ — remove it from the test allowlist`,
+        `exception "${exception}" is not present in scanned migration SQL files under migrations/ — remove it from the test allowlist`
       )
     }
   }
 
   assertEquals(unique.includes('2fa'), true)
+})
+
+test('every physical table name is owner-approved (or an explicit pending rename)', async () => {
+  const here = dirname(fromFileUrl(import.meta.url))
+  const migrationsDir = join(here, '../../migrations')
+  const files: string[] = []
+  for await (const entry of Deno.readDir(migrationsDir)) {
+    if (entry.isFile && /^\d{4}_.*\.sql$/.test(entry.name)) files.push(entry.name)
+  }
+  files.sort((a, b) => a.localeCompare(b))
+  const sqlInOrder = await Promise.all(
+    files.map((file) => Deno.readTextFile(join(migrationsDir, file)))
+  )
+  const names = accumulatePhysicalTableNames(sqlInOrder)
+
+  const unapproved = [...names].filter(
+    (name) =>
+      !APPROVED_TABLE_NAMES.has(name) &&
+      !PHYSICAL_TABLE_NAME_EXCEPTIONS.has(name) &&
+      !PENDING_RENAMES.has(name)
+  )
+  if (unapproved.length > 0) {
+    throw new TypeError(
+      `table name(s) not approved: ${unapproved.sort((a, b) => a.localeCompare(b)).join(', ')}. ` +
+        'A table name must be one real word the owner has approved as unambiguous — never two ' +
+        'words glued together. Get the name approved, then add it to APPROVED_TABLE_NAMES in this PR.'
+    )
+  }
+
+  const stale = [...APPROVED_TABLE_NAMES, ...PENDING_RENAMES.keys()].filter(
+    (name) => !names.has(name)
+  )
+  if (stale.length > 0) {
+    throw new TypeError(`listed but not in any migration (remove them): ${stale.join(', ')}`)
+  }
 })
 
 test('a forward rename retires the old physical name and judges the new one', () => {
@@ -218,8 +359,11 @@ test('a forward rename retires the old physical name and judges the new one', ()
     'ALTER TABLE "notification_channel" RENAME TO "channel";--> statement-breakpoint\nCREATE TABLE "rule" (id uuid);',
   ])
   assertEquals([...names].sort(), ['channel', 'rule'])
-  assertEquals(extractTableRenames('ALTER TABLE "a" RENAME TO "b"; ALTER TABLE "b" RENAME TO "c";'), [
-    ['a', 'b'],
-    ['b', 'c'],
-  ])
+  assertEquals(
+    extractTableRenames('ALTER TABLE "a" RENAME TO "b"; ALTER TABLE "b" RENAME TO "c";'),
+    [
+      ['a', 'b'],
+      ['b', 'c'],
+    ]
+  )
 })

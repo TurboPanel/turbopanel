@@ -21,8 +21,8 @@ import type { ComposeDocument } from '../../features/compose/types.ts'
 import { getManagedEngineSpec } from '../../features/managed/index.ts'
 import {
   backup,
-  backupPolicy,
-  backupRun,
+  retention,
+  snapshot,
   binding,
   command,
   container,
@@ -639,8 +639,8 @@ test('managed create returns rootPassword once, seals principal, is idempotent',
       // Every new managed database gets one automatic daily policy, keep 7.
       const policies = await db
         .select()
-        .from(backupPolicy)
-        .where(eq(backupPolicy.managedId, managedRow!.id))
+        .from(retention)
+        .where(eq(retention.managedId, managedRow!.id))
       assertEquals(policies.length, 1)
       assertEquals(policies[0]!.name, 'Daily')
       assertEquals(policies[0]!.targetKind, 'managed')
@@ -2346,8 +2346,8 @@ test('backup policy routes: create, list with last run, update, delete, runs', a
       // The push is the full set: the automatic daily policy plus this one.
       assertEquals((await latestBackupsReconcilePayload(db, serverId)).length, 2)
 
-      await db.insert(backupRun).values({
-        policyId: hourlyBody.policy.id,
+      await db.insert(snapshot).values({
+        retentionId: hourlyBody.policy.id,
         serverId,
         runId: 'run_first',
         startedAt: '2026-09-30T01:00:00.000Z',
@@ -2355,8 +2355,8 @@ test('backup policy routes: create, list with last run, update, delete, runs', a
         status: 'failed',
         error: 'disk full',
       })
-      await db.insert(backupRun).values({
-        policyId: hourlyBody.policy.id,
+      await db.insert(snapshot).values({
+        retentionId: hourlyBody.policy.id,
         serverId,
         runId: 'run_second',
         startedAt: '2026-09-30T02:00:00.000Z',
@@ -2429,9 +2429,9 @@ test('backup policy routes: create, list with last run, update, delete, runs', a
       assertEquals(removed.status, 200)
       assertEquals((await latestBackupsReconcilePayload(db, serverId)).length, 1)
       const runRows = await db
-        .select({ id: backupRun.id })
-        .from(backupRun)
-        .where(eq(backupRun.policyId, hourlyBody.policy.id))
+        .select({ id: snapshot.id })
+        .from(snapshot)
+        .where(eq(snapshot.retentionId, hourlyBody.policy.id))
       assertEquals(runRows.length, 0)
 
       const gone = await app.request(`${base}/${hourlyBody.policy.id}`, {
@@ -2490,7 +2490,7 @@ test('backups reconcile sweep pushes once per reconnect, including after all pol
 
       // Every policy deleted while the host was away: it still gets the
       // (now empty) set on reconnect, because it was sent one before.
-      await db.delete(backupPolicy).where(eq(backupPolicy.organizationId, organizationId))
+      await db.delete(retention).where(eq(retention.organizationId, organizationId))
       await reconnect()
       await runBackupsReconcileSweep(db, queue)
       assertEquals(ownServer(), 2)

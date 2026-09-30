@@ -943,11 +943,11 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'Lowercase SHA-256 hex digest of the artifact computed by the daemon; a restore refuses on mismatch.',
       database: 'Database name for a single-database backup; null for an instance-scope backup.',
       path: "Absolute artifact path on the primary server's filesystem as reported by the daemon.",
-      policy_id:
-        'The `backuppolicy` whose scheduled run made this artifact; null for a manual backup or once that policy is deleted.',
+      retention_id:
+        'The `retention` whose scheduled run made this artifact; null for a manual backup or once that retention is deleted.',
     },
   },
-  backuppolicy: {
+  retention: {
     group: 'managed',
     summary:
       'A scheduled backup of one managed engine or one local storage copy, pushed to its host as a systemd timer that runs without the control plane.',
@@ -955,7 +955,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       organization_id:
         'Owning organization stored directly, because the target is polymorphic; cascade-deletes the policy with the org.',
       target_kind:
-        '`managed` or `copy`: which of `managed_id` and `copy_id` names the target; exactly one is set (`backuppolicy_target_check`).',
+        '`managed` or `copy`: which of `managed_id` and `copy_id` names the target; exactly one is set (`retention_target_check`).',
       name: "Operator label for the policy, shown in the console's backup list.",
       schedule:
         'The schedule as authored, a cron expression or alias; translated to a systemd `OnCalendar` value when pushed to the host.',
@@ -970,13 +970,12 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'User who created the policy; null for an automatic default policy or once that user is deleted.',
     },
   },
-  backuprun: {
+  snapshot: {
     group: 'managed',
     summary:
-      'One finished scheduled run of a backup policy, reported by the host that ran it; unique per (policy_id, run_id).',
+      'One finished scheduled run of a `retention`, reported by the host that ran it; unique per (retention_id, run_id).',
     columns: {
-      policy_id:
-        'The `backuppolicy` this run belongs to; the run history cascades with the policy.',
+      retention_id: 'The `retention` this run belongs to; the run history cascades with it.',
       run_id:
         'Daemon-minted id for the run, unique per policy so a report delivered twice is recorded once.',
       started_at: 'When the host started the run.',
@@ -984,7 +983,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       status: '`succeeded` or `failed`, as reported by the host.',
       error: 'Failure text reported by the host; null when the run succeeded.',
       backup_ref:
-        'The `bk_` id of the artifact the run produced, matching `backup.backup_id` or `volumebackup.backup_id`; null when it failed.',
+        'The `bk_` id of the artifact the run produced, matching `backup.backup_id` or `archive.backup_id`; null when it failed.',
     },
   },
   managed: {
@@ -1145,13 +1144,13 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'Compose top-level volume key for auto-registered `volume` rows; unique per environment and the idempotency key for compose volume registration.',
     },
   },
-  volumebackup: {
+  archive: {
     group: 'storage',
     summary:
       'One completed storage-copy backup artifact recorded from a daemon report; unique per (copy_id, backup_id), cascades with the copy.',
     columns: {
-      policy_id:
-        'The `backuppolicy` whose scheduled run made this artifact; null for a manual backup or once that policy is deleted.',
+      retention_id:
+        'The `retention` whose scheduled run made this artifact; null for a manual backup or once that retention is deleted.',
       backup_id:
         'Daemon-minted `bk_` plus hex token that is also the artifact filename on the host; unique per storage copy, not globally.',
       size_bytes:

@@ -82,8 +82,8 @@ const CASES: Array<[constraint: string, values: readonly string[]]> = [
   ['upgrade_status_check', UPGRADE_STATUSES],
   ['upgrade_phase_check', UPGRADE_PHASES],
   ['upgradestep_unit_check', UPGRADE_STEP_UNITS],
-  ['backuppolicy_target_kind_check', BACKUP_TARGET_KINDS],
-  ['backuprun_status_check', BACKUP_RUN_STATUSES],
+  ['retention_target_kind_check', BACKUP_TARGET_KINDS],
+  ['snapshot_status_check', BACKUP_RUN_STATUSES],
   ['upgradestep_status_check', UPGRADE_STEP_STATUSES],
 ]
 

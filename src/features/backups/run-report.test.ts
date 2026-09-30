@@ -10,8 +10,8 @@ import { and, eq, inArray } from 'drizzle-orm'
 import { createDenoDb, endDbConnection } from '../../db/connection.ts'
 import {
   backup,
-  backupPolicy,
-  backupRun,
+  retention,
+  snapshot,
   environment,
   managed,
   organization,
@@ -116,7 +116,7 @@ async function withFixture(fn: (fixture: Fixture) => Promise<void>): Promise<voi
     const otherManagedId = await insertManaged(db, organizationId, ws!.id, serverA)
     managedIds.push(otherManagedId)
     const [policy] = await db
-      .insert(backupPolicy)
+      .insert(retention)
       .values({
         organizationId,
         targetKind: 'managed',
@@ -126,7 +126,7 @@ async function withFixture(fn: (fixture: Fixture) => Promise<void>): Promise<voi
         retentionKeep: 7,
         updatedAt: '2026-09-01T00:00:00.000Z',
       })
-      .returning({ id: backupPolicy.id })
+      .returning({ id: retention.id })
     await fn({
       db,
       organizationId,
@@ -167,7 +167,7 @@ function succeededReport(
 
 function insertBackupRow(
   db: Db,
-  values: { managedId: string; backupId: string; policyId: string | null }
+  values: { managedId: string; backupId: string; retentionId: string | null }
 ): Promise<unknown> {
   return db.insert(backup).values({
     ...values,
@@ -187,21 +187,21 @@ test('a believed report records the run, the artifact and the next run, once', a
     assertEquals(await handleBackupRunReport(store, report, options), { ok: true })
 
     const runs = await fixture.db
-      .select({ status: backupRun.status, backupRef: backupRun.backupRef })
-      .from(backupRun)
-      .where(eq(backupRun.policyId, fixture.policyId))
+      .select({ status: snapshot.status, backupRef: snapshot.backupRef })
+      .from(snapshot)
+      .where(eq(snapshot.retentionId, fixture.policyId))
     assertEquals(runs, [{ status: 'succeeded', backupRef: 'bk_new' }])
 
     const artifacts = await fixture.db
-      .select({ backupId: backup.backupId, policyId: backup.policyId })
+      .select({ backupId: backup.backupId, policyId: backup.retentionId })
       .from(backup)
       .where(eq(backup.managedId, fixture.managedId))
     assertEquals(artifacts, [{ backupId: 'bk_new', policyId: fixture.policyId }])
 
     const [policy] = await fixture.db
-      .select({ nextRunAt: backupPolicy.nextRunAt, updatedAt: backupPolicy.updatedAt })
-      .from(backupPolicy)
-      .where(eq(backupPolicy.id, fixture.policyId))
+      .select({ nextRunAt: retention.nextRunAt, updatedAt: retention.updatedAt })
+      .from(retention)
+      .where(eq(retention.id, fixture.policyId))
     assertEquals(Date.parse(policy!.nextRunAt!), Date.parse('2026-10-01T03:00:00.000Z'))
     assertEquals(Date.parse(policy!.updatedAt), Date.parse('2026-09-01T00:00:00.000Z'))
   })
@@ -212,17 +212,17 @@ test('pruning deletes only this policy’s records of this engine', async () => 
     await insertBackupRow(fixture.db, {
       managedId: fixture.managedId,
       backupId: 'bk_old',
-      policyId: fixture.policyId,
+      retentionId: fixture.policyId,
     })
     await insertBackupRow(fixture.db, {
       managedId: fixture.managedId,
       backupId: 'bk_manual',
-      policyId: null,
+      retentionId: null,
     })
     await insertBackupRow(fixture.db, {
       managedId: fixture.otherManagedId,
       backupId: 'bk_old',
-      policyId: null,
+      retentionId: null,
     })
 
     const outcome = await handleBackupRunReport(
@@ -258,9 +258,9 @@ test('a report from another server writes nothing', async () => {
     )
     assertEquals(outcome.ok, false)
     const runs = await fixture.db
-      .select({ id: backupRun.id })
-      .from(backupRun)
-      .where(eq(backupRun.policyId, fixture.policyId))
+      .select({ id: snapshot.id })
+      .from(snapshot)
+      .where(eq(snapshot.retentionId, fixture.policyId))
     assertEquals(runs.length, 0)
     const artifacts = await fixture.db
       .select({ id: backup.id })

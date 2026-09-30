@@ -354,7 +354,7 @@ Postgres backs up via `pg_dump -Fc` (custom format), per-database only —
 `supportsInstanceScope: false` documents `pg_dumpall` as an explicit future
 seam.
 
-**Scheduled backups** are `backuppolicy` rows (routes under
+**Scheduled backups** are `retention` rows (routes under
 `/environments/:id/managed/backup-policies`, org owners and managers only;
 `src/client/managed/backup-policies.ts`). The control plane never queues a
 run: it pushes each host its full policy set as `server.backups.reconcile`
