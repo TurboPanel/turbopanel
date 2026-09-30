@@ -2,12 +2,12 @@
 #
 # Every green trunk canary ("Canary" succeeded, so a canary build exists for
 # that commit) makes sure a PR "Release Candidate <version>-rc.N" from trunk into
-# staging is open. Merging it is the one human act: cut-rc.yml then cuts the
+# staging is open. Merging it is the one human act: publish-rc.yml then publishes the
 # next x.y.z-rc.N from that exact canary's bytes. The PR is opened with the
 # Release App's token, because a PR created with GITHUB_TOKEN never starts the
 # required `ci-ok` check.
 
-name: Keep the rc PR open
+name: Keep the RC PR Open
 
 on:
   workflow_run:
@@ -15,6 +15,8 @@ on:
     types: [completed]
   workflow_dispatch:
 
+# Read-only: the PR is opened and edited with the Release App's token (a PR
+# opened with GITHUB_TOKEN never starts ci-ok), so GITHUB_TOKEN writes nothing.
 permissions:
   contents: read
 
@@ -67,7 +69,7 @@ jobs:
           rc="$version-rc.$(( ${last:-0} + 1 ))"
           title="Release Candidate $rc"
           {
-            echo "Merging this cuts \`v$rc\` from the exact canary build of the merged trunk commit (same bytes, re-signed) and moves \`staging\`. It runs automatically after the merge (\`cut-rc.yml\`)."
+            echo "Merging this publishes \`v$rc\` from the exact canary build of the merged trunk commit (same bytes, re-signed) and moves \`staging\`. It runs automatically after the merge (\`publish-rc.yml\`)."
             echo
             echo "**$ahead commit(s) on trunk not yet on staging:**"
             echo

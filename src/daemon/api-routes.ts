@@ -23,6 +23,7 @@ import {
   parseDaemonSecretEnvelope,
 } from '../lib/secrets/data-encryption.ts'
 import type { Db } from '../db/connection.ts'
+import { describeError } from '../lib/describe-error.ts'
 import { logWarn } from '../lib/logger.ts'
 import {
   getDaemonCellRegistry,
@@ -608,7 +609,7 @@ function resolveSlotMappingForIngest(
     return computeSlotMapping(topologySnapshot, overrides)
   } catch (err) {
     rateLimitedMetricsLog(serverId, 'slot_mapping_resolve_failed', () => {
-      console.warn(`metrics slot mapping resolution failed for ${serverId}: ${String(err)}`)
+      console.warn(`metrics slot mapping resolution failed for ${serverId}: ${describeError(err)}`)
     })
     return undefined
   }
@@ -705,7 +706,9 @@ async function resolveIngestPlanAndReconcileTopology(
     if (!topologyKnown) {
       markTopologyResyncRequested(db, serverId).catch((err) => {
         rateLimitedMetricsLog(serverId, 'topology_resync_mark_failed', () => {
-          console.warn(`metrics topology resync marker failed for ${serverId}: ${String(err)}`)
+          console.warn(
+            `metrics topology resync marker failed for ${serverId}: ${describeError(err)}`
+          )
         })
       })
     }
@@ -732,7 +735,9 @@ async function resolveIngestPlanAndReconcileTopology(
         .where(and(eq(server.id, serverId), isNull(server.machineClass)))
         .catch((err) => {
           rateLimitedMetricsLog(serverId, 'machine_class_record_failed', () => {
-            console.warn(`metrics machine class record failed for ${serverId}: ${String(err)}`)
+            console.warn(
+              `metrics machine class record failed for ${serverId}: ${describeError(err)}`
+            )
           })
         })
     }
@@ -765,7 +770,9 @@ async function resolveIngestPlanAndReconcileTopology(
         planChanged = recorded.changed
       } catch (err) {
         rateLimitedMetricsLog(serverId, 'capability_plan_record_failed', () => {
-          console.warn(`metrics capability plan record failed for ${serverId}: ${String(err)}`)
+          console.warn(
+            `metrics capability plan record failed for ${serverId}: ${describeError(err)}`
+          )
         })
       }
     }
@@ -773,7 +780,9 @@ async function resolveIngestPlanAndReconcileTopology(
     return { plan, slotMapping, generation, planChanged }
   } catch (err) {
     rateLimitedMetricsLog(serverId, 'capability_plan_resolve_failed', () => {
-      console.warn(`metrics capability plan resolution failed for ${serverId}: ${String(err)}`)
+      console.warn(
+        `metrics capability plan resolution failed for ${serverId}: ${describeError(err)}`
+      )
     })
     return {
       plan: resolveDefaultMetricsCapabilityPlan(deployment),
@@ -810,7 +819,7 @@ async function primeCapabilityPlanAfterEnroll(
     const recorded = await recordCapabilityPlanGenerationIfChanged(db, serverId, plan)
     await enqueueCapabilityPlanUpdate(registry, serverId, plan, recorded.generation)
   } catch (err) {
-    console.warn(`capability plan enroll prime failed for ${serverId}: ${String(err)}`)
+    console.warn(`capability plan enroll prime failed for ${serverId}: ${describeError(err)}`)
   }
 }
 
@@ -1539,7 +1548,7 @@ export function registerDaemonApiRoutes<E extends Env>(
       const store = getServerMetricsStore(c) ?? new DisabledServerMetricsStore()
       const logWriteFailed = (err: unknown) => {
         rateLimitedMetricsLog(serverId, 'write_failed', () => {
-          console.warn(`metrics write failed for ${serverId}: ${String(err)}`)
+          console.warn(`metrics write failed for ${serverId}: ${describeError(err)}`)
         })
       }
 

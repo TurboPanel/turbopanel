@@ -199,14 +199,17 @@ function checkManagedFeature(
   target: UpgradeTarget,
   colocated: FleetServerFact | undefined,
   checks: UpgradePreflight['checks'],
-  blockers: string[]
+  blockers: string[],
+  channel: string
 ): void {
   const managed = admitsFeature(colocated)
   checks.push({
     id: 'managed-upgrade-v1',
     label: 'Co-located daemon can back up and roll back',
     passed: managed,
-    detail: managed ? undefined : daemonOnlyUpdateCommand(target.daemon?.manifestUrl ?? null),
+    detail: managed
+      ? undefined
+      : daemonOnlyUpdateCommand(target.daemon?.manifestUrl ?? null, channel),
   })
   if (!managed) {
     blockers.push(
@@ -281,7 +284,7 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
       recoveryCommand:
         admitsFeature(colocated) || !hasInstance
           ? controlPlaneRollbackCommand(runId)
-          : daemonOnlyUpdateCommand(target.daemon?.manifestUrl ?? null),
+          : daemonOnlyUpdateCommand(target.daemon?.manifestUrl ?? null, deps.channel),
       blockers,
     }
   }
@@ -308,7 +311,7 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
       passed: connected,
     })
     if (!connected) blockers.push('The co-located daemon is not connected.')
-    if (hasInstance) checkManagedFeature(target, colocated, checks, blockers)
+    if (hasInstance) checkManagedFeature(target, colocated, checks, blockers, deps.channel)
   }
 
   function downgradeBlockers(
@@ -452,7 +455,8 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
       step.status = 'needs_attention'
       step.errorCode = 'managed_upgrade_required' satisfies UpgradeStepErrorCode
       step.errorMessage = daemonOnlyUpdateCommand(
-        unitTarget(run.target, 'daemon')?.manifestUrl ?? null
+        unitTarget(run.target, 'daemon')?.manifestUrl ?? null,
+        deps.channel
       )
       return await saveStepIfChanged(step, before, readStatus)
     }

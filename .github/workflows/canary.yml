@@ -6,8 +6,19 @@
 # replaced on the next merge instead of pinned to a tag.
 #
 # workflow_run (not push) so the compile never starts before the test suite
-# has passed on the commit; cancel-in-progress so a burst of merges only
-# ever publishes the newest one.
+# has passed on the commit. Canaries are never cancelled or dropped: every
+# green trunk commit gets its own (publish-rc.yml waits for the canary of the
+# exact commit a Release Candidate PR merged). Runs queue in order
+# (`queue: max`; the default `single` would cancel a pending one when a third
+# arrives, and `queue: max` cannot be combined with cancel-in-progress).
+#
+# Only a Build that tested the trunk commit itself counts: a push to trunk,
+# or a manual Build run (workflow_dispatch, for a trunk push GitHub failed to
+# deliver). A pull_request Build is excluded even when its head branch is
+# trunk — the trunk -> staging "Release Candidate" PR's run tests trunk
+# merged into staging, not the trunk commit. A run whose job is skipped (a PR
+# Build, a red Build) waits its turn in the queue and ends at once; with
+# cancel-in-progress off it can no longer cancel a canary being published.
 
 name: Canary
 
@@ -17,17 +28,27 @@ on:
     types: [completed]
     branches: [trunk]
 
-permissions:
-  contents: write
-  actions: read
+# Nothing by default; the one job below asks for what the release build needs.
+permissions: {}
 
 concurrency:
   group: canary
-  cancel-in-progress: true
+  cancel-in-progress: false
+  queue: max
 
 jobs:
   publish:
-    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'trunk'
+    if: >-
+      github.event.workflow_run.conclusion == 'success'
+      && github.event.workflow_run.head_branch == 'trunk'
+      && (github.event.workflow_run.event == 'push'
+          || github.event.workflow_run.event == 'workflow_dispatch')
+    # contents: write — gh-canary.yml uploads to the rolling `canary`
+    # release and moves its tag. actions: read — release.yml's prepare job
+    # looks up the green Build run for the commit.
+    permissions:
+      contents: write
+      actions: read
     uses: ./.github/workflows/release.yml
     with:
       channel: canary

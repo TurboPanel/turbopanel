@@ -1,4 +1,4 @@
-# Cuts a GitHub Release on a v* tag: the compiled self-hosted instance,
+# Publishes a GitHub Release on a v* tag: the compiled self-hosted instance,
 # built natively on each architecture (no cross-compiling the DuckDB addon)
 # and packaged once in CI as turbopanel-instance-<version>-<arch>.tar.zst —
 # bin/turbopanel (the one binary: the server with the in-process email
@@ -69,19 +69,24 @@ on:
         description: PKCS#8 PEM of the offline release key the manifest is signed with
         required: true
 
+# Read-only by default. Writes: the `release` and `canary` jobs (the called
+# TurboPanel/dev workflows create the GitHub release / update the rolling
+# canary release and its tag). prepare also reads Actions runs.
 permissions:
-  contents: write
-  actions: read
+  contents: read
 
 jobs:
   prepare:
     # A tag pushed by a `[bot]` actor is the TurboPanel Release App
     # promoting a tested build (promote.yml → TurboPanel/dev gh-promote.yml);
     # that flow publishes the release itself, so this from-source path must
-    # not race it. A person pushing a tag still gets the classic cut; trunk
+    # not race it. A person pushing a tag still gets the classic from-source release; trunk
     # pushes (canary) are unaffected.
     if: github.event_name != 'push' || !startsWith(github.ref, 'refs/tags/') || !endsWith(github.actor, '[bot]')
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read # gh run list: the green Build for this commit
     outputs:
       version: ${{ steps.resolve.outputs.version }}
       channel: ${{ steps.resolve.outputs.channel }}
@@ -117,7 +122,7 @@ jobs:
 
       - name: Require the tag to match deno.json's version
         # The number the binary reports (src/app/version.ts reads deno.json) and
-        # the number on the release must be the same number — a tag cut
+        # the number on the release must be the same number — a tag pushed
         # before the bump is a release that lies about itself. Dry runs and
         # canary builds skip this.
         if: inputs.version == '' && steps.resolve.outputs.channel != 'canary'
@@ -132,14 +137,19 @@ jobs:
 
       - name: Require a green Build on this commit
         # Tag after green, encoded: the test suite and Sonar are not re-run
-        # here, so the commit must already carry a successful Build.
+        # here, so the commit must already carry a successful Build — one that
+        # tested this commit itself: a push run, or a manual (workflow_dispatch)
+        # run. A pull_request run does not count: it tested the commit merged
+        # into the PR's base (the trunk -> staging PR tests trunk + staging).
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          COMMIT: ${{ steps.resolve.outputs.commit }}
         run: |
           set -eu
-          _ok="$(gh run list --repo "${{ github.repository }}" --workflow Build --commit "${{ steps.resolve.outputs.commit }}" --status success --json databaseId --jq 'length')"
+          _ok="$(gh run list --repo "$REPO" --workflow Build --commit "$COMMIT" --status success --json event --jq '[.[] | select(.event == "push" or .event == "workflow_dispatch")] | length')"
           if [ "${_ok:-0}" -lt 1 ]; then
-            echo "::error::no successful Build run found for ${{ steps.resolve.outputs.commit }} — tag a commit whose Build is green"
+            echo "::error::no successful push (or manual) Build run found for ${COMMIT} — tag a commit whose trunk Build is green"
             exit 1
           fi
 
@@ -364,6 +374,8 @@ jobs:
   release:
     needs: [prepare, manifest]
     if: needs.prepare.outputs.channel != 'canary'
+    permissions:
+      contents: write # gh-release.yml: tag + GitHub release + rolling rc pointer
     uses: TurboPanel/dev/.github/workflows/gh-release.yml@177d481666cce2e1dcfa76290b141b0149a6a0a9 # dev trunk 2026-09-25
     with:
       version: ${{ needs.prepare.outputs.version }}
@@ -375,7 +387,9 @@ jobs:
   canary:
     needs: [prepare, manifest]
     if: needs.prepare.outputs.channel == 'canary'
-    uses: TurboPanel/dev/.github/workflows/gh-canary.yml@e701cabcbedc113d6e230cf18f2f82f146bbc6b1 # dev#20
+    permissions:
+      contents: write # gh-canary.yml: rolling `canary` release assets + tag move
+    uses: TurboPanel/dev/.github/workflows/gh-canary.yml@60fd59793793a2c8e8d5f30536e3036dc628d6da # dev#40
     with:
       version: ${{ needs.prepare.outputs.version }}
       commit: ${{ needs.prepare.outputs.commit }}

@@ -3,6 +3,7 @@
  */
 
 import { assertEquals, assertRejects } from '@std/assert'
+import { randomSerial } from './self-signed.ts'
 import {
   buildBasicConstraintsExtension,
   buildKeyUsageExtension,
@@ -51,7 +52,7 @@ test('mintOrganizationCa subject is unique per organization', async () => {
   const parsed = await parseCertificatePem(material.certificatePem)
   assertEquals(
     parsed.subject,
-    `O=${ORGANIZATION_CA_ORG_NAME}, OU=${ORGANIZATION_CA_ORG_UNIT}, CN=${orgId}`,
+    `O=${ORGANIZATION_CA_ORG_NAME}, OU=${ORGANIZATION_CA_ORG_UNIT}, CN=${orgId}`
   )
   assertEquals(parsed.issuer, parsed.subject)
 })
@@ -60,7 +61,7 @@ test('mintOrganizationCa rejects a blank organizationId', async () => {
   await assertRejects(
     () => mintOrganizationCa({ organizationId: '  ' }),
     TypeError,
-    'organizationId is required',
+    'organizationId is required'
   )
 })
 
@@ -70,7 +71,7 @@ test('issueLeafCertificate is signed by CA with CA:FALSE and SANs', async () => 
     ca.certificatePem,
     ca.privateKeyPem,
     ['db.example.com', 'proxy.example.com'],
-    { commonName: 'db.example.com' },
+    { commonName: 'db.example.com' }
   )
 
   const caParsed = await parseCertificatePem(ca.certificatePem)
@@ -80,10 +81,7 @@ test('issueLeafCertificate is signed by CA with CA:FALSE and SANs', async () => 
   assertEquals(leafParsed.issuer, caParsed.subject)
   assertEquals(leafParsed.dnsNames.includes('db.example.com'), true)
   assertEquals(leafParsed.dnsNames.includes('proxy.example.com'), true)
-  assertEquals(
-    await verifyCertificateSignature(leaf.certificatePem, ca.certificatePem),
-    true,
-  )
+  assertEquals(await verifyCertificateSignature(leaf.certificatePem, ca.certificatePem), true)
 })
 
 test('issueLeafCertificate embeds IP SANs for private listener verify-identity', async () => {
@@ -95,7 +93,7 @@ test('issueLeafCertificate embeds IP SANs for private listener verify-identity',
     {
       commonName: 'managed-test',
       ipAddresses: ['203.0.113.50', '203.0.113.50'],
-    },
+    }
   )
   const parsed = await parseCertificatePem(leaf.certificatePem)
   assertEquals(parsed.dnsNames.includes('managed-test'), true)
@@ -107,7 +105,7 @@ test('issueLeafCertificate rejects empty dns names', async () => {
   await assertRejects(
     () => issueLeafCertificate(ca.certificatePem, ca.privateKeyPem, []),
     TypeError,
-    'at least one DNS name is required',
+    'at least one DNS name is required'
   )
 })
 
@@ -121,17 +119,14 @@ test('issueLeafCertificate honors validDays and includeClientAuth', async () => 
     ca.certificatePem,
     ca.privateKeyPem,
     ['leaf.example.com'],
-    { validDays: 30, includeClientAuth: true, commonName: 'leaf.example.com' },
+    { validDays: 30, includeClientAuth: true, commonName: 'leaf.example.com' }
   )
   const parsed = await parseCertificatePem(leaf.certificatePem)
   const lifetimeMs = parsed.notAfter.getTime() - parsed.notBefore.getTime()
   // ~30 days (±1 day for UTCTIME second resolution / clock skew).
   assertEquals(lifetimeMs > 29 * 24 * 60 * 60 * 1000, true)
   assertEquals(lifetimeMs < 31 * 24 * 60 * 60 * 1000, true)
-  assertEquals(
-    await verifyCertificateSignature(leaf.certificatePem, ca.certificatePem),
-    true,
-  )
+  assertEquals(await verifyCertificateSignature(leaf.certificatePem, ca.certificatePem), true)
 })
 
 test('issueLeafCertificate rejects invalid IP SANs', async () => {
@@ -142,18 +137,15 @@ test('issueLeafCertificate rejects invalid IP SANs', async () => {
         ipAddresses: ['not-an-ip'],
       }),
     TypeError,
-    'invalid IP address for SAN',
+    'invalid IP address for SAN'
   )
 })
 
 test('issueLeafCertificate skips blank IP SAN entries', async () => {
   const ca = await mintOrganizationCa({ organizationId: 'org-blank-ip' })
-  const leaf = await issueLeafCertificate(
-    ca.certificatePem,
-    ca.privateKeyPem,
-    ['db.example.com'],
-    { ipAddresses: ['  ', '203.0.113.10', ''] },
-  )
+  const leaf = await issueLeafCertificate(ca.certificatePem, ca.privateKeyPem, ['db.example.com'], {
+    ipAddresses: ['  ', '203.0.113.10', ''],
+  })
   const parsed = await parseCertificatePem(leaf.certificatePem)
   assertEquals(parsed.ipAddresses, ['203.0.113.10'])
 })
@@ -169,10 +161,7 @@ test('buildBasicConstraintsExtension and buildKeyUsageExtension encode DER', () 
   assertEquals(leafBc[0], 0x30)
   assertEquals(caWithPath[0], 0x30)
 
-  const usage = buildKeyUsageExtension([
-    KEY_USAGE_DIGITAL_SIGNATURE,
-    KEY_USAGE_KEY_ENCIPHERMENT,
-  ])
+  const usage = buildKeyUsageExtension([KEY_USAGE_DIGITAL_SIGNATURE, KEY_USAGE_KEY_ENCIPHERMENT])
   assertEquals(usage[0], 0x30)
   assertEquals(usage.length > 0, true)
 })
@@ -183,20 +172,14 @@ test('buildKeyUsageExtension rejects empty and out-of-range bits', () => {
     throw new TypeError('expected empty keyUsage to throw')
   } catch (error) {
     assertEquals(error instanceof TypeError, true)
-    assertEquals(
-      (error as TypeError).message,
-      'at least one keyUsage bit is required',
-    )
+    assertEquals((error as TypeError).message, 'at least one keyUsage bit is required')
   }
   try {
     buildKeyUsageExtension([16])
     throw new TypeError('expected out-of-range keyUsage to throw')
   } catch (error) {
     assertEquals(error instanceof TypeError, true)
-    assertEquals(
-      (error as TypeError).message,
-      'keyUsage bit out of range: 16',
-    )
+    assertEquals((error as TypeError).message, 'keyUsage bit out of range: 16')
   }
 })
 
@@ -213,15 +196,10 @@ test('extractSubjectNameDer and extractSpkiDer return non-empty TLVs', async () 
 test('verifyCertificateSignature rejects a leaf signed by a different CA', async () => {
   const caA = await mintOrganizationCa({ organizationId: 'org-a' })
   const caB = await mintOrganizationCa({ organizationId: 'org-b' })
-  const leaf = await issueLeafCertificate(
-    caA.certificatePem,
-    caA.privateKeyPem,
-    ['leaf.example.com'],
-  )
-  assertEquals(
-    await verifyCertificateSignature(leaf.certificatePem, caB.certificatePem),
-    false,
-  )
+  const leaf = await issueLeafCertificate(caA.certificatePem, caA.privateKeyPem, [
+    'leaf.example.com',
+  ])
+  assertEquals(await verifyCertificateSignature(leaf.certificatePem, caB.certificatePem), false)
 })
 
 test('mintOrganizationCa honors custom validDays', async () => {
@@ -229,8 +207,7 @@ test('mintOrganizationCa honors custom validDays', async () => {
     organizationId: 'org-short-ca',
     validDays: 10,
   })
-  const lifetimeMs = material.parsed.notAfter.getTime() -
-    material.parsed.notBefore.getTime()
+  const lifetimeMs = material.parsed.notAfter.getTime() - material.parsed.notBefore.getTime()
   assertEquals(lifetimeMs > 9 * 24 * 60 * 60 * 1000, true)
   assertEquals(lifetimeMs < 11 * 24 * 60 * 60 * 1000, true)
 })
@@ -240,4 +217,14 @@ test('readBasicConstraintsCa is false for a self-signed leaf without CA:TRUE', a
   // mintSelfSignedCertificate only embeds SAN — no basicConstraints extension.
   assertEquals(readBasicConstraintsCa(leaf.certificatePem), false)
   assertEquals(readKeyUsageBits(leaf.certificatePem), null)
+})
+
+test('randomSerial is always a positive, minimal DER integer (no leading zero, top bit clear)', () => {
+  for (let i = 0; i < 50_000; i += 1) {
+    const serial = randomSerial()
+    assertEquals(serial.length, 8)
+    // A leading 0x00 before a byte below 0x80 is non-minimal DER, which OpenSSL rejects.
+    assertEquals(serial[0]! !== 0, true)
+    assertEquals((serial[0]! & 0x80) === 0, true)
+  }
 })

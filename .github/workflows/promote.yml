@@ -1,6 +1,6 @@
 # BREAK-GLASS promotion for this repo. The normal path is the two automatic
-# PRs (promote-prs.yml -> cut-rc.yml, then cut-release.yml): merge "Release Candidate
-# x.y.z-rc.N" to cut the next rc, merge "Release x.y.z" to ship it. Use this form
+# PRs (promote-prs.yml -> publish-rc.yml, then publish-release.yml): merge "Release Candidate
+# x.y.z-rc.N" to publish the next rc, merge "Release x.y.z" to ship it. Use this form
 # only when those cannot run.
 #
 #   to=rc       canary build → v<base>-rc.<N> pre-release + `staging` branch
@@ -34,8 +34,11 @@ on:
         required: true
         type: string
 
+# Read-only by default; each promote job asks for contents: write (tag,
+# GitHub release, branch fast-forward). Bare tags and the live push use the
+# Release App token inside TurboPanel/dev's workflows, not GITHUB_TOKEN.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   prepare:
@@ -48,6 +51,8 @@ jobs:
       # turbopaneld commit carrying scripts/sign-manifest.ts and the release
       # public-key pin. Bump it when the key is rotated.
       signer-ref: 93c4f94510c9499e6bf04366a9500fe9f8e38aaa
+    permissions:
+      contents: write # the rc tag
     secrets: inherit
 
   publish:
@@ -60,6 +65,8 @@ jobs:
       assets-artifact-name: ${{ needs.prepare.outputs.assets-artifact-name }}
       manifest-filename: ${{ needs.prepare.outputs.manifest-filename }}
       target-commit: ${{ needs.prepare.outputs.commit }}
+    permissions:
+      contents: write # the GitHub (pre-)release + the rolling rc pointer
     secrets: inherit
 
   finalize:
@@ -71,4 +78,6 @@ jobs:
       commit: ${{ needs.prepare.outputs.commit }}
       branch: ${{ needs.prepare.outputs.branch }}
       manifest-filename: ${{ needs.prepare.outputs.manifest-filename }}
+    permissions:
+      contents: write # release flags + staging/live fast-forward
     secrets: inherit

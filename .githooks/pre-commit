@@ -5,7 +5,52 @@ ROOT="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"
 # Secret scan is never skippable.
 "$ROOT/scripts/scan-secrets.sh"
 
+# Prettier on the staged .ts / .tsx / .mjs files under src/ and scripts/ — the
+# same whole-file check CI's format step runs (scripts/check-format-changed.sh),
+# so a format failure shows up here instead of after the push. Fast: only the
+# staged files, `--check` only (nothing is rewritten or re-staged), each file
+# as it is in the working tree.
+#
+# TURBOPANEL_SKIP_HOOK_TESTS does not skip it: it is a format check, not a test
+# run. To commit a change whose whole-file reflow goes in its own commit, set
+# TURBOPANEL_SKIP_HOOK_FORMAT=1 for that commit.
+check_staged_format() {
+  if [ "${TURBOPANEL_SKIP_HOOK_FORMAT:-}" = "1" ]; then
+    echo "pre-commit: Prettier check skipped (TURBOPANEL_SKIP_HOOK_FORMAT=1)" >&2
+    return 0
+  fi
+  prettier_bin="$ROOT/node_modules/.bin/prettier"
+  if [ ! -x "$prettier_bin" ]; then
+    # Host checkouts shared into the Vagrant guest often have no usable
+    # node_modules; CI still runs the check.
+    echo "pre-commit: no node_modules/.bin/prettier — Prettier check skipped (run pnpm install)" >&2
+    return 0
+  fi
+  staged="$(git -C "$ROOT" diff --cached --name-only --diff-filter=ACMR)"
+  set --
+  while IFS= read -r file; do
+    case "$file" in
+      src/*.ts | src/*.tsx | src/*.mjs | scripts/*.ts | scripts/*.tsx | scripts/*.mjs)
+        if [ -f "$ROOT/$file" ]; then
+          set -- "$@" "$file"
+        fi
+        ;;
+      *) ;;
+    esac
+  done <<EOF
+$staged
+EOF
+  if [ "$#" -eq 0 ]; then
+    return 0
+  fi
+  if ! (cd "$ROOT" && "$prettier_bin" --check "$@"); then
+    echo "pre-commit: Prettier would reformat the files above — run npx prettier --write on them and stage the result" >&2
+    return 1
+  fi
+}
+check_staged_format
+
 # Future: re-enable validation once the toolchain runs inside the Vagrant guest
 # (host checkouts share VirtFS with the VM and often lack a usable Node/Deno tree).
-echo "pre-commit: validation disabled — secret scan only" >&2
+echo "pre-commit: validation disabled — secret scan and Prettier only" >&2
 exit 0

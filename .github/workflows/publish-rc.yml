@@ -1,4 +1,4 @@
-# Cuts the next x.y.z-rc.N when the trunk → staging PR is merged (Road to
+# Publishes the next x.y.z-rc.N when the trunk → staging PR is merged (Road to
 # 0.2.x, versioning flow). Runs on the push the merge makes to staging — a push
 # runs the workflow file from the pushed commit, so the very first merge (which
 # brings this file into staging) already works.
@@ -12,10 +12,10 @@
 #   3. release-pr  opens (or refreshes) the staging → live PR "Release <version>"
 #
 # A push to staging that is not a merged trunk PR (a break-glass promotion, the
-# finalize fast-forward) does nothing. workflow_dispatch re-runs a cut for a
+# finalize fast-forward) does nothing. workflow_dispatch re-runs it for a
 # given trunk commit.
 
-name: Cut rc
+name: Publish Release Candidate
 
 on:
   push:
@@ -27,18 +27,23 @@ on:
         required: true
         type: string
 
+# Read-only by default. Writes (contents: write) only in the three promote
+# jobs: the rc tag, its GitHub pre-release + the rolling rc pointer, and the
+# staging fast-forward. The staging -> live PR is opened with the Release
+# App's token, not GITHUB_TOKEN, so no job needs pull-requests: write.
 permissions:
-  contents: write
-  actions: read
-  pull-requests: write
+  contents: read
 
 concurrency:
-  group: cut-rc
+  group: publish-rc
   cancel-in-progress: false
 
 jobs:
   resolve:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read # gh run list: the trunk Build of the merged commit
     outputs:
       proceed: ${{ steps.r.outputs.proceed }}
       commit: ${{ steps.r.outputs.commit }}
@@ -58,7 +63,7 @@ jobs:
           if [ "$EVENT" = "workflow_dispatch" ]; then
             commit="$INPUT_COMMIT"
           else
-            # Only a merged trunk → staging PR cuts an rc. The API can take a
+            # Only a merged trunk → staging PR publishes an rc. The API can take a
             # moment to associate the merge commit with its PR.
             pr=""
             for _ in 1 2 3 4 5 6; do
@@ -67,7 +72,7 @@ jobs:
               sleep 10
             done
             if [ -z "$pr" ]; then
-              echo "push to staging is not a merged trunk PR — nothing to cut"
+              echo "push to staging is not a merged trunk PR — nothing to publish"
               echo "proceed=false" >> "$GITHUB_OUTPUT"
               exit 0
             fi
@@ -97,21 +102,22 @@ jobs:
               fi
             done
             [ -n "$manifest" ] && break
-            # A failed test run on that commit will never produce a canary.
+            # A failed test run on that commit will never produce a canary. Push
+          # runs only: a pull_request run tested a merge, not this commit.
             if [ "$(gh run list --repo "$REPO" --workflow build.yml --commit "$commit" --event push --limit 1 --json conclusion --jq '.[0].conclusion // empty')" = "failure" ]; then
-              echo "::error::the Build of $commit failed, so it has no canary — fix trunk and re-run this cut with workflow_dispatch"
+              echo "::error::the Build of $commit failed, so it has no canary — fix trunk and re-run this workflow with workflow_dispatch"
               exit 1
             fi
             sleep 30
           done
-          [ -n "$manifest" ] || { echo "::error::no canary built from $commit after 45 minutes (superseded by a newer trunk merge, or pruned — the rail keeps the newest 20). Re-run this cut with workflow_dispatch for a commit that has one."; exit 1; }
+          [ -n "$manifest" ] || { echo "::error::no canary built from $commit after 45 minutes (superseded by a newer trunk merge, or pruned — the rail keeps the newest 20). Re-run this workflow with workflow_dispatch for a commit that has one."; exit 1; }
           number="$(echo "$manifest" | sed -E 's/^.*-canary\.([0-9]+)\.json$/\1/')"
           version="$(jq -r .version manifest.json | sed 's/-canary\..*$//')"
 
-          # Idempotence: this commit already has an rc (a re-run) — do not cut rc.N+1 of the same bytes.
+          # Idempotence: this commit already has an rc (a re-run) — do not publish rc.N+1 of the same bytes.
           for ref in $(gh api --paginate "repos/$REPO/git/matching-refs/tags/v$version-rc." --jq '.[].ref' | sed 's#^refs/tags/##'); do
             if [ "$(gh api "repos/$REPO/commits/$ref" --jq .sha)" = "$commit" ]; then
-              echo "$ref already carries $commit — nothing to cut"
+              echo "$ref already carries $commit — nothing to publish"
               echo "proceed=false" >> "$GITHUB_OUTPUT"
               exit 0
             fi
@@ -123,7 +129,7 @@ jobs:
             echo "build=$number"
             echo "version=$version"
           } >> "$GITHUB_OUTPUT"
-          echo "cutting an rc of $version from canary build $number ($commit)"
+          echo "publishing an rc of $version from canary build $number ($commit)"
 
   prepare:
     needs: resolve
@@ -138,6 +144,8 @@ jobs:
       signer-ref: 93c4f94510c9499e6bf04366a9500fe9f8e38aaa
       # The merge of the promotion PR is the approval.
       approval-environment: ''
+    permissions:
+      contents: write # the v<x.y.z>-rc.<N> tag
     secrets: inherit
 
   publish:
@@ -150,6 +158,8 @@ jobs:
       assets-artifact-name: ${{ needs.prepare.outputs.assets-artifact-name }}
       manifest-filename: ${{ needs.prepare.outputs.manifest-filename }}
       target-commit: ${{ needs.prepare.outputs.commit }}
+    permissions:
+      contents: write # the GitHub pre-release + the rolling rc pointer
     secrets: inherit
 
   finalize:
@@ -161,6 +171,8 @@ jobs:
       commit: ${{ needs.prepare.outputs.commit }}
       branch: ${{ needs.prepare.outputs.branch }}
       manifest-filename: ${{ needs.prepare.outputs.manifest-filename }}
+    permissions:
+      contents: write # the staging fast-forward
     secrets: inherit
 
   release-pr:
@@ -195,7 +207,7 @@ jobs:
           set -eu
           existing="$(gh pr list --repo "$REPO" --base live --head staging --state open --json number --jq '.[0].number // empty')"
           {
-            echo "Merging this cuts the release \`v$VERSION\` from \`v$RC\` (same bytes, re-signed) and moves \`live\`. It runs automatically after the merge (\`cut-release.yml\`)."
+            echo "Merging this publishes the release \`v$VERSION\` from \`v$RC\` (same bytes, re-signed) and moves \`live\`. It runs automatically after the merge (\`publish-release.yml\`)."
             echo
             echo "**Since the last release:**"
             echo

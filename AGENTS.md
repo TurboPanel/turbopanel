@@ -131,9 +131,29 @@ change. Future agents read `AGENTS.md` first.
 
 `build.yml` ends in a `ci-ok` job that `needs:` every pull_request job (checks,
 typecheck, vitest, deno-hostfree, deno-db, sonarqube, metrics-legacy,
-data-dictionary) and fails unless all of them succeeded. It is the one context
-the branch rulesets will require; a new PR-time job must be added to its
-`needs:` or it never gates a merge.
+data-dictionary, minor-gate) and fails unless all of them succeeded. It is the
+one context the branch rulesets will require; a new PR-time job must be added
+to its `needs:` or it never gates a merge. A red X must mean "this change is
+broken", so: on a pull request a cancelled need still fails `ci-ok`; on a trunk
+push (or manual run) a cancelled need skips `ci-ok` instead of failing it.
+Trunk pushes are never cancelled by a newer merge: `build.yml` queues them
+(workflow-level `queue: max`, `cancel-in-progress` only on pull requests) so
+every merged commit is tested and gets a canary; `canary.yml` queues the same
+way and never cancels. The `SonarQube` job needs only the coverage shards (vitest,
+deno-hostfree, deno-db) and is skipped, not failed, when one of them did not
+succeed — that failure is already red on its own job. Its quality gate blocks
+pull requests only, and only pull requests are scanned in Build. On a trunk
+push the job just merges and uploads the LCOV; `sonar-trunk.yml` (**Sonar
+Trunk Analysis**, `workflow_run` on Build) uploads the trunk analysis from it
+after Build completes, beside the canary rather than in front of it (a full
+analysis takes ~12 minutes, ~10 of them in the JS/TS security engine).
+
+The pre-commit hook (`.githooks/pre-commit`) runs the secret scan and then
+`prettier --check` on the staged `.ts`/`.tsx`/`.mjs` files under `src/` and
+`scripts/` — the same whole-file check CI's format step runs.
+`TURBOPANEL_SKIP_HOOK_TESTS=1` does not skip it; `TURBOPANEL_SKIP_HOOK_FORMAT=1`
+does (for a change whose whole-file reflow goes in its own commit). Without a
+`node_modules` tree it skips with a message.
 
 CI analysis config, the Vitest+Deno LCOV coverage merge, analysis-scope /
 exclusion rules, and the coverage-attribution traps moved to
@@ -276,7 +296,7 @@ Unit tests use non-production secrets from `src/test-fixtures/secrets.ts`
 (`TEST_ONLY_TURBOPANEL_SECRET`). Vitest Workers config uses the same naming
 convention in `wrangler.vitest.jsonc`. The secret scanner allowlists only exact
 fixture lines in `.secretscan-allowlist` — do not add broad exclusions.
-`scripts/scan-secrets.sh` is byte-identical in turbopanel, turbopaneld, ui, website and dev — change all five together. It refuses a committed secret-bearing file (`license.token`, `server-key.json`, `.pgpass`, `.rabbitmq_pass`, …), flags credential URLs (`amqp(s)`/`postgres(ql)` with `user:pass@`) and `TURBOPANEL_SECRET(S)` bindings, and flags any line that names a secret-bearing file unless that exact `path:line:content` is in `.secretscan-allowlist`. dev's `src/lib/scan-secrets.test.ts` tests the rules and, with the siblings checked out in dev CI, fails if any copy drifts.
+`scripts/scan-secrets.sh` is byte-identical in turbopanel, turbopaneld, ui, website and dev — change all five together. It refuses a committed secret-bearing file (`license.token`, `server-key.json`, `.pgpass`, `.rabbitmq_pass`, …), flags credential URLs (`amqp(s)`/`postgres(ql)` with `user:pass@`) and `TURBOPANEL_SECRET(S)` bindings, and flags any line that names a secret-bearing file unless that exact path and full line text is in `.secretscan-allowlist` as `path:line text` (no line number, so edits elsewhere in the file do not break it; the old `path:lineno:text` form is deprecated but still accepted, and with `--all` an entry that allows nothing is warned about as stale). dev's `src/lib/scan-secrets.test.ts` tests the rules and, with the siblings checked out in dev CI, fails if any copy drifts.
 
 **Where to run tests:** host VirtFS checkouts lack a usable Node/pnpm/Deno tree.
 Run suites **inside the Vagrant guest** from the host `dev` checkout
@@ -1032,7 +1052,7 @@ routed by `src/deno.ts` and imported lazily so the server path (which loads
 the DuckDB addon at module evaluation and so needs the vendored `.so` on
 `LD_LIBRARY_PATH`) is never touched by an install-time run:
 
-**Automatic promotion (two PRs, the normal path):** `promote-prs.yml` keeps a trunk → staging PR "Release Candidate x.y.z-rc.N" open after every green `Canary` run (opened with the Release App token so `ci-ok` runs). Merging it (merge commit) fires `cut-rc.yml` on the push to `staging`: it finds the merged PR's head commit, waits for the canary manifest whose `.commit` is that commit, and promotes those exact bytes to the next `x.y.z-rc.N` (no approval gate), then opens/refreshes the staging → live PR "Release x.y.z". Merging that fires `cut-release.yml`: newest rc.N → `vx.y.z` (`releases/latest`), behind the `release` environment approval (allowed branches: `trunk` and `live`), then a "Start <next>" PR bumps `deno.json` / `package.json` / `sonar-project.properties` (patch by default, `minor` label = minor, never below the highest minor across the repos). **Repos release independently — no release waits on a matching release in another repo, except a new minor (x.y.0):** turbopanel and ui each need an rc of it, then the daemon releases it, then turbopanel and ui release it. `minor-gate` in `build.yml` (dev `gh-minor-gate.yml`, role=dependent) keeps a minor Release PR red until the daemon's `vx.y.0` release exists; patches are never gated. `cut-rc.yml` re-runs the daemon's waiting Release PR check after cutting an rc. PRs into staging/live pair with sibling `trunk` (not sibling `staging`) in `build.yml`, and skip Sonar.
+**Automatic promotion (two PRs, the normal path):** `canary.yml` publishes a canary only after a green Build that tested the trunk commit itself — a `push` to trunk or a manual (`workflow_dispatch`) Build run, never a `pull_request` run (the trunk → staging PR's run has head branch `trunk` but tests trunk merged into staging) — and builds `workflow_run.head_sha`; every "green Build for this commit" lookup (`release.yml` prepare, `publish-rc.yml`) likewise ignores `pull_request` runs. `promote-prs.yml` ("Keep the RC PR Open") keeps a trunk → staging PR "Release Candidate x.y.z-rc.N" open after every green `Canary` run (opened with the Release App token so `ci-ok` runs). Merging it (merge commit) fires `publish-rc.yml` ("Publish Release Candidate") on the push to `staging`: it finds the merged PR's head commit, waits for the canary manifest whose `.commit` is that commit, and promotes those exact bytes to the next `x.y.z-rc.N` (no approval gate), then opens/refreshes the staging → live PR "Release x.y.z". Merging that fires `publish-release.yml` ("Publish Release"): newest rc.N → `vx.y.z` (`releases/latest`), behind the `release` environment approval (allowed branches: `trunk` and `live`), then a "Start <next>" PR bumps `deno.json` / `package.json` / `sonar-project.properties` (patch by default, `minor` label = minor, never below the highest minor across the repos). **Repos release independently — no release waits on a matching release in another repo, except a new minor (x.y.0):** turbopanel and ui each need an rc of it, then the daemon releases it, then turbopanel and ui release it. `minor-gate` in `build.yml` (dev `gh-minor-gate.yml`, role=dependent) keeps a minor Release PR red until the daemon's `vx.y.0` release exists; patches are never gated. `publish-rc.yml` re-runs the daemon's waiting Release PR check after publishing an rc. PRs into staging/live (and PRs from a `staging`/`live` head) pair with sibling `trunk` — never a sibling's `staging` or `live` — in `build.yml`, and skip Sonar. Every workflow declares a top-level `permissions:` block (read-only unless a job asks for a write), so the repo's default `GITHUB_TOKEN` can be read-only.
 
 **Promotion, break-glass (`.github/workflows/promote.yml`):** the same three jobs as a manual form, for when the automatic path cannot run: `to=rc` turns a canary build (`source` = build id, canary version or `manifest-<version>.json` from the rolling canary release) into the next `v<base>-rc.<N>` and fast-forwards `staging`; `to=release` turns the newest `v<base>-rc.<N>` into `v<base>` (`releases/latest`; the rolling `rc` pointer is re-pointed at it) and fast-forwards `live`. Same bytes: the source manifest's signature and every asset's sha256/size are verified first, the assets are renamed, the manifest rewritten and re-signed, and the tag is created at the source commit (an existing tag elsewhere = burned version, fails). The three jobs are `TurboPanel/dev`'s `gh-promote.yml` → `gh-release.yml` → `gh-promote-finalize.yml` pinned to ONE dev sha, passed again as `dev-ref`; `signer-ref` is the turbopaneld commit carrying `scripts/sign-manifest.ts` + the key pin — bump it together with the signer pin in `release.yml`. Approval = the `release` environment (prepare, then finalize). `to=release` needs the TurboPanel Release App secrets (`RELEASE_APP_ID` / `RELEASE_APP_PRIVATE_KEY`: bare tags and the `live` push are ruleset-bypass only) and refuses to start without them; `to=rc` runs on `GITHUB_TOKEN` and only its `staging` push fails — with the exact manual `git push` — until the App exists. `release.yml` ignores tag pushes by `[bot]` actors so an App-created tag does not race the promotion with a from-source rebuild. Full contract: `../dev/AGENTS.md` → Release promotion.
 
