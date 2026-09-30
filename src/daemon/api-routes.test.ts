@@ -11,7 +11,12 @@ import {
   COLOCATED_SERVER_DISPLAY_NAME,
   rotateColocatedLicenseCredentials,
 } from '../client/authn/install-state.ts'
-import { createLicense, invalidateLicense, revokeLicense } from '../features/licenses/license.ts'
+import {
+  createLicense,
+  generateLicenseToken,
+  invalidateLicense,
+  revokeLicense,
+} from '../features/licenses/license.ts'
 import {
   LICENSE_TIER_BELOW_REQUIRED_ERROR,
   LICENSE_TIER_UNASSIGNED_ERROR,
@@ -594,6 +599,54 @@ async function issueAuthChallenge(
   return body
 }
 
+/**
+ * `withEnrollFixture` mints a license for every test in this file (~95 of
+ * them). `createLicense` hashes a fresh random token with production-strength
+ * Argon2id (`src/lib/secrets/password.ts`, OWASP floor: 19 MiB / t=2, pure-JS
+ * `@noble/hashes`) — roughly 0.4-1s per call on its own, and several seconds
+ * under `deno test --coverage` (V8 block-coverage instrumentation slows tight
+ * pure-JS crypto loops further; this is CI's real Deno-suite path, see
+ * `scripts/test-coverage.sh`). The fixture's own token never needs to be
+ * fresh: nothing in this suite looks a license up by its token value
+ * (`lookupActiveLicense` keys on the license id), and the license table's
+ * token column carries no uniqueness constraint (`src/db/schema.ts`). Hash it
+ * once per test-process and reuse that hash across every fixture's license
+ * row instead of paying a fresh Argon2id hash per test — `/enroll` still runs
+ * the real Argon2id *verify* against that hash on every test, so the
+ * production code path under test is unchanged. A test that specifically
+ * exercises `createLicense` itself ("with a fresh license creates a new
+ * server...") still calls it directly.
+ */
+let cachedFixtureLicenseTokenPromise: ReturnType<typeof generateLicenseToken> | undefined
+
+function fixtureLicenseToken(): ReturnType<typeof generateLicenseToken> {
+  cachedFixtureLicenseTokenPromise ??= generateLicenseToken()
+  return cachedFixtureLicenseTokenPromise
+}
+
+async function insertFixtureLicense(
+  db: ReturnType<typeof createDenoDb>,
+  organizationId: string
+): Promise<{ licenseId: string; licenseToken: string }> {
+  const { plaintext, hashed } = await fixtureLicenseToken()
+  const now = new Date().toISOString()
+  const [row] = await db
+    .insert(license)
+    .values({
+      organizationId,
+      name: 'Daemon API Routes Test License',
+      token: hashed,
+      createdAt: now,
+      updatedAt: now,
+    })
+    .returning({ id: license.id })
+  const licenseId = row?.id
+  if (!licenseId) {
+    throw new Error('License creation failed')
+  }
+  return { licenseId, licenseToken: plaintext }
+}
+
 async function withEnrollFixture(
   fn: (fixture: EnrollFixture) => Promise<void>,
   options: EnrollFixtureOptions = {}
@@ -618,10 +671,7 @@ async function withEnrollFixture(
     .values({ name: 'Daemon API Routes Test Org' })
     .returning({ id: organization.id })
   const organizationId = orgRow!.id
-  const { licenseId, licenseToken } = await createLicense(db, {
-    organizationId,
-    name: 'Daemon API Routes Test License',
-  })
+  const { licenseId, licenseToken } = await insertFixtureLicense(db, organizationId)
 
   if (tierRank != null) {
     await purchaseTier(db, { organizationId, extraTierIds }, tierRank, 1)
