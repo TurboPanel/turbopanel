@@ -102,9 +102,22 @@ describe('build.yml fan-in', () => {
 
   it('keeps the required check named SonarQube and cancels stale trunk runs', () => {
     assertStringIncludes(workflow, 'name: SonarQube')
-    // typecheck is in the fan-in: a type error blocks the required check.
-    assertStringIncludes(workflow, 'needs: [checks, typecheck, vitest, deno-hostfree, deno-db]')
-    assertStringIncludes(workflow, 'if: ${{ !cancelled() }}')
+    // SonarQube needs only the coverage shards and is skipped (not failed)
+    // when one of them did not succeed; ci-ok is what fails for that.
+    assertStringIncludes(workflow, 'needs: [vitest, deno-hostfree, deno-db]')
+    for (const shard of ['vitest', 'deno-hostfree', 'deno-db']) {
+      assertStringIncludes(workflow, `needs.${shard}.result == 'success'`)
+    }
+    assertEquals(workflow.includes('Fail unless every upstream job succeeded'), false)
+    // The gate blocks pull requests only; a trunk push must not hold the canary.
+    assertStringIncludes(workflow, "continue-on-error: ${{ github.event_name != 'pull_request' }}")
+    assertStringIncludes(
+      workflow,
+      "-Dsonar.qualitygate.wait=${{ github.event_name == 'pull_request' }}"
+    )
+    // ci-ok: a cancelled PR run still fails it; a cancelled push run skips it.
+    assertStringIncludes(workflow, "(github.event_name == 'pull_request' && always())")
+    assertStringIncludes(workflow, "!contains(needs.*.result, 'cancelled')")
     assertStringIncludes(workflow, 'all(.value.result == "success")')
     assertStringIncludes(workflow, 'shard: [api-routes, db-1, db-2]')
     assertStringIncludes(workflow, 'DENO_SHARD: hostfree')
@@ -114,5 +127,11 @@ describe('build.yml fan-in', () => {
     for (const line of cancelLines) {
       assertStringIncludes(line, 'cancel-in-progress: true')
     }
+  })
+
+  it('pairs sibling checkouts with trunk, never staging or live', () => {
+    const guard = 'staging:* | live:* | *:staging | *:live) REF=trunk ;;'
+    assertEquals(workflow.split(guard).length - 1, 2)
+    assertEquals(workflow.includes('REF="${{'), false)
   })
 })

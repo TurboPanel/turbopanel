@@ -15,7 +15,7 @@
 # finalize fast-forward) does nothing. workflow_dispatch re-runs a cut for a
 # given trunk commit.
 
-name: Cut rc
+name: Cut RC
 
 on:
   push:
@@ -27,10 +27,12 @@ on:
         required: true
         type: string
 
+# Read-only by default. Writes (contents: write) only in the three promote
+# jobs: the rc tag, its GitHub pre-release + the rolling rc pointer, and the
+# staging fast-forward. The staging -> live PR is opened with the Release
+# App's token, not GITHUB_TOKEN, so no job needs pull-requests: write.
 permissions:
-  contents: write
-  actions: read
-  pull-requests: write
+  contents: read
 
 concurrency:
   group: cut-rc
@@ -39,6 +41,9 @@ concurrency:
 jobs:
   resolve:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read # gh run list: the trunk Build of the merged commit
     outputs:
       proceed: ${{ steps.r.outputs.proceed }}
       commit: ${{ steps.r.outputs.commit }}
@@ -97,7 +102,8 @@ jobs:
               fi
             done
             [ -n "$manifest" ] && break
-            # A failed test run on that commit will never produce a canary.
+            # A failed test run on that commit will never produce a canary. Push
+          # runs only: a pull_request run tested a merge, not this commit.
             if [ "$(gh run list --repo "$REPO" --workflow build.yml --commit "$commit" --event push --limit 1 --json conclusion --jq '.[0].conclusion // empty')" = "failure" ]; then
               echo "::error::the Build of $commit failed, so it has no canary — fix trunk and re-run this cut with workflow_dispatch"
               exit 1
@@ -138,6 +144,8 @@ jobs:
       signer-ref: 93c4f94510c9499e6bf04366a9500fe9f8e38aaa
       # The merge of the promotion PR is the approval.
       approval-environment: ''
+    permissions:
+      contents: write # the v<x.y.z>-rc.<N> tag
     secrets: inherit
 
   publish:
@@ -150,6 +158,8 @@ jobs:
       assets-artifact-name: ${{ needs.prepare.outputs.assets-artifact-name }}
       manifest-filename: ${{ needs.prepare.outputs.manifest-filename }}
       target-commit: ${{ needs.prepare.outputs.commit }}
+    permissions:
+      contents: write # the GitHub pre-release + the rolling rc pointer
     secrets: inherit
 
   finalize:
@@ -161,6 +171,8 @@ jobs:
       commit: ${{ needs.prepare.outputs.commit }}
       branch: ${{ needs.prepare.outputs.branch }}
       manifest-filename: ${{ needs.prepare.outputs.manifest-filename }}
+    permissions:
+      contents: write # the staging fast-forward
     secrets: inherit
 
   release-pr:

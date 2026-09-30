@@ -13,10 +13,12 @@ on:
 permissions:
   contents: read
 
-# Tests fan out, then one job named SonarQube merges LCOV and scans. The
-# required check context must stay "SonarQube". A fan-in skipped because a
-# shard failed would report success, so that job runs unless the workflow
-# itself was cancelled and then fails unless every upstream result is success.
+# Tests fan out, then one job named SonarQube merges LCOV and scans. It
+# reports only its own scan: it runs when every coverage shard succeeded and
+# is skipped otherwise (the failing shard is already red on its own job and in
+# ci-ok, so Sonar does not repeat that red). Its quality gate blocks pull
+# requests only; on a trunk push the analysis is uploaded but a red gate or a
+# SonarCloud outage does not fail Build, so it cannot hold back the canary.
 #
 # cancel-in-progress is true on every verify-stage job, including trunk
 # pushes: a newer commit on the same ref replaces the run already going.
@@ -263,10 +265,16 @@ jobs:
         id: website-ref
         env:
           GH_TOKEN: ${{ github.token }}
+          HEAD_REF: ${{ github.head_ref || github.ref_name }}
+          BASE_REF: ${{ github.base_ref }}
         run: |
-          REF="${{ github.head_ref || github.ref_name }}"
-          case "${{ github.base_ref }}" in
-            staging | live) REF=trunk ;; # promotion PRs: their commits passed against sibling trunk
+          # A same-named feature branch, else the sibling's trunk. Never the
+          # sibling's staging or live: promotion PRs (base staging/live) and
+          # PRs from those branches carry commits that passed against trunk.
+          REF="$HEAD_REF"
+          case "$REF:$BASE_REF" in
+            staging:* | live:* | *:staging | *:live) REF=trunk ;;
+            *) ;;
           esac
           if gh api "repos/TurboPanel/website/branches/${REF}" --silent; then
             echo "ref=${REF}" >> "$GITHUB_OUTPUT"
@@ -284,10 +292,16 @@ jobs:
       - name: Check the generated data dictionary is current
         run: node turbopanel/scripts/generate-data-dictionary.mjs --check
 
+  # Skipped, not failed, when a coverage shard did not succeed: the scan needs
+  # every shard's LCOV, and that shard's failure is already reported once.
   sonarqube:
     name: SonarQube
-    needs: [checks, typecheck, vitest, deno-hostfree, deno-db]
-    if: ${{ !cancelled() }}
+    needs: [vitest, deno-hostfree, deno-db]
+    if: >-
+      ${{ !cancelled()
+      && needs.vitest.result == 'success'
+      && needs.deno-hostfree.result == 'success'
+      && needs.deno-db.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     concurrency:
@@ -296,9 +310,6 @@ jobs:
     env:
       SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
     steps:
-      - name: Fail unless every upstream job succeeded
-        run: echo '${{ toJSON(needs) }}' | jq -e 'to_entries | all(.value.result == "success")'
-
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0 # Shallow clones should be disabled for a better relevancy of analysis
@@ -345,16 +356,22 @@ jobs:
         # Skipped when SONAR_TOKEN is empty (fork or Dependabot PR) and on the
         # automatic promotion PRs into staging/live, which carry only commits
         # already analysed on trunk (no new code to gate).
+        #
+        # The quality gate blocks pull requests only. On a trunk push the
+        # analysis is still uploaded (SonarCloud shows the gate), but the job
+        # does not wait for it and a scan error does not fail Build — trunk is
+        # already merged, and Sonar must not hold back its canary.
         if: >-
           env.SONAR_TOKEN != ''
           && !(github.event_name == 'pull_request'
                && (github.base_ref == 'staging' || github.base_ref == 'live'))
+        continue-on-error: ${{ github.event_name != 'pull_request' }}
         uses: SonarSource/sonarqube-scan-action@ba9859eae8dd6bd29e412f25ddbbef3d032000f4 # v8.2.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           args: >
-            -Dsonar.qualitygate.wait=true
+            -Dsonar.qualitygate.wait=${{ github.event_name == 'pull_request' }}
 
   # ClickHouse/Tabix metrics infrastructure is retired (DuckDB + Parquet /
   # Analytics Engine replaced it). The guard lives in TurboPanel/turbopaneld
@@ -377,10 +394,16 @@ jobs:
         id: daemon-ref
         env:
           GH_TOKEN: ${{ github.token }}
+          HEAD_REF: ${{ github.head_ref || github.ref_name }}
+          BASE_REF: ${{ github.base_ref }}
         run: |
-          REF="${{ github.head_ref || github.ref_name }}"
-          case "${{ github.base_ref }}" in
-            staging | live) REF=trunk ;; # promotion PRs: their commits passed against sibling trunk
+          # A same-named feature branch, else the sibling's trunk. Never the
+          # sibling's staging or live: promotion PRs (base staging/live) and
+          # PRs from those branches carry commits that passed against trunk.
+          REF="$HEAD_REF"
+          case "$REF:$BASE_REF" in
+            staging:* | live:* | *:staging | *:live) REF=trunk ;;
+            *) ;;
           esac
           if gh api "repos/TurboPanel/turbopaneld/branches/${REF}" --silent; then
             echo "ref=${REF}" >> "$GITHUB_OUTPUT"
@@ -430,12 +453,16 @@ jobs:
       RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
 
   # Single aggregate check for the branch rulesets. It needs every job that
-  # runs on pull_request and fails unless all of them succeeded (a cancelled
-  # or skipped need is a failure too — no job above is conditional on PR
-  # events, so "skipped" can only mean a dependency failed). Required-check
-  # contexts move from the individual job names to this one context so a job
-  # rename or a new job never blocks merges on a name the ruleset still waits
-  # for.
+  # runs on pull_request and fails unless all of them succeeded (a skipped
+  # need is a failure too — SonarQube is skipped only when a coverage shard
+  # did not succeed). Required-check contexts move from the individual job
+  # names to this one context so a job rename or a new job never blocks merges
+  # on a name the ruleset still waits for.
+  #
+  # Cancelled runs: on a pull request a cancelled need still fails ci-ok (the
+  # PR must not merge on an incomplete run). On a trunk push (or a manual
+  # run) a cancelled run — a newer commit replaced it — skips ci-ok instead,
+  # so the run reads as cancelled, not failed.
   ci-ok:
     name: ci-ok
     needs:
@@ -450,7 +477,9 @@ jobs:
         data-dictionary,
         minor-gate,
       ]
-    if: always()
+    if: >-
+      ${{ (github.event_name == 'pull_request' && always())
+      || (!cancelled() && !contains(needs.*.result, 'cancelled')) }}
     permissions: {}
     runs-on: ubuntu-latest
     timeout-minutes: 5

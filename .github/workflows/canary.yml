@@ -8,6 +8,14 @@
 # workflow_run (not push) so the compile never starts before the test suite
 # has passed on the commit; cancel-in-progress so a burst of merges only
 # ever publishes the newest one.
+#
+# Only a Build that tested the trunk commit itself counts: a push to trunk,
+# or a manual Build run (workflow_dispatch, for a trunk push GitHub failed to
+# deliver). A pull_request Build is excluded even when its head branch is
+# trunk — the trunk -> staging "Release Candidate" PR's run tests trunk
+# merged into staging, not the trunk commit. The concurrency group sits on
+# the job, not the workflow, so a run whose job is skipped (a PR Build, a red
+# Build) never cancels a canary that is already being published.
 
 name: Canary
 
@@ -17,17 +25,25 @@ on:
     types: [completed]
     branches: [trunk]
 
-permissions:
-  contents: write
-  actions: read
-
-concurrency:
-  group: canary
-  cancel-in-progress: true
+# Nothing by default; the one job below asks for what the release build needs.
+permissions: {}
 
 jobs:
   publish:
-    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'trunk'
+    if: >-
+      github.event.workflow_run.conclusion == 'success'
+      && github.event.workflow_run.head_branch == 'trunk'
+      && (github.event.workflow_run.event == 'push'
+          || github.event.workflow_run.event == 'workflow_dispatch')
+    concurrency:
+      group: canary
+      cancel-in-progress: true
+    # contents: write — gh-canary.yml uploads to the rolling `canary`
+    # release and moves its tag. actions: read — release.yml's prepare job
+    # looks up the green Build run for the commit.
+    permissions:
+      contents: write
+      actions: read
     uses: ./.github/workflows/release.yml
     with:
       channel: canary
