@@ -36,10 +36,7 @@ export type ClientOpenApiOptions = {
   runtime?: 'deno' | 'workers'
 }
 
-export function getClientOpenApiSpec(
-  serverUrl: string,
-  options?: ClientOpenApiOptions,
-): object {
+export function getClientOpenApiSpec(serverUrl: string, options?: ClientOpenApiOptions): object {
   const includeInstall = options?.runtime === 'deno'
   const installCommandDescription = includeInstall
     ? 'Shell command to install a daemon with this license via the instance install wrapper.'
@@ -80,8 +77,7 @@ export function getClientOpenApiSpec(
       { name: 'Storage', description: 'Volumes, bind mounts, and file storage' },
       {
         name: 'Repositories',
-        description:
-          'Git repository bindings and Git provider App installations',
+        description: 'Git repository bindings and Git provider App installations',
       },
       { name: 'Principals', description: 'Project runtime principals' },
       { name: 'Resource limits', description: 'Organization and server deploy quotas' },
@@ -107,8 +103,32 @@ export function getClientOpenApiSpec(
     ],
     'x-tagGroups': [
       { name: 'Authentication & Authorization', tags: ['Authentication', 'Authorization'] },
-      { name: 'Resources', tags: ['Workspaces', 'Projects', 'Environments', 'Managed services', 'Variables', 'Tags', 'Tasks', 'Bindings', 'Storage', 'Repositories', 'Principals', 'Resource limits', 'Services', 'Hostings', 'Containers', 'TLS', 'Docker run import'] },
-      { name: 'Infrastructure', tags: ['Servers', 'Commands', 'Networks', 'Datacenters', 'IPs', 'Licenses'] },
+      {
+        name: 'Resources',
+        tags: [
+          'Workspaces',
+          'Projects',
+          'Environments',
+          'Managed services',
+          'Variables',
+          'Tags',
+          'Tasks',
+          'Bindings',
+          'Storage',
+          'Repositories',
+          'Principals',
+          'Resource limits',
+          'Services',
+          'Hostings',
+          'Containers',
+          'TLS',
+          'Docker run import',
+        ],
+      },
+      {
+        name: 'Infrastructure',
+        tags: ['Servers', 'Commands', 'Networks', 'Datacenters', 'IPs', 'Licenses'],
+      },
       { name: 'Platform', tags: ['Health', 'System', ...(includeInstall ? ['Install'] : [])] },
     ],
     components: {
@@ -183,6 +203,5 @@ export function getClientOpenApiSpec(
       ...tlsPaths,
       ...(includeInstall ? installOpenApiPaths : {}),
     },
-
   }
 }
