@@ -90,14 +90,16 @@ function sumDeltasByTier(deltas: readonly TierDelta[]): Map<string, number> {
 function mutationForCurrentLine(line: SeatLine, delta: number): ItemMutation {
   const next = line.quantity + delta
   if (next < 0) throw new RangeError(`tier ${line.tierId} would go to ${next} seats`)
-  return next === 0 ? { id: line.providerItemId, deleted: true } : { id: line.providerItemId, quantity: next }
+  return next === 0
+    ? { id: line.providerItemId, deleted: true }
+    : { id: line.providerItemId, quantity: next }
 }
 
 /** Create a line for a tier with no current item, via `price`. `null` if there is nothing to create. */
 function mutationForNewTier(
   tierId: string,
   delta: number,
-  priceByTier: ReadonlyMap<string, string>,
+  priceByTier: ReadonlyMap<string, string>
 ): ItemMutation | null {
   if (delta === 0) return null
   if (delta < 0) throw new RangeError(`tier ${tierId} has no seats to remove`)
@@ -117,7 +119,7 @@ function mutationForNewTier(
 export function buildItemMutation(
   current: readonly SeatLine[],
   deltas: readonly TierDelta[],
-  priceByTier: ReadonlyMap<string, string>,
+  priceByTier: ReadonlyMap<string, string>
 ): ItemMutation[] {
   const deltaByTier = sumDeltasByTier(deltas)
 
@@ -159,7 +161,7 @@ export type CreateCustomerInput = Readonly<{
  */
 export async function createCustomerForOrganization(
   client: StripeClient,
-  input: CreateCustomerInput,
+  input: CreateCustomerInput
 ): Promise<{ providerCustomerId: string }> {
   const customer = await client.post<StripeObject>(
     '/v1/customers',
@@ -168,7 +170,7 @@ export async function createCustomerForOrganization(
       ...(input.email ? { email: input.email } : {}),
       ...(input.name ? { name: input.name } : {}),
     },
-    { idempotencyKey: input.idempotencyKey },
+    { idempotencyKey: input.idempotencyKey }
   )
   const id = str(customer.id)
   if (!id) throw new Error('stripe customer create returned no id')
@@ -202,7 +204,7 @@ export type CreateSubscriptionInput = Readonly<{
  */
 export async function createSubscription(
   client: StripeClient,
-  input: CreateSubscriptionInput,
+  input: CreateSubscriptionInput
 ): Promise<{ providerSubscriptionId: string; status: string }> {
   const sub = await client.post<StripeObject>(
     '/v1/subscriptions',
@@ -214,7 +216,7 @@ export async function createSubscription(
       automatic_tax: { enabled: true },
       payment_behavior: 'default_incomplete',
     },
-    { idempotencyKey: input.idempotencyKey },
+    { idempotencyKey: input.idempotencyKey }
   )
   const id = str(sub.id)
   if (!id) throw new Error('stripe subscription create returned no id')
@@ -253,7 +255,7 @@ export type PreviewSubscriptionChangeInput = Readonly<{
  */
 export async function previewSubscriptionChange(
   client: StripeClient,
-  input: PreviewSubscriptionChangeInput,
+  input: PreviewSubscriptionChangeInput
 ): Promise<SubscriptionChangePreview> {
   const prorationDate = input.prorationDate ?? Math.floor((input.nowMs ?? Date.now()) / 1000)
   const invoice = await client.post<StripeObject>('/v1/invoices/create_preview', {
@@ -276,8 +278,10 @@ export async function previewSubscriptionChange(
     lines: rawLines.map((line) => ({
       description: str(line.description),
       amount: num(line.amount) ?? 0,
-      proration: line.proration === true ||
-        (isObject(line.parent) && isObject(line.parent.subscription_item_details) &&
+      proration:
+        line.proration === true ||
+        (isObject(line.parent) &&
+          isObject(line.parent.subscription_item_details) &&
           line.parent.subscription_item_details.proration === true),
     })),
   }
@@ -315,7 +319,7 @@ export type ApplySubscriptionItemsResult = Readonly<{
  */
 export async function applySubscriptionItems(
   client: StripeClient,
-  input: ApplySubscriptionItemsInput,
+  input: ApplySubscriptionItemsInput
 ): Promise<ApplySubscriptionItemsResult> {
   const sub = await client.post<StripeObject>(
     `/v1/subscriptions/${encodeURIComponent(input.providerSubscriptionId)}`,
@@ -325,7 +329,7 @@ export async function applySubscriptionItems(
       proration_behavior: 'always_invoice',
       payment_behavior: 'pending_if_incomplete',
     },
-    { idempotencyKey: input.idempotencyKey },
+    { idempotencyKey: input.idempotencyKey }
   )
   return {
     status: str(sub.status) ?? 'unknown',
@@ -351,7 +355,7 @@ export type ChangeItemPriceInput = Readonly<{
  */
 export async function changeItemPrice(
   client: StripeClient,
-  input: ChangeItemPriceInput,
+  input: ChangeItemPriceInput
 ): Promise<ApplySubscriptionItemsResult> {
   if (!Number.isInteger(input.quantity) || input.quantity < 1) {
     throw new RangeError('changeItemPrice needs the item quantity')
@@ -364,7 +368,7 @@ export async function changeItemPrice(
       proration_behavior: 'always_invoice',
       payment_behavior: 'pending_if_incomplete',
     },
-    { idempotencyKey: input.idempotencyKey },
+    { idempotencyKey: input.idempotencyKey }
   )
   return { status: str(sub.status) ?? 'unknown', pending: isObject(sub.pending_update) }
 }
@@ -394,7 +398,7 @@ export function cancelIdempotencyKey(input: CancelSubscriptionInput): string {
  */
 export async function cancelSubscription(
   client: StripeClient,
-  input: CancelSubscriptionInput,
+  input: CancelSubscriptionInput
 ): Promise<{ status: string }> {
   const path = `/v1/subscriptions/${encodeURIComponent(input.providerSubscriptionId)}`
   const current = await client.get<StripeObject>(path)
@@ -411,7 +415,7 @@ export async function cancelSubscription(
  */
 export function seatLinesFromSubscription(
   sub: StripeObject,
-  tierByPrice: ReadonlyMap<string, string>,
+  tierByPrice: ReadonlyMap<string, string>
 ): SeatLine[] {
   const page = isObject(sub.items) ? sub.items : null
   const data = page && Array.isArray(page.data) ? page.data.filter(isObject) : []
