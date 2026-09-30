@@ -74,7 +74,7 @@ function assertPhysicalTableName(name: string): void {
   if (!PHYSICAL_TABLE_NAME_RE.test(name)) {
     throw new TypeError(
       `physical table "${name}" must be one lower-case word (no underscores); ` +
-        `add an explicit exception only for external compatibility`,
+        `add an explicit exception only for external compatibility`
     )
   }
   if (name.includes('_')) {
@@ -107,7 +107,7 @@ test('migrations/ CREATE TABLE names are single lower-case words', async () => {
   const accumulated = accumulatePhysicalTableNames(sqlInOrder)
   if (accumulated.size === 0) {
     throw new TypeError(
-      'expected at least one CREATE TABLE in scanned migration SQL files under migrations/',
+      'expected at least one CREATE TABLE in scanned migration SQL files under migrations/'
     )
   }
 
@@ -138,7 +138,11 @@ test('migrations/ CREATE TABLE names are single lower-case words', async () => {
   if (!unique.includes('tenancy')) {
     throw new TypeError('expected principal-service table "tenancy"')
   }
-  if (!unique.includes('forge') || !unique.includes('connection') || !unique.includes('repository')) {
+  if (
+    !unique.includes('forge') ||
+    !unique.includes('connection') ||
+    !unique.includes('repository')
+  ) {
     throw new TypeError('expected Git tables forge / connection / repository')
   }
   if (!unique.includes('slot')) {
@@ -194,17 +198,15 @@ test('migrations/ CREATE TABLE names are single lower-case words', async () => {
     unique.includes('rotation')
   ) {
     throw new TypeError(
-      'retired table names member / membership / managed_member / router / attachment / span / assignment / bridge / vpn / peer / tlsleaf / tlsrotation / principal_entitlement / principal_ssh_key / gitapp / installation / source / steward / location / credential / node / segment / rotation must not reappear',
+      'retired table names member / membership / managed_member / router / attachment / span / assignment / bridge / vpn / peer / tlsleaf / tlsrotation / principal_entitlement / principal_ssh_key / gitapp / installation / source / steward / location / credential / node / segment / rotation must not reappear'
     )
   }
 
   // Every listed exception must still exist in the migration (no stale exceptions)
-  for (const exception of [...PHYSICAL_TABLE_NAME_EXCEPTIONS].sort((a, b) =>
-    a.localeCompare(b)
-  )) {
+  for (const exception of [...PHYSICAL_TABLE_NAME_EXCEPTIONS].sort((a, b) => a.localeCompare(b))) {
     if (!unique.includes(exception)) {
       throw new TypeError(
-        `exception "${exception}" is not present in scanned migration SQL files under migrations/ — remove it from the test allowlist`,
+        `exception "${exception}" is not present in scanned migration SQL files under migrations/ — remove it from the test allowlist`
       )
     }
   }
@@ -218,8 +220,11 @@ test('a forward rename retires the old physical name and judges the new one', ()
     'ALTER TABLE "notification_channel" RENAME TO "channel";--> statement-breakpoint\nCREATE TABLE "rule" (id uuid);',
   ])
   assertEquals([...names].sort(), ['channel', 'rule'])
-  assertEquals(extractTableRenames('ALTER TABLE "a" RENAME TO "b"; ALTER TABLE "b" RENAME TO "c";'), [
-    ['a', 'b'],
-    ['b', 'c'],
-  ])
+  assertEquals(
+    extractTableRenames('ALTER TABLE "a" RENAME TO "b"; ALTER TABLE "b" RENAME TO "c";'),
+    [
+      ['a', 'b'],
+      ['b', 'c'],
+    ]
+  )
 })
