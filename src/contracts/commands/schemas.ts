@@ -5580,6 +5580,12 @@ export type ManagedRestoreCommandPayload = {
   database?: string
   checksum: string
   sizeBytes?: number
+  /**
+   * The `backuppolicy` that made the artifact, when a scheduled run did: the
+   * daemon keeps each policy's artifacts in their own directory, so it needs
+   * this to find the file. Omitted for a manual backup.
+   */
+  policyId?: string
 }
 
 export type ManagedRestoreCommandResult = {
@@ -5709,6 +5715,12 @@ export function parseManagedRestorePayload(value: unknown): ManagedRestoreComman
     }
     payload.sizeBytes = value.sizeBytes
   }
+  if (value.policyId !== undefined) {
+    if (!isCanonicalUuid(value.policyId)) {
+      throw new Error('Invalid managed.restore payload policyId')
+    }
+    payload.policyId = value.policyId
+  }
   return payload
 }
 
@@ -5723,6 +5735,184 @@ export function parseManagedRestoreResult(value: unknown): ManagedRestoreCommand
   if (isString(value.database)) result.database = value.database
   if (isString(value.summary)) result.summary = value.summary
   return result
+}
+
+/**
+ * A lower-case UUID. Backup policy ids become systemd unit names on the host
+ * (`turbopanel-backup-<policyId>.timer`), and the host's unit check matches
+ * that name exactly, so a mixed-case spelling of the same id is refused here.
+ */
+function isCanonicalUuid(value: unknown): value is string {
+  return isString(value) && UUID_RE.test(value) && value === value.toLowerCase()
+}
+
+const BACKUP_TARGET_KIND_SET = new Set(['managed', 'copy'])
+/** Bound on one server's policy set; far above any real schedule list. */
+const MAX_BACKUP_POLICIES_PER_SERVER = 500
+
+/**
+ * One scheduled backup as a host runs it. Must stay in sync with the daemon
+ * `server.backups.reconcile` entry (`turbopaneld/src/contracts/commands-contracts.ts`,
+ * pinned in `scripts/contract-field-snapshot.json`).
+ *
+ * `onCalendar` arrives already translated from the authored schedule
+ * (`cronToOnCalendar`), so the daemon renders it and never parses cron. A
+ * `managed` entry carries what the host needs to dump the engine on its own
+ * (`engine`, `artifactExtension`), because the run must not ask the control
+ * plane anything.
+ */
+export type BackupPolicyWireEntry = {
+  policyId: string
+  targetKind: 'managed' | 'copy'
+  managedId?: string
+  engine?: ManagedEngineCode
+  artifactExtension?: ManagedBackupArtifactExtension
+  copyId?: string
+  onCalendar: string
+  retentionKeep: number
+  enabled: boolean
+}
+
+/**
+ * Must stay in sync with the daemon `server.backups.reconcile` shape.
+ *
+ * `policies` is the **complete** set for one server, the same contract as
+ * `server.principals.reconcile`: a policy absent from it is one the host no
+ * longer runs, and its timer goes.
+ */
+export type BackupsReconcileCommandPayload = {
+  policies: BackupPolicyWireEntry[]
+}
+
+/** When one policy's timer next fires on the host; `nextRunAt` is absent while none is scheduled. */
+export type BackupPolicyNextRun = {
+  policyId: string
+  nextRunAt?: string
+}
+
+/** Must stay in sync with the daemon `server.backups.reconcile` shape. */
+export type BackupsReconcileCommandResult = {
+  policiesApplied: number
+  /** Policy ids whose units were written or rewritten. */
+  unitsChanged: string[]
+  /** Policy ids whose units were removed. */
+  unitsRemoved: string[]
+  nextRuns: BackupPolicyNextRun[]
+  warnings: string[]
+}
+
+function parseBackupPolicyTarget(raw: Record<string, unknown>, entry: BackupPolicyWireEntry): void {
+  if (entry.targetKind === 'managed') {
+    if (
+      !isCanonicalUuid(raw.managedId) ||
+      !isString(raw.engine) ||
+      !isManagedEngineCode(raw.engine) ||
+      !isString(raw.artifactExtension) ||
+      !isManagedBackupArtifactExtension(raw.artifactExtension) ||
+      raw.copyId !== undefined
+    ) {
+      throw new Error('Invalid backup policy managed target')
+    }
+    entry.managedId = raw.managedId
+    entry.engine = raw.engine
+    entry.artifactExtension = raw.artifactExtension
+    return
+  }
+  if (
+    !isCanonicalUuid(raw.copyId) ||
+    raw.managedId !== undefined ||
+    raw.engine !== undefined ||
+    raw.artifactExtension !== undefined
+  ) {
+    throw new Error('Invalid backup policy copy target')
+  }
+  entry.copyId = raw.copyId
+}
+
+function parseBackupPolicyWireEntry(raw: unknown): BackupPolicyWireEntry {
+  if (
+    !isRecord(raw) ||
+    !isCanonicalUuid(raw.policyId) ||
+    !isString(raw.targetKind) ||
+    !BACKUP_TARGET_KIND_SET.has(raw.targetKind) ||
+    !isString(raw.onCalendar) ||
+    !ON_CALENDAR_RE.test(raw.onCalendar) ||
+    typeof raw.retentionKeep !== 'number' ||
+    !Number.isInteger(raw.retentionKeep) ||
+    raw.retentionKeep < 1 ||
+    raw.retentionKeep > MAX_BACKUP_RETENTION_KEEP_BOUND ||
+    typeof raw.enabled !== 'boolean'
+  ) {
+    throw new Error('Invalid backup policy entry')
+  }
+  const entry: BackupPolicyWireEntry = {
+    policyId: raw.policyId,
+    targetKind: raw.targetKind as BackupPolicyWireEntry['targetKind'],
+    onCalendar: raw.onCalendar,
+    retentionKeep: raw.retentionKeep,
+    enabled: raw.enabled,
+  }
+  parseBackupPolicyTarget(raw, entry)
+  return entry
+}
+
+export function parseBackupsReconcilePayload(value: unknown): BackupsReconcileCommandPayload {
+  if (!isRecord(value)) {
+    throw new Error('Invalid backups reconcile payload')
+  }
+  if (!Array.isArray(value.policies) || value.policies.length > MAX_BACKUP_POLICIES_PER_SERVER) {
+    throw new TypeError('policies must be an array of at most 500 entries')
+  }
+  const policies = value.policies.map(parseBackupPolicyWireEntry)
+  const seen = new Set<string>()
+  for (const policy of policies) {
+    // Two entries for one id would name the same unit twice, and "the
+    // complete set" would no longer say which schedule wins.
+    if (seen.has(policy.policyId)) {
+      throw new Error(`policies contains ${policy.policyId} more than once`)
+    }
+    seen.add(policy.policyId)
+  }
+  return { policies }
+}
+
+function parseBackupPolicyNextRuns(value: unknown): BackupPolicyNextRun[] {
+  if (!Array.isArray(value)) {
+    throw new TypeError('nextRuns must be an array')
+  }
+  return value.map((raw) => {
+    if (!isRecord(raw) || !isCanonicalUuid(raw.policyId)) {
+      throw new Error('Invalid backups reconcile nextRuns entry')
+    }
+    const next: BackupPolicyNextRun = { policyId: raw.policyId }
+    if (raw.nextRunAt !== undefined) {
+      if (!isString(raw.nextRunAt) || Number.isNaN(Date.parse(raw.nextRunAt))) {
+        throw new Error('Invalid backups reconcile nextRunAt')
+      }
+      next.nextRunAt = raw.nextRunAt
+    }
+    return next
+  })
+}
+
+export function parseBackupsReconcileResult(value: unknown): BackupsReconcileCommandResult {
+  if (!isRecord(value)) {
+    throw new Error('Invalid backups reconcile result')
+  }
+  if (
+    typeof value.policiesApplied !== 'number' ||
+    !Number.isInteger(value.policiesApplied) ||
+    value.policiesApplied < 0
+  ) {
+    throw new TypeError('policiesApplied must be a non-negative integer')
+  }
+  return {
+    policiesApplied: value.policiesApplied,
+    unitsChanged: parseStringArrayField(value.unitsChanged, 'unitsChanged'),
+    unitsRemoved: parseStringArrayField(value.unitsRemoved, 'unitsRemoved'),
+    nextRuns: parseBackupPolicyNextRuns(value.nextRuns),
+    warnings: parseStringArrayField(value.warnings, 'warnings'),
+  }
 }
 
 function isValidHostgroupId(value: unknown): value is number {
@@ -6323,6 +6513,7 @@ export function parseCommandPayload(
   | TlsTrustReconcileCommandPayload
   | PrincipalsReconcileCommandPayload
   | FirewallReconcileCommandPayload
+  | BackupsReconcileCommandPayload
   | EnvironmentDeployCommandPayload
   | EnvironmentLifecycleCommandPayload
   | EnvironmentStopCommandPayload
@@ -6355,6 +6546,8 @@ export function parseCommandPayload(
       return parsePrincipalsReconcilePayload(value)
     case 'server.firewall.reconcile':
       return parseFirewallReconcilePayload(value)
+    case 'server.backups.reconcile':
+      return parseBackupsReconcilePayload(value)
     case 'environment.deploy':
       return parseEnvironmentDeployPayload(value)
     case 'environment.lifecycle':
@@ -6397,6 +6590,7 @@ export function parseCommandResult(
   | TlsTrustReconcileCommandResult
   | PrincipalsReconcileCommandResult
   | FirewallReconcileCommandResult
+  | BackupsReconcileCommandResult
   | EnvironmentDeployCommandResult
   | EnvironmentLifecycleCommandResult
   | EnvironmentStopCommandResult
@@ -6429,6 +6623,8 @@ export function parseCommandResult(
       return parsePrincipalsReconcileResult(value)
     case 'server.firewall.reconcile':
       return parseFirewallReconcileResult(value)
+    case 'server.backups.reconcile':
+      return parseBackupsReconcileResult(value)
     case 'environment.deploy':
       return parseEnvironmentDeployResult(value)
     case 'environment.lifecycle':

@@ -943,6 +943,48 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'Lowercase SHA-256 hex digest of the artifact computed by the daemon; a restore refuses on mismatch.',
       database: 'Database name for a single-database backup; null for an instance-scope backup.',
       path: "Absolute artifact path on the primary server's filesystem as reported by the daemon.",
+      policy_id:
+        'The `backuppolicy` whose scheduled run made this artifact; null for a manual backup or once that policy is deleted.',
+    },
+  },
+  backuppolicy: {
+    group: 'managed',
+    summary:
+      'A scheduled backup of one managed engine or one local storage copy, pushed to its host as a systemd timer that runs without the control plane.',
+    columns: {
+      organization_id:
+        'Owning organization stored directly, because the target is polymorphic; cascade-deletes the policy with the org.',
+      target_kind:
+        '`managed` or `copy`: which of `managed_id` and `copy_id` names the target; exactly one is set (`backuppolicy_target_check`).',
+      name: "Operator label for the policy, shown in the console's backup list.",
+      schedule:
+        'The schedule as authored, a cron expression or alias; translated to a systemd `OnCalendar` value when pushed to the host.',
+      timezone: "IANA zone the schedule is read in; null means the host's local time.",
+      retention_keep:
+        "How many of this policy's own artifacts the host keeps, 1 to 100; older ones are pruned after each run.",
+      is_enabled:
+        'False pauses the policy: its timer is removed from the host while the row and its run history stay.',
+      next_run_at:
+        "When the host's timer next fires, as last reported by the daemon; null until a report arrives.",
+      created_by:
+        'User who created the policy; null for an automatic default policy or once that user is deleted.',
+    },
+  },
+  backuprun: {
+    group: 'managed',
+    summary:
+      'One finished scheduled run of a backup policy, reported by the host that ran it; unique per (policy_id, run_id).',
+    columns: {
+      policy_id:
+        'The `backuppolicy` this run belongs to; the run history cascades with the policy.',
+      run_id:
+        'Daemon-minted id for the run, unique per policy so a report delivered twice is recorded once.',
+      started_at: 'When the host started the run.',
+      finished_at: 'When the host finished the run, whether it succeeded or failed.',
+      status: '`succeeded` or `failed`, as reported by the host.',
+      error: 'Failure text reported by the host; null when the run succeeded.',
+      backup_ref:
+        'The `bk_` id of the artifact the run produced, matching `backup.backup_id` or `volumebackup.backup_id`; null when it failed.',
     },
   },
   managed: {
@@ -1101,6 +1143,22 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         "Sealed file content for `kind='file'` entries (`tpsecret` at rest, resealed to `tpdaemon` at deploy); up to 256 KiB plaintext; null otherwise.",
       compose_volume_key:
         'Compose top-level volume key for auto-registered `volume` rows; unique per environment and the idempotency key for compose volume registration.',
+    },
+  },
+  volumebackup: {
+    group: 'storage',
+    summary:
+      'One completed storage-copy backup artifact recorded from a daemon report; unique per (copy_id, backup_id), cascades with the copy.',
+    columns: {
+      policy_id:
+        'The `backuppolicy` whose scheduled run made this artifact; null for a manual backup or once that policy is deleted.',
+      backup_id:
+        'Daemon-minted `bk_` plus hex token that is also the artifact filename on the host; unique per storage copy, not globally.',
+      size_bytes:
+        'Artifact size in bytes as reported by the daemon after writing the archive; re-checked before a restore.',
+      checksum:
+        'Lowercase SHA-256 hex digest of the artifact computed by the daemon; a restore refuses on mismatch.',
+      path: "Absolute artifact path on the copy's server as reported by the daemon.",
     },
   },
   // ── runtime ───────────────────────────────────────────────────────────

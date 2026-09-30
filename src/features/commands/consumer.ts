@@ -137,6 +137,8 @@ const COMMAND_TIMEOUT_MS: Record<CommandType, number> = {
   // A handful of iptables calls, an sshd -T, two restores. No package install,
   // no network wait; the xtables lock wait is bounded at 5 s per call.
   'server.firewall.reconcile': 120_000,
+  // Writes a few unit files, one daemon-reload, enables what moved. No dump runs here.
+  'server.backups.reconcile': 120_000,
   'environment.deploy': 600_000,
   'environment.lifecycle': 120_000,
   'environment.stop': 120_000,
@@ -174,6 +176,7 @@ export function commandTimeoutMs(type: string): number {
     type === 'server.tls.trust.reconcile' ||
     type === 'server.principals.reconcile' ||
     type === 'server.firewall.reconcile' ||
+    type === 'server.backups.reconcile' ||
     type === 'environment.deploy' ||
     type === 'environment.lifecycle' ||
     type === 'environment.stop' ||
