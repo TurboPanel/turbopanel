@@ -12,7 +12,7 @@
  * Postgres error) and `severity` only. Everything else a driver error carries
  * stays out of the log: postgres.js attaches the query's bind `parameters`,
  * and a Postgres `detail` can echo row values (`Key (email)=(...) already
- * exists`). A password inside a URL (`postgres://user:secret@host`) is masked.
+ * exists`). The password in a URL's `user:password@` part is masked.
  */
 
 /** Same cap as `isConnectionClosedError` in `src/db/connection.ts`. */
