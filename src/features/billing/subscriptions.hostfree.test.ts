@@ -10,8 +10,6 @@ import { createStripeClientDouble, formKeys, formOf } from '../../test-fixtures/
 import {
   applySubscriptionItems,
   buildItemMutation,
-  cancelIdempotencyKey,
-  cancelSubscription,
   changeItemPrice,
   createCustomerForOrganization,
   createSubscription,
@@ -213,36 +211,6 @@ test('createCustomerForOrganization writes the metadata key the projection reads
   assertEquals(out.providerCustomerId, 'cus_9')
   assertEquals(formOf(client.calls[0]!, 'metadata[turbopanel_organization_id]'), 'org-1')
   assertEquals(client.calls[0]!.idempotencyKey, 'customer:org-1')
-})
-
-test('cancelSubscription checks status first and DELETEs only when not already canceled, keyed on (subscription, grace expiry)', async () => {
-  // Stripe's double never moves to canceled on its own here; only the DELETE flips it below.
-  const client = createStripeClientDouble((call) => ({
-    id: 'sub_1',
-    status: call.method === 'DELETE' ? 'canceled' : 'active',
-  }))
-  const input = { providerSubscriptionId: 'sub_1', graceExpiresAt: '2026-11-11T00:00:00.000Z' }
-  await cancelSubscription(client, input)
-  await cancelSubscription(client, input)
-  // Every retry precedes its DELETE with a GET; the double's precheck never reports canceled, so both ticks delete.
-  assertEquals(
-    client.calls.map((c) => c.method),
-    ['GET', 'DELETE', 'GET', 'DELETE']
-  )
-  assertEquals(client.calls[1]!.idempotencyKey, cancelIdempotencyKey(input))
-  assertEquals(client.calls[3]!.idempotencyKey, client.calls[1]!.idempotencyKey)
-  assertEquals(client.calls[0]!.idempotencyKey, null)
-})
-
-test('cancelSubscription skips the DELETE entirely when the precheck already sees canceled', async () => {
-  const client = createStripeClientDouble(() => ({ id: 'sub_1', status: 'canceled' }))
-  const input = { providerSubscriptionId: 'sub_1', graceExpiresAt: '2026-11-11T00:00:00.000Z' }
-  const result = await cancelSubscription(client, input)
-  assertEquals(result, { status: 'canceled' })
-  assertEquals(
-    client.calls.map((c) => c.method),
-    ['GET']
-  )
 })
 
 test('seatLinesFromSubscription maps prices to tiers and drops unknown prices', () => {

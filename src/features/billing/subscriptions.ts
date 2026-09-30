@@ -373,41 +373,6 @@ export async function changeItemPrice(
   return { status: str(sub.status) ?? 'unknown', pending: isObject(sub.pending_update) }
 }
 
-export type CancelSubscriptionInput = Readonly<{
-  providerSubscriptionId: string
-  /** ISO timestamp of the grace expiry that triggered this cancel. */
-  graceExpiresAt: string
-}>
-
-/** The idempotency key `cancelSubscription` uses: one per `(subscription, expiry)`. */
-export function cancelIdempotencyKey(input: CancelSubscriptionInput): string {
-  return `cancel:${input.providerSubscriptionId}:${input.graceExpiresAt}`
-}
-
-/**
- * C13 — `DELETE /v1/subscriptions/:id`. Leftover credit is forfeited: no
- * refund call exists anywhere.
- *
- * An idempotency key on `DELETE` is not honoured by Stripe, so replay
- * safety cannot rest on the key the way every `POST` mutation in this file
- * gets it for free. Instead this checks status first: a subscription
- * already `canceled` is skipped without a second `DELETE`, so a retried
- * maintenance tick (same `(subscriptionId, graceExpiresAt)`, per
- * {@link cancelIdempotencyKey}) cannot double-cancel — the check makes the
- * call idempotent, not the header.
- */
-export async function cancelSubscription(
-  client: StripeClient,
-  input: CancelSubscriptionInput
-): Promise<{ status: string }> {
-  const path = `/v1/subscriptions/${encodeURIComponent(input.providerSubscriptionId)}`
-  const current = await client.get<StripeObject>(path)
-  const currentStatus = str(current.status) ?? 'unknown'
-  if (currentStatus === 'canceled') return { status: currentStatus }
-  const sub = await client.del<StripeObject>(path, { idempotencyKey: cancelIdempotencyKey(input) })
-  return { status: str(sub.status) ?? 'canceled' }
-}
-
 /**
  * Read the committed seat lines off a refetched subscription, mapping each
  * price back to a tier. Lines whose price maps to no tier are dropped —

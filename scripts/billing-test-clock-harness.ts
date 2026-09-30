@@ -19,8 +19,9 @@
  *   quantity-up-down        +2 seats now (invoiced), −1 seat at the boundary, one scenario
  *   upgrade-while-past-due  a failed renewal makes every raise `409 subscription_past_due`
  *                           before any Stripe write; recovery lifts the block
- *   dunning-retry-window    the failed renewal stays `past_due` through Smart Retries'
- *                           window with entitlement intact; the grace clock cancels at expiry
+ *   dunning-retry-window    the failed renewal stays `past_due` with entitlement intact
+ *                           while Stripe retries; Stripe's own dunning cancels and the
+ *                           projection revokes every license
  *
  * Every seat or tier change goes through the **exported mutation path the
  * console uses** — `changeSeats`, `upgradeTier`, `downgradeTier` in
@@ -45,10 +46,10 @@
  * rows.
  *
  * **One time base.** The scenario's clock is its wall clock: every
- * projection `now`, every intent timestamp, every `prorationDate` and the
- * grace clock's `nowMs` read the test clock's frozen time, so a latch
- * written at a simulated boundary and a sweep run at a simulated expiry
- * agree. Mixing in `Date.now()` would make the grace assertions vacuous.
+ * projection `now`, every intent timestamp and every `prorationDate` read
+ * the test clock's frozen time, so a latch written at a simulated boundary
+ * and the state read back after a later advance agree. Mixing in
+ * `Date.now()` would make the latch assertions vacuous.
  *
  * Needs a sandbox whose catalogue a superadmin has entered under Admin →
  * Tiers (exactly one active `S3` and one `S5`, each naming a product whose
@@ -59,9 +60,9 @@
  * from the product, as production does). Every scenario gets a fresh
  * test clock and a fresh throw-away organization; both, and the
  * organization's servers, ledger and lease rows, are removed in a
- * `finally`. The grace clock is never run as the batch:
- * `runGraceClockForSubscription` sees this scenario's subscription and
- * nothing else in the database.
+ * `finally`. `dunning-retry-window` also needs the sandbox's failed-payment
+ * outcome set to "cancel the subscription" (the runbook's step 2): Stripe's
+ * dunning is the only thing that ends a past-due subscription.
  *
  * The traps the shared helpers absorb so no scenario has to know them:
  *
@@ -79,7 +80,7 @@
  *    never raw numbers. The failing card attaches fine and fails every
  *    charge — that is the dunning card.
  *  - A test clock advances at most a couple of billing intervals per call;
- *    the retry window is walked in fortnights.
+ *    the retry window is walked a week at a time.
  */
 import { and, eq, inArray, isNull } from 'drizzle-orm'
 import { createDenoDb, type Db, endDbConnection } from '../src/db/connection.ts'
@@ -90,7 +91,6 @@ import { createStripeClient, type StripeClient } from '../src/features/billing/c
 import { resolveBillingConfig, STRIPE_SECRET_KEY_ENV } from '../src/features/billing/config.ts'
 import { STRIPE_CUSTOMER_ORGANIZATION_METADATA_KEY } from '../src/features/billing/customer-subject.ts'
 import { resolveBillingGateway } from '../src/features/billing/gateway.ts'
-import { runGraceClockForSubscription } from '../src/features/billing/grace-clock.ts'
 import {
   billingPendingChangesKey,
   readPendingChanges,
@@ -105,8 +105,8 @@ import {
   type TestClock,
 } from '../src/features/billing/test-clock.ts'
 import {
-  BILLING_GRACE_WINDOW_MS,
   isDelinquentStatus,
+  isEndedStatus,
   listSeatsForOrganization,
   type OrganizationBillingState,
   seatQuantitiesByTier,
@@ -129,8 +129,14 @@ const MINUTE_S = 60
 const DAY_S = 24 * HOUR_S
 /** Simulated minutes between consecutive mutations on one clock. */
 const PAUSE_MINUTES = 5
-/** The step the dunning scenario walks the retry window in. */
-export const RETRY_WINDOW_STEP_S = 14 * DAY_S
+/** The step the dunning scenario walks Stripe's retry schedule in. */
+export const DUNNING_STEP_S = 7 * DAY_S
+/**
+ * How long the dunning scenario waits for Stripe to cancel: past the
+ * longest schedule Stripe offers (a custom schedule tops out near 27 days,
+ * Smart Retries near four weeks).
+ */
+export const DUNNING_WINDOW_MAX_S = 35 * DAY_S
 /** Real-time polling for Stripe to apply a paid pending update. */
 const PENDING_APPLY_POLL_ATTEMPTS = 10
 const PENDING_APPLY_POLL_MS = 2_000
@@ -754,7 +760,7 @@ async function failRenewal(
   const state = await project(ctx, providerSubscriptionId)
   checkEqual(state.subscription?.status, 'past_due', 'status after the failed renewal')
   check(state.subscription?.pastDueSince, 'past_due_since latched')
-  check(state.subscription?.graceExpiresAt, 'grace_expires_at latched')
+  checkEqual(state.subscription?.graceExpiresAt, null, 'no TurboPanel-side grace expiry')
   return { providerCustomerId, providerSubscriptionId, licenseId, serverId, state }
 }
 
@@ -1052,15 +1058,11 @@ const upgradeWhilePastDue: Scenario = {
   async run(ctx) {
     const s3 = tierOf(ctx, 'S3')
     const s5 = tierOf(ctx, 'S5')
-    const {
-      providerCustomerId,
-      providerSubscriptionId,
-      licenseId,
-      serverId,
-      state: pastDue,
-    } = await failRenewal(ctx, 'S3')
+    const { providerCustomerId, providerSubscriptionId, licenseId, serverId } = await failRenewal(
+      ctx,
+      'S3'
+    )
     const invoicesBefore = await fetchInvoicesForSubscription(ctx.client, providerSubscriptionId)
-    const graceExpiresAt = pastDue.subscription!.graceExpiresAt
 
     const counting = countingClient(ctx.client)
     const upgrade = await upgradeTier(mutationDeps(ctx, counting), {
@@ -1072,7 +1074,7 @@ const upgradeWhilePastDue: Scenario = {
     check(!upgrade.ok, 'upgrade refused while past_due')
     checkEqual(upgrade.status, 409, 'upgrade refusal status')
     checkEqual(upgrade.body.error, SUBSCRIPTION_PAST_DUE_ERROR, 'upgrade refusal error')
-    checkEqual(upgrade.body.graceExpiresAt, graceExpiresAt, 'refusal names the grace expiry')
+    checkEqual(upgrade.body.graceExpiresAt, null, 'refusal carries no TurboPanel-side expiry')
 
     const raise = await changeSeats(mutationDeps(ctx, counting), {
       organizationId: ctx.organizationId,
@@ -1114,7 +1116,6 @@ const upgradeWhilePastDue: Scenario = {
     state = await project(ctx, providerSubscriptionId)
     checkEqual(state.subscription?.status, 'active', 'status after the renewal is paid')
     checkEqual(state.subscription?.pastDueSince, null, 'past_due_since cleared on recovery')
-    checkEqual(state.subscription?.graceExpiresAt, null, 'grace_expires_at cleared on recovery')
 
     const allowed = await upgradeTier(mutationDeps(ctx), {
       organizationId: ctx.organizationId,
@@ -1135,10 +1136,45 @@ const upgradeWhilePastDue: Scenario = {
   },
 }
 
+/**
+ * While Stripe retries, nothing about the organization's entitlement moves:
+ * the one check-set the dunning walk repeats at every step.
+ */
+async function checkEntitledWhileRetrying(
+  ctx: ScenarioContext,
+  state: OrganizationBillingState,
+  expected: {
+    pastDueSince: string
+    tierId: string
+    licenseId: string
+    serverId: string
+    at: string
+  }
+): Promise<void> {
+  const status = state.subscription?.status ?? ''
+  check(isDelinquentStatus(status), `still delinquent at ${expected.at} (status ${status})`)
+  checkEqual(
+    state.subscription?.pastDueSince,
+    expected.pastDueSince,
+    `past_due_since holds at ${expected.at}`
+  )
+  checkEqual(quantity(state, expected.tierId), 1, `entitlement intact at ${expected.at}`)
+  checkEqual(
+    (await licenseRow(ctx, expected.licenseId)).revokedAt,
+    null,
+    `license live at ${expected.at}`
+  )
+  checkEqual(
+    await assignedTierOf(ctx, expected.serverId),
+    expected.tierId,
+    `server still assigned at ${expected.at}`
+  )
+}
+
 const dunningRetryWindow: Scenario = {
   name: 'dunning-retry-window',
   covers:
-    "C13 — past_due through Smart Retries' window with entitlement intact; the grace clock cancels at expiry",
+    "C13 — past_due with entitlement intact while Stripe retries; Stripe's own dunning cancels and the projection revokes",
   async run(ctx) {
     const s3 = tierOf(ctx, 'S3')
     const {
@@ -1148,60 +1184,33 @@ const dunningRetryWindow: Scenario = {
       state: pastDue,
     } = await failRenewal(ctx, 'S3')
     const pastDueSince = pastDue.subscription!.pastDueSince!
-    const graceExpiresAt = pastDue.subscription!.graceExpiresAt!
-    checkEqual(
-      Date.parse(graceExpiresAt) - Date.parse(pastDueSince),
-      BILLING_GRACE_WINDOW_MS,
-      'grace window length'
-    )
     checkEqual(quantity(pastDue, s3.id), 1, 'entitlement survives the failed renewal')
-    const graceExpiryUnix = Math.floor(Date.parse(graceExpiresAt) / 1000)
 
-    // Walk the retry window a fortnight at a time. Smart Retries fire on the
-    // clock and keep failing; the Dashboard leaves the subscription past-due
-    // rather than ending it, so the latch holds and nothing is revoked.
-    let steps = 0
-    for (
-      let target = ctx.time.frozen + RETRY_WINDOW_STEP_S;
-      target < graceExpiryUnix;
-      target += RETRY_WINDOW_STEP_S
-    ) {
-      await advanceTo(ctx, target)
-      steps += 1
-      const state = await project(ctx, providerSubscriptionId)
-      const status = state.subscription?.status ?? ''
+    // Walk the clock a week at a time. Stripe's retries fire on the clock and
+    // keep failing; TurboPanel holds entitlement until Stripe itself cancels
+    // (the sandbox's "if all retries fail" outcome). What the webhook's
+    // `customer.subscription.deleted` would trigger is the same projection.
+    const deadline = ctx.time.frozen + DUNNING_WINDOW_MAX_S
+    let state = pastDue
+    let target = ctx.time.frozen
+    while (!isEndedStatus(state.subscription?.status ?? '')) {
+      target += DUNNING_STEP_S
       check(
-        isDelinquentStatus(status),
-        `still delinquent at ${unixToIso(target)} (status ${status})`
+        target <= deadline,
+        `Stripe did not cancel within ${DUNNING_WINDOW_MAX_S / DAY_S} days — is the sandbox's failed-payment outcome "cancel the subscription"? (src/features/billing/AGENTS.md, Dashboard runbook step 2)`
       )
-      checkEqual(
-        state.subscription?.pastDueSince,
+      await advanceTo(ctx, target)
+      state = await project(ctx, providerSubscriptionId)
+      if (isEndedStatus(state.subscription?.status ?? '')) break
+      await checkEntitledWhileRetrying(ctx, state, {
         pastDueSince,
-        `past_due_since holds at ${unixToIso(target)}`
-      )
-      checkEqual(
-        state.subscription?.graceExpiresAt,
-        graceExpiresAt,
-        `grace_expires_at holds at ${unixToIso(target)}`
-      )
-      checkEqual(quantity(state, s3.id), 1, `entitlement intact at ${unixToIso(target)}`)
-      checkEqual(
-        (await licenseRow(ctx, licenseId)).revokedAt,
-        null,
-        `license live at ${unixToIso(target)}`
-      )
-      checkEqual(
-        await assignedTierOf(ctx, serverId),
-        s3.id,
-        `server still assigned S3 at ${unixToIso(target)}`
-      )
+        tierId: s3.id,
+        licenseId,
+        serverId,
+        at: unixToIso(target),
+      })
     }
-    check(steps >= 3, `the window was walked (${steps} steps)`)
     const invoices = await fetchInvoicesForSubscription(ctx.client, providerSubscriptionId)
-    check(
-      invoices.some((invoice) => invoice.status === 'open'),
-      'the failed renewal is still an open invoice'
-    )
     check(
       !invoices.some(
         (invoice) => invoice.status === 'paid' && invoice.created >= HARNESS_FIRST_PERIOD_END_UNIX
@@ -1209,35 +1218,12 @@ const dunningRetryWindow: Scenario = {
       'no renewal was paid on the failing card'
     )
 
-    // One simulated hour past expiry, the maintenance tick would run; here
-    // only this subscription is in scope, never the batch.
-    await advanceTo(ctx, graceExpiryUnix + HOUR_S)
-    const reproject = (id: string) =>
-      projectSubscriptionById({ db: ctx.db, client: ctx.client, now: nowIso(ctx) }, id)
-    const early = await runGraceClockForSubscription({
-      db: ctx.db,
-      client: ctx.client,
-      reproject,
-      nowMs: Date.parse(graceExpiresAt) - 1,
-      providerSubscriptionId,
-    })
-    checkEqual(early.scanned, 0, 'one millisecond before expiry the clock does nothing')
-    const result = await runGraceClockForSubscription({
-      db: ctx.db,
-      client: ctx.client,
-      reproject,
-      nowMs: nowMs(ctx),
-      providerSubscriptionId,
-    })
-    checkEqual(result.scanned, 1, 'the scoped clock saw this subscription')
-    checkEqual(result.failed.length, 0, `no cancel failed (${JSON.stringify(result.failed)})`)
-    check(
-      result.canceled.includes(providerSubscriptionId),
-      `grace clock canceled the subscription (${JSON.stringify(result)})`
+    checkEqual(
+      state.subscription?.status,
+      'canceled',
+      "Stripe's dunning cancelled the subscription"
     )
-
-    const state = await listSeatsForOrganization(ctx.db, ctx.organizationId)
-    checkEqual(state.subscription?.status, 'canceled', 'status after the grace clock')
+    checkEqual(state.subscription?.pastDueSince, null, 'past_due_since cleared once ended')
     checkEqual(quantity(state, s3.id), 0, 'seats read as zero once ended')
     check((await licenseRow(ctx, licenseId)).revokedAt, 'license revoked by the reprojection')
     checkEqual(
@@ -1246,16 +1232,6 @@ const dunningRetryWindow: Scenario = {
       'every license the organization held is revoked'
     )
     checkEqual(await assignedTierOf(ctx, serverId), null, 'the server sits on nothing once ended')
-
-    // A retried tick finds nothing: the reprojection moved the status.
-    const again = await runGraceClockForSubscription({
-      db: ctx.db,
-      client: ctx.client,
-      reproject,
-      nowMs: nowMs(ctx),
-      providerSubscriptionId,
-    })
-    checkEqual(again.scanned, 0, 'a second tick is a no-op')
   },
 }
 

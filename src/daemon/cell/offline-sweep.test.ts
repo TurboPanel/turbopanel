@@ -1467,7 +1467,7 @@ it('runOfflineSweep logs lease-release-failed and still finishes the tick', asyn
 
 // ---------------------------------------------------------------------------
 // T12 · the billing phases on the cron tick: skipped wholesale without a key,
-// run in order with one, and what a throwing grace clock does to the rest.
+// run in order with one, and what a throwing billing phase does to the rest.
 // ---------------------------------------------------------------------------
 
 import { createMemoryDb, type MemoryDb } from '../../test-fixtures/memory-db.ts'
@@ -1489,7 +1489,7 @@ import { BILLING_RECONCILE_REPORT_KEY } from '../../features/billing/reconcile.t
 import { deriveEncryptionSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 
-/** Every scheduled phase fires on the hour: execution logs, tier notices, grace clock, reconcile. */
+/** Every scheduled phase fires on the hour: execution logs, tier notices, reconcile. */
 const ON_THE_HOUR = Date.parse('2026-01-01T00:00:00.000Z')
 
 const inertSweep = {
@@ -1500,8 +1500,8 @@ const inertSweep = {
   onConnected: () => Promise.resolve(),
 }
 
-/** A projection-shaped memory db; `withSubscription: false` leaves that table unregistered so its first read throws. */
-function billingSweepDb(opts: { withSubscription: boolean }): MemoryDb {
+/** A projection-shaped memory db; `withPayer: false` leaves that table unregistered so reconcile's first read throws. */
+function billingSweepDb(opts: { withPayer: boolean }): MemoryDb {
   return createMemoryDb([
     [setting, []],
     [allowance, []],
@@ -1511,10 +1511,8 @@ function billingSweepDb(opts: { withSubscription: boolean }): MemoryDb {
     [server, []],
     [license, []],
     [tier, []],
-    [payer, []],
-    ...(opts.withSubscription
-      ? [[subscription, []] as [typeof subscription, Record<string, unknown>[]]]
-      : []),
+    ...(opts.withPayer ? [[payer, []] as [typeof payer, Record<string, unknown>[]]] : []),
+    [subscription, []],
     [subscriptionItem, []],
     [webhookDelivery, []],
   ])
@@ -1551,51 +1549,47 @@ const tickComplete = (traces: string[]) =>
 const reconcileReport = (db: MemoryDb) =>
   db.rows(setting).find((row) => row.key === BILLING_RECONCILE_REPORT_KEY) ?? null
 
-it('T12 · with no Stripe key neither billing phase runs: no projection read, no reconcile report, nothing marked skipped', async () => {
-  const db = billingSweepDb({ withSubscription: false })
+it('T12 · with no Stripe key neither billing phase runs: no payer read, no reconcile report, nothing marked skipped', async () => {
+  const db = billingSweepDb({ withPayer: false })
   const traces = await runTickCapturingTrace(inertEnv(), db)
-  // The grace clock would have read `subscription` (unregistered here, so it
-  // would have thrown) and reconcile would have listed payers.
-  assertEquals(db.ops.includes('select:subscription'), false)
+  // Reconcile would have listed payers (unregistered here, so it would have
+  // thrown).
   assertEquals(db.ops.includes('select:payer'), false)
   assertEquals(reconcileReport(db), null)
   assertEquals(tickComplete(traces).includes('phasesSkipped=[]'), true)
 })
 
-it('T12 · with a key both billing phases run on their tick: the grace clock scans subscriptions, reconcile lists payers and writes its report', async () => {
-  const db = billingSweepDb({ withSubscription: true })
+it('T12 · with a key both billing phases run on their tick: pending projections are retried, reconcile lists payers and writes its report', async () => {
+  const db = billingSweepDb({ withPayer: true })
   const env = {
     TURBOPANEL_STRIPE_SECRET_KEY: 'sk_test_x',
   } as unknown as CloudflareBindings
   const traces = await runTickCapturingTrace(env, db)
-  assertEquals(db.ops.includes('select:subscription'), true)
   assertEquals(db.ops.includes('select:payer'), true)
   assertEquals(reconcileReport(db) !== null, true)
   assertEquals(tickComplete(traces).includes('phasesSkipped=[]'), true)
 })
 
-it('T12 · finding: a throwing grace clock is NOT isolated — reconcile and the queued sweeps after it are skipped on that tick', async () => {
-  // `subscription` is unregistered, so the grace clock's first read throws.
-  const db = billingSweepDb({ withSubscription: false })
+it('T12 · finding: a throwing billing phase is NOT isolated — the queued sweeps after it are skipped on that tick', async () => {
+  // `payer` is unregistered, so billing reconcile's first read throws.
+  const db = billingSweepDb({ withPayer: false })
   const env = {
     TURBOPANEL_STRIPE_SECRET_KEY: 'sk_test_x',
   } as unknown as CloudflareBindings
   const traces = await runTickCapturingTrace(env, db)
   assertEquals(
     traces.some(
-      (line) =>
-        line.includes('event=budget-exhausted') && line.includes('phase=billing-grace-clock')
+      (line) => line.includes('event=budget-exhausted') && line.includes('phase=billing-reconcile')
     ),
     true
   )
   // The code comment promises each billing phase is isolated; the optional
   // phase runner aborts the chain instead, exactly as it does for the other
-  // optional phases. Reconcile is Postgres-only and did not need Stripe.
+  // optional phases.
   const done = tickComplete(traces)
-  for (const phase of ['billing-grace-clock', 'billing-reconcile', 'reconcile']) {
+  for (const phase of ['billing-reconcile', 'reconcile']) {
     assertEquals(done.includes(phase), true, phase)
   }
-  assertEquals(db.ops.includes('select:payer'), false)
   assertEquals(reconcileReport(db), null)
   // The tick lease is still released.
   assertEquals((await tryBeginOfflineSweep(db)) !== null, true)
@@ -1621,7 +1615,7 @@ const MID_HOUR = Date.parse('2026-01-01T00:01:00.000Z')
 it('queued cron: system reconcile execute throw is isolated as system-reconcile-sweep-failed', async () => {
   // MemoryDb has no `execute`; runSystemReconcileSweep's raw SQL throws and
   // the outer catch traces without aborting the tick.
-  const db = billingSweepDb({ withSubscription: true })
+  const db = billingSweepDb({ withPayer: true })
   const traces = await runTickCapturingTrace(commandQueueEnv(), db, null, MID_HOUR)
   assertEquals(
     traces.some((line) => line.includes('event=system-reconcile-sweep-failed')),
@@ -1631,7 +1625,7 @@ it('queued cron: system reconcile execute throw is isolated as system-reconcile-
 })
 
 it('queued cron: leaf renewal and managed-ingress orphan failures are isolated after reconcile succeeds', async () => {
-  const db = billingSweepDb({ withSubscription: true })
+  const db = billingSweepDb({ withPayer: true })
   let executeCalls = 0
   Object.assign(db, {
     execute: () => {
