@@ -3230,3 +3230,101 @@ test('WS upgrade rejects when secrets keyring is missing', async () => {
   })
   assertEquals(response.status, 401)
 })
+
+/** A backup policy lookup (the one select that uses `leftJoin`) resolving `lookup()`; the rest is `createMockDb`. */
+function createBackupReportDb(lookup: () => Promise<unknown[]>): Db {
+  const base = createMockDb() as unknown as {
+    select: () => ReturnType<typeof createSelectChain>
+  }
+  return {
+    ...base,
+    select: () => ({
+      from: () => ({
+        ...base.select().from(),
+        leftJoin: () => ({ where: () => ({ limit: lookup }) }),
+      }),
+    }),
+  } as unknown as Db
+}
+
+/** Resolve with the first frame of `type`; frames the server sends before it are skipped. */
+function waitForWsJsonOfType(
+  ws: WebSocket,
+  type: string,
+  timeoutMs = 2000
+): Promise<Record<string, unknown>> {
+  return new Promise((resolve, reject) => {
+    const onMessage = (event: MessageEvent) => {
+      const frame = JSON.parse(String(event.data)) as Record<string, unknown>
+      if (frame.type !== type) return
+      clearTimeout(timer)
+      ws.removeEventListener('message', onMessage)
+      resolve(frame)
+    }
+    const timer = setTimeout(() => {
+      ws.removeEventListener('message', onMessage)
+      reject(new Error(`timed out waiting for ${type}`))
+    }, timeoutMs)
+    ws.addEventListener('message', onMessage)
+  })
+}
+
+const BACKUP_REPORT_FRAME = {
+  type: 'backup-run-report',
+  id: 'run_live1',
+  policyId: '0192a3b4-c5d6-7e8f-9a0b-1c2d3e4f5a6b',
+  runId: 'run_live1',
+  startedAt: '2026-09-30T03:00:00.000Z',
+  finishedAt: '2026-09-30T03:00:01.000Z',
+  status: 'failed',
+  error: 'engine is busy',
+  at: '2026-09-30T03:00:02.000Z',
+}
+
+test('live WS backup-run-report is answered on the same socket, keyed by its id', async () => {
+  const secrets = await createDaemonJwtSecrets()
+  const serverId = 'srv-live-backup-report'
+  await withLiveDaemonServer(
+    {
+      secrets,
+      db: createBackupReportDb(() => Promise.resolve([])),
+      registry: createTrackingRegistry(createTrackingDaemonCell(serverId).cell),
+    },
+    async ({ port }) => {
+      const issued = await issueDaemonJwt({ sub: serverId, kid: 'key-test' }, secrets)
+      const ws = await openLiveDaemonWs({ port, token: issued.token, remoteIp: LIVE_REMOTE_IP })
+      const answer = waitForWsJsonOfType(ws, 'backup-run-report-result')
+      ws.send(JSON.stringify(BACKUP_REPORT_FRAME))
+      const result = await answer
+      assertEquals(result.id, 'run_live1')
+      assertEquals(result.ok, false)
+      assertEquals(result.error, 'unknown backup policy')
+      ws.close(1000, 'done')
+      await waitForWsClose(ws)
+    }
+  )
+})
+
+test('live WS backup-run-report gets no answer when the database fails, so the daemon resends', async () => {
+  const secrets = await createDaemonJwtSecrets()
+  const serverId = 'srv-live-backup-report-down'
+  await withLiveDaemonServer(
+    {
+      secrets,
+      db: createBackupReportDb(() => Promise.reject(new Error('database unavailable'))),
+      registry: createTrackingRegistry(createTrackingDaemonCell(serverId).cell),
+    },
+    async ({ port }) => {
+      const issued = await issueDaemonJwt({ sub: serverId, kid: 'key-test' }, secrets)
+      const ws = await openLiveDaemonWs({ port, token: issued.token, remoteIp: LIVE_REMOTE_IP })
+      const answer = waitForWsJsonOfType(ws, 'backup-run-report-result', 300).then(
+        () => 'answered',
+        () => 'silent'
+      )
+      ws.send(JSON.stringify(BACKUP_REPORT_FRAME))
+      assertEquals(await answer, 'silent')
+      ws.close(1000, 'done')
+      await waitForWsClose(ws)
+    }
+  )
+})

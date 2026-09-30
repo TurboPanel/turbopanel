@@ -23,6 +23,11 @@ import {
 } from '../../features/servers/server-metadata.ts'
 import { handleManagedHaEvent } from '../../features/managed/ha-event.ts'
 import { handleAcmeIssuanceEvent } from '../../client/tls/acme-issuance-event.ts'
+import {
+  backupRunReportResultMessage,
+  createBackupRunReportStore,
+  handleBackupRunReport,
+} from '../../features/backups/run-report.ts'
 import { recordInstanceAcmeIssuance } from '../../features/install/instance-hostnames.ts'
 import {
   persistDaemonReachedTarget,
@@ -1882,7 +1887,7 @@ export class DaemonCellObject {
       }
 
       this.#recordInbound(attachment.serverId, parsed.at, undefined, attachment.connectionId)
-      await this.#handleInboundMessage(attachment.serverId, parsed)
+      await this.#handleInboundMessage(attachment.serverId, parsed, ws)
       await this.#scheduleNearestAlarm()
     } catch (err) {
       // Swallow — a bad/unexpected message must not terminate the DO instance.
@@ -2546,8 +2551,16 @@ export class DaemonCellObject {
     this.#trace('mark-sent', { serverId, requestId, deliveryId })
   }
 
-  async #handleInboundMessage(serverId: string, msg: DaemonMessage | null): Promise<void> {
+  async #handleInboundMessage(
+    serverId: string,
+    msg: DaemonMessage | null,
+    ws?: WebSocket
+  ): Promise<void> {
     if (!msg) return
+    if (msg.type === 'backup-run-report') {
+      await this.#handleBackupRunReport(serverId, msg, ws)
+      return
+    }
     const inbound = wireMessageToInboundEnvelope(msg)
     if (!inbound) return
     const envelopeOk = validateDaemonInboundEnvelope(inbound)
@@ -2560,6 +2573,23 @@ export class DaemonCellObject {
       return
     }
     await this.#handleInbound(serverId, inbound)
+  }
+
+  /**
+   * Answer a `backup-run-report` on the socket it arrived on. A null outcome
+   * (no projection DB, or a failure `#withProjectionDbResult` already logged)
+   * sends nothing, so the daemon keeps its spooled result and resends it.
+   */
+  async #handleBackupRunReport(
+    serverId: string,
+    msg: Extract<DaemonMessage, { type: 'backup-run-report' }>,
+    ws: WebSocket | undefined
+  ): Promise<void> {
+    const outcome = await this.#withProjectionDbResult('backup-run-report', serverId, (db) =>
+      handleBackupRunReport(createBackupRunReportStore(db), msg, { reporterServerId: serverId })
+    )
+    if (!outcome || !ws) return
+    ws.send(JSON.stringify(backupRunReportResultMessage(msg.id, outcome, nowIso())))
   }
 
   #readRequestRow(serverId: string, requestId: string): PendingRequestRecord | null {
