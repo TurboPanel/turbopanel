@@ -34,11 +34,11 @@ describe('generate-data-dictionary: rendering', () => {
     try {
       const groups = tablesByGroup(readLatestSnapshot(dir))
       assertEquals(
-        groups.get(SCHEMA_DESCRIPTIONS.server.group).map((t: { name: string }) => t.name),
+        (groups.get(SCHEMA_DESCRIPTIONS.server.group) ?? []).map((t: { name: string }) => t.name),
         ['server']
       )
       assertEquals(
-        groups.get('ungrouped').map((t: { name: string }) => t.name),
+        (groups.get('ungrouped') ?? []).map((t: { name: string }) => t.name),
         ['zz_fixture']
       )
       for (const key of Object.keys(DATA_DICTIONARY_GROUPS)) {
