@@ -20,10 +20,20 @@ permissions:
 # requests only; on a trunk push the analysis is uploaded but a red gate or a
 # SonarCloud outage does not fail Build, so it cannot hold back the canary.
 #
-# cancel-in-progress is true on every verify-stage job, including trunk
-# pushes: a newer commit on the same ref replaces the run already going.
-# Each job has its own group. One shared group would queue the shards
-# behind each other and cancel all but one of them.
+# Concurrency. On a pull request a new push replaces the run already going
+# (cancel-in-progress), as before. On a trunk push nothing is cancelled: every
+# merged commit is tested and can get its canary, so a newer merge waits for
+# the older run instead of killing it (a killed run left that commit untested
+# and without a canary). The workflow-level group queues trunk runs in push
+# order (`queue: max`, up to 100 pending; the default `single` would cancel a
+# pending run when a third arrives). `queue: max` cannot be combined with
+# cancel-in-progress set to true, hence the per-event expressions. Each job
+# keeps its own group too; one shared job group would queue the shards behind
+# each other.
+concurrency:
+  group: instance-build-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  queue: ${{ github.event_name == 'pull_request' && 'single' || 'max' }}
 
 jobs:
   checks:
@@ -32,7 +42,7 @@ jobs:
     timeout-minutes: 10
     concurrency:
       group: instance-checks-${{ github.event_name }}-${{ github.ref }}
-      cancel-in-progress: true
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -115,7 +125,7 @@ jobs:
     timeout-minutes: 15
     concurrency:
       group: instance-vitest-${{ github.event_name }}-${{ github.ref }}
-      cancel-in-progress: true
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     services:
       postgres:
         image: postgres:18
@@ -158,7 +168,7 @@ jobs:
     timeout-minutes: 10
     concurrency:
       group: instance-deno-hostfree-${{ github.event_name }}-${{ github.ref }}
-      cancel-in-progress: true
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     env:
       TEST_PHASE: deno
       DENO_SHARD: hostfree
@@ -186,7 +196,7 @@ jobs:
     timeout-minutes: 15
     concurrency:
       group: instance-deno-${{ matrix.shard }}-${{ github.event_name }}-${{ github.ref }}
-      cancel-in-progress: true
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     strategy:
       fail-fast: false
       matrix:
@@ -236,7 +246,7 @@ jobs:
     timeout-minutes: 15
     concurrency:
       group: instance-typecheck-${{ github.event_name }}-${{ github.ref }}
-      cancel-in-progress: true
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -254,7 +264,7 @@ jobs:
     timeout-minutes: 10
     concurrency:
       group: instance-data-dictionary-${{ github.event_name }}-${{ github.ref }}
-      cancel-in-progress: true
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -306,7 +316,7 @@ jobs:
     timeout-minutes: 20
     concurrency:
       group: instance-sonar-${{ github.event_name }}-${{ github.ref }}
-      cancel-in-progress: true
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     env:
       SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
     steps:
@@ -383,7 +393,7 @@ jobs:
     timeout-minutes: 15
     concurrency:
       group: instance-metrics-legacy-${{ github.event_name }}-${{ github.ref }}
-      cancel-in-progress: true
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -461,8 +471,10 @@ jobs:
   #
   # Cancelled runs: on a pull request a cancelled need still fails ci-ok (the
   # PR must not merge on an incomplete run). On a trunk push (or a manual
-  # run) a cancelled run — a newer commit replaced it — skips ci-ok instead,
-  # so the run reads as cancelled, not failed.
+  # run) a cancelled need skips ci-ok instead, so the run reads as
+  # cancelled, not failed. The jobs have job-level concurrency groups, so a
+  # need can be cancelled while the run itself is not — `!cancelled()` alone
+  # would still turn ci-ok red.
   ci-ok:
     name: ci-ok
     needs:
@@ -485,7 +497,7 @@ jobs:
     timeout-minutes: 5
     concurrency:
       group: instance-ci-ok-${{ github.event_name }}-${{ github.ref }}
-      cancel-in-progress: true
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     steps:
       - name: Fail unless every job succeeded
         env:

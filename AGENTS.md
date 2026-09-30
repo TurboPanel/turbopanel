@@ -135,8 +135,11 @@ data-dictionary, minor-gate) and fails unless all of them succeeded. It is the
 one context the branch rulesets will require; a new PR-time job must be added
 to its `needs:` or it never gates a merge. A red X must mean "this change is
 broken", so: on a pull request a cancelled need still fails `ci-ok`; on a trunk
-push (or manual run) a run cancelled by a newer commit skips `ci-ok` instead of
-failing it. The `SonarQube` job needs only the coverage shards (vitest,
+push (or manual run) a cancelled need skips `ci-ok` instead of failing it.
+Trunk pushes are never cancelled by a newer merge: `build.yml` queues them
+(workflow-level `queue: max`, `cancel-in-progress` only on pull requests) so
+every merged commit is tested and gets a canary; `canary.yml` queues the same
+way and never cancels. The `SonarQube` job needs only the coverage shards (vitest,
 deno-hostfree, deno-db) and is skipped, not failed, when one of them did not
 succeed — that failure is already red on its own job. Its quality gate blocks
 pull requests only; on a trunk push the analysis is uploaded without waiting
