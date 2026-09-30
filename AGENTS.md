@@ -142,9 +142,11 @@ every merged commit is tested and gets a canary; `canary.yml` queues the same
 way and never cancels. The `SonarQube` job needs only the coverage shards (vitest,
 deno-hostfree, deno-db) and is skipped, not failed, when one of them did not
 succeed — that failure is already red on its own job. Its quality gate blocks
-pull requests only; on a trunk push the analysis is uploaded without waiting
-for the gate, and a scan error does not fail Build (it must not hold back the
-canary).
+pull requests only, and only pull requests are scanned in Build. On a trunk
+push the job just merges and uploads the LCOV; `sonar-trunk.yml` (**Sonar
+Trunk Analysis**, `workflow_run` on Build) uploads the trunk analysis from it
+after Build completes, beside the canary rather than in front of it (a full
+analysis takes ~12 minutes, ~10 of them in the JS/TS security engine).
 
 The pre-commit hook (`.githooks/pre-commit`) runs the secret scan and then
 `prettier --check` on the staged `.ts`/`.tsx`/`.mjs` files under `src/` and
