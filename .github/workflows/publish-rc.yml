@@ -134,12 +134,12 @@ jobs:
   prepare:
     needs: resolve
     if: needs.resolve.outputs.proceed == 'true'
-    uses: TurboPanel/dev/.github/workflows/gh-promote.yml@ac03b76f3b1f3416f711c55b010a06daaf875dcd # dev#42
+    uses: TurboPanel/dev/.github/workflows/gh-promote.yml@387788e9e64344fc5de32f6b93abd178e956d6a1 # dev#42
     with:
       repo-kind: instance
       to: rc
       source: ${{ needs.resolve.outputs.canary }}
-      dev-ref: ac03b76f3b1f3416f711c55b010a06daaf875dcd
+      dev-ref: 387788e9e64344fc5de32f6b93abd178e956d6a1 # dev#42
       # Same signer pin as promote.yml.
       signer-ref: 93c4f94510c9499e6bf04366a9500fe9f8e38aaa
       # The merge of the promotion PR is the approval.
@@ -150,7 +150,7 @@ jobs:
 
   publish:
     needs: prepare
-    uses: TurboPanel/dev/.github/workflows/gh-release.yml@ac03b76f3b1f3416f711c55b010a06daaf875dcd # dev#42
+    uses: TurboPanel/dev/.github/workflows/gh-release.yml@387788e9e64344fc5de32f6b93abd178e956d6a1 # dev#42
     with:
       version: ${{ needs.prepare.outputs.version }}
       channel: rc
@@ -164,7 +164,7 @@ jobs:
 
   finalize:
     needs: [prepare, publish]
-    uses: TurboPanel/dev/.github/workflows/gh-promote-finalize.yml@ac03b76f3b1f3416f711c55b010a06daaf875dcd # dev#42
+    uses: TurboPanel/dev/.github/workflows/gh-promote-finalize.yml@387788e9e64344fc5de32f6b93abd178e956d6a1 # dev#42
     with:
       to: rc
       version: ${{ needs.prepare.outputs.version }}
@@ -190,7 +190,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: TurboPanel/dev
-          ref: ac03b76f3b1f3416f711c55b010a06daaf875dcd
+          ref: 387788e9e64344fc5de32f6b93abd178e956d6a1 # dev#42
           path: .promote
           fetch-depth: 1
           persist-credentials: false
