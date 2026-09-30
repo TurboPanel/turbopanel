@@ -26,11 +26,11 @@ import {
   setForceOutboxSendErrorForTests,
 } from './cell/do.ts'
 import { createDurableObjectDaemonCellRegistry } from './cell/do-registry.ts'
-import { TERMINAL_UPDATE_RETENTION_MS } from '../features/update/constants.ts'
 import {
   DAEMON_CELL_PING,
   DAEMON_CELL_PONG,
   DAEMON_OFFLINE_SWEEP_MS,
+  TERMINAL_REQUEST_RETENTION_MS,
   generateDeliveryId,
   generateRequestId,
 } from '../contracts/cell-protocol.ts'
@@ -1620,7 +1620,7 @@ describe.sequential('DaemonCellObject', () => {
 
     // Backdate finished_at past retention so the finished_at prune can reap it.
     const staleFinishedAt = new Date(
-      Date.now() - TERMINAL_UPDATE_RETENTION_MS - 1_000
+      Date.now() - TERMINAL_REQUEST_RETENTION_MS - 1_000
     ).toISOString()
     await runInDurableObject(stub, async (instance: DaemonCellObject, state) => {
       state.storage.sql.exec(

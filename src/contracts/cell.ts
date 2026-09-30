@@ -133,7 +133,7 @@ export type ClearUpdateStatusOptions = {
  *                   (PendingRequestRecord; daemon replies mutate this row)
  *     delivery    — delivery_status queued/inflight/sent/acked/dead, keyed by
  *                   deliveryId (retry_count/retry_at); retain-on-ack, then pruned
- *                   with the correlation row (expires_at / TERMINAL_UPDATE_RETENTION_MS)
+ *                   with the correlation row (expires_at / TERMINAL_REQUEST_RETENTION_MS)
  *   Redis still uses a stream + PEL/xautoclaim for delivery and a separate
  *   correlation key until the parity phase mirrors the merged model.
  *   The WS send (#pumpOutboxToDaemonSockets / startDaemonOutboxPump) is ephemeral

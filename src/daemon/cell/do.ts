@@ -21,7 +21,6 @@ import {
   type ServerOsMetadata,
   type ServerTimeSync,
 } from '../../features/servers/server-metadata.ts'
-import { TERMINAL_UPDATE_RETENTION_MS } from '../../features/update/constants.ts'
 import { handleManagedHaEvent } from '../../features/managed/ha-event.ts'
 import { handleAcmeIssuanceEvent } from '../../client/tls/acme-issuance-event.ts'
 import { recordInstanceAcmeIssuance } from '../../features/install/instance-hostnames.ts'
@@ -73,6 +72,7 @@ import {
   DAEMON_CELL_PONG,
   DAEMON_OFFLINE_SWEEP_MS,
   DAEMON_WS_POLICY_VIOLATION_CLOSE,
+  TERMINAL_REQUEST_RETENTION_MS,
   outboundEnvelopeToWireMessage,
   validateDaemonInboundEnvelope,
   validateDaemonInboundFrame,
@@ -1332,7 +1332,7 @@ export class DaemonCellObject {
         finishedMs !== null &&
         (status === 'acked' || status === 'done' || status === 'failed' || status === 'expired')
       ) {
-        bumpCleanup(finishedMs + TERMINAL_UPDATE_RETENTION_MS)
+        bumpCleanup(finishedMs + TERMINAL_REQUEST_RETENTION_MS)
       }
     }
     return hasDeliverableOutbox
@@ -1988,7 +1988,7 @@ export class DaemonCellObject {
     }
 
     // Non-terminal rows only — terminal/acked-with-finished_at rows are owned by
-    // the finished_at + TERMINAL_UPDATE_RETENTION_MS prune below (Redis parity).
+    // the finished_at + TERMINAL_REQUEST_RETENTION_MS prune below (Redis parity).
     // Deleting by expires_at here would drop a reply that landed just before the
     // original TTL before polling consumers could read it.
     this.#sql(
@@ -2004,7 +2004,7 @@ export class DaemonCellObject {
        WHERE status IN ('acked', 'done', 'failed', 'expired')
        AND finished_at IS NOT NULL
        AND finished_at <= ?`,
-      nowIso(nowMs - TERMINAL_UPDATE_RETENTION_MS)
+      nowIso(nowMs - TERMINAL_REQUEST_RETENTION_MS)
     )
     return expiringUpdates
   }
@@ -2682,8 +2682,8 @@ export class DaemonCellObject {
     // (matches Redis `#cleanupTerminalRequest`).
     const finishedMs = Date.parse(finishedAt)
     const retainUntil = Number.isFinite(finishedMs)
-      ? nowIso(finishedMs + TERMINAL_UPDATE_RETENTION_MS)
-      : nowIso(Date.now() + TERMINAL_UPDATE_RETENTION_MS)
+      ? nowIso(finishedMs + TERMINAL_REQUEST_RETENTION_MS)
+      : nowIso(Date.now() + TERMINAL_REQUEST_RETENTION_MS)
     this.#sql(
       'handle-inbound',
       `UPDATE request SET status = ?, result_json = ?, error = ?,
@@ -2860,8 +2860,8 @@ export class DaemonCellObject {
     const requestKind = existing.requestKind
     const finishedMs = Date.parse(finishedAt)
     const retainUntil = Number.isFinite(finishedMs)
-      ? nowIso(finishedMs + TERMINAL_UPDATE_RETENTION_MS)
-      : nowIso(Date.now() + TERMINAL_UPDATE_RETENTION_MS)
+      ? nowIso(finishedMs + TERMINAL_REQUEST_RETENTION_MS)
+      : nowIso(Date.now() + TERMINAL_REQUEST_RETENTION_MS)
     this.#ctx.storage.transactionSync(() => {
       if (requestKind === 'update') {
         // Retain update rows through the terminal window (Redis parity).

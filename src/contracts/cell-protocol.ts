@@ -612,6 +612,11 @@ export const DAEMON_STALE_MS = 60_000
 export const DAEMON_OFFLINE_SWEEP_MS = 150_000
 /** Redis cell registry maintenance interval (prune); not used for liveness. */
 export const DAEMON_CELL_MAINTAIN_MS = 60_000
+/** How long a terminal request's correlation record stays queryable after
+ * finishing, across every request kind (deploys, backups, secret handoffs,
+ * updates) on both the Redis and Durable Object backends — not update-specific
+ * despite the value historically living under features/update. */
+export const TERMINAL_REQUEST_RETENTION_MS = 120_000
 
 /** Message types accepted from daemons after authentication succeeds. */
 export const DAEMON_INBOUND_ALLOWED = new Set([
