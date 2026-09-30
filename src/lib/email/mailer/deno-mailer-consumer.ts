@@ -15,7 +15,7 @@ import {
 import { createMailerSmtpSender } from '@turbopanel/email/smtp-sender'
 import { createMailerMailgunSender } from './mailgun-sender.ts'
 import { parseEmailJob } from './parse-email-job.ts'
-import { RateLimiter } from './rate-limiter.ts'
+import { RateLimiter, type RateLimiterClock } from './rate-limiter.ts'
 import { redactUrlCredentials } from './redact-url.ts'
 
 /**
@@ -65,6 +65,11 @@ export type StartMailerConsumerOpts = {
    * and gets the real SMTP / Mailgun / Mailpit senders.
    */
   senderFactory?: (provider: EmailProvider) => MailerSender
+  /**
+   * Test seam: the clock the rate limiter refills against. Production leaves
+   * it unset and gets `Date.now`.
+   */
+  rateLimiterClock?: RateLimiterClock
 }
 
 export type MailerConsumer = {
@@ -125,9 +130,10 @@ export function mailerPrefetch(settings: ResolvedEmailSettings): number {
 export function carryOverRateLimiter(
   previous: RateLimiter,
   rate: number,
-  burst: number
+  burst: number,
+  now: RateLimiterClock = Date.now
 ): RateLimiter {
-  const next = new RateLimiter(rate, burst)
+  const next = new RateLimiter(rate, burst, now)
   const oldTokens = (previous as unknown as { tokens?: number }).tokens ?? rate
   ;(next as unknown as { tokens: number }).tokens = Math.min(Math.max(0, oldTokens), burst)
   return next
@@ -191,7 +197,8 @@ export async function startMailerConsumer(opts: StartMailerConsumerOpts): Promis
   // senders on each send.
   const initial = await currentSettings()
   const initialRateBurst = mailerRateAndBurst(initial)
-  let limiter = new RateLimiter(initialRateBurst.rate, initialRateBurst.burst)
+  const limiterClock = opts.rateLimiterClock ?? Date.now
+  let limiter = new RateLimiter(initialRateBurst.rate, initialRateBurst.burst, limiterClock)
   let appliedRate = initialRateBurst.rate
   let appliedBurst = initialRateBurst.burst
   let appliedProvider = initial.provider
@@ -373,7 +380,7 @@ export async function startMailerConsumer(opts: StartMailerConsumerOpts): Promis
       const settings = await currentSettings()
       const { rate, burst } = mailerRateAndBurst(settings)
       if (rate !== appliedRate || burst !== appliedBurst) {
-        limiter = carryOverRateLimiter(limiter, rate, burst)
+        limiter = carryOverRateLimiter(limiter, rate, burst, limiterClock)
         appliedRate = rate
         appliedBurst = burst
         logInfo('mailer', `rate limit updated: rate=${rate} burst=${burst}`)

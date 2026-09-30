@@ -79,18 +79,33 @@ test("mailerPrefetch defaults to 1 and ignores junk", () => {
 test("carryOverRateLimiter keeps tokens, clamped to the new burst", () => {
   const tokens = (l: RateLimiter) =>
     (l as unknown as { tokens: number }).tokens;
-  const previous = new RateLimiter(60, 60);
+  // A stopped clock: on the real one a millisecond between the two acquires
+  // refills a fraction of a token and the count is no longer exactly 58.
+  const clock = () => 1_000;
+  const previous = new RateLimiter(60, 60, clock);
   previous.tryAcquire();
   previous.tryAcquire();
   assertEquals(tokens(previous), 58);
 
   // Shrinking the bucket clamps to the new capacity.
-  assertEquals(tokens(carryOverRateLimiter(previous, 60, 5)), 5);
+  assertEquals(tokens(carryOverRateLimiter(previous, 60, 5, clock)), 5);
   // Growing keeps what was there rather than refilling.
-  assertEquals(tokens(carryOverRateLimiter(previous, 120, 120)), 58);
+  assertEquals(tokens(carryOverRateLimiter(previous, 120, 120, clock)), 58);
   // A limiter with no readable token count falls back to the rate.
   const opaque = {} as unknown as RateLimiter;
-  assertEquals(tokens(carryOverRateLimiter(opaque, 7, 9)), 7);
+  assertEquals(tokens(carryOverRateLimiter(opaque, 7, 9, clock)), 7);
+});
+
+test("carryOverRateLimiter hands its clock to the new limiter", () => {
+  let nowMs = 0;
+  const previous = new RateLimiter(60, 1, () => nowMs);
+  assertEquals(previous.tryAcquire(), true);
+  const next = carryOverRateLimiter(previous, 60, 1, () => nowMs);
+  // Carried over empty, and the stopped clock refills nothing.
+  assertEquals(next.tryAcquire(), false);
+  assertEquals(next.getWaitMs(), 1_000);
+  nowMs += 1_000;
+  assertEquals(next.tryAcquire(), true);
 });
 
 type ConsumeHandler = (msg: { content: { toString(): string } } | null) => void;
@@ -423,17 +438,19 @@ test("an exhausted rate limit requeues, pauses the consumer and resumes on the s
     handle = await startMailerConsumer({
       db: undefined,
       amqpUrl: "amqp://test",
-      // Burst of one: the second delivery in the same instant has no token.
+      // Burst of one: the second delivery has no token.
       env: {
         ...baseEnv(),
         TURBOPANEL_SYSTEM_EMAIL__RATE_LIMIT_PER_MINUTE: "60000",
         TURBOPANEL_SYSTEM_EMAIL__RATE_LIMIT_BURST: "1",
       },
       senderFactory: sender.factory,
+      // The limiter's clock never moves, so the bucket stays empty however
+      // long the second handler takes to run. On the real clock 60000/min
+      // refills a token every millisecond and a slow runner acked both.
+      rateLimiterClock: () => 1_000,
     });
     assertEquals(broker.consumeCount(), 1);
-    // Two deliveries in one turn so the 1-token bucket is still empty
-    // when the second handler runs (60000/min refills in ~1ms).
     broker.deliver({ content: { toString: () => OTP_JOB_JSON } });
     broker.deliver({ content: { toString: () => OTP_JOB_JSON } });
     await waitFor(() => broker.dispositions.length === 2, "two dispositions");
@@ -442,7 +459,8 @@ test("an exhausted rate limit requeues, pauses the consumer and resumes on the s
       { method: "nack", requeue: true },
     ]);
     assertEquals(broker.cancels, ["ctag-1"]);
-    // 60000/min refills within a millisecond; the consumer comes back.
+    // The pause is the limiter's wait (1 ms at 60000/min); then the consumer
+    // comes back on the same session.
     await waitFor(() => broker.consumeCount() === 2, "resume");
     assertEquals(sender.jobs.length, 1);
   } finally {
