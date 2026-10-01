@@ -1,4 +1,4 @@
-import type { EmailJob, OtpType } from './types.ts'
+import type { EmailJob, NotificationDigestGroup, OtpType } from './types.ts'
 
 export interface TemplateResult {
   subject: string
@@ -96,6 +96,8 @@ export function resolveEmailTemplate(job: EmailJob): TemplateResult | null {
       return createInvitationEmail(job)
     case 'notification':
       return createNotificationEmail(job)
+    case 'notification-digest':
+      return createNotificationDigestEmail(job)
     case 'channel-verification':
       return createChannelVerificationEmail(job)
     default:
@@ -314,6 +316,80 @@ export function createNotificationEmail(
     (job.consoleUrl ? `Open: ${job.consoleUrl}\n\n` : '') +
     `${job.event} · ${job.at}\n\nTurboPanel`
   return { subject, html, text }
+}
+
+const DIGEST_SUBJECT = {
+  hourly: 'hourly digest',
+  daily: 'daily digest',
+  quiet: 'held during quiet hours',
+} as const
+
+function plural(count: number, noun: string): string {
+  return count === 1 ? `${count} ${noun}` : `${count} ${noun}s`
+}
+
+function digestGroupHtml(group: NotificationDigestGroup): string {
+  const color = SEVERITY_COLOR[group.severity]
+  const heading = `${escapeHtml(group.event)} · ${plural(group.count, 'event')}`
+  const rows = group.items.map((item) => {
+    const label = escapeHtml(item.title)
+    const text = item.url
+      ? `<a href="${escapeHtml(item.url)}" style="color:#2563eb;">${label}</a>`
+      : label
+    return `<li style="margin:0 0 4px;">${text} <span style="color:#999;">${escapeHtml(item.at)}</span></li>`
+  })
+  const more = group.count - group.items.length
+  if (more > 0) rows.push(`<li style="margin:0 0 4px;color:#999;">and ${more} more</li>`)
+  return `<h2 style="margin:20px 0 8px;font-size:15px;color:${color};">${heading}</h2><ul style="margin:0;padding-left:20px;color:#444;font-size:14px;">${rows.join('')}</ul>`
+}
+
+function digestGroupText(group: NotificationDigestGroup): string {
+  const lines = group.items.map((item) => {
+    const link = item.url ? ` ${item.url}` : ''
+    return `  - ${item.title} (${item.at})${link}`
+  })
+  const more = group.count - group.items.length
+  if (more > 0) lines.push(`  - and ${more} more`)
+  return `${group.event} · ${plural(group.count, 'event')}\n${lines.join('\n')}`
+}
+
+export function createNotificationDigestEmail(
+  job: Extract<EmailJob, { type: 'notification-digest' }>
+): TemplateResult {
+  const subject = `[TurboPanel] ${plural(job.total, 'notification')} ${DIGEST_SUBJECT[job.summary]}`
+  const groupsHtml = job.groups.map(digestGroupHtml).join('')
+  const moreKinds = job.moreGroups > 0 ? `and ${plural(job.moreGroups, 'more kind')} of event.` : ''
+  const moreKindsHtml = moreKinds
+    ? `<p style="margin:16px 0 0;color:#999;font-size:13px;">${moreKinds}</p>`
+    : ''
+  const open = job.consoleUrl
+    ? `<p style="margin:24px 0;"><a href="${escapeHtml(job.consoleUrl)}" style="display:inline-block;background:#2563eb;color:#fff;text-decoration:none;padding:12px 24px;border-radius:6px;font-weight:600;">Open TurboPanel</a></p>`
+    : ''
+  const html = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${escapeHtml(subject)}</title>
+</head>
+<body style="margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f5f5f5;padding:24px;">
+  <div style="max-width:560px;margin:0 auto;background:#fff;border-radius:8px;box-shadow:0 1px 3px rgba(0,0,0,0.08);padding:32px;">
+    <h1 style="margin:0 0 4px;font-size:20px;color:#111;">${escapeHtml(plural(job.total, 'notification'))}</h1>
+    <p style="margin:0;color:#666;font-size:13px;">${escapeHtml(DIGEST_SUBJECT[job.summary])}</p>
+    ${groupsHtml}
+    ${moreKindsHtml}
+    ${open}
+    <p style="margin:16px 0 0;font-size:12px;color:#999;">${escapeHtml(job.at)} · TurboPanel</p>
+  </div>
+</body>
+</html>
+`.trim()
+  const textParts = [subject, ...job.groups.map(digestGroupText)]
+  if (moreKinds) textParts.push(moreKinds)
+  if (job.consoleUrl) textParts.push(`Open: ${job.consoleUrl}`)
+  textParts.push(`${job.at}\nTurboPanel`)
+  return { subject, html, text: textParts.join('\n\n') }
 }
 
 function escapeHtml(s: string): string {

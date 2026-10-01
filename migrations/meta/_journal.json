@@ -113,6 +113,13 @@
       "when": 1790861043773,
       "tag": "0015_deploy_options_comments",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1790883090317,
+      "tag": "0016_notification_digest_quiet_hours",
+      "breakpoints": true
     }
   ]
 }

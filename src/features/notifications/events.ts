@@ -41,6 +41,12 @@ type EventDefinition = {
   readonly severity: NotificationSeverity
   readonly scope: NotificationScope
   readonly audience: NotificationAudience
+  /**
+   * Urgent events (an outage, anything security-related) always go out at
+   * once: quiet hours never hold them and a digest never batches them. Every
+   * new event must choose.
+   */
+  readonly urgent: boolean
   /** The short line the bell and the subject line show. */
   readonly title: (ctx: NotificationContext) => string
   /** The fuller sentence, when the title alone is not enough. */
@@ -61,6 +67,7 @@ export const NOTIFICATION_EVENT_DEFINITIONS = {
     severity: 'critical',
     scope: 'organization',
     audience: 'members',
+    urgent: true,
     title: (ctx) => `Server ${name(ctx, 'serverName', 'unknown')} went offline`,
     body: (ctx) =>
       `The daemon on ${name(
@@ -75,6 +82,7 @@ export const NOTIFICATION_EVENT_DEFINITIONS = {
     severity: 'critical',
     scope: 'instance',
     audience: 'managers',
+    urgent: true,
     title: (ctx) =>
       `${typeof ctx.count === 'number' ? ctx.count : 'Many'} servers went offline in one sweep`,
     body: () =>
@@ -85,6 +93,7 @@ export const NOTIFICATION_EVENT_DEFINITIONS = {
     severity: 'info',
     scope: 'organization',
     audience: 'managers',
+    urgent: false,
     title: (ctx) => `Server ${name(ctx, 'serverName', 'unknown')} was deleted`,
     body: (ctx) => `${name(ctx, 'actorEmail', 'An operator')} deleted the server.`,
   },
@@ -92,6 +101,7 @@ export const NOTIFICATION_EVENT_DEFINITIONS = {
     severity: 'warning',
     scope: 'organization',
     audience: 'managers',
+    urgent: true,
     title: (ctx) => `Daemon key revoked on ${name(ctx, 'serverName', 'a server')}`,
     body: (ctx) =>
       `${name(
@@ -104,6 +114,7 @@ export const NOTIFICATION_EVENT_DEFINITIONS = {
     severity: 'info',
     scope: 'organization',
     audience: 'managers',
+    urgent: true,
     title: (ctx) => `Access granted: ${name(ctx, 'permissionKey', 'a permission')}`,
     body: (ctx) =>
       `${name(ctx, 'actorEmail', 'An owner')} granted ${name(
@@ -116,6 +127,7 @@ export const NOTIFICATION_EVENT_DEFINITIONS = {
     severity: 'warning',
     scope: 'organization',
     audience: 'managers',
+    urgent: true,
     title: (ctx) => `Access revoked: ${name(ctx, 'permissionKey', 'a permission')}`,
     body: (ctx) =>
       `${name(ctx, 'actorEmail', 'An owner')} revoked ${name(
@@ -151,6 +163,11 @@ export function eventSeverity(event: NotificationEvent): NotificationSeverity {
 
 export function eventScope(event: NotificationEvent): NotificationScope {
   return NOTIFICATION_EVENT_DEFINITIONS[event].scope
+}
+
+/** True when the event must never wait for quiet hours or a digest window. */
+export function eventIsUrgent(event: NotificationEvent): boolean {
+  return NOTIFICATION_EVENT_DEFINITIONS[event].urgent
 }
 
 export function eventAudience(event: NotificationEvent): NotificationAudience {
