@@ -197,16 +197,14 @@ function contextString(context: Record<string, unknown>, key: string): string | 
   return typeof raw === 'string' ? raw : null
 }
 
-function contextReplicaCounts(
-  context: Record<string, unknown>,
-): Record<string, number> | null {
+function contextReplicaCounts(context: Record<string, unknown>): Record<string, number> | null {
   return normalizeReplicaCounts(context.replicaCounts) ?? null
 }
 
 function clampLimit(limit: number | undefined): number {
   return Math.min(
     Math.max(limit ?? DEPLOYMENT_HISTORY_DEFAULT_LIMIT, 1),
-    DEPLOYMENT_HISTORY_MAX_LIMIT,
+    DEPLOYMENT_HISTORY_MAX_LIMIT
   )
 }
 
@@ -259,7 +257,7 @@ function serializeEntry(row: DeployCommandRow, hasLog: boolean): DeploymentHisto
  */
 async function resolveHasLogs(
   store: ExecutionLogPresence | undefined,
-  ids: readonly string[],
+  ids: readonly string[]
 ): Promise<boolean[]> {
   if (!store) return ids.map(() => false)
   return await Promise.all(ids.map((id) => store.exists(id).catch(() => false)))
@@ -272,14 +270,11 @@ async function resolveHasLogs(
 export async function listEnvironmentDeploymentHistory(
   db: Db,
   environmentId: string,
-  params: ListDeploymentHistoryParams = {},
+  params: ListDeploymentHistoryParams = {}
 ): Promise<DeploymentHistoryPage> {
   const limit = clampLimit(params.limit)
 
-  const filters = [
-    eq(command.name, DEPLOY_COMMAND_NAME),
-    environmentContextFilter(environmentId),
-  ]
+  const filters = [eq(command.name, DEPLOY_COMMAND_NAME), environmentContextFilter(environmentId)]
   if (params.before) {
     filters.push(lt(command.id, params.before))
   }
@@ -299,7 +294,7 @@ export async function listEnvironmentDeploymentHistory(
   const page = hasMore ? rows.slice(0, limit) : rows
   const hasLogs = await resolveHasLogs(
     params.logStore,
-    page.map((row) => row.id),
+    page.map((row) => row.id)
   )
 
   const deployments = page.map((row, index) => serializeEntry(row, hasLogs[index] ?? false))
@@ -320,7 +315,7 @@ export async function getEnvironmentDeploymentDetail(
   db: Db,
   environmentId: string,
   deploymentId: string,
-  params: { logStore?: ExecutionLogPresence } = {},
+  params: { logStore?: ExecutionLogPresence } = {}
 ): Promise<DeploymentHistoryDetail | null> {
   const anchorRows = (await db
     .select(DEPLOY_COMMAND_COLUMNS)
@@ -330,8 +325,8 @@ export async function getEnvironmentDeploymentDetail(
       and(
         eq(command.id, deploymentId),
         eq(command.name, DEPLOY_COMMAND_NAME),
-        environmentContextFilter(environmentId),
-      ),
+        environmentContextFilter(environmentId)
+      )
     )
     .limit(1)) as DeployCommandRow[]
 
@@ -359,14 +354,14 @@ export async function getEnvironmentDeploymentDetail(
             and(
               eq(command.name, DEPLOY_COMMAND_NAME),
               environmentContextFilter(environmentId),
-              sql`${command.context} ->> 'generation' = ${String(generation)}`,
-            ),
+              sql`${command.context} ->> 'generation' = ${String(generation)}`
+            )
           )
           .orderBy(desc(command.createdAt), desc(command.id))) as DeployCommandRow[])
 
   const hasLogs = await resolveHasLogs(
     params.logStore,
-    rows.map((row) => row.id),
+    rows.map((row) => row.id)
   )
   const commands = rows.map((row, index) => serializeEntry(row, hasLogs[index] ?? false))
 

@@ -115,7 +115,7 @@ test('getEnvironmentDeploymentDetail returns null for a missing anchor', async (
   const detail = await getEnvironmentDeploymentDetail(
     db,
     envId,
-    '00000000-0000-4000-8000-0000000000ff',
+    '00000000-0000-4000-8000-0000000000ff'
   )
   assertEquals(detail, null)
 })
@@ -152,16 +152,11 @@ test('getEnvironmentDeploymentDetail fans out same-generation siblings', async (
     ],
   })
 
-  const detail = await getEnvironmentDeploymentDetail(
-    db,
-    envId,
-    deployRow.id,
-    {
-      logStore: {
-        exists: async (id) => id === deployRow.id,
-      },
+  const detail = await getEnvironmentDeploymentDetail(db, envId, deployRow.id, {
+    logStore: {
+      exists: async (id) => id === deployRow.id,
     },
-  )
+  })
 
   assertEquals(detail?.generation, 2)
   assertEquals(detail?.commands.length, 2)
