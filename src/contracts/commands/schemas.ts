@@ -4586,6 +4586,12 @@ export type ManagedLifecycleCommandPayload = {
    * (defaults to postgres on the daemon).
    */
   engine?: ManagedEngineCode
+  /**
+   * Optional HA role of the member being acted on, so the daemon reports its
+   * health under the right role. Absent on in-flight commands from older
+   * releases (defaults to primary on the daemon).
+   */
+  role?: 'primary' | 'replica'
 }
 
 export type ManagedLifecycleCommandResult = {
@@ -5596,6 +5602,12 @@ export function parseManagedLifecyclePayload(value: unknown): ManagedLifecycleCo
       throw new Error('Invalid managed.lifecycle payload')
     }
     payload.engine = value.engine
+  }
+  if (value.role !== undefined) {
+    if (value.role !== 'primary' && value.role !== 'replica') {
+      throw new Error('Invalid managed.lifecycle payload')
+    }
+    payload.role = value.role
   }
   return payload
 }

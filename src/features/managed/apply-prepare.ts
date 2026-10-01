@@ -1723,6 +1723,7 @@ export async function enqueueManagedLifecycleFanout(
           managedId: params.managedId,
           action: params.action,
           memberId: member.id,
+          role: member.role,
           ...(params.engine !== undefined ? { engine: params.engine } : {}),
         },
         expiresAtMs: 120_000,
