@@ -101,7 +101,7 @@ jobs:
       - name: Work out the canary version from the tags
         id: canary
         if: inputs.channel == 'canary' && inputs.ref != ''
-        uses: TurboPanel/dev/.github/actions/version@dadee433d35a73c7a9946268c30a96e466371140 # dev#44
+        uses: TurboPanel/dev/.github/actions/version@d9127ee03a6a3b42e9435ebec3542db5fab09bc0 # dev#49
         with:
           mode: canary
 
@@ -416,7 +416,7 @@ jobs:
     if: needs.prepare.outputs.channel == 'canary'
     permissions:
       contents: write # gh-canary.yml: rolling `canary` release assets + tag move
-    uses: TurboPanel/dev/.github/workflows/gh-canary.yml@dadee433d35a73c7a9946268c30a96e466371140 # dev#44
+    uses: TurboPanel/dev/.github/workflows/gh-canary.yml@d9127ee03a6a3b42e9435ebec3542db5fab09bc0 # dev#49
     with:
       version: ${{ needs.prepare.outputs.version }}
       commit: ${{ needs.prepare.outputs.commit }}

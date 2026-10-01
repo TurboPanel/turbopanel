@@ -150,7 +150,7 @@ jobs:
 
   publish:
     needs: prepare
-    uses: TurboPanel/dev/.github/workflows/gh-release.yml@dadee433d35a73c7a9946268c30a96e466371140 # dev#44
+    uses: TurboPanel/dev/.github/workflows/gh-release.yml@d9127ee03a6a3b42e9435ebec3542db5fab09bc0 # dev#49
     with:
       version: ${{ needs.prepare.outputs.version }}
       channel: rc
@@ -164,7 +164,7 @@ jobs:
 
   finalize:
     needs: [prepare, publish]
-    uses: TurboPanel/dev/.github/workflows/gh-promote-finalize.yml@dadee433d35a73c7a9946268c30a96e466371140 # dev#44
+    uses: TurboPanel/dev/.github/workflows/gh-promote-finalize.yml@d9127ee03a6a3b42e9435ebec3542db5fab09bc0 # dev#49
     with:
       to: rc
       version: ${{ needs.prepare.outputs.version }}
@@ -190,7 +190,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: TurboPanel/dev
-          ref: dadee433d35a73c7a9946268c30a96e466371140 # dev#44
+          ref: d9127ee03a6a3b42e9435ebec3542db5fab09bc0 # dev#49
           path: .promote
           fetch-depth: 1
           persist-credentials: false
