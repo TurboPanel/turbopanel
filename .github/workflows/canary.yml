@@ -53,5 +53,9 @@ jobs:
     with:
       channel: canary
       ref: ${{ github.event.workflow_run.head_sha }}
+    # The called workflow's signing job declares the `canary` environment. Environment secrets do not
+    # reach a job of a reusable workflow in every case, so the repository secret is passed through as a
+    # fallback (same key); drop `inherit` once the environment secret is confirmed to resolve.
+    secrets: inherit
     # The manifest is signed in the called workflow's job, which declares the
     # `canary` environment and reads its TURBOPANEL_RELEASE_SIGNING_KEY secret.
