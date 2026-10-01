@@ -10,6 +10,7 @@ import {
   parseDefaultServerIdInput,
 } from '../../features/projects/project-options.ts'
 import { isPlacementServerId } from '../../features/compose/placement.ts'
+import { settleDeployOptions, validateDeployOptions } from '../../features/deploy/deploy-options.ts'
 import { parseDescription, parseName, stripPromotedMetadataKeys } from '../shared.ts'
 import {
   getCatalogEntry,
@@ -167,7 +168,10 @@ export function parseCreateProjectOptions(
     }
   }
   if (optionsResult !== null) {
+    const deployOptions = validateDeployOptions(optionsResult, 'project')
+    if (!deployOptions.ok) return { ok: false, error: deployOptions.reason, status: 400 }
     stripProjectComposePlacementOption(optionsResult)
+    return { ok: true, options: settleDeployOptions(null, optionsResult, 'project') }
   }
   return { ok: true, options: optionsResult }
 }
@@ -278,6 +282,9 @@ export function normalizeProjectPatchOptions(
 
   const serverIdError = normalizeDefaultServerIdOption(optionsResult)
   if (serverIdError) return serverIdError
+
+  const deployOptions = validateDeployOptions(optionsResult, 'project')
+  if (!deployOptions.ok) return { ok: false, error: deployOptions.reason, status: 400 }
 
   stripProjectComposePlacementOption(optionsResult)
   return { ok: true, options: optionsResult }

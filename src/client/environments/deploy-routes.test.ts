@@ -2331,3 +2331,84 @@ test('the planner approves host-level content only for an allowed actor', async 
     assertEquals('kind' in ordinary ? ordinary.kind : ordinary.hostLevelApproved, false)
   })
 })
+
+type StrategyPreviewBody = {
+  strategy: string
+  effectiveStrategy: string
+  migrations: string
+  fallbackReasons: Array<{ code: string; services: string[] }>
+}
+
+async function previewStrategy(
+  ctx: Parameters<Parameters<typeof withDeployFixtures>[0]>[0],
+  compose: ComposeDocument,
+  environmentOptions: Record<string, unknown>,
+  query = ''
+): Promise<{ status: number; body: StrategyPreviewBody }> {
+  await ctx.db
+    .update(environment)
+    .set({
+      serverId: ctx.serverId,
+      options: { compose: emptyComposeDocument(), ...environmentOptions },
+      updatedAt: new Date().toISOString(),
+    })
+    .where(eq(environment.id, ctx.environmentId))
+  await ctx.db
+    .update(project)
+    .set({ options: { compose }, updatedAt: new Date().toISOString() })
+    .where(eq(project.id, ctx.projectId))
+  const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
+  const res = await ctx.app.request(`/environments/${ctx.environmentId}/deploy-preview${query}`, {
+    headers: { Cookie: cookie, [ORG_ID_HEADER]: ctx.organizationId },
+  })
+  return { status: res.status, body: (await res.json()) as StrategyPreviewBody }
+}
+
+test('GET /environments/:id/deploy-preview reports inplace for an environment with no deploy settings', async () => {
+  await withDeployFixtures(async (ctx) => {
+    const { status, body } = await previewStrategy(ctx, composeWithWebService(), {})
+    assertEquals(status, 200)
+    assertEquals(body.strategy, 'inplace')
+    assertEquals(body.effectiveStrategy, 'inplace')
+    assertEquals(body.migrations, 'unknown')
+    assertEquals(body.fallbackReasons, [])
+  })
+})
+
+test('GET /environments/:id/deploy-preview explains a blue-green fallback', async () => {
+  await withDeployFixtures(async (ctx) => {
+    const { status, body } = await previewStrategy(ctx, composeWithNamedWebService(), {
+      deployStrategy: 'bluegreen',
+      migrations: 'compatible',
+    })
+    assertEquals(status, 200)
+    assertEquals(body.strategy, 'bluegreen')
+    assertEquals(body.effectiveStrategy, 'sequential')
+    assertEquals(
+      body.fallbackReasons.map((reason) => [reason.code, reason.services]),
+      [['authored_container_name', ['web']]]
+    )
+  })
+})
+
+test('GET /environments/:id/deploy-preview accepts what-if strategy and migration queries and refuses bad ones', async () => {
+  await withDeployFixtures(async (ctx) => {
+    const whatIf = await previewStrategy(
+      ctx,
+      composeWithWebService(),
+      { deployStrategy: 'inplace' },
+      '?strategy=bluegreen&migration=breaking'
+    )
+    assertEquals(whatIf.status, 200)
+    assertEquals(whatIf.body.strategy, 'bluegreen')
+    assertEquals(whatIf.body.migrations, 'breaking')
+    assertEquals(whatIf.body.effectiveStrategy, 'sequential')
+    assertEquals(
+      whatIf.body.fallbackReasons.map((reason) => reason.code),
+      ['migration_breaking']
+    )
+
+    const bad = await previewStrategy(ctx, composeWithWebService(), {}, '?strategy=rolling')
+    assertEquals(bad.status, 400)
+  })
+})

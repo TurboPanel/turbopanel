@@ -5,6 +5,11 @@ import {
   isPlacementServerId,
   stripComposePlacementOption,
 } from '../../features/compose/index.ts'
+import {
+  settleDeployOptions,
+  stampNewEnvironmentDeployOptions,
+  validateDeployOptions,
+} from '../../features/deploy/deploy-options.ts'
 import { parseDescription, parseName, stripPromotedMetadataKeys } from '../shared.ts'
 
 /** Placement lives on `environment.server_id` — never persist it into metadata.
@@ -22,6 +27,8 @@ export const ENVIRONMENT_PROMOTED_METADATA_KEYS = [
 export type EnvironmentRouteValidationError = {
   ok: false
   error: string
+  /** Operator-facing detail when the code alone is not enough. */
+  message?: string
   status: 400
 }
 
@@ -92,6 +99,10 @@ export function stripEnvironmentPromotedMetadata(
   return stripPromotedMetadataKeys(metadata, ENVIRONMENT_PROMOTED_METADATA_KEYS)
 }
 
+function deployOptionsError(reason: string): EnvironmentRouteValidationError {
+  return { ok: false, error: 'deploy_options_invalid', message: reason, status: 400 }
+}
+
 export function parseCreateEnvironmentJsonb(
   body: Record<string, unknown>,
   validateOptions?: ComposeValidateOptions
@@ -119,6 +130,11 @@ export function parseCreateEnvironmentJsonb(
   if (optionsResult !== null) {
     stripComposePlacementOption(optionsResult)
   }
+  const deployOptions =
+    optionsResult === null
+      ? { ok: true as const }
+      : validateDeployOptions(optionsResult, 'environment')
+  if (!deployOptions.ok) return deployOptionsError(deployOptions.reason)
 
   const metadataResult = parseJsonbField(body, 'metadata')
   if (metadataResult === 'invalid') {
@@ -126,7 +142,10 @@ export function parseCreateEnvironmentJsonb(
   }
   const metadata = metadataResult === null ? null : stripEnvironmentPromotedMetadata(metadataResult)
 
-  return { metadata, options: optionsResult, ok: true }
+  // A new environment defaults to `sequential` unless the caller chose one.
+  const settled =
+    optionsResult === null ? null : settleDeployOptions(null, optionsResult, 'environment')
+  return { metadata, options: stampNewEnvironmentDeployOptions(settled), ok: true }
 }
 
 export function parseOptionalServerIdShape(
@@ -188,5 +207,7 @@ export function parseEnvironmentPatchOptions(
     }
   }
   stripComposePlacementOption(optionsResult)
+  const deployOptions = validateDeployOptions(optionsResult, 'environment')
+  if (!deployOptions.ok) return deployOptionsError(deployOptions.reason)
   return { ok: true, options: optionsResult }
 }

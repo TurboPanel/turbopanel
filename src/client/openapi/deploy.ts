@@ -15,6 +15,21 @@ export const deploySchemas = {
         description:
           'Cacheless redeploy: rebuild images with `docker compose build --no-cache --pull` before `up`',
       },
+      strategy: {
+        type: 'string',
+        enum: ['inplace', 'sequential', 'bluegreen'],
+        description:
+          'Per-deploy override of the environment deploy strategy. **Not honored yet**: only ' +
+          '`inplace` (what every deploy does today) is accepted; `sequential` and `bluegreen` ' +
+          'are refused with `501 deploy_strategy_unsupported` rather than ignored.',
+      },
+      migration: {
+        type: 'string',
+        enum: ['none', 'compatible', 'breaking', 'unknown'],
+        description:
+          'Per-deploy override of the environment migration status ("this deploy contains a ' +
+          'breaking migration"). **Not honored yet**: refused with `501 deploy_strategy_unsupported`.',
+      },
       ref: {
         type: 'string',
         maxLength: 255,
@@ -176,6 +191,49 @@ export const deploySchemas = {
       warnings: {
         type: 'array',
         items: { $ref: '#/components/schemas/DeployPreviewWarning' },
+      },
+      strategy: {
+        type: 'string',
+        enum: ['inplace', 'sequential', 'bluegreen'],
+        description:
+          'The strategy requested: the `strategy` query, else the environment setting, else `inplace`. Informational: every deploy still runs `inplace`.',
+      },
+      effectiveStrategy: {
+        type: 'string',
+        enum: ['inplace', 'sequential', 'bluegreen'],
+        description:
+          'The strategy that would actually run. Differs from `strategy` only when `bluegreen` is refused and falls back to `sequential` (see `fallbackReasons`).',
+      },
+      migrations: {
+        type: 'string',
+        enum: ['none', 'compatible', 'breaking', 'unknown'],
+        description: 'Migration status the decision used; `unknown` when none is declared.',
+      },
+      fallbackReasons: {
+        type: 'array',
+        description: 'Every reason blue-green is refused; empty when no fallback applies.',
+        items: {
+          type: 'object',
+          required: ['code', 'message', 'services'],
+          properties: {
+            code: {
+              type: 'string',
+              enum: [
+                'host_published_ports',
+                'authored_container_name',
+                'stateful_writable_volume',
+                'missing_healthcheck',
+                'native_or_cron_service',
+                'host_level_binds',
+                'migration_unknown',
+                'migration_breaking',
+                'migrator_undeclared',
+              ],
+            },
+            message: { type: 'string' },
+            services: { type: 'array', items: { type: 'string' } },
+          },
+        },
       },
       envFile: {
         type: 'string',
@@ -522,6 +580,20 @@ export const deployPaths = {
           in: 'path',
           required: true,
           schema: { type: 'string' },
+        },
+        {
+          name: 'strategy',
+          in: 'query',
+          required: false,
+          description: 'What-if: preview as if this strategy were requested.',
+          schema: { type: 'string', enum: ['inplace', 'sequential', 'bluegreen'] },
+        },
+        {
+          name: 'migration',
+          in: 'query',
+          required: false,
+          description: 'What-if: preview as if this migration status were declared.',
+          schema: { type: 'string', enum: ['none', 'compatible', 'breaking', 'unknown'] },
         },
       ],
       responses: {

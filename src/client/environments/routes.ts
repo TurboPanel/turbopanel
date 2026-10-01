@@ -7,6 +7,7 @@ import { assertCanOr403, listVisible } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import { getDb, type Db } from '../../db/connection.ts'
 import { environment, managed } from '../../db/schema.ts'
+import { settleDeployOptions } from '../../features/deploy/deploy-options.ts'
 import { MANAGED_RUNTIME_PRESENT_ERROR } from '../../features/projects/project-delete.ts'
 import { applyStorageRetentionOnParentDelete } from '../../features/storage/storage-records.ts'
 import { purgeEnvironmentComposeNetworks } from '../../features/fabric/fabric-records.ts'
@@ -97,6 +98,31 @@ function buildEnvironmentPatchFields(
   return patchFields
 }
 
+/**
+ * A PATCH replaces `options` wholesale, and the compose editor sends only
+ * `compose`: carry the stored deploy settings over unless the body names them.
+ */
+async function keepStoredDeployOptions(
+  db: Db,
+  environmentId: string,
+  patchFields: EnvironmentPatchFields
+): Promise<void> {
+  if (!patchFields.options) return
+  const [row] = await db
+    .select({ options: environment.options })
+    .from(environment)
+    .where(eq(environment.id, environmentId))
+    .limit(1)
+  patchFields.options = settleDeployOptions(row?.options, patchFields.options, 'environment')
+}
+
+/** `{ error }`, plus the detail `message` when the validator supplied one. */
+function validationErrorBody(failure: { error: string; message?: string }) {
+  return failure.message === undefined
+    ? { error: failure.error }
+    : { error: failure.error, message: failure.message }
+}
+
 function applyEnvironmentOptionsPatch(
   c: Context<AppEnv>,
   body: Record<string, unknown>,
@@ -118,7 +144,7 @@ function applyEnvironmentOptionsPatch(
     if ('issues' in optionsResult) {
       return c.json({ error: optionsResult.error, issues: optionsResult.issues }, 400)
     }
-    return c.json({ error: optionsResult.error }, optionsResult.status)
+    return c.json(validationErrorBody(optionsResult), optionsResult.status)
   }
   if (optionsResult.options === 'absent') return
   patchFields.options = optionsResult.options
@@ -207,7 +233,7 @@ async function parseCreateEnvironmentInput(
     if ('issues' in jsonb) {
       return c.json({ error: jsonb.error, issues: jsonb.issues }, 400)
     }
-    return c.json({ error: jsonb.error }, jsonb.status)
+    return c.json(validationErrorBody(jsonb), jsonb.status)
   }
 
   const serverId = await parseOptionalServerId(c, db, organizationId, body)
@@ -398,6 +424,7 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
       )
     )
     if (optionsError) return optionsError
+    await keepStoredDeployOptions(db, id, patchFields)
 
     await db.update(environment).set(patchFields).where(eq(environment.id, id))
 

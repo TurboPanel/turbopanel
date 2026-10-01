@@ -64,6 +64,10 @@ import {
   resolveCreateProjectType,
   stampCreateProjectMetadata,
 } from './routes-helpers.ts'
+import {
+  settleDeployOptions,
+  stampNewEnvironmentDeployOptions,
+} from '../../features/deploy/deploy-options.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 
 type DbTx = Parameters<Parameters<Db['transaction']>[0]>[0]
@@ -87,7 +91,7 @@ export async function scaffoldCatalogEnvironments(
         name: displayName,
         description: env.description ?? null,
         ...(serverId ? { serverId } : {}),
-        options: env.compose ? { compose: env.compose } : null,
+        options: stampNewEnvironmentDeployOptions(env.compose ? { compose: env.compose } : null),
       })
       .returning({ id: environment.id })
 
@@ -453,6 +457,25 @@ function buildProjectPatchFields(
   return patchFields
 }
 
+/**
+ * A PATCH replaces `options` wholesale and the compose editor sends only
+ * `compose`: carry the stored deploy tuning settings over unless the body
+ * names them (`null` clears one).
+ */
+async function keepStoredProjectDeployOptions(
+  db: Db,
+  projectId: string,
+  patchFields: ProjectPatchFields
+): Promise<void> {
+  if (!patchFields.options) return
+  const [row] = await db
+    .select({ options: project.options })
+    .from(project)
+    .where(eq(project.id, projectId))
+    .limit(1)
+  patchFields.options = settleDeployOptions(row?.options, patchFields.options, 'project')
+}
+
 async function assertDefaultServerIdInOrg(
   c: Context<AppEnv>,
   db: Db,
@@ -571,7 +594,7 @@ async function insertDockerComposeProject(
     name: fields.defaultEnvironmentName,
     description: DEFAULT_PRODUCTION_ENVIRONMENT_DESCRIPTION,
     ...(fields.serverId ? { serverId: fields.serverId } : {}),
-    options: { compose: emptyComposeDocument() },
+    options: stampNewEnvironmentDeployOptions({ compose: emptyComposeDocument() }),
   })
   return inserted.id
 }
@@ -860,6 +883,7 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       patchFields.options
     )
     if (defaultServerError) return defaultServerError
+    await keepStoredProjectDeployOptions(db, id, patchFields)
 
     try {
       await db.update(project).set(patchFields).where(eq(project.id, id))

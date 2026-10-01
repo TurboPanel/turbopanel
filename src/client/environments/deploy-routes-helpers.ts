@@ -15,6 +15,12 @@ import {
   validateDeployHostings,
   validateDeployStorageMaterialList,
 } from '../../contracts/commands/deploy-validation.ts'
+import {
+  type DeployStrategy,
+  type MigrationStatus,
+  parseDeployStrategyInput,
+  parseMigrationStatusInput,
+} from '../../features/deploy/deploy-options.ts'
 import type { FabricGateOutcome } from '../../features/fabric/gate.ts'
 import type { ScheduleErrorCode } from '../../features/schedule/index.ts'
 
@@ -664,11 +670,36 @@ export function parseDeployRef(value: unknown): string | null | typeof DEPLOY_RE
   return trimmed
 }
 
+/** Per-deploy strategy overrides; `null` means "use the environment's setting". */
+export type DeployStrategyOverride = {
+  strategy: DeployStrategy | null
+  migration: MigrationStatus | null
+}
+
+function parseOptionalOverride<T>(
+  value: unknown,
+  parse: (raw: unknown) => { ok: true; value: T } | { ok: false }
+): T | null | 'invalid' {
+  if (value === undefined || value === null) return null
+  const parsed = parse(value)
+  return parsed.ok ? parsed.value : 'invalid'
+}
+
+export function parseDeployStrategyOverride(
+  record: Record<string, unknown>
+): DeployStrategyOverride | 'invalid' {
+  const strategy = parseOptionalOverride(record.strategy, parseDeployStrategyInput)
+  const migration = parseOptionalOverride(record.migration, parseMigrationStatusInput)
+  if (strategy === 'invalid' || migration === 'invalid') return 'invalid'
+  return { strategy, migration }
+}
+
 export function parseDeployRequestFlags(body: unknown):
   | {
       acknowledgeHealthCheckWarnings: boolean
       noCache: boolean
       ref: string | null
+      override: DeployStrategyOverride
     }
   | 'invalid' {
   if (body === null || typeof body !== 'object' || Array.isArray(body)) {
@@ -677,10 +708,13 @@ export function parseDeployRequestFlags(body: unknown):
   const record = body as Record<string, unknown>
   const ref = parseDeployRef(record.ref)
   if (ref === DEPLOY_REF_INVALID) return 'invalid'
+  const override = parseDeployStrategyOverride(record)
+  if (override === 'invalid') return 'invalid'
   return {
     acknowledgeHealthCheckWarnings: record.acknowledgeHealthCheckWarnings === true,
     noCache: record.noCache === true,
     ref,
+    override,
   }
 }
 

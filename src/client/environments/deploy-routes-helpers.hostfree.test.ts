@@ -257,6 +257,8 @@ test('mapPrepareErrorResponse covers every DeployPrepareError kind', () => {
   assertEquals(String(mergedInvalid.body.message).includes('overlay changes the base'), true)
 })
 
+const NO_OVERRIDE = { strategy: null, migration: null }
+
 test('parseDeployRequestFlags defaults flags to false', () => {
   assertEquals(parseDeployRequestFlags(null), 'invalid')
   assertEquals(parseDeployRequestFlags([]), 'invalid')
@@ -264,6 +266,7 @@ test('parseDeployRequestFlags defaults flags to false', () => {
     acknowledgeHealthCheckWarnings: false,
     noCache: false,
     ref: null,
+    override: NO_OVERRIDE,
   })
   assertEquals(
     parseDeployRequestFlags({
@@ -274,6 +277,7 @@ test('parseDeployRequestFlags defaults flags to false', () => {
       acknowledgeHealthCheckWarnings: true,
       noCache: true,
       ref: null,
+      override: NO_OVERRIDE,
     }
   )
 })
@@ -283,21 +287,48 @@ test('parseDeployRequestFlags accepts a ref and rejects unsafe ones', () => {
     acknowledgeHealthCheckWarnings: false,
     noCache: false,
     ref: 'main',
+    override: NO_OVERRIDE,
   })
   assertEquals(parseDeployRequestFlags({ ref: '' }), {
     acknowledgeHealthCheckWarnings: false,
     noCache: false,
     ref: null,
+    override: NO_OVERRIDE,
   })
   assertEquals(parseDeployRequestFlags({ ref: 'feature/a-b_1' }), {
     acknowledgeHealthCheckWarnings: false,
     noCache: false,
     ref: 'feature/a-b_1',
+    override: NO_OVERRIDE,
   })
   assertEquals(parseDeployRequestFlags({ ref: 'main; rm -rf /' }), 'invalid')
   assertEquals(parseDeployRequestFlags({ ref: 'refs/heads/..' }), 'invalid')
   assertEquals(parseDeployRequestFlags({ ref: '--upload-pack=x' }), 'invalid')
   assertEquals(parseDeployRequestFlags({ ref: 42 }), 'invalid')
+})
+
+test('parseDeployRequestFlags reads strategy and migration overrides', () => {
+  assertEquals(parseDeployRequestFlags({ strategy: 'bluegreen', migration: 'breaking' }), {
+    acknowledgeHealthCheckWarnings: false,
+    noCache: false,
+    ref: null,
+    override: { strategy: 'bluegreen', migration: 'breaking' },
+  })
+  assertEquals(parseDeployRequestFlags({ strategy: null, migration: undefined }), {
+    acknowledgeHealthCheckWarnings: false,
+    noCache: false,
+    ref: null,
+    override: NO_OVERRIDE,
+  })
+  for (const bad of [
+    { strategy: 'rolling' },
+    { strategy: '' },
+    { strategy: 5 },
+    { migration: 'maybe' },
+    { migration: [] },
+  ]) {
+    assertEquals(parseDeployRequestFlags(bad), 'invalid')
+  }
 })
 
 test('parseDeployRef normalizes absent and blank values to null', () => {

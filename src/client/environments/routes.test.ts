@@ -275,3 +275,132 @@ test('POST /environments reconciles service rows from the project base compose w
     await db.delete(service).where(eq(service.environmentId, id))
   })
 })
+
+type EnvironmentTestContext = Parameters<Parameters<typeof withEnvironmentFixtures>[0]>[0]
+
+async function sendJson(
+  ctx: EnvironmentTestContext,
+  cookie: string,
+  method: string,
+  path: string,
+  body: unknown
+): Promise<Response> {
+  return await ctx.app.request(path, {
+    method,
+    headers: {
+      Cookie: cookie,
+      [ORG_ID_HEADER]: ctx.organizationId,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  })
+}
+
+async function storedOptions(
+  ctx: EnvironmentTestContext,
+  id: string
+): Promise<Record<string, unknown> | null> {
+  const [row] = await ctx.db
+    .select({ options: environment.options })
+    .from(environment)
+    .where(eq(environment.id, id))
+    .limit(1)
+  return (row?.options ?? null) as Record<string, unknown> | null
+}
+
+test('POST /environments defaults a new environment to the sequential strategy', async () => {
+  await withEnvironmentFixtures(async (ctx) => {
+    const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
+    const res = await sendJson(ctx, cookie, 'POST', '/environments', {
+      projectId: ctx.projectId,
+      name: 'Env Default Strategy',
+    })
+    assertEquals(res.status, 200)
+    const { id } = (await res.json()) as { id: string }
+    assertEquals(await storedOptions(ctx, id), { deployStrategy: 'sequential' })
+  })
+})
+
+test('POST /environments keeps a strategy the caller chose, and null means unset', async () => {
+  await withEnvironmentFixtures(async (ctx) => {
+    const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
+    const chosen = await sendJson(ctx, cookie, 'POST', '/environments', {
+      projectId: ctx.projectId,
+      name: 'Env Chosen Strategy',
+      options: { deployStrategy: 'inplace', migrations: 'none' },
+    })
+    assertEquals(chosen.status, 200)
+    const chosenId = ((await chosen.json()) as { id: string }).id
+    assertEquals(await storedOptions(ctx, chosenId), {
+      deployStrategy: 'inplace',
+      migrations: 'none',
+    })
+
+    // `null` means "unset", so the new-environment default applies.
+    const cleared = await sendJson(ctx, cookie, 'POST', '/environments', {
+      projectId: ctx.projectId,
+      name: 'Env Null Strategy',
+      options: { deployStrategy: null },
+    })
+    assertEquals(cleared.status, 200)
+    const clearedId = ((await cleared.json()) as { id: string }).id
+    assertEquals(await storedOptions(ctx, clearedId), { deployStrategy: 'sequential' })
+  })
+})
+
+test('POST /environments refuses invalid deploy settings with a reason', async () => {
+  await withEnvironmentFixtures(async (ctx) => {
+    const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
+    const res = await sendJson(ctx, cookie, 'POST', '/environments', {
+      projectId: ctx.projectId,
+      name: 'Env Bad Strategy',
+      options: { deployStrategy: 'rolling' },
+    })
+    assertEquals(res.status, 400)
+    assertEquals(await res.json(), {
+      error: 'deploy_options_invalid',
+      message: 'deployStrategy must be one of inplace, sequential, bluegreen',
+    })
+  })
+})
+
+test('PATCH /environments validates deploy settings and keeps stored ones the body omits', async () => {
+  await withEnvironmentFixtures(async (ctx) => {
+    const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
+    const created = await sendJson(ctx, cookie, 'POST', '/environments', {
+      projectId: ctx.projectId,
+      name: 'Env Patch Strategy',
+      options: { deployStrategy: 'bluegreen', migrations: 'compatible', drainSeconds: 5 },
+    })
+    const { id } = (await created.json()) as { id: string }
+
+    // The compose editor sends only `compose`; the stored settings survive.
+    const composeOnly = await sendJson(ctx, cookie, 'PATCH', `/environments/${id}`, {
+      options: { compose: { version: 1, data: {}, presentation: { keyOrder: [], comments: {} } } },
+    })
+    assertEquals(composeOnly.status, 200)
+    const afterCompose = await storedOptions(ctx, id)
+    assertEquals(afterCompose?.deployStrategy, 'bluegreen')
+    assertEquals(afterCompose?.migrations, 'compatible')
+    assertEquals(afterCompose?.drainSeconds, 5)
+    assertEquals('compose' in (afterCompose ?? {}), true)
+
+    // Named keys replace; `null` clears; the rest stay.
+    const changed = await sendJson(ctx, cookie, 'PATCH', `/environments/${id}`, {
+      options: { deployStrategy: 'sequential', migrations: null },
+    })
+    assertEquals(changed.status, 200)
+    assertEquals(await storedOptions(ctx, id), { deployStrategy: 'sequential', drainSeconds: 5 })
+
+    // Invalid values are refused and nothing is written.
+    const bad = await sendJson(ctx, cookie, 'PATCH', `/environments/${id}`, {
+      options: { rollbackWindowMinutes: 100000 },
+    })
+    assertEquals(bad.status, 400)
+    assertEquals(await bad.json(), {
+      error: 'deploy_options_invalid',
+      message: 'rollbackWindowMinutes must be an integer from 0 to 1440',
+    })
+    assertEquals(await storedOptions(ctx, id), { deployStrategy: 'sequential', drainSeconds: 5 })
+  })
+})

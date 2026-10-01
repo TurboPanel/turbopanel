@@ -1560,3 +1560,108 @@ test('TurboPanel self-host descendant mutations return system_resource_immutable
     }
   )
 })
+
+type ProjectTestContext = Parameters<Parameters<typeof withProjectFixtures>[0]>[0]
+
+async function sendProjectJson(
+  ctx: ProjectTestContext,
+  cookie: string,
+  method: string,
+  path: string,
+  body: unknown
+): Promise<Response> {
+  return await ctx.app.request(path, {
+    method,
+    headers: {
+      Cookie: cookie,
+      [ORG_ID_HEADER]: ctx.organizationId,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  })
+}
+
+async function createEmptyProject(
+  ctx: ProjectTestContext,
+  cookie: string,
+  name: string
+): Promise<string> {
+  const res = await sendProjectJson(ctx, cookie, 'POST', '/projects', {
+    type: 'empty',
+    workspaceId: ctx.workspaceId,
+    name,
+  })
+  assertEquals(res.status, 200)
+  return ((await res.json()) as { id: string }).id
+}
+
+async function projectOptions(
+  ctx: ProjectTestContext,
+  id: string
+): Promise<Record<string, unknown> | null> {
+  const [row] = await ctx.db
+    .select({ options: project.options })
+    .from(project)
+    .where(eq(project.id, id))
+    .limit(1)
+  return (row?.options ?? null) as Record<string, unknown> | null
+}
+
+test('POST /projects scaffolds the default environment on the sequential strategy', async () => {
+  await withProjectFixtures(async (ctx) => {
+    const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
+    const id = await createEmptyProject(ctx, cookie, 'Strategy Default Project')
+    const [env] = await ctx.db
+      .select({ options: environment.options })
+      .from(environment)
+      .where(eq(environment.projectId, id))
+    assertEquals((env?.options as { deployStrategy?: string } | null)?.deployStrategy, 'sequential')
+  })
+})
+
+test('PATCH /projects/:id validates deploy defaults, keeps stored ones, and refuses environment-only keys', async () => {
+  await withProjectFixtures(async (ctx) => {
+    const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
+    const id = await createEmptyProject(ctx, cookie, 'Deploy Defaults Project')
+
+    const set = await sendProjectJson(ctx, cookie, 'PATCH', `/projects/${id}`, {
+      options: { rollbackWindowMinutes: 10, drainSeconds: 20 },
+    })
+    assertEquals(set.status, 200)
+    assertEquals(await projectOptions(ctx, id), { rollbackWindowMinutes: 10, drainSeconds: 20 })
+
+    // An options write that names other keys keeps the stored tuning ones.
+    const other = await sendProjectJson(ctx, cookie, 'PATCH', `/projects/${id}`, {
+      options: { containerNaming: 'custom' },
+    })
+    assertEquals(other.status, 200)
+    assertEquals(await projectOptions(ctx, id), {
+      containerNaming: 'custom',
+      rollbackWindowMinutes: 10,
+      drainSeconds: 20,
+    })
+
+    const cleared = await sendProjectJson(ctx, cookie, 'PATCH', `/projects/${id}`, {
+      options: { drainSeconds: null },
+    })
+    assertEquals(cleared.status, 200)
+    assertEquals(await projectOptions(ctx, id), { rollbackWindowMinutes: 10 })
+
+    const invalid = await sendProjectJson(ctx, cookie, 'PATCH', `/projects/${id}`, {
+      options: { healthTimeoutSeconds: 1 },
+    })
+    assertEquals(invalid.status, 400)
+    assertEquals(await invalid.json(), {
+      error: 'healthTimeoutSeconds must be an integer from 10 to 3600',
+    })
+
+    const environmentOnly = await sendProjectJson(ctx, cookie, 'PATCH', `/projects/${id}`, {
+      options: { deployStrategy: 'sequential' },
+    })
+    assertEquals(environmentOnly.status, 400)
+    assertEquals(await environmentOnly.json(), {
+      error: 'deployStrategy can only be set on an environment',
+    })
+    assertEquals(await projectOptions(ctx, id), { rollbackWindowMinutes: 10 })
+  })
+})

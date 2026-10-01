@@ -24,6 +24,7 @@ import {
   type CatalogVariable,
   type CreateProjectType,
 } from './catalog/index.ts'
+import { stampNewEnvironmentDeployOptions } from '../../features/deploy/deploy-options.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 
 export const DEFAULT_PRODUCTION_ENVIRONMENT_NAME = DEFAULT_ENVIRONMENT_NAME
@@ -101,7 +102,7 @@ export async function insertEmptyProject(
     name: envName,
     description: DEFAULT_PRODUCTION_ENVIRONMENT_DESCRIPTION,
     ...(fields.serverId ? { serverId: fields.serverId } : {}),
-    options: { compose: emptyComposeDocument() },
+    options: stampNewEnvironmentDeployOptions({ compose: emptyComposeDocument() }),
   })
 
   return inserted.id
@@ -188,7 +189,7 @@ export async function ensureProductionEnvironment(
       name: effectiveName,
       description: DEFAULT_PRODUCTION_ENVIRONMENT_DESCRIPTION,
       ...(serverId ? { serverId } : {}),
-      options: { compose: emptyComposeDocument() },
+      options: stampNewEnvironmentDeployOptions({ compose: emptyComposeDocument() }),
     })
     .returning({ id: environment.id })
   return inserted.id
@@ -326,7 +327,7 @@ async function insertExtraCatalogEnvironments(
         name: env.displayName,
         description: env.description ?? null,
         ...(input.serverId ? { serverId: input.serverId } : {}),
-        options: env.compose ? { compose: env.compose } : null,
+        options: stampNewEnvironmentDeployOptions(env.compose ? { compose: env.compose } : null),
       })
       .returning({ id: environment.id })
     if (!env.variables?.length) return

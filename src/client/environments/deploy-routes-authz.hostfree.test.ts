@@ -225,7 +225,26 @@ test('authorizeDeployRequest returns flags when manage is allowed', async () => 
     acknowledgeHealthCheckWarnings: true,
     noCache: true,
     selection: { ref: 'release/1.4', commitSha: null, sourceId: null },
+    strategyOverride: { strategy: null, migration: null },
   })
+})
+
+test('authorizeDeployRequest carries the strategy and migration override', async () => {
+  const db = buildOrgDb({
+    organizationId,
+    manageAllowed: true,
+    workspaceKind: null,
+  })
+  const c = mockContext({
+    session: { userId: 'user-1' },
+    db,
+    headers: { [ORG_ID_HEADER]: organizationId },
+    bodyText: JSON.stringify({ strategy: 'bluegreen', migration: 'breaking' }),
+  })
+  const result = await authorizeDeployRequest(c, db, environmentId)
+  assertEquals(result instanceof Response, false)
+  if (result instanceof Response) return
+  assertEquals(result.strategyOverride, { strategy: 'bluegreen', migration: 'breaking' })
 })
 
 test('authorizeDeployRequest rejects an unsafe ref', async () => {
@@ -398,6 +417,51 @@ test('POST /environments/:id/deploy refuses a ref it cannot check out', async ()
       "the environment's current state.",
     ref: 'release/1.4',
   })
+})
+
+test('POST /environments/:id/deploy refuses a strategy or migration override nothing honors yet', async () => {
+  for (const body of [
+    { strategy: 'sequential' },
+    { strategy: 'bluegreen' },
+    { migration: 'breaking' },
+    { migration: 'none' },
+    { strategy: 'inplace', migration: 'compatible' },
+  ]) {
+    // The fake database answers one authorization pass, so each request gets its own app.
+    const request = await buildManageAllowedDeployApp()
+    const res = await request(body)
+    assertEquals(res.status, 501, JSON.stringify(body))
+    const json = (await res.json()) as Record<string, unknown>
+    assertEquals(json.error, 'deploy_strategy_unsupported')
+    assertEquals(json.strategy, 'strategy' in body ? body.strategy : null)
+    assertEquals(json.migration, 'migration' in body ? body.migration : null)
+  }
+})
+
+test('POST /environments/:id/deploy accepts strategy inplace (what every deploy does) and null overrides', async () => {
+  for (const body of [{ strategy: 'inplace' }, { strategy: null, migration: null }, {}]) {
+    // Not refused by the override gate: it reaches the command queue, which
+    // this host-free app does not provide.
+    // The fake database answers one authorization pass, so each request gets its own app.
+    const request = await buildManageAllowedDeployApp()
+    const res = await request(body)
+    assertEquals(res.status, 503, JSON.stringify(body))
+  }
+})
+
+test('POST /environments/:id/deploy rejects an unknown strategy or migration value', async () => {
+  for (const body of [
+    { strategy: 'rolling' },
+    { strategy: 1 },
+    { migration: 'maybe' },
+    { migration: true },
+  ]) {
+    // The fake database answers one authorization pass, so each request gets its own app.
+    const request = await buildManageAllowedDeployApp()
+    const res = await request(body)
+    assertEquals(res.status, 400, JSON.stringify(body))
+    assertEquals(await res.json(), { error: 'Invalid request' })
+  }
 })
 
 test('POST /environments/:id/deploy without a ref passes the source gate', async () => {
