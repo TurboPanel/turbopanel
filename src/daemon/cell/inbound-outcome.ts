@@ -116,6 +116,6 @@ export function deriveInboundOutcome(inbound: DaemonInboundEnvelope): InboundOut
  * Compile-time guard: a new inbound kind must get a case (or be named
  * non-terminal) above. At run time an unknown kind is still non-terminal.
  */
-function unhandledInbound(inbound: never): null {
-  return inbound ?? null
+function unhandledInbound(_inbound: never): null {
+  return null
 }
