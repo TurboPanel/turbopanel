@@ -7,6 +7,7 @@
  */
 
 import { assertEquals } from '@std/assert'
+import { createHmac } from 'node:crypto'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import { deriveEncryptionSecretsConfig } from '../../lib/secrets/secrets.ts'
@@ -1106,4 +1107,70 @@ test('a signed body that is not JSON is a bad request', async () => {
   const res = await h.app.request(await signedPost('not-json'))
   assertEquals(res.status, 400)
   assertEquals(h.scheduled.length, 0)
+})
+
+/**
+ * Stripe's documented scheme, computed with node:crypto and none of the
+ * module's own helpers: `t=<unix>,v1=hex(HMAC-SHA256(secret, "<t>.<body>"))`.
+ * A bug shared by `computeStripeSignature` and `verifyStripeSignature` cannot
+ * hide here.
+ */
+function independentStripeHeader(body: string, secret: string, t: number): string {
+  const v1 = createHmac('sha256', secret).update(`${t}.${body}`, 'utf8').digest('hex')
+  return `t=${t},v1=${v1}`
+}
+
+function postWithHeader(body: string, header: string): Request {
+  return new Request(`http://instance${STRIPE_WEBHOOK_PATH}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'stripe-signature': header },
+    body,
+  })
+}
+
+test('an independently signed delivery is accepted; a forged, stale, re-secreted or re-bodied one is refused before any write', async () => {
+  const body = event('customer.subscription.updated', { id: 'sub_1', object: 'subscription' })
+  const wrongSecret = `whsec_${crypto.randomUUID().replaceAll('-', '')}`
+  const accepted = await buildApp()
+  const ok = await accepted.app.request(
+    postWithHeader(body, independentStripeHeader(body, SIGNING_SECRET, NOW_SECONDS))
+  )
+  assertEquals(ok.status, 200)
+
+  const refused = await buildApp()
+  const forged = [
+    // right secret, signature computed over a different body
+    independentStripeHeader(`${body} `, SIGNING_SECRET, NOW_SECONDS),
+    // right body, someone else's secret
+    independentStripeHeader(body, wrongSecret, NOW_SECONDS),
+    // a genuine signature, replayed an hour later
+    independentStripeHeader(body, SIGNING_SECRET, NOW_SECONDS - 3600),
+    // timestamp edited after signing
+    independentStripeHeader(body, SIGNING_SECRET, NOW_SECONDS).replace(
+      `t=${NOW_SECONDS}`,
+      `t=${NOW_SECONDS + 1}`
+    ),
+    // truncated signature
+    independentStripeHeader(body, SIGNING_SECRET, NOW_SECONDS).slice(0, -2),
+  ]
+  for (const header of forged) {
+    const res = await refused.app.request(postWithHeader(body, header))
+    assertEquals(res.status, 401, header)
+  }
+  assertEquals(
+    refused.trace.filter((t) => t.startsWith('insert:')),
+    []
+  )
+  assertEquals(refused.scheduled.length, 0)
+})
+
+test('a replayed genuine delivery (same event id, fresh signature) is idempotent: 204 and nothing scheduled', async () => {
+  const body = event('customer.subscription.updated', { id: 'sub_1', object: 'subscription' })
+  const replay = await buildApp({ claimed: false })
+  const res = await replay.app.request(
+    postWithHeader(body, independentStripeHeader(body, SIGNING_SECRET, NOW_SECONDS))
+  )
+  assertEquals(res.status, 204)
+  assertEquals(replay.scheduled.length, 0)
+  assertEquals(replay.db.inserts[0]?.values.externalDeliveryId, 'evt_1')
 })

@@ -14,7 +14,7 @@ export const TIER_PATHS = {
       description:
         'Rank order. Each row carries the provider product it bills against, ' +
         'the cached display price, the ladder entitlements for its label and ' +
-        'its reference counts (seats and assigned servers). `ladder` lists ' +
+        'its reference counts (licenses and assigned servers). `ladder` lists ' +
         'every label with the row bound to it, so the console can show what ' +
         'is still unmapped.',
       security: [...cookieSecurity],
@@ -127,7 +127,7 @@ export const TIER_PATHS = {
       summary: 'Retire a tier row',
       description:
         'Tiers are deactivated, never deleted: an inactive row cannot be ' +
-        'bought into but stays readable for the seats that still count ' +
+        'bought into but stays readable for the licenses that still count ' +
         'against it.',
       security: [...cookieSecurity],
       responses: {

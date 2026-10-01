@@ -11,7 +11,7 @@ import { getClientOpenApiSpec } from './index.ts'
 const BILLING_TAG = {
   name: 'Billing',
   description:
-    'Billing on TurboPanel High Availability: catalogue, projected subscription, Checkout, Customer Portal, seat and tier changes. TurboPanel High Availability only; absent on self-hosted. `503 billing_not_configured` until Stripe is configured.',
+    'Billing on TurboPanel High Availability: catalogue, projected subscription, Checkout, Customer Portal, license and tier changes. TurboPanel High Availability only; absent on self-hosted. `503 billing_not_configured` until Stripe is configured.',
 } as const
 
 type ClientSpec = {
