@@ -19,9 +19,9 @@ export const deploySchemas = {
         type: 'string',
         enum: ['inplace', 'sequential', 'bluegreen'],
         description:
-          'Per-deploy override of the environment deploy strategy. **Not honored yet**: only ' +
-          '`inplace` (what every deploy does today) is accepted; `sequential` and `bluegreen` ' +
-          'are refused with `501 deploy_strategy_unsupported` rather than ignored.',
+          'Per-deploy override of the environment deploy strategy. `inplace` and `sequential` ' +
+          'are honored; `bluegreen` has no engine yet and is refused with ' +
+          '`501 deploy_strategy_unsupported` rather than ignored.',
       },
       migration: {
         type: 'string',
@@ -54,6 +54,28 @@ export const deploySchemas = {
       },
       status: { type: 'string', const: 'queued' },
       serverId: { type: 'string' },
+      strategy: {
+        type: 'object',
+        description:
+          'The deploy strategy this deploy was queued with. `effective` is what the host runs (`inplace` or `sequential`); it differs from `requested` when `bluegreen` was asked for and not available. How the deploy ends (`rolled_back`, `needs_attention`) is reported on the deployment history entry once the host answers.',
+        required: ['requested', 'effective', 'fallbackReasons'],
+        properties: {
+          requested: { type: 'string', enum: ['inplace', 'sequential', 'bluegreen'] },
+          effective: { type: 'string', enum: ['inplace', 'sequential'] },
+          fallbackReasons: {
+            type: 'array',
+            items: {
+              type: 'object',
+              required: ['code', 'message', 'services'],
+              properties: {
+                code: { type: 'string' },
+                message: { type: 'string' },
+                services: { type: 'array', items: { type: 'string' } },
+              },
+            },
+          },
+        },
+      },
       commands: {
         type: 'array',
         description: 'Every queued `environment.deploy` (and drained-server stop) command.',
@@ -207,13 +229,13 @@ export const deploySchemas = {
         type: 'string',
         enum: ['inplace', 'sequential', 'bluegreen'],
         description:
-          'The strategy requested: the `strategy` query, else the environment setting, else `inplace`. Informational: every deploy still runs `inplace`.',
+          'The strategy requested: the `strategy` query, else the environment setting, else `inplace`.',
       },
       effectiveStrategy: {
         type: 'string',
         enum: ['inplace', 'sequential', 'bluegreen'],
         description:
-          'The strategy that would actually run. Differs from `strategy` only when `bluegreen` is refused and falls back to `sequential` (see `fallbackReasons`).',
+          'The strategy a deploy would actually run (`inplace` or `sequential`). Differs from `strategy` only when `bluegreen` is requested: it runs as `sequential` for now (see `fallbackReasons`).',
       },
       migrations: {
         type: 'string',
@@ -238,6 +260,7 @@ export const deploySchemas = {
                 'host_level_binds',
                 'migration_unknown',
                 'migration_breaking',
+                'bluegreen_unavailable',
                 'migrator_undeclared',
               ],
             },
@@ -334,6 +357,22 @@ export const deploySchemas = {
       },
       errorCode: { type: ['string', 'null'] },
       errorMessage: { type: ['string', 'null'] },
+      strategy: {
+        type: ['string', 'null'],
+        enum: ['inplace', 'sequential', null],
+        description:
+          'The deploy engine this attempt ran. Null for attempts queued before it was recorded.',
+      },
+      strategyOutcome: {
+        type: ['string', 'null'],
+        enum: ['rolled_back', 'needs_attention', null],
+        description:
+          'How a sequential deploy that did not finish ended: `rolled_back` (the previous version is running again) or `needs_attention` (stopped on purpose, for example because a migration already ran so the old version was not restarted). `errorCode` is `deploy_rolled_back` / `deploy_needs_attention`. Null otherwise.',
+      },
+      strategyOutcomeReason: {
+        type: ['string', 'null'],
+        description: 'Why the deploy rolled back or needs attention.',
+      },
       hasLog: {
         type: 'boolean',
         description:

@@ -198,8 +198,20 @@ changes.
   PATCH that omits these keys keeps the stored ones (`settleDeployOptions`) because
   `options` is replaced wholesale and the compose editor sends only `compose`.
   `null` clears a key. The deploy request accepts `strategy` / `migration`
-  overrides; only `strategy: inplace` is honored, the rest answer
-  `501 deploy_strategy_unsupported`. Deploy preview reports `strategy`,
+  overrides; `strategy: inplace` and `sequential` are honored (the daemon runs the
+  sequential engine: stop, migrate, start, health gate, roll back from `previous/`),
+  `bluegreen` and any `migration` answer `501 deploy_strategy_unsupported`. A stored
+  `bluegreen` runs as `sequential` with the `bluegreen_unavailable` reason
+  (`src/features/deploy/deploy-engine.ts`, shared by deploy and preview). The deploy
+  response carries `strategy: { requested, effective, fallbackReasons }`; the daemon
+  reports an unfinished sequential deploy as `rolled_back: ...` or
+  `needs_attention: ...` (`deploy-outcome.ts`), kept as `command.error_code`
+  (`deploy_rolled_back` / `deploy_needs_attention`) and `deployment.metadata`
+  (`deployment.outcome` stays `failed`: its check allows only applied/failed/timed_out),
+  and deployment history entries expose `strategy`, `strategyOutcome`,
+  `strategyOutcomeReason`. `deploy.update_config` stays `unsupported`: every host's
+  command is queued at once, so a sequential multi-host deploy stops all hosts at the
+  same time until the rolling stage. Deploy preview reports `strategy`,
   `effectiveStrategy`, `migrations`, `fallbackReasons[]`
   (`src/features/deploy/deploy-strategy.ts`; blue-green falls back to sequential on
   published ports, authored `container_name`, stateful writable volumes, traffic

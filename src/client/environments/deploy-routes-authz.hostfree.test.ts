@@ -421,8 +421,8 @@ test('POST /environments/:id/deploy refuses a ref it cannot check out', async ()
 
 test('POST /environments/:id/deploy refuses a strategy or migration override nothing honors yet', async () => {
   for (const body of [
-    { strategy: 'sequential' },
     { strategy: 'bluegreen' },
+    { strategy: 'sequential', migration: 'breaking' },
     { migration: 'breaking' },
     { migration: 'none' },
     { strategy: 'inplace', migration: 'compatible' },
@@ -438,8 +438,13 @@ test('POST /environments/:id/deploy refuses a strategy or migration override not
   }
 })
 
-test('POST /environments/:id/deploy accepts strategy inplace (what every deploy does) and null overrides', async () => {
-  for (const body of [{ strategy: 'inplace' }, { strategy: null, migration: null }, {}]) {
+test('POST /environments/:id/deploy accepts strategy inplace or sequential and null overrides', async () => {
+  for (const body of [
+    { strategy: 'inplace' },
+    { strategy: 'sequential' },
+    { strategy: null, migration: null },
+    {},
+  ]) {
     // Not refused by the override gate: it reaches the command queue, which
     // this host-free app does not provide.
     // The fake database answers one authorization pass, so each request gets its own app.

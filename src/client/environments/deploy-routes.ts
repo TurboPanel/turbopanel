@@ -1,9 +1,6 @@
 import { firstSequential, forEachSequential, mapSequential } from '../../lib/sequential.ts'
 import { eq, inArray } from 'drizzle-orm'
-import {
-  type DeployStrategyPreview,
-  previewDeployStrategy,
-} from '../../features/deploy/deploy-strategy.ts'
+import { type DeployEnginePlan, planDeployEngine } from '../../features/deploy/deploy-engine.ts'
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
@@ -427,19 +424,20 @@ export type DeployActor = {
 export type { DeploySourceSelection }
 
 /**
- * Strategy overrides are accepted by the request schema but nothing honors
- * them yet: every deploy runs `inplace`. Like an explicit `ref`, a field the
- * caller set and the deploy would ignore is refused rather than silently
- * dropped. `strategy: inplace` is what happens anyway, so it is not refused.
+ * Per-deploy strategy overrides. `inplace` and `sequential` are honored (the
+ * daemon implements both). `bluegreen` has no engine yet and the per-deploy
+ * `migration` override waits for the migration-declaration stage; like an
+ * explicit `ref`, a field the caller set and the deploy would ignore is
+ * refused rather than silently dropped.
  */
 function unsupportedStrategyOverride(override: DeployStrategyOverride) {
-  const strategyUnsupported = override.strategy !== null && override.strategy !== 'inplace'
+  const strategyUnsupported = override.strategy === 'bluegreen'
   if (!strategyUnsupported && override.migration === null) return null
   return {
     error: 'deploy_strategy_unsupported',
     message:
-      'Choosing a deploy strategy or migration status per deploy is not supported yet; ' +
-      'omit `strategy` and `migration` to deploy as the environment is configured.',
+      'Blue-green deploys and a per-deploy migration status are not supported yet; ' +
+      'use `strategy` inplace or sequential, and omit `migration`.',
     strategy: override.strategy,
     migration: override.migration,
   }
@@ -517,6 +515,8 @@ type DeployCommandCreateParams = DeployActor & {
   /** Set only when `managedNetworkServices` is non-empty (see prepare). */
   managedNetwork?: string
   noCache: boolean
+  /** The strategy decision; its `payload` fields ride the daemon command. */
+  engine: DeployEnginePlan
   /** The planner's host-level verdict (`PlannedDeploy.hostLevelApproved`). */
   hostLevelApproved: boolean
   generation: number
@@ -630,6 +630,7 @@ async function createDeployCommand(
         managedNetwork: params.managedNetwork,
         noCache: params.noCache ? true : undefined,
         hostLevelApproved: params.hostLevelApproved ? true : undefined,
+        ...params.engine.payload,
       }),
       listenerPorts: params.listenerPorts,
     },
@@ -651,6 +652,8 @@ async function createDeployCommand(
       desiredHash: params.desiredHash,
       replicaCounts: replicaCounts ?? undefined,
       releases: releases ?? undefined,
+      // What ran, so history still says so after the payload is deleted.
+      deployStrategy: params.engine.effectiveStrategy,
     }),
     expiresAt,
   })
@@ -718,6 +721,7 @@ function createParamsForPreparedServer(
     projectName: string
     generation: number
     noCache: boolean
+    engine: DeployEnginePlan
     hostLevelApproved: boolean
     selection: DeploySourceSelection
   }
@@ -763,6 +767,7 @@ function createParamsForPreparedServer(
       ? {}
       : { managedNetwork: row.prepared.managedNetwork }),
     noCache: params.noCache,
+    engine: params.engine,
     hostLevelApproved: params.hostLevelApproved,
     generation: params.generation,
     desiredHash: row.prepared.desiredHash,
@@ -830,6 +835,7 @@ async function persistDeployFanOut(
     projectName: string
     slots: readonly DesiredSlotInput[]
     noCache: boolean
+    engine: DeployEnginePlan
     hostLevelApproved: boolean
     selection: DeploySourceSelection
     /** Release trees to record on each target — see `deploymentTargetsForFanOut`. */
@@ -859,6 +865,7 @@ async function persistDeployFanOut(
             projectName: params.projectName,
             generation,
             noCache: params.noCache,
+            engine: params.engine,
             hostLevelApproved: params.hostLevelApproved,
             selection: params.selection,
           })
@@ -1055,21 +1062,31 @@ function parsePreviewOverride(c: Context<AppEnv>): DeployStrategyOverride | Resp
 }
 
 /**
- * Strategy block of the deploy preview. Informational only: the deploy itself
- * still runs `inplace`.
+ * The strategy a deploy of this environment runs (stored options, then the
+ * request's override, then the compose facts). The deploy and its preview call
+ * the same function, so the preview is what a deploy would do.
  */
-async function previewStrategyForRequest(
+/** The strategy block of a deploy response: what was asked, what runs, and why it differs. */
+function strategyResponse(engine: DeployEnginePlan) {
+  return {
+    requested: engine.requested,
+    effective: engine.effectiveStrategy,
+    fallbackReasons: engine.fallbackReasons,
+  }
+}
+
+async function resolveEnginePlan(
   db: Db,
   environmentId: string,
   planned: SuccessfulPlannedDeploy,
   override: DeployStrategyOverride
-): Promise<DeployStrategyPreview> {
+): Promise<DeployEnginePlan> {
   const [row] = await db
     .select({ options: environment.options })
     .from(environment)
     .where(eq(environment.id, environmentId))
     .limit(1)
-  return previewDeployStrategy({
+  return planDeployEngine({
     environmentOptions: row?.options,
     projectOptions: planned.projectOptions,
     composeData: planned.merged.data,
@@ -1141,7 +1158,7 @@ export function registerEnvironmentDeployPreviewRoutes(router: Hono<AppEnv>, opt
     })
     if (preparedByServer instanceof Response) return preparedByServer
 
-    const strategy = await previewStrategyForRequest(db, environmentId, planned, override)
+    const strategy = await resolveEnginePlan(db, environmentId, planned, override)
 
     const first = preparedByServer[0]
     const serverRows =
@@ -1201,6 +1218,8 @@ export type DeployRequestAuth = DeployActor & {
   acknowledgeHealthCheckWarnings: boolean
   noCache: boolean
   selection: DeploySourceSelection
+  /** Per-deploy strategy override from the request body; absent for webhook deploys. */
+  strategyOverride?: DeployStrategyOverride
   /**
    * Present only for `POST /environments/:id/rollback`.
    *
@@ -1702,6 +1721,12 @@ async function runEnvironmentDeploy(
       previous,
     })
     const projectName = composeProjectName(planned.projectId)
+    const engine = await resolveEnginePlan(
+      db,
+      environmentId,
+      planned,
+      auth.strategyOverride ?? { strategy: null, migration: null }
+    )
     // Recorded, not consumed, here: the current compose still names these, so
     // this is the snapshot a later stop/delete falls back to once it does not.
     const siteReleases = await resolveSourcedEnvironmentSiteReleases(db, environmentId)
@@ -1717,6 +1742,7 @@ async function runEnvironmentDeploy(
       projectName,
       slots: spanningCtx.enriched.slots,
       noCache: auth.noCache,
+      engine,
       hostLevelApproved: planned.hostLevelApproved,
       selection: auth.selection,
       siteReleases,
@@ -1749,7 +1775,7 @@ async function runEnvironmentDeploy(
       ...spanningCtx,
     })
 
-    return Response.json(queuedCommandsResponseBody(queued))
+    return Response.json(queuedCommandsResponseBody(queued, strategyResponse(engine)))
   } finally {
     if (!spanningCommitted) {
       await purgeComposeNetworksCreatedAfter(db, environmentId, priorNetworks)

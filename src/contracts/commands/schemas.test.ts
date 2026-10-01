@@ -1975,6 +1975,49 @@ test('parseCommandPayload accepts noCache on environment.deploy', () => {
   )
 })
 
+test('parseCommandPayload carries the sequential strategy fields and rejects bad ones', () => {
+  const base = {
+    environmentId: 'env-1',
+    projectId: 'proj-1',
+    organizationId: 'org-1',
+    projectName: 'tp-demo',
+    composeFiles: [
+      {
+        filename: 'compose.yaml',
+        role: 'runtime' as const,
+        content: 'services: {}\\n',
+      },
+    ],
+    hostings: [],
+  }
+  const parsed = parseCommandPayload('environment.deploy' as CommandType, {
+    ...base,
+    deployStrategy: 'sequential',
+    migrations: 'breaking',
+    healthTimeoutSeconds: 90,
+    keepRunningServices: ['db'],
+  }) as Record<string, unknown>
+  assertEquals(parsed.deployStrategy, 'sequential')
+  assertEquals(parsed.migrations, 'breaking')
+  assertEquals(parsed.healthTimeoutSeconds, 90)
+  assertEquals(parsed.keepRunningServices, ['db'])
+  const plain = parseCommandPayload('environment.deploy' as CommandType, base) as Record<
+    string,
+    unknown
+  >
+  assertEquals('deployStrategy' in plain, false)
+  for (const bad of [
+    { deployStrategy: 'bluegreen' },
+    { migrations: 'maybe' },
+    { healthTimeoutSeconds: 9 },
+    { keepRunningServices: [''] },
+  ]) {
+    assertThrows(() =>
+      parseCommandPayload('environment.deploy' as CommandType, { ...base, ...bad })
+    )
+  }
+})
+
 test('parseCommandPayload rejects non-boolean noCache on environment.deploy', () => {
   assertThrows(
     () =>

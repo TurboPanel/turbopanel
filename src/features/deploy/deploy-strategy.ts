@@ -2,9 +2,8 @@
  * Which deploy strategy a deploy would really use, and why.
  *
  * Pure: compose data and resolved options in, `{ effectiveStrategy,
- * fallbackReasons }` out. Stage 1 of the deploy-strategy work surfaces this on
- * the deploy preview; nothing acts on it yet, so a deploy still runs
- * `inplace`.
+ * fallbackReasons }` out. `deploy-engine.ts` turns it into what the daemon is
+ * told to run (`bluegreen` has no engine yet, so it runs as `sequential`).
  *
  * Rules (design section 2b and 4, owner decisions 2026-10-01):
  * - `inplace` and `sequential` are always possible as requested;
@@ -34,6 +33,7 @@ export type FallbackReasonCode =
   | 'migration_unknown'
   | 'migration_breaking'
   | 'migrator_undeclared'
+  | 'bluegreen_unavailable'
 
 export type FallbackReason = {
   code: FallbackReasonCode

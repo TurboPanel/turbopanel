@@ -29,6 +29,11 @@ import type { ExecutionLogStore } from '../execution-logs/types.ts'
  * here rather than silently drifting.
  */
 export type ExecutionLogPresence = Pick<ExecutionLogStore, 'exists'>
+import {
+  type DeployStrategyOutcome,
+  deployOutcomeReason,
+  outcomeFromErrorCode,
+} from './deploy-outcome.ts'
 import { deploymentDurationMs } from './deployment-records.ts'
 import { command, deployment, server } from '../../db/schema.ts'
 
@@ -109,6 +114,19 @@ export type DeploymentHistoryEntry = {
   durationMs: number | null
   errorCode: string | null
   errorMessage: string | null
+  /**
+   * The engine this attempt ran: `inplace` or `sequential`. `null` for a row
+   * queued before the strategy was recorded.
+   */
+  strategy: 'inplace' | 'sequential' | null
+  /**
+   * `rolled_back` (the previous version is running again) or `needs_attention`
+   * (stopped on purpose, e.g. a migration already ran) when a sequential deploy
+   * did not finish; `null` otherwise.
+   */
+  strategyOutcome: DeployStrategyOutcome | null
+  /** Why a `rolled_back` / `needs_attention` deploy ended that way. */
+  strategyOutcomeReason: string | null
   /** Whether an execution-log transcript is retained (store-side, not a column). */
   hasLog: boolean
   /**
@@ -257,8 +275,14 @@ export function readDeploymentTrigger(row: {
   }
 }
 
+function contextStrategy(context: Record<string, unknown>): 'inplace' | 'sequential' | null {
+  const raw = contextString(context, 'deployStrategy')
+  return raw === 'inplace' || raw === 'sequential' ? raw : null
+}
+
 function serializeEntry(row: DeployCommandRow, hasLog: boolean): DeploymentHistoryEntry {
   const context = contextBag(row.context)
+  const strategyOutcome = outcomeFromErrorCode(row.errorCode)
   return {
     id: row.id,
     commandId: row.id,
@@ -282,6 +306,9 @@ function serializeEntry(row: DeployCommandRow, hasLog: boolean): DeploymentHisto
       : null,
     errorCode: row.errorCode ?? null,
     errorMessage: row.errorMessage ?? null,
+    strategy: contextStrategy(context),
+    strategyOutcome,
+    strategyOutcomeReason: deployOutcomeReason(strategyOutcome, row.errorMessage ?? null),
     hasLog,
     trigger: readDeploymentTrigger(row),
   }

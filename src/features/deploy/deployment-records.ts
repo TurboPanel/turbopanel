@@ -2,17 +2,20 @@ import { and, eq, inArray, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { nowIso } from '../commands/ids.ts'
 import { deployment } from '../../db/schema.ts'
+import type { DeployStrategyOutcome } from './deploy-outcome.ts'
 
-export const DEPLOYMENT_STATUSES = Object.freeze(
-  ['pending', 'applying', 'applied', 'failed', 'draining'] as const,
-)
+export const DEPLOYMENT_STATUSES = Object.freeze([
+  'pending',
+  'applying',
+  'applied',
+  'failed',
+  'draining',
+] as const)
 
 export type DeploymentStatus = (typeof DEPLOYMENT_STATUSES)[number]
 
 /** Terminal outcome of the last apply attempt recorded on a `deployment` row. */
-export const DEPLOYMENT_OUTCOMES = Object.freeze(
-  ['applied', 'failed', 'timed_out'] as const,
-)
+export const DEPLOYMENT_OUTCOMES = Object.freeze(['applied', 'failed', 'timed_out'] as const)
 
 export type DeploymentOutcome = (typeof DEPLOYMENT_OUTCOMES)[number]
 
@@ -86,9 +89,7 @@ export function serializeDeploymentTarget(row: DeploymentDbRow): DeploymentTarge
     finishedAt: row.finishedAt ?? null,
     durationMs: row.durationMs ?? null,
     outcome:
-      typeof row.outcome === 'string' && isDeploymentOutcome(row.outcome)
-        ? row.outcome
-        : null,
+      typeof row.outcome === 'string' && isDeploymentOutcome(row.outcome) ? row.outcome : null,
   }
 }
 
@@ -109,9 +110,7 @@ export function deploymentDurationMs(params: {
   return Math.max(0, endMs - startMs)
 }
 
-function sortDeploymentTargets(
-  records: DeploymentTargetRecord[],
-): DeploymentTargetRecord[] {
+function sortDeploymentTargets(records: DeploymentTargetRecord[]): DeploymentTargetRecord[] {
   return [...records].sort((a, b) => {
     const byServer = a.serverId.localeCompare(b.serverId)
     if (byServer !== 0) return byServer
@@ -129,7 +128,7 @@ export async function upsertDeploymentTargets(
   params: {
     environmentId: string
     targets: readonly DeploymentTargetInput[]
-  },
+  }
 ): Promise<void> {
   if (params.targets.length === 0) return
 
@@ -146,7 +145,7 @@ export async function upsertDeploymentTargets(
         lastCommandId: target.lastCommandId ?? null,
         options: target.options ?? null,
         updatedAt: now,
-      })),
+      }))
     )
     .onConflictDoUpdate({
       target: [deployment.environmentId, deployment.serverId],
@@ -163,7 +162,7 @@ export async function upsertDeploymentTargets(
 
 export async function listEnvironmentDeploymentTargets(
   db: Db,
-  environmentId: string,
+  environmentId: string
 ): Promise<DeploymentTargetRecord[]> {
   const rows = await db
     .select()
@@ -176,7 +175,7 @@ export async function listEnvironmentDeploymentTargets(
 
 async function transitionDeploymentStatus(
   db: Db,
-  params: DeploymentTransitionParams,
+  params: DeploymentTransitionParams
 ): Promise<DeploymentTargetRecord | null> {
   const now = nowIso()
   const patch: Record<string, unknown> = {
@@ -208,8 +207,8 @@ async function transitionDeploymentStatus(
     .where(
       and(
         eq(deployment.environmentId, params.environmentId),
-        eq(deployment.serverId, params.serverId),
-      ),
+        eq(deployment.serverId, params.serverId)
+      )
     )
     .returning()
 
@@ -231,7 +230,7 @@ export async function markDeploymentApplied(
     commandId?: string
     finishedAt?: string
     durationMs?: number | null
-  },
+  }
 ): Promise<DeploymentTargetRecord | null> {
   const finishedAt = params.finishedAt ?? nowIso()
   return transitionDeploymentStatus(db, {
@@ -239,7 +238,7 @@ export async function markDeploymentApplied(
     serverId: params.serverId,
     status: 'applied',
     appliedGeneration: params.generation,
-    metadataPatch: { error: null },
+    metadataPatch: { error: null, strategyOutcome: null },
     finishedAt,
     durationMs: params.durationMs ?? null,
     outcome: 'applied',
@@ -263,12 +262,19 @@ export async function markDeploymentFailed(
     outcome?: DeploymentOutcome
     finishedAt?: string
     durationMs?: number | null
-  },
+    /**
+     * How a sequential deploy ended when it did not finish. Kept in `metadata`
+     * because `deployment.outcome` is limited to applied / failed / timed_out
+     * by a database check.
+     */
+    strategyOutcome?: DeployStrategyOutcome
+  }
 ): Promise<DeploymentTargetRecord | null> {
   const metadataPatch: Record<string, unknown> = {}
   if (params.error !== undefined) {
     metadataPatch.error = params.error
   }
+  metadataPatch.strategyOutcome = params.strategyOutcome ?? null
   const finishedAt = params.finishedAt ?? nowIso()
   return transitionDeploymentStatus(db, {
     environmentId: params.environmentId,
@@ -291,7 +297,7 @@ export async function pruneDrainedDeployments(
   params: {
     environmentId: string
     serverIds?: readonly string[]
-  },
+  }
 ): Promise<void> {
   if (params.serverIds !== undefined) {
     if (params.serverIds.length === 0) return
@@ -300,8 +306,8 @@ export async function pruneDrainedDeployments(
       .where(
         and(
           eq(deployment.environmentId, params.environmentId),
-          inArray(deployment.serverId, [...params.serverIds]),
-        ),
+          inArray(deployment.serverId, [...params.serverIds])
+        )
       )
     return
   }
@@ -309,9 +315,6 @@ export async function pruneDrainedDeployments(
   await db
     .delete(deployment)
     .where(
-      and(
-        eq(deployment.environmentId, params.environmentId),
-        eq(deployment.status, 'draining'),
-      ),
+      and(eq(deployment.environmentId, params.environmentId), eq(deployment.status, 'draining'))
     )
 }
