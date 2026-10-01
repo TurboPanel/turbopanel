@@ -13,10 +13,7 @@ import {
   seedMockSession,
   seedMockUser,
 } from '../authn/authn-hostfree-doubles.ts'
-import {
-  buildSignedCookie,
-  HTTP_SESSION_COOKIE_NAME,
-} from '../authn/crypto.ts'
+import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from '../authn/crypto.ts'
 import { deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
@@ -64,8 +61,7 @@ function mockContext(opts: {
       text: () => Promise.resolve(opts.bodyText ?? ''),
     },
     get: (key: string) => vars.get(key),
-    json: (body: unknown, status?: number) =>
-      Response.json(body, { status: status ?? 200 }),
+    json: (body: unknown, status?: number) => Response.json(body, { status: status ?? 200 }),
   } as unknown as Context<AppEnv>
 }
 

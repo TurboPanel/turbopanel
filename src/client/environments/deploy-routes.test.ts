@@ -1,29 +1,23 @@
-import { assertEquals } from "@std/assert";
-import { and, eq, inArray } from "drizzle-orm";
-import { Hono } from "hono";
-import type { AppEnv } from "../../app/app.ts";
-import { getDatabaseUrl } from "../../db/url.ts";
-import { createDenoDb } from "../../db/connection.ts";
-import type {
-  DaemonCell,
-  DaemonCellRegistry,
-} from "../../contracts/cell.ts";
-import {
-  buildSignedCookie,
-  HTTP_SESSION_COOKIE_NAME,
-} from "../authn/crypto.ts";
-import { createSession } from "../authn/session-store.ts";
+import { assertEquals } from '@std/assert'
+import { and, eq, inArray } from 'drizzle-orm'
+import { Hono } from 'hono'
+import type { AppEnv } from '../../app/app.ts'
+import { getDatabaseUrl } from '../../db/url.ts'
+import { createDenoDb } from '../../db/connection.ts'
+import type { DaemonCell, DaemonCellRegistry } from '../../contracts/cell.ts'
+import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from '../authn/crypto.ts'
+import { createSession } from '../authn/session-store.ts'
 import {
   deriveEncryptionSecretsConfig,
   deriveSecretsConfig,
   parseSecretsEnv,
-} from "../../lib/secrets/secrets.ts";
-import { emptyComposeDocument } from "../../features/compose/index.ts";
-import { DEFAULT_MANAGED_INGRESS_PORTS } from "../../features/managed/ingress-ports.ts";
-import type { ComposeDocument } from "../../features/compose/types.ts";
-import type { PreparedDeployCompose } from "./deploy-prepare.ts";
-import type { CommandEnvelope } from "../../features/commands/envelope.ts";
-import type { CommandQueue } from "../../features/commands/queue.ts";
+} from '../../lib/secrets/secrets.ts'
+import { emptyComposeDocument } from '../../features/compose/index.ts'
+import { DEFAULT_MANAGED_INGRESS_PORTS } from '../../features/managed/ingress-ports.ts'
+import type { ComposeDocument } from '../../features/compose/types.ts'
+import type { PreparedDeployCompose } from './deploy-prepare.ts'
+import type { CommandEnvelope } from '../../features/commands/envelope.ts'
+import type { CommandQueue } from '../../features/commands/queue.ts'
 import {
   command,
   container,
@@ -43,11 +37,8 @@ import {
   tls,
   user,
   workspace,
-} from "../../db/schema.ts";
-import {
-  getCommandMetadata,
-  transitionCommand,
-} from "../../features/commands/command-records.ts";
+} from '../../db/schema.ts'
+import { getCommandMetadata, transitionCommand } from '../../features/commands/command-records.ts'
 import {
   enableOrganizationFabric,
   getOrganizationFabric,
@@ -56,9 +47,9 @@ import {
   stampRelayPublicKey,
   stampRelayReconcileSuccess,
   updateFabricRelay,
-} from "../../features/fabric/fabric-records.ts";
-import { setFabricConvergenceTimeoutMsForTests } from "../../features/fabric/enqueue.ts";
-import { ORG_ID_HEADER } from "../org-context.ts";
+} from '../../features/fabric/fabric-records.ts'
+import { setFabricConvergenceTimeoutMsForTests } from '../../features/fabric/enqueue.ts'
+import { ORG_ID_HEADER } from '../org-context.ts'
 import {
   attachmentServerIds,
   deployParticipation,
@@ -76,13 +67,13 @@ import {
   runEnvironmentDeployForActor,
   tcpUdpIngressServiceRefs,
   validateDeployMaterials,
-} from "./deploy-routes.ts";
-import { planEnvironmentDeploy } from "../../features/schedule/index.ts";
-import { TEST_ONLY_TURBOPANEL_SECRET } from "../../test-fixtures/secrets.ts";
-import { systemHierarchyProvision } from "../../features/system/hierarchy.ts";
-import { registerTlsRoutes } from "../tls/routes.ts";
+} from './deploy-routes.ts'
+import { planEnvironmentDeploy } from '../../features/schedule/index.ts'
+import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
+import { systemHierarchyProvision } from '../../features/system/hierarchy.ts'
+import { registerTlsRoutes } from '../tls/routes.ts'
 
-const dbUrl = getDatabaseUrl();
+const dbUrl = getDatabaseUrl()
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -90,102 +81,101 @@ const dbUrl = getDatabaseUrl();
  * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
  * reports Deno suites as empty; keep this alias so analysis sees real tests.
  */
-const test = Deno.test.bind(Deno);
+const test = Deno.test.bind(Deno)
 
-test("expandHostingsForComposeInstances fans hostings onto clone keys", () => {
+test('expandHostingsForComposeInstances fans hostings onto clone keys', () => {
   const expanded = expandHostingsForComposeInstances(
     [
       {
-        hostingId: "h1",
-        serviceId: "svc-web",
-        composeServiceName: "web",
-        hostnames: ["app.example.com"],
+        hostingId: 'h1',
+        serviceId: 'svc-web',
+        composeServiceName: 'web',
+        hostnames: ['app.example.com'],
       },
       {
-        hostingId: "h2",
-        serviceId: "svc-api",
-        composeServiceName: "api",
-        hostnames: ["api.example.com"],
+        hostingId: 'h2',
+        serviceId: 'svc-api',
+        composeServiceName: 'api',
+        hostnames: ['api.example.com'],
       },
     ],
     {
-      web: ["web-1", "web-2"],
-      api: ["api"],
-    },
-  );
-  assertEquals(expanded.length, 3);
+      web: ['web-1', 'web-2'],
+      api: ['api'],
+    }
+  )
+  assertEquals(expanded.length, 3)
   assertEquals(
-    expanded.map((entry) => entry.composeServiceName).sort((a, b) =>
-      a.localeCompare(b)
-    ),
-    ["api", "web-1", "web-2"],
-  );
-  const webClones = expanded.filter((entry) => entry.hostingId === "h1");
-  assertEquals(webClones.length, 2);
-  assertEquals(webClones.every((entry) => entry.serviceId === "svc-web"), true);
-});
+    expanded.map((entry) => entry.composeServiceName).sort((a, b) => a.localeCompare(b)),
+    ['api', 'web-1', 'web-2']
+  )
+  const webClones = expanded.filter((entry) => entry.hostingId === 'h1')
+  assertEquals(webClones.length, 2)
+  assertEquals(
+    webClones.every((entry) => entry.serviceId === 'svc-web'),
+    true
+  )
+})
 
-test("expandHostingsForComposeInstances passes through when expansion is missing", () => {
-  const hostings = [{
-    hostingId: "h1",
-    serviceId: "svc-api",
-    composeServiceName: "api",
-    hostnames: ["api.example.com"],
-  }];
-  const expanded = expandHostingsForComposeInstances(hostings, {});
-  assertEquals(expanded.length, 1);
-  assertEquals(expanded[0]?.composeServiceName, "api");
-});
+test('expandHostingsForComposeInstances passes through when expansion is missing', () => {
+  const hostings = [
+    {
+      hostingId: 'h1',
+      serviceId: 'svc-api',
+      composeServiceName: 'api',
+      hostnames: ['api.example.com'],
+    },
+  ]
+  const expanded = expandHostingsForComposeInstances(hostings, {})
+  assertEquals(expanded.length, 1)
+  assertEquals(expanded[0]?.composeServiceName, 'api')
+})
 
-test("deployParticipation marks previous hosts not in the plan as drained", () => {
-  const attachments = [{ serverId: "srv-attach", networkKeys: ["default"] }];
+test('deployParticipation marks previous hosts not in the plan as drained', () => {
+  const attachments = [{ serverId: 'srv-attach', networkKeys: ['default'] }]
   const result = deployParticipation({
-    planServerIds: ["srv-a"],
+    planServerIds: ['srv-a'],
     attachments,
-    previous: [{ serverId: "srv-a" }, { serverId: "srv-old" }],
-  });
+    previous: [{ serverId: 'srv-a' }, { serverId: 'srv-old' }],
+  })
   assertEquals(
     [...result.attachmentServers].sort((a, b) => a.localeCompare(b)),
-    [
-      "srv-attach",
-    ],
-  );
+    ['srv-attach']
+  )
   assertEquals(
     [...result.participating].sort((a, b) => a.localeCompare(b)),
-    ["srv-a", "srv-attach"],
-  );
-  assertEquals(result.drainedIds, ["srv-old"]);
+    ['srv-a', 'srv-attach']
+  )
+  assertEquals(result.drainedIds, ['srv-old'])
   assertEquals(
     deployParticipation({
-      planServerIds: ["srv-a"],
+      planServerIds: ['srv-a'],
       attachments: [],
       previous: [],
     }).drainedIds,
-    [],
-  );
-});
+    []
+  )
+})
 
-test("tcpUdpIngressServiceRefs and attachmentServerIds project ids", () => {
-  assertEquals(
-    tcpUdpIngressServiceRefs([{ serviceId: "svc-1" }, { serviceId: "svc-2" }]),
-    [{ serviceId: "svc-1" }, { serviceId: "svc-2" }],
-  );
+test('tcpUdpIngressServiceRefs and attachmentServerIds project ids', () => {
+  assertEquals(tcpUdpIngressServiceRefs([{ serviceId: 'svc-1' }, { serviceId: 'svc-2' }]), [
+    { serviceId: 'svc-1' },
+    { serviceId: 'svc-2' },
+  ])
   assertEquals(
     attachmentServerIds([
-      { serverId: "srv-a", networkKeys: [] },
-      { serverId: "srv-b", networkKeys: ["default"] },
+      { serverId: 'srv-a', networkKeys: [] },
+      { serverId: 'srv-b', networkKeys: ['default'] },
     ]),
-    ["srv-a", "srv-b"],
-  );
-});
+    ['srv-a', 'srv-b']
+  )
+})
 
-function stubPreparedDeployCompose(
-  managedNetworkServices: string[],
-): PreparedDeployCompose {
+function stubPreparedDeployCompose(managedNetworkServices: string[]): PreparedDeployCompose {
   return {
-    composeYaml: "",
+    composeYaml: '',
     composeFiles: [],
-    desiredHash: "",
+    desiredHash: '',
     replicaCounts: {},
     hooks: [],
     variableMaterial: [],
@@ -206,121 +196,121 @@ function stubPreparedDeployCompose(
     composeServiceExpansion: {},
     volumes: [],
     warnings: [],
-  };
+  }
 }
 
-test("ingressServerIdsForDeploy includes attachments, leftovers, and managed hosts", () => {
+test('ingressServerIdsForDeploy includes attachments, leftovers, and managed hosts', () => {
   const ids = ingressServerIdsForDeploy({
-    planServerIds: ["srv-a", "srv-b"],
+    planServerIds: ['srv-a', 'srv-b'],
     preparedByServer: [
       {
-        serverId: "srv-a",
-        prepared: stubPreparedDeployCompose(["web"]),
+        serverId: 'srv-a',
+        prepared: stubPreparedDeployCompose(['web']),
       },
       {
-        serverId: "srv-b",
+        serverId: 'srv-b',
         prepared: stubPreparedDeployCompose([]),
       },
     ],
-    attachments: [{ serverId: "srv-attach", networkKeys: ["default"] }],
+    attachments: [{ serverId: 'srv-attach', networkKeys: ['default'] }],
     consumers: [],
     spanning: new Map(),
     segmentsByServer: new Map(),
     listenerNames: new Map(),
-    releasedListeners: ["srv-orphan"],
-  });
+    releasedListeners: ['srv-orphan'],
+  })
   assertEquals(
     [...ids].sort((a, b) => a.localeCompare(b)),
-    ["srv-a", "srv-attach", "srv-orphan"],
-  );
-});
+    ['srv-a', 'srv-attach', 'srv-orphan']
+  )
+})
 
-test("readHosting helpers parse http and tcp/udp options", () => {
-  assertEquals(readHostnames(null), []);
-  assertEquals(readHostnames({ hostnames: ["a.example.com", "", 3] }), [
-    "a.example.com",
-  ]);
-  assertEquals(readPathPrefix({ pathPrefix: "/api" }), "/api");
-  assertEquals(readPathPrefix({}), undefined);
-  assertEquals(readTargetPort({ targetPort: 8080 }), 8080);
-  assertEquals(readTargetPort({ targetPort: Number.NaN }), undefined);
-  assertEquals(readHostingProtocol({ protocol: "tcp" }), "tcp");
-  assertEquals(readHostingProtocol({ protocol: "udp" }), "udp");
-  assertEquals(readHostingProtocol({ protocol: "http" }), "http");
-  assertEquals(readHostingProtocol({}), "http");
+test('readHosting helpers parse http and tcp/udp options', () => {
+  assertEquals(readHostnames(null), [])
+  assertEquals(readHostnames({ hostnames: ['a.example.com', '', 3] }), ['a.example.com'])
+  assertEquals(readPathPrefix({ pathPrefix: '/api' }), '/api')
+  assertEquals(readPathPrefix({}), undefined)
+  assertEquals(readTargetPort({ targetPort: 8080 }), 8080)
+  assertEquals(readTargetPort({ targetPort: Number.NaN }), undefined)
+  assertEquals(readHostingProtocol({ protocol: 'tcp' }), 'tcp')
+  assertEquals(readHostingProtocol({ protocol: 'udp' }), 'udp')
+  assertEquals(readHostingProtocol({ protocol: 'http' }), 'http')
+  assertEquals(readHostingProtocol({}), 'http')
   assertEquals(
     readHostingPorts({
       ports: [
         { published: 5432, target: 5432 },
         { published: 0, target: 5432 },
-        { published: 8443, target: "8080" },
+        { published: 8443, target: '8080' },
         null,
       ],
     }),
-    [{ published: 5432, target: 5432 }],
-  );
-});
+    [{ published: 5432, target: 5432 }]
+  )
+})
 
-test("preferredListenPortsFromHostings maps targetPort by compose service name", () => {
+test('preferredListenPortsFromHostings maps targetPort by compose service name', () => {
   const map = preferredListenPortsFromHostings([
     {
-      hostingId: "h1",
-      serviceId: "svc-web",
-      composeServiceName: "web",
-      hostnames: ["app.example.com"],
+      hostingId: 'h1',
+      serviceId: 'svc-web',
+      composeServiceName: 'web',
+      hostnames: ['app.example.com'],
       targetPort: 3000,
     },
     {
-      hostingId: "h2",
-      serviceId: "svc-api",
-      composeServiceName: "api",
-      hostnames: ["api.example.com"],
+      hostingId: 'h2',
+      serviceId: 'svc-api',
+      composeServiceName: 'api',
+      hostnames: ['api.example.com'],
     },
-  ]);
-  assertEquals(map.get("web"), 3000);
-  assertEquals(map.has("api"), false);
-});
+  ])
+  assertEquals(map.get('web'), 3000)
+  assertEquals(map.has('api'), false)
+})
 
-test("validateDeployMaterials rejects tcp hosting without ports", () => {
+test('validateDeployMaterials rejects tcp hosting without ports', () => {
   const validationError = validateDeployMaterials(
-    [{
-      hostingId: "h1",
-      serviceId: "svc-db",
-      composeServiceName: "db",
-      hostnames: [],
-      protocol: "tcp",
-      ports: [],
-    }],
-    [],
-  );
+    [
+      {
+        hostingId: 'h1',
+        serviceId: 'svc-db',
+        composeServiceName: 'db',
+        hostnames: [],
+        protocol: 'tcp',
+        ports: [],
+      },
+    ],
+    []
+  )
   if (!validationError) {
-    throw new TypeError("expected a validation error");
+    throw new TypeError('expected a validation error')
   }
-  assertEquals(validationError.error, "invalid_deploy_hosting");
-});
+  assertEquals(validationError.error, 'invalid_deploy_hosting')
+})
 
 function createRecordingCommandQueue(): CommandQueue & {
-  envelopes: CommandEnvelope[];
+  envelopes: CommandEnvelope[]
 } {
-  const envelopes: CommandEnvelope[] = [];
+  const envelopes: CommandEnvelope[] = []
   return {
     envelopes,
     enqueue: (envelope) => {
-      envelopes.push(envelope);
-      return Promise.resolve();
+      envelopes.push(envelope)
+      return Promise.resolve()
     },
-  };
+  }
 }
 
 function createMockCell(serverId: string): DaemonCell {
-  const noopAsync = () => Promise.resolve();
+  const noopAsync = () => Promise.resolve()
   return {
     attachDaemonSocket: () =>
       Promise.resolve({
-        connectionId: "conn",
+        connectionId: 'conn',
         lease: {
-          holder: "conn",
-          token: "conn",
+          holder: 'conn',
+          token: 'conn',
           expiresAt: new Date(Date.now() + 45_000).toISOString(),
         },
       }),
@@ -346,7 +336,7 @@ function createMockCell(serverId: string): DaemonCell {
         serverId,
         requestId: outbound.requestId,
         requestKind: outbound.kind,
-        status: "queued" as const,
+        status: 'queued' as const,
         createdAt: outbound.at,
         expiresAt: outbound.at,
       }),
@@ -360,7 +350,7 @@ function createMockCell(serverId: string): DaemonCell {
         serverId,
         requestId: outbound.requestId,
         requestKind: outbound.kind,
-        status: "done" as const,
+        status: 'done' as const,
         createdAt: outbound.at,
         expiresAt: outbound.at,
       }),
@@ -372,24 +362,24 @@ function createMockCell(serverId: string): DaemonCell {
     prune: () => Promise.resolve([]),
     clearUpdateStatus: () => Promise.resolve({ cleared: 0 }),
     purge: noopAsync,
-  };
+  }
 }
 
 function createTrackingRegistry(): DaemonCellRegistry {
-  const cells = new Map<string, DaemonCell>();
+  const cells = new Map<string, DaemonCell>()
   return {
     getCell(serverId: string): DaemonCell {
-      let cell = cells.get(serverId);
+      let cell = cells.get(serverId)
       if (!cell) {
-        cell = createMockCell(serverId);
-        cells.set(serverId, cell);
+        cell = createMockCell(serverId)
+        cells.set(serverId, cell)
       }
-      return cell;
+      return cell
     },
     listOnlineServerIds: () => Promise.resolve([]),
     getSnapshots: () => Promise.resolve(new Map()),
     purge: () => Promise.resolve(),
-  };
+  }
 }
 
 function composeWithEmptyServices(): ComposeDocument {
@@ -398,8 +388,8 @@ function composeWithEmptyServices(): ComposeDocument {
     data: {
       services: {},
     },
-    presentation: { keyOrder: ["services"], comments: {} },
-  };
+    presentation: { keyOrder: ['services'], comments: {} },
+  }
 }
 
 function composeWithWebService(): ComposeDocument {
@@ -407,11 +397,11 @@ function composeWithWebService(): ComposeDocument {
     version: 1,
     data: {
       services: {
-        web: { image: "nginx:alpine" },
+        web: { image: 'nginx:alpine' },
       },
     },
-    presentation: { keyOrder: ["services"], comments: {} },
-  };
+    presentation: { keyOrder: ['services'], comments: {} },
+  }
 }
 
 function composeWithNamedWebService(): ComposeDocument {
@@ -419,11 +409,11 @@ function composeWithNamedWebService(): ComposeDocument {
     version: 1,
     data: {
       services: {
-        web: { image: "adminer:latest", container_name: "adminer" },
+        web: { image: 'adminer:latest', container_name: 'adminer' },
       },
     },
-    presentation: { keyOrder: ["services"], comments: {} },
-  };
+    presentation: { keyOrder: ['services'], comments: {} },
+  }
 }
 
 function composeWithReplicatedWebService(): ComposeDocument {
@@ -432,155 +422,150 @@ function composeWithReplicatedWebService(): ComposeDocument {
     data: {
       services: {
         web: {
-          image: "nginx:alpine",
-          ports: ["8080:80"],
+          image: 'nginx:alpine',
+          ports: ['8080:80'],
           deploy: { replicas: 2 },
         },
       },
-      networks: { default: { driver: "overlay" } },
+      networks: { default: { driver: 'overlay' } },
     },
-    presentation: { keyOrder: ["services", "networks"], comments: {} },
-  };
+    presentation: { keyOrder: ['services', 'networks'], comments: {} },
+  }
 }
 
 async function createDeployRoutesTestApp(
   db: ReturnType<typeof createDenoDb>,
   options: {
-    registry: DaemonCellRegistry;
-    commandQueue: CommandQueue;
-  },
+    registry: DaemonCellRegistry
+    commandQueue: CommandQueue
+  }
 ) {
-  const secretsConfig = parseSecretsEnv(
-    `1:${TEST_ONLY_TURBOPANEL_SECRET}`,
-    "deno",
-  );
-  const secrets = await deriveSecretsConfig(secretsConfig, "session-signing");
+  const secretsConfig = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`, 'deno')
+  const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
     secretsConfig,
-    "data-encryption",
-  );
-  const app = new Hono<AppEnv>();
-  app.use("*", (c, next) => {
-    c.set("db", db);
-    c.set("daemonCellRegistry", options.registry);
-    c.set("commandQueue", options.commandQueue);
-    c.set("dataEncryptionSecrets", dataEncryptionSecrets);
-    c.set("secretsConfig", secretsConfig);
-    return next();
-  });
+    'data-encryption'
+  )
+  const app = new Hono<AppEnv>()
+  app.use('*', (c, next) => {
+    c.set('db', db)
+    c.set('daemonCellRegistry', options.registry)
+    c.set('commandQueue', options.commandQueue)
+    c.set('dataEncryptionSecrets', dataEncryptionSecrets)
+    c.set('secretsConfig', secretsConfig)
+    return next()
+  })
   const routeOpts = {
     secrets,
-    runtime: "deno" as const,
+    runtime: 'deno' as const,
     signupEnvOverride: undefined,
-  };
-  registerEnvironmentDeployPreviewRoutes(app, routeOpts);
-  registerEnvironmentDeployRoutes(app, routeOpts);
-  registerEnvironmentLifecycleRoutes(app, routeOpts);
-  registerTlsRoutes(app, routeOpts);
-  return { app, secrets };
+  }
+  registerEnvironmentDeployPreviewRoutes(app, routeOpts)
+  registerEnvironmentDeployRoutes(app, routeOpts)
+  registerEnvironmentLifecycleRoutes(app, routeOpts)
+  registerTlsRoutes(app, routeOpts)
+  return { app, secrets }
 }
 
 async function sessionCookie(
   db: ReturnType<typeof createDenoDb>,
   secrets: Awaited<ReturnType<typeof deriveSecretsConfig>>,
-  userId: string,
+  userId: string
 ): Promise<string> {
-  const { token } = await createSession(db, userId, {});
-  const signed = await buildSignedCookie(token, secrets);
-  return `${HTTP_SESSION_COOKIE_NAME}=${signed}`;
+  const { token } = await createSession(db, userId, {})
+  const signed = await buildSignedCookie(token, secrets)
+  return `${HTTP_SESSION_COOKIE_NAME}=${signed}`
 }
 
 async function withDeployFixtures(
   fn: (ctx: {
-    db: ReturnType<typeof createDenoDb>;
-    app: Hono<AppEnv>;
-    secrets: Awaited<ReturnType<typeof deriveSecretsConfig>>;
-    userId: string;
-    organizationId: string;
-    workspaceId: string;
-    projectId: string;
-    environmentId: string;
-    serverId: string;
-    commandQueue: ReturnType<typeof createRecordingCommandQueue>;
-  }) => Promise<void>,
+    db: ReturnType<typeof createDenoDb>
+    app: Hono<AppEnv>
+    secrets: Awaited<ReturnType<typeof deriveSecretsConfig>>
+    userId: string
+    organizationId: string
+    workspaceId: string
+    projectId: string
+    environmentId: string
+    serverId: string
+    commandQueue: ReturnType<typeof createRecordingCommandQueue>
+  }) => Promise<void>
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn(
-      "Skipping environment deploy route tests: TURBOPANEL_DATABASE_URL not set",
-    );
-    return;
+    console.warn('Skipping environment deploy route tests: TURBOPANEL_DATABASE_URL not set')
+    return
   }
 
-  const db = createDenoDb();
-  const commandQueue = createRecordingCommandQueue();
-  const registry = createTrackingRegistry();
+  const db = createDenoDb()
+  const commandQueue = createRecordingCommandQueue()
+  const registry = createTrackingRegistry()
   const { app, secrets } = await createDeployRoutesTestApp(db, {
     registry,
     commandQueue,
-  });
+  })
 
   const [insertedOrg] = await db
     .insert(organization)
-    .values({ name: "Deploy Route Test Org" })
-    .returning({ id: organization.id });
-  const organizationId = insertedOrg!.id;
+    .values({ name: 'Deploy Route Test Org' })
+    .returning({ id: organization.id })
+  const organizationId = insertedOrg!.id
 
   const [insertedUser] = await db
     .insert(user)
     .values({
       email: `deploy-route-${crypto.randomUUID()}@example.com`,
       isEmailVerified: true,
-      role: "user",
+      role: 'user',
     })
-    .returning({ id: user.id });
-  const userId = insertedUser!.id;
+    .returning({ id: user.id })
+  const userId = insertedUser!.id
 
   await db.insert(grant).values({
-    entityType: "organization",
+    entityType: 'organization',
     entityId: organizationId,
-    actorType: "user",
+    actorType: 'user',
     actorId: userId,
-    permission: "organization:manage",
-  });
+    permission: 'organization:manage',
+  })
 
   const [insertedWorkspace] = await db
     .insert(workspace)
-    .values({ name: "Deploy Route Workspace", organizationId })
-    .returning({ id: workspace.id });
-  const workspaceId = insertedWorkspace!.id;
+    .values({ name: 'Deploy Route Workspace', organizationId })
+    .returning({ id: workspace.id })
+  const workspaceId = insertedWorkspace!.id
 
-  const now = new Date().toISOString();
+  const now = new Date().toISOString()
   const [insertedServer] = await db
     .insert(server)
     .values({
       organizationId,
-      name: "Deploy Route Server",
+      name: 'Deploy Route Server',
       createdAt: now,
       updatedAt: now,
     })
-    .returning({ id: server.id });
-  const serverId = insertedServer!.id;
+    .returning({ id: server.id })
+  const serverId = insertedServer!.id
 
   const [insertedProject] = await db
     .insert(project)
     .values({
-      name: "Deploy Route Project",
+      name: 'Deploy Route Project',
       workspaceId,
       organizationId,
       options: { compose: emptyComposeDocument() },
     })
-    .returning({ id: project.id });
-  const projectId = insertedProject!.id;
+    .returning({ id: project.id })
+  const projectId = insertedProject!.id
 
   const [insertedEnvironment] = await db
     .insert(environment)
     .values({
-      name: "Deploy Route Env",
+      name: 'Deploy Route Env',
       projectId,
       options: { compose: emptyComposeDocument() },
     })
-    .returning({ id: environment.id });
-  const environmentId = insertedEnvironment!.id;
+    .returning({ id: environment.id })
+  const environmentId = insertedEnvironment!.id
 
   try {
     await fn({
@@ -594,1274 +579,1151 @@ async function withDeployFixtures(
       environmentId,
       serverId,
       commandQueue,
-    });
+    })
   } finally {
-    await db.delete(command).where(eq(command.serverId, serverId));
-    await db.delete(container).where(eq(container.serverId, serverId));
-    await db.delete(service).where(eq(service.environmentId, environmentId));
-    await db.delete(environment).where(eq(environment.id, environmentId));
-    await db.delete(project).where(eq(project.id, projectId));
-    await db.delete(server).where(eq(server.id, serverId));
-    await db.delete(grant).where(and(
-      eq(grant.actorId, userId),
-      eq(grant.entityId, organizationId),
-    ));
-    await db.delete(workspace).where(eq(workspace.id, workspaceId));
-    await db.delete(user).where(eq(user.id, userId));
-    await db.delete(organization).where(eq(organization.id, organizationId));
+    await db.delete(command).where(eq(command.serverId, serverId))
+    await db.delete(container).where(eq(container.serverId, serverId))
+    await db.delete(service).where(eq(service.environmentId, environmentId))
+    await db.delete(environment).where(eq(environment.id, environmentId))
+    await db.delete(project).where(eq(project.id, projectId))
+    await db.delete(server).where(eq(server.id, serverId))
+    await db.delete(grant).where(and(eq(grant.actorId, userId), eq(grant.entityId, organizationId)))
+    await db.delete(workspace).where(eq(workspace.id, workspaceId))
+    await db.delete(user).where(eq(user.id, userId))
+    await db.delete(organization).where(eq(organization.id, organizationId))
   }
 }
 
-test("GET /environments/:id/deploy-preview returns prepared yaml with warnings for empty compose", async () => {
-  await withDeployFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-    projectId,
-    environmentId,
-    serverId,
-  }) => {
-    await db
-      .update(environment)
-      .set({
-        serverId,
-        options: { compose: composeWithEmptyServices() },
-        updatedAt: new Date().toISOString(),
-      })
-      .where(eq(environment.id, environmentId));
-    await db
-      .update(project)
-      .set({
-        options: { compose: emptyComposeDocument() },
-        updatedAt: new Date().toISOString(),
-      })
-      .where(eq(project.id, projectId));
-
-    const cookie = await sessionCookie(db, secrets, userId);
-    const res = await app.request(
-      `/environments/${environmentId}/deploy-preview`,
-      {
-        method: "GET",
-        headers: {
-          Cookie: cookie,
-          [ORG_ID_HEADER]: organizationId,
-        },
-      },
-    );
-
-    assertEquals(res.status, 200);
-    const body = await res.json() as {
-      ok: boolean;
-      composeFiles: Array<{ filename: string; role: string; content: string }>;
-      projectName: string;
-      containers: unknown[];
-      volumes: unknown[];
-      warnings: Array<{ code: string }>;
-    };
-    assertEquals(body.ok, true);
-    assertEquals(body.projectName, projectId);
-    assertEquals(body.containers, []);
-    assertEquals(body.volumes, []);
-    assertEquals(body.warnings.some((w) => w.code === "empty_compose"), true);
-    assertEquals(body.composeFiles?.[0]?.role, "runtime");
-    assertEquals(body.composeFiles?.[0]?.filename, "compose.yaml");
-  });
-});
-
-test("GET /environments/:id/deploy-preview returns containers for a service", async () => {
-  await withDeployFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-    projectId,
-    environmentId,
-    serverId,
-  }) => {
-    await db
-      .update(environment)
-      .set({
-        serverId,
-        options: { compose: emptyComposeDocument() },
-        updatedAt: new Date().toISOString(),
-      })
-      .where(eq(environment.id, environmentId));
-    await db
-      .update(project)
-      .set({
-        options: { compose: composeWithWebService() },
-        updatedAt: new Date().toISOString(),
-      })
-      .where(eq(project.id, projectId));
-
-    const cookie = await sessionCookie(db, secrets, userId);
-    const res = await app.request(
-      `/environments/${environmentId}/deploy-preview`,
-      {
-        method: "GET",
-        headers: {
-          Cookie: cookie,
-          [ORG_ID_HEADER]: organizationId,
-        },
-      },
-    );
-
-    assertEquals(res.status, 200);
-    const body = await res.json() as {
-      ok: boolean;
-      composeFiles: Array<{
-        filename: string;
-        role: string;
-        source?: string;
-        content: string;
-      }>;
-      projectName: string;
-      containers: Array<{
-        serviceId: string;
-        composeServiceName: string;
-        containerName: string;
-        ordinal: number;
-      }>;
-      volumes: unknown[];
-      warnings: unknown[];
-    };
-    assertEquals(body.ok, true);
-    assertEquals(body.projectName, projectId);
-    const runtimeYaml = body.composeFiles[0]?.content ?? "";
-    assertEquals(runtimeYaml.includes("web:"), true);
-    assertEquals(runtimeYaml.includes("x-turbopanel:"), true);
-    assertEquals(runtimeYaml.includes(serverId), true);
-    assertEquals(
-      (body as { servers?: unknown }).servers,
-      undefined,
-    );
-    assertEquals(body.containers.length >= 1, true);
-    assertEquals(body.containers[0]!.composeServiceName, "web");
-    assertEquals(body.containers[0]!.ordinal, 1);
-    // uuid naming: docker container_name is the service UUID (obfuscated)
-    assertEquals(
-      body.containers[0]!.containerName,
-      body.containers[0]!.serviceId,
-    );
-    assertEquals(
-      runtimeYaml.includes(
-        `container_name: ${body.containers[0]!.serviceId}`,
-      ),
-      true,
-    );
-
-    assertEquals(body.composeFiles.length, 1);
-    assertEquals(body.composeFiles[0]!.role, "runtime");
-    assertEquals(body.composeFiles[0]!.filename, "compose.yaml");
-  });
-});
-
-test("GET /environments/:id/deploy-preview uses service UUID over authored container_name", async () => {
-  await withDeployFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-    projectId,
-    environmentId,
-    serverId,
-  }) => {
-    await db
-      .update(environment)
-      .set({
-        serverId,
-        options: { compose: emptyComposeDocument() },
-        updatedAt: new Date().toISOString(),
-      })
-      .where(eq(environment.id, environmentId));
-    await db
-      .update(project)
-      .set({
-        options: { compose: composeWithNamedWebService() },
-        updatedAt: new Date().toISOString(),
-      })
-      .where(eq(project.id, projectId));
-
-    const cookie = await sessionCookie(db, secrets, userId);
-    const res = await app.request(
-      `/environments/${environmentId}/deploy-preview`,
-      {
-        method: "GET",
-        headers: {
-          Cookie: cookie,
-          [ORG_ID_HEADER]: organizationId,
-        },
-      },
-    );
-
-    assertEquals(res.status, 200);
-    const body = await res.json() as {
-      ok: boolean;
-      composeFiles: Array<{ content: string }>;
-      containers: Array<{
-        serviceId: string;
-        containerName: string;
-      }>;
-    };
-    assertEquals(body.ok, true);
-    assertEquals(body.containers.length >= 1, true);
-    assertEquals(
-      body.containers[0]!.containerName,
-      body.containers[0]!.serviceId,
-    );
-    const runtimeYaml = body.composeFiles[0]?.content ?? "";
-    assertEquals(
-      runtimeYaml.includes(`container_name: ${body.containers[0]!.serviceId}`),
-      true,
-    );
-    assertEquals(runtimeYaml.includes("container_name: adminer"), false);
-  });
-});
-
-test("POST /environments/:id/deploy payload carries runtime composeFiles", async () => {
-  await withDeployFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-    projectId,
-    environmentId,
-    serverId,
-    commandQueue,
-  }) => {
-    await db
-      .update(environment)
-      .set({
-        serverId,
-        name: "Production",
-        options: { compose: emptyComposeDocument() },
-        updatedAt: new Date().toISOString(),
-      })
-      .where(eq(environment.id, environmentId));
-    await db
-      .update(project)
-      .set({
-        options: { compose: composeWithWebService() },
-        updatedAt: new Date().toISOString(),
-      })
-      .where(eq(project.id, projectId));
-
-    const cookie = await sessionCookie(db, secrets, userId);
-    const res = await app.request(`/environments/${environmentId}/deploy`, {
-      method: "POST",
-      headers: {
-        Cookie: cookie,
-        [ORG_ID_HEADER]: organizationId,
-        "Content-Type": "application/json",
-      },
-      body: "{}",
-    });
-
-    assertEquals(res.status, 200);
-    const body = await res.json() as { ok: boolean; commandId: string };
-    assertEquals(body.ok, true);
-    assertEquals(commandQueue.envelopes.length, 1);
-
-    const [row] = await db
-      .select({ payload: dispatch.payload })
-      .from(dispatch)
-      .where(eq(dispatch.commandId, body.commandId))
-      .limit(1);
-    const payload = row?.payload as {
-      composeFiles: Array<{ filename: string; role: string; content: string }>;
-    };
-    assertEquals(Array.isArray(payload.composeFiles), true);
-    assertEquals(payload.composeFiles.length, 1);
-    assertEquals(payload.composeFiles[0]!.role, "runtime");
-    assertEquals(payload.composeFiles[0]!.filename, "compose.yaml");
-    assertEquals(payload.composeFiles[0]!.content.includes("web:"), true);
-  });
-});
-
-test("POST /environments/:id/deploy stamps hostingIngress for HTTP hostnames", async () => {
-  const traefikServiceId = "00000000-0000-4000-8000-0000000000aa";
-  await withDeployFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-    projectId,
-    environmentId,
-    serverId,
-    commandQueue,
-  }) => {
-    const originalEnsure = systemHierarchyProvision.ensure;
-    systemHierarchyProvision.ensure = () =>
-      Promise.resolve({
-        workspaceId: "00000000-0000-4000-8000-0000000000bb",
-        projectId: "00000000-0000-4000-8000-0000000000cc",
-        environmentId: "00000000-0000-4000-8000-0000000000dd",
-        serviceId: traefikServiceId,
-        containerRowId: "00000000-0000-4000-8000-0000000000ee",
-        containerName: `${traefikServiceId}-in`,
-      });
-    let hostingServiceId: string | undefined;
-    try {
+test('GET /environments/:id/deploy-preview returns prepared yaml with warnings for empty compose', async () => {
+  await withDeployFixtures(
+    async ({ db, app, secrets, userId, organizationId, projectId, environmentId, serverId }) => {
       await db
         .update(environment)
         .set({
           serverId,
-          name: "Production",
+          options: { compose: composeWithEmptyServices() },
+          updatedAt: new Date().toISOString(),
+        })
+        .where(eq(environment.id, environmentId))
+      await db
+        .update(project)
+        .set({
           options: { compose: emptyComposeDocument() },
           updatedAt: new Date().toISOString(),
         })
-        .where(eq(environment.id, environmentId));
+        .where(eq(project.id, projectId))
+
+      const cookie = await sessionCookie(db, secrets, userId)
+      const res = await app.request(`/environments/${environmentId}/deploy-preview`, {
+        method: 'GET',
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+        },
+      })
+
+      assertEquals(res.status, 200)
+      const body = (await res.json()) as {
+        ok: boolean
+        composeFiles: Array<{ filename: string; role: string; content: string }>
+        projectName: string
+        containers: unknown[]
+        volumes: unknown[]
+        warnings: Array<{ code: string }>
+      }
+      assertEquals(body.ok, true)
+      assertEquals(body.projectName, projectId)
+      assertEquals(body.containers, [])
+      assertEquals(body.volumes, [])
+      assertEquals(
+        body.warnings.some((w) => w.code === 'empty_compose'),
+        true
+      )
+      assertEquals(body.composeFiles?.[0]?.role, 'runtime')
+      assertEquals(body.composeFiles?.[0]?.filename, 'compose.yaml')
+    }
+  )
+})
+
+test('GET /environments/:id/deploy-preview returns containers for a service', async () => {
+  await withDeployFixtures(
+    async ({ db, app, secrets, userId, organizationId, projectId, environmentId, serverId }) => {
+      await db
+        .update(environment)
+        .set({
+          serverId,
+          options: { compose: emptyComposeDocument() },
+          updatedAt: new Date().toISOString(),
+        })
+        .where(eq(environment.id, environmentId))
       await db
         .update(project)
         .set({
           options: { compose: composeWithWebService() },
           updatedAt: new Date().toISOString(),
         })
-        .where(eq(project.id, projectId));
+        .where(eq(project.id, projectId))
 
-      const [svc] = await db
-        .insert(service)
-        .values({
-          environmentId,
-          name: "web",
-          composeServiceName: "web",
-        })
-        .returning({ id: service.id });
-      hostingServiceId = svc!.id;
-      await db.insert(hosting).values({
-        serviceId: svc!.id,
-        options: { hostnames: ["adminer.example.test"] },
-      });
-
-      const cookie = await sessionCookie(db, secrets, userId);
-      const res = await app.request(`/environments/${environmentId}/deploy`, {
-        method: "POST",
+      const cookie = await sessionCookie(db, secrets, userId)
+      const res = await app.request(`/environments/${environmentId}/deploy-preview`, {
+        method: 'GET',
         headers: {
           Cookie: cookie,
           [ORG_ID_HEADER]: organizationId,
-          "Content-Type": "application/json",
         },
-        body: "{}",
-      });
+      })
 
-      assertEquals(res.status, 200);
-      const body = await res.json() as { ok: boolean; commandId: string };
-      assertEquals(body.ok, true);
-      assertEquals(commandQueue.envelopes.length, 1);
-
-      const [row] = await db
-        .select({ payload: dispatch.payload })
-        .from(dispatch)
-        .where(eq(dispatch.commandId, body.commandId))
-        .limit(1);
-      const payload = row?.payload as {
-        hostingIngress?: {
-          serviceId: string;
-          composeServiceName: string;
-          containerName: string;
-        };
-        hostingIngressNetwork?: string;
-      };
-      assertEquals(payload.hostingIngress, {
-        serviceId: traefikServiceId,
-        composeServiceName: "traefik",
-        containerName: `${traefikServiceId}-in`,
-      });
-      // The shared ingress Docker network is that same component serviceId —
-      // the daemon must never reconstruct it from a literal.
-      assertEquals(payload.hostingIngressNetwork, traefikServiceId);
-    } finally {
-      if (hostingServiceId) {
-        await db.delete(hosting).where(eq(hosting.serviceId, hostingServiceId));
+      assertEquals(res.status, 200)
+      const body = (await res.json()) as {
+        ok: boolean
+        composeFiles: Array<{
+          filename: string
+          role: string
+          source?: string
+          content: string
+        }>
+        projectName: string
+        containers: Array<{
+          serviceId: string
+          composeServiceName: string
+          containerName: string
+          ordinal: number
+        }>
+        volumes: unknown[]
+        warnings: unknown[]
       }
-      systemHierarchyProvision.ensure = originalEnsure;
-    }
-  });
-});
+      assertEquals(body.ok, true)
+      assertEquals(body.projectName, projectId)
+      const runtimeYaml = body.composeFiles[0]?.content ?? ''
+      assertEquals(runtimeYaml.includes('web:'), true)
+      assertEquals(runtimeYaml.includes('x-turbopanel:'), true)
+      assertEquals(runtimeYaml.includes(serverId), true)
+      assertEquals((body as { servers?: unknown }).servers, undefined)
+      assertEquals(body.containers.length >= 1, true)
+      assertEquals(body.containers[0]!.composeServiceName, 'web')
+      assertEquals(body.containers[0]!.ordinal, 1)
+      // uuid naming: docker container_name is the service UUID (obfuscated)
+      assertEquals(body.containers[0]!.containerName, body.containers[0]!.serviceId)
+      assertEquals(runtimeYaml.includes(`container_name: ${body.containers[0]!.serviceId}`), true)
 
-test("POST /environments/:id/deploy uses internal TLS after revoking a Let's Encrypt pin", async () => {
-  const traefikServiceId = "00000000-0000-4000-8000-0000000000ab";
-  await withDeployFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-    projectId,
-    environmentId,
-    serverId,
-    commandQueue,
-  }) => {
-    const originalEnsure = systemHierarchyProvision.ensure;
-    systemHierarchyProvision.ensure = () =>
-      Promise.resolve({
-        workspaceId: "00000000-0000-4000-8000-0000000000bb",
-        projectId: "00000000-0000-4000-8000-0000000000cc",
-        environmentId: "00000000-0000-4000-8000-0000000000dd",
-        serviceId: traefikServiceId,
-        containerRowId: "00000000-0000-4000-8000-0000000000ee",
-        containerName: `${traefikServiceId}-in`,
-      });
-    let hostingServiceId: string | undefined;
-    let tlsId: string | undefined;
-    try {
+      assertEquals(body.composeFiles.length, 1)
+      assertEquals(body.composeFiles[0]!.role, 'runtime')
+      assertEquals(body.composeFiles[0]!.filename, 'compose.yaml')
+    }
+  )
+})
+
+test('GET /environments/:id/deploy-preview uses service UUID over authored container_name', async () => {
+  await withDeployFixtures(
+    async ({ db, app, secrets, userId, organizationId, projectId, environmentId, serverId }) => {
       await db
         .update(environment)
         .set({
           serverId,
-          name: "Production",
           options: { compose: emptyComposeDocument() },
           updatedAt: new Date().toISOString(),
         })
-        .where(eq(environment.id, environmentId));
+        .where(eq(environment.id, environmentId))
+      await db
+        .update(project)
+        .set({
+          options: { compose: composeWithNamedWebService() },
+          updatedAt: new Date().toISOString(),
+        })
+        .where(eq(project.id, projectId))
+
+      const cookie = await sessionCookie(db, secrets, userId)
+      const res = await app.request(`/environments/${environmentId}/deploy-preview`, {
+        method: 'GET',
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+        },
+      })
+
+      assertEquals(res.status, 200)
+      const body = (await res.json()) as {
+        ok: boolean
+        composeFiles: Array<{ content: string }>
+        containers: Array<{
+          serviceId: string
+          containerName: string
+        }>
+      }
+      assertEquals(body.ok, true)
+      assertEquals(body.containers.length >= 1, true)
+      assertEquals(body.containers[0]!.containerName, body.containers[0]!.serviceId)
+      const runtimeYaml = body.composeFiles[0]?.content ?? ''
+      assertEquals(runtimeYaml.includes(`container_name: ${body.containers[0]!.serviceId}`), true)
+      assertEquals(runtimeYaml.includes('container_name: adminer'), false)
+    }
+  )
+})
+
+test('POST /environments/:id/deploy payload carries runtime composeFiles', async () => {
+  await withDeployFixtures(
+    async ({
+      db,
+      app,
+      secrets,
+      userId,
+      organizationId,
+      projectId,
+      environmentId,
+      serverId,
+      commandQueue,
+    }) => {
+      await db
+        .update(environment)
+        .set({
+          serverId,
+          name: 'Production',
+          options: { compose: emptyComposeDocument() },
+          updatedAt: new Date().toISOString(),
+        })
+        .where(eq(environment.id, environmentId))
       await db
         .update(project)
         .set({
           options: { compose: composeWithWebService() },
           updatedAt: new Date().toISOString(),
         })
-        .where(eq(project.id, projectId));
-      // POST /tls source:lets_encrypt requires the org to have opted in to
-      // ACME (organization.options.acmeEnabled, off by default).
-      await db
-        .update(organization)
-        .set({ options: { acmeEnabled: true } })
-        .where(eq(organization.id, organizationId));
+        .where(eq(project.id, projectId))
 
-      const cookie = await sessionCookie(db, secrets, userId);
-      const headers = {
-        Cookie: cookie,
-        [ORG_ID_HEADER]: organizationId,
-        "Content-Type": "application/json",
-      };
-
-      const createTls = await app.request("/tls", {
-        method: "POST",
-        headers,
-        body: JSON.stringify({
-          source: "lets_encrypt",
-          name: "Deploy revoke LE",
-          hostnames: ["app.example.com"],
-          challengeType: "http-01",
-        }),
-      });
-      assertEquals(createTls.status, 200);
-      const created = await createTls.json() as { ok: true; id: string };
-      tlsId = created.id;
-
-      const [svc] = await db
-        .insert(service)
-        .values({
-          environmentId,
-          name: "web",
-          composeServiceName: "web",
-        })
-        .returning({ id: service.id });
-      hostingServiceId = svc!.id;
-      await db.insert(hosting).values({
-        serviceId: svc!.id,
-        tlsId: created.id,
-        options: { hostnames: ["app.example.com"] },
-      });
-
-      const revoke = await app.request(`/tls/${created.id}`, {
-        method: "PATCH",
-        headers,
-        body: JSON.stringify({ revoke: true }),
-      });
-      assertEquals(revoke.status, 200);
-
+      const cookie = await sessionCookie(db, secrets, userId)
       const res = await app.request(`/environments/${environmentId}/deploy`, {
-        method: "POST",
-        headers,
-        body: "{}",
-      });
-      assertEquals(res.status, 200);
-      const body = await res.json() as { ok: boolean; commandId: string };
-      assertEquals(body.ok, true);
-      assertEquals(commandQueue.envelopes.length, 1);
+        method: 'POST',
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+          'Content-Type': 'application/json',
+        },
+        body: '{}',
+      })
+
+      assertEquals(res.status, 200)
+      const body = (await res.json()) as { ok: boolean; commandId: string }
+      assertEquals(body.ok, true)
+      assertEquals(commandQueue.envelopes.length, 1)
 
       const [row] = await db
         .select({ payload: dispatch.payload })
         .from(dispatch)
         .where(eq(dispatch.commandId, body.commandId))
-        .limit(1);
+        .limit(1)
       const payload = row?.payload as {
-        hostings: Array<{ tlsId?: string | null; tlsMode?: string }>;
-        tlsMaterial?: unknown[];
-      };
-      assertEquals(payload.hostings.length, 1);
-      assertEquals(payload.hostings[0]?.tlsId ?? null, null);
-      assertEquals(payload.hostings[0]?.tlsMode, undefined);
-      assertEquals(payload.tlsMaterial ?? [], []);
-    } finally {
-      if (hostingServiceId) {
-        await db.delete(hosting).where(eq(hosting.serviceId, hostingServiceId));
+        composeFiles: Array<{ filename: string; role: string; content: string }>
       }
-      if (tlsId) {
-        await db.delete(tls).where(eq(tls.id, tlsId));
-      }
-      systemHierarchyProvision.ensure = originalEnsure;
+      assertEquals(Array.isArray(payload.composeFiles), true)
+      assertEquals(payload.composeFiles.length, 1)
+      assertEquals(payload.composeFiles[0]!.role, 'runtime')
+      assertEquals(payload.composeFiles[0]!.filename, 'compose.yaml')
+      assertEquals(payload.composeFiles[0]!.content.includes('web:'), true)
     }
-  });
-});
+  )
+})
 
-test("POST /environments/:id/deploy uses project defaultServerId when env pin is unset", async () => {
-  await withDeployFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-    projectId,
-    environmentId,
-    serverId,
-    commandQueue,
-  }) => {
-    await db
-      .update(project)
-      .set({
-        options: {
-          compose: composeWithWebService(),
-          defaultServerId: serverId,
-        },
-        updatedAt: new Date().toISOString(),
-      })
-      .where(eq(project.id, projectId));
-    await db
-      .update(environment)
-      .set({
-        serverId: null,
-        options: { compose: composeWithWebService() },
-        updatedAt: new Date().toISOString(),
-      })
-      .where(eq(environment.id, environmentId));
-
-    const cookie = await sessionCookie(db, secrets, userId);
-    const res = await app.request(`/environments/${environmentId}/deploy`, {
-      method: "POST",
-      headers: {
-        Cookie: cookie,
-        [ORG_ID_HEADER]: organizationId,
-        "Content-Type": "application/json",
-      },
-      body: "{}",
-    });
-
-    assertEquals(res.status, 200);
-    assertEquals(commandQueue.envelopes.length, 1);
-    assertEquals(commandQueue.envelopes[0]!.serverId, serverId);
-  });
-});
-
-test("POST /environments/:id/deploy rejects empty compose", async () => {
-  await withDeployFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-    projectId,
-    environmentId,
-    serverId,
-    commandQueue,
-  }) => {
-    await db
-      .update(environment)
-      .set({
-        serverId,
-        options: { compose: composeWithEmptyServices() },
-        updatedAt: new Date().toISOString(),
-      })
-      .where(eq(environment.id, environmentId));
-    await db
-      .update(project)
-      .set({
-        options: { compose: emptyComposeDocument() },
-        updatedAt: new Date().toISOString(),
-      })
-      .where(eq(project.id, projectId));
-
-    const cookie = await sessionCookie(db, secrets, userId);
-    const res = await app.request(`/environments/${environmentId}/deploy`, {
-      method: "POST",
-      headers: {
-        Cookie: cookie,
-        [ORG_ID_HEADER]: organizationId,
-        "Content-Type": "application/json",
-      },
-      body: "{}",
-    });
-
-    assertEquals(res.status, 400);
-    assertEquals(await res.json(), { error: "compose_empty" });
-    assertEquals(commandQueue.envelopes.length, 0);
-  });
-});
-
-test("POST /environments/:id/deploy pinned auto-resolves without body serverId", async () => {
-  await withDeployFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-    environmentId,
-    serverId,
-    commandQueue,
-  }) => {
-    await db
-      .update(environment)
-      .set({
-        serverId,
-        options: { compose: composeWithWebService() },
-        updatedAt: new Date().toISOString(),
-      })
-      .where(eq(environment.id, environmentId));
-
-    const cookie = await sessionCookie(db, secrets, userId);
-    const res = await app.request(`/environments/${environmentId}/deploy`, {
-      method: "POST",
-      headers: {
-        Cookie: cookie,
-        [ORG_ID_HEADER]: organizationId,
-        "Content-Type": "application/json",
-      },
-      body: "{}",
-    });
-
-    assertEquals(res.status, 200);
-    const body = await res.json() as {
-      ok: boolean;
-      commandId: string;
-      status: string;
-    };
-    assertEquals(body.ok, true);
-    assertEquals(body.status, "queued");
-    assertEquals(commandQueue.envelopes.length, 1);
-    assertEquals(commandQueue.envelopes[0]!.serverId, serverId);
-    assertEquals(commandQueue.envelopes[0]!.type, "environment.deploy");
-
-    const [envRow] = await db
-      .select({
-        serverId: environment.serverId,
-        metadata: environment.metadata,
-      })
-      .from(environment)
-      .where(eq(environment.id, environmentId))
-      .limit(1);
-    assertEquals(envRow?.serverId, serverId);
-    const metadata = envRow?.metadata as { serverId?: string } | null;
-    assertEquals(metadata?.serverId, undefined);
-  });
-});
-
-test("POST /environments/:id/deploy ignores body serverId and uses environment.server_id", async () => {
-  await withDeployFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-    environmentId,
-    serverId,
-    commandQueue,
-  }) => {
-    const now = new Date().toISOString();
-    const [otherServer] = await db
-      .insert(server)
-      .values({
-        organizationId,
-        name: "Deploy Route Other Server",
-        createdAt: now,
-        updatedAt: now,
-      })
-      .returning({ id: server.id });
-    const otherServerId = otherServer!.id;
-
-    try {
-      await db
-        .update(environment)
-        .set({
-          serverId,
-          options: { compose: composeWithWebService() },
-          updatedAt: new Date().toISOString(),
+test('POST /environments/:id/deploy stamps hostingIngress for HTTP hostnames', async () => {
+  const traefikServiceId = '00000000-0000-4000-8000-0000000000aa'
+  await withDeployFixtures(
+    async ({
+      db,
+      app,
+      secrets,
+      userId,
+      organizationId,
+      projectId,
+      environmentId,
+      serverId,
+      commandQueue,
+    }) => {
+      const originalEnsure = systemHierarchyProvision.ensure
+      systemHierarchyProvision.ensure = () =>
+        Promise.resolve({
+          workspaceId: '00000000-0000-4000-8000-0000000000bb',
+          projectId: '00000000-0000-4000-8000-0000000000cc',
+          environmentId: '00000000-0000-4000-8000-0000000000dd',
+          serviceId: traefikServiceId,
+          containerRowId: '00000000-0000-4000-8000-0000000000ee',
+          containerName: `${traefikServiceId}-in`,
         })
-        .where(eq(environment.id, environmentId));
+      let hostingServiceId: string | undefined
+      try {
+        await db
+          .update(environment)
+          .set({
+            serverId,
+            name: 'Production',
+            options: { compose: emptyComposeDocument() },
+            updatedAt: new Date().toISOString(),
+          })
+          .where(eq(environment.id, environmentId))
+        await db
+          .update(project)
+          .set({
+            options: { compose: composeWithWebService() },
+            updatedAt: new Date().toISOString(),
+          })
+          .where(eq(project.id, projectId))
 
-      const cookie = await sessionCookie(db, secrets, userId);
-      const res = await app.request(`/environments/${environmentId}/deploy`, {
-        method: "POST",
-        headers: {
-          Cookie: cookie,
-          [ORG_ID_HEADER]: organizationId,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ serverId: otherServerId }),
-      });
-
-      assertEquals(res.status, 200);
-      assertEquals(commandQueue.envelopes.length, 1);
-      assertEquals(commandQueue.envelopes[0]!.serverId, serverId);
-    } finally {
-      await db.delete(command).where(eq(command.serverId, otherServerId));
-      await db.delete(command).where(eq(command.serverId, serverId));
-      await db.delete(server).where(eq(server.id, otherServerId));
-    }
-  });
-});
-
-test("POST /environments/:id/deploy requires persisted environment.server_id", async () => {
-  await withDeployFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-    environmentId,
-    serverId,
-    commandQueue,
-  }) => {
-    await db
-      .update(environment)
-      .set({
-        serverId: null,
-        options: { compose: composeWithWebService() },
-        updatedAt: new Date().toISOString(),
-      })
-      .where(eq(environment.id, environmentId));
-
-    const cookie = await sessionCookie(db, secrets, userId);
-
-    const bodyServerIdRes = await app.request(
-      `/environments/${environmentId}/deploy`,
-      {
-        method: "POST",
-        headers: {
-          Cookie: cookie,
-          [ORG_ID_HEADER]: organizationId,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ serverId }),
-      },
-    );
-    assertEquals(bodyServerIdRes.status, 409);
-    assertEquals(await bodyServerIdRes.json(), {
-      error: "server_placement_required",
-    });
-    assertEquals(commandQueue.envelopes.length, 0);
-
-    const missingRes = await app.request(
-      `/environments/${environmentId}/deploy`,
-      {
-        method: "POST",
-        headers: {
-          Cookie: cookie,
-          [ORG_ID_HEADER]: organizationId,
-          "Content-Type": "application/json",
-        },
-        body: "{}",
-      },
-    );
-    assertEquals(missingRes.status, 409);
-    assertEquals(await missingRes.json(), {
-      error: "server_placement_required",
-    });
-    assertEquals(commandQueue.envelopes.length, 0);
-  });
-});
-
-test("POST /environments/:id/deploy stale environment pin returns 409", async () => {
-  await withDeployFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-    environmentId,
-    commandQueue,
-  }) => {
-    const now = new Date().toISOString();
-    const [foreignOrg] = await db
-      .insert(organization)
-      .values({ name: "Deploy Route Foreign Org" })
-      .returning({ id: organization.id });
-    const foreignOrgId = foreignOrg!.id;
-    const [foreignServer] = await db
-      .insert(server)
-      .values({
-        organizationId: foreignOrgId,
-        name: "Foreign Server",
-        createdAt: now,
-        updatedAt: now,
-      })
-      .returning({ id: server.id });
-    const foreignServerId = foreignServer!.id;
-
-    try {
-      await db
-        .update(environment)
-        .set({
-          serverId: foreignServerId,
-          options: { compose: composeWithWebService() },
-          updatedAt: new Date().toISOString(),
+        const [svc] = await db
+          .insert(service)
+          .values({
+            environmentId,
+            name: 'web',
+            composeServiceName: 'web',
+          })
+          .returning({ id: service.id })
+        hostingServiceId = svc!.id
+        await db.insert(hosting).values({
+          serviceId: svc!.id,
+          options: { hostnames: ['adminer.example.test'] },
         })
-        .where(eq(environment.id, environmentId));
 
-      const cookie = await sessionCookie(db, secrets, userId);
-      const res = await app.request(`/environments/${environmentId}/deploy`, {
-        method: "POST",
-        headers: {
-          Cookie: cookie,
-          [ORG_ID_HEADER]: organizationId,
-          "Content-Type": "application/json",
-        },
-        body: "{}",
-      });
-
-      assertEquals(res.status, 409);
-      assertEquals(await res.json(), { error: "server_placement_required" });
-      assertEquals(commandQueue.envelopes.length, 0);
-    } finally {
-      await db
-        .update(environment)
-        .set({ serverId: null, updatedAt: new Date().toISOString() })
-        .where(eq(environment.id, environmentId));
-      await db.delete(server).where(eq(server.id, foreignServerId));
-      await db.delete(organization).where(eq(organization.id, foreignOrgId));
-    }
-  });
-});
-
-test("POST /environments/:id/deploy rejects stored compose placement", async () => {
-  await withDeployFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-    projectId,
-    environmentId,
-    serverId,
-    commandQueue,
-  }) => {
-    // Stored compose placement must fail deploy — placement lives on environment.server_id.
-    await db
-      .update(project)
-      .set({
-        options: {
-          compose: {
-            version: 1,
-            data: {
-              services: { web: { image: "nginx:alpine" } },
-              "x-turbopanel": { placement: { server_id: crypto.randomUUID() } },
-            },
-            presentation: {
-              keyOrder: ["services", "x-turbopanel"],
-              comments: {},
-            },
-          },
-        },
-        updatedAt: new Date().toISOString(),
-      })
-      .where(eq(project.id, projectId));
-    await db
-      .update(environment)
-      .set({
-        serverId,
-        options: composeWithWebService(),
-        updatedAt: new Date().toISOString(),
-      })
-      .where(eq(environment.id, environmentId));
-
-    const cookie = await sessionCookie(db, secrets, userId);
-    const res = await app.request(`/environments/${environmentId}/deploy`, {
-      method: "POST",
-      headers: {
-        Cookie: cookie,
-        [ORG_ID_HEADER]: organizationId,
-        "Content-Type": "application/json",
-      },
-      body: "{}",
-    });
-    assertEquals(res.status, 400);
-    assertEquals(await res.json(), { error: "Invalid compose document" });
-    assertEquals(commandQueue.envelopes.length, 0);
-  });
-});
-
-test("POST /environments/:id/deploy rejects environment overlay compose placement", async () => {
-  await withDeployFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-    environmentId,
-    serverId,
-    commandQueue,
-  }) => {
-    await db
-      .update(environment)
-      .set({
-        serverId,
-        options: {
-          compose: {
-            version: 1,
-            data: {
-              services: { web: { image: "nginx:alpine" } },
-              "x-turbopanel": { placement: { server_id: crypto.randomUUID() } },
-            },
-            presentation: {
-              keyOrder: ["services", "x-turbopanel"],
-              comments: {},
-            },
-          },
-        },
-        updatedAt: new Date().toISOString(),
-      })
-      .where(eq(environment.id, environmentId));
-
-    const cookie = await sessionCookie(db, secrets, userId);
-    const res = await app.request(`/environments/${environmentId}/deploy`, {
-      method: "POST",
-      headers: {
-        Cookie: cookie,
-        [ORG_ID_HEADER]: organizationId,
-        "Content-Type": "application/json",
-      },
-      body: "{}",
-    });
-    assertEquals(res.status, 400);
-    assertEquals(await res.json(), { error: "Invalid compose document" });
-    assertEquals(commandQueue.envelopes.length, 0);
-  });
-});
-
-test("POST /environments/:id/lifecycle enqueues environment.lifecycle", async () => {
-  await withDeployFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-    environmentId,
-    serverId,
-    commandQueue,
-  }) => {
-    await db
-      .update(environment)
-      .set({
-        serverId,
-        updatedAt: new Date().toISOString(),
-      })
-      .where(eq(environment.id, environmentId));
-
-    const cookie = await sessionCookie(db, secrets, userId);
-    const res = await app.request(`/environments/${environmentId}/lifecycle`, {
-      method: "POST",
-      headers: {
-        Cookie: cookie,
-        [ORG_ID_HEADER]: organizationId,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ action: "stop" }),
-    });
-    assertEquals(res.status, 200);
-    const body = await res.json() as {
-      ok: boolean;
-      commandId: string;
-      status: string;
-      serverId: string;
-    };
-    assertEquals(body.ok, true);
-    assertEquals(body.status, "queued");
-    assertEquals(body.serverId, serverId);
-    assertEquals(commandQueue.envelopes.length, 1);
-    assertEquals(commandQueue.envelopes[0]!.type, "environment.lifecycle");
-    assertEquals(commandQueue.envelopes[0]!.serverId, serverId);
-  });
-});
-
-test("POST /environments/:id/lifecycle rejects unknown action", async () => {
-  await withDeployFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-    environmentId,
-    serverId,
-    commandQueue,
-  }) => {
-    await db
-      .update(environment)
-      .set({
-        serverId,
-        updatedAt: new Date().toISOString(),
-      })
-      .where(eq(environment.id, environmentId));
-
-    const cookie = await sessionCookie(db, secrets, userId);
-    const res = await app.request(`/environments/${environmentId}/lifecycle`, {
-      method: "POST",
-      headers: {
-        Cookie: cookie,
-        [ORG_ID_HEADER]: organizationId,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ action: "down" }),
-    });
-    assertEquals(res.status, 400);
-    assertEquals(await res.json(), { error: "Invalid request" });
-    assertEquals(commandQueue.envelopes.length, 0);
-  });
-});
-
-test("POST /environments/:id/lifecycle requires persisted environment.server_id", async () => {
-  await withDeployFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-    environmentId,
-    commandQueue,
-  }) => {
-    await db
-      .update(environment)
-      .set({
-        serverId: null,
-        updatedAt: new Date().toISOString(),
-      })
-      .where(eq(environment.id, environmentId));
-
-    const cookie = await sessionCookie(db, secrets, userId);
-    const res = await app.request(`/environments/${environmentId}/lifecycle`, {
-      method: "POST",
-      headers: {
-        Cookie: cookie,
-        [ORG_ID_HEADER]: organizationId,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ action: "start" }),
-    });
-    assertEquals(res.status, 409);
-    assertEquals(await res.json(), { error: "server_placement_required" });
-    assertEquals(commandQueue.envelopes.length, 0);
-  });
-});
-
-test("POST /environments/:id/lifecycle returns 403 for non-manager", async () => {
-  await withDeployFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-    environmentId,
-    serverId,
-    commandQueue,
-  }) => {
-    await db
-      .update(environment)
-      .set({
-        serverId,
-        updatedAt: new Date().toISOString(),
-      })
-      .where(eq(environment.id, environmentId));
-    await db.delete(grant).where(and(
-      eq(grant.actorId, userId),
-      eq(grant.entityId, organizationId),
-    ));
-
-    const cookie = await sessionCookie(db, secrets, userId);
-    const res = await app.request(`/environments/${environmentId}/lifecycle`, {
-      method: "POST",
-      headers: {
-        Cookie: cookie,
-        [ORG_ID_HEADER]: organizationId,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ action: "start" }),
-    });
-    assertEquals(res.status, 403);
-    assertEquals(commandQueue.envelopes.length, 0);
-  });
-});
-
-test("POST /environments/:id/lifecycle returns 404 for cross-org environment", async () => {
-  await withDeployFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-    serverId,
-    commandQueue,
-  }) => {
-    const [foreignOrg] = await db
-      .insert(organization)
-      .values({ name: "Lifecycle Foreign Org" })
-      .returning({ id: organization.id });
-    const foreignOrgId = foreignOrg!.id;
-    const [foreignWorkspace] = await db
-      .insert(workspace)
-      .values({ name: "Foreign Workspace", organizationId: foreignOrgId })
-      .returning({ id: workspace.id });
-    const [foreignProject] = await db
-      .insert(project)
-      .values({
-        name: "Foreign Project",
-        workspaceId: foreignWorkspace!.id,
-        organizationId: foreignOrgId,
-        options: { compose: emptyComposeDocument() },
-      })
-      .returning({ id: project.id });
-    const [foreignEnvironment] = await db
-      .insert(environment)
-      .values({
-        name: "Foreign Env",
-        projectId: foreignProject!.id,
-        serverId,
-        options: { compose: emptyComposeDocument() },
-      })
-      .returning({ id: environment.id });
-
-    try {
-      const cookie = await sessionCookie(db, secrets, userId);
-      const res = await app.request(
-        `/environments/${foreignEnvironment!.id}/lifecycle`,
-        {
-          method: "POST",
+        const cookie = await sessionCookie(db, secrets, userId)
+        const res = await app.request(`/environments/${environmentId}/deploy`, {
+          method: 'POST',
           headers: {
             Cookie: cookie,
             [ORG_ID_HEADER]: organizationId,
-            "Content-Type": "application/json",
+            'Content-Type': 'application/json',
           },
-          body: JSON.stringify({ action: "start" }),
-        },
-      );
-      assertEquals(res.status, 404);
-      assertEquals(commandQueue.envelopes.length, 0);
-    } finally {
-      await db.delete(environment).where(
-        eq(environment.id, foreignEnvironment!.id),
-      );
-      await db.delete(project).where(eq(project.id, foreignProject!.id));
-      await db.delete(workspace).where(eq(workspace.id, foreignWorkspace!.id));
-      await db.delete(organization).where(eq(organization.id, foreignOrgId));
-    }
-  });
-});
+          body: '{}',
+        })
 
-const WG_PUBKEY_A = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
-const WG_PUBKEY_B = "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB=";
+        assertEquals(res.status, 200)
+        const body = (await res.json()) as { ok: boolean; commandId: string }
+        assertEquals(body.ok, true)
+        assertEquals(commandQueue.envelopes.length, 1)
+
+        const [row] = await db
+          .select({ payload: dispatch.payload })
+          .from(dispatch)
+          .where(eq(dispatch.commandId, body.commandId))
+          .limit(1)
+        const payload = row?.payload as {
+          hostingIngress?: {
+            serviceId: string
+            composeServiceName: string
+            containerName: string
+          }
+          hostingIngressNetwork?: string
+        }
+        assertEquals(payload.hostingIngress, {
+          serviceId: traefikServiceId,
+          composeServiceName: 'traefik',
+          containerName: `${traefikServiceId}-in`,
+        })
+        // The shared ingress Docker network is that same component serviceId —
+        // the daemon must never reconstruct it from a literal.
+        assertEquals(payload.hostingIngressNetwork, traefikServiceId)
+      } finally {
+        if (hostingServiceId) {
+          await db.delete(hosting).where(eq(hosting.serviceId, hostingServiceId))
+        }
+        systemHierarchyProvision.ensure = originalEnsure
+      }
+    }
+  )
+})
+
+test("POST /environments/:id/deploy uses internal TLS after revoking a Let's Encrypt pin", async () => {
+  const traefikServiceId = '00000000-0000-4000-8000-0000000000ab'
+  await withDeployFixtures(
+    async ({
+      db,
+      app,
+      secrets,
+      userId,
+      organizationId,
+      projectId,
+      environmentId,
+      serverId,
+      commandQueue,
+    }) => {
+      const originalEnsure = systemHierarchyProvision.ensure
+      systemHierarchyProvision.ensure = () =>
+        Promise.resolve({
+          workspaceId: '00000000-0000-4000-8000-0000000000bb',
+          projectId: '00000000-0000-4000-8000-0000000000cc',
+          environmentId: '00000000-0000-4000-8000-0000000000dd',
+          serviceId: traefikServiceId,
+          containerRowId: '00000000-0000-4000-8000-0000000000ee',
+          containerName: `${traefikServiceId}-in`,
+        })
+      let hostingServiceId: string | undefined
+      let tlsId: string | undefined
+      try {
+        await db
+          .update(environment)
+          .set({
+            serverId,
+            name: 'Production',
+            options: { compose: emptyComposeDocument() },
+            updatedAt: new Date().toISOString(),
+          })
+          .where(eq(environment.id, environmentId))
+        await db
+          .update(project)
+          .set({
+            options: { compose: composeWithWebService() },
+            updatedAt: new Date().toISOString(),
+          })
+          .where(eq(project.id, projectId))
+        // POST /tls source:lets_encrypt requires the org to have opted in to
+        // ACME (organization.options.acmeEnabled, off by default).
+        await db
+          .update(organization)
+          .set({ options: { acmeEnabled: true } })
+          .where(eq(organization.id, organizationId))
+
+        const cookie = await sessionCookie(db, secrets, userId)
+        const headers = {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+          'Content-Type': 'application/json',
+        }
+
+        const createTls = await app.request('/tls', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            source: 'lets_encrypt',
+            name: 'Deploy revoke LE',
+            hostnames: ['app.example.com'],
+            challengeType: 'http-01',
+          }),
+        })
+        assertEquals(createTls.status, 200)
+        const created = (await createTls.json()) as { ok: true; id: string }
+        tlsId = created.id
+
+        const [svc] = await db
+          .insert(service)
+          .values({
+            environmentId,
+            name: 'web',
+            composeServiceName: 'web',
+          })
+          .returning({ id: service.id })
+        hostingServiceId = svc!.id
+        await db.insert(hosting).values({
+          serviceId: svc!.id,
+          tlsId: created.id,
+          options: { hostnames: ['app.example.com'] },
+        })
+
+        const revoke = await app.request(`/tls/${created.id}`, {
+          method: 'PATCH',
+          headers,
+          body: JSON.stringify({ revoke: true }),
+        })
+        assertEquals(revoke.status, 200)
+
+        const res = await app.request(`/environments/${environmentId}/deploy`, {
+          method: 'POST',
+          headers,
+          body: '{}',
+        })
+        assertEquals(res.status, 200)
+        const body = (await res.json()) as { ok: boolean; commandId: string }
+        assertEquals(body.ok, true)
+        assertEquals(commandQueue.envelopes.length, 1)
+
+        const [row] = await db
+          .select({ payload: dispatch.payload })
+          .from(dispatch)
+          .where(eq(dispatch.commandId, body.commandId))
+          .limit(1)
+        const payload = row?.payload as {
+          hostings: Array<{ tlsId?: string | null; tlsMode?: string }>
+          tlsMaterial?: unknown[]
+        }
+        assertEquals(payload.hostings.length, 1)
+        assertEquals(payload.hostings[0]?.tlsId ?? null, null)
+        assertEquals(payload.hostings[0]?.tlsMode, undefined)
+        assertEquals(payload.tlsMaterial ?? [], [])
+      } finally {
+        if (hostingServiceId) {
+          await db.delete(hosting).where(eq(hosting.serviceId, hostingServiceId))
+        }
+        if (tlsId) {
+          await db.delete(tls).where(eq(tls.id, tlsId))
+        }
+        systemHierarchyProvision.ensure = originalEnsure
+      }
+    }
+  )
+})
+
+test('POST /environments/:id/deploy uses project defaultServerId when env pin is unset', async () => {
+  await withDeployFixtures(
+    async ({
+      db,
+      app,
+      secrets,
+      userId,
+      organizationId,
+      projectId,
+      environmentId,
+      serverId,
+      commandQueue,
+    }) => {
+      await db
+        .update(project)
+        .set({
+          options: {
+            compose: composeWithWebService(),
+            defaultServerId: serverId,
+          },
+          updatedAt: new Date().toISOString(),
+        })
+        .where(eq(project.id, projectId))
+      await db
+        .update(environment)
+        .set({
+          serverId: null,
+          options: { compose: composeWithWebService() },
+          updatedAt: new Date().toISOString(),
+        })
+        .where(eq(environment.id, environmentId))
+
+      const cookie = await sessionCookie(db, secrets, userId)
+      const res = await app.request(`/environments/${environmentId}/deploy`, {
+        method: 'POST',
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+          'Content-Type': 'application/json',
+        },
+        body: '{}',
+      })
+
+      assertEquals(res.status, 200)
+      assertEquals(commandQueue.envelopes.length, 1)
+      assertEquals(commandQueue.envelopes[0]!.serverId, serverId)
+    }
+  )
+})
+
+test('POST /environments/:id/deploy rejects empty compose', async () => {
+  await withDeployFixtures(
+    async ({
+      db,
+      app,
+      secrets,
+      userId,
+      organizationId,
+      projectId,
+      environmentId,
+      serverId,
+      commandQueue,
+    }) => {
+      await db
+        .update(environment)
+        .set({
+          serverId,
+          options: { compose: composeWithEmptyServices() },
+          updatedAt: new Date().toISOString(),
+        })
+        .where(eq(environment.id, environmentId))
+      await db
+        .update(project)
+        .set({
+          options: { compose: emptyComposeDocument() },
+          updatedAt: new Date().toISOString(),
+        })
+        .where(eq(project.id, projectId))
+
+      const cookie = await sessionCookie(db, secrets, userId)
+      const res = await app.request(`/environments/${environmentId}/deploy`, {
+        method: 'POST',
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+          'Content-Type': 'application/json',
+        },
+        body: '{}',
+      })
+
+      assertEquals(res.status, 400)
+      assertEquals(await res.json(), { error: 'compose_empty' })
+      assertEquals(commandQueue.envelopes.length, 0)
+    }
+  )
+})
+
+test('POST /environments/:id/deploy pinned auto-resolves without body serverId', async () => {
+  await withDeployFixtures(
+    async ({ db, app, secrets, userId, organizationId, environmentId, serverId, commandQueue }) => {
+      await db
+        .update(environment)
+        .set({
+          serverId,
+          options: { compose: composeWithWebService() },
+          updatedAt: new Date().toISOString(),
+        })
+        .where(eq(environment.id, environmentId))
+
+      const cookie = await sessionCookie(db, secrets, userId)
+      const res = await app.request(`/environments/${environmentId}/deploy`, {
+        method: 'POST',
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+          'Content-Type': 'application/json',
+        },
+        body: '{}',
+      })
+
+      assertEquals(res.status, 200)
+      const body = (await res.json()) as {
+        ok: boolean
+        commandId: string
+        status: string
+      }
+      assertEquals(body.ok, true)
+      assertEquals(body.status, 'queued')
+      assertEquals(commandQueue.envelopes.length, 1)
+      assertEquals(commandQueue.envelopes[0]!.serverId, serverId)
+      assertEquals(commandQueue.envelopes[0]!.type, 'environment.deploy')
+
+      const [envRow] = await db
+        .select({
+          serverId: environment.serverId,
+          metadata: environment.metadata,
+        })
+        .from(environment)
+        .where(eq(environment.id, environmentId))
+        .limit(1)
+      assertEquals(envRow?.serverId, serverId)
+      const metadata = envRow?.metadata as { serverId?: string } | null
+      assertEquals(metadata?.serverId, undefined)
+    }
+  )
+})
+
+test('POST /environments/:id/deploy ignores body serverId and uses environment.server_id', async () => {
+  await withDeployFixtures(
+    async ({ db, app, secrets, userId, organizationId, environmentId, serverId, commandQueue }) => {
+      const now = new Date().toISOString()
+      const [otherServer] = await db
+        .insert(server)
+        .values({
+          organizationId,
+          name: 'Deploy Route Other Server',
+          createdAt: now,
+          updatedAt: now,
+        })
+        .returning({ id: server.id })
+      const otherServerId = otherServer!.id
+
+      try {
+        await db
+          .update(environment)
+          .set({
+            serverId,
+            options: { compose: composeWithWebService() },
+            updatedAt: new Date().toISOString(),
+          })
+          .where(eq(environment.id, environmentId))
+
+        const cookie = await sessionCookie(db, secrets, userId)
+        const res = await app.request(`/environments/${environmentId}/deploy`, {
+          method: 'POST',
+          headers: {
+            Cookie: cookie,
+            [ORG_ID_HEADER]: organizationId,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ serverId: otherServerId }),
+        })
+
+        assertEquals(res.status, 200)
+        assertEquals(commandQueue.envelopes.length, 1)
+        assertEquals(commandQueue.envelopes[0]!.serverId, serverId)
+      } finally {
+        await db.delete(command).where(eq(command.serverId, otherServerId))
+        await db.delete(command).where(eq(command.serverId, serverId))
+        await db.delete(server).where(eq(server.id, otherServerId))
+      }
+    }
+  )
+})
+
+test('POST /environments/:id/deploy requires persisted environment.server_id', async () => {
+  await withDeployFixtures(
+    async ({ db, app, secrets, userId, organizationId, environmentId, serverId, commandQueue }) => {
+      await db
+        .update(environment)
+        .set({
+          serverId: null,
+          options: { compose: composeWithWebService() },
+          updatedAt: new Date().toISOString(),
+        })
+        .where(eq(environment.id, environmentId))
+
+      const cookie = await sessionCookie(db, secrets, userId)
+
+      const bodyServerIdRes = await app.request(`/environments/${environmentId}/deploy`, {
+        method: 'POST',
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ serverId }),
+      })
+      assertEquals(bodyServerIdRes.status, 409)
+      assertEquals(await bodyServerIdRes.json(), {
+        error: 'server_placement_required',
+      })
+      assertEquals(commandQueue.envelopes.length, 0)
+
+      const missingRes = await app.request(`/environments/${environmentId}/deploy`, {
+        method: 'POST',
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+          'Content-Type': 'application/json',
+        },
+        body: '{}',
+      })
+      assertEquals(missingRes.status, 409)
+      assertEquals(await missingRes.json(), {
+        error: 'server_placement_required',
+      })
+      assertEquals(commandQueue.envelopes.length, 0)
+    }
+  )
+})
+
+test('POST /environments/:id/deploy stale environment pin returns 409', async () => {
+  await withDeployFixtures(
+    async ({ db, app, secrets, userId, organizationId, environmentId, commandQueue }) => {
+      const now = new Date().toISOString()
+      const [foreignOrg] = await db
+        .insert(organization)
+        .values({ name: 'Deploy Route Foreign Org' })
+        .returning({ id: organization.id })
+      const foreignOrgId = foreignOrg!.id
+      const [foreignServer] = await db
+        .insert(server)
+        .values({
+          organizationId: foreignOrgId,
+          name: 'Foreign Server',
+          createdAt: now,
+          updatedAt: now,
+        })
+        .returning({ id: server.id })
+      const foreignServerId = foreignServer!.id
+
+      try {
+        await db
+          .update(environment)
+          .set({
+            serverId: foreignServerId,
+            options: { compose: composeWithWebService() },
+            updatedAt: new Date().toISOString(),
+          })
+          .where(eq(environment.id, environmentId))
+
+        const cookie = await sessionCookie(db, secrets, userId)
+        const res = await app.request(`/environments/${environmentId}/deploy`, {
+          method: 'POST',
+          headers: {
+            Cookie: cookie,
+            [ORG_ID_HEADER]: organizationId,
+            'Content-Type': 'application/json',
+          },
+          body: '{}',
+        })
+
+        assertEquals(res.status, 409)
+        assertEquals(await res.json(), { error: 'server_placement_required' })
+        assertEquals(commandQueue.envelopes.length, 0)
+      } finally {
+        await db
+          .update(environment)
+          .set({ serverId: null, updatedAt: new Date().toISOString() })
+          .where(eq(environment.id, environmentId))
+        await db.delete(server).where(eq(server.id, foreignServerId))
+        await db.delete(organization).where(eq(organization.id, foreignOrgId))
+      }
+    }
+  )
+})
+
+test('POST /environments/:id/deploy rejects stored compose placement', async () => {
+  await withDeployFixtures(
+    async ({
+      db,
+      app,
+      secrets,
+      userId,
+      organizationId,
+      projectId,
+      environmentId,
+      serverId,
+      commandQueue,
+    }) => {
+      // Stored compose placement must fail deploy — placement lives on environment.server_id.
+      await db
+        .update(project)
+        .set({
+          options: {
+            compose: {
+              version: 1,
+              data: {
+                services: { web: { image: 'nginx:alpine' } },
+                'x-turbopanel': { placement: { server_id: crypto.randomUUID() } },
+              },
+              presentation: {
+                keyOrder: ['services', 'x-turbopanel'],
+                comments: {},
+              },
+            },
+          },
+          updatedAt: new Date().toISOString(),
+        })
+        .where(eq(project.id, projectId))
+      await db
+        .update(environment)
+        .set({
+          serverId,
+          options: composeWithWebService(),
+          updatedAt: new Date().toISOString(),
+        })
+        .where(eq(environment.id, environmentId))
+
+      const cookie = await sessionCookie(db, secrets, userId)
+      const res = await app.request(`/environments/${environmentId}/deploy`, {
+        method: 'POST',
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+          'Content-Type': 'application/json',
+        },
+        body: '{}',
+      })
+      assertEquals(res.status, 400)
+      assertEquals(await res.json(), { error: 'Invalid compose document' })
+      assertEquals(commandQueue.envelopes.length, 0)
+    }
+  )
+})
+
+test('POST /environments/:id/deploy rejects environment overlay compose placement', async () => {
+  await withDeployFixtures(
+    async ({ db, app, secrets, userId, organizationId, environmentId, serverId, commandQueue }) => {
+      await db
+        .update(environment)
+        .set({
+          serverId,
+          options: {
+            compose: {
+              version: 1,
+              data: {
+                services: { web: { image: 'nginx:alpine' } },
+                'x-turbopanel': { placement: { server_id: crypto.randomUUID() } },
+              },
+              presentation: {
+                keyOrder: ['services', 'x-turbopanel'],
+                comments: {},
+              },
+            },
+          },
+          updatedAt: new Date().toISOString(),
+        })
+        .where(eq(environment.id, environmentId))
+
+      const cookie = await sessionCookie(db, secrets, userId)
+      const res = await app.request(`/environments/${environmentId}/deploy`, {
+        method: 'POST',
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+          'Content-Type': 'application/json',
+        },
+        body: '{}',
+      })
+      assertEquals(res.status, 400)
+      assertEquals(await res.json(), { error: 'Invalid compose document' })
+      assertEquals(commandQueue.envelopes.length, 0)
+    }
+  )
+})
+
+test('POST /environments/:id/lifecycle enqueues environment.lifecycle', async () => {
+  await withDeployFixtures(
+    async ({ db, app, secrets, userId, organizationId, environmentId, serverId, commandQueue }) => {
+      await db
+        .update(environment)
+        .set({
+          serverId,
+          updatedAt: new Date().toISOString(),
+        })
+        .where(eq(environment.id, environmentId))
+
+      const cookie = await sessionCookie(db, secrets, userId)
+      const res = await app.request(`/environments/${environmentId}/lifecycle`, {
+        method: 'POST',
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ action: 'stop' }),
+      })
+      assertEquals(res.status, 200)
+      const body = (await res.json()) as {
+        ok: boolean
+        commandId: string
+        status: string
+        serverId: string
+      }
+      assertEquals(body.ok, true)
+      assertEquals(body.status, 'queued')
+      assertEquals(body.serverId, serverId)
+      assertEquals(commandQueue.envelopes.length, 1)
+      assertEquals(commandQueue.envelopes[0]!.type, 'environment.lifecycle')
+      assertEquals(commandQueue.envelopes[0]!.serverId, serverId)
+    }
+  )
+})
+
+test('POST /environments/:id/lifecycle rejects unknown action', async () => {
+  await withDeployFixtures(
+    async ({ db, app, secrets, userId, organizationId, environmentId, serverId, commandQueue }) => {
+      await db
+        .update(environment)
+        .set({
+          serverId,
+          updatedAt: new Date().toISOString(),
+        })
+        .where(eq(environment.id, environmentId))
+
+      const cookie = await sessionCookie(db, secrets, userId)
+      const res = await app.request(`/environments/${environmentId}/lifecycle`, {
+        method: 'POST',
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ action: 'down' }),
+      })
+      assertEquals(res.status, 400)
+      assertEquals(await res.json(), { error: 'Invalid request' })
+      assertEquals(commandQueue.envelopes.length, 0)
+    }
+  )
+})
+
+test('POST /environments/:id/lifecycle requires persisted environment.server_id', async () => {
+  await withDeployFixtures(
+    async ({ db, app, secrets, userId, organizationId, environmentId, commandQueue }) => {
+      await db
+        .update(environment)
+        .set({
+          serverId: null,
+          updatedAt: new Date().toISOString(),
+        })
+        .where(eq(environment.id, environmentId))
+
+      const cookie = await sessionCookie(db, secrets, userId)
+      const res = await app.request(`/environments/${environmentId}/lifecycle`, {
+        method: 'POST',
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ action: 'start' }),
+      })
+      assertEquals(res.status, 409)
+      assertEquals(await res.json(), { error: 'server_placement_required' })
+      assertEquals(commandQueue.envelopes.length, 0)
+    }
+  )
+})
+
+test('POST /environments/:id/lifecycle returns 403 for non-manager', async () => {
+  await withDeployFixtures(
+    async ({ db, app, secrets, userId, organizationId, environmentId, serverId, commandQueue }) => {
+      await db
+        .update(environment)
+        .set({
+          serverId,
+          updatedAt: new Date().toISOString(),
+        })
+        .where(eq(environment.id, environmentId))
+      await db
+        .delete(grant)
+        .where(and(eq(grant.actorId, userId), eq(grant.entityId, organizationId)))
+
+      const cookie = await sessionCookie(db, secrets, userId)
+      const res = await app.request(`/environments/${environmentId}/lifecycle`, {
+        method: 'POST',
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ action: 'start' }),
+      })
+      assertEquals(res.status, 403)
+      assertEquals(commandQueue.envelopes.length, 0)
+    }
+  )
+})
+
+test('POST /environments/:id/lifecycle returns 404 for cross-org environment', async () => {
+  await withDeployFixtures(
+    async ({ db, app, secrets, userId, organizationId, serverId, commandQueue }) => {
+      const [foreignOrg] = await db
+        .insert(organization)
+        .values({ name: 'Lifecycle Foreign Org' })
+        .returning({ id: organization.id })
+      const foreignOrgId = foreignOrg!.id
+      const [foreignWorkspace] = await db
+        .insert(workspace)
+        .values({ name: 'Foreign Workspace', organizationId: foreignOrgId })
+        .returning({ id: workspace.id })
+      const [foreignProject] = await db
+        .insert(project)
+        .values({
+          name: 'Foreign Project',
+          workspaceId: foreignWorkspace!.id,
+          organizationId: foreignOrgId,
+          options: { compose: emptyComposeDocument() },
+        })
+        .returning({ id: project.id })
+      const [foreignEnvironment] = await db
+        .insert(environment)
+        .values({
+          name: 'Foreign Env',
+          projectId: foreignProject!.id,
+          serverId,
+          options: { compose: emptyComposeDocument() },
+        })
+        .returning({ id: environment.id })
+
+      try {
+        const cookie = await sessionCookie(db, secrets, userId)
+        const res = await app.request(`/environments/${foreignEnvironment!.id}/lifecycle`, {
+          method: 'POST',
+          headers: {
+            Cookie: cookie,
+            [ORG_ID_HEADER]: organizationId,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ action: 'start' }),
+        })
+        assertEquals(res.status, 404)
+        assertEquals(commandQueue.envelopes.length, 0)
+      } finally {
+        await db.delete(environment).where(eq(environment.id, foreignEnvironment!.id))
+        await db.delete(project).where(eq(project.id, foreignProject!.id))
+        await db.delete(workspace).where(eq(workspace.id, foreignWorkspace!.id))
+        await db.delete(organization).where(eq(organization.id, foreignOrgId))
+      }
+    }
+  )
+})
+
+const WG_PUBKEY_A = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA='
+const WG_PUBKEY_B = 'BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB='
 
 async function cleanupMultiServerFabricDeploy(
   db: ReturnType<typeof createDenoDb>,
   params: {
-    environmentId: string;
-    organizationId: string;
-    serverIds: readonly string[];
-    extraServerId: string;
-  },
+    environmentId: string
+    organizationId: string
+    serverIds: readonly string[]
+    extraServerId: string
+  }
 ): Promise<void> {
-  const serverIds = [...params.serverIds];
-  await db.delete(command).where(inArray(command.serverId, serverIds));
-  await db.delete(container).where(inArray(container.serverId, serverIds));
-  await db.delete(deployment).where(
-    eq(deployment.environmentId, params.environmentId),
-  );
-  await db.delete(slot).where(eq(slot.environmentId, params.environmentId));
-  await db.delete(subnet).where(inArray(subnet.serverId, serverIds));
-  await db.delete(network).where(
-    and(
-      eq(network.organizationId, params.organizationId),
-      eq(network.kind, "compose"),
-    ),
-  );
-  await db.delete(fabric).where(
-    eq(fabric.organizationId, params.organizationId),
-  );
-  await db.delete(server).where(eq(server.id, params.extraServerId));
+  const serverIds = [...params.serverIds]
+  await db.delete(command).where(inArray(command.serverId, serverIds))
+  await db.delete(container).where(inArray(container.serverId, serverIds))
+  await db.delete(deployment).where(eq(deployment.environmentId, params.environmentId))
+  await db.delete(slot).where(eq(slot.environmentId, params.environmentId))
+  await db.delete(subnet).where(inArray(subnet.serverId, serverIds))
+  await db
+    .delete(network)
+    .where(and(eq(network.organizationId, params.organizationId), eq(network.kind, 'compose')))
+  await db.delete(fabric).where(eq(fabric.organizationId, params.organizationId))
+  await db.delete(server).where(eq(server.id, params.extraServerId))
 }
 
 async function settleFabricReconcileEnqueue(
   db: ReturnType<typeof createDenoDb>,
   params: {
-    organizationId: string;
-    envelope: CommandEnvelope;
-    settleStatus: "succeeded" | "failed" | "queued";
-  },
+    organizationId: string
+    envelope: CommandEnvelope
+    settleStatus: 'succeeded' | 'failed' | 'queued'
+  }
 ): Promise<void> {
-  if (params.envelope.type !== "server.fabric.reconcile") return;
-  if (params.settleStatus === "queued") return;
+  if (params.envelope.type !== 'server.fabric.reconcile') return
+  if (params.settleStatus === 'queued') return
   await transitionCommand(db, params.envelope.commandId, {
     status: params.settleStatus,
-    ...(params.settleStatus === "failed" ? { error: "apply failed" } : {}),
-  });
-  if (params.settleStatus !== "succeeded") return;
-  const metadata = await getCommandMetadata(db, params.envelope.commandId);
-  const desiredHash = typeof metadata?.desiredHash === "string"
-    ? metadata.desiredHash
-    : null;
-  const fabricRow = await getOrganizationFabric(db, params.organizationId);
-  if (!desiredHash || !fabricRow) return;
+    ...(params.settleStatus === 'failed' ? { error: 'apply failed' } : {}),
+  })
+  if (params.settleStatus !== 'succeeded') return
+  const metadata = await getCommandMetadata(db, params.envelope.commandId)
+  const desiredHash = typeof metadata?.desiredHash === 'string' ? metadata.desiredHash : null
+  const fabricRow = await getOrganizationFabric(db, params.organizationId)
+  if (!desiredHash || !fabricRow) return
   await stampRelayReconcileSuccess(db, {
     fabricId: fabricRow.id,
     serverId: params.envelope.serverId,
     appliedPayloadHash: desiredHash,
-  });
+  })
 }
 
 async function prepareMultiServerFabricDeploy(
   db: ReturnType<typeof createDenoDb>,
   params: {
-    organizationId: string;
-    environmentId: string;
-    serverId: string;
-    commandQueue: ReturnType<typeof createRecordingCommandQueue>;
-    settleStatus: "succeeded" | "failed" | "queued";
-  },
+    organizationId: string
+    environmentId: string
+    serverId: string
+    commandQueue: ReturnType<typeof createRecordingCommandQueue>
+    settleStatus: 'succeeded' | 'failed' | 'queued'
+  }
 ): Promise<string> {
-  const now = new Date().toISOString();
+  const now = new Date().toISOString()
   await db
     .update(server)
     .set({ isConnected: true, updatedAt: now })
-    .where(eq(server.id, params.serverId));
+    .where(eq(server.id, params.serverId))
   const [extraServer] = await db
     .insert(server)
     .values({
       organizationId: params.organizationId,
-      name: "Deploy Route Fabric Peer",
+      name: 'Deploy Route Fabric Peer',
       isConnected: true,
       createdAt: now,
       updatedAt: now,
     })
-    .returning({ id: server.id });
-  const extraServerId = extraServer!.id;
+    .returning({ id: server.id })
+  const extraServerId = extraServer!.id
 
-  const fabricRow = await enableOrganizationFabric(db, params.organizationId);
-  const relays = await listFabricRelays(db, fabricRow.id);
-  const keys = [WG_PUBKEY_A, WG_PUBKEY_B];
+  const fabricRow = await enableOrganizationFabric(db, params.organizationId)
+  const relays = await listFabricRelays(db, fabricRow.id)
+  const keys = [WG_PUBKEY_A, WG_PUBKEY_B]
   for (const [index, row] of relays.entries()) {
     await stampRelayPublicKey(db, {
       fabricId: fabricRow.id,
       serverId: row.serverId,
       publicKey: keys[index] ?? WG_PUBKEY_A,
-    });
+    })
     await updateFabricRelay(db, {
       fabricId: fabricRow.id,
       serverId: row.serverId,
       endpointAddress: `203.0.113.${10 + index}`,
-    });
+    })
   }
 
   await db
@@ -1871,406 +1733,354 @@ async function prepareMultiServerFabricDeploy(
       options: { compose: composeWithReplicatedWebService() },
       updatedAt: now,
     })
-    .where(eq(environment.id, params.environmentId));
+    .where(eq(environment.id, params.environmentId))
 
-  const originalEnqueue = params.commandQueue.enqueue.bind(params.commandQueue);
+  const originalEnqueue = params.commandQueue.enqueue.bind(params.commandQueue)
   params.commandQueue.enqueue = async (envelope) => {
-    await originalEnqueue(envelope);
+    await originalEnqueue(envelope)
     await settleFabricReconcileEnqueue(db, {
       organizationId: params.organizationId,
       envelope,
       settleStatus: params.settleStatus,
-    });
-  };
+    })
+  }
 
-  return extraServerId;
+  return extraServerId
 }
 
-test("POST /environments/:id/deploy waits for fabric reconcile before environment.deploy", async () => {
-  await withDeployFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-    environmentId,
-    serverId,
-    commandQueue,
-  }) => {
-    const extraServerId = await prepareMultiServerFabricDeploy(db, {
-      organizationId,
-      environmentId,
-      serverId,
-      commandQueue,
-      settleStatus: "succeeded",
-    });
-    try {
-      const cookie = await sessionCookie(db, secrets, userId);
-      const res = await app.request(`/environments/${environmentId}/deploy`, {
-        method: "POST",
-        headers: {
-          Cookie: cookie,
-          [ORG_ID_HEADER]: organizationId,
-          "Content-Type": "application/json",
-        },
-        body: "{}",
-      });
-      assertEquals(res.status, 200);
-      const types = commandQueue.envelopes.map((envelope) => envelope.type);
-      const lastFabric = types.lastIndexOf("server.fabric.reconcile");
-      const firstDeploy = types.indexOf("environment.deploy");
-      assertEquals(
-        types.filter((type) => type === "server.fabric.reconcile").length >= 1,
-        true,
-      );
-      assertEquals(
-        types.filter((type) => type === "environment.deploy").length,
-        2,
-      );
-      assertEquals(lastFabric >= 0 && firstDeploy > lastFabric, true);
-    } finally {
-      await cleanupMultiServerFabricDeploy(db, {
-        environmentId,
+test('POST /environments/:id/deploy waits for fabric reconcile before environment.deploy', async () => {
+  await withDeployFixtures(
+    async ({ db, app, secrets, userId, organizationId, environmentId, serverId, commandQueue }) => {
+      const extraServerId = await prepareMultiServerFabricDeploy(db, {
         organizationId,
-        serverIds: [serverId, extraServerId],
-        extraServerId,
-      });
-    }
-  });
-});
-
-test("POST /environments/:id/deploy returns 422 when fabric reconcile fails without mutating generation", async () => {
-  await withDeployFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-    environmentId,
-    serverId,
-    commandQueue,
-  }) => {
-    const extraServerId = await prepareMultiServerFabricDeploy(db, {
-      organizationId,
-      environmentId,
-      serverId,
-      commandQueue,
-      settleStatus: "failed",
-    });
-    try {
-      const cookie = await sessionCookie(db, secrets, userId);
-      const res = await app.request(`/environments/${environmentId}/deploy`, {
-        method: "POST",
-        headers: {
-          Cookie: cookie,
-          [ORG_ID_HEADER]: organizationId,
-          "Content-Type": "application/json",
-        },
-        body: "{}",
-      });
-      assertEquals(res.status, 422);
-      const body = await res.json() as { error?: string };
-      assertEquals(body.error, "fabric_reconcile_failed");
-      assertEquals(
-        commandQueue.envelopes.some((envelope) =>
-          envelope.type === "environment.deploy"
-        ),
-        false,
-      );
-      const [envRow] = await db
-        .select({ generation: environment.generation })
-        .from(environment)
-        .where(eq(environment.id, environmentId))
-        .limit(1);
-      assertEquals(envRow?.generation, 0);
-      const deployments = await db
-        .select({ id: deployment.id })
-        .from(deployment)
-        .where(eq(deployment.environmentId, environmentId));
-      assertEquals(deployments.length, 0);
-      const leftover = await listEnvironmentComposeNetworks(db, environmentId);
-      assertEquals(leftover.length, 0);
-      assertEquals(
-        leftover.reduce((count, row) => count + row.segments.length, 0),
-        0,
-      );
-    } finally {
-      await cleanupMultiServerFabricDeploy(db, {
         environmentId,
+        serverId,
+        commandQueue,
+        settleStatus: 'succeeded',
+      })
+      try {
+        const cookie = await sessionCookie(db, secrets, userId)
+        const res = await app.request(`/environments/${environmentId}/deploy`, {
+          method: 'POST',
+          headers: {
+            Cookie: cookie,
+            [ORG_ID_HEADER]: organizationId,
+            'Content-Type': 'application/json',
+          },
+          body: '{}',
+        })
+        assertEquals(res.status, 200)
+        const types = commandQueue.envelopes.map((envelope) => envelope.type)
+        const lastFabric = types.lastIndexOf('server.fabric.reconcile')
+        const firstDeploy = types.indexOf('environment.deploy')
+        assertEquals(types.filter((type) => type === 'server.fabric.reconcile').length >= 1, true)
+        assertEquals(types.filter((type) => type === 'environment.deploy').length, 2)
+        assertEquals(lastFabric >= 0 && firstDeploy > lastFabric, true)
+      } finally {
+        await cleanupMultiServerFabricDeploy(db, {
+          environmentId,
+          organizationId,
+          serverIds: [serverId, extraServerId],
+          extraServerId,
+        })
+      }
+    }
+  )
+})
+
+test('POST /environments/:id/deploy returns 422 when fabric reconcile fails without mutating generation', async () => {
+  await withDeployFixtures(
+    async ({ db, app, secrets, userId, organizationId, environmentId, serverId, commandQueue }) => {
+      const extraServerId = await prepareMultiServerFabricDeploy(db, {
         organizationId,
-        serverIds: [serverId, extraServerId],
-        extraServerId,
-      });
+        environmentId,
+        serverId,
+        commandQueue,
+        settleStatus: 'failed',
+      })
+      try {
+        const cookie = await sessionCookie(db, secrets, userId)
+        const res = await app.request(`/environments/${environmentId}/deploy`, {
+          method: 'POST',
+          headers: {
+            Cookie: cookie,
+            [ORG_ID_HEADER]: organizationId,
+            'Content-Type': 'application/json',
+          },
+          body: '{}',
+        })
+        assertEquals(res.status, 422)
+        const body = (await res.json()) as { error?: string }
+        assertEquals(body.error, 'fabric_reconcile_failed')
+        assertEquals(
+          commandQueue.envelopes.some((envelope) => envelope.type === 'environment.deploy'),
+          false
+        )
+        const [envRow] = await db
+          .select({ generation: environment.generation })
+          .from(environment)
+          .where(eq(environment.id, environmentId))
+          .limit(1)
+        assertEquals(envRow?.generation, 0)
+        const deployments = await db
+          .select({ id: deployment.id })
+          .from(deployment)
+          .where(eq(deployment.environmentId, environmentId))
+        assertEquals(deployments.length, 0)
+        const leftover = await listEnvironmentComposeNetworks(db, environmentId)
+        assertEquals(leftover.length, 0)
+        assertEquals(
+          leftover.reduce((count, row) => count + row.segments.length, 0),
+          0
+        )
+      } finally {
+        await cleanupMultiServerFabricDeploy(db, {
+          environmentId,
+          organizationId,
+          serverIds: [serverId, extraServerId],
+          extraServerId,
+        })
+      }
     }
-  });
-});
+  )
+})
 
-test("POST /environments/:id/deploy purges spanning networks when fabric gate times out", async () => {
-  await withDeployFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-    environmentId,
-    serverId,
-    commandQueue,
-  }) => {
-    setFabricConvergenceTimeoutMsForTests(0);
-    const extraServerId = await prepareMultiServerFabricDeploy(db, {
-      organizationId,
-      environmentId,
-      serverId,
-      commandQueue,
-      settleStatus: "queued",
-    });
-    try {
-      const cookie = await sessionCookie(db, secrets, userId);
-      const res = await app.request(`/environments/${environmentId}/deploy`, {
-        method: "POST",
-        headers: {
-          Cookie: cookie,
-          [ORG_ID_HEADER]: organizationId,
-          "Content-Type": "application/json",
-        },
-        body: "{}",
-      });
-      assertEquals(res.status, 409);
-      const body = await res.json() as { error?: string };
-      assertEquals(body.error, "fabric_reconcile_pending");
-      assertEquals(
-        commandQueue.envelopes.some((envelope) =>
-          envelope.type === "environment.deploy"
-        ),
-        false,
-      );
-      const leftoverAfterTimeout = await listEnvironmentComposeNetworks(
-        db,
-        environmentId,
-      );
-      assertEquals(leftoverAfterTimeout.length, 0);
-    } finally {
-      setFabricConvergenceTimeoutMsForTests(undefined);
-      await cleanupMultiServerFabricDeploy(db, {
-        environmentId,
+test('POST /environments/:id/deploy purges spanning networks when fabric gate times out', async () => {
+  await withDeployFixtures(
+    async ({ db, app, secrets, userId, organizationId, environmentId, serverId, commandQueue }) => {
+      setFabricConvergenceTimeoutMsForTests(0)
+      const extraServerId = await prepareMultiServerFabricDeploy(db, {
         organizationId,
-        serverIds: [serverId, extraServerId],
-        extraServerId,
-      });
+        environmentId,
+        serverId,
+        commandQueue,
+        settleStatus: 'queued',
+      })
+      try {
+        const cookie = await sessionCookie(db, secrets, userId)
+        const res = await app.request(`/environments/${environmentId}/deploy`, {
+          method: 'POST',
+          headers: {
+            Cookie: cookie,
+            [ORG_ID_HEADER]: organizationId,
+            'Content-Type': 'application/json',
+          },
+          body: '{}',
+        })
+        assertEquals(res.status, 409)
+        const body = (await res.json()) as { error?: string }
+        assertEquals(body.error, 'fabric_reconcile_pending')
+        assertEquals(
+          commandQueue.envelopes.some((envelope) => envelope.type === 'environment.deploy'),
+          false
+        )
+        const leftoverAfterTimeout = await listEnvironmentComposeNetworks(db, environmentId)
+        assertEquals(leftoverAfterTimeout.length, 0)
+      } finally {
+        setFabricConvergenceTimeoutMsForTests(undefined)
+        await cleanupMultiServerFabricDeploy(db, {
+          environmentId,
+          organizationId,
+          serverIds: [serverId, extraServerId],
+          extraServerId,
+        })
+      }
     }
-  });
-});
+  )
+})
 
-test("POST /environments/:id/deploy purges spanning networks when prepare fails", async () => {
-  await withDeployFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-    environmentId,
-    serverId,
-    commandQueue,
-  }) => {
-    const extraServerId = await prepareMultiServerFabricDeploy(db, {
-      organizationId,
-      environmentId,
-      serverId,
-      commandQueue,
-      settleStatus: "succeeded",
-    });
-    await db
-      .update(environment)
-      .set({
-        options: {
-          compose: {
-            version: 1,
-            data: {
-              services: {
-                web: {
-                  image: "nginx:alpine",
-                  environment: { MISSING: "{$project.does_not_exist}" },
-                  deploy: { replicas: 2 },
+test('POST /environments/:id/deploy purges spanning networks when prepare fails', async () => {
+  await withDeployFixtures(
+    async ({ db, app, secrets, userId, organizationId, environmentId, serverId, commandQueue }) => {
+      const extraServerId = await prepareMultiServerFabricDeploy(db, {
+        organizationId,
+        environmentId,
+        serverId,
+        commandQueue,
+        settleStatus: 'succeeded',
+      })
+      await db
+        .update(environment)
+        .set({
+          options: {
+            compose: {
+              version: 1,
+              data: {
+                services: {
+                  web: {
+                    image: 'nginx:alpine',
+                    environment: { MISSING: '{$project.does_not_exist}' },
+                    deploy: { replicas: 2 },
+                  },
                 },
               },
+              presentation: { keyOrder: ['services'], comments: {} },
             },
-            presentation: { keyOrder: ["services"], comments: {} },
           },
-        },
-        updatedAt: new Date().toISOString(),
-      })
-      .where(eq(environment.id, environmentId));
-    try {
-      const cookie = await sessionCookie(db, secrets, userId);
-      const res = await app.request(`/environments/${environmentId}/deploy`, {
-        method: "POST",
-        headers: {
-          Cookie: cookie,
-          [ORG_ID_HEADER]: organizationId,
-          "Content-Type": "application/json",
-        },
-        body: "{}",
-      });
-      assertEquals(res.status, 422);
-      const body = await res.json() as { error?: string };
-      assertEquals(body.error, "variable_unresolved");
-      assertEquals(
-        commandQueue.envelopes.some((envelope) =>
-          envelope.type === "environment.deploy"
-        ),
-        false,
-      );
-      const leftoverAfterPrepare = await listEnvironmentComposeNetworks(
-        db,
-        environmentId,
-      );
-      assertEquals(leftoverAfterPrepare.length, 0);
-    } finally {
-      await cleanupMultiServerFabricDeploy(db, {
-        environmentId,
-        organizationId,
-        serverIds: [serverId, extraServerId],
-        extraServerId,
-      });
-    }
-  });
-});
-
-test("POST /environments/:id/deploy records per-server failures when queue delivery fails mid fan-out", async () => {
-  await withDeployFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-    environmentId,
-    serverId,
-    commandQueue,
-  }) => {
-    const extraServerId = await prepareMultiServerFabricDeploy(db, {
-      organizationId,
-      environmentId,
-      serverId,
-      commandQueue,
-      settleStatus: "succeeded",
-    });
-    const innerEnqueue = commandQueue.enqueue.bind(commandQueue);
-    let deployEnqueues = 0;
-    commandQueue.enqueue = async (envelope) => {
-      if (envelope.type === "environment.deploy") {
-        deployEnqueues += 1;
-        if (deployEnqueues >= 2) {
-          throw new Error("queue down");
-        }
+          updatedAt: new Date().toISOString(),
+        })
+        .where(eq(environment.id, environmentId))
+      try {
+        const cookie = await sessionCookie(db, secrets, userId)
+        const res = await app.request(`/environments/${environmentId}/deploy`, {
+          method: 'POST',
+          headers: {
+            Cookie: cookie,
+            [ORG_ID_HEADER]: organizationId,
+            'Content-Type': 'application/json',
+          },
+          body: '{}',
+        })
+        assertEquals(res.status, 422)
+        const body = (await res.json()) as { error?: string }
+        assertEquals(body.error, 'variable_unresolved')
+        assertEquals(
+          commandQueue.envelopes.some((envelope) => envelope.type === 'environment.deploy'),
+          false
+        )
+        const leftoverAfterPrepare = await listEnvironmentComposeNetworks(db, environmentId)
+        assertEquals(leftoverAfterPrepare.length, 0)
+      } finally {
+        await cleanupMultiServerFabricDeploy(db, {
+          environmentId,
+          organizationId,
+          serverIds: [serverId, extraServerId],
+          extraServerId,
+        })
       }
-      await innerEnqueue(envelope);
-    };
-    try {
-      const cookie = await sessionCookie(db, secrets, userId);
-      const res = await app.request(`/environments/${environmentId}/deploy`, {
-        method: "POST",
-        headers: {
-          Cookie: cookie,
-          [ORG_ID_HEADER]: organizationId,
-          "Content-Type": "application/json",
-        },
-        body: "{}",
-      });
-      assertEquals(res.status, 200);
-      const body = await res.json() as {
-        commands?: Array<{ serverId: string; status: string }>;
-      };
-      assertEquals(body.commands?.length, 1);
-      assertEquals(body.commands?.[0]?.status, "queued");
-
-      const targets = await db
-        .select({
-          serverId: deployment.serverId,
-          status: deployment.status,
-          lastCommandId: deployment.lastCommandId,
-        })
-        .from(deployment)
-        .where(eq(deployment.environmentId, environmentId));
-      const statuses = targets
-        .map((row) => row.status)
-        .sort((a, b) => a.localeCompare(b));
-      assertEquals(targets.length, 2);
-      assertEquals(statuses, ["applying", "failed"]);
-      assertEquals(targets.every((row) => row.lastCommandId != null), true);
-      const applying = targets.find((row) => row.status === "applying");
-      assertEquals(body.commands?.[0]?.serverId, applying?.serverId);
-
-      const deployCommands = await db
-        .select({
-          id: command.id,
-          status: command.status,
-        })
-        .from(command)
-        .where(
-          and(
-            eq(command.name, "environment.deploy"),
-            inArray(command.serverId, [serverId, extraServerId]),
-          ),
-        );
-      const commandStatuses = deployCommands
-        .map((row) => row.status)
-        .sort((a, b) => a.localeCompare(b));
-      assertEquals(deployCommands.length, 2);
-      assertEquals(commandStatuses, ["failed", "queued"]);
-
-      // Spanning compose networks only materialize when the plan places
-      // replicas on more than one server (see `collectSpanningComposeNetworkKeys`);
-      // pin that precondition down explicitly so a placement regression fails
-      // here with a clear signal instead of surfacing as an empty `leftover`
-      // below with no indication of why.
-      const placement = await db
-        .select({ serverId: slot.serverId })
-        .from(slot)
-        .where(eq(slot.environmentId, environmentId));
-      assertEquals(
-        [...new Set(placement.map((row) => row.serverId))].sort().length,
-        2,
-      );
-
-      const leftover = await listEnvironmentComposeNetworks(db, environmentId);
-      assertEquals(leftover.length > 0, true);
-      assertEquals(leftover.some((row) => row.segments.length > 0), true);
-    } finally {
-      await cleanupMultiServerFabricDeploy(db, {
-        environmentId,
-        organizationId,
-        serverIds: [serverId, extraServerId],
-        extraServerId,
-      });
     }
-  });
-});
+  )
+})
+
+test('POST /environments/:id/deploy records per-server failures when queue delivery fails mid fan-out', async () => {
+  await withDeployFixtures(
+    async ({ db, app, secrets, userId, organizationId, environmentId, serverId, commandQueue }) => {
+      const extraServerId = await prepareMultiServerFabricDeploy(db, {
+        organizationId,
+        environmentId,
+        serverId,
+        commandQueue,
+        settleStatus: 'succeeded',
+      })
+      const innerEnqueue = commandQueue.enqueue.bind(commandQueue)
+      let deployEnqueues = 0
+      commandQueue.enqueue = async (envelope) => {
+        if (envelope.type === 'environment.deploy') {
+          deployEnqueues += 1
+          if (deployEnqueues >= 2) {
+            throw new Error('queue down')
+          }
+        }
+        await innerEnqueue(envelope)
+      }
+      try {
+        const cookie = await sessionCookie(db, secrets, userId)
+        const res = await app.request(`/environments/${environmentId}/deploy`, {
+          method: 'POST',
+          headers: {
+            Cookie: cookie,
+            [ORG_ID_HEADER]: organizationId,
+            'Content-Type': 'application/json',
+          },
+          body: '{}',
+        })
+        assertEquals(res.status, 200)
+        const body = (await res.json()) as {
+          commands?: Array<{ serverId: string; status: string }>
+        }
+        assertEquals(body.commands?.length, 1)
+        assertEquals(body.commands?.[0]?.status, 'queued')
+
+        const targets = await db
+          .select({
+            serverId: deployment.serverId,
+            status: deployment.status,
+            lastCommandId: deployment.lastCommandId,
+          })
+          .from(deployment)
+          .where(eq(deployment.environmentId, environmentId))
+        const statuses = targets.map((row) => row.status).sort((a, b) => a.localeCompare(b))
+        assertEquals(targets.length, 2)
+        assertEquals(statuses, ['applying', 'failed'])
+        assertEquals(
+          targets.every((row) => row.lastCommandId != null),
+          true
+        )
+        const applying = targets.find((row) => row.status === 'applying')
+        assertEquals(body.commands?.[0]?.serverId, applying?.serverId)
+
+        const deployCommands = await db
+          .select({
+            id: command.id,
+            status: command.status,
+          })
+          .from(command)
+          .where(
+            and(
+              eq(command.name, 'environment.deploy'),
+              inArray(command.serverId, [serverId, extraServerId])
+            )
+          )
+        const commandStatuses = deployCommands
+          .map((row) => row.status)
+          .sort((a, b) => a.localeCompare(b))
+        assertEquals(deployCommands.length, 2)
+        assertEquals(commandStatuses, ['failed', 'queued'])
+
+        // Spanning compose networks only materialize when the plan places
+        // replicas on more than one server (see `collectSpanningComposeNetworkKeys`);
+        // pin that precondition down explicitly so a placement regression fails
+        // here with a clear signal instead of surfacing as an empty `leftover`
+        // below with no indication of why.
+        const placement = await db
+          .select({ serverId: slot.serverId })
+          .from(slot)
+          .where(eq(slot.environmentId, environmentId))
+        assertEquals([...new Set(placement.map((row) => row.serverId))].sort().length, 2)
+
+        const leftover = await listEnvironmentComposeNetworks(db, environmentId)
+        assertEquals(leftover.length > 0, true)
+        assertEquals(
+          leftover.some((row) => row.segments.length > 0),
+          true
+        )
+      } finally {
+        await cleanupMultiServerFabricDeploy(db, {
+          environmentId,
+          organizationId,
+          serverIds: [serverId, extraServerId],
+          extraServerId,
+        })
+      }
+    }
+  )
+})
 
 // --- host-level Compose features (audit S1, 2026-09-25) ---------------------
 
-const DOCKER_SOCKET_BIND = "/var/run/docker.sock:/var/run/docker.sock";
+const DOCKER_SOCKET_BIND = '/var/run/docker.sock:/var/run/docker.sock'
 
 function composeWithBind(bind: string): ComposeDocument {
   return {
     version: 1,
-    data: { services: { web: { image: "traefik:v3", volumes: [bind] } } },
-    presentation: { keyOrder: ["services"], comments: {} },
-  };
+    data: { services: { web: { image: 'traefik:v3', volumes: [bind] } } },
+    presentation: { keyOrder: ['services'], comments: {} },
+  }
 }
 
 type HostLevelCtx = {
-  db: ReturnType<typeof createDenoDb>;
-  app: Hono<AppEnv>;
-  secrets: Awaited<ReturnType<typeof deriveSecretsConfig>>;
-  userId: string;
-  organizationId: string;
-  projectId: string;
-  environmentId: string;
-  serverId: string;
-  commandQueue: ReturnType<typeof createRecordingCommandQueue>;
-};
+  db: ReturnType<typeof createDenoDb>
+  app: Hono<AppEnv>
+  secrets: Awaited<ReturnType<typeof deriveSecretsConfig>>
+  userId: string
+  organizationId: string
+  projectId: string
+  environmentId: string
+  serverId: string
+  commandQueue: ReturnType<typeof createRecordingCommandQueue>
+}
 
-const appsWithWebhookRoute = new WeakSet<Hono<AppEnv>>();
+const appsWithWebhookRoute = new WeakSet<Hono<AppEnv>>()
 
 /**
  * Mount a stand-in for the GitHub webhook: the same
@@ -2279,59 +2089,60 @@ const appsWithWebhookRoute = new WeakSet<Hono<AppEnv>>();
  * before any — once per app.
  */
 function mountWebhookRoute(ctx: HostLevelCtx): void {
-  if (appsWithWebhookRoute.has(ctx.app)) return;
-  appsWithWebhookRoute.add(ctx.app);
-  ctx.app.post("/test/webhook-deploy/:id", (c) =>
-    runEnvironmentDeployForActor(c, ctx.db, ctx.commandQueue, c.req.param("id"), {
-      actorType: "system",
+  if (appsWithWebhookRoute.has(ctx.app)) return
+  appsWithWebhookRoute.add(ctx.app)
+  ctx.app.post('/test/webhook-deploy/:id', (c) =>
+    runEnvironmentDeployForActor(c, ctx.db, ctx.commandQueue, c.req.param('id'), {
+      actorType: 'system',
       actorId: crypto.randomUUID(),
       organizationId: ctx.organizationId,
       acknowledgeHealthCheckWarnings: true,
       noCache: false,
       selection: { ref: null, commitSha: null, sourceId: null },
-    }));
+    })
+  )
 }
 
 /** Pin the environment, store `compose` on the project, set the org gate. */
 async function useCompose(
   ctx: HostLevelCtx,
   compose: ComposeDocument,
-  hostLevelEnabled: boolean,
+  hostLevelEnabled: boolean
 ): Promise<void> {
-  mountWebhookRoute(ctx);
-  const now = new Date().toISOString();
+  mountWebhookRoute(ctx)
+  const now = new Date().toISOString()
   await ctx.db
     .update(environment)
-    .set({ serverId: ctx.serverId, name: "Production", updatedAt: now })
-    .where(eq(environment.id, ctx.environmentId));
+    .set({ serverId: ctx.serverId, name: 'Production', updatedAt: now })
+    .where(eq(environment.id, ctx.environmentId))
   await ctx.db
     .update(project)
     .set({ options: { compose }, updatedAt: now })
-    .where(eq(project.id, ctx.projectId));
+    .where(eq(project.id, ctx.projectId))
   await ctx.db
     .update(organization)
     .set({ options: { composeGatedFieldsEnabled: hostLevelEnabled } })
-    .where(eq(organization.id, ctx.organizationId));
+    .where(eq(organization.id, ctx.organizationId))
 }
 
 async function managerDeploy(ctx: HostLevelCtx): Promise<Response> {
-  const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId);
+  const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
   return await ctx.app.request(`/environments/${ctx.environmentId}/deploy`, {
-    method: "POST",
+    method: 'POST',
     headers: {
       Cookie: cookie,
       [ORG_ID_HEADER]: ctx.organizationId,
-      "Content-Type": "application/json",
+      'Content-Type': 'application/json',
     },
-    body: "{}",
-  });
+    body: '{}',
+  })
 }
 
 /** A deploy through the mounted webhook stand-in (see `mountWebhookRoute`). */
 async function webhookDeploy(ctx: HostLevelCtx): Promise<Response> {
   return await ctx.app.request(`/test/webhook-deploy/${ctx.environmentId}`, {
-    method: "POST",
-  });
+    method: 'POST',
+  })
 }
 
 async function storedApproval(ctx: HostLevelCtx): Promise<unknown> {
@@ -2339,192 +2150,184 @@ async function storedApproval(ctx: HostLevelCtx): Promise<unknown> {
     .select({ metadata: environment.metadata })
     .from(environment)
     .where(eq(environment.id, ctx.environmentId))
-    .limit(1);
-  const metadata = row?.metadata as Record<string, unknown> | null;
-  return metadata?.composeHostAccessApproval;
+    .limit(1)
+  const metadata = row?.metadata as Record<string, unknown> | null
+  return metadata?.composeHostAccessApproval
 }
 
-test("POST /environments/:id/deploy refuses a Docker socket bind while host-level features are off", async () => {
+test('POST /environments/:id/deploy refuses a Docker socket bind while host-level features are off', async () => {
   await withDeployFixtures(async (ctx) => {
-    await useCompose(ctx, composeWithBind(DOCKER_SOCKET_BIND), false);
+    await useCompose(ctx, composeWithBind(DOCKER_SOCKET_BIND), false)
 
-    const res = await managerDeploy(ctx);
+    const res = await managerDeploy(ctx)
 
-    assertEquals(res.status, 403);
-    const body = await res.json() as {
-      error: string;
-      issues: Array<{ path: string }>;
-    };
-    assertEquals(body.error, "compose_field_requires_org_opt_in");
+    assertEquals(res.status, 403)
+    const body = (await res.json()) as {
+      error: string
+      issues: Array<{ path: string }>
+    }
+    assertEquals(body.error, 'compose_field_requires_org_opt_in')
     assertEquals(
-      body.issues.some((issue) => issue.path === "services.web.volumes[0]"),
-      true,
-    );
-    assertEquals(ctx.commandQueue.envelopes.length, 0);
-  });
-});
+      body.issues.some((issue) => issue.path === 'services.web.volumes[0]'),
+      true
+    )
+    assertEquals(ctx.commandQueue.envelopes.length, 0)
+  })
+})
 
-test("POST /environments/:id/deploy runs binds inside the service directory with host-level features off", async () => {
+test('POST /environments/:id/deploy runs binds inside the service directory with host-level features off', async () => {
   await withDeployFixtures(async (ctx) => {
-    await useCompose(ctx, composeWithBind("./data:/data"), false);
+    await useCompose(ctx, composeWithBind('./data:/data'), false)
 
-    assertEquals((await managerDeploy(ctx)).status, 200);
+    assertEquals((await managerDeploy(ctx)).status, 200)
     // Nothing host-level, so a webhook needs no approval either.
-    assertEquals((await webhookDeploy(ctx)).status, 200);
-    assertEquals(ctx.commandQueue.envelopes.length, 2);
-  });
-});
+    assertEquals((await webhookDeploy(ctx)).status, 200)
+    assertEquals(ctx.commandQueue.envelopes.length, 2)
+  })
+})
 
-test("a webhook deploy of host-level content no manager has deployed is refused", async () => {
+test('a webhook deploy of host-level content no manager has deployed is refused', async () => {
   await withDeployFixtures(async (ctx) => {
-    await useCompose(ctx, composeWithBind(DOCKER_SOCKET_BIND), true);
+    await useCompose(ctx, composeWithBind(DOCKER_SOCKET_BIND), true)
 
-    const res = await webhookDeploy(ctx);
+    const res = await webhookDeploy(ctx)
 
-    assertEquals(res.status, 403);
-    const body = await res.json() as { error: string };
-    assertEquals(body.error, "compose_host_access_requires_approval");
-    assertEquals(ctx.commandQueue.envelopes.length, 0);
-  });
-});
+    assertEquals(res.status, 403)
+    const body = (await res.json()) as { error: string }
+    assertEquals(body.error, 'compose_host_access_requires_approval')
+    assertEquals(ctx.commandQueue.envelopes.length, 0)
+  })
+})
 
 test("a manager's deploy approves host-level content for later webhook deploys", async () => {
   await withDeployFixtures(async (ctx) => {
-    await useCompose(ctx, composeWithBind(DOCKER_SOCKET_BIND), true);
+    await useCompose(ctx, composeWithBind(DOCKER_SOCKET_BIND), true)
 
-    assertEquals((await managerDeploy(ctx)).status, 200);
-    const approval = await storedApproval(ctx) as {
-      fingerprint: string;
-      approvedBy: string;
-    } | undefined;
-    assertEquals(approval?.approvedBy, ctx.userId);
-    assertEquals(approval?.fingerprint.length, 64);
+    assertEquals((await managerDeploy(ctx)).status, 200)
+    const approval = (await storedApproval(ctx)) as
+      | {
+          fingerprint: string
+          approvedBy: string
+        }
+      | undefined
+    assertEquals(approval?.approvedBy, ctx.userId)
+    assertEquals(approval?.fingerprint.length, 64)
 
-    assertEquals((await webhookDeploy(ctx)).status, 200);
-    assertEquals(ctx.commandQueue.envelopes.length, 2);
-  });
-});
+    assertEquals((await webhookDeploy(ctx)).status, 200)
+    assertEquals(ctx.commandQueue.envelopes.length, 2)
+  })
+})
 
-test("changing what reaches the host voids the approval for webhook deploys", async () => {
+test('changing what reaches the host voids the approval for webhook deploys', async () => {
   await withDeployFixtures(async (ctx) => {
-    await useCompose(ctx, composeWithBind(DOCKER_SOCKET_BIND), true);
-    assertEquals((await managerDeploy(ctx)).status, 200);
+    await useCompose(ctx, composeWithBind(DOCKER_SOCKET_BIND), true)
+    assertEquals((await managerDeploy(ctx)).status, 200)
 
     // Same stack, now binding the host root instead of the socket.
-    await useCompose(ctx, composeWithBind("/:/host"), true);
-    const res = await webhookDeploy(ctx);
+    await useCompose(ctx, composeWithBind('/:/host'), true)
+    const res = await webhookDeploy(ctx)
 
-    assertEquals(res.status, 403);
-    const body = await res.json() as { error: string };
-    assertEquals(body.error, "compose_host_access_requires_approval");
-    assertEquals(ctx.commandQueue.envelopes.length, 1);
-  });
-});
+    assertEquals(res.status, 403)
+    const body = (await res.json()) as { error: string }
+    assertEquals(body.error, 'compose_host_access_requires_approval')
+    assertEquals(ctx.commandQueue.envelopes.length, 1)
+  })
+})
 
-test("a deploy preview approves nothing", async () => {
+test('a deploy preview approves nothing', async () => {
   await withDeployFixtures(async (ctx) => {
-    await useCompose(ctx, composeWithBind(DOCKER_SOCKET_BIND), true);
-    const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId);
+    await useCompose(ctx, composeWithBind(DOCKER_SOCKET_BIND), true)
+    const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
 
-    const preview = await ctx.app.request(
-      `/environments/${ctx.environmentId}/deploy-preview`,
-      { headers: { Cookie: cookie, [ORG_ID_HEADER]: ctx.organizationId } },
-    );
+    const preview = await ctx.app.request(`/environments/${ctx.environmentId}/deploy-preview`, {
+      headers: { Cookie: cookie, [ORG_ID_HEADER]: ctx.organizationId },
+    })
 
-    assertEquals(preview.status, 200);
-    assertEquals(await storedApproval(ctx), undefined);
-    assertEquals((await webhookDeploy(ctx)).status, 403);
-  });
-});
+    assertEquals(preview.status, 200)
+    assertEquals(await storedApproval(ctx), undefined)
+    assertEquals((await webhookDeploy(ctx)).status, 403)
+  })
+})
 
-test("a person without organization:manage cannot deploy host-level content", async () => {
+test('a person without organization:manage cannot deploy host-level content', async () => {
   await withDeployFixtures(async (ctx) => {
-    await useCompose(ctx, composeWithBind(DOCKER_SOCKET_BIND), true);
+    await useCompose(ctx, composeWithBind(DOCKER_SOCKET_BIND), true)
 
     const planned = await planEnvironmentDeploy(ctx.db, {
       environmentId: ctx.environmentId,
       organizationId: ctx.organizationId,
-      hostAccess: { kind: "not_manager" },
-    });
+      hostAccess: { kind: 'not_manager' },
+    })
 
-    assertEquals("kind" in planned ? planned.kind : "planned", "compose_rejected");
+    assertEquals('kind' in planned ? planned.kind : 'planned', 'compose_rejected')
     assertEquals(
-      "kind" in planned && planned.kind === "compose_rejected"
-        ? planned.error.kind
-        : null,
-      "compose_host_access_requires_manager",
-    );
-  });
-});
+      'kind' in planned && planned.kind === 'compose_rejected' ? planned.error.kind : null,
+      'compose_host_access_requires_manager'
+    )
+  })
+})
 
 /** `hostLevelApproved` on the queued `environment.deploy` payload for a deploy response. */
-async function payloadHostLevelApproved(
-  ctx: HostLevelCtx,
-  res: Response,
-): Promise<unknown> {
-  const body = await res.json() as { commandId: string };
+async function payloadHostLevelApproved(ctx: HostLevelCtx, res: Response): Promise<unknown> {
+  const body = (await res.json()) as { commandId: string }
   const [row] = await ctx.db
     .select({ payload: dispatch.payload })
     .from(dispatch)
     .where(eq(dispatch.commandId, body.commandId))
-    .limit(1);
-  return (row?.payload as Record<string, unknown> | undefined)
-    ?.hostLevelApproved;
+    .limit(1)
+  return (row?.payload as Record<string, unknown> | undefined)?.hostLevelApproved
 }
 
 test("a manager's host-level deploy tells the daemon it is approved", async () => {
   await withDeployFixtures(async (ctx) => {
-    await useCompose(ctx, composeWithBind(DOCKER_SOCKET_BIND), true);
+    await useCompose(ctx, composeWithBind(DOCKER_SOCKET_BIND), true)
 
-    const res = await managerDeploy(ctx);
+    const res = await managerDeploy(ctx)
 
-    assertEquals(res.status, 200);
-    assertEquals(await payloadHostLevelApproved(ctx, res), true);
-  });
-});
+    assertEquals(res.status, 200)
+    assertEquals(await payloadHostLevelApproved(ctx, res), true)
+  })
+})
 
-test("a webhook deploy matching a recorded approval tells the daemon it is approved", async () => {
+test('a webhook deploy matching a recorded approval tells the daemon it is approved', async () => {
   await withDeployFixtures(async (ctx) => {
-    await useCompose(ctx, composeWithBind(DOCKER_SOCKET_BIND), true);
-    assertEquals((await managerDeploy(ctx)).status, 200);
+    await useCompose(ctx, composeWithBind(DOCKER_SOCKET_BIND), true)
+    assertEquals((await managerDeploy(ctx)).status, 200)
 
-    const res = await webhookDeploy(ctx);
+    const res = await webhookDeploy(ctx)
 
-    assertEquals(res.status, 200);
-    assertEquals(await payloadHostLevelApproved(ctx, res), true);
-  });
-});
+    assertEquals(res.status, 200)
+    assertEquals(await payloadHostLevelApproved(ctx, res), true)
+  })
+})
 
-test("a deploy that reaches nothing on the host carries no approval, even with the gate on", async () => {
+test('a deploy that reaches nothing on the host carries no approval, even with the gate on', async () => {
   await withDeployFixtures(async (ctx) => {
-    await useCompose(ctx, composeWithBind("./data:/data"), true);
+    await useCompose(ctx, composeWithBind('./data:/data'), true)
 
-    const res = await managerDeploy(ctx);
+    const res = await managerDeploy(ctx)
 
-    assertEquals(res.status, 200);
-    assertEquals(await payloadHostLevelApproved(ctx, res), undefined);
-  });
-});
+    assertEquals(res.status, 200)
+    assertEquals(await payloadHostLevelApproved(ctx, res), undefined)
+  })
+})
 
-test("the planner approves host-level content only for an allowed actor", async () => {
+test('the planner approves host-level content only for an allowed actor', async () => {
   await withDeployFixtures(async (ctx) => {
-    await useCompose(ctx, composeWithBind(DOCKER_SOCKET_BIND), true);
+    await useCompose(ctx, composeWithBind(DOCKER_SOCKET_BIND), true)
     const manager = await planEnvironmentDeploy(ctx.db, {
       environmentId: ctx.environmentId,
       organizationId: ctx.organizationId,
-      hostAccess: { kind: "manager", userId: ctx.userId, recordApproval: false },
-    });
-    assertEquals("kind" in manager ? manager.kind : manager.hostLevelApproved, true);
+      hostAccess: { kind: 'manager', userId: ctx.userId, recordApproval: false },
+    })
+    assertEquals('kind' in manager ? manager.kind : manager.hostLevelApproved, true)
 
-    await useCompose(ctx, composeWithBind("./data:/data"), true);
+    await useCompose(ctx, composeWithBind('./data:/data'), true)
     const ordinary = await planEnvironmentDeploy(ctx.db, {
       environmentId: ctx.environmentId,
       organizationId: ctx.organizationId,
-      hostAccess: { kind: "automated" },
-    });
-    assertEquals(
-      "kind" in ordinary ? ordinary.kind : ordinary.hostLevelApproved,
-      false,
-    );
-  });
-});
+      hostAccess: { kind: 'automated' },
+    })
+    assertEquals('kind' in ordinary ? ordinary.kind : ordinary.hostLevelApproved, false)
+  })
+})

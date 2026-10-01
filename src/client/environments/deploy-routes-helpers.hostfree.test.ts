@@ -70,7 +70,7 @@ test('fabricGateErrorResponse maps failed and pending fabric gates', () => {
         commandId: 'cmd-1',
         message: 'peer down',
       },
-    },
+    }
   )
   assertEquals(
     fabricGateErrorResponse({
@@ -86,7 +86,7 @@ test('fabricGateErrorResponse maps failed and pending fabric gates', () => {
         serverId: projectId,
         commandId: 'cmd-2',
       },
-    },
+    }
   )
   assertEquals(
     fabricGateErrorResponse({
@@ -99,7 +99,7 @@ test('fabricGateErrorResponse maps failed and pending fabric gates', () => {
         error: 'fabric_reconcile_pending',
         pending: [{ serverId: projectId, commandId: 'cmd-3' }],
       },
-    },
+    }
   )
 })
 
@@ -112,12 +112,14 @@ test('mapPrepareErrorResponse covers every DeployPrepareError kind', () => {
     { kind: 'site_principal_ambiguous', composeServiceName: 'php' },
     {
       kind: 'resource_limit',
-      violations: [{
-        scope: 'organization',
-        field: 'maxCpus',
-        limit: 1,
-        requested: 2,
-      }],
+      violations: [
+        {
+          scope: 'organization',
+          field: 'maxCpus',
+          limit: 1,
+          requested: 2,
+        },
+      ],
     },
     { kind: 'binding_endpoint_unavailable' },
     { kind: 'variable_unresolved', message: 'missing {$project.x}', ref: '{$project.x}' },
@@ -150,13 +152,15 @@ test('mapPrepareErrorResponse covers every DeployPrepareError kind', () => {
     },
     {
       kind: 'compose_field_unsupported',
-      issues: [{
-        path: 'services.web.deploy.update_config',
-        message:
-          'deploy.update_config is not supported by TurboPanel — TurboPanel has no rolling-update controller',
-        level: 'error',
-        line: 5,
-      }],
+      issues: [
+        {
+          path: 'services.web.deploy.update_config',
+          message:
+            'deploy.update_config is not supported by TurboPanel — TurboPanel has no rolling-update controller',
+          level: 'error',
+          line: 5,
+        },
+      ],
     },
   ]
 
@@ -176,17 +180,14 @@ test('mapPrepareErrorResponse covers every DeployPrepareError kind', () => {
   assertEquals(mapPrepareErrorResponse(cases[10]).status, 422)
   assertEquals(
     mapPrepareErrorResponse(cases[10]).body.message,
-    'Storage "data" (single_writer) has no usable location on this server; primary copy is on srv-primary',
+    'Storage "data" (single_writer) has no usable location on this server; primary copy is on srv-primary'
   )
 
   const aliasUnknown = mapPrepareErrorResponse(cases[15])
   assertEquals(aliasUnknown.status, 422)
   assertEquals(aliasUnknown.body.error, 'principal_alias_unknown')
   assertEquals(aliasUnknown.body.alias, 'ghost')
-  assertEquals(
-    String(aliasUnknown.body.message).includes('x-turbopanel.principals'),
-    true,
-  )
+  assertEquals(String(aliasUnknown.body.message).includes('x-turbopanel.principals'), true)
 
   const principalRequired = mapPrepareErrorResponse(cases[16])
   assertEquals(principalRequired.status, 422)
@@ -214,7 +215,7 @@ test('mapPrepareErrorResponse covers every DeployPrepareError kind', () => {
   })
   assertEquals(
     storageWithoutPrimary.body.message,
-    'Storage "data" (single_writer) has no usable location on this server',
+    'Storage "data" (single_writer) has no usable location on this server'
   )
 
   assertEquals(mapPrepareErrorResponse(cases[11]).body.error, 'site_cron_unowned')
@@ -233,33 +234,27 @@ test('mapPrepareErrorResponse covers every DeployPrepareError kind', () => {
   assertEquals(unsupportedField.status, 422)
   assertEquals(unsupportedField.body.error, 'compose_field_unsupported')
   assertEquals(
-    String(unsupportedField.body.message).includes(
-      'services.web.deploy.update_config',
-    ),
-    true,
+    String(unsupportedField.body.message).includes('services.web.deploy.update_config'),
+    true
   )
 
   // Its own code, and its own sentence: no stored layer is wrong, so an
   // operator sent looking for the mistake inside one would not find it.
   const mergedInvalid = mapPrepareErrorResponse({
     kind: 'compose_merged_invalid',
-    issues: [{
-      path: 'services.web',
-      message: 'Service "web" must define image or build',
-      level: 'error',
-      line: 2,
-    }],
+    issues: [
+      {
+        path: 'services.web',
+        message: 'Service "web" must define image or build',
+        level: 'error',
+        line: 2,
+      },
+    ],
   })
   assertEquals(mergedInvalid.status, 422)
   assertEquals(mergedInvalid.body.error, 'compose_merged_invalid')
-  assertEquals(
-    String(mergedInvalid.body.message).includes('services.web'),
-    true,
-  )
-  assertEquals(
-    String(mergedInvalid.body.message).includes('overlay changes the base'),
-    true,
-  )
+  assertEquals(String(mergedInvalid.body.message).includes('services.web'), true)
+  assertEquals(String(mergedInvalid.body.message).includes('overlay changes the base'), true)
 })
 
 test('parseDeployRequestFlags defaults flags to false', () => {
@@ -272,14 +267,14 @@ test('parseDeployRequestFlags defaults flags to false', () => {
   })
   assertEquals(
     parseDeployRequestFlags({
-    acknowledgeHealthCheckWarnings: true,
-    noCache: true,
+      acknowledgeHealthCheckWarnings: true,
+      noCache: true,
     }),
     {
-    acknowledgeHealthCheckWarnings: true,
-    noCache: true,
+      acknowledgeHealthCheckWarnings: true,
+      noCache: true,
       ref: null,
-    },
+    }
   )
 })
 
@@ -339,12 +334,12 @@ test('expandHostingsForComposeInstances fans out clone keys', () => {
     composeServiceName: 'web',
     hostnames: ['app.example.com'],
   }
-  const expanded = expandHostingsForComposeInstances(
-    [hosting],
-    { web: ['web-1', 'web-2'] },
-  )
+  const expanded = expandHostingsForComposeInstances([hosting], { web: ['web-1', 'web-2'] })
   assertEquals(expanded.length, 2)
-  assertEquals(expanded.map((row) => row.composeServiceName), ['web-1', 'web-2'])
+  assertEquals(
+    expanded.map((row) => row.composeServiceName),
+    ['web-1', 'web-2']
+  )
 
   const kept = expandHostingsForComposeInstances([hosting], { web: [] })
   assertEquals(kept, [hosting])
@@ -360,8 +355,13 @@ test('hosting option readers filter invalid values', () => {
   assertEquals(readHostingProtocol({ protocol: 'tcp' }), 'tcp')
   assertEquals(readHostingProtocol({ protocol: 'http' }), 'http')
   assertEquals(
-    readHostingPorts({ ports: [{ published: 5432, target: 5432 }, { published: 0, target: 1 }] }),
-    [{ published: 5432, target: 5432 }],
+    readHostingPorts({
+      ports: [
+        { published: 5432, target: 5432 },
+        { published: 0, target: 1 },
+      ],
+    }),
+    [{ published: 5432, target: 5432 }]
   )
 })
 
@@ -381,49 +381,59 @@ test('preferredListenPortsFromHostings collects target ports', () => {
 test('hostingsNeedSharedHttpIngress requires HTTP hostnames', () => {
   assertEquals(hostingsNeedSharedHttpIngress([]), false)
   assertEquals(
-    hostingsNeedSharedHttpIngress([{
-      hostingId: 'h1',
-      serviceId: 's1',
-      composeServiceName: 'web',
-      hostnames: [],
-      protocol: 'tcp',
-      ports: [{ published: 5432, target: 5432 }],
-    }]),
-    false,
+    hostingsNeedSharedHttpIngress([
+      {
+        hostingId: 'h1',
+        serviceId: 's1',
+        composeServiceName: 'web',
+        hostnames: [],
+        protocol: 'tcp',
+        ports: [{ published: 5432, target: 5432 }],
+      },
+    ]),
+    false
   )
   assertEquals(
-    hostingsNeedSharedHttpIngress([{
-      hostingId: 'h1',
-      serviceId: 's1',
-      composeServiceName: 'web',
-      hostnames: [],
-    }]),
-    false,
+    hostingsNeedSharedHttpIngress([
+      {
+        hostingId: 'h1',
+        serviceId: 's1',
+        composeServiceName: 'web',
+        hostnames: [],
+      },
+    ]),
+    false
   )
   assertEquals(
-    hostingsNeedSharedHttpIngress([{
-      hostingId: 'h1',
-      serviceId: 's1',
-      composeServiceName: 'web',
-      hostnames: ['app.example.test'],
-    }]),
-    true,
+    hostingsNeedSharedHttpIngress([
+      {
+        hostingId: 'h1',
+        serviceId: 's1',
+        composeServiceName: 'web',
+        hostnames: ['app.example.test'],
+      },
+    ]),
+    true
   )
 })
 
 test('buildDeployPreviewContainers merges app and ingress rows', () => {
   const rows = buildDeployPreviewContainers({
-    appContainers: [{
-      serviceId: 'svc',
-      cloneComposeServiceName: 'web-1',
-      containerName: 'c1',
-      ordinal: 1,
-    }],
-    ingressServices: [{
-      serviceId: 'svc',
-      composeServiceName: 'web-in',
-      containerName: 'in',
-    }],
+    appContainers: [
+      {
+        serviceId: 'svc',
+        cloneComposeServiceName: 'web-1',
+        containerName: 'c1',
+        ordinal: 1,
+      },
+    ],
+    ingressServices: [
+      {
+        serviceId: 'svc',
+        composeServiceName: 'web-in',
+        containerName: 'in',
+      },
+    ],
   })
   assertEquals(rows.length, 2)
   assertEquals(rows[0]?.role, 'service')
@@ -432,34 +442,43 @@ test('buildDeployPreviewContainers merges app and ingress rows', () => {
 
 test('validateDeployMaterials rejects tcp hostings without ports', () => {
   const error = validateDeployMaterials(
-    [{
-      hostingId: 'h1',
-      serviceId: 'svc',
-      composeServiceName: 'db',
-      hostnames: [],
-      protocol: 'tcp',
-      ports: [],
-    }],
-    [],
+    [
+      {
+        hostingId: 'h1',
+        serviceId: 'svc',
+        composeServiceName: 'db',
+        hostnames: [],
+        protocol: 'tcp',
+        ports: [],
+      },
+    ],
+    []
   )
   if (!error) throw new TypeError('expected invalid deploy hosting')
   assertEquals(error.error, 'invalid_deploy_hosting')
 })
 
 test('validateDeployMaterials rejects invalid storage material', () => {
-  const error = validateDeployMaterials([], [{
-    storageId: 'st-1',
-    locationId: 'loc-1',
-    kind: 'volume',
-    name: 'data',
-    provider: 'path',
-    serverId: 'srv-1',
-    mounts: [{
-      composeServiceName: 'web',
-      destinationPath: '/data',
-      readOnly: false,
-    }],
-  }])
+  const error = validateDeployMaterials(
+    [],
+    [
+      {
+        storageId: 'st-1',
+        locationId: 'loc-1',
+        kind: 'volume',
+        name: 'data',
+        provider: 'path',
+        serverId: 'srv-1',
+        mounts: [
+          {
+            composeServiceName: 'web',
+            destinationPath: '/data',
+            readOnly: false,
+          },
+        ],
+      },
+    ]
+  )
   if (!error) throw new TypeError('expected invalid deploy storage')
   assertEquals(error.error, 'invalid_deploy_storage')
 })
@@ -467,20 +486,22 @@ test('validateDeployMaterials rejects invalid storage material', () => {
 test('deployMaterialsErrorResponse returns 400 for invalid materials', async () => {
   assertEquals(deployMaterialsErrorResponse([], []), null)
   const denied = deployMaterialsErrorResponse(
-    [{
-      hostingId: 'h1',
-      serviceId: 'svc',
-      composeServiceName: 'db',
-      hostnames: [],
-      protocol: 'udp',
-      ports: [],
-    }],
-    [],
+    [
+      {
+        hostingId: 'h1',
+        serviceId: 'svc',
+        composeServiceName: 'db',
+        hostnames: [],
+        protocol: 'udp',
+        ports: [],
+      },
+    ],
+    []
   )
   assertEquals(denied?.status, 400)
   assertEquals(
     ((await denied?.json()) as { error?: string } | undefined)?.error,
-    'invalid_deploy_hosting',
+    'invalid_deploy_hosting'
   )
 })
 
@@ -489,27 +510,21 @@ test('scheduleErrorResponse maps placement and other schedule failures', () => {
     status: 409,
     body: { error: 'server_placement_required' },
   })
-  assertEquals(
-    scheduleErrorResponse('host_port_conflict', 'port 80 taken'),
-    {
-      status: 422,
-      body: { error: 'host_port_conflict', message: 'port 80 taken' },
-    },
-  )
-  assertEquals(
-    scheduleErrorResponse('turbofabric_required', 'need mesh'),
-    {
-      status: 422,
-      body: { error: 'turbofabric_required', message: 'need mesh' },
-    },
-  )
+  assertEquals(scheduleErrorResponse('host_port_conflict', 'port 80 taken'), {
+    status: 422,
+    body: { error: 'host_port_conflict', message: 'port 80 taken' },
+  })
+  assertEquals(scheduleErrorResponse('turbofabric_required', 'need mesh'), {
+    status: 422,
+    body: { error: 'turbofabric_required', message: 'need mesh' },
+  })
   // The cap is the document's arithmetic, not a missing host, so it keeps its
   // own code and the scheduler's own sentence rather than collapsing into
   // `server_placement_required`.
   assertEquals(
     scheduleErrorResponse(
       'max_replicas_per_node_exceeded',
-      'web requires more replicas than max_replicas_per_node allows',
+      'web requires more replicas than max_replicas_per_node allows'
     ),
     {
       status: 422,
@@ -517,7 +532,7 @@ test('scheduleErrorResponse maps placement and other schedule failures', () => {
         error: 'max_replicas_per_node_exceeded',
         message: 'web requires more replicas than max_replicas_per_node allows',
       },
-    },
+    }
   )
 })
 
@@ -542,7 +557,7 @@ test('queuedCommandsResponseBody shapes empty and multi-command payloads', () =>
         { commandId: 'c1', serverId: 's1', status: 'queued' },
         { commandId: 'c2', serverId: 's2', status: 'queued' },
       ],
-    },
+    }
   )
 })
 
@@ -560,25 +575,29 @@ test('mapPrepareErrorResponse health_check is the deploy ack conflict shape', ()
         required: false,
         services: ['web', 'api'],
       },
-    },
+    }
   )
 })
 
 test('buildSitesForDeploy attaches listen ports from hostings', () => {
   const sites = buildSitesForDeploy(
-    [{
-      composeServiceName: 'static',
-      engine: 'nginx',
-      root: 'public',
-      listenPort: 8080,
-    }],
-    [{
-      hostingId: 'h1',
-      serviceId: 'svc',
-      composeServiceName: 'static',
-      hostnames: ['site.example.com'],
-      targetPort: 8080,
-    }],
+    [
+      {
+        composeServiceName: 'static',
+        engine: 'nginx',
+        root: 'public',
+        listenPort: 8080,
+      },
+    ],
+    [
+      {
+        hostingId: 'h1',
+        serviceId: 'svc',
+        composeServiceName: 'static',
+        hostnames: ['site.example.com'],
+        targetPort: 8080,
+      },
+    ]
   )
   assertEquals(sites[0]?.listenPort, 8080)
 })
@@ -592,30 +611,34 @@ test('deployPreviewServerLabel prefers name then hostname', () => {
 
 test('buildDeployPreviewServers omits a single-server plan', () => {
   const serverId = '01989d42-9adb-7e65-bc2e-f38792c53691'
-  const files = [{
-    filename: 'compose.yaml',
-    role: 'runtime' as const,
-    source: 'inline' as const,
-    content: 'services: {}\n',
-  }]
+  const files = [
+    {
+      filename: 'compose.yaml',
+      role: 'runtime' as const,
+      source: 'inline' as const,
+      content: 'services: {}\n',
+    },
+  ]
   assertEquals(
     buildDeployPreviewServers(
       [{ serverId, prepared: { composeFiles: files, replicaCounts: { web: 1 } } }],
-      new Map([[serverId, { name: 'au1', hostname: 'host.lan' }]]),
+      new Map([[serverId, { name: 'au1', hostname: 'host.lan' }]])
     ),
-    undefined,
+    undefined
   )
 })
 
 test('buildDeployPreviewServers emits per-host blocks when split', () => {
   const alpha = '01989d42-9adb-7e65-bc2e-f38792c53691'
   const bravo = '01989d42-9adb-7e65-bc2e-f38792c53692'
-  const files = [{
-    filename: 'compose.yaml',
-    role: 'runtime' as const,
-    source: 'inline' as const,
-    content: 'services: {}\n',
-  }]
+  const files = [
+    {
+      filename: 'compose.yaml',
+      role: 'runtime' as const,
+      source: 'inline' as const,
+      content: 'services: {}\n',
+    },
+  ]
   const rows = buildDeployPreviewServers(
     [
       { serverId: alpha, prepared: { composeFiles: files, replicaCounts: { web: 1 } } },
@@ -624,44 +647,67 @@ test('buildDeployPreviewServers emits per-host blocks when split', () => {
     new Map([
       [alpha, { name: 'au1', hostname: 'au1.lan' }],
       [bravo, { name: '  ', hostname: 'bravo.lan' }],
-    ]),
+    ])
   )
-  assertEquals(rows?.map((row) => ({ name: row.name, services: row.services })), [
-    { name: 'au1', services: ['web'] },
-    { name: 'bravo.lan', services: ['api'] },
-  ])
+  assertEquals(
+    rows?.map((row) => ({ name: row.name, services: row.services })),
+    [
+      { name: 'au1', services: ['web'] },
+      { name: 'bravo.lan', services: ['api'] },
+    ]
+  )
 })
 
 test('resolveDeployReleaseServiceId prefers hosting, then ingress, then compose key', () => {
   assertEquals(
-    resolveDeployReleaseServiceId('web', [{
-      hostingId: 'h1',
-      serviceId: 'svc-hosting',
-      composeServiceName: 'web',
-      hostnames: ['app.example.com'],
-    }], []),
-    'svc-hosting',
+    resolveDeployReleaseServiceId(
+      'web',
+      [
+        {
+          hostingId: 'h1',
+          serviceId: 'svc-hosting',
+          composeServiceName: 'web',
+          hostnames: ['app.example.com'],
+        },
+      ],
+      []
+    ),
+    'svc-hosting'
   )
   assertEquals(
-    resolveDeployReleaseServiceId('web', [{
-      hostingId: 'h1',
-      serviceId: '',
-      composeServiceName: 'web',
-      hostnames: ['app.example.com'],
-    }], [{
-      serviceId: 'svc-ingress',
-      composeServiceName: 'web',
-      containerName: 'web-in',
-    }]),
-    'svc-ingress',
+    resolveDeployReleaseServiceId(
+      'web',
+      [
+        {
+          hostingId: 'h1',
+          serviceId: '',
+          composeServiceName: 'web',
+          hostnames: ['app.example.com'],
+        },
+      ],
+      [
+        {
+          serviceId: 'svc-ingress',
+          composeServiceName: 'web',
+          containerName: 'web-in',
+        },
+      ]
+    ),
+    'svc-ingress'
   )
   assertEquals(
-    resolveDeployReleaseServiceId('worker', [], [{
-      serviceId: 'svc-other',
-      composeServiceName: 'api',
-      containerName: 'api-in',
-    }]),
-    'worker',
+    resolveDeployReleaseServiceId(
+      'worker',
+      [],
+      [
+        {
+          serviceId: 'svc-other',
+          composeServiceName: 'api',
+          containerName: 'api-in',
+        },
+      ]
+    ),
+    'worker'
   )
 })
 
@@ -672,13 +718,15 @@ test('buildNativeAppServicesForDeploy returns empty when no apps', () => {
 test('native app rows resolve the release serviceId from hostings', () => {
   const apps = buildNativeAppServicesForDeploy(
     [{ composeServiceName: 'web', framework: 'next', listenPort: 0 }],
-    [{
-      hostingId: 'h1',
-      serviceId: 'svc-web',
-      composeServiceName: 'web',
-      hostnames: ['app.example.com'],
-    }],
-    [],
+    [
+      {
+        hostingId: 'h1',
+        serviceId: 'svc-web',
+        composeServiceName: 'web',
+        hostnames: ['app.example.com'],
+      },
+    ],
+    []
   )
   assertEquals(apps[0]?.serviceId, 'svc-web')
 })
@@ -686,14 +734,16 @@ test('native app rows resolve the release serviceId from hostings', () => {
 test('a hosting targetPort never moves a native app listen port', () => {
   const apps = buildNativeAppServicesForDeploy(
     [{ composeServiceName: 'web', framework: 'next', listenPort: 0 }],
-    [{
-      hostingId: 'h1',
-      serviceId: 'svc-web',
-      composeServiceName: 'web',
-      hostnames: ['app.example.com'],
-      targetPort: 3000,
-    }],
-    [],
+    [
+      {
+        hostingId: 'h1',
+        serviceId: 'svc-web',
+        composeServiceName: 'web',
+        hostnames: ['app.example.com'],
+        targetPort: 3000,
+      },
+    ],
+    []
   )
   // The port is TurboPanel's allocation; the daemon reads it off
   // nativeAppServices[] and never off the hosting.
@@ -704,27 +754,31 @@ test('a native app port comes out of the shared ledger, not the route', () => {
   const used = new Set<number>()
   const first = buildNativeAppServicesForDeploy(
     [{ composeServiceName: 'web', framework: 'next', listenPort: 0 }],
-    [{
-      hostingId: 'h1',
-      serviceId: 'svc-web',
-      composeServiceName: 'web',
-      hostnames: ['app.example.com'],
-      targetPort: 3000,
-    }],
+    [
+      {
+        hostingId: 'h1',
+        serviceId: 'svc-web',
+        composeServiceName: 'web',
+        hostnames: ['app.example.com'],
+        targetPort: 3000,
+      },
+    ],
     [],
-    used,
+    used
   )
   const second = buildNativeAppServicesForDeploy(
     [{ composeServiceName: 'api', framework: 'next', listenPort: 0 }],
-    [{
-      hostingId: 'h2',
-      serviceId: 'svc-api',
-      composeServiceName: 'api',
-      hostnames: ['api.example.com'],
-      targetPort: 3000,
-    }],
+    [
+      {
+        hostingId: 'h2',
+        serviceId: 'svc-api',
+        composeServiceName: 'api',
+        hostnames: ['api.example.com'],
+        targetPort: 3000,
+      },
+    ],
     [],
-    used,
+    used
   )
   assertEquals(first[0]?.listenPort === second[0]?.listenPort, false)
 })
@@ -735,35 +789,39 @@ test('a native app with no hosting or ingress falls back to the compose key', ()
   const apps = buildNativeAppServicesForDeploy(
     [{ composeServiceName: 'worker', framework: 'auto', listenPort: 0 }],
     [],
-    [],
+    []
   )
   assertEquals(apps[0]?.serviceId, 'worker')
 })
 
 test('a native app never gets the port a site already took', () => {
   const used = new Set<number>()
-  const hostings = [{
-    hostingId: 'h1',
-    serviceId: 'svc-site',
-    composeServiceName: 'static',
-    hostnames: ['site.example.com'],
-    targetPort: 18080,
-  }]
-  const sites = buildSitesForDeploy(
-    [{
+  const hostings = [
+    {
+      hostingId: 'h1',
+      serviceId: 'svc-site',
       composeServiceName: 'static',
-      engine: 'nginx' as const,
-      root: 'public',
-      listenPort: 0,
-    }],
+      hostnames: ['site.example.com'],
+      targetPort: 18080,
+    },
+  ]
+  const sites = buildSitesForDeploy(
+    [
+      {
+        composeServiceName: 'static',
+        engine: 'nginx' as const,
+        root: 'public',
+        listenPort: 0,
+      },
+    ],
     hostings,
-    used,
+    used
   )
   const apps = buildNativeAppServicesForDeploy(
     [{ composeServiceName: 'web', framework: 'auto', listenPort: 0 }],
     hostings,
     [],
-    used,
+    used
   )
   assertEquals(sites[0]?.listenPort, 18080)
   assertEquals(apps[0]?.listenPort === sites[0]?.listenPort, false)
