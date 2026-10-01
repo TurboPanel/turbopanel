@@ -74,6 +74,10 @@ import { systemHierarchyProvision } from '../../features/system/hierarchy.ts'
 import { registerTlsRoutes } from '../tls/routes.ts'
 import { registerOrganizationRoutes } from '../organizations/routes.ts'
 import { reconcileServicesForEnvironment } from './reconcile-after-compose-save.ts'
+import { forEachSequential, mapSequential } from '../../lib/sequential.ts'
+import { registerEnvironmentDeploymentHistoryRoutes } from './deployment-history-routes.ts'
+import { registerEnvironmentReleaseRoutes } from './release-routes.ts'
+import { mintSelfSignedCertificate } from '../../lib/tls/index.ts'
 
 const dbUrl = getDatabaseUrl()
 
@@ -465,6 +469,8 @@ async function createDeployRoutesTestApp(
   registerEnvironmentDeployPreviewRoutes(app, routeOpts)
   registerEnvironmentDeployRoutes(app, routeOpts)
   registerEnvironmentLifecycleRoutes(app, routeOpts)
+  registerEnvironmentDeploymentHistoryRoutes(app, routeOpts)
+  registerEnvironmentReleaseRoutes(app, routeOpts)
   registerTlsRoutes(app, routeOpts)
   registerOrganizationRoutes(app, routeOpts)
   return { app, secrets }
@@ -2755,5 +2761,329 @@ test('the project container-naming setting is honoured by what a deploy would ru
 
     assertEquals((await withNaming('custom')).includes('container_name: adminer'), true)
     assertEquals((await withNaming('uuid')).includes('container_name: adminer'), false)
+  })
+})
+
+// --- control-plane evidence for the Track C deploy/hosting checklist rows ---
+
+type VerifyDeployCtx = {
+  db: ReturnType<typeof createDenoDb>
+  app: Hono<AppEnv>
+  secrets: Awaited<ReturnType<typeof deriveSecretsConfig>>
+  userId: string
+  organizationId: string
+  projectId: string
+  environmentId: string
+  serverId: string
+  commandQueue: ReturnType<typeof createRecordingCommandQueue>
+}
+
+async function pinWebEnvironment(
+  ctx: Pick<VerifyDeployCtx, 'db' | 'projectId' | 'environmentId' | 'serverId'>,
+  serviceOptions?: Record<string, unknown>
+): Promise<string> {
+  const now = new Date().toISOString()
+  await ctx.db
+    .update(environment)
+    .set({
+      serverId: ctx.serverId,
+      name: 'Production',
+      options: { compose: emptyComposeDocument() },
+      updatedAt: now,
+    })
+    .where(eq(environment.id, ctx.environmentId))
+  await ctx.db
+    .update(project)
+    .set({ options: { compose: composeWithWebService() }, updatedAt: now })
+    .where(eq(project.id, ctx.projectId))
+  const [svc] = await ctx.db
+    .insert(service)
+    .values({
+      environmentId: ctx.environmentId,
+      name: 'web',
+      composeServiceName: 'web',
+      options: serviceOptions ?? null,
+    })
+    .returning({ id: service.id })
+  return svc!.id
+}
+
+async function verifyHeaders(ctx: VerifyDeployCtx): Promise<Record<string, string>> {
+  const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
+  return {
+    Cookie: cookie,
+    [ORG_ID_HEADER]: ctx.organizationId,
+    'Content-Type': 'application/json',
+  }
+}
+
+async function dispatchedPayload(
+  db: ReturnType<typeof createDenoDb>,
+  commandId: string
+): Promise<Record<string, unknown>> {
+  const [row] = await db
+    .select({ payload: dispatch.payload })
+    .from(dispatch)
+    .where(eq(dispatch.commandId, commandId))
+    .limit(1)
+  return row!.payload as Record<string, unknown>
+}
+
+type ServiceHookWire = {
+  composeServiceName: string
+  preDeployCommand?: string
+  confinement?: string
+}
+
+test('deploy hooks reach the host only when the organization opted in, and then only confined to the service container', async () => {
+  await withDeployFixtures(async (ctx) => {
+    await pinWebEnvironment(ctx, {
+      preDeployCommand: 'echo before',
+      postDeployCommand: 'echo after',
+    })
+    const headers = await verifyHeaders(ctx)
+    const hooksFor = async (): Promise<ServiceHookWire[]> => {
+      const res = await ctx.app.request(`/environments/${ctx.environmentId}/deploy`, {
+        method: 'POST',
+        headers,
+        body: '{}',
+      })
+      assertEquals(res.status, 200)
+      const body = (await res.json()) as { commandId: string }
+      const payload = await dispatchedPayload(ctx.db, body.commandId)
+      return (payload.serviceHooks ?? []) as ServiceHookWire[]
+    }
+
+    // Gate off (the default): the commands are dropped before the wire.
+    const refused = await hooksFor()
+    assertEquals(
+      refused.some((hook) => hook.preDeployCommand !== undefined),
+      false
+    )
+
+    // Gate on: the commands ride along, each confined to the compose service.
+    await ctx.db
+      .update(organization)
+      .set({ options: { deployHooksEnabled: true } })
+      .where(eq(organization.id, ctx.organizationId))
+    const allowed = await hooksFor()
+    const web = allowed.find((hook) => hook.composeServiceName === 'web')
+    assertEquals(web?.preDeployCommand, 'echo before')
+    assertEquals(web?.confinement, 'compose-service')
+  })
+})
+
+test('a required health gate refuses a deploy with the services it names and queues nothing; a warn gate needs acknowledgement', async () => {
+  await withDeployFixtures(async (ctx) => {
+    await pinWebEnvironment(ctx, { healthCheck: { policy: 'required' } })
+    const headers = await verifyHeaders(ctx)
+    const deploy = (body: string) =>
+      ctx.app.request(`/environments/${ctx.environmentId}/deploy`, {
+        method: 'POST',
+        headers,
+        body,
+      })
+
+    const required = await deploy('{}')
+    assertEquals(required.status, 409)
+    assertEquals(await required.json(), {
+      error: 'health_check_missing',
+      required: true,
+      services: ['web'],
+    })
+    // Acknowledging cannot waive a required gate.
+    const acknowledged = await deploy(JSON.stringify({ acknowledgeHealthCheckWarnings: true }))
+    assertEquals(acknowledged.status, 409)
+    assertEquals(ctx.commandQueue.envelopes.length, 0)
+
+    await ctx.db
+      .update(service)
+      .set({ options: { healthCheck: { policy: 'warn' } } })
+      .where(eq(service.environmentId, ctx.environmentId))
+    const warned = await deploy('{}')
+    assertEquals(warned.status, 409)
+    assertEquals(((await warned.json()) as { required: boolean }).required, false)
+    assertEquals(ctx.commandQueue.envelopes.length, 0)
+    const ok = await deploy(JSON.stringify({ acknowledgeHealthCheckWarnings: true }))
+    assertEquals(ok.status, 200)
+    assertEquals(ctx.commandQueue.envelopes.length, 1)
+
+    await ctx.db
+      .update(service)
+      .set({ options: { healthCheck: { policy: 'disabled' } } })
+      .where(eq(service.environmentId, ctx.environmentId))
+    const disabled = await deploy('{}')
+    assertEquals(disabled.status, 200)
+  })
+})
+
+test('GET deploy-preview shows the prepared shape and changes nothing: no command, dispatch, deployment, generation or queue entry', async () => {
+  await withDeployFixtures(async (ctx) => {
+    await pinWebEnvironment(ctx)
+    const headers = await verifyHeaders(ctx)
+    const snapshot = async () => {
+      const [env] = await ctx.db
+        .select({ generation: environment.generation, updatedAt: environment.updatedAt })
+        .from(environment)
+        .where(eq(environment.id, ctx.environmentId))
+      const commands = await ctx.db
+        .select({ id: command.id })
+        .from(command)
+        .where(eq(command.serverId, ctx.serverId))
+      const deployments = await ctx.db
+        .select({ id: deployment.id })
+        .from(deployment)
+        .where(eq(deployment.environmentId, ctx.environmentId))
+      return JSON.stringify({
+        env,
+        commands: commands.length,
+        deployments: deployments.length,
+        queued: ctx.commandQueue.envelopes.length,
+      })
+    }
+    const before = await snapshot()
+    const res = await ctx.app.request(`/environments/${ctx.environmentId}/deploy-preview`, {
+      headers,
+    })
+    assertEquals(res.status, 200)
+    const body = (await res.json()) as { composeFiles: Array<{ content: string }> }
+    assertEquals(body.composeFiles[0]?.content.includes('web:'), true)
+    assertEquals(await snapshot(), before)
+  })
+})
+
+test('lifecycle start, stop and restart each reach the host as environment.lifecycle with that action', async () => {
+  await withDeployFixtures(async (ctx) => {
+    await pinWebEnvironment(ctx)
+    const headers = await verifyHeaders(ctx)
+    const actions = ['start', 'stop', 'restart']
+    await forEachSequential(actions, async (action) => {
+      const res = await ctx.app.request(`/environments/${ctx.environmentId}/lifecycle`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ action }),
+      })
+      assertEquals(res.status, 200)
+      const body = (await res.json()) as { commandId: string; status: string }
+      assertEquals(body.status, 'queued')
+      const payload = await dispatchedPayload(ctx.db, body.commandId)
+      assertEquals(payload.action, action)
+    })
+    assertEquals(
+      ctx.commandQueue.envelopes.map((envelope) => envelope.type),
+      ['environment.lifecycle', 'environment.lifecycle', 'environment.lifecycle']
+    )
+    assertEquals(
+      ctx.commandQueue.envelopes.every((envelope) => envelope.serverId === ctx.serverId),
+      true
+    )
+  })
+})
+
+test('revoking an uploaded certificate stops deploys of the hostnames pinned to it, naming the hosting', async () => {
+  const traefikServiceId = '00000000-0000-4000-8000-0000000000af'
+  await withDeployFixtures(async (ctx) => {
+    const originalEnsure = systemHierarchyProvision.ensure
+    systemHierarchyProvision.ensure = () =>
+      Promise.resolve({
+        workspaceId: '00000000-0000-4000-8000-0000000000bf',
+        projectId: '00000000-0000-4000-8000-0000000000cf',
+        environmentId: '00000000-0000-4000-8000-0000000000df',
+        serviceId: traefikServiceId,
+        containerRowId: '00000000-0000-4000-8000-0000000000ef',
+        containerName: `${traefikServiceId}-in`,
+      })
+    let tlsId: string | undefined
+    let hostingId: string | undefined
+    try {
+      const serviceId = await pinWebEnvironment(ctx)
+      const headers = await verifyHeaders(ctx)
+      const minted = await mintSelfSignedCertificate(['pinned.example.com'])
+      const created = await ctx.app.request('/tls', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          source: 'upload',
+          name: 'Pinned upload',
+          certificatePem: minted.certificatePem,
+          privateKeyPem: minted.privateKeyPem,
+        }),
+      })
+      assertEquals(created.status, 200)
+      tlsId = ((await created.json()) as { id: string }).id
+      const [hostingRow] = await ctx.db
+        .insert(hosting)
+        .values({ serviceId, tlsId, options: { hostnames: ['pinned.example.com'] } })
+        .returning({ id: hosting.id })
+      hostingId = hostingRow!.id
+      const deploy = () =>
+        ctx.app.request(`/environments/${ctx.environmentId}/deploy`, {
+          method: 'POST',
+          headers,
+          body: '{}',
+        })
+
+      // While the pin is usable the hostname resolves; this fixture server has
+      // no daemon key, so the deploy only stops later, at sealing the key.
+      const before = await deploy()
+      assertEquals(before.status, 422)
+      assertEquals(
+        ((await before.json()) as { error: string }).error,
+        'No encryption-capable daemon key on target server'
+      )
+      const queuedBefore = ctx.commandQueue.envelopes.length
+
+      const revoke = await ctx.app.request(`/tls/${tlsId}`, {
+        method: 'PATCH',
+        headers,
+        body: JSON.stringify({ revoke: true }),
+      })
+      assertEquals(revoke.status, 200)
+
+      const after = await deploy()
+      assertEquals(after.status, 400)
+      assertEquals(await after.json(), { error: 'tls_pin_not_ready', hostingId })
+      assertEquals(ctx.commandQueue.envelopes.length, queuedBefore)
+    } finally {
+      systemHierarchyProvision.ensure = originalEnsure
+      if (hostingId) await ctx.db.delete(hosting).where(eq(hosting.id, hostingId))
+      if (tlsId) await ctx.db.delete(tls).where(eq(tls.id, tlsId))
+    }
+  })
+})
+
+test('deployment history lists every deploy with its outcome', async () => {
+  await withDeployFixtures(async (ctx) => {
+    await pinWebEnvironment(ctx)
+    const headers = await verifyHeaders(ctx)
+    const deployIds = await mapSequential([0, 1], async () => {
+      const res = await ctx.app.request(`/environments/${ctx.environmentId}/deploy`, {
+        method: 'POST',
+        headers,
+        body: '{}',
+      })
+      assertEquals(res.status, 200)
+      return ((await res.json()) as { commandId: string }).commandId
+    })
+    // One deploy finishes, the other is stopped by the host.
+    await transitionCommand(ctx.db, deployIds[0]!, { status: 'succeeded' })
+    await transitionCommand(ctx.db, deployIds[1]!, {
+      status: 'failed',
+      errorCode: 'compose_up_failed',
+      error: 'service web exited',
+    })
+
+    const res = await ctx.app.request(`/environments/${ctx.environmentId}/deployments`, { headers })
+    assertEquals(res.status, 200)
+    const body = (await res.json()) as {
+      deployments: Array<{ id?: string; commandId?: string; status: string; generation: number }>
+    }
+    const listed = body.deployments.map((entry) => ({
+      status: entry.status,
+      generation: entry.generation,
+    }))
+    assertEquals(listed.length, 2)
+    assertEquals(new Set(listed.map((entry) => entry.status)), new Set(['succeeded', 'failed']))
+    assertEquals(listed[0]!.generation > listed[1]!.generation, true)
   })
 })
