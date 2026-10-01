@@ -46,6 +46,7 @@ import { registerSystemRoutes } from './system/routes.ts'
 import { registerServiceRoutes } from './services/routes.ts'
 import { registerTeamRoutes } from './teams/routes.ts'
 import { registerNotificationRoutes } from './notifications/routes.ts'
+import { registerNotificationVerifyRoutes } from './notifications/verify-routes.ts'
 import { registerOrganizationRoutes } from './organizations/routes.ts'
 import { registerOrganizationFirewallRoutes } from './organizations/firewall-routes.ts'
 import { registerWorkspaceRoutes } from './workspaces/routes.ts'
@@ -112,6 +113,8 @@ export function registerClientRoutes(app: Hono<AppEnv>, opts: ClientRouteOpts) {
   registerOrganizationRoutes(client, opts)
   registerOrganizationFirewallRoutes(client, opts)
   registerAccessRoutes(client, opts)
+  // Before the catch-all session middleware the next call installs: the verify link has no session.
+  registerNotificationVerifyRoutes(client, opts)
   registerNotificationRoutes(client, opts)
   registerWorkspaceRoutes(client, opts)
   registerEnvironmentRoutes(client, opts)

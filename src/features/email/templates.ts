@@ -96,6 +96,8 @@ export function resolveEmailTemplate(job: EmailJob): TemplateResult | null {
       return createInvitationEmail(job)
     case 'notification':
       return createNotificationEmail(job)
+    case 'channel-verification':
+      return createChannelVerificationEmail(job)
     default:
       return null
   }
@@ -223,6 +225,46 @@ export function createInvitationEmail(
     `${subject}\n\n${job.inviterEmail} invited you to join ${job.teamName} in ${job.organizationName} on TurboPanel.\n\n` +
     `Accept: ${job.acceptUrl}\n\n` +
     `If you weren't expecting this invitation, ignore this email.\n\nTurboPanel – Self-hosted control plane`
+  return { subject, html, text }
+}
+
+export function createChannelVerificationEmail(
+  job: Extract<EmailJob, { type: 'channel-verification' }>
+): TemplateResult {
+  const subject = 'Confirm this address for TurboPanel notifications'
+  const target = job.organizationName ? ` for ${job.organizationName}` : ''
+  const intro =
+    `${job.requestedByEmail} asked TurboPanel to send notifications${target} to this address, ` +
+    `as the channel "${job.channelLabel}".`
+  const safeSubject = escapeHtml(subject)
+  const safeIntro = escapeHtml(intro)
+  const safeUrl = escapeHtml(job.verifyUrl)
+  const html = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${safeSubject}</title>
+</head>
+<body style="margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f5f5f5;padding:24px;">
+  <div style="max-width:480px;margin:0 auto;background:#fff;border-radius:8px;box-shadow:0 1px 3px rgba(0,0,0,0.08);padding:32px;">
+    <h1 style="margin:0 0 16px;font-size:24px;color:#111;">${safeSubject}</h1>
+    <p style="margin:0 0 16px;color:#444;line-height:1.5;">${safeIntro}</p>
+    <p style="margin:0 0 24px;color:#444;line-height:1.5;">Nothing is sent to this address until you confirm it. The link works once and expires in one day.</p>
+    <p style="margin:0 0 24px;">
+      <a href="${safeUrl}" style="display:inline-block;background:#2563eb;color:#fff;text-decoration:none;padding:12px 24px;border-radius:6px;font-weight:600;">Confirm address</a>
+    </p>
+    <p style="margin:0;font-size:14px;color:#666;">If you don't know why you got this, ignore this email and nothing will be sent to you.</p>
+    <p style="margin:16px 0 0;font-size:12px;color:#999;">TurboPanel</p>
+  </div>
+</body>
+</html>
+`.trim()
+  const text =
+    `${subject}\n\n${intro}\n\nNothing is sent to this address until you confirm it. ` +
+    `The link works once and expires in one day:\n${job.verifyUrl}\n\n` +
+    `If you don't know why you got this, ignore this email and nothing will be sent to you.\n\nTurboPanel`
   return { subject, html, text }
 }
 

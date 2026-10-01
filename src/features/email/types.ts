@@ -46,6 +46,18 @@ export type EmailJob =
       acceptUrl: string
     }
   | {
+      /** The link that confirms an email channel's address (`src/client/notifications/channel-verification.ts`); valid for one day. */
+      type: 'channel-verification'
+      to: string
+      from: string
+      verifyUrl: string
+      channelLabel: string
+      /** Set for an organization channel; null for a person's own. */
+      organizationName: string | null
+      /** The account that asked for the channel. */
+      requestedByEmail: string
+    }
+  | {
       /** One notification event delivered to an email channel (`src/features/notifications/`). */
       type: 'notification'
       to: string
