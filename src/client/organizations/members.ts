@@ -23,6 +23,7 @@ import { createSessionMiddleware } from '../authn/middleware.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import { canManageOrganization, canOwnOrganization } from '../authz/index.ts'
 import { canAccessOrganization } from '../org-context.ts'
+import { listOrganizationMembers } from './members-list.ts'
 
 const LAST_OWNER_MESSAGE = 'Cannot remove the last owner of an organization'
 
@@ -150,7 +151,25 @@ export function registerOrganizationMemberRoutes(router: Hono<AppEnv>, opts: Aut
   if (!opts.secrets) {
     throw new TypeError('session secrets are required for organization member routes')
   }
+  router.use('/organizations/:id/members', createSessionMiddleware(opts.secrets))
   router.use('/organizations/:id/members/:memberId', createSessionMiddleware(opts.secrets))
+
+  router.get('/organizations/:id/members', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
+    const session = c.get('session')
+    if (!session) return c.json({ error: 'Unauthorized' }, 401)
+
+    const organizationId = c.req.param('id')
+    if (!isUuid(organizationId)) return c.json({ error: 'Not found' }, 404)
+    if (!(await canAccessOrganization(db, session.userId, organizationId))) {
+      return c.json({ error: 'Not found' }, 404)
+    }
+    if (!(await canManageOrganization(db, session.userId, organizationId))) {
+      return c.json({ error: 'Forbidden' }, 403)
+    }
+    return c.json({ members: await listOrganizationMembers(db, organizationId) })
+  })
 
   router.delete('/organizations/:id/members/:memberId', async (c) => {
     const db = getDb(c)

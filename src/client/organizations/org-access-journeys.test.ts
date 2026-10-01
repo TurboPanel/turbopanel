@@ -638,3 +638,84 @@ test('a removed person can be invited again and accept', async () => {
     assertEquals(await readsOrganization(fx, member), 200)
   })
 })
+
+type ListedMember = {
+  id: string
+  name: string | null
+  email: string
+  role: string
+  joinedAt: string
+}
+
+async function listMembers(fx: Fixture, who: Person, orgId = fx.organizationId) {
+  const res = await fx.call(who, 'GET', `/organizations/${orgId}/members`, undefined, orgId)
+  if (res.status !== 200) {
+    await res.body?.cancel()
+    return { status: res.status, members: [] as ListedMember[], text: '' }
+  }
+  const text = await res.clone().text()
+  const body = (await res.json()) as { members: ListedMember[] }
+  return { status: res.status, members: body.members, text }
+}
+
+test('the member list shows each person once with their role and date, owners first, and no secrets', async () => {
+  await withFixture(async (fx) => {
+    const manager = await fx.addPerson('manager')
+    const member = await fx.addPerson('member')
+    const listed = await listMembers(fx, fx.owner)
+    assertEquals(listed.status, 200)
+    assertEquals(listed.members.length, 3)
+    assertEquals(
+      listed.members.map((m) => m.role),
+      ['owner', 'manager', 'member']
+    )
+    const byId = new Map(listed.members.map((m) => [m.id, m]))
+    assertEquals(byId.get(fx.owner.userId)?.email, fx.owner.email)
+    assertEquals(byId.get(manager.userId)?.email, manager.email)
+    assertEquals(byId.get(member.userId)?.role, 'member')
+    for (const m of listed.members) {
+      assertEquals(Object.keys(m).toSorted(), ['email', 'id', 'joinedAt', 'name', 'role'])
+      assert(!Number.isNaN(Date.parse(m.joinedAt)))
+    }
+    assert(!/password|token|secret|hash/i.test(listed.text))
+    const asManager = await listMembers(fx, manager)
+    assertEquals(asManager.status, 200)
+  })
+})
+
+test('the member list is refused to plain members, hidden from outsiders, and needs a session', async () => {
+  await withFixture(async (fx) => {
+    const member = await fx.addPerson('member')
+    const outsider = await fx.addPerson('outsider')
+    assertEquals((await listMembers(fx, member)).status, 403)
+    assertEquals((await listMembers(fx, outsider)).status, 404)
+    const anon = await fx.app.request(
+      `${CLIENT_API_PREFIX}/organizations/${fx.organizationId}/members`,
+      { headers: { origin: 'http://localhost' } }
+    )
+    assertEquals(anon.status, 401)
+    await anon.body?.cancel()
+    const bad = await fx.call(fx.owner, 'GET', '/organizations/not-a-uuid/members')
+    assertEquals(bad.status, 404)
+    await bad.body?.cancel()
+  })
+})
+
+test('the member list never leaks across organizations and drops a person once removed', async () => {
+  await withFixture(async (fx) => {
+    const member = await fx.addPerson('member')
+    await withFixture(async (other) => {
+      const theirs = await listMembers(other, other.owner)
+      assertEquals(theirs.members.length, 1)
+      assert(!theirs.members.some((m) => m.id === member.userId))
+      assertEquals((await listMembers(fx, other.owner, fx.organizationId)).status, 404)
+      assertEquals((await listMembers(other, fx.owner, other.organizationId)).status, 404)
+    })
+    const removed = await fx.call(fx.owner, 'DELETE', membersPath(fx.organizationId, member.userId))
+    assertEquals(removed.status, 200)
+    await removed.body?.cancel()
+    const after = await listMembers(fx, fx.owner)
+    assertEquals(after.members.length, 1)
+    assertEquals(after.members[0]?.id, fx.owner.userId)
+  })
+})
