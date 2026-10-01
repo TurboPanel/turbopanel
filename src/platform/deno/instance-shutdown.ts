@@ -1,4 +1,5 @@
 import { logWarn } from '../../lib/logger.ts'
+import { forEachSequential } from '../../lib/sequential.ts'
 
 /**
  * Hard stop for a shutdown that is not finishing. systemd gives the unit
@@ -9,7 +10,7 @@ export const SHUTDOWN_FORCE_EXIT_MS = 6_000
 
 export type ShutdownCloser = {
   label: string
-  close: () => Promise<unknown> | unknown
+  close: () => unknown
 }
 
 export type InstanceShutdownDeps = {
@@ -22,7 +23,7 @@ export type InstanceShutdownDeps = {
   /** Stop accepting connections (aborts `Deno.serve`). */
   stopServing: () => void
   /** End the Postgres pool. Last: it is what keeps an idle process alive. */
-  endDatabase: () => Promise<unknown>
+  endDatabase: () => unknown
   /** Process exit; injected so tests do not exit. */
   exit?: (code: number) => void
   /** Watchdog delay; defaults to {@link SHUTDOWN_FORCE_EXIT_MS}. */
@@ -30,7 +31,7 @@ export type InstanceShutdownDeps = {
 }
 
 /** One shutdown step; a failure is logged and never stops the steps after it. */
-async function runStep(label: string, step: () => Promise<unknown> | unknown): Promise<void> {
+async function runStep(label: string, step: () => unknown): Promise<void> {
   try {
     await step()
   } catch (err) {
@@ -40,9 +41,7 @@ async function runStep(label: string, step: () => Promise<unknown> | unknown): P
 
 async function runShutdownSteps(deps: InstanceShutdownDeps): Promise<void> {
   for (const timer of deps.timers) clearInterval(timer)
-  for (const closer of deps.closers) {
-    await runStep(closer.label, closer.close)
-  }
+  await forEachSequential(deps.closers, (closer) => runStep(closer.label, closer.close))
   await runStep('runtime ports', deps.resetPorts)
   await runStep('server', deps.stopServing)
   await runStep('database', deps.endDatabase)
