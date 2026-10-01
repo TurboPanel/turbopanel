@@ -44,7 +44,12 @@ import {
   summarizeSteps,
   UPGRADE_TICK_STEP_BUDGET,
 } from './run.ts'
-import { planStepAction, type StepAction } from './transitions.ts'
+import {
+  computeBackoffMs,
+  planStepAction,
+  type StepAction,
+  UPGRADE_STEP_MAX_ATTEMPTS,
+} from './transitions.ts'
 import { shouldAutoStartRun } from './schedule.ts'
 import {
   type ClientUpdateBlock,
@@ -218,6 +223,13 @@ function checkManagedFeature(
   }
 }
 
+/** One short, single-line reason for a failed delivery (never a stack). */
+function dispatchErrorText(error: unknown): string {
+  const text = error instanceof Error ? error.message : String(error)
+  const line = text.replace(/\s+/g, ' ').trim()
+  return line.length > 200 ? `${line.slice(0, 197)}...` : line || 'unknown error'
+}
+
 export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeCoordinator {
   const resolveTarget = deps.resolveTarget ?? (() => resolveUpgradeTarget(deps.channel))
 
@@ -362,9 +374,35 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
     step.requestId = envelope.requestId
     step.lastStageAt = deps.now()
     step.nextAttemptAt = null
+    step.errorMessage = null
     const claimed = await deps.store.saveStep(step, expectedStatus)
     if (!claimed) return
-    await deps.enqueue(step.serverId, envelope)
+    try {
+      await deps.enqueue(step.serverId, envelope)
+    } catch (error) {
+      await recordDispatchFailure(step, error)
+    }
+  }
+
+  /**
+   * The command never reached the server's cell. Say so on the step instead of
+   * leaving it `dispatched` until the 15-minute stall timeout: retry with the
+   * usual backoff, and after the last allowed attempt hand it to an operator.
+   * Never throws: one server's failed delivery must not stop the others.
+   */
+  async function recordDispatchFailure(step: UpgradeStepRow, error: unknown): Promise<void> {
+    step.errorMessage = `The update command could not be delivered to the server: ${dispatchErrorText(error)}`
+    step.lastStageAt = deps.now()
+    if (step.attempts >= UPGRADE_STEP_MAX_ATTEMPTS) {
+      step.status = 'needs_attention'
+      step.errorCode = 'dispatch_failed' satisfies UpgradeStepErrorCode
+    } else {
+      step.status = 'pending'
+      step.nextAttemptAt = new Date(
+        Date.parse(deps.now()) + computeBackoffMs(step.attempts)
+      ).toISOString()
+    }
+    await deps.store.saveStep(step, 'dispatched')
   }
 
   function envelopeFor(

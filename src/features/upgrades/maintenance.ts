@@ -25,7 +25,9 @@ export async function runUpgradeMaintenance(input: {
   const coordinator = createUpgradeCoordinator({
     store: createDrizzleUpgradeStore(input.db, input.registry),
     enqueue: async (serverId, envelope) => {
-      if (!input.registry) return
+      // No registry means the command can never reach a daemon; failing here makes
+      // the step say so instead of waiting out the stall timeout.
+      if (!input.registry) throw new Error('no daemon cell registry is available')
       await input.registry.getCell(serverId).enqueue(envelope)
     },
     runtime: input.runtime,
