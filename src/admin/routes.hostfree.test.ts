@@ -1370,19 +1370,21 @@ test('instance updates refuse a missing or disconnected co-located daemon', asyn
 
 test('legacy instance update refuses a daemon that cannot roll the control plane back', async () => {
   const originalFetch = globalThis.fetch
-  globalThis.fetch = (() =>
-    Promise.resolve(
-      new Response(
-        JSON.stringify({
-          commit: 'targetcommit',
-          buildId: 'build-abc',
-          builtAt: '2020-01-01T00:00:00.000Z',
-          channel: 'release',
-          version: INSTANCE_VERSION,
-        }),
-        { status: 200, headers: { 'content-type': 'application/json' } }
-      )
-    )) as typeof fetch
+  // The control plane verifies signed manifests before use, so seed the target instead of faking the fetch.
+  for (const kind of ['daemon', 'instance', 'ui'] as const) {
+    seedUpdateManifestCacheForTests(
+      {
+        commit: 'targetcommit',
+        buildId: 'build-abc',
+        builtAt: '2020-01-01T00:00:00.000Z',
+        channel: 'release',
+        manifestUrl: 'https://example.invalid/manifest.json',
+        version: INSTANCE_VERSION,
+      },
+      'release',
+      kind
+    )
+  }
   const serverId = crypto.randomUUID()
   const enqueued: DaemonOutboundEnvelope[] = []
   try {
