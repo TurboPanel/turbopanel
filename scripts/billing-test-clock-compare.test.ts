@@ -17,6 +17,18 @@ test('sameValue: different instants, non-timestamps and null stay unequal', () =
   assertEquals(sameValue(3, 3), true)
 })
 
+test('sameValue: arrays and plain objects compare deeply', () => {
+  assertEquals(sameValue(['price_1'], ['price_1']), true)
+  assertEquals(sameValue(['a', 'b'], ['a', 'b']), true)
+  assertEquals(sameValue(['a', 'b'], ['b', 'a']), false)
+  assertEquals(sameValue(['a'], ['a', 'b']), false)
+  assertEquals(sameValue({ a: 1, b: ['x'] }, { b: ['x'], a: 1 }), true)
+  assertEquals(sameValue({ a: 1 }, { a: 2 }), false)
+  assertEquals(sameValue({ a: 1 }, { b: 1 }), false)
+  assertEquals(sameValue(['2031-02-01 00:00:00+00'], ['2031-02-01T00:00:00Z']), true)
+  assertEquals(sameValue([], {}), false)
+})
+
 const busy = { ok: false, status: 409, body: { error: LEASE_BUSY_ERROR } } as const
 
 test('retryWhileLeaseBusy: retries the lease code, then returns the success', async () => {

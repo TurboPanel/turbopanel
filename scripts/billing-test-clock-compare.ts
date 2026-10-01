@@ -18,12 +18,31 @@ function timestampMs(value: unknown): number | null {
   return Number.isNaN(ms) ? null : ms
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function sameArray(actual: readonly unknown[], expected: readonly unknown[]): boolean {
+  return actual.length === expected.length && actual.every((v, i) => sameValue(v, expected[i]))
+}
+
+function sameObject(actual: Record<string, unknown>, expected: Record<string, unknown>): boolean {
+  const keys = Object.keys(actual)
+  return (
+    keys.length === Object.keys(expected).length &&
+    keys.every((key) => key in expected && sameValue(actual[key], expected[key]))
+  )
+}
+
 /**
- * Equal as values, or, when both sides are timestamp strings, as the same
- * instant (a pg `2031-02-01 00:00:00+00` equals `2031-02-01T00:00:00.000Z`).
+ * Equal as values: arrays and plain objects element by element, and, when
+ * both sides are timestamp strings, as the same instant (a pg
+ * `2031-02-01 00:00:00+00` equals `2031-02-01T00:00:00.000Z`).
  */
 export function sameValue(actual: unknown, expected: unknown): boolean {
   if (actual === expected) return true
+  if (Array.isArray(actual) && Array.isArray(expected)) return sameArray(actual, expected)
+  if (isPlainObject(actual) && isPlainObject(expected)) return sameObject(actual, expected)
   const a = timestampMs(actual)
   const b = timestampMs(expected)
   return a !== null && b !== null && a === b
