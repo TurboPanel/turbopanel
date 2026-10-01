@@ -203,6 +203,8 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
     columns: {
       metadata: 'Reserved pairing jsonb with no first-party reader or writer today; stays null.',
       options: 'Reserved pairing jsonb with no first-party reader or writer today; stays null.',
+      time_zone:
+        'IANA zone (from the supported list) in which quiet hours on the personal channels of this user are read; NULL means UTC.',
       name: 'Optional display name copied at creation from the OAuth profile or the OTP sign-in form (1-255 chars); absent on password sign-up and never edited later.',
       email:
         'Unique sign-in address, trimmed at write; the identity that accounts, sessions, OTP flows and invitation accepts are matched against.',
@@ -1591,7 +1593,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       payload:
         'Rendered non-secret message as JSON: `event`, `severity`, `title`, `body`, `organizationId`, `organizationName`, `targetType`, `targetId`, `context`, `at`.',
       status:
-        '`pending` (default, not yet sent), `sent`, `failed` (retry due) or `abandoned` (after 5 failed attempts); retries pick up `pending` and `failed`.',
+        '`pending` (default), `sent`, `failed` (retry due), `abandoned` (after 5 attempts) or `held` (waits for quiet hours or a digest); retries skip `held`.',
       attempts:
         'Number of send attempts so far, bumped in SQL by the sender; the row is abandoned once it reaches 5.',
       next_attempt_at:
@@ -1624,6 +1626,12 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'Set when the owner pauses the channel; it keeps its rules but receives nothing until resumed.',
       created_by_user_id:
         'User whose session created the channel (provenance, set NULL on user delete); differs from `user_id` for org and instance channels.',
+      digest_cadence:
+        'Email only: `hourly` or `daily` batches non-urgent events into one summary per window; NULL sends each event as it happens.',
+      quiet_start_minute:
+        'Quiet hours start as minutes after local midnight (0-1439), set together with `quiet_end_minute`; NULL means no quiet hours.',
+      quiet_end_minute:
+        'Quiet hours end as minutes after local midnight (0-1439); the window may wrap midnight, and held events go out as one summary when it ends.',
     },
   },
   notification: {

@@ -98,6 +98,12 @@
       "tag": "0015_deploy_options_comments",
       "when": 1790861043773,
       "sha256": "09ff69834416a683987274366a6a9f1c8a147a92f28f49c80c059d628a6e3383"
+    },
+    {
+      "idx": 16,
+      "tag": "0016_notification_digest_quiet_hours",
+      "when": 1790883090317,
+      "sha256": "73fe747a33e184ec44596ec9e80d512cbc2d97b39797884b4591f0497e9d7a88"
     }
   ]
 }

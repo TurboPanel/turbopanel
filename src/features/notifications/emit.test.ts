@@ -153,7 +153,7 @@ test('an organization event lands in every member inbox and reaches a routed cha
       },
       { fetchImpl: fakeFetch(200, captured) }
     )
-    assertEquals(result, { inbox: 1, deliveries: 1, sent: 1, failed: 0 })
+    assertEquals(result, { inbox: 1, deliveries: 1, sent: 1, failed: 0, held: 0 })
     assertEquals(captured.length, 1)
     assertEquals(
       (captured[0]!.body as { text: string }).text.startsWith('Server db-1 went offline'),
@@ -194,7 +194,7 @@ test('an organization event lands in every member inbox and reaches a routed cha
       },
       { fetchImpl: fakeFetch(200, captured) }
     )
-    assertEquals(quiet, { inbox: 0, deliveries: 0, sent: 0, failed: 0 })
+    assertEquals(quiet, { inbox: 0, deliveries: 0, sent: 0, failed: 0, held: 0 })
     assertEquals(captured.length, 1)
 
     // Once the member holds organization:manage, the same event reaches them.
@@ -249,7 +249,7 @@ test("a managers-only event never reaches a plain member's personal channel", as
       },
       { fetchImpl: fakeFetch(200, captured) }
     )
-    assertEquals(hidden, { inbox: 0, deliveries: 0, sent: 0, failed: 0 })
+    assertEquals(hidden, { inbox: 0, deliveries: 0, sent: 0, failed: 0, held: 0 })
     assertEquals(captured.length, 0)
 
     // A members event still reaches the same channel.
@@ -650,7 +650,7 @@ test('emitting never throws: a broken database is a logged no-op', async () => {
     event: 'server.offline',
     organizationId: '00000000-0000-4000-8000-0000000000a1',
   })
-  assertEquals(result, { inbox: 0, deliveries: 0, sent: 0, failed: 0 })
+  assertEquals(result, { inbox: 0, deliveries: 0, sent: 0, failed: 0, held: 0 })
   // A missing organization on an organization event is skipped, not thrown.
   const skipped = await emitNotification(broken, undefined, {
     event: 'server.offline',
