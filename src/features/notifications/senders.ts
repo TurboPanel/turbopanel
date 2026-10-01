@@ -119,6 +119,14 @@ export function parseTelegramAddress(
   return { token, chatId };
 }
 
+/** A 3xx, or the opaque-redirect a runtime returns for `redirect: "manual"`. */
+function isRedirect(response: Response): boolean {
+  return (
+    response.type === "opaqueredirect" ||
+    (response.status >= 300 && response.status < 400)
+  );
+}
+
 async function post(
   url: string,
   body: string,
@@ -133,9 +141,13 @@ async function post(
       headers: { "content-type": "application/json", ...headers },
       body,
       signal: controller.signal,
+      // Never follow: a 3xx could point at an internal address that the
+      // send-time URL check never saw.
+      redirect: "manual",
     });
     // Drain so the connection can be reused rather than hang.
     await response.text().catch(() => undefined);
+    if (isRedirect(response)) return { ok: false, error: "redirect_blocked" };
     return response.ok
       ? { ok: true }
       : { ok: false, error: `http_${response.status}` };

@@ -151,3 +151,24 @@ test("email and push are not sent from here", async () => {
     },
   );
 });
+
+test("a webhook 302 to an internal address is never followed and fails with redirect_blocked", async () => {
+  const calls: Captured[] = [];
+  const redirecting = ((url: string | URL | Request, init?: RequestInit) => {
+    calls.push({ url: String(url), init: init ?? {} });
+    return Promise.resolve(
+      new Response(null, {
+        status: 302,
+        headers: { location: "http://169.254.169.254/latest/meta-data/" },
+      }),
+    );
+  }) as typeof fetch;
+  const outcome = await send(
+    { kind: "webhook", address: "https://hooks.example.com/x" },
+    payload,
+    redirecting,
+  );
+  assertEquals(outcome, { ok: false, error: "redirect_blocked" });
+  assertEquals(calls.length, 1);
+  assertEquals(calls[0]!.init.redirect, "manual");
+});
