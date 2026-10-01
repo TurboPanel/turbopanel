@@ -48,6 +48,7 @@ import { registerTeamRoutes } from './teams/routes.ts'
 import { registerNotificationRoutes } from './notifications/routes.ts'
 import { registerNotificationVerifyRoutes } from './notifications/verify-routes.ts'
 import { registerOrganizationMemberRoutes } from './organizations/members.ts'
+import { registerOrganizationPrincipalDefaultsRoutes } from './organizations/principal-defaults-routes.ts'
 import { registerOrganizationRoutes } from './organizations/routes.ts'
 import { registerReauthSettingsRoutes } from './organizations/reauth-settings-routes.ts'
 import { registerOrganizationFirewallRoutes } from './organizations/firewall-routes.ts'
@@ -112,6 +113,7 @@ export function registerClientRoutes(app: Hono<AppEnv>, opts: ClientRouteOpts) {
   registerIpRoutes(client, opts)
   registerLicenseRoutes(client, opts)
   opts.registerBilling?.(client, opts)
+  registerOrganizationPrincipalDefaultsRoutes(client, opts)
   registerOrganizationRoutes(client, opts)
   registerOrganizationMemberRoutes(client, opts)
   registerReauthSettingsRoutes(client, opts)

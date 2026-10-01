@@ -33,7 +33,8 @@ import {
   rotatePrincipalPassword,
   USERNAME_IN_USE_ERROR,
 } from '../../features/principals/store.ts'
-import { loadRandomizedUsernamesDefault } from '../../features/managed/load-org-defaults.ts'
+import { loadPrincipalNamePolicy } from '../../features/managed/load-org-defaults.ts'
+import { resolveRequestedNameScheme } from '../../lib/principal-name-scheme.ts'
 import { assertDispatchInfrastructure } from '../servers/command-dispatch.ts'
 import { assertCanManageOr403, getOrgId, parseJsonBody, requireStringField } from '../shared.ts'
 import { assertServerDatacenterReady } from '../../features/net/datacenter-networks.ts'
@@ -666,16 +667,19 @@ async function insertManagedCreateTransaction(
   const owningOrgIds = await resolveManagedOwningOrganizationIds(tx, managedId, [serverId])
   await lockOrganizationsForUpdate(tx, owningOrgIds)
 
-  // Always suffixed regardless of the org randomized-usernames default: the
-  // exposed root login is `postgres_<11 rand>`/`root_<11 rand>`, never the
-  // engine's bare admin name — those stay platform-internal. The short
-  // `username` keeps the spec name for internal reference.
+  // Never plain, whatever the org scheme: the exposed root login is
+  // `postgres_<11 rand>`/`root_<11 rand>` (or fully random under the `random`
+  // scheme), never the engine's bare admin name — those stay
+  // platform-internal. The short `username` keeps the spec name for internal
+  // reference.
+  const { defaultScheme } = await loadPrincipalNamePolicy(tx, ctx.organizationId)
+  const rootScheme = defaultScheme === 'plain' ? 'partial' : defaultScheme
   const rootUsername = await resolveManagedAppliedUsername(
     tx,
     owningOrgIds,
     ctx.spec.rootUsername,
     ctx.spec.userOperations.identifier,
-    { suffix: true }
+    { scheme: rootScheme }
   )
 
   const { principalId, password } = await createManagedPrincipal(tx, dataEncryptionSecrets, {
@@ -683,6 +687,7 @@ async function insertManagedCreateTransaction(
     provider: ctx.spec.principalProvider,
     username: ctx.spec.rootUsername,
     appliedUsername: rootUsername,
+    nameScheme: rootScheme,
     metadata: {
       managedRoot: true,
       engine: ctx.spec.engine,
@@ -1538,14 +1543,19 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     if (!options) return c.json({ error: 'Invalid managed options' }, 400)
 
     const residual = parseManagedResidual(row.metadata)
-    const randomizeSuffix = await loadRandomizedUsernamesDefault(db, ctx.organizationId)
+    // The org policy picks the scheme (and refuses a locked-out choice) before
+    // any name is validated: the scheme decides how long the typed name may be.
+    const policy = await loadPrincipalNamePolicy(db, ctx.organizationId)
+    const schemeChoice = resolveRequestedNameScheme(policy, body.nameScheme)
+    if (!schemeChoice.ok) return c.json({ error: schemeChoice.error }, schemeChoice.status)
+    const nameScheme = schemeChoice.scheme
     const fields = parseManagedUserCreateFields(
       c,
       ctx,
       body,
       options,
       residual.rootUsername,
-      randomizeSuffix
+      nameScheme
     )
     if (fields instanceof Response) return fields
     const { username, databases, privileges } = fields
@@ -1577,27 +1587,26 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       })
       const owningOrgIds = await resolveManagedOwningOrganizationIds(tx, row.id, [targetServerId])
       await lockOrganizationsForUpdate(tx, owningOrgIds)
-      // With the org randomized-usernames default on, the applied login gets a
-      // random `_<11>` suffix (collision-free by construction); off, the
-      // operator-chosen name is the login and must be free org-wide.
-      let appliedUsername = username
-      if (randomizeSuffix) {
-        appliedUsername = await resolveManagedAppliedUsername(
-          tx,
-          owningOrgIds,
-          username,
-          ctx.spec.userOperations.identifier,
-          { suffix: true }
-        )
-      } else if (await isManagedUsernameTaken(tx, owningOrgIds, username)) {
+      // `plain`: the operator-typed name is the login and must be free
+      // org-wide. `partial` / `random`: the server derives a collision-free
+      // system name; the typed name stays the display name.
+      if (nameScheme === 'plain' && (await isManagedUsernameTaken(tx, owningOrgIds, username))) {
         return { ok: false as const, error: USERNAME_IN_USE_ERROR }
       }
+      const appliedUsername = await resolveManagedAppliedUsername(
+        tx,
+        owningOrgIds,
+        username,
+        ctx.spec.userOperations.identifier,
+        { scheme: nameScheme }
+      )
 
       const created = await createManagedPrincipal(tx, dataEncryptionSecrets, {
         managedId: row.id,
         provider: ctx.spec.principalProvider,
         username,
         appliedUsername,
+        nameScheme,
         metadata: {
           engine: ctx.spec.engine,
           databases,
@@ -1649,6 +1658,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         id: principalId,
         username,
         appliedUsername: userCreate.appliedUsername,
+        nameScheme,
         databases,
         privileges,
         createdAt: createdUser?.createdAt ?? new Date().toISOString(),

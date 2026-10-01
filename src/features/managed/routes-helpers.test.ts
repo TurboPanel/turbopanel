@@ -371,6 +371,8 @@ test('serializeManagedUser filters databases and privileges to strings', () => {
     id: 'prin-1',
     username: 'app_user',
     appliedUsername: 'app_user_ab12cd34ef5',
+    // Legacy row (no stored scheme): a suffixed name reads as partial.
+    nameScheme: 'partial',
     databases: ['postgres', 'app'],
     privileges: ['read-only'],
     // Absent metadata role → the writer hostgroup, never an implicit reader.
@@ -457,7 +459,7 @@ test('parseManagedUserCreateFields rejects root username and invalid identifiers
   }
 })
 
-test('parseManagedUserCreateFields reserves suffix room when randomized usernames are on', async () => {
+test('parseManagedUserCreateFields reserves suffix room when the scheme is partial', async () => {
   const c = mockContext()
   const options = defaultRowOptions()
   const ctx = mockManagedContext()
@@ -471,7 +473,7 @@ test('parseManagedUserCreateFields reserves suffix room when randomized username
     { username: longest, databases: ['postgres'] },
     options,
     undefined,
-    true
+    'partial'
   )
   if (ok instanceof Response) throw new TypeError('expected fields')
   assertEquals(ok.username, longest)
@@ -483,19 +485,19 @@ test('parseManagedUserCreateFields reserves suffix room when randomized username
     { username: tooLong, databases: ['postgres'] },
     options,
     undefined,
-    true
+    'partial'
   )
   if (!(rejected instanceof Response)) throw new TypeError('expected Response')
   assertEquals(rejected.status, 400)
 
-  // Without the suffix the full engine limit applies.
+  // Without the suffix (plain/random) the full engine limit applies.
   const bare = parseManagedUserCreateFields(
     c,
     ctx,
     { username: tooLong, databases: ['postgres'] },
     options,
     undefined,
-    false
+    'random'
   )
   if (bare instanceof Response) throw new TypeError('expected fields')
   assertEquals(bare.username, tooLong)

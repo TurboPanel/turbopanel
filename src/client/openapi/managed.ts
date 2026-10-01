@@ -409,7 +409,12 @@ export const managedSchemas = {
       appliedUsername: {
         type: 'string',
         description:
-          'Engine login actually created: the short username plus a random _<11 chars> suffix when the org randomized-usernames default was on at create. Connect with this name.',
+          'Engine login actually created (the system name): per nameScheme it equals the typed username (plain), adds a random _<11 chars> suffix (partial) or is fully random. Connect with this name.',
+      },
+      nameScheme: {
+        type: 'string',
+        enum: ['plain', 'partial', 'random'],
+        description: 'Scheme the system name was derived with.',
       },
       databases: { type: 'array', items: { type: 'string' } },
       privileges: { type: 'array', items: { type: 'string' } },
@@ -433,6 +438,12 @@ export const managedSchemas = {
       username: { type: 'string' },
       databases: { type: 'array', items: { type: 'string' } },
       privileges: { type: 'array', items: { type: 'string' } },
+      nameScheme: {
+        type: 'string',
+        enum: ['plain', 'partial', 'random'],
+        description:
+          'Name scheme for the system name (the login on the host or engine): plain = the typed name, partial = typed name + _<11 random chars> (platform default), random = fully random with no trace of the typed name. Omit to use the organization default. The server derives the system name; clients never supply it. When the organization locks the scheme, asking for a different one returns 409 principal_scheme_locked.',
+      },
     },
   },
   CreateManagedUserResponse: {
@@ -1094,7 +1105,8 @@ export const managedPaths = {
           ...jsonSchema('CreateManagedUserResponse'),
         },
         409: {
-          description: 'managed_user_exists / managed_busy',
+          description:
+            'managed_user_exists / managed_busy / username_in_use / principal_scheme_locked',
           content: {
             'application/json': {
               schema: {
