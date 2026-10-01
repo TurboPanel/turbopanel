@@ -63,6 +63,7 @@ import {
   validateManagedDefaults,
 } from './routes-helpers.ts'
 import { registerOrganizationFabricRoutes } from './fabric-routes.ts'
+import { registerOrganizationFirewallRoutes } from './firewall-routes.ts'
 
 async function loadOrganizationRecord(db: Db, id: string) {
   const [orgRow] = await db
@@ -97,6 +98,7 @@ export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRoute
   router.use('/organizations/:id/compose-privileged-fields', createSessionMiddleware(secrets))
   router.use('/timezones', createSessionMiddleware(secrets))
   registerOrganizationFabricRoutes(router, opts)
+  registerOrganizationFirewallRoutes(router, opts)
 
   router.get('/organizations', async (c) => {
     const db = getDb(c)

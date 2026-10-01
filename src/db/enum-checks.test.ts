@@ -26,6 +26,14 @@ import {
   UPGRADE_STEP_UNITS,
 } from '../features/upgrades/vocabulary.ts'
 import { BACKUP_RUN_STATUSES, BACKUP_TARGET_KINDS } from '../features/backups/vocabulary.ts'
+import {
+  FIREWALL_MODES,
+  FIREWALL_RULE_ACTIONS,
+  FIREWALL_RULE_PROTOS,
+  FIREWALL_RULE_SCOPES,
+  FIREWALL_SOURCE_KINDS,
+  FIREWALL_STATES,
+} from '../features/firewall/vocabulary.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -84,6 +92,12 @@ const CASES: Array<[constraint: string, values: readonly string[]]> = [
   ['stage_unit_check', UPGRADE_STEP_UNITS],
   ['retention_target_kind_check', BACKUP_TARGET_KINDS],
   ['snapshot_status_check', BACKUP_RUN_STATUSES],
+  ['edict_scope_check', FIREWALL_RULE_SCOPES],
+  ['edict_action_check', FIREWALL_RULE_ACTIONS],
+  ['edict_proto_check', FIREWALL_RULE_PROTOS],
+  ['edict_source_kind_check', FIREWALL_SOURCE_KINDS],
+  ['bulwark_mode_check', FIREWALL_MODES],
+  ['bulwark_state_check', FIREWALL_STATES],
   ['stage_status_check', UPGRADE_STEP_STATUSES],
 ]
 
