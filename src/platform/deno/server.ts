@@ -130,6 +130,7 @@ import {
   resolveInstanceSocket,
   resolveInstanceTlsCaServePath,
 } from './server-paths.ts'
+import { createInstanceShutdown } from './instance-shutdown.ts'
 import { collectServerIps, readDefaultRouteInterfaces } from './server-addresses-deno.ts'
 import { preferredIpv4FromIps } from '../../contracts/server-addresses.ts'
 import { setHostIpv4Discovery } from '../ports/host-ipv4-discovery.ts'
@@ -759,18 +760,19 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     })()
   }, LEAF_RENEWAL_SWEEP_INTERVAL_MS)
 
-  for (const signal of ['SIGINT', 'SIGTERM'] as const) {
-    Deno.addSignalListener(signal, async () => {
-      clearInterval(maintenanceTimer)
-      clearInterval(leafRenewalTimer)
-      await emailQueue.close?.()
-      await commandQueue.close?.()
-      await commandConsumer?.close()
-      await mailerConsumer?.close()
-      await daemonCellRegistry.close()
+  const shutdown = createInstanceShutdown({
+    timers: [maintenanceTimer, leafRenewalTimer],
+    closers: [
+      { label: 'email queue', close: () => emailQueue.close?.() },
+      { label: 'command queue', close: () => commandQueue.close?.() },
+      { label: 'command consumer', close: () => commandConsumer?.close() },
+      { label: 'mailer consumer', close: () => mailerConsumer?.close() },
+      { label: 'daemon cell registry', close: () => daemonCellRegistry.close() },
       // Persist any pending batched metrics rows before tearing the process
       // down — accepted (202) samples must survive a normal SIGINT/SIGTERM.
-      await closeMetricsStoreIfSupported(serverMetricsStore)
+      { label: 'metrics store', close: () => closeMetricsStoreIfSupported(serverMetricsStore) },
+    ],
+    resetPorts: () => {
       setHostIpv4Discovery(null)
       setTcpProbe(null)
       setRevokeBoundDaemonKey(null)
@@ -778,8 +780,13 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
       setLoadServerStatusRecords(null)
       setResolveFleetPresence(null)
       setDenoExecutionLogStoreFactories(null)
-      abort.abort()
-    })
+    },
+    stopServing: () => abort.abort(),
+    // Last: closes the Postgres pool, which would otherwise keep the process alive.
+    endDatabase: () => endDbConnection(db),
+  })
+  for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+    Deno.addSignalListener(signal, shutdown)
   }
 
   await prepareInstanceSocket(socketPath)

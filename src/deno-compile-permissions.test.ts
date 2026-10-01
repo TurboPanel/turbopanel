@@ -35,6 +35,11 @@ function extractAllowNetFlag(command: string): string | null {
   return match?.[1] ?? null
 }
 
+function extractDenyNetFlag(command: string): string[] {
+  const match = /--deny-net=([^\s]+)/.exec(command)
+  return match?.[1].split(',') ?? []
+}
+
 function extractPathListFlag(command: string, flag: string): string[] {
   const match = new RegExp(`--${flag}=([^\\s]+)`).exec(command)
   return match?.[1].split(',') ?? []
@@ -123,7 +128,8 @@ it('instance outbound network is unrestricted on self-hosted — no --allow-net 
   // with PermissionDenied). The host firewall is the boundary now. The bare
   // flag stays: Deno 2.9+ treats Unix-domain connect (Postgres, Redis, the
   // listen socket) as net, so removing --allow-net entirely would refuse the
-  // database. A reintroduced host list is the regression this test exists for.
+  // database. A reintroduced host list is the regression this test exists for;
+  // the only carve-out is the cloud-metadata --deny-net list (next test).
   const tasks = await readCompileTasks()
   for (const [taskName, task] of Object.entries(tasks)) {
     assert(/(^|\s)--allow-net(\s|$)/.test(task), `${taskName} must carry a bare --allow-net`)
@@ -143,6 +149,68 @@ it('instance outbound network is unrestricted on self-hosted — no --allow-net 
       extractAllowNetFlag(line) === null,
       'deno-run ExecStart must not carry a --allow-net=<hosts> list (decided 2026-09-18)'
     )
+  }
+})
+
+it('instance network stays open except the cloud metadata endpoints (--deny-net)', async () => {
+  // The one carve-out from the open outbound network: the link-local cloud
+  // metadata services (AWS/Azure/GCE style 169.254.169.254, GCE's DNS name,
+  // AWS's IPv6 endpoint). Nothing in the instance has a reason to talk to
+  // them, so a server-side request forgery in any integration cannot reach
+  // instance credentials. Same list the daemon denies
+  // (turbopaneld src/permissions/daemon-permissions.ts DAEMON_DENY_NET).
+  const tasks = await readCompileTasks()
+  const denied = new Map<string, string[]>()
+  for (const [taskName, task] of Object.entries(tasks)) {
+    const list = extractDenyNetFlag(task)
+    assert(
+      list.some((host) => /^169\.254\.169\.254$/.test(host)),
+      `${taskName} must deny the IPv4 metadata address`
+    )
+    assert(list.includes('metadata.google.internal'), `${taskName} must deny the GCE metadata name`)
+    assert(
+      list.some((host) => /^\[fd00:ec2::254\]$/.test(host)),
+      `${taskName} must deny the AWS IPv6 metadata address (bracketed, as deno requires)`
+    )
+    denied.set(taskName, list)
+  }
+  assertEquals(denied.get('compile'), denied.get('compile:dev'))
+
+  const execStartLines = await readUnitExecStartLines()
+  if (execStartLines === null) return // standalone CI: daemon checkout absent
+  for (const line of execStartLines.filter((l) => l.includes(' run '))) {
+    assertEquals(
+      extractDenyNetFlag(line),
+      denied.get('compile'),
+      'deno-run ExecStart must deny the same metadata endpoints as the compiled binary'
+    )
+  }
+})
+
+it('only env and net are left unscoped on the compiled instance', async () => {
+  // Every other grant names what it covers. These two stay bare, each for a
+  // reason found by running the binary, not assumed:
+  // - net: decided 2026-09-18 (operator-configured webhooks/forges; Unix
+  //   sockets count as net); the metadata carve-out is the --deny-net above.
+  // - env: Deno.env.toObject() is called throughout the instance, and Deno
+  //   rejects it under ANY --allow-env=<list>. Worse, ioredis pulls in the
+  //   `debug` package, whose import enumerates process.env
+  //   (Object.keys(process.env)); under a scoped grant the instance dies on
+  //   that import before it serves a request. Scoping env would mean
+  //   replacing every toObject() and patching `debug`, to hide variables the
+  //   process legitimately holds anyway (its own DB URL and secret). Revisit
+  //   if those dependencies change.
+  const tasks = await readCompileTasks()
+  for (const [taskName, task] of Object.entries(tasks)) {
+    assert(/(^|\s)--allow-env(\s|$)/.test(task), `${taskName} keeps the bare --allow-env`)
+    for (const flag of ['allow-read', 'allow-write', 'allow-run', 'allow-sys', 'allow-ffi']) {
+      assert(
+        !new RegExp(`(^|\\s)--${flag}(\\s|$)`).test(task),
+        `${taskName} must not pass a bare --${flag}`
+      )
+      assert(task.includes(`--${flag}=`), `${taskName} must scope --${flag}`)
+    }
+    assert(!/(^|\s)(--allow-all|-A)(\s|$)/.test(task), `${taskName} must not pass --allow-all`)
   }
 })
 
