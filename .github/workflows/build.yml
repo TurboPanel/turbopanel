@@ -108,7 +108,7 @@ jobs:
       # a warning annotation. Override for one verified not exploitable here:
       # an [[IgnoredVulns]] entry with a reason in osv-scanner.toml.
       - name: Dependency advisory gate (osv-scanner)
-        uses: TurboPanel/dev/.github/actions/osv-scan@7099adc383f0d0eb7a1d91e907a071e9222dfc2e # dev#46
+        uses: TurboPanel/dev/.github/actions/osv-scan@8512d65091c662383a4aa6ff2848e16230ccc5e1 # dev#55
 
       - name: Check CA boundary (Organization CA must not touch Platform CA paths)
         run: pnpm run check:ca-boundary
