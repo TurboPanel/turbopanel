@@ -180,7 +180,7 @@ export function resolveRolloutPolicy(services: Record<string, unknown> | undefin
   const invalid: Array<{ service: string; reasons: string[] }> = []
   for (const [name, service] of Object.entries(services ?? {})) {
     const deploy = isRecord(service) && isRecord(service.deploy) ? service.deploy : null
-    if (deploy === null || deploy.update_config === undefined) continue
+    if (deploy?.update_config === undefined) continue
     const result = parseUpdateConfig(deploy.update_config)
     if (!result.ok) {
       invalid.push({ service: name, reasons: result.reasons })
