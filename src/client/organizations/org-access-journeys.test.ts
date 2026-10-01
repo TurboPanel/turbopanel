@@ -12,6 +12,7 @@ import { CLIENT_API_PREFIX } from '../../app/surfaces.ts'
 import { createDenoDb } from '../../db/connection.ts'
 import {
   account,
+  audit,
   grant,
   invitation,
   notification,
@@ -158,6 +159,7 @@ async function withFixture(fn: (fx: Fixture) => Promise<void>): Promise<void> {
     await fn({ app, db, organizationId, teamId, serverId: serverRow!.id, owner, addPerson, call })
   } finally {
     await db.delete(notification).where(eq(notification.organizationId, organizationId))
+    await db.delete(audit).where(eq(audit.organizationId, organizationId))
     await db.delete(invitation).where(eq(invitation.teamId, teamId))
     await db.delete(project).where(eq(project.organizationId, organizationId))
     await db.delete(workspace).where(eq(workspace.organizationId, organizationId))
@@ -390,5 +392,249 @@ test('an invited existing account joins with the granted permission and no secon
       await can(fx.db, invitee.userId, 'organization:manage', 'organization', fx.organizationId),
       'the invited permission is in force after accepting'
     )
+  })
+})
+
+const membersPath = (orgId: string, userId: string) => `/organizations/${orgId}/members/${userId}`
+
+async function readsOrganization(fx: Fixture, who: Person, orgId = fx.organizationId) {
+  const res = await fx.call(who, 'GET', `/organizations/${orgId}`, undefined, orgId)
+  return res.status
+}
+
+async function listedOrganizationIds(fx: Fixture, who: Person): Promise<string[]> {
+  const res = await fx.call(who, 'GET', '/organizations')
+  const body = (await res.json()) as { organizations: { id: string }[] }
+  return body.organizations.map((o) => o.id)
+}
+
+async function rowsFor(fx: Fixture, userId: string) {
+  const [teams, grants] = await Promise.all([
+    fx.db.select({ id: teammate.id }).from(teammate).where(eq(teammate.userId, userId)),
+    fx.db.select({ id: grant.id }).from(grant).where(eq(grant.actorId, userId)),
+  ])
+  return { teams: teams.length, grants: grants.length }
+}
+
+test('removing a member deletes the membership and every grant, refuses their next read, and notifies', async () => {
+  await withFixture(async (fx) => {
+    const manager = await fx.addPerson('manager')
+    const [ws] = await fx.db
+      .insert(workspace)
+      .values({ organizationId: fx.organizationId, name: 'Scoped' })
+      .returning({ id: workspace.id })
+    await fx.db.insert(grant).values({
+      entityType: 'workspace',
+      entityId: ws!.id,
+      actorType: 'user',
+      actorId: manager.userId,
+      permission: 'workspace:manage',
+    })
+    assertEquals(await readsOrganization(fx, manager), 200)
+    assert((await listedOrganizationIds(fx, manager)).includes(fx.organizationId))
+
+    const res = await fx.call(fx.owner, 'DELETE', membersPath(fx.organizationId, manager.userId))
+    assertEquals(res.status, 200, await res.clone().text())
+
+    assertEquals(await rowsFor(fx, manager.userId), { teams: 0, grants: 0 })
+    // The same signed-in session is refused straight away, and the app is gone from their list.
+    assertEquals(await readsOrganization(fx, manager), 404)
+    assert(!(await listedOrganizationIds(fx, manager)).includes(fx.organizationId))
+    assertEquals(
+      (
+        await fx.call(manager, 'PUT', `/organizations/${fx.organizationId}/default-timezone`, {
+          timezone: 'UTC',
+        })
+      ).status,
+      403
+    )
+    assertEquals(await readsOrganization(fx, fx.owner), 200, 'the owner keeps access')
+
+    const [note] = await fx.db
+      .select({ event: notification.event })
+      .from(notification)
+      .where(
+        and(
+          eq(notification.organizationId, fx.organizationId),
+          eq(notification.event, 'access.grant_revoked')
+        )
+      )
+    assert(note, 'removal raises the existing access.grant_revoked notification')
+    const [auditRow] = await fx.db
+      .select({ action: audit.action, targetId: audit.targetId })
+      .from(audit)
+      .where(and(eq(audit.organizationId, fx.organizationId), eq(audit.action, 'member.remove')))
+    assertEquals(auditRow?.targetId, fx.organizationId)
+  })
+})
+
+test('a manager can remove a plain member but is refused removing an owner', async () => {
+  await withFixture(async (fx) => {
+    const manager = await fx.addPerson('manager')
+    const member = await fx.addPerson('member')
+    const secondOwner = await fx.addPerson('owner')
+
+    const refused = await fx.call(
+      manager,
+      'DELETE',
+      membersPath(fx.organizationId, secondOwner.userId)
+    )
+    assertEquals(refused.status, 403)
+    assertEquals((await rowsFor(fx, secondOwner.userId)).grants, 1, 'the owner is untouched')
+
+    const removed = await fx.call(manager, 'DELETE', membersPath(fx.organizationId, member.userId))
+    assertEquals(removed.status, 200)
+    assertEquals(await readsOrganization(fx, member), 404)
+  })
+})
+
+test('a plain member cannot remove anyone, an outsider and a bad id get 404, an anonymous caller 401', async () => {
+  await withFixture(async (fx) => {
+    const member = await fx.addPerson('member')
+    const other = await fx.addPerson('member')
+    const outsider = await fx.addPerson('outsider')
+
+    const byMember = await fx.call(member, 'DELETE', membersPath(fx.organizationId, other.userId))
+    assertEquals(byMember.status, 403)
+    assertEquals(await readsOrganization(fx, other), 200)
+
+    const byOutsider = await fx.call(
+      outsider,
+      'DELETE',
+      membersPath(fx.organizationId, other.userId)
+    )
+    assertEquals(byOutsider.status, 404)
+    assertEquals(await readsOrganization(fx, other), 200)
+
+    const notAMember = await fx.call(
+      fx.owner,
+      'DELETE',
+      membersPath(fx.organizationId, outsider.userId)
+    )
+    assertEquals(notAMember.status, 404)
+    assertEquals(
+      (await fx.call(fx.owner, 'DELETE', `/organizations/${fx.organizationId}/members/not-a-uuid`))
+        .status,
+      404
+    )
+
+    const anonymous = await fx.app.request(
+      `${CLIENT_API_PREFIX}${membersPath(fx.organizationId, other.userId)}`,
+      { method: 'DELETE', headers: { origin: 'http://localhost' } }
+    )
+    assertEquals(anonymous.status, 401)
+  })
+})
+
+test('the last owner cannot be removed or leave; with a second owner the first can', async () => {
+  await withFixture(async (fx) => {
+    const byOwner = await fx.call(
+      fx.owner,
+      'DELETE',
+      membersPath(fx.organizationId, fx.owner.userId)
+    )
+    assertEquals(byOwner.status, 409)
+    assertEquals(await byOwner.json(), { error: 'Cannot remove the last owner of an organization' })
+    assertEquals(await readsOrganization(fx, fx.owner), 200)
+
+    const second = await fx.addPerson('owner')
+    const removed = await fx.call(second, 'DELETE', membersPath(fx.organizationId, fx.owner.userId))
+    assertEquals(removed.status, 200)
+    assertEquals(await readsOrganization(fx, fx.owner), 404)
+
+    const lastOne = await fx.call(second, 'DELETE', membersPath(fx.organizationId, second.userId))
+    assertEquals(lastOne.status, 409)
+    assertEquals(await readsOrganization(fx, second), 200)
+  })
+})
+
+test('a person can leave an organization themselves', async () => {
+  await withFixture(async (fx) => {
+    const member = await fx.addPerson('member')
+    const manager = await fx.addPerson('manager')
+    for (const who of [member, manager]) {
+      const res = await fx.call(who, 'DELETE', membersPath(fx.organizationId, who.userId))
+      assertEquals(res.status, 200, await res.clone().text())
+      assertEquals(await readsOrganization(fx, who), 404)
+      assert(!(await listedOrganizationIds(fx, who)).includes(fx.organizationId))
+    }
+  })
+})
+
+test('removal is scoped to one organization: another organization keeps the person and its owner cannot reach them', async () => {
+  await withFixture(async (fx) => {
+    const shared = await fx.addPerson('member')
+    const { organizationId: otherOrg, teamId: otherTeam } = await createOrganizationForUser(
+      fx.db,
+      shared.userId,
+      'Elsewhere'
+    )
+    try {
+      // Owner of the first organization cannot remove from, or even see, the other one.
+      const cross = await fx.call(
+        fx.owner,
+        'DELETE',
+        membersPath(otherOrg, shared.userId),
+        undefined,
+        otherOrg
+      )
+      assertEquals(cross.status, 404)
+
+      const removed = await fx.call(
+        fx.owner,
+        'DELETE',
+        membersPath(fx.organizationId, shared.userId)
+      )
+      assertEquals(removed.status, 200)
+      assertEquals(await readsOrganization(fx, shared), 404)
+      assertEquals(
+        await readsOrganization(fx, shared, otherOrg),
+        200,
+        'their own organization is untouched'
+      )
+      const remaining = await fx.db
+        .select({ id: grant.id })
+        .from(grant)
+        .where(and(eq(grant.actorId, shared.userId), eq(grant.entityId, otherOrg)))
+      assertEquals(remaining.length, 1)
+    } finally {
+      await fx.db.delete(grant).where(eq(grant.entityId, otherOrg))
+      await fx.db.delete(teammate).where(eq(teammate.teamId, otherTeam))
+      await fx.db.delete(team).where(eq(team.organizationId, otherOrg))
+      await fx.db.delete(organization).where(eq(organization.id, otherOrg))
+    }
+  })
+})
+
+test('a removed person can be invited again and accept', async () => {
+  await withFixture(async (fx) => {
+    const member = await fx.addPerson('manager')
+    const [oldInvite] = await fx.db
+      .insert(invitation)
+      .values({
+        userId: fx.owner.userId,
+        teamId: fx.teamId,
+        email: member.email,
+        status: 'accepted',
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      })
+      .returning({ id: invitation.id })
+    assertEquals(
+      (await fx.call(fx.owner, 'DELETE', membersPath(fx.organizationId, member.userId))).status,
+      200
+    )
+
+    const stale = await fx.call(member, 'POST', `/invitations/${oldInvite!.id}/accept`)
+    assertEquals(stale.status, 410, 'an old accepted invitation does not quietly restore access')
+    assertEquals(await readsOrganization(fx, member), 404)
+
+    const created = await fx.call(fx.owner, 'POST', '/invitations', {
+      teamId: fx.teamId,
+      email: member.email,
+    })
+    assertEquals(created.status, 200, await created.clone().text())
+    const invitationId = ((await created.json()) as { id: string }).id
+    assertEquals((await fx.call(member, 'POST', `/invitations/${invitationId}/accept`)).status, 200)
+    assertEquals(await readsOrganization(fx, member), 200)
   })
 })

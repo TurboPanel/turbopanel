@@ -17,10 +17,10 @@
  * - **No secrets in `context`.** Record the fact and the identifiers, never
  *   the credential that changed; the same rule `setting` rows follow.
  */
-import { and, desc, eq, lt } from "drizzle-orm";
-import type { Db } from "../../db/connection.ts";
-import { audit } from "../../db/schema.ts";
-import { logWarn } from "../../lib/logger.ts";
+import { and, desc, eq, lt } from 'drizzle-orm'
+import type { Db } from '../../db/connection.ts'
+import { audit } from '../../db/schema.ts'
+import { logWarn } from '../../lib/logger.ts'
 
 /**
  * Every action this build records, as `<subject>.<verb>` or
@@ -33,45 +33,43 @@ import { logWarn } from "../../lib/logger.ts";
  * branches on it.
  */
 export const AUDIT_ACTIONS = [
-  "server.daemon_key.revoke",
-  "server.delete",
-  "grant.create",
-  "grant.delete",
-  "forge.create",
-  "forge.update",
-  "forge.delete",
-  "organization.compose_privileged_fields.set",
-  "organization.deploy_hooks.set",
-  "organization.compose_resource_defaults.set",
-  "organization.acme.set",
-] as const;
+  'server.daemon_key.revoke',
+  'server.delete',
+  'grant.create',
+  'grant.delete',
+  'member.remove',
+  'forge.create',
+  'forge.update',
+  'forge.delete',
+  'organization.compose_privileged_fields.set',
+  'organization.deploy_hooks.set',
+  'organization.compose_resource_defaults.set',
+  'organization.acme.set',
+] as const
 
-export type AuditAction = (typeof AUDIT_ACTIONS)[number];
+export type AuditAction = (typeof AUDIT_ACTIONS)[number]
 
 export type AuditEntry = {
   /** Null for an instance-wide action that belongs to no organization. */
-  organizationId: string | null;
+  organizationId: string | null
   /** Null only for an action the platform took on nobody's behalf. */
-  actorUserId?: string | null;
+  actorUserId?: string | null
   /** Denormalized so the trail survives the account's deletion. */
-  actorEmail?: string | null;
-  action: AuditAction;
+  actorEmail?: string | null
+  action: AuditAction
   /** A catalog entity kind, or `organization`. */
-  targetType: string;
-  targetId?: string | null;
+  targetType: string
+  targetId?: string | null
   /** Small, non-secret facts worth keeping beside the action. */
-  context?: Record<string, unknown> | null;
-};
+  context?: Record<string, unknown> | null
+}
 
 /**
  * Record one action. Never throws: see the module header — an audit write
  * must not be the reason an operator's action fails.
  */
-export async function recordAudit(
-  db: Db | undefined,
-  entry: AuditEntry,
-): Promise<void> {
-  if (db === undefined) return;
+export async function recordAudit(db: Db | undefined, entry: AuditEntry): Promise<void> {
+  if (db === undefined) return
   try {
     await db.insert(audit).values({
       organizationId: entry.organizationId ?? null,
@@ -81,30 +79,30 @@ export async function recordAudit(
       targetType: entry.targetType,
       targetId: entry.targetId ?? null,
       context: entry.context ?? null,
-    });
+    })
   } catch (err) {
     logWarn(
-      "audit",
+      'audit',
       `failed to record ${entry.action} on ${entry.targetType} ${
-        entry.targetId ?? "-"
-      }: ${err instanceof Error ? err.message : String(err)}`,
-    );
+        entry.targetId ?? '-'
+      }: ${err instanceof Error ? err.message : String(err)}`
+    )
   }
 }
 
 export type AuditRecord = {
-  id: string;
-  createdAt: string;
-  actorUserId: string | null;
-  actorEmail: string | null;
-  action: string;
-  targetType: string;
-  targetId: string | null;
-  context: unknown;
-};
+  id: string
+  createdAt: string
+  actorUserId: string | null
+  actorEmail: string | null
+  action: string
+  targetType: string
+  targetId: string | null
+  context: unknown
+}
 
-export const AUDIT_PAGE_SIZE = 50;
-export const AUDIT_MAX_PAGE_SIZE = 200;
+export const AUDIT_PAGE_SIZE = 50
+export const AUDIT_MAX_PAGE_SIZE = 200
 
 /**
  * One organization's trail, newest first. Keyset pagination on `created_at`:
@@ -114,22 +112,16 @@ export const AUDIT_MAX_PAGE_SIZE = 200;
 export async function listAuditForOrganization(
   db: Db,
   params: {
-    organizationId: string;
+    organizationId: string
     /** `created_at` of the last row of the previous page. */
-    before?: string;
-    limit?: number;
-  },
+    before?: string
+    limit?: number
+  }
 ): Promise<AuditRecord[]> {
-  const limit = Math.min(
-    Math.max(1, params.limit ?? AUDIT_PAGE_SIZE),
-    AUDIT_MAX_PAGE_SIZE,
-  );
+  const limit = Math.min(Math.max(1, params.limit ?? AUDIT_PAGE_SIZE), AUDIT_MAX_PAGE_SIZE)
   const where = params.before
-    ? and(
-      eq(audit.organizationId, params.organizationId),
-      lt(audit.createdAt, params.before),
-    )
-    : eq(audit.organizationId, params.organizationId);
+    ? and(eq(audit.organizationId, params.organizationId), lt(audit.createdAt, params.before))
+    : eq(audit.organizationId, params.organizationId)
 
   const rows = await db
     .select({
@@ -145,7 +137,7 @@ export async function listAuditForOrganization(
     .from(audit)
     .where(where)
     .orderBy(desc(audit.createdAt), desc(audit.id))
-    .limit(limit);
+    .limit(limit)
 
-  return rows;
+  return rows
 }
