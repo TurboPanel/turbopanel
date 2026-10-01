@@ -20,6 +20,7 @@ import {
 } from './install-state.ts'
 import { resolvePublicBaseUrl } from '../../features/install/resolve-public-base-url.ts'
 import { hashPassword } from '../../lib/secrets/password.ts'
+import { refuseIfBreached } from './breached-password.ts'
 import {
   consumeEmailVerificationToken,
   createEmailVerificationToken,
@@ -40,6 +41,7 @@ import {
 } from '../../features/settings/email-settings.ts'
 import { registerOAuthRoutes } from './oauth/oauth-http.ts'
 import { registerInvitationLandingRoutes } from './invitation-landing-http.ts'
+import { registerChangePasswordRoute } from './change-password-http.ts'
 import { registerPasswordResetRoutes } from './password-reset-http.ts'
 import { registerOtpRoutes } from './otp-http.ts'
 import { registerPasskeyRoutes } from './passkeys-http.ts'
@@ -846,6 +848,11 @@ export function registerAuthRoutes(app: Hono<AppEnv>, opts: AuthRouteOpts) {
       )
     }
 
+    // Before the existing-user branch so a duplicate email answers the same as
+    // a new one (no account-existence oracle through this refusal).
+    const breached = await refuseIfBreached(c, parsed.password)
+    if (breached) return breached
+
     const existingUser = await db
       .select({ id: user.id })
       .from(user)
@@ -932,6 +939,7 @@ export function registerAuthRoutes(app: Hono<AppEnv>, opts: AuthRouteOpts) {
 
   registerOtpRoutes(auth, opts)
   registerPasswordResetRoutes(auth, opts)
+  registerChangePasswordRoute(auth, opts)
   registerInvitationLandingRoutes(auth, opts)
   registerTwoFactorRoutes(auth, opts)
   registerPasskeyRoutes(auth, opts)

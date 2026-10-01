@@ -417,6 +417,14 @@ export function buildAuthSchemas(runtime?: 'deno' | 'workers') {
         token: { type: 'string', description: 'The token from the reset page URL (?token=).' },
       },
     },
+    ChangePasswordRequest: {
+      type: 'object',
+      required: ['currentPassword', 'newPassword'],
+      properties: {
+        currentPassword: { type: 'string', format: 'password' },
+        newPassword: { type: 'string', format: 'password' },
+      },
+    },
     ResetPasswordOtpRequest: {
       type: 'object',
       required: ['email', 'otp', 'password'],
@@ -1035,7 +1043,35 @@ export const authPaths: Record<string, unknown> = {
         '200': { description: 'Password updated', ...jsonBody('OkResponse') },
         '400': {
           description:
-            'Invalid body or weak password, or `INVALID_TOKEN` (unknown, used or expired link)',
+            'Invalid body, weak or breached (`password_breached`) password, or `INVALID_TOKEN` (unknown, used or expired link)',
+          ...jsonBody('ErrorResponse'),
+        },
+        '429': { description: 'Too many requests', ...jsonBody('ErrorResponse') },
+        '503': { description: 'Database unavailable', ...jsonBody('ErrorResponse') },
+      },
+    },
+  },
+  '/api/client/v1/auth/change-password': {
+    post: {
+      tags: ['Authentication'],
+      summary: 'Change the signed-in account password',
+      description:
+        'Verifies the current password (throttled like every step-up), applies the sign-up password rules, refuses a known breached password (`password_breached`; if the breach lookup is unreachable the change is allowed) and signs out every other session. This session stays signed in.',
+      security: [{ cookieAuth: [] }],
+      requestBody: {
+        required: true,
+        ...jsonBody('ChangePasswordRequest'),
+      },
+      responses: {
+        '200': { description: 'Password changed', ...jsonBody('OkResponse') },
+        '400': {
+          description:
+            'Invalid body or weak password, `incorrect_current_password`, `password_unchanged` or `password_breached`',
+          ...jsonBody('ErrorResponse'),
+        },
+        '401': { description: 'Not signed in', ...jsonBody('ErrorResponse') },
+        '409': {
+          description: '`no_password`: the account signs in without a password',
           ...jsonBody('ErrorResponse'),
         },
         '429': { description: 'Too many requests', ...jsonBody('ErrorResponse') },
