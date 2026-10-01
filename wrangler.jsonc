@@ -115,6 +115,14 @@
       "name": "STRIPE_WEBHOOK_RATE_LIMITER",
       "namespace_id": "1009",
       "simple": { "limit": 60, "period": 60 }
+    },
+    {
+      // Generic mutating-request cap (client/admin/install/developer writes), keyed
+      // per signed session or per IP — see src/app/write-rate-limit.ts. Generous: an
+      // abuse ceiling, not pacing. A missing binding means no limit (fails open).
+      "name": "CLIENT_WRITE_RATE_LIMITER",
+      "namespace_id": "1010",
+      "simple": { "limit": 120, "period": 60 }
     }
   ],
   // Offline sweep (see src/daemon/cell/offline-sweep.ts) — 1 minute is Cloudflare's
@@ -239,6 +247,14 @@
           "name": "STRIPE_WEBHOOK_RATE_LIMITER",
           "namespace_id": "2009",
           "simple": { "limit": 60, "period": 60 }
+        },
+        {
+          // Generic mutating-request cap (client/admin/install/developer writes), keyed
+          // per signed session or per IP — see src/app/write-rate-limit.ts. Generous: an
+          // abuse ceiling, not pacing. A missing binding means no limit (fails open).
+          "name": "CLIENT_WRITE_RATE_LIMITER",
+          "namespace_id": "2010",
+          "simple": { "limit": 120, "period": 60 }
         }
       ],
       "triggers": { "crons": ["* * * * *"] },
@@ -381,6 +397,14 @@
           "name": "STRIPE_WEBHOOK_RATE_LIMITER",
           "namespace_id": "4009",
           "simple": { "limit": 60, "period": 60 }
+        },
+        {
+          // Generic mutating-request cap (client/admin/install/developer writes), keyed
+          // per signed session or per IP — see src/app/write-rate-limit.ts. Generous: an
+          // abuse ceiling, not pacing. A missing binding means no limit (fails open).
+          "name": "CLIENT_WRITE_RATE_LIMITER",
+          "namespace_id": "4010",
+          "simple": { "limit": 120, "period": 60 }
         }
       ],
       "triggers": { "crons": ["* * * * *"] },
@@ -503,6 +527,14 @@
           "name": "STRIPE_WEBHOOK_RATE_LIMITER",
           "namespace_id": "3009",
           "simple": { "limit": 60, "period": 60 }
+        },
+        {
+          // Generic mutating-request cap (client/admin/install/developer writes), keyed
+          // per signed session or per IP — see src/app/write-rate-limit.ts. Generous: an
+          // abuse ceiling, not pacing. A missing binding means no limit (fails open).
+          "name": "CLIENT_WRITE_RATE_LIMITER",
+          "namespace_id": "3010",
+          "simple": { "limit": 120, "period": 60 }
         }
       ],
       "triggers": { "crons": ["* * * * *"] },

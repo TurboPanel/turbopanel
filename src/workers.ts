@@ -68,6 +68,7 @@ import {
   closeWorkersRequestDb,
   openWorkersRequestDb,
   resolveWorkersClientAuthRateLimiter,
+  resolveWorkersWriteRateLimiter,
   resolveWorkersDaemonRateLimiters,
   resolveWorkersDb,
   resolveWorkersGithubWebhookRateLimiter,
@@ -85,6 +86,7 @@ import { fetchWithConnectionRetry } from './platform/workers/connection-retry.ts
 import { type createWorkersDb, type Db, endDbConnection } from './db/connection.ts'
 import { compatLogWarn } from './lib/log-compat.ts'
 import type { AuthRateLimiter } from './client/authn/auth-rate-limit.ts'
+import type { RateLimiter } from './daemon/rate-limit/contracts.ts'
 import { OTP_VERIFIER_SECRET_PURPOSE } from './client/authn/email-otp.ts'
 import { WEBAUTHN_CHALLENGE_PURPOSE } from './client/authn/passkeys.ts'
 import {
@@ -109,6 +111,7 @@ let cachedCommandQueue: CommandQueue | null = null
 let cachedServerMetricsStore: ServerMetricsStore | null = null
 let cachedExecutionLogStore: ExecutionLogStore | null = null
 let cachedAuthRateLimiter: AuthRateLimiter | null = null
+let cachedWriteRateLimiter: RateLimiter | null = null
 let cachedDaemonCellRegistryFactory:
   | ((
       env: CloudflareBindings,
@@ -133,6 +136,7 @@ export function resetWorkerAppCachesForTests(): void {
   cachedServerMetricsStore = null
   cachedExecutionLogStore = null
   cachedAuthRateLimiter = null
+  cachedWriteRateLimiter = null
   cachedDaemonCellRegistryFactory = null
   lazyEmailQueueResolveCallsForTests = 0
 }
@@ -294,6 +298,7 @@ async function initWorkerApp(env: CloudflareBindings) {
   warnIfGitlabWebhookRateLimiterMissing(env)
   warnIfStripeWebhookRateLimiterMissing(env)
   cachedAuthRateLimiter = resolveWorkersClientAuthRateLimiter(env)
+  cachedWriteRateLimiter = resolveWorkersWriteRateLimiter(env)
   const rateLimiters = resolveWorkersDaemonRateLimiters(env)
   // Daemon registrars are generic over the env — the app's `AppEnv` carries
   // through without a cast (same as platform/deno/server.ts).
@@ -397,6 +402,9 @@ export default {
         if (cachedCommandQueue) c.set('commandQueue', cachedCommandQueue)
         if (cachedAuthRateLimiter) {
           c.set('authRateLimiter', cachedAuthRateLimiter)
+        }
+        if (cachedWriteRateLimiter) {
+          c.set('writeRateLimiter', cachedWriteRateLimiter)
         }
         c.set('platformEnv', platformEnv)
         if (billingConfig) c.set('billingConfig', billingConfig)

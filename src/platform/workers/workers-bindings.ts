@@ -66,7 +66,7 @@ export function isPlaceholderHyperdriveCachedId(id: string | undefined): boolean
  * Hyperdrive troubleshooting.
  */
 export function resolveWorkersDb(
-  env: CloudflareBindings,
+  env: CloudflareBindings
 ): ReturnType<typeof createWorkersDb> | undefined {
   if (env.HYPERDRIVE) {
     return workersDbFactory(env.HYPERDRIVE) ?? undefined
@@ -83,7 +83,7 @@ export function resolveWorkersDb(
  * Creates a new client per call — same per-request rule as {@link resolveWorkersDb}.
  */
 export function resolveWorkersCachedDb(
-  env: CloudflareBindings,
+  env: CloudflareBindings
 ): ReturnType<typeof createWorkersDb> | undefined {
   if (env.HYPERDRIVE_CACHED) {
     return workersDbFactory(env.HYPERDRIVE_CACHED) ?? undefined
@@ -103,10 +103,10 @@ export function resolveWorkersCachedDb(
 export function resolveWorkersQueryCache(
   env: CloudflareBindings,
   db: Db | undefined,
-  cachedDb?: Db | null,
+  cachedDb?: Db | null
 ): QueryCache | undefined {
   const resolvedCached =
-    cachedDb === undefined ? resolveWorkersCachedDb(env) : cachedDb ?? undefined
+    cachedDb === undefined ? resolveWorkersCachedDb(env) : (cachedDb ?? undefined)
   if (resolvedCached) {
     return createHyperdriveQueryCache(resolvedCached)
   }
@@ -121,9 +121,7 @@ export function resolveWorkersQueryCache(
  * invocation. Pair with {@link closeWorkersRequestDb} — never reuse across
  * requests.
  */
-export function openWorkersRequestDb(
-  env: CloudflareBindings,
-): WorkersRequestDbHandles {
+export function openWorkersRequestDb(env: CloudflareBindings): WorkersRequestDbHandles {
   const db = resolveWorkersDb(env)
   const cachedDb = resolveWorkersCachedDb(env)
   return {
@@ -138,9 +136,7 @@ export function openWorkersRequestDb(
  * are undefined/missing; swallows nothing — callers may `.catch(() => {})`
  * when scheduling via `waitUntil`.
  */
-export async function closeWorkersRequestDb(
-  handles: WorkersRequestDbHandles,
-): Promise<void> {
+export async function closeWorkersRequestDb(handles: WorkersRequestDbHandles): Promise<void> {
   const endings: Promise<void>[] = []
   if (handles.db) endings.push(endDbConnection(handles.db))
   if (handles.cachedDb) endings.push(endDbConnection(handles.cachedDb))
@@ -156,24 +152,16 @@ export async function closeWorkersRequestDb(
  * - Binding absent on **production-like** Workers → fail-closed (429) so a
  *   misconfigured deploy cannot silently run unrestricted.
  */
-export function resolveWorkersDaemonRateLimiters(
-  env: CloudflareBindings,
-): {
+export function resolveWorkersDaemonRateLimiters(env: CloudflareBindings): {
   connect: RateLimiter
   rest: RateLimiter
   metrics: RateLimiter
 } {
   const allowNoop = isWorkersDevSurface(env)
   return {
-    connect: resolveDaemonLimiterBinding(
-      env.DAEMON_CONNECT_RATE_LIMITER,
-      allowNoop,
-    ),
+    connect: resolveDaemonLimiterBinding(env.DAEMON_CONNECT_RATE_LIMITER, allowNoop),
     rest: resolveDaemonLimiterBinding(env.DAEMON_REST_RATE_LIMITER, allowNoop),
-    metrics: resolveDaemonLimiterBinding(
-      env.DAEMON_METRICS_RATE_LIMITER,
-      allowNoop,
-    ),
+    metrics: resolveDaemonLimiterBinding(env.DAEMON_METRICS_RATE_LIMITER, allowNoop),
   }
 }
 
@@ -188,23 +176,13 @@ export function resolveWorkersDaemonRateLimiters(
  * fallback (`onError: 'local'` in `src/platform/deno/server.ts`) so a broker hiccup
  * still throttles per peer.
  */
-export function resolveWorkersGithubWebhookRateLimiter(
-  env: CloudflareBindings,
-): RateLimiter {
-  return resolveDaemonLimiterBinding(
-    env.GITHUB_WEBHOOK_RATE_LIMITER,
-    isWorkersDevSurface(env),
-  )
+export function resolveWorkersGithubWebhookRateLimiter(env: CloudflareBindings): RateLimiter {
+  return resolveDaemonLimiterBinding(env.GITHUB_WEBHOOK_RATE_LIMITER, isWorkersDevSurface(env))
 }
 
 /** GitLab's sibling limiter — same fail-closed discipline, separate bucket. */
-export function resolveWorkersGitlabWebhookRateLimiter(
-  env: CloudflareBindings,
-): RateLimiter {
-  return resolveDaemonLimiterBinding(
-    env.GITLAB_WEBHOOK_RATE_LIMITER,
-    isWorkersDevSurface(env),
-  )
+export function resolveWorkersGitlabWebhookRateLimiter(env: CloudflareBindings): RateLimiter {
+  return resolveDaemonLimiterBinding(env.GITLAB_WEBHOOK_RATE_LIMITER, isWorkersDevSurface(env))
 }
 
 /**
@@ -213,18 +191,13 @@ export function resolveWorkersGitlabWebhookRateLimiter(
  * database write per request must never run unthrottled on production),
  * its own bucket so an invoice run cannot spend a git provider's budget.
  */
-export function resolveWorkersStripeWebhookRateLimiter(
-  env: CloudflareBindings,
-): RateLimiter {
-  return resolveDaemonLimiterBinding(
-    env.STRIPE_WEBHOOK_RATE_LIMITER,
-    isWorkersDevSurface(env),
-  )
+export function resolveWorkersStripeWebhookRateLimiter(env: CloudflareBindings): RateLimiter {
+  return resolveDaemonLimiterBinding(env.STRIPE_WEBHOOK_RATE_LIMITER, isWorkersDevSurface(env))
 }
 
 function resolveDaemonLimiterBinding(
   binding: { limit(options: { key: string }): Promise<{ success: boolean }> } | undefined,
-  allowNoop: boolean,
+  allowNoop: boolean
 ): RateLimiter {
   if (binding) return createWorkersRateLimiter(binding)
   return allowNoop ? createNoopRateLimiter() : createFailClosedRateLimiter()
@@ -254,24 +227,32 @@ function resolveDaemonLimiterBinding(
  *   configuration check that stops production Workers from quietly running
  *   without a shared throttle.
  */
-export function resolveWorkersClientAuthRateLimiter(
-  env: CloudflareBindings,
-): AuthRateLimiter {
+export function resolveWorkersClientAuthRateLimiter(env: CloudflareBindings): AuthRateLimiter {
   if (env.CLIENT_AUTH_RATE_LIMITER) {
     const defaultLimiter = createWorkersRateLimiter(env.CLIENT_AUTH_RATE_LIMITER)
     if (env.CLIENT_AUTH_STRICT_RATE_LIMITER) {
       const strictLimiter = createWorkersRateLimiter(env.CLIENT_AUTH_STRICT_RATE_LIMITER)
       return createDurableAuthRateLimiter({ default: defaultLimiter, strict: strictLimiter })
     }
-    const strictLimiter = isWorkersDevSurface(env)
-      ? defaultLimiter
-      : createFailClosedRateLimiter()
+    const strictLimiter = isWorkersDevSurface(env) ? defaultLimiter : createFailClosedRateLimiter()
     return createDurableAuthRateLimiter({ default: defaultLimiter, strict: strictLimiter })
   }
   if (isWorkersDevSurface(env)) {
     return getSharedAuthRateLimiter()
   }
   return createFailClosedAuthRateLimiter()
+}
+
+/**
+ * Generic mutating-request limiter (`app/write-rate-limit.ts`). Unlike the
+ * auth limiter this **fails open**: no `CLIENT_WRITE_RATE_LIMITER` binding
+ * means no limit (`null`), never a 429 on every write. It is an abuse ceiling,
+ * and a deploy missing the binding must not become an outage.
+ */
+export function resolveWorkersWriteRateLimiter(env: CloudflareBindings): RateLimiter | null {
+  return env.CLIENT_WRITE_RATE_LIMITER
+    ? createWorkersRateLimiter(env.CLIENT_WRITE_RATE_LIMITER)
+    : null
 }
 
 let cachedHyperdriveWarningLogged = false
@@ -305,7 +286,7 @@ export function warnIfCachedHyperdriveMissing(env: CloudflareBindings): void {
 
   cachedHyperdriveWarningLogged = true
   console.warn(
-    'HYPERDRIVE_CACHED binding is missing; query-cache read models use the primary database without Hyperdrive caching.',
+    'HYPERDRIVE_CACHED binding is missing; query-cache read models use the primary database without Hyperdrive caching.'
   )
 }
 
@@ -327,7 +308,7 @@ export function warnIfDaemonRateLimitersMissing(env: CloudflareBindings): void {
   daemonRateLimiterWarningLogged = true
   console.warn(
     'DAEMON_CONNECT_RATE_LIMITER / DAEMON_REST_RATE_LIMITER / DAEMON_METRICS_RATE_LIMITER ' +
-      'binding(s) missing; daemon rate limits fail closed (429) until bound.',
+      'binding(s) missing; daemon rate limits fail closed (429) until bound.'
   )
 }
 
@@ -342,7 +323,7 @@ export function warnIfClientAuthRateLimiterMissing(env: CloudflareBindings): voi
 
   clientAuthRateLimiterWarningLogged = true
   console.warn(
-    'CLIENT_AUTH_RATE_LIMITER binding missing; client auth endpoints fail closed (429) until it is bound.',
+    'CLIENT_AUTH_RATE_LIMITER binding missing; client auth endpoints fail closed (429) until it is bound.'
   )
 }
 
@@ -361,7 +342,7 @@ export function warnIfClientAuthStrictRateLimiterMissing(env: CloudflareBindings
   clientAuthStrictRateLimiterWarningLogged = true
   console.warn(
     'CLIENT_AUTH_STRICT_RATE_LIMITER binding missing; sign-up/send-otp/reset-password-request ' +
-      'fail closed (429) until it is bound, instead of sharing the default CLIENT_AUTH_RATE_LIMITER budget.',
+      'fail closed (429) until it is bound, instead of sharing the default CLIENT_AUTH_RATE_LIMITER budget.'
   )
 }
 
@@ -376,7 +357,7 @@ export function warnIfGithubWebhookRateLimiterMissing(env: CloudflareBindings): 
 
   githubWebhookRateLimiterWarningLogged = true
   console.warn(
-    'GITHUB_WEBHOOK_RATE_LIMITER binding missing; the GitHub webhook surface fails closed (429) until it is bound.',
+    'GITHUB_WEBHOOK_RATE_LIMITER binding missing; the GitHub webhook surface fails closed (429) until it is bound.'
   )
 }
 
@@ -391,7 +372,7 @@ export function warnIfGitlabWebhookRateLimiterMissing(env: CloudflareBindings): 
 
   gitlabWebhookRateLimiterWarningLogged = true
   console.warn(
-    'GITLAB_WEBHOOK_RATE_LIMITER binding missing; the GitLab webhook surface fails closed (429) until it is bound.',
+    'GITLAB_WEBHOOK_RATE_LIMITER binding missing; the GitLab webhook surface fails closed (429) until it is bound.'
   )
 }
 
@@ -406,7 +387,7 @@ export function warnIfStripeWebhookRateLimiterMissing(env: CloudflareBindings): 
 
   stripeWebhookRateLimiterWarningLogged = true
   console.warn(
-    'STRIPE_WEBHOOK_RATE_LIMITER binding missing; the Stripe webhook surface fails closed (429) until it is bound.',
+    'STRIPE_WEBHOOK_RATE_LIMITER binding missing; the Stripe webhook surface fails closed (429) until it is bound.'
   )
 }
 

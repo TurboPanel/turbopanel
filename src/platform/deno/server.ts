@@ -88,6 +88,7 @@ import {
   createRedisRateLimiter,
   resolveClientAuthRateLimit,
   resolveClientAuthStrictRateLimit,
+  resolveClientWriteRateLimit,
   resolveDaemonConnectRateLimit,
   resolveDaemonMetricsRateLimit,
   resolveDaemonRestRateLimit,
@@ -508,6 +509,15 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     }),
   })
 
+  // Generic mutating-request cap. Redis errors fail OPEN here (the default):
+  // unlike credential throttling this must never turn into an outage.
+  const clientWriteRate = resolveClientWriteRateLimit()
+  const writeRateLimiter = createRedisRateLimiter({
+    client: daemonCellRegistry.client,
+    limit: clientWriteRate.limit,
+    periodSeconds: clientWriteRate.periodSeconds,
+  })
+
   const commandConsumer = await startOptionalCommandConsumer({
     db,
     commandQueue,
@@ -545,6 +555,7 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     // Inject before client routes mount — must not be registered after
     // registerClientRoutes (see createApp authRateLimiter middleware).
     authRateLimiter,
+    writeRateLimiter,
     // Must be registered inside createApp() *before* GET /api/health, or the
     // health handler never sees TURBOPANEL_REVISION from systemd.
     getPlatformEnv: () => Deno.env.toObject(),

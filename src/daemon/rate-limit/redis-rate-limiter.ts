@@ -41,6 +41,15 @@ export const DEFAULT_CLIENT_AUTH_STRICT_RATE_LIMIT = 5
 export const DEFAULT_CLIENT_AUTH_STRICT_RATE_PERIOD_SECONDS = 60
 
 /**
+ * Defaults match Wrangler `CLIENT_WRITE_RATE_LIMITER` (`{ limit: 120, period: 60 }`):
+ * the generic per-session / per-IP cap on mutating client/admin/developer
+ * requests (`app/write-rate-limit.ts`). An abuse ceiling, sized so the UI and
+ * scripted use never reach it.
+ */
+export const DEFAULT_CLIENT_WRITE_RATE_LIMIT = 120
+export const DEFAULT_CLIENT_WRITE_RATE_PERIOD_SECONDS = 60
+
+/**
  * Defaults match Wrangler `GITHUB_WEBHOOK_RATE_LIMITER` /
  * `GITLAB_WEBHOOK_RATE_LIMITER` (`{ limit: 120, period: 60 }` each).
  * A single `git push` can fan out into a handful of deliveries (push +
@@ -147,6 +156,23 @@ export function resolveClientAuthStrictRateLimit(
     periodSeconds: parsePositiveIntEnv(
       env.get('TURBOPANEL_CLIENT_AUTH_STRICT_RATE_PERIOD'),
       DEFAULT_CLIENT_AUTH_STRICT_RATE_PERIOD_SECONDS
+    ),
+  }
+}
+
+export function resolveClientWriteRateLimit(
+  env: {
+    get(key: string): string | undefined
+  } = Deno.env
+): { limit: number; periodSeconds: number } {
+  return {
+    limit: parsePositiveIntEnv(
+      env.get('TURBOPANEL_CLIENT_WRITE_RATE_LIMIT'),
+      DEFAULT_CLIENT_WRITE_RATE_LIMIT
+    ),
+    periodSeconds: parsePositiveIntEnv(
+      env.get('TURBOPANEL_CLIENT_WRITE_RATE_PERIOD'),
+      DEFAULT_CLIENT_WRITE_RATE_PERIOD_SECONDS
     ),
   }
 }
