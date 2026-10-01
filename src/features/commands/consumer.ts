@@ -46,6 +46,7 @@ import {
   parseManagedDestroyGate,
 } from '../managed/destroy-gate.ts'
 import { deleteManagedBackup, insertManagedBackup } from '../backups/backup-records.ts'
+import { applyStorageBackupSideEffect } from '../backups/storage-command-effects.ts'
 import type { CommandEnvelope } from './envelope.ts'
 import { nowIso } from './ids.ts'
 import { isNoopCommandQueue } from './noop-command-queue.ts'
@@ -156,6 +157,8 @@ const COMMAND_TIMEOUT_MS: Record<CommandType, number> = {
   'managed.ingress.reconcile': 300_000,
   'managed.ha.reconcile': 300_000,
   'managed.ha.failover': 600_000,
+  // Streams one volume archive to disk; sized like managed.backup.
+  'storage.backup': 1_800_000,
   'system.reconcile': 300_000,
 }
 
@@ -194,6 +197,7 @@ export function commandTimeoutMs(type: string): number {
     type === 'managed.ingress.reconcile' ||
     type === 'managed.ha.reconcile' ||
     type === 'managed.ha.failover' ||
+    type === 'storage.backup' ||
     type === 'system.reconcile'
   ) {
     return COMMAND_TIMEOUT_MS[type]
@@ -1822,6 +1826,7 @@ async function applySucceededSideEffects(
   await applyManagedHaFailoverSideEffect(db, record, envelope, result, deps)
   await applyManagedBackupSideEffect(db, record, envelope, result)
   await applyManagedRestoreSideEffect(db, record, envelope, result)
+  await applyStorageBackupSideEffect(db, record, result)
 }
 
 /**

@@ -23,6 +23,7 @@ import { taskPaths, taskSchemas } from './tasks.ts'
 import { bindingPaths, bindingSchemas } from './bindings.ts'
 import { workspacePaths, workspaceSchemas } from './workspaces.ts'
 import { storagePaths, storageSchemas } from './storage.ts'
+import { storageBackupPaths, storageBackupSchemas } from './storage-backups.ts'
 import { repositoryPaths, repositorySchemas } from './repositories.ts'
 import { principalPaths, principalSchemas } from './principals.ts'
 import { deployPaths, deploySchemas } from './deploy.ts'
@@ -36,10 +37,7 @@ export type ClientOpenApiOptions = {
   runtime?: 'deno' | 'workers'
 }
 
-export function getClientOpenApiSpec(
-  serverUrl: string,
-  options?: ClientOpenApiOptions,
-): object {
+export function getClientOpenApiSpec(serverUrl: string, options?: ClientOpenApiOptions): object {
   const includeInstall = options?.runtime === 'deno'
   const installCommandDescription = includeInstall
     ? 'Shell command to install a daemon with this license via the instance install wrapper.'
@@ -80,8 +78,7 @@ export function getClientOpenApiSpec(
       { name: 'Storage', description: 'Volumes, bind mounts, and file storage' },
       {
         name: 'Repositories',
-        description:
-          'Git repository bindings and Git provider App installations',
+        description: 'Git repository bindings and Git provider App installations',
       },
       { name: 'Principals', description: 'Project runtime principals' },
       { name: 'Resource limits', description: 'Organization and server deploy quotas' },
@@ -107,8 +104,32 @@ export function getClientOpenApiSpec(
     ],
     'x-tagGroups': [
       { name: 'Authentication & Authorization', tags: ['Authentication', 'Authorization'] },
-      { name: 'Resources', tags: ['Workspaces', 'Projects', 'Environments', 'Managed services', 'Variables', 'Tags', 'Tasks', 'Bindings', 'Storage', 'Repositories', 'Principals', 'Resource limits', 'Services', 'Hostings', 'Containers', 'TLS', 'Docker run import'] },
-      { name: 'Infrastructure', tags: ['Servers', 'Commands', 'Networks', 'Datacenters', 'IPs', 'Licenses'] },
+      {
+        name: 'Resources',
+        tags: [
+          'Workspaces',
+          'Projects',
+          'Environments',
+          'Managed services',
+          'Variables',
+          'Tags',
+          'Tasks',
+          'Bindings',
+          'Storage',
+          'Repositories',
+          'Principals',
+          'Resource limits',
+          'Services',
+          'Hostings',
+          'Containers',
+          'TLS',
+          'Docker run import',
+        ],
+      },
+      {
+        name: 'Infrastructure',
+        tags: ['Servers', 'Commands', 'Networks', 'Datacenters', 'IPs', 'Licenses'],
+      },
       { name: 'Platform', tags: ['Health', 'System', ...(includeInstall ? ['Install'] : [])] },
     ],
     components: {
@@ -138,6 +159,7 @@ export function getClientOpenApiSpec(
         ...taskSchemas,
         ...bindingSchemas,
         ...storageSchemas,
+        ...storageBackupSchemas,
         ...repositorySchemas,
         ...principalSchemas,
         ...deploySchemas,
@@ -170,6 +192,7 @@ export function getClientOpenApiSpec(
       ...taskPaths,
       ...bindingPaths,
       ...storagePaths,
+      ...storageBackupPaths,
       ...repositoryPaths,
       ...principalPaths,
       ...deployPaths,
@@ -183,6 +206,5 @@ export function getClientOpenApiSpec(
       ...tlsPaths,
       ...(includeInstall ? installOpenApiPaths : {}),
     },
-
   }
 }

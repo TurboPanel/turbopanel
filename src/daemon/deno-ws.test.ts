@@ -3236,12 +3236,15 @@ function createBackupReportDb(lookup: () => Promise<unknown[]>): Db {
   const base = createMockDb() as unknown as {
     select: () => ReturnType<typeof createSelectChain>
   }
+  // The policy lookup joins `managed` and `copy`; any number of joins ends in the lookup.
+  type Joined = { leftJoin: () => Joined; where: () => { limit: typeof lookup } }
+  const joined: Joined = { leftJoin: () => joined, where: () => ({ limit: lookup }) }
   return {
     ...base,
     select: () => ({
       from: () => ({
         ...base.select().from(),
-        leftJoin: () => ({ where: () => ({ limit: lookup }) }),
+        leftJoin: () => joined,
       }),
     }),
   } as unknown as Db

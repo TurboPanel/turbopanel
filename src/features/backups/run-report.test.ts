@@ -1,7 +1,8 @@
 /**
  * `backup-run-report` against a real database: the run is written once, the
  * artifact is recorded with its policy, pruning touches only this policy's
- * records of this engine, and a refused report writes nothing. Skips without
+ * records of this target (an engine's `backup` rows, a storage copy's
+ * `archive` rows), and a refused report writes nothing. Skips without
  * TURBOPANEL_DATABASE_URL.
  */
 
@@ -17,6 +18,9 @@ import {
   organization,
   project,
   server,
+  storage,
+  storageCopy,
+  archive,
   workspace,
 } from '../../db/schema.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
@@ -78,6 +82,8 @@ async function insertManaged(
 /** Children first: `managed.server_id` and `server.organization_id` both restrict. */
 async function removeFixture(db: Db, organizationId: string, managedIds: string[]): Promise<void> {
   if (managedIds.length > 0) await db.delete(managed).where(inArray(managed.id, managedIds))
+  // Copies (and their policies and volume backups) cascade with their storage.
+  await db.delete(storage).where(eq(storage.organizationId, organizationId))
   const projects = await db
     .select({ id: project.id })
     .from(project)
@@ -267,5 +273,98 @@ test('a report from another server writes nothing', async () => {
       .from(backup)
       .where(eq(backup.managedId, fixture.managedId))
     assertEquals(artifacts.length, 0)
+  })
+})
+
+/** A docker copy of a volume storage on `serverId`, with one policy; returns both ids. */
+async function insertCopyPolicy(
+  fixture: Fixture,
+  serverId: string
+): Promise<{ copyId: string; policyId: string }> {
+  const [store] = await fixture.db
+    .insert(storage)
+    .values({ organizationId: fixture.organizationId, kind: 'volume', name: 'uploads' })
+    .returning({ id: storage.id })
+  const [copy] = await fixture.db
+    .insert(storageCopy)
+    .values({ storageId: store!.id, serverId, provider: 'docker' })
+    .returning({ id: storageCopy.id })
+  const [policy] = await fixture.db
+    .insert(retention)
+    .values({
+      organizationId: fixture.organizationId,
+      targetKind: 'copy',
+      copyId: copy!.id,
+      name: 'Hourly',
+      schedule: '@hourly',
+      retentionKeep: 24,
+    })
+    .returning({ id: retention.id })
+  return { copyId: copy!.id, policyId: policy!.id }
+}
+
+function insertArchiveRow(
+  db: Db,
+  values: { copyId: string; backupId: string; retentionId: string | null }
+): Promise<unknown> {
+  return db.insert(archive).values({
+    ...values,
+    sizeBytes: 1,
+    checksum: 'c'.repeat(64),
+    path: `/backup/copies/${values.copyId}/${values.backupId}.tar.gz`,
+  })
+}
+
+test('a storage-copy report records an archive and prunes only that policy’s rows', async () => {
+  await withFixture(async (fixture) => {
+    const { copyId, policyId } = await insertCopyPolicy(fixture, fixture.serverA)
+    await insertArchiveRow(fixture.db, { copyId, backupId: 'bk_old', retentionId: policyId })
+    await insertArchiveRow(fixture.db, { copyId, backupId: 'bk_manual', retentionId: null })
+
+    const outcome = await handleBackupRunReport(
+      createBackupRunReportStore(fixture.db),
+      succeededReport(fixture, {
+        policyId,
+        path: `/backup/copies/${copyId}/policy-${policyId}/bk_new.tar.gz`,
+        pruned: ['bk_old', 'bk_manual'],
+      }),
+      { reporterServerId: fixture.serverA }
+    )
+    assertEquals(outcome, { ok: true })
+
+    const rows = await fixture.db
+      .select({ backupId: archive.backupId, policyId: archive.retentionId })
+      .from(archive)
+      .where(eq(archive.copyId, copyId))
+      .orderBy(archive.backupId)
+    assertEquals(rows, [
+      { backupId: 'bk_manual', policyId: null },
+      { backupId: 'bk_new', policyId },
+    ])
+    const managedArtifacts = await fixture.db
+      .select({ id: backup.id })
+      .from(backup)
+      .where(eq(backup.managedId, fixture.managedId))
+    assertEquals(managedArtifacts.length, 0)
+  })
+})
+
+test('a storage-copy report from a server the copy is not on writes nothing', async () => {
+  await withFixture(async (fixture) => {
+    const { copyId, policyId } = await insertCopyPolicy(fixture, fixture.serverA)
+    const outcome = await handleBackupRunReport(
+      createBackupRunReportStore(fixture.db),
+      succeededReport(fixture, {
+        policyId,
+        path: `/backup/copies/${copyId}/policy-${policyId}/bk_new.tar.gz`,
+      }),
+      { reporterServerId: fixture.serverB }
+    )
+    assertEquals(outcome.ok, false)
+    const rows = await fixture.db
+      .select({ id: archive.id })
+      .from(archive)
+      .where(eq(archive.copyId, copyId))
+    assertEquals(rows.length, 0)
   })
 })

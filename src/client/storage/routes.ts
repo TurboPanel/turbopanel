@@ -18,6 +18,10 @@ import {
 } from '../shared.ts'
 import { serializeCopy, serializeMount, serializeStorage } from './serialize.ts'
 import {
+  captureCopyBackupHosts,
+  reconcileBackupsAfterCopyChange,
+} from '../../features/backups/reconcile.ts'
+import {
   buildStorageUpdateFields,
   dockerVolumeMetadataWithId,
   isStorageContentTooLarge,
@@ -41,10 +45,7 @@ import {
   type StorageParentRef,
 } from './routes-helpers.ts'
 
-async function sealStorageContent(
-  c: Context<AppEnv>,
-  content: string,
-): Promise<string | Response> {
+async function sealStorageContent(c: Context<AppEnv>, content: string): Promise<string | Response> {
   if (isStorageContentTooLarge(content)) {
     return c.json({ error: 'storage_content_too_large' }, 400)
   }
@@ -59,7 +60,7 @@ async function sealStorageContent(
 
 async function resolveSealedStorageContent(
   c: Context<AppEnv>,
-  value: unknown,
+  value: unknown
 ): Promise<string | undefined | Response> {
   const contentResult = parseOptionalStorageContent(c, value)
   if (contentResult instanceof Response) return contentResult
@@ -146,8 +147,8 @@ function parentInsertValues(parent: StorageParentRef): {
   }
 }
 
-async function resolveStorageSessionContext(
-  c: Context<AppEnv>,
+export async function resolveStorageSessionContext(
+  c: Context<AppEnv>
 ): Promise<StorageSessionContext | Response> {
   const db = getDb(c)
   if (!db) return c.json({ error: 'Database unavailable' }, 503)
@@ -161,10 +162,29 @@ async function resolveStorageSessionContext(
   return { db, orgId }
 }
 
+/**
+ * After a write to storage copies: push a fresh backup set to every host
+ * captured before it, and to the new host of any copy in `copyIds` that moved.
+ * Best-effort, never throws — the write already succeeded.
+ */
+async function repushCopyBackups(
+  c: Context<AppEnv>,
+  db: StorageDb,
+  copyIds: readonly string[],
+  previousServerIds: readonly string[]
+): Promise<void> {
+  const session = c.get('session')
+  await reconcileBackupsAfterCopyChange(db, c.get('commandQueue'), {
+    copyIds,
+    previousServerIds,
+    actor: { actorType: 'user', actorId: session?.userId ?? 'unknown' },
+  })
+}
+
 async function authorizeStorageMutation(
   c: Context<AppEnv>,
   existing: StorageRow | undefined,
-  orgResult: string,
+  orgResult: string
 ): Promise<Response | { parentId: string; entityKind: StorageParentEntityKind }> {
   if (existing?.organizationId !== orgResult) {
     return c.json({ error: 'Not found' }, 404)
@@ -183,34 +203,40 @@ async function authorizeStorageMutation(
 }
 
 async function loadStorageChildren(db: StorageDb, storageIds: string[]) {
-  const copiesByStorage = new Map<string, Array<{
-    id: string
-    storageId: string
-    serverId: string | null
-    secretId: string | null
-    provider: string
-    role: string
-    state: string
-    path: string | null
-    endpoint: string | null
-    generation: number
-    metadata: unknown
-    options: unknown
-    createdAt: string
-    updatedAt: string
-  }>>()
-  const mountsByStorage = new Map<string, Array<{
-    id: string
-    storageId: string
-    serviceId: string
-    destinationPath: string
-    subpath: string | null
-    readOnly: boolean
-    metadata: unknown
-    options: unknown
-    createdAt: string
-    updatedAt: string
-  }>>()
+  const copiesByStorage = new Map<
+    string,
+    Array<{
+      id: string
+      storageId: string
+      serverId: string | null
+      secretId: string | null
+      provider: string
+      role: string
+      state: string
+      path: string | null
+      endpoint: string | null
+      generation: number
+      metadata: unknown
+      options: unknown
+      createdAt: string
+      updatedAt: string
+    }>
+  >()
+  const mountsByStorage = new Map<
+    string,
+    Array<{
+      id: string
+      storageId: string
+      serviceId: string
+      destinationPath: string
+      subpath: string | null
+      readOnly: boolean
+      metadata: unknown
+      options: unknown
+      createdAt: string
+      updatedAt: string
+    }>
+  >()
   if (storageIds.length === 0) {
     return { copiesByStorage, mountsByStorage }
   }
@@ -241,7 +267,7 @@ async function validatePrincipalRef(
   c: Context<AppEnv>,
   db: StorageDb,
   principalId: string | null | undefined,
-  projectId: string | null,
+  projectId: string | null
 ): Promise<Response | null> {
   if (!principalId) return null
   const [principalRow] = await db
@@ -262,7 +288,7 @@ async function validateServerInOrg(
   c: Context<AppEnv>,
   db: StorageDb,
   orgId: string,
-  serverId: string,
+  serverId: string
 ): Promise<Response | null> {
   const serverOrgId = await resolveEntityOrganizationId(db, 'server', serverId)
   if (!serverOrgId || serverOrgId !== orgId) {
@@ -275,7 +301,7 @@ async function validateServiceInOrg(
   c: Context<AppEnv>,
   db: StorageDb,
   orgId: string,
-  serviceId: string,
+  serviceId: string
 ): Promise<Response | null> {
   const serviceOrgId = await resolveEntityOrganizationId(db, 'service', serviceId)
   if (!serviceOrgId || serviceOrgId !== orgId) {
@@ -287,7 +313,7 @@ async function validateServiceInOrg(
 async function assertStorageMountable(
   c: Context<AppEnv>,
   db: StorageDb,
-  storageId: string,
+  storageId: string
 ): Promise<Response | null> {
   const copyRows = await db
     .select({ role: storageCopy.role })
@@ -301,11 +327,7 @@ async function assertStorageMountable(
   return null
 }
 
-async function insertCopyRow(
-  db: StorageDb,
-  storageId: string,
-  fields: CreateCopyFields,
-) {
+async function insertCopyRow(db: StorageDb, storageId: string, fields: CreateCopyFields) {
   const [inserted] = await db
     .insert(storageCopy)
     .values({
@@ -324,11 +346,7 @@ async function insertCopyRow(
   return inserted.id
 }
 
-async function insertMountRow(
-  db: StorageDb,
-  storageId: string,
-  fields: CreateMountFields,
-) {
+async function insertMountRow(db: StorageDb, storageId: string, fields: CreateMountFields) {
   const [inserted] = await db
     .insert(mount)
     .values({
@@ -346,7 +364,7 @@ async function createStorageRecord(
   c: Context<AppEnv>,
   db: StorageDb,
   orgId: string,
-  body: Record<string, unknown>,
+  body: Record<string, unknown>
 ): Promise<Response> {
   const parent = parseStorageParent(c, body)
   if (parent instanceof Response) return parent
@@ -365,7 +383,7 @@ async function createStorageRecord(
     c,
     db,
     fields.principalId,
-    resolveStorageProjectId(parent),
+    resolveStorageProjectId(parent)
   )
   if (principalError) return principalError
 
@@ -424,13 +442,13 @@ async function patchStorageRecord(
   db: StorageDb,
   id: string,
   existing: StorageRow,
-  body: Record<string, unknown>,
+  body: Record<string, unknown>
 ): Promise<Response> {
   const principalError = await validatePrincipalRef(
     c,
     db,
     typeof body.principalId === 'string' ? body.principalId : existing.principalId,
-    existing.projectId,
+    existing.projectId
   )
   if (principalError) return principalError
 
@@ -447,21 +465,22 @@ async function patchStorageRecord(
   return c.json({ ok: true as const })
 }
 
-async function requireStorageForNested(
+export async function requireStorageForNested(
   c: Context<AppEnv>,
   db: StorageDb,
   orgId: string,
   storageId: string,
-  mode: 'read' | 'manage',
+  mode: 'read' | 'manage'
 ): Promise<Response | StorageRow> {
   const entityOrgId = await resolveEntityOrganizationId(db, 'storage', storageId)
   if (!entityOrgId || entityOrgId !== orgId) {
     return c.json({ error: 'Not found' }, 404)
   }
 
-  const denied = mode === 'read'
-    ? await assertCanReadOr403(c, 'storage', storageId)
-    : await assertCanManageOr403(c, 'storage', storageId)
+  const denied =
+    mode === 'read'
+      ? await assertCanReadOr403(c, 'storage', storageId)
+      : await assertCanManageOr403(c, 'storage', storageId)
   if (denied) return denied
 
   if (mode === 'manage') {
@@ -502,11 +521,7 @@ export function registerStorageRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       const parentId = c.req.query(parentFilter.bodyKey)
       if (!parentId) return c.json({ error: 'Invalid request' }, 400)
 
-      const parentOrgId = await resolveEntityOrganizationId(
-        db,
-        parentFilter.entityKind,
-        parentId,
-      )
+      const parentOrgId = await resolveEntityOrganizationId(db, parentFilter.entityKind, parentId)
       if (!parentOrgId || parentOrgId !== orgResult) {
         return c.json({ error: 'Not found' }, 404)
       }
@@ -518,21 +533,20 @@ export function registerStorageRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         .select(STORAGE_SELECT)
         .from(storage)
         .leftJoin(principal, eq(storage.principalId, principal.id))
-        .where(and(
-          eq(storage.organizationId, orgResult),
-          eq(storage[parentFilter.column], parentId),
-        ))
+        .where(
+          and(eq(storage.organizationId, orgResult), eq(storage[parentFilter.column], parentId))
+        )
       const { copiesByStorage, mountsByStorage } = await loadStorageChildren(
         db,
-        rows.map((row) => row.id),
+        rows.map((row) => row.id)
       )
       return c.json({
         storage: rows.map((row) =>
           serializeStorage(
             row,
             copiesByStorage.get(row.id) ?? [],
-            mountsByStorage.get(row.id) ?? [],
-          ),
+            mountsByStorage.get(row.id) ?? []
+          )
         ),
       })
     }
@@ -555,15 +569,11 @@ export function registerStorageRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     const { copiesByStorage, mountsByStorage } = await loadStorageChildren(
       db,
-      rows.map((row) => row.id),
+      rows.map((row) => row.id)
     )
     return c.json({
       storage: rows.map((row) =>
-        serializeStorage(
-          row,
-          copiesByStorage.get(row.id) ?? [],
-          mountsByStorage.get(row.id) ?? [],
-        ),
+        serializeStorage(row, copiesByStorage.get(row.id) ?? [], mountsByStorage.get(row.id) ?? [])
       ),
     })
   })
@@ -597,11 +607,7 @@ export function registerStorageRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     const { copiesByStorage, mountsByStorage } = await loadStorageChildren(db, [id])
     return c.json({
-      storage: serializeStorage(
-        row,
-        copiesByStorage.get(id) ?? [],
-        mountsByStorage.get(id) ?? [],
-      ),
+      storage: serializeStorage(row, copiesByStorage.get(id) ?? [], mountsByStorage.get(id) ?? []),
     })
   })
 
@@ -628,7 +634,13 @@ export function registerStorageRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
 
-    return patchStorageRecord(c, ctx.db, id, existing!, body)
+    // A new principal or pinned volume name moves where a copy's bytes live.
+    const backupHosts = await captureCopyBackupHosts(ctx.db, c.get('commandQueue'), {
+      storageId: id,
+    })
+    const response = await patchStorageRecord(c, ctx.db, id, existing!, body)
+    if (response.ok) await repushCopyBackups(c, ctx.db, [], backupHosts)
+    return response
   })
 
   router.delete('/storage/:id', async (c) => {
@@ -641,7 +653,11 @@ export function registerStorageRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const authorized = await authorizeStorageMutation(c, existing, ctx.orgId)
     if (authorized instanceof Response) return authorized
 
+    const backupHosts = await captureCopyBackupHosts(ctx.db, c.get('commandQueue'), {
+      storageId: id,
+    })
     await ctx.db.delete(storage).where(eq(storage.id, id))
+    await repushCopyBackups(c, ctx.db, [], backupHosts)
     return c.json({ ok: true as const })
   })
 
@@ -666,9 +682,7 @@ export function registerStorageRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       principalUsername = principalRow?.username ?? null
     }
     return c.json({
-      copies: copyRows.map((copy) =>
-        serializeCopy(copy, storageId, principalUsername),
-      ),
+      copies: copyRows.map((copy) => serializeCopy(copy, storageId, principalUsername)),
     })
   })
 
@@ -720,12 +734,18 @@ export function registerStorageRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       if (serverError) return serverError
     }
 
+    // A move, a new path or provider changes which host runs the copy's
+    // backup timers, and what they read.
+    const backupHosts = await captureCopyBackupHosts(ctx.db, c.get('commandQueue'), {
+      copyIds: [copyId],
+    })
     try {
       await ctx.db.update(storageCopy).set(updateFields).where(eq(storageCopy.id, copyId))
-      return c.json({ ok: true as const })
     } catch (err) {
       return uniqueViolationResponse(c, err)
     }
+    await repushCopyBackups(c, ctx.db, [copyId], backupHosts)
+    return c.json({ ok: true as const })
   })
 
   router.delete('/storage/:id/copies/:copyId', async (c) => {
@@ -736,11 +756,16 @@ export function registerStorageRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const row = await requireStorageForNested(c, ctx.db, ctx.orgId, storageId, 'manage')
     if (row instanceof Response) return row
 
+    const backupHosts = await captureCopyBackupHosts(ctx.db, c.get('commandQueue'), {
+      copyIds: [copyId],
+    })
     const deleted = await ctx.db
       .delete(storageCopy)
       .where(and(eq(storageCopy.id, copyId), eq(storageCopy.storageId, storageId)))
       .returning({ id: storageCopy.id })
     if (deleted.length === 0) return c.json({ error: 'Not found' }, 404)
+    // Its policies cascaded away; the host drops their timers.
+    await repushCopyBackups(c, ctx.db, [], backupHosts)
     return c.json({ ok: true as const })
   })
 

@@ -1,11 +1,11 @@
 /**
- * Scheduled backup policies for a managed engine: request parsing,
- * serialization and the route bodies behind
- * `/environments/:id/managed/backup-policies`.
+ * Scheduled backup policies: request parsing, serialization and the route
+ * bodies behind `/environments/:id/managed/backup-policies` (a managed
+ * engine) and `/storage/:id/copies/:copyId/backup-policies` (a storage copy).
  *
- * Authorization happens before any of this (`authorizeManagedRequest` in
- * `manage` mode: org owners and managers). Every write that changes what a
- * host runs pushes the engine's server a full policy set
+ * Authorization happens before any of this (`manage` mode on the environment
+ * or the storage: org owners and managers). Every write that changes what a
+ * host runs pushes the target's server a full policy set
  * (`server.backups.reconcile`, best-effort — the outcome is reported, never
  * turned into an error, because the write itself has already succeeded).
  */
@@ -17,12 +17,13 @@ import type { ManagedContext } from './context.ts'
 import {
   type BackupPolicyPatch,
   type BackupPolicyRow,
+  type BackupPolicyTargetRef,
   type BackupRunRecord,
   deleteBackupPolicy,
-  findBackupPolicyForManaged,
-  insertManagedBackupPolicy,
+  findBackupPolicyForTarget,
+  insertBackupPolicy,
   latestBackupRuns,
-  listBackupPoliciesForManaged,
+  listBackupPoliciesForTarget,
   listBackupRuns,
   MAX_BACKUP_POLICIES_PER_MANAGED,
   MAX_BACKUP_RUNS_PAGE,
@@ -48,6 +49,16 @@ export type BackupPolicyScope = {
   auth: { userId: string; organizationId: string }
   ctx: ManagedContext
   row: { id: string; serverId: string | null }
+}
+
+/** One target's policy routes: who acts, on what, where its timers run, and its retention cap. */
+export type BackupPolicyTargetScope = {
+  db: Db
+  auth: { userId: string; organizationId: string }
+  target: BackupPolicyTargetRef
+  /** The server its timers run on; pushed a new set on every write that changes what it runs. */
+  serverId: string | null
+  maxRetentionKeep: number
 }
 
 type FieldResult<T> = { ok: true; value: T } | { ok: false; field: string; detail: string }
@@ -217,6 +228,7 @@ export function serializeBackupPolicy(row: BackupPolicyRow, lastRun: BackupRunRe
     name: row.name,
     targetKind: row.targetKind,
     managedId: row.managedId,
+    copyId: row.copyId,
     schedule: row.schedule,
     preset: describeBackupSchedule(row.schedule),
     timezone: row.timezone,
@@ -232,22 +244,22 @@ export function serializeBackupPolicy(row: BackupPolicyRow, lastRun: BackupRunRe
 
 async function pushPolicySet(
   c: Context<AppEnv>,
-  scope: BackupPolicyScope
+  scope: BackupPolicyTargetScope
 ): Promise<BackupsReconcileOutcome> {
   return await enqueueBackupsReconcile(
     scope.db,
     c.get('commandQueue'),
     { actorType: 'user', actorId: scope.auth.userId },
-    [scope.row.serverId]
+    [scope.serverId]
   )
 }
 
-export async function listBackupPoliciesResponse(
+export async function listPoliciesForTarget(
   c: Context<AppEnv>,
   db: Db,
-  managedId: string
+  target: BackupPolicyTargetRef
 ): Promise<Response> {
-  const rows = await listBackupPoliciesForManaged(db, managedId)
+  const rows = await listBackupPoliciesForTarget(db, target)
   const latest = await latestBackupRuns(
     db,
     rows.map((row) => row.id)
@@ -257,47 +269,41 @@ export async function listBackupPoliciesResponse(
   })
 }
 
-export async function createBackupPolicyResponse(
+export async function createPolicyForTarget(
   c: Context<AppEnv>,
-  scope: BackupPolicyScope,
+  scope: BackupPolicyTargetScope,
   body: Record<string, unknown>
 ): Promise<Response> {
-  if (body.targetKind !== undefined && body.targetKind !== 'managed') {
+  if (body.targetKind !== undefined && body.targetKind !== scope.target.kind) {
     return c.json({ error: 'backup_target_unsupported' }, 400)
   }
-  const maxKeep = maxRetentionKeep(scope.ctx)
-  if (maxKeep === null) return c.json({ error: 'managed_backup_unsupported' }, 400)
-
-  const parsed = parseCreateBody(body, maxKeep)
+  const parsed = parseCreateBody(body, scope.maxRetentionKeep)
   if (!parsed.ok) return invalidResponse(c, parsed)
 
-  const existing = await listBackupPoliciesForManaged(scope.db, scope.row.id)
+  const existing = await listBackupPoliciesForTarget(scope.db, scope.target)
   if (existing.length >= MAX_BACKUP_POLICIES_PER_MANAGED) {
     return c.json({ error: 'backup_policy_limit', limit: MAX_BACKUP_POLICIES_PER_MANAGED }, 409)
   }
 
-  const row = await insertManagedBackupPolicy(scope.db, {
+  const row = await insertBackupPolicy(scope.db, scope.target, {
     ...parsed.value,
     organizationId: scope.auth.organizationId,
-    managedId: scope.row.id,
     createdBy: scope.auth.userId,
   })
   const reconcile = await pushPolicySet(c, scope)
   return c.json({ policy: serializeBackupPolicy(row, null), reconcile }, 201)
 }
 
-export async function updateBackupPolicyResponse(
+export async function updatePolicyForTarget(
   c: Context<AppEnv>,
-  scope: BackupPolicyScope,
+  scope: BackupPolicyTargetScope,
   policyId: string,
   body: Record<string, unknown>
 ): Promise<Response> {
-  const current = await findBackupPolicyForManaged(scope.db, scope.row.id, policyId)
+  const current = await findBackupPolicyForTarget(scope.db, scope.target, policyId)
   if (!current) return c.json({ error: 'backup_policy_not_found' }, 404)
-  const maxKeep = maxRetentionKeep(scope.ctx)
-  if (maxKeep === null) return c.json({ error: 'managed_backup_unsupported' }, 400)
 
-  const parsed = parsePatchBody(body, current, maxKeep)
+  const parsed = parsePatchBody(body, current, scope.maxRetentionKeep)
   if (!parsed.ok) return invalidResponse(c, parsed)
   if (Object.keys(parsed.value).length === 0) {
     return c.json({ policy: serializeBackupPolicy(current, null), reconcile: null })
@@ -308,12 +314,12 @@ export async function updateBackupPolicyResponse(
   return c.json({ policy: serializeBackupPolicy(row, null), reconcile })
 }
 
-export async function deleteBackupPolicyResponse(
+export async function deletePolicyForTarget(
   c: Context<AppEnv>,
-  scope: BackupPolicyScope,
+  scope: BackupPolicyTargetScope,
   policyId: string
 ): Promise<Response> {
-  const current = await findBackupPolicyForManaged(scope.db, scope.row.id, policyId)
+  const current = await findBackupPolicyForTarget(scope.db, scope.target, policyId)
   if (!current) return c.json({ error: 'backup_policy_not_found' }, 404)
   await deleteBackupPolicy(scope.db, policyId)
   const reconcile = await pushPolicySet(c, scope)
@@ -327,14 +333,93 @@ function parseRunsLimit(raw: string | undefined): number {
   return Math.min(value, MAX_BACKUP_RUNS_PAGE)
 }
 
+export async function listRunsForTarget(
+  c: Context<AppEnv>,
+  db: Db,
+  target: BackupPolicyTargetRef,
+  policyId: string
+): Promise<Response> {
+  const policy = await findBackupPolicyForTarget(db, target, policyId)
+  if (!policy) return c.json({ error: 'backup_policy_not_found' }, 404)
+  const runs = await listBackupRuns(db, policyId, parseRunsLimit(c.req.query('limit')))
+  return c.json({ runs: runs.map(serializeRun) })
+}
+
+/** The managed engine's scope, or null when its engine has no backup support. */
+function managedTargetScope(scope: BackupPolicyScope): BackupPolicyTargetScope | null {
+  const maxKeep = maxRetentionKeep(scope.ctx)
+  if (maxKeep === null) return null
+  return {
+    db: scope.db,
+    auth: scope.auth,
+    target: { kind: 'managed', managedId: scope.row.id },
+    serverId: scope.row.serverId,
+    maxRetentionKeep: maxKeep,
+  }
+}
+
+export async function listBackupPoliciesResponse(
+  c: Context<AppEnv>,
+  db: Db,
+  managedId: string
+): Promise<Response> {
+  return await listPoliciesForTarget(c, db, { kind: 'managed', managedId })
+}
+
+export async function createBackupPolicyResponse(
+  c: Context<AppEnv>,
+  scope: BackupPolicyScope,
+  body: Record<string, unknown>
+): Promise<Response> {
+  if (body.targetKind !== undefined && body.targetKind !== 'managed') {
+    return c.json({ error: 'backup_target_unsupported' }, 400)
+  }
+  const target = managedTargetScope(scope)
+  if (!target) return c.json({ error: 'managed_backup_unsupported' }, 400)
+  return await createPolicyForTarget(c, target, body)
+}
+
+export async function updateBackupPolicyResponse(
+  c: Context<AppEnv>,
+  scope: BackupPolicyScope,
+  policyId: string,
+  body: Record<string, unknown>
+): Promise<Response> {
+  const current = await findBackupPolicyForTarget(
+    scope.db,
+    { kind: 'managed', managedId: scope.row.id },
+    policyId
+  )
+  if (!current) return c.json({ error: 'backup_policy_not_found' }, 404)
+  const target = managedTargetScope(scope)
+  if (!target) return c.json({ error: 'managed_backup_unsupported' }, 400)
+  return await updatePolicyForTarget(c, target, policyId, body)
+}
+
+export async function deleteBackupPolicyResponse(
+  c: Context<AppEnv>,
+  scope: BackupPolicyScope,
+  policyId: string
+): Promise<Response> {
+  return await deletePolicyForTarget(
+    c,
+    {
+      db: scope.db,
+      auth: scope.auth,
+      target: { kind: 'managed', managedId: scope.row.id },
+      serverId: scope.row.serverId,
+      // Delete never reads retention; the cap only bounds writes.
+      maxRetentionKeep: MAX_BACKUP_POLICY_RETENTION_KEEP,
+    },
+    policyId
+  )
+}
+
 export async function listBackupRunsResponse(
   c: Context<AppEnv>,
   db: Db,
   managedId: string,
   policyId: string
 ): Promise<Response> {
-  const policy = await findBackupPolicyForManaged(db, managedId, policyId)
-  if (!policy) return c.json({ error: 'backup_policy_not_found' }, 404)
-  const runs = await listBackupRuns(db, policyId, parseRunsLimit(c.req.query('limit')))
-  return c.json({ runs: runs.map(serializeRun) })
+  return await listRunsForTarget(c, db, { kind: 'managed', managedId }, policyId)
 }

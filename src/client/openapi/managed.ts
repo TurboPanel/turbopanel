@@ -689,6 +689,7 @@ export const managedSchemas = {
       'name',
       'targetKind',
       'managedId',
+      'copyId',
       'schedule',
       'preset',
       'timezone',
@@ -703,8 +704,17 @@ export const managedSchemas = {
     properties: {
       id: { type: 'string', format: 'uuid' },
       name: { type: 'string' },
-      targetKind: { type: 'string', const: 'managed' },
-      managedId: { type: 'string', format: 'uuid' },
+      targetKind: { type: 'string', enum: ['managed', 'copy'] },
+      managedId: {
+        type: ['string', 'null'],
+        format: 'uuid',
+        description: 'The managed engine a `managed` policy backs up; null for a copy',
+      },
+      copyId: {
+        type: ['string', 'null'],
+        format: 'uuid',
+        description: 'The storage copy a `copy` policy backs up; null for an engine',
+      },
       schedule: { type: 'string', description: 'Cron text as stored' },
       preset: {
         oneOf: [{ $ref: '#/components/schemas/BackupSchedulePreset' }, { type: 'null' }],
