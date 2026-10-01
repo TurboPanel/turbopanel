@@ -192,8 +192,8 @@ changes.
   `drainSeconds`, `healthTimeoutSeconds`, `rollbackWindowMinutes` (`0` = shut the
   old blue-green generation down as soon as cutover is confirmed); `project.options`
   may carry only the three tuning keys as defaults. Absent strategy = `inplace`
-  (existing environments); every create path stamps `sequential` on a new
-  environment (`stampNewEnvironmentDeployOptions`). Writes are validated (`400
+  (existing environments); every user-facing create path stamps `sequential` on a new
+  environment (system-owned environments are not stamped) (`stampNewEnvironmentDeployOptions`). Writes are validated (`400
   deploy_options_invalid` on environments; the reason string on projects) and a
   PATCH that omits these keys keeps the stored ones (`settleDeployOptions`) because
   `options` is replaced wholesale and the compose editor sends only `compose`.

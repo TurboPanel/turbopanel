@@ -189,7 +189,7 @@ function namesWhere(services: Record<string, unknown>, test: ServiceTest): strin
   for (const [name, body] of Object.entries(services)) {
     if (isRecord(body) && test(body)) names.push(name)
   }
-  return names.sort((a, b) => a.localeCompare(b))
+  return names.toSorted((a, b) => a.localeCompare(b))
 }
 
 /** Host-level binds name a path, not a service; report the service when the path is `services.<name>...`. */
@@ -199,7 +199,7 @@ function hostLevelBindServices(data: Record<string, unknown>): string[] {
     const segments = finding.segments
     if (segments[0] === 'services' && typeof segments[1] === 'string') names.add(segments[1])
   }
-  return [...names].sort((a, b) => a.localeCompare(b))
+  return [...names].toSorted((a, b) => a.localeCompare(b))
 }
 
 /** Facts about the merged compose document that decide blue-green eligibility. */

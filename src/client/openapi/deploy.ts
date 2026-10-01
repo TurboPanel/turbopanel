@@ -122,7 +122,18 @@ export const deploySchemas = {
   },
   DeployPreviewResponse: {
     type: 'object',
-    required: ['ok', 'composeFiles', 'projectName', 'containers', 'volumes', 'warnings'],
+    required: [
+      'ok',
+      'composeFiles',
+      'projectName',
+      'containers',
+      'volumes',
+      'warnings',
+      'strategy',
+      'effectiveStrategy',
+      'migrations',
+      'fallbackReasons',
+    ],
     properties: {
       ok: { type: 'boolean', const: true },
       composeFiles: {
