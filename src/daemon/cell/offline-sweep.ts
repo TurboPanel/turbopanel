@@ -61,6 +61,7 @@ import { runManagedIngressOrphanSweep } from '../../features/managed/ingress-des
 import { runDatacenterRepinFanoutSweep } from '../../client/datacenters/repin-fanout.ts'
 import { runSystemReconcileSweep } from '../../features/system/reconcile.ts'
 import { runBackupsReconcileSweep } from '../../features/backups/reconcile.ts'
+import { runFirewallPreviewSweep } from '../../features/firewall/preview.ts'
 import { runLeafRenewalSweepTick } from '../../client/tls/leaf-renewal-sweep.ts'
 import { type AlertSender, NOOP_ALERT_SENDER } from '../../features/alerts/alert-sender.ts'
 import { resolveAlertSender } from '../../features/alerts/resolve-alert-sender.ts'
@@ -1016,6 +1017,14 @@ async function runQueuedCronSweeps(
       await runBackupsReconcileSweep(db, commandQueue)
     } catch (err) {
       sweepTrace('backups-reconcile-sweep-failed', {
+        error: sweepErrorMessage(err),
+      })
+    }
+    // Firewall previews after a reconnect (nothing is applied); isolated too.
+    try {
+      await runFirewallPreviewSweep(db, commandQueue)
+    } catch (err) {
+      sweepTrace('firewall-preview-sweep-failed', {
         error: sweepErrorMessage(err),
       })
     }

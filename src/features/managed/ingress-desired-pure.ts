@@ -196,8 +196,9 @@ export function collectProxySqlListenerSans(params: {
  * - anything else → caller resolves one host address per scope
  *
  * **The publish is the enforcement.** Docker's published port is the only
- * layer that stands between a disabled cluster and the network today: there is
- * no host firewall yet, and ProxySQL has no per-user source ACL. So an empty
+ * layer that stands between a disabled cluster and the network today: the host
+ * firewall only previews these listeners so far (it enforces nothing until the
+ * default-drop stage), and ProxySQL has no per-user source ACL. So an empty
  * decision must stay empty — returning an all-interfaces bind because "the
  * exposure toggle is only recorded intent" hands every credential on the host
  * to the internet. The daemon already honours this contract (an absent/empty

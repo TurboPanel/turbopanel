@@ -13,7 +13,9 @@
  *  1. **Zero enabled clusters → no publish at all.** The empty union is what
  *     `decideIngressBindScopes` turns into `{ kind: 'omit' }`, and the daemon
  *     turns into a compose file with no `ports:`. This is the enforcement for
- *     the exposure toggle today; there is no host firewall yet.
+ *     the exposure toggle. The host firewall (`features/firewall/`) only
+ *     previews these listeners so far (stage 4, observe mode); it enforces
+ *     nothing yet.
  *  2. **One enabled cluster publishes for its co-residents too.** A cluster
  *     whose own `exposure.enabled` is false is still reachable on the published
  *     address when it shares a host with an exposed cluster. That is a real
@@ -32,6 +34,8 @@ import {
   type ManagedSqlAccessScope,
 } from './access-scope.ts'
 import { getManagedEngineSpec } from './index.ts'
+import { loadManagedIngressPorts } from './load-org-defaults.ts'
+import { managedIngressPortForEngine } from './ingress-ports.ts'
 import type { ManagedSettings } from './settings.ts'
 import type { ManagedEngineCode } from './types.ts'
 import { unionExposureScopes } from './ingress-desired-pure.ts'
@@ -102,16 +106,16 @@ async function loadFrontedManagedIds(
   return [...ids]
 }
 
-/**
- * Union of the exposure scopes every cluster on `serverId` asks for.
- *
- * This is what the host actually publishes, so it is also what a client can
- * actually dial — for every cluster the frontend serves, exposed or not.
- */
-export async function loadHostExposureScopes(
+type FrontedClusterExposure = {
+  engine: ManagedEngineCode
+  exposure: ManagedSettings['exposure']
+}
+
+/** Engine and exposure setting of every cluster the host's ProxySQL fronts. */
+async function loadFrontedClusterExposures(
   db: Db,
   serverId: string,
-): Promise<ManagedSqlAccessScope[]> {
+): Promise<FrontedClusterExposure[]> {
   const managedIds = await loadFrontedManagedIds(db, serverId)
   if (managedIds.length === 0) return []
 
@@ -124,14 +128,61 @@ export async function loadHostExposureScopes(
     .from(managed)
     .where(inArray(managed.id, managedIds))
 
-  const exposures: ManagedSettings['exposure'][] = []
+  const clusters: FrontedClusterExposure[] = []
   for (const row of rows) {
-    const spec = getManagedEngineSpec((row.engine ?? 'postgres') as ManagedEngineCode)
+    const engine = (row.engine ?? 'postgres') as ManagedEngineCode
+    const spec = getManagedEngineSpec(engine)
     if (!spec) continue
     const parsed = parseManagedRowOptions(spec, row.options)
-    exposures.push(parsed?.settings.exposure ?? spec.defaultSettings.exposure)
+    clusters.push({
+      engine,
+      exposure: parsed?.settings.exposure ?? spec.defaultSettings.exposure,
+    })
   }
-  return hostExposureScopes(exposures)
+  return clusters
+}
+
+/**
+ * Union of the exposure scopes every cluster on `serverId` asks for.
+ *
+ * This is what the host actually publishes, so it is also what a client can
+ * actually dial — for every cluster the frontend serves, exposed or not.
+ */
+export async function loadHostExposureScopes(
+  db: Db,
+  serverId: string,
+): Promise<ManagedSqlAccessScope[]> {
+  const clusters = await loadFrontedClusterExposures(db, serverId)
+  return hostExposureScopes(clusters.map((cluster) => cluster.exposure))
+}
+
+/**
+ * The shared ProxySQL client listeners a host publishes: the scopes they are
+ * published on and one port per protocol family that a fronted cluster uses
+ * (ports are the host-owner organization's, defaults 15432 / 13306). Empty
+ * when no cluster asks for a host publish. Read by the firewall derivation.
+ */
+export async function loadHostIngressListeners(
+  db: Db,
+  serverId: string,
+): Promise<{ scopes: ManagedSqlAccessScope[]; ports: number[] }> {
+  const clusters = await loadFrontedClusterExposures(db, serverId)
+  const scopes = hostExposureScopes(clusters.map((cluster) => cluster.exposure))
+  if (scopes.length === 0) return { scopes, ports: [] }
+  const [owner] = await db
+    .select({ organizationId: server.organizationId })
+    .from(server)
+    .where(eq(server.id, serverId))
+    .limit(1)
+  if (!owner?.organizationId) return { scopes: [], ports: [] }
+  const ingressPorts = await loadManagedIngressPorts(db, owner.organizationId)
+  const ports = new Set<number>()
+  for (const cluster of clusters) {
+    const spec = getManagedEngineSpec(cluster.engine)
+    if (!spec) continue
+    ports.add(managedIngressPortForEngine(cluster.engine, spec.defaultPort, ingressPorts))
+  }
+  return { scopes, ports: [...ports].toSorted((a, b) => a - b) }
 }
 
 /**

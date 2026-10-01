@@ -49,9 +49,15 @@ sshPorts[], warnings[], summary }` — `applied: false` with warnings is a
 refuses `inputDefault: drop` outright until commit-confirm rollback lands
 (`fw-invariants-commit-confirm`), and refuses a default-drop on a co-located
 control-plane host whose payload names no `controlPlane.tcpPorts`. 120s
-consumer timeout. **Nothing in the control plane enqueues this command yet**
-(`fw-derived-rules` builds the desired-state derivation); the contract lands
-first so both repos agree before either side depends on it.
+consumer timeout. **Stage 4 (2026-10-01, Road row `fw-derived-rules`) sends it
+for the first time, as a PREVIEW only**: the control plane derives each
+server's rules and always sends `mode: "observe"` (a server's `managed` mode
+behaves as observe until stage 7 flips one server-side switch), so nothing is
+ever applied. A result that did not apply (observe, or a refused apply) also
+carries `validation: { ok, errors[] }` (the kernel's `iptables-restore --test`
+verdict, nothing loaded) and `rendered: { v4, v6? }` (the exact documents, each
+at most 65,536 characters, otherwise omitted with a warning); both are absent on
+a result that loaded rules.
 
 `server.firewall.confirm` (added 2026-10-01, Road row `fw-invariants-commit-confirm`)
 promotes a ruleset the host applied but has not yet made durable. A
@@ -67,8 +73,8 @@ ruleset is pending), `expired` (the window ran out; the host is rolling back)
 or `rolled_back` (the guard already restored the previous rules). Outbound is
 open, so a daemon that "can still reach the control plane" proves nothing about
 inbound access: the confirming party must have reached the host from outside
-(`fw-derived-rules` adds that probe). 60s consumer timeout. Nothing enqueues it
-yet.
+(the outside probe is the Road row `r2-fw-outside-probe`). 60s consumer timeout.
+Nothing enqueues it yet.
 
 `server.backups.reconcile` (added 2026-09-30, Road row `r2-backup-schema`)
 carries the **complete** set of scheduled backup policies whose target lives on

@@ -250,7 +250,7 @@ test("decideIngressBindScopes covers omit/public/resolve", () => {
 
 test("decideIngressBindScopes omits the publish when no cluster is exposed", () => {
   // Regression: the exposure toggle is the only thing standing between a
-  // disabled cluster and the network (no host firewall, no ProxySQL source
+  // disabled cluster and the network (no enforcing host firewall, no ProxySQL source
   // ACL), so an all-zero host must publish nothing — never `0.0.0.0` on the
   // grounds that the setting is "recorded intent".
   for (const scopes of [[], [undefined], [undefined, undefined, undefined]]) {

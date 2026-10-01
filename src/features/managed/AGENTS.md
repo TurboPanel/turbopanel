@@ -198,7 +198,7 @@ requires a ProxySQL restart, so exposure toggles must never flap the compose
 publish). **Exposure defaults on** (`DEFAULT_MANAGED_SETTINGS` and every
 engine spec record `{ enabled: true }`); create has no exposure choice — the
 settings panel is the opt-out. Access control today is credential auth +
-org-CA TLS; the future host firewall will enforce `exposure.scope`. One-release
+org-CA TLS; the host firewall (`features/firewall/`, preview only so far; enforcement is a later stage) will enforce `exposure.scope`. One-release
 read of retired
 `exposure.bind` (`public` | `datacenter` | `local`) migrates to the same-named
 `scope`; new writes must use `scope`.
@@ -425,7 +425,7 @@ admits peers with `hostssl all` rules alongside the `hostssl replication`
 entries — a peer-less standby HBA rejects cross-host monitor/read traffic.
 Cross-host **consumer** servers (bound apps elsewhere) are admitted the same
 way via `member.clientSourceAddresses` → payload `ingressSourceAddresses`
-(pg_hba `hostssl all` + daemon firewall + MySQL/MariaDB account host scoping);
+(pg_hba `hostssl all` + daemon firewall (preview only so far) + MySQL/MariaDB account host scoping);
 consumers never receive replication rules.
 Managed leaves are minted serverAuth **+ clientAuth** (`includeClientAuth` in
 `buildManagedOrgTlsMaterial`): ProxySQL presents them as client certs on

@@ -47,6 +47,12 @@ import {
 } from '../managed/destroy-gate.ts'
 import { deleteManagedBackup, insertManagedBackup } from '../backups/backup-records.ts'
 import { applyStorageBackupSideEffect } from '../backups/storage-command-effects.ts'
+import {
+  commandMayChangeFirewallPreview,
+  enqueueFirewallPreview,
+  FIREWALL_RECONCILE_COMMAND,
+  recordFirewallPreviewResult,
+} from '../firewall/preview.ts'
 import type { CommandEnvelope } from './envelope.ts'
 import { nowIso } from './ids.ts'
 import { isNoopCommandQueue } from './noop-command-queue.ts'
@@ -1833,6 +1839,38 @@ async function applySucceededSideEffects(
   await applyManagedBackupSideEffect(db, record, envelope, result)
   await applyManagedRestoreSideEffect(db, record, envelope, result)
   await applyStorageBackupSideEffect(db, record, result)
+  await applyFirewallPreviewSideEffect(db, record, envelope, result, deps)
+}
+
+/**
+ * Firewall preview upkeep: keep what a host answered to a preview, and, after
+ * a command that can change what the host publishes, send a fresh preview if
+ * (and only if) the derived set changed. Never sends anything that applies.
+ */
+async function applyFirewallPreviewSideEffect(
+  db: Db,
+  record: DispatchableCommandRecord,
+  envelope: CommandEnvelope,
+  result: unknown,
+  deps?: CommandConsumerDeps
+): Promise<void> {
+  try {
+    if (record.type === FIREWALL_RECONCILE_COMMAND) {
+      await recordFirewallPreviewResult(db, envelope.serverId, record.payload, result)
+    } else if (commandMayChangeFirewallPreview(record.type)) {
+      await enqueueFirewallPreview(
+        db,
+        deps?.commandQueue,
+        { actorType: 'system', actorId: envelope.serverId },
+        [envelope.serverId]
+      )
+    }
+  } catch (err) {
+    compatLogWarn(
+      'command-consumer',
+      `firewall preview side effect failed for command ${record.id}: ${errorMessage(err)}`
+    )
+  }
 }
 
 /**
