@@ -8,6 +8,7 @@
  *    (the demand test `system/reconcile.ts` uses), with each hosting's bind scope;
  *  - compose `ports:`: the merged compose of every environment deployed here;
  *  - the shared ProxySQL listeners (`managed/host-exposure.ts`);
+ *  - managed clusters' private listener ports, limited to the exact peer servers;
  *  - TurboFabric's WireGuard port (a relay on this server);
  *  - the HA Raft ports (this server hosts a primary or a failover replica);
  *  - the control plane's own port (the self-host pin: this server is the panel's host).
@@ -16,7 +17,7 @@
  * environment whose deployment row still exists is included until it is removed.
  */
 
-import { and, asc, eq, isNull, or, sql } from 'drizzle-orm'
+import { and, asc, eq, isNotNull, isNull, or, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import {
   bulwark,
@@ -38,6 +39,12 @@ import { resolveHostingBind } from '../hostings/hosting-options.ts'
 import { MANAGED_HA_HTTP_PORT, MANAGED_HA_RAFT_PORT } from '../managed/ha-ports.ts'
 import { serverHostsManagedHa } from '../managed/ha-policy.ts'
 import { loadHostIngressListeners } from '../managed/host-exposure.ts'
+import {
+  isPrepareError,
+  resolveConsumerSourceAddresses,
+  resolveMemberPrivateBindAddress,
+} from '../managed/apply-prepare.ts'
+import { listManagedMembers, resolvePeersForMember } from '../managed/members.ts'
 import type { ManagedSqlAccessScope } from '../managed/access-scope.ts'
 import { parseOrganizationOptions } from '../organizations/organization-options.ts'
 import { resolveEffectiveSshPort } from '../servers/host-defaults.ts'
@@ -274,6 +281,65 @@ async function loadHaExposures(db: Db, serverId: string): Promise<DerivedExposur
   }))
 }
 
+/**
+ * One cluster member's private listener, restricted to the exact addresses that
+ * may dial it: the other members' addresses plus cross-host consumer servers
+ * (the same sources the daemon's `TP-MANAGED-PUB` chain is given). Nothing is
+ * derived when the member has no remote peer, or a peer has no path: the
+ * listener is then not published, and an unresolved path must never become a
+ * broader rule.
+ */
+async function loadClusterPeerExposure(
+  db: Db,
+  serverId: string,
+  managedId: string,
+  notes: string[]
+): Promise<DerivedExposure | null> {
+  const members = await listManagedMembers(db, managedId)
+  const member = members.find((m) => m.serverId === serverId && m.privatePort !== null)
+  if (!member || member.privatePort === null) return null
+  const bind = await resolveMemberPrivateBindAddress(db, member, members)
+  if (bind === undefined) return null
+  const peers = await resolvePeersForMember(db, members, member, member.privatePort)
+  if (isPrepareError(bind) || 'kind' in peers) {
+    notes.push(
+      `A managed cluster's peer port (${member.privatePort}) is not shown: a peer has no usable address yet`
+    )
+    return null
+  }
+  const consumers = await resolveConsumerSourceAddresses(db, managedId, members, member)
+  const remotePeers = peers.filter(
+    (peer) => peer.containerName === undefined && peer.transport !== 'local'
+  )
+  return {
+    source: 'cluster',
+    scope: 'published',
+    proto: 'tcp',
+    ports: String(member.privatePort),
+    reach: 'peers',
+    comment: 'Managed cluster peers',
+    destination: bind.address,
+    sources: [...remotePeers.map((peer) => peer.address), ...consumers],
+  }
+}
+
+/** Private listener ports of the managed clusters with a member on this server. */
+export async function loadClusterPeerExposures(
+  db: Db,
+  serverId: string,
+  notes: string[]
+): Promise<DerivedExposure[]> {
+  const rows = await db
+    .selectDistinct({ managedId: replica.managedId })
+    .from(replica)
+    .where(and(eq(replica.serverId, serverId), isNotNull(replica.privatePort)))
+    .orderBy(asc(replica.managedId))
+  const found = await Promise.all(
+    rows.map((row) => loadClusterPeerExposure(db, serverId, row.managedId, notes))
+  )
+  return found.filter((exposure): exposure is DerivedExposure => exposure !== null)
+}
+
 type EnvironmentCompose = { id: string; projectOptions: unknown; environmentOptions: unknown }
 
 async function loadDeployedEnvironments(db: Db, serverId: string): Promise<EnvironmentCompose[]> {
@@ -449,9 +515,10 @@ export async function loadFirewallFacts(
       loadEdictFacts(db, base.organizationId, serverId),
       loadSourceSets(db, serverId, base.organizationId, datacenterIds),
     ])
-  const [hosting, managed, fabricExposure, ha, compose] = await Promise.all([
+  const [hosting, managed, cluster, fabricExposure, ha, compose] = await Promise.all([
     loadHostingExposures(db, serverId),
     loadManagedExposures(db, serverId),
+    loadClusterPeerExposures(db, serverId, notes),
     loadFabricExposures(db, serverId),
     loadHaExposures(db, serverId),
     loadComposeExposures(db, serverId, notes),
@@ -465,7 +532,7 @@ export async function loadFirewallFacts(
       sshPortHint: sshPort,
       coLocated,
       controlPlaneTcpPorts,
-      exposures: [...hosting, ...managed, ...fabricExposure, ...ha, ...compose],
+      exposures: [...hosting, ...managed, ...cluster, ...fabricExposure, ...ha, ...compose],
       edicts,
       sources,
     },
