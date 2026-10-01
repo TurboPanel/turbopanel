@@ -231,4 +231,22 @@ export const storageBackupPaths = {
       },
     },
   },
+  '/api/client/v1/storage/{id}/copies/{copyId}/backups/{backupId}/restore': {
+    post: {
+      tags: TAGS,
+      summary: 'Restore a storage copy from a backup',
+      description:
+        "Org owners and managers. Queues `storage.restore` on the copy server: the archive's checksum (from its record) is verified first, then the running containers that mount the copy are stopped, its contents are replaced with the archive's, and every container that was stopped is started again, even when the restore fails.",
+      parameters: [...COPY_PARAMS, BACKUP_ID_PARAM],
+      responses: {
+        200: { description: 'Queued', ...jsonSchema('StorageBackupQueuedResponse') },
+        400: {
+          description: 'backup_target_unsupported',
+          ...jsonSchema('BackupPolicyInvalidError'),
+        },
+        404: { description: 'backup_not_found', ...jsonSchema('BackupNotFoundError') },
+        409: DISPATCH_CONFLICT,
+      },
+    },
+  },
 } as const

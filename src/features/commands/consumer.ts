@@ -159,6 +159,8 @@ const COMMAND_TIMEOUT_MS: Record<CommandType, number> = {
   'managed.ha.failover': 600_000,
   // Streams one volume archive to disk; sized like managed.backup.
   'storage.backup': 1_800_000,
+  // Stops the copy's containers, extracts one archive, starts them again.
+  'storage.restore': 1_800_000,
   'system.reconcile': 300_000,
 }
 
@@ -198,6 +200,7 @@ export function commandTimeoutMs(type: string): number {
     type === 'managed.ha.reconcile' ||
     type === 'managed.ha.failover' ||
     type === 'storage.backup' ||
+    type === 'storage.restore' ||
     type === 'system.reconcile'
   ) {
     return COMMAND_TIMEOUT_MS[type]

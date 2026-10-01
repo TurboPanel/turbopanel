@@ -167,6 +167,7 @@ const DAEMON_COMMAND_TYPES = [
   'managed.ha.reconcile',
   'managed.ha.failover',
   'storage.backup',
+  'storage.restore',
   'system.reconcile',
 ] as const
 

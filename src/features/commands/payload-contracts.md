@@ -105,6 +105,21 @@ payload's copy (`src/features/backups/storage-command-effects.ts`); a result
 naming another backup id is ignored. Queued from
 `/storage/:id/copies/:copyId/backups` (org owners and managers).
 
+`storage.restore` (added 2026-09-30) replaces one storage copy's contents with
+one of its archives: `{ copyId, copyProvider, volumeName? | hostPath? |
+organizationId? + storageId?, backupId, checksum, policyId? }`. `checksum` and
+`policyId` come from the `archive` row, never from the request
+(`buildStorageRestorePayload`). The host refuses an artifact whose sha256
+differs before it stops anything, then stops the running containers that
+mount the copy, swaps the archive in through the pinned helper (a bad archive
+leaves the copy unchanged; a failed swap puts the old contents back), and
+starts every container it stopped whatever happened. Result: `{ backupId,
+restoredAt?, stopped?, restarted?, notRestarted? (container ids), summary? }`;
+a container that will not start again fails the command with its id. 1800 s
+consumer timeout; no control-plane side effect. Queued from
+`POST /storage/:id/copies/:copyId/backups/:backupId/restore` (org owners and
+managers).
+
 `server.reboot` requires `organization:manage`, carries an empty payload, uses a
 120s consumer timeout, has no `touchServerMetadata` side-effect, and is executed
 daemon-side via `sudo systemctl reboot` (handler implemented in a separate

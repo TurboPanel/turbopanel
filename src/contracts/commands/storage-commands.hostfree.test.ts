@@ -74,3 +74,62 @@ test('storage.backup results keep only well-formed fields', () => {
   )
   assertEquals(parseCommandResult('storage.backup', null), { backupId: '' })
 })
+
+const RESTORE = {
+  copyId: COPY_ID,
+  copyProvider: 'path',
+  hostPath: '/srv/users/shop/volumes/uploads',
+  backupId: 'bk_0123abcd',
+  checksum: 'a'.repeat(64),
+}
+
+test('storage.restore carries the copy source, the archive id and its checksum', () => {
+  const plain: unknown = parseCommandPayload('storage.restore', RESTORE)
+  assertEquals(plain, RESTORE)
+  const scheduled = { ...RESTORE, policyId: POLICY_ID }
+  const parsed: unknown = parseCommandPayload('storage.restore', scheduled)
+  assertEquals(parsed, scheduled)
+})
+
+test('storage.restore refuses a missing or malformed checksum and unsafe sources', () => {
+  for (const bad of [
+    { ...RESTORE, checksum: undefined },
+    { ...RESTORE, checksum: 'A'.repeat(64) },
+    { ...RESTORE, checksum: 'a'.repeat(63) },
+    { ...RESTORE, policyId: 'not-a-uuid' },
+    { ...RESTORE, backupId: 'bk/../x' },
+    { ...RESTORE, hostPath: '/srv/users/../etc' },
+    { ...RESTORE, hostPath: 'srv/users/x' },
+    { ...RESTORE, copyProvider: 'docker' },
+  ]) {
+    assertThrows(
+      () => parseCommandPayload('storage.restore', bad),
+      Error,
+      undefined,
+      JSON.stringify(bad)
+    )
+  }
+})
+
+test('storage.restore results keep container ids and drop anything else', () => {
+  const stopped = ['0123456789ab', 'f'.repeat(64)]
+  assertEquals(
+    parseCommandResult('storage.restore', {
+      backupId: 'bk_0123abcd',
+      restoredAt: '2026-09-30T04:00:00.000Z',
+      stopped: [...stopped, 'web; rm -rf /', 42],
+      restarted: stopped,
+      notRestarted: [],
+      summary: 'restored',
+    }),
+    {
+      backupId: 'bk_0123abcd',
+      restoredAt: '2026-09-30T04:00:00.000Z',
+      stopped,
+      restarted: stopped,
+      notRestarted: [],
+      summary: 'restored',
+    }
+  )
+  assertEquals(parseCommandResult('storage.restore', { backupId: '' }), { backupId: '' })
+})
