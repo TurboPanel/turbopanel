@@ -94,7 +94,10 @@ describe('release manifest signing', () => {
       release,
       "environment: ${{ inputs.channel == 'canary' && 'canary' || (inputs.channel == 'rc' && 'rc' || 'release') }}"
     )
-    assertStringIncludes(release, 'secrets.TURBOPANEL_RELEASE_SIGNING_KEY || secrets.RELEASE_SIGNING_KEY')
+    assertStringIncludes(
+      release,
+      'secrets.TURBOPANEL_RELEASE_SIGNING_KEY || secrets.RELEASE_SIGNING_KEY'
+    )
     assertStringIncludes(canary, 'secrets: inherit')
     assertEquals(canary.includes('secrets.'), false)
   })
