@@ -1,6 +1,7 @@
 import { and, eq, inArray } from 'drizzle-orm'
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
+import { requireStepUpIfConfigured } from '../authn/step-up.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { assertCanOr403, listVisible } from '../authz/index.ts'
@@ -250,20 +251,6 @@ async function parseCreateEnvironmentInput(
     metadata: jsonb.metadata,
     options: jsonb.options,
   }
-}
-
-/**
- * STEP-UP SEAM. Permanent actions will ask for password / 2FA re-authentication
- * when the organization turns that setting on. The step-up framework is built
- * elsewhere and wires in here; until then this always allows the action.
- * Return a `Response` (e.g. 401/403) to block, `null` to continue.
- */
-export function requireStepUpIfConfigured(
-  _c: Context<AppEnv>,
-  _organizationId: string,
-  _action: string
-): Promise<Response | null> {
-  return Promise.resolve(null)
 }
 
 /** A row created while the delete ran trips an FK: report it as "has children". */
