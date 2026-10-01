@@ -18,7 +18,7 @@ import { ADMIN_API_PREFIX } from '../app/surfaces.ts'
 import { INSTANCE_VERSION } from '../app/version.ts'
 import { parseTestSecretsConfig } from '../test-fixtures/secrets.ts'
 import type { Db } from '../db/connection.ts'
-import { server, upgrade, upgradeStep } from '../db/schema.ts'
+import { server, upgrade, stage } from '../db/schema.ts'
 import { mintSelfSignedCertificate } from '../lib/tls/self-signed.ts'
 import { registerAdminRoutes } from './routes.ts'
 import { registerAdminTierRoutes } from './tier-routes.ts'
@@ -238,7 +238,7 @@ function wrapDbWithColocatedServer(
         return {
           from: (table: unknown) => {
             if (table === server) return queryChain([fleetRow])
-            if (table === upgrade || table === upgradeStep) {
+            if (table === upgrade || table === stage) {
               return queryChain([])
             }
             return chain.from(table)
@@ -246,7 +246,7 @@ function wrapDbWithColocatedServer(
         }
       },
       insert: (table: unknown) => {
-        if (table === upgrade || table === upgradeStep) {
+        if (table === upgrade || table === stage) {
           return {
             values: () => Promise.resolve(),
             onConflictDoUpdate: () => Promise.resolve(),
@@ -255,7 +255,7 @@ function wrapDbWithColocatedServer(
         return inner.insert(table)
       },
       update: (table: unknown) => {
-        if (table === upgrade || table === upgradeStep) {
+        if (table === upgrade || table === stage) {
           return {
             set: () => ({
               where: () => Promise.resolve(),

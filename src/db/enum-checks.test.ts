@@ -81,10 +81,10 @@ const CASES: Array<[constraint: string, values: readonly string[]]> = [
   ['upgrade_source_check', UPGRADE_SOURCES],
   ['upgrade_status_check', UPGRADE_STATUSES],
   ['upgrade_phase_check', UPGRADE_PHASES],
-  ['upgradestep_unit_check', UPGRADE_STEP_UNITS],
+  ['stage_unit_check', UPGRADE_STEP_UNITS],
   ['retention_target_kind_check', BACKUP_TARGET_KINDS],
   ['snapshot_status_check', BACKUP_RUN_STATUSES],
-  ['upgradestep_status_check', UPGRADE_STEP_STATUSES],
+  ['stage_status_check', UPGRADE_STEP_STATUSES],
 ]
 
 for (const [constraint, values] of CASES) {

@@ -1256,11 +1256,11 @@ export const upgrade = pgTable(
 )
 /**
  * One daemon or instance install on one server inside an {@link upgrade} run.
- * Physical name `upgradestep` (one word). Active steps are indexed for the
+ * Physical name `stage`. Active steps are indexed for the
  * retry scan; terminal rows are pruned by `pruneUpgradeHistory`.
  */
-export const upgradeStep = pgTable(
-  'upgradestep',
+export const stage = pgTable(
+  'stage',
   {
     id: uuid()
       .default(sql`uuidv7()`)
@@ -1307,9 +1307,9 @@ export const upgradeStep = pgTable(
     detail: jsonb(),
   },
   (table) => [
-    index('idx_upgradestep_upgrade_status').on(table.upgradeId, table.status),
-    index('idx_upgradestep_server_created').on(table.serverId, table.createdAt.desc()),
-    index('idx_upgradestep_active_next_attempt')
+    index('idx_stage_upgrade_status').on(table.upgradeId, table.status),
+    index('idx_stage_server_created').on(table.serverId, table.createdAt.desc()),
+    index('idx_stage_active_next_attempt')
       .on(table.status, table.nextAttemptAt)
       .where(
         sql`${table.status} IN ('pending', 'waiting', 'dispatched', 'preparing', 'downloading', 'installing', 'restarting', 'verifying')`
@@ -1317,18 +1317,18 @@ export const upgradeStep = pgTable(
     foreignKey({
       columns: [table.upgradeId],
       foreignColumns: [upgrade.id],
-      name: 'upgradestep_upgrade_id_upgrade_id_fk',
+      name: 'stage_upgrade_id_upgrade_id_fk',
     }).onDelete('cascade'),
     foreignKey({
       columns: [table.serverId],
       foreignColumns: [server.id],
-      name: 'upgradestep_server_id_server_id_fk',
+      name: 'stage_server_id_server_id_fk',
     }).onDelete('cascade'),
     // Mirror UPGRADE_STEP_UNITS / UPGRADE_STEP_STATUSES
     // (src/features/upgrades/vocabulary.ts) — pinned by enum-checks.test.ts.
-    check('upgradestep_unit_check', sql`unit IN ('daemon', 'instance')`),
+    check('stage_unit_check', sql`unit IN ('daemon', 'instance')`),
     check(
-      'upgradestep_status_check',
+      'stage_status_check',
       sql`status IN ('pending', 'waiting', 'dispatched', 'preparing', 'downloading', 'installing', 'restarting', 'verifying', 'done', 'failed', 'rolled_back', 'needs_attention', 'skipped')`
     ),
   ]

@@ -1647,7 +1647,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       finished_at: 'When the run reached a terminal status.',
     },
   },
-  upgradestep: {
+  stage: {
     group: 'upgrades',
     summary:
       'One `daemon` or `instance` install on one server inside an upgrade run, advanced by the orchestrator until a terminal outcome.',

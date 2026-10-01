@@ -68,6 +68,12 @@
       "tag": "0010_single_word_table_names",
       "when": 1790811211147,
       "sha256": "13d9c32c2669236ad930c79a100c8dc2d298b65df42e46899c917ba8af8ddd11"
+    },
+    {
+      "idx": 11,
+      "tag": "0011_rename_upgradestep_to_stage",
+      "when": 1790812730427,
+      "sha256": "309b9437f1f0da48fc9053b3621dc9c52132d3ad8692681b3cfca5c3f1dd7620"
     }
   ]
 }
