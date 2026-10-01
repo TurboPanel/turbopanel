@@ -22,7 +22,7 @@
  * Obvious columns (`id`, `created_at`, `updated_at`, plain parent-link
  * foreign keys — see `isObviousColumn`) are deliberately left without a
  * database comment: the wording would be identical on every table. The
- * data dictionary still spells them out (`STANDARD_COLUMNS`,
+ * generic wording still spells them out (`STANDARD_COLUMNS`,
  * `parentLinkComment`).
  *
  * See src/db/AGENTS.md → "Schema descriptions" for the full loop.
@@ -105,7 +105,10 @@ export function commentStatement(target, text) {
  * Order follows the snapshot (table order, then column order) so the output
  * is stable across runs.
  */
-export function pendingStatements({ snapshot = readLatestSnapshot(), migrationsDir = MIGRATIONS_DIR } = {}) {
+export function pendingStatements({
+  snapshot = readLatestSnapshot(),
+  migrationsDir = MIGRATIONS_DIR,
+} = {}) {
   const applied = readAppliedComments(migrationsDir)
   const statements = []
   for (const [target, text] of desiredComments(snapshot)) {
