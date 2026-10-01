@@ -93,6 +93,7 @@ jobs:
         run: |
           pnpm run check:migration-freeze
           pnpm run check:migration-additions -- "${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}"
+          pnpm run check:migration-forward-only -- "${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}"
 
       # Fails when a *.test.ts is claimed by no runner -- such a suite never
       # executes and never reaches coverage/lcov.info, so it reads as tested
@@ -452,16 +453,7 @@ jobs:
   # would still turn ci-ok red.
   ci-ok:
     name: ci-ok
-    needs:
-      [
-        checks,
-        typecheck,
-        vitest,
-        deno-hostfree,
-        deno-db,
-        sonarqube,
-        metrics-legacy,
-      ]
+    needs: [checks, typecheck, vitest, deno-hostfree, deno-db, sonarqube, metrics-legacy]
     if: >-
       ${{ (github.event_name == 'pull_request' && always())
       || (!cancelled() && !contains(needs.*.result, 'cancelled')) }}
