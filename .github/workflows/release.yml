@@ -199,6 +199,22 @@ jobs:
         # (wrangler + workerd, vitest, drizzle-kit, esbuild) never ships.
         run: pnpm install --prod --frozen-lockfile --ignore-scripts
 
+      - name: Generate the SBOM
+        # Straight from pnpm-lock.yaml (--lockfile-only), the lock the frozen
+        # install above enforced, so the SBOM lists exactly the shipped npm
+        # tree. Kept as a workflow artifact beside the release assets: the
+        # signed manifest lists the assets, so it is not one of them. The jsr
+        # packages (deno.lock) are pinned by the --frozen compile, not listed.
+        run: pnpm sbom --sbom-format cyclonedx --sbom-type application --prod --lockfile-only > sbom.cdx.json
+
+      - name: Upload the SBOM
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: turbopanel-sbom-${{ matrix.arch }}
+          path: sbom.cdx.json
+          if-no-files-found: error
+          retention-days: 90
+
       - name: Stamp the build identity
         # The version: src/app/version.ts reads deno.json, so the base X.Y.Z
         # (never the -canary.N label) is written into deno.json and

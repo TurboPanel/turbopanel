@@ -381,9 +381,12 @@ it('compile tasks emit the plain binary name and skip type-checking', async () =
     'compile:dev must emit dist/turbopanel-dev'
   )
   for (const [taskName, task] of Object.entries(tasks)) {
+    // The release compile also refuses a lockfile that does not cover every import.
+    const prefix =
+      taskName === 'compile' ? 'deno compile --frozen --no-check ' : 'deno compile --no-check '
     assert(
-      task.startsWith('deno compile --no-check '),
-      `${taskName} must compile with --no-check (type-checking runs before the prune)`
+      task.startsWith(prefix),
+      `${taskName} must compile with --no-check (type-checking runs before the prune)${taskName === 'compile' ? ' and --frozen' : ''}`
     )
   }
   const denoJsonPath = new URL('../deno.json', import.meta.url)
