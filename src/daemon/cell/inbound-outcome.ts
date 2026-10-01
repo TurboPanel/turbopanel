@@ -107,13 +107,10 @@ export function deriveInboundOutcome(inbound: DaemonInboundEnvelope): InboundOut
       })
     case 'command-ack':
       return null
-    default:
-      return unhandledInbound(inbound)
+    default: {
+      // Compile-time guard: a new inbound kind must get a case (or be named non-terminal) above.
+      const unhandled: never = inbound
+      return unhandled
+    }
   }
-}
-
-/** Compile-time guard: a new inbound kind must get a case (or be named non-terminal) above. */
-function unhandledInbound(inbound: never): null {
-  void inbound
-  return null
 }
