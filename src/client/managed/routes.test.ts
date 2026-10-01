@@ -43,6 +43,11 @@ import { ORG_ID_HEADER } from '../org-context.ts'
 import { getCatalogEntry, readManagedEngineOptions } from '../projects/catalog/index.ts'
 import { registerManagedRoutes } from './routes.ts'
 import { runBackupsReconcileSweep } from '../../features/backups/reconcile.ts'
+import {
+  createBackupRunReportStore,
+  handleBackupRunReport,
+} from '../../features/backups/run-report.ts'
+import type { BackupRunReportMessage } from '../../contracts/cell-protocol.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 
 const dbUrl = getDatabaseUrl()
@@ -2499,6 +2504,145 @@ test('backups reconcile sweep pushes once per reconnect, including after all pol
       await db.execute(sql`UPDATE server SET is_connected = false WHERE id = ${serverId}::uuid`)
       await runBackupsReconcileSweep(db, queue)
       assertEquals(ownServer(), 2)
+    }
+  )
+})
+
+test("backup policy list shows the daemon's own report: last status and next run, no polling", async () => {
+  await withManagedFixtures(
+    {},
+    async ({ db, app, secrets, userId, organizationId, environmentId, serverId }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = { Cookie: cookie, [ORG_ID_HEADER]: organizationId }
+      const created = await app.request(`/environments/${environmentId}/managed`, {
+        method: 'POST',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: '{}',
+      })
+      assertEquals(created.status, 200)
+      const base = `/environments/${environmentId}/managed/backup-policies`
+      type Listed = {
+        policies: Array<{
+          id: string
+          managedId: string
+          nextRunAt: string | null
+          lastRun: { status: string; backupId: string | null; error: string | null } | null
+        }>
+      }
+      const before = (await (await app.request(base, { headers })).json()) as Listed
+      const policy = before.policies[0]!
+      // Nothing has run and nothing has reported: no status, no next run.
+      assertEquals(policy.lastRun, null)
+      assertEquals(policy.nextRunAt, null)
+
+      const store = createBackupRunReportStore(db)
+      const report = (overrides: Partial<BackupRunReportMessage>): BackupRunReportMessage => ({
+        type: 'backup-run-report',
+        id: 'run_ok',
+        policyId: policy.id,
+        runId: 'run_ok',
+        startedAt: '2026-09-30T03:00:00.000Z',
+        finishedAt: '2026-09-30T03:00:05.000Z',
+        status: 'succeeded',
+        backupId: 'bk_visible',
+        sizeBytes: 2048,
+        checksum: 'b'.repeat(64),
+        path: `/backup/${policy.managedId}/policy-${policy.id}/bk_visible.dump`,
+        nextRunAt: '2026-10-01T03:00:00.000Z',
+        at: '2026-09-30T03:00:06.000Z',
+        ...overrides,
+      })
+
+      // The daemon reports up; the control plane never asks the host.
+      assertEquals(await handleBackupRunReport(store, report({}), { reporterServerId: serverId }), {
+        ok: true,
+      })
+      const afterOk = (await (await app.request(base, { headers })).json()) as Listed
+      const shown = afterOk.policies.find((entry) => entry.id === policy.id)!
+      assertEquals(shown.lastRun?.status, 'succeeded')
+      assertEquals(shown.lastRun?.backupId, 'bk_visible')
+      assertEquals(Date.parse(shown.nextRunAt!), Date.parse('2026-10-01T03:00:00.000Z'))
+
+      const failed = report({
+        id: 'run_bad',
+        runId: 'run_bad',
+        startedAt: '2026-10-01T03:00:00.000Z',
+        finishedAt: '2026-10-01T03:00:02.000Z',
+        status: 'failed',
+        error: 'disk full',
+        backupId: undefined,
+        sizeBytes: undefined,
+        checksum: undefined,
+        path: undefined,
+        nextRunAt: '2026-10-02T03:00:00.000Z',
+      })
+      assertEquals(await handleBackupRunReport(store, failed, { reporterServerId: serverId }), {
+        ok: true,
+      })
+      const afterBad = (await (await app.request(base, { headers })).json()) as Listed
+      const latest = afterBad.policies.find((entry) => entry.id === policy.id)!
+      assertEquals(latest.lastRun?.status, 'failed')
+      assertEquals(latest.lastRun?.error, 'disk full')
+      assertEquals(Date.parse(latest.nextRunAt!), Date.parse('2026-10-02T03:00:00.000Z'))
+    }
+  )
+})
+
+test('a new cluster inherits the organization defaults; its own override wins', async () => {
+  await withManagedFixtures(
+    {},
+    async ({ db, app, secrets, userId, organizationId, environmentId }) => {
+      await db
+        .update(organization)
+        .set({ options: { managedDatabase: { sslMode: 'verify-full' } } })
+        .where(eq(organization.id, organizationId))
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      }
+      const created = await app.request(`/environments/${environmentId}/managed`, {
+        method: 'POST',
+        headers,
+        body: '{}',
+      })
+      assertEquals(created.status, 200)
+      type Detail = {
+        connection: { dsn: string } | null
+        ssl: { configured: string | null; effective: string; organizationDefault: string | null }
+      }
+      const read = async (): Promise<Detail> => {
+        const res = await app.request(`/environments/${environmentId}/managed`, { headers })
+        assertEquals(res.status, 200)
+        return (await res.json()) as Detail
+      }
+
+      // Nothing was chosen for this cluster: it takes the organization's mode.
+      const inherited = await read()
+      assertEquals(inherited.ssl.configured, null)
+      assertEquals(inherited.ssl.organizationDefault, 'verify-full')
+      assertEquals(inherited.ssl.effective, 'verify-full')
+      assertEquals(inherited.connection?.dsn.endsWith('?sslmode=verify-full'), true)
+
+      // Changing the default reaches the existing cluster on the next read.
+      await db
+        .update(organization)
+        .set({ options: { managedDatabase: { sslMode: 'verify-ca' } } })
+        .where(eq(organization.id, organizationId))
+      const moved = await read()
+      assertEquals(moved.ssl.effective, 'verify-ca')
+      assertEquals(moved.connection?.dsn.endsWith('?sslmode=verify-ca'), true)
+
+      // A mode set on the cluster itself wins over the organization default.
+      await db
+        .update(managed)
+        .set({ options: sql`jsonb_set(options, '{settings,ssl,mode}', '"require"')` })
+        .where(eq(managed.environmentId, environmentId))
+      const own = await read()
+      assertEquals(own.ssl.configured, 'require')
+      assertEquals(own.ssl.effective, 'require')
+      assertEquals(own.connection?.dsn.endsWith('?sslmode=require'), true)
     }
   )
 })
