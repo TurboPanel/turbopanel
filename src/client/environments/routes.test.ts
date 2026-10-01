@@ -624,7 +624,7 @@ test('a stopped environment is deleted with its services, containers, hostings, 
     await addContainer(ctx, serviceId, 'exited')
     await ctx.db
       .insert(hosting)
-      .values({ serviceId, domain: `stopped-${crypto.randomUUID()}.example.com` })
+      .values({ serviceId })
     await ctx.db
       .insert(variable)
       .values({ environmentId: id, key: 'GONE', value: 'x', isSecret: false })
