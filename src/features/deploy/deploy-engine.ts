@@ -18,6 +18,7 @@ import {
   collectStrategyFacts,
   computeEffectiveStrategy,
   type FallbackReason,
+  type StrategyFacts,
 } from './deploy-strategy.ts'
 
 export type EngineStrategy = 'inplace' | 'sequential'
@@ -62,16 +63,29 @@ export function planDeployEngine(input: {
   const fallbackReasons = bluegreenRequested
     ? [...decided.fallbackReasons, BLUEGREEN_UNAVAILABLE_REASON]
     : decided.fallbackReasons
-  const payload: DeployEnginePayloadFields =
-    effectiveStrategy === 'sequential'
-      ? {
-          deployStrategy: 'sequential',
-          migrations,
-          healthTimeoutSeconds: resolved.healthTimeoutSeconds,
-          ...(facts.statefulWritableVolumes.length > 0
-            ? { keepRunningServices: facts.statefulWritableVolumes }
-            : {}),
-        }
-      : {}
-  return { requested, effectiveStrategy, fallbackReasons, migrations, payload }
+  return {
+    requested,
+    effectiveStrategy,
+    fallbackReasons,
+    migrations,
+    payload: enginePayload(effectiveStrategy, migrations, resolved.healthTimeoutSeconds, facts),
+  }
+}
+
+function enginePayload(
+  effectiveStrategy: EngineStrategy,
+  migrations: MigrationStatus,
+  healthTimeoutSeconds: number,
+  facts: StrategyFacts
+): DeployEnginePayloadFields {
+  if (effectiveStrategy !== 'sequential') return {}
+  const payload: DeployEnginePayloadFields = {
+    deployStrategy: 'sequential',
+    migrations,
+    healthTimeoutSeconds,
+  }
+  if (facts.statefulWritableVolumes.length > 0) {
+    payload.keepRunningServices = facts.statefulWritableVolumes
+  }
+  return payload
 }
