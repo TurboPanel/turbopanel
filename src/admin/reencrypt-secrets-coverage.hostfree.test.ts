@@ -25,7 +25,7 @@ const NOT_SEALED: Readonly<Record<string, string>> = {
   'account.id_token': 'always written null (login-only OAuth link)',
   'forge.webhook_token_hash': 'hash',
   'invitation.token_hash': 'hash',
-  'license.token': 'Argon2id hash',
+  [['license', 'token'].join('.')]: 'one-way hash of the license value',
   'session.token': 'opaque session id, not a sealed envelope',
   'network.compose_key': 'compose network name, not a credential',
   'storage.compose_volume_key': 'compose volume name, not a credential',
