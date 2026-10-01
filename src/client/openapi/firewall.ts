@@ -131,6 +131,30 @@ export const firewallSchemas = {
       host: {},
     },
   },
+  FirewallProbe: {
+    type: ['object', 'null'],
+    description:
+      "The last OUTSIDE reachability check: the control plane dialled the server's own stored addresses at its SSH port, its own port when it hosts the control plane, and the public tcp ports the derived ruleset opens, and recorded what answered. Null until one ran. `state` per port is `open` (handshake completed), `refused`, `timeout`, `blocked` (this platform would not dial it) or `error`. `role` says whether a port gates a confirmation (`invariant`, `public`) or is only reported (`informational`). Nothing is read from or written to a connection.",
+    properties: {
+      at: { type: 'string', format: 'date-time' },
+      phase: { type: 'string', enum: ['manual', 'baseline', 'after'] },
+      status: { type: 'string', enum: ['running', 'done'] },
+      ports: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            port: { type: 'integer', minimum: 1, maximum: 65535 },
+            role: { type: 'string', enum: ['invariant', 'public', 'informational'] },
+            reason: { type: 'string' },
+            state: { type: 'string', enum: ['open', 'refused', 'timeout', 'blocked', 'error'] },
+            ms: { type: ['integer', 'null'] },
+          },
+        },
+      },
+      notes: { type: 'array', items: { type: 'string' } },
+    },
+  },
   FirewallModeUpdate: {
     type: 'object',
     required: ['mode'],
@@ -273,6 +297,7 @@ export const firewallPaths: Record<string, unknown> = {
           properties: {
             bulwark: { $ref: '#/components/schemas/FirewallServerState' },
             preview: { $ref: '#/components/schemas/FirewallPreview' },
+            probe: { $ref: '#/components/schemas/FirewallProbe' },
           },
         }),
         ...errors(),
@@ -292,6 +317,28 @@ export const firewallPaths: Record<string, unknown> = {
           properties: { bulwark: { $ref: '#/components/schemas/FirewallServerState' } },
         }),
         ...errors({ badRequest: true }),
+      },
+    },
+  },
+  '/api/client/v1/organizations/{id}/firewall/servers/{serverId}/probe': {
+    post: {
+      tags: ['Organizations'],
+      summary: 'Check a server from outside now',
+      description:
+        "Owners and managers only. Dials only the server's own stored addresses, only at its SSH port, the control plane's own port on its host, and the public tcp ports the derived ruleset opens; never an address the control plane may not dial (loopback, link-local, metadata, multicast ...), and private networks only from a self-hosted control plane. It changes no firewall and sends no command. At most once every 30 seconds per server (429 with `Retry-After`). 503 when this control plane has no outside vantage. `autoConfirmPossible` says whether a change that keeps these ports open could be confirmed automatically (an invariant port answered).",
+      security: [{ cookieAuth: [] }],
+      parameters: [ORG_ID_PARAM, SERVER_ID_PARAM],
+      responses: {
+        ...jsonOk('What answered', {
+          type: 'object',
+          properties: {
+            probe: { $ref: '#/components/schemas/FirewallProbe' },
+            autoConfirmPossible: { type: 'boolean' },
+          },
+        }),
+        ...errors(),
+        '429': { description: 'Checked less than 30 seconds ago' },
+        '503': { description: 'This control plane cannot run the outside check' },
       },
     },
   },

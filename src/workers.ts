@@ -36,7 +36,10 @@ import type { CommandQueue } from './features/commands/queue.ts'
 import { isTransientError, processCommandEnvelope } from './features/commands/consumer.ts'
 import { parseCommandEnvelope } from './features/commands/envelope.ts'
 import { setRevokeBoundDaemonKey } from './features/licenses/revoke-bound-daemon-key.ts'
+import { connect as connectSocket } from 'cloudflare:sockets'
 import { registerCommandRuntimePorts } from './platform/ports/register-command-runtime-ports.ts'
+import { setTcpProbe } from './platform/ports/tcp-probe.ts'
+import { createWorkersTcpProbe } from './platform/workers/tcp-probe.ts'
 import { loadServerStatusRecords } from './client/servers/update-status.ts'
 import { resolveFleetPresence } from './daemon/cell/server-status.ts'
 import {
@@ -188,6 +191,7 @@ function createLazyWorkersEmailQueue(
 }
 
 async function initWorkerApp(env: CloudflareBindings) {
+  setTcpProbe(createWorkersTcpProbe(connectSocket))
   setRevokeBoundDaemonKey(revokeDaemonKey)
   registerCommandRuntimePorts({
     fencePhaseFromCommandMetadata,
