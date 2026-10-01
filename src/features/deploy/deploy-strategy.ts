@@ -90,7 +90,6 @@ const STATEFUL_IMAGES = new Set([
   'redis',
   'valkey',
   'rabbitmq',
-  'clickhouse',
   'elasticsearch',
   'opensearch',
   'cassandra',
