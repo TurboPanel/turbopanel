@@ -416,7 +416,12 @@ jobs:
     if: needs.prepare.outputs.channel == 'canary'
     permissions:
       contents: write # gh-canary.yml: rolling `canary` release assets + tag move
-    uses: TurboPanel/dev/.github/workflows/gh-canary.yml@d9127ee03a6a3b42e9435ebec3542db5fab09bc0 # dev#49
+    uses: TurboPanel/dev/.github/workflows/gh-canary.yml@5e45cd0b7795193a55728746279c75dadcbf7157 # dev#50 (squash on dev trunk)
+    # The Release App token moves the canary tag past commits that change .github/workflows
+    # (GITHUB_TOKEN cannot). Optional: without the secrets the tag move only warns.
+    secrets:
+      RELEASE_APP_ID: ${{ secrets.RELEASE_APP_ID }}
+      RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
     with:
       version: ${{ needs.prepare.outputs.version }}
       commit: ${{ needs.prepare.outputs.commit }}
