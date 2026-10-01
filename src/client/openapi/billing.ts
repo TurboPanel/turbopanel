@@ -399,6 +399,19 @@ export const billingSchemas = {
       endsAt: { type: ['string', 'null'], format: 'date-time' },
     },
   },
+  BillingLicensesInUseError: {
+    type: 'object',
+    required: ['error', 'purchasedAfter', 'licensesHeld', 'inUse', 'unusedKeys'],
+    description:
+      'A reduction would leave more licenses held than purchased. Remove servers (inUse) or delete registration keys nobody has used (unusedKeys) first.',
+    properties: {
+      error: { type: 'string', const: 'licenses_in_use' },
+      purchasedAfter: { type: 'integer' },
+      licensesHeld: { type: 'integer' },
+      inUse: { type: 'integer', description: 'Licenses bound to a server or being provisioned.' },
+      unusedKeys: { type: 'integer', description: 'Registration keys nobody has used yet.' },
+    },
+  },
 } as const
 
 const conflict = (codes: string) => errorResponse(`Conflict — \`error\` is one of ${codes}.`)
@@ -570,7 +583,7 @@ export const billingPaths: Record<string, unknown> = {
   [`${CLIENT_PREFIX}/billing/seats`]: mutationPath(
     'Buy or release licenses at one tier',
     'BillingSeatsRequest',
-    '`licenses_ending` (BillingLicensesEndingError), `subscription_past_due`, `no_subscription`, `servers_uncovered`, `licenses_in_use`'
+    '`licenses_ending` (BillingLicensesEndingError), `subscription_past_due`, `no_subscription`, `servers_uncovered`, `licenses_in_use` (BillingLicensesInUseError)'
   ),
   [`${CLIENT_PREFIX}/billing/restore`]: {
     post: {
@@ -613,6 +626,6 @@ export const billingPaths: Record<string, unknown> = {
   [`${CLIENT_PREFIX}/billing/downgrade`]: mutationPath(
     'Move one purchased license to a lower tier at the period boundary',
     'BillingTierMoveRequest',
-    '`licenses_ending` (at the lower tier), `no_subscription`, `servers_uncovered`, `licenses_in_use`'
+    '`licenses_ending` (at the lower tier), `no_subscription`, `servers_uncovered`, `licenses_in_use` (BillingLicensesInUseError)'
   ),
 }
