@@ -4,6 +4,7 @@ import type { AppEnv } from '../../app/app.ts'
 import { resolveManagedSslMode } from '../../features/managed/ssl.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
+import { requireStepUpIfConfigured } from '../authn/step-up.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { getDaemonCellRegistry, getDb } from '../../db/connection.ts'
 import type { CommandQueue } from '../../features/commands/queue.ts'
@@ -1380,6 +1381,9 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     if (scope instanceof Response) return scope
     const { db, environmentId, auth, row } = scope
 
+    const stepUp = await requireStepUpIfConfigured(c, auth.organizationId, 'managed.delete')
+    if (stepUp) return stepUp
+
     const busy = assertManagedNotBusy(c, row.status)
     if (busy) return busy
 
@@ -1951,6 +1955,13 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const databaseName = decodeURIComponent(c.req.param('databaseName'))
     const auth = await authorizeManagedRequest(c, db, environmentId, 'manage')
     if (auth instanceof Response) return auth
+
+    const stepUp = await requireStepUpIfConfigured(
+      c,
+      auth.organizationId,
+      'managed.database.delete'
+    )
+    if (stepUp) return stepUp
 
     const ctx = await loadManagedContext(c, db, environmentId, auth.organizationId)
     if (ctx instanceof Response) return ctx

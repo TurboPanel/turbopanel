@@ -43,6 +43,7 @@ import { registerInvitationLandingRoutes } from './invitation-landing-http.ts'
 import { registerPasswordResetRoutes } from './password-reset-http.ts'
 import { registerOtpRoutes } from './otp-http.ts'
 import { registerPasskeyRoutes } from './passkeys-http.ts'
+import { registerReauthRoutes } from './reauth-http.ts'
 import { registerTwoFactorRoutes } from './two-factor-http.ts'
 import { issueTwoFactorChallenge } from './two-factor.ts'
 import {
@@ -934,6 +935,7 @@ export function registerAuthRoutes(app: Hono<AppEnv>, opts: AuthRouteOpts) {
   registerPasswordResetRoutes(auth, opts)
   registerInvitationLandingRoutes(auth, opts)
   registerTwoFactorRoutes(auth, opts)
+  registerReauthRoutes(auth, opts)
   registerPasskeyRoutes(auth, opts)
   registerOAuthRoutes(auth, opts)
 

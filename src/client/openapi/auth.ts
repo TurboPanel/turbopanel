@@ -1728,4 +1728,48 @@ export const authPaths: Record<string, unknown> = {
       },
     },
   },
+  '/api/client/v1/auth/reauth': {
+    post: {
+      tags: ['Authentication'],
+      summary: 'Re-authenticate for permanent actions',
+      description:
+        'Proves who the signed-in person is again so permanent actions (delete a project, remove a member, revoke a key) unlock for five minutes on this session. Send `password`, or `code` (authenticator) when an authenticator is enrolled. Routes that need this answer `403` with `error: reauth_required` and the allowed `methods` when the organization has turned the setting on.',
+      security: [{ cookieAuth: [] }],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              properties: {
+                password: { type: 'string', format: 'password' },
+                code: { type: 'string' },
+              },
+            },
+          },
+        },
+      },
+      responses: {
+        '200': {
+          description: 'Re-authenticated; `expiresAt` is when it lapses',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['ok', 'expiresAt'],
+                properties: {
+                  ok: { type: 'boolean', const: true },
+                  expiresAt: { type: 'string', format: 'date-time' },
+                },
+              },
+            },
+          },
+        },
+        '400': { description: 'Invalid request, or `reauth_unavailable` (sign in again)' },
+        '401': { description: 'Unauthorized' },
+        '403': { description: 'Reauthentication failed' },
+        '429': { description: 'Too many attempts' },
+      },
+    },
+  },
 }

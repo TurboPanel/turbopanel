@@ -3,76 +3,69 @@
  * client timezone, host-defaults, server-capacity, and default-environment APIs.
  */
 
-import {
-  isValidDisplayName,
-  normalizeDisplayName,
-} from "../../lib/display-name-format.ts";
-import {
-  type NtpDefaults,
-  parseNtpDefaults,
-  parseSshPort,
-} from "../servers/host-defaults.ts";
+import { isValidDisplayName, normalizeDisplayName } from '../../lib/display-name-format.ts'
+import { type NtpDefaults, parseNtpDefaults, parseSshPort } from '../servers/host-defaults.ts'
 import {
   type ManagedOrganizationDefaults,
   parseManagedOrganizationDefaults,
-} from "../managed/org-defaults.ts";
+} from '../managed/org-defaults.ts'
 import {
   type MetricsCapabilityPlanOverride,
   parseMetricsCapabilityPlanOverride,
-} from "./metrics-capability-override.ts";
+} from './metrics-capability-override.ts'
 import {
   type OrganizationDockerNetworking,
   parseOrganizationDockerNetworking,
-} from "../deploy/docker-address-pools.ts";
+} from '../deploy/docker-address-pools.ts'
 
 /** Platform fallback when `defaultEnvironmentName` is unset. */
-export const DEFAULT_ENVIRONMENT_NAME = "Production";
+export const DEFAULT_ENVIRONMENT_NAME = 'Production'
 
 /** Display unit for temperature metrics (chart axes, tooltips, thresholds). */
-export type TemperatureUnit = "celsius" | "fahrenheit";
+export type TemperatureUnit = 'celsius' | 'fahrenheit'
 
-const TEMPERATURE_UNITS = new Set<TemperatureUnit>(["celsius", "fahrenheit"]);
+const TEMPERATURE_UNITS = new Set<TemperatureUnit>(['celsius', 'fahrenheit'])
 
 /** Platform fallback when `temperatureUnit` is unset. */
-export const DEFAULT_TEMPERATURE_UNIT: TemperatureUnit = "celsius";
+export const DEFAULT_TEMPERATURE_UNIT: TemperatureUnit = 'celsius'
 
 export type OrganizationOptions = {
   /** Org-wide default timezone applied when a server has no override. */
-  defaultServerTimezone?: string;
+  defaultServerTimezone?: string
   /**
    * When true, the org default wins over any per-server `options.timezone`
    * override.
    */
-  enforceServerTimezone?: boolean;
+  enforceServerTimezone?: boolean
   /**
    * Cap on enrolled servers + unconsumed registration keys for this org.
    * Omitted or `null` = unlimited (self-hosted default). Workers/Stripe billing
    * will set a concrete cap later; self-hosted operators may set one on the
    * control plane.
    */
-  maxServers?: number | null;
+  maxServers?: number | null
   /**
    * Org-wide name used for the environment scaffolded with every new project.
    * Platform fallback is {@link DEFAULT_ENVIRONMENT_NAME} (`Production`).
    */
-  defaultEnvironmentName?: string;
+  defaultEnvironmentName?: string
   /**
    * Desired SSH listen port for fleet hosts that do not set a datacenter or
    * server override. Omitted → inherit platform default 22.
    */
-  sshPort?: number;
+  sshPort?: number
   /** Desired NTP client settings inherited by datacenters and servers. */
-  ntp?: NtpDefaults;
+  ntp?: NtpDefaults
   /**
    * Preferred TurboFabric state for this organization. Does not create or tear
    * down the mesh — `PUT /organizations/:id/fabric` remains the enable path.
    */
-  defaultFabricEnabled?: boolean;
+  defaultFabricEnabled?: boolean
   /**
    * Org-wide managed-database defaults inherited by services that set no
    * override. See `managed/org-defaults.ts`.
    */
-  managedDatabase?: ManagedOrganizationDefaults;
+  managedDatabase?: ManagedOrganizationDefaults
   /**
    * When on (the default — preferred for security), every newly created
    * principal's applied login (Linux account / database role) is the short
@@ -80,12 +73,12 @@ export type OrganizationOptions = {
    * the short name. Decided per principal at create; toggling never renames
    * existing principals. Managed root logins are always suffixed regardless.
    */
-  randomizedPrincipalUsernames?: boolean;
+  randomizedPrincipalUsernames?: boolean
   /**
    * Display unit for temperature metrics (chart axes, tooltips, thresholds).
    * Platform fallback is {@link DEFAULT_TEMPERATURE_UNIT} (`celsius`).
    */
-  temperatureUnit?: TemperatureUnit;
+  temperatureUnit?: TemperatureUnit
   /**
    * Org-wide default overrides for the v5 metrics capability plan (see
    * `../daemon/metrics/capability-plan.ts`). Layered under any per-server
@@ -93,14 +86,14 @@ export type OrganizationOptions = {
    * `resolveEffectiveMetricsCapabilityPlan` (`db/server-metadata.ts`), on
    * top of a license-tier base when one is bound.
    */
-  metricsCapabilityPlan?: MetricsCapabilityPlanOverride;
+  metricsCapabilityPlan?: MetricsCapabilityPlanOverride
   /**
    * Org-wide Docker host addressing (`default-address-pools` / `bip`) every
    * enrolled host merges into `/etc/docker/daemon.json`. See
    * `docker-address-pools.ts`. Pool bases and the default bridge network also
    * join the org CIDR registry (`dockerHostCidrs`).
    */
-  docker?: OrganizationDockerNetworking;
+  docker?: OrganizationDockerNetworking
   /**
    * Opt-in gate for Let's Encrypt / ACME certificate issuance — both the
    * tenant `tls` library (`POST /tls` with `source: 'lets_encrypt'`) and the
@@ -109,7 +102,15 @@ export type OrganizationOptions = {
    * their servers at all, so a `managed` TLS row is inert until the org
    * turns this on. Toggling off does not revoke certificates already issued.
    */
-  acmeEnabled?: boolean;
+  acmeEnabled?: boolean
+  /**
+   * Step-up re-authentication for permanent actions (delete a project, remove
+   * a member, revoke a key, ...). When on, those routes refuse with
+   * `reauth_required` until the signed-in person has just proved who they are
+   * (see `client/authn/step-up.ts`). Off by default so a self-hosted install
+   * never surprises anyone; turning it on is recommended and owner-only.
+   */
+  requireReauthForDestructive?: boolean
   /**
    * Opt-in gate for the namespace/capability-escaping Compose fields
    * (`privileged`, `cap_add`, `devices`, `network_mode`, `pid`, `ipc`,
@@ -121,7 +122,7 @@ export type OrganizationOptions = {
    * finding. An org that has a real need for one of these (rare) has to turn
    * this on explicitly; it is not a per-field allowlist.
    */
-  composeGatedFieldsEnabled?: boolean;
+  composeGatedFieldsEnabled?: boolean
   /**
    * Whether services in this organization may carry `preDeployCommand` /
    * `postDeployCommand`. Off by default: a hook is arbitrary shell authored
@@ -130,7 +131,7 @@ export type OrganizationOptions = {
    * commit). An owner turns it on explicitly for the organization; until
    * then the options parser drops hook fields and no deploy carries them.
    */
-  deployHooksEnabled?: boolean;
+  deployHooksEnabled?: boolean
   /**
    * Per-service ceiling applied at deploy to any container service whose
    * compose sets none (`mem_limit` / `cpus` / `deploy.resources.limits`).
@@ -145,21 +146,19 @@ export type OrganizationOptions = {
    */
   composeDefaultResourceLimits?: {
     /** Whole or fractional cores, as Compose's `cpus`. */
-    cpus?: number;
+    cpus?: number
     /** Bytes, as Compose's `mem_limit`. */
-    memoryBytes?: number;
-  };
-};
+    memoryBytes?: number
+  }
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 /** True when no finite server seat cap is configured. */
-export function isUnlimitedMaxServers(
-  maxServers: number | null | undefined,
-): boolean {
-  return maxServers === null || maxServers === undefined;
+export function isUnlimitedMaxServers(maxServers: number | null | undefined): boolean {
+  return maxServers === null || maxServers === undefined
 }
 
 /**
@@ -168,13 +167,13 @@ export function isUnlimitedMaxServers(
  * returns `{ ok: false }`.
  */
 export function parseMaxServersInput(
-  value: unknown,
+  value: unknown
 ): { ok: true; value: number | null } | { ok: false } {
-  if (value === null) return { ok: true, value: null };
-  if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
-    return { ok: false };
+  if (value === null) return { ok: true, value: null }
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+    return { ok: false }
   }
-  return { ok: true, value };
+  return { ok: true, value }
 }
 
 /**
@@ -184,173 +183,154 @@ export function parseMaxServersInput(
  * cap, or names with control characters → `{ ok: false }`.
  */
 export function parseDefaultEnvironmentNameInput(
-  value: unknown,
+  value: unknown
 ): { ok: true; value: string | null } | { ok: false } {
-  if (value === null) return { ok: true, value: null };
-  if (typeof value !== "string") return { ok: false };
-  const normalized = normalizeDisplayName(value);
+  if (value === null) return { ok: true, value: null }
+  if (typeof value !== 'string') return { ok: false }
+  const normalized = normalizeDisplayName(value)
   if (!isValidDisplayName(normalized)) {
-    return { ok: false };
+    return { ok: false }
   }
-  return { ok: true, value: normalized };
+  return { ok: true, value: normalized }
 }
 
 /** Resolved scaffold name: option when set, else platform fallback. */
-export function resolveDefaultEnvironmentName(
-  options: OrganizationOptions,
-): string {
-  return options.defaultEnvironmentName ?? DEFAULT_ENVIRONMENT_NAME;
+export function resolveDefaultEnvironmentName(options: OrganizationOptions): string {
+  return options.defaultEnvironmentName ?? DEFAULT_ENVIRONMENT_NAME
 }
 
 function assignTrimmedOption(
   options: OrganizationOptions,
-  key: "defaultServerTimezone" | "defaultEnvironmentName",
-  value: unknown,
+  key: 'defaultServerTimezone' | 'defaultEnvironmentName',
+  value: unknown
 ): void {
-  if (typeof value !== "string") return;
-  const trimmed = value.trim();
-  if (trimmed.length > 0) options[key] = trimmed;
+  if (typeof value !== 'string') return
+  const trimmed = value.trim()
+  if (trimmed.length > 0) options[key] = trimmed
 }
 
-function assignMaxServers(
-  options: OrganizationOptions,
-  value: Record<string, unknown>,
-): void {
-  if (!("maxServers" in value)) return;
-  const parsed = parseMaxServersInput(value.maxServers);
-  if (parsed.ok) options.maxServers = parsed.value;
+function assignMaxServers(options: OrganizationOptions, value: Record<string, unknown>): void {
+  if (!('maxServers' in value)) return
+  const parsed = parseMaxServersInput(value.maxServers)
+  if (parsed.ok) options.maxServers = parsed.value
 }
 
-function assignManagedDatabase(
-  options: OrganizationOptions,
-  value: Record<string, unknown>,
-): void {
-  if (!("managedDatabase" in value)) return;
-  const managedDatabase = parseManagedOrganizationDefaults(
-    value.managedDatabase,
-  );
+function assignManagedDatabase(options: OrganizationOptions, value: Record<string, unknown>): void {
+  if (!('managedDatabase' in value)) return
+  const managedDatabase = parseManagedOrganizationDefaults(value.managedDatabase)
   if (Object.keys(managedDatabase).length > 0) {
-    options.managedDatabase = managedDatabase;
+    options.managedDatabase = managedDatabase
   }
 }
 
 function assignMetricsCapabilityPlan(
   options: OrganizationOptions,
-  value: Record<string, unknown>,
+  value: Record<string, unknown>
 ): void {
-  if (!("metricsCapabilityPlan" in value)) return;
-  const metricsCapabilityPlan = parseMetricsCapabilityPlanOverride(
-    value.metricsCapabilityPlan,
-  );
+  if (!('metricsCapabilityPlan' in value)) return
+  const metricsCapabilityPlan = parseMetricsCapabilityPlanOverride(value.metricsCapabilityPlan)
   if (Object.keys(metricsCapabilityPlan).length > 0) {
-    options.metricsCapabilityPlan = metricsCapabilityPlan;
+    options.metricsCapabilityPlan = metricsCapabilityPlan
   }
 }
 
-function assignDocker(
-  options: OrganizationOptions,
-  value: Record<string, unknown>,
-): void {
-  if (!("docker" in value)) return;
-  const docker = parseOrganizationDockerNetworking(value.docker);
+function assignDocker(options: OrganizationOptions, value: Record<string, unknown>): void {
+  if (!('docker' in value)) return
+  const docker = parseOrganizationDockerNetworking(value.docker)
   if (Object.keys(docker).length > 0) {
-    options.docker = docker;
+    options.docker = docker
+  }
+}
+
+function assignRequireReauth(options: OrganizationOptions, value: Record<string, unknown>): void {
+  if (typeof value.requireReauthForDestructive === 'boolean') {
+    options.requireReauthForDestructive = value.requireReauthForDestructive
   }
 }
 
 /** Parse organization.options jsonb (missing/invalid keys → omitted). */
 export function parseOrganizationOptions(value: unknown): OrganizationOptions {
-  if (!isRecord(value)) return {};
-  const options: OrganizationOptions = {};
-  assignTrimmedOption(
-    options,
-    "defaultServerTimezone",
-    value.defaultServerTimezone,
-  );
-  if (typeof value.enforceServerTimezone === "boolean") {
-    options.enforceServerTimezone = value.enforceServerTimezone;
+  if (!isRecord(value)) return {}
+  const options: OrganizationOptions = {}
+  assignTrimmedOption(options, 'defaultServerTimezone', value.defaultServerTimezone)
+  if (typeof value.enforceServerTimezone === 'boolean') {
+    options.enforceServerTimezone = value.enforceServerTimezone
   }
-  assignMaxServers(options, value);
-  assignTrimmedOption(
-    options,
-    "defaultEnvironmentName",
-    value.defaultEnvironmentName,
-  );
-  const sshPort = parseSshPort(value.sshPort);
-  if (sshPort !== undefined) options.sshPort = sshPort;
-  const ntp = parseNtpDefaults(value.ntp);
-  if (ntp) options.ntp = ntp;
-  if (typeof value.defaultFabricEnabled === "boolean") {
-    options.defaultFabricEnabled = value.defaultFabricEnabled;
+  assignMaxServers(options, value)
+  assignTrimmedOption(options, 'defaultEnvironmentName', value.defaultEnvironmentName)
+  const sshPort = parseSshPort(value.sshPort)
+  if (sshPort !== undefined) options.sshPort = sshPort
+  const ntp = parseNtpDefaults(value.ntp)
+  if (ntp) options.ntp = ntp
+  if (typeof value.defaultFabricEnabled === 'boolean') {
+    options.defaultFabricEnabled = value.defaultFabricEnabled
   }
-  assignManagedDatabase(options, value);
-  if (typeof value.randomizedPrincipalUsernames === "boolean") {
-    options.randomizedPrincipalUsernames = value.randomizedPrincipalUsernames;
+  assignManagedDatabase(options, value)
+  if (typeof value.randomizedPrincipalUsernames === 'boolean') {
+    options.randomizedPrincipalUsernames = value.randomizedPrincipalUsernames
   }
   if (
-    typeof value.temperatureUnit === "string" &&
+    typeof value.temperatureUnit === 'string' &&
     TEMPERATURE_UNITS.has(value.temperatureUnit as TemperatureUnit)
   ) {
-    options.temperatureUnit = value.temperatureUnit as TemperatureUnit;
+    options.temperatureUnit = value.temperatureUnit as TemperatureUnit
   }
-  assignMetricsCapabilityPlan(options, value);
-  assignDocker(options, value);
-  if (typeof value.acmeEnabled === "boolean") {
-    options.acmeEnabled = value.acmeEnabled;
+  assignMetricsCapabilityPlan(options, value)
+  assignDocker(options, value)
+  if (typeof value.acmeEnabled === 'boolean') {
+    options.acmeEnabled = value.acmeEnabled
   }
-  if (typeof value.composeGatedFieldsEnabled === "boolean") {
-    options.composeGatedFieldsEnabled = value.composeGatedFieldsEnabled;
+  assignRequireReauth(options, value)
+  if (typeof value.composeGatedFieldsEnabled === 'boolean') {
+    options.composeGatedFieldsEnabled = value.composeGatedFieldsEnabled
   }
-  if (typeof value.deployHooksEnabled === "boolean") {
-    options.deployHooksEnabled = value.deployHooksEnabled;
+  if (typeof value.deployHooksEnabled === 'boolean') {
+    options.deployHooksEnabled = value.deployHooksEnabled
   }
-  assignComposeDefaultResourceLimits(options, value);
-  return options;
+  assignComposeDefaultResourceLimits(options, value)
+  return options
 }
 
 /** Effective randomized-usernames default: on unless the org opted out. */
-export function resolveRandomizedPrincipalUsernames(
-  options: OrganizationOptions,
-): boolean {
-  return options.randomizedPrincipalUsernames ?? true;
+export function resolveRandomizedPrincipalUsernames(options: OrganizationOptions): boolean {
+  return options.randomizedPrincipalUsernames ?? true
 }
 
 /** Resolved display unit: option when set, else platform fallback (celsius). */
-export function resolveTemperatureUnit(
-  options: OrganizationOptions,
-): TemperatureUnit {
-  return options.temperatureUnit ?? DEFAULT_TEMPERATURE_UNIT;
+export function resolveTemperatureUnit(options: OrganizationOptions): TemperatureUnit {
+  return options.temperatureUnit ?? DEFAULT_TEMPERATURE_UNIT
 }
 
 /** Effective Let's Encrypt gate: off unless the org has opted in. */
 export function resolveAcmeEnabled(options: OrganizationOptions): boolean {
-  return options.acmeEnabled ?? false;
+  return options.acmeEnabled ?? false
+}
+
+/** Effective step-up gate for permanent actions: off unless an owner turned it on. */
+export function resolveRequireReauthForDestructive(options: OrganizationOptions): boolean {
+  return options.requireReauthForDestructive ?? false
 }
 
 function assignComposeDefaultResourceLimits(
   options: OrganizationOptions,
-  value: Record<string, unknown>,
+  value: Record<string, unknown>
 ): void {
-  const raw = value.composeDefaultResourceLimits;
-  if (!isRecord(raw)) return;
-  const limits: NonNullable<
-    OrganizationOptions["composeDefaultResourceLimits"]
-  > = {};
-  if (
-    typeof raw.cpus === "number" && Number.isFinite(raw.cpus) && raw.cpus > 0
-  ) {
-    limits.cpus = raw.cpus;
+  const raw = value.composeDefaultResourceLimits
+  if (!isRecord(raw)) return
+  const limits: NonNullable<OrganizationOptions['composeDefaultResourceLimits']> = {}
+  if (typeof raw.cpus === 'number' && Number.isFinite(raw.cpus) && raw.cpus > 0) {
+    limits.cpus = raw.cpus
   }
   if (
-    typeof raw.memoryBytes === "number" &&
+    typeof raw.memoryBytes === 'number' &&
     Number.isFinite(raw.memoryBytes) &&
     raw.memoryBytes > 0
   ) {
-    limits.memoryBytes = Math.trunc(raw.memoryBytes);
+    limits.memoryBytes = Math.trunc(raw.memoryBytes)
   }
   // An empty or all-invalid object is the same as not opting in.
   if (Object.keys(limits).length > 0) {
-    options.composeDefaultResourceLimits = limits;
+    options.composeDefaultResourceLimits = limits
   }
 }
 
@@ -359,23 +339,19 @@ function assignComposeDefaultResourceLimits(
  * opted into one (the 0.1.0 default).
  */
 export function resolveComposeDefaultResourceLimits(
-  options: OrganizationOptions,
-): NonNullable<OrganizationOptions["composeDefaultResourceLimits"]> | null {
-  return options.composeDefaultResourceLimits ?? null;
+  options: OrganizationOptions
+): NonNullable<OrganizationOptions['composeDefaultResourceLimits']> | null {
+  return options.composeDefaultResourceLimits ?? null
 }
 
 /** Effective deploy-hook posture: off (hooks dropped) unless the org opted in. */
-export function resolveDeployHooksEnabled(
-  options: OrganizationOptions,
-): boolean {
-  return options.deployHooksEnabled ?? false;
+export function resolveDeployHooksEnabled(options: OrganizationOptions): boolean {
+  return options.deployHooksEnabled ?? false
 }
 
 /** Effective gated-Compose-fields posture: off (deny) unless the org opted in. */
-export function resolveComposeGatedFieldsEnabled(
-  options: OrganizationOptions,
-): boolean {
-  return options.composeGatedFieldsEnabled ?? false;
+export function resolveComposeGatedFieldsEnabled(options: OrganizationOptions): boolean {
+  return options.composeGatedFieldsEnabled ?? false
 }
 
 /**
@@ -385,12 +361,10 @@ export function resolveComposeGatedFieldsEnabled(
  * whenever the option is unset).
  */
 export function parseTemperatureUnitInput(
-  value: unknown,
+  value: unknown
 ): { ok: true; value: TemperatureUnit } | { ok: false } {
-  if (
-    typeof value === "string" && TEMPERATURE_UNITS.has(value as TemperatureUnit)
-  ) {
-    return { ok: true, value: value as TemperatureUnit };
+  if (typeof value === 'string' && TEMPERATURE_UNITS.has(value as TemperatureUnit)) {
+    return { ok: true, value: value as TemperatureUnit }
   }
-  return { ok: false };
+  return { ok: false }
 }

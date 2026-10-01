@@ -3,6 +3,7 @@ import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
+import { requireStepUpIfConfigured } from '../authn/step-up.ts'
 import { isAdminRole } from '../authn/session-store.ts'
 import { can, listVisible } from '../authz/index.ts'
 import { assertCanManageOr403, assertCanReadOr403, getOrgId, parseJsonBody } from '../shared.ts'
@@ -1427,6 +1428,9 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     const denied = await assertCanManageOr403(c, 'server', id)
     if (denied) return denied
 
+    const stepUp = await requireStepUpIfConfigured(c, organizationId, 'server.daemon_key.revoke')
+    if (stepUp) return stepUp
+
     const registry = getDaemonCellRegistry(c)
     const blocked = await assertServerNotColocatedOr403(
       c,
@@ -1488,6 +1492,9 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
 
     const denied = await assertCanManageOr403(c, 'server', id)
     if (denied) return denied
+
+    const stepUp = await requireStepUpIfConfigured(c, organizationId, 'server.delete')
+    if (stepUp) return stepUp
 
     // Co-located guard before the registry 503 so an unavailable registry can
     // never turn a self-host-pinned (or probe-matched) host into a deletable one.
