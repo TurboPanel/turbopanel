@@ -16,6 +16,7 @@ import type { DaemonCell, DaemonCellRegistry, PendingRequestRecord } from '../co
 import type { DaemonOutboundEnvelope } from '../contracts/cell-protocol.ts'
 import { ADMIN_API_PREFIX } from '../app/surfaces.ts'
 import { INSTANCE_VERSION } from '../app/version.ts'
+import { seedUpdateManifestCacheForTests } from '../features/update/manifest.ts'
 import { parseTestSecretsConfig } from '../test-fixtures/secrets.ts'
 import type { Db } from '../db/connection.ts'
 import { server, upgrade, stage } from '../db/schema.ts'
@@ -1275,6 +1276,70 @@ test('instance updates: workers refuses the control plane, GET still reports its
     })
   } finally {
     globalThis.fetch = originalFetch
+  }
+})
+
+test('instance updates: a self-hosted control plane offers a UI-only update from the console build it is told', async () => {
+  seedUpdateManifestCacheForTests(
+    {
+      commit: 'ab12cd34ef56ab12cd34ef56ab12cd34ef56ab12',
+      buildId: 'u1',
+      builtAt: '2026-09-24T00:00:00.000Z',
+      channel: 'canary',
+      manifestUrl:
+        'https://github.com/TurboPanel/ui/releases/download/canary/manifest-0.1.6-canary.15.json',
+      version: '0.1.6-canary.15',
+    },
+    'canary',
+    'ui'
+  )
+  try {
+    const { app, cookie } = await buildApp({
+      getEnv: () => ({ TURBOPANEL_UPDATE_CHANNEL: 'canary' }),
+    })
+    const read = async (query: string) => {
+      const res = await app.request(`${ADMIN_API_PREFIX}/instance/updates${query}`, {
+        headers: { Cookie: cookie },
+      })
+      const body = await jsonBody<{ units: { instance: { uiUpdateAvailable: boolean } } }>(res)
+      return body.units.instance.uiUpdateAvailable
+    }
+    assertEquals(await read('?consoleCommit=0123456789abcdef'), true)
+    assertEquals(await read('?consoleCommit=ab12cd34ef56'), false)
+    assertEquals(await read(''), false)
+    assertEquals(await read('?consoleCommit=not-a-commit'), false)
+  } finally {
+    seedUpdateManifestCacheForTests(null, 'canary', 'ui')
+  }
+})
+
+test('instance updates: on Workers the UI is deployed, never offered as an install', async () => {
+  seedUpdateManifestCacheForTests(
+    {
+      commit: 'ab12cd34ef56ab12cd34ef56ab12cd34ef56ab12',
+      buildId: 'u1',
+      builtAt: '2026-09-24T00:00:00.000Z',
+      channel: 'canary',
+      manifestUrl:
+        'https://github.com/TurboPanel/ui/releases/download/canary/manifest-0.1.6-canary.15.json',
+      version: '0.1.6-canary.15',
+    },
+    'canary',
+    'ui'
+  )
+  try {
+    const { app, cookie } = await buildApp({
+      runtime: 'workers',
+      getEnv: () => ({ TURBOPANEL_UPDATE_CHANNEL: 'canary' }),
+    })
+    const res = await app.request(
+      `${ADMIN_API_PREFIX}/instance/updates?consoleCommit=0123456789abcdef`,
+      { headers: { Cookie: cookie } }
+    )
+    const body = await jsonBody<{ units: { instance: { uiUpdateAvailable: boolean } } }>(res)
+    assertEquals(body.units.instance.uiUpdateAvailable, false)
+  } finally {
+    seedUpdateManifestCacheForTests(null, 'canary', 'ui')
   }
 })
 

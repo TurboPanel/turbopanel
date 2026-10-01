@@ -19,6 +19,7 @@ import {
   differsFromInstalled,
   isDowngrade,
   isOnTarget,
+  uiBehindTarget,
   unitTarget,
   type UpgradeTarget,
 } from './target.ts'
@@ -62,6 +63,7 @@ import {
   MANAGED_UPGRADE_FEATURE,
   readDispatchHistory,
   stepStatusForProgressStage,
+  uiRefreshFromDetail,
   withInProgressRefused,
   withSupersededRequest,
 } from './decisions.ts'
@@ -104,6 +106,12 @@ export type UpgradeCoordinator = {
     fleetServerIds?: readonly string[]
     /** The id preflight already showed. Reused so the copied command matches. */
     runId?: string
+    /**
+     * The commit of the UI bundle the console is running. When it differs from
+     * the channel's UI target the control-plane step opens even if the instance
+     * binary is current, because the install is what moves the UI.
+     */
+    consoleCommit?: string | null
   }): Promise<
     | { ok: true; runId: string }
     | {
@@ -712,7 +720,12 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
   }
 
   function currentCommit(step: UpgradeStepRow, fact: FleetServerFact | undefined): string | null {
-    if (step.unit === 'instance') return deps.instanceInstalled.commit
+    if (step.unit === 'instance') {
+      // A UI-only refresh reinstalls the same binary, so "the instance runs the
+      // target commit" is true before the install ran. Only the daemon's
+      // result report settles such a step.
+      return uiRefreshFromDetail(step.detail) ? null : deps.instanceInstalled.commit
+    }
     return fact?.commit ?? null
   }
 
@@ -775,8 +788,12 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
         startedAt: now,
         finishedAt: null,
       }
+      const uiBehind = uiBehindTarget(target.ui, input.consoleCommit)
       const steps = plan.steps.map((planned) =>
-        stepFromPlan(run, planned, fleet, now, deps.instanceInstalled.commit)
+        stepFromPlan(run, planned, fleet, now, {
+          commit: deps.instanceInstalled.commit,
+          uiBehind,
+        })
       )
       run.phase = earliestOpenPhase(steps)
       const inserted = await deps.store.insertRun(run, steps)
@@ -1148,7 +1165,7 @@ function stepFromPlan(
   planned: PlannedStep,
   fleet: FleetServerFact[],
   now: string,
-  instanceCommit: string | null
+  instance: { commit: string | null; uiBehind: boolean }
 ): UpgradeStepRow {
   const fact = fleet.find((item) => item.serverId === planned.serverId)
   const pin = unitTarget(run.target, planned.unit)
@@ -1156,7 +1173,8 @@ function stepFromPlan(
     planned,
     {
       daemonCommit: fact?.commit ?? null,
-      instanceCommit: instanceCommit,
+      instanceCommit: instance.commit,
+      uiBehind: instance.uiBehind,
     },
     run.target
   )
@@ -1189,7 +1207,10 @@ function stepFromPlan(
     errorMessage: ahead
       ? `Runs ${fact?.version}, newer than the target ${pin?.version}. Managed updates never downgrade a server.`
       : null,
-    detail: { phase: planned.phase },
+    detail: {
+      phase: planned.phase,
+      ...(planned.unit === 'instance' && instance.uiBehind ? { uiRefresh: true } : {}),
+    },
   }
 }
 

@@ -22,7 +22,11 @@ export const INSTANCE_UPDATES_PATHS = {
         "the same upgrade. Each unit carries `updateAvailable`: the server's " +
         'rule (the target names a commit the host is not running, and ' +
         'installing it would not downgrade). Clients render it rather than ' +
-        'comparing versions or commits themselves.',
+        'comparing versions or commits themselves. The control-plane unit also ' +
+        'carries `uiUpdateAvailable` (self-hosted only): pass `?consoleCommit=` ' +
+        'with the commit the console bundle was built from, and it is true when ' +
+        "the channel's UI build differs. The UI ships inside the control-plane " +
+        'install, so a run started with `consoleCommit` in the body reinstalls it.',
       security: [...cookieSecurity],
       responses: {
         '200': { description: 'Installed versions and channel targets' },

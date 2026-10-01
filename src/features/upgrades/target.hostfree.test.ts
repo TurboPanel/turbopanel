@@ -4,6 +4,7 @@ import {
   EMPTY_UNIT_TARGET,
   isDowngrade,
   isOnTarget,
+  uiBehindTarget,
   unitTarget,
   updateAvailableFor,
   type UpgradeTarget,
@@ -144,4 +145,16 @@ test("updateAvailableFor is the server's one update-available rule", () => {
     ),
     false
   )
+})
+
+test('uiBehindTarget: only when both commits are known and differ', () => {
+  const ui = { commit: 'abcdef1234567890' }
+  assertEquals(uiBehindTarget(ui, '0000000'), true)
+  assertEquals(uiBehindTarget(ui, 'abcdef1'), false)
+  assertEquals(uiBehindTarget(ui, 'abcdef1234567890'), false)
+  assertEquals(uiBehindTarget(ui, null), false)
+  assertEquals(uiBehindTarget(ui, 'unknown'), false)
+  assertEquals(uiBehindTarget(null, '0000000'), false)
+  assertEquals(uiBehindTarget({ commit: null }, '0000000'), false)
+  assertEquals(uiBehindTarget({ commit: 'unknown' }, '0000000'), false)
 })
