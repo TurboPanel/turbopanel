@@ -884,7 +884,7 @@ test('the control-plane step is not done until the daemon reports, and a second 
   assertEquals((await coordinator.run(runId))?.status, 'succeeded')
 })
 
-test('a step the busy daemon refused reaches needs_attention within minutes, not three stall timeouts', async () => {
+test('a step the busy daemon refused reaches needs_attention after one install window, not three', async () => {
   const h = clockHarness({ facts: [fact(['managed-upgrade-v1'], 'new-daemon')] })
   const runId = await startOrThrow(h.coordinator)
   const requestId = h.enqueued[0]?.envelope.requestId
@@ -897,7 +897,7 @@ test('a step the busy daemon refused reaches needs_attention within minutes, not
     errorCode: 'preflight_in_progress',
     requestId,
   })
-  h.clock.now = minutesAfter(T0, 6)
+  h.clock.now = minutesAfter(T0, 16)
   await h.coordinator.tick({ resolveManifests: false })
   const recorded = await h.coordinator.run(runId)
   const stuck = recorded?.steps.find((item) => item.unit === 'instance')

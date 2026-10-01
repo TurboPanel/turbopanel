@@ -246,19 +246,18 @@ test('a dispatched step the daemon never answers retries after the ack timeout, 
   )
 })
 
-test('a dispatch the busy daemon refused is not retried: needs attention after the ack timeout', () => {
-  const stale = new Date(Date.parse(NOW) - 6 * 60 * 1000).toISOString()
-  assertEquals(
-    planStepAction(
-      step({
-        status: 'dispatched',
-        lastStageAt: stale,
-        attempts: 1,
-        inProgressRefused: true,
-      }),
-      facts(),
-      cfg
-    ),
-    { kind: 'needs_attention', errorCode: 'step_timeout' }
-  )
+test('a dispatch the busy daemon refused keeps the install window, then needs attention without a retry', () => {
+  const at = (minutes: number) => new Date(Date.parse(NOW) - minutes * 60 * 1000).toISOString()
+  const refused = (minutes: number) =>
+    step({
+      status: 'dispatched',
+      lastStageAt: at(minutes),
+      attempts: 1,
+      inProgressRefused: true,
+    })
+  assertEquals(planStepAction(refused(6), facts(), cfg).kind, 'none')
+  assertEquals(planStepAction(refused(16), facts(), cfg), {
+    kind: 'needs_attention',
+    errorCode: 'step_timeout',
+  })
 })

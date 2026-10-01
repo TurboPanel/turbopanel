@@ -138,7 +138,7 @@ function backoffElapsed(step: StepView, cfg: StepConfig): boolean {
 function isStalled(step: StepView, cfg: StepConfig): boolean {
   if (!step.lastStageAt) return false
   const timeout =
-    step.status === 'dispatched'
+    step.status === 'dispatched' && step.inProgressRefused !== true
       ? (cfg.dispatchAckTimeoutMs ?? UPGRADE_DISPATCH_ACK_TIMEOUT_MS)
       : (cfg.stepTimeoutMs ?? UPGRADE_STEP_TIMEOUT_MS)
   return Date.parse(cfg.now) - Date.parse(step.lastStageAt) > timeout
@@ -176,7 +176,8 @@ function handleInFlight(step: StepView, facts: StepFacts, cfg: StepConfig): Step
   if (!facts.serverConnected) return { kind: 'wait_offline' }
   if (!isStalled(step, cfg)) return { kind: 'none' }
   const maxAttempts = cfg.maxAttempts ?? UPGRADE_STEP_MAX_ATTEMPTS
-  // A busy daemon already refused this dispatch; sending it again cannot help.
+  // A refused dispatch (the daemon is busy with an earlier install) is an
+  // answer, so it keeps the long window; sending it again cannot help.
   if (step.inProgressRefused === true || step.attempts >= maxAttempts) {
     return { kind: 'needs_attention', errorCode: 'step_timeout' satisfies UpgradeStepErrorCode }
   }

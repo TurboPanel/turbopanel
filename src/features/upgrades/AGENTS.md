@@ -175,8 +175,10 @@ working.
 - A step still `dispatched` after `UPGRADE_DISPATCH_ACK_TIMEOUT_MS` (5 min) is
   stuck, not slow: it retries (up to the attempt limit) and then goes to
   `needs_attention` / `step_timeout`; a dispatch the daemon refused as busy
-  (`inProgressRefused`) goes straight there. Steps that reported a stage keep
-  the 15-minute `UPGRADE_STEP_TIMEOUT_MS`.
+  (`inProgressRefused`) is an answer: the earlier install may still finish the
+  step, so it keeps the 15-minute window and then goes to `needs_attention`
+  without a retry. Steps that reported a stage keep
+  `UPGRADE_STEP_TIMEOUT_MS` (15 min).
 
 ## Saving what daemons report
 
