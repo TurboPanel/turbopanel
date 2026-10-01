@@ -53,6 +53,7 @@ jobs:
     with:
       channel: canary
       ref: ${{ github.event.workflow_run.head_sha }}
+      build-run-id: ${{ github.event.workflow_run.id }}
     # The called workflow's signing job declares the `canary` environment. Environment secrets do not
     # reach a job of a reusable workflow in every case, so the repository secret is passed through as a
     # fallback (same key); drop `inherit` once the environment secret is confirmed to resolve.
