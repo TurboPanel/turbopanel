@@ -89,7 +89,7 @@ export type HealthPayload = {
   /** The instance's semver — what the app holds against its supported range. */
   version: string
   revision: InstanceRevision
-  /** The update channel this instance follows (`TURBOPANEL_UPDATE_CHANNEL`, default `trunk`). */
+  /** The update channel this instance follows (`TURBOPANEL_UPDATE_CHANNEL`, default `release`). */
   channel: UpdateChannel
   /** The installed package's pre-release label, when known; see {@link resolveBuildLabel}. */
   build: string | null

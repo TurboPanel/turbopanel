@@ -391,7 +391,7 @@ guard; `pnpm test:do` alone does not.
   `GET /api/health` reports `{ license, version, revision: { commit, sourceUrl },
   channel, build, environment }` (`src/app/build-info.ts`) so a network user can
   identify Corresponding Source. `channel` is the resolved
-  `TURBOPANEL_UPDATE_CHANNEL` (default `trunk`); `build` is the installed
+  `TURBOPANEL_UPDATE_CHANNEL` (default `release`); `build` is the installed
   package's full label from `TURBOPANEL_BUILD_LABEL` (e.g.
   `0.1.1-canary.<buildId>`, `0.1.1-rc.1`) or null — never baked into the
   binary, because promotion reuses the canary bytes for rc and release, so the
@@ -1223,7 +1223,7 @@ src/
   (`fetch`-only, one fetch straight to the channel's built-in location from
   `src/contracts/update-channel.ts` — trunk on the CDN drop, rc/release on the
   daemon's GitHub Releases; per-channel cache; returns `null` on any failure).
-  The instance follows `TURBOPANEL_UPDATE_CHANNEL` (default `trunk`; invalid
+  The instance follows `TURBOPANEL_UPDATE_CHANNEL` (default `release`; invalid
   is a Deno startup error) and every queued daemon update carries that channel
 - `src/features/email/` — shared queue types/templates; SMTP (Deno/AMQP) and
   Mailgun (Workers) backends live under `src/platform/`

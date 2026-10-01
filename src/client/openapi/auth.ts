@@ -121,7 +121,7 @@ export function buildAuthSchemas(runtime?: 'deno' | 'workers') {
           type: 'string',
           enum: ['trunk', 'edge', 'canary', 'rc', 'release'],
           description:
-            'The update channel this instance follows (TURBOPANEL_UPDATE_CHANNEL; default trunk).',
+            'The update channel this instance follows (TURBOPANEL_UPDATE_CHANNEL; default release).',
         },
         build: {
           type: ['string', 'null'],
