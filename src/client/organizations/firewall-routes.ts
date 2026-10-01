@@ -27,14 +27,40 @@ import {
   updateEdict,
   updateOrganizationFirewallPolicy,
 } from '../../features/firewall/records.ts'
+import {
+  enqueueFirewallPreview,
+  enqueueFirewallPreviewForOrganization,
+  type FirewallPreviewActor,
+  previewOfLastResult,
+} from '../../features/firewall/preview.ts'
 import { FIREWALL_MODES } from '../../features/firewall/vocabulary.ts'
 
 /**
  * Firewall settings for an organization: its policy, the rules its operators
  * typed, and each server's mode. Owners and managers only (the same
  * `organization:manage` check as TurboFabric). Nothing here pushes anything
- * to a host: stage 4 builds and sends the ruleset.
+ * to a host that changes it: after a write, the affected servers are sent a
+ * PREVIEW (`observe`: rendered and kernel-checked, nothing loaded).
  */
+
+function previewActor(c: Context<AppEnv>): FirewallPreviewActor {
+  return { actorType: 'user', actorId: c.get('session')!.userId }
+}
+
+/** Preview the servers a rule change reaches: its one server, or every server of the organization. */
+async function previewAfterRuleChange(
+  c: Context<AppEnv>,
+  scope: Scope,
+  serverIds: readonly (string | null)[]
+): Promise<void> {
+  const queue = c.get('commandQueue')
+  const actor = previewActor(c)
+  if (serverIds.includes(null)) {
+    await enqueueFirewallPreviewForOrganization(scope.db, queue, actor, scope.organizationId)
+    return
+  }
+  await enqueueFirewallPreview(scope.db, queue, actor, serverIds)
+}
 
 function toEdictApiRow(row: EdictRecord) {
   return {
@@ -125,6 +151,7 @@ async function createEdictResponse(
   if (badServer) return badServer
   try {
     const row = await createEdict(scope.db, scope.organizationId, userId, parsed.values)
+    await previewAfterRuleChange(c, scope, [row.serverId])
     return c.json({ rule: toEdictApiRow(row) }, 201)
   } catch (err) {
     if (err instanceof EdictLimitError)
@@ -148,6 +175,7 @@ async function patchEdictResponse(c: Context<AppEnv>, scope: Scope): Promise<Res
   if (badServer) return badServer
   const row = await updateEdict(scope.db, scope.organizationId, edictId, merged)
   if (!row) return c.json({ error: 'Not found' }, 404)
+  await previewAfterRuleChange(c, scope, [current.serverId, row.serverId])
   return c.json({ rule: toEdictApiRow(row) })
 }
 
@@ -162,6 +190,12 @@ async function putPolicyResponse(c: Context<AppEnv>, scope: Scope): Promise<Resp
     parsed.patch
   )
   if (!policy) return c.json({ error: 'Not found' }, 404)
+  await enqueueFirewallPreviewForOrganization(
+    scope.db,
+    c.get('commandQueue'),
+    previewActor(c),
+    scope.organizationId
+  )
   return c.json({ policy })
 }
 
@@ -177,9 +211,9 @@ async function putModeResponse(c: Context<AppEnv>, scope: Scope): Promise<Respon
       400
     )
   }
-  return c.json({
-    bulwark: await setBulwarkMode(scope.db, serverId, mode as (typeof FIREWALL_MODES)[number]),
-  })
+  const updated = await setBulwarkMode(scope.db, serverId, mode as (typeof FIREWALL_MODES)[number])
+  await enqueueFirewallPreview(scope.db, c.get('commandQueue'), previewActor(c), [serverId])
+  return c.json({ bulwark: updated })
 }
 
 const FIREWALL_PATHS = [
@@ -233,8 +267,13 @@ export function registerOrganizationFirewallRoutes(router: Hono<AppEnv>, opts: A
     const scope = await loadScope(c)
     if (scope instanceof Response) return scope
     const edictId = c.req.param('edictId') as string
-    const deleted = isUuid(edictId) && (await deleteEdict(scope.db, scope.organizationId, edictId))
-    return deleted ? c.json({ ok: true }) : c.json({ error: 'Not found' }, 404)
+    const current = isUuid(edictId)
+      ? await findEdict(scope.db, scope.organizationId, edictId)
+      : null
+    const deleted = current !== null && (await deleteEdict(scope.db, scope.organizationId, edictId))
+    if (!deleted) return c.json({ error: 'Not found' }, 404)
+    await previewAfterRuleChange(c, scope, [current.serverId])
+    return c.json({ ok: true })
   })
 
   router.get('/organizations/:id/firewall/servers/:serverId', async (c) => {
@@ -242,7 +281,8 @@ export function registerOrganizationFirewallRoutes(router: Hono<AppEnv>, opts: A
     if (scope instanceof Response) return scope
     const serverId = await resolveServerId(c, scope)
     if (serverId instanceof Response) return serverId
-    return c.json({ bulwark: await readBulwark(scope.db, serverId) })
+    const view = await readBulwark(scope.db, serverId)
+    return c.json({ bulwark: view, preview: previewOfLastResult(view.lastResult) })
   })
 
   router.put('/organizations/:id/firewall/servers/:serverId', async (c) => {

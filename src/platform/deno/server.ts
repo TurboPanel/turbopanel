@@ -47,6 +47,7 @@ import { runManagedIngressOrphanSweep } from '../../features/managed/ingress-des
 import { runDatacenterRepinFanoutSweep } from '../../client/datacenters/repin-fanout.ts'
 import { runSystemReconcileSweep } from '../../features/system/reconcile.ts'
 import { runBackupsReconcileSweep } from '../../features/backups/reconcile.ts'
+import { runFirewallPreviewSweep } from '../../features/firewall/preview.ts'
 import {
   LEAF_RENEWAL_SWEEP_INTERVAL_MS,
   runLeafRenewalSweepTick,
@@ -625,6 +626,10 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     // Backup policy sets once after each reconnect (hello must not enqueue).
     void runBackupsReconcileSweep(db, commandQueue).catch((err) => {
       logWarn('daemon-cell', `backups reconcile sweep error: ${String(err)}`)
+    })
+    // Firewall previews once after each reconnect (nothing is applied).
+    void runFirewallPreviewSweep(db, commandQueue).catch((err) => {
+      logWarn('daemon-cell', `firewall preview sweep error: ${String(err)}`)
     })
   }
   // Observe pending self-host inventory on boot, not only after the first

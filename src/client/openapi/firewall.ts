@@ -116,6 +116,21 @@ export const firewallSchemas = {
       confirmedAt: { type: ['string', 'null'], format: 'date-time' },
     },
   },
+  FirewallPreview: {
+    type: ['object', 'null'],
+    description:
+      "What the host was last sent as a PREVIEW: the ruleset rendered and checked by the kernel (`iptables-restore --test`), never loaded. Null until a preview was sent. `status` is `queued` (sent, no answer yet), `previewed`, `refused` (the kernel would reject it) or `failed`. `notes` lists, in words, what could not be derived. `host` is the host's own answer (warnings, validation, rendered text).",
+    properties: {
+      kind: { type: 'string', enum: ['preview'] },
+      status: { type: 'string', enum: ['queued', 'previewed', 'refused', 'failed'] },
+      desiredDigest: { type: 'string' },
+      generation: { type: 'integer', minimum: 0 },
+      sentAt: { type: 'string', format: 'date-time' },
+      ruleCount: { type: 'integer', minimum: 0 },
+      notes: { type: 'array', items: { type: 'string' } },
+      host: {},
+    },
+  },
   FirewallModeUpdate: {
     type: 'object',
     required: ['mode'],
@@ -255,7 +270,10 @@ export const firewallPaths: Record<string, unknown> = {
       responses: {
         ...jsonOk('Server firewall state', {
           type: 'object',
-          properties: { bulwark: { $ref: '#/components/schemas/FirewallServerState' } },
+          properties: {
+            bulwark: { $ref: '#/components/schemas/FirewallServerState' },
+            preview: { $ref: '#/components/schemas/FirewallPreview' },
+          },
         }),
         ...errors(),
       },
@@ -264,7 +282,7 @@ export const firewallPaths: Record<string, unknown> = {
       tags: ['Organizations'],
       summary: "Set a server's firewall mode",
       description:
-        'Owners and managers only. `observe` (the default) shows the ruleset and applies nothing; `managed` enforces it; `off` leaves the firewall alone. Raises the server generation.',
+        'Owners and managers only. `observe` (the default) shows the ruleset and applies nothing; `managed` is accepted and stored but behaves as `observe` until enforcement is switched on server-side; `off` leaves the firewall alone and sends nothing. Raises the server generation.',
       security: [{ cookieAuth: [] }],
       parameters: [ORG_ID_PARAM, SERVER_ID_PARAM],
       requestBody: jsonBody('FirewallModeUpdate'),
