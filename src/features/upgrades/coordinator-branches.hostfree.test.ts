@@ -806,18 +806,23 @@ test('tick: several pending steps are claimed and dispatched one after another, 
   )
 })
 
-test('tick: a failing enqueue stops the pass and later steps are never dispatched', async () => {
+test('tick: a failing enqueue is recorded on that step and the later steps are still dispatched', async () => {
   const { coordinator, store, enqueued } = await threeHostRun({
     traceEnqueue: true,
     failEnqueueFor: 'srv-b',
   })
-  assertEquals(await rejection(coordinator.tick({ resolveManifests: false })), 'queue down')
+  await coordinator.tick({ resolveManifests: false })
   assertEquals(
     enqueued.map((item) => item.serverId),
-    ['srv-a']
+    ['srv-a', 'srv-c']
   )
-  const statuses = (await store.stepsFor('upgrade-run-1')).map((step) => step.status)
-  assertEquals(statuses[2], 'pending')
+  const steps = await store.stepsFor('upgrade-run-1')
+  assertEquals(
+    steps.map((step) => step.status),
+    ['dispatched', 'pending', 'dispatched']
+  )
+  assertEquals(steps[1]?.errorMessage?.includes('queue down'), true)
+  assertEquals(steps[1]?.attempts, 1)
 })
 
 test('cancel: skips open steps in order, leaves settled ones alone, then records the run', async () => {

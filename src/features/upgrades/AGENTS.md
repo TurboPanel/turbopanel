@@ -229,7 +229,7 @@ grouped `count(*)`, not a materialised server or step list.
   client renders it and never compares version or commit strings itself.
 - Error vocabulary (`vocabulary.ts`): `UPGRADE_STEP_ERROR_CODES` are the step
   `errorCode`s the control plane sets itself (`rolled_back`, `server_offline`,
-  `step_timeout`, `managed_upgrade_required`, `downgrade_refused`); a daemon
+  `step_timeout`, `dispatch_failed`, `managed_upgrade_required`, `downgrade_refused`); a daemon
   result may add its own reason code, so a client names these and shows any
   other code verbatim. `UPGRADE_RUN_ERROR_CODES` are the run `error`s
   (`colocated_daemon_failed`, `control_plane_failed`). The literals in
