@@ -1,63 +1,63 @@
 export const readinessSchemas = {
   DaemonErrorResponse: {
-    type: "object",
-    required: ["error"],
+    type: 'object',
+    required: ['error'],
     properties: {
-      error: { type: "string" },
+      error: { type: 'string' },
     },
   },
-};
+}
 
 export const readinessPaths: Record<string, unknown> = {
-  "/api/daemon/v1/readiness": {
+  '/api/daemon/v1/readiness': {
     get: {
-      tags: ["Daemon"],
-      summary: "Install readiness probe",
+      tags: ['Daemon'],
+      summary: 'Install readiness probe',
       description:
-        "Co-located self-hosted daemons poll this before opening the daemon WebSocket. " +
-        "Returns 503 until the install wizard has created org + superadmin.\n\n" +
-        "This is also the endpoint to monitor. `/api/health` is a static identity " +
-        "payload (licence, version, commit) and answers 200 with the database gone; " +
-        "this route reads the database, so the two 503 bodies below tell " +
-        "\"not installed yet\" apart from \"database unavailable\".",
+        'Co-located self-hosted daemons poll this before opening the daemon WebSocket. ' +
+        'Returns 503 until the install wizard has created org + superadmin.\n\n' +
+        'This is also the endpoint to monitor. `/api/health` is a static identity ' +
+        'payload (licence, version, commit) and answers 200 with the database gone; ' +
+        'this route reads the database, so the two 503 bodies below tell ' +
+        '"not installed yet" apart from "database unavailable".',
       responses: {
-        "200": {
-          description: "Instance is ready for daemon connections",
+        '200': {
+          description: 'Control plane is ready for daemon connections',
           content: {
-            "application/json": {
+            'application/json': {
               schema: {
-                type: "object",
-                required: ["ok", "ready"],
+                type: 'object',
+                required: ['ok', 'ready'],
                 properties: {
-                  ok: { type: "boolean", const: true },
-                  ready: { type: "boolean", const: true },
+                  ok: { type: 'boolean', const: true },
+                  ready: { type: 'boolean', const: true },
                 },
               },
             },
           },
         },
-        "503": {
-          description: "Not ready or database unavailable",
+        '503': {
+          description: 'Not ready or database unavailable',
           content: {
-            "application/json": {
+            'application/json': {
               schema: {
                 oneOf: [
                   {
-                    type: "object",
-                    required: ["ok", "ready", "needsInstall"],
+                    type: 'object',
+                    required: ['ok', 'ready', 'needsInstall'],
                     properties: {
-                      ok: { type: "boolean", const: true },
-                      ready: { type: "boolean", const: false },
-                      needsInstall: { type: "boolean", const: true },
+                      ok: { type: 'boolean', const: true },
+                      ready: { type: 'boolean', const: false },
+                      needsInstall: { type: 'boolean', const: true },
                     },
                   },
                   {
-                    type: "object",
-                    required: ["ok", "ready", "error"],
+                    type: 'object',
+                    required: ['ok', 'ready', 'error'],
                     properties: {
-                      ok: { type: "boolean", const: false },
-                      ready: { type: "boolean", const: false },
-                      error: { type: "string", const: "database unavailable" },
+                      ok: { type: 'boolean', const: false },
+                      ready: { type: 'boolean', const: false },
+                      error: { type: 'string', const: 'database unavailable' },
                     },
                   },
                 ],
@@ -68,4 +68,4 @@ export const readinessPaths: Record<string, unknown> = {
       },
     },
   },
-};
+}

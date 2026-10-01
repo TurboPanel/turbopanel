@@ -1,7 +1,7 @@
 /**
  * Which registered app does this delivery belong to?
  *
- * Once an instance may hold more than one GitHub App or GitLab OAuth
+ * Once a control plane may hold more than one GitHub App or GitLab OAuth
  * application, a delivery can no longer be verified against "the" webhook
  * secret — the surface has to work out *whose* secret to use before it can
  * authenticate anything. This module is that step, and it runs between reading
@@ -73,8 +73,7 @@ export type HeaderReader = { get(name: string): string | null }
  * keeps the one that verifies — bounded, and only reachable on the header path.
  */
 export type WebhookAppResolution =
-  | { ok: true; candidates: Forge[] }
-  | { ok: false; reason: WebhookAppFailure }
+  { ok: true; candidates: Forge[] } | { ok: false; reason: WebhookAppFailure }
 
 export type WebhookAppFailure =
   /** No signal identified an app: answer 401, never an unauthenticated accept. */
@@ -104,7 +103,7 @@ export async function resolveGithubWebhookForge(
   db: Db,
   dataEncryptionSecrets: DerivedSecretsConfig,
   webhookRef: string | null,
-  headers: HeaderReader,
+  headers: HeaderReader
 ): Promise<WebhookAppResolution> {
   const targetAppId = githubTargetAppId(headers)
 
@@ -136,7 +135,7 @@ export async function resolveGitlabWebhookForge(
   db: Db,
   dataEncryptionSecrets: DerivedSecretsConfig,
   webhookRef: string | null,
-  presentedToken: string | null,
+  presentedToken: string | null
 ): Promise<WebhookAppResolution> {
   if (webhookRef) {
     const app = await findForgeByWebhookRef(db, dataEncryptionSecrets, webhookRef)
@@ -149,7 +148,7 @@ export async function resolveGitlabWebhookForge(
   const app = await findGitlabForgeByWebhookTokenHash(
     db,
     dataEncryptionSecrets,
-    await hashWebhookToken(token),
+    await hashWebhookToken(token)
   )
   if (!app) return failed('unresolved')
   return { ok: true, candidates: [app] }
@@ -164,7 +163,7 @@ export async function resolveGitlabWebhookForge(
  */
 export async function selectVerifiedApp(
   candidates: Forge[],
-  verify: (webhookSecret: string) => Promise<boolean>,
+  verify: (webhookSecret: string) => Promise<boolean>
 ): Promise<Forge | null> {
   for (const candidate of candidates) {
     if (!candidate.webhookSecret) continue

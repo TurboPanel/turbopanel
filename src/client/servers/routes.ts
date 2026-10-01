@@ -159,7 +159,7 @@ type QueueUpdateFailure = {
   error: string
 }
 
-/** The channel this instance follows — the one every queued update targets. */
+/** The channel this control plane follows — the one every queued update targets. */
 function instanceUpdateChannel(c: Context<AppEnv>): UpdateChannel {
   return resolveInstanceUpdateChannel(c.get('platformEnv'))
 }

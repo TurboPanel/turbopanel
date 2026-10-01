@@ -153,7 +153,7 @@ export function registerAdminRoutes(
     devSurface: boolean
     getEnv?: () => Record<string, string | undefined>
     /**
-     * Hosted (Workers) only. Passed from `src/workers.ts` so this registrar
+     * TurboPanel High Availability only. Passed from `src/workers.ts` so this registrar
      * never statically imports the Stripe tier catalogue.
      */
     registerTiers?: (admin: Hono<AppEnv>) => void
@@ -244,7 +244,7 @@ export function registerAdminRoutes(
       return c.json(
         {
           ok: false,
-          error: 'instance address collection is not available on this runtime',
+          error: 'control plane address collection is not available on this runtime',
           ips: emptyServerIps(),
         },
         422

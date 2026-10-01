@@ -10,7 +10,7 @@ const errorResponse = (description: string) => ({
 })
 
 const notConfigured = errorResponse(
-  'Billing is not configured on this instance (`billing_not_configured`); self-hosted has no billing surface.'
+  'Billing is not configured on this control plane (`billing_not_configured`); self-hosted has no billing surface.'
 )
 const unauthorized = errorResponse('Unauthorized')
 const forbidden = errorResponse('Forbidden (owner-only)')
@@ -243,7 +243,7 @@ export const billingSchemas = {
                 type: ['string', 'null'],
                 format: 'date-time',
                 description:
-                  "Always null. Stripe's dunning ends a past-due subscription (it arrives as `canceled`), so TurboPanel keeps no expiry; kept in the shape until the console stops reading it.",
+                  "Always null. Stripe's dunning ends a past-due subscription (it arrives as `canceled`), so TurboPanel keeps no expiry; kept in the shape until the app stops reading it.",
               },
               scheduleAttached: {
                 type: 'boolean',

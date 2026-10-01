@@ -92,7 +92,7 @@ export function getClientOpenApiSpec(serverUrl: string, options?: ClientOpenApiO
           'Translate a `docker run` command into a compose fragment (compute only — nothing is persisted)',
       },
       { name: 'TLS', description: 'Organization TLS certificate library' },
-      { name: 'Servers', description: 'Server fleet and update management' },
+      { name: 'Servers', description: 'Servers and update management' },
       { name: 'Commands', description: 'Command lifecycle status polling' },
       { name: 'Networks', description: 'Organization network registry' },
       { name: 'Datacenters', description: 'Datacenter CRUD' },

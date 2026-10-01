@@ -1,5 +1,5 @@
 /**
- * Which update channel this instance follows, and where each channel's
+ * Which update channel this control plane follows, and where each channel's
  * daemon manifest lives — the control plane's mirror of the daemon's
  * `src/update/config.ts` + `src/update/urls.ts` (turbopaneld). The instance
  * resolves daemon updates for the servers it manages (`POST /servers/:id/update`

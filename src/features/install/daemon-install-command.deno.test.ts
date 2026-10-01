@@ -236,7 +236,7 @@ test("formatInstallScriptCurlUrl keeps each environment's bare installer host", 
   }
 })
 
-test("buildLicenseInstallCommand curls the installer host for the instance's channel", () => {
+test("buildLicenseInstallCommand curls the installer host for the control plane's channel", () => {
   const base = {
     instanceUrl: 'https://turbopanel.app',
     licenseId: 'license-id',

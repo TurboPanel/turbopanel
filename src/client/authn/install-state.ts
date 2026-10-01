@@ -91,7 +91,7 @@ export const IS_SIGNUP_ENABLED_CONFIG_KEY = 'IS_SIGNUP_ENABLED'
 export const INSTANCE_INSTALL_SENTINEL_KEY = 'INSTANCE_INSTALL_SENTINEL'
 
 /** Thrown when initial install is attempted but the instance is already configured. */
-export const INSTANCE_ALREADY_CONFIGURED_ERROR = 'Instance is already configured'
+export const INSTANCE_ALREADY_CONFIGURED_ERROR = 'Control plane is already configured'
 
 /** Wrangler / platform env bindings may arrive as strings, numbers, or booleans. */
 export type SignupEnvOverride = string | number | boolean | null

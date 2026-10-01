@@ -7,14 +7,8 @@ import { Hono } from 'hono'
 import type { Context } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
-import {
-  buildSignedCookie,
-  HTTP_SESSION_COOKIE_NAME,
-} from '../authn/crypto.ts'
-import {
-  deriveEncryptionSecretsConfig,
-  deriveSecretsConfig,
-} from '../../lib/secrets/secrets.ts'
+import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from '../authn/crypto.ts'
+import { deriveEncryptionSecretsConfig, deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { encryptSecret } from '../../lib/secrets/data-encryption.ts'
 import type { DaemonCellRegistry } from '../../contracts/cell.ts'
 import type { Db } from '../../db/connection.ts'
@@ -27,10 +21,7 @@ import { CLIENT_API_PREFIX } from '../../app/surfaces.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { providerInstallUiReturnPath } from '../forges/routes-helpers.ts'
-import {
-  signGithubInstallState,
-  signGitlabConnectState,
-} from './provider-install-state.ts'
+import { signGithubInstallState, signGitlabConnectState } from './provider-install-state.ts'
 import {
   GIT_DEPLOY_KEY_CREDENTIAL_PROVIDER,
   SOURCE_REFERENCED_BY_COMPOSE_ERROR,
@@ -95,7 +86,7 @@ function mockContext(options: MockContextOptions = {}): Context<AppEnv> {
       header: (key: string) => {
         if (!options.header) return undefined
         const found = Object.entries(options.header).find(
-          ([name]) => name.toLowerCase() === key.toLowerCase(),
+          ([name]) => name.toLowerCase() === key.toLowerCase()
         )
         return found?.[1]
       },
@@ -116,7 +107,10 @@ function coerceSeedPublicUrls(rows: unknown[]): string[] {
     return value.filter((entry): entry is string => typeof entry === 'string')
   }
   if (typeof value === 'string') {
-    return value.split(',').map((entry) => entry.trim()).filter((entry) => entry !== '')
+    return value
+      .split(',')
+      .map((entry) => entry.trim())
+      .filter((entry) => entry !== '')
   }
   return []
 }
@@ -229,7 +223,7 @@ function adminAccessDb(): Db {
 async function expectJson(
   response: Response,
   status: number,
-  body: Record<string, unknown>,
+  body: Record<string, unknown>
 ): Promise<void> {
   assertEquals(response.status, status)
   assertEquals(await response.json(), body)
@@ -245,21 +239,18 @@ test('isUniqueViolation only matches Postgres 23505', () => {
 
 test('providerErrorResponse maps known provider statuses and rethrows bugs', async () => {
   const c = mockContext()
-  await expectJson(
-    providerErrorResponse(c, new GithubAppTokenError('missing', 404)),
-    404,
-    { error: 'git_provider_request_failed', detail: 'missing' },
-  )
-  await expectJson(
-    providerErrorResponse(c, new GitlabOauthTokenError('taken', 409)),
-    409,
-    { error: 'git_provider_request_failed', detail: 'taken' },
-  )
-  await expectJson(
-    providerErrorResponse(c, new GitlabApiError('rate limited', 429)),
-    502,
-    { error: 'git_provider_request_failed', detail: 'rate limited' },
-  )
+  await expectJson(providerErrorResponse(c, new GithubAppTokenError('missing', 404)), 404, {
+    error: 'git_provider_request_failed',
+    detail: 'missing',
+  })
+  await expectJson(providerErrorResponse(c, new GitlabOauthTokenError('taken', 409)), 409, {
+    error: 'git_provider_request_failed',
+    detail: 'taken',
+  })
+  await expectJson(providerErrorResponse(c, new GitlabApiError('rate limited', 429)), 502, {
+    error: 'git_provider_request_failed',
+    detail: 'rate limited',
+  })
 
   try {
     providerErrorResponse(c, new TypeError('bug'))
@@ -275,7 +266,7 @@ test('redirectToForgeUi sends the console back, never JSON', () => {
   assertEquals(withApp.status, 302)
   assertEquals(
     withApp.headers.get('Location'),
-    providerInstallUiReturnPath(ORG_ID, APP_ID, { installed: CONNECTION_ID }),
+    providerInstallUiReturnPath(ORG_ID, APP_ID, { installed: CONNECTION_ID })
   )
 
   const failed = redirectToForgeUi(c, null, null, { error: 'invalid_request' })
@@ -291,18 +282,22 @@ test('resolveSourceSession requires db, session, and an accessible org', async (
   if (!(noSession instanceof Response)) throw new TypeError('expected 401')
   await expectJson(noSession, 401, { error: 'Unauthorized' })
 
-  const missingOrg = await resolveSourceSession(mockContext({
-    db: adminAccessDb(),
-    session: { userId: USER_ID },
-  }))
+  const missingOrg = await resolveSourceSession(
+    mockContext({
+      db: adminAccessDb(),
+      session: { userId: USER_ID },
+    })
+  )
   if (!(missingOrg instanceof Response)) throw new TypeError('expected org required')
   await expectJson(missingOrg, 400, { error: 'organizationId required' })
 
-  const ctx = await resolveSourceSession(mockContext({
-    db: adminAccessDb(),
-    session: { userId: USER_ID },
-    header: { [ORG_ID_HEADER]: ORG_ID },
-  }))
+  const ctx = await resolveSourceSession(
+    mockContext({
+      db: adminAccessDb(),
+      session: { userId: USER_ID },
+      header: { [ORG_ID_HEADER]: ORG_ID },
+    })
+  )
   if (ctx instanceof Response) throw new TypeError('expected session context')
   assertEquals(ctx.userId, USER_ID)
   assertEquals(ctx.organizationId, ORG_ID)
@@ -317,10 +312,12 @@ test('resolveProviderCallbackSession loads db and session without an org header'
   if (!(noSession instanceof Response)) throw new TypeError('expected 401')
   await expectJson(noSession, 401, { error: 'Unauthorized' })
 
-  const ctx = await resolveProviderCallbackSession(mockContext({
-    db: adminAccessDb(),
-    session: { userId: USER_ID },
-  }))
+  const ctx = await resolveProviderCallbackSession(
+    mockContext({
+      db: adminAccessDb(),
+      session: { userId: USER_ID },
+    })
+  )
   if (ctx instanceof Response) throw new TypeError('expected callback session')
   assertEquals(ctx.userId, USER_ID)
   assertEquals(ctx.secretsConfig, undefined)
@@ -332,25 +329,25 @@ test('composeReferencesRepository reads the EXISTS flag', async () => {
     await composeReferencesRepository(
       { execute: () => Promise.resolve([{ referenced: true }]) } as unknown as Db,
       ORG_ID,
-      SOURCE_ID,
+      SOURCE_ID
     ),
-    true,
+    true
   )
   assertEquals(
     await composeReferencesRepository(
       { execute: () => Promise.resolve([{ referenced: false }]) } as unknown as Db,
       ORG_ID,
-      SOURCE_ID,
+      SOURCE_ID
     ),
-    false,
+    false
   )
   assertEquals(
     await composeReferencesRepository(
       { execute: () => Promise.resolve([]) } as unknown as Db,
       ORG_ID,
-      SOURCE_ID,
+      SOURCE_ID
     ),
-    false,
+    false
   )
 })
 
@@ -359,29 +356,21 @@ test('findSourceByUrl answers the row id or null', async () => {
     await findSourceByUrl(
       selectLimitDb([{ id: SOURCE_ID }]),
       ORG_ID,
-      'https://github.com/acme/app.git',
+      'https://github.com/acme/app.git'
     ),
-    SOURCE_ID,
+    SOURCE_ID
   )
   assertEquals(
     await findSourceByUrl(selectLimitDb([]), ORG_ID, 'https://github.com/acme/app.git'),
-    null,
+    null
   )
 })
 
 test('assertConnectionInOrganization checks ownership then provider', async () => {
   const c = mockContext()
-  assertEquals(
-    await assertConnectionInOrganization(c, selectLimitDb([]), ORG_ID, null),
-    null,
-  )
+  assertEquals(await assertConnectionInOrganization(c, selectLimitDb([]), ORG_ID, null), null)
 
-  const missing = await assertConnectionInOrganization(
-    c,
-    selectLimitDb([]),
-    ORG_ID,
-    CONNECTION_ID,
-  )
+  const missing = await assertConnectionInOrganization(c, selectLimitDb([]), ORG_ID, CONNECTION_ID)
   if (!(missing instanceof Response)) throw new TypeError('expected missing install')
   await expectJson(missing, 404, { error: 'Not found' })
 
@@ -389,7 +378,7 @@ test('assertConnectionInOrganization checks ownership then provider', async () =
     c,
     selectLimitDb([{ organizationId: OTHER_ORG, provider: 'github' }]),
     ORG_ID,
-    CONNECTION_ID,
+    CONNECTION_ID
   )
   if (!(foreign instanceof Response)) throw new TypeError('expected foreign install')
   await expectJson(foreign, 404, { error: 'Not found' })
@@ -399,7 +388,7 @@ test('assertConnectionInOrganization checks ownership then provider', async () =
     selectLimitDb([{ organizationId: ORG_ID, provider: 'gitlab' }]),
     ORG_ID,
     CONNECTION_ID,
-    'github',
+    'github'
   )
   if (!(mismatch instanceof Response)) throw new TypeError('expected mismatch')
   await expectJson(mismatch, 400, { error: 'source_installation_provider_mismatch' })
@@ -410,38 +399,37 @@ test('assertConnectionInOrganization checks ownership then provider', async () =
       selectLimitDb([{ organizationId: ORG_ID, provider: 'github' }]),
       ORG_ID,
       CONNECTION_ID,
-      'github',
+      'github'
     ),
-    null,
+    null
   )
 })
 
 test('assertSecretInOrganization rejects the wrong lane or kind', async () => {
   const c = mockContext()
-  assertEquals(
-    await assertSecretInOrganization(c, selectLimitDb([]), ORG_ID, null, 'git'),
-    null,
-  )
+  assertEquals(await assertSecretInOrganization(c, selectLimitDb([]), ORG_ID, null, 'git'), null)
 
   const missing = await assertSecretInOrganization(
     c,
     selectLimitDb([]),
     ORG_ID,
     CREDENTIAL_ID,
-    'git',
+    'git'
   )
   if (!(missing instanceof Response)) throw new TypeError('expected missing credential')
   await expectJson(missing, 404, { error: 'Not found' })
 
   const githubDenied = await assertSecretInOrganization(
     c,
-    selectLimitDb([{
-      organizationId: ORG_ID,
-      provider: GIT_DEPLOY_KEY_CREDENTIAL_PROVIDER,
-    }]),
+    selectLimitDb([
+      {
+        organizationId: ORG_ID,
+        provider: GIT_DEPLOY_KEY_CREDENTIAL_PROVIDER,
+      },
+    ]),
     ORG_ID,
     CREDENTIAL_ID,
-    'github',
+    'github'
   )
   if (!(githubDenied instanceof Response)) throw new TypeError('expected github deny')
   await expectJson(githubDenied, 400, { error: 'source_credential_not_supported' })
@@ -451,7 +439,7 @@ test('assertSecretInOrganization rejects the wrong lane or kind', async () => {
     selectLimitDb([{ organizationId: ORG_ID, provider: 's3' }]),
     ORG_ID,
     CREDENTIAL_ID,
-    'gitlab',
+    'gitlab'
   )
   if (!(storageKey instanceof Response)) throw new TypeError('expected provider mismatch')
   await expectJson(storageKey, 400, { error: 'source_credential_provider_mismatch' })
@@ -459,15 +447,17 @@ test('assertSecretInOrganization rejects the wrong lane or kind', async () => {
   assertEquals(
     await assertSecretInOrganization(
       c,
-      selectLimitDb([{
-        organizationId: ORG_ID,
-        provider: GIT_DEPLOY_KEY_CREDENTIAL_PROVIDER,
-      }]),
+      selectLimitDb([
+        {
+          organizationId: ORG_ID,
+          provider: GIT_DEPLOY_KEY_CREDENTIAL_PROVIDER,
+        },
+      ]),
       ORG_ID,
       CREDENTIAL_ID,
-      'git',
+      'git'
     ),
-    null,
+    null
   )
 })
 
@@ -480,23 +470,16 @@ test('assertConnectionUnclaimed is first-come across organizations', async () =>
     organizationId: ORG_ID,
   }
 
+  assertEquals(await assertConnectionUnclaimed(c, selectLimitDb([]), params), null)
   assertEquals(
-    await assertConnectionUnclaimed(c, selectLimitDb([]), params),
-    null,
-  )
-  assertEquals(
-    await assertConnectionUnclaimed(
-      c,
-      selectLimitDb([{ organizationId: ORG_ID }]),
-      params,
-    ),
-    null,
+    await assertConnectionUnclaimed(c, selectLimitDb([{ organizationId: ORG_ID }]), params),
+    null
   )
 
   const claimed = await assertConnectionUnclaimed(
     c,
     selectLimitDb([{ organizationId: OTHER_ORG }]),
-    params,
+    params
   )
   if (!(claimed instanceof Response)) throw new TypeError('expected 409')
   await expectJson(claimed, 409, { error: 'installation_claimed_by_another_organization' })
@@ -508,21 +491,21 @@ test('findAttachedSource returns the existing binding id', async () => {
       connectionId: CONNECTION_ID,
       repositoryExternalId: '99',
     }),
-    null,
+    null
   )
   assertEquals(
     await findAttachedSource(selectLimitDb([{ id: SOURCE_ID }]), ORG_ID, {
       connectionId: CONNECTION_ID,
       repositoryExternalId: '99',
     }),
-    SOURCE_ID,
+    SOURCE_ID
   )
 })
 
 test('resolveConnectApp requires a visible app id', async () => {
   const secrets = await deriveEncryptionSecretsConfig(
     parseTestSecretsConfig('deno'),
-    'data-encryption',
+    'data-encryption'
   )
 
   const missing = await resolveConnectApp(
@@ -530,7 +513,7 @@ test('resolveConnectApp requires a visible app id', async () => {
     selectLimitDb([]),
     secrets,
     ORG_ID,
-    'github',
+    'github'
   )
   if (!(missing instanceof Response)) throw new TypeError('expected git_app_required')
   await expectJson(missing, 400, { error: 'git_app_required' })
@@ -540,7 +523,7 @@ test('resolveConnectApp requires a visible app id', async () => {
     selectLimitDb([]),
     secrets,
     ORG_ID,
-    'github',
+    'github'
   )
   if (!(invalid instanceof Response)) throw new TypeError('expected invalid app')
   await expectJson(invalid, 400, { error: 'git_app_required' })
@@ -550,7 +533,7 @@ test('resolveConnectApp requires a visible app id', async () => {
     selectLimitDb([]),
     secrets,
     ORG_ID,
-    'github',
+    'github'
   )
   if (!(hidden instanceof Response)) throw new TypeError('expected hidden 404')
   await expectJson(hidden, 404, { error: 'Not found' })
@@ -560,7 +543,7 @@ test('resolveConnectApp requires a visible app id', async () => {
     selectLimitSequence([[{ id: APP_ID }], []]),
     secrets,
     ORG_ID,
-    'gitlab',
+    'gitlab'
   )
   if (!(unsealedMissing instanceof Response)) throw new TypeError('expected load 404')
   await expectJson(unsealedMissing, 404, { error: 'Not found' })
@@ -569,33 +552,30 @@ test('resolveConnectApp requires a visible app id', async () => {
 test('resolveGitlabRedirectUri prefers the configured URI then a public origin', async () => {
   assertEquals(
     await resolveGitlabRedirectUri(selectLimitDb([]), 'https://panel.example.com/cb'),
-    'https://panel.example.com/cb',
+    'https://panel.example.com/cb'
   )
   assertEquals(await resolveGitlabRedirectUri(selectLimitDb([]), null), null)
-  assertEquals(
-    await resolveGitlabRedirectUri(selectLimitDb([{ value: [] }]), null),
-    null,
-  )
+  assertEquals(await resolveGitlabRedirectUri(selectLimitDb([{ value: [] }]), null), null)
   assertEquals(
     await resolveGitlabRedirectUri(
       selectLimitDb([{ value: ['https://panel.example.com/'] }]),
-      null,
+      null
     ),
-    `https://panel.example.com:8443${CLIENT_API_PREFIX}/repositories/gitlab/oauth/callback`,
+    `https://panel.example.com:8443${CLIENT_API_PREFIX}/repositories/gitlab/oauth/callback`
   )
   assertEquals(
     await resolveGitlabRedirectUri(
       selectLimitDb([{ value: 'https://panel.example.com, https://other.example.com' }]),
-      null,
+      null
     ),
-    `https://panel.example.com:8443${CLIENT_API_PREFIX}/repositories/gitlab/oauth/callback`,
+    `https://panel.example.com:8443${CLIENT_API_PREFIX}/repositories/gitlab/oauth/callback`
   )
 })
 
 test('finishGitlabOauthCallback rejects the wrong provider and maps invalid credentials', async () => {
   const secrets = await deriveEncryptionSecretsConfig(
     parseTestSecretsConfig('deno'),
-    'data-encryption',
+    'data-encryption'
   )
   const forgeRow = {
     id: APP_ID,
@@ -627,33 +607,33 @@ test('finishGitlabOauthCallback rejects the wrong provider and maps invalid cred
     mockContext(),
     selectLimitDb([{ ...forgeRow, provider: 'github' }]),
     secrets,
-    params,
+    params
   )
   assertEquals(
     wrongProvider.headers.get('Location'),
-    providerInstallUiReturnPath(ORG_ID, APP_ID, { error: 'not_configured' }),
+    providerInstallUiReturnPath(ORG_ID, APP_ID, { error: 'not_configured' })
   )
 
   const missingRedirect = await finishGitlabOauthCallback(
     mockContext(),
     selectLimitSequence([[{ ...forgeRow, redirectUri: null }], []]),
     secrets,
-    params,
+    params
   )
   assertEquals(
     missingRedirect.headers.get('Location'),
-    providerInstallUiReturnPath(ORG_ID, APP_ID, { error: 'not_configured' }),
+    providerInstallUiReturnPath(ORG_ID, APP_ID, { error: 'not_configured' })
   )
 
   const invalidCredentials = await finishGitlabOauthCallback(
     mockContext(),
     selectLimitDb([forgeRow]),
     secrets,
-    params,
+    params
   )
   assertEquals(
     invalidCredentials.headers.get('Location'),
-    providerInstallUiReturnPath(ORG_ID, APP_ID, { error: 'provider_failed' }),
+    providerInstallUiReturnPath(ORG_ID, APP_ID, { error: 'provider_failed' })
   )
 
   const originalFetch = globalThis.fetch
@@ -661,48 +641,54 @@ test('finishGitlabOauthCallback rejects the wrong provider and maps invalid cred
   try {
     const providerFailure = await finishGitlabOauthCallback(
       mockContext(),
-      selectLimitDb([{
-        ...forgeRow,
-        envelopes: {
-          clientSecretEnvelope: await encryptSecret(secrets, 'client-secret'),
+      selectLimitDb([
+        {
+          ...forgeRow,
+          envelopes: {
+            clientSecretEnvelope: await encryptSecret(secrets, 'client-secret'),
+          },
         },
-      }]),
+      ]),
       secrets,
-      params,
+      params
     )
     assertEquals(
       providerFailure.headers.get('Location'),
-      providerInstallUiReturnPath(ORG_ID, APP_ID, { error: 'provider_failed' }),
+      providerInstallUiReturnPath(ORG_ID, APP_ID, { error: 'provider_failed' })
     )
 
     globalThis.fetch = ((input: RequestInfo | URL) => {
       const url = String(input instanceof Request ? input.url : input)
       if (url.endsWith('/oauth/token')) {
-        return Promise.resolve(Response.json({
-          access_token: 'gitlab-access',
-          refresh_token: 'gitlab-refresh',
-          expires_in: 3600,
-        }))
+        return Promise.resolve(
+          Response.json({
+            access_token: 'gitlab-access',
+            refresh_token: 'gitlab-refresh',
+            expires_in: 3600,
+          })
+        )
       }
       return Promise.resolve(Response.json({ id: 42, username: 'claimed-user' }))
     }) as typeof fetch
     const claimedConnection = await finishGitlabOauthCallback(
       mockContext(),
       selectLimitSequence([
-        [{
-          ...forgeRow,
-          envelopes: {
-            clientSecretEnvelope: await encryptSecret(secrets, 'client-secret'),
+        [
+          {
+            ...forgeRow,
+            envelopes: {
+              clientSecretEnvelope: await encryptSecret(secrets, 'client-secret'),
+            },
           },
-        }],
+        ],
         [{ organizationId: OTHER_ORG }],
       ]),
       secrets,
-      params,
+      params
     )
     assertEquals(
       claimedConnection.headers.get('Location'),
-      providerInstallUiReturnPath(ORG_ID, APP_ID, { error: 'claimed' }),
+      providerInstallUiReturnPath(ORG_ID, APP_ID, { error: 'claimed' })
     )
   } finally {
     globalThis.fetch = originalFetch
@@ -710,10 +696,7 @@ test('finishGitlabOauthCallback rejects the wrong provider and maps invalid cred
 })
 
 test('resolveSourceWebhookInfo is undefined for generic git and otherwise folds reachability', async () => {
-  assertEquals(
-    await resolveSourceWebhookInfo(selectLimitDb([]), 'git', CONNECTION_ID),
-    undefined,
-  )
+  assertEquals(await resolveSourceWebhookInfo(selectLimitDb([]), 'git', CONNECTION_ID), undefined)
 
   const noUrl = await resolveSourceWebhookInfo(selectLimitDb([{ value: [] }]), 'github', null)
   assertEquals(noUrl?.webhookUrl, null)
@@ -722,7 +705,7 @@ test('resolveSourceWebhookInfo is undefined for generic git and otherwise folds 
   const publicGithub = await resolveSourceWebhookInfo(
     selectLimitDb([{ value: ['https://panel.example.com'] }]),
     'github',
-    null,
+    null
   )
   assertEquals(publicGithub?.webhookReachable, true)
   assertEquals(publicGithub?.webhookUrl?.endsWith('/webhook/github'), true)
@@ -730,14 +713,16 @@ test('resolveSourceWebhookInfo is undefined for generic git and otherwise folds 
   const withApp = await resolveSourceWebhookInfo(
     selectLimitSequence([
       [{ value: ['https://panel.example.com'] }],
-      [{
-        webhookRef: 'app-ref',
-        baseUrl: 'https://github.example.com',
-        webhookOrigin: 'https://hooks.example.com',
-      }],
+      [
+        {
+          webhookRef: 'app-ref',
+          baseUrl: 'https://github.example.com',
+          webhookOrigin: 'https://hooks.example.com',
+        },
+      ],
     ]),
     'gitlab',
-    CONNECTION_ID,
+    CONNECTION_ID
   )
   assertEquals(withApp?.webhookUrl?.includes('/webhook/gitlab'), true)
 })
@@ -761,21 +746,23 @@ test('fetchInstallationAccount treats lookup failures as authorization failures'
     if (url.includes('/network')) {
       return Promise.reject(new TypeError('offline'))
     }
-    return Promise.resolve(Response.json({
-      account: { login: 'acme', type: 'Organization' },
-    }))
+    return Promise.resolve(
+      Response.json({
+        account: { login: 'acme', type: 'Organization' },
+      })
+    )
   }) as typeof fetch
 
   try {
-    assertEquals(
-      await fetchInstallationAccount('jwt', '42'),
-      { accountLogin: 'acme', accountType: 'Organization' },
-    )
+    assertEquals(await fetchInstallationAccount('jwt', '42'), {
+      accountLogin: 'acme',
+      accountType: 'Organization',
+    })
     assertEquals(calls[0]?.includes('/app/installations/42'), true)
 
     assertEquals(
       await fetchInstallationAccount('jwt', 'bad-json', 'https://ghe.example.com/api/v3'),
-      { accountLogin: null, accountType: null },
+      { accountLogin: null, accountType: null }
     )
 
     try {
@@ -838,7 +825,7 @@ const SOURCE_PATHS = [
 
 async function buildSourceApp(
   db?: Db,
-  opts?: { registry?: DaemonCellRegistry; connectLimit?: number },
+  opts?: { registry?: DaemonCellRegistry; connectLimit?: number }
 ): Promise<{
   app: Hono<AppEnv>
   cookie: string
@@ -847,7 +834,7 @@ async function buildSourceApp(
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
     secretsConfig,
-    'data-encryption',
+    'data-encryption'
   )
   const app = new Hono<AppEnv>()
   // Each app gets its own limiter so the provider callbacks' per-user
@@ -902,31 +889,35 @@ function flattenSql(query: unknown): string {
   return parts.join('')
 }
 
-function sourceHttpDb(options: {
-  selectRows?: unknown[]
-  limitQueue?: unknown[][]
-  orderByRows?: unknown[]
-  executeRows?: unknown[]
-  /** Every `insert().values(...)` call, in order — for asserting what was written. */
-  insertValues?: unknown[]
-  executeQueue?: unknown[][]
-  execute?: (query: unknown) => Promise<unknown[]>
-  insertId?: string | null
-  insertError?: unknown
-  sessionRole?: string
-  publicUrls?: string[]
-} = {}): Db {
+function sourceHttpDb(
+  options: {
+    selectRows?: unknown[]
+    limitQueue?: unknown[][]
+    orderByRows?: unknown[]
+    executeRows?: unknown[]
+    /** Every `insert().values(...)` call, in order — for asserting what was written. */
+    insertValues?: unknown[]
+    executeQueue?: unknown[][]
+    execute?: (query: unknown) => Promise<unknown[]>
+    insertId?: string | null
+    insertError?: unknown
+    sessionRole?: string
+    publicUrls?: string[]
+  } = {}
+): Db {
   const sessionRole = options.sessionRole ?? 'superadmin'
   const session = sessionRow(sessionRole)
   const defaultSelect = options.selectRows ?? [{ role: sessionRole }]
-  const defaultExecute = options.executeRows ?? [{
-    allowed: true,
-    item_id: SOURCE_ID,
-    referenced: false,
-    organization_id: ORG_ID,
-  }]
+  const defaultExecute = options.executeRows ?? [
+    {
+      allowed: true,
+      item_id: SOURCE_ID,
+      referenced: false,
+      organization_id: ORG_ID,
+    },
+  ]
   const hostnameRows = hostnameRowsFromSeed(
-    options.publicUrls === undefined ? [] : [{ value: options.publicUrls }],
+    options.publicUrls === undefined ? [] : [{ value: options.publicUrls }]
   )
   const limitRows = () => Promise.resolve(takeNext(options.limitQueue, defaultSelect))
   const whereResult = (table?: unknown) => {
@@ -937,7 +928,7 @@ function sourceHttpDb(options: {
       return thenableRows(
         options.publicUrls === undefined
           ? []
-          : [{ key: 'TURBOPANEL_PUBLIC_URLS', value: options.publicUrls }],
+          : [{ key: 'TURBOPANEL_PUBLIC_URLS', value: options.publicUrls }]
       )
     }
     const rows = limitRows()
@@ -973,10 +964,14 @@ function sourceHttpDb(options: {
         if (options.insertError) throw options.insertError
         return {
           returning: () =>
-            Promise.resolve(options.insertId === null ? [] : [{ id: options.insertId ?? SOURCE_ID }]),
+            Promise.resolve(
+              options.insertId === null ? [] : [{ id: options.insertId ?? SOURCE_ID }]
+            ),
           onConflictDoUpdate: () => ({
             returning: () =>
-              Promise.resolve(options.insertId === null ? [] : [{ id: options.insertId ?? CONNECTION_ID }]),
+              Promise.resolve(
+                options.insertId === null ? [] : [{ id: options.insertId ?? CONNECTION_ID }]
+              ),
           }),
         }
       },
@@ -1004,7 +999,7 @@ test('source routes return 401 without a session cookie', async () => {
       body: method === 'GET' || method === 'DELETE' ? undefined : JSON.stringify({}),
     })
     assertEquals(res.status, 401, `${method} ${path}`)
-    const body = await res.json() as { error?: unknown }
+    const body = (await res.json()) as { error?: unknown }
     assertEquals(body.error, 'Unauthorized', `${method} ${path}`)
   }
 })
@@ -1025,12 +1020,12 @@ test('authenticated source routes reject bad ids, bodies, and missing signing ma
   await expectJson(
     await app.request(`/repositories/${CONNECTION_ID.slice(0, 8)}`, { headers }),
     404,
-    { error: 'Not found' },
+    { error: 'Not found' }
   )
   await expectJson(
     await app.request(`/repositories/${CONNECTION_ID.slice(0, 8)}/inspect`, { headers }),
     404,
-    { error: 'Not found' },
+    { error: 'Not found' }
   )
   await expectJson(
     await app.request(`/repositories/${SOURCE_ID}`, {
@@ -1039,7 +1034,7 @@ test('authenticated source routes reject bad ids, bodies, and missing signing ma
       body: JSON.stringify({ autoDeploy: 'immediate' }),
     }),
     404,
-    { error: 'Not found' },
+    { error: 'Not found' }
   )
   await expectJson(
     await app.request(`/repositories/not-a-uuid`, {
@@ -1047,23 +1042,19 @@ test('authenticated source routes reject bad ids, bodies, and missing signing ma
       headers,
     }),
     404,
-    { error: 'Not found' },
+    { error: 'Not found' }
   )
   await expectJson(
     await app.request('/repositories/connections/not-a-uuid/repositories', { headers }),
     400,
-    { error: 'Invalid request' },
+    { error: 'Invalid request' }
   )
-  await expectJson(
-    await app.request('/repositories/github/install', { headers }),
-    400,
-    { error: 'git_app_required' },
-  )
-  await expectJson(
-    await app.request('/repositories/gitlab/oauth', { headers }),
-    400,
-    { error: 'git_app_required' },
-  )
+  await expectJson(await app.request('/repositories/github/install', { headers }), 400, {
+    error: 'git_app_required',
+  })
+  await expectJson(await app.request('/repositories/gitlab/oauth', { headers }), 400, {
+    error: 'git_app_required',
+  })
   await expectJson(
     await app.request('/repositories/attach', {
       method: 'POST',
@@ -1072,9 +1063,8 @@ test('authenticated source routes reject bad ids, bodies, and missing signing ma
     }),
     400,
     {
-      error:
-        'expected { connectionId, repositoryExternalId, repositoryUrl, defaultBranch? }',
-    },
+      error: 'expected { connectionId, repositoryExternalId, repositoryUrl, defaultBranch? }',
+    }
   )
   await expectJson(
     await app.request('/repositories', {
@@ -1083,7 +1073,7 @@ test('authenticated source routes reject bad ids, bodies, and missing signing ma
       body: JSON.stringify({ repositoryUrl: 'https://github.com/acme/app.git' }),
     }),
     400,
-    { error: 'source_installation_required' },
+    { error: 'source_installation_required' }
   )
   await expectJson(
     await app.request('/repositories/gitlab/deploy-keys', {
@@ -1092,11 +1082,11 @@ test('authenticated source routes reject bad ids, bodies, and missing signing ma
       body: JSON.stringify({ name: '' }),
     }),
     400,
-    { error: 'Invalid request' },
+    { error: 'Invalid request' }
   )
 })
 
-test('github and gitlab callbacks redirect into the console on a bad hop', async () => {
+test('github and gitlab callbacks redirect into the app on a bad hop', async () => {
   const { app, cookie } = await buildSourceApp(sourceHttpDb())
   const headers = { Cookie: cookie }
 
@@ -1104,14 +1094,14 @@ test('github and gitlab callbacks redirect into the console on a bad hop', async
   assertEquals(github.status, 302)
   assertEquals(
     github.headers.get('Location'),
-    providerInstallUiReturnPath(null, null, { error: 'invalid_request' }),
+    providerInstallUiReturnPath(null, null, { error: 'invalid_request' })
   )
 
   const gitlab = await app.request('/repositories/gitlab/oauth/callback', { headers })
   assertEquals(gitlab.status, 302)
   assertEquals(
     gitlab.headers.get('Location'),
-    providerInstallUiReturnPath(null, null, { error: 'invalid_request' }),
+    providerInstallUiReturnPath(null, null, { error: 'invalid_request' })
   )
 })
 
@@ -1123,7 +1113,7 @@ test('list and detail short-circuit on empty visibility and missing rows', async
   await expectJson(
     await listed.app.request('/repositories', { headers: authHeaders(listed.cookie) }),
     200,
-    { repositories: [] },
+    { repositories: [] }
   )
 
   const missing = await buildSourceApp(sourceHttpDb({ selectRows: [] }))
@@ -1132,53 +1122,57 @@ test('list and detail short-circuit on empty visibility and missing rows', async
       headers: authHeaders(missing.cookie),
     }),
     404,
-    { error: 'Not found' },
+    { error: 'Not found' }
   )
   await expectJson(
     await missing.app.request('/repositories/connections', {
       headers: authHeaders(missing.cookie),
     }),
     200,
-    { connections: [] },
+    { connections: [] }
   )
 })
 
 test('inspect requires a ref when the source has no default branch', async () => {
   const db = sourceHttpDb({
-    selectRows: [{
-      id: SOURCE_ID,
-      organizationId: ORG_ID,
-      connectionId: CONNECTION_ID,
-      secretId: null,
-      provider: 'git',
-      repositoryUrl: 'https://example.com/acme/app.git',
-      repositoryExternalId: '99',
-      defaultBranch: null,
-      subdirectory: null,
-      autoDeploy: 'disabled',
-      metadata: null,
-      options: null,
-      createdAt: '2026-01-01T00:00:00.000Z',
-      updatedAt: '2026-01-02T00:00:00.000Z',
-    }],
+    selectRows: [
+      {
+        id: SOURCE_ID,
+        organizationId: ORG_ID,
+        connectionId: CONNECTION_ID,
+        secretId: null,
+        provider: 'git',
+        repositoryUrl: 'https://example.com/acme/app.git',
+        repositoryExternalId: '99',
+        defaultBranch: null,
+        subdirectory: null,
+        autoDeploy: 'disabled',
+        metadata: null,
+        options: null,
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-02T00:00:00.000Z',
+      },
+    ],
   })
   const { app, cookie } = await buildSourceApp(db)
   const res = await app.request(`/repositories/${SOURCE_ID}/inspect`, {
     headers: authHeaders(cookie),
   })
   assertEquals(res.status, 400)
-  const body = await res.json() as { error?: unknown }
+  const body = (await res.json()) as { error?: unknown }
   assertEquals(body.error, 'ref_required')
 })
 
 test('delete refuses a compose-referenced source and otherwise returns ok', async () => {
   const referenced = sourceHttpDb({
     selectRows: [{ id: SOURCE_ID }],
-    executeRows: [{
-      allowed: true,
-      referenced: true,
-      organization_id: ORG_ID,
-    }],
+    executeRows: [
+      {
+        allowed: true,
+        referenced: true,
+        organization_id: ORG_ID,
+      },
+    ],
   })
   const { app, cookie } = await buildSourceApp(referenced)
   await expectJson(
@@ -1187,16 +1181,18 @@ test('delete refuses a compose-referenced source and otherwise returns ok', asyn
       headers: authHeaders(cookie),
     }),
     409,
-    { error: SOURCE_REFERENCED_BY_COMPOSE_ERROR },
+    { error: SOURCE_REFERENCED_BY_COMPOSE_ERROR }
   )
 
   const free = sourceHttpDb({
     selectRows: [{ id: SOURCE_ID }],
-    executeRows: [{
-      allowed: true,
-      referenced: false,
-      organization_id: ORG_ID,
-    }],
+    executeRows: [
+      {
+        allowed: true,
+        referenced: false,
+        organization_id: ORG_ID,
+      },
+    ],
   })
   const freed = await buildSourceApp(free)
   await expectJson(
@@ -1205,7 +1201,7 @@ test('delete refuses a compose-referenced source and otherwise returns ok', asyn
       headers: authHeaders(freed.cookie),
     }),
     200,
-    { ok: true },
+    { ok: true }
   )
 })
 
@@ -1231,7 +1227,7 @@ test('attach reuses an existing binding and maps a unique-violation race', async
       }),
     }),
     200,
-    { ok: true, id: SOURCE_ID, reused: true },
+    { ok: true, id: SOURCE_ID, reused: true }
   )
 
   // Race pops: role, ownership, provider, external-id miss, URL miss, then the
@@ -1259,7 +1255,7 @@ test('attach reuses an existing binding and maps a unique-violation race', async
       }),
     }),
     200,
-    { ok: true, id: SOURCE_ID, reused: true },
+    { ok: true, id: SOURCE_ID, reused: true }
   )
 })
 
@@ -1279,14 +1275,14 @@ test('signing-unavailable github install answers 503 when secretsConfig is missi
       headers: authHeaders(cookie),
     }),
     503,
-    { error: 'Signing unavailable — no root secret configured' },
+    { error: 'Signing unavailable — no root secret configured' }
   )
   await expectJson(
     await app.request(`/repositories/gitlab/oauth?forgeId=${APP_ID}`, {
       headers: authHeaders(cookie),
     }),
     503,
-    { error: 'Signing unavailable — no root secret configured' },
+    { error: 'Signing unavailable — no root secret configured' }
   )
 })
 
@@ -1325,7 +1321,7 @@ test('create/patch bodies reject invalid combinations', async () => {
       }),
     }),
     400,
-    { error: 'Invalid request' },
+    { error: 'Invalid request' }
   )
   await expectJson(
     await app.request('/repositories', {
@@ -1339,17 +1335,15 @@ test('create/patch bodies reject invalid combinations', async () => {
       }),
     }),
     400,
-    { error: 'source_scope_not_supported' },
+    { error: 'source_scope_not_supported' }
   )
-  await expectJson(
-    await app.request(`/repositories/${SOURCE_ID}/inspect`, { headers }),
-    404,
-    { error: 'Not found' },
-  )
+  await expectJson(await app.request(`/repositories/${SOURCE_ID}/inspect`, { headers }), 404, {
+    error: 'Not found',
+  })
   await expectJson(
     await app.request(`/repositories/github/install?forgeId=${APP_ID}`, { headers }),
     404,
-    { error: 'Not found' },
+    { error: 'Not found' }
   )
 })
 
@@ -1363,7 +1357,7 @@ test('detail serializes a visible source and patch writes autoDeploy', async () 
 
   const detail = await app.request(`/repositories/${SOURCE_ID}`, { headers })
   assertEquals(detail.status, 200)
-  const body = await detail.json() as { repository?: { id?: unknown; provider?: unknown } }
+  const body = (await detail.json()) as { repository?: { id?: unknown; provider?: unknown } }
   assertEquals(body.repository?.id, SOURCE_ID)
   assertEquals(body.repository?.provider, 'github')
 
@@ -1374,7 +1368,7 @@ test('detail serializes a visible source and patch writes autoDeploy', async () 
       body: JSON.stringify({ autoDeploy: 'immediate' }),
     }),
     200,
-    { ok: true },
+    { ok: true }
   )
 })
 
@@ -1385,12 +1379,12 @@ test('github and gitlab callbacks reject bad or foreign state', async () => {
 
   const invalidGithub = await app.request(
     '/repositories/github/callback?state=not-signed&installation_id=1&code=c',
-    { headers },
+    { headers }
   )
   assertEquals(invalidGithub.status, 302)
   assertEquals(
     invalidGithub.headers.get('Location'),
-    providerInstallUiReturnPath(null, null, { error: 'state_invalid' }),
+    providerInstallUiReturnPath(null, null, { error: 'state_invalid' })
   )
 
   const foreignState = await signGithubInstallState(secretsConfig, {
@@ -1399,22 +1393,22 @@ test('github and gitlab callbacks reject bad or foreign state', async () => {
   })
   const foreign = await app.request(
     `/repositories/github/callback?state=${encodeURIComponent(foreignState)}&installation_id=1&code=c`,
-    { headers },
+    { headers }
   )
   assertEquals(foreign.status, 302)
   assertEquals(
     foreign.headers.get('Location'),
-    providerInstallUiReturnPath(OTHER_ORG, APP_ID, { error: 'not_configured' }),
+    providerInstallUiReturnPath(OTHER_ORG, APP_ID, { error: 'not_configured' })
   )
 
   const invalidGitlab = await app.request(
     '/repositories/gitlab/oauth/callback?state=not-signed&code=abc',
-    { headers },
+    { headers }
   )
   assertEquals(invalidGitlab.status, 302)
   assertEquals(
     invalidGitlab.headers.get('Location'),
-    providerInstallUiReturnPath(null, null, { error: 'state_invalid' }),
+    providerInstallUiReturnPath(null, null, { error: 'state_invalid' })
   )
 
   const gitlabForeign = await signGitlabConnectState(secretsConfig, {
@@ -1423,12 +1417,12 @@ test('github and gitlab callbacks reject bad or foreign state', async () => {
   })
   const gitlab = await app.request(
     `/repositories/gitlab/oauth/callback?state=${encodeURIComponent(gitlabForeign)}&code=abc`,
-    { headers },
+    { headers }
   )
   assertEquals(gitlab.status, 302)
   assertEquals(
     gitlab.headers.get('Location'),
-    providerInstallUiReturnPath(OTHER_ORG, APP_ID, { error: 'not_configured' }),
+    providerInstallUiReturnPath(OTHER_ORG, APP_ID, { error: 'not_configured' })
   )
 })
 
@@ -1445,12 +1439,12 @@ test('github callback refuses an install that carries no user-authorization code
   // the App is even loaded.
   const res = await app.request(
     `/repositories/github/callback?state=${encodeURIComponent(state)}&installation_id=84213`,
-    { headers: { Cookie: cookie } },
+    { headers: { Cookie: cookie } }
   )
   assertEquals(res.status, 302)
   assertEquals(
     res.headers.get('Location'),
-    providerInstallUiReturnPath(null, null, { error: 'install_authorization_required' }),
+    providerInstallUiReturnPath(null, null, { error: 'install_authorization_required' })
   )
 })
 
@@ -1459,37 +1453,58 @@ test('provider callbacks are rate-limited per user', async () => {
   const headers = { Cookie: cookie }
   const first = await app.request(
     '/repositories/github/callback?state=not-signed&installation_id=1&code=c',
-    { headers },
+    { headers }
   )
-  assertEquals(first.headers.get('Location'), providerInstallUiReturnPath(null, null, { error: 'state_invalid' }))
+  assertEquals(
+    first.headers.get('Location'),
+    providerInstallUiReturnPath(null, null, { error: 'state_invalid' })
+  )
   const second = await app.request(
     '/repositories/gitlab/oauth/callback?state=not-signed&code=abc',
-    { headers },
+    { headers }
   )
-  assertEquals(second.headers.get('Location'), providerInstallUiReturnPath(null, null, { error: 'state_invalid' }))
+  assertEquals(
+    second.headers.get('Location'),
+    providerInstallUiReturnPath(null, null, { error: 'state_invalid' })
+  )
   // Third attempt in the window — whichever provider — is refused before any
   // state or installation id is looked at.
   const third = await app.request(
     '/repositories/github/callback?state=not-signed&installation_id=2&code=c',
-    { headers },
+    { headers }
   )
   assertEquals(third.status, 302)
-  assertEquals(third.headers.get('Location'), providerInstallUiReturnPath(null, null, { error: 'rate_limited' }))
+  assertEquals(
+    third.headers.get('Location'),
+    providerInstallUiReturnPath(null, null, { error: 'rate_limited' })
+  )
 })
 
 test('isInstallationClaimViolation recognizes the cross-organization index by name, at either nesting', () => {
-  const direct = Object.assign(new Error('duplicate key value violates unique constraint "uniq_connection_forge_external_github"'), { code: '23505' })
+  const direct = Object.assign(
+    new Error(
+      'duplicate key value violates unique constraint "uniq_connection_forge_external_github"'
+    ),
+    { code: '23505' }
+  )
   assertEquals(isInstallationClaimViolation(direct), true)
   // drizzle-orm ≥ 0.45: a DrizzleQueryError with no `code` of its own, the
   // driver error (code + constraint name) on `.cause`.
   const nested = new Error('Failed query: insert into "connection" …', {
     cause: Object.assign(
-      new Error('duplicate key value violates unique constraint "uniq_connection_forge_external_github"'),
-      { code: '23505' },
+      new Error(
+        'duplicate key value violates unique constraint "uniq_connection_forge_external_github"'
+      ),
+      { code: '23505' }
     ),
   })
   assertEquals(isInstallationClaimViolation(nested), true)
-  const other = Object.assign(new Error('duplicate key value violates unique constraint "uniq_connection_organization_forge_external"'), { code: '23505' })
+  const other = Object.assign(
+    new Error(
+      'duplicate key value violates unique constraint "uniq_connection_organization_forge_external"'
+    ),
+    { code: '23505' }
+  )
   assertEquals(isInstallationClaimViolation(other), false)
   assertEquals(isInstallationClaimViolation(new Error('network')), false)
 })
@@ -1499,9 +1514,12 @@ test('nested source routes answer 503 when encryption secrets are missing', asyn
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const app = new Hono<AppEnv>()
   app.use('*', (c, next) => {
-    c.set('db', sourceHttpDb({
-      selectRows: [{ organizationId: ORG_ID, provider: 'github' }],
-    }))
+    c.set(
+      'db',
+      sourceHttpDb({
+        selectRows: [{ organizationId: ORG_ID, provider: 'github' }],
+      })
+    )
     c.set('runtime', 'deno')
     c.set('secretsConfig', secretsConfig)
     return next()
@@ -1513,7 +1531,7 @@ test('nested source routes answer 503 when encryption secrets are missing', asyn
   await expectJson(
     await app.request(`/repositories/connections/${CONNECTION_ID}/repositories`, { headers }),
     503,
-    { error: 'Encryption unavailable — no encryption key configured' },
+    { error: 'Encryption unavailable — no encryption key configured' }
   )
   await expectJson(
     await app.request('/repositories/gitlab/deploy-keys', {
@@ -1522,12 +1540,12 @@ test('nested source routes answer 503 when encryption secrets are missing', asyn
       body: JSON.stringify({ name: 'read-only' }),
     }),
     503,
-    { error: 'Encryption unavailable — no encryption key configured' },
+    { error: 'Encryption unavailable — no encryption key configured' }
   )
   await expectJson(
     await app.request(`/repositories/gitlab/oauth?forgeId=${APP_ID}`, { headers }),
     503,
-    { error: 'Encryption unavailable — no encryption key configured' },
+    { error: 'Encryption unavailable — no encryption key configured' }
   )
 
   const state = await signGithubInstallState(secretsConfig, {
@@ -1536,12 +1554,12 @@ test('nested source routes answer 503 when encryption secrets are missing', asyn
   })
   const callback = await app.request(
     `/repositories/github/callback?state=${encodeURIComponent(state)}&installation_id=1&code=c`,
-    { headers },
+    { headers }
   )
   assertEquals(callback.status, 302)
   assertEquals(
     callback.headers.get('Location'),
-    providerInstallUiReturnPath(ORG_ID, APP_ID, { error: 'unavailable' }),
+    providerInstallUiReturnPath(ORG_ID, APP_ID, { error: 'unavailable' })
   )
 })
 
@@ -1549,11 +1567,7 @@ test('create and attach insert a new binding when none exists', async () => {
   const installRow = { organizationId: ORG_ID, provider: 'github' }
   // Create pops: role, connection ownership, then the URL find-or-create miss.
   const created = sourceHttpDb({
-    limitQueue: [
-      [{ role: 'superadmin' }],
-      [installRow],
-      [],
-    ],
+    limitQueue: [[{ role: 'superadmin' }], [installRow], []],
     insertId: SOURCE_ID,
   })
   const first = await buildSourceApp(created)
@@ -1567,19 +1581,13 @@ test('create and attach insert a new binding when none exists', async () => {
       }),
     }),
     201,
-    { ok: true, id: SOURCE_ID, reused: false },
+    { ok: true, id: SOURCE_ID, reused: false }
   )
 
   // Attach pops: role, connection ownership, provider, the external-id miss,
   // then the URL adoption miss.
   const attached = sourceHttpDb({
-    limitQueue: [
-      [{ role: 'superadmin' }],
-      [installRow],
-      [installRow],
-      [],
-      [],
-    ],
+    limitQueue: [[{ role: 'superadmin' }], [installRow], [installRow], [], []],
     insertId: SOURCE_ID,
   })
   const second = await buildSourceApp(attached)
@@ -1594,15 +1602,11 @@ test('create and attach insert a new binding when none exists', async () => {
       }),
     }),
     201,
-    { ok: true, id: SOURCE_ID, reused: false },
+    { ok: true, id: SOURCE_ID, reused: false }
   )
 
   const failedInsert = sourceHttpDb({
-    limitQueue: [
-      [{ role: 'superadmin' }],
-      [installRow],
-      [],
-    ],
+    limitQueue: [[{ role: 'superadmin' }], [installRow], []],
     insertId: null,
   })
   const third = await buildSourceApp(failedInsert)
@@ -1616,7 +1620,7 @@ test('create and attach insert a new binding when none exists', async () => {
       }),
     }),
     500,
-    { error: 'Failed to create repository' },
+    { error: 'Failed to create repository' }
   )
 })
 
@@ -1625,11 +1629,7 @@ test('create reuses the organization row holding the same canonical URL', async 
   // The pasted spelling differs from the stored one; canonicalization is what
   // makes the find-or-create hit.
   const reused = sourceHttpDb({
-    limitQueue: [
-      [{ role: 'superadmin' }],
-      [installRow],
-      [{ id: SOURCE_ID }],
-    ],
+    limitQueue: [[{ role: 'superadmin' }], [installRow], [{ id: SOURCE_ID }]],
   })
   const { app, cookie } = await buildSourceApp(reused)
   await expectJson(
@@ -1642,7 +1642,7 @@ test('create reuses the organization row holding the same canonical URL', async 
       }),
     }),
     200,
-    { ok: true, id: SOURCE_ID, reused: true },
+    { ok: true, id: SOURCE_ID, reused: true }
   )
 })
 
@@ -1684,11 +1684,7 @@ test('create resolves an anonymous clone URL default branch through a connected 
     // server-id read. `loadServerStatusRecords`'s own presence/colocated/
     // status reads land past the queue and share `presenceRow` as their
     // fallback — it carries every column any of those three selects touch.
-    limitQueue: [
-      [{ role: 'superadmin' }],
-      [],
-      [{ id: 'server-1' }],
-    ],
+    limitQueue: [[{ role: 'superadmin' }], [], [{ id: 'server-1' }]],
     selectRows: [presenceRow],
     insertId: SOURCE_ID,
     insertValues,
@@ -1710,7 +1706,7 @@ test('create resolves an anonymous clone URL default branch through a connected 
       }),
     }),
     201,
-    { ok: true, id: SOURCE_ID, reused: false },
+    { ok: true, id: SOURCE_ID, reused: false }
   )
 
   const written = insertValues[0] as {
@@ -1726,10 +1722,7 @@ test('create resolves an anonymous clone URL default branch through a connected 
 test('create resolves a public github.com default branch via anonymous REST', async () => {
   const insertValues: unknown[] = []
   const db = sourceHttpDb({
-    limitQueue: [
-      [{ role: 'superadmin' }],
-      [],
-    ],
+    limitQueue: [[{ role: 'superadmin' }], []],
     insertId: SOURCE_ID,
     insertValues,
   })
@@ -1737,9 +1730,7 @@ test('create resolves a public github.com default branch via anonymous REST', as
   globalThis.fetch = ((input: RequestInfo | URL) => {
     const url = String(input instanceof Request ? input.url : input)
     if (url.includes('api.github.com/repos/acme/app')) {
-      return Promise.resolve(
-        new Response(JSON.stringify({ default_branch: 'trunk' })),
-      )
+      return Promise.resolve(new Response(JSON.stringify({ default_branch: 'trunk' })))
     }
     return Promise.resolve(new Response('', { status: 500 }))
   }) as typeof fetch
@@ -1755,7 +1746,7 @@ test('create resolves a public github.com default branch via anonymous REST', as
         }),
       }),
       201,
-      { ok: true, id: SOURCE_ID, reused: false },
+      { ok: true, id: SOURCE_ID, reused: false }
     )
   } finally {
     globalThis.fetch = originalFetch
@@ -1774,10 +1765,12 @@ test('create still resolves a keyed github.com default branch via anonymous REST
   const db = sourceHttpDb({
     limitQueue: [
       [{ role: 'superadmin' }],
-      [{
-        organizationId: ORG_ID,
-        provider: GIT_DEPLOY_KEY_CREDENTIAL_PROVIDER,
-      }],
+      [
+        {
+          organizationId: ORG_ID,
+          provider: GIT_DEPLOY_KEY_CREDENTIAL_PROVIDER,
+        },
+      ],
       [],
     ],
     insertId: SOURCE_ID,
@@ -1787,9 +1780,7 @@ test('create still resolves a keyed github.com default branch via anonymous REST
   globalThis.fetch = ((input: RequestInfo | URL) => {
     const url = String(input instanceof Request ? input.url : input)
     if (url.includes('api.github.com/repos/acme/app')) {
-      return Promise.resolve(
-        new Response(JSON.stringify({ default_branch: 'trunk' })),
-      )
+      return Promise.resolve(new Response(JSON.stringify({ default_branch: 'trunk' })))
     }
     return Promise.resolve(new Response('', { status: 500 }))
   }) as typeof fetch
@@ -1806,7 +1797,7 @@ test('create still resolves a keyed github.com default branch via anonymous REST
         }),
       }),
       201,
-      { ok: true, id: SOURCE_ID, reused: false },
+      { ok: true, id: SOURCE_ID, reused: false }
     )
   } finally {
     globalThis.fetch = originalFetch
@@ -1825,11 +1816,7 @@ test('create still resolves a keyed github.com default branch via anonymous REST
 test('create never attempts branch detection for a provider-connected row', async () => {
   const connectedInsert: unknown[] = []
   const connected = sourceHttpDb({
-    limitQueue: [
-      [{ role: 'superadmin' }],
-      [{ organizationId: ORG_ID, provider: 'github' }],
-      [],
-    ],
+    limitQueue: [[{ role: 'superadmin' }], [{ organizationId: ORG_ID, provider: 'github' }], []],
     insertId: SOURCE_ID,
     insertValues: connectedInsert,
   })
@@ -1849,7 +1836,7 @@ test('create never attempts branch detection for a provider-connected row', asyn
       }),
     }),
     201,
-    { ok: true, id: SOURCE_ID, reused: false },
+    { ok: true, id: SOURCE_ID, reused: false }
   )
   // Pops stop at role, connection ownership, and the URL miss — no extra pop
   // for a server-id read, so the stored row keeps the plain unset branch.
@@ -1861,13 +1848,7 @@ test('attach adopts an existing same-URL row instead of duplicating it', async (
   // External-id lookup misses (the row was created from a pasted clone URL),
   // the URL lookup hits, and the row is re-keyed to the connection in place.
   const adopted = sourceHttpDb({
-    limitQueue: [
-      [{ role: 'superadmin' }],
-      [installRow],
-      [installRow],
-      [],
-      [{ id: SOURCE_ID }],
-    ],
+    limitQueue: [[{ role: 'superadmin' }], [installRow], [installRow], [], [{ id: SOURCE_ID }]],
   })
   const { app, cookie } = await buildSourceApp(adopted)
   await expectJson(
@@ -1881,17 +1862,16 @@ test('attach adopts an existing same-URL row instead of duplicating it', async (
       }),
     }),
     200,
-    { ok: true, id: SOURCE_ID, reused: true },
+    { ok: true, id: SOURCE_ID, reused: true }
   )
 })
 
 test('refresh rejects unknown rows and sources without a connection', async () => {
-  const missing = await buildSourceApp(sourceHttpDb({
-    limitQueue: [
-      [{ role: 'superadmin' }],
-      [],
-    ],
-  }))
+  const missing = await buildSourceApp(
+    sourceHttpDb({
+      limitQueue: [[{ role: 'superadmin' }], []],
+    })
+  )
   await expectJson(
     await missing.app.request(`/repositories/${SOURCE_ID}/refresh`, {
       method: 'POST',
@@ -1899,23 +1879,22 @@ test('refresh rejects unknown rows and sources without a connection', async () =
       body: JSON.stringify({}),
     }),
     404,
-    { error: 'Not found' },
+    { error: 'Not found' }
   )
 
   // A deploy-key row has no provider listing to consult.
-  const keyed = await buildSourceApp(sourceHttpDb({
-    limitQueue: [
-      [{ role: 'superadmin' }],
-      [sourceRow({ connectionId: null, provider: 'git' })],
-    ],
-  }))
+  const keyed = await buildSourceApp(
+    sourceHttpDb({
+      limitQueue: [[{ role: 'superadmin' }], [sourceRow({ connectionId: null, provider: 'git' })]],
+    })
+  )
   const refreshed = await keyed.app.request(`/repositories/${SOURCE_ID}/refresh`, {
     method: 'POST',
     headers: { ...authHeaders(keyed.cookie), 'content-type': 'application/json' },
     body: JSON.stringify({}),
   })
   assertEquals(refreshed.status, 400)
-  const body = await refreshed.json() as { error?: unknown }
+  const body = (await refreshed.json()) as { error?: unknown }
   assertEquals(body.error, 'source_refresh_not_supported')
 })
 
@@ -1942,7 +1921,7 @@ test('patch answers 409 when the new URL collides with another row', async () =>
       body: JSON.stringify({ repositoryUrl: 'https://github.com/acme/other.git' }),
     }),
     409,
-    { error: 'source_url_conflict' },
+    { error: 'source_url_conflict' }
   )
 })
 
@@ -1950,13 +1929,7 @@ test('attach succeeds for a non-platform user with an organization:manage grant'
   const installRow = { organizationId: ORG_ID, provider: 'github' }
   const attached = sourceHttpDb({
     sessionRole: 'user',
-    limitQueue: [
-      [{ role: 'user' }],
-      [installRow],
-      [installRow],
-      [],
-      [],
-    ],
+    limitQueue: [[{ role: 'user' }], [installRow], [installRow], [], []],
     insertId: SOURCE_ID,
     execute: (query) => {
       // Repository ancestry keys on repository.id, so an org-level manage
@@ -1982,49 +1955,50 @@ test('attach succeeds for a non-platform user with an organization:manage grant'
       }),
     }),
     201,
-    { ok: true, id: SOURCE_ID, reused: false },
+    { ok: true, id: SOURCE_ID, reused: false }
   )
 })
 
 test('list and installations return visible rows; connect callbacks fail closed after a valid state', async () => {
   const listed = sourceHttpDb({
     selectRows: [{ role: 'superadmin' }],
-    executeQueue: [
-      [{ allowed: true }],
-      [{ item_id: SOURCE_ID }],
-    ],
+    executeQueue: [[{ allowed: true }], [{ item_id: SOURCE_ID }]],
     orderByRows: [sourceRow()],
   })
   const { app, cookie } = await buildSourceApp(listed)
   const headers = authHeaders(cookie)
   const list = await app.request('/repositories', { headers })
   assertEquals(list.status, 200)
-  const listedBody = await list.json() as { repositories?: Array<{ id?: unknown }> }
+  const listedBody = (await list.json()) as { repositories?: Array<{ id?: unknown }> }
   assertEquals(listedBody.repositories?.length, 1)
   assertEquals(listedBody.repositories?.[0]?.id, SOURCE_ID)
 
-  const installs = await buildSourceApp(sourceHttpDb({
-    selectRows: [{ role: 'superadmin' }],
-    orderByRows: [{
-      id: CONNECTION_ID,
-      organizationId: ORG_ID,
-      forgeId: APP_ID,
-      provider: 'github',
-      externalInstallationId: '99',
-      accountLogin: 'acme',
-      accountType: 'Organization',
-      suspendedAt: null,
-      metadata: null,
-      options: null,
-      createdAt: '2026-01-01T00:00:00.000Z',
-      updatedAt: '2026-01-02T00:00:00.000Z',
-    }],
-  }))
+  const installs = await buildSourceApp(
+    sourceHttpDb({
+      selectRows: [{ role: 'superadmin' }],
+      orderByRows: [
+        {
+          id: CONNECTION_ID,
+          organizationId: ORG_ID,
+          forgeId: APP_ID,
+          provider: 'github',
+          externalInstallationId: '99',
+          accountLogin: 'acme',
+          accountType: 'Organization',
+          suspendedAt: null,
+          metadata: null,
+          options: null,
+          createdAt: '2026-01-01T00:00:00.000Z',
+          updatedAt: '2026-01-02T00:00:00.000Z',
+        },
+      ],
+    })
+  )
   const installRes = await installs.app.request('/repositories/connections', {
     headers: authHeaders(installs.cookie),
   })
   assertEquals(installRes.status, 200)
-  const installBody = await installRes.json() as {
+  const installBody = (await installRes.json()) as {
     connections?: Array<{ id?: unknown; suspended?: unknown }>
   }
   assertEquals(installBody.connections?.[0]?.id, CONNECTION_ID)
@@ -2039,12 +2013,12 @@ test('list and installations return visible rows; connect callbacks fail closed 
   })
   const github = await connect.app.request(
     `/repositories/github/callback?state=${encodeURIComponent(githubState)}&installation_id=1&code=c`,
-    { headers: connectHeaders },
+    { headers: connectHeaders }
   )
   assertEquals(github.status, 302)
   assertEquals(
     github.headers.get('Location'),
-    providerInstallUiReturnPath(ORG_ID, APP_ID, { error: 'not_configured' }),
+    providerInstallUiReturnPath(ORG_ID, APP_ID, { error: 'not_configured' })
   )
 
   const gitlabState = await signGitlabConnectState(secretsConfig, {
@@ -2053,22 +2027,18 @@ test('list and installations return visible rows; connect callbacks fail closed 
   })
   const gitlab = await connect.app.request(
     `/repositories/gitlab/oauth/callback?state=${encodeURIComponent(gitlabState)}&code=abc`,
-    { headers: connectHeaders },
+    { headers: connectHeaders }
   )
   assertEquals(gitlab.status, 302)
   assertEquals(
     gitlab.headers.get('Location'),
-    providerInstallUiReturnPath(ORG_ID, APP_ID, { error: 'not_configured' }),
+    providerInstallUiReturnPath(ORG_ID, APP_ID, { error: 'not_configured' })
   )
 })
 
 test('github install 404s when the app id is visible but cannot be loaded', async () => {
   const db = sourceHttpDb({
-    limitQueue: [
-      [{ role: 'superadmin' }],
-      [{ id: APP_ID }],
-      [],
-    ],
+    limitQueue: [[{ role: 'superadmin' }], [{ id: APP_ID }], []],
   })
   const { app, cookie } = await buildSourceApp(db)
   await expectJson(
@@ -2076,7 +2046,7 @@ test('github install 404s when the app id is visible but cannot be loaded', asyn
       headers: authHeaders(cookie),
     }),
     404,
-    { error: 'Not found' },
+    { error: 'Not found' }
   )
 })
 
@@ -2088,7 +2058,7 @@ test('deploy-keys mints a show-once public key', async () => {
     body: JSON.stringify({ name: 'read-only' }),
   })
   assertEquals(res.status, 200)
-  const body = await res.json() as {
+  const body = (await res.json()) as {
     ok?: unknown
     secretId?: unknown
     publicKey?: unknown
@@ -2107,11 +2077,7 @@ test('deploy-keys mints a show-once public key', async () => {
 test('inspect with a default branch and repositories reach the provider boundary', async () => {
   const db = sourceHttpDb({
     selectRows: [sourceRow()],
-    limitQueue: [
-      [{ role: 'superadmin' }],
-      [sourceRow()],
-      [],
-    ],
+    limitQueue: [[{ role: 'superadmin' }], [sourceRow()], []],
   })
   const { app, cookie } = await buildSourceApp(db)
   const inspect = await app.request(`/repositories/${SOURCE_ID}/inspect`, {
@@ -2127,53 +2093,43 @@ test('inspect with a default branch and repositories reach the provider boundary
     ],
   })
   const listed = await buildSourceApp(repos)
-  const res = await listed.app.request(
-    `/repositories/connections/${CONNECTION_ID}/repositories`,
-    { headers: authHeaders(listed.cookie) },
-  )
+  const res = await listed.app.request(`/repositories/connections/${CONNECTION_ID}/repositories`, {
+    headers: authHeaders(listed.cookie),
+  })
   assertEquals(res.status >= 400, true)
 })
 
 test('inspect rejects an unsafe listPath before touching the provider', async () => {
   const db = sourceHttpDb({
     selectRows: [sourceRow()],
-    limitQueue: [
-      [{ role: 'superadmin' }],
-      [sourceRow()],
-    ],
+    limitQueue: [[{ role: 'superadmin' }], [sourceRow()]],
   })
   const { app, cookie } = await buildSourceApp(db)
   await expectJson(
-    await app.request(
-      `/repositories/${SOURCE_ID}/inspect?listPath=${encodeURIComponent('../x')}`,
-      { headers: authHeaders(cookie) },
-    ),
+    await app.request(`/repositories/${SOURCE_ID}/inspect?listPath=${encodeURIComponent('../x')}`, {
+      headers: authHeaders(cookie),
+    }),
     400,
     {
       error: 'invalid_list_path',
       message: 'listPath must be a relative path without ".." (e.g. "apps/web").',
-    },
+    }
   )
 })
 
 test('inspect passes a safe listPath through to the provider boundary', async () => {
   const db = sourceHttpDb({
     selectRows: [sourceRow()],
-    limitQueue: [
-      [{ role: 'superadmin' }],
-      [sourceRow()],
-      [],
-    ],
+    limitQueue: [[{ role: 'superadmin' }], [sourceRow()], []],
   })
   const { app, cookie } = await buildSourceApp(db)
-  const res = await app.request(
-    `/repositories/${SOURCE_ID}/inspect?listPath=apps/web`,
-    { headers: authHeaders(cookie) },
-  )
+  const res = await app.request(`/repositories/${SOURCE_ID}/inspect?listPath=apps/web`, {
+    headers: authHeaders(cookie),
+  })
   // Same shape as the no-listPath case above: the value clears validation and
   // the request fails only at the unreachable provider.
   assertEquals(res.status >= 400, true)
-  const body = await res.json() as { error?: unknown }
+  const body = (await res.json()) as { error?: unknown }
   assertEquals(body.error === 'invalid_list_path', false)
 })
 
@@ -2182,7 +2138,14 @@ test('patch names a foreign installation as not found; attach insert miss is 500
     selectRows: [sourceRow()],
     limitQueue: [
       [{ role: 'superadmin' }],
-      [sourceRow({ connectionId: CONNECTION_ID, secretId: null, repositoryUrl: 'https://github.com/acme/app.git', provider: 'github' })],
+      [
+        sourceRow({
+          connectionId: CONNECTION_ID,
+          secretId: null,
+          repositoryUrl: 'https://github.com/acme/app.git',
+          provider: 'github',
+        }),
+      ],
       [],
     ],
   })
@@ -2194,17 +2157,12 @@ test('patch names a foreign installation as not found; attach insert miss is 500
       body: JSON.stringify({ connectionId: CONNECTION_ID }),
     }),
     404,
-    { error: 'Not found' },
+    { error: 'Not found' }
   )
 
   const installRow = { organizationId: ORG_ID, provider: 'github' }
   const failedAttach = sourceHttpDb({
-    limitQueue: [
-      [{ role: 'superadmin' }],
-      [installRow],
-      [installRow],
-      [],
-    ],
+    limitQueue: [[{ role: 'superadmin' }], [installRow], [installRow], []],
     insertId: null,
   })
   const second = await buildSourceApp(failedAttach)
@@ -2219,6 +2177,6 @@ test('patch names a foreign installation as not found; attach insert miss is 500
       }),
     }),
     500,
-    { error: 'Failed to attach repository' },
+    { error: 'Failed to attach repository' }
   )
 })

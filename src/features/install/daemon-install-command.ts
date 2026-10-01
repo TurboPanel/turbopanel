@@ -88,7 +88,7 @@ function buildInstallPipeline(opts: {
     // alone never disables verification.
     envParts.push(`TURBOPANEL_DL_BASE=${opts.dlBase}`, 'TURBOPANEL_DEV_ALLOW_UNSIGNED_MANIFEST=1')
   }
-  // The daemon follows the channel this instance follows. Always said, trunk
+  // The daemon follows the channel this control plane follows. Always said, trunk
   // included: the channel also picks the installer host (testing./staging.),
   // and run.sh re-fetches itself from the host its channel names when it
   // re-runs under sudo, so leaving it out would send a testing install back
@@ -121,7 +121,7 @@ export function buildLicenseInstallCommand(opts: {
    * overlay so remote servers never hit the public CDN.
    */
   dlBase?: string
-  /** The channel this instance follows (TURBOPANEL_UPDATE_CHANNEL); enrolled daemons follow it too. */
+  /** The channel this control plane follows (TURBOPANEL_UPDATE_CHANNEL); enrolled daemons follow it too. */
   updateChannel?: string
 }): string {
   const {

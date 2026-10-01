@@ -40,14 +40,14 @@ export function createEmailVerificationLinkEmail(
       <a href="${safeUrl}" style="display:inline-block;background:#2563eb;color:#fff;text-decoration:none;padding:12px 24px;border-radius:6px;font-weight:600;">Verify email</a>
     </p>
     <p style="margin:0;font-size:14px;color:#666;">If you didn't sign up, you can ignore this email.</p>
-    <p style="margin:16px 0 0;font-size:12px;color:#999;">TurboPanel – Self-hosted control plane</p>
+    <p style="margin:16px 0 0;font-size:12px;color:#999;">TurboPanel</p>
   </div>
 </body>
 </html>
 `.trim()
   const text =
     `Verify your TurboPanel email\n\nOpen this link:\n${verifyUrl}\n\n` +
-    `If you didn't sign up, ignore this email.\n\nTurboPanel – Self-hosted control plane`
+    `If you didn't sign up, ignore this email.\n\nTurboPanel`
   return { subject, html, text }
 }
 
@@ -70,14 +70,14 @@ export function createPasswordResetLinkEmail(resetUrl: string): TemplateResult {
       <a href="${safeUrl}" style="display:inline-block;background:#2563eb;color:#fff;text-decoration:none;padding:12px 24px;border-radius:6px;font-weight:600;">Choose a new password</a>
     </p>
     <p style="margin:0;font-size:14px;color:#666;">If you didn't ask for this, you can ignore this email — your password stays the same.</p>
-    <p style="margin:16px 0 0;font-size:12px;color:#999;">TurboPanel – Self-hosted control plane</p>
+    <p style="margin:16px 0 0;font-size:12px;color:#999;">TurboPanel</p>
   </div>
 </body>
 </html>
 `.trim()
   const text =
     `Reset your TurboPanel password\n\nOpen this link to choose a new password (it works once and expires in one hour):\n${resetUrl}\n\n` +
-    `If you didn't ask for this, ignore this email — your password stays the same.\n\nTurboPanel – Self-hosted control plane`
+    `If you didn't ask for this, ignore this email — your password stays the same.\n\nTurboPanel`
   return { subject, html, text }
 }
 
@@ -125,14 +125,14 @@ export function createEmailOtpEmail(
     <p style="margin:0 0 24px;color:#444;line-height:1.5;">${escapeHtml(intro)}</p>
     <p style="margin:0 0 24px;font-size:32px;font-weight:700;letter-spacing:0.25em;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;color:#111;text-align:center;padding:16px;background:#f3f4f6;border-radius:8px;">${safeOtp}</p>
     <p style="margin:0;font-size:14px;color:#666;">Enter this code in TurboPanel. It expires soon.</p>
-    <p style="margin:16px 0 0;font-size:12px;color:#999;">TurboPanel – Self-hosted control plane</p>
+    <p style="margin:16px 0 0;font-size:12px;color:#999;">TurboPanel</p>
   </div>
 </body>
 </html>
 `.trim()
   const text =
     `${subject}\n\n${intro}\n\nYour code: ${otp}\n\n` +
-    `Enter this code in TurboPanel. It expires soon.\n\nTurboPanel – Self-hosted control plane`
+    `Enter this code in TurboPanel. It expires soon.\n\nTurboPanel`
   return { subject, html, text }
 }
 
@@ -180,14 +180,13 @@ export function createServerTierNoticeEmail(
     <p style="margin:0 0 24px;">
       <a href="${safeUrl}" style="display:inline-block;background:#2563eb;color:#fff;text-decoration:none;padding:12px 24px;border-radius:6px;font-weight:600;">Open server</a>
     </p>
-    <p style="margin:16px 0 0;font-size:12px;color:#999;">TurboPanel – Self-hosted control plane</p>
+    <p style="margin:16px 0 0;font-size:12px;color:#999;">TurboPanel</p>
   </div>
 </body>
 </html>
 `.trim()
   const text =
-    `${subject}\n\n${intro}\n\n${unwatchedLine}\n\nOpen: ${job.consoleUrl}\n\n` +
-    `TurboPanel – Self-hosted control plane`
+    `${subject}\n\n${intro}\n\n${unwatchedLine}\n\nOpen: ${job.consoleUrl}\n\n` + `TurboPanel`
   return { subject, html, text }
 }
 
@@ -216,7 +215,7 @@ export function createInvitationEmail(
       <a href="${safeUrl}" style="display:inline-block;background:#2563eb;color:#fff;text-decoration:none;padding:12px 24px;border-radius:6px;font-weight:600;">Accept invitation</a>
     </p>
     <p style="margin:0;font-size:14px;color:#666;">If you weren't expecting this invitation, you can ignore this email.</p>
-    <p style="margin:16px 0 0;font-size:12px;color:#999;">TurboPanel – Self-hosted control plane</p>
+    <p style="margin:16px 0 0;font-size:12px;color:#999;">TurboPanel</p>
   </div>
 </body>
 </html>
@@ -224,7 +223,7 @@ export function createInvitationEmail(
   const text =
     `${subject}\n\n${job.inviterEmail} invited you to join ${job.teamName} in ${job.organizationName} on TurboPanel.\n\n` +
     `Accept: ${job.acceptUrl}\n\n` +
-    `If you weren't expecting this invitation, ignore this email.\n\nTurboPanel – Self-hosted control plane`
+    `If you weren't expecting this invitation, ignore this email.\n\nTurboPanel`
   return { subject, html, text }
 }
 
@@ -304,7 +303,7 @@ export function createNotificationEmail(
         : ''
     }
     <p style="margin:0;font-size:12px;color:#999;">${escapeHtml(job.event)} · ${escapeHtml(job.at)}</p>
-    <p style="margin:16px 0 0;font-size:12px;color:#999;">TurboPanel – Self-hosted control plane</p>
+    <p style="margin:16px 0 0;font-size:12px;color:#999;">TurboPanel</p>
   </div>
 </body>
 </html>
@@ -313,7 +312,7 @@ export function createNotificationEmail(
     `${subject}\n\n${job.body ?? ''}${job.body ? '\n\n' : ''}` +
     (job.details.length > 0 ? `${job.details.join('\n')}\n\n` : '') +
     (job.consoleUrl ? `Open: ${job.consoleUrl}\n\n` : '') +
-    `${job.event} · ${job.at}\n\nTurboPanel – Self-hosted control plane`
+    `${job.event} · ${job.at}\n\nTurboPanel`
   return { subject, html, text }
 }
 
