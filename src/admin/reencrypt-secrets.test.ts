@@ -179,7 +179,8 @@ async function installIsolatedFixtureSchema(tx: Db, schemaName: string): Promise
       is_email_verified boolean DEFAULT false NOT NULL,
       is_2fa_enabled boolean DEFAULT false NOT NULL,
       is_disabled boolean DEFAULT false NOT NULL,
-      role text DEFAULT 'user' NOT NULL
+      role text DEFAULT 'user' NOT NULL,
+      time_zone varchar(64)
     )
   `)
   )
