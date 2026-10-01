@@ -1,0 +1,2 @@
+COMMENT ON COLUMN "subscription"."grace_expires_at" IS 'Always null since the TurboPanel grace clock was removed: provider retries now end a past-due subscription. Kept by the schema freeze, never read.';--> statement-breakpoint
+COMMENT ON COLUMN "subscription"."past_due_since" IS 'First moment the provider reported `past_due` or `unpaid`; latched while delinquent, cleared by any other status so a later lapse is measured afresh.';

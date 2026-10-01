@@ -441,9 +441,9 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       schedule_id:
         'Provider subscription schedule id (Stripe `sub_sched_...`) while a downgrade is parked on a schedule; null otherwise, written by the webhook projection.',
       grace_expires_at:
-        'Moment entitlement lapses after non-payment: latched to `past_due_since` plus 65 days while status is `past_due` or `unpaid`, cleared on any other status.',
+        'Always null since the TurboPanel grace clock was removed: provider retries now end a past-due subscription. Kept by the schema freeze, never read.',
       past_due_since:
-        'First moment the provider reported `past_due` or `unpaid`; latched while delinquent, cleared by any other status so a second lapse restarts the grace clock.',
+        'First moment the provider reported `past_due` or `unpaid`; latched while delinquent, cleared by any other status so a later lapse is measured afresh.',
     },
   },
   tier: {
