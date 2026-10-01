@@ -297,13 +297,14 @@ async function loadClusterPeerExposure(
 ): Promise<DerivedExposure | null> {
   const members = await listManagedMembers(db, managedId)
   const member = members.find((m) => m.serverId === serverId && m.privatePort !== null)
-  if (!member || member.privatePort === null) return null
+  const port = member?.privatePort ?? null
+  if (member === undefined || port === null) return null
   const bind = await resolveMemberPrivateBindAddress(db, member, members)
   if (bind === undefined) return null
-  const peers = await resolvePeersForMember(db, members, member, member.privatePort)
+  const peers = await resolvePeersForMember(db, members, member, port)
   if (isPrepareError(bind) || 'kind' in peers) {
     notes.push(
-      `A managed cluster's peer port (${member.privatePort}) is not shown: a peer has no usable address yet`
+      `A managed cluster's peer port (${port}) is not shown: a peer has no usable address yet`
     )
     return null
   }
@@ -315,7 +316,7 @@ async function loadClusterPeerExposure(
     source: 'cluster',
     scope: 'published',
     proto: 'tcp',
-    ports: String(member.privatePort),
+    ports: String(port),
     reach: 'peers',
     comment: 'Managed cluster peers',
     destination: bind.address,
