@@ -83,6 +83,7 @@ type Db = ReturnType<typeof createDenoDb>
 /** Routes outside the matrix because their path parameters are not object ids. */
 const NOT_OBJECT_ID_ROUTES: readonly RegExp[] = [
   /^\/api\/client\/v1\/auth\//, // tokens and provider names, not objects
+  /^\/api\/client\/v1\/notification-channels\/verify\//, // an emailed one-time token, not an object id
 ]
 
 /**
