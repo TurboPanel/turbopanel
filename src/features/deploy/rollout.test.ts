@@ -19,9 +19,12 @@ import {
   advanceRollout,
   haltRollout,
   nextRolloutStep,
+  failTimedOutDeploy,
+  readDeployContext,
   readRolloutOptions,
   rolloutOptions,
 } from './rollout.ts'
+import { sweepStaleCommands } from '../commands/stale-sweep.ts'
 
 /** Jest/Mocha-shaped alias so Sonar sees real tests. */
 const test = Deno.test.bind(Deno)
@@ -118,6 +121,7 @@ async function withRollout(
       actorId: crypto.randomUUID(),
       type: 'environment.deploy',
       payload: { environmentId },
+      context: { environmentId, serverId, generation: 7 },
       // Old clock on purpose: delivery must restart it.
       expiresAt: new Date(Date.now() - 1000).toISOString(),
     })
@@ -274,6 +278,119 @@ test('a stale generation is left alone', async () => {
       []
     )
     assertEquals(f.sent.length, 0)
+    assertEquals(await targetStatus(f, f.serverIds[1]!), 'pending')
+  })
+})
+
+test('readDeployContext reads the environment and generation of a deploy command', () => {
+  assertEquals(readDeployContext({ environmentId: 'e', generation: 3, serverId: 's' }), {
+    environmentId: 'e',
+    generation: 3,
+  })
+  assertEquals(readDeployContext({ environmentId: 'e' }), null)
+  assertEquals(readDeployContext({ generation: 3 }), null)
+  assertEquals(readDeployContext(null), null)
+})
+
+test('advanceRollout halts a rollout that already has a failed server', async () => {
+  await withRollout(async (f) => {
+    await f.db
+      .update(deployment)
+      .set({ status: 'failed' })
+      .where(
+        and(eq(deployment.environmentId, f.environmentId), eq(deployment.serverId, f.serverIds[0]!))
+      )
+    const gen = { environmentId: f.environmentId, generation: 7 }
+    assertEquals(await advanceRollout(f.db, { enqueue: f.enqueue }, gen), [])
+    assertEquals(f.sent.length, 0)
+    assertEquals(await targetStatus(f, f.serverIds[1]!), 'failed')
+    assertEquals(await targetStatus(f, f.serverIds[2]!), 'failed')
+    assertEquals((await getCommandRecord(f.db, f.commandIds[1]!))?.status, 'cancelled')
+    assertEquals((await getCommandRecord(f.db, f.commandIds[2]!))?.status, 'cancelled')
+  })
+})
+
+test('haltRollout without a generation cancels waiting servers of any generation', async () => {
+  await withRollout(async (f) => {
+    const flagged = await haltRollout(f.db, {
+      environmentId: f.environmentId,
+      reason: 'the environment was stopped',
+    })
+    assertEquals(flagged.length, 2)
+    assertEquals(await targetStatus(f, f.serverIds[0]!), 'applying')
+    assertEquals((await getCommandRecord(f.db, f.commandIds[2]!))?.status, 'cancelled')
+  })
+})
+
+/** A sweep an hour from now: every command not held is long past its budget. */
+function sweepLater(f: Fixture): Promise<number> {
+  return sweepStaleCommands(f.db, { now: Date.now() + 3_600_000 })
+}
+
+test('the stale sweep timing out an in-flight rollout server flags it and stops the rollout', async () => {
+  await withRollout(async (f) => {
+    await f.db.update(command).set({ status: 'sent' }).where(eq(command.id, f.commandIds[0]!))
+    await sweepLater(f)
+    assertEquals((await getCommandRecord(f.db, f.commandIds[0]!))?.status, 'timed_out')
+    assertEquals(await targetStatus(f, f.serverIds[0]!), 'failed')
+    assertEquals(await targetStatus(f, f.serverIds[1]!), 'failed')
+    assertEquals(await targetStatus(f, f.serverIds[2]!), 'failed')
+    assertEquals((await getCommandRecord(f.db, f.commandIds[1]!))?.status, 'cancelled')
+    assertEquals((await getCommandRecord(f.db, f.commandIds[2]!))?.status, 'cancelled')
+    // Nothing is left to deliver.
+    assertEquals(
+      await advanceRollout(
+        f.db,
+        { enqueue: f.enqueue },
+        {
+          environmentId: f.environmentId,
+          generation: 7,
+        }
+      ),
+      []
+    )
+    assertEquals(f.sent.length, 0)
+  })
+})
+
+test('a batch claimed but never queued (worker died) is failed by the sweep and stops the rollout', async () => {
+  await withRollout(async (f) => {
+    await markApplied(f, f.serverIds[0]!)
+    // Claimed (`applying`), command still `queued`: the worker died before enqueue.
+    await f.db
+      .update(deployment)
+      .set({ status: 'applying' })
+      .where(
+        and(eq(deployment.environmentId, f.environmentId), eq(deployment.serverId, f.serverIds[1]!))
+      )
+    await sweepLater(f)
+    assertEquals((await getCommandRecord(f.db, f.commandIds[1]!))?.status, 'timed_out')
+    assertEquals(await targetStatus(f, f.serverIds[1]!), 'failed')
+    assertEquals(await targetStatus(f, f.serverIds[2]!), 'failed')
+    assertEquals((await getCommandRecord(f.db, f.commandIds[2]!))?.status, 'cancelled')
+  })
+})
+
+test('the stale sweep leaves commands that are only waiting their turn alone', async () => {
+  await withRollout(async (f) => {
+    // Batch 0 finished; batches 1 and 2 are waiting their turn.
+    await markApplied(f, f.serverIds[0]!)
+    await sweepLater(f)
+    assertEquals((await getCommandRecord(f.db, f.commandIds[1]!))?.status, 'queued')
+    assertEquals((await getCommandRecord(f.db, f.commandIds[2]!))?.status, 'queued')
+    assertEquals(await targetStatus(f, f.serverIds[2]!), 'pending')
+  })
+})
+
+test('failTimedOutDeploy ignores a command a newer deploy replaced', async () => {
+  await withRollout(async (f) => {
+    await failTimedOutDeploy(f.db, {
+      commandId: f.commandIds[2]!,
+      serverId: f.serverIds[0]!,
+      context: { environmentId: f.environmentId, generation: 7 },
+      error: 'late',
+    })
+    assertEquals(await targetStatus(f, f.serverIds[0]!), 'applying')
     assertEquals(await targetStatus(f, f.serverIds[1]!), 'pending')
   })
 })

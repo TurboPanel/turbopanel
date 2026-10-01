@@ -202,6 +202,12 @@ export async function advanceRollout(
 ): Promise<string[]> {
   const targets = await loadGenerationTargets(db, params)
   const step = nextRolloutStep(targets)
+  if (step.action === 'halted') {
+    // Every failure path halts itself; this is the net for one that did not
+    // (idempotent: nothing is left to flag once the rollout has stopped).
+    await haltRollout(db, { ...params, reason: 'a server in this rollout failed' })
+    return []
+  }
   if (step.action !== 'start') return []
   const ids = targets
     .filter((target) => target.status === 'pending' && target.batch === step.batch)
@@ -217,7 +223,7 @@ export async function advanceRollout(
   if (failures.length > 0) {
     await haltRollout(db, {
       ...params,
-      reason: 'a server in the previous batch could not be reached',
+      reason: 'the next batch could not be delivered',
     })
   }
   return delivered
@@ -226,11 +232,13 @@ export async function advanceRollout(
 /**
  * Stop a rollout: every target of this generation that has not started is
  * marked failed ("not started") and its undelivered command cancelled.
- * Servers already applying are left to finish. Returns the servers flagged.
+ * Servers already applying are left to finish. Without a `generation` it
+ * covers every generation (stop, restart: nothing waiting may deploy after).
+ * Returns the servers flagged.
  */
 export async function haltRollout(
   db: Db,
-  params: { environmentId: string; generation: number; reason: string }
+  params: { environmentId: string; generation?: number; reason: string }
 ): Promise<string[]> {
   const error = `rollout stopped: ${params.reason}; this server was not started`
   const finishedAt = nowIso()
@@ -249,7 +257,9 @@ export async function haltRollout(
     .where(
       and(
         eq(deployment.environmentId, params.environmentId),
-        eq(deployment.desiredGeneration, params.generation),
+        ...(params.generation === undefined
+          ? []
+          : [eq(deployment.desiredGeneration, params.generation)]),
         eq(deployment.status, 'pending'),
         sql`${deployment.options} -> 'rollout' is not null`
       )
@@ -260,4 +270,51 @@ export async function haltRollout(
     await transitionCommand(db, row.lastCommandId, { status: 'cancelled', error })
   })
   return rows.map((row) => row.serverId)
+}
+
+/** The environment and generation a deploy command was issued for, from `command.context`. */
+export function readDeployContext(
+  context: unknown
+): { environmentId: string; generation: number } | null {
+  if (!isRecord(context)) return null
+  const { environmentId, generation } = context
+  if (typeof environmentId !== 'string' || !Number.isInteger(generation)) return null
+  return { environmentId, generation: generation as number }
+}
+
+/**
+ * A deploy command that timed out without the consumer's own wait ending it
+ * (the stale-command sweep, an expired redelivery): mark its server failed and
+ * halt the rollout, so the servers behind it are flagged instead of waiting
+ * forever. Only acts while the server's target still points at this command and
+ * is `applying`, so a later deploy's rows are never touched.
+ */
+export async function failTimedOutDeploy(
+  db: Db,
+  params: { commandId: string; serverId: string; context: unknown; error: string }
+): Promise<void> {
+  const deploy = readDeployContext(params.context)
+  if (deploy === null) return
+  const [target] = await db
+    .select({ status: deployment.status, lastCommandId: deployment.lastCommandId })
+    .from(deployment)
+    .where(
+      and(
+        eq(deployment.environmentId, deploy.environmentId),
+        eq(deployment.serverId, params.serverId)
+      )
+    )
+  if (target?.lastCommandId !== params.commandId || target.status !== 'applying') return
+  await markDeploymentFailed(db, {
+    environmentId: deploy.environmentId,
+    serverId: params.serverId,
+    error: params.error,
+    commandId: params.commandId,
+    outcome: 'timed_out',
+  })
+  await haltRollout(db, {
+    environmentId: deploy.environmentId,
+    generation: deploy.generation,
+    reason: `${params.serverId} timed out`,
+  })
 }

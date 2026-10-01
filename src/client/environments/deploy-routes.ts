@@ -1,4 +1,4 @@
-import { rolloutOptions } from '../../features/deploy/rollout.ts'
+import { haltRollout, rolloutOptions } from '../../features/deploy/rollout.ts'
 import { firstSequential, forEachSequential, mapSequential } from '../../lib/sequential.ts'
 import { eq, inArray } from 'drizzle-orm'
 import {
@@ -949,6 +949,13 @@ async function deliverDeployFanOut(
     }
     queued.push(delivered)
   })
+  if (enqueueError !== null) {
+    // The first failure stops a rolling deploy: nothing held may start after it.
+    await haltRollout(db, {
+      environmentId: params.environmentId,
+      reason: 'a server in the first batch could not be reached',
+    })
+  }
   return { queued, enqueueError }
 }
 
@@ -1892,6 +1899,15 @@ export function registerEnvironmentDeployRoutes(router: Hono<AppEnv>, opts: Auth
   })
 }
 
+/**
+ * A stop or lifecycle action while a rolling deploy is part-way: servers still
+ * waiting must not deploy after it (a held batch would otherwise start a server
+ * the stop already ran on). Servers already applying are left to finish.
+ */
+async function cancelWaitingRollout(db: Db, environmentId: string, reason: string): Promise<void> {
+  await haltRollout(db, { environmentId, reason })
+}
+
 async function loadLifecycleTargets(
   db: Db,
   environmentId: string
@@ -2041,6 +2057,7 @@ export function registerEnvironmentStopRoutes(router: Hono<AppEnv>, opts: AuthRo
 
     const loaded = await loadLifecycleTargets(db, environmentId)
     if (loaded instanceof Response) return loaded
+    await cancelWaitingRollout(db, environmentId, 'the environment was stopped')
 
     const tcpUdpServices = await resolveTcpUdpIngressServices(db, environmentId)
     const composeNetworks = await listEnvironmentComposeNetworks(db, environmentId)
@@ -2174,6 +2191,7 @@ export function registerEnvironmentLifecycleRoutes(router: Hono<AppEnv>, opts: A
 
     const loaded = await loadLifecycleTargets(db, environmentId)
     if (loaded instanceof Response) return loaded
+    await cancelWaitingRollout(db, environmentId, `the environment was asked to ${action}`)
 
     const queued: QueuedCommandRef[] = []
     for (const serverId of loaded.serverIds) {

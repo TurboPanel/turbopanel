@@ -2739,6 +2739,54 @@ test('processCommandEnvelope stops a rolling deploy when a server fails and flag
   })
 })
 
+test('processCommandEnvelope: a deploy command that expired before dispatch stops the rollout', async () => {
+  await withDeployFixtures(async ({ db, organizationId, serverId, environmentId, projectId }) => {
+    await attachConnectedDaemonStatus(db, serverId)
+    const held = await holdSecondServerOfRollout(db, {
+      organizationId,
+      serverId,
+      environmentId,
+      projectId,
+    })
+    try {
+      await db
+        .update(command)
+        .set({ expiresAt: new Date(Date.now() - 1000).toISOString() })
+        .where(eq(command.id, held.firstCommandId))
+      await db
+        .update(command)
+        .set({ context: { environmentId, serverId, generation: 5 } })
+        .where(eq(command.id, held.firstCommandId))
+      const sent: CommandEnvelope[] = []
+      const record = await getCommandRecord(db, held.firstCommandId)
+      await processCommandEnvelope(
+        db,
+        createDispatchMockRegistry(serverId, { waitForRequestResult: null }),
+        buildEnvelope(record!, serverId),
+        {
+          commandQueue: { enqueue: (envelope) => Promise.resolve(void sent.push(envelope)) },
+        }
+      )
+      assertEquals((await getCommandRecord(db, held.firstCommandId))?.status, 'timed_out')
+      const [first] = await db
+        .select({ status: deployment.status, outcome: deployment.outcome })
+        .from(deployment)
+        .where(eq(deployment.serverId, serverId))
+      assertEquals(first?.status, 'failed')
+      assertEquals(first?.outcome, 'timed_out')
+      const [heldRow] = await db
+        .select({ status: deployment.status })
+        .from(deployment)
+        .where(eq(deployment.serverId, held.heldServerId))
+      assertEquals(heldRow?.status, 'failed')
+      assertEquals((await getCommandRecord(db, held.heldCommandId))?.status, 'cancelled')
+      assertEquals(sent.length, 0)
+    } finally {
+      await removeHeldServer(db, held.heldServerId)
+    }
+  })
+})
+
 test('processCommandEnvelope clears pins on environment.stop success', async () => {
   await withDeployFixtures(async ({ db, serverId, environmentId, projectId, webServiceId }) => {
     await attachConnectedDaemonStatus(db, serverId)

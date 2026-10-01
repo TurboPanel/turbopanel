@@ -64,6 +64,7 @@ import {
   registerEnvironmentDeployPreviewRoutes,
   registerEnvironmentDeployRoutes,
   registerEnvironmentLifecycleRoutes,
+  registerEnvironmentStopRoutes,
   runEnvironmentDeployForActor,
   tcpUdpIngressServiceRefs,
   validateDeployMaterials,
@@ -469,6 +470,7 @@ async function createDeployRoutesTestApp(
   registerEnvironmentDeployPreviewRoutes(app, routeOpts)
   registerEnvironmentDeployRoutes(app, routeOpts)
   registerEnvironmentLifecycleRoutes(app, routeOpts)
+  registerEnvironmentStopRoutes(app, routeOpts)
   registerEnvironmentDeploymentHistoryRoutes(app, routeOpts)
   registerEnvironmentReleaseRoutes(app, routeOpts)
   registerTlsRoutes(app, routeOpts)
@@ -2192,19 +2194,44 @@ test('POST /environments/:id/deploy records per-server failures when queue deliv
   )
 })
 
+type TwoServerCtx = {
+  db: ReturnType<typeof createDenoDb>
+  app: Hono<AppEnv>
+  secrets: Awaited<ReturnType<typeof deriveSecretsConfig>>
+  userId: string
+  organizationId: string
+  environmentId: string
+  serverId: string
+  commandQueue: ReturnType<typeof createRecordingCommandQueue>
+}
+
+type TwoServerOptions = {
+  updateConfig?: Record<string, unknown>
+  /** Status the deploy answers with; 200 unless the queue is made to fail. */
+  expectStatus?: number
+  /** Make every `environment.deploy` enqueue throw. */
+  failDeployEnqueue?: boolean
+}
+
+/** POST to an environment route as the fixture user. */
+function postEnvironment(ctx: TwoServerCtx, path: string, body = '{}'): Promise<Response> {
+  return sessionCookie(ctx.db, ctx.secrets, ctx.userId).then((cookie) =>
+    ctx.app.request(`/environments/${ctx.environmentId}/${path}`, {
+      method: 'POST',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: ctx.organizationId,
+        'Content-Type': 'application/json',
+      },
+      body,
+    })
+  )
+}
+
 /** Run the two-server deploy under `deployStrategy: sequential`, with an optional update_config. */
 async function deployTwoServersSequentially(
-  ctx: {
-    db: ReturnType<typeof createDenoDb>
-    app: Hono<AppEnv>
-    secrets: Awaited<ReturnType<typeof deriveSecretsConfig>>
-    userId: string
-    organizationId: string
-    environmentId: string
-    serverId: string
-    commandQueue: ReturnType<typeof createRecordingCommandQueue>
-  },
-  updateConfig: Record<string, unknown> | undefined,
+  ctx: TwoServerCtx,
+  options: TwoServerOptions,
   check: (input: {
     body: {
       commands: Array<{ serverId: string }>
@@ -2213,7 +2240,7 @@ async function deployTwoServersSequentially(
     serverIds: string[]
   }) => Promise<void>
 ): Promise<void> {
-  const { db, app, secrets, userId, organizationId, environmentId, serverId, commandQueue } = ctx
+  const { db, organizationId, environmentId, serverId, commandQueue } = ctx
   const extraServerId = await prepareMultiServerFabricDeploy(db, {
     organizationId,
     environmentId,
@@ -2222,26 +2249,24 @@ async function deployTwoServersSequentially(
     settleStatus: 'succeeded',
   })
   const compose = composeWithReplicatedWebService()
-  if (updateConfig !== undefined) {
+  if (options.updateConfig !== undefined) {
     const services = compose.data.services as Record<string, { deploy: Record<string, unknown> }>
-    services.web!.deploy.update_config = updateConfig
+    services.web!.deploy.update_config = options.updateConfig
   }
   await db
     .update(environment)
     .set({ options: { compose, deployStrategy: 'sequential' } })
     .where(eq(environment.id, environmentId))
+  if (options.failDeployEnqueue) {
+    const inner = commandQueue.enqueue.bind(commandQueue)
+    commandQueue.enqueue = async (envelope) => {
+      if (envelope.type === 'environment.deploy') throw new Error('queue down')
+      await inner(envelope)
+    }
+  }
   try {
-    const cookie = await sessionCookie(db, secrets, userId)
-    const res = await app.request(`/environments/${environmentId}/deploy`, {
-      method: 'POST',
-      headers: {
-        Cookie: cookie,
-        [ORG_ID_HEADER]: organizationId,
-        'Content-Type': 'application/json',
-      },
-      body: '{}',
-    })
-    assertEquals(res.status, 200)
+    const res = await postEnvironment(ctx, 'deploy')
+    assertEquals(res.status, options.expectStatus ?? 200)
     await check({
       body: (await res.json()) as Parameters<typeof check>[0]['body'],
       serverIds: [serverId, extraServerId],
@@ -2256,9 +2281,18 @@ async function deployTwoServersSequentially(
   }
 }
 
+/** Every deployment target of the environment, by server. */
+async function targetsByServer(ctx: TwoServerCtx): Promise<Map<string, string>> {
+  const rows = await ctx.db
+    .select({ serverId: deployment.serverId, status: deployment.status })
+    .from(deployment)
+    .where(eq(deployment.environmentId, ctx.environmentId))
+  return new Map(rows.map((row) => [row.serverId, row.status]))
+}
+
 test('POST /environments/:id/deploy on a sequential environment queues one server, holds the rest', async () => {
   await withDeployFixtures(async (ctx) => {
-    await deployTwoServersSequentially(ctx, undefined, async ({ body, serverIds }) => {
+    await deployTwoServersSequentially(ctx, {}, async ({ body, serverIds }) => {
       assertEquals(body.strategy.rollout, { parallelism: 1, batches: 2 })
       assertEquals(body.commands.length, 1)
       const queuedDeploys = ctx.commandQueue.envelopes.filter(
@@ -2297,18 +2331,69 @@ test('POST /environments/:id/deploy on a sequential environment queues one serve
 
 test('POST /environments/:id/deploy with update_config.parallelism 0 queues every server at once', async () => {
   await withDeployFixtures(async (ctx) => {
-    await deployTwoServersSequentially(ctx, { parallelism: 0 }, async ({ body }) => {
-      assertEquals(body.strategy.rollout, { parallelism: 0, batches: 1 })
-      assertEquals(body.commands.length, 2)
-    })
+    await deployTwoServersSequentially(
+      ctx,
+      { updateConfig: { parallelism: 0 } },
+      async ({ body }) => {
+        assertEquals(body.strategy.rollout, { parallelism: 0, batches: 1 })
+        assertEquals(body.commands.length, 2)
+      }
+    )
   })
 })
 
 test('POST /environments/:id/deploy with update_config.parallelism 2 queues both servers in one batch', async () => {
   await withDeployFixtures(async (ctx) => {
-    await deployTwoServersSequentially(ctx, { parallelism: 2 }, async ({ body }) => {
-      assertEquals(body.strategy.rollout, { parallelism: 2, batches: 1 })
-      assertEquals(body.commands.length, 2)
+    await deployTwoServersSequentially(
+      ctx,
+      { updateConfig: { parallelism: 2 } },
+      async ({ body }) => {
+        assertEquals(body.strategy.rollout, { parallelism: 2, batches: 1 })
+        assertEquals(body.commands.length, 2)
+      }
+    )
+  })
+})
+
+test('POST /environments/:id/deploy: a first-batch server that cannot be reached stops the rollout', async () => {
+  await withDeployFixtures(async (ctx) => {
+    await deployTwoServersSequentially(
+      ctx,
+      { failDeployEnqueue: true, expectStatus: 503 },
+      async ({ serverIds }) => {
+        const targets = await targetsByServer(ctx)
+        assertEquals([...targets.values()], ['failed', 'failed'])
+        const commands = await ctx.db
+          .select({ status: command.status })
+          .from(command)
+          .where(and(eq(command.name, 'environment.deploy'), inArray(command.serverId, serverIds)))
+        assertEquals(
+          commands.map((row) => row.status).toSorted((a, b) => a.localeCompare(b)),
+          ['cancelled', 'failed']
+        )
+      }
+    )
+  })
+})
+
+test('POST /environments/:id/stop mid-rollout cancels the servers still waiting', async () => {
+  await withDeployFixtures(async (ctx) => {
+    await deployTwoServersSequentially(ctx, {}, async ({ body, serverIds }) => {
+      const first = body.commands[0]!.serverId
+      const held = serverIds.find((id) => id !== first)!
+      assertEquals((await targetsByServer(ctx)).get(held), 'pending')
+
+      const stopped = await postEnvironment(ctx, 'stop')
+      assertEquals(stopped.status, 200)
+
+      const targets = await targetsByServer(ctx)
+      assertEquals(targets.get(held), 'failed')
+      assertEquals(targets.get(first), 'applying')
+      const [heldCommand] = await ctx.db
+        .select({ status: command.status })
+        .from(command)
+        .where(and(eq(command.name, 'environment.deploy'), eq(command.serverId, held)))
+      assertEquals(heldCommand?.status, 'cancelled')
     })
   })
 })

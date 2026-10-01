@@ -29,7 +29,7 @@ import {
 import { reconcileEnvironmentContainers } from '../environments/container-records.ts'
 import { recordDeployedSiteApps } from '../environments/app-facts.ts'
 import { classifyDeployFailure, deployOutcomeErrorCode } from '../deploy/deploy-outcome.ts'
-import { advanceRollout, haltRollout } from '../deploy/rollout.ts'
+import { advanceRollout, failTimedOutDeploy, haltRollout } from '../deploy/rollout.ts'
 import {
   deploymentDurationMs,
   type DeploymentOutcome,
@@ -315,6 +315,14 @@ async function loadDispatchableRecord(
 
   if (record.expiresAt && Date.parse(record.expiresAt) < Date.now()) {
     await transitionCommand(db, record.id, { status: 'timed_out' })
+    if (record.type === 'environment.deploy') {
+      await failTimedOutDeploy(db, {
+        commandId: record.id,
+        serverId: record.serverId,
+        context: record.context,
+        error: 'command expired before the daemon reported an outcome',
+      })
+    }
     return null
   }
 
