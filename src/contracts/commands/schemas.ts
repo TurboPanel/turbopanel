@@ -2227,6 +2227,21 @@ export type EnvironmentDeployResultRelease = {
   railpackPlanVersion?: string
 }
 
+/**
+ * What the daemon recognised in a site's document root, from file names only
+ * (never `wp-config.php` contents). Stored at `service.metadata.app`.
+ */
+export type EnvironmentDeployResultApp = {
+  kind: 'wordpress'
+  version?: string
+}
+
+/** One applied site and its detected app; `app` absent clears a stale fact. */
+export type EnvironmentDeployResultSite = {
+  composeServiceName: string
+  app?: EnvironmentDeployResultApp
+}
+
 export type EnvironmentDeployCommandResult = {
   projectName: string
   summary?: string
@@ -2234,6 +2249,8 @@ export type EnvironmentDeployCommandResult = {
   containers?: EnvironmentDeployContainer[]
   /** Git-backed releases this deploy applied; absent when there were none. */
   releases?: EnvironmentDeployResultRelease[]
+  /** Per-site facts for the sites this deploy applied; absent from older daemons. */
+  sites?: EnvironmentDeployResultSite[]
 }
 
 const MAX_ENVIRONMENT_DEPLOY_CONTAINERS = 100
@@ -3829,7 +3846,42 @@ export function parseEnvironmentDeployResult(value: unknown): EnvironmentDeployC
   if (containers !== undefined) result.containers = containers
   const releases = parseDeployResultReleases(value.releases)
   if (releases !== undefined) result.releases = releases
+  const sites = parseDeployResultSites(value.sites)
+  if (sites !== undefined) result.sites = sites
   return result
+}
+
+const MAX_ENVIRONMENT_DEPLOY_RESULT_SITES = 100
+const DEPLOY_RESULT_APP_VERSION_RE = /^\d+(\.\d+){0,3}(-[\w.]+)?$/
+
+/** A well-formed detected app (known kind, optional well-shaped version), else `undefined`. */
+export function parseDeployResultApp(value: unknown): EnvironmentDeployResultApp | undefined {
+  if (!isRecord(value) || value.kind !== 'wordpress') return undefined
+  const version = value.version
+  if (isString(version) && version.length <= 32 && DEPLOY_RESULT_APP_VERSION_RE.test(version)) {
+    return { kind: 'wordpress', version }
+  }
+  return { kind: 'wordpress' }
+}
+
+/**
+ * Lenient like the rest of the result parser. A row whose `app` is present but
+ * not a kind this control plane knows (a newer daemon) is dropped, so it
+ * neither clears nor invents a fact.
+ */
+function parseDeployResultSites(value: unknown): EnvironmentDeployResultSite[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const out: EnvironmentDeployResultSite[] = []
+  for (const entry of value.slice(0, MAX_ENVIRONMENT_DEPLOY_RESULT_SITES)) {
+    if (!isRecord(entry) || !isString(entry.composeServiceName)) continue
+    if (entry.app === undefined || entry.app === null) {
+      out.push({ composeServiceName: entry.composeServiceName })
+      continue
+    }
+    const app = parseDeployResultApp(entry.app)
+    if (app) out.push({ composeServiceName: entry.composeServiceName, app })
+  }
+  return out.length > 0 ? out : undefined
 }
 
 /** Cap mirrors {@link MAX_ENVIRONMENT_DEPLOY_CONTAINERS} — same blast radius. */
