@@ -553,12 +553,7 @@ async function request(
   return result
 }
 
-async function withFixture(fn: (fixture: Fixture) => Promise<void>): Promise<void> {
-  if (!dbUrl) {
-    console.warn('Skipping IDOR matrix: TURBOPANEL_DATABASE_URL not set')
-    return
-  }
-  const db = createDenoDb()
+async function withFixtureOn(db: Db, fn: (fixture: Fixture) => Promise<void>): Promise<void> {
   const secretsConfig = parseTestSecretsConfig('deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
@@ -621,6 +616,27 @@ async function withFixture(fn: (fixture: Fixture) => Promise<void>): Promise<voi
   }
   const b = await seedOrganizationB(db, orgB, ownerB, nonce)
   await fn({ db, app, nonce, orgA, orgB, cookieA, b, aOwn })
+}
+
+class RollbackFixture extends Error {}
+
+/**
+ * Everything the fixture seeds is rolled back at the end, so the shared test
+ * database is left exactly as found (other suites scan whole tables).
+ */
+async function withFixture(fn: (fixture: Fixture) => Promise<void>): Promise<void> {
+  if (!dbUrl) {
+    console.warn('Skipping IDOR matrix: TURBOPANEL_DATABASE_URL not set')
+    return
+  }
+  try {
+    await createDenoDb().transaction(async (tx) => {
+      await withFixtureOn(tx as unknown as Db, fn)
+      throw new RollbackFixture()
+    })
+  } catch (error) {
+    if (!(error instanceof RollbackFixture)) throw error
+  }
 }
 
 test('positive controls: A can use A’s own objects through the same harness', async () => {
