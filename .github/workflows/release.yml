@@ -68,10 +68,6 @@ on:
         description: The trunk commit to build (the head of the green Build run)
         required: true
         type: string
-    secrets:
-      RELEASE_SIGNING_KEY:
-        description: PKCS#8 PEM of the offline release key the manifest is signed with
-        required: true
 
 # Read-only by default. Writes: the `release` and `canary` jobs (the called
 # TurboPanel/dev workflows create the GitHub release / update the rolling
@@ -282,6 +278,9 @@ jobs:
           retention-days: 7
 
   manifest:
+    # Signing key = environment secret TURBOPANEL_RELEASE_SIGNING_KEY, one environment per
+    # channel: `canary` (trunk), `rc` (staging), `release` (live, owner approval).
+    environment: ${{ inputs.channel == 'canary' && 'canary' || (inputs.channel == 'rc' && 'rc' || 'release') }}
     needs: [prepare, build]
     runs-on: ubuntu-latest
     steps:
@@ -382,7 +381,7 @@ jobs:
 
       - name: Sign the manifest
         env:
-          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+          RELEASE_SIGNING_KEY: ${{ secrets.TURBOPANEL_RELEASE_SIGNING_KEY }}
         run: |
           set -eu
           deno run --config .manifest-signer/deno.json \
