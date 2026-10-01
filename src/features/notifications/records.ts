@@ -17,17 +17,18 @@ import {
   isNotNull,
   isNull,
   lt,
+  lte,
   notInArray,
   or,
   sql,
-} from "drizzle-orm";
-import type { Db } from "../../db/connection.ts";
+} from 'drizzle-orm'
+import type { Db } from '../../db/connection.ts'
 import {
   decryptSecret,
   encryptSecret,
   isSealedEnvelope,
-} from "../../lib/secrets/data-encryption.ts";
-import type { DerivedSecretsConfig } from "../../lib/secrets/secrets.ts";
+} from '../../lib/secrets/data-encryption.ts'
+import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import {
   grant,
   notification,
@@ -38,96 +39,94 @@ import {
   team,
   teammate,
   user,
-} from "../../db/schema.ts";
+} from '../../db/schema.ts'
+import {
+  DEFAULT_TIME_ZONE,
+  type NotificationDigestCadence,
+  type QuietHours,
+  usableTimeZone,
+} from './windows.ts'
 import {
   NOTIFICATION_RULE_ANY_EVENT,
   type NotificationContext,
   type NotificationEvent,
   type NotificationSeverity,
   severityAtLeast,
-} from "./events.ts";
+} from './events.ts'
 
-function channelOwnerFilter(
-  organizationId: string | null,
-  memberIds: readonly string[],
-) {
-  if (!organizationId) return eq(notificationChannel.scope, "instance");
-  const memberClause = memberIds.length > 0
-    ? inArray(notificationChannel.userId, memberIds)
-    : sql`false`;
+function channelOwnerFilter(organizationId: string | null, memberIds: readonly string[]) {
+  if (!organizationId) return eq(notificationChannel.scope, 'instance')
+  const memberClause =
+    memberIds.length > 0 ? inArray(notificationChannel.userId, memberIds) : sql`false`
   return or(
-    eq(notificationChannel.scope, "instance"),
+    eq(notificationChannel.scope, 'instance'),
     eq(notificationChannel.organizationId, organizationId),
-    memberClause,
-  );
+    memberClause
+  )
 }
 
-export const NOTIFICATION_CHANNEL_SCOPES = [
-  "instance",
-  "organization",
-  "user",
-] as const;
-export type NotificationChannelScope =
-  (typeof NOTIFICATION_CHANNEL_SCOPES)[number];
+export const NOTIFICATION_CHANNEL_SCOPES = ['instance', 'organization', 'user'] as const
+export type NotificationChannelScope = (typeof NOTIFICATION_CHANNEL_SCOPES)[number]
 
 export const NOTIFICATION_CHANNEL_KINDS = [
-  "email",
-  "webhook",
-  "slack",
-  "discord",
-  "telegram",
-  "push",
-] as const;
-export type NotificationChannelKind =
-  (typeof NOTIFICATION_CHANNEL_KINDS)[number];
+  'email',
+  'webhook',
+  'slack',
+  'discord',
+  'telegram',
+  'push',
+] as const
+export type NotificationChannelKind = (typeof NOTIFICATION_CHANNEL_KINDS)[number]
 
 export const NOTIFICATION_DELIVERY_STATUSES = [
-  "pending",
-  "sent",
-  "failed",
-  "abandoned",
-] as const;
-export type NotificationDeliveryStatus =
-  (typeof NOTIFICATION_DELIVERY_STATUSES)[number];
+  'pending',
+  'sent',
+  'failed',
+  'abandoned',
+  'held',
+] as const
+export type NotificationDeliveryStatus = (typeof NOTIFICATION_DELIVERY_STATUSES)[number]
 
 /** Kinds whose address is a credential and is therefore stored sealed. */
 export function channelAddressIsSecret(kind: NotificationChannelKind): boolean {
-  return kind !== "email";
+  return kind !== 'email'
 }
 
 /** After this many failed attempts a delivery is abandoned, not retried. */
-export const NOTIFICATION_DELIVERY_MAX_ATTEMPTS = 5;
+export const NOTIFICATION_DELIVERY_MAX_ATTEMPTS = 5
 
 /** Backoff between attempts: 1, 5, 25, 125 minutes — bounded by the cap above. */
 export function nextAttemptDelayMs(attempts: number): number {
-  return 60_000 * 5 ** Math.max(0, Math.min(attempts - 1, 3));
+  return 60_000 * 5 ** Math.max(0, Math.min(attempts - 1, 3))
 }
 
 export type NotificationChannelRecord = {
-  id: string;
-  scope: NotificationChannelScope;
-  organizationId: string | null;
-  userId: string | null;
-  kind: NotificationChannelKind;
-  label: string;
+  id: string
+  scope: NotificationChannelScope
+  organizationId: string | null
+  userId: string | null
+  kind: NotificationChannelKind
+  label: string
   /** Stored form: sealed for secret kinds. Use {@link resolveChannelAddress} to read it. */
-  address: string;
-  signingSecret: string | null;
-  verifiedAt: string | null;
-  disabledAt: string | null;
-  createdAt: string;
-};
+  address: string
+  signingSecret: string | null
+  verifiedAt: string | null
+  disabledAt: string | null
+  createdAt: string
+  /** null = every event is sent as it happens. */
+  digestCadence: NotificationDigestCadence | null
+  /** null = no quiet hours. */
+  quiet: QuietHours | null
+}
 
 export type NotificationRuleRecord = {
-  id: string;
-  channelId: string;
-  event: string;
-  minSeverity: NotificationSeverity;
-};
+  id: string
+  channelId: string
+  event: string
+  minSeverity: NotificationSeverity
+}
 
-function asChannel(
-  row: typeof notificationChannel.$inferSelect,
-): NotificationChannelRecord {
+function asChannel(row: typeof notificationChannel.$inferSelect): NotificationChannelRecord {
   return {
     id: row.id,
     scope: row.scope as NotificationChannelScope,
@@ -140,40 +139,43 @@ function asChannel(
     verifiedAt: row.verifiedAt,
     disabledAt: row.disabledAt,
     createdAt: row.createdAt,
-  };
+    digestCadence: row.digestCadence as NotificationDigestCadence | null,
+    quiet:
+      row.quietStartMinute !== null && row.quietEndMinute !== null
+        ? { startMinute: row.quietStartMinute, endMinute: row.quietEndMinute }
+        : null,
+  }
 }
 
 export type CreateChannelInput = {
-  scope: NotificationChannelScope;
-  organizationId?: string | null;
-  userId?: string | null;
-  kind: NotificationChannelKind;
-  label: string;
+  scope: NotificationChannelScope
+  organizationId?: string | null
+  userId?: string | null
+  kind: NotificationChannelKind
+  label: string
   /** Plain; sealed here when the kind calls for it. */
-  address: string;
+  address: string
   /** Plain; always sealed. */
-  signingSecret?: string | null;
-  createdByUserId?: string | null;
-  verifiedAt?: string | null;
-};
+  signingSecret?: string | null
+  createdByUserId?: string | null
+  verifiedAt?: string | null
+}
 
 export async function createNotificationChannel(
   db: Db,
   secrets: DerivedSecretsConfig | undefined,
-  input: CreateChannelInput,
+  input: CreateChannelInput
 ): Promise<NotificationChannelRecord> {
-  const sealed = channelAddressIsSecret(input.kind) || input.signingSecret;
+  const sealed = channelAddressIsSecret(input.kind) || input.signingSecret
   if (sealed && !secrets) {
-    throw new Error(
-      "data encryption secrets are required to store a notification channel address",
-    );
+    throw new Error('data encryption secrets are required to store a notification channel address')
   }
   const address = channelAddressIsSecret(input.kind)
     ? await encryptSecret(secrets!, input.address)
-    : input.address;
+    : input.address
   const signingSecret = input.signingSecret
     ? await encryptSecret(secrets!, input.signingSecret)
-    : null;
+    : null
   const [row] = await db
     .insert(notificationChannel)
     .values({
@@ -187,174 +189,240 @@ export async function createNotificationChannel(
       createdByUserId: input.createdByUserId ?? null,
       verifiedAt: input.verifiedAt ?? null,
     })
-    .returning();
-  if (!row) throw new Error("notification channel insert returned no row");
-  return asChannel(row);
+    .returning()
+  if (!row) throw new Error('notification channel insert returned no row')
+  return asChannel(row)
 }
 
 /** The plain address, whatever form it is stored in; null when it cannot be unsealed. */
 export async function resolveChannelAddress(
   secrets: DerivedSecretsConfig | undefined,
-  channel: Pick<NotificationChannelRecord, "kind" | "address">,
+  channel: Pick<NotificationChannelRecord, 'kind' | 'address'>
 ): Promise<string | null> {
-  if (
-    !channelAddressIsSecret(channel.kind) || !isSealedEnvelope(channel.address)
-  ) {
-    return channel.address;
+  if (!channelAddressIsSecret(channel.kind) || !isSealedEnvelope(channel.address)) {
+    return channel.address
   }
-  if (!secrets) return null;
+  if (!secrets) return null
   try {
-    return await decryptSecret(secrets, channel.address);
+    return await decryptSecret(secrets, channel.address)
   } catch {
-    return null;
+    return null
   }
 }
 
 export async function resolveChannelSigningSecret(
   secrets: DerivedSecretsConfig | undefined,
-  channel: Pick<NotificationChannelRecord, "signingSecret">,
+  channel: Pick<NotificationChannelRecord, 'signingSecret'>
 ): Promise<string | null> {
-  if (!channel.signingSecret) return null;
-  if (!isSealedEnvelope(channel.signingSecret)) return channel.signingSecret;
-  if (!secrets) return null;
+  if (!channel.signingSecret) return null
+  if (!isSealedEnvelope(channel.signingSecret)) return channel.signingSecret
+  if (!secrets) return null
   try {
-    return await decryptSecret(secrets, channel.signingSecret);
+    return await decryptSecret(secrets, channel.signingSecret)
   } catch {
-    return null;
+    return null
   }
 }
 
 /** What a settings screen renders: never the address of a secret kind, only its origin or a mask. */
 export function describeChannelAddress(
   kind: NotificationChannelKind,
-  plainAddress: string | null,
+  plainAddress: string | null
 ): string {
-  if (plainAddress === null) return "(unreadable)";
-  if (!channelAddressIsSecret(kind)) return plainAddress;
-  if (kind === "webhook" || kind === "slack" || kind === "discord") {
+  if (plainAddress === null) return '(unreadable)'
+  if (!channelAddressIsSecret(kind)) return plainAddress
+  if (kind === 'webhook' || kind === 'slack' || kind === 'discord') {
     try {
-      return new URL(plainAddress).origin;
+      return new URL(plainAddress).origin
     } catch {
-      return "(invalid URL)";
+      return '(invalid URL)'
     }
   }
   // Telegram chat ids and push tokens: show the tail so two can be told apart.
-  return plainAddress.length > 6 ? `…${plainAddress.slice(-4)}` : "…";
+  return plainAddress.length > 6 ? `…${plainAddress.slice(-4)}` : '…'
 }
 
 export async function listChannelsForUser(
   db: Db,
-  userId: string,
+  userId: string
 ): Promise<NotificationChannelRecord[]> {
   const rows = await db
     .select()
     .from(notificationChannel)
     .where(eq(notificationChannel.userId, userId))
-    .orderBy(desc(notificationChannel.createdAt));
-  return rows.map(asChannel);
+    .orderBy(desc(notificationChannel.createdAt))
+  return rows.map(asChannel)
 }
 
 export async function listChannelsForOrganization(
   db: Db,
-  organizationId: string,
+  organizationId: string
 ): Promise<NotificationChannelRecord[]> {
   const rows = await db
     .select()
     .from(notificationChannel)
     .where(eq(notificationChannel.organizationId, organizationId))
-    .orderBy(desc(notificationChannel.createdAt));
-  return rows.map(asChannel);
+    .orderBy(desc(notificationChannel.createdAt))
+  return rows.map(asChannel)
 }
 
-export async function listInstanceChannels(
-  db: Db,
-): Promise<NotificationChannelRecord[]> {
+export async function listInstanceChannels(db: Db): Promise<NotificationChannelRecord[]> {
   const rows = await db
     .select()
     .from(notificationChannel)
-    .where(eq(notificationChannel.scope, "instance"))
-    .orderBy(desc(notificationChannel.createdAt));
-  return rows.map(asChannel);
+    .where(eq(notificationChannel.scope, 'instance'))
+    .orderBy(desc(notificationChannel.createdAt))
+  return rows.map(asChannel)
 }
 
-export async function getChannel(
-  db: Db,
-  id: string,
-): Promise<NotificationChannelRecord | null> {
+export async function getChannel(db: Db, id: string): Promise<NotificationChannelRecord | null> {
   const [row] = await db
     .select()
     .from(notificationChannel)
     .where(eq(notificationChannel.id, id))
-    .limit(1);
-  return row ? asChannel(row) : null;
+    .limit(1)
+  return row ? asChannel(row) : null
 }
 
 export async function deleteChannel(db: Db, id: string): Promise<boolean> {
   const rows = await db
     .delete(notificationChannel)
     .where(eq(notificationChannel.id, id))
-    .returning({ id: notificationChannel.id });
-  return rows.length > 0;
+    .returning({ id: notificationChannel.id })
+  return rows.length > 0
 }
 
-export async function updateChannelLabel(
-  db: Db,
-  id: string,
-  label: string,
-): Promise<void> {
-  await db
-    .update(notificationChannel)
-    .set({ label })
-    .where(eq(notificationChannel.id, id));
+export async function updateChannelLabel(db: Db, id: string, label: string): Promise<void> {
+  await db.update(notificationChannel).set({ label }).where(eq(notificationChannel.id, id))
 }
 
-export async function setChannelDisabled(
-  db: Db,
-  id: string,
-  disabled: boolean,
-): Promise<void> {
+export async function setChannelDisabled(db: Db, id: string, disabled: boolean): Promise<void> {
   await db
     .update(notificationChannel)
     .set({ disabledAt: disabled ? sql`now()` : null })
-    .where(eq(notificationChannel.id, id));
+    .where(eq(notificationChannel.id, id))
+}
+
+/** Digest cadence and quiet hours for one channel; `null` clears either. Replaces both together. */
+export async function setChannelHoldSettings(
+  db: Db,
+  id: string,
+  settings: { digestCadence: NotificationDigestCadence | null; quiet: QuietHours | null }
+): Promise<void> {
+  await db
+    .update(notificationChannel)
+    .set({
+      digestCadence: settings.digestCadence,
+      quietStartMinute: settings.quiet?.startMinute ?? null,
+      quietEndMinute: settings.quiet?.endMinute ?? null,
+    })
+    .where(eq(notificationChannel.id, id))
+}
+
+/** The IANA zone a person chose, or null (read as UTC). */
+export async function getUserTimeZone(db: Db, userId: string): Promise<string | null> {
+  const [row] = await db
+    .select({ timeZone: user.timeZone })
+    .from(user)
+    .where(eq(user.id, userId))
+    .limit(1)
+  return row?.timeZone ?? null
+}
+
+export async function setUserTimeZone(
+  db: Db,
+  userId: string,
+  timeZone: string | null
+): Promise<void> {
+  await db.update(user).set({ timeZone }).where(eq(user.id, userId))
+}
+
+/** The organization-wide default zone (`options.defaultServerTimezone`), or null. */
+async function organizationTimeZones(
+  db: Db,
+  organizationIds: readonly string[]
+): Promise<Map<string, string | null>> {
+  if (organizationIds.length === 0) return new Map()
+  const rows = await db
+    .select({ id: organization.id, options: organization.options })
+    .from(organization)
+    .where(inArray(organization.id, [...organizationIds]))
+  return new Map(
+    rows.map((r) => {
+      const zone = (r.options as { defaultServerTimezone?: unknown } | null)?.defaultServerTimezone
+      return [r.id, typeof zone === 'string' ? zone : null]
+    })
+  )
+}
+
+/**
+ * The zone each channel's quiet hours and digest windows are read in: a
+ * personal channel uses its owner's zone, an organization channel the
+ * organization default, an instance channel UTC; anything unset or unusable is
+ * UTC.
+ */
+export async function channelTimeZones(
+  db: Db,
+  channels: ReadonlyArray<
+    Pick<NotificationChannelRecord, 'id' | 'scope' | 'userId' | 'organizationId'>
+  >
+): Promise<Map<string, string>> {
+  const userIds = channels.flatMap((c) => (c.scope === 'user' && c.userId ? [c.userId] : []))
+  const orgIds = channels.flatMap((c) =>
+    c.scope === 'organization' && c.organizationId ? [c.organizationId] : []
+  )
+  const [users, orgs] = await Promise.all([
+    userIds.length === 0
+      ? Promise.resolve([])
+      : db
+          .select({ id: user.id, timeZone: user.timeZone })
+          .from(user)
+          .where(inArray(user.id, userIds)),
+    organizationTimeZones(db, orgIds),
+  ])
+  const byUser = new Map(users.map((u) => [u.id, u.timeZone]))
+  const zoneOf = (c: (typeof channels)[number]): string | null | undefined => {
+    if (c.scope === 'user') return byUser.get(c.userId ?? '')
+    if (c.scope === 'organization') return orgs.get(c.organizationId ?? '')
+    return null
+  }
+  return new Map(channels.map((c) => [c.id, usableTimeZone(zoneOf(c) ?? DEFAULT_TIME_ZONE)]))
 }
 
 export async function listRulesForChannel(
   db: Db,
-  channelId: string,
+  channelId: string
 ): Promise<NotificationRuleRecord[]> {
   const rows = await db
     .select()
     .from(notificationRule)
-    .where(eq(notificationRule.channelId, channelId));
+    .where(eq(notificationRule.channelId, channelId))
   return rows.map((r) => ({
     id: r.id,
     channelId: r.channelId,
     event: r.event,
     minSeverity: r.minSeverity as NotificationSeverity,
-  }));
+  }))
 }
 
 /** Replace a channel's rules wholesale — the preferences screen saves the matrix, not a diff. */
 export async function replaceRulesForChannel(
   db: Db,
   channelId: string,
-  rules: ReadonlyArray<{ event: string; minSeverity: NotificationSeverity }>,
+  rules: ReadonlyArray<{ event: string; minSeverity: NotificationSeverity }>
 ): Promise<void> {
   await db.transaction(async (tx) => {
-    await tx.delete(notificationRule).where(
-      eq(notificationRule.channelId, channelId),
-    );
+    await tx.delete(notificationRule).where(eq(notificationRule.channelId, channelId))
     if (rules.length > 0) {
       await tx.insert(notificationRule).values(
         rules.map((r) => ({
           channelId,
           event: r.event,
           minSeverity: r.minSeverity,
-        })),
-      );
+        }))
+      )
     }
-  });
+  })
 }
 
 /**
@@ -372,49 +440,43 @@ export async function channelsForEvent(
   event: NotificationEvent,
   severity: NotificationSeverity,
   organizationId: string | null,
-  recipientIds: readonly string[],
+  recipientIds: readonly string[]
 ): Promise<NotificationChannelRecord[]> {
-  const ownerFilter = channelOwnerFilter(organizationId, recipientIds);
+  const ownerFilter = channelOwnerFilter(organizationId, recipientIds)
   const rows = await db
     .select({ channel: notificationChannel, rule: notificationRule })
     .from(notificationRule)
-    .innerJoin(
-      notificationChannel,
-      eq(notificationRule.channelId, notificationChannel.id),
-    )
+    .innerJoin(notificationChannel, eq(notificationRule.channelId, notificationChannel.id))
     .where(
       and(
         isNull(notificationChannel.disabledAt),
         ownerFilter,
         or(
           eq(notificationRule.event, NOTIFICATION_RULE_ANY_EVENT),
-          eq(notificationRule.event, event),
-        ),
-      ),
-    );
-  const seen = new Set<string>();
-  const out: NotificationChannelRecord[] = [];
+          eq(notificationRule.event, event)
+        )
+      )
+    )
+  const seen = new Set<string>()
+  const out: NotificationChannelRecord[] = []
   for (const { channel, rule } of rows) {
-    if (seen.has(channel.id)) continue;
+    if (seen.has(channel.id)) continue
     if (!severityAtLeast(severity, rule.minSeverity as NotificationSeverity)) {
-      continue;
+      continue
     }
-    seen.add(channel.id);
-    out.push(asChannel(channel));
+    seen.add(channel.id)
+    out.push(asChannel(channel))
   }
-  return out;
+  return out
 }
 
-export async function organizationName(
-  db: Db,
-  organizationId: string,
-): Promise<string | null> {
+export async function organizationName(db: Db, organizationId: string): Promise<string | null> {
   const [row] = await db
     .select({ name: organization.name })
     .from(organization)
     .where(eq(organization.id, organizationId))
-    .limit(1);
-  return row?.name ?? null;
+    .limit(1)
+  return row?.name ?? null
 }
 
 /**
@@ -424,66 +486,60 @@ export async function organizationName(
  * mirror the owner-only audit trail (decided 2026-09-18): a plain teammate
  * does not learn every grant change from the bell.
  */
-export async function organizationManagerIds(
-  db: Db,
-  organizationId: string,
-): Promise<string[]> {
+export async function organizationManagerIds(db: Db, organizationId: string): Promise<string[]> {
   const rows = await db
     .select({ actorType: grant.actorType, actorId: grant.actorId })
     .from(grant)
     .where(
       and(
-        eq(grant.entityType, "organization"),
+        eq(grant.entityType, 'organization'),
         eq(grant.entityId, organizationId),
-        inArray(grant.permission, ["organization:own", "organization:manage"]),
-      ),
-    );
-  const ids = new Set<string>();
-  const teamIds: string[] = [];
-  let everyone = false;
+        inArray(grant.permission, ['organization:own', 'organization:manage'])
+      )
+    )
+  const ids = new Set<string>()
+  const teamIds: string[] = []
+  let everyone = false
   for (const row of rows) {
-    if (row.actorType === "user") ids.add(row.actorId);
-    else if (row.actorType === "team") teamIds.push(row.actorId);
-    else if (row.actorType === "organization") everyone = true;
+    if (row.actorType === 'user') ids.add(row.actorId)
+    else if (row.actorType === 'team') teamIds.push(row.actorId)
+    else if (row.actorType === 'organization') everyone = true
   }
-  if (everyone) return await organizationMemberIds(db, organizationId);
+  if (everyone) return await organizationMemberIds(db, organizationId)
   if (teamIds.length > 0) {
     const members = await db
       .selectDistinct({ userId: teammate.userId })
       .from(teammate)
-      .where(inArray(teammate.teamId, teamIds));
-    for (const m of members) ids.add(m.userId);
+      .where(inArray(teammate.teamId, teamIds))
+    for (const m of members) ids.add(m.userId)
   }
   // Instance administrators see every organization; they hear about it too.
-  for (const admin of await instanceAdminIds(db)) ids.add(admin);
-  return [...ids];
+  for (const admin of await instanceAdminIds(db)) ids.add(admin)
+  return [...ids]
 }
 
 /** The account emails of everyone in the organization — what an organization email channel may name. */
 export async function organizationMemberEmails(
   db: Db,
-  organizationId: string,
+  organizationId: string
 ): Promise<Set<string>> {
   const rows = await db
     .selectDistinct({ email: user.email })
     .from(teammate)
     .innerJoin(team, eq(teammate.teamId, team.id))
     .innerJoin(user, eq(teammate.userId, user.id))
-    .where(eq(team.organizationId, organizationId));
-  return new Set(rows.map((r) => r.email.toLowerCase()));
+    .where(eq(team.organizationId, organizationId))
+  return new Set(rows.map((r) => r.email.toLowerCase()))
 }
 
 /** Everyone who belongs to the organization through a team — the inbox fan-out. */
-export async function organizationMemberIds(
-  db: Db,
-  organizationId: string,
-): Promise<string[]> {
+export async function organizationMemberIds(db: Db, organizationId: string): Promise<string[]> {
   const rows = await db
     .selectDistinct({ userId: teammate.userId })
     .from(teammate)
     .innerJoin(team, eq(teammate.teamId, team.id))
-    .where(eq(team.organizationId, organizationId));
-  return rows.map((r) => r.userId);
+    .where(eq(team.organizationId, organizationId))
+  return rows.map((r) => r.userId)
 }
 
 /** Instance administrators — the inbox fan-out for an instance-scoped event. */
@@ -491,27 +547,24 @@ export async function instanceAdminIds(db: Db): Promise<string[]> {
   const rows = await db
     .select({ id: user.id })
     .from(user)
-    .where(inArray(user.role, ["admin", "superadmin"]));
-  return rows.map((r) => r.id);
+    .where(inArray(user.role, ['admin', 'superadmin']))
+  return rows.map((r) => r.id)
 }
 
 export type NotificationInsert = {
-  userId: string;
-  organizationId: string | null;
-  event: NotificationEvent;
-  severity: NotificationSeverity;
-  title: string;
-  body: string | null;
-  targetType?: string | null;
-  targetId?: string | null;
-  context?: NotificationContext | null;
-};
+  userId: string
+  organizationId: string | null
+  event: NotificationEvent
+  severity: NotificationSeverity
+  title: string
+  body: string | null
+  targetType?: string | null
+  targetId?: string | null
+  context?: NotificationContext | null
+}
 
-export async function insertNotifications(
-  db: Db,
-  rows: NotificationInsert[],
-): Promise<number> {
-  if (rows.length === 0) return 0;
+export async function insertNotifications(db: Db, rows: NotificationInsert[]): Promise<number> {
+  if (rows.length === 0) return 0
   const inserted = await db
     .insert(notification)
     .values(
@@ -525,31 +578,31 @@ export async function insertNotifications(
         targetType: r.targetType ?? null,
         targetId: r.targetId ?? null,
         context: r.context ?? null,
-      })),
+      }))
     )
-    .returning({ id: notification.id });
-  return inserted.length;
+    .returning({ id: notification.id })
+  return inserted.length
 }
 
 export type NotificationRecord = {
-  id: string;
-  createdAt: string;
-  organizationId: string | null;
-  event: string;
-  severity: NotificationSeverity;
-  title: string;
-  body: string | null;
-  targetType: string | null;
-  targetId: string | null;
-  readAt: string | null;
-};
+  id: string
+  createdAt: string
+  organizationId: string | null
+  event: string
+  severity: NotificationSeverity
+  title: string
+  body: string | null
+  targetType: string | null
+  targetId: string | null
+  readAt: string | null
+}
 
 export async function listNotificationsForUser(
   db: Db,
   userId: string,
-  opts: { limit?: number; before?: string } = {},
+  opts: { limit?: number; before?: string } = {}
 ): Promise<NotificationRecord[]> {
-  const limit = Math.min(Math.max(opts.limit ?? 30, 1), 100);
+  const limit = Math.min(Math.max(opts.limit ?? 30, 1), 100)
   const rows = await db
     .select()
     .from(notification)
@@ -557,11 +610,11 @@ export async function listNotificationsForUser(
       and(
         eq(notification.userId, userId),
         isNull(notification.dismissedAt),
-        opts.before ? lt(notification.createdAt, opts.before) : undefined,
-      ),
+        opts.before ? lt(notification.createdAt, opts.before) : undefined
+      )
     )
     .orderBy(desc(notification.createdAt))
-    .limit(limit);
+    .limit(limit)
   return rows.map((r) => ({
     id: r.id,
     createdAt: r.createdAt,
@@ -573,13 +626,10 @@ export async function listNotificationsForUser(
     targetType: r.targetType,
     targetId: r.targetId,
     readAt: r.readAt,
-  }));
+  }))
 }
 
-export async function countUnreadForUser(
-  db: Db,
-  userId: string,
-): Promise<number> {
+export async function countUnreadForUser(db: Db, userId: string): Promise<number> {
   const [row] = await db
     .select({ count: sql<number>`count(*)::int` })
     .from(notification)
@@ -587,17 +637,17 @@ export async function countUnreadForUser(
       and(
         eq(notification.userId, userId),
         isNull(notification.readAt),
-        isNull(notification.dismissedAt),
-      ),
-    );
-  return row?.count ?? 0;
+        isNull(notification.dismissedAt)
+      )
+    )
+  return row?.count ?? 0
 }
 
 /** Mark the given rows (or every unread row when `ids` is empty) read for this user. */
 export async function markNotificationsRead(
   db: Db,
   userId: string,
-  ids: readonly string[],
+  ids: readonly string[]
 ): Promise<number> {
   const rows = await db
     .update(notification)
@@ -606,51 +656,47 @@ export async function markNotificationsRead(
       and(
         eq(notification.userId, userId),
         isNull(notification.readAt),
-        ids.length > 0 ? inArray(notification.id, [...ids]) : undefined,
-      ),
+        ids.length > 0 ? inArray(notification.id, [...ids]) : undefined
+      )
     )
-    .returning({ id: notification.id });
-  return rows.length;
+    .returning({ id: notification.id })
+  return rows.length
 }
 
-export async function dismissNotification(
-  db: Db,
-  userId: string,
-  id: string,
-): Promise<boolean> {
+export async function dismissNotification(db: Db, userId: string, id: string): Promise<boolean> {
   const rows = await db
     .update(notification)
     .set({ dismissedAt: sql`now()`, readAt: sql`coalesce(read_at, now())` })
     .where(and(eq(notification.userId, userId), eq(notification.id, id)))
-    .returning({ id: notification.id });
-  return rows.length > 0;
+    .returning({ id: notification.id })
+  return rows.length > 0
 }
 
 export type DeliveryPayload = {
-  event: NotificationEvent;
-  severity: NotificationSeverity;
-  title: string;
-  body: string | null;
-  organizationId: string | null;
+  event: NotificationEvent
+  severity: NotificationSeverity
+  title: string
+  body: string | null
+  organizationId: string | null
   /** Denormalized for the message; null for an instance-scoped event. */
-  organizationName: string | null;
-  targetType: string | null;
-  targetId: string | null;
-  context: NotificationContext;
+  organizationName: string | null
+  targetType: string | null
+  targetId: string | null
+  context: NotificationContext
   /** ISO time the event happened. */
-  at: string;
-};
+  at: string
+}
 
 export type NotificationDeliveryRecord = {
-  id: string;
-  channelId: string;
-  organizationId: string | null;
-  event: NotificationEvent;
-  severity: NotificationSeverity;
-  payload: DeliveryPayload;
-  status: NotificationDeliveryStatus;
-  attempts: number;
-};
+  id: string
+  channelId: string
+  organizationId: string | null
+  event: NotificationEvent
+  severity: NotificationSeverity
+  payload: DeliveryPayload
+  status: NotificationDeliveryStatus
+  attempts: number
+}
 
 /**
  * How long the retry sweep leaves a fresh row to the inline attempt. The
@@ -660,37 +706,51 @@ export type NotificationDeliveryRecord = {
  * mid-send, the case the ledger-first design exists for — and never races a
  * slow one into a double send.
  */
-export const INLINE_ATTEMPT_GRACE_MS = 2 * 60_000;
+export const INLINE_ATTEMPT_GRACE_MS = 2 * 60_000
 
-/** Write the ledger row first — a crash between here and the send leaves a pending row, not silence. */
+function ledgerRow(channelId: string, payload: DeliveryPayload, held: boolean) {
+  const base = {
+    channelId,
+    organizationId: payload.organizationId,
+    event: payload.event,
+    severity: payload.severity,
+    payload,
+    attempts: 0,
+  }
+  if (held) {
+    // Nothing retries a held row (no retry time); it is dated by the event, so
+    // the window that closes after the event is the one that carries it.
+    return { ...base, status: 'held', nextAttemptAt: null, createdAt: payload.at }
+  }
+  return {
+    ...base,
+    status: 'pending',
+    nextAttemptAt: new Date(Date.now() + INLINE_ATTEMPT_GRACE_MS).toISOString(),
+  }
+}
+
+/**
+ * Write the ledger row first — a crash between here and the send leaves a pending row, not silence.
+ * A channel in `heldChannelIds` gets a `held` row instead: nothing retries it, the digest sweep
+ * sends it when its window ends.
+ */
 export async function insertPendingDeliveries(
   db: Db,
   channelIds: readonly string[],
   payload: DeliveryPayload,
+  heldChannelIds: ReadonlySet<string> = new Set()
 ): Promise<NotificationDeliveryRecord[]> {
-  if (channelIds.length === 0) return [];
+  if (channelIds.length === 0) return []
   const rows = await db
     .insert(notificationDelivery)
     .values(
-      channelIds.map((channelId) => ({
-        channelId,
-        organizationId: payload.organizationId,
-        event: payload.event,
-        severity: payload.severity,
-        payload,
-        status: "pending",
-        attempts: 0,
-        nextAttemptAt: new Date(Date.now() + INLINE_ATTEMPT_GRACE_MS)
-          .toISOString(),
-      })),
+      channelIds.map((channelId) => ledgerRow(channelId, payload, heldChannelIds.has(channelId)))
     )
-    .returning();
-  return rows.map(asDelivery);
+    .returning()
+  return rows.map(asDelivery)
 }
 
-function asDelivery(
-  row: typeof notificationDelivery.$inferSelect,
-): NotificationDeliveryRecord {
+function asDelivery(row: typeof notificationDelivery.$inferSelect): NotificationDeliveryRecord {
   return {
     id: row.id,
     channelId: row.channelId,
@@ -700,7 +760,7 @@ function asDelivery(
     payload: row.payload as DeliveryPayload,
     status: row.status as NotificationDeliveryStatus,
     attempts: row.attempts,
-  };
+  }
 }
 
 /**
@@ -711,41 +771,41 @@ function asDelivery(
 export async function recordDeliveryAttempt(
   db: Db,
   id: string,
-  outcome: { ok: true } | { ok: false; error: string },
+  outcome: { ok: true } | { ok: false; error: string }
 ): Promise<void> {
   if (outcome.ok) {
     await db
       .update(notificationDelivery)
       .set({
-        status: "sent",
+        status: 'sent',
         attempts: sql`${notificationDelivery.attempts} + 1`,
         sentAt: sql`now()`,
         nextAttemptAt: null,
         lastError: null,
       })
-      .where(eq(notificationDelivery.id, id));
-    return;
+      .where(eq(notificationDelivery.id, id))
+    return
   }
   const [row] = await db
     .update(notificationDelivery)
     .set({
-      status: "failed",
+      status: 'failed',
       attempts: sql`${notificationDelivery.attempts} + 1`,
       lastError: outcome.error.slice(0, 200),
     })
     .where(eq(notificationDelivery.id, id))
-    .returning({ attempts: notificationDelivery.attempts });
-  const attempts = row?.attempts ?? NOTIFICATION_DELIVERY_MAX_ATTEMPTS;
-  const abandoned = attempts >= NOTIFICATION_DELIVERY_MAX_ATTEMPTS;
+    .returning({ attempts: notificationDelivery.attempts })
+  const attempts = row?.attempts ?? NOTIFICATION_DELIVERY_MAX_ATTEMPTS
+  const abandoned = attempts >= NOTIFICATION_DELIVERY_MAX_ATTEMPTS
   await db
     .update(notificationDelivery)
     .set({
-      status: abandoned ? "abandoned" : "failed",
+      status: abandoned ? 'abandoned' : 'failed',
       nextAttemptAt: abandoned
         ? null
         : new Date(Date.now() + nextAttemptDelayMs(attempts)).toISOString(),
     })
-    .where(eq(notificationDelivery.id, id));
+    .where(eq(notificationDelivery.id, id))
 }
 
 /**
@@ -760,78 +820,170 @@ export async function recordDeliveryAttempt(
 export async function listDueDeliveries(
   db: Db,
   limit = 50,
-  opts: { includeEmail?: boolean } = {},
+  opts: { includeEmail?: boolean } = {}
 ): Promise<NotificationDeliveryRecord[]> {
-  const now = new Date().toISOString();
+  const now = new Date().toISOString()
   const kindFilter = opts.includeEmail
     ? or(
-      and(
-        eq(notificationChannel.kind, "email"),
-        isNotNull(notificationChannel.verifiedAt),
-      ),
-      notInArray(notificationChannel.kind, ["email", "push"]),
-    )
-    : notInArray(notificationChannel.kind, ["email", "push"]);
+        and(eq(notificationChannel.kind, 'email'), isNotNull(notificationChannel.verifiedAt)),
+        notInArray(notificationChannel.kind, ['email', 'push'])
+      )
+    : notInArray(notificationChannel.kind, ['email', 'push'])
   const rows = await db
     .select({ delivery: notificationDelivery })
     .from(notificationDelivery)
-    .innerJoin(
-      notificationChannel,
-      eq(notificationDelivery.channelId, notificationChannel.id),
-    )
+    .innerJoin(notificationChannel, eq(notificationDelivery.channelId, notificationChannel.id))
     .where(
       and(
-        inArray(notificationDelivery.status, ["pending", "failed"]),
+        inArray(notificationDelivery.status, ['pending', 'failed']),
         lt(notificationDelivery.nextAttemptAt, now),
         isNull(notificationChannel.disabledAt),
-        kindFilter,
-      ),
+        kindFilter
+      )
     )
     .orderBy(notificationDelivery.nextAttemptAt)
-    .limit(limit);
-  return rows.map((r) => asDelivery(r.delivery));
+    .limit(limit)
+  return rows.map((r) => asDelivery(r.delivery))
+}
+
+/** Enabled, verified email channels that have at least one held delivery — the digest sweep's batch. */
+export async function listChannelsWithHeldDeliveries(
+  db: Db,
+  limit = 50
+): Promise<NotificationChannelRecord[]> {
+  const rows = await db
+    .select()
+    .from(notificationChannel)
+    .where(
+      and(
+        eq(notificationChannel.kind, 'email'),
+        isNotNull(notificationChannel.verifiedAt),
+        isNull(notificationChannel.disabledAt),
+        inArray(
+          notificationChannel.id,
+          db
+            .select({ id: notificationDelivery.channelId })
+            .from(notificationDelivery)
+            .where(eq(notificationDelivery.status, 'held'))
+        )
+      )
+    )
+    .orderBy(notificationChannel.createdAt)
+    .limit(limit)
+  return rows.map(asChannel)
+}
+
+/**
+ * Take the held deliveries a window has closed on, atomically: the rows move to
+ * `pending` with the inline-attempt grace on their retry time, so two sweeps
+ * racing for one channel never both get a row (the loser matches nothing), and
+ * a sweeper that dies mid-send leaves rows the retry sweep will still deliver.
+ */
+export async function claimHeldDeliveries(
+  db: Db,
+  channelId: string,
+  createdAtOrBefore: string,
+  limit: number
+): Promise<NotificationDeliveryRecord[]> {
+  const candidates = db
+    .select({ id: notificationDelivery.id })
+    .from(notificationDelivery)
+    .where(
+      and(
+        eq(notificationDelivery.channelId, channelId),
+        eq(notificationDelivery.status, 'held'),
+        lte(notificationDelivery.createdAt, createdAtOrBefore)
+      )
+    )
+    .orderBy(notificationDelivery.createdAt)
+    .limit(limit)
+    .for('update', { skipLocked: true })
+  const rows = await db
+    .update(notificationDelivery)
+    .set({
+      status: 'pending',
+      nextAttemptAt: new Date(Date.now() + INLINE_ATTEMPT_GRACE_MS).toISOString(),
+    })
+    .where(
+      and(eq(notificationDelivery.status, 'held'), inArray(notificationDelivery.id, candidates))
+    )
+    .returning()
+  return rows.map(asDelivery)
+}
+
+/**
+ * Close out claimed rows after the one digest email: sent on success; on failure
+ * back to `held` for the next sweep, `abandoned` once a row has failed the cap.
+ */
+export async function finishDigestDeliveries(
+  db: Db,
+  ids: readonly string[],
+  outcome: { ok: true } | { ok: false; error: string }
+): Promise<void> {
+  if (ids.length === 0) return
+  const where = and(
+    inArray(notificationDelivery.id, [...ids]),
+    eq(notificationDelivery.status, 'pending')
+  )
+  if (outcome.ok) {
+    await db
+      .update(notificationDelivery)
+      .set({
+        status: 'sent',
+        attempts: sql`${notificationDelivery.attempts} + 1`,
+        sentAt: sql`now()`,
+        nextAttemptAt: null,
+        lastError: null,
+      })
+      .where(where)
+    return
+  }
+  await db
+    .update(notificationDelivery)
+    .set({
+      status: sql`case when ${notificationDelivery.attempts} + 1 >= ${NOTIFICATION_DELIVERY_MAX_ATTEMPTS} then 'abandoned' else 'held' end`,
+      attempts: sql`${notificationDelivery.attempts} + 1`,
+      nextAttemptAt: null,
+      lastError: outcome.error.slice(0, 200),
+    })
+    .where(where)
 }
 
 /** Deliveries newer than `since` for one channel — what a channel's detail row shows. */
 export async function listRecentDeliveriesForChannel(
   db: Db,
   channelId: string,
-  since: string,
+  since: string
 ): Promise<NotificationDeliveryRecord[]> {
   const rows = await db
     .select()
     .from(notificationDelivery)
     .where(
-      and(
-        eq(notificationDelivery.channelId, channelId),
-        gt(notificationDelivery.createdAt, since),
-      ),
+      and(eq(notificationDelivery.channelId, channelId), gt(notificationDelivery.createdAt, since))
     )
     .orderBy(desc(notificationDelivery.createdAt))
-    .limit(20);
-  return rows.map(asDelivery);
+    .limit(20)
+  return rows.map(asDelivery)
 }
 
 /** The label the operator's instance-wide alert webhook carries once folded into a channel. */
-export const OPERATOR_WEBHOOK_LABEL = "Operator alert webhook";
+export const OPERATOR_WEBHOOK_LABEL = 'Operator alert webhook'
 
 /** The instance webhook channel the legacy `ALERT_WEBHOOK_URL` setting became, if any. */
-export async function getOperatorWebhookChannel(
-  db: Db,
-): Promise<NotificationChannelRecord | null> {
+export async function getOperatorWebhookChannel(db: Db): Promise<NotificationChannelRecord | null> {
   const [row] = await db
     .select()
     .from(notificationChannel)
     .where(
       and(
-        eq(notificationChannel.scope, "instance"),
-        eq(notificationChannel.kind, "webhook"),
-        eq(notificationChannel.label, OPERATOR_WEBHOOK_LABEL),
-      ),
+        eq(notificationChannel.scope, 'instance'),
+        eq(notificationChannel.kind, 'webhook'),
+        eq(notificationChannel.label, OPERATOR_WEBHOOK_LABEL)
+      )
     )
     .orderBy(notificationChannel.createdAt)
-    .limit(1);
-  return row ? asChannel(row) : null;
+    .limit(1)
+  return row ? asChannel(row) : null
 }
 
 /** Replace a channel's sealed address (already-validated plain input). */
@@ -840,15 +992,12 @@ export async function updateChannelAddress(
   secrets: DerivedSecretsConfig,
   id: string,
   kind: NotificationChannelKind,
-  plainAddress: string,
+  plainAddress: string
 ): Promise<void> {
   const address = channelAddressIsSecret(kind)
     ? await encryptSecret(secrets, plainAddress)
-    : plainAddress;
-  await db
-    .update(notificationChannel)
-    .set({ address })
-    .where(eq(notificationChannel.id, id));
+    : plainAddress
+  await db.update(notificationChannel).set({ address }).where(eq(notificationChannel.id, id))
 }
 
 /** The account emails of every instance administrator — what an instance email channel may name. */
@@ -856,6 +1005,6 @@ export async function instanceAdminEmails(db: Db): Promise<Set<string>> {
   const rows = await db
     .select({ email: user.email })
     .from(user)
-    .where(inArray(user.role, ["admin", "superadmin"]));
-  return new Set(rows.map((r) => r.email.toLowerCase()));
+    .where(inArray(user.role, ['admin', 'superadmin']))
+  return new Set(rows.map((r) => r.email.toLowerCase()))
 }

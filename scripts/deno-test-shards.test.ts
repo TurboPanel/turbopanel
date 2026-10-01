@@ -139,8 +139,13 @@ describe('build.yml fan-in', () => {
 
   it('pairs sibling checkouts with trunk, never staging or live', () => {
     const guard = 'staging:* | live:* | *:staging | *:live) REF=trunk ;;'
-    assertEquals(workflow.split(guard).length - 1, 2)
+    assertEquals(workflow.split(guard).length - 1, 1)
     assertEquals(workflow.includes('REF="${{'), false)
+  })
+
+  it('does not depend on the website checkout or a generated data dictionary', () => {
+    assertEquals(workflow.includes('repository: TurboPanel/website'), false)
+    assertEquals(workflow.includes('data-dictionary'), false)
   })
 })
 

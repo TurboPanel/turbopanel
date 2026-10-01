@@ -1,5 +1,13 @@
 import { MANIFEST_CACHE_MS } from './constants.ts'
 import {
+  ManifestRefusedError,
+  RELEASE_SIGNING_PUBLIC_KEY_HEX,
+  verifyManifestSignature,
+  type ManifestRefusalCode,
+} from './signing.ts'
+import { compareSemver, parseSemver } from '../../lib/version-wire.ts'
+import { logWarn } from '../../lib/logger.ts'
+import {
   builtinChannelManifestUrl,
   DEFAULT_UPDATE_CHANNEL,
   type ReleaseArtifactKind,
@@ -26,6 +34,90 @@ function requireHttpsUrl(url: string): boolean {
   }
 }
 
+/** A manifest the control plane refused, with a stable code (see {@link ManifestRefusalCode}). */
+export type UpdateManifestRefusal = {
+  code: ManifestRefusalCode
+  message: string
+  at: string
+}
+
+let trustKeyHex = RELEASE_SIGNING_PUBLIC_KEY_HEX
+const refusals = new Map<string, UpdateManifestRefusal>()
+const accepted = new Map<string, UpdateManifestTarget>()
+
+function manifestCacheKey(channel: UpdateChannel, kind: ReleaseArtifactKind): string {
+  return `${kind}:${channel}`
+}
+
+/** The last refusal for one channel and kind, or null when its manifest was accepted. */
+export function getUpdateManifestRefusal(
+  channel: UpdateChannel,
+  kind: ReleaseArtifactKind = 'daemon'
+): UpdateManifestRefusal | null {
+  return refusals.get(manifestCacheKey(channel, kind)) ?? null
+}
+
+function recordRefusal(channel: UpdateChannel, kind: ReleaseArtifactKind, error: unknown): void {
+  const key = manifestCacheKey(channel, kind)
+  if (!(error instanceof ManifestRefusedError)) return
+  refusals.set(key, { code: error.code, message: error.message, at: new Date().toISOString() })
+  logWarn('update-manifest', `refused ${key} manifest: ${error.code}: ${error.message}`)
+}
+
+/**
+ * Same rule as the daemon's `isRollback` and `isDowngrade`: base versions
+ * order builds across releases (the pre-release label is ignored), the same
+ * base falls back to build time, and no evidence is never a refusal.
+ */
+function isOlderBuild(previous: UpdateManifestTarget, next: UpdateManifestTarget): boolean {
+  if (previous.commit === next.commit) return false
+  const have = parseSemver(previous.version)
+  const want = parseSemver(next.version)
+  if (have && want) {
+    const base = compareSemver({ ...want, prerelease: [] }, { ...have, prerelease: [] })
+    if (base !== 0) return base < 0
+  }
+  const previousAt = Date.parse(previous.builtAt)
+  const nextAt = Date.parse(next.builtAt)
+  return Number.isFinite(previousAt) && Number.isFinite(nextAt) && nextAt < previousAt
+}
+
+/**
+ * A signature proves who made a manifest, not when. Refuse a validly signed
+ * manifest that is older than one this process already accepted for the same
+ * channel (a replayed stale release asset); the daemon refuses it again at
+ * install time. In memory only: a restart forgets the high-water mark.
+ */
+function assertNotReplayed(key: string, target: UpdateManifestTarget): void {
+  const previous = accepted.get(key)
+  if (previous && isOlderBuild(previous, target)) {
+    throw new ManifestRefusedError(
+      'manifest_replayed',
+      `signed manifest (${target.version ?? target.commit}, built ${target.builtAt}) is older than the one already accepted (${previous.version ?? previous.commit}, built ${previous.builtAt})`
+    )
+  }
+  accepted.set(key, target)
+  refusals.delete(key)
+}
+
+function nonEmptyString(value: unknown): string | null {
+  return typeof value === 'string' && value ? value : null
+}
+
+/** The identity fields every channel manifest must carry; null when any is missing. */
+function readTarget(
+  manifestJson: Record<string, unknown>,
+  manifestUrl: string
+): UpdateManifestTarget | null {
+  const commit = nonEmptyString(manifestJson.commit)
+  const buildId = nonEmptyString(manifestJson.buildId)
+  const builtAt = nonEmptyString(manifestJson.builtAt)
+  const channel = nonEmptyString(manifestJson.channel)
+  if (!commit || !buildId || !builtAt || !channel) return null
+  const version = typeof manifestJson.version === 'string' ? manifestJson.version.trim() : ''
+  return { commit, buildId, builtAt, channel, manifestUrl, ...(version ? { version } : {}) }
+}
+
 /**
  * One fetch, straight to the channel's built-in manifest location — no
  * catalog hop. `rc` / `release` resolve through GitHub's own redirects, which
@@ -46,41 +138,17 @@ async function fetchManifestUncached(
     })
     if (!manifestRes.ok) return null
 
-    const manifestJson = JSON.parse(await manifestRes.text()) as {
-      commit?: unknown
-      buildId?: unknown
-      builtAt?: unknown
-      channel?: unknown
-      version?: unknown
-    }
+    const manifestJson = JSON.parse(await manifestRes.text()) as Record<string, unknown>
+    // Verify before any field is used (audit M6): an unsigned, foreign-signed
+    // or tampered manifest is "target unknown", never a target.
+    await verifyManifestSignature(manifestJson, trustKeyHex)
 
-    const { commit, buildId, builtAt, channel: manifestChannel } = manifestJson
-    const version =
-      typeof manifestJson.version === 'string' && manifestJson.version.trim()
-        ? manifestJson.version.trim()
-        : undefined
-    if (
-      typeof commit !== 'string' ||
-      !commit ||
-      typeof buildId !== 'string' ||
-      !buildId ||
-      typeof builtAt !== 'string' ||
-      !builtAt ||
-      typeof manifestChannel !== 'string' ||
-      !manifestChannel
-    ) {
-      return null
-    }
-
-    return {
-      commit,
-      buildId,
-      builtAt,
-      channel: manifestChannel,
-      manifestUrl,
-      ...(version ? { version } : {}),
-    }
-  } catch {
+    const target = readTarget(manifestJson, manifestUrl)
+    if (!target) return null
+    assertNotReplayed(manifestCacheKey(channel, kind), target)
+    return target
+  } catch (error) {
+    recordRefusal(channel, kind, error)
     return null
   }
 }
@@ -90,7 +158,9 @@ async function fetchManifestUncached(
  * configured to follow. The dev instance points this at the local daemon
  * checkout's overlay catalog (see src/developer/dev-update-overlay.ts) so
  * "update available" tracks local daemon changes instead of the public rail.
- * Never set in production; the provider does its own caching.
+ * Never set in production; the provider does its own caching. It skips signature
+ * verification on purpose: it is the explicit dev opt-in (registered only by
+ * `deno-dev.ts`), the control-plane twin of the daemon's dev unsigned bypass.
  */
 export type UpdateManifestProvider = () => Promise<UpdateManifestTarget | null>
 
@@ -105,10 +175,6 @@ type CacheEntry = {
   expiresAt: number
 }
 
-function manifestCacheKey(channel: UpdateChannel, kind: ReleaseArtifactKind): string {
-  return `${kind}:${channel}`
-}
-
 const cache = new Map<string, CacheEntry>()
 const inflight = new Map<string, Promise<UpdateManifestTarget | null>>()
 
@@ -116,6 +182,14 @@ const inflight = new Map<string, Promise<UpdateManifestTarget | null>>()
 export function resetUpdateManifestCacheForTests(): void {
   cache.clear()
   inflight.clear()
+  refusals.clear()
+  accepted.clear()
+  trustKeyHex = RELEASE_SIGNING_PUBLIC_KEY_HEX
+}
+
+/** Trust a test key instead of the pinned release key — for tests only. */
+export function setUpdateManifestTrustKeyForTests(publicKeyHex: string): void {
+  trustKeyHex = publicKeyHex
 }
 
 /** Seed manifest cache — for tests only. */

@@ -256,53 +256,6 @@ jobs:
       - name: Deno typecheck (entry points + tests)
         run: deno task check:types
 
-  # The website's /docs/database pages are generated from the schema. Not in
-  # the SonarQube fan-in: a schema change lands with its website PR, and a
-  # same-named website branch is used when one exists.
-  data-dictionary:
-    name: data-dictionary
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    concurrency:
-      group: instance-data-dictionary-${{ github.event_name }}-${{ github.ref }}
-      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          path: turbopanel
-
-      - name: Resolve website checkout ref
-        id: website-ref
-        env:
-          GH_TOKEN: ${{ github.token }}
-          HEAD_REF: ${{ github.head_ref || github.ref_name }}
-          BASE_REF: ${{ github.base_ref }}
-        run: |
-          # A same-named feature branch, else the sibling's trunk. Never the
-          # sibling's staging or live: promotion PRs (base staging/live) and
-          # PRs from those branches carry commits that passed against trunk.
-          REF="$HEAD_REF"
-          case "$REF:$BASE_REF" in
-            staging:* | live:* | *:staging | *:live) REF=trunk ;;
-            *) ;;
-          esac
-          if gh api "repos/TurboPanel/website/branches/${REF}" --silent; then
-            echo "ref=${REF}" >> "$GITHUB_OUTPUT"
-          else
-            echo "ref=trunk" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Check out website
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: TurboPanel/website
-          path: website
-          ref: ${{ steps.website-ref.outputs.ref }}
-
-      - name: Check the generated data dictionary is current
-        run: node turbopanel/scripts/generate-data-dictionary.mjs --check
-
   # Skipped, not failed, when a coverage shard did not succeed: the scan needs
   # every shard's LCOV, and that shard's failure is already reported once.
   sonarqube:
@@ -482,7 +435,6 @@ jobs:
         deno-db,
         sonarqube,
         metrics-legacy,
-        data-dictionary,
       ]
     if: >-
       ${{ (github.event_name == 'pull_request' && always())

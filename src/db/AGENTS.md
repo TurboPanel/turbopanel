@@ -321,26 +321,27 @@ unless the developer explicitly asks.
 Destructive changes (drop column/table, type narrowing) can lose dev rows.
 `dev/scripts/sync.sh` prompts via `--strict`; `--force` skips those guardrails.
 
-## Schema descriptions — Postgres comments + website data dictionary
+## Schema descriptions — Postgres comments
 
-**Every schema change updates the website's data dictionary in the same
-session, and every table and non-obvious column carries a Postgres comment.**
-Both are generated from one file, and a test holds that file to the shipped
-schema, so "I'll document it later" fails CI rather than drifting.
+**Every table and non-obvious column carries a Postgres comment.** The
+comments are generated from one file, and a test holds that file to the
+shipped schema, so "I'll document it later" fails CI rather than drifting.
+The descriptions live in the database (`COMMENT ON`, visible with `\d+` in
+`psql`). The website's `/docs/database` reference was removed for 0.2.x (a
+browsable reference may return later); nothing generates or checks website
+pages any more.
 
 | Piece | Path | Role |
 | --- | --- | --- |
 | Source of truth | [`schema-descriptions.ts`](./schema-descriptions.ts) | Physical table name → `group`, one-sentence `summary`, and one sentence per non-obvious column. Hand-maintained. |
 | Guard | [`schema-descriptions.test.ts`](./schema-descriptions.test.ts) | Against the **latest snapshot**: every table has a group + summary; every non-obvious column has a sentence; nothing describes a missing table/column; sentences obey the writing rules; **and every sentence is already in a `COMMENT ON` migration**. |
 | Comment delta | `scripts/schema-comments.mjs` (`pnpm schema:comments`, `--check`) | Replays `COMMENT ON` across `migrations/*.sql` (journal order, last wins) and prints only the statements still missing, in drizzle's `--> statement-breakpoint` format. |
-| Data dictionary | `scripts/generate-data-dictionary.mjs` (`pnpm docs:data-dictionary`, `--check`) | Renders latest snapshot + descriptions to `../website/docs/database/` (`index.mdx`, one page per group, `meta.json`). Published at `/docs/database`. |
-| Snapshot reader | `scripts/schema-snapshot.mjs` | Both scripts read the snapshot behind the newest journal entry — never `schema.ts` — so an ungenerated edit cannot reach comments or docs ahead of its migration. |
+| Snapshot reader | `scripts/schema-snapshot.mjs` | The comment script reads the snapshot behind the newest journal entry — never `schema.ts` — so an ungenerated edit cannot reach comments ahead of its migration. |
 
 **"Obvious" is a rule, not a judgement** (`isObviousColumn`): `id`,
 `created_at`, `updated_at`, and a foreign key named exactly
 `<referenced table>_id`. Those **need** no database comment (an authored
-sentence on one is still emitted) and the dictionary spells them out
-generically. A foreign key under any other name
+sentence on one is still emitted). A foreign key under any other name
 (`server.assigned_tier_id`, `audit.actor_user_id`) must be described — the
 name signals a rule. `metadata` / `options` always need a sentence saying
 what keys they hold and who writes them.
@@ -349,8 +350,7 @@ what keys they hold and who writes them.
 line breaks, none of `| { } < > "` (GFM cells, MDX, SQL quoting). Backticks
 for identifiers and literal values; single quotes are fine. Say what the
 value is, who writes it, and the members / units / derived-vs-stored fact.
-"daemon", never "agent" (`pnpm check:vocabulary` scans this file and the
-generated pages).
+"daemon", never "agent" (`pnpm check:vocabulary` scans this file).
 
 ### The loop (every schema change, same PR)
 
@@ -366,13 +366,8 @@ generated pages).
    offline), then paste there.
 4. `node scripts/check-migration-freeze.mjs --update` (appends the manifest
    entry; never `--rebaseline`).
-5. `pnpm docs:data-dictionary` regenerates `../website/docs/database/*`.
-   Commit those pages in the **website** repo (its own PR, same session);
-   `pnpm docs:data-dictionary:check` reports staleness. The pages are
-   generated — never hand-edit them; a description change starts at step 2.
-6. Run the db suites in the guest (`pnpm verify:ci`, or at least
-   `deno test --allow-read src/db/`) and `pnpm check:vocabulary` in
-   **both** repos.
+5. Run the db suites in the guest (`pnpm verify:ci`, or at least
+   `deno test --allow-read src/db/`) and `pnpm check:vocabulary`.
 
 The agent policy above still holds: generate and edit the unshipped SQL,
 yes; apply (`pnpm migrate`) or commit migrations, no — hand the developer

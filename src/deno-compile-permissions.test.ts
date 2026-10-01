@@ -275,8 +275,12 @@ it('compiled instance branch vendors libduckdb.so on LD_LIBRARY_PATH', async () 
   const defaults = await readDaemonFile('orchestration/roles/instance-launch/defaults/main.yml')
   assert(defaults !== null, 'instance-launch defaults must exist next to the unit template')
   assert(
-    defaults.includes('turbopanel_duckdb_lib_dir: "{{ turbopanel_vendor_dir }}/duckdb/lib"'),
-    'turbopanel_duckdb_lib_dir must default to <vendor>/duckdb/lib'
+    defaults.includes("turbopanel_duckdb_lib_dir: \"{{ (turbopanel_vendor_dir ~ '/duckdb/lib') if"),
+    'turbopanel_duckdb_lib_dir must default to <vendor>/duckdb/lib for a co-located dev instance'
+  )
+  assert(
+    defaults.includes('else turbopanel_lib_dir }}"'),
+    'turbopanel_duckdb_lib_dir must otherwise be the flat install lib dir (lib/libduckdb.so)'
   )
   assert(
     defaults.includes('turbopanel_vendor_dir: "{{ turbopanel_install_root }}/vendor"'),
@@ -377,9 +381,12 @@ it('compile tasks emit the plain binary name and skip type-checking', async () =
     'compile:dev must emit dist/turbopanel-dev'
   )
   for (const [taskName, task] of Object.entries(tasks)) {
+    // The release compile also refuses a lockfile that does not cover every import.
+    const prefix =
+      taskName === 'compile' ? 'deno compile --frozen --no-check ' : 'deno compile --no-check '
     assert(
-      task.startsWith('deno compile --no-check '),
-      `${taskName} must compile with --no-check (type-checking runs before the prune)`
+      task.startsWith(prefix),
+      `${taskName} must compile with --no-check (type-checking runs before the prune)${taskName === 'compile' ? ' and --frozen' : ''}`
     )
   }
   const denoJsonPath = new URL('../deno.json', import.meta.url)

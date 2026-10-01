@@ -5,10 +5,22 @@ import type { AppEnv } from '../../app/app.ts'
 import { CLIENT_API_PREFIX } from '../../app/surfaces.ts'
 import { createDenoDb } from '../../db/connection.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
-import { account, grant, organization, session, user, verification } from '../../db/schema.ts'
+import {
+  account,
+  environment,
+  grant,
+  organization,
+  project,
+  session,
+  user,
+  verification,
+  workspace,
+} from '../../db/schema.ts'
 import { hashPassword } from '../../lib/secrets/password.ts'
 import { deriveEncryptionSecretsConfig, deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
+import { registerEnvironmentRoutes } from '../environments/routes.ts'
+import { ORG_ID_HEADER } from '../org-context.ts'
 import { registerOrganizationMemberRoutes } from '../organizations/members.ts'
 import { registerReauthSettingsRoutes } from '../organizations/reauth-settings-routes.ts'
 import { createAuthRateLimiter, setSharedAuthRateLimiterForTests } from './auth-rate-limit.ts'
@@ -61,6 +73,7 @@ async function buildFixture(db: Db, reauthLimit = 1000) {
   registerAuthRoutes(client, opts)
   registerReauthSettingsRoutes(client, opts)
   registerOrganizationMemberRoutes(client, opts)
+  registerEnvironmentRoutes(client, opts)
   // A stand-in destructive route: any route wired to the gate behaves like it.
   client.use('/probe/*', createSessionMiddleware(sessionSecrets))
   client.delete('/probe/:orgId', async (c) => {
@@ -380,6 +393,68 @@ test('remove member is wired to the gate', async () => {
     } finally {
       await db.delete(grant).where(eq(grant.actorId, member.userId))
       await db.delete(user).where(eq(user.id, member.userId))
+    }
+  })
+})
+
+/** A project with one never-deployed environment in the org: nothing blocks its delete. */
+async function makeStoppedEnvironment(db: Db, organizationId: string, label: string) {
+  const [ws] = await db
+    .insert(workspace)
+    .values({ name: `Step-up Workspace ${label}`, organizationId })
+    .returning({ id: workspace.id })
+  const [proj] = await db
+    .insert(project)
+    .values({ name: `Step-up Project ${label}`, workspaceId: ws!.id, organizationId })
+    .returning({ id: project.id })
+  const [env] = await db
+    .insert(environment)
+    .values({ projectId: proj!.id, name: `Step-up Environment ${label}` })
+    .returning({ id: environment.id })
+  return { workspaceId: ws!.id, projectId: proj!.id, environmentId: env!.id }
+}
+
+function deleteEnvironment(fx: Fixture, orgId: string, envId: string, cookie: string) {
+  return fx.app.request(`${API}/environments/${envId}`, {
+    method: 'DELETE',
+    headers: { cookie, [ORG_ID_HEADER]: orgId, 'X-Real-IP': '203.0.113.7' },
+  })
+}
+
+async function environmentExists(db: Db, envId: string) {
+  const rows = await db
+    .select({ id: environment.id })
+    .from(environment)
+    .where(eq(environment.id, envId))
+  return rows.length === 1
+}
+
+test('delete environment is wired to the gate', async () => {
+  await withScene(async ({ db, fx, orgA, cookie, password }) => {
+    const off = await makeStoppedEnvironment(db, orgA, 'off')
+    const on = await makeStoppedEnvironment(db, orgA, 'on')
+    try {
+      // Setting off: the delete is not prompted.
+      assertEquals((await deleteEnvironment(fx, orgA, off.environmentId, cookie)).status, 200)
+      assertEquals(await environmentExists(db, off.environmentId), false)
+
+      await setOrgReauth(db, orgA, true)
+      const refused = await deleteEnvironment(fx, orgA, on.environmentId, cookie)
+      assertEquals(refused.status, 403)
+      const body = (await refused.json()) as { error: string; action: string }
+      assertEquals(body.error, 'reauth_required')
+      assertEquals(body.action, 'environment.delete')
+      assertEquals(await environmentExists(db, on.environmentId), true)
+
+      await req(fx, 'POST', '/auth/reauth', cookie, proofBody(password))
+      assertEquals((await deleteEnvironment(fx, orgA, on.environmentId, cookie)).status, 200)
+      assertEquals(await environmentExists(db, on.environmentId), false)
+    } finally {
+      await db.delete(environment).where(eq(environment.projectId, off.projectId))
+      await db.delete(environment).where(eq(environment.projectId, on.projectId))
+      await db.delete(project).where(eq(project.workspaceId, off.workspaceId))
+      await db.delete(project).where(eq(project.workspaceId, on.workspaceId))
+      await db.delete(workspace).where(eq(workspace.organizationId, orgA))
     }
   })
 })
