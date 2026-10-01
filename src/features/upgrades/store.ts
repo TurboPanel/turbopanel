@@ -272,7 +272,7 @@ type StepDbRow = {
   toVersion: string | null
   fromCommit: string | null
   toCommit: string | null
-  lastStageAt: string | null
+  statusChangedAt: string | null
   errorCode: string | null
   errorMessage: string | null
   detail: unknown
@@ -294,7 +294,7 @@ function toStep(row: StepDbRow): UpgradeStepRow {
     toVersion: row.toVersion,
     fromCommit: row.fromCommit,
     toCommit: row.toCommit,
-    lastStageAt: row.lastStageAt,
+    lastStageAt: row.statusChangedAt,
     errorCode: row.errorCode,
     errorMessage: row.errorMessage,
     detail: row.detail,
@@ -316,7 +316,7 @@ function stepInsert(step: UpgradeStepRow) {
     toVersion: step.toVersion,
     fromCommit: step.fromCommit,
     toCommit: step.toCommit,
-    lastStageAt: step.lastStageAt,
+    statusChangedAt: step.lastStageAt,
     errorCode: step.errorCode,
     errorMessage: step.errorMessage,
     detail: detailWithPhase(step.phase, step.detail),
@@ -575,7 +575,7 @@ export function createDrizzleUpgradeStore(
           requestId: step.requestId,
           attempts: step.attempts,
           nextAttemptAt: step.nextAttemptAt,
-          lastStageAt: step.lastStageAt,
+          statusChangedAt: step.lastStageAt,
           errorCode: step.errorCode,
           errorMessage: step.errorMessage,
           detail: detailWithPhase(step.phase, step.detail),
