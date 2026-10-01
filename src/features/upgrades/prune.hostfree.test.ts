@@ -129,7 +129,7 @@ test('pruneUpgradeHistory issues three capped deletes and returns their counts',
 
 test('the active-step index lists UPGRADE_STEP_ACTIVE_STATUSES', async () => {
   const source = await Deno.readTextFile(new URL('../../db/schema.ts', import.meta.url))
-  const at = source.indexOf('idx_upgradestep_active_next_attempt')
+  const at = source.indexOf('idx_stage_active_next_attempt')
   assert(at >= 0)
   const slice = source.slice(at, at + 600).replaceAll(/\s+/g, '')
   const expected = UPGRADE_STEP_ACTIVE_STATUSES.map((status) => `'${status}'`).join(',')

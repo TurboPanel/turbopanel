@@ -63,7 +63,7 @@ export function daemonOnlyUpdateCommand(manifestUrl: string | null, channel?: st
   )} | TURBOPANEL_DAEMON_ONLY=1 TURBOPANEL_MANIFEST_URL=${pin} sh`
 }
 
-/** Map a fire-and-forget progress stage onto an `upgradestep` status. */
+/** Map a fire-and-forget progress stage onto a `stage` status. */
 export function stepStatusForProgressStage(stage: UpdateProgressStage): UpgradeStepStatus {
   if (stage === 'rolled-back') return 'rolled_back'
   return stage

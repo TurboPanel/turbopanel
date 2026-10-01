@@ -1,5 +1,5 @@
 /**
- * Checked vocabularies for `upgrade` / `upgradestep`.
+ * Checked vocabularies for `upgrade` / `stage`.
  *
  * The `CHECK` lists in `src/db/schema.ts` are pinned to these arrays by
  * `src/db/enum-checks.test.ts`. Add a member in both places.
@@ -58,7 +58,7 @@ export const UPGRADE_STEP_STATUSES = [
 export type UpgradeStepStatus = (typeof UPGRADE_STEP_STATUSES)[number]
 
 /**
- * Non-terminal step statuses. `idx_upgradestep_active_next_attempt` is
+ * Non-terminal step statuses. `idx_stage_active_next_attempt` is
  * partial on this list so the retry scan stays small.
  */
 export const UPGRADE_STEP_ACTIVE_STATUSES = [

@@ -94,6 +94,7 @@ const APPROVED_TABLE_NAMES = new Set<string>([
   'slot',
   'snapshot',
   'ssh',
+  'stage',
   'storage',
   'subnet',
   'subscription',
@@ -116,12 +117,7 @@ const APPROVED_TABLE_NAMES = new Set<string>([
  * so they stay visible instead of silently approved; remove an entry by
  * renaming the table in a forward migration.
  */
-const PENDING_RENAMES = new Map<string, string>([
-  [
-    'upgradestep',
-    "owner chose `phase` (2026-09-30); held because `phase` already names UpgradePhase (colocated_daemon / control_plane / fleet), stored in each step's detail",
-  ],
-])
+const PENDING_RENAMES = new Map<string, string>()
 
 /** Names a replayed database must never hold again. */
 const RETIRED_TABLE_NAMES = new Set<string>([
@@ -151,6 +147,7 @@ const RETIRED_TABLE_NAMES = new Set<string>([
   'backuppolicy',
   'backuprun',
   'volumebackup',
+  'upgradestep',
 ])
 
 /** One standalone lower-case word: letter-first, alphanumeric only, no underscores. */

@@ -7,7 +7,7 @@ exposes it, and the maintenance tick drives it.
 Root context: `../../../AGENTS.md`. Cell protocol + tolerant inbound:
 `../../daemon/cell/AGENTS.md`. Settings row: `../settings/upgrade-settings.ts`.
 Channel manifests: `../../contracts/update-channel.ts`. Schema (`upgrade` /
-`upgradestep`): `../../db/AGENTS.md`.
+`stage`): `../../db/AGENTS.md`.
 
 ## The one rule: the planner and state transitions stay pure
 
@@ -21,7 +21,7 @@ do not import a DB/cell module here.
 
 | Module              | Owns                                                                                                                               |
 | ------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `vocabulary.ts`     | `upgrade` / `upgradestep` enums, pinned by `../../db/enum-checks.test.ts`                                                          |
+| `vocabulary.ts`     | `upgrade` / `stage` enums, pinned by `../../db/enum-checks.test.ts`                                                          |
 | `target.ts`         | `upgrade.target` jsonb shape + `isOnTarget` / `differsFromInstalled`                                                               |
 | `target-resolve.ts` | channel manifests → `UpgradeTarget` (pinned via `pinnedChannelManifestUrl`), `channelHasInstancePackage`, latest-build setting row |
 | `planner.ts`        | phases + batch sizing → the run's step list                                                                                        |

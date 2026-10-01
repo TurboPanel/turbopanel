@@ -4,7 +4,7 @@
  *
  * The orchestrator (not this file) writes `upgrade.counts` when a run
  * finishes. That summary is what history keeps after these deletes remove
- * old `upgradestep` rows.
+ * old `stage` rows.
  *
  * Three capped deletes per call, oldest first, same shape as
  * `sweepExpiredCommandDispatch` / `sweepExpiredWebhookDeliveries`:
@@ -20,7 +20,7 @@
  */
 import { sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import { upgrade, upgradeStep } from '../../db/schema.ts'
+import { upgrade, stage } from '../../db/schema.ts'
 import {
   UPGRADE_STEP_DONE_STATUSES,
   UPGRADE_STEP_FAILURE_STATUSES,
@@ -95,10 +95,10 @@ async function deleteOldSteps(
   limit: number
 ): Promise<number> {
   const deleted = await db
-    .delete(upgradeStep)
+    .delete(stage)
     .where(
-      sql`${upgradeStep.id} in (
-        select step.id from ${upgradeStep} step
+      sql`${stage.id} in (
+        select step.id from ${stage} step
         inner join ${upgrade} parent on parent.id = step.upgrade_id
         where step.status in (${sql.raw(quotedList(statuses))})
           and step.updated_at < ${cutoff}::timestamptz
@@ -108,7 +108,7 @@ async function deleteOldSteps(
         limit ${limit}
       )`
     )
-    .returning({ id: upgradeStep.id })
+    .returning({ id: stage.id })
   return deleted.length
 }
 

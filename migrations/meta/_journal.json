@@ -78,6 +78,13 @@
       "when": 1790811211147,
       "tag": "0010_single_word_table_names",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1790812730427,
+      "tag": "0011_rename_upgradestep_to_stage",
+      "breakpoints": true
     }
   ]
 }

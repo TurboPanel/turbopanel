@@ -2,7 +2,7 @@
  * The `upgrade.target` jsonb shape and the pure "on target?" predicates the
  * planner and the state machine share.
  *
- * One pin per releasable unit. `daemon` and `instance` become `upgradestep`
+ * One pin per releasable unit. `daemon` and `instance` become `stage`
  * rows; `ui` rides the same control-plane install as `instance` (there is no
  * separate UI step, so it is a pin only). Every field is nullable — the tick
  * writes it once it has resolved the channel manifests (`resolveUpdateManifest`
