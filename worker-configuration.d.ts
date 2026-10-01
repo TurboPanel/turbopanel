@@ -59,6 +59,11 @@ interface CloudflareBindings {
    */
   CLIENT_AUTH_STRICT_RATE_LIMITER?: RateLimit
   /**
+   * Generic mutating-request cap (`src/app/write-rate-limit.ts`): 120 writes /
+   * 60 s per signed session or per IP. Optional — absent means no limit.
+   */
+  CLIENT_WRITE_RATE_LIMITER?: RateLimit
+  /**
    * Inbound GitHub webhook throttle (`/webhook/github`). Keyed per
    * peer address because the caller has no identity until its HMAC is verified.
    * Missing binding fails closed on production-like Workers (see

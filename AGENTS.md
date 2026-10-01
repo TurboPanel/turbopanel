@@ -962,6 +962,38 @@ see the last row.
 | Daemon                       | `/api/daemon/v1/*`                | `/ws/daemon/v1`           | `version`, `instance/ca`, `instance/uploaded-trust`; daemons connect on the WS path                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | Git webhooks                 | `/webhook/{github,gitlab}(/:ref)` | —                         | **Not an API.** The caller is GitHub or GitLab: no session, no daemon JWT, no `Origin`, and what arrives is an event rather than a call. Unversioned and outside every protected prefix by design. Self-hosted providers get the `:ref` suffix; hosted ones get the clean path. Every fronting layer must forward it — see `src/webhook/AGENTS.md`                                                                                                                                                                |
 
+### Gates on mutating requests (client / admin / install / developer)
+
+`createApp` (`src/app/app.ts`) runs three gates, in this order, on `POST` /
+`PUT` / `PATCH` / `DELETE` under the four cookie-authenticated prefixes. `GET`,
+`HEAD` and `OPTIONS` are never gated. `/api/daemon/v1`, `/ws/*`, `/webhook/*`,
+`/api/health` and docs/static routes are outside all three (they have their own
+bounded readers and limiters).
+
+1. **CSRF** (`app/browser-write-protection.ts`). Exact-origin match on `Origin`,
+   else `Referer`; neither present = non-browser client, allowed. `Sec-Fetch-Site`
+   only tightens: `cross-site` is always `403`, and with no `Origin`/`Referer` a
+   present value other than `same-origin` / `none` (so `same-site`) is `403`.
+   `same-site` is **not** a pass on its own: customer sites can live on sibling
+   subdomains of the panel host. A missing `Sec-Fetch-Site` stays allowed — the
+   native apps, CLI, installer curl and Local-Console HMAC calls send none. Do
+   not add a required custom header: store apps in the field would lock out.
+2. **Body limit** (`app/body-limit.ts`). 1 MiB default, 4 MiB for compose-bearing
+   routes (projects, environments, deploy, docker-run import); `413`
+   `{ ok: false, error, code: 'request_body_too_large' }` before any handler
+   parses the body, with or without `Content-Length`. Smaller per-route bounds
+   (auth, 2-8 KiB) still apply inside handlers. Add a route to
+   `CLIENT_LARGE_BODY_PATTERNS` only with a reason.
+3. **Write rate limit** (`app/write-rate-limit.ts`). 120 writes / 60 s per
+   verified session cookie (digest, no DB read), else per client IP; `429`
+   `{ code: 'rate_limited' }` + `Retry-After: 60`. Backend is the `RateLimiter`
+   seam: Workers binding `CLIENT_WRITE_RATE_LIMITER` (namespace ids 1010 / 2010 /
+   3010 / 4010), Deno Redis (`TURBOPANEL_CLIENT_WRITE_RATE_LIMIT` /
+   `_PERIOD`). It **fails open**: no binding, no limiter injected, an unresolvable
+   IP, or a limiter error all let the write through (one warning per process).
+   Unlike `authRateLimiter` it must never become an outage. Forged cookies are
+   anonymous and keyed by IP.
+
 - Route modules: `src/daemon/api-routes.ts`, `src/client/routes.ts`,
   `src/install/routes.ts` (registered from `deno.ts` only); Deno-only routes
   `src/developer/system-routes.ts`, `src/developer/dev-sync.ts`,

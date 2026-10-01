@@ -51,6 +51,12 @@ export function getClientOpenApiSpec(serverUrl: string, options?: ClientOpenApiO
     info: {
       title: 'TurboPanel Client API',
       version: INSTANCE_VERSION,
+      description:
+        'Mutating requests (POST, PUT, PATCH, DELETE) pass three gates before a route runs. ' +
+        'Browser writes must be same-origin: a cross-site Sec-Fetch-Site or a foreign Origin answers 403 Forbidden, ' +
+        'while clients that send no Origin, Referer or Sec-Fetch headers (CLI, native apps) are unaffected. ' +
+        'Bodies over 1 MiB (4 MiB on project, environment and docker-run import routes) answer 413 with code request_body_too_large. ' +
+        'More than 120 writes per minute per session (per IP when anonymous) answers 429 with code rate_limited and a Retry-After header.',
     },
     servers: [{ url: serverUrl }],
     tags: [
