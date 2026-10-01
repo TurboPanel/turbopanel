@@ -1665,3 +1665,35 @@ test('PATCH /projects/:id validates deploy defaults, keeps stored ones, and refu
     assertEquals(await projectOptions(ctx, id), { rollbackWindowMinutes: 10 })
   })
 })
+
+test('POST /projects/:id/configure with a catalog template keeps the environment deploy settings', async () => {
+  await withProjectFixtures(async (ctx) => {
+    const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
+    const id = await createEmptyProject(ctx, cookie, 'Template Keeps Strategy')
+    const [env] = await ctx.db
+      .select({ id: environment.id })
+      .from(environment)
+      .where(eq(environment.projectId, id))
+    await ctx.db
+      .update(environment)
+      .set({
+        options: { compose: { version: 1 }, deployStrategy: 'bluegreen', migrations: 'none' },
+      })
+      .where(eq(environment.id, env!.id))
+
+    const res = await sendProjectJson(ctx, cookie, 'POST', `/projects/${id}/configure`, {
+      type: 'template',
+      code: 'static-site',
+    })
+    assertEquals(res.status, 200)
+
+    const [after] = await ctx.db
+      .select({ options: environment.options })
+      .from(environment)
+      .where(eq(environment.id, env!.id))
+    const options = after?.options as Record<string, unknown>
+    assertEquals(options.deployStrategy, 'bluegreen')
+    assertEquals(options.migrations, 'none')
+    assertEquals(typeof options.compose, 'object')
+  })
+})

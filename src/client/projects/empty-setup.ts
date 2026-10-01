@@ -24,7 +24,10 @@ import {
   type CatalogVariable,
   type CreateProjectType,
 } from './catalog/index.ts'
-import { stampNewEnvironmentDeployOptions } from '../../features/deploy/deploy-options.ts'
+import {
+  settleDeployOptions,
+  stampNewEnvironmentDeployOptions,
+} from '../../features/deploy/deploy-options.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 
 export const DEFAULT_PRODUCTION_ENVIRONMENT_NAME = DEFAULT_ENVIRONMENT_NAME
@@ -272,10 +275,20 @@ async function applyCatalogEnvCompose(
 ): Promise<void> {
   const catalogEnv = resolveCatalogProductionEnv(entry)
   if (!catalogEnv?.compose) return
+  // Replaces the compose overlay but keeps (or, for a first configure, stamps)
+  // the deploy settings the environment already carries.
+  const [existing] = await tx
+    .select({ options: environment.options })
+    .from(environment)
+    .where(eq(environment.id, productionId))
+    .limit(1)
+  const options = stampNewEnvironmentDeployOptions(
+    settleDeployOptions(existing?.options, { compose: catalogEnv.compose }, 'environment')
+  )
   await tx
     .update(environment)
     .set({
-      options: { compose: catalogEnv.compose },
+      options,
       description: catalogEnv.description ?? DEFAULT_PRODUCTION_ENVIRONMENT_DESCRIPTION,
       updatedAt: new Date().toISOString(),
     })
