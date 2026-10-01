@@ -203,3 +203,85 @@ test('an organization ssh restriction is reported as not yet sent', () => {
   )
   assertEquals(derivation.notes.length, 1)
 })
+
+function clusterExposure(
+  ports: string,
+  sources: string[] | undefined,
+  destination = '203.0.113.5'
+): FirewallDeriveInput['exposures'][number] {
+  return {
+    source: 'cluster',
+    scope: 'published',
+    proto: 'tcp',
+    ports,
+    reach: 'peers',
+    comment: 'Managed cluster peers',
+    destination,
+    ...(sources === undefined ? {} : { sources }),
+  }
+}
+
+test('a cluster port lists exactly its peers, sorted, and is never open to anyone', () => {
+  const derivation = deriveFirewall(
+    input({
+      exposures: [clusterExposure('34001', ['198.51.100.9', '198.51.100.2', '198.51.100.30'])],
+    })
+  )
+  assertEquals(derivation.rules.length, 1)
+  assertEquals(derivation.rules[0]!.sources, [
+    '198.51.100.2/32',
+    '198.51.100.30/32',
+    '198.51.100.9/32',
+  ])
+  assertEquals(derivation.rules[0]!.destinations, ['203.0.113.5'])
+  assertEquals(derivation.rules[0]!.sources.includes('any'), false)
+})
+
+test('a removed peer shrinks the rule', () => {
+  const sources = ['198.51.100.2', '198.51.100.9', '198.51.100.30']
+  const before = deriveFirewall(input({ exposures: [clusterExposure('34001', sources)] }))
+  const after = deriveFirewall(
+    input({ exposures: [clusterExposure('34001', sources.slice(0, 2))] })
+  )
+  assertEquals(before.rules[0]!.sources.length, 3)
+  assertEquals(after.rules[0]!.sources, ['198.51.100.2/32', '198.51.100.9/32'])
+})
+
+test('a cluster with no usable peers derives no rule and says why', () => {
+  for (const sources of [undefined, [], ['any', 'not-an-address']]) {
+    const derivation = deriveFirewall(input({ exposures: [clusterExposure('34001', sources)] }))
+    assertEquals(derivation.rules, [])
+    assertEquals(derivation.notes.length, 1)
+  }
+})
+
+test('IPv4 and IPv6 peers are both kept, and the order does not depend on input order', () => {
+  const forward = deriveFirewall(
+    input({
+      exposures: [clusterExposure('34001', ['2001:db8::7', '198.51.100.2', '198.51.100.2'])],
+    })
+  )
+  const backward = deriveFirewall(
+    input({ exposures: [clusterExposure('34001', ['198.51.100.2', '2001:db8::7'])] })
+  )
+  assertEquals(forward.rules[0]!.sources, ['198.51.100.2/32', '2001:db8::7/128'])
+  assertEquals(forward.rules, backward.rules)
+})
+
+test('two clusters on one host get one rule each, never a shared or open one', () => {
+  const derivation = deriveFirewall(
+    input({
+      exposures: [
+        clusterExposure('34002', ['198.51.100.9']),
+        clusterExposure('34001', ['198.51.100.2']),
+      ],
+    })
+  )
+  assertEquals(
+    derivation.rules.map((rule) => [rule.ports, rule.sources]),
+    [
+      ['34001', ['198.51.100.2/32']],
+      ['34002', ['198.51.100.9/32']],
+    ]
+  )
+})
