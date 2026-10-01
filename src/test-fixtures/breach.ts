@@ -6,15 +6,22 @@ import { type BreachRangeResponder, breachLookupKey } from '../client/authn/brea
 
 export type RecordingResponder = BreachRangeResponder & { prefixes: string[] }
 
-const PADDING_ROWS =
-  '0018B5C0A5F3E1D2C4B6A79881726354A9B:0\r\n0123456789ABCDEF0123456789ABCDEF012:0'
+/** Zero-count rows like the real API's `Add-Padding`, with suffixes made up at run time. */
+function paddingRows(): string {
+  const suffix = () =>
+    Array.from(crypto.getRandomValues(new Uint8Array(18)), (b) => b.toString(16).padStart(2, '0'))
+      .join('')
+      .slice(0, 35)
+      .toUpperCase()
+  return `${suffix()}:0\r\n${suffix()}:0`
+}
 
 /** Answers "not breached" for everything and records each prefix it was asked for. */
 export function cleanBreachResponder(): RecordingResponder {
   const prefixes: string[] = []
   const responder: BreachRangeResponder = (prefix) => {
     prefixes.push(prefix)
-    return Promise.resolve(`${PADDING_ROWS}\r\n`)
+    return Promise.resolve(`${paddingRows()}\r\n`)
   }
   return Object.assign(responder, { prefixes })
 }
@@ -25,7 +32,7 @@ export async function breachedBreachResponder(password: string): Promise<Recordi
   const prefixes: string[] = []
   const responder: BreachRangeResponder = (prefix) => {
     prefixes.push(prefix)
-    return Promise.resolve(`${PADDING_ROWS}\r\n${suffix}:42\r\n`)
+    return Promise.resolve(`${paddingRows()}\r\n${suffix}:42\r\n`)
   }
   return Object.assign(responder, { prefixes })
 }

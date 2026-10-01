@@ -21,11 +21,15 @@ function sample(): string {
 }
 
 test('breachLookupKey splits the SHA-1 into a 5-character prefix and a 35-character suffix', async () => {
-  // SHA-1("abc") is a published test vector, not a password.
-  const { prefix, suffix } = await breachLookupKey('abc')
-  assertEquals(prefix, 'A9993')
-  assertEquals(suffix, 'E364706816ABA3E25717850C26C9CD0D89D')
+  const text = sample()
+  const { prefix, suffix } = await breachLookupKey(text)
+  const digest = await crypto.subtle.digest('SHA-1', new TextEncoder().encode(text))
+  const expected = Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0'))
+    .join('')
+    .toUpperCase()
   assertEquals(prefix.length, BREACH_PREFIX_LENGTH)
+  assertEquals(suffix.length, 35)
+  assertEquals(`${prefix}${suffix}`, expected)
 })
 
 test('rangeBodyContains matches a suffix with a positive count and ignores padding rows', () => {

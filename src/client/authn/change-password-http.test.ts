@@ -24,7 +24,7 @@ import {
   createAuthRateLimiter,
   setSharedAuthRateLimiterForTests,
 } from './auth-rate-limit.ts'
-import { type BreachRangeResponder } from './breached-password.ts'
+import type { BreachRangeResponder } from './breached-password.ts'
 import { parseChangePasswordBody } from './change-password-http.ts'
 import { registerAuthnRoutes, registerAuthRoutes } from './http.ts'
 import { createSession } from './session-store.ts'
