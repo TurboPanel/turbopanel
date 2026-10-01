@@ -3,11 +3,13 @@ import type { Context } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import type { Db } from '../../db/connection.ts'
 import type { CommandQueue } from '../commands/queue.ts'
+import type { ManagedMemberRow } from './members.ts'
 import { managed } from '../../db/schema.ts'
 import {
   enqueueManagedApply,
   enqueueManagedDestroy,
   enqueueManagedLifecycle,
+  enqueueManagedLifecycleFanout,
   enqueueTypedCommand,
 } from './apply-prepare.ts'
 
@@ -47,10 +49,12 @@ function createEnqueueDb(): {
   managedUpdates: Array<Record<string, unknown>>
   commandRows: CommandRow[]
   commandUpdates: Array<{ id: string; patch: Record<string, unknown> }>
+  dispatchPayloads: unknown[]
 } {
   const managedUpdates: Array<Record<string, unknown>> = []
   const commandRows: CommandRow[] = []
   const commandUpdates: Array<{ id: string; patch: Record<string, unknown> }> = []
+  const dispatchPayloads: unknown[] = []
 
   const db = {
     update: (table: unknown) => ({
@@ -85,30 +89,33 @@ function createEnqueueDb(): {
       return fn(this)
     },
     insert: () => ({
-      values: (row: Record<string, unknown>) => ({
-        returning: () => {
-          const created: CommandRow = {
-            id: 'cmd-00000000-0000-4000-8000-000000000099',
-            serverId: row.serverId as string,
-            actorType: row.actorType as string,
-            actorId: row.actorId as string,
-            name: row.name as string,
-            status: 'queued',
-            attempts: 0,
-            payload: row.payload,
-            metadata: row.metadata as Record<string, unknown>,
-            result: null,
-            createdAt: '2024-01-01T00:00:00.000Z',
-            updatedAt: '2024-01-01T00:00:00.000Z',
-          }
-          commandRows.push(created)
-          return Promise.resolve([created])
-        },
-      }),
+      values: (row: Record<string, unknown>) => {
+        if ('commandId' in row) dispatchPayloads.push(row.payload)
+        return {
+          returning: () => {
+            const created: CommandRow = {
+              id: 'cmd-00000000-0000-4000-8000-000000000099',
+              serverId: row.serverId as string,
+              actorType: row.actorType as string,
+              actorId: row.actorId as string,
+              name: row.name as string,
+              status: 'queued',
+              attempts: 0,
+              payload: row.payload,
+              metadata: row.metadata as Record<string, unknown>,
+              result: null,
+              createdAt: '2024-01-01T00:00:00.000Z',
+              updatedAt: '2024-01-01T00:00:00.000Z',
+            }
+            commandRows.push(created)
+            return Promise.resolve([created])
+          },
+        }
+      },
     }),
   } as unknown as Db
 
-  return { db, managedUpdates, commandRows, commandUpdates }
+  return { db, managedUpdates, commandRows, commandUpdates, dispatchPayloads }
 }
 
 function recordingQueue(fail = false): CommandQueue {
@@ -192,7 +199,10 @@ test('enqueueTypedCommand returns 503 and marks failed when the queue is unavail
   assertEquals(managedUpdates.length, 2)
   assertEquals(managedUpdates[0]?.status, 'applying')
   assertEquals(managedUpdates[1]?.status, 'failed')
-  assertEquals(commandUpdates.some((entry) => entry.patch.status === 'failed'), true)
+  assertEquals(
+    commandUpdates.some((entry) => entry.patch.status === 'failed'),
+    true
+  )
 })
 
 test('enqueueManagedApply delegates to managed.apply with setApplying', async () => {
@@ -242,4 +252,46 @@ test('enqueueManagedLifecycle and enqueueManagedDestroy enqueue without setApply
   }
   assertEquals(destroy.status, 'queued')
   assertEquals(managedUpdates.length, 0)
+})
+
+test('enqueueManagedLifecycleFanout sends each member its own id and HA role', async () => {
+  const c = mockContext()
+  const { db, dispatchPayloads } = createEnqueueDb()
+  const queue = recordingQueue()
+  const members = [
+    { id: '00000000-0000-4000-8000-0000000000a1', serverId: 'server-1', role: 'primary' },
+    { id: '00000000-0000-4000-8000-0000000000a2', serverId: 'server-2', role: 'replica' },
+  ] as ManagedMemberRow[]
+
+  const results = await enqueueManagedLifecycleFanout(c, db, queue, {
+    userId: 'user-1',
+    managedId: 'managed-1',
+    action: 'restart',
+    members,
+    engine: 'postgres',
+  })
+  if (results instanceof Response) {
+    throw new TypeError('expected fan-out results')
+  }
+
+  assertEquals(
+    results.map((result) => result.status),
+    ['queued', 'queued']
+  )
+  assertEquals(dispatchPayloads, [
+    {
+      managedId: 'managed-1',
+      action: 'restart',
+      memberId: members[0]!.id,
+      role: 'primary',
+      engine: 'postgres',
+    },
+    {
+      managedId: 'managed-1',
+      action: 'restart',
+      memberId: members[1]!.id,
+      role: 'replica',
+      engine: 'postgres',
+    },
+  ])
 })

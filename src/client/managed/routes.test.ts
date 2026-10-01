@@ -1452,8 +1452,6 @@ test('POST /environments/:id/managed/lifecycle targets managed.server_id when en
         assertEquals(commandQueue.envelopes.length, beforeCount + 1)
         assertEquals(commandQueue.envelopes.at(-1)?.serverId, serverId)
         assertEquals(commandQueue.envelopes.at(-1)?.type, 'managed.lifecycle')
-        const payload = commandQueue.envelopes.at(-1)?.payload as { role?: string }
-        assertEquals(payload.role, 'primary')
       })
     }
   )
