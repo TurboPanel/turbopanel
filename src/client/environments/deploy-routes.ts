@@ -873,7 +873,6 @@ async function persistDeployFanOut(
     params.engine,
     params.preparedByServer.map((row) => row.serverId)
   )
-  const firstBatch = new Set(batches[0] ?? [])
   const all = await db.transaction(async (tx) => {
     const generation = await bumpEnvironmentGeneration(tx, params.environmentId)
     await replaceEnvironmentSlotsInTx(tx, {
@@ -918,7 +917,8 @@ async function persistDeployFanOut(
     })
     return created
   })
-  return all.filter((row) => firstBatch.has(row.serverId))
+  // `created` is in `preparedByServer` order, which is the order the batches were cut in.
+  return batches.length < 2 ? all : all.slice(0, batches[0]?.length ?? 0)
 }
 
 /**

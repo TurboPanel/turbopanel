@@ -22,29 +22,29 @@
 
 export type FieldPolicyExpectedIssue = {
   /** Dot-joined compose path the issue must be reported at. */
-  path: string;
+  path: string
   /** Substring the message must contain. Full text stays free to improve. */
-  messageIncludes: string;
+  messageIncludes: string
   /** Severity when the linter runs permissively (save-time). */
-  level: "error" | "warning";
+  level: 'error' | 'warning'
   /** Whether the permissive run treats it as blocking. */
-  blocking: boolean;
+  blocking: boolean
   /**
    * Severity when the linter runs strictly (deploy-time). Absent means the
    * posture makes no difference to this issue.
    */
-  strictLevel?: "error" | "warning";
-};
+  strictLevel?: 'error' | 'warning'
+}
 
 export type FieldPolicyFixture = {
-  description: string;
-  compose: string;
-  expectedIssues: FieldPolicyExpectedIssue[];
-};
+  description: string
+  compose: string
+  expectedIssues: FieldPolicyExpectedIssue[]
+}
 
 export const FIELD_POLICY_FIXTURES: readonly FieldPolicyFixture[] = [
   {
-    description: "a fully valid document raises nothing",
+    description: 'a fully valid document raises nothing',
     compose: `services:
   web:
     image: nginx:alpine
@@ -57,7 +57,7 @@ export const FIELD_POLICY_FIXTURES: readonly FieldPolicyFixture[] = [
     expectedIssues: [],
   },
   {
-    description: "unknown top-level key is a suggestion, not a schema dump",
+    description: 'unknown top-level key is a suggestion, not a schema dump',
     compose: `servces:
   web:
     image: nginx:alpine
@@ -67,15 +67,15 @@ services:
 `,
     expectedIssues: [
       {
-        path: "servces",
+        path: 'servces',
         messageIncludes: 'did you mean "services"',
-        level: "warning",
+        level: 'warning',
         blocking: true,
       },
     ],
   },
   {
-    description: "unknown service key is a suggestion, not a schema dump",
+    description: 'unknown service key is a suggestion, not a schema dump',
     compose: `services:
   web:
     imaage: nginx:alpine
@@ -83,16 +83,16 @@ services:
 `,
     expectedIssues: [
       {
-        path: "services.web.imaage",
+        path: 'services.web.imaage',
         messageIncludes: 'did you mean "image"',
-        level: "warning",
+        level: 'warning',
         blocking: true,
       },
     ],
   },
   {
     description:
-      "deploy.update_config.parallelism and a stopping failure_action are applied by the rolling deploy",
+      'deploy.update_config.parallelism and a stopping failure_action are applied by the rolling deploy',
     compose: `services:
   web:
     image: nginx:alpine
@@ -104,8 +104,7 @@ services:
     expectedIssues: [],
   },
   {
-    description:
-      "the other update_config settings are refused: nothing acts on them yet",
+    description: 'the other update_config settings are refused: nothing acts on them yet',
     compose: `services:
   web:
     image: nginx:alpine
@@ -116,23 +115,23 @@ services:
 `,
     expectedIssues: [
       {
-        path: "services.web.deploy.update_config.delay",
-        messageIncludes: "not supported yet",
-        level: "warning",
+        path: 'services.web.deploy.update_config.delay',
+        messageIncludes: 'not supported yet',
+        level: 'warning',
         blocking: false,
-        strictLevel: "error",
+        strictLevel: 'error',
       },
       {
-        path: "services.web.deploy.update_config.failure_action",
-        messageIncludes: "a failed batch always stops the rollout",
-        level: "warning",
+        path: 'services.web.deploy.update_config.failure_action',
+        messageIncludes: 'a failed batch always stops the rollout',
+        level: 'warning',
         blocking: false,
-        strictLevel: "error",
+        strictLevel: 'error',
       },
     ],
   },
   {
-    description: "a negative parallelism is refused",
+    description: 'a negative parallelism is refused',
     compose: `services:
   web:
     image: nginx:alpine
@@ -142,15 +141,15 @@ services:
 `,
     expectedIssues: [
       {
-        path: "services.web.deploy.update_config.parallelism",
-        messageIncludes: "whole number of at least 0",
-        level: "error",
+        path: 'services.web.deploy.update_config.parallelism',
+        messageIncludes: 'whole number of at least 0',
+        level: 'error',
         blocking: true,
       },
     ],
   },
   {
-    description: "deploy.rollback_config and deploy.endpoint_mode too",
+    description: 'deploy.rollback_config and deploy.endpoint_mode too',
     compose: `services:
   web:
     image: nginx:alpine
@@ -161,24 +160,23 @@ services:
 `,
     expectedIssues: [
       {
-        path: "services.web.deploy.endpoint_mode",
-        messageIncludes: "not supported by TurboPanel",
-        level: "warning",
+        path: 'services.web.deploy.endpoint_mode',
+        messageIncludes: 'not supported by TurboPanel',
+        level: 'warning',
         blocking: false,
-        strictLevel: "error",
+        strictLevel: 'error',
       },
       {
-        path: "services.web.deploy.rollback_config",
-        messageIncludes: "not supported by TurboPanel",
-        level: "warning",
+        path: 'services.web.deploy.rollback_config',
+        messageIncludes: 'not supported by TurboPanel',
+        level: 'warning',
         blocking: false,
-        strictLevel: "error",
+        strictLevel: 'error',
       },
     ],
   },
   {
-    description:
-      "deploy.mode: replicated-job is refused by value, not by stripping the key",
+    description: 'deploy.mode: replicated-job is refused by value, not by stripping the key',
     compose: `services:
   worker:
     image: nginx:alpine
@@ -187,16 +185,16 @@ services:
 `,
     expectedIssues: [
       {
-        path: "services.worker.deploy.mode",
-        messageIncludes: "not supported by TurboPanel",
-        level: "warning",
+        path: 'services.worker.deploy.mode',
+        messageIncludes: 'not supported by TurboPanel',
+        level: 'warning',
         blocking: false,
-        strictLevel: "error",
+        strictLevel: 'error',
       },
     ],
   },
   {
-    description: "deploy.mode: global-job is refused the same way",
+    description: 'deploy.mode: global-job is refused the same way',
     compose: `services:
   worker:
     image: nginx:alpine
@@ -205,17 +203,16 @@ services:
 `,
     expectedIssues: [
       {
-        path: "services.worker.deploy.mode",
-        messageIncludes: "finite-job controller",
-        level: "warning",
+        path: 'services.worker.deploy.mode',
+        messageIncludes: 'finite-job controller',
+        level: 'warning',
         blocking: false,
-        strictLevel: "error",
+        strictLevel: 'error',
       },
     ],
   },
   {
-    description:
-      "deploy.mode: global is a mode TurboPanel schedules — no issue",
+    description: 'deploy.mode: global is a mode TurboPanel schedules — no issue',
     compose: `services:
   agent:
     image: nginx:alpine
@@ -225,8 +222,7 @@ services:
     expectedIssues: [],
   },
   {
-    description:
-      "deploy.resources.reservations is unsupported even though resources is not",
+    description: 'deploy.resources.reservations is unsupported even though resources is not',
     compose: `services:
   web:
     image: nginx:alpine
@@ -240,17 +236,16 @@ services:
 `,
     expectedIssues: [
       {
-        path: "services.web.deploy.resources.reservations",
-        messageIncludes: "no per-host capacity inventory",
-        level: "warning",
+        path: 'services.web.deploy.resources.reservations',
+        messageIncludes: 'no per-host capacity inventory',
+        level: 'warning',
         blocking: false,
-        strictLevel: "error",
+        strictLevel: 'error',
       },
     ],
   },
   {
-    description:
-      "a bridge network keeps every attribute — the registry has no opinion",
+    description: 'a bridge network keeps every attribute — the registry has no opinion',
     compose: `services:
   web:
     image: nginx:alpine
@@ -270,8 +265,7 @@ networks:
     expectedIssues: [],
   },
   {
-    description:
-      "driver: overlay is the authored spanning signal and carries a note",
+    description: 'driver: overlay is the authored spanning signal and carries a note',
     compose: `services:
   web:
     image: nginx:alpine
@@ -285,16 +279,15 @@ networks:
 `,
     expectedIssues: [
       {
-        path: "networks.frontend.driver",
-        messageIncludes: "TurboFabric spanning network",
-        level: "warning",
+        path: 'networks.frontend.driver',
+        messageIncludes: 'TurboFabric spanning network',
+        level: 'warning',
         blocking: false,
       },
     ],
   },
   {
-    description:
-      "the five overlay-only attributes TurboFabric cannot honour are named",
+    description: 'the five overlay-only attributes TurboFabric cannot honour are named',
     compose: `services:
   web:
     image: nginx:alpine
@@ -314,50 +307,50 @@ networks:
 `,
     expectedIssues: [
       {
-        path: "networks.frontend.driver",
-        messageIncludes: "TurboFabric spanning network",
-        level: "warning",
+        path: 'networks.frontend.driver',
+        messageIncludes: 'TurboFabric spanning network',
+        level: 'warning',
         blocking: false,
       },
       {
-        path: "networks.frontend.attachable",
-        messageIncludes: "Swarm service-network flag",
-        level: "warning",
+        path: 'networks.frontend.attachable',
+        messageIncludes: 'Swarm service-network flag',
+        level: 'warning',
         blocking: false,
-        strictLevel: "error",
+        strictLevel: 'error',
       },
       {
-        path: "networks.frontend.enable_ipv6",
-        messageIncludes: "IPv4-only",
-        level: "warning",
+        path: 'networks.frontend.enable_ipv6',
+        messageIncludes: 'IPv4-only',
+        level: 'warning',
         blocking: false,
-        strictLevel: "error",
+        strictLevel: 'error',
       },
       {
-        path: "networks.frontend.ipam",
-        messageIncludes: "one subnet per participating host",
-        level: "warning",
+        path: 'networks.frontend.ipam',
+        messageIncludes: 'one subnet per participating host',
+        level: 'warning',
         blocking: false,
-        strictLevel: "error",
+        strictLevel: 'error',
       },
       {
-        path: "networks.frontend.driver_opts",
-        messageIncludes: "routed bridge on each host",
-        level: "warning",
+        path: 'networks.frontend.driver_opts',
+        messageIncludes: 'routed bridge on each host',
+        level: 'warning',
         blocking: false,
-        strictLevel: "error",
+        strictLevel: 'error',
       },
       {
-        path: "networks.frontend.internal",
-        messageIncludes: "an internal network forbids",
-        level: "warning",
+        path: 'networks.frontend.internal',
+        messageIncludes: 'an internal network forbids',
+        level: 'warning',
         blocking: false,
-        strictLevel: "error",
+        strictLevel: 'error',
       },
     ],
   },
   {
-    description: "deploy.labels is interpreted — no issue at either posture",
+    description: 'deploy.labels is interpreted — no issue at either posture',
     compose: `services:
   web:
     image: nginx:alpine
@@ -369,4 +362,4 @@ networks:
 `,
     expectedIssues: [],
   },
-] as const;
+] as const
