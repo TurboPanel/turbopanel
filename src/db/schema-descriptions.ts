@@ -970,6 +970,51 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'User who created the policy; null for an automatic default policy or once that user is deleted.',
     },
   },
+  edict: {
+    group: 'networking',
+    summary:
+      'One firewall rule an operator typed, in the wire contract words; rules derived from what is deployed are computed per server and never stored here.',
+    columns: {
+      organization_id: 'Owning organization; cascade-deletes the rule with the org.',
+      server_id: 'The one server the rule applies to; null means every server in the organization.',
+      label:
+        "Operator label shown in the console, also sent to the host as the rule's comment, so it uses the comment alphabet.",
+      scope:
+        "`host` for the host's own listeners or `published` for a port Docker publishes for a container.",
+      action: '`accept` allows, `drop` blocks silently and `reject` blocks and tells the sender.',
+      proto: '`tcp`, `udp` or `any`; ports are meaningful only for `tcp` and `udp`.',
+      ports:
+        'One port or an inclusive ascending range such as `5432-5440`; null means every port, which only a block may say.',
+      source_kind:
+        "Who the rule is about: `any`, `servers` (the organization's other servers), `datacenter`, `fabric` or `addresses`.",
+      source_addresses:
+        'Explicit addresses or CIDRs, one to 256 of them; only for `source_kind` `addresses`, empty for every other kind.',
+      is_enabled: 'False keeps the rule but leaves it out of the ruleset sent to hosts.',
+      created_by: 'User who created the rule; null once that user is deleted.',
+    },
+  },
+  bulwark: {
+    group: 'networking',
+    summary:
+      "One server's firewall state: its mode, the generation last sent, what the host last answered, and whether the last ruleset was kept.",
+    columns: {
+      server_id: 'The server this state belongs to; one row per server, cascade-deleted with it.',
+      mode: '`observe` shows the ruleset and applies nothing (the default), `managed` enforces it and `off` leaves the firewall alone.',
+      generation:
+        'Rises by one each time the desired ruleset changes, so a host can tell a stale push from a current one.',
+      last_digest:
+        'The sha256 hex the host last reported for its rendered rulesets; the drift key.',
+      last_result:
+        'What the host last answered: applied or refused, the rule count and any warnings; null before any report.',
+      state:
+        '`idle`, `pending` (awaiting confirmation), `confirmed` or `rolled_back` (undone by the host guard).',
+      deadline_at:
+        'When the host guard undoes an unconfirmed ruleset; null unless `state` is `pending`.',
+      last_applied_at: 'When the host last applied a ruleset; null before the first.',
+      confirmed_at:
+        'When the last ruleset was confirmed as keeping the host reachable; null before the first.',
+    },
+  },
   snapshot: {
     group: 'managed',
     summary:

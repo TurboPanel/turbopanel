@@ -5754,3 +5754,163 @@ export const notificationDelivery = pgTable(
     }).onDelete('cascade'),
   ]
 )
+/**
+ * One firewall rule an operator typed, in the vocabulary of the
+ * `server.firewall.reconcile` wire contract (`scope`, `action`, `proto`,
+ * `ports`), so a stored rule maps onto a wire entry unchanged. Rules derived
+ * from what is deployed (published ports, the panel's own port, SSH) are
+ * computed when a server's ruleset is built and never stored here.
+ *
+ * `server_id` null means every server in the organization. `source_kind`
+ * names who the rule is about; only `addresses` carries `source_addresses`.
+ * `label` doubles as the rule's wire comment, so it follows the contract's
+ * comment alphabet.
+ */
+export const edict = pgTable(
+  'edict',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .$onUpdate(() => sql`now()`)
+      .notNull(),
+    organizationId: uuid('organization_id').notNull(),
+    serverId: uuid('server_id'),
+    label: text().notNull(),
+    scope: text().notNull(),
+    action: text().notNull(),
+    proto: text().notNull(),
+    /** One port (`8443`) or an inclusive ascending range (`5432-5440`); null means every port. */
+    ports: text(),
+    sourceKind: text('source_kind').notNull(),
+    /** Explicit addresses or CIDRs; only for `source_kind = 'addresses'`, otherwise empty. */
+    sourceAddresses: inet('source_addresses')
+      .array()
+      .notNull()
+      .default(sql`'{}'::inet[]`),
+    isEnabled: boolean('is_enabled').default(true).notNull(),
+    createdBy: uuid('created_by'),
+  },
+  (table) => [
+    index('idx_edict_organization_id').using('btree', table.organizationId.asc()),
+    index('idx_edict_server_id').using('btree', table.serverId.asc().nullsLast()),
+    foreignKey({
+      columns: [table.organizationId],
+      foreignColumns: [organization.id],
+      name: 'edict_organization_id_organization_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.serverId],
+      foreignColumns: [server.id],
+      name: 'edict_server_id_server_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.createdBy],
+      foreignColumns: [user.id],
+      name: 'edict_created_by_user_id_fk',
+    }).onDelete('set null'),
+    // Mirror the arrays in src/features/firewall/vocabulary.ts — pinned by enum-checks.test.ts.
+    check('edict_scope_check', sql`scope IN ('host', 'published')`),
+    check('edict_action_check', sql`action IN ('accept', 'drop', 'reject')`),
+    check('edict_proto_check', sql`proto IN ('tcp', 'udp', 'any')`),
+    check(
+      'edict_source_kind_check',
+      sql`source_kind IN ('any', 'servers', 'datacenter', 'fabric', 'addresses')`
+    ),
+    check('edict_label_format_check', sql`label ~ '^[A-Za-z0-9 ._:/-]{1,48}$'`),
+    check('edict_ports_format_check', sql`ports IS NULL OR ports ~ '^[0-9]{1,5}(-[0-9]{1,5})?$'`),
+    // Ports mean something only to tcp and udp.
+    check('edict_ports_proto_check', sql`ports IS NULL OR proto <> 'any'`),
+    // Only a block may say "every port"; an allow names its ports.
+    check('edict_accept_ports_check', sql`action <> 'accept' OR ports IS NOT NULL`),
+    check(
+      'edict_source_addresses_check',
+      sql`(source_kind = 'addresses' AND cardinality(source_addresses) BETWEEN 1 AND 256) OR (source_kind <> 'addresses' AND cardinality(source_addresses) = 0)`
+    ),
+  ]
+)
+/**
+ * One server's firewall state, one row per server. `mode` decides whether
+ * the computed ruleset is only shown (`observe`, the default), enforced
+ * (`managed`) or left alone (`off`). `generation` rises by one each time the
+ * desired state changes, so a host can tell a stale push from a current one.
+ * The remaining columns record the last apply and whether it was kept.
+ */
+export const bulwark = pgTable(
+  'bulwark',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .$onUpdate(() => sql`now()`)
+      .notNull(),
+    serverId: uuid('server_id').notNull(),
+    mode: text().default('observe').notNull(),
+    generation: integer().default(0).notNull(),
+    /** sha256 hex of the rendered rulesets the host last reported; the drift key. */
+    lastDigest: text('last_digest'),
+    /** What the host last answered (applied or refused, rule count, warnings); null before any report. */
+    lastResult: jsonb('last_result'),
+    state: text().default('idle').notNull(),
+    /** When an unconfirmed ruleset is undone by the host's guard; null unless `state` is `pending`. */
+    deadlineAt: timestamp('deadline_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }),
+    lastAppliedAt: timestamp('last_applied_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }),
+    confirmedAt: timestamp('confirmed_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }),
+  },
+  (table) => [
+    uniqueIndex('uniq_bulwark_server_id').using('btree', table.serverId.asc()),
+    foreignKey({
+      columns: [table.serverId],
+      foreignColumns: [server.id],
+      name: 'bulwark_server_id_server_id_fk',
+    }).onDelete('cascade'),
+    // Mirror FIREWALL_MODES / FIREWALL_STATES — pinned by enum-checks.test.ts.
+    check('bulwark_mode_check', sql`mode IN ('observe', 'managed', 'off')`),
+    check('bulwark_state_check', sql`state IN ('idle', 'pending', 'confirmed', 'rolled_back')`),
+    check('bulwark_generation_check', sql`generation >= 0`),
+    check(
+      'bulwark_digest_format_check',
+      sql`last_digest IS NULL OR last_digest ~ '^[a-f0-9]{64}$'`
+    ),
+  ]
+)

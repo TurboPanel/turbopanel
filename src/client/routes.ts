@@ -47,6 +47,7 @@ import { registerServiceRoutes } from './services/routes.ts'
 import { registerTeamRoutes } from './teams/routes.ts'
 import { registerNotificationRoutes } from './notifications/routes.ts'
 import { registerOrganizationRoutes } from './organizations/routes.ts'
+import { registerOrganizationFirewallRoutes } from './organizations/firewall-routes.ts'
 import { registerWorkspaceRoutes } from './workspaces/routes.ts'
 import { type ClientOpenApiOptions, getClientOpenApiSpec } from './openapi/index.ts'
 import { buildClientScalarHtml } from '../app/scalar-html.ts'
@@ -109,6 +110,7 @@ export function registerClientRoutes(app: Hono<AppEnv>, opts: ClientRouteOpts) {
   registerLicenseRoutes(client, opts)
   opts.registerBilling?.(client, opts)
   registerOrganizationRoutes(client, opts)
+  registerOrganizationFirewallRoutes(client, opts)
   registerAccessRoutes(client, opts)
   registerNotificationRoutes(client, opts)
   registerWorkspaceRoutes(client, opts)
