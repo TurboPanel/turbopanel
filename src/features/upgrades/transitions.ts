@@ -27,6 +27,14 @@ export const UPGRADE_ROLLBACK_MAX_ATTEMPTS = 2
 /** No stage change within this window is treated as a stalled install. */
 export const UPGRADE_STEP_TIMEOUT_MS = 15 * 60 * 1000
 
+/**
+ * A step still `dispatched` (the daemon has not answered with any stage) after
+ * this long is stuck, not slow: the daemon acknowledges a command within
+ * seconds. Much shorter than {@link UPGRADE_STEP_TIMEOUT_MS}, so an unanswered
+ * step reaches `needs_attention` in minutes, not after three 15-minute waits.
+ */
+export const UPGRADE_DISPATCH_ACK_TIMEOUT_MS = 5 * 60 * 1000
+
 /** First retry waits this long; each further retry doubles it. */
 export const UPGRADE_BACKOFF_BASE_MS = 60 * 1000
 
@@ -72,6 +80,8 @@ export type StepView = {
   lastStageAt: string | null
   /** The commit this step installs (copied from the run target). */
   toCommit: string | null
+  /** The daemon refused the current dispatch because it is busy with another install. */
+  inProgressRefused?: boolean
 }
 
 export type StepFacts = {
@@ -85,6 +95,7 @@ export type StepConfig = {
   maxAttempts?: number
   rollbackMaxAttempts?: number
   stepTimeoutMs?: number
+  dispatchAckTimeoutMs?: number
   backoffBaseMs?: number
   backoffMaxMs?: number
   offlineDeadlineMs?: number
@@ -126,7 +137,10 @@ function backoffElapsed(step: StepView, cfg: StepConfig): boolean {
 
 function isStalled(step: StepView, cfg: StepConfig): boolean {
   if (!step.lastStageAt) return false
-  const timeout = cfg.stepTimeoutMs ?? UPGRADE_STEP_TIMEOUT_MS
+  const timeout =
+    step.status === 'dispatched'
+      ? (cfg.dispatchAckTimeoutMs ?? UPGRADE_DISPATCH_ACK_TIMEOUT_MS)
+      : (cfg.stepTimeoutMs ?? UPGRADE_STEP_TIMEOUT_MS)
   return Date.parse(cfg.now) - Date.parse(step.lastStageAt) > timeout
 }
 
@@ -162,7 +176,8 @@ function handleInFlight(step: StepView, facts: StepFacts, cfg: StepConfig): Step
   if (!facts.serverConnected) return { kind: 'wait_offline' }
   if (!isStalled(step, cfg)) return { kind: 'none' }
   const maxAttempts = cfg.maxAttempts ?? UPGRADE_STEP_MAX_ATTEMPTS
-  if (step.attempts >= maxAttempts) {
+  // A busy daemon already refused this dispatch; sending it again cannot help.
+  if (step.inProgressRefused === true || step.attempts >= maxAttempts) {
     return { kind: 'needs_attention', errorCode: 'step_timeout' satisfies UpgradeStepErrorCode }
   }
   return { kind: 'retry', nextAttemptAt: backoffAt(cfg, step.attempts) }

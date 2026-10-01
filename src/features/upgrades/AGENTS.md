@@ -166,6 +166,17 @@ working.
 - A run whose last open step settles this tick finishes this tick (the
   recount covers the whole run, not just the page the tick read).
 - Endpoints exist for retrying a step and cancelling a run.
+- A control-plane (`instance`) step is never settled by the commit alone once it
+  was dispatched: the new binary answers as soon as it restarts, while the
+  daemon is still verifying it (and may roll it back). Only the daemon's `done`
+  stage or an ok `instance-update-result` settles it, so the run stays active
+  until then and `start()` answers 409 `upgrade_run_active` (with
+  `activeRunId`) to a second update.
+- A step still `dispatched` after `UPGRADE_DISPATCH_ACK_TIMEOUT_MS` (5 min) is
+  stuck, not slow: it retries (up to the attempt limit) and then goes to
+  `needs_attention` / `step_timeout`; a dispatch the daemon refused as busy
+  (`inProgressRefused`) goes straight there. Steps that reported a stage keep
+  the 15-minute `UPGRADE_STEP_TIMEOUT_MS`.
 
 ## Saving what daemons report
 

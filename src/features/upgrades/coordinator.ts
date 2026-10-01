@@ -118,6 +118,7 @@ export type UpgradeCoordinator = {
         ok: false
         error: string
         blockers?: string[]
+        activeRunId?: string
       }
   >
   tick(input?: { resolveManifests?: boolean }): Promise<void>
@@ -238,6 +239,20 @@ function dispatchErrorText(error: unknown): string {
   return line.length > 200 ? `${line.slice(0, 197)}...` : line || 'unknown error'
 }
 
+/** `start()` error code while an update is still in progress (HTTP 409). */
+export const UPGRADE_RUN_ACTIVE = 'upgrade_run_active'
+
+export const UPGRADE_RUN_ACTIVE_MESSAGE = 'Another update is already in progress.'
+
+function runActiveRefusal(activeRunId?: string) {
+  return {
+    ok: false as const,
+    error: UPGRADE_RUN_ACTIVE,
+    blockers: [UPGRADE_RUN_ACTIVE_MESSAGE],
+    ...(activeRunId ? { activeRunId } : {}),
+  }
+}
+
 export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeCoordinator {
   const resolveTarget = deps.resolveTarget ?? (() => resolveUpgradeTarget(deps.channel))
 
@@ -284,7 +299,7 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
       label: 'No upgrade is already running',
       passed: active === null,
     })
-    if (active) blockers.push('An upgrade is already running.')
+    if (active) blockers.push(UPGRADE_RUN_ACTIVE_MESSAGE)
     const manifestGaps = pinnedManifestBlockers(deps.channel, target, {
       runtime: deps.runtime,
       hasColocated: Boolean(deps.colocatedServerId),
@@ -551,6 +566,7 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
         nextAttemptAt: step.nextAttemptAt,
         lastStageAt: step.lastStageAt,
         toCommit: step.toCommit,
+        inProgressRefused: readDispatchHistory(step.detail).inProgressRefused,
       },
       {
         serverConnected: fact?.connected === true,
@@ -724,7 +740,14 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
       // A UI-only refresh reinstalls the same binary, so "the instance runs the
       // target commit" is true before the install ran. Only the daemon's
       // result report settles such a step.
-      return uiRefreshFromDetail(step.detail) ? null : deps.instanceInstalled.commit
+      //
+      // The same holds once the step was dispatched: the new binary answers as
+      // soon as it restarts, while the daemon is still verifying it (and may
+      // yet roll it back). The step is done when the daemon says so (`done`
+      // stage or an ok result), never on the commit alone, so the update is
+      // not reported as finished early and a second one cannot start on top.
+      if (uiRefreshFromDetail(step.detail) || step.attempts > 0) return null
+      return deps.instanceInstalled.commit
     }
     return fact?.commit ?? null
   }
@@ -745,6 +768,9 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
         deps.store.activeRun(),
         deps.store.settings(),
       ])
+      // One update at a time. Checked before anything else so a second press
+      // gets the machine code, not whichever preflight sentence came first.
+      if (active) return runActiveRefusal(active.id)
       const preflight = await buildPreflight(target, fleet, active)
       if (!preflight.canStart) {
         return {
@@ -797,9 +823,7 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
       )
       run.phase = earliestOpenPhase(steps)
       const inserted = await deps.store.insertRun(run, steps)
-      if (inserted === 'active') {
-        return { ok: false, error: 'An upgrade is already running.' }
-      }
+      if (inserted === 'active') return runActiveRefusal()
       await deps.store.clearReservedRunId()
       const stored = await deps.store.stepsFor(run.id)
       run.phase = earliestOpenPhase(stored)
