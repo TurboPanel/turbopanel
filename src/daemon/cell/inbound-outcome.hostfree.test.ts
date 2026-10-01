@@ -286,3 +286,69 @@ test('deriveInboundOutcome maps managed-health-result done and failed', () => {
     }
   )
 })
+
+test('deriveInboundOutcome maps repo-default-branch-result done, null branch and failed', () => {
+  const base = { kind: 'repo-default-branch-result' as const, requestId: REQUEST_ID, at: AT }
+  assertEquals(deriveInboundOutcome({ ...base, ok: true, defaultBranch: 'main' }), {
+    status: 'done',
+    result: { ok: true, defaultBranch: 'main', error: undefined },
+  })
+  assertEquals(deriveInboundOutcome({ ...base, ok: true, defaultBranch: null }), {
+    status: 'done',
+    result: { ok: true, defaultBranch: null, error: undefined },
+  })
+  assertEquals(deriveInboundOutcome({ ...base, ok: false, error: 'repo not found' }), {
+    status: 'failed',
+    result: { ok: false, defaultBranch: undefined, error: 'repo not found' },
+    error: 'repo not found',
+  })
+})
+
+const common = { requestId: REQUEST_ID, at: AT }
+
+/**
+ * One sample per inbound kind. Typed as a full Record, so adding a kind to
+ * DaemonInboundEnvelope without a sample here fails type-checking.
+ */
+const SAMPLES: Record<DaemonInboundEnvelope['kind'], DaemonInboundEnvelope> = {
+  'addresses-result': { kind: 'addresses-result', ...common, ips: [] },
+  'managed-logs-result': { kind: 'managed-logs-result', ...common, logs: '' },
+  'managed-health-result': { kind: 'managed-health-result', ...common, ok: true },
+  'container-logs-result': { kind: 'container-logs-result', ...common, logs: '' },
+  'repo-read-result': { kind: 'repo-read-result', ...common, ok: true },
+  'repo-default-branch-result': {
+    kind: 'repo-default-branch-result',
+    ...common,
+    ok: true,
+    defaultBranch: 'main',
+  },
+  'fabric-paths-result': { kind: 'fabric-paths-result', ...common, paths: [] },
+  'dev-sync-result': { kind: 'dev-sync-result', ...common, ok: true },
+  'tunnel-token-result': { kind: 'tunnel-token-result', ...common, ok: true },
+  'public-urls-update-result': { kind: 'public-urls-update-result', ...common, ok: true },
+  'metrics-live-start-result': { kind: 'metrics-live-start-result', ...common, ok: true },
+  'metrics-live-stop-result': { kind: 'metrics-live-stop-result', ...common, ok: true },
+  'metrics-capabilities-result': { kind: 'metrics-capabilities-result', ...common, ok: true },
+  'topology-overrides-update-result': {
+    kind: 'topology-overrides-update-result',
+    ...common,
+    ok: true,
+  },
+  'capability-plan-update-result': { kind: 'capability-plan-update-result', ...common, ok: true },
+  'capability-plan-clear-result': { kind: 'capability-plan-clear-result', ...common, ok: true },
+  'update-result': { kind: 'update-result', ...common, ok: true },
+  'instance-update-result': { kind: 'instance-update-result', ...common, ok: true },
+  'command-ack': { kind: 'command-ack', ...common, daemonReceivedAt: AT },
+  'command-outcome': { kind: 'command-outcome', ...common, ok: true },
+}
+
+test('deriveInboundOutcome has a mapping for every inbound kind except the non-terminal command-ack', () => {
+  for (const [kind, sample] of Object.entries(SAMPLES)) {
+    const outcome = deriveInboundOutcome(sample)
+    if (kind === 'command-ack') {
+      assertEquals(outcome, null, 'command-ack is progress, not completion')
+    } else {
+      assertEquals(outcome?.status, 'done', `${kind} must map to a terminal outcome`)
+    }
+  }
+})
