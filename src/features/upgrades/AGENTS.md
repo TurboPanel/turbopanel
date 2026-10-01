@@ -21,7 +21,7 @@ do not import a DB/cell module here.
 
 | Module              | Owns                                                                                                                               |
 | ------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `vocabulary.ts`     | `upgrade` / `stage` enums, pinned by `../../db/enum-checks.test.ts`                                                          |
+| `vocabulary.ts`     | `upgrade` / `stage` enums, pinned by `../../db/enum-checks.test.ts`                                                                |
 | `target.ts`         | `upgrade.target` jsonb shape + `isOnTarget` / `differsFromInstalled`                                                               |
 | `target-resolve.ts` | channel manifests → `UpgradeTarget` (pinned via `pinnedChannelManifestUrl`), `channelHasInstancePackage`, latest-build setting row |
 | `planner.ts`        | phases + batch sizing → the run's step list                                                                                        |
@@ -179,6 +179,21 @@ working.
   step, so it keeps the 15-minute window and then goes to `needs_attention`
   without a retry. Steps that reported a stage keep
   `UPGRADE_STEP_TIMEOUT_MS` (15 min).
+- A control-plane step that restarted (`restarting` / `verifying`) is never
+  retried: a second install on top of a build the daemon is still checking
+  can only make it worse. Quiet past `UPGRADE_VERIFY_TIMEOUT_MS` (20 min;
+  `TURBOPANEL_UPGRADE_VERIFY_TIMEOUT_MINUTES`, whole minutes 5..180) it goes to
+  `needs_attention` / `verify_timeout`, whose `errorMessage` says whether this
+  control plane runs the target commit. The run then ends, so the console never
+  spins forever and the next Update can start. Keep the window longer than the
+  daemon's own health budget (10 min by default;
+  `TURBOPANEL_UPDATE_HEALTH_TIMEOUT_SECONDS` on the host, up to 60 min), after
+  which the daemon has reported `done` or rolled back. Canary update #2
+  (2026-10-01) sat in `verifying` because the daemon's health check never
+  matched a canary label (`0.1.7` vs `0.1.7-canary.56`; fixed in turbopaneld).
+- `start()` reads the active run before anything else, before the target is
+  even resolved, so a second press answers 409 `upgrade_run_active` even when
+  the manifest host is unreachable.
 
 ## Saving what daemons report
 
@@ -242,7 +257,7 @@ grouped `count(*)`, not a materialised server or step list.
   client renders it and never compares version or commit strings itself.
 - Error vocabulary (`vocabulary.ts`): `UPGRADE_STEP_ERROR_CODES` are the step
   `errorCode`s the control plane sets itself (`rolled_back`, `server_offline`,
-  `step_timeout`, `dispatch_failed`, `managed_upgrade_required`, `downgrade_refused`); a daemon
+  `step_timeout`, `verify_timeout`, `dispatch_failed`, `managed_upgrade_required`, `downgrade_refused`); a daemon
   result may add its own reason code, so a client names these and shows any
   other code verbatim. `UPGRADE_RUN_ERROR_CODES` are the run `error`s
   (`colocated_daemon_failed`, `control_plane_failed`). The literals in

@@ -50,6 +50,7 @@ import {
   planStepAction,
   type StepAction,
   UPGRADE_STEP_MAX_ATTEMPTS,
+  UPGRADE_VERIFY_TIMEOUT_MS,
 } from './transitions.ts'
 import { shouldAutoStartRun } from './schedule.ts'
 import {
@@ -175,6 +176,11 @@ export type UpgradeCoordinatorDeps = {
   colocatedServerId: string | null
   instanceInstalled: { version: string; commit: string | null }
   resolveTarget?: () => Promise<UpgradeTarget>
+  /**
+   * How long a restarted control-plane step may wait for the daemon's verdict
+   * (`UPGRADE_VERIFY_TIMEOUT_MS`; `TURBOPANEL_UPGRADE_VERIFY_TIMEOUT_MINUTES`).
+   */
+  verifyTimeoutMs?: number
   /**
    * One line per maintenance tick describing what it decided (target, drift,
    * whether an automatic run started or why not). The tick caller rate-limits.
@@ -505,6 +511,7 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
     if (action.kind === 'needs_attention') {
       step.status = 'needs_attention'
       step.errorCode = action.errorCode
+      if (action.errorCode === 'verify_timeout') step.errorMessage = verifyTimeoutMessage(step)
       return await saveStepIfChanged(step, before, readStatus)
     }
     if (action.kind === 'retry') {
@@ -558,10 +565,23 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
     return overlayProbes(fleet, probes)
   }
 
+  /** What the operator needs when the daemon never confirmed the restarted control plane. */
+  function verifyTimeoutMessage(step: UpgradeStepRow): string {
+    const minutes = Math.round((deps.verifyTimeoutMs ?? UPGRADE_VERIFY_TIMEOUT_MS) / 60_000)
+    const want = shortCommit(step.toCommit)
+    const running = deps.instanceInstalled.commit
+    const where =
+      running && running === step.toCommit
+        ? `This control plane is running the target build ${want}`
+        : `This control plane is running ${shortCommit(running)}, not the target build ${want}`
+    return `The daemon did not confirm the new control plane within ${minutes} minutes. ${where}. Check the daemon log on this host, then retry the step or cancel the update.`
+  }
+
   function stepActionFor(step: UpgradeStepRow, fact: FleetServerFact | undefined): StepAction {
     return planStepAction(
       {
         status: step.status,
+        unit: step.unit,
         attempts: step.attempts,
         nextAttemptAt: step.nextAttemptAt,
         lastStageAt: step.lastStageAt,
@@ -572,7 +592,10 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
         serverConnected: fact?.connected === true,
         currentCommit: currentCommit(step, fact),
       },
-      { now: deps.now() }
+      {
+        now: deps.now(),
+        ...(deps.verifyTimeoutMs === undefined ? {} : { verifyTimeoutMs: deps.verifyTimeoutMs }),
+      }
     )
   }
 
@@ -762,15 +785,16 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
       return await buildPreflight(target, fleet, active)
     },
     start: async (input) => {
-      const [target, fleet, active, settings] = await Promise.all([
+      // One update at a time. Checked before anything else (the target is not
+      // even resolved) so a second press always gets the machine code, never
+      // a preflight sentence or a manifest-fetch error.
+      const active = await deps.store.activeRun()
+      if (active) return runActiveRefusal(active.id)
+      const [target, fleet, settings] = await Promise.all([
         resolveTarget(),
         facts(),
-        deps.store.activeRun(),
         deps.store.settings(),
       ])
-      // One update at a time. Checked before anything else so a second press
-      // gets the machine code, not whichever preflight sentence came first.
-      if (active) return runActiveRefusal(active.id)
       const preflight = await buildPreflight(target, fleet, active)
       if (!preflight.canStart) {
         return {
@@ -1043,6 +1067,10 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
       await deps.store.saveStep(step)
     },
   }
+}
+
+function shortCommit(commit: string | null): string {
+  return commit ? commit.slice(0, 7) : 'an unknown build'
 }
 
 async function ensureReservedRunId(store: UpgradeStore): Promise<string> {

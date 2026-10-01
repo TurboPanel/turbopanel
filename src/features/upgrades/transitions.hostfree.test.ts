@@ -3,12 +3,14 @@ import {
   computeBackoffMs,
   isInFlightStepStatus,
   isSettledStepStatus,
+  parseUpgradeVerifyTimeoutMs,
   planStepAction,
   type StepConfig,
   type StepFacts,
   type StepView,
   UPGRADE_BACKOFF_BASE_MS,
   UPGRADE_BACKOFF_MAX_MS,
+  UPGRADE_VERIFY_TIMEOUT_MS,
 } from './transitions.ts'
 
 /**
@@ -260,4 +262,44 @@ test('a dispatch the busy daemon refused keeps the install window, then needs at
     kind: 'needs_attention',
     errorCode: 'step_timeout',
   })
+})
+
+function minutesAgo(minutes: number): string {
+  return new Date(Date.parse(NOW) - minutes * 60 * 1000).toISOString()
+}
+
+test('a restarted control-plane step waits out the verify window without a retry', () => {
+  for (const status of ['restarting', 'verifying'] as const) {
+    const quiet = step({ unit: 'instance', status, lastStageAt: minutesAgo(16), attempts: 1 })
+    assertEquals(planStepAction(quiet, facts(), cfg).kind, 'none')
+    const past = step({ unit: 'instance', status, lastStageAt: minutesAgo(21), attempts: 1 })
+    assertEquals(planStepAction(past, facts(), cfg), {
+      kind: 'needs_attention',
+      errorCode: 'verify_timeout',
+    })
+  }
+})
+
+test('the verify window is configurable and only applies to the control plane', () => {
+  const long = { ...cfg, verifyTimeoutMs: 45 * 60 * 1000 }
+  const verifying = step({ unit: 'instance', status: 'verifying', lastStageAt: minutesAgo(30) })
+  assertEquals(planStepAction(verifying, facts(), long).kind, 'none')
+  // A daemon step keeps the ordinary stall retry.
+  const daemon = step({ unit: 'daemon', status: 'verifying', lastStageAt: minutesAgo(16) })
+  assertEquals(planStepAction(daemon, facts(), cfg).kind, 'retry')
+  // So does a control-plane step that never reached its restart.
+  const installing = step({ unit: 'instance', status: 'installing', lastStageAt: minutesAgo(16) })
+  assertEquals(planStepAction(installing, facts(), cfg).kind, 'retry')
+})
+
+test('parseUpgradeVerifyTimeoutMs reads whole minutes within 5..180', () => {
+  assertEquals(UPGRADE_VERIFY_TIMEOUT_MS, 20 * 60 * 1000)
+  assertEquals(parseUpgradeVerifyTimeoutMs(undefined), UPGRADE_VERIFY_TIMEOUT_MS)
+  assertEquals(parseUpgradeVerifyTimeoutMs(''), UPGRADE_VERIFY_TIMEOUT_MS)
+  assertEquals(parseUpgradeVerifyTimeoutMs(' 45 '), 45 * 60 * 1000)
+  assertEquals(parseUpgradeVerifyTimeoutMs('5'), 5 * 60 * 1000)
+  assertEquals(parseUpgradeVerifyTimeoutMs('180'), 180 * 60 * 1000)
+  for (const junk of ['4', '181', '1.5', '-10', 'ten', '9999']) {
+    assertEquals(parseUpgradeVerifyTimeoutMs(junk), UPGRADE_VERIFY_TIMEOUT_MS, junk)
+  }
 })

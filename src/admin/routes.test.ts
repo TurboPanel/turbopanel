@@ -21,6 +21,7 @@ import {
   notificationChannel,
   server,
   setting,
+  upgrade,
   user,
 } from "../db/schema.ts";
 import { OPERATOR_WEBHOOK_LABEL } from "../features/notifications/records.ts";
@@ -590,6 +591,41 @@ test("POST /api/admin/v1/secrets/reencrypt returns 409 when a sweep is already r
       assertEquals(body.error, "reencrypt_in_progress");
     } finally {
       if (held) await endReencryptSweep(lockDb, held);
+    }
+  });
+});
+
+test("POST /api/admin/v1/instance/updates/runs answers 409 upgrade_run_active while an update is running", async () => {
+  // canary update #2 (2026-10-01): a second Update press during a run got 409
+  // with only a sentence as `error`; clients branch on the code.
+  await withRoleUser("superadmin", async ({ app, cookie }) => {
+    const db = createDenoDb();
+    const [active] = await db
+      .insert(upgrade)
+      .values({ source: "manual", channel: "canary", status: "running" })
+      .returning({ id: upgrade.id });
+    try {
+      const res = await app.request(
+        `${ADMIN_API_PREFIX}/instance/updates/runs`,
+        {
+          method: "POST",
+          headers: { Cookie: cookie, "content-type": "application/json" },
+          body: JSON.stringify({}),
+        },
+      );
+      assertEquals(res.status, 409);
+      const body = await jsonBody<{
+        ok: boolean;
+        error: string;
+        activeRunId?: string;
+        blockers?: string[];
+      }>(res);
+      assertEquals(body.ok, false);
+      assertEquals(body.error, "upgrade_run_active");
+      assertEquals(body.activeRunId, active!.id);
+      assertEquals(body.blockers, ["Another update is already in progress."]);
+    } finally {
+      await db.delete(upgrade).where(eq(upgrade.id, active!.id));
     }
   });
 });

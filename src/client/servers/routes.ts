@@ -52,6 +52,10 @@ import { isExplicitDevelopmentMode } from '../../lib/dev-mode.ts'
 import { createUpgradeCoordinator } from '../../features/upgrades/coordinator.ts'
 import { createDrizzleUpgradeStore } from '../../features/upgrades/store.ts'
 import {
+  parseUpgradeVerifyTimeoutMs,
+  UPGRADE_VERIFY_TIMEOUT_ENV,
+} from '../../features/upgrades/transitions.ts'
+import {
   type ClientUpdateBlock,
   clientUpdateBlockReason,
   clientUpdateBlockStatus,
@@ -189,6 +193,9 @@ async function buildUpgradeCoordinator(
     now: () => new Date().toISOString(),
     colocatedServerId: colocated,
     instanceInstalled: { version: INSTANCE_VERSION, commit: revision.commit },
+    verifyTimeoutMs: parseUpgradeVerifyTimeoutMs(
+      c.get('platformEnv')?.[UPGRADE_VERIFY_TIMEOUT_ENV]
+    ),
   })
   return { coordinator, colocated }
 }

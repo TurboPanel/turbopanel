@@ -9,6 +9,7 @@ import type { Db } from '../../db/connection.ts'
 import { isExplicitDevelopmentMode } from '../../lib/dev-mode.ts'
 import { createUpgradeCoordinator, type UpgradeTickDecision } from './coordinator.ts'
 import { createDrizzleUpgradeStore } from './store.ts'
+import { parseUpgradeVerifyTimeoutMs, UPGRADE_VERIFY_TIMEOUT_ENV } from './transitions.ts'
 import type { UpgradeRuntime } from './planner.ts'
 
 export async function runUpgradeMaintenance(input: {
@@ -36,6 +37,7 @@ export async function runUpgradeMaintenance(input: {
     now: () => new Date().toISOString(),
     colocatedServerId: input.colocatedServerId,
     instanceInstalled: input.instanceInstalled,
+    verifyTimeoutMs: parseUpgradeVerifyTimeoutMs(env[UPGRADE_VERIFY_TIMEOUT_ENV]),
     trace: traceUpgradeTick,
   })
   await coordinator.tick({ resolveManifests: input.resolveManifests })

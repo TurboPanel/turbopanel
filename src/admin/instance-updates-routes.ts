@@ -9,6 +9,10 @@ import { resolveUpdateManifest } from '../features/update/manifest.ts'
 import { isExplicitDevelopmentMode } from '../lib/dev-mode.ts'
 import { createUpgradeCoordinator } from '../features/upgrades/coordinator.ts'
 import { createDrizzleUpgradeStore } from '../features/upgrades/store.ts'
+import {
+  parseUpgradeVerifyTimeoutMs,
+  UPGRADE_VERIFY_TIMEOUT_ENV,
+} from '../features/upgrades/transitions.ts'
 import { uiBehindTarget, updateAvailableFor } from '../features/upgrades/target.ts'
 import { normalizeUpgradeSettings } from '../features/settings/upgrade-settings.ts'
 import { resolvePlatformEnv } from './routes-helpers.ts'
@@ -268,6 +272,7 @@ async function coordinatorFrom(
     now: () => new Date().toISOString(),
     colocatedServerId: colocated,
     instanceInstalled: { version: INSTANCE_VERSION, commit: revision.commit },
+    verifyTimeoutMs: parseUpgradeVerifyTimeoutMs(env[UPGRADE_VERIFY_TIMEOUT_ENV]),
   })
 }
 
