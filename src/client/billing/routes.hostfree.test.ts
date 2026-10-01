@@ -55,6 +55,8 @@ import {
   summarizeTiers,
 } from './routes-helpers.ts'
 import { registerBillingRoutes } from './routes.ts'
+import { CLIENT_API_PREFIX } from '../../app/surfaces.ts'
+import { getWorkersClientOpenApiSpec } from '../openapi/workers.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -1409,4 +1411,46 @@ test('POST /billing/portal is 404 for an organization with no projected payer, b
   assertEquals(res.status, 404)
   assertEquals(await res.json(), { error: 'Not found' })
   assertEquals(stripeCalls(), [])
+})
+
+type SpecOperation = { responses?: Record<string, { description?: string }> }
+
+/** Routes that run under the quantity lease (or refuse on subscription state) and so can 409. */
+const BILLING_ROUTES_THAT_CAN_409 = [
+  '/billing/checkout',
+  '/billing/preview',
+  '/billing/seats',
+  '/billing/restore',
+  '/billing/upgrade',
+  '/billing/downgrade',
+]
+const BILLING_ROUTES_UNDER_LEASE = BILLING_ROUTES_THAT_CAN_409.filter(
+  (p) => p !== '/billing/preview'
+)
+
+test('every mounted billing route is a documented OpenAPI operation with its 409s and the 503', async () => {
+  const { app } = await buildApp()
+  const spec = getWorkersClientOpenApiSpec('https://panel.example.com') as {
+    paths: Record<string, Record<string, SpecOperation>>
+  }
+  const mounted = app.routes
+    .filter((r) => r.method !== 'ALL' && r.path.startsWith('/billing/'))
+    .map((r) => ({ method: r.method.toLowerCase(), path: r.path }))
+  assertEquals(mounted.length, PATHS.length)
+  for (const { method, path } of mounted) {
+    const op = spec.paths[`${CLIENT_API_PREFIX}${path}`]?.[method]
+    assertEquals(op !== undefined, true, `${method} ${path} is not documented`)
+    assertEquals(op?.responses?.['503'] !== undefined, true, `${method} ${path} lacks 503`)
+    assertEquals(op?.responses?.['401'] !== undefined, true, `${method} ${path} lacks 401`)
+    if (BILLING_ROUTES_THAT_CAN_409.includes(path)) {
+      assertEquals(op?.responses?.['409'] !== undefined, true, `${method} ${path} lacks 409`)
+    }
+    if (BILLING_ROUTES_UNDER_LEASE.includes(path)) {
+      assertEquals(
+        op?.responses?.['409']?.description?.includes('billing_mutation_in_progress'),
+        true,
+        `${method} ${path} 409 must name billing_mutation_in_progress`
+      )
+    }
+  }
 })
