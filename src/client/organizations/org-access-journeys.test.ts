@@ -392,3 +392,19 @@ test('an invited existing account joins with the granted permission and no secon
     )
   })
 })
+
+test('a member whose grants are all revoked loses access to the organization', async () => {
+  await withFixture(async (fx) => {
+    const manager = await fx.addPerson('manager')
+    const [grantRow] = await fx.db
+      .select({ id: grant.id })
+      .from(grant)
+      .where(and(eq(grant.actorId, manager.userId), eq(grant.entityId, fx.organizationId)))
+    assertEquals((await fx.call(fx.owner, 'DELETE', `/access/${grantRow!.id}`)).status, 200)
+
+    // Fails today: the teammate row survives the revoke, and canAccessOrganization
+    // lets any teammate in, so the organization is still readable and listed.
+    const read = await fx.call(manager, 'GET', `/organizations/${fx.organizationId}`)
+    assertEquals(read.status, 404, 'the former member can still read the organization')
+  })
+})
