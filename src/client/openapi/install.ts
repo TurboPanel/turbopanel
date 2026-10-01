@@ -71,7 +71,7 @@ export const installOpenApiPaths: Record<string, unknown> = {
           },
         },
         '409': {
-          description: 'Instance already configured',
+          description: 'Control plane already configured',
           content: {
             'application/json': {
               schema: { $ref: '#/components/schemas/ErrorResponse' },
@@ -135,7 +135,7 @@ export const installOpenApiPaths: Record<string, unknown> = {
           },
         },
         '409': {
-          description: 'Instance already configured',
+          description: 'Control plane already configured',
           content: {
             'application/json': {
               schema: { $ref: '#/components/schemas/ErrorResponse' },

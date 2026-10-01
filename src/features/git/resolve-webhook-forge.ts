@@ -1,7 +1,7 @@
 /**
  * Which registered app does this delivery belong to?
  *
- * Once an instance may hold more than one GitHub App or GitLab OAuth
+ * Once a control plane may hold more than one GitHub App or GitLab OAuth
  * application, a delivery can no longer be verified against "the" webhook
  * secret — the surface has to work out *whose* secret to use before it can
  * authenticate anything. This module is that step, and it runs between reading

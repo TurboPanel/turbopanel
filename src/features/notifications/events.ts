@@ -83,7 +83,7 @@ export const NOTIFICATION_EVENT_DEFINITIONS = {
         typeof ctx.count === "number" ? ctx.count : "Many"
       } servers went offline in one sweep`,
     body: () =>
-      "A whole sweep lost its fleet at once — that is usually the control plane's own network or " +
+      "A whole sweep lost all its servers at once — that is usually the control plane's own network or " +
       "a broker, not every host at the same time.",
   },
   "server.deleted": {

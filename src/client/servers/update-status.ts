@@ -288,7 +288,7 @@ export async function resolveServerUpdateStatus(params: {
   current: ServerUpdateCommit | null
   listUpdateRequests?: () => Promise<PendingRequestRecord[]>
   projectedUpdate?: UpdateProjection | null
-  /** The channel this instance follows — what the target is resolved on. */
+  /** The channel this control plane follows — what the target is resolved on. */
   channel: UpdateChannel
   /** When batching status checks, pass a shared manifest lookup result. */
   targetManifest?: UpdateManifestTarget | null

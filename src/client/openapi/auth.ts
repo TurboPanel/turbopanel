@@ -34,7 +34,7 @@ const denoClientStatusSchema = {
     billingEnabled: {
       type: 'boolean',
       description:
-        'Whether customer billing is operational (Stripe API key and webhook signing secret). Presence only — the console hides the billing area wholesale when false. Never the keys.',
+        'Whether customer billing is operational (Stripe API key and webhook signing secret). Presence only — the app hides the billing area wholesale when false. Never the keys.',
     },
     authProviders: {
       type: 'array',
@@ -66,7 +66,7 @@ const workersClientStatusSchema = {
     billingEnabled: {
       type: 'boolean',
       description:
-        'Whether customer billing is operational (Stripe API key and webhook signing secret). Presence only — the console hides the billing area wholesale when false. Never the keys.',
+        'Whether customer billing is operational (Stripe API key and webhook signing secret). Presence only — the app hides the billing area wholesale when false. Never the keys.',
     },
     authProviders: {
       type: 'array',
@@ -115,13 +115,13 @@ export function buildAuthSchemas(runtime?: 'deno' | 'workers') {
         license: { type: 'string', const: 'AGPL-3.0-only' },
         version: {
           type: 'string',
-          description: "The instance's semver (deno.json).",
+          description: "The control plane's semver (deno.json).",
         },
         channel: {
           type: 'string',
           enum: ['trunk', 'edge', 'canary', 'rc', 'release'],
           description:
-            'The update channel this instance follows (TURBOPANEL_UPDATE_CHANNEL; default release).',
+            'The update channel this control plane follows (TURBOPANEL_UPDATE_CHANNEL; default release).',
         },
         build: {
           type: ['string', 'null'],
@@ -132,7 +132,7 @@ export function buildAuthSchemas(runtime?: 'deno' | 'workers') {
           type: ['string', 'null'],
           enum: ['testing', 'staging', 'live', null],
           description:
-            'The hosted deployment (TURBOPANEL_ENVIRONMENT, set per wrangler env); null for local dev and self-hosted.',
+            'The TurboPanel High Availability deployment (TURBOPANEL_ENVIRONMENT, set per wrangler env); null for local dev and self-hosted.',
         },
         revision: {
           type: 'object',
@@ -368,7 +368,7 @@ export function buildAuthSchemas(runtime?: 'deno' | 'workers') {
         redirectTo: {
           type: 'string',
           description:
-            'Console page the emailed link lands on; only allowlisted pages (today just /reset-password) are honoured, anything else falls back to /reset-password.',
+            'App page the emailed link lands on; only allowlisted pages (today just /reset-password) are honoured, anything else falls back to /reset-password.',
         },
       },
     },
@@ -450,7 +450,7 @@ export const authPaths: Record<string, unknown> = {
       summary: 'Health probe',
       responses: {
         '200': {
-          description: 'Instance is reachable',
+          description: 'Control plane is reachable',
           content: {
             'application/json': {
               schema: { $ref: '#/components/schemas/OkHealth' },
@@ -1011,13 +1011,13 @@ export const authPaths: Record<string, unknown> = {
       tags: ['Authentication'],
       summary: 'Open a password-reset link',
       description:
-        'The link in the email. Redirects to `callbackURL` (an allowlisted console page, default /reset-password) with `?token=` when the link is live, else `?error=INVALID_TOKEN`. Does not use the link up.',
+        'The link in the email. Redirects to `callbackURL` (an allowlisted app page, default /reset-password) with `?token=` when the link is live, else `?error=INVALID_TOKEN`. Does not use the link up.',
       parameters: [
         { name: 'token', in: 'path', required: true, schema: { type: 'string' } },
         { name: 'callbackURL', in: 'query', required: false, schema: { type: 'string' } },
       ],
       responses: {
-        '302': { description: 'Redirect to the console reset page' },
+        '302': { description: 'Redirect to the app reset page' },
       },
     },
   },

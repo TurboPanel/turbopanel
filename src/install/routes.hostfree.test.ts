@@ -141,7 +141,7 @@ test('POST /bootstrap returns 409 when the instance is already configured', asyn
   assertEquals(res.status, 409)
   assertEquals(await res.json(), {
     ok: false,
-    error: 'Instance is already configured',
+    error: 'Control plane is already configured',
   })
 })
 
@@ -242,7 +242,7 @@ test('POST / returns 409 when the instance is already configured', async () => {
   assertEquals(res.status, 409)
   assertEquals(await res.json(), {
     ok: false,
-    error: 'Instance is already configured',
+    error: 'Control plane is already configured',
   })
 })
 

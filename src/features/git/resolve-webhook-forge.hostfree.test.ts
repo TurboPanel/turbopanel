@@ -1,6 +1,6 @@
 /**
  * Coverage for webhook app resolution — the step that decides *whose* secret a
- * delivery is verified against once an instance may hold several apps.
+ * delivery is verified against once a control plane may hold several apps.
  *
  * Host-free: the only database work is the `gitapp` read, stubbed here.
  */

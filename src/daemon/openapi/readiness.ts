@@ -22,7 +22,7 @@ export const readinessPaths: Record<string, unknown> = {
         "\"not installed yet\" apart from \"database unavailable\".",
       responses: {
         "200": {
-          description: "Instance is ready for daemon connections",
+          description: "Control plane is ready for daemon connections",
           content: {
             "application/json": {
               schema: {

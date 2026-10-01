@@ -43,7 +43,7 @@ async function completeInstallHandler(c: Context, opts: AuthRouteOpts) {
   }
 
   if (await isInstanceInstalled(db)) {
-    return c.json({ ok: false, error: 'Instance is already configured' }, 409)
+    return c.json({ ok: false, error: 'Control plane is already configured' }, 409)
   }
 
   const gated = await readGatedAuthJsonBody(c, {
@@ -112,7 +112,7 @@ async function completeInstallHandler(c: Context, opts: AuthRouteOpts) {
     )
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Install failed'
-    if (message === 'Instance is already configured') {
+    if (message === 'Control plane is already configured') {
       return c.json({ ok: false, error: message }, 409)
     }
     return c.json({ ok: false, error: message }, 400)
@@ -140,7 +140,7 @@ export function registerInstallRoutes(app: Hono<AppEnv>, opts: AuthRouteOpts) {
     }
 
     if (await isInstanceInstalled(db)) {
-      return c.json({ ok: false, error: 'Instance is already configured' }, 409)
+      return c.json({ ok: false, error: 'Control plane is already configured' }, 409)
     }
 
     const gated = await readGatedAuthJsonBody(c, {

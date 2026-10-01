@@ -32,13 +32,13 @@ export type WebhookReachability = {
 }
 
 const LAN_NOTE =
-  'This instance’s public URL is on a private network, so the Git provider ' +
+  'This control plane’s public URL is on a private network, so the Git provider ' +
   'cannot deliver webhooks to it. Auto-deploy will not fire; deploy a specific ' +
   'commit with the `ref` field on POST /environments/:id/deploy instead.'
 
 const NO_URL_NOTE =
-  'No public URL is configured for this instance, so the webhook endpoint has ' +
-  'no address to give the Git provider. Set one under instance settings, or ' +
+  'No public URL is configured for this control plane, so the webhook endpoint has ' +
+  'no address to give the Git provider. Set one under Networking, or ' +
   'deploy a specific commit with the `ref` field on POST /environments/:id/deploy.'
 
 /** An https origin on a publicly routable host is assumed deliverable. */

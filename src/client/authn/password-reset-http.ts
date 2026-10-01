@@ -13,7 +13,7 @@
  *     Sets the new password, uses the link up and signs the user out
  *     everywhere (owner decision 2026-09-27).
  *
- * The callback is only ever an allowlisted console page (`RESET_PAGES`);
+ * The callback is only ever an allowlisted app page (`RESET_PAGES`);
  * anything else falls back to `/reset-password`, so the link can never bounce
  * a token to another site.
  */

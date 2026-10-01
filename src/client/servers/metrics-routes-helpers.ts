@@ -494,7 +494,7 @@ export function findUnmonitorableNicSlotId(
 
 /**
  * Error text when the monitored-NIC list is longer than the server's
- * effective `normalNicSlots` (its capability plan — 2 on the hosted platform
+ * effective `normalNicSlots` (its capability plan — 2 on TurboPanel High Availability
  * by default, `MAX_NIC_SLOTS` self-hosted), or `null` when it fits. Checked at
  * PUT time so a hosted operator never pins NICs that ingest would silently
  * drop.

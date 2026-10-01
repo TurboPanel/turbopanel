@@ -1,7 +1,7 @@
 import denoConfig from '../../deno.json' with { type: 'json' }
 
 /**
- * The instance's semver, read from deno.json at build time — the one place
+ * The control plane's semver, read from deno.json at build time — the one place
  * the number is typed for this repo (package.json mirrors it; version.test.ts
  * pins the two, and sonar.projectVersion, together). Everything that puts a
  * version on a wire reads it from here: the three OpenAPI documents'

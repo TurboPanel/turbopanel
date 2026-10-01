@@ -1096,7 +1096,7 @@ test('authenticated source routes reject bad ids, bodies, and missing signing ma
   )
 })
 
-test('github and gitlab callbacks redirect into the console on a bad hop', async () => {
+test('github and gitlab callbacks redirect into the app on a bad hop', async () => {
   const { app, cookie } = await buildSourceApp(sourceHttpDb())
   const headers = { Cookie: cookie }
 

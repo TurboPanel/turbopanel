@@ -3,7 +3,7 @@ import { ADMIN_API_PREFIX } from '../../app/surfaces.ts'
 const cookieSecurity = [{ cookieAuth: [] }] as const
 
 /**
- * Tier catalogue paths. Hosted (Workers) only: the routes are not mounted on
+ * Tier catalogue paths. TurboPanel High Availability only: the routes are not mounted on
  * self-hosted Deno, so the shared admin spec omits them.
  */
 export const TIER_PATHS = {

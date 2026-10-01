@@ -368,7 +368,7 @@ export function providerErrorResponse(c: Context<AppEnv>, error: unknown): Respo
  * The registered app a connect flow was asked to run against.
  *
  * `?forgeId=` is required rather than defaulted, because "the" app no longer
- * exists: an instance may hold several per provider, and silently picking one
+ * exists: a control plane may hold several per provider, and silently picking one
  * would connect the operator's account to an application they did not choose.
  * The lookup is scoped by {@link visibleForgesCondition}, so an organization
  * can only name its own apps or instance-wide ones — a 404 for anything else,

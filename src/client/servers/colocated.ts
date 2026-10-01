@@ -15,7 +15,7 @@ import { license, server } from "../../db/schema.ts";
 const SELF_HOST_COMPONENT = "turbopanel";
 
 /**
- * Resolve which server ids are co-located with this control plane instance.
+ * Resolve which server ids are co-located with this control plane.
  *
  * Probe sources (registry, `__direct__` projection, local machine-key) identify
  * the live co-located daemon. The preferred durable source for authorization
@@ -126,7 +126,7 @@ async function addSelfHostPinnedIds(
   }
 }
 
-/** Server ids for daemons co-located with this control plane instance. */
+/** Server ids for daemons co-located with this control plane. */
 export async function resolveColocatedServerIdSet(
   db: Db,
   _registry: DaemonCellRegistry | undefined,
