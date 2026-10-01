@@ -736,7 +736,7 @@ export const serverSchemas = {
         type: 'string',
         enum: ['trunk', 'edge', 'canary', 'rc', 'release'],
         description:
-          "The update channel this instance follows (TURBOPANEL_UPDATE_CHANNEL; default trunk) — the one every queued update targets. rc and release resolve from the daemon's GitHub Releases.",
+          "The update channel this instance follows (TURBOPANEL_UPDATE_CHANNEL; default release) — the one every queued update targets. rc and release resolve from the daemon's GitHub Releases.",
       },
       current: {
         oneOf: [{ $ref: '#/components/schemas/ServerUpdateCurrent' }, { type: 'null' }],

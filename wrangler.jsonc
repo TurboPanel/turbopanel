@@ -158,6 +158,9 @@
   ],
   "vars": {
     "CLOUDFLARE_ACCOUNT_ID": "a574c2793baa3e2276ac16e96097bc8c",
+    // The dev box runs on the local overlay catalog, which only carries trunk
+    // builds; with no channel a control plane follows release.
+    "TURBOPANEL_UPDATE_CHANNEL": "trunk",
     // Transcript retention window in days (positive integer). Anything else
     // falls back to the 90-day default — parity with the Deno
     // TURBOPANEL_EXECUTION_LOG_RETENTION_DAYS env var.

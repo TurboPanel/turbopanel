@@ -15,7 +15,7 @@ export const UPDATE_CHANNELS = ['trunk', 'edge', 'canary', 'rc', 'release'] as c
 
 export type UpdateChannel = (typeof UPDATE_CHANNELS)[number]
 
-export const DEFAULT_UPDATE_CHANNEL: UpdateChannel = 'trunk'
+export const DEFAULT_UPDATE_CHANNEL: UpdateChannel = 'release'
 
 /** The repository whose GitHub Releases carry the daemon's canary/rc/release packages. */
 export const DAEMON_GITHUB_RELEASES_REPO = 'TurboPanel/turbopaneld'
@@ -49,7 +49,7 @@ export function isUpdateChannel(value: unknown): value is UpdateChannel {
 }
 
 /**
- * `TURBOPANEL_UPDATE_CHANNEL` from the platform env, defaulting to `trunk`.
+ * `TURBOPANEL_UPDATE_CHANNEL` from the platform env, defaulting to `release` (a control plane installed with no channel follows the stable rail; every component follows the channel it was installed from).
  * Mirrors the daemon's `resolveUpdateChannelConfig`; like the daemon, an
  * invalid value is a startup error (see `assertValidUpdateChannelEnv`) rather
  * than a silent fallback, so a typo can't quietly keep a fleet on trunk.
