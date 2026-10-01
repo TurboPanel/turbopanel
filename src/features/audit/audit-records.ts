@@ -46,6 +46,7 @@ export const AUDIT_ACTIONS = [
   'organization.compose_resource_defaults.set',
   'organization.acme.set',
   'organization.reauth_for_destructive.set',
+  'server.firewall_mode.set',
 ] as const
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[number]

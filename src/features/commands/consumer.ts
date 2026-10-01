@@ -56,6 +56,7 @@ import {
   FIREWALL_RECONCILE_COMMAND,
   recordFirewallPreviewResult,
 } from '../firewall/preview.ts'
+import type { FirewallApplyGate } from '../firewall/enforcement.ts'
 import type { CommandEnvelope } from './envelope.ts'
 import { nowIso } from './ids.ts'
 import { isNoopCommandQueue } from './noop-command-queue.ts'
@@ -137,6 +138,8 @@ export type CommandConsumerDeps = {
   resealDeps?: CommandResealDeps
   secretsConfig?: SecretsConfig
   dataEncryptionSecrets?: DerivedSecretsConfig
+  /** The deploy-time firewall apply key; absent means every server stays observe-only. */
+  firewallApplyGate?: FirewallApplyGate
 }
 
 const COMMAND_TIMEOUT_MS: Record<CommandType, number> = {
@@ -1874,7 +1877,8 @@ async function applySucceededSideEffects(
 /**
  * Firewall preview upkeep: keep what a host answered to a preview, and, after
  * a command that can change what the host publishes, send a fresh preview if
- * (and only if) the derived set changed. Never sends anything that applies.
+ * (and only if) the derived set changed. Sends an apply only for a server both
+ * keys of `../firewall/enforcement.ts` allow.
  */
 async function applyFirewallPreviewSideEffect(
   db: Db,
@@ -1892,7 +1896,7 @@ async function applyFirewallPreviewSideEffect(
         deps?.commandQueue,
         { actorType: 'system', actorId: envelope.serverId },
         [envelope.serverId],
-        { onlyIfPreviewed: true }
+        { onlyIfPreviewed: true, applyGate: deps?.firewallApplyGate }
       )
     }
   } catch (err) {

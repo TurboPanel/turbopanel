@@ -27,6 +27,11 @@ import {
   updateEdict,
   updateOrganizationFirewallPolicy,
 } from '../../features/firewall/records.ts'
+import { recordAudit } from '../../features/audit/audit-records.ts'
+import {
+  type FirewallApplyGate,
+  firewallApplyGateFromEnv,
+} from '../../features/firewall/enforcement.ts'
 import {
   enqueueFirewallPreview,
   enqueueFirewallPreviewForOrganization,
@@ -49,13 +54,20 @@ import { getTcpProbe } from '../../platform/ports/tcp-probe.ts'
 /**
  * Firewall settings for an organization: its policy, the rules its operators
  * typed, and each server's mode. Owners and managers only (the same
- * `organization:manage` check as TurboFabric). Nothing here pushes anything
- * to a host that changes it: after a write, the affected servers are sent a
- * PREVIEW (`observe`: rendered and kernel-checked, nothing loaded).
+ * `organization:manage` check as TurboFabric). After a write, the affected
+ * servers are sent a PREVIEW (`observe`: rendered and kernel-checked, nothing
+ * loaded). The one exception is a server the operator names in
+ * `TURBOPANEL_FIREWALL_APPLY_SERVERS` whose mode is `managed`: it is sent an
+ * apply under the daemon's commit-confirm guard (`features/firewall/enforcement.ts`).
  */
 
 function previewActor(c: Context<AppEnv>): FirewallPreviewActor {
   return { actorType: 'user', actorId: c.get('session')!.userId }
+}
+
+/** The deploy-time apply key, read per request so a dashboard var change applies without a recycle. */
+function applyGateOf(c: Context<AppEnv>): FirewallApplyGate {
+  return firewallApplyGateFromEnv(c.get('platformEnv'))
 }
 
 /** Preview the servers a rule change reaches: its one server, or every server of the organization. */
@@ -67,10 +79,12 @@ async function previewAfterRuleChange(
   const queue = c.get('commandQueue')
   const actor = previewActor(c)
   if (serverIds.includes(null)) {
-    await enqueueFirewallPreviewForOrganization(scope.db, queue, actor, scope.organizationId)
+    await enqueueFirewallPreviewForOrganization(scope.db, queue, actor, scope.organizationId, {
+      applyGate: applyGateOf(c),
+    })
     return
   }
-  await enqueueFirewallPreview(scope.db, queue, actor, serverIds)
+  await enqueueFirewallPreview(scope.db, queue, actor, serverIds, { applyGate: applyGateOf(c) })
 }
 
 function toEdictApiRow(row: EdictRecord) {
@@ -205,7 +219,8 @@ async function putPolicyResponse(c: Context<AppEnv>, scope: Scope): Promise<Resp
     scope.db,
     c.get('commandQueue'),
     previewActor(c),
-    scope.organizationId
+    scope.organizationId,
+    { applyGate: applyGateOf(c) }
   )
   return c.json({ policy })
 }
@@ -223,7 +238,19 @@ async function putModeResponse(c: Context<AppEnv>, scope: Scope): Promise<Respon
     )
   }
   const updated = await setBulwarkMode(scope.db, serverId, mode as (typeof FIREWALL_MODES)[number])
-  await enqueueFirewallPreview(scope.db, c.get('commandQueue'), previewActor(c), [serverId])
+  const session = c.get('session')
+  await recordAudit(scope.db, {
+    organizationId: scope.organizationId,
+    actorUserId: session?.userId ?? null,
+    actorEmail: session?.email ?? null,
+    action: 'server.firewall_mode.set',
+    targetType: 'server',
+    targetId: serverId,
+    context: { mode },
+  })
+  await enqueueFirewallPreview(scope.db, c.get('commandQueue'), previewActor(c), [serverId], {
+    applyGate: applyGateOf(c),
+  })
   return c.json({ bulwark: updated })
 }
 

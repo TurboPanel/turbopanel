@@ -35,7 +35,17 @@ test('buildCommandConsumerDeps wires commandQueue when present', () => {
     resealDeps: undefined,
     secretsConfig: undefined,
     dataEncryptionSecrets: undefined,
+    firewallApplyGate: undefined,
   })
+})
+
+test('buildCommandConsumerDeps passes the firewall apply key through untouched', () => {
+  const commandQueue = createNoopCommandQueue()
+  const firewallApplyGate = (serverId: string) => serverId === 'one'
+  assertEquals(
+    buildCommandConsumerDeps({ commandQueue, firewallApplyGate })?.firewallApplyGate,
+    firewallApplyGate
+  )
 })
 
 test('buildCommandConsumerDeps wires resealDeps without a queue', () => {
@@ -52,15 +62,15 @@ test('commandMessageDisposition acks success and branches on transient vs perman
   assertEquals(commandMessageDisposition({ ok: true }), 'ack')
   assertEquals(
     commandMessageDisposition({ ok: false, error: new Error('ECONNREFUSED') }),
-    'nack_requeue',
+    'nack_requeue'
   )
   assertEquals(
     commandMessageDisposition({ ok: false, error: new Error('invalid command envelope') }),
-    'nack_dead',
+    'nack_dead'
   )
   assertEquals(
     commandMessageDisposition({ ok: false, error: 'data integrity failure' }),
-    'nack_dead',
+    'nack_dead'
   )
 })
 
@@ -89,18 +99,20 @@ test('applyCommandMessageDisposition maps dispositions to ack/nack flags', () =>
 
 type ConsumeHandler = (msg: { content: { toString(): string } } | null) => void
 
-function createStubBroker(options: {
-  consumerTag?: string
-  cancel?: () => Promise<void>
-  channelClose?: () => Promise<void>
-  connectionClose?: () => Promise<void>
-  /** Make ack/nack throw, the way a channel the broker took away does. */
-  dispositionError?: Error
-  /** Runs inside consume(), i.e. after the loss listeners are attached. */
-  duringConsume?: () => void
-  /** Runs inside prefetch(), i.e. while the session is still being set up. */
-  duringPrefetch?: () => void
-} = {}) {
+function createStubBroker(
+  options: {
+    consumerTag?: string
+    cancel?: () => Promise<void>
+    channelClose?: () => Promise<void>
+    connectionClose?: () => Promise<void>
+    /** Make ack/nack throw, the way a channel the broker took away does. */
+    dispositionError?: Error
+    /** Runs inside consume(), i.e. after the loss listeners are attached. */
+    duringConsume?: () => void
+    /** Runs inside prefetch(), i.e. while the session is still being set up. */
+    duringPrefetch?: () => void
+  } = {}
+) {
   const dispositions: Array<{ method: string; requeue?: boolean }> = []
   let onMessage: ConsumeHandler | undefined
   let consumeCount = 0
@@ -191,9 +203,10 @@ function missingRowDb(): Db {
   return {
     select: () => ({
       from: () => ({
-        where: () => Object.assign(Promise.resolve([]), {
-          limit: () => Promise.resolve([]),
-        }),
+        where: () =>
+          Object.assign(Promise.resolve([]), {
+            limit: () => Promise.resolve([]),
+          }),
       }),
     }),
   } as unknown as Db
@@ -207,9 +220,7 @@ function throwingDb(error: Error): Db {
   } as unknown as Db
 }
 
-async function waitForDisposition(
-  dispositions: Array<{ method: string }>,
-): Promise<void> {
+async function waitForDisposition(dispositions: Array<{ method: string }>): Promise<void> {
   for (let i = 0; i < 50; i++) {
     if (dispositions.length > 0) return
     await new Promise((resolve) => setTimeout(resolve, 5))
@@ -364,7 +375,8 @@ test('startCommandConsumer rejects when the first connect succeeds but channel s
     Promise.resolve({
       createConfirmChannel: () => Promise.reject(new Error('channel down')),
       close: async () => undefined,
-    } as never))
+    } as never)
+  )
   try {
     await assertRejects(
       () =>
@@ -374,7 +386,7 @@ test('startCommandConsumer rejects when the first connect succeeds but channel s
           amqpUrl: 'amqp://bad-channel',
         }),
       Error,
-      'channel down',
+      'channel down'
     )
   } finally {
     connectStub.restore()

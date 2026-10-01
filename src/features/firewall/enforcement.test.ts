@@ -1,5 +1,14 @@
 import { assertEquals, assertStringIncludes } from '@std/assert'
-import { FIREWALL_APPLY_ENABLED, wireModeFor } from './enforcement.ts'
+import {
+  applyAllowedFor,
+  DENY_FIREWALL_APPLY,
+  FIREWALL_APPLY_ENABLED,
+  FIREWALL_APPLY_SERVERS_ENV,
+  FIREWALL_APPLY_SERVERS_MAX,
+  firewallApplyGateFromEnv,
+  parseFirewallApplyServers,
+  wireModeFor,
+} from './enforcement.ts'
 
 const test = Deno.test.bind(Deno)
 
@@ -13,6 +22,61 @@ test('enforcement is off in code, so no stored mode can put managed on the wire'
 test('only the enforcement switch together with a managed server yields managed', () => {
   assertEquals(wireModeFor('managed', true), 'managed')
   assertEquals(wireModeFor('observe', true), 'observe')
+})
+
+const HOST_A = '0192d6a0-0000-7000-8000-00000000000a'
+const HOST_B = '0192d6a0-0000-7000-8000-00000000000b'
+
+test('by default no server may apply: no env, an empty env, or no gate at all', () => {
+  assertEquals(applyAllowedFor(HOST_A, undefined), false)
+  assertEquals(applyAllowedFor(HOST_A, DENY_FIREWALL_APPLY), false)
+  assertEquals(applyAllowedFor(HOST_A, firewallApplyGateFromEnv(undefined)), false)
+  assertEquals(applyAllowedFor(HOST_A, firewallApplyGateFromEnv({})), false)
+  assertEquals(
+    applyAllowedFor(HOST_A, firewallApplyGateFromEnv({ [FIREWALL_APPLY_SERVERS_ENV]: '' })),
+    false
+  )
+})
+
+test('naming one server allows that server only; every other server stays observe-only', () => {
+  const gate = firewallApplyGateFromEnv({
+    [FIREWALL_APPLY_SERVERS_ENV]: ` ${HOST_A.toUpperCase()} `,
+  })
+  assertEquals(applyAllowedFor(HOST_A, gate), true)
+  assertEquals(applyAllowedFor(HOST_B, gate), false)
+  assertEquals(wireModeFor('managed', applyAllowedFor(HOST_B, gate)), 'observe')
+})
+
+test('a wildcard, a malformed entry or too many servers closes the switch for everyone', () => {
+  for (const raw of [
+    '*',
+    'all',
+    'true',
+    '1',
+    `${HOST_A},*`,
+    `${HOST_A},not-a-uuid`,
+    `${HOST_A};${HOST_B}`,
+  ]) {
+    assertEquals(parseFirewallApplyServers(raw).size, 0, raw)
+  }
+  const many = Array.from(
+    { length: FIREWALL_APPLY_SERVERS_MAX + 1 },
+    (_, index) => `0192d6a0-0000-7000-8000-${String(index).padStart(12, '0')}`
+  )
+  assertEquals(parseFirewallApplyServers(many.join(',')).size, 0)
+  assertEquals(
+    parseFirewallApplyServers(many.slice(0, FIREWALL_APPLY_SERVERS_MAX).join(',')).size,
+    3
+  )
+})
+
+test('no committed Workers config sets the apply allowlist (turning it on is an operator act)', async () => {
+  const root = new URL('../../../', import.meta.url)
+  for await (const entry of Deno.readDir(root)) {
+    if (!/^wrangler.*\.jsonc?$/.test(entry.name)) continue
+    const text = await Deno.readTextFile(new URL(entry.name, root))
+    assertEquals(text.includes(FIREWALL_APPLY_SERVERS_ENV), false, entry.name)
+  }
 })
 
 async function sourceFiles(dir: string): Promise<string[]> {
@@ -38,6 +102,7 @@ test('no code path queues server.firewall.reconcile except the preview sender', 
 
 test('the preview sender takes its mode from wireModeFor and never names managed itself', async () => {
   const text = await Deno.readTextFile(new URL('./preview.ts', import.meta.url))
-  assertStringIncludes(text, 'mode: wireModeFor(facts.mode)')
+  assertStringIncludes(text, 'wireModeFor(stored, options.applyAllowed === true)')
+  assertStringIncludes(text, 'applyAllowed: applyAllowedFor(serverId, options.applyGate)')
   assertEquals(/mode:\s*['"]managed['"]/.test(text), false)
 })
