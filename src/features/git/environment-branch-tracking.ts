@@ -126,5 +126,5 @@ export function trackedBranches(bindings: readonly EnvironmentBranchBinding[]): 
   for (const binding of bindings) {
     if (binding.branch !== null) names.add(binding.branch)
   }
-  return [...names].sort()
+  return [...names].sort((a, b) => a.localeCompare(b))
 }
