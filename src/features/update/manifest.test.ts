@@ -1,10 +1,10 @@
-import { assertEquals } from "@std/assert";
+import { assertEquals } from '@std/assert'
 import {
   resetUpdateManifestCacheForTests,
   resolveUpdateManifest,
   seedUpdateManifestCacheForTests,
   setUpdateManifestProvider,
-} from "./manifest.ts";
+} from './manifest.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -12,271 +12,262 @@ import {
  * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
  * reports Deno suites as empty; keep this alias so analysis sees real tests.
  */
-const test = Deno.test.bind(Deno);
+const test = Deno.test.bind(Deno)
 
-const TRUNK_MANIFEST_URL = "https://dl.trbp.nl/channels/trunk/manifest.json";
+const TRUNK_MANIFEST_URL = 'https://dl.trbp.nl/channels/trunk/manifest.json'
 const RC_MANIFEST_URL =
-  "https://github.com/TurboPanel/turbopaneld/releases/download/rc/manifest.json";
+  'https://github.com/TurboPanel/turbopaneld/releases/download/rc/manifest.json'
 const RELEASE_MANIFEST_URL =
-  "https://github.com/TurboPanel/turbopaneld/releases/latest/download/manifest.json";
+  'https://github.com/TurboPanel/turbopaneld/releases/latest/download/manifest.json'
 
-function manifestBody(channel: string, commit = "abc123", version?: string) {
+function manifestBody(channel: string, commit = 'abc123', version?: string) {
   return JSON.stringify({
     commit,
     buildId: `build-${commit}`,
-    builtAt: "2020-01-01T00:00:00.000Z",
+    builtAt: '2020-01-01T00:00:00.000Z',
     channel,
     ...(version ? { version } : {}),
-  });
+  })
 }
 
 /** Install a fetch stub and return the URLs it was asked for. */
-function stubFetch(
-  handler: (url: string) => Response | Promise<Response>,
-): { calls: string[]; restore: () => void } {
-  const calls: string[] = [];
-  const originalFetch = globalThis.fetch;
+function stubFetch(handler: (url: string) => Response | Promise<Response>): {
+  calls: string[]
+  restore: () => void
+} {
+  const calls: string[] = []
+  const originalFetch = globalThis.fetch
   globalThis.fetch = ((input: RequestInfo | URL) => {
-    const url = String(input);
-    calls.push(url);
-    return Promise.resolve(handler(url));
-  }) as typeof fetch;
+    const url = String(input)
+    calls.push(url)
+    return Promise.resolve(handler(url))
+  }) as typeof fetch
   return {
     calls,
     restore: () => {
-      globalThis.fetch = originalFetch;
+      globalThis.fetch = originalFetch
     },
-  };
+  }
 }
 
-test("resolveUpdateManifest reads the built-in rail with one fetch — no channels.json hop", async () => {
-  resetUpdateManifestCacheForTests();
+test('resolveUpdateManifest reads the built-in rail with one fetch — no channels.json hop', async () => {
+  resetUpdateManifestCacheForTests()
   const stub = stubFetch((url) =>
     url === TRUNK_MANIFEST_URL
-      ? new Response(manifestBody("trunk"), { status: 200 })
-      : new Response("missing", { status: 404 })
-  );
+      ? new Response(manifestBody('trunk'), { status: 200 })
+      : new Response('missing', { status: 404 })
+  )
   try {
-    const manifest = await resolveUpdateManifest("trunk");
+    const manifest = await resolveUpdateManifest('trunk')
     assertEquals(manifest, {
-      commit: "abc123",
-      buildId: "build-abc123",
-      builtAt: "2020-01-01T00:00:00.000Z",
-      channel: "trunk",
+      commit: 'abc123',
+      buildId: 'build-abc123',
+      builtAt: '2020-01-01T00:00:00.000Z',
+      channel: 'trunk',
       manifestUrl: TRUNK_MANIFEST_URL,
-    });
-    assertEquals(stub.calls, [TRUNK_MANIFEST_URL]);
+    })
+    assertEquals(stub.calls, [TRUNK_MANIFEST_URL])
   } finally {
-    stub.restore();
-    resetUpdateManifestCacheForTests();
+    stub.restore()
+    resetUpdateManifestCacheForTests()
   }
-});
+})
 
-test("resolveUpdateManifest follows rc and release to GitHub Releases", async () => {
-  resetUpdateManifestCacheForTests();
+test('resolveUpdateManifest follows rc and release to GitHub Releases', async () => {
+  resetUpdateManifestCacheForTests()
   const stub = stubFetch((url) => {
     if (url === RC_MANIFEST_URL) {
-      return new Response(manifestBody("rc", "rc1"), { status: 200 });
+      return new Response(manifestBody('rc', 'rc1'), { status: 200 })
     }
     if (url === RELEASE_MANIFEST_URL) {
-      return new Response(manifestBody("release", "rel1", "0.1.1"), {
+      return new Response(manifestBody('release', 'rel1', '0.1.1'), {
         status: 200,
-      });
+      })
     }
-    return new Response("missing", { status: 404 });
-  });
+    return new Response('missing', { status: 404 })
+  })
   try {
-    const rc = await resolveUpdateManifest("rc");
-    assertEquals(rc?.commit, "rc1");
+    const rc = await resolveUpdateManifest('rc')
+    assertEquals(rc?.commit, 'rc1')
     // Trunk-shaped manifests carry no version; release manifests name one.
-    assertEquals("version" in (rc ?? {}), false);
-    assertEquals((await resolveUpdateManifest("release"))?.commit, "rel1");
-    assertEquals((await resolveUpdateManifest("release"))?.version, "0.1.1");
-    assertEquals(
-      (await resolveUpdateManifest("release"))?.manifestUrl,
-      RELEASE_MANIFEST_URL,
-    );
-    assertEquals(stub.calls, [RC_MANIFEST_URL, RELEASE_MANIFEST_URL]);
+    assertEquals('version' in (rc ?? {}), false)
+    assertEquals((await resolveUpdateManifest('release'))?.commit, 'rel1')
+    assertEquals((await resolveUpdateManifest('release'))?.version, '0.1.1')
+    assertEquals((await resolveUpdateManifest('release'))?.manifestUrl, RELEASE_MANIFEST_URL)
+    assertEquals(stub.calls, [RC_MANIFEST_URL, RELEASE_MANIFEST_URL])
   } finally {
-    stub.restore();
-    resetUpdateManifestCacheForTests();
+    stub.restore()
+    resetUpdateManifestCacheForTests()
   }
-});
+})
 
-test("resolveUpdateManifest is null for the reserved channel without fetching", async () => {
-  resetUpdateManifestCacheForTests();
+test('resolveUpdateManifest is null for the reserved channel without fetching', async () => {
+  resetUpdateManifestCacheForTests()
   const stub = stubFetch(() => {
-    throw new TypeError("must not fetch");
-  });
+    throw new TypeError('must not fetch')
+  })
   try {
     // canary is advertised now (the rolling GitHub pre-release); only edge
     // still has no built-in location.
-    assertEquals(await resolveUpdateManifest("edge"), null);
-    assertEquals(stub.calls, []);
+    assertEquals(await resolveUpdateManifest('edge'), null)
+    assertEquals(stub.calls, [])
   } finally {
-    stub.restore();
-    resetUpdateManifestCacheForTests();
+    stub.restore()
+    resetUpdateManifestCacheForTests()
   }
-});
+})
 
-test("resolveUpdateManifest coalesces concurrent lookups per channel", async () => {
-  resetUpdateManifestCacheForTests();
-  const stub = stubFetch((url) =>
-    new Response(manifestBody(url === RC_MANIFEST_URL ? "rc" : "trunk"), {
-      status: 200,
-    })
-  );
+test('resolveUpdateManifest coalesces concurrent lookups per channel', async () => {
+  resetUpdateManifestCacheForTests()
+  const stub = stubFetch(
+    (url) =>
+      new Response(manifestBody(url === RC_MANIFEST_URL ? 'rc' : 'trunk'), {
+        status: 200,
+      })
+  )
   try {
     const [first, second, rc] = await Promise.all([
-      resolveUpdateManifest("trunk"),
-      resolveUpdateManifest("trunk"),
-      resolveUpdateManifest("rc"),
-    ]);
-    assertEquals(first?.commit, "abc123");
-    assertEquals(second?.commit, "abc123");
-    assertEquals(rc?.channel, "rc");
-    assertEquals(stub.calls, [TRUNK_MANIFEST_URL, RC_MANIFEST_URL]);
+      resolveUpdateManifest('trunk'),
+      resolveUpdateManifest('trunk'),
+      resolveUpdateManifest('rc'),
+    ])
+    assertEquals(first?.commit, 'abc123')
+    assertEquals(second?.commit, 'abc123')
+    assertEquals(rc?.channel, 'rc')
+    assertEquals(stub.calls, [TRUNK_MANIFEST_URL, RC_MANIFEST_URL])
   } finally {
-    stub.restore();
-    resetUpdateManifestCacheForTests();
+    stub.restore()
+    resetUpdateManifestCacheForTests()
   }
-});
+})
 
-test("resolveUpdateManifest reuses the cached manifest within the TTL, per channel", async () => {
-  resetUpdateManifestCacheForTests();
-  const stub = stubFetch(() =>
-    new Response(manifestBody("trunk"), { status: 200 })
-  );
+test('resolveUpdateManifest reuses the cached manifest within the TTL, per channel', async () => {
+  resetUpdateManifestCacheForTests()
+  const stub = stubFetch(() => new Response(manifestBody('trunk'), { status: 200 }))
   try {
-    await resolveUpdateManifest("trunk");
-    await resolveUpdateManifest("trunk");
-    assertEquals(stub.calls.length, 1);
-    await resolveUpdateManifest("release");
-    assertEquals(stub.calls.length, 2);
+    await resolveUpdateManifest('trunk')
+    await resolveUpdateManifest('trunk')
+    assertEquals(stub.calls.length, 1)
+    await resolveUpdateManifest('release')
+    assertEquals(stub.calls.length, 2)
   } finally {
-    stub.restore();
-    resetUpdateManifestCacheForTests();
+    stub.restore()
+    resetUpdateManifestCacheForTests()
   }
-});
+})
 
-test("resolveUpdateManifest returns null when the manifest is unavailable", async () => {
-  resetUpdateManifestCacheForTests();
-  const stub = stubFetch(() => new Response("nope", { status: 500 }));
+test('resolveUpdateManifest returns null when the manifest is unavailable', async () => {
+  resetUpdateManifestCacheForTests()
+  const stub = stubFetch(() => new Response('nope', { status: 500 }))
   try {
-    assertEquals(await resolveUpdateManifest("trunk"), null);
+    assertEquals(await resolveUpdateManifest('trunk'), null)
     // A release that does not exist yet (404 until the first promotion) is
     // the same "unknown" the page already degrades to.
-    assertEquals(await resolveUpdateManifest("release"), null);
+    assertEquals(await resolveUpdateManifest('release'), null)
   } finally {
-    stub.restore();
-    resetUpdateManifestCacheForTests();
+    stub.restore()
+    resetUpdateManifestCacheForTests()
   }
-});
+})
 
-test("resolveUpdateManifest returns null for incomplete manifest fields", async () => {
-  resetUpdateManifestCacheForTests();
-  const stub = stubFetch(() =>
-    new Response(JSON.stringify({ commit: "only" }), { status: 200 })
-  );
+test('resolveUpdateManifest returns null for incomplete manifest fields', async () => {
+  resetUpdateManifestCacheForTests()
+  const stub = stubFetch(() => new Response(JSON.stringify({ commit: 'only' }), { status: 200 }))
   try {
-    assertEquals(await resolveUpdateManifest("trunk"), null);
+    assertEquals(await resolveUpdateManifest('trunk'), null)
   } finally {
-    stub.restore();
-    resetUpdateManifestCacheForTests();
+    stub.restore()
+    resetUpdateManifestCacheForTests()
   }
-});
+})
 
-test("resolveUpdateManifest returns null when fetch throws", async () => {
-  resetUpdateManifestCacheForTests();
+test('resolveUpdateManifest returns null when fetch throws', async () => {
+  resetUpdateManifestCacheForTests()
   const stub = stubFetch(() => {
-    throw new TypeError("network down");
-  });
+    throw new TypeError('network down')
+  })
   try {
-    assertEquals(await resolveUpdateManifest("trunk"), null);
+    assertEquals(await resolveUpdateManifest('trunk'), null)
   } finally {
-    stub.restore();
-    resetUpdateManifestCacheForTests();
+    stub.restore()
+    resetUpdateManifestCacheForTests()
   }
-});
+})
 
-test("seedUpdateManifestCacheForTests short-circuits the fetch path for its channel only", async () => {
-  resetUpdateManifestCacheForTests();
-  seedUpdateManifestCacheForTests({
-    commit: "seeded",
-    buildId: "b",
-    builtAt: "2020-01-01T00:00:00.000Z",
-    channel: "trunk",
-    manifestUrl: "https://dl.trbp.nl/m.json",
-  }, "trunk");
-  const stub = stubFetch(() => new Response("missing", { status: 404 }));
+test('seedUpdateManifestCacheForTests short-circuits the fetch path for its channel only', async () => {
+  resetUpdateManifestCacheForTests()
+  seedUpdateManifestCacheForTests(
+    {
+      commit: 'seeded',
+      buildId: 'b',
+      builtAt: '2020-01-01T00:00:00.000Z',
+      channel: 'trunk',
+      manifestUrl: 'https://dl.trbp.nl/m.json',
+    },
+    'trunk'
+  )
+  const stub = stubFetch(() => new Response('missing', { status: 404 }))
   try {
-    assertEquals((await resolveUpdateManifest("trunk"))?.commit, "seeded");
-    assertEquals(stub.calls, []);
-    assertEquals(await resolveUpdateManifest("rc"), null);
-    assertEquals(stub.calls, [RC_MANIFEST_URL]);
+    assertEquals((await resolveUpdateManifest('trunk'))?.commit, 'seeded')
+    assertEquals(stub.calls, [])
+    assertEquals(await resolveUpdateManifest('rc'), null)
+    assertEquals(stub.calls, [RC_MANIFEST_URL])
   } finally {
-    stub.restore();
-    resetUpdateManifestCacheForTests();
+    stub.restore()
+    resetUpdateManifestCacheForTests()
   }
-});
+})
 
-test("resolveUpdateManifest defers to a registered provider for every channel", async () => {
-  resetUpdateManifestCacheForTests();
+test('resolveUpdateManifest defers to a registered provider for every channel', async () => {
+  resetUpdateManifestCacheForTests()
   const stub = stubFetch(() => {
-    throw new TypeError("provider must bypass the rail fetch");
-  });
+    throw new TypeError('provider must bypass the rail fetch')
+  })
   const target = {
-    commit: "abc+1",
-    buildId: "dev-abc+1",
-    builtAt: "2026-01-01T00:00:00.000Z",
-    channel: "trunk",
-    manifestUrl: "/repo/dist/manifest.json",
-  };
-  try {
-    setUpdateManifestProvider(() => Promise.resolve(target));
-    assertEquals(await resolveUpdateManifest("trunk"), target);
-    assertEquals(await resolveUpdateManifest("release"), target);
-    assertEquals(stub.calls, []);
-  } finally {
-    setUpdateManifestProvider(null);
-    stub.restore();
-    resetUpdateManifestCacheForTests();
+    commit: 'abc+1',
+    buildId: 'dev-abc+1',
+    builtAt: '2026-01-01T00:00:00.000Z',
+    channel: 'trunk',
+    manifestUrl: '/repo/dist/manifest.json',
   }
-});
+  try {
+    setUpdateManifestProvider(() => Promise.resolve(target))
+    assertEquals(await resolveUpdateManifest('trunk'), target)
+    assertEquals(await resolveUpdateManifest('release'), target)
+    assertEquals(stub.calls, [])
+  } finally {
+    setUpdateManifestProvider(null)
+    stub.restore()
+    resetUpdateManifestCacheForTests()
+  }
+})
 
-test("resolveUpdateManifest keeps the daemon provider off the instance kind", async () => {
-  resetUpdateManifestCacheForTests();
-  const instanceUrl =
-    "https://github.com/TurboPanel/turbopanel/releases/download/rc/manifest.json";
+test('resolveUpdateManifest keeps the daemon provider off the instance kind', async () => {
+  resetUpdateManifestCacheForTests()
+  const instanceUrl = 'https://github.com/TurboPanel/turbopanel/releases/download/rc/manifest.json'
   const stub = stubFetch((url) =>
     url === instanceUrl
-      ? new Response(manifestBody("rc", "inst1", "0.1.1"), { status: 200 })
-      : new Response("missing", { status: 404 })
-  );
+      ? new Response(manifestBody('rc', 'inst1', '0.1.1'), { status: 200 })
+      : new Response('missing', { status: 404 })
+  )
   try {
     setUpdateManifestProvider(() =>
       Promise.resolve({
-        commit: "daemon-only",
-        buildId: "d",
-        builtAt: "2020-01-01T00:00:00.000Z",
-        channel: "rc",
-        manifestUrl: "https://example.invalid/m.json",
+        commit: 'daemon-only',
+        buildId: 'd',
+        builtAt: '2020-01-01T00:00:00.000Z',
+        channel: 'rc',
+        manifestUrl: 'https://example.invalid/m.json',
       })
-    );
-    assertEquals((await resolveUpdateManifest("rc"))?.commit, "daemon-only");
-    assertEquals(
-      (await resolveUpdateManifest("rc", "instance"))?.commit,
-      "inst1",
-    );
-    assertEquals(
-      (await resolveUpdateManifest("rc", "instance"))?.version,
-      "0.1.1",
-    );
-    assertEquals(await resolveUpdateManifest("trunk", "instance"), null);
-    assertEquals(stub.calls, [instanceUrl]);
+    )
+    assertEquals((await resolveUpdateManifest('rc'))?.commit, 'daemon-only')
+    assertEquals((await resolveUpdateManifest('rc', 'instance'))?.commit, 'inst1')
+    assertEquals((await resolveUpdateManifest('rc', 'instance'))?.version, '0.1.1')
+    assertEquals(await resolveUpdateManifest('trunk', 'instance'), null)
+    assertEquals(stub.calls, [instanceUrl])
   } finally {
-    setUpdateManifestProvider(null);
-    stub.restore();
-    resetUpdateManifestCacheForTests();
+    setUpdateManifestProvider(null)
+    stub.restore()
+    resetUpdateManifestCacheForTests()
   }
-});
+})
