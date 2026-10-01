@@ -145,6 +145,26 @@ function parseNotification(
   }
 }
 
+function parseChannelVerification(
+  job: Record<string, unknown>,
+  to: string,
+  from: string
+): EmailJob | null {
+  if (typeof job.verifyUrl !== 'string') return null
+  if (typeof job.channelLabel !== 'string') return null
+  if (job.organizationName !== null && typeof job.organizationName !== 'string') return null
+  if (typeof job.requestedByEmail !== 'string') return null
+  return {
+    type: 'channel-verification',
+    to,
+    from,
+    verifyUrl: job.verifyUrl,
+    channelLabel: job.channelLabel,
+    organizationName: job.organizationName,
+    requestedByEmail: job.requestedByEmail,
+  }
+}
+
 /** Decode a queued mailer payload into an {@link EmailJob}, or `null` if invalid. */
 export function parseEmailJob(raw: unknown): EmailJob | null {
   if (!isRecord(raw)) return null
@@ -167,6 +187,10 @@ export function parseEmailJob(raw: unknown): EmailJob | null {
   }
   if (raw.type === 'notification') {
     return parseNotification(raw, raw.to, raw.from)
+  }
+
+  if (raw.type === 'channel-verification') {
+    return parseChannelVerification(raw, raw.to, raw.from)
   }
 
   return null
