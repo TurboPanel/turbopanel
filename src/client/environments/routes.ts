@@ -6,11 +6,13 @@ import { createSessionMiddleware } from '../authn/middleware.ts'
 import { assertCanOr403, listVisible } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import { getDb, type Db } from '../../db/connection.ts'
-import { environment, managed } from '../../db/schema.ts'
+import { environment } from '../../db/schema.ts'
 import { settleDeployOptions } from '../../features/deploy/deploy-options.ts'
-import { MANAGED_RUNTIME_PRESENT_ERROR } from '../../features/projects/project-delete.ts'
-import { applyStorageRetentionOnParentDelete } from '../../features/storage/storage-records.ts'
-import { purgeEnvironmentComposeNetworks } from '../../features/fabric/fabric-records.ts'
+import {
+  deleteEnvironmentCascade,
+  type EnvironmentDeleteResult,
+  type EnvironmentDeleteRefusal,
+} from '../../features/projects/project-delete.ts'
 import { verifyServerInOrg } from './deploy-prepare.ts'
 import { loadRepinNeedsRedeployForEnvironment } from './repin-needs-redeploy.ts'
 import { reconcileServicesForEnvironment } from './reconcile-after-compose-save.ts'
@@ -23,7 +25,7 @@ import {
   parseJsonBody,
   requireStringField,
 } from '../shared.ts'
-import { hierarchyDeleteHasChildrenResponse, runHierarchyDelete } from '../hierarchy-delete.ts'
+import { hierarchyDeleteHasChildrenResponse, isForeignKeyViolation } from '../hierarchy-delete.ts'
 import { planEnvironmentTeardown, reclaimDeletedEnvironmentHosts } from './teardown.ts'
 import {
   composePrincipalAliases,
@@ -250,6 +252,37 @@ async function parseCreateEnvironmentInput(
   }
 }
 
+/**
+ * STEP-UP SEAM. Permanent actions will ask for password / 2FA re-authentication
+ * when the organization turns that setting on. The step-up framework is built
+ * elsewhere and wires in here; until then this always allows the action.
+ * Return a `Response` (e.g. 401/403) to block, `null` to continue.
+ */
+export function requireStepUpIfConfigured(
+  _c: Context<AppEnv>,
+  _organizationId: string,
+  _action: string
+): Promise<Response | null> {
+  return Promise.resolve(null)
+}
+
+/** A row created while the delete ran trips an FK: report it as "has children". */
+async function deleteEnvironmentCascadeGuarded(
+  db: Db,
+  id: string
+): Promise<EnvironmentDeleteResult | 'has_children'> {
+  try {
+    return await deleteEnvironmentCascade(db, id)
+  } catch (error) {
+    if (isForeignKeyViolation(error)) return 'has_children'
+    throw error
+  }
+}
+
+function environmentDeleteRefusal(c: Context<AppEnv>, error: EnvironmentDeleteRefusal): Response {
+  return c.json({ error }, 409)
+}
+
 export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
   if (!opts.secrets) {
     throw new TypeError('session secrets are required for environment routes')
@@ -461,27 +494,18 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
     const immutable = await assertNotSystemOwnedOr403(c, 'environment', id)
     if (immutable) return immutable
 
-    const [managedRow] = await db
-      .select({ id: managed.id })
-      .from(managed)
-      .where(eq(managed.environmentId, id))
-      .limit(1)
-    if (managedRow) {
-      return c.json({ error: MANAGED_RUNTIME_PRESENT_ERROR }, 409)
-    }
+    const stepUp = await requireStepUpIfConfigured(c, organizationId, 'environment.delete')
+    if (stepUp) return stepUp
 
     // Planned before the delete: the payload is built from rows the delete
     // removes. Dispatched after it commits.
     const teardownPlan = await planEnvironmentTeardown(db, id)
 
-    const result = await runHierarchyDelete(db, async (tx) => {
-      await applyStorageRetentionOnParentDelete(tx, { environmentIds: [id] })
-      await purgeEnvironmentComposeNetworks(tx, id)
-      await tx.delete(environment).where(eq(environment.id, id))
-    })
-    if (result === 'has_children') {
-      return hierarchyDeleteHasChildrenResponse(c)
-    }
+    // Refuses (409) while a container is running or a deploy is in progress;
+    // otherwise drops the environment and everything under it.
+    const result = await deleteEnvironmentCascadeGuarded(db, id)
+    if (result === 'has_children') return hierarchyDeleteHasChildrenResponse(c)
+    if (!result.ok) return environmentDeleteRefusal(c, result.error)
 
     await reclaimDeletedEnvironmentHosts(c, db, teardownPlan ? [teardownPlan] : [], session.userId)
 
