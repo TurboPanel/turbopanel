@@ -3734,9 +3734,6 @@ function createRecordingCommandQueue() {
   return {
     envelopes,
     enqueue: (envelope: CommandEnvelope) => {
-      // The firewall preview that follows a successful command is covered by
-      // its own tests; these assertions are about the managed follow-ups.
-      if (envelope.type === "server.firewall.reconcile") return Promise.resolve();
       envelopes.push(envelope);
       return Promise.resolve();
     },

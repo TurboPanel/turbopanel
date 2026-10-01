@@ -121,18 +121,18 @@ function parseShortEntry(entry: string): EntryResult {
   return buildPort(proto, parts.host, parts.ip, entry)
 }
 
+function longHostPorts(published: unknown): string | undefined {
+  if (typeof published === 'number') return String(published)
+  return typeof published === 'string' ? published : undefined
+}
+
 function parseLongEntry(entry: Record<string, unknown>): EntryResult {
   const published = entry.published
-  const label = `published ${String(published ?? '')} -> ${String(entry.target ?? '')}`
+  const label = `published ${String(longHostPorts(published) ?? '')} -> ${String(longHostPorts(entry.target) ?? '')}`
   if (typeof published === 'string' && published.includes('${')) {
     return { note: `${label}: uses a variable, so its host port is unknown here` }
   }
-  const hostPorts =
-    typeof published === 'number'
-      ? String(published)
-      : typeof published === 'string'
-        ? published
-        : undefined
+  const hostPorts = longHostPorts(published)
   const proto = typeof entry.protocol === 'string' ? entry.protocol.toLowerCase() : 'tcp'
   const hostIp = typeof entry.host_ip === 'string' ? entry.host_ip : undefined
   return buildPort(proto, hostPorts, hostIp, label)

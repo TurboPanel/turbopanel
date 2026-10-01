@@ -1862,7 +1862,8 @@ async function applyFirewallPreviewSideEffect(
         db,
         deps?.commandQueue,
         { actorType: 'system', actorId: envelope.serverId },
-        [envelope.serverId]
+        [envelope.serverId],
+        { onlyIfPreviewed: true }
       )
     }
   } catch (err) {

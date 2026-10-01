@@ -62,6 +62,13 @@ export type FirewallPreviewRecord = {
   host: unknown
 }
 
+type PreviewOptions = {
+  /** Send even when the desired set is unchanged (after a reconnect). */
+  force?: boolean
+  /** Only refresh a server that already has a stored preview. */
+  onlyIfPreviewed?: boolean
+}
+
 export type FirewallPreviewOutcome = {
   queuedServerIds: string[]
   failedServerIds: string[]
@@ -153,13 +160,16 @@ async function previewOne(
   queue: CommandQueue,
   actor: FirewallPreviewActor,
   serverId: string,
-  force: boolean
+  options: PreviewOptions
 ): Promise<'queued' | 'skipped'> {
   const built = await buildPreview(db, serverId)
   if (!built) return 'skipped'
   const stored = await readStoredDesiredDigest(db, serverId)
+  // A server never previewed gets its first one from the reconnect sweep or a
+  // settings write; a deploy only refreshes a preview that already exists.
+  if (stored === null && options.onlyIfPreviewed === true) return 'skipped'
   const changed = stored !== built.desiredDigest
-  if (!changed && !force) return 'skipped'
+  if (!changed && options.force !== true) return 'skipped'
   // The generation rises only when the desired set did; a reconnect re-send
   // of an unchanged set keeps the number the host already knows.
   const generation = changed
@@ -199,14 +209,14 @@ export async function enqueueFirewallPreview(
   queue: CommandQueue | undefined,
   actor: FirewallPreviewActor,
   serverIds: readonly (string | null | undefined)[],
-  options: { force?: boolean } = {}
+  options: PreviewOptions = {}
 ): Promise<FirewallPreviewOutcome> {
   const unique = [...new Set(serverIds.filter((id): id is string => typeof id === 'string'))]
   const outcome: FirewallPreviewOutcome = { queuedServerIds: [], failedServerIds: [] }
   if (!canEnqueue(queue)) return { queuedServerIds: [], failedServerIds: unique }
   await forEachSequential(unique, async (serverId) => {
     try {
-      if ((await previewOne(db, queue, actor, serverId, options.force === true)) === 'queued') {
+      if ((await previewOne(db, queue, actor, serverId, options)) === 'queued') {
         outcome.queuedServerIds.push(serverId)
       }
     } catch (err) {
@@ -323,7 +333,7 @@ export async function recordFirewallPreviewResult(
   if (payload.mode !== 'observe') return
   const result = parseFirewallReconcileResult(resultValue)
   const stored = await readStoredPreview(db, serverId)
-  if (!stored || stored.generation !== payload.generation) return
+  if (stored?.generation !== payload.generation) return
   const status: FirewallPreviewStatus =
     result.validation && !result.validation.ok ? 'refused' : 'previewed'
   await db

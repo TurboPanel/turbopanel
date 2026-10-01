@@ -55,7 +55,7 @@ async function previewAfterRuleChange(
 ): Promise<void> {
   const queue = c.get('commandQueue')
   const actor = previewActor(c)
-  if (serverIds.some((id) => id === null)) {
+  if (serverIds.includes(null)) {
     await enqueueFirewallPreviewForOrganization(scope.db, queue, actor, scope.organizationId)
     return
   }

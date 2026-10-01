@@ -29,10 +29,7 @@
 import { eq, inArray } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { managed, replica, server } from '../../db/schema.ts'
-import {
-  DEFAULT_MANAGED_SQL_ACCESS_SCOPE,
-  type ManagedSqlAccessScope,
-} from './access-scope.ts'
+import { DEFAULT_MANAGED_SQL_ACCESS_SCOPE, type ManagedSqlAccessScope } from './access-scope.ts'
 import { getManagedEngineSpec } from './index.ts'
 import { loadManagedIngressPorts } from './load-org-defaults.ts'
 import { managedIngressPortForEngine } from './ingress-ports.ts'
@@ -46,7 +43,7 @@ export { loadBoundManagedIdsForServer } from './ingress-bound-consumers.ts'
 
 /** The scope a cluster asks for, or `undefined` when it asks for no publish. */
 export function requestedExposureScope(
-  exposure: ManagedSettings['exposure'],
+  exposure: ManagedSettings['exposure']
 ): ManagedSqlAccessScope | undefined {
   if (!exposure.enabled) return undefined
   return exposure.scope ?? DEFAULT_MANAGED_SQL_ACCESS_SCOPE
@@ -61,7 +58,7 @@ export function requestedExposureScope(
  * {@link loadHostExposureScopes}.
  */
 export function hostExposureScopes(
-  exposures: readonly ManagedSettings['exposure'][],
+  exposures: readonly ManagedSettings['exposure'][]
 ): ManagedSqlAccessScope[] {
   return unionExposureScopes(exposures.map(requestedExposureScope))
 }
@@ -73,10 +70,7 @@ export function hostExposureScopes(
  * Mirrors the set `buildManagedIngressReconcileDesired` reconciles — the
  * published listener serves exactly these clusters.
  */
-async function loadFrontedManagedIds(
-  db: Db,
-  serverId: string,
-): Promise<string[]> {
+async function loadFrontedManagedIds(db: Db, serverId: string): Promise<string[]> {
   const memberRows = await db
     .select({ managedId: replica.managedId })
     .from(replica)
@@ -93,13 +87,7 @@ async function loadFrontedManagedIds(
   const organizationId = serverRow?.organizationId
   const ids = new Set(memberRows.map((row) => row.managedId))
   if (organizationId) {
-    for (
-      const boundId of await loadBoundManagedIdsForServer(
-        db,
-        serverId,
-        organizationId,
-      )
-    ) {
+    for (const boundId of await loadBoundManagedIdsForServer(db, serverId, organizationId)) {
       ids.add(boundId)
     }
   }
@@ -114,7 +102,7 @@ type FrontedClusterExposure = {
 /** Engine and exposure setting of every cluster the host's ProxySQL fronts. */
 async function loadFrontedClusterExposures(
   db: Db,
-  serverId: string,
+  serverId: string
 ): Promise<FrontedClusterExposure[]> {
   const managedIds = await loadFrontedManagedIds(db, serverId)
   if (managedIds.length === 0) return []
@@ -150,7 +138,7 @@ async function loadFrontedClusterExposures(
  */
 export async function loadHostExposureScopes(
   db: Db,
-  serverId: string,
+  serverId: string
 ): Promise<ManagedSqlAccessScope[]> {
   const clusters = await loadFrontedClusterExposures(db, serverId)
   return hostExposureScopes(clusters.map((cluster) => cluster.exposure))
@@ -164,7 +152,7 @@ export async function loadHostExposureScopes(
  */
 export async function loadHostIngressListeners(
   db: Db,
-  serverId: string,
+  serverId: string
 ): Promise<{ scopes: ManagedSqlAccessScope[]; ports: number[] }> {
   const clusters = await loadFrontedClusterExposures(db, serverId)
   const scopes = hostExposureScopes(clusters.map((cluster) => cluster.exposure))
@@ -210,7 +198,7 @@ export async function resolveManagedEffectiveExposure(
   params: Readonly<{
     serverId: string
     exposure: ManagedSettings['exposure']
-  }>,
+  }>
 ): Promise<ManagedEffectiveExposure> {
   const scopes = await loadHostExposureScopes(db, params.serverId)
   const requested = params.exposure.enabled

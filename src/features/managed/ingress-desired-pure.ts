@@ -18,11 +18,7 @@ import {
   managedIngressPortForEngine,
   type ManagedIngressPorts,
 } from './ingress-ports.ts'
-import {
-  type ManagedSslMode,
-  managedSslRequiresTls,
-  resolveManagedSslMode,
-} from './ssl.ts'
+import { type ManagedSslMode, managedSslRequiresTls, resolveManagedSslMode } from './ssl.ts'
 
 export {
   DEFAULT_MANAGED_INGRESS_PORTS,
@@ -61,14 +57,12 @@ export function hostgroupsForClusterIndex(index: number): {
  * other scope's clients. Empty means no cluster wants a host publish.
  */
 export function unionExposureScopes(
-  scopes: readonly (ManagedSqlAccessScope | undefined)[],
+  scopes: readonly (ManagedSqlAccessScope | undefined)[]
 ): ManagedSqlAccessScope[] {
   return collapseManagedSqlAccessScopes(unionManagedSqlAccessScopes(scopes))
 }
 
-export function isIngressRecord(
-  value: unknown,
-): value is Record<string, unknown> {
+export function isIngressRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
@@ -82,7 +76,7 @@ export function isIngressRecord(
 export function protocolListenerForEngine(
   engine: string,
   defaultPort: number,
-  ports: ManagedIngressPorts = DEFAULT_MANAGED_INGRESS_PORTS,
+  ports: ManagedIngressPorts = DEFAULT_MANAGED_INGRESS_PORTS
 ): { protocolPort: number; family: ManagedIngressFamily } {
   return {
     protocolPort: managedIngressPortForEngine(engine, defaultPort, ports),
@@ -100,13 +94,11 @@ export function isManagedReplicationPrincipal(metadata: unknown): boolean {
   return metadata.managedReplication === true
 }
 
-export function principalDefaultDatabase(
-  metadata: unknown,
-): string | undefined {
+export function principalDefaultDatabase(metadata: unknown): string | undefined {
   if (!isIngressRecord(metadata)) return undefined
   if (!Array.isArray(metadata.databases)) return undefined
   const first = metadata.databases.find(
-    (entry): entry is string => typeof entry === 'string' && entry.length > 0,
+    (entry): entry is string => typeof entry === 'string' && entry.length > 0
   )
   return first
 }
@@ -122,11 +114,7 @@ export function looksLikeIpLiteral(value: string): boolean {
   })
 }
 
-export function addSanValue(
-  value: string,
-  dnsNames: Set<string>,
-  ipAddresses: Set<string>,
-): void {
+export function addSanValue(value: string, dnsNames: Set<string>, ipAddresses: Set<string>): void {
   if (looksLikeIpLiteral(value)) ipAddresses.add(value)
   else dnsNames.add(value)
 }
@@ -134,7 +122,7 @@ export function addSanValue(
 export function addBindAddressSan(
   bindAddress: string | undefined,
   dnsNames: Set<string>,
-  ipAddresses: Set<string>,
+  ipAddresses: Set<string>
 ): void {
   if (!bindAddress) return
   if (!looksLikeIpLiteral(bindAddress)) {
@@ -148,7 +136,7 @@ export function addBindAddressSan(
 export function addBackendAddressSan(
   address: string,
   dnsNames: Set<string>,
-  ipAddresses: Set<string>,
+  ipAddresses: Set<string>
 ): void {
   if (!address || address.length === 0) return
   // Co-resident container names are not client dial targets.
@@ -212,12 +200,12 @@ export type IngressBindScopeDecision =
   | { kind: 'omit' }
   | { kind: 'public_all_interfaces'; addresses: readonly ['0.0.0.0'] }
   | {
-    kind: 'resolve'
-    scopes: ReadonlyArray<Exclude<ManagedSqlAccessScope, 'public'>>
-  }
+      kind: 'resolve'
+      scopes: ReadonlyArray<Exclude<ManagedSqlAccessScope, 'public'>>
+    }
 
 export function decideIngressBindScopes(
-  enabledScopes: readonly (ManagedSqlAccessScope | undefined)[],
+  enabledScopes: readonly (ManagedSqlAccessScope | undefined)[]
 ): IngressBindScopeDecision {
   const scopes = unionExposureScopes(enabledScopes)
   if (scopes.length === 0) return { kind: 'omit' }
@@ -245,10 +233,10 @@ export type LocalBackendMember = {
 export type IngressBackendBuildResult =
   | { kind: 'ok'; backend: ManagedIngressReconcileBackend }
   | {
-    kind: 'private_path_unavailable'
-    fromServerId: string
-    toServerId: string
-  }
+      kind: 'private_path_unavailable'
+      fromServerId: string
+      toServerId: string
+    }
 
 /**
  * Co-resident member → Docker container name on the organization's managed network.
@@ -257,7 +245,7 @@ export type IngressBackendBuildResult =
 export function buildLocalOrMissingPortBackend(
   fromServerId: string,
   member: LocalBackendMember,
-  enginePort: number,
+  enginePort: number
 ): IngressBackendBuildResult | { kind: 'remote'; role: 'primary' | 'replica' } {
   const role: 'primary' | 'replica' = member.role === 'replica' ? 'replica' : 'primary'
 
@@ -314,11 +302,11 @@ export function buildRemoteIngressBackend(params: {
 
 export function mergeHierarchyContainerSan(
   listenerSans: { dnsNames: string[]; ipAddresses: string[] },
-  containerName: string,
+  containerName: string
 ): { dnsNames: string[]; ipAddresses: string[] } {
   return {
-    dnsNames: [...new Set([...listenerSans.dnsNames, containerName])].sort(
-      (a, b) => a.localeCompare(b),
+    dnsNames: [...new Set([...listenerSans.dnsNames, containerName])].sort((a, b) =>
+      a.localeCompare(b)
     ),
     ipAddresses: listenerSans.ipAddresses,
   }
@@ -340,17 +328,13 @@ export function buildIngressUserRole(metadata: unknown): 'root' | 'user' {
  * principal metadata moves a login to the reader hostgroup — read eligibility
  * of a member never rewrites where an existing login sends its traffic.
  */
-export function principalConnectionRole(
-  metadata: unknown,
-): 'read-only' | undefined {
+export function principalConnectionRole(metadata: unknown): 'read-only' | undefined {
   if (!isIngressRecord(metadata)) return undefined
   return metadata.connectionRole === 'read-only' ? 'read-only' : undefined
 }
 
 /** Cluster-level `^SELECT` split policy; absent/false keeps reads on the primary. */
-export function clusterAutoReadSplit(
-  routing: { autoReadSplit?: boolean } | undefined,
-): boolean {
+export function clusterAutoReadSplit(routing: { autoReadSplit?: boolean } | undefined): boolean {
   return routing?.autoReadSplit === true
 }
 
@@ -364,26 +348,18 @@ export function clusterAutoReadSplit(
  */
 export function clusterRequireTls(
   configured: ManagedSslMode | undefined,
-  organizationDefault: ManagedSslMode | undefined,
+  organizationDefault: ManagedSslMode | undefined
 ): boolean {
-  return managedSslRequiresTls(
-    resolveManagedSslMode(configured, organizationDefault),
-  )
+  return managedSslRequiresTls(resolveManagedSslMode(configured, organizationDefault))
 }
 
-export function shouldSkipIngressFrontendUser(
-  username: unknown,
-  metadata: unknown,
-): boolean {
+export function shouldSkipIngressFrontendUser(username: unknown, metadata: unknown): boolean {
   if (typeof username !== 'string' || username.length === 0) return true
   // Replication principal is not a client login — never a ProxySQL frontend user.
   if (isManagedReplicationPrincipal(metadata)) return true
   return false
 }
 
-export function isAtRestSealedPassword(
-  sealed: unknown,
-  envelopePrefix: string,
-): sealed is string {
+export function isAtRestSealedPassword(sealed: unknown, envelopePrefix: string): sealed is string {
   return typeof sealed === 'string' && sealed.startsWith(envelopePrefix)
 }
