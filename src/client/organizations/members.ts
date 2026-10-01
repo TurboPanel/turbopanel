@@ -20,6 +20,7 @@ import { recordAuditAndNotify } from '../../features/notifications/audit-bridge.
 import { isUuid } from '../access/routes-helpers.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
+import { requireStepUpIfConfigured } from '../authn/step-up.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import { canManageOrganization, canOwnOrganization } from '../authz/index.ts'
 import { canAccessOrganization } from '../org-context.ts'
@@ -173,6 +174,9 @@ export function registerOrganizationMemberRoutes(router: Hono<AppEnv>, opts: Aut
       isOwner: footprint.isOwner,
     })
     if (denial) return c.json({ error: denial.error }, denial.status)
+
+    const stepUp = await requireStepUpIfConfigured(c, organizationId, 'member.remove')
+    if (stepUp) return stepUp
 
     const outcome = await removeMemberRows(db, organizationId, memberId, footprint.grantIds)
     if (outcome.status === 'last_owner') {

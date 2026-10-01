@@ -66,6 +66,10 @@ sequenceDiagram
     Daemon-->>Instance: pong
 ```
 
+### Step-up re-authentication (permanent actions)
+
+An organization owner can switch on `organization.options.requireReauthForDestructive` (`PUT /organizations/:id/reauth-settings`, owner-only, default off; recommended on). Routes listed in `step-up-actions.ts` call `requireStepUpIfConfigured(c, organizationId, action)` (`step-up.ts`) after their permission check and before any change; with the setting on and no recent re-authentication they answer `403 { error: 'reauth_required', action, methods }`. `POST /auth/reauth` takes `{ password }` (people without an authenticator) or `{ code }` (people with one; the password alone is weaker than their sign-in so it is refused), is charged to the `reauth` rate-limit bucket first, and writes one `verification` row `reauth:<sessionId>` that lapses after 5 minutes (`STEP_UP_WINDOW_MS`). Keyed on the session, not the user, no session column. A session created inside the window counts as just re-authenticated. Passkey / OAuth-only people (no password, no authenticator) get `methods: ['signin']`: sign in again. The authenticator path shares the sign-in lockout and replay ledger (`verifyTotpForStepUp`). To gate another route: add its key to `STEP_UP_ACTIONS` and add the one call.
+
 ### Session model
 
 Sign-in is **email-only** (the legacy `user.username` / `displayUsername` columns were removed). The session payload does not include `username`.

@@ -2,6 +2,7 @@ import { and, eq, inArray } from 'drizzle-orm'
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
+import { requireStepUpIfConfigured } from '../authn/step-up.ts'
 import { encryptSecret } from '../../lib/secrets/data-encryption.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
@@ -906,7 +907,10 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const id = c.req.param('id')
     const scope = await resolveManageableProject(c, id)
     if (scope instanceof Response) return scope
-    const { db, userId } = scope
+    const { db, userId, organizationId } = scope
+
+    const stepUp = await requireStepUpIfConfigured(c, organizationId, 'project.delete')
+    if (stepUp) return stepUp
 
     // Capture host teardown material while the service / hosting / segment
     // rows still exist; the commands go out after the cascade commits.

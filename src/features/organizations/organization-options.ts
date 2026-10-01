@@ -104,6 +104,14 @@ export type OrganizationOptions = {
    */
   acmeEnabled?: boolean
   /**
+   * Step-up re-authentication for permanent actions (delete a project, remove
+   * a member, revoke a key, ...). When on, those routes refuse with
+   * `reauth_required` until the signed-in person has just proved who they are
+   * (see `client/authn/step-up.ts`). Off by default so a self-hosted install
+   * never surprises anyone; turning it on is recommended and owner-only.
+   */
+  requireReauthForDestructive?: boolean
+  /**
    * Opt-in gate for the namespace/capability-escaping Compose fields
    * (`privileged`, `cap_add`, `devices`, `network_mode`, `pid`, `ipc`,
    * `userns_mode`, `security_opt`, `cgroup_parent`, `sysctls` — see
@@ -234,6 +242,12 @@ function assignDocker(options: OrganizationOptions, value: Record<string, unknow
   }
 }
 
+function assignRequireReauth(options: OrganizationOptions, value: Record<string, unknown>): void {
+  if (typeof value.requireReauthForDestructive === 'boolean') {
+    options.requireReauthForDestructive = value.requireReauthForDestructive
+  }
+}
+
 /** Parse organization.options jsonb (missing/invalid keys → omitted). */
 export function parseOrganizationOptions(value: unknown): OrganizationOptions {
   if (!isRecord(value)) return {}
@@ -266,6 +280,7 @@ export function parseOrganizationOptions(value: unknown): OrganizationOptions {
   if (typeof value.acmeEnabled === 'boolean') {
     options.acmeEnabled = value.acmeEnabled
   }
+  assignRequireReauth(options, value)
   if (typeof value.composeGatedFieldsEnabled === 'boolean') {
     options.composeGatedFieldsEnabled = value.composeGatedFieldsEnabled
   }
@@ -289,6 +304,11 @@ export function resolveTemperatureUnit(options: OrganizationOptions): Temperatur
 /** Effective Let's Encrypt gate: off unless the org has opted in. */
 export function resolveAcmeEnabled(options: OrganizationOptions): boolean {
   return options.acmeEnabled ?? false
+}
+
+/** Effective step-up gate for permanent actions: off unless an owner turned it on. */
+export function resolveRequireReauthForDestructive(options: OrganizationOptions): boolean {
+  return options.requireReauthForDestructive ?? false
 }
 
 function assignComposeDefaultResourceLimits(

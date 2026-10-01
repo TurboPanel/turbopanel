@@ -3,6 +3,7 @@ import {
   parseMaxServersInput,
   parseTemperatureUnitInput,
   resolveAcmeEnabled,
+  resolveRequireReauthForDestructive,
   resolveComposeDefaultResourceLimits,
   resolveComposeGatedFieldsEnabled,
   resolveDeployHooksEnabled,
@@ -58,6 +59,10 @@ export type TemperatureUnitPatch = {
 
 export type TlsSettingsPatch = {
   acmeEnabled: boolean
+}
+
+export type ReauthSettingsPatch = {
+  requireReauthForDestructive: boolean
 }
 
 export type ComposeGatedFieldsPatch = {
@@ -349,6 +354,22 @@ export function parseTlsSettingsPatch(
   return { ok: true, patch: { acmeEnabled: body.acmeEnabled } }
 }
 
+export function parseReauthSettingsPatch(
+  body: Record<string, unknown>
+): { ok: true; patch: ReauthSettingsPatch } | OrganizationRouteValidationError {
+  if (typeof body.requireReauthForDestructive !== 'boolean') {
+    return {
+      ok: false,
+      error: 'Invalid requireReauthForDestructive',
+      status: 400,
+    }
+  }
+  return {
+    ok: true,
+    patch: { requireReauthForDestructive: body.requireReauthForDestructive },
+  }
+}
+
 export function parseComposeGatedFieldsPatch(
   body: Record<string, unknown>
 ): { ok: true; patch: ComposeGatedFieldsPatch } | OrganizationRouteValidationError {
@@ -615,6 +636,19 @@ export function tlsSettingsPutResponse(options: { acmeEnabled?: boolean }) {
   return {
     ok: true as const,
     ...tlsSettingsGetResponse(options),
+  }
+}
+
+export function reauthSettingsGetResponse(options: { requireReauthForDestructive?: boolean }) {
+  return {
+    requireReauthForDestructive: resolveRequireReauthForDestructive(options),
+  }
+}
+
+export function reauthSettingsPutResponse(options: { requireReauthForDestructive?: boolean }) {
+  return {
+    ok: true as const,
+    ...reauthSettingsGetResponse(options),
   }
 }
 
