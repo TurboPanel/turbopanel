@@ -104,6 +104,11 @@ export type StepDetail = {
   progressDetail?: string
   priorRequestIds?: string[]
   inProgressRefused?: boolean
+  /**
+   * The control-plane step exists only to move the UI bundle (the binary is
+   * already current), so the daemon's result — not the commit — settles it.
+   */
+  uiRefresh?: boolean
 }
 
 function detailRecord(detail: unknown): Record<string, unknown> {
@@ -156,7 +161,13 @@ export function detailWithPhase(phase: UpgradePhase, detail: unknown): StepDetai
     out.priorRequestIds = history.priorRequestIds
   }
   if (history.inProgressRefused) out.inProgressRefused = true
+  if (uiRefreshFromDetail(detail)) out.uiRefresh = true
   return out
+}
+
+/** Whether a step was opened only to refresh the UI bundle. */
+export function uiRefreshFromDetail(detail: unknown): boolean {
+  return detailRecord(detail).uiRefresh === true
 }
 
 export type ClientUpdateBlockError =

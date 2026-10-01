@@ -9,7 +9,7 @@ import { resolveUpdateManifest } from '../features/update/manifest.ts'
 import { isExplicitDevelopmentMode } from '../lib/dev-mode.ts'
 import { createUpgradeCoordinator } from '../features/upgrades/coordinator.ts'
 import { createDrizzleUpgradeStore } from '../features/upgrades/store.ts'
-import { updateAvailableFor } from '../features/upgrades/target.ts'
+import { uiBehindTarget, updateAvailableFor } from '../features/upgrades/target.ts'
 import { normalizeUpgradeSettings } from '../features/settings/upgrade-settings.ts'
 import { resolvePlatformEnv } from './routes-helpers.ts'
 
@@ -77,6 +77,7 @@ export function registerInstanceUpdatesAdminRoutes(
     const env = resolvePlatformEnv(c, opts)
     const channel = resolveInstanceUpdateChannel(env)
     const revision = resolveInstanceRevision(env)
+    const consoleCommit = readConsoleCommit(c.req.query('consoleCommit'))
     const [instanceTarget, uiTarget, daemonTarget, daemon] = await Promise.all([
       resolveUpdateManifest(channel, 'instance'),
       resolveUpdateManifest(channel, 'ui'),
@@ -106,6 +107,11 @@ export function registerInstanceUpdatesAdminRoutes(
           target: instanceTarget,
           uiTarget,
           updateAvailable: updateAvailableFor(instanceInstalled, instanceTarget),
+          // The UI ships inside the control-plane install. On a self-hosted
+          // control plane it is behind when the console's own bundle differs
+          // from the channel's UI build; on Workers the UI is deployed, not
+          // installed, so it is never offered here.
+          uiUpdateAvailable: opts.runtime === 'deno' && uiBehindTarget(uiTarget, consoleCommit),
         },
         daemon: {
           installed: daemonInstalled,
@@ -265,6 +271,13 @@ async function coordinatorFrom(
   })
 }
 
+/** A git commit id the console reports (a hex prefix or full sha), or null. */
+function readConsoleCommit(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim()
+  return /^[0-9a-f]{7,64}$/i.test(trimmed) ? trimmed.toLowerCase() : null
+}
+
 async function startGuardedRun(
   c: Context<AppEnv>,
   opts: {
@@ -277,10 +290,12 @@ async function startGuardedRun(
   const startedBy = c.get('session')?.userId ?? null
   const body = await c.req.json().catch(() => null)
   const runId = typeof body?.runId === 'string' ? body.runId : undefined
+  const consoleCommit = opts.runtime === 'deno' ? readConsoleCommit(body?.consoleCommit) : null
   const result = await coordinator.start({
     source: 'manual',
     startedBy,
     runId,
+    consoleCommit,
   })
   if (!result.ok) {
     return c.json({ ok: false, error: result.error, blockers: result.blockers }, 409)
