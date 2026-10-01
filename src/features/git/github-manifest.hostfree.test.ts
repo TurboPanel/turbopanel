@@ -16,6 +16,9 @@ import {
   GithubManifestError,
   GITHUB_MANIFEST_EVENTS,
 } from './github-manifest.ts'
+import { useUnpinnedForgeFetchForTests } from './forge-url.ts'
+
+useUnpinnedForgeFetchForTests()
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.

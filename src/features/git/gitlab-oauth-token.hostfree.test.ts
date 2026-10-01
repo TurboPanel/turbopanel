@@ -17,6 +17,9 @@ import {
   GITLAB_DEFAULT_BASE_URL,
   GITLAB_OAUTH_SCOPES,
 } from './forge-records.ts'
+import { useUnpinnedForgeFetchForTests } from './forge-url.ts'
+
+useUnpinnedForgeFetchForTests()
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.

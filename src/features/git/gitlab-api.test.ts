@@ -11,6 +11,9 @@ import {
   resolveGitlabCommit,
   toGitlabRepositorySummary,
 } from './gitlab-api.ts'
+import { useUnpinnedForgeFetchForTests } from './forge-url.ts'
+
+useUnpinnedForgeFetchForTests()
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.

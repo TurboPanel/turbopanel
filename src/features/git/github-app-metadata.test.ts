@@ -2,6 +2,9 @@ import { assertEquals, assertRejects } from '@std/assert'
 import type { Forge } from './forge-records.ts'
 import { fetchGithubAppMetadata } from './github-app-metadata.ts'
 import { GithubAppTokenError, privateKeyPemToPkcs8Der } from './github-app-token.ts'
+import { useUnpinnedForgeFetchForTests } from './forge-url.ts'
+
+useUnpinnedForgeFetchForTests()
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.

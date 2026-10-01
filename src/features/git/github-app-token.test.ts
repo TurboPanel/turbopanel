@@ -18,6 +18,9 @@ import {
   signGithubAppJwt,
   verifyInstallationAuthorizedByUser,
 } from './github-app-token.ts'
+import { useUnpinnedForgeFetchForTests } from './forge-url.ts'
+
+useUnpinnedForgeFetchForTests()
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.

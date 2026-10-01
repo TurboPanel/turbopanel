@@ -17,11 +17,10 @@
  * - {@link resolveOutboundHostScope} resolves the name, which a literal-only
  *   validator cannot do. Only the Deno instance has a resolver; elsewhere it
  *   is a no-op. A name that later re-points to a private address (rebinding)
- *   is only caught when the fetch-time check runs it again (`forgeFetch` in
- *   `git/forge-url.ts` does, with `failClosed`); a rebind between that
- *   lookup and the connection itself is not caught, and the host firewall
- *   is the wall there (the compiled instance runs with unrestricted
- *   `--allow-net` since 2026-09-18).
+ *   is caught when the fetch-time check runs it again, and
+ *   {@link resolveOutboundHost} returns the judged answers so `forgeFetch`
+ *   (`git/forge-url.ts`) can connect to exactly those (`pinned-fetch.ts`)
+ *   instead of letting `fetch` resolve the name a second time.
  *
  * `allowPrivate` lifts the address and reserved-name rules. Scheme and
  * credential rules stay. Who passes it is a per-caller decision:
@@ -74,7 +73,7 @@ export type OutboundUrlOptions = {
 /** Returns the reason the URL is refused, or `null` when it is dialable. */
 export function validateOutboundUrl(
   raw: string,
-  opts: OutboundUrlOptions = {},
+  opts: OutboundUrlOptions = {}
 ): OutboundUrlRejection | null {
   let url: URL
   try {
@@ -106,30 +105,45 @@ export type ResolveOutboundHostOptions = OutboundUrlOptions & {
   failClosed?: boolean
 }
 
+export type OutboundHostResolution = {
+  rejection: OutboundUrlRejection | null
+  /**
+   * The public addresses the name resolved to (an IP-literal host yields
+   * itself). Empty when there is no resolver (Workers) or the name does not
+   * exist. A caller that can pin a connection connects to one of these and
+   * never resolves the name again.
+   */
+  addresses: string[]
+}
+
 /**
- * Resolve the name and refuse it if any answer is not a public address — the
- * half of the check a literal-only validator cannot do. At write time a name
- * that does not resolve is left to the fetch to fail on (the admin may be
- * mid-DNS-setup); with `failClosed` (fetch time) a resolver error refuses it.
+ * Resolve the name, refuse it if any answer is not a public address, and
+ * hand back the answers so the caller can pin the connection to them. At
+ * write time a name that does not resolve is left to the fetch to fail on
+ * (the admin may be mid-DNS-setup); with `failClosed` (fetch time) a resolver
+ * error refuses it.
  */
-export async function resolveOutboundHostScope(
+export async function resolveOutboundHost(
   raw: string,
-  opts: ResolveOutboundHostOptions = {},
-): Promise<OutboundUrlRejection | null> {
-  if (opts.allowPrivate) return null
+  opts: ResolveOutboundHostOptions = {}
+): Promise<OutboundHostResolution> {
+  if (opts.allowPrivate) return { rejection: null, addresses: [] }
   const deno = (globalThis as { Deno?: { resolveDns?: unknown } }).Deno
-  if (typeof deno?.resolveDns !== 'function') return null
-  const resolveDns = deno.resolveDns as (
-    query: string,
-    recordType: 'A' | 'AAAA',
-  ) => Promise<string[]>
   let hostname: string
   try {
     hostname = unbracket(new URL(raw.trim()).hostname.toLowerCase())
   } catch {
-    return 'malformed'
+    return { rejection: 'malformed', addresses: [] }
   }
-  if (normalizeIpAddress(hostname) !== null) return null
+  const literal = normalizeIpAddress(hostname)
+  if (literal !== null) return { rejection: null, addresses: [literal] }
+  if (typeof deno?.resolveDns !== 'function') {
+    return { rejection: null, addresses: [] }
+  }
+  const resolveDns = deno.resolveDns as (
+    query: string,
+    recordType: 'A' | 'AAAA'
+  ) => Promise<string[]>
   const answers: string[] = []
   for (const recordType of ['A', 'AAAA'] as const) {
     try {
@@ -137,13 +151,23 @@ export async function resolveOutboundHostScope(
     } catch (error) {
       // NXDOMAIN / no records of this type: nothing to judge. Anything else
       // (SERVFAIL, timeout, resolver unreachable) is unjudged at fetch time.
-      if (opts.failClosed && !isNoSuchRecord(error)) return 'dns_lookup_failed'
+      if (opts.failClosed && !isNoSuchRecord(error)) {
+        return { rejection: 'dns_lookup_failed', addresses: [] }
+      }
     }
   }
-  for (const answer of answers) {
-    if (ipAddressScope(answer) !== 'public') return 'address_not_public'
+  if (answers.some((answer) => ipAddressScope(answer) !== 'public')) {
+    return { rejection: 'address_not_public', addresses: [] }
   }
-  return null
+  return { rejection: null, addresses: answers }
+}
+
+/** {@link resolveOutboundHost} reduced to its verdict. */
+export async function resolveOutboundHostScope(
+  raw: string,
+  opts: ResolveOutboundHostOptions = {}
+): Promise<OutboundUrlRejection | null> {
+  return (await resolveOutboundHost(raw, opts)).rejection
 }
 
 /** Deno reports NXDOMAIN and "no records of this type" as `NotFound`. */

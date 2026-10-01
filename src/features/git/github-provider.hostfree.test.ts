@@ -26,6 +26,9 @@ import {
   successfulCheckSha,
   toGithubRepositorySummary,
 } from './github-provider.ts'
+import { useUnpinnedForgeFetchForTests } from './forge-url.ts'
+
+useUnpinnedForgeFetchForTests()
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
