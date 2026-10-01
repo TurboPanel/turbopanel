@@ -179,6 +179,7 @@ import {
   parseResourceLimits,
   sumServiceResourceUsage,
 } from '../../features/organizations/resource-limits.ts'
+import { effectiveServiceResources } from '../../features/organizations/compose-resource-usage.ts'
 import {
   type HostingBindScope,
   parseHostingOptions,
@@ -1811,22 +1812,19 @@ function resourceLimitPrepareError(
   resolvedServices: readonly ResolvedService[],
   serviceCount: number,
   orgOptions: unknown,
-  serverOptions: unknown
+  serverOptions: unknown,
+  composeServices?: unknown
 ): SoftDeployPrepareError | null {
   const orgLimits =
     parseResourceLimits(isPlainObject(orgOptions) ? orgOptions.resourceLimits : null) ?? {}
   const serverLimits =
     parseResourceLimits(isPlainObject(serverOptions) ? serverOptions.resourceLimits : null) ?? {}
+  const effective = effectiveServiceResources(
+    composeServices,
+    new Map(resolvedServices.map((entry) => [entry.composeServiceName, entry.resources] as const))
+  )
   const usage = sumServiceResourceUsage(
-    new Map(
-      resolvedServices.map(
-        (entry) =>
-          [
-            entry.composeServiceName,
-            entry.resources === undefined ? {} : { resources: entry.resources },
-          ] as const
-      )
-    ),
+    new Map([...effective].map(([name, resources]) => [name, { resources }] as const)),
     serviceCount
   )
   const violations = checkResourceLimits(usage, orgLimits, serverLimits)
@@ -2679,7 +2677,8 @@ async function resolvedPlacementGateError(
       args.resolved.services,
       args.pipeline.expandedServiceNames.length,
       args.orgOptions,
-      args.serverOptions
+      args.serverOptions,
+      args.pipeline.expandedDocument.data.services
     )
   )
   if (limitErr) return limitErr

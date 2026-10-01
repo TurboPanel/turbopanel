@@ -2545,6 +2545,108 @@ test('a deploy over the organization or server ceiling is refused with the limit
   })
 })
 
+async function setServerCeiling(ctx: HostLevelCtx, limits: Record<string, number>): Promise<void> {
+  await ctx.db
+    .update(server)
+    .set({ options: { resourceLimits: limits } })
+    .where(eq(server.id, ctx.serverId))
+}
+
+async function deployComposeWithCeiling(
+  ctx: HostLevelCtx,
+  services: Record<string, unknown>,
+  limits: Record<string, number>
+): Promise<{ status: number; body: { error?: string; violations?: LimitViolation[] } }> {
+  await useCompose(ctx, composeOf(services), false)
+  await ctx.db
+    .update(organization)
+    .set({ options: {} })
+    .where(eq(organization.id, ctx.organizationId))
+  await reconcileServicesForEnvironment(ctx.db, ctx.environmentId)
+  await setServerCeiling(ctx, limits)
+  return deployBody(ctx)
+}
+
+test('compose-authored cpus count toward the server ceiling', async () => {
+  await withDeployFixtures(async (ctx) => {
+    const services = {
+      web: { image: 'nginx:alpine', cpus: 2 },
+      db: { image: 'postgres:17', deploy: { resources: { limits: { cpus: '1' } } } },
+    }
+    const over = await deployComposeWithCeiling(ctx, services, { maxCpus: 2 })
+    assertEquals(over.status, 409)
+    assertEquals(over.body.error, 'resource_limit_exceeded')
+    assertEquals(over.body.violations, [
+      { scope: 'server', field: 'maxCpus', limit: 2, requested: 3 },
+    ])
+    assertEquals(ctx.commandQueue.envelopes.length, 0)
+
+    await setServerCeiling(ctx, { maxCpus: 3 })
+    assertEquals((await managerDeploy(ctx)).status, 200)
+  })
+})
+
+test('compose-authored memory limits are parsed by unit and checked against the ceiling', async () => {
+  await withDeployFixtures(async (ctx) => {
+    const mib = 1024 ** 2
+    const services = {
+      a: { image: 'x:1', mem_limit: '512m' },
+      b: { image: 'x:2', mem_limit: '512mb' },
+      c: { image: 'x:3', deploy: { resources: { limits: { memory: '1g' } } } },
+      d: { image: 'x:4', mem_limit: 1048576 },
+    }
+    const over = await deployComposeWithCeiling(ctx, services, { maxMemoryBytes: 2048 * mib })
+    assertEquals(over.status, 409)
+    assertEquals(over.body.violations, [
+      { scope: 'server', field: 'maxMemoryBytes', limit: 2048 * mib, requested: 2049 * mib },
+    ])
+
+    await setServerCeiling(ctx, { maxMemoryBytes: 2049 * mib })
+    assertEquals((await managerDeploy(ctx)).status, 200)
+  })
+})
+
+test('a compose mem_reservation larger than the limit counts', async () => {
+  await withDeployFixtures(async (ctx) => {
+    const services = { a: { image: 'x:1', mem_limit: '1m', mem_reservation: '8m' } }
+    const over = await deployComposeWithCeiling(ctx, services, { maxMemoryBytes: 4 * 1024 ** 2 })
+    assertEquals(over.status, 409)
+    assertEquals(over.body.violations?.[0]?.requested, 8 * 1024 ** 2)
+  })
+})
+
+test('deploy.replicas multiplies the compose-authored request', async () => {
+  await withDeployFixtures(async (ctx) => {
+    const services = { web: { image: 'nginx:alpine', cpus: 1, deploy: { replicas: 3 } } }
+    const over = await deployComposeWithCeiling(ctx, services, { maxCpus: 2 })
+    assertEquals(over.status, 409)
+    assertEquals(over.body.violations, [
+      { scope: 'server', field: 'maxCpus', limit: 2, requested: 3 },
+    ])
+    await setServerCeiling(ctx, { maxCpus: 3 })
+    assertEquals((await managerDeploy(ctx)).status, 200)
+  })
+})
+
+test('services with no limits are not counted, and settings still win over the compose value', async () => {
+  await withDeployFixtures(async (ctx) => {
+    const services = { web: { image: 'nginx:alpine', cpus: 4 }, db: { image: 'postgres:17' } }
+    await useCompose(ctx, composeOf(services), false)
+    await reconcileServicesForEnvironment(ctx.db, ctx.environmentId)
+    await pinServiceCpus(ctx, { web: 1 })
+    await setServerCeiling(ctx, { maxCpus: 1 })
+    // Settings pin web to 1 cpu (they are applied over the document); db asks for nothing.
+    assertEquals((await managerDeploy(ctx)).status, 200)
+
+    await pinServiceCpus(ctx, { web: 2 })
+    const over = await deployBody(ctx)
+    assertEquals(over.status, 409)
+    assertEquals(over.body.violations, [
+      { scope: 'server', field: 'maxCpus', limit: 1, requested: 2 },
+    ])
+  })
+})
+
 async function withExtraUser(
   ctx: RunCtx,
   permission: 'organization:own' | null,
