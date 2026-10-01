@@ -260,6 +260,47 @@ test('buildManagedRestorePayload omits database when the record has none', () =>
   assertEquals('database' in built.payload, false)
 })
 
+test("buildManagedRestorePayload carries a scheduled backup's policy id", () => {
+  const ctx = buildContext(postgresEngineSpec)
+  const record = {
+    ...buildRecord(),
+    retentionId: '11111111-1111-4111-8111-111111111111',
+  }
+
+  const built = buildManagedRestorePayload(ctx, 'managed-1', record)
+  if (isManagedBackupApiError(built)) {
+    throw new Error(`expected success, got error kind=${built.kind}`)
+  }
+  assertEquals(built.payload.policyId, '11111111-1111-4111-8111-111111111111')
+})
+
+test('buildManagedRestorePayload omits the policy id for a manual backup', () => {
+  const ctx = buildContext(postgresEngineSpec)
+  const record = buildRecord()
+
+  const built = buildManagedRestorePayload(ctx, 'managed-1', record)
+  if (isManagedBackupApiError(built)) {
+    throw new Error(`expected success, got error kind=${built.kind}`)
+  }
+  assertEquals('policyId' in built.payload, false)
+})
+
+test('buildManagedRestorePayload takes the policy id only from the stored record', () => {
+  const ctx = buildContext(postgresEngineSpec)
+  // A manual backup's record with a request-style field smuggled in must not
+  // produce a policy id: the builder reads `retentionId`, nothing else.
+  const record = {
+    ...buildRecord(),
+    policyId: '22222222-2222-4222-8222-222222222222',
+  } as ReturnType<typeof buildRecord>
+
+  const built = buildManagedRestorePayload(ctx, 'managed-1', record)
+  if (isManagedBackupApiError(built)) {
+    throw new Error(`expected success, got error kind=${built.kind}`)
+  }
+  assertEquals('policyId' in built.payload, false)
+})
+
 function mockBackupContext(): Context<AppEnv> {
   return {
     json(body: unknown, status?: number) {

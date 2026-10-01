@@ -142,6 +142,10 @@ export function buildManagedRestorePayload(
     sizeBytes: record.sizeBytes,
   }
   if (record.database !== undefined) payload.database = record.database
+  // A scheduled backup lives in its own policy directory on the host, so the
+  // daemon needs the policy id to find it. It comes from the stored row, never
+  // from the request.
+  if (record.retentionId !== undefined) payload.policyId = record.retentionId
   return { payload }
 }
 

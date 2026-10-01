@@ -597,6 +597,11 @@ export const managedSchemas = {
         type: 'string',
         description: 'Daemon-local artifact path — never a downloadable URL',
       },
+      retentionId: {
+        type: 'string',
+        format: 'uuid',
+        description: 'The backup schedule whose run made this artifact; absent for a manual backup',
+      },
     },
   },
   ManagedBackupsResponse: {
