@@ -20,6 +20,7 @@ import {
   workspace,
 } from '../../db/schema.ts'
 import type { EmailJob, EmailQueue } from '../../features/email/types.ts'
+import { listNotificationsForUser } from '../../features/notifications/records.ts'
 import { registerAccessRoutes } from './routes.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 
@@ -949,4 +950,81 @@ test('POST /invitations removes the invitation when the email fails, so a retry 
     },
     { emailQueue: queue }
   )
+})
+
+test('POST /access raises access.grant_created for the managers', async () => {
+  await withTestFixtures(async ({ db, app, secrets, actorId, targetId, organizationId }) => {
+    await db.insert(grant).values({
+      entityType: 'organization',
+      entityId: organizationId,
+      actorType: 'user',
+      actorId: actorId,
+      permission: 'organization:own',
+    })
+
+    const cookie = await sessionCookie(db, secrets, actorId)
+    const res = await app.request('/access', {
+      method: 'POST',
+      headers: {
+        ...orgRequestHeaders(cookie, organizationId),
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        subjectKind: 'user',
+        subjectId: targetId,
+        resourceId: organizationId,
+        effect: 'allow',
+        permissionKey: 'organization:manage',
+      }),
+    })
+    assertEquals(res.status, 200)
+
+    const created = (await listNotificationsForUser(db, actorId)).filter(
+      (n) => n.event === 'access.grant_created'
+    )
+    assertEquals(created.length, 1)
+    assertEquals(created[0]!.title, 'Access granted: organization:manage')
+  })
+})
+
+test('DELETE /access/:id raises access.grant_revoked for the managers', async () => {
+  await withTestFixtures(async ({ db, app, secrets, actorId, targetId, organizationId }) => {
+    await db.insert(grant).values({
+      entityType: 'organization',
+      entityId: organizationId,
+      actorType: 'user',
+      actorId: actorId,
+      permission: 'organization:own',
+    })
+    const [targetGrant] = await db
+      .insert(grant)
+      .values({
+        entityType: 'organization',
+        entityId: organizationId,
+        actorType: 'user',
+        actorId: targetId,
+        permission: 'organization:manage',
+      })
+      .returning({ id: grant.id })
+
+    const cookie = await sessionCookie(db, secrets, actorId)
+    const res = await app.request(`/access/${targetGrant!.id}`, {
+      method: 'DELETE',
+      headers: orgRequestHeaders(cookie, organizationId),
+    })
+    assertEquals(res.status, 200)
+
+    const revoked = (await listNotificationsForUser(db, actorId)).filter(
+      (n) => n.event === 'access.grant_revoked'
+    )
+    assertEquals(revoked.length, 1)
+    assertEquals(revoked[0]!.title, 'Access revoked: organization:manage')
+    // The member who lost the permission is not a manager any more and is not told.
+    assertEquals(
+      (await listNotificationsForUser(db, targetId)).filter(
+        (n) => n.event === 'access.grant_revoked'
+      ),
+      []
+    )
+  })
 })
