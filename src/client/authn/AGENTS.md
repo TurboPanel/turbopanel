@@ -10,6 +10,12 @@ The instance uses a **custom PAM-style auth model** built entirely on the **Web 
 
 **`nodejs_compat` is enabled** in `wrangler.jsonc` as a toolchain compatibility shim (required for drizzle-kit and postgres.js during the migration step). **Rarely use Node.js APIs in application code** — always prefer Cloudflare-native APIs: Web Crypto API (`crypto.subtle`, `crypto.getRandomValues`), Cloudflare Cache API, etc. Do not use `nodejs_compat` as justification for pulling in Node.js-specific libraries in application routes.
 
+### Change password and the breached-password check
+
+`POST /auth/change-password` (`change-password-http.ts`): session required; verifies `currentPassword` behind the `reauth` throttle; same rules as sign-up; refuses a breached new password; signs out every other session. Accounts without a password get `409 no_password`. A wrong current password is `400 incorrect_current_password` (never 403: the app reads a 403 as "ask again").
+
+`breached-password.ts` is the server-side Have I Been Pwned check (k-anonymity range API: only the first 5 hex characters of the SHA-1 are sent, `Add-Padding: true`, 2 s budget; the password and hash are never logged). Enforced on sign-up, invitation sign-up, reset-password (before the link is used up) and change-password with `400 password_breached`. Fail-open by decision: if the API is unreachable the password is allowed and a warning is logged. Tests inject `breachRangeResponder` on the request context (`src/test-fixtures/breach.ts`); a test that signs up with a fixed password must inject one too, or it reaches the real API.
+
 ### Password hashing
 
 Credential-account passwords use **Argon2id** via `@noble/hashes` (`src/lib/secrets/password.ts`) — pure TypeScript, no WASM loader, runs on both Deno and Cloudflare Workers. Stored PHC format: `$argon2id$v=19$m=<m>,t=<t>,p=<p>$<b64-salt>$<b64-hash>`. New hashes use the OWASP 2026 minimum baseline **`m=19456,t=2,p=1`** (~19 MiB working set, well under the default 128 MiB Workers isolate limit). Verification re-derives the digest as bytes and compares with XOR-accumulation constant-time equality — do **not** delegate final equality to library `argon2Verify` helpers. Do not use plain SHA-256 or PBKDF2 for new passwords.

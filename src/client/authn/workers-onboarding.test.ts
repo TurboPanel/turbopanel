@@ -5,6 +5,7 @@ import type { AppEnv } from '../../app/app.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
 import { createDenoDb } from '../../db/connection.ts'
 import { createEmailOtp, OTP_VERIFIER_SECRET_PURPOSE } from './email-otp.ts'
+import { cleanBreachResponder } from '../../test-fixtures/breach.ts'
 import { registerAuthRoutes } from './http.ts'
 import {
   DEFAULT_WORKSPACE_NAME,
@@ -98,6 +99,7 @@ async function createAuthRouteApp(
     // Workers fail closed without an injected durable limiter; tests use the
     // process-local shared limiter so auth routes remain exercisable.
     c.set('authRateLimiter', testAuthRateLimiter)
+    c.set('breachRangeResponder', cleanBreachResponder())
     if (options?.platformEnv) {
       c.set('platformEnv', options.platformEnv)
     }
@@ -134,6 +136,7 @@ async function createClientRouteApp(
   app.use('*', (c, next) => {
     c.set('db', db)
     c.set('authRateLimiter', testAuthRateLimiter)
+    c.set('breachRangeResponder', cleanBreachResponder())
     if (platformEnv) {
       c.set('platformEnv', platformEnv)
     }
