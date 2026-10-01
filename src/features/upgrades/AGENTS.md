@@ -152,8 +152,8 @@ working.
 ## Self-healing (`transitions.ts`)
 
 - An offline server's step becomes `waiting` (`wait_offline`) and is dispatched
-  when the server reconnects. The orchestrator stamps `lastStageAt` when the
-  step enters `waiting`; still waiting after `UPGRADE_OFFLINE_DEADLINE_MS`
+  when the server reconnects. The orchestrator stamps `lastStageAt` (column
+  `stage.status_changed_at`) when the step enters `waiting`; still waiting after `UPGRADE_OFFLINE_DEADLINE_MS`
   (60 min) it becomes `needs_attention` with `errorCode` `server_offline`, so
   one unreachable host cannot hold the single instance-wide run open. The
   step-retry endpoint reopens it.

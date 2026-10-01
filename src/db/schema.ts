@@ -1297,7 +1297,7 @@ export const stage = pgTable(
     toVersion: text('to_version'),
     fromCommit: text('from_commit'),
     toCommit: text('to_commit'),
-    lastStageAt: timestamp('last_stage_at', {
+    statusChangedAt: timestamp('status_changed_at', {
       precision: 3,
       withTimezone: true,
       mode: 'string',

@@ -1666,7 +1666,8 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       to_version: 'Version this step installs, copied from the run target for `unit`.',
       from_commit: 'Commit installed before this step ran; NULL when it was unknown.',
       to_commit: 'Commit this step installs, copied from the run target for `unit`.',
-      last_stage_at: 'When `status` last changed, so a step stuck in one stage can be detected.',
+      status_changed_at:
+        'When `status` last changed, so a step stuck in one stage can be detected.',
       error_code: 'Machine-readable code when the step fails, rolls back or needs attention.',
       error_message: 'Human-readable failure text set alongside `error_code`.',
       detail:

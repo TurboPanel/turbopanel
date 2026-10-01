@@ -74,6 +74,12 @@
       "tag": "0011_rename_upgradestep_to_stage",
       "when": 1790812730427,
       "sha256": "309b9437f1f0da48fc9053b3621dc9c52132d3ad8692681b3cfca5c3f1dd7620"
+    },
+    {
+      "idx": 12,
+      "tag": "0012_rename_stage_last_stage_at",
+      "when": 1790813625007,
+      "sha256": "55282be50e5f77319d1c07d5456a45a86d45b1a61a0861a6a7a3adb3bc3bb37d"
     }
   ]
 }

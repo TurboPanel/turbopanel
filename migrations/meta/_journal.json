@@ -85,6 +85,13 @@
       "when": 1790812730427,
       "tag": "0011_rename_upgradestep_to_stage",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1790813625007,
+      "tag": "0012_rename_stage_last_stage_at",
+      "breakpoints": true
     }
   ]
 }
