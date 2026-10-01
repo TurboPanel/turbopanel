@@ -10,16 +10,29 @@ import type { AppEnv } from '../../app/app.ts'
 import { type Db, getDb } from '../../db/connection.ts'
 import { organization } from '../../db/schema.ts'
 import { recordAudit } from '../../features/audit/audit-records.ts'
-import { parseOrganizationOptions } from '../../features/organizations/organization-options.ts'
-import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
+import type { AuthRouteOpts } from '../authn/http.ts'
 import { assertOrgOwnerOr403 } from '../authz/index.ts'
 import { assertCanManageOr403, parseJsonBody } from '../shared.ts'
 import {
-  parseReauthSettingsPatch,
-  reauthSettingsGetResponse,
-  reauthSettingsPutResponse,
-} from './routes-helpers.ts'
+  type OrganizationOptions,
+  parseOrganizationOptions,
+  resolveRequireReauthForDestructive,
+} from '../../features/organizations/organization-options.ts'
+
+function parsePatch(body: Record<string, unknown>) {
+  if (typeof body.requireReauthForDestructive !== 'boolean') {
+    return { ok: false as const, error: 'Invalid requireReauthForDestructive' }
+  }
+  return {
+    ok: true as const,
+    patch: { requireReauthForDestructive: body.requireReauthForDestructive },
+  }
+}
+
+function settingsOf(options: OrganizationOptions) {
+  return { requireReauthForDestructive: resolveRequireReauthForDestructive(options) }
+}
 
 const PATH = '/organizations/:id/reauth-settings'
 
@@ -49,7 +62,7 @@ async function handleGet(c: Context<AppEnv>) {
   const denied = await assertCanManageOr403(c, 'organization', id)
   if (denied) return denied
   const options = await readOptions(db, id)
-  return options ? c.json(reauthSettingsGetResponse(options)) : c.json({ error: 'Not found' }, 404)
+  return options ? c.json(settingsOf(options)) : c.json({ error: 'Not found' }, 404)
 }
 
 async function handlePut(c: Context<AppEnv>) {
@@ -60,8 +73,8 @@ async function handlePut(c: Context<AppEnv>) {
   if (denied) return denied
   const body = await parseJsonBody(c)
   if (body instanceof Response) return body
-  const parsed = parseReauthSettingsPatch(body)
-  if (!parsed.ok) return c.json({ error: parsed.error }, parsed.status)
+  const parsed = parsePatch(body)
+  if (!parsed.ok) return c.json({ error: parsed.error }, 400)
   if ((await readOptions(db, id)) === null) return c.json({ error: 'Not found' }, 404)
 
   await mergeOptions(db, id, parsed.patch)
@@ -75,11 +88,14 @@ async function handlePut(c: Context<AppEnv>) {
     targetId: id,
     context: { requireReauthForDestructive: parsed.patch.requireReauthForDestructive },
   })
-  return c.json(reauthSettingsPutResponse((await readOptions(db, id)) ?? {}))
+  return c.json({ ok: true as const, ...settingsOf((await readOptions(db, id)) ?? {}) })
 }
 
-export function registerReauthSettingsRoutes(router: Hono<AppEnv>, secrets: DerivedSecretsConfig) {
-  router.use(PATH, createSessionMiddleware(secrets))
+export function registerReauthSettingsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
+  if (!opts.secrets) {
+    throw new TypeError('session secrets are required for organization routes')
+  }
+  router.use(PATH, createSessionMiddleware(opts.secrets))
   router.get(PATH, handleGet)
   router.put(PATH, handlePut)
 }

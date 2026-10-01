@@ -10,7 +10,7 @@ import { hashPassword } from '../../lib/secrets/password.ts'
 import { deriveEncryptionSecretsConfig, deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import { registerOrganizationMemberRoutes } from '../organizations/members.ts'
-import { registerOrganizationRoutes } from '../organizations/routes.ts'
+import { registerReauthSettingsRoutes } from '../organizations/reauth-settings-routes.ts'
 import { createAuthRateLimiter, setSharedAuthRateLimiterForTests } from './auth-rate-limit.ts'
 import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from './crypto.ts'
 import { registerAuthRoutes } from './http.ts'
@@ -59,7 +59,7 @@ async function buildFixture(db: Db, reauthLimit = 1000) {
     signupEnvOverride: undefined,
   }
   registerAuthRoutes(client, opts)
-  registerOrganizationRoutes(client, opts)
+  registerReauthSettingsRoutes(client, opts)
   registerOrganizationMemberRoutes(client, opts)
   // A stand-in destructive route: any route wired to the gate behaves like it.
   client.use('/probe/*', createSessionMiddleware(sessionSecrets))

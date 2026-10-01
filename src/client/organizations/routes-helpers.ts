@@ -3,129 +3,129 @@ import {
   parseMaxServersInput,
   parseTemperatureUnitInput,
   resolveAcmeEnabled,
-  resolveRequireReauthForDestructive,
   resolveComposeDefaultResourceLimits,
   resolveComposeGatedFieldsEnabled,
   resolveDeployHooksEnabled,
   type TemperatureUnit,
-} from '../../features/organizations/organization-options.ts'
-import { DISPLAY_NAME_MAX_LENGTH } from '../../lib/display-name-format.ts'
-import { isAllowedTimezone } from '../../lib/timezones.ts'
-import type { OrganizationSummary } from '../org-context.ts'
-import { BadRequestError, parseName } from '../shared.ts'
+} from "../../features/organizations/organization-options.ts";
+import { DISPLAY_NAME_MAX_LENGTH } from "../../lib/display-name-format.ts";
+import { isAllowedTimezone } from "../../lib/timezones.ts";
+import type { OrganizationSummary } from "../org-context.ts";
+import { BadRequestError, parseName } from "../shared.ts";
 import {
   type NtpDefaults,
   parseDefaultFabricEnabledInput,
   parseNtpDefaultsInput,
   parseSshPortInput,
-} from '../../features/servers/host-defaults.ts'
+} from "../../features/servers/host-defaults.ts";
 import {
   type ManagedIngressPortsPatch,
   type ManagedOrganizationDefaults,
   parseManagedIngressPortsInput,
   parseManagedSslModeInput,
   validateManagedOrganizationDefaults,
-} from '../../features/managed/org-defaults.ts'
+} from "../../features/managed/org-defaults.ts";
 import {
   type ManagedIngressPortRejection,
   resolveManagedIngressPorts,
-} from '../../features/managed/ingress-ports.ts'
-import { type ManagedSslMode, resolveManagedSslMode } from '../../features/managed/ssl.ts'
+} from "../../features/managed/ingress-ports.ts";
+import {
+  type ManagedSslMode,
+  resolveManagedSslMode,
+} from "../../features/managed/ssl.ts";
 import {
   DOCKER_ADDRESS_POOLS_MAX,
   type DockerAddressingRejection,
   isValidDefaultBridgeCidr,
   type OrganizationDockerNetworking,
   validateDockerAddressPools,
-} from '../../features/deploy/docker-address-pools.ts'
+} from "../../features/deploy/docker-address-pools.ts";
 
 /** Matches {@link NEW_ORGANIZATION_NAME} in authn/install-state.ts. */
-const NEW_ORGANIZATION_DISPLAY_NAME = 'New Organization'
+const NEW_ORGANIZATION_DISPLAY_NAME = "New Organization";
 
 export type OrganizationRouteValidationError = {
-  ok: false
-  error: string
-  status: 400
-}
+  ok: false;
+  error: string;
+  status: 400;
+};
 
 export type DefaultTimezonePatch = {
-  defaultServerTimezone?: string | null
-  enforceServerTimezone?: boolean
-}
+  defaultServerTimezone?: string | null;
+  enforceServerTimezone?: boolean;
+};
 
 export type TemperatureUnitPatch = {
-  temperatureUnit: TemperatureUnit
-}
+  temperatureUnit: TemperatureUnit;
+};
 
 export type TlsSettingsPatch = {
-  acmeEnabled: boolean
-}
-
-export type ReauthSettingsPatch = {
-  requireReauthForDestructive: boolean
-}
+  acmeEnabled: boolean;
+};
 
 export type ComposeGatedFieldsPatch = {
-  composeGatedFieldsEnabled: boolean
-}
+  composeGatedFieldsEnabled: boolean;
+};
 
 export type DeployHooksPatch = {
-  deployHooksEnabled: boolean
-}
+  deployHooksEnabled: boolean;
+};
 
 export type ComposeDefaultResourceLimitsPatch = {
-  composeDefaultResourceLimits: { cpus?: number; memoryBytes?: number } | null
-}
+  composeDefaultResourceLimits: { cpus?: number; memoryBytes?: number } | null;
+};
 
 export type HostDefaultsPatch = {
-  sshPort?: number | null
-  ntp?: NtpDefaults | null
-  defaultFabricEnabled?: boolean | null
-}
+  sshPort?: number | null;
+  ntp?: NtpDefaults | null;
+  defaultFabricEnabled?: boolean | null;
+};
 
 /** `null` clears a key so inheriting services fall back to the platform value. */
 export type ManagedDefaultsPatch = {
-  sslMode?: ManagedSslMode | null
-  ports?: ManagedIngressPortsPatch | null
-}
+  sslMode?: ManagedSslMode | null;
+  ports?: ManagedIngressPortsPatch | null;
+};
 
 const PORT_REJECTION_MESSAGE: Record<ManagedIngressPortRejection, string> = {
-  out_of_range: 'must be an integer between 1024 and 65535',
-  reserved_admin: 'is reserved for the ProxySQL admin interface',
-  reserved_private_range: 'is reserved for managed member private listeners (45000-45999)',
+  out_of_range: "must be an integer between 1024 and 65535",
+  reserved_admin: "is reserved for the ProxySQL admin interface",
+  reserved_private_range:
+    "is reserved for managed member private listeners (45000-45999)",
   collision: "must differ from the other protocol family's listener port",
-}
+};
 
 export function parseManagedDefaultsPatch(
-  body: Record<string, unknown>
-): { ok: true; patch: ManagedDefaultsPatch } | OrganizationRouteValidationError {
-  const patch: ManagedDefaultsPatch = {}
+  body: Record<string, unknown>,
+):
+  | { ok: true; patch: ManagedDefaultsPatch }
+  | OrganizationRouteValidationError {
+  const patch: ManagedDefaultsPatch = {};
 
-  if ('sslMode' in body) {
-    const parsed = parseManagedSslModeInput(body.sslMode)
+  if ("sslMode" in body) {
+    const parsed = parseManagedSslModeInput(body.sslMode);
     if (!parsed.ok) {
-      return { ok: false, error: 'Invalid sslMode', status: 400 }
+      return { ok: false, error: "Invalid sslMode", status: 400 };
     }
-    patch.sslMode = parsed.value
+    patch.sslMode = parsed.value;
   }
 
-  if ('ports' in body) {
-    const parsed = parseManagedIngressPortsInput(body.ports)
+  if ("ports" in body) {
+    const parsed = parseManagedIngressPortsInput(body.ports);
     if (!parsed.ok) {
-      const detail =
-        parsed.field && parsed.reason
-          ? `ports.${parsed.field} ${PORT_REJECTION_MESSAGE[parsed.reason]}`
-          : 'Invalid ports'
-      return { ok: false, error: detail, status: 400 }
+      const detail = parsed.field && parsed.reason
+        ? `ports.${parsed.field} ${PORT_REJECTION_MESSAGE[parsed.reason]}`
+        : "Invalid ports";
+      return { ok: false, error: detail, status: 400 };
     }
-    patch.ports = parsed.value
+    patch.ports = parsed.value;
   }
 
   if (Object.keys(patch).length === 0) {
-    return { ok: false, error: 'Invalid request', status: 400 }
+    return { ok: false, error: "Invalid request", status: 400 };
   }
 
-  return { ok: true, patch }
+  return { ok: true, patch };
 }
 
 /**
@@ -135,38 +135,38 @@ export function parseManagedDefaultsPatch(
  */
 export function applyManagedDefaultsPatch(
   current: ManagedOrganizationDefaults,
-  patch: ManagedDefaultsPatch
+  patch: ManagedDefaultsPatch,
 ): ManagedOrganizationDefaults {
-  const next: ManagedOrganizationDefaults = { ...current }
-  if ('sslMode' in patch) {
+  const next: ManagedOrganizationDefaults = { ...current };
+  if ("sslMode" in patch) {
     if (patch.sslMode === null || patch.sslMode === undefined) {
-      delete next.sslMode
+      delete next.sslMode;
     } else {
-      next.sslMode = patch.sslMode
+      next.sslMode = patch.sslMode;
     }
   }
-  if ('ports' in patch) {
-    const merged = mergeIngressPortsPatch(current.ports, patch.ports)
-    if (merged) next.ports = merged
-    else delete next.ports
+  if ("ports" in patch) {
+    const merged = mergeIngressPortsPatch(current.ports, patch.ports);
+    if (merged) next.ports = merged;
+    else delete next.ports;
   }
-  return next
+  return next;
 }
 
 /** Per-family merge; a family set to `null` (or the whole object) is cleared. */
 function mergeIngressPortsPatch(
-  current: ManagedOrganizationDefaults['ports'],
-  patch: ManagedIngressPortsPatch | null | undefined
-): ManagedOrganizationDefaults['ports'] {
-  if (patch === null || patch === undefined) return undefined
-  const next = { ...current }
-  for (const field of ['postgres', 'mysqlFamily'] as const) {
-    if (!(field in patch)) continue
-    const value = patch[field]
-    if (value === null) delete next[field]
-    else next[field] = value
+  current: ManagedOrganizationDefaults["ports"],
+  patch: ManagedIngressPortsPatch | null | undefined,
+): ManagedOrganizationDefaults["ports"] {
+  if (patch === null || patch === undefined) return undefined;
+  const next = { ...current };
+  for (const field of ["postgres", "mysqlFamily"] as const) {
+    if (!(field in patch)) continue;
+    const value = patch[field];
+    if (value === null) delete next[field];
+    else next[field] = value;
   }
-  return Object.keys(next).length > 0 ? next : undefined
+  return Object.keys(next).length > 0 ? next : undefined;
 }
 
 /**
@@ -174,18 +174,20 @@ function mergeIngressPortsPatch(
  * today only a listener-port collision between the two protocol families.
  */
 export function validateManagedDefaults(
-  defaults: ManagedOrganizationDefaults
+  defaults: ManagedOrganizationDefaults,
 ): OrganizationRouteValidationError | null {
-  const check = validateManagedOrganizationDefaults(defaults)
-  if (check.ok) return null
+  const check = validateManagedOrganizationDefaults(defaults);
+  if (check.ok) return null;
   return {
     ok: false,
     error: `${check.field} ${PORT_REJECTION_MESSAGE[check.reason]}`,
     status: 400,
-  }
+  };
 }
 
-export function managedDefaultsGetResponse(defaults: ManagedOrganizationDefaults) {
+export function managedDefaultsGetResponse(
+  defaults: ManagedOrganizationDefaults,
+) {
   return {
     /** Configured org default; `null` = inheriting the platform value. */
     sslMode: defaults.sslMode ?? null,
@@ -198,28 +200,32 @@ export function managedDefaultsGetResponse(defaults: ManagedOrganizationDefaults
     },
     /** Ports clients actually dial today, after platform fallback. */
     effectivePorts: resolveManagedIngressPorts(defaults.ports),
-  }
+  };
 }
 
-export function managedDefaultsPutResponse(defaults: ManagedOrganizationDefaults) {
+export function managedDefaultsPutResponse(
+  defaults: ManagedOrganizationDefaults,
+) {
   return {
     ok: true as const,
     ...managedDefaultsGetResponse(defaults),
-  }
+  };
 }
 
 const DOCKER_ADDRESSING_MESSAGE: Record<DockerAddressingRejection, string> = {
-  address_pools_invalid: 'Invalid addressPools',
-  address_pools_too_many: `addressPools may hold at most ${DOCKER_ADDRESS_POOLS_MAX} entries`,
-  address_pool_base_invalid: 'Invalid addressPools base',
-  address_pool_size_invalid: 'Invalid addressPools size (integer between the base prefix and /30)',
-  address_pools_overlap: 'addressPools entries overlap each other',
+  address_pools_invalid: "Invalid addressPools",
+  address_pools_too_many:
+    `addressPools may hold at most ${DOCKER_ADDRESS_POOLS_MAX} entries`,
+  address_pool_base_invalid: "Invalid addressPools base",
+  address_pool_size_invalid:
+    "Invalid addressPools size (integer between the base prefix and /30)",
+  address_pools_overlap: "addressPools entries overlap each other",
   default_bridge_cidr_invalid:
-    'Invalid defaultBridgeCidr (host address with prefix, e.g. 172.17.0.1/16)',
-}
+    "Invalid defaultBridgeCidr (host address with prefix, e.g. 172.17.0.1/16)",
+};
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /**
@@ -231,168 +237,166 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * dockerd keeps its built-in ranges.
  */
 export function parseDockerNetworkingPatch(
-  body: unknown
-): { ok: true; value: OrganizationDockerNetworking | null } | OrganizationRouteValidationError {
+  body: unknown,
+):
+  | { ok: true; value: OrganizationDockerNetworking | null }
+  | OrganizationRouteValidationError {
   if (!isRecord(body)) {
-    return { ok: false, error: 'Invalid request', status: 400 }
+    return { ok: false, error: "Invalid request", status: 400 };
   }
-  if (!('addressPools' in body) && !('defaultBridgeCidr' in body)) {
-    return { ok: false, error: 'Invalid request', status: 400 }
+  if (!("addressPools" in body) && !("defaultBridgeCidr" in body)) {
+    return { ok: false, error: "Invalid request", status: 400 };
   }
-  const value: OrganizationDockerNetworking = {}
-  const pools = parseDockerAddressPoolsField(body.addressPools)
-  if (!pools.ok) return pools
-  if (pools.value) value.addressPools = pools.value
-  const bridge = parseDefaultBridgeCidrField(body.defaultBridgeCidr)
-  if (!bridge.ok) return bridge
-  if (bridge.value) value.defaultBridgeCidr = bridge.value
-  return { ok: true, value: Object.keys(value).length > 0 ? value : null }
+  const value: OrganizationDockerNetworking = {};
+  const pools = parseDockerAddressPoolsField(body.addressPools);
+  if (!pools.ok) return pools;
+  if (pools.value) value.addressPools = pools.value;
+  const bridge = parseDefaultBridgeCidrField(body.defaultBridgeCidr);
+  if (!bridge.ok) return bridge;
+  if (bridge.value) value.defaultBridgeCidr = bridge.value;
+  return { ok: true, value: Object.keys(value).length > 0 ? value : null };
 }
 
 /** `addressPools` field: absent/`null`/empty list → `null` (cleared). */
 function parseDockerAddressPoolsField(
-  raw: unknown
+  raw: unknown,
 ):
-  | { ok: true; value: OrganizationDockerNetworking['addressPools'] | null }
+  | { ok: true; value: OrganizationDockerNetworking["addressPools"] | null }
   | OrganizationRouteValidationError {
-  if (raw === undefined || raw === null) return { ok: true, value: null }
-  const pools = validateDockerAddressPools(raw)
+  if (raw === undefined || raw === null) return { ok: true, value: null };
+  const pools = validateDockerAddressPools(raw);
   if (!pools.ok) {
-    const suffix = pools.index === undefined ? '' : ` (entry ${pools.index})`
+    const suffix = pools.index === undefined ? "" : ` (entry ${pools.index})`;
     return {
       ok: false,
       error: `${DOCKER_ADDRESSING_MESSAGE[pools.reason]}${suffix}`,
       status: 400,
-    }
+    };
   }
-  return { ok: true, value: pools.pools.length > 0 ? pools.pools : null }
+  return { ok: true, value: pools.pools.length > 0 ? pools.pools : null };
 }
 
 /** `defaultBridgeCidr` field: absent/`null` → `null` (cleared). */
 function parseDefaultBridgeCidrField(
-  raw: unknown
+  raw: unknown,
 ): { ok: true; value: string | null } | OrganizationRouteValidationError {
-  if (raw === undefined || raw === null) return { ok: true, value: null }
+  if (raw === undefined || raw === null) return { ok: true, value: null };
   if (!isValidDefaultBridgeCidr(raw)) {
     return {
       ok: false,
       error: DOCKER_ADDRESSING_MESSAGE.default_bridge_cidr_invalid,
       status: 400,
-    }
+    };
   }
-  return { ok: true, value: raw.trim() }
+  return { ok: true, value: raw.trim() };
 }
 
-export function dockerNetworkingGetResponse(docker: OrganizationDockerNetworking) {
+export function dockerNetworkingGetResponse(
+  docker: OrganizationDockerNetworking,
+) {
   return {
     /** Configured dockerd `default-address-pools`; empty = Docker built-ins. */
     addressPools: (docker.addressPools ?? []).map((pool) => ({ ...pool })),
     /** Configured dockerd `bip`; `null` = Docker's built-in bridge. */
     defaultBridgeCidr: docker.defaultBridgeCidr ?? null,
-  }
+  };
 }
 
-export function dockerNetworkingPutResponse(docker: OrganizationDockerNetworking) {
+export function dockerNetworkingPutResponse(
+  docker: OrganizationDockerNetworking,
+) {
   return {
     ok: true as const,
     ...dockerNetworkingGetResponse(docker),
-  }
+  };
 }
 
 export function parseDefaultTimezonePatch(
-  body: Record<string, unknown>
-): { ok: true; patch: DefaultTimezonePatch } | OrganizationRouteValidationError {
-  const patch: DefaultTimezonePatch = {}
+  body: Record<string, unknown>,
+):
+  | { ok: true; patch: DefaultTimezonePatch }
+  | OrganizationRouteValidationError {
+  const patch: DefaultTimezonePatch = {};
 
-  if ('defaultServerTimezone' in body) {
+  if ("defaultServerTimezone" in body) {
     if (body.defaultServerTimezone === null) {
-      patch.defaultServerTimezone = null
+      patch.defaultServerTimezone = null;
     } else if (
-      typeof body.defaultServerTimezone === 'string' &&
+      typeof body.defaultServerTimezone === "string" &&
       isAllowedTimezone(body.defaultServerTimezone)
     ) {
-      patch.defaultServerTimezone = body.defaultServerTimezone
+      patch.defaultServerTimezone = body.defaultServerTimezone;
     } else {
-      return { ok: false, error: 'Invalid defaultServerTimezone', status: 400 }
+      return { ok: false, error: "Invalid defaultServerTimezone", status: 400 };
     }
   }
 
-  if ('enforceServerTimezone' in body) {
-    if (typeof body.enforceServerTimezone !== 'boolean') {
-      return { ok: false, error: 'Invalid enforceServerTimezone', status: 400 }
+  if ("enforceServerTimezone" in body) {
+    if (typeof body.enforceServerTimezone !== "boolean") {
+      return { ok: false, error: "Invalid enforceServerTimezone", status: 400 };
     }
-    patch.enforceServerTimezone = body.enforceServerTimezone
+    patch.enforceServerTimezone = body.enforceServerTimezone;
   }
 
   if (Object.keys(patch).length === 0) {
-    return { ok: false, error: 'Invalid request', status: 400 }
+    return { ok: false, error: "Invalid request", status: 400 };
   }
 
-  return { ok: true, patch }
+  return { ok: true, patch };
 }
 
 /** `temperatureUnit` is required — unlike timezone, there is no clear-to-null case. */
 export function parseTemperatureUnitPatch(
-  body: Record<string, unknown>
-): { ok: true; patch: TemperatureUnitPatch } | OrganizationRouteValidationError {
-  if (!('temperatureUnit' in body)) {
-    return { ok: false, error: 'Invalid request', status: 400 }
+  body: Record<string, unknown>,
+):
+  | { ok: true; patch: TemperatureUnitPatch }
+  | OrganizationRouteValidationError {
+  if (!("temperatureUnit" in body)) {
+    return { ok: false, error: "Invalid request", status: 400 };
   }
-  const parsed = parseTemperatureUnitInput(body.temperatureUnit)
+  const parsed = parseTemperatureUnitInput(body.temperatureUnit);
   if (!parsed.ok) {
-    return { ok: false, error: 'Invalid temperatureUnit', status: 400 }
+    return { ok: false, error: "Invalid temperatureUnit", status: 400 };
   }
-  return { ok: true, patch: { temperatureUnit: parsed.value } }
+  return { ok: true, patch: { temperatureUnit: parsed.value } };
 }
 
 export function parseTlsSettingsPatch(
-  body: Record<string, unknown>
-): { ok: true; patch: TlsSettingsPatch } | OrganizationRouteValidationError {
-  if (typeof body.acmeEnabled !== 'boolean') {
-    return { ok: false, error: 'Invalid acmeEnabled', status: 400 }
+  body: Record<string, unknown>,
+):
+  | { ok: true; patch: TlsSettingsPatch }
+  | OrganizationRouteValidationError {
+  if (typeof body.acmeEnabled !== "boolean") {
+    return { ok: false, error: "Invalid acmeEnabled", status: 400 };
   }
-  return { ok: true, patch: { acmeEnabled: body.acmeEnabled } }
-}
-
-export function parseReauthSettingsPatch(
-  body: Record<string, unknown>
-): { ok: true; patch: ReauthSettingsPatch } | OrganizationRouteValidationError {
-  if (typeof body.requireReauthForDestructive !== 'boolean') {
-    return {
-      ok: false,
-      error: 'Invalid requireReauthForDestructive',
-      status: 400,
-    }
-  }
-  return {
-    ok: true,
-    patch: { requireReauthForDestructive: body.requireReauthForDestructive },
-  }
+  return { ok: true, patch: { acmeEnabled: body.acmeEnabled } };
 }
 
 export function parseComposeGatedFieldsPatch(
-  body: Record<string, unknown>
-): { ok: true; patch: ComposeGatedFieldsPatch } | OrganizationRouteValidationError {
-  if (typeof body.composeGatedFieldsEnabled !== 'boolean') {
+  body: Record<string, unknown>,
+):
+  | { ok: true; patch: ComposeGatedFieldsPatch }
+  | OrganizationRouteValidationError {
+  if (typeof body.composeGatedFieldsEnabled !== "boolean") {
     return {
       ok: false,
-      error: 'Invalid composeGatedFieldsEnabled',
+      error: "Invalid composeGatedFieldsEnabled",
       status: 400,
-    }
+    };
   }
   return {
     ok: true,
     patch: { composeGatedFieldsEnabled: body.composeGatedFieldsEnabled },
-  }
+  };
 }
 
 export function parseDeployHooksPatch(
-  body: Record<string, unknown>
+  body: Record<string, unknown>,
 ): { ok: true; patch: DeployHooksPatch } | OrganizationRouteValidationError {
-  if (typeof body.deployHooksEnabled !== 'boolean') {
-    return { ok: false, error: 'Invalid deployHooksEnabled', status: 400 }
+  if (typeof body.deployHooksEnabled !== "boolean") {
+    return { ok: false, error: "Invalid deployHooksEnabled", status: 400 };
   }
-  return { ok: true, patch: { deployHooksEnabled: body.deployHooksEnabled } }
+  return { ok: true, patch: { deployHooksEnabled: body.deployHooksEnabled } };
 }
 
 /**
@@ -402,303 +406,321 @@ export function parseDeployHooksPatch(
  * nothing.
  */
 export function parseComposeDefaultResourceLimitsPatch(
-  body: Record<string, unknown>
-): { ok: true; patch: ComposeDefaultResourceLimitsPatch } | OrganizationRouteValidationError {
-  const raw = body.composeDefaultResourceLimits
+  body: Record<string, unknown>,
+):
+  | { ok: true; patch: ComposeDefaultResourceLimitsPatch }
+  | OrganizationRouteValidationError {
+  const raw = body.composeDefaultResourceLimits;
   if (raw === null) {
-    return { ok: true, patch: { composeDefaultResourceLimits: null } }
+    return { ok: true, patch: { composeDefaultResourceLimits: null } };
   }
-  if (typeof raw !== 'object' || raw === undefined || Array.isArray(raw)) {
+  if (typeof raw !== "object" || raw === undefined || Array.isArray(raw)) {
     return {
       ok: false,
-      error: 'Invalid composeDefaultResourceLimits',
+      error: "Invalid composeDefaultResourceLimits",
       status: 400,
-    }
+    };
   }
-  const record = raw as Record<string, unknown>
-  const limits: { cpus?: number; memoryBytes?: number } = {}
+  const record = raw as Record<string, unknown>;
+  const limits: { cpus?: number; memoryBytes?: number } = {};
   if (record.cpus !== undefined) {
-    if (typeof record.cpus !== 'number' || !Number.isFinite(record.cpus) || record.cpus <= 0) {
-      return { ok: false, error: 'Invalid cpus', status: 400 }
+    if (
+      typeof record.cpus !== "number" || !Number.isFinite(record.cpus) ||
+      record.cpus <= 0
+    ) {
+      return { ok: false, error: "Invalid cpus", status: 400 };
     }
-    limits.cpus = record.cpus
+    limits.cpus = record.cpus;
   }
   if (record.memoryBytes !== undefined) {
     if (
-      typeof record.memoryBytes !== 'number' ||
-      !Number.isInteger(record.memoryBytes) ||
-      record.memoryBytes <= 0
+      typeof record.memoryBytes !== "number" ||
+      !Number.isInteger(record.memoryBytes) || record.memoryBytes <= 0
     ) {
-      return { ok: false, error: 'Invalid memoryBytes', status: 400 }
+      return { ok: false, error: "Invalid memoryBytes", status: 400 };
     }
-    limits.memoryBytes = record.memoryBytes
+    limits.memoryBytes = record.memoryBytes;
   }
   if (limits.cpus === undefined && limits.memoryBytes === undefined) {
     return {
       ok: false,
-      error: 'composeDefaultResourceLimits needs cpus or memoryBytes',
+      error: "composeDefaultResourceLimits needs cpus or memoryBytes",
       status: 400,
-    }
+    };
   }
-  return { ok: true, patch: { composeDefaultResourceLimits: limits } }
+  return { ok: true, patch: { composeDefaultResourceLimits: limits } };
 }
 
 export function composeDefaultResourceLimitsGetResponse(options: {
-  composeDefaultResourceLimits?: { cpus?: number; memoryBytes?: number }
+  composeDefaultResourceLimits?: { cpus?: number; memoryBytes?: number };
 }) {
   return {
     composeDefaultResourceLimits: resolveComposeDefaultResourceLimits(options),
-  }
+  };
 }
 
 export function composeDefaultResourceLimitsPutResponse(options: {
-  composeDefaultResourceLimits?: { cpus?: number; memoryBytes?: number }
+  composeDefaultResourceLimits?: { cpus?: number; memoryBytes?: number };
 }) {
   return {
     ok: true as const,
     ...composeDefaultResourceLimitsGetResponse(options),
-  }
+  };
 }
 
 export function parseHostDefaultsPatch(
-  body: Record<string, unknown>
-): { ok: true; patch: HostDefaultsPatch } | OrganizationRouteValidationError {
-  const patch: HostDefaultsPatch = {}
+  body: Record<string, unknown>,
+):
+  | { ok: true; patch: HostDefaultsPatch }
+  | OrganizationRouteValidationError {
+  const patch: HostDefaultsPatch = {};
 
-  if ('sshPort' in body) {
-    const parsed = parseSshPortInput(body.sshPort)
+  if ("sshPort" in body) {
+    const parsed = parseSshPortInput(body.sshPort);
     if (!parsed.ok) {
-      return { ok: false, error: 'Invalid sshPort', status: 400 }
+      return { ok: false, error: "Invalid sshPort", status: 400 };
     }
-    patch.sshPort = parsed.value
+    patch.sshPort = parsed.value;
   }
 
-  if ('ntp' in body) {
-    const parsed = parseNtpDefaultsInput(body.ntp)
+  if ("ntp" in body) {
+    const parsed = parseNtpDefaultsInput(body.ntp);
     if (!parsed.ok) {
-      return { ok: false, error: 'Invalid ntp', status: 400 }
+      return { ok: false, error: "Invalid ntp", status: 400 };
     }
-    patch.ntp = parsed.value
+    patch.ntp = parsed.value;
   }
 
-  if ('defaultFabricEnabled' in body) {
-    const parsed = parseDefaultFabricEnabledInput(body.defaultFabricEnabled)
+  if ("defaultFabricEnabled" in body) {
+    const parsed = parseDefaultFabricEnabledInput(body.defaultFabricEnabled);
     if (!parsed.ok) {
-      return { ok: false, error: 'Invalid defaultFabricEnabled', status: 400 }
+      return { ok: false, error: "Invalid defaultFabricEnabled", status: 400 };
     }
-    patch.defaultFabricEnabled = parsed.value
+    patch.defaultFabricEnabled = parsed.value;
   }
 
   if (Object.keys(patch).length === 0) {
-    return { ok: false, error: 'Invalid request', status: 400 }
+    return { ok: false, error: "Invalid request", status: 400 };
   }
 
-  return { ok: true, patch }
+  return { ok: true, patch };
 }
 
 export function parseDefaultEnvironmentPutBody(
-  body: Record<string, unknown>
-): { ok: true; defaultEnvironmentName: string | null } | OrganizationRouteValidationError {
-  if (!('defaultEnvironmentName' in body)) {
-    return { ok: false, error: 'Invalid request', status: 400 }
+  body: Record<string, unknown>,
+):
+  | { ok: true; defaultEnvironmentName: string | null }
+  | OrganizationRouteValidationError {
+  if (!("defaultEnvironmentName" in body)) {
+    return { ok: false, error: "Invalid request", status: 400 };
   }
 
-  const parsed = parseDefaultEnvironmentNameInput(body.defaultEnvironmentName)
+  const parsed = parseDefaultEnvironmentNameInput(body.defaultEnvironmentName);
   if (!parsed.ok) {
     return {
       ok: false,
-      error: `defaultEnvironmentName must be null or a non-empty name of at most ${String(
-        DISPLAY_NAME_MAX_LENGTH
-      )} characters with no control characters`,
+      error:
+        `defaultEnvironmentName must be null or a non-empty name of at most ${
+          String(DISPLAY_NAME_MAX_LENGTH)
+        } characters with no control characters`,
       status: 400,
-    }
+    };
   }
 
-  return { ok: true, defaultEnvironmentName: parsed.value }
+  return { ok: true, defaultEnvironmentName: parsed.value };
 }
 
 export function parseServerCapacityPutBody(
-  body: Record<string, unknown>
-): { ok: true; maxServers: number | null } | OrganizationRouteValidationError {
-  if (!('maxServers' in body)) {
-    return { ok: false, error: 'Invalid request', status: 400 }
+  body: Record<string, unknown>,
+):
+  | { ok: true; maxServers: number | null }
+  | OrganizationRouteValidationError {
+  if (!("maxServers" in body)) {
+    return { ok: false, error: "Invalid request", status: 400 };
   }
 
-  const parsed = parseMaxServersInput(body.maxServers)
+  const parsed = parseMaxServersInput(body.maxServers);
   if (!parsed.ok) {
     return {
       ok: false,
-      error: 'maxServers must be a non-negative integer or null',
+      error: "maxServers must be a non-negative integer or null",
       status: 400,
-    }
+    };
   }
 
-  return { ok: true, maxServers: parsed.value }
+  return { ok: true, maxServers: parsed.value };
 }
 
 export function parseOrganizationCreateDisplayName(
-  body: Record<string, unknown>
+  body: Record<string, unknown>,
 ): { ok: true; name: string } | OrganizationRouteValidationError {
   try {
-    const hasName = body.name !== undefined
+    const hasName = body.name !== undefined;
     if (!hasName) {
-      return { ok: true, name: NEW_ORGANIZATION_DISPLAY_NAME }
+      return { ok: true, name: NEW_ORGANIZATION_DISPLAY_NAME };
     }
-    const parsed = parseName(body)
-    return { ok: true, name: parsed ?? NEW_ORGANIZATION_DISPLAY_NAME }
+    const parsed = parseName(body);
+    return { ok: true, name: parsed ?? NEW_ORGANIZATION_DISPLAY_NAME };
   } catch (error) {
     if (error instanceof BadRequestError) {
-      return { ok: false, error: 'Invalid request', status: 400 }
+      return { ok: false, error: "Invalid request", status: 400 };
     }
-    throw error
+    throw error;
   }
 }
 
 /** PATCH requires a non-empty name; it cannot be cleared. */
 export function parseOrganizationPatchDisplayName(
-  body: Record<string, unknown>
+  body: Record<string, unknown>,
 ): { ok: true; name: string } | OrganizationRouteValidationError {
-  if (!('name' in body)) {
-    return { ok: false, error: 'Invalid request', status: 400 }
+  if (!("name" in body)) {
+    return { ok: false, error: "Invalid request", status: 400 };
   }
   try {
-    const parsed = parseName(body)
+    const parsed = parseName(body);
     if (parsed === null) {
-      return { ok: false, error: 'Invalid request', status: 400 }
+      return { ok: false, error: "Invalid request", status: 400 };
     }
-    return { ok: true, name: parsed }
+    return { ok: true, name: parsed };
   } catch (error) {
     if (error instanceof BadRequestError) {
-      return { ok: false, error: 'Invalid request', status: 400 }
+      return { ok: false, error: "Invalid request", status: 400 };
     }
-    throw error
+    throw error;
   }
 }
 
 export function toOrganizationRecord(row: {
-  id: string
-  name: string | null
-  createdAt: string
+  id: string;
+  name: string | null;
+  createdAt: string;
 }): OrganizationSummary {
   return {
     id: row.id,
     name: row.name,
     createdAt: row.createdAt,
-  }
+  };
 }
 
 export function defaultTimezoneGetResponse(options: {
-  defaultServerTimezone?: string | null
-  enforceServerTimezone?: boolean | null
+  defaultServerTimezone?: string | null;
+  enforceServerTimezone?: boolean | null;
 }) {
   return {
     defaultServerTimezone: options.defaultServerTimezone ?? null,
     enforceServerTimezone: options.enforceServerTimezone ?? false,
-  }
+  };
 }
 
-export function defaultEnvironmentGetResponse(options: { defaultEnvironmentName?: string | null }) {
+export function defaultEnvironmentGetResponse(options: {
+  defaultEnvironmentName?: string | null;
+}) {
   return {
     defaultEnvironmentName: options.defaultEnvironmentName ?? null,
-  }
+  };
 }
 
 export function defaultTimezonePutResponse(options: {
-  defaultServerTimezone?: string | null
-  enforceServerTimezone?: boolean | null
+  defaultServerTimezone?: string | null;
+  enforceServerTimezone?: boolean | null;
 }) {
   return {
     ok: true as const,
     ...defaultTimezoneGetResponse(options),
-  }
+  };
 }
 
-export function temperatureUnitGetResponse(options: { temperatureUnit?: TemperatureUnit | null }) {
+export function temperatureUnitGetResponse(options: {
+  temperatureUnit?: TemperatureUnit | null;
+}) {
   return {
-    temperatureUnit: options.temperatureUnit ?? 'celsius',
-  }
+    temperatureUnit: options.temperatureUnit ?? "celsius",
+  };
 }
 
-export function temperatureUnitPutResponse(options: { temperatureUnit?: TemperatureUnit | null }) {
+export function temperatureUnitPutResponse(options: {
+  temperatureUnit?: TemperatureUnit | null;
+}) {
   return {
     ok: true as const,
     ...temperatureUnitGetResponse(options),
-  }
+  };
 }
 
-export function tlsSettingsGetResponse(options: { acmeEnabled?: boolean }) {
+export function tlsSettingsGetResponse(options: {
+  acmeEnabled?: boolean;
+}) {
   return {
     acmeEnabled: resolveAcmeEnabled(options),
-  }
+  };
 }
 
-export function tlsSettingsPutResponse(options: { acmeEnabled?: boolean }) {
+export function tlsSettingsPutResponse(options: {
+  acmeEnabled?: boolean;
+}) {
   return {
     ok: true as const,
     ...tlsSettingsGetResponse(options),
-  }
+  };
 }
 
-export function reauthSettingsGetResponse(options: { requireReauthForDestructive?: boolean }) {
-  return {
-    requireReauthForDestructive: resolveRequireReauthForDestructive(options),
-  }
-}
-
-export function reauthSettingsPutResponse(options: { requireReauthForDestructive?: boolean }) {
-  return {
-    ok: true as const,
-    ...reauthSettingsGetResponse(options),
-  }
-}
-
-export function composeGatedFieldsGetResponse(options: { composeGatedFieldsEnabled?: boolean }) {
+export function composeGatedFieldsGetResponse(options: {
+  composeGatedFieldsEnabled?: boolean;
+}) {
   return {
     composeGatedFieldsEnabled: resolveComposeGatedFieldsEnabled(options),
-  }
+  };
 }
 
-export function composeGatedFieldsPutResponse(options: { composeGatedFieldsEnabled?: boolean }) {
+export function composeGatedFieldsPutResponse(options: {
+  composeGatedFieldsEnabled?: boolean;
+}) {
   return {
     ok: true as const,
     ...composeGatedFieldsGetResponse(options),
-  }
+  };
 }
 
-export function deployHooksGetResponse(options: { deployHooksEnabled?: boolean }) {
-  return { deployHooksEnabled: resolveDeployHooksEnabled(options) }
+export function deployHooksGetResponse(options: {
+  deployHooksEnabled?: boolean;
+}) {
+  return { deployHooksEnabled: resolveDeployHooksEnabled(options) };
 }
 
-export function deployHooksPutResponse(options: { deployHooksEnabled?: boolean }) {
-  return { ok: true as const, ...deployHooksGetResponse(options) }
+export function deployHooksPutResponse(options: {
+  deployHooksEnabled?: boolean;
+}) {
+  return { ok: true as const, ...deployHooksGetResponse(options) };
 }
 
 export function hostDefaultsGetResponse(options: {
-  sshPort?: number
-  ntp?: NtpDefaults
-  defaultFabricEnabled?: boolean
+  sshPort?: number;
+  ntp?: NtpDefaults;
+  defaultFabricEnabled?: boolean;
 }) {
   return {
     sshPort: options.sshPort ?? null,
     ntp: options.ntp ?? null,
     defaultFabricEnabled: options.defaultFabricEnabled ?? false,
-  }
+  };
 }
 
 export function hostDefaultsPutResponse(options: {
-  sshPort?: number
-  ntp?: NtpDefaults
-  defaultFabricEnabled?: boolean
+  sshPort?: number;
+  ntp?: NtpDefaults;
+  defaultFabricEnabled?: boolean;
 }) {
   return {
     ok: true as const,
     ...hostDefaultsGetResponse(options),
-  }
+  };
 }
 
-export function defaultEnvironmentPutResponse(options: { defaultEnvironmentName?: string | null }) {
+export function defaultEnvironmentPutResponse(options: {
+  defaultEnvironmentName?: string | null;
+}) {
   return {
     ok: true as const,
     ...defaultEnvironmentGetResponse(options),
-  }
+  };
 }
