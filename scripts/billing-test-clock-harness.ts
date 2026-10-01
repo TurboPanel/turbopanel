@@ -10,7 +10,7 @@
  *
  *     deno test -A scripts/billing-test-clock-harness.test.ts
  *
- * Six scenarios, one lifecycle case each:
+ * Seven scenarios, one lifecycle case each:
  *
  *   partial-first-month     signup mid-month: day-1 anchor, prorated first invoice
  *   mid-cycle-upgrade       S3 → S5 parked as a pending update; entitlement rises
@@ -22,6 +22,8 @@
  *   dunning-retry-window    the failed renewal stays `past_due` with entitlement intact
  *                           while Stripe retries; Stripe's own dunning cancels and the
  *                           projection revokes every license
+ *   upgrade-empties-source  S4: an upgrade that empties its source tier deletes that
+ *                           item inside the parked update; S5 is the only line once applied
  *
  * Every seat or tier change goes through the **exported mutation path the
  * console uses** — `changeSeats`, `upgradeTier`, `downgradeTier` in
@@ -83,6 +85,7 @@
  *    the retry window is walked a week at a time.
  */
 import { and, eq, isNull } from 'drizzle-orm'
+import { retryWhileLeaseBusy, sameValue } from './billing-test-clock-compare.ts'
 import { createDenoDb, type Db, endDbConnection } from '../src/db/connection.ts'
 import { createLicense } from '../src/features/licenses/license.ts'
 import { changeSeats, downgradeTier, upgradeTier } from '../src/client/billing/mutations.ts'
@@ -190,7 +193,8 @@ export function check(condition: unknown, message: string): asserts condition {
 }
 
 export function checkEqual<T>(actual: T, expected: T, what: string): void {
-  if (actual !== expected) {
+  // Two timestamp strings are compared as instants: pg prints `…+00`, Stripe-side code ISO.
+  if (!sameValue(actual, expected)) {
     throw new HarnessAssertionError(`${what}: expected ${String(expected)}, got ${String(actual)}`)
   }
 }
@@ -824,12 +828,14 @@ const midCycleUpgrade: Scenario = {
     // The proration invoice for the upgrade must fail: the dunning card is the default.
     await attachCard(ctx, providerCustomerId, true)
     await pause(ctx)
-    const parked = await upgradeTier(mutationDeps(ctx), {
-      organizationId: ctx.organizationId,
-      fromTierId: s3.id,
-      toTierId: s5.id,
-      prorationDate: ctx.time.frozen,
-    })
+    const parked = await retryWhileLeaseBusy(() =>
+      upgradeTier(mutationDeps(ctx), {
+        organizationId: ctx.organizationId,
+        fromTierId: s3.id,
+        toTierId: s5.id,
+        prorationDate: ctx.time.frozen,
+      })
+    )
     check(parked.ok, `upgrade accepted: ${JSON.stringify(parked.body)}`)
     checkEqual(
       parked.body.pending,
@@ -904,11 +910,13 @@ const deferredDowngrade: Scenario = {
     checkEqual(await assignedTierOf(ctx, serverId), s5.id, 'server assigned S5 on purchase')
     await pause(ctx)
 
-    const result = await downgradeTier(mutationDeps(ctx), {
-      organizationId: ctx.organizationId,
-      fromTierId: s5.id,
-      toTierId: s3.id,
-    })
+    const result = await retryWhileLeaseBusy(() =>
+      downgradeTier(mutationDeps(ctx), {
+        organizationId: ctx.organizationId,
+        fromTierId: s5.id,
+        toTierId: s3.id,
+      })
+    )
     check(result.ok, `downgrade accepted: ${JSON.stringify(result.body)}`)
     checkEqual(result.body.deferred, true, 'downgrade is deferred')
     check(result.body.scheduleId, 'a schedule now carries the downgrade')
@@ -976,12 +984,14 @@ const quantityUpDown: Scenario = {
     await pause(ctx)
 
     // Up: immediate, prorated, invoiced now.
-    const up = await changeSeats(mutationDeps(ctx), {
-      organizationId: ctx.organizationId,
-      tierId: s3.id,
-      delta: 2,
-      prorationDate: ctx.time.frozen,
-    })
+    const up = await retryWhileLeaseBusy(() =>
+      changeSeats(mutationDeps(ctx), {
+        organizationId: ctx.organizationId,
+        tierId: s3.id,
+        delta: 2,
+        prorationDate: ctx.time.frozen,
+      })
+    )
     check(up.ok, `raise accepted: ${JSON.stringify(up.body)}`)
     checkEqual(up.body.pending, false, 'raise applied, not parked')
     checkEqual(up.body.deferred, false, 'raise is immediate')
@@ -995,11 +1005,13 @@ const quantityUpDown: Scenario = {
 
     // Down: deferred to the boundary, in the same scenario.
     await pause(ctx)
-    const down = await changeSeats(mutationDeps(ctx), {
-      organizationId: ctx.organizationId,
-      tierId: s3.id,
-      delta: -1,
-    })
+    const down = await retryWhileLeaseBusy(() =>
+      changeSeats(mutationDeps(ctx), {
+        organizationId: ctx.organizationId,
+        tierId: s3.id,
+        delta: -1,
+      })
+    )
     check(down.ok, `decrease accepted: ${JSON.stringify(down.body)}`)
     checkEqual(down.body.deferred, true, 'decrease is deferred')
     check(down.body.scheduleId, 'a schedule now carries the decrease')
@@ -1066,23 +1078,27 @@ const upgradeWhilePastDue: Scenario = {
     const invoicesBefore = await fetchInvoicesForSubscription(ctx.client, providerSubscriptionId)
 
     const counting = countingClient(ctx.client)
-    const upgrade = await upgradeTier(mutationDeps(ctx, counting), {
-      organizationId: ctx.organizationId,
-      fromTierId: s3.id,
-      toTierId: s5.id,
-      prorationDate: ctx.time.frozen,
-    })
+    const upgrade = await retryWhileLeaseBusy(() =>
+      upgradeTier(mutationDeps(ctx, counting), {
+        organizationId: ctx.organizationId,
+        fromTierId: s3.id,
+        toTierId: s5.id,
+        prorationDate: ctx.time.frozen,
+      })
+    )
     check(!upgrade.ok, 'upgrade refused while past_due')
     checkEqual(upgrade.status, 409, 'upgrade refusal status')
     checkEqual(upgrade.body.error, SUBSCRIPTION_PAST_DUE_ERROR, 'upgrade refusal error')
     checkEqual(upgrade.body.graceExpiresAt, null, 'refusal carries no TurboPanel-side expiry')
 
-    const raise = await changeSeats(mutationDeps(ctx, counting), {
-      organizationId: ctx.organizationId,
-      tierId: s3.id,
-      delta: 1,
-      prorationDate: ctx.time.frozen,
-    })
+    const raise = await retryWhileLeaseBusy(() =>
+      changeSeats(mutationDeps(ctx, counting), {
+        organizationId: ctx.organizationId,
+        tierId: s3.id,
+        delta: 1,
+        prorationDate: ctx.time.frozen,
+      })
+    )
     check(!raise.ok, 'seat raise refused while past_due')
     checkEqual(raise.status, 409, 'seat raise refusal status')
     checkEqual(raise.body.error, SUBSCRIPTION_PAST_DUE_ERROR, 'seat raise refusal error')
@@ -1123,12 +1139,14 @@ const upgradeWhilePastDue: Scenario = {
     checkEqual(state.subscription?.status, 'active', 'status after the renewal is paid')
     checkEqual(state.subscription?.pastDueSince, null, 'past_due_since cleared on recovery')
 
-    const allowed = await upgradeTier(mutationDeps(ctx), {
-      organizationId: ctx.organizationId,
-      fromTierId: s3.id,
-      toTierId: s5.id,
-      prorationDate: ctx.time.frozen,
-    })
+    const allowed = await retryWhileLeaseBusy(() =>
+      upgradeTier(mutationDeps(ctx), {
+        organizationId: ctx.organizationId,
+        fromTierId: s3.id,
+        toTierId: s5.id,
+        prorationDate: ctx.time.frozen,
+      })
+    )
     check(allowed.ok, `upgrade accepted once active again: ${JSON.stringify(allowed.body)}`)
     checkEqual(allowed.body.pending, false, 'upgrade applied on the good card')
     state = await listSeatsForOrganization(ctx.db, ctx.organizationId)
@@ -1241,6 +1259,90 @@ const dunningRetryWindow: Scenario = {
   },
 }
 
+/** The price ids on a Stripe subscription's committed items (the live line items, not the pending update). */
+async function committedPriceIds(
+  ctx: ScenarioContext,
+  providerSubscriptionId: string
+): Promise<string[]> {
+  const sub = await ctx.client.get<StripeObject>(
+    `/v1/subscriptions/${encodeURIComponent(providerSubscriptionId)}`
+  )
+  const items = isObject(sub.items) && Array.isArray(sub.items.data) ? sub.items.data : []
+  const ids: string[] = []
+  for (const item of items) {
+    const price = isObject(item) && isObject(item.price) ? str(item.price.id) : null
+    if (price) ids.push(price)
+  }
+  return ids.toSorted()
+}
+
+const upgradeEmptiesSource: Scenario = {
+  name: 'upgrade-empties-source',
+  covers:
+    'S4 — a deleted item inside a pending_if_incomplete update when an upgrade empties its source tier',
+  async run(ctx) {
+    const s3 = tierOf(ctx, 'S3')
+    const s5 = tierOf(ctx, 'S5')
+    const { providerCustomerId } = await createClockCustomer(ctx)
+    const { providerSubscriptionId } = await subscribe(ctx, providerCustomerId, [
+      { label: 'S3', quantity: 1 },
+    ])
+    const { serverId } = await mintBoundLicense(ctx, 'S3')
+    await project(ctx, providerSubscriptionId)
+    checkEqual(
+      await committedPriceIds(ctx, providerSubscriptionId),
+      [s3.providerPriceId],
+      'one S3 line before the upgrade'
+    )
+
+    // The only S3 seat moves up, so the swap deletes the S3 item outright
+    // (not "quantity 0") and adds S5, parked because the proration fails.
+    await attachCard(ctx, providerCustomerId, true)
+    await pause(ctx)
+    const parked = await retryWhileLeaseBusy(() =>
+      upgradeTier(mutationDeps(ctx), {
+        organizationId: ctx.organizationId,
+        fromTierId: s3.id,
+        toTierId: s5.id,
+        prorationDate: ctx.time.frozen,
+      })
+    )
+    check(parked.ok, `upgrade accepted: ${JSON.stringify(parked.body)}`)
+    checkEqual(parked.body.pending, true, 'the swap with a deleted item is parked, not refused')
+
+    // Step one, parked: the committed items still show S3 only, and nothing moved.
+    checkEqual(
+      await committedPriceIds(ctx, providerSubscriptionId),
+      [s3.providerPriceId],
+      'committed items unchanged while the swap is pending'
+    )
+    let state = await listSeatsForOrganization(ctx.db, ctx.organizationId)
+    checkEqual(quantity(state, s3.id), 1, 'S3 seat kept while pending')
+    checkEqual(quantity(state, s5.id), 0, 'no S5 seat while pending')
+    checkEqual(await assignedTierOf(ctx, serverId), s3.id, 'server still on S3 while pending')
+
+    // Step two, applied: the S3 item is gone (deleted), S5 is the only line.
+    const goodCard = await attachCard(ctx, providerCustomerId, false)
+    const proration = await openInvoiceFor(ctx, providerSubscriptionId)
+    await payInvoice(ctx, proration.id, goodCard)
+    await waitForPendingUpdateApplied(ctx, providerSubscriptionId)
+    checkEqual(
+      await committedPriceIds(ctx, providerSubscriptionId),
+      [s5.providerPriceId],
+      'the emptied S3 item was deleted and S5 is the only line'
+    )
+    state = await project(ctx, providerSubscriptionId)
+    checkEqual(quantity(state, s3.id), 0, 'S3 seats once the deletion applied')
+    checkEqual(quantity(state, s5.id), 1, 'S5 seats once applied')
+    checkEqual(await assignedTierOf(ctx, serverId), s5.id, 'server assigned S5 by the reprojection')
+    checkEqual(
+      (await ledgerIntents(ctx, providerSubscriptionId)).length,
+      0,
+      'an immediate upgrade leaves no intent'
+    )
+  },
+}
+
 export const SCENARIOS: readonly Scenario[] = [
   partialFirstMonth,
   midCycleUpgrade,
@@ -1248,9 +1350,10 @@ export const SCENARIOS: readonly Scenario[] = [
   quantityUpDown,
   upgradeWhilePastDue,
   dunningRetryWindow,
+  upgradeEmptiesSource,
 ]
 
-/** The six C16 cases, by name, in run order. */
+/** The harness's cases (the six C16 ones plus S4), by name, in run order. */
 export const SCENARIO_NAMES: readonly string[] = SCENARIOS.map((scenario) => scenario.name)
 
 // ---------------------------------------------------------------------------
