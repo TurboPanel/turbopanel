@@ -6103,6 +6103,75 @@ export function parseStorageBackupResult(value: unknown): StorageBackupCommandRe
   return result
 }
 
+/**
+ * Must stay in sync with the daemon `storage.restore` shape.
+ *
+ * Replaces one storage copy's contents with an archive `storage.backup` or a
+ * scheduled run made on the same host. `checksum` and `policyId` come from the
+ * `archive` row, never from the caller: the daemon refuses an artifact whose
+ * sha256 differs before it stops anything. The containers mounting the copy
+ * are stopped for the swap and started again whatever happens.
+ */
+export type StorageRestoreCommandPayload = CopyBackupSource & {
+  backupId: string
+  checksum: string
+  policyId?: string
+}
+
+/** Container ids, as `docker ps` printed them, never names or contents. */
+export type StorageRestoreCommandResult = {
+  backupId: string
+  restoredAt?: string
+  stopped?: string[]
+  restarted?: string[]
+  notRestarted?: string[]
+  summary?: string
+}
+
+export function parseStorageRestorePayload(value: unknown): StorageRestoreCommandPayload {
+  if (
+    !isRecord(value) ||
+    !isString(value.backupId) ||
+    !isSafeBackupId(value.backupId) ||
+    !isString(value.checksum) ||
+    !CHECKSUM_SHA256_RE.test(value.checksum) ||
+    (value.policyId !== undefined && !isCanonicalUuid(value.policyId))
+  ) {
+    throw new Error('Invalid storage.restore payload')
+  }
+  const payload: StorageRestoreCommandPayload = {
+    ...parseCopyBackupSource(value),
+    backupId: value.backupId,
+    checksum: value.checksum,
+  }
+  if (value.policyId !== undefined) payload.policyId = value.policyId
+  return payload
+}
+
+const CONTAINER_ID_RE = /^[a-f\d]{12,64}$/
+
+function parseContainerIds(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  return value.filter((id): id is string => isString(id) && CONTAINER_ID_RE.test(id))
+}
+
+/** Lenient result parser: keeps only well-formed fields. */
+export function parseStorageRestoreResult(value: unknown): StorageRestoreCommandResult {
+  if (!isRecord(value) || !isString(value.backupId) || value.backupId.length === 0) {
+    return { backupId: '' }
+  }
+  const result: StorageRestoreCommandResult = { backupId: value.backupId }
+  if (isString(value.restoredAt)) result.restoredAt = value.restoredAt
+  const stopped = parseContainerIds(value.stopped)
+  if (stopped) result.stopped = stopped
+  const restarted = parseContainerIds(value.restarted)
+  if (restarted) result.restarted = restarted
+  const notRestarted = parseContainerIds(value.notRestarted)
+  if (notRestarted) result.notRestarted = notRestarted
+  if (isString(value.summary)) result.summary = value.summary
+  return result
+}
+
 function isValidHostgroupId(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 65_535
 }
@@ -6715,6 +6784,7 @@ export function parseCommandPayload(
   | ManagedHaReconcileCommandPayload
   | ManagedHaFailoverCommandPayload
   | StorageBackupCommandPayload
+  | StorageRestoreCommandPayload
   | SystemReconcileCommandPayload {
   switch (type) {
     case 'daemon.ping':
@@ -6763,6 +6833,8 @@ export function parseCommandPayload(
       return parseManagedHaFailoverPayload(value)
     case 'storage.backup':
       return parseStorageBackupPayload(value)
+    case 'storage.restore':
+      return parseStorageRestorePayload(value)
     case 'system.reconcile':
       return parseSystemReconcilePayload(value)
   }
@@ -6795,6 +6867,7 @@ export function parseCommandResult(
   | ManagedHaReconcileCommandResult
   | ManagedHaFailoverCommandResult
   | StorageBackupCommandResult
+  | StorageRestoreCommandResult
   | SystemReconcileCommandResult {
   switch (type) {
     case 'daemon.ping':
@@ -6843,6 +6916,8 @@ export function parseCommandResult(
       return parseManagedHaFailoverResult(value)
     case 'storage.backup':
       return parseStorageBackupResult(value)
+    case 'storage.restore':
+      return parseStorageRestoreResult(value)
     case 'system.reconcile':
       return parseSystemReconcileResult(value)
   }

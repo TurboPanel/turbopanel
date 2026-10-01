@@ -2,7 +2,8 @@
  * Storage-copy backup routes against a real database: policy CRUD for a
  * manager, `manage` required (a read-only member is refused), a copy must
  * belong to the storage in the path, copies that cannot be backed up are
- * refused, and manual backups list and dispatch to the copy's own server.
+ * refused, manual backups list and dispatch to the copy's own server, and a
+ * restore names an archive of that copy and carries the row's checksum.
  * Skips without TURBOPANEL_DATABASE_URL.
  */
 
@@ -26,7 +27,7 @@ import {
 } from '../../db/schema.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { registerStorageRoutes } from './routes.ts'
-import { registerStorageBackupRoutes } from './backup-routes.ts'
+import { buildStorageRestorePayload, registerStorageBackupRoutes } from './backup-routes.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 
 /**
@@ -333,4 +334,55 @@ test('manual copy backups list their records and dispatch only to an online serv
     const remove = await request(fixture, `${base}/bk_manual`, { method: 'DELETE' })
     assertEquals(remove.status, 409)
   })
+})
+
+test('a restore needs manage, an archive of this copy, and an online server', async () => {
+  await withFixture(async (fixture) => {
+    await fixture.db.insert(archive).values({
+      copyId: fixture.copyId,
+      backupId: 'bk_manual',
+      sizeBytes: 10,
+      checksum: 'a'.repeat(64),
+      path: `/backup/copies/${fixture.copyId}/bk_manual.tar.gz`,
+    })
+    const base = `/storage/${fixture.storageId}/copies/${fixture.copyId}/backups`
+    const restore = (backupId: string, cookie?: string) =>
+      request(fixture, `${base}/${backupId}/restore`, { method: 'POST', cookie })
+
+    assertEquals((await restore('bk_manual', fixture.readerCookie)).status, 403)
+    const missing = await restore('bk_nope')
+    assertEquals(missing.status, 404)
+    assertEquals(((await missing.json()) as { error: string }).error, 'backup_not_found')
+
+    // Another copy's archive is not this copy's, even in the same org.
+    const other = await insertCopy(fixture.db, {
+      organizationId: fixture.organizationId,
+      serverId: fixture.serverId,
+      kind: 'volume',
+      provider: 'docker',
+    })
+    const crossCopy = await request(
+      fixture,
+      `/storage/${other.storageId}/copies/${other.copyId}/backups/bk_manual/restore`,
+      { method: 'POST' }
+    )
+    assertEquals(crossCopy.status, 404)
+
+    // The copy's server has no live daemon here.
+    const offline = await restore('bk_manual')
+    assertEquals(offline.status, 409)
+    assertEquals(((await offline.json()) as { error: string }).error, 'server_offline')
+  })
+})
+
+test('the restore payload takes its checksum and retention from the archive row', () => {
+  const source = { copyId: 'c', copyProvider: 'docker' as const, volumeName: 'shop_uploads' }
+  assertEquals(
+    buildStorageRestorePayload(source, { id: 'bk_1', checksum: 'b'.repeat(64), policyId: null }),
+    { ...source, backupId: 'bk_1', checksum: 'b'.repeat(64) }
+  )
+  assertEquals(
+    buildStorageRestorePayload(source, { id: 'bk_2', checksum: 'c'.repeat(64), policyId: 'p' }),
+    { ...source, backupId: 'bk_2', checksum: 'c'.repeat(64), policyId: 'p' }
+  )
 })
