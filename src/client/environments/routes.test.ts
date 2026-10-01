@@ -4,10 +4,7 @@ import { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
 import { createDenoDb } from '../../db/connection.ts'
-import {
-  buildSignedCookie,
-  HTTP_SESSION_COOKIE_NAME,
-} from '../authn/crypto.ts'
+import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from '../authn/crypto.ts'
 import { createSession } from '../authn/session-store.ts'
 import { deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
 import {
@@ -53,7 +50,7 @@ async function createEnvironmentRoutesTestApp(db: ReturnType<typeof createDenoDb
 async function sessionCookie(
   db: ReturnType<typeof createDenoDb>,
   secrets: Awaited<ReturnType<typeof deriveSecretsConfig>>,
-  userId: string,
+  userId: string
 ): Promise<string> {
   const { token } = await createSession(db, userId, {})
   const signed = await buildSignedCookie(token, secrets)
@@ -69,7 +66,7 @@ async function withEnvironmentFixtures(
     organizationId: string
     projectId: string
     serverId: string
-  }) => Promise<void>,
+  }) => Promise<void>
 ): Promise<void> {
   if (!dbUrl) {
     console.warn('Skipping environment route tests: TURBOPANEL_DATABASE_URL not set')
@@ -145,10 +142,7 @@ async function withEnvironmentFixtures(
     await db.delete(environment).where(eq(environment.projectId, projectId))
     await db.delete(project).where(eq(project.id, projectId))
     await db.delete(server).where(eq(server.id, serverId))
-    await db.delete(grant).where(and(
-      eq(grant.actorId, userId),
-      eq(grant.entityId, organizationId),
-    ))
+    await db.delete(grant).where(and(eq(grant.actorId, userId), eq(grant.entityId, organizationId)))
     await db.delete(workspace).where(eq(workspace.id, workspaceId))
     await db.delete(user).where(eq(user.id, userId))
     await db.delete(organization).where(eq(organization.id, organizationId))
@@ -156,99 +150,86 @@ async function withEnvironmentFixtures(
 }
 
 test('POST/PATCH /environments strip metadata.serverId from stored JSONB', async () => {
-  await withEnvironmentFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-    projectId,
-    serverId,
-  }) => {
-    const cookie = await sessionCookie(db, secrets, userId)
+  await withEnvironmentFixtures(
+    async ({ db, app, secrets, userId, organizationId, projectId, serverId }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
 
-    const createRes = await app.request('/environments', {
-      method: 'POST',
-      headers: {
-        Cookie: cookie,
-        [ORG_ID_HEADER]: organizationId,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        projectId,
-        name: 'Env Metadata Strip',
-        serverId,
-        metadata: { serverId, note: 'keep-me' },
-      }),
-    })
-    assertEquals(createRes.status, 200)
-    const { id } = await createRes.json() as { ok: true; id: string }
-
-    const [storedAfterCreate] = await db
-      .select({
-        serverId: environment.serverId,
-        metadata: environment.metadata,
+      const createRes = await app.request('/environments', {
+        method: 'POST',
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          projectId,
+          name: 'Env Metadata Strip',
+          serverId,
+          metadata: { serverId, note: 'keep-me' },
+        }),
       })
-      .from(environment)
-      .where(eq(environment.id, id))
-      .limit(1)
-    assertEquals(storedAfterCreate?.serverId, serverId)
-    assertEquals(storedAfterCreate?.metadata, { note: 'keep-me' })
+      assertEquals(createRes.status, 200)
+      const { id } = (await createRes.json()) as { ok: true; id: string }
 
-    const getRes = await app.request(`/environments/${id}`, {
-      headers: {
-        Cookie: cookie,
-        [ORG_ID_HEADER]: organizationId,
-      },
-    })
-    assertEquals(getRes.status, 200)
-    const getBody = await getRes.json() as {
-      environment: {
-        serverId: string
-        metadata: { serverId?: string; note?: string }
+      const [storedAfterCreate] = await db
+        .select({
+          serverId: environment.serverId,
+          metadata: environment.metadata,
+        })
+        .from(environment)
+        .where(eq(environment.id, id))
+        .limit(1)
+      assertEquals(storedAfterCreate?.serverId, serverId)
+      assertEquals(storedAfterCreate?.metadata, { note: 'keep-me' })
+
+      const getRes = await app.request(`/environments/${id}`, {
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+        },
+      })
+      assertEquals(getRes.status, 200)
+      const getBody = (await getRes.json()) as {
+        environment: {
+          serverId: string
+          metadata: { serverId?: string; note?: string }
+        }
       }
-    }
-    assertEquals(getBody.environment.serverId, serverId)
-    // `serverId` lives only on the dedicated column — the serialized
-    // response never mirrors it back into `metadata`.
-    assertEquals(getBody.environment.metadata.serverId, undefined)
-    assertEquals(getBody.environment.metadata.note, 'keep-me')
+      assertEquals(getBody.environment.serverId, serverId)
+      // `serverId` lives only on the dedicated column — the serialized
+      // response never mirrors it back into `metadata`.
+      assertEquals(getBody.environment.metadata.serverId, undefined)
+      assertEquals(getBody.environment.metadata.note, 'keep-me')
 
-    const patchRes = await app.request(`/environments/${id}`, {
-      method: 'PATCH',
-      headers: {
-        Cookie: cookie,
-        [ORG_ID_HEADER]: organizationId,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        metadata: { serverId: crypto.randomUUID(), note: 'patched' },
-      }),
-    })
-    assertEquals(patchRes.status, 200)
-
-    const [storedAfterPatch] = await db
-      .select({
-        serverId: environment.serverId,
-        metadata: environment.metadata,
+      const patchRes = await app.request(`/environments/${id}`, {
+        method: 'PATCH',
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          metadata: { serverId: crypto.randomUUID(), note: 'patched' },
+        }),
       })
-      .from(environment)
-      .where(eq(environment.id, id))
-      .limit(1)
-    assertEquals(storedAfterPatch?.serverId, serverId)
-    assertEquals(storedAfterPatch?.metadata, { note: 'patched' })
-  })
+      assertEquals(patchRes.status, 200)
+
+      const [storedAfterPatch] = await db
+        .select({
+          serverId: environment.serverId,
+          metadata: environment.metadata,
+        })
+        .from(environment)
+        .where(eq(environment.id, id))
+        .limit(1)
+      assertEquals(storedAfterPatch?.serverId, serverId)
+      assertEquals(storedAfterPatch?.metadata, { note: 'patched' })
+    }
+  )
 })
 
 test('POST /environments reconciles service rows from the project base compose when created without options', async () => {
-  await withEnvironmentFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-    projectId,
-  }) => {
+  await withEnvironmentFixtures(async ({ db, app, secrets, userId, organizationId, projectId }) => {
     await db
       .update(project)
       .set({
@@ -282,7 +263,7 @@ test('POST /environments reconciles service rows from the project base compose w
       }),
     })
     assertEquals(createRes.status, 200)
-    const { id } = await createRes.json() as { ok: true; id: string }
+    const { id } = (await createRes.json()) as { ok: true; id: string }
 
     const rows = await db
       .select({ composeServiceName: service.composeServiceName })
@@ -292,5 +273,134 @@ test('POST /environments reconciles service rows from the project base compose w
     assertEquals(names, ['api', 'web'])
 
     await db.delete(service).where(eq(service.environmentId, id))
+  })
+})
+
+type EnvironmentTestContext = Parameters<Parameters<typeof withEnvironmentFixtures>[0]>[0]
+
+async function sendJson(
+  ctx: EnvironmentTestContext,
+  cookie: string,
+  method: string,
+  path: string,
+  body: unknown
+): Promise<Response> {
+  return await ctx.app.request(path, {
+    method,
+    headers: {
+      Cookie: cookie,
+      [ORG_ID_HEADER]: ctx.organizationId,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  })
+}
+
+async function storedOptions(
+  ctx: EnvironmentTestContext,
+  id: string
+): Promise<Record<string, unknown> | null> {
+  const [row] = await ctx.db
+    .select({ options: environment.options })
+    .from(environment)
+    .where(eq(environment.id, id))
+    .limit(1)
+  return (row?.options ?? null) as Record<string, unknown> | null
+}
+
+test('POST /environments defaults a new environment to the sequential strategy', async () => {
+  await withEnvironmentFixtures(async (ctx) => {
+    const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
+    const res = await sendJson(ctx, cookie, 'POST', '/environments', {
+      projectId: ctx.projectId,
+      name: 'Env Default Strategy',
+    })
+    assertEquals(res.status, 200)
+    const { id } = (await res.json()) as { id: string }
+    assertEquals(await storedOptions(ctx, id), { deployStrategy: 'sequential' })
+  })
+})
+
+test('POST /environments keeps a strategy the caller chose, and null means unset', async () => {
+  await withEnvironmentFixtures(async (ctx) => {
+    const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
+    const chosen = await sendJson(ctx, cookie, 'POST', '/environments', {
+      projectId: ctx.projectId,
+      name: 'Env Chosen Strategy',
+      options: { deployStrategy: 'inplace', migrations: 'none' },
+    })
+    assertEquals(chosen.status, 200)
+    const chosenId = ((await chosen.json()) as { id: string }).id
+    assertEquals(await storedOptions(ctx, chosenId), {
+      deployStrategy: 'inplace',
+      migrations: 'none',
+    })
+
+    // `null` means "unset", so the new-environment default applies.
+    const cleared = await sendJson(ctx, cookie, 'POST', '/environments', {
+      projectId: ctx.projectId,
+      name: 'Env Null Strategy',
+      options: { deployStrategy: null },
+    })
+    assertEquals(cleared.status, 200)
+    const clearedId = ((await cleared.json()) as { id: string }).id
+    assertEquals(await storedOptions(ctx, clearedId), { deployStrategy: 'sequential' })
+  })
+})
+
+test('POST /environments refuses invalid deploy settings with a reason', async () => {
+  await withEnvironmentFixtures(async (ctx) => {
+    const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
+    const res = await sendJson(ctx, cookie, 'POST', '/environments', {
+      projectId: ctx.projectId,
+      name: 'Env Bad Strategy',
+      options: { deployStrategy: 'rolling' },
+    })
+    assertEquals(res.status, 400)
+    assertEquals(await res.json(), {
+      error: 'deploy_options_invalid',
+      message: 'deployStrategy must be one of inplace, sequential, bluegreen',
+    })
+  })
+})
+
+test('PATCH /environments validates deploy settings and keeps stored ones the body omits', async () => {
+  await withEnvironmentFixtures(async (ctx) => {
+    const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
+    const created = await sendJson(ctx, cookie, 'POST', '/environments', {
+      projectId: ctx.projectId,
+      name: 'Env Patch Strategy',
+      options: { deployStrategy: 'bluegreen', migrations: 'compatible', drainSeconds: 5 },
+    })
+    const { id } = (await created.json()) as { id: string }
+
+    // The compose editor sends only `compose`; the stored settings survive.
+    const composeOnly = await sendJson(ctx, cookie, 'PATCH', `/environments/${id}`, {
+      options: { compose: { version: 1, data: {}, presentation: { keyOrder: [], comments: {} } } },
+    })
+    assertEquals(composeOnly.status, 200)
+    const afterCompose = await storedOptions(ctx, id)
+    assertEquals(afterCompose?.deployStrategy, 'bluegreen')
+    assertEquals(afterCompose?.migrations, 'compatible')
+    assertEquals(afterCompose?.drainSeconds, 5)
+    assertEquals('compose' in (afterCompose ?? {}), true)
+
+    // Named keys replace; `null` clears; the rest stay.
+    const changed = await sendJson(ctx, cookie, 'PATCH', `/environments/${id}`, {
+      options: { deployStrategy: 'sequential', migrations: null },
+    })
+    assertEquals(changed.status, 200)
+    assertEquals(await storedOptions(ctx, id), { deployStrategy: 'sequential', drainSeconds: 5 })
+
+    // Invalid values are refused and nothing is written.
+    const bad = await sendJson(ctx, cookie, 'PATCH', `/environments/${id}`, {
+      options: { rollbackWindowMinutes: 100000 },
+    })
+    assertEquals(bad.status, 400)
+    assertEquals(await bad.json(), {
+      error: 'deploy_options_invalid',
+      message: 'rollbackWindowMinutes must be an integer from 0 to 1440',
+    })
+    assertEquals(await storedOptions(ctx, id), { deployStrategy: 'sequential', drainSeconds: 5 })
   })
 })

@@ -24,6 +24,10 @@ import {
   type CatalogVariable,
   type CreateProjectType,
 } from './catalog/index.ts'
+import {
+  settleDeployOptions,
+  stampNewEnvironmentDeployOptions,
+} from '../../features/deploy/deploy-options.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 
 export const DEFAULT_PRODUCTION_ENVIRONMENT_NAME = DEFAULT_ENVIRONMENT_NAME
@@ -101,7 +105,7 @@ export async function insertEmptyProject(
     name: envName,
     description: DEFAULT_PRODUCTION_ENVIRONMENT_DESCRIPTION,
     ...(fields.serverId ? { serverId: fields.serverId } : {}),
-    options: { compose: emptyComposeDocument() },
+    options: stampNewEnvironmentDeployOptions({ compose: emptyComposeDocument() }),
   })
 
   return inserted.id
@@ -188,7 +192,7 @@ export async function ensureProductionEnvironment(
       name: effectiveName,
       description: DEFAULT_PRODUCTION_ENVIRONMENT_DESCRIPTION,
       ...(serverId ? { serverId } : {}),
-      options: { compose: emptyComposeDocument() },
+      options: stampNewEnvironmentDeployOptions({ compose: emptyComposeDocument() }),
     })
     .returning({ id: environment.id })
   return inserted.id
@@ -271,10 +275,20 @@ async function applyCatalogEnvCompose(
 ): Promise<void> {
   const catalogEnv = resolveCatalogProductionEnv(entry)
   if (!catalogEnv?.compose) return
+  // Replaces the compose overlay but keeps (or, for a first configure, stamps)
+  // the deploy settings the environment already carries.
+  const [existing] = await tx
+    .select({ options: environment.options })
+    .from(environment)
+    .where(eq(environment.id, productionId))
+    .limit(1)
+  const options = stampNewEnvironmentDeployOptions(
+    settleDeployOptions(existing?.options, { compose: catalogEnv.compose }, 'environment')
+  )
   await tx
     .update(environment)
     .set({
-      options: { compose: catalogEnv.compose },
+      options,
       description: catalogEnv.description ?? DEFAULT_PRODUCTION_ENVIRONMENT_DESCRIPTION,
       updatedAt: new Date().toISOString(),
     })
@@ -326,7 +340,7 @@ async function insertExtraCatalogEnvironments(
         name: env.displayName,
         description: env.description ?? null,
         ...(input.serverId ? { serverId: input.serverId } : {}),
-        options: env.compose ? { compose: env.compose } : null,
+        options: stampNewEnvironmentDeployOptions(env.compose ? { compose: env.compose } : null),
       })
       .returning({ id: environment.id })
     if (!env.variables?.length) return

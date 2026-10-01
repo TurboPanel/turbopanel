@@ -15,13 +15,28 @@ export const deploySchemas = {
         description:
           'Cacheless redeploy: rebuild images with `docker compose build --no-cache --pull` before `up`',
       },
+      strategy: {
+        type: 'string',
+        enum: ['inplace', 'sequential', 'bluegreen'],
+        description:
+          'Per-deploy override of the environment deploy strategy. **Not honored yet**: only ' +
+          '`inplace` (what every deploy does today) is accepted; `sequential` and `bluegreen` ' +
+          'are refused with `501 deploy_strategy_unsupported` rather than ignored.',
+      },
+      migration: {
+        type: 'string',
+        enum: ['none', 'compatible', 'breaking', 'unknown'],
+        description:
+          'Per-deploy override of the environment migration status ("this deploy contains a ' +
+          'breaking migration"). **Not honored yet**: refused with `501 deploy_strategy_unsupported`.',
+      },
       ref: {
         type: 'string',
         maxLength: 255,
         description:
           'Branch, tag, or commit SHA to deploy for Git-backed services. Equivalent to what a ' +
           'push webhook would trigger, for instances GitHub cannot reach. **Not honored yet**: ' +
-          'checking a ref out is the release-engine phase\'s job, so a request that sets this ' +
+          "checking a ref out is the release-engine phase's job, so a request that sets this " +
           'field is refused with `501 source_ref_unsupported` rather than deploying the ' +
           "environment's current state under a ref the caller asked for. Omit it to deploy " +
           'current state.',
@@ -114,6 +129,10 @@ export const deploySchemas = {
       'containers',
       'volumes',
       'warnings',
+      'strategy',
+      'effectiveStrategy',
+      'migrations',
+      'fallbackReasons',
     ],
     properties: {
       ok: { type: 'boolean', const: true },
@@ -153,13 +172,7 @@ export const deploySchemas = {
         type: 'array',
         items: {
           type: 'object',
-          required: [
-            'serviceId',
-            'composeServiceName',
-            'containerName',
-            'ordinal',
-            'role',
-          ],
+          required: ['serviceId', 'composeServiceName', 'containerName', 'ordinal', 'role'],
           properties: {
             serviceId: { type: 'string' },
             composeServiceName: { type: 'string' },
@@ -169,7 +182,7 @@ export const deploySchemas = {
               type: 'string',
               enum: ['service', 'ingress', 'turbopanel'],
               description:
-                "Workload replica (`service`), ingress frontend (`ingress` — per-service Traefik or shared per-server ProxySQL managed-ingress, both named `<serviceId>-in` at ordinal 1), or platform `turbopanel-system` stack / Orchestrator container (`turbopanel`).",
+                'Workload replica (`service`), ingress frontend (`ingress` — per-service Traefik or shared per-server ProxySQL managed-ingress, both named `<serviceId>-in` at ordinal 1), or platform `turbopanel-system` stack / Orchestrator container (`turbopanel`).',
             },
           },
         },
@@ -189,6 +202,49 @@ export const deploySchemas = {
       warnings: {
         type: 'array',
         items: { $ref: '#/components/schemas/DeployPreviewWarning' },
+      },
+      strategy: {
+        type: 'string',
+        enum: ['inplace', 'sequential', 'bluegreen'],
+        description:
+          'The strategy requested: the `strategy` query, else the environment setting, else `inplace`. Informational: every deploy still runs `inplace`.',
+      },
+      effectiveStrategy: {
+        type: 'string',
+        enum: ['inplace', 'sequential', 'bluegreen'],
+        description:
+          'The strategy that would actually run. Differs from `strategy` only when `bluegreen` is refused and falls back to `sequential` (see `fallbackReasons`).',
+      },
+      migrations: {
+        type: 'string',
+        enum: ['none', 'compatible', 'breaking', 'unknown'],
+        description: 'Migration status the decision used; `unknown` when none is declared.',
+      },
+      fallbackReasons: {
+        type: 'array',
+        description: 'Every reason blue-green is refused; empty when no fallback applies.',
+        items: {
+          type: 'object',
+          required: ['code', 'message', 'services'],
+          properties: {
+            code: {
+              type: 'string',
+              enum: [
+                'host_published_ports',
+                'authored_container_name',
+                'stateful_writable_volume',
+                'missing_healthcheck',
+                'native_or_cron_service',
+                'host_level_binds',
+                'migration_unknown',
+                'migration_breaking',
+                'migrator_undeclared',
+              ],
+            },
+            message: { type: 'string' },
+            services: { type: 'array', items: { type: 'string' } },
+          },
+        },
       },
       envFile: {
         type: 'string',
@@ -264,7 +320,8 @@ export const deploySchemas = {
       serverName: { type: ['string', 'null'] },
       status: {
         type: 'string',
-        description: 'Command lifecycle status (`queued`, `sent`, `succeeded`, `failed`, `timed_out`, …).',
+        description:
+          'Command lifecycle status (`queued`, `sent`, `succeeded`, `failed`, `timed_out`, …).',
       },
       actorEntityType: { type: 'string' },
       actorEntityId: { type: 'string' },
@@ -302,14 +359,7 @@ export const deploySchemas = {
   },
   DeploymentHistoryDetail: {
     type: 'object',
-    required: [
-      'id',
-      'environmentId',
-      'replicaCounts',
-      'totalReplicas',
-      'commands',
-      'servers',
-    ],
+    required: ['id', 'environmentId', 'replicaCounts', 'totalReplicas', 'commands', 'servers'],
     properties: {
       id: { type: 'string' },
       environmentId: { type: 'string' },
@@ -319,7 +369,7 @@ export const deploySchemas = {
         type: 'object',
         additionalProperties: { type: 'integer', minimum: 1 },
         description:
-          'Per-service replica counts for the whole fan-out, summed across every participating host from each attempt\'s historical `command.context`. Empty when no attempt in the fan-out carries counts (rows queued before they were persisted).',
+          "Per-service replica counts for the whole fan-out, summed across every participating host from each attempt's historical `command.context`. Empty when no attempt in the fan-out carries counts (rows queued before they were persisted).",
       },
       totalReplicas: {
         type: 'integer',
@@ -356,7 +406,7 @@ export const deploySchemas = {
             },
             totalReplicas: {
               type: ['integer', 'null'],
-              description: 'Sum of this host\'s `replicaCounts`; null when unknown.',
+              description: "Sum of this host's `replicaCounts`; null when unknown.",
             },
           },
         },
@@ -510,7 +560,7 @@ export const deployPaths = {
       tags: ['Environments'],
       summary: 'Read one deploy attempt and its multi-server fan-out',
       description:
-        '`deploymentId` is a `command.id`. The response groups every `environment.deploy` command sharing the anchor\'s `context.generation` — the full fan-out, unpaginated and untruncated, so every participating host can be enumerated. Replica counts (`replicaCounts` / `totalReplicas`) are historical, read from each attempt\'s `command.context`. The per-server convergence figures (`appliedGeneration`, `desiredGeneration`, `deploymentStatus`) instead come from a live join to `deployment` and therefore reflect current state, not a snapshot taken at deploy time.',
+        "`deploymentId` is a `command.id`. The response groups every `environment.deploy` command sharing the anchor's `context.generation` — the full fan-out, unpaginated and untruncated, so every participating host can be enumerated. Replica counts (`replicaCounts` / `totalReplicas`) are historical, read from each attempt's `command.context`. The per-server convergence figures (`appliedGeneration`, `desiredGeneration`, `deploymentStatus`) instead come from a live join to `deployment` and therefore reflect current state, not a snapshot taken at deploy time.",
       parameters: [
         { name: 'id', in: 'path', required: true, schema: { type: 'string' } },
         { name: 'deploymentId', in: 'path', required: true, schema: { type: 'string' } },
@@ -541,6 +591,20 @@ export const deployPaths = {
           in: 'path',
           required: true,
           schema: { type: 'string' },
+        },
+        {
+          name: 'strategy',
+          in: 'query',
+          required: false,
+          description: 'What-if: preview as if this strategy were requested.',
+          schema: { type: 'string', enum: ['inplace', 'sequential', 'bluegreen'] },
+        },
+        {
+          name: 'migration',
+          in: 'query',
+          required: false,
+          description: 'What-if: preview as if this migration status were declared.',
+          schema: { type: 'string', enum: ['none', 'compatible', 'breaking', 'unknown'] },
         },
       ],
       responses: {

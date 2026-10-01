@@ -186,6 +186,28 @@ changes.
   Environments without their own `server_id` inherit it at deploy / lifecycle /
   stop (`resolveEffectivePlacementServerId`). Overview Base shows an inline
   picker; env-level pins still override.
+- **Deploy strategy settings (stage 1, nothing acts on them yet):**
+  `environment.options` carries `deployStrategy` (`inplace` | `sequential` |
+  `bluegreen`), `migrations` (`none` | `compatible` | `breaking` | `unknown`),
+  `drainSeconds`, `healthTimeoutSeconds`, `rollbackWindowMinutes` (`0` = shut the
+  old blue-green generation down as soon as cutover is confirmed); `project.options`
+  may carry only the three tuning keys as defaults. Absent strategy = `inplace`
+  (existing environments); every user-facing create path stamps `sequential` on a new
+  environment (system-owned environments are not stamped) (`stampNewEnvironmentDeployOptions`). Writes are validated (`400
+  deploy_options_invalid` on environments; the reason string on projects) and a
+  PATCH that omits these keys keeps the stored ones (`settleDeployOptions`) because
+  `options` is replaced wholesale and the compose editor sends only `compose`.
+  `null` clears a key. The deploy request accepts `strategy` / `migration`
+  overrides; only `strategy: inplace` is honored, the rest answer
+  `501 deploy_strategy_unsupported`. Deploy preview reports `strategy`,
+  `effectiveStrategy`, `migrations`, `fallbackReasons[]`
+  (`src/features/deploy/deploy-strategy.ts`; blue-green falls back to sequential on
+  published ports, authored `container_name`, stateful writable volumes, traffic
+  services without a healthcheck, native/cron services, host-level binds, or a
+  migration status other than `none`/`compatible`). Owner decisions 2026-10-01:
+  unknown migrations fall back to sequential; a failed deploy after a migration ran
+  stops and flags, never starts old code on a changed schema; multi-host rollout
+  follows `deploy.update_config` (default parallelism 1, halt on failure).
 - **Environment lifecycle:** `POST /environments/:id/lifecycle` (`start` /
   `stop` / `restart`) is non-destructive (`environment.lifecycle`);
   `POST /environments/:id/stop` tears down compose including volumes

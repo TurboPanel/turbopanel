@@ -1,5 +1,9 @@
 import { firstSequential, forEachSequential, mapSequential } from '../../lib/sequential.ts'
 import { eq, inArray } from 'drizzle-orm'
+import {
+  type DeployStrategyPreview,
+  previewDeployStrategy,
+} from '../../features/deploy/deploy-strategy.ts'
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
@@ -42,9 +46,11 @@ import {
   buildNativeAppServicesForDeploy,
   buildSitesForDeploy,
   composeProjectName,
+  type DeployStrategyOverride,
   fabricGateErrorResponse,
   mapPrepareErrorResponse,
   parseDeployRequestFlags,
+  parseDeployStrategyOverride,
   parseLifecycleAction,
   type QueuedCommandRef,
   queuedCommandsResponseBody,
@@ -421,6 +427,25 @@ export type DeployActor = {
 export type { DeploySourceSelection }
 
 /**
+ * Strategy overrides are accepted by the request schema but nothing honors
+ * them yet: every deploy runs `inplace`. Like an explicit `ref`, a field the
+ * caller set and the deploy would ignore is refused rather than silently
+ * dropped. `strategy: inplace` is what happens anyway, so it is not refused.
+ */
+function unsupportedStrategyOverride(override: DeployStrategyOverride) {
+  const strategyUnsupported = override.strategy !== null && override.strategy !== 'inplace'
+  if (!strategyUnsupported && override.migration === null) return null
+  return {
+    error: 'deploy_strategy_unsupported',
+    message:
+      'Choosing a deploy strategy or migration status per deploy is not supported yet; ' +
+      'omit `strategy` and `migration` to deploy as the environment is configured.',
+    strategy: override.strategy,
+    migration: override.migration,
+  }
+}
+
+/**
  * Deploy-only authz: {@link authorizeEnvironmentManage} plus deploy request flags.
  * Exported for host-free unit coverage without full orchestration.
  */
@@ -436,6 +461,7 @@ export async function authorizeDeployRequest(
       acknowledgeHealthCheckWarnings: boolean
       noCache: boolean
       selection: DeploySourceSelection
+      strategyOverride: DeployStrategyOverride
     }
   | Response
 > {
@@ -460,6 +486,7 @@ export async function authorizeDeployRequest(
     // not "deploy this repository's commit". `sourceId` stays `null`, so no
     // source binding is pinned to a caller-supplied SHA.
     selection: { ref: flags.ref, commitSha: null, sourceId: null },
+    strategyOverride: flags.override,
   }
 }
 
@@ -1017,6 +1044,39 @@ function deployPreviewSources(
   return [...byRelease.values()]
 }
 
+/** What-if `?strategy=` / `?migration=` on the deploy preview; a bad value is a 400. */
+function parsePreviewOverride(c: Context<AppEnv>): DeployStrategyOverride | Response {
+  const override = parseDeployStrategyOverride({
+    strategy: c.req.query('strategy'),
+    migration: c.req.query('migration'),
+  })
+  if (override === 'invalid') return c.json({ error: 'Invalid request' }, 400)
+  return override
+}
+
+/**
+ * Strategy block of the deploy preview. Informational only: the deploy itself
+ * still runs `inplace`.
+ */
+async function previewStrategyForRequest(
+  db: Db,
+  environmentId: string,
+  planned: SuccessfulPlannedDeploy,
+  override: DeployStrategyOverride
+): Promise<DeployStrategyPreview> {
+  const [row] = await db
+    .select({ options: environment.options })
+    .from(environment)
+    .where(eq(environment.id, environmentId))
+    .limit(1)
+  return previewDeployStrategy({
+    environmentOptions: row?.options,
+    projectOptions: planned.projectOptions,
+    composeData: planned.merged.data,
+    override,
+  })
+}
+
 /**
  * GET /environments/:id/deploy-preview — exact compose YAML the daemon would
  * receive (same `prepareDeployCompose` path), with secrets redacted.
@@ -1039,6 +1099,9 @@ export function registerEnvironmentDeployPreviewRoutes(router: Hono<AppEnv>, opt
     const environmentId = c.req.param('id')
     const auth = await authorizeEnvironmentManage(c, db, environmentId)
     if (auth instanceof Response) return auth
+
+    const override = parsePreviewOverride(c)
+    if (override instanceof Response) return override
 
     const planned = await resolveSuccessfulPlan(
       c,
@@ -1078,6 +1141,8 @@ export function registerEnvironmentDeployPreviewRoutes(router: Hono<AppEnv>, opt
     })
     if (preparedByServer instanceof Response) return preparedByServer
 
+    const strategy = await previewStrategyForRequest(db, environmentId, planned, override)
+
     const first = preparedByServer[0]
     const serverRows =
       planned.plan.serverIds.length === 0
@@ -1100,6 +1165,10 @@ export function registerEnvironmentDeployPreviewRoutes(router: Hono<AppEnv>, opt
       composeFiles: first?.prepared.composeFiles ?? [],
       projectName,
       ...presentFields({ servers, sources }),
+      strategy: strategy.requested,
+      effectiveStrategy: strategy.effectiveStrategy,
+      migrations: strategy.migrations,
+      fallbackReasons: strategy.fallbackReasons,
       containers: buildDeployPreviewContainers({
         appContainers,
         ingressServices: ingress,
@@ -1734,6 +1803,11 @@ export function registerEnvironmentDeployRoutes(router: Hono<AppEnv>, opts: Auth
     // named on the request. Accepting one would answer `queued` to "deploy
     // release/1.4" and build the declared branch instead — the one outcome a
     // caller reaching for this field cannot detect. Refuse loudly.
+    const unsupportedOverride = unsupportedStrategyOverride(auth.strategyOverride)
+    if (unsupportedOverride !== null) {
+      return c.json(unsupportedOverride, 501)
+    }
+
     if (!PREPARE_HONORS_SOURCE_SELECTION && auth.selection.ref !== null) {
       return c.json(
         {

@@ -734,7 +734,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       metadata:
         'Client jsonb; the promoted keys `serverId` and `component` are stripped on create and patch so placement and system identity never live here.',
       options:
-        'Jsonb whose `compose` key is the per-environment ComposeDocument overlay merged onto the project compose at deploy; placement keys are stripped on save.',
+        'Jsonb: `compose` overlay merged at deploy, plus deploy settings `deployStrategy`, `migrations`, `drainSeconds`, `healthTimeoutSeconds`, `rollbackWindowMinutes`.',
       server_id:
         'Desired whole-server placement pin and single source of truth; NULL inherits `project.options.defaultServerId` at deploy, lifecycle and stop.',
       generation:
@@ -830,7 +830,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       metadata:
         'Client jsonb: `type` is `docker-compose`, `managed`, `template` or platform-only `system` (absent means setup not chosen yet), plus optional catalog `code`.',
       options:
-        'Jsonb holding `compose` (the base ComposeDocument), `containerNaming` (`uuid` or `custom`), `defaultServerId` and `composeSource` seed provenance.',
+        'Jsonb: `compose`, `containerNaming`, `defaultServerId`, `composeSource`, and deploy defaults `drainSeconds`, `healthTimeoutSeconds`, `rollbackWindowMinutes`.',
       organization_id:
         "Denormalized copy of the workspace's organization, resolved on every insert; exists so `uniq_project_organization_name` can be a real per-organization unique.",
       repository_id:

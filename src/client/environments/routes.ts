@@ -7,6 +7,7 @@ import { assertCanOr403, listVisible } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import { getDb, type Db } from '../../db/connection.ts'
 import { environment, managed } from '../../db/schema.ts'
+import { settleDeployOptions } from '../../features/deploy/deploy-options.ts'
 import { MANAGED_RUNTIME_PRESENT_ERROR } from '../../features/projects/project-delete.ts'
 import { applyStorageRetentionOnParentDelete } from '../../features/storage/storage-records.ts'
 import { purgeEnvironmentComposeNetworks } from '../../features/fabric/fabric-records.ts'
@@ -22,14 +23,8 @@ import {
   parseJsonBody,
   requireStringField,
 } from '../shared.ts'
-import {
-  hierarchyDeleteHasChildrenResponse,
-  runHierarchyDelete,
-} from '../hierarchy-delete.ts'
-import {
-  planEnvironmentTeardown,
-  reclaimDeletedEnvironmentHosts,
-} from './teardown.ts'
+import { hierarchyDeleteHasChildrenResponse, runHierarchyDelete } from '../hierarchy-delete.ts'
+import { planEnvironmentTeardown, reclaimDeletedEnvironmentHosts } from './teardown.ts'
 import {
   composePrincipalAliases,
   loadProjectPrincipalAliases,
@@ -84,7 +79,7 @@ type CreateEnvironmentInput = {
 
 function buildEnvironmentPatchFields(
   c: Context<AppEnv>,
-  body: Record<string, unknown>,
+  body: Record<string, unknown>
 ): EnvironmentPatchFields | Response {
   let patchFields: EnvironmentPatchFields
   try {
@@ -103,28 +98,53 @@ function buildEnvironmentPatchFields(
   return patchFields
 }
 
+/**
+ * A PATCH replaces `options` wholesale, and the compose editor sends only
+ * `compose`: carry the stored deploy settings over unless the body names them.
+ */
+async function keepStoredDeployOptions(
+  db: Db,
+  environmentId: string,
+  patchFields: EnvironmentPatchFields
+): Promise<void> {
+  if (!patchFields.options) return
+  const [row] = await db
+    .select({ options: environment.options })
+    .from(environment)
+    .where(eq(environment.id, environmentId))
+    .limit(1)
+  patchFields.options = settleDeployOptions(row?.options, patchFields.options, 'environment')
+}
+
+/** `{ error }`, plus the detail `message` when the validator supplied one. */
+function validationErrorBody(failure: { error: string; message?: string }) {
+  return failure.message === undefined
+    ? { error: failure.error }
+    : { error: failure.error, message: failure.message }
+}
+
 function applyEnvironmentOptionsPatch(
   c: Context<AppEnv>,
   body: Record<string, unknown>,
   patchFields: EnvironmentPatchFields,
   knownSourceIds: ReadonlySet<string>,
   projectRepositoryId: string | null,
-  knownPrincipalAliases: ReadonlySet<string>,
+  knownPrincipalAliases: ReadonlySet<string>
 ): Response | undefined {
   const optionsResult = parseEnvironmentPatchOptions(body, {
-      knownSourceIds,
-      knownPrincipalAliases,
-      projectRepositoryId,
-      // An environment's compose IS the overlay. Linting it as `base` produced
-      // a spurious advisory telling the operator that `!reset` / `!override`
-      // "only take effect in an overlay compose file" — about the overlay.
-      layer: 'overlay',
-    })
+    knownSourceIds,
+    knownPrincipalAliases,
+    projectRepositoryId,
+    // An environment's compose IS the overlay. Linting it as `base` produced
+    // a spurious advisory telling the operator that `!reset` / `!override`
+    // "only take effect in an overlay compose file" — about the overlay.
+    layer: 'overlay',
+  })
   if (!optionsResult.ok) {
     if ('issues' in optionsResult) {
       return c.json({ error: optionsResult.error, issues: optionsResult.issues }, 400)
     }
-    return c.json({ error: optionsResult.error }, optionsResult.status)
+    return c.json(validationErrorBody(optionsResult), optionsResult.status)
   }
   if (optionsResult.options === 'absent') return
   patchFields.options = optionsResult.options
@@ -140,7 +160,7 @@ async function parseOptionalServerId(
   c: Context<AppEnv>,
   db: Db,
   organizationId: string,
-  body: Record<string, unknown>,
+  body: Record<string, unknown>
 ): Promise<string | null | undefined | Response> {
   const parsed = parseOptionalServerIdShape(body)
   if (!parsed.ok) {
@@ -159,7 +179,7 @@ async function applyEnvironmentServerIdPatch(
   db: Db,
   organizationId: string,
   body: Record<string, unknown>,
-  patchFields: EnvironmentPatchFields,
+  patchFields: EnvironmentPatchFields
 ): Promise<Response | undefined> {
   const serverId = await parseOptionalServerId(c, db, organizationId, body)
   if (serverId instanceof Response) return serverId
@@ -170,7 +190,7 @@ async function applyEnvironmentServerIdPatch(
 async function parseCreateEnvironmentInput(
   c: Context<AppEnv>,
   db: Db,
-  organizationId: string,
+  organizationId: string
 ): Promise<CreateEnvironmentInput | Response> {
   const body = await parseJsonBody(c)
   if (body instanceof Response) return body
@@ -199,21 +219,21 @@ async function parseCreateEnvironmentInput(
   // one-repository rule — and to the project's binding, not to its own.
   const projectRepositoryId = (await loadProjectRepositoryId(db, projectId)) ?? null
   const jsonb = parseCreateEnvironmentJsonb(body, {
-      knownSourceIds,
-      // Same union as the PATCH lane: the project's persisted root plus this
-      // document's own.
-      knownPrincipalAliases: unionAliasSets(
-        await loadProjectPrincipalAliases(db, projectId),
-        composePrincipalAliases(body.options),
-      ),
-      layer: 'overlay',
-      projectRepositoryId,
-    })
+    knownSourceIds,
+    // Same union as the PATCH lane: the project's persisted root plus this
+    // document's own.
+    knownPrincipalAliases: unionAliasSets(
+      await loadProjectPrincipalAliases(db, projectId),
+      composePrincipalAliases(body.options)
+    ),
+    layer: 'overlay',
+    projectRepositoryId,
+  })
   if (!jsonb.ok) {
     if ('issues' in jsonb) {
       return c.json({ error: jsonb.error, issues: jsonb.issues }, 400)
     }
-    return c.json({ error: jsonb.error }, jsonb.status)
+    return c.json(validationErrorBody(jsonb), jsonb.status)
   }
 
   const serverId = await parseOptionalServerId(c, db, organizationId, body)
@@ -343,12 +363,7 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
       return inserted.id
     })
 
-    await adoptProjectRepository(
-      db,
-      input.projectId,
-      input.options,
-      input.projectRepositoryId,
-    )
+    await adoptProjectRepository(db, input.projectId, input.options, input.projectRepositoryId)
     await reconcileServicesForEnvironment(db, id)
 
     return c.json({ ok: true as const, id })
@@ -388,7 +403,7 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
       db,
       organizationId,
       body,
-      patchFields,
+      patchFields
     )
     if (serverIdError) return serverIdError
 
@@ -405,24 +420,17 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
       parent?.repositoryId ?? null,
       unionAliasSets(
         parent ? await loadProjectPrincipalAliases(db, parent.projectId) : new Set(),
-        composePrincipalAliases(body.options),
-      ),
+        composePrincipalAliases(body.options)
+      )
     )
     if (optionsError) return optionsError
+    await keepStoredDeployOptions(db, id, patchFields)
 
-    await db
-      .update(environment)
-      .set(patchFields)
-      .where(eq(environment.id, id))
+    await db.update(environment).set(patchFields).where(eq(environment.id, id))
 
     if (patchFields.options !== undefined) {
       if (parent) {
-        await adoptProjectRepository(
-          db,
-          parent.projectId,
-          patchFields.options,
-          parent.repositoryId,
-        )
+        await adoptProjectRepository(db, parent.projectId, patchFields.options, parent.repositoryId)
       }
       await reconcileServicesForEnvironment(db, id)
     }
@@ -475,12 +483,7 @@ export function registerEnvironmentRoutes(router: Hono<AppEnv>, opts: AuthRouteO
       return hierarchyDeleteHasChildrenResponse(c)
     }
 
-    await reclaimDeletedEnvironmentHosts(
-      c,
-      db,
-      teardownPlan ? [teardownPlan] : [],
-      session.userId,
-    )
+    await reclaimDeletedEnvironmentHosts(c, db, teardownPlan ? [teardownPlan] : [], session.userId)
 
     return c.json({ ok: true as const })
   })

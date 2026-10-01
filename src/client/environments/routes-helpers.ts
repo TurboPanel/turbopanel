@@ -6,10 +6,11 @@ import {
   stripComposePlacementOption,
 } from '../../features/compose/index.ts'
 import {
-  parseDescription,
-  parseName,
-  stripPromotedMetadataKeys,
-} from '../shared.ts'
+  settleDeployOptions,
+  stampNewEnvironmentDeployOptions,
+  validateDeployOptions,
+} from '../../features/deploy/deploy-options.ts'
+import { parseDescription, parseName, stripPromotedMetadataKeys } from '../shared.ts'
 
 /** Placement lives on `environment.server_id` — never persist it into metadata.
  * `component` is reserved for system project identity — never accept it on
@@ -26,6 +27,8 @@ export const ENVIRONMENT_PROMOTED_METADATA_KEYS = [
 export type EnvironmentRouteValidationError = {
   ok: false
   error: string
+  /** Operator-facing detail when the code alone is not enough. */
+  message?: string
   status: 400
 }
 
@@ -64,7 +67,7 @@ export function serializeEnvironment(row: EnvironmentRow) {
 
 export function parseJsonbField(
   body: Record<string, unknown>,
-  field: string,
+  field: string
 ): Record<string, unknown> | null | 'invalid' {
   if (body[field] === undefined) {
     return null
@@ -77,10 +80,8 @@ export function parseJsonbField(
 }
 
 export function parseCreateEnvironmentNames(
-  body: Record<string, unknown>,
-):
-  | { ok: true; name: string | null; description: string | null }
-  | EnvironmentRouteValidationError {
+  body: Record<string, unknown>
+): { ok: true; name: string | null; description: string | null } | EnvironmentRouteValidationError {
   try {
     return {
       ok: true,
@@ -93,30 +94,31 @@ export function parseCreateEnvironmentNames(
 }
 
 export function stripEnvironmentPromotedMetadata(
-  metadata: Record<string, unknown>,
+  metadata: Record<string, unknown>
 ): Record<string, unknown> {
   return stripPromotedMetadataKeys(metadata, ENVIRONMENT_PROMOTED_METADATA_KEYS)
 }
 
+function deployOptionsError(reason: string): EnvironmentRouteValidationError {
+  return { ok: false, error: 'deploy_options_invalid', message: reason, status: 400 }
+}
+
 export function parseCreateEnvironmentJsonb(
   body: Record<string, unknown>,
-  validateOptions?: ComposeValidateOptions,
+  validateOptions?: ComposeValidateOptions
 ):
   | {
-    ok: true
-    metadata: Record<string, unknown> | null
-    options: Record<string, unknown> | null
-  }
+      ok: true
+      metadata: Record<string, unknown> | null
+      options: Record<string, unknown> | null
+    }
   | EnvironmentComposeValidationError
   | EnvironmentRouteValidationError {
   const optionsResult = parseJsonbField(body, 'options')
   if (optionsResult === 'invalid') {
     return { ok: false, error: 'Invalid request', status: 400 }
   }
-  const composeOption = applyValidatedComposeOption(
-    optionsResult,
-    validateOptions,
-  )
+  const composeOption = applyValidatedComposeOption(optionsResult, validateOptions)
   if (!composeOption.ok) {
     return {
       ok: false,
@@ -128,23 +130,27 @@ export function parseCreateEnvironmentJsonb(
   if (optionsResult !== null) {
     stripComposePlacementOption(optionsResult)
   }
+  const deployOptions =
+    optionsResult === null
+      ? { ok: true as const }
+      : validateDeployOptions(optionsResult, 'environment')
+  if (!deployOptions.ok) return deployOptionsError(deployOptions.reason)
 
   const metadataResult = parseJsonbField(body, 'metadata')
   if (metadataResult === 'invalid') {
     return { ok: false, error: 'Invalid request', status: 400 }
   }
-  const metadata = metadataResult === null
-    ? null
-    : stripEnvironmentPromotedMetadata(metadataResult)
+  const metadata = metadataResult === null ? null : stripEnvironmentPromotedMetadata(metadataResult)
 
-  return { metadata, options: optionsResult, ok: true }
+  // A new environment defaults to `sequential` unless the caller chose one.
+  const settled =
+    optionsResult === null ? null : settleDeployOptions(null, optionsResult, 'environment')
+  return { metadata, options: stampNewEnvironmentDeployOptions(settled), ok: true }
 }
 
 export function parseOptionalServerIdShape(
-  body: Record<string, unknown>,
-):
-  | { ok: true; serverId: string | null | undefined }
-  | EnvironmentRouteValidationError {
+  body: Record<string, unknown>
+): { ok: true; serverId: string | null | undefined } | EnvironmentRouteValidationError {
   if (!('serverId' in body)) {
     return { ok: true, serverId: undefined }
   }
@@ -159,7 +165,7 @@ export function parseOptionalServerIdShape(
 }
 
 export function parseEnvironmentPatchMetadata(
-  body: Record<string, unknown>,
+  body: Record<string, unknown>
 ):
   | { ok: true; metadata: Record<string, unknown> | null | 'absent' }
   | EnvironmentRouteValidationError {
@@ -178,7 +184,7 @@ export function parseEnvironmentPatchMetadata(
 
 export function parseEnvironmentPatchOptions(
   body: Record<string, unknown>,
-  validateOptions?: ComposeValidateOptions,
+  validateOptions?: ComposeValidateOptions
 ):
   | { ok: true; options: Record<string, unknown> | null | 'absent' }
   | EnvironmentComposeValidationError
@@ -191,10 +197,7 @@ export function parseEnvironmentPatchOptions(
     return { ok: true, options: 'absent' }
   }
 
-  const composeOption = applyValidatedComposeOption(
-    optionsResult,
-    validateOptions,
-  )
+  const composeOption = applyValidatedComposeOption(optionsResult, validateOptions)
   if (!composeOption.ok) {
     return {
       ok: false,
@@ -204,5 +207,7 @@ export function parseEnvironmentPatchOptions(
     }
   }
   stripComposePlacementOption(optionsResult)
+  const deployOptions = validateDeployOptions(optionsResult, 'environment')
+  if (!deployOptions.ok) return deployOptionsError(deployOptions.reason)
   return { ok: true, options: optionsResult }
 }
