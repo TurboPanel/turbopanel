@@ -194,3 +194,24 @@ test('IPv4 and IPv6 peers are both listed', async () => {
     assertEquals(rules[0]!.sources, ['198.51.100.2/32', '2001:db8::7/128'])
   })
 })
+
+test('a second member of one cluster on one server cannot exist, so one rule per port is complete', async () => {
+  await withCluster(['198.51.100.2'], async (db, cluster) => {
+    let rejected = false
+    try {
+      await db.insert(replica).values({
+        managedId: cluster.managedId,
+        serverId: cluster.home,
+        role: 'replica',
+        replicaClass: 'read',
+        isReadEligible: true,
+        ordinal: 9,
+        privatePort: PRIVATE_PORT + 20,
+      })
+    } catch {
+      rejected = true
+    }
+    assertEquals(rejected, true)
+    assertEquals((await derivedClusterRules(db, cluster)).length, 1)
+  })
+})

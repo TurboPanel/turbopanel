@@ -289,16 +289,13 @@ async function loadHaExposures(db: Db, serverId: string): Promise<DerivedExposur
  * listener is then not published, and an unresolved path must never become a
  * broader rule.
  */
-async function loadClusterPeerExposure(
+async function loadMemberPeerExposure(
   db: Db,
-  serverId: string,
-  managedId: string,
+  members: Awaited<ReturnType<typeof listManagedMembers>>,
+  member: Awaited<ReturnType<typeof listManagedMembers>>[number],
+  port: number,
   notes: string[]
 ): Promise<DerivedExposure | null> {
-  const members = await listManagedMembers(db, managedId)
-  const member = members.find((m) => m.serverId === serverId && m.privatePort !== null)
-  const port = member?.privatePort ?? null
-  if (member === undefined || port === null) return null
   const bind = await resolveMemberPrivateBindAddress(db, member, members)
   if (bind === undefined) return null
   const peers = await resolvePeersForMember(db, members, member, port)
@@ -308,7 +305,7 @@ async function loadClusterPeerExposure(
     )
     return null
   }
-  const consumers = await resolveConsumerSourceAddresses(db, managedId, members, member)
+  const consumers = await resolveConsumerSourceAddresses(db, member.managedId, members, member)
   const remotePeers = peers.filter(
     (peer) => peer.containerName === undefined && peer.transport !== 'local'
   )
@@ -322,6 +319,25 @@ async function loadClusterPeerExposure(
     destination: bind.address,
     sources: [...remotePeers.map((peer) => peer.address), ...consumers],
   }
+}
+
+/** Every member of the cluster on this server has its own private port, so each gets its own rule. */
+async function loadClusterPeerExposure(
+  db: Db,
+  serverId: string,
+  managedId: string,
+  notes: string[]
+): Promise<DerivedExposure[]> {
+  const members = await listManagedMembers(db, managedId)
+  const local = members.flatMap((member) =>
+    member.serverId === serverId && member.privatePort !== null
+      ? [{ member, port: member.privatePort }]
+      : []
+  )
+  const found = await Promise.all(
+    local.map(({ member, port }) => loadMemberPeerExposure(db, members, member, port, notes))
+  )
+  return found.filter((exposure): exposure is DerivedExposure => exposure !== null)
 }
 
 /** Private listener ports of the managed clusters with a member on this server. */
@@ -338,7 +354,7 @@ export async function loadClusterPeerExposures(
   const found = await Promise.all(
     rows.map((row) => loadClusterPeerExposure(db, serverId, row.managedId, notes))
   )
-  return found.filter((exposure): exposure is DerivedExposure => exposure !== null)
+  return found.flat()
 }
 
 type EnvironmentCompose = { id: string; projectOptions: unknown; environmentOptions: unknown }
