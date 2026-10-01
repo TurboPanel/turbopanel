@@ -27,6 +27,7 @@ import {
   transitionCommand,
 } from './command-records.ts'
 import { reconcileEnvironmentContainers } from '../environments/container-records.ts'
+import { recordDeployedSiteApps } from '../environments/app-facts.ts'
 import {
   deploymentDurationMs,
   type DeploymentOutcome,
@@ -67,6 +68,7 @@ import {
   type ManagedDestroyCommandPayload,
   parseEnvironmentDeployPayload,
   parseEnvironmentDeployResult,
+  type EnvironmentDeployResultSite,
   parseEnvironmentLifecyclePayload,
   parseEnvironmentLifecycleResult,
   parseEnvironmentStopPayload,
@@ -707,6 +709,28 @@ async function reconcileContainersSafely(
   }
 }
 
+/**
+ * Store what the daemon detected in each applied site's document root. Best
+ * effort like the container reconcile: a deploy that already succeeded on the
+ * host is never recorded as failed over a reporting field.
+ */
+async function recordSiteAppsSafely(
+  db: Db,
+  record: DispatchableCommandRecord,
+  environmentId: string,
+  sites: EnvironmentDeployResultSite[] | undefined
+): Promise<void> {
+  if (sites === undefined) return
+  try {
+    await recordDeployedSiteApps(db, { environmentId, sites })
+  } catch (err) {
+    compatLogWarn(
+      'command-consumer',
+      `site app facts failed for command ${record.id}: ${errorMessage(err)}`
+    )
+  }
+}
+
 async function applyEnvironmentDeploySideEffect(
   db: Db,
   record: DispatchableCommandRecord,
@@ -732,6 +756,7 @@ async function applyEnvironmentDeploySideEffect(
       })
     }
     const deployResult = parseEnvironmentDeployResult(result)
+    await recordSiteAppsSafely(db, record, payload.environmentId, deployResult.sites)
     // Only reconcile when the daemon included an authoritative containers
     // report (including `[]`). Omitting the field means collection failed.
     if (deployResult.containers === undefined) return

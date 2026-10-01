@@ -6872,3 +6872,23 @@ test('server.firewall.reconcile result round-trips the daemon report', () => {
     'mode must be'
   )
 })
+
+test('parseEnvironmentDeployResult keeps per-site app facts and drops unknown kinds', () => {
+  const parsed = parseEnvironmentDeployResult({
+    projectName: 'demo',
+    sites: [
+      { composeServiceName: 'blog', app: { kind: 'wordpress', version: '6.5.2' } },
+      { composeServiceName: 'docs' },
+      { composeServiceName: 'shop', app: { kind: 'drupal' } },
+      { composeServiceName: 'odd', app: { kind: 'wordpress', version: '<script>' } },
+      { app: { kind: 'wordpress' } },
+    ],
+  })
+  assertEquals(parsed.sites, [
+    { composeServiceName: 'blog', app: { kind: 'wordpress', version: '6.5.2' } },
+    { composeServiceName: 'docs' },
+    { composeServiceName: 'odd', app: { kind: 'wordpress' } },
+  ])
+  assertEquals('sites' in parseEnvironmentDeployResult({ projectName: 'demo' }), false)
+  assertEquals('sites' in parseEnvironmentDeployResult({ projectName: 'demo', sites: 'x' }), false)
+})
