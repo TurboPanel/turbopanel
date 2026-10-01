@@ -568,6 +568,41 @@ test('an unknown buildKind is dropped and reported', () => {
   )
 })
 
+test('deployOnPush false survives parsing and true is kept as authored', () => {
+  const off = parseServiceTurbopanelExtension({
+    source: { sourceId: RAILPACK_SOURCE_ID, deployOnPush: false },
+  })
+  assertEquals(off?.source?.deployOnPush, false)
+  const on = parseServiceTurbopanelExtension({
+    source: { sourceId: RAILPACK_SOURCE_ID, deployOnPush: true },
+  })
+  assertEquals(on?.source?.deployOnPush, true)
+  const absent = parseServiceTurbopanelExtension({
+    source: { sourceId: RAILPACK_SOURCE_ID },
+  })
+  assertEquals(absent?.source?.deployOnPush, undefined)
+})
+
+test('a non-boolean deployOnPush is dropped and reported', () => {
+  const parsed = parseServiceTurbopanelExtension({
+    source: { sourceId: RAILPACK_SOURCE_ID, deployOnPush: 'false' },
+  })
+  assertEquals(parsed?.source?.deployOnPush, undefined)
+
+  const issues = collectServiceTurbopanelValidationIssues({
+    api: {
+      image: 'nginx',
+      'x-turbopanel': {
+        source: { sourceId: RAILPACK_SOURCE_ID, deployOnPush: 'false' },
+      },
+    },
+  })
+  assertEquals(
+    issues.map((issue) => issue.path),
+    ['services.api.x-turbopanel.source.deployOnPush']
+  )
+})
+
 test('railpack is rejected on a host-native service kind', () => {
   const issues = collectServiceTurbopanelValidationIssues({
     site: {

@@ -18,6 +18,7 @@
 import { and, desc, eq, lt, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { normalizeReplicaCounts } from '../commands/context.ts'
+import { normalizeBranchName } from '../git/environment-branch-tracking.ts'
 import type { ExecutionLogStore } from '../execution-logs/types.ts'
 
 /**
@@ -49,6 +50,7 @@ const DEPLOY_COMMAND_COLUMNS = {
   serverId: command.serverId,
   status: command.status,
   context: command.context,
+  metadata: command.metadata,
   actorType: command.actorType,
   actorId: command.actorId,
   errorCode: command.errorCode,
@@ -65,6 +67,8 @@ type DeployCommandRow = {
   serverId: string
   status: string
   context: unknown
+  /** `command.metadata`: carries the push attribution (`sourceSelection`) of an automated deploy. */
+  metadata?: unknown
   actorType: string
   actorId: string
   errorCode: string | null
@@ -107,6 +111,22 @@ export type DeploymentHistoryEntry = {
   errorMessage: string | null
   /** Whether an execution-log transcript is retained (store-side, not a column). */
   hasLog: boolean
+  /**
+   * What set this attempt off when it was a push, `null` for a person's deploy.
+   * Read from the attribution the deploy path wrote on the command, so it stays
+   * after the daemon payload is deleted.
+   */
+  trigger: DeploymentTrigger | null
+}
+
+/** A deploy started by a git push rather than a person. */
+export type DeploymentTrigger = {
+  kind: 'push'
+  /** Branch that was pushed (no `refs/heads/` prefix), or `null` when only a SHA was recorded. */
+  branch: string | null
+  commitSha: string | null
+  /** The repository (`repository.id`) the push came from. */
+  sourceId: string | null
 }
 
 export type ListDeploymentHistoryParams = {
@@ -213,6 +233,30 @@ function environmentContextFilter(environmentId: string) {
   return sql`${command.context} ->> 'environmentId' = ${environmentId}`
 }
 
+/**
+ * The push behind an automated deploy, from `command.metadata.sourceSelection`.
+ *
+ * Only a `system` actor can have one: a person pressing Deploy records no
+ * selection (a manual ref is refused), and metadata is never read as a claim
+ * about who acted. A selection with neither branch nor SHA is no attribution.
+ */
+export function readDeploymentTrigger(row: {
+  actorType: string
+  metadata?: unknown
+}): DeploymentTrigger | null {
+  if (row.actorType !== 'system') return null
+  const selection = contextBag(contextBag(row.metadata).sourceSelection)
+  const ref = contextString(selection, 'ref')
+  const commitSha = contextString(selection, 'commitSha')
+  if (ref === null && commitSha === null) return null
+  return {
+    kind: 'push',
+    branch: ref === null ? null : (normalizeBranchName(ref) ?? ref),
+    commitSha,
+    sourceId: contextString(selection, 'sourceId'),
+  }
+}
+
 function serializeEntry(row: DeployCommandRow, hasLog: boolean): DeploymentHistoryEntry {
   const context = contextBag(row.context)
   return {
@@ -239,6 +283,7 @@ function serializeEntry(row: DeployCommandRow, hasLog: boolean): DeploymentHisto
     errorCode: row.errorCode ?? null,
     errorMessage: row.errorMessage ?? null,
     hasLog,
+    trigger: readDeploymentTrigger(row),
   }
 }
 

@@ -9,6 +9,7 @@ import {
   DEPLOYMENT_HISTORY_MAX_LIMIT,
   getEnvironmentDeploymentDetail,
   listEnvironmentDeploymentHistory,
+  readDeploymentTrigger,
 } from './deployment-history.ts'
 
 /**
@@ -97,6 +98,7 @@ test('listEnvironmentDeploymentHistory serializes context and paginates', async 
   assertEquals(page.deployments[0]?.replicaCounts, { web: 1 })
   assertEquals(page.deployments[0]?.durationMs, 3000)
   assertEquals(page.deployments[0]?.hasLog, false)
+  assertEquals(page.deployments[0]?.trigger, null)
   assertEquals(page.nextCursor, olderId)
 })
 
@@ -164,4 +166,58 @@ test('getEnvironmentDeploymentDetail fans out same-generation siblings', async (
   assertEquals(detail?.totalReplicas, 3)
   assertEquals(detail?.commands[0]?.hasLog, true)
   assertEquals(detail?.servers[1]?.totalReplicas, 2)
+})
+
+const PUSH_SOURCE_ID = '00000000-0000-4000-8000-000000000555'
+
+test('a push-triggered deploy names the branch and commit it came from', async () => {
+  const db = createHistoryDb({
+    commandRows: [
+      {
+        ...deployRow,
+        actorType: 'system',
+        actorId: PUSH_SOURCE_ID,
+        metadata: {
+          sourceSelection: {
+            ref: 'refs/heads/staging',
+            commitSha: 'abc123def456',
+            sourceId: PUSH_SOURCE_ID,
+          },
+        },
+      },
+    ],
+  })
+  const page = await listEnvironmentDeploymentHistory(db, envId)
+  assertEquals(page.deployments[0]?.trigger, {
+    kind: 'push',
+    branch: 'staging',
+    commitSha: 'abc123def456',
+    sourceId: PUSH_SOURCE_ID,
+  })
+})
+
+test('readDeploymentTrigger attributes only automated deploys that recorded a selection', () => {
+  const selection = { sourceSelection: { ref: 'refs/heads/main', commitSha: 'a1' } }
+  // A person's deploy is never reported as a push, whatever its metadata says.
+  assertEquals(readDeploymentTrigger({ actorType: 'user', metadata: selection }), null)
+  assertEquals(readDeploymentTrigger({ actorType: 'system' }), null)
+  assertEquals(readDeploymentTrigger({ actorType: 'system', metadata: null }), null)
+  assertEquals(
+    readDeploymentTrigger({ actorType: 'system', metadata: { sourceSelection: {} } }),
+    null
+  )
+  assertEquals(readDeploymentTrigger({ actorType: 'system', metadata: 'nope' }), null)
+  assertEquals(readDeploymentTrigger({ actorType: 'system', metadata: selection }), {
+    kind: 'push',
+    branch: 'main',
+    commitSha: 'a1',
+    sourceId: null,
+  })
+  assertEquals(
+    readDeploymentTrigger({
+      actorType: 'system',
+      metadata: { sourceSelection: { commitSha: 'only-sha' } },
+    }),
+    { kind: 'push', branch: null, commitSha: 'only-sha', sourceId: null }
+  )
 })

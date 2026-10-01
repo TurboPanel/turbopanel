@@ -120,6 +120,13 @@ export type ComposeServiceSourceExtension = {
    * {@link validateSourceConsistency} enforces.
    */
   buildKind?: ComposeSourceBuildKind
+  /**
+   * `false` keeps this binding out of push-triggered deploys: the environment
+   * still builds {@link ComposeServiceSourceExtension.branch} when a person
+   * deploys it, but a push to that branch does not. Omitted means push deploys
+   * are allowed (subject to the repository's own auto-deploy switch).
+   */
+  deployOnPush?: boolean
 }
 
 /**
@@ -592,6 +599,10 @@ export function parseServiceSourceExtension(value: unknown): ComposeServiceSourc
 
   const buildKind = readSourceBuildKind(value.buildKind)
   if (buildKind) source.buildKind = buildKind
+  // `false` must survive the round-trip — never a truthiness guard here.
+  if (typeof value.deployOnPush === 'boolean') {
+    source.deployOnPush = value.deployOnPush
+  }
 
   return source
 }
@@ -1092,6 +1103,13 @@ function validateRawSourceFieldTypes(
     issues.push({
       path: `${sourcePath}.buildKind`,
       message: 'source.buildKind must be "native" or "railpack"',
+    })
+  }
+
+  if ('deployOnPush' in rawSource && typeof rawSource.deployOnPush !== 'boolean') {
+    issues.push({
+      path: `${sourcePath}.deployOnPush`,
+      message: 'source.deployOnPush must be true or false',
     })
   }
 

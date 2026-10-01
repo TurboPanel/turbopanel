@@ -59,6 +59,7 @@ import {
 import { isGitProviderFailure, resolveGitProvider } from '../../features/git/git-provider.ts'
 import type { ResolvedSourceCommit } from '../../features/git/git-provider.ts'
 import { isSshCloneUrl } from '../../features/git/clone-url.ts'
+import { normalizeBranchName } from '../../features/git/environment-branch-tracking.ts'
 import { newCorrelationId } from '../../features/commands/ids.ts'
 import { definedFields } from '../../lib/optional-fields.ts'
 import {
@@ -361,11 +362,30 @@ async function resolveDaemonRecipient(
  */
 export function requestedCommitShaForSource(
   selection: DeploySourceResolveParams['sourceSelection'],
-  sourceId: string
+  sourceId: string,
+  bindingRef?: string | null
 ): string | undefined {
   if (!selection?.commitSha) return undefined
   if (!selection.sourceId || selection.sourceId !== sourceId) return undefined
+  if (!selectionCoversBranch(selection.ref, bindingRef)) return undefined
   return selection.commitSha
+}
+
+/**
+ * A pushed SHA belongs to the branch it was pushed to. One environment may bind
+ * the same repository twice on different branches (a `web` service on `main`,
+ * a `docs` service on `docs`), and a push to one says nothing about the other's
+ * branch — pinning it there would build the wrong tree. With no ref on the
+ * selection, or no ref on the binding to compare, nothing is ruled out.
+ */
+function selectionCoversBranch(
+  selectionRef: string | null | undefined,
+  bindingRef: string | null | undefined
+): boolean {
+  const pushed = normalizeBranchName(selectionRef)
+  const built = normalizeBranchName(bindingRef)
+  if (pushed === null || built === null) return true
+  return pushed === built
 }
 
 /** One compose service and the `x-turbopanel.source` block bound to it. */
@@ -549,7 +569,7 @@ async function resolveBindingMaterial(
     // forwarding it to every binding would deploy the triggering commit into
     // unrelated repositories (or fail the whole deploy on a SHA they do not
     // contain).
-    pinnedCommitSha: requestedCommitShaForSource(params.sourceSelection, row.id),
+    pinnedCommitSha: requestedCommitShaForSource(params.sourceSelection, row.id, ref),
   })
   if (resolved instanceof Response) return resolved
   if ('kind' in resolved) return resolved

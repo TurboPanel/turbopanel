@@ -148,6 +148,22 @@ test('a webhook SHA pins only the source that produced it', () => {
   assertEquals(requestedCommitShaForSource(selection, 'src-2'), undefined)
 })
 
+test('a webhook SHA pins only the bindings that build the pushed branch', () => {
+  const selection = {
+    ref: 'refs/heads/staging',
+    commitSha: SHA,
+    sourceId: 'src-1',
+  }
+  assertEquals(requestedCommitShaForSource(selection, 'src-1', 'staging'), SHA)
+  assertEquals(requestedCommitShaForSource(selection, 'src-1', 'refs/heads/staging'), SHA)
+  // Same repository, another service on another branch: the pushed commit does
+  // not belong to that branch, so it must resolve from its own ref.
+  assertEquals(requestedCommitShaForSource(selection, 'src-1', 'main'), undefined)
+  // Nothing to compare against rules nothing out.
+  assertEquals(requestedCommitShaForSource(selection, 'src-1', null), SHA)
+  assertEquals(requestedCommitShaForSource({ ...selection, ref: null }, 'src-1', 'main'), SHA)
+})
+
 test('a SHA with no source identity pins nothing', () => {
   assertEquals(
     requestedCommitShaForSource({ ref: null, commitSha: SHA, sourceId: null }, 'src-1'),

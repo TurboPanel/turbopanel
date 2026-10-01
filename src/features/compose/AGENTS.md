@@ -653,7 +653,7 @@ overwrite the write. Rows created in the panel keep working unchanged.
 ### Per-service Git source (`x-turbopanel.source`) — resolved into `sourceMaterial[]`
 
 `services.<name>.x-turbopanel` accepts an optional **`source`** block:
-`{ sourceId, branch?, subdirectory?, buildCommand?, startCommand?, outputDirectory? }`
+`{ sourceId, branch?, subdirectory?, buildCommand?, startCommand?, outputDirectory?, deployOnPush? }`
 (`src/features/compose/service-kind.ts` — `parseServiceSourceExtension`,
 `SOURCE_BRANCH_MAX_LENGTH` / `SOURCE_COMMAND_MAX_LENGTH`; the path fields reuse
 the exported `isSafeRoot` rule that already guards `root`). It is no longer
@@ -668,6 +668,13 @@ unresolvable ref → `source_ref_unresolved`). Each entry's `commitSha` is folde
 into **`desiredHash`** (compose YAML + sorted `composeServiceName=commitSha`
 pairs) so a redeploy against an unchanged commit stays a genuine no-op while a
 moved commit is not; deploys with no `sourceMaterial[]` hash exactly as before.
+`branch` is **per environment** through the ordinary overlay merge: set it in the
+project document for every environment, or override it in one environment's
+document. A git push deploys exactly the environments whose merged `branch` (else
+the repository's `defaultBranch`) is the pushed branch, and `deployOnPush: false`
+opts a binding out of push deploys while leaving a manual deploy untouched — see
+`src/webhook/AGENTS.md` ("Which environments a push deploys") and
+`src/features/git/environment-branch-tracking.ts`.
 The daemon release engine (`../../../../turbopaneld/src/deploy/release/`) checks
 out, builds, and atomically promotes
 `<principalHome>/sites/<serviceId>/current`.

@@ -42,7 +42,6 @@ import {
   successfulCheckSha,
 } from './github.ts'
 import {
-  sourceWatchesBranch,
   type TriggerSummary,
   triggerSummaryNeedsRetry,
 } from '../../client/repositories/webhook-trigger.ts'
@@ -149,6 +148,22 @@ function flattenSql(query: unknown): string {
   return parts.join('')
 }
 
+/** An environment document whose one service builds `main` from the test repository. */
+const buildsPushedBranch = {
+  compose: {
+    version: 1,
+    data: {
+      services: {
+        web: {
+          image: 'node:24',
+          'x-turbopanel': { source: { sourceId: SOURCE_ID, branch: 'main' } },
+        },
+      },
+    },
+    presentation: { keyOrder: [], comments: {} },
+  },
+}
+
 /**
  * Table-aware repository graph + empty-compose deploy stub.
  *
@@ -211,12 +226,17 @@ function createEnqueueGraphDb(
               ]),
             innerJoin: () => ({
               innerJoin: () => ({
+                // One row answers both joins that reach here: the placement
+                // lookup (server pin + org) and the push resolver's per-
+                // environment branch lookup (the environment's own compose).
                 where: () =>
                   thenableRows([
                     {
                       serverId: SERVER_ID,
                       projectOptions: composeOptions,
                       organizationId: ORG_ID,
+                      environmentId: ENV_ID,
+                      environmentOptions: buildsPushedBranch,
                     },
                   ]),
               }),
@@ -824,14 +844,6 @@ test('an unhandled signed event is accepted as skipped', async () => {
   const res = await signedDispatch(app, '{}', { 'x-github-event': 'ping' })
   assertEquals(res.status, 200)
   assertEquals(await res.json(), { ok: true })
-})
-
-test('sourceWatchesBranch: a blank default branch watches every branch', () => {
-  assertEquals(sourceWatchesBranch('main', 'main'), true)
-  assertEquals(sourceWatchesBranch('main', 'develop'), false)
-  assertEquals(sourceWatchesBranch(' main ', 'main'), true)
-  assertEquals(sourceWatchesBranch(null, 'anything'), true)
-  assertEquals(sourceWatchesBranch('   ', 'anything'), true)
 })
 
 test('whitespace-only event or delivery headers are treated as missing', async () => {
