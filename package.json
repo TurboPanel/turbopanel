@@ -36,6 +36,7 @@
     "schema:comments:check": "node scripts/schema-comments.mjs --check",
     "docs:data-dictionary": "node scripts/generate-data-dictionary.mjs",
     "docs:data-dictionary:check": "node scripts/generate-data-dictionary.mjs --check",
+    "docs:errors:check": "node scripts/check-error-appendix.mjs",
     "check:deploy-env": "node scripts/check-deploy-env.mjs",
     "bootstrap:superadmin": "node scripts/bootstrap-superadmin.mjs",
     "check:metrics-boundaries": "node scripts/check-metrics-boundaries.mjs",
