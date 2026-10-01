@@ -3853,6 +3853,46 @@ describe('DaemonCellObject alarm / outbox / RPC branch coverage', () => {
     expect(body.record.status).toBe('failed')
   })
 
+  it('repo-default-branch-result correlates done, null branch and failed', async () => {
+    const serverId = 'test-srv-repo-default-branch'
+    const stub = env.DAEMON_CELL.getByName(serverId)
+
+    const roundTrip = async (inbound: Record<string, unknown>) => {
+      const requestId = generateRequestId()
+      await cellRpc(stub, serverId, '/rpc/enqueue', {
+        method: 'POST',
+        body: JSON.stringify({
+          outbound: {
+            kind: 'repo-default-branch-request',
+            deliveryId: generateDeliveryId(),
+            requestId,
+            at: new Date().toISOString(),
+            cloneUrl: 'https://example.test/acme/app.git',
+          },
+        }),
+      })
+      const response = await cellRpc(stub, serverId, '/rpc/inbound', {
+        method: 'POST',
+        body: JSON.stringify({
+          inbound: {
+            kind: 'repo-default-branch-result',
+            requestId,
+            at: new Date().toISOString(),
+            ...inbound,
+          },
+        }),
+      })
+      expect(response.status).toBe(200)
+      return ((await response.json()) as { record: { status: string; error?: string } }).record
+    }
+
+    expect((await roundTrip({ ok: true, defaultBranch: 'main' })).status).toBe('done')
+    expect((await roundTrip({ ok: true, defaultBranch: null })).status).toBe('done')
+    const failed = await roundTrip({ ok: false, error: 'repo not found' })
+    expect(failed.status).toBe('failed')
+    expect(failed.error).toBe('repo not found')
+  })
+
   it('fabric-paths-result correlates done and failed', async () => {
     const serverId = 'test-srv-fabric-paths'
     const stub = env.DAEMON_CELL.getByName(serverId)
