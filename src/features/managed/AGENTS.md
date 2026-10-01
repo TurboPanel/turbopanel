@@ -520,12 +520,18 @@ still walk, on PostgreSQL, MySQL, and MariaDB:
 
 ## Login namespace
 
-Every managed principal has a short internal `username` and an
-`applied_username` — the actual engine login. With the org
-randomized-usernames default on (`organization.options.randomizedPrincipalUsernames`,
-platform default **on**), the applied login is `<short>_<11 random chars>`
-(`resolveManagedAppliedUsername`); off, it is the short name. Root is
-**always** suffixed regardless (`postgres_<11 rand>` / `root_<11 rand>`,
+Every managed principal has the name the person typed (`username`, the display
+name) and an `applied_username` — the actual engine login, the system name. A
+**name scheme** decides how the system name is derived
+(`src/lib/principal-name-scheme.ts`, `resolveManagedAppliedUsername`): `plain`
+= the typed name, `partial` = `<typed>_<11 random chars>` (the platform default),
+`random` = a fully random 12-character name with no trace of the typed name. The
+org default and optional lock live on `organization.options`
+(`principalNameScheme`, `principalNameSchemeLocked`; the legacy boolean
+`randomizedPrincipalUsernames` is the fallback: true = partial, false = plain);
+the chosen scheme is stored on `principal.options.nameScheme`. The server always
+derives the system name. Root is **never** plain
+(`postgres_<11 rand>` / `root_<11 rand>`, or random under the `random` scheme;
 persisted on `managed.metadata.rootUsername` — spec `rootUsername` is only the
 short name/prefix), so the bare engine admin name is never a login. Applied
 usernames are unique across every cluster landing on servers owned by the same

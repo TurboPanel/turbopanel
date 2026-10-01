@@ -1,4 +1,4 @@
-import { assertEquals } from '@std/assert'
+import { assertEquals, assertMatch } from '@std/assert'
 import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
@@ -2118,6 +2118,91 @@ test('GET /environments/:id/managed/logs returns compose logs', async () => {
       assertEquals(logs.status, 200)
       const body = (await logs.json()) as { logs: string }
       assertEquals(body.logs, 'stub-logs\n')
+    }
+  )
+})
+
+test('POST managed user honours name schemes, the org lock, and the root login scheme', async () => {
+  await withManagedFixtures(
+    {},
+    async ({ db, app, secrets, userId, organizationId, environmentId }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      }
+      // Org default `random`: the managed root login must be random too (never plain).
+      await db
+        .update(organization)
+        .set({ options: { principalNameScheme: 'random' } })
+        .where(eq(organization.id, organizationId))
+
+      const create = await app.request(`/environments/${environmentId}/managed`, {
+        method: 'POST',
+        headers,
+        body: '{}',
+      })
+      assertEquals(create.status, 200)
+      const created = (await create.json()) as { managed: { id: string } }
+      await db.update(managed).set({ status: 'ready' }).where(eq(managed.id, created.managed.id))
+      const [root] = await db
+        .select({ username: principal.username, appliedUsername: principal.appliedUsername })
+        .from(principal)
+        .where(and(eq(principal.managedId, created.managed.id), eq(principal.username, 'postgres')))
+      assertMatch(root?.appliedUsername ?? '', /^[a-z][a-z0-9]{11}$/)
+
+      const createUser = async (body: Record<string, unknown>) => {
+        // Each apply leaves the cluster busy until the daemon reports back.
+        await db.update(managed).set({ status: 'ready' }).where(eq(managed.id, created.managed.id))
+        return await app.request(`/environments/${environmentId}/managed/users`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ databases: ['defaultdb'], ...body }),
+        })
+      }
+      type UserBody = { user: { username: string; appliedUsername: string; nameScheme: string } }
+
+      // No scheme asked: the org default (random). The typed name stays the display name.
+      const byDefault = (await (await createUser({ username: 'dbone' })).json()) as UserBody
+      assertEquals(byDefault.user.nameScheme, 'random')
+      assertEquals(byDefault.user.username, 'dbone')
+      assertMatch(byDefault.user.appliedUsername, /^[a-z][a-z0-9]{11}$/)
+
+      const plainRes = await createUser({ username: 'dbplain', nameScheme: 'plain' })
+      const plain = (await plainRes.json()) as UserBody
+      assertEquals(plain.user.appliedUsername, 'dbplain')
+      const partial = (await (
+        await createUser({ username: 'dbpart', nameScheme: 'partial' })
+      ).json()) as UserBody
+      assertMatch(partial.user.appliedUsername, /^dbpart_[a-z0-9]{11}$/)
+
+      const bad = await createUser({ username: 'dbbad', nameScheme: 'full' })
+      assertEquals(bad.status, 400)
+      assertEquals(await bad.json(), { error: 'invalid_name_scheme' })
+
+      // Lock: a different scheme is refused (409) and nothing is created.
+      await db
+        .update(organization)
+        .set({ options: { principalNameScheme: 'random', principalNameSchemeLocked: true } })
+        .where(eq(organization.id, organizationId))
+      const refused = await createUser({ username: 'dblocked', nameScheme: 'plain' })
+      assertEquals(refused.status, 409)
+      assertEquals(await refused.json(), { error: 'principal_scheme_locked' })
+      const none = await db
+        .select({ id: principal.id })
+        .from(principal)
+        .where(and(eq(principal.managedId, created.managed.id), eq(principal.username, 'dblocked')))
+      assertEquals(none.length, 0)
+      assertEquals((await createUser({ username: 'dbok', nameScheme: 'random' })).status, 200)
+
+      // Existing users keep their stored system name and scheme.
+      const [existing] = await db
+        .select({ appliedUsername: principal.appliedUsername, options: principal.options })
+        .from(principal)
+        .where(and(eq(principal.managedId, created.managed.id), eq(principal.username, 'dbplain')))
+      assertEquals(existing?.appliedUsername, 'dbplain')
+      assertEquals(existing?.options, { nameScheme: 'plain' })
     }
   )
 })

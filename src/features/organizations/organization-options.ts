@@ -3,6 +3,12 @@
  * client timezone, host-defaults, server-capacity, and default-environment APIs.
  */
 
+import {
+  isPrincipalNameScheme,
+  type PrincipalNamePolicy,
+  type PrincipalNameScheme,
+  resolveOrgPrincipalNameScheme,
+} from '../../lib/principal-name-scheme.ts'
 import { isValidDisplayName, normalizeDisplayName } from '../../lib/display-name-format.ts'
 import { type NtpDefaults, parseNtpDefaults, parseSshPort } from '../servers/host-defaults.ts'
 import {
@@ -74,6 +80,19 @@ export type OrganizationOptions = {
    * existing principals. Managed root logins are always suffixed regardless.
    */
   randomizedPrincipalUsernames?: boolean
+  /**
+   * Org default principal name scheme (`plain` | `partial` | `random`) for
+   * the system name (login on the host or engine). Wins over the legacy
+   * boolean above, which stays readable as a fallback (true = partial,
+   * false = plain). See `lib/principal-name-scheme.ts`.
+   */
+  principalNameScheme?: PrincipalNameScheme
+  /**
+   * Org policy lock: when true every NEW principal must use the effective
+   * default scheme and a create asking for another one is refused with
+   * `principal_scheme_locked`. Never renames existing principals.
+   */
+  principalNameSchemeLocked?: boolean
   /**
    * Display unit for temperature metrics (chart axes, tooltips, thresholds).
    * Platform fallback is {@link DEFAULT_TEMPERATURE_UNIT} (`celsius`).
@@ -269,6 +288,12 @@ export function parseOrganizationOptions(value: unknown): OrganizationOptions {
   if (typeof value.randomizedPrincipalUsernames === 'boolean') {
     options.randomizedPrincipalUsernames = value.randomizedPrincipalUsernames
   }
+  if (isPrincipalNameScheme(value.principalNameScheme)) {
+    options.principalNameScheme = value.principalNameScheme
+  }
+  if (typeof value.principalNameSchemeLocked === 'boolean') {
+    options.principalNameSchemeLocked = value.principalNameSchemeLocked
+  }
   if (
     typeof value.temperatureUnit === 'string' &&
     TEMPERATURE_UNITS.has(value.temperatureUnit as TemperatureUnit)
@@ -293,7 +318,15 @@ export function parseOrganizationOptions(value: unknown): OrganizationOptions {
 
 /** Effective randomized-usernames default: on unless the org opted out. */
 export function resolveRandomizedPrincipalUsernames(options: OrganizationOptions): boolean {
-  return options.randomizedPrincipalUsernames ?? true
+  return resolveOrgPrincipalNameScheme(options) !== 'plain'
+}
+
+/** Effective org default scheme and lock for new principals. */
+export function resolvePrincipalNamePolicy(options: OrganizationOptions): PrincipalNamePolicy {
+  return {
+    defaultScheme: resolveOrgPrincipalNameScheme(options),
+    locked: options.principalNameSchemeLocked === true,
+  }
 }
 
 /** Resolved display unit: option when set, else platform fallback (celsius). */

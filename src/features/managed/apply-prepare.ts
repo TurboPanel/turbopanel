@@ -52,7 +52,7 @@ import {
   REPLICATION_PASSWORD_LENGTH,
   setPrincipalPassword,
 } from '../principals/store.ts'
-import { loadRandomizedUsernamesDefault } from './load-org-defaults.ts'
+import { loadPrincipalNamePolicy } from './load-org-defaults.ts'
 import { generatePassword } from '../../lib/secrets/generate-secret.ts'
 import {
   loadOrganizationCaSet,
@@ -1353,7 +1353,7 @@ async function ensureClusterReplicationUsername(
     preferredUsername: 'tp_repl',
     provider: input.spec.principalProvider,
     identifier: input.spec.userOperations.identifier,
-    randomizeSuffix: await loadRandomizedUsernamesDefault(db, input.organizationId),
+    nameScheme: (await loadPrincipalNamePolicy(db, input.organizationId)).defaultScheme,
   })
 
   // MySQL caps `CHANGE REPLICATION SOURCE … SOURCE_PASSWORD` at 32 chars

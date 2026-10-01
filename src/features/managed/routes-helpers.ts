@@ -20,7 +20,11 @@ import { BadRequestError, parseName, requireStringField } from '../../lib/http/r
 
 /** Keep aligned with `src/features/principals/store.ts`. */
 const USERNAME_RE = /^[A-Za-z_][A-Za-z0-9_-]*$/
-import { PRINCIPAL_APPLIED_SUFFIX_LENGTH } from '../../lib/naming.ts'
+import {
+  maxTypedNameLength,
+  principalNameSchemeOf,
+  type PrincipalNameScheme,
+} from '../../lib/principal-name-scheme.ts'
 import { LOOPBACK_BIND, resolveManagedDialHost } from './access-address.ts'
 import { resolveManagedEffectiveExposure } from './host-exposure.ts'
 import type { ManagedContext } from './managed-context.ts'
@@ -433,6 +437,7 @@ export function serializeManagedUser(row: {
   username: string
   appliedUsername: string
   metadata: unknown
+  options?: unknown
   createdAt: string
 }) {
   const meta = principalMetadata(row.metadata)
@@ -446,6 +451,7 @@ export function serializeManagedUser(row: {
     id: row.id,
     username: row.username,
     appliedUsername: row.appliedUsername,
+    nameScheme: principalNameSchemeOf(row),
     databases,
     privileges,
     connectionRole:
@@ -501,11 +507,11 @@ export function parseManagedUserCreateFields(
   /** Persisted cluster root username when known; falls back to spec preference. */
   rootUsername?: string,
   /**
-   * Org randomized-usernames default: when on, the applied login gets a
-   * `_<11>` suffix, so the short name must leave room for it within the
-   * engine's identifier maxLength.
+   * Scheme the applied login will use. `partial` adds a `_<11>` suffix, so
+   * the typed name must leave room for it within the engine's identifier
+   * maxLength; `plain` and `random` use the full length for the typed name.
    */
-  randomizeSuffix?: boolean
+  nameScheme: PrincipalNameScheme = 'plain'
 ):
   | {
       username: string
@@ -519,7 +525,7 @@ export function parseManagedUserCreateFields(
 
   const effectiveRoot = rootUsername ?? ctx.spec.rootUsername
   const { pattern, maxLength } = ctx.spec.userOperations.identifier
-  const maxShortLength = randomizeSuffix ? maxLength - PRINCIPAL_APPLIED_SUFFIX_LENGTH : maxLength
+  const maxShortLength = maxTypedNameLength(nameScheme, maxLength)
   if (
     !USERNAME_RE.test(username) ||
     !pattern.test(username) ||
