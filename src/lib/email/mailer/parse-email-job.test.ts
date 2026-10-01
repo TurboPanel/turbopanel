@@ -157,3 +157,29 @@ test('parsed server-tier-notice and invitation jobs dispatch through the SMTP se
     createStub.restore()
   }
 })
+
+const DIGEST_JOB: EmailJob = {
+  type: 'notification-digest',
+  to: 'ops@example.com',
+  from: 'noreply@example.com',
+  summary: 'hourly',
+  total: 3,
+  groups: [
+    {
+      event: 'server.deleted',
+      severity: 'info',
+      count: 3,
+      items: [{ title: 'Server db-1 was deleted', at: '2026-05-01T10:10:00.000Z', url: null }],
+    },
+  ],
+  moreGroups: 0,
+  consoleUrl: 'https://panel.example.com',
+  at: '2026-05-01T11:00:00.000Z',
+}
+
+test('parseEmailJob accepts a digest payload and refuses a malformed one', () => {
+  assertEquals(parseEmailJob(DIGEST_JOB), DIGEST_JOB)
+  assertEquals(parseEmailJob({ ...DIGEST_JOB, summary: 'weekly' }), null)
+  assertEquals(parseEmailJob({ ...DIGEST_JOB, groups: [{ event: 'x' }] }), null)
+  assertEquals(parseEmailJob({ ...DIGEST_JOB, total: '3' }), null)
+})

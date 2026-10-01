@@ -45,12 +45,14 @@ import {
   eventSeverity,
   NOTIFICATION_EVENTS,
 } from '../../features/notifications/events.ts'
+import { applyHoldFields, presentChannelHold } from '../../features/notifications/hold-settings.ts'
 import {
   type ChannelCreate,
   type ChannelWriteRefusal,
   parseChannelCreateBody,
   parseChannelPatchBody,
   parseRulesBody,
+  refuseHoldFieldsFor,
 } from './routes-helpers.ts'
 
 type NotificationCtx = Parameters<typeof getDb>[0]
@@ -78,6 +80,7 @@ async function presentNotificationChannel(c: NotificationCtx, channel: Notificat
     verifiedAt: channel.verifiedAt,
     disabledAt: channel.disabledAt,
     createdAt: channel.createdAt,
+    ...(await presentChannelHold(db, channel)),
     rules: rules.map((r) => ({ event: r.event, minSeverity: r.minSeverity })),
     recentDeliveries: deliveries.map((d) => ({
       id: d.id,
@@ -307,7 +310,9 @@ export function registerNotificationRoutes(router: Hono<AppEnv>, opts: AuthRoute
       verifiedAt,
     })
     await replaceRulesForChannel(db, channel.id, parsed.value.rules)
-    return c.json({ ok: true, channel: await presentNotificationChannel(c, channel) }, 201)
+    await applyHoldFields(db, channel, parsed.value.hold)
+    const fresh = (await getChannel(db, channel.id)) ?? channel
+    return c.json({ ok: true, channel: await presentNotificationChannel(c, fresh) }, 201)
   })
 
   router.patch('/notification-channels/:id', async (c) => {
@@ -320,6 +325,8 @@ export function registerNotificationRoutes(router: Hono<AppEnv>, opts: AuthRoute
     const body = await c.req.json().catch(() => null)
     const parsed = parseChannelPatchBody(body)
     if (!parsed.ok) return refuseChannelWrite(c, parsed)
+    const refusal = refuseHoldFieldsFor(owned, parsed.value.hold)
+    if (refusal) return refuseChannelWrite(c, refusal)
     if (parsed.value.label !== undefined) {
       await updateChannelLabel(db, owned.id, parsed.value.label)
     }
@@ -329,6 +336,7 @@ export function registerNotificationRoutes(router: Hono<AppEnv>, opts: AuthRoute
     if (parsed.value.rules !== undefined) {
       await replaceRulesForChannel(db, owned.id, parsed.value.rules)
     }
+    await applyHoldFields(db, owned, parsed.value.hold)
     const fresh = await getChannel(db, owned.id)
     return c.json({
       ok: true,

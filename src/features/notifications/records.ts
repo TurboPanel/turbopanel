@@ -8,7 +8,20 @@
  * always sealed. The re-encrypt sweep (`src/admin/reencrypt-secrets.ts`)
  * re-seals both columns under the current key version.
  */
-import { and, desc, eq, gt, inArray, isNotNull, isNull, lt, notInArray, or, sql } from 'drizzle-orm'
+import {
+  and,
+  desc,
+  eq,
+  gt,
+  inArray,
+  isNotNull,
+  isNull,
+  lt,
+  lte,
+  notInArray,
+  or,
+  sql,
+} from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import {
   decryptSecret,
@@ -27,6 +40,12 @@ import {
   teammate,
   user,
 } from '../../db/schema.ts'
+import {
+  DEFAULT_TIME_ZONE,
+  type NotificationDigestCadence,
+  type QuietHours,
+  usableTimeZone,
+} from './windows.ts'
 import {
   NOTIFICATION_RULE_ANY_EVENT,
   type NotificationContext,
@@ -59,7 +78,13 @@ export const NOTIFICATION_CHANNEL_KINDS = [
 ] as const
 export type NotificationChannelKind = (typeof NOTIFICATION_CHANNEL_KINDS)[number]
 
-export const NOTIFICATION_DELIVERY_STATUSES = ['pending', 'sent', 'failed', 'abandoned'] as const
+export const NOTIFICATION_DELIVERY_STATUSES = [
+  'pending',
+  'sent',
+  'failed',
+  'abandoned',
+  'held',
+] as const
 export type NotificationDeliveryStatus = (typeof NOTIFICATION_DELIVERY_STATUSES)[number]
 
 /** Kinds whose address is a credential and is therefore stored sealed. */
@@ -88,6 +113,10 @@ export type NotificationChannelRecord = {
   verifiedAt: string | null
   disabledAt: string | null
   createdAt: string
+  /** null = every event is sent as it happens. */
+  digestCadence: NotificationDigestCadence | null
+  /** null = no quiet hours. */
+  quiet: QuietHours | null
 }
 
 export type NotificationRuleRecord = {
@@ -110,6 +139,11 @@ function asChannel(row: typeof notificationChannel.$inferSelect): NotificationCh
     verifiedAt: row.verifiedAt,
     disabledAt: row.disabledAt,
     createdAt: row.createdAt,
+    digestCadence: row.digestCadence as NotificationDigestCadence | null,
+    quiet:
+      row.quietStartMinute !== null && row.quietEndMinute !== null
+        ? { startMinute: row.quietStartMinute, endMinute: row.quietEndMinute }
+        : null,
   }
 }
 
@@ -267,6 +301,92 @@ export async function setChannelDisabled(db: Db, id: string, disabled: boolean):
     .update(notificationChannel)
     .set({ disabledAt: disabled ? sql`now()` : null })
     .where(eq(notificationChannel.id, id))
+}
+
+/** Digest cadence and quiet hours for one channel; `null` clears either. Replaces both together. */
+export async function setChannelHoldSettings(
+  db: Db,
+  id: string,
+  settings: { digestCadence: NotificationDigestCadence | null; quiet: QuietHours | null }
+): Promise<void> {
+  await db
+    .update(notificationChannel)
+    .set({
+      digestCadence: settings.digestCadence,
+      quietStartMinute: settings.quiet?.startMinute ?? null,
+      quietEndMinute: settings.quiet?.endMinute ?? null,
+    })
+    .where(eq(notificationChannel.id, id))
+}
+
+/** The IANA zone a person chose, or null (read as UTC). */
+export async function getUserTimeZone(db: Db, userId: string): Promise<string | null> {
+  const [row] = await db
+    .select({ timeZone: user.timeZone })
+    .from(user)
+    .where(eq(user.id, userId))
+    .limit(1)
+  return row?.timeZone ?? null
+}
+
+export async function setUserTimeZone(
+  db: Db,
+  userId: string,
+  timeZone: string | null
+): Promise<void> {
+  await db.update(user).set({ timeZone }).where(eq(user.id, userId))
+}
+
+/** The organization-wide default zone (`options.defaultServerTimezone`), or null. */
+async function organizationTimeZones(
+  db: Db,
+  organizationIds: readonly string[]
+): Promise<Map<string, string | null>> {
+  if (organizationIds.length === 0) return new Map()
+  const rows = await db
+    .select({ id: organization.id, options: organization.options })
+    .from(organization)
+    .where(inArray(organization.id, [...organizationIds]))
+  return new Map(
+    rows.map((r) => {
+      const zone = (r.options as { defaultServerTimezone?: unknown } | null)?.defaultServerTimezone
+      return [r.id, typeof zone === 'string' ? zone : null]
+    })
+  )
+}
+
+/**
+ * The zone each channel's quiet hours and digest windows are read in: a
+ * personal channel uses its owner's zone, an organization channel the
+ * organization default, an instance channel UTC; anything unset or unusable is
+ * UTC.
+ */
+export async function channelTimeZones(
+  db: Db,
+  channels: ReadonlyArray<
+    Pick<NotificationChannelRecord, 'id' | 'scope' | 'userId' | 'organizationId'>
+  >
+): Promise<Map<string, string>> {
+  const userIds = channels.flatMap((c) => (c.scope === 'user' && c.userId ? [c.userId] : []))
+  const orgIds = channels.flatMap((c) =>
+    c.scope === 'organization' && c.organizationId ? [c.organizationId] : []
+  )
+  const [users, orgs] = await Promise.all([
+    userIds.length === 0
+      ? Promise.resolve([])
+      : db
+          .select({ id: user.id, timeZone: user.timeZone })
+          .from(user)
+          .where(inArray(user.id, userIds)),
+    organizationTimeZones(db, orgIds),
+  ])
+  const byUser = new Map(users.map((u) => [u.id, u.timeZone]))
+  const zoneOf = (c: (typeof channels)[number]): string | null | undefined => {
+    if (c.scope === 'user') return byUser.get(c.userId ?? '')
+    if (c.scope === 'organization') return orgs.get(c.organizationId ?? '')
+    return null
+  }
+  return new Map(channels.map((c) => [c.id, usableTimeZone(zoneOf(c) ?? DEFAULT_TIME_ZONE)]))
 }
 
 export async function listRulesForChannel(
@@ -588,26 +708,43 @@ export type NotificationDeliveryRecord = {
  */
 export const INLINE_ATTEMPT_GRACE_MS = 2 * 60_000
 
-/** Write the ledger row first — a crash between here and the send leaves a pending row, not silence. */
+function ledgerRow(channelId: string, payload: DeliveryPayload, held: boolean) {
+  const base = {
+    channelId,
+    organizationId: payload.organizationId,
+    event: payload.event,
+    severity: payload.severity,
+    payload,
+    attempts: 0,
+  }
+  if (held) {
+    // Nothing retries a held row (no retry time); it is dated by the event, so
+    // the window that closes after the event is the one that carries it.
+    return { ...base, status: 'held', nextAttemptAt: null, createdAt: payload.at }
+  }
+  return {
+    ...base,
+    status: 'pending',
+    nextAttemptAt: new Date(Date.now() + INLINE_ATTEMPT_GRACE_MS).toISOString(),
+  }
+}
+
+/**
+ * Write the ledger row first — a crash between here and the send leaves a pending row, not silence.
+ * A channel in `heldChannelIds` gets a `held` row instead: nothing retries it, the digest sweep
+ * sends it when its window ends.
+ */
 export async function insertPendingDeliveries(
   db: Db,
   channelIds: readonly string[],
-  payload: DeliveryPayload
+  payload: DeliveryPayload,
+  heldChannelIds: ReadonlySet<string> = new Set()
 ): Promise<NotificationDeliveryRecord[]> {
   if (channelIds.length === 0) return []
   const rows = await db
     .insert(notificationDelivery)
     .values(
-      channelIds.map((channelId) => ({
-        channelId,
-        organizationId: payload.organizationId,
-        event: payload.event,
-        severity: payload.severity,
-        payload,
-        status: 'pending',
-        attempts: 0,
-        nextAttemptAt: new Date(Date.now() + INLINE_ATTEMPT_GRACE_MS).toISOString(),
-      }))
+      channelIds.map((channelId) => ledgerRow(channelId, payload, heldChannelIds.has(channelId)))
     )
     .returning()
   return rows.map(asDelivery)
@@ -707,6 +844,109 @@ export async function listDueDeliveries(
     .orderBy(notificationDelivery.nextAttemptAt)
     .limit(limit)
   return rows.map((r) => asDelivery(r.delivery))
+}
+
+/** Enabled, verified email channels that have at least one held delivery — the digest sweep's batch. */
+export async function listChannelsWithHeldDeliveries(
+  db: Db,
+  limit = 50
+): Promise<NotificationChannelRecord[]> {
+  const rows = await db
+    .select()
+    .from(notificationChannel)
+    .where(
+      and(
+        eq(notificationChannel.kind, 'email'),
+        isNotNull(notificationChannel.verifiedAt),
+        isNull(notificationChannel.disabledAt),
+        inArray(
+          notificationChannel.id,
+          db
+            .select({ id: notificationDelivery.channelId })
+            .from(notificationDelivery)
+            .where(eq(notificationDelivery.status, 'held'))
+        )
+      )
+    )
+    .orderBy(notificationChannel.createdAt)
+    .limit(limit)
+  return rows.map(asChannel)
+}
+
+/**
+ * Take the held deliveries a window has closed on, atomically: the rows move to
+ * `pending` with the inline-attempt grace on their retry time, so two sweeps
+ * racing for one channel never both get a row (the loser matches nothing), and
+ * a sweeper that dies mid-send leaves rows the retry sweep will still deliver.
+ */
+export async function claimHeldDeliveries(
+  db: Db,
+  channelId: string,
+  createdAtOrBefore: string,
+  limit: number
+): Promise<NotificationDeliveryRecord[]> {
+  const candidates = db
+    .select({ id: notificationDelivery.id })
+    .from(notificationDelivery)
+    .where(
+      and(
+        eq(notificationDelivery.channelId, channelId),
+        eq(notificationDelivery.status, 'held'),
+        lte(notificationDelivery.createdAt, createdAtOrBefore)
+      )
+    )
+    .orderBy(notificationDelivery.createdAt)
+    .limit(limit)
+    .for('update', { skipLocked: true })
+  const rows = await db
+    .update(notificationDelivery)
+    .set({
+      status: 'pending',
+      nextAttemptAt: new Date(Date.now() + INLINE_ATTEMPT_GRACE_MS).toISOString(),
+    })
+    .where(
+      and(eq(notificationDelivery.status, 'held'), inArray(notificationDelivery.id, candidates))
+    )
+    .returning()
+  return rows.map(asDelivery)
+}
+
+/**
+ * Close out claimed rows after the one digest email: sent on success; on failure
+ * back to `held` for the next sweep, `abandoned` once a row has failed the cap.
+ */
+export async function finishDigestDeliveries(
+  db: Db,
+  ids: readonly string[],
+  outcome: { ok: true } | { ok: false; error: string }
+): Promise<void> {
+  if (ids.length === 0) return
+  const where = and(
+    inArray(notificationDelivery.id, [...ids]),
+    eq(notificationDelivery.status, 'pending')
+  )
+  if (outcome.ok) {
+    await db
+      .update(notificationDelivery)
+      .set({
+        status: 'sent',
+        attempts: sql`${notificationDelivery.attempts} + 1`,
+        sentAt: sql`now()`,
+        nextAttemptAt: null,
+        lastError: null,
+      })
+      .where(where)
+    return
+  }
+  await db
+    .update(notificationDelivery)
+    .set({
+      status: sql`case when ${notificationDelivery.attempts} + 1 >= ${NOTIFICATION_DELIVERY_MAX_ATTEMPTS} then 'abandoned' else 'held' end`,
+      attempts: sql`${notificationDelivery.attempts} + 1`,
+      nextAttemptAt: null,
+      lastError: outcome.error.slice(0, 200),
+    })
+    .where(where)
 }
 
 /** Deliveries newer than `since` for one channel — what a channel's detail row shows. */

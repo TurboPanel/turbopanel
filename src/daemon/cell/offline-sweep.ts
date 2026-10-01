@@ -66,6 +66,7 @@ import { runLeafRenewalSweepTick } from '../../client/tls/leaf-renewal-sweep.ts'
 import { type AlertSender, NOOP_ALERT_SENDER } from '../../features/alerts/alert-sender.ts'
 import { resolveAlertSender } from '../../features/alerts/resolve-alert-sender.ts'
 import { type EmitEmail, retryDueDeliveries } from '../../features/notifications/emit.ts'
+import { sendDueDigests } from '../../features/notifications/digest.ts'
 import {
   ALERT_DELIVERY_BUDGET_MS,
   notifyDemotions,
@@ -1343,6 +1344,24 @@ async function runOptionalCronPhases(
       async () => {
         await retryDueDeliveries(db, tlsRenewal?.dataEncryptionSecrets, {
           allowPrivateTargets: true,
+          email: await workersNotificationEmail(env, db, tlsRenewal),
+        })
+      }
+    ))
+  ) {
+    return
+  }
+
+  // Send each email channel's closed digest / quiet-hours window as one
+  // summary (held deliveries; see features/notifications/digest.ts).
+  if (
+    !(await runOptionalPhase(
+      deadlineMs,
+      'notification-digests',
+      opts.scheduledTime,
+      phasesSkipped,
+      async () => {
+        await sendDueDigests(db, {
           email: await workersNotificationEmail(env, db, tlsRenewal),
         })
       }

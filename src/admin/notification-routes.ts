@@ -30,9 +30,11 @@ import {
   setChannelDisabled,
   updateChannelLabel,
 } from '../features/notifications/records.ts'
+import { applyHoldFields, presentChannelHold } from '../features/notifications/hold-settings.ts'
 import {
   parseChannelCreateBody,
   parseChannelPatchBody,
+  refuseHoldFieldsFor,
 } from '../client/notifications/routes-helpers.ts'
 
 type NotificationAdminCtx = Parameters<typeof getDb>[0]
@@ -58,6 +60,7 @@ async function presentInstanceChannel(c: NotificationAdminCtx, channel: Notifica
     verifiedAt: channel.verifiedAt,
     disabledAt: channel.disabledAt,
     createdAt: channel.createdAt,
+    ...(await presentChannelHold(db, channel)),
     rules: rules.map((r) => ({ event: r.event, minSeverity: r.minSeverity })),
     recentDeliveries: deliveries.map((d) => ({
       id: d.id,
@@ -112,6 +115,10 @@ export function registerNotificationAdminRoutes(admin: Hono<AppEnv>) {
         parsed.status
       )
     }
+    // An instance channel has no owner profile: it reads its windows in UTC.
+    if (parsed.value.hold.timeZone !== undefined) {
+      return c.json({ error: 'time_zone_user_channels_only' }, 422)
+    }
     const secrets = c.get('dataEncryptionSecrets')
     if (parsed.value.kind !== 'email' && !secrets) {
       return c.json(
@@ -145,7 +152,9 @@ export function registerNotificationAdminRoutes(admin: Hono<AppEnv>) {
       verifiedAt,
     })
     await replaceRulesForChannel(db, channel.id, parsed.value.rules)
-    return c.json({ ok: true, channel: await presentInstanceChannel(c, channel) }, 201)
+    await applyHoldFields(db, channel, parsed.value.hold)
+    const fresh = (await getChannel(db, channel.id)) ?? channel
+    return c.json({ ok: true, channel: await presentInstanceChannel(c, fresh) }, 201)
   })
 
   admin.patch('/notification-channels/:id', async (c) => {
@@ -164,6 +173,13 @@ export function registerNotificationAdminRoutes(admin: Hono<AppEnv>) {
         parsed.status
       )
     }
+    const refusal = refuseHoldFieldsFor(owned, parsed.value.hold)
+    if (refusal || parsed.value.hold.timeZone !== undefined) {
+      return c.json(
+        { error: refusal?.error ?? 'time_zone_user_channels_only' },
+        refusal?.status ?? 422
+      )
+    }
     if (parsed.value.label !== undefined) {
       await updateChannelLabel(db, owned.id, parsed.value.label)
     }
@@ -173,6 +189,7 @@ export function registerNotificationAdminRoutes(admin: Hono<AppEnv>) {
     if (parsed.value.rules !== undefined) {
       await replaceRulesForChannel(db, owned.id, parsed.value.rules)
     }
+    await applyHoldFields(db, owned, parsed.value.hold)
     const fresh = await getChannel(db, owned.id)
     return c.json({
       ok: true,

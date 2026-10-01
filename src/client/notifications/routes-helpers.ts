@@ -16,6 +16,14 @@ import {
   type NotificationChannelKind,
 } from '../../features/notifications/records.ts'
 import { parseTelegramAddress } from '../../features/notifications/senders.ts'
+import {
+  NOTIFICATION_DIGEST_CADENCES,
+  type NotificationDigestCadence,
+  type ChannelHoldFields,
+  parseClockMinutes,
+  type QuietHours,
+} from '../../features/notifications/windows.ts'
+import { isAllowedTimezone } from '../../lib/timezones.ts'
 
 export type ChannelWriteRefusal = {
   ok: false
@@ -33,12 +41,14 @@ export type ChannelCreate = {
   address: string
   signingSecret: string | null
   rules: ChannelRule[]
+  hold: ChannelHoldFields
 }
 
 export type ChannelPatch = {
   label?: string
   disabled?: boolean
   rules?: ChannelRule[]
+  hold: ChannelHoldFields
 }
 
 export const CHANNEL_LABEL_MAX = 80
@@ -93,6 +103,80 @@ export function parseRulesBody(
     })
   }
   return { ok: true, value: rules }
+}
+
+function parseDigestCadence(
+  raw: unknown
+): { ok: true; value: NotificationDigestCadence | null } | ChannelWriteRefusal {
+  if (raw === null) return { ok: true, value: null }
+  if (
+    typeof raw !== 'string' ||
+    !(NOTIFICATION_DIGEST_CADENCES as readonly string[]).includes(raw)
+  ) {
+    return { ok: false, status: 400, error: 'digest_cadence_invalid' }
+  }
+  return { ok: true, value: raw as NotificationDigestCadence }
+}
+
+function parseQuietHours(
+  raw: unknown
+): { ok: true; value: QuietHours | null } | ChannelWriteRefusal {
+  if (raw === null) return { ok: true, value: null }
+  if (!isRecord(raw)) return { ok: false, status: 400, error: 'quiet_hours_invalid' }
+  const startMinute = parseClockMinutes(raw.start)
+  const endMinute = parseClockMinutes(raw.end)
+  if (startMinute === null || endMinute === null || startMinute === endMinute) {
+    return { ok: false, status: 400, error: 'quiet_hours_invalid' }
+  }
+  return { ok: true, value: { startMinute, endMinute } }
+}
+
+function parseTimeZone(raw: unknown): { ok: true; value: string | null } | ChannelWriteRefusal {
+  if (raw === null) return { ok: true, value: null }
+  if (!isAllowedTimezone(raw) && raw !== 'UTC') {
+    return { ok: false, status: 400, error: 'time_zone_invalid' }
+  }
+  return { ok: true, value: raw as string }
+}
+
+/** Parse the delivery-timing fields of a create or patch body; absent fields stay absent. */
+export function parseHoldFields(
+  raw: Record<string, unknown>
+): { ok: true; value: ChannelHoldFields } | ChannelWriteRefusal {
+  const hold: ChannelHoldFields = {}
+  if (raw.digestCadence !== undefined) {
+    const parsed = parseDigestCadence(raw.digestCadence)
+    if (!parsed.ok) return parsed
+    hold.digestCadence = parsed.value
+  }
+  if (raw.quietHours !== undefined) {
+    const parsed = parseQuietHours(raw.quietHours)
+    if (!parsed.ok) return parsed
+    hold.quiet = parsed.value
+  }
+  if (raw.timeZone !== undefined) {
+    const parsed = parseTimeZone(raw.timeZone)
+    if (!parsed.ok) return parsed
+    hold.timeZone = parsed.value
+  }
+  return { ok: true, value: hold }
+}
+
+/** Which channels may carry delivery timing: digest and quiet hours are email, the zone is personal. */
+export function refuseHoldFieldsFor(
+  channel: { kind: NotificationChannelKind; scope: string },
+  hold: ChannelHoldFields
+): ChannelWriteRefusal | null {
+  const setsTiming =
+    (hold.digestCadence !== undefined && hold.digestCadence !== null) ||
+    (hold.quiet !== undefined && hold.quiet !== null)
+  if (setsTiming && channel.kind !== 'email') {
+    return { ok: false, status: 422, error: 'timing_email_only' }
+  }
+  if (hold.timeZone !== undefined && channel.scope !== 'user') {
+    return { ok: false, status: 422, error: 'time_zone_user_channels_only' }
+  }
+  return null
 }
 
 function parseLabel(raw: unknown): string | ChannelWriteRefusal {
@@ -200,6 +284,10 @@ export async function parseChannelCreateBody(
   }
   const rules = parseRulesBody(raw.rules ?? [])
   if (!rules.ok) return rules
+  const hold = parseHoldFields(raw)
+  if (!hold.ok) return hold
+  const refusal = refuseHoldFieldsFor({ kind: kind as ChannelCreate['kind'], scope }, hold.value)
+  if (refusal) return refusal
   return {
     ok: true,
     value: {
@@ -209,6 +297,7 @@ export async function parseChannelCreateBody(
       address,
       signingSecret,
       rules: rules.value,
+      hold: hold.value,
     },
   }
 }
@@ -217,7 +306,9 @@ export function parseChannelPatchBody(
   raw: unknown
 ): { ok: true; value: ChannelPatch } | ChannelWriteRefusal {
   if (!isRecord(raw)) return { ok: false, status: 400, error: 'body_invalid' }
-  const patch: ChannelPatch = {}
+  const hold = parseHoldFields(raw)
+  if (!hold.ok) return hold
+  const patch: ChannelPatch = { hold: hold.value }
   if (raw.label !== undefined) {
     const label = parseLabel(raw.label)
     if (typeof label !== 'string') return label

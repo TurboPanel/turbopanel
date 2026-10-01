@@ -421,3 +421,56 @@ test('the catalogue lists every event with its severity and scope', async () => 
     )
   })
 })
+
+test('digest cadence, quiet hours and the owner time zone are written, read back and validated', async () => {
+  await withFixtures('deno', async ({ db, app, memberCookie, memberId, memberEmail }) => {
+    const created = await json(app, memberCookie, 'POST', '/notification-channels', {
+      kind: 'email',
+      label: 'My inbox',
+      address: memberEmail,
+      digestCadence: 'hourly',
+      quietHours: { start: '22:00', end: '07:00' },
+      timeZone: 'America/New_York',
+      rules: [{ event: '*' }],
+    })
+    assertEquals(created.status, 201)
+    type Presented = {
+      id: string
+      digestCadence: string | null
+      quietHours: { start: string; end: string } | null
+      timeZone: string
+    }
+    const { channel } = (await created.json()) as { channel: Presented }
+    assertEquals(channel.digestCadence, 'hourly')
+    assertEquals(channel.quietHours, { start: '22:00', end: '07:00' })
+    assertEquals(channel.timeZone, 'America/New_York')
+    const [owner] = await db.select({ tz: user.timeZone }).from(user).where(eq(user.id, memberId))
+    assertEquals(owner?.tz, 'America/New_York')
+
+    // A patch changes only what it names; null clears.
+    const patched = await json(app, memberCookie, 'PATCH', `/notification-channels/${channel.id}`, {
+      digestCadence: null,
+    })
+    const after = ((await patched.json()) as { channel: Presented }).channel
+    assertEquals(after.digestCadence, null)
+    assertEquals(after.quietHours, { start: '22:00', end: '07:00' })
+
+    // Refusals: an empty window, a bad time, a bad cadence, a bad zone.
+    const bad = async (body: unknown) =>
+      (await json(app, memberCookie, 'PATCH', `/notification-channels/${channel.id}`, body)).status
+    assertEquals(await bad({ quietHours: { start: '22:00', end: '22:00' } }), 400)
+    assertEquals(await bad({ quietHours: { start: '25:00', end: '07:00' } }), 400)
+    assertEquals(await bad({ digestCadence: 'weekly' }), 400)
+    assertEquals(await bad({ timeZone: 'Mars/Olympus' }), 400)
+
+    // Digest and quiet hours are for email; a chat channel is refused.
+    const slack = await json(app, memberCookie, 'POST', '/notification-channels', {
+      kind: 'slack',
+      label: 'Chat',
+      address: 'https://hooks.slack.com/services/T0/B0/X',
+      digestCadence: 'daily',
+    })
+    assertEquals(slack.status, 422)
+    assertEquals(((await slack.json()) as { error: string }).error, 'timing_email_only')
+  })
+})
