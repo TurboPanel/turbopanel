@@ -224,6 +224,7 @@ async function buildOtpAuthApp(
     signupEnvOverride?: '1' | '0'
     emailQueue?: { enqueue: (job: unknown) => Promise<void> }
     platformEnv?: Record<string, string | undefined>
+    limit?: number
   } = {},
 ) {
   const secretsConfig = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`,
@@ -233,13 +234,14 @@ async function buildOtpAuthApp(
     ? opts.otpVerifierSecrets
     : await deriveSecretsConfig(secretsConfig, 'email-otp-verifier')
   const app = new Hono<AppEnv>()
+  const limiter = createAuthRateLimiter({
+    defaultPolicy: { limit: opts.limit ?? 10_000, windowMs: 60_000 },
+  })
   app.use('*', (c, next) => {
     if (db) c.set('db', db)
     if (opts.emailQueue) c.set('emailQueue', opts.emailQueue)
     if (opts.platformEnv) c.set('platformEnv', opts.platformEnv)
-    c.set('authRateLimiter', createAuthRateLimiter({
-      defaultPolicy: { limit: 10_000, windowMs: 60_000 },
-    }))
+    c.set('authRateLimiter', limiter)
     return next()
   })
   const client = new Hono<AppEnv>()
@@ -306,6 +308,22 @@ test('verify-email/otp requires an active session cookie', async () => {
     body: JSON.stringify({ email: 'otp@example.com', otp: '123456' }),
   })
   assertEquals(res.status, 401)
+})
+
+test('verify-email/otp without a session still charges the anonymous + IP bucket', async () => {
+  const db = createMockAuthDb(createEmptyMockAuthState())
+  const { app } = await buildOtpAuthApp(db, { limit: 2 })
+  const attempt = () =>
+    app.request(`${CLIENT_API_PREFIX}/auth/verify-email/otp`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'X-Real-IP': '203.0.113.77' },
+      body: JSON.stringify({ email: 'otp@example.com', otp: '123456' }),
+    })
+  assertEquals((await attempt()).status, 401)
+  assertEquals((await attempt()).status, 401)
+  const blocked = await attempt()
+  assertEquals(blocked.status, 429)
+  assertEquals(blocked.headers.get('Retry-After') !== null, true)
 })
 
 test('reset-password/request-otp returns 503 without verifier secrets', async () => {
