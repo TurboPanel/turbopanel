@@ -46,6 +46,7 @@ import {
   attachDaemonStateToServer,
   getServerDaemonStateByServerId,
 } from "../../features/servers/server-identity-db.ts";
+import { listNotificationsForUser } from "../../features/notifications/records.ts";
 import { registerServerRoutes } from "./routes.ts";
 import type { ServerStatusRecord } from "./update-status.ts";
 import type { QueryCache } from "../../query-cache/contracts.ts";
@@ -3191,5 +3192,53 @@ test("GET /servers/:id still issues exactly one cached select after labels are a
     assertEquals(body.server.labels, [{ key: "env", value: "prod" }]);
     assertEquals(recordingCache.readModels, ["server-detail"]);
     assertEquals(readDb.selectCallCount, 1);
+  });
+});
+
+test("DELETE /servers/:id raises server.deleted once, with the server's name, to the managers' bell", async () => {
+  await withServerDeleteFixtures(async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    serverId,
+  }) => {
+    const cookie = await sessionCookie(db, secrets, userId);
+    const res = await app.request(`/servers/${serverId}`, {
+      method: "DELETE",
+      headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+    });
+    assertEquals(res.status, 200);
+
+    const inbox = await listNotificationsForUser(db, userId);
+    const deleted = inbox.filter((n) => n.event === "server.deleted");
+    assertEquals(deleted.length, 1);
+    assertEquals(deleted[0]!.title, "Server Delete Me was deleted");
+  });
+});
+
+test("POST /servers/:id/daemon-key/revoke raises server.daemon_key_revoked with the server's name", async () => {
+  await withServerDeleteFixtures(async ({
+    db,
+    app,
+    secrets,
+    userId,
+    organizationId,
+    serverId,
+  }) => {
+    await enrollFixtureServer(db, serverId);
+    const cookie = await sessionCookie(db, secrets, userId);
+    const res = await app.request(`/servers/${serverId}/daemon-key/revoke`, {
+      method: "POST",
+      headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+    });
+    assertEquals(res.status, 200);
+
+    const inbox = await listNotificationsForUser(db, userId);
+    const revoked = inbox.filter((n) => n.event === "server.daemon_key_revoked");
+    assertEquals(revoked.length, 1);
+    assertEquals(revoked[0]!.title, "Daemon key revoked on Delete Me");
+    assertEquals(revoked[0]!.severity, "warning");
   });
 });
