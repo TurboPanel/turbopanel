@@ -13,8 +13,10 @@ import {
   forge,
   gitConnection,
   instanceUploadedCertificate,
+  monitor,
   organization,
   principal,
+  relay,
   setting,
   tls,
   twoFactor,
@@ -22,6 +24,7 @@ import {
   variable,
 } from '../db/schema.ts'
 import { SYSTEM_AUTH_PROVIDERS_DB_KEY } from '../features/settings/auth-provider-settings.ts'
+import { ALERT_WEBHOOK_URL_KEY } from '../features/alerts/alert-webhook-settings.ts'
 import { SYSTEM_EMAIL_DB_KEY } from '../features/settings/email-settings.ts'
 import { TEST_ONLY_TURBOPANEL_SECRET } from '../test-fixtures/secrets.ts'
 import {
@@ -257,6 +260,9 @@ async function installIsolatedFixtureSchema(tx: Db, schemaName: string): Promise
     )
   `)
   )
+  // Column-for-column copies without the foreign keys (the transaction rolls back).
+  await tx.execute(sql.raw('CREATE TABLE monitor (LIKE public.monitor INCLUDING DEFAULTS)'))
+  await tx.execute(sql.raw('CREATE TABLE relay (LIKE public.relay INCLUDING DEFAULTS)'))
 }
 
 async function withIsolatedFixture(
@@ -1026,5 +1032,119 @@ test('reencryptAtRestSecrets reseals uploaded control-plane certificate keys', a
     // Plaintext and a daemon-bound envelope are not valid at rest: left as-is (counted failed).
     assertEquals(await keyOf(plainId), 'plaintext-key-never-migrated')
     assertEquals(await keyOf(daemonId), daemonBound)
+  })
+})
+
+test('reencryptAtRestSecrets reseals monitor.secret_envelope, relay.preshared_key and the ALERT_WEBHOOK_URL setting', async () => {
+  const v1Only = await createV1OnlySecrets()
+  const rotated = await createRotatedSecrets()
+  const suffix = crypto.randomUUID().replaceAll('-', '')
+  const monitorPlain = `monitor-${suffix}`
+  const presharedPlain = `psk-${suffix}`
+  const webhookPlain = `https://hooks.example.test/${suffix}`
+  const monitorV1 = await encryptSecret(v1Only, monitorPlain)
+  const monitorV2 = await encryptSecret(rotated, 'already-current')
+  const presharedV1 = await encryptSecret(v1Only, presharedPlain)
+
+  await withIsolatedFixture('reencrypt_p2', async (scoped) => {
+    const serverId = crypto.randomUUID()
+    const insertMonitor = async (envelope: string) => {
+      const [row] = await scoped
+        .insert(monitor)
+        .values({
+          serverId: crypto.randomUUID(),
+          username: 'tp_monitor_x',
+          secretEnvelope: envelope,
+        })
+        .returning({ id: monitor.id })
+      return row!.id
+    }
+    const insertRelay = async (presharedKey: string | null) => {
+      const [row] = await scoped
+        .insert(relay)
+        .values({
+          fabricId: crypto.randomUUID(),
+          serverId,
+          address: '10.0.0.1',
+          publicKey: 'pk',
+          prefix: '10.0.0.0/24',
+          presharedKey,
+        })
+        .returning({ id: relay.id })
+      return row!.id
+    }
+    const monitorV1Id = await insertMonitor(monitorV1)
+    const monitorV2Id = await insertMonitor(monitorV2)
+    const relayV1Id = await insertRelay(presharedV1)
+    const relayNullId = await insertRelay(null)
+    await scoped
+      .insert(setting)
+      .values({ key: ALERT_WEBHOOK_URL_KEY, value: await encryptSecret(v1Only, webhookPlain) })
+
+    const totals = await reencryptAtRestSecretsToCompletion(scoped, rotated)
+    assertEquals(totals.reencrypted, 3)
+    assertEquals(totals.failed, 0)
+
+    const monitorOf = async (id: string) =>
+      (
+        await scoped.select({ v: monitor.secretEnvelope }).from(monitor).where(eq(monitor.id, id))
+      )[0]!.v
+    const resealedMonitor = await monitorOf(monitorV1Id)
+    assertEquals(parseSecretEnvelope(resealedMonitor)?.keyVersion, 2)
+    assertEquals(await decryptSecret(rotated, resealedMonitor), monitorPlain)
+    assertEquals(await monitorOf(monitorV2Id), monitorV2)
+
+    const relayOf = async (id: string) =>
+      (await scoped.select({ v: relay.presharedKey }).from(relay).where(eq(relay.id, id)))[0]!.v
+    const resealedRelay = await relayOf(relayV1Id)
+    assertEquals(parseSecretEnvelope(resealedRelay!)?.keyVersion, 2)
+    assertEquals(await decryptSecret(rotated, resealedRelay!), presharedPlain)
+    assertEquals(await relayOf(relayNullId), null)
+
+    const [hook] = await scoped
+      .select({ value: setting.value })
+      .from(setting)
+      .where(eq(setting.key, ALERT_WEBHOOK_URL_KEY))
+    const hookValue = hook!.value as string
+    assertEquals(parseSecretEnvelope(hookValue)?.keyVersion, 2)
+    assertEquals(await decryptSecret(rotated, hookValue), webhookPlain)
+
+    // Second pass is a no-op: everything is current.
+    const again = await reencryptAtRestSecretsToCompletion(scoped, rotated)
+    assertEquals(again.reencrypted, 0)
+  })
+})
+
+test('reencryptAtRestSecrets leaves a concurrently changed monitor envelope untouched (CAS)', async () => {
+  const v1Only = await createV1OnlySecrets()
+  const rotated = await createRotatedSecrets()
+  const stale = await encryptSecret(v1Only, 'stale-monitor')
+  const newer = await encryptSecret(rotated, 'newer-monitor')
+
+  await withIsolatedFixture('reencrypt_p2cas', async (scoped) => {
+    const [row] = await scoped
+      .insert(monitor)
+      .values({ serverId: crypto.randomUUID(), username: 'tp_monitor_y', secretEnvelope: stale })
+      .returning({ id: monitor.id })
+    // Simulate a writer landing between the sweep's read and its conditional update.
+    let swapped = false
+    const racing = new Proxy(scoped, {
+      get(target, prop, receiver) {
+        if (prop === 'update' && !swapped) {
+          swapped = true
+          return (...args: unknown[]) => {
+            return (
+              target.execute(
+                sql`UPDATE monitor SET secret_envelope = ${newer} WHERE id = ${row!.id}`
+              ) as Promise<unknown>
+            ).then(() => (target.update as (...a: unknown[]) => unknown)(...args)) as never
+          }
+        }
+        return Reflect.get(target, prop, receiver)
+      },
+    }) as Db
+    await reencryptAtRestSecrets(racing, rotated, { cursor: { stage: 'monitors' } })
+    const [after] = await scoped.select({ v: monitor.secretEnvelope }).from(monitor)
+    assertEquals(after!.v, newer)
   })
 })
