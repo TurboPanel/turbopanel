@@ -34,8 +34,6 @@
     "check:migration-additions": "node scripts/check-migration-additions.mjs",
     "schema:comments": "node scripts/schema-comments.mjs",
     "schema:comments:check": "node scripts/schema-comments.mjs --check",
-    "docs:data-dictionary": "node scripts/generate-data-dictionary.mjs",
-    "docs:data-dictionary:check": "node scripts/generate-data-dictionary.mjs --check",
     "docs:errors:check": "node scripts/check-error-appendix.mjs",
     "check:deploy-env": "node scripts/check-deploy-env.mjs",
     "bootstrap:superadmin": "node scripts/bootstrap-superadmin.mjs",

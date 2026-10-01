@@ -1,8 +1,7 @@
 /**
  * Human descriptions for every physical table and every non-obvious column
- * in the control-plane schema — the single source both the Postgres
- * `COMMENT ON` migrations and the website data dictionary are generated
- * from (`scripts/schema-comments.mjs`, `scripts/generate-data-dictionary.mjs`).
+ * in the control-plane schema — the single source the Postgres `COMMENT ON`
+ * migrations are generated from (`scripts/schema-comments.mjs`).
  *
  * Keyed by **physical** names (`seat`, `copy`, `2fa`, …), exactly as they
  * appear in the latest `migrations/meta/NNNN_snapshot.json` — never by the
