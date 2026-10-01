@@ -97,12 +97,7 @@ async function loadDatacenterIds(db: Db, serverId: string): Promise<string[]> {
  * organization), else 22. The host also asks sshd itself, so a wrong guess can
  * only keep one extra port open; it can never close the real one.
  */
-async function loadSshPortHint(
-  db: Db,
-  serverId: string,
-  base: ServerBase,
-  datacenterIds: string[]
-): Promise<number> {
+async function loadSshPortHint(db: Db, base: ServerBase, datacenterIds: string[]): Promise<number> {
   const [org] = await db
     .select({ options: organization.options })
     .from(organization)
@@ -448,7 +443,7 @@ export async function loadFirewallFacts(
     await Promise.all([
       isCoLocatedServer(db, serverId),
       loadControlPlanePorts(db),
-      loadSshPortHint(db, serverId, base, datacenterIds),
+      loadSshPortHint(db, base, datacenterIds),
       loadOrganizationPolicy(db, base.organizationId),
       loadServerMode(db, serverId),
       loadEdictFacts(db, base.organizationId, serverId),
