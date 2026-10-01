@@ -24,6 +24,7 @@ import { createDenoMaintenanceScheduler } from '../../daemon/cell/deno-maintenan
 import { resolveAlertSender } from '../../features/alerts/resolve-alert-sender.ts'
 import { ALERT_WEBHOOK_POLICY } from '../../features/alerts/alert-webhook-settings.ts'
 import { retryDueDeliveries } from '../../features/notifications/emit.ts'
+import { sendDueDigests } from '../../features/notifications/digest.ts'
 import { DAEMON_CELL_MAINTAIN_MS } from '../../contracts/cell-protocol.ts'
 import {
   COMMAND_DISPATCH_SWEEP_LIMIT,
@@ -699,6 +700,17 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
       await runCleanupPhase('notification retry sweep', () =>
         retryDueDeliveries(db, dataEncryptionSecrets, {
           allowPrivateTargets: true,
+          email: {
+            queue: emailQueue,
+            from: emailSettings.from,
+            consoleBaseUrl: Deno.env.get('TURBOPANEL_BASE_URL') ?? null,
+          },
+        })
+      )
+      // Workers parity (offline-sweep cron): one summary email per channel
+      // for the events held by a digest cadence or quiet hours.
+      await runCleanupPhase('notification digest sweep', () =>
+        sendDueDigests(db, {
           email: {
             queue: emailQueue,
             from: emailSettings.from,

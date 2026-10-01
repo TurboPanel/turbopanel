@@ -30,6 +30,7 @@ import { validateOutboundUrl } from '../../lib/http/outbound-url.ts'
 import {
   describeEvent,
   eventAudience,
+  eventIsUrgent,
   eventScope,
   eventSeverity,
   type NotificationContext,
@@ -37,6 +38,7 @@ import {
 } from './events.ts'
 import {
   channelsForEvent,
+  channelTimeZones,
   type DeliveryPayload,
   getChannel,
   insertNotifications,
@@ -53,6 +55,7 @@ import {
   resolveChannelSigningSecret,
 } from './records.ts'
 import { renderDetails, send, type SendOutcome } from './senders.ts'
+import { shouldHoldNow } from './windows.ts'
 import type { EmailJob, EmailQueue } from '../email/types.ts'
 
 export type EmitInput = {
@@ -90,9 +93,11 @@ export type EmitResult = {
   deliveries: number
   sent: number
   failed: number
+  /** Deliveries written as `held`, waiting for quiet hours to end or a digest window to close. */
+  held: number
 }
 
-const EMPTY: EmitResult = { inbox: 0, deliveries: 0, sent: 0, failed: 0 }
+const EMPTY: EmitResult = { inbox: 0, deliveries: 0, sent: 0, failed: 0, held: 0 }
 
 /** How long the whole delivery phase of one emit may take. */
 export const EMIT_DELIVERY_BUDGET_MS = 5_000
@@ -159,10 +164,12 @@ export async function emitNotification(
         organizationId,
         recipients
       )
+      const held = await heldChannelIds(tx, channels, payload.event, deps.now?.() ?? Date.now())
       const deliveries = await insertPendingDeliveries(
         tx,
         channels.map((c) => c.id),
-        payload
+        payload,
+        held
       )
       return { inbox, channels, deliveries }
     })
@@ -172,10 +179,12 @@ export async function emitNotification(
     const outcome = await attemptDeliveries(
       db,
       secrets,
-      written.deliveries.map((d) => ({
-        delivery: d,
-        channel: byId.get(d.channelId) ?? null,
-      })),
+      written.deliveries
+        .filter((d) => d.status !== 'held')
+        .map((d) => ({
+          delivery: d,
+          channel: byId.get(d.channelId) ?? null,
+        })),
       deps,
       EMIT_DELIVERY_BUDGET_MS
     )
@@ -184,6 +193,7 @@ export async function emitNotification(
       deliveries: written.deliveries.length,
       sent: outcome.sent,
       failed: outcome.failed,
+      held: written.deliveries.filter((d) => d.status === 'held').length,
     }
   } catch (error) {
     compatLogWarn(
@@ -193,6 +203,37 @@ export async function emitNotification(
     trace('notification-emit-failed', { event: input.event })
     return EMPTY
   }
+}
+
+/**
+ * The channels that should wait rather than send now: a verified email channel
+ * with a digest cadence, or one inside its quiet hours, for an event that is
+ * not urgent. An urgent event (outage, anything security-related) is never held
+ * and the bell is never touched — only the external send waits.
+ */
+async function heldChannelIds(
+  db: Db,
+  channels: readonly NotificationChannelRecord[],
+  event: NotificationEvent,
+  nowMs: number
+): Promise<Set<string>> {
+  if (eventIsUrgent(event)) return new Set()
+  const candidates = channels.filter(
+    (c) =>
+      c.kind === 'email' && c.verifiedAt !== null && (c.digestCadence !== null || c.quiet !== null)
+  )
+  if (candidates.length === 0) return new Set()
+  const zones = await channelTimeZones(db, candidates)
+  return new Set(
+    candidates
+      .filter((c) =>
+        shouldHoldNow(nowMs, zones.get(c.id) ?? 'UTC', {
+          digestCadence: c.digestCadence,
+          quiet: c.quiet,
+        })
+      )
+      .map((c) => c.id)
+  )
 }
 
 async function inboxRecipients(

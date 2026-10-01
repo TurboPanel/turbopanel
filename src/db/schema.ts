@@ -26,6 +26,7 @@ import {
   integer,
   jsonb,
   pgTable,
+  smallint,
   text,
   timestamp,
   unique,
@@ -5302,6 +5303,8 @@ export const user = pgTable(
     is2FaEnabled: boolean('is_2fa_enabled').default(false).notNull(),
     isDisabled: boolean('is_disabled').default(false).notNull(),
     role: text().default('user').notNull(),
+    /** IANA zone the person's quiet hours are read in; null means UTC. */
+    timeZone: varchar('time_zone', { length: 64 }),
   },
   (table) => [
     unique('user_email_unique').on(table.email),
@@ -5559,6 +5562,12 @@ export const notificationChannel = pgTable(
       mode: 'string',
     }),
     createdByUserId: uuid('created_by_user_id'),
+    /** NOTIFICATION_DIGEST_CADENCES; null = every event is sent as it happens. */
+    digestCadence: text('digest_cadence'),
+    /** Quiet hours start, minutes after local midnight (0-1439); null with `quietEndMinute` = no quiet hours. */
+    quietStartMinute: smallint('quiet_start_minute'),
+    /** Quiet hours end, minutes after local midnight (0-1439); the window may wrap midnight. */
+    quietEndMinute: smallint('quiet_end_minute'),
   },
   (table) => [
     check('channel_scope_check', sql`scope IN ('instance', 'organization', 'user')`),
@@ -5570,6 +5579,15 @@ export const notificationChannel = pgTable(
     check(
       'channel_owner_check',
       sql`(scope = 'instance' AND organization_id IS NULL AND user_id IS NULL) OR (scope = 'organization' AND organization_id IS NOT NULL AND user_id IS NULL) OR (scope = 'user' AND user_id IS NOT NULL AND organization_id IS NULL)`
+    ),
+    check(
+      'channel_digest_cadence_check',
+      sql`digest_cadence IS NULL OR digest_cadence IN ('hourly', 'daily')`
+    ),
+    // Quiet hours are both ends or neither, each a minute of the day, and not an empty window.
+    check(
+      'channel_quiet_hours_check',
+      sql`(quiet_start_minute IS NULL AND quiet_end_minute IS NULL) OR (quiet_start_minute BETWEEN 0 AND 1439 AND quiet_end_minute BETWEEN 0 AND 1439 AND quiet_start_minute <> quiet_end_minute)`
     ),
     index('idx_channel_organization').on(table.organizationId),
     index('idx_channel_user').on(table.userId),
@@ -5739,8 +5757,15 @@ export const notificationDelivery = pgTable(
       sql`event IN ('server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked')`
     ),
     check('attempt_severity_check', sql`severity IN ('info', 'warning', 'critical')`),
-    check('attempt_status_check', sql`status IN ('pending', 'sent', 'failed', 'abandoned')`),
+    check(
+      'attempt_status_check',
+      sql`status IN ('pending', 'sent', 'failed', 'abandoned', 'held')`
+    ),
     index('idx_attempt_pending').on(table.status, table.nextAttemptAt),
+    // The digest sweep reads only the rows waiting for a window to end.
+    index('idx_attempt_held')
+      .on(table.channelId, table.createdAt)
+      .where(sql`status = 'held'`),
     index('idx_attempt_channel_created').on(table.channelId, table.createdAt.desc()),
     foreignKey({
       columns: [table.channelId],
