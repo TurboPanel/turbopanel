@@ -184,8 +184,7 @@ export function createServerTierNoticeEmail(
 </html>
 `.trim()
   const text =
-    `${subject}\n\n${intro}\n\n${unwatchedLine}\n\nOpen: ${job.consoleUrl}\n\n` +
-    `TurboPanel`
+    `${subject}\n\n${intro}\n\n${unwatchedLine}\n\nOpen: ${job.consoleUrl}\n\n` + `TurboPanel`
   return { subject, html, text }
 }
 

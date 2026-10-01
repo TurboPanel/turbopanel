@@ -17,8 +17,7 @@ export const installOpenApiSchemas = {
   InstallRequest: {
     type: 'object',
     required: ['username', 'password', 'superadminEmail', 'superadminPassword'],
-    description:
-      'Host credentials are required as `username` + `password`.',
+    description: 'Host credentials are required as `username` + `password`.',
     properties: {
       username: {
         type: 'string',

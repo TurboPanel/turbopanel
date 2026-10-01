@@ -17,26 +17,19 @@ import type { ServerGeo } from '../../features/geo/server-geo.ts'
 import { server } from '../../db/schema.ts'
 import { resolveColocatedServerIdSet } from './colocated.ts'
 import { UPDATE_PENDING_MS, UPDATE_REQUEST_TTL_MS } from '../../features/update/constants.ts'
-import {
-  resolveUpdateManifest,
-  type UpdateManifestTarget,
-} from '../../features/update/manifest.ts'
+import { resolveUpdateManifest, type UpdateManifestTarget } from '../../features/update/manifest.ts'
 import type { UpdateChannel } from '../../contracts/update-channel.ts'
 import { type DaemonSupport, resolveDaemonSupport } from '../../lib/version-wire.ts'
 import type { ServerUpdateBlockedCode } from '../../features/upgrades/decisions.ts'
 
-const TERMINAL_STATUSES = new Set<PendingRequestStatus>([
-  'done',
-  'failed',
-  'expired',
-])
+const TERMINAL_STATUSES = new Set<PendingRequestStatus>(['done', 'failed', 'expired'])
 
 function isTerminalRequestStatus(status: PendingRequestStatus): boolean {
   return TERMINAL_STATUSES.has(status)
 }
 
 function pickLatestUpdateRequest(
-  requests: PendingRequestRecord[],
+  requests: PendingRequestRecord[]
 ): PendingRequestRecord | undefined {
   if (requests.length === 0) return undefined
   const [first, ...rest] = requests
@@ -52,14 +45,11 @@ function pickLatestUpdateRequest(
 
 function projectedUpdateToRequest(
   serverId: string,
-  projected: UpdateProjection,
+  projected: UpdateProjection
 ): PendingRequestRecord | undefined {
   if (projected.status === 'idle') return undefined
 
-  const statusMap: Record<
-    Exclude<UpdateProjection['status'], 'idle'>,
-    PendingRequestStatus
-  > = {
+  const statusMap: Record<Exclude<UpdateProjection['status'], 'idle'>, PendingRequestStatus> = {
     updating: 'sent',
     done: 'done',
     failed: 'failed',
@@ -68,8 +58,7 @@ function projectedUpdateToRequest(
   const status = statusMap[projected.status as Exclude<UpdateProjection['status'], 'idle'>]
   if (!status) return undefined
 
-  const createdAt = projected.queuedAt ?? projected.finishedAt ??
-    new Date(0).toISOString()
+  const createdAt = projected.queuedAt ?? projected.finishedAt ?? new Date(0).toISOString()
 
   return {
     serverId,
@@ -107,11 +96,7 @@ export function isStaleProjectedUpdating(params: {
   const update = params.projectedUpdate
   if (update?.status !== 'updating') return false
 
-  if (
-    params.targetCommit &&
-    params.currentCommit &&
-    params.currentCommit === params.targetCommit
-  ) {
+  if (params.targetCommit && params.currentCommit && params.currentCommit === params.targetCommit) {
     return true
   }
 
@@ -175,22 +160,19 @@ function resolveUpdateTarget(params: {
 }): ResolvedUpdateTarget {
   const target = params.manifest
     ? {
-      commit: params.manifest.commit,
-      buildId: params.manifest.buildId,
-      builtAt: params.manifest.builtAt,
-      manifestUrl: params.manifest.manifestUrl,
-      ...(params.manifest.version ? { version: params.manifest.version } : {}),
-    }
+        commit: params.manifest.commit,
+        buildId: params.manifest.buildId,
+        builtAt: params.manifest.builtAt,
+        manifestUrl: params.manifest.manifestUrl,
+        ...(params.manifest.version ? { version: params.manifest.version } : {}),
+      }
     : null
 
-  const targetStatus = target ? 'ok' as const : 'unknown' as const
-  const targetError = target
-    ? undefined
-    : unresolvedTargetError(params.channel)
+  const targetStatus = target ? ('ok' as const) : ('unknown' as const)
+  const targetError = target ? undefined : unresolvedTargetError(params.channel)
 
-  const commitDrift = target && params.current?.commit
-    ? params.current.commit !== target.commit
-    : false
+  const commitDrift =
+    target && params.current?.commit ? params.current.commit !== target.commit : false
   const updateBlocked = params.colocatedWithInstance === true
   const updateAvailable = updateBlocked ? false : commitDrift
 
@@ -203,10 +185,7 @@ async function loadUpdateRequests(params: {
   projectedUpdate?: UpdateProjection | null
 }): Promise<PendingRequestRecord[]> {
   if (params.projectedUpdate !== undefined && params.projectedUpdate !== null) {
-    const synthesized = projectedUpdateToRequest(
-      params.serverId,
-      params.projectedUpdate,
-    )
+    const synthesized = projectedUpdateToRequest(params.serverId, params.projectedUpdate)
     return synthesized ? [synthesized] : []
   }
   if (!params.listUpdateRequests) return []
@@ -215,12 +194,13 @@ async function loadUpdateRequests(params: {
 
 function statusFromFailedOrExpired(
   latest: PendingRequestRecord,
-  updateAvailable: boolean,
+  updateAvailable: boolean
 ): {
   status: ServerUpdateGetResponse['status']
   lastUpdateError: string
 } {
-  const lastUpdateError = latest.error ??
+  const lastUpdateError =
+    latest.error ??
     (latest.status === 'expired'
       ? 'Update timed out waiting for daemon acknowledgement'
       : 'Update failed')
@@ -236,14 +216,11 @@ function statusFromFailedOrExpired(
 function isDoneStillPending(
   latest: PendingRequestRecord,
   target: NonNullable<ServerUpdateGetResponse['target']>,
-  currentCommit: string | undefined,
+  currentCommit: string | undefined
 ): boolean {
   if (currentCommit === target.commit) return false
-  const finishedAt = latest.finishedAt
-    ? Date.parse(latest.finishedAt)
-    : Number.NaN
-  return !Number.isNaN(finishedAt) &&
-    Date.now() - finishedAt < UPDATE_PENDING_MS
+  const finishedAt = latest.finishedAt ? Date.parse(latest.finishedAt) : Number.NaN
+  return !Number.isNaN(finishedAt) && Date.now() - finishedAt < UPDATE_PENDING_MS
 }
 
 function deriveUpdateLifecycle(params: {
@@ -269,7 +246,9 @@ function deriveUpdateLifecycle(params: {
     const failed = statusFromFailedOrExpired(latest, updateAvailable)
     status = failed.status
     lastUpdateError = failed.lastUpdateError
-  } else if (latest.status === 'done' && target &&
+  } else if (
+    latest.status === 'done' &&
+    target &&
     isDoneStillPending(latest, target, currentCommit)
   ) {
     status = 'updating'
@@ -311,22 +290,19 @@ export async function resolveServerUpdateStatus(params: {
     | 'daemonSupport'
   >
 > {
-  const manifest = params.targetManifest !== undefined
-    ? params.targetManifest
-    : await resolveUpdateManifest(params.channel)
+  const manifest =
+    params.targetManifest !== undefined
+      ? params.targetManifest
+      : await resolveUpdateManifest(params.channel)
 
-  const {
-    target,
-    targetStatus,
-    targetError,
-    updateBlocked,
-    updateAvailable,
-  } = resolveUpdateTarget({
-    current: params.current,
-    colocatedWithInstance: params.colocatedWithInstance,
-    channel: params.channel,
-    manifest,
-  })
+  const { target, targetStatus, targetError, updateBlocked, updateAvailable } = resolveUpdateTarget(
+    {
+      current: params.current,
+      colocatedWithInstance: params.colocatedWithInstance,
+      channel: params.channel,
+      manifest,
+    }
+  )
 
   const requests = await loadUpdateRequests(params)
   const latest = pickLatestUpdateRequest(requests)
@@ -345,7 +321,8 @@ export async function resolveServerUpdateStatus(params: {
     updateAvailable,
   })
 
-  const canResetUpdateStatus = staleUpdating ||
+  const canResetUpdateStatus =
+    staleUpdating ||
     (status === 'error' && !!lastUpdateError) ||
     (status === 'idle' && !!lastUpdateError && !updateAvailable)
 
@@ -354,10 +331,10 @@ export async function resolveServerUpdateStatus(params: {
     updateAvailable,
     ...(updateBlocked
       ? {
-        updateBlocked: true,
-        updateBlockedCode: 'colocated_with_instance' as const,
-        updateBlockedReason: colocatedServerUpdateBlockedReason(),
-      }
+          updateBlocked: true,
+          updateBlockedCode: 'colocated_with_instance' as const,
+          updateBlockedReason: colocatedServerUpdateBlockedReason(),
+        }
       : {}),
     status,
     targetStatus,
@@ -383,7 +360,7 @@ export type ServerStatusRecord = {
 
 export async function readDaemonStatusesForServers(
   db: Db,
-  serverIds: string[],
+  serverIds: string[]
 ): Promise<Map<string, ServerDaemonStatus>> {
   if (serverIds.length === 0) return new Map()
 
@@ -406,12 +383,10 @@ export async function readDaemonStatusesForServers(
 export function buildServerStatusRecord(
   presence: ServerFleetPresence,
   colocatedWithInstance: boolean,
-  status?: ServerDaemonStatus | null,
+  status?: ServerDaemonStatus | null
 ): ServerStatusRecord {
   const resolved = status ?? buildDefaultDaemonStatus()
-  const connectedAt = presence.connected
-    ? (presence.connectedAt ?? resolved.statusChangedAt)
-    : null
+  const connectedAt = presence.connected ? (presence.connectedAt ?? resolved.statusChangedAt) : null
   return {
     serverId: presence.serverId,
     connected: presence.connected,
@@ -428,7 +403,7 @@ export function buildServerStatusRecord(
 export async function loadServerStatusRecords(
   db: Db,
   registry: DaemonCellRegistry | undefined,
-  serverIds: string[],
+  serverIds: string[]
 ): Promise<ServerStatusRecord[]> {
   if (serverIds.length === 0) return []
 
@@ -441,10 +416,6 @@ export async function loadServerStatusRecords(
   return serverIds.flatMap((id) => {
     const live = presence.get(id)
     if (!live) return []
-    return [buildServerStatusRecord(
-      live,
-      colocatedIds.has(id),
-      statuses.get(id),
-    )]
+    return [buildServerStatusRecord(live, colocatedIds.has(id), statuses.get(id))]
   })
 }

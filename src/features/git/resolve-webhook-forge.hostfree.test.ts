@@ -93,20 +93,24 @@ test('githubTargetAppId reads the App id only for app-targeted webhooks', () => 
   assertEquals(githubTargetAppId(APP_HEADERS), '1234')
   // `app` is the newer spelling of the same target type.
   assertEquals(
-    githubTargetAppId(headers({
-      [GITHUB_HOOK_TARGET_TYPE_HEADER]: 'app',
-      [GITHUB_HOOK_TARGET_ID_HEADER]: '77',
-    })),
-    '77',
+    githubTargetAppId(
+      headers({
+        [GITHUB_HOOK_TARGET_TYPE_HEADER]: 'app',
+        [GITHUB_HOOK_TARGET_ID_HEADER]: '77',
+      })
+    ),
+    '77'
   )
   // A repository webhook's target id is a repository id, not an App id — using
   // it to select an app would be a category error.
   assertEquals(
-    githubTargetAppId(headers({
-      [GITHUB_HOOK_TARGET_TYPE_HEADER]: 'repository',
-      [GITHUB_HOOK_TARGET_ID_HEADER]: '99',
-    })),
-    null,
+    githubTargetAppId(
+      headers({
+        [GITHUB_HOOK_TARGET_TYPE_HEADER]: 'repository',
+        [GITHUB_HOOK_TARGET_ID_HEADER]: '99',
+      })
+    ),
+    null
   )
   assertEquals(githubTargetAppId(headers({})), null)
 })
@@ -122,12 +126,7 @@ test('a ref that disagrees with the delivery App id is refused', async () => {
   // The URL says one app, the credentials say another: accepting either would
   // route a verified delivery to the wrong tenant.
   const db = stubDb([row({ id: 'app-a', externalAppId: '9999' })])
-  const resolved = await resolveGithubWebhookForge(
-    db,
-    await secrets(),
-    'app-a-ref',
-    APP_HEADERS,
-  )
+  const resolved = await resolveGithubWebhookForge(db, await secrets(), 'app-a-ref', APP_HEADERS)
   assertEquals(resolved, { ok: false, reason: 'ref_header_mismatch' })
 })
 
@@ -167,13 +166,12 @@ test('selectVerifiedApp keeps the candidate whose secret actually verifies', asy
     stubDb([first, second]),
     derived,
     null,
-    APP_HEADERS,
+    APP_HEADERS
   )
   if (!resolved.ok) throw new TypeError('expected candidates')
 
-  const picked = await selectVerifiedApp(
-    resolved.candidates,
-    (secret) => Promise.resolve(secret === 'right'),
+  const picked = await selectVerifiedApp(resolved.candidates, (secret) =>
+    Promise.resolve(secret === 'right')
   )
   assertEquals(picked?.id, 'second')
 
@@ -187,18 +185,16 @@ test('candidatesUnconfigured separates a config gap from a rejection', async () 
     stubDb([row({ id: 'bare' })]),
     derived,
     'bare-ref',
-    headers({}),
+    headers({})
   )
   if (!resolved.ok) throw new TypeError('expected candidates')
   assertEquals(candidatesUnconfigured(resolved.candidates), true)
 
   const configured = await resolveGithubWebhookForge(
-    stubDb([
-      row({ id: 'set', webhookSecretEnvelope: await encryptSecret(derived, 'shh') }),
-    ]),
+    stubDb([row({ id: 'set', webhookSecretEnvelope: await encryptSecret(derived, 'shh') })]),
     derived,
     'set-ref',
-    headers({}),
+    headers({})
   )
   if (!configured.ok) throw new TypeError('expected candidates')
   assertEquals(candidatesUnconfigured(configured.candidates), false)
@@ -222,18 +218,18 @@ test('gitlab resolves by ref, then by token digest', async () => {
   assertEquals(byToken.ok && byToken.candidates.map((app) => app.id), ['gl'])
 
   // No ref and no token is not something to guess at.
-  assertEquals(
-    await resolveGitlabWebhookForge(stubDb([gitlabRow]), derived, null, '  '),
-    { ok: false, reason: 'unresolved' },
-  )
+  assertEquals(await resolveGitlabWebhookForge(stubDb([gitlabRow]), derived, null, '  '), {
+    ok: false,
+    reason: 'unresolved',
+  })
 })
 
 test('a github ref is not a gitlab candidate', async () => {
   const db = stubDb([row({ id: 'gh', provider: 'github' })])
-  assertEquals(
-    await resolveGitlabWebhookForge(db, await secrets(), 'gh-ref', null),
-    { ok: false, reason: 'unresolved' },
-  )
+  assertEquals(await resolveGitlabWebhookForge(db, await secrets(), 'gh-ref', null), {
+    ok: false,
+    reason: 'unresolved',
+  })
 })
 
 test('hashWebhookToken is deterministic and domain-separated', async () => {
@@ -245,7 +241,7 @@ test('hashWebhookToken is deterministic and domain-separated', async () => {
   // confused with any other hash of the same secret.
   const bare = await crypto.subtle.digest(
     'SHA-256',
-    new TextEncoder().encode('token-value') as BufferSource,
+    new TextEncoder().encode('token-value') as BufferSource
   )
   const bareHex = Array.from(new Uint8Array(bare))
     .map((byte) => byte.toString(16).padStart(2, '0'))

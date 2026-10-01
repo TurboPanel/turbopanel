@@ -29,9 +29,7 @@ export function getWorkersClientOpenApiSpec(serverUrl: string): object {
   } else {
     spec.tags.splice(licensesIndex + 1, 0, BILLING_TAG)
   }
-  const infrastructure = spec['x-tagGroups'].find((group) =>
-    group.name === 'Infrastructure'
-  )
+  const infrastructure = spec['x-tagGroups'].find((group) => group.name === 'Infrastructure')
   if (infrastructure && !infrastructure.tags.includes('Billing')) {
     infrastructure.tags.push('Billing')
   }

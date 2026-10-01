@@ -122,8 +122,7 @@ export const repositorySchemas = {
       },
       reachabilityNote: {
         type: ['string', 'null'],
-        description:
-          'Operator-facing explanation when webhookReachable is false; null otherwise.',
+        description: 'Operator-facing explanation when webhookReachable is false; null otherwise.',
       },
     },
   },
@@ -209,8 +208,7 @@ export const repositorySchemas = {
       provider: { type: 'string', enum: ['github', 'gitlab'] },
       externalInstallationId: {
         type: 'string',
-        description:
-          "GitHub App installation id, or the connected GitLab account/group id.",
+        description: 'GitHub App installation id, or the connected GitLab account/group id.',
       },
       accountLogin: { type: ['string', 'null'] },
       accountType: { type: ['string', 'null'] },
@@ -238,8 +236,7 @@ export const repositorySchemas = {
     properties: {
       name: {
         type: 'string',
-        description:
-          'Label for the credential, also used as the key comment shown in GitLab.',
+        description: 'Label for the credential, also used as the key comment shown in GitLab.',
       },
     },
   },
@@ -303,7 +300,7 @@ export const repositoryPaths = {
   [gitAppsBasePath]: {
     get: {
       tags: ['Repositories'],
-      summary: "List Git applications this organization may connect through",
+      summary: 'List Git applications this organization may connect through',
       description:
         "The organization's own applications plus every instance-wide one. " +
         'Rows shared with every organization come back with `readOnly: true`: usable for a ' +
@@ -364,9 +361,7 @@ export const repositoryPaths = {
     },
   },
   [`${gitAppsBasePath}/{id}`]: {
-    parameters: [
-      { name: 'id', in: 'path', required: true, schema: { type: 'string' } },
-    ],
+    parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
     get: {
       tags: ['Repositories'],
       summary: 'Read one Git application',
@@ -405,8 +400,7 @@ export const repositoryPaths = {
           },
         },
         '403': {
-          description:
-            'git_app_not_writable — the application is instance-wide',
+          description: 'git_app_not_writable — the application is instance-wide',
           content: { 'application/json': { schema: clientErrorJson } },
         },
         '409': {
@@ -427,8 +421,7 @@ export const repositoryPaths = {
       responses: {
         '204': { description: 'Deleted' },
         '403': {
-          description:
-            'git_app_not_writable — the application is instance-wide',
+          description: 'git_app_not_writable — the application is instance-wide',
           content: { 'application/json': { schema: clientErrorJson } },
         },
         ...resourceErrorResponses({}),
@@ -522,9 +515,7 @@ export const repositoryPaths = {
         'new accounts. GitHub apps only: a GitLab OAuth application has no ' +
         'equivalent self-describing endpoint.',
       security,
-      parameters: [
-        { name: 'id', in: 'path', required: true, schema: { type: 'string' } },
-      ],
+      parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
       responses: {
         '200': {
           description: 'The reconciled app, plus the provider permission/event sets',
@@ -596,7 +587,7 @@ export const repositoryPaths = {
       summary: 'Finish the GitHub App Manifest flow',
       description:
         "Exchanges GitHub's one-shot code for the App credentials and stores " +
-        'them, then 302s the operator\'s browser back to the Git providers ' +
+        "them, then 302s the operator's browser back to the Git providers " +
         'page. The organization is pinned in the query string rather than the ' +
         'usual header because this is a top-level navigation.',
       security,
@@ -607,8 +598,7 @@ export const repositoryPaths = {
       responses: {
         '302': {
           description:
-            'Redirect to /{organizationId}/projects/git-apps with created= ' +
-            'or error=',
+            'Redirect to /{organizationId}/projects/git-apps with created= ' + 'or error=',
         },
         ...resourceErrorResponses({}),
       },
@@ -632,7 +622,7 @@ export const repositoryPaths = {
   [`${repositoryIdPath}/refresh`]: {
     post: {
       tags: ['Repositories'],
-      summary: "Re-read provider facts (default branch) for one repository",
+      summary: 'Re-read provider facts (default branch) for one repository',
       description:
         "Reads the provider's current listing through the repository's " +
         'connection and records detectedDefaultBranch / defaultBranchCheckedAt ' +
@@ -641,9 +631,7 @@ export const repositoryPaths = {
         'value); an operator-set branch is never overwritten. 400 ' +
         'source_refresh_not_supported for deploy-key / generic git rows.',
       security,
-      parameters: [
-        { name: 'id', in: 'path', required: true, schema: { type: 'string' } },
-      ],
+      parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
       responses: {
         '200': {
           description: 'The refreshed repository',
@@ -679,10 +667,9 @@ export const repositoryPaths = {
         unknown
       >),
       responses: {
-        ...(((basePaths[repositoryIdPath] as Record<string, unknown>).delete as Record<
-          string,
-          unknown
-        >).responses as Record<string, unknown>),
+        ...((
+          (basePaths[repositoryIdPath] as Record<string, unknown>).delete as Record<string, unknown>
+        ).responses as Record<string, unknown>),
         '409': {
           description: 'source_referenced_by_compose',
           content: { 'application/json': { schema: clientErrorJson } },
@@ -717,9 +704,7 @@ export const repositoryPaths = {
         "Dispatches on the installation's provider: mints a short-lived credential per " +
         'request, calls the provider, and discards it.',
       security,
-      parameters: [
-        { name: 'id', in: 'path', required: true, schema: { type: 'string' } },
-      ],
+      parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
       responses: {
         '200': {
           description: 'Repositories the installation can access',
@@ -778,7 +763,7 @@ export const repositoryPaths = {
       tags: ['Repositories'],
       summary: 'GitHub App installation callback',
       description:
-        'The App\'s callback URL. Verifies the signed `state`, exchanges the one-shot user-authorization `code` ' +
+        "The App's callback URL. Verifies the signed `state`, exchanges the one-shot user-authorization `code` " +
         'GitHub sends when the App requests user authorization during installation, confirms the authorizing ' +
         'GitHub user can see `installation_id` (`GET /user/installations`), then upserts the connection row for ' +
         'the organization. An installation already held by another organization on the same App is refused ' +
@@ -819,7 +804,7 @@ export const repositoryPaths = {
       summary: 'Start the GitLab OAuth connect flow',
       description:
         'Redirects to the GitLab authorize endpoint with a signed `state` binding the flow ' +
-        "to the caller organization and to the chosen application. GitLab has no " +
+        'to the caller organization and to the chosen application. GitLab has no ' +
         'App install, so this connects one account or group rather than selecting ' +
         'repositories.',
       security,

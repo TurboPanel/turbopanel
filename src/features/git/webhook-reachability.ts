@@ -83,10 +83,7 @@ const HOSTED_PROVIDER_ORIGINS: Record<WebhookProvider, string> = {
  * release cadence, and a build that omits the header would 401 every delivery
  * with nothing in the URL to fall back to. Those get the ref.
  */
-export function webhookPathNeedsRef(
-  provider: WebhookProvider,
-  baseUrl?: string | null,
-): boolean {
+export function webhookPathNeedsRef(provider: WebhookProvider, baseUrl?: string | null): boolean {
   if (!baseUrl) return false
   return normalizeOrigin(baseUrl) !== HOSTED_PROVIDER_ORIGINS[provider]
 }
@@ -101,7 +98,7 @@ export function webhookPathNeedsRef(
 export function webhookPathFor(
   provider: WebhookProvider,
   webhookRef?: string | null,
-  baseUrl?: string | null,
+  baseUrl?: string | null
 ): string {
   const base = WEBHOOK_PATH_BY_PROVIDER[provider]
   if (!webhookRef || !webhookPathNeedsRef(provider, baseUrl)) return base
@@ -120,7 +117,7 @@ export function webhookReachability(
   origins: readonly string[],
   provider: WebhookProvider = 'github',
   webhookRef?: string | null,
-  baseUrl?: string | null,
+  baseUrl?: string | null
 ): WebhookReachability {
   const path = webhookPathFor(provider, webhookRef, baseUrl)
   const usable = origins.map((entry) => entry.trim()).filter((entry) => entry.length > 0)
@@ -141,8 +138,6 @@ export function webhookReachability(
 }
 
 /** GitHub-specific alias kept for the callers (and test) that predate GitLab. */
-export function githubWebhookReachability(
-  origins: readonly string[],
-): WebhookReachability {
+export function githubWebhookReachability(origins: readonly string[]): WebhookReachability {
   return webhookReachability(origins, 'github')
 }
