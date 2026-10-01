@@ -13,7 +13,8 @@
  *  1. the operator names its id in the deploy-time variable
  *     `TURBOPANEL_FIREWALL_APPLY_SERVERS` (comma-separated server UUIDs, at
  *     most {@link FIREWALL_APPLY_SERVERS_MAX}; `*`, `all` or any malformed
- *     entry makes the whole list empty), and
+ *     entry makes the whole list empty; ignored outright on the hosted live
+ *     environment, `TURBOPANEL_ENVIRONMENT=live`), and
  *  2. an owner or manager sets that server's firewall mode to `managed`
  *     (audited as `server.firewall_mode.set`).
  * Either key alone keeps the server observe-only. What the host then does is
@@ -60,10 +61,15 @@ export function parseFirewallApplyServers(raw: string | undefined): ReadonlySet<
   return new Set(entries)
 }
 
+/** The hosted environment on which the allowlist is never honored (public production). */
+export const FIREWALL_APPLY_REFUSED_ENVIRONMENT = 'live'
+
 /** The deploy-time key read from a runtime's string env (Workers bindings or `Deno.env`). */
 export function firewallApplyGateFromEnv(
   env: Readonly<Record<string, string | undefined>> | undefined
 ): FirewallApplyGate {
+  const environment = env?.TURBOPANEL_ENVIRONMENT?.trim().toLowerCase()
+  if (environment === FIREWALL_APPLY_REFUSED_ENVIRONMENT) return DENY_FIREWALL_APPLY
   const servers = parseFirewallApplyServers(env?.[FIREWALL_APPLY_SERVERS_ENV])
   if (servers.size === 0) return DENY_FIREWALL_APPLY
   return (serverId) => servers.has(serverId.toLowerCase())

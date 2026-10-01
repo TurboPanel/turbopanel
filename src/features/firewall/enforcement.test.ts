@@ -47,6 +47,17 @@ test('naming one server allows that server only; every other server stays observ
   assertEquals(wireModeFor('managed', applyAllowedFor(HOST_B, gate)), 'observe')
 })
 
+test('the hosted live environment never honors the allowlist; testing and self-hosted do', () => {
+  const named = { [FIREWALL_APPLY_SERVERS_ENV]: HOST_A }
+  for (const environment of ['live', ' LIVE ']) {
+    const gate = firewallApplyGateFromEnv({ ...named, TURBOPANEL_ENVIRONMENT: environment })
+    assertEquals(applyAllowedFor(HOST_A, gate), false, environment)
+  }
+  const testing = firewallApplyGateFromEnv({ ...named, TURBOPANEL_ENVIRONMENT: 'testing' })
+  assertEquals(applyAllowedFor(HOST_A, testing), true)
+  assertEquals(applyAllowedFor(HOST_A, firewallApplyGateFromEnv(named)), true)
+})
+
 test('a wildcard, a malformed entry or too many servers closes the switch for everyone', () => {
   for (const raw of [
     '*',
