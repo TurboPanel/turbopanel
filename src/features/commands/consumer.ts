@@ -12,6 +12,7 @@ import type { Db } from '../../db/connection.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 import type { DaemonCellRegistry, PendingRequestRecord } from '../../contracts/cell.ts'
 import { generateDeliveryId } from '../../contracts/cell-protocol.ts'
+import { resultSummaryForPersist } from './result-summary.ts'
 import { getResolveFleetPresence } from '../../platform/ports/fleet-presence.ts'
 import { getServerLicenseBinding, touchServerMetadata } from '../servers/server-registry.ts'
 import { commandConsumerTrace } from '../../lib/logger.ts'
@@ -2140,7 +2141,10 @@ async function handlePendingDone(
 ): Promise<void> {
   await transitionCommand(db, record.id, {
     status: 'succeeded',
-    result: enrichPingResult(record.type, pending.result, pending),
+    result: resultSummaryForPersist(
+      record.type,
+      enrichPingResult(record.type, pending.result, pending)
+    ),
     ackedAt: pending.ackAt ?? pending.finishedAt,
     startedAt: pending.ackAt ?? pending.finishedAt,
     finishedAt: pending.finishedAt,
