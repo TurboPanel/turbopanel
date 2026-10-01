@@ -3,7 +3,9 @@ import {
   DEFAULT_ROLLOUT_POLICY,
   parseComposeDurationSeconds,
   parseUpdateConfig,
+  planRolloutBatches,
   resolveRolloutPolicy,
+  unhonoredUpdateConfigReason,
 } from './rollout-policy.ts'
 
 const test = Deno.test.bind(Deno)
@@ -174,4 +176,31 @@ test('a continue-only environment continues; an invalid stanza is reported, not 
   assertEquals(result.invalid, [
     { service: 'bad', reasons: ['parallelism must be a non-negative integer'] },
   ])
+})
+
+test('planRolloutBatches splits in order, one at a time by default', () => {
+  assertEquals(planRolloutBatches(['a', 'b', 'c'], 1), [['a'], ['b'], ['c']])
+  assertEquals(planRolloutBatches(['a', 'b', 'c', 'd', 'e'], 2), [['a', 'b'], ['c', 'd'], ['e']])
+  assertEquals(planRolloutBatches(['a', 'b'], 5), [['a', 'b']])
+  assertEquals(planRolloutBatches([], 2), [])
+})
+
+test('planRolloutBatches: 0 is all at once, a bad value is never all at once', () => {
+  assertEquals(planRolloutBatches(['a', 'b', 'c'], 0), [['a', 'b', 'c']])
+  assertEquals(planRolloutBatches(['a', 'b'], -3), [['a'], ['b']])
+  assertEquals(planRolloutBatches(['a', 'b'], 1.5), [['a'], ['b']])
+})
+
+test('only parallelism and a stopping failure_action are honoured', () => {
+  assertEquals(unhonoredUpdateConfigReason('parallelism', 3), null)
+  assertEquals(unhonoredUpdateConfigReason('failure_action', 'pause'), null)
+  assertEquals(unhonoredUpdateConfigReason('failure_action', 'rollback'), null)
+  assertEquals(
+    unhonoredUpdateConfigReason('failure_action', 'continue')?.includes('always stops'),
+    true
+  )
+  for (const key of ['delay', 'monitor', 'order', 'max_failure_ratio']) {
+    assertEquals(unhonoredUpdateConfigReason(key, 'x')?.includes(`update_config.${key}`), true)
+  }
+  assertEquals(unhonoredUpdateConfigReason('nonsense', 1), null)
 })

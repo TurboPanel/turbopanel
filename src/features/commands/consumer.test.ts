@@ -2571,6 +2571,174 @@ test('processCommandEnvelope records a rolled back and a needs attention sequent
   })
 })
 
+/** Two servers of one deploy, generation 5: `serverId` is batch 0 (applying), a second is batch 1 (held). */
+async function holdSecondServerOfRollout(
+  db: Parameters<Parameters<typeof withDeployFixtures>[0]>[0]['db'],
+  ctx: { organizationId: string; serverId: string; environmentId: string; projectId: string }
+): Promise<{ firstCommandId: string; heldServerId: string; heldCommandId: string }> {
+  const now = new Date().toISOString()
+  const [held] = await db
+    .insert(server)
+    .values({
+      organizationId: ctx.organizationId,
+      name: 'rollout-held',
+      createdAt: now,
+      updatedAt: now,
+    })
+    .returning({ id: server.id })
+  const payload = {
+    environmentId: ctx.environmentId,
+    projectId: ctx.projectId,
+    organizationId: ctx.organizationId,
+    projectName: 'tp-deploy-test',
+    composeFiles: [
+      {
+        filename: 'compose.yaml',
+        role: 'runtime',
+        source: 'inline',
+        content: 'services:\n  web:\n    image: nginx\n',
+      },
+    ],
+    hostings: [],
+    generation: 5,
+  }
+  const first = await createCommandRecord(db, {
+    serverId: ctx.serverId,
+    ...TEST_COMMAND_ACTOR,
+    type: 'environment.deploy',
+    payload,
+  })
+  const second = await createCommandRecord(db, {
+    serverId: held!.id,
+    ...TEST_COMMAND_ACTOR,
+    type: 'environment.deploy',
+    payload: { ...payload, serverId: held!.id },
+  })
+  await db.insert(deployment).values([
+    {
+      environmentId: ctx.environmentId,
+      serverId: ctx.serverId,
+      desiredGeneration: 5,
+      status: 'applying',
+      lastCommandId: first.id,
+      options: { rollout: { batch: 0, batches: 2 } },
+    },
+    {
+      environmentId: ctx.environmentId,
+      serverId: held!.id,
+      desiredGeneration: 5,
+      status: 'pending',
+      lastCommandId: second.id,
+      options: { rollout: { batch: 1, batches: 2 } },
+    },
+  ])
+  return { firstCommandId: first.id, heldServerId: held!.id, heldCommandId: second.id }
+}
+
+async function removeHeldServer(
+  db: Parameters<Parameters<typeof withDeployFixtures>[0]>[0]['db'],
+  heldServerId: string
+): Promise<void> {
+  await db.delete(deployment).where(eq(deployment.serverId, heldServerId))
+  await db.delete(command).where(eq(command.serverId, heldServerId))
+  await db.delete(server).where(eq(server.id, heldServerId))
+}
+
+async function finishFirstOfRollout(
+  db: Parameters<Parameters<typeof withDeployFixtures>[0]>[0]['db'],
+  ids: { serverId: string; firstCommandId: string },
+  outcome: { status: 'done'; result: unknown } | { status: 'failed'; error: string },
+  sent: CommandEnvelope[]
+): Promise<void> {
+  const record = await getCommandRecord(db, ids.firstCommandId)
+  const registry = createDispatchMockRegistry(ids.serverId, {
+    waitForRequestResult: {
+      serverId: ids.serverId,
+      requestId: ids.firstCommandId,
+      requestKind: 'command-dispatch',
+      createdAt: record!.createdAt,
+      expiresAt: record!.createdAt,
+      finishedAt: new Date().toISOString(),
+      ...outcome,
+    },
+  })
+  const queue = {
+    enqueue: (envelope: CommandEnvelope) => Promise.resolve(void sent.push(envelope)),
+  }
+  await processCommandEnvelope(db, registry, buildEnvelope(record!, ids.serverId), {
+    commandQueue: queue,
+  })
+}
+
+test('processCommandEnvelope delivers the next rolling batch when a deploy succeeds', async () => {
+  await withDeployFixtures(async ({ db, organizationId, serverId, environmentId, projectId }) => {
+    await attachConnectedDaemonStatus(db, serverId)
+    const held = await holdSecondServerOfRollout(db, {
+      organizationId,
+      serverId,
+      environmentId,
+      projectId,
+    })
+    const sent: CommandEnvelope[] = []
+    try {
+      await finishFirstOfRollout(
+        db,
+        { serverId, firstCommandId: held.firstCommandId },
+        { status: 'done', result: { projectName: 'tp-deploy-test', summary: 'deployed' } },
+        sent
+      )
+      assertEquals(
+        sent.map((envelope) => envelope.commandId),
+        [held.heldCommandId]
+      )
+      assertEquals(sent[0]?.serverId, held.heldServerId)
+      const [row] = await db
+        .select({ status: deployment.status })
+        .from(deployment)
+        .where(eq(deployment.serverId, held.heldServerId))
+      assertEquals(row?.status, 'applying')
+    } finally {
+      await removeHeldServer(db, held.heldServerId)
+    }
+  })
+})
+
+test('processCommandEnvelope stops a rolling deploy when a server fails and flags the rest', async () => {
+  await withDeployFixtures(async ({ db, organizationId, serverId, environmentId, projectId }) => {
+    await attachConnectedDaemonStatus(db, serverId)
+    const held = await holdSecondServerOfRollout(db, {
+      organizationId,
+      serverId,
+      environmentId,
+      projectId,
+    })
+    const sent: CommandEnvelope[] = []
+    try {
+      await finishFirstOfRollout(
+        db,
+        { serverId, firstCommandId: held.firstCommandId },
+        { status: 'failed', error: 'rolled_back: web failed its healthcheck' },
+        sent
+      )
+      assertEquals(sent.length, 0)
+      const [row] = await db
+        .select({ status: deployment.status, metadata: deployment.metadata })
+        .from(deployment)
+        .where(eq(deployment.serverId, held.heldServerId))
+      assertEquals(row?.status, 'failed')
+      assertEquals((row?.metadata as { rollout: unknown }).rollout, 'not_started')
+      assertEquals((await getCommandRecord(db, held.heldCommandId))?.status, 'cancelled')
+      // The server that failed keeps its own rolled_back outcome.
+      assertEquals(
+        (await getCommandRecord(db, held.firstCommandId))?.errorCode,
+        'deploy_rolled_back'
+      )
+    } finally {
+      await removeHeldServer(db, held.heldServerId)
+    }
+  })
+})
+
 test('processCommandEnvelope clears pins on environment.stop success', async () => {
   await withDeployFixtures(async ({ db, serverId, environmentId, projectId, webServiceId }) => {
     await attachConnectedDaemonStatus(db, serverId)

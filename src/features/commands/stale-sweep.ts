@@ -27,7 +27,7 @@
 
 import { and, eq, inArray, lt, notExists, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import { command, managed } from '../../db/schema.ts'
+import { command, deployment, managed } from '../../db/schema.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 import { transitionCommand } from './command-records.ts'
 import { nowIso } from './ids.ts'
@@ -131,7 +131,21 @@ export async function sweepStaleCommands(
       startedAt: command.startedAt,
     })
     .from(command)
-    .where(and(inArray(command.status, NON_TERMINAL_STATUSES), lt(command.updatedAt, cutoff)))
+    .where(
+      and(
+        inArray(command.status, NON_TERMINAL_STATUSES),
+        lt(command.updatedAt, cutoff),
+        // A rolling deploy's later batches wait undelivered (target `pending`);
+        // that is not a stall, and the rollout starts their clock when it
+        // delivers them (`features/deploy/rollout.ts`).
+        notExists(
+          db
+            .select({ one: sql`1` })
+            .from(deployment)
+            .where(and(eq(deployment.lastCommandId, command.id), eq(deployment.status, 'pending')))
+        )
+      )
+    )
     .limit(limit)
 
   let swept = 0

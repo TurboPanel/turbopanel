@@ -3,7 +3,7 @@ import { and, eq, inArray } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
-import { createDenoDb } from '../../db/connection.ts'
+import { createDenoDb, endDbConnection } from '../../db/connection.ts'
 import type { DaemonCell, DaemonCellRegistry } from '../../contracts/cell.ts'
 import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from '../authn/crypto.ts'
 import { createSession } from '../authn/session-store.ts'
@@ -600,6 +600,8 @@ async function withDeployFixtures(
     await db.delete(workspace).where(eq(workspace.id, workspaceId))
     await db.delete(user).where(eq(user.id, userId))
     await db.delete(organization).where(eq(organization.id, organizationId))
+    // Each fixture opens its own pool; leaking it exhausts a small Postgres.
+    await endDbConnection(db)
   }
 }
 
@@ -2188,6 +2190,173 @@ test('POST /environments/:id/deploy records per-server failures when queue deliv
       }
     }
   )
+})
+
+/** Run the two-server deploy under `deployStrategy: sequential`, with an optional update_config. */
+async function deployTwoServersSequentially(
+  ctx: {
+    db: ReturnType<typeof createDenoDb>
+    app: Hono<AppEnv>
+    secrets: Awaited<ReturnType<typeof deriveSecretsConfig>>
+    userId: string
+    organizationId: string
+    environmentId: string
+    serverId: string
+    commandQueue: ReturnType<typeof createRecordingCommandQueue>
+  },
+  updateConfig: Record<string, unknown> | undefined,
+  check: (input: {
+    body: {
+      commands: Array<{ serverId: string }>
+      strategy: { rollout: { parallelism: number; batches: number } }
+    }
+    serverIds: string[]
+  }) => Promise<void>
+): Promise<void> {
+  const { db, app, secrets, userId, organizationId, environmentId, serverId, commandQueue } = ctx
+  const extraServerId = await prepareMultiServerFabricDeploy(db, {
+    organizationId,
+    environmentId,
+    serverId,
+    commandQueue,
+    settleStatus: 'succeeded',
+  })
+  const compose = composeWithReplicatedWebService()
+  if (updateConfig !== undefined) {
+    const services = compose.data.services as Record<string, { deploy: Record<string, unknown> }>
+    services.web!.deploy.update_config = updateConfig
+  }
+  await db
+    .update(environment)
+    .set({ options: { compose, deployStrategy: 'sequential' } })
+    .where(eq(environment.id, environmentId))
+  try {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const res = await app.request(`/environments/${environmentId}/deploy`, {
+      method: 'POST',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      },
+      body: '{}',
+    })
+    assertEquals(res.status, 200)
+    await check({
+      body: (await res.json()) as Parameters<typeof check>[0]['body'],
+      serverIds: [serverId, extraServerId],
+    })
+  } finally {
+    await cleanupMultiServerFabricDeploy(db, {
+      environmentId,
+      organizationId,
+      serverIds: [serverId, extraServerId],
+      extraServerId,
+    })
+  }
+}
+
+test('POST /environments/:id/deploy on a sequential environment queues one server, holds the rest', async () => {
+  await withDeployFixtures(async (ctx) => {
+    await deployTwoServersSequentially(ctx, undefined, async ({ body, serverIds }) => {
+      assertEquals(body.strategy.rollout, { parallelism: 1, batches: 2 })
+      assertEquals(body.commands.length, 1)
+      const queuedDeploys = ctx.commandQueue.envelopes.filter(
+        (envelope) => envelope.type === 'environment.deploy'
+      )
+      assertEquals(queuedDeploys.length, 1)
+      const first = body.commands[0]!.serverId
+      const second = serverIds.find((id) => id !== first)!
+
+      const targets = await ctx.db
+        .select({
+          serverId: deployment.serverId,
+          status: deployment.status,
+          options: deployment.options,
+        })
+        .from(deployment)
+        .where(eq(deployment.environmentId, ctx.environmentId))
+      assertEquals(targets.find((row) => row.serverId === first)?.status, 'applying')
+      const held = targets.find((row) => row.serverId === second)
+      assertEquals(held?.status, 'pending')
+      assertEquals((held?.options as { rollout?: unknown }).rollout, { batch: 1, batches: 2 })
+
+      // The held server's command exists and was never handed to the queue.
+      const [heldCommand] = await ctx.db
+        .select({ id: command.id, status: command.status })
+        .from(command)
+        .where(and(eq(command.name, 'environment.deploy'), eq(command.serverId, second)))
+      assertEquals(heldCommand?.status, 'queued')
+      assertEquals(
+        queuedDeploys.some((envelope) => envelope.commandId === heldCommand?.id),
+        false
+      )
+    })
+  })
+})
+
+test('POST /environments/:id/deploy with update_config.parallelism 0 queues every server at once', async () => {
+  await withDeployFixtures(async (ctx) => {
+    await deployTwoServersSequentially(ctx, { parallelism: 0 }, async ({ body }) => {
+      assertEquals(body.strategy.rollout, { parallelism: 0, batches: 1 })
+      assertEquals(body.commands.length, 2)
+    })
+  })
+})
+
+test('POST /environments/:id/deploy with update_config.parallelism 2 queues both servers in one batch', async () => {
+  await withDeployFixtures(async (ctx) => {
+    await deployTwoServersSequentially(ctx, { parallelism: 2 }, async ({ body }) => {
+      assertEquals(body.strategy.rollout, { parallelism: 2, batches: 1 })
+      assertEquals(body.commands.length, 2)
+    })
+  })
+})
+
+test('POST /environments/:id/deploy refuses an update_config setting nothing acts on yet', async () => {
+  await withDeployFixtures(async (ctx) => {
+    const extraServerId = await prepareMultiServerFabricDeploy(ctx.db, {
+      organizationId: ctx.organizationId,
+      environmentId: ctx.environmentId,
+      serverId: ctx.serverId,
+      commandQueue: ctx.commandQueue,
+      settleStatus: 'succeeded',
+    })
+    const compose = composeWithReplicatedWebService()
+    const services = compose.data.services as Record<string, { deploy: Record<string, unknown> }>
+    services.web!.deploy.update_config = { parallelism: 1, delay: '10s' }
+    await ctx.db
+      .update(environment)
+      .set({ options: { compose, deployStrategy: 'sequential' } })
+      .where(eq(environment.id, ctx.environmentId))
+    try {
+      const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
+      const res = await ctx.app.request(`/environments/${ctx.environmentId}/deploy`, {
+        method: 'POST',
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: ctx.organizationId,
+          'Content-Type': 'application/json',
+        },
+        body: '{}',
+      })
+      assertEquals(res.status, 422)
+      const body = (await res.json()) as { error?: string; message?: string }
+      assertEquals(body.error, 'compose_field_unsupported')
+      assertEquals(body.message?.includes('update_config.delay'), true)
+      assertEquals(
+        ctx.commandQueue.envelopes.some((envelope) => envelope.type === 'environment.deploy'),
+        false
+      )
+    } finally {
+      await cleanupMultiServerFabricDeploy(ctx.db, {
+        environmentId: ctx.environmentId,
+        organizationId: ctx.organizationId,
+        serverIds: [ctx.serverId, extraServerId],
+        extraServerId,
+      })
+    }
+  })
 })
 
 // --- host-level Compose features (audit S1, 2026-09-25) ---------------------

@@ -24,6 +24,7 @@ import {
   hostingTlsRefUnresolvedMessage,
   readHostingHostname,
 } from './hosting-extension.ts'
+import { unhonoredUpdateConfigReason } from '../deploy/rollout-policy.ts'
 import { parseExactVariableRef } from './variable-refs.ts'
 import {
   isNativeAppRestartCondition,
@@ -1032,6 +1033,63 @@ function lintNativeRestartPolicy(
 }
 
 /**
+ * Check `services.<name>.deploy.update_config` against what the rolling deploy
+ * acts on.
+ *
+ * `parallelism` (how many servers update at once; `0` is all at once) and a
+ * stopping `failure_action` (`pause` or `rollback`) are applied. The other
+ * settings, and `failure_action: continue`, would change what a deploy does and
+ * nothing reads them yet, so they are refused rather than accepted and ignored.
+ * A `parallelism` that is not a whole number of at least 0 is refused too: the
+ * rollout would otherwise fall back to one at a time under a document that
+ * asked for something else.
+ */
+function lintDeployUpdateConfig(
+  name: string,
+  updateConfigNode: Node | null | undefined,
+  strict: boolean,
+  lineCounter: LineCounter,
+  issues: ComposeLintIssue[]
+): void {
+  if (!isMap(updateConfigNode) || isTaggedNode(updateConfigNode)) return
+
+  for (const item of (updateConfigNode as YAMLMap).items) {
+    const key = stringKey(item.key)
+    if (key === null || isExtensionKey(key)) continue
+    const valueNode = item.value as Node | null | undefined
+    const path = `services.${name}.deploy.update_config.${key}`
+    const raw = scalarValueOf(valueNode)
+    if (key === 'parallelism' && isInvalidParallelism(raw)) {
+      issues.push({
+        level: 'error',
+        message:
+          'deploy.update_config.parallelism must be a whole number of at least 0 \u2014 0 updates every server at once, 1 updates them one at a time',
+        path,
+        line: nodeLine(item.key as Node, lineCounter),
+      })
+      continue
+    }
+    const reason = unhonoredUpdateConfigReason(key, raw)
+    if (reason === null) continue
+    issues.push({
+      level: strict ? 'error' : 'warning',
+      code: 'field_unsupported',
+      message: reason,
+      path,
+      line: nodeLine(item.key as Node, lineCounter),
+      // Save-time keeps a draft editable; deploy-time refuses it.
+      ...(strict ? {} : { blocking: false as const }),
+    })
+  }
+}
+
+/** A concrete `parallelism` value the rollout cannot use; placeholders and unreadable nodes pass. */
+function isInvalidParallelism(raw: unknown): boolean {
+  if (typeof raw !== 'number') return false
+  return !Number.isInteger(raw) || raw < 0
+}
+
+/**
  * Classify every key under `services.<name>.deploy.resources`.
  *
  * The parent `resources` key is passthrough — both engines act on
@@ -1143,6 +1201,14 @@ function lintDeployBlock(
       )
     } else if (key === 'mode') {
       lintDeployMode(name, item.value as Node | null | undefined, strict, lineCounter, issues)
+    } else if (key === 'update_config') {
+      lintDeployUpdateConfig(
+        name,
+        item.value as Node | null | undefined,
+        strict,
+        lineCounter,
+        issues
+      )
     } else if (key === 'resources') {
       lintDeployResources(name, item.value as Node | null | undefined, strict, lineCounter, issues)
     } else if (key === 'restart_policy' && nativeApp) {

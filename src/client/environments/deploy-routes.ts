@@ -1,6 +1,12 @@
+import { rolloutOptions } from '../../features/deploy/rollout.ts'
 import { firstSequential, forEachSequential, mapSequential } from '../../lib/sequential.ts'
 import { eq, inArray } from 'drizzle-orm'
-import { type DeployEnginePlan, planDeployEngine } from '../../features/deploy/deploy-engine.ts'
+import {
+  type DeployEnginePlan,
+  planDeployBatches,
+  planDeployEngine,
+  rolloutSummary,
+} from '../../features/deploy/deploy-engine.ts'
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
@@ -791,21 +797,28 @@ function deploymentTargetsForFanOut(params: {
   created: readonly CreatedDeployCommand[]
   /** Release trees the current compose declares, recorded per target. */
   siteReleases: readonly EnvironmentSiteRelease[]
+  /** Server ids per rollout batch; a single batch records nothing extra. */
+  batches: readonly (readonly string[])[]
 }): DeploymentTargetInput[] {
+  const rolloutByServer = rolloutByServerId(params.batches)
   const preparedByServerId = new Map(params.preparedByServer.map((row) => [row.serverId, row]))
   const commandByServer = new Map(params.created.map((row) => [row.serverId, row.commandId]))
   return [
     ...params.planServerIds.map((serverId) => {
       const prepared = preparedByServerId.get(serverId)?.prepared
+      const rollout = rolloutByServer.get(serverId)
       return {
         serverId,
         desiredGeneration: params.generation,
         desiredHash: prepared?.desiredHash ?? null,
-        status: 'applying' as const,
+        // A later rollout batch waits (`pending`) until the one before it is applied.
+        status:
+          rollout !== undefined && rollout.batch > 0 ? ('pending' as const) : ('applying' as const),
         lastCommandId: commandByServer.get(serverId) ?? null,
         options: {
           secretPlan: prepared?.secretPlan ?? [],
           siteReleases: params.siteReleases,
+          ...(rollout === undefined ? {} : { rollout }),
         },
       }
     }),
@@ -817,9 +830,23 @@ function deploymentTargetsForFanOut(params: {
   ]
 }
 
+/** Rollout options per server; empty when the deploy is one batch (no rollout to track). */
+function rolloutByServerId(
+  batches: readonly (readonly string[])[]
+): Map<string, ReturnType<typeof rolloutOptions>> {
+  const byServer = new Map<string, ReturnType<typeof rolloutOptions>>()
+  if (batches.length < 2) return byServer
+  batches.forEach((serverIds, batch) => {
+    for (const serverId of serverIds) byServer.set(serverId, rolloutOptions(batch, batches.length))
+  })
+  return byServer
+}
+
 /**
  * Atomically bump generation, replace slots, create deploy commands, and
- * persist deployment targets. Returns command refs only after commit.
+ * persist deployment targets. Returns command refs only after commit — only
+ * the first rollout batch's: later batches stay recorded and undelivered until
+ * the rollout delivers them (`features/deploy/rollout.ts`).
  * Queue delivery stays outside. Callers must treat spanning networks as
  * committed once this returns.
  */
@@ -842,7 +869,12 @@ async function persistDeployFanOut(
     siteReleases: readonly EnvironmentSiteRelease[]
   }
 ): Promise<CreatedDeployCommand[]> {
-  return await db.transaction(async (tx) => {
+  const batches = planDeployBatches(
+    params.engine,
+    params.preparedByServer.map((row) => row.serverId)
+  )
+  const firstBatch = new Set(batches[0] ?? [])
+  const all = await db.transaction(async (tx) => {
     const generation = await bumpEnvironmentGeneration(tx, params.environmentId)
     await replaceEnvironmentSlotsInTx(tx, {
       environmentId: params.environmentId,
@@ -881,10 +913,12 @@ async function persistDeployFanOut(
         generation,
         created,
         siteReleases: params.siteReleases,
+        batches,
       }),
     })
     return created
   })
+  return all.filter((row) => firstBatch.has(row.serverId))
 }
 
 /**
@@ -1067,11 +1101,12 @@ function parsePreviewOverride(c: Context<AppEnv>): DeployStrategyOverride | Resp
  * the same function, so the preview is what a deploy would do.
  */
 /** The strategy block of a deploy response: what was asked, what runs, and why it differs. */
-function strategyResponse(engine: DeployEnginePlan) {
+function strategyResponse(engine: DeployEnginePlan, serverCount: number) {
   return {
     requested: engine.requested,
     effective: engine.effectiveStrategy,
     fallbackReasons: engine.fallbackReasons,
+    rollout: rolloutSummary(engine, serverCount),
   }
 }
 
@@ -1186,6 +1221,7 @@ export function registerEnvironmentDeployPreviewRoutes(router: Hono<AppEnv>, opt
       effectiveStrategy: strategy.effectiveStrategy,
       migrations: strategy.migrations,
       fallbackReasons: strategy.fallbackReasons,
+      rollout: rolloutSummary(strategy, preparedByServer.length),
       containers: buildDeployPreviewContainers({
         appContainers,
         ingressServices: ingress,
@@ -1775,7 +1811,9 @@ async function runEnvironmentDeploy(
       ...spanningCtx,
     })
 
-    return Response.json(queuedCommandsResponseBody(queued, strategyResponse(engine)))
+    return Response.json(
+      queuedCommandsResponseBody(queued, strategyResponse(engine, preparedByServer.length))
+    )
   } finally {
     if (!spanningCommitted) {
       await purgeComposeNetworksCreatedAfter(db, environmentId, priorNetworks)

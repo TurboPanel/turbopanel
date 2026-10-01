@@ -29,6 +29,7 @@ import {
 import { reconcileEnvironmentContainers } from '../environments/container-records.ts'
 import { recordDeployedSiteApps } from '../environments/app-facts.ts'
 import { classifyDeployFailure, deployOutcomeErrorCode } from '../deploy/deploy-outcome.ts'
+import { advanceRollout, haltRollout } from '../deploy/rollout.ts'
 import {
   deploymentDurationMs,
   type DeploymentOutcome,
@@ -497,6 +498,13 @@ async function applyEnvironmentDeployFailedSideEffect(
         finishedAt,
       }),
     })
+    if (payload.generation !== undefined) {
+      await haltRollout(db, {
+        environmentId: payload.environmentId,
+        generation: payload.generation,
+        reason: `${envelope.serverId} failed`,
+      })
+    }
   } catch (err) {
     const message = errorMessage(err)
     compatLogWarn(
@@ -734,11 +742,39 @@ async function recordSiteAppsSafely(
   }
 }
 
+/**
+ * Deliver the next rolling-deploy batch once the current one is applied. Best
+ * effort like the other deploy side effects: the command already succeeded, so
+ * a failure here is logged and the stalled batch is visible as `pending`.
+ */
+async function advanceRolloutSafely(
+  db: Db,
+  deps: CommandConsumerDeps | undefined,
+  environmentId: string,
+  generation: number
+): Promise<void> {
+  const commandQueue = deps?.commandQueue
+  if (commandQueue === undefined || isNoopCommandQueue(commandQueue)) return
+  try {
+    await advanceRollout(
+      db,
+      { enqueue: (envelope) => commandQueue.enqueue(envelope) },
+      { environmentId, generation }
+    )
+  } catch (err) {
+    compatLogWarn(
+      'command-consumer',
+      `rollout advance failed for environment ${environmentId}: ${errorMessage(err)}`
+    )
+  }
+}
+
 async function applyEnvironmentDeploySideEffect(
   db: Db,
   record: DispatchableCommandRecord,
   envelope: CommandEnvelope,
-  result: unknown
+  result: unknown,
+  deps?: CommandConsumerDeps
 ): Promise<void> {
   if (record.type !== 'environment.deploy') return
   try {
@@ -757,6 +793,7 @@ async function applyEnvironmentDeploySideEffect(
           finishedAt,
         }),
       })
+      await advanceRolloutSafely(db, deps, payload.environmentId, payload.generation)
     }
     const deployResult = parseEnvironmentDeployResult(result)
     await recordSiteAppsSafely(db, record, payload.environmentId, deployResult.sites)
@@ -1853,7 +1890,7 @@ async function applySucceededSideEffects(
   await applyHostnameSideEffect(db, record, envelope, result)
   await applyTimeSyncSideEffect(db, record, envelope, result)
   await applyFabricSideEffect(db, record, envelope, result, deps)
-  await applyEnvironmentDeploySideEffect(db, record, envelope, result)
+  await applyEnvironmentDeploySideEffect(db, record, envelope, result, deps)
   await applyEnvironmentStopSideEffect(db, record, envelope, result)
   await applyEnvironmentLifecycleSideEffect(db, record, envelope, result)
   await applySystemReconcileSideEffect(db, record, envelope, result)

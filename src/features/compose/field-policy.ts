@@ -418,15 +418,11 @@ const DEPLOY_FIELD_POLICY = new Map<string, ComposeFieldPolicy>([
   // Service metadata. Deliberately never copied onto the container's own
   // `labels:` — Compose keeps the two namespaces apart and so do we.
   ["labels", { state: "interpreted", runtime: "keep" }],
-  [
-    "update_config",
-    {
-      state: "unsupported",
-      runtime: "strip",
-      reason:
-        "TurboPanel has no rolling-update controller — parallelism, delay, order and failure_action would all be ignored",
-    },
-  ],
+  // Rolling deploys across servers read `parallelism` (and a stopping
+  // `failure_action`) from here; `lintDeployUpdateConfig` (`./lint.ts`) refuses
+  // the settings nothing acts on yet. Stripped from the runtime document: the
+  // control plane drives the rollout, standalone Docker must not reinterpret it.
+  ["update_config", { state: "interpreted", runtime: "strip" }],
   [
     "rollback_config",
     {

@@ -92,21 +92,60 @@ services:
   },
   {
     description:
-      "deploy.update_config is unsupported: advice while editing, refusal at deploy",
+      "deploy.update_config.parallelism and a stopping failure_action are applied by the rolling deploy",
     compose: `services:
   web:
     image: nginx:alpine
     deploy:
       update_config:
         parallelism: 2
+        failure_action: rollback
+`,
+    expectedIssues: [],
+  },
+  {
+    description:
+      "the other update_config settings are refused: nothing acts on them yet",
+    compose: `services:
+  web:
+    image: nginx:alpine
+    deploy:
+      update_config:
+        delay: 10s
+        failure_action: continue
 `,
     expectedIssues: [
       {
-        path: "services.web.deploy.update_config",
-        messageIncludes: "not supported by TurboPanel",
+        path: "services.web.deploy.update_config.delay",
+        messageIncludes: "not supported yet",
         level: "warning",
         blocking: false,
         strictLevel: "error",
+      },
+      {
+        path: "services.web.deploy.update_config.failure_action",
+        messageIncludes: "a failed batch always stops the rollout",
+        level: "warning",
+        blocking: false,
+        strictLevel: "error",
+      },
+    ],
+  },
+  {
+    description: "a negative parallelism is refused",
+    compose: `services:
+  web:
+    image: nginx:alpine
+    deploy:
+      update_config:
+        parallelism: -1
+`,
+    expectedIssues: [
+      {
+        path: "services.web.deploy.update_config.parallelism",
+        messageIncludes: "whole number of at least 0",
+        level: "error",
+        blocking: true,
       },
     ],
   },
