@@ -1458,9 +1458,11 @@ function listContainerComposeNames(document: ComposeDocument): Set<string> {
 
 function buildExpandedServiceOptionsMap(
   serviceRows: ServiceRow[],
-  expansion: Map<string, string[]>
+  expansion: Map<string, string[]>,
+  deployHooks: boolean
 ): ServiceOptionsByComposeName {
-  const originOptions = buildServiceOptionsMap(serviceRows)
+  // Hook commands survive the read only when the organization enabled them.
+  const originOptions = buildServiceOptionsMap(serviceRows, { deployHooks })
   const map: ServiceOptionsByComposeName = new Map()
 
   for (const [originName, clones] of expansion) {
@@ -1901,6 +1903,7 @@ async function allocateExpandDeployPipeline(
     composeServiceNames: readonly string[]
     serviceRows: ServiceRow[]
     schedule?: DeployScheduleSlice
+    deployHooks: boolean
   }
 ): Promise<DeployExpandPipeline> {
   const containerNaming = resolveContainerNaming(parseProjectOptions(params.projectOptions))
@@ -1971,7 +1974,11 @@ async function allocateExpandDeployPipeline(
     expandedDocument: withRenamedVolumes,
     expansion,
     expandedServiceNames: listComposeServiceKeys(withRenamedVolumes),
-    optionsByComposeName: buildExpandedServiceOptionsMap(params.serviceRows, expansion),
+    optionsByComposeName: buildExpandedServiceOptionsMap(
+      params.serviceRows,
+      expansion,
+      params.deployHooks
+    ),
     localReplicaCounts: localCounts,
     ...(localNames ? { localServiceNames: localNames } : {}),
   }
@@ -2824,6 +2831,7 @@ export async function prepareDeployCompose(
     composeServiceNames,
     serviceRows,
     schedule: params.schedule,
+    deployHooks: resolveDeployHooksEnabled(parseOrganizationOptions(orgRow?.options)),
   })
 
   // Stage 3: the same services after the control plane answered what the

@@ -114,6 +114,17 @@ test('materialFromLetsEncrypt rejects wildcard hostnames', () => {
   assertEquals(material.error, 'wildcard_unsupported')
 })
 
+test('materialFromLetsEncrypt rejects loopback and private hostnames', () => {
+  for (const name of ['localhost', 'app.local', 'db.internal', '10.0.0.5', '192.168.1.20']) {
+    const material = materialFromLetsEncrypt({ hostnames: ['ok.example.com', name] })
+    assertEquals(isCreateTlsFailure(material), true, name)
+    if (!isCreateTlsFailure(material)) {
+      throw new TypeError('expected failure material')
+    }
+    assertEquals(material.error, 'private_hostname_unsupported')
+  }
+})
+
 test('materialFromLetsEncrypt rejects dns-01', () => {
   const material = materialFromLetsEncrypt({
     hostnames: ['app.example.com'],

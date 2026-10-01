@@ -2,6 +2,7 @@ import type { ComposeDocument } from "./types.ts";
 import {
   formatStopGracePeriod,
   parseServiceOptions,
+  type ParseServiceOptionsOptions,
   resolveHealthCheckPolicy,
   resolveMaxRestartAttempts,
   resolveStopGracePeriodSeconds,
@@ -407,10 +408,11 @@ function isHostNativeComposeService(service: Record<string, unknown>): boolean {
 
 export function buildServiceOptionsMap(
   rows: Array<{ composeServiceName: string; options: unknown }>,
+  parseOptions?: ParseServiceOptionsOptions,
 ): ServiceOptionsByComposeName {
   const map: ServiceOptionsByComposeName = new Map();
   for (const row of rows) {
-    const parsed = parseServiceOptions(row.options);
+    const parsed = parseServiceOptions(row.options, parseOptions);
     if (parsed) map.set(row.composeServiceName, parsed);
   }
   return map;

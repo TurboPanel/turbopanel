@@ -1,3 +1,4 @@
+import { isLoopbackOrPrivateHostname } from "../../features/install/install-tls.ts";
 import {
   encryptSecret,
   ENVELOPE_MAGIC,
@@ -274,6 +275,9 @@ export function materialFromLetsEncrypt(
   }
   if (hostnames.some((n) => n.startsWith("*."))) {
     return createFailure("wildcard_unsupported");
+  }
+  if (hostnames.some((n) => isLoopbackOrPrivateHostname(n))) {
+    return createFailure("private_hostname_unsupported");
   }
   if (body.challengeType === "dns-01") {
     return createFailure("dns_01_unsupported");

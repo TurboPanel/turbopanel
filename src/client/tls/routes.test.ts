@@ -1104,3 +1104,209 @@ test("POST /tls/ca/retire stays blocked when binding rematerialize failed", asyn
     },
   );
 });
+
+async function countTlsRows(
+  db: ReturnType<typeof createDenoDb>,
+  organizationId: string,
+): Promise<number> {
+  const rows = await db
+    .select({ id: tls.id })
+    .from(tls)
+    .where(eq(tls.organizationId, organizationId));
+  return rows.length;
+}
+
+test("POST /tls refuses Let's Encrypt for private and wildcard names before saving anything", async () => {
+  await withTlsFixtures(
+    async ({ db, app, secrets, userId, organizationId }) => {
+      const cookie = await sessionCookie(db, secrets, userId);
+      const headers = {
+        cookie,
+        [ORG_ID_HEADER]: organizationId,
+        "content-type": "application/json",
+      };
+      const refused = [
+        ["*.example.com"],
+        ["localhost"],
+        ["app.local"],
+        ["db.internal"],
+        ["10.0.0.5"],
+        ["192.168.1.20"],
+        ["fine.example.com", "printer.lan"],
+      ];
+      const responses = await Promise.all(
+        refused.map(async (hostnames) => {
+          const res = await app.request("/tls", {
+            method: "POST",
+            headers,
+            body: JSON.stringify({
+              source: "lets_encrypt",
+              name: "Refused LE",
+              hostnames,
+              challengeType: "http-01",
+            }),
+          });
+          return {
+            label: hostnames.join(","),
+            status: res.status,
+            error: (await res.json() as { error: string }).error,
+          };
+        }),
+      );
+      for (const { label, status, error } of responses) {
+        assertEquals(status, 400, `expected 400 for ${label}`);
+        assertEquals(
+          error === "wildcard_unsupported" ||
+            error === "private_hostname_unsupported",
+          true,
+          `unexpected error ${error} for ${label}`,
+        );
+      }
+      // Nothing was saved by any refused request.
+      assertEquals(await countTlsRows(db, organizationId), 0);
+
+      const ok = await app.request("/tls", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          source: "lets_encrypt",
+          name: "Public LE",
+          hostnames: ["app.example.com"],
+        }),
+      });
+      assertEquals(ok.status, 200);
+      assertEquals(await countTlsRows(db, organizationId), 1);
+    },
+  );
+});
+
+test("POST /tls upload stores a sealed key and no read endpoint ever returns it", async () => {
+  await withTlsFixtures(
+    async ({ db, app, secrets, userId, organizationId }) => {
+      const cookie = await sessionCookie(db, secrets, userId);
+      const headers = {
+        cookie,
+        [ORG_ID_HEADER]: organizationId,
+        "content-type": "application/json",
+      };
+      const minted = await mintSelfSignedCertificate(["upload.example.com"]);
+      const res = await app.request("/tls", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          source: "upload",
+          name: "Uploaded",
+          certificatePem: minted.certificatePem,
+          privateKeyPem: minted.privateKeyPem,
+        }),
+      });
+      assertEquals(res.status, 200);
+      const created = await res.json() as { ok: true; id: string };
+
+      const [row] = await db
+        .select({ sealed: tls.privateKeyPem })
+        .from(tls)
+        .where(eq(tls.id, created.id))
+        .limit(1);
+      assertEquals(typeof row?.sealed, "string");
+      assertEquals(row!.sealed!.includes("BEGIN"), false);
+
+      const keyBody = minted.privateKeyPem
+        .replace(/-----[^-]+-----/g, "")
+        .replace(/\s+/g, "");
+      const reads = await Promise.all([
+        app.request("/tls", { headers }),
+        app.request(`/tls/${created.id}`, { headers }),
+      ]);
+      const texts = await Promise.all(reads.map((read) => read.text()));
+      for (const [index, read] of reads.entries()) {
+        assertEquals(read.status, 200);
+        const text = texts[index]!;
+        assertEquals(text.includes("PRIVATE KEY"), false);
+        assertEquals(text.includes(keyBody), false);
+        assertEquals(text.includes(row!.sealed!), false);
+        assertEquals(/privateKey/i.test(text), false);
+      }
+    },
+  );
+});
+
+test("POST /tls upload refuses a mismatched key and a garbage certificate, saving nothing", async () => {
+  await withTlsFixtures(
+    async ({ db, app, secrets, userId, organizationId }) => {
+      const cookie = await sessionCookie(db, secrets, userId);
+      const headers = {
+        cookie,
+        [ORG_ID_HEADER]: organizationId,
+        "content-type": "application/json",
+      };
+      const minted = await mintSelfSignedCertificate(["a.example.com"]);
+      const other = await mintSelfSignedCertificate(["b.example.com"]);
+      const mismatch = await app.request("/tls", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          source: "upload",
+          certificatePem: minted.certificatePem,
+          privateKeyPem: other.privateKeyPem,
+        }),
+      });
+      assertEquals(mismatch.status, 400);
+      assertEquals(
+        (await mismatch.json() as { error: string }).error,
+        "certificate_key_mismatch",
+      );
+
+      const garbage = await app.request("/tls", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          source: "upload",
+          certificatePem: "-----BEGIN CERTIFICATE-----\nnot a cert\n-----END CERTIFICATE-----\n",
+          privateKeyPem: minted.privateKeyPem,
+        }),
+      });
+      assertEquals(garbage.status, 400);
+      assertEquals(await countTlsRows(db, organizationId), 0);
+    },
+  );
+});
+
+test("POST /tls self_signed mints a usable certificate for internal and private names", async () => {
+  await withTlsFixtures(
+    async ({ db, app, secrets, userId, organizationId }) => {
+      const cookie = await sessionCookie(db, secrets, userId);
+      const headers = {
+        cookie,
+        [ORG_ID_HEADER]: organizationId,
+        "content-type": "application/json",
+      };
+      const res = await app.request("/tls", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          source: "self_signed",
+          name: "Internal",
+          hostnames: ["app.internal", "db.local"],
+        }),
+      });
+      assertEquals(res.status, 200);
+      const created = await res.json() as { ok: true; id: string };
+      const detail = await app.request(`/tls/${created.id}`, { headers });
+      assertEquals(detail.status, 200);
+      const { tls: published } = await detail.json() as {
+        tls: {
+          source: string;
+          metadata: TlsMetadata;
+          certificatePem: string | null;
+        };
+      };
+      assertEquals(published.source, "self_signed");
+      assertEquals(published.metadata.status, "ready");
+      assertEquals(published.metadata.dnsNames.includes("app.internal"), true);
+      assertEquals(published.metadata.dnsNames.includes("db.local"), true);
+      assertEquals(published.certificatePem?.includes("BEGIN CERTIFICATE"), true);
+      assertEquals(published.metadata.fingerprintSha256.length > 0, true);
+    },
+  );
+});
