@@ -1011,7 +1011,11 @@ in `src/deno-compile-permissions.test.ts` and gated by `deno task duckdb:smoke`:
 
 - `deno compile` bundles the `duckdb.node` addon from `node_modules`
   automatically and **self-extracts it at runtime**; loading it needs
-  `--allow-ffi` (unscoped — the extraction path is a per-binary temp dir).
+  FFI permission, **scoped** to `--allow-ffi=/tmp/deno-compile-<binary name>`
+  (the permission check names `/tmp/deno-compile-turbopanel/node_modules/…/duckdb.node`;
+  `turbopanel-dev` gets `/tmp/deno-compile-turbopanel-dev`). Never bare
+  `--allow-ffi`: it lets the process load any shared object and defeats every
+  other permission. If the binary is renamed, the scope must follow.
 - It does **not** extract the companion `libduckdb.so` the addon links via
   `RUNPATH $ORIGIN`, and `--include` cannot help (the compiled binary's VFS is
   invisible to the dynamic linker). The daemon's `instance-build` role stages
@@ -1019,7 +1023,7 @@ in `src/deno-compile-permissions.test.ts` and gated by `deno task duckdb:smoke`:
   converge (locating it via `scripts/duckdb-native-lib.ts`; converge fails when
   it cannot be staged) and the instance unit puts that directory on
   `LD_LIBRARY_PATH` (see `resolveDuckdbNativeLibraryPath` in
-  `src/platform/deno/server-paths.ts`). Source mode (`deno run --allow-ffi`) needs neither —
+  `src/platform/deno/server-paths.ts`). Source mode (`deno run --allow-ffi=<instance dir>/node_modules`) needs neither —
   addon and `.so` are real sibling files under `node_modules`.
 - Metrics state lives at `resolveMetricsDir()` (`<stateDir>/metrics`,
   `TURBOPANEL_METRICS_DIR` override); the compile tasks and the daemon's
