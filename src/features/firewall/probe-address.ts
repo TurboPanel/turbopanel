@@ -51,7 +51,7 @@ function parseIpv6(text: string): number[] | null {
   const groups = expandIpv6Groups(source)
   if (groups === null) return null
   const values = groups.map((group) =>
-    /^[0-9a-fA-F]{1,4}$/.test(group) ? parseInt(group, 16) : -1
+    /^[0-9a-fA-F]{1,4}$/.test(group) ? Number.parseInt(group, 16) : -1
   )
   return values.every((value) => value >= 0) ? values : null
 }

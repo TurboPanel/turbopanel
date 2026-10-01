@@ -260,8 +260,7 @@ async function postProbeResponse(c: Context<AppEnv>, scope: Scope): Promise<Resp
     )
   }
   const plan = await loadProbePlan(scope.db, serverId)
-  if (!plan || plan.organizationId !== scope.organizationId)
-    return c.json({ error: 'Not found' }, 404)
+  if (plan?.organizationId !== scope.organizationId) return c.json({ error: 'Not found' }, 404)
   const round = await observeOutside(probe, plan)
   const record: OutsideProbeRecord = {
     at: new Date().toISOString(),
