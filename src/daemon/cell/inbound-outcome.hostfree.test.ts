@@ -352,3 +352,7 @@ test('deriveInboundOutcome has a mapping for every inbound kind except the non-t
     }
   }
 })
+
+test('deriveInboundOutcome treats an unknown kind as non-terminal', () => {
+  assertEquals(deriveInboundOutcome({ kind: 'from-the-future', ...common } as never), null)
+})
