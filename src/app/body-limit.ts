@@ -79,7 +79,7 @@ function tooLarge(c: Context): Response {
 }
 
 export function createRequestBodyLimitMiddleware(): MiddlewareHandler {
-  return async (c: Context, next: Next) => {
+  return (c: Context, next: Next) => {
     if (!BODY_METHODS.has(c.req.method.toUpperCase())) return next()
     let pathname: string
     try {
