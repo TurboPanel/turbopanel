@@ -23,6 +23,7 @@ import { WORKSPACE_KIND_TURBOPANEL } from '../../db/workspace-kind.ts'
 import { principalHomeDir } from '../../lib/naming.ts'
 import { DEFAULT_PRINCIPAL_SHELL } from '../../features/principals/principal-options.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
+import { registerOrganizationPrincipalDefaultsRoutes } from '../organizations/principal-defaults-routes.ts'
 import { registerOrganizationRoutes } from '../organizations/routes.ts'
 import {
   registerOrganizationLimitsRoutes,
@@ -60,6 +61,11 @@ async function createPrincipalRoutesTestApp(db: ReturnType<typeof createDenoDb>)
     signupEnvOverride: undefined,
   })
   registerServerLimitsRoutes(app, {
+    secrets,
+    runtime: 'deno',
+    signupEnvOverride: undefined,
+  })
+  registerOrganizationPrincipalDefaultsRoutes(app, {
     secrets,
     runtime: 'deno',
     signupEnvOverride: undefined,
