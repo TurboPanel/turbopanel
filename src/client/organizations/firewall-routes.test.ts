@@ -7,8 +7,8 @@
  * without TURBOPANEL_DATABASE_URL.
  */
 
-import { assertEquals } from '@std/assert'
-import { eq, inArray } from 'drizzle-orm'
+import { assertEquals, assertGreaterOrEqual } from '@std/assert'
+import { eq, inArray, sql } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
@@ -16,9 +16,10 @@ import { createDenoDb, endDbConnection } from '../../db/connection.ts'
 import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from '../authn/crypto.ts'
 import { createSession } from '../authn/session-store.ts'
 import { deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
-import { bulwark, edict, grant, organization, server, user } from '../../db/schema.ts'
+import { bulwark, edict, grant, ip, organization, server, user } from '../../db/schema.ts'
 import { nextBulwarkGeneration } from '../../features/firewall/records.ts'
 import { MAX_FIREWALL_RULES_PER_ORG } from '../../features/firewall/vocabulary.ts'
+import { setTcpProbe, type TcpProbe } from '../../platform/ports/tcp-probe.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import { registerOrganizationFirewallRoutes } from './firewall-routes.ts'
 
@@ -489,5 +490,164 @@ test('deleting a server removes its state and the rules pinned to it, but not or
         .length,
       0
     )
+  })
+})
+
+type Dialed = { address: string; port: number }
+
+/** A stand-in for the platform's TCP probe: records every dial, answers from `open`. */
+function fakeProbe(open: (target: Dialed) => boolean): { dialed: Dialed[] } {
+  const dialed: Dialed[] = []
+  const probe: TcpProbe = {
+    canReachPrivate: false,
+    connect: (target) => {
+      dialed.push({ address: target.address, port: target.port })
+      return Promise.resolve(
+        open(target) ? { state: 'open', ms: 9 } : { state: 'timeout', ms: null }
+      )
+    },
+  }
+  setTcpProbe(probe)
+  return { dialed }
+}
+
+async function insertAddress(db: Db, organizationId: string, serverId: string, address: string) {
+  await db
+    .insert(ip)
+    .values({ organizationId, serverId, address, allocation: 'dedicated', scope: 'public' })
+}
+
+async function withProbeFixture(fn: (f: Fixture) => Promise<void>): Promise<void> {
+  await withFixture(async (f) => {
+    try {
+      await fn(f)
+    } finally {
+      setTcpProbe(null)
+      await f.db.delete(ip).where(inArray(ip.organizationId, [f.orgA, f.orgB]))
+    }
+  })
+}
+
+const probePath = (f: Fixture, serverId = f.serverA) =>
+  `/organizations/${f.orgA}/firewall/servers/${serverId}/probe`
+
+test('the outside check refuses no-session, a read-only member, another organization and a foreign server', async () => {
+  await withProbeFixture(async (f) => {
+    const { dialed } = fakeProbe(() => true)
+    assertEquals((await call(f, 'POST', probePath(f), null, {})).status, 401)
+    assertEquals((await call(f, 'POST', probePath(f), f.memberCookie, {})).status, 403)
+    assertEquals((await call(f, 'POST', probePath(f), f.otherManagerCookie, {})).status, 403)
+    assertEquals((await call(f, 'POST', probePath(f, f.serverB), f.ownerCookie, {})).status, 404)
+    assertEquals((await call(f, 'POST', probePath(f, 'not-a-uuid'), f.ownerCookie, {})).status, 404)
+    assertEquals(dialed, [])
+    assertEquals((await db_count(f)).bulwarks, 0)
+  })
+})
+
+test('with no outside vantage the check answers 503 and records nothing', async () => {
+  await withProbeFixture(async (f) => {
+    setTcpProbe(null)
+    const res = await call(f, 'POST', probePath(f), f.ownerCookie, {})
+    assertEquals(res.status, 503)
+    assertEquals(res.body.error, 'firewall_probe_unavailable')
+    assertEquals((await db_count(f)).bulwarks, 0)
+  })
+})
+
+test("the check dials only the server's own stored, dialable addresses at its planned ports", async () => {
+  await withProbeFixture(async (f) => {
+    await insertAddress(f.db, f.orgA, f.serverA, '93.184.216.34')
+    await insertAddress(f.db, f.orgA, f.serverA, '127.0.0.1')
+    await insertAddress(f.db, f.orgA, f.serverA, '169.254.169.254')
+    await insertAddress(f.db, f.orgA, f.serverA, '10.1.2.3')
+    await insertAddress(f.db, f.orgB, f.serverB, '1.1.1.1')
+    const { dialed } = fakeProbe((target) => target.port === 22)
+
+    const res = await call(f, 'POST', probePath(f), f.managerCookie, {})
+    assertEquals(res.status, 200)
+    assertEquals(dialed, [{ address: '93.184.216.34', port: 22 }])
+    const probe = res.body.probe as {
+      phase: string
+      status: string
+      ports: Record<string, unknown>[]
+    }
+    assertEquals([probe.phase, probe.status], ['manual', 'done'])
+    assertEquals(
+      probe.ports.map((p) => [p.port, p.role, p.state]),
+      [[22, 'invariant', 'open']]
+    )
+    assertEquals(res.body.autoConfirmPossible, true)
+
+    const read = await call(
+      f,
+      'GET',
+      `/organizations/${f.orgA}/firewall/servers/${f.serverA}`,
+      f.ownerCookie
+    )
+    assertEquals((read.body.probe as { at: string }).at, (probe as unknown as { at: string }).at)
+  })
+})
+
+test('a server with no stored address reports nothing reachable and cannot be auto-confirmed', async () => {
+  await withProbeFixture(async (f) => {
+    const { dialed } = fakeProbe(() => true)
+    const res = await call(f, 'POST', probePath(f), f.ownerCookie, {})
+    assertEquals(res.status, 200)
+    assertEquals(dialed, [])
+    assertEquals(res.body.autoConfirmPossible, false)
+    const probe = res.body.probe as { ports: Record<string, unknown>[]; notes: string[] }
+    assertEquals(
+      probe.ports.map((p) => p.state),
+      ['blocked']
+    )
+    assertEquals(
+      probe.notes.includes('This server has no address the control plane can check'),
+      true
+    )
+  })
+})
+
+test('a second check inside thirty seconds is refused with Retry-After and dials nothing', async () => {
+  await withProbeFixture(async (f) => {
+    await insertAddress(f.db, f.orgA, f.serverA, '93.184.216.34')
+    const { dialed } = fakeProbe(() => true)
+    assertEquals((await call(f, 'POST', probePath(f), f.ownerCookie, {})).status, 200)
+    const dialedOnce = dialed.length
+
+    const res = await f.app.request(probePath(f), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', Cookie: f.ownerCookie },
+      body: '{}',
+    })
+    assertEquals(res.status, 429)
+    assertEquals(res.headers.get('retry-after'), '30')
+    assertEquals(((await res.json()) as { error: string }).error, 'firewall_probe_rate_limited')
+    assertEquals(dialed.length, dialedOnce)
+
+    await f.db.execute(sql`
+      UPDATE bulwark
+      SET last_result = jsonb_set(last_result, '{probe,at}', to_jsonb(now() - interval '31 seconds'))
+      WHERE server_id = ${f.serverA}::uuid
+    `)
+    assertEquals((await call(f, 'POST', probePath(f), f.ownerCookie, {})).status, 200)
+    assertGreaterOrEqual(dialed.length, dialedOnce * 2)
+  })
+})
+
+test('a check keeps the stored preview beside it instead of replacing it', async () => {
+  await withProbeFixture(async (f) => {
+    await insertAddress(f.db, f.orgA, f.serverA, '93.184.216.34')
+    await nextBulwarkGeneration(f.db, f.serverA)
+    await f.db
+      .update(bulwark)
+      .set({
+        lastResult: { kind: 'preview', status: 'previewed', desiredDigest: 'abc', ruleCount: 3 },
+      })
+      .where(eq(bulwark.serverId, f.serverA))
+    fakeProbe(() => true)
+    assertEquals((await call(f, 'POST', probePath(f), f.ownerCookie, {})).status, 200)
+    const [row] = await f.db.select().from(bulwark).where(eq(bulwark.serverId, f.serverA))
+    const stored = row!.lastResult as { kind: string; ruleCount: number; probe: { status: string } }
+    assertEquals([stored.kind, stored.ruleCount, stored.probe.status], ['preview', 3, 'done'])
   })
 })

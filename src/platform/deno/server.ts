@@ -133,6 +133,8 @@ import {
 import { collectServerIps, readDefaultRouteInterfaces } from './server-addresses-deno.ts'
 import { preferredIpv4FromIps } from '../../contracts/server-addresses.ts'
 import { setHostIpv4Discovery } from '../ports/host-ipv4-discovery.ts'
+import { setTcpProbe } from '../ports/tcp-probe.ts'
+import { createDenoTcpProbe } from './tcp-probe.ts'
 import { setRevokeBoundDaemonKey } from '../../features/licenses/revoke-bound-daemon-key.ts'
 import { setManagedHaRecoveryHooks } from '../ports/managed-ha-recovery.ts'
 import { setLoadServerStatusRecords } from '../ports/load-server-status.ts'
@@ -326,6 +328,7 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
   setHostIpv4Discovery(
     () => preferredIpv4FromIps(collectServerIps(readDefaultRouteInterfaces())) ?? null
   )
+  setTcpProbe(createDenoTcpProbe())
   setRevokeBoundDaemonKey(revokeDaemonKey)
   registerCommandRuntimePorts({
     fencePhaseFromCommandMetadata,
@@ -769,6 +772,7 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
       // down — accepted (202) samples must survive a normal SIGINT/SIGTERM.
       await closeMetricsStoreIfSupported(serverMetricsStore)
       setHostIpv4Discovery(null)
+      setTcpProbe(null)
       setRevokeBoundDaemonKey(null)
       setManagedHaRecoveryHooks(null)
       setLoadServerStatusRecords(null)

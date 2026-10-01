@@ -33,7 +33,18 @@ import {
   type FirewallPreviewActor,
   previewOfLastResult,
 } from '../../features/firewall/preview.ts'
+import { decideConfirmation } from '../../features/firewall/probe-decision.ts'
+import {
+  claimProbeSlot,
+  loadProbePlan,
+  observeOutside,
+  type OutsideProbeRecord,
+  PROBE_MIN_INTERVAL_MS,
+  probeOfLastResult,
+  storeProbeRecord,
+} from '../../features/firewall/probe-run.ts'
 import { FIREWALL_MODES } from '../../features/firewall/vocabulary.ts'
+import { getTcpProbe } from '../../platform/ports/tcp-probe.ts'
 
 /**
  * Firewall settings for an organization: its policy, the rules its operators
@@ -216,11 +227,62 @@ async function putModeResponse(c: Context<AppEnv>, scope: Scope): Promise<Respon
   return c.json({ bulwark: updated })
 }
 
+/**
+ * "Check now": dial the server's own stored addresses from this control plane
+ * at the ports that matter and report what answered. It only reads the
+ * network: it changes no firewall, confirms nothing, and sends no command.
+ * Owners and managers only, and once per server per
+ * {@link PROBE_MIN_INTERVAL_MS}.
+ */
+async function postProbeResponse(c: Context<AppEnv>, scope: Scope): Promise<Response> {
+  const serverId = await resolveServerId(c, scope)
+  if (serverId instanceof Response) return serverId
+  const probe = getTcpProbe()
+  if (!probe) {
+    return c.json(
+      {
+        error: 'firewall_probe_unavailable',
+        message: 'This control plane cannot run the outside check.',
+      },
+      503
+    )
+  }
+  if (!(await claimProbeSlot(scope.db, serverId))) {
+    const retryAfter = Math.ceil(PROBE_MIN_INTERVAL_MS / 1000)
+    return c.json(
+      {
+        error: 'firewall_probe_rate_limited',
+        message: `The outside check runs at most once every ${retryAfter} seconds per server.`,
+        retryAfterSeconds: retryAfter,
+      },
+      429,
+      { 'Retry-After': String(retryAfter) }
+    )
+  }
+  const plan = await loadProbePlan(scope.db, serverId)
+  if (!plan || plan.organizationId !== scope.organizationId)
+    return c.json({ error: 'Not found' }, 404)
+  const round = await observeOutside(probe, plan)
+  const record: OutsideProbeRecord = {
+    at: new Date().toISOString(),
+    phase: 'manual',
+    status: 'done',
+    ports: round.reach,
+    notes: round.notes,
+  }
+  await storeProbeRecord(scope.db, serverId, record)
+  return c.json({
+    probe: record,
+    autoConfirmPossible: decideConfirmation(round.reach, round.reach).kind === 'confirm',
+  })
+}
+
 const FIREWALL_PATHS = [
   '/organizations/:id/firewall',
   '/organizations/:id/firewall/rules',
   '/organizations/:id/firewall/rules/:edictId',
   '/organizations/:id/firewall/servers/:serverId',
+  '/organizations/:id/firewall/servers/:serverId/probe',
 ] as const
 
 export function registerOrganizationFirewallRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
@@ -282,12 +344,22 @@ export function registerOrganizationFirewallRoutes(router: Hono<AppEnv>, opts: A
     const serverId = await resolveServerId(c, scope)
     if (serverId instanceof Response) return serverId
     const view = await readBulwark(scope.db, serverId)
-    return c.json({ bulwark: view, preview: previewOfLastResult(view.lastResult) })
+    return c.json({
+      bulwark: view,
+      preview: previewOfLastResult(view.lastResult),
+      probe: probeOfLastResult(view.lastResult),
+    })
   })
 
   router.put('/organizations/:id/firewall/servers/:serverId', async (c) => {
     const scope = await loadScope(c)
     if (scope instanceof Response) return scope
     return await putModeResponse(c, scope)
+  })
+
+  router.post('/organizations/:id/firewall/servers/:serverId/probe', async (c) => {
+    const scope = await loadScope(c)
+    if (scope instanceof Response) return scope
+    return await postProbeResponse(c, scope)
   })
 }
