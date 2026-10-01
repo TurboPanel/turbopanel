@@ -564,6 +564,20 @@ Installed and managed by the daemon via the `instance-launch` Ansible role:
 - Logs:
   `journalctl -u turbopanel-instance -u turbopanel-caddy -u turbopanel-ui -f`
 - Co-located daemon: `../turbopaneld/scripts/install-daemon-systemd.sh`
+- **Production instance hardening** (compiled `tpctrl` unit only; co-located dev
+  is unsandboxed because its source checkout lives in `$HOME`). Systemd:
+  `ProtectSystem=strict` with a `ReadWritePaths` list, `ProtectHome`,
+  `PrivateTmp`/`PrivateDevices`, `ProtectKernel*`, `RestrictAddressFamilies`
+  (`AF_UNIX AF_INET AF_INET6 AF_NETLINK`), a deny-list `CapabilityBoundingSet`.
+  `NoNewPrivileges` stays **off** while the instance runs `sudo` (host-credential
+  `pamtester`, upgrade `systemctl restart`); move those behind the daemon before
+  enabling it. Pinned by `../turbopaneld/src/orchestration/instance-unit-sandbox.test.ts`.
+  Deno: `--deny-net` carves the cloud-metadata endpoints out of the open
+  `--allow-net` (same list as the daemon); `--allow-env` stays bare because
+  `Deno.env.toObject()` needs it and ioredis's `debug` import enumerates
+  `process.env` (see `src/deno-compile-permissions.test.ts`). `SIGTERM` exits
+  in about a second (`src/platform/deno/instance-shutdown.ts`): without it the
+  idle Postgres pool kept the process until systemd's SIGKILL.
 
 ## Unix domain sockets
 
