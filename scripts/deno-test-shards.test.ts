@@ -128,8 +128,22 @@ describe('build.yml fan-in', () => {
       .split('\n')
       .filter((line) => line.trimStart().startsWith('cancel-in-progress:'))
     assert(cancelLines.length >= 5)
+    // The trunk -> staging and staging -> live promotion PRs are never
+    // cancelled either (each head is a real commit; a cancelled run is a red
+    // mark on it): their groups end in the run id instead of the ref.
     for (const line of cancelLines) {
-      assertStringIncludes(line, "cancel-in-progress: ${{ github.event_name == 'pull_request' }}")
+      assertStringIncludes(
+        line,
+        "cancel-in-progress: ${{ github.event_name == 'pull_request' && github.head_ref != 'trunk' && github.head_ref != 'staging' }}"
+      )
+    }
+    const groupLines = workflow.split('\n').filter((line) => line.trimStart().startsWith('group:'))
+    assert(groupLines.length >= 5)
+    for (const line of groupLines) {
+      assertStringIncludes(
+        line,
+        "(github.head_ref == 'trunk' || github.head_ref == 'staging') && github.run_id || github.ref"
+      )
     }
     assertStringIncludes(
       workflow,
