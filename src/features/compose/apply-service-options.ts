@@ -1,4 +1,4 @@
-import type { ComposeDocument } from "./types.ts";
+import type { ComposeDocument } from './types.ts'
 import {
   formatStopGracePeriod,
   parseServiceOptions,
@@ -7,69 +7,67 @@ import {
   resolveMaxRestartAttempts,
   resolveStopGracePeriodSeconds,
   type ServiceOptions,
-} from "../projects/service-options.ts";
-import { isNodeComposeService, isSiteComposeService } from "./service-kind.ts";
+} from '../projects/service-options.ts'
+import { isNodeComposeService, isSiteComposeService } from './service-kind.ts'
 
-export type ServiceOptionsByComposeName = Map<string, ServiceOptions>;
+export type ServiceOptionsByComposeName = Map<string, ServiceOptions>
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 function listComposeServiceNames(document: ComposeDocument): string[] {
-  const services = document.data.services;
-  if (!isRecord(services)) return [];
-  return Object.keys(services).sort((a, b) => a.localeCompare(b));
+  const services = document.data.services
+  if (!isRecord(services)) return []
+  return Object.keys(services).sort((a, b) => a.localeCompare(b))
 }
 
 function hasHealthCheck(service: Record<string, unknown>): boolean {
-  return isRecord(service.healthcheck);
+  return isRecord(service.healthcheck)
 }
 
 export function serviceHasComposeHealthCheck(
   document: ComposeDocument,
-  composeServiceName: string,
+  composeServiceName: string
 ): boolean {
-  const services = document.data.services;
-  if (!isRecord(services)) return false;
-  const service = services[composeServiceName];
-  return isRecord(service) && hasHealthCheck(service);
+  const services = document.data.services
+  if (!isRecord(services)) return false
+  const service = services[composeServiceName]
+  return isRecord(service) && hasHealthCheck(service)
 }
 
 export type HealthCheckWarning = {
-  composeServiceName: string;
-  policy: "warn" | "required";
-};
+  composeServiceName: string
+  policy: 'warn' | 'required'
+}
 
 export function collectHealthCheckWarnings(
   document: ComposeDocument,
-  optionsByComposeName: ServiceOptionsByComposeName,
+  optionsByComposeName: ServiceOptionsByComposeName
 ): HealthCheckWarning[] {
-  const warnings: HealthCheckWarning[] = [];
+  const warnings: HealthCheckWarning[] = []
   for (const composeServiceName of listComposeServiceNames(document)) {
-    const options = optionsByComposeName.get(composeServiceName) ?? {};
-    const parsed = parseServiceOptions(options) ?? {};
-    const policy = resolveHealthCheckPolicy(parsed);
-    if (policy === "disabled") continue;
-    const services = document.data.services;
-    const rawService = isRecord(services)
-      ? services[composeServiceName]
-      : undefined;
+    const options = optionsByComposeName.get(composeServiceName) ?? {}
+    const parsed = parseServiceOptions(options) ?? {}
+    const policy = resolveHealthCheckPolicy(parsed)
+    if (policy === 'disabled') continue
+    const services = document.data.services
+    const rawService = isRecord(services) ? services[composeServiceName] : undefined
     // Sites are host nginx/apache — not Docker healthchecks.
     if (isRecord(rawService) && isSiteComposeService(rawService)) {
-      continue;
+      continue
     }
     // Compose `healthcheck:` (or an image HEALTHCHECK once Docker reports it)
     // is enough — we only gate when the operator opted into warn/required and
     // the compose service has no healthcheck block.
     if (isRecord(rawService) && hasHealthCheck(rawService)) {
-      continue;
+      continue
     }
-    if (policy === "warn" || policy === "required") {
-      warnings.push({ composeServiceName, policy });
+    if (policy === 'warn' || policy === 'required') {
+      warnings.push({ composeServiceName, policy })
     }
   }
-  return warnings;
+  return warnings
 }
 
 /**
@@ -79,51 +77,44 @@ export function collectHealthCheckWarnings(
  */
 export function applyResourcesToComposeService(
   service: Record<string, unknown>,
-  resources: NonNullable<ServiceOptions["resources"]>,
+  resources: NonNullable<ServiceOptions['resources']>
 ): void {
   if (resources.cpus !== undefined) {
-    service.cpus = resources.cpus;
+    service.cpus = resources.cpus
   }
   if (resources.memoryBytes !== undefined) {
-    service.mem_limit = resources.memoryBytes;
+    service.mem_limit = resources.memoryBytes
   }
   if (resources.memoryReservationBytes !== undefined) {
-    service.mem_reservation = resources.memoryReservationBytes;
+    service.mem_reservation = resources.memoryReservationBytes
   }
 
-  const deploy = isRecord(service.deploy) ? { ...service.deploy } : {};
-  const deployResources = isRecord(deploy.resources)
-    ? { ...deploy.resources }
-    : {};
-  const limits = isRecord(deployResources.limits)
-    ? { ...deployResources.limits }
-    : {};
+  const deploy = isRecord(service.deploy) ? { ...service.deploy } : {}
+  const deployResources = isRecord(deploy.resources) ? { ...deploy.resources } : {}
+  const limits = isRecord(deployResources.limits) ? { ...deployResources.limits } : {}
 
   if (resources.cpus !== undefined) {
-    limits.cpus = String(resources.cpus);
+    limits.cpus = String(resources.cpus)
   }
   if (resources.memoryBytes !== undefined) {
-    limits.memory = `${resources.memoryBytes}`;
+    limits.memory = `${resources.memoryBytes}`
   }
 
   if (Object.keys(limits).length > 0) {
-    deployResources.limits = limits;
-    deploy.resources = deployResources;
-    service.deploy = deploy;
+    deployResources.limits = limits
+    deploy.resources = deployResources
+    service.deploy = deploy
   }
 }
 
-function applyRestartPolicy(
-  service: Record<string, unknown>,
-  maxAttempts: number,
-): void {
-  const deploy = isRecord(service.deploy) ? { ...service.deploy } : {};
+function applyRestartPolicy(service: Record<string, unknown>, maxAttempts: number): void {
+  const deploy = isRecord(service.deploy) ? { ...service.deploy } : {}
   const restartPolicy: Record<string, unknown> = isRecord(deploy.restart_policy)
     ? { ...deploy.restart_policy }
-    : { condition: "on-failure" };
-  restartPolicy.max_attempts = maxAttempts;
-  deploy.restart_policy = restartPolicy;
-  service.deploy = deploy;
+    : { condition: 'on-failure' }
+  restartPolicy.max_attempts = maxAttempts
+  deploy.restart_policy = restartPolicy
+  service.deploy = deploy
 }
 
 /**
@@ -131,28 +122,28 @@ function applyRestartPolicy(
  * (`docker compose run` before `up`, `exec` after) — never a host shell. The
  * daemon refuses a command-bearing hook without this field.
  */
-export type ServiceDeployHookConfinement = "compose-service";
+export type ServiceDeployHookConfinement = 'compose-service'
 
 export type ServiceDeployHook = {
-  composeServiceName: string;
-  confinement?: ServiceDeployHookConfinement;
-  preDeployCommand?: string;
-  postDeployCommand?: string;
-  buildDisableCache?: boolean;
-};
+  composeServiceName: string
+  confinement?: ServiceDeployHookConfinement
+  preDeployCommand?: string
+  postDeployCommand?: string
+  buildDisableCache?: boolean
+}
 
 /** Whether deploy hooks are read from service options for this deploy. */
 export type ApplyServiceOptionsHookPolicy = {
   /** The organization's `deployHooksEnabled` gate; off drops hook commands. */
-  enabled: boolean;
-};
+  enabled: boolean
+}
 
-const DEFAULT_HOOK_POLICY: ApplyServiceOptionsHookPolicy = { enabled: false };
+const DEFAULT_HOOK_POLICY: ApplyServiceOptionsHookPolicy = { enabled: false }
 
 export type ApplyServiceOptionsResult = {
-  document: ComposeDocument;
-  hooks: ServiceDeployHook[];
-};
+  document: ComposeDocument
+  hooks: ServiceDeployHook[]
+}
 
 /**
  * Friendly name the container answers to after allocation renames it to the
@@ -161,73 +152,69 @@ export type ApplyServiceOptionsResult = {
  */
 export function friendlyContainerName(
   service: Record<string, unknown>,
-  composeServiceName: string,
+  composeServiceName: string
 ): string {
-  const authored = service.container_name;
-  if (typeof authored === "string" && authored.trim().length > 0) {
-    return authored.trim();
+  const authored = service.container_name
+  if (typeof authored === 'string' && authored.trim().length > 0) {
+    return authored.trim()
   }
-  return composeServiceName;
+  return composeServiceName
 }
 
 function isNonEmptyString(value: unknown): value is string {
-  return typeof value === "string" && value.length > 0;
+  return typeof value === 'string' && value.length > 0
 }
 
 function cloneNetworkEntry(value: unknown): Record<string, unknown> {
-  return isRecord(value) ? { ...value } : {};
+  return isRecord(value) ? { ...value } : {}
 }
 
 function mergeAliases(existing: unknown, alias: string): string[] {
-  const aliases: string[] = [];
+  const aliases: string[] = []
   if (Array.isArray(existing)) {
     for (const entry of existing) {
       if (isNonEmptyString(entry) && !aliases.includes(entry)) {
-        aliases.push(entry);
+        aliases.push(entry)
       }
     }
   }
-  if (!aliases.includes(alias)) aliases.push(alias);
-  return aliases;
+  if (!aliases.includes(alias)) aliases.push(alias)
+  return aliases
 }
 
-function listFormNetworksToMapping(
-  networks: unknown[],
-): Record<string, unknown> {
-  const next: Record<string, unknown> = {};
+function listFormNetworksToMapping(networks: unknown[]): Record<string, unknown> {
+  const next: Record<string, unknown> = {}
   for (const key of networks) {
-    if (isNonEmptyString(key)) next[key] = {};
+    if (isNonEmptyString(key)) next[key] = {}
   }
-  return next;
+  return next
 }
 
-function mappingFormNetworks(
-  networks: Record<string, unknown>,
-): Record<string, unknown> {
-  const next: Record<string, unknown> = {};
+function mappingFormNetworks(networks: Record<string, unknown>): Record<string, unknown> {
+  const next: Record<string, unknown> = {}
   for (const [key, value] of Object.entries(networks)) {
-    next[key] = cloneNetworkEntry(value);
+    next[key] = cloneNetworkEntry(value)
   }
-  return next;
+  return next
 }
 
 function composeNetworksAsMapping(networks: unknown): Record<string, unknown> {
-  if (Array.isArray(networks)) return listFormNetworksToMapping(networks);
-  if (isRecord(networks)) return mappingFormNetworks(networks);
-  return {};
+  if (Array.isArray(networks)) return listFormNetworksToMapping(networks)
+  if (isRecord(networks)) return mappingFormNetworks(networks)
+  return {}
 }
 
 function attachAliasToNetworkMapping(
   mapping: Record<string, unknown>,
-  alias: string,
+  alias: string
 ): Record<string, unknown> {
-  const next: Record<string, unknown> = {};
+  const next: Record<string, unknown> = {}
   for (const [key, value] of Object.entries(mapping)) {
-    const entry = cloneNetworkEntry(value);
-    entry.aliases = mergeAliases(entry.aliases, alias);
-    next[key] = entry;
+    const entry = cloneNetworkEntry(value)
+    entry.aliases = mergeAliases(entry.aliases, alias)
+    next[key] = entry
   }
-  return next;
+  return next
 }
 
 /**
@@ -238,63 +225,56 @@ function attachAliasToNetworkMapping(
  * overlay unions platform networks in the same shape, so aliases survive the
  * `-f compose.yaml -f daemon.yaml` merge.
  */
-function applyNetworkAlias(
-  service: Record<string, unknown>,
-  alias: string,
-): void {
-  const mapping = composeNetworksAsMapping(service.networks);
-  if (Object.keys(mapping).length === 0) mapping.default = {};
-  service.networks = attachAliasToNetworkMapping(mapping, alias);
+function applyNetworkAlias(service: Record<string, unknown>, alias: string): void {
+  const mapping = composeNetworksAsMapping(service.networks)
+  if (Object.keys(mapping).length === 0) mapping.default = {}
+  service.networks = attachAliasToNetworkMapping(mapping, alias)
 }
 
 function applyParsedOptionsToService(
   service: Record<string, unknown>,
   parsed: ServiceOptions,
   containerName: string | undefined,
-  composeServiceName: string,
+  composeServiceName: string
 ): void {
   if (containerName !== undefined && containerName.length > 0) {
     // Allocation renames the container to the service UUID; give the operator's
     // name back as a network alias so it stays reachable.
-    const friendlyName = friendlyContainerName(service, composeServiceName);
-    service.container_name = containerName;
+    const friendlyName = friendlyContainerName(service, composeServiceName)
+    service.container_name = containerName
     if (friendlyName !== containerName) {
-      applyNetworkAlias(service, friendlyName);
+      applyNetworkAlias(service, friendlyName)
     }
   }
 
   if (service.stop_grace_period === undefined) {
-    service.stop_grace_period = formatStopGracePeriod(
-      resolveStopGracePeriodSeconds(parsed),
-    );
+    service.stop_grace_period = formatStopGracePeriod(resolveStopGracePeriodSeconds(parsed))
   }
 
   if (parsed.resources) {
-    applyResourcesToComposeService(service, parsed.resources);
+    applyResourcesToComposeService(service, parsed.resources)
   }
 
-  applyRestartPolicy(service, resolveMaxRestartAttempts(parsed));
+  applyRestartPolicy(service, resolveMaxRestartAttempts(parsed))
 }
 
 function buildServiceDeployHook(
   composeServiceName: string,
-  parsed: ServiceOptions,
+  parsed: ServiceOptions
 ): ServiceDeployHook | undefined {
-  const hook: ServiceDeployHook = { composeServiceName };
-  if (parsed.preDeployCommand) hook.preDeployCommand = parsed.preDeployCommand;
+  const hook: ServiceDeployHook = { composeServiceName }
+  if (parsed.preDeployCommand) hook.preDeployCommand = parsed.preDeployCommand
   if (parsed.postDeployCommand) {
-    hook.postDeployCommand = parsed.postDeployCommand;
+    hook.postDeployCommand = parsed.postDeployCommand
   }
   if (hook.preDeployCommand || hook.postDeployCommand) {
-    hook.confinement = "compose-service";
+    hook.confinement = 'compose-service'
   }
-  if (parsed.build?.disableCache) hook.buildDisableCache = true;
-  if (
-    hook.preDeployCommand || hook.postDeployCommand || hook.buildDisableCache
-  ) {
-    return hook;
+  if (parsed.build?.disableCache) hook.buildDisableCache = true
+  if (hook.preDeployCommand || hook.postDeployCommand || hook.buildDisableCache) {
+    return hook
   }
-  return undefined;
+  return undefined
 }
 
 export function applyServiceOptionsToComposeDocument(
@@ -317,38 +297,38 @@ export function applyServiceOptionsToComposeDocument(
    * organization enabled them; the default (absent) reads none, so a caller
    * that has not consulted the gate cannot emit a hook by accident.
    */
-  hookPolicy?: ApplyServiceOptionsHookPolicy,
+  hookPolicy?: ApplyServiceOptionsHookPolicy
 ): ApplyServiceOptionsResult {
-  const hooksEnabled = (hookPolicy ?? DEFAULT_HOOK_POLICY).enabled;
-  const data = { ...document.data };
-  const services = isRecord(data.services) ? { ...data.services } : {};
-  const hooks: ServiceDeployHook[] = [];
+  const hooksEnabled = (hookPolicy ?? DEFAULT_HOOK_POLICY).enabled
+  const data = { ...document.data }
+  const services = isRecord(data.services) ? { ...data.services } : {}
+  const hooks: ServiceDeployHook[] = []
 
   for (const composeServiceName of listComposeServiceNames(document)) {
-    const rawService = services[composeServiceName];
-    if (!isRecord(rawService)) continue;
+    const rawService = services[composeServiceName]
+    if (!isRecord(rawService)) continue
 
-    const service = { ...rawService };
-    const parsed = parseServiceOptions(
-      optionsByComposeName.get(composeServiceName),
-      { deployHooks: hooksEnabled },
-    ) ?? {};
+    const service = { ...rawService }
+    const parsed =
+      parseServiceOptions(optionsByComposeName.get(composeServiceName), {
+        deployHooks: hooksEnabled,
+      }) ?? {}
     applyParsedOptionsToService(
       service,
       parsed,
       containerNameByComposeName?.get(composeServiceName),
-      composeServiceName,
-    );
+      composeServiceName
+    )
 
-    applyDefaultResourceLimits(service, defaultResourceLimits);
+    applyDefaultResourceLimits(service, defaultResourceLimits)
 
-    const hook = buildServiceDeployHook(composeServiceName, parsed);
-    if (hook) hooks.push(hook);
+    const hook = buildServiceDeployHook(composeServiceName, parsed)
+    if (hook) hooks.push(hook)
 
-    services[composeServiceName] = service;
+    services[composeServiceName] = service
   }
 
-  data.services = services;
+  data.services = services
 
   return {
     document: {
@@ -357,7 +337,7 @@ export function applyServiceOptionsToComposeDocument(
       presentation: document.presentation,
     },
     hooks,
-  };
+  }
 }
 
 /**
@@ -372,48 +352,41 @@ export function applyServiceOptionsToComposeDocument(
  */
 function applyDefaultResourceLimits(
   service: Record<string, unknown>,
-  limits: { cpus?: number; memoryBytes?: number } | null | undefined,
+  limits: { cpus?: number; memoryBytes?: number } | null | undefined
 ): void {
-  if (!limits) return;
-  if (limits.cpus === undefined && limits.memoryBytes === undefined) return;
-  if (isHostNativeComposeService(service)) return;
-  if (serviceHasResourceCeiling(service)) return;
+  if (!limits) return
+  if (limits.cpus === undefined && limits.memoryBytes === undefined) return
+  if (isHostNativeComposeService(service)) return
+  if (serviceHasResourceCeiling(service)) return
   applyResourcesToComposeService(service, {
     ...(limits.cpus === undefined ? {} : { cpus: limits.cpus }),
-    ...(limits.memoryBytes === undefined
-      ? {}
-      : { memoryBytes: limits.memoryBytes }),
-  });
+    ...(limits.memoryBytes === undefined ? {} : { memoryBytes: limits.memoryBytes }),
+  })
 }
 
 /** Any of the places Compose can express a ceiling — mirrors the linter's rule. */
 function serviceHasResourceCeiling(service: Record<string, unknown>): boolean {
   if (service.mem_limit !== undefined || service.cpus !== undefined) {
-    return true;
+    return true
   }
-  const deploy = isRecord(service.deploy) ? service.deploy : undefined;
-  const resources = deploy && isRecord(deploy.resources)
-    ? deploy.resources
-    : undefined;
-  const limits = resources && isRecord(resources.limits)
-    ? resources.limits
-    : undefined;
-  return limits !== undefined &&
-    (limits.memory !== undefined || limits.cpus !== undefined);
+  const deploy = isRecord(service.deploy) ? service.deploy : undefined
+  const resources = deploy && isRecord(deploy.resources) ? deploy.resources : undefined
+  const limits = resources && isRecord(resources.limits) ? resources.limits : undefined
+  return limits !== undefined && (limits.memory !== undefined || limits.cpus !== undefined)
 }
 
 function isHostNativeComposeService(service: Record<string, unknown>): boolean {
-  return isSiteComposeService(service) || isNodeComposeService(service);
+  return isSiteComposeService(service) || isNodeComposeService(service)
 }
 
 export function buildServiceOptionsMap(
   rows: Array<{ composeServiceName: string; options: unknown }>,
-  parseOptions?: ParseServiceOptionsOptions,
+  parseOptions?: ParseServiceOptionsOptions
 ): ServiceOptionsByComposeName {
-  const map: ServiceOptionsByComposeName = new Map();
+  const map: ServiceOptionsByComposeName = new Map()
   for (const row of rows) {
-    const parsed = parseServiceOptions(row.options, parseOptions);
-    if (parsed) map.set(row.composeServiceName, parsed);
+    const parsed = parseServiceOptions(row.options, parseOptions)
+    if (parsed) map.set(row.composeServiceName, parsed)
   }
-  return map;
+  return map
 }

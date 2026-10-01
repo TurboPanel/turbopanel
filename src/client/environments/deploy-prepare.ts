@@ -1459,7 +1459,7 @@ function listContainerComposeNames(document: ComposeDocument): Set<string> {
 function buildExpandedServiceOptionsMap(
   serviceRows: ServiceRow[],
   expansion: Map<string, string[]>,
-  deployHooks: boolean
+  deployHooks = false
 ): ServiceOptionsByComposeName {
   // Hook commands survive the read only when the organization enabled them.
   const originOptions = buildServiceOptionsMap(serviceRows, { deployHooks })

@@ -1,19 +1,16 @@
-import { assertEquals } from "@std/assert";
-import { eq } from "drizzle-orm";
-import { Hono } from "hono";
-import type { AppEnv } from "../../app/app.ts";
-import { getDatabaseUrl } from "../../db/url.ts";
-import { createDenoDb } from "../../db/connection.ts";
-import {
-  buildSignedCookie,
-  HTTP_SESSION_COOKIE_NAME,
-} from "../authn/crypto.ts";
-import { createSession } from "../authn/session-store.ts";
+import { assertEquals } from '@std/assert'
+import { eq } from 'drizzle-orm'
+import { Hono } from 'hono'
+import type { AppEnv } from '../../app/app.ts'
+import { getDatabaseUrl } from '../../db/url.ts'
+import { createDenoDb } from '../../db/connection.ts'
+import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from '../authn/crypto.ts'
+import { createSession } from '../authn/session-store.ts'
 import {
   deriveEncryptionSecretsConfig,
   deriveSecretsConfig,
   parseSecretsEnv,
-} from "../../lib/secrets/secrets.ts";
+} from '../../lib/secrets/secrets.ts'
 import {
   changeover,
   command,
@@ -26,28 +23,24 @@ import {
   tls,
   user,
   workspace,
-} from "../../db/schema.ts";
+} from '../../db/schema.ts'
 import {
   assembleTlsMetadata,
   mintSelfSignedCertificate,
   parseTlsOptions,
   resolveTlsForHosting,
-} from "../../lib/tls/index.ts";
-import type {
-  TlsCandidate,
-  TlsMetadata,
-  TlsSource,
-} from "../../lib/tls/types.ts";
-import { ORG_ID_HEADER } from "../org-context.ts";
-import { registerTlsRoutes } from "./routes.ts";
-import { ROTATION_FANOUT_BATCH_SIZE } from "./changeover-fanout.ts";
-import { TEST_ONLY_TURBOPANEL_SECRET } from "../../test-fixtures/secrets.ts";
-import type { CommandEnvelope } from "../../features/commands/envelope.ts";
-import type { CommandQueue } from "../../features/commands/queue.ts";
-import type { DaemonCellRegistry } from "../../contracts/cell.ts";
-import type { DaemonOutboundEnvelope } from "../../contracts/cell-protocol.ts";
+} from '../../lib/tls/index.ts'
+import type { TlsCandidate, TlsMetadata, TlsSource } from '../../lib/tls/types.ts'
+import { ORG_ID_HEADER } from '../org-context.ts'
+import { registerTlsRoutes } from './routes.ts'
+import { ROTATION_FANOUT_BATCH_SIZE } from './changeover-fanout.ts'
+import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
+import type { CommandEnvelope } from '../../features/commands/envelope.ts'
+import type { CommandQueue } from '../../features/commands/queue.ts'
+import type { DaemonCellRegistry } from '../../contracts/cell.ts'
+import type { DaemonOutboundEnvelope } from '../../contracts/cell-protocol.ts'
 
-const dbUrl = getDatabaseUrl();
+const dbUrl = getDatabaseUrl()
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -55,19 +48,19 @@ const dbUrl = getDatabaseUrl();
  * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
  * reports Deno suites as empty; keep this alias so analysis sees real tests.
  */
-const test = Deno.test.bind(Deno);
+const test = Deno.test.bind(Deno)
 
 function createRecordingCommandQueue(): CommandQueue & {
-  envelopes: CommandEnvelope[];
+  envelopes: CommandEnvelope[]
 } {
-  const envelopes: CommandEnvelope[] = [];
+  const envelopes: CommandEnvelope[] = []
   return {
     envelopes,
     enqueue: (envelope: CommandEnvelope) => {
-      envelopes.push(envelope);
-      return Promise.resolve();
+      envelopes.push(envelope)
+      return Promise.resolve()
     },
-  };
+  }
 }
 
 function createStubRegistry(): DaemonCellRegistry {
@@ -75,140 +68,135 @@ function createStubRegistry(): DaemonCellRegistry {
     getCell: () => ({
       createRequestAndWait: (outbound: DaemonOutboundEnvelope) =>
         Promise.resolve({
-          serverId: "stub",
+          serverId: 'stub',
           requestId: outbound.requestId,
           requestKind: outbound.kind,
-          status: "done" as const,
+          status: 'done' as const,
           createdAt: outbound.at,
           expiresAt: outbound.at,
           result: {},
         }),
     }),
-  } as unknown as DaemonCellRegistry;
+  } as unknown as DaemonCellRegistry
 }
 
 async function createTlsTestApp(db: ReturnType<typeof createDenoDb>) {
-  const secretsConfig = parseSecretsEnv(
-    `1:${TEST_ONLY_TURBOPANEL_SECRET}`,
-    "deno",
-  );
-  const secrets = await deriveSecretsConfig(secretsConfig, "session-signing");
+  const secretsConfig = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`, 'deno')
+  const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
     secretsConfig,
-    "data-encryption",
-  );
-  const app = new Hono<AppEnv>();
-  app.use("*", (c, next) => {
-    c.set("db", db);
-    c.set("secretsConfig", secretsConfig);
-    c.set("dataEncryptionSecrets", dataEncryptionSecrets);
-    c.set("daemonCellRegistry", createStubRegistry());
-    c.set("commandQueue", createRecordingCommandQueue());
-    return next();
-  });
+    'data-encryption'
+  )
+  const app = new Hono<AppEnv>()
+  app.use('*', (c, next) => {
+    c.set('db', db)
+    c.set('secretsConfig', secretsConfig)
+    c.set('dataEncryptionSecrets', dataEncryptionSecrets)
+    c.set('daemonCellRegistry', createStubRegistry())
+    c.set('commandQueue', createRecordingCommandQueue())
+    return next()
+  })
   registerTlsRoutes(app, {
     secrets,
-    runtime: "deno",
+    runtime: 'deno',
     signupEnvOverride: undefined,
-  });
-  return { app, secrets };
+  })
+  return { app, secrets }
 }
 
 async function sessionCookie(
   db: ReturnType<typeof createDenoDb>,
   secrets: Awaited<ReturnType<typeof deriveSecretsConfig>>,
-  userId: string,
+  userId: string
 ): Promise<string> {
-  const { token } = await createSession(db, userId, {});
-  const signed = await buildSignedCookie(token, secrets);
-  return `${HTTP_SESSION_COOKIE_NAME}=${signed}`;
+  const { token } = await createSession(db, userId, {})
+  const signed = await buildSignedCookie(token, secrets)
+  return `${HTTP_SESSION_COOKIE_NAME}=${signed}`
 }
 
 async function withTlsFixtures(
   fn: (ctx: {
-    db: ReturnType<typeof createDenoDb>;
-    app: Hono<AppEnv>;
-    secrets: Awaited<ReturnType<typeof deriveSecretsConfig>>;
-    userId: string;
-    organizationId: string;
-  }) => Promise<void>,
+    db: ReturnType<typeof createDenoDb>
+    app: Hono<AppEnv>
+    secrets: Awaited<ReturnType<typeof deriveSecretsConfig>>
+    userId: string
+    organizationId: string
+  }) => Promise<void>
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn("Skipping tls route tests: TURBOPANEL_DATABASE_URL not set");
-    return;
+    console.warn('Skipping tls route tests: TURBOPANEL_DATABASE_URL not set')
+    return
   }
 
-  const db = createDenoDb();
-  const { app, secrets } = await createTlsTestApp(db);
+  const db = createDenoDb()
+  const { app, secrets } = await createTlsTestApp(db)
 
   const [orgRow] = await db
     .insert(organization)
     .values({
-      name: "TLS Route Test Org",
+      name: 'TLS Route Test Org',
       options: { acmeEnabled: true },
     })
-    .returning({ id: organization.id });
-  const organizationId = orgRow!.id;
+    .returning({ id: organization.id })
+  const organizationId = orgRow!.id
 
   const [userRow] = await db
     .insert(user)
     .values({
       email: `tls-route-${crypto.randomUUID()}@example.com`,
       isEmailVerified: true,
-      role: "user",
+      role: 'user',
     })
-    .returning({ id: user.id });
-  const userId = userRow!.id;
+    .returning({ id: user.id })
+  const userId = userRow!.id
 
   await db.insert(grant).values({
-    entityType: "organization",
+    entityType: 'organization',
     entityId: organizationId,
-    actorType: "user",
+    actorType: 'user',
     actorId: userId,
-    permission: "organization:own",
-  });
+    permission: 'organization:own',
+  })
 
   try {
-    await fn({ db, app, secrets, userId, organizationId });
+    await fn({ db, app, secrets, userId, organizationId })
   } finally {
-    await db.delete(changeover).where(
-      eq(changeover.organizationId, organizationId),
-    );
-    await db.delete(tls).where(eq(tls.organizationId, organizationId));
-    await db.delete(grant).where(eq(grant.actorId, userId));
-    await db.delete(user).where(eq(user.id, userId));
-    await db.delete(organization).where(eq(organization.id, organizationId));
+    await db.delete(changeover).where(eq(changeover.organizationId, organizationId))
+    await db.delete(tls).where(eq(tls.organizationId, organizationId))
+    await db.delete(grant).where(eq(grant.actorId, userId))
+    await db.delete(user).where(eq(user.id, userId))
+    await db.delete(organization).where(eq(organization.id, organizationId))
   }
 }
 
 async function seedManagedClusters(
   db: ReturnType<typeof createDenoDb>,
   params: {
-    organizationId: string;
-    count: number;
-    serverId?: string;
-  },
+    organizationId: string
+    count: number
+    serverId?: string
+  }
 ): Promise<{
-  workspaceId: string;
-  projectId: string;
-  environmentIds: string[];
-  managedIds: string[];
+  workspaceId: string
+  projectId: string
+  environmentIds: string[]
+  managedIds: string[]
 }> {
   const [workspaceRow] = await db
     .insert(workspace)
     .values({
-      name: "TLS Rotation Workspace",
+      name: 'TLS Rotation Workspace',
       organizationId: params.organizationId,
     })
-    .returning({ id: workspace.id });
-  const workspaceId = workspaceRow!.id;
+    .returning({ id: workspace.id })
+  const workspaceId = workspaceRow!.id
   const [projectRow] = await db
     .insert(project)
-    .values({ name: "TLS Rotation Project", workspaceId, organizationId: params.organizationId })
-    .returning({ id: project.id });
-  const projectId = projectRow!.id;
-  const environmentIds: string[] = [];
-  const managedIds: string[] = [];
+    .values({ name: 'TLS Rotation Project', workspaceId, organizationId: params.organizationId })
+    .returning({ id: project.id })
+  const projectId = projectRow!.id
+  const environmentIds: string[] = []
+  const managedIds: string[] = []
   for (let i = 0; i < params.count; i++) {
     const [environmentRow] = await db
       .insert(environment)
@@ -217,140 +205,136 @@ async function seedManagedClusters(
         projectId,
         serverId: params.serverId,
       })
-      .returning({ id: environment.id });
-    const environmentId = environmentRow!.id;
-    environmentIds.push(environmentId);
+      .returning({ id: environment.id })
+    const environmentId = environmentRow!.id
+    environmentIds.push(environmentId)
     const [managedRow] = await db
       .insert(managed)
       .values({
         environmentId,
         serverId: params.serverId,
         name: `Cluster ${i + 1}`,
-        engine: "postgres",
+        engine: 'postgres',
       })
-      .returning({ id: managed.id });
-    managedIds.push(managedRow!.id);
+      .returning({ id: managed.id })
+    managedIds.push(managedRow!.id)
   }
-  return { workspaceId, projectId, environmentIds, managedIds };
+  return { workspaceId, projectId, environmentIds, managedIds }
 }
 
 async function deleteSeededManagedClusters(
   db: ReturnType<typeof createDenoDb>,
   seeded: {
-    workspaceId: string;
-    projectId: string;
-    environmentIds: string[];
-    managedIds: string[];
-  },
+    workspaceId: string
+    projectId: string
+    environmentIds: string[]
+    managedIds: string[]
+  }
 ): Promise<void> {
   for (const managedId of seeded.managedIds) {
-    await db.delete(managed).where(eq(managed.id, managedId));
+    await db.delete(managed).where(eq(managed.id, managedId))
   }
   for (const environmentId of seeded.environmentIds) {
-    await db.delete(environment).where(eq(environment.id, environmentId));
+    await db.delete(environment).where(eq(environment.id, environmentId))
   }
-  await db.delete(project).where(eq(project.id, seeded.projectId));
-  await db.delete(workspace).where(eq(workspace.id, seeded.workspaceId));
+  await db.delete(project).where(eq(project.id, seeded.projectId))
+  await db.delete(workspace).where(eq(workspace.id, seeded.workspaceId))
 }
 
-test("POST /tls lets_encrypt managed cert appears in list and detail with empty fingerprint", async () => {
-  await withTlsFixtures(
-    async ({ db, app, secrets, userId, organizationId }) => {
-      const cookie = await sessionCookie(db, secrets, userId);
-      const headers = {
-        cookie,
-        [ORG_ID_HEADER]: organizationId,
-        "content-type": "application/json",
-      };
+test('POST /tls lets_encrypt managed cert appears in list and detail with empty fingerprint', async () => {
+  await withTlsFixtures(async ({ db, app, secrets, userId, organizationId }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const headers = {
+      cookie,
+      [ORG_ID_HEADER]: organizationId,
+      'content-type': 'application/json',
+    }
 
-      const createRes = await app.request("/tls", {
-        method: "POST",
-        headers,
-        body: JSON.stringify({
-          source: "lets_encrypt",
-          name: "Pending LE",
-          hostnames: ["pending.example.com"],
-          challengeType: "http-01",
-        }),
-      });
-      assertEquals(createRes.status, 200);
-      const created = await createRes.json() as { ok: true; id: string };
-      assertEquals(created.ok, true);
+    const createRes = await app.request('/tls', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        source: 'lets_encrypt',
+        name: 'Pending LE',
+        hostnames: ['pending.example.com'],
+        challengeType: 'http-01',
+      }),
+    })
+    assertEquals(createRes.status, 200)
+    const created = (await createRes.json()) as { ok: true; id: string }
+    assertEquals(created.ok, true)
 
-      const [row] = await db
-        .select({ fingerprintSha256: tls.fingerprintSha256 })
-        .from(tls)
-        .where(eq(tls.id, created.id))
-        .limit(1);
-      assertEquals(row?.fingerprintSha256, null);
+    const [row] = await db
+      .select({ fingerprintSha256: tls.fingerprintSha256 })
+      .from(tls)
+      .where(eq(tls.id, created.id))
+      .limit(1)
+    assertEquals(row?.fingerprintSha256, null)
 
-      const listRes = await app.request("/tls", { headers });
-      assertEquals(listRes.status, 200);
-      const listBody = await listRes.json() as {
-        tls: Array<{ id: string; metadata: TlsMetadata }>;
-      };
-      const listed = listBody.tls.find((entry) => entry.id === created.id);
-      assertEquals(listed !== undefined, true);
-      assertEquals(listed?.metadata.status, "managed");
-      assertEquals(listed?.metadata.fingerprintSha256, "");
-      assertEquals(listed?.metadata.dnsNames, ["pending.example.com"]);
-      assertEquals(listed?.metadata.acme?.challengeType, "http-01");
+    const listRes = await app.request('/tls', { headers })
+    assertEquals(listRes.status, 200)
+    const listBody = (await listRes.json()) as {
+      tls: Array<{ id: string; metadata: TlsMetadata }>
+    }
+    const listed = listBody.tls.find((entry) => entry.id === created.id)
+    assertEquals(listed !== undefined, true)
+    assertEquals(listed?.metadata.status, 'managed')
+    assertEquals(listed?.metadata.fingerprintSha256, '')
+    assertEquals(listed?.metadata.dnsNames, ['pending.example.com'])
+    assertEquals(listed?.metadata.acme?.challengeType, 'http-01')
 
-      const detailRes = await app.request(`/tls/${created.id}`, { headers });
-      assertEquals(detailRes.status, 200);
-      const detailBody = await detailRes.json() as {
-        tls: { metadata: TlsMetadata };
-      };
-      assertEquals(detailBody.tls.metadata.status, "managed");
-      assertEquals(detailBody.tls.metadata.fingerprintSha256, "");
-      assertEquals(detailBody.tls.metadata.dnsNames, ["pending.example.com"]);
-    },
-  );
-});
+    const detailRes = await app.request(`/tls/${created.id}`, { headers })
+    assertEquals(detailRes.status, 200)
+    const detailBody = (await detailRes.json()) as {
+      tls: { metadata: TlsMetadata }
+    }
+    assertEquals(detailBody.tls.metadata.status, 'managed')
+    assertEquals(detailBody.tls.metadata.fingerprintSha256, '')
+    assertEquals(detailBody.tls.metadata.dnsNames, ['pending.example.com'])
+  })
+})
 
-test("POST /tls refuses lets_encrypt when the org has not opted in to ACME", async () => {
-  await withTlsFixtures(
-    async ({ db, app, secrets, userId, organizationId }) => {
-      await db
-        .update(organization)
-        .set({ options: { acmeEnabled: false } })
-        .where(eq(organization.id, organizationId));
+test('POST /tls refuses lets_encrypt when the org has not opted in to ACME', async () => {
+  await withTlsFixtures(async ({ db, app, secrets, userId, organizationId }) => {
+    await db
+      .update(organization)
+      .set({ options: { acmeEnabled: false } })
+      .where(eq(organization.id, organizationId))
 
-      const cookie = await sessionCookie(db, secrets, userId);
-      const headers = {
-        cookie,
-        [ORG_ID_HEADER]: organizationId,
-        "content-type": "application/json",
-      };
+    const cookie = await sessionCookie(db, secrets, userId)
+    const headers = {
+      cookie,
+      [ORG_ID_HEADER]: organizationId,
+      'content-type': 'application/json',
+    }
 
-      const res = await app.request("/tls", {
-        method: "POST",
-        headers,
-        body: JSON.stringify({
-          source: "lets_encrypt",
-          hostnames: ["opt-in.example.com"],
-        }),
-      });
-      assertEquals(res.status, 403);
-      assertEquals(await res.json(), { error: "lets_encrypt_not_enabled" });
+    const res = await app.request('/tls', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        source: 'lets_encrypt',
+        hostnames: ['opt-in.example.com'],
+      }),
+    })
+    assertEquals(res.status, 403)
+    assertEquals(await res.json(), { error: 'lets_encrypt_not_enabled' })
 
-      // Self-signed is unaffected by the org's ACME opt-in.
-      const selfSigned = await app.request("/tls", {
-        method: "POST",
-        headers,
-        body: JSON.stringify({
-          source: "self_signed",
-          hostnames: ["opt-in.example.com"],
-        }),
-      });
-      assertEquals(selfSigned.status, 200);
-    },
-  );
-});
+    // Self-signed is unaffected by the org's ACME opt-in.
+    const selfSigned = await app.request('/tls', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        source: 'self_signed',
+        hostnames: ['opt-in.example.com'],
+      }),
+    })
+    assertEquals(selfSigned.status, 200)
+  })
+})
 
 async function loadTlsCandidate(
   db: ReturnType<typeof createDenoDb>,
-  tlsId: string,
+  tlsId: string
 ): Promise<TlsCandidate> {
   const [row] = await db
     .select({
@@ -364,949 +348,890 @@ async function loadTlsCandidate(
     })
     .from(tls)
     .where(eq(tls.id, tlsId))
-    .limit(1);
-  if (!row) throw new TypeError("expected tls row");
+    .limit(1)
+  if (!row) throw new TypeError('expected tls row')
   const metadata = assembleTlsMetadata(
     {
       status: row.status,
       notAfter: row.notAfter,
       fingerprintSha256: row.fingerprintSha256,
     },
-    row.metadata,
-  );
-  if (!metadata) throw new TypeError("expected tls metadata");
+    row.metadata
+  )
+  if (!metadata) throw new TypeError('expected tls metadata')
   return {
     id: row.id,
     metadata,
     options: parseTlsOptions(row.options),
     source: row.source as TlsSource,
-  };
+  }
 }
 
-test("PATCH /tls/:id revoke:true on lets_encrypt falls back to internal TLS on deploy", async () => {
-  await withTlsFixtures(
-    async ({ db, app, secrets, userId, organizationId }) => {
-      const cookie = await sessionCookie(db, secrets, userId);
-      const headers = {
-        cookie,
-        [ORG_ID_HEADER]: organizationId,
-        "content-type": "application/json",
-      };
+test('PATCH /tls/:id revoke:true on lets_encrypt falls back to internal TLS on deploy', async () => {
+  await withTlsFixtures(async ({ db, app, secrets, userId, organizationId }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const headers = {
+      cookie,
+      [ORG_ID_HEADER]: organizationId,
+      'content-type': 'application/json',
+    }
 
-      const createRes = await app.request("/tls", {
-        method: "POST",
-        headers,
-        body: JSON.stringify({
-          source: "lets_encrypt",
-          name: "Revoke fallback LE",
-          hostnames: ["app.example.com"],
-          challengeType: "http-01",
-        }),
-      });
-      assertEquals(createRes.status, 200);
-      const created = await createRes.json() as { ok: true; id: string };
+    const createRes = await app.request('/tls', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        source: 'lets_encrypt',
+        name: 'Revoke fallback LE',
+        hostnames: ['app.example.com'],
+        challengeType: 'http-01',
+      }),
+    })
+    assertEquals(createRes.status, 200)
+    const created = (await createRes.json()) as { ok: true; id: string }
 
-      const before = await loadTlsCandidate(db, created.id);
-      assertEquals(
-        resolveTlsForHosting({
-          pinId: created.id,
-          hostnames: ["app.example.com"],
-          candidates: [before],
-        }),
-        { ok: true, tlsId: created.id, reason: "pin" },
-      );
+    const before = await loadTlsCandidate(db, created.id)
+    assertEquals(
+      resolveTlsForHosting({
+        pinId: created.id,
+        hostnames: ['app.example.com'],
+        candidates: [before],
+      }),
+      { ok: true, tlsId: created.id, reason: 'pin' }
+    )
 
-      const revoke = await app.request(`/tls/${created.id}`, {
-        method: "PATCH",
-        headers,
-        body: JSON.stringify({ revoke: true }),
-      });
-      assertEquals(revoke.status, 200);
+    const revoke = await app.request(`/tls/${created.id}`, {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify({ revoke: true }),
+    })
+    assertEquals(revoke.status, 200)
 
-      const after = await loadTlsCandidate(db, created.id);
-      assertEquals(after.metadata.status, "revoked");
-      // Same resolution path deploy-prepare uses: omit the pin so the daemon
-      // emits `tls internal` instead of failing with tls_pin_not_ready.
-      assertEquals(
-        resolveTlsForHosting({
-          pinId: created.id,
-          hostnames: ["app.example.com"],
-          candidates: [after],
-        }),
-        { ok: true, tlsId: null, reason: "internal" },
-      );
-    },
-  );
-});
+    const after = await loadTlsCandidate(db, created.id)
+    assertEquals(after.metadata.status, 'revoked')
+    // Same resolution path deploy-prepare uses: omit the pin so the daemon
+    // emits `tls internal` instead of failing with tls_pin_not_ready.
+    assertEquals(
+      resolveTlsForHosting({
+        pinId: created.id,
+        hostnames: ['app.example.com'],
+        candidates: [after],
+      }),
+      { ok: true, tlsId: null, reason: 'internal' }
+    )
+  })
+})
 
-test("POST /tls returns 409 tls_fingerprint_conflict for duplicate fingerprint", async () => {
-  await withTlsFixtures(
-    async ({ db, app, secrets, userId, organizationId }) => {
-      const cookie = await sessionCookie(db, secrets, userId);
-      const headers = {
-        cookie,
-        [ORG_ID_HEADER]: organizationId,
-        "content-type": "application/json",
-      };
+test('POST /tls returns 409 tls_fingerprint_conflict for duplicate fingerprint', async () => {
+  await withTlsFixtures(async ({ db, app, secrets, userId, organizationId }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const headers = {
+      cookie,
+      [ORG_ID_HEADER]: organizationId,
+      'content-type': 'application/json',
+    }
 
-      const material = await mintSelfSignedCertificate(["dup.example.com"]);
-      const body = JSON.stringify({
-        source: "upload",
-        name: "Dup fingerprint",
-        certificatePem: material.certificatePem,
-        privateKeyPem: material.privateKeyPem,
-      });
+    const material = await mintSelfSignedCertificate(['dup.example.com'])
+    const body = JSON.stringify({
+      source: 'upload',
+      name: 'Dup fingerprint',
+      certificatePem: material.certificatePem,
+      privateKeyPem: material.privateKeyPem,
+    })
 
-      const first = await app.request("/tls", {
-        method: "POST",
-        headers,
-        body,
-      });
-      assertEquals(first.status, 200);
+    const first = await app.request('/tls', {
+      method: 'POST',
+      headers,
+      body,
+    })
+    assertEquals(first.status, 200)
 
-      const second = await app.request("/tls", {
-        method: "POST",
-        headers,
-        body,
-      });
-      assertEquals(second.status, 409);
-      const conflict = await second.json() as { error: string };
-      assertEquals(conflict.error, "tls_fingerprint_conflict");
-    },
-  );
-});
+    const second = await app.request('/tls', {
+      method: 'POST',
+      headers,
+      body,
+    })
+    assertEquals(second.status, 409)
+    const conflict = (await second.json()) as { error: string }
+    assertEquals(conflict.error, 'tls_fingerprint_conflict')
+  })
+})
 
-test("POST /tls organization_ca succeeds once and second attempt returns 409", async () => {
-  await withTlsFixtures(
-    async ({ db, app, secrets, userId, organizationId }) => {
-      const cookie = await sessionCookie(db, secrets, userId);
-      const headers = {
-        cookie,
-        [ORG_ID_HEADER]: organizationId,
-        "content-type": "application/json",
-      };
+test('POST /tls organization_ca succeeds once and second attempt returns 409', async () => {
+  await withTlsFixtures(async ({ db, app, secrets, userId, organizationId }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const headers = {
+      cookie,
+      [ORG_ID_HEADER]: organizationId,
+      'content-type': 'application/json',
+    }
 
-      const first = await app.request("/tls", {
-        method: "POST",
-        headers,
-        body: JSON.stringify({
-          source: "organization_ca",
-          name: "Org CA",
-        }),
-      });
-      assertEquals(first.status, 200);
+    const first = await app.request('/tls', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        source: 'organization_ca',
+        name: 'Org CA',
+      }),
+    })
+    assertEquals(first.status, 200)
 
-      const second = await app.request("/tls", {
-        method: "POST",
-        headers,
-        body: JSON.stringify({
-          source: "organization_ca",
-          name: "Org CA 2",
-        }),
-      });
-      assertEquals(second.status, 409);
-      const conflict = await second.json() as { error: string };
-      assertEquals(conflict.error, "organization_ca_exists");
-    },
-  );
-});
+    const second = await app.request('/tls', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        source: 'organization_ca',
+        name: 'Org CA 2',
+      }),
+    })
+    assertEquals(second.status, 409)
+    const conflict = (await second.json()) as { error: string }
+    assertEquals(conflict.error, 'organization_ca_exists')
+  })
+})
 
-test("GET /tls/ca ensure-or-create is idempotent", async () => {
-  await withTlsFixtures(
-    async ({ db, app, secrets, userId, organizationId }) => {
-      const cookie = await sessionCookie(db, secrets, userId);
-      const headers = {
-        cookie,
-        [ORG_ID_HEADER]: organizationId,
-      };
+test('GET /tls/ca ensure-or-create is idempotent', async () => {
+  await withTlsFixtures(async ({ db, app, secrets, userId, organizationId }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const headers = {
+      cookie,
+      [ORG_ID_HEADER]: organizationId,
+    }
 
-      const first = await app.request("/tls/ca", { headers });
-      assertEquals(first.status, 200);
-      const firstBody = await first.json() as {
-        tls: {
-          id: string;
-          source: string;
-          certificatePem: string | null;
-          trustBundlePem?: string;
-          notAfter: string | null;
-          caGeneration: number | null;
-          metadata: { subject: string };
-        };
-        trustBundlePem: string;
-        leafHealth: {
-          dueCount: number;
-          caGeneration: number;
-          caNotAfter: string | null;
-        };
-      };
-      assertEquals(firstBody.tls.source, "organization_ca");
-      assertEquals(typeof firstBody.tls.certificatePem, "string");
-      assertEquals(
-        firstBody.tls.metadata.subject,
-        `O=TurboPanel, OU=Organization CA, CN=${organizationId}`,
-      );
-      assertEquals(typeof firstBody.trustBundlePem, "string");
-      assertEquals(
-        firstBody.trustBundlePem.includes("BEGIN CERTIFICATE"),
-        true,
-      );
-      assertEquals(firstBody.tls.trustBundlePem, firstBody.trustBundlePem);
-      assertEquals(firstBody.tls.caGeneration, 1);
-      assertEquals(typeof firstBody.leafHealth.dueCount, "number");
-      assertEquals(firstBody.leafHealth.dueCount, 0);
-      assertEquals(firstBody.leafHealth.caGeneration, 1);
-      assertEquals(
-        firstBody.leafHealth.caGeneration,
-        firstBody.tls.caGeneration,
-      );
-      assertEquals(typeof firstBody.leafHealth.caNotAfter, "string");
-
-      const second = await app.request("/tls/ca", { headers });
-      assertEquals(second.status, 200);
-      const secondBody = await second.json() as {
-        tls: { id: string };
-        trustBundlePem: string;
-      };
-      assertEquals(secondBody.tls.id, firstBody.tls.id);
-      assertEquals(secondBody.trustBundlePem, firstBody.trustBundlePem);
-    },
-  );
-});
-
-test("POST /tls/ca/rotate retires prior CA and mints a new active generation", async () => {
-  await withTlsFixtures(
-    async ({ db, app, secrets, userId, organizationId }) => {
-      const cookie = await sessionCookie(db, secrets, userId);
-      const headers = {
-        cookie,
-        [ORG_ID_HEADER]: organizationId,
-        "content-type": "application/json",
-      };
-
-      const ensure = await app.request("/tls/ca", { headers });
-      assertEquals(ensure.status, 200);
-      const ensureBody = await ensure.json() as {
-        tls: { id: string; certificatePem: string };
-        trustBundlePem: string;
-      };
-      const priorId = ensureBody.tls.id;
-      const priorPem = ensureBody.tls.certificatePem;
-
-      const rotate = await app.request("/tls/ca/rotate", {
-        method: "POST",
-        headers,
-      });
-      assertEquals(rotate.status, 200);
-      const rotateBody = await rotate.json() as {
-        ok: true;
-        id: string;
-        rotationId: string;
-        generation: number;
-        results: unknown[];
-      };
-      assertEquals(rotateBody.ok, true);
-      assertEquals(rotateBody.id === priorId, false);
-      assertEquals(typeof rotateBody.rotationId, "string");
-      assertEquals(rotateBody.generation, 2);
-      assertEquals(Array.isArray(rotateBody.results), true);
-
-      const [journal] = await db
-        .select({
-          id: changeover.id,
-          state: changeover.state,
-          fromCaGeneration: changeover.fromCaGeneration,
-          toCaGeneration: changeover.toCaGeneration,
-        })
-        .from(changeover)
-        .where(eq(changeover.organizationId, organizationId))
-        .limit(1);
-      assertEquals(journal?.id, rotateBody.rotationId);
-      assertEquals(journal?.state, "awaiting_retire");
-      assertEquals(journal?.fromCaGeneration, 1);
-      assertEquals(journal?.toCaGeneration, 2);
-
-      const statusRes = await app.request("/tls/ca/rotation", { headers });
-      assertEquals(statusRes.status, 200);
-      const statusBody = await statusRes.json() as {
-        rotationId: string;
-        state: string;
-        retiredCaStillRequired: boolean;
-      };
-      assertEquals(statusBody.rotationId, rotateBody.rotationId);
-      assertEquals(statusBody.state, "awaiting_retire");
-      assertEquals(statusBody.retiredCaStillRequired, true);
-
-      const [prior] = await db
-        .select({
-          status: tls.status,
-          caState: tls.caState,
-          caGeneration: tls.caGeneration,
-        })
-        .from(tls)
-        .where(eq(tls.id, priorId))
-        .limit(1);
-      assertEquals(prior?.status, "ready");
-      assertEquals(prior?.caState, "retired");
-      assertEquals(prior?.caGeneration, 1);
-
-      const [active] = await db
-        .select({
-          id: tls.id,
-          status: tls.status,
-          caState: tls.caState,
-          caGeneration: tls.caGeneration,
-        })
-        .from(tls)
-        .where(eq(tls.id, rotateBody.id))
-        .limit(1);
-      assertEquals(active?.status, "ready");
-      assertEquals(active?.caState, "active");
-      assertEquals(active?.caGeneration, 2);
-
-      const after = await app.request("/tls/ca", { headers });
-      assertEquals(after.status, 200);
-      const afterBody = await after.json() as {
-        tls: { id: string; certificatePem: string };
-        trustBundlePem: string;
-      };
-      assertEquals(afterBody.tls.id, rotateBody.id);
-      assertEquals(
-        afterBody.trustBundlePem.includes(afterBody.tls.certificatePem.trim()),
-        true,
-      );
-      assertEquals(afterBody.trustBundlePem.includes(priorPem.trim()), true);
-
-      const download = await app.request("/tls/ca/download", { headers });
-      assertEquals(download.status, 200);
-      const downloadBody = await download.text();
-      assertEquals(downloadBody, afterBody.trustBundlePem);
-      assertEquals(downloadBody.split("BEGIN CERTIFICATE").length - 1, 2);
-    },
-  );
-});
-
-test("PATCH /tls/:id revoke:true on an Organization CA is rejected", async () => {
-  await withTlsFixtures(
-    async ({ db, app, secrets, userId, organizationId }) => {
-      const cookie = await sessionCookie(db, secrets, userId);
-      const headers = {
-        cookie,
-        [ORG_ID_HEADER]: organizationId,
-        "content-type": "application/json",
-      };
-
-      const ensure = await app.request("/tls/ca", { headers });
-      assertEquals(ensure.status, 200);
-      const ensureBody = await ensure.json() as {
-        tls: { id: string };
-      };
-
-      const revoke = await app.request(`/tls/${ensureBody.tls.id}`, {
-        method: "PATCH",
-        headers,
-        body: JSON.stringify({ revoke: true }),
-      });
-      assertEquals(revoke.status, 409);
-      const body = await revoke.json() as { error: string };
-      assertEquals(body.error, "organization_ca_retire_required");
-
-      const [row] = await db
-        .select({ status: tls.status, caState: tls.caState })
-        .from(tls)
-        .where(eq(tls.id, ensureBody.tls.id))
-        .limit(1);
-      assertEquals(row?.status, "ready");
-      assertEquals(row?.caState, "active");
-    },
-  );
-});
-
-test("GET /tls/ca/download returns the Organization CA trust-bundle PEM", async () => {
-  await withTlsFixtures(
-    async ({ db, app, secrets, userId, organizationId }) => {
-      const cookie = await sessionCookie(db, secrets, userId);
-      const headers = {
-        cookie,
-        [ORG_ID_HEADER]: organizationId,
-      };
-
-      const first = await app.request("/tls/ca", { headers });
-      assertEquals(first.status, 200);
-      const firstBody = await first.json() as { trustBundlePem: string };
-
-      const download = await app.request("/tls/ca/download", { headers });
-      assertEquals(download.status, 200);
-      assertEquals(
-        download.headers.get("content-type")?.includes(
-          "application/x-pem-file",
-        ),
-        true,
-      );
-      const body = await download.text();
-      assertEquals(body, firstBody.trustBundlePem);
-      assertEquals(body.includes("BEGIN CERTIFICATE"), true);
-      assertEquals(body.includes("privateKeyPem"), false);
-      assertEquals(body.includes("BEGIN PRIVATE KEY"), false);
-
-      const asJson = (() => {
-        try {
-          return JSON.parse(body) as Record<string, unknown>;
-        } catch {
-          return null;
-        }
-      })();
-      assertEquals(asJson, null);
-    },
-  );
-});
-
-test("POST /tls/ca/rotate returns 409 while a changeover is in flight", async () => {
-  await withTlsFixtures(
-    async ({ db, app, secrets, userId, organizationId }) => {
-      const cookie = await sessionCookie(db, secrets, userId);
-      const headers = {
-        cookie,
-        [ORG_ID_HEADER]: organizationId,
-        "content-type": "application/json",
-      };
-
-      const ensure = await app.request("/tls/ca", { headers });
-      assertEquals(ensure.status, 200);
-
-      const first = await app.request("/tls/ca/rotate", {
-        method: "POST",
-        headers,
-      });
-      assertEquals(first.status, 200);
-
-      const second = await app.request("/tls/ca/rotate", {
-        method: "POST",
-        headers,
-      });
-      assertEquals(second.status, 409);
-      const body = await second.json() as { error: string };
-      assertEquals(body.error, "ca_rotation_in_progress");
-    },
-  );
-});
-
-test("POST /tls/ca/retire waits for tracked command success then revokes the retired CA", async () => {
-  await withTlsFixtures(
-    async ({ db, app, secrets, userId, organizationId }) => {
-      const cookie = await sessionCookie(db, secrets, userId);
-      const headers = {
-        cookie,
-        [ORG_ID_HEADER]: organizationId,
-        "content-type": "application/json",
-      };
-
-      const ensure = await app.request("/tls/ca", { headers });
-      assertEquals(ensure.status, 200);
-      const ensureBody = await ensure.json() as {
-        tls: { id: string; certificatePem: string };
-      };
-      const priorId = ensureBody.tls.id;
-      const priorPem = ensureBody.tls.certificatePem;
-
-      const rotate = await app.request("/tls/ca/rotate", {
-        method: "POST",
-        headers,
-      });
-      assertEquals(rotate.status, 200);
-      const rotateBody = await rotate.json() as { rotationId: string };
-
-      const [serverRow] = await db
-        .insert(server)
-        .values({ organizationId, name: "CA changeover host" })
-        .returning({ id: server.id });
-      const serverId = serverRow!.id;
-
-      const [commandRow] = await db
-        .insert(command)
-        .values({
-          serverId,
-          actorType: "user",
-          actorId: userId,
-          name: "managed.ingress.reconcile",
-          status: "queued",
-        })
-        .returning({ id: command.id });
-      const commandId = commandRow!.id;
-
-      try {
-        await db
-          .update(changeover)
-          .set({
-            results: [{
-              serverId,
-              kind: "ingress",
-              commandId,
-              status: "queued",
-            }],
-          })
-          .where(eq(changeover.id, rotateBody.rotationId));
-
-        const earlyRetire = await app.request("/tls/ca/retire", {
-          method: "POST",
-          headers,
-        });
-        assertEquals(earlyRetire.status, 409);
-        const earlyBody = await earlyRetire.json() as { error: string };
-        assertEquals(earlyBody.error, "ca_rotation_not_converged");
-
-        await db
-          .update(command)
-          .set({ status: "succeeded" })
-          .where(eq(command.id, commandId));
-
-        const retire = await app.request("/tls/ca/retire", {
-          method: "POST",
-          headers,
-        });
-        assertEquals(retire.status, 200);
-        const retireBody = await retire.json() as {
-          ok: true;
-          rotationId: string;
-        };
-        assertEquals(retireBody.ok, true);
-        assertEquals(retireBody.rotationId, rotateBody.rotationId);
-
-        const [prior] = await db
-          .select({ caState: tls.caState, status: tls.status })
-          .from(tls)
-          .where(eq(tls.id, priorId))
-          .limit(1);
-        assertEquals(prior?.caState, "revoked");
-        assertEquals(prior?.status, "revoked");
-
-        const after = await app.request("/tls/ca", { headers });
-        assertEquals(after.status, 200);
-        const afterBody = await after.json() as { trustBundlePem: string };
-        assertEquals(afterBody.trustBundlePem.includes(priorPem.trim()), false);
-
-        const statusRes = await app.request("/tls/ca/rotation", { headers });
-        assertEquals(statusRes.status, 200);
-        const statusBody = await statusRes.json() as {
-          state: string;
-          retiredCaStillRequired: boolean;
-        };
-        assertEquals(statusBody.state, "completed");
-        assertEquals(statusBody.retiredCaStillRequired, false);
-      } finally {
-        await db.delete(command).where(eq(command.id, commandId));
-        await db.delete(server).where(eq(server.id, serverId));
+    const first = await app.request('/tls/ca', { headers })
+    assertEquals(first.status, 200)
+    const firstBody = (await first.json()) as {
+      tls: {
+        id: string
+        source: string
+        certificatePem: string | null
+        trustBundlePem?: string
+        notAfter: string | null
+        caGeneration: number | null
+        metadata: { subject: string }
       }
-    },
-  );
-});
-
-test("POST /tls/ca/rotate resumes fan-out across batches until awaiting_retire", async () => {
-  await withTlsFixtures(
-    async ({ db, app, secrets, userId, organizationId }) => {
-      const cookie = await sessionCookie(db, secrets, userId);
-      const headers = {
-        cookie,
-        [ORG_ID_HEADER]: organizationId,
-        "content-type": "application/json",
-      };
-      const seeded = await seedManagedClusters(db, {
-        organizationId,
-        count: ROTATION_FANOUT_BATCH_SIZE + 1,
-      });
-      try {
-        const ensure = await app.request("/tls/ca", { headers });
-        assertEquals(ensure.status, 200);
-
-        const first = await app.request("/tls/ca/rotate", {
-          method: "POST",
-          headers,
-        });
-        assertEquals(first.status, 200);
-        const firstBody = await first.json() as {
-          id: string;
-          rotationId: string;
-          generation: number;
-          results: Array<{ managedId?: string; kind?: string }>;
-        };
-        assertEquals(firstBody.generation, 2);
-        assertEquals(
-          firstBody.results.filter((row) => row.kind === "apply").length,
-          ROTATION_FANOUT_BATCH_SIZE,
-        );
-
-        const [afterFirst] = await db
-          .select({
-            state: changeover.state,
-            toCaGeneration: changeover.toCaGeneration,
-          })
-          .from(changeover)
-          .where(eq(changeover.id, firstBody.rotationId))
-          .limit(1);
-        assertEquals(afterFirst?.state, "in_progress");
-        assertEquals(afterFirst?.toCaGeneration, 2);
-
-        const second = await app.request("/tls/ca/rotate", {
-          method: "POST",
-          headers,
-        });
-        assertEquals(second.status, 200);
-        const secondBody = await second.json() as {
-          id: string;
-          rotationId: string;
-          generation: number;
-          results: Array<{ managedId?: string; kind?: string }>;
-        };
-        assertEquals(secondBody.id, firstBody.id);
-        assertEquals(secondBody.rotationId, firstBody.rotationId);
-        assertEquals(secondBody.generation, 2);
-
-        const [afterSecond] = await db
-          .select({ state: changeover.state })
-          .from(changeover)
-          .where(eq(changeover.id, firstBody.rotationId))
-          .limit(1);
-        assertEquals(afterSecond?.state, "awaiting_retire");
-
-        const applyManagedIds = secondBody.results
-          .filter((row) => row.kind === "apply" && row.managedId)
-          .map((row) => row.managedId as string)
-          .sort((a, b) => a.localeCompare(b));
-        assertEquals(
-          applyManagedIds,
-          [...seeded.managedIds].sort((a, b) => a.localeCompare(b)),
-        );
-      } finally {
-        await deleteSeededManagedClusters(db, seeded);
+      trustBundlePem: string
+      leafHealth: {
+        dueCount: number
+        caGeneration: number
+        caNotAfter: string | null
       }
-    },
-  );
-});
+    }
+    assertEquals(firstBody.tls.source, 'organization_ca')
+    assertEquals(typeof firstBody.tls.certificatePem, 'string')
+    assertEquals(
+      firstBody.tls.metadata.subject,
+      `O=TurboPanel, OU=Organization CA, CN=${organizationId}`
+    )
+    assertEquals(typeof firstBody.trustBundlePem, 'string')
+    assertEquals(firstBody.trustBundlePem.includes('BEGIN CERTIFICATE'), true)
+    assertEquals(firstBody.tls.trustBundlePem, firstBody.trustBundlePem)
+    assertEquals(firstBody.tls.caGeneration, 1)
+    assertEquals(typeof firstBody.leafHealth.dueCount, 'number')
+    assertEquals(firstBody.leafHealth.dueCount, 0)
+    assertEquals(firstBody.leafHealth.caGeneration, 1)
+    assertEquals(firstBody.leafHealth.caGeneration, firstBody.tls.caGeneration)
+    assertEquals(typeof firstBody.leafHealth.caNotAfter, 'string')
 
-test("POST /tls/ca/rotate keeps kind and managedId when one server hosts two clusters", async () => {
-  await withTlsFixtures(
-    async ({ db, app, secrets, userId, organizationId }) => {
-      const cookie = await sessionCookie(db, secrets, userId);
-      const headers = {
-        cookie,
-        [ORG_ID_HEADER]: organizationId,
-        "content-type": "application/json",
-      };
-      const [serverRow] = await db
-        .insert(server)
-        .values({ organizationId, name: "Shared changeover host" })
-        .returning({ id: server.id });
-      const serverId = serverRow!.id;
-      const seeded = await seedManagedClusters(db, {
-        organizationId,
-        count: 2,
+    const second = await app.request('/tls/ca', { headers })
+    assertEquals(second.status, 200)
+    const secondBody = (await second.json()) as {
+      tls: { id: string }
+      trustBundlePem: string
+    }
+    assertEquals(secondBody.tls.id, firstBody.tls.id)
+    assertEquals(secondBody.trustBundlePem, firstBody.trustBundlePem)
+  })
+})
+
+test('POST /tls/ca/rotate retires prior CA and mints a new active generation', async () => {
+  await withTlsFixtures(async ({ db, app, secrets, userId, organizationId }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const headers = {
+      cookie,
+      [ORG_ID_HEADER]: organizationId,
+      'content-type': 'application/json',
+    }
+
+    const ensure = await app.request('/tls/ca', { headers })
+    assertEquals(ensure.status, 200)
+    const ensureBody = (await ensure.json()) as {
+      tls: { id: string; certificatePem: string }
+      trustBundlePem: string
+    }
+    const priorId = ensureBody.tls.id
+    const priorPem = ensureBody.tls.certificatePem
+
+    const rotate = await app.request('/tls/ca/rotate', {
+      method: 'POST',
+      headers,
+    })
+    assertEquals(rotate.status, 200)
+    const rotateBody = (await rotate.json()) as {
+      ok: true
+      id: string
+      rotationId: string
+      generation: number
+      results: unknown[]
+    }
+    assertEquals(rotateBody.ok, true)
+    assertEquals(rotateBody.id === priorId, false)
+    assertEquals(typeof rotateBody.rotationId, 'string')
+    assertEquals(rotateBody.generation, 2)
+    assertEquals(Array.isArray(rotateBody.results), true)
+
+    const [journal] = await db
+      .select({
+        id: changeover.id,
+        state: changeover.state,
+        fromCaGeneration: changeover.fromCaGeneration,
+        toCaGeneration: changeover.toCaGeneration,
+      })
+      .from(changeover)
+      .where(eq(changeover.organizationId, organizationId))
+      .limit(1)
+    assertEquals(journal?.id, rotateBody.rotationId)
+    assertEquals(journal?.state, 'awaiting_retire')
+    assertEquals(journal?.fromCaGeneration, 1)
+    assertEquals(journal?.toCaGeneration, 2)
+
+    const statusRes = await app.request('/tls/ca/rotation', { headers })
+    assertEquals(statusRes.status, 200)
+    const statusBody = (await statusRes.json()) as {
+      rotationId: string
+      state: string
+      retiredCaStillRequired: boolean
+    }
+    assertEquals(statusBody.rotationId, rotateBody.rotationId)
+    assertEquals(statusBody.state, 'awaiting_retire')
+    assertEquals(statusBody.retiredCaStillRequired, true)
+
+    const [prior] = await db
+      .select({
+        status: tls.status,
+        caState: tls.caState,
+        caGeneration: tls.caGeneration,
+      })
+      .from(tls)
+      .where(eq(tls.id, priorId))
+      .limit(1)
+    assertEquals(prior?.status, 'ready')
+    assertEquals(prior?.caState, 'retired')
+    assertEquals(prior?.caGeneration, 1)
+
+    const [active] = await db
+      .select({
+        id: tls.id,
+        status: tls.status,
+        caState: tls.caState,
+        caGeneration: tls.caGeneration,
+      })
+      .from(tls)
+      .where(eq(tls.id, rotateBody.id))
+      .limit(1)
+    assertEquals(active?.status, 'ready')
+    assertEquals(active?.caState, 'active')
+    assertEquals(active?.caGeneration, 2)
+
+    const after = await app.request('/tls/ca', { headers })
+    assertEquals(after.status, 200)
+    const afterBody = (await after.json()) as {
+      tls: { id: string; certificatePem: string }
+      trustBundlePem: string
+    }
+    assertEquals(afterBody.tls.id, rotateBody.id)
+    assertEquals(afterBody.trustBundlePem.includes(afterBody.tls.certificatePem.trim()), true)
+    assertEquals(afterBody.trustBundlePem.includes(priorPem.trim()), true)
+
+    const download = await app.request('/tls/ca/download', { headers })
+    assertEquals(download.status, 200)
+    const downloadBody = await download.text()
+    assertEquals(downloadBody, afterBody.trustBundlePem)
+    assertEquals(downloadBody.split('BEGIN CERTIFICATE').length - 1, 2)
+  })
+})
+
+test('PATCH /tls/:id revoke:true on an Organization CA is rejected', async () => {
+  await withTlsFixtures(async ({ db, app, secrets, userId, organizationId }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const headers = {
+      cookie,
+      [ORG_ID_HEADER]: organizationId,
+      'content-type': 'application/json',
+    }
+
+    const ensure = await app.request('/tls/ca', { headers })
+    assertEquals(ensure.status, 200)
+    const ensureBody = (await ensure.json()) as {
+      tls: { id: string }
+    }
+
+    const revoke = await app.request(`/tls/${ensureBody.tls.id}`, {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify({ revoke: true }),
+    })
+    assertEquals(revoke.status, 409)
+    const body = (await revoke.json()) as { error: string }
+    assertEquals(body.error, 'organization_ca_retire_required')
+
+    const [row] = await db
+      .select({ status: tls.status, caState: tls.caState })
+      .from(tls)
+      .where(eq(tls.id, ensureBody.tls.id))
+      .limit(1)
+    assertEquals(row?.status, 'ready')
+    assertEquals(row?.caState, 'active')
+  })
+})
+
+test('GET /tls/ca/download returns the Organization CA trust-bundle PEM', async () => {
+  await withTlsFixtures(async ({ db, app, secrets, userId, organizationId }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const headers = {
+      cookie,
+      [ORG_ID_HEADER]: organizationId,
+    }
+
+    const first = await app.request('/tls/ca', { headers })
+    assertEquals(first.status, 200)
+    const firstBody = (await first.json()) as { trustBundlePem: string }
+
+    const download = await app.request('/tls/ca/download', { headers })
+    assertEquals(download.status, 200)
+    assertEquals(download.headers.get('content-type')?.includes('application/x-pem-file'), true)
+    const body = await download.text()
+    assertEquals(body, firstBody.trustBundlePem)
+    assertEquals(body.includes('BEGIN CERTIFICATE'), true)
+    assertEquals(body.includes('privateKeyPem'), false)
+    assertEquals(body.includes('BEGIN PRIVATE KEY'), false)
+
+    const asJson = (() => {
+      try {
+        return JSON.parse(body) as Record<string, unknown>
+      } catch {
+        return null
+      }
+    })()
+    assertEquals(asJson, null)
+  })
+})
+
+test('POST /tls/ca/rotate returns 409 while a changeover is in flight', async () => {
+  await withTlsFixtures(async ({ db, app, secrets, userId, organizationId }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const headers = {
+      cookie,
+      [ORG_ID_HEADER]: organizationId,
+      'content-type': 'application/json',
+    }
+
+    const ensure = await app.request('/tls/ca', { headers })
+    assertEquals(ensure.status, 200)
+
+    const first = await app.request('/tls/ca/rotate', {
+      method: 'POST',
+      headers,
+    })
+    assertEquals(first.status, 200)
+
+    const second = await app.request('/tls/ca/rotate', {
+      method: 'POST',
+      headers,
+    })
+    assertEquals(second.status, 409)
+    const body = (await second.json()) as { error: string }
+    assertEquals(body.error, 'ca_rotation_in_progress')
+  })
+})
+
+test('POST /tls/ca/retire waits for tracked command success then revokes the retired CA', async () => {
+  await withTlsFixtures(async ({ db, app, secrets, userId, organizationId }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const headers = {
+      cookie,
+      [ORG_ID_HEADER]: organizationId,
+      'content-type': 'application/json',
+    }
+
+    const ensure = await app.request('/tls/ca', { headers })
+    assertEquals(ensure.status, 200)
+    const ensureBody = (await ensure.json()) as {
+      tls: { id: string; certificatePem: string }
+    }
+    const priorId = ensureBody.tls.id
+    const priorPem = ensureBody.tls.certificatePem
+
+    const rotate = await app.request('/tls/ca/rotate', {
+      method: 'POST',
+      headers,
+    })
+    assertEquals(rotate.status, 200)
+    const rotateBody = (await rotate.json()) as { rotationId: string }
+
+    const [serverRow] = await db
+      .insert(server)
+      .values({ organizationId, name: 'CA changeover host' })
+      .returning({ id: server.id })
+    const serverId = serverRow!.id
+
+    const [commandRow] = await db
+      .insert(command)
+      .values({
         serverId,
-      });
-      try {
-        const ensure = await app.request("/tls/ca", { headers });
-        assertEquals(ensure.status, 200);
+        actorType: 'user',
+        actorId: userId,
+        name: 'managed.ingress.reconcile',
+        status: 'queued',
+      })
+      .returning({ id: command.id })
+    const commandId = commandRow!.id
 
-        const rotate = await app.request("/tls/ca/rotate", {
-          method: "POST",
-          headers,
-        });
-        assertEquals(rotate.status, 200);
-        const body = await rotate.json() as {
-          results: Array<{
-            serverId: string;
-            kind?: string;
-            managedId?: string;
-            status: string;
-          }>;
-        };
-        const applyRows = body.results.filter((row) => row.kind === "apply");
-        assertEquals(applyRows.length, 2);
-        assertEquals(applyRows[0]?.serverId, serverId);
-        assertEquals(applyRows[1]?.serverId, serverId);
-        assertEquals(
-          applyRows[0]?.managedId === applyRows[1]?.managedId,
-          false,
-        );
-        const managedIds = applyRows
-          .map((row) => row.managedId)
-          .sort((a, b) => (a ?? "").localeCompare(b ?? ""));
-        assertEquals(
-          managedIds,
-          [...seeded.managedIds].sort((a, b) => a.localeCompare(b)),
-        );
-
-        const statusRes = await app.request("/tls/ca/rotation", { headers });
-        assertEquals(statusRes.status, 200);
-        const statusBody = await statusRes.json() as {
-          results: Array<{
-            serverId: string;
-            kind?: string;
-            managedId?: string;
-          }>;
-        };
-        const statusApply = statusBody.results.filter((row) =>
-          row.kind === "apply"
-        );
-        assertEquals(statusApply.length, 2);
-        assertEquals(
-          statusApply[0]?.managedId === statusApply[1]?.managedId,
-          false,
-        );
-      } finally {
-        await deleteSeededManagedClusters(db, seeded);
-        await db.delete(command).where(eq(command.serverId, serverId));
-        await db.delete(server).where(eq(server.id, serverId));
-      }
-    },
-  );
-});
-
-test("POST /tls/ca/retire stays blocked when binding rematerialize failed", async () => {
-  await withTlsFixtures(
-    async ({ db, app, secrets, userId, organizationId }) => {
-      const cookie = await sessionCookie(db, secrets, userId);
-      const headers = {
-        cookie,
-        [ORG_ID_HEADER]: organizationId,
-        "content-type": "application/json",
-      };
-
-      const ensure = await app.request("/tls/ca", { headers });
-      assertEquals(ensure.status, 200);
-
-      const rotate = await app.request("/tls/ca/rotate", {
-        method: "POST",
-        headers,
-      });
-      assertEquals(rotate.status, 200);
-      const rotateBody = await rotate.json() as { rotationId: string };
-
+    try {
       await db
         .update(changeover)
         .set({
-          state: "awaiting_retire",
-          results: [{
-            serverId: organizationId,
-            kind: "binding",
-            managedId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-            status: "failed",
-            error: "binding_ca_unavailable",
-          }],
+          results: [
+            {
+              serverId,
+              kind: 'ingress',
+              commandId,
+              status: 'queued',
+            },
+          ],
         })
-        .where(eq(changeover.id, rotateBody.rotationId));
+        .where(eq(changeover.id, rotateBody.rotationId))
 
-      const retire = await app.request("/tls/ca/retire", {
-        method: "POST",
+      const earlyRetire = await app.request('/tls/ca/retire', {
+        method: 'POST',
         headers,
-      });
-      assertEquals(retire.status, 409);
-      const body = await retire.json() as { error: string };
-      assertEquals(body.error, "ca_rotation_not_converged");
-    },
-  );
-});
+      })
+      assertEquals(earlyRetire.status, 409)
+      const earlyBody = (await earlyRetire.json()) as { error: string }
+      assertEquals(earlyBody.error, 'ca_rotation_not_converged')
+
+      await db.update(command).set({ status: 'succeeded' }).where(eq(command.id, commandId))
+
+      const retire = await app.request('/tls/ca/retire', {
+        method: 'POST',
+        headers,
+      })
+      assertEquals(retire.status, 200)
+      const retireBody = (await retire.json()) as {
+        ok: true
+        rotationId: string
+      }
+      assertEquals(retireBody.ok, true)
+      assertEquals(retireBody.rotationId, rotateBody.rotationId)
+
+      const [prior] = await db
+        .select({ caState: tls.caState, status: tls.status })
+        .from(tls)
+        .where(eq(tls.id, priorId))
+        .limit(1)
+      assertEquals(prior?.caState, 'revoked')
+      assertEquals(prior?.status, 'revoked')
+
+      const after = await app.request('/tls/ca', { headers })
+      assertEquals(after.status, 200)
+      const afterBody = (await after.json()) as { trustBundlePem: string }
+      assertEquals(afterBody.trustBundlePem.includes(priorPem.trim()), false)
+
+      const statusRes = await app.request('/tls/ca/rotation', { headers })
+      assertEquals(statusRes.status, 200)
+      const statusBody = (await statusRes.json()) as {
+        state: string
+        retiredCaStillRequired: boolean
+      }
+      assertEquals(statusBody.state, 'completed')
+      assertEquals(statusBody.retiredCaStillRequired, false)
+    } finally {
+      await db.delete(command).where(eq(command.id, commandId))
+      await db.delete(server).where(eq(server.id, serverId))
+    }
+  })
+})
+
+test('POST /tls/ca/rotate resumes fan-out across batches until awaiting_retire', async () => {
+  await withTlsFixtures(async ({ db, app, secrets, userId, organizationId }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const headers = {
+      cookie,
+      [ORG_ID_HEADER]: organizationId,
+      'content-type': 'application/json',
+    }
+    const seeded = await seedManagedClusters(db, {
+      organizationId,
+      count: ROTATION_FANOUT_BATCH_SIZE + 1,
+    })
+    try {
+      const ensure = await app.request('/tls/ca', { headers })
+      assertEquals(ensure.status, 200)
+
+      const first = await app.request('/tls/ca/rotate', {
+        method: 'POST',
+        headers,
+      })
+      assertEquals(first.status, 200)
+      const firstBody = (await first.json()) as {
+        id: string
+        rotationId: string
+        generation: number
+        results: Array<{ managedId?: string; kind?: string }>
+      }
+      assertEquals(firstBody.generation, 2)
+      assertEquals(
+        firstBody.results.filter((row) => row.kind === 'apply').length,
+        ROTATION_FANOUT_BATCH_SIZE
+      )
+
+      const [afterFirst] = await db
+        .select({
+          state: changeover.state,
+          toCaGeneration: changeover.toCaGeneration,
+        })
+        .from(changeover)
+        .where(eq(changeover.id, firstBody.rotationId))
+        .limit(1)
+      assertEquals(afterFirst?.state, 'in_progress')
+      assertEquals(afterFirst?.toCaGeneration, 2)
+
+      const second = await app.request('/tls/ca/rotate', {
+        method: 'POST',
+        headers,
+      })
+      assertEquals(second.status, 200)
+      const secondBody = (await second.json()) as {
+        id: string
+        rotationId: string
+        generation: number
+        results: Array<{ managedId?: string; kind?: string }>
+      }
+      assertEquals(secondBody.id, firstBody.id)
+      assertEquals(secondBody.rotationId, firstBody.rotationId)
+      assertEquals(secondBody.generation, 2)
+
+      const [afterSecond] = await db
+        .select({ state: changeover.state })
+        .from(changeover)
+        .where(eq(changeover.id, firstBody.rotationId))
+        .limit(1)
+      assertEquals(afterSecond?.state, 'awaiting_retire')
+
+      const applyManagedIds = secondBody.results
+        .filter((row) => row.kind === 'apply' && row.managedId)
+        .map((row) => row.managedId as string)
+        .sort((a, b) => a.localeCompare(b))
+      assertEquals(
+        applyManagedIds,
+        [...seeded.managedIds].sort((a, b) => a.localeCompare(b))
+      )
+    } finally {
+      await deleteSeededManagedClusters(db, seeded)
+    }
+  })
+})
+
+test('POST /tls/ca/rotate keeps kind and managedId when one server hosts two clusters', async () => {
+  await withTlsFixtures(async ({ db, app, secrets, userId, organizationId }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const headers = {
+      cookie,
+      [ORG_ID_HEADER]: organizationId,
+      'content-type': 'application/json',
+    }
+    const [serverRow] = await db
+      .insert(server)
+      .values({ organizationId, name: 'Shared changeover host' })
+      .returning({ id: server.id })
+    const serverId = serverRow!.id
+    const seeded = await seedManagedClusters(db, {
+      organizationId,
+      count: 2,
+      serverId,
+    })
+    try {
+      const ensure = await app.request('/tls/ca', { headers })
+      assertEquals(ensure.status, 200)
+
+      const rotate = await app.request('/tls/ca/rotate', {
+        method: 'POST',
+        headers,
+      })
+      assertEquals(rotate.status, 200)
+      const body = (await rotate.json()) as {
+        results: Array<{
+          serverId: string
+          kind?: string
+          managedId?: string
+          status: string
+        }>
+      }
+      const applyRows = body.results.filter((row) => row.kind === 'apply')
+      assertEquals(applyRows.length, 2)
+      assertEquals(applyRows[0]?.serverId, serverId)
+      assertEquals(applyRows[1]?.serverId, serverId)
+      assertEquals(applyRows[0]?.managedId === applyRows[1]?.managedId, false)
+      const managedIds = applyRows
+        .map((row) => row.managedId)
+        .sort((a, b) => (a ?? '').localeCompare(b ?? ''))
+      assertEquals(
+        managedIds,
+        [...seeded.managedIds].sort((a, b) => a.localeCompare(b))
+      )
+
+      const statusRes = await app.request('/tls/ca/rotation', { headers })
+      assertEquals(statusRes.status, 200)
+      const statusBody = (await statusRes.json()) as {
+        results: Array<{
+          serverId: string
+          kind?: string
+          managedId?: string
+        }>
+      }
+      const statusApply = statusBody.results.filter((row) => row.kind === 'apply')
+      assertEquals(statusApply.length, 2)
+      assertEquals(statusApply[0]?.managedId === statusApply[1]?.managedId, false)
+    } finally {
+      await deleteSeededManagedClusters(db, seeded)
+      await db.delete(command).where(eq(command.serverId, serverId))
+      await db.delete(server).where(eq(server.id, serverId))
+    }
+  })
+})
+
+test('POST /tls/ca/retire stays blocked when binding rematerialize failed', async () => {
+  await withTlsFixtures(async ({ db, app, secrets, userId, organizationId }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const headers = {
+      cookie,
+      [ORG_ID_HEADER]: organizationId,
+      'content-type': 'application/json',
+    }
+
+    const ensure = await app.request('/tls/ca', { headers })
+    assertEquals(ensure.status, 200)
+
+    const rotate = await app.request('/tls/ca/rotate', {
+      method: 'POST',
+      headers,
+    })
+    assertEquals(rotate.status, 200)
+    const rotateBody = (await rotate.json()) as { rotationId: string }
+
+    await db
+      .update(changeover)
+      .set({
+        state: 'awaiting_retire',
+        results: [
+          {
+            serverId: organizationId,
+            kind: 'binding',
+            managedId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+            status: 'failed',
+            error: 'binding_ca_unavailable',
+          },
+        ],
+      })
+      .where(eq(changeover.id, rotateBody.rotationId))
+
+    const retire = await app.request('/tls/ca/retire', {
+      method: 'POST',
+      headers,
+    })
+    assertEquals(retire.status, 409)
+    const body = (await retire.json()) as { error: string }
+    assertEquals(body.error, 'ca_rotation_not_converged')
+  })
+})
 
 async function countTlsRows(
   db: ReturnType<typeof createDenoDb>,
-  organizationId: string,
+  organizationId: string
 ): Promise<number> {
   const rows = await db
     .select({ id: tls.id })
     .from(tls)
-    .where(eq(tls.organizationId, organizationId));
-  return rows.length;
+    .where(eq(tls.organizationId, organizationId))
+  return rows.length
 }
 
 test("POST /tls refuses Let's Encrypt for private and wildcard names before saving anything", async () => {
-  await withTlsFixtures(
-    async ({ db, app, secrets, userId, organizationId }) => {
-      const cookie = await sessionCookie(db, secrets, userId);
-      const headers = {
-        cookie,
-        [ORG_ID_HEADER]: organizationId,
-        "content-type": "application/json",
-      };
-      const refused = [
-        ["*.example.com"],
-        ["localhost"],
-        ["app.local"],
-        ["db.internal"],
-        ["10.0.0.5"],
-        ["192.168.1.20"],
-        ["fine.example.com", "printer.lan"],
-      ];
-      const responses = await Promise.all(
-        refused.map(async (hostnames) => {
-          const res = await app.request("/tls", {
-            method: "POST",
-            headers,
-            body: JSON.stringify({
-              source: "lets_encrypt",
-              name: "Refused LE",
-              hostnames,
-              challengeType: "http-01",
-            }),
-          });
-          return {
-            label: hostnames.join(","),
-            status: res.status,
-            error: (await res.json() as { error: string }).error,
-          };
-        }),
-      );
-      for (const { label, status, error } of responses) {
-        assertEquals(status, 400, `expected 400 for ${label}`);
-        assertEquals(
-          error === "wildcard_unsupported" ||
-            error === "private_hostname_unsupported",
-          true,
-          `unexpected error ${error} for ${label}`,
-        );
-      }
-      // Nothing was saved by any refused request.
-      assertEquals(await countTlsRows(db, organizationId), 0);
-
-      const ok = await app.request("/tls", {
-        method: "POST",
-        headers,
-        body: JSON.stringify({
-          source: "lets_encrypt",
-          name: "Public LE",
-          hostnames: ["app.example.com"],
-        }),
-      });
-      assertEquals(ok.status, 200);
-      assertEquals(await countTlsRows(db, organizationId), 1);
-    },
-  );
-});
-
-test("POST /tls upload stores a sealed key and no read endpoint ever returns it", async () => {
-  await withTlsFixtures(
-    async ({ db, app, secrets, userId, organizationId }) => {
-      const cookie = await sessionCookie(db, secrets, userId);
-      const headers = {
-        cookie,
-        [ORG_ID_HEADER]: organizationId,
-        "content-type": "application/json",
-      };
-      const minted = await mintSelfSignedCertificate(["upload.example.com"]);
-      const res = await app.request("/tls", {
-        method: "POST",
-        headers,
-        body: JSON.stringify({
-          source: "upload",
-          name: "Uploaded",
-          certificatePem: minted.certificatePem,
-          privateKeyPem: minted.privateKeyPem,
-        }),
-      });
-      assertEquals(res.status, 200);
-      const created = await res.json() as { ok: true; id: string };
-
-      const [row] = await db
-        .select({ sealed: tls.privateKeyPem })
-        .from(tls)
-        .where(eq(tls.id, created.id))
-        .limit(1);
-      assertEquals(typeof row?.sealed, "string");
-      assertEquals(row!.sealed!.includes("BEGIN"), false);
-
-      const keyBody = minted.privateKeyPem
-        .replace(/-----[^-]+-----/g, "")
-        .replace(/\s+/g, "");
-      const reads = await Promise.all([
-        app.request("/tls", { headers }),
-        app.request(`/tls/${created.id}`, { headers }),
-      ]);
-      const texts = await Promise.all(reads.map((read) => read.text()));
-      for (const [index, read] of reads.entries()) {
-        assertEquals(read.status, 200);
-        const text = texts[index]!;
-        assertEquals(text.includes("PRIVATE KEY"), false);
-        assertEquals(text.includes(keyBody), false);
-        assertEquals(text.includes(row!.sealed!), false);
-        assertEquals(/privateKey/i.test(text), false);
-      }
-    },
-  );
-});
-
-test("POST /tls upload refuses a mismatched key and a garbage certificate, saving nothing", async () => {
-  await withTlsFixtures(
-    async ({ db, app, secrets, userId, organizationId }) => {
-      const cookie = await sessionCookie(db, secrets, userId);
-      const headers = {
-        cookie,
-        [ORG_ID_HEADER]: organizationId,
-        "content-type": "application/json",
-      };
-      const minted = await mintSelfSignedCertificate(["a.example.com"]);
-      const other = await mintSelfSignedCertificate(["b.example.com"]);
-      const mismatch = await app.request("/tls", {
-        method: "POST",
-        headers,
-        body: JSON.stringify({
-          source: "upload",
-          certificatePem: minted.certificatePem,
-          privateKeyPem: other.privateKeyPem,
-        }),
-      });
-      assertEquals(mismatch.status, 400);
+  await withTlsFixtures(async ({ db, app, secrets, userId, organizationId }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const headers = {
+      cookie,
+      [ORG_ID_HEADER]: organizationId,
+      'content-type': 'application/json',
+    }
+    const refused = [
+      ['*.example.com'],
+      ['localhost'],
+      ['app.local'],
+      ['db.internal'],
+      ['10.0.0.5'],
+      ['192.168.1.20'],
+      ['fine.example.com', 'printer.lan'],
+    ]
+    const responses = await Promise.all(
+      refused.map(async (hostnames) => {
+        const res = await app.request('/tls', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            source: 'lets_encrypt',
+            name: 'Refused LE',
+            hostnames,
+            challengeType: 'http-01',
+          }),
+        })
+        return {
+          label: hostnames.join(','),
+          status: res.status,
+          error: ((await res.json()) as { error: string }).error,
+        }
+      })
+    )
+    for (const { label, status, error } of responses) {
+      assertEquals(status, 400, `expected 400 for ${label}`)
       assertEquals(
-        (await mismatch.json() as { error: string }).error,
-        "certificate_key_mismatch",
-      );
+        error === 'wildcard_unsupported' || error === 'private_hostname_unsupported',
+        true,
+        `unexpected error ${error} for ${label}`
+      )
+    }
+    // Nothing was saved by any refused request.
+    assertEquals(await countTlsRows(db, organizationId), 0)
 
-      const garbage = await app.request("/tls", {
-        method: "POST",
-        headers,
-        body: JSON.stringify({
-          source: "upload",
-          certificatePem: "-----BEGIN CERTIFICATE-----\nnot a cert\n-----END CERTIFICATE-----\n",
-          privateKeyPem: minted.privateKeyPem,
-        }),
-      });
-      assertEquals(garbage.status, 400);
-      assertEquals(await countTlsRows(db, organizationId), 0);
-    },
-  );
-});
+    const ok = await app.request('/tls', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        source: 'lets_encrypt',
+        name: 'Public LE',
+        hostnames: ['app.example.com'],
+      }),
+    })
+    assertEquals(ok.status, 200)
+    assertEquals(await countTlsRows(db, organizationId), 1)
+  })
+})
 
-test("POST /tls self_signed mints a usable certificate for internal and private names", async () => {
-  await withTlsFixtures(
-    async ({ db, app, secrets, userId, organizationId }) => {
-      const cookie = await sessionCookie(db, secrets, userId);
-      const headers = {
-        cookie,
-        [ORG_ID_HEADER]: organizationId,
-        "content-type": "application/json",
-      };
-      const res = await app.request("/tls", {
-        method: "POST",
-        headers,
-        body: JSON.stringify({
-          source: "self_signed",
-          name: "Internal",
-          hostnames: ["app.internal", "db.local"],
-        }),
-      });
-      assertEquals(res.status, 200);
-      const created = await res.json() as { ok: true; id: string };
-      const detail = await app.request(`/tls/${created.id}`, { headers });
-      assertEquals(detail.status, 200);
-      const { tls: published } = await detail.json() as {
-        tls: {
-          source: string;
-          metadata: TlsMetadata;
-          certificatePem: string | null;
-        };
-      };
-      assertEquals(published.source, "self_signed");
-      assertEquals(published.metadata.status, "ready");
-      assertEquals(published.metadata.dnsNames.includes("app.internal"), true);
-      assertEquals(published.metadata.dnsNames.includes("db.local"), true);
-      assertEquals(published.certificatePem?.includes("BEGIN CERTIFICATE"), true);
-      assertEquals(published.metadata.fingerprintSha256.length > 0, true);
-    },
-  );
-});
+test('POST /tls upload stores a sealed key and no read endpoint ever returns it', async () => {
+  await withTlsFixtures(async ({ db, app, secrets, userId, organizationId }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const headers = {
+      cookie,
+      [ORG_ID_HEADER]: organizationId,
+      'content-type': 'application/json',
+    }
+    const minted = await mintSelfSignedCertificate(['upload.example.com'])
+    const res = await app.request('/tls', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        source: 'upload',
+        name: 'Uploaded',
+        certificatePem: minted.certificatePem,
+        privateKeyPem: minted.privateKeyPem,
+      }),
+    })
+    assertEquals(res.status, 200)
+    const created = (await res.json()) as { ok: true; id: string }
+
+    const [row] = await db
+      .select({ sealed: tls.privateKeyPem })
+      .from(tls)
+      .where(eq(tls.id, created.id))
+      .limit(1)
+    assertEquals(typeof row?.sealed, 'string')
+    assertEquals(row!.sealed!.includes('BEGIN'), false)
+
+    const keyBody = minted.privateKeyPem.replace(/-----[^-]+-----/g, '').replace(/\s+/g, '')
+    const reads = await Promise.all([
+      app.request('/tls', { headers }),
+      app.request(`/tls/${created.id}`, { headers }),
+    ])
+    const texts = await Promise.all(reads.map((read) => read.text()))
+    for (const [index, read] of reads.entries()) {
+      assertEquals(read.status, 200)
+      const text = texts[index]!
+      assertEquals(text.includes('PRIVATE KEY'), false)
+      assertEquals(text.includes(keyBody), false)
+      assertEquals(text.includes(row!.sealed!), false)
+      assertEquals(/privateKey/i.test(text), false)
+    }
+  })
+})
+
+test('POST /tls upload refuses a mismatched key and a garbage certificate, saving nothing', async () => {
+  await withTlsFixtures(async ({ db, app, secrets, userId, organizationId }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const headers = {
+      cookie,
+      [ORG_ID_HEADER]: organizationId,
+      'content-type': 'application/json',
+    }
+    const minted = await mintSelfSignedCertificate(['a.example.com'])
+    const other = await mintSelfSignedCertificate(['b.example.com'])
+    const mismatch = await app.request('/tls', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        source: 'upload',
+        certificatePem: minted.certificatePem,
+        privateKeyPem: other.privateKeyPem,
+      }),
+    })
+    assertEquals(mismatch.status, 400)
+    assertEquals(((await mismatch.json()) as { error: string }).error, 'certificate_key_mismatch')
+
+    const garbage = await app.request('/tls', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        source: 'upload',
+        certificatePem: '-----BEGIN CERTIFICATE-----\nnot a cert\n-----END CERTIFICATE-----\n',
+        privateKeyPem: minted.privateKeyPem,
+      }),
+    })
+    assertEquals(garbage.status, 400)
+    assertEquals(await countTlsRows(db, organizationId), 0)
+  })
+})
+
+test('POST /tls self_signed mints a usable certificate for internal and private names', async () => {
+  await withTlsFixtures(async ({ db, app, secrets, userId, organizationId }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const headers = {
+      cookie,
+      [ORG_ID_HEADER]: organizationId,
+      'content-type': 'application/json',
+    }
+    const res = await app.request('/tls', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        source: 'self_signed',
+        name: 'Internal',
+        hostnames: ['app.internal', 'db.local'],
+      }),
+    })
+    assertEquals(res.status, 200)
+    const created = (await res.json()) as { ok: true; id: string }
+    const detail = await app.request(`/tls/${created.id}`, { headers })
+    assertEquals(detail.status, 200)
+    const { tls: published } = (await detail.json()) as {
+      tls: {
+        source: string
+        metadata: TlsMetadata
+        certificatePem: string | null
+      }
+    }
+    assertEquals(published.source, 'self_signed')
+    assertEquals(published.metadata.status, 'ready')
+    assertEquals(published.metadata.dnsNames.includes('app.internal'), true)
+    assertEquals(published.metadata.dnsNames.includes('db.local'), true)
+    assertEquals(published.certificatePem?.includes('BEGIN CERTIFICATE'), true)
+    assertEquals(published.metadata.fingerprintSha256.length > 0, true)
+  })
+})

@@ -51,23 +51,25 @@ test('createFailure and isCreateTlsFailure discriminate results', () => {
       metadata: {} as never,
       options: null,
     }),
-    false,
+    false
   )
 })
 
 test('isTlsFingerprintUniqueViolation matches org fingerprint index', () => {
   const match = Object.assign(
-    new Error('duplicate key value violates unique constraint "uniq_tls_organization_fingerprint_sha256"'),
-    { code: '23505' },
+    new Error(
+      'duplicate key value violates unique constraint "uniq_tls_organization_fingerprint_sha256"'
+    ),
+    { code: '23505' }
   )
   assertEquals(isTlsFingerprintUniqueViolation(match), true)
   assertEquals(
     isTlsFingerprintUniqueViolation(
       Object.assign(new Error('uniq_tls_organization_fingerprint_sha256'), {
         code: '23505',
-      }),
+      })
     ),
-    true,
+    true
   )
   assertEquals(isTlsFingerprintUniqueViolation({ code: '23505' }), false)
   assertEquals(isTlsFingerprintUniqueViolation(new Error('other')), false)
@@ -77,7 +79,7 @@ test('isTlsFingerprintUniqueViolation matches org fingerprint index', () => {
 test('isOrganizationCaUniqueViolation matches active CA index', () => {
   const match = Object.assign(
     new Error('duplicate key value violates unique constraint "uniq_tls_organization_active_ca"'),
-    { code: '23505' },
+    { code: '23505' }
   )
   assertEquals(isOrganizationCaUniqueViolation(match), true)
   assertEquals(isOrganizationCaUniqueViolation({ code: '23505' }), false)
