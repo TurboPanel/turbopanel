@@ -72,6 +72,8 @@ import { planEnvironmentDeploy } from '../../features/schedule/index.ts'
 import { TEST_ONLY_TURBOPANEL_SECRET } from '../../test-fixtures/secrets.ts'
 import { systemHierarchyProvision } from '../../features/system/hierarchy.ts'
 import { registerTlsRoutes } from '../tls/routes.ts'
+import { registerOrganizationRoutes } from '../organizations/routes.ts'
+import { reconcileServicesForEnvironment } from './reconcile-after-compose-save.ts'
 
 const dbUrl = getDatabaseUrl()
 
@@ -464,6 +466,7 @@ async function createDeployRoutesTestApp(
   registerEnvironmentDeployRoutes(app, routeOpts)
   registerEnvironmentLifecycleRoutes(app, routeOpts)
   registerTlsRoutes(app, routeOpts)
+  registerOrganizationRoutes(app, routeOpts)
   return { app, secrets }
 }
 
@@ -2410,5 +2413,245 @@ test('GET /environments/:id/deploy-preview accepts what-if strategy and migratio
 
     const bad = await previewStrategy(ctx, composeWithWebService(), {}, '?strategy=rolling')
     assertEquals(bad.status, 400)
+  })
+})
+
+type RunCtx = HostLevelCtx & { workspaceId: string }
+
+async function previewYaml(ctx: HostLevelCtx): Promise<string> {
+  const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
+  const res = await ctx.app.request(`/environments/${ctx.environmentId}/deploy-preview`, {
+    headers: { Cookie: cookie, [ORG_ID_HEADER]: ctx.organizationId },
+  })
+  assertEquals(res.status, 200)
+  const body = (await res.json()) as { composeFiles: Array<{ content: string }> }
+  return body.composeFiles[0]?.content ?? ''
+}
+
+function composeOf(services: Record<string, unknown>): ComposeDocument {
+  return {
+    version: 1,
+    data: { services },
+    presentation: { keyOrder: ['services'], comments: {} },
+  }
+}
+
+test('an environment overlay merges on top of the project base in what a deploy would run, and leaves the base alone', async () => {
+  await withDeployFixtures(async (ctx) => {
+    const base = composeOf({ web: { image: 'nginx:alpine' }, db: { image: 'postgres:17' } })
+    const overlay = composeOf({ web: { image: 'nginx:1.27' }, api: { image: 'node:22' } })
+    await ctx.db
+      .update(project)
+      .set({ options: { compose: base } })
+      .where(eq(project.id, ctx.projectId))
+    await ctx.db
+      .update(environment)
+      .set({ serverId: ctx.serverId, options: { compose: overlay } })
+      .where(eq(environment.id, ctx.environmentId))
+
+    const yaml = await previewYaml(ctx)
+
+    // Overlay wins where both name a service; base-only and overlay-only services both survive.
+    assertEquals(yaml.includes('image: nginx:1.27'), true)
+    assertEquals(yaml.includes('nginx:alpine'), false)
+    assertEquals(yaml.includes('image: postgres:17'), true)
+    assertEquals(yaml.includes('image: node:22'), true)
+
+    const [stored] = await ctx.db
+      .select({ options: project.options })
+      .from(project)
+      .where(eq(project.id, ctx.projectId))
+    assertEquals(
+      (
+        (stored?.options as { compose: ComposeDocument }).compose.data.services as Record<
+          string,
+          { image: string }
+        >
+      ).web.image,
+      'nginx:alpine'
+    )
+  })
+})
+
+type LimitViolation = { scope: string; field: string; limit: number; requested: number }
+
+async function pinServiceCpus(
+  ctx: HostLevelCtx,
+  cpusByService: Record<string, number>
+): Promise<void> {
+  await Promise.all(
+    Object.entries(cpusByService).map(([name, cpus]) =>
+      ctx.db
+        .update(service)
+        .set({ options: { resources: { cpus } } })
+        .where(
+          and(eq(service.environmentId, ctx.environmentId), eq(service.composeServiceName, name))
+        )
+    )
+  )
+}
+
+async function deployBody(
+  ctx: HostLevelCtx
+): Promise<{ status: number; body: { error?: string; violations?: LimitViolation[] } }> {
+  const res = await managerDeploy(ctx)
+  return {
+    status: res.status,
+    body: (await res.json()) as { error?: string; violations?: LimitViolation[] },
+  }
+}
+
+test('a deploy over the organization or server ceiling is refused with the limit named, and nothing is queued', async () => {
+  await withDeployFixtures(async (ctx) => {
+    const compose = composeOf({ web: { image: 'nginx:alpine' }, db: { image: 'postgres:17' } })
+    await useCompose(ctx, compose, false)
+    // The ceilings sum what each service row asks for (its pinned resources).
+    await reconcileServicesForEnvironment(ctx.db, ctx.environmentId)
+    await pinServiceCpus(ctx, { web: 2, db: 1 })
+
+    await ctx.db
+      .update(organization)
+      .set({ options: { resourceLimits: { maxServicesPerEnvironment: 1 } } })
+      .where(eq(organization.id, ctx.organizationId))
+    const overOrg = await deployBody(ctx)
+    assertEquals(overOrg.status, 409)
+    assertEquals(overOrg.body.error, 'resource_limit_exceeded')
+    assertEquals(overOrg.body.violations, [
+      { scope: 'organization', field: 'maxServicesPerEnvironment', limit: 1, requested: 2 },
+    ])
+
+    await ctx.db
+      .update(organization)
+      .set({ options: {} })
+      .where(eq(organization.id, ctx.organizationId))
+    await ctx.db
+      .update(server)
+      .set({ options: { resourceLimits: { maxCpus: 2 } } })
+      .where(eq(server.id, ctx.serverId))
+    const overServer = await deployBody(ctx)
+    assertEquals(overServer.status, 409)
+    assertEquals(overServer.body.violations, [
+      { scope: 'server', field: 'maxCpus', limit: 2, requested: 3 },
+    ])
+    assertEquals(ctx.commandQueue.envelopes.length, 0)
+
+    // Within both ceilings the same stack deploys.
+    await ctx.db
+      .update(server)
+      .set({ options: { resourceLimits: { maxCpus: 3 } } })
+      .where(eq(server.id, ctx.serverId))
+    assertEquals((await managerDeploy(ctx)).status, 200)
+    assertEquals(ctx.commandQueue.envelopes.length, 1)
+  })
+})
+
+async function withExtraUser(
+  ctx: RunCtx,
+  permission: 'organization:own' | null,
+  fn: (userId: string) => Promise<void>
+): Promise<void> {
+  const [row] = await ctx.db
+    .insert(user)
+    .values({
+      email: `extra-${crypto.randomUUID()}@example.com`,
+      isEmailVerified: true,
+      role: 'user',
+    })
+    .returning({ id: user.id })
+  const extraId = row!.id
+  if (permission) {
+    await ctx.db.insert(grant).values({
+      entityType: 'organization',
+      entityId: ctx.organizationId,
+      actorType: 'user',
+      actorId: extraId,
+      permission,
+    })
+  }
+  try {
+    await fn(extraId)
+  } finally {
+    await ctx.db.delete(grant).where(eq(grant.actorId, extraId))
+    await ctx.db.delete(user).where(eq(user.id, extraId))
+  }
+}
+
+function putGate(ctx: HostLevelCtx, cookie: string, enabled: boolean): Promise<Response> {
+  return Promise.resolve(
+    ctx.app.request(`/organizations/${ctx.organizationId}/compose-privileged-fields`, {
+      method: 'PUT',
+      headers: { Cookie: cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ composeGatedFieldsEnabled: enabled }),
+    })
+  )
+}
+
+test('host-level compose is refused by default with the way to enable it; an owner enables it, a manager deploys, a member is refused', async () => {
+  await withDeployFixtures(async (ctx) => {
+    await useCompose(ctx, composeWithBind(DOCKER_SOCKET_BIND), false)
+    await ctx.db
+      .update(organization)
+      .set({ options: null })
+      .where(eq(organization.id, ctx.organizationId))
+
+    // Default: refused, and the refusal says who turns it on and where.
+    const refused = await managerDeploy(ctx)
+    assertEquals(refused.status, 403)
+    const refusedBody = (await refused.json()) as { issues: Array<{ message: string }> }
+    assertEquals(refusedBody.issues[0]!.message.includes('Manage Organization'), true)
+    assertEquals(
+      refusedBody.issues[0]!.message.includes('an organization owner has to turn on'),
+      true
+    )
+
+    const managerCookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
+    // A manager cannot enable it: that is the owner's switch.
+    assertEquals((await putGate(ctx, managerCookie, true)).status, 403)
+    assertEquals((await managerDeploy(ctx)).status, 403)
+
+    await withExtraUser({ ...ctx, workspaceId: '' }, 'organization:own', async (ownerId) => {
+      const ownerCookie = await sessionCookie(ctx.db, ctx.secrets, ownerId)
+      assertEquals((await putGate(ctx, ownerCookie, true)).status, 200)
+    })
+
+    // Enabled: the manager's deploy goes through.
+    assertEquals((await managerDeploy(ctx)).status, 200)
+    assertEquals(ctx.commandQueue.envelopes.length, 1)
+
+    // A member (no organization:manage) is still refused, and nothing more is queued.
+    await withExtraUser({ ...ctx, workspaceId: '' }, null, async (memberId) => {
+      const memberCookie = await sessionCookie(ctx.db, ctx.secrets, memberId)
+      const res = await ctx.app.request(`/environments/${ctx.environmentId}/deploy`, {
+        method: 'POST',
+        headers: {
+          Cookie: memberCookie,
+          [ORG_ID_HEADER]: ctx.organizationId,
+          'Content-Type': 'application/json',
+        },
+        body: '{}',
+      })
+      assertEquals(res.status, 403)
+    })
+    assertEquals(ctx.commandQueue.envelopes.length, 1)
+  })
+})
+
+test('the project container-naming setting is honoured by what a deploy would run: custom keeps the authored name, uuid replaces it', async () => {
+  await withDeployFixtures(async (ctx) => {
+    await ctx.db
+      .update(environment)
+      .set({ serverId: ctx.serverId })
+      .where(eq(environment.id, ctx.environmentId))
+
+    const withNaming = async (containerNaming: 'custom' | 'uuid'): Promise<string> => {
+      await ctx.db
+        .update(project)
+        .set({ options: { compose: composeWithNamedWebService(), containerNaming } })
+        .where(eq(project.id, ctx.projectId))
+      return await previewYaml(ctx)
+    }
+
+    assertEquals((await withNaming('custom')).includes('container_name: adminer'), true)
+    assertEquals((await withNaming('uuid')).includes('container_name: adminer'), false)
   })
 })

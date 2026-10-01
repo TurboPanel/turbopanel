@@ -15,6 +15,7 @@ import {
   server,
   service,
   user,
+  variable,
   workspace,
 } from '../../db/schema.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
@@ -402,5 +403,204 @@ test('PATCH /environments validates deploy settings and keeps stored ones the bo
       message: 'rollbackWindowMinutes must be an integer from 0 to 1440',
     })
     assertEquals(await storedOptions(ctx, id), { deployStrategy: 'sequential', drainSeconds: 5 })
+  })
+})
+
+// A service-free overlay (only a project name), so the environment has nothing to block its delete.
+const EMPTY_OVERLAY = {
+  version: 1,
+  data: { name: 'staging-stack' },
+  presentation: { keyOrder: ['name'], comments: {} },
+}
+
+const WEB_OVERLAY = {
+  version: 1,
+  data: { services: { web: { image: 'nginx:1.27' } } },
+  presentation: { keyOrder: ['services'], comments: {} },
+}
+
+async function environmentRow(ctx: EnvironmentTestContext, id: string) {
+  const [row] = await ctx.db
+    .select({
+      name: environment.name,
+      description: environment.description,
+    })
+    .from(environment)
+    .where(eq(environment.id, id))
+    .limit(1)
+  return row
+}
+
+async function createEnvironmentWith(
+  ctx: EnvironmentTestContext,
+  cookie: string,
+  fields: Record<string, unknown>
+): Promise<string> {
+  const created = await sendJson(ctx, cookie, 'POST', '/environments', {
+    projectId: ctx.projectId,
+    ...fields,
+  })
+  assertEquals(created.status, 200)
+  return ((await created.json()) as { id: string }).id
+}
+
+function deleteEnvironmentRequest(
+  ctx: EnvironmentTestContext,
+  cookie: string,
+  id: string
+): Promise<Response> {
+  return Promise.resolve(
+    ctx.app.request(`/environments/${id}`, {
+      method: 'DELETE',
+      headers: { Cookie: cookie, [ORG_ID_HEADER]: ctx.organizationId },
+    })
+  )
+}
+
+test('an environment is added with an overlay, renamed with the overlay kept, and deleted with its variables', async () => {
+  await withEnvironmentFixtures(async (ctx) => {
+    const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
+    const id = await createEnvironmentWith(ctx, cookie, {
+      name: 'Staging',
+      description: 'first',
+      options: { compose: EMPTY_OVERLAY },
+    })
+    assertEquals((await environmentRow(ctx, id))?.name, 'Staging')
+    assertEquals(
+      ((await storedOptions(ctx, id))?.compose as typeof EMPTY_OVERLAY).data,
+      EMPTY_OVERLAY.data
+    )
+
+    const renamed = await sendJson(ctx, cookie, 'PATCH', `/environments/${id}`, {
+      name: 'Pre-production',
+      description: 'second',
+    })
+    assertEquals(renamed.status, 200)
+    assertEquals(await environmentRow(ctx, id), { name: 'Pre-production', description: 'second' })
+    // Renaming is not an overlay edit: the overlay survives.
+    assertEquals(
+      ((await storedOptions(ctx, id))?.compose as typeof EMPTY_OVERLAY).data,
+      EMPTY_OVERLAY.data
+    )
+
+    await ctx.db
+      .insert(variable)
+      .values({ environmentId: id, key: 'STAGE_ONLY', value: 'x', isSecret: false })
+
+    const removed = await deleteEnvironmentRequest(ctx, cookie, id)
+    assertEquals(removed.status, 200)
+    assertEquals(await environmentRow(ctx, id), undefined)
+    const leftovers = await ctx.db
+      .select({ id: variable.id })
+      .from(variable)
+      .where(eq(variable.environmentId, id))
+    assertEquals(leftovers.length, 0)
+  })
+})
+
+test('an environment that still has services is not deleted: 409, nothing removed, then it deletes once they are gone', async () => {
+  await withEnvironmentFixtures(async (ctx) => {
+    const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
+    const id = await createEnvironmentWith(ctx, cookie, {
+      name: 'With Services',
+      options: { compose: WEB_OVERLAY },
+    })
+    const services = await ctx.db
+      .select({ name: service.composeServiceName })
+      .from(service)
+      .where(eq(service.environmentId, id))
+    assertEquals(
+      services.map((row) => row.name),
+      ['web']
+    )
+
+    const refused = await deleteEnvironmentRequest(ctx, cookie, id)
+    assertEquals(refused.status, 409)
+    assertEquals(await refused.json(), { error: 'Cannot delete while child resources exist' })
+    assertEquals((await environmentRow(ctx, id))?.name, 'With Services')
+
+    await ctx.db.delete(service).where(eq(service.environmentId, id))
+    assertEquals((await deleteEnvironmentRequest(ctx, cookie, id)).status, 200)
+    assertEquals(await environmentRow(ctx, id), undefined)
+  })
+})
+
+test('an environment moves to another server only by an explicit pin change, and a server outside the organization is refused', async () => {
+  await withEnvironmentFixtures(async (ctx) => {
+    const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
+    const now = new Date().toISOString()
+    const [second] = await ctx.db
+      .insert(server)
+      .values({
+        organizationId: ctx.organizationId,
+        name: 'Second Server',
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning({ id: server.id })
+    const [otherOrg] = await ctx.db
+      .insert(organization)
+      .values({ name: 'Placement Other Org' })
+      .returning({ id: organization.id })
+    const [foreign] = await ctx.db
+      .insert(server)
+      .values({
+        organizationId: otherOrg!.id,
+        name: 'Foreign Server',
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning({ id: server.id })
+    try {
+      const id = await createEnvironmentWith(ctx, cookie, {
+        name: 'Placed',
+        serverId: ctx.serverId,
+      })
+      const pinned = async () =>
+        (
+          await ctx.db
+            .select({ serverId: environment.serverId })
+            .from(environment)
+            .where(eq(environment.id, id))
+        )[0]?.serverId
+
+      assertEquals(await pinned(), ctx.serverId)
+      // A rename leaves placement alone: nothing moves implicitly.
+      await sendJson(ctx, cookie, 'PATCH', `/environments/${id}`, { name: 'Placed renamed' })
+      assertEquals(await pinned(), ctx.serverId)
+
+      const moved = await sendJson(ctx, cookie, 'PATCH', `/environments/${id}`, {
+        serverId: second!.id,
+      })
+      assertEquals(moved.status, 200)
+      assertEquals(await pinned(), second!.id)
+
+      const refused = await sendJson(ctx, cookie, 'PATCH', `/environments/${id}`, {
+        serverId: foreign!.id,
+      })
+      assertEquals(refused.status, 404)
+      assertEquals(await pinned(), second!.id)
+      assertEquals(
+        (
+          await sendJson(ctx, cookie, 'POST', '/environments', {
+            projectId: ctx.projectId,
+            name: 'Nope',
+            serverId: foreign!.id,
+          })
+        ).status,
+        404
+      )
+
+      const cleared = await sendJson(ctx, cookie, 'PATCH', `/environments/${id}`, {
+        serverId: null,
+      })
+      assertEquals(cleared.status, 200)
+      assertEquals(await pinned(), null)
+    } finally {
+      await ctx.db.delete(environment).where(eq(environment.projectId, ctx.projectId))
+      await ctx.db.delete(server).where(eq(server.id, second!.id))
+      await ctx.db.delete(server).where(eq(server.id, foreign!.id))
+      await ctx.db.delete(organization).where(eq(organization.id, otherOrg!.id))
+    }
   })
 })

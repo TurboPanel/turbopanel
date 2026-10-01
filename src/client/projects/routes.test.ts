@@ -42,6 +42,8 @@ import {
 } from '../../features/system/hierarchy.ts'
 import { isProjectNameUniqueViolation, mapCreateProjectError } from './routes-helpers.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
+import { forEachSequential } from '../../lib/sequential.ts'
+import { getCatalogEntry, listCatalog, type CatalogEntry } from './catalog/index.ts'
 
 const dbUrl = getDatabaseUrl()
 
@@ -1695,5 +1697,89 @@ test('POST /projects/:id/configure with a catalog template keeps the environment
     assertEquals(options.deployStrategy, 'bluegreen')
     assertEquals(options.migrations, 'none')
     assertEquals(typeof options.compose, 'object')
+  })
+})
+
+type CatalogScaffoldBody = {
+  type: 'template' | 'managed'
+  code: string
+  workspaceId: string
+  name: string
+}
+
+/** The environment name a catalog entry scaffolds under (its Production-like name follows the org default). */
+function expectedCatalogEnvironmentName(declared: string): string {
+  return declared.toLowerCase() === 'production' ? 'Production' : declared
+}
+
+async function assertCatalogScaffold(
+  ctx: ProjectTestContext,
+  projectId: string,
+  entry: CatalogEntry
+): Promise<void> {
+  const [projectRow] = await ctx.db
+    .select({ metadata: project.metadata, options: project.options })
+    .from(project)
+    .where(eq(project.id, projectId))
+    .limit(1)
+  const metadata = projectRow?.metadata as { type?: string } | null
+  assertEquals(metadata?.type, entry.kind, `${entry.code}: project type`)
+  const options = projectRow?.options as { compose?: { data?: unknown } } | null
+  assertEquals(
+    options?.compose?.data,
+    entry.compose.data,
+    `${entry.code}: stored compose is the template's`
+  )
+
+  const envs = await ctx.db
+    .select({ id: environment.id, name: environment.name, options: environment.options })
+    .from(environment)
+    .where(eq(environment.projectId, projectId))
+  assertEquals(
+    envs.map((env) => env.name),
+    entry.environments.map((env) => expectedCatalogEnvironmentName(env.displayName)),
+    `${entry.code}: first environment exists with the template's name`
+  )
+  await forEachSequential(entry.environments, async (declared, index) => {
+    const vars = await ctx.db
+      .select({ key: variable.key, value: variable.value, isSecret: variable.isSecret })
+      .from(variable)
+      .where(eq(variable.environmentId, envs[index]!.id))
+    const stored = new Map(vars.map((row) => [row.key, row]))
+    assertEquals(
+      [...stored.keys()].sort(),
+      (declared.variables ?? []).map((v) => v.key).sort(),
+      `${entry.code}: variables match the template`
+    )
+    for (const declaredVar of declared.variables ?? []) {
+      const row = stored.get(declaredVar.key)
+      assertEquals(row?.isSecret, declaredVar.isSecret)
+      if (declaredVar.isSecret) assertEquals(row?.value?.startsWith('tpsecret.'), true)
+      else assertEquals(row?.value, declaredVar.value)
+    }
+  })
+}
+
+test('POST /projects creates a project from every catalog template and managed entry, scaffolding what the entry declares', async () => {
+  await withProjectFixtures(async (ctx) => {
+    const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
+    const summaries = listCatalog()
+    assertEquals(summaries.length >= 7, true)
+    assertEquals(summaries.filter((entry) => entry.kind === 'template').length >= 2, true)
+
+    await forEachSequential(summaries, async (summary) => {
+      const entry = getCatalogEntry(summary.code)
+      assertEquals(entry?.code, summary.code)
+      const body: CatalogScaffoldBody = {
+        type: summary.kind,
+        code: summary.code,
+        workspaceId: ctx.workspaceId,
+        name: `Catalog ${summary.code}`,
+      }
+      const res = await sendProjectJson(ctx, cookie, 'POST', '/projects', body)
+      assertEquals(res.status, 200, `${summary.code}: create`)
+      const { id } = (await res.json()) as { id: string }
+      await assertCatalogScaffold(ctx, id, entry!)
+    })
   })
 })
