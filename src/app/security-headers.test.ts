@@ -79,7 +79,10 @@ test("isSecureRequest reads the proxy declaration first, then the URL", () => {
 test("clickjacking is refused to old and new browsers alike", () => {
   const byName = new Map(SECURITY_HEADERS);
   assertEquals(byName.get("X-Frame-Options"), "DENY");
-  assertEquals(byName.get("Content-Security-Policy"), "frame-ancestors 'none'");
+  assertEquals(
+    byName.get("Content-Security-Policy"),
+    "default-src 'none'; frame-ancestors 'none'",
+  );
 });
 
 test("isWebSocketUpgradeRequest matches the handshake header only", () => {
@@ -92,11 +95,13 @@ test("isWebSocketUpgradeRequest matches the handshake header only", () => {
 test("websocket upgrades skip document security headers and still return 101", async () => {
   const app = new Hono<AppEnv>();
   registerSecurityHeaders(app);
-  app.get("/ws", () =>
-    new Response(null, {
-      status: 101,
-      headers: { Upgrade: "websocket", Connection: "Upgrade" },
-    })
+  app.get(
+    "/ws",
+    () =>
+      new Response(null, {
+        status: 101,
+        headers: { Upgrade: "websocket", Connection: "Upgrade" },
+      }),
   );
   const res = await app.request("https://panel.example.com/ws", {
     headers: { upgrade: "websocket", connection: "Upgrade" },
@@ -104,4 +109,21 @@ test("websocket upgrades skip document security headers and still return 101", a
   assertEquals(res.status, 101);
   assertEquals(res.headers.get("X-Frame-Options"), null);
   assertEquals(res.headers.get(HSTS_HEADER), null);
+});
+
+test("HTML documents keep only the framing refusal; JSON is locked down", async () => {
+  const app = buildApp();
+  app.get("/docs", (c) => c.html("<p>docs</p>"));
+  const html = await app.request("https://panel.example.com/docs");
+  assertEquals(
+    html.headers.get("Content-Security-Policy"),
+    "frame-ancestors 'none'",
+  );
+  const json = await app.request("https://panel.example.com/ok");
+  assertEquals(
+    json.headers.get("Content-Security-Policy"),
+    "default-src 'none'; frame-ancestors 'none'",
+  );
+  assertEquals(json.headers.get("Referrer-Policy"), "no-referrer");
+  assertEquals(json.headers.get("Cross-Origin-Resource-Policy"), "same-site");
 });
