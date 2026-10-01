@@ -1806,3 +1806,41 @@ it('a slow webhook cannot stop hosts from being demoted', async () => {
   // And the wait was the alert budget, not the whole tick deadline.
   assertEquals(elapsed < ALERT_DELIVERY_BUDGET_MS + 3_000, true)
 })
+
+async function upgradeTickTraces(
+  env: CloudflareBindings,
+  scheduledTime: number
+): Promise<string[]> {
+  const traces: string[] = []
+  const originalInfo = console.info
+  console.info = (...args: unknown[]) => {
+    traces.push(args.map(String).join(' '))
+  }
+  try {
+    await runOfflineSweep(env, null, {
+      db: createOfflineSweepLockMemoryDb(),
+      scheduledTime,
+      sweepOnceDeps: {
+        listConnected: () => Promise.resolve([]),
+        listRecentlyOffline: () => Promise.resolve([]),
+        resolveActiveServerIds: () => Promise.resolve(new Map()),
+        onDisconnected: () => Promise.resolve(),
+        onConnected: () => Promise.resolve(),
+      },
+    })
+  } finally {
+    console.info = originalInfo
+  }
+  return traces.filter((line) => line.includes('event=upgrade-tick'))
+}
+
+it('the upgrade tick keeps its 15-minute cadence unless TURBOPANEL_UPGRADE_TICK_MINUTES says otherwise', async () => {
+  const minuteFive = Date.parse('2026-01-01T00:05:00.000Z')
+  const minuteFifteen = Date.parse('2026-01-01T00:15:00.000Z')
+  assertEquals(await upgradeTickTraces(inertEnv(), minuteFive), [])
+  assertEquals((await upgradeTickTraces(inertEnv(), minuteFifteen)).length > 0, true)
+  const everyFive = { TURBOPANEL_UPGRADE_TICK_MINUTES: '5' } as unknown as CloudflareBindings
+  assertEquals((await upgradeTickTraces(everyFive, minuteFive)).length > 0, true)
+  const invalid = { TURBOPANEL_UPGRADE_TICK_MINUTES: '7' } as unknown as CloudflareBindings
+  assertEquals(await upgradeTickTraces(invalid, minuteFive), [])
+})

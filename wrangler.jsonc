@@ -292,7 +292,10 @@
         "TURBOPANEL_ENVIRONMENT": "testing",
         // Read side of SERVER_METRICS above: must name the same dataset.
         "TURBOPANEL_SERVER_METRICS_AE_DATASET": "testing_turbopanel_server_metrics_v6",
-        "TURBOPANEL_EXECUTION_LOG_RETENTION_DAYS": "90"
+        "TURBOPANEL_EXECUTION_LOG_RETENTION_DAYS": "90",
+        // Upgrade tick every 5 minutes instead of 15 so a testing-fleet rollout
+        // finishes in minutes. Staging and live keep the 15-minute default.
+        "TURBOPANEL_UPGRADE_TICK_MINUTES": "5"
       }
     },
     // Staging: the release-candidate environment. Same shape as testing and live,

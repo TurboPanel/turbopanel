@@ -134,6 +134,13 @@ interface CloudflareBindings {
    * `TURBOPANEL_EXECUTION_LOG_RETENTION_DAYS` env var.
    */
   TURBOPANEL_EXECUTION_LOG_RETENTION_DAYS?: string
+  /**
+   * How often the Workers cron advances managed upgrades, in minutes. One of
+   * 1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60; anything else (or unset) means
+   * the 15-minute default. Workers only: the Deno tick runs on every cleanup
+   * pass.
+   */
+  TURBOPANEL_UPGRADE_TICK_MINUTES?: string
   /** Max inbound WS messages per connection per window (DO in-memory cap; default 120). */
   TURBOPANEL_DAEMON_WS_INBOUND_LIMIT?: string
   /** Inbound WS flood window in ms (DO in-memory cap; default 60000). */

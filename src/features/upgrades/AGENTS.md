@@ -32,7 +32,7 @@ do not import a DB/cell module here.
 
 The coordinator is `coordinator.ts` (decisions) plus `store.ts` (Postgres or the
 in-memory test store). `maintenance.ts` is the tick: Deno cleanup lane every
-pass, Workers offline-sweep on the 15-minute divisor. Hello, heartbeat, and
+pass, Workers offline-sweep on `TURBOPANEL_UPGRADE_TICK_MINUTES` (default 15, testing 5; `tick-cadence.ts`). Hello, heartbeat, and
 `update-progress` / `update-result` / `instance-update-result` persist through
 `persist.ts` and do not enqueue. Admin routes live in
 `../../admin/instance-updates-routes.ts`. The client gate is

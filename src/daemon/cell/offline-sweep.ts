@@ -94,6 +94,10 @@ import { INSTANCE_VERSION } from '../../app/version.ts'
 import { resolveColocatedServerId } from '../../client/authn/install-state.ts'
 import { runUpgradeMaintenance } from '../../features/upgrades/maintenance.ts'
 import {
+  parseUpgradeTickMinutes,
+  shouldRunUpgradeTick,
+} from '../../features/upgrades/tick-cadence.ts'
+import {
   type AnalyticsEngineDatasetLike,
   resolveServerMetricsStore,
 } from '../metrics/store-selection-workers.ts'
@@ -949,7 +953,8 @@ export async function sweepUpgradeHistorySafely(db: Db, doneRetentionDays?: numb
 }
 
 /**
- * Advance managed upgrades on the same 15-minute window as history prune.
+ * Advance managed upgrades. The cadence is `TURBOPANEL_UPGRADE_TICK_MINUTES`
+ * (default 15, see features/upgrades/tick-cadence.ts), independent of history prune.
  * Manifest fetches are cached. Dispatch is capped inside the coordinator.
  */
 export async function runUpgradeMaintenanceSafely(db: Db, env: CloudflareBindings): Promise<void> {
@@ -1159,6 +1164,38 @@ async function runScheduledOptionalPhase(
   return runOptionalPhase(deadlineMs, phase, scheduledTime, phasesSkipped, work)
 }
 
+/**
+ * The 'upgrade-history' cron phase: history prune on its own 15-minute window
+ * and the upgrade tick on `upgradeTickMinutes`; whichever is due runs.
+ */
+async function upgradePhaseWork(
+  db: Db,
+  env: CloudflareBindings,
+  opts: RunOfflineSweepOpts,
+  deadlineMs: number,
+  upgradeTickMinutes: number
+): Promise<void> {
+  const scheduledTime = opts.scheduledTime
+  if (scheduledTime === undefined) return
+  if (shouldSweepUpgradeHistory(scheduledTime)) {
+    await runWithDbTimeout(
+      db,
+      (database) =>
+        sweepUpgradeHistorySafely(
+          database,
+          parseUpgradeStepRetentionDays(
+            (env as { TURBOPANEL_UPGRADE_STEP_RETENTION_DAYS?: string })
+              .TURBOPANEL_UPGRADE_STEP_RETENTION_DAYS
+          )
+        ),
+      capDbTimeout(deadlineMs)
+    )
+  }
+  if (shouldRunUpgradeTick(scheduledTime, upgradeTickMinutes)) {
+    await runUpgradeMaintenanceSafely(db, env)
+  }
+}
+
 async function sweepExecutionLogsPhase(
   env: CloudflareBindings,
   opts: RunOfflineSweepOpts
@@ -1267,6 +1304,9 @@ async function runOptionalCronPhases(
   deadlineMs: number,
   phasesSkipped: string[]
 ): Promise<void> {
+  const upgradeTickMinutes = parseUpgradeTickMinutes(
+    (env as { TURBOPANEL_UPGRADE_TICK_MINUTES?: string }).TURBOPANEL_UPGRADE_TICK_MINUTES
+  )
   if (
     !(await runOptionalPhase(
       deadlineMs,
@@ -1330,22 +1370,10 @@ async function runOptionalCronPhases(
       'upgrade-history',
       opts.scheduledTime,
       phasesSkipped,
-      shouldSweepUpgradeHistory,
-      async () => {
-        await runWithDbTimeout(
-          db,
-          (database) =>
-            sweepUpgradeHistorySafely(
-              database,
-              parseUpgradeStepRetentionDays(
-                (env as { TURBOPANEL_UPGRADE_STEP_RETENTION_DAYS?: string })
-                  .TURBOPANEL_UPGRADE_STEP_RETENTION_DAYS
-              )
-            ),
-          capDbTimeout(deadlineMs)
-        )
-        await runUpgradeMaintenanceSafely(db, env)
-      }
+      (scheduledTimeMs) =>
+        shouldSweepUpgradeHistory(scheduledTimeMs) ||
+        shouldRunUpgradeTick(scheduledTimeMs, upgradeTickMinutes),
+      () => upgradePhaseWork(db, env, opts, deadlineMs, upgradeTickMinutes)
     ))
   ) {
     return
