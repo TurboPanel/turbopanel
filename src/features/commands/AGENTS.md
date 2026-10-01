@@ -73,6 +73,9 @@ extracted from the payload by `context.ts` at enqueue time, so status/error
 projections never need the payload. Organization is derived from the server —
 there is no `organization_id` column on `command`. Do not store large logs or
 streaming output in Postgres — `result` and `error` are bounded summaries only.
+`result` is rebuilt per command type at persist (`result-summary.ts` runs the type's
+result parser), so only that type's listed fields are stored; a report that does
+not fit its type is stored as `null`.
 
 ### Dispatch payload (`dispatch` table)
 
