@@ -83,7 +83,7 @@ function decodeBase64(value: string): Uint8Array<ArrayBuffer> | null {
   try {
     const binary = atob(value.trim())
     const out = new Uint8Array(new ArrayBuffer(binary.length))
-    for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i)
+    out.set(Array.from(binary, (char) => char.codePointAt(0) ?? 0))
     return out
   } catch {
     return null
