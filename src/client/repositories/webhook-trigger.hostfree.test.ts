@@ -7,12 +7,12 @@ import {
   applyGithubInstallationEvent,
   applyProviderInstallationEvent,
   readPendingChecks,
+  resolveEnvironmentBranches,
   resolveRepositoryEnvironmentIds,
   resolveCheckTrigger,
   resolveGithubCheckTrigger,
   resolveGithubPushTrigger,
   resolvePushTrigger,
-  sourceWatchesBranch,
   summarize,
   triggerSummaryNeedsRetry,
   type TriggerOutcome,
@@ -42,14 +42,6 @@ function summary(failed: number): TriggerSummary {
 test('triggerSummaryNeedsRetry is true only when an instance-side fault ran', () => {
   assertEquals(triggerSummaryNeedsRetry(summary(0)), false)
   assertEquals(triggerSummaryNeedsRetry(summary(1)), true)
-})
-
-test('sourceWatchesBranch treats a blank default as every branch', () => {
-  assertEquals(sourceWatchesBranch(null, 'trunk'), true)
-  assertEquals(sourceWatchesBranch('   ', 'trunk'), true)
-  assertEquals(sourceWatchesBranch('trunk', 'trunk'), true)
-  assertEquals(sourceWatchesBranch(' trunk ', 'trunk'), true)
-  assertEquals(sourceWatchesBranch('main', 'trunk'), false)
 })
 
 test('readPendingChecks requires a non-empty commitSha', () => {
@@ -113,6 +105,7 @@ function triggerDeps(
     findSources: async () => rows,
     setPendingChecks: async () => {},
     resolveRepositoryEnvironmentIds: async () => [ENV_ID],
+    resolveEnvironmentBranches: trackRepositoryDefault,
     resolveEnvironmentPlacement: async () => ({
       serverId: SERVER_ID,
       organizationId: ORG_ID,
@@ -121,6 +114,15 @@ function triggerDeps(
     ...overrides,
   }
 }
+
+/** Every candidate environment builds the repository's default branch (no overlay). */
+const trackRepositoryDefault: NonNullable<
+  WebhookTriggerDeps['resolveEnvironmentBranches']
+> = async (_db, row, environmentIds) =>
+  environmentIds.map((environmentId) => ({
+    environmentId,
+    bindings: [{ composeServiceName: 'web', branch: row.defaultBranch, deployOnPush: true }],
+  }))
 
 const APP_ID = '11111111-1111-4111-8111-111111111111'
 
@@ -692,6 +694,8 @@ test('resolvePushTrigger default loaders read a fake installation and source cha
   const parked = await resolvePushTrigger(unusedCtx, parkedDb, unusedQueue, samplePush, {
     loadInstallations: async () => ({ live: ['inst-row'], suspended: 0 }),
     findSources: async () => [sourceRow({ autoDeploy: 'checks_passed' })],
+    resolveRepositoryEnvironmentIds: async () => [ENV_ID],
+    resolveEnvironmentBranches: trackRepositoryDefault,
   })
   assertEquals(
     parked.outcomes[0]?.kind === 'skipped' && parked.outcomes[0].reason,
@@ -749,6 +753,7 @@ test('resolvePushTrigger default loaders read a fake installation and source cha
     loadInstallations: async () => ({ live: ['inst-row'], suspended: 0 }),
     findSources: async () => [sourceRow()],
     resolveRepositoryEnvironmentIds: async () => [ENV_ID],
+    resolveEnvironmentBranches: trackRepositoryDefault,
     runDeploy: async () => new Response(null, { status: 204 }),
   })
   assertEquals(placed.queued, 1)
@@ -775,6 +780,7 @@ test('resolvePushTrigger default loaders read a fake installation and source cha
       loadInstallations: async () => ({ live: ['inst-row'], suspended: 0 }),
       findSources: async () => [sourceRow()],
       resolveRepositoryEnvironmentIds: async () => [ENV_ID],
+      resolveEnvironmentBranches: trackRepositoryDefault,
     }
   )
   assertEquals(missingPlacement.outcomes[0], {
@@ -902,4 +908,337 @@ test('resolvePushTrigger stops at the first source whose lookup throws', async (
     'lookup failed'
   )
   assertEquals(started, [SOURCE_ID])
+})
+
+const STAGING_ENV = '00000000-0000-4000-8000-00000000a001'
+const PRODUCTION_ENV = '00000000-0000-4000-8000-00000000a002'
+const OTHER_ENV = '00000000-0000-4000-8000-00000000a003'
+
+type TrackedBranch = { branch: string | null; deployOnPush?: boolean }
+
+/** Per-environment branches, as the stored compose would resolve them. */
+function trackedBranchesFor(
+  byEnvironment: Record<string, TrackedBranch[]>
+): NonNullable<WebhookTriggerDeps['resolveEnvironmentBranches']> {
+  return async (_db, _row, environmentIds) =>
+    environmentIds
+      .filter((environmentId) => environmentId in byEnvironment)
+      .map((environmentId) => ({
+        environmentId,
+        bindings: byEnvironment[environmentId].map((entry, index) => ({
+          composeServiceName: `svc-${index}`,
+          branch: entry.branch,
+          deployOnPush: entry.deployOnPush !== false,
+        })),
+      }))
+}
+
+function recordingDeploys(
+  deployed: Array<{ environmentId: string; ref: string | null; commitSha: string | null }>
+): NonNullable<WebhookTriggerDeps['runDeploy']> {
+  return async (_c, _db, _queue, environmentId, auth) => {
+    deployed.push({
+      environmentId,
+      ref: auth.selection.ref,
+      commitSha: auth.selection.commitSha,
+    })
+    return new Response(null, { status: 204 })
+  }
+}
+
+const twoEnvironments = {
+  [STAGING_ENV]: [{ branch: 'staging' }],
+  [PRODUCTION_ENV]: [{ branch: 'main' }],
+}
+
+test('a push deploys only the environments that build the pushed branch', async () => {
+  const deployed: Array<{ environmentId: string; ref: string | null; commitSha: string | null }> =
+    []
+  const deps = triggerDeps([sourceRow({ defaultBranch: 'main' })], {
+    resolveRepositoryEnvironmentIds: async () => [STAGING_ENV, PRODUCTION_ENV],
+    resolveEnvironmentBranches: trackedBranchesFor(twoEnvironments),
+    runDeploy: recordingDeploys(deployed),
+  })
+
+  const staging = await resolvePushTrigger(
+    unusedCtx,
+    unusedDb,
+    unusedQueue,
+    { ...samplePush, ref: 'refs/heads/staging', branch: 'staging', commitSha: 'staging-sha' },
+    deps
+  )
+  assertEquals(staging.queued, 1)
+  assertEquals(deployed, [
+    { environmentId: STAGING_ENV, ref: 'refs/heads/staging', commitSha: 'staging-sha' },
+  ])
+
+  deployed.length = 0
+  const main = await resolvePushTrigger(
+    unusedCtx,
+    unusedDb,
+    unusedQueue,
+    { ...samplePush, ref: 'refs/heads/main', branch: 'main', commitSha: 'main-sha' },
+    deps
+  )
+  assertEquals(main.queued, 1)
+  assertEquals(deployed, [
+    { environmentId: PRODUCTION_ENV, ref: 'refs/heads/main', commitSha: 'main-sha' },
+  ])
+})
+
+test('a push to a branch no environment builds deploys nothing', async () => {
+  const deployed: Array<{ environmentId: string; ref: string | null; commitSha: string | null }> =
+    []
+  const deps = triggerDeps([sourceRow({ defaultBranch: 'main' })], {
+    resolveRepositoryEnvironmentIds: async () => [STAGING_ENV, PRODUCTION_ENV],
+    resolveEnvironmentBranches: trackedBranchesFor(twoEnvironments),
+    runDeploy: recordingDeploys(deployed),
+  })
+  const refs = [
+    ['refs/heads/feature/login', 'feature/login'],
+    ['refs/heads/Staging', 'Staging'],
+    ['refs/heads/staging-2', 'staging-2'],
+    ['refs/tags/staging', 'staging'],
+  ]
+  for (const [ref, branch] of refs) {
+    const result = await resolvePushTrigger(
+      unusedCtx,
+      unusedDb,
+      unusedQueue,
+      { ...samplePush, ref, branch },
+      deps
+    )
+    assertEquals(result.queued, 0, ref)
+    assertEquals(
+      result.outcomes,
+      [{ kind: 'skipped', sourceId: SOURCE_ID, environmentId: null, reason: 'branch_not_watched' }],
+      ref
+    )
+  }
+  assertEquals(deployed, [])
+})
+
+test('the repository default branch is only a fallback for environments that name none', async () => {
+  const deployed: Array<{ environmentId: string; ref: string | null; commitSha: string | null }> =
+    []
+  // Production names nothing, so it follows the repository default (main);
+  // staging names its own branch and ignores the default.
+  const deps = triggerDeps([sourceRow({ defaultBranch: 'main' })], {
+    resolveRepositoryEnvironmentIds: async () => [STAGING_ENV, PRODUCTION_ENV],
+    resolveEnvironmentBranches: async (_db, row, ids) =>
+      ids.map((environmentId) => ({
+        environmentId,
+        bindings: [
+          {
+            composeServiceName: 'web',
+            branch: environmentId === STAGING_ENV ? 'staging' : row.defaultBranch,
+            deployOnPush: true,
+          },
+        ],
+      })),
+    runDeploy: recordingDeploys(deployed),
+  })
+  const result = await resolvePushTrigger(
+    unusedCtx,
+    unusedDb,
+    unusedQueue,
+    { ...samplePush, ref: 'refs/heads/main', branch: 'main', commitSha: 'm1' },
+    deps
+  )
+  assertEquals(result.queued, 1)
+  assertEquals(
+    deployed.map((entry) => entry.environmentId),
+    [PRODUCTION_ENV]
+  )
+})
+
+test('an environment that resolves no branch is never deployed by a push', async () => {
+  const deps = triggerDeps([sourceRow({ defaultBranch: null })], {
+    resolveRepositoryEnvironmentIds: async () => [STAGING_ENV],
+    resolveEnvironmentBranches: trackedBranchesFor({ [STAGING_ENV]: [{ branch: null }] }),
+    runDeploy: async () => {
+      throw new TypeError('nothing may deploy')
+    },
+  })
+  const result = await resolvePushTrigger(unusedCtx, unusedDb, unusedQueue, samplePush, deps)
+  assertEquals(result.outcomes[0], {
+    kind: 'skipped',
+    sourceId: SOURCE_ID,
+    environmentId: null,
+    reason: 'branch_not_watched',
+  })
+})
+
+test('deployOnPush false keeps one environment manual while another still deploys', async () => {
+  const deployed: Array<{ environmentId: string; ref: string | null; commitSha: string | null }> =
+    []
+  const deps = triggerDeps([sourceRow()], {
+    resolveRepositoryEnvironmentIds: async () => [STAGING_ENV, PRODUCTION_ENV],
+    resolveEnvironmentBranches: trackedBranchesFor({
+      [STAGING_ENV]: [{ branch: 'trunk' }],
+      [PRODUCTION_ENV]: [{ branch: 'trunk', deployOnPush: false }],
+    }),
+    runDeploy: recordingDeploys(deployed),
+  })
+  const result = await resolvePushTrigger(unusedCtx, unusedDb, unusedQueue, samplePush, deps)
+  assertEquals(result.queued, 1)
+  assertEquals(
+    deployed.map((entry) => entry.environmentId),
+    [STAGING_ENV]
+  )
+  assertEquals(result.outcomes[0], {
+    kind: 'skipped',
+    sourceId: SOURCE_ID,
+    environmentId: PRODUCTION_ENV,
+    reason: 'push_deploys_off',
+  })
+})
+
+test('an environment that opted out of push deploys alone is reported, not deployed', async () => {
+  const deps = triggerDeps([sourceRow()], {
+    resolveEnvironmentBranches: trackedBranchesFor({
+      [ENV_ID]: [{ branch: 'trunk', deployOnPush: false }],
+    }),
+    runDeploy: async () => {
+      throw new TypeError('nothing may deploy')
+    },
+  })
+  const result = await resolvePushTrigger(unusedCtx, unusedDb, unusedQueue, samplePush, deps)
+  assertEquals(result.queued, 0)
+  assertEquals(result.outcomes, [
+    { kind: 'skipped', sourceId: SOURCE_ID, environmentId: ENV_ID, reason: 'push_deploys_off' },
+  ])
+})
+
+test('checks_passed parks a push only when some environment builds that branch', async () => {
+  const parked: string[] = []
+  const deps = triggerDeps([sourceRow({ defaultBranch: 'main', autoDeploy: 'checks_passed' })], {
+    resolveRepositoryEnvironmentIds: async () => [STAGING_ENV, PRODUCTION_ENV],
+    resolveEnvironmentBranches: trackedBranchesFor(twoEnvironments),
+    setPendingChecks: async (_db, _row, pending) => {
+      parked.push(pending?.ref ?? 'cleared')
+    },
+  })
+  const ignored = await resolvePushTrigger(
+    unusedCtx,
+    unusedDb,
+    unusedQueue,
+    { ...samplePush, ref: 'refs/heads/feature/x', branch: 'feature/x' },
+    deps
+  )
+  assertEquals(
+    ignored.outcomes[0]?.kind === 'skipped' && ignored.outcomes[0].reason,
+    'branch_not_watched'
+  )
+  assertEquals(parked, [])
+
+  const tracked = await resolvePushTrigger(
+    unusedCtx,
+    unusedDb,
+    unusedQueue,
+    { ...samplePush, ref: 'refs/heads/staging', branch: 'staging' },
+    deps
+  )
+  assertEquals(
+    tracked.outcomes[0]?.kind === 'skipped' && tracked.outcomes[0].reason,
+    'awaiting_checks'
+  )
+  assertEquals(parked, ['refs/heads/staging'])
+})
+
+test('a green check releases only the environment that builds the parked branch', async () => {
+  const deployed: Array<{ environmentId: string; ref: string | null; commitSha: string | null }> =
+    []
+  const parkedRow = sourceRow({
+    defaultBranch: 'main',
+    autoDeploy: 'checks_passed',
+    options: {
+      pendingChecks: {
+        commitSha: 'staging-sha',
+        ref: 'refs/heads/staging',
+        recordedAt: '2026-01-15T12:00:00.000Z',
+      },
+    },
+  })
+  const result = await resolveCheckTrigger(
+    unusedCtx,
+    unusedDb,
+    unusedQueue,
+    {
+      provider: 'github',
+      forgeId: APP_ID,
+      externalInstallationId: '42',
+      repositoryExternalId: '99',
+      commitSha: 'staging-sha',
+      ref: 'refs/heads/staging',
+    },
+    triggerDeps([parkedRow], {
+      resolveRepositoryEnvironmentIds: async () => [STAGING_ENV, PRODUCTION_ENV],
+      resolveEnvironmentBranches: trackedBranchesFor(twoEnvironments),
+      runDeploy: recordingDeploys(deployed),
+    })
+  )
+  assertEquals(result.queued, 1)
+  assertEquals(deployed, [
+    { environmentId: STAGING_ENV, ref: 'refs/heads/staging', commitSha: 'staging-sha' },
+  ])
+})
+
+test('the default environment branch loader reads only this organization and resolves overlays', async () => {
+  const sourceId = SOURCE_ID
+  const bound = (source: Record<string, unknown>) => ({
+    version: 1,
+    data: {
+      services: {
+        web: { image: 'node:24', 'x-turbopanel': { source: { sourceId, ...source } } },
+      },
+    },
+    presentation: { keyOrder: [], comments: {} },
+  })
+  let whereCondition: unknown
+  const db = {
+    select: () => ({
+      from: () => ({
+        innerJoin: () => ({
+          innerJoin: () => ({
+            where: (condition: unknown) => {
+              whereCondition = condition
+              return Promise.resolve([
+                {
+                  environmentId: STAGING_ENV,
+                  environmentOptions: { compose: bound({ branch: 'staging' }) },
+                  projectOptions: { compose: bound({ branch: 'main' }) },
+                },
+                {
+                  environmentId: PRODUCTION_ENV,
+                  environmentOptions: null,
+                  projectOptions: { compose: bound({ branch: 'main', deployOnPush: false }) },
+                },
+              ])
+            },
+          }),
+        }),
+      }),
+    }),
+  } as unknown as Db
+  const resolved = await resolveEnvironmentBranches(db, sourceRow({ defaultBranch: 'trunk' }), [
+    STAGING_ENV,
+    PRODUCTION_ENV,
+    OTHER_ENV,
+  ])
+  assertEquals(resolved, [
+    {
+      environmentId: STAGING_ENV,
+      bindings: [{ composeServiceName: 'web', branch: 'staging', deployOnPush: true }],
+    },
+    {
+      environmentId: PRODUCTION_ENV,
+      bindings: [{ composeServiceName: 'web', branch: 'main', deployOnPush: false }],
+    },
+  ])
+  // The query is bound to the repository's own organization.
+  assertEquals(boundValues(whereCondition).includes(ORG_ID), true)
+
+  const none = await resolveEnvironmentBranches(db, sourceRow(), [])
+  assertEquals(none, [])
 })

@@ -339,6 +339,29 @@ export const deploySchemas = {
         description:
           'Whether an execution-log transcript is retained. Resolved store-side — there is no Postgres column.',
       },
+      trigger: {
+        description:
+          'What set this attempt off when it was a git push (`actorEntityType` is `system`); null for a deploy a person started. Read from the attribution recorded on the command, so it outlives the daemon payload.',
+        oneOf: [
+          { type: 'null' },
+          {
+            type: 'object',
+            required: ['kind', 'branch', 'commitSha', 'sourceId'],
+            properties: {
+              kind: { type: 'string', const: 'push' },
+              branch: {
+                type: ['string', 'null'],
+                description: 'Branch that was pushed, without the `refs/heads/` prefix.',
+              },
+              commitSha: { type: ['string', 'null'], description: 'Head commit of the push.' },
+              sourceId: {
+                type: ['string', 'null'],
+                description: 'The repository (`repository.id`) the push came from.',
+              },
+            },
+          },
+        ],
+      },
     },
   },
   DeploymentHistoryResponse: {
