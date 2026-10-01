@@ -303,3 +303,17 @@ test('parseUpgradeVerifyTimeoutMs reads whole minutes within 5..180', () => {
     assertEquals(parseUpgradeVerifyTimeoutMs(junk), UPGRADE_VERIFY_TIMEOUT_MS, junk)
   }
 })
+
+test('a restarted control-plane step is not re-dispatched while its daemon reconnects', () => {
+  const offline = facts({ serverConnected: false })
+  const inside = step({ unit: 'instance', status: 'verifying', lastStageAt: minutesAgo(2) })
+  assertEquals(planStepAction(inside, offline, cfg).kind, 'none')
+  const past = step({ unit: 'instance', status: 'restarting', lastStageAt: minutesAgo(21) })
+  assertEquals(planStepAction(past, offline, cfg), {
+    kind: 'needs_attention',
+    errorCode: 'verify_timeout',
+  })
+  // Before the restart an offline host still waits and is re-dispatched.
+  const installing = step({ unit: 'instance', status: 'installing', lastStageAt: minutesAgo(2) })
+  assertEquals(planStepAction(installing, offline, cfg).kind, 'wait_offline')
+})

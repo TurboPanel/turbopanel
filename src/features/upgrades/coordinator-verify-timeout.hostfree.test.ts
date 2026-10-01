@@ -136,9 +136,10 @@ test('a verifying control-plane step past the verify window needs attention and 
   assertEquals(step?.errorCode, 'verify_timeout')
   assertStringIncludes(step?.errorMessage ?? '', '20 minutes')
   assertStringIncludes(step?.errorMessage ?? '', 'is running the target build 077abdc')
-  // The co-located daemon step did finish, so the run ends partially failed
-  // and leaves the active slot: the next Update can start.
-  assertEquals(run?.status, 'partially_failed')
+  // The run ends this tick with the platform error the console shows, and
+  // leaves the active slot: the next Update can start.
+  assertEquals(run?.status, 'failed')
+  assertEquals(run?.error, 'control_plane_failed')
   assertEquals(run?.finishedAt, minutesAfter(T0, 4 + 21))
   assertEquals(await h.coordinator.activeRun(), null)
   assertEquals(h.enqueued.length, 1)

@@ -184,8 +184,11 @@ working.
   can only make it worse. Quiet past `UPGRADE_VERIFY_TIMEOUT_MS` (20 min;
   `TURBOPANEL_UPGRADE_VERIFY_TIMEOUT_MINUTES`, whole minutes 5..180) it goes to
   `needs_attention` / `verify_timeout`, whose `errorMessage` says whether this
-  control plane runs the target commit. The run then ends, so the console never
-  spins forever and the next Update can start. Keep the window longer than the
+  control plane runs the target commit. This holds while the daemon is
+  disconnected too (it reconnects to the restarted control plane), so a tick in
+  that gap never turns the step into `waiting` and re-installs. The run then
+  ends in that tick with `control_plane_failed`, so the console never spins
+  forever and the next Update can start. Keep the window longer than the
   daemon's own health budget (10 min by default;
   `TURBOPANEL_UPDATE_HEALTH_TIMEOUT_SECONDS` on the host, up to 60 min), after
   which the daemon has reported `done` or rolled back. Canary update #2

@@ -740,6 +740,7 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
       open.map((step) => step.serverId)
     )
     const dirty = await processSteps(run, open, fleetView)
+    if (dirty && failedPlatformPhase(open) && (await endedByPlatformFailure(run))) return
     const counts = dirty ? await deps.store.countSteps(run.id) : window.counts
     if (counts.total > 0 && counts.inProgress === 0) {
       // This tick settled the last open step (counts cover the whole run).
@@ -748,6 +749,20 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
     }
     await saveRunIfChanged(run, window.phase, counts)
     await writeWindowCursor(run, window)
+  }
+
+  /**
+   * A platform step this tick moved to failed / needs attention ends the run
+   * now with its `<phase>_failed` error, not as a plain `partially_failed`
+   * finish when it was the last open step (a single-server self-hosted run).
+   * The store is re-read so a concurrent report that won the write decides.
+   */
+  async function endedByPlatformFailure(run: UpgradeRunRow): Promise<boolean> {
+    const settled = await deps.store.tickWindow(run.id, null, UPGRADE_TICK_STEP_BUDGET)
+    if (!settled.failedPlatformPhase) return false
+    await failRun(run, settled.failedPlatformPhase, settled.counts)
+    await deps.store.writeTickCursor(run.id, null)
+    return true
   }
 
   async function markInProgressRefused(step: UpgradeStepRow, at: string): Promise<void> {

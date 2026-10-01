@@ -219,13 +219,16 @@ function verifyWindowPassed(step: StepView, cfg: StepConfig): boolean {
 }
 
 function handleInFlight(step: StepView, facts: StepFacts, cfg: StepConfig): StepAction {
-  // A host that drops mid-install cannot finish; re-dispatch on reconnect.
-  if (!facts.serverConnected) return { kind: 'wait_offline' }
+  // Checked before the offline rule: the co-located daemon reconnects to the
+  // freshly restarted control plane, and a tick in that gap must not turn the
+  // step into `waiting` and re-install on reconnect.
   if (isAwaitingVerdict(step)) {
     return verifyWindowPassed(step, cfg)
       ? { kind: 'needs_attention', errorCode: 'verify_timeout' satisfies UpgradeStepErrorCode }
       : { kind: 'none' }
   }
+  // A host that drops mid-install cannot finish; re-dispatch on reconnect.
+  if (!facts.serverConnected) return { kind: 'wait_offline' }
   if (!isStalled(step, cfg)) return { kind: 'none' }
   const maxAttempts = cfg.maxAttempts ?? UPGRADE_STEP_MAX_ATTEMPTS
   // A refused dispatch (the daemon is busy with an earlier install) is an
