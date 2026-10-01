@@ -1,4 +1,4 @@
-import { assert } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { it } from "@std/testing/bdd";
 import { DEFAULT_DUCKDB_LIB_DIR, DEFAULT_METRICS_DIR } from "./platform/deno/server-paths.ts";
@@ -70,15 +70,24 @@ async function readUnitExecStartLines(): Promise<string[] | null> {
   }
 }
 
-it("compile tasks grant FFI for the DuckDB native addon", async () => {
+it("compile tasks scope FFI to the binary's own extraction dir", async () => {
   // `@duckdb/node-api` loads a native `.node` addon: `deno compile` bundles it
-  // from the npm cache and self-extracts at runtime, but loading it requires
-  // FFI permission. Unscoped: the extraction path is a per-binary temp dir.
+  // and self-extracts it at runtime to `/tmp/deno-compile-<binary name>/…`,
+  // and loading it needs FFI permission for that path. A bare `--allow-ffi`
+  // would let the process load any shared object and defeat every other
+  // permission, so the grant is scoped to exactly that directory.
   const tasks = await readCompileTasks();
   for (const [taskName, task] of Object.entries(tasks)) {
     assert(
-      /(^|\s)--allow-ffi(\s|$)/.test(task),
-      `${taskName} must include --allow-ffi for the DuckDB native addon`,
+      !/(^|\s)--allow-ffi(\s|$)/.test(task),
+      `${taskName} must not pass a bare --allow-ffi`,
+    );
+    const binary = /-o dist\/(\S+)/.exec(task)?.[1];
+    assert(binary, `${taskName} must name its output under dist/`);
+    assertEquals(
+      extractPathListFlag(task, "allow-ffi"),
+      [`/tmp/deno-compile-${binary}`],
+      `${taskName} --allow-ffi must be scoped to the binary's extraction dir`,
     );
   }
 });
@@ -171,8 +180,13 @@ it("instance unit ExecStart drops ClickHouse and grants DuckDB needs", async () 
   assert(denoRunLines.length > 0, "unit template must keep deno-run branches");
   for (const line of denoRunLines) {
     assert(
-      /(^|\s)--allow-ffi(\s|$)/.test(line),
-      "deno-run ExecStart must include --allow-ffi for the DuckDB native addon",
+      !/(^|\s)--allow-ffi(\s|$)/.test(line),
+      "deno-run ExecStart must not pass a bare --allow-ffi",
+    );
+    assertEquals(
+      extractPathListFlag(line, "allow-ffi"),
+      ["{{turbopanel_instance_dir}}/node_modules"],
+      "deno-run ExecStart --allow-ffi must be scoped to the instance's node_modules",
     );
     for (const flag of ["allow-read", "allow-write"]) {
       const paths = extractPathListFlag(line, flag);
