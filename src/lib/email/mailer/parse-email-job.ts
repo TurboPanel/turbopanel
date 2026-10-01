@@ -100,7 +100,7 @@ function parseServerTierNotice(
   }
 }
 
-const SEVERITIES = ['info', 'warning', 'critical']
+const SEVERITIES = new Set(['info', 'warning', 'critical'])
 
 function isDigestItem(item: unknown): boolean {
   const i = item as Record<string, unknown> | null
@@ -120,7 +120,7 @@ function isDigestGroup(group: unknown): group is NotificationDigestGroup {
     g !== null &&
     typeof g.event === 'string' &&
     typeof g.severity === 'string' &&
-    SEVERITIES.includes(g.severity) &&
+    SEVERITIES.has(g.severity) &&
     typeof g.count === 'number' &&
     Array.isArray(g.items) &&
     g.items.every(isDigestItem)
