@@ -16,10 +16,7 @@ const test = Deno.test.bind(Deno)
 
 test('createEmailVerificationLinkEmail escapes HTML in verify URL', () => {
   const malicious = 'https://example.com/verify?x=<script>'
-  const { subject, html, text } = createEmailVerificationLinkEmail(
-    'user@example.com',
-    malicious,
-  )
+  const { subject, html, text } = createEmailVerificationLinkEmail('user@example.com', malicious)
   assertEquals(subject, 'Verify your TurboPanel email')
   assertEquals(html.includes('<script>'), false)
   assertEquals(html.includes('&lt;script&gt;'), true)
@@ -43,11 +40,7 @@ test('createEmailOtpEmail covers otp types and escapes otp in HTML', () => {
   } as const
 
   for (const otpType of ['sign-in', 'email-verification', 'forget-password'] as const) {
-    const { subject, html, text } = createEmailOtpEmail(
-      'user@example.com',
-      '123456',
-      otpType,
-    )
+    const { subject, html, text } = createEmailOtpEmail('user@example.com', '123456', otpType)
     assertEquals(subject, subjects[otpType])
     assertEquals(html.includes('123456'), true)
     assertEquals(text.includes('123456'), true)
