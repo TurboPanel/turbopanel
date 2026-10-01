@@ -188,7 +188,7 @@ export const organizationSchemas = {
         type: ['integer', 'null'],
         minimum: 0,
         description:
-          'Seat cap for enrolled servers + unconsumed registration keys. null = unlimited.',
+          'Server limit for enrolled servers + unconsumed registration keys. null = unlimited.',
       },
       serverCount: {
         type: 'integer',
@@ -208,7 +208,7 @@ export const organizationSchemas = {
       availableSeats: {
         type: ['integer', 'null'],
         minimum: 0,
-        description: 'Remaining seats, or null when unlimited.',
+        description: 'Remaining server slots, or null when unlimited.',
       },
     },
   },
@@ -219,7 +219,7 @@ export const organizationSchemas = {
       maxServers: {
         type: ['integer', 'null'],
         minimum: 0,
-        description: 'Non-negative integer seat cap, or null for unlimited.',
+        description: 'Non-negative integer server limit, or null for unlimited.',
       },
     },
   },
@@ -1137,9 +1137,9 @@ export const organizationPaths: Record<string, unknown> = {
   '/api/client/v1/organizations/{id}/server-capacity': {
     get: {
       tags: ['Organizations'],
-      summary: 'Get organization server seat capacity',
+      summary: 'Get organization server limit',
       description:
-        'Returns the configured maxServers cap (null = unlimited) and current seat usage. Enrolled servers and unconsumed registration keys both consume a seat.',
+        'Returns the configured maxServers cap (null = unlimited) and current usage. Enrolled servers and unconsumed registration keys both count toward the limit.',
       security: [{ cookieAuth: [] }],
       parameters: [
         {
@@ -1151,7 +1151,7 @@ export const organizationPaths: Record<string, unknown> = {
       ],
       responses: {
         '200': {
-          description: 'Server seat capacity',
+          description: 'Server limit',
           content: {
             'application/json': {
               schema: {
@@ -1180,7 +1180,7 @@ export const organizationPaths: Record<string, unknown> = {
     },
     put: {
       tags: ['Organizations'],
-      summary: 'Update organization server seat capacity',
+      summary: 'Update organization server limit',
       description:
         'Owner-only. Sets organization.options.maxServers for self-hosted control-plane quotas. Pass null for unlimited. Does not remove existing servers when lowered below current usage — only blocks new registration keys.',
       security: [{ cookieAuth: [] }],
