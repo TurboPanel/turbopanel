@@ -399,8 +399,11 @@ export function getAdminOpenApiSpec(
                 'gitconnection',
                 'twofactor',
                 'notifications',
+                'monitors',
+                'relays',
                 'authproviders',
                 'email',
+                'alertwebhook',
               ],
             },
             afterId: {
