@@ -100,7 +100,7 @@ export const billingSchemas = {
       ending: {
         type: 'integer',
         description:
-          'Of `purchased`, the licenses that end at the period boundary (released seats). Restore them with `POST /billing/restore`; buying more at this tier is refused (`licenses_ending`) while this is non-zero.',
+          'Of `purchased`, the licenses that end at the period boundary (released licenses). Restore them with `POST /billing/restore`; buying more at this tier is refused (`licenses_ending`) while this is non-zero.',
       },
       endsAt: {
         type: ['string', 'null'],
@@ -116,7 +116,7 @@ export const billingSchemas = {
         type: 'integer',
         deprecated: true,
         description:
-          'Use `ending`. Every seat leaving this tier at the boundary, a pending downgrade included.',
+          'Use `ending`. Every license leaving this tier at the boundary, a pending downgrade included.',
       },
       priceCents: { type: ['integer', 'null'] },
       currency: { type: ['string', 'null'] },
@@ -141,7 +141,7 @@ export const billingSchemas = {
       releasing: {
         type: 'integer',
         description:
-          'Every seat leaving at the period boundary (ending licenses and pending downgrades).',
+          'Every license leaving at the period boundary (ending licenses and pending downgrades).',
       },
       ending: {
         type: 'integer',
@@ -248,7 +248,7 @@ export const billingSchemas = {
               scheduleAttached: {
                 type: 'boolean',
                 description:
-                  'A deferred change (downgrade / seat release) is parked on a subscription schedule.',
+                  'A deferred change (downgrade / license release) is parked on a subscription schedule.',
               },
             },
           },
@@ -391,7 +391,7 @@ export const billingSchemas = {
     type: 'object',
     required: ['error', 'tierId', 'ending', 'endsAt'],
     description:
-      'Buying more at a tier (seats, an upgrade or downgrade into it, or the preview of any of those) while licenses at that tier are ending. Restore them first.',
+      'Buying more at a tier (more licenses, an upgrade or downgrade into it, or the preview of any of those) while licenses at that tier are ending. Restore them first.',
     properties: {
       error: { type: 'string', const: 'licenses_ending' },
       tierId: { type: 'string', format: 'uuid' },
