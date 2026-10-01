@@ -207,7 +207,7 @@ test("seedUpdateManifestCacheForTests short-circuits the fetch path for its chan
     builtAt: "2020-01-01T00:00:00.000Z",
     channel: "trunk",
     manifestUrl: "https://dl.trbp.nl/m.json",
-  });
+  }, "trunk");
   const stub = stubFetch(() => new Response("missing", { status: 404 }));
   try {
     assertEquals((await resolveUpdateManifest("trunk"))?.commit, "seeded");

@@ -1,6 +1,7 @@
 import { MANIFEST_CACHE_MS } from "./constants.ts";
 import {
   builtinChannelManifestUrl,
+  DEFAULT_UPDATE_CHANNEL,
   type ReleaseArtifactKind,
   type UpdateChannel,
 } from "../../contracts/update-channel.ts";
@@ -121,7 +122,7 @@ export function resetUpdateManifestCacheForTests(): void {
 /** Seed manifest cache — for tests only. */
 export function seedUpdateManifestCacheForTests(
   manifest: UpdateManifestTarget | null,
-  channel: UpdateChannel = "trunk",
+  channel: UpdateChannel = DEFAULT_UPDATE_CHANNEL,
   kind: ReleaseArtifactKind = "daemon",
 ): void {
   const key = manifestCacheKey(channel, kind);
