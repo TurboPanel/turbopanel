@@ -368,6 +368,7 @@ async function configureCatalogProject(
     dataEncryptionSecrets: DerivedSecretsConfig
     serverId?: string | null
     defaultEnvironmentName?: string
+    existingOptions?: unknown
   }
 ): Promise<ConfigureProjectResult> {
   const entry = getCatalogEntry(input.catalogCode)
@@ -398,7 +399,11 @@ async function configureCatalogProject(
         .update(project)
         .set({
           metadata: nextMetadata,
-          options: catalogConfigureOptions(entry),
+          options: settleDeployOptions(
+            input.existingOptions,
+            catalogConfigureOptions(entry),
+            'project'
+          ),
           updatedAt: new Date().toISOString(),
         })
         .where(eq(project.id, input.projectId))
@@ -417,7 +422,8 @@ async function configureDockerComposeProject(
   db: Db,
   projectId: string,
   serverId?: string | null,
-  defaultEnvironmentName?: string
+  defaultEnvironmentName?: string,
+  existingOptions?: unknown
 ): Promise<ConfigureProjectResult> {
   await db.transaction(async (tx) => {
     await ensureProductionEnvironment(tx, projectId, serverId, defaultEnvironmentName)
@@ -425,7 +431,11 @@ async function configureDockerComposeProject(
       .update(project)
       .set({
         metadata: { type: 'docker-compose' },
-        options: { compose: emptyComposeDocument() },
+        options: settleDeployOptions(
+          existingOptions,
+          { compose: emptyComposeDocument() },
+          'project'
+        ),
         updatedAt: new Date().toISOString(),
       })
       .where(eq(project.id, projectId))
@@ -473,7 +483,8 @@ export async function configureProjectType(
       db,
       input.projectId,
       input.serverId,
-      input.defaultEnvironmentName
+      input.defaultEnvironmentName,
+      row.options
     )
   }
 
@@ -491,5 +502,6 @@ export async function configureProjectType(
     dataEncryptionSecrets: input.dataEncryptionSecrets,
     serverId: input.serverId,
     defaultEnvironmentName: input.defaultEnvironmentName,
+    existingOptions: row.options,
   })
 }

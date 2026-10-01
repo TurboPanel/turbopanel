@@ -113,6 +113,30 @@ const REFUSALS: Array<{
     },
   },
   {
+    name: 'custom image on a database port with a named volume',
+    code: 'stateful_writable_volume',
+    services: ['store'],
+    compose: {
+      services: { store: { image: 'acme/store:1', ports: ['5432:5432'], volumes: ['d:/x'] } },
+    },
+  },
+  {
+    name: 'custom image mounting a mysql data dir',
+    code: 'stateful_writable_volume',
+    services: ['store'],
+    compose: {
+      services: { store: { image: 'acme/store:1', volumes: ['d:/var/lib/mysql'] } },
+    },
+  },
+  {
+    name: 'clickhouse with a named volume',
+    code: 'stateful_writable_volume',
+    services: ['ch'],
+    compose: {
+      services: { ch: { image: 'clickhouse/clickhouse-server:24', volumes: ['c:/data'] } },
+    },
+  },
+  {
     name: 'registry-prefixed redis with a long-syntax bind',
     code: 'stateful_writable_volume',
     services: ['cache'],

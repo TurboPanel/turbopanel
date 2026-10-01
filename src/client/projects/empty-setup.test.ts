@@ -597,6 +597,54 @@ test('configureProjectType configures docker-compose via transaction', async () 
   assertEquals(result, { ok: true, alreadyConfigured: false })
 })
 
+const TUNING = { drainSeconds: 45, healthTimeoutSeconds: 200, rollbackWindowMinutes: 10 }
+
+function projectPatchOf(patches: Record<string, unknown>[]): Record<string, unknown> {
+  const patch = patches.find((p) => 'metadata' in p)
+  if (!patch) throw new Error('no project update')
+  return patch
+}
+
+test('configureProjectType catalog configure keeps stored deploy tuning on the project', async () => {
+  const patches: Record<string, unknown>[] = []
+  const tx = createTxStub({
+    envRows: [{ id: 'env-1', name: 'Production', serverId: null }],
+    onUpdate: (patch) => patches.push(patch),
+  })
+  const result = await configureProjectType(
+    createProjectSelectDb([{ id: 'p1', metadata: {}, options: { ...TUNING, stale: 1 } }], tx),
+    {
+      projectId: 'p1',
+      projectType: 'template',
+      catalogCode: 'static-site',
+      dataEncryptionSecrets: stubSecrets(),
+    },
+  )
+  assertEquals(result, { ok: true, alreadyConfigured: false })
+  const options = projectPatchOf(patches).options as Record<string, unknown>
+  assertEquals(options.drainSeconds, 45)
+  assertEquals(options.healthTimeoutSeconds, 200)
+  assertEquals(options.rollbackWindowMinutes, 10)
+  assertEquals('compose' in options, true)
+  assertEquals('stale' in options, false)
+})
+
+test('configureProjectType docker-compose configure keeps stored deploy tuning', async () => {
+  const patches: Record<string, unknown>[] = []
+  const tx = createTxStub({
+    envRows: [{ id: 'env-1', name: 'Production', serverId: null }],
+    onUpdate: (patch) => patches.push(patch),
+  })
+  await configureProjectType(
+    createProjectSelectDb([{ id: 'p1', metadata: null, options: TUNING }], tx),
+    { projectId: 'p1', projectType: 'docker-compose', dataEncryptionSecrets: stubSecrets() },
+  )
+  const options = projectPatchOf(patches).options as Record<string, unknown>
+  assertEquals(options.drainSeconds, 45)
+  assertEquals(options.rollbackWindowMinutes, 10)
+  assertEquals('compose' in options, true)
+})
+
 test('configureProjectType configures static-site template', async () => {
   const result = await configureProjectType(
     createProjectSelectDb([{ id: 'p1', metadata: {}, options: null }]),
