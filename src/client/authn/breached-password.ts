@@ -41,7 +41,7 @@ export type BreachResult = 'breached' | 'clean' | 'unavailable'
 
 /** The HIBP range protocol is defined over SHA-1; it is a lookup key here, not a credential hash. */
 async function sha1HexUpper(text: string): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-1', new TextEncoder().encode(text))
+  const digest = await crypto.subtle.digest('SHA-1', new TextEncoder().encode(text)) // NOSONAR: the Have I Been Pwned range API requires SHA-1; only a 5-character prefix is sent
   return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0'))
     .join('')
     .toUpperCase()
