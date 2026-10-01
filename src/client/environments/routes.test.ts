@@ -1,5 +1,5 @@
 import { assertEquals } from '@std/assert'
-import { and, eq } from 'drizzle-orm'
+import { and, eq, inArray } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
@@ -8,8 +8,12 @@ import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from '../authn/crypto.ts'
 import { createSession } from '../authn/session-store.ts'
 import { deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
 import {
+  binding,
+  container,
+  deployment,
   environment,
   grant,
+  hosting,
   organization,
   project,
   server,
@@ -140,6 +144,27 @@ async function withEnvironmentFixtures(
       serverId,
     })
   } finally {
+    const envIds = (
+      await db
+        .select({ id: environment.id })
+        .from(environment)
+        .where(eq(environment.projectId, projectId))
+    ).map((row) => row.id)
+    if (envIds.length > 0) {
+      const svcIds = (
+        await db
+          .select({ id: service.id })
+          .from(service)
+          .where(inArray(service.environmentId, envIds))
+      ).map((row) => row.id)
+      if (svcIds.length > 0) {
+        await db.delete(container).where(inArray(container.serviceId, svcIds))
+        await db.delete(hosting).where(inArray(hosting.serviceId, svcIds))
+        await db.delete(binding).where(inArray(binding.serviceId, svcIds))
+        await db.delete(service).where(inArray(service.id, svcIds))
+      }
+    }
+    await db.delete(deployment).where(eq(deployment.serverId, serverId))
     await db.delete(environment).where(eq(environment.projectId, projectId))
     await db.delete(project).where(eq(project.id, projectId))
     await db.delete(server).where(eq(server.id, serverId))
@@ -498,30 +523,209 @@ test('an environment is added with an overlay, renamed with the overlay kept, an
   })
 })
 
-test('an environment that still has services is not deleted: 409, nothing removed, then it deletes once they are gone', async () => {
+async function createEnvironmentWithWeb(
+  ctx: EnvironmentTestContext,
+  cookie: string,
+  name: string
+): Promise<{ id: string; serviceId: string }> {
+  const id = await createEnvironmentWith(ctx, cookie, {
+    name,
+    options: { compose: WEB_OVERLAY },
+  })
+  const [svc] = await ctx.db
+    .select({ id: service.id })
+    .from(service)
+    .where(eq(service.environmentId, id))
+  return { id, serviceId: svc!.id }
+}
+
+async function countRows(
+  ctx: EnvironmentTestContext,
+  environmentId: string,
+  serviceId: string
+): Promise<{ services: number; containers: number; hostings: number; bindings: number }> {
+  const services = await ctx.db
+    .select({ id: service.id })
+    .from(service)
+    .where(eq(service.environmentId, environmentId))
+  const containers = await ctx.db
+    .select({ id: container.id })
+    .from(container)
+    .where(eq(container.serviceId, serviceId))
+  const hostings = await ctx.db
+    .select({ id: hosting.id })
+    .from(hosting)
+    .where(eq(hosting.serviceId, serviceId))
+  const bindings = await ctx.db
+    .select({ id: binding.id })
+    .from(binding)
+    .where(eq(binding.serviceId, serviceId))
+  return {
+    services: services.length,
+    containers: containers.length,
+    hostings: hostings.length,
+    bindings: bindings.length,
+  }
+}
+
+function addContainer(ctx: EnvironmentTestContext, serviceId: string, status: string) {
+  return ctx.db.insert(container).values({
+    serviceId,
+    serverId: ctx.serverId,
+    containerId: `cid-${crypto.randomUUID()}`,
+    containerName: `web-${crypto.randomUUID()}`,
+    status,
+    composeServiceName: 'web',
+  })
+}
+
+test('an environment with a running container is refused with environment_running and nothing is removed', async () => {
   await withEnvironmentFixtures(async (ctx) => {
     const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
-    const id = await createEnvironmentWith(ctx, cookie, {
-      name: 'With Services',
-      options: { compose: WEB_OVERLAY },
-    })
-    const services = await ctx.db
-      .select({ name: service.composeServiceName })
-      .from(service)
-      .where(eq(service.environmentId, id))
-    assertEquals(
-      services.map((row) => row.name),
-      ['web']
-    )
+    const { id, serviceId } = await createEnvironmentWithWeb(ctx, cookie, 'Running')
+    await addContainer(ctx, serviceId, 'running')
 
     const refused = await deleteEnvironmentRequest(ctx, cookie, id)
     assertEquals(refused.status, 409)
-    assertEquals(await refused.json(), { error: 'Cannot delete while child resources exist' })
-    assertEquals((await environmentRow(ctx, id))?.name, 'With Services')
+    assertEquals(await refused.json(), { error: 'environment_running' })
+    assertEquals((await environmentRow(ctx, id))?.name, 'Running')
+    assertEquals((await countRows(ctx, id, serviceId)).containers, 1)
+  })
+})
 
-    await ctx.db.delete(service).where(eq(service.environmentId, id))
+test('an environment with a deploy in progress is refused with environment_running', async () => {
+  await withEnvironmentFixtures(async (ctx) => {
+    const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
+    const { id } = await createEnvironmentWithWeb(ctx, cookie, 'Deploying')
+    await ctx.db
+      .insert(deployment)
+      .values({ environmentId: id, serverId: ctx.serverId, status: 'applying' })
+
+    const refused = await deleteEnvironmentRequest(ctx, cookie, id)
+    assertEquals(refused.status, 409)
+    assertEquals(await refused.json(), { error: 'environment_running' })
+    assertEquals((await environmentRow(ctx, id))?.name, 'Deploying')
+
+    // A finished deploy no longer blocks.
+    await ctx.db
+      .update(deployment)
+      .set({ status: 'applied' })
+      .where(eq(deployment.environmentId, id))
     assertEquals((await deleteEnvironmentRequest(ctx, cookie, id)).status, 200)
     assertEquals(await environmentRow(ctx, id), undefined)
+  })
+})
+
+test('a stopped environment is deleted with its services, containers, hostings, bindings and variables', async () => {
+  await withEnvironmentFixtures(async (ctx) => {
+    const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
+    const { id, serviceId } = await createEnvironmentWithWeb(ctx, cookie, 'Stopped')
+    const sibling = await createEnvironmentWithWeb(ctx, cookie, 'Sibling')
+    await addContainer(ctx, serviceId, 'exited')
+    await ctx.db
+      .insert(hosting)
+      .values({ serviceId, domain: `stopped-${crypto.randomUUID()}.example.com` })
+    await ctx.db
+      .insert(variable)
+      .values({ environmentId: id, key: 'GONE', value: 'x', isSecret: false })
+    await ctx.db
+      .insert(deployment)
+      .values({ environmentId: id, serverId: ctx.serverId, status: 'applied' })
+    const before = await countRows(ctx, id, serviceId)
+    assertEquals([before.services, before.containers, before.hostings], [1, 1, 1])
+
+    const removed = await deleteEnvironmentRequest(ctx, cookie, id)
+    assertEquals(removed.status, 200)
+    assertEquals(await environmentRow(ctx, id), undefined)
+    assertEquals(await countRows(ctx, id, serviceId), {
+      services: 0,
+      containers: 0,
+      hostings: 0,
+      bindings: 0,
+    })
+    const vars = await ctx.db
+      .select({ id: variable.id })
+      .from(variable)
+      .where(eq(variable.environmentId, id))
+    assertEquals(vars.length, 0)
+    const deployments = await ctx.db
+      .select({ id: deployment.id })
+      .from(deployment)
+      .where(eq(deployment.environmentId, id))
+    assertEquals(deployments.length, 0)
+    // The sibling environment is untouched.
+    assertEquals((await environmentRow(ctx, sibling.id))?.name, 'Sibling')
+    assertEquals((await countRows(ctx, sibling.id, sibling.serviceId)).services, 1)
+  })
+})
+
+test('a never-deployed environment with services deletes', async () => {
+  await withEnvironmentFixtures(async (ctx) => {
+    const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
+    const { id, serviceId } = await createEnvironmentWithWeb(ctx, cookie, 'Fresh')
+    assertEquals((await deleteEnvironmentRequest(ctx, cookie, id)).status, 200)
+    assertEquals((await countRows(ctx, id, serviceId)).services, 0)
+  })
+})
+
+test('environment delete: another organization gets 404 and a member without manage gets 403, nothing removed', async () => {
+  await withEnvironmentFixtures(async (ctx) => {
+    const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
+    const { id } = await createEnvironmentWithWeb(ctx, cookie, 'Protected')
+
+    const [otherOrg] = await ctx.db
+      .insert(organization)
+      .values({ name: 'Other Delete Org' })
+      .returning({ id: organization.id })
+    const [other] = await ctx.db
+      .insert(user)
+      .values({
+        email: `other-${crypto.randomUUID()}@example.com`,
+        isEmailVerified: true,
+        role: 'user',
+      })
+      .returning({ id: user.id })
+    const [reader] = await ctx.db
+      .insert(user)
+      .values({
+        email: `reader-${crypto.randomUUID()}@example.com`,
+        isEmailVerified: true,
+        role: 'user',
+      })
+      .returning({ id: user.id })
+    try {
+      await ctx.db.insert(grant).values([
+        {
+          entityType: 'organization',
+          entityId: otherOrg!.id,
+          actorType: 'user',
+          actorId: other!.id,
+          permission: 'organization:manage',
+        },
+        {
+          entityType: 'organization',
+          entityId: ctx.organizationId,
+          actorType: 'user',
+          actorId: reader!.id,
+          permission: 'organization:read',
+        },
+      ])
+      const otherCookie = await sessionCookie(ctx.db, ctx.secrets, other!.id)
+      const crossOrg = await ctx.app.request(`/environments/${id}`, {
+        method: 'DELETE',
+        headers: { Cookie: otherCookie, [ORG_ID_HEADER]: otherOrg!.id },
+      })
+      assertEquals(crossOrg.status, 404)
+
+      const readerCookie = await sessionCookie(ctx.db, ctx.secrets, reader!.id)
+      const denied = await deleteEnvironmentRequest(ctx, readerCookie, id)
+      assertEquals(denied.status, 403)
+      assertEquals((await environmentRow(ctx, id))?.name, 'Protected')
+    } finally {
+      await ctx.db.delete(grant).where(inArray(grant.actorId, [other!.id, reader!.id]))
+      await ctx.db.delete(user).where(inArray(user.id, [other!.id, reader!.id]))
+      await ctx.db.delete(organization).where(eq(organization.id, otherOrg!.id))
+    }
   })
 })
 
