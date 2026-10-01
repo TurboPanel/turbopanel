@@ -278,9 +278,9 @@ jobs:
           retention-days: 7
 
   manifest:
-    # Signing key = environment secret TURBOPANEL_RELEASE_SIGNING_KEY: `canary` for
-    # the trunk canary path (workflow_call), `release` (owner approval) otherwise.
-    environment: ${{ inputs.channel == 'canary' && 'canary' || 'release' }}
+    # Signing key = environment secret TURBOPANEL_RELEASE_SIGNING_KEY, one environment per
+    # channel: `canary` (trunk), `rc` (staging), `release` (live, owner approval).
+    environment: ${{ inputs.channel == 'canary' && 'canary' || (inputs.channel == 'rc' && 'rc' || 'release') }}
     needs: [prepare, build]
     runs-on: ubuntu-latest
     steps:

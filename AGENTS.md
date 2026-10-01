@@ -1057,8 +1057,8 @@ The release package (`.github/workflows/release.yml`,
 `lib/libduckdb.so`, unpacked flat into `/opt/turbopanel` beside the daemon.
 Its `manifest.json` is **signed** before upload with the offline release key
 (`TURBOPANEL_RELEASE_SIGNING_KEY`, an environment secret with the same value in
-the `canary` and `release` environments: the signing job declares `canary` on the
-canary path and `release`, owner-approved, otherwise). The `manifest` job runs turbopaneld's
+the `canary` (trunk), `rc` (staging) and `release` (live, owner-approved)
+environments: the signing job declares the one matching its channel). The `manifest` job runs turbopaneld's
 `scripts/sign-manifest.ts` from a SHA-pinned checkout, so the control plane,
 UI and daemon share one signer and one canonicaliser. A missing key, or one
 that does not match the public key pinned in that turbopaneld commit, fails

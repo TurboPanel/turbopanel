@@ -89,10 +89,10 @@ describe('release manifest signing', () => {
     assertEquals(/^[0-9a-f]{40}$/.test(ref), true, `signer ref is not a commit SHA: ${ref}`)
   })
 
-  it('reads the signing key from the canary or release environment, not a repo secret', () => {
+  it('reads the signing key from the canary, rc or release environment, not a repo secret', () => {
     assertStringIncludes(
       release,
-      "environment: ${{ inputs.channel == 'canary' && 'canary' || 'release' }}"
+      "environment: ${{ inputs.channel == 'canary' && 'canary' || (inputs.channel == 'rc' && 'rc' || 'release') }}"
     )
     assertEquals(release.includes('secrets.RELEASE_SIGNING_KEY'), false)
     assertEquals(canary.includes('secrets.'), false)
