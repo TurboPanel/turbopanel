@@ -53,6 +53,23 @@ consumer timeout. **Nothing in the control plane enqueues this command yet**
 (`fw-derived-rules` builds the desired-state derivation); the contract lands
 first so both repos agree before either side depends on it.
 
+`server.firewall.confirm` (added 2026-10-01, Road row `fw-invariants-commit-confirm`)
+promotes a ruleset the host applied but has not yet made durable. A
+`server.firewall.reconcile` that actually loads rules answers with a
+`confirmation: { state: "pending", deadlineAt, windowSeconds }`: the host's
+**root guard** (a systemd timer, independent of the daemon) restores the last
+confirmed rules at `deadlineAt` unless this command arrives first, and the
+rules only become durable (reboot-safe) when it does. Payload `{ digest }` (the
+reconcile result's digest, lower-case sha256 hex); result `{ state, digest,
+pendingDigest?, summary }` with `state` one of `confirmed`, `nothing_pending`
+(idempotent: already confirmed, or none), `digest_mismatch` (a different
+ruleset is pending), `expired` (the window ran out; the host is rolling back)
+or `rolled_back` (the guard already restored the previous rules). Outbound is
+open, so a daemon that "can still reach the control plane" proves nothing about
+inbound access: the confirming party must have reached the host from outside
+(`fw-derived-rules` adds that probe). 60s consumer timeout. Nothing enqueues it
+yet.
+
 `server.backups.reconcile` (added 2026-09-30, Road row `r2-backup-schema`)
 carries the **complete** set of scheduled backup policies whose target lives on
 one server, the same full-set contract as `server.principals.reconcile`:

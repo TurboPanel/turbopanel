@@ -8,6 +8,7 @@ export const COMMAND_TYPES = [
   'server.tls.trust.reconcile',
   'server.principals.reconcile',
   'server.firewall.reconcile',
+  'server.firewall.confirm',
   'server.backups.reconcile',
   'environment.deploy',
   'environment.lifecycle',

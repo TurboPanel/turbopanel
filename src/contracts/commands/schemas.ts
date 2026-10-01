@@ -335,6 +335,55 @@ export type FirewallReconcileCommandResult = {
    */
   sshPorts: number[]
   warnings: string[]
+  /**
+   * Present when this apply loaded rules that are not yet durable: the host
+   * rolls them back on its own at `deadlineAt` unless a `server.firewall.confirm`
+   * for `digest` arrives first. Absent for observe, off and refused applies.
+   */
+  confirmation?: FirewallPendingConfirmation
+  summary: string
+}
+
+/**
+ * Must stay in sync with the daemon `server.firewall.reconcile` shape.
+ * A ruleset that was applied and is waiting to be confirmed (commit-confirm).
+ */
+export type FirewallPendingConfirmation = {
+  state: 'pending'
+  /** ISO time after which the host's root guard rolls the ruleset back. */
+  deadlineAt: string
+  /** The confirm window the host armed, in seconds. */
+  windowSeconds: number
+}
+
+/**
+ * Must stay in sync with the daemon `server.firewall.confirm` shape.
+ * `digest` is the reconcile result's digest: the host promotes the pending
+ * ruleset only when it is exactly that one.
+ */
+export type FirewallConfirmCommandPayload = {
+  digest: string
+}
+
+/** Must stay in sync with the daemon `server.firewall.confirm` shape. */
+export type FirewallConfirmState =
+  'confirmed' | 'nothing_pending' | 'digest_mismatch' | 'expired' | 'rolled_back'
+
+/**
+ * Must stay in sync with the daemon `server.firewall.confirm` shape.
+ *
+ * - `confirmed`: the pending ruleset is now durable (it survives a reboot).
+ * - `nothing_pending`: no unconfirmed ruleset (already confirmed, or none).
+ * - `digest_mismatch`: a different ruleset is pending; `pendingDigest` names it.
+ * - `expired`: the window ran out; the host is rolling back, not promoting.
+ * - `rolled_back`: the guard already restored the last confirmed rules.
+ */
+export type FirewallConfirmCommandResult = {
+  state: FirewallConfirmState
+  /** sha256 hex of the pending ruleset the command named. */
+  digest: string
+  /** On `digest_mismatch`, the digest actually pending. */
+  pendingDigest?: string
   summary: string
 }
 
@@ -871,8 +920,82 @@ export function parseFirewallReconcileResult(value: unknown): FirewallReconcileC
     forwardApplied: value.forwardApplied as boolean,
     sshPorts: parseFirewallPortList(value.sshPorts, 'sshPorts'),
     warnings: parseStringArrayField(value.warnings, 'warnings'),
+    ...(value.confirmation === undefined
+      ? {}
+      : { confirmation: parseFirewallPendingConfirmation(value.confirmation) }),
     summary: value.summary,
   }
+}
+
+function parseFirewallPendingConfirmation(value: unknown): FirewallPendingConfirmation {
+  if (!isRecord(value) || value.state !== 'pending') {
+    throw new Error('confirmation must be a pending confirmation')
+  }
+  if (!isString(value.deadlineAt) || Number.isNaN(Date.parse(value.deadlineAt))) {
+    throw new TypeError('confirmation.deadlineAt must be an ISO time')
+  }
+  if (
+    typeof value.windowSeconds !== 'number' ||
+    !Number.isInteger(value.windowSeconds) ||
+    value.windowSeconds < 1 ||
+    value.windowSeconds > 3600
+  ) {
+    throw new Error('confirmation.windowSeconds must be an integer from 1 to 3600')
+  }
+  return {
+    state: 'pending',
+    deadlineAt: value.deadlineAt,
+    windowSeconds: value.windowSeconds,
+  }
+}
+
+const FIREWALL_DIGEST_RE = /^[a-f0-9]{64}$/
+const FIREWALL_CONFIRM_STATES: ReadonlySet<string> = new Set([
+  'confirmed',
+  'nothing_pending',
+  'digest_mismatch',
+  'expired',
+  'rolled_back',
+])
+
+/** Parse `server.firewall.confirm`. Byte-for-byte the daemon's rules. */
+export function parseFirewallConfirmPayload(value: unknown): FirewallConfirmCommandPayload {
+  if (!isRecord(value)) {
+    throw new Error('Invalid firewall confirm payload')
+  }
+  if (!isString(value.digest) || !FIREWALL_DIGEST_RE.test(value.digest)) {
+    throw new Error('digest must be a lower-case sha256 hex string')
+  }
+  return { digest: value.digest }
+}
+
+export function parseFirewallConfirmResult(value: unknown): FirewallConfirmCommandResult {
+  if (!isRecord(value)) {
+    throw new Error('Invalid firewall confirm result')
+  }
+  if (!isString(value.state) || !FIREWALL_CONFIRM_STATES.has(value.state)) {
+    throw new Error(
+      'state must be confirmed, nothing_pending, digest_mismatch, expired or rolled_back'
+    )
+  }
+  if (!isString(value.digest) || !FIREWALL_DIGEST_RE.test(value.digest)) {
+    throw new Error('digest must be a lower-case sha256 hex string')
+  }
+  if (!isString(value.summary)) {
+    throw new TypeError('summary must be a string')
+  }
+  const result: FirewallConfirmCommandResult = {
+    state: value.state as FirewallConfirmState,
+    digest: value.digest,
+    summary: value.summary,
+  }
+  if (value.pendingDigest !== undefined) {
+    if (!isString(value.pendingDigest) || !FIREWALL_DIGEST_RE.test(value.pendingDigest)) {
+      throw new Error('pendingDigest must be a lower-case sha256 hex string')
+    }
+    result.pendingDigest = value.pendingDigest
+  }
+  return result
 }
 
 function parseDaemonBuild(value: unknown): PingCommandResult['daemonBuild'] {
@@ -6770,6 +6893,7 @@ export function parseCommandPayload(
   | TlsTrustReconcileCommandPayload
   | PrincipalsReconcileCommandPayload
   | FirewallReconcileCommandPayload
+  | FirewallConfirmCommandPayload
   | BackupsReconcileCommandPayload
   | EnvironmentDeployCommandPayload
   | EnvironmentLifecycleCommandPayload
@@ -6805,6 +6929,8 @@ export function parseCommandPayload(
       return parsePrincipalsReconcilePayload(value)
     case 'server.firewall.reconcile':
       return parseFirewallReconcilePayload(value)
+    case 'server.firewall.confirm':
+      return parseFirewallConfirmPayload(value)
     case 'server.backups.reconcile':
       return parseBackupsReconcilePayload(value)
     case 'environment.deploy':
@@ -6853,6 +6979,7 @@ export function parseCommandResult(
   | TlsTrustReconcileCommandResult
   | PrincipalsReconcileCommandResult
   | FirewallReconcileCommandResult
+  | FirewallConfirmCommandResult
   | BackupsReconcileCommandResult
   | EnvironmentDeployCommandResult
   | EnvironmentLifecycleCommandResult
@@ -6888,6 +7015,8 @@ export function parseCommandResult(
       return parsePrincipalsReconcileResult(value)
     case 'server.firewall.reconcile':
       return parseFirewallReconcileResult(value)
+    case 'server.firewall.confirm':
+      return parseFirewallConfirmResult(value)
     case 'server.backups.reconcile':
       return parseBackupsReconcileResult(value)
     case 'environment.deploy':
