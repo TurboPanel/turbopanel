@@ -65,7 +65,7 @@ export type FirewallPreviewStatus =
 /** What was sent: a preview (observe), an apply (managed) or a teardown (off). */
 export type FirewallRecordKind = 'preview' | 'apply' | 'remove'
 
-const RECORD_KINDS: readonly string[] = ['preview', 'apply', 'remove']
+const RECORD_KINDS: ReadonlySet<string> = new Set(['preview', 'apply', 'remove'])
 
 const KIND_OF_MODE: Record<FirewallMode, FirewallRecordKind> = {
   observe: 'preview',
@@ -466,7 +466,7 @@ async function readStoredRecord(db: Db, serverId: string): Promise<FirewallPrevi
 export function previewOfLastResult(lastResult: unknown): FirewallPreviewRecord | null {
   if (typeof lastResult !== 'object' || lastResult === null) return null
   const kind = (lastResult as { kind?: unknown }).kind
-  return typeof kind === 'string' && RECORD_KINDS.includes(kind)
+  return typeof kind === 'string' && RECORD_KINDS.has(kind)
     ? (lastResult as FirewallPreviewRecord)
     : null
 }
