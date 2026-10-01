@@ -102,6 +102,48 @@ test('listEnvironmentDeploymentHistory serializes context and paginates', async 
   assertEquals(page.nextCursor, olderId)
 })
 
+test('listEnvironmentDeploymentHistory surfaces the strategy and how an unfinished deploy ended', async () => {
+  const rolledBack = {
+    ...deployRow,
+    id: '00000000-0000-4000-8000-000000000101',
+    status: 'failed',
+    context: { ...deployRow.context, deployStrategy: 'sequential' },
+    errorCode: 'deploy_rolled_back',
+    errorMessage: 'rolled_back: web failed its healthcheck; the previous version is running again',
+  }
+  const needsAttention = {
+    ...rolledBack,
+    id: '00000000-0000-4000-8000-000000000102',
+    errorCode: 'deploy_needs_attention',
+    errorMessage: 'needs_attention: a migration already ran',
+  }
+  const plainFailure = {
+    ...rolledBack,
+    id: '00000000-0000-4000-8000-000000000103',
+    context: { ...deployRow.context, deployStrategy: 'inplace' },
+    errorCode: null,
+    errorMessage: 'Docker Compose deployment failed',
+  }
+  const db = createHistoryDb({
+    commandRows: [rolledBack, needsAttention, plainFailure, deployRow],
+  })
+  const { deployments } = await listEnvironmentDeploymentHistory(db, envId)
+  assertEquals(
+    deployments.map((d) => [d.strategy, d.strategyOutcome, d.strategyOutcomeReason]),
+    [
+      [
+        'sequential',
+        'rolled_back',
+        'web failed its healthcheck; the previous version is running again',
+      ],
+      ['sequential', 'needs_attention', 'a migration already ran'],
+      ['inplace', null, null],
+      // A row queued before the strategy was recorded.
+      [null, null, null],
+    ]
+  )
+})
+
 test('listEnvironmentDeploymentHistory clamps limit bounds', async () => {
   const db = createHistoryDb({ commandRows: [] })
   await listEnvironmentDeploymentHistory(db, envId, { limit: 0 })

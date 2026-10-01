@@ -2128,6 +2128,18 @@ export type EnvironmentDeployCommandPayload = EnvironmentDeployHostAccess & {
    * before `up` (cacheless redeploy).
    */
   noCache?: boolean
+  /**
+   * `sequential`: the daemon stops the previous version, runs migrations,
+   * starts the new one, gates on health and rolls back. Omitted for `inplace`
+   * (and for a daemon that predates the field, which deploys in place).
+   */
+  deployStrategy?: 'inplace' | 'sequential'
+  /** Declared migration status; the daemon only acts on `breaking`. */
+  migrations?: 'none' | 'compatible' | 'breaking' | 'unknown'
+  /** Seconds the daemon's health gate waits (default 120). */
+  healthTimeoutSeconds?: number
+  /** Compose services left running while the application is stopped. */
+  keepRunningServices?: string[]
   /** Unique TLS material referenced by `hostings[].tlsId` (deduped). */
   tlsMaterial?: EnvironmentDeployTlsMaterial[]
   variableMaterial?: EnvironmentDeployVariableMaterial[]
@@ -3668,6 +3680,40 @@ function parseOptionalDeployBoolean(value: unknown): boolean | undefined {
   return value
 }
 
+function parseDeployStrategyField(value: unknown): 'inplace' | 'sequential' | undefined {
+  if (value === undefined) return undefined
+  if (value !== 'inplace' && value !== 'sequential') {
+    throw new TypeError('Invalid environment.deploy payload')
+  }
+  return value
+}
+
+function parseDeployMigrationsField(
+  value: unknown
+): 'none' | 'compatible' | 'breaking' | 'unknown' | undefined {
+  if (value === undefined) return undefined
+  if (value !== 'none' && value !== 'compatible' && value !== 'breaking' && value !== 'unknown') {
+    throw new TypeError('Invalid environment.deploy payload')
+  }
+  return value
+}
+
+function parseHealthTimeoutField(value: unknown): number | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 10 || value > 3600) {
+    throw new TypeError('Invalid environment.deploy payload')
+  }
+  return value
+}
+
+function parseKeepRunningField(value: unknown): string[] | undefined {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value) || !value.every((name) => isString(name) && name.length > 0)) {
+    throw new TypeError('Invalid environment.deploy payload')
+  }
+  return value as string[]
+}
+
 function omitUndefinedEntries<T extends Record<string, unknown>>(fields: T): Partial<T> {
   return Object.fromEntries(
     Object.entries(fields).filter(([, value]) => value !== undefined)
@@ -3811,6 +3857,10 @@ export function parseEnvironmentDeployPayload(value: unknown): EnvironmentDeploy
       managedNetworkServices,
       managedNetwork: parseDeployManagedNetwork(value.managedNetwork, managedNetworkServices),
       noCache: parseOptionalDeployBoolean(value.noCache),
+      deployStrategy: parseDeployStrategyField(value.deployStrategy),
+      migrations: parseDeployMigrationsField(value.migrations),
+      healthTimeoutSeconds: parseHealthTimeoutField(value.healthTimeoutSeconds),
+      keepRunningServices: parseKeepRunningField(value.keepRunningServices),
       hostLevelApproved: parseOptionalDeployBoolean(value.hostLevelApproved),
       tlsMaterial: parseDeployTlsMaterial(value.tlsMaterial),
       variableMaterial: parseDeployVariableMaterial(value.variableMaterial),

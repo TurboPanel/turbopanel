@@ -832,6 +832,131 @@ test('POST /environments/:id/deploy payload carries runtime composeFiles', async
   )
 })
 
+type StrategyDeployResult = {
+  status: number
+  body: {
+    strategy?: {
+      requested: string
+      effective: string
+      fallbackReasons: Array<{ code: string }>
+    }
+    error?: string
+  }
+  payload: Record<string, unknown>
+  context: Record<string, unknown>
+}
+
+/** Deploy the web fixture with `options` stored on the environment and `request` as the body. */
+async function deployWithStrategy(
+  environmentOptions: Record<string, unknown>,
+  request: Record<string, unknown>
+): Promise<StrategyDeployResult> {
+  let result: StrategyDeployResult | undefined
+  await withDeployFixtures(
+    async ({ db, app, secrets, userId, organizationId, projectId, environmentId, serverId }) => {
+      await db
+        .update(environment)
+        .set({
+          serverId,
+          name: 'Production',
+          options: { compose: emptyComposeDocument(), ...environmentOptions },
+          updatedAt: new Date().toISOString(),
+        })
+        .where(eq(environment.id, environmentId))
+      await db
+        .update(project)
+        .set({
+          options: { compose: composeWithWebService() },
+          updatedAt: new Date().toISOString(),
+        })
+        .where(eq(project.id, projectId))
+      const res = await app.request(`/environments/${environmentId}/deploy`, {
+        method: 'POST',
+        headers: {
+          Cookie: await sessionCookie(db, secrets, userId),
+          [ORG_ID_HEADER]: organizationId,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(request),
+      })
+      const body = (await res.json()) as StrategyDeployResult['body'] & { commandId?: string }
+      let payload: Record<string, unknown> = {}
+      let context: Record<string, unknown> = {}
+      if (body.commandId) {
+        const [row] = await db
+          .select({ payload: dispatch.payload })
+          .from(dispatch)
+          .where(eq(dispatch.commandId, body.commandId))
+          .limit(1)
+        payload = (row?.payload ?? {}) as Record<string, unknown>
+        const [cmd] = await db
+          .select({ context: command.context })
+          .from(command)
+          .where(eq(command.id, body.commandId))
+          .limit(1)
+        context = (cmd?.context ?? {}) as Record<string, unknown>
+      }
+      result = { status: res.status, body, payload, context }
+    }
+  )
+  if (!result) throw new TypeError('fixtures did not run')
+  return result
+}
+
+test('POST /environments/:id/deploy sends sequential to the daemon when the environment is sequential', async () => {
+  const out = await deployWithStrategy({ deployStrategy: 'sequential' }, {})
+  assertEquals(out.status, 200)
+  assertEquals(out.payload.deployStrategy, 'sequential')
+  assertEquals(out.payload.migrations, 'unknown')
+  assertEquals(out.payload.healthTimeoutSeconds, 120)
+  assertEquals(out.context.deployStrategy, 'sequential')
+  assertEquals(out.body.strategy?.requested, 'sequential')
+  assertEquals(out.body.strategy?.effective, 'sequential')
+  assertEquals(out.body.strategy?.fallbackReasons, [])
+})
+
+test('POST /environments/:id/deploy keeps an environment with no strategy in place (no payload change)', async () => {
+  const out = await deployWithStrategy({}, {})
+  assertEquals(out.status, 200)
+  assertEquals('deployStrategy' in out.payload, false)
+  assertEquals('healthTimeoutSeconds' in out.payload, false)
+  assertEquals(out.context.deployStrategy, 'inplace')
+  assertEquals(out.body.strategy?.effective, 'inplace')
+})
+
+test('POST /environments/:id/deploy honors a per-deploy strategy override and the health timeout setting', async () => {
+  const optedOut = await deployWithStrategy(
+    { deployStrategy: 'sequential' },
+    { strategy: 'inplace' }
+  )
+  assertEquals(optedOut.status, 200)
+  assertEquals('deployStrategy' in optedOut.payload, false)
+  assertEquals(optedOut.body.strategy?.requested, 'inplace')
+
+  const optedIn = await deployWithStrategy({ healthTimeoutSeconds: 45 }, { strategy: 'sequential' })
+  assertEquals(optedIn.status, 200)
+  assertEquals(optedIn.payload.deployStrategy, 'sequential')
+  assertEquals(optedIn.payload.healthTimeoutSeconds, 45)
+})
+
+test('POST /environments/:id/deploy runs a stored blue-green setting as sequential with a visible reason', async () => {
+  const out = await deployWithStrategy({ deployStrategy: 'bluegreen' }, {})
+  assertEquals(out.status, 200)
+  assertEquals(out.payload.deployStrategy, 'sequential')
+  assertEquals(out.body.strategy?.requested, 'bluegreen')
+  assertEquals(out.body.strategy?.effective, 'sequential')
+  assertEquals(
+    out.body.strategy?.fallbackReasons.some((r) => r.code === 'bluegreen_unavailable'),
+    true
+  )
+})
+
+test('POST /environments/:id/deploy still refuses a per-deploy blue-green override with 501', async () => {
+  const out = await deployWithStrategy({}, { strategy: 'bluegreen' })
+  assertEquals(out.status, 501)
+  assertEquals(out.body.error, 'deploy_strategy_unsupported')
+})
+
 test('POST /environments/:id/deploy stamps hostingIngress for HTTP hostnames', async () => {
   const traefikServiceId = '00000000-0000-4000-8000-0000000000aa'
   await withDeployFixtures(
@@ -2395,7 +2520,10 @@ test('GET /environments/:id/deploy-preview explains a blue-green fallback', asyn
     assertEquals(body.effectiveStrategy, 'sequential')
     assertEquals(
       body.fallbackReasons.map((reason) => [reason.code, reason.services]),
-      [['authored_container_name', ['web']]]
+      [
+        ['authored_container_name', ['web']],
+        ['bluegreen_unavailable', []],
+      ]
     )
   })
 })
@@ -2414,7 +2542,7 @@ test('GET /environments/:id/deploy-preview accepts what-if strategy and migratio
     assertEquals(whatIf.body.effectiveStrategy, 'sequential')
     assertEquals(
       whatIf.body.fallbackReasons.map((reason) => reason.code),
-      ['migration_breaking']
+      ['migration_breaking', 'bluegreen_unavailable']
     )
 
     const bad = await previewStrategy(ctx, composeWithWebService(), {}, '?strategy=rolling')

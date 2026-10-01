@@ -28,6 +28,7 @@ import {
 } from './command-records.ts'
 import { reconcileEnvironmentContainers } from '../environments/container-records.ts'
 import { recordDeployedSiteApps } from '../environments/app-facts.ts'
+import { classifyDeployFailure, deployOutcomeErrorCode } from '../deploy/deploy-outcome.ts'
 import {
   deploymentDurationMs,
   type DeploymentOutcome,
@@ -481,12 +482,14 @@ async function applyEnvironmentDeployFailedSideEffect(
   try {
     const payload = parseEnvironmentDeployPayload(record.payload)
     const finishedAt = nowIso()
+    const deployFailure = classifyDeployFailure(error)
     await markDeploymentFailed(db, {
       environmentId: payload.environmentId,
       serverId: envelope.serverId,
       error,
       commandId: record.id,
       outcome,
+      ...(deployFailure === null ? {} : { strategyOutcome: deployFailure.outcome }),
       finishedAt,
       durationMs: deploymentDurationMs({
         startedAt: record.startedAt,
@@ -2192,9 +2195,13 @@ async function handlePendingFailed(
   deps?: CommandConsumerDeps
 ): Promise<void> {
   const error = pending.error ?? 'Command failed'
+  // A sequential deploy that rolled back or needs attention says so in its error
+  // text; keep that machine-readable on the row.
+  const deployFailure = record.type === 'environment.deploy' ? classifyDeployFailure(error) : null
   await transitionCommand(db, record.id, {
     status: 'failed',
     error,
+    ...(deployFailure === null ? {} : { errorCode: deployOutcomeErrorCode(deployFailure.outcome) }),
   })
   commandConsumerTrace('dispatch-result', {
     commandId: record.id,

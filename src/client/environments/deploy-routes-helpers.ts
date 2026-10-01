@@ -152,10 +152,12 @@ export type QueuedCommandRef = {
 }
 
 export function queuedCommandsResponseBody(
-  commands: readonly QueuedCommandRef[]
+  commands: readonly QueuedCommandRef[],
+  strategy?: Record<string, unknown>
 ): Record<string, unknown> {
   const first = commands[0]
   return {
+    ...(strategy === undefined ? {} : { strategy }),
     ok: true as const,
     commandId: first?.commandId ?? '',
     status: 'queued' as const,

@@ -2,9 +2,9 @@
  * Deploy-strategy settings kept in `environment.options` (and, for the tuning
  * knobs only, `project.options`), beside the `compose` overlay.
  *
- * Stage 1 of the deploy-strategy work: this module only *describes and
- * validates* the settings. Nothing in the deploy path reads them yet, so every
- * deploy still behaves as `inplace`.
+ * This module *describes and validates* the settings; `deploy-engine.ts` reads
+ * them to decide what the daemon runs. An environment with no strategy still
+ * behaves as `inplace`.
  *
  * Defaults, by owner decision (2026-10-01):
  * - an environment with no `deployStrategy` is an existing one and stays
