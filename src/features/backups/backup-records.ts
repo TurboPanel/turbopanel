@@ -20,6 +20,8 @@ export type ManagedBackupRecord = {
   checksum: string
   database?: string
   path: string
+  /** The `retention` whose scheduled run made it; absent for a manual backup. */
+  retentionId?: string
 }
 
 function toRecord(row: typeof backup.$inferSelect): ManagedBackupRecord {
@@ -31,6 +33,7 @@ function toRecord(row: typeof backup.$inferSelect): ManagedBackupRecord {
     checksum: row.checksum,
     ...(row.database !== null ? { database: row.database } : {}),
     path: row.path,
+    ...(row.retentionId !== null ? { retentionId: row.retentionId } : {}),
   }
 }
 
