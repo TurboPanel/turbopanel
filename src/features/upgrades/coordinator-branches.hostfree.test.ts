@@ -283,7 +283,7 @@ test('preflight: a running upgrade blocks and its id is the recovery id', async 
     label: 'No upgrade is already running',
     passed: false,
   })
-  assertEquals(preflight.blockers.includes('An upgrade is already running.'), true)
+  assertEquals(preflight.blockers.includes('Another update is already in progress.'), true)
   assertEquals(preflight.canStart, false)
 })
 

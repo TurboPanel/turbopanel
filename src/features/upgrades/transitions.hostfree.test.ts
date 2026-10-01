@@ -1,4 +1,4 @@
-import { assertEquals } from "@std/assert";
+import { assertEquals } from '@std/assert'
 import {
   computeBackoffMs,
   isInFlightStepStatus,
@@ -9,7 +9,7 @@ import {
   type StepView,
   UPGRADE_BACKOFF_BASE_MS,
   UPGRADE_BACKOFF_MAX_MS,
-} from "./transitions.ts";
+} from './transitions.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -17,221 +17,247 @@ import {
  * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
  * reports Deno suites as empty; keep this alias so analysis sees real tests.
  */
-const test = Deno.test.bind(Deno);
+const test = Deno.test.bind(Deno)
 
-const NOW = "2026-01-01T12:00:00.000Z";
+const NOW = '2026-01-01T12:00:00.000Z'
 
 function step(overrides: Partial<StepView> = {}): StepView {
   return {
-    status: "pending",
+    status: 'pending',
     attempts: 0,
     nextAttemptAt: null,
     lastStageAt: null,
-    toCommit: "target-sha",
+    toCommit: 'target-sha',
     ...overrides,
-  };
+  }
 }
 
 function facts(overrides: Partial<StepFacts> = {}): StepFacts {
-  return { serverConnected: true, currentCommit: null, ...overrides };
+  return { serverConnected: true, currentCommit: null, ...overrides }
 }
 
-const cfg: StepConfig = { now: NOW };
+const cfg: StepConfig = { now: NOW }
 
-test("settled steps are left alone", () => {
-  for (
-    const status of ["done", "skipped", "failed", "needs_attention"] as const
-  ) {
-    assertEquals(planStepAction(step({ status }), facts(), cfg).kind, "none");
+test('settled steps are left alone', () => {
+  for (const status of ['done', 'skipped', 'failed', 'needs_attention'] as const) {
+    assertEquals(planStepAction(step({ status }), facts(), cfg).kind, 'none')
   }
-});
+})
 
-test("a matching current commit marks the step done", () => {
+test('a matching current commit marks the step done', () => {
   const action = planStepAction(
-    step({ status: "installing" }),
-    facts({ currentCommit: "target-sha" }),
-    cfg,
-  );
-  assertEquals(action.kind, "done");
-});
+    step({ status: 'installing' }),
+    facts({ currentCommit: 'target-sha' }),
+    cfg
+  )
+  assertEquals(action.kind, 'done')
+})
 
-test("pending + connected + no backoff → dispatch", () => {
-  assertEquals(planStepAction(step(), facts(), cfg).kind, "dispatch");
-});
+test('pending + connected + no backoff → dispatch', () => {
+  assertEquals(planStepAction(step(), facts(), cfg).kind, 'dispatch')
+})
 
-test("pending + offline → waiting (self-heal on reconnect)", () => {
+test('pending + offline → waiting (self-heal on reconnect)', () => {
+  assertEquals(planStepAction(step(), facts({ serverConnected: false }), cfg).kind, 'wait_offline')
+})
+
+test('pending with a future backoff waits without dispatching', () => {
+  const future = new Date(Date.parse(NOW) + 60_000).toISOString()
   assertEquals(
-    planStepAction(step(), facts({ serverConnected: false }), cfg).kind,
-    "wait_offline",
-  );
-});
-
-test("pending with a future backoff waits without dispatching", () => {
-  const future = new Date(Date.parse(NOW) + 60_000).toISOString();
+    planStepAction(step({ status: 'waiting', nextAttemptAt: future }), facts(), cfg).kind,
+    'none'
+  )
+  const past = new Date(Date.parse(NOW) - 60_000).toISOString()
   assertEquals(
-    planStepAction(
-      step({ status: "waiting", nextAttemptAt: future }),
-      facts(),
-      cfg,
-    ).kind,
-    "none",
-  );
-  const past = new Date(Date.parse(NOW) - 60_000).toISOString();
-  assertEquals(
-    planStepAction(
-      step({ status: "waiting", nextAttemptAt: past }),
-      facts(),
-      cfg,
-    ).kind,
-    "dispatch",
-  );
-});
+    planStepAction(step({ status: 'waiting', nextAttemptAt: past }), facts(), cfg).kind,
+    'dispatch'
+  )
+})
 
-test("in-flight and offline → waiting so it re-dispatches on reconnect", () => {
+test('in-flight and offline → waiting so it re-dispatches on reconnect', () => {
   assertEquals(
-    planStepAction(
-      step({ status: "downloading" }),
-      facts({ serverConnected: false }),
-      cfg,
-    ).kind,
-    "wait_offline",
-  );
-});
+    planStepAction(step({ status: 'downloading' }), facts({ serverConnected: false }), cfg).kind,
+    'wait_offline'
+  )
+})
 
-test("in-flight and not stalled → none", () => {
-  const recent = new Date(Date.parse(NOW) - 60_000).toISOString();
+test('in-flight and not stalled → none', () => {
+  const recent = new Date(Date.parse(NOW) - 60_000).toISOString()
   assertEquals(
-    planStepAction(
-      step({ status: "installing", lastStageAt: recent }),
-      facts(),
-      cfg,
-    ).kind,
-    "none",
-  );
-});
+    planStepAction(step({ status: 'installing', lastStageAt: recent }), facts(), cfg).kind,
+    'none'
+  )
+})
 
-test("stalled install retries with backoff until attempts are exhausted", () => {
-  const stale = new Date(Date.parse(NOW) - 30 * 60 * 1000).toISOString();
+test('stalled install retries with backoff until attempts are exhausted', () => {
+  const stale = new Date(Date.parse(NOW) - 30 * 60 * 1000).toISOString()
   const retry = planStepAction(
-    step({ status: "installing", lastStageAt: stale, attempts: 1 }),
+    step({ status: 'installing', lastStageAt: stale, attempts: 1 }),
     facts(),
-    cfg,
-  );
-  assertEquals(retry.kind, "retry");
-  if (retry.kind !== "retry") throw new TypeError("expected a retry action");
+    cfg
+  )
+  assertEquals(retry.kind, 'retry')
+  if (retry.kind !== 'retry') throw new TypeError('expected a retry action')
   assertEquals(
     retry.nextAttemptAt,
-    new Date(Date.parse(NOW) + UPGRADE_BACKOFF_BASE_MS).toISOString(),
-  );
+    new Date(Date.parse(NOW) + UPGRADE_BACKOFF_BASE_MS).toISOString()
+  )
 
   const exhausted = planStepAction(
-    step({ status: "installing", lastStageAt: stale, attempts: 3 }),
+    step({ status: 'installing', lastStageAt: stale, attempts: 3 }),
     facts(),
-    cfg,
-  );
-  assertEquals(exhausted.kind, "needs_attention");
-  if (exhausted.kind !== "needs_attention") {
-    throw new TypeError("expected needs_attention");
+    cfg
+  )
+  assertEquals(exhausted.kind, 'needs_attention')
+  if (exhausted.kind !== 'needs_attention') {
+    throw new TypeError('expected needs_attention')
   }
-  assertEquals(exhausted.errorCode, "step_timeout");
-});
+  assertEquals(exhausted.errorCode, 'step_timeout')
+})
 
-test("rolled_back retries once then needs attention", () => {
+test('rolled_back retries once then needs attention', () => {
   assertEquals(
-    planStepAction(step({ status: "rolled_back", attempts: 1 }), facts(), cfg)
-      .kind,
-    "dispatch",
-  );
-  const attention = planStepAction(
-    step({ status: "rolled_back", attempts: 2 }),
-    facts(),
-    cfg,
-  );
-  assertEquals(attention.kind, "needs_attention");
-  if (attention.kind !== "needs_attention") {
-    throw new TypeError("expected needs_attention");
+    planStepAction(step({ status: 'rolled_back', attempts: 1 }), facts(), cfg).kind,
+    'dispatch'
+  )
+  const attention = planStepAction(step({ status: 'rolled_back', attempts: 2 }), facts(), cfg)
+  assertEquals(attention.kind, 'needs_attention')
+  if (attention.kind !== 'needs_attention') {
+    throw new TypeError('expected needs_attention')
   }
-  assertEquals(attention.errorCode, "rolled_back");
-});
+  assertEquals(attention.errorCode, 'rolled_back')
+})
 
-test("rolled_back while offline waits instead of dispatching", () => {
+test('rolled_back while offline waits instead of dispatching', () => {
   assertEquals(
     planStepAction(
-      step({ status: "rolled_back", attempts: 1 }),
+      step({ status: 'rolled_back', attempts: 1 }),
       facts({ serverConnected: false }),
-      cfg,
+      cfg
     ).kind,
-    "wait_offline",
-  );
-});
+    'wait_offline'
+  )
+})
 
-const HOUR_MS = 60 * 60 * 1000;
+const HOUR_MS = 60 * 60 * 1000
 
 function hoursBefore(iso: string, hours: number): string {
-  return new Date(Date.parse(iso) - hours * HOUR_MS).toISOString();
+  return new Date(Date.parse(iso) - hours * HOUR_MS).toISOString()
 }
 
-test("a step still offline past the offline deadline needs attention", () => {
+test('a step still offline past the offline deadline needs attention', () => {
   const action = planStepAction(
-    step({ status: "waiting", lastStageAt: hoursBefore(NOW, 2) }),
+    step({ status: 'waiting', lastStageAt: hoursBefore(NOW, 2) }),
     facts({ serverConnected: false }),
-    cfg,
-  );
-  assertEquals(action, { kind: "needs_attention", errorCode: "server_offline" });
-});
+    cfg
+  )
+  assertEquals(action, { kind: 'needs_attention', errorCode: 'server_offline' })
+})
 
-test("a waiting step inside the offline deadline keeps waiting", () => {
+test('a waiting step inside the offline deadline keeps waiting', () => {
   const action = planStepAction(
     step({
-      status: "waiting",
+      status: 'waiting',
       lastStageAt: new Date(Date.parse(NOW) - 10 * 60 * 1000).toISOString(),
     }),
     facts({ serverConnected: false }),
-    cfg,
-  );
-  assertEquals(action.kind, "wait_offline");
-});
+    cfg
+  )
+  assertEquals(action.kind, 'wait_offline')
+})
 
-test("a later-batch step that first finds its server offline waits, whatever its row age", () => {
+test('a later-batch step that first finds its server offline waits, whatever its row age', () => {
   const action = planStepAction(
-    step({ status: "pending", lastStageAt: hoursBefore(NOW, 48) }),
+    step({ status: 'pending', lastStageAt: hoursBefore(NOW, 48) }),
     facts({ serverConnected: false }),
-    cfg,
-  );
-  assertEquals(action.kind, "wait_offline");
-});
+    cfg
+  )
+  assertEquals(action.kind, 'wait_offline')
+})
 
-test("the offline deadline is configurable", () => {
+test('the offline deadline is configurable', () => {
   const action = planStepAction(
     step({
-      status: "waiting",
+      status: 'waiting',
       lastStageAt: new Date(Date.parse(NOW) - 5 * 60 * 1000).toISOString(),
     }),
     facts({ serverConnected: false }),
-    { now: NOW, offlineDeadlineMs: 60 * 1000 },
-  );
-  assertEquals(action, { kind: "needs_attention", errorCode: "server_offline" });
-});
+    { now: NOW, offlineDeadlineMs: 60 * 1000 }
+  )
+  assertEquals(action, { kind: 'needs_attention', errorCode: 'server_offline' })
+})
 
-test("a server back online before the deadline is dispatched", () => {
+test('a server back online before the deadline is dispatched', () => {
   const action = planStepAction(
-    step({ status: "waiting", lastStageAt: hoursBefore(NOW, 2) }),
+    step({ status: 'waiting', lastStageAt: hoursBefore(NOW, 2) }),
     facts({ serverConnected: true }),
-    cfg,
-  );
-  assertEquals(action.kind, "dispatch");
-});
+    cfg
+  )
+  assertEquals(action.kind, 'dispatch')
+})
 
-test("computeBackoffMs doubles per attempt and caps", () => {
-  assertEquals(computeBackoffMs(1), UPGRADE_BACKOFF_BASE_MS);
-  assertEquals(computeBackoffMs(2), UPGRADE_BACKOFF_BASE_MS * 2);
-  assertEquals(computeBackoffMs(3), UPGRADE_BACKOFF_BASE_MS * 4);
-  assertEquals(computeBackoffMs(99), UPGRADE_BACKOFF_MAX_MS);
-});
+test('computeBackoffMs doubles per attempt and caps', () => {
+  assertEquals(computeBackoffMs(1), UPGRADE_BACKOFF_BASE_MS)
+  assertEquals(computeBackoffMs(2), UPGRADE_BACKOFF_BASE_MS * 2)
+  assertEquals(computeBackoffMs(3), UPGRADE_BACKOFF_BASE_MS * 4)
+  assertEquals(computeBackoffMs(99), UPGRADE_BACKOFF_MAX_MS)
+})
 
-test("status classifiers", () => {
-  assertEquals(isSettledStepStatus("done"), true);
-  assertEquals(isSettledStepStatus("rolled_back"), false);
-  assertEquals(isInFlightStepStatus("downloading"), true);
-  assertEquals(isInFlightStepStatus("pending"), false);
-});
+test('status classifiers', () => {
+  assertEquals(isSettledStepStatus('done'), true)
+  assertEquals(isSettledStepStatus('rolled_back'), false)
+  assertEquals(isInFlightStepStatus('downloading'), true)
+  assertEquals(isInFlightStepStatus('pending'), false)
+})
+
+test('a dispatched step the daemon never answers retries after the ack timeout, then needs attention', () => {
+  const minutesAgo = (minutes: number) =>
+    new Date(Date.parse(NOW) - minutes * 60 * 1000).toISOString()
+  assertEquals(
+    planStepAction(
+      step({ status: 'dispatched', lastStageAt: minutesAgo(4), attempts: 1 }),
+      facts(),
+      cfg
+    ).kind,
+    'none'
+  )
+  assertEquals(
+    planStepAction(
+      step({ status: 'dispatched', lastStageAt: minutesAgo(6), attempts: 1 }),
+      facts(),
+      cfg
+    ).kind,
+    'retry'
+  )
+  const exhausted = planStepAction(
+    step({ status: 'dispatched', lastStageAt: minutesAgo(6), attempts: 3 }),
+    facts(),
+    cfg
+  )
+  assertEquals(exhausted, { kind: 'needs_attention', errorCode: 'step_timeout' })
+  // A step that reported a stage keeps the long install timeout.
+  assertEquals(
+    planStepAction(
+      step({ status: 'verifying', lastStageAt: minutesAgo(6), attempts: 1 }),
+      facts(),
+      cfg
+    ).kind,
+    'none'
+  )
+})
+
+test('a dispatch the busy daemon refused keeps the install window, then needs attention without a retry', () => {
+  const at = (minutes: number) => new Date(Date.parse(NOW) - minutes * 60 * 1000).toISOString()
+  const refused = (minutes: number) =>
+    step({
+      status: 'dispatched',
+      lastStageAt: at(minutes),
+      attempts: 1,
+      inProgressRefused: true,
+    })
+  assertEquals(planStepAction(refused(6), facts(), cfg).kind, 'none')
+  assertEquals(planStepAction(refused(16), facts(), cfg), {
+    kind: 'needs_attention',
+    errorCode: 'step_timeout',
+  })
+})

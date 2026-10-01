@@ -298,7 +298,15 @@ async function startGuardedRun(
     consoleCommit,
   })
   if (!result.ok) {
-    return c.json({ ok: false, error: result.error, blockers: result.blockers }, 409)
+    return c.json(
+      {
+        ok: false,
+        error: result.error,
+        blockers: result.blockers,
+        ...(result.activeRunId ? { activeRunId: result.activeRunId } : {}),
+      },
+      409
+    )
   }
   return c.json({ ok: true, dispatched: true, runId: result.runId }, 202)
 }
