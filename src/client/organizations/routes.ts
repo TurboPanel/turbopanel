@@ -4,6 +4,7 @@ import type { AppEnv } from '../../app/app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { createOrganizationForUser } from '../authn/install-state.ts'
+import { registerReauthSettingsRoutes } from './reauth-settings-routes.ts'
 import { assertOrgOwnerOr403 } from '../authz/index.ts'
 import { canAccessOrganization, listAccessibleOrganizations } from '../org-context.ts'
 import { assertCanManageOr403, parseJsonBody } from '../shared.ts'
@@ -54,12 +55,9 @@ import {
   parseOrganizationPatchDisplayName,
   parseServerCapacityPutBody,
   parseTemperatureUnitPatch,
-  parseReauthSettingsPatch,
   parseTlsSettingsPatch,
   temperatureUnitGetResponse,
   temperatureUnitPutResponse,
-  reauthSettingsGetResponse,
-  reauthSettingsPutResponse,
   tlsSettingsGetResponse,
   tlsSettingsPutResponse,
   toOrganizationRecord,
@@ -97,7 +95,7 @@ export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRoute
   router.use('/organizations/:id/principal-defaults', createSessionMiddleware(secrets))
   router.use('/organizations/:id/docker-networking', createSessionMiddleware(secrets))
   router.use('/organizations/:id/tls-settings', createSessionMiddleware(secrets))
-  router.use('/organizations/:id/reauth-settings', createSessionMiddleware(secrets))
+  registerReauthSettingsRoutes(router, secrets)
   router.use('/organizations/:id/compose-privileged-fields', createSessionMiddleware(secrets))
   router.use('/timezones', createSessionMiddleware(secrets))
   registerOrganizationFabricRoutes(router, opts)
@@ -388,82 +386,6 @@ export function registerOrganizationRoutes(router: Hono<AppEnv>, opts: AuthRoute
     })
 
     return c.json(tlsSettingsPutResponse(options))
-  })
-
-  router.get('/organizations/:id/reauth-settings', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const id = c.req.param('id')
-    const denied = await assertCanManageOr403(c, 'organization', id)
-    if (denied) return denied
-
-    const [orgRow] = await db
-      .select({ options: organization.options })
-      .from(organization)
-      .where(eq(organization.id, id))
-      .limit(1)
-    if (!orgRow) return c.json({ error: 'Not found' }, 404)
-
-    return c.json(reauthSettingsGetResponse(parseOrganizationOptions(orgRow.options)))
-  })
-
-  // Owner-only: this is the switch that decides whether permanent actions ask
-  // for a fresh sign-in, so a manager must not be able to turn it off.
-  router.put('/organizations/:id/reauth-settings', async (c) => {
-    const db = getDb(c)
-    if (!db) return c.json({ error: 'Database unavailable' }, 503)
-
-    const session = c.get('session')
-    const id = c.req.param('id')
-    const denied = await assertOrgOwnerOr403(c, 'organization', id)
-    if (denied) return denied
-
-    const body = await parseJsonBody(c)
-    if (body instanceof Response) return body
-
-    const parsedPatch = parseReauthSettingsPatch(body)
-    if (!parsedPatch.ok) {
-      return c.json({ error: parsedPatch.error }, parsedPatch.status)
-    }
-    const patch = parsedPatch.patch
-
-    const [orgRow] = await db
-      .select({ options: organization.options })
-      .from(organization)
-      .where(eq(organization.id, id))
-      .limit(1)
-    if (!orgRow) return c.json({ error: 'Not found' }, 404)
-
-    await db
-      .update(organization)
-      .set({
-        options: sql`COALESCE(${organization.options}, '{}'::jsonb) || ${JSON.stringify(
-          patch
-        )}::jsonb`,
-        updatedAt: new Date().toISOString(),
-      })
-      .where(eq(organization.id, id))
-
-    const [updated] = await db
-      .select({ options: organization.options })
-      .from(organization)
-      .where(eq(organization.id, id))
-      .limit(1)
-
-    await recordAudit(db, {
-      organizationId: id,
-      actorUserId: session?.userId ?? null,
-      actorEmail: session?.email ?? null,
-      action: 'organization.reauth_for_destructive.set',
-      targetType: 'organization',
-      targetId: id,
-      context: {
-        requireReauthForDestructive: patch.requireReauthForDestructive,
-      },
-    })
-
-    return c.json(reauthSettingsPutResponse(parseOrganizationOptions(updated?.options)))
   })
 
   // Org-owner, not just organization:manage — this gates namespace/

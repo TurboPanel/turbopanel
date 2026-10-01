@@ -35,14 +35,14 @@ const API = `${CLIENT_API_PREFIX}`
 type Db = ReturnType<typeof createDenoDb>
 type Fixture = Awaited<ReturnType<typeof buildFixture>>
 
-async function buildFixture(db: Db) {
+async function buildFixture(db: Db, reauthLimit = 1000) {
   const config = parseTestSecretsConfig('deno')
   const sessionSecrets = await deriveSecretsConfig(config, 'session-signing')
   const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(config, 'data-encryption')
   const backupCodeVerifierSecrets = await deriveSecretsConfig(config, BACKUP_CODE_VERIFIER_PURPOSE)
   const limiter = createAuthRateLimiter({
     defaultPolicy: { limit: 1000, windowMs: 60_000 },
-    policies: { reauth: { limit: 1000, windowMs: 60_000 } },
+    policies: { reauth: { limit: reauthLimit, windowMs: 60_000 } },
   })
   const app = new Hono<AppEnv>()
   app.use('*', (c, next) => {
@@ -136,14 +136,15 @@ async function withScene(
     password: string
     cookie: string
     sessionId: string
-  }) => Promise<void>
+  }) => Promise<void>,
+  reauthLimit = 1000
 ): Promise<void> {
   if (!dbUrl) {
     console.warn('Skipping step-up tests: TURBOPANEL_DATABASE_URL not set')
     return
   }
   const db = createDenoDb()
-  const fx = await buildFixture(db)
+  const fx = await buildFixture(db, reauthLimit)
   // Built at run time: never a password literal in a test file.
   const password = `pw-${crypto.randomUUID()}`
   const owner = await makeUser(db, password)
@@ -245,33 +246,13 @@ test('a wrong password is refused and the gate stays shut', async () => {
 test('wrong-password guesses are throttled: 429 once the reauth bucket is spent', async () => {
   await withScene(async ({ db, fx, orgA, cookie }) => {
     await setOrgReauth(db, orgA, true)
-    const tight = createAuthRateLimiter({
-      policies: { reauth: { limit: 2, windowMs: 60_000 } },
-    })
-    const app = new Hono<AppEnv>()
-    app.use('*', (c, next) => {
-      c.set('db', db)
-      c.set('authRateLimiter', tight)
-      return next()
-    })
-    const client = new Hono<AppEnv>()
-    registerAuthRoutes(client, {
-      secrets: fx.sessionSecrets,
-      runtime: 'deno',
-      signupEnvOverride: undefined,
-    })
-    app.route(CLIENT_API_PREFIX, client)
     const statuses: number[] = []
     for (let i = 0; i < 4; i += 1) {
-      const res = await app.request(`${API}/auth/reauth`, {
-        method: 'POST',
-        headers: { cookie, 'content-type': 'application/json' },
-        body: JSON.stringify(proofBody(crypto.randomUUID())),
-      })
+      const res = await req(fx, 'POST', '/auth/reauth', cookie, proofBody(crypto.randomUUID()))
       statuses.push(res.status)
     }
     assertEquals(statuses, [403, 403, 429, 429])
-  })
+  }, 2)
 })
 
 test('authenticator path: code required, password refused, replay refused', async () => {
