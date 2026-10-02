@@ -135,6 +135,36 @@ test('parseOptionalHostingOptions rejects non-object options payloads', async ()
   assertEquals(ok.value.bind, 'public')
 })
 
+test('parseOptionalHostingOptions refuses values a root-loaded config cannot carry', async () => {
+  const c = mockContext()
+  const cases: Array<[Record<string, unknown>, string, string]> = [
+    [
+      { pathPrefix: '/api', proxy: { stripPrefix: '/api\n}' } },
+      'options.proxy.stripPrefix',
+      'must be',
+    ],
+    [{ pathPrefix: '/api {' }, 'options.pathPrefix', 'must be'],
+    [{ hostnames: ['app.example.test\n'] }, 'options.hostnames', 'lowercase'],
+    [{ web: { env: { 'A\nB': 'x' } } }, 'options.web.env', 'letter'],
+    [{ web: { env: { TOKEN: 'a\nb' } } }, 'options.web.env.TOKEN', 'line breaks'],
+  ]
+  for (const [options, field, fragment] of cases) {
+    const result = parseOptionalHostingOptions(c, { options })
+    if (result.kind !== 'error') throw new TypeError(`expected refusal for ${field}`)
+    assertEquals(result.response.status, 400)
+    const body = (await result.response.json()) as Record<string, string>
+    assertEquals(body.error, 'invalid_hosting_option')
+    assertEquals(body.field, field)
+    assertEquals(body.message.includes(fragment), true, body.message)
+  }
+
+  const ok = parseOptionalHostingOptions(c, {
+    options: { pathPrefix: '/api/', proxy: { stripPrefix: '/api' }, web: { env: { A: 'b c' } } },
+  })
+  if (ok.kind !== 'value') throw new TypeError('expected parsed hosting options')
+  assertEquals(ok.value.proxy?.stripPrefix, '/api')
+})
+
 test('assertHostingPublicBindScope rejects non-public IP when bind is public', async () => {
   const c = mockContext()
   const denied = await assertHostingPublicBindScope(c, entityOrgDb(['__ip_scope__']), IP, {

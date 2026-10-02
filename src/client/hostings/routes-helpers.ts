@@ -10,6 +10,10 @@ import {
   HOSTING_COMPOSE_TLS_MODE_METADATA_KEY,
   readHostingComposeOwner,
 } from '../../features/hostings/hosting-compose-owner.ts'
+import {
+  hostingOptionsInputError,
+  INVALID_HOSTING_OPTION_ERROR,
+} from '../../features/hostings/config-values.ts'
 import { parseHostingOptions, resolveHostingBind } from '../../features/hostings/hosting-options.ts'
 import { buildPatchUpdateFields, parseJsonbObject, stripPromotedMetadataKeys } from '../shared.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
@@ -157,6 +161,14 @@ export function parseOptionalHostingOptions(
     return { kind: 'error', response: optionsResult }
   }
   if (optionsResult === null) return { kind: 'absent' }
+  // Refused, not dropped: these values reach configs root-run engines parse.
+  const inputError = hostingOptionsInputError(optionsResult)
+  if (inputError) {
+    return {
+      kind: 'error',
+      response: c.json({ error: INVALID_HOSTING_OPTION_ERROR, ...inputError }, 400),
+    }
+  }
   const parsed = parseHostingOptions(optionsResult)
   if (parsed === null) {
     return {
