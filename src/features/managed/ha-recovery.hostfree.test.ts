@@ -15,6 +15,7 @@ import {
   type RecoveryState,
   TERMINAL_RECOVERY_STATES,
 } from './recovery.ts'
+import { AUTOMATIC_FAILOVER_DISABLED_MESSAGE } from './auto-failover-switch.ts'
 import { container, environment, ip, managed, replica, recovery, server } from '../../db/schema.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import { deriveEncryptionSecretsConfig } from '../../lib/secrets/secrets.ts'
@@ -594,6 +595,120 @@ test('beginAutomaticFailover without a command queue records a terminal blocked 
   assertEquals(row.metadata.blockedReason, AUTOMATIC_FAILOVER_NO_QUEUE_MESSAGE)
   assertEquals(row.metadata.sourceDatacenterId, DC_A)
   assertEquals(harness.commandInserts.length, 0)
+})
+
+function countingQueue(): { queue: CommandQueue; sent: unknown[] } {
+  const sent: unknown[] = []
+  return {
+    sent,
+    queue: {
+      enqueue: (message) => {
+        sent.push(message)
+        return Promise.resolve()
+      },
+    },
+  }
+}
+
+test('beginAutomaticFailover with auto failover off records a terminal blocked row and queues nothing', async () => {
+  const harness = createHarness({
+    pins: [
+      {
+        ipId: 'ip-1',
+        serverId: SERVER_A,
+        datacenterId: DC_A,
+        networkId: 'net-1',
+        address: '203.0.113.10',
+      },
+    ],
+  })
+  const { queue, sent } = countingQueue()
+  const row = expectRecord(
+    await beginAutomaticFailover({
+      db: harness.db,
+      commandQueue: queue,
+      managedId: MANAGED_ID,
+      engine: 'postgres',
+      members: [member(), failoverReplica()],
+      detector: 'postgres-probe',
+      actor: ACTOR,
+      autoFailover: 'off',
+    })
+  )
+  assertEquals(row.state, 'blocked')
+  assertEquals(isTerminalRecoveryState(row.state), true)
+  // No target: never counts as an accepted failover for the cooldown.
+  assertEquals(row.targetMemberId, null)
+  assertEquals(row.metadata.blockedReason, AUTOMATIC_FAILOVER_DISABLED_MESSAGE)
+  assertEquals(row.metadata.detector, 'postgres-probe')
+  assertEquals(harness.commandInserts.length, 0)
+  assertEquals(sent.length, 0)
+})
+
+test('beginAutomaticFailover with auto failover on still fences', async () => {
+  const harness = createHarness({
+    pins: [
+      {
+        ipId: 'ip-1',
+        serverId: SERVER_A,
+        datacenterId: DC_A,
+        networkId: 'net-1',
+        address: '203.0.113.10',
+      },
+    ],
+  })
+  const { queue, sent } = countingQueue()
+  const row = expectRecord(
+    await beginAutomaticFailover({
+      db: harness.db,
+      commandQueue: queue,
+      managedId: MANAGED_ID,
+      engine: 'postgres',
+      members: [member(), failoverReplica()],
+      actor: ACTOR,
+      autoFailover: 'on',
+    })
+  )
+  assertEquals(row.state, 'fencing')
+  assertEquals(sent.length > 0, true)
+})
+
+test('a manual switchover still works after an automatic failover refused as off', async () => {
+  const harness = createHarness({
+    inflightOnlyRecoveryReads: true,
+    connected: [false],
+    pins: [
+      {
+        ipId: 'ip-1',
+        serverId: SERVER_A,
+        datacenterId: DC_A,
+        networkId: 'net-1',
+        address: '203.0.113.10',
+      },
+    ],
+  })
+  expectRecord(
+    await beginAutomaticFailover({
+      db: harness.db,
+      commandQueue: okQueue(),
+      managedId: MANAGED_ID,
+      engine: 'postgres',
+      members: [member(), failoverReplica()],
+      actor: ACTOR,
+      autoFailover: 'off',
+    })
+  )
+  const result = await beginOperatorSwitchover({
+    db: harness.db,
+    commandQueue: okQueue(),
+    managedId: MANAGED_ID,
+    engine: 'postgres',
+    source: member(),
+    target: failoverReplica(),
+    members: [member(), failoverReplica()],
+    actor: ACTOR,
+  })
+  expectOk(result)
 })
 
 test('a manual switchover still works after a queue-less automatic failover attempt', async () => {

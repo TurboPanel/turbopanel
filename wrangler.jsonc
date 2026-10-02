@@ -314,7 +314,11 @@
         "TURBOPANEL_EXECUTION_LOG_RETENTION_DAYS": "90",
         // Upgrade tick every 5 minutes instead of 15 so a testing-fleet rollout
         // finishes in minutes. Staging and live keep the 15-minute default.
-        "TURBOPANEL_UPGRADE_TICK_MINUTES": "5"
+        "TURBOPANEL_UPGRADE_TICK_MINUTES": "5",
+        // Automatic failover (fence + promote on an accepted dead-primary
+        // event). On here; staging and live keep it off until the owner turns
+        // it on. Manual switchover / DR are unaffected either way.
+        "TURBOPANEL_AUTO_FAILOVER": "on"
       }
     },
     // Staging: the release-candidate environment. Same shape as testing and live,
@@ -460,7 +464,10 @@
         "TURBOPANEL_ENVIRONMENT": "staging",
         // Read side of SERVER_METRICS above: must name the same dataset.
         "TURBOPANEL_SERVER_METRICS_AE_DATASET": "staging_turbopanel_server_metrics_v6",
-        "TURBOPANEL_EXECUTION_LOG_RETENTION_DAYS": "90"
+        "TURBOPANEL_EXECUTION_LOG_RETENTION_DAYS": "90",
+        // Automatic failover off: an accepted dead-primary event is recorded
+        // as blocked (auto_failover_disabled), nothing is fenced or promoted.
+        "TURBOPANEL_AUTO_FAILOVER": "off"
       }
     },
     "live": {
@@ -586,7 +593,9 @@
         "TURBOPANEL_ENVIRONMENT": "live",
         // Read side of SERVER_METRICS above: must name the same dataset.
         "TURBOPANEL_SERVER_METRICS_AE_DATASET": "live_turbopanel_server_metrics_v6",
-        "TURBOPANEL_EXECUTION_LOG_RETENTION_DAYS": "90"
+        "TURBOPANEL_EXECUTION_LOG_RETENTION_DAYS": "90",
+        // Automatic failover off (see testing): blocked auto_failover_disabled.
+        "TURBOPANEL_AUTO_FAILOVER": "off"
       }
     }
   }

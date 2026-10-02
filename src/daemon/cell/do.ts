@@ -21,7 +21,11 @@ import {
   type ServerOsMetadata,
   type ServerTimeSync,
 } from '../../features/servers/server-metadata.ts'
-import { cellCommandQueue, handleCellManagedHaEvent } from './managed-ha-inbound.ts'
+import {
+  cellAutoFailover,
+  cellCommandQueue,
+  handleCellManagedHaEvent,
+} from './managed-ha-inbound.ts'
 import { handleAcmeIssuanceEvent } from '../../client/tls/acme-issuance-event.ts'
 import {
   backupRunReportResultMessage,
@@ -1827,6 +1831,7 @@ export class DaemonCellObject {
           await handleCellManagedHaEvent(db, parsed, {
             reporterServerId: attachment.serverId,
             commandQueue: cellCommandQueue(this.#env),
+            autoFailover: cellAutoFailover(this.#env),
           })
         })
         return

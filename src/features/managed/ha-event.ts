@@ -16,6 +16,7 @@ import { beginAutomaticFailover } from './ha-recovery.ts'
 import { listManagedMembers } from './members.ts'
 import { haEventRejection } from './ha-policy.ts'
 import { compatLogInfo, compatLogWarn } from '../../lib/log-compat.ts'
+import type { AutoFailoverSetting } from './auto-failover-switch.ts'
 
 export type ManagedHaEventInput = {
   managedId: string
@@ -78,6 +79,8 @@ export async function handleManagedHaEvent(
   deps: {
     commandQueue?: CommandQueue
     reporterServerId: string
+    /** `TURBOPANEL_AUTO_FAILOVER`, resolved by the transport; absent = `on`. */
+    autoFailover?: AutoFailoverSetting
   }
 ): Promise<RecoveryRecord | null> {
   const row = await loadCluster(db, input.managedId)
@@ -125,5 +128,6 @@ export async function handleManagedHaEvent(
     ...(input.detector ? { detector: input.detector } : {}),
     ...(evidence ? { evidence } : {}),
     actor: { actorType: 'system', actorId: deps.reporterServerId },
+    ...(deps.autoFailover ? { autoFailover: deps.autoFailover } : {}),
   })
 }

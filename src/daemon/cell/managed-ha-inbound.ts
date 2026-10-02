@@ -15,12 +15,29 @@ import {
   createWorkersCommandQueue,
 } from '../../features/commands/workers-queue.ts'
 import { handleManagedHaEvent } from '../../features/managed/ha-event.ts'
+import {
+  type AutoFailoverSetting,
+  resolveAutoFailover,
+} from '../../features/managed/auto-failover-switch.ts'
 import type { DaemonMessage } from '../../contracts/cell-protocol.ts'
 
 export type ManagedHaEventFrame = Extract<DaemonMessage, { type: 'managed-ha-event' }>
 
 export type CellCommandQueueEnv = {
   TURBOPANEL_COMMAND_QUEUE?: CommandQueueBinding
+}
+
+export type CellAutoFailoverEnv = {
+  TURBOPANEL_AUTO_FAILOVER?: string
+  TURBOPANEL_ENVIRONMENT?: string
+}
+
+/** `TURBOPANEL_AUTO_FAILOVER` from the Worker's vars, read per event. */
+export function cellAutoFailover(env: CellAutoFailoverEnv): AutoFailoverSetting {
+  return resolveAutoFailover({
+    TURBOPANEL_AUTO_FAILOVER: env.TURBOPANEL_AUTO_FAILOVER,
+    TURBOPANEL_ENVIRONMENT: env.TURBOPANEL_ENVIRONMENT,
+  })
 }
 
 /** The Workers command queue when the producer binding exists, else undefined. */
@@ -39,6 +56,7 @@ export async function handleCellManagedHaEvent(
   deps: {
     reporterServerId: string
     commandQueue: CommandQueue | undefined
+    autoFailover: AutoFailoverSetting
     handle?: typeof handleManagedHaEvent
   }
 ): Promise<void> {
@@ -55,6 +73,7 @@ export async function handleCellManagedHaEvent(
     {
       reporterServerId: deps.reporterServerId,
       ...(deps.commandQueue ? { commandQueue: deps.commandQueue } : {}),
+      autoFailover: deps.autoFailover,
     }
   )
 }

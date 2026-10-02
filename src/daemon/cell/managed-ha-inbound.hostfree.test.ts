@@ -9,6 +9,7 @@ import type { Db } from '../../db/connection.ts'
 import type { CommandEnvelope } from '../../features/commands/envelope.ts'
 import type { handleManagedHaEvent } from '../../features/managed/ha-event.ts'
 import {
+  cellAutoFailover,
   cellCommandQueue,
   handleCellManagedHaEvent,
   type ManagedHaEventFrame,
@@ -62,6 +63,7 @@ test('handleCellManagedHaEvent hands the Workers queue to the failover path', as
   await handleCellManagedHaEvent(db, frame, {
     reporterServerId: SERVER_A,
     commandQueue,
+    autoFailover: 'on',
     handle: recordingHandle(calls),
   })
   assertEquals(calls.length, 1)
@@ -74,6 +76,7 @@ test('handleCellManagedHaEvent hands the Workers queue to the failover path', as
     at: AT,
   })
   assertEquals(deps.reporterServerId, SERVER_A)
+  assertEquals(deps.autoFailover, 'on')
   const queue = deps.commandQueue
   if (!queue) throw new TypeError('expected the Workers command queue to be passed')
   const envelope = { id: 'cmd-1' } as unknown as CommandEnvelope
@@ -89,6 +92,7 @@ test('handleCellManagedHaEvent passes no queue when the binding is absent', asyn
     {
       reporterServerId: SERVER_A,
       commandQueue: cellCommandQueue({}),
+      autoFailover: 'on',
       handle: recordingHandle(calls),
     }
   )
@@ -96,4 +100,28 @@ test('handleCellManagedHaEvent passes no queue when the binding is absent', asyn
   const [, input, deps] = calls[0]
   assertEquals(input, { managedId: 'mgd-1', at: AT })
   assertEquals('commandQueue' in deps, false)
+})
+
+test('cellAutoFailover follows the Worker vars: on for testing, off for staging / live', () => {
+  assertEquals(cellAutoFailover({ TURBOPANEL_AUTO_FAILOVER: 'on' }), 'on')
+  assertEquals(cellAutoFailover({ TURBOPANEL_AUTO_FAILOVER: 'off' }), 'off')
+  assertEquals(cellAutoFailover({ TURBOPANEL_ENVIRONMENT: 'testing' }), 'on')
+  assertEquals(cellAutoFailover({ TURBOPANEL_ENVIRONMENT: 'staging' }), 'off')
+  assertEquals(cellAutoFailover({ TURBOPANEL_ENVIRONMENT: 'live' }), 'off')
+  assertEquals(cellAutoFailover({}), 'on')
+})
+
+test('handleCellManagedHaEvent passes auto failover off to the failover path', async () => {
+  const calls: Call[] = []
+  await handleCellManagedHaEvent(db, frame, {
+    reporterServerId: SERVER_A,
+    commandQueue: cellCommandQueue({}),
+    autoFailover: cellAutoFailover({
+      TURBOPANEL_AUTO_FAILOVER: 'off',
+      TURBOPANEL_ENVIRONMENT: 'testing',
+    }),
+    handle: recordingHandle(calls),
+  })
+  assertEquals(calls.length, 1)
+  assertEquals(calls[0][2].autoFailover, 'off')
 })

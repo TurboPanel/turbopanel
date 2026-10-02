@@ -53,6 +53,11 @@ import {
   type RecoveryRecord,
 } from './recovery.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
+import {
+  AUTOMATIC_FAILOVER_DISABLED_MESSAGE,
+  AUTOMATIC_FAILOVER_DISABLED_REASON,
+  type AutoFailoverSetting,
+} from './auto-failover-switch.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 
 export type RecoveryEnqueueOk = {
@@ -534,6 +539,40 @@ function detectorMetadata(
   }
 }
 
+/**
+ * Automatic failover is switched off for this deployment: record the accepted
+ * event as a TERMINAL row with no target (never counts for the cooldown) and
+ * queue nothing. Manual switchover / DR stay available.
+ */
+async function recordAutoFailoverDisabled(params: {
+  db: Db
+  managedId: string
+  members: readonly ManagedMemberRow[]
+  sourceMemberId?: string
+  detector?: string
+  evidence?: string
+}): Promise<RecoveryRecord | null> {
+  const primary =
+    params.members.find((row) => row.role === 'primary') ??
+    params.members.find((row) => row.id === params.sourceMemberId)
+  if (!primary) return null
+  compatLogWarn(
+    'managed-ha',
+    `automatic failover for ${params.managedId} not started: ${AUTOMATIC_FAILOVER_DISABLED_REASON}`
+  )
+  return insertRecovery(params.db, {
+    managedId: params.managedId,
+    kind: 'automatic-failover',
+    sourcePrimaryMemberId: primary.id,
+    state: 'blocked',
+    metadata: {
+      blockedReason: AUTOMATIC_FAILOVER_DISABLED_MESSAGE,
+      sourceServerId: primary.serverId,
+      ...detectorMetadata(params.detector, params.evidence),
+    },
+  })
+}
+
 export async function beginAutomaticFailover(params: {
   db: Db
   commandQueue: CommandQueue | null
@@ -546,9 +585,13 @@ export async function beginAutomaticFailover(params: {
   /** Bounded detector evidence (JSON text); recorded on the journal row. */
   evidence?: string
   actor: RecoveryCommandActor
+  /** `TURBOPANEL_AUTO_FAILOVER` for this deployment; absent = `on`. */
+  autoFailover?: AutoFailoverSetting
 }): Promise<RecoveryRecord | null> {
   const inflight = await findInFlightRecovery(params.db, params.managedId)
   if (inflight) return inflight
+
+  if (params.autoFailover === 'off') return recordAutoFailoverDisabled(params)
 
   // Persisted cooldown: the journal row of the last accepted failover, so a
   // flapping detector or a restart can never chain failovers back to back.

@@ -146,6 +146,13 @@ interface CloudflareBindings {
    * pass.
    */
   TURBOPANEL_UPGRADE_TICK_MINUTES?: string
+  /**
+   * Automatic Postgres / MySQL failover on an accepted dead-primary event:
+   * `on` or `off`. Unset = off on staging / live (`TURBOPANEL_ENVIRONMENT`),
+   * on elsewhere; any other value = off. Manual switchover / DR unaffected.
+   * See `src/features/managed/auto-failover-switch.ts`.
+   */
+  TURBOPANEL_AUTO_FAILOVER?: string
   /** Max inbound WS messages per connection per window (DO in-memory cap; default 120). */
   TURBOPANEL_DAEMON_WS_INBOUND_LIMIT?: string
   /** Inbound WS flood window in ms (DO in-memory cap; default 60000). */
