@@ -184,11 +184,16 @@ function isNativeOrCron(service: Record<string, unknown>): boolean {
 
 type ServiceTest = (service: Record<string, unknown>) => boolean
 
+/** String form of a string/number scalar; anything else (null, objects) becomes ''. */
+function scalarText(value: unknown): string {
+  return typeof value === 'string' || typeof value === 'number' ? String(value) : ''
+}
+
 /** Container-side port of a short `[IP:]HOST:CONTAINER[/proto]` entry or a long entry's `target`. */
 function containerPort(entry: unknown): string {
   if (typeof entry === 'number') return String(entry)
   if (typeof entry === 'string') return entry.split('/')[0].split(':').at(-1) ?? ''
-  if (isRecord(entry)) return String(entry.target ?? '')
+  if (isRecord(entry)) return scalarText(entry.target)
   return ''
 }
 
@@ -200,7 +205,7 @@ function exposesDatabasePort(service: Record<string, unknown>): boolean {
 /** Mount destination of a short (`src:dst[:opts]`) or long (`target`) volume entry. */
 function mountTarget(entry: unknown): string {
   if (typeof entry === 'string') return entry.split(':')[1] ?? ''
-  return isRecord(entry) ? String(entry.target ?? '') : ''
+  return isRecord(entry) ? scalarText(entry.target) : ''
 }
 
 function mountsDatabaseDataDir(service: Record<string, unknown>): boolean {
