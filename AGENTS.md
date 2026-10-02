@@ -112,6 +112,10 @@ those two directories (`node-app-runtime` role), never through world bits.
 `turbopanel`, RabbitMQ user = `turbopanel`, Docker network/volumes =
 `turbopanel*`.
 
+## Releases
+
+How changes ship: squash-merge into `trunk`, then two bot-opened pull requests (`trunk` to `staging`, `staging` to `live`) that a maintainer merges with merge commits. Hotfixes land on `trunk` first, and the daemon ships before the control plane. See [How changes ship](https://github.com/TurboPanel/.github/blob/trunk/CONTRIBUTING.md#how-changes-ship) and [How to ship](https://turbopanel.io/docs/development/how-to-ship).
+
 ## Documentation discipline
 
 **Keep this file current.** When you learn something durable about how

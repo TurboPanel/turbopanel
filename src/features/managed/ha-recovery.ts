@@ -45,14 +45,22 @@ import {
 import { isAutomaticFailoverHealthy, replicationFromMemberMetadata } from './promote-lag.ts'
 import {
   AUTOMATIC_FAILOVER_BLOCKED_ERROR,
+  AUTOMATIC_FAILOVER_COOLDOWN_MESSAGE,
   AUTOMATIC_FAILOVER_NO_QUEUE_MESSAGE,
   AUTOMATIC_FAILOVER_NO_QUEUE_REASON,
+  FENCE_STOP_UNQUEUED_MESSAGE,
+  PROMOTE_UNQUEUED_MESSAGE,
   isTerminalRecoveryState,
   type RecoveryKind,
   type RecoveryMetadata,
   type RecoveryRecord,
 } from './recovery.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
+import {
+  AUTOMATIC_FAILOVER_DISABLED_MESSAGE,
+  AUTOMATIC_FAILOVER_DISABLED_REASON,
+  type AutoFailoverSetting,
+} from './auto-failover-switch.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 
 export type RecoveryEnqueueOk = {
@@ -302,6 +310,7 @@ async function enqueuePromoteOrRecover(
       metadata: { recoveryId: params.recovery.id },
     })
     if (!queued) {
+      await blockUnqueuedPromote(db, params.recovery.id, metadata)
       return { ok: false, error: 'Command queue unavailable', status: 503 }
     }
     await updateRecovery(db, params.recovery.id, {
@@ -331,6 +340,7 @@ async function enqueuePromoteOrRecover(
     metadata: { recoveryId: params.recovery.id },
   })
   if (!queued) {
+    await blockUnqueuedPromote(db, params.recovery.id, metadata)
     return { ok: false, error: 'Command queue unavailable', status: 503 }
   }
   await updateRecovery(db, params.recovery.id, {
@@ -343,6 +353,21 @@ async function enqueuePromoteOrRecover(
     fencePending: false,
     recoveryId: params.recovery.id,
   }
+}
+
+/**
+ * A `promoting` row whose promote command never got queued would hold the
+ * in-flight slot (managed_busy) with nothing to advance it: make it terminal.
+ */
+async function blockUnqueuedPromote(
+  db: Db,
+  recoveryId: string,
+  metadata: RecoveryMetadata
+): Promise<void> {
+  await updateRecovery(db, recoveryId, {
+    state: 'blocked',
+    metadata: { ...metadata, blockedReason: PROMOTE_UNQUEUED_MESSAGE },
+  })
 }
 
 async function enqueueFenceCommands(
@@ -394,6 +419,17 @@ async function enqueueFenceCommands(
     metadata: { recoveryId: params.recovery.id, fencePhase: 'stop' },
   })
   if (!stopQueued) {
+    // Never leave a `fencing` row with a target and no stop command: it would
+    // hold the in-flight slot (managed_busy) with nothing to advance it.
+    await updateRecovery(db, params.recovery.id, {
+      state: 'blocked',
+      metadata: {
+        ...params.recovery.metadata,
+        haPresent: params.haPresent,
+        fenceCommandIds,
+        blockedReason: FENCE_STOP_UNQUEUED_MESSAGE,
+      },
+    })
     return { ok: false, error: 'Command queue unavailable', status: 503 }
   }
   fenceCommandIds.push(stopQueued.commandId)
@@ -534,6 +570,40 @@ function detectorMetadata(
   }
 }
 
+/**
+ * Automatic failover is switched off for this deployment: record the accepted
+ * event as a TERMINAL row with no target (never counts for the cooldown) and
+ * queue nothing. Manual switchover / DR stay available.
+ */
+async function recordAutoFailoverDisabled(params: {
+  db: Db
+  managedId: string
+  members: readonly ManagedMemberRow[]
+  sourceMemberId?: string
+  detector?: string
+  evidence?: string
+}): Promise<RecoveryRecord | null> {
+  const primary =
+    params.members.find((row) => row.role === 'primary') ??
+    params.members.find((row) => row.id === params.sourceMemberId)
+  if (!primary) return null
+  compatLogWarn(
+    'managed-ha',
+    `automatic failover for ${params.managedId} not started: ${AUTOMATIC_FAILOVER_DISABLED_REASON}`
+  )
+  return insertRecovery(params.db, {
+    managedId: params.managedId,
+    kind: 'automatic-failover',
+    sourcePrimaryMemberId: primary.id,
+    state: 'blocked',
+    metadata: {
+      blockedReason: AUTOMATIC_FAILOVER_DISABLED_MESSAGE,
+      sourceServerId: primary.serverId,
+      ...detectorMetadata(params.detector, params.evidence),
+    },
+  })
+}
+
 export async function beginAutomaticFailover(params: {
   db: Db
   commandQueue: CommandQueue | null
@@ -546,9 +616,13 @@ export async function beginAutomaticFailover(params: {
   /** Bounded detector evidence (JSON text); recorded on the journal row. */
   evidence?: string
   actor: RecoveryCommandActor
+  /** `TURBOPANEL_AUTO_FAILOVER` for this deployment; absent = `on`. */
+  autoFailover?: AutoFailoverSetting
 }): Promise<RecoveryRecord | null> {
   const inflight = await findInFlightRecovery(params.db, params.managedId)
   if (inflight) return inflight
+
+  if (params.autoFailover === 'off') return recordAutoFailoverDisabled(params)
 
   // Persisted cooldown: the journal row of the last accepted failover, so a
   // flapping detector or a restart can never chain failovers back to back.
@@ -558,7 +632,23 @@ export async function beginAutomaticFailover(params: {
       'managed-ha',
       `automatic failover for ${params.managedId} refused: previous one started ${lastAccepted?.startedAt} (cooldown)`
     )
-    return null
+    // Visible in the journal / UI, terminal, and without a target so it never
+    // extends the cooldown itself. The daemon re-sends after the cooldown.
+    const coolingPrimary =
+      params.members.find((row) => row.role === 'primary') ??
+      params.members.find((row) => row.id === params.sourceMemberId)
+    if (!coolingPrimary) return null
+    return insertRecovery(params.db, {
+      managedId: params.managedId,
+      kind: 'automatic-failover',
+      sourcePrimaryMemberId: coolingPrimary.id,
+      state: 'blocked',
+      metadata: {
+        blockedReason: AUTOMATIC_FAILOVER_COOLDOWN_MESSAGE,
+        sourceServerId: coolingPrimary.serverId,
+        ...detectorMetadata(params.detector, params.evidence),
+      },
+    })
   }
 
   const primary =

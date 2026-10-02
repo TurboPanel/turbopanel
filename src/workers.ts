@@ -85,7 +85,7 @@ import {
 } from './platform/workers/workers-bindings.ts'
 import { fetchWithConnectionRetry } from './platform/workers/connection-retry.ts'
 import { type createWorkersDb, type Db, endDbConnection } from './db/connection.ts'
-import { compatLogWarn } from './lib/log-compat.ts'
+import { compatLogError, compatLogWarn } from './lib/log-compat.ts'
 import type { AuthRateLimiter } from './client/authn/auth-rate-limit.ts'
 import type { RateLimiter } from './daemon/rate-limit/contracts.ts'
 import { OTP_VERIFIER_SECRET_PURPOSE } from './client/authn/email-otp.ts'
@@ -357,6 +357,28 @@ function stringBindingEnv(env: CloudflareBindings): Record<string, string | unde
   return out
 }
 
+/**
+ * Failed command message: never ack. Transient and permanent failures both
+ * `retry()`; once the consumer's `max_retries` (wrangler.jsonc) is exhausted
+ * Cloudflare moves the message to the configured `dead_letter_queue`, matching
+ * the Deno consumer's dead-lettering. Acking here would silently drop it.
+ */
+function retryOrDeadLetter(msg: Message<unknown>, error: unknown): void {
+  if (!isTransientError(error)) {
+    compatLogError(
+      'command-consumer',
+      JSON.stringify({
+        event: 'command.permanent_failure',
+        disposition: 'retry_to_dlq',
+        messageId: msg.id,
+        attempts: msg.attempts,
+        error: error instanceof Error ? error.message : String(error),
+      })
+    )
+  }
+  msg.retry()
+}
+
 export default {
   async fetch(request: Request, env: CloudflareBindings, ctx: ExecutionContext) {
     initPromise ??= initWorkerApp(env)
@@ -506,11 +528,7 @@ export default {
             })
             msg.ack()
           } catch (error) {
-            if (isTransientError(error)) {
-              msg.retry()
-            } else {
-              msg.ack()
-            }
+            retryOrDeadLetter(msg, error)
           }
         })
       } catch {

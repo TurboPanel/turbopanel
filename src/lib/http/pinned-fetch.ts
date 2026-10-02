@@ -12,8 +12,8 @@
  * HTTP/1.1 exchange (one request, `Connection: close`, identity or
  * gzip/deflate bodies, content-length / chunked / until-close framing).
  *
- * Workers cannot do this (no raw sockets in `fetch`, no resolver); callers
- * fall back to `fetch` there. See `git/forge-url.ts` for the per-runtime story.
+ * Workers cannot do this (no raw sockets in `fetch`); callers check the name
+ * over DNS-over-HTTPS and fall back to `fetch` there. See `git/forge-url.ts` for the per-runtime story.
  *
  * Everything runtime-specific is behind {@link PinnedConnect}, so the HTTP
  * handling is tested with fakes and no network.

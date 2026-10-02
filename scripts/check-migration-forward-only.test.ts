@@ -3,7 +3,12 @@
  * and NOT NULL tightening fail unless the file carries a breaking-ok reason.
  */
 import { assertEquals } from '@std/assert'
-import { findBreakingStatements } from './check-migration-forward-only.mjs'
+import {
+  findBreakingStatements,
+  findProblems,
+  GRANDFATHERED,
+  resolveBase,
+} from './check-migration-forward-only.mjs'
 
 /** Alias so Sonar recognizes the suite (see check-deploy-env.test.ts). */
 const test = Deno.test.bind(Deno)
@@ -48,4 +53,20 @@ test('breaking-ok with a reason opts out; without one it does not', () => {
   const reason = '-- breaking-ok: the old worker never read this column\n'
   assertEquals(findBreakingStatements(reason + 'ALTER TABLE "a" DROP COLUMN "b";'), [])
   assertEquals(findBreakingStatements('-- breaking-ok:\nDROP TABLE "a";'), ['DROP TABLE'])
+})
+
+test('grandfathered migrations 0010-0012 are skipped; later ones are checked', () => {
+  const breaking = () => 'ALTER TABLE "a" RENAME COLUMN "b" TO "c";'
+  const files = [...GRANDFATHERED, 'migrations/0013_add_edict_and_bulwark.sql']
+  assertEquals(findProblems(files, breaking), [
+    ['migrations/0013_add_edict_and_bulwark.sql', ['RENAME COLUMN']],
+  ])
+  assertEquals(findProblems([...GRANDFATHERED], breaking), [])
+  assertEquals(GRANDFATHERED.size, 3)
+})
+
+test('resolveBase skips the -- pnpm forwards', () => {
+  assertEquals(resolveBase(['--', 'abc123']), 'abc123')
+  assertEquals(resolveBase(['--']), 'origin/trunk')
+  assertEquals(resolveBase([]), 'origin/trunk')
 })

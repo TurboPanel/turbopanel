@@ -36,6 +36,7 @@ import type {
   EnvironmentDeployNativeAppService,
   EnvironmentDeployPrincipalMaterial,
   EnvironmentDeployServiceHook,
+  EnvironmentDeploySecretPlanEntry,
   EnvironmentDeploySource,
   EnvironmentDeployStorageMaterial,
   EnvironmentDeployTlsMaterial,
@@ -65,6 +66,7 @@ import {
   resolveEnvironmentSiteReleases,
   resolveSourcedEnvironmentSiteReleases,
 } from './site-releases.ts'
+import { recordSitePhpModes } from './deploy-php-modes.ts'
 import { isNoopCommandQueue } from '../../features/commands/noop-command-queue.ts'
 import {
   type CommandContextRelease,
@@ -513,6 +515,10 @@ type DeployCommandCreateParams = DeployActor & {
   variableMaterial: EnvironmentDeployVariableMaterial[]
   storageMaterial: EnvironmentDeployStorageMaterial[]
   principalMaterial: EnvironmentDeployPrincipalMaterial[]
+  /** Non-secret Compose project `.env` the daemon writes next to compose.yaml. */
+  envFile?: string
+  /** File-only secret mounts the daemon materializes from `variableMaterial`. */
+  secretPlan?: EnvironmentDeploySecretPlanEntry[]
   serviceHooks: EnvironmentDeployServiceHook[]
   dockerExternalNetworks: string[]
   dockerNetworkAddressing: EnvironmentDeployDockerNetwork[]
@@ -628,6 +634,8 @@ async function createDeployCommand(
         variableMaterial: params.variableMaterial,
         storageMaterial: params.storageMaterial,
         principalMaterial: params.principalMaterial,
+        envFile: params.envFile || undefined,
+        secretPlan: params.secretPlan,
         serviceHooks: params.serviceHooks,
         dockerExternalNetworks: params.dockerExternalNetworks,
         dockerNetworkAddressing: params.dockerNetworkAddressing,
@@ -764,6 +772,8 @@ function createParamsForPreparedServer(
     variableMaterial: row.prepared.variableMaterial,
     storageMaterial: row.prepared.storageMaterial,
     principalMaterial: row.prepared.principalMaterial,
+    envFile: row.prepared.envFile,
+    secretPlan: row.prepared.secretPlan,
     serviceHooks: row.prepared.hooks,
     dockerExternalNetworks: row.prepared.dockerExternalNetworks,
     dockerNetworkAddressing: row.prepared.dockerNetworkAddressing,
@@ -788,6 +798,8 @@ function createParamsForPreparedServer(
  * once a Git-backed service is removed, nothing derivable from the current
  * document names its `<principalHome>/sites/<serviceId>` tree any more, so a
  * later stop or delete would leave it behind. See `site-releases.ts`.
+ * `phpModes` is what each PHP site runs, which `deploy-php-modes.ts` reads
+ * back so a site keeps its mode when the policy narrows.
  */
 function deploymentTargetsForFanOut(params: {
   preparedByServer: readonly PreparedServerDeploy[]
@@ -818,6 +830,8 @@ function deploymentTargetsForFanOut(params: {
         options: {
           secretPlan: prepared?.secretPlan ?? [],
           siteReleases: params.siteReleases,
+          // The PHP mode each site was given, so the next deploy keeps it.
+          phpModes: recordSitePhpModes(prepared?.sites),
           ...(rollout === undefined ? {} : { rollout }),
         },
       }

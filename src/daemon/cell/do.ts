@@ -21,7 +21,11 @@ import {
   type ServerOsMetadata,
   type ServerTimeSync,
 } from '../../features/servers/server-metadata.ts'
-import { handleManagedHaEvent } from '../../features/managed/ha-event.ts'
+import {
+  cellAutoFailover,
+  cellCommandQueue,
+  handleCellManagedHaEvent,
+} from './managed-ha-inbound.ts'
 import { handleAcmeIssuanceEvent } from '../../client/tls/acme-issuance-event.ts'
 import {
   backupRunReportResultMessage,
@@ -1824,17 +1828,11 @@ export class DaemonCellObject {
       if (parsed.type === 'managed-ha-event') {
         this.#recordInbound(attachment.serverId, parsed.at, undefined, attachment.connectionId)
         await this.#withProjectionDb('managed-ha-event', attachment.serverId, async (db) => {
-          await handleManagedHaEvent(
-            db,
-            {
-              managedId: parsed.managedId,
-              ...(parsed.sourceMemberId ? { sourceMemberId: parsed.sourceMemberId } : {}),
-              ...(parsed.detector ? { detector: parsed.detector } : {}),
-              ...(parsed.evidence ? { evidence: parsed.evidence } : {}),
-              at: parsed.at,
-            },
-            { reporterServerId: attachment.serverId }
-          )
+          await handleCellManagedHaEvent(db, parsed, {
+            reporterServerId: attachment.serverId,
+            commandQueue: cellCommandQueue(this.#env),
+            autoFailover: cellAutoFailover(this.#env),
+          })
         })
         return
       }

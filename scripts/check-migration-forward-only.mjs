@@ -28,6 +28,20 @@ import { pathToFileURL } from 'node:url'
 const NIL_SHA = '0000000000000000000000000000000000000000'
 const OPT_OUT = /^[ \t]*--[ \t]*breaking-ok:[ \t]*(\S.{9,})$/m
 
+/**
+ * Migrations grandfathered past this guard. 0010-0012 were the pre-tag
+ * single-word-table-name and upgrade-stage renames; they landed on trunk
+ * before this guard existed and ship together in the first release candidate
+ * that carries them, so there is no previous Worker to protect. They are
+ * frozen by the migration manifest and are never edited. Every migration
+ * after 0012 stays strictly forward-only: do not extend this list.
+ */
+export const GRANDFATHERED = new Set([
+  'migrations/0010_single_word_table_names.sql',
+  'migrations/0011_rename_upgradestep_to_stage.sql',
+  'migrations/0012_rename_stage_last_stage_at.sql',
+])
+
 const RULES = [
   [/\bDROP\s+TABLE\b/i, 'DROP TABLE'],
   [/\bDROP\s+COLUMN\b/i, 'DROP COLUMN'],
@@ -59,6 +73,20 @@ export function findBreakingStatements(sql) {
   return RULES.filter(([re]) => re.test(code)).map(([, label]) => label)
 }
 
+/** The base ref from argv: skips the literal `--` pnpm forwards, falls back to origin/trunk. */
+export function resolveBase(args) {
+  const requested = args.find((arg) => arg !== '--')?.trim()
+  return !requested || requested === NIL_SHA ? 'origin/trunk' : requested
+}
+
+/** Problems for added migration files; grandfathered files are not checked. */
+export function findProblems(files, readFile) {
+  return files
+    .filter((file) => !GRANDFATHERED.has(file))
+    .map((file) => [file, findBreakingStatements(readFile(file))])
+    .filter(([, found]) => found.length > 0)
+}
+
 function git(...args) {
   return execFileSync('git', args, { encoding: 'utf8' }).trim()
 }
@@ -72,20 +100,11 @@ function addedMigrations(base) {
 }
 
 function main() {
-  const requested = process.argv
-    .slice(2)
-    .find((arg) => arg !== '--')
-    ?.trim()
-  const base = !requested || requested === NIL_SHA ? 'origin/trunk' : requested
-  const problems = []
-  for (const file of addedMigrations(base)) {
-    const found = findBreakingStatements(fs.readFileSync(file, 'utf8'))
-    if (found.length > 0) {
-      problems.push(
-        `${file}: ${found.join(', ')} would break the previous Worker (it keeps running against the new schema during a deploy or rollback). Split into expand then contract releases, or add a "-- breaking-ok: <reason>" line if it is truly safe.`
-      )
-    }
-  }
+  const base = resolveBase(process.argv.slice(2))
+  const problems = findProblems(addedMigrations(base), (file) => fs.readFileSync(file, 'utf8')).map(
+    ([file, found]) =>
+      `${file}: ${found.join(', ')} would break the previous Worker (it keeps running against the new schema during a deploy or rollback). Split into expand then contract releases, or add a "-- breaking-ok: <reason>" line if it is truly safe.`
+  )
   if (problems.length > 0) {
     for (const problem of problems) console.error(`migration-forward-only: ${problem}`)
     process.exit(1)

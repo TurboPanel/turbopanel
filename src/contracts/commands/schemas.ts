@@ -1580,8 +1580,28 @@ export type EnvironmentDeployServiceHook = {
   buildDisableCache?: boolean
 }
 
+/**
+ * How a site's PHP runs: `fastcgi` (php-cgi under systemd), `fpm` (a php-fpm
+ * master per site), or OpenLiteSpeed's lsphp `lsphp-detached` (systemd) /
+ * `lsphp-attached` (started by the web server through the launcher).
+ */
+export type PhpMode = 'fastcgi' | 'fpm' | 'lsphp-detached' | 'lsphp-attached'
+
+export const PHP_MODES: readonly PhpMode[] = ['fastcgi', 'fpm', 'lsphp-detached', 'lsphp-attached']
+
+export function isPhpMode(value: unknown): value is PhpMode {
+  return typeof value === 'string' && (PHP_MODES as readonly string[]).includes(value)
+}
+
 export type EnvironmentDeployHostingPhp = {
   version?: string
+  /**
+   * The resolved PHP mode (`sites[].php.mode`). The control plane sets it on
+   * every PHP site it has resolved one for, after checking the organization's
+   * and the server's allowed modes and the site's engine. Omitted means the
+   * daemon keeps its current behaviour (a php-fpm pool).
+   */
+  mode?: PhpMode
   /**
    * Validated `php_admin_value` directives, already rendered to strings by the
    * control plane's `php-settings.ts` table. `memoryLimit` /
@@ -2366,6 +2386,7 @@ function parseDeployHostingPhp(value: unknown): EnvironmentDeployHostingPhp | un
   if (!isRecord(value)) return undefined
   const php: EnvironmentDeployHostingPhp = {}
   if (isString(value.version)) php.version = value.version
+  if (isPhpMode(value.mode)) php.mode = value.mode
   for (const field of ['settings', 'pool'] as const) {
     const directives = parseEnvRecord(value[field])
     if (directives) php[field] = directives
