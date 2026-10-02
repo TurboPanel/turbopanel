@@ -97,7 +97,20 @@ const STATEFUL_IMAGES = new Set([
   'influxdb',
   'kafka',
   'minio',
+  'clickhouse',
+  'clickhouse-server',
 ])
+
+/** Container-side ports that mean a database even when the image name is custom. */
+const DATABASE_PORTS = new Set(['5432', '3306', '27017', '6379', '8123'])
+
+/** Data directories databases keep their files in. */
+const DATABASE_DATA_DIRS = [
+  '/var/lib/postgresql',
+  '/var/lib/mysql',
+  '/data/db',
+  '/var/lib/clickhouse',
+]
 
 /** Short-syntax mount: `src:dst[:opts]`; read-only when `ro` is in opts. */
 function isWritableShortMount(entry: string): boolean {
@@ -171,14 +184,53 @@ function isNativeOrCron(service: Record<string, unknown>): boolean {
 
 type ServiceTest = (service: Record<string, unknown>) => boolean
 
+/** String form of a string/number scalar; anything else (null, objects) becomes ''. */
+function scalarText(value: unknown): string {
+  return typeof value === 'string' || typeof value === 'number' ? String(value) : ''
+}
+
+/** Container-side port of a short `[IP:]HOST:CONTAINER[/proto]` entry or a long entry's `target`. */
+function containerPort(entry: unknown): string {
+  if (typeof entry === 'number') return String(entry)
+  if (typeof entry === 'string') return entry.split('/')[0].split(':').at(-1) ?? ''
+  if (isRecord(entry)) return scalarText(entry.target)
+  return ''
+}
+
+function exposesDatabasePort(service: Record<string, unknown>): boolean {
+  const entries = [service.ports, service.expose].flatMap((v) => (Array.isArray(v) ? v : []))
+  return entries.some((entry) => DATABASE_PORTS.has(containerPort(entry)))
+}
+
+/** Mount destination of a short (`src:dst[:opts]`) or long (`target`) volume entry. */
+function mountTarget(entry: unknown): string {
+  if (typeof entry === 'string') return entry.split(':')[1] ?? ''
+  return isRecord(entry) ? scalarText(entry.target) : ''
+}
+
+function mountsDatabaseDataDir(service: Record<string, unknown>): boolean {
+  if (!Array.isArray(service.volumes)) return false
+  return service.volumes.some((entry) => {
+    const target = mountTarget(entry)
+    return DATABASE_DATA_DIRS.some((dir) => target.startsWith(dir))
+  })
+}
+
+function looksStateful(service: Record<string, unknown>): boolean {
+  return (
+    STATEFUL_IMAGES.has(imageBaseName(service.image)) ||
+    exposesDatabasePort(service) ||
+    mountsDatabaseDataDir(service)
+  )
+}
+
 const SERVICE_TESTS: Record<
   Exclude<keyof StrategyFacts, 'migratorDetected' | 'hostLevelBinds'>,
   ServiceTest
 > = {
   hostPublishedPorts: publishesHostPort,
   authoredContainerNames: (service) => typeof service.container_name === 'string',
-  statefulWritableVolumes: (service) =>
-    STATEFUL_IMAGES.has(imageBaseName(service.image)) && hasWritableVolume(service),
+  statefulWritableVolumes: (service) => looksStateful(service) && hasWritableVolume(service),
   missingHealthchecks: (service) => isTrafficFacing(service) && !hasHealthcheck(service),
   nativeOrCron: isNativeOrCron,
 }
