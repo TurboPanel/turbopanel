@@ -342,6 +342,24 @@ async function connectFirst(
   throw failure
 }
 
+/** `close()` that is safe to call from the abort, end-of-body, cancel and error paths alike. */
+function idempotentClose(conn: PinnedConn): PinnedConn {
+  let closed = false
+  return {
+    readable: conn.readable,
+    writable: conn.writable,
+    close() {
+      if (closed) return
+      closed = true
+      try {
+        conn.close()
+      } catch {
+        // already closed by the runtime
+      }
+    },
+  }
+}
+
 /**
  * Send `request` over a connection to one of `options.addresses`, never
  * resolving the URL's host. `request` must be `https:`; redirects are the
@@ -355,7 +373,7 @@ export async function pinnedFetch(
   if (url.protocol !== 'https:') throw new Error('pinned fetch: https only')
   const bytes = await serializeRequest(request, url)
   const hostname = url.hostname.startsWith('[') ? url.hostname.slice(1, -1) : url.hostname
-  const conn = await connectFirst(options, Number(url.port || 443), hostname)
+  const conn = idempotentClose(await connectFirst(options, Number(url.port || 443), hostname))
   const onAbort = () => conn.close()
   options.signal?.addEventListener('abort', onAbort, { once: true })
   try {
