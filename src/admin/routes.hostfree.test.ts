@@ -1418,3 +1418,58 @@ test('legacy instance update refuses a daemon that cannot roll the control plane
     globalThis.fetch = originalFetch
   }
 })
+
+const SUPERADMIN_ONLY_SETTINGS_ROUTES: ReadonlyArray<
+  Readonly<{ method: 'PUT' | 'POST'; path: string; body: unknown }>
+> = [
+  { method: 'PUT', path: '/settings/email', body: { FROM: 'ops@example.com' } },
+  { method: 'PUT', path: '/instance/public-urls', body: { urls: ['https://panel.example.com'] } },
+  { method: 'POST', path: '/instance/public-urls/apply', body: {} },
+  { method: 'POST', path: '/instance/tunnel-token', body: { token: 'x' } },
+]
+
+test('installation-wide settings writes return a clean 403 for org admins', async () => {
+  const { app, cookie } = await buildApp({ role: 'admin' })
+  for (const route of SUPERADMIN_ONLY_SETTINGS_ROUTES) {
+    const res = await app.request(`${ADMIN_API_PREFIX}${route.path}`, {
+      method: route.method,
+      headers: { Cookie: cookie, 'content-type': 'application/json' },
+      body: JSON.stringify(route.body),
+    })
+    assertEquals(res.status, 403, route.path)
+    assertEquals(await jsonBody<{ ok: boolean; error: string }>(res), {
+      ok: false,
+      error: 'Forbidden',
+    })
+  }
+})
+
+test('installation-wide settings writes are allowed for superadmin', async () => {
+  const { app, cookie } = await buildApp({ role: 'superadmin' })
+  const email = await app.request(`${ADMIN_API_PREFIX}/settings/email`, {
+    method: 'PUT',
+    headers: { Cookie: cookie, 'content-type': 'application/json' },
+    body: JSON.stringify({ FROM: 'ops@example.com' }),
+  })
+  assertEquals(email.status, 200)
+  const urls = await app.request(`${ADMIN_API_PREFIX}/instance/public-urls`, {
+    method: 'PUT',
+    headers: { Cookie: cookie, 'content-type': 'application/json' },
+    body: JSON.stringify({ urls: ['https://panel.example.com'] }),
+  })
+  assertEquals(urls.status, 200)
+  const tunnel = await app.request(`${ADMIN_API_PREFIX}/instance/tunnel-token`, {
+    method: 'POST',
+    headers: { Cookie: cookie, 'content-type': 'application/json' },
+    body: JSON.stringify({ token: '' }),
+  })
+  assertEquals(tunnel.status, 503)
+})
+
+test('other org-admin routes stay open to admin role', async () => {
+  const { app, cookie } = await buildApp({ role: 'admin' })
+  for (const path of ['/settings/email', '/instance/public-urls', '/daemon/events']) {
+    const res = await app.request(`${ADMIN_API_PREFIX}${path}`, { headers: { Cookie: cookie } })
+    assertEquals(res.status, 200, path)
+  }
+})

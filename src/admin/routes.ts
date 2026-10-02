@@ -261,7 +261,7 @@ export function registerAdminRoutes(
     return c.json({ ok: true, urls })
   })
 
-  admin.put('/instance/public-urls', async (c) => {
+  admin.put('/instance/public-urls', createRootOnlyMiddleware(opts.secrets), async (c) => {
     const db = getDb(c)
     if (!db) return c.json({ ok: false, error: 'Database unavailable' }, 503)
 
@@ -288,6 +288,7 @@ export function registerAdminRoutes(
   })
 
   registerInstanceAccessAdminRoutes(admin, {
+    secrets: opts.secrets,
     runtime: opts.runtime,
     ...(opts.getEnv ? { getEnv: opts.getEnv } : {}),
     ...(opts.readPlatformCaBundle ? { readPlatformCaBundle: opts.readPlatformCaBundle } : {}),
@@ -376,7 +377,7 @@ export function registerAdminRoutes(
     return c.json({ settings: emailSettingsToApiShape(resolved) })
   })
 
-  admin.put('/settings/email', async (c) => {
+  admin.put('/settings/email', createRootOnlyMiddleware(opts.secrets), async (c) => {
     const db = getDb(c)
     if (!db) return c.json({ error: 'Database unavailable' }, 503)
 
@@ -570,7 +571,7 @@ export function registerAdminRoutes(
     return c.json(describeAlertWebhook(stored))
   })
 
-  admin.post('/instance/public-urls/apply', async (c) => {
+  admin.post('/instance/public-urls/apply', createRootOnlyMiddleware(opts.secrets), async (c) => {
     if (opts.runtime === 'workers') {
       return c.json({ ok: false, error: 'cert apply is not applicable on this runtime' }, 422)
     }

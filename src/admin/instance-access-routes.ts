@@ -1,12 +1,14 @@
 import type { Hono } from 'hono'
 import type { AppEnv } from '../app/app.ts'
 import { getDaemonCellRegistry, getDb } from '../db/connection.ts'
+import { createRootOnlyMiddleware } from '../client/authn/middleware.ts'
 import { resolveColocatedServerId } from '../client/authn/install-state.ts'
 import { getCommandQueue } from '../features/commands/queue.ts'
 import { DEFAULT_TRUSTED_PROXY_CIDRS, parseTrustedProxyCidrs } from '../lib/peer-address.ts'
 import { parseCertificatePem } from '../lib/tls/parse.ts'
 import { resolveDaemonCapabilities } from '../lib/version-wire.ts'
 import { dispatchInstanceTunnelToken, parseTunnelTokenBody } from '../developer/tunnel-token.ts'
+import type { DerivedSecretsConfig } from '../lib/secrets/secrets.ts'
 import { resolvePlatformEnv } from './routes-helpers.ts'
 import { enqueuePlatformCaTrustReconcile } from './tls-trust-reconcile.ts'
 
@@ -30,6 +32,7 @@ function emptyDaemonCapabilities() {
 export function registerInstanceAccessAdminRoutes(
   admin: Hono<AppEnv>,
   opts: {
+    secrets: DerivedSecretsConfig
     runtime: 'deno' | 'workers'
     getEnv?: () => Record<string, string | undefined>
     readPlatformCaBundle?: () => Promise<string>
@@ -102,7 +105,7 @@ export function registerInstanceAccessAdminRoutes(
     return c.json({ cidrs, isDefault: trustedProxiesAreDefault(cidrs) })
   })
 
-  admin.post('/instance/tunnel-token', async (c) => {
+  admin.post('/instance/tunnel-token', createRootOnlyMiddleware(opts.secrets), async (c) => {
     const body = await c.req.json().catch(() => null)
     const parsed = parseTunnelTokenBody(body)
     if (!parsed.ok) {
