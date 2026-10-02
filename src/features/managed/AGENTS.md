@@ -530,7 +530,9 @@ all:
 3. `PRIMARY_HOST_DETECTORS` (`postgres-probe`): `sourceMemberId` is the
    current primary member and the reporter is that member's server, so a stale
    daemon (old primary after a switchover) can never fail over the new primary.
-4. An in-flight recovery for the cluster is resumed, not duplicated.
+4. An in-flight recovery for the cluster is resumed, not duplicated. Then the
+   per-deployment switch (`TURBOPANEL_AUTO_FAILOVER`, below): when off, a
+   terminal `blocked` row (`auto_failover_disabled`, no target) and stop.
 5. Persisted cooldown: no new automatic failover within
    `AUTOMATIC_FAILOVER_COOLDOWN_MS` (15 min) of the last **accepted** one
    (newest `automatic-failover` recovery row with a target), read from the
@@ -540,8 +542,9 @@ all:
    dead, so a refusal inside the window is retried after it.
 6. A same-DC `failover` replica passes the promote lag gate (streaming,
    observation ≤ 120 s old, lag under 64 MiB / 30 s); otherwise `blocked`.
-7. Without a command queue (the Workers / Durable Object transport) a
-   **terminal** `blocked` row is written with
+7. Without a command queue (a deployment with no `TURBOPANEL_COMMAND_QUEUE`
+   binding; the Durable Object passes the Worker's binding through
+   `daemon/cell/managed-ha-inbound.ts`) a **terminal** `blocked` row is written with
    `AUTOMATIC_FAILOVER_NO_QUEUE_MESSAGE` (`no_command_queue`) and no target —
    never `detecting`, which would hold the in-flight slot
    (`uniq_recovery_inflight_managed`) and make every later switchover / DR
@@ -555,6 +558,18 @@ all:
    offline-sweep cron) expires any `detecting` or `fencing` row older than
    `STALE_DETECTING_RECOVERY_MS` (10 min) with no command recorded in its
    metadata to `blocked` (`expireStaleDetectingRecoveries`).
+
+**Automatic failover switch** (`auto-failover-switch.ts`):
+`TURBOPANEL_AUTO_FAILOVER=on|off` (also `true`/`false`, `1`/`0`), read at
+event time — the Worker's vars on Workers (`daemon/cell/managed-ha-inbound.ts`),
+`Deno.env` on self-hosted. Unset: **off** when `TURBOPANEL_ENVIRONMENT` is
+`staging` or `live`, **on** everywhere else (testing, local dev, self-hosted
+Deno keep the original behaviour); any other value is off, so a typo never
+promotes. `wrangler.jsonc` commits `on` for testing and `off` for staging and
+live. Off writes `AUTOMATIC_FAILOVER_DISABLED_MESSAGE` as a terminal `blocked`
+row with no target (no cooldown) and queues nothing; like the no-queue row, a
+detector that keeps re-sending writes one row per accepted event. Manual
+switchover and disaster recovery never read the switch.
 
 A rejected event is logged and dropped (no recovery row). An accepted one is
 logged with its evidence and records `metadata.detector` /

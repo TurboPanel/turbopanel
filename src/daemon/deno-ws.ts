@@ -59,6 +59,7 @@ import {
   handleBackupRunReport,
 } from '../features/backups/run-report.ts'
 import { handleManagedHaEvent } from '../features/managed/ha-event.ts'
+import { resolveAutoFailoverFromDenoEnv } from '../features/managed/auto-failover-switch.ts'
 import { enqueueLatestRecordedCapabilityPlan } from '../client/servers/capability-plan-push.ts'
 import { recordTopologyGeneration } from '../features/servers/server-topology-records.ts'
 import { createInboundWindowGate } from './rate-limit/inbound-window.ts'
@@ -362,6 +363,7 @@ async function handleDaemonManagedHaInbound(params: {
     {
       commandQueue: params.commandQueue,
       reporterServerId: params.reporterServerId,
+      autoFailover: resolveAutoFailoverFromDenoEnv(),
     }
   )
   await cell.recordInbound({ connectionId, at: message.at })
