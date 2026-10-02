@@ -15,9 +15,7 @@ import {
 export const HA_PROMOTION_RULE_PREFER = 'prefer'
 export const HA_PROMOTION_RULE_MUST_NOT = 'must_not'
 
-export type HaPromotionRule =
-  | typeof HA_PROMOTION_RULE_PREFER
-  | typeof HA_PROMOTION_RULE_MUST_NOT
+export type HaPromotionRule = typeof HA_PROMOTION_RULE_PREFER | typeof HA_PROMOTION_RULE_MUST_NOT
 
 export type HaMemberCandidateInput = {
   id: string
@@ -33,12 +31,12 @@ export type HaMemberCandidateInput = {
  * Same-DC `failover` class, ignoring health. Used to distinguish "none
  * exist" from "none are healthy enough" when blocking automatic failover.
  */
-export function isAutomaticFailoverClassMember(
-  member: Readonly<HaMemberCandidateInput>,
-): boolean {
-  return member.role === 'replica' &&
+export function isAutomaticFailoverClassMember(member: Readonly<HaMemberCandidateInput>): boolean {
+  return (
+    member.role === 'replica' &&
     member.replicaClass === 'failover' &&
     member.sameDatacenterAsPrimary
+  )
 }
 
 /**
@@ -46,9 +44,7 @@ export function isAutomaticFailoverClassMember(
  * never do. Cross-datacenter is disaster recovery only (operator route).
  * `readEligible` has zero effect.
  */
-export function isAutomaticFailoverCandidate(
-  member: Readonly<HaMemberCandidateInput>,
-): boolean {
+export function isAutomaticFailoverCandidate(member: Readonly<HaMemberCandidateInput>): boolean {
   return isAutomaticFailoverClassMember(member) && member.healthy
 }
 
@@ -57,7 +53,7 @@ export function isAutomaticFailoverCandidate(
  * `readEligible` is ignored.
  */
 export function pickAutomaticFailoverCandidate(
-  members: readonly HaMemberCandidateInput[],
+  members: readonly HaMemberCandidateInput[]
 ): HaMemberCandidateInput | null {
   const eligible = members
     .filter((member) => isAutomaticFailoverCandidate(member))
@@ -69,7 +65,7 @@ export function pickAutomaticFailoverCandidate(
  * Why automatic failover cannot pick a candidate. `null` when a pick exists.
  */
 export function automaticFailoverBlockCause(
-  members: readonly HaMemberCandidateInput[],
+  members: readonly HaMemberCandidateInput[]
 ): 'no-candidate' | 'unhealthy' | null {
   if (pickAutomaticFailoverCandidate(members)) return null
   return members.some((member) => isAutomaticFailoverClassMember(member))
@@ -77,12 +73,8 @@ export function automaticFailoverBlockCause(
     : 'no-candidate'
 }
 
-export function orchestratorPromotionRule(
-  replicaClass: string | null,
-): HaPromotionRule {
-  return replicaClass === 'failover'
-    ? HA_PROMOTION_RULE_PREFER
-    : HA_PROMOTION_RULE_MUST_NOT
+export function orchestratorPromotionRule(replicaClass: string | null): HaPromotionRule {
+  return replicaClass === 'failover' ? HA_PROMOTION_RULE_PREFER : HA_PROMOTION_RULE_MUST_NOT
 }
 
 /**
@@ -94,7 +86,7 @@ export function shouldBlockUnreachablePrimaryFence(kind: RecoveryKind): boolean 
 }
 
 export function automaticFailoverBlockedReason(
-  cause: 'unfenced' | 'no-candidate' | 'unhealthy',
+  cause: 'unfenced' | 'no-candidate' | 'unhealthy'
 ): string {
   if (cause === 'no-candidate') return AUTOMATIC_FAILOVER_NO_CANDIDATE_MESSAGE
   if (cause === 'unhealthy') return AUTOMATIC_FAILOVER_UNHEALTHY_MESSAGE
@@ -123,16 +115,51 @@ export function replicaClassAfterDisasterRecovery(input: {
 
 /** Primary and same-DC failover replicas join the org Orchestrator Raft group. */
 export function serverHostsManagedHa(
-  membersOnServer: ReadonlyArray<{ role: string; replicaClass: string | null }>,
+  membersOnServer: ReadonlyArray<{ role: string; replicaClass: string | null }>
 ): boolean {
-  return membersOnServer.some((member) =>
-    member.role === 'primary' || member.replicaClass === 'failover'
+  return membersOnServer.some(
+    (member) => member.role === 'primary' || member.replicaClass === 'failover'
   )
 }
 
 export function pickHaAdvertiseAddress(
-  pins: ReadonlyArray<{ address: string; family: 4 | 6 }>,
+  pins: ReadonlyArray<{ address: string; family: 4 | 6 }>
 ): string | null {
   const v4 = pins.find((pin) => pin.family === 4)
   return v4?.address ?? pins[0]?.address ?? null
+}
+
+export type HaRaftPin = { datacenterId: string; address: string; family: 4 | 6 }
+
+export type HaRaftMembers = {
+  advertiseAddress: string
+  peers: Array<{ serverId: string; address: string }>
+}
+
+/**
+ * Raft voters for `thisServerId`: the HA servers pinned in the datacenter it
+ * advertises from. An org-wide group spanning datacenters whose private
+ * networks cannot see each other never reaches quorum (no leader, so no
+ * DeadPrimary and no automatic failover anywhere in the org), and automatic
+ * failover is same-datacenter only, so a cross-datacenter voter adds nothing
+ * but quorum risk.
+ */
+export function selectHaRaftMembers(
+  thisServerId: string,
+  raftServerIds: readonly string[],
+  pins: ReadonlyMap<string, readonly HaRaftPin[]>
+): HaRaftMembers | null {
+  const thisPins = pins.get(thisServerId) ?? []
+  const advertiseAddress = pickHaAdvertiseAddress(thisPins)
+  if (!advertiseAddress) return null
+  const datacenterId = thisPins.find((pin) => pin.address === advertiseAddress)?.datacenterId
+  const peers: HaRaftMembers['peers'] = []
+  for (const serverId of raftServerIds) {
+    const sameDatacenter = (pins.get(serverId) ?? []).filter(
+      (pin) => pin.datacenterId === datacenterId
+    )
+    const address = pickHaAdvertiseAddress(sameDatacenter)
+    if (address) peers.push({ serverId, address })
+  }
+  return { advertiseAddress, peers }
 }
