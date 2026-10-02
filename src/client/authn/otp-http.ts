@@ -16,6 +16,7 @@ import {
   type AuthBodyValidation,
   type AuthRouteOpts,
   buildSessionResponse,
+  enforceAuthRateLimit,
   readGatedAuthJsonBody,
   resolveClientIp,
 } from './http.ts'
@@ -541,6 +542,10 @@ export function registerOtpRoutes<E extends Env>(auth: Hono<E>, opts: AuthRouteO
 
     const sessionData = await readActiveSession(c, opts)
     if (!sessionData) {
+      // Unauthenticated callers still spend the anonymous + IP bucket, so
+      // hammering this route without a session is throttled like sign-in.
+      const anonLimited = await enforceAuthRateLimit(c, 'verify-email-otp', null, opts.runtime)
+      if (anonLimited) return anonLimited
       return c.json({ ok: false, error: 'Unauthorized' }, 401)
     }
     const sessionEmail = sessionData.email.trim().toLowerCase()
