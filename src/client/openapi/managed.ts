@@ -788,8 +788,9 @@ export const managedSchemas = {
       enabled: { type: 'boolean', default: true },
       targetKind: {
         type: 'string',
-        const: 'managed',
-        description: 'Storage-copy targets are not supported yet',
+        enum: ['managed', 'copy'],
+        description:
+          'Optional. Must match the route: `managed` on the managed-engine route, `copy` on the storage-copy route (`/storage/{id}/copies/{copyId}/backup-policies`). A mismatch is refused with `backup_target_unsupported`.',
       },
     },
   },

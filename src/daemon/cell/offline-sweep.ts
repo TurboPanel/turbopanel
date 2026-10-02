@@ -97,6 +97,7 @@ import { runUpgradeMaintenance } from '../../features/upgrades/maintenance.ts'
 import {
   parseUpgradeTickMinutes,
   shouldRunUpgradeTick,
+  UPGRADE_TICK_DEFAULT_MINUTES,
 } from '../../features/upgrades/tick-cadence.ts'
 import {
   type AnalyticsEngineDatasetLike,
@@ -1078,12 +1079,32 @@ function shouldRunScheduledPhase(
   return scheduledTime !== undefined && shouldRun(scheduledTime)
 }
 
-function optionalPhaseNames(scheduledTime: number | undefined): string[] {
+/**
+ * Phases a tick did not run, plus the upgrade tick cadence in force for it
+ * (`TURBOPANEL_UPGRADE_TICK_MINUTES`) so the skipped-phase list agrees with
+ * what the tick would really have scheduled.
+ */
+export type SkippedPhases = string[] & { readonly upgradeTickMinutes: number }
+
+export function newSkippedPhases(upgradeTickMinutes: number): SkippedPhases {
+  return Object.assign([] as string[], { upgradeTickMinutes })
+}
+
+/** The phases this tick schedules after liveness, in run order. */
+export function optionalPhaseNames(
+  scheduledTime: number | undefined,
+  upgradeTickMinutes: number = UPGRADE_TICK_DEFAULT_MINUTES
+): string[] {
   const names = ['command-dispatch', 'webhook-deliveries']
   if (shouldRunScheduledPhase(scheduledTime, shouldSweepExecutionLogs)) {
     names.push('execution-logs')
   }
-  if (shouldRunScheduledPhase(scheduledTime, shouldSweepUpgradeHistory)) {
+  if (
+    shouldRunScheduledPhase(
+      scheduledTime,
+      (ms) => shouldSweepUpgradeHistory(ms) || shouldRunUpgradeTick(ms, upgradeTickMinutes)
+    )
+  ) {
     names.push('upgrade-history')
   }
   if (shouldRunScheduledPhase(scheduledTime, shouldSweepTierNotices)) {
@@ -1098,17 +1119,17 @@ function optionalPhaseNames(scheduledTime: number | undefined): string[] {
 }
 
 function markSkippedFrom(
-  phasesSkipped: string[],
+  phasesSkipped: SkippedPhases,
   phase: string,
   scheduledTime: number | undefined
 ): void {
-  const rest = optionalPhaseNames(scheduledTime)
+  const rest = optionalPhaseNames(scheduledTime, phasesSkipped.upgradeTickMinutes)
   const index = rest.indexOf(phase)
   phasesSkipped.push(...(index === -1 ? rest : rest.slice(index)))
 }
 
 function skipFromPhase(
-  phasesSkipped: string[],
+  phasesSkipped: SkippedPhases,
   phase: string,
   scheduledTime: number | undefined
 ): void {
@@ -1124,7 +1145,7 @@ async function runOptionalPhase(
   deadlineMs: number,
   phase: string,
   scheduledTime: number | undefined,
-  phasesSkipped: string[],
+  phasesSkipped: SkippedPhases,
   work: () => Promise<void>
 ): Promise<boolean> {
   const left = remainingMs(deadlineMs)
@@ -1157,7 +1178,7 @@ async function runScheduledOptionalPhase(
   deadlineMs: number,
   phase: string,
   scheduledTime: number | undefined,
-  phasesSkipped: string[],
+  phasesSkipped: SkippedPhases,
   shouldRun: (scheduledTimeMs: number) => boolean,
   work: () => Promise<void>
 ): Promise<boolean> {
@@ -1260,7 +1281,7 @@ async function runBillingOptionalPhases(
   db: Db,
   opts: RunOfflineSweepOpts,
   deadlineMs: number,
-  phasesSkipped: string[]
+  phasesSkipped: SkippedPhases
 ): Promise<boolean> {
   // Billing phases: skipped wholesale when the instance has no Stripe key
   // (`resolveBillingConfig` is the switch). They run in sequence through
@@ -1303,11 +1324,9 @@ async function runOptionalCronPhases(
   tlsRenewal: CronTlsRenewal | null | undefined,
   opts: RunOfflineSweepOpts,
   deadlineMs: number,
-  phasesSkipped: string[]
+  phasesSkipped: SkippedPhases
 ): Promise<void> {
-  const upgradeTickMinutes = parseUpgradeTickMinutes(
-    (env as { TURBOPANEL_UPGRADE_TICK_MINUTES?: string }).TURBOPANEL_UPGRADE_TICK_MINUTES
-  )
+  const upgradeTickMinutes = phasesSkipped.upgradeTickMinutes
   if (
     !(await runOptionalPhase(
       deadlineMs,
@@ -1461,7 +1480,11 @@ export async function runOfflineSweep(
 
   const startedAtMs = opts.nowMs ?? Date.now()
   const deadlineMs = opts.deadlineMs ?? startedAtMs + OFFLINE_SWEEP_TICK_BUDGET_MS
-  const phasesSkipped: string[] = []
+  const phasesSkipped = newSkippedPhases(
+    parseUpgradeTickMinutes(
+      (env as { TURBOPANEL_UPGRADE_TICK_MINUTES?: string }).TURBOPANEL_UPGRADE_TICK_MINUTES
+    )
+  )
   let stats: SweepOnceStats = { ...EMPTY_SWEEP_STATS }
 
   try {
