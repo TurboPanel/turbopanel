@@ -1079,12 +1079,20 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
       } else {
         step.status = 'failed'
         step.errorCode = input.errorCode ?? 'update_failed'
-        step.errorMessage = input.error ? redactUrlSecrets(input.error) : null
+        step.errorMessage = redactedOr(input.error, null)
         step.lastStageAt = input.at
       }
       await deps.store.saveStep(step)
     },
   }
+}
+
+/** `text` with URL secrets stripped, or `fallback` when there is no text. */
+function redactedOr(
+  text: string | null | undefined,
+  fallback: string | null | undefined
+): string | null {
+  return text ? redactUrlSecrets(text) : (fallback ?? null)
 }
 
 function shortCommit(commit: string | null): string {
