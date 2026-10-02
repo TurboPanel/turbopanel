@@ -270,6 +270,7 @@ function queryResult<T>(rows: T[]) {
   const promise = Promise.resolve(rows)
   return Object.assign(promise, {
     limit: (_n: number) => Promise.resolve(rows),
+    for: (_strength: string) => ({ limit: (_n: number) => Promise.resolve(rows) }),
     orderBy: (..._cols: unknown[]) =>
       Object.assign(Promise.resolve(rows), {
         limit: (_n: number) => Promise.resolve(rows),
