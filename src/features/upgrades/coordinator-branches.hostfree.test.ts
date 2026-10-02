@@ -616,6 +616,17 @@ test('noteProgress: a terminal failure copies the detail into errorMessage, succ
   assertEquals(done.errorMessage, null)
 })
 
+test('noteProgress: a signed URL in a failure detail never reaches errorMessage or detail', async () => {
+  const signed = 'https://objects.example/a.tar?X-Amz-Signature=deadbeef&token=s3cr3t'
+  const failed = await progress({}, { stage: 'failed', detail: `GET ${signed} failed: EAI_AGAIN` })
+  assertEquals(
+    failed.errorMessage,
+    'GET https://objects.example/a.tar?[redacted] failed: EAI_AGAIN'
+  )
+  assertEquals(JSON.stringify(failed).includes('deadbeef'), false)
+  assertEquals(JSON.stringify(failed).includes('s3cr3t'), false)
+})
+
 test('noteProgress: an empty error code leaves the recorded one', async () => {
   const step = await progress({ errorCode: 'earlier' }, { stage: 'installing', errorCode: '' })
   assertEquals(step.errorCode, 'earlier')
