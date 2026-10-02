@@ -311,6 +311,14 @@ async function parseCreateProjectInput(
     }
     return c.json({ error: optionsResult.error }, optionsResult.status)
   }
+  // Same rule as PATCH: a default server outside the organization reads as 404.
+  const defaultServerError = await assertDefaultServerIdInOrg(
+    c,
+    db,
+    organizationId,
+    optionsResult.options
+  )
+  if (defaultServerError) return defaultServerError
 
   const metadataResult = parseCreateProjectMetadata(body)
   if (!metadataResult.ok) {
