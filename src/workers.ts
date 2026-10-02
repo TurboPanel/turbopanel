@@ -465,6 +465,7 @@ export default {
           env.TURBOPANEL_EXECUTION_LOG_RETENTION_DAYS
         ),
         scheduledTime: controller.scheduledTime,
+        firewallApplyGate: firewallApplyGateFromEnv(stringBindingEnv(env)),
       }
     )
     ctx.waitUntil(sweep)

@@ -220,6 +220,21 @@ export function shouldSend(changed: boolean, mode: FirewallMode, force: boolean)
   return force && mode === 'observe'
 }
 
+/** Minimum gap between two unchanged teardowns to one server. */
+export const TEARDOWN_RESEND_MIN_MS = 10 * 60 * 1000
+
+/** True when an unchanged teardown was already sent to this server within the gap. */
+export function teardownBackedOff(
+  stored: FirewallPreviewRecord | null,
+  mode: FirewallMode,
+  changed: boolean,
+  nowMs: number
+): boolean {
+  if (mode !== 'off' || changed || stored?.kind !== 'remove') return false
+  const sentMs = Date.parse(stored.sentAt)
+  return Number.isFinite(sentMs) && nowMs - sentMs < TEARDOWN_RESEND_MIN_MS
+}
+
 /** Build, validate and queue one server's preview. True when a command was queued. */
 async function previewOne(
   db: Db,
@@ -239,6 +254,7 @@ async function previewOne(
   if (!built) return 'skipped'
   const changed = stored?.desiredDigest !== built.desiredDigest
   if (!shouldSend(changed, built.payload.mode, options.force === true)) return 'skipped'
+  if (teardownBackedOff(stored, built.payload.mode, changed, Date.now())) return 'skipped'
   // The generation rises only when the desired set did; a reconnect re-send
   // of an unchanged set keeps the number the host already knows.
   const generation = changed
@@ -346,8 +362,9 @@ export function commandMayChangeFirewallPreview(type: string): boolean {
  * (re)connects. "Once" is enforced by the command table: a server is skipped
  * when a firewall reconcile was already created since its `status_changed_at`.
  * Servers whose mode is `off` are left out unless they still carry an apply
- * to undo. Runs from the Deno maintenance timer, never from hello or a
- * Durable Object handler.
+ * to undo. Runs from the Deno maintenance timer and the Workers cron sweep,
+ * never from hello or a Durable Object handler. Both must pass the same
+ * `applyGate`, or an applied host is torn down.
  */
 export async function runFirewallPreviewSweep(
   db: Db,

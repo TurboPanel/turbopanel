@@ -20,6 +20,8 @@ import {
   runFirewallPreviewSweep,
   shouldSend,
   statusOfResult,
+  TEARDOWN_RESEND_MIN_MS,
+  teardownBackedOff,
 } from './preview.ts'
 
 const test = Deno.test.bind(Deno)
@@ -220,6 +222,18 @@ test('a reconnect re-sends an unchanged preview or teardown but never re-applies
   assertEquals(shouldSend(false, 'observe', true), true)
   assertEquals(shouldSend(false, 'observe', false), false)
   assertEquals(shouldSend(false, 'off', false), true)
+})
+
+test('an unchanged teardown is not re-sent within the back-off gap, a first or changed one is', () => {
+  const now = Date.parse('2026-10-01T01:00:00.000Z')
+  const sent = (agoMs: number, kind = 'remove') =>
+    ({ ...storedPreview, kind, sentAt: new Date(now - agoMs).toISOString() }) as never
+  assertEquals(teardownBackedOff(sent(1000), 'off', false, now), true)
+  assertEquals(teardownBackedOff(sent(TEARDOWN_RESEND_MIN_MS + 1), 'off', false, now), false)
+  assertEquals(teardownBackedOff(sent(1000), 'off', true, now), false)
+  assertEquals(teardownBackedOff(sent(1000, 'apply'), 'off', false, now), false)
+  assertEquals(teardownBackedOff(null, 'off', false, now), false)
+  assertEquals(teardownBackedOff(sent(1000), 'observe', false, now), false)
 })
 
 const appliedAnswer = {

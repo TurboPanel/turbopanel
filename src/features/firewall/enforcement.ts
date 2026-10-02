@@ -24,7 +24,9 @@
  * by the daemon (`DEFAULT_DROP_HELD_WARNING`) whatever is sent.
  *
  * Every sender takes a {@link FirewallApplyGate}; a caller that passes none
- * gets {@link DENY_FIREWALL_APPLY}, so a forgotten call site fails to observe.
+ * gets {@link DENY_FIREWALL_APPLY}, which for an opted-in host that already
+ * applied means a teardown (`off`), not a quiet observe. A forgotten call site
+ * therefore flaps rules; a source-scan test requires every call site to pass one.
  */
 
 import type { FirewallMode } from '../../contracts/commands/schemas.ts'

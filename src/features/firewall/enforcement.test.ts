@@ -111,6 +111,29 @@ test('no code path queues server.firewall.reconcile except the preview sender', 
   assertEquals(senders[0].endsWith('features/firewall/preview.ts'), true)
 })
 
+test('every preview sender call site passes an applyGate', async () => {
+  const sender = /\b(?:runFirewallPreviewSweep|enqueueFirewallPreview\w*)\(/g
+  let sites = 0
+  for (const path of await sourceFiles(new URL('../../', import.meta.url).pathname)) {
+    if (path.endsWith('features/firewall/preview.ts')) continue
+    const text = await Deno.readTextFile(path)
+    for (const match of text.matchAll(sender)) {
+      sites++
+      // Skip the argument list's own parens to the end of the call.
+      let depth = 1
+      let end = match.index + match[0].length
+      while (end < text.length && depth > 0) {
+        if (text[end] === '(') depth++
+        else if (text[end] === ')') depth--
+        end++
+      }
+      const call = text.slice(match.index, end)
+      assertEquals(/\bapplyGate\b/.test(call), true, `${path}: ${call.slice(0, 80)}`)
+    }
+  }
+  assertEquals(sites >= 6, true)
+})
+
 test('the preview sender takes its mode from wireModeFor and never names managed itself', async () => {
   const text = await Deno.readTextFile(new URL('./preview.ts', import.meta.url))
   assertStringIncludes(text, 'wireModeFor(stored, options.applyAllowed === true)')
