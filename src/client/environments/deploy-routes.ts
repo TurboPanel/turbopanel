@@ -36,6 +36,7 @@ import type {
   EnvironmentDeployNativeAppService,
   EnvironmentDeployPrincipalMaterial,
   EnvironmentDeployServiceHook,
+  EnvironmentDeploySecretPlanEntry,
   EnvironmentDeploySource,
   EnvironmentDeployStorageMaterial,
   EnvironmentDeployTlsMaterial,
@@ -513,6 +514,10 @@ type DeployCommandCreateParams = DeployActor & {
   variableMaterial: EnvironmentDeployVariableMaterial[]
   storageMaterial: EnvironmentDeployStorageMaterial[]
   principalMaterial: EnvironmentDeployPrincipalMaterial[]
+  /** Non-secret Compose project `.env` the daemon writes next to compose.yaml. */
+  envFile?: string
+  /** File-only secret mounts the daemon materializes from `variableMaterial`. */
+  secretPlan?: EnvironmentDeploySecretPlanEntry[]
   serviceHooks: EnvironmentDeployServiceHook[]
   dockerExternalNetworks: string[]
   dockerNetworkAddressing: EnvironmentDeployDockerNetwork[]
@@ -628,6 +633,8 @@ async function createDeployCommand(
         variableMaterial: params.variableMaterial,
         storageMaterial: params.storageMaterial,
         principalMaterial: params.principalMaterial,
+        envFile: params.envFile || undefined,
+        secretPlan: params.secretPlan,
         serviceHooks: params.serviceHooks,
         dockerExternalNetworks: params.dockerExternalNetworks,
         dockerNetworkAddressing: params.dockerNetworkAddressing,
@@ -764,6 +771,8 @@ function createParamsForPreparedServer(
     variableMaterial: row.prepared.variableMaterial,
     storageMaterial: row.prepared.storageMaterial,
     principalMaterial: row.prepared.principalMaterial,
+    envFile: row.prepared.envFile,
+    secretPlan: row.prepared.secretPlan,
     serviceHooks: row.prepared.hooks,
     dockerExternalNetworks: row.prepared.dockerExternalNetworks,
     dockerNetworkAddressing: row.prepared.dockerNetworkAddressing,
