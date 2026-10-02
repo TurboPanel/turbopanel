@@ -5,6 +5,7 @@
 import { assertEquals } from '@std/assert'
 import type { Db } from '../../db/connection.ts'
 import type { CommandQueue } from '../commands/queue.ts'
+import { createWorkersCommandQueue } from '../commands/workers-queue.ts'
 import {
   AUTOMATIC_FAILOVER_NO_CANDIDATE_MESSAGE,
   AUTOMATIC_FAILOVER_NO_QUEUE_MESSAGE,
@@ -694,6 +695,46 @@ test('beginAutomaticFailover fences a reachable primary and records drain/stop c
   const stored = harness.recovery()
   if (!stored) throw new TypeError('expected stored fencing row')
   const metadata = stored.metadata as { fenceCommandIds?: string[] }
+  assertEquals((metadata.fenceCommandIds ?? []).length >= 2, true)
+})
+
+test('beginAutomaticFailover fences through the Workers queue binding', async () => {
+  const sent: unknown[] = []
+  const queue = createWorkersCommandQueue({
+    send: (message) => {
+      sent.push(message)
+      return Promise.resolve()
+    },
+  })
+  const harness = createHarness({
+    pins: [
+      {
+        ipId: 'ip-1',
+        serverId: SERVER_A,
+        datacenterId: DC_A,
+        networkId: 'net-1',
+        address: '203.0.113.10',
+      },
+    ],
+    connected: [true, true],
+  })
+  const row = expectRecord(
+    await beginAutomaticFailover({
+      db: harness.db,
+      commandQueue: queue,
+      managedId: MANAGED_ID,
+      engine: 'postgres',
+      members: [member(), failoverReplica()],
+      actor: ACTOR,
+      detector: 'postgres-probe',
+    })
+  )
+  assertEquals(row.state, 'fencing')
+  assertEquals(sent.length >= 2, true)
+  const stored = harness.recovery()
+  if (!stored) throw new TypeError('expected stored fencing row')
+  const metadata = stored.metadata as { blockedReason?: string; fenceCommandIds?: string[] }
+  assertEquals(metadata.blockedReason, undefined)
   assertEquals((metadata.fenceCommandIds ?? []).length >= 2, true)
 })
 
