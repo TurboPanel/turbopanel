@@ -537,9 +537,17 @@ all:
    journal so it survives restarts.
 6. A same-DC `failover` replica passes the promote lag gate (streaming,
    observation ≤ 120 s old, lag under 64 MiB / 30 s); otherwise `blocked`.
-7. Without a command queue only `detecting` is persisted; with one, fence
-   (drain + `managed.lifecycle stop`; an unreachable old primary blocks) then
-   promote.
+7. Without a command queue (the Workers / Durable Object transport) a
+   **terminal** `blocked` row is written with
+   `AUTOMATIC_FAILOVER_NO_QUEUE_MESSAGE` (`no_command_queue`) and no target —
+   never `detecting`, which would hold the in-flight slot
+   (`uniq_recovery_inflight_managed`) and make every later switchover / DR
+   answer `managed_busy`. With a queue: fence (drain + `managed.lifecycle
+   stop`; an unreachable old primary blocks) then promote.
+8. Safety net: the stale sweep (Deno cleanup lane and the Workers
+   offline-sweep cron) expires any `detecting` row older than
+   `STALE_DETECTING_RECOVERY_MS` (10 min) with no command recorded in its
+   metadata to `blocked` (`expireStaleDetectingRecoveries`).
 
 A rejected event is logged and dropped (no recovery row). An accepted one is
 logged with its evidence and records `metadata.detector` /

@@ -45,6 +45,8 @@ import {
 import { isAutomaticFailoverHealthy, replicationFromMemberMetadata } from './promote-lag.ts'
 import {
   AUTOMATIC_FAILOVER_BLOCKED_ERROR,
+  AUTOMATIC_FAILOVER_NO_QUEUE_MESSAGE,
+  AUTOMATIC_FAILOVER_NO_QUEUE_REASON,
   isTerminalRecoveryState,
   type RecoveryKind,
   type RecoveryMetadata,
@@ -586,13 +588,20 @@ export async function beginAutomaticFailover(params: {
   if (!target) return null
 
   if (!params.commandQueue) {
+    // No queue means nothing can ever fence or promote: record a TERMINAL row
+    // (never `detecting`, which would hold the in-flight slot forever) and no
+    // target, so it does not count as an accepted failover for the cooldown.
+    compatLogWarn(
+      'managed-ha',
+      `automatic failover for ${params.managedId} not started: ${AUTOMATIC_FAILOVER_NO_QUEUE_REASON}`
+    )
     return insertRecovery(params.db, {
       managedId: params.managedId,
       kind: 'automatic-failover',
       sourcePrimaryMemberId: primary.id,
-      targetMemberId: target.id,
-      state: 'detecting',
+      state: 'blocked',
       metadata: {
+        blockedReason: AUTOMATIC_FAILOVER_NO_QUEUE_MESSAGE,
         sourceServerId: primary.serverId,
         targetServerId: target.serverId,
         sourceDatacenterId: firstDatacenterId(dcSets, primary.serverId),

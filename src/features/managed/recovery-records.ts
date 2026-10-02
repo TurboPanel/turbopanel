@@ -1,6 +1,7 @@
 import { and, desc, eq, isNotNull, notInArray } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { recovery } from '../../db/schema.ts'
+import { forEachSequential } from '../../lib/sequential.ts'
 import {
   isRecoveryKind,
   isRecoveryState,
@@ -154,4 +155,49 @@ export async function updateRecovery(
     .returning()
   const row = rows[0]
   return row ? serializeRow(row) : null
+}
+
+/** A `detecting` row older than this with no command queued is expired. */
+export const STALE_DETECTING_RECOVERY_MS = 10 * 60_000
+
+function hasQueuedCommands(metadata: RecoveryMetadata): boolean {
+  return Boolean(
+    (metadata.fenceCommandIds?.length ?? 0) > 0 ||
+    metadata.promoteCommandId ||
+    metadata.failoverCommandId ||
+    (metadata.ingressCommandIds?.length ?? 0) > 0
+  )
+}
+
+/**
+ * Safety net for the stale sweep: a `detecting` row that nothing advanced
+ * (no command queued) for {@link STALE_DETECTING_RECOVERY_MS} holds the
+ * per-cluster in-flight slot and would lock switchover / DR out with
+ * `managed_busy`. Expire it to terminal `blocked`. Returns the expired ids.
+ */
+export async function expireStaleDetectingRecoveries(
+  db: Db,
+  opts: { now?: number; maxAgeMs?: number; reason: string }
+): Promise<string[]> {
+  const nowMs = opts.now ?? Date.now()
+  const maxAgeMs = opts.maxAgeMs ?? STALE_DETECTING_RECOVERY_MS
+  const rows = await db.select().from(recovery).where(eq(recovery.state, 'detecting'))
+  const stale = rows
+    .map((row) => serializeRow(row))
+    .filter((row): row is RecoveryRecord => row !== null)
+    .filter((row) => {
+      const started = Date.parse(row.startedAt)
+      return (
+        Number.isFinite(started) && nowMs - started >= maxAgeMs && !hasQueuedCommands(row.metadata)
+      )
+    })
+  const expired: string[] = []
+  await forEachSequential(stale, async (row) => {
+    const updated = await updateRecovery(db, row.id, {
+      state: 'blocked',
+      metadata: { ...row.metadata, blockedReason: opts.reason },
+    })
+    if (updated) expired.push(updated.id)
+  })
+  return expired
 }

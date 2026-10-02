@@ -38,6 +38,20 @@ export const AUTOMATIC_FAILOVER_BLOCKED_MESSAGE =
 export const AUTOMATIC_FAILOVER_NO_CANDIDATE_MESSAGE =
   'Automatic failover blocked: no same-datacenter failover replica is eligible'
 
+/**
+ * The transport that received the event has no command queue (the Workers /
+ * Durable Object path), so nothing could ever fence or promote: the journal
+ * row is terminal at once instead of a `detecting` row that would hold the
+ * in-flight slot and lock switchover / DR out.
+ */
+export const AUTOMATIC_FAILOVER_NO_QUEUE_REASON = 'no_command_queue'
+export const AUTOMATIC_FAILOVER_NO_QUEUE_MESSAGE =
+  'Automatic failover not started: this control plane cannot dispatch commands (no_command_queue)'
+
+/** A `detecting` row nothing advanced: expired by the stale sweep. */
+export const AUTOMATIC_FAILOVER_STALE_DETECTING_MESSAGE =
+  'Automatic failover expired: detection was never advanced (stale_detecting)'
+
 export const AUTOMATIC_FAILOVER_UNHEALTHY_MESSAGE =
   'Automatic failover blocked: no same-datacenter failover replica is healthy enough to promote'
 

@@ -6,6 +6,7 @@ import { assertEquals } from '@std/assert'
 import type { Db } from '../../db/connection.ts'
 import type { CommandQueue } from '../commands/queue.ts'
 import { handleManagedHaEvent } from './ha-event.ts'
+import { AUTOMATIC_FAILOVER_NO_QUEUE_MESSAGE } from './recovery.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -183,11 +184,11 @@ test('handleManagedHaEvent persists a blocked row when no failover candidate exi
   assertEquals(result?.state, 'blocked')
 })
 
-test('handleManagedHaEvent persists detecting when a candidate exists but the queue does not', async () => {
+test('handleManagedHaEvent records a terminal blocked row when a candidate exists but the queue does not', async () => {
   const detecting = recoveryRow({
     id: 'rec-detect',
-    state: 'detecting',
-    targetMemberId: 'mem-replica',
+    state: 'blocked',
+    metadata: { blockedReason: AUTOMATIC_FAILOVER_NO_QUEUE_MESSAGE },
   })
   const result = await handleManagedHaEvent(
     fakeDb(
@@ -213,7 +214,7 @@ test('handleManagedHaEvent persists detecting when a candidate exists but the qu
     { reporterServerId: SERVER_A }
   )
   assertEquals(result?.id, 'rec-detect')
-  assertEquals(result?.state, 'detecting')
+  assertEquals(result?.state, 'blocked')
 })
 
 test('handleManagedHaEvent rejects a Postgres event with no detector (Orchestrator never sees Postgres)', async () => {
