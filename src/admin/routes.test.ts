@@ -785,7 +785,7 @@ test('GET and PUT /api/admin/v1/instance/public-urls validate and persist origin
 })
 
 test('GET and PUT /api/admin/v1/settings/email round-trip non-secret settings', async () => {
-  await withRoleUser('admin', async ({ app, cookie }) => {
+  await withRoleUser('superadmin', async ({ app, cookie }) => {
     const get = await app.request(`${ADMIN_API_PREFIX}/settings/email`, {
       headers: { Cookie: cookie },
     })
