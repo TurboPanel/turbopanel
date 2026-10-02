@@ -107,7 +107,7 @@ export async function handleManagedHaEvent(
     return null
   }
   const detectorName = input.detector ?? 'orchestrator'
-  const evidenceSuffix = evidence ? ' evidence=' + evidence : ''
+  const evidenceSuffix = evidence ? ` evidence=${evidence}` : ''
   compatLogInfo(
     'managed-ha',
     `accepted managed-ha-event for ${row.id} from server ${deps.reporterServerId} detector=${detectorName}${evidenceSuffix}`
