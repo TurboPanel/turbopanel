@@ -463,15 +463,6 @@ async function buildApp(opts: BuildOpts = {}): Promise<{
     if (opts.db) c.set('db', opts.db)
     c.set('runtime', 'deno')
     c.set('secretsConfig', secretsConfig)
-    // Disaster-recovery promote is registered without session middleware
-    // (`managedSessionPaths` omits it). Seed a session so those short-circuits
-    // still run after a signed cookie would have been accepted on other paths.
-    c.set('session', {
-      sessionId: 'sess-1',
-      userId: USER_ID,
-      email: 'ops@example.com',
-      role: 'superadmin',
-    })
     if (dataEncryptionSecrets) {
       c.set('dataEncryptionSecrets', dataEncryptionSecrets)
     }
@@ -1861,7 +1852,7 @@ test('GET org managed returns 403 when manage is denied', async () => {
   )
 })
 
-test('disaster-recovery promote returns 503 when the database is unset', async () => {
+test('disaster-recovery promote cannot verify a session when the database is unset', async () => {
   const { app, cookie } = await buildApp()
   await expectJson(
     await app.request(envPath('/disaster-recovery/promote'), {
@@ -1869,8 +1860,8 @@ test('disaster-recovery promote returns 503 when the database is unset', async (
       headers: { ...authHeaders(cookie), 'content-type': 'application/json' },
       body: JSON.stringify({ confirm: true, memberId: MEMBER_ID }),
     }),
-    503,
-    { error: 'Database unavailable' }
+    401,
+    { error: 'Unauthorized', ok: false }
   )
 })
 
@@ -2654,6 +2645,103 @@ test('POST disaster-recovery promote with a read replica reaches recovery', asyn
     body: JSON.stringify({ confirm: true, memberId: MEMBER_ID }),
   })
   assertEquals([200, 400, 404, 409, 422, 500, 503].includes(res.status), true)
+})
+
+const DR_PROMOTE_BODY = JSON.stringify({ confirm: true, memberId: MEMBER_ID })
+
+function drReplicaDb(): Db {
+  return applyReadyDb({
+    memberRows: [
+      memberRow({ replicaClass: 'read' }),
+      memberRow({
+        id: 'aaaaaaa2-aaaa-4aaa-8aaa-aaaaaaaaaaa2',
+        role: 'primary',
+        replicaClass: null,
+        ordinal: 1,
+      }),
+    ],
+  })
+}
+
+test('every mounted managed route is covered by managedSessionPaths', async () => {
+  const { app } = await buildApp()
+  const covered = new Set(managedSessionPaths())
+  const mounted = new Set(
+    app.routes.filter((r) => r.method !== 'ALL' && r.path !== '*').map((r) => r.path)
+  )
+  assertEquals(mounted.size > 0, true)
+  const missing = [...mounted].filter((path) => !covered.has(path))
+  assertEquals(missing, [], 'mounted managed routes without session middleware')
+  const stale = [...covered].filter((path) => !mounted.has(path))
+  assertEquals(stale, [], 'managedSessionPaths entries with no mounted route')
+})
+
+test('POST disaster-recovery promote returns 401 without a session', async () => {
+  const { app } = await buildApp({ db: drReplicaDb() })
+  await expectJson(
+    await app.request(envPath('/disaster-recovery/promote'), {
+      method: 'POST',
+      headers: { [ORG_ID_HEADER]: ORG_ID, 'content-type': 'application/json' },
+      body: DR_PROMOTE_BODY,
+    }),
+    401,
+    { error: 'Unauthorized', ok: false }
+  )
+})
+
+test('POST disaster-recovery promote returns 200 with a valid session', async () => {
+  const { app, cookie } = await buildApp({
+    db: drReplicaDb(),
+    registry: stubRegistry(),
+    commandQueue: recordingQueue(),
+  })
+  const res = await app.request(envPath('/disaster-recovery/promote'), {
+    method: 'POST',
+    headers: { ...authHeaders(cookie), 'content-type': 'application/json' },
+    body: DR_PROMOTE_BODY,
+  })
+  assertEquals(res.status, 200)
+})
+
+test('POST disaster-recovery promote returns 403 when manage is denied', async () => {
+  let executeCalls = 0
+  const db = {
+    ...drReplicaDb(),
+    execute: () => {
+      executeCalls += 1
+      if (executeCalls === 1) {
+        return Promise.resolve([{ organization_id: ORG_ID, kind: 'user' }])
+      }
+      return Promise.resolve([{ allowed: false, organization_id: ORG_ID, kind: 'user' }])
+    },
+  } as unknown as Db
+  const { app, cookie } = await buildApp({ db })
+  await expectJson(
+    await app.request(envPath('/disaster-recovery/promote'), {
+      method: 'POST',
+      headers: { ...authHeaders(cookie), 'content-type': 'application/json' },
+      body: DR_PROMOTE_BODY,
+    }),
+    403,
+    { error: 'Forbidden' }
+  )
+})
+
+test('POST disaster-recovery promote hides a foreign environment as 404', async () => {
+  const db = {
+    ...drReplicaDb(),
+    execute: () => Promise.resolve([{ allowed: true, organization_id: OTHER_ORG, kind: 'user' }]),
+  } as unknown as Db
+  const { app, cookie } = await buildApp({ db })
+  await expectJson(
+    await app.request(envPath('/disaster-recovery/promote'), {
+      method: 'POST',
+      headers: { ...authHeaders(cookie), 'content-type': 'application/json' },
+      body: DR_PROMOTE_BODY,
+    }),
+    404,
+    { error: 'Not found' }
+  )
 })
 
 test('DELETE replica member past dispatch maps a later prepare error', async () => {

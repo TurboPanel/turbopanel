@@ -267,6 +267,7 @@ export function managedSessionPaths(): string[] {
     '/environments/:id/managed/members/:memberId',
     '/environments/:id/managed/members/:memberId/promote',
     '/environments/:id/managed/members/:memberId/resync',
+    '/environments/:id/managed/disaster-recovery/promote',
     '/organizations/:id/managed',
   ]
 }
