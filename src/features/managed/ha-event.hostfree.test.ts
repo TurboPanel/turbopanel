@@ -6,7 +6,10 @@ import { assertEquals } from '@std/assert'
 import type { Db } from '../../db/connection.ts'
 import type { CommandQueue } from '../commands/queue.ts'
 import { handleManagedHaEvent } from './ha-event.ts'
-import { AUTOMATIC_FAILOVER_NO_QUEUE_MESSAGE } from './recovery.ts'
+import {
+  AUTOMATIC_FAILOVER_COOLDOWN_MESSAGE,
+  AUTOMATIC_FAILOVER_NO_QUEUE_MESSAGE,
+} from './recovery.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -328,12 +331,19 @@ test('handleManagedHaEvent honours the persisted cooldown (a fresh process sees 
     targetMemberId: 'mem-replica',
     startedAt: new Date(Date.now() - 5 * 60_000).toISOString(),
   })
+  const cooldownRow = recoveryRow({
+    id: 'rec-cooldown',
+    state: 'blocked',
+    metadata: { blockedReason: AUTOMATIC_FAILOVER_COOLDOWN_MESSAGE },
+  })
   const calls = { inserts: 0, reads: 0 }
   const result = await handleManagedHaEvent(
-    fakeDb([[pgRow], [member(), replicaMember()], inOrg, [], [previous]], undefined, calls),
+    fakeDb([[pgRow], [member(), replicaMember()], inOrg, [], [previous]], [cooldownRow], calls),
     { managedId: MANAGED_ID, sourceMemberId: 'mem-primary', detector: 'postgres-probe' },
     { reporterServerId: SERVER_A, commandQueue: queue }
   )
-  assertEquals(result, null)
-  assertEquals(calls, { inserts: 0, reads: 5 })
+  // Refused: one visible terminal row, no fence/promote (no further reads).
+  assertEquals(result?.state, 'blocked')
+  assertEquals(result?.metadata.blockedReason, AUTOMATIC_FAILOVER_COOLDOWN_MESSAGE)
+  assertEquals(calls, { inserts: 1, reads: 5 })
 })

@@ -14,6 +14,7 @@ import { datacenterPaths, datacenterSchemas } from './datacenters.ts'
 import { ipPaths, ipSchemas } from './ips.ts'
 import { buildLicensePaths, buildLicenseSchemas } from './licenses.ts'
 import { organizationPaths, organizationSchemas } from './organizations.ts'
+import { phpModePaths, phpModeSchemas } from './php-modes.ts'
 import { projectPaths, projectSchemas } from './projects.ts'
 import { serverPaths, serverSchemas } from './servers.ts'
 import { servicePaths, serviceSchemas } from './services.ts'
@@ -159,6 +160,7 @@ export function getClientOpenApiSpec(serverUrl: string, options?: ClientOpenApiO
         ...buildLicenseSchemas(installCommandDescription),
         ...accessSchemas,
         ...organizationSchemas,
+        ...phpModeSchemas,
         ...workspaceSchemas,
         ...environmentSchemas,
         ...projectSchemas,
@@ -194,6 +196,7 @@ export function getClientOpenApiSpec(serverUrl: string, options?: ClientOpenApiO
       ...buildLicensePaths(installCommandDescription),
       ...accessPaths,
       ...organizationPaths,
+      ...phpModePaths,
       ...workspacePaths,
       ...environmentPaths,
       ...projectPaths,

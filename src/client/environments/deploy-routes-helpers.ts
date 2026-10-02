@@ -539,8 +539,31 @@ function tryMapPrincipalPrepareError(prepared: DeployPrepareError): PrepareError
   return mapPrincipalPrepareError(prepared)
 }
 
+const PHP_MODE_REFUSAL_TEXT = {
+  engine_unsupported: 'its web server cannot run that mode',
+  not_allowed: 'its organization or server does not offer that mode',
+  none_allowed: 'its organization and server offer no mode its web server can run',
+} as const
+
+function tryMapPhpModePrepareError(prepared: DeployPrepareError): PrepareErrorResponse | null {
+  if (prepared.kind !== 'php_mode_unavailable') return null
+  const asked = prepared.mode ? ` PHP mode "${prepared.mode}"` : ' a PHP mode'
+  return {
+    status: 422,
+    body: {
+      error: 'php_mode_unavailable',
+      composeServiceName: prepared.composeServiceName,
+      reason: prepared.reason,
+      ...(prepared.mode ? { mode: prepared.mode } : {}),
+      allowed: prepared.allowed,
+      message: `Site "${prepared.composeServiceName}" cannot get${asked}: ${PHP_MODE_REFUSAL_TEXT[prepared.reason]}. Allowed here: ${prepared.allowed.join(', ') || 'none'}.`,
+    },
+  }
+}
+
 export function mapPrepareErrorResponse(prepared: DeployPrepareError): PrepareErrorResponse {
   return (
+    tryMapPhpModePrepareError(prepared) ??
     tryMapSitePrepareError(prepared) ??
     tryMapPrincipalPrepareError(prepared) ??
     tryMapHostingPrepareError(prepared) ??

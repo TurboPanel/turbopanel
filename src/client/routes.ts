@@ -49,6 +49,7 @@ import { registerNotificationRoutes } from './notifications/routes.ts'
 import { registerNotificationVerifyRoutes } from './notifications/verify-routes.ts'
 import { registerOrganizationMemberRoutes } from './organizations/members.ts'
 import { registerOrganizationPrincipalDefaultsRoutes } from './organizations/principal-defaults-routes.ts'
+import { registerPhpModeRoutes } from './hostings/php-mode-routes.ts'
 import { registerOrganizationRoutes } from './organizations/routes.ts'
 import { registerReauthSettingsRoutes } from './organizations/reauth-settings-routes.ts'
 import { registerOrganizationFirewallRoutes } from './organizations/firewall-routes.ts'
@@ -106,6 +107,8 @@ export function registerClientRoutes(app: Hono<AppEnv>, opts: ClientRouteOpts) {
     return c.json(payload)
   })
 
+  // Ahead of the generic server and organization routes, like principal defaults.
+  registerPhpModeRoutes(client, opts)
   registerServerRoutes(client, opts)
   registerSystemRoutes(client, opts)
   registerNetworkRoutes(client, opts)

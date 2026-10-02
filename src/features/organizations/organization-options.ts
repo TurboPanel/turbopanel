@@ -23,6 +23,7 @@ import {
   type OrganizationDockerNetworking,
   parseOrganizationDockerNetworking,
 } from '../deploy/docker-address-pools.ts'
+import { parsePhpModes, type PhpMode } from '../hostings/php-mode.ts'
 
 /** Platform fallback when `defaultEnvironmentName` is unset. */
 export const DEFAULT_ENVIRONMENT_NAME = 'Production'
@@ -169,6 +170,13 @@ export type OrganizationOptions = {
     /** Bytes, as Compose's `mem_limit`. */
     memoryBytes?: number
   }
+  /**
+   * PHP modes this organization offers its sites (`fastcgi`, `fpm`,
+   * `lsphp-detached`, `lsphp-attached`). Omitted offers every mode; managers
+   * and owners set it through `/organizations/:id/php-modes`. See
+   * `features/hostings/php-mode.ts`.
+   */
+  phpModes?: PhpMode[]
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -313,7 +321,13 @@ export function parseOrganizationOptions(value: unknown): OrganizationOptions {
     options.deployHooksEnabled = value.deployHooksEnabled
   }
   assignComposeDefaultResourceLimits(options, value)
+  assignPhpModes(options, value)
   return options
+}
+
+function assignPhpModes(options: { phpModes?: PhpMode[] }, value: Record<string, unknown>): void {
+  const phpModes = parsePhpModes(value.phpModes)
+  if (phpModes) options.phpModes = phpModes
 }
 
 /** Effective randomized-usernames default: on unless the org opted out. */

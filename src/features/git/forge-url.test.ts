@@ -484,3 +484,171 @@ test('the time budget covers a connection that never opens, across every address
   })
   assertEquals(tried, ['203.0.113.1'])
 })
+
+// --- Workers: no `Deno.resolveDns`, so the name is resolved over DNS-over-HTTPS ---
+
+/** A scripted DoH answer for one query: the record type in, `null` for a failed lookup. */
+type DohScript = (name: string, type: 'A' | 'AAAA', query: number) => DohAnswer | null
+type DohAnswer = { Status: number; Answer?: Array<{ type: number; data: string }> }
+
+const aRecords = (...data: string[]): DohAnswer => ({
+  Status: 0,
+  Answer: data.map((ip) => ({ type: 1, data: ip })),
+})
+const aaaaRecords = (...data: string[]): DohAnswer => ({
+  Status: 0,
+  Answer: data.map((ip) => ({ type: 28, data: ip })),
+})
+const noRecords: DohAnswer = { Status: 0 }
+
+type WorkersSeen = { doh: string[]; target: Seen[] }
+
+/**
+ * Run `fn` as the Workers instance would: `Deno.resolveDns` removed, and
+ * `fetch` routed by URL — DoH queries answered from `script`, everything else
+ * from `responses` in order. Target requests are recorded apart from the DoH
+ * queries, so a refusal can assert the target saw nothing.
+ */
+async function withWorkersDoh(
+  script: DohScript,
+  responses: Array<() => Response>,
+  fn: (seen: WorkersSeen) => Promise<void>
+): Promise<void> {
+  const resolver = Object.getOwnPropertyDescriptor(Deno, 'resolveDns')
+  const originalFetch = globalThis.fetch
+  const seen: WorkersSeen = { doh: [], target: [] }
+  Reflect.deleteProperty(Deno, 'resolveDns')
+  globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(input instanceof Request ? input.url : String(input))
+    if (url.hostname === 'cloudflare-dns.com') {
+      seen.doh.push(url.toString())
+      const type = url.searchParams.get('type') as 'A' | 'AAAA'
+      const answer = script(url.searchParams.get('name') ?? '', type, seen.doh.length)
+      if (answer === null) return Promise.resolve(new Response('upstream error', { status: 502 }))
+      return Promise.resolve(
+        new Response(JSON.stringify(answer), {
+          headers: { 'content-type': 'application/dns-json' },
+        })
+      )
+    }
+    seen.target.push({ url: url.toString(), init })
+    const next = responses.shift()
+    if (!next) throw new Error('unexpected request')
+    return Promise.resolve(next())
+  }) as typeof fetch
+  try {
+    await fn(seen)
+  } finally {
+    globalThis.fetch = originalFetch
+    if (resolver) Object.defineProperty(Deno, 'resolveDns', resolver)
+  }
+}
+
+async function assertRefused(url: string, reason: string, seen: WorkersSeen): Promise<void> {
+  const error = await assertRejects(() => forgeFetch(url), ForgeUrlError)
+  assertEquals((error as ForgeUrlError).reason, reason)
+  assertEquals(seen.target.length, 0)
+}
+
+test('Workers: a public name that resolves to the metadata address is refused', async () => {
+  const metadata: DohScript = (_name, type) =>
+    type === 'A' ? aRecords('169.254.169.254') : noRecords
+  await withWorkersDoh(metadata, [], async (seen) => {
+    await assertRefused('https://169.254.169.254.nip.io/latest', 'address_not_public', seen)
+    assertEquals(seen.doh.length > 0, true)
+  })
+})
+
+test('Workers: a name whose answers are all public is fetched', async () => {
+  const github: DohScript = (name, type) => {
+    assertEquals(name, 'ghe.example.com')
+    return type === 'A' ? aRecords('140.82.112.6') : aaaaRecords('2606:50c0:8000::153')
+  }
+  await withWorkersDoh(github, [() => new Response('ok')], async (seen) => {
+    const response = await forgeFetch('https://ghe.example.com/api/v3/app')
+    assertEquals(await response.text(), 'ok')
+    assertEquals(seen.target.length, 1)
+  })
+})
+
+test('Workers: a private AAAA answer is refused even when there is no A record', async () => {
+  const ula: DohScript = (_name, type) => (type === 'AAAA' ? aaaaRecords('fd00::1') : noRecords)
+  await withWorkersDoh(ula, [], (seen) =>
+    assertRefused('https://ghe.example.com/a', 'address_not_public', seen)
+  )
+})
+
+test('Workers: a DoH failure, a missing name or no answers refuses the request', async () => {
+  const failing: DohScript[] = [
+    () => null,
+    () => ({ Status: 2 }),
+    () => ({ Status: 3 }),
+    () => noRecords,
+    (_name, type) =>
+      type === 'A' ? { Status: 0, Answer: [{ type: 1, data: 'nonsense' }] } : noRecords,
+  ]
+  // One after another: each case swaps the process-wide `fetch` and resolver.
+  await failing.reduce(
+    (previous, script) =>
+      previous.then(() =>
+        withWorkersDoh(script, [], (seen) =>
+          assertRefused('https://ghe.example.com/a', 'dns_lookup_failed', seen)
+        )
+      ),
+    Promise.resolve()
+  )
+})
+
+test('Workers: a redirect to a name that now resolves privately is refused', async () => {
+  // Same origin (the only redirect followed), rebinding between the hops.
+  const rebinding: DohScript = (_name, type, query) => {
+    if (type !== 'A') return noRecords
+    return query <= 2 ? aRecords('140.82.112.6') : aRecords('10.0.0.5')
+  }
+  await withWorkersDoh(
+    rebinding,
+    [() => new Response(null, { status: 302, headers: { location: '/moved' } })],
+    async (seen) => {
+      const error = await assertRejects(
+        () => forgeFetch('https://ghe.example.com/a'),
+        ForgeUrlError
+      )
+      assertEquals((error as ForgeUrlError).reason, 'address_not_public')
+      assertEquals(seen.target.length, 1)
+    }
+  )
+})
+
+test('Workers: a CNAME chain is judged by its final addresses', async () => {
+  const chain: DohScript = (_name, type) =>
+    type === 'A'
+      ? {
+          Status: 0,
+          Answer: [
+            { type: 5, data: 'internal.example.net.' },
+            { type: 1, data: '192.168.1.10' },
+          ],
+        }
+      : noRecords
+  await withWorkersDoh(chain, [], (seen) =>
+    assertRefused('https://ghe.example.com/a', 'address_not_public', seen)
+  )
+})
+
+test('Workers: the time budget covers a DoH lookup that never answers', async () => {
+  const resolver = Object.getOwnPropertyDescriptor(Deno, 'resolveDns')
+  const originalFetch = globalThis.fetch
+  Reflect.deleteProperty(Deno, 'resolveDns')
+  globalThis.fetch = ((_input: RequestInfo | URL, init?: RequestInit) =>
+    new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(init.signal?.reason))
+    })) as typeof fetch
+  try {
+    await assertRejects(() =>
+      forgeFetchWith('https://ghe.example.com/a', {}, { connect: null, timeoutMs: 20 })
+    )
+  } finally {
+    globalThis.fetch = originalFetch
+    if (resolver) Object.defineProperty(Deno, 'resolveDns', resolver)
+  }
+})

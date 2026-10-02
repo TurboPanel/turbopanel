@@ -1,4 +1,4 @@
-import { and, desc, eq, isNotNull, notInArray } from 'drizzle-orm'
+import { and, desc, eq, inArray, isNotNull, notInArray } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { recovery } from '../../db/schema.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
@@ -202,7 +202,7 @@ export async function updateRecoveryLocked(
   })
 }
 
-/** A `detecting` row older than this with no command queued is expired. */
+/** A `detecting`/`fencing` row older than this with no command queued is expired. */
 export const STALE_DETECTING_RECOVERY_MS = 10 * 60_000
 
 function hasQueuedCommands(metadata: RecoveryMetadata): boolean {
@@ -215,10 +215,11 @@ function hasQueuedCommands(metadata: RecoveryMetadata): boolean {
 }
 
 /**
- * Safety net for the stale sweep: a `detecting` row that nothing advanced
- * (no command queued) for {@link STALE_DETECTING_RECOVERY_MS} holds the
- * per-cluster in-flight slot and would lock switchover / DR out with
- * `managed_busy`. Expire it to terminal `blocked`. Returns the expired ids.
+ * Safety net for the stale sweep: a `detecting` or `fencing` row that nothing
+ * advanced (no command recorded in its metadata) for
+ * {@link STALE_DETECTING_RECOVERY_MS} holds the per-cluster in-flight slot
+ * and would lock switchover / DR out with `managed_busy`. Expire it to
+ * terminal `blocked`. Returns the expired ids.
  */
 export async function expireStaleDetectingRecoveries(
   db: Db,
@@ -226,7 +227,10 @@ export async function expireStaleDetectingRecoveries(
 ): Promise<string[]> {
   const nowMs = opts.now ?? Date.now()
   const maxAgeMs = opts.maxAgeMs ?? STALE_DETECTING_RECOVERY_MS
-  const rows = await db.select().from(recovery).where(eq(recovery.state, 'detecting'))
+  const rows = await db
+    .select()
+    .from(recovery)
+    .where(inArray(recovery.state, ['detecting', 'fencing']))
   const stale = rows
     .map((row) => serializeRow(row))
     .filter((row): row is RecoveryRecord => row !== null)
