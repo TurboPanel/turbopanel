@@ -46,6 +46,9 @@ import {
   resolveSourceSession,
   resolveSourceWebhookInfo,
 } from './routes.ts'
+import { useUnpinnedForgeFetchForTests } from '../../features/git/forge-url.ts'
+
+useUnpinnedForgeFetchForTests()
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.

@@ -49,7 +49,7 @@ type DenoNet = {
 
 /** The Deno transport, or `null` where there is none (Workers, browsers). */
 export function denoPinnedConnect(): PinnedConnect | null {
-  const deno = (globalThis as { Deno?: Partial<DenoNet> }).Deno
+  const deno = (globalThis as unknown as { Deno?: Partial<DenoNet> }).Deno
   if (typeof deno?.connect !== 'function' || typeof deno.startTls !== 'function') return null
   const net = deno as DenoNet
   return async ({ address, port, serverName }) => {
