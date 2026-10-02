@@ -503,6 +503,60 @@ Durable Object poll loop. DR rewrite: members no longer in the new primary's
 datacenter cannot stay `failover` → `read` (keep `readEligible`). Same-DC `read`
 peers are never silently upgraded to `failover`.
 
+### Dead-primary detectors
+
+`managed-ha-event` may carry `detector` (absent = Orchestrator) and bounded
+`evidence`. `ha-policy.ts` → `AUTOMATIC_FAILOVER_DETECTORS` is the policy
+switch for which detectors may start automatic failover, per engine:
+
+- `orchestrator` (absent field): Orchestrator DeadPrimary, **MySQL/MariaDB
+  only** — Orchestrator's image has only the MySQL driver, so an
+  Orchestrator-shaped event for Postgres is always rejected.
+- `postgres-probe`: the daemon's own probe on the Postgres primary's host
+  (`turbopaneld/src/managed/AGENTS.md` → **Postgres dead-primary detection**):
+  engine dead, host alive. Sent only when the attach frame advertises
+  `managed-ha-probe-v1`.
+
+What the control plane actually checks, in order (`handleManagedHaEvent` →
+`haEventRejection` → `beginAutomaticFailover`); there is **no raft-leader
+check here** — Raft only matters to whether Orchestrator raises DeadPrimary at
+all:
+
+1. The detector covers the cluster's engine.
+2. **Every** event (with or without `detector`): the reporting server — the
+   authenticated cell session's `serverId`, never a payload field — hosts a
+   member of the cluster **and** `server.organization_id` equals the cluster's
+   organization (environment → project).
+3. `PRIMARY_HOST_DETECTORS` (`postgres-probe`): `sourceMemberId` is the
+   current primary member and the reporter is that member's server, so a stale
+   daemon (old primary after a switchover) can never fail over the new primary.
+4. An in-flight recovery for the cluster is resumed, not duplicated.
+5. Persisted cooldown: no new automatic failover within
+   `AUTOMATIC_FAILOVER_COOLDOWN_MS` (15 min) of the last **accepted** one
+   (newest `automatic-failover` recovery row with a target), read from the
+   journal so it survives restarts.
+6. A same-DC `failover` replica passes the promote lag gate (streaming,
+   observation ≤ 120 s old, lag under 64 MiB / 30 s); otherwise `blocked`.
+7. Without a command queue (the Workers / Durable Object transport) a
+   **terminal** `blocked` row is written with
+   `AUTOMATIC_FAILOVER_NO_QUEUE_MESSAGE` (`no_command_queue`) and no target —
+   never `detecting`, which would hold the in-flight slot
+   (`uniq_recovery_inflight_managed`) and make every later switchover / DR
+   answer `managed_busy`. With a queue: fence (drain + `managed.lifecycle
+   stop`; an unreachable old primary blocks) then promote.
+8. Safety net: the stale sweep (Deno cleanup lane and the Workers
+   offline-sweep cron) expires any `detecting` row older than
+   `STALE_DETECTING_RECOVERY_MS` (10 min) with no command recorded in its
+   metadata to `blocked` (`expireStaleDetectingRecoveries`).
+
+A rejected event is logged and dropped (no recovery row). An accepted one is
+logged with its evidence and records `metadata.detector` /
+`metadata.detectorEvidence` on the recovery row.
+
+Whole-host loss is deliberately **not** a detector: nothing can fence a host
+that is gone, so it stays manual with an alert. Widening it (Option A) is a new
+entry in `AUTOMATIC_FAILOVER_DETECTORS` once fencing can cope.
+
 ### Manual live HA checklist
 
 Unit tests encode topology/lag/fence policy. A later live run (not CI) should

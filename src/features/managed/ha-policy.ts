@@ -163,3 +163,112 @@ export function selectHaRaftMembers(
   }
   return { advertiseAddress, peers }
 }
+
+/** `managed-ha-event` without `detector`: the daemon's Orchestrator poller. */
+export const ORCHESTRATOR_DETECTOR = 'orchestrator'
+/** The daemon's own Postgres probe on the primary's host. */
+export const POSTGRES_PROBE_DETECTOR = 'postgres-probe'
+
+/**
+ * Detectors whose `managed-ha-event` may start automatic failover, and the
+ * engines each may speak for. This is the policy switch for what counts as a
+ * dead primary:
+ *
+ * - `orchestrator` (event without `detector`): Orchestrator DeadPrimary.
+ *   MySQL/MariaDB only: Orchestrator's image has only the MySQL driver and
+ *   never sees Postgres, so an Orchestrator-shaped event for Postgres is
+ *   always spurious.
+ * - `postgres-probe`: the Postgres engine is dead while its host and daemon
+ *   are alive, so the old primary can still be fenced.
+ *
+ * Whole-host loss is deliberately absent: nothing can fence a host that is
+ * gone, so it stays a manual operator action with an alert. Widening to it
+ * (Option A) means adding a host-loss detector here once fencing can cope,
+ * not changing the daemon probe.
+ */
+export const AUTOMATIC_FAILOVER_DETECTORS: ReadonlyMap<string, readonly string[]> = new Map<
+  string,
+  readonly string[]
+>([
+  [ORCHESTRATOR_DETECTOR, ['mysql', 'mariadb']],
+  [POSTGRES_PROBE_DETECTOR, ['postgres']],
+])
+
+/**
+ * Detectors that run on the primary's own host. Their event must name the
+ * current primary member and come from that member's server, so a stale
+ * daemon (e.g. the old primary's host after a switchover) can never fail
+ * over the new primary.
+ */
+export const PRIMARY_HOST_DETECTORS: ReadonlySet<string> = new Set([POSTGRES_PROBE_DETECTOR])
+
+/** Minimum time between two accepted automatic failovers of one cluster. */
+export const AUTOMATIC_FAILOVER_COOLDOWN_MS = 15 * 60_000
+
+export type HaEventGateInput = {
+  detector: string | undefined
+  engine: string
+  sourceMemberId?: string
+  /** The authenticated session's server id, never a payload field. */
+  reporterServerId: string
+  /** Organization of the reporting server (`server.organization_id`). */
+  reporterOrganizationId: string | null
+  /** Organization that owns the cluster (its environment's project). */
+  clusterOrganizationId: string | null
+  /** Server ids hosting a member of the cluster. */
+  memberServerIds: readonly string[]
+  primary: { id: string; serverId: string } | null
+}
+
+function reporterRejection(input: HaEventGateInput): string | null {
+  if (!input.memberServerIds.includes(input.reporterServerId)) {
+    return 'reporting server hosts no member of this cluster'
+  }
+  if (
+    input.clusterOrganizationId === null ||
+    input.reporterOrganizationId !== input.clusterOrganizationId
+  ) {
+    return "reporting server is not in the cluster's organization"
+  }
+  return null
+}
+
+function primaryHostRejection(input: HaEventGateInput): string | null {
+  if (!input.primary) return 'no current primary'
+  if (input.sourceMemberId !== input.primary.id) {
+    return 'event does not name the current primary'
+  }
+  if (input.reporterServerId !== input.primary.serverId) {
+    return "event did not come from the current primary's server"
+  }
+  return null
+}
+
+/**
+ * Why a `managed-ha-event` must not start automatic failover; `null` when it
+ * may. Every detector (including none) must come from a server that hosts a
+ * member of the cluster in the cluster's organization.
+ */
+export function haEventRejection(input: HaEventGateInput): string | null {
+  const detector = input.detector ?? ORCHESTRATOR_DETECTOR
+  const engines = AUTOMATIC_FAILOVER_DETECTORS.get(detector)
+  if (!engines) return `detector ${detector} may not start automatic failover`
+  if (!engines.includes(input.engine)) {
+    return `detector ${detector} does not cover engine ${input.engine}`
+  }
+  const reporter = reporterRejection(input)
+  if (reporter) return reporter
+  return PRIMARY_HOST_DETECTORS.has(detector) ? primaryHostRejection(input) : null
+}
+
+/** True while the last accepted automatic failover is inside the cooldown. */
+export function automaticFailoverCoolingDown(
+  lastAcceptedStartedAt: string | null,
+  nowMs: number,
+  cooldownMs: number = AUTOMATIC_FAILOVER_COOLDOWN_MS
+): boolean {
+  if (!lastAcceptedStartedAt) return false
+  const started = Date.parse(lastAcceptedStartedAt)
+  if (!Number.isFinite(started)) return false
+  return nowMs - started < cooldownMs
+}

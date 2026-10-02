@@ -6,11 +6,7 @@
  * primary → `blocked`, never promote.
  */
 
-export const RECOVERY_KINDS = [
-  'automatic-failover',
-  'switchover',
-  'disaster-recovery',
-] as const
+export const RECOVERY_KINDS = ['automatic-failover', 'switchover', 'disaster-recovery'] as const
 
 export type RecoveryKind = (typeof RECOVERY_KINDS)[number]
 
@@ -34,14 +30,27 @@ export const TERMINAL_RECOVERY_STATES: ReadonlySet<RecoveryState> = new Set([
   'blocked',
 ])
 
-export const AUTOMATIC_FAILOVER_BLOCKED_ERROR =
-  'managed_automatic_failover_blocked'
+export const AUTOMATIC_FAILOVER_BLOCKED_ERROR = 'managed_automatic_failover_blocked'
 
 export const AUTOMATIC_FAILOVER_BLOCKED_MESSAGE =
   'Automatic failover blocked: unable to verify previous primary is fenced'
 
 export const AUTOMATIC_FAILOVER_NO_CANDIDATE_MESSAGE =
   'Automatic failover blocked: no same-datacenter failover replica is eligible'
+
+/**
+ * The transport that received the event has no command queue (the Workers /
+ * Durable Object path), so nothing could ever fence or promote: the journal
+ * row is terminal at once instead of a `detecting` row that would hold the
+ * in-flight slot and lock switchover / DR out.
+ */
+export const AUTOMATIC_FAILOVER_NO_QUEUE_REASON = 'no_command_queue'
+export const AUTOMATIC_FAILOVER_NO_QUEUE_MESSAGE =
+  'Automatic failover not started: this control plane cannot dispatch commands (no_command_queue)'
+
+/** A `detecting` row nothing advanced: expired by the stale sweep. */
+export const AUTOMATIC_FAILOVER_STALE_DETECTING_MESSAGE =
+  'Automatic failover expired: detection was never advanced (stale_detecting)'
 
 export const AUTOMATIC_FAILOVER_UNHEALTHY_MESSAGE =
   'Automatic failover blocked: no same-datacenter failover replica is healthy enough to promote'
@@ -62,6 +71,10 @@ export type RecoveryMetadata = {
   targetDatacenterId?: string | null
   sourceServerId?: string
   targetServerId?: string
+  /** `managed-ha-event` detector that opened an automatic failover. */
+  detector?: string
+  /** Detector evidence as sent (JSON text, bounded); never used to decide. */
+  detectorEvidence?: string
 }
 
 export type RecoveryRecord = {
@@ -79,13 +92,11 @@ export type RecoveryRecord = {
 }
 
 export function isRecoveryKind(value: unknown): value is RecoveryKind {
-  return typeof value === 'string' &&
-    (RECOVERY_KINDS as readonly string[]).includes(value)
+  return typeof value === 'string' && (RECOVERY_KINDS as readonly string[]).includes(value)
 }
 
 export function isRecoveryState(value: unknown): value is RecoveryState {
-  return typeof value === 'string' &&
-    (RECOVERY_STATES as readonly string[]).includes(value)
+  return typeof value === 'string' && (RECOVERY_STATES as readonly string[]).includes(value)
 }
 
 export function isTerminalRecoveryState(state: RecoveryState): boolean {
@@ -122,7 +133,7 @@ function optionalNullableNumber(value: unknown): number | null | undefined {
 function setIfPresent<K extends keyof RecoveryMetadata>(
   metadata: RecoveryMetadata,
   key: K,
-  parsed: RecoveryMetadata[K] | undefined,
+  parsed: RecoveryMetadata[K] | undefined
 ): void {
   if (parsed === undefined) return
   metadata[key] = parsed
@@ -132,44 +143,22 @@ export function parseRecoveryMetadata(value: unknown): RecoveryMetadata {
   if (!isRecord(value)) return {}
   const metadata: RecoveryMetadata = {}
   setIfPresent(metadata, 'fencingEpoch', optionalString(value.fencingEpoch))
-  setIfPresent(
-    metadata,
-    'fenceCommandIds',
-    optionalStringList(value.fenceCommandIds),
-  )
-  setIfPresent(
-    metadata,
-    'promoteCommandId',
-    optionalString(value.promoteCommandId),
-  )
-  setIfPresent(
-    metadata,
-    'failoverCommandId',
-    optionalString(value.failoverCommandId),
-  )
-  setIfPresent(
-    metadata,
-    'ingressCommandIds',
-    optionalStringList(value.ingressCommandIds),
-  )
+  setIfPresent(metadata, 'fenceCommandIds', optionalStringList(value.fenceCommandIds))
+  setIfPresent(metadata, 'promoteCommandId', optionalString(value.promoteCommandId))
+  setIfPresent(metadata, 'failoverCommandId', optionalString(value.failoverCommandId))
+  setIfPresent(metadata, 'ingressCommandIds', optionalStringList(value.ingressCommandIds))
   setIfPresent(metadata, 'haPresent', optionalBoolean(value.haPresent))
   setIfPresent(metadata, 'fenced', optionalBoolean(value.fenced))
   setIfPresent(metadata, 'drainApplied', optionalBoolean(value.drainApplied))
   setIfPresent(metadata, 'stopApplied', optionalBoolean(value.stopApplied))
   setIfPresent(metadata, 'blockedReason', optionalString(value.blockedReason))
   setIfPresent(metadata, 'lagBytes', optionalNullableNumber(value.lagBytes))
-  setIfPresent(
-    metadata,
-    'sourceDatacenterId',
-    optionalNullableString(value.sourceDatacenterId),
-  )
-  setIfPresent(
-    metadata,
-    'targetDatacenterId',
-    optionalNullableString(value.targetDatacenterId),
-  )
+  setIfPresent(metadata, 'sourceDatacenterId', optionalNullableString(value.sourceDatacenterId))
+  setIfPresent(metadata, 'targetDatacenterId', optionalNullableString(value.targetDatacenterId))
   setIfPresent(metadata, 'sourceServerId', optionalString(value.sourceServerId))
   setIfPresent(metadata, 'targetServerId', optionalString(value.targetServerId))
+  setIfPresent(metadata, 'detector', optionalString(value.detector))
+  setIfPresent(metadata, 'detectorEvidence', optionalString(value.detectorEvidence))
   return metadata
 }
 

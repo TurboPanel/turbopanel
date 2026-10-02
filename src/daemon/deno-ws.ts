@@ -355,6 +355,8 @@ async function handleDaemonManagedHaInbound(params: {
     {
       managedId: message.managedId,
       sourceMemberId: message.sourceMemberId,
+      ...(message.detector ? { detector: message.detector } : {}),
+      ...(message.evidence ? { evidence: message.evidence } : {}),
       at: message.at,
     },
     {

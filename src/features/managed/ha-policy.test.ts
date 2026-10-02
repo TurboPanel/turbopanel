@@ -11,6 +11,8 @@ import {
   selectHaRaftMembers,
   serverHostsManagedHa,
   shouldBlockUnreachablePrimaryFence,
+  haEventRejection,
+  automaticFailoverCoolingDown,
   type HaMemberCandidateInput,
 } from './ha-policy.ts'
 import {
@@ -325,4 +327,90 @@ test('disaster recovery reclassifies former same-DC failover members that left t
     }),
     'read'
   )
+})
+
+const PRIMARY = { id: 'mem-primary', serverId: 'srv-a' }
+const GATE = {
+  detector: 'postgres-probe',
+  engine: 'postgres',
+  sourceMemberId: 'mem-primary',
+  reporterServerId: 'srv-a',
+  reporterOrganizationId: 'org-1',
+  clusterOrganizationId: 'org-1',
+  memberServerIds: ['srv-a', 'srv-b'],
+  primary: PRIMARY,
+}
+
+test('haEventRejection: Orchestrator events (no detector) cover MySQL/MariaDB only', () => {
+  const orchestrator = { ...GATE, detector: undefined, sourceMemberId: undefined }
+  for (const engine of ['mysql', 'mariadb']) {
+    assertEquals(haEventRejection({ ...orchestrator, engine }), null)
+  }
+  assertEquals(
+    haEventRejection({ ...orchestrator, engine: 'postgres' }),
+    'detector orchestrator does not cover engine postgres'
+  )
+  assertEquals(
+    haEventRejection({ ...orchestrator, detector: 'orchestrator', engine: 'postgres' }),
+    'detector orchestrator does not cover engine postgres'
+  )
+})
+
+test('haEventRejection: every detector must come from a member server of the same org', () => {
+  for (const base of [GATE, { ...GATE, detector: undefined, engine: 'mysql' }]) {
+    assertEquals(
+      haEventRejection({ ...base, reporterServerId: 'srv-x' }),
+      'reporting server hosts no member of this cluster'
+    )
+    assertEquals(
+      haEventRejection({ ...base, reporterOrganizationId: 'org-2' }),
+      "reporting server is not in the cluster's organization"
+    )
+    assertEquals(
+      haEventRejection({ ...base, reporterOrganizationId: null }),
+      "reporting server is not in the cluster's organization"
+    )
+    assertEquals(
+      haEventRejection({ ...base, clusterOrganizationId: null, reporterOrganizationId: null }),
+      "reporting server is not in the cluster's organization"
+    )
+  }
+})
+
+test('haEventRejection: postgres-probe must name the current primary from its own server', () => {
+  assertEquals(haEventRejection(GATE), null)
+  assertEquals(
+    haEventRejection({ ...GATE, sourceMemberId: 'mem-old-primary' }),
+    'event does not name the current primary'
+  )
+  assertEquals(haEventRejection({ ...GATE, sourceMemberId: undefined }) !== null, true)
+  assertEquals(
+    haEventRejection({ ...GATE, reporterServerId: 'srv-b' }),
+    "event did not come from the current primary's server"
+  )
+  assertEquals(haEventRejection({ ...GATE, primary: null }), 'no current primary')
+})
+
+test('haEventRejection: postgres-probe never speaks for MySQL/MariaDB', () => {
+  for (const engine of ['mysql', 'mariadb']) {
+    assertEquals(
+      haEventRejection({ ...GATE, engine }),
+      `detector postgres-probe does not cover engine ${engine}`
+    )
+  }
+})
+
+test('haEventRejection: unknown detectors (e.g. host loss, not enabled) never fail over', () => {
+  assertEquals(
+    haEventRejection({ ...GATE, detector: 'host-lost' }),
+    'detector host-lost may not start automatic failover'
+  )
+})
+
+test('automaticFailoverCoolingDown: 15 minutes from the last accepted failover', () => {
+  const now = Date.parse('2026-10-01T12:00:00Z')
+  assertEquals(automaticFailoverCoolingDown(null, now), false)
+  assertEquals(automaticFailoverCoolingDown('2026-10-01T11:50:00Z', now), true)
+  assertEquals(automaticFailoverCoolingDown('2026-10-01T11:45:00Z', now), false)
+  assertEquals(automaticFailoverCoolingDown('not-a-date', now), false)
 })
