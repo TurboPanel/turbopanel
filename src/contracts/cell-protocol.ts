@@ -501,6 +501,18 @@ export type DaemonMessage =
       type: 'managed-ha-event'
       managedId: string
       sourceMemberId?: string
+      /**
+       * Who decided the primary is dead. Absent = the daemon's Orchestrator
+       * poller. `postgres-probe` = the daemon's own Postgres probe on the
+       * primary's host (feature `managed-ha-probe-v1`); see
+       * `features/managed/ha-policy.ts` → `AUTOMATIC_FAILOVER_DETECTORS`.
+       */
+      detector?: string
+      /**
+       * Bounded detector evidence. Logged and stored on the recovery row
+       * (`metadata.detectorEvidence`); never used to decide anything.
+       */
+      evidence?: Record<string, unknown>
       at: string
     }
   | {
@@ -999,7 +1011,20 @@ function validateManagedHaEventFields(record: Record<string, unknown>): string |
   ) {
     return 'invalid sourceMemberId'
   }
+  if (record.detector !== undefined && !isManagedHaDetectorName(record.detector)) {
+    return 'invalid detector'
+  }
+  if (record.evidence !== undefined && !isRecord(record.evidence)) {
+    return 'invalid evidence'
+  }
   return null
+}
+
+const MANAGED_HA_DETECTOR_RE = /^[a-z][a-z0-9-]{0,63}$/
+
+/** Shape only: which detectors may start a failover is policy, not wire. */
+function isManagedHaDetectorName(value: unknown): value is string {
+  return typeof value === 'string' && MANAGED_HA_DETECTOR_RE.test(value)
 }
 
 function isNonNegativeInt(value: unknown): value is number {

@@ -82,9 +82,12 @@ function createDaemonJwtSecrets() {
 function createSelectChain<T>(getRows: () => T[]) {
   const limit = () => Promise.resolve(getRows())
   const where = () => ({ limit })
-  // `getServerDaemonStateByServerId` joins `key` in — the mock ignores the
-  // join predicate and always resolves the same rows.
-  const from = () => ({ where, innerJoin: () => ({ where }) })
+  // `getServerDaemonStateByServerId` joins `key` in, and the managed HA
+  // event gate joins environment + project — the mock ignores every join
+  // predicate and always resolves the same rows.
+  type Joinable = { where: typeof where; innerJoin: () => Joinable }
+  const joinable: Joinable = { where, innerJoin: () => joinable }
+  const from = () => joinable
   return { from }
 }
 

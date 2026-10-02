@@ -16,6 +16,7 @@ import type { ManagedEngineCode } from './types.ts'
 import { createCommandRecord, transitionCommand } from '../commands/command-records.ts'
 import {
   findInFlightRecovery,
+  findLatestAcceptedAutomaticFailover,
   findLatestRecovery,
   findRecoveryById,
   insertRecovery,
@@ -38,11 +39,14 @@ import { isPrivateEndpointError, resolvePrivateEndpoints } from '../net/private-
 import {
   automaticFailoverBlockCause,
   automaticFailoverBlockedReason,
+  automaticFailoverCoolingDown,
   type HaMemberCandidateInput,
 } from './ha-policy.ts'
 import { isAutomaticFailoverHealthy, replicationFromMemberMetadata } from './promote-lag.ts'
 import {
   AUTOMATIC_FAILOVER_BLOCKED_ERROR,
+  AUTOMATIC_FAILOVER_NO_QUEUE_MESSAGE,
+  AUTOMATIC_FAILOVER_NO_QUEUE_REASON,
   isTerminalRecoveryState,
   type RecoveryKind,
   type RecoveryMetadata,
@@ -520,6 +524,16 @@ export function beginDisasterRecovery(params: {
   return beginRecovery({ ...params, kind: 'disaster-recovery' })
 }
 
+function detectorMetadata(
+  detector: string | undefined,
+  evidence: string | undefined
+): { detector?: string; detectorEvidence?: string } {
+  return {
+    ...(detector ? { detector } : {}),
+    ...(evidence ? { detectorEvidence: evidence } : {}),
+  }
+}
+
 export async function beginAutomaticFailover(params: {
   db: Db
   commandQueue: CommandQueue | null
@@ -527,10 +541,25 @@ export async function beginAutomaticFailover(params: {
   engine: ManagedEngineCode
   members: readonly ManagedMemberRow[]
   sourceMemberId?: string
+  /** `managed-ha-event` detector; recorded on the journal row. */
+  detector?: string
+  /** Bounded detector evidence (JSON text); recorded on the journal row. */
+  evidence?: string
   actor: RecoveryCommandActor
 }): Promise<RecoveryRecord | null> {
   const inflight = await findInFlightRecovery(params.db, params.managedId)
   if (inflight) return inflight
+
+  // Persisted cooldown: the journal row of the last accepted failover, so a
+  // flapping detector or a restart can never chain failovers back to back.
+  const lastAccepted = await findLatestAcceptedAutomaticFailover(params.db, params.managedId)
+  if (automaticFailoverCoolingDown(lastAccepted?.startedAt ?? null, Date.now())) {
+    compatLogWarn(
+      'managed-ha',
+      `automatic failover for ${params.managedId} refused: previous one started ${lastAccepted?.startedAt} (cooldown)`
+    )
+    return null
+  }
 
   const primary =
     params.members.find((row) => row.role === 'primary') ??
@@ -551,6 +580,7 @@ export async function beginAutomaticFailover(params: {
         blockedReason: automaticFailoverBlockedReason(cause),
         sourceServerId: primary.serverId,
         sourceDatacenterId: firstDatacenterId(dcSets, primary.serverId),
+        ...detectorMetadata(params.detector, params.evidence),
       },
     })
   }
@@ -558,17 +588,25 @@ export async function beginAutomaticFailover(params: {
   if (!target) return null
 
   if (!params.commandQueue) {
+    // No queue means nothing can ever fence or promote: record a TERMINAL row
+    // (never `detecting`, which would hold the in-flight slot forever) and no
+    // target, so it does not count as an accepted failover for the cooldown.
+    compatLogWarn(
+      'managed-ha',
+      `automatic failover for ${params.managedId} not started: ${AUTOMATIC_FAILOVER_NO_QUEUE_REASON}`
+    )
     return insertRecovery(params.db, {
       managedId: params.managedId,
       kind: 'automatic-failover',
       sourcePrimaryMemberId: primary.id,
-      targetMemberId: target.id,
-      state: 'detecting',
+      state: 'blocked',
       metadata: {
+        blockedReason: AUTOMATIC_FAILOVER_NO_QUEUE_MESSAGE,
         sourceServerId: primary.serverId,
         targetServerId: target.serverId,
         sourceDatacenterId: firstDatacenterId(dcSets, primary.serverId),
         targetDatacenterId: firstDatacenterId(dcSets, target.serverId),
+        ...detectorMetadata(params.detector, params.evidence),
       },
     })
   }
@@ -586,6 +624,7 @@ export async function beginAutomaticFailover(params: {
     extraMetadata: {
       sourceDatacenterId: firstDatacenterId(dcSets, primary.serverId),
       targetDatacenterId: firstDatacenterId(dcSets, target.serverId),
+      ...detectorMetadata(params.detector, params.evidence),
     },
   })
   if (!result.ok) {

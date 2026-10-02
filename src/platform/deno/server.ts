@@ -1,4 +1,6 @@
 import type { Hono } from 'hono'
+import { expireStaleDetectingRecoveries } from '../../features/managed/recovery-records.ts'
+import { AUTOMATIC_FAILOVER_STALE_DETECTING_MESSAGE } from '../../features/managed/recovery.ts'
 import { deriveDaemonJwtKeyring } from '../../daemon/authn/daemon-jwt-keyring.ts'
 import {
   type DerivedSecretsConfig,
@@ -321,10 +323,13 @@ async function runCleanupPhase(label: string, fn: () => Promise<unknown>): Promi
 async function sweepStaleCommandsPhase(db: Db): Promise<void> {
   const swept = await sweepStaleCommands(db)
   const released = await releaseStuckManagedApplying(db)
-  if (swept > 0 || released.length > 0) {
+  const expired = await expireStaleDetectingRecoveries(db, {
+    reason: AUTOMATIC_FAILOVER_STALE_DETECTING_MESSAGE,
+  })
+  if (swept > 0 || released.length > 0 || expired.length > 0) {
     logWarn(
       'daemon-cell',
-      `stale command sweep: timed out ${swept}, released managed ${released.join(',') || 'none'}`
+      `stale command sweep: timed out ${swept}, released managed ${released.join(',') || 'none'}, expired detecting recoveries ${expired.join(',') || 'none'}`
     )
   }
 }

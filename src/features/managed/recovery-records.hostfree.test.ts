@@ -5,12 +5,15 @@
 import { assertEquals, assertRejects } from '@std/assert'
 import type { Db } from '../../db/connection.ts'
 import { recovery } from '../../db/schema.ts'
+import { createMemoryDb } from '../../test-fixtures/memory-db.ts'
 import {
   findInFlightRecovery,
   findLatestRecovery,
   findRecoveryById,
   insertRecovery,
   updateRecovery,
+  expireStaleDetectingRecoveries,
+  STALE_DETECTING_RECOVERY_MS,
 } from './recovery-records.ts'
 
 /**
@@ -101,11 +104,13 @@ function createRecoveryDb(opts?: {
         return {
           returning: () =>
             Promise.resolve(
-              opts?.insertReturning ?? [{
-                ...baseRow(),
-                ...values,
-                id: recoveryId,
-              }],
+              opts?.insertReturning ?? [
+                {
+                  ...baseRow(),
+                  ...values,
+                  id: recoveryId,
+                },
+              ]
             ),
         }
       },
@@ -114,10 +119,7 @@ function createRecoveryDb(opts?: {
       set: (patch: Record<string, unknown>) => {
         updates.push(patch)
         return {
-          where: () =>
-            thenableRows(
-              opts?.updateReturning ?? [{ ...baseRow(), ...patch }],
-            ),
+          where: () => thenableRows(opts?.updateReturning ?? [{ ...baseRow(), ...patch }]),
         }
       },
     }),
@@ -132,7 +134,7 @@ function createRecoveryDb(opts?: {
 test('findRecoveryById serializes a valid row and drops invalid kinds', async () => {
   const valid = await findRecoveryById(
     createRecoveryDb({ selectQueues: [[baseRow()]] }),
-    recoveryId,
+    recoveryId
   )
   if (!valid) throw new TypeError('expected a recovery record')
   assertEquals(valid.id, recoveryId)
@@ -141,14 +143,11 @@ test('findRecoveryById serializes a valid row and drops invalid kinds', async ()
 
   const invalid = await findRecoveryById(
     createRecoveryDb({ selectQueues: [[baseRow({ kind: 'not-a-kind' })]] }),
-    recoveryId,
+    recoveryId
   )
   assertEquals(invalid, null)
 
-  const missing = await findRecoveryById(
-    createRecoveryDb({ selectQueues: [[]] }),
-    recoveryId,
-  )
+  const missing = await findRecoveryById(createRecoveryDb({ selectQueues: [[]] }), recoveryId)
   assertEquals(missing, null)
 })
 
@@ -157,15 +156,12 @@ test('findInFlightRecovery returns the newest non-terminal row', async () => {
     createRecoveryDb({
       selectQueues: [[baseRow({ state: 'fencing', startedAt: '2020-01-02T00:00:00.000Z' })]],
     }),
-    managedId,
+    managedId
   )
   if (!inflight) throw new TypeError('expected an in-flight recovery')
   assertEquals(inflight.state, 'fencing')
 
-  const none = await findInFlightRecovery(
-    createRecoveryDb({ selectQueues: [[]] }),
-    managedId,
-  )
+  const none = await findInFlightRecovery(createRecoveryDb({ selectQueues: [[]] }), managedId)
   assertEquals(none, null)
 })
 
@@ -174,7 +170,7 @@ test('findLatestRecovery prefers in-flight over terminal history', async () => {
     createRecoveryDb({
       selectQueues: [[baseRow({ state: 'detecting' })]],
     }),
-    managedId,
+    managedId
   )
   if (!inflight) throw new TypeError('expected an in-flight recovery')
   assertEquals(inflight.state, 'detecting')
@@ -186,7 +182,7 @@ test('findLatestRecovery prefers in-flight over terminal history', async () => {
         [baseRow({ state: 'completed', completedAt: '2020-01-03T00:00:00.000Z' })],
       ],
     }),
-    managedId,
+    managedId
   )
   if (!terminal) throw new TypeError('expected a terminal recovery')
   assertEquals(terminal.state, 'completed')
@@ -224,7 +220,7 @@ test('insertRecovery rejects an empty returning row', async () => {
         sourcePrimaryMemberId: sourceMemberId,
       }),
     Error,
-    'Failed to create recovery',
+    'Failed to create recovery'
   )
 })
 
@@ -240,18 +236,20 @@ test('insertRecovery rejects an unserializable returning row', async () => {
         sourcePrimaryMemberId: sourceMemberId,
       }),
     Error,
-    'Failed to serialize recovery',
+    'Failed to serialize recovery'
   )
 })
 
 test('updateRecovery stamps completedAt on terminal states and honors explicit patches', async () => {
   const db = createRecoveryDb({
-    updateReturning: [baseRow({
-      state: 'completed',
-      completedAt: '2020-01-04T00:00:00.000Z',
-      metadata: { fenced: true, drainApplied: true },
-      targetMemberId: null,
-    })],
+    updateReturning: [
+      baseRow({
+        state: 'completed',
+        completedAt: '2020-01-04T00:00:00.000Z',
+        metadata: { fenced: true, drainApplied: true },
+        targetMemberId: null,
+      }),
+    ],
   })
 
   const updated = await updateRecovery(db, recoveryId, {
@@ -268,10 +266,12 @@ test('updateRecovery stamps completedAt on terminal states and honors explicit p
   assertEquals(db.updates[0]?.completedAt !== undefined, true)
 
   const explicit = createRecoveryDb({
-    updateReturning: [baseRow({
-      state: 'failed',
-      completedAt: '2020-01-05T00:00:00.000Z',
-    })],
+    updateReturning: [
+      baseRow({
+        state: 'failed',
+        completedAt: '2020-01-05T00:00:00.000Z',
+      }),
+    ],
   })
   const failed = await updateRecovery(explicit, recoveryId, {
     state: 'failed',
@@ -283,10 +283,54 @@ test('updateRecovery stamps completedAt on terminal states and honors explicit p
 })
 
 test('updateRecovery returns null when no row matches', async () => {
-  const updated = await updateRecovery(
-    createRecoveryDb({ updateReturning: [] }),
-    recoveryId,
-    { state: 'verifying' },
-  )
+  const updated = await updateRecovery(createRecoveryDb({ updateReturning: [] }), recoveryId, {
+    state: 'verifying',
+  })
   assertEquals(updated, null)
+})
+
+function staleRow(id: string, overrides: Record<string, unknown> = {}) {
+  return {
+    id,
+    managedId: `mgd-${id}`,
+    kind: 'automatic-failover',
+    sourcePrimaryMemberId: 'mem-primary',
+    targetMemberId: 'mem-replica',
+    state: 'detecting',
+    startedAt: '2026-10-01T00:00:00.000Z',
+    completedAt: null,
+    metadata: {},
+    createdAt: '2026-10-01T00:00:00.000Z',
+    updatedAt: '2026-10-01T00:00:00.000Z',
+    ...overrides,
+  }
+}
+
+test('expireStaleDetectingRecoveries expires only old detecting rows with no queued command', async () => {
+  const db = createMemoryDb([
+    [
+      recovery,
+      [
+        staleRow('old'),
+        staleRow('fresh', { startedAt: '2026-10-01T00:55:00.000Z' }),
+        staleRow('queued', { metadata: { fenceCommandIds: ['cmd-1'] } }),
+        staleRow('fencing', { state: 'fencing' }),
+        staleRow('done', { state: 'blocked', metadata: { blockedReason: 'earlier' } }),
+      ],
+    ],
+  ])
+  const expired = await expireStaleDetectingRecoveries(db, {
+    now: Date.parse('2026-10-01T01:00:00.000Z'),
+    reason: 'stale',
+  })
+  assertEquals(expired, ['old'])
+  const byId = new Map(db.rows(recovery).map((row) => [row.id, row]))
+  assertEquals(byId.get('old')?.state, 'blocked')
+  assertEquals((byId.get('old')?.metadata as Record<string, unknown>).blockedReason, 'stale')
+  assertEquals(typeof byId.get('old')?.completedAt, 'string')
+  assertEquals(byId.get('fresh')?.state, 'detecting')
+  assertEquals(byId.get('queued')?.state, 'detecting')
+  assertEquals(byId.get('fencing')?.state, 'fencing')
+  assertEquals(byId.get('done')?.state, 'blocked')
+  assertEquals(STALE_DETECTING_RECOVERY_MS, 10 * 60_000)
 })
