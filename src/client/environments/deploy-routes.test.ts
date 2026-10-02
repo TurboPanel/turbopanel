@@ -36,6 +36,7 @@ import {
   subnet,
   tls,
   user,
+  variable,
   workspace,
 } from '../../db/schema.ts'
 import { getCommandMetadata, transitionCommand } from '../../features/commands/command-records.ts'
@@ -832,6 +833,55 @@ test('POST /environments/:id/deploy payload carries runtime composeFiles', async
       assertEquals(payload.composeFiles[0]!.role, 'runtime')
       assertEquals(payload.composeFiles[0]!.filename, 'compose.yaml')
       assertEquals(payload.composeFiles[0]!.content.includes('web:'), true)
+    }
+  )
+})
+
+test('POST /environments/:id/deploy payload carries the non-secret envFile', async () => {
+  await withDeployFixtures(
+    async ({ db, app, secrets, userId, organizationId, projectId, environmentId, serverId }) => {
+      await db
+        .update(environment)
+        .set({
+          serverId,
+          name: 'Production',
+          options: { compose: emptyComposeDocument() },
+          updatedAt: new Date().toISOString(),
+        })
+        .where(eq(environment.id, environmentId))
+      await db
+        .update(project)
+        .set({
+          options: { compose: composeWithWebService() },
+          updatedAt: new Date().toISOString(),
+        })
+        .where(eq(project.id, projectId))
+      await db.insert(variable).values({
+        environmentId,
+        key: 'APP_MODE',
+        value: 'route-test',
+      })
+
+      const cookie = await sessionCookie(db, secrets, userId)
+      const res = await app.request(`/environments/${environmentId}/deploy`, {
+        method: 'POST',
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+          'Content-Type': 'application/json',
+        },
+        body: '{}',
+      })
+
+      assertEquals(res.status, 200)
+      const body = (await res.json()) as { ok: boolean; commandId: string }
+      const [row] = await db
+        .select({ payload: dispatch.payload })
+        .from(dispatch)
+        .where(eq(dispatch.commandId, body.commandId))
+        .limit(1)
+      const payload = row?.payload as { envFile?: string }
+      assertEquals(payload.envFile?.includes('APP_MODE=route-test'), true)
     }
   )
 })
