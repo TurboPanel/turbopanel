@@ -6,7 +6,10 @@ import { assertEquals } from '@std/assert'
 import type { Db } from '../../db/connection.ts'
 import type { CommandQueue } from '../commands/queue.ts'
 import {
+  AUTOMATIC_FAILOVER_COOLDOWN_MESSAGE,
   AUTOMATIC_FAILOVER_NO_CANDIDATE_MESSAGE,
+  FENCE_STOP_UNQUEUED_MESSAGE,
+  PROMOTE_UNQUEUED_MESSAGE,
   AUTOMATIC_FAILOVER_NO_QUEUE_MESSAGE,
   AUTOMATIC_FAILOVER_UNHEALTHY_MESSAGE,
   isTerminalRecoveryState,
@@ -231,6 +234,8 @@ type HarnessOpts = {
   containerNames?: Array<string | undefined>
   /** Recovery reads honour the in-flight (non-terminal) predicate, like the unique index. */
   inflightOnlyRecoveryReads?: boolean
+  /** Scripted recovery reads, in call order (overrides `recovery` for reads). */
+  recoveryReads?: RecoveryRow[][]
 }
 
 type RecoveryHarness = {
@@ -269,6 +274,9 @@ function createHarness(opts: HarnessOpts = {}): RecoveryHarness {
   const db = {
     select: () => ({
       from: (table: unknown) => {
+        if (table === recovery && opts.recoveryReads) {
+          return thenableRows(opts.recoveryReads.shift() ?? [])
+        }
         if (table === recovery) {
           const visible =
             stored &&
@@ -811,6 +819,36 @@ test('beginOperatorSwitchover returns 503 when the promote queue is down', async
     actor: ACTOR,
   })
   assertEquals(result, { ok: false, error: 'Command queue unavailable', status: 503 })
+  // Not left `promoting` with no promote command (in-flight slot held).
+  assertEquals(harness.recovery()?.state, 'blocked')
+  assertEquals(
+    (harness.recovery()?.metadata as Record<string, unknown>).blockedReason,
+    PROMOTE_UNQUEUED_MESSAGE
+  )
+})
+
+test('beginAutomaticFailover inside the cooldown records a visible terminal row without a target', async () => {
+  const previous = recoveryRow({
+    state: 'completed',
+    targetMemberId: MEM_REPLICA,
+    startedAt: new Date(Date.now() - 5 * 60_000).toISOString(),
+  })
+  // In-flight read: nothing. Cooldown read: the previous accepted failover.
+  const harness = createHarness({ recoveryReads: [[], [previous]] })
+  const row = expectRecord(
+    await beginAutomaticFailover({
+      db: harness.db,
+      commandQueue: okQueue(),
+      managedId: MANAGED_ID,
+      engine: 'postgres',
+      members: [member(), failoverReplica()],
+      actor: ACTOR,
+    })
+  )
+  assertEquals(row.state, 'blocked')
+  assertEquals(row.targetMemberId, null)
+  assertEquals(row.metadata.blockedReason, AUTOMATIC_FAILOVER_COOLDOWN_MESSAGE)
+  assertEquals(harness.commandInserts.length, 0)
 })
 
 test('beginOperatorSwitchover fences a reachable primary', async () => {
@@ -870,6 +908,12 @@ test('beginOperatorSwitchover returns 503 when the fence stop command cannot enq
     actor: ACTOR,
   })
   assertEquals(result, { ok: false, error: 'Command queue unavailable', status: 503 })
+  // The journal row must not stay `fencing` (it would hold the in-flight slot).
+  assertEquals(harness.recovery()?.state, 'blocked')
+  assertEquals(
+    (harness.recovery()?.metadata as Record<string, unknown>).blockedReason,
+    FENCE_STOP_UNQUEUED_MESSAGE
+  )
 })
 
 test('beginOperatorSwitchover continues fencing when a drain enqueue fails', async () => {
