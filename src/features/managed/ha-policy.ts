@@ -163,3 +163,66 @@ export function selectHaRaftMembers(
   }
   return { advertiseAddress, peers }
 }
+
+/** `managed-ha-event` without `detector`: the daemon's Orchestrator poller. */
+export const ORCHESTRATOR_DETECTOR = 'orchestrator'
+/** The daemon's own Postgres probe on the primary's host. */
+export const POSTGRES_PROBE_DETECTOR = 'postgres-probe'
+
+/**
+ * Detectors whose `managed-ha-event` may start automatic failover, and the
+ * engines each may speak for. This is the policy switch for what counts as a
+ * dead primary:
+ *
+ * - `orchestrator`: Orchestrator DeadPrimary (MySQL/MariaDB; it cannot see
+ *   Postgres).
+ * - `postgres-probe`: the Postgres engine is dead while its host and daemon
+ *   are alive, so the old primary can still be fenced.
+ *
+ * Whole-host loss is deliberately absent: nothing can fence a host that is
+ * gone, so it stays a manual operator action with an alert. Widening to it
+ * (Option A) means adding a host-loss detector here once fencing can cope,
+ * not changing the daemon probe.
+ */
+export const AUTOMATIC_FAILOVER_DETECTORS: ReadonlyMap<string, readonly string[] | 'any'> = new Map<
+  string,
+  readonly string[] | 'any'
+>([
+  [ORCHESTRATOR_DETECTOR, 'any'],
+  [POSTGRES_PROBE_DETECTOR, ['postgres']],
+])
+
+/**
+ * Detectors that run on the primary's own host. Their event must name the
+ * current primary member and come from that member's server, so a stale
+ * daemon (e.g. the old primary's host after a switchover) can never fail
+ * over the new primary.
+ */
+export const PRIMARY_HOST_DETECTORS: ReadonlySet<string> = new Set([POSTGRES_PROBE_DETECTOR])
+
+export type HaEventGateInput = {
+  detector: string | undefined
+  engine: string
+  sourceMemberId?: string
+  reporterServerId: string
+  primary: { id: string; serverId: string } | null
+}
+
+/** Why a `managed-ha-event` must not start automatic failover; `null` when it may. */
+export function haEventRejection(input: HaEventGateInput): string | null {
+  const detector = input.detector ?? ORCHESTRATOR_DETECTOR
+  const engines = AUTOMATIC_FAILOVER_DETECTORS.get(detector)
+  if (!engines) return `detector ${detector} may not start automatic failover`
+  if (engines !== 'any' && !engines.includes(input.engine)) {
+    return `detector ${detector} does not cover engine ${input.engine}`
+  }
+  if (!PRIMARY_HOST_DETECTORS.has(detector)) return null
+  if (!input.primary) return 'no current primary'
+  if (input.sourceMemberId !== input.primary.id) {
+    return 'event does not name the current primary'
+  }
+  if (input.reporterServerId !== input.primary.serverId) {
+    return "event did not come from the current primary's server"
+  }
+  return null
+}

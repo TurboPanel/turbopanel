@@ -1829,6 +1829,7 @@ export class DaemonCellObject {
             {
               managedId: parsed.managedId,
               ...(parsed.sourceMemberId ? { sourceMemberId: parsed.sourceMemberId } : {}),
+              ...(parsed.detector ? { detector: parsed.detector } : {}),
               at: parsed.at,
             },
             { reporterServerId: attachment.serverId }

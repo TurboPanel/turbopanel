@@ -520,6 +520,10 @@ export function beginDisasterRecovery(params: {
   return beginRecovery({ ...params, kind: 'disaster-recovery' })
 }
 
+function detectorMetadata(detector: string | undefined): { detector?: string } {
+  return detector ? { detector } : {}
+}
+
 export async function beginAutomaticFailover(params: {
   db: Db
   commandQueue: CommandQueue | null
@@ -527,6 +531,8 @@ export async function beginAutomaticFailover(params: {
   engine: ManagedEngineCode
   members: readonly ManagedMemberRow[]
   sourceMemberId?: string
+  /** `managed-ha-event` detector; recorded on the journal row. */
+  detector?: string
   actor: RecoveryCommandActor
 }): Promise<RecoveryRecord | null> {
   const inflight = await findInFlightRecovery(params.db, params.managedId)
@@ -551,6 +557,7 @@ export async function beginAutomaticFailover(params: {
         blockedReason: automaticFailoverBlockedReason(cause),
         sourceServerId: primary.serverId,
         sourceDatacenterId: firstDatacenterId(dcSets, primary.serverId),
+        ...detectorMetadata(params.detector),
       },
     })
   }
@@ -569,6 +576,7 @@ export async function beginAutomaticFailover(params: {
         targetServerId: target.serverId,
         sourceDatacenterId: firstDatacenterId(dcSets, primary.serverId),
         targetDatacenterId: firstDatacenterId(dcSets, target.serverId),
+        ...detectorMetadata(params.detector),
       },
     })
   }
@@ -586,6 +594,7 @@ export async function beginAutomaticFailover(params: {
     extraMetadata: {
       sourceDatacenterId: firstDatacenterId(dcSets, primary.serverId),
       targetDatacenterId: firstDatacenterId(dcSets, target.serverId),
+      ...detectorMetadata(params.detector),
     },
   })
   if (!result.ok) {

@@ -11,6 +11,7 @@ import {
   selectHaRaftMembers,
   serverHostsManagedHa,
   shouldBlockUnreachablePrimaryFence,
+  haEventRejection,
   type HaMemberCandidateInput,
 } from './ha-policy.ts'
 import {
@@ -324,5 +325,65 @@ test('disaster recovery reclassifies former same-DC failover members that left t
       sameDatacenterAsNewPrimary: true,
     }),
     'read'
+  )
+})
+
+const PRIMARY = { id: 'mem-primary', serverId: 'srv-a' }
+
+test("haEventRejection: Orchestrator events (no detector) keep today's behaviour", () => {
+  for (const engine of ['postgres', 'mysql', 'mariadb']) {
+    assertEquals(
+      haEventRejection({ detector: undefined, engine, reporterServerId: 'srv-x', primary: null }),
+      null
+    )
+  }
+})
+
+test('haEventRejection: postgres-probe must name the current primary from its own server', () => {
+  const ok = {
+    detector: 'postgres-probe',
+    engine: 'postgres',
+    sourceMemberId: 'mem-primary',
+    reporterServerId: 'srv-a',
+    primary: PRIMARY,
+  }
+  assertEquals(haEventRejection(ok), null)
+  assertEquals(
+    haEventRejection({ ...ok, sourceMemberId: 'mem-old-primary' }),
+    'event does not name the current primary'
+  )
+  assertEquals(haEventRejection({ ...ok, sourceMemberId: undefined }) !== null, true)
+  assertEquals(
+    haEventRejection({ ...ok, reporterServerId: 'srv-b' }),
+    "event did not come from the current primary's server"
+  )
+  assertEquals(haEventRejection({ ...ok, primary: null }), 'no current primary')
+})
+
+test('haEventRejection: postgres-probe never speaks for MySQL/MariaDB', () => {
+  for (const engine of ['mysql', 'mariadb']) {
+    assertEquals(
+      haEventRejection({
+        detector: 'postgres-probe',
+        engine,
+        sourceMemberId: 'mem-primary',
+        reporterServerId: 'srv-a',
+        primary: PRIMARY,
+      }),
+      `detector postgres-probe does not cover engine ${engine}`
+    )
+  }
+})
+
+test('haEventRejection: unknown detectors (e.g. host loss, not enabled) never fail over', () => {
+  assertEquals(
+    haEventRejection({
+      detector: 'host-lost',
+      engine: 'postgres',
+      sourceMemberId: 'mem-primary',
+      reporterServerId: 'srv-a',
+      primary: PRIMARY,
+    }),
+    'detector host-lost may not start automatic failover'
   )
 })

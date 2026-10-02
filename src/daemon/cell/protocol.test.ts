@@ -1344,6 +1344,36 @@ it('validateDaemonInboundFrame rejects managed-ha-event with an invalid sourceMe
   assertEquals(result.ok, false)
 })
 
+it('validateDaemonInboundFrame accepts managed-ha-event with detector and evidence', () => {
+  const result = validateDaemonInboundFrame(
+    JSON.stringify({
+      type: 'managed-ha-event',
+      managedId: '00000000-0000-4000-8000-000000000001',
+      sourceMemberId: '00000000-0000-4000-8000-000000000002',
+      detector: 'postgres-probe',
+      evidence: { failures: 6, spanMs: 25000, lastError: 'container exited exit=137' },
+      at: VALID_AT,
+    })
+  )
+  assertEquals(result.ok, true)
+})
+
+it('validateDaemonInboundFrame rejects managed-ha-event with a malformed detector or evidence', () => {
+  const base = {
+    type: 'managed-ha-event',
+    managedId: '00000000-0000-4000-8000-000000000001',
+    at: VALID_AT,
+  }
+  for (const extra of [
+    { detector: 'Postgres Probe' },
+    { detector: 7 },
+    { evidence: 'dead' },
+    { evidence: null },
+  ]) {
+    assertEquals(validateDaemonInboundFrame(JSON.stringify({ ...base, ...extra })).ok, false)
+  }
+})
+
 it('validateDaemonInboundFrame rejects fabric path field shapes', () => {
   const base = {
     type: 'fabric-paths-result',

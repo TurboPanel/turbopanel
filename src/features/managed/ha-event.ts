@@ -12,10 +12,14 @@ import { isManagedEngineCode } from './types.ts'
 import type { RecoveryRecord } from './recovery.ts'
 import { beginAutomaticFailover } from './ha-recovery.ts'
 import { listManagedMembers } from './members.ts'
+import { haEventRejection } from './ha-policy.ts'
+import { compatLogWarn } from '../../lib/log-compat.ts'
 
 export type ManagedHaEventInput = {
   managedId: string
   sourceMemberId?: string
+  /** Absent = Orchestrator. See `ha-policy.ts` → `AUTOMATIC_FAILOVER_DETECTORS`. */
+  detector?: string
   at?: string
 }
 
@@ -25,7 +29,7 @@ export async function handleManagedHaEvent(
   deps: {
     commandQueue?: CommandQueue
     reporterServerId: string
-  },
+  }
 ): Promise<RecoveryRecord | null> {
   const [row] = await db
     .select({
@@ -41,6 +45,22 @@ export async function handleManagedHaEvent(
   const members = await listManagedMembers(db, row.id)
   if (members.length === 0) return null
 
+  const primary = members.find((member) => member.role === 'primary') ?? null
+  const rejection = haEventRejection({
+    detector: input.detector,
+    engine: row.engine,
+    sourceMemberId: input.sourceMemberId,
+    reporterServerId: deps.reporterServerId,
+    primary,
+  })
+  if (rejection) {
+    compatLogWarn(
+      'managed-ha',
+      `ignored managed-ha-event for ${row.id} from server ${deps.reporterServerId}: ${rejection}`
+    )
+    return null
+  }
+
   return beginAutomaticFailover({
     db,
     commandQueue: deps.commandQueue ?? null,
@@ -48,6 +68,7 @@ export async function handleManagedHaEvent(
     engine: row.engine,
     members,
     sourceMemberId: input.sourceMemberId,
+    ...(input.detector ? { detector: input.detector } : {}),
     actor: { actorType: 'system', actorId: deps.reporterServerId },
   })
 }

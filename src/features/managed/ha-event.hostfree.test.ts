@@ -73,7 +73,7 @@ function fakeDb(resultSets: unknown[][], inserted?: unknown[]): Db {
         if (prop === 'catch' || prop === 'finally') return undefined
         return () => chain
       },
-    },
+    }
   )
   return {
     select: () => chain,
@@ -89,7 +89,7 @@ test('handleManagedHaEvent returns null when the managed row is gone', async () 
   const result = await handleManagedHaEvent(
     fakeDb([[]]),
     { managedId: MANAGED_ID },
-    { reporterServerId: SERVER_A },
+    { reporterServerId: SERVER_A }
   )
   assertEquals(result, null)
 })
@@ -98,7 +98,7 @@ test('handleManagedHaEvent returns null for an unknown engine', async () => {
   const result = await handleManagedHaEvent(
     fakeDb([[{ id: MANAGED_ID, engine: 'not-an-engine' }]]),
     { managedId: MANAGED_ID },
-    { reporterServerId: SERVER_A },
+    { reporterServerId: SERVER_A }
   )
   assertEquals(result, null)
 })
@@ -107,7 +107,7 @@ test('handleManagedHaEvent returns null when the cluster has no members', async 
   const result = await handleManagedHaEvent(
     fakeDb([[{ id: MANAGED_ID, engine: 'postgres' }], []]),
     { managedId: MANAGED_ID },
-    { reporterServerId: SERVER_A },
+    { reporterServerId: SERVER_A }
   )
   assertEquals(result, null)
 })
@@ -115,13 +115,9 @@ test('handleManagedHaEvent returns null when the cluster has no members', async 
 test('handleManagedHaEvent resumes an in-flight recovery instead of opening another', async () => {
   const inflight = recoveryRow()
   const result = await handleManagedHaEvent(
-    fakeDb([
-      [{ id: MANAGED_ID, engine: 'postgres' }],
-      [member()],
-      [inflight],
-    ]),
+    fakeDb([[{ id: MANAGED_ID, engine: 'postgres' }], [member()], [inflight]]),
     { managedId: MANAGED_ID, sourceMemberId: 'mem-primary' },
-    { reporterServerId: SERVER_A },
+    { reporterServerId: SERVER_A }
   )
   assertEquals(result?.id, 'rec-1')
   assertEquals(result?.state, 'fencing')
@@ -136,7 +132,7 @@ test('handleManagedHaEvent returns null when no primary or source member exists'
       [],
     ]),
     { managedId: MANAGED_ID, sourceMemberId: 'missing' },
-    { reporterServerId: SERVER_A },
+    { reporterServerId: SERVER_A }
   )
   assertEquals(result, null)
 })
@@ -144,17 +140,9 @@ test('handleManagedHaEvent returns null when no primary or source member exists'
 test('handleManagedHaEvent persists a blocked row when no failover candidate exists', async () => {
   const blocked = recoveryRow({ state: 'blocked', id: 'rec-blocked' })
   const result = await handleManagedHaEvent(
-    fakeDb(
-      [
-        [{ id: MANAGED_ID, engine: 'postgres' }],
-        [member()],
-        [],
-        [],
-      ],
-      [blocked],
-    ),
+    fakeDb([[{ id: MANAGED_ID, engine: 'postgres' }], [member()], [], []], [blocked]),
     { managedId: MANAGED_ID },
-    { reporterServerId: SERVER_A, commandQueue: { enqueue: async () => {} } as CommandQueue },
+    { reporterServerId: SERVER_A, commandQueue: { enqueue: async () => {} } as CommandQueue }
   )
   assertEquals(result?.id, 'rec-blocked')
   assertEquals(result?.state, 'blocked')
@@ -199,11 +187,58 @@ test('handleManagedHaEvent persists detecting when a candidate exists but the qu
           },
         ],
       ],
-      [detecting],
+      [detecting]
     ),
     { managedId: MANAGED_ID, at: NOW },
-    { reporterServerId: SERVER_A },
+    { reporterServerId: SERVER_A }
   )
   assertEquals(result?.id, 'rec-detect')
   assertEquals(result?.state, 'detecting')
+})
+
+const SERVER_B = '550e8400-e29b-41d4-a716-446655440001'
+
+test("handleManagedHaEvent ignores a postgres-probe event from a server that is not the primary's", async () => {
+  const result = await handleManagedHaEvent(
+    fakeDb([[{ id: MANAGED_ID, engine: 'postgres' }], [member()]]),
+    { managedId: MANAGED_ID, sourceMemberId: 'mem-primary', detector: 'postgres-probe' },
+    { reporterServerId: SERVER_B }
+  )
+  assertEquals(result, null)
+})
+
+test('handleManagedHaEvent ignores a postgres-probe event naming a stale primary', async () => {
+  const result = await handleManagedHaEvent(
+    fakeDb([
+      [{ id: MANAGED_ID, engine: 'postgres' }],
+      [member(), member({ id: 'mem-old', role: 'replica', replicaClass: 'failover', ordinal: 2 })],
+    ]),
+    { managedId: MANAGED_ID, sourceMemberId: 'mem-old', detector: 'postgres-probe' },
+    { reporterServerId: SERVER_A }
+  )
+  assertEquals(result, null)
+})
+
+test('handleManagedHaEvent ignores a postgres-probe event for a MySQL cluster', async () => {
+  const result = await handleManagedHaEvent(
+    fakeDb([[{ id: MANAGED_ID, engine: 'mysql' }], [member()]]),
+    { managedId: MANAGED_ID, sourceMemberId: 'mem-primary', detector: 'postgres-probe' },
+    { reporterServerId: SERVER_A }
+  )
+  assertEquals(result, null)
+})
+
+test('handleManagedHaEvent runs the unchanged failover path for a valid postgres-probe event', async () => {
+  const blocked = recoveryRow({
+    state: 'blocked',
+    id: 'rec-probe',
+    metadata: { detector: 'postgres-probe' },
+  })
+  const result = await handleManagedHaEvent(
+    fakeDb([[{ id: MANAGED_ID, engine: 'postgres' }], [member()], [], []], [blocked]),
+    { managedId: MANAGED_ID, sourceMemberId: 'mem-primary', detector: 'postgres-probe' },
+    { reporterServerId: SERVER_A, commandQueue: { enqueue: async () => {} } as CommandQueue }
+  )
+  assertEquals(result?.id, 'rec-probe')
+  assertEquals(result?.state, 'blocked')
 })

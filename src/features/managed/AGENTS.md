@@ -503,6 +503,28 @@ Durable Object poll loop. DR rewrite: members no longer in the new primary's
 datacenter cannot stay `failover` → `read` (keep `readEligible`). Same-DC `read`
 peers are never silently upgraded to `failover`.
 
+### Dead-primary detectors
+
+`managed-ha-event` may carry `detector` (absent = Orchestrator) and bounded
+`evidence`. `ha-policy.ts` → `AUTOMATIC_FAILOVER_DETECTORS` is the policy
+switch for which detectors may start automatic failover, per engine:
+
+- `orchestrator` (absent field): Orchestrator DeadPrimary, MySQL/MariaDB.
+  Orchestrator cannot see Postgres.
+- `postgres-probe`: the daemon's own probe on the Postgres primary's host
+  (`turbopaneld/src/managed/AGENTS.md` → **Postgres dead-primary detection**):
+  engine dead, host alive. `PRIMARY_HOST_DETECTORS` makes `haEventRejection`
+  require `sourceMemberId` = the current primary member **and** the reporting
+  server = that member's server, so a stale daemon (old primary after a
+  switchover) can never fail over the new primary. The daemon sends it only
+  when the attach frame advertises `managed-ha-probe-v1`.
+
+Whole-host loss is deliberately **not** a detector: nothing can fence a host
+that is gone, so it stays manual with an alert. Widening it (Option A) is a new
+entry in `AUTOMATIC_FAILOVER_DETECTORS` once fencing can cope. A rejected event
+is logged and dropped (no recovery row); an accepted one runs the unchanged
+pipeline and records `metadata.detector` on the recovery row.
+
 ### Manual live HA checklist
 
 Unit tests encode topology/lag/fence policy. A later live run (not CI) should
