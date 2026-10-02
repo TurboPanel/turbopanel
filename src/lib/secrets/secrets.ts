@@ -15,7 +15,7 @@ function assertValidSecretValue(value: string, context: string): void {
   }
   if (value.length < MIN_SECRET_LENGTH) {
     throw new Error(
-      `${context}: secret is too short (${value.length} chars; minimum ${MIN_SECRET_LENGTH})`,
+      `${context}: secret is too short (minimum ${MIN_SECRET_LENGTH} chars)`,
     );
   }
 }
@@ -70,20 +70,20 @@ function parseVersionedSecrets(secretsEnv: string): VersionedSecret[] {
     const colonIndex = entry.indexOf(":");
     if (colonIndex === -1) {
       throw new Error(
-        `Invalid secrets entry at index ${index}: expected "version:secret", got "${entry}"`,
+        `Invalid secrets entry at index ${index}: expected "version:secret" (TURBOPANEL_SECRETS entries are comma-separated)`,
       );
     }
     const versionStr = entry.slice(0, colonIndex).trim();
     const value = entry.slice(colonIndex + 1);
     if (!/^\d+$/.test(versionStr)) {
       throw new Error(
-        `Invalid version in secrets entry at index ${index}: "${versionStr}" is not a positive integer`,
+        `Invalid version in secrets entry at index ${index}: the part before ":" is not a positive integer (TURBOPANEL_SECRETS expects "version:secret")`,
       );
     }
     const version = Number.parseInt(versionStr, 10);
     if (!Number.isInteger(version) || version < 1) {
       throw new Error(
-        `Invalid version in secrets entry at index ${index}: "${versionStr}" is not a positive integer`,
+        `Invalid version in secrets entry at index ${index}: the part before ":" is not a positive integer (TURBOPANEL_SECRETS expects "version:secret")`,
       );
     }
     assertValidSecretValue(value, `secrets entry at index ${index}`);
@@ -167,7 +167,10 @@ export function parseSecretsEnv(
     if (!allowEphemeralSecrets(runtime)) {
       throw new Error("TURBOPANEL_SECRET is required");
     }
-    compatLogWarn('auth', 'No secret configured — using ephemeral random secret (dev only)');
+    compatLogWarn(
+      "auth",
+      "No secret configured — using ephemeral random secret (dev only)",
+    );
     versioned = [{ version: 1, value: generateSecret() }];
   }
 

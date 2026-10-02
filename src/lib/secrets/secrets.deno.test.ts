@@ -65,7 +65,10 @@ test("parses a valid single secret at version 1", () => {
 
 test("parses a valid plural keyring keeping written order (descending)", () => {
   const config = parseSecretsEnv(`2:${STRONG_B},1:${STRONG_A}`, "deno");
-  assertEquals(config.versioned.map((v) => v.version), [2, 1]);
+  assertEquals(
+    config.versioned.map((v) => v.version),
+    [2, 1],
+  );
   assertEquals(config.versioned[0].value, STRONG_B);
 });
 
@@ -107,7 +110,10 @@ test("accepts gapped descending versions without warning", () => {
   });
   try {
     const config = parseSecretsEnv(`3:${STRONG_A},1:${STRONG_B}`, "deno");
-    assertEquals(config.versioned.map((v) => v.version), [3, 1]);
+    assertEquals(
+      config.versioned.map((v) => v.version),
+      [3, 1],
+    );
     assertEquals(config.versioned[0].version, 3);
     assertEquals(config.versioned[0].value, STRONG_A);
     const authWarns = writes.filter((line) => line.includes(" WARN auth"));
@@ -167,27 +173,28 @@ test("rejects a too-short plural secret", () => {
 });
 
 test("rejects missing secrets outside explicit dev mode (deno)", () => {
-  withEnv(
-    { TURBOPANEL_DEV_SURFACE: null, TURBOPANEL_MODE: null, TURBOPANEL_UI_MODE: null },
-    () => {
-      assertThrows(
-        () => parseSecretsEnv(undefined, "deno"),
-        Error,
-        "TURBOPANEL_SECRET is required",
-      );
-    },
-  );
+  withEnv({
+    TURBOPANEL_DEV_SURFACE: null,
+    TURBOPANEL_MODE: null,
+    TURBOPANEL_UI_MODE: null,
+  }, () => {
+    assertThrows(
+      () => parseSecretsEnv(undefined, "deno"),
+      Error,
+      "TURBOPANEL_SECRET is required",
+    );
+  });
 });
 
 test("rejects missing secrets under development mode with a static UI", () => {
   withEnv(
-    { TURBOPANEL_DEV_SURFACE: null, TURBOPANEL_MODE: "development", TURBOPANEL_UI_MODE: "static" },
+    {
+      TURBOPANEL_DEV_SURFACE: null,
+      TURBOPANEL_MODE: "development",
+      TURBOPANEL_UI_MODE: "static",
+    },
     () => {
-      assertThrows(
-        () => parseSecretsEnv(undefined, "deno"),
-        Error,
-        "required",
-      );
+      assertThrows(() => parseSecretsEnv(undefined, "deno"), Error, "required");
     },
   );
 });
@@ -213,13 +220,13 @@ test("allows an ephemeral secret only under an explicit dev flag", () => {
 test("rejects missing secrets for the development + dev UI pair without the dev-surface flag", () => {
   // TURBOPANEL_UI_MODE is a Caddy/Expo selector, not a dev-mode signal.
   withEnv(
-    { TURBOPANEL_DEV_SURFACE: null, TURBOPANEL_MODE: "development", TURBOPANEL_UI_MODE: "dev" },
+    {
+      TURBOPANEL_DEV_SURFACE: null,
+      TURBOPANEL_MODE: "development",
+      TURBOPANEL_UI_MODE: "dev",
+    },
     () => {
-      assertThrows(
-        () => parseSecretsEnv(undefined, "deno"),
-        Error,
-        "required",
-      );
+      assertThrows(() => parseSecretsEnv(undefined, "deno"), Error, "required");
     },
   );
 });
@@ -233,16 +240,25 @@ test("rejects a keyring entry without a version separator", () => {
 });
 
 test("parseSecretsFromEnv treats TURBOPANEL_SECRET as version 1", () => {
-  const config = parseSecretsFromEnv({ TURBOPANEL_SECRET: STRONG_A }, "workers");
+  const config = parseSecretsFromEnv(
+    { TURBOPANEL_SECRET: STRONG_A },
+    "workers",
+  );
   assertEquals(config.versioned, [{ version: 1, value: STRONG_A }]);
 });
 
 test("parseSecretsFromEnv uses TURBOPANEL_SECRETS as the full keyring when set", () => {
   const config = parseSecretsFromEnv(
-    { TURBOPANEL_SECRET: STRONG_A, TURBOPANEL_SECRETS: `2:${STRONG_B},1:${STRONG_A}` },
+    {
+      TURBOPANEL_SECRET: STRONG_A,
+      TURBOPANEL_SECRETS: `2:${STRONG_B},1:${STRONG_A}`,
+    },
     "workers",
   );
-  assertEquals(config.versioned.map((v) => v.version), [2, 1]);
+  assertEquals(
+    config.versioned.map((v) => v.version),
+    [2, 1],
+  );
   assertEquals(config.versioned[0].value, STRONG_B);
 });
 
@@ -287,7 +303,10 @@ test("deriveSecretsConfig orders current and fallbacks by version", async () => 
 
 test("deriveEncryptionSecretsConfig derives AES-GCM keys", async () => {
   const config = parseSecretsEnv(`1:${STRONG_A}`, "deno");
-  const derived = await deriveEncryptionSecretsConfig(config, "data-encryption");
+  const derived = await deriveEncryptionSecretsConfig(
+    config,
+    "data-encryption",
+  );
   assertEquals(derived.current.version, 1);
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const ciphertext = await crypto.subtle.encrypt(
@@ -309,4 +328,56 @@ test("deriveSecretsConfig rejects an empty versioned list", async () => {
     Error,
     "No signing secret available",
   );
+});
+
+const SENTINEL = "SENTINEL_Zq9xK2mV7pL4wR8tY1nB6cD3fG5hJ0aS";
+
+function thrownMessage(fn: () => unknown): string {
+  try {
+    fn();
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+  throw new Error("expected function to throw");
+}
+
+test("boot errors for malformed TURBOPANEL_SECRETS never echo the value", () => {
+  const malformed = [
+    SENTINEL, // no "version:secret" separator
+    `${SENTINEL}:1`, // swapped: secret in the version position
+    `1:${STRONG_A},${SENTINEL}`, // second entry malformed
+    `x${SENTINEL}:${STRONG_A}`, // bad version containing the sentinel
+    `0:${SENTINEL.slice(0, 8)}`, // too short, sentinel prefix as secret
+  ];
+  for (const value of malformed) {
+    const message = thrownMessage(() => parseSecretsEnv(value, "deno"));
+    for (const secret of [SENTINEL, SENTINEL.slice(0, 8), STRONG_A]) {
+      assertEquals(message.includes(secret), false, message);
+    }
+    assertEquals(message.length > 0, true);
+  }
+});
+
+test("too-short secret error does not disclose the secret length", () => {
+  const message = thrownMessage(() =>
+    parseSecretsEnv(`1:${TOO_SHORT}`, "deno")
+  );
+  assertEquals(message.includes(String(TOO_SHORT.length)), false, message);
+  assertEquals(message.includes(TOO_SHORT), false, message);
+});
+
+test("out-of-order TURBOPANEL_SECRETS warning never echoes values", () => {
+  const writes: string[] = [];
+  const writeStub = stub(Deno.stderr, "writeSync", (data: Uint8Array) => {
+    writes.push(new TextDecoder().decode(data));
+    return data.byteLength;
+  });
+  try {
+    parseSecretsEnv(`1:${SENTINEL}${STRONG_A},2:${STRONG_B}`, "deno");
+    const warns = writes.filter((line) => line.includes(" WARN auth"));
+    assertEquals(warns.length > 0, true);
+    assertEquals(warns.join("").includes(SENTINEL), false);
+  } finally {
+    writeStub.restore();
+  }
 });
