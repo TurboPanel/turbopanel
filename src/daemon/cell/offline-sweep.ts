@@ -1014,8 +1014,8 @@ export async function sweepExpiredExecutionLogsSafely(
 async function runQueuedCronSweeps(
   db: Db,
   queue: NonNullable<CloudflareBindings['TURBOPANEL_COMMAND_QUEUE']>,
-  tlsRenewal?: CronTlsRenewal | null,
-  firewallApplyGate?: FirewallApplyGate
+  tlsRenewal: CronTlsRenewal | null | undefined,
+  firewallApplyGate: FirewallApplyGate
 ): Promise<void> {
   try {
     const commandQueue = createWorkersCommandQueue(queue)
@@ -1454,15 +1454,15 @@ export type RunOfflineSweepOpts = {
   db?: Db
   /** Test seam: inject `sweepOnce` deps (registry, list, AE resolver). */
   sweepOnceDeps?: SweepOnceDeps
-  /** Deploy-time firewall apply key (`firewallApplyGateFromEnv`); unset = observe-only. */
-  firewallApplyGate?: FirewallApplyGate
+  /** Deploy-time firewall apply key (`firewallApplyGateFromEnv`); required so a dropped gate fails the type check. */
+  firewallApplyGate: FirewallApplyGate
 }
 
 /** Cron Trigger entry point (`workers.ts` `scheduled()`). */
 export async function runOfflineSweep(
   env: CloudflareBindings,
-  tlsRenewal?: CronTlsRenewal | null,
-  opts: RunOfflineSweepOpts = {}
+  tlsRenewal: CronTlsRenewal | null | undefined,
+  opts: RunOfflineSweepOpts
 ): Promise<void> {
   lastScheduledTimeForTests = opts.scheduledTime
 

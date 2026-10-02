@@ -1,3 +1,4 @@
+import { DENY_FIREWALL_APPLY } from '../firewall/enforcement.ts'
 import { assertEquals } from '@std/assert'
 import { projectServerDaemon } from '../../daemon/cell/postgres-projection.ts'
 import { eq, inArray } from 'drizzle-orm'
@@ -2666,6 +2667,7 @@ async function finishFirstOfRollout(
     enqueue: (envelope: CommandEnvelope) => Promise.resolve(void sent.push(envelope)),
   }
   await processCommandEnvelope(db, registry, buildEnvelope(record!, ids.serverId), {
+    firewallApplyGate: DENY_FIREWALL_APPLY,
     commandQueue: queue,
   })
 }
@@ -2764,6 +2766,7 @@ test('processCommandEnvelope: a deploy command that expired before dispatch stop
         createDispatchMockRegistry(serverId, { waitForRequestResult: null }),
         buildEnvelope(record!, serverId),
         {
+          firewallApplyGate: DENY_FIREWALL_APPLY,
           commandQueue: { enqueue: (envelope) => Promise.resolve(void sent.push(envelope)) },
         }
       )
@@ -4096,6 +4099,7 @@ test('processCommandEnvelope enqueues pendingStandbyApplies only after primary s
       })
 
       await processCommandEnvelope(db, registry, buildEnvelope(record, serverId), {
+        firewallApplyGate: DENY_FIREWALL_APPLY,
         commandQueue: queue,
       })
 
@@ -4155,6 +4159,7 @@ test('processCommandEnvelope does not enqueue standbys when primary apply fails'
     })
 
     await processCommandEnvelope(db, registry, buildEnvelope(record, serverId), {
+      firewallApplyGate: DENY_FIREWALL_APPLY,
       commandQueue: queue,
     })
 
@@ -4222,7 +4227,7 @@ test('processCommandEnvelope enqueues the deferred primary destroy only after ev
       db,
       succeed(replicaRecords[0]!),
       buildEnvelope(replicaRecords[0]!, serverId),
-      { commandQueue: queue }
+      { firewallApplyGate: DENY_FIREWALL_APPLY, commandQueue: queue }
     )
     assertEquals(
       queue.envelopes.filter((envelope) => envelope.type === 'managed.destroy').length,
@@ -4240,7 +4245,7 @@ test('processCommandEnvelope enqueues the deferred primary destroy only after ev
       db,
       succeed(replicaRecords[1]!),
       buildEnvelope(replicaRecords[1]!, serverId),
-      { commandQueue: queue }
+      { firewallApplyGate: DENY_FIREWALL_APPLY, commandQueue: queue }
     )
     const primaryEnvelopes = queue.envelopes.filter(
       (envelope) => envelope.type === 'managed.destroy'
@@ -4261,7 +4266,7 @@ test('processCommandEnvelope enqueues the deferred primary destroy only after ev
       db,
       succeed(replicaRecords[1]!),
       buildEnvelope(replicaRecords[1]!, serverId),
-      { commandQueue: queue }
+      { firewallApplyGate: DENY_FIREWALL_APPLY, commandQueue: queue }
     )
     assertEquals(
       queue.envelopes.filter((envelope) => envelope.type === 'managed.destroy').length,
@@ -4330,7 +4335,7 @@ test('processCommandEnvelope leaves the primary intact when a gated replica dest
         },
       }),
       buildEnvelope(okRecord, serverId),
-      { commandQueue: queue }
+      { firewallApplyGate: DENY_FIREWALL_APPLY, commandQueue: queue }
     )
 
     await processCommandEnvelope(
@@ -4348,7 +4353,7 @@ test('processCommandEnvelope leaves the primary intact when a gated replica dest
         },
       }),
       buildEnvelope(failingRecord, serverId),
-      { commandQueue: queue }
+      { firewallApplyGate: DENY_FIREWALL_APPLY, commandQueue: queue }
     )
 
     // A failed replica never opens the gate: no primary command, and the
@@ -4403,7 +4408,7 @@ test('processCommandEnvelope ignores a malformed destroy gate instead of enqueui
         },
       }),
       buildEnvelope(record, serverId),
-      { commandQueue: queue }
+      { firewallApplyGate: DENY_FIREWALL_APPLY, commandQueue: queue }
     )
 
     assertEquals(queue.envelopes.length, 0)
@@ -4464,6 +4469,7 @@ test('processCommandEnvelope enqueues promote only after successful fence lifecy
     })
 
     await processCommandEnvelope(db, registry, buildEnvelope(record, serverId), {
+      firewallApplyGate: DENY_FIREWALL_APPLY,
       commandQueue: queue,
     })
 
@@ -4510,6 +4516,7 @@ test('processCommandEnvelope does not enqueue promote when fence lifecycle fails
     })
 
     await processCommandEnvelope(db, registry, buildEnvelope(record, serverId), {
+      firewallApplyGate: DENY_FIREWALL_APPLY,
       commandQueue: queue,
     })
 
@@ -4970,6 +4977,7 @@ test('processCommandEnvelope fans promote ingress reconcile out to bound consume
       })
 
       await processCommandEnvelope(db, registry, buildEnvelope(record, standbyServerId), {
+        firewallApplyGate: DENY_FIREWALL_APPLY,
         commandQueue: queue,
         secretsConfig,
         dataEncryptionSecrets,

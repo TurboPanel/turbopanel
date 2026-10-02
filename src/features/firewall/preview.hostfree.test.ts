@@ -233,6 +233,10 @@ test('an unchanged teardown is not re-sent within the back-off gap, a first or c
   assertEquals(teardownBackedOff(sent(1000), 'off', true, now), false)
   assertEquals(teardownBackedOff(sent(1000, 'apply'), 'off', false, now), false)
   assertEquals(teardownBackedOff(null, 'off', false, now), false)
+  // Clock skew: a sentAt in the future never holds the teardown back.
+  assertEquals(teardownBackedOff(sent(-1000), 'off', false, now), false)
+  assertEquals(teardownBackedOff(sent(-TEARDOWN_RESEND_MIN_MS * 100), 'off', false, now), false)
+  assertEquals(teardownBackedOff(sent(0), 'off', false, now), true)
   assertEquals(teardownBackedOff(sent(1000), 'observe', false, now), false)
 })
 

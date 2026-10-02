@@ -26,7 +26,7 @@ export type StartCommandConsumerOpts = {
   resealDeps?: CommandResealDeps
   secretsConfig?: import('../../lib/secrets/secrets.ts').SecretsConfig
   dataEncryptionSecrets?: import('../../lib/secrets/secrets.ts').DerivedSecretsConfig
-  firewallApplyGate?: import('../firewall/enforcement.ts').FirewallApplyGate
+  firewallApplyGate: import('../firewall/enforcement.ts').FirewallApplyGate
 }
 
 /**

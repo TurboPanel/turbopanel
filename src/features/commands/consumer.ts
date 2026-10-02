@@ -144,8 +144,8 @@ export type CommandConsumerDeps = {
   resealDeps?: CommandResealDeps
   secretsConfig?: SecretsConfig
   dataEncryptionSecrets?: DerivedSecretsConfig
-  /** The deploy-time firewall apply key; absent means every server stays observe-only. */
-  firewallApplyGate?: FirewallApplyGate
+  /** The deploy-time firewall apply key; required so a dropped gate fails the type check. */
+  firewallApplyGate: FirewallApplyGate
 }
 
 const COMMAND_TIMEOUT_MS: Record<CommandType, number> = {
