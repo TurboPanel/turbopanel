@@ -1,7 +1,9 @@
 /**
  * Daemon-observed HA events (DeadPrimary). Creates or resumes a recovery
  * journal row and, when a command queue is available, starts automatic
- * failover. Workers without a queue persist detecting/blocked only.
+ * failover. Both transports pass one (Deno's queue; the Durable Object's
+ * `TURBOPANEL_COMMAND_QUEUE` binding); without it a terminal blocked row is
+ * recorded.
  */
 
 import { eq } from 'drizzle-orm'

@@ -537,8 +537,9 @@ all:
    journal so it survives restarts.
 6. A same-DC `failover` replica passes the promote lag gate (streaming,
    observation ≤ 120 s old, lag under 64 MiB / 30 s); otherwise `blocked`.
-7. Without a command queue (the Workers / Durable Object transport) a
-   **terminal** `blocked` row is written with
+7. Without a command queue (a deployment with no `TURBOPANEL_COMMAND_QUEUE`
+   binding; the Durable Object passes the Worker's binding through
+   `daemon/cell/managed-ha-inbound.ts`) a **terminal** `blocked` row is written with
    `AUTOMATIC_FAILOVER_NO_QUEUE_MESSAGE` (`no_command_queue`) and no target —
    never `detecting`, which would hold the in-flight slot
    (`uniq_recovery_inflight_managed`) and make every later switchover / DR
