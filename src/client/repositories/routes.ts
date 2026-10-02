@@ -1771,16 +1771,11 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
       if (connectionDenied) return connectionDenied
     }
 
-    if (patch.secretId !== undefined) {
-      const secretDenied = await assertSecretInOrganization(
-        c,
-        db,
-        organizationId,
-        patch.secretId,
-        existingProvider
-      )
-      if (secretDenied) return secretDenied
-    }
+    const secretDenied =
+      patch.secretId === undefined
+        ? undefined
+        : await assertSecretInOrganization(c, db, organizationId, patch.secretId, existingProvider)
+    if (secretDenied) return secretDenied
 
     const notVisible = await assertSourceVisibleToConnection(
       c,
