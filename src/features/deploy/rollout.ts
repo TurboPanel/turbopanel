@@ -295,23 +295,17 @@ export async function failTimedOutDeploy(
 ): Promise<void> {
   const deploy = readDeployContext(params.context)
   if (deploy === null) return
-  const [target] = await db
-    .select({ status: deployment.status, lastCommandId: deployment.lastCommandId })
-    .from(deployment)
-    .where(
-      and(
-        eq(deployment.environmentId, deploy.environmentId),
-        eq(deployment.serverId, params.serverId)
-      )
-    )
-  if (target?.lastCommandId !== params.commandId || target.status !== 'applying') return
-  await markDeploymentFailed(db, {
+  // One conditional update: a redeploy landing in between cannot be overwritten.
+  const marked = await markDeploymentFailed(db, {
     environmentId: deploy.environmentId,
     serverId: params.serverId,
     error: params.error,
     commandId: params.commandId,
     outcome: 'timed_out',
+    expectedCommandId: params.commandId,
+    expectedStatus: 'applying',
   })
+  if (marked === null) return
   await haltRollout(db, {
     environmentId: deploy.environmentId,
     generation: deploy.generation,

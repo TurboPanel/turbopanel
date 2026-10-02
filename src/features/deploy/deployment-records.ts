@@ -1,4 +1,4 @@
-import { and, eq, inArray, sql } from 'drizzle-orm'
+import { and, eq, inArray, isNull, or, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { nowIso } from '../commands/ids.ts'
 import { deployment } from '../../db/schema.ts'
@@ -61,6 +61,13 @@ type DeploymentTransitionParams = {
   finishedAt?: string
   durationMs?: number | null
   outcome?: DeploymentOutcome
+  /**
+   * Only write while the row still belongs to this command (or tracks none).
+   * A result from an older deploy must not overwrite a newer deploy's row.
+   */
+  expectedCommandId?: string
+  /** Only write while the row is in this status. */
+  expectedStatus?: DeploymentStatus
 }
 
 function isDeploymentStatus(value: string): value is DeploymentStatus {
@@ -207,7 +214,18 @@ async function transitionDeploymentStatus(
     .where(
       and(
         eq(deployment.environmentId, params.environmentId),
-        eq(deployment.serverId, params.serverId)
+        eq(deployment.serverId, params.serverId),
+        ...(params.expectedCommandId === undefined
+          ? []
+          : [
+              or(
+                isNull(deployment.lastCommandId),
+                eq(deployment.lastCommandId, params.expectedCommandId)
+              ),
+            ]),
+        ...(params.expectedStatus === undefined
+          ? []
+          : [eq(deployment.status, params.expectedStatus)])
       )
     )
     .returning()
@@ -230,12 +248,17 @@ export async function markDeploymentApplied(
     commandId?: string
     finishedAt?: string
     durationMs?: number | null
+    /** See {@link DeploymentTransitionParams.expectedCommandId}. */
+    expectedCommandId?: string
   }
 ): Promise<DeploymentTargetRecord | null> {
   const finishedAt = params.finishedAt ?? nowIso()
   return transitionDeploymentStatus(db, {
     environmentId: params.environmentId,
     serverId: params.serverId,
+    ...(params.expectedCommandId === undefined
+      ? {}
+      : { expectedCommandId: params.expectedCommandId }),
     status: 'applied',
     appliedGeneration: params.generation,
     metadataPatch: { error: null, strategyOutcome: null },
@@ -268,6 +291,9 @@ export async function markDeploymentFailed(
      * by a database check.
      */
     strategyOutcome?: DeployStrategyOutcome
+    /** See {@link DeploymentTransitionParams.expectedCommandId}. */
+    expectedCommandId?: string
+    expectedStatus?: DeploymentStatus
   }
 ): Promise<DeploymentTargetRecord | null> {
   const metadataPatch: Record<string, unknown> = {}
@@ -279,6 +305,10 @@ export async function markDeploymentFailed(
   return transitionDeploymentStatus(db, {
     environmentId: params.environmentId,
     serverId: params.serverId,
+    ...(params.expectedCommandId === undefined
+      ? {}
+      : { expectedCommandId: params.expectedCommandId }),
+    ...(params.expectedStatus === undefined ? {} : { expectedStatus: params.expectedStatus }),
     status: 'failed',
     finishedAt,
     durationMs: params.durationMs ?? null,

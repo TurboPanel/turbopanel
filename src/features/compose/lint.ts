@@ -1,4 +1,5 @@
 import {
+  isAlias,
   isMap,
   isSeq,
   LineCounter,
@@ -1051,6 +1052,16 @@ function lintDeployUpdateConfig(
   lineCounter: LineCounter,
   issues: ComposeLintIssue[]
 ): void {
+  if (isAlias(updateConfigNode)) {
+    issues.push({
+      level: 'error',
+      message:
+        'deploy.update_config cannot be an alias \u2014 write the settings out so the rollout reads what this document says',
+      path: `services.${name}.deploy.update_config`,
+      line: nodeLine(updateConfigNode as Node, lineCounter),
+    })
+    return
+  }
   if (!isMap(updateConfigNode) || isTaggedNode(updateConfigNode)) return
 
   for (const item of (updateConfigNode as YAMLMap).items) {
@@ -1058,6 +1069,16 @@ function lintDeployUpdateConfig(
     if (key === null || isExtensionKey(key)) continue
     const valueNode = item.value as Node | null | undefined
     const path = `services.${name}.deploy.update_config.${key}`
+    if (key === '<<') {
+      issues.push({
+        level: 'error',
+        message:
+          'deploy.update_config cannot use a merge key (<<) \u2014 write the settings out so the rollout reads what this document says',
+        path,
+        line: nodeLine(item.key as Node, lineCounter),
+      })
+      continue
+    }
     const raw = scalarValueOf(valueNode)
     if (key === 'parallelism' && isInvalidParallelism(raw)) {
       issues.push({

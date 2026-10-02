@@ -14,7 +14,11 @@ import {
 import { emptyComposeDocument } from '../compose/index.ts'
 import { createCommandRecord, getCommandRecord } from '../commands/command-records.ts'
 import type { CommandEnvelope } from '../commands/envelope.ts'
-import { upsertDeploymentTargets } from './deployment-records.ts'
+import {
+  markDeploymentApplied,
+  markDeploymentFailed,
+  upsertDeploymentTargets,
+} from './deployment-records.ts'
 import {
   advanceRollout,
   haltRollout,
@@ -392,5 +396,95 @@ test('failTimedOutDeploy ignores a command a newer deploy replaced', async () =>
     })
     assertEquals(await targetStatus(f, f.serverIds[0]!), 'applying')
     assertEquals(await targetStatus(f, f.serverIds[1]!), 'pending')
+  })
+})
+
+/** Gen 7 redeployed as gen 8 while server 1 was still applying gen 7 (command X). */
+async function redeployMidRollout(f: Fixture): Promise<{ newCommandIds: string[] }> {
+  const newCommandIds: string[] = []
+  for (const serverId of f.serverIds) {
+    const record = await createCommandRecord(f.db, {
+      serverId,
+      actorType: 'system',
+      actorId: crypto.randomUUID(),
+      type: 'environment.deploy',
+      payload: { environmentId: f.environmentId },
+      context: { environmentId: f.environmentId, serverId, generation: 8 },
+    })
+    newCommandIds.push(record.id)
+  }
+  await upsertDeploymentTargets(f.db, {
+    environmentId: f.environmentId,
+    targets: f.serverIds.map((serverId, index) => ({
+      serverId,
+      desiredGeneration: 8,
+      status: index === 0 ? 'applying' : 'pending',
+      lastCommandId: newCommandIds[index],
+      options: { rollout: rolloutOptions(index, 3) },
+    })),
+  })
+  return { newCommandIds }
+}
+
+test('a late success of the replaced deploy does not mark the new deploy applied', async () => {
+  await withRollout(async (f) => {
+    await redeployMidRollout(f)
+    const marked = await markDeploymentApplied(f.db, {
+      environmentId: f.environmentId,
+      serverId: f.serverIds[0]!,
+      generation: 7,
+      commandId: f.commandIds[0]!,
+      expectedCommandId: f.commandIds[0]!,
+    })
+    assertEquals(marked, null)
+    assertEquals(await targetStatus(f, f.serverIds[0]!), 'applying')
+    assertEquals(await targetStatus(f, f.serverIds[1]!), 'pending')
+  })
+})
+
+test('a late failure of the replaced deploy does not halt the new deploy', async () => {
+  await withRollout(async (f) => {
+    await redeployMidRollout(f)
+    const marked = await markDeploymentFailed(f.db, {
+      environmentId: f.environmentId,
+      serverId: f.serverIds[0]!,
+      error: 'late',
+      commandId: f.commandIds[0]!,
+      expectedCommandId: f.commandIds[0]!,
+    })
+    assertEquals(marked, null)
+    await failTimedOutDeploy(f.db, {
+      commandId: f.commandIds[0]!,
+      serverId: f.serverIds[0]!,
+      context: { environmentId: f.environmentId, generation: 7 },
+      error: 'late',
+    })
+    assertEquals(await targetStatus(f, f.serverIds[0]!), 'applying')
+    assertEquals(await targetStatus(f, f.serverIds[1]!), 'pending')
+    assertEquals(await targetStatus(f, f.serverIds[2]!), 'pending')
+  })
+})
+
+test('the new deploy still reaches the held server after the replaced one reports', async () => {
+  await withRollout(async (f) => {
+    const { newCommandIds } = await redeployMidRollout(f)
+    await markDeploymentApplied(f.db, {
+      environmentId: f.environmentId,
+      serverId: f.serverIds[1]!,
+      generation: 7,
+      commandId: f.commandIds[1]!,
+      expectedCommandId: f.commandIds[1]!,
+    })
+    await markApplied(f, f.serverIds[0]!)
+    const delivered = await advanceRollout(
+      f.db,
+      { enqueue: f.enqueue },
+      {
+        environmentId: f.environmentId,
+        generation: 8,
+      }
+    )
+    assertEquals(delivered, [f.serverIds[1]])
+    assertEquals(f.sent[0]?.commandId, newCommandIds[1])
   })
 })

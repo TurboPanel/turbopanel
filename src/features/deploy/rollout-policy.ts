@@ -119,6 +119,8 @@ export function parseUpdateConfig(value: unknown): UpdateConfigResult {
   const parsed: Partial<RolloutPolicy> = {}
   const reasons: string[] = []
   for (const [key, raw] of Object.entries(value)) {
+    // Compose extension keys are the author's own notes.
+    if (key.startsWith('x-')) continue
     const read = FIELD_READERS[key]
     if (read === undefined) {
       reasons.push(`update_config.${key} is not a known setting`)

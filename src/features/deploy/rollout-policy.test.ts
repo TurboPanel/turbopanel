@@ -204,3 +204,11 @@ test('only parallelism and a stopping failure_action are honoured', () => {
   }
   assertEquals(unhonoredUpdateConfigReason('nonsense', 1), null)
 })
+
+test('an x- note inside update_config does not drop parallelism', () => {
+  const result = resolveRolloutPolicy({
+    web: { deploy: { update_config: { parallelism: 3, 'x-note': 'hello' } } },
+  })
+  assertEquals(result.policy.parallelism, 3)
+  assertEquals(result.invalid, [])
+})

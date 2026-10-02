@@ -131,6 +131,26 @@ services:
     ],
   },
   {
+    description:
+      'an aliased update_config is refused: the rollout would read what the document does not say',
+    compose: `x-rollout: &rollout
+  parallelism: 2
+services:
+  web:
+    image: nginx:alpine
+    deploy:
+      update_config: *rollout
+`,
+    expectedIssues: [
+      {
+        path: 'services.web.deploy.update_config',
+        messageIncludes: 'cannot be an alias',
+        level: 'error',
+        blocking: true,
+      },
+    ],
+  },
+  {
     description: 'a negative parallelism is refused',
     compose: `services:
   web:

@@ -492,11 +492,12 @@ async function applyEnvironmentDeployFailedSideEffect(
     const payload = parseEnvironmentDeployPayload(record.payload)
     const finishedAt = nowIso()
     const deployFailure = classifyDeployFailure(error)
-    await markDeploymentFailed(db, {
+    const marked = await markDeploymentFailed(db, {
       environmentId: payload.environmentId,
       serverId: envelope.serverId,
       error,
       commandId: record.id,
+      expectedCommandId: record.id,
       outcome,
       ...(deployFailure === null ? {} : { strategyOutcome: deployFailure.outcome }),
       finishedAt,
@@ -506,7 +507,7 @@ async function applyEnvironmentDeployFailedSideEffect(
         finishedAt,
       }),
     })
-    if (payload.generation !== undefined) {
+    if (marked !== null && payload.generation !== undefined) {
       await haltRollout(db, {
         environmentId: payload.environmentId,
         generation: payload.generation,
@@ -789,11 +790,12 @@ async function applyEnvironmentDeploySideEffect(
     const payload = parseEnvironmentDeployPayload(record.payload)
     if (payload.generation !== undefined) {
       const finishedAt = nowIso()
-      await markDeploymentApplied(db, {
+      const marked = await markDeploymentApplied(db, {
         environmentId: payload.environmentId,
         serverId: envelope.serverId,
         generation: payload.generation,
         commandId: record.id,
+        expectedCommandId: record.id,
         finishedAt,
         durationMs: deploymentDurationMs({
           startedAt: record.startedAt,
@@ -801,7 +803,10 @@ async function applyEnvironmentDeploySideEffect(
           finishedAt,
         }),
       })
-      await advanceRolloutSafely(db, deps, payload.environmentId, payload.generation)
+      // A result from a deploy a newer one replaced changes nothing and advances nothing.
+      if (marked !== null) {
+        await advanceRolloutSafely(db, deps, payload.environmentId, payload.generation)
+      }
     }
     const deployResult = parseEnvironmentDeployResult(result)
     await recordSiteAppsSafely(db, record, payload.environmentId, deployResult.sites)
