@@ -118,7 +118,11 @@ in the execution-log store — there is no Postgres column for them. See
   `testing` uses `staging-daemon-commands` / `staging-daemon-commands-dlq`;
   local top-level worker uses `dev-daemon-commands` / `dev-daemon-commands-dlq`
   (max 3 retries). Declared under `queues.producers` and `queues.consumers`.
-  Consumer handler: `queue(batch, env, ctx)` in `src/workers.ts`.
+  Consumer handler: `queue(batch, env, ctx)` in `src/workers.ts`. Failed
+  messages are never acked: permanent failures (malformed/poisoned) log
+  `command.permanent_failure` and `retry()` like transient ones, so
+  `max_retries` exhaustion routes them to the `dead_letter_queue` (the DLQ
+  must exist: `wrangler queues create <name>-dlq`).
 - **Deno:** `TURBOPANEL_AMQP_URL` (same URL as email queue, different topology).
   Exchange `turbopanel.commands`, queue `turbopanel.commands.dispatch`, routing
   key `command.dispatch`, DLX `turbopanel.commands.dlx` → DLQ
@@ -248,15 +252,15 @@ connection, and turns a daemon that is merely slow into a failed API call.
 
 Two instances today, same shape:
 
-| Metadata key            | Gate                                        | Released by                                                |
-| ----------------------- | ------------------------------------------- | ---------------------------------------------------------- |
-| `pendingStandbyApplies` | one predecessor (the primary `managed.apply`) | `enqueuePendingStandbyApplies` — standby basebackup needs primary replication set up first |
-| `managedDestroyGate`    | **all** sibling replica `managed.destroy`s   | `enqueuePendingManagedDestroys` — the primary's `deleteAfterDestroy` removes the `managed` row the replicas' side effects are keyed on |
+| Metadata key            | Gate                                          | Released by                                                                                                                            |
+| ----------------------- | --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `pendingStandbyApplies` | one predecessor (the primary `managed.apply`) | `enqueuePendingStandbyApplies` — standby basebackup needs primary replication set up first                                             |
+| `managedDestroyGate`    | **all** sibling replica `managed.destroy`s    | `enqueuePendingManagedDestroys` — the primary's `deleteAfterDestroy` removes the `managed` row the replicas' side effects are keyed on |
 
 The destroy gate is an AND across siblings, so two extra rules apply:
 
 - **Stamp at insert time.** The gate carries a `gateId` plus the replica
-  *member* ids, not command ids, because it must be written with the very first
+  _member_ ids, not command ids, because it must be written with the very first
   `createCommandRecord` — a gate stamped after the fan-out could be missed by a
   replica that finished in between. Siblings are found by
   `metadata->'managedDestroyGate'->>'gateId'`, reading `command` only (the
