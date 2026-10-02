@@ -87,6 +87,7 @@ export const UPGRADE_STEP_ERROR_CODES = [
   'rolled_back',
   'server_offline',
   'step_timeout',
+  'verify_timeout',
   'dispatch_failed',
   'managed_upgrade_required',
   'downgrade_refused',
