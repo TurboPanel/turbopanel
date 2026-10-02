@@ -15,6 +15,7 @@ import { getEmailQueue } from '../../features/email/types.ts'
 import { isNoopEmailQueue } from '../../features/email/noop-queue.ts'
 import { resolvePublicBaseUrl } from '../../features/install/resolve-public-base-url.ts'
 import { getOrgId } from '../shared.ts'
+import { inviterHoldsTeamGrants } from './invitation-delegation.ts'
 import { invitationAcceptUrl, mintInvitationToken } from './invitation-token.ts'
 import { parseCreateInvitationBody, type CreateInvitationInput } from './routes-helpers.ts'
 
@@ -167,7 +168,9 @@ export async function handleCreateInvitation(c: Context, opts: AuthRouteOpts): P
   const teamRow = await loadTeamInOrganization(db, parsed.teamId, organizationId)
   if (!teamRow) return c.json({ error: 'Not found' }, 404)
 
-  const allowed = await canInviteToTeam(db, session.userId, parsed.teamId)
+  const allowed =
+    (await canInviteToTeam(db, session.userId, parsed.teamId)) &&
+    (await inviterHoldsTeamGrants(db, session.userId, parsed.teamId))
   if (!allowed) return c.json({ error: 'Forbidden' }, 403)
 
   const now = new Date()
@@ -362,7 +365,9 @@ export async function handleResendInvitation(c: Context, opts: AuthRouteOpts): P
   const invite = rows[0]
   if (!invite) return c.json({ error: 'Not found' }, 404)
 
-  const allowed = await canInviteToTeam(db, session.userId, invite.teamId)
+  const allowed =
+    (await canInviteToTeam(db, session.userId, invite.teamId)) &&
+    (await inviterHoldsTeamGrants(db, session.userId, invite.teamId))
   if (!allowed) return c.json({ error: 'Forbidden' }, 403)
   if (invite.status !== 'pending') return c.json({ error: 'Not found' }, 404)
 
