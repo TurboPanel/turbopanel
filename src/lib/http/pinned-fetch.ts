@@ -19,6 +19,8 @@
  * handling is tested with fakes and no network.
  */
 
+import { firstSequential } from '../sequential.ts'
+
 export type PinnedConn = {
   readable: ReadableStream<Uint8Array>
   writable: WritableStream<Uint8Array>
@@ -82,24 +84,20 @@ class ByteReader {
   }
 
   /** Bytes up to (excluding) `delimiter`, consuming it; `null` at a clean end. */
-  async readUntil(delimiter: Uint8Array, limit: number): Promise<Uint8Array | null> {
-    let from = 0
-    for (;;) {
-      const at = indexOf(this.buffer, delimiter, from)
-      if (at >= 0) {
-        const head = this.buffer.slice(0, at)
-        this.buffer = this.buffer.slice(at + delimiter.length)
-        return head
-      }
-      if (this.buffer.length > limit) {
-        throw new Error('pinned fetch: header section too large')
-      }
-      from = Math.max(0, this.buffer.length - delimiter.length + 1)
-      if (!(await this.fill())) {
-        if (this.buffer.length === 0) return null
-        throw new Error('pinned fetch: connection closed mid-message')
-      }
+  async readUntil(delimiter: Uint8Array, limit: number, from = 0): Promise<Uint8Array | null> {
+    const at = indexOf(this.buffer, delimiter, from)
+    if (at >= 0) {
+      const head = this.buffer.slice(0, at)
+      this.buffer = this.buffer.slice(at + delimiter.length)
+      return head
     }
+    if (this.buffer.length > limit) {
+      throw new Error('pinned fetch: header section too large')
+    }
+    const next = Math.max(0, this.buffer.length - delimiter.length + 1)
+    if (await this.fill()) return this.readUntil(delimiter, limit, next)
+    if (this.buffer.length === 0) return null
+    throw new Error('pinned fetch: connection closed mid-message')
   }
 
   /** Up to `max` bytes (at least one), or `null` at the end of the stream. */
@@ -200,59 +198,74 @@ function framingFor(method: string, head: ParsedHead): Framing {
   return { kind: 'length', length: Number(declared) }
 }
 
-async function* lengthBody(reader: ByteReader, length: number): AsyncGenerator<Uint8Array> {
+/** Yields the next piece of the body, or `null` once it has ended. */
+type BodyPull = () => Promise<Uint8Array | null>
+
+function lengthPull(reader: ByteReader, length: number): BodyPull {
   let remaining = length
-  while (remaining > 0) {
+  return async () => {
+    if (remaining === 0) return null
     const chunk = await reader.readSome(remaining)
-    if (!chunk) {
-      throw new Error('pinned fetch: connection closed before the body ended')
-    }
+    if (!chunk) throw new Error('pinned fetch: connection closed before the body ended')
     remaining -= chunk.length
-    yield chunk
+    return chunk
   }
 }
 
-async function* closeBody(reader: ByteReader): AsyncGenerator<Uint8Array> {
-  for (;;) {
-    const chunk = await reader.readSome(64 * 1024)
-    if (!chunk) return
-    yield chunk
-  }
+function closePull(reader: ByteReader): BodyPull {
+  return () => reader.readSome(64 * 1024)
 }
 
-async function* chunkedBody(reader: ByteReader): AsyncGenerator<Uint8Array> {
-  for (;;) {
-    const sizeLine = await reader.readUntil(CRLF, 1024)
-    if (sizeLine === null) {
-      throw new Error('pinned fetch: connection closed inside a chunked body')
-    }
-    const hex = decoder.decode(sizeLine).split(';')[0]!.trim()
-    if (!/^[\da-fA-F]+$/.test(hex)) {
-      throw new Error('pinned fetch: bad chunk size')
-    }
-    const size = Number.parseInt(hex, 16)
-    if (size === 0) {
-      // Trailers: skip to the blank line.
-      for (;;) {
-        const trailer = await reader.readUntil(CRLF, MAX_HEADER_BYTES)
-        if (trailer === null || trailer.length === 0) return
-      }
-    }
-    yield* lengthBody(reader, size)
-    const end = await reader.readUntil(CRLF, 2)
-    if (end === null || end.length !== 0) {
-      throw new Error('pinned fetch: bad chunk terminator')
-    }
-  }
+/** Skip trailer lines up to and including the blank line that ends the body. */
+async function skipTrailers(reader: ByteReader): Promise<void> {
+  const trailer = await reader.readUntil(CRLF, MAX_HEADER_BYTES)
+  if (!trailer?.length) return
+  await skipTrailers(reader)
 }
 
-function bodySource(
-  framing: Exclude<Framing, { kind: 'none' }>,
-  reader: ByteReader
-): AsyncGenerator<Uint8Array> {
-  if (framing.kind === 'chunked') return chunkedBody(reader)
-  if (framing.kind === 'length') return lengthBody(reader, framing.length)
-  return closeBody(reader)
+async function readChunkSize(reader: ByteReader): Promise<number> {
+  const sizeLine = await reader.readUntil(CRLF, 1024)
+  if (sizeLine === null) {
+    throw new Error('pinned fetch: connection closed inside a chunked body')
+  }
+  const hex = decoder.decode(sizeLine).split(';')[0]!.trim()
+  if (!/^[\da-fA-F]+$/.test(hex)) throw new Error('pinned fetch: bad chunk size')
+  return Number.parseInt(hex, 16)
+}
+
+function chunkedPull(reader: ByteReader): BodyPull {
+  let inChunk = 0
+  let finished = false
+  let afterData = false
+  const pull: BodyPull = async () => {
+    if (finished) return null
+    if (inChunk > 0) {
+      const chunk = await reader.readSome(inChunk)
+      if (!chunk) throw new Error('pinned fetch: connection closed before the chunk ended')
+      inChunk -= chunk.length
+      afterData = true
+      return chunk
+    }
+    if (afterData) {
+      const end = await reader.readUntil(CRLF, 2)
+      if (end?.length !== 0) throw new Error('pinned fetch: bad chunk terminator')
+      afterData = false
+    }
+    inChunk = await readChunkSize(reader)
+    if (inChunk === 0) {
+      finished = true
+      await skipTrailers(reader)
+      return null
+    }
+    return pull()
+  }
+  return pull
+}
+
+function bodySource(framing: Exclude<Framing, { kind: 'none' }>, reader: ByteReader): BodyPull {
+  if (framing.kind === 'chunked') return chunkedPull(reader)
+  if (framing.kind === 'length') return lengthPull(reader, framing.length)
+  return closePull(reader)
 }
 
 function bodyStream(
@@ -264,16 +277,16 @@ function bodyStream(
     conn.close()
     return null
   }
-  const iterator = bodySource(framing, reader)[Symbol.asyncIterator]()
+  const nextPiece = bodySource(framing, reader)
   return new ReadableStream<Uint8Array>({
     async pull(controller) {
       try {
-        const next = await iterator.next()
-        if (next.done) {
+        const piece = await nextPiece()
+        if (piece === null) {
           conn.close()
           controller.close()
         } else {
-          controller.enqueue(next.value)
+          controller.enqueue(piece)
         }
       } catch (error) {
         conn.close()
@@ -317,13 +330,15 @@ async function connectFirst(
   serverName: string
 ): Promise<PinnedConn> {
   let failure: unknown = new Error('pinned fetch: no address to connect to')
-  for (const address of options.addresses) {
+  const connected = await firstSequential(options.addresses, async (address) => {
     try {
       return await options.connect({ address, port, serverName })
     } catch (error) {
       failure = error
+      return undefined
     }
-  }
+  })
+  if (connected) return connected
   throw failure
 }
 
@@ -364,13 +379,9 @@ export async function pinnedFetch(
 }
 
 async function readHead(reader: ByteReader): Promise<ParsedHead> {
-  for (;;) {
-    const raw = await reader.readUntil(HEADER_END, MAX_HEADER_BYTES)
-    if (raw === null) {
-      throw new Error('pinned fetch: connection closed before a response')
-    }
-    const head = parseHead(raw)
-    // A 1xx interim response (we send no Expect, but be tolerant) is skipped.
-    if (head.status >= 200) return head
-  }
+  const raw = await reader.readUntil(HEADER_END, MAX_HEADER_BYTES)
+  if (raw === null) throw new Error('pinned fetch: connection closed before a response')
+  const head = parseHead(raw)
+  // A 1xx interim response (we send no Expect, but be tolerant) is skipped.
+  return head.status >= 200 ? head : readHead(reader)
 }
