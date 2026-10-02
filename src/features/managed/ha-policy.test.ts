@@ -8,6 +8,7 @@ import {
   pickAutomaticFailoverCandidate,
   pickHaAdvertiseAddress,
   replicaClassAfterDisasterRecovery,
+  selectHaRaftMembers,
   serverHostsManagedHa,
   shouldBlockUnreachablePrimaryFence,
   type HaMemberCandidateInput,
@@ -62,12 +63,9 @@ test('automatic candidate requires replica + failover + same datacenter + health
       ...failoverSameDc,
       role: 'primary',
     }),
-    false,
+    false
   )
-  assertEquals(
-    isAutomaticFailoverCandidate({ ...failoverSameDc, healthy: false }),
-    false,
-  )
+  assertEquals(isAutomaticFailoverCandidate({ ...failoverSameDc, healthy: false }), false)
   assertEquals(isAutomaticFailoverClassMember({ ...failoverSameDc, healthy: false }), true)
 })
 
@@ -75,7 +73,7 @@ test('pickAutomaticFailoverCandidate is lowest ordinal and ignores readEligible'
   const later = { ...failoverSameDc, id: 'm-later', ordinal: 5 }
   assertEquals(
     pickAutomaticFailoverCandidate([readSameDc, later, failoverSameDc])?.id,
-    'm-failover',
+    'm-failover'
   )
   assertEquals(pickAutomaticFailoverCandidate([readSameDc, failoverRemote]), null)
   // Equal ordinal: stable id order via localeCompare.
@@ -89,21 +87,15 @@ test('pickAutomaticFailoverCandidate skips unhealthy and picks the next healthy 
   const healthyLater = { ...failoverSameDc, id: 'm-ok', ordinal: 5, healthy: true }
   assertEquals(
     pickAutomaticFailoverCandidate([unhealthyEarly, healthyLater, readSameDc])?.id,
-    'm-ok',
+    'm-ok'
   )
-  assertEquals(
-    pickAutomaticFailoverCandidate([unhealthyEarly, readSameDc, failoverRemote]),
-    null,
-  )
+  assertEquals(pickAutomaticFailoverCandidate([unhealthyEarly, readSameDc, failoverRemote]), null)
 })
 
 test('automaticFailoverBlockCause distinguishes no-candidate from unhealthy', () => {
   assertEquals(automaticFailoverBlockCause([failoverSameDc]), null)
   assertEquals(automaticFailoverBlockCause([readSameDc, failoverRemote]), 'no-candidate')
-  assertEquals(
-    automaticFailoverBlockCause([{ ...failoverSameDc, healthy: false }]),
-    'unhealthy',
-  )
+  assertEquals(automaticFailoverBlockCause([{ ...failoverSameDc, healthy: false }]), 'unhealthy')
 })
 
 test('Orchestrator promotion rules prefer failover and must_not read', () => {
@@ -121,18 +113,12 @@ test('unreachable primary fence blocks automatic failover only', () => {
 })
 
 test('automaticFailoverBlockedReason uses the product copy', () => {
-  assertEquals(
-    automaticFailoverBlockedReason('unfenced'),
-    AUTOMATIC_FAILOVER_BLOCKED_MESSAGE,
-  )
+  assertEquals(automaticFailoverBlockedReason('unfenced'), AUTOMATIC_FAILOVER_BLOCKED_MESSAGE)
   assertEquals(
     automaticFailoverBlockedReason('no-candidate'),
-    AUTOMATIC_FAILOVER_NO_CANDIDATE_MESSAGE,
+    AUTOMATIC_FAILOVER_NO_CANDIDATE_MESSAGE
   )
-  assertEquals(
-    automaticFailoverBlockedReason('unhealthy'),
-    AUTOMATIC_FAILOVER_UNHEALTHY_MESSAGE,
-  )
+  assertEquals(automaticFailoverBlockedReason('unhealthy'), AUTOMATIC_FAILOVER_UNHEALTHY_MESSAGE)
 })
 
 test('disaster recovery demotes remote failover to read and never upgrades read', () => {
@@ -142,7 +128,7 @@ test('disaster recovery demotes remote failover to read and never upgrades read'
       replicaClass: 'failover',
       sameDatacenterAsNewPrimary: false,
     }),
-    'read',
+    'read'
   )
   assertEquals(
     replicaClassAfterDisasterRecovery({
@@ -150,7 +136,7 @@ test('disaster recovery demotes remote failover to read and never upgrades read'
       replicaClass: 'failover',
       sameDatacenterAsNewPrimary: true,
     }),
-    'failover',
+    'failover'
   )
   assertEquals(
     replicaClassAfterDisasterRecovery({
@@ -158,7 +144,7 @@ test('disaster recovery demotes remote failover to read and never upgrades read'
       replicaClass: 'read',
       sameDatacenterAsNewPrimary: true,
     }),
-    'read',
+    'read'
   )
   assertEquals(
     replicaClassAfterDisasterRecovery({
@@ -166,7 +152,7 @@ test('disaster recovery demotes remote failover to read and never upgrades read'
       replicaClass: null,
       sameDatacenterAsNewPrimary: true,
     }),
-    null,
+    null
   )
   // Unknown / missing replica class on a non-primary falls back to read.
   assertEquals(
@@ -175,7 +161,7 @@ test('disaster recovery demotes remote failover to read and never upgrades read'
       replicaClass: null,
       sameDatacenterAsNewPrimary: true,
     }),
-    'read',
+    'read'
   )
   assertEquals(
     replicaClassAfterDisasterRecovery({
@@ -183,23 +169,14 @@ test('disaster recovery demotes remote failover to read and never upgrades read'
       replicaClass: 'standby',
       sameDatacenterAsNewPrimary: false,
     }),
-    'read',
+    'read'
   )
 })
 
 test('serverHostsManagedHa includes primary and failover, not read-only', () => {
-  assertEquals(
-    serverHostsManagedHa([{ role: 'primary', replicaClass: null }]),
-    true,
-  )
-  assertEquals(
-    serverHostsManagedHa([{ role: 'replica', replicaClass: 'failover' }]),
-    true,
-  )
-  assertEquals(
-    serverHostsManagedHa([{ role: 'replica', replicaClass: 'read' }]),
-    false,
-  )
+  assertEquals(serverHostsManagedHa([{ role: 'primary', replicaClass: null }]), true)
+  assertEquals(serverHostsManagedHa([{ role: 'replica', replicaClass: 'failover' }]), true)
+  assertEquals(serverHostsManagedHa([{ role: 'replica', replicaClass: 'read' }]), false)
 })
 
 test('pickHaAdvertiseAddress prefers IPv4 datacenter pins', () => {
@@ -208,13 +185,49 @@ test('pickHaAdvertiseAddress prefers IPv4 datacenter pins', () => {
       { address: '2001:db8::10', family: 6 },
       { address: '203.0.113.10', family: 4 },
     ]),
-    '203.0.113.10',
+    '203.0.113.10'
   )
-  assertEquals(
-    pickHaAdvertiseAddress([{ address: '2001:db8::10', family: 6 }]),
-    '2001:db8::10',
-  )
+  assertEquals(pickHaAdvertiseAddress([{ address: '2001:db8::10', family: 6 }]), '2001:db8::10')
   assertEquals(pickHaAdvertiseAddress([]), null)
+})
+
+test('selectHaRaftMembers keeps the raft group inside this server datacenter', () => {
+  const pins = new Map([
+    ['lan-a', [{ datacenterId: 'dc-lan', address: '10.10.1.10', family: 4 as const }]],
+    ['lan-b', [{ datacenterId: 'dc-lan', address: '10.10.1.20', family: 4 as const }]],
+    ['vpc-a', [{ datacenterId: 'dc-vpc', address: '10.100.0.4', family: 4 as const }]],
+    ['vpc-b', [{ datacenterId: 'dc-vpc', address: '10.100.0.5', family: 4 as const }]],
+  ])
+  const all = ['lan-a', 'lan-b', 'vpc-a', 'vpc-b']
+  assertEquals(selectHaRaftMembers('vpc-a', all, pins), {
+    advertiseAddress: '10.100.0.4',
+    peers: [
+      { serverId: 'vpc-a', address: '10.100.0.4' },
+      { serverId: 'vpc-b', address: '10.100.0.5' },
+    ],
+  })
+  assertEquals(
+    selectHaRaftMembers('lan-b', all, pins)?.peers.map((peer) => peer.serverId),
+    ['lan-a', 'lan-b']
+  )
+})
+
+test('selectHaRaftMembers dials a multi-datacenter peer on its shared-datacenter pin', () => {
+  const pins = new Map([
+    ['a', [{ datacenterId: 'dc-1', address: '10.0.0.1', family: 4 as const }]],
+    [
+      'b',
+      [
+        { datacenterId: 'dc-2', address: '192.168.0.2', family: 4 as const },
+        { datacenterId: 'dc-1', address: '10.0.0.2', family: 4 as const },
+      ],
+    ],
+  ])
+  assertEquals(selectHaRaftMembers('a', ['a', 'b'], pins)?.peers, [
+    { serverId: 'a', address: '10.0.0.1' },
+    { serverId: 'b', address: '10.0.0.2' },
+  ])
+  assertEquals(selectHaRaftMembers('c', ['a', 'b', 'c'], pins), null)
 })
 
 /**
@@ -267,31 +280,29 @@ test('four-member topology: auto pick is same-DC failover, never the remote read
   assertEquals(pickAutomaticFailoverCandidate(fourMemberTopology())?.id, 'server-b')
   assertEquals(automaticFailoverBlockCause(fourMemberTopology()), null)
   assertEquals(
-    fourMemberTopology().some((row) =>
-      row.id === 'server-d' && isAutomaticFailoverCandidate(row)
-    ),
-    false,
+    fourMemberTopology().some((row) => row.id === 'server-d' && isAutomaticFailoverCandidate(row)),
+    false
   )
 })
 
 test('four-member topology: unhealthy B yields C; both unhealthy blocks', () => {
   assertEquals(
     pickAutomaticFailoverCandidate(fourMemberTopology({ bHealthy: false }))?.id,
-    'server-c',
+    'server-c'
   )
   assertEquals(
     pickAutomaticFailoverCandidate(fourMemberTopology({ bHealthy: false, cHealthy: false })),
-    null,
+    null
   )
   assertEquals(
     automaticFailoverBlockCause(fourMemberTopology({ bHealthy: false, cHealthy: false })),
-    'unhealthy',
+    'unhealthy'
   )
 })
 
 test('four-member topology: remote-only survivors are never automatic candidates', () => {
-  const remoteOnly = fourMemberTopology().filter((row) =>
-    row.id === 'server-a' || row.id === 'server-d'
+  const remoteOnly = fourMemberTopology().filter(
+    (row) => row.id === 'server-a' || row.id === 'server-d'
   )
   assertEquals(pickAutomaticFailoverCandidate(remoteOnly), null)
   assertEquals(automaticFailoverBlockCause(remoteOnly), 'no-candidate')
@@ -304,7 +315,7 @@ test('disaster recovery reclassifies former same-DC failover members that left t
       replicaClass: 'failover',
       sameDatacenterAsNewPrimary: false,
     }),
-    'read',
+    'read'
   )
   assertEquals(
     replicaClassAfterDisasterRecovery({
@@ -312,6 +323,6 @@ test('disaster recovery reclassifies former same-DC failover members that left t
       replicaClass: 'read',
       sameDatacenterAsNewPrimary: true,
     }),
-    'read',
+    'read'
   )
 })
