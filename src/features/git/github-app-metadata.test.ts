@@ -2,6 +2,9 @@ import { assertEquals, assertRejects } from '@std/assert'
 import type { Forge } from './forge-records.ts'
 import { fetchGithubAppMetadata } from './github-app-metadata.ts'
 import { GithubAppTokenError, privateKeyPemToPkcs8Der } from './github-app-token.ts'
+import { useUnpinnedForgeFetchForTests } from './forge-url.ts'
+
+useUnpinnedForgeFetchForTests()
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -20,13 +23,15 @@ async function generatePkcs8Pem(): Promise<string> {
       hash: 'SHA-256',
     },
     true,
-    ['sign', 'verify'],
+    ['sign', 'verify']
   )
   const pkcs8 = await crypto.subtle.exportKey('pkcs8', keyPair.privateKey)
   const bytes = new Uint8Array(pkcs8)
   let binary = ''
   for (const byte of bytes) binary += String.fromCodePoint(byte)
-  const body = btoa(binary).replaceAll(/(.{64})/g, '$1\n').trim()
+  const body = btoa(binary)
+    .replaceAll(/(.{64})/g, '$1\n')
+    .trim()
   return `-----BEGIN PRIVATE KEY-----\n${body}\n-----END PRIVATE KEY-----\n`
 }
 
@@ -57,7 +62,7 @@ function githubApp(overrides: Partial<Forge> = {}): Forge {
 
 function withFetch(
   handler: (url: string, init?: RequestInit) => Response | Promise<Response>,
-  fn: () => Promise<void>,
+  fn: () => Promise<void>
 ): Promise<void> {
   const original = globalThis.fetch
   globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
@@ -73,7 +78,7 @@ test('fetchGithubAppMetadata rejects a non-github app', async () => {
   await assertRejects(
     () => fetchGithubAppMetadata(githubApp({ provider: 'gitlab', name: 'gitlab-app' })),
     GithubAppTokenError,
-    'is not a github app',
+    'is not a github app'
   )
 })
 
@@ -81,60 +86,66 @@ test('fetchGithubAppMetadata rejects a missing private key', async () => {
   await assertRejects(
     () => fetchGithubAppMetadata(githubApp({ privateKeyPem: null })),
     GithubAppTokenError,
-    'no private key configured',
+    'no private key configured'
   )
 })
 
 test('fetchGithubAppMetadata maps a full GET /app payload', async () => {
   const pem = await generatePkcs8Pem()
   assertEquals(privateKeyPemToPkcs8Der(pem).length > 0, true)
-  await withFetch((url) => {
-    assertEquals(url, 'https://api.github.com/app')
-    return new Response(
-      JSON.stringify({
-        id: 99,
-        name: ' Quiet Heron ',
+  await withFetch(
+    (url) => {
+      assertEquals(url, 'https://api.github.com/app')
+      return new Response(
+        JSON.stringify({
+          id: 99,
+          name: ' Quiet Heron ',
+          slug: 'quiet-heron',
+          public: true,
+          permissions: { contents: 'read', extra: 1, nested: { nope: true } },
+          events: ['push', 12, 'check_run'],
+        }),
+        { status: 200 }
+      )
+    },
+    async () => {
+      assertEquals(await fetchGithubAppMetadata(githubApp({ privateKeyPem: pem })), {
+        externalAppId: '99',
+        name: 'Quiet Heron',
         slug: 'quiet-heron',
-        public: true,
-        permissions: { contents: 'read', extra: 1, nested: { nope: true } },
-        events: ['push', 12, 'check_run'],
-      }),
-      { status: 200 },
-    )
-  }, async () => {
-    assertEquals(await fetchGithubAppMetadata(githubApp({ privateKeyPem: pem })), {
-      externalAppId: '99',
-      name: 'Quiet Heron',
-      slug: 'quiet-heron',
-      isPublic: true,
-      permissions: { contents: 'read' },
-      events: ['push', 'check_run'],
-    })
-  })
+        isPublic: true,
+        permissions: { contents: 'read' },
+        events: ['push', 'check_run'],
+      })
+    }
+  )
 })
 
 test('fetchGithubAppMetadata treats absent public and empty slug as unknown', async () => {
   const pem = await generatePkcs8Pem()
-  await withFetch(() =>
-    new Response(
-      JSON.stringify({
-        id: '42',
+  await withFetch(
+    () =>
+      new Response(
+        JSON.stringify({
+          id: '42',
+          name: 'Private App',
+          slug: '',
+          permissions: ['not-an-object'],
+          events: { push: true },
+        }),
+        { status: 200 }
+      ),
+    async () => {
+      assertEquals(await fetchGithubAppMetadata(githubApp({ privateKeyPem: pem })), {
+        externalAppId: '42',
         name: 'Private App',
-        slug: '',
-        permissions: ['not-an-object'],
-        events: { push: true },
-      }),
-      { status: 200 },
-    ), async () => {
-    assertEquals(await fetchGithubAppMetadata(githubApp({ privateKeyPem: pem })), {
-      externalAppId: '42',
-      name: 'Private App',
-      slug: null,
-      isPublic: null,
-      permissions: {},
-      events: [],
-    })
-  })
+        slug: null,
+        isPublic: null,
+        permissions: {},
+        events: [],
+      })
+    }
+  )
 })
 
 test('fetchGithubAppMetadata maps a network failure', async () => {
@@ -145,7 +156,7 @@ test('fetchGithubAppMetadata maps a network failure', async () => {
     await assertRejects(
       () => fetchGithubAppMetadata(githubApp({ privateKeyPem: pem })),
       GithubAppTokenError,
-      'github app lookup failed: dns failure',
+      'github app lookup failed: dns failure'
     )
   } finally {
     globalThis.fetch = original
@@ -160,7 +171,7 @@ test('fetchGithubAppMetadata maps a non-Error network failure', async () => {
     await assertRejects(
       () => fetchGithubAppMetadata(githubApp({ privateKeyPem: pem })),
       GithubAppTokenError,
-      'github app lookup failed: network error',
+      'github app lookup failed: network error'
     )
   } finally {
     globalThis.fetch = original
@@ -169,33 +180,39 @@ test('fetchGithubAppMetadata maps a non-Error network failure', async () => {
 
 test('fetchGithubAppMetadata maps a non-OK GitHub response', async () => {
   const pem = await generatePkcs8Pem()
-  await withFetch(() => new Response('nope', { status: 401 }), async () => {
-    await assertRejects(
-      () => fetchGithubAppMetadata(githubApp({ privateKeyPem: pem })),
-      GithubAppTokenError,
-      'github app lookup failed (401)',
-    )
-  })
+  await withFetch(
+    () => new Response('nope', { status: 401 }),
+    async () => {
+      await assertRejects(
+        () => fetchGithubAppMetadata(githubApp({ privateKeyPem: pem })),
+        GithubAppTokenError,
+        'github app lookup failed (401)'
+      )
+    }
+  )
 })
 
 test('fetchGithubAppMetadata rejects an empty or incomplete body', async () => {
   const pem = await generatePkcs8Pem()
-  await withFetch(() => new Response('not-json', { status: 200 }), async () => {
-    await assertRejects(
-      () => fetchGithubAppMetadata(githubApp({ privateKeyPem: pem })),
-      GithubAppTokenError,
-      'returned no body',
-    )
-  })
+  await withFetch(
+    () => new Response('not-json', { status: 200 }),
+    async () => {
+      await assertRejects(
+        () => fetchGithubAppMetadata(githubApp({ privateKeyPem: pem })),
+        GithubAppTokenError,
+        'returned no body'
+      )
+    }
+  )
   await withFetch(
     () => new Response(JSON.stringify({ id: null, name: 'x' }), { status: 200 }),
     async () => {
       await assertRejects(
         () => fetchGithubAppMetadata(githubApp({ privateKeyPem: pem })),
         GithubAppTokenError,
-        'returned no id or name',
+        'returned no id or name'
       )
-    },
+    }
   )
   await withFetch(
     () => new Response(JSON.stringify({ id: 7, name: '   ' }), { status: 200 }),
@@ -203,9 +220,9 @@ test('fetchGithubAppMetadata rejects an empty or incomplete body', async () => {
       await assertRejects(
         () => fetchGithubAppMetadata(githubApp({ privateKeyPem: pem })),
         GithubAppTokenError,
-        'returned no id or name',
+        'returned no id or name'
       )
-    },
+    }
   )
   await withFetch(
     () => new Response(JSON.stringify({ id: { value: 7 }, name: 'Quiet Heron' }), { status: 200 }),
@@ -213,8 +230,8 @@ test('fetchGithubAppMetadata rejects an empty or incomplete body', async () => {
       await assertRejects(
         () => fetchGithubAppMetadata(githubApp({ privateKeyPem: pem })),
         GithubAppTokenError,
-        'returned no id or name',
+        'returned no id or name'
       )
-    },
+    }
   )
 })
