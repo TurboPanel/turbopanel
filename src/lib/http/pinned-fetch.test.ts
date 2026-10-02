@@ -1,5 +1,11 @@
 import { assertEquals, assertRejects } from '@std/assert'
-import { type PinnedConn, pinnedConnectVia, pinnedFetch } from './pinned-fetch.ts'
+import {
+  MAX_INTERIM_RESPONSES,
+  MAX_TRAILER_LINES,
+  type PinnedConn,
+  pinnedConnectVia,
+  pinnedFetch,
+} from './pinned-fetch.ts'
 
 const test = Deno.test.bind(Deno)
 
@@ -165,4 +171,87 @@ test('the Deno transport abandons a TLS handshake that never completes, closing 
   setTimeout(() => controller.abort(new Error('deadline')), 5)
   await assertRejects(() => pending, Error, 'deadline')
   assertEquals(tcpClosed, 1)
+})
+
+/** A connection that delivers `reply` one byte per read — the worst case for the buffering. */
+function byteConn(reply: string): PinnedConn {
+  const bytes = new TextEncoder().encode(reply)
+  let at = 0
+  return {
+    readable: new ReadableStream({
+      pull(controller) {
+        if (at < bytes.length) controller.enqueue(bytes.slice(at, ++at))
+        else controller.close()
+      },
+    }),
+    writable: new WritableStream(),
+    close() {},
+  }
+}
+
+const fetchByteWise = (reply: string) =>
+  pinnedFetch(new Request('https://git.example.com/'), {
+    addresses: ['203.0.113.9'],
+    connect: () => Promise.resolve(byteConn(reply)),
+  })
+
+test('a body delivered a byte at a time reads back intact', async () => {
+  const chunked = await fetchByteWise(
+    'HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n4\r\ndefg\r\n0\r\n\r\n'
+  )
+  assertEquals(await chunked.text(), 'abcdefg')
+  const sized = await fetchByteWise('HTTP/1.1 200 OK\r\nContent-Length: 11\r\n\r\nhello world')
+  assertEquals(await sized.text(), 'hello world')
+})
+
+test('body pieces already handed out are not overwritten by later reads', async () => {
+  const response = await fetchVia(
+    'HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\naaaaa\r\n5\r\nbbbbb\r\n5\r\nccccc\r\n0\r\n\r\n',
+    new Request('https://git.example.com/')
+  )
+  // Every piece is kept until the end, so a reused buffer would show here.
+  const pieces = await Array.fromAsync(response.body!)
+  const text = pieces.map((piece) => new TextDecoder().decode(piece)).join('')
+  assertEquals(text, 'aaaaabbbbbccccc')
+})
+
+test('only a Transfer-Encoding of exactly chunked frames the body', async () => {
+  const req = () => new Request('https://git.example.com/')
+  const chunked = await fetchVia(
+    'HTTP/1.1 200 OK\r\nTransfer-Encoding: Chunked\r\n\r\n2\r\nok\r\n0\r\n\r\n',
+    req()
+  )
+  assertEquals(await chunked.text(), 'ok')
+  await Promise.all(
+    ['xchunked', 'chunked, gzip', 'gzip, chunked', 'notchunked'].map((coding) =>
+      assertRejects(
+        () =>
+          fetchVia(
+            `HTTP/1.1 200 OK\r\nTransfer-Encoding: ${coding}\r\nContent-Length: 2\r\n\r\nok`,
+            req()
+          ),
+        Error,
+        'transfer-encoding'
+      )
+    )
+  )
+})
+
+test('trailers and interim responses are bounded', async () => {
+  const req = () => new Request('https://git.example.com/')
+  const trailers = (count: number) =>
+    `HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\nok\r\n0\r\n${'X-T: 1\r\n'.repeat(count)}\r\n`
+  assertEquals(await (await fetchVia(trailers(3), req())).text(), 'ok')
+  await assertRejects(() => fetchVia(trailers(MAX_TRAILER_LINES), req()).then((r) => r.text()))
+  const big = `HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\nok\r\n0\r\n${`X-T: ${'a'.repeat(1000)}\r\n`.repeat(60)}A: ${'a'.repeat(6000)}\r\n\r\n`
+  await assertRejects(() => fetchVia(big, req()).then((r) => r.text()), Error, 'too large')
+
+  const interim = (count: number) =>
+    `${'HTTP/1.1 100 Continue\r\n\r\n'.repeat(count)}HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok`
+  assertEquals(await (await fetchVia(interim(MAX_INTERIM_RESPONSES), req())).text(), 'ok')
+  await assertRejects(
+    () => fetchVia(interim(MAX_INTERIM_RESPONSES + 1), req()),
+    Error,
+    'interim responses'
+  )
 })

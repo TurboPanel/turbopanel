@@ -84,47 +84,63 @@ export function denoPinnedConnect(): PinnedConnect | null {
   return pinnedConnectVia(deno as DenoNet)
 }
 
-/** Pulls bytes off a stream with a push-back buffer, for the header/chunk parsing. */
+/**
+ * Pulls bytes off a stream with a push-back buffer, for the header/chunk
+ * parsing. Consumed bytes are skipped by moving `start`, not by copying the
+ * rest of the buffer on every read; the buffer is only rebuilt when a new
+ * network read has to be appended to unread bytes. Returned pieces are views
+ * of buffers that are never written to again, so they stay valid.
+ */
 class ByteReader {
-  private buffer = new Uint8Array(0)
+  private buffer: Uint8Array = new Uint8Array(0)
+  private start = 0
   private readonly reader: ReadableStreamDefaultReader<Uint8Array>
   constructor(stream: ReadableStream<Uint8Array>) {
     this.reader = stream.getReader()
   }
 
+  private get unread(): number {
+    return this.buffer.length - this.start
+  }
+
   private async fill(): Promise<boolean> {
     const { done, value } = await this.reader.read()
     if (done) return false
-    const merged = new Uint8Array(this.buffer.length + value.length)
-    merged.set(this.buffer)
-    merged.set(value, this.buffer.length)
-    this.buffer = merged
+    if (this.unread === 0) {
+      this.buffer = value
+    } else {
+      const merged = new Uint8Array(this.unread + value.length)
+      merged.set(this.buffer.subarray(this.start))
+      merged.set(value, this.unread)
+      this.buffer = merged
+    }
+    this.start = 0
     return true
+  }
+
+  private take(length: number, skip = 0): Uint8Array {
+    const piece = this.buffer.subarray(this.start, this.start + length)
+    this.start += length + skip
+    return piece
   }
 
   /** Bytes up to (excluding) `delimiter`, consuming it; `null` at a clean end. */
   async readUntil(delimiter: Uint8Array, limit: number, from = 0): Promise<Uint8Array | null> {
-    const at = indexOf(this.buffer, delimiter, from)
-    if (at >= 0) {
-      const head = this.buffer.slice(0, at)
-      this.buffer = this.buffer.slice(at + delimiter.length)
-      return head
-    }
-    if (this.buffer.length > limit) {
+    const at = indexOf(this.buffer, delimiter, this.start + from)
+    if (at >= 0) return this.take(at - this.start, delimiter.length)
+    if (this.unread > limit) {
       throw new Error('pinned fetch: header section too large')
     }
-    const next = Math.max(0, this.buffer.length - delimiter.length + 1)
+    const next = Math.max(0, this.unread - delimiter.length + 1)
     if (await this.fill()) return this.readUntil(delimiter, limit, next)
-    if (this.buffer.length === 0) return null
+    if (this.unread === 0) return null
     throw new Error('pinned fetch: connection closed mid-message')
   }
 
   /** Up to `max` bytes (at least one), or `null` at the end of the stream. */
   async readSome(max: number): Promise<Uint8Array | null> {
-    if (this.buffer.length === 0 && !(await this.fill())) return null
-    const chunk = this.buffer.slice(0, max)
-    this.buffer = this.buffer.slice(chunk.length)
-    return chunk
+    if (this.unread === 0 && !(await this.fill())) return null
+    return this.take(Math.min(max, this.unread))
   }
 
   async cancel(): Promise<void> {
@@ -206,7 +222,16 @@ function framingFor(method: string, head: ParsedHead): Framing {
   if (method === 'HEAD' || status === 204 || status === 304) {
     return { kind: 'none' }
   }
-  if (headers.get('transfer-encoding')?.toLowerCase().includes('chunked')) {
+  const transferEncoding = headers.get('transfer-encoding')
+  if (transferEncoding !== null) {
+    // RFC 9112 6.3: only a final `chunked` coding frames the body, and this
+    // client decodes no other transfer coding, so `chunked` must be the whole
+    // list (`xchunked`, `chunked, gzip` and `gzip, chunked` are all refused).
+    // Content-Length is never a fallback once Transfer-Encoding is present.
+    const codings = transferEncoding.split(',').map((coding) => coding.trim().toLowerCase())
+    if (codings.length !== 1 || codings[0] !== 'chunked') {
+      throw new Error(`pinned fetch: unsupported transfer-encoding ${transferEncoding}`)
+    }
     return { kind: 'chunked' }
   }
   const declared = headers.get('content-length')
@@ -235,11 +260,30 @@ function closePull(reader: ByteReader): BodyPull {
   return () => reader.readSome(64 * 1024)
 }
 
-/** Skip trailer lines up to and including the blank line that ends the body. */
+/** Trailer lines a chunked body may carry; their bytes share {@link MAX_HEADER_BYTES}. */
+export const MAX_TRAILER_LINES = 64
+/** Interim 1xx responses tolerated ahead of the final one. */
+export const MAX_INTERIM_RESPONSES = 8
+
+/** `count` slots for {@link firstSequential}: a bounded, ordered retry without a loop. */
+function attempts(count: number): undefined[] {
+  return Array.from({ length: count }, () => undefined)
+}
+
+/**
+ * Skip trailer lines up to and including the blank line that ends the body,
+ * within {@link MAX_TRAILER_LINES} lines and {@link MAX_HEADER_BYTES} bytes.
+ */
 async function skipTrailers(reader: ByteReader): Promise<void> {
-  const trailer = await reader.readUntil(CRLF, MAX_HEADER_BYTES)
-  if (!trailer?.length) return
-  await skipTrailers(reader)
+  let budget = MAX_HEADER_BYTES
+  const ended = await firstSequential(attempts(MAX_TRAILER_LINES), async () => {
+    const trailer = await reader.readUntil(CRLF, budget)
+    if (!trailer?.length) return true
+    budget -= trailer.length + CRLF.length
+    if (budget < 0) throw new Error('pinned fetch: trailer section too large')
+    return undefined
+  })
+  if (!ended) throw new Error('pinned fetch: too many trailer lines')
 }
 
 async function readChunkSize(reader: ByteReader): Promise<number> {
@@ -425,10 +469,17 @@ export async function pinnedFetch(
   }
 }
 
+/**
+ * The final response head. Up to {@link MAX_INTERIM_RESPONSES} 1xx interim
+ * responses ahead of it (we send no Expect, but be tolerant) are skipped.
+ */
 async function readHead(reader: ByteReader): Promise<ParsedHead> {
-  const raw = await reader.readUntil(HEADER_END, MAX_HEADER_BYTES)
-  if (raw === null) throw new Error('pinned fetch: connection closed before a response')
-  const head = parseHead(raw)
-  // A 1xx interim response (we send no Expect, but be tolerant) is skipped.
-  return head.status >= 200 ? head : readHead(reader)
+  const head = await firstSequential(attempts(MAX_INTERIM_RESPONSES + 1), async () => {
+    const raw = await reader.readUntil(HEADER_END, MAX_HEADER_BYTES)
+    if (raw === null) throw new Error('pinned fetch: connection closed before a response')
+    const parsed = parseHead(raw)
+    return parsed.status >= 200 ? parsed : undefined
+  })
+  if (!head) throw new Error('pinned fetch: too many interim responses')
+  return head
 }
