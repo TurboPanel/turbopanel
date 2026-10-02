@@ -1,5 +1,5 @@
 import { assertEquals } from '@std/assert'
-import { BLUEGREEN_UNAVAILABLE_REASON, planDeployEngine } from './deploy-engine.ts'
+import { BLUEGREEN_UNAVAILABLE_REASON, planDeployEngine, rolloutSummary } from './deploy-engine.ts'
 
 /** Jest/Mocha-shaped alias so Sonar sees real tests (see health-gate tests in turbopaneld). */
 const test = Deno.test.bind(Deno)
@@ -72,4 +72,48 @@ test('blue-green is never sent to the daemon: it runs sequential and says why', 
     refused.fallbackReasons.map((reason) => reason.code),
     ['migration_unknown', 'bluegreen_unavailable']
   )
+})
+
+test('rollout parallelism: sequential reads update_config, default one at a time', () => {
+  assertEquals(plan({ deployStrategy: 'sequential' }).rolloutParallelism, 1)
+  const wide = {
+    services: { web: { image: 'nginx', deploy: { update_config: { parallelism: 3 } } } },
+  }
+  assertEquals(plan({ deployStrategy: 'sequential' }, wide).rolloutParallelism, 3)
+  const all = {
+    services: { web: { image: 'nginx', deploy: { update_config: { parallelism: 0 } } } },
+  }
+  assertEquals(plan({ deployStrategy: 'sequential' }, all).rolloutParallelism, 0)
+})
+
+test('rollout parallelism: bluegreen runs as sequential and rolls; inplace keeps all-at-once', () => {
+  assertEquals(plan({ deployStrategy: 'bluegreen' }).rolloutParallelism, 1)
+  assertEquals(plan({}).rolloutParallelism, 0)
+})
+
+test('rolloutSummary counts the batches a deploy delivers in order', () => {
+  const sequential = plan({ deployStrategy: 'sequential' })
+  assertEquals(rolloutSummary(sequential, 3), { parallelism: 1, batches: 3 })
+  assertEquals(rolloutSummary(sequential, 0), { parallelism: 1, batches: 0 })
+  assertEquals(rolloutSummary(plan({}), 3), { parallelism: 0, batches: 1 })
+})
+
+test('an inplace deploy warns that update_config.parallelism is ignored', () => {
+  const rolled = {
+    services: {
+      web: { image: 'nginx:alpine', deploy: { update_config: { parallelism: 2 } } },
+      worker: { image: 'busybox' },
+    },
+  }
+  const inplace = plan({}, rolled)
+  assertEquals(
+    inplace.rolloutWarnings.map((issue) => [issue.level, issue.path, issue.blocking]),
+    [['warning', 'services.web.deploy.update_config.parallelism', false]]
+  )
+  assertEquals(rolloutSummary(inplace, 3).warnings?.length, 1)
+  // Sequential reads it, so there is nothing to warn about.
+  const sequential = plan({ deployStrategy: 'sequential' }, rolled)
+  assertEquals(sequential.rolloutWarnings, [])
+  assertEquals(rolloutSummary(sequential, 3), { parallelism: 2, batches: 2 })
+  assertEquals(plan({}).rolloutWarnings, [])
 })

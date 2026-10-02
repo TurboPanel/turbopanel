@@ -2571,6 +2571,373 @@ test('processCommandEnvelope records a rolled back and a needs attention sequent
   })
 })
 
+/** Two servers of one deploy, generation 5: `serverId` is batch 0 (applying), a second is batch 1 (held). */
+async function holdSecondServerOfRollout(
+  db: Parameters<Parameters<typeof withDeployFixtures>[0]>[0]['db'],
+  ctx: { organizationId: string; serverId: string; environmentId: string; projectId: string }
+): Promise<{ firstCommandId: string; heldServerId: string; heldCommandId: string }> {
+  const now = new Date().toISOString()
+  const [held] = await db
+    .insert(server)
+    .values({
+      organizationId: ctx.organizationId,
+      name: 'rollout-held',
+      createdAt: now,
+      updatedAt: now,
+    })
+    .returning({ id: server.id })
+  const payload = {
+    environmentId: ctx.environmentId,
+    projectId: ctx.projectId,
+    organizationId: ctx.organizationId,
+    projectName: 'tp-deploy-test',
+    composeFiles: [
+      {
+        filename: 'compose.yaml',
+        role: 'runtime',
+        source: 'inline',
+        content: 'services:\n  web:\n    image: nginx\n',
+      },
+    ],
+    hostings: [],
+    generation: 5,
+  }
+  const first = await createCommandRecord(db, {
+    serverId: ctx.serverId,
+    ...TEST_COMMAND_ACTOR,
+    type: 'environment.deploy',
+    payload,
+  })
+  const second = await createCommandRecord(db, {
+    serverId: held!.id,
+    ...TEST_COMMAND_ACTOR,
+    type: 'environment.deploy',
+    payload: { ...payload, serverId: held!.id },
+  })
+  await db.insert(deployment).values([
+    {
+      environmentId: ctx.environmentId,
+      serverId: ctx.serverId,
+      desiredGeneration: 5,
+      status: 'applying',
+      lastCommandId: first.id,
+      options: { rollout: { batch: 0, batches: 2 } },
+    },
+    {
+      environmentId: ctx.environmentId,
+      serverId: held!.id,
+      desiredGeneration: 5,
+      status: 'pending',
+      lastCommandId: second.id,
+      options: { rollout: { batch: 1, batches: 2 } },
+    },
+  ])
+  return { firstCommandId: first.id, heldServerId: held!.id, heldCommandId: second.id }
+}
+
+async function removeHeldServer(
+  db: Parameters<Parameters<typeof withDeployFixtures>[0]>[0]['db'],
+  heldServerId: string
+): Promise<void> {
+  await db.delete(deployment).where(eq(deployment.serverId, heldServerId))
+  await db.delete(command).where(eq(command.serverId, heldServerId))
+  await db.delete(server).where(eq(server.id, heldServerId))
+}
+
+async function finishFirstOfRollout(
+  db: Parameters<Parameters<typeof withDeployFixtures>[0]>[0]['db'],
+  ids: { serverId: string; firstCommandId: string },
+  outcome: { status: 'done'; result: unknown } | { status: 'failed'; error: string },
+  sent: CommandEnvelope[]
+): Promise<void> {
+  const record = await getCommandRecord(db, ids.firstCommandId)
+  const registry = createDispatchMockRegistry(ids.serverId, {
+    waitForRequestResult: {
+      serverId: ids.serverId,
+      requestId: ids.firstCommandId,
+      requestKind: 'command-dispatch',
+      createdAt: record!.createdAt,
+      expiresAt: record!.createdAt,
+      finishedAt: new Date().toISOString(),
+      ...outcome,
+    },
+  })
+  const queue = {
+    enqueue: (envelope: CommandEnvelope) => Promise.resolve(void sent.push(envelope)),
+  }
+  await processCommandEnvelope(db, registry, buildEnvelope(record!, ids.serverId), {
+    commandQueue: queue,
+  })
+}
+
+test('processCommandEnvelope delivers the next rolling batch when a deploy succeeds', async () => {
+  await withDeployFixtures(async ({ db, organizationId, serverId, environmentId, projectId }) => {
+    await attachConnectedDaemonStatus(db, serverId)
+    const held = await holdSecondServerOfRollout(db, {
+      organizationId,
+      serverId,
+      environmentId,
+      projectId,
+    })
+    const sent: CommandEnvelope[] = []
+    try {
+      await finishFirstOfRollout(
+        db,
+        { serverId, firstCommandId: held.firstCommandId },
+        { status: 'done', result: { projectName: 'tp-deploy-test', summary: 'deployed' } },
+        sent
+      )
+      assertEquals(
+        sent.map((envelope) => envelope.commandId),
+        [held.heldCommandId]
+      )
+      assertEquals(sent[0]?.serverId, held.heldServerId)
+      const [row] = await db
+        .select({ status: deployment.status })
+        .from(deployment)
+        .where(eq(deployment.serverId, held.heldServerId))
+      assertEquals(row?.status, 'applying')
+    } finally {
+      await removeHeldServer(db, held.heldServerId)
+    }
+  })
+})
+
+test('processCommandEnvelope stops a rolling deploy when a server fails and flags the rest', async () => {
+  await withDeployFixtures(async ({ db, organizationId, serverId, environmentId, projectId }) => {
+    await attachConnectedDaemonStatus(db, serverId)
+    const held = await holdSecondServerOfRollout(db, {
+      organizationId,
+      serverId,
+      environmentId,
+      projectId,
+    })
+    const sent: CommandEnvelope[] = []
+    try {
+      await finishFirstOfRollout(
+        db,
+        { serverId, firstCommandId: held.firstCommandId },
+        { status: 'failed', error: 'rolled_back: web failed its healthcheck' },
+        sent
+      )
+      assertEquals(sent.length, 0)
+      const [row] = await db
+        .select({ status: deployment.status, metadata: deployment.metadata })
+        .from(deployment)
+        .where(eq(deployment.serverId, held.heldServerId))
+      assertEquals(row?.status, 'failed')
+      assertEquals((row?.metadata as { rollout: unknown }).rollout, 'not_started')
+      assertEquals((await getCommandRecord(db, held.heldCommandId))?.status, 'cancelled')
+      // The server that failed keeps its own rolled_back outcome.
+      assertEquals(
+        (await getCommandRecord(db, held.firstCommandId))?.errorCode,
+        'deploy_rolled_back'
+      )
+    } finally {
+      await removeHeldServer(db, held.heldServerId)
+    }
+  })
+})
+
+test('processCommandEnvelope: a deploy command that expired before dispatch stops the rollout', async () => {
+  await withDeployFixtures(async ({ db, organizationId, serverId, environmentId, projectId }) => {
+    await attachConnectedDaemonStatus(db, serverId)
+    const held = await holdSecondServerOfRollout(db, {
+      organizationId,
+      serverId,
+      environmentId,
+      projectId,
+    })
+    try {
+      await db
+        .update(command)
+        .set({ expiresAt: new Date(Date.now() - 1000).toISOString() })
+        .where(eq(command.id, held.firstCommandId))
+      await db
+        .update(command)
+        .set({ context: { environmentId, serverId, generation: 5 } })
+        .where(eq(command.id, held.firstCommandId))
+      const sent: CommandEnvelope[] = []
+      const record = await getCommandRecord(db, held.firstCommandId)
+      await processCommandEnvelope(
+        db,
+        createDispatchMockRegistry(serverId, { waitForRequestResult: null }),
+        buildEnvelope(record!, serverId),
+        {
+          commandQueue: { enqueue: (envelope) => Promise.resolve(void sent.push(envelope)) },
+        }
+      )
+      assertEquals((await getCommandRecord(db, held.firstCommandId))?.status, 'timed_out')
+      const [first] = await db
+        .select({ status: deployment.status, outcome: deployment.outcome })
+        .from(deployment)
+        .where(eq(deployment.serverId, serverId))
+      assertEquals(first?.status, 'failed')
+      assertEquals(first?.outcome, 'timed_out')
+      const [heldRow] = await db
+        .select({ status: deployment.status })
+        .from(deployment)
+        .where(eq(deployment.serverId, held.heldServerId))
+      assertEquals(heldRow?.status, 'failed')
+      assertEquals((await getCommandRecord(db, held.heldCommandId))?.status, 'cancelled')
+      assertEquals(sent.length, 0)
+    } finally {
+      await removeHeldServer(db, held.heldServerId)
+    }
+  })
+})
+
+type RolloutDb = Parameters<Parameters<typeof withDeployFixtures>[0]>[0]['db']
+
+/**
+ * Three servers at parallelism 1, generation 5: the fixture server applied
+ * batch 0, a second server is applying batch 1 (no daemon attached, so it is
+ * offline), a third waits in batch 2.
+ */
+async function rolloutStuckOnOfflineServer(
+  db: RolloutDb,
+  ctx: { organizationId: string; serverId: string; environmentId: string; projectId: string }
+): Promise<{ serverIds: string[]; commandIds: string[] }> {
+  const now = new Date().toISOString()
+  const extra = await db
+    .insert(server)
+    .values(
+      ['rollout-offline', 'rollout-waiting'].map((name) => ({
+        organizationId: ctx.organizationId,
+        name,
+        createdAt: now,
+        updatedAt: now,
+      }))
+    )
+    .returning({ id: server.id })
+  const serverIds = [ctx.serverId, ...extra.map((row) => row.id)]
+  const payload = {
+    environmentId: ctx.environmentId,
+    projectId: ctx.projectId,
+    organizationId: ctx.organizationId,
+    projectName: 'tp-deploy-test',
+    composeFiles: [
+      {
+        filename: 'compose.yaml',
+        role: 'runtime',
+        source: 'inline',
+        content: 'services:\n  web:\n    image: nginx\n',
+      },
+    ],
+    hostings: [],
+    generation: 5,
+  }
+  const records = await Promise.all(
+    serverIds.map((id) =>
+      createCommandRecord(db, {
+        serverId: id,
+        ...TEST_COMMAND_ACTOR,
+        type: 'environment.deploy',
+        payload,
+        context: { environmentId: ctx.environmentId, serverId: id, generation: 5 },
+      })
+    )
+  )
+  const commandIds = records.map((record) => record.id)
+  const statuses = ['applied', 'applying', 'pending'] as const
+  await db.insert(deployment).values(
+    serverIds.map((id, index) => ({
+      environmentId: ctx.environmentId,
+      serverId: id,
+      desiredGeneration: 5,
+      status: statuses[index]!,
+      lastCommandId: commandIds[index]!,
+      options: { rollout: { batch: index, batches: 3 } },
+    }))
+  )
+  return { serverIds, commandIds }
+}
+
+async function removeRolloutServers(db: RolloutDb, serverIds: readonly string[]): Promise<void> {
+  const extra = serverIds.slice(1)
+  await db.delete(deployment).where(inArray(deployment.serverId, [...serverIds]))
+  await db.delete(command).where(inArray(command.serverId, [...serverIds]))
+  await db.delete(server).where(inArray(server.id, extra))
+}
+
+/** Batch 1 failed, batch 2 flagged "not started" with its command cancelled: the rollout is over. */
+async function assertRolloutHaltedAtSecondServer(
+  db: RolloutDb,
+  rollout: { serverIds: string[]; commandIds: string[] }
+): Promise<void> {
+  const rows = await db
+    .select({
+      serverId: deployment.serverId,
+      status: deployment.status,
+      metadata: deployment.metadata,
+    })
+    .from(deployment)
+    .where(inArray(deployment.serverId, rollout.serverIds))
+  const byServer = new Map(rows.map((row) => [row.serverId, row]))
+  assertEquals(byServer.get(rollout.serverIds[0]!)?.status, 'applied')
+  assertEquals(byServer.get(rollout.serverIds[1]!)?.status, 'failed')
+  const waiting = byServer.get(rollout.serverIds[2]!)
+  assertEquals(waiting?.status, 'failed')
+  assertEquals((waiting?.metadata as { rollout: unknown }).rollout, 'not_started')
+  assertEquals((await getCommandRecord(db, rollout.commandIds[2]!))?.status, 'cancelled')
+  // Nothing is left applying or pending, so nothing waits on this rollout.
+  assertEquals(
+    rows.some((row) => row.status === 'applying' || row.status === 'pending'),
+    false
+  )
+}
+
+test('processCommandEnvelope: a rollout server whose daemon is offline fails and stops the rollout', async () => {
+  await withDeployFixtures(async ({ db, organizationId, serverId, environmentId, projectId }) => {
+    await attachConnectedDaemonStatus(db, serverId)
+    const rollout = await rolloutStuckOnOfflineServer(db, {
+      organizationId,
+      serverId,
+      environmentId,
+      projectId,
+    })
+    try {
+      const offlineServerId = rollout.serverIds[1]!
+      const record = await getCommandRecord(db, rollout.commandIds[1]!)
+      const registry = createDispatchMockRegistry(offlineServerId, { waitForRequestResult: null })
+      await processCommandEnvelope(db, registry, buildEnvelope(record!, offlineServerId))
+      assertEquals(registry.enqueueCalled, false)
+      const failed = await getCommandRecord(db, rollout.commandIds[1]!)
+      assertEquals(failed?.status, 'failed')
+      assertEquals(failed?.error, 'Daemon not connected')
+      await assertRolloutHaltedAtSecondServer(db, rollout)
+    } finally {
+      await removeRolloutServers(db, rollout.serverIds)
+    }
+  })
+})
+
+test('processCommandEnvelope: a rollout server whose dispatch payload is gone fails and stops the rollout', async () => {
+  await withDeployFixtures(async ({ db, organizationId, serverId, environmentId, projectId }) => {
+    await attachConnectedDaemonStatus(db, serverId)
+    const rollout = await rolloutStuckOnOfflineServer(db, {
+      organizationId,
+      serverId,
+      environmentId,
+      projectId,
+    })
+    try {
+      const targetServerId = rollout.serverIds[1]!
+      await deleteCommandDispatch(db, rollout.commandIds[1]!)
+      const record = await getCommandRecord(db, rollout.commandIds[1]!)
+      const registry = createDispatchMockRegistry(targetServerId, { waitForRequestResult: null })
+      await processCommandEnvelope(db, registry, buildEnvelope(record!, targetServerId))
+      assertEquals(
+        (await getCommandRecord(db, rollout.commandIds[1]!))?.errorCode,
+        'dispatch_payload_missing'
+      )
+      await assertRolloutHaltedAtSecondServer(db, rollout)
+    } finally {
+      await removeRolloutServers(db, rollout.serverIds)
+    }
+  })
+})
+
 test('processCommandEnvelope clears pins on environment.stop success', async () => {
   await withDeployFixtures(async ({ db, serverId, environmentId, projectId, webServiceId }) => {
     await attachConnectedDaemonStatus(db, serverId)
