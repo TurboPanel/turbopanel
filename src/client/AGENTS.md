@@ -476,15 +476,15 @@ sourceServerId? }`
   (`POST`/`PATCH /forges`, the manifest wizard) by `../lib/git/forge-url.ts` —
   https only, no embedded credentials, no reserved names (`localhost`, `.local`,
   `.internal`, `.arpa`, single-label), no loopback / link-local / private /
-  CGNAT literal, and on the Deno instance the name is resolved and every answer
-  must be public — refused as `400 forge_url_rejected { field, reason }`. The
+  CGNAT literal, and the name is resolved (Deno's resolver, or DNS-over-HTTPS
+  on Workers) and every answer must be public — refused as `400 forge_url_rejected { field, reason }`. The
   same check re-runs at the fetch-time choke points (`githubApiBaseFor`,
   `gitlabApiBase`, the GitLab token grant), surfaced as the provider error
   those callers already map, so a row written by anything else is still never
   dialed with credentials attached. Every forge request itself goes through
   `forgeFetch` (`forge-url.ts`): the name is resolved again before each
-  request on Deno (a private answer or a resolver failure other than "no such
-  name" refuses it), redirects are `manual`, a same-origin redirect is
+  request (a private answer, a resolver failure or a name with no address
+  refuses it), redirects are `manual`, a same-origin redirect is
   re-checked and followed (at most 3), and a cross-origin one is refused so
   the App's credentials never reach another host. `GET /repositories/github/callback` is the
   App's **callback URL** (the manifest requests user authorization during

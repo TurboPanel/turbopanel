@@ -36,11 +36,16 @@
  *   (`lib/http/pinned-fetch.ts`). `fetch` never resolves the name, so there
  *   is no rebinding window. A name with no answers or a resolver failure
  *   refuses the request.
- * - **Workers** (no resolver, `fetch` cannot be pinned to an address): the
- *   literal and reserved-name checks above are all that can run before the
- *   request, and Cloudflare's egress cannot reach private ranges anyway. A
- *   rebind cannot be detected here, so the controls are the ones that bound
- *   what a hostile answer can do: redirects, time and size (below).
+ * - **Workers** (no DNS API, `fetch` cannot be pinned to an address): the
+ *   name is resolved once per hop over DNS-over-HTTPS (Cloudflare's 1.1.1.1
+ *   JSON API, `lib/http/doh-resolve.ts`), A and AAAA, and every answer must
+ *   be public — so `169.254.169.254.nip.io` is refused here rather than only
+ *   by the network. A DoH failure, NXDOMAIN or a name with no address
+ *   refuses the request. Residual gap (TOCTOU / DNS rebinding): `fetch` then
+ *   resolves the name again itself, and a hostile zone can answer it
+ *   differently from the check. Cloudflare's egress, which cannot reach
+ *   private ranges, is the second layer for that window; redirects, time and
+ *   size (below) bound what a hostile answer can do.
  *
  * On both runtimes:
  *
@@ -96,9 +101,9 @@ export function assertForgeUrlAllowed(field: ForgeUrlField, raw: string): string
 /**
  * Resolve the name and refuse it if any answer is not a public address —
  * the write-time half of the check that a literal-only validator cannot do.
- * Only the Deno instance has a resolver; elsewhere this is a no-op that
- * resolves to `null`. A name that does not resolve at all is left to the
- * fetch to fail on, not refused here (the admin may be mid-DNS-setup).
+ * Deno's resolver on the Deno instance, DNS-over-HTTPS on Workers. A name
+ * that does not resolve at all is left to the fetch to fail on, not refused
+ * here (the admin may be mid-DNS-setup).
  */
 export async function resolveForgeHostScope(raw: string): Promise<ForgeUrlRejection | null> {
   return await resolveOutboundHostScope(raw)
