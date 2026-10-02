@@ -147,9 +147,17 @@ async function claimBatch(
   )
 }
 
-/** A waiting command starts its clock when it is delivered, not when it was recorded. */
-async function refreshCommandClock(db: Db, commandId: string): Promise<string> {
+/**
+ * A waiting command starts its clock when it is delivered, not when it was
+ * recorded. Refreshed before the batch is claimed: the stale sweep skips a
+ * command only while its target is `pending`, so a claimed (`applying`) target
+ * whose command still carried its old clock could be swept before delivery.
+ * Only still-`queued` commands are touched, so a caller that loses the claim
+ * cannot extend the budget of a command already in flight.
+ */
+async function refreshCommandClocks(db: Db, commandIds: readonly string[]): Promise<string> {
   const queuedAt = nowIso()
+  if (commandIds.length === 0) return queuedAt
   await db
     .update(command)
     .set({
@@ -157,24 +165,23 @@ async function refreshCommandClock(db: Db, commandId: string): Promise<string> {
       updatedAt: queuedAt,
       expiresAt: new Date(Date.now() + COMMAND_BUDGET_MS).toISOString(),
     })
-    .where(eq(command.id, commandId))
+    .where(and(inArray(command.id, [...commandIds]), eq(command.status, 'queued')))
   return queuedAt
 }
 
 async function deliverClaimed(
   db: Db,
   deps: RolloutDeps,
-  params: { environmentId: string; claimed: ClaimedTarget }
+  params: { environmentId: string; claimed: ClaimedTarget; queuedAt: string }
 ): Promise<boolean> {
   const { claimed } = params
-  const queuedAt = await refreshCommandClock(db, claimed.commandId)
   try {
     await deps.enqueue({
       commandId: claimed.commandId,
       serverId: claimed.serverId,
       type: 'environment.deploy',
       attempt: 1,
-      queuedAt,
+      queuedAt: params.queuedAt,
     })
     return true
   } catch {
@@ -209,14 +216,22 @@ export async function advanceRollout(
     return []
   }
   if (step.action !== 'start') return []
-  const ids = targets
-    .filter((target) => target.status === 'pending' && target.batch === step.batch)
-    .map((target) => target.id)
-  const claimed = await claimBatch(db, { ...params, ids })
+  const batch = targets.filter(
+    (target) => target.status === 'pending' && target.batch === step.batch
+  )
+  const queuedAt = await refreshCommandClocks(
+    db,
+    batch.flatMap((target) => (target.lastCommandId === null ? [] : [target.lastCommandId]))
+  )
+  const claimed = await claimBatch(db, { ...params, ids: batch.map((target) => target.id) })
   const delivered: string[] = []
   const failures: string[] = []
   await forEachSequential(claimed, async (row) => {
-    const ok = await deliverClaimed(db, deps, { environmentId: params.environmentId, claimed: row })
+    const ok = await deliverClaimed(db, deps, {
+      environmentId: params.environmentId,
+      claimed: row,
+      queuedAt,
+    })
     if (ok) delivered.push(row.serverId)
     else failures.push(row.serverId)
   })
@@ -283,15 +298,23 @@ export function readDeployContext(
 }
 
 /**
- * A deploy command that timed out without the consumer's own wait ending it
- * (the stale-command sweep, an expired redelivery): mark its server failed and
- * halt the rollout, so the servers behind it are flagged instead of waiting
- * forever. Only acts while the server's target still points at this command and
- * is `applying`, so a later deploy's rows are never touched.
+ * A deploy command that ended without reaching the consumer's result handling
+ * (the stale-command sweep, an expired redelivery, a missing dispatch payload):
+ * mark its server failed and halt the rollout, so the servers behind it are
+ * flagged instead of waiting forever. The environment and generation come from
+ * `command.context`, so it works without the payload. Only acts while the
+ * server's target still points at this command and is `applying`, so a later
+ * deploy's rows are never touched.
  */
-export async function failTimedOutDeploy(
+export async function failDeployByContext(
   db: Db,
-  params: { commandId: string; serverId: string; context: unknown; error: string }
+  params: {
+    commandId: string
+    serverId: string
+    context: unknown
+    error: string
+    outcome: 'failed' | 'timed_out'
+  }
 ): Promise<void> {
   const deploy = readDeployContext(params.context)
   if (deploy === null) return
@@ -301,7 +324,7 @@ export async function failTimedOutDeploy(
     serverId: params.serverId,
     error: params.error,
     commandId: params.commandId,
-    outcome: 'timed_out',
+    outcome: params.outcome,
     expectedCommandId: params.commandId,
     expectedStatus: 'applying',
   })
@@ -309,6 +332,14 @@ export async function failTimedOutDeploy(
   await haltRollout(db, {
     environmentId: deploy.environmentId,
     generation: deploy.generation,
-    reason: `${params.serverId} timed out`,
+    reason: `${params.serverId} ${params.outcome === 'timed_out' ? 'timed out' : 'failed'}`,
   })
+}
+
+/** {@link failDeployByContext} for a deploy command that timed out. */
+export async function failTimedOutDeploy(
+  db: Db,
+  params: { commandId: string; serverId: string; context: unknown; error: string }
+): Promise<void> {
+  await failDeployByContext(db, { ...params, outcome: 'timed_out' })
 }

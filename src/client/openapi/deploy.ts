@@ -1,3 +1,20 @@
+/** Rollout settings the effective strategy ignores; present only when there are some. */
+const ROLLOUT_WARNINGS_SCHEMA = {
+  type: 'array',
+  description:
+    'Advisory compose lint warnings for rollout settings this deploy ignores: `deploy.update_config.parallelism` on an `inplace` deploy, which updates every server at once. Never blocking.',
+  items: {
+    type: 'object',
+    required: ['level', 'message', 'path'],
+    properties: {
+      level: { type: 'string', enum: ['warning'] },
+      message: { type: 'string' },
+      path: { type: 'string' },
+      blocking: { type: 'boolean', enum: [false] },
+    },
+  },
+}
+
 export const deploySchemas = {
   DeployEnvironmentRequest: {
     type: 'object',
@@ -68,6 +85,7 @@ export const deploySchemas = {
             properties: {
               parallelism: { type: 'integer', minimum: 0 },
               batches: { type: 'integer', minimum: 0 },
+              warnings: ROLLOUT_WARNINGS_SCHEMA,
             },
           },
           requested: { type: 'string', enum: ['inplace', 'sequential', 'bluegreen'] },
@@ -257,6 +275,7 @@ export const deploySchemas = {
         properties: {
           parallelism: { type: 'integer', minimum: 0 },
           batches: { type: 'integer', minimum: 0 },
+          warnings: ROLLOUT_WARNINGS_SCHEMA,
         },
       },
       migrations: {

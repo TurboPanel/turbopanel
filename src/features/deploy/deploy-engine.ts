@@ -9,6 +9,7 @@
  * Pure: options and compose data in, the decision and the payload fields out.
  */
 
+import { type ComposeLintIssue, lintParallelismIgnoredByStrategy } from '../compose/lint.ts'
 import {
   type DeployStrategy,
   type MigrationStatus,
@@ -45,6 +46,8 @@ export type DeployEnginePlan = {
    * `inplace` deploy keeps today's all-at-once fan-out, so it reports `0`.
    */
   rolloutParallelism: number
+  /** Rollout settings the effective strategy ignores (`parallelism` on an `inplace` deploy). */
+  rolloutWarnings: ComposeLintIssue[]
 }
 
 export const BLUEGREEN_UNAVAILABLE_REASON: FallbackReason = {
@@ -77,6 +80,7 @@ export function planDeployEngine(input: {
     migrations,
     payload: enginePayload(effectiveStrategy, migrations, resolved.healthTimeoutSeconds, facts),
     rolloutParallelism: rolloutParallelismFor(effectiveStrategy, input.composeData),
+    rolloutWarnings: lintParallelismIgnoredByStrategy(input.composeData, effectiveStrategy),
   }
 }
 
@@ -100,10 +104,11 @@ export function planDeployBatches<T>(plan: DeployEnginePlan, servers: readonly T
 export function rolloutSummary(
   plan: DeployEnginePlan,
   serverCount: number
-): { parallelism: number; batches: number } {
+): { parallelism: number; batches: number; warnings?: ComposeLintIssue[] } {
   return {
     parallelism: plan.rolloutParallelism,
     batches: planDeployBatches(plan, Array.from({ length: serverCount })).length,
+    ...(plan.rolloutWarnings.length === 0 ? {} : { warnings: plan.rolloutWarnings }),
   }
 }
 

@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull, or, sql } from 'drizzle-orm'
+import { and, eq, inArray, isNull, ne, or, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { nowIso } from '../commands/ids.ts'
 import { deployment } from '../../db/schema.ts'
@@ -62,8 +62,9 @@ type DeploymentTransitionParams = {
   durationMs?: number | null
   outcome?: DeploymentOutcome
   /**
-   * Only write while the row still belongs to this command (or tracks none).
-   * A result from an older deploy must not overwrite a newer deploy's row.
+   * Only write while the row still belongs to this command (or tracks none and
+   * is not `draining`). A result from an older deploy must not overwrite a
+   * newer deploy's row.
    */
   expectedCommandId?: string
   /** Only write while the row is in this status. */
@@ -219,7 +220,10 @@ async function transitionDeploymentStatus(
           ? []
           : [
               or(
-                isNull(deployment.lastCommandId),
+                // A `draining` row also tracks no command (a redeploy dropped
+                // the server), but a late result from the old generation must
+                // not turn it back into a target the drain prune skips.
+                and(isNull(deployment.lastCommandId), ne(deployment.status, 'draining')),
                 eq(deployment.lastCommandId, params.expectedCommandId)
               ),
             ]),

@@ -29,7 +29,12 @@ import {
 import { reconcileEnvironmentContainers } from '../environments/container-records.ts'
 import { recordDeployedSiteApps } from '../environments/app-facts.ts'
 import { classifyDeployFailure, deployOutcomeErrorCode } from '../deploy/deploy-outcome.ts'
-import { advanceRollout, failTimedOutDeploy, haltRollout } from '../deploy/rollout.ts'
+import {
+  advanceRollout,
+  failTimedOutDeploy,
+  failDeployByContext,
+  haltRollout,
+} from '../deploy/rollout.ts'
 import {
   deploymentDurationMs,
   type DeploymentOutcome,
@@ -342,6 +347,16 @@ async function loadDispatchableRecord(
       error: 'Command dispatch payload unavailable',
       errorCode: 'dispatch_payload_missing',
     })
+    if (record.type === 'environment.deploy') {
+      // No payload to read the environment from; the command's context names it.
+      await failDeployByContext(db, {
+        commandId: record.id,
+        serverId: record.serverId,
+        context: record.context,
+        error: 'Command dispatch payload unavailable',
+        outcome: 'failed',
+      })
+    }
     return null
   }
 
@@ -366,12 +381,13 @@ async function markDispatching(
   })
 }
 
+/** `null` when the command can be delivered; otherwise the error it was failed with. */
 async function ensureServerAndDaemonOnline(
   db: Db,
   registry: DaemonCellRegistry,
   record: DispatchableCommandRecord,
   envelope: CommandEnvelope
-): Promise<boolean> {
+): Promise<string | null> {
   const serverBinding = await getServerLicenseBinding(db, envelope.serverId)
   if (!serverBinding) {
     compatLogWarn(
@@ -382,7 +398,7 @@ async function ensureServerAndDaemonOnline(
       status: 'failed',
       error: 'Server not found',
     })
-    return false
+    return 'Server not found'
   }
 
   const presenceMap = await getResolveFleetPresence()(db, registry, [envelope.serverId])
@@ -398,7 +414,7 @@ async function ensureServerAndDaemonOnline(
       status: 'failed',
       error: 'Daemon not connected',
     })
-    return false
+    return 'Daemon not connected'
   }
 
   // A daemon below the supported floor keeps its connection — that is how it
@@ -413,15 +429,16 @@ async function ensureServerAndDaemonOnline(
       serverId: envelope.serverId,
       reason: 'daemon_unsupported',
     })
+    const error = daemonUnsupportedReason(support)
     await transitionCommand(db, record.id, {
       status: 'failed',
       errorCode: 'daemon_unsupported',
-      error: daemonUnsupportedReason(support),
+      error,
     })
-    return false
+    return error
   }
 
-  return true
+  return null
 }
 
 async function enqueueAndAwaitOutcome(
@@ -2341,8 +2358,11 @@ export async function processCommandEnvelope(
 
   await markDispatching(db, record, envelope)
 
-  const ready = await ensureServerAndDaemonOnline(db, registry, record, envelope)
-  if (!ready) {
+  const notReady = await ensureServerAndDaemonOnline(db, registry, record, envelope)
+  if (notReady !== null) {
+    // A deploy that never reached its server fails its row and halts the
+    // rollout, or later batches would wait on an `applying` row forever.
+    await applyEnvironmentDeployFailedSideEffect(db, record, envelope, notReady)
     await applyFabricFailedSideEffect(db, record, envelope)
     return
   }

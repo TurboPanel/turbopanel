@@ -17,6 +17,7 @@ import type { CommandEnvelope } from '../commands/envelope.ts'
 import {
   markDeploymentApplied,
   markDeploymentFailed,
+  pruneDrainedDeployments,
   upsertDeploymentTargets,
 } from './deployment-records.ts'
 import {
@@ -486,5 +487,53 @@ test('the new deploy still reaches the held server after the replaced one report
     )
     assertEquals(delivered, [f.serverIds[1]])
     assertEquals(f.sent[0]?.commandId, newCommandIds[1])
+  })
+})
+
+test('a late result of the replaced deploy leaves a server it dropped draining', async () => {
+  await withRollout(async (f) => {
+    // The redeploy keeps servers b and c and drains a, which was still applying.
+    await upsertDeploymentTargets(f.db, {
+      environmentId: f.environmentId,
+      targets: [{ serverId: f.serverIds[0]!, desiredGeneration: 8, status: 'draining' }],
+    })
+    const applied = await markDeploymentApplied(f.db, {
+      environmentId: f.environmentId,
+      serverId: f.serverIds[0]!,
+      generation: 7,
+      commandId: f.commandIds[0]!,
+      expectedCommandId: f.commandIds[0]!,
+    })
+    assertEquals(applied, null)
+    const failed = await markDeploymentFailed(f.db, {
+      environmentId: f.environmentId,
+      serverId: f.serverIds[0]!,
+      error: 'late',
+      commandId: f.commandIds[0]!,
+      expectedCommandId: f.commandIds[0]!,
+    })
+    assertEquals(failed, null)
+    assertEquals(await targetStatus(f, f.serverIds[0]!), 'draining')
+    await pruneDrainedDeployments(f.db, { environmentId: f.environmentId })
+    assertEquals(await targetStatus(f, f.serverIds[0]!), undefined)
+    assertEquals(await targetStatus(f, f.serverIds[1]!), 'pending')
+  })
+})
+
+test('advanceRollout leaves the clock of a command already in flight alone', async () => {
+  await withRollout(async (f) => {
+    await markApplied(f, f.serverIds[0]!)
+    // Batch 1's command was already sent by a racing caller; its clock stays.
+    const expiresAt = new Date(Date.now() - 1000).toISOString()
+    await f.db
+      .update(command)
+      .set({ status: 'sent', expiresAt })
+      .where(eq(command.id, f.commandIds[1]!))
+    await advanceRollout(
+      f.db,
+      { enqueue: f.enqueue },
+      { environmentId: f.environmentId, generation: 7 }
+    )
+    assertEquals((await getCommandRecord(f.db, f.commandIds[1]!))?.expiresAt, expiresAt)
   })
 })

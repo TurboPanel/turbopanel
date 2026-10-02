@@ -1094,6 +1094,43 @@ function lintDeployUpdateConfig(
   }
 }
 
+/**
+ * `deploy.update_config.parallelism` under a deploy that will not roll.
+ *
+ * Which strategy a deploy runs comes from the environment and project options,
+ * not from this document, so the YAML pass cannot tell; the deploy and its
+ * preview call this with the effective strategy. An `inplace` deploy updates
+ * every server at once and never reads `parallelism`, so the setting would be
+ * ignored in silence. A warning, never blocking: the document is valid, and it
+ * takes effect as soon as the environment deploys `sequential`.
+ */
+export function lintParallelismIgnoredByStrategy(
+  composeData: Record<string, unknown> | null | undefined,
+  effectiveStrategy: string
+): ComposeLintIssue[] {
+  if (effectiveStrategy !== 'inplace') return []
+  const services = composeData?.services
+  if (!isPlainRecord(services)) return []
+  return Object.entries(services).flatMap(([name, service]) => {
+    const deploy = isPlainRecord(service) ? service.deploy : undefined
+    const updateConfig = isPlainRecord(deploy) ? deploy.update_config : undefined
+    if (!isPlainRecord(updateConfig) || !('parallelism' in updateConfig)) return []
+    return [
+      {
+        level: 'warning' as const,
+        message:
+          'deploy.update_config.parallelism is ignored: this environment deploys inplace, which updates every server at once \u2014 deploy with the sequential strategy to update servers in batches',
+        path: `services.${name}.deploy.update_config.parallelism`,
+        blocking: false as const,
+      },
+    ]
+  })
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
 /** A setting the rollout can never read correctly (merge key, bad parallelism), or `null`. */
 function updateConfigHardError(key: string, raw: unknown): string | null {
   if (key === '<<') {

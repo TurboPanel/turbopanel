@@ -97,3 +97,23 @@ test('rolloutSummary counts the batches a deploy delivers in order', () => {
   assertEquals(rolloutSummary(sequential, 0), { parallelism: 1, batches: 0 })
   assertEquals(rolloutSummary(plan({}), 3), { parallelism: 0, batches: 1 })
 })
+
+test('an inplace deploy warns that update_config.parallelism is ignored', () => {
+  const rolled = {
+    services: {
+      web: { image: 'nginx:alpine', deploy: { update_config: { parallelism: 2 } } },
+      worker: { image: 'busybox' },
+    },
+  }
+  const inplace = plan({}, rolled)
+  assertEquals(
+    inplace.rolloutWarnings.map((issue) => [issue.level, issue.path, issue.blocking]),
+    [['warning', 'services.web.deploy.update_config.parallelism', false]]
+  )
+  assertEquals(rolloutSummary(inplace, 3).warnings?.length, 1)
+  // Sequential reads it, so there is nothing to warn about.
+  const sequential = plan({ deployStrategy: 'sequential' }, rolled)
+  assertEquals(sequential.rolloutWarnings, [])
+  assertEquals(rolloutSummary(sequential, 3), { parallelism: 2, batches: 2 })
+  assertEquals(plan({}).rolloutWarnings, [])
+})
