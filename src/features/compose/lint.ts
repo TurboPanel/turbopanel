@@ -1069,22 +1069,12 @@ function lintDeployUpdateConfig(
     if (key === null || isExtensionKey(key)) continue
     const valueNode = item.value as Node | null | undefined
     const path = `services.${name}.deploy.update_config.${key}`
-    if (key === '<<') {
-      issues.push({
-        level: 'error',
-        message:
-          'deploy.update_config cannot use a merge key (<<) \u2014 write the settings out so the rollout reads what this document says',
-        path,
-        line: nodeLine(item.key as Node, lineCounter),
-      })
-      continue
-    }
     const raw = scalarValueOf(valueNode)
-    if (key === 'parallelism' && isInvalidParallelism(raw)) {
+    const hardError = updateConfigHardError(key, raw)
+    if (hardError !== null) {
       issues.push({
         level: 'error',
-        message:
-          'deploy.update_config.parallelism must be a whole number of at least 0 \u2014 0 updates every server at once, 1 updates them one at a time',
+        message: hardError,
         path,
         line: nodeLine(item.key as Node, lineCounter),
       })
@@ -1102,6 +1092,17 @@ function lintDeployUpdateConfig(
       ...(strict ? {} : { blocking: false as const }),
     })
   }
+}
+
+/** A setting the rollout can never read correctly (merge key, bad parallelism), or `null`. */
+function updateConfigHardError(key: string, raw: unknown): string | null {
+  if (key === '<<') {
+    return 'deploy.update_config cannot use a merge key (<<) \u2014 write the settings out so the rollout reads what this document says'
+  }
+  if (key === 'parallelism' && isInvalidParallelism(raw)) {
+    return 'deploy.update_config.parallelism must be a whole number of at least 0 \u2014 0 updates every server at once, 1 updates them one at a time'
+  }
+  return null
 }
 
 /** A concrete `parallelism` value the rollout cannot use; placeholders and unreadable nodes pass. */
