@@ -66,6 +66,7 @@ import {
   resolveEnvironmentSiteReleases,
   resolveSourcedEnvironmentSiteReleases,
 } from './site-releases.ts'
+import { recordSitePhpModes } from './deploy-php-modes.ts'
 import { isNoopCommandQueue } from '../../features/commands/noop-command-queue.ts'
 import {
   type CommandContextRelease,
@@ -797,6 +798,8 @@ function createParamsForPreparedServer(
  * once a Git-backed service is removed, nothing derivable from the current
  * document names its `<principalHome>/sites/<serviceId>` tree any more, so a
  * later stop or delete would leave it behind. See `site-releases.ts`.
+ * `phpModes` is what each PHP site runs, which `deploy-php-modes.ts` reads
+ * back so a site keeps its mode when the policy narrows.
  */
 function deploymentTargetsForFanOut(params: {
   preparedByServer: readonly PreparedServerDeploy[]
@@ -827,6 +830,8 @@ function deploymentTargetsForFanOut(params: {
         options: {
           secretPlan: prepared?.secretPlan ?? [],
           siteReleases: params.siteReleases,
+          // The PHP mode each site was given, so the next deploy keeps it.
+          phpModes: recordSitePhpModes(prepared?.sites),
           ...(rollout === undefined ? {} : { rollout }),
         },
       }

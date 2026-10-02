@@ -1063,6 +1063,34 @@ test('php is rejected outside site and for malformed blocks', () => {
   )
 })
 
+test('php.mode must be a known mode the engine can run', () => {
+  const modeIssues = (engine: string | undefined, mode: unknown) =>
+    collectServiceTurbopanelValidationIssues({
+      blog: {
+        'x-turbopanel': {
+          serviceKind: 'site',
+          ...(engine ? { engine } : {}),
+          php: { mode },
+        },
+      },
+    }).filter((issue) => issue.path === 'services.blog.x-turbopanel.php.mode')
+
+  assertEquals(modeIssues('nginx', 'fastcgi'), [])
+  assertEquals(modeIssues('apache', 'fpm'), [])
+  assertEquals(modeIssues('openlitespeed', 'lsphp-attached'), [])
+  assertEquals(modeIssues('nginx', 'cgi')[0]?.message.includes('must be one of'), true)
+  assertEquals(modeIssues('nginx', 'lsphp-detached')[0]?.message.includes('supports'), true)
+  // No engine is Caddy, which has no PHP mode at all.
+  assertEquals(modeIssues(undefined, 'fastcgi')[0]?.message.includes('Caddy'), true)
+
+  const parsed = parseServiceTurbopanelExtension({
+    serviceKind: 'site',
+    engine: 'nginx',
+    php: { mode: 'fastcgi' },
+  })
+  assertEquals(parsed?.php?.mode, 'fastcgi')
+})
+
 test('php version series and extension membership are enforced', () => {
   const patchVersion = collectServiceTurbopanelValidationIssues({
     blog: {

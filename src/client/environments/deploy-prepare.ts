@@ -100,6 +100,7 @@ import {
   loadEntitlementsByPrincipalIds,
 } from '../../features/principals/store.ts'
 import { renderPhpForDeploy } from '../../features/hostings/php-settings.ts'
+import { type PhpModePrepareError, withSitePhpModes } from './deploy-php-modes.ts'
 import {
   isComposeChainError,
   resolveComposeLayerChain,
@@ -280,6 +281,7 @@ export type DeployPrepareWarningCode =
   | 'principal_required_for_service_kind'
   | 'binding_endpoint_unavailable'
   | 'php_series_not_installed'
+  | 'php_mode_not_allowed'
 
 /**
  * Gate a deploy's PHP series against what the target host actually reports.
@@ -520,6 +522,8 @@ export type DeployPrepareError =
   | ComposeHostingError
   | { kind: 'site_managed_directory_unowned'; composeServiceName: string }
   | { kind: 'site_cron_unowned'; composeServiceName: string }
+  /** A PHP site asks for a mode its engine, organization or server does not offer. */
+  | PhpModePrepareError
   | { kind: 'source_principal_ambiguous'; composeServiceName: string }
   | {
       kind: 'source_ref_unresolved'
@@ -612,6 +616,8 @@ async function emptyPreparedCompose(
 
 type HardDeployPrepareError =
   | { kind: 'datacenter_ip_required'; serverId: string }
+  // Hard in preview too: the site would not come up in the mode it asks for.
+  | PhpModePrepareError
   // Hard in preview too: previewing a deploy that would silently ignore a field
   // — or that would be refused the moment it was run for real — is exactly the
   // reassurance an operator must not be given.
@@ -2949,19 +2955,31 @@ export async function prepareDeployCompose(
   // Task rows (`POST /tasks`) join compose-authored cron on the wire for
   // sites and native apps alike — loaded once here, keyed by compose name.
   const tasksByComposeName = await loadTasksByComposeServiceName(db, serviceRows)
-  const siteResolved = resolveSitesForMode(
-    mode,
-    warnings,
-    await attachPrincipalsToSites(
-      db,
-      params.environmentId,
-      serviceRows,
-      principalMaterial,
-      split.sites,
-      principalResolution,
-      tasksByComposeName
-    ),
-    split.sites
+  const siteResolved = await withSitePhpModes(
+    db,
+    {
+      environmentId: params.environmentId,
+      serverId: params.serverId,
+      localServiceNames: pipeline.localServiceNames,
+      specs: split.sites,
+      orgOptions: orgRow?.options,
+      serverOptions: serverRow?.options,
+      warnings,
+    },
+    resolveSitesForMode(
+      mode,
+      warnings,
+      await attachPrincipalsToSites(
+        db,
+        params.environmentId,
+        serviceRows,
+        principalMaterial,
+        split.sites,
+        principalResolution,
+        tasksByComposeName
+      ),
+      split.sites
+    )
   )
   if ('kind' in siteResolved) return siteResolved
   const localSite = sitesOnScheduledServer(siteResolved, pipeline.localServiceNames)
