@@ -104,6 +104,12 @@
       "tag": "0016_notification_digest_quiet_hours",
       "when": 1790883090317,
       "sha256": "73fe747a33e184ec44596ec9e80d512cbc2d97b39797884b4591f0497e9d7a88"
+    },
+    {
+      "idx": 17,
+      "tag": "0017_php_mode_policy_comments",
+      "when": 1790966133776,
+      "sha256": "76ed00dec1f12cdcf30e121f9273cd1081325884032909d3c9565a43c431f4b9"
     }
   ]
 }

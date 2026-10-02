@@ -302,7 +302,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
     columns: {
       metadata: 'Reserved pairing jsonb with no first-party reader or writer today; stays null.',
       options:
-        'Org-wide settings merged key-by-key by the organization PATCH routes (`defaultServerTimezone`, `maxServers`, `acmeEnabled`, `managedDatabase` and more).',
+        'Org-wide settings merged key-by-key by the organization routes (`defaultServerTimezone`, `maxServers`, `acmeEnabled`, `managedDatabase`, `phpModes` and more).',
       name: 'Display name; `My Organization` when sign-up gives none, otherwise set by the install wizard or PATCH `/organizations/:id`.',
     },
   },
@@ -1266,7 +1266,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       metadata:
         'Jsonb patched on apply outcome: `error` holds the last failure message and is reset to null on success.',
       options:
-        'Per-target apply inputs written at deploy time: `secretPlan` and `siteReleases` (release trees the compose declares) for that server.',
+        'Per-target apply inputs written at deploy time: `secretPlan`, `siteReleases` (release trees the compose declares) and `phpModes` (mode per PHP site).',
       desired_generation:
         'Environment deploy generation this row targets, written by deploy-routes.ts for every planned and drained server on each deploy.',
       applied_generation:
@@ -1362,7 +1362,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       metadata:
         'Daemon-projected host facts jsonb: `resources`, `geo`, `docker`, `runtimes`, `cell` plus the operator `hardwareProfile`; hostname, OS and NTP have own columns.',
       options:
-        'Operator config jsonb served verbatim by GET /servers: `timezone`, `sshPort`, `ntp`, `hosting`, `cellLocationHint`, `cellGeneration`, `metricsCapabilityPlan`.',
+        'Operator config served by GET /servers: `timezone`, `sshPort`, `ntp`, `hosting`, `cellLocationHint`, `cellGeneration`, `metricsCapabilityPlan`, `phpModes`.',
       organization_id:
         'Owning organization, nullable; ON DELETE RESTRICT so an organization that still has server rows cannot be deleted.',
       name: 'Optional operator-chosen display name, set when the registration key is minted or via PATCH; the UI falls back to `hostname` when null.',

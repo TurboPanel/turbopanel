@@ -134,6 +134,7 @@ export const deploySchemas = {
           'site_principal_ambiguous',
           'site_managed_directory_unowned',
           'site_cron_unowned',
+          'php_mode_not_allowed',
         ],
       },
       message: { type: 'string' },

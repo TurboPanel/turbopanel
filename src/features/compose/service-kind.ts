@@ -7,6 +7,7 @@ import {
   parseCronCommand,
 } from '../deploy/cron.ts'
 import { validatePhpPoolSetting, validatePhpSetting } from '../hostings/php-settings.ts'
+import { ENGINE_PHP_MODES, isPhpMode, PHP_MODES, type PhpMode } from '../hostings/php-mode.ts'
 import {
   collectHostingExtensionValidationIssues,
   type ComposeHostingExtensionEntry,
@@ -391,6 +392,12 @@ export type ComposeServicePhpExtension = {
   /** Series (`8.4`). Omitted means the host default. */
   version?: string
   /**
+   * How PHP runs for this site (`fastcgi`, `fpm`, `lsphp-detached`,
+   * `lsphp-attached`). Omitted keeps the mode the site already runs, or gives
+   * a new site the default the policy allows (`../hostings/php-mode.ts`).
+   */
+  mode?: PhpMode
+  /**
    * Opt-in extensions on top of the always-installed baseline.
    *
    * Host-global per series: `extension=` is `PHP_INI_SYSTEM` and there is no
@@ -731,6 +738,7 @@ function parseServicePhpExtension(value: unknown): ComposeServicePhpExtension | 
   const php: ComposeServicePhpExtension = {}
   const version = readTrimmedString(value.version)
   if (version && PHP_VERSION_RE.test(version)) php.version = version
+  if (isPhpMode(value.mode)) php.mode = value.mode
 
   const extensions = parsePhpExtensionList(value.extensions)
   if (extensions) php.extensions = extensions
@@ -1148,6 +1156,31 @@ function validatePhpVersion(
   return []
 }
 
+/**
+ * A known mode, and one the site's engine can run. An unset engine is Caddy,
+ * which has no PHP mode. Whether the organization and server allow the mode
+ * is a deploy-time question: the policy can change after the save.
+ */
+function validatePhpMode(
+  basePath: string,
+  rawMode: unknown,
+  engine: SiteEngine | undefined
+): ServiceTurbopanelValidationIssue[] {
+  if (rawMode === undefined) return []
+  const path = `${basePath}.php.mode`
+  if (!isPhpMode(rawMode)) {
+    return [{ path, message: `php.mode must be one of: ${PHP_MODES.join(', ')}` }]
+  }
+  const siteEngine = engine ?? 'caddy'
+  const supported = ENGINE_PHP_MODES[siteEngine]
+  if (supported.includes(rawMode)) return []
+  const message =
+    supported.length === 0
+      ? `Caddy sites have no PHP mode; use nginx, apache or openlitespeed for "${rawMode}"`
+      : `The ${siteEngine} engine cannot run php.mode "${rawMode}"; it supports: ${supported.join(', ')}`
+  return [{ path, message }]
+}
+
 /** Every name is reported, not just the first: operators paste whole lists. */
 function validatePhpExtensions(
   basePath: string,
@@ -1230,6 +1263,7 @@ function validatePhpConsistency(
   if (rawPhp.extensions !== undefined) {
     issues.push(...validatePhpExtensions(basePath, rawPhp.extensions))
   }
+  issues.push(...validatePhpMode(basePath, rawPhp.mode, fields.engine))
 
   for (const [field, validate] of [
     ['settings', validatePhpSetting],
