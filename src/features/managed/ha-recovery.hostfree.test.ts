@@ -9,6 +9,7 @@ import {
   AUTOMATIC_FAILOVER_NO_CANDIDATE_MESSAGE,
   AUTOMATIC_FAILOVER_NO_QUEUE_MESSAGE,
   AUTOMATIC_FAILOVER_UNHEALTHY_MESSAGE,
+  FENCE_STOP_UNQUEUED_MESSAGE,
   isTerminalRecoveryState,
   type RecoveryRecord,
   type RecoveryState,
@@ -77,6 +78,7 @@ function thenableRows(rows: unknown[]) {
   chain.where = self
   chain.orderBy = self
   chain.limit = self
+  chain.for = self
   chain.innerJoin = self
   chain.leftJoin = self
   chain.returning = () => promise
@@ -252,6 +254,7 @@ function createHarness(opts: HarnessOpts = {}): RecoveryHarness {
   const commandInserts: Array<Record<string, unknown>> = []
   let commandSeq = 0
   let lastCommand: ReturnType<typeof commandRow> | null = null
+  let txTail: Promise<unknown> = Promise.resolve()
 
   const haHierarchy = opts.haPresent
     ? [
@@ -343,7 +346,13 @@ function createHarness(opts: HarnessOpts = {}): RecoveryHarness {
     delete: () => ({
       where: () => Promise.resolve(),
     }),
-    transaction: (fn: (tx: Db) => Promise<unknown>) => fn(db as unknown as Db),
+    // Serializes transactions like Postgres row locks (`SELECT … FOR UPDATE`):
+    // a second transaction waits for the first to finish.
+    transaction: (fn: (tx: Db) => Promise<unknown>) => {
+      const run = txTail.then(() => fn(db as unknown as Db))
+      txTail = run.catch(() => undefined)
+      return run
+    },
   }
 
   return {
@@ -1093,6 +1102,199 @@ test('onFenceCommandFailed advances once the last fence command is gone', async 
     actor: ACTOR,
   })
   assertEquals(harness.recovery()?.state, 'blocked')
+})
+
+type QueuedEnvelope = { commandId: string; type: string }
+
+const FENCE_PHASE_BY_TYPE: Readonly<Record<string, 'drain' | 'stop'>> = {
+  'managed.ha.failover': 'drain',
+  'managed.lifecycle': 'stop',
+}
+
+/**
+ * A queue whose consumer answers at once: each fence command's success is
+ * delivered while `enqueue` is still running, i.e. before the producer gets
+ * control back — the earliest a result can ever arrive.
+ */
+function instantFenceResultQueue(db: Db): CommandQueue & { envelopes: QueuedEnvelope[] } {
+  const envelopes: QueuedEnvelope[] = []
+  const queue: CommandQueue & { envelopes: QueuedEnvelope[] } = {
+    envelopes,
+    enqueue: async (envelope) => {
+      const queued = envelope as unknown as QueuedEnvelope
+      envelopes.push(queued)
+      const fencePhase = FENCE_PHASE_BY_TYPE[queued.type]
+      if (!fencePhase) return
+      await onFenceCommandSucceeded(db, queue, {
+        recoveryId: REC_ID,
+        commandId: queued.commandId,
+        fencePhase,
+        engine: 'postgres',
+        actor: ACTOR,
+      })
+    },
+  }
+  return queue
+}
+
+function fenceSuccess(commandId: string, fencePhase: 'drain' | 'stop') {
+  return {
+    recoveryId: REC_ID,
+    commandId,
+    fencePhase,
+    engine: 'postgres' as const,
+    actor: ACTOR,
+  }
+}
+
+test("concurrent fence results never lose each other's pending-list edits", async () => {
+  const harness = createHarness({
+    recovery: recoveryRow({
+      kind: 'switchover',
+      metadata: { fenceCommandIds: ['cmd-d1', 'cmd-d2', 'cmd-stop'] },
+    }),
+  })
+  await Promise.all([
+    onFenceCommandSucceeded(harness.db, okQueue(), fenceSuccess('cmd-d1', 'drain')),
+    onFenceCommandSucceeded(harness.db, okQueue(), fenceSuccess('cmd-d2', 'drain')),
+  ])
+  const stored = harness.recovery()
+  if (!stored) throw new TypeError('expected stored recovery')
+  assertEquals(stored.state, 'fencing')
+  const metadata = stored.metadata as { fenceCommandIds?: string[]; drainApplied?: boolean }
+  assertEquals(metadata.fenceCommandIds, ['cmd-stop'])
+  assertEquals(metadata.drainApplied, true)
+})
+
+test('concurrent last fence results advance exactly once and promote once', async () => {
+  const queue = okQueue()
+  const harness = createHarness({
+    members: [member(), failoverReplica()],
+    recovery: recoveryRow({
+      kind: 'automatic-failover',
+      metadata: { fenceCommandIds: ['cmd-drain', 'cmd-stop'] },
+    }),
+  })
+  await Promise.all([
+    onFenceCommandSucceeded(harness.db, queue, fenceSuccess('cmd-drain', 'drain')),
+    onFenceCommandSucceeded(harness.db, queue, fenceSuccess('cmd-stop', 'stop')),
+    onFenceCommandFailed(harness.db, queue, {
+      recoveryId: REC_ID,
+      commandId: 'cmd-stop',
+      engine: 'postgres',
+      actor: ACTOR,
+    }),
+  ])
+  const stored = harness.recovery()
+  if (!stored) throw new TypeError('expected stored recovery')
+  assertEquals(stored.state, 'promoting')
+  const metadata = stored.metadata as { fenceCommandIds?: string[]; fenced?: boolean }
+  assertEquals(metadata.fenceCommandIds, [])
+  assertEquals(metadata.fenced, true)
+  assertEquals(
+    queue.envelopes.filter((row) => (row as { type: string }).type === 'managed.promote').length,
+    1
+  )
+})
+
+test('a fence result for a command the row does not list is ignored', async () => {
+  const harness = createHarness({
+    recovery: recoveryRow({
+      kind: 'automatic-failover',
+      metadata: { fenceCommandIds: ['cmd-stop'] },
+    }),
+  })
+  await onFenceCommandSucceeded(harness.db, okQueue(), fenceSuccess('cmd-other', 'drain'))
+  assertEquals(harness.recovery()?.state, 'fencing')
+  assertEquals((harness.recovery()?.metadata as { fenceCommandIds?: string[] }).fenceCommandIds, [
+    'cmd-stop',
+  ])
+})
+
+test('automatic failover tolerates fence results that arrive while still enqueuing', async () => {
+  const harness = createHarness({
+    members: [member(), failoverReplica()],
+    pins: [
+      {
+        ipId: 'ip-1',
+        serverId: SERVER_A,
+        datacenterId: DC_A,
+        networkId: 'net-1',
+        address: '203.0.113.10',
+      },
+    ],
+    connected: [true, true, true],
+  })
+  const queue = instantFenceResultQueue(harness.db)
+  await beginAutomaticFailover({
+    db: harness.db,
+    commandQueue: queue,
+    managedId: MANAGED_ID,
+    engine: 'postgres',
+    members: [member(), failoverReplica()],
+    actor: ACTOR,
+  })
+  const stored = harness.recovery()
+  if (!stored) throw new TypeError('expected stored recovery')
+  // Fenced (drain + stop proven) and promoted, never blocked `unfenced` and
+  // never reset to `fencing` with ids nothing will clear.
+  assertEquals(stored.state, 'promoting')
+  const metadata = stored.metadata as {
+    fenceCommandIds?: string[]
+    fenced?: boolean
+    blockedReason?: string
+  }
+  assertEquals(metadata.fenceCommandIds, [])
+  assertEquals(metadata.fenced, true)
+  assertEquals(metadata.blockedReason, undefined)
+  const types = queue.envelopes.map((row) => row.type)
+  assertEquals(types.filter((type) => type === 'managed.promote').length, 1)
+  // Never promote before the stop (fence) command was queued.
+  assertEquals(types.indexOf('managed.lifecycle') < types.indexOf('managed.promote'), true)
+})
+
+test('switchover never promotes ahead of its stop command when results arrive early', async () => {
+  const harness = createHarness({
+    members: [member(), failoverReplica()],
+    connected: [true, true, true],
+  })
+  const queue = instantFenceResultQueue(harness.db)
+  const result = await beginOperatorSwitchover({
+    db: harness.db,
+    commandQueue: queue,
+    managedId: MANAGED_ID,
+    engine: 'postgres',
+    source: member(),
+    target: failoverReplica(),
+    members: [member(), failoverReplica()],
+    actor: ACTOR,
+  })
+  expectOk(result)
+  const types = queue.envelopes.map((row) => row.type)
+  assertEquals(types.filter((type) => type === 'managed.promote').length, 1)
+  assertEquals(types.indexOf('managed.lifecycle') < types.indexOf('managed.promote'), true)
+  assertEquals(harness.recovery()?.state, 'promoting')
+  assertEquals((harness.recovery()?.metadata as { fenced?: boolean }).fenced, true)
+})
+
+test('a stop command that cannot be queued blocks the row instead of leaving it fencing', async () => {
+  const harness = createHarness({ connected: [true, true] })
+  const result = await beginOperatorSwitchover({
+    db: harness.db,
+    commandQueue: failingQueue(),
+    managedId: MANAGED_ID,
+    engine: 'postgres',
+    source: member(),
+    target: failoverReplica(),
+    members: [member(), failoverReplica()],
+    actor: ACTOR,
+  })
+  assertEquals(result, { ok: false, error: 'Command queue unavailable', status: 503 })
+  assertEquals(harness.recovery()?.state, 'blocked')
+  assertEquals(
+    (harness.recovery()?.metadata as { blockedReason?: string }).blockedReason,
+    FENCE_STOP_UNQUEUED_MESSAGE
+  )
 })
 
 test('onFenceCommandFailed is a no-op for a missing journal', async () => {

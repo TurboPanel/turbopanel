@@ -124,16 +124,14 @@ export async function insertRecovery(
   return serialized
 }
 
-export async function updateRecovery(
-  db: Db,
-  recoveryId: string,
-  patch: {
-    state?: RecoveryState
-    targetMemberId?: string | null
-    metadata?: RecoveryMetadata
-    completedAt?: string | null
-  }
-): Promise<RecoveryRecord | null> {
+export type RecoveryPatch = {
+  state?: RecoveryState
+  targetMemberId?: string | null
+  metadata?: RecoveryMetadata
+  completedAt?: string | null
+}
+
+function recoveryPatchColumns(patch: RecoveryPatch) {
   const now = new Date().toISOString()
   const terminal = patch.state && (TERMINAL_RECOVERY_STATES as ReadonlySet<string>).has(patch.state)
   let completedAt: string | null | undefined
@@ -142,19 +140,66 @@ export async function updateRecovery(
   } else if (terminal) {
     completedAt = now
   }
+  return {
+    ...(patch.state !== undefined ? { state: patch.state } : {}),
+    ...(patch.targetMemberId !== undefined ? { targetMemberId: patch.targetMemberId } : {}),
+    ...(patch.metadata !== undefined ? { metadata: patch.metadata } : {}),
+    completedAt,
+    updatedAt: now,
+  }
+}
+
+export async function updateRecovery(
+  db: Db,
+  recoveryId: string,
+  patch: RecoveryPatch
+): Promise<RecoveryRecord | null> {
   const rows = await db
     .update(recovery)
-    .set({
-      ...(patch.state !== undefined ? { state: patch.state } : {}),
-      ...(patch.targetMemberId !== undefined ? { targetMemberId: patch.targetMemberId } : {}),
-      ...(patch.metadata !== undefined ? { metadata: patch.metadata } : {}),
-      completedAt,
-      updatedAt: now,
-    })
+    .set(recoveryPatchColumns(patch))
     .where(eq(recovery.id, recoveryId))
     .returning()
   const row = rows[0]
   return row ? serializeRow(row) : null
+}
+
+/**
+ * Read-modify-write of one live (non-terminal) recovery row under a row lock
+ * (`SELECT … FOR UPDATE` in a transaction), so concurrent writers — parallel
+ * queue consumers delivering fence results — serialize instead of losing each
+ * other's `fenceCommandIds` edits. `decide` sees the locked current row and
+ * returns the patch, or null to leave it untouched. Returns the updated row,
+ * or null when nothing was written (missing, terminal, or declined).
+ *
+ * `decide` must be pure: never queue commands or open another transaction
+ * while the lock is held; act on the returned row after the commit.
+ */
+export async function updateRecoveryLocked(
+  db: Db,
+  recoveryId: string,
+  decide: (current: RecoveryRecord) => RecoveryPatch | null
+): Promise<RecoveryRecord | null> {
+  return await db.transaction(async (tx) => {
+    const [locked] = await tx
+      .select()
+      .from(recovery)
+      .where(eq(recovery.id, recoveryId))
+      .for('update')
+      .limit(1)
+    const current = locked ? serializeRow(locked) : null
+    if (!current || (TERMINAL_RECOVERY_STATES as ReadonlySet<string>).has(current.state)) {
+      return null
+    }
+    const patch = decide(current)
+    if (!patch) return null
+    const rows = await tx
+      .update(recovery)
+      .set(recoveryPatchColumns(patch))
+      .where(eq(recovery.id, recoveryId))
+      .returning()
+    const row = rows[0]
+    return row ? serializeRow(row) : null
+  })
 }
 
 /** A `detecting` row older than this with no command queued is expired. */

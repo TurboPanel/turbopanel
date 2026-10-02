@@ -52,6 +52,10 @@ export const AUTOMATIC_FAILOVER_NO_QUEUE_MESSAGE =
 export const AUTOMATIC_FAILOVER_STALE_DETECTING_MESSAGE =
   'Automatic failover expired: detection was never advanced (stale_detecting)'
 
+/** The fence stop command could not be enqueued. */
+export const FENCE_STOP_UNQUEUED_MESSAGE =
+  'Recovery blocked: the fence stop command could not be queued (command queue unavailable)'
+
 export const AUTOMATIC_FAILOVER_UNHEALTHY_MESSAGE =
   'Automatic failover blocked: no same-datacenter failover replica is healthy enough to promote'
 

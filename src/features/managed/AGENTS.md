@@ -557,6 +557,18 @@ Whole-host loss is deliberately **not** a detector: nothing can fence a host
 that is gone, so it stays manual with an alert. Widening it (Option A) is a new
 entry in `AUTOMATIC_FAILOVER_DETECTORS` once fencing can cope.
 
+**Fence bookkeeping is lock-serialized** (`ha-recovery.ts`). Every fence
+command row is created first, `metadata.fenceCommandIds` is written, and only
+then are the commands queued (drains, stop last), so no result can arrive for
+an id the row does not hold. Fence results (parallel queue consumers on both
+runtimes) go through `updateRecoveryLocked` (`SELECT … FOR UPDATE` in a
+transaction): only a `fencing` row that still lists the command changes; a
+duplicate, late or unknown result is ignored. The result that empties the list
+picks the next state under the lock, and the promote is queued after the
+commit, so it is queued once. A stop command that cannot be queued blocks the
+row (`FENCE_STOP_UNQUEUED_MESSAGE`); a drain that cannot be queued just leaves
+the list.
+
 ### Manual live HA checklist
 
 Unit tests encode topology/lag/fence policy. A later live run (not CI) should
