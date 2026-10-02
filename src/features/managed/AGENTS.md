@@ -509,21 +509,45 @@ peers are never silently upgraded to `failover`.
 `evidence`. `ha-policy.ts` → `AUTOMATIC_FAILOVER_DETECTORS` is the policy
 switch for which detectors may start automatic failover, per engine:
 
-- `orchestrator` (absent field): Orchestrator DeadPrimary, MySQL/MariaDB.
-  Orchestrator cannot see Postgres.
+- `orchestrator` (absent field): Orchestrator DeadPrimary, **MySQL/MariaDB
+  only** — Orchestrator's image has only the MySQL driver, so an
+  Orchestrator-shaped event for Postgres is always rejected.
 - `postgres-probe`: the daemon's own probe on the Postgres primary's host
   (`turbopaneld/src/managed/AGENTS.md` → **Postgres dead-primary detection**):
-  engine dead, host alive. `PRIMARY_HOST_DETECTORS` makes `haEventRejection`
-  require `sourceMemberId` = the current primary member **and** the reporting
-  server = that member's server, so a stale daemon (old primary after a
-  switchover) can never fail over the new primary. The daemon sends it only
-  when the attach frame advertises `managed-ha-probe-v1`.
+  engine dead, host alive. Sent only when the attach frame advertises
+  `managed-ha-probe-v1`.
+
+What the control plane actually checks, in order (`handleManagedHaEvent` →
+`haEventRejection` → `beginAutomaticFailover`); there is **no raft-leader
+check here** — Raft only matters to whether Orchestrator raises DeadPrimary at
+all:
+
+1. The detector covers the cluster's engine.
+2. **Every** event (with or without `detector`): the reporting server — the
+   authenticated cell session's `serverId`, never a payload field — hosts a
+   member of the cluster **and** `server.organization_id` equals the cluster's
+   organization (environment → project).
+3. `PRIMARY_HOST_DETECTORS` (`postgres-probe`): `sourceMemberId` is the
+   current primary member and the reporter is that member's server, so a stale
+   daemon (old primary after a switchover) can never fail over the new primary.
+4. An in-flight recovery for the cluster is resumed, not duplicated.
+5. Persisted cooldown: no new automatic failover within
+   `AUTOMATIC_FAILOVER_COOLDOWN_MS` (15 min) of the last **accepted** one
+   (newest `automatic-failover` recovery row with a target), read from the
+   journal so it survives restarts.
+6. A same-DC `failover` replica passes the promote lag gate (streaming,
+   observation ≤ 120 s old, lag under 64 MiB / 30 s); otherwise `blocked`.
+7. Without a command queue only `detecting` is persisted; with one, fence
+   (drain + `managed.lifecycle stop`; an unreachable old primary blocks) then
+   promote.
+
+A rejected event is logged and dropped (no recovery row). An accepted one is
+logged with its evidence and records `metadata.detector` /
+`metadata.detectorEvidence` on the recovery row.
 
 Whole-host loss is deliberately **not** a detector: nothing can fence a host
 that is gone, so it stays manual with an alert. Widening it (Option A) is a new
-entry in `AUTOMATIC_FAILOVER_DETECTORS` once fencing can cope. A rejected event
-is logged and dropped (no recovery row); an accepted one runs the unchanged
-pipeline and records `metadata.detector` on the recovery row.
+entry in `AUTOMATIC_FAILOVER_DETECTORS` once fencing can cope.
 
 ### Manual live HA checklist
 

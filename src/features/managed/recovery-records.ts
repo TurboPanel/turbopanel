@@ -1,4 +1,4 @@
-import { and, desc, eq, notInArray } from 'drizzle-orm'
+import { and, desc, eq, isNotNull, notInArray } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { recovery } from '../../db/schema.ts'
 import {
@@ -31,32 +31,20 @@ function serializeRow(row: typeof recovery.$inferSelect): RecoveryRecord | null 
   }
 }
 
-export async function findRecoveryById(
-  db: Db,
-  recoveryId: string,
-): Promise<RecoveryRecord | null> {
-  const rows = await db
-    .select()
-    .from(recovery)
-    .where(eq(recovery.id, recoveryId))
-    .limit(1)
+export async function findRecoveryById(db: Db, recoveryId: string): Promise<RecoveryRecord | null> {
+  const rows = await db.select().from(recovery).where(eq(recovery.id, recoveryId)).limit(1)
   const row = rows[0]
   return row ? serializeRow(row) : null
 }
 
 export async function findInFlightRecovery(
   db: Db,
-  managedId: string,
+  managedId: string
 ): Promise<RecoveryRecord | null> {
   const rows = await db
     .select()
     .from(recovery)
-    .where(
-      and(
-        eq(recovery.managedId, managedId),
-        notInArray(recovery.state, TERMINAL_STATES),
-      ),
-    )
+    .where(and(eq(recovery.managedId, managedId), notInArray(recovery.state, TERMINAL_STATES)))
     .orderBy(desc(recovery.startedAt))
     .limit(1)
   const row = rows[0]
@@ -65,7 +53,7 @@ export async function findInFlightRecovery(
 
 export async function findLatestRecovery(
   db: Db,
-  managedId: string,
+  managedId: string
 ): Promise<RecoveryRecord | null> {
   const inflight = await findInFlightRecovery(db, managedId)
   if (inflight) return inflight
@@ -73,6 +61,31 @@ export async function findLatestRecovery(
     .select()
     .from(recovery)
     .where(eq(recovery.managedId, managedId))
+    .orderBy(desc(recovery.startedAt))
+    .limit(1)
+  const row = rows[0]
+  return row ? serializeRow(row) : null
+}
+
+/**
+ * Newest automatic failover that was accepted (a target was chosen), in any
+ * state. Backs the persisted per-cluster cooldown: it survives restarts
+ * because it is the journal itself.
+ */
+export async function findLatestAcceptedAutomaticFailover(
+  db: Db,
+  managedId: string
+): Promise<RecoveryRecord | null> {
+  const rows = await db
+    .select()
+    .from(recovery)
+    .where(
+      and(
+        eq(recovery.managedId, managedId),
+        eq(recovery.kind, 'automatic-failover'),
+        isNotNull(recovery.targetMemberId)
+      )
+    )
     .orderBy(desc(recovery.startedAt))
     .limit(1)
   const row = rows[0]
@@ -88,7 +101,7 @@ export async function insertRecovery(
     targetMemberId?: string | null
     state?: RecoveryState
     metadata?: RecoveryMetadata
-  },
+  }
 ): Promise<RecoveryRecord> {
   const now = new Date().toISOString()
   const rows = await db
@@ -118,11 +131,10 @@ export async function updateRecovery(
     targetMemberId?: string | null
     metadata?: RecoveryMetadata
     completedAt?: string | null
-  },
+  }
 ): Promise<RecoveryRecord | null> {
   const now = new Date().toISOString()
-  const terminal = patch.state &&
-    (TERMINAL_RECOVERY_STATES as ReadonlySet<string>).has(patch.state)
+  const terminal = patch.state && (TERMINAL_RECOVERY_STATES as ReadonlySet<string>).has(patch.state)
   let completedAt: string | null | undefined
   if (patch.completedAt !== undefined) {
     completedAt = patch.completedAt
@@ -133,9 +145,7 @@ export async function updateRecovery(
     .update(recovery)
     .set({
       ...(patch.state !== undefined ? { state: patch.state } : {}),
-      ...(patch.targetMemberId !== undefined
-        ? { targetMemberId: patch.targetMemberId }
-        : {}),
+      ...(patch.targetMemberId !== undefined ? { targetMemberId: patch.targetMemberId } : {}),
       ...(patch.metadata !== undefined ? { metadata: patch.metadata } : {}),
       completedAt,
       updatedAt: now,

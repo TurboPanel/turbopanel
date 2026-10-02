@@ -59,6 +59,8 @@ export type RecoveryMetadata = {
   targetServerId?: string
   /** `managed-ha-event` detector that opened an automatic failover. */
   detector?: string
+  /** Detector evidence as sent (JSON text, bounded); never used to decide. */
+  detectorEvidence?: string
 }
 
 export type RecoveryRecord = {
@@ -142,6 +144,7 @@ export function parseRecoveryMetadata(value: unknown): RecoveryMetadata {
   setIfPresent(metadata, 'sourceServerId', optionalString(value.sourceServerId))
   setIfPresent(metadata, 'targetServerId', optionalString(value.targetServerId))
   setIfPresent(metadata, 'detector', optionalString(value.detector))
+  setIfPresent(metadata, 'detectorEvidence', optionalString(value.detectorEvidence))
   return metadata
 }
 

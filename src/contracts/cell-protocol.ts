@@ -508,7 +508,10 @@ export type DaemonMessage =
        * `features/managed/ha-policy.ts` → `AUTOMATIC_FAILOVER_DETECTORS`.
        */
       detector?: string
-      /** Bounded detector evidence; logged and never trusted for decisions. */
+      /**
+       * Bounded detector evidence. Logged and stored on the recovery row
+       * (`metadata.detectorEvidence`); never used to decide anything.
+       */
       evidence?: Record<string, unknown>
       at: string
     }
