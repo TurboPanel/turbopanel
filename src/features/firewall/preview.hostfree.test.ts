@@ -10,11 +10,18 @@ import { createNoopCommandQueue } from '../commands/noop-command-queue.ts'
 import type { LoadedFirewallFacts } from './facts.ts'
 import { DEFAULT_FIREWALL_ORG_POLICY } from './policy.ts'
 import {
+  bulwarkStateOfResult,
   enqueueFirewallPreview,
+  needsTeardown,
+  planWireMode,
   previewFromFacts,
   previewOfLastResult,
   recordFirewallPreviewResult,
   runFirewallPreviewSweep,
+  shouldSend,
+  statusOfResult,
+  TEARDOWN_RESEND_MIN_MS,
+  teardownBackedOff,
 } from './preview.ts'
 
 const test = Deno.test.bind(Deno)
@@ -158,14 +165,110 @@ test('an answer for an older generation than the stored preview is ignored', asy
   assertEquals(written.length, 0)
 })
 
-test('a result for a non-observe command is not recorded by the preview path', async () => {
+test('a result whose kind does not match what was stored is ignored as stale', async () => {
   const { db, written } = recordingDb(storedPreview)
   await recordFirewallPreviewResult(db, SERVER, { ...sentPayload, mode: 'managed' }, hostAnswer)
   assertEquals(written.length, 0)
 })
 
-test('previewOfLastResult only returns stored previews', () => {
+test('previewOfLastResult only returns stored reconcile records', () => {
   assertEquals(previewOfLastResult(storedPreview)?.status, 'queued')
+  assertEquals(previewOfLastResult({ ...storedPreview, kind: 'apply' })?.kind, 'apply')
+  assertEquals(previewOfLastResult({ ...storedPreview, kind: 'other' }), null)
   assertEquals(previewOfLastResult(null), null)
   assertEquals(previewOfLastResult({ applied: true }), null)
+})
+
+test('managed is sent only when apply is allowed for this server; observe stays observe', async () => {
+  const applied = await previewFromFacts(facts('managed'), { applyAllowed: true })
+  assertEquals(applied?.payload.mode, 'managed')
+  assertEquals(applied?.payload.rules.length, 1)
+  assertEquals(
+    (await previewFromFacts(facts('observe'), { applyAllowed: true }))?.payload.mode,
+    'observe'
+  )
+  assertEquals(
+    (await previewFromFacts(facts('managed'), { applyAllowed: false }))?.payload.mode,
+    'observe'
+  )
+})
+
+test('a server that still carries an apply is sent off (no rules) once either key is gone', async () => {
+  assertEquals(planWireMode('managed', { applyAllowed: false, teardown: true }), 'off')
+  assertEquals(planWireMode('observe', { applyAllowed: true, teardown: true }), 'off')
+  assertEquals(planWireMode('off', { teardown: true }), 'off')
+  assertEquals(planWireMode('managed', { applyAllowed: true, teardown: true }), 'managed')
+  assertEquals(planWireMode('off', {}), null)
+  const teardown = await previewFromFacts(facts('off'), { teardown: true })
+  assertEquals(teardown?.payload.mode, 'off')
+  assertEquals(teardown?.payload.rules, [])
+  assertEquals(teardown?.payload.sshPorts, undefined)
+})
+
+test('teardown is owed after an apply and until the host reports the removal', () => {
+  assertEquals(needsTeardown(null), false)
+  assertEquals(needsTeardown({ ...storedPreview, kind: 'preview' } as never), false)
+  assertEquals(needsTeardown({ ...storedPreview, kind: 'apply', status: 'refused' } as never), true)
+  assertEquals(needsTeardown({ ...storedPreview, kind: 'remove', status: 'queued' } as never), true)
+  assertEquals(
+    needsTeardown({ ...storedPreview, kind: 'remove', status: 'removed' } as never),
+    false
+  )
+})
+
+test('a reconnect re-sends an unchanged preview or teardown but never re-applies an unchanged ruleset', () => {
+  assertEquals(shouldSend(true, 'managed', false), true)
+  assertEquals(shouldSend(false, 'managed', true), false)
+  assertEquals(shouldSend(false, 'observe', true), true)
+  assertEquals(shouldSend(false, 'observe', false), false)
+  assertEquals(shouldSend(false, 'off', false), true)
+})
+
+test('an unchanged teardown is not re-sent within the back-off gap, a first or changed one is', () => {
+  const now = Date.parse('2026-10-01T01:00:00.000Z')
+  const sent = (agoMs: number, kind = 'remove') =>
+    ({ ...storedPreview, kind, sentAt: new Date(now - agoMs).toISOString() }) as never
+  assertEquals(teardownBackedOff(sent(1000), 'off', false, now), true)
+  assertEquals(teardownBackedOff(sent(TEARDOWN_RESEND_MIN_MS + 1), 'off', false, now), false)
+  assertEquals(teardownBackedOff(sent(1000), 'off', true, now), false)
+  assertEquals(teardownBackedOff(sent(1000, 'apply'), 'off', false, now), false)
+  assertEquals(teardownBackedOff(null, 'off', false, now), false)
+  assertEquals(teardownBackedOff(sent(1000), 'observe', false, now), false)
+})
+
+const appliedAnswer = {
+  ...hostAnswer,
+  mode: 'managed',
+  applied: true,
+  validation: undefined,
+  confirmation: { state: 'pending', deadlineAt: '2026-10-01T00:02:00.000Z', windowSeconds: 120 },
+}
+
+test('an applied answer is recorded as applied and pending until the host deadline', async () => {
+  const { db, written } = recordingDb({ ...storedPreview, kind: 'apply' })
+  await recordFirewallPreviewResult(db, SERVER, { ...sentPayload, mode: 'managed' }, appliedAnswer)
+  const set = written[0].set as Record<string, unknown>
+  assertEquals((set.lastResult as { kind: string; status: string }).kind, 'apply')
+  assertEquals((set.lastResult as { status: string }).status, 'applied')
+  assertEquals(set.state, 'pending')
+  assertEquals(set.deadlineAt, '2026-10-01T00:02:00.000Z')
+  assertEquals(typeof set.lastAppliedAt, 'string')
+})
+
+test('a reported teardown is recorded as removed and idle; a refusal moves no state', async () => {
+  const { db, written } = recordingDb({ ...storedPreview, kind: 'remove' })
+  await recordFirewallPreviewResult(
+    db,
+    SERVER,
+    { ...sentPayload, mode: 'off' },
+    { ...hostAnswer, mode: 'off', applied: true, digest: '', validation: undefined }
+  )
+  const set = written[0].set as Record<string, unknown>
+  assertEquals((set.lastResult as { status: string }).status, 'removed')
+  assertEquals(set.state, 'idle')
+  assertEquals(set.deadlineAt, null)
+  assertEquals(set.lastDigest, null)
+  const refused = { ...appliedAnswer, applied: false, confirmation: undefined }
+  assertEquals(statusOfResult('managed', refused as never), 'refused')
+  assertEquals(bulwarkStateOfResult('refused', refused as never, 'now'), {})
 })

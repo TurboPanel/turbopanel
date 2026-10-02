@@ -61,6 +61,7 @@ import { runManagedIngressOrphanSweep } from '../../features/managed/ingress-des
 import { runDatacenterRepinFanoutSweep } from '../../client/datacenters/repin-fanout.ts'
 import { runSystemReconcileSweep } from '../../features/system/reconcile.ts'
 import { runBackupsReconcileSweep } from '../../features/backups/reconcile.ts'
+import type { FirewallApplyGate } from '../../features/firewall/enforcement.ts'
 import { runFirewallPreviewSweep } from '../../features/firewall/preview.ts'
 import { runLeafRenewalSweepTick } from '../../client/tls/leaf-renewal-sweep.ts'
 import { type AlertSender, NOOP_ALERT_SENDER } from '../../features/alerts/alert-sender.ts'
@@ -1013,7 +1014,8 @@ export async function sweepExpiredExecutionLogsSafely(
 async function runQueuedCronSweeps(
   db: Db,
   queue: NonNullable<CloudflareBindings['TURBOPANEL_COMMAND_QUEUE']>,
-  tlsRenewal?: CronTlsRenewal | null
+  tlsRenewal?: CronTlsRenewal | null,
+  firewallApplyGate?: FirewallApplyGate
 ): Promise<void> {
   try {
     const commandQueue = createWorkersCommandQueue(queue)
@@ -1027,9 +1029,11 @@ async function runQueuedCronSweeps(
         error: sweepErrorMessage(err),
       })
     }
-    // Firewall previews after a reconnect (nothing is applied); isolated too.
+    // Firewall previews after a reconnect; isolated too. The gate is the
+    // deploy-time apply key: without it an opted-in host that applied would be
+    // sent a teardown on every reconnect.
     try {
-      await runFirewallPreviewSweep(db, commandQueue)
+      await runFirewallPreviewSweep(db, commandQueue, { applyGate: firewallApplyGate })
     } catch (err) {
       sweepTrace('firewall-preview-sweep-failed', {
         error: sweepErrorMessage(err),
@@ -1437,7 +1441,7 @@ async function runOptionalCronPhases(
   const commandQueue = env.TURBOPANEL_COMMAND_QUEUE
   if (!commandQueue) return
   await runOptionalPhase(deadlineMs, 'reconcile', opts.scheduledTime, phasesSkipped, () =>
-    runQueuedCronSweeps(db, commandQueue, tlsRenewal)
+    runQueuedCronSweeps(db, commandQueue, tlsRenewal, opts.firewallApplyGate)
   )
 }
 
@@ -1450,6 +1454,8 @@ export type RunOfflineSweepOpts = {
   db?: Db
   /** Test seam: inject `sweepOnce` deps (registry, list, AE resolver). */
   sweepOnceDeps?: SweepOnceDeps
+  /** Deploy-time firewall apply key (`firewallApplyGateFromEnv`); unset = observe-only. */
+  firewallApplyGate?: FirewallApplyGate
 }
 
 /** Cron Trigger entry point (`workers.ts` `scheduled()`). */

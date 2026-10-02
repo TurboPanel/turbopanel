@@ -119,10 +119,13 @@ export const firewallSchemas = {
   FirewallPreview: {
     type: ['object', 'null'],
     description:
-      "What the host was last sent as a PREVIEW: the ruleset rendered and checked by the kernel (`iptables-restore --test`), never loaded. Null until a preview was sent. `status` is `queued` (sent, no answer yet), `previewed`, `refused` (the kernel would reject it) or `failed`. `notes` lists, in words, what could not be derived. `host` is the host's own answer (warnings, validation, rendered text).",
+      "What the host was last sent. `kind` is `preview` (rendered and checked by the kernel with `iptables-restore --test`, never loaded) for every server, except a server the operator names in `TURBOPANEL_FIREWALL_APPLY_SERVERS` whose mode is `managed`: it is sent an `apply` (loaded under the host's commit-confirm guard, rolled back at the deadline unless confirmed on the host), and a `remove` (TurboPanel's chains taken out) once either key is gone. Null until something was sent. `status` is `queued` (sent, no answer yet), `previewed`, `applied` (loaded, pending confirmation), `removed`, `refused` (the kernel or the host refused it) or `failed`. `notes` lists, in words, what could not be derived. `host` is the host's own answer (warnings, validation, rendered text).",
     properties: {
-      kind: { type: 'string', enum: ['preview'] },
-      status: { type: 'string', enum: ['queued', 'previewed', 'refused', 'failed'] },
+      kind: { type: 'string', enum: ['preview', 'apply', 'remove'] },
+      status: {
+        type: 'string',
+        enum: ['queued', 'previewed', 'applied', 'removed', 'refused', 'failed'],
+      },
       desiredDigest: { type: 'string' },
       generation: { type: 'integer', minimum: 0 },
       sentAt: { type: 'string', format: 'date-time' },

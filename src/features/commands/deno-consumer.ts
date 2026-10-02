@@ -26,6 +26,7 @@ export type StartCommandConsumerOpts = {
   resealDeps?: CommandResealDeps
   secretsConfig?: import('../../lib/secrets/secrets.ts').SecretsConfig
   dataEncryptionSecrets?: import('../../lib/secrets/secrets.ts').DerivedSecretsConfig
+  firewallApplyGate?: import('../firewall/enforcement.ts').FirewallApplyGate
 }
 
 /**
@@ -34,7 +35,7 @@ export type StartCommandConsumerOpts = {
 export function buildCommandConsumerDeps(
   opts: Pick<
     StartCommandConsumerOpts,
-    'commandQueue' | 'resealDeps' | 'secretsConfig' | 'dataEncryptionSecrets'
+    'commandQueue' | 'resealDeps' | 'secretsConfig' | 'dataEncryptionSecrets' | 'firewallApplyGate'
   >
 ): CommandConsumerDeps | undefined {
   if (!(opts.commandQueue || opts.resealDeps || opts.secretsConfig)) {
@@ -45,6 +46,7 @@ export function buildCommandConsumerDeps(
     resealDeps: opts.resealDeps,
     secretsConfig: opts.secretsConfig,
     dataEncryptionSecrets: opts.dataEncryptionSecrets,
+    firewallApplyGate: opts.firewallApplyGate,
   }
 }
 

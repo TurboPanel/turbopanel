@@ -1,4 +1,5 @@
 import { forEachSequential } from './lib/sequential.ts'
+import { firewallApplyGateFromEnv } from './features/firewall/enforcement.ts'
 import { Hono } from 'hono'
 import type { DaemonJwtKeyring } from './daemon/authn/daemon-jwt-keyring.ts'
 import { deriveDaemonJwtKeyring } from './daemon/authn/daemon-jwt-keyring.ts'
@@ -464,6 +465,7 @@ export default {
           env.TURBOPANEL_EXECUTION_LOG_RETENTION_DAYS
         ),
         scheduledTime: controller.scheduledTime,
+        firewallApplyGate: firewallApplyGateFromEnv(stringBindingEnv(env)),
       }
     )
     ctx.waitUntil(sweep)
@@ -482,6 +484,8 @@ export default {
       }
 
       const registry = cachedDaemonCellRegistryFactory(env, db)
+      // The deploy-time firewall apply key; unset means observe-only everywhere.
+      const firewallApplyGate = firewallApplyGateFromEnv(stringBindingEnv(env))
 
       try {
         await forEachSequential(batch.messages, async (msg) => {
@@ -498,6 +502,7 @@ export default {
                   : undefined,
               secretsConfig: cachedSecretsConfig ?? undefined,
               dataEncryptionSecrets: cachedDataEncryptionSecrets ?? undefined,
+              firewallApplyGate,
             })
             msg.ack()
           } catch (error) {

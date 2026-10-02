@@ -49,6 +49,7 @@ import { runDatacenterRepinFanoutSweep } from '../../client/datacenters/repin-fa
 import { runSystemReconcileSweep } from '../../features/system/reconcile.ts'
 import { runBackupsReconcileSweep } from '../../features/backups/reconcile.ts'
 import { runFirewallPreviewSweep } from '../../features/firewall/preview.ts'
+import { firewallApplyGateFromEnv } from '../../features/firewall/enforcement.ts'
 import {
   LEAF_RENEWAL_SWEEP_INTERVAL_MS,
   runLeafRenewalSweepTick,
@@ -228,6 +229,7 @@ async function startOptionalCommandConsumer(opts: {
       },
       secretsConfig: opts.secretsConfig,
       dataEncryptionSecrets: opts.dataEncryptionSecrets,
+      firewallApplyGate: firewallApplyGateFromEnv(Deno.env.toObject()),
     })
   } catch (err) {
     logWarn(
@@ -643,8 +645,12 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
     void runBackupsReconcileSweep(db, commandQueue).catch((err) => {
       logWarn('daemon-cell', `backups reconcile sweep error: ${String(err)}`)
     })
-    // Firewall previews once after each reconnect (nothing is applied).
-    void runFirewallPreviewSweep(db, commandQueue).catch((err) => {
+    // Firewall previews once after each reconnect. Applies only for a server
+    // both keys of features/firewall/enforcement.ts allow, and never re-applies
+    // an unchanged ruleset.
+    void runFirewallPreviewSweep(db, commandQueue, {
+      applyGate: firewallApplyGateFromEnv(Deno.env.toObject()),
+    }).catch((err) => {
       logWarn('daemon-cell', `firewall preview sweep error: ${String(err)}`)
     })
   }

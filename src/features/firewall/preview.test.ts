@@ -11,6 +11,7 @@ import { bulwark, command, organization, server } from '../../db/schema.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 import type { CommandEnvelope } from '../commands/envelope.ts'
+import { FIREWALL_APPLY_SERVERS_ENV, firewallApplyGateFromEnv } from './enforcement.ts'
 import { loadFirewallFacts } from './facts.ts'
 import {
   enqueueFirewallPreview,
@@ -162,6 +163,91 @@ test('the sweep sends once after a reconnect and the host answer is stored as a 
     assertEquals(view.lastDigest, 'b'.repeat(64))
     assertEquals(view.lastAppliedAt, null)
     assertEquals(view.state, 'idle')
+  })
+})
+
+async function addServer(db: Db, organizationId: string, name: string): Promise<string> {
+  const now = new Date().toISOString()
+  const [srv] = await db
+    .insert(server)
+    .values({
+      organizationId,
+      name,
+      isConnected: true,
+      statusChangedAt: now,
+      createdAt: now,
+      updatedAt: now,
+    })
+    .returning({ id: server.id })
+  return srv!.id
+}
+
+async function lastKind(db: Db, serverId: string): Promise<string | undefined> {
+  return previewOfLastResult((await readBulwark(db, serverId)).lastResult)?.kind
+}
+
+test('one allowed managed server is sent an apply; another managed server stays observe; losing the key sends off until removed', async () => {
+  await withServer(async (db, allowed, organizationId) => {
+    const other = await addServer(db, organizationId, 'Second Server')
+    await setBulwarkMode(db, allowed, 'managed')
+    await setBulwarkMode(db, other, 'managed')
+    const queue = recordingQueue()
+    const applyGate = firewallApplyGateFromEnv({ [FIREWALL_APPLY_SERVERS_ENV]: allowed })
+
+    await enqueueFirewallPreviewForOrganization(db, queue, ACTOR, organizationId, { applyGate })
+    assertEquals(await lastKind(db, allowed), 'apply')
+    assertEquals(await lastKind(db, other), 'preview')
+
+    // A reconnect does not re-apply an unchanged ruleset.
+    const before = queue.envelopes.length
+    await enqueueFirewallPreview(db, queue, ACTOR, [allowed], { force: true, applyGate })
+    assertEquals(queue.envelopes.length, before)
+
+    // The operator drops the key: the next trigger tears the host down, and keeps doing so until it reports back.
+    await enqueueFirewallPreview(db, queue, ACTOR, [allowed])
+    assertEquals(await lastKind(db, allowed), 'remove')
+    const removal = previewOfLastResult((await readBulwark(db, allowed)).lastResult)!
+    await recordFirewallPreviewResult(
+      db,
+      allowed,
+      {
+        generation: removal.generation,
+        mode: 'off',
+        policy: { inputDefault: 'accept', ipv6: 'mirror' },
+        rules: [],
+      },
+      {
+        generation: removal.generation,
+        mode: 'off',
+        applied: true,
+        digest: '',
+        ruleCount: 0,
+        ipv6Applied: false,
+        forwardApplied: false,
+        sshPorts: [],
+        warnings: [],
+        summary: 'removed',
+      }
+    )
+    assertEquals(
+      previewOfLastResult((await readBulwark(db, allowed)).lastResult)?.status,
+      'removed'
+    )
+    await enqueueFirewallPreview(db, queue, ACTOR, [allowed])
+    assertEquals(await lastKind(db, allowed), 'preview')
+  })
+})
+
+test('setting a server that carried an apply to off sends the teardown, then nothing', async () => {
+  await withServer(async (db, serverId) => {
+    const queue = recordingQueue()
+    const applyGate = firewallApplyGateFromEnv({ [FIREWALL_APPLY_SERVERS_ENV]: serverId })
+    await setBulwarkMode(db, serverId, 'managed')
+    await enqueueFirewallPreview(db, queue, ACTOR, [serverId], { applyGate })
+    assertEquals(await lastKind(db, serverId), 'apply')
+    await setBulwarkMode(db, serverId, 'off')
+    await enqueueFirewallPreview(db, queue, ACTOR, [serverId], { applyGate })
+    assertEquals(await lastKind(db, serverId), 'remove')
   })
 })
 

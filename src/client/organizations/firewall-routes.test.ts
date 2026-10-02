@@ -16,7 +16,7 @@ import { createDenoDb, endDbConnection } from '../../db/connection.ts'
 import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from '../authn/crypto.ts'
 import { createSession } from '../authn/session-store.ts'
 import { deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
-import { bulwark, edict, grant, ip, organization, server, user } from '../../db/schema.ts'
+import { audit, bulwark, edict, grant, ip, organization, server, user } from '../../db/schema.ts'
 import { nextBulwarkGeneration } from '../../features/firewall/records.ts'
 import { MAX_FIREWALL_RULES_PER_ORG } from '../../features/firewall/vocabulary.ts'
 import { setTcpProbe, type TcpProbe } from '../../platform/ports/tcp-probe.ts'
@@ -127,6 +127,7 @@ async function withFixture(fn: (fixture: Fixture) => Promise<void>): Promise<voi
       otherManagerCookie: await cookie(ids.otherManager),
     })
   } finally {
+    await db.delete(audit).where(inArray(audit.organizationId, [orgA, orgB]))
     // A server restricts its organization's deletion, so servers go first.
     await db.delete(server).where(inArray(server.organizationId, [orgA, orgB]))
     await db.delete(organization).where(inArray(organization.id, [orgA, orgB]))
@@ -416,6 +417,15 @@ test('a server reports observe until it is configured, and each mode change rais
     assertEquals((managed.body.bulwark as Record<string, unknown>).generation, 1)
     const off = await call(f, 'PUT', path, f.ownerCookie, { mode: 'off' })
     assertEquals((off.body.bulwark as Record<string, unknown>).generation, 2)
+    const audited = await f.db
+      .select({ action: audit.action, context: audit.context })
+      .from(audit)
+      .where(eq(audit.targetId, f.serverA))
+      .orderBy(audit.id)
+    assertEquals(
+      audited.filter((row) => row.action === 'server.firewall_mode.set').map((row) => row.context),
+      [{ mode: 'managed' }, { mode: 'off' }]
+    )
 
     for (const bad of [{ mode: 'drop' }, { mode: 5 }, {}]) {
       assertEquals(
