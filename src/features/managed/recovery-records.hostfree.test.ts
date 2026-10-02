@@ -306,7 +306,7 @@ function staleRow(id: string, overrides: Record<string, unknown> = {}) {
   }
 }
 
-test('expireStaleDetectingRecoveries expires only old detecting rows with no queued command', async () => {
+test('expireStaleDetectingRecoveries expires only old detecting/fencing rows with no queued command', async () => {
   const db = createMemoryDb([
     [
       recovery,
@@ -315,6 +315,11 @@ test('expireStaleDetectingRecoveries expires only old detecting rows with no que
         staleRow('fresh', { startedAt: '2026-10-01T00:55:00.000Z' }),
         staleRow('queued', { metadata: { fenceCommandIds: ['cmd-1'] } }),
         staleRow('fencing', { state: 'fencing' }),
+        staleRow('fencing-queued', {
+          state: 'fencing',
+          metadata: { fenceCommandIds: ['cmd-2'] },
+        }),
+        staleRow('promoting', { state: 'promoting' }),
         staleRow('done', { state: 'blocked', metadata: { blockedReason: 'earlier' } }),
       ],
     ],
@@ -323,14 +328,17 @@ test('expireStaleDetectingRecoveries expires only old detecting rows with no que
     now: Date.parse('2026-10-01T01:00:00.000Z'),
     reason: 'stale',
   })
-  assertEquals(expired, ['old'])
+  // A `fencing` row whose stop never got queued is as stuck as `detecting`.
+  assertEquals(expired, ['old', 'fencing'])
   const byId = new Map(db.rows(recovery).map((row) => [row.id, row]))
   assertEquals(byId.get('old')?.state, 'blocked')
   assertEquals((byId.get('old')?.metadata as Record<string, unknown>).blockedReason, 'stale')
   assertEquals(typeof byId.get('old')?.completedAt, 'string')
   assertEquals(byId.get('fresh')?.state, 'detecting')
   assertEquals(byId.get('queued')?.state, 'detecting')
-  assertEquals(byId.get('fencing')?.state, 'fencing')
+  assertEquals(byId.get('fencing')?.state, 'blocked')
+  assertEquals(byId.get('fencing-queued')?.state, 'fencing')
+  assertEquals(byId.get('promoting')?.state, 'promoting')
   assertEquals(byId.get('done')?.state, 'blocked')
   assertEquals(STALE_DETECTING_RECOVERY_MS, 10 * 60_000)
 })

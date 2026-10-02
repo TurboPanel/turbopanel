@@ -48,9 +48,21 @@ export const AUTOMATIC_FAILOVER_NO_QUEUE_REASON = 'no_command_queue'
 export const AUTOMATIC_FAILOVER_NO_QUEUE_MESSAGE =
   'Automatic failover not started: this control plane cannot dispatch commands (no_command_queue)'
 
-/** A `detecting` row nothing advanced: expired by the stale sweep. */
+/** A `detecting` / `fencing` row nothing advanced: expired by the stale sweep. */
 export const AUTOMATIC_FAILOVER_STALE_DETECTING_MESSAGE =
-  'Automatic failover expired: detection was never advanced (stale_detecting)'
+  'Recovery expired: it was never advanced and no command was queued (stale_unadvanced)'
+
+/** Refused inside the per-cluster cooldown (recorded, terminal, no target). */
+export const AUTOMATIC_FAILOVER_COOLDOWN_MESSAGE =
+  'Automatic failover refused: a previous automatic failover started less than 15 minutes ago (cooldown)'
+
+/** The promote / recover command could not be enqueued. */
+export const PROMOTE_UNQUEUED_MESSAGE =
+  'Recovery blocked: the promote command could not be queued (command queue unavailable)'
+
+/** The fence stop command could not be enqueued. */
+export const FENCE_STOP_UNQUEUED_MESSAGE =
+  'Recovery blocked: the fence stop command could not be queued (command queue unavailable)'
 
 export const AUTOMATIC_FAILOVER_UNHEALTHY_MESSAGE =
   'Automatic failover blocked: no same-datacenter failover replica is healthy enough to promote'
