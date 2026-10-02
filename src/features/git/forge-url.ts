@@ -162,7 +162,7 @@ type HopRequest = {
 async function sendHop({ url, init, deps, signal }: HopRequest): Promise<Response> {
   const literal = validateForgeUrl(url)
   if (literal) throw new ForgeUrlError('request', literal)
-  const resolution = await resolveOutboundHost(url, { failClosed: true })
+  const resolution = await resolveOutboundHost(url, { failClosed: true, signal })
   if (resolution.rejection) {
     throw new ForgeUrlError('request', resolution.rejection)
   }

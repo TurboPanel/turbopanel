@@ -37,6 +37,7 @@
  *   credentials, and the response is parsed and acted on.
  */
 import { ipAddressScope, normalizeIpAddress } from '../ip-address.ts'
+import { abortable } from './abortable.ts'
 
 export type OutboundUrlRejection =
   | 'malformed'
@@ -103,6 +104,8 @@ export type ResolveOutboundHostOptions = OutboundUrlOptions & {
    * does not exist is still left to the fetch, which cannot connect to it.
    */
   failClosed?: boolean
+  /** The caller's deadline; a lookup still pending when it fires rejects with its reason. */
+  signal?: AbortSignal
 }
 
 export type OutboundHostResolution = {
@@ -142,18 +145,24 @@ export async function resolveOutboundHost(
   }
   const resolveDns = deno.resolveDns as (
     query: string,
-    recordType: 'A' | 'AAAA'
+    recordType: 'A' | 'AAAA',
+    options?: { signal?: AbortSignal }
   ) => Promise<string[]>
+  const { signal } = opts
+  const lookups = await Promise.allSettled(
+    (['A', 'AAAA'] as const).map((recordType) =>
+      abortable(resolveDns(hostname, recordType, { signal }), signal)
+    )
+  )
+  // The caller's deadline is not a resolver failure: surface it as the abort it is.
+  signal?.throwIfAborted()
   const answers: string[] = []
-  for (const recordType of ['A', 'AAAA'] as const) {
-    try {
-      answers.push(...(await resolveDns(hostname, recordType)))
-    } catch (error) {
-      // NXDOMAIN / no records of this type: nothing to judge. Anything else
-      // (SERVFAIL, timeout, resolver unreachable) is unjudged at fetch time.
-      if (opts.failClosed && !isNoSuchRecord(error)) {
-        return { rejection: 'dns_lookup_failed', addresses: [] }
-      }
+  for (const lookup of lookups) {
+    if (lookup.status === 'fulfilled') answers.push(...lookup.value)
+    // NXDOMAIN / no records of this type: nothing to judge. Anything else
+    // (SERVFAIL, timeout, resolver unreachable) is unjudged at fetch time.
+    else if (opts.failClosed && !isNoSuchRecord(lookup.reason)) {
+      return { rejection: 'dns_lookup_failed', addresses: [] }
     }
   }
   if (answers.some((answer) => ipAddressScope(answer) !== 'public')) {

@@ -20,6 +20,7 @@
  */
 
 import { firstSequential } from '../sequential.ts'
+import { abortable } from './abortable.ts'
 
 export type PinnedConn = {
   readable: ReadableStream<Uint8Array>
@@ -31,6 +32,8 @@ export type PinnedTarget = {
   address: string
   port: number
   serverName: string
+  /** The caller's deadline; a connect or handshake still pending when it fires is abandoned. */
+  signal?: AbortSignal
 }
 
 export type PinnedConnect = (target: PinnedTarget) => Promise<PinnedConn>
@@ -40,29 +43,45 @@ export const MAX_HEADER_BYTES = 64 * 1024
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
 
-type DenoNet = {
-  connect(opts: { hostname: string; port: number }): Promise<{
-    readable: ReadableStream<Uint8Array>
-    writable: WritableStream<Uint8Array>
-    close(): void
-  }>
+export type DenoNet = {
+  connect(opts: { hostname: string; port: number; signal?: AbortSignal }): Promise<PinnedConn>
   startTls(conn: unknown, opts: { hostname: string }): Promise<PinnedConn>
+}
+
+function closeQuietly(conn: PinnedConn): void {
+  try {
+    conn.close()
+  } catch {
+    // already closed, or owned by the TLS layer now
+  }
+}
+
+/**
+ * The TCP connect and the TLS handshake, each abandoned (and its socket
+ * closed) when `signal` fires — a peer that accepts the connection and never
+ * sends a ServerHello must not outlive the caller's deadline.
+ */
+export function pinnedConnectVia(net: DenoNet): PinnedConnect {
+  return async ({ address, port, serverName, signal }) => {
+    const tcp = await abortable(
+      net.connect({ hostname: address, port, signal }),
+      signal,
+      closeQuietly
+    )
+    try {
+      return await abortable(net.startTls(tcp, { hostname: serverName }), signal, closeQuietly)
+    } catch (error) {
+      closeQuietly(tcp)
+      throw error
+    }
+  }
 }
 
 /** The Deno transport, or `null` where there is none (Workers, browsers). */
 export function denoPinnedConnect(): PinnedConnect | null {
   const deno = (globalThis as unknown as { Deno?: Partial<DenoNet> }).Deno
   if (typeof deno?.connect !== 'function' || typeof deno.startTls !== 'function') return null
-  const net = deno as DenoNet
-  return async ({ address, port, serverName }) => {
-    const tcp = await net.connect({ hostname: address, port })
-    try {
-      return await net.startTls(tcp, { hostname: serverName })
-    } catch (error) {
-      tcp.close()
-      throw error
-    }
-  }
+  return pinnedConnectVia(deno as DenoNet)
 }
 
 /** Pulls bytes off a stream with a push-back buffer, for the header/chunk parsing. */
@@ -329,11 +348,20 @@ async function connectFirst(
   port: number,
   serverName: string
 ): Promise<PinnedConn> {
+  const { signal } = options
   let failure: unknown = new Error('pinned fetch: no address to connect to')
+  // One deadline for every address: an abort stops the walk instead of
+  // counting as this address's failure and moving on to the next.
   const connected = await firstSequential(options.addresses, async (address) => {
+    signal?.throwIfAborted()
     try {
-      return await options.connect({ address, port, serverName })
+      return await abortable(
+        options.connect({ address, port, serverName, signal }),
+        signal,
+        closeQuietly
+      )
     } catch (error) {
+      signal?.throwIfAborted()
       failure = error
       return undefined
     }
@@ -373,6 +401,7 @@ export async function pinnedFetch(
   if (url.protocol !== 'https:') throw new Error('pinned fetch: https only')
   const bytes = await serializeRequest(request, url)
   const hostname = url.hostname.startsWith('[') ? url.hostname.slice(1, -1) : url.hostname
+  options.signal?.throwIfAborted()
   const conn = idempotentClose(await connectFirst(options, Number(url.port || 443), hostname))
   const onAbort = () => conn.close()
   options.signal?.addEventListener('abort', onAbort, { once: true })

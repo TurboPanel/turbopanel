@@ -305,8 +305,9 @@ test('forgeFetch connects to the address it validated, never to a later answer f
       'https://ghe.example.com/api/v3/app',
       {},
       {
-        connect: (target) => {
-          targets.push(target)
+        connect: ({ address, port, serverName, signal }) => {
+          assertEquals(signal instanceof AbortSignal, true)
+          targets.push({ address, port, serverName })
           return Promise.resolve(fakeConn(OK_REPLY, sent))
         },
         fetch: () => {
@@ -447,4 +448,39 @@ test('forgeFetch aborts a request that outlives its time budget', async () => {
       )
     )
   })
+})
+
+test('the time budget covers a DNS lookup that never answers', async () => {
+  const silent: Resolver = () => new Promise<string[]>(() => {})
+  await withResolver(silent, async () => {
+    await assertRejects(() =>
+      forgeFetchWith(
+        'https://ghe.example.com/a',
+        {},
+        { connect: () => new Promise(() => {}), timeoutMs: 20 }
+      )
+    )
+  })
+})
+
+test('the time budget covers a connection that never opens, across every address', async () => {
+  const tried: string[] = []
+  const twoAnswers: Resolver = (_name, type) =>
+    Promise.resolve(type === 'A' ? ['203.0.113.1', '203.0.113.2'] : [])
+  await withResolver(twoAnswers, async () => {
+    await assertRejects(() =>
+      forgeFetchWith(
+        'https://ghe.example.com/a',
+        {},
+        {
+          connect: ({ address }: PinnedTarget) => {
+            tried.push(address)
+            return new Promise<PinnedConn>(() => {})
+          },
+          timeoutMs: 20,
+        }
+      )
+    )
+  })
+  assertEquals(tried, ['203.0.113.1'])
 })

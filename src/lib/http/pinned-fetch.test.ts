@@ -1,5 +1,5 @@
 import { assertEquals, assertRejects } from '@std/assert'
-import { type PinnedConn, pinnedFetch } from './pinned-fetch.ts'
+import { type PinnedConn, pinnedConnectVia, pinnedFetch } from './pinned-fetch.ts'
 
 const test = Deno.test.bind(Deno)
 
@@ -113,4 +113,56 @@ test('tries the next validated address when one will not connect', async () => {
 
 test('refuses plain http', async () => {
   await assertRejects(() => fetchVia('', new Request('http://git.example.com/')))
+})
+
+test('an abort stops a connect that never resolves, and no later address is tried', async () => {
+  const tried: string[] = []
+  const controller = new AbortController()
+  const pending = pinnedFetch(new Request('https://git.example.com/'), {
+    addresses: ['203.0.113.1', '203.0.113.2'],
+    connect: ({ address }) => {
+      tried.push(address)
+      return new Promise<PinnedConn>(() => {})
+    },
+    signal: controller.signal,
+  })
+  setTimeout(() => controller.abort(new Error('deadline')), 5)
+  await assertRejects(() => pending, Error, 'deadline')
+  assertEquals(tried, ['203.0.113.1'])
+})
+
+test('a connection that opens after the abort is closed, not leaked', async () => {
+  let closed = 0
+  let open: (conn: PinnedConn) => void = () => {}
+  const controller = new AbortController()
+  const pending = pinnedFetch(new Request('https://git.example.com/'), {
+    addresses: ['203.0.113.1'],
+    connect: () => {
+      setTimeout(() => controller.abort(new Error('deadline')), 0)
+      return new Promise<PinnedConn>((resolve) => (open = resolve))
+    },
+    signal: controller.signal,
+  })
+  await assertRejects(() => pending, Error, 'deadline')
+  open({ ...conn(''), close: () => void closed++ })
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  assertEquals(closed, 1)
+})
+
+test('the Deno transport abandons a TLS handshake that never completes, closing the socket', async () => {
+  let tcpClosed = 0
+  const controller = new AbortController()
+  const connect = pinnedConnectVia({
+    connect: () => Promise.resolve({ ...conn(''), close: () => void tcpClosed++ }),
+    startTls: () => new Promise<PinnedConn>(() => {}),
+  })
+  const pending = connect({
+    address: '203.0.113.1',
+    port: 443,
+    serverName: 'git.example.com',
+    signal: controller.signal,
+  })
+  setTimeout(() => controller.abort(new Error('deadline')), 5)
+  await assertRejects(() => pending, Error, 'deadline')
+  assertEquals(tcpClosed, 1)
 })
