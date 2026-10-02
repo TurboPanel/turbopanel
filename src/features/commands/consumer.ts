@@ -30,6 +30,12 @@ import { reconcileEnvironmentContainers } from '../environments/container-record
 import { recordDeployedSiteApps } from '../environments/app-facts.ts'
 import { classifyDeployFailure, deployOutcomeErrorCode } from '../deploy/deploy-outcome.ts'
 import {
+  advanceRollout,
+  failTimedOutDeploy,
+  failDeployByContext,
+  haltRollout,
+} from '../deploy/rollout.ts'
+import {
   deploymentDurationMs,
   type DeploymentOutcome,
   markDeploymentApplied,
@@ -314,6 +320,14 @@ async function loadDispatchableRecord(
 
   if (record.expiresAt && Date.parse(record.expiresAt) < Date.now()) {
     await transitionCommand(db, record.id, { status: 'timed_out' })
+    if (record.type === 'environment.deploy') {
+      await failTimedOutDeploy(db, {
+        commandId: record.id,
+        serverId: record.serverId,
+        context: record.context,
+        error: 'command expired before the daemon reported an outcome',
+      })
+    }
     return null
   }
 
@@ -333,6 +347,16 @@ async function loadDispatchableRecord(
       error: 'Command dispatch payload unavailable',
       errorCode: 'dispatch_payload_missing',
     })
+    if (record.type === 'environment.deploy') {
+      // No payload to read the environment from; the command's context names it.
+      await failDeployByContext(db, {
+        commandId: record.id,
+        serverId: record.serverId,
+        context: record.context,
+        error: 'Command dispatch payload unavailable',
+        outcome: 'failed',
+      })
+    }
     return null
   }
 
@@ -357,12 +381,13 @@ async function markDispatching(
   })
 }
 
+/** `null` when the command can be delivered; otherwise the error it was failed with. */
 async function ensureServerAndDaemonOnline(
   db: Db,
   registry: DaemonCellRegistry,
   record: DispatchableCommandRecord,
   envelope: CommandEnvelope
-): Promise<boolean> {
+): Promise<string | null> {
   const serverBinding = await getServerLicenseBinding(db, envelope.serverId)
   if (!serverBinding) {
     compatLogWarn(
@@ -373,7 +398,7 @@ async function ensureServerAndDaemonOnline(
       status: 'failed',
       error: 'Server not found',
     })
-    return false
+    return 'Server not found'
   }
 
   const presenceMap = await getResolveFleetPresence()(db, registry, [envelope.serverId])
@@ -389,7 +414,7 @@ async function ensureServerAndDaemonOnline(
       status: 'failed',
       error: 'Daemon not connected',
     })
-    return false
+    return 'Daemon not connected'
   }
 
   // A daemon below the supported floor keeps its connection — that is how it
@@ -404,15 +429,16 @@ async function ensureServerAndDaemonOnline(
       serverId: envelope.serverId,
       reason: 'daemon_unsupported',
     })
+    const error = daemonUnsupportedReason(support)
     await transitionCommand(db, record.id, {
       status: 'failed',
       errorCode: 'daemon_unsupported',
-      error: daemonUnsupportedReason(support),
+      error,
     })
-    return false
+    return error
   }
 
-  return true
+  return null
 }
 
 async function enqueueAndAwaitOutcome(
@@ -483,11 +509,12 @@ async function applyEnvironmentDeployFailedSideEffect(
     const payload = parseEnvironmentDeployPayload(record.payload)
     const finishedAt = nowIso()
     const deployFailure = classifyDeployFailure(error)
-    await markDeploymentFailed(db, {
+    const marked = await markDeploymentFailed(db, {
       environmentId: payload.environmentId,
       serverId: envelope.serverId,
       error,
       commandId: record.id,
+      expectedCommandId: record.id,
       outcome,
       ...(deployFailure === null ? {} : { strategyOutcome: deployFailure.outcome }),
       finishedAt,
@@ -497,6 +524,13 @@ async function applyEnvironmentDeployFailedSideEffect(
         finishedAt,
       }),
     })
+    if (marked !== null && payload.generation !== undefined) {
+      await haltRollout(db, {
+        environmentId: payload.environmentId,
+        generation: payload.generation,
+        reason: `${envelope.serverId} failed`,
+      })
+    }
   } catch (err) {
     const message = errorMessage(err)
     compatLogWarn(
@@ -734,22 +768,51 @@ async function recordSiteAppsSafely(
   }
 }
 
+/**
+ * Deliver the next rolling-deploy batch once the current one is applied. Best
+ * effort like the other deploy side effects: the command already succeeded, so
+ * a failure here is logged and the stalled batch is visible as `pending`.
+ */
+async function advanceRolloutSafely(
+  db: Db,
+  deps: CommandConsumerDeps | undefined,
+  environmentId: string,
+  generation: number
+): Promise<void> {
+  const commandQueue = deps?.commandQueue
+  if (commandQueue === undefined || isNoopCommandQueue(commandQueue)) return
+  try {
+    await advanceRollout(
+      db,
+      { enqueue: (envelope) => commandQueue.enqueue(envelope) },
+      { environmentId, generation }
+    )
+  } catch (err) {
+    compatLogWarn(
+      'command-consumer',
+      `rollout advance failed for environment ${environmentId}: ${errorMessage(err)}`
+    )
+  }
+}
+
 async function applyEnvironmentDeploySideEffect(
   db: Db,
   record: DispatchableCommandRecord,
   envelope: CommandEnvelope,
-  result: unknown
+  result: unknown,
+  deps?: CommandConsumerDeps
 ): Promise<void> {
   if (record.type !== 'environment.deploy') return
   try {
     const payload = parseEnvironmentDeployPayload(record.payload)
     if (payload.generation !== undefined) {
       const finishedAt = nowIso()
-      await markDeploymentApplied(db, {
+      const marked = await markDeploymentApplied(db, {
         environmentId: payload.environmentId,
         serverId: envelope.serverId,
         generation: payload.generation,
         commandId: record.id,
+        expectedCommandId: record.id,
         finishedAt,
         durationMs: deploymentDurationMs({
           startedAt: record.startedAt,
@@ -757,6 +820,10 @@ async function applyEnvironmentDeploySideEffect(
           finishedAt,
         }),
       })
+      // A result from a deploy a newer one replaced changes nothing and advances nothing.
+      if (marked !== null) {
+        await advanceRolloutSafely(db, deps, payload.environmentId, payload.generation)
+      }
     }
     const deployResult = parseEnvironmentDeployResult(result)
     await recordSiteAppsSafely(db, record, payload.environmentId, deployResult.sites)
@@ -1853,7 +1920,7 @@ async function applySucceededSideEffects(
   await applyHostnameSideEffect(db, record, envelope, result)
   await applyTimeSyncSideEffect(db, record, envelope, result)
   await applyFabricSideEffect(db, record, envelope, result, deps)
-  await applyEnvironmentDeploySideEffect(db, record, envelope, result)
+  await applyEnvironmentDeploySideEffect(db, record, envelope, result, deps)
   await applyEnvironmentStopSideEffect(db, record, envelope, result)
   await applyEnvironmentLifecycleSideEffect(db, record, envelope, result)
   await applySystemReconcileSideEffect(db, record, envelope, result)
@@ -2291,8 +2358,11 @@ export async function processCommandEnvelope(
 
   await markDispatching(db, record, envelope)
 
-  const ready = await ensureServerAndDaemonOnline(db, registry, record, envelope)
-  if (!ready) {
+  const notReady = await ensureServerAndDaemonOnline(db, registry, record, envelope)
+  if (notReady !== null) {
+    // A deploy that never reached its server fails its row and halts the
+    // rollout, or later batches would wait on an `applying` row forever.
+    await applyEnvironmentDeployFailedSideEffect(db, record, envelope, notReady)
     await applyFabricFailedSideEffect(db, record, envelope)
     return
   }

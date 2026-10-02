@@ -1013,6 +1013,37 @@ function buildApplyPeersField(
 }
 
 /**
+ * Addresses cross-host consumer servers (services bound to this cluster, placed
+ * on a server that hosts no member) dial this member's listener from. Sorted;
+ * empty when there are none. Shared by the apply payload and the firewall
+ * derivation so both name the same sources.
+ */
+export async function resolveConsumerSourceAddresses(
+  db: Db,
+  managedId: string,
+  members: readonly ManagedMemberRow[],
+  member: ManagedMemberRow
+): Promise<string[]> {
+  const memberServerIds = new Set(members.map((m) => m.serverId))
+  const consumerIds = (await consumerServerIdsForManaged(db, managedId)).filter(
+    (id) => !memberServerIds.has(id) && id !== member.serverId
+  )
+  if (consumerIds.length === 0) return []
+
+  const endpoints = await resolvePrivateEndpoints(db, {
+    fromServerId: member.serverId,
+    toServerIds: consumerIds,
+    purpose: 'client-backend',
+  })
+  const addresses: string[] = []
+  for (const resolved of endpoints.values()) {
+    if ('kind' in resolved) continue
+    if (!addresses.includes(resolved.address)) addresses.push(resolved.address)
+  }
+  return addresses.toSorted((a, b) => a.localeCompare(b))
+}
+
+/**
  * Cross-host consumer servers (bound apps elsewhere) run ProxySQL ingress
  * that dials this engine's private listener — pg_hba / engine account host
  * scoping must admit them. Multi-member only: single-member engines have no
@@ -1026,25 +1057,8 @@ async function attachConsumerSourceAddresses(
   member: ManagedMemberRow,
   memberInput: NonNullable<BuildRuntimeSpecInput['member']>
 ): Promise<void> {
-  const memberServerIds = new Set(members.map((m) => m.serverId))
-  const consumerIds = (await consumerServerIdsForManaged(db, input.managedRow.id)).filter(
-    (id) => !memberServerIds.has(id) && id !== member.serverId
-  )
-  if (consumerIds.length === 0) return
-
-  const endpoints = await resolvePrivateEndpoints(db, {
-    fromServerId: member.serverId,
-    toServerIds: consumerIds,
-    purpose: 'client-backend',
-  })
-  const addresses: string[] = []
-  for (const resolved of endpoints.values()) {
-    if ('kind' in resolved) continue
-    if (!addresses.includes(resolved.address)) addresses.push(resolved.address)
-  }
-  if (addresses.length > 0) {
-    memberInput.clientSourceAddresses = addresses.toSorted((a, b) => a.localeCompare(b))
-  }
+  const addresses = await resolveConsumerSourceAddresses(db, input.managedRow.id, members, member)
+  if (addresses.length > 0) memberInput.clientSourceAddresses = addresses
 }
 
 /**

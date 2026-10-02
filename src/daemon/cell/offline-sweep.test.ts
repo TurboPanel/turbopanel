@@ -21,6 +21,8 @@ import {
   DEMOTION_RESERVE_MS,
   isMassDisconnect,
   isStale,
+  newSkippedPhases,
+  optionalPhaseNames,
   MASS_DISCONNECT_ABSOLUTE,
   OFFLINE_SWEEP_STALE_MS,
   resetOfflineSweepNullGraceForTests,
@@ -1843,4 +1845,13 @@ it('the upgrade tick keeps its 15-minute cadence unless TURBOPANEL_UPGRADE_TICK_
   assertEquals((await upgradeTickTraces(everyFive, minuteFive)).length > 0, true)
   const invalid = { TURBOPANEL_UPGRADE_TICK_MINUTES: '7' } as unknown as CloudflareBindings
   assertEquals(await upgradeTickTraces(invalid, minuteFive), [])
+})
+
+it('the skipped-phase list follows the configured upgrade tick cadence', () => {
+  const minuteFive = Date.parse('2026-01-01T00:05:00.000Z')
+  const minuteFifteen = Date.parse('2026-01-01T00:15:00.000Z')
+  assertEquals(optionalPhaseNames(minuteFive).includes('upgrade-history'), false)
+  assertEquals(optionalPhaseNames(minuteFive, 5).includes('upgrade-history'), true)
+  assertEquals(optionalPhaseNames(minuteFifteen).includes('upgrade-history'), true)
+  assertEquals(newSkippedPhases(5).upgradeTickMinutes, 5)
 })

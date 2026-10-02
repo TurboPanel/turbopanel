@@ -79,8 +79,9 @@ function harness(failFor: (serverId: string) => boolean) {
   return { coordinator, attempts, delivered, clock }
 }
 
+/** The step on the active run, or on the run that just ended (a failed platform step ends it). */
 async function stepOf(coordinator: ReturnType<typeof harness>['coordinator'], serverId: string) {
-  const run = await coordinator.activeRun()
+  const run = (await coordinator.activeRun()) ?? (await coordinator.lastRun())
   return run?.steps.find((step) => step.serverId === serverId)
 }
 
@@ -109,6 +110,9 @@ test('after the last allowed attempt the step needs attention with a dispatch_fa
   assertEquals(step?.errorCode, 'dispatch_failed')
   assertEquals(step?.attempts, UPGRADE_STEP_MAX_ATTEMPTS)
   assertEquals(step?.errorMessage?.includes('cell unavailable'), true)
+  // The co-located daemon step is a platform step: the run ends with it.
+  assertEquals(await coordinator.activeRun(), null)
+  assertEquals((await coordinator.lastRun())?.error, 'colocated_daemon_failed')
 })
 
 test('a later successful delivery clears the failure message', async () => {

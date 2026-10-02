@@ -209,9 +209,17 @@ changes.
   (`deploy_rolled_back` / `deploy_needs_attention`) and `deployment.metadata`
   (`deployment.outcome` stays `failed`: its check allows only applied/failed/timed_out),
   and deployment history entries expose `strategy`, `strategyOutcome`,
-  `strategyOutcomeReason`. `deploy.update_config` stays `unsupported`: every host's
-  command is queued at once, so a sequential multi-host deploy stops all hosts at the
-  same time until the rolling stage. Deploy preview reports `strategy`,
+  `strategyOutcomeReason`. A multi-server `sequential` deploy
+  is a rolling deploy: `deploy.update_config.parallelism` (default 1, `0` = all at once)
+  that many servers update at once. Only the first batch's commands are queued; the rest are
+  recorded (deployment target `pending`, `options.rollout = { batch, batches }`, command
+  `queued` and undelivered) and `src/features/deploy/rollout.ts` queues each next batch
+  from the command consumer when the one before is applied. The first failed or timed-out
+  server stops the rollout: servers not yet started are marked `failed` and their
+  commands `cancelled`. `inplace` keeps the all-at-once fan-out. The response `strategy.rollout`
+  and the preview `rollout` report `{ parallelism, batches }`; `delay`, `monitor`, `order`,
+  `max_failure_ratio` and `failure_action: continue` are refused at deploy
+  (`field_unsupported`). Deploy preview reports `strategy`,
   `effectiveStrategy`, `migrations`, `fallbackReasons[]`
   (`src/features/deploy/deploy-strategy.ts`; blue-green falls back to sequential on
   published ports, authored `container_name`, stateful writable volumes, traffic

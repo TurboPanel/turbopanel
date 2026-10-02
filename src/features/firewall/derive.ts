@@ -29,8 +29,12 @@ import {
 import type { FirewallOrgPolicy } from './policy.ts'
 import { type FirewallSourceKind, MAX_FIREWALL_RULE_ADDRESSES } from './vocabulary.ts'
 
-/** Who may connect to a derived port. */
-export type ExposureReach = 'public' | 'datacenter' | 'fabric' | 'servers'
+/**
+ * Who may connect to a derived port. `peers` means exactly the addresses listed
+ * in the exposure's own `sources` (a managed cluster's members and consumers);
+ * it is never widened, and never `any`.
+ */
+export type ExposureReach = 'public' | 'datacenter' | 'fabric' | 'servers' | 'peers'
 
 export type DerivedExposure = {
   /** Which part of the system listens: `hosting`, `proxysql`, `fabric`, `ha`, `compose`, `control-plane`. */
@@ -44,6 +48,8 @@ export type DerivedExposure = {
   comment: string
   /** The single host address a published port is bound to, when it is not every address. */
   destination?: string
+  /** The exact addresses allowed, IPv4 and IPv6 alike; required (and only read) for `reach: 'peers'`. */
+  sources?: string[]
 }
 
 /** An operator-typed rule that applies to this server (already filtered to enabled ones). */
@@ -103,7 +109,7 @@ function uniqueSorted(values: readonly string[]): string[] {
 }
 
 const REACH_WORDS: Record<
-  Exclude<ExposureReach, 'public'>,
+  Exclude<ExposureReach, 'public' | 'peers'>,
   { words: string; set: keyof FirewallSourceSets }
 > = {
   datacenter: { words: 'this datacenter', set: 'datacenter' },
@@ -113,7 +119,10 @@ const REACH_WORDS: Record<
 
 type Resolved = { sources: string[] } | { reason: string }
 
-function resolveWords(reach: Exclude<ExposureReach, 'public'>, sets: FirewallSourceSets): Resolved {
+function resolveWords(
+  reach: Exclude<ExposureReach, 'public' | 'peers'>,
+  sets: FirewallSourceSets
+): Resolved {
   const { words, set } = REACH_WORDS[reach]
   const sources = uniqueSorted(sets[set])
   if (sources.length === 0) return { reason: `no addresses are known for ${words}` }
@@ -123,8 +132,22 @@ function resolveWords(reach: Exclude<ExposureReach, 'public'>, sets: FirewallSou
   return { sources }
 }
 
-function resolveReach(reach: ExposureReach, sets: FirewallSourceSets): Resolved {
-  return reach === 'public' ? { sources: ['any'] } : resolveWords(reach, sets)
+function resolvePeers(addresses: readonly string[] | undefined): Resolved {
+  const parsed = (addresses ?? [])
+    .map((address) => parseFirewallAddress(address))
+    .filter((address): address is string => address !== null && address !== 'any')
+  const sources = uniqueSorted(parsed)
+  if (sources.length === 0) return { reason: 'no peer addresses are known' }
+  if (sources.length > MAX_FIREWALL_RULE_ADDRESSES) {
+    return { reason: `more than ${MAX_FIREWALL_RULE_ADDRESSES} peer addresses` }
+  }
+  return { sources }
+}
+
+function resolveReach(exposure: DerivedExposure, sets: FirewallSourceSets): Resolved {
+  if (exposure.reach === 'public') return { sources: ['any'] }
+  if (exposure.reach === 'peers') return resolvePeers(exposure.sources)
+  return resolveWords(exposure.reach, sets)
 }
 
 function resolveEdictSources(edict: EdictFact, sets: FirewallSourceSets): Resolved {
@@ -166,7 +189,7 @@ function derivedRules(
 ): FirewallCommandRule[] {
   const byId = new Map<string, FirewallCommandRule>()
   for (const exposure of exposures) {
-    const resolved = resolveReach(exposure.reach, sets)
+    const resolved = resolveReach(exposure, sets)
     if ('reason' in resolved) {
       notes.push(
         `${exposure.comment} (${exposure.proto} ${exposure.ports}) is not sent: ${resolved.reason}`

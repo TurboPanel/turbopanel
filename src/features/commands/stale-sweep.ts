@@ -27,9 +27,10 @@
 
 import { and, eq, inArray, lt, notExists, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import { command, managed } from '../../db/schema.ts'
+import { command, deployment, managed } from '../../db/schema.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 import { transitionCommand } from './command-records.ts'
+import { failTimedOutDeploy } from '../deploy/rollout.ts'
 import { nowIso } from './ids.ts'
 import { commandTimeoutMs } from './consumer.ts'
 import { COMMAND_STATUSES, TERMINAL_COMMAND_STATUSES } from './types.ts'
@@ -54,6 +55,9 @@ export type StaleCommandCandidate = {
   sentAt: string | null
   ackedAt: string | null
   startedAt: string | null
+  /** `command.context`: a deploy's environment and generation, for the rollout. */
+  context?: unknown
+  serverId?: string
 }
 
 function toMs(value: string | null): number | null {
@@ -129,9 +133,25 @@ export async function sweepStaleCommands(
       sentAt: command.sentAt,
       ackedAt: command.ackedAt,
       startedAt: command.startedAt,
+      context: command.context,
+      serverId: command.serverId,
     })
     .from(command)
-    .where(and(inArray(command.status, NON_TERMINAL_STATUSES), lt(command.updatedAt, cutoff)))
+    .where(
+      and(
+        inArray(command.status, NON_TERMINAL_STATUSES),
+        lt(command.updatedAt, cutoff),
+        // A rolling deploy's later batches wait undelivered (target `pending`);
+        // that is not a stall, and the rollout starts their clock when it
+        // delivers them (`features/deploy/rollout.ts`).
+        notExists(
+          db
+            .select({ one: sql`1` })
+            .from(deployment)
+            .where(and(eq(deployment.lastCommandId, command.id), eq(deployment.status, 'pending')))
+        )
+      )
+    )
     .limit(limit)
 
   let swept = 0
@@ -149,6 +169,15 @@ export async function sweepStaleCommands(
         : 'command stalled: the daemon never acknowledged it, so nothing ran on the host. Safe to run again.',
     })
     if (record) swept += 1
+    if (record && row.name === 'environment.deploy' && row.serverId !== undefined) {
+      // A rolling deploy waits on this server: flag it and stop the rollout.
+      await failTimedOutDeploy(db, {
+        commandId: row.id,
+        serverId: row.serverId,
+        context: row.context,
+        error: record.errorMessage ?? 'command stalled',
+      })
+    }
   })
   return swept
 }

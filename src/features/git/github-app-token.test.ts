@@ -18,6 +18,9 @@ import {
   signGithubAppJwt,
   verifyInstallationAuthorizedByUser,
 } from './github-app-token.ts'
+import { useUnpinnedForgeFetchForTests } from './forge-url.ts'
+
+useUnpinnedForgeFetchForTests()
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -36,13 +39,15 @@ async function generatePkcs8Pem(): Promise<string> {
       hash: 'SHA-256',
     },
     true,
-    ['sign', 'verify'],
+    ['sign', 'verify']
   )
   const pkcs8 = await crypto.subtle.exportKey('pkcs8', keyPair.privateKey)
   const bytes = new Uint8Array(pkcs8)
   let binary = ''
   for (const byte of bytes) binary += String.fromCodePoint(byte)
-  const body = btoa(binary).replaceAll(/(.{64})/g, '$1\n').trim()
+  const body = btoa(binary)
+    .replaceAll(/(.{64})/g, '$1\n')
+    .trim()
   return `-----BEGIN PRIVATE KEY-----\n${body}\n-----END PRIVATE KEY-----\n`
 }
 
@@ -54,34 +59,27 @@ test('privateKeyPemToPkcs8Der accepts PKCS#8 PEM blocks', async () => {
 })
 
 test('privateKeyPemToPkcs8Der rejects invalid PEM', () => {
-  assertThrows(
-    () => privateKeyPemToPkcs8Der('not a pem'),
-    GithubAppTokenError,
-    'not a PEM block',
-  )
+  assertThrows(() => privateKeyPemToPkcs8Der('not a pem'), GithubAppTokenError, 'not a PEM block')
   assertThrows(
     () => privateKeyPemToPkcs8Der('-----BEGIN CERTIFICATE-----\nYWJj\n-----END CERTIFICATE-----'),
     GithubAppTokenError,
-    'unsupported github app private key PEM label',
+    'unsupported github app private key PEM label'
   )
 })
 
 test('githubApiBaseFor strips trailing slashes and maps github.com', () => {
-  assertEquals(
-    githubApiBaseFor({ apiUrl: null, baseUrl: 'https://github.com' }),
-    GITHUB_API_BASE,
-  )
+  assertEquals(githubApiBaseFor({ apiUrl: null, baseUrl: 'https://github.com' }), GITHUB_API_BASE)
   assertEquals(
     githubApiBaseFor({ apiUrl: null, baseUrl: 'https://github.com///' }),
-    GITHUB_API_BASE,
+    GITHUB_API_BASE
   )
   assertEquals(
     githubApiBaseFor({ apiUrl: null, baseUrl: 'https://github.acme.test/' }),
-    'https://github.acme.test/api/v3',
+    'https://github.acme.test/api/v3'
   )
   assertEquals(
     githubApiBaseFor({ apiUrl: 'https://ghe.example/api/v3///', baseUrl: 'https://ghe.example' }),
-    'https://ghe.example/api/v3',
+    'https://ghe.example/api/v3'
   )
 })
 
@@ -121,48 +119,36 @@ test('signGithubAppJwt rejects a blank app id', async () => {
   await assertRejects(
     () => signGithubAppJwt('  ', pem),
     GithubAppTokenError,
-    'github app id is not configured',
+    'github app id is not configured'
   )
 })
 
 test('privateKeyPemToPkcs8Der rejects an empty PEM body', () => {
   assertThrows(
-    () =>
-      privateKeyPemToPkcs8Der(
-        '-----BEGIN PRIVATE KEY-----\n\n-----END PRIVATE KEY-----',
-      ),
+    () => privateKeyPemToPkcs8Der('-----BEGIN PRIVATE KEY-----\n\n-----END PRIVATE KEY-----'),
     GithubAppTokenError,
-    'PEM body is empty',
+    'PEM body is empty'
   )
 })
 
 test('privateKeyPemToPkcs8Der rejects invalid base64', () => {
   assertThrows(
-    () =>
-      privateKeyPemToPkcs8Der(
-        '-----BEGIN PRIVATE KEY-----\n!!!!\n-----END PRIVATE KEY-----',
-      ),
+    () => privateKeyPemToPkcs8Der('-----BEGIN PRIVATE KEY-----\n!!!!\n-----END PRIVATE KEY-----'),
     GithubAppTokenError,
-    'not valid base64',
+    'not valid base64'
   )
 })
 
 test('signGithubAppJwt rejects a PEM that is not an RSA key', async () => {
   await assertRejects(
     () =>
-      signGithubAppJwt(
-        '1',
-        '-----BEGIN PRIVATE KEY-----\nYWJjZA==\n-----END PRIVATE KEY-----\n',
-      ),
+      signGithubAppJwt('1', '-----BEGIN PRIVATE KEY-----\nYWJjZA==\n-----END PRIVATE KEY-----\n'),
     GithubAppTokenError,
-    'could not be imported',
+    'could not be imported'
   )
 })
 
-function readDerLength(
-  bytes: Uint8Array,
-  offset: number,
-): { length: number; header: number } {
+function readDerLength(bytes: Uint8Array, offset: number): { length: number; header: number } {
   const first = bytes[offset]
   if (first === undefined) throw new TypeError('truncated DER length')
   if (first < 0x80) return { length: first, header: 1 }
@@ -191,7 +177,9 @@ function pkcs8DerToPkcs1Pem(pkcs8: Uint8Array): string {
   const pkcs1 = pkcs8.subarray(i, i + oct.length)
   let binary = ''
   for (const byte of pkcs1) binary += String.fromCodePoint(byte)
-  const body = btoa(binary).replaceAll(/(.{64})/g, '$1\n').trim()
+  const body = btoa(binary)
+    .replaceAll(/(.{64})/g, '$1\n')
+    .trim()
   return `-----BEGIN RSA PRIVATE KEY-----\n${body}\n-----END RSA PRIVATE KEY-----\n`
 }
 
@@ -204,7 +192,7 @@ test('signGithubAppJwt accepts GitHub PKCS#1 RSA PRIVATE KEY PEM', async () => {
 
 function withFetch(
   handler: (url: string, init?: RequestInit) => Response | Promise<Response> | never,
-  fn: () => Promise<void>,
+  fn: () => Promise<void>
 ): Promise<void> {
   const original = globalThis.fetch
   globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
@@ -222,65 +210,77 @@ test('githubApiHeaders uses the token scheme for installation tokens', () => {
 })
 
 test('exchangeInstallationTokenAt returns the token and GitHub expiry', async () => {
-  await withFetch((url, init) => {
-    assertEquals(
-      url,
-      `${GITHUB_API_BASE}/app/installations/42%2F99/access_tokens`,
-    )
-    assertEquals(init?.method, 'POST')
-    const headers = init?.headers as Record<string, string>
-    assertEquals(headers.authorization, 'Bearer app-jwt')
-    return new Response(
-      JSON.stringify({ token: 'ghs_live', expires_at: '2030-01-01T00:00:00Z' }),
-      { status: 200 },
-    )
-  }, async () => {
-    const result = await exchangeInstallationTokenAt(GITHUB_API_BASE, 'app-jwt', '42/99')
-    assertEquals(result, {
-      token: 'ghs_live',
-      expiresAt: '2030-01-01T00:00:00Z',
-      apiBase: GITHUB_API_BASE,
-    })
-  })
+  await withFetch(
+    (url, init) => {
+      assertEquals(url, `${GITHUB_API_BASE}/app/installations/42%2F99/access_tokens`)
+      assertEquals(init?.method, 'POST')
+      const headers = init?.headers as Record<string, string>
+      assertEquals(headers.authorization, 'Bearer app-jwt')
+      return new Response(
+        JSON.stringify({ token: 'ghs_live', expires_at: '2030-01-01T00:00:00Z' }),
+        { status: 200 }
+      )
+    },
+    async () => {
+      const result = await exchangeInstallationTokenAt(GITHUB_API_BASE, 'app-jwt', '42/99')
+      assertEquals(result, {
+        token: 'ghs_live',
+        expiresAt: '2030-01-01T00:00:00Z',
+        apiBase: GITHUB_API_BASE,
+      })
+    }
+  )
 })
 
 test('exchangeInstallationTokenAt never lets the runtime follow a redirect with the App JWT attached', async () => {
-  await withFetch((_url, init) => {
-    assertEquals(init?.redirect, 'manual')
-    return new Response(JSON.stringify({ token: 'ghs_manual' }), { status: 200 })
-  }, async () => {
-    const result = await exchangeInstallationTokenAt(GITHUB_API_BASE, 'app-jwt', '7')
-    assertEquals(result.token, 'ghs_manual')
-  })
+  await withFetch(
+    (_url, init) => {
+      assertEquals(init?.redirect, 'manual')
+      return new Response(JSON.stringify({ token: 'ghs_manual' }), { status: 200 })
+    },
+    async () => {
+      const result = await exchangeInstallationTokenAt(GITHUB_API_BASE, 'app-jwt', '7')
+      assertEquals(result.token, 'ghs_manual')
+    }
+  )
 })
 
 test('exchangeInstallationTokenAt follows a same-origin redirect and refuses a cross-origin one', async () => {
   const urls: string[] = []
-  await withFetch((url) => {
-    urls.push(url)
-    if (url.endsWith('/access_tokens')) {
-      return new Response(null, {
-        status: 307,
-        headers: { location: `${GITHUB_API_BASE}/app/installations/7/access_tokens/v2` },
-      })
+  await withFetch(
+    (url) => {
+      urls.push(url)
+      if (url.endsWith('/access_tokens')) {
+        return new Response(null, {
+          status: 307,
+          headers: { location: `${GITHUB_API_BASE}/app/installations/7/access_tokens/v2` },
+        })
+      }
+      return new Response(JSON.stringify({ token: 'ghs_moved' }), { status: 200 })
+    },
+    async () => {
+      const result = await exchangeInstallationTokenAt(GITHUB_API_BASE, 'app-jwt', '7')
+      assertEquals(result.token, 'ghs_moved')
     }
-    return new Response(JSON.stringify({ token: 'ghs_moved' }), { status: 200 })
-  }, async () => {
-    const result = await exchangeInstallationTokenAt(GITHUB_API_BASE, 'app-jwt', '7')
-    assertEquals(result.token, 'ghs_moved')
-  })
+  )
   assertEquals(urls.length, 2)
 
   const offsite: string[] = []
-  await withFetch((url) => {
-    offsite.push(url)
-    return new Response(null, { status: 302, headers: { location: 'https://evil.example.net/x' } })
-  }, async () => {
-    await assertRejects(
-      () => exchangeInstallationTokenAt(GITHUB_API_BASE, 'app-jwt', '7'),
-      GithubAppTokenError,
-    )
-  })
+  await withFetch(
+    (url) => {
+      offsite.push(url)
+      return new Response(null, {
+        status: 302,
+        headers: { location: 'https://evil.example.net/x' },
+      })
+    },
+    async () => {
+      await assertRejects(
+        () => exchangeInstallationTokenAt(GITHUB_API_BASE, 'app-jwt', '7'),
+        GithubAppTokenError
+      )
+    }
+  )
   assertEquals(offsite, [`${GITHUB_API_BASE}/app/installations/7/access_tokens`])
 })
 
@@ -291,26 +291,25 @@ test('exchangeInstallationTokenAt synthesizes expiry when GitHub omits it', asyn
       const result = await exchangeInstallationTokenAt(GITHUB_API_BASE, 'jwt', '1')
       assertEquals(result.token, 'ghs_noexp')
       assertEquals(Number.isNaN(Date.parse(result.expiresAt)), false)
-    },
+    }
   )
 })
 
 test('exchangeInstallationTokenAt maps GitHub error bodies', async () => {
   await withFetch(
-    () =>
-      new Response(JSON.stringify({ message: 'Bad credentials' }), { status: 401 }),
+    () => new Response(JSON.stringify({ message: 'Bad credentials' }), { status: 401 }),
     async () => {
       const error = await assertRejects(
         () => exchangeInstallationTokenAt(GITHUB_API_BASE, 'jwt', '1'),
         GithubAppTokenError,
-        'Bad credentials',
+        'Bad credentials'
       )
       assertEquals(error instanceof GithubAppTokenError, true)
       if (!(error instanceof GithubAppTokenError)) {
         throw new TypeError('expected GithubAppTokenError')
       }
       assertEquals(error.status, 401)
-    },
+    }
   )
 })
 
@@ -321,9 +320,9 @@ test('exchangeInstallationTokenAt falls back when the error body is not JSON', a
       await assertRejects(
         () => exchangeInstallationTokenAt(GITHUB_API_BASE, 'jwt', '1'),
         GithubAppTokenError,
-        'github request failed (502)',
+        'github request failed (502)'
       )
-    },
+    }
   )
 })
 
@@ -334,9 +333,9 @@ test('exchangeInstallationTokenAt falls back when the error body is empty', asyn
       await assertRejects(
         () => exchangeInstallationTokenAt(GITHUB_API_BASE, 'jwt', '1'),
         GithubAppTokenError,
-        'github request failed (503)',
+        'github request failed (503)'
       )
-    },
+    }
   )
 })
 
@@ -347,9 +346,9 @@ test('exchangeInstallationTokenAt rejects a payload with no token', async () => 
       await assertRejects(
         () => exchangeInstallationTokenAt(GITHUB_API_BASE, 'jwt', '1'),
         GithubAppTokenError,
-        'returned no token',
+        'returned no token'
       )
-    },
+    }
   )
 })
 
@@ -362,9 +361,9 @@ test('exchangeInstallationTokenAt wraps network failures', async () => {
       await assertRejects(
         () => exchangeInstallationTokenAt(GITHUB_API_BASE, 'jwt', '1'),
         GithubAppTokenError,
-        'dns failed',
+        'dns failed'
       )
-    },
+    }
   )
 })
 
@@ -377,9 +376,9 @@ test('exchangeInstallationTokenAt wraps non-Error network failures', async () =>
       await assertRejects(
         () => exchangeInstallationTokenAt(GITHUB_API_BASE, 'jwt', '1'),
         GithubAppTokenError,
-        'network error',
+        'network error'
       )
-    },
+    }
   )
 })
 
@@ -417,7 +416,7 @@ function gitDb(opts: {
 async function sealedApp(privateKeyPem: string, baseUrl = 'https://github.com') {
   const secrets = await deriveEncryptionSecretsConfig(
     parseTestSecretsConfig('deno'),
-    'data-encryption',
+    'data-encryption'
   )
   return {
     secrets,
@@ -453,26 +452,29 @@ test('mintGithubInstallationToken exchanges a JWT for the installation token', a
     },
   })
 
-  await withFetch((url) => {
-    assertEquals(url.includes('/app/installations/88/access_tokens'), true)
-    return new Response(
-      JSON.stringify({ token: 'ghs_minted', expires_at: '2031-01-01T00:00:00Z' }),
-      { status: 201 },
-    )
-  }, async () => {
-    const token = await mintGithubInstallationToken(db, secrets, 'install-1')
-    assertEquals(token, {
-      token: 'ghs_minted',
-      expiresAt: '2031-01-01T00:00:00Z',
-      apiBase: GITHUB_API_BASE,
-    })
-  })
+  await withFetch(
+    (url) => {
+      assertEquals(url.includes('/app/installations/88/access_tokens'), true)
+      return new Response(
+        JSON.stringify({ token: 'ghs_minted', expires_at: '2031-01-01T00:00:00Z' }),
+        { status: 201 }
+      )
+    },
+    async () => {
+      const token = await mintGithubInstallationToken(db, secrets, 'install-1')
+      assertEquals(token, {
+        token: 'ghs_minted',
+        expiresAt: '2031-01-01T00:00:00Z',
+        apiBase: GITHUB_API_BASE,
+      })
+    }
+  )
 })
 
 test('mintGithubInstallationToken rejects a missing App config', async () => {
   const secrets = await deriveEncryptionSecretsConfig(
     parseTestSecretsConfig('deno'),
-    'data-encryption',
+    'data-encryption'
   )
   await assertRejects(
     () =>
@@ -485,10 +487,10 @@ test('mintGithubInstallationToken rejects a missing App config', async () => {
           },
         }),
         secrets,
-        'install-1',
+        'install-1'
       ),
     GithubAppTokenError,
-    'github app is not configured',
+    'github app is not configured'
   )
 })
 
@@ -496,14 +498,9 @@ test('mintGithubInstallationToken rejects a missing installation', async () => {
   const pem = await generatePkcs8Pem()
   const { secrets, app } = await sealedApp(pem)
   await assertRejects(
-    () =>
-      mintGithubInstallationToken(
-        gitDb({ app, installation: null }),
-        secrets,
-        'missing',
-      ),
+    () => mintGithubInstallationToken(gitDb({ app, installation: null }), secrets, 'missing'),
     GithubAppTokenError,
-    'installation not found',
+    'installation not found'
   )
 })
 
@@ -522,10 +519,10 @@ test('mintGithubInstallationToken rejects a non-github installation', async () =
           },
         }),
         secrets,
-        'install-1',
+        'install-1'
       ),
     GithubAppTokenError,
-    'unsupported installation provider "gitlab"',
+    'unsupported installation provider "gitlab"'
   )
 })
 
@@ -544,10 +541,10 @@ test('mintGithubInstallationToken rejects a suspended installation', async () =>
           },
         }),
         secrets,
-        'install-1',
+        'install-1'
       ),
     GithubAppTokenError,
-    'installation is suspended',
+    'installation is suspended'
   )
   if (!(error instanceof GithubAppTokenError)) {
     throw new TypeError('expected GithubAppTokenError')
@@ -573,7 +570,7 @@ function stubGithubUserAuthorization(opts: {
     if (url.endsWith('/login/oauth/access_token')) {
       const body = opts.tokenBody ?? { access_token: 'ghu_user', token_type: 'bearer' }
       return Promise.resolve(
-        new Response(JSON.stringify(body), { status: opts.tokenStatus ?? 200 }),
+        new Response(JSON.stringify(body), { status: opts.tokenStatus ?? 200 })
       )
     }
     if (url.includes('/user/installations')) {
@@ -581,8 +578,8 @@ function stubGithubUserAuthorization(opts: {
       return Promise.resolve(
         new Response(
           JSON.stringify({ total_count: ids.length, installations: ids.map((id) => ({ id })) }),
-          { status: opts.installationsStatus ?? 200 },
-        ),
+          { status: opts.installationsStatus ?? 200 }
+        )
       )
     }
     return Promise.resolve(new Response('', { status: 500 }))
@@ -628,7 +625,7 @@ test('verifyInstallationAuthorizedByUser refuses an installation the user cannot
         code: 'one-shot',
         externalInstallationId: '84213',
       }),
-      'not_authorized',
+      'not_authorized'
     )
   } finally {
     restore()
@@ -649,7 +646,7 @@ test('verifyInstallationAuthorizedByUser treats a spent or foreign code as a ref
         code: 'spent',
         externalInstallationId: '84213',
       }),
-      'not_authorized',
+      'not_authorized'
     )
     // Never got as far as the installations read.
     assertEquals(seen.length, 1)
@@ -669,7 +666,7 @@ test('verifyInstallationAuthorizedByUser surfaces a failing installations read a
           externalInstallationId: '84213',
         }),
       GithubAppTokenError,
-      'user installations lookup failed (502)',
+      'user installations lookup failed (502)'
     )
   } finally {
     restore()
@@ -681,10 +678,10 @@ test('verifyInstallationAuthorizedByUser needs OAuth client credentials and a sa
     () =>
       verifyInstallationAuthorizedByUser(
         { ...OAUTH_APP, clientSecret: null },
-        { code: 'c', externalInstallationId: '1' },
+        { code: 'c', externalInstallationId: '1' }
       ),
     GithubAppTokenError,
-    'no OAuth client credentials',
+    'no OAuth client credentials'
   )
   const seen: string[] = []
   const restore = stubGithubUserAuthorization({ installations: [1], seen })
@@ -695,10 +692,10 @@ test('verifyInstallationAuthorizedByUser needs OAuth client credentials and a sa
       () =>
         verifyInstallationAuthorizedByUser(
           { ...OAUTH_APP, baseUrl: 'https://127.0.0.1:8443' },
-          { code: 'c', externalInstallationId: '1' },
+          { code: 'c', externalInstallationId: '1' }
         ),
       GithubAppTokenError,
-      'refused: address_not_public',
+      'refused: address_not_public'
     )
     assertEquals(seen, [])
   } finally {
@@ -713,9 +710,9 @@ test('verifyInstallationAuthorizedByUser uses the Enterprise host for both the t
     assertEquals(
       await verifyInstallationAuthorizedByUser(
         { ...OAUTH_APP, baseUrl: 'https://ghe.corp.example.com/' },
-        { code: 'c', externalInstallationId: '7' },
+        { code: 'c', externalInstallationId: '7' }
       ),
-      'authorized',
+      'authorized'
     )
     assertEquals(seen, [
       'POST https://ghe.corp.example.com/login/oauth/access_token',

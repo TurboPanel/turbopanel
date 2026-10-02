@@ -1,80 +1,79 @@
-import { assertEquals } from "@std/assert";
-import { Hono } from "hono";
-import type { AppEnv } from "../app/app.ts";
-import { createBrowserWriteProtectionMiddleware } from "../app/browser-write-protection.ts";
-import { getDatabaseUrl } from "../db/url.ts";
-import { createDenoDb, endDbConnection } from "../db/connection.ts";
-import type { DaemonCell, DaemonCellRegistry } from "../contracts/cell.ts";
+import { assertEquals } from '@std/assert'
+import { Hono } from 'hono'
+import type { AppEnv } from '../app/app.ts'
+import { createBrowserWriteProtectionMiddleware } from '../app/browser-write-protection.ts'
+import { getDatabaseUrl } from '../db/url.ts'
+import { createDenoDb, endDbConnection } from '../db/connection.ts'
+import type { DaemonCell, DaemonCellRegistry } from '../contracts/cell.ts'
 import {
   buildSignedCookie,
   HTTP_SESSION_COOKIE_NAME,
   HTTPS_SESSION_COOKIE_NAME,
-} from "../client/authn/crypto.ts";
-import { createSession } from "../client/authn/session-store.ts";
+} from '../client/authn/crypto.ts'
+import { createSession } from '../client/authn/session-store.ts'
 import {
   deriveEncryptionSecretsConfig,
   deriveSecretsConfig,
   parseSecretsEnv,
-} from "../lib/secrets/secrets.ts";
+} from '../lib/secrets/secrets.ts'
 import {
   instanceHostname,
   notificationChannel,
   server,
   setting,
+  upgrade,
   user,
-} from "../db/schema.ts";
-import { OPERATOR_WEBHOOK_LABEL } from "../features/notifications/records.ts";
-import { encryptSecret } from "../lib/secrets/data-encryption.ts";
-import { eq, isNotNull } from "drizzle-orm";
-import { ADMIN_API_PREFIX } from "../app/surfaces.ts";
+} from '../db/schema.ts'
+import { OPERATOR_WEBHOOK_LABEL } from '../features/notifications/records.ts'
+import { encryptSecret } from '../lib/secrets/data-encryption.ts'
+import { eq, isNotNull } from 'drizzle-orm'
+import { ADMIN_API_PREFIX } from '../app/surfaces.ts'
 import {
   endReencryptSweep,
   resetReencryptSweepLockForTests,
   tryBeginReencryptSweep,
-} from "./reencrypt-secrets.ts";
-import { registerAdminRoutes } from "./routes.ts";
-import { SERVER_METRICS_LIVE_MAX_MINUTES_KEY } from "../features/settings/server-metrics-settings.ts";
-import { ALERT_WEBHOOK_URL_KEY } from "../features/alerts/alert-webhook-settings.ts";
-import { replaceInstanceHostnames } from "../features/install/instance-hostnames.ts";
+} from './reencrypt-secrets.ts'
+import { registerAdminRoutes } from './routes.ts'
+import { SERVER_METRICS_LIVE_MAX_MINUTES_KEY } from '../features/settings/server-metrics-settings.ts'
+import { ALERT_WEBHOOK_URL_KEY } from '../features/alerts/alert-webhook-settings.ts'
+import { replaceInstanceHostnames } from '../features/install/instance-hostnames.ts'
 import {
   INSTANCE_ACME_SETTINGS,
   INSTANCE_ACME_TOS_NOT_ACCEPTED_CODE,
-} from "../features/install/instance-acme-settings.ts";
+} from '../features/install/instance-acme-settings.ts'
 
-const dbUrl = getDatabaseUrl();
-import { TEST_ONLY_TURBOPANEL_SECRET } from "../test-fixtures/secrets.ts";
+const dbUrl = getDatabaseUrl()
+import { TEST_ONLY_TURBOPANEL_SECRET } from '../test-fixtures/secrets.ts'
 
-type WaitOverride = (
-  outbound: { requestId: string; at: string; kind: string },
-) => Promise<{
-  serverId: string;
-  requestId: string;
-  requestKind: string;
-  status: "done" | "failed" | "expired" | "queued";
-  createdAt: string;
-  expiresAt: string;
-  error?: string;
-  result?: unknown;
-}>;
+type WaitOverride = (outbound: { requestId: string; at: string; kind: string }) => Promise<{
+  serverId: string
+  requestId: string
+  requestKind: string
+  status: 'done' | 'failed' | 'expired' | 'queued'
+  createdAt: string
+  expiresAt: string
+  error?: string
+  result?: unknown
+}>
 
 function jsonBody<T>(res: Response): Promise<T> {
-  return res.json() as Promise<T>;
+  return res.json() as Promise<T>
 }
 
 function createMockCell(
   serverId: string,
   purgedIds: string[],
   failIds: Set<string>,
-  waitOverride?: WaitOverride,
+  waitOverride?: WaitOverride
 ): DaemonCell {
-  const noopAsync = () => Promise.resolve();
+  const noopAsync = () => Promise.resolve()
   return {
     attachDaemonSocket: () =>
       Promise.resolve({
-        connectionId: "conn",
+        connectionId: 'conn',
         lease: {
-          holder: "conn",
-          token: "conn",
+          holder: 'conn',
+          token: 'conn',
           expiresAt: new Date(Date.now() + 45_000).toISOString(),
         },
       }),
@@ -100,7 +99,7 @@ function createMockCell(
         serverId,
         requestId: outbound.requestId,
         requestKind: outbound.kind,
-        status: "queued" as const,
+        status: 'queued' as const,
         createdAt: outbound.at,
         expiresAt: outbound.at,
       }),
@@ -110,18 +109,18 @@ function createMockCell(
     listRequests: () => Promise.resolve([]),
     waitForRequest: () => Promise.resolve(null),
     createRequestAndWait: (outbound) => {
-      if (waitOverride) return waitOverride(outbound);
+      if (waitOverride) return waitOverride(outbound)
       return Promise.resolve({
         serverId,
         requestId: outbound.requestId,
         requestKind: outbound.kind,
-        status: "done" as const,
+        status: 'done' as const,
         createdAt: outbound.at,
         expiresAt: outbound.at,
         result: {
           ips: [],
         },
-      });
+      })
     },
     claimDeliveryLease: () => Promise.resolve(null),
     renewDeliveryLease: () => Promise.resolve(null),
@@ -132,44 +131,44 @@ function createMockCell(
     clearUpdateStatus: () => Promise.resolve({ cleared: 0 }),
     purge: () => {
       if (failIds.has(serverId)) {
-        return Promise.reject(new Error(`purge failed for ${serverId}`));
+        return Promise.reject(new Error(`purge failed for ${serverId}`))
       }
-      purgedIds.push(serverId);
-      return Promise.resolve();
+      purgedIds.push(serverId)
+      return Promise.resolve()
     },
-  };
+  }
 }
 
 function createTrackingRegistry(
   failIds: Set<string> = new Set(),
   opts: Readonly<{
-    onlineIds?: string[];
-    connectedSnapshots?: boolean;
-    waitOverride?: WaitOverride;
+    onlineIds?: string[]
+    connectedSnapshots?: boolean
+    waitOverride?: WaitOverride
     /** Reported on every snapshot as `daemonBuild.version`. */
-    daemonVersion?: string;
-  }> = {},
+    daemonVersion?: string
+  }> = {}
 ): {
-  registry: DaemonCellRegistry;
-  purgedIds: string[];
+  registry: DaemonCellRegistry
+  purgedIds: string[]
 } {
-  const purgedIds: string[] = [];
-  const cells = new Map<string, DaemonCell>();
+  const purgedIds: string[] = []
+  const cells = new Map<string, DaemonCell>()
 
   const registry: DaemonCellRegistry = {
     getCell(serverId: string): DaemonCell {
-      let cell = cells.get(serverId);
+      let cell = cells.get(serverId)
       if (!cell) {
-        cell = createMockCell(serverId, purgedIds, failIds, opts.waitOverride);
-        cells.set(serverId, cell);
+        cell = createMockCell(serverId, purgedIds, failIds, opts.waitOverride)
+        cells.set(serverId, cell)
       }
-      return cell;
+      return cell
     },
     listOnlineServerIds: () => Promise.resolve(opts.onlineIds ?? []),
     // Admin diagnostics (`GET /servers/:id/cell`) legitimately reads live snapshots.
     getSnapshots: (ids) => {
-      const out = new Map();
-      if (!opts.connectedSnapshots) return Promise.resolve(out);
+      const out = new Map()
+      if (!opts.connectedSnapshots) return Promise.resolve(out)
       for (const id of ids) {
         out.set(id, {
           serverId: id,
@@ -178,115 +177,110 @@ function createTrackingRegistry(
           connected: true,
           lastInboundAt: new Date().toISOString(),
           ...(opts.daemonVersion
-            ? { daemonBuild: { version: opts.daemonVersion, commit: "c0ffee" } }
+            ? { daemonBuild: { version: opts.daemonVersion, commit: 'c0ffee' } }
             : {}),
-        });
+        })
       }
-      return Promise.resolve(out);
+      return Promise.resolve(out)
     },
     purge: async (serverId: string) => {
-      await registry.getCell(serverId).purge();
+      await registry.getCell(serverId).purge()
     },
-  };
+  }
 
-  return { registry, purgedIds };
+  return { registry, purgedIds }
 }
 
 async function createAdminTestApp(
   registry: DaemonCellRegistry,
   options: Readonly<{
-    withDataEncryption?: boolean;
-    withBrowserWriteProtection?: boolean;
-    getEnv?: () => Record<string, string | undefined>;
+    withDataEncryption?: boolean
+    withBrowserWriteProtection?: boolean
+    getEnv?: () => Record<string, string | undefined>
     /** Set on the request context, as `createApp`'s `getPlatformEnv` does on Deno. */
-    platformEnv?: Record<string, string | undefined>;
-    devSurface?: boolean;
-    runtime?: "deno" | "workers";
-  }> = {},
+    platformEnv?: Record<string, string | undefined>
+    devSurface?: boolean
+    runtime?: 'deno' | 'workers'
+  }> = {}
 ) {
-  const secretsConfig = parseSecretsEnv(
-    `1:${TEST_ONLY_TURBOPANEL_SECRET}`,
-    "deno",
-  );
-  const secrets = await deriveSecretsConfig(secretsConfig, "session-signing");
-  const dataEncryptionSecrets = options.withDataEncryption === false
-    ? undefined
-    : await deriveEncryptionSecretsConfig(secretsConfig, "data-encryption");
-  const app = new Hono<AppEnv>();
+  const secretsConfig = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`, 'deno')
+  const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
+  const dataEncryptionSecrets =
+    options.withDataEncryption === false
+      ? undefined
+      : await deriveEncryptionSecretsConfig(secretsConfig, 'data-encryption')
+  const app = new Hono<AppEnv>()
   if (options.withBrowserWriteProtection) {
-    app.use("*", createBrowserWriteProtectionMiddleware("workers"));
+    app.use('*', createBrowserWriteProtectionMiddleware('workers'))
   }
   // One pool per test app, not one per request: a pool opened per request
   // and never ended leaks a connection each time, and a file this size then
   // runs into Postgres' connection cap ("sorry, too many clients already").
-  const appDb = createDenoDb();
-  app.use("*", (c, next) => {
-    c.set("db", appDb);
-    c.set("daemonCellRegistry", registry);
-    if (options.platformEnv) c.set("platformEnv", options.platformEnv);
+  const appDb = createDenoDb()
+  app.use('*', (c, next) => {
+    c.set('db', appDb)
+    c.set('daemonCellRegistry', registry)
+    if (options.platformEnv) c.set('platformEnv', options.platformEnv)
     if (dataEncryptionSecrets) {
-      c.set("dataEncryptionSecrets", dataEncryptionSecrets);
+      c.set('dataEncryptionSecrets', dataEncryptionSecrets)
     }
-    return next();
-  });
+    return next()
+  })
   registerAdminRoutes(app, {
     secrets,
-    runtime: options.runtime ?? "deno",
+    runtime: options.runtime ?? 'deno',
     devSurface: options.devSurface ?? false,
     ...(options.getEnv ? { getEnv: options.getEnv } : {}),
-  });
-  return { app, secrets, appDb };
+  })
+  return { app, secrets, appDb }
 }
 
 async function adminSessionCookie(
   db: ReturnType<typeof createDenoDb>,
   secrets: Awaited<ReturnType<typeof deriveSecretsConfig>>,
-  userId: string,
+  userId: string
 ): Promise<string> {
-  const { token } = await createSession(db, userId, {});
-  const signed = await buildSignedCookie(token, secrets);
-  return `${HTTP_SESSION_COOKIE_NAME}=${signed}`;
+  const { token } = await createSession(db, userId, {})
+  const signed = await buildSignedCookie(token, secrets)
+  return `${HTTP_SESSION_COOKIE_NAME}=${signed}`
 }
 
 async function withRoleUser(
-  role: "admin" | "superadmin",
-  fn: (ctx: {
-    app: Hono<AppEnv>;
-    cookie: string;
-  }) => Promise<void>,
+  role: 'admin' | 'superadmin',
+  fn: (ctx: { app: Hono<AppEnv>; cookie: string }) => Promise<void>,
   options: Readonly<{
-    withDataEncryption?: boolean;
-    withBrowserWriteProtection?: boolean;
-    getEnv?: () => Record<string, string | undefined>;
-    devSurface?: boolean;
-    runtime?: "deno" | "workers";
-  }> = {},
+    withDataEncryption?: boolean
+    withBrowserWriteProtection?: boolean
+    getEnv?: () => Record<string, string | undefined>
+    devSurface?: boolean
+    runtime?: 'deno' | 'workers'
+  }> = {}
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn("Skipping admin route tests: TURBOPANEL_DATABASE_URL not set");
-    return;
+    console.warn('Skipping admin route tests: TURBOPANEL_DATABASE_URL not set')
+    return
   }
 
-  const db = createDenoDb();
-  await resetReencryptSweepLockForTests(db);
-  const email = `admin-cell-purge-${role}-${crypto.randomUUID()}@example.com`;
+  const db = createDenoDb()
+  await resetReencryptSweepLockForTests(db)
+  const email = `admin-cell-purge-${role}-${crypto.randomUUID()}@example.com`
   const [insertedUser] = await db
     .insert(user)
     .values({ email, isEmailVerified: true, role })
-    .returning({ id: user.id });
-  const userId = insertedUser!.id;
+    .returning({ id: user.id })
+  const userId = insertedUser!.id
 
-  const { registry } = createTrackingRegistry();
-  const { app, secrets, appDb } = await createAdminTestApp(registry, options);
-  const cookie = await adminSessionCookie(db, secrets, userId);
+  const { registry } = createTrackingRegistry()
+  const { app, secrets, appDb } = await createAdminTestApp(registry, options)
+  const cookie = await adminSessionCookie(db, secrets, userId)
 
   try {
-    await fn({ app, cookie });
+    await fn({ app, cookie })
   } finally {
-    await db.delete(user).where(eq(user.id, userId));
-    await resetReencryptSweepLockForTests(db);
-    await endDbConnection(appDb);
-    await endDbConnection(db);
+    await db.delete(user).where(eq(user.id, userId))
+    await resetReencryptSweepLockForTests(db)
+    await endDbConnection(appDb)
+    await endDbConnection(db)
   }
 }
 
@@ -296,564 +290,537 @@ async function withRoleUser(
  * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
  * reports Deno suites as empty; keep this alias so analysis sees real tests.
  */
-const test = Deno.test.bind(Deno);
+const test = Deno.test.bind(Deno)
 
-test("POST /api/admin/v1/cells/:serverId/purge returns 403 for admin role", async () => {
-  await withRoleUser("admin", async ({ app, cookie }) => {
-    const serverId = crypto.randomUUID();
-    const res = await app.request(
-      `${ADMIN_API_PREFIX}/cells/${serverId}/purge`,
-      {
-        method: "POST",
-        headers: { Cookie: cookie },
-      },
-    );
+test('POST /api/admin/v1/cells/:serverId/purge returns 403 for admin role', async () => {
+  await withRoleUser('admin', async ({ app, cookie }) => {
+    const serverId = crypto.randomUUID()
+    const res = await app.request(`${ADMIN_API_PREFIX}/cells/${serverId}/purge`, {
+      method: 'POST',
+      headers: { Cookie: cookie },
+    })
 
-    assertEquals(res.status, 403);
-  });
-});
+    assertEquals(res.status, 403)
+  })
+})
 
-test("POST /api/admin/v1/cells/:serverId/purge purges a cell for superadmin", async () => {
-  await withRoleUser("superadmin", async ({ app, cookie }) => {
-    const serverId = crypto.randomUUID();
-    const res = await app.request(
-      `${ADMIN_API_PREFIX}/cells/${serverId}/purge`,
-      {
-        method: "POST",
-        headers: { Cookie: cookie },
-      },
-    );
+test('POST /api/admin/v1/cells/:serverId/purge purges a cell for superadmin', async () => {
+  await withRoleUser('superadmin', async ({ app, cookie }) => {
+    const serverId = crypto.randomUUID()
+    const res = await app.request(`${ADMIN_API_PREFIX}/cells/${serverId}/purge`, {
+      method: 'POST',
+      headers: { Cookie: cookie },
+    })
 
-    assertEquals(res.status, 200);
-    const body = await res.json();
-    assertEquals(body, { ok: true, serverId, purged: true });
-  });
-});
+    assertEquals(res.status, 200)
+    const body = await res.json()
+    assertEquals(body, { ok: true, serverId, purged: true })
+  })
+})
 
-test("POST /api/admin/v1/cells/purge-batch returns 403 for admin role", async () => {
-  await withRoleUser("admin", async ({ app, cookie }) => {
+test('POST /api/admin/v1/cells/purge-batch returns 403 for admin role', async () => {
+  await withRoleUser('admin', async ({ app, cookie }) => {
     const res = await app.request(`${ADMIN_API_PREFIX}/cells/purge-batch`, {
-      method: "POST",
+      method: 'POST',
       headers: {
         Cookie: cookie,
-        "Content-Type": "application/json",
+        'Content-Type': 'application/json',
       },
       body: JSON.stringify({ serverIds: [crypto.randomUUID()] }),
-    });
+    })
 
-    assertEquals(res.status, 403);
-  });
-});
+    assertEquals(res.status, 403)
+  })
+})
 
-test("POST /api/admin/v1/cells/purge-batch reports per-id results for superadmin", async () => {
-  await withRoleUser("superadmin", async ({ app: _app, cookie }) => {
-    const okId = crypto.randomUUID();
-    const failId = crypto.randomUUID();
-    const failIds = new Set([failId]);
-    const { registry, purgedIds } = createTrackingRegistry(failIds);
+test('POST /api/admin/v1/cells/purge-batch reports per-id results for superadmin', async () => {
+  await withRoleUser('superadmin', async ({ app: _app, cookie }) => {
+    const okId = crypto.randomUUID()
+    const failId = crypto.randomUUID()
+    const failIds = new Set([failId])
+    const { registry, purgedIds } = createTrackingRegistry(failIds)
 
-    const secretsConfig = parseSecretsEnv(
-      `1:${TEST_ONLY_TURBOPANEL_SECRET}`,
-      "deno",
-    );
-    const secrets = await deriveSecretsConfig(secretsConfig, "session-signing");
+    const secretsConfig = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`, 'deno')
+    const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
     const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
       secretsConfig,
-      "data-encryption",
-    );
-    const batchApp = new Hono<AppEnv>();
-    batchApp.use("*", (c, next) => {
-      c.set("db", createDenoDb());
-      c.set("daemonCellRegistry", registry);
-      c.set("dataEncryptionSecrets", dataEncryptionSecrets);
-      return next();
-    });
+      'data-encryption'
+    )
+    const batchApp = new Hono<AppEnv>()
+    batchApp.use('*', (c, next) => {
+      c.set('db', createDenoDb())
+      c.set('daemonCellRegistry', registry)
+      c.set('dataEncryptionSecrets', dataEncryptionSecrets)
+      return next()
+    })
     registerAdminRoutes(batchApp, {
       secrets,
-      runtime: "deno",
+      runtime: 'deno',
       devSurface: false,
-    });
+    })
 
-    const res = await batchApp.request(
-      `${ADMIN_API_PREFIX}/cells/purge-batch`,
-      {
-        method: "POST",
-        headers: {
-          Cookie: cookie,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ serverIds: [okId, failId] }),
-      },
-    );
-
-    assertEquals(res.status, 200);
-    const body = await jsonBody<{
-      ok: boolean;
-      results: Array<{ serverId: string; ok: boolean; error?: string }>;
-    }>(res);
-    assertEquals(body.ok, true);
-    assertEquals(body.results.length, 2);
-    assertEquals(body.results[0], { serverId: okId, ok: true });
-    assertEquals(body.results[1].serverId, failId);
-    assertEquals(body.results[1].ok, false);
-    assertEquals(typeof body.results[1].error, "string");
-    assertEquals(purgedIds, [okId]);
-  });
-});
-
-test("POST /api/admin/v1/secrets/reencrypt returns 403 for admin role", async () => {
-  await withRoleUser("admin", async ({ app, cookie }) => {
-    const res = await app.request(`${ADMIN_API_PREFIX}/secrets/reencrypt`, {
-      method: "POST",
-      headers: { Cookie: cookie },
-    });
-
-    assertEquals(res.status, 403);
-  });
-});
-
-test("POST /api/admin/v1/secrets/reencrypt returns summary for superadmin", async () => {
-  await withRoleUser("superadmin", async ({ app, cookie }) => {
-    const res = await app.request(`${ADMIN_API_PREFIX}/secrets/reencrypt`, {
-      method: "POST",
+    const res = await batchApp.request(`${ADMIN_API_PREFIX}/cells/purge-batch`, {
+      method: 'POST',
       headers: {
         Cookie: cookie,
-        "content-type": "application/json",
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ serverIds: [okId, failId] }),
+    })
+
+    assertEquals(res.status, 200)
+    const body = await jsonBody<{
+      ok: boolean
+      results: Array<{ serverId: string; ok: boolean; error?: string }>
+    }>(res)
+    assertEquals(body.ok, true)
+    assertEquals(body.results.length, 2)
+    assertEquals(body.results[0], { serverId: okId, ok: true })
+    assertEquals(body.results[1].serverId, failId)
+    assertEquals(body.results[1].ok, false)
+    assertEquals(typeof body.results[1].error, 'string')
+    assertEquals(purgedIds, [okId])
+  })
+})
+
+test('POST /api/admin/v1/secrets/reencrypt returns 403 for admin role', async () => {
+  await withRoleUser('admin', async ({ app, cookie }) => {
+    const res = await app.request(`${ADMIN_API_PREFIX}/secrets/reencrypt`, {
+      method: 'POST',
+      headers: { Cookie: cookie },
+    })
+
+    assertEquals(res.status, 403)
+  })
+})
+
+test('POST /api/admin/v1/secrets/reencrypt returns summary for superadmin', async () => {
+  await withRoleUser('superadmin', async ({ app, cookie }) => {
+    const res = await app.request(`${ADMIN_API_PREFIX}/secrets/reencrypt`, {
+      method: 'POST',
+      headers: {
+        Cookie: cookie,
+        'content-type': 'application/json',
       },
       body: JSON.stringify({}),
-    });
+    })
 
-    assertEquals(res.status, 200);
+    assertEquals(res.status, 200)
     const body = await jsonBody<{
-      ok: boolean;
-      scanned: number;
-      reencrypted: number;
-      skipped: number;
-      failed: number;
-      completed: boolean;
-      cursor: string | null;
-    }>(res);
-    assertEquals(body.ok, true);
-    assertEquals(typeof body.scanned, "number");
-    assertEquals(typeof body.reencrypted, "number");
-    assertEquals(typeof body.skipped, "number");
-    assertEquals(typeof body.failed, "number");
-    assertEquals(typeof body.completed, "boolean");
-    assertEquals(body.completed, true);
-    assertEquals(body.cursor, null);
-  });
-});
+      ok: boolean
+      scanned: number
+      reencrypted: number
+      skipped: number
+      failed: number
+      completed: boolean
+      cursor: string | null
+    }>(res)
+    assertEquals(body.ok, true)
+    assertEquals(typeof body.scanned, 'number')
+    assertEquals(typeof body.reencrypted, 'number')
+    assertEquals(typeof body.skipped, 'number')
+    assertEquals(typeof body.failed, 'number')
+    assertEquals(typeof body.completed, 'boolean')
+    assertEquals(body.completed, true)
+    assertEquals(body.cursor, null)
+  })
+})
 
-test("POST /api/admin/v1/secrets/reencrypt returns 503 when encryption key is missing", async () => {
+test('POST /api/admin/v1/secrets/reencrypt returns 503 when encryption key is missing', async () => {
   await withRoleUser(
-    "superadmin",
+    'superadmin',
     async ({ app, cookie }) => {
       const res = await app.request(`${ADMIN_API_PREFIX}/secrets/reencrypt`, {
-        method: "POST",
+        method: 'POST',
         headers: { Cookie: cookie },
-      });
+      })
 
-      assertEquals(res.status, 503);
-      const body = await jsonBody<{ ok: boolean; error: string }>(res);
-      assertEquals(body.ok, false);
-      assertEquals(
-        body.error,
-        "Encryption unavailable — no encryption key configured",
-      );
+      assertEquals(res.status, 503)
+      const body = await jsonBody<{ ok: boolean; error: string }>(res)
+      assertEquals(body.ok, false)
+      assertEquals(body.error, 'Encryption unavailable — no encryption key configured')
     },
-    { withDataEncryption: false },
-  );
-});
+    { withDataEncryption: false }
+  )
+})
 
-test("POST /api/admin/v1/secrets/reencrypt rejects cross-origin browser writes", async () => {
+test('POST /api/admin/v1/secrets/reencrypt rejects cross-origin browser writes', async () => {
   await withRoleUser(
-    "superadmin",
+    'superadmin',
     async ({ app, cookie }) => {
       // HTTPS requests resolve the `__Host-` cookie name; reuse the signed token.
       const httpsCookie = cookie.replace(
         `${HTTP_SESSION_COOKIE_NAME}=`,
-        `${HTTPS_SESSION_COOKIE_NAME}=`,
-      );
+        `${HTTPS_SESSION_COOKIE_NAME}=`
+      )
       const res = await app.request(
-        new Request(
-          `https://panel.example.com${ADMIN_API_PREFIX}/secrets/reencrypt`,
-          {
-            method: "POST",
-            headers: {
-              Cookie: httpsCookie,
-              Origin: "https://docs.example.com",
-              "content-type": "application/json",
-            },
-            body: "{}",
+        new Request(`https://panel.example.com${ADMIN_API_PREFIX}/secrets/reencrypt`, {
+          method: 'POST',
+          headers: {
+            Cookie: httpsCookie,
+            Origin: 'https://docs.example.com',
+            'content-type': 'application/json',
           },
-        ),
-      );
+          body: '{}',
+        })
+      )
 
-      assertEquals(res.status, 403);
-      const body = await jsonBody<{ ok: boolean; error: string }>(res);
-      assertEquals(body.ok, false);
-      assertEquals(body.error, "Forbidden");
+      assertEquals(res.status, 403)
+      const body = await jsonBody<{ ok: boolean; error: string }>(res)
+      assertEquals(body.ok, false)
+      assertEquals(body.error, 'Forbidden')
     },
-    { withBrowserWriteProtection: true },
-  );
-});
+    { withBrowserWriteProtection: true }
+  )
+})
 
-test("POST /api/admin/v1/secrets/reencrypt allows same-origin browser writes", async () => {
+test('POST /api/admin/v1/secrets/reencrypt allows same-origin browser writes', async () => {
   await withRoleUser(
-    "superadmin",
+    'superadmin',
     async ({ app, cookie }) => {
       const httpsCookie = cookie.replace(
         `${HTTP_SESSION_COOKIE_NAME}=`,
-        `${HTTPS_SESSION_COOKIE_NAME}=`,
-      );
+        `${HTTPS_SESSION_COOKIE_NAME}=`
+      )
       const res = await app.request(
-        new Request(
-          `https://panel.example.com${ADMIN_API_PREFIX}/secrets/reencrypt`,
-          {
-            method: "POST",
-            headers: {
-              Cookie: httpsCookie,
-              Origin: "https://panel.example.com",
-              "content-type": "application/json",
-            },
-            body: "{}",
+        new Request(`https://panel.example.com${ADMIN_API_PREFIX}/secrets/reencrypt`, {
+          method: 'POST',
+          headers: {
+            Cookie: httpsCookie,
+            Origin: 'https://panel.example.com',
+            'content-type': 'application/json',
           },
-        ),
-      );
+          body: '{}',
+        })
+      )
 
-      assertEquals(res.status, 200);
-      const body = await jsonBody<{ ok: boolean; completed: boolean }>(res);
-      assertEquals(body.ok, true);
-      assertEquals(body.completed, true);
+      assertEquals(res.status, 200)
+      const body = await jsonBody<{ ok: boolean; completed: boolean }>(res)
+      assertEquals(body.ok, true)
+      assertEquals(body.completed, true)
     },
-    { withBrowserWriteProtection: true },
-  );
-});
+    { withBrowserWriteProtection: true }
+  )
+})
 
-test("POST /api/admin/v1/secrets/reencrypt validates request bodies", async () => {
-  await withRoleUser("superadmin", async ({ app, cookie }) => {
+test('POST /api/admin/v1/secrets/reencrypt validates request bodies', async () => {
+  await withRoleUser('superadmin', async ({ app, cookie }) => {
     const badBody = await app.request(`${ADMIN_API_PREFIX}/secrets/reencrypt`, {
-      method: "POST",
+      method: 'POST',
       headers: {
         Cookie: cookie,
-        "content-type": "application/json",
+        'content-type': 'application/json',
       },
       body: JSON.stringify([]),
-    });
-    assertEquals(badBody.status, 400);
+    })
+    assertEquals(badBody.status, 400)
 
-    const badLimit = await app.request(
-      `${ADMIN_API_PREFIX}/secrets/reencrypt`,
-      {
-        method: "POST",
-        headers: {
-          Cookie: cookie,
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({ limit: 0 }),
+    const badLimit = await app.request(`${ADMIN_API_PREFIX}/secrets/reencrypt`, {
+      method: 'POST',
+      headers: {
+        Cookie: cookie,
+        'content-type': 'application/json',
       },
-    );
-    assertEquals(badLimit.status, 400);
+      body: JSON.stringify({ limit: 0 }),
+    })
+    assertEquals(badLimit.status, 400)
 
-    const badCursor = await app.request(
-      `${ADMIN_API_PREFIX}/secrets/reencrypt`,
-      {
-        method: "POST",
-        headers: {
-          Cookie: cookie,
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({ cursor: { stage: "not-a-stage" } }),
+    const badCursor = await app.request(`${ADMIN_API_PREFIX}/secrets/reencrypt`, {
+      method: 'POST',
+      headers: {
+        Cookie: cookie,
+        'content-type': 'application/json',
       },
-    );
-    assertEquals(badCursor.status, 400);
-  });
-});
+      body: JSON.stringify({ cursor: { stage: 'not-a-stage' } }),
+    })
+    assertEquals(badCursor.status, 400)
+  })
+})
 
-test("POST /api/admin/v1/secrets/reencrypt returns 409 when a sweep is already running", async () => {
-  await withRoleUser("superadmin", async ({ app, cookie }) => {
-    const lockDb = createDenoDb();
-    await resetReencryptSweepLockForTests(lockDb);
-    const held = await tryBeginReencryptSweep(lockDb);
-    assertEquals(held !== null, true);
+test('POST /api/admin/v1/secrets/reencrypt returns 409 when a sweep is already running', async () => {
+  await withRoleUser('superadmin', async ({ app, cookie }) => {
+    const lockDb = createDenoDb()
+    await resetReencryptSweepLockForTests(lockDb)
+    const held = await tryBeginReencryptSweep(lockDb)
+    assertEquals(held !== null, true)
     try {
       const res = await app.request(`${ADMIN_API_PREFIX}/secrets/reencrypt`, {
-        method: "POST",
+        method: 'POST',
         headers: {
           Cookie: cookie,
-          "content-type": "application/json",
+          'content-type': 'application/json',
         },
         body: JSON.stringify({}),
-      });
-      assertEquals(res.status, 409);
-      const body = await jsonBody<{ error: string }>(res);
-      assertEquals(body.error, "reencrypt_in_progress");
+      })
+      assertEquals(res.status, 409)
+      const body = await jsonBody<{ error: string }>(res)
+      assertEquals(body.error, 'reencrypt_in_progress')
     } finally {
-      if (held) await endReencryptSweep(lockDb, held);
+      if (held) await endReencryptSweep(lockDb, held)
     }
-  });
-});
+  })
+})
 
-test("GET and PUT /api/admin/v1/settings/signup round-trip panel toggle", async () => {
-  await withRoleUser("superadmin", async ({ app, cookie }) => {
-    const db = createDenoDb();
-    const signupKey = "IS_SIGNUP_ENABLED";
+test('POST /api/admin/v1/instance/updates/runs answers 409 upgrade_run_active while an update is running', async () => {
+  // canary update #2 (2026-10-01): a second Update press during a run got 409
+  // with only a sentence as `error`; clients branch on the code.
+  await withRoleUser('superadmin', async ({ app, cookie }) => {
+    const db = createDenoDb()
+    const [active] = await db
+      .insert(upgrade)
+      .values({ source: 'manual', channel: 'canary', status: 'running' })
+      .returning({ id: upgrade.id })
+    try {
+      const res = await app.request(`${ADMIN_API_PREFIX}/instance/updates/runs`, {
+        method: 'POST',
+        headers: { Cookie: cookie, 'content-type': 'application/json' },
+        body: JSON.stringify({}),
+      })
+      assertEquals(res.status, 409)
+      const body = await jsonBody<{
+        ok: boolean
+        error: string
+        activeRunId?: string
+        blockers?: string[]
+      }>(res)
+      assertEquals(body.ok, false)
+      assertEquals(body.error, 'upgrade_run_active')
+      assertEquals(body.activeRunId, active!.id)
+      assertEquals(body.blockers, ['Another update is already in progress.'])
+    } finally {
+      await db.delete(upgrade).where(eq(upgrade.id, active!.id))
+    }
+  })
+})
+
+test('GET and PUT /api/admin/v1/settings/signup round-trip panel toggle', async () => {
+  await withRoleUser('superadmin', async ({ app, cookie }) => {
+    const db = createDenoDb()
+    const signupKey = 'IS_SIGNUP_ENABLED'
     const previous = await db
       .select({ value: setting.value })
       .from(setting)
       .where(eq(setting.key, signupKey))
-      .limit(1);
+      .limit(1)
 
     try {
-      await db.delete(setting).where(eq(setting.key, signupKey));
+      await db.delete(setting).where(eq(setting.key, signupKey))
 
       const initial = await app.request(`${ADMIN_API_PREFIX}/settings/signup`, {
         headers: { Cookie: cookie },
-      });
-      assertEquals(initial.status, 200);
-      const initialBody = await jsonBody<
-        { enabled: boolean; isEnvForced: boolean }
-      >(
-        initial,
-      );
-      assertEquals(initialBody.enabled, false);
-      assertEquals(initialBody.isEnvForced, false);
+      })
+      assertEquals(initial.status, 200)
+      const initialBody = await jsonBody<{ enabled: boolean; isEnvForced: boolean }>(initial)
+      assertEquals(initialBody.enabled, false)
+      assertEquals(initialBody.isEnvForced, false)
 
       const enable = await app.request(`${ADMIN_API_PREFIX}/settings/signup`, {
-        method: "PUT",
+        method: 'PUT',
         headers: {
           Cookie: cookie,
-          "content-type": "application/json",
+          'content-type': 'application/json',
         },
         body: JSON.stringify({ enabled: true }),
-      });
-      assertEquals(enable.status, 200);
-      const enabledBody = await jsonBody<{ enabled: boolean; dbValue: string }>(
-        enable,
-      );
-      assertEquals(enabledBody.enabled, true);
-      assertEquals(enabledBody.dbValue, "1");
+      })
+      assertEquals(enable.status, 200)
+      const enabledBody = await jsonBody<{ enabled: boolean; dbValue: string }>(enable)
+      assertEquals(enabledBody.enabled, true)
+      assertEquals(enabledBody.dbValue, '1')
 
       const disable = await app.request(`${ADMIN_API_PREFIX}/settings/signup`, {
-        method: "PUT",
+        method: 'PUT',
         headers: {
           Cookie: cookie,
-          "content-type": "application/json",
+          'content-type': 'application/json',
         },
         body: JSON.stringify({ enabled: false }),
-      });
-      assertEquals(disable.status, 200);
-      const disabledBody = await jsonBody<
-        { enabled: boolean; dbValue: string }
-      >(
-        disable,
-      );
-      assertEquals(disabledBody.enabled, false);
-      assertEquals(disabledBody.dbValue, "0");
+      })
+      assertEquals(disable.status, 200)
+      const disabledBody = await jsonBody<{ enabled: boolean; dbValue: string }>(disable)
+      assertEquals(disabledBody.enabled, false)
+      assertEquals(disabledBody.dbValue, '0')
     } finally {
-      await db.delete(setting).where(eq(setting.key, signupKey));
+      await db.delete(setting).where(eq(setting.key, signupKey))
       if (previous.length > 0) {
         await db.insert(setting).values({
           key: signupKey,
           value: previous[0]!.value,
-        });
+        })
       }
     }
-  });
-});
+  })
+})
 
-test("PUT /api/admin/v1/settings/signup returns 409 when env force override is set", async () => {
+test('PUT /api/admin/v1/settings/signup returns 409 when env force override is set', async () => {
   await withRoleUser(
-    "superadmin",
+    'superadmin',
     async ({ app, cookie }) => {
       const res = await app.request(`${ADMIN_API_PREFIX}/settings/signup`, {
-        method: "PUT",
+        method: 'PUT',
         headers: {
           Cookie: cookie,
-          "content-type": "application/json",
+          'content-type': 'application/json',
         },
         body: JSON.stringify({ enabled: false }),
-      });
-      assertEquals(res.status, 409);
-      const body = await jsonBody<{ isEnvForced: boolean; enabled: boolean }>(
-        res,
-      );
-      assertEquals(body.isEnvForced, true);
-      assertEquals(body.enabled, true);
+      })
+      assertEquals(res.status, 409)
+      const body = await jsonBody<{ isEnvForced: boolean; enabled: boolean }>(res)
+      assertEquals(body.isEnvForced, true)
+      assertEquals(body.enabled, true)
     },
     {
-      getEnv: () => ({ TURBOPANEL_IS_SIGNUP_ENABLED: "1" }),
-    },
-  );
-});
+      getEnv: () => ({ TURBOPANEL_IS_SIGNUP_ENABLED: '1' }),
+    }
+  )
+})
 
-test("GET and PUT /api/admin/v1/instance/public-urls validate and persist origins", async () => {
-  await withRoleUser("superadmin", async ({ app, cookie }) => {
-    const db = createDenoDb();
-    const publicUrlsKey = "TURBOPANEL_PUBLIC_URLS";
+test('GET and PUT /api/admin/v1/instance/public-urls validate and persist origins', async () => {
+  await withRoleUser('superadmin', async ({ app, cookie }) => {
+    const db = createDenoDb()
+    const publicUrlsKey = 'TURBOPANEL_PUBLIC_URLS'
     const previous = await db
       .select({ value: setting.value })
       .from(setting)
       .where(eq(setting.key, publicUrlsKey))
-      .limit(1);
-    const previousHosts = await db.select().from(instanceHostname);
+      .limit(1)
+    const previousHosts = await db.select().from(instanceHostname)
 
     try {
-      await db.delete(instanceHostname).where(isNotNull(instanceHostname.id));
-      await db.delete(setting).where(eq(setting.key, publicUrlsKey));
+      await db.delete(instanceHostname).where(isNotNull(instanceHostname.id))
+      await db.delete(setting).where(eq(setting.key, publicUrlsKey))
 
-      const empty = await app.request(
-        `${ADMIN_API_PREFIX}/instance/public-urls`,
-        {
-          headers: { Cookie: cookie },
-        },
-      );
-      assertEquals(empty.status, 200);
-      assertEquals(await empty.json(), { ok: true, urls: [] });
+      const empty = await app.request(`${ADMIN_API_PREFIX}/instance/public-urls`, {
+        headers: { Cookie: cookie },
+      })
+      assertEquals(empty.status, 200)
+      assertEquals(await empty.json(), { ok: true, urls: [] })
 
-      const invalid = await app.request(
-        `${ADMIN_API_PREFIX}/instance/public-urls`,
-        {
-          method: "PUT",
-          headers: {
-            Cookie: cookie,
-            "content-type": "application/json",
-          },
-          body: JSON.stringify({ urls: ["localhost"] }),
+      const invalid = await app.request(`${ADMIN_API_PREFIX}/instance/public-urls`, {
+        method: 'PUT',
+        headers: {
+          Cookie: cookie,
+          'content-type': 'application/json',
         },
-      );
-      assertEquals(invalid.status, 422);
+        body: JSON.stringify({ urls: ['localhost'] }),
+      })
+      assertEquals(invalid.status, 422)
 
-      const save = await app.request(
-        `${ADMIN_API_PREFIX}/instance/public-urls`,
-        {
-          method: "PUT",
-          headers: {
-            Cookie: cookie,
-            "content-type": "application/json",
-          },
-          body: JSON.stringify({ urls: ["https://panel.example.com"] }),
+      const save = await app.request(`${ADMIN_API_PREFIX}/instance/public-urls`, {
+        method: 'PUT',
+        headers: {
+          Cookie: cookie,
+          'content-type': 'application/json',
         },
-      );
-      assertEquals(save.status, 200);
-      const savedBody = await save.json();
+        body: JSON.stringify({ urls: ['https://panel.example.com'] }),
+      })
+      assertEquals(save.status, 200)
+      const savedBody = await save.json()
       assertEquals(savedBody, {
         ok: true,
-        urls: ["https://panel.example.com:8443"],
+        urls: ['https://panel.example.com:8443'],
         applied: false,
-      });
+      })
 
-      const reload = await app.request(
-        `${ADMIN_API_PREFIX}/instance/public-urls`,
-        {
-          headers: { Cookie: cookie },
-        },
-      );
-      assertEquals(reload.status, 200);
+      const reload = await app.request(`${ADMIN_API_PREFIX}/instance/public-urls`, {
+        headers: { Cookie: cookie },
+      })
+      assertEquals(reload.status, 200)
       assertEquals(await reload.json(), {
         ok: true,
-        urls: ["https://panel.example.com:8443"],
-      });
+        urls: ['https://panel.example.com:8443'],
+      })
 
-      const savedNames = await app.request(
-        `${ADMIN_API_PREFIX}/instance/hostnames`,
-        {
-          method: "PUT",
-          headers: {
-            Cookie: cookie,
-            "content-type": "application/json",
-          },
-          body: JSON.stringify({
-            hostnames: [{
-              host: "https://names.example.com",
-              source: "platform-ca",
-            }],
-          }),
+      const savedNames = await app.request(`${ADMIN_API_PREFIX}/instance/hostnames`, {
+        method: 'PUT',
+        headers: {
+          Cookie: cookie,
+          'content-type': 'application/json',
         },
-      );
-      assertEquals(savedNames.status, 200);
-      const listedNames = await app.request(
-        `${ADMIN_API_PREFIX}/instance/hostnames`,
-        { headers: { Cookie: cookie } },
-      );
-      assertEquals(listedNames.status, 200);
-      const listedBody = await listedNames.json() as {
-        hostnames: { host: string; source: string; status: string }[];
-      };
-      assertEquals(
-        listedBody.hostnames[0]?.host,
-        "https://names.example.com:8443",
-      );
-      assertEquals(listedBody.hostnames[0]?.source, "platform-ca");
-      assertEquals(listedBody.hostnames[0]?.status, "ready");
+        body: JSON.stringify({
+          hostnames: [
+            {
+              host: 'https://names.example.com',
+              source: 'platform-ca',
+            },
+          ],
+        }),
+      })
+      assertEquals(savedNames.status, 200)
+      const listedNames = await app.request(`${ADMIN_API_PREFIX}/instance/hostnames`, {
+        headers: { Cookie: cookie },
+      })
+      assertEquals(listedNames.status, 200)
+      const listedBody = (await listedNames.json()) as {
+        hostnames: { host: string; source: string; status: string }[]
+      }
+      assertEquals(listedBody.hostnames[0]?.host, 'https://names.example.com:8443')
+      assertEquals(listedBody.hostnames[0]?.source, 'platform-ca')
+      assertEquals(listedBody.hostnames[0]?.status, 'ready')
 
-      const rejectedAcme = await app.request(
-        `${ADMIN_API_PREFIX}/instance/hostnames`,
-        {
-          method: "PUT",
-          headers: {
-            Cookie: cookie,
-            "content-type": "application/json",
-          },
-          body: JSON.stringify({
-            hostnames: [{ host: "10.1.2.3", source: "lets-encrypt" }],
-          }),
+      const rejectedAcme = await app.request(`${ADMIN_API_PREFIX}/instance/hostnames`, {
+        method: 'PUT',
+        headers: {
+          Cookie: cookie,
+          'content-type': 'application/json',
         },
-      );
-      assertEquals(rejectedAcme.status, 422);
+        body: JSON.stringify({
+          hostnames: [{ host: '10.1.2.3', source: 'lets-encrypt' }],
+        }),
+      })
+      assertEquals(rejectedAcme.status, 422)
     } finally {
-      await db.delete(instanceHostname).where(isNotNull(instanceHostname.id));
-      await db.delete(setting).where(eq(setting.key, publicUrlsKey));
+      await db.delete(instanceHostname).where(isNotNull(instanceHostname.id))
+      await db.delete(setting).where(eq(setting.key, publicUrlsKey))
       if (previousHosts.length > 0) {
-        await db.insert(instanceHostname).values(previousHosts);
+        await db.insert(instanceHostname).values(previousHosts)
       }
       if (previous.length > 0) {
         await db.insert(setting).values({
           key: publicUrlsKey,
           value: previous[0]!.value,
-        });
+        })
       }
     }
-  });
-});
+  })
+})
 
-test("GET and PUT /api/admin/v1/settings/email round-trip non-secret settings", async () => {
-  await withRoleUser("admin", async ({ app, cookie }) => {
+test('GET and PUT /api/admin/v1/settings/email round-trip non-secret settings', async () => {
+  await withRoleUser('admin', async ({ app, cookie }) => {
     const get = await app.request(`${ADMIN_API_PREFIX}/settings/email`, {
       headers: { Cookie: cookie },
-    });
-    assertEquals(get.status, 200);
-    const before = await jsonBody<{ settings: unknown }>(get);
-    assertEquals(typeof before.settings, "object");
+    })
+    assertEquals(get.status, 200)
+    const before = await jsonBody<{ settings: unknown }>(get)
+    assertEquals(typeof before.settings, 'object')
 
     const put = await app.request(`${ADMIN_API_PREFIX}/settings/email`, {
-      method: "PUT",
+      method: 'PUT',
       headers: {
         Cookie: cookie,
-        "content-type": "application/json",
+        'content-type': 'application/json',
       },
-      body: JSON.stringify({ FROM: "coverage-admin@example.com" }),
-    });
-    assertEquals(put.status, 200);
-    const after = await jsonBody<{ settings: unknown }>(put);
-    assertEquals(typeof after.settings, "object");
-  });
-});
+      body: JSON.stringify({ FROM: 'coverage-admin@example.com' }),
+    })
+    assertEquals(put.status, 200)
+    const after = await jsonBody<{ settings: unknown }>(put)
+    assertEquals(typeof after.settings, 'object')
+  })
+})
 
-test("daemon fleet diagnostics and address request success paths", async () => {
+test('daemon fleet diagnostics and address request success paths', async () => {
   if (!dbUrl) {
-    console.warn("Skipping admin route tests: TURBOPANEL_DATABASE_URL not set");
-    return;
+    console.warn('Skipping admin route tests: TURBOPANEL_DATABASE_URL not set')
+    return
   }
 
-  const db = createDenoDb();
-  await resetReencryptSweepLockForTests(db);
-  const email = `admin-fleet-${crypto.randomUUID()}@example.com`;
+  const db = createDenoDb()
+  await resetReencryptSweepLockForTests(db)
+  const email = `admin-fleet-${crypto.randomUUID()}@example.com`
   const [insertedUser] = await db
     .insert(user)
-    .values({ email, isEmailVerified: true, role: "superadmin" })
-    .returning({ id: user.id });
-  const userId = insertedUser!.id;
+    .values({ email, isEmailVerified: true, role: 'superadmin' })
+    .returning({ id: user.id })
+  const userId = insertedUser!.id
 
   const [insertedServer] = await db
     .insert(server)
@@ -865,118 +832,101 @@ test("daemon fleet diagnostics and address request success paths", async () => {
       daemon: {
         key: {
           id: crypto.randomUUID(),
-          algorithm: "Ed25519",
+          algorithm: 'Ed25519',
           publicJwk: {
-            kty: "OKP",
-            crv: "Ed25519",
-            x: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            kty: 'OKP',
+            crv: 'Ed25519',
+            x: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
           },
-          fingerprint: "fp",
+          fingerprint: 'fp',
           createdAt: new Date().toISOString(),
         },
         projection: {
-          remoteAddress: "__direct__",
+          remoteAddress: '__direct__',
           connected: true,
         },
       },
     })
-    .returning({ id: server.id });
-  const serverId = insertedServer!.id;
+    .returning({ id: server.id })
+  const serverId = insertedServer!.id
 
   const { registry } = createTrackingRegistry(new Set(), {
     onlineIds: [serverId],
     connectedSnapshots: true,
-  });
-  const { app, secrets } = await createAdminTestApp(registry);
-  const cookie = await adminSessionCookie(db, secrets, userId);
+  })
+  const { app, secrets } = await createAdminTestApp(registry)
+  const cookie = await adminSessionCookie(db, secrets, userId)
 
   try {
-    const connections = await app.request(
-      `${ADMIN_API_PREFIX}/daemon/connections`,
-      {
-        headers: { Cookie: cookie },
-      },
-    );
-    assertEquals(connections.status, 200);
-    const connectionsBody = await jsonBody<{ connections: unknown[] }>(
-      connections,
-    );
-    assertEquals(Array.isArray(connectionsBody.connections), true);
+    const connections = await app.request(`${ADMIN_API_PREFIX}/daemon/connections`, {
+      headers: { Cookie: cookie },
+    })
+    assertEquals(connections.status, 200)
+    const connectionsBody = await jsonBody<{ connections: unknown[] }>(connections)
+    assertEquals(Array.isArray(connectionsBody.connections), true)
 
-    const send = await app.request(
-      `${ADMIN_API_PREFIX}/daemon/${serverId}/send`,
-      {
-        method: "POST",
-        headers: {
-          Cookie: cookie,
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({ payload: { echo: true } }),
+    const send = await app.request(`${ADMIN_API_PREFIX}/daemon/${serverId}/send`, {
+      method: 'POST',
+      headers: {
+        Cookie: cookie,
+        'content-type': 'application/json',
       },
-    );
-    assertEquals(send.status, 200);
-    assertEquals(await send.json(), { ok: true, id: serverId });
+      body: JSON.stringify({ payload: { echo: true } }),
+    })
+    assertEquals(send.status, 200)
+    assertEquals(await send.json(), { ok: true, id: serverId })
 
     const commands = await app.request(`${ADMIN_API_PREFIX}/daemon/commands`, {
       headers: { Cookie: cookie },
-    });
-    assertEquals(commands.status, 200);
+    })
+    assertEquals(commands.status, 200)
 
-    const fleetAddresses = await app.request(
-      `${ADMIN_API_PREFIX}/daemon/addresses`,
-      {
-        headers: { Cookie: cookie },
+    const fleetAddresses = await app.request(`${ADMIN_API_PREFIX}/daemon/addresses`, {
+      headers: { Cookie: cookie },
+    })
+    assertEquals(fleetAddresses.status, 200)
+    const fleetBody = await jsonBody<{ servers: unknown[] }>(fleetAddresses)
+    assertEquals(Array.isArray(fleetBody.servers), true)
+    assertEquals(fleetBody.servers.length >= 1, true)
+
+    const oneAddresses = await app.request(`${ADMIN_API_PREFIX}/daemon/${serverId}/addresses`, {
+      headers: { Cookie: cookie },
+    })
+    assertEquals(oneAddresses.status, 200)
+    const oneBody = await jsonBody<{ ok: boolean; daemonId: string }>(oneAddresses)
+    assertEquals(oneBody.ok, true)
+    assertEquals(oneBody.daemonId, serverId)
+
+    const applyOk = await app.request(`${ADMIN_API_PREFIX}/instance/public-urls/apply`, {
+      method: 'POST',
+      headers: {
+        Cookie: cookie,
+        'content-type': 'application/json',
       },
-    );
-    assertEquals(fleetAddresses.status, 200);
-    const fleetBody = await jsonBody<{ servers: unknown[] }>(fleetAddresses);
-    assertEquals(Array.isArray(fleetBody.servers), true);
-    assertEquals(fleetBody.servers.length >= 1, true);
-
-    const oneAddresses = await app.request(
-      `${ADMIN_API_PREFIX}/daemon/${serverId}/addresses`,
-      { headers: { Cookie: cookie } },
-    );
-    assertEquals(oneAddresses.status, 200);
-    const oneBody = await jsonBody<{ ok: boolean; daemonId: string }>(
-      oneAddresses,
-    );
-    assertEquals(oneBody.ok, true);
-    assertEquals(oneBody.daemonId, serverId);
-
-    const applyOk = await app.request(
-      `${ADMIN_API_PREFIX}/instance/public-urls/apply`,
-      {
-        method: "POST",
-        headers: {
-          Cookie: cookie,
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({ urls: ["https://apply.example.com"] }),
-      },
-    );
-    assertEquals(applyOk.status, 200);
-    assertEquals(await applyOk.json(), { ok: true, applied: true });
+      body: JSON.stringify({ urls: ['https://apply.example.com'] }),
+    })
+    assertEquals(applyOk.status, 200)
+    assertEquals(await applyOk.json(), { ok: true, applied: true })
   } finally {
-    await db.delete(server).where(eq(server.id, serverId));
-    await db.delete(user).where(eq(user.id, userId));
-    await resetReencryptSweepLockForTests(db);
+    await db.delete(server).where(eq(server.id, serverId))
+    await db.delete(user).where(eq(user.id, userId))
+    await resetReencryptSweepLockForTests(db)
   }
-});
+})
 
-test("daemon address request failed/expired/error branches", async () => {
+test('daemon address request failed/expired/error branches', async () => {
   if (!dbUrl) {
-    console.warn("Skipping admin route tests: TURBOPANEL_DATABASE_URL not set");
-    return;
+    console.warn('Skipping admin route tests: TURBOPANEL_DATABASE_URL not set')
+    return
   }
 
-  const db = createDenoDb();
-  const email = `admin-addr-fail-${crypto.randomUUID()}@example.com`;
+  const db = createDenoDb()
+  const email = `admin-addr-fail-${crypto.randomUUID()}@example.com`
   const [insertedUser] = await db
     .insert(user)
-    .values({ email, isEmailVerified: true, role: "admin" })
-    .returning({ id: user.id });
-  const userId = insertedUser!.id;
+    .values({ email, isEmailVerified: true, role: 'admin' })
+    .returning({ id: user.id })
+  const userId = insertedUser!.id
 
   const [insertedServer] = await db
     .insert(server)
@@ -987,20 +937,20 @@ test("daemon address request failed/expired/error branches", async () => {
       daemon: {
         key: {
           id: crypto.randomUUID(),
-          algorithm: "Ed25519",
+          algorithm: 'Ed25519',
           publicJwk: {
-            kty: "OKP",
-            crv: "Ed25519",
-            x: "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+            kty: 'OKP',
+            crv: 'Ed25519',
+            x: 'BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB',
           },
-          fingerprint: "fp2",
+          fingerprint: 'fp2',
           createdAt: new Date().toISOString(),
         },
-        projection: { remoteAddress: "__direct__" },
+        projection: { remoteAddress: '__direct__' },
       },
     })
-    .returning({ id: server.id });
-  const serverId = insertedServer!.id;
+    .returning({ id: server.id })
+  const serverId = insertedServer!.id
 
   try {
     const failedRegistry = createTrackingRegistry(new Set(), {
@@ -1010,36 +960,26 @@ test("daemon address request failed/expired/error branches", async () => {
           serverId,
           requestId: outbound.requestId,
           requestKind: outbound.kind,
-          status: "failed" as const,
+          status: 'failed' as const,
           createdAt: outbound.at,
           expiresAt: outbound.at,
         }),
-    }).registry;
-    const failedApp = await createAdminTestApp(failedRegistry);
-    const cookie = await adminSessionCookie(db, failedApp.secrets, userId);
+    }).registry
+    const failedApp = await createAdminTestApp(failedRegistry)
+    const cookie = await adminSessionCookie(db, failedApp.secrets, userId)
 
-    const failedFleet = await failedApp.app.request(
-      `${ADMIN_API_PREFIX}/daemon/addresses`,
-      {
-        headers: { Cookie: cookie },
-      },
-    );
-    assertEquals(failedFleet.status, 200);
-    const failedFleetBody = await jsonBody<
-      { servers: Array<{ error?: string }> }
-    >(
-      failedFleet,
-    );
-    assertEquals(
-      failedFleetBody.servers[0]?.error,
-      "failed to fetch addresses",
-    );
+    const failedFleet = await failedApp.app.request(`${ADMIN_API_PREFIX}/daemon/addresses`, {
+      headers: { Cookie: cookie },
+    })
+    assertEquals(failedFleet.status, 200)
+    const failedFleetBody = await jsonBody<{ servers: Array<{ error?: string }> }>(failedFleet)
+    assertEquals(failedFleetBody.servers[0]?.error, 'failed to fetch addresses')
 
     const failedOne = await failedApp.app.request(
       `${ADMIN_API_PREFIX}/daemon/${serverId}/addresses`,
-      { headers: { Cookie: cookie } },
-    );
-    assertEquals(failedOne.status, 500);
+      { headers: { Cookie: cookie } }
+    )
+    assertEquals(failedOne.status, 500)
 
     const expiredRegistry = createTrackingRegistry(new Set(), {
       onlineIds: [serverId],
@@ -1048,102 +988,77 @@ test("daemon address request failed/expired/error branches", async () => {
           serverId,
           requestId: outbound.requestId,
           requestKind: outbound.kind,
-          status: "expired" as const,
+          status: 'expired' as const,
           createdAt: outbound.at,
           expiresAt: outbound.at,
         }),
-    }).registry;
-    const expiredApp = await createAdminTestApp(expiredRegistry);
-    const expiredCookie = await adminSessionCookie(
-      db,
-      expiredApp.secrets,
-      userId,
-    );
+    }).registry
+    const expiredApp = await createAdminTestApp(expiredRegistry)
+    const expiredCookie = await adminSessionCookie(db, expiredApp.secrets, userId)
 
-    const expiredFleet = await expiredApp.app.request(
-      `${ADMIN_API_PREFIX}/daemon/addresses`,
-      {
-        headers: { Cookie: expiredCookie },
-      },
-    );
-    assertEquals(expiredFleet.status, 200);
-    const expiredFleetBody = await jsonBody<
-      { servers: Array<{ error?: string }> }
-    >(
-      expiredFleet,
-    );
-    assertEquals(
-      expiredFleetBody.servers[0]?.error,
-      "timeout waiting for addresses",
-    );
+    const expiredFleet = await expiredApp.app.request(`${ADMIN_API_PREFIX}/daemon/addresses`, {
+      headers: { Cookie: expiredCookie },
+    })
+    assertEquals(expiredFleet.status, 200)
+    const expiredFleetBody = await jsonBody<{ servers: Array<{ error?: string }> }>(expiredFleet)
+    assertEquals(expiredFleetBody.servers[0]?.error, 'timeout waiting for addresses')
 
     const expiredOne = await expiredApp.app.request(
       `${ADMIN_API_PREFIX}/daemon/${serverId}/addresses`,
-      { headers: { Cookie: expiredCookie } },
-    );
-    assertEquals(expiredOne.status, 500);
+      { headers: { Cookie: expiredCookie } }
+    )
+    assertEquals(expiredOne.status, 500)
 
     const throwRegistry = createTrackingRegistry(new Set(), {
       onlineIds: [serverId],
-      waitOverride: () => Promise.reject(new Error("daemon not connected")),
-    }).registry;
-    const throwApp = await createAdminTestApp(throwRegistry);
-    const throwCookie = await adminSessionCookie(db, throwApp.secrets, userId);
+      waitOverride: () => Promise.reject(new Error('daemon not connected')),
+    }).registry
+    const throwApp = await createAdminTestApp(throwRegistry)
+    const throwCookie = await adminSessionCookie(db, throwApp.secrets, userId)
 
-    const throwFleet = await throwApp.app.request(
-      `${ADMIN_API_PREFIX}/daemon/addresses`,
-      {
-        headers: { Cookie: throwCookie },
-      },
-    );
-    assertEquals(throwFleet.status, 200);
-    const throwFleetBody = await jsonBody<
-      { servers: Array<{ error?: string }> }
-    >(
-      throwFleet,
-    );
-    assertEquals(throwFleetBody.servers[0]?.error, "daemon not connected");
+    const throwFleet = await throwApp.app.request(`${ADMIN_API_PREFIX}/daemon/addresses`, {
+      headers: { Cookie: throwCookie },
+    })
+    assertEquals(throwFleet.status, 200)
+    const throwFleetBody = await jsonBody<{ servers: Array<{ error?: string }> }>(throwFleet)
+    assertEquals(throwFleetBody.servers[0]?.error, 'daemon not connected')
 
     const throwOne = await throwApp.app.request(
       `${ADMIN_API_PREFIX}/daemon/${serverId}/addresses`,
-      { headers: { Cookie: throwCookie } },
-    );
-    assertEquals(throwOne.status, 404);
+      { headers: { Cookie: throwCookie } }
+    )
+    assertEquals(throwOne.status, 404)
 
     const throw500Registry = createTrackingRegistry(new Set(), {
       onlineIds: [serverId],
-      waitOverride: () => Promise.reject("raw-fail"),
-    }).registry;
-    const throw500App = await createAdminTestApp(throw500Registry);
-    const throw500Cookie = await adminSessionCookie(
-      db,
-      throw500App.secrets,
-      userId,
-    );
+      waitOverride: () => Promise.reject('raw-fail'),
+    }).registry
+    const throw500App = await createAdminTestApp(throw500Registry)
+    const throw500Cookie = await adminSessionCookie(db, throw500App.secrets, userId)
     const throw500One = await throw500App.app.request(
       `${ADMIN_API_PREFIX}/daemon/${serverId}/addresses`,
-      { headers: { Cookie: throw500Cookie } },
-    );
-    assertEquals(throw500One.status, 500);
+      { headers: { Cookie: throw500Cookie } }
+    )
+    assertEquals(throw500One.status, 500)
   } finally {
-    await db.delete(server).where(eq(server.id, serverId));
-    await db.delete(user).where(eq(user.id, userId));
+    await db.delete(server).where(eq(server.id, serverId))
+    await db.delete(user).where(eq(user.id, userId))
   }
-});
+})
 
-test("POST /instance/public-urls/apply returns 503 when colocated snapshot is disconnected", async () => {
+test('POST /instance/public-urls/apply returns 503 when colocated snapshot is disconnected', async () => {
   if (!dbUrl) {
-    console.warn("Skipping admin route tests: TURBOPANEL_DATABASE_URL not set");
-    return;
+    console.warn('Skipping admin route tests: TURBOPANEL_DATABASE_URL not set')
+    return
   }
 
-  const db = createDenoDb();
-  const email = `admin-apply-disc-${crypto.randomUUID()}@example.com`;
+  const db = createDenoDb()
+  const email = `admin-apply-disc-${crypto.randomUUID()}@example.com`
   const [insertedUser] = await db
     .insert(user)
-    .values({ email, isEmailVerified: true, role: "superadmin" })
-    .returning({ id: user.id });
-  const userId = insertedUser!.id;
+    .values({ email, isEmailVerified: true, role: 'superadmin' })
+    .returning({ id: user.id })
+  const userId = insertedUser!.id
 
   const [insertedServer] = await db
     .insert(server)
@@ -1154,184 +1069,158 @@ test("POST /instance/public-urls/apply returns 503 when colocated snapshot is di
       daemon: {
         key: {
           id: crypto.randomUUID(),
-          algorithm: "Ed25519",
+          algorithm: 'Ed25519',
           publicJwk: {
-            kty: "OKP",
-            crv: "Ed25519",
-            x: "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+            kty: 'OKP',
+            crv: 'Ed25519',
+            x: 'CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC',
           },
-          fingerprint: "fp3",
+          fingerprint: 'fp3',
           createdAt: new Date().toISOString(),
         },
-        projection: { remoteAddress: "__direct__" },
+        projection: { remoteAddress: '__direct__' },
       },
     })
-    .returning({ id: server.id });
-  const serverId = insertedServer!.id;
+    .returning({ id: server.id })
+  const serverId = insertedServer!.id
 
   const { registry } = createTrackingRegistry(new Set(), {
     onlineIds: [serverId],
     connectedSnapshots: false,
-  });
-  const { app, secrets } = await createAdminTestApp(registry);
-  const cookie = await adminSessionCookie(db, secrets, userId);
+  })
+  const { app, secrets } = await createAdminTestApp(registry)
+  const cookie = await adminSessionCookie(db, secrets, userId)
 
   try {
-    const res = await app.request(
-      `${ADMIN_API_PREFIX}/instance/public-urls/apply`,
-      {
-        method: "POST",
-        headers: {
-          Cookie: cookie,
-          "content-type": "application/json",
-        },
-        body: "{}",
+    const res = await app.request(`${ADMIN_API_PREFIX}/instance/public-urls/apply`, {
+      method: 'POST',
+      headers: {
+        Cookie: cookie,
+        'content-type': 'application/json',
       },
-    );
-    assertEquals(res.status, 503);
-    const body = await jsonBody<{ error: string }>(res);
-    assertEquals(body.error, "co-located daemon disconnected");
+      body: '{}',
+    })
+    assertEquals(res.status, 503)
+    const body = await jsonBody<{ error: string }>(res)
+    assertEquals(body.error, 'co-located daemon disconnected')
   } finally {
-    await db.delete(server).where(eq(server.id, serverId));
-    await db.delete(user).where(eq(user.id, userId));
+    await db.delete(server).where(eq(server.id, serverId))
+    await db.delete(user).where(eq(user.id, userId))
   }
-});
+})
 
-test("GET and PUT /api/admin/v1/settings/server-metrics-live round-trip the cap", async () => {
-  await withRoleUser("superadmin", async ({ app, cookie }) => {
-    const db = createDenoDb();
+test('GET and PUT /api/admin/v1/settings/server-metrics-live round-trip the cap', async () => {
+  await withRoleUser('superadmin', async ({ app, cookie }) => {
+    const db = createDenoDb()
     const previous = await db
       .select({ value: setting.value })
       .from(setting)
       .where(eq(setting.key, SERVER_METRICS_LIVE_MAX_MINUTES_KEY))
-      .limit(1);
+      .limit(1)
 
     try {
-      await db
-        .delete(setting)
-        .where(eq(setting.key, SERVER_METRICS_LIVE_MAX_MINUTES_KEY));
+      await db.delete(setting).where(eq(setting.key, SERVER_METRICS_LIVE_MAX_MINUTES_KEY))
 
-      const initial = await app.request(
-        `${ADMIN_API_PREFIX}/settings/server-metrics-live`,
-        { headers: { Cookie: cookie } },
-      );
-      assertEquals(initial.status, 200);
-      const initialBody = await jsonBody<{ maxMinutes: number }>(initial);
-      assertEquals(initialBody.maxMinutes, 60);
+      const initial = await app.request(`${ADMIN_API_PREFIX}/settings/server-metrics-live`, {
+        headers: { Cookie: cookie },
+      })
+      assertEquals(initial.status, 200)
+      const initialBody = await jsonBody<{ maxMinutes: number }>(initial)
+      assertEquals(initialBody.maxMinutes, 60)
 
       const put = (maxMinutes: unknown) =>
         app.request(`${ADMIN_API_PREFIX}/settings/server-metrics-live`, {
-          method: "PUT",
+          method: 'PUT',
           headers: {
             Cookie: cookie,
-            "content-type": "application/json",
+            'content-type': 'application/json',
           },
           body: JSON.stringify({ maxMinutes }),
-        });
+        })
 
-      const thirty = await put(30);
-      assertEquals(thirty.status, 200);
-      assertEquals(
-        (await jsonBody<{ maxMinutes: number }>(thirty)).maxMinutes,
-        30,
-      );
+      const thirty = await put(30)
+      assertEquals(thirty.status, 200)
+      assertEquals((await jsonBody<{ maxMinutes: number }>(thirty)).maxMinutes, 30)
 
-      const readBack = await app.request(
-        `${ADMIN_API_PREFIX}/settings/server-metrics-live`,
-        { headers: { Cookie: cookie } },
-      );
-      assertEquals(
-        (await jsonBody<{ maxMinutes: number }>(readBack)).maxMinutes,
-        30,
-      );
+      const readBack = await app.request(`${ADMIN_API_PREFIX}/settings/server-metrics-live`, {
+        headers: { Cookie: cookie },
+      })
+      assertEquals((await jsonBody<{ maxMinutes: number }>(readBack)).maxMinutes, 30)
 
       // 0 disables live sessions entirely.
-      const disabled = await put(0);
-      assertEquals(disabled.status, 200);
-      assertEquals(
-        (await jsonBody<{ maxMinutes: number }>(disabled)).maxMinutes,
-        0,
-      );
+      const disabled = await put(0)
+      assertEquals(disabled.status, 200)
+      assertEquals((await jsonBody<{ maxMinutes: number }>(disabled)).maxMinutes, 0)
 
       // Boundary values of the 5–240 window.
-      assertEquals((await put(5)).status, 200);
-      assertEquals((await put(240)).status, 200);
+      assertEquals((await put(5)).status, 200)
+      assertEquals((await put(240)).status, 200)
 
       // Out-of-window and malformed values are rejected.
-      assertEquals((await put(4)).status, 400);
-      assertEquals((await put(241)).status, 400);
-      assertEquals((await put(1)).status, 400);
-      assertEquals((await put(-1)).status, 400);
-      assertEquals((await put(30.5)).status, 400);
-      assertEquals((await put("60")).status, 400);
+      assertEquals((await put(4)).status, 400)
+      assertEquals((await put(241)).status, 400)
+      assertEquals((await put(1)).status, 400)
+      assertEquals((await put(-1)).status, 400)
+      assertEquals((await put(30.5)).status, 400)
+      assertEquals((await put('60')).status, 400)
 
-      const missing = await app.request(
-        `${ADMIN_API_PREFIX}/settings/server-metrics-live`,
-        {
-          method: "PUT",
-          headers: {
-            Cookie: cookie,
-            "content-type": "application/json",
-          },
-          body: JSON.stringify({}),
+      const missing = await app.request(`${ADMIN_API_PREFIX}/settings/server-metrics-live`, {
+        method: 'PUT',
+        headers: {
+          Cookie: cookie,
+          'content-type': 'application/json',
         },
-      );
-      assertEquals(missing.status, 400);
+        body: JSON.stringify({}),
+      })
+      assertEquals(missing.status, 400)
     } finally {
-      await db
-        .delete(setting)
-        .where(eq(setting.key, SERVER_METRICS_LIVE_MAX_MINUTES_KEY));
+      await db.delete(setting).where(eq(setting.key, SERVER_METRICS_LIVE_MAX_MINUTES_KEY))
       if (previous.length > 0) {
         await db.insert(setting).values({
           key: SERVER_METRICS_LIVE_MAX_MINUTES_KEY,
           value: previous[0]!.value,
-        });
+        })
       }
     }
-  });
-});
+  })
+})
 
-test("GET and PUT /api/admin/v1/settings/alert-webhook never hand the URL back", async () => {
-  await withRoleUser("superadmin", async ({ app, cookie }) => {
-    const db = createDenoDb();
+test('GET and PUT /api/admin/v1/settings/alert-webhook never hand the URL back', async () => {
+  await withRoleUser('superadmin', async ({ app, cookie }) => {
+    const db = createDenoDb()
     try {
-      await db.delete(setting).where(eq(setting.key, ALERT_WEBHOOK_URL_KEY));
-      await db.delete(notificationChannel).where(
-        eq(notificationChannel.label, OPERATOR_WEBHOOK_LABEL),
-      );
+      await db.delete(setting).where(eq(setting.key, ALERT_WEBHOOK_URL_KEY))
+      await db
+        .delete(notificationChannel)
+        .where(eq(notificationChannel.label, OPERATOR_WEBHOOK_LABEL))
 
-      const initial = await app.request(
-        `${ADMIN_API_PREFIX}/settings/alert-webhook`,
-        { headers: { Cookie: cookie } },
-      );
-      assertEquals(initial.status, 200);
-      assertEquals(
-        await jsonBody<{ configured: boolean; origin: string | null }>(initial),
-        { configured: false, origin: null },
-      );
+      const initial = await app.request(`${ADMIN_API_PREFIX}/settings/alert-webhook`, {
+        headers: { Cookie: cookie },
+      })
+      assertEquals(initial.status, 200)
+      assertEquals(await jsonBody<{ configured: boolean; origin: string | null }>(initial), {
+        configured: false,
+        origin: null,
+      })
 
       const put = (url: unknown) =>
         app.request(`${ADMIN_API_PREFIX}/settings/alert-webhook`, {
-          method: "PUT",
-          headers: { Cookie: cookie, "content-type": "application/json" },
+          method: 'PUT',
+          headers: { Cookie: cookie, 'content-type': 'application/json' },
           body: JSON.stringify({ url }),
-        });
+        })
 
-      const set = await put(
-        "https://hooks.slack.com/services/T0/B0/SECRETPATH",
-      );
-      assertEquals(set.status, 200);
-      const setBody = await jsonBody<
-        { configured: boolean; origin: string | null }
-      >(set);
+      const set = await put('https://hooks.slack.com/services/T0/B0/SECRETPATH')
+      assertEquals(set.status, 200)
+      const setBody = await jsonBody<{ configured: boolean; origin: string | null }>(set)
       assertEquals(setBody, {
         configured: true,
-        origin: "https://hooks.slack.com",
-      });
+        origin: 'https://hooks.slack.com',
+      })
 
       // The response says a webhook exists and where it points, and does not
       // contain the path — the path is the credential.
-      assertEquals(JSON.stringify(setBody).includes("SECRETPATH"), false);
+      assertEquals(JSON.stringify(setBody).includes('SECRETPATH'), false)
 
       // The webhook is an instance channel now (2026-09-18), and its stored
       // address is sealed the way an SMTP password is; the legacy setting row
@@ -1340,179 +1229,153 @@ test("GET and PUT /api/admin/v1/settings/alert-webhook never hand the URL back",
         .select({ address: notificationChannel.address })
         .from(notificationChannel)
         .where(eq(notificationChannel.label, OPERATOR_WEBHOOK_LABEL))
-        .limit(1);
-      assertEquals(typeof stored[0]?.address, "string");
-      assertEquals(String(stored[0]?.address).includes("SECRETPATH"), false);
-      assertEquals(String(stored[0]?.address).startsWith("tpsecret."), true);
+        .limit(1)
+      assertEquals(typeof stored[0]?.address, 'string')
+      assertEquals(String(stored[0]?.address).includes('SECRETPATH'), false)
+      assertEquals(String(stored[0]?.address).startsWith('tpsecret.'), true)
       const legacyRows = await db
         .select({ value: setting.value })
         .from(setting)
         .where(eq(setting.key, ALERT_WEBHOOK_URL_KEY))
-        .limit(1);
-      assertEquals(legacyRows.length, 0);
+        .limit(1)
+      assertEquals(legacyRows.length, 0)
 
       // Scheme and credential rules hold on every runtime; the test app is
       // the self-hosted (Deno) runtime, where a LAN or loopback target is
       // allowed by decision (2026-09-18) — see the Workers case below.
-      for (
-        const rejected of [
-          "http://hooks.slack.com/x",
-          "https://u:p@hooks.slack.com/x",
-        ]
-      ) {
-        assertEquals((await put(rejected)).status, 400, rejected);
+      for (const rejected of ['http://hooks.slack.com/x', 'https://u:p@hooks.slack.com/x']) {
+        assertEquals((await put(rejected)).status, 400, rejected)
       }
-      assertEquals((await put(42)).status, 400);
+      assertEquals((await put(42)).status, 400)
 
       // The refusals left the working webhook in place.
-      const unchanged = await app.request(
-        `${ADMIN_API_PREFIX}/settings/alert-webhook`,
-        { headers: { Cookie: cookie } },
-      );
+      const unchanged = await app.request(`${ADMIN_API_PREFIX}/settings/alert-webhook`, {
+        headers: { Cookie: cookie },
+      })
       assertEquals(
         (await jsonBody<{ origin: string | null }>(unchanged)).origin,
-        "https://hooks.slack.com",
-      );
+        'https://hooks.slack.com'
+      )
 
       // null clears it.
-      const cleared = await put(null);
-      assertEquals(cleared.status, 200);
-      assertEquals(
-        await jsonBody<{ configured: boolean; origin: string | null }>(cleared),
-        { configured: false, origin: null },
-      );
+      const cleared = await put(null)
+      assertEquals(cleared.status, 200)
+      assertEquals(await jsonBody<{ configured: boolean; origin: string | null }>(cleared), {
+        configured: false,
+        origin: null,
+      })
     } finally {
-      await db.delete(setting).where(eq(setting.key, ALERT_WEBHOOK_URL_KEY));
-      await db.delete(notificationChannel).where(
-        eq(notificationChannel.label, OPERATOR_WEBHOOK_LABEL),
-      );
+      await db.delete(setting).where(eq(setting.key, ALERT_WEBHOOK_URL_KEY))
+      await db
+        .delete(notificationChannel)
+        .where(eq(notificationChannel.label, OPERATOR_WEBHOOK_LABEL))
     }
-  });
-});
+  })
+})
 
-test("a legacy ALERT_WEBHOOK_URL setting is adopted into the operator channel on first touch", async () => {
-  await withRoleUser("superadmin", async ({ app, cookie }) => {
-    const db = createDenoDb();
+test('a legacy ALERT_WEBHOOK_URL setting is adopted into the operator channel on first touch', async () => {
+  await withRoleUser('superadmin', async ({ app, cookie }) => {
+    const db = createDenoDb()
     try {
-      await db.delete(notificationChannel).where(
-        eq(notificationChannel.label, OPERATOR_WEBHOOK_LABEL),
-      );
+      await db
+        .delete(notificationChannel)
+        .where(eq(notificationChannel.label, OPERATOR_WEBHOOK_LABEL))
       // A pre-pipeline instance: the sealed URL sits in the setting row.
-      const secretsConfig = parseSecretsEnv(
-        `1:${TEST_ONLY_TURBOPANEL_SECRET}`,
-        "deno",
-      );
-      const enc = await deriveEncryptionSecretsConfig(
-        secretsConfig,
-        "data-encryption",
-      );
-      await db.insert(setting).values({
-        key: ALERT_WEBHOOK_URL_KEY,
-        value: await encryptSecret(
-          enc,
-          "https://hooks.slack.com/services/LEGACY/PATH",
-        ),
-      }).onConflictDoUpdate({
-        target: setting.key,
-        set: {
-          value: await encryptSecret(
-            enc,
-            "https://hooks.slack.com/services/LEGACY/PATH",
-          ),
-        },
-      });
+      const secretsConfig = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`, 'deno')
+      const enc = await deriveEncryptionSecretsConfig(secretsConfig, 'data-encryption')
+      await db
+        .insert(setting)
+        .values({
+          key: ALERT_WEBHOOK_URL_KEY,
+          value: await encryptSecret(enc, 'https://hooks.slack.com/services/LEGACY/PATH'),
+        })
+        .onConflictDoUpdate({
+          target: setting.key,
+          set: {
+            value: await encryptSecret(enc, 'https://hooks.slack.com/services/LEGACY/PATH'),
+          },
+        })
 
       // Listing the instance channels folds it in: one channel, a `*` rule,
       // the setting row gone.
-      const listed = await app.request(
-        `${ADMIN_API_PREFIX}/notification-channels`,
-        {
-          headers: { Cookie: cookie },
-        },
-      );
-      assertEquals(listed.status, 200);
+      const listed = await app.request(`${ADMIN_API_PREFIX}/notification-channels`, {
+        headers: { Cookie: cookie },
+      })
+      assertEquals(listed.status, 200)
       const { channels } = await jsonBody<{
-        channels: Array<
-          {
-            label: string;
-            kind: string;
-            address: string;
-            rules: Array<{ event: string; minSeverity: string }>;
-          }
-        >;
-      }>(listed);
-      const operator = channels.find((ch) =>
-        ch.label === OPERATOR_WEBHOOK_LABEL
-      );
-      assertEquals(operator?.kind, "webhook");
-      assertEquals(operator?.address, "https://hooks.slack.com");
-      assertEquals(operator?.rules, [{ event: "*", minSeverity: "info" }]);
+        channels: Array<{
+          label: string
+          kind: string
+          address: string
+          rules: Array<{ event: string; minSeverity: string }>
+        }>
+      }>(listed)
+      const operator = channels.find((ch) => ch.label === OPERATOR_WEBHOOK_LABEL)
+      assertEquals(operator?.kind, 'webhook')
+      assertEquals(operator?.address, 'https://hooks.slack.com')
+      assertEquals(operator?.rules, [{ event: '*', minSeverity: 'info' }])
       const legacyRows = await db
         .select({ value: setting.value })
         .from(setting)
-        .where(eq(setting.key, ALERT_WEBHOOK_URL_KEY));
-      assertEquals(legacyRows.length, 0);
+        .where(eq(setting.key, ALERT_WEBHOOK_URL_KEY))
+      assertEquals(legacyRows.length, 0)
 
       // And the old route still answers from the same channel.
-      const described = await app.request(
-        `${ADMIN_API_PREFIX}/settings/alert-webhook`,
-        {
-          headers: { Cookie: cookie },
-        },
-      );
+      const described = await app.request(`${ADMIN_API_PREFIX}/settings/alert-webhook`, {
+        headers: { Cookie: cookie },
+      })
       assertEquals(await jsonBody(described), {
         configured: true,
-        origin: "https://hooks.slack.com",
-      });
+        origin: 'https://hooks.slack.com',
+      })
     } finally {
-      await db.delete(setting).where(eq(setting.key, ALERT_WEBHOOK_URL_KEY));
-      await db.delete(notificationChannel).where(
-        eq(notificationChannel.label, OPERATOR_WEBHOOK_LABEL),
-      );
+      await db.delete(setting).where(eq(setting.key, ALERT_WEBHOOK_URL_KEY))
+      await db
+        .delete(notificationChannel)
+        .where(eq(notificationChannel.label, OPERATOR_WEBHOOK_LABEL))
     }
-  });
-});
+  })
+})
 
-test("PUT /api/admin/v1/settings/alert-webhook accepts a private target on every runtime", async () => {
+test('PUT /api/admin/v1/settings/alert-webhook accepts a private target on every runtime', async () => {
   // Decided 2026-09-18, "allow everywhere, no exceptions": the rule used to
   // follow the runtime. A Workers instance cannot reach a private address
   // anyway, so refusing it there bought nothing but a second rule to explain.
   // Two shapes, not the whole matrix: the test app opens a pool per request
   // and this file runs close to Postgres' connection cap; the full list is
   // covered in outbound-url.hostfree.test.ts.
-  const privateTargets = ["https://127.0.0.1/hook", "https://10.0.0.5/hook"];
+  const privateTargets = ['https://127.0.0.1/hook', 'https://10.0.0.5/hook']
   const put = (app: Hono<AppEnv>, cookie: string, url: string | null) =>
     app.request(`${ADMIN_API_PREFIX}/settings/alert-webhook`, {
-      method: "PUT",
-      headers: { Cookie: cookie, "content-type": "application/json" },
+      method: 'PUT',
+      headers: { Cookie: cookie, 'content-type': 'application/json' },
       body: JSON.stringify({ url }),
-    });
-  for (const runtime of ["workers", "deno"] as const) {
-    await withRoleUser("superadmin", async ({ app, cookie }) => {
-      try {
-        for (const url of privateTargets) {
-          const res = await put(app, cookie, url);
-          assertEquals(res.status, 200, `${runtime}: ${url}`);
-          const body = await jsonBody<
-            { configured: boolean; origin: string | null }
-          >(res);
-          assertEquals(body.configured, true);
-          assertEquals(JSON.stringify(body).includes("/hook"), false);
+    })
+  for (const runtime of ['workers', 'deno'] as const) {
+    await withRoleUser(
+      'superadmin',
+      async ({ app, cookie }) => {
+        try {
+          for (const url of privateTargets) {
+            const res = await put(app, cookie, url)
+            assertEquals(res.status, 200, `${runtime}: ${url}`)
+            const body = await jsonBody<{ configured: boolean; origin: string | null }>(res)
+            assertEquals(body.configured, true)
+            assertEquals(JSON.stringify(body).includes('/hook'), false)
+          }
+          // Scheme is still the rule.
+          const plain = await put(app, cookie, 'http://10.0.0.5/hook')
+          assertEquals(plain.status, 400, `${runtime}: http`)
+          assertEquals((await jsonBody<{ reason: string }>(plain)).reason, 'scheme_not_https')
+        } finally {
+          // Clear through the route itself: `null` deletes the row.
+          assertEquals((await put(app, cookie, null)).status, 200)
         }
-        // Scheme is still the rule.
-        const plain = await put(app, cookie, "http://10.0.0.5/hook");
-        assertEquals(plain.status, 400, `${runtime}: http`);
-        assertEquals(
-          (await jsonBody<{ reason: string }>(plain)).reason,
-          "scheme_not_https",
-        );
-      } finally {
-        // Clear through the route itself: `null` deletes the row.
-        assertEquals((await put(app, cookie, null)).status, 200);
-      }
-    }, { runtime });
+      },
+      { runtime }
+    )
   }
-});
+})
 
 /**
  * One Let's Encrypt hostname on a capable co-located daemon, with the ACME
@@ -1520,28 +1383,28 @@ test("PUT /api/admin/v1/settings/alert-webhook accepts a private target on every
  */
 async function withLetsEncryptColocated(
   platformEnv: Record<string, string | undefined>,
-  fn: (ctx: { app: Hono<AppEnv>; cookie: string }) => Promise<void>,
+  fn: (ctx: { app: Hono<AppEnv>; cookie: string }) => Promise<void>
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn("Skipping admin route tests: TURBOPANEL_DATABASE_URL not set");
-    return;
+    console.warn('Skipping admin route tests: TURBOPANEL_DATABASE_URL not set')
+    return
   }
-  const db = createDenoDb();
-  const previousHosts = await db.select().from(instanceHostname);
+  const db = createDenoDb()
+  const previousHosts = await db.select().from(instanceHostname)
   const previousAcme = await db
     .select({ value: setting.value })
     .from(setting)
     .where(eq(setting.key, INSTANCE_ACME_SETTINGS))
-    .limit(1);
+    .limit(1)
   const [insertedUser] = await db
     .insert(user)
     .values({
       email: `admin-acme-env-${crypto.randomUUID()}@example.com`,
       isEmailVerified: true,
-      role: "superadmin",
+      role: 'superadmin',
     })
-    .returning({ id: user.id });
-  const userId = insertedUser!.id;
+    .returning({ id: user.id })
+  const userId = insertedUser!.id
   const [insertedServer] = await db
     .insert(server)
     .values({
@@ -1551,148 +1414,139 @@ async function withLetsEncryptColocated(
       daemon: {
         key: {
           id: crypto.randomUUID(),
-          algorithm: "Ed25519",
+          algorithm: 'Ed25519',
           publicJwk: {
-            kty: "OKP",
-            crv: "Ed25519",
-            x: "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD",
+            kty: 'OKP',
+            crv: 'Ed25519',
+            x: 'DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD',
           },
-          fingerprint: "fp-acme-env",
+          fingerprint: 'fp-acme-env',
           createdAt: new Date().toISOString(),
         },
-        projection: { remoteAddress: "__direct__", connected: true },
+        projection: { remoteAddress: '__direct__', connected: true },
       },
     })
-    .returning({ id: server.id });
-  const serverId = insertedServer!.id;
+    .returning({ id: server.id })
+  const serverId = insertedServer!.id
   const { registry } = createTrackingRegistry(new Set(), {
     onlineIds: [serverId],
     connectedSnapshots: true,
-    daemonVersion: "0.1.1",
-  });
+    daemonVersion: '0.1.1',
+  })
   const { app, secrets, appDb } = await createAdminTestApp(registry, {
     platformEnv,
-  });
-  const cookie = await adminSessionCookie(db, secrets, userId);
+  })
+  const cookie = await adminSessionCookie(db, secrets, userId)
   try {
-    await db.delete(instanceHostname).where(isNotNull(instanceHostname.id));
-    await db.delete(setting).where(eq(setting.key, INSTANCE_ACME_SETTINGS));
+    await db.delete(instanceHostname).where(isNotNull(instanceHostname.id))
+    await db.delete(setting).where(eq(setting.key, INSTANCE_ACME_SETTINGS))
     const seeded = await replaceInstanceHostnames(db, [
       {
-        host: "https://acme-env.example.com",
-        source: "lets-encrypt",
+        host: 'https://acme-env.example.com',
+        source: 'lets-encrypt',
         uploadedCertId: null,
       },
-    ]);
-    assertEquals(seeded.ok, true);
-    await fn({ app, cookie });
+    ])
+    assertEquals(seeded.ok, true)
+    await fn({ app, cookie })
   } finally {
-    await db.delete(instanceHostname).where(isNotNull(instanceHostname.id));
+    await db.delete(instanceHostname).where(isNotNull(instanceHostname.id))
     if (previousHosts.length > 0) {
-      await db.insert(instanceHostname).values(previousHosts);
+      await db.insert(instanceHostname).values(previousHosts)
     }
-    await db.delete(setting).where(eq(setting.key, INSTANCE_ACME_SETTINGS));
+    await db.delete(setting).where(eq(setting.key, INSTANCE_ACME_SETTINGS))
     if (previousAcme.length > 0) {
       await db.insert(setting).values({
         key: INSTANCE_ACME_SETTINGS,
         value: previousAcme[0]!.value,
-      });
+      })
     }
-    await db.delete(server).where(eq(server.id, serverId));
-    await db.delete(user).where(eq(user.id, userId));
-    await endDbConnection(appDb);
-    await endDbConnection(db);
+    await db.delete(server).where(eq(server.id, serverId))
+    await db.delete(user).where(eq(user.id, userId))
+    await endDbConnection(appDb)
+    await endDbConnection(db)
   }
 }
 
 const ENV_TERMS_ACCEPTED = {
-  TURBOPANEL_INSTANCE_ACME__TOS_ACCEPTED: "true",
-  TURBOPANEL_INSTANCE_ACME__CONTACT_EMAIL: "ops@example.com",
-} as const;
+  TURBOPANEL_INSTANCE_ACME__TOS_ACCEPTED: 'true',
+  TURBOPANEL_INSTANCE_ACME__CONTACT_EMAIL: 'ops@example.com',
+} as const
 
 test("Let's Encrypt terms accepted only in the environment: reads say accepted and apply succeeds", async () => {
   await withLetsEncryptColocated(ENV_TERMS_ACCEPTED, async ({ app, cookie }) => {
-    const apply = await app.request(
-      `${ADMIN_API_PREFIX}/instance/public-urls/apply`,
-      {
-        method: "POST",
-        headers: { Cookie: cookie, "content-type": "application/json" },
-        body: "{}",
-      },
-    );
-    assertEquals(await apply.json(), { ok: true, applied: true });
-    assertEquals(apply.status, 200);
+    const apply = await app.request(`${ADMIN_API_PREFIX}/instance/public-urls/apply`, {
+      method: 'POST',
+      headers: { Cookie: cookie, 'content-type': 'application/json' },
+      body: '{}',
+    })
+    assertEquals(await apply.json(), { ok: true, applied: true })
+    assertEquals(apply.status, 200)
 
     const acme = await app.request(`${ADMIN_API_PREFIX}/instance/acme`, {
       headers: { Cookie: cookie },
-    });
-    assertEquals(acme.status, 200);
-    assertEquals((await jsonBody<{ tosAccepted: boolean }>(acme)).tosAccepted, true);
+    })
+    assertEquals(acme.status, 200)
+    assertEquals((await jsonBody<{ tosAccepted: boolean }>(acme)).tosAccepted, true)
 
     const names = await app.request(`${ADMIN_API_PREFIX}/instance/hostnames`, {
       headers: { Cookie: cookie },
-    });
-    assertEquals(names.status, 200);
-    assertEquals((await jsonBody<{ tosAccepted: boolean }>(names)).tosAccepted, true);
-  });
-});
+    })
+    assertEquals(names.status, 200)
+    assertEquals((await jsonBody<{ tosAccepted: boolean }>(names)).tosAccepted, true)
+  })
+})
 
 test("Let's Encrypt terms not accepted: apply refuses with a typed code, not only a sentence", async () => {
   await withLetsEncryptColocated({}, async ({ app, cookie }) => {
-    const apply = await app.request(
-      `${ADMIN_API_PREFIX}/instance/public-urls/apply`,
-      {
-        method: "POST",
-        headers: { Cookie: cookie, "content-type": "application/json" },
-        body: "{}",
-      },
-    );
-    assertEquals(apply.status, 422);
-    const body = await jsonBody<{ ok: boolean; code?: string }>(apply);
-    assertEquals(body.ok, false);
-    assertEquals(body.code, INSTANCE_ACME_TOS_NOT_ACCEPTED_CODE);
-  });
-});
+    const apply = await app.request(`${ADMIN_API_PREFIX}/instance/public-urls/apply`, {
+      method: 'POST',
+      headers: { Cookie: cookie, 'content-type': 'application/json' },
+      body: '{}',
+    })
+    assertEquals(apply.status, 422)
+    const body = await jsonBody<{ ok: boolean; code?: string }>(apply)
+    assertEquals(body.ok, false)
+    assertEquals(body.code, INSTANCE_ACME_TOS_NOT_ACCEPTED_CODE)
+  })
+})
 
 test("PUT /instance/hostnames refuses to store a Let's Encrypt row while the terms are not accepted", async () => {
   await withLetsEncryptColocated({}, async ({ app, cookie }) => {
     const save = await app.request(`${ADMIN_API_PREFIX}/instance/hostnames`, {
-      method: "PUT",
-      headers: { Cookie: cookie, "content-type": "application/json" },
+      method: 'PUT',
+      headers: { Cookie: cookie, 'content-type': 'application/json' },
       body: JSON.stringify({
         hostnames: [
-          { host: "https://acme-env.example.com", source: "lets-encrypt" },
-          { host: "https://other.example.com", source: "platform-ca" },
+          { host: 'https://acme-env.example.com', source: 'lets-encrypt' },
+          { host: 'https://other.example.com', source: 'platform-ca' },
         ],
       }),
-    });
-    assertEquals(save.status, 422);
-    const body = await jsonBody<{ code?: string }>(save);
-    assertEquals(body.code, INSTANCE_ACME_TOS_NOT_ACCEPTED_CODE);
+    })
+    assertEquals(save.status, 422)
+    const body = await jsonBody<{ code?: string }>(save)
+    assertEquals(body.code, INSTANCE_ACME_TOS_NOT_ACCEPTED_CODE)
 
     const listed = await app.request(`${ADMIN_API_PREFIX}/instance/hostnames`, {
       headers: { Cookie: cookie },
-    });
+    })
     const listedBody = await jsonBody<{
-      hostnames: { host: string }[];
-      tosAccepted: boolean;
-    }>(listed);
-    assertEquals(listedBody.tosAccepted, false);
+      hostnames: { host: string }[]
+      tosAccepted: boolean
+    }>(listed)
+    assertEquals(listedBody.tosAccepted, false)
     assertEquals(
       listedBody.hostnames.map((row) => row.host),
-      ["https://acme-env.example.com:8443"],
-    );
+      ['https://acme-env.example.com:8443']
+    )
 
-    const platformOnly = await app.request(
-      `${ADMIN_API_PREFIX}/instance/hostnames`,
-      {
-        method: "PUT",
-        headers: { Cookie: cookie, "content-type": "application/json" },
-        body: JSON.stringify({
-          hostnames: [{ host: "https://other.example.com", source: "platform-ca" }],
-        }),
-      },
-    );
-    assertEquals(platformOnly.status, 200);
-  });
-});
+    const platformOnly = await app.request(`${ADMIN_API_PREFIX}/instance/hostnames`, {
+      method: 'PUT',
+      headers: { Cookie: cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        hostnames: [{ host: 'https://other.example.com', source: 'platform-ca' }],
+      }),
+    })
+    assertEquals(platformOnly.status, 200)
+  })
+})

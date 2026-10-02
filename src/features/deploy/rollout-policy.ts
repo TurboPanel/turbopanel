@@ -119,6 +119,8 @@ export function parseUpdateConfig(value: unknown): UpdateConfigResult {
   const parsed: Partial<RolloutPolicy> = {}
   const reasons: string[] = []
   for (const [key, raw] of Object.entries(value)) {
+    // Compose extension keys are the author's own notes.
+    if (key.startsWith('x-')) continue
     const read = FIELD_READERS[key]
     if (read === undefined) {
       reasons.push(`update_config.${key} is not a known setting`)
@@ -190,4 +192,44 @@ export function resolveRolloutPolicy(services: Record<string, unknown> | undefin
     mostConservative(merged, result.value)
   }
   return { policy: { ...DEFAULT_ROLLOUT_POLICY, ...merged }, declaredBy, invalid }
+}
+
+/**
+ * Split `items` into rollout batches of at most `parallelism`, in order.
+ * `0` means every item in one batch (Swarm's "all at once"); anything that is
+ * not a positive integer is treated as the default of one at a time, so a bad
+ * value can never turn a rolling deploy into an all-at-once one.
+ */
+export function planRolloutBatches<T>(items: readonly T[], parallelism: number): T[][] {
+  if (items.length === 0) return []
+  if (parallelism === 0) return [[...items]]
+  const size =
+    Number.isInteger(parallelism) && parallelism > 0
+      ? parallelism
+      : DEFAULT_ROLLOUT_POLICY.parallelism
+  const batches: T[][] = []
+  for (let start = 0; start < items.length; start += size) {
+    batches.push(items.slice(start, start + size))
+  }
+  return batches
+}
+
+/**
+ * Why a valid `update_config` setting is still refused: the rolling deploy
+ * honours `parallelism` and a stopping `failure_action` (`pause` or
+ * `rollback`) only. Accepting the rest would be the silent-drop bug the field
+ * registry exists to prevent. `null` when the setting is honoured (or is not a
+ * known setting, which {@link parseUpdateConfig} reports).
+ */
+export function unhonoredUpdateConfigReason(key: string, raw: unknown): string | null {
+  if (key === 'parallelism') return null
+  if (key === 'failure_action') {
+    return raw === 'continue'
+      ? 'deploy.update_config.failure_action: continue is not supported yet \u2014 a failed batch always stops the rollout'
+      : null
+  }
+  if (key in FIELD_READERS) {
+    return `deploy.update_config.${key} is not supported yet \u2014 only parallelism is applied, and a failed batch stops the rollout`
+  }
+  return null
 }

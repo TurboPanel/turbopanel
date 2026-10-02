@@ -1,3 +1,20 @@
+/** Rollout settings the effective strategy ignores; present only when there are some. */
+const ROLLOUT_WARNINGS_SCHEMA = {
+  type: 'array',
+  description:
+    'Advisory compose lint warnings for rollout settings this deploy ignores: `deploy.update_config.parallelism` on an `inplace` deploy, which updates every server at once. Never blocking.',
+  items: {
+    type: 'object',
+    required: ['level', 'message', 'path'],
+    properties: {
+      level: { type: 'string', enum: ['warning'] },
+      message: { type: 'string' },
+      path: { type: 'string' },
+      blocking: { type: 'boolean', enum: [false] },
+    },
+  },
+}
+
 export const deploySchemas = {
   DeployEnvironmentRequest: {
     type: 'object',
@@ -58,8 +75,19 @@ export const deploySchemas = {
         type: 'object',
         description:
           'The deploy strategy this deploy was queued with. `effective` is what the host runs (`inplace` or `sequential`); it differs from `requested` when `bluegreen` was asked for and not available. How the deploy ends (`rolled_back`, `needs_attention`) is reported on the deployment history entry once the host answers.',
-        required: ['requested', 'effective', 'fallbackReasons'],
+        required: ['requested', 'effective', 'fallbackReasons', 'rollout'],
         properties: {
+          rollout: {
+            type: 'object',
+            description:
+              'Rolling deploy across servers. `parallelism` is how many servers update at once (compose `deploy.update_config.parallelism`; default 1, `0` = all at once; an `inplace` deploy reports 0). `batches` is how many batches the deploy delivers in order. Batch 1 is queued now; each next batch is queued when the one before is applied, and the first failed server stops the rollout: servers not yet started are marked failed and their commands cancelled.',
+            required: ['parallelism', 'batches'],
+            properties: {
+              parallelism: { type: 'integer', minimum: 0 },
+              batches: { type: 'integer', minimum: 0 },
+              warnings: ROLLOUT_WARNINGS_SCHEMA,
+            },
+          },
           requested: { type: 'string', enum: ['inplace', 'sequential', 'bluegreen'] },
           effective: { type: 'string', enum: ['inplace', 'sequential'] },
           fallbackReasons: {
@@ -78,7 +106,8 @@ export const deploySchemas = {
       },
       commands: {
         type: 'array',
-        description: 'Every queued `environment.deploy` (and drained-server stop) command.',
+        description:
+          'Every queued `environment.deploy` (and drained-server stop) command. On a rolling deploy this is the first batch only; later batches are queued as the one before them is applied.',
         items: {
           type: 'object',
           required: ['commandId', 'serverId', 'status'],
@@ -155,6 +184,7 @@ export const deploySchemas = {
       'effectiveStrategy',
       'migrations',
       'fallbackReasons',
+      'rollout',
     ],
     properties: {
       ok: { type: 'boolean', const: true },
@@ -236,6 +266,17 @@ export const deploySchemas = {
         enum: ['inplace', 'sequential', 'bluegreen'],
         description:
           'The strategy a deploy would actually run (`inplace` or `sequential`). Differs from `strategy` only when `bluegreen` is requested: it runs as `sequential` for now (see `fallbackReasons`).',
+      },
+      rollout: {
+        type: 'object',
+        description:
+          'Rolling deploy across servers. `parallelism` is how many servers update at once (compose `deploy.update_config.parallelism`; default 1, `0` = all at once; an `inplace` deploy reports 0). `batches` is how many batches the deploy delivers in order. Batch 1 is queued now; each next batch is queued when the one before is applied, and the first failed server stops the rollout: servers not yet started are marked failed and their commands cancelled.',
+        required: ['parallelism', 'batches'],
+        properties: {
+          parallelism: { type: 'integer', minimum: 0 },
+          batches: { type: 'integer', minimum: 0 },
+          warnings: ROLLOUT_WARNINGS_SCHEMA,
+        },
       },
       migrations: {
         type: 'string',
