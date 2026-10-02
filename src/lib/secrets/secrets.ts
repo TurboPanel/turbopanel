@@ -1,38 +1,36 @@
-import { generateSecret, SECRET_LENGTH } from "./generate-secret.ts";
-import { compatLogWarn } from "../log-compat.ts";
-import { isExplicitDevelopmentMode } from "../dev-mode.ts";
+import { generateSecret, SECRET_LENGTH } from './generate-secret.ts'
+import { compatLogWarn } from '../log-compat.ts'
+import { isExplicitDevelopmentMode } from '../dev-mode.ts'
 
 /**
  * Minimum accepted length for a configured root secret. Matches the canonical
  * generator ({@link SECRET_LENGTH} chars from `src/lib/secrets/generate-secret.ts`). Any
  * shorter value is rejected at boot as insufficient-entropy.
  */
-export const MIN_SECRET_LENGTH = SECRET_LENGTH;
+export const MIN_SECRET_LENGTH = SECRET_LENGTH
 
 function assertValidSecretValue(value: string, context: string): void {
   if (value.length === 0) {
-    throw new Error(`${context}: secret value must not be empty`);
+    throw new Error(`${context}: secret value must not be empty`)
   }
   if (value.length < MIN_SECRET_LENGTH) {
-    throw new Error(
-      `${context}: secret is too short (minimum ${MIN_SECRET_LENGTH} chars)`,
-    );
+    throw new Error(`${context}: secret is too short (minimum ${MIN_SECRET_LENGTH} chars)`)
   }
 }
 
 export type VersionedSecret = {
-  version: number;
-  value: string;
-};
+  version: number
+  value: string
+}
 
 export type SecretsConfig = {
-  versioned: VersionedSecret[];
-};
+  versioned: VersionedSecret[]
+}
 
 export type DerivedSecretsConfig = {
-  current: { version: number; key: CryptoKey };
-  fallbacks: Array<{ version: number; key: CryptoKey }>;
-};
+  current: { version: number; key: CryptoKey }
+  fallbacks: Array<{ version: number; key: CryptoKey }>
+}
 
 /**
  * Direct version→key lookup against a derived keyring. Returns the matching
@@ -40,20 +38,20 @@ export type DerivedSecretsConfig = {
  */
 export function findKeyForVersion(
   secrets: DerivedSecretsConfig,
-  version: number,
+  version: number
 ): CryptoKey | null {
-  if (secrets.current.version === version) return secrets.current.key;
-  const fallback = secrets.fallbacks.find((f) => f.version === version);
-  return fallback?.key ?? null;
+  if (secrets.current.version === version) return secrets.current.key
+  const fallback = secrets.fallbacks.find((f) => f.version === version)
+  return fallback?.key ?? null
 }
 
 function normalizeEnvValue(value: string | undefined): string | undefined {
-  if (value === undefined) return undefined;
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : undefined;
+  if (value === undefined) return undefined
+  const trimmed = value.trim()
+  return trimmed.length > 0 ? trimmed : undefined
 }
 
-export type SecretsRuntime = "deno" | "workers";
+export type SecretsRuntime = 'deno' | 'workers'
 
 /**
  * The dev-only ephemeral random secret fallback is gated behind an **explicit**
@@ -61,71 +59,69 @@ export type SecretsRuntime = "deno" | "workers";
  * inference. Outside explicit dev mode a missing secret is a hard boot failure.
  */
 function allowEphemeralSecrets(runtime: SecretsRuntime): boolean {
-  return runtime === "deno" && isExplicitDevelopmentMode();
+  return runtime === 'deno' && isExplicitDevelopmentMode()
 }
 
 function parseVersionedSecrets(secretsEnv: string): VersionedSecret[] {
-  const entries = secretsEnv.split(",");
+  const entries = secretsEnv.split(',')
   const versioned = entries.map((entry, index) => {
-    const colonIndex = entry.indexOf(":");
+    const colonIndex = entry.indexOf(':')
     if (colonIndex === -1) {
       throw new Error(
-        `Invalid secrets entry at index ${index}: expected "version:secret" (TURBOPANEL_SECRETS entries are comma-separated)`,
-      );
+        `Invalid secrets entry at index ${index}: expected "version:secret" (TURBOPANEL_SECRETS entries are comma-separated)`
+      )
     }
-    const versionStr = entry.slice(0, colonIndex).trim();
-    const value = entry.slice(colonIndex + 1);
+    const versionStr = entry.slice(0, colonIndex).trim()
+    const value = entry.slice(colonIndex + 1)
     if (!/^\d+$/.test(versionStr)) {
       throw new Error(
-        `Invalid version in secrets entry at index ${index}: the part before ":" is not a positive integer (TURBOPANEL_SECRETS expects "version:secret")`,
-      );
+        `Invalid version in secrets entry at index ${index}: the part before ":" is not a positive integer (TURBOPANEL_SECRETS expects "version:secret")`
+      )
     }
-    const version = Number.parseInt(versionStr, 10);
+    const version = Number.parseInt(versionStr, 10)
     if (!Number.isInteger(version) || version < 1) {
       throw new Error(
-        `Invalid version in secrets entry at index ${index}: the part before ":" is not a positive integer (TURBOPANEL_SECRETS expects "version:secret")`,
-      );
+        `Invalid version in secrets entry at index ${index}: the part before ":" is not a positive integer (TURBOPANEL_SECRETS expects "version:secret")`
+      )
     }
-    assertValidSecretValue(value, `secrets entry at index ${index}`);
-    return { version, value };
-  });
+    assertValidSecretValue(value, `secrets entry at index ${index}`)
+    return { version, value }
+  })
 
-  const seen = new Set<number>();
+  const seen = new Set<number>()
   for (const entry of versioned) {
     if (seen.has(entry.version)) {
-      throw new Error(
-        `Duplicate secret version ${entry.version} in TURBOPANEL_SECRETS`,
-      );
+      throw new Error(`Duplicate secret version ${entry.version} in TURBOPANEL_SECRETS`)
     }
-    seen.add(entry.version);
+    seen.add(entry.version)
   }
 
   // Order-as-written is authoritative: versioned[0] is current/signing.
   // Warn (do not reorder) when operators listed keys off descending-version order.
   if (versioned.length > 1) {
-    let descending = true;
+    let descending = true
     for (let i = 1; i < versioned.length; i++) {
       if (versioned[i].version >= versioned[i - 1].version) {
-        descending = false;
-        break;
+        descending = false
+        break
       }
     }
     if (!descending) {
       compatLogWarn(
-        "auth",
-        "TURBOPANEL_SECRETS entries are not listed in descending version order; " +
-          "the first entry is treated as current — list highest version first",
-      );
+        'auth',
+        'TURBOPANEL_SECRETS entries are not listed in descending version order; ' +
+          'the first entry is treated as current — list highest version first'
+      )
     }
   }
 
-  return versioned;
+  return versioned
 }
 
 export type SecretEnvVars = {
-  TURBOPANEL_SECRET?: string;
-  TURBOPANEL_SECRETS?: string;
-};
+  TURBOPANEL_SECRET?: string
+  TURBOPANEL_SECRETS?: string
+}
 
 /**
  * Resolve the root secret from process / Worker env.
@@ -137,111 +133,88 @@ export type SecretEnvVars = {
  */
 export function parseSecretsFromEnv(
   vars: SecretEnvVars,
-  runtime: SecretsRuntime = "deno",
+  runtime: SecretsRuntime = 'deno'
 ): SecretsConfig {
-  const secrets = normalizeEnvValue(vars.TURBOPANEL_SECRETS);
+  const secrets = normalizeEnvValue(vars.TURBOPANEL_SECRETS)
   if (secrets !== undefined) {
-    return parseSecretsEnv(secrets, runtime);
+    return parseSecretsEnv(secrets, runtime)
   }
-  const secret = normalizeEnvValue(vars.TURBOPANEL_SECRET);
+  const secret = normalizeEnvValue(vars.TURBOPANEL_SECRET)
   if (secret !== undefined) {
-    assertValidSecretValue(secret, "TURBOPANEL_SECRET");
-    return { versioned: [{ version: 1, value: secret }] };
+    assertValidSecretValue(secret, 'TURBOPANEL_SECRET')
+    return { versioned: [{ version: 1, value: secret }] }
   }
-  return parseSecretsEnv(undefined, runtime);
+  return parseSecretsEnv(undefined, runtime)
 }
 
 export function parseSecretsEnv(
   secretsEnv: string | undefined,
-  runtime: SecretsRuntime = "deno",
+  runtime: SecretsRuntime = 'deno'
 ): SecretsConfig {
-  secretsEnv = normalizeEnvValue(secretsEnv);
+  secretsEnv = normalizeEnvValue(secretsEnv)
 
-  let versioned: VersionedSecret[] = [];
+  let versioned: VersionedSecret[] = []
 
   if (secretsEnv !== undefined) {
-    versioned = parseVersionedSecrets(secretsEnv);
+    versioned = parseVersionedSecrets(secretsEnv)
   }
 
   if (secretsEnv === undefined) {
     if (!allowEphemeralSecrets(runtime)) {
-      throw new Error("TURBOPANEL_SECRET is required");
+      throw new Error('TURBOPANEL_SECRET is required')
     }
-    compatLogWarn(
-      "auth",
-      "No secret configured — using ephemeral random secret (dev only)",
-    );
-    versioned = [{ version: 1, value: generateSecret() }];
+    compatLogWarn('auth', 'No secret configured — using ephemeral random secret (dev only)')
+    versioned = [{ version: 1, value: generateSecret() }]
   }
 
-  return { versioned };
+  return { versioned }
 }
 
-export async function deriveKey(
-  rootSecret: string,
-  purpose: string,
-): Promise<CryptoKey> {
-  const keyMaterial = new TextEncoder().encode(rootSecret);
-  const hkdfKey = await crypto.subtle.importKey(
-    "raw",
-    keyMaterial,
-    "HKDF",
-    false,
-    ["deriveKey"],
-  );
+export async function deriveKey(rootSecret: string, purpose: string): Promise<CryptoKey> {
+  const keyMaterial = new TextEncoder().encode(rootSecret)
+  const hkdfKey = await crypto.subtle.importKey('raw', keyMaterial, 'HKDF', false, ['deriveKey'])
   return crypto.subtle.deriveKey(
     {
-      name: "HKDF",
-      hash: "SHA-256",
-      salt: new TextEncoder().encode("turbopanel"),
+      name: 'HKDF',
+      hash: 'SHA-256',
+      salt: new TextEncoder().encode('turbopanel'),
       info: new TextEncoder().encode(purpose),
     },
     hkdfKey,
-    { name: "HMAC", hash: "SHA-256" },
+    { name: 'HMAC', hash: 'SHA-256' },
     false,
-    ["sign", "verify"],
-  );
+    ['sign', 'verify']
+  )
 }
 
-export async function deriveEncryptionKey(
-  rootSecret: string,
-  purpose: string,
-): Promise<CryptoKey> {
-  const keyMaterial = new TextEncoder().encode(rootSecret);
-  const hkdfKey = await crypto.subtle.importKey(
-    "raw",
-    keyMaterial,
-    "HKDF",
-    false,
-    ["deriveKey"],
-  );
+export async function deriveEncryptionKey(rootSecret: string, purpose: string): Promise<CryptoKey> {
+  const keyMaterial = new TextEncoder().encode(rootSecret)
+  const hkdfKey = await crypto.subtle.importKey('raw', keyMaterial, 'HKDF', false, ['deriveKey'])
   return crypto.subtle.deriveKey(
     {
-      name: "HKDF",
-      hash: "SHA-256",
-      salt: new TextEncoder().encode("turbopanel"),
+      name: 'HKDF',
+      hash: 'SHA-256',
+      salt: new TextEncoder().encode('turbopanel'),
       info: new TextEncoder().encode(purpose),
     },
     hkdfKey,
-    { name: "AES-GCM", length: 256 },
+    { name: 'AES-GCM', length: 256 },
     false,
-    ["encrypt", "decrypt"],
-  );
+    ['encrypt', 'decrypt']
+  )
 }
 
 export async function deriveSecretsConfig(
   config: SecretsConfig,
-  purpose: string,
+  purpose: string
 ): Promise<DerivedSecretsConfig> {
   if (config.versioned.length === 0) {
-    throw new Error(
-      "No signing secret available — configure TURBOPANEL_SECRET",
-    );
+    throw new Error('No signing secret available — configure TURBOPANEL_SECRET')
   }
 
   const versionedKeys = await Promise.all(
-    config.versioned.map((entry) => deriveKey(entry.value, purpose)),
-  );
+    config.versioned.map((entry) => deriveKey(entry.value, purpose))
+  )
 
   return {
     current: { version: config.versioned[0].version, key: versionedKeys[0] },
@@ -249,22 +222,20 @@ export async function deriveSecretsConfig(
       version: entry.version,
       key: versionedKeys[i + 1],
     })),
-  };
+  }
 }
 
 export async function deriveEncryptionSecretsConfig(
   config: SecretsConfig,
-  purpose: string,
+  purpose: string
 ): Promise<DerivedSecretsConfig> {
   if (config.versioned.length === 0) {
-    throw new Error(
-      "No signing secret available — configure TURBOPANEL_SECRET",
-    );
+    throw new Error('No signing secret available — configure TURBOPANEL_SECRET')
   }
 
   const versionedKeys = await Promise.all(
-    config.versioned.map((entry) => deriveEncryptionKey(entry.value, purpose)),
-  );
+    config.versioned.map((entry) => deriveEncryptionKey(entry.value, purpose))
+  )
 
   return {
     current: { version: config.versioned[0].version, key: versionedKeys[0] },
@@ -272,5 +243,5 @@ export async function deriveEncryptionSecretsConfig(
       version: entry.version,
       key: versionedKeys[i + 1],
     })),
-  };
+  }
 }
