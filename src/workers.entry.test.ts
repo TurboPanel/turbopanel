@@ -6,7 +6,7 @@
  * (explicit enumeration); do **not** add it to `scripts/test-coverage.sh`.
  */
 import { env } from 'cloudflare:test'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Db } from './db/connection.ts'
 import { CLIENT_API_PREFIX, GITHUB_WEBHOOK_PATH, HEALTH_PATH } from './app/surfaces.ts'
 import {
@@ -71,7 +71,7 @@ function fakeQueueMessage(body: unknown): Message<unknown> & {
 }
 
 function fakeMessageBatch(
-  messages: Message<unknown>[],
+  messages: Message<unknown>[]
 ): MessageBatch<unknown> & { retriedAll: boolean } {
   let retriedAll = false
   return {
@@ -112,10 +112,10 @@ describe('workers.ts entry handlers', () => {
     const response = await workers.fetch(
       new Request(`https://panel.example.com${HEALTH_PATH}`),
       workersTestEnv(),
-      ctx,
+      ctx
     )
     expect(response.status).toBe(200)
-    const body = await response.json() as { ok: boolean }
+    const body = (await response.json()) as { ok: boolean }
     expect(body.ok).toBe(true)
     expect(ctx.waitUntilPromises.length).toBeGreaterThanOrEqual(1)
     await Promise.all(ctx.waitUntilPromises)
@@ -133,7 +133,7 @@ describe('workers.ts entry handlers', () => {
     const response = await workers.fetch(
       new Request(`https://panel.example.com${HEALTH_PATH}`),
       testEnv,
-      ctx,
+      ctx
     )
     expect(response.status).toBe(200)
     await Promise.all(ctx.waitUntilPromises)
@@ -149,7 +149,7 @@ describe('workers.ts entry handlers', () => {
         noRetry() {},
       },
       workersTestEnv(),
-      ctx,
+      ctx
     )
     expect(ctx.waitUntilPromises).toHaveLength(1)
     expect(takeLastOfflineSweepScheduledTimeForTests()).toBe(scheduledTime)
@@ -157,21 +157,37 @@ describe('workers.ts entry handlers', () => {
 
   it('queue retries the batch when no DB client is available', async () => {
     setWorkersDbFactoryForTests(() => undefined)
-    const batch = fakeMessageBatch([
-      fakeQueueMessage({ commandId: 'cmd-1' }),
-    ])
+    const batch = fakeMessageBatch([fakeQueueMessage({ commandId: 'cmd-1' })])
     await workers.queue(batch, workersTestEnv())
     expect(batch.retriedAll).toBe(true)
   }, 30_000)
 
-  it('queue acks permanent envelope parse failures', async () => {
+  it('queue never acks permanent envelope parse failures (retry until DLQ)', async () => {
     setWorkersDbFactoryForTests(() => mockDb('queue-permanent'))
     const msg = fakeQueueMessage({ not: 'a-command-envelope' })
     const batch = fakeMessageBatch([msg])
     await workers.queue(batch, workersTestEnv())
-    expect(msg.acked).toBe(true)
-    expect(msg.retried).toBe(false)
+    expect(msg.retried).toBe(true)
+    expect(msg.acked).toBe(false)
     expect(batch.retriedAll).toBe(false)
+  }, 30_000)
+
+  it('queue keeps flowing past a poisoned message and logs it', async () => {
+    setWorkersDbFactoryForTests(() => mockDb('queue-poison-batch'))
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const poison = fakeQueueMessage('not-json{')
+      const poison2 = fakeQueueMessage({ not: 'a-command-envelope' })
+      const batch = fakeMessageBatch([poison, poison2])
+      await workers.queue(batch, workersTestEnv())
+      expect(poison.retried).toBe(true)
+      expect(poison2.retried).toBe(true)
+      expect(poison.acked).toBe(false)
+      expect(poison2.acked).toBe(false)
+      expect(errorSpy.mock.calls.flat().join(' ')).toContain('command.permanent_failure')
+    } finally {
+      errorSpy.mockRestore()
+    }
   }, 30_000)
 
   it('a rate-limited auth request never resolves the email queue', async () => {
@@ -186,7 +202,7 @@ describe('workers.ts entry handlers', () => {
         body: JSON.stringify({ email: 'someone@example.com', password: 'x' }),
       }),
       workersTestEnv(),
-      ctx,
+      ctx
     )
     expect(response.status).toBe(429)
     expect(getLazyEmailQueueResolveCallsForTests()).toBe(0)
@@ -205,7 +221,7 @@ describe('workers.ts entry handlers', () => {
         body: '{}',
       }),
       workersTestEnv(),
-      ctx,
+      ctx
     )
     expect(response.status).toBe(429)
     expect(getLazyEmailQueueResolveCallsForTests()).toBe(0)
@@ -217,7 +233,7 @@ describe('workers.ts entry handlers', () => {
     const response = await workers.fetch(
       new Request(`https://panel.example.com${HEALTH_PATH}`),
       workersTestEnv(),
-      ctx,
+      ctx
     )
     expect(response.status).toBe(200)
     expect(getLazyEmailQueueResolveCallsForTests()).toBe(0)
