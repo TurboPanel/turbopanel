@@ -3,8 +3,12 @@
  * C16 — the live-Stripe lifecycle harness, on test clocks.
  *
  *   TURBOPANEL_STRIPE_SECRET_KEY=sk_test_… TURBOPANEL_DATABASE_URL=… \
- *     deno task billing:test-clocks                      # every scenario
- *     deno task billing:test-clocks deferred-downgrade   # one, by name
+ *     deno run -A scripts/billing-test-clock-harness.ts                    # every scenario
+ *     deno run -A scripts/billing-test-clock-harness.ts deferred-downgrade # one, by name
+ *
+ * Use `deno run -A`, not `deno task billing:test-clocks`: the task's --allow-net
+ * list cannot name the database host (it comes from TURBOPANEL_DATABASE_URL),
+ * so it dies with a DNS permission error against a remote database.
  *
  * Or, as `deno test`, one test per scenario:
  *
