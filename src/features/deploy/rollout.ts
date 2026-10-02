@@ -155,9 +155,12 @@ async function claimBatch(
  * Only still-`queued` commands are touched, so a caller that loses the claim
  * cannot extend the budget of a command already in flight.
  */
-async function refreshCommandClocks(db: Db, commandIds: readonly string[]): Promise<string> {
-  const queuedAt = nowIso()
-  if (commandIds.length === 0) return queuedAt
+async function refreshCommandClocks(
+  db: Db,
+  commandIds: readonly string[],
+  queuedAt: string
+): Promise<void> {
+  if (commandIds.length === 0) return
   await db
     .update(command)
     .set({
@@ -166,7 +169,6 @@ async function refreshCommandClocks(db: Db, commandIds: readonly string[]): Prom
       expiresAt: new Date(Date.now() + COMMAND_BUDGET_MS).toISOString(),
     })
     .where(and(inArray(command.id, [...commandIds]), eq(command.status, 'queued')))
-  return queuedAt
 }
 
 async function deliverClaimed(
@@ -219,9 +221,11 @@ export async function advanceRollout(
   const batch = targets.filter(
     (target) => target.status === 'pending' && target.batch === step.batch
   )
-  const queuedAt = await refreshCommandClocks(
+  const queuedAt = nowIso()
+  await refreshCommandClocks(
     db,
-    batch.flatMap((target) => (target.lastCommandId === null ? [] : [target.lastCommandId]))
+    batch.flatMap((target) => (target.lastCommandId === null ? [] : [target.lastCommandId])),
+    queuedAt
   )
   const claimed = await claimBatch(db, { ...params, ids: batch.map((target) => target.id) })
   const delivered: string[] = []
