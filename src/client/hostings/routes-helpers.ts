@@ -1,7 +1,7 @@
-import { eq } from "drizzle-orm";
-import type { Context } from "hono";
-import type { Db } from "../../db/connection.ts";
-import { hosting, ip } from "../../db/schema.ts";
+import { eq } from 'drizzle-orm'
+import type { Context } from 'hono'
+import type { Db } from '../../db/connection.ts'
+import { hosting, ip } from '../../db/schema.ts'
 import {
   HOSTING_COMPOSE_ADOPTED_METADATA_KEY,
   HOSTING_COMPOSE_OWNED_METADATA_KEY,
@@ -9,17 +9,10 @@ import {
   HOSTING_COMPOSE_SERVICE_METADATA_KEY,
   HOSTING_COMPOSE_TLS_MODE_METADATA_KEY,
   readHostingComposeOwner,
-} from "../../features/hostings/hosting-compose-owner.ts";
-import {
-  parseHostingOptions,
-  resolveHostingBind,
-} from "../../features/hostings/hosting-options.ts";
-import {
-  buildPatchUpdateFields,
-  parseJsonbObject,
-  stripPromotedMetadataKeys,
-} from "../shared.ts";
-import { resolveEntityOrganizationId } from "../authz/create-access-grant.ts";
+} from '../../features/hostings/hosting-compose-owner.ts'
+import { parseHostingOptions, resolveHostingBind } from '../../features/hostings/hosting-options.ts'
+import { buildPatchUpdateFields, parseJsonbObject, stripPromotedMetadataKeys } from '../shared.ts'
+import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 
 /**
  * Compose-ownership provenance markers (`hosting-compose-owner.ts`) — only
@@ -38,78 +31,73 @@ export const HOSTING_PROMOTED_METADATA_KEYS = [
   HOSTING_COMPOSE_ROUTE_METADATA_KEY,
   HOSTING_COMPOSE_TLS_MODE_METADATA_KEY,
   HOSTING_COMPOSE_ADOPTED_METADATA_KEY,
-] as const;
+] as const
 
-export const HOSTING_UUID_RE =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export const HOSTING_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 export function isHostingUuid(value: unknown): value is string {
-  return typeof value === "string" && HOSTING_UUID_RE.test(value);
+  return typeof value === 'string' && HOSTING_UUID_RE.test(value)
 }
 
 export type OptionalTlsIdResult =
-  | { kind: "absent" }
-  | { kind: "value"; value: string | null }
-  | { kind: "error"; response: Response };
+  | { kind: 'absent' }
+  | { kind: 'value'; value: string | null }
+  | { kind: 'error'; response: Response }
 
 export async function parseOptionalTlsId(
   c: Context,
   db: Db,
   organizationId: string,
-  tlsIdRaw: unknown,
+  tlsIdRaw: unknown
 ): Promise<OptionalTlsIdResult> {
-  if (tlsIdRaw === undefined) return { kind: "absent" };
-  if (tlsIdRaw === null) return { kind: "value", value: null };
+  if (tlsIdRaw === undefined) return { kind: 'absent' }
+  if (tlsIdRaw === null) return { kind: 'value', value: null }
   if (isHostingUuid(tlsIdRaw)) {
-    const tlsOrgId = await resolveEntityOrganizationId(db, "tls", tlsIdRaw);
+    const tlsOrgId = await resolveEntityOrganizationId(db, 'tls', tlsIdRaw)
     if (tlsOrgId !== organizationId) {
-      return { kind: "error", response: c.json({ error: "Not found" }, 404) };
+      return { kind: 'error', response: c.json({ error: 'Not found' }, 404) }
     }
-    return { kind: "value", value: tlsIdRaw };
+    return { kind: 'value', value: tlsIdRaw }
   }
-  return { kind: "error", response: c.json({ error: "Invalid request" }, 400) };
+  return { kind: 'error', response: c.json({ error: 'Invalid request' }, 400) }
 }
 
 export type OptionalIpIdResult =
-  | { kind: "absent" }
-  | { kind: "value"; value: string | null }
-  | { kind: "error"; response: Response };
+  | { kind: 'absent' }
+  | { kind: 'value'; value: string | null }
+  | { kind: 'error'; response: Response }
 
 export async function parseOptionalIpId(
   c: Context,
   db: Db,
   organizationId: string,
-  ipIdRaw: unknown,
+  ipIdRaw: unknown
 ): Promise<OptionalIpIdResult> {
-  if (ipIdRaw === undefined) return { kind: "absent" };
-  if (ipIdRaw === null) return { kind: "value", value: null };
+  if (ipIdRaw === undefined) return { kind: 'absent' }
+  if (ipIdRaw === null) return { kind: 'value', value: null }
   if (isHostingUuid(ipIdRaw)) {
-    const ipOrgId = await resolveEntityOrganizationId(db, "ip", ipIdRaw);
+    const ipOrgId = await resolveEntityOrganizationId(db, 'ip', ipIdRaw)
     if (ipOrgId !== organizationId) {
-      return { kind: "error", response: c.json({ error: "Not found" }, 404) };
+      return { kind: 'error', response: c.json({ error: 'Not found' }, 404) }
     }
-    return { kind: "value", value: ipIdRaw };
+    return { kind: 'value', value: ipIdRaw }
   }
-  return { kind: "error", response: c.json({ error: "Invalid request" }, 400) };
+  return { kind: 'error', response: c.json({ error: 'Invalid request' }, 400) }
 }
 
 export async function assertHostingPublicBindScope(
   c: Context,
   db: Db,
   ipId: string,
-  options: ReturnType<typeof parseHostingOptions> | null,
+  options: ReturnType<typeof parseHostingOptions> | null
 ): Promise<Response | null> {
-  const bind = resolveHostingBind(options ?? undefined);
-  if (bind !== "public") return null;
-  const [ipRow] = await db
-    .select({ scope: ip.scope })
-    .from(ip)
-    .where(eq(ip.id, ipId))
-    .limit(1);
-  if (ipRow?.scope !== "public") {
-    return c.json({ error: "hosting_bind_scope_mismatch" }, 400);
+  const bind = resolveHostingBind(options ?? undefined)
+  if (bind !== 'public') return null
+  const [ipRow] = await db.select({ scope: ip.scope }).from(ip).where(eq(ip.id, ipId)).limit(1)
+  if (ipRow?.scope !== 'public') {
+    return c.json({ error: 'hosting_bind_scope_mismatch' }, 400)
   }
-  return null;
+  return null
 }
 
 /**
@@ -129,170 +117,161 @@ export async function assertHostingPublicBindScope(
 export async function assertHostingNotComposeOwnedOr409(
   c: Context,
   db: Db,
-  id: string,
+  id: string
 ): Promise<Response | null> {
   const [row] = await db
     .select({ serviceId: hosting.serviceId, metadata: hosting.metadata })
     .from(hosting)
     .where(eq(hosting.id, id))
-    .limit(1);
-  if (!row) return null;
+    .limit(1)
+  if (!row) return null
 
-  const owner = readHostingComposeOwner(row.metadata);
-  if (!owner) return null;
+  const owner = readHostingComposeOwner(row.metadata)
+  if (!owner) return null
 
-  return c.json({
-    error: "hosting_owned_by_compose",
-    serviceId: row.serviceId,
-    composeServiceName: owner.composeServiceName,
-    message:
-      `This hosting is declared by compose service "${owner.composeServiceName}" (x-turbopanel.hosting). Edit the compose document instead — a change made here would be overwritten on the next deploy.`,
-  }, 409);
+  return c.json(
+    {
+      error: 'hosting_owned_by_compose',
+      serviceId: row.serviceId,
+      composeServiceName: owner.composeServiceName,
+      message: `This hosting is declared by compose service "${owner.composeServiceName}" (x-turbopanel.hosting). Edit the compose document instead — a change made here would be overwritten on the next deploy.`,
+    },
+    409
+  )
 }
 
 export type OptionalHostingOptionsResult =
-  | { kind: "absent" }
+  | { kind: 'absent' }
   | {
-    kind: "value";
-    value: NonNullable<ReturnType<typeof parseHostingOptions>>;
-  }
-  | { kind: "error"; response: Response };
+      kind: 'value'
+      value: NonNullable<ReturnType<typeof parseHostingOptions>>
+    }
+  | { kind: 'error'; response: Response }
 
 export function parseOptionalHostingOptions(
   c: Context,
-  body: Record<string, unknown>,
+  body: Record<string, unknown>
 ): OptionalHostingOptionsResult {
-  const optionsResult = parseJsonbObject(c, body, "options");
+  const optionsResult = parseJsonbObject(c, body, 'options')
   if (optionsResult instanceof Response) {
-    return { kind: "error", response: optionsResult };
+    return { kind: 'error', response: optionsResult }
   }
-  if (optionsResult === null) return { kind: "absent" };
-  const parsed = parseHostingOptions(optionsResult);
+  if (optionsResult === null) return { kind: 'absent' }
+  const parsed = parseHostingOptions(optionsResult)
   if (parsed === null) {
     return {
-      kind: "error",
-      response: c.json({ error: "invalid_hosting_options" }, 400),
-    };
+      kind: 'error',
+      response: c.json({ error: 'invalid_hosting_options' }, 400),
+    }
   }
-  return { kind: "value", value: parsed };
+  return { kind: 'value', value: parsed }
 }
 
 export type HostingFkResult =
-  | { kind: "error"; response: Response }
+  | { kind: 'error'; response: Response }
   | {
-    kind: "ok";
-    tlsId: Extract<OptionalTlsIdResult, { kind: "absent" | "value" }>;
-    ipId: Extract<OptionalIpIdResult, { kind: "absent" | "value" }>;
-  };
+      kind: 'ok'
+      tlsId: Extract<OptionalTlsIdResult, { kind: 'absent' | 'value' }>
+      ipId: Extract<OptionalIpIdResult, { kind: 'absent' | 'value' }>
+    }
 
 export async function resolveOptionalHostingFks(
   c: Context,
   db: Db,
   organizationId: string,
-  body: Record<string, unknown>,
+  body: Record<string, unknown>
 ): Promise<HostingFkResult> {
-  const tlsIdResult = await parseOptionalTlsId(
-    c,
-    db,
-    organizationId,
-    body.tlsId,
-  );
-  if (tlsIdResult.kind === "error") {
-    return { kind: "error", response: tlsIdResult.response };
+  const tlsIdResult = await parseOptionalTlsId(c, db, organizationId, body.tlsId)
+  if (tlsIdResult.kind === 'error') {
+    return { kind: 'error', response: tlsIdResult.response }
   }
-  const ipIdResult = await parseOptionalIpId(c, db, organizationId, body.ipId);
-  if (ipIdResult.kind === "error") {
-    return { kind: "error", response: ipIdResult.response };
+  const ipIdResult = await parseOptionalIpId(c, db, organizationId, body.ipId)
+  if (ipIdResult.kind === 'error') {
+    return { kind: 'error', response: ipIdResult.response }
   }
-  return { kind: "ok", tlsId: tlsIdResult, ipId: ipIdResult };
+  return { kind: 'ok', tlsId: tlsIdResult, ipId: ipIdResult }
 }
 
 export type HostingPatchFields = {
-  name?: string | null;
-  description?: string | null;
-  metadata?: Record<string, unknown> | null;
-  options?: Record<string, unknown> | null;
-  protocol?: string | null;
-  tlsId?: string | null;
-  ipId?: string | null;
-  updatedAt: string;
-};
+  name?: string | null
+  description?: string | null
+  metadata?: Record<string, unknown> | null
+  options?: Record<string, unknown> | null
+  protocol?: string | null
+  tlsId?: string | null
+  ipId?: string | null
+  updatedAt: string
+}
 
 export async function buildHostingPatchFields(
   c: Context,
   db: Db,
   organizationId: string,
-  body: Record<string, unknown>,
+  body: Record<string, unknown>
 ): Promise<HostingPatchFields | Response> {
-  let patchFields: HostingPatchFields;
+  let patchFields: HostingPatchFields
   try {
-    patchFields = buildPatchUpdateFields(body);
+    patchFields = buildPatchUpdateFields(body)
   } catch {
-    return c.json({ error: "Invalid request" }, 400);
+    return c.json({ error: 'Invalid request' }, 400)
   }
 
-  const metadataResult = parseJsonbObject(c, body, "metadata");
-  if (metadataResult instanceof Response) return metadataResult;
+  const metadataResult = parseJsonbObject(c, body, 'metadata')
+  if (metadataResult instanceof Response) return metadataResult
   if (metadataResult !== null) {
-    patchFields.metadata = stripPromotedMetadataKeys(
-      metadataResult,
-      HOSTING_PROMOTED_METADATA_KEYS,
-    );
+    patchFields.metadata = stripPromotedMetadataKeys(metadataResult, HOSTING_PROMOTED_METADATA_KEYS)
   }
 
-  const optionsResult = parseOptionalHostingOptions(c, body);
-  if (optionsResult.kind === "error") return optionsResult.response;
-  if (optionsResult.kind === "value") {
-    patchFields.options = optionsResult.value;
-    patchFields.protocol = optionsResult.value.protocol ?? null;
+  const optionsResult = parseOptionalHostingOptions(c, body)
+  if (optionsResult.kind === 'error') return optionsResult.response
+  if (optionsResult.kind === 'value') {
+    patchFields.options = optionsResult.value
+    patchFields.protocol = optionsResult.value.protocol ?? null
   }
 
-  const fks = await resolveOptionalHostingFks(c, db, organizationId, body);
-  if (fks.kind === "error") return fks.response;
-  if (fks.tlsId.kind === "value") patchFields.tlsId = fks.tlsId.value;
-  if (fks.ipId.kind === "value") patchFields.ipId = fks.ipId.value;
+  const fks = await resolveOptionalHostingFks(c, db, organizationId, body)
+  if (fks.kind === 'error') return fks.response
+  if (fks.tlsId.kind === 'value') patchFields.tlsId = fks.tlsId.value
+  if (fks.ipId.kind === 'value') patchFields.ipId = fks.ipId.value
 
-  return patchFields;
+  return patchFields
 }
 
 export function assertCreateHostingBindScope(
   c: Context,
   db: Db,
-  ipIdResult: Extract<OptionalIpIdResult, { kind: "absent" | "value" }>,
-  options: ReturnType<typeof parseHostingOptions> | null,
+  ipIdResult: Extract<OptionalIpIdResult, { kind: 'absent' | 'value' }>,
+  options: ReturnType<typeof parseHostingOptions> | null
 ): Promise<Response | null> {
-  if (ipIdResult.kind !== "value" || !ipIdResult.value) {
-    return Promise.resolve(null);
+  if (ipIdResult.kind !== 'value' || !ipIdResult.value) {
+    return Promise.resolve(null)
   }
-  return assertHostingPublicBindScope(c, db, ipIdResult.value, options);
+  return assertHostingPublicBindScope(c, db, ipIdResult.value, options)
 }
 
 export function assertMergedHostingBindScope(
   c: Context,
   db: Db,
   existing: Readonly<{ ipId: string | null; options: unknown }>,
-  patchFields: Readonly<
-    { ipId?: string | null; options?: Record<string, unknown> | null }
-  >,
+  patchFields: Readonly<{ ipId?: string | null; options?: Record<string, unknown> | null }>
 ): Promise<Response | null> {
-  const mergedOptions = patchFields.options === undefined
-    ? parseHostingOptions(existing.options)
-    : parseHostingOptions(patchFields.options);
+  const mergedOptions =
+    patchFields.options === undefined
+      ? parseHostingOptions(existing.options)
+      : parseHostingOptions(patchFields.options)
   // Prefer assignment over `??`: null clears the pin; only undefined keeps existing.
-  let effectiveIpId = existing.ipId;
+  let effectiveIpId = existing.ipId
   if (patchFields.ipId !== undefined) {
-    effectiveIpId = patchFields.ipId;
+    effectiveIpId = patchFields.ipId
   }
-  if (!effectiveIpId) return Promise.resolve(null);
-  return assertHostingPublicBindScope(c, db, effectiveIpId, mergedOptions);
+  if (!effectiveIpId) return Promise.resolve(null)
+  return assertHostingPublicBindScope(c, db, effectiveIpId, mergedOptions)
 }
 
-export function parseCreateServiceId(
-  body: Record<string, unknown>,
-): string | null {
-  const serviceIdRaw = body.serviceId;
-  if (typeof serviceIdRaw !== "string" || serviceIdRaw.trim().length === 0) {
-    return null;
+export function parseCreateServiceId(body: Record<string, unknown>): string | null {
+  const serviceIdRaw = body.serviceId
+  if (typeof serviceIdRaw !== 'string' || serviceIdRaw.trim().length === 0) {
+    return null
   }
-  return serviceIdRaw.trim();
+  return serviceIdRaw.trim()
 }

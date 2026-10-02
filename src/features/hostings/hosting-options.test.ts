@@ -32,12 +32,12 @@ test('parseHostingOptions accepts protocol and ports for tcp/udp hosting', () =>
       protocol: 'tcp',
       ports: [{ published: 5432, target: 5432 }],
     }),
-    { protocol: 'tcp', ports: [{ published: 5432, target: 5432 }] },
+    { protocol: 'tcp', ports: [{ published: 5432, target: 5432 }] }
   )
-  assertEquals(
-    parseHostingOptions({ protocol: 'udp', ports: [{ published: 53, target: 5300 }] }),
-    { protocol: 'udp', ports: [{ published: 53, target: 5300 }] },
-  )
+  assertEquals(parseHostingOptions({ protocol: 'udp', ports: [{ published: 53, target: 5300 }] }), {
+    protocol: 'udp',
+    ports: [{ published: 53, target: 5300 }],
+  })
   assertEquals(parseHostingOptions({ protocol: 'invalid' }), {})
 })
 
@@ -52,7 +52,7 @@ test('parseHostingOptions drops invalid or duplicate port mappings', () => {
         'not-an-object',
       ],
     }),
-    { ports: [{ published: 5432, target: 5432 }] },
+    { ports: [{ published: 5432, target: 5432 }] }
   )
   assertEquals(parseHostingOptions({ ports: [] }), {})
   assertEquals(parseHostingOptions({ ports: 'nope' }), {})
@@ -93,7 +93,7 @@ test('parseHostingOptions accepts hostnames, path prefix, target port, and proxy
         brotli: true,
         stripPrefix: '/v1',
       },
-    },
+    }
   )
 })
 
@@ -104,10 +104,7 @@ test('resolveHostingProxy applies documented defaults', () => {
     brotli: false,
     stripPrefix: undefined,
   })
-  assertEquals(
-    resolveHostingProxy({ proxy: { stripPrefix: '/api' } }).stripPrefix,
-    '/api',
-  )
+  assertEquals(resolveHostingProxy({ proxy: { stripPrefix: '/api' } }).stripPrefix, '/api')
 })
 
 test('parseHostingOptions rejects non-records', () => {
@@ -127,7 +124,7 @@ test('parseHostingOptions accepts web env and php hints', () => {
         env: { APP_ENV: 'production' },
         php: { version: '8.3', memoryLimit: '256M', maxExecutionTime: 30 },
       },
-    },
+    }
   )
 })
 
@@ -151,7 +148,7 @@ test('parseHostingOptions drops invalid web env values and php fields', () => {
       web: {
         env: { OK: 'yes' },
       },
-    },
+    }
   )
   assertEquals(parseHostingOptions({ web: { env: {} } }), {})
   assertEquals(parseHostingOptions({ web: 'nope' }), {})

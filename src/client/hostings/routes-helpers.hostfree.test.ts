@@ -42,7 +42,7 @@ function mockContext(): Context<AppEnv> {
 async function expectErrorResponse(
   response: unknown,
   status: number,
-  body: Record<string, unknown>,
+  body: Record<string, unknown>
 ): Promise<void> {
   if (!(response instanceof Response)) {
     throw new TypeError('expected error response')
@@ -51,9 +51,7 @@ async function expectErrorResponse(
   assertEquals(await response.json(), body)
 }
 
-function entityOrgDb(
-  responses: Array<string | null | '__ip_scope__' | '__ip_public__'>,
-): Db {
+function entityOrgDb(responses: Array<string | null | '__ip_scope__' | '__ip_public__'>): Db {
   let i = 0
   return {
     select: () => ({
@@ -105,12 +103,7 @@ test('parseOptionalTlsId handles absent, null, invalid, and foreign org', async 
   if (invalid.kind !== 'error') throw new TypeError('expected tls error')
   await expectErrorResponse(invalid.response, 400, { error: 'Invalid request' })
 
-  const foreign = await parseOptionalTlsId(
-    c,
-    entityOrgDb(['other-org']),
-    ORG,
-    TLS,
-  )
+  const foreign = await parseOptionalTlsId(c, entityOrgDb(['other-org']), ORG, TLS)
   if (foreign.kind !== 'error') throw new TypeError('expected tls not found')
   await expectErrorResponse(foreign.response, 404, { error: 'Not found' })
 
@@ -144,20 +137,14 @@ test('parseOptionalHostingOptions rejects non-object options payloads', async ()
 
 test('assertHostingPublicBindScope rejects non-public IP when bind is public', async () => {
   const c = mockContext()
-  const denied = await assertHostingPublicBindScope(
-    c,
-    entityOrgDb(['__ip_scope__']),
-    IP,
-    { bind: 'public' },
-  )
+  const denied = await assertHostingPublicBindScope(c, entityOrgDb(['__ip_scope__']), IP, {
+    bind: 'public',
+  })
   await expectErrorResponse(denied, 400, { error: 'hosting_bind_scope_mismatch' })
 
-  const allowed = await assertHostingPublicBindScope(
-    c,
-    entityOrgDb(['__ip_public__']),
-    IP,
-    { bind: 'public' },
-  )
+  const allowed = await assertHostingPublicBindScope(c, entityOrgDb(['__ip_public__']), IP, {
+    bind: 'public',
+  })
   assertEquals(allowed, null)
 })
 
@@ -165,7 +152,7 @@ test('assertCreateHostingBindScope skips absent ipId', async () => {
   const c = mockContext()
   assertEquals(
     await assertCreateHostingBindScope(c, entityOrgDb([]), { kind: 'absent' }, null),
-    null,
+    null
   )
 })
 
@@ -175,7 +162,7 @@ test('assertMergedHostingBindScope merges patch ipId and options', async () => {
     c,
     entityOrgDb(['__ip_scope__']),
     { ipId: null, options: { bind: 'datacenter' } },
-    { ipId: IP, options: { bind: 'public' } },
+    { ipId: IP, options: { bind: 'public' } }
   )
   await expectErrorResponse(denied, 400, { error: 'hosting_bind_scope_mismatch' })
 })
