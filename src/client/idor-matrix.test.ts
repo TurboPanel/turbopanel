@@ -49,6 +49,7 @@ import {
   project,
   repository,
   retention,
+  secret,
   server,
   service,
   storage,
@@ -62,6 +63,7 @@ import {
   workspace,
 } from '../db/schema.ts'
 import { deriveEncryptionSecretsConfig, deriveSecretsConfig } from '../lib/secrets/secrets.ts'
+import { forEachSequential } from '../lib/sequential.ts'
 import { parseTestSecretsConfig } from '../test-fixtures/secrets.ts'
 import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from './authn/crypto.ts'
 import { createSession } from './authn/session-store.ts'
@@ -103,7 +105,7 @@ type Fixture = {
   orgB: string
   cookieA: string
   b: Ids
-  aOwn: { tagId: string; serverId: string }
+  aOwn: { tagId: string; serverId: string } & Ids
 }
 
 async function insertId(promise: Promise<{ id: string }[]>): Promise<string> {
@@ -380,7 +382,39 @@ async function seedOrganizationB(
     checksum: 'b'.repeat(64),
     path: `/backup/copies/${ids.copyId}/${ids.archiveBackupId}.tar.gz`,
   })
+  await seedBodyReferences(db, orgB, ids, n)
   return ids
+}
+
+/**
+ * Objects only ever named in a request body: a credential and a project-bound
+ * principal. Seeded for B (the foreign id) and for A (the positive control).
+ */
+async function seedBodyReferences(
+  db: Db,
+  org: string,
+  ids: Ids,
+  n: (suffix: string) => string
+): Promise<void> {
+  ids.secretId = await insertId(
+    db
+      .insert(secret)
+      .values({ organizationId: org, provider: 'sftp', name: n('secret'), secretEnvelope: 'x' })
+      .returning({ id: secret.id })
+  )
+  ids.projectPrincipalId = await insertId(
+    db
+      .insert(principal)
+      .values({
+        organizationId: org,
+        projectId: ids.projectId,
+        kind: 'database',
+        provider: 'postgres',
+        username: n('pp'),
+        appliedUsername: n('pp'),
+      })
+      .returning({ id: principal.id })
+  )
 }
 
 /** One md5 over every table that holds organization B's resources. */
@@ -554,6 +588,32 @@ async function request(
   return result
 }
 
+/** A's own objects for the body-id positive controls. */
+async function seedBodyTargetsA(db: Db, orgA: string, nonce: string): Promise<Ids> {
+  const n = (suffix: string) => `idor-a-${nonce}-${suffix}`
+  const ids: Ids = {}
+  ids.workspaceId = await insertId(
+    db
+      .insert(workspace)
+      .values({ organizationId: orgA, name: n('workspace') })
+      .returning({ id: workspace.id })
+  )
+  ids.projectId = await insertId(
+    db
+      .insert(project)
+      .values({ workspaceId: ids.workspaceId, organizationId: orgA, name: n('project') })
+      .returning({ id: project.id })
+  )
+  ids.storageId = await insertId(
+    db
+      .insert(storage)
+      .values({ organizationId: orgA, kind: 'volume', name: n('storage') })
+      .returning({ id: storage.id })
+  )
+  await seedBodyReferences(db, orgA, ids, n)
+  return ids
+}
+
 async function withFixtureOn(db: Db, fn: (fixture: Fixture) => Promise<void>): Promise<void> {
   const secretsConfig = parseTestSecretsConfig('deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
@@ -615,6 +675,7 @@ async function withFixtureOn(db: Db, fn: (fixture: Fixture) => Promise<void>): P
         .returning({ id: server.id })
     ),
   }
+  Object.assign(aOwn, await seedBodyTargetsA(db, orgA, nonce))
   const b = await seedOrganizationB(db, orgB, ownerB, nonce)
   await fn({ db, app, nonce, orgA, orgB, cookieA, b, aOwn })
 }
@@ -722,5 +783,208 @@ test('every parameterised client route refuses another organization’s ids, lea
       [],
       `IDOR matrix failures (${failures.length} of ${requests} requests):\n${failures.join('\n')}`
     )
+  })
+})
+
+/**
+ * Ids named in a request body or query rather than the path (audit P2-16: the
+ * path-only matrix is why a foreign `defaultServerId` on create went unnoticed).
+ * Each case is sent twice with the same body: once carrying B's id, which must
+ * be refused as 404, and once carrying A's own id, which must succeed. The
+ * positive control is what keeps the 404 from passing on a validation error.
+ */
+type BodyCase = {
+  method: string
+  path: (own: Ids) => string
+  body: (own: Ids, ref: Ids, nonce: string) => Record<string, unknown>
+}
+
+const BODY_ID_CASES: Record<string, BodyCase> = {
+  'POST /projects options.defaultServerId': {
+    method: 'POST',
+    path: () => '/api/client/v1/projects',
+    body: (own, ref, nonce) => ({
+      workspaceId: own.workspaceId,
+      name: `idor-body-${nonce}-${crypto.randomUUID().slice(0, 8)}`,
+      type: 'empty',
+      options: { defaultServerId: ref.serverId },
+    }),
+  },
+  'POST /storage principalId': {
+    method: 'POST',
+    path: () => '/api/client/v1/storage',
+    body: (_own, ref, nonce) => ({
+      kind: 'volume',
+      name: `idor-body-${nonce}-${crypto.randomUUID().slice(0, 8)}`,
+      principalId: ref.projectPrincipalId,
+    }),
+  },
+  'PATCH /storage/:id principalId': {
+    method: 'PATCH',
+    path: (own) => `/api/client/v1/storage/${own.storageId}`,
+    body: (_own, ref) => ({ principalId: ref.projectPrincipalId }),
+  },
+  'POST /storage/:id/copies secretId': {
+    method: 'POST',
+    path: (own) => `/api/client/v1/storage/${own.storageId}/copies`,
+    body: (own, ref) => ({
+      provider: 'docker',
+      serverId: own.serverId,
+      path: `/idor/${crypto.randomUUID()}`,
+      secretId: ref.secretId,
+    }),
+  },
+}
+
+async function sendJson(
+  fixture: Fixture,
+  method: string,
+  path: string,
+  body: Record<string, unknown>
+): Promise<{ status: number; text: string }> {
+  const response = await fixture.app.request(path, {
+    method,
+    headers: {
+      cookie: fixture.cookieA,
+      'content-type': 'application/json',
+      origin: 'http://localhost',
+      [ORG_ID_HEADER]: fixture.orgA,
+    },
+    body: JSON.stringify(body),
+  })
+  return { status: response.status, text: await response.text() }
+}
+
+for (const [name, entry] of Object.entries(BODY_ID_CASES)) {
+  test(`body ids: ${name} refuses B's id and accepts A's own`, async () => {
+    await withFixture(async (fixture) => {
+      const path = entry.path(fixture.aOwn)
+      const foreign = await sendJson(
+        fixture,
+        entry.method,
+        path,
+        entry.body(fixture.aOwn, fixture.b, fixture.nonce)
+      )
+      assertEquals(foreign.status, 404, `foreign id: ${foreign.text}`)
+      const own = await sendJson(
+        fixture,
+        entry.method,
+        path,
+        entry.body(fixture.aOwn, fixture.aOwn, fixture.nonce)
+      )
+      assert(own.status >= 200 && own.status < 300, `own id: ${own.status} ${own.text}`)
+    })
+  })
+}
+
+/** Every id field name a create, update or list filter takes, set to B's object. */
+function foreignReferenceFields(ids: Ids): Record<string, string> {
+  return {
+    serverId: ids.serverId!,
+    defaultServerId: ids.serverId!,
+    sourceServerId: ids.serverId!,
+    datacenterId: ids.datacenterId!,
+    workspaceId: ids.workspaceId!,
+    projectId: ids.projectId!,
+    environmentId: ids.environmentId!,
+    serviceId: ids.serviceId!,
+    storageId: ids.storageId!,
+    networkId: ids.networkId!,
+    ipId: ids.ipId!,
+    tlsId: ids.tlsId!,
+    hostingId: ids.hostingId!,
+    principalId: ids.projectPrincipalId!,
+    repositoryId: ids.repositoryId!,
+    secretId: ids.secretId!,
+    managedId: ids.managedId!,
+    teamId: ids.teamId!,
+    tagId: ids.tagId!,
+    forgeId: ids.forgeId!,
+    containerId: ids.containerId!,
+    taskId: ids.taskId!,
+  }
+}
+
+/**
+ * md5 over every row, in any fingerprinted table, whose text names one of B's
+ * ids. Changes when one of B's rows changes and when any other row starts
+ * referencing B (the stored-foreign-reference class); rows A creates for itself
+ * do not move it.
+ */
+async function rowsNamingB(db: Db, ids: Ids): Promise<string> {
+  const uuids = Object.values(ids).filter((id) => /^[0-9a-f-]{36}$/.test(id))
+  const pattern = uuids.join('|')
+  const parts = FINGERPRINT_TABLES.map(
+    (table) =>
+      `(select coalesce(md5(string_agg(t::text, '|' order by t::text)), '') from "${table}" t where t::text ~ '${pattern}')`
+  )
+  const rows = await db.execute(sql.raw(`select md5(concat_ws('|', ${parts.join(', ')})) as fp`))
+  return String((rows as unknown as { fp: string }[])[0]!.fp)
+}
+
+/** Markers only B's seeded rows carry (A's are `idor-a-<nonce>-…`, `IDOR A <nonce>`). */
+function revealsB(body: string, nonce: string): boolean {
+  return body.includes(`idor-${nonce}-`) || body.includes(`IDOR B ${nonce}`)
+}
+
+function isUnparameterised(route: { method: string; path: string }): boolean {
+  return (
+    route.method !== 'ALL' &&
+    !route.path.includes(':') &&
+    !route.path.includes('*') &&
+    !NOT_OBJECT_ID_ROUTES.some((pattern) => pattern.test(route.path))
+  )
+}
+
+/**
+ * One unparameterised route, called as A with B's ids in the query (reads) or
+ * the body (writes). Returns what went wrong, if anything.
+ */
+async function probeWithForeignReferences(
+  fixture: Fixture,
+  route: { method: string; path: string },
+  query: string,
+  body: Record<string, unknown>
+): Promise<string[]> {
+  const before = await rowsNamingB(fixture.db, fixture.b)
+  const result =
+    route.method === 'GET'
+      ? await request(fixture, 'GET', `${route.path}?${query}`, fixture.orgA)
+      : await sendJson(fixture, route.method, route.path, body).then((r) => ({
+          status: r.status,
+          body: r.text,
+        }))
+  const after = await rowsNamingB(fixture.db, fixture.b)
+  if (result === 'timeout') return ['no answer within 15 s']
+  const problems: string[] = []
+  // A 401 means A's session stopped working: every later route would then pass
+  // vacuously, so it is a harness failure, never a pass.
+  if (result.status === 401) problems.push('answered 401 to a signed-in owner')
+  // 503 is a feature the harness leaves unconfigured (upgrade channel, public URL).
+  if (result.status >= 500 && result.status !== 503) {
+    problems.push(`server error ${result.status}`)
+  }
+  if (revealsB(result.body, fixture.nonce)) problems.push("body contains B's data")
+  if (before !== after) problems.push('stored or changed a reference to B')
+  return problems
+}
+
+test('unparameterised client routes never act on or reveal B through body or query ids', async () => {
+  await withFixture(async (fixture) => {
+    const fields = foreignReferenceFields(fixture.b)
+    const query = new URLSearchParams(fields).toString()
+    const body = { ...fields, options: { defaultServerId: fixture.b.serverId } }
+    const routes = new Map(
+      fixture.app.routes
+        .filter(isUnparameterised)
+        .map((route) => [`${route.method} ${route.path}`, route])
+    )
+    assert(routes.size > 30, `expected the unparameterised routes, found ${routes.size}`)
+    const failures: string[] = []
+    await forEachSequential(routes, async ([key, route]) => {
+      const problems = await probeWithForeignReferences(fixture, route, query, body)
+      failures.push(...problems.map((problem) => `${key}: ${problem}`))
+    })
+    assertEquals(failures, [], failures.join('\n'))
   })
 })

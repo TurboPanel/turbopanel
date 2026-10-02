@@ -7,7 +7,7 @@ import { createSessionMiddleware } from '../authn/middleware.ts'
 import { listVisible } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import { getDb } from '../../db/connection.ts'
-import { storageCopy, mount, principal, storage } from '../../db/schema.ts'
+import { storageCopy, mount, principal, secret, storage } from '../../db/schema.ts'
 import {
   assertCanCreateOr403,
   assertCanManageOr403,
@@ -266,6 +266,7 @@ async function loadStorageChildren(db: StorageDb, storageIds: string[]) {
 async function validatePrincipalRef(
   c: Context<AppEnv>,
   db: StorageDb,
+  orgId: string,
   principalId: string | null | undefined,
   projectId: string | null
 ): Promise<Response | null> {
@@ -273,7 +274,9 @@ async function validatePrincipalRef(
   const [principalRow] = await db
     .select({ projectId: principal.projectId })
     .from(principal)
-    .where(eq(principal.id, principalId))
+    // Another organization's principal reads as missing: its credentials would
+    // otherwise ship with this storage at deploy.
+    .where(and(eq(principal.id, principalId), eq(principal.organizationId, orgId)))
     .limit(1)
   if (!principalRow?.projectId) {
     return c.json({ error: 'Not found' }, 404)
@@ -284,15 +287,26 @@ async function validatePrincipalRef(
   return null
 }
 
-async function validateServerInOrg(
+/** A copy's server and credential must both be the organization's own; anything else is 404. */
+async function validateCopyRefsInOrg(
   c: Context<AppEnv>,
   db: StorageDb,
   orgId: string,
-  serverId: string
+  refs: { serverId?: unknown; secretId?: unknown }
 ): Promise<Response | null> {
-  const serverOrgId = await resolveEntityOrganizationId(db, 'server', serverId)
-  if (!serverOrgId || serverOrgId !== orgId) {
+  if (
+    typeof refs.serverId === 'string' &&
+    (await resolveEntityOrganizationId(db, 'server', refs.serverId)) !== orgId
+  ) {
     return c.json({ error: 'Not found' }, 404)
+  }
+  if (typeof refs.secretId === 'string') {
+    const [owned] = await db
+      .select({ id: secret.id })
+      .from(secret)
+      .where(and(eq(secret.id, refs.secretId), eq(secret.organizationId, orgId)))
+      .limit(1)
+    if (!owned) return c.json({ error: 'Not found' }, 404)
   }
   return null
 }
@@ -382,14 +396,15 @@ async function createStorageRecord(
   const principalError = await validatePrincipalRef(
     c,
     db,
+    orgId,
     fields.principalId,
     resolveStorageProjectId(parent)
   )
   if (principalError) return principalError
 
   if (fields.copy) {
-    const serverError = await validateServerInOrg(c, db, orgId, fields.copy.serverId)
-    if (serverError) return serverError
+    const copyRefError = await validateCopyRefsInOrg(c, db, orgId, fields.copy)
+    if (copyRefError) return copyRefError
   }
   if (fields.mount) {
     const serviceError = await validateServiceInOrg(c, db, orgId, fields.mount.serviceId)
@@ -447,6 +462,7 @@ async function patchStorageRecord(
   const principalError = await validatePrincipalRef(
     c,
     db,
+    existing.organizationId,
     typeof body.principalId === 'string' ? body.principalId : existing.principalId,
     existing.projectId
   )
@@ -698,8 +714,8 @@ export function registerStorageRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const fields = parseCopyRecord(c, body)
     if (fields instanceof Response) return fields
 
-    const serverError = await validateServerInOrg(c, ctx.db, ctx.orgId, fields.serverId)
-    if (serverError) return serverError
+    const copyRefError = await validateCopyRefsInOrg(c, ctx.db, ctx.orgId, fields)
+    if (copyRefError) return copyRefError
 
     try {
       const id = await insertCopyRow(ctx.db, storageId, fields)
@@ -729,10 +745,8 @@ export function registerStorageRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const updateFields = parseCopyPatchFields(c, body)
     if (updateFields instanceof Response) return updateFields
 
-    if (typeof updateFields.serverId === 'string') {
-      const serverError = await validateServerInOrg(c, ctx.db, ctx.orgId, updateFields.serverId)
-      if (serverError) return serverError
-    }
+    const copyRefError = await validateCopyRefsInOrg(c, ctx.db, ctx.orgId, updateFields)
+    if (copyRefError) return copyRefError
 
     // A move, a new path or provider changes which host runs the copy's
     // backup timers, and what they read.
