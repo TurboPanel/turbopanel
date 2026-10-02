@@ -10,6 +10,7 @@ import {
   type UpdateProgressStage,
 } from '../../contracts/cell-protocol.ts'
 import type { UpdateChannel } from '../../contracts/update-channel.ts'
+import { redactUrlSecrets } from './redact-url-secrets.ts'
 import {
   channelHasInstancePackage,
   pinnedManifestBlockers,
@@ -240,7 +241,7 @@ function checkManagedFeature(
 
 /** One short, single-line reason for a failed delivery (never a stack). */
 function dispatchErrorText(error: unknown): string {
-  const text = error instanceof Error ? error.message : String(error)
+  const text = redactUrlSecrets(error instanceof Error ? error.message : String(error))
   const line = text.replace(/\s+/g, ' ').trim()
   return line.length > 200 ? `${line.slice(0, 197)}...` : line || 'unknown error'
 }
@@ -1071,12 +1072,14 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
         // result must not turn that into an ordinary failure.
         step.status = 'rolled_back'
         step.errorCode = input.errorCode ?? step.errorCode ?? 'rolled_back'
-        step.errorMessage = input.error ?? step.errorMessage ?? null
+        step.errorMessage = input.error
+          ? redactUrlSecrets(input.error)
+          : (step.errorMessage ?? null)
         step.lastStageAt = input.at
       } else {
         step.status = 'failed'
         step.errorCode = input.errorCode ?? 'update_failed'
-        step.errorMessage = input.error ?? null
+        step.errorMessage = input.error ? redactUrlSecrets(input.error) : null
         step.lastStageAt = input.at
       }
       await deps.store.saveStep(step)
@@ -1102,12 +1105,13 @@ function recordProgressDetail(
   status: UpgradeStepStatus,
   detail: string
 ): void {
+  const safeDetail = redactUrlSecrets(detail)
   step.detail = {
     ...(typeof step.detail === 'object' && step.detail !== null ? step.detail : {}),
     phase: step.phase,
-    progressDetail: detail,
+    progressDetail: safeDetail,
   }
-  if (isProgressTerminal(status) && status !== 'done') step.errorMessage = detail
+  if (isProgressTerminal(status) && status !== 'done') step.errorMessage = safeDetail
 }
 
 /** A window step the tick may act on: still open, and not a fleet step behind a closed gate. */
