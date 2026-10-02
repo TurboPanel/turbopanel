@@ -187,22 +187,20 @@ it('instance network stays open except the cloud metadata endpoints (--deny-net)
   }
 })
 
-it('only env and net are left unscoped on the compiled instance', async () => {
-  // Every other grant names what it covers. These two stay bare, each for a
-  // reason found by running the binary, not assumed:
-  // - net: decided 2026-09-18 (operator-configured webhooks/forges; Unix
-  //   sockets count as net); the metadata carve-out is the --deny-net above.
-  // - env: Deno.env.toObject() is called throughout the instance, and Deno
-  //   rejects it under ANY --allow-env=<list>. Worse, ioredis pulls in the
-  //   `debug` package, whose import enumerates process.env
-  //   (Object.keys(process.env)); under a scoped grant the instance dies on
-  //   that import before it serves a request. Scoping env would mean
-  //   replacing every toObject() and patching `debug`, to hide variables the
-  //   process legitimately holds anyway (its own DB URL and secret). Revisit
-  //   if those dependencies change.
+it('only net is left unscoped on the compiled instance; env is a list plus --ignore-env', async () => {
+  // Every other grant names what it covers. Net stays bare: decided
+  // 2026-09-18 (operator-configured webhooks/forges; Unix sockets count as
+  // net); the metadata carve-out is the --deny-net above.
+  // Env is scoped. A bare --ignore-env beside the list is what makes that
+  // work: an unlisted name reads as unset instead of throwing, and
+  // Deno.env.toObject() / Object.keys(process.env) (ioredis's `debug` import)
+  // return just the allowed names instead of failing NotCapable. The list is
+  // checked against the source by src/deno-env-allowlist.test.ts.
   const tasks = await readCompileTasks()
   for (const [taskName, task] of Object.entries(tasks)) {
-    assert(/(^|\s)--allow-env(\s|$)/.test(task), `${taskName} keeps the bare --allow-env`)
+    assert(!/(^|\s)--allow-env(\s|$)/.test(task), `${taskName} must not pass a bare --allow-env`)
+    assert(/(^|\s)--allow-env=TURBOPANEL_\*,\S+/.test(task), `${taskName} must scope --allow-env`)
+    assert(/(^|\s)--ignore-env(\s|$)/.test(task), `${taskName} must pair env with --ignore-env`)
     for (const flag of ['allow-read', 'allow-write', 'allow-run', 'allow-sys', 'allow-ffi']) {
       assert(
         !new RegExp(`(^|\\s)--${flag}(\\s|$)`).test(task),

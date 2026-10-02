@@ -572,9 +572,12 @@ Installed and managed by the daemon via the `instance-launch` Ansible role:
   `pamtester`, upgrade `systemctl restart`); move those behind the daemon before
   enabling it. Pinned by `../turbopaneld/src/orchestration/instance-unit-sandbox.test.ts`.
   Deno: `--deny-net` carves the cloud-metadata endpoints out of the open
-  `--allow-net` (same list as the daemon); `--allow-env` stays bare because
-  `Deno.env.toObject()` needs it and ioredis's `debug` import enumerates
-  `process.env` (see `src/deno-compile-permissions.test.ts`). `SIGTERM` exits
+  `--allow-net` (same list as the daemon). `--allow-env` is a list
+  (`TURBOPANEL_*`, `HOME`, `PATH`, `LANG`, `CADDY_TLS_CERT`, `SMTP_PORT`) plus a
+  bare `--ignore-env`: unlisted names read as unset, and `Deno.env.toObject()` /
+  ioredis's `debug` enumeration of `process.env` return just the allowed names
+  instead of failing. `src/deno-env-allowlist.test.ts` fails on a source read the
+  list misses — extend the list, never go back to a bare `--allow-env`. `SIGTERM` exits
   in about a second (`src/platform/deno/instance-shutdown.ts`): without it the
   idle Postgres pool kept the process until systemd's SIGKILL.
 
