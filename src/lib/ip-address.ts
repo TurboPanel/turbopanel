@@ -435,13 +435,13 @@ function matchesAny(address: string, cidrs: readonly string[]): boolean {
   return cidrs.some((cidr) => addressInCidr(address, cidr))
 }
 
-const IPV4_MASK = 0xffff_ffffn
+const IPV4_MASK = 0xffffffffn
 /** `64:ff9b::/96` (RFC 6052 NAT64): the address shifted right by 32 bits. */
-const NAT64_PREFIX = 0x0064_ff9b_0000_0000_0000_0000n
+const NAT64_PREFIX = 0x64ff9b0000000000000000n
 /** `2002::/16` (RFC 3056 6to4): the address shifted right by 112 bits. */
 const SIX_TO_FOUR_PREFIX = 0x2002n
 /** `2001::/32` (RFC 4380 Teredo): the address shifted right by 96 bits. */
-const TEREDO_PREFIX = 0x2001_0000n
+const TEREDO_PREFIX = 0x20010000n
 
 /**
  * The IPv4 addresses an IPv6 transition address delivers to: NAT64 (the low
