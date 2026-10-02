@@ -134,6 +134,21 @@ test('every preview sender call site passes an applyGate', async () => {
   assertEquals(sites >= 6, true)
 })
 
+test('workers.ts and the Deno server pass the apply gate into the sweep and the consumer', async () => {
+  const root = new URL('../../', import.meta.url)
+  const workers = await Deno.readTextFile(new URL('workers.ts', root))
+  const server = await Deno.readTextFile(new URL('platform/deno/server.ts', root))
+  const wired = (text: string, call: string, pattern: RegExp) => {
+    const at = text.indexOf(call)
+    assertEquals(at >= 0, true, call)
+    assertEquals(pattern.test(text.slice(at, at + 900)), true, call)
+  }
+  wired(workers, 'runOfflineSweep(', /firewallApplyGate:\s*firewallApplyGateFromEnv\(/)
+  wired(workers, 'processCommandEnvelope(', /\bfirewallApplyGate,/)
+  assertStringIncludes(workers, 'const firewallApplyGate = firewallApplyGateFromEnv(')
+  wired(server, 'startCommandConsumer({', /firewallApplyGate:\s*firewallApplyGateFromEnv\(/)
+})
+
 test('the preview sender takes its mode from wireModeFor and never names managed itself', async () => {
   const text = await Deno.readTextFile(new URL('./preview.ts', import.meta.url))
   assertStringIncludes(text, 'wireModeFor(stored, options.applyAllowed === true)')

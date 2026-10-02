@@ -3,6 +3,7 @@
  * paths (no Postgres / Redis).
  */
 
+import { DENY_FIREWALL_APPLY } from '../firewall/enforcement.ts'
 import { assertEquals } from '@std/assert'
 import type { Db } from '../../db/connection.ts'
 import type { DaemonCell, DaemonCellRegistry, PendingRequestRecord } from '../../contracts/cell.ts'
@@ -158,13 +159,20 @@ test('isManagedObservedStatus accepts projectable statuses only', () => {
 
 test('hasManagedFollowUpDeps requires live queue plus both secret configs', () => {
   assertEquals(hasManagedFollowUpDeps(undefined), false)
-  assertEquals(hasManagedFollowUpDeps({}), false)
-  assertEquals(hasManagedFollowUpDeps({ commandQueue: createNoopCommandQueue() }), false)
+  assertEquals(hasManagedFollowUpDeps({ firewallApplyGate: DENY_FIREWALL_APPLY }), false)
+  assertEquals(
+    hasManagedFollowUpDeps({
+      firewallApplyGate: DENY_FIREWALL_APPLY,
+      commandQueue: createNoopCommandQueue(),
+    }),
+    false
+  )
   const liveQueue = {
     enqueue: () => Promise.resolve(),
   }
   assertEquals(
     hasManagedFollowUpDeps({
+      firewallApplyGate: DENY_FIREWALL_APPLY,
       commandQueue: liveQueue,
       secretsConfig: { versioned: [] } as never,
       dataEncryptionSecrets: {
@@ -1114,6 +1122,7 @@ function followUpSecrets(queue: {
   enqueue: (envelope: { commandId: string; type: string }) => Promise<void>
 }) {
   return {
+    firewallApplyGate: DENY_FIREWALL_APPLY,
     commandQueue: queue,
     secretsConfig: { versioned: [] } as never,
     dataEncryptionSecrets: {
@@ -1728,7 +1737,7 @@ test('processCommandEnvelope managed.apply enqueues pending standby applies', as
           },
         ],
       },
-      deps: { commandQueue: queue },
+      deps: { commandQueue: queue, firewallApplyGate: DENY_FIREWALL_APPLY },
     }
   )
   assertEquals(
@@ -1761,6 +1770,7 @@ test('processCommandEnvelope managed.apply marks a follow-up failed when the que
         ],
       },
       deps: {
+        firewallApplyGate: DENY_FIREWALL_APPLY,
         commandQueue: {
           enqueue: () => Promise.reject(new Error('queue down')),
         },
@@ -1824,7 +1834,7 @@ test('processCommandEnvelope managed.lifecycle stop enqueues a follow-up promote
           },
         },
       },
-      deps: { commandQueue: queue },
+      deps: { commandQueue: queue, firewallApplyGate: DENY_FIREWALL_APPLY },
     }
   )
   assertEquals(
@@ -1953,7 +1963,7 @@ test('processCommandEnvelope managed.destroy looks up environmentId and opens th
           ],
         },
       },
-      deps: { commandQueue: queue },
+      deps: { commandQueue: queue, firewallApplyGate: DENY_FIREWALL_APPLY },
     }
   )
   assertEquals(
@@ -2079,7 +2089,7 @@ test('processCommandEnvelope fabric success with a live queue still stamps after
         cidr: '10.192.0.0/16',
         options: {},
       },
-      deps: { commandQueue: queue },
+      deps: { commandQueue: queue, firewallApplyGate: DENY_FIREWALL_APPLY },
     }
   )
   assertEquals(
@@ -2118,7 +2128,7 @@ test('processCommandEnvelope managed.apply standby follow-up carries a pending T
           },
         ],
       },
-      deps: { commandQueue: queue },
+      deps: { commandQueue: queue, firewallApplyGate: DENY_FIREWALL_APPLY },
     }
   )
   assertEquals(
@@ -2261,7 +2271,7 @@ test('processCommandEnvelope managed.destroy leaves the gate closed while a sibl
           ],
         },
       },
-      deps: { commandQueue: queue },
+      deps: { commandQueue: queue, firewallApplyGate: DENY_FIREWALL_APPLY },
     }
   )
   assertEquals(
@@ -2299,6 +2309,7 @@ test('processCommandEnvelope managed.destroy marks a gated follow-up failed when
         },
       },
       deps: {
+        firewallApplyGate: DENY_FIREWALL_APPLY,
         commandQueue: {
           enqueue: () => Promise.reject(new Error('queue down')),
         },

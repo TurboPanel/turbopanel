@@ -6,6 +6,7 @@
  * and collides with `lib.deno.ns` + DOM. Excluded from `deno task check:types`;
  * the Workers toolchain owns this file's types.
  */
+import { DENY_FIREWALL_APPLY } from '../../features/firewall/enforcement.ts'
 import { assertEquals } from '@std/assert'
 import { it } from '@std/testing/bdd'
 import type {
@@ -654,7 +655,7 @@ it('second tick skips while the offline-sweep lease is held', async () => {
     traces.push(args.map(String).join(' '))
   }
   try {
-    await runOfflineSweep(inertEnv(), null, { db })
+    await runOfflineSweep(inertEnv(), null, { db, firewallApplyGate: DENY_FIREWALL_APPLY })
   } finally {
     console.info = originalInfo
   }
@@ -675,6 +676,7 @@ it('runOfflineSweep isolates a listConnected throw as sweep-failed', async () =>
   }
   try {
     await runOfflineSweep(inertEnv(), null, {
+      firewallApplyGate: DENY_FIREWALL_APPLY,
       db,
       sweepOnceDeps: {
         listConnected: () => {
@@ -710,6 +712,7 @@ it('runOfflineSweep skips liveness when the tick deadline is already due', async
   }
   try {
     await runOfflineSweep(inertEnv(), null, {
+      firewallApplyGate: DENY_FIREWALL_APPLY,
       db,
       deadlineMs: Date.now() - 1,
       sweepOnceDeps: {
@@ -742,6 +745,7 @@ it('runOfflineSweep skips liveness when the tick deadline is already due', async
 it('offline-sweep lease is released when a phase throws', async () => {
   const db = createOfflineSweepLockMemoryDb()
   await runOfflineSweep(inertEnv(), null, {
+    firewallApplyGate: DENY_FIREWALL_APPLY,
     db,
     sweepOnceDeps: {
       listConnected: () => {
@@ -787,6 +791,7 @@ it('second tick skips while a stalled optional phase still holds the lease past 
   } as unknown as Db
 
   const first = runOfflineSweep(inertEnv(), null, {
+    firewallApplyGate: DENY_FIREWALL_APPLY,
     db: hangingDb,
     nowMs: startedAt,
     deadlineMs: startedAt + OFFLINE_SWEEP_LEASE_MS + 30_000,
@@ -813,6 +818,7 @@ it('second tick skips while a stalled optional phase still holds the lease past 
     }
     try {
       await runOfflineSweep(inertEnv(), null, {
+        firewallApplyGate: DENY_FIREWALL_APPLY,
         db: hangingDb,
         nowMs: startedAt + OFFLINE_SWEEP_LEASE_MS + 1,
       })
@@ -918,6 +924,7 @@ it('takeLastOfflineSweepScheduledTimeForTests returns the last cron stamp once',
   const scheduledTime = Date.parse('2026-01-01T00:00:00.000Z')
   const db = createOfflineSweepLockMemoryDb()
   await runOfflineSweep(inertEnv(), null, {
+    firewallApplyGate: DENY_FIREWALL_APPLY,
     db,
     scheduledTime,
     sweepOnceDeps: {
@@ -1416,7 +1423,7 @@ it('runOfflineSweep logs lease-acquire-failed and returns', async () => {
     traces.push(args.map(String).join(' '))
   }
   try {
-    await runOfflineSweep(inertEnv(), null, { db })
+    await runOfflineSweep(inertEnv(), null, { db, firewallApplyGate: DENY_FIREWALL_APPLY })
   } finally {
     console.info = originalInfo
   }
@@ -1445,6 +1452,7 @@ it('runOfflineSweep logs lease-release-failed and still finishes the tick', asyn
   }
   try {
     await runOfflineSweep(inertEnv(), null, {
+      firewallApplyGate: DENY_FIREWALL_APPLY,
       db,
       sweepOnceDeps: {
         listConnected: () => Promise.resolve([]),
@@ -1536,6 +1544,7 @@ async function runTickCapturingTrace(
     // `nowMs` must be live or every phase reads as over budget before it runs.
     await runOfflineSweep(env, tlsRenewal, {
       db,
+      firewallApplyGate: DENY_FIREWALL_APPLY,
       scheduledTime,
       nowMs: Date.now(),
       sweepOnceDeps: inertSweep,
@@ -1820,6 +1829,7 @@ async function upgradeTickTraces(
   }
   try {
     await runOfflineSweep(env, null, {
+      firewallApplyGate: DENY_FIREWALL_APPLY,
       db: createOfflineSweepLockMemoryDb(),
       scheduledTime,
       sweepOnceDeps: {

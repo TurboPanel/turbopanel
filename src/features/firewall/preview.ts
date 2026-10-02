@@ -232,7 +232,12 @@ export function teardownBackedOff(
 ): boolean {
   if (mode !== 'off' || changed || stored?.kind !== 'remove') return false
   const sentMs = Date.parse(stored.sentAt)
-  return Number.isFinite(sentMs) && nowMs - sentMs < TEARDOWN_RESEND_MIN_MS
+  if (!Number.isFinite(sentMs)) return false
+  // A sentAt in the future (clock skew) is no evidence of a recent send and
+  // would otherwise hold the teardown back past the gap: re-send, which
+  // rewrites sentAt from this clock.
+  const ageMs = nowMs - sentMs
+  return ageMs >= 0 && ageMs < TEARDOWN_RESEND_MIN_MS
 }
 
 /** Build, validate and queue one server's preview. True when a command was queued. */
