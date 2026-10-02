@@ -12,8 +12,6 @@
  * event; manual switchover and disaster recovery are unaffected.
  */
 
-import { resolveDeploymentEnvironment } from '../../app/build-info.ts'
-
 export const AUTO_FAILOVER_ENV = 'TURBOPANEL_AUTO_FAILOVER'
 
 export type AutoFailoverSetting = 'on' | 'off'
@@ -37,8 +35,10 @@ export function resolveAutoFailover(
 ): AutoFailoverSetting {
   const raw = env?.[AUTO_FAILOVER_ENV]?.trim().toLowerCase() ?? ''
   if (raw === '') {
-    const deployment = resolveDeploymentEnvironment(env)
-    return deployment && OFF_BY_DEFAULT_ENVIRONMENTS.has(deployment) ? 'off' : 'on'
+    // Same parsing as `resolveDeploymentEnvironment` (app/build-info.ts), which
+    // a feature module may not import.
+    const deployment = env?.TURBOPANEL_ENVIRONMENT?.trim().toLowerCase() ?? ''
+    return OFF_BY_DEFAULT_ENVIRONMENTS.has(deployment) ? 'off' : 'on'
   }
   if (ON_VALUES.has(raw)) return 'on'
   if (OFF_VALUES.has(raw)) return 'off'
