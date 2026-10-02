@@ -13,10 +13,7 @@ import {
   persistGitlabTokenPair,
   refreshGitlabAccessToken,
 } from './gitlab-oauth-token.ts'
-import {
-  GITLAB_DEFAULT_BASE_URL,
-  GITLAB_OAUTH_SCOPES,
-} from './forge-records.ts'
+import { GITLAB_DEFAULT_BASE_URL, GITLAB_OAUTH_SCOPES } from './forge-records.ts'
 import { useUnpinnedForgeFetchForTests } from './forge-url.ts'
 
 useUnpinnedForgeFetchForTests()
@@ -35,7 +32,7 @@ test('gitlabAuthorizeUrl builds the OAuth authorize endpoint', () => {
     {
       redirectUri: 'https://203.0.113.10:8443/api/client/v1/repositories/gitlab/oauth/callback',
       state: 'csrf-token',
-    },
+    }
   )
   const parsed = new URL(url)
   assertEquals(parsed.origin, 'https://gitlab.com')
@@ -43,7 +40,7 @@ test('gitlabAuthorizeUrl builds the OAuth authorize endpoint', () => {
   assertEquals(parsed.searchParams.get('client_id'), 'app-id')
   assertEquals(
     parsed.searchParams.get('redirect_uri'),
-    'https://203.0.113.10:8443/api/client/v1/repositories/gitlab/oauth/callback',
+    'https://203.0.113.10:8443/api/client/v1/repositories/gitlab/oauth/callback'
   )
   assertEquals(parsed.searchParams.get('response_type'), 'code')
   assertEquals(parsed.searchParams.get('state'), 'csrf-token')
@@ -53,7 +50,7 @@ test('gitlabAuthorizeUrl builds the OAuth authorize endpoint', () => {
 test('gitlabAuthorizeUrl respects a self-managed GitLab base URL', () => {
   const url = gitlabAuthorizeUrl(
     { baseUrl: 'https://git.example.lan', clientId: 'self-hosted' },
-    { redirectUri: 'https://203.0.113.20/callback', state: 's' },
+    { redirectUri: 'https://203.0.113.20/callback', state: 's' }
   )
   const parsed = new URL(url)
   assertEquals(parsed.origin, 'https://git.example.lan')
@@ -68,7 +65,7 @@ const oauthConfig: GitlabOauthCredentials = {
 
 function withFetch(
   handler: (url: string, init?: RequestInit) => Response | Promise<Response>,
-  fn: () => Promise<void>,
+  fn: () => Promise<void>
 ): Promise<void> {
   const original = globalThis.fetch
   globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
@@ -81,53 +78,53 @@ function withFetch(
 }
 
 test('exchangeGitlabAuthorizationCode posts the authorization-code grant', async () => {
-  await withFetch((url, init) => {
-    assertEquals(url, 'https://gitlab.com/oauth/token')
-    assertEquals(init?.method, 'POST')
-    const body = String(init?.body ?? '')
-    assertEquals(body.includes('grant_type=authorization_code'), true)
-    assertEquals(body.includes('code=auth-code'), true)
-    assertEquals(
-      body.includes('redirect_uri=https%3A%2F%2F203.0.113.10%2Fcallback'),
-      true,
-    )
-    return new Response(
-      JSON.stringify({
-        access_token: 'glpat-access',
-        refresh_token: 'glpat-refresh',
-        expires_in: 3600,
-        scope: 'api read_repository',
-      }),
-      { status: 200 },
-    )
-  }, async () => {
-    const pair = await exchangeGitlabAuthorizationCode(oauthConfig, {
-      code: 'auth-code',
-      redirectUri: 'https://203.0.113.10/callback',
-    })
-    assertEquals(pair.token, 'glpat-access')
-    assertEquals(pair.refreshToken, 'glpat-refresh')
-    assertEquals(pair.scope, 'api read_repository')
-    assertEquals(Number.isNaN(Date.parse(pair.expiresAt)), false)
-  })
+  await withFetch(
+    (url, init) => {
+      assertEquals(url, 'https://gitlab.com/oauth/token')
+      assertEquals(init?.method, 'POST')
+      const body = String(init?.body ?? '')
+      assertEquals(body.includes('grant_type=authorization_code'), true)
+      assertEquals(body.includes('code=auth-code'), true)
+      assertEquals(body.includes('redirect_uri=https%3A%2F%2F203.0.113.10%2Fcallback'), true)
+      return new Response(
+        JSON.stringify({
+          access_token: 'glpat-access',
+          refresh_token: 'glpat-refresh',
+          expires_in: 3600,
+          scope: 'api read_repository',
+        }),
+        { status: 200 }
+      )
+    },
+    async () => {
+      const pair = await exchangeGitlabAuthorizationCode(oauthConfig, {
+        code: 'auth-code',
+        redirectUri: 'https://203.0.113.10/callback',
+      })
+      assertEquals(pair.token, 'glpat-access')
+      assertEquals(pair.refreshToken, 'glpat-refresh')
+      assertEquals(pair.scope, 'api read_repository')
+      assertEquals(Number.isNaN(Date.parse(pair.expiresAt)), false)
+    }
+  )
 })
 
 test('refreshGitlabAccessToken posts the refresh grant and defaults lifetime', async () => {
-  await withFetch((url, init) => {
-    assertEquals(url, 'https://gitlab.com/oauth/token')
-    const body = String(init?.body ?? '')
-    assertEquals(body.includes('grant_type=refresh_token'), true)
-    assertEquals(body.includes('refresh_token=old-refresh'), true)
-    return new Response(
-      JSON.stringify({ access_token: 'glpat-new' }),
-      { status: 200 },
-    )
-  }, async () => {
-    const pair = await refreshGitlabAccessToken(oauthConfig, 'old-refresh')
-    assertEquals(pair.token, 'glpat-new')
-    assertEquals(pair.refreshToken, null)
-    assertEquals(pair.scope, null)
-  })
+  await withFetch(
+    (url, init) => {
+      assertEquals(url, 'https://gitlab.com/oauth/token')
+      const body = String(init?.body ?? '')
+      assertEquals(body.includes('grant_type=refresh_token'), true)
+      assertEquals(body.includes('refresh_token=old-refresh'), true)
+      return new Response(JSON.stringify({ access_token: 'glpat-new' }), { status: 200 })
+    },
+    async () => {
+      const pair = await refreshGitlabAccessToken(oauthConfig, 'old-refresh')
+      assertEquals(pair.token, 'glpat-new')
+      assertEquals(pair.refreshToken, null)
+      assertEquals(pair.scope, null)
+    }
+  )
 })
 
 test('gitlab token exchange maps error_description from GitLab', async () => {
@@ -135,7 +132,7 @@ test('gitlab token exchange maps error_description from GitLab', async () => {
     () =>
       new Response(
         JSON.stringify({ error_description: 'The provided authorization grant is invalid' }),
-        { status: 400 },
+        { status: 400 }
       ),
     async () => {
       const error = await assertRejects(
@@ -145,13 +142,13 @@ test('gitlab token exchange maps error_description from GitLab', async () => {
             redirectUri: 'https://203.0.113.10/callback',
           }),
         GitlabOauthTokenError,
-        'authorization grant is invalid',
+        'authorization grant is invalid'
       )
       if (!(error instanceof GitlabOauthTokenError)) {
         throw new TypeError('expected GitlabOauthTokenError')
       }
       assertEquals(error.status, 400)
-    },
+    }
   )
 })
 
@@ -162,9 +159,9 @@ test('gitlab token exchange falls back through message, error, then status', asy
       await assertRejects(
         () => refreshGitlabAccessToken(oauthConfig, 'x'),
         GitlabOauthTokenError,
-        'invalid_grant',
+        'invalid_grant'
       )
-    },
+    }
   )
   await withFetch(
     () => new Response('not-json', { status: 502 }),
@@ -172,9 +169,9 @@ test('gitlab token exchange falls back through message, error, then status', asy
       await assertRejects(
         () => refreshGitlabAccessToken(oauthConfig, 'x'),
         GitlabOauthTokenError,
-        'gitlab request failed (502)',
+        'gitlab request failed (502)'
       )
-    },
+    }
   )
   await withFetch(
     () => new Response('', { status: 503 }),
@@ -182,9 +179,9 @@ test('gitlab token exchange falls back through message, error, then status', asy
       await assertRejects(
         () => refreshGitlabAccessToken(oauthConfig, 'x'),
         GitlabOauthTokenError,
-        'gitlab request failed (503)',
+        'gitlab request failed (503)'
       )
-    },
+    }
   )
 })
 
@@ -195,9 +192,9 @@ test('gitlab token exchange rejects a payload with no access_token', async () =>
       await assertRejects(
         () => refreshGitlabAccessToken(oauthConfig, 'x'),
         GitlabOauthTokenError,
-        'returned no token',
+        'returned no token'
       )
-    },
+    }
   )
 })
 
@@ -210,9 +207,9 @@ test('gitlab token exchange wraps network failures', async () => {
       await assertRejects(
         () => refreshGitlabAccessToken(oauthConfig, 'x'),
         GitlabOauthTokenError,
-        'tls handshake failed',
+        'tls handshake failed'
       )
-    },
+    }
   )
 })
 
@@ -225,9 +222,9 @@ test('gitlab token exchange wraps non-Error network failures', async () => {
       await assertRejects(
         () => refreshGitlabAccessToken(oauthConfig, 'x'),
         GitlabOauthTokenError,
-        'network error',
+        'network error'
       )
-    },
+    }
   )
 })
 
@@ -278,7 +275,7 @@ function gitlabDb(opts: {
 async function sealedOauthApp() {
   const secrets = await deriveEncryptionSecretsConfig(
     parseTestSecretsConfig('deno'),
-    'data-encryption',
+    'data-encryption'
   )
   return {
     secrets,
@@ -305,7 +302,7 @@ async function sealedOauthApp() {
 test('persistGitlabTokenPair seals the pair and keeps a stored refresh token', async () => {
   const secrets = await deriveEncryptionSecretsConfig(
     parseTestSecretsConfig('deno'),
-    'data-encryption',
+    'data-encryption'
   )
   const storedRefresh = await encryptSecret(secrets, 'kept-refresh')
   const db = gitlabDb({
@@ -336,7 +333,7 @@ test('persistGitlabTokenPair seals the pair and keeps a stored refresh token', a
 test('persistGitlabTokenPair writes a rotated refresh token', async () => {
   const secrets = await deriveEncryptionSecretsConfig(
     parseTestSecretsConfig('deno'),
-    'data-encryption',
+    'data-encryption'
   )
   const db = gitlabDb({ installation: { oauthEnvelope: {} } })
   await persistGitlabTokenPair(db, secrets, 'install-1', {
@@ -396,7 +393,7 @@ test('mintGitlabAccessToken refreshes and writes back an expired pair', async ()
           refresh_token: 'glpat-rotated',
           expires_in: 7200,
         }),
-        { status: 200 },
+        { status: 200 }
       ),
     async () => {
       const minted = await mintGitlabAccessToken(db, secrets, 'install-1')
@@ -405,28 +402,28 @@ test('mintGitlabAccessToken refreshes and writes back an expired pair', async ()
       if (typeof updated?.oauthEnvelope?.expiresAt !== 'string') {
         throw new TypeError('expected persisted oauth envelope')
       }
-    },
+    }
   )
 })
 
 test('mintGitlabAccessToken rejects missing config, row, provider, and suspension', async () => {
   const secrets = await deriveEncryptionSecretsConfig(
     parseTestSecretsConfig('deno'),
-    'data-encryption',
+    'data-encryption'
   )
   // The application is resolved *through* the installation now, so a missing
   // installation reports itself rather than being blamed on configuration.
   await assertRejects(
     () => mintGitlabAccessToken(gitlabDb({}), secrets, 'install-1'),
     GitlabOauthTokenError,
-    'installation not found',
+    'installation not found'
   )
 
   // A live installation whose app row is gone is the configuration failure —
   // reached only on the refresh path, which is the only place the app is read.
   const unconfigured = await deriveEncryptionSecretsConfig(
     parseTestSecretsConfig('deno'),
-    'data-encryption',
+    'data-encryption'
   )
   const staleRefresh = await encryptSecret(unconfigured, 'refresh-me')
   await assertRejects(
@@ -444,22 +441,17 @@ test('mintGitlabAccessToken rejects missing config, row, provider, and suspensio
           },
         }),
         unconfigured,
-        'install-1',
+        'install-1'
       ),
     GitlabOauthTokenError,
-    'gitlab oauth application is not configured',
+    'gitlab oauth application is not configured'
   )
 
   const { secrets: sealedSecrets, app } = await sealedOauthApp()
   await assertRejects(
-    () =>
-      mintGitlabAccessToken(
-        gitlabDb({ app, installation: null }),
-        sealedSecrets,
-        'missing',
-      ),
+    () => mintGitlabAccessToken(gitlabDb({ app, installation: null }), sealedSecrets, 'missing'),
     GitlabOauthTokenError,
-    'installation not found',
+    'installation not found'
   )
   await assertRejects(
     () =>
@@ -469,10 +461,10 @@ test('mintGitlabAccessToken rejects missing config, row, provider, and suspensio
           installation: { provider: 'github', suspendedAt: null, oauthEnvelope: {} },
         }),
         sealedSecrets,
-        'install-1',
+        'install-1'
       ),
     GitlabOauthTokenError,
-    'unsupported installation provider "github"',
+    'unsupported installation provider "github"'
   )
   const suspended = await assertRejects(
     () =>
@@ -486,10 +478,10 @@ test('mintGitlabAccessToken rejects missing config, row, provider, and suspensio
           },
         }),
         sealedSecrets,
-        'install-1',
+        'install-1'
       ),
     GitlabOauthTokenError,
-    'installation is suspended',
+    'installation is suspended'
   )
   if (!(suspended instanceof GitlabOauthTokenError)) {
     throw new TypeError('expected GitlabOauthTokenError')
@@ -514,10 +506,10 @@ test('mintGitlabAccessToken rejects unsealed envelopes and a missing refresh tok
           },
         }),
         secrets,
-        'install-1',
+        'install-1'
       ),
     GitlabOauthTokenError,
-    'gitlab access token is not sealed',
+    'gitlab access token is not sealed'
   )
   await assertRejects(
     () =>
@@ -531,10 +523,10 @@ test('mintGitlabAccessToken rejects unsealed envelopes and a missing refresh tok
           },
         }),
         secrets,
-        'install-1',
+        'install-1'
       ),
     GitlabOauthTokenError,
-    'gitlab connection has no refresh token',
+    'gitlab connection has no refresh token'
   )
   await assertRejects(
     () =>
@@ -548,9 +540,9 @@ test('mintGitlabAccessToken rejects unsealed envelopes and a missing refresh tok
           },
         }),
         secrets,
-        'install-1',
+        'install-1'
       ),
     GitlabOauthTokenError,
-    'gitlab refresh token is not sealed',
+    'gitlab refresh token is not sealed'
   )
 })
