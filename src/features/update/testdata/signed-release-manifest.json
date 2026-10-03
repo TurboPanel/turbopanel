@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "channel": "release",
+  "version": "0.1.6",
+  "commit": "68f94f622373e9cc5a0ed05601ee0f2393625e60",
+  "buildId": "20260930-141458-68f94f6",
+  "builtAt": "2026-09-30T14:14:58Z",
+  "artifacts": {
+    "instance-linux-amd64": {
+      "url": "https://github.com/TurboPanel/turbopanel/releases/download/v0.1.6/turbopanel-instance-0.1.6-linux-amd64.tar.zst",
+      "sha256": "e9bf9b5d4dfb6172809e9495af3fb9b42b6f5b14a595611ca110c7b63dcd3a82",
+      "size": 124491477
+    },
+    "instance-linux-arm64": {
+      "url": "https://github.com/TurboPanel/turbopanel/releases/download/v0.1.6/turbopanel-instance-0.1.6-linux-arm64.tar.zst",
+      "sha256": "51418ae2e4adbbf6d02d081067247d28f6264b2a97658c565d08d41c4a3f8bad",
+      "size": 120054510
+    }
+  },
+  "signature": {
+    "alg": "ed25519",
+    "keyId": "c72c6744",
+    "value": "8gZDE0HGrVYtfeInGV2vwHwVfMiYLk8phjD2TPaqudNqSkqmOJuSiIZfvXb+vKz8C28tJ69rcGNiH6BwPDkyCQ=="
+  }
+}

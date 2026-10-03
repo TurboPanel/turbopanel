@@ -34,7 +34,7 @@ const nicSlotLimitSchema = {
   minimum: 0,
   maximum: MAX_NIC_SLOTS,
   description:
-    'How many network interfaces this server may monitor (its effective capability plan’s NIC-slot count — 2 by default on the hosted platform, up to 8 self-hosted). The hardware-profile PUT rejects a longer nicSlotDeviceIds list.',
+    'How many network interfaces this server may monitor (its effective capability plan’s NIC-slot count — 2 by default on TurboPanel High Availability, up to 8 self-hosted). The hardware-profile PUT rejects a longer nicSlotDeviceIds list.',
 }
 
 const sensorSlotProperties = Object.fromEntries(
@@ -421,7 +421,7 @@ export const metricsSchemas = {
         type: 'array',
         items: { type: 'string' },
         description:
-          'The fixed v5 fleet host metric set (CPU stack + memory/swap) — never per-request. v3’s load-average fields (`load1`/`load5`/`load15`) have no v5 analogue and are not present.',
+          'The fixed v5 host metric set (CPU stack + memory/swap) — never per-request. v3’s load-average fields (`load1`/`load5`/`load15`) have no v5 analogue and are not present.',
       },
       servers: {
         type: 'array',
@@ -662,7 +662,7 @@ export const metricsPaths: Record<string, unknown> = {
   '/api/client/v1/servers/metrics/latest': {
     get: {
       tags: ['Servers'],
-      summary: 'Get one fleet-wide host usage snapshot for the org servers overview',
+      summary: 'Get one host usage snapshot across all servers for the org servers overview',
       description:
         'CPU stack + memory/swap for every server visible to the caller, in one query — never N per-server calls. Authorization is server-side via listVisible; no serverIds are ever accepted from the client. Carries no per-server cpuLimits (unlike /series and /summary) — see FLEET_HOST_METRICS’s doc comment.',
       security: [{ cookieAuth: [] }],
@@ -676,7 +676,7 @@ export const metricsPaths: Record<string, unknown> = {
       ],
       responses: {
         '200': {
-          description: 'Fleet host usage snapshot',
+          description: 'Host usage snapshot across all servers',
           content: {
             'application/json': {
               schema: {

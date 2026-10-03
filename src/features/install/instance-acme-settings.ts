@@ -252,10 +252,30 @@ function storedAcmeValue(
   return { ok: true, value: trimmed }
 }
 
+const CONTACT_EMAIL_LOCAL = /^[\w.+-]{1,64}$/
+const CONTACT_EMAIL_LABEL = /^[A-Za-z0-9-]{1,63}$/
+
+/**
+ * A plain `local@host.tld` address: the contact reaches a root-run playbook as
+ * a key=value extra-var, so whitespace, newlines and shell metacharacters are
+ * refused here, as the daemon also does (public-urls-apply.ts).
+ */
+function isPlainContactEmail(value: string): boolean {
+  const at = value.lastIndexOf('@')
+  if (at <= 0) return false
+  const local = value.slice(0, at)
+  if (!CONTACT_EMAIL_LOCAL.test(local) || local.startsWith('.') || local.endsWith('.')) return false
+  const labels = value.slice(at + 1).split('.')
+  if (labels.length < 2) return false
+  return labels.every(
+    (label) => CONTACT_EMAIL_LABEL.test(label) && !label.startsWith('-') && !label.endsWith('-')
+  )
+}
+
 function isAllowedValue(shortKey: InstanceAcmeSettingShortKey, value: string): boolean {
   if (shortKey === 'CONTACT_EMAIL') {
     if (value === '') return true
-    return value.includes('@') && !value.includes(' ')
+    return isPlainContactEmail(value)
   }
   if (shortKey === 'DIRECTORY_URL') {
     if (value === '') return true

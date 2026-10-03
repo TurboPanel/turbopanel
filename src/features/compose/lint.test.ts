@@ -1,5 +1,6 @@
 import { assertEquals } from '@std/assert'
 import { blockingComposeLintIssues, lintComposeYaml } from './lint.ts'
+import { HOST_LEVEL_OPT_IN_SENTENCE } from './field-policy.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -937,7 +938,7 @@ test('lintComposeYaml warns when nodeVersion pins an unoffered series', () => {
 })
 
 test('lintComposeYaml stays quiet for an offered node series and its minor pins', () => {
-  for (const version of ['24', '24.17']) {
+  for (const version of ['24', '24.17', '26']) {
     const issues = lintComposeYaml(`services:
   web:
     x-turbopanel:
@@ -1292,5 +1293,55 @@ test('host-native services are exempt from the resource advisory', () => {
   assertEquals(
     issues.some((issue) => issue.code === 'field_recommends_resource_limits'),
     false
+  )
+})
+
+const THREE_KINDS_OF_PROBLEM = `services:
+  web:
+    image: nginx:alpine
+    mem_limit: 1g
+    privileged: true
+    imaage: nginx
+    deploy:
+      endpoint_mode: dnsrr
+`
+
+test('unsupported, gated and invalid keys read differently at save and at deploy, each pointing at its fix', () => {
+  const byPath = (issues: ReturnType<typeof lintComposeYaml>, path: string) =>
+    issues.find((issue) => issue.path === path)
+
+  const save = lintComposeYaml(THREE_KINDS_OF_PROBLEM)
+  const deploy = lintComposeYaml(THREE_KINDS_OF_PROBLEM, { strict: true })
+
+  // Invalid (a typo): names the near miss and the line to fix, the same at save and deploy.
+  for (const issues of [save, deploy]) {
+    const typo = byPath(issues, 'services.web.imaage')
+    assertEquals(typo?.message, 'Unknown service key "imaage" — did you mean "image"?')
+    assertEquals(typo?.line, 6)
+    assertEquals(typo?.code, undefined)
+  }
+
+  // Gated: never blocks the editor, ends with who enables it and where, and says nothing is "unsupported by TurboPanel".
+  for (const issues of [save, deploy]) {
+    const gated = byPath(issues, 'services.web.privileged')
+    assertEquals(gated?.code, 'field_requires_org_opt_in')
+    assertEquals(gated?.blocking, false)
+    assertEquals(gated?.level, 'warning')
+    assertEquals(gated?.message.endsWith(HOST_LEVEL_OPT_IN_SENTENCE), true)
+    assertEquals(gated?.message.includes('is not supported by TurboPanel'), false)
+  }
+
+  // Unsupported: a warning while editing, an error at deploy, with the reason it cannot be set.
+  const unsupportedAtSave = byPath(save, 'services.web.deploy.endpoint_mode')
+  const unsupportedAtDeploy = byPath(deploy, 'services.web.deploy.endpoint_mode')
+  assertEquals(unsupportedAtSave?.code, 'field_unsupported')
+  assertEquals(unsupportedAtSave?.level, 'warning')
+  assertEquals(unsupportedAtDeploy?.level, 'error')
+  assertEquals(unsupportedAtDeploy?.message.includes('there is no VIP/dnsrr switch to set'), true)
+
+  // At save only the invalid key blocks; the gated and unsupported ones stay advisory until deploy.
+  assertEquals(
+    blockingComposeLintIssues(save).map((issue) => issue.path),
+    ['services.web.imaage']
   )
 })

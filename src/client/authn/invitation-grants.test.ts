@@ -1,7 +1,7 @@
 import { assertEquals, assertRejects } from '@std/assert'
 import type { Db } from '../../db/connection.ts'
 import {
-  defaultInvitationGrants,
+  type InvitationGrantSpec,
   InvitationGrantValidationError,
   materializeInvitationGrants,
   parseInvitationGrants,
@@ -18,13 +18,9 @@ const test = Deno.test.bind(Deno)
 
 const organizationId = '00000000-0000-4000-8000-000000000001'
 
-test('defaultInvitationGrants grants organization:manage on the org', () => {
-  const grants = defaultInvitationGrants(organizationId)
-  assertEquals(grants.length, 1)
-  assertEquals(grants[0]?.entityType, 'organization')
-  assertEquals(grants[0]?.entityId, organizationId)
-  assertEquals(grants[0]?.permissionKey, 'organization:manage')
-})
+function manageGrant(orgId: string): InvitationGrantSpec[] {
+  return [{ entityType: 'organization', entityId: orgId, permissionKey: 'organization:manage' }]
+}
 
 test('parseInvitationGrants accepts valid entries without allow fields', () => {
   const parsed = parseInvitationGrants([
@@ -48,7 +44,7 @@ test('parseInvitationGrants rejects allowed and allow fields', () => {
         allow: true,
       },
     ]),
-    null,
+    null
   )
   assertEquals(
     parseInvitationGrants([
@@ -59,7 +55,7 @@ test('parseInvitationGrants rejects allowed and allow fields', () => {
         allowed: false,
       },
     ]),
-    null,
+    null
   )
 })
 
@@ -72,7 +68,7 @@ test('parseInvitationGrants rejects system:manage as not grantable', () => {
         permissionKey: 'system:manage',
       },
     ]),
-    null,
+    null
   )
 })
 
@@ -85,7 +81,7 @@ test('parseInvitationGrants rejects invalid shapes', () => {
   assertEquals(parseInvitationGrants([]), null)
   assertEquals(
     parseInvitationGrants([{ entityType: 'organization', entityId: organizationId }]),
-    null,
+    null
   )
   assertEquals(
     parseInvitationGrants([
@@ -95,7 +91,7 @@ test('parseInvitationGrants rejects invalid shapes', () => {
         permissionKey: 'not-a-permission',
       },
     ]),
-    null,
+    null
   )
   assertEquals(
     parseInvitationGrants([
@@ -106,13 +102,14 @@ test('parseInvitationGrants rejects invalid shapes', () => {
         allowed: 'yes',
       },
     ]),
-    null,
+    null
   )
 })
 
-test('resolveInvitationGrants falls back to defaults when raw is invalid', () => {
-  const grants = resolveInvitationGrants(undefined, organizationId)
-  assertEquals(grants, defaultInvitationGrants(organizationId))
+test('resolveInvitationGrants confers no org-level grant when none were stored', () => {
+  for (const raw of [undefined, null, [], 'garbage']) {
+    assertEquals(resolveInvitationGrants(raw), [])
+  }
 })
 
 test('resolveInvitationGrants keeps a valid parsed grant list', () => {
@@ -123,7 +120,7 @@ test('resolveInvitationGrants keeps a valid parsed grant list', () => {
       permissionKey: 'organization:own',
     },
   ]
-  const grants = resolveInvitationGrants(raw, organizationId)
+  const grants = resolveInvitationGrants(raw)
   assertEquals(grants.length, 1)
   assertEquals(grants[0]?.permissionKey, 'organization:own')
 })
@@ -144,7 +141,7 @@ test('parseInvitationGrants rejects entries with empty entityId', () => {
         permissionKey: 'organization:manage',
       },
     ]),
-    null,
+    null
   )
 })
 
@@ -153,8 +150,7 @@ function mockGrantDb(orgExists: boolean): Db {
     select: () => ({
       from: () => ({
         where: () => ({
-          limit: () =>
-            Promise.resolve(orgExists ? [{ id: 'org-row' }] : []),
+          limit: () => Promise.resolve(orgExists ? [{ id: 'org-row' }] : []),
         }),
       }),
     }),
@@ -190,7 +186,7 @@ test('materializeInvitationGrants inserts validated grant rows', async () => {
     }),
   } as unknown as Db
 
-  await materializeInvitationGrants(db, 'user-1', defaultInvitationGrants(orgId), orgId)
+  await materializeInvitationGrants(db, 'user-1', manageGrant(orgId), orgId)
   assertEquals(inserts.length, 1)
   assertEquals((inserts[0] as { permission: string }).permission, 'organization:manage')
 })
@@ -198,15 +194,9 @@ test('materializeInvitationGrants inserts validated grant rows', async () => {
 test('materializeInvitationGrants rejects missing grant targets', async () => {
   const orgId = '00000000-0000-4000-8000-000000000001'
   await assertRejects(
-    () =>
-      materializeInvitationGrants(
-        mockGrantDb(false),
-        'user-1',
-        defaultInvitationGrants(orgId),
-        orgId,
-      ),
+    () => materializeInvitationGrants(mockGrantDb(false), 'user-1', manageGrant(orgId), orgId),
     InvitationGrantValidationError,
-    'Entity not found',
+    'Entity not found'
   )
 })
 
@@ -219,8 +209,8 @@ test('materializeInvitationGrants rejects incompatible permission keys', async (
         db,
         'user-1',
         [{ entityType: 'organization', entityId: orgId, permissionKey: 'team:own' }],
-        orgId,
+        orgId
       ),
-    InvitationGrantValidationError,
+    InvitationGrantValidationError
   )
 })

@@ -3,6 +3,7 @@ import {
   createEmailOtpEmail,
   createEmailVerificationLinkEmail,
   createInvitationEmail,
+  createNotificationDigestEmail,
   createNotificationEmail,
 } from './templates.ts'
 
@@ -16,10 +17,7 @@ const test = Deno.test.bind(Deno)
 
 test('createEmailVerificationLinkEmail escapes HTML in verify URL', () => {
   const malicious = 'https://example.com/verify?x=<script>'
-  const { subject, html, text } = createEmailVerificationLinkEmail(
-    'user@example.com',
-    malicious,
-  )
+  const { subject, html, text } = createEmailVerificationLinkEmail('user@example.com', malicious)
   assertEquals(subject, 'Verify your TurboPanel email')
   assertEquals(html.includes('<script>'), false)
   assertEquals(html.includes('&lt;script&gt;'), true)
@@ -43,11 +41,7 @@ test('createEmailOtpEmail covers otp types and escapes otp in HTML', () => {
   } as const
 
   for (const otpType of ['sign-in', 'email-verification', 'forget-password'] as const) {
-    const { subject, html, text } = createEmailOtpEmail(
-      'user@example.com',
-      '123456',
-      otpType,
-    )
+    const { subject, html, text } = createEmailOtpEmail('user@example.com', '123456', otpType)
     assertEquals(subject, subjects[otpType])
     assertEquals(html.includes('123456'), true)
     assertEquals(text.includes('123456'), true)
@@ -116,4 +110,37 @@ test('createNotificationEmail carries the severity in the subject and escapes ev
   })
   assertEquals(bare.subject, '[TurboPanel Warning] 7 servers went offline in one sweep')
   assertEquals(bare.html.includes('Open in TurboPanel'), false)
+})
+
+test('createNotificationDigestEmail lists groups, counts what it cuts and escapes titles', () => {
+  const { subject, html, text } = createNotificationDigestEmail({
+    type: 'notification-digest',
+    to: 'ops@example.com',
+    from: 'noreply@example.com',
+    summary: 'quiet',
+    total: 9,
+    groups: [
+      {
+        event: 'server.deleted',
+        severity: 'info',
+        count: 8,
+        items: [
+          {
+            title: 'Server <b>x</b> was deleted',
+            at: '2026-05-01T10:10:00.000Z',
+            url: 'https://panel.example.com/o/servers/s',
+          },
+        ],
+      },
+    ],
+    moreGroups: 2,
+    consoleUrl: 'https://panel.example.com',
+    at: '2026-05-01T11:00:00.000Z',
+  })
+  assertEquals(subject, '[TurboPanel] 9 notifications held during quiet hours')
+  assertEquals(html.includes('<b>x</b>'), false)
+  assertEquals(html.includes('Server &lt;b&gt;x&lt;/b&gt; was deleted'), true)
+  assertEquals(html.includes('and 7 more'), true)
+  assertEquals(text.includes('and 2 more kinds of event.'), true)
+  assertEquals(text.includes('Open: https://panel.example.com'), true)
 })

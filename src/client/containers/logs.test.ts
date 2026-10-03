@@ -5,6 +5,7 @@ import type { Db } from '../../db/connection.ts'
 import type { DaemonCellRegistry } from '../../contracts/cell.ts'
 import { fetchContainerLogTail, parseLogsTailQuery } from './logs.ts'
 import { createServerPresenceDb } from '../managed/server-status-test-db.ts'
+import { SERVER_OFFLINE_BODY } from '../managed/context.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -68,13 +69,13 @@ test('fetchContainerLogTail returns 409 when the target server is offline', asyn
       serverId: 'server-1',
       containerId: 'aabbccddeeff',
       tail: 50,
-    },
+    }
   )
   if (!(response instanceof Response)) {
     throw new TypeError('expected Response')
   }
   assertEquals(response.status, 409)
-  assertEquals(await response.json(), { error: 'server_offline' })
+  assertEquals(await response.json(), SERVER_OFFLINE_BODY)
 })
 
 test('fetchContainerLogTail returns 503 when the cell wait expires', async () => {
@@ -86,7 +87,7 @@ test('fetchContainerLogTail returns 503 when the cell wait expires', async () =>
   const response = await fetchContainerLogTail(
     mockContext(registry),
     createServerPresenceDb('server-1', true),
-    { serverId: 'server-1', containerId: 'aabbccddeeff', tail: 20 },
+    { serverId: 'server-1', containerId: 'aabbccddeeff', tail: 20 }
   )
   if (!(response instanceof Response)) {
     throw new TypeError('expected Response')
@@ -95,16 +96,33 @@ test('fetchContainerLogTail returns 503 when the cell wait expires', async () =>
   assertEquals(await response.json(), { error: 'timeout waiting for container logs' })
 })
 
+test('fetchContainerLogTail returns 403 with a plain message when the host does not own the container', async () => {
+  const response = await fetchContainerLogTail(
+    mockContext({
+      getCell: () => ({
+        createRequestAndWait: () =>
+          Promise.resolve({ status: 'failed', error: 'container is not owned by this host' }),
+      }),
+    } as unknown as DaemonCellRegistry),
+    createServerPresenceDb('server-1', true),
+    { serverId: 'server-1', containerId: 'aabbccddeeff', tail: 20 }
+  )
+  if (!(response instanceof Response)) throw new TypeError('expected Response')
+  assertEquals(response.status, 403)
+  const body = (await response.json()) as { error: string; message: string }
+  assertEquals(body.error, 'container_not_owned')
+  assertEquals(body.message.length > 0, true)
+})
+
 test('fetchContainerLogTail returns 500 when the cell wait fails', async () => {
   const withError = await fetchContainerLogTail(
     mockContext({
       getCell: () => ({
-        createRequestAndWait: () =>
-          Promise.resolve({ status: 'failed', error: 'docker gone' }),
+        createRequestAndWait: () => Promise.resolve({ status: 'failed', error: 'docker gone' }),
       }),
     } as unknown as DaemonCellRegistry),
     createServerPresenceDb('server-1', true),
-    { serverId: 'server-1', containerId: 'aabbccddeeff', tail: 20 },
+    { serverId: 'server-1', containerId: 'aabbccddeeff', tail: 20 }
   )
   if (!(withError instanceof Response)) throw new TypeError('expected Response')
   assertEquals(withError.status, 500)
@@ -117,7 +135,7 @@ test('fetchContainerLogTail returns 500 when the cell wait fails', async () => {
       }),
     } as unknown as DaemonCellRegistry),
     createServerPresenceDb('server-1', true),
-    { serverId: 'server-1', containerId: 'aabbccddeeff', tail: 20 },
+    { serverId: 'server-1', containerId: 'aabbccddeeff', tail: 20 }
   )
   if (!(withoutError instanceof Response)) throw new TypeError('expected Response')
   assertEquals(withoutError.status, 500)
@@ -133,7 +151,7 @@ test('fetchContainerLogTail returns 500 when the result has no logs string', asy
         }),
       } as unknown as DaemonCellRegistry),
       createServerPresenceDb('server-1', true),
-      { serverId: 'server-1', containerId: 'aabbccddeeff', tail: 20 },
+      { serverId: 'server-1', containerId: 'aabbccddeeff', tail: 20 }
     )
     if (!(response instanceof Response)) throw new TypeError('expected Response')
     assertEquals(response.status, 500)
@@ -149,7 +167,7 @@ test('fetchContainerLogTail returns 503 when the cell wait throws', async () => 
       }),
     } as unknown as DaemonCellRegistry),
     createServerPresenceDb('server-1', true),
-    { serverId: 'server-1', containerId: 'aabbccddeeff', tail: 20 },
+    { serverId: 'server-1', containerId: 'aabbccddeeff', tail: 20 }
   )
   if (!(asError instanceof Response)) throw new TypeError('expected Response')
   assertEquals(asError.status, 503)
@@ -162,7 +180,7 @@ test('fetchContainerLogTail returns 503 when the cell wait throws', async () => 
       }),
     } as unknown as DaemonCellRegistry),
     createServerPresenceDb('server-1', true),
-    { serverId: 'server-1', containerId: 'aabbccddeeff', tail: 20 },
+    { serverId: 'server-1', containerId: 'aabbccddeeff', tail: 20 }
   )
   if (!(asString instanceof Response)) throw new TypeError('expected Response')
   assertEquals(asString.status, 503)
@@ -186,7 +204,7 @@ test('fetchContainerLogTail returns docker logs on success', async () => {
       serverId: 'server-1',
       containerId: 'aabbccddeeff',
       tail: 200,
-    },
+    }
   )
   if (result instanceof Response) {
     throw new TypeError('expected logs payload')

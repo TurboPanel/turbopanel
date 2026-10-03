@@ -30,6 +30,7 @@ import {
   resolveAcmeEnabled,
   resolveComposeDefaultResourceLimits,
   resolveComposeGatedFieldsEnabled,
+  resolveComposeRemoteBuildSourcesEnabled,
   resolveDeployHooksEnabled,
 } from '../../features/organizations/organization-options.ts'
 import {
@@ -100,6 +101,8 @@ import {
   loadEntitlementsByPrincipalIds,
 } from '../../features/principals/store.ts'
 import { renderPhpForDeploy } from '../../features/hostings/php-settings.ts'
+import { type PhpModePrepareError, withSitePhpModes } from './deploy-php-modes.ts'
+import { PHP_SITE_MODES_FEATURE } from '../../lib/version-wire.ts'
 import {
   isComposeChainError,
   resolveComposeLayerChain,
@@ -179,6 +182,7 @@ import {
   parseResourceLimits,
   sumServiceResourceUsage,
 } from '../../features/organizations/resource-limits.ts'
+import { effectiveServiceResources } from '../../features/organizations/compose-resource-usage.ts'
 import {
   type HostingBindScope,
   parseHostingOptions,
@@ -279,6 +283,7 @@ export type DeployPrepareWarningCode =
   | 'principal_required_for_service_kind'
   | 'binding_endpoint_unavailable'
   | 'php_series_not_installed'
+  | 'php_mode_not_allowed'
 
 /**
  * Gate a deploy's PHP series against what the target host actually reports.
@@ -519,6 +524,8 @@ export type DeployPrepareError =
   | ComposeHostingError
   | { kind: 'site_managed_directory_unowned'; composeServiceName: string }
   | { kind: 'site_cron_unowned'; composeServiceName: string }
+  /** A PHP site asks for a mode its engine, organization or server does not offer. */
+  | PhpModePrepareError
   | { kind: 'source_principal_ambiguous'; composeServiceName: string }
   | {
       kind: 'source_ref_unresolved'
@@ -611,6 +618,8 @@ async function emptyPreparedCompose(
 
 type HardDeployPrepareError =
   | { kind: 'datacenter_ip_required'; serverId: string }
+  // Hard in preview too: the site would not come up in the mode it asks for.
+  | PhpModePrepareError
   // Hard in preview too: previewing a deploy that would silently ignore a field
   // — or that would be refused the moment it was run for real — is exactly the
   // reassurance an operator must not be given.
@@ -1458,9 +1467,11 @@ function listContainerComposeNames(document: ComposeDocument): Set<string> {
 
 function buildExpandedServiceOptionsMap(
   serviceRows: ServiceRow[],
-  expansion: Map<string, string[]>
+  expansion: Map<string, string[]>,
+  deployHooks = false
 ): ServiceOptionsByComposeName {
-  const originOptions = buildServiceOptionsMap(serviceRows)
+  // Hook commands survive the read only when the organization enabled them.
+  const originOptions = buildServiceOptionsMap(serviceRows, { deployHooks })
   const map: ServiceOptionsByComposeName = new Map()
 
   for (const [originName, clones] of expansion) {
@@ -1811,22 +1822,19 @@ function resourceLimitPrepareError(
   resolvedServices: readonly ResolvedService[],
   serviceCount: number,
   orgOptions: unknown,
-  serverOptions: unknown
+  serverOptions: unknown,
+  composeServices?: unknown
 ): SoftDeployPrepareError | null {
   const orgLimits =
     parseResourceLimits(isPlainObject(orgOptions) ? orgOptions.resourceLimits : null) ?? {}
   const serverLimits =
     parseResourceLimits(isPlainObject(serverOptions) ? serverOptions.resourceLimits : null) ?? {}
+  const effective = effectiveServiceResources(
+    composeServices,
+    new Map(resolvedServices.map((entry) => [entry.composeServiceName, entry.resources] as const))
+  )
   const usage = sumServiceResourceUsage(
-    new Map(
-      resolvedServices.map(
-        (entry) =>
-          [
-            entry.composeServiceName,
-            entry.resources === undefined ? {} : { resources: entry.resources },
-          ] as const
-      )
-    ),
+    new Map([...effective].map(([name, resources]) => [name, { resources }] as const)),
     serviceCount
   )
   const violations = checkResourceLimits(usage, orgLimits, serverLimits)
@@ -1901,6 +1909,7 @@ async function allocateExpandDeployPipeline(
     composeServiceNames: readonly string[]
     serviceRows: ServiceRow[]
     schedule?: DeployScheduleSlice
+    deployHooks: boolean
   }
 ): Promise<DeployExpandPipeline> {
   const containerNaming = resolveContainerNaming(parseProjectOptions(params.projectOptions))
@@ -1971,7 +1980,11 @@ async function allocateExpandDeployPipeline(
     expandedDocument: withRenamedVolumes,
     expansion,
     expandedServiceNames: listComposeServiceKeys(withRenamedVolumes),
-    optionsByComposeName: buildExpandedServiceOptionsMap(params.serviceRows, expansion),
+    optionsByComposeName: buildExpandedServiceOptionsMap(
+      params.serviceRows,
+      expansion,
+      params.deployHooks
+    ),
     localReplicaCounts: localCounts,
     ...(localNames ? { localServiceNames: localNames } : {}),
   }
@@ -2543,11 +2556,10 @@ async function loadDeployComposeContext(
   // which is entitled to assume every `deploy:` key it still sees is one the
   // registry says we handle, and before the reconciles below write rows.
   if (!params.composeValidated) {
-    const composeGatedFieldsEnabled = resolveComposeGatedFieldsEnabled(
-      parseOrganizationOptions(orgRow?.options)
-    )
+    const orgOptions = parseOrganizationOptions(orgRow?.options)
     const rejected = validateComposeForDeploy(merged, {
-      composeGatedFieldsEnabled,
+      composeGatedFieldsEnabled: resolveComposeGatedFieldsEnabled(orgOptions),
+      composeRemoteBuildSourcesEnabled: resolveComposeRemoteBuildSourcesEnabled(orgOptions),
     })
     if (rejected) return { ok: false, failure: rejected }
   }
@@ -2679,7 +2691,8 @@ async function resolvedPlacementGateError(
       args.resolved.services,
       args.pipeline.expandedServiceNames.length,
       args.orgOptions,
-      args.serverOptions
+      args.serverOptions,
+      args.pipeline.expandedDocument.data.services
     )
   )
   if (limitErr) return limitErr
@@ -2715,7 +2728,8 @@ async function resolveManagedNetworkHostName(
 }
 
 /**
- * Persist Node runtime entitlements implied by this deploy.
+ * Persist the runtime entitlements this deploy implies (Node for native apps,
+ * PHP for per-site FastCGI / php-fpm runtimes).
  *
  * Preview must not write. Empty lists are a no-op inside the store helper.
  */
@@ -2824,6 +2838,7 @@ export async function prepareDeployCompose(
     composeServiceNames,
     serviceRows,
     schedule: params.schedule,
+    deployHooks: resolveDeployHooksEnabled(parseOrganizationOptions(orgRow?.options)),
   })
 
   // Stage 3: the same services after the control plane answered what the
@@ -2942,19 +2957,34 @@ export async function prepareDeployCompose(
   // Task rows (`POST /tasks`) join compose-authored cron on the wire for
   // sites and native apps alike — loaded once here, keyed by compose name.
   const tasksByComposeName = await loadTasksByComposeServiceName(db, serviceRows)
-  const siteResolved = resolveSitesForMode(
-    mode,
-    warnings,
-    await attachPrincipalsToSites(
-      db,
-      params.environmentId,
-      serviceRows,
-      principalMaterial,
-      split.sites,
-      principalResolution,
-      tasksByComposeName
-    ),
-    split.sites
+  const phpDaemonState = await getServerDaemonStateByServerId(db, params.serverId)
+  const siteResolved = await withSitePhpModes(
+    db,
+    {
+      daemonRunsModes:
+        phpDaemonState?.projection?.features?.includes(PHP_SITE_MODES_FEATURE) === true,
+      environmentId: params.environmentId,
+      serverId: params.serverId,
+      localServiceNames: pipeline.localServiceNames,
+      specs: split.sites,
+      orgOptions: orgRow?.options,
+      serverOptions: serverRow?.options,
+      warnings,
+    },
+    resolveSitesForMode(
+      mode,
+      warnings,
+      await attachPrincipalsToSites(
+        db,
+        params.environmentId,
+        serviceRows,
+        principalMaterial,
+        split.sites,
+        principalResolution,
+        tasksByComposeName
+      ),
+      split.sites
+    )
   )
   if ('kind' in siteResolved) return siteResolved
   const localSite = sitesOnScheduledServer(siteResolved, pipeline.localServiceNames)
@@ -2987,6 +3017,7 @@ export async function prepareDeployCompose(
       principalMaterial,
       nativeAppServices: localNativeApps,
       sourceMaterial: localSourceMaterial,
+      sites: localSite,
     })
   await persistDeployRuntimeEntitlements(db, mode, deployEntitlements)
 

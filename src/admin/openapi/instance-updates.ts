@@ -22,10 +22,50 @@ export const INSTANCE_UPDATES_PATHS = {
         "the same upgrade. Each unit carries `updateAvailable`: the server's " +
         'rule (the target names a commit the host is not running, and ' +
         'installing it would not downgrade). Clients render it rather than ' +
-        'comparing versions or commits themselves.',
+        'comparing versions or commits themselves. The control-plane unit also ' +
+        'carries `uiUpdateAvailable` (self-hosted only): pass `?consoleCommit=` ' +
+        'with the commit the console bundle was built from, and it is true when ' +
+        "the channel's UI build differs. The UI ships inside the control-plane " +
+        'install, so a run started with `consoleCommit` in the body reinstalls it.',
       security: [...cookieSecurity],
       responses: {
         '200': { description: 'Installed versions and channel targets' },
+        '401': { description: 'Unauthorized' },
+        '403': { description: 'Forbidden — requires admin or superadmin role' },
+      },
+    },
+  },
+  [`${ADMIN_API_PREFIX}/instance/updates/settings`]: {
+    get: {
+      tags: ['Instance'],
+      summary: 'Read the managed-upgrade settings',
+      description:
+        'Returns `autoUpdate`, the maintenance window and `batch` ' +
+        '(`{ mode: "count" | "percent", value }`): how many servers update ' +
+        'together in one batch. The next batch starts on a later upgrade tick ' +
+        '(15 minutes by default) once every server in the current one has ' +
+        'finished or failed. Settings belong to this environment. With nothing ' +
+        'saved, `batch` is one server at a time unless the environment sets ' +
+        '`TURBOPANEL_UPGRADE_BATCH` (for example the testing fleet).',
+      security: [...cookieSecurity],
+      responses: {
+        '200': { description: 'Current settings' },
+        '401': { description: 'Unauthorized' },
+        '403': { description: 'Forbidden — requires admin or superadmin role' },
+      },
+    },
+    put: {
+      tags: ['Instance'],
+      summary: 'Save the managed-upgrade settings',
+      description:
+        'Replaces the whole settings object. `batch.mode` is `count` (1 to ' +
+        '10000 servers) or `percent` (1 to 100 of the fleet, rounded up); ' +
+        'values must be whole numbers. Anything else answers 400 ' +
+        '`invalid_settings`.',
+      security: [...cookieSecurity],
+      responses: {
+        '200': { description: 'Saved settings' },
+        '400': { description: 'invalid_settings' },
         '401': { description: 'Unauthorized' },
         '403': { description: 'Forbidden — requires admin or superadmin role' },
       },

@@ -199,7 +199,7 @@ export function buildLicensePaths(_installCommandDescription: string): Record<st
           },
           '409': {
             description:
-              'Self-hosted: server seat capacity exceeded (maxServers; enrolled servers and unconsumed keys both count). Hosted: `no_license_available` — every purchased license is in use (bound or provisioning), held by an unused registration key, or ending at the period boundary; `message` is the sentence to show (it never calls an ending license or an unused key "in use"), and the counts say whether to use or delete a key (`unusedKeys > 0`), restore (`ending > 0`, `POST /billing/restore`) or buy. Also `billing_mutation_in_progress` while the organization quantity lease is held.',
+              'Self-hosted: server limit exceeded (maxServers; enrolled servers and unconsumed keys both count). TurboPanel High Availability: `no_license_available` — every purchased license is in use (bound or provisioning), held by an unused registration key, or ending at the period boundary; `message` is the sentence to show (it never calls an ending license or an unused key "in use"), and the counts say whether to use or delete a key (`unusedKeys > 0`), restore (`ending > 0`, `POST /billing/restore`) or buy. Also `billing_mutation_in_progress` while the organization quantity lease is held.',
             content: {
               'application/json': {
                 schema: {

@@ -6,7 +6,8 @@
  * `principal.password`, `storage.content_envelope`, `secret.secret_envelope`,
  * `forge.envelopes` (private key / client secret / webhook secret),
  * `connection.oauth_envelope` (GitLab access/refresh token pair), `2fa.secret`,
- * `SYSTEM_AUTH_PROVIDERS` secret keys, and email secret keys in the
+ * `monitor.secret_envelope`, `relay.preshared_key`, the `ALERT_WEBHOOK_URL`
+ * setting, `SYSTEM_AUTH_PROVIDERS` secret keys, and email secret keys in the
  * `SYSTEM_EMAIL` setting row onto the current data-encryption key version.
  *
  * Per-blob rules (variable / TLS / principal / storage / secret / forge / gitConnection / twofactor / authproviders / email secrets):
@@ -49,7 +50,9 @@ import {
   gitConnection,
   instanceUploadedCertificate,
   lease,
+  monitor,
   principal,
+  relay,
   secret,
   setting,
   storage,
@@ -58,6 +61,7 @@ import {
   twoFactor,
   variable,
 } from '../db/schema.ts'
+import { ALERT_WEBHOOK_URL_KEY } from '../features/alerts/alert-webhook-settings.ts'
 import { EMAIL_SECRET_KEYS, SYSTEM_EMAIL_DB_KEY } from '../features/settings/email-settings.ts'
 import {
   AUTH_PROVIDER_SECRET_KEYS,
@@ -90,8 +94,35 @@ export const REENCRYPT_STAGES = [
   'gitconnection',
   'twofactor',
   'notifications',
+  'monitors',
+  'relays',
   'authproviders',
   'email',
+  'alertwebhook',
+] as const
+
+/**
+ * Every sealed place the sweep covers, as `table.column` (or `setting:<key>`).
+ * The guard test derives the sealed columns from the schema and fails when one
+ * is missing here, so a new sealed column cannot ship without a sweep stage.
+ */
+export const REENCRYPT_COVERED_PLACES = [
+  'variable.value',
+  'tls.private_key_pem',
+  'certificate.key_pem',
+  'principal.password',
+  'storage.content_envelope',
+  'secret.secret_envelope',
+  'forge.envelopes',
+  'connection.oauth_envelope',
+  '2fa.secret',
+  'channel.address',
+  'channel.signing_secret',
+  'monitor.secret_envelope',
+  'relay.preshared_key',
+  `setting:${SYSTEM_AUTH_PROVIDERS_DB_KEY}`,
+  `setting:${SYSTEM_EMAIL_DB_KEY}`,
+  `setting:${ALERT_WEBHOOK_URL_KEY}`,
 ] as const
 
 export type ReencryptStage = (typeof REENCRYPT_STAGES)[number]
@@ -1003,7 +1034,115 @@ async function sweepEmailSettingSecrets(
   }
 }
 
-type TableStage = Exclude<ReencryptStage, 'authproviders' | 'email'>
+/** `monitor.secret_envelope`: the per-server ProxySQL monitor password (NOT NULL). */
+async function sweepMonitorSecretsBatch(
+  db: Db,
+  secrets: DerivedSecretsConfig,
+  summary: ReencryptSweepSummary,
+  afterId: string | undefined,
+  limit: number
+): Promise<StageBatchResult> {
+  const rows = await db
+    .select({ id: monitor.id, value: monitor.secretEnvelope })
+    .from(monitor)
+    .where(afterId === undefined ? undefined : gt(monitor.id, afterId))
+    .orderBy(asc(monitor.id))
+    .limit(limit)
+
+  await forEachSequential(rows, async (row) => {
+    const original = row.value
+    await processBlob(
+      summary,
+      secrets,
+      original,
+      async (resealed) => {
+        const updated = await db
+          .update(monitor)
+          .set({ secretEnvelope: resealed })
+          .where(and(eq(monitor.id, row.id), eq(monitor.secretEnvelope, original)))
+          .returning({ id: monitor.id })
+        return updated.length > 0
+      },
+      { allowDaemonBound: false }
+    )
+  })
+
+  return { pageSize: rows.length, lastId: rows.at(-1)?.id }
+}
+
+/** `relay.preshared_key`: nullable sealed WireGuard preshared key. */
+async function sweepRelayPresharedKeysBatch(
+  db: Db,
+  secrets: DerivedSecretsConfig,
+  summary: ReencryptSweepSummary,
+  afterId: string | undefined,
+  limit: number
+): Promise<StageBatchResult> {
+  const rows = await db
+    .select({ id: relay.id, value: relay.presharedKey })
+    .from(relay)
+    .where(
+      afterId === undefined
+        ? isNotNull(relay.presharedKey)
+        : and(isNotNull(relay.presharedKey), gt(relay.id, afterId))
+    )
+    .orderBy(asc(relay.id))
+    .limit(limit)
+
+  await forEachSequential(rows, async (row) => {
+    const original = row.value
+    if (original === null) return
+    await processBlob(
+      summary,
+      secrets,
+      original,
+      async (resealed) => {
+        const updated = await db
+          .update(relay)
+          .set({ presharedKey: resealed })
+          .where(and(eq(relay.id, row.id), eq(relay.presharedKey, original)))
+          .returning({ id: relay.id })
+        return updated.length > 0
+      },
+      { allowDaemonBound: false }
+    )
+  })
+
+  return { pageSize: rows.length, lastId: rows.at(-1)?.id }
+}
+
+/** The legacy operator `ALERT_WEBHOOK_URL` setting: one sealed string in `setting.value`. */
+async function sweepAlertWebhookSetting(
+  db: Db,
+  secrets: DerivedSecretsConfig,
+  summary: ReencryptSweepSummary
+): Promise<void> {
+  const rows = await db
+    .select({ value: setting.value })
+    .from(setting)
+    .where(eq(setting.key, ALERT_WEBHOOK_URL_KEY))
+    .limit(1)
+
+  const original = rows[0]?.value
+  if (typeof original !== 'string' || original === '') return
+
+  await processBlob(
+    summary,
+    secrets,
+    original,
+    async (resealed) => {
+      const updated = await db
+        .update(setting)
+        .set({ value: resealed, updatedAt: nowIso() })
+        .where(and(eq(setting.key, ALERT_WEBHOOK_URL_KEY), eq(setting.value, original)))
+        .returning({ key: setting.key })
+      return updated.length > 0
+    },
+    { allowDaemonBound: false }
+  )
+}
+
+type TableStage = Exclude<ReencryptStage, 'authproviders' | 'email' | 'alertwebhook'>
 
 async function runTableStageBatch(
   db: Db,
@@ -1052,6 +1191,10 @@ async function runTableStageBatch(
         afterId,
         remaining
       )
+    case 'monitors':
+      return sweepMonitorSecretsBatch(db, dataEncryptionSecrets, summary, afterId, remaining)
+    case 'relays':
+      return sweepRelayPresharedKeysBatch(db, dataEncryptionSecrets, summary, afterId, remaining)
   }
 }
 
@@ -1120,6 +1263,12 @@ export async function reencryptAtRestSecrets(
 
     if (cursor.stage === 'email') {
       await sweepEmailSettingSecrets(db, dataEncryptionSecrets, summary)
+      cursor = { stage: 'alertwebhook' }
+      continue
+    }
+
+    if (cursor.stage === 'alertwebhook') {
+      await sweepAlertWebhookSetting(db, dataEncryptionSecrets, summary)
       return { ...summary, completed: true, cursor: null }
     }
 

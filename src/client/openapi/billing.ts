@@ -10,7 +10,7 @@ const errorResponse = (description: string) => ({
 })
 
 const notConfigured = errorResponse(
-  'Billing is not configured on this instance (`billing_not_configured`); self-hosted has no billing surface.'
+  'Billing is not configured on this control plane (`billing_not_configured`); self-hosted has no billing surface.'
 )
 const unauthorized = errorResponse('Unauthorized')
 const forbidden = errorResponse('Forbidden (owner-only)')
@@ -100,7 +100,7 @@ export const billingSchemas = {
       ending: {
         type: 'integer',
         description:
-          'Of `purchased`, the licenses that end at the period boundary (released seats). Restore them with `POST /billing/restore`; buying more at this tier is refused (`licenses_ending`) while this is non-zero.',
+          'Of `purchased`, the licenses that end at the period boundary (released licenses). Restore them with `POST /billing/restore`; buying more at this tier is refused (`licenses_ending`) while this is non-zero.',
       },
       endsAt: {
         type: ['string', 'null'],
@@ -116,7 +116,7 @@ export const billingSchemas = {
         type: 'integer',
         deprecated: true,
         description:
-          'Use `ending`. Every seat leaving this tier at the boundary, a pending downgrade included.',
+          'Use `ending`. Every license leaving this tier at the boundary, a pending downgrade included.',
       },
       priceCents: { type: ['integer', 'null'] },
       currency: { type: ['string', 'null'] },
@@ -141,7 +141,7 @@ export const billingSchemas = {
       releasing: {
         type: 'integer',
         description:
-          'Every seat leaving at the period boundary (ending licenses and pending downgrades).',
+          'Every license leaving at the period boundary (ending licenses and pending downgrades).',
       },
       ending: {
         type: 'integer',
@@ -243,12 +243,12 @@ export const billingSchemas = {
                 type: ['string', 'null'],
                 format: 'date-time',
                 description:
-                  'Entitlement survives until this moment while past due; the grace clock cancels after it.',
+                  "Always null. Stripe's dunning ends a past-due subscription (it arrives as `canceled`), so TurboPanel keeps no expiry; kept in the shape until the app stops reading it.",
               },
               scheduleAttached: {
                 type: 'boolean',
                 description:
-                  'A deferred change (downgrade / seat release) is parked on a subscription schedule.',
+                  'A deferred change (downgrade / license release) is parked on a subscription schedule.',
               },
             },
           },
@@ -391,12 +391,25 @@ export const billingSchemas = {
     type: 'object',
     required: ['error', 'tierId', 'ending', 'endsAt'],
     description:
-      'Buying more at a tier (seats, an upgrade or downgrade into it, or the preview of any of those) while licenses at that tier are ending. Restore them first.',
+      'Buying more at a tier (more licenses, an upgrade or downgrade into it, or the preview of any of those) while licenses at that tier are ending. Restore them first.',
     properties: {
       error: { type: 'string', const: 'licenses_ending' },
       tierId: { type: 'string', format: 'uuid' },
       ending: { type: 'integer' },
       endsAt: { type: ['string', 'null'], format: 'date-time' },
+    },
+  },
+  BillingLicensesInUseError: {
+    type: 'object',
+    required: ['error', 'purchasedAfter', 'licensesHeld', 'inUse', 'unusedKeys'],
+    description:
+      'A reduction would leave more licenses held than purchased. Remove servers (inUse) or delete registration keys nobody has used (unusedKeys) first.',
+    properties: {
+      error: { type: 'string', const: 'licenses_in_use' },
+      purchasedAfter: { type: 'integer' },
+      licensesHeld: { type: 'integer' },
+      inUse: { type: 'integer', description: 'Licenses bound to a server or being provisioned.' },
+      unusedKeys: { type: 'integer', description: 'Registration keys nobody has used yet.' },
     },
   },
 } as const
@@ -466,7 +479,7 @@ export const billingPaths: Record<string, unknown> = {
       tags: ['Billing'],
       summary: 'Projection summary for the organization',
       description:
-        "Status, period end, per-tier purchased vs in use, the license totals the mint gate reads, each licensed server's derived tier, grace clock, schedule flag and outstanding deferred changes. Postgres only.",
+        "Status, period end, per-tier purchased vs in use, the license totals the mint gate reads, each licensed server's derived tier, past-due state, schedule flag and outstanding deferred changes. Postgres only.",
       security: [{ cookieAuth: [] }],
       responses: {
         '200': {
@@ -570,7 +583,7 @@ export const billingPaths: Record<string, unknown> = {
   [`${CLIENT_PREFIX}/billing/seats`]: mutationPath(
     'Buy or release licenses at one tier',
     'BillingSeatsRequest',
-    '`licenses_ending` (BillingLicensesEndingError), `subscription_past_due`, `no_subscription`, `servers_uncovered`, `licenses_in_use`'
+    '`licenses_ending` (BillingLicensesEndingError), `subscription_past_due`, `no_subscription`, `servers_uncovered`, `licenses_in_use` (BillingLicensesInUseError)'
   ),
   [`${CLIENT_PREFIX}/billing/restore`]: {
     post: {
@@ -613,6 +626,6 @@ export const billingPaths: Record<string, unknown> = {
   [`${CLIENT_PREFIX}/billing/downgrade`]: mutationPath(
     'Move one purchased license to a lower tier at the period boundary',
     'BillingTierMoveRequest',
-    '`licenses_ending` (at the lower tier), `no_subscription`, `servers_uncovered`, `licenses_in_use`'
+    '`licenses_ending` (at the lower tier), `no_subscription`, `servers_uncovered`, `licenses_in_use` (BillingLicensesInUseError)'
   ),
 }

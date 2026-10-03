@@ -5,7 +5,7 @@
  */
 import { and, asc, desc, eq, inArray, notInArray, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import { server, setting, upgrade, upgradeStep, user } from '../../db/schema.ts'
+import { server, setting, upgrade, stage, user } from '../../db/schema.ts'
 import { isPostgresUniqueViolation } from '../../db/unique-violation.ts'
 import { parseServerDaemonState } from '../servers/daemon-state.ts'
 import type { DaemonCellRegistry } from '../../contracts/cell.ts'
@@ -272,7 +272,7 @@ type StepDbRow = {
   toVersion: string | null
   fromCommit: string | null
   toCommit: string | null
-  lastStageAt: string | null
+  statusChangedAt: string | null
   errorCode: string | null
   errorMessage: string | null
   detail: unknown
@@ -294,7 +294,7 @@ function toStep(row: StepDbRow): UpgradeStepRow {
     toVersion: row.toVersion,
     fromCommit: row.fromCommit,
     toCommit: row.toCommit,
-    lastStageAt: row.lastStageAt,
+    lastStageAt: row.statusChangedAt,
     errorCode: row.errorCode,
     errorMessage: row.errorMessage,
     detail: row.detail,
@@ -316,7 +316,7 @@ function stepInsert(step: UpgradeStepRow) {
     toVersion: step.toVersion,
     fromCommit: step.fromCommit,
     toCommit: step.toCommit,
-    lastStageAt: step.lastStageAt,
+    statusChangedAt: step.lastStageAt,
     errorCode: step.errorCode,
     errorMessage: step.errorMessage,
     detail: detailWithPhase(step.phase, step.detail),
@@ -460,10 +460,11 @@ export function createMemoryUpgradeStore(input?: {
 
 export function createDrizzleUpgradeStore(
   db: Db,
-  registry: DaemonCellRegistry | null
+  registry: DaemonCellRegistry | null,
+  defaultBatch?: UpgradeSettings['batch']
 ): UpgradeStore {
   return {
-    settings: () => getUpgradeSettings(db),
+    settings: () => getUpgradeSettings(db, defaultBatch),
     saveSettings: (settings) => setUpgradeSettings(db, settings),
     latestBuild: () => getLatestAvailableBuild(db),
     saveLatestBuild: (target) => setLatestAvailableBuild(db, target),
@@ -525,7 +526,7 @@ export function createDrizzleUpgradeStore(
             finishedAt: run.finishedAt,
           })
           if (runSteps.length > 0) {
-            await tx.insert(upgradeStep).values(runSteps.map(stepInsert))
+            await tx.insert(stage).values(runSteps.map(stepInsert))
           }
         })
         return 'created'
@@ -552,12 +553,12 @@ export function createDrizzleUpgradeStore(
     stepsFor: async (upgradeId) => {
       const rows = await db
         .select()
-        .from(upgradeStep)
-        .where(eq(upgradeStep.upgradeId, upgradeId))
+        .from(stage)
+        .where(eq(stage.upgradeId, upgradeId))
         .orderBy(
-          sql`case coalesce(${upgradeStep.detail}->>'phase', 'fleet') when 'colocated_daemon' then 0 when 'control_plane' then 1 else 2 end`,
-          asc(upgradeStep.batchIndex),
-          asc(upgradeStep.id)
+          sql`case coalesce(${stage.detail}->>'phase', 'fleet') when 'colocated_daemon' then 0 when 'control_plane' then 1 else 2 end`,
+          asc(stage.batchIndex),
+          asc(stage.id)
         )
       return rows.map(toStep)
     },
@@ -569,23 +570,23 @@ export function createDrizzleUpgradeStore(
     factsFor: (ids, colocatedServerId) => loadFactsFor(db, ids, colocatedServerId),
     saveStep: async (step, expectedStatus) => {
       const rows = await db
-        .update(upgradeStep)
+        .update(stage)
         .set({
           status: step.status,
           requestId: step.requestId,
           attempts: step.attempts,
           nextAttemptAt: step.nextAttemptAt,
-          lastStageAt: step.lastStageAt,
+          statusChangedAt: step.lastStageAt,
           errorCode: step.errorCode,
           errorMessage: step.errorMessage,
           detail: detailWithPhase(step.phase, step.detail),
         })
         .where(
           expectedStatus !== undefined
-            ? and(eq(upgradeStep.id, step.id), eq(upgradeStep.status, expectedStatus))
-            : eq(upgradeStep.id, step.id)
+            ? and(eq(stage.id, step.id), eq(stage.status, expectedStatus))
+            : eq(stage.id, step.id)
         )
-        .returning({ id: upgradeStep.id })
+        .returning({ id: stage.id })
       return rows.length > 0
     },
     history: async (offset, limit) => {
@@ -700,7 +701,7 @@ function fleetStatusWhere(status: string, targetCommit: string | null) {
   }
   if (status === 'needs_attention') {
     return sql`exists (
-      select 1 from upgradestep step
+      select 1 from stage step
       inner join upgrade run on run.id = step.upgrade_id
       where step.server_id = ${server.id}
         and run.status in ('pending', 'running')
@@ -715,7 +716,7 @@ function fleetStatusWhere(status: string, targetCommit: string | null) {
     const behind = targetCommit ? sql`${commit} is distinct from ${targetCommit}` : sql`true`
     return sql`(
       exists (
-        select 1 from upgradestep step
+        select 1 from stage step
         inner join upgrade run on run.id = step.upgrade_id
         where step.server_id = ${server.id}
           and run.status in ('pending', 'running')
@@ -725,7 +726,7 @@ function fleetStatusWhere(status: string, targetCommit: string | null) {
     )`
   }
   return sql`exists (
-    select 1 from upgradestep step
+    select 1 from stage step
     inner join upgrade run on run.id = step.upgrade_id
     where step.server_id = ${server.id}
       and run.status in ('pending', 'running')
@@ -946,12 +947,12 @@ function memoryTickPage(
 async function countUpgradeSteps(db: Db, upgradeId: string): Promise<StepSummary> {
   const rows = await db
     .select({
-      status: upgradeStep.status,
+      status: stage.status,
       total: sql<number>`count(*)::int`,
     })
-    .from(upgradeStep)
-    .where(eq(upgradeStep.upgradeId, upgradeId))
-    .groupBy(upgradeStep.status)
+    .from(stage)
+    .where(eq(stage.upgradeId, upgradeId))
+    .groupBy(stage.status)
   return summaryFromStatusCounts(rows)
 }
 
@@ -966,36 +967,31 @@ async function loadTickWindow(
     countUpgradeSteps(db, upgradeId),
     db
       .select({
-        phase: sql<string>`coalesce(${upgradeStep.detail}->>'phase', 'fleet')`,
+        phase: sql<string>`coalesce(${stage.detail}->>'phase', 'fleet')`,
       })
-      .from(upgradeStep)
+      .from(stage)
       .where(
         and(
-          eq(upgradeStep.upgradeId, upgradeId),
-          inArray(sql`coalesce(${upgradeStep.detail}->>'phase', 'fleet')`, [...PLATFORM_PHASES]),
-          inArray(upgradeStep.status, ['failed', 'needs_attention'])
+          eq(stage.upgradeId, upgradeId),
+          inArray(sql`coalesce(${stage.detail}->>'phase', 'fleet')`, [...PLATFORM_PHASES]),
+          inArray(stage.status, ['failed', 'needs_attention'])
         )
       )
       .orderBy(
-        sql`case coalesce(${upgradeStep.detail}->>'phase', 'fleet') when 'colocated_daemon' then 0 else 1 end`
+        sql`case coalesce(${stage.detail}->>'phase', 'fleet') when 'colocated_daemon' then 0 else 1 end`
       )
       .limit(1),
     db
       .select({
-        phase: sql<string>`coalesce(${upgradeStep.detail}->>'phase', 'fleet')`,
-        batchIndex: upgradeStep.batchIndex,
+        phase: sql<string>`coalesce(${stage.detail}->>'phase', 'fleet')`,
+        batchIndex: stage.batchIndex,
       })
-      .from(upgradeStep)
-      .where(
-        and(
-          eq(upgradeStep.upgradeId, upgradeId),
-          notInArray(upgradeStep.status, [...TERMINAL_STEP_SQL])
-        )
-      )
+      .from(stage)
+      .where(and(eq(stage.upgradeId, upgradeId), notInArray(stage.status, [...TERMINAL_STEP_SQL])))
       .orderBy(
-        sql`case coalesce(${upgradeStep.detail}->>'phase', 'fleet') when 'colocated_daemon' then 0 when 'control_plane' then 1 else 2 end`,
-        asc(upgradeStep.batchIndex),
-        asc(upgradeStep.id)
+        sql`case coalesce(${stage.detail}->>'phase', 'fleet') when 'colocated_daemon' then 0 when 'control_plane' then 1 else 2 end`,
+        asc(stage.batchIndex),
+        asc(stage.id)
       )
       .limit(1),
   ])
@@ -1015,17 +1011,17 @@ async function loadTickWindow(
   const batchIndex = opened.batchIndex
   const afterId = cursorAfterId(cursor, phase, batchIndex)
   const filters = [
-    eq(upgradeStep.upgradeId, upgradeId),
-    sql`coalesce(${upgradeStep.detail}->>'phase', 'fleet') = ${phase}`,
-    eq(upgradeStep.batchIndex, batchIndex),
-    notInArray(upgradeStep.status, [...TERMINAL_STEP_SQL]),
+    eq(stage.upgradeId, upgradeId),
+    sql`coalesce(${stage.detail}->>'phase', 'fleet') = ${phase}`,
+    eq(stage.batchIndex, batchIndex),
+    notInArray(stage.status, [...TERMINAL_STEP_SQL]),
   ]
-  if (afterId) filters.push(sql`${upgradeStep.id}::text > ${afterId}`)
+  if (afterId) filters.push(sql`${stage.id}::text > ${afterId}`)
   const rows = await db
     .select()
-    .from(upgradeStep)
+    .from(stage)
     .where(and(...filters))
-    .orderBy(asc(upgradeStep.id))
+    .orderBy(asc(stage.id))
     .limit(cap)
   return {
     steps: rows.map(toStep),

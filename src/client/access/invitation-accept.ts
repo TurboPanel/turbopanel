@@ -18,6 +18,7 @@ import {
   materializeInvitationGrants,
   resolveInvitationGrants,
 } from '../authn/invitation-grants.ts'
+import { inviterHoldsTeamGrants } from './invitation-delegation.ts'
 import type { InvitationAcceptError } from './routes-helpers.ts'
 
 export type AcceptInvitationResult =
@@ -89,13 +90,18 @@ export async function acceptInvitationForUser(
     if (!organizationId) {
       return { error: 'gone' as const }
     }
+    // Re-checked at accept time: covers invitations sent before the rule
+    // existed, and grants given to the team after the invitation went out.
+    if (!(await inviterHoldsTeamGrants(tx, invite.userId, invite.teamId))) {
+      return { error: 'invalid_grant' as const }
+    }
 
     await tx
       .insert(teammate)
       .values({ teamId: invite.teamId, userId })
       .onConflictDoNothing({ target: [teammate.teamId, teammate.userId] })
 
-    const grants = resolveInvitationGrants(invite.grants, organizationId)
+    const grants = resolveInvitationGrants(invite.grants)
     try {
       await materializeInvitationGrants(tx, userId, grants, organizationId)
     } catch (err) {

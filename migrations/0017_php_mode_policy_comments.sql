@@ -1,0 +1,3 @@
+COMMENT ON COLUMN "deployment"."options" IS 'Per-target apply inputs written at deploy time: `secretPlan`, `siteReleases` (release trees the compose declares) and `phpModes` (mode per PHP site).';--> statement-breakpoint
+COMMENT ON COLUMN "organization"."options" IS 'Org-wide settings merged key-by-key by the organization routes (`defaultServerTimezone`, `maxServers`, `acmeEnabled`, `managedDatabase`, `phpModes` and more).';--> statement-breakpoint
+COMMENT ON COLUMN "server"."options" IS 'Operator config served by GET /servers: `timezone`, `sshPort`, `ntp`, `hosting`, `cellLocationHint`, `cellGeneration`, `metricsCapabilityPlan`, `phpModes`.';

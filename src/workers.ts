@@ -1,4 +1,5 @@
 import { forEachSequential } from './lib/sequential.ts'
+import { firewallApplyGateFromEnv } from './features/firewall/enforcement.ts'
 import { Hono } from 'hono'
 import type { DaemonJwtKeyring } from './daemon/authn/daemon-jwt-keyring.ts'
 import { deriveDaemonJwtKeyring } from './daemon/authn/daemon-jwt-keyring.ts'
@@ -36,7 +37,10 @@ import type { CommandQueue } from './features/commands/queue.ts'
 import { isTransientError, processCommandEnvelope } from './features/commands/consumer.ts'
 import { parseCommandEnvelope } from './features/commands/envelope.ts'
 import { setRevokeBoundDaemonKey } from './features/licenses/revoke-bound-daemon-key.ts'
+import { connect as connectSocket } from 'cloudflare:sockets'
 import { registerCommandRuntimePorts } from './platform/ports/register-command-runtime-ports.ts'
+import { setTcpProbe } from './platform/ports/tcp-probe.ts'
+import { createWorkersTcpProbe } from './platform/workers/tcp-probe.ts'
 import { loadServerStatusRecords } from './client/servers/update-status.ts'
 import { resolveFleetPresence } from './daemon/cell/server-status.ts'
 import {
@@ -65,6 +69,7 @@ import {
   closeWorkersRequestDb,
   openWorkersRequestDb,
   resolveWorkersClientAuthRateLimiter,
+  resolveWorkersWriteRateLimiter,
   resolveWorkersDaemonRateLimiters,
   resolveWorkersDb,
   resolveWorkersGithubWebhookRateLimiter,
@@ -80,8 +85,9 @@ import {
 } from './platform/workers/workers-bindings.ts'
 import { fetchWithConnectionRetry } from './platform/workers/connection-retry.ts'
 import { type createWorkersDb, type Db, endDbConnection } from './db/connection.ts'
-import { compatLogWarn } from './lib/log-compat.ts'
+import { compatLogError, compatLogWarn } from './lib/log-compat.ts'
 import type { AuthRateLimiter } from './client/authn/auth-rate-limit.ts'
+import type { RateLimiter } from './daemon/rate-limit/contracts.ts'
 import { OTP_VERIFIER_SECRET_PURPOSE } from './client/authn/email-otp.ts'
 import { WEBAUTHN_CHALLENGE_PURPOSE } from './client/authn/passkeys.ts'
 import {
@@ -106,6 +112,7 @@ let cachedCommandQueue: CommandQueue | null = null
 let cachedServerMetricsStore: ServerMetricsStore | null = null
 let cachedExecutionLogStore: ExecutionLogStore | null = null
 let cachedAuthRateLimiter: AuthRateLimiter | null = null
+let cachedWriteRateLimiter: RateLimiter | null = null
 let cachedDaemonCellRegistryFactory:
   | ((
       env: CloudflareBindings,
@@ -130,6 +137,7 @@ export function resetWorkerAppCachesForTests(): void {
   cachedServerMetricsStore = null
   cachedExecutionLogStore = null
   cachedAuthRateLimiter = null
+  cachedWriteRateLimiter = null
   cachedDaemonCellRegistryFactory = null
   lazyEmailQueueResolveCallsForTests = 0
 }
@@ -188,6 +196,7 @@ function createLazyWorkersEmailQueue(
 }
 
 async function initWorkerApp(env: CloudflareBindings) {
+  setTcpProbe(createWorkersTcpProbe(connectSocket))
   setRevokeBoundDaemonKey(revokeDaemonKey)
   registerCommandRuntimePorts({
     fencePhaseFromCommandMetadata,
@@ -290,6 +299,7 @@ async function initWorkerApp(env: CloudflareBindings) {
   warnIfGitlabWebhookRateLimiterMissing(env)
   warnIfStripeWebhookRateLimiterMissing(env)
   cachedAuthRateLimiter = resolveWorkersClientAuthRateLimiter(env)
+  cachedWriteRateLimiter = resolveWorkersWriteRateLimiter(env)
   const rateLimiters = resolveWorkersDaemonRateLimiters(env)
   // Daemon registrars are generic over the env — the app's `AppEnv` carries
   // through without a cast (same as platform/deno/server.ts).
@@ -347,6 +357,28 @@ function stringBindingEnv(env: CloudflareBindings): Record<string, string | unde
   return out
 }
 
+/**
+ * Failed command message: never ack. Transient and permanent failures both
+ * `retry()`; once the consumer's `max_retries` (wrangler.jsonc) is exhausted
+ * Cloudflare moves the message to the configured `dead_letter_queue`, matching
+ * the Deno consumer's dead-lettering. Acking here would silently drop it.
+ */
+function retryOrDeadLetter(msg: Message<unknown>, error: unknown): void {
+  if (!isTransientError(error)) {
+    compatLogError(
+      'command-consumer',
+      JSON.stringify({
+        event: 'command.permanent_failure',
+        disposition: 'retry_to_dlq',
+        messageId: msg.id,
+        attempts: msg.attempts,
+        error: error instanceof Error ? error.message : String(error),
+      })
+    )
+  }
+  msg.retry()
+}
+
 export default {
   async fetch(request: Request, env: CloudflareBindings, ctx: ExecutionContext) {
     initPromise ??= initWorkerApp(env)
@@ -393,6 +425,9 @@ export default {
         if (cachedCommandQueue) c.set('commandQueue', cachedCommandQueue)
         if (cachedAuthRateLimiter) {
           c.set('authRateLimiter', cachedAuthRateLimiter)
+        }
+        if (cachedWriteRateLimiter) {
+          c.set('writeRateLimiter', cachedWriteRateLimiter)
         }
         c.set('platformEnv', platformEnv)
         if (billingConfig) c.set('billingConfig', billingConfig)
@@ -452,6 +487,7 @@ export default {
           env.TURBOPANEL_EXECUTION_LOG_RETENTION_DAYS
         ),
         scheduledTime: controller.scheduledTime,
+        firewallApplyGate: firewallApplyGateFromEnv(stringBindingEnv(env)),
       }
     )
     ctx.waitUntil(sweep)
@@ -470,6 +506,8 @@ export default {
       }
 
       const registry = cachedDaemonCellRegistryFactory(env, db)
+      // The deploy-time firewall apply key; unset means observe-only everywhere.
+      const firewallApplyGate = firewallApplyGateFromEnv(stringBindingEnv(env))
 
       try {
         await forEachSequential(batch.messages, async (msg) => {
@@ -486,14 +524,11 @@ export default {
                   : undefined,
               secretsConfig: cachedSecretsConfig ?? undefined,
               dataEncryptionSecrets: cachedDataEncryptionSecrets ?? undefined,
+              firewallApplyGate,
             })
             msg.ack()
           } catch (error) {
-            if (isTransientError(error)) {
-              msg.retry()
-            } else {
-              msg.ack()
-            }
+            retryOrDeadLetter(msg, error)
           }
         })
       } catch {

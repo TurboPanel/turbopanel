@@ -10,11 +10,8 @@ import {
   parseDefaultServerIdInput,
 } from '../../features/projects/project-options.ts'
 import { isPlacementServerId } from '../../features/compose/placement.ts'
-import {
-  parseDescription,
-  parseName,
-  stripPromotedMetadataKeys,
-} from '../shared.ts'
+import { settleDeployOptions, validateDeployOptions } from '../../features/deploy/deploy-options.ts'
+import { parseDescription, parseName, stripPromotedMetadataKeys } from '../shared.ts'
 import {
   getCatalogEntry,
   isCreateProjectType,
@@ -41,7 +38,7 @@ export type ProjectComposeValidationError = {
 export type ResolvedCreateProjectType = CreateProjectType | 'empty'
 
 export function resolveCreateProjectType(
-  body: Record<string, unknown>,
+  body: Record<string, unknown>
 ): ResolvedCreateProjectType | 'invalid' {
   const rawType = body.type
   // Missing / blank type is rejected — callers must send an explicit value.
@@ -60,7 +57,7 @@ export function resolveCreateProjectType(
 
 export function resolveCatalogEntryForCreate(
   projectType: ResolvedCreateProjectType,
-  body: Record<string, unknown>,
+  body: Record<string, unknown>
 ): CatalogEntry | 'missing_code' | 'unknown_code' | undefined {
   if (projectType !== 'template' && projectType !== 'managed') {
     return undefined
@@ -100,7 +97,7 @@ export function catalogProjectOptions(
     options: Record<string, unknown> | null
     entry: CatalogEntry
   },
-  includeEngineOptions: boolean,
+  includeEngineOptions: boolean
 ): Record<string, unknown> {
   if (fields.options) return fields.options
   if (includeEngineOptions && fields.entry.options) {
@@ -111,7 +108,7 @@ export function catalogProjectOptions(
 
 export function parseJsonbField(
   body: Record<string, unknown>,
-  field: string,
+  field: string
 ): Record<string, unknown> | null | 'invalid' {
   if (body[field] === undefined) {
     return null
@@ -124,10 +121,8 @@ export function parseJsonbField(
 }
 
 export function parseCreateProjectNames(
-  body: Record<string, unknown>,
-):
-  | { ok: true; name: string | null; description: string | null }
-  | ProjectRouteValidationError {
+  body: Record<string, unknown>
+): { ok: true; name: string | null; description: string | null } | ProjectRouteValidationError {
   try {
     return {
       ok: true,
@@ -141,7 +136,7 @@ export function parseCreateProjectNames(
 
 export function parseCreateProjectOptions(
   body: Record<string, unknown>,
-  validateOptions?: ComposeValidateOptions,
+  validateOptions?: ComposeValidateOptions
 ):
   | { ok: true; options: Record<string, unknown> | null }
   | ProjectComposeValidationError
@@ -155,7 +150,7 @@ export function parseCreateProjectOptions(
   if (optionsResult !== null && 'composeSource' in optionsResult) {
     const parsed = parseComposeSourceInput(
       optionsResult.composeSource,
-      validateOptions?.knownSourceIds,
+      validateOptions?.knownSourceIds
     )
     if (!parsed.ok) {
       return { ok: false, error: parsed.reason, status: 400 }
@@ -173,7 +168,10 @@ export function parseCreateProjectOptions(
     }
   }
   if (optionsResult !== null) {
+    const deployOptions = validateDeployOptions(optionsResult, 'project')
+    if (!deployOptions.ok) return { ok: false, error: deployOptions.reason, status: 400 }
     stripProjectComposePlacementOption(optionsResult)
+    return { ok: true, options: settleDeployOptions(null, optionsResult, 'project') }
   }
   return { ok: true, options: optionsResult }
 }
@@ -182,17 +180,16 @@ export function parseCreateProjectOptions(
 export const CREATE_PROJECT_PROMOTED_METADATA_KEYS = ['component', 'type'] as const
 
 export function parseCreateProjectMetadata(
-  body: Record<string, unknown>,
-):
-  | { ok: true; metadata: Record<string, unknown> | null }
-  | ProjectRouteValidationError {
+  body: Record<string, unknown>
+): { ok: true; metadata: Record<string, unknown> | null } | ProjectRouteValidationError {
   const metadataResult = parseJsonbField(body, 'metadata')
   if (metadataResult === 'invalid') {
     return { ok: false, error: 'Invalid request', status: 400 }
   }
-  const metadata = metadataResult === null
-    ? null
-    : stripPromotedMetadataKeys(metadataResult, CREATE_PROJECT_PROMOTED_METADATA_KEYS)
+  const metadata =
+    metadataResult === null
+      ? null
+      : stripPromotedMetadataKeys(metadataResult, CREATE_PROJECT_PROMOTED_METADATA_KEYS)
   return { ok: true, metadata }
 }
 
@@ -202,16 +199,14 @@ export function parseCreateProjectMetadata(
  */
 export function stampCreateProjectMetadata(
   metadata: Record<string, unknown> | null,
-  canonical: Record<string, unknown>,
+  canonical: Record<string, unknown>
 ): Record<string, unknown> {
   return { ...metadata, ...canonical }
 }
 
 export function parseCreateProjectServerIdField(
-  body: Record<string, unknown>,
-):
-  | { ok: true; serverId: string | null | undefined }
-  | ProjectRouteValidationError {
+  body: Record<string, unknown>
+): { ok: true; serverId: string | null | undefined } | ProjectRouteValidationError {
   if (body.serverId === undefined) {
     return { ok: true, serverId: undefined }
   }
@@ -231,13 +226,10 @@ export function parseCreateProjectServerIdField(
  */
 function normalizeComposeSourceOption(
   options: Record<string, unknown>,
-  validateOptions?: ComposeValidateOptions,
+  validateOptions?: ComposeValidateOptions
 ): ProjectRouteValidationError | null {
   if (!('composeSource' in options)) return null
-  const parsed = parseComposeSourceInput(
-    options.composeSource,
-    validateOptions?.knownSourceIds,
-  )
+  const parsed = parseComposeSourceInput(options.composeSource, validateOptions?.knownSourceIds)
   if (!parsed.ok) return { ok: false, error: parsed.reason, status: 400 }
   if (parsed.value === null) delete options.composeSource
   else options.composeSource = parsed.value
@@ -245,7 +237,7 @@ function normalizeComposeSourceOption(
 }
 
 function normalizeContainerNamingOption(
-  options: Record<string, unknown>,
+  options: Record<string, unknown>
 ): ProjectRouteValidationError | null {
   if (!('containerNaming' in options)) return null
   const naming = parseContainerNamingInput(options.containerNaming)
@@ -255,7 +247,7 @@ function normalizeContainerNamingOption(
 }
 
 function normalizeDefaultServerIdOption(
-  options: Record<string, unknown>,
+  options: Record<string, unknown>
 ): ProjectRouteValidationError | null {
   if (!('defaultServerId' in options)) return null
   const parsed = parseDefaultServerIdInput(options.defaultServerId)
@@ -267,15 +259,12 @@ function normalizeDefaultServerIdOption(
 
 export function normalizeProjectPatchOptions(
   optionsResult: Record<string, unknown>,
-  validateOptions?: ComposeValidateOptions,
+  validateOptions?: ComposeValidateOptions
 ):
   | { ok: true; options: Record<string, unknown> }
   | ProjectComposeValidationError
   | ProjectRouteValidationError {
-  const composeSourceError = normalizeComposeSourceOption(
-    optionsResult,
-    validateOptions,
-  )
+  const composeSourceError = normalizeComposeSourceOption(optionsResult, validateOptions)
   if (composeSourceError) return composeSourceError
 
   const composeOption = applyValidatedComposeOption(optionsResult, validateOptions)
@@ -294,13 +283,16 @@ export function normalizeProjectPatchOptions(
   const serverIdError = normalizeDefaultServerIdOption(optionsResult)
   if (serverIdError) return serverIdError
 
+  const deployOptions = validateDeployOptions(optionsResult, 'project')
+  if (!deployOptions.ok) return { ok: false, error: deployOptions.reason, status: 400 }
+
   stripProjectComposePlacementOption(optionsResult)
   return { ok: true, options: optionsResult }
 }
 
 export function parseProjectPatchOptionsBody(
   body: Record<string, unknown>,
-  validateOptions?: ComposeValidateOptions,
+  validateOptions?: ComposeValidateOptions
 ):
   | { ok: true; options: Record<string, unknown> | null }
   | ProjectComposeValidationError
@@ -316,7 +308,7 @@ export function parseProjectPatchOptionsBody(
 }
 
 export function assertDefaultServerIdShape(
-  options: Record<string, unknown> | null | undefined,
+  options: Record<string, unknown> | null | undefined
 ): ProjectRouteValidationError | null {
   if (!options || !('defaultServerId' in options)) return null
   const serverId = options.defaultServerId
@@ -328,10 +320,9 @@ export function assertDefaultServerIdShape(
 }
 
 export function parseConfigureProjectBody(
-  body: Record<string, unknown>,
+  body: Record<string, unknown>
 ):
-  | { ok: true; projectType: CreateProjectType; catalogCode?: string }
-  | ProjectRouteValidationError {
+  { ok: true; projectType: CreateProjectType; catalogCode?: string } | ProjectRouteValidationError {
   const rawType = body.type
   if (typeof rawType !== 'string' || !isConfiguredProjectType(rawType)) {
     return { ok: false, error: 'Invalid request', status: 400 }

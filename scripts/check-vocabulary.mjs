@@ -89,9 +89,7 @@ const GENERATED_TYPE_FILES = new Set(['worker-configuration.d.ts', 'cloudflare-e
 /** Vendored/generated trees and skill packs that must never be scanned. */
 function isSkippedPath(rel) {
   return (
-    /(^|\/)migrations(\/|$)/.test(rel) ||
-    /(^|\/)\.agents\/skills(\/|$)/.test(rel) ||
-    rel === SELF
+    /(^|\/)migrations(\/|$)/.test(rel) || /(^|\/)\.agents\/skills(\/|$)/.test(rel) || rel === SELF
   )
 }
 
@@ -101,9 +99,7 @@ function isSkippedDir(entry, rel) {
 
 function isSkippedFile(entry, rel) {
   return (
-    SKIP_FILENAMES.has(entry.name) ||
-    GENERATED_TYPE_FILES.has(entry.name) ||
-    isSkippedPath(rel)
+    SKIP_FILENAMES.has(entry.name) || GENERATED_TYPE_FILES.has(entry.name) || isSkippedPath(rel)
   )
 }
 
@@ -126,6 +122,28 @@ function isAllowlisted(line) {
   return ALLOWLIST_LINE_PATTERNS.some((pattern) => pattern.test(line))
 }
 
+// Warn mode (not blocking). The terminology page on the website names one word
+// for each part: control plane, app / web app, daemon, server, administrator.
+// These retired words are reported as warnings so new copy can be corrected
+// before the list is promoted to FORBIDDEN_PHRASES. Keep the siblings aligned.
+const WARN_PHRASES = [
+  { label: 'the console', pattern: /(?<![\w./-])the console(?![\w-])/i },
+  { label: 'instance owner', pattern: /\binstance owner\b/i },
+  { label: 'Instance CA', pattern: /\bInstance CA\b/ },
+  { label: 'hosted instance', pattern: /\bhosted instance\b/i },
+  { label: 'remote node', pattern: /\bremote nodes?\b/i },
+  { label: 'fleet', pattern: /(?<![\w./'"`-])fleet(?![\w'"`-])(?!\.\w)/i },
+]
+
+// Lines where a warn phrase is a real tool or identifier name.
+const WARN_ALLOWLIST_LINE_PATTERNS = [
+  /console\.(log|error|warn|info|debug|table)/,
+  /\.\/console|dev console|developer console|dev\/console|\.local\/console/i,
+  /^\s*(import|export)\b.*from\b/,
+]
+
+const warnings = []
+
 const failures = []
 
 for (const file of walk(ROOT)) {
@@ -133,6 +151,17 @@ for (const file of walk(ROOT)) {
   const rel = path.relative(ROOT, file)
   const text = fs.readFileSync(file, 'utf8')
   const lines = text.split('\n')
+
+  if (!rel.endsWith('terminology.mdx')) {
+    lines.forEach((line, i) => {
+      if (WARN_ALLOWLIST_LINE_PATTERNS.some((pattern) => pattern.test(line))) return
+      for (const { label, pattern } of WARN_PHRASES) {
+        if (pattern.test(line)) {
+          warnings.push(`${rel}:${i + 1} says "${label}" (see the terminology page)`)
+        }
+      }
+    })
+  }
 
   lines.forEach((line, i) => {
     if (isAllowlisted(line)) return
@@ -145,6 +174,14 @@ for (const file of walk(ROOT)) {
   })
 }
 
+if (warnings.length > 0) {
+  console.log(
+    `check-vocabulary: ${warnings.length} terminology warning(s) (warn mode, not blocking):`
+  )
+  for (const warning of warnings.slice(0, 40)) console.log(`  ! ${warning}`)
+  if (warnings.length > 40) console.log(`  ... and ${warnings.length - 40} more`)
+}
+
 if (failures.length > 0) {
   console.error('Vocabulary check failed:\n')
   for (const failure of failures) {
@@ -153,7 +190,7 @@ if (failures.length > 0) {
   console.error(
     `\n${failures.length} problem(s) found. The daemon is a "daemon" / "host daemon" / "turbopaneld", never an "agent". ` +
       'Shell chrome is "frosted chrome", never Apple-associated glass product copy. ' +
-      'Update the allowlist in this script (and the sibling repo copies) if this is a legitimate coding-agent, third-party, or expo-glass-effect identifier.',
+      'Update the allowlist in this script (and the sibling repo copies) if this is a legitimate coding-agent, third-party, or expo-glass-effect identifier.'
   )
   process.exit(1)
 }

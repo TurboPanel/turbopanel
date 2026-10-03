@@ -19,9 +19,7 @@ import type { DaemonCell } from '../../contracts/cell.ts'
 import type { Db } from '../../db/connection.ts'
 import type { RedisCellClient } from '../../daemon/cell/redis/client.ts'
 import { createRedisRateLimiter } from '../../daemon/rate-limit/redis-rate-limiter.ts'
-import {
-  GITHUB_WEBHOOK_PATH,
-} from '../../app/surfaces.ts'
+import { GITHUB_WEBHOOK_PATH } from '../../app/surfaces.ts'
 import { deriveEncryptionSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { encryptSecret } from '../../lib/secrets/data-encryption.ts'
 import { emptyComposeDocument } from '../../features/compose/types.ts'
@@ -44,7 +42,6 @@ import {
   successfulCheckSha,
 } from './github.ts'
 import {
-  sourceWatchesBranch,
   type TriggerSummary,
   triggerSummaryNeedsRetry,
 } from '../../client/repositories/webhook-trigger.ts'
@@ -72,7 +69,7 @@ const WEBHOOK_REF = 'ref-under-test'
  */
 function stubAppDb(
   rows: unknown[],
-  opts: { claimed?: boolean; updated?: unknown[]; installations?: unknown[] } = {},
+  opts: { claimed?: boolean; updated?: unknown[]; installations?: unknown[] } = {}
 ): Db {
   return {
     select: () => ({
@@ -84,17 +81,15 @@ function stubAppDb(
           // list empty so dispatch can finish without a live repository graph.
           then: (
             onFulfilled: (value: unknown) => unknown,
-            onRejected?: (reason: unknown) => unknown,
-          ) =>
-            Promise.resolve(opts.installations ?? []).then(onFulfilled, onRejected),
+            onRejected?: (reason: unknown) => unknown
+          ) => Promise.resolve(opts.installations ?? []).then(onFulfilled, onRejected),
         }),
       }),
     }),
     insert: () => ({
       values: () => ({
         onConflictDoNothing: () => ({
-          returning: () =>
-            Promise.resolve(opts.claimed === false ? [] : [{ id: 'row' }]),
+          returning: () => Promise.resolve(opts.claimed === false ? [] : [{ id: 'row' }]),
         }),
       }),
     }),
@@ -153,6 +148,22 @@ function flattenSql(query: unknown): string {
   return parts.join('')
 }
 
+/** An environment document whose one service builds `main` from the test repository. */
+const buildsPushedBranch = {
+  compose: {
+    version: 1,
+    data: {
+      services: {
+        web: {
+          image: 'node:24',
+          'x-turbopanel': { source: { sourceId: SOURCE_ID, branch: 'main' } },
+        },
+      },
+    },
+    presentation: { keyOrder: [], comments: {} },
+  },
+}
+
 /**
  * Table-aware repository graph + empty-compose deploy stub.
  *
@@ -169,7 +180,7 @@ function createEnqueueGraphDb(
     enqueue: 'success' | 'fail' | 'throw'
     repository?: { autoDeploy?: string; options?: unknown }
     onRelease?: () => void
-  },
+  }
 ): Db {
   const composeOptions = { compose: emptyComposeDocument() }
   const sourceRow = {
@@ -204,29 +215,37 @@ function createEnqueueGraphDb(
         if (table === environment) {
           return {
             where: () =>
-              thenableRows([{
-                id: ENV_ID,
-                projectId: PROJECT_ID,
-                serverId: null,
-                options: composeOptions,
-                name: 'Production',
-              }]),
+              thenableRows([
+                {
+                  id: ENV_ID,
+                  projectId: PROJECT_ID,
+                  serverId: null,
+                  options: composeOptions,
+                  name: 'Production',
+                },
+              ]),
             innerJoin: () => ({
               innerJoin: () => ({
+                // One row answers both joins that reach here: the placement
+                // lookup (server pin + org) and the push resolver's per-
+                // environment branch lookup (the environment's own compose).
                 where: () =>
-                  thenableRows([{
-                    serverId: SERVER_ID,
-                    projectOptions: composeOptions,
-                    organizationId: ORG_ID,
-                  }]),
+                  thenableRows([
+                    {
+                      serverId: SERVER_ID,
+                      projectOptions: composeOptions,
+                      organizationId: ORG_ID,
+                      environmentId: ENV_ID,
+                      environmentOptions: buildsPushedBranch,
+                    },
+                  ]),
               }),
             }),
           }
         }
         if (table === project) {
           return {
-            where: () =>
-              thenableRows([{ id: PROJECT_ID, options: composeOptions }]),
+            where: () => thenableRows([{ id: PROJECT_ID, options: composeOptions }]),
           }
         }
         if (table === fabric || table === server) {
@@ -259,8 +278,7 @@ function createEnqueueGraphDb(
     insert: () => ({
       values: () => ({
         onConflictDoNothing: () => ({
-          returning: () =>
-            Promise.resolve(opts.claimed === false ? [] : [{ id: 'row' }]),
+          returning: () => Promise.resolve(opts.claimed === false ? [] : [{ id: 'row' }]),
         }),
         returning: () => Promise.resolve([{ id: 'svc-1' }]),
       }),
@@ -271,7 +289,7 @@ function createEnqueueGraphDb(
           returning: () => Promise.resolve([]),
           then: (
             onFulfilled: (value: unknown) => unknown,
-            onRejected?: (reason: unknown) => unknown,
+            onRejected?: (reason: unknown) => unknown
           ) => Promise.resolve().then(onFulfilled, onRejected),
         }),
       }),
@@ -293,11 +311,13 @@ function createEnqueueGraphDb(
     transaction: async () => {
       if (opts.enqueue === 'throw') throw new Error('injected dispatch crash')
       if (opts.enqueue === 'fail') {
-        return [{
-          commandId: 'cmd-1',
-          serverId: SERVER_ID,
-          queuedAt: '2026-01-01T00:00:00.000Z',
-        }]
+        return [
+          {
+            commandId: 'cmd-1',
+            serverId: SERVER_ID,
+            queuedAt: '2026-01-01T00:00:00.000Z',
+          },
+        ]
       }
       return []
     },
@@ -325,32 +345,39 @@ async function buildApp(opts: {
   const secretsConfig = parseTestSecretsConfig('deno')
   const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
     secretsConfig,
-    'data-encryption',
+    'data-encryption'
   )
 
-  const rows = opts.appRegistered === false ? [] : [{
-    id: 'app-1',
-    organizationId: null,
-    provider: 'github',
-    name: 'TurboPanel',
-    baseUrl: 'https://github.com',
-    apiUrl: null,
-    externalAppId: '1234',
-    appSlug: null,
-    clientId: null,
-    redirectUri: null,
-    webhookRef: WEBHOOK_REF,
-    webhookTokenHash: null,
-    envelopes: {
-      privateKeyEnvelope: await encryptSecret(dataEncryptionSecrets, 'pem-placeholder'),
-      ...(opts.webhookSecret === undefined ? {} : {
-        webhookSecretEnvelope: await encryptSecret(
-          dataEncryptionSecrets,
-          opts.webhookSecret,
-        ),
-      }),
-    },
-  }]
+  const rows =
+    opts.appRegistered === false
+      ? []
+      : [
+          {
+            id: 'app-1',
+            organizationId: null,
+            provider: 'github',
+            name: 'TurboPanel',
+            baseUrl: 'https://github.com',
+            apiUrl: null,
+            externalAppId: '1234',
+            appSlug: null,
+            clientId: null,
+            redirectUri: null,
+            webhookRef: WEBHOOK_REF,
+            webhookTokenHash: null,
+            envelopes: {
+              privateKeyEnvelope: await encryptSecret(dataEncryptionSecrets, 'pem-placeholder'),
+              ...(opts.webhookSecret === undefined
+                ? {}
+                : {
+                    webhookSecretEnvelope: await encryptSecret(
+                      dataEncryptionSecrets,
+                      opts.webhookSecret
+                    ),
+                  }),
+            },
+          },
+        ]
 
   const app = new Hono<AppEnv>()
   app.use('*', (c, next) => {
@@ -358,12 +385,12 @@ async function buildApp(opts: {
       'db',
       opts.graph
         ? createEnqueueGraphDb(rows, {
-          claimed: opts.claimed,
-          enqueue: opts.graph.enqueue,
-          ...(opts.graph.repository === undefined ? {} : { repository: opts.graph.repository }),
-          ...(opts.graph.onRelease === undefined ? {} : { onRelease: opts.graph.onRelease }),
-        })
-        : stubAppDb(rows, { claimed: opts.claimed, updated: opts.updated }),
+            claimed: opts.claimed,
+            enqueue: opts.graph.enqueue,
+            ...(opts.graph.repository === undefined ? {} : { repository: opts.graph.repository }),
+            ...(opts.graph.onRelease === undefined ? {} : { onRelease: opts.graph.onRelease }),
+          })
+        : stubAppDb(rows, { claimed: opts.claimed, updated: opts.updated })
     )
     c.set('dataEncryptionSecrets', dataEncryptionSecrets)
     if (opts.dispatchReady || opts.graph) {
@@ -374,7 +401,7 @@ async function buildApp(opts: {
             : Promise.resolve(),
       })
       c.set('daemonCellRegistry', {
-        getCell: () => ({} as unknown as DaemonCell),
+        getCell: () => ({}) as unknown as DaemonCell,
         listOnlineServerIds: () => Promise.resolve([]),
         getSnapshots: () => Promise.resolve(new Map()),
         purge: () => Promise.resolve(),
@@ -400,24 +427,14 @@ async function signBody(secret: string, body: string): Promise<string> {
     encoder.encode(secret) as BufferSource,
     { name: 'HMAC', hash: 'SHA-256' },
     false,
-    ['sign'],
+    ['sign']
   )
-  const mac = await crypto.subtle.sign(
-    { name: 'HMAC' },
-    key,
-    encoder.encode(body) as BufferSource,
-  )
-  const hex = [...new Uint8Array(mac)]
-    .map((byte) => byte.toString(16).padStart(2, '0'))
-    .join('')
+  const mac = await crypto.subtle.sign({ name: 'HMAC' }, key, encoder.encode(body) as BufferSource)
+  const hex = [...new Uint8Array(mac)].map((byte) => byte.toString(16).padStart(2, '0')).join('')
   return `sha256=${hex}`
 }
 
-function postTo(
-  path: string,
-  body: string,
-  headers: Record<string, string> = {},
-): Request {
+function postTo(path: string, body: string, headers: Record<string, string> = {}): Request {
   return new Request(`http://instance${path}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', ...headers },
@@ -459,10 +476,12 @@ test('a missing or wrong signature is 401 before the delivery is claimed', async
   const unsigned = await app.request(post('{}', { 'x-github-event': 'push' }))
   assertEquals(unsigned.status, 401)
 
-  const wrong = await app.request(post('{}', {
-    'x-github-event': 'push',
-    'x-hub-signature-256': `sha256=${'a'.repeat(64)}`,
-  }))
+  const wrong = await app.request(
+    post('{}', {
+      'x-github-event': 'push',
+      'x-hub-signature-256': `sha256=${'a'.repeat(64)}`,
+    })
+  )
   assertEquals(wrong.status, 401)
 })
 
@@ -471,25 +490,31 @@ test('a signed delivery missing its event or id headers is a bad request', async
   const body = '{}'
   const signature = await signBody('shh', body)
 
-  const noEvent = await app.request(post(body, {
-    'x-hub-signature-256': signature,
-    'x-github-delivery': crypto.randomUUID(),
-  }))
+  const noEvent = await app.request(
+    post(body, {
+      'x-hub-signature-256': signature,
+      'x-github-delivery': crypto.randomUUID(),
+    })
+  )
   assertEquals(noEvent.status, 400)
 
-  const noDelivery = await app.request(post(body, {
-    'x-hub-signature-256': signature,
-    'x-github-event': 'push',
-  }))
+  const noDelivery = await app.request(
+    post(body, {
+      'x-hub-signature-256': signature,
+      'x-github-event': 'push',
+    })
+  )
   assertEquals(noDelivery.status, 400)
 })
 
 test('an oversized declared body is refused before it is buffered', async () => {
   const app = await buildApp({ webhookSecret: 'shh' })
-  const res = await app.request(post('{}', {
-    'x-github-event': 'push',
-    'content-length': String(GITHUB_WEBHOOK_MAX_BODY_BYTES + 1),
-  }))
+  const res = await app.request(
+    post('{}', {
+      'x-github-event': 'push',
+      'content-length': String(GITHUB_WEBHOOK_MAX_BODY_BYTES + 1),
+    })
+  )
   assertEquals(res.status, 413)
 })
 
@@ -516,7 +541,7 @@ test('an oversized body with no Content-Length is refused without buffering the 
       body,
       duplex: 'half',
       // deno-lint-ignore no-explicit-any
-    } as any),
+    } as any)
   )
   assertEquals(res.status, 413)
   // GITHUB_WEBHOOK_MAX_BODY_BYTES is 1 MiB; the reader must abort within a
@@ -536,7 +561,7 @@ test('the scoped and bare paths both reach the same gate', async () => {
         'x-github-event': 'push',
         'x-github-hook-installation-target-type': 'integration',
         'x-github-hook-installation-target-id': '1234',
-      }),
+      })
     )
     // 401 is the gate rejecting an unsigned body — which means it ran. A 404
     // would mean the path never reached the handler at all.
@@ -549,19 +574,19 @@ test('successfulCheckSha reads only completed successful suites', () => {
     successfulCheckSha('check_suite', {
       check_suite: { status: 'completed', conclusion: 'success', head_sha: 'a'.repeat(40) },
     }),
-    'a'.repeat(40),
+    'a'.repeat(40)
   )
   assertEquals(
     successfulCheckSha('check_suite', {
       check_suite: { status: 'completed', conclusion: 'failure', head_sha: 'a'.repeat(40) },
     }),
-    null,
+    null
   )
   assertEquals(
     successfulCheckSha('check_suite', {
       check_suite: { status: 'in_progress', conclusion: null, head_sha: 'a'.repeat(40) },
     }),
-    null,
+    null
   )
   assertEquals(successfulCheckSha('check_suite', {}), null)
 })
@@ -582,7 +607,7 @@ test('successfulCheckSha releases a check_run only once its suite is green', () 
         },
       },
     }),
-    'b'.repeat(40),
+    'b'.repeat(40)
   )
   // One green job while the rest of the suite is still running must not release
   // a `checks_passed` deploy.
@@ -595,7 +620,7 @@ test('successfulCheckSha releases a check_run only once its suite is green', () 
         check_suite: { status: 'in_progress', conclusion: null, head_sha: 'b'.repeat(40) },
       },
     }),
-    null,
+    null
   )
   // Nor may one that passed inside a suite that ended up failing.
   assertEquals(
@@ -607,14 +632,14 @@ test('successfulCheckSha releases a check_run only once its suite is green', () 
         check_suite: { status: 'completed', conclusion: 'failure', head_sha: 'b'.repeat(40) },
       },
     }),
-    null,
+    null
   )
   // A run with no suite at all carries no all-checks-green claim.
   assertEquals(
     successfulCheckSha('check_run', {
       check_run: { status: 'completed', conclusion: 'success', head_sha: 'b'.repeat(40) },
     }),
-    null,
+    null
   )
   assertEquals(
     successfulCheckSha('check_run', {
@@ -624,7 +649,7 @@ test('successfulCheckSha releases a check_run only once its suite is green', () 
         check_suite: { status: 'completed', conclusion: 'success', head_sha: 'b'.repeat(40) },
       },
     }),
-    null,
+    null
   )
 })
 
@@ -652,22 +677,26 @@ const COMMIT_SHA = 'a'.repeat(40)
 async function signedDispatch(
   app: Hono<AppEnv>,
   body: string,
-  headers: Record<string, string>,
+  headers: Record<string, string>
 ): Promise<Response> {
-  return await app.request(post(body, {
-    'x-hub-signature-256': await signBody('shh', body),
-    'x-github-delivery': crypto.randomUUID(),
-    ...headers,
-  }))
+  return await app.request(
+    post(body, {
+      'x-hub-signature-256': await signBody('shh', body),
+      'x-github-delivery': crypto.randomUUID(),
+      ...headers,
+    })
+  )
 }
 
 test('a scoped path whose App id header names a different app is 401', async () => {
   const app = await buildApp({ webhookSecret: 'shh' })
-  const res = await app.request(post('{}', {
-    'x-github-event': 'push',
-    'x-github-hook-installation-target-type': 'integration',
-    'x-github-hook-installation-target-id': '9999',
-  }))
+  const res = await app.request(
+    post('{}', {
+      'x-github-event': 'push',
+      'x-github-hook-installation-target-type': 'integration',
+      'x-github-hook-installation-target-id': '9999',
+    })
+  )
   assertEquals(res.status, 401)
 })
 
@@ -691,64 +720,84 @@ test('a signed branch push that names no installation is unidentified', async ()
 
 test('a signed branch-delete push is accepted as skipped', async () => {
   const app = await buildApp({ webhookSecret: 'shh' })
-  const res = await signedDispatch(app, JSON.stringify({
-    ref: 'refs/heads/main',
-    after: '0'.repeat(40),
-    deleted: true,
-    installation: { id: 99 },
-    repository: { id: 42 },
-  }), { 'x-github-event': 'push' })
+  const res = await signedDispatch(
+    app,
+    JSON.stringify({
+      ref: 'refs/heads/main',
+      after: '0'.repeat(40),
+      deleted: true,
+      installation: { id: 99 },
+      repository: { id: 42 },
+    }),
+    { 'x-github-event': 'push' }
+  )
   assertEquals(res.status, 200)
   assertEquals(await res.json(), { ok: true })
 })
 
 test('a signed push that would deploy asks for a retry when dispatch is down', async () => {
   const app = await buildApp({ webhookSecret: 'shh' })
-  const res = await signedDispatch(app, JSON.stringify({
-    ref: 'refs/heads/main',
-    after: COMMIT_SHA,
-    installation: { id: 99 },
-    repository: { id: 42 },
-  }), { 'x-github-event': 'push' })
+  const res = await signedDispatch(
+    app,
+    JSON.stringify({
+      ref: 'refs/heads/main',
+      after: COMMIT_SHA,
+      installation: { id: 99 },
+      repository: { id: 42 },
+    }),
+    { 'x-github-event': 'push' }
+  )
   assertEquals(res.status, 503)
   assertEquals(await res.json(), { error: 'retry' })
 })
 
 test('a signed check_suite that is not all-green is accepted as skipped', async () => {
   const app = await buildApp({ webhookSecret: 'shh' })
-  const res = await signedDispatch(app, JSON.stringify({
-    check_suite: { status: 'in_progress', conclusion: null, head_sha: COMMIT_SHA },
-  }), { 'x-github-event': 'check_suite' })
+  const res = await signedDispatch(
+    app,
+    JSON.stringify({
+      check_suite: { status: 'in_progress', conclusion: null, head_sha: COMMIT_SHA },
+    }),
+    { 'x-github-event': 'check_suite' }
+  )
   assertEquals(res.status, 200)
   assertEquals(await res.json(), { ok: true })
 })
 
 test('a signed green check_suite asks for a retry when dispatch is down', async () => {
   const app = await buildApp({ webhookSecret: 'shh' })
-  const res = await signedDispatch(app, JSON.stringify({
-    check_suite: { status: 'completed', conclusion: 'success', head_sha: COMMIT_SHA },
-    installation: { id: 99 },
-    repository: { id: 42 },
-  }), { 'x-github-event': 'check_suite' })
+  const res = await signedDispatch(
+    app,
+    JSON.stringify({
+      check_suite: { status: 'completed', conclusion: 'success', head_sha: COMMIT_SHA },
+      installation: { id: 99 },
+      repository: { id: 42 },
+    }),
+    { 'x-github-event': 'check_suite' }
+  )
   assertEquals(res.status, 503)
   assertEquals(await res.json(), { error: 'retry' })
 })
 
 test('a signed green check_run whose suite is green asks for a retry when dispatch is down', async () => {
   const app = await buildApp({ webhookSecret: 'shh' })
-  const res = await signedDispatch(app, JSON.stringify({
-    check_run: {
-      status: 'completed',
-      conclusion: 'success',
-      check_suite: {
+  const res = await signedDispatch(
+    app,
+    JSON.stringify({
+      check_run: {
         status: 'completed',
         conclusion: 'success',
-        head_sha: COMMIT_SHA,
+        check_suite: {
+          status: 'completed',
+          conclusion: 'success',
+          head_sha: COMMIT_SHA,
+        },
       },
-    },
-    installation: { id: 99 },
-    repository: { id: 42 },
-  }), { 'x-github-event': 'check_run' })
+      installation: { id: 99 },
+      repository: { id: 42 },
+    }),
+    { 'x-github-event': 'check_run' }
+  )
   assertEquals(res.status, 503)
   assertEquals(await res.json(), { error: 'retry' })
 })
@@ -764,20 +813,28 @@ test('a signed installation without an id is unidentified', async () => {
 
 test('installation_repositories is noted without mutating repository rows', async () => {
   const app = await buildApp({ webhookSecret: 'shh' })
-  const res = await signedDispatch(app, JSON.stringify({
-    action: 'added',
-    installation: { id: 99 },
-  }), { 'x-github-event': 'installation_repositories' })
+  const res = await signedDispatch(
+    app,
+    JSON.stringify({
+      action: 'added',
+      installation: { id: 99 },
+    }),
+    { 'x-github-event': 'installation_repositories' }
+  )
   assertEquals(res.status, 200)
   assertEquals(await res.json(), { ok: true })
 })
 
 test('a signed installation lifecycle event applies against the verified app', async () => {
   const app = await buildApp({ webhookSecret: 'shh', updated: [{ id: 'inst-1' }] })
-  const res = await signedDispatch(app, JSON.stringify({
-    action: 'deleted',
-    installation: { id: 99 },
-  }), { 'x-github-event': 'installation' })
+  const res = await signedDispatch(
+    app,
+    JSON.stringify({
+      action: 'deleted',
+      installation: { id: 99 },
+    }),
+    { 'x-github-event': 'installation' }
+  )
   assertEquals(res.status, 200)
   assertEquals(await res.json(), { ok: true })
 })
@@ -789,39 +846,39 @@ test('an unhandled signed event is accepted as skipped', async () => {
   assertEquals(await res.json(), { ok: true })
 })
 
-test('sourceWatchesBranch: a blank default branch watches every branch', () => {
-  assertEquals(sourceWatchesBranch('main', 'main'), true)
-  assertEquals(sourceWatchesBranch('main', 'develop'), false)
-  assertEquals(sourceWatchesBranch(' main ', 'main'), true)
-  assertEquals(sourceWatchesBranch(null, 'anything'), true)
-  assertEquals(sourceWatchesBranch('   ', 'anything'), true)
-})
-
 test('whitespace-only event or delivery headers are treated as missing', async () => {
   const app = await buildApp({ webhookSecret: 'shh' })
   const body = '{}'
   const signature = await signBody('shh', body)
 
-  const blankEvent = await app.request(post(body, {
-    'x-hub-signature-256': signature,
-    'x-github-event': '   ',
-    'x-github-delivery': crypto.randomUUID(),
-  }))
+  const blankEvent = await app.request(
+    post(body, {
+      'x-hub-signature-256': signature,
+      'x-github-event': '   ',
+      'x-github-delivery': crypto.randomUUID(),
+    })
+  )
   assertEquals(blankEvent.status, 400)
 
-  const blankDelivery = await app.request(post(body, {
-    'x-hub-signature-256': signature,
-    'x-github-event': 'push',
-    'x-github-delivery': '   ',
-  }))
+  const blankDelivery = await app.request(
+    post(body, {
+      'x-hub-signature-256': signature,
+      'x-github-event': 'push',
+      'x-github-delivery': '   ',
+    })
+  )
   assertEquals(blankDelivery.status, 400)
 })
 
 test('a green check_suite without an installation is not a release signal', async () => {
   const app = await buildApp({ webhookSecret: 'shh' })
-  const res = await signedDispatch(app, JSON.stringify({
-    check_suite: { status: 'completed', conclusion: 'success', head_sha: COMMIT_SHA },
-  }), { 'x-github-event': 'check_suite' })
+  const res = await signedDispatch(
+    app,
+    JSON.stringify({
+      check_suite: { status: 'completed', conclusion: 'success', head_sha: COMMIT_SHA },
+    }),
+    { 'x-github-event': 'check_suite' }
+  )
   assertEquals(res.status, 200)
   assertEquals(await res.json(), { ok: true })
 })
@@ -830,52 +887,68 @@ test('an installation event with a non-string action is a no-op apply', async ()
   // Only the named lifecycle verbs mutate rows; a numeric action becomes ''
   // and apply reports zero updates rather than guessing a suspend/resume.
   const app = await buildApp({ webhookSecret: 'shh', updated: [{ id: 'inst-1' }] })
-  const res = await signedDispatch(app, JSON.stringify({
-    action: 1,
-    installation: { id: 99 },
-  }), { 'x-github-event': 'installation' })
+  const res = await signedDispatch(
+    app,
+    JSON.stringify({
+      action: 1,
+      installation: { id: 99 },
+    }),
+    { 'x-github-event': 'installation' }
+  )
   assertEquals(res.status, 200)
   assertEquals(await res.json(), { ok: true })
 })
 
 test('a signed push with dispatch up is accepted when no installation matches', async () => {
   const app = await buildApp({ webhookSecret: 'shh', dispatchReady: true })
-  const res = await signedDispatch(app, JSON.stringify({
-    ref: 'refs/heads/main',
-    after: COMMIT_SHA,
-    installation: { id: 99 },
-    repository: { id: 42 },
-  }), { 'x-github-event': 'push' })
+  const res = await signedDispatch(
+    app,
+    JSON.stringify({
+      ref: 'refs/heads/main',
+      after: COMMIT_SHA,
+      installation: { id: 99 },
+      repository: { id: 42 },
+    }),
+    { 'x-github-event': 'push' }
+  )
   assertEquals(res.status, 200)
   assertEquals(await res.json(), { ok: true })
 })
 
 test('a signed green check_suite with dispatch up is accepted when no installation matches', async () => {
   const app = await buildApp({ webhookSecret: 'shh', dispatchReady: true })
-  const res = await signedDispatch(app, JSON.stringify({
-    check_suite: { status: 'completed', conclusion: 'success', head_sha: COMMIT_SHA },
-    installation: { id: 99 },
-    repository: { id: 42 },
-  }), { 'x-github-event': 'check_suite' })
+  const res = await signedDispatch(
+    app,
+    JSON.stringify({
+      check_suite: { status: 'completed', conclusion: 'success', head_sha: COMMIT_SHA },
+      installation: { id: 99 },
+      repository: { id: 42 },
+    }),
+    { 'x-github-event': 'check_suite' }
+  )
   assertEquals(res.status, 200)
   assertEquals(await res.json(), { ok: true })
 })
 
 test('a signed green check_run with dispatch up is accepted when no installation matches', async () => {
   const app = await buildApp({ webhookSecret: 'shh', dispatchReady: true })
-  const res = await signedDispatch(app, JSON.stringify({
-    check_run: {
-      status: 'completed',
-      conclusion: 'success',
-      check_suite: {
+  const res = await signedDispatch(
+    app,
+    JSON.stringify({
+      check_run: {
         status: 'completed',
         conclusion: 'success',
-        head_sha: COMMIT_SHA,
+        check_suite: {
+          status: 'completed',
+          conclusion: 'success',
+          head_sha: COMMIT_SHA,
+        },
       },
-    },
-    installation: { id: 99 },
-    repository: { id: 42 },
-  }), { 'x-github-event': 'check_run' })
+      installation: { id: 99 },
+      repository: { id: 42 },
+    }),
+    { 'x-github-event': 'check_run' }
+  )
   assertEquals(res.status, 200)
   assertEquals(await res.json(), { ok: true })
 })
@@ -1012,12 +1085,16 @@ test('a Redis eval failure still throttles GitHub webhook ingress', async () => 
     'x-github-event': 'push',
   })
   assertEquals(first.status, 200)
-  const second = await signedDispatch(app, JSON.stringify({
-    ...branchPush,
-    after: 'b'.repeat(40),
-  }), {
-    'x-github-event': 'push',
-  })
+  const second = await signedDispatch(
+    app,
+    JSON.stringify({
+      ...branchPush,
+      after: 'b'.repeat(40),
+    }),
+    {
+      'x-github-event': 'push',
+    }
+  )
   assertEquals(second.status, 429)
   assertEquals(second.headers.get('Retry-After'), '60')
 })

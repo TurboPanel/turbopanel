@@ -15,6 +15,12 @@ import {
   validateDeployHostings,
   validateDeployStorageMaterialList,
 } from '../../contracts/commands/deploy-validation.ts'
+import {
+  type DeployStrategy,
+  type MigrationStatus,
+  parseDeployStrategyInput,
+  parseMigrationStatusInput,
+} from '../../features/deploy/deploy-options.ts'
 import type { FabricGateOutcome } from '../../features/fabric/gate.ts'
 import type { ScheduleErrorCode } from '../../features/schedule/index.ts'
 
@@ -146,10 +152,12 @@ export type QueuedCommandRef = {
 }
 
 export function queuedCommandsResponseBody(
-  commands: readonly QueuedCommandRef[]
+  commands: readonly QueuedCommandRef[],
+  strategy?: Record<string, unknown>
 ): Record<string, unknown> {
   const first = commands[0]
   return {
+    ...(strategy === undefined ? {} : { strategy }),
     ok: true as const,
     commandId: first?.commandId ?? '',
     status: 'queued' as const,
@@ -268,6 +276,30 @@ function mapComposeUnsupportedError(
       error: 'compose_field_unsupported',
       issues: prepared.issues,
       message: `This compose document sets ${fieldNoun(count)} TurboPanel does not support: ${composeIssuePaths(prepared.issues)}. Remove ${pronounWord(count)} and deploy again — leaving ${pronounWord(count)} in place would deploy something different from what the document says.`,
+    },
+  }
+}
+
+function mapComposeBuildRefusedError(
+  prepared: Extract<DeployPrepareError, { kind: 'compose_build_refused' }>
+): PrepareErrorResponse {
+  const onlyRemote = prepared.issues.every((issue) => issue.code === 'build_remote_source_refused')
+  if (onlyRemote) {
+    return {
+      status: 422,
+      body: {
+        error: 'compose_build_refused',
+        issues: prepared.issues,
+        message: `This compose document builds from a remote source (${composeIssuePaths(prepared.issues)}), and remote build sources are off for this organization. An organization owner can turn them on under Manage Organization → Compose, or point the build at a folder in the project instead.`,
+      },
+    }
+  }
+  return {
+    status: 422,
+    body: {
+      error: 'compose_build_refused',
+      issues: prepared.issues,
+      message: `This compose document builds with options no deploy may use: ${composeIssuePaths(prepared.issues)}. Each issue carries its rule's code. Remove them and deploy again (only a public remote build source can be allowed, by an organization owner).`,
     },
   }
 }
@@ -531,8 +563,33 @@ function tryMapPrincipalPrepareError(prepared: DeployPrepareError): PrepareError
   return mapPrincipalPrepareError(prepared)
 }
 
+const PHP_MODE_REFUSAL_TEXT = {
+  engine_unsupported: 'its web server cannot run that mode',
+  not_allowed: 'its organization or server does not offer that mode',
+  none_allowed: 'its organization and server offer no mode its web server can run',
+  daemon_unsupported:
+    "the server's TurboPanel daemon is too old to run per-site PHP modes (update the daemon first)",
+} as const
+
+function tryMapPhpModePrepareError(prepared: DeployPrepareError): PrepareErrorResponse | null {
+  if (prepared.kind !== 'php_mode_unavailable') return null
+  const asked = prepared.mode ? ` PHP mode "${prepared.mode}"` : ' a PHP mode'
+  return {
+    status: 422,
+    body: {
+      error: 'php_mode_unavailable',
+      composeServiceName: prepared.composeServiceName,
+      reason: prepared.reason,
+      ...(prepared.mode ? { mode: prepared.mode } : {}),
+      allowed: prepared.allowed,
+      message: `Site "${prepared.composeServiceName}" cannot get${asked}: ${PHP_MODE_REFUSAL_TEXT[prepared.reason]}. Allowed here: ${prepared.allowed.join(', ') || 'none'}.`,
+    },
+  }
+}
+
 export function mapPrepareErrorResponse(prepared: DeployPrepareError): PrepareErrorResponse {
   return (
+    tryMapPhpModePrepareError(prepared) ??
     tryMapSitePrepareError(prepared) ??
     tryMapPrincipalPrepareError(prepared) ??
     tryMapHostingPrepareError(prepared) ??
@@ -566,6 +623,11 @@ function mapCorePrepareError(prepared: DeployPrepareError): PrepareErrorResponse
       return mapComposeMergeError(prepared)
     case 'compose_field_unsupported':
       return mapComposeUnsupportedError(prepared)
+    // A build option no deploy may carry (host network, privileges, SSH agent,
+    // a context or secret outside the project, …). 422, not 403: no opt-in and
+    // no higher role makes it deployable.
+    case 'compose_build_refused':
+      return mapComposeBuildRefusedError(prepared)
     // TurboPanel *does* implement this field — unlike compose_field_unsupported
     // above, the fix is an org-owner opt-in
     // (PUT /organizations/:id/compose-privileged-fields), not removing the
@@ -664,11 +726,36 @@ export function parseDeployRef(value: unknown): string | null | typeof DEPLOY_RE
   return trimmed
 }
 
+/** Per-deploy strategy overrides; `null` means "use the environment's setting". */
+export type DeployStrategyOverride = {
+  strategy: DeployStrategy | null
+  migration: MigrationStatus | null
+}
+
+function parseOptionalOverride<T>(
+  value: unknown,
+  parse: (raw: unknown) => { ok: true; value: T } | { ok: false }
+): T | null | 'invalid' {
+  if (value === undefined || value === null) return null
+  const parsed = parse(value)
+  return parsed.ok ? parsed.value : 'invalid'
+}
+
+export function parseDeployStrategyOverride(
+  record: Record<string, unknown>
+): DeployStrategyOverride | 'invalid' {
+  const strategy = parseOptionalOverride(record.strategy, parseDeployStrategyInput)
+  const migration = parseOptionalOverride(record.migration, parseMigrationStatusInput)
+  if (strategy === 'invalid' || migration === 'invalid') return 'invalid'
+  return { strategy, migration }
+}
+
 export function parseDeployRequestFlags(body: unknown):
   | {
       acknowledgeHealthCheckWarnings: boolean
       noCache: boolean
       ref: string | null
+      override: DeployStrategyOverride
     }
   | 'invalid' {
   if (body === null || typeof body !== 'object' || Array.isArray(body)) {
@@ -677,10 +764,13 @@ export function parseDeployRequestFlags(body: unknown):
   const record = body as Record<string, unknown>
   const ref = parseDeployRef(record.ref)
   if (ref === DEPLOY_REF_INVALID) return 'invalid'
+  const override = parseDeployStrategyOverride(record)
+  if (override === 'invalid') return 'invalid'
   return {
     acknowledgeHealthCheckWarnings: record.acknowledgeHealthCheckWarnings === true,
     noCache: record.noCache === true,
     ref,
+    override,
   }
 }
 
@@ -743,10 +833,11 @@ export function preferredListenPortsFromHostings(
 export function buildSitesForDeploy(
   sites: EnvironmentDeploySite[],
   hostings: EnvironmentDeployHosting[],
-  used: Set<number> = new Set<number>()
+  used: Set<number> = new Set<number>(),
+  uniqueKey?: string
 ): EnvironmentDeploySite[] {
   return attachWebMetadataToSites(
-    assignSiteListenPorts(sites, preferredListenPortsFromHostings(hostings), used),
+    assignSiteListenPorts(sites, preferredListenPortsFromHostings(hostings), used, uniqueKey),
     hostings
   )
 }
@@ -799,15 +890,19 @@ export function buildNativeAppServicesForDeploy(
   nativeAppServices: readonly PreparedNativeAppService[],
   hostings: EnvironmentDeployHosting[],
   ingressServices: readonly EnvironmentDeployIngressService[],
-  used: Set<number> = new Set<number>()
+  used: Set<number> = new Set<number>(),
+  uniqueKey?: string
 ): EnvironmentDeployNativeAppService[] {
   if (nativeAppServices.length === 0) return []
-  return assignNativeAppListenPorts(nativeAppServices, new Map<string, number>(), used).map(
-    (app) => ({
-      ...app,
-      serviceId: resolveDeployReleaseServiceId(app.composeServiceName, hostings, ingressServices),
-    })
-  )
+  return assignNativeAppListenPorts(
+    nativeAppServices,
+    new Map<string, number>(),
+    used,
+    uniqueKey
+  ).map((app) => ({
+    ...app,
+    serviceId: resolveDeployReleaseServiceId(app.composeServiceName, hostings, ingressServices),
+  }))
 }
 
 export type DeployMaterialValidationError = {

@@ -12,6 +12,7 @@ import {
   resolveDeployHooksEnabled,
 } from '../../features/organizations/organization-options.ts'
 import type { ParseServiceOptionsOptions } from '../../features/projects/service-options.ts'
+import { preserveServiceApp } from '../../features/environments/app-facts.ts'
 import { applyStorageRetentionOnParentDelete } from '../../features/storage/storage-records.ts'
 import {
   assertCanCreateOr403,
@@ -21,10 +22,7 @@ import {
   parseJsonBody,
   requireStringField,
 } from '../shared.ts'
-import {
-  hierarchyDeleteHasChildrenResponse,
-  runHierarchyDelete,
-} from '../hierarchy-delete.ts'
+import { hierarchyDeleteHasChildrenResponse, runHierarchyDelete } from '../hierarchy-delete.ts'
 import {
   parseServiceCreateFields,
   parseServicePatchFields,
@@ -47,7 +45,7 @@ const SERVICE_SELECT = {
 function buildServicePatchFields(
   c: Context,
   body: Record<string, unknown>,
-  parseOptions: ParseServiceOptionsOptions,
+  parseOptions: ParseServiceOptionsOptions
 ) {
   const parsed = parseServicePatchFields(body, parseOptions)
   if ('ok' in parsed && parsed.ok === false && 'message' in parsed) {
@@ -126,11 +124,7 @@ export function registerServiceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       return c.json({ error: 'Not found' }, 404)
     }
 
-    const rows = await db
-      .select(SERVICE_SELECT)
-      .from(service)
-      .where(eq(service.id, id))
-      .limit(1)
+    const rows = await db.select(SERVICE_SELECT).from(service).where(eq(service.id, id)).limit(1)
 
     const row = rows[0]
     if (!row) {
@@ -215,16 +209,22 @@ export function registerServiceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       .from(organization)
       .where(eq(organization.id, organizationId))
       .limit(1)
-    const deployHooks = resolveDeployHooksEnabled(
-      parseOrganizationOptions(orgRow?.options)
-    )
+    const deployHooks = resolveDeployHooksEnabled(parseOrganizationOptions(orgRow?.options))
     const patchFields = buildServicePatchFields(c, body, { deployHooks })
     if (patchFields instanceof Response) return patchFields
 
-    await db
-      .update(service)
-      .set(patchFields)
-      .where(eq(service.id, id))
+    // `metadata` is replaced wholesale; the daemon-detected `app` fact is not the
+    // client's to wipe, so carry it across.
+    if (patchFields.metadata) {
+      const [existing] = await db
+        .select({ metadata: service.metadata })
+        .from(service)
+        .where(eq(service.id, id))
+        .limit(1)
+      patchFields.metadata = preserveServiceApp(existing?.metadata, patchFields.metadata)
+    }
+
+    await db.update(service).set(patchFields).where(eq(service.id, id))
 
     return c.json({ ok: true as const })
   })

@@ -41,12 +41,9 @@ test('mergeTopLevelPrincipalIdsIntoOptions merges uid/gid into options', () => {
       uid: 1002,
       options: { shell: '/bin/bash', uid: 1 },
     }),
-    { shell: '/bin/bash', uid: 1002 },
+    { shell: '/bin/bash', uid: 1002 }
   )
-  assertEquals(
-    mergeTopLevelPrincipalIdsIntoOptions({ uid: 1, options: 'bad' }),
-    'bad',
-  )
+  assertEquals(mergeTopLevelPrincipalIdsIntoOptions({ uid: 1, options: 'bad' }), 'bad')
 })
 
 test('parsePrincipalUsernameValue rejects reserved and unsafe names', () => {
@@ -73,26 +70,37 @@ test('parseCreatePrincipalOptions accepts and rejects option shapes', () => {
 test('projectPrincipalCreateResponse includes uid/gid only when set', () => {
   assertEquals(
     projectPrincipalCreateResponse(
-      { id: 'p1', appliedUsername: 'app_abc123def45' },
-      ['s1'],
+      { id: 'p1', appliedUsername: 'app_abc123def45', nameScheme: 'partial' },
+      ['s1']
     ),
-    { ok: true, id: 'p1', appliedUsername: 'app_abc123def45', serviceIds: ['s1'] },
+    {
+      ok: true,
+      id: 'p1',
+      appliedUsername: 'app_abc123def45',
+      nameScheme: 'partial',
+      serviceIds: ['s1'],
+    }
   )
   assertEquals(
     projectPrincipalCreateResponse(
-      { id: 'p1', appliedUsername: 'app', uid: 10, gid: 20 },
-      [],
+      { id: 'p1', appliedUsername: 'app', nameScheme: 'plain', uid: 10, gid: 20 },
+      []
     ),
-    { ok: true, id: 'p1', appliedUsername: 'app', uid: 10, gid: 20, serviceIds: [] },
+    {
+      ok: true,
+      id: 'p1',
+      appliedUsername: 'app',
+      nameScheme: 'plain',
+      uid: 10,
+      gid: 20,
+      serviceIds: [],
+    }
   )
 })
 
 test('resourceLimitsFromOptions parses jsonb options', () => {
   assertEquals(optionsRecordFromJsonb(null), {})
-  assertEquals(
-    resourceLimitsFromOptions({ resourceLimits: { maxCpus: 2 } }),
-    { maxCpus: 2 },
-  )
+  assertEquals(resourceLimitsFromOptions({ resourceLimits: { maxCpus: 2 } }), { maxCpus: 2 })
   assertEquals(resourceLimitsFromOptions({}), {})
   assertEquals(patchRequiresServiceIds({ serviceIds: [] }), true)
   assertEquals(patchRequiresServiceIds({}), false)
@@ -111,23 +119,14 @@ test('parseEntitlementsField rejects rather than dropping a bad grant', () => {
   // Silently discarding a malformed list would REVOKE every entitlement the
   // principal should have held.
   assertEquals(parseEntitlementsField({ entitlements: 'php' }, RUNTIMES), null)
+  assertEquals(parseEntitlementsField({ entitlements: [{ runtime: 'php' }] }, RUNTIMES), null)
   assertEquals(
-    parseEntitlementsField({ entitlements: [{ runtime: 'php' }] }, RUNTIMES),
-    null,
+    parseEntitlementsField({ entitlements: [{ runtime: 'ruby', series: '3.3' }] }, RUNTIMES),
+    null
   )
   assertEquals(
-    parseEntitlementsField(
-      { entitlements: [{ runtime: 'ruby', series: '3.3' }] },
-      RUNTIMES,
-    ),
-    null,
-  )
-  assertEquals(
-    parseEntitlementsField(
-      { entitlements: [{ runtime: 'php', series: '8.1' }] },
-      RUNTIMES,
-    ),
-    null,
+    parseEntitlementsField({ entitlements: [{ runtime: 'php', series: '8.1' }] }, RUNTIMES),
+    null
   )
 })
 
@@ -137,9 +136,9 @@ test('parseEntitlementsField marks API grants as operator, never deploy', () => 
   assertEquals(
     parseEntitlementsField(
       { entitlements: [{ runtime: 'php', series: '8.4', grantedBy: 'deploy' }] },
-      RUNTIMES,
+      RUNTIMES
     ),
-    [{ runtime: 'php', series: '8.4', grantedBy: 'operator' }],
+    [{ runtime: 'php', series: '8.4', grantedBy: 'operator' }]
   )
 })
 
@@ -152,9 +151,9 @@ test('parseEntitlementsField folds duplicates', () => {
           { runtime: 'php', series: '8.4' },
         ],
       },
-      RUNTIMES,
+      RUNTIMES
     ),
-    [{ runtime: 'php', series: '8.4', grantedBy: 'operator' }],
+    [{ runtime: 'php', series: '8.4', grantedBy: 'operator' }]
   )
 })
 
@@ -191,23 +190,22 @@ test('parsePrincipalPasswordField distinguishes generate, set, and invalid', () 
   // Absent means "generate one for me" — the show-once flow.
   assertEquals(parsePrincipalPasswordField({}), {})
   assertEquals(parsePrincipalPasswordField({ password: undefined }), {})
-  assertEquals(
-    parsePrincipalPasswordField({ password: 'correct horse' }),
-    { password: 'correct horse' },
-  )
+  assertEquals(parsePrincipalPasswordField({ password: 'correct horse' }), {
+    password: 'correct horse',
+  })
   // Bounds and shape are rejected, never silently coerced.
   assertEquals(parsePrincipalPasswordField({ password: 42 }), null)
   assertEquals(
     parsePrincipalPasswordField({
       password: 'a'.repeat(MIN_PRINCIPAL_PASSWORD_LENGTH - 1),
     }),
-    null,
+    null
   )
   assertEquals(
     parsePrincipalPasswordField({
       password: 'a'.repeat(MAX_PRINCIPAL_PASSWORD_LENGTH + 1),
     }),
-    null,
+    null
   )
   // Control characters cannot be typed back at an ssh prompt, so accepting
   // one would store a password that can never authenticate.

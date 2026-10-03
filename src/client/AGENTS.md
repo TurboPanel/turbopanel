@@ -186,6 +186,48 @@ changes.
   Environments without their own `server_id` inherit it at deploy / lifecycle /
   stop (`resolveEffectivePlacementServerId`). Overview Base shows an inline
   picker; env-level pins still override.
+- **Deploy strategy settings (stage 1, nothing acts on them yet):**
+  `environment.options` carries `deployStrategy` (`inplace` | `sequential` |
+  `bluegreen`), `migrations` (`none` | `compatible` | `breaking` | `unknown`),
+  `drainSeconds`, `healthTimeoutSeconds`, `rollbackWindowMinutes` (`0` = shut the
+  old blue-green generation down as soon as cutover is confirmed); `project.options`
+  may carry only the three tuning keys as defaults. Absent strategy = `inplace`
+  (existing environments); every user-facing create path stamps `sequential` on a new
+  environment (system-owned environments are not stamped) (`stampNewEnvironmentDeployOptions`). Writes are validated (`400
+  deploy_options_invalid` on environments; the reason string on projects) and a
+  PATCH that omits these keys keeps the stored ones (`settleDeployOptions`) because
+  `options` is replaced wholesale and the compose editor sends only `compose`.
+  `null` clears a key. The deploy request accepts `strategy` / `migration`
+  overrides; `strategy: inplace` and `sequential` are honored (the daemon runs the
+  sequential engine: stop, migrate, start, health gate, roll back from `previous/`),
+  `bluegreen` and any `migration` answer `501 deploy_strategy_unsupported`. A stored
+  `bluegreen` runs as `sequential` with the `bluegreen_unavailable` reason
+  (`src/features/deploy/deploy-engine.ts`, shared by deploy and preview). The deploy
+  response carries `strategy: { requested, effective, fallbackReasons }`; the daemon
+  reports an unfinished sequential deploy as `rolled_back: ...` or
+  `needs_attention: ...` (`deploy-outcome.ts`), kept as `command.error_code`
+  (`deploy_rolled_back` / `deploy_needs_attention`) and `deployment.metadata`
+  (`deployment.outcome` stays `failed`: its check allows only applied/failed/timed_out),
+  and deployment history entries expose `strategy`, `strategyOutcome`,
+  `strategyOutcomeReason`. A multi-server `sequential` deploy
+  is a rolling deploy: `deploy.update_config.parallelism` (default 1, `0` = all at once)
+  that many servers update at once. Only the first batch's commands are queued; the rest are
+  recorded (deployment target `pending`, `options.rollout = { batch, batches }`, command
+  `queued` and undelivered) and `src/features/deploy/rollout.ts` queues each next batch
+  from the command consumer when the one before is applied. The first failed or timed-out
+  server stops the rollout: servers not yet started are marked `failed` and their
+  commands `cancelled`. `inplace` keeps the all-at-once fan-out. The response `strategy.rollout`
+  and the preview `rollout` report `{ parallelism, batches }`; `delay`, `monitor`, `order`,
+  `max_failure_ratio` and `failure_action: continue` are refused at deploy
+  (`field_unsupported`). Deploy preview reports `strategy`,
+  `effectiveStrategy`, `migrations`, `fallbackReasons[]`
+  (`src/features/deploy/deploy-strategy.ts`; blue-green falls back to sequential on
+  published ports, authored `container_name`, stateful writable volumes, traffic
+  services without a healthcheck, native/cron services, host-level binds, or a
+  migration status other than `none`/`compatible`). Owner decisions 2026-10-01:
+  unknown migrations fall back to sequential; a failed deploy after a migration ran
+  stops and flags, never starts old code on a changed schema; multi-host rollout
+  follows `deploy.update_config` (default parallelism 1, halt on failure).
 - **Environment lifecycle:** `POST /environments/:id/lifecycle` (`start` /
   `stop` / `restart`) is non-destructive (`environment.lifecycle`);
   `POST /environments/:id/stop` tears down compose including volumes
@@ -434,15 +476,15 @@ sourceServerId? }`
   (`POST`/`PATCH /forges`, the manifest wizard) by `../lib/git/forge-url.ts` —
   https only, no embedded credentials, no reserved names (`localhost`, `.local`,
   `.internal`, `.arpa`, single-label), no loopback / link-local / private /
-  CGNAT literal, and on the Deno instance the name is resolved and every answer
-  must be public — refused as `400 forge_url_rejected { field, reason }`. The
+  CGNAT literal, and the name is resolved (Deno's resolver, or DNS-over-HTTPS
+  on Workers) and every answer must be public — refused as `400 forge_url_rejected { field, reason }`. The
   same check re-runs at the fetch-time choke points (`githubApiBaseFor`,
   `gitlabApiBase`, the GitLab token grant), surfaced as the provider error
   those callers already map, so a row written by anything else is still never
   dialed with credentials attached. Every forge request itself goes through
   `forgeFetch` (`forge-url.ts`): the name is resolved again before each
-  request on Deno (a private answer or a resolver failure other than "no such
-  name" refuses it), redirects are `manual`, a same-origin redirect is
+  request (a private answer, a resolver failure or a name with no address
+  refuses it), redirects are `manual`, a same-origin redirect is
   re-checked and followed (at most 3), and a cross-origin one is refused so
   the App's credentials never reach another host. `GET /repositories/github/callback` is the
   App's **callback URL** (the manifest requests user authorization during

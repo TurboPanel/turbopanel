@@ -9,8 +9,15 @@ import { resolveUpdateManifest } from '../features/update/manifest.ts'
 import { isExplicitDevelopmentMode } from '../lib/dev-mode.ts'
 import { createUpgradeCoordinator } from '../features/upgrades/coordinator.ts'
 import { createDrizzleUpgradeStore } from '../features/upgrades/store.ts'
-import { updateAvailableFor } from '../features/upgrades/target.ts'
-import { normalizeUpgradeSettings } from '../features/settings/upgrade-settings.ts'
+import {
+  parseUpgradeVerifyTimeoutMs,
+  UPGRADE_VERIFY_TIMEOUT_ENV,
+} from '../features/upgrades/transitions.ts'
+import { uiBehindTarget, updateAvailableFor } from '../features/upgrades/target.ts'
+import {
+  normalizeUpgradeSettings,
+  parseUpgradeBatchDefault,
+} from '../features/settings/upgrade-settings.ts'
 import { resolvePlatformEnv } from './routes-helpers.ts'
 
 const INSTANCE_UPDATE_RUNTIME_ERROR = 'control-plane update is not applicable on this runtime'
@@ -77,6 +84,7 @@ export function registerInstanceUpdatesAdminRoutes(
     const env = resolvePlatformEnv(c, opts)
     const channel = resolveInstanceUpdateChannel(env)
     const revision = resolveInstanceRevision(env)
+    const consoleCommit = readConsoleCommit(c.req.query('consoleCommit'))
     const [instanceTarget, uiTarget, daemonTarget, daemon] = await Promise.all([
       resolveUpdateManifest(channel, 'instance'),
       resolveUpdateManifest(channel, 'ui'),
@@ -106,6 +114,11 @@ export function registerInstanceUpdatesAdminRoutes(
           target: instanceTarget,
           uiTarget,
           updateAvailable: updateAvailableFor(instanceInstalled, instanceTarget),
+          // The UI ships inside the control-plane install. On a self-hosted
+          // control plane it is behind when the console's own bundle differs
+          // from the channel's UI build; on Workers the UI is deployed, not
+          // installed, so it is never offered here.
+          uiUpdateAvailable: opts.runtime === 'deno' && uiBehindTarget(uiTarget, consoleCommit),
         },
         daemon: {
           installed: daemonInstalled,
@@ -251,7 +264,11 @@ async function coordinatorFrom(
   const revision = resolveInstanceRevision(env)
   const colocated = registry ? await resolveColocatedServerId(db, registry) : null
   return createUpgradeCoordinator({
-    store: createDrizzleUpgradeStore(db, registry),
+    store: createDrizzleUpgradeStore(
+      db,
+      registry,
+      parseUpgradeBatchDefault(env.TURBOPANEL_UPGRADE_BATCH)
+    ),
     enqueue: async (serverId, envelope) => {
       if (!registry) throw new Error(NO_DAEMON_ERROR)
       await registry.getCell(serverId).enqueue(envelope)
@@ -262,7 +279,15 @@ async function coordinatorFrom(
     now: () => new Date().toISOString(),
     colocatedServerId: colocated,
     instanceInstalled: { version: INSTANCE_VERSION, commit: revision.commit },
+    verifyTimeoutMs: parseUpgradeVerifyTimeoutMs(env[UPGRADE_VERIFY_TIMEOUT_ENV]),
   })
+}
+
+/** A git commit id the console reports (a hex prefix or full sha), or null. */
+function readConsoleCommit(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const trimmed = value.trim()
+  return /^[0-9a-f]{7,64}$/i.test(trimmed) ? trimmed.toLowerCase() : null
 }
 
 async function startGuardedRun(
@@ -277,13 +302,23 @@ async function startGuardedRun(
   const startedBy = c.get('session')?.userId ?? null
   const body = await c.req.json().catch(() => null)
   const runId = typeof body?.runId === 'string' ? body.runId : undefined
+  const consoleCommit = opts.runtime === 'deno' ? readConsoleCommit(body?.consoleCommit) : null
   const result = await coordinator.start({
     source: 'manual',
     startedBy,
     runId,
+    consoleCommit,
   })
   if (!result.ok) {
-    return c.json({ ok: false, error: result.error, blockers: result.blockers }, 409)
+    return c.json(
+      {
+        ok: false,
+        error: result.error,
+        blockers: result.blockers,
+        ...(result.activeRunId ? { activeRunId: result.activeRunId } : {}),
+      },
+      409
+    )
   }
   return c.json({ ok: true, dispatched: true, runId: result.runId }, 202)
 }

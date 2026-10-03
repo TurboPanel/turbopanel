@@ -153,7 +153,7 @@ export function registerAdminRoutes(
     devSurface: boolean
     getEnv?: () => Record<string, string | undefined>
     /**
-     * Hosted (Workers) only. Passed from `src/workers.ts` so this registrar
+     * TurboPanel High Availability only. Passed from `src/workers.ts` so this registrar
      * never statically imports the Stripe tier catalogue.
      */
     registerTiers?: (admin: Hono<AppEnv>) => void
@@ -244,7 +244,7 @@ export function registerAdminRoutes(
       return c.json(
         {
           ok: false,
-          error: 'instance address collection is not available on this runtime',
+          error: 'control plane address collection is not available on this runtime',
           ips: emptyServerIps(),
         },
         422
@@ -261,7 +261,7 @@ export function registerAdminRoutes(
     return c.json({ ok: true, urls })
   })
 
-  admin.put('/instance/public-urls', async (c) => {
+  admin.put('/instance/public-urls', createRootOnlyMiddleware(opts.secrets), async (c) => {
     const db = getDb(c)
     if (!db) return c.json({ ok: false, error: 'Database unavailable' }, 503)
 
@@ -288,6 +288,7 @@ export function registerAdminRoutes(
   })
 
   registerInstanceAccessAdminRoutes(admin, {
+    secrets: opts.secrets,
     runtime: opts.runtime,
     ...(opts.getEnv ? { getEnv: opts.getEnv } : {}),
     ...(opts.readPlatformCaBundle ? { readPlatformCaBundle: opts.readPlatformCaBundle } : {}),
@@ -376,7 +377,7 @@ export function registerAdminRoutes(
     return c.json({ settings: emailSettingsToApiShape(resolved) })
   })
 
-  admin.put('/settings/email', async (c) => {
+  admin.put('/settings/email', createRootOnlyMiddleware(opts.secrets), async (c) => {
     const db = getDb(c)
     if (!db) return c.json({ error: 'Database unavailable' }, 503)
 
@@ -414,7 +415,7 @@ export function registerAdminRoutes(
     return c.json({ settings: authProviderSettingsToApiShape(resolved) })
   })
 
-  admin.put('/settings/auth-providers', async (c) => {
+  admin.put('/settings/auth-providers', createRootOnlyMiddleware(opts.secrets), async (c) => {
     const db = getDb(c)
     if (!db) return c.json({ error: 'Database unavailable' }, 503)
 
@@ -452,7 +453,7 @@ export function registerAdminRoutes(
     })
   })
 
-  admin.put('/settings/signup', async (c) => {
+  admin.put('/settings/signup', createRootOnlyMiddleware(opts.secrets), async (c) => {
     const db = getDb(c)
     if (!db) return c.json({ error: 'Database unavailable' }, 503)
 
@@ -536,7 +537,7 @@ export function registerAdminRoutes(
     return c.json(describeAlertWebhook(url))
   })
 
-  admin.put('/settings/alert-webhook', async (c) => {
+  admin.put('/settings/alert-webhook', createRootOnlyMiddleware(opts.secrets), async (c) => {
     const db = getDb(c)
     if (!db) return c.json({ error: 'Database unavailable' }, 503)
 
@@ -570,7 +571,7 @@ export function registerAdminRoutes(
     return c.json(describeAlertWebhook(stored))
   })
 
-  admin.post('/instance/public-urls/apply', async (c) => {
+  admin.post('/instance/public-urls/apply', createRootOnlyMiddleware(opts.secrets), async (c) => {
     if (opts.runtime === 'workers') {
       return c.json({ ok: false, error: 'cert apply is not applicable on this runtime' }, 422)
     }

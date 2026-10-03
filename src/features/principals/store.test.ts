@@ -1,9 +1,9 @@
-import { assertEquals, assertMatch, assertRejects } from "@std/assert";
-import { and, eq } from "drizzle-orm";
-import { getDatabaseUrl } from "../../db/url.ts";
-import { createDenoDb } from "../../db/connection.ts";
-import { deriveEncryptionSecretsConfig } from "../../lib/secrets/secrets.ts";
-import { decryptSecret } from "../../lib/secrets/data-encryption.ts";
+import { assertEquals, assertMatch, assertRejects } from '@std/assert'
+import { and, eq, inArray } from 'drizzle-orm'
+import { getDatabaseUrl } from '../../db/url.ts'
+import { createDenoDb } from '../../db/connection.ts'
+import { deriveEncryptionSecretsConfig } from '../../lib/secrets/secrets.ts'
+import { decryptSecret } from '../../lib/secrets/data-encryption.ts'
 import {
   environment,
   grant,
@@ -17,9 +17,10 @@ import {
   tenancy,
   user,
   workspace,
-} from "../../db/schema.ts";
+} from '../../db/schema.ts'
 import {
   createPrincipal,
+  ensureComposePrincipal,
   isManagedUsernameTaken,
   isServerPrincipalUsernameTaken,
   PRINCIPAL_PROVIDERS,
@@ -27,112 +28,108 @@ import {
   resolveManagedAppliedUsername,
   SERVER_PRINCIPAL_PROVIDER,
   setPrincipalPassword,
-} from "./store.ts";
-import { parseTestSecretsConfig } from "../../test-fixtures/secrets.ts";
+} from './store.ts'
+import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 
-const dbUrl = getDatabaseUrl();
+const dbUrl = getDatabaseUrl()
 
 async function withPrincipalFixtures(
   fn: (ctx: {
-    db: ReturnType<typeof createDenoDb>;
-    dataEncryptionSecrets: Awaited<
-      ReturnType<typeof deriveEncryptionSecretsConfig>
-    >;
-    serviceId: string;
-    principalId: string;
-    organizationId: string;
-    projectId: string;
-  }) => Promise<void>,
+    db: ReturnType<typeof createDenoDb>
+    dataEncryptionSecrets: Awaited<ReturnType<typeof deriveEncryptionSecretsConfig>>
+    serviceId: string
+    principalId: string
+    organizationId: string
+    projectId: string
+  }) => Promise<void>
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn(
-      "Skipping principal store tests: TURBOPANEL_DATABASE_URL not set",
-    );
-    return;
+    console.warn('Skipping principal store tests: TURBOPANEL_DATABASE_URL not set')
+    return
   }
 
-  const db = createDenoDb();
-  const secretsConfig = parseTestSecretsConfig("deno");
+  const db = createDenoDb()
+  const secretsConfig = parseTestSecretsConfig('deno')
   const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
     secretsConfig,
-    "data-encryption",
-  );
+    'data-encryption'
+  )
 
   const insertedOrg = await db
     .insert(organization)
-    .values({ name: "Principal Store Test Org" })
-    .returning({ id: organization.id });
-  const organizationId = insertedOrg[0]!.id;
+    .values({ name: 'Principal Store Test Org' })
+    .returning({ id: organization.id })
+  const organizationId = insertedOrg[0]!.id
 
   const insertedUser = await db
     .insert(user)
     .values({
       email: `principal-store-${crypto.randomUUID()}@example.com`,
       isEmailVerified: true,
-      role: "user",
+      role: 'user',
     })
-    .returning({ id: user.id });
-  const userId = insertedUser[0]!.id;
+    .returning({ id: user.id })
+  const userId = insertedUser[0]!.id
 
   await db.insert(grant).values({
-    entityType: "organization",
+    entityType: 'organization',
     entityId: organizationId,
-    actorType: "user",
+    actorType: 'user',
     actorId: userId,
-    permission: "organization:own",
-  });
+    permission: 'organization:own',
+  })
 
   const [insertedWorkspace] = await db
     .insert(workspace)
-    .values({ name: "Principal Store Workspace", organizationId })
-    .returning({ id: workspace.id });
-  const workspaceId = insertedWorkspace!.id;
+    .values({ name: 'Principal Store Workspace', organizationId })
+    .returning({ id: workspace.id })
+  const workspaceId = insertedWorkspace!.id
 
   const [insertedProject] = await db
     .insert(project)
     .values({
-      name: "Principal Store Project",
+      name: 'Principal Store Project',
       workspaceId,
       organizationId,
     })
-    .returning({ id: project.id });
-  const projectId = insertedProject!.id;
+    .returning({ id: project.id })
+  const projectId = insertedProject!.id
 
   const [insertedEnvironment] = await db
     .insert(environment)
     .values({
-      name: "Principal Store Env",
+      name: 'Principal Store Env',
       projectId,
     })
-    .returning({ id: environment.id });
-  const environmentId = insertedEnvironment!.id;
+    .returning({ id: environment.id })
+  const environmentId = insertedEnvironment!.id
 
   const [insertedService] = await db
     .insert(service)
     .values({
       environmentId,
-      name: "principal-store-service",
-      composeServiceName: "principal-store-service",
+      name: 'principal-store-service',
+      composeServiceName: 'principal-store-service',
     })
-    .returning({ id: service.id });
-  const serviceId = insertedService!.id;
+    .returning({ id: service.id })
+  const serviceId = insertedService!.id
 
   const [insertedPrincipal] = await db
     .insert(principal)
     .values({
       organizationId,
-      kind: "database",
-      provider: "postgres",
-      username: "app_user",
-      appliedUsername: "app_user",
+      kind: 'database',
+      provider: 'postgres',
+      username: 'app_user',
+      appliedUsername: 'app_user',
     })
-    .returning({ id: principal.id });
-  const principalId = insertedPrincipal!.id;
+    .returning({ id: principal.id })
+  const principalId = insertedPrincipal!.id
 
   await db.insert(tenancy).values({
     principalId,
     serviceId,
-  });
+  })
 
   try {
     await fn({
@@ -142,20 +139,17 @@ async function withPrincipalFixtures(
       principalId,
       organizationId,
       projectId,
-    });
+    })
   } finally {
-    await db.delete(tenancy).where(eq(tenancy.principalId, principalId));
-    await db.delete(principal).where(eq(principal.id, principalId));
-    await db.delete(service).where(eq(service.id, serviceId));
-    await db.delete(environment).where(eq(environment.id, environmentId));
-    await db.delete(project).where(eq(project.id, projectId));
-    await db.delete(grant).where(and(
-      eq(grant.actorId, userId),
-      eq(grant.entityId, organizationId),
-    ));
-    await db.delete(workspace).where(eq(workspace.id, workspaceId));
-    await db.delete(user).where(eq(user.id, userId));
-    await db.delete(organization).where(eq(organization.id, organizationId));
+    await db.delete(tenancy).where(eq(tenancy.principalId, principalId))
+    await db.delete(principal).where(eq(principal.id, principalId))
+    await db.delete(service).where(eq(service.id, serviceId))
+    await db.delete(environment).where(eq(environment.id, environmentId))
+    await db.delete(project).where(eq(project.id, projectId))
+    await db.delete(grant).where(and(eq(grant.actorId, userId), eq(grant.entityId, organizationId)))
+    await db.delete(workspace).where(eq(workspace.id, workspaceId))
+    await db.delete(user).where(eq(user.id, userId))
+    await db.delete(organization).where(eq(organization.id, organizationId))
   }
 }
 
@@ -165,82 +159,62 @@ async function withPrincipalFixtures(
  * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
  * reports Deno suites as empty; keep this alias so analysis sees real tests.
  */
-const test = Deno.test.bind(Deno);
+const test = Deno.test.bind(Deno)
 
-test("setPrincipalPassword with password seals as enc and never stores plaintext", async () => {
-  await withPrincipalFixtures(async ({
-    db,
-    dataEncryptionSecrets,
-    principalId,
-  }) => {
-    const plaintext = "explicit-principal-secret";
-    const result = await setPrincipalPassword(
-      db,
-      dataEncryptionSecrets,
-      principalId,
-      { password: plaintext },
-    );
-    assertEquals(result.plaintext, undefined);
+test('setPrincipalPassword with password seals as enc and never stores plaintext', async () => {
+  await withPrincipalFixtures(async ({ db, dataEncryptionSecrets, principalId }) => {
+    const plaintext = 'explicit-principal-secret'
+    const result = await setPrincipalPassword(db, dataEncryptionSecrets, principalId, {
+      password: plaintext,
+    })
+    assertEquals(result.plaintext, undefined)
 
     const rows = await db
       .select({ password: principal.password })
       .from(principal)
       .where(eq(principal.id, principalId))
-      .limit(1);
-    const stored = rows[0]!.password;
-    assertEquals(typeof stored, "string");
-    assertEquals(stored!.startsWith("tpsecret."), true);
-    assertEquals(stored!.includes(plaintext), false);
-    assertEquals(
-      await decryptSecret(dataEncryptionSecrets, stored!),
-      plaintext,
-    );
-  });
-});
+      .limit(1)
+    const stored = rows[0]!.password
+    assertEquals(typeof stored, 'string')
+    assertEquals(stored!.startsWith('tpsecret.'), true)
+    assertEquals(stored!.includes(plaintext), false)
+    assertEquals(await decryptSecret(dataEncryptionSecrets, stored!), plaintext)
+  })
+})
 
-test("setPrincipalPassword generate:true returns plaintext once and stores enc", async () => {
-  await withPrincipalFixtures(async ({
-    db,
-    dataEncryptionSecrets,
-    principalId,
-  }) => {
-    const result = await setPrincipalPassword(
-      db,
-      dataEncryptionSecrets,
-      principalId,
-      { generate: true },
-    );
-    assertEquals(typeof result.plaintext, "string");
-    assertEquals((result.plaintext?.length ?? 0) > 0, true);
+test('setPrincipalPassword generate:true returns plaintext once and stores enc', async () => {
+  await withPrincipalFixtures(async ({ db, dataEncryptionSecrets, principalId }) => {
+    const result = await setPrincipalPassword(db, dataEncryptionSecrets, principalId, {
+      generate: true,
+    })
+    assertEquals(typeof result.plaintext, 'string')
+    assertEquals((result.plaintext?.length ?? 0) > 0, true)
 
     const rows = await db
       .select({ password: principal.password })
       .from(principal)
       .where(eq(principal.id, principalId))
-      .limit(1);
-    const stored = rows[0]!.password;
-    assertEquals(typeof stored, "string");
-    assertEquals(stored!.startsWith("tpsecret."), true);
-    assertEquals(stored!.includes(result.plaintext!), false);
-    assertEquals(
-      await decryptSecret(dataEncryptionSecrets, stored!),
-      result.plaintext,
-    );
-  });
-});
+      .limit(1)
+    const stored = rows[0]!.password
+    assertEquals(typeof stored, 'string')
+    assertEquals(stored!.startsWith('tpsecret.'), true)
+    assertEquals(stored!.includes(result.plaintext!), false)
+    assertEquals(await decryptSecret(dataEncryptionSecrets, stored!), result.plaintext)
+  })
+})
 
-test("setPrincipalPassword throws when principal id is missing", async () => {
+test('setPrincipalPassword throws when principal id is missing', async () => {
   await withPrincipalFixtures(async ({ db, dataEncryptionSecrets }) => {
-    const missingId = crypto.randomUUID();
+    const missingId = crypto.randomUUID()
 
     await assertRejects(
       () =>
         setPrincipalPassword(db, dataEncryptionSecrets, missingId, {
-          password: "stale-principal-secret",
+          password: 'stale-principal-secret',
         }),
       Error,
-      "Principal not found",
-    );
+      'Principal not found'
+    )
 
     await assertRejects(
       () =>
@@ -248,278 +222,253 @@ test("setPrincipalPassword throws when principal id is missing", async () => {
           generate: true,
         }),
       Error,
-      "Principal not found",
-    );
-  });
-});
+      'Principal not found'
+    )
+  })
+})
 
-test("PRINCIPAL_PROVIDERS contains server not pam", () => {
-  assertEquals(PRINCIPAL_PROVIDERS.has("server"), true);
-  assertEquals(PRINCIPAL_PROVIDERS.has("pam"), false);
-  assertEquals(SERVER_PRINCIPAL_PROVIDER, "server");
-});
+test('PRINCIPAL_PROVIDERS contains server not pam', () => {
+  assertEquals(PRINCIPAL_PROVIDERS.has('server'), true)
+  assertEquals(PRINCIPAL_PROVIDERS.has('pam'), false)
+  assertEquals(SERVER_PRINCIPAL_PROVIDER, 'server')
+})
 
-test("isServerPrincipalUsernameTaken is org-scoped and case-insensitive", async () => {
+test('isServerPrincipalUsernameTaken is org-scoped and case-insensitive', async () => {
   await withPrincipalFixtures(async ({ db, organizationId, projectId }) => {
     const [inserted] = await db
       .insert(principal)
       .values({
         organizationId,
-        kind: "system",
+        kind: 'system',
         provider: SERVER_PRINCIPAL_PROVIDER,
-        username: "AppUser",
-        appliedUsername: "AppUser",
+        username: 'AppUser',
+        appliedUsername: 'AppUser',
         projectId,
-        metadata: { home: "/srv/users/AppUser" },
+        metadata: { home: '/srv/users/AppUser' },
       })
-      .returning({ id: principal.id });
-    const createdId = inserted!.id;
+      .returning({ id: principal.id })
+    const createdId = inserted!.id
 
     try {
+      assertEquals(await isServerPrincipalUsernameTaken(db, organizationId, 'appuser'), true)
+      assertEquals(await isServerPrincipalUsernameTaken(db, organizationId, '  APPUSER  '), true)
+      assertEquals(await isServerPrincipalUsernameTaken(db, organizationId, 'otheruser'), false)
       assertEquals(
-        await isServerPrincipalUsernameTaken(db, organizationId, "appuser"),
-        true,
-      );
-      assertEquals(
-        await isServerPrincipalUsernameTaken(db, organizationId, "  APPUSER  "),
-        true,
-      );
-      assertEquals(
-        await isServerPrincipalUsernameTaken(db, organizationId, "otheruser"),
-        false,
-      );
-      assertEquals(
-        await isServerPrincipalUsernameTaken(
-          db,
-          organizationId,
-          "appuser",
-          createdId,
-        ),
-        false,
-      );
+        await isServerPrincipalUsernameTaken(db, organizationId, 'appuser', createdId),
+        false
+      )
     } finally {
-      await db.delete(principal).where(eq(principal.id, createdId));
+      await db.delete(principal).where(eq(principal.id, createdId))
     }
-  });
-});
+  })
+})
 
-test("isManagedUsernameTaken scopes by server-owning org not create chain", async () => {
+test('isManagedUsernameTaken scopes by server-owning org not create chain', async () => {
   if (!dbUrl) {
-    console.warn(
-      "Skipping managed username tests: TURBOPANEL_DATABASE_URL not set",
-    );
-    return;
+    console.warn('Skipping managed username tests: TURBOPANEL_DATABASE_URL not set')
+    return
   }
-  const db = createDenoDb();
+  const db = createDenoDb()
   const [orgA] = await db
     .insert(organization)
-    .values({ name: "Managed Username Org A" })
-    .returning({ id: organization.id });
+    .values({ name: 'Managed Username Org A' })
+    .returning({ id: organization.id })
   const [orgB] = await db
     .insert(organization)
-    .values({ name: "Managed Username Org B" })
-    .returning({ id: organization.id });
-  const organizationIdA = orgA!.id;
-  const organizationIdB = orgB!.id;
-  const now = new Date().toISOString();
+    .values({ name: 'Managed Username Org B' })
+    .returning({ id: organization.id })
+  const organizationIdA = orgA!.id
+  const organizationIdB = orgB!.id
+  const now = new Date().toISOString()
   const [srvA] = await db
     .insert(server)
     .values({
       organizationId: organizationIdA,
-      name: "srv-a",
+      name: 'srv-a',
       createdAt: now,
       updatedAt: now,
     })
-    .returning({ id: server.id });
+    .returning({ id: server.id })
   const [ws] = await db
     .insert(workspace)
-    .values({ name: "ws", organizationId: organizationIdA })
-    .returning({ id: workspace.id });
+    .values({ name: 'ws', organizationId: organizationIdA })
+    .returning({ id: workspace.id })
   const [proj] = await db
     .insert(project)
     .values({
-      name: "p",
+      name: 'p',
       workspaceId: ws!.id,
       organizationId: organizationIdA,
-      metadata: { type: "managed", code: "postgres" },
+      metadata: { type: 'managed', code: 'postgres' },
     })
-    .returning({ id: project.id });
+    .returning({ id: project.id })
   const [env] = await db
     .insert(environment)
-    .values({ name: "e", projectId: proj!.id, serverId: srvA!.id })
-    .returning({ id: environment.id });
+    .values({ name: 'e', projectId: proj!.id, serverId: srvA!.id })
+    .returning({ id: environment.id })
   const [m] = await db
     .insert(managed)
     .values({
       environmentId: env!.id,
       serverId: srvA!.id,
-      name: "pg",
-      engine: "postgres",
-      status: "ready",
+      name: 'pg',
+      engine: 'postgres',
+      status: 'ready',
     })
-    .returning({ id: managed.id });
+    .returning({ id: managed.id })
   await db.insert(replica).values({
     managedId: m!.id,
     serverId: srvA!.id,
-    role: "primary",
+    role: 'primary',
     ordinal: 1,
-  });
+  })
   const [prin] = await db
     .insert(principal)
     .values({
       organizationId: organizationIdA,
-      kind: "database",
-      provider: "postgres",
-      username: "SharedUser",
-      appliedUsername: "SharedUser",
+      kind: 'database',
+      provider: 'postgres',
+      username: 'SharedUser',
+      appliedUsername: 'SharedUser',
       managedId: m!.id,
     })
-    .returning({ id: principal.id });
+    .returning({ id: principal.id })
 
   try {
-    assertEquals(
-      await isManagedUsernameTaken(db, [organizationIdA], "shareduser"),
-      true,
-    );
-    assertEquals(
-      await isManagedUsernameTaken(db, [organizationIdB], "shareduser"),
-      false,
-    );
-    assertEquals(
-      await isManagedUsernameTaken(
-        db,
-        [organizationIdA],
-        "shareduser",
-        prin!.id,
-      ),
-      false,
-    );
+    assertEquals(await isManagedUsernameTaken(db, [organizationIdA], 'shareduser'), true)
+    assertEquals(await isManagedUsernameTaken(db, [organizationIdB], 'shareduser'), false)
+    assertEquals(await isManagedUsernameTaken(db, [organizationIdA], 'shareduser', prin!.id), false)
   } finally {
-    await db.delete(principal).where(eq(principal.id, prin!.id));
-    await db.delete(replica).where(eq(replica.managedId, m!.id));
-    await db.delete(managed).where(eq(managed.id, m!.id));
-    await db.delete(environment).where(eq(environment.id, env!.id));
-    await db.delete(project).where(eq(project.id, proj!.id));
-    await db.delete(workspace).where(eq(workspace.id, ws!.id));
-    await db.delete(server).where(eq(server.id, srvA!.id));
-    await db.delete(organization).where(eq(organization.id, organizationIdA));
-    await db.delete(organization).where(eq(organization.id, organizationIdB));
+    await db.delete(principal).where(eq(principal.id, prin!.id))
+    await db.delete(replica).where(eq(replica.managedId, m!.id))
+    await db.delete(managed).where(eq(managed.id, m!.id))
+    await db.delete(environment).where(eq(environment.id, env!.id))
+    await db.delete(project).where(eq(project.id, proj!.id))
+    await db.delete(workspace).where(eq(workspace.id, ws!.id))
+    await db.delete(server).where(eq(server.id, srvA!.id))
+    await db.delete(organization).where(eq(organization.id, organizationIdA))
+    await db.delete(organization).where(eq(organization.id, organizationIdB))
   }
-});
+})
 
-test("resolveManagedAppliedUsername suffixes when short name taken", async () => {
+test('resolveManagedAppliedUsername suffixes when short name taken', async () => {
   if (!dbUrl) {
-    console.warn(
-      "Skipping managed username tests: TURBOPANEL_DATABASE_URL not set",
-    );
-    return;
+    console.warn('Skipping managed username tests: TURBOPANEL_DATABASE_URL not set')
+    return
   }
-  const db = createDenoDb();
+  const db = createDenoDb()
   const [org] = await db
     .insert(organization)
-    .values({ name: "Managed Root Suffix Org" })
-    .returning({ id: organization.id });
-  const organizationId = org!.id;
-  const now = new Date().toISOString();
+    .values({ name: 'Managed Root Suffix Org' })
+    .returning({ id: organization.id })
+  const organizationId = org!.id
+  const now = new Date().toISOString()
   const [srv] = await db
     .insert(server)
     .values({
       organizationId,
-      name: "srv",
+      name: 'srv',
       createdAt: now,
       updatedAt: now,
     })
-    .returning({ id: server.id });
+    .returning({ id: server.id })
   const [ws] = await db
     .insert(workspace)
-    .values({ name: "ws", organizationId })
-    .returning({ id: workspace.id });
+    .values({ name: 'ws', organizationId })
+    .returning({ id: workspace.id })
   const [proj] = await db
     .insert(project)
     .values({
-      name: "p",
+      name: 'p',
       workspaceId: ws!.id,
       organizationId,
-      metadata: { type: "managed", code: "postgres" },
+      metadata: { type: 'managed', code: 'postgres' },
     })
-    .returning({ id: project.id });
+    .returning({ id: project.id })
   const [env] = await db
     .insert(environment)
-    .values({ name: "e", projectId: proj!.id, serverId: srv!.id })
-    .returning({ id: environment.id });
-  const managedId = crypto.randomUUID();
+    .values({ name: 'e', projectId: proj!.id, serverId: srv!.id })
+    .returning({ id: environment.id })
+  const managedId = crypto.randomUUID()
   await db.insert(managed).values({
     id: managedId,
     environmentId: env!.id,
     serverId: srv!.id,
-    name: "pg",
-    engine: "postgres",
-    status: "ready",
-  });
+    name: 'pg',
+    engine: 'postgres',
+    status: 'ready',
+  })
   await db.insert(replica).values({
     managedId,
     serverId: srv!.id,
-    role: "primary",
+    role: 'primary',
     ordinal: 1,
-  });
+  })
   const [prin] = await db
     .insert(principal)
     .values({
       organizationId,
-      kind: "database",
-      provider: "postgres",
-      username: "postgres",
-      appliedUsername: "postgres",
+      kind: 'database',
+      provider: 'postgres',
+      username: 'postgres',
+      appliedUsername: 'postgres',
       managedId,
     })
-    .returning({ id: principal.id });
+    .returning({ id: principal.id })
 
   try {
-    const identifier = { pattern: /^[a-zA-Z_][a-zA-Z0-9_]*$/, maxLength: 63 };
-    const free = await resolveManagedAppliedUsername(
-      db,
-      [organizationId],
-      "app_root",
-      identifier,
-      { suffix: false },
-    );
-    assertEquals(free, "app_root");
+    const identifier = { pattern: /^[a-zA-Z_][a-zA-Z0-9_]*$/, maxLength: 63 }
+    const free = await resolveManagedAppliedUsername(db, [organizationId], 'app_root', identifier, {
+      scheme: 'plain',
+    })
+    assertEquals(free, 'app_root')
 
     const taken = await resolveManagedAppliedUsername(
       db,
       [organizationId],
-      "postgres",
+      'postgres',
       identifier,
-      { suffix: false },
-    );
-    assertMatch(taken, /^postgres_[a-z0-9]{11}$/);
+      { scheme: 'plain' }
+    )
+    assertMatch(taken, /^postgres_[a-z0-9]{11}$/)
 
     const suffixed = await resolveManagedAppliedUsername(
       db,
       [organizationId],
-      "app_root",
+      'app_root',
       identifier,
-      { suffix: true },
-    );
-    assertMatch(suffixed, /^app_root_[a-z0-9]{11}$/);
-  } finally {
-    await db.delete(principal).where(eq(principal.id, prin!.id));
-    await db.delete(replica).where(eq(replica.managedId, managedId));
-    await db.delete(managed).where(eq(managed.id, managedId));
-    await db.delete(environment).where(eq(environment.id, env!.id));
-    await db.delete(project).where(eq(project.id, proj!.id));
-    await db.delete(workspace).where(eq(workspace.id, ws!.id));
-    await db.delete(server).where(eq(server.id, srv!.id));
-    await db.delete(organization).where(eq(organization.id, organizationId));
-  }
-});
+      { scheme: 'partial' }
+    )
+    assertMatch(suffixed, /^app_root_[a-z0-9]{11}$/)
 
-test("createPrincipal and replaceTenancies write expected tenancy edges", async () => {
+    // random: no trace of the typed name, still a valid engine identifier.
+    const random = await resolveManagedAppliedUsername(
+      db,
+      [organizationId],
+      'app_root',
+      identifier,
+      { scheme: 'random' }
+    )
+    assertMatch(random, /^[a-z][a-z0-9]{11}$/)
+    assertEquals(identifier.pattern.test(random), true)
+  } finally {
+    await db.delete(principal).where(eq(principal.id, prin!.id))
+    await db.delete(replica).where(eq(replica.managedId, managedId))
+    await db.delete(managed).where(eq(managed.id, managedId))
+    await db.delete(environment).where(eq(environment.id, env!.id))
+    await db.delete(project).where(eq(project.id, proj!.id))
+    await db.delete(workspace).where(eq(workspace.id, ws!.id))
+    await db.delete(server).where(eq(server.id, srv!.id))
+    await db.delete(organization).where(eq(organization.id, organizationId))
+  }
+})
+
+test('createPrincipal and replaceTenancies write expected tenancy edges', async () => {
   await withPrincipalFixtures(async ({ db, organizationId, serviceId }) => {
     const [secondService] = await db
       .insert(service)
       .values({
-        name: "principal-store-service-2",
+        name: 'principal-store-service-2',
         environmentId: (
           await db
             .select({ environmentId: service.environmentId })
@@ -527,68 +476,123 @@ test("createPrincipal and replaceTenancies write expected tenancy edges", async 
             .where(eq(service.id, serviceId))
             .limit(1)
         )[0]!.environmentId,
-        composeServiceName: "principal-store-service-2",
+        composeServiceName: 'principal-store-service-2',
       })
-      .returning({ id: service.id });
-    const secondServiceId = secondService!.id;
+      .returning({ id: service.id })
+    const secondServiceId = secondService!.id
 
-    let createdId: string | undefined;
+    let createdId: string | undefined
     try {
       createdId = await createPrincipal(
         db,
         {
           organizationId,
-          kind: "database",
-          provider: "postgres",
-          username: "created_user",
+          kind: 'database',
+          provider: 'postgres',
+          username: 'created_user',
         },
-        [serviceId],
-      );
+        [serviceId]
+      )
 
       let edges = await db
         .select({ serviceId: tenancy.serviceId })
         .from(tenancy)
-        .where(eq(tenancy.principalId, createdId));
+        .where(eq(tenancy.principalId, createdId))
       assertEquals(
-        edges.map((row) => row.serviceId).toSorted((a, b) =>
-          a.localeCompare(b)
-        ),
-        [
-          serviceId,
-        ],
-      );
+        edges.map((row) => row.serviceId).toSorted((a, b) => a.localeCompare(b)),
+        [serviceId]
+      )
 
-      await replaceTenancies(db, createdId, [secondServiceId]);
+      await replaceTenancies(db, createdId, [secondServiceId])
       edges = await db
         .select({ serviceId: tenancy.serviceId })
         .from(tenancy)
-        .where(eq(tenancy.principalId, createdId));
+        .where(eq(tenancy.principalId, createdId))
       assertEquals(
-        edges.map((row) => row.serviceId).toSorted((a, b) =>
-          a.localeCompare(b)
-        ),
-        [
-          secondServiceId,
-        ],
-      );
+        edges.map((row) => row.serviceId).toSorted((a, b) => a.localeCompare(b)),
+        [secondServiceId]
+      )
 
-      await replaceTenancies(db, createdId, [serviceId, secondServiceId]);
+      await replaceTenancies(db, createdId, [serviceId, secondServiceId])
       edges = await db
         .select({ serviceId: tenancy.serviceId })
         .from(tenancy)
-        .where(eq(tenancy.principalId, createdId));
+        .where(eq(tenancy.principalId, createdId))
       assertEquals(
-        edges.map((row) => row.serviceId).toSorted((a, b) =>
-          a.localeCompare(b)
-        ),
-        [serviceId, secondServiceId].toSorted((a, b) => a.localeCompare(b)),
-      );
+        edges.map((row) => row.serviceId).toSorted((a, b) => a.localeCompare(b)),
+        [serviceId, secondServiceId].toSorted((a, b) => a.localeCompare(b))
+      )
     } finally {
       if (createdId) {
-        await db.delete(tenancy).where(eq(tenancy.principalId, createdId));
-        await db.delete(principal).where(eq(principal.id, createdId));
+        await db.delete(tenancy).where(eq(tenancy.principalId, createdId))
+        await db.delete(principal).where(eq(principal.id, createdId))
       }
-      await db.delete(service).where(eq(service.id, secondServiceId));
+      await db.delete(service).where(eq(service.id, secondServiceId))
     }
-  });
-});
+  })
+})
+
+test('ensureComposePrincipal follows the org default scheme and stores it', async () => {
+  await withPrincipalFixtures(async ({ db, organizationId, projectId }) => {
+    const scenarios = [
+      { options: null, alias: 'wpuser', scheme: 'partial', shape: /^wpuser_[a-z0-9]{11}$/ },
+      {
+        options: { randomizedPrincipalUsernames: false },
+        alias: 'plainuser',
+        scheme: 'plain',
+        shape: /^plainuser$/,
+      },
+      {
+        options: { principalNameScheme: 'random' },
+        alias: 'randuser',
+        scheme: 'random',
+        shape: /^[a-z][a-z0-9]{11}$/,
+      },
+    ] as const
+    const ids: string[] = []
+    try {
+      for (const scenario of scenarios) {
+        await db
+          .update(organization)
+          .set({ options: scenario.options })
+          .where(eq(organization.id, organizationId))
+        const { principalId } = await ensureComposePrincipal(db, {
+          organizationId,
+          projectId,
+          alias: scenario.alias,
+        })
+        ids.push(principalId)
+        const [row] = await db
+          .select({
+            username: principal.username,
+            appliedUsername: principal.appliedUsername,
+            options: principal.options,
+          })
+          .from(principal)
+          .where(eq(principal.id, principalId))
+        assertEquals(row?.username, scenario.alias)
+        assertMatch(row?.appliedUsername ?? '', scenario.shape)
+        assertEquals((row?.options as { nameScheme: string }).nameScheme, scenario.scheme)
+      }
+      // Re-running a deploy (idempotent by alias) keeps the stored system name
+      // even after the org default changed.
+      const [first] = await db
+        .select({ appliedUsername: principal.appliedUsername })
+        .from(principal)
+        .where(eq(principal.id, ids[0]!))
+      const again = await ensureComposePrincipal(db, {
+        organizationId,
+        projectId,
+        alias: 'wpuser',
+      })
+      assertEquals(again, { principalId: ids[0], created: false })
+      const [afterRow] = await db
+        .select({ appliedUsername: principal.appliedUsername })
+        .from(principal)
+        .where(eq(principal.id, ids[0]!))
+      assertEquals(afterRow?.appliedUsername, first?.appliedUsername)
+    } finally {
+      await db.delete(principal).where(inArray(principal.id, ids))
+    }
+  })
+})

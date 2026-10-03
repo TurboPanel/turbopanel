@@ -1,14 +1,14 @@
 /**
  * Topology-reinterpretation guard for the v5 metrics write path.
  *
- * `host.io`'s embedded NIC slots (double14..19 — see `field-map.ts`'s
+ * `host.network`'s embedded NIC slots (double6..11 — see `field-map.ts`'s
  * module doc comment) carry no per-slot identity of their own: which
  * `networks[]` entry a slot represents is resolved only through the
  * `SlotMapping` passed to `buildMetricsDataPoints` at write time. Every
  * other paged family (gpu/network/filesystem/block/hardware.physical) stamps
- * blob10 with the contributing entities' real ids, so a stored row is
+ * blob6 with the contributing entities' real ids, so a stored row is
  * self-describing regardless of which topology generation produced it; NICs
- * embedded in `host.io` are the one place a topology reassignment could
+ * embedded in `host.network` are the one place a topology reassignment could
  * silently reinterpret a slot if the wrong generation's mapping were ever
  * used to decode it. DuckDB has no equivalent risk — it writes every network
  * device to its per-family table keyed by real `deviceId` regardless of slot
@@ -42,7 +42,7 @@ import type { AuthenticatedMetricsSample, SlotMapping } from './types.ts'
 import {
   AE_BLOB_FAMILY_INDEX,
   AE_BLOB_TOPOLOGY_GENERATION_INDEX,
-  AE_FAMILY_HOST_IO,
+  AE_FAMILY_HOST_NETWORK,
   AE_FAMILY_HOST_SYSTEM,
   AE_FAMILY_NETWORK,
   AE_MISSING_METRIC_SENTINEL,
@@ -163,24 +163,23 @@ function emptySlotMapping(overrides: Partial<SlotMapping> = {}): SlotMapping {
   }
 }
 
-function hostIoPoint(points: AnalyticsEngineDataPointLike[]): AnalyticsEngineDataPointLike {
-  const found = points.find(
-    (point) => point.blobs[AE_BLOB_FAMILY_INDEX] === AE_FAMILY_HOST_IO
-  )
-  if (!found) throw new Error('no host.io point found')
+function hostNetworkPoint(points: AnalyticsEngineDataPointLike[]): AnalyticsEngineDataPointLike {
+  const found = points.find((point) => point.blobs[AE_BLOB_FAMILY_INDEX] === AE_FAMILY_HOST_NETWORK)
+  if (!found) throw new Error('no host.network point found')
   return found
 }
 
-// host.io's NIC0 rx-bytes/s embed slot: HOST_IO_FIELD_ORDER.length (13 in v6 —
-// 2 host.kernel + 7 host.storage + 1 spare + 2 host.network + 1 spare) + 0.
-const NIC0_RX_DOUBLE_INDEX = 13
+// host.network's NIC0 rx-bytes/s embed slot: after the root filesystem pair
+// (double1..2), the folded filesystem pair (double3..4) and tcp retransmits
+// (double5), so double6 (index 5) in the v7 layout.
+const NIC0_RX_DOUBLE_INDEX = 5
 
 // ---------------------------------------------------------------------------
 // Own-generation resolution: two generations, two distinct devices, each
 // decoded with its own recorded SlotMapping.
 // ---------------------------------------------------------------------------
 
-it("generation 1's host.io row embeds generation 1's own slot-mapped NIC", () => {
+it("generation 1's host.network row embeds generation 1's own slot-mapped NIC", () => {
   const sampleGen1 = buildSample({
     metadata: {
       version: 6,
@@ -193,11 +192,11 @@ it("generation 1's host.io row embeds generation 1's own slot-mapped NIC", () =>
     networks: [nic('eth0', 100)],
   })
   const slotMappingGen1 = emptySlotMapping({ normalNicSlots: ['eth0'] })
-  const point = hostIoPoint(buildMetricsDataPoints(sampleGen1, slotMappingGen1))
+  const point = hostNetworkPoint(buildMetricsDataPoints(sampleGen1, slotMappingGen1))
   assertEquals(point.doubles[NIC0_RX_DOUBLE_INDEX], 100)
 })
 
-it("generation 2's host.io row embeds generation 2's own (replaced) slot-mapped NIC", () => {
+it("generation 2's host.network row embeds generation 2's own (replaced) slot-mapped NIC", () => {
   const sampleGen2 = buildSample({
     metadata: {
       version: 6,
@@ -210,7 +209,7 @@ it("generation 2's host.io row embeds generation 2's own (replaced) slot-mapped 
     networks: [nic('eth1', 300)],
   })
   const slotMappingGen2 = emptySlotMapping({ normalNicSlots: ['eth1'] })
-  const point = hostIoPoint(buildMetricsDataPoints(sampleGen2, slotMappingGen2))
+  const point = hostNetworkPoint(buildMetricsDataPoints(sampleGen2, slotMappingGen2))
   assertEquals(point.doubles[NIC0_RX_DOUBLE_INDEX], 300)
 })
 
@@ -227,7 +226,7 @@ it("decoding generation 2's sample with generation 1's mapping never finds the r
     networks: [nic('eth1', 300)],
   })
   const wrongGenerationMapping = emptySlotMapping({ normalNicSlots: ['eth0'] })
-  const point = hostIoPoint(buildMetricsDataPoints(sampleGen2, wrongGenerationMapping))
+  const point = hostNetworkPoint(buildMetricsDataPoints(sampleGen2, wrongGenerationMapping))
   // eth0 does not exist in this sample under the wrong (stale) mapping —
   // the slot goes missing rather than silently reading eth1's value under
   // eth0's name.
@@ -247,8 +246,8 @@ it('the same raw sample decodes to different slot-1 values under a swapped mappi
   const mappingB = emptySlotMapping({
     normalNicSlots: ['eth1', 'eth0'],
   })
-  const pointA = hostIoPoint(buildMetricsDataPoints(sample, mappingA))
-  const pointB = hostIoPoint(buildMetricsDataPoints(sample, mappingB))
+  const pointA = hostNetworkPoint(buildMetricsDataPoints(sample, mappingA))
+  const pointB = hostNetworkPoint(buildMetricsDataPoints(sample, mappingB))
   assertEquals(pointA.doubles[NIC0_RX_DOUBLE_INDEX], 100)
   assertEquals(pointB.doubles[NIC0_RX_DOUBLE_INDEX], 300)
 })
@@ -258,21 +257,21 @@ it('the same raw sample decodes to different slot-1 values under a swapped mappi
 // graceful-degradation behavior.
 // ---------------------------------------------------------------------------
 
-it('without a SlotMapping, host.io falls back to positional embedding (networks[0]/networks[1])', () => {
+it('without a SlotMapping, host.network falls back to positional embedding (networks[0]/networks[1])', () => {
   const sample = buildSample({
     networks: [nic('eth0', 100), nic('eth1', 300)],
   })
-  const point = hostIoPoint(buildMetricsDataPoints(sample, undefined))
+  const point = hostNetworkPoint(buildMetricsDataPoints(sample, undefined))
   assertEquals(point.doubles[NIC0_RX_DOUBLE_INDEX], 100)
 })
 
 // ---------------------------------------------------------------------------
-// blob7 (topologyGeneration) carries each sample's own generation on every
+// blob4 (topologyGeneration) carries each sample's own generation on every
 // row kind, so a downstream reader can regroup rows by generation even
 // without per-slot ids.
 // ---------------------------------------------------------------------------
 
-it("every row (host.system, host.io, and a paged family) carries its own sample's topologyGeneration in blob7", () => {
+it("every row (host.system, host.network, and a paged family) carries its own sample's topologyGeneration in blob4", () => {
   const sample = buildSample({
     metadata: {
       version: 6,
@@ -288,7 +287,7 @@ it("every row (host.system, host.io, and a paged family) carries its own sample'
   const families = points.map((point) => point.blobs[AE_BLOB_FAMILY_INDEX])
   assertEquals(
     families.includes(AE_FAMILY_HOST_SYSTEM) &&
-      families.includes(AE_FAMILY_HOST_IO) &&
+      families.includes(AE_FAMILY_HOST_NETWORK) &&
       families.includes(AE_FAMILY_NETWORK),
     true
   )
@@ -296,9 +295,7 @@ it("every row (host.system, host.io, and a paged family) carries its own sample'
     assertEquals(
       point.blobs[AE_BLOB_TOPOLOGY_GENERATION_INDEX],
       '7',
-      `family ${
-        point.blobs[AE_BLOB_FAMILY_INDEX]
-      } must carry its own sample's topologyGeneration`
+      `family ${point.blobs[AE_BLOB_FAMILY_INDEX]} must carry its own sample's topologyGeneration`
     )
   }
 })

@@ -13,7 +13,7 @@
  *     Sets the new password, uses the link up and signs the user out
  *     everywhere (owner decision 2026-09-27).
  *
- * The callback is only ever an allowlisted console page (`RESET_PAGES`);
+ * The callback is only ever an allowlisted app page (`RESET_PAGES`);
  * anything else falls back to `/reset-password`, so the link can never bounce
  * a token to another site.
  */
@@ -25,6 +25,7 @@ import { account, user } from '../../db/schema.ts'
 import { getEmailQueue } from '../../features/email/types.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
 import { hashPassword } from '../../lib/secrets/password.ts'
+import { refuseIfBreached } from './breached-password.ts'
 import {
   AUTH_RESET_PASSWORD_MAX_BODY_BYTES,
   AUTH_RESET_PASSWORD_REQUEST_MAX_BODY_BYTES,
@@ -198,6 +199,14 @@ export function registerPasswordResetRoutes<E extends Env>(
       identity: (v) => v.token.slice(0, 16),
     })
     if (!gated.ok) return gated.response
+
+    // Refuse a breached password while the link is still unused, so the person
+    // can try again with the same link.
+    if ((await peekPasswordResetToken(db, gated.value.token)) === null) {
+      return c.json({ ok: false, error: INVALID_TOKEN }, 400)
+    }
+    const breached = await refuseIfBreached(c, gated.value.newPassword)
+    if (breached) return breached
 
     const userId = await consumePasswordResetToken(db, gated.value.token)
     if (userId === null) {

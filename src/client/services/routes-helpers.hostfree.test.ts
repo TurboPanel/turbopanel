@@ -34,8 +34,30 @@ test('serializeService exposes composeServiceName', () => {
       createdAt: '2026-01-01T00:00:00.000Z',
       updatedAt: '2026-01-01T00:00:00.000Z',
     }).composeServiceName,
-    'web',
+    'web'
   )
+})
+
+test('serializeService exposes the detected app only when metadata carries a valid one', () => {
+  const row = {
+    id: validUuid,
+    name: 'Blog',
+    description: null,
+    environmentId: validUuid,
+    composeServiceName: 'blog',
+    options: null,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+  }
+  assertEquals(
+    serializeService({
+      ...row,
+      metadata: { app: { kind: 'wordpress', version: '6.5.2' } },
+    }).app,
+    { kind: 'wordpress', version: '6.5.2' }
+  )
+  assertEquals('app' in serializeService({ ...row, metadata: null }), false)
+  assertEquals('app' in serializeService({ ...row, metadata: { app: { kind: 'drupal' } } }), false)
 })
 
 test('rejectComposeServiceNameInBody blocks direct compose name writes', () => {
@@ -46,10 +68,7 @@ test('rejectComposeServiceNameInBody blocks direct compose name writes', () => {
 })
 
 test('stripServicePromotedMetadata removes composeServiceName', () => {
-  assertEquals(
-    stripServicePromotedMetadata({ composeServiceName: 'web', note: 1 }),
-    { note: 1 },
-  )
+  assertEquals(stripServicePromotedMetadata({ composeServiceName: 'web', note: 1 }), { note: 1 })
 })
 
 test('parseServiceCreateFields rejects invalid options and compose name', () => {

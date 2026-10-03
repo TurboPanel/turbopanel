@@ -3,7 +3,6 @@
 **Host more. Manage less.** The open-source control plane for everything you host — websites, apps, databases, and the servers under them, run from one place.
 
 [![Release](https://img.shields.io/github/v/release/TurboPanel/turbopanel?label=release)](https://github.com/TurboPanel/turbopanel/releases)
-[![Release candidate](https://img.shields.io/github/v/tag/TurboPanel/turbopanel?filter=*-rc.*&sort=semver&include_prereleases&label=release%20candidate&color=orange)](https://github.com/TurboPanel/turbopanel/releases)
 [![Quality Gate](https://sonarcloud.io/api/project_badges/measure?project=turbopanel_turbopanel&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=turbopanel_turbopanel)
 [![Coverage](https://sonarcloud.io/api/project_badges/measure?project=turbopanel_turbopanel&metric=coverage)](https://sonarcloud.io/component_measures?id=turbopanel_turbopanel&metric=coverage)
 [![Code Smells](https://sonarcloud.io/api/project_badges/measure?project=turbopanel_turbopanel&metric=code_smells)](https://sonarcloud.io/project/issues?id=turbopanel_turbopanel&resolved=false&types=CODE_SMELL)

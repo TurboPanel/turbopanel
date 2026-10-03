@@ -1,5 +1,12 @@
+import { haltRollout, rolloutOptions } from '../../features/deploy/rollout.ts'
 import { firstSequential, forEachSequential, mapSequential } from '../../lib/sequential.ts'
 import { eq, inArray } from 'drizzle-orm'
+import {
+  type DeployEnginePlan,
+  planDeployBatches,
+  planDeployEngine,
+  rolloutSummary,
+} from '../../features/deploy/deploy-engine.ts'
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
@@ -29,6 +36,7 @@ import type {
   EnvironmentDeployNativeAppService,
   EnvironmentDeployPrincipalMaterial,
   EnvironmentDeployServiceHook,
+  EnvironmentDeploySecretPlanEntry,
   EnvironmentDeploySource,
   EnvironmentDeployStorageMaterial,
   EnvironmentDeployTlsMaterial,
@@ -42,9 +50,11 @@ import {
   buildNativeAppServicesForDeploy,
   buildSitesForDeploy,
   composeProjectName,
+  type DeployStrategyOverride,
   fabricGateErrorResponse,
   mapPrepareErrorResponse,
   parseDeployRequestFlags,
+  parseDeployStrategyOverride,
   parseLifecycleAction,
   type QueuedCommandRef,
   queuedCommandsResponseBody,
@@ -56,6 +66,7 @@ import {
   resolveEnvironmentSiteReleases,
   resolveSourcedEnvironmentSiteReleases,
 } from './site-releases.ts'
+import { recordSitePhpModes } from './deploy-php-modes.ts'
 import { isNoopCommandQueue } from '../../features/commands/noop-command-queue.ts'
 import {
   type CommandContextRelease,
@@ -68,6 +79,7 @@ import { bumpEnvironmentGeneration } from '../../features/deploy/environment-gen
 import {
   type DeploymentTargetInput,
   listEnvironmentDeploymentTargets,
+  listReservedListenPorts,
   markDeploymentFailed,
   pruneDrainedDeployments,
   upsertDeploymentTargets,
@@ -421,6 +433,26 @@ export type DeployActor = {
 export type { DeploySourceSelection }
 
 /**
+ * Per-deploy strategy overrides. `inplace` and `sequential` are honored (the
+ * daemon implements both). `bluegreen` has no engine yet and the per-deploy
+ * `migration` override waits for the migration-declaration stage; like an
+ * explicit `ref`, a field the caller set and the deploy would ignore is
+ * refused rather than silently dropped.
+ */
+function unsupportedStrategyOverride(override: DeployStrategyOverride) {
+  const strategyUnsupported = override.strategy === 'bluegreen'
+  if (!strategyUnsupported && override.migration === null) return null
+  return {
+    error: 'deploy_strategy_unsupported',
+    message:
+      'Blue-green deploys and a per-deploy migration status are not supported yet; ' +
+      'use `strategy` inplace or sequential, and omit `migration`.',
+    strategy: override.strategy,
+    migration: override.migration,
+  }
+}
+
+/**
  * Deploy-only authz: {@link authorizeEnvironmentManage} plus deploy request flags.
  * Exported for host-free unit coverage without full orchestration.
  */
@@ -436,6 +468,7 @@ export async function authorizeDeployRequest(
       acknowledgeHealthCheckWarnings: boolean
       noCache: boolean
       selection: DeploySourceSelection
+      strategyOverride: DeployStrategyOverride
     }
   | Response
 > {
@@ -460,6 +493,7 @@ export async function authorizeDeployRequest(
     // not "deploy this repository's commit". `sourceId` stays `null`, so no
     // source binding is pinned to a caller-supplied SHA.
     selection: { ref: flags.ref, commitSha: null, sourceId: null },
+    strategyOverride: flags.override,
   }
 }
 
@@ -482,6 +516,10 @@ type DeployCommandCreateParams = DeployActor & {
   variableMaterial: EnvironmentDeployVariableMaterial[]
   storageMaterial: EnvironmentDeployStorageMaterial[]
   principalMaterial: EnvironmentDeployPrincipalMaterial[]
+  /** Non-secret Compose project `.env` the daemon writes next to compose.yaml. */
+  envFile?: string
+  /** File-only secret mounts the daemon materializes from `variableMaterial`. */
+  secretPlan?: EnvironmentDeploySecretPlanEntry[]
   serviceHooks: EnvironmentDeployServiceHook[]
   dockerExternalNetworks: string[]
   dockerNetworkAddressing: EnvironmentDeployDockerNetwork[]
@@ -490,8 +528,11 @@ type DeployCommandCreateParams = DeployActor & {
   /** Set only when `managedNetworkServices` is non-empty (see prepare). */
   managedNetwork?: string
   noCache: boolean
+  /** The strategy decision; its `payload` fields ride the daemon command. */
+  engine: DeployEnginePlan
   /** The planner's host-level verdict (`PlannedDeploy.hostLevelApproved`). */
   hostLevelApproved: boolean
+  remoteBuildSourcesApproved: boolean
   generation: number
   desiredHash: string
   replicaCounts: Record<string, number>
@@ -595,6 +636,8 @@ async function createDeployCommand(
         variableMaterial: params.variableMaterial,
         storageMaterial: params.storageMaterial,
         principalMaterial: params.principalMaterial,
+        envFile: params.envFile || undefined,
+        secretPlan: params.secretPlan,
         serviceHooks: params.serviceHooks,
         dockerExternalNetworks: params.dockerExternalNetworks,
         dockerNetworkAddressing: params.dockerNetworkAddressing,
@@ -603,6 +646,8 @@ async function createDeployCommand(
         managedNetwork: params.managedNetwork,
         noCache: params.noCache ? true : undefined,
         hostLevelApproved: params.hostLevelApproved ? true : undefined,
+        remoteBuildSourcesApproved: params.remoteBuildSourcesApproved ? true : undefined,
+        ...params.engine.payload,
       }),
       listenerPorts: params.listenerPorts,
     },
@@ -624,6 +669,8 @@ async function createDeployCommand(
       desiredHash: params.desiredHash,
       replicaCounts: replicaCounts ?? undefined,
       releases: releases ?? undefined,
+      // What ran, so history still says so after the payload is deleted.
+      deployStrategy: params.engine.effectiveStrategy,
     }),
     expiresAt,
   })
@@ -691,14 +738,19 @@ function createParamsForPreparedServer(
     projectName: string
     generation: number
     noCache: boolean
+    engine: DeployEnginePlan
     hostLevelApproved: boolean
+    remoteBuildSourcesApproved: boolean
     selection: DeploySourceSelection
+    /** Ports other environments already hold on this server; allocation probes past them. */
+    reservedListenPorts?: ReadonlySet<number>
   }
 ): DeployCommandCreateParams {
   // One loopback-port ledger for both host-native lanes: site vhosts
   // and native `node` apps are both reverse-proxied on 127.0.0.1, so allocating
-  // them separately could hand the same port to a site and an app.
-  const usedListenPorts = new Set<number>()
+  // them separately could hand the same port to a site and an app. It starts
+  // from the ports other environments hold on this server.
+  const usedListenPorts = new Set<number>(params.reservedListenPorts)
   return {
     serverId: row.serverId,
     actorType: params.actorType,
@@ -710,12 +762,18 @@ function createParamsForPreparedServer(
     projectName: params.projectName,
     composeFiles: row.prepared.composeFiles,
     hostings: row.prepared.hostings,
-    sites: buildSitesForDeploy(row.prepared.sites, row.prepared.hostings, usedListenPorts),
+    sites: buildSitesForDeploy(
+      row.prepared.sites,
+      row.prepared.hostings,
+      usedListenPorts,
+      params.environmentId
+    ),
     nativeAppServices: buildNativeAppServicesForDeploy(
       row.prepared.nativeAppServices,
       row.prepared.hostings,
       row.prepared.ingressServices,
-      usedListenPorts
+      usedListenPorts,
+      params.environmentId
     ),
     sourceMaterial: row.prepared.sourceMaterial,
     ingressServices: row.prepared.ingressServices,
@@ -727,6 +785,8 @@ function createParamsForPreparedServer(
     variableMaterial: row.prepared.variableMaterial,
     storageMaterial: row.prepared.storageMaterial,
     principalMaterial: row.prepared.principalMaterial,
+    envFile: row.prepared.envFile,
+    secretPlan: row.prepared.secretPlan,
     serviceHooks: row.prepared.hooks,
     dockerExternalNetworks: row.prepared.dockerExternalNetworks,
     dockerNetworkAddressing: row.prepared.dockerNetworkAddressing,
@@ -736,7 +796,9 @@ function createParamsForPreparedServer(
       ? {}
       : { managedNetwork: row.prepared.managedNetwork }),
     noCache: params.noCache,
+    engine: params.engine,
     hostLevelApproved: params.hostLevelApproved,
+    remoteBuildSourcesApproved: params.remoteBuildSourcesApproved,
     generation: params.generation,
     desiredHash: row.prepared.desiredHash,
     replicaCounts: row.prepared.replicaCounts,
@@ -750,7 +812,18 @@ function createParamsForPreparedServer(
  * once a Git-backed service is removed, nothing derivable from the current
  * document names its `<principalHome>/sites/<serviceId>` tree any more, so a
  * later stop or delete would leave it behind. See `site-releases.ts`.
+ * `phpModes` is what each PHP site runs, which `deploy-php-modes.ts` reads
+ * back so a site keeps its mode when the policy narrows.
+ * `listenPorts` is the loopback ports this deploy gave sites and native apps, which
+ * other environments on the same server read so they never take the same port.
  */
+function deployListenPorts(params: DeployCommandCreateParams): number[] {
+  return [
+    ...(params.sites ?? []).map((site) => site.listenPort),
+    ...(params.nativeAppServices ?? []).map((app) => app.listenPort),
+  ]
+}
+
 function deploymentTargetsForFanOut(params: {
   preparedByServer: readonly PreparedServerDeploy[]
   planServerIds: readonly string[]
@@ -759,21 +832,33 @@ function deploymentTargetsForFanOut(params: {
   created: readonly CreatedDeployCommand[]
   /** Release trees the current compose declares, recorded per target. */
   siteReleases: readonly EnvironmentSiteRelease[]
+  /** Loopback ports each server's deploy allocated, so the next allocation avoids them. */
+  listenPortsByServer: ReadonlyMap<string, readonly number[]>
+  /** Server ids per rollout batch; a single batch records nothing extra. */
+  batches: readonly (readonly string[])[]
 }): DeploymentTargetInput[] {
+  const rolloutByServer = rolloutByServerId(params.batches)
   const preparedByServerId = new Map(params.preparedByServer.map((row) => [row.serverId, row]))
   const commandByServer = new Map(params.created.map((row) => [row.serverId, row.commandId]))
   return [
     ...params.planServerIds.map((serverId) => {
       const prepared = preparedByServerId.get(serverId)?.prepared
+      const rollout = rolloutByServer.get(serverId)
       return {
         serverId,
         desiredGeneration: params.generation,
         desiredHash: prepared?.desiredHash ?? null,
-        status: 'applying' as const,
+        // A later rollout batch waits (`pending`) until the one before it is applied.
+        status:
+          rollout !== undefined && rollout.batch > 0 ? ('pending' as const) : ('applying' as const),
         lastCommandId: commandByServer.get(serverId) ?? null,
         options: {
           secretPlan: prepared?.secretPlan ?? [],
           siteReleases: params.siteReleases,
+          // The PHP mode each site was given, so the next deploy keeps it.
+          phpModes: recordSitePhpModes(prepared?.sites),
+          listenPorts: params.listenPortsByServer.get(serverId) ?? [],
+          ...(rollout === undefined ? {} : { rollout }),
         },
       }
     }),
@@ -785,9 +870,23 @@ function deploymentTargetsForFanOut(params: {
   ]
 }
 
+/** Rollout options per server; empty when the deploy is one batch (no rollout to track). */
+function rolloutByServerId(
+  batches: readonly (readonly string[])[]
+): Map<string, ReturnType<typeof rolloutOptions>> {
+  const byServer = new Map<string, ReturnType<typeof rolloutOptions>>()
+  if (batches.length < 2) return byServer
+  batches.forEach((serverIds, batch) => {
+    for (const serverId of serverIds) byServer.set(serverId, rolloutOptions(batch, batches.length))
+  })
+  return byServer
+}
+
 /**
  * Atomically bump generation, replace slots, create deploy commands, and
- * persist deployment targets. Returns command refs only after commit.
+ * persist deployment targets. Returns command refs only after commit — only
+ * the first rollout batch's: later batches stay recorded and undelivered until
+ * the rollout delivers them (`features/deploy/rollout.ts`).
  * Queue delivery stays outside. Callers must treat spanning networks as
  * committed once this returns.
  */
@@ -803,13 +902,19 @@ async function persistDeployFanOut(
     projectName: string
     slots: readonly DesiredSlotInput[]
     noCache: boolean
+    engine: DeployEnginePlan
     hostLevelApproved: boolean
+    remoteBuildSourcesApproved: boolean
     selection: DeploySourceSelection
     /** Release trees to record on each target — see `deploymentTargetsForFanOut`. */
     siteReleases: readonly EnvironmentSiteRelease[]
   }
 ): Promise<CreatedDeployCommand[]> {
-  return await db.transaction(async (tx) => {
+  const batches = planDeployBatches(
+    params.engine,
+    params.preparedByServer.map((row) => row.serverId)
+  )
+  const all = await db.transaction(async (tx) => {
     const generation = await bumpEnvironmentGeneration(tx, params.environmentId)
     await replaceEnvironmentSlotsInTx(tx, {
       environmentId: params.environmentId,
@@ -817,25 +922,34 @@ async function persistDeployFanOut(
       slots: params.slots,
     })
 
+    const reservedPorts = await listReservedListenPorts(tx, {
+      environmentId: params.environmentId,
+      serverIds: params.preparedByServer.map((row) => row.serverId),
+    })
+    const listenPortsByServer = new Map<string, number[]>()
+
     // One transaction connection: the writes must stay ordered.
     const created = await mapSequential(
       params.preparedByServer,
-      (row): Promise<CreatedDeployCommand> =>
-        createDeployCommand(
-          tx,
-          createParamsForPreparedServer(row, {
-            actorType: params.actorType,
-            actorId: params.actorId,
-            environmentId: params.environmentId,
-            projectId: params.projectId,
-            organizationId: params.organizationId,
-            projectName: params.projectName,
-            generation,
-            noCache: params.noCache,
-            hostLevelApproved: params.hostLevelApproved,
-            selection: params.selection,
-          })
-        )
+      (row): Promise<CreatedDeployCommand> => {
+        const createParams = createParamsForPreparedServer(row, {
+          actorType: params.actorType,
+          actorId: params.actorId,
+          environmentId: params.environmentId,
+          projectId: params.projectId,
+          organizationId: params.organizationId,
+          projectName: params.projectName,
+          generation,
+          noCache: params.noCache,
+          engine: params.engine,
+          hostLevelApproved: params.hostLevelApproved,
+          remoteBuildSourcesApproved: params.remoteBuildSourcesApproved,
+          selection: params.selection,
+          reservedListenPorts: reservedPorts.get(row.serverId),
+        })
+        listenPortsByServer.set(row.serverId, deployListenPorts(createParams))
+        return createDeployCommand(tx, createParams)
+      }
     )
 
     await upsertDeploymentTargets(tx, {
@@ -847,10 +961,14 @@ async function persistDeployFanOut(
         generation,
         created,
         siteReleases: params.siteReleases,
+        listenPortsByServer,
+        batches,
       }),
     })
     return created
   })
+  // `created` is in `preparedByServer` order, which is the order the batches were cut in.
+  return batches.length < 2 ? all : all.slice(0, batches[0]?.length ?? 0)
 }
 
 /**
@@ -881,6 +999,13 @@ async function deliverDeployFanOut(
     }
     queued.push(delivered)
   })
+  if (enqueueError !== null) {
+    // The first failure stops a rolling deploy: nothing held may start after it.
+    await haltRollout(db, {
+      environmentId: params.environmentId,
+      reason: 'a server in the first batch could not be reached',
+    })
+  }
   return { queued, enqueueError }
 }
 
@@ -1017,6 +1142,50 @@ function deployPreviewSources(
   return [...byRelease.values()]
 }
 
+/** What-if `?strategy=` / `?migration=` on the deploy preview; a bad value is a 400. */
+function parsePreviewOverride(c: Context<AppEnv>): DeployStrategyOverride | Response {
+  const override = parseDeployStrategyOverride({
+    strategy: c.req.query('strategy'),
+    migration: c.req.query('migration'),
+  })
+  if (override === 'invalid') return c.json({ error: 'Invalid request' }, 400)
+  return override
+}
+
+/**
+ * The strategy a deploy of this environment runs (stored options, then the
+ * request's override, then the compose facts). The deploy and its preview call
+ * the same function, so the preview is what a deploy would do.
+ */
+/** The strategy block of a deploy response: what was asked, what runs, and why it differs. */
+function strategyResponse(engine: DeployEnginePlan, serverCount: number) {
+  return {
+    requested: engine.requested,
+    effective: engine.effectiveStrategy,
+    fallbackReasons: engine.fallbackReasons,
+    rollout: rolloutSummary(engine, serverCount),
+  }
+}
+
+async function resolveEnginePlan(
+  db: Db,
+  environmentId: string,
+  planned: SuccessfulPlannedDeploy,
+  override: DeployStrategyOverride
+): Promise<DeployEnginePlan> {
+  const [row] = await db
+    .select({ options: environment.options })
+    .from(environment)
+    .where(eq(environment.id, environmentId))
+    .limit(1)
+  return planDeployEngine({
+    environmentOptions: row?.options,
+    projectOptions: planned.projectOptions,
+    composeData: planned.merged.data,
+    override,
+  })
+}
+
 /**
  * GET /environments/:id/deploy-preview — exact compose YAML the daemon would
  * receive (same `prepareDeployCompose` path), with secrets redacted.
@@ -1039,6 +1208,9 @@ export function registerEnvironmentDeployPreviewRoutes(router: Hono<AppEnv>, opt
     const environmentId = c.req.param('id')
     const auth = await authorizeEnvironmentManage(c, db, environmentId)
     if (auth instanceof Response) return auth
+
+    const override = parsePreviewOverride(c)
+    if (override instanceof Response) return override
 
     const planned = await resolveSuccessfulPlan(
       c,
@@ -1078,6 +1250,8 @@ export function registerEnvironmentDeployPreviewRoutes(router: Hono<AppEnv>, opt
     })
     if (preparedByServer instanceof Response) return preparedByServer
 
+    const strategy = await resolveEnginePlan(db, environmentId, planned, override)
+
     const first = preparedByServer[0]
     const serverRows =
       planned.plan.serverIds.length === 0
@@ -1100,6 +1274,11 @@ export function registerEnvironmentDeployPreviewRoutes(router: Hono<AppEnv>, opt
       composeFiles: first?.prepared.composeFiles ?? [],
       projectName,
       ...presentFields({ servers, sources }),
+      strategy: strategy.requested,
+      effectiveStrategy: strategy.effectiveStrategy,
+      migrations: strategy.migrations,
+      fallbackReasons: strategy.fallbackReasons,
+      rollout: rolloutSummary(strategy, preparedByServer.length),
       containers: buildDeployPreviewContainers({
         appContainers,
         ingressServices: ingress,
@@ -1132,6 +1311,8 @@ export type DeployRequestAuth = DeployActor & {
   acknowledgeHealthCheckWarnings: boolean
   noCache: boolean
   selection: DeploySourceSelection
+  /** Per-deploy strategy override from the request body; absent for webhook deploys. */
+  strategyOverride?: DeployStrategyOverride
   /**
    * Present only for `POST /environments/:id/rollback`.
    *
@@ -1633,6 +1814,12 @@ async function runEnvironmentDeploy(
       previous,
     })
     const projectName = composeProjectName(planned.projectId)
+    const engine = await resolveEnginePlan(
+      db,
+      environmentId,
+      planned,
+      auth.strategyOverride ?? { strategy: null, migration: null }
+    )
     // Recorded, not consumed, here: the current compose still names these, so
     // this is the snapshot a later stop/delete falls back to once it does not.
     const siteReleases = await resolveSourcedEnvironmentSiteReleases(db, environmentId)
@@ -1648,7 +1835,9 @@ async function runEnvironmentDeploy(
       projectName,
       slots: spanningCtx.enriched.slots,
       noCache: auth.noCache,
+      engine,
       hostLevelApproved: planned.hostLevelApproved,
+      remoteBuildSourcesApproved: planned.remoteBuildSourcesApproved,
       selection: auth.selection,
       siteReleases,
     })
@@ -1680,7 +1869,9 @@ async function runEnvironmentDeploy(
       ...spanningCtx,
     })
 
-    return Response.json(queuedCommandsResponseBody(queued))
+    return Response.json(
+      queuedCommandsResponseBody(queued, strategyResponse(engine, preparedByServer.length))
+    )
   } finally {
     if (!spanningCommitted) {
       await purgeComposeNetworksCreatedAfter(db, environmentId, priorNetworks)
@@ -1734,6 +1925,11 @@ export function registerEnvironmentDeployRoutes(router: Hono<AppEnv>, opts: Auth
     // named on the request. Accepting one would answer `queued` to "deploy
     // release/1.4" and build the declared branch instead — the one outcome a
     // caller reaching for this field cannot detect. Refuse loudly.
+    const unsupportedOverride = unsupportedStrategyOverride(auth.strategyOverride)
+    if (unsupportedOverride !== null) {
+      return c.json(unsupportedOverride, 501)
+    }
+
     if (!PREPARE_HONORS_SOURCE_SELECTION && auth.selection.ref !== null) {
       return c.json(
         {
@@ -1752,6 +1948,15 @@ export function registerEnvironmentDeployRoutes(router: Hono<AppEnv>, opts: Auth
 
     return runEnvironmentDeploy(c, db, commandQueue, environmentId, auth)
   })
+}
+
+/**
+ * A stop or lifecycle action while a rolling deploy is part-way: servers still
+ * waiting must not deploy after it (a held batch would otherwise start a server
+ * the stop already ran on). Servers already applying are left to finish.
+ */
+async function cancelWaitingRollout(db: Db, environmentId: string, reason: string): Promise<void> {
+  await haltRollout(db, { environmentId, reason })
 }
 
 async function loadLifecycleTargets(
@@ -1903,6 +2108,7 @@ export function registerEnvironmentStopRoutes(router: Hono<AppEnv>, opts: AuthRo
 
     const loaded = await loadLifecycleTargets(db, environmentId)
     if (loaded instanceof Response) return loaded
+    await cancelWaitingRollout(db, environmentId, 'the environment was stopped')
 
     const tcpUdpServices = await resolveTcpUdpIngressServices(db, environmentId)
     const composeNetworks = await listEnvironmentComposeNetworks(db, environmentId)
@@ -2036,6 +2242,7 @@ export function registerEnvironmentLifecycleRoutes(router: Hono<AppEnv>, opts: A
 
     const loaded = await loadLifecycleTargets(db, environmentId)
     if (loaded instanceof Response) return loaded
+    await cancelWaitingRollout(db, environmentId, `the environment was asked to ${action}`)
 
     const queued: QueuedCommandRef[] = []
     for (const serverId of loaded.serverIds) {

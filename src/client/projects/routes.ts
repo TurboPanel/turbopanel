@@ -2,6 +2,7 @@ import { and, eq, inArray } from 'drizzle-orm'
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
+import { requireStepUpIfConfigured } from '../authn/step-up.ts'
 import { encryptSecret } from '../../lib/secrets/data-encryption.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
@@ -64,6 +65,10 @@ import {
   resolveCreateProjectType,
   stampCreateProjectMetadata,
 } from './routes-helpers.ts'
+import {
+  settleDeployOptions,
+  stampNewEnvironmentDeployOptions,
+} from '../../features/deploy/deploy-options.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 
 type DbTx = Parameters<Parameters<Db['transaction']>[0]>[0]
@@ -87,7 +92,7 @@ export async function scaffoldCatalogEnvironments(
         name: displayName,
         description: env.description ?? null,
         ...(serverId ? { serverId } : {}),
-        options: env.compose ? { compose: env.compose } : null,
+        options: stampNewEnvironmentDeployOptions(env.compose ? { compose: env.compose } : null),
       })
       .returning({ id: environment.id })
 
@@ -306,6 +311,14 @@ async function parseCreateProjectInput(
     }
     return c.json({ error: optionsResult.error }, optionsResult.status)
   }
+  // Same rule as PATCH: a default server outside the organization reads as 404.
+  const defaultServerError = await assertDefaultServerIdInOrg(
+    c,
+    db,
+    organizationId,
+    optionsResult.options
+  )
+  if (defaultServerError) return defaultServerError
 
   const metadataResult = parseCreateProjectMetadata(body)
   if (!metadataResult.ok) {
@@ -453,6 +466,25 @@ function buildProjectPatchFields(
   return patchFields
 }
 
+/**
+ * A PATCH replaces `options` wholesale and the compose editor sends only
+ * `compose`: carry the stored deploy tuning settings over unless the body
+ * names them (`null` clears one).
+ */
+async function keepStoredProjectDeployOptions(
+  db: Db,
+  projectId: string,
+  patchFields: ProjectPatchFields
+): Promise<void> {
+  if (!patchFields.options) return
+  const [row] = await db
+    .select({ options: project.options })
+    .from(project)
+    .where(eq(project.id, projectId))
+    .limit(1)
+  patchFields.options = settleDeployOptions(row?.options, patchFields.options, 'project')
+}
+
 async function assertDefaultServerIdInOrg(
   c: Context<AppEnv>,
   db: Db,
@@ -571,7 +603,7 @@ async function insertDockerComposeProject(
     name: fields.defaultEnvironmentName,
     description: DEFAULT_PRODUCTION_ENVIRONMENT_DESCRIPTION,
     ...(fields.serverId ? { serverId: fields.serverId } : {}),
-    options: { compose: emptyComposeDocument() },
+    options: stampNewEnvironmentDeployOptions({ compose: emptyComposeDocument() }),
   })
   return inserted.id
 }
@@ -860,6 +892,7 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       patchFields.options
     )
     if (defaultServerError) return defaultServerError
+    await keepStoredProjectDeployOptions(db, id, patchFields)
 
     try {
       await db.update(project).set(patchFields).where(eq(project.id, id))
@@ -882,7 +915,10 @@ export function registerProjectRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const id = c.req.param('id')
     const scope = await resolveManageableProject(c, id)
     if (scope instanceof Response) return scope
-    const { db, userId } = scope
+    const { db, userId, organizationId } = scope
+
+    const stepUp = await requireStepUpIfConfigured(c, organizationId, 'project.delete')
+    if (stepUp) return stepUp
 
     // Capture host teardown material while the service / hosting / segment
     // rows still exist; the commands go out after the cascade commits.

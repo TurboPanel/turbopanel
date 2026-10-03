@@ -25,9 +25,9 @@
  * Workers-bundleable: nothing at module load.
  */
 
-import type { TierLabel } from "../tiers/ladder.ts";
-import type { StripeClient } from "./client.ts";
-import { createStripeGateway } from "./stripe-products.ts";
+import type { TierLabel } from '../tiers/ladder.ts'
+import type { StripeClient } from './client.ts'
+import { createStripeGateway } from './stripe-products.ts'
 
 /**
  * Matches `payer_provider_check` and `tier_provider_check` (pinned by
@@ -37,45 +37,45 @@ import { createStripeGateway } from "./stripe-products.ts";
  * A second gateway is added here, in the two CHECKs, and behind
  * `BillingGateway` together.
  */
-export const BILLING_PROVIDER_IDS = ["stripe"] as const;
+export const BILLING_PROVIDER_IDS = ['stripe'] as const
 
-export type BillingProviderId = (typeof BILLING_PROVIDER_IDS)[number];
+export type BillingProviderId = (typeof BILLING_PROVIDER_IDS)[number]
 
 /** The price a product bills at, as much as a tier needs to know. */
 export type ProviderPrice = Readonly<{
-  id: string;
-  active: boolean;
+  id: string
+  active: boolean
   /** `recurring` or `one_time`. */
-  type: string | null;
+  type: string | null
   /** Lower-case ISO code. */
-  currency: string;
+  currency: string
   /** Minor units (cents). */
-  unitAmount: number | null;
-  interval: string | null;
-  intervalCount: number | null;
+  unitAmount: number | null
+  interval: string | null
+  intervalCount: number | null
   /** `per_unit` or `tiered`. */
-  billingScheme: string | null;
+  billingScheme: string | null
   /** `inclusive`, `exclusive` or `unspecified`. */
-  taxBehavior: string | null;
-  livemode: boolean;
-}>;
+  taxBehavior: string | null
+  livemode: boolean
+}>
 
 /** One product on the provider's catalogue, with the price it sells at. */
 export type ProviderProduct = Readonly<{
-  id: string;
-  name: string;
-  active: boolean;
-  livemode: boolean;
-  metadata: Readonly<Record<string, string>>;
+  id: string
+  name: string
+  active: boolean
+  livemode: boolean
+  metadata: Readonly<Record<string, string>>
   /**
    * The ladder label the product names in its metadata
    * (`turbopanel_tier`), when it names a valid one — what the admin form
    * preselects so nobody types "S3" twice.
    */
-  suggestedLabel: TierLabel | null;
+  suggestedLabel: TierLabel | null
   /** The product's default price; `null` when it has none (unsellable). */
-  defaultPrice: ProviderPrice | null;
-}>;
+  defaultPrice: ProviderPrice | null
+}>
 
 /**
  * The provider account's own tax configuration.
@@ -88,23 +88,35 @@ export type ProviderProduct = Readonly<{
  */
 export type ProviderTaxDefaults = Readonly<{
   /**
-   * `inclusive` or `exclusive` when the account sets a default; `null`
-   * when it sets none, or when the provider could not be asked.
+   * `inclusive`, `exclusive` or `inferred_by_currency` (the Dashboard's
+   * "Automatic": exclusive for USD and CAD, inclusive for other
+   * currencies) when the account sets a default; `null` when it sets none,
+   * or when the provider could not be asked.
    */
-  taxBehavior: string | null;
+  taxBehavior: string | null
   /** `active` once the provider can calculate tax; `pending` while incomplete. */
-  status: string | null;
-}>;
+  status: string | null
+}>
 
 /** No account default — every price must then speak for itself. */
 export const NO_TAX_DEFAULTS: ProviderTaxDefaults = {
   taxBehavior: null,
   status: null,
-};
+}
 
 /** Whether a tax-behaviour string actually names a behaviour. */
 export function isResolvedTaxBehavior(value: string | null): boolean {
-  return value === "inclusive" || value === "exclusive";
+  return value === 'inclusive' || value === 'exclusive'
+}
+
+/**
+ * Whether the ACCOUNT's tax default names a behaviour. Unlike a price,
+ * which is only `inclusive`, `exclusive` or `unspecified`, the account
+ * default may also be `inferred_by_currency` ("Automatic"), which Stripe
+ * resolves per currency, so a price left `unspecified` under it is fine.
+ */
+export function isResolvedAccountTaxDefault(value: string | null): boolean {
+  return isResolvedTaxBehavior(value) || value === 'inferred_by_currency'
 }
 
 /**
@@ -113,38 +125,37 @@ export function isResolvedTaxBehavior(value: string | null): boolean {
  * question by itself, so the common case costs no extra round trip.
  */
 export function needsAccountTaxDefaults(product: ProviderProduct): boolean {
-  return product.defaultPrice !== null &&
-    !isResolvedTaxBehavior(product.defaultPrice.taxBehavior);
+  return product.defaultPrice !== null && !isResolvedTaxBehavior(product.defaultPrice.taxBehavior)
 }
 
 export type ProductVerification = Readonly<{
   /** No failures — a tier may bill against this product. */
-  ok: boolean;
-  product: ProviderProduct;
-  failures: readonly string[];
-}>;
+  ok: boolean
+  product: ProviderProduct
+  failures: readonly string[]
+}>
 
 /** The ladder entry a priced-tier bind must match — SX has none. */
 export type ProductLadderExpectation = Readonly<{
-  label: TierLabel;
-  listPriceCents: number;
-}>;
+  label: TierLabel
+  listPriceCents: number
+}>
 
 /** The metadata key a product uses to name its ladder label. */
-export const PRODUCT_TIER_METADATA_KEY = "turbopanel_tier";
+export const PRODUCT_TIER_METADATA_KEY = 'turbopanel_tier'
 
 export interface BillingGateway {
-  readonly id: BillingProviderId;
+  readonly id: BillingProviderId
   /** Every active product with its default price expanded — the admin dropdown. */
-  listProducts(): Promise<ProviderProduct[]>;
+  listProducts(): Promise<ProviderProduct[]>
   /** One product with its default price; throws the provider's error when absent. */
-  getProduct(productId: string): Promise<ProviderProduct>;
+  getProduct(productId: string): Promise<ProviderProduct>
   /**
    * The account's tax defaults. Degrades to {@link NO_TAX_DEFAULTS} when
    * the provider refuses the question, which only makes verification
    * stricter, never laxer.
    */
-  getTaxDefaults(): Promise<ProviderTaxDefaults>;
+  getTaxDefaults(): Promise<ProviderTaxDefaults>
   /**
    * Every reason this product cannot back a tier row. Pure — the caller
    * supplies the account defaults so one lookup serves a whole listing.
@@ -154,11 +165,11 @@ export interface BillingGateway {
   verifyProduct(
     product: ProviderProduct,
     taxDefaults: ProviderTaxDefaults,
-    expected?: ProductLadderExpectation | null,
-  ): ProductVerification;
+    expected?: ProductLadderExpectation | null
+  ): ProductVerification
 }
 
 /** The gateway for this instance's configured provider — Stripe, today. */
 export function resolveBillingGateway(client: StripeClient): BillingGateway {
-  return createStripeGateway(client);
+  return createStripeGateway(client)
 }

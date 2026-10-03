@@ -2,7 +2,7 @@
  * The `upgrade.target` jsonb shape and the pure "on target?" predicates the
  * planner and the state machine share.
  *
- * One pin per releasable unit. `daemon` and `instance` become `upgradestep`
+ * One pin per releasable unit. `daemon` and `instance` become `stage`
  * rows; `ui` rides the same control-plane install as `instance` (there is no
  * separate UI step, so it is a pin only). Every field is nullable — the tick
  * writes it once it has resolved the channel manifests (`resolveUpdateManifest`
@@ -144,4 +144,21 @@ export function isDowngrade(
     return targetAt < installedAt
   }
   return false
+}
+
+/**
+ * True when the UI bundle the console is running was built from a different
+ * commit than the channel's UI target. The control plane cannot read the
+ * installed bundle's identity itself, so the console reports its own build
+ * (the bundle it was served). Either side unknown or `unknown` is never
+ * "behind": a run must not open on an identity nobody could name.
+ */
+export function uiBehindTarget(
+  target: { commit?: string | null } | null | undefined,
+  consoleCommit: string | null | undefined
+): boolean {
+  const want = target?.commit?.trim() ?? ''
+  const have = consoleCommit?.trim() ?? ''
+  if (want === '' || want === 'unknown' || have === '' || have === 'unknown') return false
+  return !(want.startsWith(have) || have.startsWith(want))
 }

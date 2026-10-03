@@ -42,64 +42,62 @@
  * build, without spending a provider API call on every editor keystroke.
  */
 
-import type { Context } from "hono";
-import { and, eq, inArray } from "drizzle-orm";
-import type { AppEnv } from "../../app/app.ts";
-import type { Db } from "../../db/connection.ts";
+import type { Context } from 'hono'
+import { and, eq, inArray } from 'drizzle-orm'
+import type { AppEnv } from '../../app/app.ts'
+import type { Db } from '../../db/connection.ts'
 import {
   encryptSecretForDaemon,
   isDaemonSealedEnvelope,
   isSealedEnvelope,
   resealSecretForDaemon,
-} from "../../lib/secrets/data-encryption.ts";
+} from '../../lib/secrets/data-encryption.ts'
 import {
   getServerDaemonStateByServerId,
   isDaemonKeyActive,
-} from "../../features/servers/server-identity-db.ts";
-import {
-  isGitProviderFailure,
-  resolveGitProvider,
-} from "../../features/git/git-provider.ts";
-import type { ResolvedSourceCommit } from "../../features/git/git-provider.ts";
-import { isSshCloneUrl } from "../../features/git/clone-url.ts";
-import { newCorrelationId } from "../../features/commands/ids.ts";
-import { definedFields } from "../../lib/optional-fields.ts";
+} from '../../features/servers/server-identity-db.ts'
+import { isGitProviderFailure, resolveGitProvider } from '../../features/git/git-provider.ts'
+import type { ResolvedSourceCommit } from '../../features/git/git-provider.ts'
+import { isSshCloneUrl } from '../../features/git/clone-url.ts'
+import { normalizeBranchName } from '../../features/git/environment-branch-tracking.ts'
+import { newCorrelationId } from '../../features/commands/ids.ts'
+import { definedFields } from '../../lib/optional-fields.ts'
 import {
   type ComposeServiceKind,
   type ComposeServiceSourceExtension,
   isHostNativeServiceKind,
   type NodePackageManager,
   readServiceTurbopanelExtension,
-} from "../../features/compose/index.ts";
+} from '../../features/compose/index.ts'
 import type {
   EnvironmentDeployPrincipalMaterial,
   EnvironmentDeploySource,
   EnvironmentDeploySourceBuild,
   EnvironmentDeploySourceCredentialKind,
   EnvironmentDeploySitePrincipal,
-} from "../../contracts/commands/schemas.ts";
-import { secret, repository } from "../../db/schema.ts";
+} from '../../contracts/commands/schemas.ts'
+import { secret, repository } from '../../db/schema.ts'
 import {
   type ComposePrincipalResolution,
   loadPrincipalIdsByServiceIdForEnvironment,
   pickSolePrincipalId,
-} from "../principals/tenancies.ts";
+} from '../principals/tenancies.ts'
 
 /** Prepare failures this stage can raise. Mirrors `DeployPrepareError` kinds. */
 export type DeploySourcePrepareError =
-  | { kind: "source_principal_ambiguous"; composeServiceName: string }
+  | { kind: 'source_principal_ambiguous'; composeServiceName: string }
   | {
-    kind: "principal_required_for_service_kind";
-    composeServiceName: string;
-    serviceKind: "site" | "node";
-  }
+      kind: 'principal_required_for_service_kind'
+      composeServiceName: string
+      serviceKind: 'site' | 'node'
+    }
   | {
-    kind: "source_ref_unresolved";
-    composeServiceName: string;
-    sourceId: string;
-    ref: string;
-    message: string;
-  };
+      kind: 'source_ref_unresolved'
+      composeServiceName: string
+      sourceId: string
+      ref: string
+      message: string
+    }
 
 /**
  * "Serve release X of service Y again", instead of building whatever the
@@ -121,14 +119,14 @@ export type DeploySourcePrepareError =
  */
 export type DeployRollbackRequest = {
   /** The service the operator asked to roll back — used for messages only. */
-  composeServiceName: string;
+  composeServiceName: string
   /**
    * Compose service name → the already-published release it must end up on,
    * together with the commit metadata the control plane already recorded for
    * that release. Every entry is verified by the route before it reaches here.
    */
-  releaseByService: Record<string, DeployRollbackReleasePin>;
-};
+  releaseByService: Record<string, DeployRollbackReleasePin>
+}
 
 /**
  * One pinned release in a rollback, with the commit it was built from.
@@ -144,12 +142,12 @@ export type DeployRollbackRequest = {
  * the control plane has).
  */
 export type DeployRollbackReleasePin = {
-  releaseId: string;
+  releaseId: string
   /** Commit recorded for the pinned release; absent on pre-metadata releases. */
-  commitSha?: string;
-  commitMessage?: string;
-  commitAuthor?: string;
-};
+  commitSha?: string
+  commitMessage?: string
+  commitAuthor?: string
+}
 
 /**
  * One release id per compose service, shared by every server in a deploy.
@@ -171,8 +169,8 @@ export type DeployRollbackReleasePin = {
  */
 export type ReleaseIdAllocator = {
   /** Stable release id for one compose service, minted on first request. */
-  allocate(composeServiceName: string): string;
-};
+  allocate(composeServiceName: string): string
+}
 
 /**
  * A fresh allocator for one deploy request. Create it in the route, before the
@@ -180,34 +178,34 @@ export type ReleaseIdAllocator = {
  * call in that fan-out — never one per server.
  */
 export function createReleaseIdAllocator(): ReleaseIdAllocator {
-  const byComposeServiceName = new Map<string, string>();
+  const byComposeServiceName = new Map<string, string>()
   return {
     allocate(composeServiceName: string): string {
-      const existing = byComposeServiceName.get(composeServiceName);
-      if (existing !== undefined) return existing;
-      const allocated = newCorrelationId();
-      byComposeServiceName.set(composeServiceName, allocated);
-      return allocated;
+      const existing = byComposeServiceName.get(composeServiceName)
+      if (existing !== undefined) return existing
+      const allocated = newCorrelationId()
+      byComposeServiceName.set(composeServiceName, allocated)
+      return allocated
     },
-  };
+  }
 }
 
 export type DeploySourceResolveParams = {
-  mode: "deploy" | "preview";
-  organizationId: string;
-  environmentId: string;
-  serverId: string;
+  mode: 'deploy' | 'preview'
+  organizationId: string
+  environmentId: string
+  serverId: string
   /** Merged compose `services` mapping (pre-expansion). */
-  services: Record<string, unknown>;
-  serviceRows: ReadonlyArray<{ id: string; composeServiceName: string }>;
-  principalMaterial: readonly EnvironmentDeployPrincipalMaterial[];
+  services: Record<string, unknown>
+  serviceRows: ReadonlyArray<{ id: string; composeServiceName: string }>
+  principalMaterial: readonly EnvironmentDeployPrincipalMaterial[]
   /**
    * Aliases this document declared, already materialized into `principal` rows
    * by `reconcilePrincipalsFromCompose`. A declared alias is what ownership
    * resolves against; the sole-steward lookup is only the fallback for a
    * document that names none.
    */
-  principalResolution: ComposePrincipalResolution;
+  principalResolution: ComposePrincipalResolution
   /**
    * Webhook-supplied commit, when the trigger already knows the head SHA.
    *
@@ -217,10 +215,10 @@ export type DeploySourceResolveParams = {
    * to one repository says nothing about the others.
    */
   sourceSelection?: {
-    ref: string | null;
-    commitSha: string | null;
-    sourceId?: string | null;
-  };
+    ref: string | null
+    commitSha: string | null
+    sourceId?: string | null
+  }
   /**
    * Roll one service back to an already-published release instead of building.
    *
@@ -228,57 +226,49 @@ export type DeploySourceResolveParams = {
    * `rollbackToReleaseId` set — and performs **no** GitHub round trip, no token
    * minting, and no secret sealing: there is nothing to clone.
    */
-  rollback?: DeployRollbackRequest;
+  rollback?: DeployRollbackRequest
   /**
    * Deploy-scoped release id allocator, shared by every server in the fan-out.
    *
    * Absent only on paths that resolve a single host in isolation (preview),
    * where a throwaway id is harmless. See {@link ReleaseIdAllocator}.
    */
-  releaseIds?: ReleaseIdAllocator;
-};
+  releaseIds?: ReleaseIdAllocator
+}
 
 type SourceRow = {
-  id: string;
-  provider: string;
-  repositoryUrl: string;
-  defaultBranch: string | null;
-  subdirectory: string | null;
-  connectionId: string | null;
-  secretId: string | null;
-};
+  id: string
+  provider: string
+  repositoryUrl: string
+  defaultBranch: string | null
+  subdirectory: string | null
+  connectionId: string | null
+  secretId: string | null
+}
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 /** Compose services carrying `x-turbopanel.source`, in stable key order. */
-function collectSourceBindings(
-  services: Record<string, unknown>,
-): SourceBinding[] {
-  const out: SourceBinding[] = [];
+function collectSourceBindings(services: Record<string, unknown>): SourceBinding[] {
+  const out: SourceBinding[] = []
   for (const [name, raw] of Object.entries(services)) {
-    if (!isPlainObject(raw)) continue;
-    const extension = readServiceTurbopanelExtension(raw);
-    const binding = extension?.source;
-    if (!binding) continue;
+    if (!isPlainObject(raw)) continue
+    const extension = readServiceTurbopanelExtension(raw)
+    const binding = extension?.source
+    if (!binding) continue
     out.push({
       composeServiceName: name,
       repository: binding,
       ...(extension.packageManager === undefined
         ? {}
         : { packageManager: extension.packageManager }),
-      ...(extension.principal === undefined
-        ? {}
-        : { principalAlias: extension.principal }),
-      ...(extension.serviceKind === undefined
-        ? {}
-        : { serviceKind: extension.serviceKind }),
-    });
+      ...(extension.principal === undefined ? {} : { principalAlias: extension.principal }),
+      ...(extension.serviceKind === undefined ? {} : { serviceKind: extension.serviceKind }),
+    })
   }
-  return out.sort((a, b) =>
-    a.composeServiceName.localeCompare(b.composeServiceName)
-  );
+  return out.sort((a, b) => a.composeServiceName.localeCompare(b.composeServiceName))
 }
 
 /**
@@ -287,28 +277,28 @@ function collectSourceBindings(
  * names: they are part of this module's tested surface, and every caller
  * already reaches for them here.
  */
-export { isSshCloneUrl };
+export { isSshCloneUrl }
 export {
   commitSubject,
   parseRepositoryOwnerRepo as parseGithubRepositoryPath,
-} from "../../features/git/clone-url.ts";
+} from '../../features/git/clone-url.ts'
 
 /**
  * Commit metadata the release surface renders, as resolved from the provider.
  * Defined with the provider interface in `src/features/git/git-provider.ts` and
  * re-exported here for the readers that already import it from prepare.
  */
-export type { ResolvedSourceCommit };
+export type { ResolvedSourceCommit }
 
 function toDeploySourcePrincipal(
-  material: EnvironmentDeployPrincipalMaterial,
+  material: EnvironmentDeployPrincipalMaterial
 ): EnvironmentDeploySitePrincipal {
   return {
     principalId: material.principalId,
     username: material.username,
     ...(material.uid === undefined ? {} : { uid: material.uid }),
     ...(material.gid === undefined ? {} : { gid: material.gid }),
-  };
+  }
 }
 
 /**
@@ -331,33 +321,37 @@ function toDeploySourcePrincipal(
  */
 function resolveSourceBuild(
   binding: ComposeServiceSourceExtension,
-  packageManager?: NodePackageManager,
+  packageManager?: NodePackageManager
 ): EnvironmentDeploySourceBuild {
   const build: EnvironmentDeploySourceBuild = {
-    kind: binding.buildKind === "railpack" ? "railpack" : "native",
-  };
+    kind: binding.buildKind === 'railpack' ? 'railpack' : 'native',
+  }
   // The owning service's package-manager choice rides the build object so the
   // daemon can derive the right install command after checkout.
-  if (packageManager) build.packageManager = packageManager;
-  if (binding.buildCommand) build.buildCommand = binding.buildCommand;
-  if (binding.startCommand) build.startCommand = binding.startCommand;
-  if (binding.outputDirectory) build.outputDirectory = binding.outputDirectory;
-  return build;
+  if (packageManager) build.packageManager = packageManager
+  if (binding.installCommand) build.installCommand = binding.installCommand
+  if (binding.buildCommand) build.buildCommand = binding.buildCommand
+  if (binding.startCommand) build.startCommand = binding.startCommand
+  if (binding.outputDirectory) build.outputDirectory = binding.outputDirectory
+  return build
 }
 
-type DaemonRecipient = { serverId: string; keyId: string };
+type DaemonRecipient = { serverId: string; keyId: string }
 
 async function resolveDaemonRecipient(
   db: Db,
-  serverId: string,
+  serverId: string
 ): Promise<DaemonRecipient | Response> {
-  const daemonState = await getServerDaemonStateByServerId(db, serverId);
+  const daemonState = await getServerDaemonStateByServerId(db, serverId)
   if (!daemonState || !isDaemonKeyActive(daemonState.key)) {
-    return Response.json({
-      error: "No encryption-capable daemon key on target server",
-    }, { status: 422 });
+    return Response.json(
+      {
+        error: 'No encryption-capable daemon key on target server',
+      },
+      { status: 422 }
+    )
   }
-  return { serverId, keyId: daemonState.key.id };
+  return { serverId, keyId: daemonState.key.id }
 }
 
 /**
@@ -368,55 +362,72 @@ async function resolveDaemonRecipient(
  * nothing may be pinned to it).
  */
 export function requestedCommitShaForSource(
-  selection: DeploySourceResolveParams["sourceSelection"],
+  selection: DeploySourceResolveParams['sourceSelection'],
   sourceId: string,
+  bindingRef?: string | null
 ): string | undefined {
-  if (!selection?.commitSha) return undefined;
-  if (!selection.sourceId || selection.sourceId !== sourceId) return undefined;
-  return selection.commitSha;
+  if (!selection?.commitSha) return undefined
+  if (!selection.sourceId || selection.sourceId !== sourceId) return undefined
+  if (!selectionCoversBranch(selection.ref, bindingRef)) return undefined
+  return selection.commitSha
+}
+
+/**
+ * A pushed SHA belongs to the branch it was pushed to. One environment may bind
+ * the same repository twice on different branches (a `web` service on `main`,
+ * a `docs` service on `docs`), and a push to one says nothing about the other's
+ * branch — pinning it there would build the wrong tree. With no ref on the
+ * selection, or no ref on the binding to compare, nothing is ruled out.
+ */
+function selectionCoversBranch(
+  selectionRef: string | null | undefined,
+  bindingRef: string | null | undefined
+): boolean {
+  const pushed = normalizeBranchName(selectionRef)
+  const built = normalizeBranchName(bindingRef)
+  if (pushed === null || built === null) return true
+  return pushed === built
 }
 
 /** One compose service and the `x-turbopanel.source` block bound to it. */
 type SourceBinding = {
-  composeServiceName: string;
-  repository: ComposeServiceSourceExtension;
+  composeServiceName: string
+  repository: ComposeServiceSourceExtension
   /** The owning service's `x-turbopanel.packageManager`, when declared. */
-  packageManager?: NodePackageManager;
+  packageManager?: NodePackageManager
   /** The owning service's `x-turbopanel.principal` alias, when declared. */
-  principalAlias?: string;
+  principalAlias?: string
   /** The owning service's kind — decides whether ownership is *required*. */
-  serviceKind?: ComposeServiceKind;
-};
+  serviceKind?: ComposeServiceKind
+}
 
 /** Lookups every binding in one deploy resolves against, loaded once up front. */
 type SourceResolutionContext = {
-  sourceById: Map<string, SourceRow>;
-  principalById: Map<string, EnvironmentDeployPrincipalMaterial>;
-  principalIdsByServiceId: Awaited<
-    ReturnType<typeof loadPrincipalIdsByServiceIdForEnvironment>
-  >;
-  serviceIdByComposeName: Map<string, string>;
+  sourceById: Map<string, SourceRow>
+  principalById: Map<string, EnvironmentDeployPrincipalMaterial>
+  principalIdsByServiceId: Awaited<ReturnType<typeof loadPrincipalIdsByServiceIdForEnvironment>>
+  serviceIdByComposeName: Map<string, string>
   /** Alias → materialized `principal.id`, from the deploy-prepare reconcile. */
-  principalIdByAlias: ReadonlyMap<string, string>;
-  sealForDaemon: boolean;
-  recipient?: DaemonRecipient;
-};
+  principalIdByAlias: ReadonlyMap<string, string>
+  sealForDaemon: boolean
+  recipient?: DaemonRecipient
+}
 
 /**
  * Nothing bound: a plain deploy simply has no Git-backed service, while a
  * rollback named one that carries no `x-turbopanel.source` to roll back.
  */
 function noSourceBindingsResult(
-  rollback: DeployRollbackRequest | undefined,
+  rollback: DeployRollbackRequest | undefined
 ): EnvironmentDeploySource[] | DeploySourcePrepareError {
-  if (!rollback) return [];
+  if (!rollback) return []
   return {
-    kind: "source_ref_unresolved",
+    kind: 'source_ref_unresolved',
     composeServiceName: rollback.composeServiceName,
-    sourceId: "",
-    ref: "",
-    message: "service has no x-turbopanel.source binding to roll back",
-  };
+    sourceId: '',
+    ref: '',
+    message: 'service has no x-turbopanel.source binding to roll back',
+  }
 }
 
 /**
@@ -437,33 +448,29 @@ function noSourceBindingsResult(
  */
 function resolveBindingPrincipal(
   binding: SourceBinding,
-  context: SourceResolutionContext,
+  context: SourceResolutionContext
 ): { material?: EnvironmentDeployPrincipalMaterial } | DeploySourcePrepareError {
-  const composeServiceName = binding.composeServiceName;
+  const composeServiceName = binding.composeServiceName
   if (binding.principalAlias !== undefined) {
-    const principalId = context.principalIdByAlias.get(binding.principalAlias);
-    return principalId
-      ? { material: context.principalById.get(principalId) }
-      : {};
+    const principalId = context.principalIdByAlias.get(binding.principalAlias)
+    return principalId ? { material: context.principalById.get(principalId) } : {}
   }
 
-  const serviceId = context.serviceIdByComposeName.get(composeServiceName);
-  const assignedIds = serviceId
-    ? (context.principalIdsByServiceId.get(serviceId) ?? [])
-    : [];
-  const sole = pickSolePrincipalId(assignedIds);
-  if (sole.status === "ambiguous") {
-    return { kind: "source_principal_ambiguous", composeServiceName };
+  const serviceId = context.serviceIdByComposeName.get(composeServiceName)
+  const assignedIds = serviceId ? (context.principalIdsByServiceId.get(serviceId) ?? []) : []
+  const sole = pickSolePrincipalId(assignedIds)
+  if (sole.status === 'ambiguous') {
+    return { kind: 'source_principal_ambiguous', composeServiceName }
   }
-  if (sole.status === "none") {
-    if (!isHostNativeServiceKind(binding.serviceKind)) return {};
+  if (sole.status === 'none') {
+    if (!isHostNativeServiceKind(binding.serviceKind)) return {}
     return {
-      kind: "principal_required_for_service_kind",
+      kind: 'principal_required_for_service_kind',
       composeServiceName,
-      serviceKind: binding.serviceKind as "site" | "node",
-    };
+      serviceKind: binding.serviceKind as 'site' | 'node',
+    }
   }
-  return { material: context.principalById.get(sole.principalId) };
+  return { material: context.principalById.get(sole.principalId) }
 }
 
 /**
@@ -479,30 +486,36 @@ function resolveBindingCommit(
   c: Context<AppEnv>,
   db: Db,
   args: {
-    composeServiceName: string;
-    row: SourceRow;
-    ref: string;
-    context: SourceResolutionContext;
-    rollbackPin: DeployRollbackReleasePin | undefined;
-    pinnedCommitSha: string | undefined;
-  },
-): Promise<Awaited<ReturnType<typeof resolveSourceCommitAndCredential>>> {
-  const { rollbackPin } = args;
-  if (rollbackPin) {
-    return Promise.resolve(definedFields({
-      commitSha: rollbackPin.commitSha ?? args.ref,
-      commitMessage: rollbackPin.commitMessage,
-      commitAuthor: rollbackPin.commitAuthor,
-    }));
+    composeServiceName: string
+    row: SourceRow
+    ref: string
+    context: SourceResolutionContext
+    rollbackPin: DeployRollbackReleasePin | undefined
+    pinnedCommitSha: string | undefined
   }
-  return resolveSourceCommitAndCredential(c, db, definedFields({
-    composeServiceName: args.composeServiceName,
-    row: args.row,
-    ref: args.ref,
-    sealForDaemon: args.context.sealForDaemon,
-    recipient: args.context.recipient,
-    requestedCommitSha: args.pinnedCommitSha,
-  }));
+): Promise<Awaited<ReturnType<typeof resolveSourceCommitAndCredential>>> {
+  const { rollbackPin } = args
+  if (rollbackPin) {
+    return Promise.resolve(
+      definedFields({
+        commitSha: rollbackPin.commitSha ?? args.ref,
+        commitMessage: rollbackPin.commitMessage,
+        commitAuthor: rollbackPin.commitAuthor,
+      })
+    )
+  }
+  return resolveSourceCommitAndCredential(
+    c,
+    db,
+    definedFields({
+      composeServiceName: args.composeServiceName,
+      row: args.row,
+      ref: args.ref,
+      sealForDaemon: args.context.sealForDaemon,
+      recipient: args.context.recipient,
+      requestedCommitSha: args.pinnedCommitSha,
+    })
+  )
 }
 
 /** One binding → one wire entry, or the reason it cannot be resolved. */
@@ -511,33 +524,33 @@ async function resolveBindingMaterial(
   db: Db,
   params: DeploySourceResolveParams,
   context: SourceResolutionContext,
-  binding: SourceBinding,
+  binding: SourceBinding
 ): Promise<EnvironmentDeploySource | DeploySourcePrepareError | Response> {
-  const composeServiceName = binding.composeServiceName;
-  const row = context.sourceById.get(binding.repository.sourceId);
+  const composeServiceName = binding.composeServiceName
+  const row = context.sourceById.get(binding.repository.sourceId)
   if (!row) {
     return {
-      kind: "source_ref_unresolved",
+      kind: 'source_ref_unresolved',
       composeServiceName,
       sourceId: binding.repository.sourceId,
-      ref: binding.repository.branch ?? "",
-      message: "repository not found in this organization",
-    };
+      ref: binding.repository.branch ?? '',
+      message: 'repository not found in this organization',
+    }
   }
 
-  const ref = binding.repository.branch ?? row.defaultBranch ?? null;
+  const ref = binding.repository.branch ?? row.defaultBranch ?? null
   if (!ref) {
     return {
-      kind: "source_ref_unresolved",
+      kind: 'source_ref_unresolved',
       composeServiceName,
       sourceId: row.id,
-      ref: "",
-      message: "no branch on the compose binding and no repository default branch",
-    };
+      ref: '',
+      message: 'no branch on the compose binding and no repository default branch',
+    }
   }
 
-  const owner = resolveBindingPrincipal(binding, context);
-  if ("kind" in owner) return owner;
+  const owner = resolveBindingPrincipal(binding, context)
+  if ('kind' in owner) return owner
 
   // Rollback: the release tree already exists on the host, so there is no
   // commit to resolve and no secret to mint. `ref` still travels because
@@ -545,7 +558,7 @@ async function resolveBindingMaterial(
   // `commitSha` carries the metadata the pinned release recorded, so the row
   // this deploy writes names the commit going live rather than a branch name.
   // See `EnvironmentDeploySource.rollbackToReleaseId`.
-  const rollbackPin = params.rollback?.releaseByService[composeServiceName];
+  const rollbackPin = params.rollback?.releaseByService[composeServiceName]
   const resolved = await resolveBindingCommit(c, db, {
     composeServiceName,
     row,
@@ -557,19 +570,19 @@ async function resolveBindingMaterial(
     // forwarding it to every binding would deploy the triggering commit into
     // unrelated repositories (or fail the whole deploy on a SHA they do not
     // contain).
-    pinnedCommitSha: requestedCommitShaForSource(params.sourceSelection, row.id),
-  });
-  if (resolved instanceof Response) return resolved;
-  if ("kind" in resolved) return resolved;
+    pinnedCommitSha: requestedCommitShaForSource(params.sourceSelection, row.id, ref),
+  })
+  if (resolved instanceof Response) return resolved
+  if ('kind' in resolved) return resolved
 
-  const rollbackReleaseId = rollbackPin?.releaseId;
+  const rollbackReleaseId = rollbackPin?.releaseId
   return definedFields({
     sourceId: row.id,
     composeServiceName,
     // The row's provider travels verbatim: the wire parser bounds it to the
     // same set the `source_provider_check` constraint does, so narrowing it
     // here would only be able to *lose* information.
-    provider: row.provider as EnvironmentDeploySource["provider"],
+    provider: row.provider as EnvironmentDeploySource['provider'],
     cloneUrl: row.repositoryUrl,
     ref,
     commitSha: resolved.commitSha,
@@ -583,28 +596,25 @@ async function resolveBindingMaterial(
     // rather than one indistinguishable release per host.
     // A rollback allocates none — it re-lives the release it pins, so both
     // ids are that release and the host addresses the tree that exists.
-    releaseId: rollbackReleaseId ??
-      params.releaseIds?.allocate(composeServiceName) ??
-      newCorrelationId(),
+    releaseId:
+      rollbackReleaseId ?? params.releaseIds?.allocate(composeServiceName) ?? newCorrelationId(),
     rollbackToReleaseId: rollbackReleaseId,
     build: resolveSourceBuild(binding.repository, binding.packageManager),
     subdirectory: binding.repository.subdirectory ?? row.subdirectory ?? undefined,
     credential: resolved.credential,
     credentialKind: resolved.credentialKind,
     credentialUsername: resolved.credentialUsername,
-    principal: owner.material
-      ? toDeploySourcePrincipal(owner.material)
-      : undefined,
-  });
+    principal: owner.material ? toDeploySourcePrincipal(owner.material) : undefined,
+  })
 }
 
 /** Load every lookup the per-binding pass needs, in one round of queries. */
 async function loadSourceResolutionContext(
   db: Db,
   params: DeploySourceResolveParams,
-  bindings: readonly SourceBinding[],
+  bindings: readonly SourceBinding[]
 ): Promise<SourceResolutionContext | Response> {
-  const sourceIds = [...new Set(bindings.map((b) => b.repository.sourceId))];
+  const sourceIds = [...new Set(bindings.map((b) => b.repository.sourceId))]
   const sourceRows = await db
     .select({
       id: repository.id,
@@ -617,82 +627,73 @@ async function loadSourceResolutionContext(
     })
     .from(repository)
     .where(
-      and(
-        eq(repository.organizationId, params.organizationId),
-        inArray(repository.id, sourceIds),
-      ),
-    );
+      and(eq(repository.organizationId, params.organizationId), inArray(repository.id, sourceIds))
+    )
 
-  const serviceIdByComposeName = new Map<string, string>();
+  const serviceIdByComposeName = new Map<string, string>()
   for (const row of params.serviceRows) {
-    serviceIdByComposeName.set(row.composeServiceName, row.id);
+    serviceIdByComposeName.set(row.composeServiceName, row.id)
   }
 
   // A rollback clones nothing, so it seals nothing — and must not fail on a
   // server whose daemon key is momentarily unusable when no secret is
   // going to travel anyway.
-  const sealForDaemon = params.mode === "deploy" && params.rollback === undefined;
-  const recipient = sealForDaemon
-    ? await resolveDaemonRecipient(db, params.serverId)
-    : undefined;
-  if (recipient instanceof Response) return recipient;
+  const sealForDaemon = params.mode === 'deploy' && params.rollback === undefined
+  const recipient = sealForDaemon ? await resolveDaemonRecipient(db, params.serverId) : undefined
+  if (recipient instanceof Response) return recipient
 
   return definedFields({
     sourceById: new Map<string, SourceRow>(
-      sourceRows.map((row) => [row.id, row satisfies SourceRow]),
+      sourceRows.map((row) => [row.id, row satisfies SourceRow])
     ),
-    principalById: new Map(
-      params.principalMaterial.map((entry) => [entry.principalId, entry]),
-    ),
+    principalById: new Map(params.principalMaterial.map((entry) => [entry.principalId, entry])),
     principalIdByAlias: params.principalResolution.principalIdByAlias,
     principalIdsByServiceId: await loadPrincipalIdsByServiceIdForEnvironment(
       db,
-      params.environmentId,
+      params.environmentId
     ),
     serviceIdByComposeName,
     sealForDaemon,
     recipient,
-  });
+  })
 }
 
 export async function resolveDeploySourceMaterial(
   c: Context<AppEnv>,
   db: Db,
-  params: DeploySourceResolveParams,
+  params: DeploySourceResolveParams
 ): Promise<EnvironmentDeploySource[] | DeploySourcePrepareError | Response> {
-  const allBindings = collectSourceBindings(params.services);
-  const rollback = params.rollback;
+  const allBindings = collectSourceBindings(params.services)
+  const rollback = params.rollback
   // A rollback promotes releases that already exist, so only services the
   // caller pinned participate — see `DeployRollbackRequest` for why that set is
   // every Git-backed service with a release, not just the one being undone.
   const bindings = rollback
-    ? allBindings.filter((binding) =>
-      binding.composeServiceName in rollback.releaseByService
-    )
-    : allBindings;
-  if (bindings.length === 0) return noSourceBindingsResult(rollback);
+    ? allBindings.filter((binding) => binding.composeServiceName in rollback.releaseByService)
+    : allBindings
+  if (bindings.length === 0) return noSourceBindingsResult(rollback)
 
-  const context = await loadSourceResolutionContext(db, params, bindings);
-  if (context instanceof Response) return context;
+  const context = await loadSourceResolutionContext(db, params, bindings)
+  if (context instanceof Response) return context
 
-  const out: EnvironmentDeploySource[] = [];
+  const out: EnvironmentDeploySource[] = []
   for (const binding of bindings) {
-    const entry = await resolveBindingMaterial(c, db, params, context, binding);
-    if (entry instanceof Response) return entry;
-    if ("kind" in entry) return entry;
-    out.push(entry);
+    const entry = await resolveBindingMaterial(c, db, params, context, binding)
+    if (entry instanceof Response) return entry
+    if ('kind' in entry) return entry
+    out.push(entry)
   }
-  return out;
+  return out
 }
 
 type CommitAndCredentialParams = {
-  composeServiceName: string;
-  row: SourceRow;
-  ref: string;
-  sealForDaemon: boolean;
-  recipient?: DaemonRecipient;
-  requestedCommitSha?: string;
-};
+  composeServiceName: string
+  row: SourceRow
+  ref: string
+  sealForDaemon: boolean
+  recipient?: DaemonRecipient
+  requestedCommitSha?: string
+}
 
 /**
  * Resolve the commit to build and the sealed clone secret for one repository.
@@ -711,19 +712,19 @@ type CommitAndCredentialParams = {
 async function resolveSourceCommitAndCredential(
   c: Context<AppEnv>,
   db: Db,
-  params: CommitAndCredentialParams,
+  params: CommitAndCredentialParams
 ): Promise<
   | (ResolvedSourceCommit & {
-    credential?: string;
-    credentialKind?: EnvironmentDeploySourceCredentialKind;
-    credentialUsername?: string;
-  })
+      credential?: string
+      credentialKind?: EnvironmentDeploySourceCredentialKind
+      credentialUsername?: string
+    })
   | DeploySourcePrepareError
   | Response
 > {
-  const { row, ref } = params;
-  const dataEncryptionSecrets = c.get("dataEncryptionSecrets");
-  const secretsConfig = c.get("secretsConfig");
+  const { row, ref } = params
+  const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
+  const secretsConfig = c.get('secretsConfig')
 
   const prepared = await resolveGitProvider(row.provider).prepareClone(
     { db, dataEncryptionSecrets },
@@ -734,32 +735,35 @@ async function resolveSourceCommitAndCredential(
       ...(params.requestedCommitSha === undefined
         ? {}
         : { requestedCommitSha: params.requestedCommitSha }),
-    },
-  );
+    }
+  )
   if (isGitProviderFailure(prepared)) {
     // A provider-side refusal names the binding that could not be resolved, so
     // the operator sees which service is stuck rather than a bare 500.
     return {
-      kind: "source_ref_unresolved",
+      kind: 'source_ref_unresolved',
       composeServiceName: params.composeServiceName,
       sourceId: row.id,
       ref,
       message: prepared.failure,
-    };
+    }
   }
 
-  const commit = prepared.commit;
+  const commit = prepared.commit
   // Preview resolves shape only: nothing is sealed, so nothing needs a
   // recipient or an encryption key.
-  if (!params.sealForDaemon) return commit;
+  if (!params.sealForDaemon) return commit
 
   // Lane 1 — the provider minted a secret for this one clone. Seal it
   // straight into the payload; it is never written anywhere.
   if (prepared.minted) {
     if (!secretsConfig || !params.recipient) {
-      return Response.json({
-        error: "Encryption unavailable — no encryption key configured",
-      }, { status: 503 });
+      return Response.json(
+        {
+          error: 'Encryption unavailable — no encryption key configured',
+        },
+        { status: 503 }
+      )
     }
     return {
       ...commit,
@@ -773,46 +777,46 @@ async function resolveSourceCommitAndCredential(
       credential: await encryptSecretForDaemon(
         secretsConfig,
         params.recipient,
-        prepared.minted.secret,
+        prepared.minted.secret
       ),
-    };
+    }
   }
 
   // Lane 2 — the repository clones with the deploy key it already points at.
   // A repository with no secret at all clones anonymously (a public
   // repository), which is a valid, if unusual, configuration.
-  if (!row.secretId) return commit;
+  if (!row.secretId) return commit
   if (!dataEncryptionSecrets || !secretsConfig || !params.recipient) {
-    return Response.json({
-      error: "Encryption unavailable — no encryption key configured",
-    }, { status: 503 });
+    return Response.json(
+      {
+        error: 'Encryption unavailable — no encryption key configured',
+      },
+      { status: 503 }
+    )
   }
   const [credentialRow] = await db
     .select({ secretEnvelope: secret.secretEnvelope })
     .from(secret)
     .where(eq(secret.id, row.secretId))
-    .limit(1);
-  if (!credentialRow) return commit;
+    .limit(1)
+  if (!credentialRow) return commit
   // An SSH clone URL means the stored secret is a deploy key, and the
   // daemon has to install it as an identity file — `GIT_ASKPASS` answers
   // password prompts, never publickey auth. Say so on the wire rather than
   // leaving the daemon to guess from the URL.
-  const credentialKind: EnvironmentDeploySourceCredentialKind =
-    isSshCloneUrl(row.repositoryUrl) ? "ssh_key" : "token";
-  const envelope = credentialRow.secretEnvelope;
+  const credentialKind: EnvironmentDeploySourceCredentialKind = isSshCloneUrl(row.repositoryUrl)
+    ? 'ssh_key'
+    : 'token'
+  const envelope = credentialRow.secretEnvelope
   if (isDaemonSealedEnvelope(envelope)) {
-    return { ...commit, credential: envelope, credentialKind };
+    return { ...commit, credential: envelope, credentialKind }
   }
   if (!isSealedEnvelope(envelope)) {
     return {
       ...commit,
       credentialKind,
-      credential: await encryptSecretForDaemon(
-        secretsConfig,
-        params.recipient,
-        envelope,
-      ),
-    };
+      credential: await encryptSecretForDaemon(secretsConfig, params.recipient, envelope),
+    }
   }
   return {
     ...commit,
@@ -821,7 +825,7 @@ async function resolveSourceCommitAndCredential(
       secretsConfig,
       dataEncryptionSecrets,
       params.recipient,
-      envelope,
+      envelope
     ),
-  };
+  }
 }

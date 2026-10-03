@@ -4,10 +4,7 @@ import { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
 import { createDenoDb } from '../../db/connection.ts'
-import {
-  buildSignedCookie,
-  HTTP_SESSION_COOKIE_NAME,
-} from '../authn/crypto.ts'
+import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from '../authn/crypto.ts'
 import { createSession } from '../authn/session-store.ts'
 import { deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
 import {
@@ -48,7 +45,7 @@ async function createServiceRoutesTestApp(db: ReturnType<typeof createDenoDb>) {
 async function sessionCookie(
   db: ReturnType<typeof createDenoDb>,
   secrets: Awaited<ReturnType<typeof deriveSecretsConfig>>,
-  userId: string,
+  userId: string
 ): Promise<string> {
   const { token } = await createSession(db, userId, {})
   const signed = await buildSignedCookie(token, secrets)
@@ -63,7 +60,7 @@ async function withServiceFixtures(
     userId: string
     organizationId: string
     environmentId: string
-  }) => Promise<void>,
+  }) => Promise<void>
 ): Promise<void> {
   if (!dbUrl) {
     console.warn('Skipping service route tests: TURBOPANEL_DATABASE_URL not set')
@@ -135,10 +132,7 @@ async function withServiceFixtures(
     await db.delete(service).where(eq(service.environmentId, environmentId))
     await db.delete(environment).where(eq(environment.id, environmentId))
     await db.delete(project).where(eq(project.id, projectId))
-    await db.delete(grant).where(and(
-      eq(grant.actorId, userId),
-      eq(grant.entityId, organizationId),
-    ))
+    await db.delete(grant).where(and(eq(grant.actorId, userId), eq(grant.entityId, organizationId)))
     await db.delete(workspace).where(eq(workspace.id, workspaceId))
     await db.delete(user).where(eq(user.id, userId))
     await db.delete(organization).where(eq(organization.id, organizationId))
@@ -146,14 +140,7 @@ async function withServiceFixtures(
 }
 
 test('POST /services rejects a composeServiceName in the body with 400', async () => {
-  await withServiceFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-    environmentId,
-  }) => {
+  await withServiceFixtures(async ({ db, app, secrets, userId, organizationId, environmentId }) => {
     const cookie = await sessionCookie(db, secrets, userId)
 
     const createRes = await app.request('/services', {
@@ -170,20 +157,13 @@ test('POST /services rejects a composeServiceName in the body with 400', async (
       }),
     })
     assertEquals(createRes.status, 400)
-    const body = await createRes.json() as { error: string }
+    const body = (await createRes.json()) as { error: string }
     assertEquals(body.error, 'compose_service_name_read_only')
   })
 })
 
 test('POST /services is not supported even without composeServiceName in the body', async () => {
-  await withServiceFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-    environmentId,
-  }) => {
+  await withServiceFixtures(async ({ db, app, secrets, userId, organizationId, environmentId }) => {
     const cookie = await sessionCookie(db, secrets, userId)
 
     const createRes = await app.request('/services', {
@@ -196,20 +176,13 @@ test('POST /services is not supported even without composeServiceName in the bod
       body: JSON.stringify({ environmentId, name: 'web' }),
     })
     assertEquals(createRes.status, 400)
-    const body = await createRes.json() as { error: string }
+    const body = (await createRes.json()) as { error: string }
     assertEquals(body.error, 'service_create_not_supported')
   })
 })
 
 test('PATCH /services/:id rejects a composeServiceName in the body and leaves the stored value unchanged', async () => {
-  await withServiceFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-    environmentId,
-  }) => {
+  await withServiceFixtures(async ({ db, app, secrets, userId, organizationId, environmentId }) => {
     const cookie = await sessionCookie(db, secrets, userId)
 
     const [inserted] = await db
@@ -232,7 +205,7 @@ test('PATCH /services/:id rejects a composeServiceName in the body and leaves th
       body: JSON.stringify({ composeServiceName: 'api' }),
     })
     assertEquals(patchRes.status, 400)
-    const body = await patchRes.json() as { error: string }
+    const body = (await patchRes.json()) as { error: string }
     assertEquals(body.error, 'compose_service_name_read_only')
 
     const [stored] = await db
@@ -245,14 +218,7 @@ test('PATCH /services/:id rejects a composeServiceName in the body and leaves th
 })
 
 test('PATCH /services/:id still strips metadata.composeServiceName without rejecting the request', async () => {
-  await withServiceFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-    environmentId,
-  }) => {
+  await withServiceFixtures(async ({ db, app, secrets, userId, organizationId, environmentId }) => {
     const cookie = await sessionCookie(db, secrets, userId)
 
     const [inserted] = await db
@@ -288,5 +254,51 @@ test('PATCH /services/:id still strips metadata.composeServiceName without rejec
       .limit(1)
     assertEquals(stored?.composeServiceName, 'web')
     assertEquals(stored?.metadata, { note: 'patched' })
+  })
+})
+
+test('PATCH /services/:id keeps the daemon-detected app fact when metadata is replaced', async () => {
+  await withServiceFixtures(async ({ db, app, secrets, userId, organizationId, environmentId }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+
+    const [inserted] = await db
+      .insert(service)
+      .values({
+        environmentId,
+        name: 'blog',
+        composeServiceName: 'blog',
+        metadata: { app: { kind: 'wordpress', version: '6.5.2' }, old: true },
+      })
+      .returning({ id: service.id })
+    const id = inserted!.id
+
+    const patchRes = await app.request(`/services/${id}`, {
+      method: 'PATCH',
+      headers: {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      },
+      // A client cannot replace or drop the fact: `app` in the body is ignored.
+      body: JSON.stringify({ metadata: { note: 'patched', app: { kind: 'wordpress' } } }),
+    })
+    assertEquals(patchRes.status, 200)
+
+    const [stored] = await db
+      .select({ metadata: service.metadata })
+      .from(service)
+      .where(eq(service.id, id))
+      .limit(1)
+    assertEquals(stored?.metadata, {
+      note: 'patched',
+      app: { kind: 'wordpress', version: '6.5.2' },
+    })
+
+    const getRes = await app.request(`/services/${id}`, {
+      headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+    })
+    assertEquals(getRes.status, 200)
+    const body = (await getRes.json()) as { service: { app?: unknown } }
+    assertEquals(body.service.app, { kind: 'wordpress', version: '6.5.2' })
   })
 })

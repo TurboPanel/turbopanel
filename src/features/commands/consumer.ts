@@ -7,11 +7,12 @@
  * isolate (worker stub or Deno process), not inside the Durable Object.
  * There is no per-server polling or cross-cell fan-out.
  */
-import { and, eq, inArray, sql } from 'drizzle-orm'
+import { and, eq, inArray, or, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
-import type { DaemonCellRegistry, PendingRequestRecord } from '../../contracts/cell.ts'
+import type { DaemonCell, DaemonCellRegistry, PendingRequestRecord } from '../../contracts/cell.ts'
 import { generateDeliveryId } from '../../contracts/cell-protocol.ts'
+import { resultSummaryForPersist } from './result-summary.ts'
 import { getResolveFleetPresence } from '../../platform/ports/fleet-presence.ts'
 import { getServerLicenseBinding, touchServerMetadata } from '../servers/server-registry.ts'
 import { commandConsumerTrace } from '../../lib/logger.ts'
@@ -26,6 +27,14 @@ import {
   transitionCommand,
 } from './command-records.ts'
 import { reconcileEnvironmentContainers } from '../environments/container-records.ts'
+import { recordDeployedSiteApps } from '../environments/app-facts.ts'
+import { classifyDeployFailure, deployOutcomeErrorCode } from '../deploy/deploy-outcome.ts'
+import {
+  advanceRollout,
+  failTimedOutDeploy,
+  failDeployByContext,
+  haltRollout,
+} from '../deploy/rollout.ts'
 import {
   deploymentDurationMs,
   type DeploymentOutcome,
@@ -39,21 +48,45 @@ import {
   stampRelayReconcileSuccess,
 } from '../fabric/fabric-records.ts'
 import { reconcileFabricMembership } from '../fabric/enqueue.ts'
-import { command, container, managed, replica, server, service } from '../../db/schema.ts'
+import {
+  command,
+  container,
+  managed,
+  replica,
+  server,
+  service,
+  storage,
+  storageCopy,
+} from '../../db/schema.ts'
 import {
   MANAGED_DESTROY_GATE_CLAIM_KEY,
   MANAGED_DESTROY_GATE_METADATA_KEY,
   parseManagedDestroyGate,
 } from '../managed/destroy-gate.ts'
 import { deleteManagedBackup, insertManagedBackup } from '../backups/backup-records.ts'
+import { applyStorageBackupSideEffect } from '../backups/storage-command-effects.ts'
+import {
+  commandMayChangeFirewallPreview,
+  enqueueFirewallPreview,
+  FIREWALL_RECONCILE_COMMAND,
+  recordFirewallPreviewFailure,
+  recordFirewallPreviewResult,
+} from '../firewall/preview.ts'
+import type { FirewallApplyGate } from '../firewall/enforcement.ts'
 import type { CommandEnvelope } from './envelope.ts'
 import { nowIso } from './ids.ts'
 import { isNoopCommandQueue } from './noop-command-queue.ts'
+import {
+  captureManagedBackupHost,
+  enqueueBackupsReconcile,
+  reconcileBackupsAfterManagedMove,
+} from '../backups/reconcile.ts'
 import type { CommandQueue } from './queue.ts'
 import {
   type ManagedDestroyCommandPayload,
   parseEnvironmentDeployPayload,
   parseEnvironmentDeployResult,
+  type EnvironmentDeployResultSite,
   parseEnvironmentLifecyclePayload,
   parseEnvironmentLifecycleResult,
   parseEnvironmentStopPayload,
@@ -121,6 +154,8 @@ export type CommandConsumerDeps = {
   resealDeps?: CommandResealDeps
   secretsConfig?: SecretsConfig
   dataEncryptionSecrets?: DerivedSecretsConfig
+  /** The deploy-time firewall apply key; required so a dropped gate fails the type check. */
+  firewallApplyGate: FirewallApplyGate
 }
 
 const COMMAND_TIMEOUT_MS: Record<CommandType, number> = {
@@ -137,6 +172,10 @@ const COMMAND_TIMEOUT_MS: Record<CommandType, number> = {
   // A handful of iptables calls, an sshd -T, two restores. No package install,
   // no network wait; the xtables lock wait is bounded at 5 s per call.
   'server.firewall.reconcile': 120_000,
+  // One file move and one systemctl stop; confirms are small and must not queue behind work.
+  'server.firewall.confirm': 60_000,
+  // Writes a few unit files, one daemon-reload, enables what moved. No dump runs here.
+  'server.backups.reconcile': 120_000,
   'environment.deploy': 600_000,
   'environment.lifecycle': 120_000,
   'environment.stop': 120_000,
@@ -149,6 +188,10 @@ const COMMAND_TIMEOUT_MS: Record<CommandType, number> = {
   'managed.ingress.reconcile': 300_000,
   'managed.ha.reconcile': 300_000,
   'managed.ha.failover': 600_000,
+  // Streams one volume archive to disk; sized like managed.backup.
+  'storage.backup': 1_800_000,
+  // Stops the copy's containers, extracts one archive, starts them again.
+  'storage.restore': 1_800_000,
   'system.reconcile': 300_000,
 }
 
@@ -174,6 +217,8 @@ export function commandTimeoutMs(type: string): number {
     type === 'server.tls.trust.reconcile' ||
     type === 'server.principals.reconcile' ||
     type === 'server.firewall.reconcile' ||
+    type === 'server.firewall.confirm' ||
+    type === 'server.backups.reconcile' ||
     type === 'environment.deploy' ||
     type === 'environment.lifecycle' ||
     type === 'environment.stop' ||
@@ -186,6 +231,8 @@ export function commandTimeoutMs(type: string): number {
     type === 'managed.ingress.reconcile' ||
     type === 'managed.ha.reconcile' ||
     type === 'managed.ha.failover' ||
+    type === 'storage.backup' ||
+    type === 'storage.restore' ||
     type === 'system.reconcile'
   ) {
     return COMMAND_TIMEOUT_MS[type]
@@ -286,6 +333,14 @@ async function loadDispatchableRecord(
 
   if (record.expiresAt && Date.parse(record.expiresAt) < Date.now()) {
     await transitionCommand(db, record.id, { status: 'timed_out' })
+    if (record.type === 'environment.deploy') {
+      await failTimedOutDeploy(db, {
+        commandId: record.id,
+        serverId: record.serverId,
+        context: record.context,
+        error: 'command expired before the daemon reported an outcome',
+      })
+    }
     return null
   }
 
@@ -305,6 +360,16 @@ async function loadDispatchableRecord(
       error: 'Command dispatch payload unavailable',
       errorCode: 'dispatch_payload_missing',
     })
+    if (record.type === 'environment.deploy') {
+      // No payload to read the environment from; the command's context names it.
+      await failDeployByContext(db, {
+        commandId: record.id,
+        serverId: record.serverId,
+        context: record.context,
+        error: 'Command dispatch payload unavailable',
+        outcome: 'failed',
+      })
+    }
     return null
   }
 
@@ -329,12 +394,13 @@ async function markDispatching(
   })
 }
 
+/** `null` when the command can be delivered; otherwise the error it was failed with. */
 async function ensureServerAndDaemonOnline(
   db: Db,
   registry: DaemonCellRegistry,
   record: DispatchableCommandRecord,
   envelope: CommandEnvelope
-): Promise<boolean> {
+): Promise<string | null> {
   const serverBinding = await getServerLicenseBinding(db, envelope.serverId)
   if (!serverBinding) {
     compatLogWarn(
@@ -345,7 +411,7 @@ async function ensureServerAndDaemonOnline(
       status: 'failed',
       error: 'Server not found',
     })
-    return false
+    return 'Server not found'
   }
 
   const presenceMap = await getResolveFleetPresence()(db, registry, [envelope.serverId])
@@ -361,7 +427,7 @@ async function ensureServerAndDaemonOnline(
       status: 'failed',
       error: 'Daemon not connected',
     })
-    return false
+    return 'Daemon not connected'
   }
 
   // A daemon below the supported floor keeps its connection — that is how it
@@ -376,15 +442,69 @@ async function ensureServerAndDaemonOnline(
       serverId: envelope.serverId,
       reason: 'daemon_unsupported',
     })
+    const error = daemonUnsupportedReason(support)
     await transitionCommand(db, record.id, {
       status: 'failed',
       errorCode: 'daemon_unsupported',
-      error: daemonUnsupportedReason(support),
+      error,
     })
-    return false
+    return error
   }
 
-  return true
+  return null
+}
+
+/**
+ * How long a dispatched command may go without the daemon's `command-ack`.
+ * The daemon acks the instant it receives the frame, so silence this long
+ * means the frame never arrived (a half-open connection), not slow work.
+ */
+export const COMMAND_ACK_DEADLINE_MS = 45_000
+
+export const COMMAND_UNACKED_ERROR =
+  'The server did not acknowledge the command in time; its connection looked dead and was reset. Try again once it reconnects.'
+
+/**
+ * Wait for a terminal outcome, but fail fast when the daemon never acks a
+ * command that was written to its socket.
+ *
+ * Only a `sent` request is failed: a `queued` one is still waiting for the
+ * outbox to retry, so it keeps its whole budget. Never re-sends. The dead
+ * connection is dropped first so a frame still buffered on it cannot run
+ * later, and the request is expired in the cell so the outbox cannot deliver
+ * it after the caller was told it failed (the daemon also ignores a command id
+ * it has already seen). A backend that cannot drop a connection and expire a
+ * request (Redis) does a plain wait, so the message never claims a reset that
+ * did not happen. The result is a synthetic `failed` record, which flows
+ * through the normal failure side effects.
+ */
+export async function awaitOutcomeWithAckDeadline(
+  cell: DaemonCell,
+  requestId: string,
+  timeoutMs: number,
+  ackDeadlineMs = COMMAND_ACK_DEADLINE_MS
+): Promise<PendingRequestRecord | null> {
+  const { dropDaemonConnection, expireRequest } = cell
+  if (ackDeadlineMs >= timeoutMs || !dropDaemonConnection || !expireRequest) {
+    return cell.waitForRequest(requestId, timeoutMs)
+  }
+  const restMs = timeoutMs - ackDeadlineMs
+  const first = await cell.waitForRequest(requestId, ackDeadlineMs)
+  if (first) return first
+  const current = await cell.getRequest(requestId)
+  if (current?.status !== 'sent' || current.ackAt) {
+    return cell.waitForRequest(requestId, restMs)
+  }
+  await dropDaemonConnection.call(cell, 'command_unacked').catch(() => undefined)
+  // The ack may have landed while the connection was being dropped.
+  const settled = await cell.getRequest(requestId)
+  if (settled && ['done', 'failed', 'expired'].includes(settled.status)) return settled
+  if (settled?.ackAt || (settled && settled.status !== 'sent')) {
+    return cell.waitForRequest(requestId, restMs)
+  }
+  const expired = await expireRequest.call(cell, requestId).catch(() => null)
+  if (expired && (expired.status === 'done' || expired.status === 'failed')) return expired
+  return { ...(settled ?? current), status: 'failed', error: COMMAND_UNACKED_ERROR }
 }
 
 async function enqueueAndAwaitOutcome(
@@ -421,7 +541,7 @@ async function enqueueAndAwaitOutcome(
     serverId: envelope.serverId,
   })
 
-  const pending = await cell.waitForRequest(record.id, timeoutMs)
+  const pending = await awaitOutcomeWithAckDeadline(cell, record.id, timeoutMs)
   if (!pending) {
     await transitionCommand(db, record.id, { status: 'timed_out' })
     commandConsumerTrace('dispatch-result', {
@@ -454,12 +574,15 @@ async function applyEnvironmentDeployFailedSideEffect(
   try {
     const payload = parseEnvironmentDeployPayload(record.payload)
     const finishedAt = nowIso()
-    await markDeploymentFailed(db, {
+    const deployFailure = classifyDeployFailure(error)
+    const marked = await markDeploymentFailed(db, {
       environmentId: payload.environmentId,
       serverId: envelope.serverId,
       error,
       commandId: record.id,
+      expectedCommandId: record.id,
       outcome,
+      ...(deployFailure === null ? {} : { strategyOutcome: deployFailure.outcome }),
       finishedAt,
       durationMs: deploymentDurationMs({
         startedAt: record.startedAt,
@@ -467,6 +590,13 @@ async function applyEnvironmentDeployFailedSideEffect(
         finishedAt,
       }),
     })
+    if (marked !== null && payload.generation !== undefined) {
+      await haltRollout(db, {
+        environmentId: payload.environmentId,
+        generation: payload.generation,
+        reason: `${envelope.serverId} failed`,
+      })
+    }
   } catch (err) {
     const message = errorMessage(err)
     compatLogWarn(
@@ -682,22 +812,120 @@ async function reconcileContainersSafely(
   }
 }
 
+/**
+ * Store what the daemon detected in each applied site's document root. Best
+ * effort like the container reconcile: a deploy that already succeeded on the
+ * host is never recorded as failed over a reporting field.
+ */
+async function recordSiteAppsSafely(
+  db: Db,
+  record: DispatchableCommandRecord,
+  environmentId: string,
+  sites: EnvironmentDeployResultSite[] | undefined
+): Promise<void> {
+  if (sites === undefined) return
+  try {
+    await recordDeployedSiteApps(db, { environmentId, sites })
+  } catch (err) {
+    compatLogWarn(
+      'command-consumer',
+      `site app facts failed for command ${record.id}: ${errorMessage(err)}`
+    )
+  }
+}
+
+/**
+ * Deliver the next rolling-deploy batch once the current one is applied. Best
+ * effort like the other deploy side effects: the command already succeeded, so
+ * a failure here is logged and the stalled batch is visible as `pending`.
+ */
+async function advanceRolloutSafely(
+  db: Db,
+  deps: CommandConsumerDeps | undefined,
+  environmentId: string,
+  generation: number
+): Promise<void> {
+  const commandQueue = deps?.commandQueue
+  if (commandQueue === undefined || isNoopCommandQueue(commandQueue)) return
+  try {
+    await advanceRollout(
+      db,
+      { enqueue: (envelope) => commandQueue.enqueue(envelope) },
+      { environmentId, generation }
+    )
+  } catch (err) {
+    compatLogWarn(
+      'command-consumer',
+      `rollout advance failed for environment ${environmentId}: ${errorMessage(err)}`
+    )
+  }
+}
+
+/**
+ * A successful deploy created the environment's docker volumes on this server: their `pending`
+ * primary copies are ready. Scratch, non-docker and other-server copies are left alone.
+ */
+async function markEnvironmentCopiesReady(
+  db: Db,
+  environmentId: string,
+  serverId: string
+): Promise<void> {
+  await db
+    .update(storageCopy)
+    .set({ state: 'ready' })
+    .where(
+      and(
+        eq(storageCopy.serverId, serverId),
+        eq(storageCopy.state, 'pending'),
+        eq(storageCopy.provider, 'docker'),
+        eq(storageCopy.role, 'primary'),
+        inArray(
+          storageCopy.storageId,
+          db
+            .select({ id: storage.id })
+            .from(storage)
+            .where(
+              or(
+                eq(storage.environmentId, environmentId),
+                // Storage owned by a service of this environment that runs on this server.
+                inArray(
+                  storage.serviceId,
+                  db
+                    .select({ id: service.id })
+                    .from(service)
+                    .innerJoin(container, eq(container.serviceId, service.id))
+                    .where(
+                      and(
+                        eq(service.environmentId, environmentId),
+                        eq(container.serverId, serverId)
+                      )
+                    )
+                )
+              )
+            )
+        )
+      )
+    )
+}
+
 async function applyEnvironmentDeploySideEffect(
   db: Db,
   record: DispatchableCommandRecord,
   envelope: CommandEnvelope,
-  result: unknown
+  result: unknown,
+  deps?: CommandConsumerDeps
 ): Promise<void> {
   if (record.type !== 'environment.deploy') return
   try {
     const payload = parseEnvironmentDeployPayload(record.payload)
     if (payload.generation !== undefined) {
       const finishedAt = nowIso()
-      await markDeploymentApplied(db, {
+      const marked = await markDeploymentApplied(db, {
         environmentId: payload.environmentId,
         serverId: envelope.serverId,
         generation: payload.generation,
         commandId: record.id,
+        expectedCommandId: record.id,
         finishedAt,
         durationMs: deploymentDurationMs({
           startedAt: record.startedAt,
@@ -705,8 +933,14 @@ async function applyEnvironmentDeploySideEffect(
           finishedAt,
         }),
       })
+      // A result from a deploy a newer one replaced changes nothing and advances nothing.
+      if (marked !== null) {
+        await advanceRolloutSafely(db, deps, payload.environmentId, payload.generation)
+      }
     }
+    await markEnvironmentCopiesReady(db, payload.environmentId, envelope.serverId)
     const deployResult = parseEnvironmentDeployResult(result)
+    await recordSiteAppsSafely(db, record, payload.environmentId, deployResult.sites)
     // Only reconcile when the daemon included an authoritative containers
     // report (including `[]`). Omitting the field means collection failed.
     if (deployResult.containers === undefined) return
@@ -940,10 +1174,16 @@ async function applyManagedApplySideEffect(
     const payload = parseManagedApplyPayload(record.payload)
     const applyResult = parseManagedApplyResult(result)
     const updatedAt = nowIso()
+    const isPrimary = payload.memberRole === 'primary'
+    // Captured before a primary apply can re-pin the engine, so its backup
+    // policies can follow it to the new host.
+    const backupHost = isPrimary
+      ? await captureManagedBackupHost(db, deps?.commandQueue, payload.managedId)
+      : null
     // `managed.server_id` is the primary placement pin. Fan-out apply sends one
     // command per member — only the primary member may update the pin / host /
     // port so a late replica success cannot re-home the cluster.
-    if (payload.memberRole === 'primary') {
+    if (isPrimary) {
       await db
         .update(managed)
         .set({
@@ -979,13 +1219,14 @@ async function applyManagedApplySideEffect(
       )
     }
     await projectManagedMemberObservedStatus(db, applyResult.member, record.id, record.type)
+    await reconcileBackupsAfterManagedMove(db, deps?.commandQueue, {
+      managedId: payload.managedId,
+      previousServerId: backupHost,
+      actorId: envelope.serverId,
+    })
 
     // Primary success → enqueue deferred standby applies (if any).
-    if (
-      payload.memberRole === 'primary' &&
-      deps?.commandQueue &&
-      !isNoopCommandQueue(deps.commandQueue)
-    ) {
+    if (isPrimary && deps?.commandQueue && !isNoopCommandQueue(deps.commandQueue)) {
       await enqueuePendingStandbyApplies(db, record, deps)
     }
   } catch (err) {
@@ -1559,7 +1800,16 @@ async function applyManagedDestroySideEffect(
     // the API-delete completion, distinct from any future "destroy runtime
     // only" action that would omit the marker and leave the row in place.
     if (payload.deleteAfterDestroy) {
+      // The engine's backup policies cascade with the row; its host gets the
+      // smaller set so no timer outlives the engine.
+      const backupHost = await captureManagedBackupHost(db, deps?.commandQueue, payload.managedId)
       await db.delete(managed).where(eq(managed.id, payload.managedId))
+      await enqueueBackupsReconcile(
+        db,
+        deps?.commandQueue,
+        { actorType: 'system', actorId: envelope.serverId },
+        [backupHost]
+      )
     }
 
     await cleanupDestroyedMember(db, record, payload, deps)
@@ -1784,7 +2034,7 @@ async function applySucceededSideEffects(
   await applyHostnameSideEffect(db, record, envelope, result)
   await applyTimeSyncSideEffect(db, record, envelope, result)
   await applyFabricSideEffect(db, record, envelope, result, deps)
-  await applyEnvironmentDeploySideEffect(db, record, envelope, result)
+  await applyEnvironmentDeploySideEffect(db, record, envelope, result, deps)
   await applyEnvironmentStopSideEffect(db, record, envelope, result)
   await applyEnvironmentLifecycleSideEffect(db, record, envelope, result)
   await applySystemReconcileSideEffect(db, record, envelope, result)
@@ -1798,6 +2048,59 @@ async function applySucceededSideEffects(
   await applyManagedHaFailoverSideEffect(db, record, envelope, result, deps)
   await applyManagedBackupSideEffect(db, record, envelope, result)
   await applyManagedRestoreSideEffect(db, record, envelope, result)
+  await applyStorageBackupSideEffect(db, record, result)
+  await applyFirewallPreviewSideEffect(db, record, envelope, result, deps)
+}
+
+/**
+ * Firewall preview upkeep: keep what a host answered to a preview, and, after
+ * a command that can change what the host publishes, send a fresh preview if
+ * (and only if) the derived set changed. Sends an apply only for a server both
+ * keys of `../firewall/enforcement.ts` allow.
+ */
+async function applyFirewallPreviewSideEffect(
+  db: Db,
+  record: DispatchableCommandRecord,
+  envelope: CommandEnvelope,
+  result: unknown,
+  deps?: CommandConsumerDeps
+): Promise<void> {
+  try {
+    if (record.type === FIREWALL_RECONCILE_COMMAND) {
+      await recordFirewallPreviewResult(db, envelope.serverId, record.payload, result)
+    } else if (commandMayChangeFirewallPreview(record.type)) {
+      await enqueueFirewallPreview(
+        db,
+        deps?.commandQueue,
+        { actorType: 'system', actorId: envelope.serverId },
+        [envelope.serverId],
+        { onlyIfPreviewed: true, applyGate: deps?.firewallApplyGate }
+      )
+    }
+  } catch (err) {
+    compatLogWarn(
+      'command-consumer',
+      `firewall preview side effect failed for command ${record.id}: ${errorMessage(err)}`
+    )
+  }
+}
+
+/** A failed or timed-out reconcile is kept on the firewall record so it does not read as queued. */
+async function applyFirewallFailedSideEffect(
+  db: Db,
+  record: DispatchableCommandRecord,
+  envelope: CommandEnvelope,
+  error: string
+): Promise<void> {
+  if (record.type !== FIREWALL_RECONCILE_COMMAND) return
+  try {
+    await recordFirewallPreviewFailure(db, envelope.serverId, record.payload, error)
+  } catch (err) {
+    compatLogWarn(
+      'command-consumer',
+      `firewall failure record failed for command ${record.id}: ${errorMessage(err)}`
+    )
+  }
 }
 
 /**
@@ -1822,6 +2125,7 @@ async function applyManagedPromoteSideEffect(
     const promotedMemberId = promoteResult.promotedMemberId || payload.memberId
     const demotedMemberId = promoteResult.demotedMemberId ?? payload.demoteMemberId
     const updatedAt = nowIso()
+    const backupHost = await captureManagedBackupHost(db, deps?.commandQueue, managedId)
 
     await db.transaction(async (tx) => {
       // Demote first so the partial unique primary index stays satisfied.
@@ -1876,6 +2180,11 @@ async function applyManagedPromoteSideEffect(
         replication: promoteResult.replication,
       })
     }
+    await reconcileBackupsAfterManagedMove(db, deps?.commandQueue, {
+      managedId,
+      previousServerId: backupHost,
+      actorId: envelope.serverId,
+    })
 
     if (!hasManagedFollowUpDeps(deps)) {
       const meta = await getCommandMetadata(db, record.id)
@@ -2016,12 +2325,18 @@ async function applyManagedHaFailoverSideEffect(
       return
     }
 
+    const backupHost = await captureManagedBackupHost(db, deps?.commandQueue, payload.managedId)
     await applyManagedRoleFlip(db, {
       managedId: payload.managedId,
       promotedMemberId: payload.targetMemberId,
       demotedMemberId: payload.sourceMemberId,
       status: 'ready',
       updatedAt: nowIso(),
+    })
+    await reconcileBackupsAfterManagedMove(db, deps?.commandQueue, {
+      managedId: payload.managedId,
+      previousServerId: backupHost,
+      actorId: envelope.serverId,
     })
 
     if (recoveryId) {
@@ -2054,7 +2369,10 @@ async function handlePendingDone(
 ): Promise<void> {
   await transitionCommand(db, record.id, {
     status: 'succeeded',
-    result: enrichPingResult(record.type, pending.result, pending),
+    result: resultSummaryForPersist(
+      record.type,
+      enrichPingResult(record.type, pending.result, pending)
+    ),
     ackedAt: pending.ackAt ?? pending.finishedAt,
     startedAt: pending.ackAt ?? pending.finishedAt,
     finishedAt: pending.finishedAt,
@@ -2069,6 +2387,22 @@ async function handlePendingDone(
   await applySucceededSideEffects(db, record, envelope, pending.result, deps)
 }
 
+/** Host text for a restore whose archive is gone (deleted or pruned). */
+const BACKUP_NOT_ON_HOST_RE = /backup \S+ is not on this host/
+
+/** Machine-readable `errorCode` for a failed command, when its error text names one. */
+export function failureErrorCodeField(
+  type: string,
+  deployFailure: ReturnType<typeof classifyDeployFailure>,
+  error: string
+): { errorCode?: string } {
+  if (deployFailure !== null) return { errorCode: deployOutcomeErrorCode(deployFailure.outcome) }
+  if (type === 'storage.restore' && BACKUP_NOT_ON_HOST_RE.test(error)) {
+    return { errorCode: 'backup_not_found' }
+  }
+  return {}
+}
+
 async function handlePendingFailed(
   db: Db,
   record: DispatchableCommandRecord,
@@ -2077,9 +2411,13 @@ async function handlePendingFailed(
   deps?: CommandConsumerDeps
 ): Promise<void> {
   const error = pending.error ?? 'Command failed'
+  // A sequential deploy that rolled back or needs attention says so in its error
+  // text; keep that machine-readable on the row.
+  const deployFailure = record.type === 'environment.deploy' ? classifyDeployFailure(error) : null
   await transitionCommand(db, record.id, {
     status: 'failed',
     error,
+    ...failureErrorCodeField(record.type, deployFailure, error),
   })
   commandConsumerTrace('dispatch-result', {
     commandId: record.id,
@@ -2092,6 +2430,7 @@ async function handlePendingFailed(
   await applyManagedFailedSideEffect(db, record, deps, error)
   await applyEnvironmentDeployFailedSideEffect(db, record, envelope, error)
   await applyFabricFailedSideEffect(db, record, envelope)
+  await applyFirewallFailedSideEffect(db, record, envelope, error)
 }
 
 async function handlePendingExpired(
@@ -2112,6 +2451,7 @@ async function handlePendingExpired(
   await applyManagedFailedSideEffect(db, record, deps, pending.error ?? 'Command timed out')
   await applyEnvironmentDeployFailedSideEffect(db, record, envelope, 'timed_out', 'timed_out')
   await applyFabricFailedSideEffect(db, record, envelope)
+  await applyFirewallFailedSideEffect(db, record, envelope, pending.error ?? 'Command timed out')
 }
 
 async function handlePendingUnexpected(
@@ -2169,8 +2509,11 @@ export async function processCommandEnvelope(
 
   await markDispatching(db, record, envelope)
 
-  const ready = await ensureServerAndDaemonOnline(db, registry, record, envelope)
-  if (!ready) {
+  const notReady = await ensureServerAndDaemonOnline(db, registry, record, envelope)
+  if (notReady !== null) {
+    // A deploy that never reached its server fails its row and halts the
+    // rollout, or later batches would wait on an `applying` row forever.
+    await applyEnvironmentDeployFailedSideEffect(db, record, envelope, notReady)
     await applyFabricFailedSideEffect(db, record, envelope)
     return
   }

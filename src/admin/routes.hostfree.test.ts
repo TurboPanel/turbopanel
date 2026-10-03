@@ -16,9 +16,10 @@ import type { DaemonCell, DaemonCellRegistry, PendingRequestRecord } from '../co
 import type { DaemonOutboundEnvelope } from '../contracts/cell-protocol.ts'
 import { ADMIN_API_PREFIX } from '../app/surfaces.ts'
 import { INSTANCE_VERSION } from '../app/version.ts'
+import { seedUpdateManifestCacheForTests } from '../features/update/manifest.ts'
 import { parseTestSecretsConfig } from '../test-fixtures/secrets.ts'
 import type { Db } from '../db/connection.ts'
-import { server, upgrade, upgradeStep } from '../db/schema.ts'
+import { server, upgrade, stage } from '../db/schema.ts'
 import { mintSelfSignedCertificate } from '../lib/tls/self-signed.ts'
 import { registerAdminRoutes } from './routes.ts'
 import { registerAdminTierRoutes } from './tier-routes.ts'
@@ -238,7 +239,7 @@ function wrapDbWithColocatedServer(
         return {
           from: (table: unknown) => {
             if (table === server) return queryChain([fleetRow])
-            if (table === upgrade || table === upgradeStep) {
+            if (table === upgrade || table === stage) {
               return queryChain([])
             }
             return chain.from(table)
@@ -246,7 +247,7 @@ function wrapDbWithColocatedServer(
         }
       },
       insert: (table: unknown) => {
-        if (table === upgrade || table === upgradeStep) {
+        if (table === upgrade || table === stage) {
           return {
             values: () => Promise.resolve(),
             onConflictDoUpdate: () => Promise.resolve(),
@@ -255,7 +256,7 @@ function wrapDbWithColocatedServer(
         return inner.insert(table)
       },
       update: (table: unknown) => {
-        if (table === upgrade || table === upgradeStep) {
+        if (table === upgrade || table === stage) {
           return {
             set: () => ({
               where: () => Promise.resolve(),
@@ -1278,6 +1279,70 @@ test('instance updates: workers refuses the control plane, GET still reports its
   }
 })
 
+test('instance updates: a self-hosted control plane offers a UI-only update from the console build it is told', async () => {
+  seedUpdateManifestCacheForTests(
+    {
+      commit: 'ab12cd34ef56ab12cd34ef56ab12cd34ef56ab12',
+      buildId: 'u1',
+      builtAt: '2026-09-24T00:00:00.000Z',
+      channel: 'canary',
+      manifestUrl:
+        'https://github.com/TurboPanel/ui/releases/download/canary/manifest-0.1.6-canary.15.json',
+      version: '0.1.6-canary.15',
+    },
+    'canary',
+    'ui'
+  )
+  try {
+    const { app, cookie } = await buildApp({
+      getEnv: () => ({ TURBOPANEL_UPDATE_CHANNEL: 'canary' }),
+    })
+    const read = async (query: string) => {
+      const res = await app.request(`${ADMIN_API_PREFIX}/instance/updates${query}`, {
+        headers: { Cookie: cookie },
+      })
+      const body = await jsonBody<{ units: { instance: { uiUpdateAvailable: boolean } } }>(res)
+      return body.units.instance.uiUpdateAvailable
+    }
+    assertEquals(await read('?consoleCommit=0123456789abcdef'), true)
+    assertEquals(await read('?consoleCommit=ab12cd34ef56'), false)
+    assertEquals(await read(''), false)
+    assertEquals(await read('?consoleCommit=not-a-commit'), false)
+  } finally {
+    seedUpdateManifestCacheForTests(null, 'canary', 'ui')
+  }
+})
+
+test('instance updates: on Workers the UI is deployed, never offered as an install', async () => {
+  seedUpdateManifestCacheForTests(
+    {
+      commit: 'ab12cd34ef56ab12cd34ef56ab12cd34ef56ab12',
+      buildId: 'u1',
+      builtAt: '2026-09-24T00:00:00.000Z',
+      channel: 'canary',
+      manifestUrl:
+        'https://github.com/TurboPanel/ui/releases/download/canary/manifest-0.1.6-canary.15.json',
+      version: '0.1.6-canary.15',
+    },
+    'canary',
+    'ui'
+  )
+  try {
+    const { app, cookie } = await buildApp({
+      runtime: 'workers',
+      getEnv: () => ({ TURBOPANEL_UPDATE_CHANNEL: 'canary' }),
+    })
+    const res = await app.request(
+      `${ADMIN_API_PREFIX}/instance/updates?consoleCommit=0123456789abcdef`,
+      { headers: { Cookie: cookie } }
+    )
+    const body = await jsonBody<{ units: { instance: { uiUpdateAvailable: boolean } } }>(res)
+    assertEquals(body.units.instance.uiUpdateAvailable, false)
+  } finally {
+    seedUpdateManifestCacheForTests(null, 'canary', 'ui')
+  }
+})
+
 test('instance updates refuse a missing or disconnected co-located daemon', async () => {
   const releaseEnv = () => ({ TURBOPANEL_UPDATE_CHANNEL: 'release' })
   const noRegistry = await buildApp({ registry: null, getEnv: releaseEnv })
@@ -1305,19 +1370,21 @@ test('instance updates refuse a missing or disconnected co-located daemon', asyn
 
 test('legacy instance update refuses a daemon that cannot roll the control plane back', async () => {
   const originalFetch = globalThis.fetch
-  globalThis.fetch = (() =>
-    Promise.resolve(
-      new Response(
-        JSON.stringify({
-          commit: 'targetcommit',
-          buildId: 'build-abc',
-          builtAt: '2020-01-01T00:00:00.000Z',
-          channel: 'release',
-          version: INSTANCE_VERSION,
-        }),
-        { status: 200, headers: { 'content-type': 'application/json' } }
-      )
-    )) as typeof fetch
+  // The control plane verifies signed manifests before use, so seed the target instead of faking the fetch.
+  for (const kind of ['daemon', 'instance', 'ui'] as const) {
+    seedUpdateManifestCacheForTests(
+      {
+        commit: 'targetcommit',
+        buildId: 'build-abc',
+        builtAt: '2020-01-01T00:00:00.000Z',
+        channel: 'release',
+        manifestUrl: 'https://example.invalid/manifest.json',
+        version: INSTANCE_VERSION,
+      },
+      'release',
+      kind
+    )
+  }
   const serverId = crypto.randomUUID()
   const enqueued: DaemonOutboundEnvelope[] = []
   try {
@@ -1349,5 +1416,64 @@ test('legacy instance update refuses a daemon that cannot roll the control plane
     )
   } finally {
     globalThis.fetch = originalFetch
+  }
+})
+
+const SUPERADMIN_ONLY_SETTINGS_ROUTES: ReadonlyArray<
+  Readonly<{ method: 'PUT' | 'POST'; path: string; body: unknown }>
+> = [
+  { method: 'PUT', path: '/settings/email', body: { FROM: 'ops@example.com' } },
+  { method: 'PUT', path: '/instance/public-urls', body: { urls: ['https://panel.example.com'] } },
+  { method: 'POST', path: '/instance/public-urls/apply', body: {} },
+  { method: 'POST', path: '/instance/tunnel-token', body: { token: 'x' } },
+  { method: 'PUT', path: '/settings/auth-providers', body: { GITHUB_CLIENT_ID: 'x' } },
+  { method: 'PUT', path: '/settings/signup', body: { enabled: false } },
+  { method: 'PUT', path: '/settings/alert-webhook', body: { url: '' } },
+  { method: 'POST', path: '/instance/platform-ca/trust-reconcile', body: {} },
+]
+
+test('installation-wide settings writes return a clean 403 for org admins', async () => {
+  const { app, cookie } = await buildApp({ role: 'admin' })
+  for (const route of SUPERADMIN_ONLY_SETTINGS_ROUTES) {
+    const res = await app.request(`${ADMIN_API_PREFIX}${route.path}`, {
+      method: route.method,
+      headers: { Cookie: cookie, 'content-type': 'application/json' },
+      body: JSON.stringify(route.body),
+    })
+    assertEquals(res.status, 403, route.path)
+    assertEquals(await jsonBody<{ ok: boolean; error: string }>(res), {
+      ok: false,
+      error: 'Forbidden',
+    })
+  }
+})
+
+test('installation-wide settings writes are allowed for superadmin', async () => {
+  const { app, cookie } = await buildApp({ role: 'superadmin' })
+  const email = await app.request(`${ADMIN_API_PREFIX}/settings/email`, {
+    method: 'PUT',
+    headers: { Cookie: cookie, 'content-type': 'application/json' },
+    body: JSON.stringify({ FROM: 'ops@example.com' }),
+  })
+  assertEquals(email.status, 200)
+  const urls = await app.request(`${ADMIN_API_PREFIX}/instance/public-urls`, {
+    method: 'PUT',
+    headers: { Cookie: cookie, 'content-type': 'application/json' },
+    body: JSON.stringify({ urls: ['https://panel.example.com'] }),
+  })
+  assertEquals(urls.status, 200)
+  const tunnel = await app.request(`${ADMIN_API_PREFIX}/instance/tunnel-token`, {
+    method: 'POST',
+    headers: { Cookie: cookie, 'content-type': 'application/json' },
+    body: JSON.stringify({ token: '' }),
+  })
+  assertEquals(tunnel.status, 503)
+})
+
+test('other org-admin routes stay open to admin role', async () => {
+  const { app, cookie } = await buildApp({ role: 'admin' })
+  for (const path of ['/settings/email', '/instance/public-urls', '/daemon/events']) {
+    const res = await app.request(`${ADMIN_API_PREFIX}${path}`, { headers: { Cookie: cookie } })
+    assertEquals(res.status, 200, path)
   }
 })

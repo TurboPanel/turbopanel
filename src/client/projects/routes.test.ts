@@ -4,15 +4,9 @@ import { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
 import { createDenoDb } from '../../db/connection.ts'
-import {
-  buildSignedCookie,
-  HTTP_SESSION_COOKIE_NAME,
-} from '../authn/crypto.ts'
+import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from '../authn/crypto.ts'
 import { createSession } from '../authn/session-store.ts'
-import {
-  deriveEncryptionSecretsConfig,
-  deriveSecretsConfig,
-} from '../../lib/secrets/secrets.ts'
+import { deriveEncryptionSecretsConfig, deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
 import {
   container,
   environment,
@@ -31,9 +25,7 @@ import { SYSTEM_RESOURCE_IMMUTABLE_ERROR } from '../authz/http.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { registerProjectRoutes } from './routes.ts'
 import { registerEnvironmentRoutes } from '../environments/routes.ts'
-import {
-  registerEnvironmentDeployRoutes,
-} from '../environments/deploy-routes.ts'
+import { registerEnvironmentDeployRoutes } from '../environments/deploy-routes.ts'
 import { registerServiceRoutes } from '../services/routes.ts'
 import { registerVariableRoutes } from '../variables/routes.ts'
 import { registerContainerRoutes } from '../containers/routes.ts'
@@ -50,6 +42,8 @@ import {
 } from '../../features/system/hierarchy.ts'
 import { isProjectNameUniqueViolation, mapCreateProjectError } from './routes-helpers.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
+import { forEachSequential } from '../../lib/sequential.ts'
+import { getCatalogEntry, listCatalog, type CatalogEntry } from './catalog/index.ts'
 
 const dbUrl = getDatabaseUrl()
 
@@ -66,7 +60,7 @@ async function createProjectRoutesTestApp(db: ReturnType<typeof createDenoDb>) {
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
     secretsConfig,
-    'data-encryption',
+    'data-encryption'
   )
   const app = new Hono<AppEnv>()
   app.use('*', (c, next) => {
@@ -81,7 +75,7 @@ async function createProjectRoutesTestApp(db: ReturnType<typeof createDenoDb>) {
 async function sessionCookie(
   db: ReturnType<typeof createDenoDb>,
   secrets: Awaited<ReturnType<typeof deriveSecretsConfig>>,
-  userId: string,
+  userId: string
 ): Promise<string> {
   const { token } = await createSession(db, userId, {})
   const signed = await buildSignedCookie(token, secrets)
@@ -104,7 +98,7 @@ async function withProjectFixtures(
     selfHostProjectId: string
     selfHostEnvironmentId: string
     selfHostServiceId: string
-  }) => Promise<void>,
+  }) => Promise<void>
 ): Promise<void> {
   if (!dbUrl) {
     console.warn('Skipping project route tests: TURBOPANEL_DATABASE_URL not set')
@@ -211,10 +205,7 @@ async function withProjectFixtures(
         await db.delete(project).where(eq(project.id, row.id))
       }
     }
-    await db.delete(grant).where(and(
-      eq(grant.actorId, userId),
-      eq(grant.entityId, organizationId),
-    ))
+    await db.delete(grant).where(and(eq(grant.actorId, userId), eq(grant.entityId, organizationId)))
     await db.delete(workspace).where(eq(workspace.organizationId, organizationId))
     await db.delete(server).where(eq(server.organizationId, organizationId))
     await db.delete(user).where(eq(user.id, userId))
@@ -223,14 +214,7 @@ async function withProjectFixtures(
 }
 
 test('POST /projects managed postgres scaffolds env without managed row', async () => {
-  await withProjectFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-    workspaceId,
-  }) => {
+  await withProjectFixtures(async ({ db, app, secrets, userId, organizationId, workspaceId }) => {
     const cookie = await sessionCookie(db, secrets, userId)
     const res = await app.request('/projects', {
       method: 'POST',
@@ -248,7 +232,7 @@ test('POST /projects managed postgres scaffolds env without managed row', async 
     })
 
     assertEquals(res.status, 200)
-    const body = await res.json() as { ok: boolean; id: string }
+    const body = (await res.json()) as { ok: boolean; id: string }
     assertEquals(body.ok, true)
     const projectId = body.id
 
@@ -287,14 +271,7 @@ test('POST /projects managed postgres scaffolds env without managed row', async 
 })
 
 test('POST /projects managed rejects unknown catalog code', async () => {
-  await withProjectFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-    workspaceId,
-  }) => {
+  await withProjectFixtures(async ({ db, app, secrets, userId, organizationId, workspaceId }) => {
     const cookie = await sessionCookie(db, secrets, userId)
     const res = await app.request('/projects', {
       method: 'POST',
@@ -317,14 +294,7 @@ test('POST /projects managed rejects unknown catalog code', async () => {
 })
 
 test('POST /projects empty scaffolds Production once with type empty', async () => {
-  await withProjectFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-    workspaceId,
-  }) => {
+  await withProjectFixtures(async ({ db, app, secrets, userId, organizationId, workspaceId }) => {
     const cookie = await sessionCookie(db, secrets, userId)
     const res = await app.request('/projects', {
       method: 'POST',
@@ -341,7 +311,7 @@ test('POST /projects empty scaffolds Production once with type empty', async () 
     })
 
     assertEquals(res.status, 200)
-    const body = await res.json() as { ok: boolean; id: string }
+    const body = (await res.json()) as { ok: boolean; id: string }
     assertEquals(body.ok, true)
 
     const [projectRow] = await db
@@ -362,14 +332,7 @@ test('POST /projects empty scaffolds Production once with type empty', async () 
 })
 
 test('POST /projects accepts an apostrophe in the display name', async () => {
-  await withProjectFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-    workspaceId,
-  }) => {
+  await withProjectFixtures(async ({ db, app, secrets, userId, organizationId, workspaceId }) => {
     const cookie = await sessionCookie(db, secrets, userId)
     const res = await app.request('/projects', {
       method: 'POST',
@@ -386,7 +349,7 @@ test('POST /projects accepts an apostrophe in the display name', async () => {
     })
 
     assertEquals(res.status, 200)
-    const body = await res.json() as { ok: boolean; id: string }
+    const body = (await res.json()) as { ok: boolean; id: string }
     assertEquals(body.ok, true)
 
     const [projectRow] = await db
@@ -399,14 +362,7 @@ test('POST /projects accepts an apostrophe in the display name', async () => {
 })
 
 test('POST /projects rejects missing type', async () => {
-  await withProjectFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-    workspaceId,
-  }) => {
+  await withProjectFixtures(async ({ db, app, secrets, userId, organizationId, workspaceId }) => {
     const cookie = await sessionCookie(db, secrets, userId)
     const res = await app.request('/projects', {
       method: 'POST',
@@ -427,14 +383,7 @@ test('POST /projects rejects missing type', async () => {
 })
 
 test('POST /projects rejects empty string type', async () => {
-  await withProjectFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-    workspaceId,
-  }) => {
+  await withProjectFixtures(async ({ db, app, secrets, userId, organizationId, workspaceId }) => {
     const cookie = await sessionCookie(db, secrets, userId)
     const res = await app.request('/projects', {
       method: 'POST',
@@ -456,14 +405,7 @@ test('POST /projects rejects empty string type', async () => {
 })
 
 test('POST /projects empty uses org defaultEnvironmentName when set', async () => {
-  await withProjectFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-    workspaceId,
-  }) => {
+  await withProjectFixtures(async ({ db, app, secrets, userId, organizationId, workspaceId }) => {
     await db
       .update(organization)
       .set({ options: { defaultEnvironmentName: 'Staging' } })
@@ -485,7 +427,7 @@ test('POST /projects empty uses org defaultEnvironmentName when set', async () =
     })
 
     assertEquals(res.status, 200)
-    const body = await res.json() as { ok: boolean; id: string }
+    const body = (await res.json()) as { ok: boolean; id: string }
     assertEquals(body.ok, true)
 
     const envs = await db
@@ -498,14 +440,7 @@ test('POST /projects empty uses org defaultEnvironmentName when set', async () =
 })
 
 test('POST /projects docker-compose uses org defaultEnvironmentName when set', async () => {
-  await withProjectFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-    workspaceId,
-  }) => {
+  await withProjectFixtures(async ({ db, app, secrets, userId, organizationId, workspaceId }) => {
     await db
       .update(organization)
       .set({ options: { defaultEnvironmentName: 'Live' } })
@@ -527,7 +462,7 @@ test('POST /projects docker-compose uses org defaultEnvironmentName when set', a
     })
 
     assertEquals(res.status, 200)
-    const body = await res.json() as { ok: boolean; id: string }
+    const body = (await res.json()) as { ok: boolean; id: string }
 
     const envs = await db
       .select({ name: environment.name })
@@ -539,14 +474,7 @@ test('POST /projects docker-compose uses org defaultEnvironmentName when set', a
 })
 
 test('POST /projects cannot persist nested metadata.type system', async () => {
-  await withProjectFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-    workspaceId,
-  }) => {
+  await withProjectFixtures(async ({ db, app, secrets, userId, organizationId, workspaceId }) => {
     const cookie = await sessionCookie(db, secrets, userId)
     const headers = {
       Cookie: cookie,
@@ -565,7 +493,7 @@ test('POST /projects cannot persist nested metadata.type system', async () => {
       }),
     })
     assertEquals(composeRes.status, 200)
-    const composeBody = await composeRes.json() as { ok: boolean; id: string }
+    const composeBody = (await composeRes.json()) as { ok: boolean; id: string }
     const [composeRow] = await db
       .select({ metadata: project.metadata })
       .from(project)
@@ -590,7 +518,7 @@ test('POST /projects cannot persist nested metadata.type system', async () => {
       }),
     })
     assertEquals(managedRes.status, 200)
-    const managedBody = await managedRes.json() as { ok: boolean; id: string }
+    const managedBody = (await managedRes.json()) as { ok: boolean; id: string }
     const [managedRow] = await db
       .select({ metadata: project.metadata })
       .from(project)
@@ -606,14 +534,7 @@ test('POST /projects cannot persist nested metadata.type system', async () => {
 })
 
 test('POST /projects/:id/configure reuses custom-named default environment', async () => {
-  await withProjectFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-    workspaceId,
-  }) => {
+  await withProjectFixtures(async ({ db, app, secrets, userId, organizationId, workspaceId }) => {
     await db
       .update(organization)
       .set({ options: { defaultEnvironmentName: 'Staging' } })
@@ -634,7 +555,7 @@ test('POST /projects/:id/configure reuses custom-named default environment', asy
       }),
     })
     assertEquals(createRes.status, 200)
-    const { id } = await createRes.json() as { id: string }
+    const { id } = (await createRes.json()) as { id: string }
 
     const configureRes = await app.request(`/projects/${id}/configure`, {
       method: 'POST',
@@ -657,14 +578,7 @@ test('POST /projects/:id/configure reuses custom-named default environment', asy
 })
 
 test('POST /projects/:id/configure reuses scaffolded env when org default changed', async () => {
-  await withProjectFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-    workspaceId,
-  }) => {
+  await withProjectFixtures(async ({ db, app, secrets, userId, organizationId, workspaceId }) => {
     await db
       .update(organization)
       .set({ options: { defaultEnvironmentName: 'Staging' } })
@@ -685,7 +599,7 @@ test('POST /projects/:id/configure reuses scaffolded env when org default change
       }),
     })
     assertEquals(createRes.status, 200)
-    const { id } = await createRes.json() as { id: string }
+    const { id } = (await createRes.json()) as { id: string }
 
     const [scaffolded] = await db
       .select({
@@ -734,19 +648,15 @@ test('POST /projects/:id/configure reuses scaffolded env when org default change
       .select({ key: variable.key })
       .from(variable)
       .where(eq(variable.environmentId, scaffolded!.id))
-    assertEquals(vars.map((row) => row.key), ['POSTGRES_PASSWORD'])
+    assertEquals(
+      vars.map((row) => row.key),
+      ['POSTGRES_PASSWORD']
+    )
   })
 })
 
 test('POST /projects/:id/configure prefers literal Production over org default match', async () => {
-  await withProjectFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-    workspaceId,
-  }) => {
+  await withProjectFixtures(async ({ db, app, secrets, userId, organizationId, workspaceId }) => {
     const cookie = await sessionCookie(db, secrets, userId)
     const createRes = await app.request('/projects', {
       method: 'POST',
@@ -762,7 +672,7 @@ test('POST /projects/:id/configure prefers literal Production over org default m
       }),
     })
     assertEquals(createRes.status, 200)
-    const { id } = await createRes.json() as { id: string }
+    const { id } = (await createRes.json()) as { id: string }
 
     await db.insert(environment).values({
       projectId: id,
@@ -806,7 +716,10 @@ test('POST /projects/:id/configure prefers literal Production over org default m
       .select({ key: variable.key })
       .from(variable)
       .where(eq(variable.environmentId, production!.id))
-    assertEquals(productionVars.map((row) => row.key), ['POSTGRES_PASSWORD'])
+    assertEquals(
+      productionVars.map((row) => row.key),
+      ['POSTGRES_PASSWORD']
+    )
 
     const stagingVars = await db
       .select({ key: variable.key })
@@ -817,14 +730,7 @@ test('POST /projects/:id/configure prefers literal Production over org default m
 })
 
 test('POST /projects/:id/configure pins serverId on existing default environment', async () => {
-  await withProjectFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-    workspaceId,
-  }) => {
+  await withProjectFixtures(async ({ db, app, secrets, userId, organizationId, workspaceId }) => {
     const cookie = await sessionCookie(db, secrets, userId)
     const createRes = await app.request('/projects', {
       method: 'POST',
@@ -840,7 +746,7 @@ test('POST /projects/:id/configure pins serverId on existing default environment
       }),
     })
     assertEquals(createRes.status, 200)
-    const { id } = await createRes.json() as { id: string }
+    const { id } = (await createRes.json()) as { id: string }
 
     const [before] = await db
       .select({ serverId: environment.serverId })
@@ -887,24 +793,14 @@ test('POST /projects/:id/configure pins serverId on existing default environment
       assertEquals(after?.name, 'Production')
       assertEquals(after?.serverId, serverId)
     } finally {
-      await db
-        .update(environment)
-        .set({ serverId: null })
-        .where(eq(environment.projectId, id))
+      await db.update(environment).set({ serverId: null }).where(eq(environment.projectId, id))
       await db.delete(server).where(eq(server.id, serverId))
     }
   })
 })
 
 test('POST /projects/:id/configure sets docker-compose idempotently', async () => {
-  await withProjectFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-    workspaceId,
-  }) => {
+  await withProjectFixtures(async ({ db, app, secrets, userId, organizationId, workspaceId }) => {
     const cookie = await sessionCookie(db, secrets, userId)
     const createRes = await app.request('/projects', {
       method: 'POST',
@@ -920,7 +816,7 @@ test('POST /projects/:id/configure sets docker-compose idempotently', async () =
       }),
     })
     assertEquals(createRes.status, 200)
-    const { id } = await createRes.json() as { id: string }
+    const { id } = (await createRes.json()) as { id: string }
 
     const configureRes = await app.request(`/projects/${id}/configure`, {
       method: 'POST',
@@ -977,14 +873,7 @@ test('POST /projects/:id/configure sets docker-compose idempotently', async () =
 })
 
 test('POST /projects/:id/configure managed postgres reuses Production', async () => {
-  await withProjectFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-    workspaceId,
-  }) => {
+  await withProjectFixtures(async ({ db, app, secrets, userId, organizationId, workspaceId }) => {
     const cookie = await sessionCookie(db, secrets, userId)
     const createRes = await app.request('/projects', {
       method: 'POST',
@@ -1000,7 +889,7 @@ test('POST /projects/:id/configure managed postgres reuses Production', async ()
       }),
     })
     assertEquals(createRes.status, 200)
-    const { id } = await createRes.json() as { id: string }
+    const { id } = (await createRes.json()) as { id: string }
 
     const configureRes = await app.request(`/projects/${id}/configure`, {
       method: 'POST',
@@ -1041,14 +930,7 @@ test('POST /projects/:id/configure managed postgres reuses Production', async ()
 })
 
 test('POST /projects rejects duplicate display names case-insensitively within the org', async () => {
-  await withProjectFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-    workspaceId,
-  }) => {
+  await withProjectFixtures(async ({ db, app, secrets, userId, organizationId, workspaceId }) => {
     const cookie = await sessionCookie(db, secrets, userId)
     const first = await app.request('/projects', {
       method: 'POST',
@@ -1084,14 +966,7 @@ test('POST /projects rejects duplicate display names case-insensitively within t
 })
 
 test('PATCH /projects/:id rejects renaming onto another project name in the org', async () => {
-  await withProjectFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-    workspaceId,
-  }) => {
+  await withProjectFixtures(async ({ db, app, secrets, userId, organizationId, workspaceId }) => {
     const cookie = await sessionCookie(db, secrets, userId)
     const createA = await app.request('/projects', {
       method: 'POST',
@@ -1122,7 +997,7 @@ test('PATCH /projects/:id rejects renaming onto another project name in the org'
       }),
     })
     assertEquals(createB.status, 200)
-    const { id: projectBId } = await createB.json() as { id: string }
+    const { id: projectBId } = (await createB.json()) as { id: string }
 
     const rename = await app.request(`/projects/${projectBId}`, {
       method: 'PATCH',
@@ -1140,15 +1015,11 @@ test('PATCH /projects/:id rejects renaming onto another project name in the org'
 
 test('uniq_project_organization_name is the lock: a duplicate past the app pre-check is refused by Postgres and maps to 409', async () => {
   await withProjectFixtures(async ({ db, organizationId, workspaceId }) => {
-    await db
-      .insert(project)
-      .values({ name: 'Race Winner', workspaceId, organizationId })
+    await db.insert(project).values({ name: 'Race Winner', workspaceId, organizationId })
     let thrown: unknown = null
     try {
       // Straight to the table, the shape of a racer the pre-check missed.
-      await db
-        .insert(project)
-        .values({ name: '  race WINNER ', workspaceId, organizationId })
+      await db.insert(project).values({ name: '  race WINNER ', workspaceId, organizationId })
     } catch (err) {
       thrown = err
     }
@@ -1178,14 +1049,7 @@ test('uniq_project_organization_name is the lock: a duplicate past the app pre-c
 })
 
 test('system project names are reserved: POST and PATCH refuse them with project_name_in_use', async () => {
-  await withProjectFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-    workspaceId,
-  }) => {
+  await withProjectFixtures(async ({ db, app, secrets, userId, organizationId, workspaceId }) => {
     const cookie = await sessionCookie(db, secrets, userId)
     const headers = {
       Cookie: cookie,
@@ -1211,7 +1075,7 @@ test('system project names are reserved: POST and PATCH refuse them with project
       body: JSON.stringify({ type: 'empty', workspaceId, name: 'Legit App' }),
     })
     assertEquals(ok.status, 200)
-    const { id } = await ok.json() as { id: string }
+    const { id } = (await ok.json()) as { id: string }
 
     const rename = await app.request(`/projects/${id}`, {
       method: 'PATCH',
@@ -1224,489 +1088,698 @@ test('system project names are reserved: POST and PATCH refuse them with project
 })
 
 test('the system hierarchy self-heal still converges with user projects in the org', async () => {
-  await withProjectFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-    workspaceId,
-    serverId,
-    systemProjectId,
-    selfHostProjectId,
-  }) => {
-    const cookie = await sessionCookie(db, secrets, userId)
-    const created = await app.request('/projects', {
-      method: 'POST',
-      headers: {
-        Cookie: cookie,
-        [ORG_ID_HEADER]: organizationId,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ type: 'empty', workspaceId, name: 'User App' }),
-    })
-    assertEquals(created.status, 200)
+  await withProjectFixtures(
+    async ({
+      db,
+      app,
+      secrets,
+      userId,
+      organizationId,
+      workspaceId,
+      serverId,
+      systemProjectId,
+      selfHostProjectId,
+    }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const created = await app.request('/projects', {
+        method: 'POST',
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ type: 'empty', workspaceId, name: 'User App' }),
+      })
+      assertEquals(created.status, 200)
 
-    // Drift a system project's name, then re-run the ensure: the rename back
-    // to the constant goes through the org-wide unique index too.
-    await db
-      .update(project)
-      .set({ name: 'Renamed By Hand' })
-      .where(eq(project.id, systemProjectId))
-    const again = await ensureSystemHierarchy(db, { organizationId, serverId })
-    assertEquals(again.projectId, systemProjectId)
-    const selfHostAgain = await ensureSelfHostSystemHierarchy(db, { organizationId, serverId })
-    assertEquals(selfHostAgain.projectId, selfHostProjectId)
-    const [row] = await db
-      .select({ name: project.name, organizationId: project.organizationId })
-      .from(project)
-      .where(eq(project.id, systemProjectId))
-    assertEquals(row?.name, SYSTEM_PROJECT_DISPLAY_NAME)
-    assertEquals(row?.organizationId, organizationId)
-  })
+      // Drift a system project's name, then re-run the ensure: the rename back
+      // to the constant goes through the org-wide unique index too.
+      await db
+        .update(project)
+        .set({ name: 'Renamed By Hand' })
+        .where(eq(project.id, systemProjectId))
+      const again = await ensureSystemHierarchy(db, { organizationId, serverId })
+      assertEquals(again.projectId, systemProjectId)
+      const selfHostAgain = await ensureSelfHostSystemHierarchy(db, { organizationId, serverId })
+      assertEquals(selfHostAgain.projectId, selfHostProjectId)
+      const [row] = await db
+        .select({ name: project.name, organizationId: project.organizationId })
+        .from(project)
+        .where(eq(project.id, systemProjectId))
+      assertEquals(row?.name, SYSTEM_PROJECT_DISPLAY_NAME)
+      assertEquals(row?.organizationId, organizationId)
+    }
+  )
 })
 
 test('system workspace project mutations return system_resource_immutable', async () => {
-  await withProjectFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-    workspaceId,
-    systemWorkspaceId,
-    systemProjectId,
-  }) => {
-    const cookie = await sessionCookie(db, secrets, userId)
+  await withProjectFixtures(
+    async ({
+      db,
+      app,
+      secrets,
+      userId,
+      organizationId,
+      workspaceId,
+      systemWorkspaceId,
+      systemProjectId,
+    }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
 
-    const createIntoSystem = await app.request('/projects', {
-      method: 'POST',
-      headers: {
-        Cookie: cookie,
-        [ORG_ID_HEADER]: organizationId,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        type: 'empty',
-        workspaceId: systemWorkspaceId,
-        name: 'Into System',
-      }),
-    })
-    assertEquals(createIntoSystem.status, 403)
-    assertEquals(await createIntoSystem.json(), {
-      error: SYSTEM_RESOURCE_IMMUTABLE_ERROR,
-    })
+      const createIntoSystem = await app.request('/projects', {
+        method: 'POST',
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          type: 'empty',
+          workspaceId: systemWorkspaceId,
+          name: 'Into System',
+        }),
+      })
+      assertEquals(createIntoSystem.status, 403)
+      assertEquals(await createIntoSystem.json(), {
+        error: SYSTEM_RESOURCE_IMMUTABLE_ERROR,
+      })
 
-    const createUser = await app.request('/projects', {
-      method: 'POST',
-      headers: {
-        Cookie: cookie,
-        [ORG_ID_HEADER]: organizationId,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        type: 'empty',
-        workspaceId,
-        name: 'User Project',
-      }),
-    })
-    assertEquals(createUser.status, 200)
-    const { id: userProjectId } = await createUser.json() as { id: string }
+      const createUser = await app.request('/projects', {
+        method: 'POST',
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          type: 'empty',
+          workspaceId,
+          name: 'User Project',
+        }),
+      })
+      assertEquals(createUser.status, 200)
+      const { id: userProjectId } = (await createUser.json()) as { id: string }
 
-    const moveIntoSystem = await app.request(`/projects/${userProjectId}`, {
-      method: 'PATCH',
-      headers: {
-        Cookie: cookie,
-        [ORG_ID_HEADER]: organizationId,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ workspaceId: systemWorkspaceId }),
-    })
-    assertEquals(moveIntoSystem.status, 403)
-    assertEquals(await moveIntoSystem.json(), {
-      error: SYSTEM_RESOURCE_IMMUTABLE_ERROR,
-    })
-
-    const patchSystem = await app.request(`/projects/${systemProjectId}`, {
-      method: 'PATCH',
-      headers: {
-        Cookie: cookie,
-        [ORG_ID_HEADER]: organizationId,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ name: 'Renamed Ingress' }),
-    })
-    assertEquals(patchSystem.status, 403)
-    assertEquals(await patchSystem.json(), {
-      error: SYSTEM_RESOURCE_IMMUTABLE_ERROR,
-    })
-
-    const deleteSystem = await app.request(`/projects/${systemProjectId}`, {
-      method: 'DELETE',
-      headers: {
-        Cookie: cookie,
-        [ORG_ID_HEADER]: organizationId,
-      },
-    })
-    assertEquals(deleteSystem.status, 403)
-    assertEquals(await deleteSystem.json(), {
-      error: SYSTEM_RESOURCE_IMMUTABLE_ERROR,
-    })
-
-    const getSystem = await app.request(`/projects/${systemProjectId}`, {
-      headers: {
-        Cookie: cookie,
-        [ORG_ID_HEADER]: organizationId,
-      },
-    })
-    assertEquals(getSystem.status, 200)
-
-    const [systemWs] = await db
-      .select({ kind: workspace.kind })
-      .from(workspace)
-      .where(eq(workspace.id, systemWorkspaceId))
-      .limit(1)
-    assertEquals(systemWs?.kind, WORKSPACE_KIND_SYSTEM)
-  })
-})
-
-test('system descendant mutations return system_resource_immutable; container read stays open', async () => {
-  await withProjectFixtures(async ({
-    db,
-    secrets,
-    userId,
-    organizationId,
-    systemEnvironmentId,
-    systemServiceId,
-  }) => {
-    const secretsConfig = parseTestSecretsConfig('deno')
-    const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
-      secretsConfig,
-      'data-encryption',
-    )
-    const descendantApp = new Hono<AppEnv>()
-    descendantApp.use('*', (c, next) => {
-      c.set('db', db)
-      c.set('dataEncryptionSecrets', dataEncryptionSecrets)
-      return next()
-    })
-    const opts = { secrets, runtime: 'deno' as const, signupEnvOverride: undefined }
-    registerEnvironmentRoutes(descendantApp, opts)
-    registerEnvironmentDeployRoutes(descendantApp, opts)
-    registerServiceRoutes(descendantApp, opts)
-    registerVariableRoutes(descendantApp, opts)
-    registerContainerRoutes(descendantApp, opts)
-
-    const cookie = await sessionCookie(db, secrets, userId)
-    const headers = {
-      Cookie: cookie,
-      [ORG_ID_HEADER]: organizationId,
-      'Content-Type': 'application/json',
-    }
-
-    const patchEnv = await descendantApp.request(
-      `/environments/${systemEnvironmentId}`,
-      {
+      const moveIntoSystem = await app.request(`/projects/${userProjectId}`, {
         method: 'PATCH',
-        headers,
-        body: JSON.stringify({ name: 'Nope' }),
-      },
-    )
-    assertEquals(patchEnv.status, 403)
-    assertEquals(await patchEnv.json(), {
-      error: SYSTEM_RESOURCE_IMMUTABLE_ERROR,
-    })
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ workspaceId: systemWorkspaceId }),
+      })
+      assertEquals(moveIntoSystem.status, 403)
+      assertEquals(await moveIntoSystem.json(), {
+        error: SYSTEM_RESOURCE_IMMUTABLE_ERROR,
+      })
 
-    const deleteService = await descendantApp.request(
-      `/services/${systemServiceId}`,
-      {
+      const patchSystem = await app.request(`/projects/${systemProjectId}`, {
+        method: 'PATCH',
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ name: 'Renamed Ingress' }),
+      })
+      assertEquals(patchSystem.status, 403)
+      assertEquals(await patchSystem.json(), {
+        error: SYSTEM_RESOURCE_IMMUTABLE_ERROR,
+      })
+
+      const deleteSystem = await app.request(`/projects/${systemProjectId}`, {
         method: 'DELETE',
         headers: {
           Cookie: cookie,
           [ORG_ID_HEADER]: organizationId,
         },
-      },
-    )
-    assertEquals(deleteService.status, 403)
-    assertEquals(await deleteService.json(), {
-      error: SYSTEM_RESOURCE_IMMUTABLE_ERROR,
-    })
+      })
+      assertEquals(deleteSystem.status, 403)
+      assertEquals(await deleteSystem.json(), {
+        error: SYSTEM_RESOURCE_IMMUTABLE_ERROR,
+      })
 
-    const createVar = await descendantApp.request('/variables', {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        environmentId: systemEnvironmentId,
-        key: 'SYSTEM_BLOCKED',
-        value: '1',
-      }),
-    })
-    assertEquals(createVar.status, 403)
-    assertEquals(await createVar.json(), {
-      error: SYSTEM_RESOURCE_IMMUTABLE_ERROR,
-    })
-
-    const deploy = await descendantApp.request(
-      `/environments/${systemEnvironmentId}/deploy`,
-      {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({}),
-      },
-    )
-    assertEquals(deploy.status, 403)
-    assertEquals(await deploy.json(), {
-      error: SYSTEM_RESOURCE_IMMUTABLE_ERROR,
-    })
-
-    const containers = await descendantApp.request(
-      `/containers?environmentId=${systemEnvironmentId}`,
-      {
+      const getSystem = await app.request(`/projects/${systemProjectId}`, {
         headers: {
           Cookie: cookie,
           [ORG_ID_HEADER]: organizationId,
         },
-      },
-    )
-    assertEquals(containers.status, 200)
-    const containerBody = await containers.json() as {
-      containers: Array<{ role?: string }>
+      })
+      assertEquals(getSystem.status, 200)
+
+      const [systemWs] = await db
+        .select({ kind: workspace.kind })
+        .from(workspace)
+        .where(eq(workspace.id, systemWorkspaceId))
+        .limit(1)
+      assertEquals(systemWs?.kind, WORKSPACE_KIND_SYSTEM)
     }
-    if (!Array.isArray(containerBody.containers)) {
-      throw new TypeError('expected containers array')
+  )
+})
+
+test('system descendant mutations return system_resource_immutable; container read stays open', async () => {
+  await withProjectFixtures(
+    async ({ db, secrets, userId, organizationId, systemEnvironmentId, systemServiceId }) => {
+      const secretsConfig = parseTestSecretsConfig('deno')
+      const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
+        secretsConfig,
+        'data-encryption'
+      )
+      const descendantApp = new Hono<AppEnv>()
+      descendantApp.use('*', (c, next) => {
+        c.set('db', db)
+        c.set('dataEncryptionSecrets', dataEncryptionSecrets)
+        return next()
+      })
+      const opts = { secrets, runtime: 'deno' as const, signupEnvOverride: undefined }
+      registerEnvironmentRoutes(descendantApp, opts)
+      registerEnvironmentDeployRoutes(descendantApp, opts)
+      registerServiceRoutes(descendantApp, opts)
+      registerVariableRoutes(descendantApp, opts)
+      registerContainerRoutes(descendantApp, opts)
+
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      }
+
+      const patchEnv = await descendantApp.request(`/environments/${systemEnvironmentId}`, {
+        method: 'PATCH',
+        headers,
+        body: JSON.stringify({ name: 'Nope' }),
+      })
+      assertEquals(patchEnv.status, 403)
+      assertEquals(await patchEnv.json(), {
+        error: SYSTEM_RESOURCE_IMMUTABLE_ERROR,
+      })
+
+      const deleteService = await descendantApp.request(`/services/${systemServiceId}`, {
+        method: 'DELETE',
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+        },
+      })
+      assertEquals(deleteService.status, 403)
+      assertEquals(await deleteService.json(), {
+        error: SYSTEM_RESOURCE_IMMUTABLE_ERROR,
+      })
+
+      const createVar = await descendantApp.request('/variables', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          environmentId: systemEnvironmentId,
+          key: 'SYSTEM_BLOCKED',
+          value: '1',
+        }),
+      })
+      assertEquals(createVar.status, 403)
+      assertEquals(await createVar.json(), {
+        error: SYSTEM_RESOURCE_IMMUTABLE_ERROR,
+      })
+
+      const deploy = await descendantApp.request(`/environments/${systemEnvironmentId}/deploy`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({}),
+      })
+      assertEquals(deploy.status, 403)
+      assertEquals(await deploy.json(), {
+        error: SYSTEM_RESOURCE_IMMUTABLE_ERROR,
+      })
+
+      const containers = await descendantApp.request(
+        `/containers?environmentId=${systemEnvironmentId}`,
+        {
+          headers: {
+            Cookie: cookie,
+            [ORG_ID_HEADER]: organizationId,
+          },
+        }
+      )
+      assertEquals(containers.status, 200)
+      const containerBody = (await containers.json()) as {
+        containers: Array<{ role?: string }>
+      }
+      if (!Array.isArray(containerBody.containers)) {
+        throw new TypeError('expected containers array')
+      }
+      assertEquals(
+        containerBody.containers.some((row) => row.role === 'ingress'),
+        true
+      )
     }
-    assertEquals(
-      containerBody.containers.some((row) => row.role === 'ingress'),
-      true,
-    )
-  })
+  )
 })
 
 test('TurboPanel self-host project mutations return system_resource_immutable; reads stay open', async () => {
-  await withProjectFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-    workspaceId,
-    selfHostProjectId,
-  }) => {
-    const cookie = await sessionCookie(db, secrets, userId)
-    const headers = {
-      Cookie: cookie,
-      [ORG_ID_HEADER]: organizationId,
-      'Content-Type': 'application/json',
+  await withProjectFixtures(
+    async ({ db, app, secrets, userId, organizationId, workspaceId, selfHostProjectId }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      }
+
+      // Compose/override edit (options.compose) is blocked the same as any
+      // other patch — image changes go through this same `options` field.
+      const composeEdit = await app.request(`/projects/${selfHostProjectId}`, {
+        method: 'PATCH',
+        headers,
+        body: JSON.stringify({
+          options: { compose: { services: { database: { image: 'postgres:16' } } } },
+        }),
+      })
+      assertEquals(composeEdit.status, 403)
+      assertEquals(await composeEdit.json(), {
+        error: SYSTEM_RESOURCE_IMMUTABLE_ERROR,
+      })
+
+      // Move OUT of the system workspace onto a normal user workspace.
+      const moveOut = await app.request(`/projects/${selfHostProjectId}`, {
+        method: 'PATCH',
+        headers,
+        body: JSON.stringify({ workspaceId }),
+      })
+      assertEquals(moveOut.status, 403)
+      assertEquals(await moveOut.json(), {
+        error: SYSTEM_RESOURCE_IMMUTABLE_ERROR,
+      })
+
+      // Move INTO the system workspace from a normal user project.
+      const createUser = await app.request('/projects', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          type: 'empty',
+          workspaceId,
+          name: 'Not Self-Host',
+        }),
+      })
+      assertEquals(createUser.status, 200)
+      const { id: userProjectId } = (await createUser.json()) as { id: string }
+
+      const [selfHostRow] = await db
+        .select({ workspaceId: project.workspaceId })
+        .from(project)
+        .where(eq(project.id, selfHostProjectId))
+        .limit(1)
+      const moveIn = await app.request(`/projects/${userProjectId}`, {
+        method: 'PATCH',
+        headers,
+        body: JSON.stringify({ workspaceId: selfHostRow!.workspaceId }),
+      })
+      assertEquals(moveIn.status, 403)
+      assertEquals(await moveIn.json(), {
+        error: SYSTEM_RESOURCE_IMMUTABLE_ERROR,
+      })
+
+      const deleteSelfHost = await app.request(`/projects/${selfHostProjectId}`, {
+        method: 'DELETE',
+        headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+      })
+      assertEquals(deleteSelfHost.status, 403)
+      assertEquals(await deleteSelfHost.json(), {
+        error: SYSTEM_RESOURCE_IMMUTABLE_ERROR,
+      })
+
+      // Reads stay open for an authorized org administrator.
+      const getSelfHost = await app.request(`/projects/${selfHostProjectId}`, {
+        headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+      })
+      assertEquals(getSelfHost.status, 200)
     }
-
-    // Compose/override edit (options.compose) is blocked the same as any
-    // other patch — image changes go through this same `options` field.
-    const composeEdit = await app.request(`/projects/${selfHostProjectId}`, {
-      method: 'PATCH',
-      headers,
-      body: JSON.stringify({
-        options: { compose: { services: { database: { image: 'postgres:16' } } } },
-      }),
-    })
-    assertEquals(composeEdit.status, 403)
-    assertEquals(await composeEdit.json(), {
-      error: SYSTEM_RESOURCE_IMMUTABLE_ERROR,
-    })
-
-    // Move OUT of the system workspace onto a normal user workspace.
-    const moveOut = await app.request(`/projects/${selfHostProjectId}`, {
-      method: 'PATCH',
-      headers,
-      body: JSON.stringify({ workspaceId }),
-    })
-    assertEquals(moveOut.status, 403)
-    assertEquals(await moveOut.json(), {
-      error: SYSTEM_RESOURCE_IMMUTABLE_ERROR,
-    })
-
-    // Move INTO the system workspace from a normal user project.
-    const createUser = await app.request('/projects', {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        type: 'empty',
-        workspaceId,
-        name: 'Not Self-Host',
-      }),
-    })
-    assertEquals(createUser.status, 200)
-    const { id: userProjectId } = await createUser.json() as { id: string }
-
-    const [selfHostRow] = await db
-      .select({ workspaceId: project.workspaceId })
-      .from(project)
-      .where(eq(project.id, selfHostProjectId))
-      .limit(1)
-    const moveIn = await app.request(`/projects/${userProjectId}`, {
-      method: 'PATCH',
-      headers,
-      body: JSON.stringify({ workspaceId: selfHostRow!.workspaceId }),
-    })
-    assertEquals(moveIn.status, 403)
-    assertEquals(await moveIn.json(), {
-      error: SYSTEM_RESOURCE_IMMUTABLE_ERROR,
-    })
-
-    const deleteSelfHost = await app.request(`/projects/${selfHostProjectId}`, {
-      method: 'DELETE',
-      headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
-    })
-    assertEquals(deleteSelfHost.status, 403)
-    assertEquals(await deleteSelfHost.json(), {
-      error: SYSTEM_RESOURCE_IMMUTABLE_ERROR,
-    })
-
-    // Reads stay open for an authorized org administrator.
-    const getSelfHost = await app.request(`/projects/${selfHostProjectId}`, {
-      headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
-    })
-    assertEquals(getSelfHost.status, 200)
-  })
+  )
 })
 
 test('TurboPanel self-host descendant mutations return system_resource_immutable; reads stay open', async () => {
-  await withProjectFixtures(async ({
-    db,
-    secrets,
-    userId,
-    organizationId,
-    serverId,
-    selfHostEnvironmentId,
-    selfHostServiceId,
-  }) => {
-    const secretsConfig = parseTestSecretsConfig('deno')
-    const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
-      secretsConfig,
-      'data-encryption',
-    )
-    const descendantApp = new Hono<AppEnv>()
-    descendantApp.use('*', (c, next) => {
-      c.set('db', db)
-      c.set('dataEncryptionSecrets', dataEncryptionSecrets)
-      return next()
-    })
-    const opts = { secrets, runtime: 'deno' as const, signupEnvOverride: undefined }
-    registerEnvironmentRoutes(descendantApp, opts)
-    registerEnvironmentDeployRoutes(descendantApp, opts)
-    registerEnvironmentLifecycleRoutes(descendantApp, opts)
-    registerEnvironmentStopRoutes(descendantApp, opts)
-    registerServiceRoutes(descendantApp, opts)
-    registerVariableRoutes(descendantApp, opts)
-    registerContainerRoutes(descendantApp, opts)
-    registerStorageRoutes(descendantApp, opts)
+  await withProjectFixtures(
+    async ({
+      db,
+      secrets,
+      userId,
+      organizationId,
+      serverId,
+      selfHostEnvironmentId,
+      selfHostServiceId,
+    }) => {
+      const secretsConfig = parseTestSecretsConfig('deno')
+      const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
+        secretsConfig,
+        'data-encryption'
+      )
+      const descendantApp = new Hono<AppEnv>()
+      descendantApp.use('*', (c, next) => {
+        c.set('db', db)
+        c.set('dataEncryptionSecrets', dataEncryptionSecrets)
+        return next()
+      })
+      const opts = { secrets, runtime: 'deno' as const, signupEnvOverride: undefined }
+      registerEnvironmentRoutes(descendantApp, opts)
+      registerEnvironmentDeployRoutes(descendantApp, opts)
+      registerEnvironmentLifecycleRoutes(descendantApp, opts)
+      registerEnvironmentStopRoutes(descendantApp, opts)
+      registerServiceRoutes(descendantApp, opts)
+      registerVariableRoutes(descendantApp, opts)
+      registerContainerRoutes(descendantApp, opts)
+      registerStorageRoutes(descendantApp, opts)
 
-    const cookie = await sessionCookie(db, secrets, userId)
-    const headers = {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
+        Cookie: cookie,
+        [ORG_ID_HEADER]: organizationId,
+        'Content-Type': 'application/json',
+      }
+
+      // Environment / service delete.
+      const patchEnv = await descendantApp.request(`/environments/${selfHostEnvironmentId}`, {
+        method: 'PATCH',
+        headers,
+        body: JSON.stringify({ name: 'Nope' }),
+      })
+      assertEquals(patchEnv.status, 403)
+      assertEquals(await patchEnv.json(), {
+        error: SYSTEM_RESOURCE_IMMUTABLE_ERROR,
+      })
+
+      const deleteService = await descendantApp.request(`/services/${selfHostServiceId}`, {
+        method: 'DELETE',
+        headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+      })
+      assertEquals(deleteService.status, 403)
+      assertEquals(await deleteService.json(), {
+        error: SYSTEM_RESOURCE_IMMUTABLE_ERROR,
+      })
+
+      // Variable mutation.
+      const createVar = await descendantApp.request('/variables', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          environmentId: selfHostEnvironmentId,
+          key: 'SELF_HOST_BLOCKED',
+          value: '1',
+        }),
+      })
+      assertEquals(createVar.status, 403)
+      assertEquals(await createVar.json(), {
+        error: SYSTEM_RESOURCE_IMMUTABLE_ERROR,
+      })
+
+      // Storage mutation.
+      const createStorage = await descendantApp.request('/storage', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          environmentId: selfHostEnvironmentId,
+          kind: 'volume',
+          name: 'self-host-blocked',
+          location: { provider: 'docker', serverId },
+        }),
+      })
+      assertEquals(createStorage.status, 403)
+      assertEquals(await createStorage.json(), {
+        error: SYSTEM_RESOURCE_IMMUTABLE_ERROR,
+      })
+
+      // Deploy / lifecycle / stop.
+      const deploy = await descendantApp.request(`/environments/${selfHostEnvironmentId}/deploy`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({}),
+      })
+      assertEquals(deploy.status, 403)
+      assertEquals(await deploy.json(), {
+        error: SYSTEM_RESOURCE_IMMUTABLE_ERROR,
+      })
+
+      const lifecycle = await descendantApp.request(
+        `/environments/${selfHostEnvironmentId}/lifecycle`,
+        { method: 'POST', headers, body: JSON.stringify({ action: 'start' }) }
+      )
+      assertEquals(lifecycle.status, 403)
+      assertEquals(await lifecycle.json(), {
+        error: SYSTEM_RESOURCE_IMMUTABLE_ERROR,
+      })
+
+      const stop = await descendantApp.request(`/environments/${selfHostEnvironmentId}/stop`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({}),
+      })
+      assertEquals(stop.status, 403)
+      assertEquals(await stop.json(), {
+        error: SYSTEM_RESOURCE_IMMUTABLE_ERROR,
+      })
+
+      // Reads stay open for an authorized org administrator.
+      const getEnv = await descendantApp.request(`/environments/${selfHostEnvironmentId}`, {
+        headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+      })
+      assertEquals(getEnv.status, 200)
+
+      const containers = await descendantApp.request(
+        `/containers?environmentId=${selfHostEnvironmentId}`,
+        { headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId } }
+      )
+      assertEquals(containers.status, 200)
+      const containerBody = (await containers.json()) as {
+        containers: Array<{ role?: string }>
+      }
+      if (!Array.isArray(containerBody.containers)) {
+        throw new TypeError('expected containers array')
+      }
+      assertEquals(
+        containerBody.containers.every((row) => row.role === 'turbopanel'),
+        true
+      )
+      assertEquals(containerBody.containers.length > 0, true)
+    }
+  )
+})
+
+type ProjectTestContext = Parameters<Parameters<typeof withProjectFixtures>[0]>[0]
+
+async function sendProjectJson(
+  ctx: ProjectTestContext,
+  cookie: string,
+  method: string,
+  path: string,
+  body: unknown
+): Promise<Response> {
+  return await ctx.app.request(path, {
+    method,
+    headers: {
       Cookie: cookie,
-      [ORG_ID_HEADER]: organizationId,
+      [ORG_ID_HEADER]: ctx.organizationId,
       'Content-Type': 'application/json',
-    }
+    },
+    body: JSON.stringify(body),
+  })
+}
 
-    // Environment / service delete.
-    const patchEnv = await descendantApp.request(
-      `/environments/${selfHostEnvironmentId}`,
-      { method: 'PATCH', headers, body: JSON.stringify({ name: 'Nope' }) },
-    )
-    assertEquals(patchEnv.status, 403)
-    assertEquals(await patchEnv.json(), {
-      error: SYSTEM_RESOURCE_IMMUTABLE_ERROR,
+async function createEmptyProject(
+  ctx: ProjectTestContext,
+  cookie: string,
+  name: string
+): Promise<string> {
+  const res = await sendProjectJson(ctx, cookie, 'POST', '/projects', {
+    type: 'empty',
+    workspaceId: ctx.workspaceId,
+    name,
+  })
+  assertEquals(res.status, 200)
+  return ((await res.json()) as { id: string }).id
+}
+
+async function projectOptions(
+  ctx: ProjectTestContext,
+  id: string
+): Promise<Record<string, unknown> | null> {
+  const [row] = await ctx.db
+    .select({ options: project.options })
+    .from(project)
+    .where(eq(project.id, id))
+    .limit(1)
+  return (row?.options ?? null) as Record<string, unknown> | null
+}
+
+test('POST /projects scaffolds the default environment on the sequential strategy', async () => {
+  await withProjectFixtures(async (ctx) => {
+    const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
+    const id = await createEmptyProject(ctx, cookie, 'Strategy Default Project')
+    const [env] = await ctx.db
+      .select({ options: environment.options })
+      .from(environment)
+      .where(eq(environment.projectId, id))
+    assertEquals((env?.options as { deployStrategy?: string } | null)?.deployStrategy, 'sequential')
+  })
+})
+
+test('PATCH /projects/:id validates deploy defaults, keeps stored ones, and refuses environment-only keys', async () => {
+  await withProjectFixtures(async (ctx) => {
+    const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
+    const id = await createEmptyProject(ctx, cookie, 'Deploy Defaults Project')
+
+    const set = await sendProjectJson(ctx, cookie, 'PATCH', `/projects/${id}`, {
+      options: { rollbackWindowMinutes: 10, drainSeconds: 20 },
+    })
+    assertEquals(set.status, 200)
+    assertEquals(await projectOptions(ctx, id), { rollbackWindowMinutes: 10, drainSeconds: 20 })
+
+    // An options write that names other keys keeps the stored tuning ones.
+    const other = await sendProjectJson(ctx, cookie, 'PATCH', `/projects/${id}`, {
+      options: { containerNaming: 'custom' },
+    })
+    assertEquals(other.status, 200)
+    assertEquals(await projectOptions(ctx, id), {
+      containerNaming: 'custom',
+      rollbackWindowMinutes: 10,
+      drainSeconds: 20,
     })
 
-    const deleteService = await descendantApp.request(
-      `/services/${selfHostServiceId}`,
-      { method: 'DELETE', headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId } },
-    )
-    assertEquals(deleteService.status, 403)
-    assertEquals(await deleteService.json(), {
-      error: SYSTEM_RESOURCE_IMMUTABLE_ERROR,
+    const cleared = await sendProjectJson(ctx, cookie, 'PATCH', `/projects/${id}`, {
+      options: { drainSeconds: null },
+    })
+    assertEquals(cleared.status, 200)
+    assertEquals(await projectOptions(ctx, id), { rollbackWindowMinutes: 10 })
+
+    const invalid = await sendProjectJson(ctx, cookie, 'PATCH', `/projects/${id}`, {
+      options: { healthTimeoutSeconds: 1 },
+    })
+    assertEquals(invalid.status, 400)
+    assertEquals(await invalid.json(), {
+      error: 'healthTimeoutSeconds must be an integer from 10 to 3600',
     })
 
-    // Variable mutation.
-    const createVar = await descendantApp.request('/variables', {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        environmentId: selfHostEnvironmentId,
-        key: 'SELF_HOST_BLOCKED',
-        value: '1',
-      }),
+    const environmentOnly = await sendProjectJson(ctx, cookie, 'PATCH', `/projects/${id}`, {
+      options: { deployStrategy: 'sequential' },
     })
-    assertEquals(createVar.status, 403)
-    assertEquals(await createVar.json(), {
-      error: SYSTEM_RESOURCE_IMMUTABLE_ERROR,
+    assertEquals(environmentOnly.status, 400)
+    assertEquals(await environmentOnly.json(), {
+      error: 'deployStrategy can only be set on an environment',
     })
+    assertEquals(await projectOptions(ctx, id), { rollbackWindowMinutes: 10 })
+  })
+})
 
-    // Storage mutation.
-    const createStorage = await descendantApp.request('/storage', {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        environmentId: selfHostEnvironmentId,
-        kind: 'volume',
-        name: 'self-host-blocked',
-        location: { provider: 'docker', serverId },
-      }),
-    })
-    assertEquals(createStorage.status, 403)
-    assertEquals(await createStorage.json(), {
-      error: SYSTEM_RESOURCE_IMMUTABLE_ERROR,
-    })
+test('POST /projects/:id/configure with a catalog template keeps the environment deploy settings', async () => {
+  await withProjectFixtures(async (ctx) => {
+    const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
+    const id = await createEmptyProject(ctx, cookie, 'Template Keeps Strategy')
+    const [env] = await ctx.db
+      .select({ id: environment.id })
+      .from(environment)
+      .where(eq(environment.projectId, id))
+    await ctx.db
+      .update(environment)
+      .set({
+        options: { compose: { version: 1 }, deployStrategy: 'bluegreen', migrations: 'none' },
+      })
+      .where(eq(environment.id, env!.id))
 
-    // Deploy / lifecycle / stop.
-    const deploy = await descendantApp.request(
-      `/environments/${selfHostEnvironmentId}/deploy`,
-      { method: 'POST', headers, body: JSON.stringify({}) },
-    )
-    assertEquals(deploy.status, 403)
-    assertEquals(await deploy.json(), {
-      error: SYSTEM_RESOURCE_IMMUTABLE_ERROR,
+    const res = await sendProjectJson(ctx, cookie, 'POST', `/projects/${id}/configure`, {
+      type: 'template',
+      code: 'static-site',
     })
+    assertEquals(res.status, 200)
 
-    const lifecycle = await descendantApp.request(
-      `/environments/${selfHostEnvironmentId}/lifecycle`,
-      { method: 'POST', headers, body: JSON.stringify({ action: 'start' }) },
-    )
-    assertEquals(lifecycle.status, 403)
-    assertEquals(await lifecycle.json(), {
-      error: SYSTEM_RESOURCE_IMMUTABLE_ERROR,
-    })
+    const [after] = await ctx.db
+      .select({ options: environment.options })
+      .from(environment)
+      .where(eq(environment.id, env!.id))
+    const options = after?.options as Record<string, unknown>
+    assertEquals(options.deployStrategy, 'bluegreen')
+    assertEquals(options.migrations, 'none')
+    assertEquals(typeof options.compose, 'object')
+  })
+})
 
-    const stop = await descendantApp.request(
-      `/environments/${selfHostEnvironmentId}/stop`,
-      { method: 'POST', headers, body: JSON.stringify({}) },
-    )
-    assertEquals(stop.status, 403)
-    assertEquals(await stop.json(), {
-      error: SYSTEM_RESOURCE_IMMUTABLE_ERROR,
-    })
+type CatalogScaffoldBody = {
+  type: 'template' | 'managed'
+  code: string
+  workspaceId: string
+  name: string
+}
 
-    // Reads stay open for an authorized org administrator.
-    const getEnv = await descendantApp.request(
-      `/environments/${selfHostEnvironmentId}`,
-      { headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId } },
-    )
-    assertEquals(getEnv.status, 200)
+/** The environment name a catalog entry scaffolds under (its Production-like name follows the org default). */
+function expectedCatalogEnvironmentName(declared: string): string {
+  return declared.toLowerCase() === 'production' ? 'Production' : declared
+}
 
-    const containers = await descendantApp.request(
-      `/containers?environmentId=${selfHostEnvironmentId}`,
-      { headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId } },
-    )
-    assertEquals(containers.status, 200)
-    const containerBody = await containers.json() as {
-      containers: Array<{ role?: string }>
-    }
-    if (!Array.isArray(containerBody.containers)) {
-      throw new TypeError('expected containers array')
-    }
+async function assertCatalogScaffold(
+  ctx: ProjectTestContext,
+  projectId: string,
+  entry: CatalogEntry
+): Promise<void> {
+  const [projectRow] = await ctx.db
+    .select({ metadata: project.metadata, options: project.options })
+    .from(project)
+    .where(eq(project.id, projectId))
+    .limit(1)
+  const metadata = projectRow?.metadata as { type?: string } | null
+  assertEquals(metadata?.type, entry.kind, `${entry.code}: project type`)
+  const options = projectRow?.options as { compose?: { data?: unknown } } | null
+  assertEquals(
+    options?.compose?.data,
+    entry.compose.data,
+    `${entry.code}: stored compose is the template's`
+  )
+
+  const envs = await ctx.db
+    .select({ id: environment.id, name: environment.name, options: environment.options })
+    .from(environment)
+    .where(eq(environment.projectId, projectId))
+  assertEquals(
+    envs.map((env) => env.name),
+    entry.environments.map((env) => expectedCatalogEnvironmentName(env.displayName)),
+    `${entry.code}: first environment exists with the template's name`
+  )
+  await forEachSequential(entry.environments, async (declared, index) => {
+    const vars = await ctx.db
+      .select({ key: variable.key, value: variable.value, isSecret: variable.isSecret })
+      .from(variable)
+      .where(eq(variable.environmentId, envs[index]!.id))
+    const stored = new Map(vars.map((row) => [row.key, row]))
     assertEquals(
-      containerBody.containers.every((row) => row.role === 'turbopanel'),
-      true,
+      [...stored.keys()].sort(),
+      (declared.variables ?? []).map((v) => v.key).sort(),
+      `${entry.code}: variables match the template`
     )
-    assertEquals(containerBody.containers.length > 0, true)
+    for (const declaredVar of declared.variables ?? []) {
+      const row = stored.get(declaredVar.key)
+      assertEquals(row?.isSecret, declaredVar.isSecret)
+      if (declaredVar.isSecret) assertEquals(row?.value?.startsWith('tpsecret.'), true)
+      else assertEquals(row?.value, declaredVar.value)
+    }
+  })
+}
+
+test('POST /projects creates a project from every catalog template and managed entry, scaffolding what the entry declares', async () => {
+  await withProjectFixtures(async (ctx) => {
+    const cookie = await sessionCookie(ctx.db, ctx.secrets, ctx.userId)
+    const summaries = listCatalog()
+    assertEquals(summaries.length >= 7, true)
+    assertEquals(summaries.filter((entry) => entry.kind === 'template').length >= 2, true)
+
+    await forEachSequential(summaries, async (summary) => {
+      const entry = getCatalogEntry(summary.code)
+      assertEquals(entry?.code, summary.code)
+      const body: CatalogScaffoldBody = {
+        type: summary.kind,
+        code: summary.code,
+        workspaceId: ctx.workspaceId,
+        name: `Catalog ${summary.code}`,
+      }
+      const res = await sendProjectJson(ctx, cookie, 'POST', '/projects', body)
+      assertEquals(res.status, 200, `${summary.code}: create`)
+      const { id } = (await res.json()) as { id: string }
+      await assertCatalogScaffold(ctx, id, entry!)
+    })
   })
 })

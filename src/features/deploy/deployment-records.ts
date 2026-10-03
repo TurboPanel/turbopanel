@@ -1,18 +1,21 @@
-import { and, eq, inArray, sql } from 'drizzle-orm'
+import { and, eq, inArray, isNull, ne, or, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { nowIso } from '../commands/ids.ts'
 import { deployment } from '../../db/schema.ts'
+import type { DeployStrategyOutcome } from './deploy-outcome.ts'
 
-export const DEPLOYMENT_STATUSES = Object.freeze(
-  ['pending', 'applying', 'applied', 'failed', 'draining'] as const,
-)
+export const DEPLOYMENT_STATUSES = Object.freeze([
+  'pending',
+  'applying',
+  'applied',
+  'failed',
+  'draining',
+] as const)
 
 export type DeploymentStatus = (typeof DEPLOYMENT_STATUSES)[number]
 
 /** Terminal outcome of the last apply attempt recorded on a `deployment` row. */
-export const DEPLOYMENT_OUTCOMES = Object.freeze(
-  ['applied', 'failed', 'timed_out'] as const,
-)
+export const DEPLOYMENT_OUTCOMES = Object.freeze(['applied', 'failed', 'timed_out'] as const)
 
 export type DeploymentOutcome = (typeof DEPLOYMENT_OUTCOMES)[number]
 
@@ -58,6 +61,14 @@ type DeploymentTransitionParams = {
   finishedAt?: string
   durationMs?: number | null
   outcome?: DeploymentOutcome
+  /**
+   * Only write while the row still belongs to this command (or tracks none and
+   * is not `draining`). A result from an older deploy must not overwrite a
+   * newer deploy's row.
+   */
+  expectedCommandId?: string
+  /** Only write while the row is in this status. */
+  expectedStatus?: DeploymentStatus
 }
 
 function isDeploymentStatus(value: string): value is DeploymentStatus {
@@ -86,9 +97,7 @@ export function serializeDeploymentTarget(row: DeploymentDbRow): DeploymentTarge
     finishedAt: row.finishedAt ?? null,
     durationMs: row.durationMs ?? null,
     outcome:
-      typeof row.outcome === 'string' && isDeploymentOutcome(row.outcome)
-        ? row.outcome
-        : null,
+      typeof row.outcome === 'string' && isDeploymentOutcome(row.outcome) ? row.outcome : null,
   }
 }
 
@@ -109,9 +118,7 @@ export function deploymentDurationMs(params: {
   return Math.max(0, endMs - startMs)
 }
 
-function sortDeploymentTargets(
-  records: DeploymentTargetRecord[],
-): DeploymentTargetRecord[] {
+function sortDeploymentTargets(records: DeploymentTargetRecord[]): DeploymentTargetRecord[] {
   return [...records].sort((a, b) => {
     const byServer = a.serverId.localeCompare(b.serverId)
     if (byServer !== 0) return byServer
@@ -129,7 +136,7 @@ export async function upsertDeploymentTargets(
   params: {
     environmentId: string
     targets: readonly DeploymentTargetInput[]
-  },
+  }
 ): Promise<void> {
   if (params.targets.length === 0) return
 
@@ -146,7 +153,7 @@ export async function upsertDeploymentTargets(
         lastCommandId: target.lastCommandId ?? null,
         options: target.options ?? null,
         updatedAt: now,
-      })),
+      }))
     )
     .onConflictDoUpdate({
       target: [deployment.environmentId, deployment.serverId],
@@ -161,9 +168,47 @@ export async function upsertDeploymentTargets(
     })
 }
 
+/**
+ * Loopback listen ports the control plane gave other environments' sites and
+ * native apps on each server (`options.listenPorts`, written by the deploy that
+ * allocated them). A new allocation probes past these so two environments on one
+ * host never share a port. This environment's own row is left out: a redeploy
+ * keeps the port it already has.
+ */
+export async function listReservedListenPorts(
+  db: Db,
+  params: { environmentId: string; serverIds: readonly string[] }
+): Promise<Map<string, Set<number>>> {
+  const byServer = new Map<string, Set<number>>()
+  if (params.serverIds.length === 0) return byServer
+  const rows = await db
+    .select({ serverId: deployment.serverId, options: deployment.options })
+    .from(deployment)
+    .where(
+      and(
+        inArray(deployment.serverId, [...params.serverIds]),
+        ne(deployment.environmentId, params.environmentId)
+      )
+    )
+  for (const row of rows) {
+    const ports = byServer.get(row.serverId) ?? new Set<number>()
+    for (const port of readRecordedListenPorts(row.options)) ports.add(port)
+    byServer.set(row.serverId, ports)
+  }
+  return byServer
+}
+
+/** The `listenPorts` a deploy recorded on its `deployment.options`; empty when absent or malformed. */
+export function readRecordedListenPorts(options: unknown): number[] {
+  if (typeof options !== 'object' || options === null) return []
+  const ports = (options as { listenPorts?: unknown }).listenPorts
+  if (!Array.isArray(ports)) return []
+  return ports.filter((port): port is number => Number.isInteger(port))
+}
+
 export async function listEnvironmentDeploymentTargets(
   db: Db,
-  environmentId: string,
+  environmentId: string
 ): Promise<DeploymentTargetRecord[]> {
   const rows = await db
     .select()
@@ -176,7 +221,7 @@ export async function listEnvironmentDeploymentTargets(
 
 async function transitionDeploymentStatus(
   db: Db,
-  params: DeploymentTransitionParams,
+  params: DeploymentTransitionParams
 ): Promise<DeploymentTargetRecord | null> {
   const now = nowIso()
   const patch: Record<string, unknown> = {
@@ -209,7 +254,21 @@ async function transitionDeploymentStatus(
       and(
         eq(deployment.environmentId, params.environmentId),
         eq(deployment.serverId, params.serverId),
-      ),
+        ...(params.expectedCommandId === undefined
+          ? []
+          : [
+              or(
+                // A `draining` row also tracks no command (a redeploy dropped
+                // the server), but a late result from the old generation must
+                // not turn it back into a target the drain prune skips.
+                and(isNull(deployment.lastCommandId), ne(deployment.status, 'draining')),
+                eq(deployment.lastCommandId, params.expectedCommandId)
+              ),
+            ]),
+        ...(params.expectedStatus === undefined
+          ? []
+          : [eq(deployment.status, params.expectedStatus)])
+      )
     )
     .returning()
 
@@ -231,15 +290,20 @@ export async function markDeploymentApplied(
     commandId?: string
     finishedAt?: string
     durationMs?: number | null
-  },
+    /** See {@link DeploymentTransitionParams.expectedCommandId}. */
+    expectedCommandId?: string
+  }
 ): Promise<DeploymentTargetRecord | null> {
   const finishedAt = params.finishedAt ?? nowIso()
   return transitionDeploymentStatus(db, {
     environmentId: params.environmentId,
     serverId: params.serverId,
+    ...(params.expectedCommandId === undefined
+      ? {}
+      : { expectedCommandId: params.expectedCommandId }),
     status: 'applied',
     appliedGeneration: params.generation,
-    metadataPatch: { error: null },
+    metadataPatch: { error: null, strategyOutcome: null },
     finishedAt,
     durationMs: params.durationMs ?? null,
     outcome: 'applied',
@@ -263,16 +327,30 @@ export async function markDeploymentFailed(
     outcome?: DeploymentOutcome
     finishedAt?: string
     durationMs?: number | null
-  },
+    /**
+     * How a sequential deploy ended when it did not finish. Kept in `metadata`
+     * because `deployment.outcome` is limited to applied / failed / timed_out
+     * by a database check.
+     */
+    strategyOutcome?: DeployStrategyOutcome
+    /** See {@link DeploymentTransitionParams.expectedCommandId}. */
+    expectedCommandId?: string
+    expectedStatus?: DeploymentStatus
+  }
 ): Promise<DeploymentTargetRecord | null> {
   const metadataPatch: Record<string, unknown> = {}
   if (params.error !== undefined) {
     metadataPatch.error = params.error
   }
+  metadataPatch.strategyOutcome = params.strategyOutcome ?? null
   const finishedAt = params.finishedAt ?? nowIso()
   return transitionDeploymentStatus(db, {
     environmentId: params.environmentId,
     serverId: params.serverId,
+    ...(params.expectedCommandId === undefined
+      ? {}
+      : { expectedCommandId: params.expectedCommandId }),
+    ...(params.expectedStatus === undefined ? {} : { expectedStatus: params.expectedStatus }),
     status: 'failed',
     finishedAt,
     durationMs: params.durationMs ?? null,
@@ -291,7 +369,7 @@ export async function pruneDrainedDeployments(
   params: {
     environmentId: string
     serverIds?: readonly string[]
-  },
+  }
 ): Promise<void> {
   if (params.serverIds !== undefined) {
     if (params.serverIds.length === 0) return
@@ -300,8 +378,8 @@ export async function pruneDrainedDeployments(
       .where(
         and(
           eq(deployment.environmentId, params.environmentId),
-          inArray(deployment.serverId, [...params.serverIds]),
-        ),
+          inArray(deployment.serverId, [...params.serverIds])
+        )
       )
     return
   }
@@ -309,9 +387,6 @@ export async function pruneDrainedDeployments(
   await db
     .delete(deployment)
     .where(
-      and(
-        eq(deployment.environmentId, params.environmentId),
-        eq(deployment.status, 'draining'),
-      ),
+      and(eq(deployment.environmentId, params.environmentId), eq(deployment.status, 'draining'))
     )
 }

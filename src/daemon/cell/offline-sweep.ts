@@ -49,6 +49,8 @@
  * phases race remaining time, and `OFFLINE_SWEEP_LOCK.expiresAt` covers the
  * enforced live runtime so a still-running holder cannot be stolen.
  */
+import { expireStaleDetectingRecoveries } from '../../features/managed/recovery-records.ts'
+import { AUTOMATIC_FAILOVER_STALE_DETECTING_MESSAGE } from '../../features/managed/recovery.ts'
 import {
   type Db,
   DB_OP_TIMEOUT_MS,
@@ -60,10 +62,14 @@ import { resolveWorkersDb } from '../../platform/workers/workers-bindings.ts'
 import { runManagedIngressOrphanSweep } from '../../features/managed/ingress-desired.ts'
 import { runDatacenterRepinFanoutSweep } from '../../client/datacenters/repin-fanout.ts'
 import { runSystemReconcileSweep } from '../../features/system/reconcile.ts'
+import { runBackupsReconcileSweep } from '../../features/backups/reconcile.ts'
+import type { FirewallApplyGate } from '../../features/firewall/enforcement.ts'
+import { runFirewallPreviewSweep } from '../../features/firewall/preview.ts'
 import { runLeafRenewalSweepTick } from '../../client/tls/leaf-renewal-sweep.ts'
 import { type AlertSender, NOOP_ALERT_SENDER } from '../../features/alerts/alert-sender.ts'
 import { resolveAlertSender } from '../../features/alerts/resolve-alert-sender.ts'
 import { type EmitEmail, retryDueDeliveries } from '../../features/notifications/emit.ts'
+import { sendDueDigests } from '../../features/notifications/digest.ts'
 import {
   ALERT_DELIVERY_BUDGET_MS,
   notifyDemotions,
@@ -91,6 +97,11 @@ import { resolveInstanceRevision } from '../../app/build-info.ts'
 import { INSTANCE_VERSION } from '../../app/version.ts'
 import { resolveColocatedServerId } from '../../client/authn/install-state.ts'
 import { runUpgradeMaintenance } from '../../features/upgrades/maintenance.ts'
+import {
+  parseUpgradeTickMinutes,
+  shouldRunUpgradeTick,
+  UPGRADE_TICK_DEFAULT_MINUTES,
+} from '../../features/upgrades/tick-cadence.ts'
 import {
   type AnalyticsEngineDatasetLike,
   resolveServerMetricsStore,
@@ -131,12 +142,8 @@ import { resolveEmailSettings } from '../../features/settings/email-settings.ts'
 import { sweepTierNotices } from '../../features/tiers/tier-notice-sweep.ts'
 import { resolveBillingConfig } from '../../features/billing/config.ts'
 import { createStripeClient } from '../../features/billing/client.ts'
-import { runGraceClock, shouldRunGraceClock } from '../../features/billing/grace-clock.ts'
 import { runReconcile, shouldRunReconcile } from '../../features/billing/reconcile.ts'
-import {
-  projectSubscriptionById,
-  runPendingStripeProjections,
-} from '../../webhook/billing/stripe-projection.ts'
+import { runPendingStripeProjections } from '../../webhook/billing/stripe-projection.ts'
 
 /** Grace beyond the daemon's ~60s idle-ping cadence before declaring a server stale. */
 export const OFFLINE_SWEEP_STALE_MS = 90_000
@@ -899,10 +906,14 @@ export async function sweepExpiredCommandDispatchSafely(db: Db): Promise<void> {
   try {
     const timedOut = await sweepStaleCommands(db)
     const released = await releaseStuckManagedApplying(db)
-    if (timedOut > 0 || released.length > 0) {
+    const expiredDetecting = await expireStaleDetectingRecoveries(db, {
+      reason: AUTOMATIC_FAILOVER_STALE_DETECTING_MESSAGE,
+    })
+    if (timedOut > 0 || released.length > 0 || expiredDetecting.length > 0) {
       sweepTrace('stale-command-swept', {
         timedOut,
         releasedManaged: released.length,
+        expiredDetectingRecoveries: expiredDetecting.length,
       })
     }
   } catch (err) {
@@ -951,7 +962,8 @@ export async function sweepUpgradeHistorySafely(db: Db, doneRetentionDays?: numb
 }
 
 /**
- * Advance managed upgrades on the same 15-minute window as history prune.
+ * Advance managed upgrades. The cadence is `TURBOPANEL_UPGRADE_TICK_MINUTES`
+ * (default 15, see features/upgrades/tick-cadence.ts), independent of history prune.
  * Manifest fetches are cached. Dispatch is capped inside the coordinator.
  */
 export async function runUpgradeMaintenanceSafely(db: Db, env: CloudflareBindings): Promise<void> {
@@ -1008,11 +1020,31 @@ export async function sweepExpiredExecutionLogsSafely(
 async function runQueuedCronSweeps(
   db: Db,
   queue: NonNullable<CloudflareBindings['TURBOPANEL_COMMAND_QUEUE']>,
-  tlsRenewal?: CronTlsRenewal | null
+  tlsRenewal: CronTlsRenewal | null | undefined,
+  firewallApplyGate: FirewallApplyGate
 ): Promise<void> {
   try {
     const commandQueue = createWorkersCommandQueue(queue)
     await runSystemReconcileSweep(db, commandQueue)
+    // Backup policy sets after a reconnect; isolated so a failure never
+    // aborts the other sweeps.
+    try {
+      await runBackupsReconcileSweep(db, commandQueue)
+    } catch (err) {
+      sweepTrace('backups-reconcile-sweep-failed', {
+        error: sweepErrorMessage(err),
+      })
+    }
+    // Firewall previews after a reconnect; isolated too. The gate is the
+    // deploy-time apply key: without it an opted-in host that applied would be
+    // sent a teardown on every reconnect.
+    try {
+      await runFirewallPreviewSweep(db, commandQueue, { applyGate: firewallApplyGate })
+    } catch (err) {
+      sweepTrace('firewall-preview-sweep-failed', {
+        error: sweepErrorMessage(err),
+      })
+    }
     if (tlsRenewal) {
       await runLeafRenewalSweepTickSafely(db, commandQueue, tlsRenewal)
       // Orphaned ProxySQL frontends: teardown needs a full
@@ -1057,21 +1089,38 @@ function shouldRunScheduledPhase(
   return scheduledTime !== undefined && shouldRun(scheduledTime)
 }
 
-function optionalPhaseNames(scheduledTime: number | undefined): string[] {
+/**
+ * Phases a tick did not run, plus the upgrade tick cadence in force for it
+ * (`TURBOPANEL_UPGRADE_TICK_MINUTES`) so the skipped-phase list agrees with
+ * what the tick would really have scheduled.
+ */
+export type SkippedPhases = string[] & { readonly upgradeTickMinutes: number }
+
+export function newSkippedPhases(upgradeTickMinutes: number): SkippedPhases {
+  return Object.assign([] as string[], { upgradeTickMinutes })
+}
+
+/** The phases this tick schedules after liveness, in run order. */
+export function optionalPhaseNames(
+  scheduledTime: number | undefined,
+  upgradeTickMinutes: number = UPGRADE_TICK_DEFAULT_MINUTES
+): string[] {
   const names = ['command-dispatch', 'webhook-deliveries']
   if (shouldRunScheduledPhase(scheduledTime, shouldSweepExecutionLogs)) {
     names.push('execution-logs')
   }
-  if (shouldRunScheduledPhase(scheduledTime, shouldSweepUpgradeHistory)) {
+  if (
+    shouldRunScheduledPhase(
+      scheduledTime,
+      (ms) => shouldSweepUpgradeHistory(ms) || shouldRunUpgradeTick(ms, upgradeTickMinutes)
+    )
+  ) {
     names.push('upgrade-history')
   }
   if (shouldRunScheduledPhase(scheduledTime, shouldSweepTierNotices)) {
     names.push('tier-notices')
   }
   names.push('billing-stripe-projection')
-  if (shouldRunScheduledPhase(scheduledTime, shouldRunGraceClock)) {
-    names.push('billing-grace-clock')
-  }
   if (shouldRunScheduledPhase(scheduledTime, shouldRunReconcile)) {
     names.push('billing-reconcile')
   }
@@ -1080,17 +1129,17 @@ function optionalPhaseNames(scheduledTime: number | undefined): string[] {
 }
 
 function markSkippedFrom(
-  phasesSkipped: string[],
+  phasesSkipped: SkippedPhases,
   phase: string,
   scheduledTime: number | undefined
 ): void {
-  const rest = optionalPhaseNames(scheduledTime)
+  const rest = optionalPhaseNames(scheduledTime, phasesSkipped.upgradeTickMinutes)
   const index = rest.indexOf(phase)
   phasesSkipped.push(...(index === -1 ? rest : rest.slice(index)))
 }
 
 function skipFromPhase(
-  phasesSkipped: string[],
+  phasesSkipped: SkippedPhases,
   phase: string,
   scheduledTime: number | undefined
 ): void {
@@ -1106,7 +1155,7 @@ async function runOptionalPhase(
   deadlineMs: number,
   phase: string,
   scheduledTime: number | undefined,
-  phasesSkipped: string[],
+  phasesSkipped: SkippedPhases,
   work: () => Promise<void>
 ): Promise<boolean> {
   const left = remainingMs(deadlineMs)
@@ -1139,12 +1188,44 @@ async function runScheduledOptionalPhase(
   deadlineMs: number,
   phase: string,
   scheduledTime: number | undefined,
-  phasesSkipped: string[],
+  phasesSkipped: SkippedPhases,
   shouldRun: (scheduledTimeMs: number) => boolean,
   work: () => Promise<void>
 ): Promise<boolean> {
   if (!shouldRunScheduledPhase(scheduledTime, shouldRun)) return true
   return runOptionalPhase(deadlineMs, phase, scheduledTime, phasesSkipped, work)
+}
+
+/**
+ * The 'upgrade-history' cron phase: history prune on its own 15-minute window
+ * and the upgrade tick on `upgradeTickMinutes`; whichever is due runs.
+ */
+async function upgradePhaseWork(
+  db: Db,
+  env: CloudflareBindings,
+  opts: RunOfflineSweepOpts,
+  deadlineMs: number,
+  upgradeTickMinutes: number
+): Promise<void> {
+  const scheduledTime = opts.scheduledTime
+  if (scheduledTime === undefined) return
+  if (shouldSweepUpgradeHistory(scheduledTime)) {
+    await runWithDbTimeout(
+      db,
+      (database) =>
+        sweepUpgradeHistorySafely(
+          database,
+          parseUpgradeStepRetentionDays(
+            (env as { TURBOPANEL_UPGRADE_STEP_RETENTION_DAYS?: string })
+              .TURBOPANEL_UPGRADE_STEP_RETENTION_DAYS
+          )
+        ),
+      capDbTimeout(deadlineMs)
+    )
+  }
+  if (shouldRunUpgradeTick(scheduledTime, upgradeTickMinutes)) {
+    await runUpgradeMaintenanceSafely(db, env)
+  }
 }
 
 async function sweepExecutionLogsPhase(
@@ -1210,7 +1291,7 @@ async function runBillingOptionalPhases(
   db: Db,
   opts: RunOfflineSweepOpts,
   deadlineMs: number,
-  phasesSkipped: string[]
+  phasesSkipped: SkippedPhases
 ): Promise<boolean> {
   // Billing phases: skipped wholesale when the instance has no Stripe key
   // (`resolveBillingConfig` is the switch). They run in sequence through
@@ -1235,28 +1316,6 @@ async function runBillingOptionalPhases(
     return false
   }
 
-  if (
-    !(await runScheduledOptionalPhase(
-      deadlineMs,
-      'billing-grace-clock',
-      opts.scheduledTime,
-      phasesSkipped,
-      shouldRunGraceClock,
-      async () => {
-        const client = createStripeClient(billingConfig)
-        await runGraceClock({
-          db,
-          client,
-          nowMs: opts.nowMs,
-          reproject: (providerSubscriptionId) =>
-            projectSubscriptionById({ db, client }, providerSubscriptionId),
-        })
-      }
-    ))
-  ) {
-    return false
-  }
-
   return runScheduledOptionalPhase(
     deadlineMs,
     'billing-reconcile',
@@ -1275,8 +1334,9 @@ async function runOptionalCronPhases(
   tlsRenewal: CronTlsRenewal | null | undefined,
   opts: RunOfflineSweepOpts,
   deadlineMs: number,
-  phasesSkipped: string[]
+  phasesSkipped: SkippedPhases
 ): Promise<void> {
+  const upgradeTickMinutes = phasesSkipped.upgradeTickMinutes
   if (
     !(await runOptionalPhase(
       deadlineMs,
@@ -1321,6 +1381,26 @@ async function runOptionalCronPhases(
     return
   }
 
+  // Send each email channel's closed digest / quiet-hours window as one
+  // summary (held deliveries; see features/notifications/digest.ts).
+  if (
+    !(await runOptionalPhase(
+      deadlineMs,
+      'notification-digests',
+      opts.scheduledTime,
+      phasesSkipped,
+      async () => {
+        await sendDueDigests(db, {
+          secrets: tlsRenewal?.dataEncryptionSecrets,
+          allowPrivateTargets: true,
+          email: await workersNotificationEmail(env, db, tlsRenewal),
+        })
+      }
+    ))
+  ) {
+    return
+  }
+
   if (
     !(await runScheduledOptionalPhase(
       deadlineMs,
@@ -1340,22 +1420,10 @@ async function runOptionalCronPhases(
       'upgrade-history',
       opts.scheduledTime,
       phasesSkipped,
-      shouldSweepUpgradeHistory,
-      async () => {
-        await runWithDbTimeout(
-          db,
-          (database) =>
-            sweepUpgradeHistorySafely(
-              database,
-              parseUpgradeStepRetentionDays(
-                (env as { TURBOPANEL_UPGRADE_STEP_RETENTION_DAYS?: string })
-                  .TURBOPANEL_UPGRADE_STEP_RETENTION_DAYS
-              )
-            ),
-          capDbTimeout(deadlineMs)
-        )
-        await runUpgradeMaintenanceSafely(db, env)
-      }
+      (scheduledTimeMs) =>
+        shouldSweepUpgradeHistory(scheduledTimeMs) ||
+        shouldRunUpgradeTick(scheduledTimeMs, upgradeTickMinutes),
+      () => upgradePhaseWork(db, env, opts, deadlineMs, upgradeTickMinutes)
     ))
   ) {
     return
@@ -1381,7 +1449,7 @@ async function runOptionalCronPhases(
   const commandQueue = env.TURBOPANEL_COMMAND_QUEUE
   if (!commandQueue) return
   await runOptionalPhase(deadlineMs, 'reconcile', opts.scheduledTime, phasesSkipped, () =>
-    runQueuedCronSweeps(db, commandQueue, tlsRenewal)
+    runQueuedCronSweeps(db, commandQueue, tlsRenewal, opts.firewallApplyGate)
   )
 }
 
@@ -1394,13 +1462,15 @@ export type RunOfflineSweepOpts = {
   db?: Db
   /** Test seam: inject `sweepOnce` deps (registry, list, AE resolver). */
   sweepOnceDeps?: SweepOnceDeps
+  /** Deploy-time firewall apply key (`firewallApplyGateFromEnv`); required so a dropped gate fails the type check. */
+  firewallApplyGate: FirewallApplyGate
 }
 
 /** Cron Trigger entry point (`workers.ts` `scheduled()`). */
 export async function runOfflineSweep(
   env: CloudflareBindings,
-  tlsRenewal?: CronTlsRenewal | null,
-  opts: RunOfflineSweepOpts = {}
+  tlsRenewal: CronTlsRenewal | null | undefined,
+  opts: RunOfflineSweepOpts
 ): Promise<void> {
   lastScheduledTimeForTests = opts.scheduledTime
 
@@ -1424,7 +1494,11 @@ export async function runOfflineSweep(
 
   const startedAtMs = opts.nowMs ?? Date.now()
   const deadlineMs = opts.deadlineMs ?? startedAtMs + OFFLINE_SWEEP_TICK_BUDGET_MS
-  const phasesSkipped: string[] = []
+  const phasesSkipped = newSkippedPhases(
+    parseUpgradeTickMinutes(
+      (env as { TURBOPANEL_UPGRADE_TICK_MINUTES?: string }).TURBOPANEL_UPGRADE_TICK_MINUTES
+    )
+  )
   let stats: SweepOnceStats = { ...EMPTY_SWEEP_STATS }
 
   try {

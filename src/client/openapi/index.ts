@@ -14,6 +14,7 @@ import { datacenterPaths, datacenterSchemas } from './datacenters.ts'
 import { ipPaths, ipSchemas } from './ips.ts'
 import { buildLicensePaths, buildLicenseSchemas } from './licenses.ts'
 import { organizationPaths, organizationSchemas } from './organizations.ts'
+import { phpModePaths, phpModeSchemas } from './php-modes.ts'
 import { projectPaths, projectSchemas } from './projects.ts'
 import { serverPaths, serverSchemas } from './servers.ts'
 import { servicePaths, serviceSchemas } from './services.ts'
@@ -23,6 +24,9 @@ import { taskPaths, taskSchemas } from './tasks.ts'
 import { bindingPaths, bindingSchemas } from './bindings.ts'
 import { workspacePaths, workspaceSchemas } from './workspaces.ts'
 import { storagePaths, storageSchemas } from './storage.ts'
+import { storageBackupPaths, storageBackupSchemas } from './storage-backups.ts'
+import { firewallPaths, firewallSchemas } from './firewall.ts'
+import { organizationMemberPaths, organizationMemberSchemas } from './organization-members.ts'
 import { repositoryPaths, repositorySchemas } from './repositories.ts'
 import { principalPaths, principalSchemas } from './principals.ts'
 import { deployPaths, deploySchemas } from './deploy.ts'
@@ -36,10 +40,7 @@ export type ClientOpenApiOptions = {
   runtime?: 'deno' | 'workers'
 }
 
-export function getClientOpenApiSpec(
-  serverUrl: string,
-  options?: ClientOpenApiOptions,
-): object {
+export function getClientOpenApiSpec(serverUrl: string, options?: ClientOpenApiOptions): object {
   const includeInstall = options?.runtime === 'deno'
   const installCommandDescription = includeInstall
     ? 'Shell command to install a daemon with this license via the instance install wrapper.'
@@ -51,6 +52,12 @@ export function getClientOpenApiSpec(
     info: {
       title: 'TurboPanel Client API',
       version: INSTANCE_VERSION,
+      description:
+        'Mutating requests (POST, PUT, PATCH, DELETE) pass three gates before a route runs. ' +
+        'Browser writes must be same-origin: a cross-site Sec-Fetch-Site or a foreign Origin answers 403 Forbidden, ' +
+        'while clients that send no Origin, Referer or Sec-Fetch headers (CLI, native apps) are unaffected. ' +
+        'Bodies over 1 MiB (4 MiB on project, environment and docker-run import routes) answer 413 with code request_body_too_large. ' +
+        'More than 120 writes per minute per session (per IP when anonymous) answers 429 with code rate_limited and a Retry-After header.',
     },
     servers: [{ url: serverUrl }],
     tags: [
@@ -80,8 +87,7 @@ export function getClientOpenApiSpec(
       { name: 'Storage', description: 'Volumes, bind mounts, and file storage' },
       {
         name: 'Repositories',
-        description:
-          'Git repository bindings and Git provider App installations',
+        description: 'Git repository bindings and Git provider App installations',
       },
       { name: 'Principals', description: 'Project runtime principals' },
       { name: 'Resource limits', description: 'Organization and server deploy quotas' },
@@ -94,7 +100,7 @@ export function getClientOpenApiSpec(
           'Translate a `docker run` command into a compose fragment (compute only — nothing is persisted)',
       },
       { name: 'TLS', description: 'Organization TLS certificate library' },
-      { name: 'Servers', description: 'Server fleet and update management' },
+      { name: 'Servers', description: 'Servers and update management' },
       { name: 'Commands', description: 'Command lifecycle status polling' },
       { name: 'Networks', description: 'Organization network registry' },
       { name: 'Datacenters', description: 'Datacenter CRUD' },
@@ -107,8 +113,32 @@ export function getClientOpenApiSpec(
     ],
     'x-tagGroups': [
       { name: 'Authentication & Authorization', tags: ['Authentication', 'Authorization'] },
-      { name: 'Resources', tags: ['Workspaces', 'Projects', 'Environments', 'Managed services', 'Variables', 'Tags', 'Tasks', 'Bindings', 'Storage', 'Repositories', 'Principals', 'Resource limits', 'Services', 'Hostings', 'Containers', 'TLS', 'Docker run import'] },
-      { name: 'Infrastructure', tags: ['Servers', 'Commands', 'Networks', 'Datacenters', 'IPs', 'Licenses'] },
+      {
+        name: 'Resources',
+        tags: [
+          'Workspaces',
+          'Projects',
+          'Environments',
+          'Managed services',
+          'Variables',
+          'Tags',
+          'Tasks',
+          'Bindings',
+          'Storage',
+          'Repositories',
+          'Principals',
+          'Resource limits',
+          'Services',
+          'Hostings',
+          'Containers',
+          'TLS',
+          'Docker run import',
+        ],
+      },
+      {
+        name: 'Infrastructure',
+        tags: ['Servers', 'Commands', 'Networks', 'Datacenters', 'IPs', 'Licenses'],
+      },
       { name: 'Platform', tags: ['Health', 'System', ...(includeInstall ? ['Install'] : [])] },
     ],
     components: {
@@ -130,6 +160,7 @@ export function getClientOpenApiSpec(
         ...buildLicenseSchemas(installCommandDescription),
         ...accessSchemas,
         ...organizationSchemas,
+        ...phpModeSchemas,
         ...workspaceSchemas,
         ...environmentSchemas,
         ...projectSchemas,
@@ -138,6 +169,9 @@ export function getClientOpenApiSpec(
         ...taskSchemas,
         ...bindingSchemas,
         ...storageSchemas,
+        ...storageBackupSchemas,
+        ...firewallSchemas,
+        ...organizationMemberSchemas,
         ...repositorySchemas,
         ...principalSchemas,
         ...deploySchemas,
@@ -162,6 +196,7 @@ export function getClientOpenApiSpec(
       ...buildLicensePaths(installCommandDescription),
       ...accessPaths,
       ...organizationPaths,
+      ...phpModePaths,
       ...workspacePaths,
       ...environmentPaths,
       ...projectPaths,
@@ -170,6 +205,9 @@ export function getClientOpenApiSpec(
       ...taskPaths,
       ...bindingPaths,
       ...storagePaths,
+      ...storageBackupPaths,
+      ...firewallPaths,
+      ...organizationMemberPaths,
       ...repositoryPaths,
       ...principalPaths,
       ...deployPaths,
@@ -183,6 +221,5 @@ export function getClientOpenApiSpec(
       ...tlsPaths,
       ...(includeInstall ? installOpenApiPaths : {}),
     },
-
   }
 }

@@ -49,9 +49,107 @@ sshPorts[], warnings[], summary }` — `applied: false` with warnings is a
 refuses `inputDefault: drop` outright until commit-confirm rollback lands
 (`fw-invariants-commit-confirm`), and refuses a default-drop on a co-located
 control-plane host whose payload names no `controlPlane.tcpPorts`. 120s
-consumer timeout. **Nothing in the control plane enqueues this command yet**
-(`fw-derived-rules` builds the desired-state derivation); the contract lands
-first so both repos agree before either side depends on it.
+consumer timeout. **Stage 4 (2026-10-01, Road row `fw-derived-rules`) sends it
+for the first time, as a PREVIEW only**: the control plane derives each
+server's rules and always sends `mode: "observe"` (a server's `managed` mode
+behaves as observe until stage 7 flips one server-side switch), so nothing is
+ever applied. A result that did not apply (observe, or a refused apply) also
+carries `validation: { ok, errors[] }` (the kernel's `iptables-restore --test`
+verdict, nothing loaded) and `rendered: { v4, v6? }` (the exact documents, each
+at most 65,536 characters, otherwise omitted with a warning); both are absent on
+a result that loaded rules.
+
+`server.firewall.confirm` (added 2026-10-01, Road row `fw-invariants-commit-confirm`)
+promotes a ruleset the host applied but has not yet made durable. A
+`server.firewall.reconcile` that actually loads rules answers with a
+`confirmation: { state: "pending", deadlineAt, windowSeconds }`: the host's
+**root guard** (a systemd timer, independent of the daemon) restores the last
+confirmed rules at `deadlineAt` unless this command arrives first, and the
+rules only become durable (reboot-safe) when it does. Payload `{ digest }` (the
+reconcile result's digest, lower-case sha256 hex); result `{ state, digest,
+pendingDigest?, summary }` with `state` one of `confirmed`, `nothing_pending`
+(idempotent: already confirmed, or none), `digest_mismatch` (a different
+ruleset is pending), `expired` (the window ran out; the host is rolling back)
+or `rolled_back` (the guard already restored the previous rules). Outbound is
+open, so a daemon that "can still reach the control plane" proves nothing about
+inbound access (the invariant SSH and control-plane ACCEPTs are what protect
+that). Decided 2026-10-03: **the daemon confirms itself.** After the rules are
+live it makes one authenticated round trip (`GET /api/daemon/v1/ping`) and, only
+if that answers, runs this same confirm; the reconcile result then carries
+`confirmation: { state: "confirmed", autoConfirm: { ok: true, reason } }`. If the
+round trip fails or times out the result stays `state: "pending"` with
+`autoConfirm: { ok: false, reason }` and nothing else happens: the 120 s rollback
+fires. A rollback is reported as `lastRollback { digest, at, restored }` on the
+next result while nothing is pending. The control plane runs no test or outside
+probe and sends no confirm; 60s consumer timeout kept for a manual confirm.
+Nothing enqueues it.
+
+`server.backups.reconcile` (added 2026-09-30, Road row `r2-backup-schema`)
+carries the **complete** set of scheduled backup policies whose target lives on
+one server, the same full-set contract as `server.principals.reconcile`:
+`{ policies[] }`, each `{ policyId, targetKind: managed | copy, managedId? +
+engine? + artifactExtension? (managed), copyId? (copy), onCalendar,
+retentionKeep 1–100, enabled }`. Exactly one target is set for the kind;
+`policyId` is a lower-case UUID because it becomes the unit name
+`turbopanel-backup-<policyId>.timer`; `onCalendar` is already translated from
+the authored schedule (`cronToOnCalendar`) and checked only for charset, like
+cron jobs. The host renders one timer + oneshot service per enabled policy,
+removes every `turbopanel-backup-*` unit not in the set, and each run happens
+on the host with no control-plane round trip. Result: `{ policiesApplied,
+unitsChanged[], unitsRemoved[], nextRuns[]: { policyId, nextRunAt? },
+warnings[] }`. 120s consumer timeout. `managed.restore` gains an optional
+`policyId` so the daemon can find an artifact in that policy's own directory.
+Built and enqueued by `src/features/backups/reconcile.ts` (the set is run
+through `parseBackupsReconcilePayload` before it is queued, so a set the daemon
+would refuse is never sent). A managed policy's host is its engine's
+`managed.server_id`, resolved at push time. Enqueued, best-effort, on: policy
+create / schedule / timezone / retention / enabled change / delete; managed
+create (the automatic daily policy); a managed apply, promote or HA failover
+that re-pins `managed.server_id` (both old and new host); managed delete
+(force delete in the route, `deleteAfterDestroy` in the consumer); and once per
+reconnect by `runBackupsReconcileSweep` (Workers cron + Deno maintenance tick),
+which also reaches a server whose policies were all deleted while it was away.
+
+A `copy` entry (added 2026-09-30, Road row `r2-backup-tenant-volumes`) also
+carries where the storage copy's bytes live, so a run never asks the control
+plane: `copyProvider: docker` + `volumeName` (the Docker volume deploy mounts),
+or `copyProvider: path` + `hostPath` (an absolute, normalized directory; the
+control plane only sends ones under `/srv/users/`), or `copyProvider: path` +
+`organizationId` + `storageId` (the host's default
+`<stateDir>/storage/<org>/<storage>/<copy>/data`). A copy policy's host is its
+copy's `copy.server_id`; `src/features/backups/copy-targets.ts` decides which
+copies can be backed up (docker or path copies of `volume` / `directory`
+storage, placed on a server). Also enqueued when a copy is moved, re-pathed or
+deleted, and when its storage is edited or deleted (every host that held one of
+its copies' policies).
+
+`storage.backup` (added 2026-09-30) is a manual backup of one storage copy:
+`{ copyId, copyProvider, volumeName? | hostPath? | organizationId? + storageId?,
+action: create | delete, backupId, policyId? }` — the same copy-source fields as
+a `copy` policy entry. `create` writes a live gzipped tar (no pause) to
+`<backupDir>/copies/<copyId>/<backupId>.tar.gz`; `delete` removes one, and
+`policyId` (delete only) locates a scheduled run's artifact under
+`…/copies/<copyId>/policy-<policyId>/`. Result: `{ backupId, deleted?, path?,
+sizeBytes?, checksum?, completedAt?, summary? }`. 1800 s consumer timeout, like
+`managed.backup`. Success records or removes the `archive` row for the
+payload's copy (`src/features/backups/storage-command-effects.ts`); a result
+naming another backup id is ignored. Queued from
+`/storage/:id/copies/:copyId/backups` (org owners and managers).
+
+`storage.restore` (added 2026-09-30) replaces one storage copy's contents with
+one of its archives: `{ copyId, copyProvider, volumeName? | hostPath? |
+organizationId? + storageId?, backupId, checksum, policyId? }`. `checksum` and
+`policyId` come from the `archive` row, never from the request
+(`buildStorageRestorePayload`). The host refuses an artifact whose sha256
+differs before it stops anything, then stops the running containers that
+mount the copy, swaps the archive in through the pinned helper (a bad archive
+leaves the copy unchanged; a failed swap puts the old contents back), and
+starts every container it stopped whatever happened. Result: `{ backupId,
+restoredAt?, stopped?, restarted?, notRestarted? (container ids), summary? }`;
+a container that will not start again fails the command with its id. 1800 s
+consumer timeout; no control-plane side effect. Queued from
+`POST /storage/:id/copies/:copyId/backups/:backupId/restore` (org owners and
+managers).
 
 `server.reboot` requires `organization:manage`, carries an empty payload, uses a
 120s consumer timeout, has no `touchServerMetadata` side-effect, and is executed
@@ -221,6 +319,22 @@ site + deployment dir + `/run` secrets removed, `containers: []` clears pins);
 lifecycle is **non-destructive** (`compose start|stop|restart`,
 files/volumes/deployment dir preserved, container rows keep their ids).
 Lifecycle `start`/`restart` rehydrate missing `/run` secret files first.
+
+**`retirePrincipals[]` (`{ username }[]`) is set only by a delete teardown**
+(`client/environments/teardown.ts`). The plan captures the project's server
+principals (applied logins) before the cascade; after it commits,
+`resolvePrincipalRetirement` keeps every login a surviving environment still
+places on that server (pinned there or holding a `deployment` row there) and
+names the rest on the **last** stop sent to that server. The daemon retires each
+after everything else in the stop through `tp-host principal-remove` (slice
+stopped and removed, processes killed, key file and group memberships cleared,
+the home tree removed without following symlinks, `userdel`, `groupdel
+<name>-grp`), then re-renders the `sshd` drop-in. tp-host refuses an account
+whose uid or `<name>-grp` gid is outside 15001–60000, whose home is not under
+the principal root, or that the host still references (a `turbopanel-*` unit
+running as it or in its slice, or a tree left under its `sites/`); a refusal is
+logged and the account kept, never a stop failure. An older daemon ignores the
+field.
 
 `environment.lifecycle` uses a 120s consumer timeout. On success the consumer
 reconciles the daemon's authoritative `compose ps -a` report through

@@ -46,6 +46,18 @@ export type EmailJob =
       acceptUrl: string
     }
   | {
+      /** The link that confirms an email channel's address (`src/client/notifications/channel-verification.ts`); valid for one day. */
+      type: 'channel-verification'
+      to: string
+      from: string
+      verifyUrl: string
+      channelLabel: string
+      /** Set for an organization channel; null for a person's own. */
+      organizationName: string | null
+      /** The account that asked for the channel. */
+      requestedByEmail: string
+    }
+  | {
       /** One notification event delivered to an email channel (`src/features/notifications/`). */
       type: 'notification'
       to: string
@@ -61,6 +73,39 @@ export type EmailJob =
       consoleUrl: string | null
       at: string
     }
+  | {
+      /** One summary of the events a channel held for a digest window or quiet hours. */
+      type: 'notification-digest'
+      to: string
+      from: string
+      /** Why these were held: a digest cadence, or quiet hours that just ended. */
+      summary: 'hourly' | 'daily' | 'quiet'
+      /** Every event in the window, including those past the listed groups and items. */
+      total: number
+      groups: NotificationDigestGroup[]
+      /** Event kinds beyond the listed groups. */
+      moreGroups: number
+      /** The link back to the app. */
+      consoleUrl: string | null
+      /** ISO time the digest was built. */
+      at: string
+    }
+
+export type NotificationDigestItem = {
+  title: string
+  at: string
+  /** Where the console shows the event's target, when it has one. */
+  url: string | null
+}
+
+export type NotificationDigestGroup = {
+  event: string
+  severity: 'info' | 'warning' | 'critical'
+  /** How many events of this kind the window held. */
+  count: number
+  /** The first few, newest last; `count` can be larger. */
+  items: NotificationDigestItem[]
+}
 
 export interface EmailQueue {
   enqueue(job: EmailJob): Promise<void>

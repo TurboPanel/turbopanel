@@ -1,4 +1,4 @@
-import type { EmailJob, OtpType } from './types.ts'
+import type { EmailJob, NotificationDigestGroup, OtpType } from './types.ts'
 
 export interface TemplateResult {
   subject: string
@@ -40,14 +40,14 @@ export function createEmailVerificationLinkEmail(
       <a href="${safeUrl}" style="display:inline-block;background:#2563eb;color:#fff;text-decoration:none;padding:12px 24px;border-radius:6px;font-weight:600;">Verify email</a>
     </p>
     <p style="margin:0;font-size:14px;color:#666;">If you didn't sign up, you can ignore this email.</p>
-    <p style="margin:16px 0 0;font-size:12px;color:#999;">TurboPanel – Self-hosted control plane</p>
+    <p style="margin:16px 0 0;font-size:12px;color:#999;">TurboPanel</p>
   </div>
 </body>
 </html>
 `.trim()
   const text =
     `Verify your TurboPanel email\n\nOpen this link:\n${verifyUrl}\n\n` +
-    `If you didn't sign up, ignore this email.\n\nTurboPanel – Self-hosted control plane`
+    `If you didn't sign up, ignore this email.\n\nTurboPanel`
   return { subject, html, text }
 }
 
@@ -70,14 +70,14 @@ export function createPasswordResetLinkEmail(resetUrl: string): TemplateResult {
       <a href="${safeUrl}" style="display:inline-block;background:#2563eb;color:#fff;text-decoration:none;padding:12px 24px;border-radius:6px;font-weight:600;">Choose a new password</a>
     </p>
     <p style="margin:0;font-size:14px;color:#666;">If you didn't ask for this, you can ignore this email — your password stays the same.</p>
-    <p style="margin:16px 0 0;font-size:12px;color:#999;">TurboPanel – Self-hosted control plane</p>
+    <p style="margin:16px 0 0;font-size:12px;color:#999;">TurboPanel</p>
   </div>
 </body>
 </html>
 `.trim()
   const text =
     `Reset your TurboPanel password\n\nOpen this link to choose a new password (it works once and expires in one hour):\n${resetUrl}\n\n` +
-    `If you didn't ask for this, ignore this email — your password stays the same.\n\nTurboPanel – Self-hosted control plane`
+    `If you didn't ask for this, ignore this email — your password stays the same.\n\nTurboPanel`
   return { subject, html, text }
 }
 
@@ -96,6 +96,10 @@ export function resolveEmailTemplate(job: EmailJob): TemplateResult | null {
       return createInvitationEmail(job)
     case 'notification':
       return createNotificationEmail(job)
+    case 'notification-digest':
+      return createNotificationDigestEmail(job)
+    case 'channel-verification':
+      return createChannelVerificationEmail(job)
     default:
       return null
   }
@@ -123,14 +127,14 @@ export function createEmailOtpEmail(
     <p style="margin:0 0 24px;color:#444;line-height:1.5;">${escapeHtml(intro)}</p>
     <p style="margin:0 0 24px;font-size:32px;font-weight:700;letter-spacing:0.25em;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;color:#111;text-align:center;padding:16px;background:#f3f4f6;border-radius:8px;">${safeOtp}</p>
     <p style="margin:0;font-size:14px;color:#666;">Enter this code in TurboPanel. It expires soon.</p>
-    <p style="margin:16px 0 0;font-size:12px;color:#999;">TurboPanel – Self-hosted control plane</p>
+    <p style="margin:16px 0 0;font-size:12px;color:#999;">TurboPanel</p>
   </div>
 </body>
 </html>
 `.trim()
   const text =
     `${subject}\n\n${intro}\n\nYour code: ${otp}\n\n` +
-    `Enter this code in TurboPanel. It expires soon.\n\nTurboPanel – Self-hosted control plane`
+    `Enter this code in TurboPanel. It expires soon.\n\nTurboPanel`
   return { subject, html, text }
 }
 
@@ -178,14 +182,13 @@ export function createServerTierNoticeEmail(
     <p style="margin:0 0 24px;">
       <a href="${safeUrl}" style="display:inline-block;background:#2563eb;color:#fff;text-decoration:none;padding:12px 24px;border-radius:6px;font-weight:600;">Open server</a>
     </p>
-    <p style="margin:16px 0 0;font-size:12px;color:#999;">TurboPanel – Self-hosted control plane</p>
+    <p style="margin:16px 0 0;font-size:12px;color:#999;">TurboPanel</p>
   </div>
 </body>
 </html>
 `.trim()
   const text =
-    `${subject}\n\n${intro}\n\n${unwatchedLine}\n\nOpen: ${job.consoleUrl}\n\n` +
-    `TurboPanel – Self-hosted control plane`
+    `${subject}\n\n${intro}\n\n${unwatchedLine}\n\nOpen: ${job.consoleUrl}\n\n` + `TurboPanel`
   return { subject, html, text }
 }
 
@@ -214,7 +217,7 @@ export function createInvitationEmail(
       <a href="${safeUrl}" style="display:inline-block;background:#2563eb;color:#fff;text-decoration:none;padding:12px 24px;border-radius:6px;font-weight:600;">Accept invitation</a>
     </p>
     <p style="margin:0;font-size:14px;color:#666;">If you weren't expecting this invitation, you can ignore this email.</p>
-    <p style="margin:16px 0 0;font-size:12px;color:#999;">TurboPanel – Self-hosted control plane</p>
+    <p style="margin:16px 0 0;font-size:12px;color:#999;">TurboPanel</p>
   </div>
 </body>
 </html>
@@ -222,7 +225,47 @@ export function createInvitationEmail(
   const text =
     `${subject}\n\n${job.inviterEmail} invited you to join ${job.teamName} in ${job.organizationName} on TurboPanel.\n\n` +
     `Accept: ${job.acceptUrl}\n\n` +
-    `If you weren't expecting this invitation, ignore this email.\n\nTurboPanel – Self-hosted control plane`
+    `If you weren't expecting this invitation, ignore this email.\n\nTurboPanel`
+  return { subject, html, text }
+}
+
+export function createChannelVerificationEmail(
+  job: Extract<EmailJob, { type: 'channel-verification' }>
+): TemplateResult {
+  const subject = 'Confirm this address for TurboPanel notifications'
+  const target = job.organizationName ? ` for ${job.organizationName}` : ''
+  const intro =
+    `${job.requestedByEmail} asked TurboPanel to send notifications${target} to this address, ` +
+    `as the channel "${job.channelLabel}".`
+  const safeSubject = escapeHtml(subject)
+  const safeIntro = escapeHtml(intro)
+  const safeUrl = escapeHtml(job.verifyUrl)
+  const html = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${safeSubject}</title>
+</head>
+<body style="margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f5f5f5;padding:24px;">
+  <div style="max-width:480px;margin:0 auto;background:#fff;border-radius:8px;box-shadow:0 1px 3px rgba(0,0,0,0.08);padding:32px;">
+    <h1 style="margin:0 0 16px;font-size:24px;color:#111;">${safeSubject}</h1>
+    <p style="margin:0 0 16px;color:#444;line-height:1.5;">${safeIntro}</p>
+    <p style="margin:0 0 24px;color:#444;line-height:1.5;">Nothing is sent to this address until you confirm it. The link works once and expires in one day.</p>
+    <p style="margin:0 0 24px;">
+      <a href="${safeUrl}" style="display:inline-block;background:#2563eb;color:#fff;text-decoration:none;padding:12px 24px;border-radius:6px;font-weight:600;">Confirm address</a>
+    </p>
+    <p style="margin:0;font-size:14px;color:#666;">If you don't know why you got this, ignore this email and nothing will be sent to you.</p>
+    <p style="margin:16px 0 0;font-size:12px;color:#999;">TurboPanel</p>
+  </div>
+</body>
+</html>
+`.trim()
+  const text =
+    `${subject}\n\n${intro}\n\nNothing is sent to this address until you confirm it. ` +
+    `The link works once and expires in one day:\n${job.verifyUrl}\n\n` +
+    `If you don't know why you got this, ignore this email and nothing will be sent to you.\n\nTurboPanel`
   return { subject, html, text }
 }
 
@@ -262,7 +305,7 @@ export function createNotificationEmail(
         : ''
     }
     <p style="margin:0;font-size:12px;color:#999;">${escapeHtml(job.event)} · ${escapeHtml(job.at)}</p>
-    <p style="margin:16px 0 0;font-size:12px;color:#999;">TurboPanel – Self-hosted control plane</p>
+    <p style="margin:16px 0 0;font-size:12px;color:#999;">TurboPanel</p>
   </div>
 </body>
 </html>
@@ -271,8 +314,82 @@ export function createNotificationEmail(
     `${subject}\n\n${job.body ?? ''}${job.body ? '\n\n' : ''}` +
     (job.details.length > 0 ? `${job.details.join('\n')}\n\n` : '') +
     (job.consoleUrl ? `Open: ${job.consoleUrl}\n\n` : '') +
-    `${job.event} · ${job.at}\n\nTurboPanel – Self-hosted control plane`
+    `${job.event} · ${job.at}\n\nTurboPanel`
   return { subject, html, text }
+}
+
+const DIGEST_SUBJECT = {
+  hourly: 'hourly digest',
+  daily: 'daily digest',
+  quiet: 'held during quiet hours',
+} as const
+
+function plural(count: number, noun: string): string {
+  return count === 1 ? `${count} ${noun}` : `${count} ${noun}s`
+}
+
+function digestGroupHtml(group: NotificationDigestGroup): string {
+  const color = SEVERITY_COLOR[group.severity]
+  const heading = `${escapeHtml(group.event)} · ${plural(group.count, 'event')}`
+  const rows = group.items.map((item) => {
+    const label = escapeHtml(item.title)
+    const text = item.url
+      ? `<a href="${escapeHtml(item.url)}" style="color:#2563eb;">${label}</a>`
+      : label
+    return `<li style="margin:0 0 4px;">${text} <span style="color:#999;">${escapeHtml(item.at)}</span></li>`
+  })
+  const more = group.count - group.items.length
+  if (more > 0) rows.push(`<li style="margin:0 0 4px;color:#999;">and ${more} more</li>`)
+  return `<h2 style="margin:20px 0 8px;font-size:15px;color:${color};">${heading}</h2><ul style="margin:0;padding-left:20px;color:#444;font-size:14px;">${rows.join('')}</ul>`
+}
+
+function digestGroupText(group: NotificationDigestGroup): string {
+  const lines = group.items.map((item) => {
+    const link = item.url ? ` ${item.url}` : ''
+    return `  - ${item.title} (${item.at})${link}`
+  })
+  const more = group.count - group.items.length
+  if (more > 0) lines.push(`  - and ${more} more`)
+  return `${group.event} · ${plural(group.count, 'event')}\n${lines.join('\n')}`
+}
+
+export function createNotificationDigestEmail(
+  job: Extract<EmailJob, { type: 'notification-digest' }>
+): TemplateResult {
+  const subject = `[TurboPanel] ${plural(job.total, 'notification')} ${DIGEST_SUBJECT[job.summary]}`
+  const groupsHtml = job.groups.map(digestGroupHtml).join('')
+  const moreKinds = job.moreGroups > 0 ? `and ${plural(job.moreGroups, 'more kind')} of event.` : ''
+  const moreKindsHtml = moreKinds
+    ? `<p style="margin:16px 0 0;color:#999;font-size:13px;">${moreKinds}</p>`
+    : ''
+  const open = job.consoleUrl
+    ? `<p style="margin:24px 0;"><a href="${escapeHtml(job.consoleUrl)}" style="display:inline-block;background:#2563eb;color:#fff;text-decoration:none;padding:12px 24px;border-radius:6px;font-weight:600;">Open TurboPanel</a></p>`
+    : ''
+  const html = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${escapeHtml(subject)}</title>
+</head>
+<body style="margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f5f5f5;padding:24px;">
+  <div style="max-width:560px;margin:0 auto;background:#fff;border-radius:8px;box-shadow:0 1px 3px rgba(0,0,0,0.08);padding:32px;">
+    <h1 style="margin:0 0 4px;font-size:20px;color:#111;">${escapeHtml(plural(job.total, 'notification'))}</h1>
+    <p style="margin:0;color:#666;font-size:13px;">${escapeHtml(DIGEST_SUBJECT[job.summary])}</p>
+    ${groupsHtml}
+    ${moreKindsHtml}
+    ${open}
+    <p style="margin:16px 0 0;font-size:12px;color:#999;">${escapeHtml(job.at)} · TurboPanel</p>
+  </div>
+</body>
+</html>
+`.trim()
+  const textParts = [subject, ...job.groups.map(digestGroupText)]
+  if (moreKinds) textParts.push(moreKinds)
+  if (job.consoleUrl) textParts.push(`Open: ${job.consoleUrl}`)
+  textParts.push(`${job.at}\nTurboPanel`)
+  return { subject, html, text: textParts.join('\n\n') }
 }
 
 function escapeHtml(s: string): string {

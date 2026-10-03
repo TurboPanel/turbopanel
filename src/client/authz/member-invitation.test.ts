@@ -3,26 +3,16 @@ import { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
 import { createDenoDb } from '../../db/connection.ts'
-import {
-  grant,
-  invitation,
-  organization,
-  team,
-  workspace,
-  user,
-} from '../../db/schema.ts'
+import { grant, invitation, organization, team, workspace, user } from '../../db/schema.ts'
 import type { EmailQueue } from '../../features/email/types.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
-import {
-  buildSignedCookie,
-  HTTP_SESSION_COOKIE_NAME,
-} from '../authn/crypto.ts'
+import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from '../authn/crypto.ts'
 import { deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { createSession } from '../authn/session-store.ts'
 import { registerAccessRoutes } from '../access/routes.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import {
-  defaultInvitationGrants,
+  type InvitationGrantSpec,
   InvitationGrantValidationError,
   materializeInvitationGrants,
 } from '../authn/invitation-grants.ts'
@@ -30,13 +20,20 @@ import { canManageOrganization } from './service.ts'
 
 const dbUrl = getDatabaseUrl()
 
+/** An explicit org-manager grant: what an owner may still put on an invitation. */
+function manageGrant(organizationId: string): InvitationGrantSpec[] {
+  return [
+    { entityType: 'organization', entityId: organizationId, permissionKey: 'organization:manage' },
+  ]
+}
+
 async function withTestFixtures(
   fn: (ctx: {
     db: ReturnType<typeof createDenoDb>
     userId: string
     organizationId: string
     workspaceId: string
-  }) => Promise<void>,
+  }) => Promise<void>
 ): Promise<void> {
   if (!dbUrl) {
     console.warn('Skipping authz tests: TURBOPANEL_DATABASE_URL not set')
@@ -60,7 +57,6 @@ async function withTestFixtures(
     .returning({ id: user.id })
 
   const userId = insertedUser[0]!.id
-
 
   const [insertedWorkspace] = await db
     .insert(workspace)
@@ -92,9 +88,9 @@ async function withTestFixtures(
  */
 const test = Deno.test.bind(Deno)
 
-test('default invited member gets organization:manage grant', async () => {
+test('an explicit organization:manage invitation grant materializes one row', async () => {
   await withTestFixtures(async ({ db, userId, organizationId }) => {
-    const grants = defaultInvitationGrants(organizationId)
+    const grants = manageGrant(organizationId)
     await materializeInvitationGrants(db, userId, grants, organizationId)
 
     const rows = await db
@@ -104,8 +100,8 @@ test('default invited member gets organization:manage grant', async () => {
         and(
           eq(grant.actorId, userId),
           eq(grant.entityType, 'organization'),
-          eq(grant.entityId, organizationId),
-        ),
+          eq(grant.entityId, organizationId)
+        )
       )
 
     if (rows.length !== 1) {
@@ -119,7 +115,7 @@ test('default invited member gets organization:manage grant', async () => {
 
 test('organization:manage grant allows canManageOrganization', async () => {
   await withTestFixtures(async ({ db, userId, organizationId }) => {
-    const grants = defaultInvitationGrants(organizationId)
+    const grants = manageGrant(organizationId)
     await materializeInvitationGrants(db, userId, grants, organizationId)
 
     const managesOrg = await canManageOrganization(db, userId, organizationId)
@@ -131,7 +127,7 @@ test('organization:manage grant allows canManageOrganization', async () => {
 
 test('invitation grant materialization is idempotent', async () => {
   await withTestFixtures(async ({ db, userId, organizationId }) => {
-    const grants = defaultInvitationGrants(organizationId)
+    const grants = manageGrant(organizationId)
 
     await materializeInvitationGrants(db, userId, grants, organizationId)
     await materializeInvitationGrants(db, userId, grants, organizationId)
@@ -143,12 +139,14 @@ test('invitation grant materialization is idempotent', async () => {
         and(
           eq(grant.actorId, userId),
           eq(grant.entityType, 'organization'),
-          eq(grant.entityId, organizationId),
-        ),
+          eq(grant.entityId, organizationId)
+        )
       )
 
     if (rows.length !== 1) {
-      throw new Error(`expected exactly one grant row after idempotent materialization, got ${rows.length}`)
+      throw new Error(
+        `expected exactly one grant row after idempotent materialization, got ${rows.length}`
+      )
     }
   })
 })
@@ -168,7 +166,7 @@ test('invitation grant rejects nonexistent entity id', async () => {
             permissionKey: 'organization:manage',
           },
         ],
-        organizationId,
+        organizationId
       )
       throw new Error('expected InvitationGrantValidationError')
     } catch (err) {
@@ -195,17 +193,14 @@ test('invitation grant rejects incompatible permission on existing workspace ent
             permissionKey: 'organization:manage',
           },
         ],
-        organizationId,
+        organizationId
       )
       throw new Error('expected InvitationGrantValidationError')
     } catch (err) {
       if (!(err instanceof InvitationGrantValidationError)) {
         throw err
       }
-      if (
-        err.message !==
-        'organization:manage may only be granted on organization entities'
-      ) {
+      if (err.message !== 'organization:manage may only be granted on organization entities') {
         throw new Error(`expected permission compatibility rejection, got ${err.message}`)
       }
       if (err.status !== 400) {
@@ -236,7 +231,7 @@ test('invitation grant rejects cross-organization entity target', async () => {
               permissionKey: 'organization:manage',
             },
           ],
-          otherOrganizationId,
+          otherOrganizationId
         )
         throw new Error('expected InvitationGrantValidationError')
       } catch (err) {
@@ -260,7 +255,7 @@ async function withInvitationHttpFixtures(
     cookie: string
     organizationId: string
     teamId: string
-  }) => Promise<void>,
+  }) => Promise<void>
 ): Promise<void> {
   if (!dbUrl) {
     console.warn('Skipping authz tests: TURBOPANEL_DATABASE_URL not set')
@@ -268,10 +263,7 @@ async function withInvitationHttpFixtures(
   }
 
   const db = createDenoDb()
-  const secrets = await deriveSecretsConfig(
-    parseTestSecretsConfig('deno'),
-    'session-signing',
-  )
+  const secrets = await deriveSecretsConfig(parseTestSecretsConfig('deno'), 'session-signing')
   const queue: EmailQueue = {
     enqueue: () => Promise.resolve(),
   }
@@ -330,73 +322,69 @@ async function withInvitationHttpFixtures(
 }
 
 test('manager passing grants gets 403 grants_require_owner', async () => {
-  await withInvitationHttpFixtures('organization:manage', async ({
-    app,
-    cookie,
-    organizationId,
-    teamId,
-  }) => {
-    const res = await app.request('/invitations', {
-      method: 'POST',
-      headers: {
-        Cookie: cookie,
-        [ORG_ID_HEADER]: organizationId,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        teamId,
-        email: `mgr-${crypto.randomUUID()}@example.com`,
-        grants: [
-          {
-            entityType: 'organization',
-            entityId: organizationId,
-            permissionKey: 'organization:own',
-          },
-        ],
-      }),
-    })
-    if (res.status !== 403) {
-      throw new TypeError(`expected 403 grants_require_owner, got ${res.status}`)
+  await withInvitationHttpFixtures(
+    'organization:manage',
+    async ({ app, cookie, organizationId, teamId }) => {
+      const res = await app.request('/invitations', {
+        method: 'POST',
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          teamId,
+          email: `mgr-${crypto.randomUUID()}@example.com`,
+          grants: [
+            {
+              entityType: 'organization',
+              entityId: organizationId,
+              permissionKey: 'organization:own',
+            },
+          ],
+        }),
+      })
+      if (res.status !== 403) {
+        throw new TypeError(`expected 403 grants_require_owner, got ${res.status}`)
+      }
+      const body = (await res.json()) as { error: string }
+      if (body.error !== 'grants_require_owner') {
+        throw new TypeError(`expected grants_require_owner, got ${body.error}`)
+      }
     }
-    const body = await res.json() as { error: string }
-    if (body.error !== 'grants_require_owner') {
-      throw new TypeError(`expected grants_require_owner, got ${body.error}`)
-    }
-  })
+  )
 })
 
 test('owner passing grants succeeds', async () => {
-  await withInvitationHttpFixtures('organization:own', async ({
-    app,
-    cookie,
-    organizationId,
-    teamId,
-  }) => {
-    const res = await app.request('/invitations', {
-      method: 'POST',
-      headers: {
-        Cookie: cookie,
-        [ORG_ID_HEADER]: organizationId,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        teamId,
-        email: `owner-${crypto.randomUUID()}@example.com`,
-        grants: [
-          {
-            entityType: 'organization',
-            entityId: organizationId,
-            permissionKey: 'organization:manage',
-          },
-        ],
-      }),
-    })
-    if (res.status !== 200) {
-      throw new TypeError(`expected 200 creating owner invitation, got ${res.status}`)
+  await withInvitationHttpFixtures(
+    'organization:own',
+    async ({ app, cookie, organizationId, teamId }) => {
+      const res = await app.request('/invitations', {
+        method: 'POST',
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          teamId,
+          email: `owner-${crypto.randomUUID()}@example.com`,
+          grants: [
+            {
+              entityType: 'organization',
+              entityId: organizationId,
+              permissionKey: 'organization:manage',
+            },
+          ],
+        }),
+      })
+      if (res.status !== 200) {
+        throw new TypeError(`expected 200 creating owner invitation, got ${res.status}`)
+      }
+      const body = (await res.json()) as { ok: boolean; id: string }
+      if (!body.ok || !body.id) {
+        throw new TypeError('owner invitation response missing id')
+      }
     }
-    const body = await res.json() as { ok: boolean; id: string }
-    if (!body.ok || !body.id) {
-      throw new TypeError('owner invitation response missing id')
-    }
-  })
+  )
 })

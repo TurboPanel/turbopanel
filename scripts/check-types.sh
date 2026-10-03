@@ -20,6 +20,21 @@ cd "$(dirname "$0")/.."
 
 deno check src/deno.ts src/app/app.ts
 
+# scripts/ too: nothing else type-checks them (the billing test-clock harness
+# broke silently when the quantity lock moved to the `lease` table). Fixtures
+# are deliberately-bad inputs for the lint checks and stay out.
+scripts=$(
+  git ls-files --cached --others --exclude-standard 'scripts/*.ts' 'scripts/**/*.ts' |
+    while IFS= read -r file; do
+      case "$file" in
+        scripts/fixtures/*) ;;
+        *) [ -f "$file" ] && printf '%s\n' "$file" ;;
+      esac
+    done
+)
+# shellcheck disable=SC2086
+deno check $scripts
+
 # Enumerate from the worktree, not from the index alone: `--others` picks up
 # test files that are new and not yet staged, and the `-f` guard drops paths
 # still recorded in the index whose file has been deleted or moved. Either skew

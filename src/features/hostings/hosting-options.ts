@@ -127,9 +127,7 @@ function parsePorts(value: unknown): HostingPortMapping[] | undefined {
 
 function parseHostnames(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) return undefined
-  const hostnames = value.filter(
-    (h): h is string => typeof h === 'string' && h.length > 0,
-  )
+  const hostnames = value.filter((h): h is string => typeof h === 'string' && h.length > 0)
   return hostnames.length > 0 ? hostnames : undefined
 }
 
@@ -236,14 +234,15 @@ export function parseHostingOptions(value: unknown): HostingOptions | null {
 
 /** Defaults to `'http'` when unset/invalid — the only protocol prior to `tcp`/`udp` support. */
 export function resolveHostingProtocol(
-  options: HostingOptions | null | undefined,
+  options: HostingOptions | null | undefined
 ): HostingProtocol {
   return options?.protocol ?? 'http'
 }
 
-export function resolveHostingProxy(options: HostingOptions | null | undefined): Required<
-  Pick<HostingProxyOptions, 'forceHttps' | 'gzip' | 'brotli'>
-> & Pick<HostingProxyOptions, 'stripPrefix'> {
+export function resolveHostingProxy(
+  options: HostingOptions | null | undefined
+): Required<Pick<HostingProxyOptions, 'forceHttps' | 'gzip' | 'brotli'>> &
+  Pick<HostingProxyOptions, 'stripPrefix'> {
   const proxy = options?.proxy
   return {
     forceHttps: proxy?.forceHttps ?? true,
@@ -253,8 +252,6 @@ export function resolveHostingProxy(options: HostingOptions | null | undefined):
   }
 }
 
-export function resolveHostingBind(
-  options: HostingOptions | null | undefined,
-): HostingBindScope {
+export function resolveHostingBind(options: HostingOptions | null | undefined): HostingBindScope {
   return options?.bind ?? 'public'
 }

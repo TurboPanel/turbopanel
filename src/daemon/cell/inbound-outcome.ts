@@ -73,6 +73,12 @@ export function deriveInboundOutcome(inbound: DaemonInboundEnvelope): InboundOut
       })
     case 'repo-read-result':
       return inboundOutcomeFromOk(inbound.ok, inbound.error, repoReadResultPayload(inbound))
+    case 'repo-default-branch-result':
+      return inboundOutcomeFromOk(inbound.ok, inbound.error, {
+        ok: inbound.ok,
+        defaultBranch: inbound.defaultBranch,
+        error: inbound.error,
+      })
     case 'command-outcome':
       return inboundOutcomeFromOk(inbound.ok, inbound.error, commandOutcomePayload(inbound))
     case 'public-urls-update-result':
@@ -99,7 +105,17 @@ export function deriveInboundOutcome(inbound: DaemonInboundEnvelope): InboundOut
       return inboundOutcomeFromOk(inbound.ok, inbound.error, {
         capabilities: inbound.capabilities,
       })
-    default:
+    case 'command-ack':
       return null
+    default:
+      return unhandledInbound(inbound)
   }
+}
+
+/**
+ * Compile-time guard: a new inbound kind must get a case (or be named
+ * non-terminal) above. At run time an unknown kind is still non-terminal.
+ */
+function unhandledInbound(_inbound: never): null {
+  return null
 }

@@ -1110,7 +1110,13 @@ test('T3 · a decrease below the licenses held is refused 409 licenses_in_use wi
     await changeSeats(depsFor(db, client).deps, { organizationId: ORG, tierId: S3, delta: -2 })
   )
   assertEquals(outcome.status, 409)
-  assertEquals(outcome.body, { error: LICENSES_IN_USE_ERROR, purchasedAfter: 1, licensesHeld: 2 })
+  assertEquals(outcome.body, {
+    error: LICENSES_IN_USE_ERROR,
+    purchasedAfter: 1,
+    licensesHeld: 2,
+    inUse: 0,
+    unusedKeys: 2,
+  })
   assertEquals(client.calls, [])
   assertEquals((await ledgerOf(db)).intents, [])
 })

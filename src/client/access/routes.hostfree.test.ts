@@ -15,10 +15,7 @@ import {
   seedMockSession,
   seedMockUser,
 } from '../authn/authn-hostfree-doubles.ts'
-import {
-  buildSignedCookie,
-  HTTP_SESSION_COOKIE_NAME,
-} from '../authn/crypto.ts'
+import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from '../authn/crypto.ts'
 import { deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { registerAccessRoutes } from './routes.ts'
@@ -62,11 +59,13 @@ type SessionAppOpts = {
   teamRow?: Record<string, unknown> | null
   /** Grant row returned by select-from-grant for revoke. */
   grantRow?: Record<string, unknown> | null
+  /** Grants the invited team holds as an actor (invitation delegation). */
+  teamGrants?: Record<string, unknown>[]
   executeQueue?: unknown[][]
 }
 
 async function buildSessionApp(
-  opts: SessionAppOpts = {},
+  opts: SessionAppOpts = {}
 ): Promise<{ app: Hono<AppEnv>; cookie: string; email: string }> {
   const secretsConfig = parseTestSecretsConfig('deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
@@ -110,8 +109,7 @@ async function buildSessionApp(
           const row = opts.teamRow
           return {
             where: () => ({
-              limit: () =>
-                Promise.resolve(row === undefined ? [] : row === null ? [] : [row]),
+              limit: () => Promise.resolve(row ? [row] : []),
             }),
           }
         }
@@ -119,19 +117,20 @@ async function buildSessionApp(
           const row = opts.invitationRow
           return {
             where: () => ({
-              limit: () =>
-                Promise.resolve(row === undefined ? [] : row === null ? [] : [row]),
+              limit: () => Promise.resolve(row ? [row] : []),
             }),
           }
         }
         if (table === grant) {
           const row = opts.grantRow
+          // Awaiting `where()` itself lists the grants a team holds
+          // (invitation delegation); none unless a test seeds `teamGrants`.
           return {
-            where: () => ({
-              limit: () =>
-                Promise.resolve(row === undefined ? [] : row === null ? [] : [row]),
-              orderBy: () => Promise.resolve(row ? [row] : []),
-            }),
+            where: () =>
+              Object.assign(Promise.resolve(opts.teamGrants ?? []), {
+                limit: () => Promise.resolve(row ? [row] : []),
+                orderBy: () => Promise.resolve(row ? [row] : []),
+              }),
           }
         }
         return origSelect(fields).from(table)
@@ -191,11 +190,17 @@ test('GET /permissions returns the catalog for a signed-in session', async () =>
     headers: { Cookie: cookie },
   })
   assertEquals(res.status, 200)
-  const body = await res.json() as { permissions: Array<{ key: string }> }
+  const body = (await res.json()) as { permissions: Array<{ key: string }> }
   assertEquals(Array.isArray(body.permissions), true)
   assertEquals(body.permissions.length > 0, true)
-  assertEquals(body.permissions.some((entry) => entry.key === 'system:manage'), false)
-  assertEquals(body.permissions.some((entry) => entry.key === 'system:operate'), true)
+  assertEquals(
+    body.permissions.some((entry) => entry.key === 'system:manage'),
+    false
+  )
+  assertEquals(
+    body.permissions.some((entry) => entry.key === 'system:operate'),
+    true
+  )
 })
 
 test('POST /invitations/:id/accept returns 404 when the invitation is missing', async () => {
@@ -262,7 +267,7 @@ test('GET /access/check returns 400 for an invalid permissionKey', async () => {
   const { app, cookie } = await buildSessionApp()
   const res = await app.request(
     `/access/check?resourceId=${resourceId}&permissionKey=organization:delete`,
-    { headers: { Cookie: cookie } },
+    { headers: { Cookie: cookie } }
   )
   assertEquals(res.status, 400)
   assertEquals(await res.json(), { error: 'Invalid permissionKey' })
@@ -374,16 +379,36 @@ test('POST /invitations returns 400 when a grantable key targets the wrong entit
   })
 })
 
+test('POST /invitations returns 403 when the team holds a grant the inviter lacks', async () => {
+  const teamId = '55555555-5555-4555-8555-555555555555'
+  const { app, cookie } = await buildSessionApp({
+    role: 'user',
+    teamRow: { id: teamId, name: 'Ops', organizationId },
+    teamGrants: [
+      { entityType: 'organization', entityId: organizationId, permission: 'organization:own' },
+    ],
+    // org access, team manage, then the team's organization:own grant
+    executeQueue: [[{ allowed: true }], [{ allowed: true }], [{ allowed: false }]],
+  })
+  const res = await app.request('/invitations', {
+    method: 'POST',
+    headers: {
+      Cookie: cookie,
+      [ORG_ID_HEADER]: organizationId,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({ teamId, email: 'teammate@example.com' }),
+  })
+  assertEquals(res.status, 403)
+  assertEquals(await res.json(), { error: 'Forbidden' })
+})
+
 test('POST /invitations returns 403 grants_require_owner when a non-owner passes grants', async () => {
   const teamId = '55555555-5555-4555-8555-555555555555'
   const { app, cookie } = await buildSessionApp({
     role: 'user',
     teamRow: { id: teamId, name: 'Ops', organizationId },
-    executeQueue: [
-      [{ allowed: true }],
-      [{ allowed: true }],
-      [{ allowed: false }],
-    ],
+    executeQueue: [[{ allowed: true }], [{ allowed: true }], [{ allowed: false }]],
   })
   const res = await app.request('/invitations', {
     method: 'POST',

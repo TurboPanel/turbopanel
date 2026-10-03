@@ -32,9 +32,7 @@ const test = Deno.test.bind(Deno)
  * Install host-auth bypass without `Deno.env.set` (no `--allow-env` needed).
  * Production reads `TURBOPANEL_DEV_HOST_AUTH` + explicit-dev via `Deno.env.get`.
  */
-async function withDevHostAuth(
-  fn: () => void | Promise<void>,
-): Promise<void> {
+async function withDevHostAuth(fn: () => void | Promise<void>): Promise<void> {
   const env = Deno.env
   const originalGet = env.get.bind(env)
   const patchedGet = (key: string): string | undefined => {
@@ -66,13 +64,15 @@ async function withDevHostAuth(
   }
 }
 
-async function buildApp(opts: {
-  runtime?: 'deno' | 'workers'
-  withSecrets?: boolean
-  withDb?: boolean
-  installed?: boolean
-  authRateLimiter?: AuthRateLimiter
-} = {}): Promise<Hono<AppEnv>> {
+async function buildApp(
+  opts: {
+    runtime?: 'deno' | 'workers'
+    withSecrets?: boolean
+    withDb?: boolean
+    installed?: boolean
+    authRateLimiter?: AuthRateLimiter
+  } = {}
+): Promise<Hono<AppEnv>> {
   const runtime = opts.runtime ?? 'deno'
   const withSecrets = opts.withSecrets ?? true
   const secretsConfig = parseTestSecretsConfig(runtime)
@@ -89,9 +89,10 @@ async function buildApp(opts: {
     if (db) c.set('db', db)
     c.set(
       'authRateLimiter',
-      opts.authRateLimiter ?? createAuthRateLimiter({
-        defaultPolicy: { limit: 10_000, windowMs: 60_000 },
-      }),
+      opts.authRateLimiter ??
+        createAuthRateLimiter({
+          defaultPolicy: { limit: 10_000, windowMs: 60_000 },
+        })
     )
     return next()
   })
@@ -141,7 +142,7 @@ test('POST /bootstrap returns 409 when the instance is already configured', asyn
   assertEquals(res.status, 409)
   assertEquals(await res.json(), {
     ok: false,
-    error: 'Instance is already configured',
+    error: 'Control plane is already configured',
   })
 })
 
@@ -242,7 +243,7 @@ test('POST / returns 409 when the instance is already configured', async () => {
   assertEquals(res.status, 409)
   assertEquals(await res.json(), {
     ok: false,
-    error: 'Instance is already configured',
+    error: 'Control plane is already configured',
   })
 })
 
@@ -355,7 +356,9 @@ test('POST / surfaces completeInstanceInstall validation errors after host auth'
     assertEquals(mockDbCannotInstall.status, 400)
     const failed = await mockDbCannotInstall.json()
     if (
-      typeof failed !== 'object' || failed === null || !('error' in failed) ||
+      typeof failed !== 'object' ||
+      failed === null ||
+      !('error' in failed) ||
       !('ok' in failed)
     ) {
       throw new TypeError('complete-install error body')

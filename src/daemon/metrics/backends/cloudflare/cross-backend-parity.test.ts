@@ -24,7 +24,10 @@
  */
 import { assertEquals } from '@std/assert'
 import { it } from '@std/testing/bdd'
-import { buildMetricsSample, type MetricsSampleInput } from '../../../../contracts/metrics-contract.ts'
+import {
+  buildMetricsSample,
+  type MetricsSampleInput,
+} from '../../../../contracts/metrics-contract.ts'
 import {
   resolveMetricsCapabilityPlan,
   truncateSampleToCapabilityPlan,
@@ -374,11 +377,7 @@ it('cross-backend parity: DuckDB and Cloudflare AE agree on host series, entity 
       // counter, since AE resolves those through different SQL expressions
       // (`weightedAvgExpressionForColumn` vs `deltaSumExpressionForColumn`)
       // than DuckDB's plain column aggregation.
-      metrics: [
-        'router.backendsUp',
-        'router.tlsCertSoonestExpiryDays',
-        'router.configReloads',
-      ],
+      metrics: ['router.backendsUp', 'router.backendLatencyMsAvg', 'router.backendRequests'],
       from,
       to,
       resolutionSeconds: INTERVAL_SECONDS,
@@ -390,13 +389,11 @@ it('cross-backend parity: DuckDB and Cloudflare AE agree on host series, entity 
       at: string,
       field: string
     ) => result.points.find((point) => point.at === at)?.values[field] ?? null
-    for (
-      const field of [
-        'router.backendsUp',
-        'router.tlsCertSoonestExpiryDays',
-        'router.configReloads',
-      ]
-    ) {
+    for (const field of [
+      'router.backendsUp',
+      'router.backendLatencyMsAvg',
+      'router.backendRequests',
+    ]) {
       for (const sample of [tick1Sample, tick2Sample]) {
         assertEquals(
           routerValues(aeRouter, sample.metadata.sampledAt, field),
@@ -407,20 +404,17 @@ it('cross-backend parity: DuckDB and Cloudflare AE agree on host series, entity 
     }
     // Pin the actual value too, not just agreement — two backends resolving
     // the same wrong slot would otherwise pass.
+    assertEquals(routerValues(aeRouter, tick1Sample.metadata.sampledAt, 'router.backendsUp'), 3)
+    assertEquals(routerValues(aeRouter, tick2Sample.metadata.sampledAt, 'router.backendsUp'), 1)
     assertEquals(
-      routerValues(aeRouter, tick1Sample.metadata.sampledAt, 'router.backendsUp'),
-      3
+      routerValues(aeRouter, tick1Sample.metadata.sampledAt, 'router.backendLatencyMsAvg'),
+      12
     )
+    // delta-sum: one sample of 100 requests per bucket, summed rather than averaged.
     assertEquals(
-      routerValues(aeRouter, tick2Sample.metadata.sampledAt, 'router.backendsUp'),
-      1
+      routerValues(aeRouter, tick1Sample.metadata.sampledAt, 'router.backendRequests'),
+      100
     )
-    assertEquals(
-      routerValues(aeRouter, tick1Sample.metadata.sampledAt, 'router.tlsCertSoonestExpiryDays'),
-      45
-    )
-    // delta-sum: one sample of 1 reload per bucket, summed rather than averaged.
-    assertEquals(routerValues(aeRouter, tick1Sample.metadata.sampledAt, 'router.configReloads'), 1)
 
     // --- managed.storage / managed.docker: the other two host-wide
     // singletons. Covers a flat storage gauge, a *nested* per-engine reading
@@ -429,10 +423,10 @@ it('cross-backend parity: DuckDB and Cloudflare AE agree on host series, entity 
     // two backends store in structurally different tables. ---
     const storageMetrics = [
       'storage.hostingUsedBytes',
-      'storage.postgresConnectionsUsed',
+      'storage.postgresInstancesRunning',
       'storage.mysqlInstancesRunning',
       'dockerUsage.layersBytes',
-      'dockerUsage.buildCacheReclaimableBytes',
+      'dockerUsage.volumesBytes',
     ]
     const storageQuery = {
       serverId: SERVER_ID,
@@ -467,8 +461,8 @@ it('cross-backend parity: DuckDB and Cloudflare AE agree on host series, entity 
       8192
     )
     assertEquals(
-      storageValues(aeStorage, tick1Sample.metadata.sampledAt, 'storage.postgresConnectionsUsed'),
-      30
+      storageValues(aeStorage, tick1Sample.metadata.sampledAt, 'storage.postgresInstancesRunning'),
+      2
     )
     // An engine that reported nothing stays null on both backends, never 0.
     assertEquals(

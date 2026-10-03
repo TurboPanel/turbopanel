@@ -40,6 +40,24 @@ const MEMBER_ID_PARAM = {
   schema: { type: 'string' },
 } as const
 
+const POLICY_ID_PARAM = {
+  name: 'policyId',
+  in: 'path',
+  required: true,
+  schema: { type: 'string', format: 'uuid' },
+} as const
+
+const BACKUP_POLICY_INVALID_RESPONSE = {
+  description:
+    'backup_policy_invalid / backup_schedule_invalid / backup_timezone_invalid / backup_target_unsupported / managed_backup_unsupported',
+  ...jsonSchema('BackupPolicyInvalidError'),
+} as const
+
+const BACKUP_POLICY_NOT_FOUND_RESPONSE = {
+  description: 'backup_policy_not_found',
+  ...jsonSchema('BackupPolicyNotFoundError'),
+} as const
+
 function errorSchema(constError: string) {
   return {
     type: 'object',
@@ -391,7 +409,12 @@ export const managedSchemas = {
       appliedUsername: {
         type: 'string',
         description:
-          'Engine login actually created: the short username plus a random _<11 chars> suffix when the org randomized-usernames default was on at create. Connect with this name.',
+          'Engine login actually created (the system name): per nameScheme it equals the typed username (plain), adds a random _<11 chars> suffix (partial) or is fully random. Connect with this name.',
+      },
+      nameScheme: {
+        type: 'string',
+        enum: ['plain', 'partial', 'random'],
+        description: 'Scheme the system name was derived with.',
       },
       databases: { type: 'array', items: { type: 'string' } },
       privileges: { type: 'array', items: { type: 'string' } },
@@ -415,6 +438,12 @@ export const managedSchemas = {
       username: { type: 'string' },
       databases: { type: 'array', items: { type: 'string' } },
       privileges: { type: 'array', items: { type: 'string' } },
+      nameScheme: {
+        type: 'string',
+        enum: ['plain', 'partial', 'random'],
+        description:
+          'Name scheme for the system name (the login on the host or engine): plain = the typed name, partial = typed name + _<11 random chars> (platform default), random = fully random with no trace of the typed name. Omit to use the organization default. The server derives the system name; clients never supply it. When the organization locks the scheme, asking for a different one returns 409 principal_scheme_locked.',
+      },
     },
   },
   CreateManagedUserResponse: {
@@ -579,6 +608,11 @@ export const managedSchemas = {
         type: 'string',
         description: 'Daemon-local artifact path — never a downloadable URL',
       },
+      retentionId: {
+        type: 'string',
+        format: 'uuid',
+        description: 'The backup schedule whose run made this artifact; absent for a manual backup',
+      },
     },
   },
   ManagedBackupsResponse: {
@@ -618,6 +652,223 @@ export const managedSchemas = {
       ok: { type: 'boolean', const: true },
       commandId: { type: 'string' },
       serverId: { type: 'string' },
+    },
+  },
+  BackupSchedulePreset: {
+    description:
+      'A preset schedule. Stored as cron (`0 * * * *`, `<m> <h> * * *`, `<m> <h> * * <dow>`) and read back out for display.',
+    oneOf: [
+      {
+        type: 'object',
+        required: ['preset'],
+        properties: { preset: { type: 'string', const: 'hourly' } },
+      },
+      {
+        type: 'object',
+        required: ['preset', 'time'],
+        properties: {
+          preset: { type: 'string', const: 'daily' },
+          time: { type: 'string', description: 'HH:MM, 24-hour' },
+        },
+      },
+      {
+        type: 'object',
+        required: ['preset', 'day', 'time'],
+        properties: {
+          preset: { type: 'string', const: 'weekly' },
+          day: { type: 'string', enum: ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'] },
+          time: { type: 'string', description: 'HH:MM, 24-hour' },
+        },
+      },
+    ],
+  },
+  BackupRun: {
+    type: 'object',
+    required: ['runId', 'serverId', 'startedAt', 'finishedAt', 'status', 'error', 'backupId'],
+    properties: {
+      runId: { type: 'string' },
+      serverId: { type: 'string' },
+      startedAt: { type: 'string', format: 'date-time' },
+      finishedAt: { type: 'string', format: 'date-time' },
+      status: { type: 'string', enum: ['succeeded', 'failed'] },
+      error: { type: ['string', 'null'] },
+      backupId: {
+        type: ['string', 'null'],
+        description: 'The `bk_` id of the artifact; null when the run failed',
+      },
+    },
+  },
+  BackupPolicy: {
+    type: 'object',
+    required: [
+      'id',
+      'name',
+      'targetKind',
+      'managedId',
+      'copyId',
+      'schedule',
+      'preset',
+      'timezone',
+      'retentionKeep',
+      'enabled',
+      'automatic',
+      'nextRunAt',
+      'lastRun',
+      'createdAt',
+      'updatedAt',
+    ],
+    properties: {
+      id: { type: 'string', format: 'uuid' },
+      name: { type: 'string' },
+      targetKind: { type: 'string', enum: ['managed', 'copy'] },
+      managedId: {
+        type: ['string', 'null'],
+        format: 'uuid',
+        description: 'The managed engine a `managed` policy backs up; null for a copy',
+      },
+      copyId: {
+        type: ['string', 'null'],
+        format: 'uuid',
+        description: 'The storage copy a `copy` policy backs up; null for an engine',
+      },
+      schedule: { type: 'string', description: 'Cron text as stored' },
+      preset: {
+        oneOf: [{ $ref: '#/components/schemas/BackupSchedulePreset' }, { type: 'null' }],
+        description: 'The preset this schedule matches; null for custom cron',
+      },
+      timezone: {
+        type: ['string', 'null'],
+        description: 'IANA zone; null means the host local time',
+      },
+      retentionKeep: { type: 'integer', minimum: 1 },
+      enabled: { type: 'boolean' },
+      automatic: {
+        type: 'boolean',
+        description: 'True for the daily policy created with the engine',
+      },
+      nextRunAt: {
+        type: ['string', 'null'],
+        format: 'date-time',
+        description: 'As last reported by the host; null until a report arrives',
+      },
+      lastRun: {
+        oneOf: [{ $ref: '#/components/schemas/BackupRun' }, { type: 'null' }],
+      },
+      createdAt: { type: 'string', format: 'date-time' },
+      updatedAt: { type: 'string', format: 'date-time' },
+    },
+  },
+  BackupPoliciesResponse: {
+    type: 'object',
+    required: ['policies'],
+    properties: {
+      policies: {
+        type: 'array',
+        items: { $ref: '#/components/schemas/BackupPolicy' },
+        description: 'Oldest first',
+      },
+    },
+  },
+  BackupScheduleInput: {
+    description: 'A preset object, or cron text (5 fields or an @alias; @reboot is refused)',
+    oneOf: [{ $ref: '#/components/schemas/BackupSchedulePreset' }, { type: 'string' }],
+  },
+  CreateBackupPolicyRequest: {
+    type: 'object',
+    required: ['name', 'schedule', 'retentionKeep'],
+    properties: {
+      name: { type: 'string', maxLength: 64 },
+      schedule: { $ref: '#/components/schemas/BackupScheduleInput' },
+      timezone: { type: ['string', 'null'] },
+      retentionKeep: {
+        type: 'integer',
+        minimum: 1,
+        description: "Up to the engine's own maximum",
+      },
+      enabled: { type: 'boolean', default: true },
+      targetKind: {
+        type: 'string',
+        enum: ['managed', 'copy'],
+        description:
+          'Optional. Must match the route: `managed` on the managed-engine route, `copy` on the storage-copy route (`/storage/{id}/copies/{copyId}/backup-policies`). A mismatch is refused with `backup_target_unsupported`.',
+      },
+    },
+  },
+  UpdateBackupPolicyRequest: {
+    type: 'object',
+    properties: {
+      name: { type: 'string', maxLength: 64 },
+      schedule: { $ref: '#/components/schemas/BackupScheduleInput' },
+      timezone: { type: ['string', 'null'], description: 'null clears it (host local time)' },
+      retentionKeep: { type: 'integer', minimum: 1 },
+      enabled: { type: 'boolean' },
+    },
+  },
+  BackupsReconcileOutcome: {
+    type: 'object',
+    required: ['queuedServerIds', 'failedServerIds'],
+    description:
+      'Best-effort push of the full policy set to the engine host. A failed server catches up on its next reconnect.',
+    properties: {
+      queuedServerIds: { type: 'array', items: { type: 'string' } },
+      failedServerIds: { type: 'array', items: { type: 'string' } },
+    },
+  },
+  BackupPolicyResponse: {
+    type: 'object',
+    required: ['policy', 'reconcile'],
+    properties: {
+      policy: { $ref: '#/components/schemas/BackupPolicy' },
+      reconcile: {
+        oneOf: [{ $ref: '#/components/schemas/BackupsReconcileOutcome' }, { type: 'null' }],
+        description: 'null when the change did not affect what the host runs (a rename)',
+      },
+    },
+  },
+  DeleteBackupPolicyResponse: {
+    type: 'object',
+    required: ['ok', 'reconcile'],
+    properties: {
+      ok: { type: 'boolean', const: true },
+      reconcile: { $ref: '#/components/schemas/BackupsReconcileOutcome' },
+    },
+  },
+  BackupRunsResponse: {
+    type: 'object',
+    required: ['runs'],
+    properties: {
+      runs: {
+        type: 'array',
+        items: { $ref: '#/components/schemas/BackupRun' },
+        description: 'Newest first',
+      },
+    },
+  },
+  BackupPolicyInvalidError: {
+    type: 'object',
+    required: ['error'],
+    properties: {
+      error: {
+        type: 'string',
+        enum: [
+          'backup_policy_invalid',
+          'backup_schedule_invalid',
+          'backup_timezone_invalid',
+          'backup_target_unsupported',
+          'managed_backup_unsupported',
+        ],
+      },
+      field: { type: 'string' },
+      detail: { type: 'string' },
+    },
+  },
+  BackupPolicyNotFoundError: errorSchema('backup_policy_not_found'),
+  BackupPolicyLimitError: {
+    type: 'object',
+    required: ['error', 'limit'],
+    properties: {
+      error: { type: 'string', const: 'backup_policy_limit' },
+      limit: { type: 'integer' },
     },
   },
   ManagedBusyError: errorSchema('managed_busy'),
@@ -855,7 +1106,8 @@ export const managedPaths = {
           ...jsonSchema('CreateManagedUserResponse'),
         },
         409: {
-          description: 'managed_user_exists / managed_busy',
+          description:
+            'managed_user_exists / managed_busy / username_in_use / principal_scheme_locked',
           content: {
             'application/json': {
               schema: {
@@ -1116,6 +1368,109 @@ export const managedPaths = {
             },
           },
         },
+      },
+    },
+  },
+  '/api/client/v1/environments/{id}/managed/backup-policies': {
+    get: {
+      tags: ['Managed services'],
+      summary: 'List scheduled backup policies for the managed engine',
+      description:
+        'Each policy with its newest run. Scheduled runs are fired by a timer on the host, not queued from here.',
+      parameters: [ENV_ID_PARAM],
+      responses: {
+        200: {
+          description: 'Policies, oldest first; empty when the environment has no managed engine',
+          ...jsonSchema('BackupPoliciesResponse'),
+        },
+      },
+    },
+    post: {
+      tags: ['Managed services'],
+      summary: 'Create a scheduled backup policy',
+      description:
+        "Org owners and managers. Pushes the engine host's full policy set (`server.backups.reconcile`).",
+      parameters: [ENV_ID_PARAM],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: { $ref: '#/components/schemas/CreateBackupPolicyRequest' },
+          },
+        },
+      },
+      responses: {
+        201: {
+          description: 'Policy created',
+          ...jsonSchema('BackupPolicyResponse'),
+        },
+        400: BACKUP_POLICY_INVALID_RESPONSE,
+        409: {
+          description: 'backup_policy_limit',
+          ...jsonSchema('BackupPolicyLimitError'),
+        },
+      },
+    },
+  },
+  '/api/client/v1/environments/{id}/managed/backup-policies/{policyId}': {
+    patch: {
+      tags: ['Managed services'],
+      summary: 'Update a scheduled backup policy',
+      description:
+        'Any subset of fields. A change to schedule, timezone, retention or enabled pushes the host a new set; a rename does not.',
+      parameters: [ENV_ID_PARAM, POLICY_ID_PARAM],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: { $ref: '#/components/schemas/UpdateBackupPolicyRequest' },
+          },
+        },
+      },
+      responses: {
+        200: {
+          description: 'Policy updated',
+          ...jsonSchema('BackupPolicyResponse'),
+        },
+        400: BACKUP_POLICY_INVALID_RESPONSE,
+        404: BACKUP_POLICY_NOT_FOUND_RESPONSE,
+      },
+    },
+    delete: {
+      tags: ['Managed services'],
+      summary: 'Delete a scheduled backup policy',
+      description:
+        'Removes the policy and its run history; the host drops its timer. Artifacts already written stay on the host and in the backup list.',
+      parameters: [ENV_ID_PARAM, POLICY_ID_PARAM],
+      responses: {
+        200: {
+          description: 'Policy deleted',
+          ...jsonSchema('DeleteBackupPolicyResponse'),
+        },
+        404: BACKUP_POLICY_NOT_FOUND_RESPONSE,
+      },
+    },
+  },
+  '/api/client/v1/environments/{id}/managed/backup-policies/{policyId}/runs': {
+    get: {
+      tags: ['Managed services'],
+      summary: "List a backup policy's recent runs",
+      parameters: [
+        ENV_ID_PARAM,
+        POLICY_ID_PARAM,
+        {
+          name: 'limit',
+          in: 'query',
+          required: false,
+          schema: { type: 'integer', minimum: 1, maximum: 100, default: 20 },
+        },
+      ],
+      responses: {
+        200: {
+          description: 'Runs, newest first',
+          ...jsonSchema('BackupRunsResponse'),
+        },
+        404: BACKUP_POLICY_NOT_FOUND_RESPONSE,
       },
     },
   },

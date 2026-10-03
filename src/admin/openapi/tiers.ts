@@ -3,7 +3,7 @@ import { ADMIN_API_PREFIX } from '../../app/surfaces.ts'
 const cookieSecurity = [{ cookieAuth: [] }] as const
 
 /**
- * Tier catalogue paths. Hosted (Workers) only: the routes are not mounted on
+ * Tier catalogue paths. TurboPanel High Availability only: the routes are not mounted on
  * self-hosted Deno, so the shared admin spec omits them.
  */
 export const TIER_PATHS = {
@@ -14,7 +14,7 @@ export const TIER_PATHS = {
       description:
         'Rank order. Each row carries the provider product it bills against, ' +
         'the cached display price, the ladder entitlements for its label and ' +
-        'its reference counts (seats and assigned servers). `ladder` lists ' +
+        'its reference counts (licenses and assigned servers). `ladder` lists ' +
         'every label with the row bound to it, so the console can show what ' +
         'is still unmapped.',
       security: [...cookieSecurity],
@@ -35,7 +35,7 @@ export const TIER_PATHS = {
         'ladder; `SX` takes no product, every other label needs one. The ' +
         'product is fetched from the provider with its default price and ' +
         'verified (active, recurring monthly, per-unit, usd, and a tax ' +
-        'behaviour resolvable from the price or the account\'s Tax ' +
+        "behaviour resolvable from the price or the account's Tax " +
         'settings default) before the row is written — a wrong product is silent ' +
         'downstream, because the projection skips items whose product maps ' +
         'to no tier. `rank` and `isCustom` come from the ladder, never the body.',
@@ -66,7 +66,7 @@ export const TIER_PATHS = {
         'verification with the reasons, the ladder label it names in ' +
         '`metadata.turbopanel_tier` (when valid) as `suggestedLabel`, and the ' +
         'tier row already bound to it, if any, plus `taxDefaults` — the ' +
-        'account\'s Stripe Tax default, which is what lets a price left at ' +
+        "account's Stripe Tax default, which is what lets a price left at " +
         '"Use default" verify. One provider list call, and a second for ' +
         'those defaults only when some price needs them; nothing is written.',
       security: [...cookieSecurity],
@@ -87,7 +87,7 @@ export const TIER_PATHS = {
       summary: 'Re-verify every priced row and refresh its cached price',
       description:
         'The "Verify all" button. One product fetch per priced row; the ' +
-        'only write is the row\'s cached display price.',
+        "only write is the row's cached display price.",
       security: [...cookieSecurity],
       responses: {
         '200': { description: 'One verification result per priced row' },
@@ -127,7 +127,7 @@ export const TIER_PATHS = {
       summary: 'Retire a tier row',
       description:
         'Tiers are deactivated, never deleted: an inactive row cannot be ' +
-        'bought into but stays readable for the seats that still count ' +
+        'bought into but stays readable for the licenses that still count ' +
         'against it.',
       security: [...cookieSecurity],
       responses: {
@@ -144,7 +144,7 @@ export const TIER_PATHS = {
   [`${ADMIN_API_PREFIX}/tiers/{id}/verify`]: {
     post: {
       tags: ['Tiers'],
-      summary: 'Verify one row\'s provider product and refresh its cached price',
+      summary: "Verify one row's provider product and refresh its cached price",
       description: 'A custom row has no product to verify and answers 400 `tier_has_no_product`.',
       security: [...cookieSecurity],
       responses: {
