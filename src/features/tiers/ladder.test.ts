@@ -8,6 +8,7 @@
  */
 
 import { assertEquals } from '@std/assert'
+import v7Layout from '../../daemon/metrics/testing/v7-layout.fixture.json' with { type: 'json' }
 import { MAX_NIC_SLOTS } from '../../contracts/topology-types.ts'
 import {
   CATALOGUE_CURRENCY,
@@ -43,22 +44,39 @@ import {
 const test = Deno.test.bind(Deno)
 
 test('labels and ranks are unique, and the ladder is S1…S7 then SX in rank order', () => {
-  assertEquals(LADDER.map((entry) => entry.label), [...TIER_LABELS])
+  assertEquals(
+    LADDER.map((entry) => entry.label),
+    [...TIER_LABELS]
+  )
   assertEquals(new Set(LADDER.map((entry) => entry.label)).size, LADDER.length)
   assertEquals(new Set(LADDER.map((entry) => entry.rank)).size, LADDER.length)
   // Ranks are 1…N with no gaps: the greedy assignment and the bands index by them.
-  assertEquals(LADDER.map((entry) => entry.rank), LADDER.map((_, index) => index + 1))
+  assertEquals(
+    LADDER.map((entry) => entry.rank),
+    LADDER.map((_, index) => index + 1)
+  )
   assertEquals(LADDER[0]?.rank, ENTRY_TIER_RANK)
   assertEquals(LADDER.at(-1)?.label, CUSTOM_TIER_LABEL)
 })
 
 test('every ceiling and slot budget is non-decreasing up the ladder', () => {
-  const keys = ['maxCores', 'maxMemoryBytes', 'nicSlots', 'driveSlots', 'gpuSlots', 'filesystemSlots'] as const
+  const keys = [
+    'maxCores',
+    'maxMemoryBytes',
+    'nicSlots',
+    'driveSlots',
+    'gpuSlots',
+    'filesystemSlots',
+  ] as const
   for (const key of keys) {
     for (let index = 1; index < LADDER.length; index++) {
       const below = LADDER[index - 1]![key]
       const here = LADDER[index]![key]
-      assertEquals(here >= below, true, `${key} falls from ${LADDER[index - 1]!.label} to ${LADDER[index]!.label}`)
+      assertEquals(
+        here >= below,
+        true,
+        `${key} falls from ${LADDER[index - 1]!.label} to ${LADDER[index]!.label}`
+      )
     }
   }
 })
@@ -76,23 +94,46 @@ test('SX is the one custom rung: unbounded, unpriced, never purchasable', () => 
   assertEquals(sx?.isCustom, true)
   assertEquals(sx?.listPriceCents, null)
   assertEquals([sx?.maxCores, sx?.maxMemoryBytes], [SX_UNBOUNDED_CORES, SX_UNBOUNDED_MEMORY_BYTES])
-  assertEquals(LADDER.filter((entry) => entry.isCustom).map((entry) => entry.label), ['SX'])
+  assertEquals(
+    LADDER.filter((entry) => entry.isCustom).map((entry) => entry.label),
+    ['SX']
+  )
   // Every priced rung carries a positive list price the provider's Product is expected to match.
-  assertEquals(PRICED_LADDER.map((entry) => entry.label), ['S1', 'S2', 'S3', 'S4', 'S5', 'S6', 'S7'])
+  assertEquals(
+    PRICED_LADDER.map((entry) => entry.label),
+    ['S1', 'S2', 'S3', 'S4', 'S5', 'S6', 'S7']
+  )
   for (const entry of PRICED_LADDER) {
-    assertEquals(typeof entry.listPriceCents === 'number' && entry.listPriceCents > 0, true, entry.label)
+    assertEquals(
+      typeof entry.listPriceCents === 'number' && entry.listPriceCents > 0,
+      true,
+      entry.label
+    )
   }
   assertEquals(CATALOGUE_CURRENCY, 'usd')
 })
 
 test('the placement thresholds are the priced ladder, column by column', () => {
-  assertEquals(TIER_CPU_CORE_THRESHOLDS, PRICED_LADDER.map((entry) => entry.maxCores))
-  assertEquals(TIER_RAM_BYTE_THRESHOLDS, PRICED_LADDER.map((entry) => entry.maxMemoryBytes))
-  assertEquals(TIER_NIC_SLOT_THRESHOLDS, PRICED_LADDER.map((entry) => entry.nicSlots))
-  assertEquals(TIER_DRIVE_SLOT_THRESHOLDS, PRICED_LADDER.map((entry) => entry.driveSlots))
-  // GPU counts repeat across neighbouring rungs; the band is the first rank selling each count.
-  const distinctGpu = [...new Set(PRICED_LADDER.map((entry) => entry.gpuSlots))]
-  assertEquals(TIER_GPU_SLOT_THRESHOLDS, distinctGpu)
+  assertEquals(
+    TIER_CPU_CORE_THRESHOLDS,
+    PRICED_LADDER.map((entry) => entry.maxCores)
+  )
+  assertEquals(
+    TIER_RAM_BYTE_THRESHOLDS,
+    PRICED_LADDER.map((entry) => entry.maxMemoryBytes)
+  )
+  assertEquals(
+    TIER_NIC_SLOT_THRESHOLDS,
+    PRICED_LADDER.map((entry) => entry.nicSlots)
+  )
+  assertEquals(
+    TIER_DRIVE_SLOT_THRESHOLDS,
+    PRICED_LADDER.map((entry) => entry.driveSlots)
+  )
+  assertEquals(
+    TIER_GPU_SLOT_THRESHOLDS,
+    PRICED_LADDER.map((entry) => entry.gpuSlots)
+  )
   // A server exactly at a rung's ceiling is placed on that rung; one core over needs the next.
   for (const entry of PRICED_LADDER) {
     assertEquals(cpuBand(entry.maxCores).label, entry.label)
@@ -102,11 +143,29 @@ test('the placement thresholds are the priced ladder, column by column', () => {
 })
 
 test('ladderEntitlements emits the capability-plan shape, with isEntryTier true for S1 only', () => {
-  assertEquals(ladderEntitlements('S3'), { nicSlots: 5, driveSlots: 6, gpuSlots: 2, filesystemSlots: 9, isEntryTier: false })
-  assertEquals(ladderEntitlements('S1'), { nicSlots: 2, driveSlots: 2, gpuSlots: 2, filesystemSlots: 9, isEntryTier: true })
+  assertEquals(ladderEntitlements('S3'), {
+    nicSlots: 5,
+    driveSlots: 6,
+    gpuSlots: 1,
+    filesystemSlots: 9,
+    isEntryTier: false,
+  })
+  assertEquals(ladderEntitlements('S1'), {
+    nicSlots: 2,
+    driveSlots: 3,
+    gpuSlots: 0,
+    filesystemSlots: 9,
+    isEntryTier: true,
+  })
   for (const entry of LADDER) {
     const entitlements = ladderEntitlements(entry.label)
-    assertEquals(Object.keys(entitlements ?? {}).sort(), ['driveSlots', 'filesystemSlots', 'gpuSlots', 'isEntryTier', 'nicSlots'])
+    assertEquals(Object.keys(entitlements ?? {}).sort(), [
+      'driveSlots',
+      'filesystemSlots',
+      'gpuSlots',
+      'isEntryTier',
+      'nicSlots',
+    ])
     assertEquals(entitlements?.isEntryTier, entry.rank === ENTRY_TIER_RANK, entry.label)
   }
   // A label off the ladder is "no tier": the platform default plan.
@@ -130,4 +189,24 @@ test('the lookups answer by label and by rank, and refuse anything else', () => 
   assertEquals(isTierLabel('SX'), true)
   assertEquals(isTierLabel('S0'), false)
   assertEquals(isTierLabel(1), false)
+})
+
+test('the ladder grants exactly the slots the sealed v7 layout fixture states', () => {
+  const limits = v7Layout.planLimits as Record<
+    string,
+    { nicSlots: number; driveSlots: number; gpuSlots: number; filesystemSlots: number }
+  >
+  assertEquals(
+    Object.keys(limits),
+    LADDER.map((entry) => entry.label)
+  )
+  for (const entry of LADDER) {
+    const want = limits[entry.label]!
+    assertEquals(entry.nicSlots, want.nicSlots, `${entry.label} NIC slots`)
+    assertEquals(entry.driveSlots, want.driveSlots, `${entry.label} drive slots`)
+    assertEquals(entry.gpuSlots, want.gpuSlots, `${entry.label} GPU slots`)
+    // The entry tier stores one extra filesystem (capability-plan.ts), the rest what the ladder says.
+    const filesystems = entry.rank === ENTRY_TIER_RANK ? 1 : entry.filesystemSlots
+    assertEquals(filesystems, want.filesystemSlots, `${entry.label} filesystem slots`)
+  }
 })
