@@ -56,3 +56,15 @@ test('the live-channel signing job resolves to the protected release environment
     "release.yml's signing job must resolve to the `release` environment for the live channel"
   )
 })
+
+test('no workflow inherits secrets or falls back to a repo-level signing key', () => {
+  for (const entry of Deno.readDirSync(WORKFLOWS)) {
+    if (!entry.isFile || !entry.name.endsWith('.yml')) continue
+    const text = Deno.readTextFileSync(join(WORKFLOWS, entry.name))
+    assert(!/^\s*secrets:\s*inherit\b/m.test(text), `${entry.name} uses secrets: inherit`)
+    assert(
+      !text.includes('secrets.RELEASE_SIGNING_KEY'),
+      `${entry.name} falls back to a repo-level RELEASE_SIGNING_KEY`
+    )
+  }
+})

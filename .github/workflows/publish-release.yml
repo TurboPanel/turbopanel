@@ -112,7 +112,9 @@ jobs:
       # Default: the `release` environment approval stays for the release hop.
     permissions:
       contents: write # the v<x.y.z> tag
-    secrets: inherit
+    secrets:
+      RELEASE_APP_ID: ${{ secrets.RELEASE_APP_ID }}
+      RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
 
   publish:
     needs: prepare
@@ -126,7 +128,9 @@ jobs:
       target-commit: ${{ needs.prepare.outputs.commit }}
     permissions:
       contents: write # the GitHub release
-    secrets: inherit
+    secrets:
+      RELEASE_APP_ID: ${{ secrets.RELEASE_APP_ID }}
+      RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
 
   finalize:
     needs: [prepare, publish]
@@ -139,4 +143,6 @@ jobs:
       manifest-filename: ${{ needs.prepare.outputs.manifest-filename }}
     permissions:
       contents: write # releases/latest, the rolling rc pointer, the live fast-forward
-    secrets: inherit
+    secrets:
+      RELEASE_APP_ID: ${{ secrets.RELEASE_APP_ID }}
+      RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
