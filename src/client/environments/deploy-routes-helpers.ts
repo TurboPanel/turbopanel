@@ -802,10 +802,11 @@ export function preferredListenPortsFromHostings(
 export function buildSitesForDeploy(
   sites: EnvironmentDeploySite[],
   hostings: EnvironmentDeployHosting[],
-  used: Set<number> = new Set<number>()
+  used: Set<number> = new Set<number>(),
+  environmentId = ''
 ): EnvironmentDeploySite[] {
   return attachWebMetadataToSites(
-    assignSiteListenPorts(sites, preferredListenPortsFromHostings(hostings), used),
+    assignSiteListenPorts(sites, preferredListenPortsFromHostings(hostings), used, environmentId),
     hostings
   )
 }

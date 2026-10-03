@@ -20,12 +20,14 @@ export { isPhpMode, PHP_MODES, type PhpMode }
 
 /**
  * Modes each web server can run. Caddy sites get no PHP mode; nginx and
- * Apache reach PHP over FastCGI; OpenLiteSpeed can also run lsphp.
+ * Apache reach PHP over FastCGI (nginx in front of Apache through Apache);
+ * OpenLiteSpeed can also run lsphp.
  */
 export const ENGINE_PHP_MODES: Readonly<Record<SiteEngine, readonly PhpMode[]>> = {
   caddy: [],
   nginx: ['fastcgi', 'fpm'],
   apache: ['fastcgi', 'fpm'],
+  'nginx+apache': ['fastcgi', 'fpm'],
   openlitespeed: PHP_MODES,
 }
 

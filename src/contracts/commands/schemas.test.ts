@@ -5512,6 +5512,24 @@ test('parseEnvironmentDeployPayload sites accept engines, php, and principal ids
     Error,
     'Invalid sites entry'
   )
+  // nginx in front of Apache carries Apache's own port, distinct from listenPort.
+  const paired = parseEnvironmentDeployPayload(
+    deployPayloadWithSite({ engine: 'nginx+apache', backendPort: 18091 })
+  )
+  assertEquals(paired.sites?.[0]?.engine, 'nginx+apache')
+  assertEquals(paired.sites?.[0]?.backendPort, 18091)
+  for (const backendPort of [undefined, 80, paired.sites?.[0]?.listenPort]) {
+    assertThrows(
+      () =>
+        parseEnvironmentDeployPayload(
+          deployPayloadWithSite({ engine: 'nginx+apache', backendPort })
+        ),
+      Error,
+      'nginx+apache needs a backendPort'
+    )
+  }
+  const plain = parseEnvironmentDeployPayload(deployPayloadWithSite({ backendPort: 18091 }))
+  assertEquals(plain.sites?.[0]?.backendPort, undefined)
   assertThrows(
     () => parseEnvironmentDeployPayload(deployPayloadWithSite({ listenPort: 80 })),
     Error,

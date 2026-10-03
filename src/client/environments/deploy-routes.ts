@@ -755,7 +755,12 @@ function createParamsForPreparedServer(
     projectName: params.projectName,
     composeFiles: row.prepared.composeFiles,
     hostings: row.prepared.hostings,
-    sites: buildSitesForDeploy(row.prepared.sites, row.prepared.hostings, usedListenPorts),
+    sites: buildSitesForDeploy(
+      row.prepared.sites,
+      row.prepared.hostings,
+      usedListenPorts,
+      params.environmentId
+    ),
     nativeAppServices: buildNativeAppServicesForDeploy(
       row.prepared.nativeAppServices,
       row.prepared.hostings,
