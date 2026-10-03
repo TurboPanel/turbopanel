@@ -3,12 +3,19 @@
  */
 
 import { eq, sql } from 'drizzle-orm'
-import {
-  isComposeChainError,
-  resolveComposeLayerChain,
-} from '../compose/layer-chain.ts'
+import { isComposeChainError, resolveComposeLayerChain } from '../compose/layer-chain.ts'
 import type { Db } from '../../db/connection.ts'
-import { environment, fabric, organization, storageCopy, mount, project, server, service, storage } from '../../db/schema.ts'
+import {
+  environment,
+  fabric,
+  organization,
+  storageCopy,
+  mount,
+  project,
+  server,
+  service,
+  storage,
+} from '../../db/schema.ts'
 import { listServerLabelsForServers } from '../servers/label-records.ts'
 import { listEnvironmentSlots } from '../servers/slot-records.ts'
 import {
@@ -92,10 +99,8 @@ async function authorizeHostAccess(
   db: Db,
   envRow: { id: string; metadata: unknown },
   merged: ComposeDocument,
-  actor: HostAccessActor,
-): Promise<
-  { error: ComposeDeployValidationError } | { hostLevelApproved: boolean }
-> {
+  actor: HostAccessActor
+): Promise<{ error: ComposeDeployValidationError } | { hostLevelApproved: boolean }> {
   const fingerprint = await hostAccessFingerprint(merged.data)
   if (fingerprint === null) return { hostLevelApproved: false }
   const issues = hostAccessIssues(merged.data)
@@ -200,7 +205,7 @@ export function extractComposeFromOptions(options: unknown): unknown {
 export function resolveMergedCompose(
   projectOptions: unknown,
   environmentOptions: unknown,
-  environmentFilename: string,
+  environmentFilename: string
 ): ComposeDocument | PlanDeployError {
   const chain = resolveComposeLayerChain({
     projectOptions,
@@ -233,7 +238,7 @@ export type StoragePinMountRow = {
  * has a shared (null-server) storageCopy.
  */
 export function computeStoragePinsFromMountRows(
-  rows: readonly StoragePinMountRow[],
+  rows: readonly StoragePinMountRow[]
 ): Map<string, string> {
   const hasShared = new Set<string>()
   const primaryServer = new Map<string, string>()
@@ -257,7 +262,7 @@ export function computeStoragePinsFromMountRows(
 async function loadFleet(
   db: Db,
   organizationId: string,
-  listLabels: typeof listServerLabelsForServers,
+  listLabels: typeof listServerLabelsForServers
 ): Promise<FleetServer[]> {
   const rows = await db
     .select({
@@ -269,7 +274,7 @@ async function loadFleet(
 
   const labelsByServer = await listLabels(
     db,
-    rows.map((row) => row.id),
+    rows.map((row) => row.id)
   )
   return rows.map((row) => {
     const labels: Record<string, string> = {}
@@ -284,10 +289,7 @@ async function loadFleet(
   })
 }
 
-async function loadStoragePins(
-  db: Db,
-  environmentId: string,
-): Promise<Map<string, string>> {
+async function loadStoragePins(db: Db, environmentId: string): Promise<Map<string, string>> {
   const rows = await db
     .select({
       serviceId: mount.serviceId,
@@ -330,7 +332,7 @@ export async function planEnvironmentDeploy(
     /** Required: there is no default actor, so a new caller cannot skip the gate. */
     hostAccess: HostAccessActor
   },
-  deps: PlanEnvironmentDeployDeps = {},
+  deps: PlanEnvironmentDeployDeps = {}
 ): Promise<PlannedDeploy | PlanDeployError> {
   const reconcile = deps.reconcileServicesFromCompose ?? reconcileServicesFromCompose
   const registerVolumes = deps.registerComposeVolumes ?? registerComposeVolumes
@@ -376,8 +378,7 @@ export async function planEnvironmentDeploy(
     .limit(1)
   const orgOptions = parseOrganizationOptions(orgRow?.options)
   const composeGatedFieldsEnabled = resolveComposeGatedFieldsEnabled(orgOptions)
-  const composeRemoteBuildSourcesEnabled =
-    resolveComposeRemoteBuildSourcesEnabled(orgOptions)
+  const composeRemoteBuildSourcesEnabled = resolveComposeRemoteBuildSourcesEnabled(orgOptions)
 
   // Before anything is written. `reconcile` below creates and retires `service`
   // rows, and `registerVolumes` / `registerMounts` further down create `storage`
