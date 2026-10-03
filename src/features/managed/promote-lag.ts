@@ -11,6 +11,12 @@ export type ManagedPromoteLagGateError =
 /** Default max age of a replica observation for the promote gate. */
 export const DEFAULT_MANAGED_PROMOTE_STALE_MS = 120_000
 
+/** Default max replay lag in bytes for the promote gate (64 MiB). */
+export const DEFAULT_MANAGED_PROMOTE_MAX_LAG_BYTES = 64 * 1024 * 1024
+
+/** Default max replay lag in seconds for the promote gate. */
+export const DEFAULT_MANAGED_PROMOTE_MAX_LAG_SECONDS = 30
+
 export type ManagedPromoteLagGateOptions = {
   /** Max age of the observation (default 120s). */
   staleMs?: number
@@ -29,8 +35,8 @@ export function evaluateManagedPromoteLagGate(
   options?: ManagedPromoteLagGateOptions
 ): null | ManagedPromoteLagGateError {
   const staleMs = options?.staleMs ?? DEFAULT_MANAGED_PROMOTE_STALE_MS
-  const maxLagBytes = options?.maxLagBytes ?? 64 * 1024 * 1024
-  const maxLagSeconds = options?.maxLagSeconds ?? 30
+  const maxLagBytes = options?.maxLagBytes ?? DEFAULT_MANAGED_PROMOTE_MAX_LAG_BYTES
+  const maxLagSeconds = options?.maxLagSeconds ?? DEFAULT_MANAGED_PROMOTE_MAX_LAG_SECONDS
 
   if (typeof replication !== 'object' || replication === null || Array.isArray(replication)) {
     return 'managed_replica_not_streaming'
@@ -70,7 +76,7 @@ export function evaluateManagedPromoteLagGate(
  * `managed_replica_not_streaming` *before* it looks at `observedAt`, so a
  * replica last seen catching up (or never observed) would otherwise never be
  * re-probed. Used only to decide whether the operator promote route asks the
- * daemon; automatic failover never probes.
+ * daemon. Automatic failover probes on its own terms (`ha-fresh-standby.ts`).
  */
 export function isManagedReplicaObservationStale(
   replication: unknown,

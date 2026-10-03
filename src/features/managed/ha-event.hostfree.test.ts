@@ -347,3 +347,65 @@ test('handleManagedHaEvent honours the persisted cooldown (a fresh process sees 
   assertEquals(result?.metadata.blockedReason, AUTOMATIC_FAILOVER_COOLDOWN_MESSAGE)
   assertEquals(calls, { inserts: 1, reads: 5 })
 })
+
+function coldPgDb(blocked: unknown) {
+  const pins = [SERVER_A, SERVER_B].map((serverId, index) => ({
+    ipId: `ip-${index}`,
+    serverId,
+    datacenterId: 'dc-east',
+    networkId: 'net-1',
+    address: `203.0.113.${10 + index}`,
+  }))
+  const cold = replicaMember({ metadata: { replication: { state: 'stopped', observedAt: NOW } } })
+  return fakeDb([[pgRow], [member(), cold], inOrg, [], [], pins], [blocked])
+}
+
+test('handleManagedHaEvent probes a cold Postgres standby, anchored on the detector span', async () => {
+  const blocked = recoveryRow({ state: 'blocked', id: 'rec-cold' })
+  const calls: unknown[] = []
+  const result = await handleManagedHaEvent(
+    coldPgDb(blocked),
+    {
+      managedId: MANAGED_ID,
+      sourceMemberId: 'mem-primary',
+      detector: 'postgres-probe',
+      evidence: { failures: 6, spanMs: 25_000 },
+    },
+    {
+      reporterServerId: SERVER_A,
+      commandQueue: queue,
+      probeStandby: (target) => {
+        calls.push(target)
+        return Promise.resolve(null)
+      },
+      nowMs: () => 1_000_000,
+    }
+  )
+  assertEquals(result?.id, 'rec-cold')
+  assertEquals(calls, [
+    { memberId: 'mem-replica', managedId: MANAGED_ID, serverId: SERVER_B, engine: 'postgres' },
+  ])
+})
+
+test('handleManagedHaEvent never probes without a usable detector span', async () => {
+  const blocked = recoveryRow({ state: 'blocked', id: 'rec-cold' })
+  let probed = 0
+  await handleManagedHaEvent(
+    coldPgDb(blocked),
+    {
+      managedId: MANAGED_ID,
+      sourceMemberId: 'mem-primary',
+      detector: 'postgres-probe',
+      evidence: { failures: 6 },
+    },
+    {
+      reporterServerId: SERVER_A,
+      commandQueue: queue,
+      probeStandby: () => {
+        probed += 1
+        return Promise.resolve(null)
+      },
+    }
+  )
+  assertEquals(probed, 0)
+})

@@ -67,6 +67,14 @@ export const FENCE_STOP_UNQUEUED_MESSAGE =
 export const AUTOMATIC_FAILOVER_UNHEALTHY_MESSAGE =
   'Automatic failover blocked: no same-datacenter failover replica is healthy enough to promote'
 
+/**
+ * The stored observations named no healthy candidate, and the event-time
+ * probe could not prove a non-streaming failover replica caught up
+ * (`ha-fresh-standby.ts`; details in `freshStandby`).
+ */
+export const AUTOMATIC_FAILOVER_STANDBY_NOT_PROVEN_MESSAGE =
+  'Automatic failover blocked: the failover replica is not streaming and could not be proven caught up to the failed primary'
+
 export type RecoveryMetadata = {
   fencingEpoch?: string
   fenceCommandIds?: string[]
@@ -85,8 +93,13 @@ export type RecoveryMetadata = {
   targetServerId?: string
   /** `managed-ha-event` detector that opened an automatic failover. */
   detector?: string
-  /** Detector evidence as sent (JSON text, bounded); never used to decide. */
+  /**
+   * Detector evidence as sent (JSON text, bounded). Only its `spanMs` is
+   * used, to anchor the fresh-standby gate's failure start.
+   */
   detectorEvidence?: string
+  /** Fresh-standby gate outcome per probed replica (accepted basis / refusal). */
+  freshStandby?: string
 }
 
 export type RecoveryRecord = {
@@ -171,6 +184,7 @@ export function parseRecoveryMetadata(value: unknown): RecoveryMetadata {
   setIfPresent(metadata, 'targetServerId', optionalString(value.targetServerId))
   setIfPresent(metadata, 'detector', optionalString(value.detector))
   setIfPresent(metadata, 'detectorEvidence', optionalString(value.detectorEvidence))
+  setIfPresent(metadata, 'freshStandby', optionalString(value.freshStandby))
   return metadata
 }
 
@@ -189,5 +203,6 @@ export function serializeRecovery(row: RecoveryRecord) {
     targetDatacenterId: row.metadata.targetDatacenterId ?? null,
     sourceServerId: row.metadata.sourceServerId ?? null,
     targetServerId: row.metadata.targetServerId ?? null,
+    freshStandby: row.metadata.freshStandby ?? null,
   }
 }

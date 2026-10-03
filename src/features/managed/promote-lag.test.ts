@@ -176,12 +176,13 @@ test('observation staleness is keyed on age, not on the gate verdict', () => {
   )
 })
 
-test('automatic failover still fails closed on a stale observation and never probes', async () => {
+test('automatic failover still fails closed on a stale observation and never imports the probe', async () => {
   const stale = { state: 'streaming', observedAt: '2020-01-01T00:00:00.000Z' }
   assertEquals(isAutomaticFailoverHealthy(stale, NOW), false)
   assertEquals(isAutomaticFailoverHealthy({ state: 'streaming', observedAt: FRESH }, NOW), true)
-  // The probe is an operator-route concern: nothing on the automatic-failover
-  // path may import it.
+  // The automatic-failover path never imports the probe transport: the
+  // event-time standby probe (`ha-fresh-standby.ts`) is injected by the
+  // transports, so the feature modules stay host-free.
   for (const file of ['ha-recovery.ts', 'ha-recovery-pure.ts', 'promote-lag.ts']) {
     const source = await Deno.readTextFile(new URL(`./${file}`, import.meta.url))
     assertEquals(source.includes('health-probe'), false, file)
