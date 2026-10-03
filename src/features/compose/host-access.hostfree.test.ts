@@ -805,6 +805,31 @@ const GATE_CASES: Array<[string, unknown, Expected[]]> = [
     [],
   ],
   [
+    'volumes: an explicit name reaches a volume the stack may not own',
+    { volumes: { a: { name: 'other_stack_data' } } },
+    [
+      [
+        ['volumes', 'a', 'name'],
+        'volume `a`',
+        'names a Docker volume on the host, which may belong to another stack',
+        'other_stack_data',
+      ],
+    ],
+  ],
+  [
+    'volumes: external uses a volume the stack does not own',
+    { volumes: { a: { external: true } } },
+    [
+      [
+        ['volumes', 'a', 'external'],
+        'volume `a`',
+        'uses a Docker volume the stack does not own',
+        true,
+      ],
+    ],
+  ],
+  ['volumes: external false is an ordinary volume', { volumes: { a: { external: false } } }, []],
+  [
     'volumes: named volume with harmless options',
     {
       volumes: {

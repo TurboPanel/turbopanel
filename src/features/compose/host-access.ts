@@ -14,6 +14,9 @@
  *   (`type: bind` / `npipe` / an unknown type) syntax;
  * - top-level `volumes.<name>.driver_opts` that make a local volume a bind
  *   (`o: bind`, `type: none`, a host-path `device`);
+ * - top-level `volumes.<name>.name` / `external`, which name a Docker volume
+ *   the stack does not own (another stack's data, mounted on deploy and
+ *   removed by `compose down --volumes`);
  * - top-level `configs.<name>.file` / `secrets.<name>.file`;
  * - `services.<name>.env_file` / `label_file`;
  * - `services.<name>.build` — `context`, `dockerfile`, `additional_contexts`,
@@ -368,10 +371,32 @@ function checkExtends(out: Collector, serviceSegments: string[], value: unknown)
   }
 }
 
+/** An explicit `name:` or `external` makes Compose use a volume by its host-wide name. */
+function checkVolumeIdentity(out: Collector, name: string, entry: Record<string, unknown>): void {
+  if (entry.name !== undefined) {
+    out.add(
+      ['volumes', name, 'name'],
+      `volume \`${name}\``,
+      'names a Docker volume on the host, which may belong to another stack',
+      entry.name
+    )
+  }
+  if (entry.external !== undefined && entry.external !== false) {
+    out.add(
+      ['volumes', name, 'external'],
+      `volume \`${name}\``,
+      'uses a Docker volume the stack does not own',
+      entry.external
+    )
+  }
+}
+
 function checkTopLevelVolumes(out: Collector, volumes: unknown): void {
   if (!isRecord(volumes)) return
   for (const [name, entry] of Object.entries(volumes)) {
-    if (!isRecord(entry) || !isRecord(entry.driver_opts)) continue
+    if (!isRecord(entry)) continue
+    checkVolumeIdentity(out, name, entry)
+    if (!isRecord(entry.driver_opts)) continue
     const opts = entry.driver_opts
     const at = ['volumes', name, 'driver_opts']
     const type = typeof opts.type === 'string' ? opts.type.trim() : undefined
