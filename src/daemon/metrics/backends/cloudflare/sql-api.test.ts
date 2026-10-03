@@ -41,7 +41,7 @@ import {
 } from './sql-api.ts'
 
 it('AE_DATASET_NAME is the current dataset', () => {
-  assertEquals(AE_DATASET_NAME, 'turbopanel_server_metrics_v6')
+  assertEquals(AE_DATASET_NAME, 'turbopanel_server_metrics_v7')
 })
 
 it('AE_SUPPORTED_SCHEMA_VERSIONS reads both v6 and v7 rows', () => {
@@ -160,7 +160,7 @@ it('entityIdInPageIdentityPredicate: matches exact, leading, trailing, and mid-l
   const predicate = entityIdInPageIdentityPredicate('gpu1')
   assertEquals(
     predicate,
-    "(blob10 = 'gpu1' OR startsWith(blob10, 'gpu1,') OR endsWith(blob10, ',gpu1') OR position(',gpu1,' IN blob10) > 0)"
+    "(blob6 = 'gpu1' OR startsWith(blob6, 'gpu1,') OR endsWith(blob6, ',gpu1') OR position(',gpu1,' IN blob6) > 0)"
   )
   // AE has no concat, and LIKE would treat `_` in an id as a wildcard.
   assertEquals(predicate.includes('CONCAT'), false)
@@ -510,7 +510,7 @@ it('queryFleetHostSnapshotViaSqlApi: reads every per-family host index and group
     },
     {
       serverIds: [HOST_SERVER_ID],
-      metrics: ['host.cpu.busyPercent'],
+      metrics: ['host.cpu.busyPercent', 'host.storage.diskReadBytesPerSecond'],
       from: '2026-01-01T00:00:00.000Z',
       to: '2026-01-01T00:05:00.000Z',
     }
@@ -694,14 +694,14 @@ const EMPTY_SLOT_MAPPING = {
   hardwareSignalPageOrder: [],
 }
 
-it("queryEntitySeriesViaSqlApi (network family): reconstructs a slot-mapped NIC's rx/tx from host.io while a genuinely paged device still resolves via the paged path", async () => {
+it("queryEntitySeriesViaSqlApi (network family): reconstructs a slot-mapped NIC's rx/tx from host.network while a genuinely paged device still resolves via the paged path", async () => {
   const result = await queryEntitySeriesViaSqlApi(
     {
       accountId: 'acct123',
       apiToken: 'token-xyz',
       fetch: async (_url, init) => {
         const body = String(init?.body ?? '')
-        if (body.includes(`blob2 = 'host.io'`)) {
+        if (body.includes(`blob2 = 'host.network'`)) {
           return new Response(
             envelopedSqlResponse([
               {

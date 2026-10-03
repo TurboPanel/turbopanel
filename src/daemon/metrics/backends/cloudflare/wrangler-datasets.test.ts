@@ -1,5 +1,7 @@
 import { assert, assertEquals, assertNotEquals } from '@std/assert'
 import { it } from '@std/testing/bdd'
+import { METRICS_SCHEMA_VERSION } from '../../../../contracts/metrics-contract.ts'
+import { AE_DATASET_NAME } from './field-map.ts'
 
 type WranglerEnv = {
   analytics_engine_datasets?: { binding: string; dataset: string }[]
@@ -38,4 +40,17 @@ it('every deployed environment writes its own Analytics Engine dataset and reads
   const top = wrangler.analytics_engine_datasets.find((d) => d.binding === 'SERVER_METRICS')
   assert(top)
   assertNotEquals(seen.has(top.dataset), true, 'no deployed environment uses the local-dev dataset')
+})
+
+it('the dataset name tracks the metrics schema version in code and in every wrangler environment', async () => {
+  const expected = `turbopanel_server_metrics_v${METRICS_SCHEMA_VERSION}`
+  assertEquals(AE_DATASET_NAME, expected)
+  const wrangler = await readWrangler()
+  const top = wrangler.analytics_engine_datasets.find((d) => d.binding === 'SERVER_METRICS')
+  assertEquals(top?.dataset, expected, 'local-dev dataset')
+  for (const [name, env] of Object.entries(wrangler.env)) {
+    const binding = env.analytics_engine_datasets?.find((d) => d.binding === 'SERVER_METRICS')
+    assertEquals(binding?.dataset, `${name}_${expected}`, `${name}: per-environment prefix`)
+    assertEquals(env.vars?.TURBOPANEL_SERVER_METRICS_AE_DATASET, `${name}_${expected}`)
+  }
 })

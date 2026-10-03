@@ -51,10 +51,12 @@ function fieldNamesForScope(scope: MetricEntityScope): string[] {
     .sort()
 }
 
-test('DaemonMetricsSample documents the v6 wire version and required top-level fields', () => {
-  assertEquals(METRICS_SCHEMA_VERSION, 6)
+test('DaemonMetricsSample documents the accepted wire versions and required top-level fields', () => {
+  assertEquals(METRICS_SCHEMA_VERSION, 7)
   assertEquals(sample.properties.type.const, 'metrics')
-  assertEquals(sample.properties.metadata.properties.version!.const, METRICS_SCHEMA_VERSION)
+  assertEquals(sample.properties.metadata.properties.version!.enum, [6, 7])
+  assertEquals('durable' in sample.properties.metadata.properties, true)
+  assertEquals('extended' in sample.properties, true)
   assertEquals(sample.required.includes('metadata'), true)
   assertEquals(sample.required.includes('host'), true)
   assertEquals(
@@ -155,10 +157,22 @@ test('ingressSources documents the bucket/duration-sum latency shape, not a stor
   const ingressFields = Object.keys(sample.properties.ingressSources.items.properties!)
   assertEquals(ingressFields.includes('requestDurationSecondsSum'), true)
   assertEquals(ingressFields.includes('requestDurationSecondsAvg'), false)
-  for (const bucket of ['bucket10ms', 'bucket50ms', 'bucket100ms', 'bucket500ms', 'bucket1s', 'bucket5s']) {
+  for (const bucket of [
+    'bucket10ms',
+    'bucket50ms',
+    'bucket100ms',
+    'bucket500ms',
+    'bucket1s',
+    'bucket5s',
+  ]) {
     assertEquals(ingressFields.includes(bucket), true, bucket)
   }
-  for (const dropped of ['requestsUnder100ms', 'requestsUnder500ms', 'requestsUnder1s', 'requestsUnder5s']) {
+  for (const dropped of [
+    'requestsUnder100ms',
+    'requestsUnder500ms',
+    'requestsUnder1s',
+    'requestsUnder5s',
+  ]) {
     assertEquals(ingressFields.includes(dropped), false, dropped)
   }
 })
@@ -184,17 +198,15 @@ test('diagnostics nests two flat numeric halves that together cover the whole sc
     fieldNamesForScope('diagnostics').sort()
   )
   // The seven meminfo gauges v6 dropped are gone from the wire schema too.
-  for (
-    const dropped of [
-      'pageTablesBytes',
-      'kernelStackBytes',
-      'commitLimitBytes',
-      'activeAnonBytes',
-      'inactiveAnonBytes',
-      'activeFileBytes',
-      'inactiveFileBytes',
-    ]
-  ) {
+  for (const dropped of [
+    'pageTablesBytes',
+    'kernelStackBytes',
+    'commitLimitBytes',
+    'activeAnonBytes',
+    'inactiveAnonBytes',
+    'activeFileBytes',
+    'inactiveFileBytes',
+  ]) {
     assertEquals(dropped in memory.properties, false, dropped)
   }
 })
