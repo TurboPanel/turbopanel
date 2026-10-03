@@ -574,9 +574,22 @@ function tryMapPhpModePrepareError(prepared: DeployPrepareError): PrepareErrorRe
   }
 }
 
+function tryMapSiteEngineFeatureError(prepared: DeployPrepareError): PrepareErrorResponse | null {
+  if (prepared.kind !== 'site_engine_feature_missing') return null
+  return {
+    status: 422,
+    body: {
+      error: 'site_engine_feature_missing',
+      composeServiceName: prepared.composeServiceName,
+      message: `Site "${prepared.composeServiceName}" uses the nginx+apache web server pair, but the TurboPanel agent on this server is too old to run it. Update the agent on this server, then deploy again.`,
+    },
+  }
+}
+
 export function mapPrepareErrorResponse(prepared: DeployPrepareError): PrepareErrorResponse {
   return (
     tryMapPhpModePrepareError(prepared) ??
+    tryMapSiteEngineFeatureError(prepared) ??
     tryMapSitePrepareError(prepared) ??
     tryMapPrincipalPrepareError(prepared) ??
     tryMapHostingPrepareError(prepared) ??
