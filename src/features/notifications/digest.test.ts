@@ -10,15 +10,17 @@ import { createDenoDb, endDbConnection } from '../../db/connection.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
 import { grant, notificationDelivery, organization, team, teammate, user } from '../../db/schema.ts'
 import type { EmailJob, EmailQueue } from '../email/types.ts'
+import { deriveEncryptionSecretsConfig, parseSecretsEnv } from '../../lib/secrets/secrets.ts'
+import { generateSecret } from '../../lib/secrets/generate-secret.ts'
 import { sendDueDigests } from './digest.ts'
 import { type EmitEmail, emitNotification } from './emit.ts'
 import {
   createNotificationChannel,
   listNotificationsForUser,
+  type NotificationChannelRecord,
   replaceRulesForChannel,
   setChannelDisabled,
   setChannelHoldSettings,
-  type NotificationChannelRecord,
 } from './records.ts'
 import type { NotificationEvent } from './events.ts'
 
@@ -42,9 +44,30 @@ type Ctx = {
   ) => ReturnType<typeof emitNotification>
   digest: (at: string) => ReturnType<typeof sendDueDigests>
   channel: (
-    over?: Partial<NotificationChannelRecord> & { scope?: 'user' | 'organization' }
+    over?: Partial<NotificationChannelRecord> & {
+      scope?: 'user' | 'organization'
+    }
   ) => Promise<NotificationChannelRecord>
   statuses: (channelId: string) => Promise<string[]>
+  /** Data-encryption secrets that seal chat and webhook addresses. */
+  secrets: Awaited<ReturnType<typeof deriveEncryptionSecretsConfig>>
+  /** Every POST the chat and webhook sends made. */
+  posts: Array<{ url: string; body: Record<string, unknown>; headers: Headers }>
+  chat: (
+    kind: 'slack' | 'discord' | 'telegram' | 'webhook',
+    address: string,
+    over?: {
+      digestCadence?: 'hourly'
+      quiet?: typeof NIGHT
+      signingSecret?: string
+    }
+  ) => Promise<NotificationChannelRecord>
+  /** Emit with the secrets and the recording fetch, like the live sweep. */
+  emitChat: (event: NotificationEvent, at: string) => ReturnType<typeof emitNotification>
+  digestChat: (
+    at: string,
+    over?: { secrets?: Ctx['secrets'] | null }
+  ) => ReturnType<typeof sendDueDigests>
 }
 
 const at = (iso: string) => Date.parse(iso)
@@ -99,7 +122,70 @@ async function withFixture(fn: (ctx: Ctx) => Promise<void>): Promise<void> {
     from: 'noreply@example.com',
     consoleBaseUrl: 'https://panel.example.com',
   }
+  const secrets = await deriveEncryptionSecretsConfig(
+    parseSecretsEnv(`1:${generateSecret()}`, 'deno'),
+    'data-encryption'
+  )
+  const posts: Ctx['posts'] = []
+  const fetchImpl = ((url: string, init: RequestInit) => {
+    posts.push({
+      url,
+      body: JSON.parse(init.body as string),
+      headers: new Headers(init.headers),
+    })
+    return Promise.resolve(new Response('ok', { status: 200 }))
+  }) as unknown as typeof fetch
   const ctx: Ctx = {
+    secrets,
+    posts,
+    chat: async (kind, address, over = {}) => {
+      const c = await createNotificationChannel(db, secrets, {
+        scope: 'organization',
+        organizationId,
+        userId: null,
+        kind,
+        label: `Digest ${kind}`,
+        address,
+        signingSecret: over.signingSecret,
+      })
+      await replaceRulesForChannel(db, c.id, [
+        {
+          event: '*',
+          minSeverity: 'info',
+        },
+      ])
+      if (over.digestCadence !== undefined || over.quiet !== undefined) {
+        await setChannelHoldSettings(db, c.id, {
+          digestCadence: over.digestCadence ?? null,
+          quiet: over.quiet ?? null,
+        })
+      }
+      return {
+        ...c,
+        digestCadence: over.digestCadence ?? null,
+        quiet: over.quiet ?? null,
+      }
+    },
+    emitChat: (event, when) =>
+      emitNotification(
+        db,
+        secrets,
+        {
+          event,
+          organizationId,
+          context: { serverName: 'db-1' },
+          targetType: 'server',
+          targetId: SERVER_ID,
+        },
+        { email, now: () => at(when), fetchImpl }
+      ),
+    digestChat: (when, over = {}) =>
+      sendDueDigests(db, {
+        email,
+        secrets: over.secrets === null ? undefined : (over.secrets ?? secrets),
+        fetchImpl,
+        now: () => at(when),
+      }),
     db,
     organizationId,
     memberId,
@@ -131,14 +217,23 @@ async function withFixture(fn: (ctx: Ctx) => Promise<void>): Promise<void> {
         address: `digest-${crypto.randomUUID()}@example.com`,
         verifiedAt: new Date().toISOString(),
       })
-      await replaceRulesForChannel(db, c.id, [{ event: '*', minSeverity: 'info' }])
+      await replaceRulesForChannel(db, c.id, [
+        {
+          event: '*',
+          minSeverity: 'info',
+        },
+      ])
       if (over.digestCadence !== undefined || over.quiet !== undefined) {
         await setChannelHoldSettings(db, c.id, {
           digestCadence: over.digestCadence ?? null,
           quiet: over.quiet ?? null,
         })
       }
-      return { ...c, digestCadence: over.digestCadence ?? null, quiet: over.quiet ?? null }
+      return {
+        ...c,
+        digestCadence: over.digestCadence ?? null,
+        quiet: over.quiet ?? null,
+      }
     },
     statuses: async (channelId) =>
       (
@@ -299,7 +394,10 @@ test('removing the settings flushes what was held', async () => {
     const channel = await x.channel({ digestCadence: 'daily' })
     await x.emit('server.deleted', '2026-05-01T10:00:00Z')
     assertEquals((await x.digest('2026-05-01T10:30:00Z')).digests, 0)
-    await setChannelHoldSettings(x.db, channel.id, { digestCadence: null, quiet: null })
+    await setChannelHoldSettings(x.db, channel.id, {
+      digestCadence: null,
+      quiet: null,
+    })
     assertEquals((await x.digest('2026-05-01T10:31:00Z')).digests, 1)
     assertEquals(digests(x.jobs)[0]?.summary, 'quiet')
   })
@@ -344,5 +442,137 @@ test('a channel with neither setting is untouched: events send at once and never
     assertEquals(result.sent, 1)
     assertEquals(await x.statuses(channel.id), ['sent'])
     assertEquals((await x.digest('2026-07-02T08:00:00Z')).channels, 0)
+  })
+})
+
+test('quiet hours hold a routine event for each chat and webhook kind and one digest goes to each', async () => {
+  await withFixture(async (x) => {
+    const slack = await x.chat('slack', 'https://hooks.slack.example/a', {
+      quiet: NIGHT,
+    })
+    const discord = await x.chat('discord', 'https://discord.example/b', {
+      quiet: NIGHT,
+    })
+    const telegram = await x.chat('telegram', '123:abc/-100', { quiet: NIGHT })
+    const hook = await x.chat('webhook', 'https://hook.example/c', {
+      quiet: NIGHT,
+      signingSecret: 'shh',
+    })
+
+    // Routine inside quiet hours: held everywhere, nothing posted. Urgent: sent at once to all four.
+    assertEquals((await x.emitChat('server.deleted', '2026-07-01T23:00:00Z')).held, 4)
+    assertEquals(x.posts.length, 0)
+    assertEquals((await x.emitChat('server.offline', '2026-07-01T23:05:00Z')).held, 0)
+    assertEquals(x.posts.length, 4)
+    x.posts.length = 0
+
+    assertEquals((await x.digestChat('2026-07-02T03:00:00Z')).digests, 0)
+    const done = await x.digestChat('2026-07-02T07:00:00Z')
+    assertEquals(done.digests, 4)
+    assertEquals(done.events, 4)
+    assertEquals(x.posts.length, 4)
+    const by = (needle: string) => x.posts.find((p) => p.url.includes(needle))!
+    assertEquals(Object.keys(by('hooks.slack.example').body), ['text'])
+    assertEquals(Object.keys(by('discord.example').body), ['content'])
+    assertEquals(by('api.telegram.org').body.chat_id, '-100')
+    const body = by('hook.example').body
+    assertEquals(body.type, 'digest')
+    assertEquals(by('hook.example').headers.get('x-turbopanel-event'), 'digest')
+    assertEquals(
+      (by('hook.example').headers.get('x-turbopanel-signature') ?? '').startsWith('sha256='),
+      true
+    )
+    for (const c of [slack, discord, telegram, hook]) {
+      assertEquals((await x.statuses(c.id)).includes('held'), false)
+    }
+    // Sent once: a second sweep finds nothing.
+    assertEquals((await x.digestChat('2026-07-02T07:01:00Z')).digests, 0)
+  })
+})
+
+test('held chat digests wait for the secrets, however many ticks pass, then go out', async () => {
+  await withFixture(async (x) => {
+    const channel = await x.chat('slack', 'https://hooks.slack.example/a', {
+      quiet: NIGHT,
+    })
+    await x.emitChat('server.deleted', '2026-07-01T23:00:00Z')
+    for (let tick = 0; tick < 8; tick++) {
+      const minute = String(tick).padStart(2, '0')
+      const r = await x.digestChat(`2026-07-02T07:${minute}:00Z`, {
+        secrets: null,
+      })
+      assertEquals(r.digests, 0)
+    }
+    // Still held, no attempt used up.
+    assertEquals(await x.statuses(channel.id), ['held'])
+    const [row] = await x.db
+      .select({ attempts: notificationDelivery.attempts })
+      .from(notificationDelivery)
+      .where(eq(notificationDelivery.channelId, channel.id))
+    assertEquals(row?.attempts, 0)
+    assertEquals(x.posts.length, 0)
+    assertEquals((await x.digestChat('2026-07-02T08:00:00Z')).digests, 1)
+    assertEquals(await x.statuses(channel.id), ['sent'])
+    assertEquals(x.posts.length, 1)
+  })
+})
+
+test('a held email channel still sends without the secrets while chat waits', async () => {
+  await withFixture(async (x) => {
+    const mail = await x.channel({ quiet: NIGHT })
+    const chat = await x.chat('slack', 'https://hooks.slack.example/a', {
+      quiet: NIGHT,
+    })
+    await x.emitChat('server.deleted', '2026-07-01T23:00:00Z')
+    const r = await x.digestChat('2026-07-02T07:00:00Z', { secrets: null })
+    assertEquals(r.digests, 1)
+    assertEquals(digests(x.jobs).length, 1)
+    assertEquals(await x.statuses(mail.id), ['sent'])
+    assertEquals(await x.statuses(chat.id), ['held'])
+  })
+})
+
+test('a chat address that now fails the outbound URL rule is refused at send and put back', async () => {
+  await withFixture(async (x) => {
+    const channel = await x.chat('webhook', 'http://169.254.169.254/latest', {
+      quiet: NIGHT,
+    })
+    await x.emitChat('server.deleted', '2026-07-01T23:00:00Z')
+    const r = await sendDueDigests(x.db, {
+      email: x.email,
+      secrets: x.secrets,
+      allowPrivateTargets: false,
+      fetchImpl: (() => Promise.reject(new Error('must not be called'))) as unknown as typeof fetch,
+      now: () => at('2026-07-02T07:00:00Z'),
+    })
+    assertEquals(r.digests, 0)
+    assertEquals(await x.statuses(channel.id), ['held'])
+  })
+})
+
+test('a push channel is never held, even with quiet hours set on it', async () => {
+  await withFixture(async (x) => {
+    const push = await createNotificationChannel(x.db, x.secrets, {
+      scope: 'organization',
+      organizationId: x.organizationId,
+      userId: null,
+      kind: 'push',
+      label: 'Phone',
+      address: 'ExponentPushToken[abc]',
+    })
+    await replaceRulesForChannel(x.db, push.id, [
+      {
+        event: '*',
+        minSeverity: 'info',
+      },
+    ])
+    await setChannelHoldSettings(x.db, push.id, {
+      digestCadence: null,
+      quiet: NIGHT,
+    })
+    const r = await x.emitChat('server.deleted', '2026-07-01T23:00:00Z')
+    assertEquals(r.held, 0)
+    assertEquals((await x.statuses(push.id)).includes('held'), false)
+    assertEquals((await x.digestChat('2026-07-02T07:00:00Z')).channels, 0)
   })
 })

@@ -92,8 +92,8 @@ it('weightedAvgExpressionForColumn: SUM(value*double20*_sample_interval)/SUM(dou
   const expr = weightedAvgExpressionForColumn(AE_FAMILY_HOST_SYSTEM, 0)
   assertEquals(
     expr,
-    "SUM(if(blob2 = 'host.system', if(double1 = -pow(10, 308), 0.0, double1 * double20 * _sample_interval), 0.0)) / " +
-      "SUM(if(blob2 = 'host.system', if(double1 = -pow(10, 308), 0.0, double20 * _sample_interval * 1.0), 0.0))"
+    "SUM(if(blob2 = 'host.system', if(double1 > -pow(10, 307), double1 * double20 * _sample_interval, 0.0), 0.0)) / " +
+      "SUM(if(blob2 = 'host.system', if(double1 > -pow(10, 307), double20 * _sample_interval * 1.0, 0.0), 0.0))"
   )
 })
 
@@ -101,10 +101,29 @@ it('deltaSumExpressionForColumn: weight by _sample_interval only, never interval
   const expr = deltaSumExpressionForColumn(AE_FAMILY_HOST_IO, 2)
   assertEquals(
     expr,
-    "SUM(if(blob2 = 'host.io', if(double3 = -pow(10, 308), 0.0, double3 * _sample_interval), 0.0))"
+    "if(SUM(if(blob2 = 'host.io', if(double3 > -pow(10, 307), 1, 0), 0)) > 0, " +
+      "SUM(if(blob2 = 'host.io', if(double3 > -pow(10, 307), double3 * _sample_interval, 0.0), 0.0)), -pow(10, 308))"
   )
   // Never references double20 (the reserved interval slot).
   assertEquals(expr.includes('double20'), false)
+})
+
+it('no aggregate compares a column to the sentinel by equality (threshold predicate only)', () => {
+  const exprs = [
+    weightedAvgExpressionForColumn(AE_FAMILY_HOST_SYSTEM, 0),
+    deltaSumExpressionForColumn(AE_FAMILY_HOST_IO, 2),
+    lastValueExpressionForColumn(AE_FAMILY_HOST_IO, 0),
+  ]
+  for (const expr of exprs) {
+    assertEquals(expr.includes('= -pow(10, 308)'), false)
+    assertEquals(expr.includes('> -pow(10, 307)'), true)
+  }
+})
+
+it('deltaSumExpressionForColumn: an absent family reports the sentinel (null), not an empty-SUM zero', () => {
+  const expr = deltaSumExpressionForColumn(AE_FAMILY_HOST_IO, 2)
+  assertEquals(expr.startsWith('if(SUM('), true)
+  assertEquals(expr.endsWith(', -pow(10, 308))'), true)
 })
 
 it('maxValueExpressionForColumn: MAX(if(family, col, sentinel))', () => {
@@ -117,7 +136,7 @@ it('lastValueExpressionForColumn: argMax keyed by row timestamp, sentinel demote
   assertEquals(
     expr,
     "argMax(if(blob2 = 'host.io', double1, -pow(10, 308)), " +
-      "if(if(blob2 = 'host.io', double1, -pow(10, 308)) = -pow(10, 308), toUnixTimestamp(timestamp) * 0, toUnixTimestamp(timestamp)))"
+      "if(if(blob2 = 'host.io', double1, -pow(10, 308)) > -pow(10, 307), toUnixTimestamp(timestamp), toUnixTimestamp(timestamp) * 0))"
   )
 })
 
@@ -160,7 +179,7 @@ it('entityIdInPageIdentityPredicate: matches exact, leading, trailing, and mid-l
   const predicate = entityIdInPageIdentityPredicate('gpu1')
   assertEquals(
     predicate,
-    "(blob10 = 'gpu1' OR startsWith(blob10, 'gpu1,') OR endsWith(blob10, ',gpu1') OR position(',gpu1,' IN blob10) > 0)"
+    "(blob6 = 'gpu1' OR startsWith(blob6, 'gpu1,') OR endsWith(blob6, ',gpu1') OR position(',gpu1,' IN blob6) > 0)"
   )
   // AE has no concat, and LIKE would treat `_` in an id as a wildcard.
   assertEquals(predicate.includes('CONCAT'), false)
@@ -510,7 +529,7 @@ it('queryFleetHostSnapshotViaSqlApi: reads every per-family host index and group
     },
     {
       serverIds: [HOST_SERVER_ID],
-      metrics: ['host.cpu.busyPercent'],
+      metrics: ['host.cpu.busyPercent', 'host.storage.diskReadBytesPerSecond'],
       from: '2026-01-01T00:00:00.000Z',
       to: '2026-01-01T00:05:00.000Z',
     }
@@ -660,6 +679,41 @@ it("queryEntitySeriesViaSqlApi (paged family): recombines an entity's weighted-a
   assertEquals(eth1.sampleCount, 2) // only present in composition A
 })
 
+it('queryEntitySeriesViaSqlApi: a delta-sum over a group with no present rows is null, never a flat 0', async () => {
+  const run = async (raw: number) =>
+    queryEntitySeriesViaSqlApi(
+      {
+        accountId: 'acct123',
+        apiToken: 'token-xyz',
+        fetch: async () =>
+          new Response(
+            envelopedSqlResponse([
+              {
+                bucket: 1735689600,
+                entity_id: 'caddy',
+                sample_count: 2,
+                avg_interval_seconds: 60,
+                m0: raw,
+              },
+            ]),
+            { status: 200 }
+          ),
+      },
+      {
+        serverId: HOST_SERVER_ID,
+        family: 'managed.ingress',
+        entityIds: ['caddy'],
+        metrics: ['requests'],
+        from: '2026-01-01T00:00:00.000Z',
+        to: '2026-01-01T00:05:00.000Z',
+      }
+    )
+  const absent = await run(-1e308)
+  assertEquals(absent.entities[0].points[0].values.requests, null)
+  const present = await run(120)
+  assertEquals(present.entities[0].points[0]?.values.requests, 120)
+})
+
 it('queryEntitySeriesViaSqlApi (paged family): a requested entity absent from every row still comes back with empty points and full gapCount', async () => {
   const result = await queryEntitySeriesViaSqlApi(
     {
@@ -694,14 +748,14 @@ const EMPTY_SLOT_MAPPING = {
   hardwareSignalPageOrder: [],
 }
 
-it("queryEntitySeriesViaSqlApi (network family): reconstructs a slot-mapped NIC's rx/tx from host.io while a genuinely paged device still resolves via the paged path", async () => {
+it("queryEntitySeriesViaSqlApi (network family): reconstructs a slot-mapped NIC's rx/tx from host.network while a genuinely paged device still resolves via the paged path", async () => {
   const result = await queryEntitySeriesViaSqlApi(
     {
       accountId: 'acct123',
       apiToken: 'token-xyz',
       fetch: async (_url, init) => {
         const body = String(init?.body ?? '')
-        if (body.includes(`blob2 = 'host.io'`)) {
+        if (body.includes(`blob2 = 'host.network'`)) {
           return new Response(
             envelopedSqlResponse([
               {

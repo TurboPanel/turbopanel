@@ -261,6 +261,37 @@ export function haEventRejection(input: HaEventGateInput): string | null {
   return PRIMARY_HOST_DETECTORS.has(detector) ? primaryHostRejection(input) : null
 }
 
+export type OrchestratorBindingInput = {
+  /** The reporting daemon lists `managed-ha-instance-v1`. */
+  reporterBindsInstance: boolean
+  instanceHost?: string
+  instancePort?: number
+  /**
+   * The current primary's address as that reporter's Orchestrator knows it
+   * (`null` = no primary, or no usable address for it).
+   */
+  expectedPrimary: { host: string; port: number } | null
+}
+
+/**
+ * Why an Orchestrator dead-primary report is STALE (it does not name the
+ * current primary, so it must never fence); `null` when it may proceed.
+ * A daemon that does not list `managed-ha-instance-v1` sends no instance and
+ * keeps the legacy behavior; one that lists it must send the instance.
+ */
+export function orchestratorBindingRejection(input: OrchestratorBindingInput): string | null {
+  const named = input.instanceHost !== undefined && input.instancePort !== undefined
+  if (!named) {
+    return input.reporterBindsInstance
+      ? 'report names no instance although the daemon advertises managed-ha-instance-v1'
+      : null
+  }
+  if (!input.expectedPrimary) return 'the current primary has no known private address and port'
+  const sameHost = input.instanceHost?.toLowerCase() === input.expectedPrimary.host.toLowerCase()
+  if (sameHost && input.instancePort === input.expectedPrimary.port) return null
+  return `reported instance ${input.instanceHost}:${input.instancePort} is not the current primary (${input.expectedPrimary.host}:${input.expectedPrimary.port})`
+}
+
 /** True while the last accepted automatic failover is inside the cooldown. */
 export function automaticFailoverCoolingDown(
   lastAcceptedStartedAt: string | null,

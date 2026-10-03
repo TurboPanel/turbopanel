@@ -236,7 +236,7 @@ below).
 | Binding / config | Value                                                                                                                                                                                        |
 | ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Wrangler binding | `SERVER_METRICS` (`analytics_engine_datasets`)                                                                                                                                               |
-| Dataset name     | `turbopanel_server_metrics_v7` by default (`AE_DATASET_NAME`, `field-map.ts`; always `turbopanel_server_metrics_v${METRICS_SCHEMA_VERSION}`); every hosted environment has its own `<testing|staging|live>_turbopanel_server_metrics_v7`: wrangler.jsonc sets it on the `SERVER_METRICS` binding (writes) AND as `TURBOPANEL_SERVER_METRICS_AE_DATASET` (the SQL read side, `resolveCloudflareAnalyticsSqlConfig`); `wrangler-datasets.test.ts` keeps the two equal and unique per env |
+| Dataset name     | `turbopanel_server_metrics_v7` by default (`AE_DATASET_NAME`, `field-map.ts`; always `turbopanel_server_metrics_v${METRICS_SCHEMA_VERSION}`); every hosted environment has its own `<testing | staging | live>_turbopanel_server_metrics_v7`: wrangler.jsonc sets it on the `SERVER_METRICS`binding (writes) AND as`TURBOPANEL_SERVER_METRICS_AE_DATASET`(the SQL read side,`resolveCloudflareAnalyticsSqlConfig`); `wrangler-datasets.test.ts` keeps the two equal and unique per env |
 | Write API        | `writeDataPoint({ indexes, doubles, blobs })` — sync, non-blocking; one call per family row actually emitted (2 baseline + 0..N presence-gated), full 20/20 doubles/blobs shape on every row |
 | SQL API          | `POST .../analytics_engine/sql` with `Authorization: Bearer <token>`; response envelope rows under `result.data`                                                                             |
 | Max range        | Default `AE_DEFAULT_MAX_RANGE_SECONDS` = 90 days; override via `TURBOPANEL_SERVER_METRICS_AE_MAX_RANGE_SECONDS`                                                                              |
@@ -401,7 +401,7 @@ entity), unlike v3's fixed-width part tables.
 
 **Schema on open** (`database.ts`): `CREATE TABLE IF NOT EXISTS` /
 `CREATE INDEX IF NOT EXISTS` for the current layout (schema marker **9**). A
-marker-8 database is upgraded in place (`ALTER TABLE ... ADD COLUMN IF NOT EXISTS` for the v7 `ext_*` numeric columns, one transaction, idempotent); a missing, corrupt, or any other sidecar marker discards `metrics.duckdb`, `parquet/`,
+marker-8 database is discarded like any other mismatch (hard cut, no migration); a missing, corrupt, or any other sidecar marker discards `metrics.duckdb`, `parquet/`,
 `tmp/`, and `schema-version` before the current store is created — there is no
 in-place migration and no supported path for older DuckDB files. The marker is a
 discard-on-mismatch counter, not a monotonic migration version. **The three

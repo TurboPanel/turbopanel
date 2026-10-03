@@ -1,18 +1,20 @@
 /**
- * The digest sweep: send each email channel the events it held, as one summary.
+ * The digest sweep: send each channel the events it held, as one summary.
  *
  * `emitNotification` writes a `held` ledger row instead of sending when a
- * verified email channel has a digest cadence, or is inside its quiet hours,
+ * verified email, chat or webhook channel has a digest cadence, or is inside its quiet hours,
  * and the event is not urgent. This sweep, run on both maintenance ticks, is
  * the other half: per channel it asks `releaseCutoff` whether a window has
  * closed, claims the rows atomically (`claimHeldDeliveries`), and enqueues ONE
- * `notification-digest` email — grouped by event, capped in length, linked back
- * to the app. A failed enqueue puts the rows back to `held` for the next tick.
+ * summary — an email, a compact chat text, or a structured webhook body
+ * (`senders.ts`), grouped by event, capped in length, linked back to the app. A failed enqueue puts the rows back to `held` for the next tick.
  *
  * Never throws, like every notification phase. A paused channel is skipped and
  * its rows wait untouched until it resumes.
  */
 import { type Db, runWithDbTimeout } from '../../db/connection.ts'
+import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
+import { validateOutboundUrl } from '../../lib/http/outbound-url.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
 import { mapSequential } from '../../lib/sequential.ts'
 import type { EmailJob, NotificationDigestGroup, NotificationDigestItem } from '../email/types.ts'
@@ -25,7 +27,10 @@ import {
   listChannelsWithHeldDeliveries,
   type NotificationChannelRecord,
   type NotificationDeliveryRecord,
+  resolveChannelAddress,
+  resolveChannelSigningSecret,
 } from './records.ts'
+import { type DigestMessage, sendDigest } from './senders.ts'
 import { DEFAULT_TIME_ZONE, releaseCutoff } from './windows.ts'
 
 /** Rows one digest may carry; a bigger backlog goes out in the next tick's digest. */
@@ -36,12 +41,20 @@ export const DIGEST_MAX_GROUPS = 8
 export const DIGEST_MAX_ITEMS = 5
 
 export type DigestDeps = {
-  /** Without a mail queue this tick has nowhere to send a digest, so it does nothing. */
+  /** Without a mail queue, email channels' held rows wait; chat and webhook channels do not need one. */
   email?: EmitEmail
+  /** Unseals a chat or webhook channel's address; without it those channels' rows wait, held and uncounted, until a tick that has it. */
+  secrets?: DerivedSecretsConfig
+  fetchImpl?: typeof fetch
+  allowPrivateTargets?: boolean
   now?: () => number
 }
 
-export type DigestResult = { channels: number; digests: number; events: number }
+export type DigestResult = {
+  channels: number
+  digests: number
+  events: number
+}
 
 const NONE: DigestResult = { channels: 0, digests: 0, events: 0 }
 
@@ -56,7 +69,11 @@ function toItem(
   base: string | null | undefined
 ): NotificationDigestItem {
   const payload = delivery.payload
-  return { title: payload.title, at: payload.at, url: consoleUrlFor(base, payload) }
+  return {
+    title: payload.title,
+    at: payload.at,
+    url: consoleUrlFor(base, payload),
+  }
 }
 
 function compareGroups(a: NotificationDigestGroup, b: NotificationDigestGroup): number {
@@ -90,6 +107,24 @@ export function buildDigestGroups(
   }
 }
 
+/** The transport-neutral digest: grouped, capped, linked; each transport renders it. */
+export function buildDigestMessage(input: {
+  summary: DigestMessage['summary']
+  deliveries: readonly NotificationDeliveryRecord[]
+  consoleBaseUrl: string | null | undefined
+  nowMs: number
+}): DigestMessage {
+  const { groups, moreGroups } = buildDigestGroups(input.deliveries, input.consoleBaseUrl)
+  return {
+    summary: input.summary,
+    total: input.deliveries.length,
+    groups,
+    moreGroups,
+    consoleUrl: input.consoleBaseUrl ?? null,
+    at: new Date(input.nowMs).toISOString(),
+  }
+}
+
 export function buildDigestJob(input: {
   to: string
   email: EmitEmail
@@ -97,17 +132,17 @@ export function buildDigestJob(input: {
   deliveries: readonly NotificationDeliveryRecord[]
   nowMs: number
 }): DigestJob {
-  const { groups, moreGroups } = buildDigestGroups(input.deliveries, input.email.consoleBaseUrl)
+  const message = buildDigestMessage({
+    summary: input.summary,
+    deliveries: input.deliveries,
+    consoleBaseUrl: input.email.consoleBaseUrl,
+    nowMs: input.nowMs,
+  })
   return {
     type: 'notification-digest',
     to: input.to,
     from: input.email.from,
-    summary: input.summary,
-    total: input.deliveries.length,
-    groups,
-    moreGroups,
-    consoleUrl: input.email.consoleBaseUrl ?? null,
-    at: new Date(input.nowMs).toISOString(),
+    ...message,
   }
 }
 
@@ -119,13 +154,61 @@ async function enqueueDigest(
     await email.queue.enqueue(job)
     return { ok: true }
   } catch (error) {
-    return { ok: false, error: error instanceof Error ? `queue_${error.name}` : 'queue' }
+    return {
+      ok: false,
+      error: error instanceof Error ? `queue_${error.name}` : 'queue',
+    }
   }
+}
+
+type SendOutcome = { ok: true } | { ok: false; error: string }
+
+/** Hand one digest to the channel's transport: the mail queue, or a POST to the chat or webhook URL. */
+async function sendDigestTo(
+  channel: NotificationChannelRecord,
+  deps: DigestDeps,
+  claimed: readonly NotificationDeliveryRecord[],
+  nowMs: number
+): Promise<SendOutcome> {
+  const summary = channel.digestCadence ?? 'quiet'
+  const address = await resolveChannelAddress(deps.secrets, channel)
+  if (address === null) return { ok: false, error: 'address_unreadable' }
+  if (channel.kind === 'email') {
+    if (!deps.email) return { ok: false, error: 'no_email_queue' }
+    const job = buildDigestJob({
+      to: address,
+      email: deps.email,
+      summary,
+      deliveries: claimed,
+      nowMs,
+    })
+    return await enqueueDigest(deps.email, job)
+  }
+  // Re-validated at send, like every notification: the stored address may
+  // predate a rule change.
+  if (channel.kind !== 'telegram') {
+    const rejection = validateOutboundUrl(address, {
+      allowPrivate: deps.allowPrivateTargets !== false,
+    })
+    if (rejection) return { ok: false, error: `address_${rejection}` }
+  }
+  const message = buildDigestMessage({
+    summary,
+    deliveries: claimed,
+    consoleBaseUrl: deps.email?.consoleBaseUrl ?? null,
+    nowMs,
+  })
+  const signingSecret = await resolveChannelSigningSecret(deps.secrets, channel)
+  return await sendDigest(
+    { kind: channel.kind, address, signingSecret },
+    message,
+    deps.fetchImpl ?? fetch
+  )
 }
 
 async function digestOne(
   db: Db,
-  email: EmitEmail,
+  deps: DigestDeps,
   channel: NotificationChannelRecord,
   timeZone: string,
   nowMs: number
@@ -139,14 +222,7 @@ async function digestOne(
     claimHeldDeliveries(tx, channel.id, new Date(cutoff).toISOString(), DIGEST_CLAIM_LIMIT)
   )
   if (claimed.length === 0) return { digests: 0, events: 0 }
-  const job = buildDigestJob({
-    to: channel.address,
-    email,
-    summary: channel.digestCadence ?? 'quiet',
-    deliveries: claimed,
-    nowMs,
-  })
-  const outcome = await enqueueDigest(email, job)
+  const outcome = await sendDigestTo(channel, deps, claimed, nowMs)
   await runWithDbTimeout(db, (tx) =>
     finishDigestDeliveries(
       tx,
@@ -160,17 +236,19 @@ async function digestOne(
 /** One channel's failure (a slow query, a bad row) must not starve the channels after it. */
 async function digestOneSafely(
   db: Db,
-  email: EmitEmail,
+  deps: DigestDeps,
   channel: NotificationChannelRecord,
   timeZone: string,
   nowMs: number
 ): Promise<{ digests: number; events: number }> {
   try {
-    return await digestOne(db, email, channel, timeZone, nowMs)
+    return await digestOne(db, deps, channel, timeZone, nowMs)
   } catch (error) {
     compatLogWarn(
       'notifications',
-      `digest for channel ${channel.id} failed: ${error instanceof Error ? error.message : String(error)}`
+      `digest for channel ${channel.id} failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`
     )
     return { digests: 0, events: 0 }
   }
@@ -178,15 +256,18 @@ async function digestOneSafely(
 
 /** The maintenance tick's phase: send every channel's closed window as one summary. */
 export async function sendDueDigests(db: Db, deps: DigestDeps = {}): Promise<DigestResult> {
-  const email = deps.email
-  if (!email) return NONE
   try {
     const nowMs = deps.now?.() ?? Date.now()
-    const channels = await runWithDbTimeout(db, (tx) => listChannelsWithHeldDeliveries(tx))
+    const channels = await runWithDbTimeout(db, (tx) =>
+      listChannelsWithHeldDeliveries(tx, 50, {
+        includeEmail: deps.email !== undefined,
+        includeChat: deps.secrets !== undefined,
+      })
+    )
     if (channels.length === 0) return NONE
     const zones = await runWithDbTimeout(db, (tx) => channelTimeZones(tx, channels))
     const results = await mapSequential(channels, (channel) =>
-      digestOneSafely(db, email, channel, zones.get(channel.id) ?? DEFAULT_TIME_ZONE, nowMs)
+      digestOneSafely(db, deps, channel, zones.get(channel.id) ?? DEFAULT_TIME_ZONE, nowMs)
     )
     return {
       channels: channels.length,

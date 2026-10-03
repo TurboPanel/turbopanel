@@ -21,7 +21,8 @@ import { representativeMachineFixtures } from '../../testing/representative-mach
 import {
   AE_BLOB_COUNT,
   AE_BLOB_FAMILY_INDEX,
-  AE_BLOB_SOURCE_OR_IDENTITY_INDEX,
+  AE_BLOB_SCHEMA_VERSION_INDEX,
+  AE_BLOB_ENTITY_IDS_INDEX,
   AE_DOUBLE_COUNT,
   AE_DOUBLE_INTERVAL_INDEX,
   buildMetricsDataPoints,
@@ -55,7 +56,7 @@ for (const fixture of representativeMachineFixtures()) {
     // unchanged row count, so losing them would otherwise go unnoticed.
     const packedSignalIds = points
       .filter((point) => point.blobs[AE_BLOB_FAMILY_INDEX] === 'hardware.physical')
-      .flatMap((point) => String(point.blobs[AE_BLOB_SOURCE_OR_IDENTITY_INDEX] ?? '').split(','))
+      .flatMap((point) => String(point.blobs[AE_BLOB_ENTITY_IDS_INDEX] ?? '').split(','))
       .filter((id) => id.length > 0)
       .sort()
     assertEquals(
@@ -78,6 +79,7 @@ for (const fixture of representativeMachineFixtures()) {
     for (const point of points) {
       assertEquals(point.doubles.length, AE_DOUBLE_COUNT, `${fixture.name}: doubles length`)
       assertEquals(point.blobs.length, AE_BLOB_COUNT, `${fixture.name}: blobs length`)
+      assertEquals(point.blobs[AE_BLOB_SCHEMA_VERSION_INDEX], '7', `${fixture.name}: blob3`)
       assertEquals(
         point.doubles[AE_DOUBLE_INTERVAL_INDEX],
         sample.metadata.intervalSeconds,
