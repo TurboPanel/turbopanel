@@ -84,11 +84,7 @@ export const metricsSchemas = {
         ],
         properties: {
           version: { type: 'integer', enum: [...METRICS_WIRE_VERSIONS] },
-          durable: {
-            type: 'boolean',
-            description:
-              'v7 only. false marks a 10 s live-lease sample that feeds the live overlay and is never stored; absent means durable.',
-          },
+          durable: { type: 'boolean' },
           sampledAt: { type: 'string', format: 'date-time' },
           intervalSeconds: { type: 'number' },
           sequence: { type: 'integer' },

@@ -68,19 +68,107 @@ const GIB = 1024 ** 3
  * S1…S7 then SX, in rank order. Slot budgets and list prices are the
  * measured ladder in `scripts/metrics-tier-model.ts`; the core / RAM
  * ceilings are the placement bands. `filesystemSlots` is stored as the
- * ladder says — the entry-tier carve-out to `0` is applied in
- * `capability-plan.ts` from `isEntryTier`, not baked in here.
+ * ladder says — the entry tier's smaller extra-filesystem allowance (1) is
+ * applied in `capability-plan.ts` from `isEntryTier`, not baked in here.
  */
 export const LADDER: readonly LadderEntry[] = [
-  { label: 'S1', rank: 1, isCustom: false, listPriceCents: 500, maxCores: 4, maxMemoryBytes: 16 * GIB, nicSlots: 2, driveSlots: 2, gpuSlots: 2, filesystemSlots: 9 },
-  { label: 'S2', rank: 2, isCustom: false, listPriceCents: 750, maxCores: 10, maxMemoryBytes: 32 * GIB, nicSlots: 2, driveSlots: 4, gpuSlots: 2, filesystemSlots: 9 },
-  { label: 'S3', rank: 3, isCustom: false, listPriceCents: 1000, maxCores: 16, maxMemoryBytes: 64 * GIB, nicSlots: 5, driveSlots: 6, gpuSlots: 2, filesystemSlots: 9 },
-  { label: 'S4', rank: 4, isCustom: false, listPriceCents: 1500, maxCores: 32, maxMemoryBytes: 128 * GIB, nicSlots: 5, driveSlots: 8, gpuSlots: 4, filesystemSlots: 9 },
-  { label: 'S5', rank: 5, isCustom: false, listPriceCents: 2000, maxCores: 64, maxMemoryBytes: 256 * GIB, nicSlots: 8, driveSlots: 12, gpuSlots: 4, filesystemSlots: 18 },
-  { label: 'S6', rank: 6, isCustom: false, listPriceCents: 3500, maxCores: 128, maxMemoryBytes: 512 * GIB, nicSlots: 8, driveSlots: 16, gpuSlots: 6, filesystemSlots: 18 },
-  { label: 'S7', rank: 7, isCustom: false, listPriceCents: 5000, maxCores: 256, maxMemoryBytes: 1024 * GIB, nicSlots: 11, driveSlots: 20, gpuSlots: 8, filesystemSlots: 18 },
+  {
+    label: 'S1',
+    rank: 1,
+    isCustom: false,
+    listPriceCents: 500,
+    maxCores: 4,
+    maxMemoryBytes: 16 * GIB,
+    nicSlots: 2,
+    driveSlots: 3,
+    gpuSlots: 0,
+    filesystemSlots: 9,
+  },
+  {
+    label: 'S2',
+    rank: 2,
+    isCustom: false,
+    listPriceCents: 750,
+    maxCores: 10,
+    maxMemoryBytes: 32 * GIB,
+    nicSlots: 2,
+    driveSlots: 6,
+    gpuSlots: 1,
+    filesystemSlots: 9,
+  },
+  {
+    label: 'S3',
+    rank: 3,
+    isCustom: false,
+    listPriceCents: 1000,
+    maxCores: 16,
+    maxMemoryBytes: 64 * GIB,
+    nicSlots: 5,
+    driveSlots: 6,
+    gpuSlots: 1,
+    filesystemSlots: 9,
+  },
+  {
+    label: 'S4',
+    rank: 4,
+    isCustom: false,
+    listPriceCents: 1500,
+    maxCores: 32,
+    maxMemoryBytes: 128 * GIB,
+    nicSlots: 5,
+    driveSlots: 9,
+    gpuSlots: 4,
+    filesystemSlots: 9,
+  },
+  {
+    label: 'S5',
+    rank: 5,
+    isCustom: false,
+    listPriceCents: 2000,
+    maxCores: 64,
+    maxMemoryBytes: 256 * GIB,
+    nicSlots: 8,
+    driveSlots: 12,
+    gpuSlots: 4,
+    filesystemSlots: 18,
+  },
+  {
+    label: 'S6',
+    rank: 6,
+    isCustom: false,
+    listPriceCents: 3500,
+    maxCores: 128,
+    maxMemoryBytes: 512 * GIB,
+    nicSlots: 8,
+    driveSlots: 18,
+    gpuSlots: 6,
+    filesystemSlots: 18,
+  },
+  {
+    label: 'S7',
+    rank: 7,
+    isCustom: false,
+    listPriceCents: 5000,
+    maxCores: 256,
+    maxMemoryBytes: 1024 * GIB,
+    nicSlots: 11,
+    driveSlots: 21,
+    gpuSlots: 8,
+    filesystemSlots: 18,
+  },
   // SX watches every slot the daemon can monitor; nothing sells beyond it.
-  { label: 'SX', rank: 8, isCustom: true, listPriceCents: null, maxCores: SX_UNBOUNDED_CORES, maxMemoryBytes: SX_UNBOUNDED_MEMORY_BYTES, nicSlots: MAX_NIC_SLOTS, driveSlots: 24, gpuSlots: 8, filesystemSlots: 18 },
+  {
+    label: 'SX',
+    rank: 8,
+    isCustom: true,
+    listPriceCents: null,
+    maxCores: SX_UNBOUNDED_CORES,
+    maxMemoryBytes: SX_UNBOUNDED_MEMORY_BYTES,
+    nicSlots: MAX_NIC_SLOTS,
+    driveSlots: 24,
+    gpuSlots: 8,
+    filesystemSlots: 18,
+  },
 ]
 
 /** The priced rungs, S1…S7 — what the placement bands are cut from. */
@@ -111,7 +199,7 @@ export function ladderRank(label: string | null | undefined): number | null {
  * caller treats as "no tier" (the platform default plan).
  */
 export function ladderEntitlements(
-  label: string | null | undefined,
+  label: string | null | undefined
 ): MetricsCapabilityTierEntitlements | undefined {
   const entry = ladderEntry(label)
   if (!entry) return undefined

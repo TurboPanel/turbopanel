@@ -44,6 +44,7 @@ import {
   type MetricsDeploymentKind,
   metricsDeploymentKindForRuntime,
   resolveDefaultMetricsCapabilityPlan,
+  countHostLevelSignals,
   resolveServerMachineClass,
   truncateSampleToCapabilityPlan,
 } from '../contracts/capability-plan.ts'
@@ -722,7 +723,7 @@ async function resolveIngestPlanAndReconcileTopology(
     const machineClass = resolveServerMachineClass(
       planRow?.machineClass,
       snapshotForClass,
-      sample.hardwareSignals.length
+      countHostLevelSignals(sample.hardwareSignals)
     )
     if (
       planRow !== undefined &&
