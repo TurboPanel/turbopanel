@@ -35,8 +35,7 @@
  * untouched, which is what makes this additive rather than a migration.
  */
 
-import { firstSequential } from '../../lib/sequential.ts'
-import { forEachSequential } from '../../lib/sequential.ts'
+import { firstSequential, forEachSequential } from '../../lib/sequential.ts'
 import { eq, inArray } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import {
