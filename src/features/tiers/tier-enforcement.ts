@@ -6,100 +6,99 @@
  * derived from what the organization bought (`assignment-records.ts`);
  * nothing here chooses it.
  */
-import { and, eq, inArray, isNull } from "drizzle-orm";
-import type { Db } from "../../db/connection.ts";
-import { license, organization, server, tier } from "../../db/schema.ts";
-import { listSeatsForOrganization } from "../billing/billing-records.ts";
+import { and, eq, inArray, isNull } from 'drizzle-orm'
+import type { Db } from '../../db/connection.ts'
+import { license, organization, server, tier } from '../../db/schema.ts'
+import { listSeatsForOrganization } from '../billing/billing-records.ts'
 import {
   parseServerHardwareProfile,
   parseServerHostResources,
   parseServerOptions,
   resolveEffectiveMetricsCapabilityPlan,
   type ServerHostResources,
-} from "../servers/server-metadata.ts";
-import { parseOrganizationOptions } from "../organizations/organization-options.ts";
+} from '../servers/server-metadata.ts'
+import { parseOrganizationOptions } from '../organizations/organization-options.ts'
 import {
   isServerMachineClass,
   type MetricsCapabilityPlan,
   type MetricsDeploymentKind,
   resolveServerMachineClass,
-} from "../../contracts/capability-plan.ts";
-import { getLatestTopologyGenerations } from "../servers/server-topology-records.ts";
-import { computeSlotMapping } from "../../contracts/topology-slot-mapping.ts";
+} from '../../contracts/capability-plan.ts'
+import { getLatestTopologyGenerations } from '../servers/server-topology-records.ts'
+import { computeSlotMapping, isWholeDisk } from '../../contracts/topology-slot-mapping.ts'
 import {
   EMPTY_TOPOLOGY_OVERRIDES,
   type TopologyOverrides,
   type TopologySnapshot,
-} from "../../contracts/topology-types.ts";
-import { metricsCapabilityTierEntitlementsForRank } from "./tier-entitlements.ts";
-import { computeAssignment } from "./assignment.ts";
-import { loadAssignableServers, tierQuantitiesFromState } from "./assignment-records.ts";
+} from '../../contracts/topology-types.ts'
+import { metricsCapabilityTierEntitlementsForRank } from './tier-entitlements.ts'
+import { computeAssignment } from './assignment.ts'
+import { loadAssignableServers, tierQuantitiesFromState } from './assignment-records.ts'
 import {
   resolveRecommendedTier,
   resolveRequiredTier,
   type TierBandLabel,
   totalPhysicalCores,
-} from "./tier-placement.ts";
+} from './tier-placement.ts'
 
 /** Byte-for-byte daemon `classifyConnectFailure` permanent-auth/enroll message. */
-export const LICENSE_TIER_BELOW_REQUIRED_ERROR = "License tier below required";
+export const LICENSE_TIER_BELOW_REQUIRED_ERROR = 'License tier below required'
 
 /** Byte-for-byte daemon `classifyConnectFailure` permanent-auth/enroll message. */
-export const LICENSE_TIER_UNASSIGNED_ERROR = "License tier not assigned";
+export const LICENSE_TIER_UNASSIGNED_ERROR = 'License tier not assigned'
 
 export type ServerLicenseTierJoinRow = {
-  serverId: string;
-  organizationId: string;
-  serverName: string | null;
-  organizationName: string | null;
-  serverOptions: unknown;
-  orgOptions: unknown;
-  serverMetadata: unknown;
-  machineClass: unknown;
-  licenseId: string | null;
+  serverId: string
+  organizationId: string
+  serverName: string | null
+  organizationName: string | null
+  serverOptions: unknown
+  orgOptions: unknown
+  serverMetadata: unknown
+  machineClass: unknown
+  licenseId: string | null
   /** The derived tier; null when unlicensed or uncovered. */
-  assignedTierId: string | null;
-  tierRank: number | null;
-  tierLabel: string | null;
-};
+  assignedTierId: string | null
+  tierRank: number | null
+  tierLabel: string | null
+}
 
 export type TierFloorEvaluation = {
-  requiredRank: number;
-  requiredLabel: TierBandLabel;
-  satisfied: boolean;
-};
+  requiredRank: number
+  requiredLabel: TierBandLabel
+  satisfied: boolean
+}
 
 export type TierUnwatchedIds = {
-  nics: string[];
-  drives: string[];
-  gpus: string[];
-};
+  nics: string[]
+  drives: string[]
+  gpus: string[]
+}
 
 export type TierUnwatchedCounts = {
-  nics: number;
-  drives: number;
-  gpus: number;
-};
+  nics: number
+  drives: number
+  gpus: number
+}
 
 export type TierPlacementEvaluation = {
-  requiredRank: number;
-  requiredLabel: TierBandLabel;
-  recommendedRank: number;
-  recommendedLabel: TierBandLabel;
-  licenseRank: number | null;
-  licenseLabel: string | null;
-  unwatched: TierUnwatchedIds;
-  satisfied: boolean;
-};
+  requiredRank: number
+  requiredLabel: TierBandLabel
+  recommendedRank: number
+  recommendedLabel: TierBandLabel
+  licenseRank: number | null
+  licenseLabel: string | null
+  unwatched: TierUnwatchedIds
+  satisfied: boolean
+}
 
-export type TierPlacementDto<
-  U extends TierUnwatchedIds | TierUnwatchedCounts = TierUnwatchedIds,
-> = {
-  licenseTier: string | null;
-  requiredTier: string;
-  recommendedTier: string;
-  unwatched: U;
-};
+export type TierPlacementDto<U extends TierUnwatchedIds | TierUnwatchedCounts = TierUnwatchedIds> =
+  {
+    licenseTier: string | null
+    requiredTier: string
+    recommendedTier: string
+    unwatched: U
+  }
 
 const JOIN_COLUMNS = {
   serverId: server.id,
@@ -114,82 +113,70 @@ const JOIN_COLUMNS = {
   assignedTierId: server.assignedTierId,
   tierRank: tier.rank,
   tierLabel: tier.label,
-} as const;
+} as const
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-function isSlotMappableTopologySnapshot(
-  value: Record<string, unknown>,
-): value is TopologySnapshot {
+function isSlotMappableTopologySnapshot(value: Record<string, unknown>): value is TopologySnapshot {
   return (
     Array.isArray(value.networks) &&
     Array.isArray(value.filesystems) &&
     Array.isArray(value.blockDevices) &&
     Array.isArray(value.gpus) &&
     Array.isArray(value.hardwareSignals)
-  );
+  )
 }
 
-export function parseTopologySnapshot(
-  value: unknown,
-): TopologySnapshot | undefined {
-  if (!isRecord(value)) return undefined;
-  if (!isSlotMappableTopologySnapshot(value)) return undefined;
-  return value;
+export function parseTopologySnapshot(value: unknown): TopologySnapshot | undefined {
+  if (!isRecord(value)) return undefined
+  if (!isSlotMappableTopologySnapshot(value)) return undefined
+  return value
 }
 
-function hasKnownHardware(
-  resources: ServerHostResources | undefined,
-): boolean {
-  if (!resources) return false;
-  return totalPhysicalCores(resources) > 0 ||
-    (resources.memory?.totalBytes ?? 0) > 0;
+function hasKnownHardware(resources: ServerHostResources | undefined): boolean {
+  if (!resources) return false
+  return totalPhysicalCores(resources) > 0 || (resources.memory?.totalBytes ?? 0) > 0
 }
 
 function sortedIds(ids: readonly string[]): string[] {
-  return [...ids].sort((a, b) => a.localeCompare(b));
+  return [...ids].sort((a, b) => a.localeCompare(b))
 }
 
-function discoveredDeviceIds(
-  snapshot: TopologySnapshot | undefined,
-): TierUnwatchedIds {
+function discoveredDeviceIds(snapshot: TopologySnapshot | undefined): TierUnwatchedIds {
   if (!snapshot) {
-    return { nics: [], drives: [], gpus: [] };
+    return { nics: [], drives: [], gpus: [] }
   }
   const nics = snapshot.networks
-    .filter((device) => device.kind === "uplink")
-    .map((device) => device.deviceId);
-  const drives = snapshot.blockDevices
-    .filter((device) => device.isServiceDevice)
-    .map((device) => device.deviceId);
-  const gpus = snapshot.gpus.map((gpu) => gpu.gpuId);
+    .filter((device) => device.kind === 'uplink')
+    .map((device) => device.deviceId)
+  // Real whole disks, RAID members included. md/dm arrays and partitions are
+  // never drives: RAID is covered by RAID health and filesystem free space.
+  const drives = snapshot.blockDevices.filter(isWholeDisk).map((device) => device.deviceId)
+  const gpus = snapshot.gpus.map((gpu) => gpu.gpuId)
   return {
     nics: sortedIds(nics),
     drives: sortedIds(drives),
     gpus: sortedIds(gpus),
-  };
+  }
 }
 
-function unwatchedBeyondSlots(
-  discovered: readonly string[],
-  slotCount: number,
-): string[] {
-  if (slotCount <= 0) return [...discovered];
-  return discovered.slice(slotCount);
+function unwatchedBeyondSlots(discovered: readonly string[], slotCount: number): string[] {
+  if (slotCount <= 0) return [...discovered]
+  return discovered.slice(slotCount)
 }
 
 function topologyOverridesFromMetadata(
-  metadata: Record<string, unknown> | undefined,
+  metadata: Record<string, unknown> | undefined
 ): TopologyOverrides {
-  const hardwareProfile = parseServerHardwareProfile(metadata?.hardwareProfile);
+  const hardwareProfile = parseServerHardwareProfile(metadata?.hardwareProfile)
   return {
     ...EMPTY_TOPOLOGY_OVERRIDES,
     nicSlotDeviceIds: hardwareProfile?.nicSlotDeviceIds ?? [],
     hostingFilesystemId: hardwareProfile?.hostingFilesystemId ?? null,
     drivetempEnabled: hardwareProfile?.drivetempEnabled ?? false,
-  };
+  }
 }
 
 /**
@@ -202,11 +189,10 @@ function topologyOverridesFromMetadata(
  */
 function monitoredNicIds(
   snapshot: TopologySnapshot | undefined,
-  overrides: TopologyOverrides | undefined,
+  overrides: TopologyOverrides | undefined
 ): string[] {
-  if (!snapshot) return [];
-  return computeSlotMapping(snapshot, overrides ?? EMPTY_TOPOLOGY_OVERRIDES)
-    .normalNicSlots;
+  if (!snapshot) return []
+  return computeSlotMapping(snapshot, overrides ?? EMPTY_TOPOLOGY_OVERRIDES).normalNicSlots
 }
 
 /**
@@ -219,10 +205,10 @@ function monitoredNicIds(
 function unwatchedNicIds(
   discovered: readonly string[],
   monitored: readonly string[],
-  slotCount: number,
+  slotCount: number
 ): string[] {
-  const watched = new Set(monitored.slice(0, Math.max(slotCount, 0)));
-  return discovered.filter((id) => !watched.has(id));
+  const watched = new Set(monitored.slice(0, Math.max(slotCount, 0)))
+  return discovered.filter((id) => !watched.has(id))
 }
 
 /**
@@ -232,37 +218,34 @@ function unwatchedNicIds(
  */
 export async function loadServerLicenseTierJoin(
   db: Db,
-  serverId: string,
+  serverId: string
 ): Promise<ServerLicenseTierJoinRow | undefined> {
-  const rows = await loadServerLicenseTierJoins(db, [serverId]);
-  return rows.get(serverId);
+  const rows = await loadServerLicenseTierJoins(db, [serverId])
+  return rows.get(serverId)
 }
 
 export async function loadServerLicenseTierJoins(
   db: Db,
-  serverIds: readonly string[],
+  serverIds: readonly string[]
 ): Promise<Map<string, ServerLicenseTierJoinRow>> {
-  const byId = new Map<string, ServerLicenseTierJoinRow>();
-  if (serverIds.length === 0) return byId;
+  const byId = new Map<string, ServerLicenseTierJoinRow>()
+  if (serverIds.length === 0) return byId
 
   const rows = await db
     .select(JOIN_COLUMNS)
     .from(server)
     .leftJoin(organization, eq(organization.id, server.organizationId))
-    .leftJoin(
-      license,
-      and(eq(license.serverId, server.id), isNull(license.revokedAt)),
-    )
+    .leftJoin(license, and(eq(license.serverId, server.id), isNull(license.revokedAt)))
     .leftJoin(tier, eq(tier.id, server.assignedTierId))
-    .where(inArray(server.id, [...serverIds]));
+    .where(inArray(server.id, [...serverIds]))
 
   for (const row of rows) {
     // A server that belongs to no organization has no license to bind, no
     // tier to place against and no owners to notify: it has no placement.
-    if (row.organizationId === null) continue;
-    byId.set(row.serverId, { ...row, organizationId: row.organizationId });
+    if (row.organizationId === null) continue
+    byId.set(row.serverId, { ...row, organizationId: row.organizationId })
   }
-  return byId;
+  return byId
 }
 
 /**
@@ -277,7 +260,7 @@ export async function loadServerLicenseTierJoins(
  */
 export async function evaluateHostedEnrollmentTier(
   db: Db,
-  licenseId: string,
+  licenseId: string
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   const [row] = await db
     .select({
@@ -286,33 +269,30 @@ export async function evaluateHostedEnrollmentTier(
     })
     .from(license)
     .where(and(eq(license.id, licenseId), isNull(license.revokedAt)))
-    .limit(1);
-  if (!row) return { ok: false, error: LICENSE_TIER_UNASSIGNED_ERROR };
+    .limit(1)
+  if (!row) return { ok: false, error: LICENSE_TIER_UNASSIGNED_ERROR }
 
-  const state = await listSeatsForOrganization(db, row.organizationId);
-  const servers = await loadAssignableServers(db, row.organizationId);
+  const state = await listSeatsForOrganization(db, row.organizationId)
+  const servers = await loadAssignableServers(db, row.organizationId)
   const already = row.serverId
     ? servers.find((entry) => entry.serverId === row.serverId)
-    : undefined;
+    : undefined
   const candidate = already ?? {
     serverId: `enrolling:${licenseId}`,
     requiredRank: null,
     // Newest: placed after every incumbent.
-    boundAt: "9999-12-31T23:59:59.999Z",
-  };
-  const quantities = tierQuantitiesFromState(state);
-  const assignment = computeAssignment(
-    quantities,
-    already ? servers : [...servers, candidate],
-  );
-  const assigned = assignment.byServer.get(candidate.serverId) ?? null;
+    boundAt: '9999-12-31T23:59:59.999Z',
+  }
+  const quantities = tierQuantitiesFromState(state)
+  const assignment = computeAssignment(quantities, already ? servers : [...servers, candidate])
+  const assigned = assignment.byServer.get(candidate.serverId) ?? null
   if (assigned === null) {
     return {
       ok: false,
       error: already ? LICENSE_TIER_BELOW_REQUIRED_ERROR : LICENSE_TIER_UNASSIGNED_ERROR,
-    };
+    }
   }
-  return { ok: true };
+  return { ok: true }
 }
 
 /**
@@ -321,54 +301,48 @@ export async function evaluateHostedEnrollmentTier(
  * blocks. Soft dimensions (NICs / drives / GPUs) are ignored.
  */
 export function evaluateTierFloor(input: {
-  resources: ServerHostResources | undefined;
-  tierRank: number;
+  resources: ServerHostResources | undefined
+  tierRank: number
 }): TierFloorEvaluation {
-  const resources = input.resources ?? {};
-  const required = resolveRequiredTier(resources);
+  const resources = input.resources ?? {}
+  const required = resolveRequiredTier(resources)
   if (!hasKnownHardware(input.resources)) {
     return {
       requiredRank: required.rank,
       requiredLabel: required.label,
       satisfied: true,
-    };
+    }
   }
   return {
     requiredRank: required.rank,
     requiredLabel: required.label,
     satisfied: input.tierRank >= required.rank,
-  };
+  }
 }
 
 export function evaluateTierPlacement(input: {
-  resources: ServerHostResources | undefined;
-  topologySnapshot: TopologySnapshot | undefined;
-  plan: Pick<
-    MetricsCapabilityPlan,
-    "normalNicSlots" | "detailedBlockDeviceSlots" | "gpuSlots"
-  >;
-  tierRank: number | null;
-  licenseLabel?: string | null;
-  topologyOverrides?: TopologyOverrides;
+  resources: ServerHostResources | undefined
+  topologySnapshot: TopologySnapshot | undefined
+  plan: Pick<MetricsCapabilityPlan, 'normalNicSlots' | 'detailedBlockDeviceSlots' | 'gpuSlots'>
+  tierRank: number | null
+  licenseLabel?: string | null
+  topologyOverrides?: TopologyOverrides
 }): TierPlacementEvaluation {
   const floor = evaluateTierFloor({
     resources: input.resources,
     tierRank: input.tierRank ?? 0,
-  });
-  const discovered = discoveredDeviceIds(input.topologySnapshot);
+  })
+  const discovered = discoveredDeviceIds(input.topologySnapshot)
   // NICs recommend from what the operator monitors, not from every uplink
   // discovered — a six-port box watching one NIC needs no NIC-driven
   // upgrade. Drives and GPUs have no operator selection and use discovery.
-  const monitoredNics = monitoredNicIds(
-    input.topologySnapshot,
-    input.topologyOverrides,
-  );
+  const monitoredNics = monitoredNicIds(input.topologySnapshot, input.topologyOverrides)
   const recommended = resolveRecommendedTier(
     input.resources ?? {},
     monitoredNics.length,
     discovered.drives.length,
-    discovered.gpus.length,
-  );
+    discovered.gpus.length
+  )
   return {
     requiredRank: floor.requiredRank,
     requiredLabel: floor.requiredLabel,
@@ -377,64 +351,55 @@ export function evaluateTierPlacement(input: {
     licenseRank: input.tierRank,
     licenseLabel: input.licenseLabel ?? null,
     unwatched: {
-      nics: unwatchedNicIds(
-        discovered.nics,
-        monitoredNics,
-        input.plan.normalNicSlots,
-      ),
-      drives: unwatchedBeyondSlots(
-        discovered.drives,
-        input.plan.detailedBlockDeviceSlots,
-      ),
+      nics: unwatchedNicIds(discovered.nics, monitoredNics, input.plan.normalNicSlots),
+      drives: unwatchedBeyondSlots(discovered.drives, input.plan.detailedBlockDeviceSlots),
       gpus: unwatchedBeyondSlots(discovered.gpus, input.plan.gpuSlots),
     },
     satisfied: floor.satisfied,
-  };
+  }
 }
 
 export function toTierPlacementDto(
   placement: TierPlacementEvaluation,
-  unwatched: "ids",
-): TierPlacementDto<TierUnwatchedIds>;
+  unwatched: 'ids'
+): TierPlacementDto<TierUnwatchedIds>
 export function toTierPlacementDto(
   placement: TierPlacementEvaluation,
-  unwatched: "counts",
-): TierPlacementDto<TierUnwatchedCounts>;
+  unwatched: 'counts'
+): TierPlacementDto<TierUnwatchedCounts>
 export function toTierPlacementDto(
   placement: TierPlacementEvaluation,
-  unwatched: "ids" | "counts",
+  unwatched: 'ids' | 'counts'
 ): TierPlacementDto<TierUnwatchedIds | TierUnwatchedCounts> {
-  const ids = placement.unwatched;
+  const ids = placement.unwatched
   return {
     licenseTier: placement.licenseLabel,
     requiredTier: placement.requiredLabel,
     recommendedTier: placement.recommendedLabel,
-    unwatched: unwatched === "counts"
-      ? {
-        nics: ids.nics.length,
-        drives: ids.drives.length,
-        gpus: ids.gpus.length,
-      }
-      : ids,
-  };
+    unwatched:
+      unwatched === 'counts'
+        ? {
+            nics: ids.nics.length,
+            drives: ids.drives.length,
+            gpus: ids.gpus.length,
+          }
+        : ids,
+  }
 }
 
 function placementFromJoinRow(
   row: ServerLicenseTierJoinRow,
   snapshot: TopologySnapshot | undefined,
   deployment: MetricsDeploymentKind,
-  orgOptionsOverride?: ReturnType<typeof parseOrganizationOptions>,
+  orgOptionsOverride?: ReturnType<typeof parseOrganizationOptions>
 ): TierPlacementEvaluation {
-  const metadata = isRecord(row.serverMetadata)
-    ? row.serverMetadata
-    : undefined;
-  const resources = parseServerHostResources(metadata?.resources);
+  const metadata = isRecord(row.serverMetadata) ? row.serverMetadata : undefined
+  const resources = parseServerHostResources(metadata?.resources)
   const machineClass = isServerMachineClass(row.machineClass)
     ? row.machineClass
-    : resolveServerMachineClass(row.machineClass, snapshot);
-  const orgOptions = orgOptionsOverride ??
-    parseOrganizationOptions(row.orgOptions);
-  const serverOptions = parseServerOptions(row.serverOptions) ?? undefined;
+    : resolveServerMachineClass(row.machineClass, snapshot)
+  const orgOptions = orgOptionsOverride ?? parseOrganizationOptions(row.orgOptions)
+  const serverOptions = parseServerOptions(row.serverOptions) ?? undefined
   // Self-hosted has an assigned tier now — the licence grant places every
   // server on `SX` (`src/features/tiers/self-hosted-grant.ts`) — but placement is
   // a *priced* idea and self-hosted buys nothing. Feeding the grant's rung in
@@ -442,18 +407,18 @@ function placementFromJoinRow(
   // uncapped by definition, and would put an "SX" badge on a console that has
   // no billing area. So the tier is dropped on this path only: the grant
   // stays what it is, an entitlement the assignment reads.
-  const selfHosted = deployment === "self-hosted";
-  const tierRank = selfHosted ? null : row.tierRank;
+  const selfHosted = deployment === 'self-hosted'
+  const tierRank = selfHosted ? null : row.tierRank
   const entitlements = selfHosted
     ? undefined
-    : metricsCapabilityTierEntitlementsForRank(row.tierRank);
+    : metricsCapabilityTierEntitlementsForRank(row.tierRank)
   const plan = resolveEffectiveMetricsCapabilityPlan(
     machineClass,
     orgOptions,
     serverOptions,
     deployment,
-    entitlements,
-  );
+    entitlements
+  )
   return evaluateTierPlacement({
     resources,
     topologySnapshot: snapshot,
@@ -461,68 +426,56 @@ function placementFromJoinRow(
     tierRank,
     licenseLabel: selfHosted ? null : row.tierLabel,
     topologyOverrides: topologyOverridesFromMetadata(metadata),
-  });
+  })
 }
 
 export async function loadTierPlacementsForServers(
   db: Db,
   serverIds: readonly string[],
   opts: {
-    deployment: MetricsDeploymentKind;
-    orgOptions?: ReturnType<typeof parseOrganizationOptions>;
-    unwatched: "ids";
-  },
-): Promise<Map<string, TierPlacementDto<TierUnwatchedIds>>>;
+    deployment: MetricsDeploymentKind
+    orgOptions?: ReturnType<typeof parseOrganizationOptions>
+    unwatched: 'ids'
+  }
+): Promise<Map<string, TierPlacementDto<TierUnwatchedIds>>>
 export async function loadTierPlacementsForServers(
   db: Db,
   serverIds: readonly string[],
   opts: {
-    deployment: MetricsDeploymentKind;
-    orgOptions?: ReturnType<typeof parseOrganizationOptions>;
-    unwatched: "counts";
-  },
-): Promise<Map<string, TierPlacementDto<TierUnwatchedCounts>>>;
+    deployment: MetricsDeploymentKind
+    orgOptions?: ReturnType<typeof parseOrganizationOptions>
+    unwatched: 'counts'
+  }
+): Promise<Map<string, TierPlacementDto<TierUnwatchedCounts>>>
 export async function loadTierPlacementsForServers(
   db: Db,
   serverIds: readonly string[],
   opts: {
-    deployment: MetricsDeploymentKind;
-    orgOptions?: ReturnType<typeof parseOrganizationOptions>;
-    unwatched: "ids" | "counts";
-  },
-): Promise<
-  Map<string, TierPlacementDto<TierUnwatchedIds | TierUnwatchedCounts>>
-> {
-  const result = new Map<
-    string,
-    TierPlacementDto<TierUnwatchedIds | TierUnwatchedCounts>
-  >();
-  if (serverIds.length === 0) return result;
+    deployment: MetricsDeploymentKind
+    orgOptions?: ReturnType<typeof parseOrganizationOptions>
+    unwatched: 'ids' | 'counts'
+  }
+): Promise<Map<string, TierPlacementDto<TierUnwatchedIds | TierUnwatchedCounts>>> {
+  const result = new Map<string, TierPlacementDto<TierUnwatchedIds | TierUnwatchedCounts>>()
+  if (serverIds.length === 0) return result
 
   const [joins, topologyByServer] = await Promise.all([
     loadServerLicenseTierJoins(db, serverIds),
     getLatestTopologyGenerations(db, serverIds),
-  ]);
+  ])
 
   for (const serverId of serverIds) {
-    const row = joins.get(serverId);
-    if (!row) continue;
-    const snapshot = parseTopologySnapshot(
-      topologyByServer.get(serverId)?.snapshot,
-    );
-    const placement = placementFromJoinRow(
-      row,
-      snapshot,
-      opts.deployment,
-      opts.orgOptions,
-    );
-    if (opts.unwatched === "ids") {
-      result.set(serverId, toTierPlacementDto(placement, "ids"));
+    const row = joins.get(serverId)
+    if (!row) continue
+    const snapshot = parseTopologySnapshot(topologyByServer.get(serverId)?.snapshot)
+    const placement = placementFromJoinRow(row, snapshot, opts.deployment, opts.orgOptions)
+    if (opts.unwatched === 'ids') {
+      result.set(serverId, toTierPlacementDto(placement, 'ids'))
     } else {
-      result.set(serverId, toTierPlacementDto(placement, "counts"));
+      result.set(serverId, toTierPlacementDto(placement, 'counts'))
     }
   }
-  return result;
+  return result
 }
 
-export { placementFromJoinRow };
+export { placementFromJoinRow }
