@@ -66,15 +66,17 @@ function idPath(id: string): string | null {
 }
 
 function hasPrefixPath(path: string, prefix: string): boolean {
-  if (prefix === '/boot') return path.startsWith('/boot')
   return path === prefix || path.startsWith(`${prefix}/`)
 }
 
 export function isNoiseFilesystemId(id: string): boolean {
   const lower = id.toLowerCase()
-  const words = new Set(lower.split(/[^a-z0-9.]+/))
-  if (PSEUDO_FS_TOKENS.some((token) => words.has(token))) return true
   const path = idPath(lower)
+  // Only the filesystem-type part of the id (before the mount path) names a
+  // pseudo type, so a mount such as /srv/proc is a real data mount.
+  const typePart = path === null ? lower : lower.slice(0, lower.length - path.length)
+  const words = new Set(typePart.split(/[^a-z0-9.]+/))
+  if (PSEUDO_FS_TOKENS.some((token) => words.has(token))) return true
   return path !== null && NOISE_MOUNT_PREFIXES.some((prefix) => hasPrefixPath(path, prefix))
 }
 

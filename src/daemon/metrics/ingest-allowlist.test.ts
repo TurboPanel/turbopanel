@@ -46,7 +46,15 @@ describe('ingest allowlist: filesystems', () => {
     ]) {
       assertEquals(isNoiseFilesystemId(id), true, id)
     }
-    for (const id of ['/srv', '/mnt/data', 'fs:dev:/dev/sda1', '/var/lib/mysql']) {
+    for (const id of [
+      '/srv',
+      '/srv/proc',
+      '/mnt/overlay',
+      '/bootstrap',
+      '/mnt/data',
+      'fs:dev:/dev/sda1',
+      '/var/lib/mysql',
+    ]) {
       assertEquals(isNoiseFilesystemId(id), false, id)
     }
   })
