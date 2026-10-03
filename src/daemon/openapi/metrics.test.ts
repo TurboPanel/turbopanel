@@ -1,5 +1,5 @@
 import { assertEquals, assertStringIncludes } from '@std/assert'
-import { METRIC_EVENT_KINDS, METRICS_SCHEMA_VERSION } from '../../contracts/metrics-contract.ts'
+import { METRIC_EVENT_KINDS, METRICS_WIRE_VERSIONS } from '../../contracts/metrics-contract.ts'
 import {
   HOST_METRICS_METRIC_DESCRIPTORS,
   type MetricEntityScope,
@@ -52,9 +52,9 @@ function fieldNamesForScope(scope: MetricEntityScope): string[] {
 }
 
 test('DaemonMetricsSample documents the accepted wire versions and required top-level fields', () => {
-  assertEquals(METRICS_SCHEMA_VERSION, 7)
+  assertEquals([...METRICS_WIRE_VERSIONS], [6, 7])
   assertEquals(sample.properties.type.const, 'metrics')
-  assertEquals(sample.properties.metadata.properties.version!.enum, [6, 7])
+  assertEquals(sample.properties.metadata.properties.version!.enum, [...METRICS_WIRE_VERSIONS])
   assertEquals(sample.required.includes('metadata'), true)
   assertEquals(sample.required.includes('host'), true)
   assertEquals(
