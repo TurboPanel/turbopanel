@@ -438,6 +438,7 @@ export function assignNativeAppListenPorts<
   apps: readonly T[],
   preferredListenPortByService: ReadonlyMap<string, number> = new Map(),
   used: Set<number> = new Set<number>(),
+  uniqueKey?: string,
 ): T[] {
   const sorted = [...apps].sort((a, b) =>
     a.composeServiceName.localeCompare(b.composeServiceName)
@@ -448,6 +449,7 @@ export function assignNativeAppListenPorts<
       app.composeServiceName,
       used,
       preferredListenPortByService.get(app.composeServiceName),
+      uniqueKey,
     ),
   }));
 }

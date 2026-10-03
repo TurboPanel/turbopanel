@@ -802,10 +802,11 @@ export function preferredListenPortsFromHostings(
 export function buildSitesForDeploy(
   sites: EnvironmentDeploySite[],
   hostings: EnvironmentDeployHosting[],
-  used: Set<number> = new Set<number>()
+  used: Set<number> = new Set<number>(),
+  uniqueKey?: string
 ): EnvironmentDeploySite[] {
   return attachWebMetadataToSites(
-    assignSiteListenPorts(sites, preferredListenPortsFromHostings(hostings), used),
+    assignSiteListenPorts(sites, preferredListenPortsFromHostings(hostings), used, uniqueKey),
     hostings
   )
 }
@@ -858,15 +859,19 @@ export function buildNativeAppServicesForDeploy(
   nativeAppServices: readonly PreparedNativeAppService[],
   hostings: EnvironmentDeployHosting[],
   ingressServices: readonly EnvironmentDeployIngressService[],
-  used: Set<number> = new Set<number>()
+  used: Set<number> = new Set<number>(),
+  uniqueKey?: string
 ): EnvironmentDeployNativeAppService[] {
   if (nativeAppServices.length === 0) return []
-  return assignNativeAppListenPorts(nativeAppServices, new Map<string, number>(), used).map(
-    (app) => ({
-      ...app,
-      serviceId: resolveDeployReleaseServiceId(app.composeServiceName, hostings, ingressServices),
-    })
-  )
+  return assignNativeAppListenPorts(
+    nativeAppServices,
+    new Map<string, number>(),
+    used,
+    uniqueKey
+  ).map((app) => ({
+    ...app,
+    serviceId: resolveDeployReleaseServiceId(app.composeServiceName, hostings, ingressServices),
+  }))
 }
 
 export type DeployMaterialValidationError = {

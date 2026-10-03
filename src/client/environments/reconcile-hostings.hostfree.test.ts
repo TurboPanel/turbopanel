@@ -538,3 +538,29 @@ test('reconcileHostingsFromCompose ignores compose-owned rows without a route ke
     'string',
   )
 })
+
+test('reconcileHostingsFromCompose retires a renamed service row before inserting its replacement', async () => {
+  const db = createReconcileDb({
+    hostingRows: [
+      {
+        id: 'host-old',
+        serviceId: SVC_WEB,
+        metadata: composeOwnedMetadata('web', ROUTE),
+        options: { hostnames: [HOSTNAME] },
+      },
+    ],
+  })
+  const result = await reconcileHostingsFromCompose(db, {
+    organizationId: ORG_ID,
+    environmentId: ENV_ID,
+    merged: composeDoc({ other: hostingService([{ hostname: HOSTNAME }]) }),
+    serviceRows: [{ id: SVC_OTHER, composeServiceName: 'other' }],
+  })
+  if (!result.ok) throw new TypeError('expected rename to succeed')
+  assertEquals(result.removed, ['host-old'])
+  assertEquals(result.created.length, 1)
+  assertEquals(
+    db.rows(hosting).map((row) => row.serviceId),
+    [SVC_OTHER]
+  )
+})

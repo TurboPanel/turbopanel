@@ -68,12 +68,16 @@ function hashServiceName(name: string): number {
 
 /**
  * Prefer hosting `targetPort` when free; otherwise a stable port in
- * 18080–18999 derived from the compose service name.
+ * 18080–18999 derived from `uniqueKey` (the environment id) plus the compose
+ * service name. The name alone is not unique on a host: two projects that each
+ * name a site `site` would otherwise share a loopback port, and Apache refuses
+ * the second `Listen`. Collisions inside one deploy are probed past via `used`.
  */
 export function allocateSiteListenPort(
   composeServiceName: string,
   used: Set<number>,
   preferred?: number,
+  uniqueKey?: string,
 ): number {
   if (
     preferred !== undefined &&
@@ -87,7 +91,8 @@ export function allocateSiteListenPort(
   }
 
   let port = LISTEN_PORT_BASE +
-    (hashServiceName(composeServiceName) % LISTEN_PORT_SPAN);
+    (hashServiceName(`${uniqueKey ?? ""}\0${composeServiceName}`) %
+      LISTEN_PORT_SPAN);
   for (let attempt = 0; attempt < LISTEN_PORT_SPAN; attempt++) {
     if (!used.has(port)) {
       used.add(port);
@@ -176,7 +181,7 @@ export function emptyContainerComposeYaml(): string {
  *
  * `used` is shared with the native-app allocator for the same reason
  * {@link splitSiteServices} shares it — one loopback ledger per
- * deploy, not one per lane.
+ * deploy, not one per lane. `uniqueKey` is the environment id.
  */
 export function assignSiteListenPorts<
   T extends { composeServiceName: string; listenPort: number },
@@ -184,6 +189,7 @@ export function assignSiteListenPorts<
   sites: readonly T[],
   preferredListenPortByService: ReadonlyMap<string, number> = new Map(),
   used: Set<number> = new Set<number>(),
+  uniqueKey?: string,
 ): T[] {
   const sorted = [...sites].sort((a, b) =>
     a.composeServiceName.localeCompare(b.composeServiceName)
@@ -194,6 +200,7 @@ export function assignSiteListenPorts<
       site.composeServiceName,
       used,
       preferredListenPortByService.get(site.composeServiceName),
+      uniqueKey,
     ),
   }));
 }

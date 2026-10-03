@@ -33,6 +33,17 @@ test("allocateSiteListenPort prefers hosting targetPort when free", () => {
   assertEquals(second !== 8080, true);
 });
 
+test("allocateSiteListenPort gives the same service name different ports per environment key", () => {
+  const first = allocateSiteListenPort("site", new Set(), undefined, "env-a");
+  const second = allocateSiteListenPort("site", new Set(), undefined, "env-b");
+  assertEquals(first !== second, true);
+  // Stable for the same key.
+  assertEquals(
+    allocateSiteListenPort("site", new Set(), undefined, "env-a"),
+    first,
+  );
+});
+
 test("splitSiteServices partitions container vs site", () => {
   const result = splitSiteServices({
     api: { image: "node:22" },
