@@ -140,7 +140,7 @@ capability-plan generation and page are no longer written.
 | blob12 | bootId (health.boot id) |
 | blob13 | virt (health.virtualisation) |
 | blob14 | cloudProvider (health.cloud provider) |
-| blob15 | agentVersion (health.TurboPanel agent version) |
+| blob15 | agentVersion (health.TurboPanel daemon version) |
 | blob16 | timeSync (health.clock sync) |
 | blob17 | pendingUpdates (health.pending updates) |
 | blob18 | fsReadOnly (health.read-only filesystems) |
