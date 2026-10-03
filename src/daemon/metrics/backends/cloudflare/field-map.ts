@@ -1,7 +1,7 @@
 /**
  * Cloudflare Analytics Engine positional field map for the current metrics
  * contract — the single source of truth for the double1..double20 /
- * blob1..blob20 layout on the `turbopanel_server_metrics_v6` dataset.
+ * blob1..blob20 layout on the `turbopanel_server_metrics_v7` dataset.
  *
  * Metrics are grouped by entity/family (`metric-descriptors.ts`'s
  * `hostedFamily`). This module is the packing layer for the active
@@ -70,7 +70,7 @@ import {
 import type { AuthenticatedMetricsSample, ServerStatusEvent, SlotMapping } from '../../types.ts'
 
 /** Analytics Engine dataset for the current metrics contract. */
-export const AE_DATASET_NAME = 'turbopanel_server_metrics_v6'
+export const AE_DATASET_NAME = 'turbopanel_server_metrics_v7'
 
 export const AE_DOUBLE_COUNT = 20
 export const AE_BLOB_COUNT = 20

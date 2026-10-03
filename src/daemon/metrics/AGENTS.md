@@ -34,7 +34,7 @@ Human docs + AE cost model:
 
 The store surface is unsuffixed: `ServerMetricsStore`,
 `resolveServerMetricsStore`, binding `SERVER_METRICS`, dataset
-`turbopanel_server_metrics_v6`. `DuckDbParquetServerMetricsStore` implements
+`turbopanel_server_metrics_v7`. `DuckDbParquetServerMetricsStore` implements
 only `ServerMetricsStore` — its
 `queryHostSeries`/`queryHostSummary`/`queryFleetHostSnapshot` accept the current
 canonical metric names. `app.ts`/`db.ts`/`workers.ts` carry only the
@@ -565,7 +565,7 @@ UI charts: **`../ui/AGENTS.md`** (Server metrics). Operator glossary:
 20. The store/binding/dataset are unsuffixed. `app.ts`/`db.ts`/`workers.ts`/
     `do.ts`/`offline-sweep.ts`/`store-selection*.ts` carry only
     `serverMetricsStore`, `resolveServerMetricsStore`, and `SERVER_METRICS`
-    (dataset `turbopanel_server_metrics_v6`). Do not reintroduce a
+    (dataset `turbopanel_server_metrics_v7`). Do not reintroduce a
     version-suffixed parallel store, binding, or dataset.
 
 ## Coverage and gaps
