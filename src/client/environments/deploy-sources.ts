@@ -329,6 +329,7 @@ function resolveSourceBuild(
   // The owning service's package-manager choice rides the build object so the
   // daemon can derive the right install command after checkout.
   if (packageManager) build.packageManager = packageManager
+  if (binding.installCommand) build.installCommand = binding.installCommand
   if (binding.buildCommand) build.buildCommand = binding.buildCommand
   if (binding.startCommand) build.startCommand = binding.startCommand
   if (binding.outputDirectory) build.outputDirectory = binding.outputDirectory

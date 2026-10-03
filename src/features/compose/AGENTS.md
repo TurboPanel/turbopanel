@@ -687,7 +687,7 @@ overwrite the write. Rows created in the panel keep working unchanged.
 ### Per-service Git source (`x-turbopanel.source`) — resolved into `sourceMaterial[]`
 
 `services.<name>.x-turbopanel` accepts an optional **`source`** block:
-`{ sourceId, branch?, subdirectory?, buildCommand?, startCommand?, outputDirectory?, deployOnPush? }`
+`{ sourceId, branch?, subdirectory?, installCommand?, buildCommand?, startCommand?, outputDirectory?, deployOnPush? }`
 (`src/features/compose/service-kind.ts` — `parseServiceSourceExtension`,
 `SOURCE_BRANCH_MAX_LENGTH` / `SOURCE_COMMAND_MAX_LENGTH`; the path fields reuse
 the exported `isSafeRoot` rule that already guards `root`). It is no longer
