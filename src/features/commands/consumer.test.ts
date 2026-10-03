@@ -2550,19 +2550,25 @@ test('processCommandEnvelope reconciles containers on environment.deploy success
         ])
         .returning({ id: storageCopy.id })
 
-      await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
-
-      for (const extra of extraCopies) {
-        const [extraRow] = await db
-          .select({ state: storageCopy.state })
-          .from(storageCopy)
-          .where(eq(storageCopy.id, extra.id))
-        assertEquals(extraRow?.state, 'pending')
+      const cleanup = async () => {
+        for (const extra of extraCopies)
+          await db.delete(storageCopy).where(eq(storageCopy.id, extra.id))
+        for (const extra of extraStorage) await db.delete(storage).where(eq(storage.id, extra.id))
+        await db.delete(service).where(eq(service.id, otherService!.id))
       }
-      for (const extra of extraCopies)
-        await db.delete(storageCopy).where(eq(storageCopy.id, extra.id))
-      for (const extra of extraStorage) await db.delete(storage).where(eq(storage.id, extra.id))
-      await db.delete(service).where(eq(service.id, otherService!.id))
+      try {
+        await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
+        const labels = ['scratch', 's3', 'service-scoped elsewhere']
+        for (const [index, extra] of extraCopies.entries()) {
+          const [extraRow] = await db
+            .select({ state: storageCopy.state })
+            .from(storageCopy)
+            .where(eq(storageCopy.id, extra.id))
+          assertEquals(extraRow?.state, 'pending', `${labels[index]} copy must stay pending`)
+        }
+      } finally {
+        await cleanup()
+      }
 
       const [row] = await db
         .select({ containerId: container.containerId, status: container.status })
