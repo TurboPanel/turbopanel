@@ -50,6 +50,7 @@ import { INSTANCE_VERSION } from '../../app/version.ts'
 import { resolveInstanceRevision } from '../../app/build-info.ts'
 import { isExplicitDevelopmentMode } from '../../lib/dev-mode.ts'
 import { createUpgradeCoordinator } from '../../features/upgrades/coordinator.ts'
+import { parseUpgradeBatchDefault } from '../../features/settings/upgrade-settings.ts'
 import { createDrizzleUpgradeStore } from '../../features/upgrades/store.ts'
 import {
   parseUpgradeVerifyTimeoutMs,
@@ -185,7 +186,11 @@ async function buildUpgradeCoordinator(
   const revision = resolveInstanceRevision(c.get('platformEnv'))
   const colocated = await resolveColocatedServerId(db, registry)
   const coordinator = createUpgradeCoordinator({
-    store: createDrizzleUpgradeStore(db, registry),
+    store: createDrizzleUpgradeStore(
+      db,
+      registry,
+      parseUpgradeBatchDefault(c.get('platformEnv')?.TURBOPANEL_UPGRADE_BATCH)
+    ),
     enqueue: (serverId, envelope) => registry.getCell(serverId).enqueue(envelope),
     runtime,
     channel: instanceUpdateChannel(c),

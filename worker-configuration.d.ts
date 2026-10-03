@@ -147,6 +147,11 @@ interface CloudflareBindings {
    */
   TURBOPANEL_UPGRADE_TICK_MINUTES?: string
   /**
+   * Starting batch for managed upgrades when none is saved in the panel:
+   * `count:N` or `percent:N`. Unset means one server at a time.
+   */
+  TURBOPANEL_UPGRADE_BATCH?: string
+  /**
    * Automatic Postgres / MySQL failover on an accepted dead-primary event:
    * `on` or `off`. Unset = off on staging / live (`TURBOPANEL_ENVIRONMENT`),
    * on elsewhere; any other value = off. Manual switchover / DR unaffected.
