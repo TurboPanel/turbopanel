@@ -199,6 +199,35 @@ export function railpackIdentitiesFromResult(
   return identities
 }
 
+/** A full git object id (SHA-1 or SHA-256) — as opposed to a ref name. */
+const FULL_COMMIT_SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i
+
+/**
+ * `(composeServiceName, releaseId)` → the commit the daemon actually built.
+ *
+ * `context.releases[]` is written at enqueue time, and for a source whose
+ * provider cannot resolve a ref (a plain git URL) it holds the ref name
+ * (`main`) as a placeholder. The daemon's own result reports the commit it
+ * checked out, so a full SHA found there replaces the placeholder.
+ */
+export function resolvedCommitShasFromResult(result: unknown): Map<string, string> {
+  const shas = new Map<string, string>()
+  const releases = contextBag(result).releases
+  if (!Array.isArray(releases)) return shas
+  for (const entry of releases) {
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) continue
+    const record = entry as Record<string, unknown>
+    const composeServiceName = resultField(record, 'composeServiceName')
+    const releaseId = resultField(record, 'releaseId')
+    const commitSha = resultField(record, 'commitSha')
+    if (!composeServiceName || !releaseId || !commitSha) continue
+    if (FULL_COMMIT_SHA.test(commitSha)) {
+      shas.set(releaseKey(composeServiceName, releaseId), commitSha)
+    }
+  }
+  return shas
+}
+
 /**
  * The fan-out key: one release of one service, however many servers ran it.
  * Keying on the service name as well as the id keeps two services that somehow
@@ -307,6 +336,7 @@ export async function listServiceReleases(
     const releases = normalizeContextReleases(contextBag(row.context).releases)
     if (!releases) continue
     const identities = railpackIdentitiesFromResult(row.resultSummary)
+    const resolvedShas = resolvedCommitShasFromResult(row.resultSummary)
     for (const release of releases) {
       if (
         params.composeServiceName !== undefined &&
@@ -321,20 +351,39 @@ export async function listServiceReleases(
         serverId: row.serverId,
         status: row.status,
       }
+      const resolvedSha = resolvedShas.get(key)
       const existing = folded.get(key)
       if (existing) {
-        foldReleaseAttempt(existing, attempt, identity, row.queuedAt ?? null, row.finishedAt ?? null)
+        if (resolvedSha !== undefined && !FULL_COMMIT_SHA.test(existing.commitSha)) {
+          existing.commitSha = resolvedSha
+        }
+        foldReleaseAttempt(
+          existing,
+          attempt,
+          identity,
+          row.queuedAt ?? null,
+          row.finishedAt ?? null
+        )
         continue
       }
       order.push(key)
-      folded.set(
-        key,
-        newReleaseRecord(release, attempt, identity, row.queuedAt ?? null, row.finishedAt ?? null)
+      const record = newReleaseRecord(
+        release,
+        attempt,
+        identity,
+        row.queuedAt ?? null,
+        row.finishedAt ?? null
       )
+      if (resolvedSha !== undefined && !FULL_COMMIT_SHA.test(record.commitSha)) {
+        record.commitSha = resolvedSha
+      }
+      folded.set(key, record)
     }
   }
 
-  return markLiveReleases(order.map((key) => withSettledFinishedAt(folded.get(key) as ServiceReleaseRecord)))
+  return markLiveReleases(
+    order.map((key) => withSettledFinishedAt(folded.get(key) as ServiceReleaseRecord))
+  )
 }
 
 /** Fold one more host's attempt into the release record it belongs to. */
