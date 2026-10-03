@@ -31,6 +31,9 @@
 
 import {
   type BlockDeviceSample,
+  EXTENDED_DOCKER_FIELD_NAMES,
+  EXTENDED_HOST_FIELD_NAMES,
+  EXTENDED_INGRESS_FIELD_NAMES,
   type DatabaseProxySample,
   type DiagnosticsCpuSample,
   type DiagnosticsMemorySample,
@@ -83,8 +86,18 @@ export const STATUS_EVENTS_TABLE = 'server_status_events'
  * existing file would silently keep its old, narrower columns and reject
  * every insert. Bumped 7 → 8 for the same reason when `managed.storage` and
  * `managed.docker` gained `server_storage_samples` / `server_docker_samples`.
+ * Bumped 8 → 9 for metrics v7: the optional `extended` numeric fields became
+ * `ext_*` columns on `server_host_samples`, `server_docker_samples` and
+ * `server_ingress_samples`. Unlike the earlier bumps this one migrates in
+ * place: a marker-8 file is kept and {@link V7_MIGRATION_STATEMENTS} adds the
+ * columns (`ALTER TABLE ... ADD COLUMN IF NOT EXISTS`, one transaction).
+ * Free-text v7 fields are not stored here (Analytics Engine and the live view
+ * only).
  */
-export const DUCKDB_SCHEMA_MARKER_VERSION = 8
+export const DUCKDB_SCHEMA_MARKER_VERSION = 9
+
+/** Older markers `openDuckDb` upgrades in place instead of discarding. */
+export const DUCKDB_MIGRATABLE_MARKER_VERSIONS: readonly number[] = [8]
 
 // ---------------------------------------------------------------------------
 // Field ordering — hand-declared `Record<keyof T, true>` literals so a
@@ -172,12 +185,11 @@ const HOST_GROUP_FIELD_RECORDS: Record<HostMetricGroup, Record<string, true>> = 
  * field or group added to `contract.ts` without a matching entry fails
  * the TypeScript build rather than silently missing a column.
  */
-export const HOST_METRIC_FIELD_REFS: readonly HostFieldRef[] = HOST_METRIC_GROUPS.flatMap(
-  (group) =>
-    Object.keys(HOST_GROUP_FIELD_RECORDS[group]).map((field) => ({
-      group,
-      field,
-    }))
+export const HOST_METRIC_FIELD_REFS: readonly HostFieldRef[] = HOST_METRIC_GROUPS.flatMap((group) =>
+  Object.keys(HOST_GROUP_FIELD_RECORDS[group]).map((field) => ({
+    group,
+    field,
+  }))
 )
 
 const NETWORK_FIELDS: Record<keyof Omit<NetworkDeviceSample, 'deviceId'>, true> = {
@@ -453,6 +465,33 @@ export function dockerUsageStorageColumnName(field: string): string {
   return `docker_${snakeCase(field)}`
 }
 
+/** DuckDB column name for one of the v7 `extended` numeric fields (`oomKills` -> `ext_oom_kills`). */
+export function extendedColumnName(field: string): string {
+  return `ext_${snakeCase(field)}`
+}
+
+/** v7 numeric columns per table, in DDL / insert order (`extended.host`, `.docker`, `.ingress`). */
+export const V7_HOST_COLUMNS: readonly string[] = EXTENDED_HOST_FIELD_NAMES.map(extendedColumnName)
+export const V7_DOCKER_COLUMNS: readonly string[] =
+  EXTENDED_DOCKER_FIELD_NAMES.map(extendedColumnName)
+export const V7_INGRESS_COLUMNS: readonly string[] =
+  EXTENDED_INGRESS_FIELD_NAMES.map(extendedColumnName)
+
+/**
+ * Idempotent in-place upgrade from marker 8. Run inside one transaction by
+ * `openDuckDb`; fresh stores already have these columns from their DDL, so
+ * `IF NOT EXISTS` makes the same statements a no-op there.
+ */
+export const V7_MIGRATION_STATEMENTS: readonly string[] = [
+  [HOST_SAMPLES_TABLE, V7_HOST_COLUMNS],
+  [DOCKER_SAMPLES_TABLE, V7_DOCKER_COLUMNS],
+  [INGRESS_SAMPLES_TABLE, V7_INGRESS_COLUMNS],
+].flatMap(([table, columns]) =>
+  (columns as readonly string[]).map(
+    (column) => `ALTER TABLE ${table as string} ADD COLUMN IF NOT EXISTS ${column} DOUBLE`
+  )
+)
+
 /** DuckDB column name for one of the diagnostics CPU half's hand-declared host-global scalar fields. */
 export function cpuDiagnosticsHostColumnName(field: string): string {
   if (!(field in HOST_GLOBAL_CPU_DIAGNOSTICS_FIELDS)) {
@@ -500,7 +539,12 @@ function hostSamplesTableDdl(): string {
   )
   return [
     `CREATE TABLE IF NOT EXISTS ${HOST_SAMPLES_TABLE} (`,
-    indent([...COMMON_METADATA_COLUMN_DEFS, ...metricColumns, ...cpuDiagnosticsColumns]),
+    indent([
+      ...COMMON_METADATA_COLUMN_DEFS,
+      ...metricColumns,
+      ...cpuDiagnosticsColumns,
+      ...V7_HOST_COLUMNS.map((column) => `${column} DOUBLE`),
+    ]),
     `)`,
   ].join('\n')
 }
@@ -509,9 +553,13 @@ function hostSamplesTableDdl(): string {
 function entitySamplesTableDdl(
   table: string,
   idColumnDefs: readonly string[],
-  metricFields: readonly string[]
+  metricFields: readonly string[],
+  extraDoubleColumns: readonly string[] = []
 ): string {
-  const metricColumns = metricFields.map((field) => `${entityMetricColumnName(field)} DOUBLE`)
+  const metricColumns = [
+    ...metricFields.map((field) => `${entityMetricColumnName(field)} DOUBLE`),
+    ...extraDoubleColumns.map((column) => `${column} DOUBLE`),
+  ]
   return [
     `CREATE TABLE IF NOT EXISTS ${table} (`,
     indent([...COMMON_METADATA_COLUMN_DEFS, ...idColumnDefs, ...metricColumns]),
@@ -586,9 +634,10 @@ function storageSamplesTableDdl(): string {
  * diagnostics memory half.
  */
 function dockerSamplesTableDdl(): string {
-  const metricColumns = DOCKER_USAGE_METRIC_FIELDS.map(
-    (field) => `${entityMetricColumnName(field)} DOUBLE`
-  )
+  const metricColumns = [
+    ...DOCKER_USAGE_METRIC_FIELDS.map((field) => `${entityMetricColumnName(field)} DOUBLE`),
+    ...V7_DOCKER_COLUMNS.map((column) => `${column} DOUBLE`),
+  ]
   return [
     `CREATE TABLE IF NOT EXISTS ${DOCKER_SAMPLES_TABLE} (`,
     indent([...COMMON_METADATA_COLUMN_DEFS, ...metricColumns]),
@@ -626,7 +675,8 @@ function ingressSamplesTableDdl(): string {
   return entitySamplesTableDdl(
     INGRESS_SAMPLES_TABLE,
     ['source_id VARCHAR NOT NULL', 'source_kind VARCHAR NOT NULL'],
-    INGRESS_METRIC_FIELDS
+    INGRESS_METRIC_FIELDS,
+    V7_INGRESS_COLUMNS
   )
 }
 
@@ -726,6 +776,7 @@ function hostSamplesDoubleColumnNames(): string[] {
   return [
     ...HOST_METRIC_FIELD_REFS.map((ref) => hostMetricColumnName(ref.group, ref.field)),
     ...HOST_GLOBAL_CPU_DIAGNOSTICS_FIELDS_LIST.map(cpuDiagnosticsHostColumnName),
+    ...V7_HOST_COLUMNS,
   ]
 }
 
@@ -778,6 +829,7 @@ export function ingressSamplesInsertColumns(): string[] {
     'source_id',
     'source_kind',
     ...INGRESS_METRIC_FIELDS.map(entityMetricColumnName),
+    ...V7_INGRESS_COLUMNS,
   ]
 }
 
@@ -840,7 +892,11 @@ export function storageSamplesInsertColumns(): string[] {
 }
 
 export function dockerSamplesInsertColumns(): string[] {
-  return [...COMMON_METADATA_COLUMNS, ...DOCKER_USAGE_METRIC_FIELDS.map(entityMetricColumnName)]
+  return [
+    ...COMMON_METADATA_COLUMNS,
+    ...DOCKER_USAGE_METRIC_FIELDS.map(entityMetricColumnName),
+    ...V7_DOCKER_COLUMNS,
+  ]
 }
 
 export function metricEventsInsertColumns(): string[] {

@@ -230,14 +230,15 @@ console.log(
   "costs). Self-hosted samples are written untruncated — the operator's own",
 );
 console.log(
-  "disk is uncapped. Live sessions sample every 10 s but those points are",
+  "disk is uncapped. Live sessions sample every 10 s, but v7 stores only the",
 );
 console.log(
-  "cached, never durably written (A3d), so a live lease does not inflate",
+  "60 s baseline sample (flagged durable) and routes the 10 s samples to the",
 );
 console.log(
-  "Analytics Engine row counts. See `deno task metrics:inventory`.\n",
+  "live overlay buffer, so a live lease does not inflate Analytics Engine row",
 );
+console.log("counts. See `deno task metrics:inventory`.\n");
 console.log(
   'A "row" is one Analytics Engine data point. Two things decide the total:',
 );
@@ -292,14 +293,15 @@ for (const archetype of ARCHETYPES) {
 }
 
 console.log(
-  "\nLIVE SESSIONS — the daemon samples every 10 s while a page is open,",
+  "\nLIVE SESSIONS — the daemon samples every 10 s while a page is open and",
 );
 console.log(
-  "but those samples are cached in the live-sample buffer and never written",
+  "keeps its 60 s baseline running alongside. Only the baseline is stored;",
 );
 console.log(
-  "to Analytics Engine. Durable row counts stay at the 60 s baseline.\n",
+  "the 10 s samples go to the live overlay buffer. Durable rows stay at the",
 );
+console.log("60 s baseline (v6 stored every 10 s sample, about 6x while watched).\n");
 console.log(
   pad("Scenario", 32) +
     padLeft("baseline/h", 12) +

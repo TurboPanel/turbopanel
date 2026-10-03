@@ -12,7 +12,12 @@ import {
   DOCKER_USAGE_METRIC_FIELDS,
   dockerSamplesInsertColumns,
   dockerUsageStorageColumnName,
+  DUCKDB_MIGRATABLE_MARKER_VERSIONS,
   DUCKDB_SCHEMA_MARKER_VERSION,
+  V7_DOCKER_COLUMNS,
+  V7_HOST_COLUMNS,
+  V7_INGRESS_COLUMNS,
+  V7_MIGRATION_STATEMENTS,
   entityMetricColumnName,
   FILESYSTEM_METRIC_FIELDS,
   FILESYSTEM_SAMPLES_TABLE,
@@ -40,8 +45,26 @@ import {
   STATUS_EVENTS_TABLE,
 } from './schema.ts'
 
-it('DuckDB schema marker is 8', () => {
-  assertEquals(DUCKDB_SCHEMA_MARKER_VERSION, 8)
+it('DuckDB schema marker is 9 and upgrades marker 8 in place', () => {
+  assertEquals(DUCKDB_SCHEMA_MARKER_VERSION, 9)
+  assertEquals([...DUCKDB_MIGRATABLE_MARKER_VERSIONS], [8])
+})
+
+it('v7 migration adds every extended numeric column with ADD COLUMN IF NOT EXISTS', () => {
+  assertEquals(V7_HOST_COLUMNS.length, 7)
+  assertEquals(V7_DOCKER_COLUMNS.length, 8)
+  assertEquals(V7_INGRESS_COLUMNS, ['ext_tls_cert_soonest_expiry_days'])
+  assertEquals(V7_MIGRATION_STATEMENTS.length, 7 + 8 + 1)
+  assertEquals(
+    V7_MIGRATION_STATEMENTS.every((s) =>
+      /^ALTER TABLE \w+ ADD COLUMN IF NOT EXISTS ext_\w+ DOUBLE$/.test(s)
+    ),
+    true
+  )
+  const ddl = buildSchemaStatements().join('\n')
+  for (const column of [...V7_HOST_COLUMNS, ...V7_DOCKER_COLUMNS, ...V7_INGRESS_COLUMNS]) {
+    assertEquals(ddl.includes(`${column} DOUBLE`), true, column)
+  }
 })
 
 it('hostMetricColumnName prefixes by group, avoiding cross-group collisions', () => {
@@ -202,17 +225,15 @@ it('buildSchemaStatements emits idempotent DDL for every v5 table', () => {
   // v6 dropped the sample-level collection-mode column outright.
   assertEquals(joined.includes('collection_mode'), false)
   // The seven meminfo gauges v6 dropped have no column anywhere.
-  for (
-    const dropped of [
-      'page_tables_bytes',
-      'kernel_stack_bytes',
-      'commit_limit_bytes',
-      'active_anon_bytes',
-      'inactive_anon_bytes',
-      'active_file_bytes',
-      'inactive_file_bytes',
-    ]
-  ) {
+  for (const dropped of [
+    'page_tables_bytes',
+    'kernel_stack_bytes',
+    'commit_limit_bytes',
+    'active_anon_bytes',
+    'inactive_anon_bytes',
+    'active_file_bytes',
+    'inactive_file_bytes',
+  ]) {
     assertEquals(joined.includes(dropped), false, dropped)
   }
 })
@@ -230,7 +251,10 @@ it('hostSamplesInsertColumns lists common metadata then every host metric column
   const columns = hostSamplesInsertColumns()
   assertEquals(
     columns.length,
-    7 + HOST_METRIC_FIELD_REFS.length + HOST_GLOBAL_CPU_DIAGNOSTICS_FIELDS_LIST.length
+    7 +
+      HOST_METRIC_FIELD_REFS.length +
+      HOST_GLOBAL_CPU_DIAGNOSTICS_FIELDS_LIST.length +
+      V7_HOST_COLUMNS.length
   )
   assertEquals(columns.slice(0, 7), [
     'server_id',
@@ -269,17 +293,15 @@ it('every entity family declares a non-empty, unique field list', () => {
 it('server_storage_samples carries the storage row plus a docker_-prefixed breakdown copy', () => {
   const columns = storageSamplesMetricColumnNames()
   // The flat storage fields, snake_cased from their contract names.
-  for (
-    const column of [
-      'hosting_used_bytes',
-      'backup_used_bytes',
-      'docker_used_bytes',
-      'logs_used_bytes',
-      'hosting_free_bytes',
-      'backup_free_bytes',
-      'logs_free_bytes',
-    ]
-  ) {
+  for (const column of [
+    'hosting_used_bytes',
+    'backup_used_bytes',
+    'docker_used_bytes',
+    'logs_used_bytes',
+    'hosting_free_bytes',
+    'backup_free_bytes',
+    'logs_free_bytes',
+  ]) {
     assertEquals(columns.includes(column), true, column)
   }
   // The Docker breakdown, prefixed so it cannot collide with the total.
@@ -295,10 +317,9 @@ it('server_storage_samples carries the storage row plus a docker_-prefixed break
 
 it('storageSamplesInsertColumns is metadata + metrics + the four nullable topology id columns', () => {
   const columns = storageSamplesInsertColumns()
-  assertEquals(
-    columns.slice(-STORAGE_FILESYSTEM_ID_COLUMNS.length),
-    [...STORAGE_FILESYSTEM_ID_COLUMNS]
-  )
+  assertEquals(columns.slice(-STORAGE_FILESYSTEM_ID_COLUMNS.length), [
+    ...STORAGE_FILESYSTEM_ID_COLUMNS,
+  ])
   assertEquals(
     columns.length,
     COMMON_METADATA_COLUMNS.length +
@@ -309,10 +330,10 @@ it('storageSamplesInsertColumns is metadata + metrics + the four nullable topolo
 
 it('server_docker_samples mirrors the AE managed.docker family exactly, unprefixed', () => {
   const columns = dockerSamplesInsertColumns()
-  assertEquals(
-    columns.slice(COMMON_METADATA_COLUMNS.length),
-    DOCKER_USAGE_METRIC_FIELDS.map(entityMetricColumnName)
-  )
+  assertEquals(columns.slice(COMMON_METADATA_COLUMNS.length), [
+    ...DOCKER_USAGE_METRIC_FIELDS.map(entityMetricColumnName),
+    ...V7_DOCKER_COLUMNS,
+  ])
   assertEquals(DOCKER_USAGE_METRIC_FIELDS.length, 10)
   assertEquals(columns.includes('layers_bytes'), true)
   assertEquals(columns.includes('docker_layers_bytes'), false)
@@ -320,11 +341,7 @@ it('server_docker_samples mirrors the AE managed.docker family exactly, unprefix
 
 it('dockerUsageStorageColumnName rejects a field outside the Docker breakdown', () => {
   assertEquals(dockerUsageStorageColumnName('layersBytes'), 'docker_layers_bytes')
-  assertThrows(
-    () => dockerUsageStorageColumnName('nope'),
-    TypeError,
-    'unknown Docker usage field'
-  )
+  assertThrows(() => dockerUsageStorageColumnName('nope'), TypeError, 'unknown Docker usage field')
 })
 
 it('the storage and docker tables carry no entity id column, like the router table', () => {

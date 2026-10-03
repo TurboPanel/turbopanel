@@ -410,8 +410,8 @@ console.log("\n=== 5. Cadence ===\n");
 console.log(
   "  Every family writes on every 60 s sample (A7). There is no per-family",
 );
-console.log("  cadence and no ingest decimation step. Live (10 s) samples are");
-console.log("  cached, never durably stored (A3d).");
+console.log("  cadence and no ingest decimation step. During a live lease only the");
+console.log("  60 s baseline sample is stored; 10 s samples go to the overlay.");
 
 console.log(
   "\nWARNING: hosted ingest truncates to the capability plan before packing.\n" +
