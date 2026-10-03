@@ -335,6 +335,12 @@ type FakeDbConfig = {
   userRole?: string
 }
 
+/**
+ * Recovery rows inserted through a config's fake, shared with the fakes its
+ * transactions open, so a locked read-modify-write sees the row just written.
+ */
+const insertedRecoveryRows = new WeakMap<FakeDbConfig, unknown[]>()
+
 function fakeDb(config: FakeDbConfig = {}): Db {
   const executeRows = config.executeRows ?? [
     {
@@ -375,7 +381,7 @@ function fakeDb(config: FakeDbConfig = {}): Db {
           return queryChain(config.bindingRows ?? [])
         }
         if (table === recovery) {
-          return queryChain(config.recoveryRows ?? [])
+          return queryChain(config.recoveryRows ?? insertedRecoveryRows.get(config) ?? [])
         }
         if (table === backup) {
           return queryChain(config.backupRows ?? [])
@@ -404,7 +410,7 @@ function fakeDb(config: FakeDbConfig = {}): Db {
       }),
     }),
     execute: () => Promise.resolve(executeRows),
-    insert: () => ({
+    insert: (table: unknown) => ({
       values: (values: Record<string, unknown>) => {
         const rows = [
           {
@@ -417,17 +423,24 @@ function fakeDb(config: FakeDbConfig = {}): Db {
             id: typeof values.id === 'string' ? values.id : PRINCIPAL_ID,
           },
         ]
+        if (table === recovery) insertedRecoveryRows.set(config, rows)
         return {
           ...queryChain(rows),
           onConflictDoNothing: () => queryChain(rows),
         }
       },
     }),
-    update: () => ({
+    update: (table: unknown) => ({
       set: (next: Record<string, unknown>) => ({
         where: () => {
+          const base =
+            table === recovery
+              ? (insertedRecoveryRows.get(config)?.[0] as Record<string, unknown> | undefined)
+              : undefined
           const row = {
-            ...((config.managedRows?.[0] as Record<string, unknown> | undefined) ?? managedRow()),
+            ...(base ??
+              (config.managedRows?.[0] as Record<string, unknown> | undefined) ??
+              managedRow()),
             ...next,
           }
           return queryChain([row])

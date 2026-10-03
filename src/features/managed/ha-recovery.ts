@@ -20,7 +20,9 @@ import {
   findLatestRecovery,
   findRecoveryById,
   insertRecovery,
+  type RecoveryPatch,
   updateRecovery,
+  updateRecoveryLocked,
 } from './recovery-records.ts'
 import { container, managed, replica, server, service } from '../../db/schema.ts'
 import { OrchestratorManagedHaAuthority } from './ha-authority.ts'
@@ -110,18 +112,24 @@ async function stampManagedReady(db: Db, managedId: string): Promise<void> {
     .where(eq(managed.id, managedId))
 }
 
-async function enqueueCommand(
-  db: Db,
-  commandQueue: CommandQueue,
-  params: {
-    serverId: string
-    type: CommandType
-    payload: unknown
-    expiresAtMs: number
-    actor: RecoveryCommandActor
-    metadata?: Record<string, unknown>
-  }
-): Promise<{ commandId: string; serverId: string } | null> {
+type CommandSpec = {
+  serverId: string
+  type: CommandType
+  payload: unknown
+  expiresAtMs: number
+  actor: RecoveryCommandActor
+  metadata?: Record<string, unknown>
+}
+
+/** A command row written `queued` but not yet handed to the queue. */
+type PreparedCommand = {
+  commandId: string
+  serverId: string
+  type: CommandType
+  queuedAt: string
+}
+
+async function prepareCommand(db: Db, params: CommandSpec): Promise<PreparedCommand> {
   const expiresAt = new Date(Date.now() + params.expiresAtMs).toISOString()
   const record = await createCommandRecord(db, {
     serverId: params.serverId,
@@ -132,22 +140,46 @@ async function enqueueCommand(
     expiresAt,
     ...(params.metadata ? { metadata: params.metadata } : {}),
   })
+  return {
+    commandId: record.id,
+    serverId: params.serverId,
+    type: params.type,
+    queuedAt: record.queuedAt ?? record.createdAt,
+  }
+}
+
+/** Hand a prepared command to the queue; on failure the row is failed and false returned. */
+async function publishCommand(
+  db: Db,
+  commandQueue: CommandQueue,
+  prepared: PreparedCommand
+): Promise<boolean> {
   try {
     await commandQueue.enqueue({
-      commandId: record.id,
-      serverId: params.serverId,
-      type: params.type,
+      commandId: prepared.commandId,
+      serverId: prepared.serverId,
+      type: prepared.type,
       attempt: 1,
-      queuedAt: record.queuedAt ?? record.createdAt,
+      queuedAt: prepared.queuedAt,
     })
   } catch {
-    await transitionCommand(db, record.id, {
+    await transitionCommand(db, prepared.commandId, {
       status: 'failed',
       error: 'Command queue unavailable',
     })
-    return null
+    return false
   }
-  return { commandId: record.id, serverId: params.serverId }
+  return true
+}
+
+async function enqueueCommand(
+  db: Db,
+  commandQueue: CommandQueue,
+  params: CommandSpec
+): Promise<{ commandId: string; serverId: string } | null> {
+  const prepared = await prepareCommand(db, params)
+  if (!(await publishCommand(db, commandQueue, prepared))) return null
+  return { commandId: prepared.commandId, serverId: prepared.serverId }
 }
 
 async function detectHaPresent(db: Db, members: readonly ManagedMemberRow[]): Promise<boolean> {
@@ -370,20 +402,19 @@ async function blockUnqueuedPromote(
   })
 }
 
-async function enqueueFenceCommands(
-  db: Db,
-  commandQueue: CommandQueue,
-  params: {
-    recovery: RecoveryRecord
-    engine: ManagedEngineCode
-    source: ManagedMemberRow
-    target: ManagedMemberRow
-    members: readonly ManagedMemberRow[]
-    actor: RecoveryCommandActor
-    haPresent: boolean
-  }
-): Promise<RecoveryEnqueueResult> {
-  const fenceCommandIds: string[] = []
+type FenceParams = {
+  recovery: RecoveryRecord
+  engine: ManagedEngineCode
+  source: ManagedMemberRow
+  target: ManagedMemberRow
+  members: readonly ManagedMemberRow[]
+  actor: RecoveryCommandActor
+  haPresent: boolean
+}
+
+/** Drain rows for every connected member server (written, not yet queued). */
+async function prepareDrainCommands(db: Db, params: FenceParams): Promise<PreparedCommand[]> {
+  const prepared: PreparedCommand[] = []
   const drainServers = [...new Set(params.members.map((row) => row.serverId))]
   await forEachSequential(drainServers, async (serverId) => {
     if (!(await isServerConnected(db, serverId))) return
@@ -394,18 +425,74 @@ async function enqueueFenceCommands(
       engine: params.engine,
       phase: 'drain',
     })
-    const queued = await enqueueCommand(db, commandQueue, {
-      serverId,
-      type: 'managed.ha.failover',
-      payload,
-      expiresAtMs: FENCE_TTL_MS,
-      actor: params.actor,
-      metadata: { recoveryId: params.recovery.id, fencePhase: 'drain' },
-    })
-    if (queued) fenceCommandIds.push(queued.commandId)
+    prepared.push(
+      await prepareCommand(db, {
+        serverId,
+        type: 'managed.ha.failover',
+        payload,
+        expiresAtMs: FENCE_TTL_MS,
+        actor: params.actor,
+        metadata: { recoveryId: params.recovery.id, fencePhase: 'drain' },
+      })
+    )
   })
+  return prepared
+}
 
-  const stopQueued = await enqueueCommand(db, commandQueue, {
+/**
+ * Record every fence command id on the row BEFORE any is queued, so no result
+ * can arrive for a command the row does not know about yet.
+ */
+function recordFenceCommands(
+  db: Db,
+  recoveryId: string,
+  fenceCommandIds: string[],
+  haPresent: boolean
+): Promise<RecoveryRecord | null> {
+  return updateRecoveryLocked(db, recoveryId, (current) =>
+    current.state === 'fencing'
+      ? {
+          metadata: {
+            ...current.metadata,
+            haPresent,
+            fenceCommandIds,
+            fencingEpoch: new Date().toISOString(),
+            drainApplied: false,
+            stopApplied: false,
+          },
+        }
+      : null
+  )
+}
+
+/**
+ * The stop command never reached the queue: nothing can prove the fence, so
+ * the row turns terminal `blocked` (never promote without fencing) instead of
+ * holding the in-flight slot.
+ */
+async function blockUnqueuedFenceStop(db: Db, recoveryId: string, stopId: string): Promise<void> {
+  const blocked = await updateRecoveryLocked(db, recoveryId, (current) =>
+    current.state === 'fencing'
+      ? {
+          state: 'blocked',
+          metadata: {
+            ...current.metadata,
+            fenceCommandIds: (current.metadata.fenceCommandIds ?? []).filter((id) => id !== stopId),
+            blockedReason: FENCE_STOP_UNQUEUED_MESSAGE,
+          },
+        }
+      : null
+  )
+  if (blocked) await stampManagedReady(db, blocked.managedId)
+}
+
+async function enqueueFenceCommands(
+  db: Db,
+  commandQueue: CommandQueue,
+  params: FenceParams
+): Promise<RecoveryEnqueueResult> {
+  const drains = await prepareDrainCommands(db, params)
+  const stop = await prepareCommand(db, {
     serverId: params.source.serverId,
     type: 'managed.lifecycle',
     payload: {
@@ -418,38 +505,31 @@ async function enqueueFenceCommands(
     actor: params.actor,
     metadata: { recoveryId: params.recovery.id, fencePhase: 'stop' },
   })
-  if (!stopQueued) {
-    // Never leave a `fencing` row with a target and no stop command: it would
-    // hold the in-flight slot (managed_busy) with nothing to advance it.
-    await updateRecovery(db, params.recovery.id, {
-      state: 'blocked',
-      metadata: {
-        ...params.recovery.metadata,
-        haPresent: params.haPresent,
-        fenceCommandIds,
-        blockedReason: FENCE_STOP_UNQUEUED_MESSAGE,
-      },
-    })
+  const fenceCommandIds = [...drains.map((row) => row.commandId), stop.commandId]
+  const recorded = await recordFenceCommands(
+    db,
+    params.recovery.id,
+    fenceCommandIds,
+    params.haPresent
+  )
+  if (!recorded) return { ok: false, error: 'managed_busy', status: 409 }
+  await stampManagedApplying(db, params.recovery.managedId)
+
+  const settle = { recoveryId: params.recovery.id, engine: params.engine, actor: params.actor }
+  await forEachSequential(drains, async (drain) => {
+    if (await publishCommand(db, commandQueue, drain)) return
+    // A drain that never left still has to leave the pending list; the stop
+    // is still pending, so this never advances the row on its own.
+    await settleFenceCommand(db, commandQueue, { ...settle, commandId: drain.commandId })
+  })
+  if (!(await publishCommand(db, commandQueue, stop))) {
+    await blockUnqueuedFenceStop(db, params.recovery.id, stop.commandId)
     return { ok: false, error: 'Command queue unavailable', status: 503 }
   }
-  fenceCommandIds.push(stopQueued.commandId)
-
-  await updateRecovery(db, params.recovery.id, {
-    state: 'fencing',
-    metadata: {
-      ...params.recovery.metadata,
-      haPresent: params.haPresent,
-      fenceCommandIds,
-      fencingEpoch: new Date().toISOString(),
-      drainApplied: false,
-      stopApplied: false,
-    },
-  })
-  await stampManagedApplying(db, params.recovery.managedId)
   return {
     ok: true,
-    commandId: stopQueued.commandId,
-    serverId: stopQueued.serverId,
+    commandId: stop.commandId,
+    serverId: stop.serverId,
     fencePending: true,
     recoveryId: params.recovery.id,
   }
@@ -723,12 +803,6 @@ export async function beginAutomaticFailover(params: {
   return findRecoveryById(params.db, result.recoveryId)
 }
 
-async function loadRecovery(db: Db, recoveryId: string): Promise<RecoveryRecord | null> {
-  const current = await findRecoveryById(db, recoveryId)
-  if (!current || isTerminalRecoveryState(current.state)) return null
-  return current
-}
-
 function fenceOutcomeFromMetadata(metadata: RecoveryMetadata): FenceOutcome {
   return {
     oldPrimaryReachable: true,
@@ -737,57 +811,81 @@ function fenceOutcomeFromMetadata(metadata: RecoveryMetadata): FenceOutcome {
   }
 }
 
-async function maybeAdvanceAfterFence(
+type FenceSettlement = {
+  recoveryId: string
+  commandId: string
+  /** Set when the command succeeded; absent for a failed (or never queued) one. */
+  applied?: 'drain' | 'stop'
+  engine: ManagedEngineCode
+  actor: RecoveryCommandActor
+}
+
+/**
+ * Pure step applied under the row lock. Only a `fencing` row whose pending
+ * list still holds this command changes: a duplicate or late result, or one
+ * for a command the row never recorded, is ignored rather than advancing on
+ * an empty list. The result that empties the list decides the next state.
+ */
+function applyFenceSettlement(
+  current: RecoveryRecord,
+  settlement: Pick<FenceSettlement, 'commandId' | 'applied'>
+): RecoveryPatch | null {
+  if (current.state !== 'fencing') return null
+  const recorded = current.metadata.fenceCommandIds ?? []
+  if (!recorded.includes(settlement.commandId)) return null
+  const pending = recorded.filter((id) => id !== settlement.commandId)
+  const metadata: RecoveryMetadata = { ...current.metadata, fenceCommandIds: pending }
+  if (settlement.applied === 'drain') metadata.drainApplied = true
+  if (settlement.applied === 'stop') metadata.stopApplied = true
+  if (pending.length > 0) return { metadata }
+  const advance = nextStateAfterFence({
+    kind: current.kind,
+    outcome: fenceOutcomeFromMetadata(metadata),
+    metadata,
+  })
+  return { state: advance.state, metadata: advance.metadata }
+}
+
+/** After the lock is released: act on the state the settlement produced. */
+async function followFenceAdvance(
   db: Db,
   commandQueue: CommandQueue | undefined,
-  params: {
-    current: RecoveryRecord
-    engine: ManagedEngineCode
-    actor: RecoveryCommandActor
-  }
+  record: RecoveryRecord,
+  settlement: FenceSettlement
 ): Promise<void> {
-  const pending = params.current.metadata.fenceCommandIds ?? []
-  if (pending.length > 0) {
-    await updateRecovery(db, params.current.id, {
-      metadata: params.current.metadata,
-    })
+  if (record.state === 'blocked') {
+    await stampManagedReady(db, record.managedId)
     return
   }
+  if (!commandQueue || record.state !== 'promoting') return
 
-  const advance = nextStateAfterFence({
-    kind: params.current.kind,
-    outcome: fenceOutcomeFromMetadata(params.current.metadata),
-    metadata: params.current.metadata,
-  })
-  await updateRecovery(db, params.current.id, {
-    state: advance.state,
-    metadata: advance.metadata,
-  })
-  if (advance.state === 'blocked') {
-    await stampManagedReady(db, params.current.managedId)
-    return
-  }
-  if (!commandQueue || advance.state !== 'promoting') return
-
-  const members = await listManagedMembers(db, params.current.managedId)
-  const source = members.find((row) => row.id === params.current.sourcePrimaryMemberId)
-  const target = params.current.targetMemberId
-    ? members.find((row) => row.id === params.current.targetMemberId)
+  const members = await listManagedMembers(db, record.managedId)
+  const source = members.find((row) => row.id === record.sourcePrimaryMemberId)
+  const target = record.targetMemberId
+    ? members.find((row) => row.id === record.targetMemberId)
     : null
   if (!source || !target) return
 
   await enqueuePromoteOrRecover(db, commandQueue, {
-    recovery: {
-      ...params.current,
-      state: 'promoting',
-      metadata: advance.metadata,
-    },
-    engine: params.engine,
+    recovery: record,
+    engine: settlement.engine,
     source,
     target,
-    actor: params.actor,
-    haPresent: Boolean(advance.metadata.haPresent),
+    actor: settlement.actor,
+    haPresent: Boolean(record.metadata.haPresent),
   })
+}
+
+async function settleFenceCommand(
+  db: Db,
+  commandQueue: CommandQueue | undefined,
+  settlement: FenceSettlement
+): Promise<void> {
+  const updated = await updateRecoveryLocked(db, settlement.recoveryId, (current) =>
+    applyFenceSettlement(current, settlement)
+  )
+  if (!updated) return
+  await followFenceAdvance(db, commandQueue, updated, settlement)
 }
 
 export async function onFenceCommandSucceeded(
@@ -801,18 +899,10 @@ export async function onFenceCommandSucceeded(
     actor: RecoveryCommandActor
   }
 ): Promise<void> {
-  const current = await loadRecovery(db, params.recoveryId)
-  if (!current) return
-
-  const pending = (current.metadata.fenceCommandIds ?? []).filter((id) => id !== params.commandId)
-  const metadata: RecoveryMetadata = {
-    ...current.metadata,
-    fenceCommandIds: pending,
-    drainApplied: params.fencePhase === 'drain' || Boolean(current.metadata.drainApplied),
-    stopApplied: params.fencePhase === 'stop' || Boolean(current.metadata.stopApplied),
-  }
-  await maybeAdvanceAfterFence(db, commandQueue, {
-    current: { ...current, metadata },
+  await settleFenceCommand(db, commandQueue, {
+    recoveryId: params.recoveryId,
+    commandId: params.commandId,
+    applied: params.fencePhase,
     engine: params.engine,
     actor: params.actor,
   })
@@ -828,19 +918,7 @@ export async function onFenceCommandFailed(
     actor: RecoveryCommandActor
   }
 ): Promise<void> {
-  const current = await loadRecovery(db, params.recoveryId)
-  if (!current) return
-
-  const pending = (current.metadata.fenceCommandIds ?? []).filter((id) => id !== params.commandId)
-  const metadata: RecoveryMetadata = {
-    ...current.metadata,
-    fenceCommandIds: pending,
-  }
-  await maybeAdvanceAfterFence(db, commandQueue, {
-    current: { ...current, metadata },
-    engine: params.engine,
-    actor: params.actor,
-  })
+  await settleFenceCommand(db, commandQueue, params)
 }
 
 async function reclassifyAfterDisasterRecovery(db: Db, record: RecoveryRecord): Promise<void> {
