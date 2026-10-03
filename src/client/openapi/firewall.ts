@@ -78,6 +78,11 @@ export const firewallSchemas = {
       inputDefault: { type: 'string', enum: ['accept', 'drop'] },
       ipv6: { type: 'string', enum: ['mirror', 'skip'] },
       sshSources: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 256 },
+      acknowledgeSshExcludesMe: {
+        type: 'boolean',
+        description:
+          "Set to true to save an `sshSources` list that does not include the caller's own address. Without it that save is refused with 409 `firewall_ssh_excludes_you`.",
+      },
     },
   },
   FirewallRule: {
@@ -221,6 +226,10 @@ export const firewallPaths: Record<string, unknown> = {
           properties: { policy: { $ref: '#/components/schemas/FirewallPolicy' } },
         }),
         ...errors({ badRequest: true }),
+        409: {
+          description:
+            "Refused: the new `sshSources` list does not include the caller's own address (`firewall_ssh_excludes_you`). Resend with `acknowledgeSshExcludesMe: true` to save anyway.",
+        },
       },
     },
   },

@@ -167,7 +167,9 @@ export function eventScope(event: NotificationEvent): NotificationScope {
 
 /** True when the event must never wait for quiet hours or a digest window. */
 export function eventIsUrgent(event: NotificationEvent): boolean {
-  return NOTIFICATION_EVENT_DEFINITIONS[event].urgent
+  const definition: EventDefinition = NOTIFICATION_EVENT_DEFINITIONS[event]
+  // A critical event is never routine, whatever its flag says.
+  return definition.urgent || definition.severity === 'critical'
 }
 
 export function eventAudience(event: NotificationEvent): NotificationAudience {
