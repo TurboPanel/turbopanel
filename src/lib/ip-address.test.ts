@@ -271,5 +271,22 @@ test('ipAddressScope judges the IPv4 address a transition address delivers to', 
   assertEquals(ipAddressScope('2001:0:cb00:7109::34ff:8ef5'), 'public')
   // Neighbouring prefixes are ordinary addresses.
   assertEquals(ipAddressScope('2001:db8::7f00:1'), 'public')
-  assertEquals(ipAddressScope('64:ff9b:1::7f00:1'), 'public')
+  assertEquals(ipAddressScope('2001:db8::1'), 'public')
+})
+
+test('ipAddressScope keeps reserved ranges out of public', () => {
+  assertEquals(ipAddressScope('192.0.0.8'), 'private')
+  assertEquals(ipAddressScope('198.18.0.1'), 'private')
+  assertEquals(ipAddressScope('198.19.255.254'), 'private')
+  assertEquals(ipAddressScope('240.0.0.1'), 'private')
+  assertEquals(ipAddressScope('64:ff9b:1::cb00:7109'), 'private')
+  // IPv4-compatible `::a.b.c.d` judges the IPv4 address it names.
+  assertEquals(ipAddressScope('::7f00:1'), 'loopback')
+  assertEquals(ipAddressScope('::a00:1'), 'private')
+  assertEquals(ipAddressScope('::cb00:7109'), 'public')
+  assertEquals(ipAddressScope('::1'), 'loopback')
+  // Neighbours stay public.
+  assertEquals(ipAddressScope('192.0.1.1'), 'public')
+  assertEquals(ipAddressScope('198.20.0.1'), 'public')
+  assertEquals(ipAddressScope('223.255.255.255'), 'public')
 })

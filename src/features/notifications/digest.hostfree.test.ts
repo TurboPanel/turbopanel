@@ -1,6 +1,6 @@
 import { assertEquals } from '@std/assert'
 import { buildDigestGroups, buildDigestJob, DIGEST_MAX_GROUPS, DIGEST_MAX_ITEMS } from './digest.ts'
-import { eventIsUrgent, NOTIFICATION_EVENTS } from './events.ts'
+import { eventIsUrgent, eventSeverity, NOTIFICATION_EVENTS } from './events.ts'
 import type { NotificationDeliveryRecord } from './records.ts'
 
 const test = Deno.test.bind(Deno)
@@ -82,4 +82,13 @@ test('urgent events are the outages and the security changes; only routine ones 
   assertEquals(urgent.includes('access.grant_revoked'), true)
   assertEquals(urgent.includes('server.daemon_key_revoked'), true)
   assertEquals(eventIsUrgent('server.deleted'), false)
+})
+
+test('critical events and failed-deploy, billing and security codes are never held', () => {
+  for (const event of NOTIFICATION_EVENTS) {
+    if (eventSeverity(event) === 'critical') assertEquals(eventIsUrgent(event), true, event)
+    if (/fail|billing|payment|invoice|security|revoked/.test(event)) {
+      assertEquals(eventIsUrgent(event), true, event)
+    }
+  }
 })

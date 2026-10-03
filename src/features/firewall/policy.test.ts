@@ -4,6 +4,7 @@ import {
   mergeFirewallPolicyIntoOptions,
   parseFirewallOrgPolicy,
   parseFirewallPolicyPatch,
+  sshSourcesExcludeAddress,
 } from './policy.ts'
 
 /**
@@ -77,4 +78,13 @@ test('merging keeps the other option keys and the other policy fields', () => {
   assertEquals(mergeFirewallPolicyIntoOptions(null, { inputDefault: 'drop' }), {
     firewall: { inputDefault: 'drop', ipv6: 'mirror', sshSources: ['any'] },
   })
+})
+
+test('the lockout guard flags a narrowed list that leaves out the caller', () => {
+  assertEquals(sshSourcesExcludeAddress(['203.0.113.0/24'], '198.51.100.4'), true)
+  assertEquals(sshSourcesExcludeAddress(['203.0.113.0/24'], '203.0.113.9'), false)
+  assertEquals(sshSourcesExcludeAddress(['10.0.0.0/8', '203.0.113.9/32'], '203.0.113.9'), false)
+  assertEquals(sshSourcesExcludeAddress(['203.0.113.0/24'], '2001:db8::1'), true)
+  assertEquals(sshSourcesExcludeAddress(['any'], '198.51.100.4'), false)
+  assertEquals(sshSourcesExcludeAddress(['203.0.113.0/24'], null), false)
 })
