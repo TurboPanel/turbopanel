@@ -543,6 +543,8 @@ const PHP_MODE_REFUSAL_TEXT = {
   engine_unsupported: 'its web server cannot run that mode',
   not_allowed: 'its organization or server does not offer that mode',
   none_allowed: 'its organization and server offer no mode its web server can run',
+  daemon_unsupported:
+    "the server's TurboPanel daemon is too old to run per-site PHP modes (update the daemon first)",
 } as const
 
 function tryMapPhpModePrepareError(prepared: DeployPrepareError): PrepareErrorResponse | null {
