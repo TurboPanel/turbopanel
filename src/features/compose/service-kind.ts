@@ -92,7 +92,7 @@ const NODE_VERSION_RE = /^\d{1,3}(\.\d{1,3}){0,2}$/
  * `turbopaneld/orchestration/runtime-registry.json`, advisory only — the
  * schema keeps accepting any {@link NODE_VERSION_RE} value.
  */
-export const SUPPORTED_NODE_SERIES: readonly string[] = ['22', '24']
+export const SUPPORTED_NODE_SERIES: readonly string[] = ['22', '24', '26']
 export const DEFAULT_NODE_SERIES = '24'
 
 /**

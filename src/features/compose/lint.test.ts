@@ -938,7 +938,7 @@ test('lintComposeYaml warns when nodeVersion pins an unoffered series', () => {
 })
 
 test('lintComposeYaml stays quiet for an offered node series and its minor pins', () => {
-  for (const version of ['24', '24.17']) {
+  for (const version of ['24', '24.17', '26']) {
     const issues = lintComposeYaml(`services:
   web:
     x-turbopanel:
