@@ -514,7 +514,7 @@ os|health|footprint|b|-|OS release|text|-|H|idea|x|PRETTY_NAME from /etc/os-rele
 bootId|health|footprint|b|-|boot id|text|-|H|idea|x|Changes on every reboot, so reboots are exact.||
 virt|health|footprint|b|-|virtualisation|text|-|H|idea||systemd-detect-virt result: kvm, lxc, none…||
 cloudProvider|health|footprint|b|-|cloud provider|text|-|H|idea|x|From the DMI vendor (DigitalOcean, Hetzner, QEMU, Dell…). Cheap, changes only on migration.||
-agentVersion|health|footprint|b|-|TurboPanel agent version|text|-|H|idea|x|turbopaneld version, to spot hosts on old agents.||
+agentVersion|health|footprint|b|-|TurboPanel daemon version|text|-|H|idea|x|turbopaneld version, to spot hosts on old agents.||
 timeSync|health|footprint|b|-|clock sync|text|-|H|idea|x|Whether NTP/timesyncd reports the clock as synced. A drifting clock breaks TLS and logs.||
 pendingUpdates|health|footprint|b|-|pending updates|text|-|H|idea|x|Package updates waiting, e.g. "12 (3 security)". Refreshed hourly at most.||
 fsReadOnly|health|footprint|b|-|read-only filesystems|text|-|H|idea|x|Any filesystem the kernel remounted read-only after errors, e.g. "/var/www". Empty when healthy. Usually a dying disk.||
