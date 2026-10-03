@@ -168,6 +168,44 @@ export async function upsertDeploymentTargets(
     })
 }
 
+/**
+ * Loopback listen ports the control plane gave other environments' sites and
+ * native apps on each server (`options.listenPorts`, written by the deploy that
+ * allocated them). A new allocation probes past these so two environments on one
+ * host never share a port. This environment's own row is left out: a redeploy
+ * keeps the port it already has.
+ */
+export async function listReservedListenPorts(
+  db: Db,
+  params: { environmentId: string; serverIds: readonly string[] }
+): Promise<Map<string, Set<number>>> {
+  const byServer = new Map<string, Set<number>>()
+  if (params.serverIds.length === 0) return byServer
+  const rows = await db
+    .select({ serverId: deployment.serverId, options: deployment.options })
+    .from(deployment)
+    .where(
+      and(
+        inArray(deployment.serverId, [...params.serverIds]),
+        ne(deployment.environmentId, params.environmentId)
+      )
+    )
+  for (const row of rows) {
+    const ports = byServer.get(row.serverId) ?? new Set<number>()
+    for (const port of readRecordedListenPorts(row.options)) ports.add(port)
+    byServer.set(row.serverId, ports)
+  }
+  return byServer
+}
+
+/** The `listenPorts` a deploy recorded on its `deployment.options`; empty when absent or malformed. */
+export function readRecordedListenPorts(options: unknown): number[] {
+  if (typeof options !== 'object' || options === null) return []
+  const ports = (options as { listenPorts?: unknown }).listenPorts
+  if (!Array.isArray(ports)) return []
+  return ports.filter((port): port is number => Number.isInteger(port))
+}
+
 export async function listEnvironmentDeploymentTargets(
   db: Db,
   environmentId: string
