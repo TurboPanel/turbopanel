@@ -57,6 +57,7 @@ import { enforceAuthRateLimit } from '../authn/http.ts'
 import { isPostgresUniqueViolation, isUniqueViolationOn } from '../../db/unique-violation.ts'
 import { resolveGitProvider, type RepositorySummary } from '../../features/git/git-provider.ts'
 import { canonicalizeRepositoryUrl } from '../../features/git/clone-url.ts'
+import { forgeFetch } from '../../features/git/forge-url.ts'
 import { fetchPublicGithubDefaultBranch } from '../../features/git/github-provider.ts'
 import {
   exchangeGitlabAuthorizationCode,
@@ -852,7 +853,7 @@ export async function fetchInstallationAccount(
   const id = encodeURIComponent(externalInstallationId)
   let response: Response
   try {
-    response = await fetch(`${apiBase}/app/installations/${id}`, {
+    response = await forgeFetch(`${apiBase}/app/installations/${id}`, {
       headers: githubApiHeaders(appJwt, 'Bearer'),
     })
   } catch (error) {

@@ -12,19 +12,19 @@ export { isPostgresUniqueViolation } from '../../db/unique-violation.ts'
 export const MAX_STORAGE_CONTENT_BYTES = 256 * 1024
 
 export const STORAGE_KINDS = ['volume', 'directory', 'file'] as const
-export type StorageKind = typeof STORAGE_KINDS[number]
+export type StorageKind = (typeof STORAGE_KINDS)[number]
 
 export const ACCESS_MODES = ['single_writer', 'multi_reader', 'multi_writer'] as const
-export type StorageAccessMode = typeof ACCESS_MODES[number]
+export type StorageAccessMode = (typeof ACCESS_MODES)[number]
 
 export const RETENTION_POLICIES = ['retain', 'delete'] as const
-export type StorageRetention = typeof RETENTION_POLICIES[number]
+export type StorageRetention = (typeof RETENTION_POLICIES)[number]
 
 export const API_COPY_PROVIDERS = ['docker', 'path'] as const
-export type ApiCopyProvider = typeof API_COPY_PROVIDERS[number]
+export type ApiCopyProvider = (typeof API_COPY_PROVIDERS)[number]
 
 export const COPY_ROLES = ['primary', 'replica', 'scratch', 'archive'] as const
-export type CopyRole = typeof COPY_ROLES[number]
+export type CopyRole = (typeof COPY_ROLES)[number]
 
 export const COPY_STATES = [
   'pending',
@@ -35,22 +35,22 @@ export const COPY_STATES = [
   'failed',
   'retiring',
 ] as const
-export type CopyState = typeof COPY_STATES[number]
+export type CopyState = (typeof COPY_STATES)[number]
 
 export const PARENT_FIELDS = [
   { bodyKey: 'workspaceId', column: 'workspaceId' as const, entityKind: 'workspace' as const },
   { bodyKey: 'projectId', column: 'projectId' as const, entityKind: 'project' as const },
-  { bodyKey: 'environmentId', column: 'environmentId' as const, entityKind: 'environment' as const },
+  {
+    bodyKey: 'environmentId',
+    column: 'environmentId' as const,
+    entityKind: 'environment' as const,
+  },
   { bodyKey: 'serviceId', column: 'serviceId' as const, entityKind: 'service' as const },
 ] as const
 
 type StorageRow = typeof storage.$inferSelect
 export type StorageParentEntityKind =
-  | 'organization'
-  | 'workspace'
-  | 'project'
-  | 'environment'
-  | 'service'
+  'organization' | 'workspace' | 'project' | 'environment' | 'service'
 
 export type StorageParentRef = {
   column: (typeof PARENT_FIELDS)[number]['column'] | null
@@ -63,33 +63,27 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 export function isStorageKind(value: unknown): value is StorageKind {
-  return typeof value === 'string' &&
-    (STORAGE_KINDS as readonly string[]).includes(value)
+  return typeof value === 'string' && (STORAGE_KINDS as readonly string[]).includes(value)
 }
 
 export function isAccessMode(value: unknown): value is StorageAccessMode {
-  return typeof value === 'string' &&
-    (ACCESS_MODES as readonly string[]).includes(value)
+  return typeof value === 'string' && (ACCESS_MODES as readonly string[]).includes(value)
 }
 
 export function isRetention(value: unknown): value is StorageRetention {
-  return typeof value === 'string' &&
-    (RETENTION_POLICIES as readonly string[]).includes(value)
+  return typeof value === 'string' && (RETENTION_POLICIES as readonly string[]).includes(value)
 }
 
 export function isApiCopyProvider(value: unknown): value is ApiCopyProvider {
-  return typeof value === 'string' &&
-    (API_COPY_PROVIDERS as readonly string[]).includes(value)
+  return typeof value === 'string' && (API_COPY_PROVIDERS as readonly string[]).includes(value)
 }
 
 export function isCopyRole(value: unknown): value is CopyRole {
-  return typeof value === 'string' &&
-    (COPY_ROLES as readonly string[]).includes(value)
+  return typeof value === 'string' && (COPY_ROLES as readonly string[]).includes(value)
 }
 
 export function isCopyState(value: unknown): value is CopyState {
-  return typeof value === 'string' &&
-    (COPY_STATES as readonly string[]).includes(value)
+  return typeof value === 'string' && (COPY_STATES as readonly string[]).includes(value)
 }
 
 export function optionalStringField(value: unknown): string | null {
@@ -109,7 +103,7 @@ export function resolvePatchKind(body: Record<string, unknown>, existing: Storag
 
 export function resolvePatchPrincipalId(
   body: Record<string, unknown>,
-  existing: string | null,
+  existing: string | null
 ): string | null {
   if (body.principalId === null) return null
   if (typeof body.principalId === 'string') return body.principalId
@@ -138,7 +132,7 @@ export function resolveStorageParentContext(row: StorageRow | undefined): {
 
 export function parseStorageParent(
   c: Context<AppEnv>,
-  body: Record<string, unknown>,
+  body: Record<string, unknown>
 ): StorageParentRef | Response {
   const specified = PARENT_FIELDS.filter(({ bodyKey }) => {
     const value = body[bodyKey]
@@ -168,7 +162,7 @@ export function isStorageContentTooLarge(content: string): boolean {
 
 export function parseOptionalStorageContent(
   c: Context<AppEnv>,
-  value: unknown,
+  value: unknown
 ): string | undefined | Response {
   if (value === undefined) return undefined
   if (typeof value !== 'string') {
@@ -212,7 +206,7 @@ function parseEnumField<T extends string>(
   c: Context<AppEnv>,
   value: unknown,
   allowed: readonly T[],
-  fallback: T,
+  fallback: T
 ): T | Response {
   if (value === undefined) return fallback
   if (typeof value === 'string' && (allowed as readonly string[]).includes(value)) {
@@ -224,7 +218,7 @@ function parseEnumField<T extends string>(
 function parseOptionalBoolean(
   c: Context<AppEnv>,
   value: unknown,
-  fallback: boolean,
+  fallback: boolean
 ): boolean | Response {
   if (value === undefined) return fallback
   if (typeof value === 'boolean') return value
@@ -240,9 +234,7 @@ function uniqueViolationMessage(err: unknown): string {
   return uniqueViolationLayerMessage(err) ?? ''
 }
 
-export function mapStorageUniqueViolation(
-  err: unknown,
-): { error: string; status: 409 } | null {
+export function mapStorageUniqueViolation(err: unknown): { error: string; status: 409 } | null {
   if (!isPostgresUniqueViolation(err)) return null
   const message = uniqueViolationMessage(err)
   if (message.includes('uniq_copy_storage_primary')) {
@@ -259,10 +251,17 @@ export function mapStorageUniqueViolation(
 
 export function parseCopyRecord(
   c: Context<AppEnv>,
-  copy: Record<string, unknown>,
+  copy: Record<string, unknown>
 ): CreateCopyFields | Response {
   if (!isApiCopyProvider(copy.provider)) {
-    return c.json({ error: 'Invalid request' }, 400)
+    return c.json(
+      {
+        error:
+          `Unsupported copy provider. Supported providers: ${API_COPY_PROVIDERS.join(', ')}. ` +
+          'Remote storage (nfs, s3, sftp, webdav, cifs) is not available yet.',
+      },
+      400
+    )
   }
   const serverId = requireStringField(c, copy, 'serverId')
   if (serverId instanceof Response) return serverId
@@ -289,7 +288,7 @@ export function parseCopyRecord(
 
 export function parseMountRecord(
   c: Context<AppEnv>,
-  mountBody: Record<string, unknown>,
+  mountBody: Record<string, unknown>
 ): CreateMountFields | Response {
   const serviceId = requireStringField(c, mountBody, 'serviceId')
   if (serviceId instanceof Response) return serviceId
@@ -310,7 +309,7 @@ export function parseMountRecord(
 
 export function parseCreateCopyFields(
   c: Context<AppEnv>,
-  body: Record<string, unknown>,
+  body: Record<string, unknown>
 ): CreateCopyFields | undefined | Response {
   // Prefer the renamed copy field (`storageCopy` or `copy`).
   const raw = body.storageCopy ?? body.copy
@@ -323,7 +322,7 @@ export function parseCreateCopyFields(
 
 export function parseCreateMountFields(
   c: Context<AppEnv>,
-  body: Record<string, unknown>,
+  body: Record<string, unknown>
 ): CreateMountFields | undefined | Response {
   if (body.mount === undefined) return undefined
   if (!isRecord(body.mount)) {
@@ -334,7 +333,7 @@ export function parseCreateMountFields(
 
 export function parseCreateStorageFields(
   c: Context<AppEnv>,
-  body: Record<string, unknown>,
+  body: Record<string, unknown>
 ): CreateStorageFields | Response {
   const kind = body.kind
   if (!isStorageKind(kind)) {
@@ -378,7 +377,7 @@ export function parseCreateStorageFields(
 
 export function buildStorageUpdateFields(
   c: Context<AppEnv>,
-  body: Record<string, unknown>,
+  body: Record<string, unknown>
 ): Record<string, unknown> | Response {
   const updateFields: Record<string, unknown> = {
     updatedAt: new Date().toISOString(),
@@ -400,7 +399,7 @@ export function buildStorageUpdateFields(
 
 export function parseCopyPatchFields(
   c: Context<AppEnv>,
-  body: Record<string, unknown>,
+  body: Record<string, unknown>
 ): Record<string, unknown> | Response {
   const updateFields: Record<string, unknown> = {
     updatedAt: new Date().toISOString(),
@@ -428,7 +427,7 @@ export function parseCopyPatchFields(
 
 export function parseMountPatchFields(
   c: Context<AppEnv>,
-  body: Record<string, unknown>,
+  body: Record<string, unknown>
 ): Record<string, unknown> | Response {
   const updateFields: Record<string, unknown> = {
     updatedAt: new Date().toISOString(),
@@ -456,14 +455,10 @@ export function parseMountPatchFields(
 
 export function dockerVolumeMetadataWithId(
   metadata: Record<string, unknown> | null | undefined,
-  storageId: string,
+  storageId: string
 ): Record<string, unknown> {
   const existingMeta =
-    typeof metadata === 'object' &&
-    metadata !== null &&
-    !Array.isArray(metadata)
-      ? metadata
-      : {}
+    typeof metadata === 'object' && metadata !== null && !Array.isArray(metadata) ? metadata : {}
   return {
     ...existingMeta,
     dockerVolumeName: storageId,
@@ -472,7 +467,7 @@ export function dockerVolumeMetadataWithId(
 
 export function principalProjectMismatch(
   principalProjectId: string | null | undefined,
-  expectedProjectId: string | null | undefined,
+  expectedProjectId: string | null | undefined
 ): boolean {
   if (!expectedProjectId) return false
   return principalProjectId !== expectedProjectId

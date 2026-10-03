@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
 import { registerSecurityHeaders } from './security-headers.ts'
+import { registerInvalidIdErrorHandler } from './invalid-id-error.ts'
 import type { SessionData } from '../client/authn/session-store.ts'
 import type { AuthRateLimiter } from '../client/authn/auth-rate-limit.ts'
 import type { DerivedSecretsConfig, SecretsConfig } from '../lib/secrets/secrets.ts'
@@ -182,6 +183,7 @@ export function createApp({
   // First, so every response carries them — including ones a later
   // middleware short-circuits (CORS preflight, rate limits, auth refusals).
   registerSecurityHeaders(app)
+  registerInvalidIdErrorHandler(app)
   registerCorsMiddleware(app, corsOrigins)
   // Publish the runtime before write protection and routes so session-cookie
   // TLS resolution and same-origin browser checks know whether the Deno
