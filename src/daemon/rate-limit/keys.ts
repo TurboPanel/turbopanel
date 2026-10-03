@@ -8,40 +8,35 @@
  */
 
 export type DaemonRestRateLimitRoute =
-  | "auth-challenge"
-  | "enroll"
-  | "auth-session"
-  | "commands-lease"
-  | "secrets-decrypt"
-  | "secrets-rehydrate"
-  | "host-docker-networking"
-  | "commands-log";
+  | 'auth-challenge'
+  | 'enroll'
+  | 'auth-session'
+  | 'commands-lease'
+  | 'secrets-decrypt'
+  | 'secrets-rehydrate'
+  | 'host-docker-networking'
+  | 'ping'
+  | 'commands-log'
 
 /** Sentinel id for anonymous enrollment-challenge REST limiting (no serverId). */
-export const DAEMON_ENROLL_CHALLENGE_RATE_LIMIT_ID = "enroll-challenge";
+export const DAEMON_ENROLL_CHALLENGE_RATE_LIMIT_ID = 'enroll-challenge'
 
 export function daemonConnectRateLimitKey(serverId: string): string {
-  return `daemon:connect:${serverId}`;
+  return `daemon:connect:${serverId}`
 }
 
-export function daemonRestRateLimitKey(
-  id: string,
-  route: DaemonRestRateLimitRoute,
-): string {
-  return `daemon:rest:${route}:${id}`;
+export function daemonRestRateLimitKey(id: string, route: DaemonRestRateLimitRoute): string {
+  return `daemon:rest:${route}:${id}`
 }
 
 /** Per-server key for `POST /metrics` (dedicated metrics limiter). */
 export function daemonMetricsRateLimitKey(serverId: string): string {
-  return `daemon:metrics:${serverId}`;
+  return `daemon:metrics:${serverId}`
 }
 
 /** Global key for empty-body / enrollment-style `POST /auth/challenge`. */
 export function daemonEnrollChallengeRateLimitKey(): string {
-  return daemonRestRateLimitKey(
-    DAEMON_ENROLL_CHALLENGE_RATE_LIMIT_ID,
-    "auth-challenge",
-  );
+  return daemonRestRateLimitKey(DAEMON_ENROLL_CHALLENGE_RATE_LIMIT_ID, 'auth-challenge')
 }
 
 /**
@@ -61,7 +56,7 @@ export function daemonEnrollChallengeRateLimitKey(): string {
  * which is the conservative direction.
  */
 export function githubWebhookRateLimitKey(peer: string): string {
-  return gitWebhookRateLimitKey("github", peer);
+  return gitWebhookRateLimitKey('github', peer)
 }
 
 /**
@@ -73,11 +68,11 @@ export function githubWebhookRateLimitKey(peer: string): string {
  * deliveries start bouncing.
  */
 export function gitlabWebhookRateLimitKey(peer: string): string {
-  return gitWebhookRateLimitKey("gitlab", peer);
+  return gitWebhookRateLimitKey('gitlab', peer)
 }
 
 function gitWebhookRateLimitKey(provider: string, peer: string): string {
-  return `git:webhook:${provider}:${normalizeWebhookPeer(peer)}`;
+  return `git:webhook:${provider}:${normalizeWebhookPeer(peer)}`
 }
 
 /**
@@ -91,11 +86,11 @@ function gitWebhookRateLimitKey(provider: string, peer: string): string {
  * never spend a git provider's budget, and vice versa.
  */
 export function stripeWebhookRateLimitKey(peer: string): string {
-  return `billing:webhook:stripe:${normalizeWebhookPeer(peer)}`;
+  return `billing:webhook:stripe:${normalizeWebhookPeer(peer)}`
 }
 
 /** Blank peer → the shared `unknown` bucket (the conservative direction). */
 function normalizeWebhookPeer(peer: string): string {
-  const trimmed = peer.trim();
-  return trimmed.length > 0 ? trimmed : "unknown";
+  const trimmed = peer.trim()
+  return trimmed.length > 0 ? trimmed : 'unknown'
 }
