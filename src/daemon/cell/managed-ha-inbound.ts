@@ -67,6 +67,8 @@ export async function handleCellManagedHaEvent(
       managedId: frame.managedId,
       ...(frame.sourceMemberId ? { sourceMemberId: frame.sourceMemberId } : {}),
       ...(frame.detector ? { detector: frame.detector } : {}),
+      ...(frame.instanceHost ? { instanceHost: frame.instanceHost } : {}),
+      ...(frame.instancePort ? { instancePort: frame.instancePort } : {}),
       ...(frame.evidence ? { evidence: frame.evidence } : {}),
       at: frame.at,
     },

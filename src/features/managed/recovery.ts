@@ -90,6 +90,11 @@ export type RecoveryMetadata = {
   detector?: string
   /** Detector evidence as sent (JSON text, bounded); never used to decide. */
   detectorEvidence?: string
+  /**
+   * The report did not name the current primary: recorded, never acted on
+   * (no fencing, no promotion). `blockedReason` says why.
+   */
+  stale?: boolean
 }
 
 export type RecoveryRecord = {
@@ -176,6 +181,7 @@ export function parseRecoveryMetadata(value: unknown): RecoveryMetadata {
   setIfPresent(metadata, 'targetServerId', optionalString(value.targetServerId))
   setIfPresent(metadata, 'detector', optionalString(value.detector))
   setIfPresent(metadata, 'detectorEvidence', optionalString(value.detectorEvidence))
+  setIfPresent(metadata, 'stale', optionalBoolean(value.stale))
   return metadata
 }
 
