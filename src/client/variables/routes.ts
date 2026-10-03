@@ -79,7 +79,7 @@ async function respondWithResolvedVariables(
   organizationId: string,
   kind: ResolvedEntityKind,
   entityId: string,
-  resolve: (db: Db, id: string) => Promise<ResolvedVariableMap>,
+  resolve: (db: Db, id: string) => Promise<ResolvedVariableMap>
 ) {
   const entityOrgId = await resolveEntityOrganizationId(db, kind, entityId)
   if (!entityOrgId || entityOrgId !== organizationId) {
@@ -93,10 +93,7 @@ async function respondWithResolvedVariables(
   return c.json({ variables: serializeResolvedVariables(resolved) })
 }
 
-async function sealVariableValue(
-  c: Context<AppEnv>,
-  value: string,
-): Promise<string | Response> {
+async function sealVariableValue(c: Context<AppEnv>, value: string): Promise<string | Response> {
   const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
   if (!dataEncryptionSecrets) {
     return c.json({ error: 'Encryption unavailable — no encryption key configured' }, 503)
@@ -124,7 +121,7 @@ type VariablePatchFields = {
 function applyOptionalKeyPatch(
   c: Context<AppEnv>,
   body: Record<string, unknown>,
-  updateFields: VariablePatchFields,
+  updateFields: VariablePatchFields
 ): Response | undefined {
   if (body.key === undefined) return
   const key = parseVariableKey(c, body.key)
@@ -135,7 +132,7 @@ function applyOptionalKeyPatch(
 function applyOptionalDescriptionPatch(
   c: Context<AppEnv>,
   body: Record<string, unknown>,
-  updateFields: VariablePatchFields,
+  updateFields: VariablePatchFields
 ): Response | undefined {
   if (body.description === undefined) return
   const description = parseOptionalDescription(c, body.description)
@@ -146,7 +143,7 @@ function applyOptionalDescriptionPatch(
 async function sealOrPlainValue(
   c: Context<AppEnv>,
   plaintext: string,
-  asSecret: boolean,
+  asSecret: boolean
 ): Promise<string | Response> {
   if (!asSecret) return plaintext
   return await sealVariableValue(c, plaintext)
@@ -157,7 +154,7 @@ async function applyValueAndSecretPatch(
   body: Record<string, unknown>,
   existing: ExistingVariableForPatch,
   nextIsSecret: boolean,
-  updateFields: VariablePatchFields,
+  updateFields: VariablePatchFields
 ): Promise<Response | undefined> {
   const valueProvided = body.value !== undefined
   const switchingToSecret = nextIsSecret && !existing.isSecret
@@ -183,7 +180,7 @@ async function applyValueAndSecretPatch(
   if (switchingSecretRequiresValue(nextIsSecret, existing.isSecret, valueProvided)) {
     return c.json(
       { error: 'value is required when converting a secret variable to non-secret' },
-      400,
+      400
     )
   }
 }
@@ -192,7 +189,7 @@ function applyOptionalBooleanPatch(
   c: Context<AppEnv>,
   body: Record<string, unknown>,
   field: 'isLiteral' | 'forBuild' | 'forRuntime',
-  updateFields: VariablePatchFields,
+  updateFields: VariablePatchFields
 ): Response | undefined {
   if (body[field] === undefined) return
   const parsed = parseOptionalBoolean(c, body[field])
@@ -211,7 +208,7 @@ function applyOptionalBooleanPatch(
 async function buildVariablePatchFields(
   c: Context<AppEnv>,
   body: Record<string, unknown>,
-  existing: ExistingVariableForPatch,
+  existing: ExistingVariableForPatch
 ): Promise<VariablePatchFields | Response> {
   const updateFields: VariablePatchFields = {
     updatedAt: new Date().toISOString(),
@@ -240,7 +237,7 @@ async function buildVariablePatchFields(
     body,
     existing,
     secretResult.nextIsSecret,
-    updateFields,
+    updateFields
   )
   if (valueError) return valueError
 
@@ -265,7 +262,7 @@ type VariableCreateFields = {
 async function parseVariableCreateFields(
   c: Context<AppEnv>,
   body: Record<string, unknown>,
-  organizationId: string,
+  organizationId: string
 ): Promise<VariableCreateFields | Response> {
   const parent = parseVariableParent(c, body)
   if (parent instanceof Response) return parent
@@ -365,7 +362,7 @@ export function registerVariableRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts
         organizationId,
         'hosting',
         parsed.query.id,
-        resolveInheritedVariablesForHosting,
+        resolveInheritedVariablesForHosting
       )
     }
 
@@ -376,7 +373,7 @@ export function registerVariableRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts
         organizationId,
         'service',
         parsed.query.id,
-        resolveInheritedVariablesForService,
+        resolveInheritedVariablesForService
       )
     }
 
@@ -386,7 +383,7 @@ export function registerVariableRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts
       organizationId,
       'environment',
       parsed.query.id,
-      resolveInheritedVariablesForEnvironment,
+      resolveInheritedVariablesForEnvironment
     )
   })
 
@@ -492,7 +489,7 @@ export function registerVariableRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts
       }
     } else if (fields.parent.column === 'hostingId') {
       const serviceId = await resolveServiceIdForHosting(db, fields.parent.id)
-      if (serviceId && await isKeyOwnedByBindingOnService(db, serviceId, fields.key)) {
+      if (serviceId && (await isKeyOwnedByBindingOnService(db, serviceId, fields.key))) {
         return c.json({ error: BINDING_KEY_CONFLICT_ERROR }, 409)
       }
     }
@@ -501,15 +498,17 @@ export function registerVariableRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts
       const id = await db.transaction(async (tx) => {
         const [inserted] = await tx
           .insert(variable)
-          .values(buildInsertValues(fields.parent, {
-            key: fields.key,
-            value: fields.value,
-            isSecret: fields.isSecret,
-            isLiteral: fields.isLiteral,
-            forBuild: fields.forBuild,
-            forRuntime: fields.forRuntime,
-            description: fields.description,
-          }))
+          .values(
+            buildInsertValues(fields.parent, {
+              key: fields.key,
+              value: fields.value,
+              isSecret: fields.isSecret,
+              isLiteral: fields.isLiteral,
+              forBuild: fields.forBuild,
+              forRuntime: fields.forRuntime,
+              description: fields.description,
+            })
+          )
           .returning({ id: variable.id })
         return inserted.id
       })
@@ -517,10 +516,7 @@ export function registerVariableRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts
       return c.json({ ok: true as const, id })
     } catch (err) {
       if (isVariableKeyUniqueViolation(err)) {
-        return c.json(
-          { error: variableKeyUniqueConflictMessage() },
-          409,
-        )
+        return c.json({ error: variableKeyUniqueConflictMessage() }, 409)
       }
       throw err
     }
@@ -583,18 +579,12 @@ export function registerVariableRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts
     if (updateFields instanceof Response) return updateFields
 
     try {
-      await db
-        .update(variable)
-        .set(updateFields)
-        .where(eq(variable.id, id))
+      await db.update(variable).set(updateFields).where(eq(variable.id, id))
 
       return c.json({ ok: true as const })
     } catch (err) {
       if (isVariableKeyUniqueViolation(err)) {
-        return c.json(
-          { error: variableKeyUniqueConflictMessage() },
-          409,
-        )
+        return c.json({ error: variableKeyUniqueConflictMessage() }, 409)
       }
       throw err
     }
