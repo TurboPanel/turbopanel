@@ -8,6 +8,7 @@ import {
   INSTANCE_REVISION_HEADER,
   INSTANCE_VERSION_HEADER,
   MANAGED_HEALTH_FEATURE,
+  PHP_SITE_MODES_FEATURE,
   MIN_SUPPORTED_DAEMON_VERSION,
   parseSemver,
   resolveDaemonCapabilities,
@@ -134,5 +135,11 @@ test('managed-health-v1 is an advertised wire feature and raised no floor', () =
   assertEquals(MANAGED_HEALTH_FEATURE, 'managed-health-v1')
   assertEquals((DAEMON_WIRE_FEATURES as readonly string[]).includes(MANAGED_HEALTH_FEATURE), true)
   // A new wire message is feature-gated; it never moves the version floor.
+  assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
+})
+
+test('php-site-modes-v1 is an advertised wire feature and raised no floor', () => {
+  assertEquals(PHP_SITE_MODES_FEATURE, 'php-site-modes-v1')
+  assertEquals((DAEMON_WIRE_FEATURES as readonly string[]).includes(PHP_SITE_MODES_FEATURE), true)
   assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
 })

@@ -141,6 +141,14 @@ and never block it (no threshold). Workers caps enqueues per tick
 (`capWorkersDispatch`, `WORKERS_DISPATCH_BUDGET`) below the subrequest ceiling
 it shares with the sweep, so a 100% batch drains over several ticks.
 
+The batch is per environment: each control plane keeps its own `UPGRADE_SETTINGS`
+row. With no row saved the default is **one server per batch** (count 1), so
+customer fleets update one at a time, one batch per tick (15 minutes). An
+environment can start larger with `TURBOPANEL_UPGRADE_BATCH` (`count:N` /
+`percent:N`; testing sets `percent:100`); a value saved in Admin > Updates
+always wins. Not to be confused with `update_config.parallelism` (rolling
+deploys of a site).
+
 ## Marking servers done
 
 In the hello/heartbeat projection paths (`../../daemon/deno-ws.ts`, and the DO's

@@ -315,6 +315,9 @@
         // Upgrade tick every 5 minutes instead of 15 so a testing-fleet rollout
         // finishes in minutes. Staging and live keep the 15-minute default.
         "TURBOPANEL_UPGRADE_TICK_MINUTES": "5",
+        // The testing fleet starts all at once; customer environments start
+        // with one server per batch (a value saved in Admin > Updates wins).
+        "TURBOPANEL_UPGRADE_BATCH": "percent:100",
         // Automatic failover (fence + promote on an accepted dead-primary
         // event). On here; staging and live keep it off until the owner turns
         // it on. Manual switchover / DR are unaffected either way.

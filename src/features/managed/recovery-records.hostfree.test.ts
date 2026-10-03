@@ -11,6 +11,8 @@ import {
   findLatestRecovery,
   findRecoveryById,
   insertRecovery,
+  insertRecoveryIfFree,
+  recordBlockedRecovery,
   updateRecovery,
   expireStaleDetectingRecoveries,
   STALE_DETECTING_RECOVERY_MS,
@@ -77,6 +79,7 @@ function baseRow(overrides: Partial<RecoveryRow> = {}): RecoveryRow {
 function createRecoveryDb(opts?: {
   selectQueues?: unknown[][]
   insertReturning?: RecoveryRow[]
+  insertError?: unknown
   updateReturning?: RecoveryRow[]
 }): Db & {
   inserts: Array<Record<string, unknown>>
@@ -103,15 +106,17 @@ function createRecoveryDb(opts?: {
         inserts.push(values)
         return {
           returning: () =>
-            Promise.resolve(
-              opts?.insertReturning ?? [
-                {
-                  ...baseRow(),
-                  ...values,
-                  id: recoveryId,
-                },
-              ]
-            ),
+            opts?.insertError !== undefined
+              ? Promise.reject(opts.insertError)
+              : Promise.resolve(
+                  opts?.insertReturning ?? [
+                    {
+                      ...baseRow(),
+                      ...values,
+                      id: recoveryId,
+                    },
+                  ]
+                ),
         }
       },
     }),
@@ -341,4 +346,85 @@ test('expireStaleDetectingRecoveries expires only old detecting/fencing rows wit
   assertEquals(byId.get('promoting')?.state, 'promoting')
   assertEquals(byId.get('done')?.state, 'blocked')
   assertEquals(STALE_DETECTING_RECOVERY_MS, 10 * 60_000)
+})
+
+const uniqueViolation = Object.assign(new Error('duplicate key'), { code: '23505' })
+
+test('insertRecoveryIfFree returns null when another recovery holds the in-flight slot', async () => {
+  const wrapped = new Error('Failed query', { cause: uniqueViolation })
+  for (const insertError of [uniqueViolation, wrapped]) {
+    const db = createRecoveryDb({ insertError })
+    const created = await insertRecoveryIfFree(db, {
+      managedId,
+      kind: 'switchover',
+      sourcePrimaryMemberId: sourceMemberId,
+      state: 'fencing',
+    })
+    assertEquals(created, null)
+  }
+})
+
+test('insertRecovery returns the in-flight row when it loses the insert race', async () => {
+  const db = createRecoveryDb({
+    insertError: uniqueViolation,
+    selectQueues: [[baseRow({ id: 'inflight', state: 'fencing' })]],
+  })
+  const row = await insertRecovery(db, {
+    managedId,
+    kind: 'automatic-failover',
+    sourcePrimaryMemberId: sourceMemberId,
+  })
+  assertEquals(row.id, 'inflight')
+})
+
+test('insert errors other than a unique violation still throw', async () => {
+  const db = createRecoveryDb({ insertError: new Error('connection reset') })
+  await assertRejects(
+    () =>
+      insertRecovery(db, {
+        managedId,
+        kind: 'automatic-failover',
+        sourcePrimaryMemberId: sourceMemberId,
+      }),
+    Error,
+    'connection reset'
+  )
+})
+
+const blockedParams = {
+  managedId,
+  kind: 'automatic-failover' as const,
+  sourcePrimaryMemberId: sourceMemberId,
+  state: 'blocked' as const,
+  metadata: { blockedReason: 'cooldown' },
+}
+
+test('recordBlockedRecovery counts a repeated refusal on the newest row instead of inserting', async () => {
+  const same = baseRow({
+    id: 'blocked-1',
+    state: 'blocked',
+    targetMemberId: null,
+    metadata: { blockedReason: 'cooldown' },
+  })
+  const db = createRecoveryDb({ selectQueues: [[], [same]] })
+  const row = await recordBlockedRecovery(db, blockedParams)
+  assertEquals(db.inserts.length, 0)
+  assertEquals(db.updates.length, 1)
+  assertEquals(row.metadata.blockedCount, 2)
+  assertEquals(typeof row.metadata.lastBlockedAt, 'string')
+})
+
+test('recordBlockedRecovery inserts when the refusal differs or the history is empty', async () => {
+  const other = baseRow({
+    state: 'blocked',
+    targetMemberId: null,
+    metadata: { blockedReason: 'no candidate' },
+  })
+  const differs = createRecoveryDb({ selectQueues: [[], [other]] })
+  await recordBlockedRecovery(differs, blockedParams)
+  assertEquals(differs.inserts.length, 1)
+  assertEquals(differs.inserts[0]?.state, 'blocked')
+  const empty = createRecoveryDb({ selectQueues: [[], []] })
+  await recordBlockedRecovery(empty, blockedParams)
+  assertEquals(empty.inserts.length, 1)
 })
