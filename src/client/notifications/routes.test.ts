@@ -471,6 +471,6 @@ test('digest cadence, quiet hours and the owner time zone are written, read back
       digestCadence: 'daily',
     })
     assertEquals(slack.status, 201)
-    assertEquals(((await slack.json()) as { digestCadence: string }).digestCadence, 'daily')
+    assertEquals(((await slack.json()) as { channel: Presented }).channel.digestCadence, 'daily')
   })
 })
