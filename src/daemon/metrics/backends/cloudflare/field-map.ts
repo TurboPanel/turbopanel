@@ -45,7 +45,7 @@ import {
   type MetricsSample,
   type NetworkDeviceSample,
 } from '../../../../contracts/metrics-contract.ts'
-import type { HostedFamily } from '../../metric-descriptors.ts'
+import type { HostedFamily, MetricEntityScope } from '../../metric-descriptors.ts'
 import type { AuthenticatedMetricsSample, ServerStatusEvent, SlotMapping } from '../../types.ts'
 import {
   hasManagedDatabase,
@@ -54,7 +54,6 @@ import {
   V7_ENTITIES_PER_PAGE,
   V7_FIRST_CONTENT_BLOB_INDEX,
   V7_HOST_FAMILIES,
-  V7_SINGLE_SOURCE_FIELD_ORDER,
   type V7Context,
   type V7EntityPage,
   type V7HostFamily,
@@ -64,7 +63,6 @@ import {
   v7HostSlotFor,
   type V7RowValues,
 } from './v7-layout.ts'
-import type { MetricEntityScope } from '../../metric-descriptors.ts'
 
 /** Analytics Engine dataset for the current metrics contract. */
 export const AE_DATASET_NAME = `turbopanel_server_metrics_v${METRICS_SCHEMA_VERSION}`
@@ -706,7 +704,7 @@ export function entitiesPerPage(width: number): number {
 }
 
 /** Per-entity-family field order (a `null` entry is a slot with no descriptor), keyed by family. */
-export const PER_ENTITY_FIELD_ORDER = V7_ENTITY_FIELD_ORDER
+export { V7_ENTITY_FIELD_ORDER as PER_ENTITY_FIELD_ORDER } from './v7-layout.ts'
 
 /** The queryable (non-null) field names of an entity family, in slot order. */
 export function queryableEntityFields(family: keyof typeof V7_ENTITY_FIELD_ORDER): string[] {
@@ -737,7 +735,7 @@ export function hostIoEmbeddedNicDoubleIndex(
  * field names laid out by physical double index on the host row that carries
  * them, so `indexOf(field)` is the slot. They are no longer rows of their own.
  */
-export const SINGLE_ROW_FIELD_ORDER = V7_SINGLE_SOURCE_FIELD_ORDER
+export { V7_SINGLE_SOURCE_FIELD_ORDER as SINGLE_ROW_FIELD_ORDER } from './v7-layout.ts'
 
 /**
  * Resolve a host-scoped field to its physical AE slot: which v7 host row
