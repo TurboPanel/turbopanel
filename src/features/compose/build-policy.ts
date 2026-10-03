@@ -238,11 +238,15 @@ function checkPrivileges(
   build: Record<string, unknown>
 ) {
   const network = build.network
-  if (network !== undefined && network !== null && !ALLOWED_BUILD_NETWORKS.has(String(network))) {
+  if (
+    network !== undefined &&
+    network !== null &&
+    !(typeof network === 'string' && ALLOWED_BUILD_NETWORKS.has(network))
+  ) {
     out.add(
       'build_network_refused',
       [...at, 'network'],
-      `build network \`${String(network)}\``,
+      `build network \`${typeof network === 'string' ? network : JSON.stringify(network)}\``,
       'is refused: only `default` and `none` keep the build off the host network'
     )
   }
