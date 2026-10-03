@@ -15,6 +15,13 @@
  *
  * Anything missing, unparseable or out of range refuses. This never replaces
  * fencing or the cooldown; it only decides whether the candidate is healthy.
+ *
+ * Loss window: replication is asynchronous, so an accepted standby may still
+ * lack what the primary committed after the standby's last streaming read.
+ * That is bounded by the margin (time between that read and the failure start,
+ * up to `marginMs` + the detector's first-probe delay) plus the receive lag
+ * the read itself showed (at most 64 MiB of WAL). Several accepted standbys:
+ * the one that received the most WAL wins ({@link pickMostAdvancedStandby}).
  */
 
 import type { ManagedReplicationHealth } from '../../contracts/commands/schemas.ts'
@@ -29,8 +36,12 @@ export const DEFAULT_FRESH_STANDBY_MARGIN_MS = 10_000
 /** Upper bound on the configured margin: a looser gate is not a fresh one. */
 export const MAX_FRESH_STANDBY_MARGIN_MS = 60_000
 
-/** Upper bound on the detector's failure span the gate will anchor on. */
-export const MAX_FAILURE_SPAN_MS = 24 * 60 * 60_000
+/**
+ * Upper bound on the detector's failure span the gate will anchor on. A
+ * re-sent event for an older incident falls outside it and is refused: the
+ * standby's last streaming read can no longer be tied to the failure.
+ */
+export const MAX_FAILURE_SPAN_MS = 10 * 60_000
 
 /** Receiver states of a standby still in recovery whose primary went away. */
 const DISCONNECTED_STANDBY_STATES: ReadonlySet<string> = new Set([
@@ -180,4 +191,28 @@ export function failureStartedAtMs(
   const spanMs = evidence?.spanMs
   if (!isNonNegativeFinite(spanMs) || spanMs > MAX_FAILURE_SPAN_MS) return null
   return receivedAtMs - spanMs
+}
+
+/**
+ * Among accepted standbys, the one that received the most WAL (highest
+ * `receivedLsn`); ties, and standbys with no parseable LSN, fall back to the
+ * lowest ordinal, then id. `null` for an empty list.
+ */
+export function pickMostAdvancedStandby<
+  T extends { id: string; ordinal: number; receivedLsn?: string | undefined },
+>(accepted: readonly T[]): T | null {
+  let best: T | null = null
+  let bestLsn = -1n
+  for (const entry of accepted) {
+    const lsn = parsePgLsn(entry.receivedLsn) ?? -1n
+    if (best === null || lsn > bestLsn || (lsn === bestLsn && precedes(entry, best))) {
+      best = entry
+      bestLsn = lsn
+    }
+  }
+  return best
+}
+
+function precedes(a: { id: string; ordinal: number }, b: { id: string; ordinal: number }) {
+  return a.ordinal < b.ordinal || (a.ordinal === b.ordinal && a.id.localeCompare(b.id) < 0)
 }

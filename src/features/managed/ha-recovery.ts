@@ -49,6 +49,7 @@ import {
   DEFAULT_FRESH_STANDBY_MARGIN_MS,
   evaluateFreshStandby,
   type FreshStandbyProbe,
+  pickMostAdvancedStandby,
 } from './ha-fresh-standby.ts'
 import { isAutomaticFailoverHealthy, replicationFromMemberMetadata } from './promote-lag.ts'
 import {
@@ -763,7 +764,12 @@ async function probeFreshStandbys(
         failureStartedAtMs,
         marginMs: params.freshStandbyMarginMs ?? DEFAULT_FRESH_STANDBY_MARGIN_MS,
       })
-      return { id: input.id, verdict }
+      return {
+        id: input.id,
+        ordinal: input.ordinal,
+        verdict,
+        receivedLsn: replication?.receivedLsn,
+      }
     })
   )
   const accepted = new Set(verdicts.filter((row) => row.verdict.accepted).map((row) => row.id))
@@ -775,9 +781,11 @@ async function probeFreshStandbys(
       verdict.accepted ? `${id} accepted: ${verdict.basis}` : `${id} refused: ${verdict.reason}`
     )
     .join('; ')
+  // Several accepted: the one that received the most WAL loses the least.
+  const best = pickMostAdvancedStandby(verdicts.filter((row) => row.verdict.accepted))
   return {
     inputs: probed,
-    candidate: OrchestratorManagedHaAuthority.pickAutomaticCandidate(probed),
+    candidate: best ? (probed.find((input) => input.id === best.id) ?? null) : null,
     freshStandby,
   }
 }

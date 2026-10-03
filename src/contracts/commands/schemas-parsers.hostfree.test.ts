@@ -33,8 +33,7 @@ const HA_SERVICE_ID = '00000000-0000-4000-8000-0000000000cc'
 const MEMBER_ID = '00000000-0000-4000-8000-0000000000dd'
 /** Org-wide managed Docker network name — a `network.kind='managed'` row id. */
 const MANAGED_NETWORK = '00000000-0000-4000-8000-0000000000ee'
-const PEM =
-  '-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n'
+const PEM = '-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n'
 
 test('parsePrincipalsReconcilePayload accepts principals and rejects duplicates', () => {
   assertEquals(
@@ -43,7 +42,7 @@ test('parsePrincipalsReconcilePayload accepts principals and rejects duplicates'
     }),
     {
       principals: [{ principalId: PRINCIPAL_ID, username: 'deploy' }],
-    },
+    }
   )
   assertThrows(
     () =>
@@ -54,17 +53,17 @@ test('parsePrincipalsReconcilePayload accepts principals and rejects duplicates'
         ],
       }),
     Error,
-    'principals contains deploy more than once',
+    'principals contains deploy more than once'
   )
   assertThrows(
     () => parsePrincipalsReconcilePayload({ principals: 'x' }),
     TypeError,
-    'principals must be an array',
+    'principals must be an array'
   )
   assertThrows(
     () => parsePrincipalsReconcilePayload(null),
     Error,
-    'Invalid principals reconcile payload',
+    'Invalid principals reconcile payload'
   )
 })
 
@@ -83,7 +82,7 @@ test('parsePrincipalsReconcileResult validates integer and boolean fields', () =
       keysRemoved: [],
       sshdReloaded: true,
       warnings: ['reloaded'],
-    },
+    }
   )
   assertThrows(
     () =>
@@ -95,7 +94,7 @@ test('parsePrincipalsReconcileResult validates integer and boolean fields', () =
         warnings: [],
       }),
     TypeError,
-    'principalsApplied must be an integer',
+    'principalsApplied must be an integer'
   )
   assertThrows(
     () =>
@@ -107,12 +106,12 @@ test('parsePrincipalsReconcileResult validates integer and boolean fields', () =
         warnings: [],
       }),
     Error,
-    'keysChanged must be an array of strings',
+    'keysChanged must be an array of strings'
   )
   assertThrows(
     () => parsePrincipalsReconcileResult(null),
     Error,
-    'Invalid principals reconcile result',
+    'Invalid principals reconcile result'
   )
   assertThrows(
     () =>
@@ -124,7 +123,7 @@ test('parsePrincipalsReconcileResult validates integer and boolean fields', () =
         warnings: [],
       }),
     TypeError,
-    'sshdReloaded must be a boolean',
+    'sshdReloaded must be a boolean'
   )
 })
 
@@ -139,7 +138,7 @@ test('parseTlsTrustReconcilePayload validates PEM bundle and optional allowRemov
       bundlePem: PEM,
       fingerprint: 'a'.repeat(64),
       allowRemoval: true,
-    },
+    }
   )
   assertThrows(
     () =>
@@ -148,7 +147,7 @@ test('parseTlsTrustReconcilePayload validates PEM bundle and optional allowRemov
         fingerprint: 'a'.repeat(64),
       }),
     Error,
-    'bundlePem must contain at least one certificate',
+    'bundlePem must contain at least one certificate'
   )
   assertThrows(
     () =>
@@ -158,12 +157,12 @@ test('parseTlsTrustReconcilePayload validates PEM bundle and optional allowRemov
         allowRemoval: 'yes',
       }),
     TypeError,
-    'allowRemoval must be a boolean',
+    'allowRemoval must be a boolean'
   )
   assertThrows(
     () => parseTlsTrustReconcilePayload(null),
     Error,
-    'Invalid tls trust reconcile payload',
+    'Invalid tls trust reconcile payload'
   )
   assertThrows(
     () =>
@@ -172,12 +171,12 @@ test('parseTlsTrustReconcilePayload validates PEM bundle and optional allowRemov
         fingerprint: 'a'.repeat(64),
       }),
     Error,
-    'bundlePem must be a non-empty PEM string',
+    'bundlePem must be a non-empty PEM string'
   )
   assertThrows(
     () => parseTlsTrustReconcilePayload({ bundlePem: PEM, fingerprint: '   ' }),
     Error,
-    'fingerprint must be a non-empty string',
+    'fingerprint must be a non-empty string'
   )
 })
 
@@ -187,17 +186,17 @@ test('parseTlsTrustReconcileResult requires applied and fingerprint', () => {
       applied: false,
       fingerprint: 'b'.repeat(64),
     }),
-    { applied: false, fingerprint: 'b'.repeat(64) },
+    { applied: false, fingerprint: 'b'.repeat(64) }
   )
   assertThrows(
     () => parseTlsTrustReconcileResult({ applied: true, fingerprint: '' }),
     Error,
-    'fingerprint must be a non-empty string',
+    'fingerprint must be a non-empty string'
   )
   assertThrows(
     () => parseTlsTrustReconcileResult(null),
     Error,
-    'Invalid tls trust reconcile result',
+    'Invalid tls trust reconcile result'
   )
 })
 
@@ -224,14 +223,10 @@ test('parseDeploySecretPlan accepts entries and rejects hostile paths', () => {
         forBuild: true,
         forRuntime: false,
       },
-    ],
+    ]
   )
   assertEquals(parseDeploySecretPlan(undefined), undefined)
-  assertThrows(
-    () => parseDeploySecretPlan({}),
-    TypeError,
-    'secretPlan must be an array',
-  )
+  assertThrows(() => parseDeploySecretPlan({}), TypeError, 'secretPlan must be an array')
   assertThrows(
     () =>
       parseDeploySecretPlan([
@@ -244,7 +239,7 @@ test('parseDeploySecretPlan accepts entries and rejects hostile paths', () => {
         },
       ]),
     TypeError,
-    'Invalid environment.deploy secretPlan relativePath',
+    'Invalid environment.deploy secretPlan relativePath'
   )
   assertThrows(
     () =>
@@ -258,7 +253,7 @@ test('parseDeploySecretPlan accepts entries and rejects hostile paths', () => {
         },
       ]),
     TypeError,
-    'Invalid environment.deploy secretPlan source/target',
+    'Invalid environment.deploy secretPlan source/target'
   )
   assertThrows(
     () =>
@@ -272,7 +267,7 @@ test('parseDeploySecretPlan accepts entries and rejects hostile paths', () => {
         },
       ]),
     TypeError,
-    'Invalid environment.deploy secretPlan source/target',
+    'Invalid environment.deploy secretPlan source/target'
   )
 })
 
@@ -289,12 +284,15 @@ test('parseManagedReplicationHealth accepts valid snapshots and drops malformed 
       observedAt: '2020-01-01T00:00:00.000Z',
       lagBytes: 1024,
       lagSeconds: 2,
-    },
+    }
   )
   assertEquals(parseManagedReplicationHealth(undefined), undefined)
   assertEquals(parseManagedReplicationHealth('x'), undefined)
   assertEquals(parseManagedReplicationHealth({ state: 'bogus' }), undefined)
-  assertEquals(parseManagedReplicationHealth({ state: 'streaming', observedAt: 'not-iso' }), undefined)
+  assertEquals(
+    parseManagedReplicationHealth({ state: 'streaming', observedAt: 'not-iso' }),
+    undefined
+  )
   assertEquals(
     parseManagedReplicationHealth({
       state: 'needs_resync',
@@ -302,14 +300,14 @@ test('parseManagedReplicationHealth accepts valid snapshots and drops malformed 
       lagBytes: -1,
       lagSeconds: Number.NaN,
     }),
-    { state: 'needs_resync', observedAt: '2020-01-01T00:00:00.000Z' },
+    { state: 'needs_resync', observedAt: '2020-01-01T00:00:00.000Z' }
   )
   assertEquals(
     parseManagedReplicationHealth({
       state: 'catchup',
       observedAt: '2020-01-01T00:00:00.000Z',
     }),
-    { state: 'catchup', observedAt: '2020-01-01T00:00:00.000Z' },
+    { state: 'catchup', observedAt: '2020-01-01T00:00:00.000Z' }
   )
 })
 
@@ -383,7 +381,7 @@ test('parseManagedHaReconcilePayload accepts raft peers and cluster members', ()
         },
       }),
     TypeError,
-    'Invalid managed.ha.reconcile raft peer',
+    'Invalid managed.ha.reconcile raft peer'
   )
   assertThrows(
     () =>
@@ -418,7 +416,7 @@ test('parseManagedHaReconcilePayload accepts raft peers and cluster members', ()
         },
       }),
     TypeError,
-    'Invalid managed.ha.reconcile cluster',
+    'Invalid managed.ha.reconcile cluster'
   )
   assertThrows(
     () =>
@@ -435,7 +433,7 @@ test('parseManagedHaReconcilePayload accepts raft peers and cluster members', ()
         },
       }),
     TypeError,
-    'Invalid managed.ha.reconcile identity',
+    'Invalid managed.ha.reconcile identity'
   )
 })
 
@@ -455,7 +453,7 @@ test('parseManagedHaReconcilePayload requires a Docker-safe managedNetwork', () 
   assertThrows(
     () => parseManagedHaReconcilePayload(base),
     TypeError,
-    'Invalid managed.ha.reconcile payload',
+    'Invalid managed.ha.reconcile payload'
   )
   assertThrows(
     () =>
@@ -464,7 +462,7 @@ test('parseManagedHaReconcilePayload requires a Docker-safe managedNetwork', () 
         managedNetwork: 'not a docker name',
       }),
     TypeError,
-    'Invalid managed.ha.reconcile payload',
+    'Invalid managed.ha.reconcile payload'
   )
 })
 
@@ -498,7 +496,7 @@ test('parseManagedHaReconcileResult accepts optional containers', () => {
           role: 'turbopanel',
         },
       ],
-    },
+    }
   )
   assertThrows(
     () =>
@@ -508,7 +506,7 @@ test('parseManagedHaReconcileResult accepts optional containers', () => {
         restarted: false,
       }),
     TypeError,
-    'Invalid managed.ha.reconcile result',
+    'Invalid managed.ha.reconcile result'
   )
   assertThrows(
     () =>
@@ -519,7 +517,7 @@ test('parseManagedHaReconcileResult accepts optional containers', () => {
         containers: [{ composeServiceName: 'orchestrator' }],
       }),
     TypeError,
-    'Invalid managed.ha.reconcile result containers',
+    'Invalid managed.ha.reconcile result containers'
   )
 })
 
@@ -543,7 +541,7 @@ test('parseManagedHaFailoverPayload and result validate phase and ids', () => {
       summary: 'drained',
       phase: 'recover',
     }),
-    { summary: 'drained', phase: 'recover' },
+    { summary: 'drained', phase: 'recover' }
   )
 
   assertThrows(
@@ -555,12 +553,12 @@ test('parseManagedHaFailoverPayload and result validate phase and ids', () => {
         phase: 'promote',
       }),
     TypeError,
-    'Invalid managed.ha.failover payload',
+    'Invalid managed.ha.failover payload'
   )
   assertThrows(
     () => parseManagedHaFailoverPayload(null),
     TypeError,
-    'Invalid managed.ha.failover payload',
+    'Invalid managed.ha.failover payload'
   )
   assertThrows(
     () =>
@@ -572,7 +570,7 @@ test('parseManagedHaFailoverPayload and result validate phase and ids', () => {
         engine: 'sqlite',
       }),
     TypeError,
-    'Invalid managed.ha.failover payload',
+    'Invalid managed.ha.failover payload'
   )
   assertThrows(
     () =>
@@ -584,7 +582,7 @@ test('parseManagedHaFailoverPayload and result validate phase and ids', () => {
         sourceHost: '',
       }),
     TypeError,
-    'Invalid managed.ha.failover payload',
+    'Invalid managed.ha.failover payload'
   )
   assertThrows(
     () =>
@@ -596,7 +594,7 @@ test('parseManagedHaFailoverPayload and result validate phase and ids', () => {
         targetPort: 0,
       }),
     TypeError,
-    'Invalid managed.ha.failover payload',
+    'Invalid managed.ha.failover payload'
   )
   assertEquals(
     parseManagedHaFailoverPayload({
@@ -607,17 +605,17 @@ test('parseManagedHaFailoverPayload and result validate phase and ids', () => {
       targetHost: '203.0.113.40',
       targetPort: 5433,
     }).targetHost,
-    '203.0.113.40',
+    '203.0.113.40'
   )
   assertThrows(
     () => parseManagedHaFailoverResult(null),
     TypeError,
-    'Invalid managed.ha.failover result',
+    'Invalid managed.ha.failover result'
   )
   assertThrows(
     () => parseManagedHaFailoverResult({ summary: 'ok', phase: 'promote' }),
     TypeError,
-    'Invalid managed.ha.failover result',
+    'Invalid managed.ha.failover result'
   )
 })
 
@@ -665,7 +663,7 @@ test('parseManagedHaReconcilePayload rejects raft, cluster, and member field err
   assertThrows(
     () => parseManagedHaReconcilePayload(null),
     TypeError,
-    'Invalid managed.ha.reconcile payload',
+    'Invalid managed.ha.reconcile payload'
   )
   assertThrows(
     () =>
@@ -678,7 +676,7 @@ test('parseManagedHaReconcilePayload rejects raft, cluster, and member field err
         identity,
       }),
     TypeError,
-    'Invalid managed.ha.reconcile payload',
+    'Invalid managed.ha.reconcile payload'
   )
   assertThrows(
     () =>
@@ -691,7 +689,7 @@ test('parseManagedHaReconcilePayload rejects raft, cluster, and member field err
         identity,
       }),
     TypeError,
-    'Invalid managed.ha.reconcile payload',
+    'Invalid managed.ha.reconcile payload'
   )
   assertThrows(
     () =>
@@ -704,7 +702,7 @@ test('parseManagedHaReconcilePayload rejects raft, cluster, and member field err
         identity,
       }),
     TypeError,
-    'Invalid managed.ha.reconcile raft',
+    'Invalid managed.ha.reconcile raft'
   )
   assertThrows(
     () =>
@@ -728,7 +726,7 @@ test('parseManagedHaReconcilePayload rejects raft, cluster, and member field err
         identity,
       }),
     TypeError,
-    'Invalid managed.ha.reconcile raft',
+    'Invalid managed.ha.reconcile raft'
   )
   assertThrows(
     () =>
@@ -747,7 +745,7 @@ test('parseManagedHaReconcilePayload rejects raft, cluster, and member field err
         identity,
       }),
     TypeError,
-    'Invalid managed.ha.reconcile raft peer',
+    'Invalid managed.ha.reconcile raft peer'
   )
   assertThrows(
     () =>
@@ -760,7 +758,7 @@ test('parseManagedHaReconcilePayload rejects raft, cluster, and member field err
         identity,
       }),
     TypeError,
-    'Invalid managed.ha.reconcile cluster',
+    'Invalid managed.ha.reconcile cluster'
   )
   assertThrows(
     () =>
@@ -773,7 +771,7 @@ test('parseManagedHaReconcilePayload rejects raft, cluster, and member field err
         identity,
       }),
     TypeError,
-    'Invalid managed.ha.reconcile cluster',
+    'Invalid managed.ha.reconcile cluster'
   )
   assertThrows(
     () =>
@@ -786,7 +784,7 @@ test('parseManagedHaReconcilePayload rejects raft, cluster, and member field err
         identity,
       }),
     TypeError,
-    'Invalid managed.ha.reconcile cluster member',
+    'Invalid managed.ha.reconcile cluster member'
   )
   assertThrows(
     () =>
@@ -795,14 +793,16 @@ test('parseManagedHaReconcilePayload rejects raft, cluster, and member field err
         managedNetwork: MANAGED_NETWORK,
         desired: 'present',
         raft: null,
-        clusters: [{
-          ...cluster,
-          members: [{ ...member, replicaClass: 'standby' }],
-        }],
+        clusters: [
+          {
+            ...cluster,
+            members: [{ ...member, replicaClass: 'standby' }],
+          },
+        ],
         identity,
       }),
     TypeError,
-    'Invalid managed.ha.reconcile cluster member',
+    'Invalid managed.ha.reconcile cluster member'
   )
   assertThrows(
     () =>
@@ -811,14 +811,16 @@ test('parseManagedHaReconcilePayload rejects raft, cluster, and member field err
         managedNetwork: MANAGED_NETWORK,
         desired: 'present',
         raft: null,
-        clusters: [{
-          ...cluster,
-          members: [{ ...member, containerName: 'Bad Name' }],
-        }],
+        clusters: [
+          {
+            ...cluster,
+            members: [{ ...member, containerName: 'Bad Name' }],
+          },
+        ],
         identity,
       }),
     TypeError,
-    'Invalid managed.ha.reconcile cluster member',
+    'Invalid managed.ha.reconcile cluster member'
   )
   assertThrows(
     () =>
@@ -831,7 +833,7 @@ test('parseManagedHaReconcilePayload rejects raft, cluster, and member field err
         identity: 'x',
       }),
     TypeError,
-    'Invalid managed.ha.reconcile identity',
+    'Invalid managed.ha.reconcile identity'
   )
 })
 
@@ -851,7 +853,7 @@ test('parseCommandPayload and parseCommandResult dispatch HA and principals type
   }
   assertEquals(
     parseCommandPayload('managed.ha.reconcile', haPayload),
-    parseManagedHaReconcilePayload(haPayload),
+    parseManagedHaReconcilePayload(haPayload)
   )
   assertEquals(
     parseCommandResult('managed.ha.reconcile', {
@@ -859,7 +861,7 @@ test('parseCommandPayload and parseCommandResult dispatch HA and principals type
       registeredClusters: [],
       restarted: false,
     }),
-    { summary: 'absent', registeredClusters: [], restarted: false },
+    { summary: 'absent', registeredClusters: [], restarted: false }
   )
   assertEquals(
     parseCommandPayload('managed.ha.failover', {
@@ -879,12 +881,12 @@ test('parseCommandPayload and parseCommandResult dispatch HA and principals type
       engine: 'postgres',
       sourceHost: '10.0.0.1',
       sourcePort: 5432,
-    }),
+    })
   )
-  assertEquals(
-    parseCommandResult('managed.ha.failover', { summary: 'drained', phase: 'drain' }),
-    { summary: 'drained', phase: 'drain' },
-  )
+  assertEquals(parseCommandResult('managed.ha.failover', { summary: 'drained', phase: 'drain' }), {
+    summary: 'drained',
+    phase: 'drain',
+  })
   assertEquals(
     parseCommandResult('server.principals.reconcile', {
       principalsApplied: 0,
@@ -899,6 +901,35 @@ test('parseCommandPayload and parseCommandResult dispatch HA and principals type
       keysRemoved: [],
       sshdReloaded: false,
       warnings: [],
-    },
+    }
+  )
+})
+
+test('parseManagedReplicationHealth keeps standby WAL positions and receive lag', () => {
+  assertEquals(
+    parseManagedReplicationHealth({
+      state: 'streaming',
+      observedAt: '2020-01-01T00:00:00.000Z',
+      receivedLsn: '0/3000148',
+      replayLsn: '0/3000100',
+      receiveLagBytes: 64,
+    }),
+    {
+      state: 'streaming',
+      observedAt: '2020-01-01T00:00:00.000Z',
+      receivedLsn: '0/3000148',
+      replayLsn: '0/3000100',
+      receiveLagBytes: 64,
+    }
+  )
+  assertEquals(
+    parseManagedReplicationHealth({
+      state: 'streaming',
+      observedAt: '2020-01-01T00:00:00.000Z',
+      receivedLsn: 7,
+      replayLsn: 'x'.repeat(40),
+      receiveLagBytes: -1,
+    }),
+    { state: 'streaming', observedAt: '2020-01-01T00:00:00.000Z' }
   )
 })

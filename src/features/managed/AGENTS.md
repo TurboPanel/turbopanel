@@ -557,6 +557,12 @@ all:
    monotonic clock, so no cross-host clock is compared. The outcome per replica
    is recorded as `metadata.freshStandby`; a refusal is `blocked` with
    `AUTOMATIC_FAILOVER_STANDBY_NOT_PROVEN_MESSAGE`. Otherwise `blocked`.
+   Several accepted: the one with the highest `receivedLsn` wins (ties: lowest
+   ordinal). A failure span over 10 min (a re-send for an old incident) is not
+   anchored, so it refuses. Loss window: async replication, so an accepted
+   standby may lack up to the margin's worth of commits plus the last
+   sample's receive lag (≤ 64 MiB of WAL). The daemon records a streaming
+   sample only when the receiver heard from the primary within 5 s.
    Fencing (step 7) and the cooldown (step 5) still apply unchanged.
 7. Without a command queue (a deployment with no `TURBOPANEL_COMMAND_QUEUE`
    binding; the Durable Object passes the Worker's binding through

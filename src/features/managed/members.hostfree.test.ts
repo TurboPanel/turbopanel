@@ -1534,3 +1534,28 @@ test('crud helpers: insert update delete find mark and observed replication', as
     status: 'failed',
   })
 })
+
+test('serializeManagedMember keeps the stored standby WAL positions', () => {
+  const row = member({
+    id: 'm2',
+    serverId: 's1',
+    role: 'replica',
+    ordinal: 2,
+    metadata: {
+      replication: {
+        state: 'stopped',
+        observedAt: '2020-01-02T00:00:00.000Z',
+        receivedLsn: '0/5',
+        replayLsn: '0/5',
+        receiveLagBytes: 0,
+      },
+    },
+  })
+  assertEquals(serializeManagedMember(row, 'db-1').replication, {
+    state: 'stopped',
+    observedAt: '2020-01-02T00:00:00.000Z',
+    receivedLsn: '0/5',
+    replayLsn: '0/5',
+    receiveLagBytes: 0,
+  })
+})

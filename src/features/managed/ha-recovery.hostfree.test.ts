@@ -1852,3 +1852,34 @@ test('fresh-standby: the cooldown still refuses before any probe', async () => {
   assertEquals(row.metadata.blockedReason, AUTOMATIC_FAILOVER_COOLDOWN_MESSAGE)
   assertEquals(calls.length, 0)
 })
+
+test('fresh-standby: of several accepted standbys the one that received the most WAL wins', async () => {
+  const harness = createHarness({ pins: sharedDatacenterPins() })
+  const { queue } = countingQueue()
+  const second = failoverReplica({
+    id: MEM_READ,
+    serverId: SERVER_B,
+    ordinal: 3,
+    metadata: { replication: { state: 'stopped', observedAt: new Date(EVENT_MS).toISOString() } },
+  })
+  const behind = freshStopped({ receivedLsn: '0/3000100', replayLsn: '0/3000100' })
+  const ahead = freshStopped()
+  const row = expectRecord(
+    await beginAutomaticFailover({
+      db: harness.db,
+      commandQueue: queue,
+      managedId: MANAGED_ID,
+      engine: 'postgres',
+      members: [member(), coldReplica(), second],
+      sourceMemberId: MEM_PRIMARY,
+      detector: 'postgres-probe',
+      actor: ACTOR,
+      probeStandby: (target) => Promise.resolve(target.memberId === MEM_READ ? ahead : behind),
+      failureStartedAtMs: FAILURE_START_MS,
+      nowMs: () => EVENT_MS,
+    })
+  )
+  assertEquals(row.state, 'fencing')
+  // The lower-ordinal replica was accepted too, but is behind.
+  assertEquals(row.targetMemberId, MEM_READ)
+})

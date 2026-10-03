@@ -6,6 +6,7 @@ import {
   failureStartedAtMs,
   MAX_FAILURE_SPAN_MS,
   parsePgLsn,
+  pickMostAdvancedStandby,
 } from './ha-fresh-standby.ts'
 
 /**
@@ -134,4 +135,20 @@ test('failureStartedAtMs anchors on the detector span and refuses a bad one', ()
   assertEquals(failureStartedAtMs({ spanMs: '25000' }, 100_000), null)
   assertEquals(failureStartedAtMs({ spanMs: -1 }, 100_000), null)
   assertEquals(failureStartedAtMs({ spanMs: MAX_FAILURE_SPAN_MS + 1 }, 100_000), null)
+})
+
+test('pickMostAdvancedStandby takes the highest received LSN, then the lowest ordinal', () => {
+  const a = { id: 'a', ordinal: 2, receivedLsn: '0/3000100' }
+  const b = { id: 'b', ordinal: 3, receivedLsn: '0/3000148' }
+  const c = { id: 'c', ordinal: 4, receivedLsn: '0/3000148' }
+  const d = { id: 'd', ordinal: 1, receivedLsn: undefined }
+  assertEquals(pickMostAdvancedStandby([a, b, c, d])?.id, 'b')
+  assertEquals(pickMostAdvancedStandby([c, b])?.id, 'b')
+  assertEquals(pickMostAdvancedStandby([d, a])?.id, 'a')
+  assertEquals(pickMostAdvancedStandby([]), null)
+})
+
+test('failureStartedAtMs refuses a span older than 10 minutes (an old incident)', () => {
+  assertEquals(failureStartedAtMs({ spanMs: 10 * 60_000 }, 1_000_000), 400_000)
+  assertEquals(failureStartedAtMs({ spanMs: 11 * 60_000 }, 1_000_000), null)
 })
