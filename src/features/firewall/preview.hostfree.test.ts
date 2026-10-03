@@ -278,6 +278,44 @@ test('a reported teardown is recorded as removed and idle; a refusal moves no st
   assertEquals(bulwarkStateOfResult('refused', refused as never, 'now'), {})
 })
 
+test('an answer the daemon confirmed itself is recorded confirmed, with no deadline', async () => {
+  const { db, written } = recordingDb({ ...storedPreview, kind: 'apply' })
+  const answer = {
+    ...appliedAnswer,
+    confirmation: {
+      state: 'confirmed',
+      deadlineAt: '2026-10-01T00:02:00.000Z',
+      windowSeconds: 120,
+      autoConfirm: { ok: true, reason: 'reached the control plane' },
+    },
+  }
+  await recordFirewallPreviewResult(db, SERVER, { ...sentPayload, mode: 'managed' }, answer)
+  const set = written[0].set as Record<string, unknown>
+  assertEquals(set.state, 'confirmed')
+  assertEquals(set.deadlineAt, null)
+})
+
+test('a failed self-check stays pending with its deadline; a later preview with lastRollback is rolled_back', () => {
+  const failed = {
+    ...appliedAnswer,
+    confirmation: {
+      ...appliedAnswer.confirmation,
+      autoConfirm: { ok: false, reason: 'could not reach the control plane' },
+    },
+  }
+  const pending = bulwarkStateOfResult('applied', failed as never, 'now')
+  assertEquals(pending.state, 'pending')
+  assertEquals(pending.deadlineAt, '2026-10-01T00:02:00.000Z')
+  const preview = {
+    ...hostAnswer,
+    lastRollback: { digest: 'c'.repeat(64), at: '2026-10-01T00:02:01.000Z', restored: 'none' },
+  }
+  assertEquals(bulwarkStateOfResult('previewed', preview as never, 'now'), {
+    state: 'rolled_back',
+    deadlineAt: null,
+  })
+})
+
 const FAILED_AT = '2026-10-03T06:01:30.000Z'
 
 test('a failed reconcile is recorded as failed with the error, generation and time', async () => {
