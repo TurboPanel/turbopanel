@@ -2516,10 +2516,15 @@ test('processCommandEnvelope reconciles containers on environment.deploy success
           { organizationId, environmentId, kind: 'volume', name: 'remote' },
           {
             organizationId,
-            environmentId,
             kind: 'volume',
             name: 'scoped',
             serviceId: otherService!.id,
+          },
+          {
+            organizationId,
+            kind: 'volume',
+            name: 'scoped-here',
+            serviceId: webServiceId,
           },
         ])
         .returning({ id: storage.id })
@@ -2547,6 +2552,13 @@ test('processCommandEnvelope reconciles containers on environment.deploy success
             role: 'primary',
             state: 'pending',
           },
+          {
+            storageId: extraStorage[3]!.id,
+            serverId,
+            provider: 'docker',
+            role: 'primary',
+            state: 'pending',
+          },
         ])
         .returning({ id: storageCopy.id })
 
@@ -2558,13 +2570,15 @@ test('processCommandEnvelope reconciles containers on environment.deploy success
       }
       try {
         await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
-        const labels = ['scratch', 's3', 'service-scoped elsewhere']
+        const labels = ['scratch', 's3', 'service-scoped elsewhere', 'service-scoped here']
         for (const [index, extra] of extraCopies.entries()) {
           const [extraRow] = await db
             .select({ state: storageCopy.state })
             .from(storageCopy)
             .where(eq(storageCopy.id, extra.id))
-          assertEquals(extraRow?.state, 'pending', `${labels[index]} copy must stay pending`)
+          // The last copy belongs to a service this deploy ran on this server.
+          const want = index === extraCopies.length - 1 ? 'ready' : 'pending'
+          assertEquals(extraRow?.state, want, `${labels[index]} copy must be ${want}`)
         }
       } finally {
         await cleanup()

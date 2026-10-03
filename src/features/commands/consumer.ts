@@ -7,7 +7,7 @@
  * isolate (worker stub or Deno process), not inside the Durable Object.
  * There is no per-server polling or cross-cell fan-out.
  */
-import { and, eq, inArray, isNull, or, sql } from 'drizzle-orm'
+import { and, eq, inArray, or, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 import type { DaemonCellRegistry, PendingRequestRecord } from '../../contracts/cell.ts'
@@ -832,18 +832,21 @@ async function markEnvironmentCopiesReady(
             .select({ id: storage.id })
             .from(storage)
             .where(
-              and(
+              or(
                 eq(storage.environmentId, environmentId),
-                // Environment-wide storage, or storage of a service that runs on this server.
-                or(
-                  isNull(storage.serviceId),
-                  inArray(
-                    storage.serviceId,
-                    db
-                      .select({ id: container.serviceId })
-                      .from(container)
-                      .where(eq(container.serverId, serverId))
-                  )
+                // Storage owned by a service of this environment that runs on this server.
+                inArray(
+                  storage.serviceId,
+                  db
+                    .select({ id: service.id })
+                    .from(service)
+                    .innerJoin(container, eq(container.serviceId, service.id))
+                    .where(
+                      and(
+                        eq(service.environmentId, environmentId),
+                        eq(container.serverId, serverId)
+                      )
+                    )
                 )
               )
             )
