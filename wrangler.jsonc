@@ -136,11 +136,11 @@
   // its table from `TURBOPANEL_SERVER_METRICS_AE_DATASET` — an env must set both to
   // the same value (guarded by src/daemon/metrics/backends/cloudflare/wrangler-datasets.test.ts).
   // Rows are keyed by index1=serverId.
-  // The current contract is family-based: every sample writes one always-present
-  // host.system row, one always-present host.io row, plus presence-gated pages
-  // for gpu/network/filesystem/block/hardware.physical and one row per
-  // managed.ingress/managed.database_proxy entry and per event — see
-  // src/daemon/metrics/backends/cloudflare/field-map.ts. `workers.ts` wires this binding
+  // Schema v7 (blob3 "7"): every sample writes four always-present host rows
+  // (host.system, host.io, host.network, host.web), managed.database when managed
+  // databases run, presence-gated pages for block/network/filesystem/gpu/
+  // hardware.physical, and one row per event — see
+  // src/daemon/metrics/backends/cloudflare/field-map.ts and src/daemon/metrics/V7-LAYOUT.md. `workers.ts` wires this binding
   // straight into a real `CloudflareAnalyticsEngineServerMetricsStore` for
   // both writes and reads — metric samples, status transitions, and metric
   // events all land here directly.

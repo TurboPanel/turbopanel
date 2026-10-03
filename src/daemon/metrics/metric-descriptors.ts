@@ -88,6 +88,9 @@ export type MetricAvailabilityBehavior = 'missing-when-unsupported' | 'legitimat
 export type HostedFamily =
   | 'host.system'
   | 'host.io'
+  | 'host.network'
+  | 'host.web'
+  | 'managed.database'
   | 'gpu'
   | 'network'
   | 'filesystem'
@@ -368,46 +371,39 @@ const HOST_MEMORY_DESCRIPTORS: Record<keyof HostMemoryMetrics, HostMetricsMetric
 // host.io (§7) — HostKernelMetrics + HostStorageMetrics + HostNetworkMetrics
 // ---------------------------------------------------------------------------
 
-const HOST_STORAGE_DESCRIPTORS: Record<keyof HostStorageMetrics, HostMetricsMetricDescriptor> =
-  {
-    ioPressureSomePercent: psiPercent('ioPressureSomePercent', 'host.storage', 'host.io'),
-    ioPressureFullPercent: psiPercent('ioPressureFullPercent', 'host.storage', 'host.io'),
-    diskReadBytesPerSecond: rate(
-      'diskReadBytesPerSecond',
-      'bytesPerSecond',
-      'host.storage',
-      'host.io'
-    ),
-    diskWriteBytesPerSecond: rate(
-      'diskWriteBytesPerSecond',
-      'bytesPerSecond',
-      'host.storage',
-      'host.io'
-    ),
-    diskLatencyMs: milliseconds('diskLatencyMs', 'host.storage', 'host.io'),
-    rootFilesystemAvailableBytes: bytesGauge(
-      'rootFilesystemAvailableBytes',
-      'host.storage',
-      'host.io'
-    ),
-    rootFilesystemFreeInodes: countGauge('rootFilesystemFreeInodes', 'host.storage', 'host.io'),
-  }
+const HOST_STORAGE_DESCRIPTORS: Record<keyof HostStorageMetrics, HostMetricsMetricDescriptor> = {
+  ioPressureSomePercent: psiPercent('ioPressureSomePercent', 'host.storage', 'host.io'),
+  ioPressureFullPercent: psiPercent('ioPressureFullPercent', 'host.storage', 'host.io'),
+  diskReadBytesPerSecond: rate(
+    'diskReadBytesPerSecond',
+    'bytesPerSecond',
+    'host.storage',
+    'host.io'
+  ),
+  diskWriteBytesPerSecond: rate(
+    'diskWriteBytesPerSecond',
+    'bytesPerSecond',
+    'host.storage',
+    'host.io'
+  ),
+  diskLatencyMs: milliseconds('diskLatencyMs', 'host.storage', 'host.io'),
+  rootFilesystemAvailableBytes: bytesGauge(
+    'rootFilesystemAvailableBytes',
+    'host.storage',
+    'host.io'
+  ),
+  rootFilesystemFreeInodes: countGauge('rootFilesystemFreeInodes', 'host.storage', 'host.io'),
+}
 
-const HOST_NETWORK_DESCRIPTORS: Record<keyof HostNetworkMetrics, HostMetricsMetricDescriptor> =
-  {
-    tcpRetransmitPercent: percent(
-      'tcpRetransmitPercent',
-      'host.network',
-      'host.io',
-      'missing-when-unsupported'
-    ),
-    softnetDropsPerSecond: rate(
-      'softnetDropsPerSecond',
-      'countPerSecond',
-      'host.network',
-      'host.io'
-    ),
-  }
+const HOST_NETWORK_DESCRIPTORS: Record<keyof HostNetworkMetrics, HostMetricsMetricDescriptor> = {
+  tcpRetransmitPercent: percent(
+    'tcpRetransmitPercent',
+    'host.network',
+    'host.io',
+    'missing-when-unsupported'
+  ),
+  softnetDropsPerSecond: rate('softnetDropsPerSecond', 'countPerSecond', 'host.network', 'host.io'),
+}
 
 // ---------------------------------------------------------------------------
 // Per-entity families. Canonical names are qualified (`<scope>.<field>`) —
@@ -450,10 +446,7 @@ const BLOCK_DESCRIPTORS: Record<
   queueDepth: countGauge('queueDepth', 'block', 'block'),
 }
 
-const GPU_DESCRIPTORS: Record<
-  Exclude<keyof GpuSample, 'gpuId'>,
-  HostMetricsMetricDescriptor
-> = {
+const GPU_DESCRIPTORS: Record<Exclude<keyof GpuSample, 'gpuId'>, HostMetricsMetricDescriptor> = {
   utilizationPercent: percent('utilizationPercent', 'gpu', 'gpu'),
   memoryUsedBytes: bytesGauge('memoryUsedBytes', 'gpu', 'gpu'),
   memoryActivityPercent: percent('memoryActivityPercent', 'gpu', 'gpu'),
@@ -737,20 +730,12 @@ export const STORAGE_ENGINE_FIELD_NAME_LIST: readonly string[] = STORAGE_ENGINE_
 const DOCKER_USAGE_DESCRIPTORS: Record<keyof DockerUsageSample, HostMetricsMetricDescriptor> = {
   layersBytes: bytesGauge('layersBytes', 'dockerUsage', 'managed.docker'),
   imagesCount: countGauge('imagesCount', 'dockerUsage', 'managed.docker'),
-  imagesReclaimableBytes: bytesGauge(
-    'imagesReclaimableBytes',
-    'dockerUsage',
-    'managed.docker'
-  ),
+  imagesReclaimableBytes: bytesGauge('imagesReclaimableBytes', 'dockerUsage', 'managed.docker'),
   containersBytes: bytesGauge('containersBytes', 'dockerUsage', 'managed.docker'),
   containersCount: countGauge('containersCount', 'dockerUsage', 'managed.docker'),
   volumesBytes: bytesGauge('volumesBytes', 'dockerUsage', 'managed.docker'),
   volumesCount: countGauge('volumesCount', 'dockerUsage', 'managed.docker'),
-  volumesReclaimableBytes: bytesGauge(
-    'volumesReclaimableBytes',
-    'dockerUsage',
-    'managed.docker'
-  ),
+  volumesReclaimableBytes: bytesGauge('volumesReclaimableBytes', 'dockerUsage', 'managed.docker'),
   buildCacheBytes: bytesGauge('buildCacheBytes', 'dockerUsage', 'managed.docker'),
   buildCacheReclaimableBytes: bytesGauge(
     'buildCacheReclaimableBytes',
@@ -778,49 +763,47 @@ export const DOCKER_USAGE_FIELD_NAMES: readonly string[] = Object.values(
 // multiplier any more.
 // ---------------------------------------------------------------------------
 
-const DIAGNOSTICS_CPU_DESCRIPTORS: Record<
-  keyof DiagnosticsCpuSample,
-  HostMetricsMetricDescriptor
-> = {
-  averageFrequencyMHz: nonNegative('averageFrequencyMHz', {
-    unit: 'mhz',
-    semantic: 'gauge',
-    aggregation: 'weighted-average',
-    entityScope: 'diagnostics',
-    hostedFamily: 'host.diagnostics',
-    availabilityBehavior: 'missing-when-unsupported',
-  }),
-  minimumFrequencyMHz: nonNegative('minimumFrequencyMHz', {
-    unit: 'mhz',
-    semantic: 'gauge',
-    aggregation: 'weighted-average',
-    entityScope: 'diagnostics',
-    hostedFamily: 'host.diagnostics',
-    availabilityBehavior: 'missing-when-unsupported',
-  }),
-  maximumFrequencyMHz: nonNegative('maximumFrequencyMHz', {
-    unit: 'mhz',
-    semantic: 'gauge',
-    aggregation: 'weighted-average',
-    entityScope: 'diagnostics',
-    hostedFamily: 'host.diagnostics',
-    availabilityBehavior: 'missing-when-unsupported',
-  }),
-  contextSwitchesPerSecond: rate(
-    'contextSwitchesPerSecond',
-    'countPerSecond',
-    'diagnostics',
-    'host.diagnostics'
-  ),
-  interruptsPerSecond: rate(
-    'interruptsPerSecond',
-    'countPerSecond',
-    'diagnostics',
-    'host.diagnostics'
-  ),
-  forksPerSecond: rate('forksPerSecond', 'countPerSecond', 'diagnostics', 'host.diagnostics'),
-  cpuIrqPercent: percent('cpuIrqPercent', 'diagnostics', 'host.diagnostics'),
-}
+const DIAGNOSTICS_CPU_DESCRIPTORS: Record<keyof DiagnosticsCpuSample, HostMetricsMetricDescriptor> =
+  {
+    averageFrequencyMHz: nonNegative('averageFrequencyMHz', {
+      unit: 'mhz',
+      semantic: 'gauge',
+      aggregation: 'weighted-average',
+      entityScope: 'diagnostics',
+      hostedFamily: 'host.diagnostics',
+      availabilityBehavior: 'missing-when-unsupported',
+    }),
+    minimumFrequencyMHz: nonNegative('minimumFrequencyMHz', {
+      unit: 'mhz',
+      semantic: 'gauge',
+      aggregation: 'weighted-average',
+      entityScope: 'diagnostics',
+      hostedFamily: 'host.diagnostics',
+      availabilityBehavior: 'missing-when-unsupported',
+    }),
+    maximumFrequencyMHz: nonNegative('maximumFrequencyMHz', {
+      unit: 'mhz',
+      semantic: 'gauge',
+      aggregation: 'weighted-average',
+      entityScope: 'diagnostics',
+      hostedFamily: 'host.diagnostics',
+      availabilityBehavior: 'missing-when-unsupported',
+    }),
+    contextSwitchesPerSecond: rate(
+      'contextSwitchesPerSecond',
+      'countPerSecond',
+      'diagnostics',
+      'host.diagnostics'
+    ),
+    interruptsPerSecond: rate(
+      'interruptsPerSecond',
+      'countPerSecond',
+      'diagnostics',
+      'host.diagnostics'
+    ),
+    forksPerSecond: rate('forksPerSecond', 'countPerSecond', 'diagnostics', 'host.diagnostics'),
+    cpuIrqPercent: percent('cpuIrqPercent', 'diagnostics', 'host.diagnostics'),
+  }
 
 const DIAGNOSTICS_MEMORY_DESCRIPTORS: Record<
   keyof DiagnosticsMemorySample,
@@ -967,9 +950,7 @@ const PER_ENTITY_CAPACITY: Record<
 const EMBEDDED_SCOPE_MULTIPLIER: Partial<Record<MetricEntityScope, number>> = {}
 
 const FIXED_SHAPE_FAMILIES = Object.keys(HOSTED_FAMILY_CAPACITY) as HostedFamily[]
-const PER_ENTITY_FAMILIES = Object.keys(
-  PER_ENTITY_CAPACITY
-) as (keyof typeof PER_ENTITY_CAPACITY)[]
+const PER_ENTITY_FAMILIES = Object.keys(PER_ENTITY_CAPACITY) as (keyof typeof PER_ENTITY_CAPACITY)[]
 
 function descriptorsByFamily(
   descriptors: Record<string, HostMetricsMetricDescriptor>
