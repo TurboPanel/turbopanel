@@ -102,6 +102,7 @@ import {
 import { renderPhpForDeploy } from '../../features/hostings/php-settings.ts'
 import { type PhpModePrepareError, withSitePhpModes } from './deploy-php-modes.ts'
 import { type SiteEngineFeatureError, withSiteEngineFeature } from './deploy-site-engine-gate.ts'
+import { PHP_SITE_MODES_FEATURE } from '../../lib/version-wire.ts'
 import {
   isComposeChainError,
   resolveComposeLayerChain,
@@ -2959,9 +2960,12 @@ export async function prepareDeployCompose(
   // Task rows (`POST /tasks`) join compose-authored cron on the wire for
   // sites and native apps alike — loaded once here, keyed by compose name.
   const tasksByComposeName = await loadTasksByComposeServiceName(db, serviceRows)
+  const phpDaemonState = await getServerDaemonStateByServerId(db, params.serverId)
   const siteResolved = await withSitePhpModes(
     db,
     {
+      daemonRunsModes:
+        phpDaemonState?.projection?.features?.includes(PHP_SITE_MODES_FEATURE) === true,
       environmentId: params.environmentId,
       serverId: params.serverId,
       localServiceNames: pipeline.localServiceNames,

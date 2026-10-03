@@ -34,8 +34,11 @@ export const ENGINE_PHP_MODES: Readonly<Record<SiteEngine, readonly PhpMode[]>> 
 /** The default for a new PHP site, then its fallbacks. Attached lsphp is never automatic. */
 export const PHP_MODE_DEFAULT_ORDER: readonly PhpMode[] = ['fastcgi', 'fpm', 'lsphp-detached']
 
-/** What a PHP site deployed before modes existed runs: one php-fpm pool. */
-export const LEGACY_PHP_MODE: PhpMode = 'fpm'
+/**
+ * What a daemon that does not advertise `php-site-modes-v1` runs every PHP
+ * site on: one shared php-fpm pool. It is the only mode such a daemon is sent.
+ */
+export const SHARED_POOL_PHP_MODE: PhpMode = 'fpm'
 
 /** Stored policy list: deduplicated in canonical order; anything else reads as unset. */
 export function parsePhpModes(value: unknown): PhpMode[] | undefined {
@@ -79,7 +82,8 @@ export function defaultPhpMode(allowed: readonly PhpMode[]): PhpMode | undefined
   return PHP_MODE_DEFAULT_ORDER.find((mode) => allowed.includes(mode))
 }
 
-export type PhpModeRefusal = 'engine_unsupported' | 'not_allowed' | 'none_allowed'
+export type PhpModeRefusal =
+  'engine_unsupported' | 'not_allowed' | 'none_allowed' | 'daemon_unsupported'
 
 export type SitePhpModeDecision =
   /** `kept`: the policy no longer offers this mode, but the site already runs it. */
