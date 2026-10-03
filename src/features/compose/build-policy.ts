@@ -81,8 +81,8 @@ const ALLOWED_BUILD_NETWORKS = new Set(['default', 'none'])
  * Kept as numbers: link-local metadata (`169.254.169.254`) is caught by scope.
  */
 const METADATA_ADDRESSES: ReadonlySet<bigint> = new Set([
-  0xfd00_0ec2_0000_0000_0000_0000_0000_0254n,
-  0x6464_64c8n,
+  0xfd000ec2000000000000000000000254n,
+  0x646464c8n,
 ])
 
 /** A host label spelled the way `inet_aton` reads a number (`0x7f`, `017`, `2130706433`). */
