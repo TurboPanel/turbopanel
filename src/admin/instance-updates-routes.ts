@@ -14,7 +14,10 @@ import {
   UPGRADE_VERIFY_TIMEOUT_ENV,
 } from '../features/upgrades/transitions.ts'
 import { uiBehindTarget, updateAvailableFor } from '../features/upgrades/target.ts'
-import { normalizeUpgradeSettings } from '../features/settings/upgrade-settings.ts'
+import {
+  normalizeUpgradeSettings,
+  parseUpgradeBatchDefault,
+} from '../features/settings/upgrade-settings.ts'
 import { resolvePlatformEnv } from './routes-helpers.ts'
 
 const INSTANCE_UPDATE_RUNTIME_ERROR = 'control-plane update is not applicable on this runtime'
@@ -261,7 +264,11 @@ async function coordinatorFrom(
   const revision = resolveInstanceRevision(env)
   const colocated = registry ? await resolveColocatedServerId(db, registry) : null
   return createUpgradeCoordinator({
-    store: createDrizzleUpgradeStore(db, registry),
+    store: createDrizzleUpgradeStore(
+      db,
+      registry,
+      parseUpgradeBatchDefault(env.TURBOPANEL_UPGRADE_BATCH)
+    ),
     enqueue: async (serverId, envelope) => {
       if (!registry) throw new Error(NO_DAEMON_ERROR)
       await registry.getCell(serverId).enqueue(envelope)

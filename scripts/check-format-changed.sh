@@ -18,6 +18,9 @@ files=$(
   git diff --name-only --diff-filter=ACMR "$base"...HEAD |
     while IFS= read -r file; do
       [ -f "$file" ] || continue
+      # The metrics contract is a byte-identical twin of the daemon copy, which
+      # deno fmt formats, so it stays out of the Prettier gate.
+      [ "$file" = "src/contracts/metrics-contract.ts" ] && continue
       case "$file" in
         src/*.ts | src/*.tsx | scripts/*.ts | scripts/*.mjs) printf '%s\n' "$file" ;;
         *) ;;
