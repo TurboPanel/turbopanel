@@ -1426,6 +1426,10 @@ const SUPERADMIN_ONLY_SETTINGS_ROUTES: ReadonlyArray<
   { method: 'PUT', path: '/instance/public-urls', body: { urls: ['https://panel.example.com'] } },
   { method: 'POST', path: '/instance/public-urls/apply', body: {} },
   { method: 'POST', path: '/instance/tunnel-token', body: { token: 'x' } },
+  { method: 'PUT', path: '/settings/auth-providers', body: { GITHUB_CLIENT_ID: 'x' } },
+  { method: 'PUT', path: '/settings/signup', body: { enabled: false } },
+  { method: 'PUT', path: '/settings/alert-webhook', body: { url: '' } },
+  { method: 'POST', path: '/instance/platform-ca/trust-reconcile', body: {} },
 ]
 
 test('installation-wide settings writes return a clean 403 for org admins', async () => {

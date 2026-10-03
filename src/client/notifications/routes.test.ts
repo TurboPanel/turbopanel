@@ -463,14 +463,14 @@ test('digest cadence, quiet hours and the owner time zone are written, read back
     assertEquals(await bad({ digestCadence: 'weekly' }), 400)
     assertEquals(await bad({ timeZone: 'Mars/Olympus' }), 400)
 
-    // Digest and quiet hours are for email; a chat channel is refused.
+    // Digest and quiet hours also apply to chat and webhook channels.
     const slack = await json(app, memberCookie, 'POST', '/notification-channels', {
       kind: 'slack',
       label: 'Chat',
       address: 'https://hooks.slack.com/services/T0/B0/X',
       digestCadence: 'daily',
     })
-    assertEquals(slack.status, 422)
-    assertEquals(((await slack.json()) as { error: string }).error, 'timing_email_only')
+    assertEquals(slack.status, 201)
+    assertEquals(((await slack.json()) as { channel: Presented }).channel.digestCadence, 'daily')
   })
 })

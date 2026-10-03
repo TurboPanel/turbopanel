@@ -531,6 +531,7 @@ type DeployCommandCreateParams = DeployActor & {
   engine: DeployEnginePlan
   /** The planner's host-level verdict (`PlannedDeploy.hostLevelApproved`). */
   hostLevelApproved: boolean
+  remoteBuildSourcesApproved: boolean
   generation: number
   desiredHash: string
   replicaCounts: Record<string, number>
@@ -644,6 +645,7 @@ async function createDeployCommand(
         managedNetwork: params.managedNetwork,
         noCache: params.noCache ? true : undefined,
         hostLevelApproved: params.hostLevelApproved ? true : undefined,
+        remoteBuildSourcesApproved: params.remoteBuildSourcesApproved ? true : undefined,
         ...params.engine.payload,
       }),
       listenerPorts: params.listenerPorts,
@@ -737,6 +739,7 @@ function createParamsForPreparedServer(
     noCache: boolean
     engine: DeployEnginePlan
     hostLevelApproved: boolean
+    remoteBuildSourcesApproved: boolean
     selection: DeploySourceSelection
   }
 ): DeployCommandCreateParams {
@@ -785,6 +788,7 @@ function createParamsForPreparedServer(
     noCache: params.noCache,
     engine: params.engine,
     hostLevelApproved: params.hostLevelApproved,
+    remoteBuildSourcesApproved: params.remoteBuildSourcesApproved,
     generation: params.generation,
     desiredHash: row.prepared.desiredHash,
     replicaCounts: row.prepared.replicaCounts,
@@ -878,6 +882,7 @@ async function persistDeployFanOut(
     noCache: boolean
     engine: DeployEnginePlan
     hostLevelApproved: boolean
+    remoteBuildSourcesApproved: boolean
     selection: DeploySourceSelection
     /** Release trees to record on each target — see `deploymentTargetsForFanOut`. */
     siteReleases: readonly EnvironmentSiteRelease[]
@@ -912,6 +917,7 @@ async function persistDeployFanOut(
             noCache: params.noCache,
             engine: params.engine,
             hostLevelApproved: params.hostLevelApproved,
+            remoteBuildSourcesApproved: params.remoteBuildSourcesApproved,
             selection: params.selection,
           })
         )
@@ -1801,6 +1807,7 @@ async function runEnvironmentDeploy(
       noCache: auth.noCache,
       engine,
       hostLevelApproved: planned.hostLevelApproved,
+      remoteBuildSourcesApproved: planned.remoteBuildSourcesApproved,
       selection: auth.selection,
       siteReleases,
     })

@@ -9,6 +9,7 @@ import {
 import { cellTrace } from '../../lib/logger.ts'
 import { loadServerStatusRecords } from '../servers/update-status.ts'
 import type { Db } from '../../db/connection.ts'
+import { SERVER_OFFLINE_BODY } from '../managed/context.ts'
 
 export { parseLogsTailQuery } from '../managed/logs.ts'
 
@@ -33,7 +34,7 @@ export async function fetchContainerLogTail(
     serverId: string
     containerId: string
     tail: number
-  },
+  }
 ): Promise<{ logs: string } | Response> {
   const registry = getDaemonCellRegistry(c)
   if (!registry) {
@@ -43,7 +44,7 @@ export async function fetchContainerLogTail(
   const records = await loadServerStatusRecords(db, registry, [params.serverId])
   const live = records[0]
   if (!live?.connected) {
-    return c.json({ error: 'server_offline' }, 409)
+    return c.json(SERVER_OFFLINE_BODY, 409)
   }
 
   const requestId = generateRequestId()
@@ -63,10 +64,9 @@ export async function fetchContainerLogTail(
   })
 
   try {
-    const record = await registry.getCell(params.serverId).createRequestAndWait(
-      envelope,
-      LOGS_TIMEOUT_MS,
-    )
+    const record = await registry
+      .getCell(params.serverId)
+      .createRequestAndWait(envelope, LOGS_TIMEOUT_MS)
 
     if (record.status === 'expired') {
       cellTrace('request-result', {
@@ -89,6 +89,16 @@ export async function fetchContainerLogTail(
         resultStatus: 'failed',
         error,
       })
+      if (error.includes('is not owned by this host')) {
+        return c.json(
+          {
+            error: 'container_not_owned',
+            message:
+              'This container does not belong to a deployment on this server, so its logs cannot be read.',
+          },
+          403
+        )
+      }
       return c.json({ error }, 500)
     }
 

@@ -18,6 +18,7 @@ import {
   isNull,
   lt,
   lte,
+  ne,
   notInArray,
   or,
   sql,
@@ -307,7 +308,10 @@ export async function setChannelDisabled(db: Db, id: string, disabled: boolean):
 export async function setChannelHoldSettings(
   db: Db,
   id: string,
-  settings: { digestCadence: NotificationDigestCadence | null; quiet: QuietHours | null }
+  settings: {
+    digestCadence: NotificationDigestCadence | null
+    quiet: QuietHours | null
+  }
 ): Promise<void> {
   await db
     .update(notificationChannel)
@@ -720,7 +724,12 @@ function ledgerRow(channelId: string, payload: DeliveryPayload, held: boolean) {
   if (held) {
     // Nothing retries a held row (no retry time); it is dated by the event, so
     // the window that closes after the event is the one that carries it.
-    return { ...base, status: 'held', nextAttemptAt: null, createdAt: payload.at }
+    return {
+      ...base,
+      status: 'held',
+      nextAttemptAt: null,
+      createdAt: payload.at,
+    }
   }
   return {
     ...base,
@@ -846,18 +855,29 @@ export async function listDueDeliveries(
   return rows.map((r) => asDelivery(r.delivery))
 }
 
-/** Enabled, verified email channels that have at least one held delivery — the digest sweep's batch. */
+/**
+ * Enabled channels that have at least one held delivery — the digest sweep's batch.
+ * Chat and webhook channels keep their addresses sealed, so a tick without the
+ * data-encryption secrets leaves them out (`includeChat: false`): their rows
+ * stay held, with no attempt counted, until a tick that has the secrets.
+ */
 export async function listChannelsWithHeldDeliveries(
   db: Db,
-  limit = 50
+  limit = 50,
+  opts: { includeEmail?: boolean; includeChat?: boolean } = {}
 ): Promise<NotificationChannelRecord[]> {
   const rows = await db
     .select()
     .from(notificationChannel)
     .where(
       and(
-        eq(notificationChannel.kind, 'email'),
-        isNotNull(notificationChannel.verifiedAt),
+        // Chat and webhook channels need nothing but the sweep; an email
+        // channel also needs a verified address and a tick with a mail queue.
+        opts.includeEmail
+          ? or(ne(notificationChannel.kind, 'email'), isNotNull(notificationChannel.verifiedAt))
+          : ne(notificationChannel.kind, 'email'),
+        ne(notificationChannel.kind, 'push'),
+        opts.includeChat === false ? eq(notificationChannel.kind, 'email') : undefined,
         isNull(notificationChannel.disabledAt),
         inArray(
           notificationChannel.id,

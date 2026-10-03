@@ -220,99 +220,99 @@ function twoUplinkSlotMapping(fabricDeviceIds: string[] = []): SlotMapping {
 // every other row is presence-gated / paged on top of that.
 // ---------------------------------------------------------------------------
 
-it('1-NIC VM: 2 rows (both NICs embed in host.io; here just 1)', () => {
-  assertEquals(writeCountFor({ networks: [mkNic('eth0')] }), 2)
+it('1-NIC VM: 4 rows (the four host rows; both NICs embed in host.network, here just 1)', () => {
+  assertEquals(writeCountFor({ networks: [mkNic('eth0')] }), 4)
 })
 
-it('2-NIC VM: 2 rows (both NICs embed in host.io)', () => {
-  assertEquals(writeCountFor({ networks: [mkNic('eth0'), mkNic('eth1')] }), 2)
+it('2-NIC VM: 4 rows (both NICs embed in host.network)', () => {
+  assertEquals(writeCountFor({ networks: [mkNic('eth0'), mkNic('eth1')] }), 4)
 })
 
-it('2-NIC + extra fabric device, topology generation unknown: 3 rows (conservative positional fallback, no slot mapping to tell fabric apart yet)', () => {
+it('2-NIC + extra fabric device, topology generation unknown: 5 rows (conservative positional fallback, no slot mapping to tell fabric apart yet)', () => {
   assertEquals(
     writeCountFor({
       networks: [mkNic('eth0'), mkNic('eth1'), mkNic('fabric0')],
     }),
-    3
+    5
   )
 })
 
-it('2-NIC + extra fabric device, topology generation known: 2 rows — fabric never pages once SlotMapping identifies it', () => {
+it('2-NIC + extra fabric device, topology generation known: 4 rows — fabric never pages once SlotMapping identifies it', () => {
   assertEquals(
     writeCountFor(
       { networks: [mkNic('eth0'), mkNic('eth1'), mkNic('fabric0')] },
       twoUplinkSlotMapping(['fabric0'])
     ),
-    2
+    4
   )
 })
 
-it('2-NIC + a genuine 3rd uplink, topology generation known: 3 rows — only fabric is excluded from paging, not every extra device', () => {
+it('2-NIC + a genuine 3rd uplink, topology generation known: 5 rows — only fabric is excluded from paging, not every extra device', () => {
   assertEquals(
     writeCountFor(
       { networks: [mkNic('eth0'), mkNic('eth1'), mkNic('eth2')] },
       twoUplinkSlotMapping([])
     ),
-    3
+    5
   )
 })
 
-it('+1 GPU: 3 rows (host.system, host.io, one gpu page)', () => {
-  assertEquals(writeCountFor({ gpus: [mkGpu('gpu0')] }), 3)
+it('+1 GPU: 5 rows (four host rows, one gpu page)', () => {
+  assertEquals(writeCountFor({ gpus: [mkGpu('gpu0')] }), 5)
 })
 
-it('+Caddy (managed.ingress): 3 rows', () => {
-  assertEquals(writeCountFor({ ingressSources: [mkIngress('caddy0')] }), 3)
+it('+Caddy: still 4 rows (its totals ride host.web, no row of its own)', () => {
+  assertEquals(writeCountFor({ ingressSources: [mkIngress('caddy0')] }), 4)
 })
 
-it('web (Caddy) + GPU: 4 rows', () => {
+it('web (Caddy) + GPU: 5 rows', () => {
   assertEquals(
     writeCountFor({
       ingressSources: [mkIngress('caddy0')],
       gpus: [mkGpu('gpu0')],
     }),
-    4
+    5
   )
 })
 
-it('DB-only VM (no ProxySQL): 2 rows', () => {
-  assertEquals(writeCountFor({}), 2)
+it('VM with no managed database data: 4 rows', () => {
+  assertEquals(writeCountFor({}), 4)
 })
 
-it('DB + ProxySQL (managed.database_proxy): 3 rows', () => {
-  assertEquals(writeCountFor({ databaseProxies: [mkDatabaseProxy('proxysql0')] }), 3)
+it('DB + ProxySQL (managed.database): 5 rows', () => {
+  assertEquals(writeCountFor({ databaseProxies: [mkDatabaseProxy('proxysql0')] }), 5)
 })
 
-it('bare-metal <=19 hardware signals: 3 rows (host.system, host.io, one hardware.physical page)', () => {
+it('bare-metal <=19 hardware signals: 5 rows (four host rows, one hardware.physical page)', () => {
   const signals = Array.from({ length: 12 }, (_, i) => mkSignal(`sig${i}`))
-  assertEquals(writeCountFor({ hardwareSignals: signals }), 3)
+  assertEquals(writeCountFor({ hardwareSignals: signals }), 5)
 })
 
-it('bare-metal + GPU: 4 rows', () => {
+it('bare-metal + GPU: 6 rows', () => {
   const signals = Array.from({ length: 12 }, (_, i) => mkSignal(`sig${i}`))
-  assertEquals(writeCountFor({ hardwareSignals: signals, gpus: [mkGpu('gpu0')] }), 4)
+  assertEquals(writeCountFor({ hardwareSignals: signals, gpus: [mkGpu('gpu0')] }), 6)
 })
 
-it('4-NIC host: 3 rows (host.system, host.io, one network page of the 2 extras)', () => {
+it('4-NIC host: 5 rows (four host rows, one network page of the 2 extras)', () => {
   const networks = [mkNic('eth0'), mkNic('eth1'), mkNic('eth2'), mkNic('eth3')]
-  assertEquals(writeCountFor({ networks }), 3)
+  assertEquals(writeCountFor({ networks }), 5)
 })
 
-it('8-NIC host: 4 rows (host.system, host.io, two network pages of the 6 extras)', () => {
+it('8-NIC host: 6 rows (four host rows, two network pages of the 6 extras)', () => {
   const networks = Array.from({ length: 8 }, (_, i) => mkNic(`eth${i}`))
-  assertEquals(writeCountFor({ networks }), 4)
+  assertEquals(writeCountFor({ networks }), 6)
 })
 
-it('16-GPU host: 8 rows (host.system, host.io, six gpu pages of 3 each)', () => {
+it('16-GPU host: 10 rows (four host rows, six gpu pages of 3 each)', () => {
   const gpus = Array.from({ length: 16 }, (_, i) => mkGpu(`gpu${i}`))
-  assertEquals(writeCountFor({ gpus }), 8)
+  assertEquals(writeCountFor({ gpus }), 10)
 })
 
-it('presence-gated empty arrays: exactly 2 rows, no extra writes', () => {
-  assertEquals(writeCountFor({}), 2)
+it('presence-gated empty arrays: exactly the 4 host rows, no extra writes', () => {
+  assertEquals(writeCountFor({}), 4)
 })
 
-it('events: one extra writeDataPoint call per event, on top of the host.system/host.io baseline', () => {
+it('events: one extra writeDataPoint call per event, on top of the four host rows', () => {
   const events = [
     {
       eventId: 'evt1',
@@ -327,7 +327,7 @@ it('events: one extra writeDataPoint call per event, on top of the host.system/h
       severity: 'critical' as const,
     },
   ]
-  assertEquals(writeCountFor({ events }), 4)
+  assertEquals(writeCountFor({ events }), 6)
 })
 
 // ---------------------------------------------------------------------------

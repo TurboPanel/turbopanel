@@ -15,6 +15,7 @@ import { MAX_NIC_SLOTS } from '../../../../contracts/topology-types.ts'
 import { HOST_METRICS_METRIC_DESCRIPTORS } from '../../metric-descriptors.ts'
 import { aeSqlValidationFailure } from '../../testing/fake-analytics-engine.ts'
 import { aeSqlDialectFailures, inferAeExpressionType } from './ae-sql-dialect.ts'
+import { PER_ENTITY_FIELD_ORDER, SINGLE_ROW_FIELD_ORDER } from './field-map.ts'
 import type { PerEntityHostedFamily } from '../../types.ts'
 import {
   AE_SQL_MAX_LENGTH,
@@ -80,10 +81,17 @@ const HOST_METRICS = Object.entries(HOST_METRICS_METRIC_DESCRIPTORS)
   .filter(([, descriptor]) => HOST_SCOPES.has(descriptor.entityScope))
   .map(([name]) => name)
 
+/** Every field v7 stores for the family (the dropped v6 fields are not queryable). */
 function fieldsFor(family: PerEntityHostedFamily): string[] {
-  return Object.values(HOST_METRICS_METRIC_DESCRIPTORS)
-    .filter((descriptor) => descriptor.entityScope === ENTITY_SCOPE[family])
-    .map((descriptor) => descriptor.fieldName)
+  const stored: readonly (string | null)[] =
+    family === 'managed.ingress' || family === 'managed.database_proxy'
+      ? SINGLE_ROW_FIELD_ORDER[family]
+      : PER_ENTITY_FIELD_ORDER[family]
+  return stored.filter((field): field is string => field !== null && hasDescriptor(family, field))
+}
+
+function hasDescriptor(family: PerEntityHostedFamily, field: string): boolean {
+  return `${ENTITY_SCOPE[family]}.${field}` in HOST_METRICS_METRIC_DESCRIPTORS
 }
 
 function entityIdsFor(family: PerEntityHostedFamily, count: number): string[] {

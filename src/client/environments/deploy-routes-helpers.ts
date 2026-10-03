@@ -280,6 +280,30 @@ function mapComposeUnsupportedError(
   }
 }
 
+function mapComposeBuildRefusedError(
+  prepared: Extract<DeployPrepareError, { kind: 'compose_build_refused' }>
+): PrepareErrorResponse {
+  const onlyRemote = prepared.issues.every((issue) => issue.code === 'build_remote_source_refused')
+  if (onlyRemote) {
+    return {
+      status: 422,
+      body: {
+        error: 'compose_build_refused',
+        issues: prepared.issues,
+        message: `This compose document builds from a remote source (${composeIssuePaths(prepared.issues)}), and remote build sources are off for this organization. An organization owner can turn them on under Manage Organization → Compose, or point the build at a folder in the project instead.`,
+      },
+    }
+  }
+  return {
+    status: 422,
+    body: {
+      error: 'compose_build_refused',
+      issues: prepared.issues,
+      message: `This compose document builds with options no deploy may use: ${composeIssuePaths(prepared.issues)}. Each issue carries its rule's code. Remove them and deploy again (only a public remote build source can be allowed, by an organization owner).`,
+    },
+  }
+}
+
 function mapComposeOptInError(
   prepared: Extract<DeployPrepareError, { kind: 'compose_field_requires_org_opt_in' }>
 ): PrepareErrorResponse {
@@ -543,6 +567,8 @@ const PHP_MODE_REFUSAL_TEXT = {
   engine_unsupported: 'its web server cannot run that mode',
   not_allowed: 'its organization or server does not offer that mode',
   none_allowed: 'its organization and server offer no mode its web server can run',
+  daemon_unsupported:
+    "the server's TurboPanel daemon is too old to run per-site PHP modes (update the daemon first)",
 } as const
 
 function tryMapPhpModePrepareError(prepared: DeployPrepareError): PrepareErrorResponse | null {
@@ -597,6 +623,11 @@ function mapCorePrepareError(prepared: DeployPrepareError): PrepareErrorResponse
       return mapComposeMergeError(prepared)
     case 'compose_field_unsupported':
       return mapComposeUnsupportedError(prepared)
+    // A build option no deploy may carry (host network, privileges, SSH agent,
+    // a context or secret outside the project, …). 422, not 403: no opt-in and
+    // no higher role makes it deployable.
+    case 'compose_build_refused':
+      return mapComposeBuildRefusedError(prepared)
     // TurboPanel *does* implement this field — unlike compose_field_unsupported
     // above, the fix is an org-owner opt-in
     // (PUT /organizations/:id/compose-privileged-fields), not removing the

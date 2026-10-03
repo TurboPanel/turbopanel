@@ -85,7 +85,6 @@ import {
 import {
   AE_BLOB_FAMILY_INDEX,
   AE_BLOB_KIND_INDEX,
-  AE_BLOB_SOURCE_OR_IDENTITY_INDEX,
   type AnalyticsEngineDataPointLike,
 } from './metrics/backends/cloudflare/field-map.ts'
 import {
@@ -2743,7 +2742,7 @@ test('POST /metrics still writes priming and baseline intervals without a live-s
   assertEquals(writes.length, 2)
 })
 
-test('POST /metrics through a real CloudflareAnalyticsEngineServerMetricsStore: entity families and events all land as AE rows, ingress sources keyed by sourceId', async () => {
+test('POST /metrics through a real CloudflareAnalyticsEngineServerMetricsStore: host rows, entity families and events all land as v7 AE rows', async () => {
   const { app, points } = await createMetricsTestAppWithRealCloudflareStore()
   const serverId = 'srv-metrics-cf-real'
   const daemonToken = await issueDaemonToken(serverId, 'key-metrics-cf-real')
@@ -2790,18 +2789,15 @@ test('POST /metrics through a real CloudflareAnalyticsEngineServerMetricsStore: 
   const family = (kind: string) => points.filter((p) => p.blobs[AE_BLOB_FAMILY_INDEX] === kind)
   assertEquals(family('host.system').length, 1)
   assertEquals(family('host.io').length, 1)
+  assertEquals(family('host.network').length, 1)
+  assertEquals(family('host.web').length, 1)
   assertEquals(family('network').length, 0) // eth0/eth1 embed; eth2 exceeds the 2-slot hosted plan
   assertEquals(family('gpu').length, 1)
 
-  const ingressRows = family('managed.ingress')
-  assertEquals(ingressRows.length, 2)
-  const ingressIds = ingressRows.map((p) => p.blobs[AE_BLOB_SOURCE_OR_IDENTITY_INDEX]).sort()
-  // Two sources sharing sourceKind "caddy" stay distinct rows keyed by sourceId.
-  assertEquals(ingressIds, ['caddy-1', 'caddy-2'])
-
-  const proxyRows = family('managed.database_proxy')
-  assertEquals(proxyRows.length, 1)
-  assertEquals(proxyRows[0]!.blobs[AE_BLOB_SOURCE_OR_IDENTITY_INDEX], 'proxysql-1')
+  // v7 folds Caddy into host.web and ProxySQL into managed.database: no rows
+  // of their own, one source each.
+  assertEquals(family('managed.ingress').length, 0)
+  assertEquals(family('managed.database').length, 1)
 
   const eventRows = points.filter((p) => p.blobs[AE_BLOB_KIND_INDEX] === 'event')
   assertEquals(eventRows.length, 1)

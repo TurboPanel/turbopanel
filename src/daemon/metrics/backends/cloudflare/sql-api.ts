@@ -1,6 +1,6 @@
 /**
  * Query-side SQL primitives for the v5 Analytics Engine dataset
- * (`turbopanel_server_metrics_v6` — see `field-map.ts`).
+ * (`turbopanel_server_metrics_v7` — see `field-map.ts`).
  *
  * Host-level aggregates (`host.system` / `host.io`) are simple: every sample
  * writes exactly one `host.system` row and one `host.io` row — unlike v3's
@@ -73,6 +73,7 @@ import {
   defaultExpectedSamplesPerBucket,
   finalizeHostSeriesResult,
 } from '../../query/series-response.ts'
+import { V7_SINGLE_SOURCE_FAMILIES, V7_SOURCE_IDS } from './v7-layout.ts'
 import {
   AE_BLOB_EVENT_ENTITY_ID_INDEX,
   AE_BLOB_EVENT_ID_INDEX,
@@ -80,15 +81,12 @@ import {
   AE_BLOB_FAMILY_INDEX,
   AE_BLOB_KIND_INDEX,
   AE_BLOB_SCHEMA_VERSION_INDEX,
+  AE_BLOB_ENTITY_IDS_INDEX,
   AE_BLOB_SOURCE_OR_IDENTITY_INDEX,
   AE_BLOB_TOPOLOGY_GENERATION_INDEX,
   AE_DATASET_NAME,
-  AE_FAMILY_HOST_IO,
+  AE_FAMILY_HOST_NETWORK,
   AE_FAMILY_HOST_SYSTEM,
-  AE_FAMILY_HOST_DIAGNOSTICS,
-  AE_FAMILY_MANAGED_DOCKER,
-  AE_FAMILY_MANAGED_ROUTER,
-  AE_FAMILY_MANAGED_STORAGE,
   AE_EVENT_INDEX_SUFFIX,
   AE_INDEX_SERVER_ID_COLUMN,
   AE_KIND_EVENT,
@@ -97,8 +95,8 @@ import {
   AE_TIMESTAMP_COLUMN,
   blobColumn,
   doubleColumn,
-  doubleIndexForHostField,
   entitiesPerPage,
+  findHostFieldSlot,
   HOST_IO_EMBEDDED_NIC_FIELDS,
   hostIoEmbeddedNicDoubleIndex,
   intervalSecondsColumn,
@@ -113,7 +111,7 @@ import {
 export { AE_DATASET_NAME }
 
 /** Schema versions this read path understands (positional semantics must match). */
-export const AE_SUPPORTED_SCHEMA_VERSIONS: readonly number[] = [6]
+export const AE_SUPPORTED_SCHEMA_VERSIONS: readonly number[] = [6, 7]
 
 /** Escape a string literal for AE SQL (single-quote doubling). Same idiom as v3's `quoteSqlString`. */
 export function quoteSqlString(value: string): string {
@@ -878,7 +876,7 @@ export function serverFamiliesPredicate(
  * read `_` / `%` inside an entity id as wildcards.
  */
 export function entityIdInPageIdentityPredicate(entityId: string): string {
-  const col = blobColumn(AE_BLOB_SOURCE_OR_IDENTITY_INDEX)
+  const col = blobColumn(AE_BLOB_ENTITY_IDS_INDEX)
   const id = quoteSqlString(entityId)
   const prefix = quoteSqlString(`${entityId},`)
   const suffix = quoteSqlString(`,${entityId}`)
@@ -1090,64 +1088,31 @@ function assertHostMetrics(metrics: readonly string[]): string[] {
   return result
 }
 
-/** `true` when any of `metrics` resolves to a `host.diagnostics` field, requiring that family's rows in the scan. */
-function requiresDiagnosticsFamily(metrics: readonly string[]): boolean {
-  return metrics.some(
-    (name) => HOST_METRICS_METRIC_DESCRIPTORS[name]?.entityScope === 'diagnostics'
-  )
-}
-
-/** `true` when any of `metrics` resolves to a `managed.router` field, requiring that family's rows in the scan. */
-function requiresRouterFamily(metrics: readonly string[]): boolean {
-  return metrics.some((name) => HOST_METRICS_METRIC_DESCRIPTORS[name]?.entityScope === 'router')
-}
-
-/** `true` when any of `metrics` resolves to a `managed.storage` field, requiring that family's rows in the scan. */
-function requiresStorageFamily(metrics: readonly string[]): boolean {
-  return metrics.some((name) => HOST_METRICS_METRIC_DESCRIPTORS[name]?.entityScope === 'storage')
-}
-
-/** `true` when any of `metrics` resolves to a `managed.docker` field, requiring that family's rows in the scan. */
-function requiresDockerUsageFamily(metrics: readonly string[]): boolean {
-  return metrics.some(
-    (name) => HOST_METRICS_METRIC_DESCRIPTORS[name]?.entityScope === 'dockerUsage'
-  )
-}
-
 function hostMetricSelectExpression(canonicalName: string, alias: string): string {
   const descriptor = HOST_METRICS_METRIC_DESCRIPTORS[canonicalName]
-  const { family, doubleIndex } = doubleIndexForHostField(
-    descriptor.entityScope,
-    descriptor.fieldName
-  )
-  return `${aggregateExpressionForDescriptor(descriptor, family, doubleIndex)} AS ${alias}`
+  const slot = findHostFieldSlot(descriptor.entityScope, descriptor.fieldName)
+  // v7 does not store every v6 field: one it dropped reads as missing (the
+  // sentinel, which the row parser turns into null), never as an error.
+  if (!slot) return `${aeMissingMetricSentinelSql()} AS ${alias}`
+  return `${aggregateExpressionForDescriptor(descriptor, slot.family, slot.doubleIndex)} AS ${alias}`
 }
 
 /**
- * `blob1 = 'metrics' AND (blob2 = 'host.system' OR blob2 = 'host.io' [OR ...])`
- * — every host-metric select's internal `if()` guards already scope by
- * family, this is a row-scan optimization, not a correctness requirement.
- * `host.system`/`host.io` are always included (the former anchors
- * `sample_count`); `host.diagnostics`, `managed.router`, `managed.storage`
- * and `managed.docker` are included only when `metrics` actually references
- * one of their fields, so a request that never touches a singleton family
- * doesn't pay to scan its rows.
+ * `blob1 = 'metrics' AND (blob2 = 'host.system' [OR blob2 = ...])` — every
+ * host-metric select's internal `if()` guards already scope by family, this
+ * is a row-scan optimization, not a correctness requirement. `host.system`
+ * is always included (it anchors `sample_count`); the other v7 host rows
+ * (`host.io`, `host.network`, `host.web`, `managed.database`) are included
+ * only when `metrics` references one of their fields.
  */
 function hostFamiliesFor(metrics: readonly string[]): HostedFamily[] {
-  const families: HostedFamily[] = [AE_FAMILY_HOST_SYSTEM, AE_FAMILY_HOST_IO]
-  if (requiresDiagnosticsFamily(metrics)) {
-    families.push(AE_FAMILY_HOST_DIAGNOSTICS)
+  const families = new Set<HostedFamily>([AE_FAMILY_HOST_SYSTEM])
+  for (const name of metrics) {
+    const descriptor = HOST_METRICS_METRIC_DESCRIPTORS[name]
+    const slot = descriptor && findHostFieldSlot(descriptor.entityScope, descriptor.fieldName)
+    if (slot) families.add(slot.family)
   }
-  if (requiresRouterFamily(metrics)) {
-    families.push(AE_FAMILY_MANAGED_ROUTER)
-  }
-  if (requiresStorageFamily(metrics)) {
-    families.push(AE_FAMILY_MANAGED_STORAGE)
-  }
-  if (requiresDockerUsageFamily(metrics)) {
-    families.push(AE_FAMILY_MANAGED_DOCKER)
-  }
-  return families
+  return [...families]
 }
 
 function hostFamilyScopePredicate(metrics: readonly string[]): string {
@@ -1196,6 +1161,28 @@ function parseBucketEpochSeconds(bucket: unknown): number {
   if (typeof bucket === 'number') return bucket
   if (typeof bucket === 'string') return Number(bucket)
   return Number.NaN
+}
+
+type SeriesWindow = { serverId: string; bucketSeconds: number; fromUnix: number; toUnix: number }
+
+/** Validate the server id, time range, bucket width and dataset shared by the series builders. */
+function resolveSeriesWindow(
+  input: { serverId: string; from: string; to: string; resolutionSeconds?: number },
+  opts: { dataset: string; maxRangeSeconds: number }
+): SeriesWindow {
+  const serverId = assertSafeServerId(input.serverId)
+  const from = assertIsoTimestamp('from', input.from)
+  const to = assertIsoTimestamp('to', input.to)
+  assertRange(from, to, opts.maxRangeSeconds)
+  const bucketSeconds = assertPositiveInt(
+    'resolutionSeconds',
+    input.resolutionSeconds ?? AE_DEFAULT_BUCKET_SECONDS
+  )
+  assertSafeDatasetName(opts.dataset)
+
+  const fromUnix = Math.floor(from.getTime() / 1000)
+  const toUnix = Math.floor(to.getTime() / 1000)
+  return { serverId, bucketSeconds, fromUnix, toUnix }
 }
 
 function buildHostSeriesSql(
@@ -1950,47 +1937,36 @@ function buildSingleRowEntitySeriesSql(
   input: EntitySeriesQuery,
   family: Extract<PerEntityHostedFamily, 'managed.ingress' | 'managed.database_proxy'>,
   fields: readonly string[],
-  entityIds: readonly string[],
   opts: { dataset: string; maxRangeSeconds: number }
 ): { sql: string; aliases: string[]; bucketSeconds: number } {
-  const serverId = assertSafeServerId(input.serverId)
-  const from = assertIsoTimestamp('from', input.from)
-  const to = assertIsoTimestamp('to', input.to)
-  assertRange(from, to, opts.maxRangeSeconds)
-  const bucketSeconds = assertPositiveInt(
-    'resolutionSeconds',
-    input.resolutionSeconds ?? AE_DEFAULT_BUCKET_SECONDS
-  )
-  assertSafeDatasetName(opts.dataset)
-
-  const fromUnix = Math.floor(from.getTime() / 1000)
-  const toUnix = Math.floor(to.getTime() / 1000)
+  const { serverId, bucketSeconds, fromUnix, toUnix } = resolveSeriesWindow(input, opts)
   const discriminators = hostMetricsDiscriminatorPredicates()
   const order = fieldOrderForFamily(family)
+  // v7 folded these families into host rows: the row family is the host row's,
+  // and the only source is the fixed id the family reports as.
+  const rowFamily = V7_SINGLE_SOURCE_FAMILIES[family].hostFamily
+  const sourceIdLiteral = quoteSqlString(V7_SOURCE_IDS[family])
   const aliases = fields.map((_, i) => metricAlias(i))
   const metricSelects = fields.map((field, i) => {
     const descriptor = resolveEntityFieldDescriptor(family, field)
     const fieldIndex = order.indexOf(field)
-    return `${aggregateExpressionForDescriptor(descriptor, family, fieldIndex)} AS ${aliases[i]}`
+    return `${aggregateExpressionForDescriptor(descriptor, rowFamily, fieldIndex)} AS ${aliases[i]}`
   })
-  const entityIdCol = blobColumn(AE_BLOB_SOURCE_OR_IDENTITY_INDEX)
-  const inList = entityIds.map((id) => quoteSqlString(id)).join(', ')
 
   const sql = [
     'SELECT',
     `  intDiv(toUnixTimestamp(${AE_TIMESTAMP_COLUMN}), ${bucketSeconds}) * ${bucketSeconds} AS bucket,`,
-    `  ${entityIdCol} AS entity_id,`,
+    `  ${sourceIdLiteral} AS entity_id,`,
     `  SUM(_sample_interval) AS sample_count,`,
     `  SUM(${intervalSecondsColumn()} * _sample_interval) / SUM(_sample_interval) AS avg_interval_seconds,`,
     `  ${metricSelects.join(',\n  ')}`,
     `FROM ${opts.dataset}`,
-    `WHERE ${serverFamiliesPredicate(serverId, [family])}`,
+    `WHERE ${serverFamiliesPredicate(serverId, [rowFamily])}`,
     `  AND ${discriminators[0]}`,
     `  AND ${discriminators[1]}`,
-    `  AND ${familyPredicate(family)}`,
-    `  AND ${entityIdCol} IN (${inList})`,
+    `  AND ${familyPredicate(rowFamily)}`,
     `  AND ${timeRangePredicate(fromUnix, toUnix)}`,
-    `GROUP BY bucket, entity_id`,
+    `GROUP BY bucket`,
     `ORDER BY bucket ASC`,
   ].join('\n')
 
@@ -2081,18 +2057,7 @@ function buildPagedEntitySeriesSql(
   entityIds: readonly string[],
   opts: { dataset: string; maxRangeSeconds: number }
 ): { sql: string; plans: PagedFieldPlan[]; bucketSeconds: number } {
-  const serverId = assertSafeServerId(input.serverId)
-  const from = assertIsoTimestamp('from', input.from)
-  const to = assertIsoTimestamp('to', input.to)
-  assertRange(from, to, opts.maxRangeSeconds)
-  const bucketSeconds = assertPositiveInt(
-    'resolutionSeconds',
-    input.resolutionSeconds ?? AE_DEFAULT_BUCKET_SECONDS
-  )
-  assertSafeDatasetName(opts.dataset)
-
-  const fromUnix = Math.floor(from.getTime() / 1000)
-  const toUnix = Math.floor(to.getTime() / 1000)
+  const { serverId, bucketSeconds, fromUnix, toUnix } = resolveSeriesWindow(input, opts)
   const discriminators = hostMetricsDiscriminatorPredicates()
   const order = fieldOrderForFamily(family)
   const width = order.length
@@ -2162,7 +2127,7 @@ function buildPagedEntitySeriesSql(
     }
   }
 
-  const idsCol = blobColumn(AE_BLOB_SOURCE_OR_IDENTITY_INDEX)
+  const idsCol = blobColumn(AE_BLOB_ENTITY_IDS_INDEX)
   const entityPredicate = entityIds.map((id) => entityIdInPageIdentityPredicate(id)).join(' OR ')
 
   const sql = [
@@ -2354,20 +2319,9 @@ function buildEmbeddedNicEntitySeriesSql(
 ): { sql: string; bucketSeconds: number; embeddableFields: string[] } | null {
   if (input.topologyGeneration == null) return null
 
-  const serverId = assertSafeServerId(input.serverId)
-  const from = assertIsoTimestamp('from', input.from)
-  const to = assertIsoTimestamp('to', input.to)
-  assertRange(from, to, opts.maxRangeSeconds)
-  const bucketSeconds = assertPositiveInt(
-    'resolutionSeconds',
-    input.resolutionSeconds ?? AE_DEFAULT_BUCKET_SECONDS
-  )
-  assertSafeDatasetName(opts.dataset)
-
-  const fromUnix = Math.floor(from.getTime() / 1000)
-  const toUnix = Math.floor(to.getTime() / 1000)
+  const { serverId, bucketSeconds, fromUnix, toUnix } = resolveSeriesWindow(input, opts)
   const discriminators = hostMetricsDiscriminatorPredicates()
-  const hostIoPred = familyPredicate(AE_FAMILY_HOST_IO)
+  const hostIoPred = familyPredicate(AE_FAMILY_HOST_NETWORK)
   const generationCol = blobColumn(AE_BLOB_TOPOLOGY_GENERATION_INDEX)
   const generationPred = `${generationCol} = ${quoteSqlString(String(input.topologyGeneration))}`
 
@@ -2383,7 +2337,7 @@ function buildEmbeddedNicEntitySeriesSql(
       )
       selects.push(
         `${weightedAvgExpressionForColumn(
-          AE_FAMILY_HOST_IO,
+          AE_FAMILY_HOST_NETWORK,
           doubleIndex
         )} AS ${embeddedNicAlias(slot, field)}`
       )
@@ -2399,7 +2353,7 @@ function buildEmbeddedNicEntitySeriesSql(
     `  SUM(if(${hostIoPred}, ${intervalSecondsColumn()} * _sample_interval, 0.0)) / SUM(if(${hostIoPred}, _sample_interval * 1.0, 0.0)) AS avg_interval_seconds` +
       (selects.length > 0 ? `,\n  ${selects.join(',\n  ')}` : ''),
     `FROM ${opts.dataset}`,
-    `WHERE ${serverFamiliesPredicate(serverId, [AE_FAMILY_HOST_IO])}`,
+    `WHERE ${serverFamiliesPredicate(serverId, [AE_FAMILY_HOST_NETWORK])}`,
     `  AND ${discriminators[0]}`,
     `  AND ${discriminators[1]}`,
     `  AND ${hostIoPred}`,
@@ -2560,7 +2514,7 @@ function entitySeriesSqlLength(
       PerEntityHostedFamily,
       'managed.ingress' | 'managed.database_proxy'
     >
-    return buildSingleRowEntitySeriesSql(input, family, fields, entityIds, opts).sql.length
+    return buildSingleRowEntitySeriesSql(input, family, fields, opts).sql.length
   }
   const family = input.family as Exclude<
     PerEntityHostedFamily,
@@ -2702,7 +2656,7 @@ async function queryEntitySeriesChunk(
       PerEntityHostedFamily,
       'managed.ingress' | 'managed.database_proxy'
     >
-    const built = buildSingleRowEntitySeriesSql(input, family, fields, entityIds, {
+    const built = buildSingleRowEntitySeriesSql(input, family, fields, {
       dataset,
       maxRangeSeconds,
     })
@@ -2741,6 +2695,33 @@ async function queryEntitySeriesChunk(
 // Entity ids seen — distinct entity ids of a family observed in a range.
 // ---------------------------------------------------------------------------
 
+/**
+ * The single-source families have no ids of their own in v7: the source is
+ * "seen" when the host row's first value for the family is not the sentinel.
+ */
+function buildSingleSourceSeenSql(
+  serverId: string,
+  family: 'managed.ingress' | 'managed.database_proxy',
+  discriminators: readonly string[],
+  dataset: string,
+  [fromUnix, toUnix]: readonly [number, number]
+): string {
+  const rowFamily = V7_SINGLE_SOURCE_FAMILIES[family].hostFamily
+  const anchor = SINGLE_ROW_FIELD_ORDER[family].findIndex((field) => field !== null)
+  return [
+    'SELECT',
+    `  ${quoteSqlString(V7_SOURCE_IDS[family])} AS ids`,
+    `FROM ${dataset}`,
+    `WHERE ${serverFamiliesPredicate(serverId, [rowFamily])}`,
+    `  AND ${discriminators[0]}`,
+    `  AND ${discriminators[1]}`,
+    `  AND ${familyPredicate(rowFamily)}`,
+    `  AND ${doubleColumn(anchor)} != ${aeMissingMetricSentinelSql()}`,
+    `  AND ${timeRangePredicate(fromUnix, toUnix)}`,
+    'LIMIT 1',
+  ].join('\n')
+}
+
 function buildEntityIdsSeenSql(
   input: EntityIdsSeenQuery,
   opts: { dataset: string; maxRangeSeconds: number }
@@ -2754,7 +2735,13 @@ function buildEntityIdsSeenSql(
   const fromUnix = Math.floor(from.getTime() / 1000)
   const toUnix = Math.floor(to.getTime() / 1000)
   const discriminators = hostMetricsDiscriminatorPredicates()
-  const idsCol = blobColumn(AE_BLOB_SOURCE_OR_IDENTITY_INDEX)
+  if (input.family === 'managed.ingress' || input.family === 'managed.database_proxy') {
+    return buildSingleSourceSeenSql(serverId, input.family, discriminators, opts.dataset, [
+      fromUnix,
+      toUnix,
+    ])
+  }
+  const idsCol = blobColumn(AE_BLOB_ENTITY_IDS_INDEX)
 
   return [
     'SELECT',
