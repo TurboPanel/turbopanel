@@ -1855,43 +1855,14 @@ type BucketEntityAccumulator = {
   fields: Map<string, EntityFieldAccumulator>
 }
 
-type FieldRaw = Parameters<typeof mergeFieldAccumulator>[2]
-
-function mergeDeltaSum(
+/** The accumulator so far, when it is of the given aggregation kind. */
+function priorAccumulator<K extends EntityFieldAccumulator['aggregation']>(
   existing: EntityFieldAccumulator | undefined,
-  raw: FieldRaw
-): EntityFieldAccumulator {
-  const prev = existing?.aggregation === 'delta-sum' ? existing : undefined
-  // A group whose delta-sum is the missing sentinel had no present rows:
-  // it adds nothing, and a field with no present group stays null.
-  const next = raw.raw === undefined ? null : stripAeSentinel(raw.raw)
-  const total = next === null ? (prev?.raw ?? null) : (prev?.raw ?? 0) + next
-  return { aggregation: 'delta-sum', raw: total }
-}
-
-function mergeMax(
-  existing: EntityFieldAccumulator | undefined,
-  raw: FieldRaw
-): EntityFieldAccumulator {
-  const prev = existing?.aggregation === 'max' ? existing : undefined
-  const nextRaw = raw.raw ?? aeMissingSentinelValue()
-  return {
-    aggregation: 'max',
-    raw: prev === undefined ? nextRaw : Math.max(prev.raw, nextRaw),
-  }
-}
-
-function mergeLast(
-  existing: EntityFieldAccumulator | undefined,
-  raw: FieldRaw
-): EntityFieldAccumulator {
-  const prev = existing?.aggregation === 'last' ? existing : undefined
-  const nextKey = raw.key ?? 0
-  const nextValue = raw.value ?? aeMissingSentinelValue()
-  if (prev === undefined || nextKey > prev.key) {
-    return { aggregation: 'last', value: nextValue, key: nextKey }
-  }
-  return prev
+  kind: K
+): Extract<EntityFieldAccumulator, { aggregation: K }> | undefined {
+  return existing?.aggregation === kind
+    ? (existing as Extract<EntityFieldAccumulator, { aggregation: K }>)
+    : undefined
 }
 
 function mergeFieldAccumulator(
@@ -1907,19 +1878,38 @@ function mergeFieldAccumulator(
 ): EntityFieldAccumulator {
   switch (aggregation) {
     case 'weighted-average': {
-      const prev = existing?.aggregation === 'weighted-average' ? existing : undefined
+      const prev = priorAccumulator(existing, 'weighted-average')
       return {
         aggregation: 'weighted-average',
         numerator: (prev?.numerator ?? 0) + (raw.numerator ?? 0),
         denominator: (prev?.denominator ?? 0) + (raw.denominator ?? 0),
       }
     }
-    case 'delta-sum':
-      return mergeDeltaSum(existing, raw)
-    case 'max':
-      return mergeMax(existing, raw)
-    case 'last':
-      return mergeLast(existing, raw)
+    case 'delta-sum': {
+      const prev = priorAccumulator(existing, 'delta-sum')
+      // A group whose delta-sum is the missing sentinel had no present rows:
+      // it adds nothing, and a field with no present group stays null.
+      const next = raw.raw === undefined ? null : stripAeSentinel(raw.raw)
+      const total = next === null ? (prev?.raw ?? null) : (prev?.raw ?? 0) + next
+      return { aggregation: 'delta-sum', raw: total }
+    }
+    case 'max': {
+      const prev = priorAccumulator(existing, 'max')
+      const nextRaw = raw.raw ?? aeMissingSentinelValue()
+      return {
+        aggregation: 'max',
+        raw: prev === undefined ? nextRaw : Math.max(prev.raw, nextRaw),
+      }
+    }
+    case 'last': {
+      const prev = priorAccumulator(existing, 'last')
+      const nextKey = raw.key ?? 0
+      const nextValue = raw.value ?? aeMissingSentinelValue()
+      if (prev === undefined || nextKey > prev.key) {
+        return { aggregation: 'last', value: nextValue, key: nextKey }
+      }
+      return prev
+    }
   }
 }
 
