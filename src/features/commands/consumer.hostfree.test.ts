@@ -14,6 +14,7 @@ import {
   enrichPingResult,
   errorMessage,
   extractObservedHostname,
+  failureErrorCodeField,
   hasManagedFollowUpDeps,
   isManagedObservedStatus,
   isPostgresUniqueViolation,
@@ -35,6 +36,15 @@ setResolveFleetPresence(resolveFleetPresence)
  * reports Deno suites as empty; keep this alias so analysis sees real tests.
  */
 const test = Deno.test.bind(Deno)
+
+test('failureErrorCodeField names a restore whose backup is gone', () => {
+  const gone = 'backup bk_01 is not on this host'
+  assertEquals(failureErrorCodeField('storage.restore', null, gone), {
+    errorCode: 'backup_not_found',
+  })
+  assertEquals(failureErrorCodeField('storage.backup', null, gone), {})
+  assertEquals(failureErrorCodeField('storage.restore', null, 'the restore helper failed'), {})
+})
 
 const MANAGED_ID = '00000000-0000-4000-8000-0000000000aa'
 const MEMBER_ID = '00000000-0000-4000-8000-0000000000dd'
