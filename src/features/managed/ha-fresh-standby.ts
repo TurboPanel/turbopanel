@@ -199,7 +199,7 @@ export function failureStartedAtMs(
  * lowest ordinal, then id. `null` for an empty list.
  */
 export function pickMostAdvancedStandby<
-  T extends { id: string; ordinal: number; receivedLsn?: string | undefined },
+  T extends { id: string; ordinal: number; receivedLsn?: string },
 >(accepted: readonly T[]): T | null {
   let best: T | null = null
   let bestLsn = -1n
