@@ -109,9 +109,7 @@ test('parseMountPatchFields rejects blank destinationPath and bad readOnly', asy
 
 test('parseCreateMountFields requires destinationPath and serviceId', async () => {
   const c = mockContext()
-  await expectInvalidRequest(
-    parseCreateMountFields(c, { mount: { serviceId: 'svc-1' } }),
-  )
+  await expectInvalidRequest(parseCreateMountFields(c, { mount: { serviceId: 'svc-1' } }))
   const blank = parseCreateMountFields(c, {
     mount: { serviceId: 'svc-1', destinationPath: '  ' },
   })
@@ -128,7 +126,7 @@ test('parseCopyRecord explains why a remote provider is refused', async () => {
   const response = parseCopyRecord(mockContext(), { provider: 's3', serverId: 'x' })
   if (!(response instanceof Response)) throw new TypeError('expected error response')
   assertEquals(response.status, 400)
-  const body = await response.json() as { error: string }
+  const body = (await response.json()) as { error: string }
   assertEquals(body.error.includes('docker, path'), true)
   assertEquals(body.error.includes('Remote storage'), true)
 })
