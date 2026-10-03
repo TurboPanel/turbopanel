@@ -11,8 +11,10 @@
  *
  * **Apply, for the one allowed server.** `managed` goes out; the daemon arms
  * its root rollback guard before loading anything and the rules stay pending
- * until `turbopaneld firewall confirm` on the host (this build never sends
- * `server.firewall.confirm`). **Teardown.** When a server that was sent an
+ * until the daemon confirms its own change (it makes an authenticated round
+ * trip to the control plane once the rules are live; if that fails the host
+ * rolls back after 120 s). This build never sends `server.firewall.confirm`
+ * and runs no firewall test or outside probe. **Teardown.** When a server that was sent an
  * apply loses either key, it is sent `mode: "off"` (remove TurboPanel's chains
  * and jumps, forget the documents, stop the guard) until the host reports the
  * removal; only then does it go back to plain previews. Teardown is never
@@ -434,9 +436,12 @@ export function statusOfResult(
 }
 
 /**
- * The bulwark columns an answer moves: an applied ruleset is pending until its
- * deadline (this build does not yet learn a host-side confirm or rollback), a
- * reported teardown is idle again. Previews and refusals move nothing.
+ * The bulwark columns an answer moves. An applied ruleset is `pending` until
+ * its deadline, or `confirmed` when the daemon confirmed its own change after
+ * reaching the control plane (`confirmation.autoConfirm`); the control plane
+ * runs no check and sends no confirm. A reported teardown is idle again. A
+ * preview that carries `lastRollback` says the host's guard undid a ruleset, so
+ * the state is `rolled_back`. Other previews and refusals move nothing.
  */
 export function bulwarkStateOfResult(
   status: FirewallPreviewStatus,
@@ -444,13 +449,16 @@ export function bulwarkStateOfResult(
   now: string
 ): Partial<typeof bulwark.$inferInsert> {
   if (status === 'applied') {
+    const confirmed = result.confirmation?.state === 'confirmed'
     return {
-      state: 'pending',
-      deadlineAt: result.confirmation?.deadlineAt ?? null,
+      state: confirmed ? 'confirmed' : 'pending',
+      deadlineAt: confirmed ? null : (result.confirmation?.deadlineAt ?? null),
       lastAppliedAt: now,
     }
   }
   if (status === 'removed') return { state: 'idle', deadlineAt: null }
+  if (status === 'previewed' && result.lastRollback)
+    return { state: 'rolled_back', deadlineAt: null }
   return {}
 }
 

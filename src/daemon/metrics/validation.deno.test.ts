@@ -1,6 +1,9 @@
 import { assertEquals } from '@std/assert'
 import { it } from '@std/testing/bdd'
-import { METRICS_SCHEMA_VERSION } from '../../contracts/metrics-contract.ts'
+import {
+  METRICS_LEGACY_WIRE_VERSION,
+  METRICS_SCHEMA_VERSION,
+} from '../../contracts/metrics-contract.ts'
 import { MAX_METRICS_PAYLOAD_BYTES, validateMetricsSample } from './validation.ts'
 
 /**
@@ -27,7 +30,7 @@ function validRaw(
   return {
     type: 'metrics',
     metadata: {
-      version: METRICS_SCHEMA_VERSION,
+      version: METRICS_LEGACY_WIRE_VERSION,
       sampledAt: new Date().toISOString(),
       intervalSeconds: 60,
       sequence: 1,
@@ -91,6 +94,62 @@ it('validateMetricsSample rejects oversized payloads via payloadBytes', () => {
 it('validateMetricsSample rejects a wrong metadata schema version', () => {
   const result = validateMetricsSample(validRaw({ metadata: { version: 99 } }), ctx())
   assertEquals(result.ok, false)
+})
+
+it('validateMetricsSample accepts both v6 and v7 samples and keeps the wire version', () => {
+  for (const version of [METRICS_LEGACY_WIRE_VERSION, METRICS_SCHEMA_VERSION]) {
+    const result = validateMetricsSample(validRaw({ metadata: { version } }), ctx())
+    assertEquals(result.ok, true)
+    if (result.ok) assertEquals(result.sample.metadata.version, version)
+  }
+})
+
+it('validateMetricsSample carries the durable flag and rejects a non-boolean one', () => {
+  const live = validateMetricsSample(
+    validRaw({
+      metadata: { version: METRICS_SCHEMA_VERSION, durable: false, intervalSeconds: 10 },
+    }),
+    ctx()
+  )
+  assertEquals(live.ok, true)
+  if (live.ok) assertEquals(live.sample.metadata.durable, false)
+  const plain = validateMetricsSample(validRaw(), ctx())
+  assertEquals(plain.ok && 'durable' in plain.sample.metadata, false)
+  const bad = validateMetricsSample(validRaw({ metadata: { durable: 'no' } }), ctx())
+  assertEquals(bad.ok, false)
+})
+
+it('validateMetricsSample accepts the v7 extended section and sanitizes it', () => {
+  const result = validateMetricsSample(
+    validRaw({
+      metadata: { version: METRICS_SCHEMA_VERSION },
+      extended: {
+        host: { oomKills: 2, pidLimitUsedPercent: null },
+        docker: { containersRunning: 3 },
+        ingress: { tlsCertSoonestExpiryDays: 30 },
+        text: { kernel: ' 6.8.0 ', failedUnits: '' },
+        blockDeviceText: [{ deviceId: 'nvme0n1', model: 'Samsung' }],
+        gpuText: [{ gpuId: 'gpu0', driver: 'nvidia' }],
+      },
+    }),
+    ctx()
+  )
+  assertEquals(result.ok, true)
+  if (!result.ok) return
+  assertEquals(result.sample.extended?.host, { oomKills: 2, pidLimitUsedPercent: null })
+  assertEquals(result.sample.extended?.text, { kernel: '6.8.0' })
+  assertEquals(result.sample.extended?.blockDeviceText, [{ deviceId: 'nvme0n1', model: 'Samsung' }])
+})
+
+it('validateMetricsSample rejects malformed extended sections', () => {
+  const bad = (extended: unknown) => validateMetricsSample(validRaw({ extended }), ctx())
+  assertEquals(bad({ nope: 1 }).ok, false)
+  assertEquals(bad({ host: { notAField: 1 } }).ok, false)
+  assertEquals(bad({ host: { oomKills: 'many' } }).ok, false)
+  assertEquals(bad({ text: { kernel: 5 } }).ok, false)
+  assertEquals(bad({ text: { kernel: 'x'.repeat(2000) } }).ok, false)
+  assertEquals(bad({ blockDeviceText: [{ model: 'no id' }] }).ok, false)
+  assertEquals(bad('x').ok, false)
 })
 
 it('validateMetricsSample rejects sampledAt outside the allowed skew window', () => {
@@ -196,10 +255,7 @@ it('validateMetricsSample rejects an entity entry missing its id field', () => {
 })
 
 it('validateMetricsSample rejects an unrecognized field on an entity entry', () => {
-  const result = validateMetricsSample(
-    validRaw({ gpus: [{ gpuId: 'gpu0', notAField: 1 }] }),
-    ctx()
-  )
+  const result = validateMetricsSample(validRaw({ gpus: [{ gpuId: 'gpu0', notAField: 1 }] }), ctx())
   assertEquals(result.ok, false)
 })
 
@@ -221,10 +277,7 @@ it('validateMetricsSample clamps an out-of-range entity field via its descriptor
 })
 
 it("validateMetricsSample requires a hardwareSignal's kind discriminator", () => {
-  const result = validateMetricsSample(
-    validRaw({ hardwareSignals: [{ signalId: 'sig0' }] }),
-    ctx()
-  )
+  const result = validateMetricsSample(validRaw({ hardwareSignals: [{ signalId: 'sig0' }] }), ctx())
   assertEquals(result.ok, false)
 })
 
@@ -300,10 +353,7 @@ it('validateMetricsSample rejects an unknown key inside the router block', () =>
 
 it('validateMetricsSample rejects a non-object router block and a non-numeric router field', () => {
   assertEquals(validateMetricsSample(validRaw({ router: 1 }), ctx()).ok, false)
-  assertEquals(
-    validateMetricsSample(validRaw({ router: { backendsUp: 'x' } }), ctx()).ok,
-    false
-  )
+  assertEquals(validateMetricsSample(validRaw({ router: { backendsUp: 'x' } }), ctx()).ok, false)
 })
 
 // ---------------------------------------------------------------------------

@@ -33,9 +33,19 @@ export type UpgradeSettings = {
   }
 }
 
+/**
+ * Customer fleets update one server at a time (one batch per upgrade tick, 15
+ * minutes by default). A throwaway environment can start larger through
+ * `TURBOPANEL_UPGRADE_BATCH`; a value saved in the panel always wins.
+ */
+export const DEFAULT_UPGRADE_BATCH: UpgradeSettings['batch'] = {
+  mode: 'count',
+  value: 1,
+}
+
 export const DEFAULT_UPGRADE_SETTINGS: UpgradeSettings = {
   autoUpdate: false,
-  batch: { mode: 'percent', value: 100 },
+  batch: { ...DEFAULT_UPGRADE_BATCH },
   maintenanceWindow: {
     enabled: false,
     startMinute: 0,
@@ -75,6 +85,18 @@ function isValidBatchValue(mode: UpgradeBatchMode, value: unknown): boolean {
   if (typeof value !== 'number' || !Number.isInteger(value)) return false
   if (mode === 'percent') return value >= PERCENT_MIN && value <= PERCENT_MAX
   return value >= COUNT_MIN && value <= COUNT_MAX
+}
+
+/**
+ * Parse `TURBOPANEL_UPGRADE_BATCH` (`count:5` or `percent:100`). Blank or
+ * anything outside the stored limits falls back to one server at a time.
+ */
+export function parseUpgradeBatchDefault(raw: string | undefined): UpgradeSettings['batch'] {
+  const match = /^(percent|count):(\d{1,5})$/.exec(raw?.trim() ?? '')
+  if (!match) return { ...DEFAULT_UPGRADE_BATCH }
+  const mode = match[1] as UpgradeBatchMode
+  const value = Number.parseInt(match[2], 10)
+  return isValidBatchValue(mode, value) ? { mode, value } : { ...DEFAULT_UPGRADE_BATCH }
 }
 
 function isValidWeekdays(value: unknown): value is number[] {
@@ -143,15 +165,22 @@ export function normalizeUpgradeSettings(value: unknown): UpgradeSettings | null
 
 /**
  * Read upgrade settings. An unset or invalid row falls back to
- * {@link DEFAULT_UPGRADE_SETTINGS}.
+ * {@link DEFAULT_UPGRADE_SETTINGS}, with `defaultBatch` (this environment's
+ * starting batch) in place of the built-in one.
  */
-export async function getUpgradeSettings(db: Db): Promise<UpgradeSettings> {
+export async function getUpgradeSettings(
+  db: Db,
+  defaultBatch: UpgradeSettings['batch'] = DEFAULT_UPGRADE_BATCH
+): Promise<UpgradeSettings> {
   const rows = await db
     .select({ value: setting.value })
     .from(setting)
     .where(eq(setting.key, UPGRADE_SETTINGS_KEY))
     .limit(1)
-  return normalizeUpgradeSettings(rows[0]?.value) ?? copySettings(DEFAULT_UPGRADE_SETTINGS)
+  return (
+    normalizeUpgradeSettings(rows[0]?.value) ??
+    copySettings({ ...DEFAULT_UPGRADE_SETTINGS, batch: defaultBatch })
+  )
 }
 
 /**

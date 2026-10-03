@@ -44,6 +44,7 @@ import {
   type MetricsDeploymentKind,
   metricsDeploymentKindForRuntime,
   resolveDefaultMetricsCapabilityPlan,
+  countHostLevelSignals,
   resolveServerMachineClass,
   truncateSampleToCapabilityPlan,
 } from '../contracts/capability-plan.ts'
@@ -717,7 +718,7 @@ async function resolveIngestPlanAndReconcileTopology(
     const machineClass = resolveServerMachineClass(
       planRow?.machineClass,
       snapshotForClass,
-      sample.hardwareSignals.length
+      countHostLevelSignals(sample.hardwareSignals)
     )
     if (
       planRow !== undefined &&
@@ -1639,6 +1640,15 @@ export function registerDaemonApiRoutes<E extends Env>(
 
       return c.json({ plaintexts }, 200)
     }
+  )
+
+  /**
+   * Authenticated no-op round trip. The daemon calls it after a firewall
+   * change goes live to prove it can still reach the control plane with a
+   * valid token; it reads nothing and the control plane runs no test of its own.
+   */
+  daemon.get('/ping', requireDaemonJwt, enforceJwtRestLimit('ping'), requireActiveDaemonKey, (c) =>
+    c.json({ ok: true, at: new Date().toISOString() }, 200)
   )
 
   daemon.post(

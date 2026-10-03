@@ -6,6 +6,7 @@ import {
   getUpgradeSettings,
   isValidUpgradeSettings,
   normalizeUpgradeSettings,
+  parseUpgradeBatchDefault,
   setUpgradeSettings,
   type UpgradeSettings,
   UPGRADE_SETTINGS_KEY,
@@ -31,9 +32,7 @@ function createFakeSettingDb(initial?: unknown) {
           return builder
         },
         limit(): Promise<Array<{ value: unknown }>> {
-          return stored === undefined
-            ? Promise.resolve([])
-            : Promise.resolve([{ value: stored }])
+          return stored === undefined ? Promise.resolve([]) : Promise.resolve([{ value: stored }])
         },
       }
       return builder
@@ -61,77 +60,67 @@ function sample(overrides: Partial<UpgradeSettings> = {}): UpgradeSettings {
     ...DEFAULT_UPGRADE_SETTINGS,
     ...overrides,
     batch: overrides.batch ?? DEFAULT_UPGRADE_SETTINGS.batch,
-    maintenanceWindow: overrides.maintenanceWindow ??
-      DEFAULT_UPGRADE_SETTINGS.maintenanceWindow,
+    maintenanceWindow: overrides.maintenanceWindow ?? DEFAULT_UPGRADE_SETTINGS.maintenanceWindow,
   }
 }
 
 test('isValidUpgradeSettings accepts the default and rejects drift', () => {
   assertEquals(isValidUpgradeSettings(DEFAULT_UPGRADE_SETTINGS), true)
   assertEquals(isValidUpgradeSettings(sample({ autoUpdate: true })), true)
-  assertEquals(
-    isValidUpgradeSettings(sample({ batch: { mode: 'count', value: 3 } })),
-    true,
-  )
+  assertEquals(isValidUpgradeSettings(sample({ batch: { mode: 'count', value: 3 } })), true)
   assertEquals(isValidUpgradeSettings(sample({ autoUpdate: 'yes' as never })), false)
+  assertEquals(isValidUpgradeSettings(sample({ batch: { mode: 'percent', value: 0 } })), false)
+  assertEquals(isValidUpgradeSettings(sample({ batch: { mode: 'percent', value: 101 } })), false)
+  assertEquals(isValidUpgradeSettings(sample({ batch: { mode: 'count', value: 0 } })), false)
   assertEquals(
-    isValidUpgradeSettings(sample({ batch: { mode: 'percent', value: 0 } })),
-    false,
+    isValidUpgradeSettings(
+      sample({
+        maintenanceWindow: {
+          enabled: true,
+          startMinute: 120,
+          durationMinutes: 60,
+          weekdays: [1, 1],
+        },
+      })
+    ),
+    false
   )
   assertEquals(
-    isValidUpgradeSettings(sample({ batch: { mode: 'percent', value: 101 } })),
-    false,
-  )
-  assertEquals(
-    isValidUpgradeSettings(sample({ batch: { mode: 'count', value: 0 } })),
-    false,
-  )
-  assertEquals(
-    isValidUpgradeSettings(sample({
-      maintenanceWindow: {
-        enabled: true,
-        startMinute: 120,
-        durationMinutes: 60,
-        weekdays: [1, 1],
-      },
-    })),
-    false,
-  )
-  assertEquals(
-    isValidUpgradeSettings(sample({
-      maintenanceWindow: {
-        enabled: false,
-        startMinute: 0,
-        durationMinutes: 60,
-        weekdays: [7],
-      },
-    })),
-    false,
+    isValidUpgradeSettings(
+      sample({
+        maintenanceWindow: {
+          enabled: false,
+          startMinute: 0,
+          durationMinutes: 60,
+          weekdays: [7],
+        },
+      })
+    ),
+    false
   )
 })
 
 test('normalizeUpgradeSettings sorts weekdays and drops invalid objects', () => {
-  const normalized = normalizeUpgradeSettings(sample({
-    maintenanceWindow: {
-      enabled: true,
-      startMinute: 60,
-      durationMinutes: 30,
-      weekdays: [5, 1],
-    },
-  }))
+  const normalized = normalizeUpgradeSettings(
+    sample({
+      maintenanceWindow: {
+        enabled: true,
+        startMinute: 60,
+        durationMinutes: 30,
+        weekdays: [5, 1],
+      },
+    })
+  )
   if (!normalized) throw new TypeError('expected valid settings')
   assertEquals(normalized.maintenanceWindow.weekdays, [1, 5])
   assertEquals(normalizeUpgradeSettings({ autoUpdate: false }), null)
 })
 
 test('getUpgradeSettings falls back when the row is missing or invalid', async () => {
-  assertEquals(
-    await getUpgradeSettings(createFakeSettingDb()),
-    DEFAULT_UPGRADE_SETTINGS,
-  )
+  assertEquals(await getUpgradeSettings(createFakeSettingDb()), DEFAULT_UPGRADE_SETTINGS)
   assertEquals(
     await getUpgradeSettings(createFakeSettingDb({ autoUpdate: 'no' })),
-    DEFAULT_UPGRADE_SETTINGS,
+    DEFAULT_UPGRADE_SETTINGS
   )
 })
 
@@ -140,7 +129,7 @@ test('setUpgradeSettings rejects invalid values and round-trips a valid one', as
   await assertRejects(
     () => setUpgradeSettings(db, sample({ batch: { mode: 'percent', value: 0 } })),
     TypeError,
-    'upgrade settings are invalid',
+    'upgrade settings are invalid'
   )
   const next = sample({
     autoUpdate: true,
@@ -157,4 +146,35 @@ test('setUpgradeSettings rejects invalid values and round-trips a valid one', as
   assertEquals(stored.autoUpdate, true)
   assertEquals(stored.batch, { mode: 'count', value: 4 })
   assertEquals(stored.maintenanceWindow.weekdays, [1, 3])
+})
+
+test('the built-in default is one server at a time', () => {
+  assertEquals(DEFAULT_UPGRADE_SETTINGS.batch, { mode: 'count', value: 1 })
+})
+
+test('parseUpgradeBatchDefault reads count and percent, else one at a time', () => {
+  assertEquals(parseUpgradeBatchDefault('percent:100'), { mode: 'percent', value: 100 })
+  assertEquals(parseUpgradeBatchDefault(' count:5 '), { mode: 'count', value: 5 })
+  const bad = [
+    undefined,
+    '',
+    'all',
+    'percent:0',
+    'percent:101',
+    'count:0',
+    'count:10001',
+    'count:x',
+  ]
+  for (const raw of bad) {
+    assertEquals(parseUpgradeBatchDefault(raw), { mode: 'count', value: 1 })
+  }
+})
+
+test('an unset row uses the environment default; a saved row wins', async () => {
+  const fallback = { mode: 'percent', value: 100 } as const
+  const unset = await getUpgradeSettings(createFakeSettingDb(), fallback)
+  assertEquals(unset.batch, fallback)
+  const saved = sample({ batch: { mode: 'count', value: 2 } })
+  const fake = createFakeSettingDb(saved)
+  assertEquals((await getUpgradeSettings(fake, fallback)).batch, { mode: 'count', value: 2 })
 })

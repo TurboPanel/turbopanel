@@ -19,7 +19,7 @@
  *     (audited as `server.firewall_mode.set`).
  * Either key alone keeps the server observe-only. What the host then does is
  * the daemon's commit-confirm: the root guard is armed before any rule is
- * loaded, the ruleset is pending until `turbopaneld firewall confirm`, and the
+ * loaded, the ruleset is pending until the daemon confirms its own change (or `turbopaneld firewall confirm`), and the
  * guard restores the confirmed rules at the deadline. Default drop stays held
  * by the daemon (`DEFAULT_DROP_HELD_WARNING`) whatever is sent.
  *

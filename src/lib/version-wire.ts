@@ -175,6 +175,7 @@ export const DAEMON_WIRE_FEATURES = [
   'managed-health-v1',
   'managed-ha-probe-v1',
   'managed-ha-instance-v1',
+  'metrics-v7',
   'php-site-modes-v1',
 ] as const
 
@@ -210,6 +211,13 @@ export const MANAGED_HA_PROBE_FEATURE: DaemonWireFeature = 'managed-ha-probe-v1'
  * daemon that does not list it keeps the legacy behavior (no binding).
  */
 export const MANAGED_HA_INSTANCE_FEATURE: DaemonWireFeature = 'managed-ha-instance-v1'
+
+/**
+ * Metrics schema v7 (`metadata.version` 7: the `extended` section and the
+ * `durable` flag). The daemon stamps the legacy wire version until the control
+ * plane it is attached to lists this feature.
+ */
+export const METRICS_V7_FEATURE: DaemonWireFeature = 'metrics-v7'
 
 /**
  * The daemon runs each PHP site in the mode its deploy asks for (`php.mode`).
