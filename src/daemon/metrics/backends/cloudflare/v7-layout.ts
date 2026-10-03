@@ -570,16 +570,7 @@ const BLOCK_SPEC: EntityRowSpec<BlockDeviceSample> = {
     entityNum('writeLatencyMs'),
     entityNum('queueDepth'),
   ],
-  blobs: [
-    {
-      read: (d, s) =>
-        s.extended?.blockDeviceText?.find((t) => t.deviceId === d.deviceId)?.model ?? '',
-    },
-    {
-      read: (d, s) =>
-        s.extended?.blockDeviceText?.find((t) => t.deviceId === d.deviceId)?.smart ?? '',
-    },
-  ],
+  blobs: [blockText('model'), blockText('smart')],
   perPage: 3,
 }
 
