@@ -490,7 +490,7 @@ export async function awaitOutcomeWithAckDeadline(
   // The ack may have landed while the connection was being dropped.
   const settled = await cell.getRequest(requestId)
   if (settled && ['done', 'failed', 'expired'].includes(settled.status)) return settled
-  if (settled && (settled.ackAt || settled.status !== 'sent')) {
+  if (settled?.ackAt || (settled && settled.status !== 'sent')) {
     return cell.waitForRequest(requestId, restMs)
   }
   const expired = await expireRequest.call(cell, requestId).catch(() => null)
