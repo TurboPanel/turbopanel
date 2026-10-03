@@ -73,6 +73,13 @@ on:
         required: false
         type: string
         default: ""
+    secrets:
+      RELEASE_APP_ID:
+        description: Optional - Release App id, used to move the canary tag past workflow changes
+        required: false
+      RELEASE_APP_PRIVATE_KEY:
+        description: Optional - the Release App private key PEM
+        required: false
 
 # Read-only by default. Writes: the `release` and `canary` jobs (the called
 # TurboPanel/dev workflows create the GitHub release / update the rolling
@@ -439,7 +446,7 @@ jobs:
 
       - name: Sign the manifest
         env:
-          RELEASE_SIGNING_KEY: ${{ secrets.TURBOPANEL_RELEASE_SIGNING_KEY || secrets.RELEASE_SIGNING_KEY }}
+          RELEASE_SIGNING_KEY: ${{ secrets.TURBOPANEL_RELEASE_SIGNING_KEY }}
         run: |
           set -eu
           deno run --config .manifest-signer/deno.json \

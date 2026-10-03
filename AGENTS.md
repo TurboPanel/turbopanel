@@ -1125,7 +1125,7 @@ The release package (`.github/workflows/release.yml`,
 Its `manifest.json` is **signed** before upload with the offline release key
 (`TURBOPANEL_RELEASE_SIGNING_KEY`, an environment secret with the same value in
 the `canary` (trunk), `rc` (staging) and `release` (live, owner-approved)
-environments: the signing job declares the one matching its channel). The `manifest` job runs turbopaneld's
+environments: the signing job declares the one matching its channel). There is no repo-level fallback and no `secrets: inherit`: callers pass only `RELEASE_APP_ID` / `RELEASE_APP_PRIVATE_KEY`. The `manifest` job runs turbopaneld's
 `scripts/sign-manifest.ts` from a SHA-pinned checkout, so the control plane,
 UI and daemon share one signer and one canonicaliser. A missing key, or one
 that does not match the public key pinned in that turbopaneld commit, fails

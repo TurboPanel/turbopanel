@@ -53,7 +53,9 @@ jobs:
       signer-ref: 93c4f94510c9499e6bf04366a9500fe9f8e38aaa
     permissions:
       contents: write # the rc tag
-    secrets: inherit
+    secrets:
+      RELEASE_APP_ID: ${{ secrets.RELEASE_APP_ID }}
+      RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
 
   publish:
     needs: prepare
@@ -67,7 +69,9 @@ jobs:
       target-commit: ${{ needs.prepare.outputs.commit }}
     permissions:
       contents: write # the GitHub (pre-)release + the rolling rc pointer
-    secrets: inherit
+    secrets:
+      RELEASE_APP_ID: ${{ secrets.RELEASE_APP_ID }}
+      RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
 
   finalize:
     needs: [prepare, publish]
@@ -80,4 +84,6 @@ jobs:
       manifest-filename: ${{ needs.prepare.outputs.manifest-filename }}
     permissions:
       contents: write # release flags + staging/live fast-forward
-    secrets: inherit
+    secrets:
+      RELEASE_APP_ID: ${{ secrets.RELEASE_APP_ID }}
+      RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
