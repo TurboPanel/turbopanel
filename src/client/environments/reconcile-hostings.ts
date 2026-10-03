@@ -35,6 +35,7 @@
  * untouched, which is what makes this additive rather than a migration.
  */
 
+import { firstSequential } from '../../lib/sequential.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 import { eq, inArray } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
@@ -795,10 +796,8 @@ async function reconcileHostingsInTransaction(
   }
   const staleIds = new Set(staleRows.map((row) => row.id))
 
-  for (const route of routes) {
-    const error = await reconcileDeclaredRoute(db, route, ctx)
-    if (error) throw new HostingReconcileRejected(error)
-  }
+  const rejection = await firstSequential(routes, (route) => reconcileDeclaredRoute(db, route, ctx))
+  if (rejection) throw new HostingReconcileRejected(rejection)
 
   const late = await pruneOrphanedComposeRows(
     db,
