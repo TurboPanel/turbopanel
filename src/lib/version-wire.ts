@@ -174,21 +174,9 @@ export const DAEMON_WIRE_FEATURES = [
   'sealed-instance-secrets-v1',
   'managed-health-v1',
   'managed-ha-probe-v1',
-  'metrics-v7',
 ] as const
 
 export type DaemonWireFeature = (typeof DAEMON_WIRE_FEATURES)[number]
-
-/**
- * Metrics schema v7. The control plane advertising it means it accepts v7
- * samples (`metadata.version` 7: the `extended` section and the `durable`
- * flag) and writes v7 rows; the daemon advertising it means it can produce
- * them. A daemon stamps `METRICS_LEGACY_WIRE_VERSION` until the control plane
- * it is attached to advertises this, so a daemon updated ahead of the control
- * plane keeps sending samples the old control plane accepts. The control
- * plane accepts both versions during the transition.
- */
-export const METRICS_V7_FEATURE: DaemonWireFeature = 'metrics-v7'
 
 /**
  * The daemon opens `tpdaemon` envelopes on `public-urls-update`
