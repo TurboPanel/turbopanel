@@ -460,10 +460,11 @@ export function createMemoryUpgradeStore(input?: {
 
 export function createDrizzleUpgradeStore(
   db: Db,
-  registry: DaemonCellRegistry | null
+  registry: DaemonCellRegistry | null,
+  defaultBatch?: UpgradeSettings['batch']
 ): UpgradeStore {
   return {
-    settings: () => getUpgradeSettings(db),
+    settings: () => getUpgradeSettings(db, defaultBatch),
     saveSettings: (settings) => setUpgradeSettings(db, settings),
     latestBuild: () => getLatestAvailableBuild(db),
     saveLatestBuild: (target) => setLatestAvailableBuild(db, target),

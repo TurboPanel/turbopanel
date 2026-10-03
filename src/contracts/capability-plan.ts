@@ -79,9 +79,10 @@ export type MetricsCapabilityPlan = {
   databaseProxyMetricsEnabled: boolean
   /**
    * Whether `dockerUsage` — Docker's own `GET /system/df` breakdown — may be
-   * reported. `storage` has no flag of its own: host-wide storage accounting
-   * is granted at every tier, the same way `diagnostics` needed no flag once
-   * v6 merged it.
+   * reported. Docker metrics are on every plan since v7: tier entitlements
+   * always grant it; only an explicit org/server override can turn it off.
+   * `storage` has no flag of its own: host-wide storage accounting is granted
+   * at every tier, the same way `diagnostics` needed no flag once v6 merged it.
    */
   managedDockerEnabled: boolean
   /** Whether hardware-health `events` may be reported. */
@@ -120,6 +121,32 @@ export function isServerMachineClass(value: unknown): value is ServerMachineClas
   return value === 'physical' || value === 'virtual'
 }
 
+/** Signal ids the daemon derives from a GPU entity (`signal:gpu:<gpuId>:<kind>`). */
+const GPU_SIGNAL_ID_PREFIX = 'signal:gpu:'
+
+/** True for a signal that exists only because a GPU does (never host-level hardware). */
+export function isGpuDerivedSignalId(signalId: unknown): boolean {
+  return typeof signalId === 'string' && signalId.startsWith(GPU_SIGNAL_ID_PREFIX)
+}
+
+/**
+ * How many of `signals` prove host-level sensors. GPU-derived signals are
+ * excluded: a virtual display adapter or passthrough GPU reports them on a VM
+ * too (the io/megaclite/themisto bug), so they never make a machine physical.
+ * Accepts topology snapshot entries (`{ signalId }`) and sample signals alike.
+ */
+export function countHostLevelSignals(signals: readonly unknown[]): number {
+  let count = 0
+  for (const signal of signals) {
+    const id =
+      typeof signal === 'object' && signal !== null
+        ? (signal as Record<string, unknown>).signalId
+        : undefined
+    if (!isGpuDerivedSignalId(id)) count += 1
+  }
+  return count
+}
+
 /**
  * Infer a machine class from whichever topology snapshot is on hand (the
  * daemon's `topology-report.snapshot`, stored verbatim by
@@ -128,7 +155,8 @@ export function isServerMachineClass(value: unknown): value is ServerMachineClas
  * wins: a bare-metal host with nothing discoverable is still physical.
  * Without it, the sensor proxy: a physical host is the only kind that ever
  * discovers host-level sensors, so a non-empty `hardwareSignals` array is
- * proof of `'physical'`; an empty one is only absence of proof and resolves
+ * proof of `'physical'` (GPU-derived signals excluded, see
+ * {@link countHostLevelSignals}); an empty one is only absence of proof and resolves
  * `'virtual'`. A snapshot that lacks the array entirely (none recorded, or a
  * minimal test snapshot) falls through to `sampleSignalCount` — the raw,
  * pre-truncation sample's own signal count at ingest, `0` on the read side
@@ -147,7 +175,7 @@ export function inferServerMachineClass(
     if (isServerMachineClass(declaredByDaemon)) return declaredByDaemon
     const signals = (topologySnapshot as Record<string, unknown>).hardwareSignals
     if (Array.isArray(signals)) {
-      return signals.length > 0 ? 'physical' : 'virtual'
+      return countHostLevelSignals(signals) > 0 ? 'physical' : 'virtual'
     }
   }
   return sampleSignalCount > 0 ? 'physical' : 'virtual'
@@ -216,18 +244,18 @@ export const PLATFORM_DEFAULT_METRICS_CAPABILITY_PLAN: MetricsCapabilityPlan = {
   physicalHardwareSignalSlots: 19,
   managedIngressEnabled: true,
   databaseProxyMetricsEnabled: true,
-  // Permissive when no license tier is bound. A bound entry-tier row turns
-  // this off via {@link metricsCapabilityPlanFromTierEntitlements}.
+  // On for every plan, tiered or not (v7).
   managedDockerEnabled: true,
   hardwareHealthEventsEnabled: true,
 }
 
 /**
- * Host-level hardware-signal slots granted to a physical machine on the
- * entry tier. Callers pass {@link MetricsCapabilityTierEntitlements.isEntryTier}
- * rather than a label so this module never names a priced SKU.
+ * Extra (non-root) filesystems the entry tier stores: one, because a lone
+ * extra filesystem folds into a host row at no row cost. Callers pass
+ * {@link MetricsCapabilityTierEntitlements.isEntryTier} rather than a label
+ * so this module never names a priced SKU.
  */
-const ENTRY_TIER_PHYSICAL_HARDWARE_SIGNAL_SLOTS = 11
+const ENTRY_TIER_EXTRA_FILESYSTEM_SLOTS = 1
 
 /**
  * Already-resolved numeric entitlements from a `tier` row. The caller
@@ -246,8 +274,9 @@ export type MetricsCapabilityTierEntitlements = {
  * Map a tier's raw entitlement columns onto {@link MetricsCapabilityPlan}.
  * Unspecified fields (cadence, interconnect, ingress, proxy, health events)
  * keep the platform default. `physicalHardwareSignalSlots` is still zeroed
- * for virtual machines; the entry-tier carve-out only applies to physical
- * hosts. `managedDockerEnabled` is off on the entry tier.
+ * for virtual machines and otherwise the platform default on every tier (the
+ * old entry-tier 11-signal cap is gone). The entry tier stores one extra
+ * filesystem. `managedDockerEnabled` is on for every tier.
  */
 export function metricsCapabilityPlanFromTierEntitlements(
   entitlements: MetricsCapabilityTierEntitlements,
@@ -256,21 +285,16 @@ export function metricsCapabilityPlanFromTierEntitlements(
 ): MetricsCapabilityPlan {
   const base = platformDefaultMetricsCapabilityPlan(machineClass, deployment)
   const normalNicSlots = Math.min(Math.max(entitlements.nicSlots, 0), MAX_NIC_SLOTS)
-  const extraFilesystemSlots = entitlements.isEntryTier ? 0 : entitlements.filesystemSlots
-  let physicalHardwareSignalSlots = 0
-  if (machineClass === 'physical') {
-    physicalHardwareSignalSlots = entitlements.isEntryTier
-      ? ENTRY_TIER_PHYSICAL_HARDWARE_SIGNAL_SLOTS
-      : base.physicalHardwareSignalSlots
-  }
+  const extraFilesystemSlots = entitlements.isEntryTier
+    ? Math.min(ENTRY_TIER_EXTRA_FILESYSTEM_SLOTS, entitlements.filesystemSlots)
+    : entitlements.filesystemSlots
   return {
     ...base,
     normalNicSlots,
     extraFilesystemSlots,
     detailedBlockDeviceSlots: entitlements.driveSlots,
     gpuSlots: entitlements.gpuSlots,
-    physicalHardwareSignalSlots,
-    managedDockerEnabled: !entitlements.isEntryTier,
+    managedDockerEnabled: true,
   }
 }
 

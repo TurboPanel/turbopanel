@@ -386,7 +386,7 @@ test("GET /billing/catalog lists active tiers from Postgres in ladder order with
     maxMemoryBytes: 64 * 1024 ** 3,
     nicSlots: 5,
     driveSlots: 6,
-    gpuSlots: 2,
+    gpuSlots: 1,
     filesystemSlots: 9,
   })
   assertEquals(body.tiers[1]!.entitlements.maxCores, 64)

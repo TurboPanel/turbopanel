@@ -60,7 +60,11 @@ function workersFleet(facts: FleetServerFact[], autoUpdate = true) {
   const store = createMemoryUpgradeStore({
     facts,
     latest: canaryTarget,
-    settings: { ...DEFAULT_UPGRADE_SETTINGS, autoUpdate },
+    settings: {
+      ...DEFAULT_UPGRADE_SETTINGS,
+      autoUpdate,
+      batch: { mode: 'percent', value: 100 },
+    },
   })
   const coordinator = createUpgradeCoordinator({
     store,
