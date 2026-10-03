@@ -1,4 +1,4 @@
-import { assertEquals } from "@std/assert";
+import { assertEquals } from '@std/assert'
 import {
   activeBatchIndex,
   batchComplete,
@@ -11,11 +11,8 @@ import {
   PLATFORM_PHASES,
   summarizeSteps,
   WORKERS_DISPATCH_BUDGET,
-} from "./run.ts";
-import {
-  UPGRADE_RUN_ERROR_CODES,
-  type UpgradeStepStatus,
-} from "./vocabulary.ts";
+} from './run.ts'
+import { UPGRADE_RUN_ERROR_CODES, type UpgradeStepStatus } from './vocabulary.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -23,56 +20,98 @@ import {
  * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
  * reports Deno suites as empty; keep this alias so analysis sees real tests.
  */
-const test = Deno.test.bind(Deno);
+const test = Deno.test.bind(Deno)
 
 function batch(pairs: Array<[number, UpgradeStepStatus]>) {
-  return pairs.map(([batchIndex, status]) => ({ batchIndex, status }));
+  return pairs.map(([batchIndex, status]) => ({ batchIndex, status }))
 }
 
-test("rolled_back is not terminal; failure statuses are", () => {
-  assertEquals(isTerminalStepStatus("done"), true);
-  assertEquals(isTerminalStepStatus("failed"), true);
-  assertEquals(isTerminalStepStatus("needs_attention"), true);
-  assertEquals(isTerminalStepStatus("rolled_back"), false);
-  assertEquals(isTerminalStepStatus("downloading"), false);
-});
+test('rolled_back is not terminal; failure statuses are', () => {
+  assertEquals(isTerminalStepStatus('done'), true)
+  assertEquals(isTerminalStepStatus('failed'), true)
+  assertEquals(isTerminalStepStatus('needs_attention'), true)
+  assertEquals(isTerminalStepStatus('rolled_back'), false)
+  assertEquals(isTerminalStepStatus('downloading'), false)
+})
 
-test("activeBatchIndex is the lowest incomplete batch", () => {
+test('activeBatchIndex is the lowest incomplete batch', () => {
   assertEquals(
-    activeBatchIndex(batch([[0, "done"], [1, "installing"], [1, "pending"]])),
-    1,
-  );
+    activeBatchIndex(
+      batch([
+        [0, 'done'],
+        [1, 'installing'],
+        [1, 'pending'],
+      ])
+    ),
+    1
+  )
   // A failure in batch 0 does not block batch 1 — it is terminal.
   assertEquals(
-    activeBatchIndex(batch([[0, "failed"], [1, "pending"]])),
-    1,
-  );
-  assertEquals(activeBatchIndex(batch([[0, "done"], [1, "skipped"]])), null);
-});
+    activeBatchIndex(
+      batch([
+        [0, 'failed'],
+        [1, 'pending'],
+      ])
+    ),
+    1
+  )
+  assertEquals(
+    activeBatchIndex(
+      batch([
+        [0, 'done'],
+        [1, 'skipped'],
+      ])
+    ),
+    null
+  )
+})
 
-test("batchComplete requires every step in the batch terminal", () => {
-  const steps = batch([[0, "done"], [0, "failed"], [1, "pending"]]);
-  assertEquals(batchComplete(steps, 0), true);
-  assertEquals(batchComplete(steps, 1), false);
-  assertEquals(batchComplete(steps, 9), false);
-});
+test('batchComplete requires every step in the batch terminal', () => {
+  const steps = batch([
+    [0, 'done'],
+    [0, 'failed'],
+    [1, 'pending'],
+  ])
+  assertEquals(batchComplete(steps, 0), true)
+  assertEquals(batchComplete(steps, 1), false)
+  assertEquals(batchComplete(steps, 9), false)
+})
 
-test("summarizeSteps and finalRunStatus classify outcomes", () => {
+test('summarizeSteps and finalRunStatus classify outcomes', () => {
   assertEquals(
-    finalRunStatus(batch([[0, "done"], [0, "skipped"]])),
-    "succeeded",
-  );
+    finalRunStatus(
+      batch([
+        [0, 'done'],
+        [0, 'skipped'],
+      ])
+    ),
+    'succeeded'
+  )
   assertEquals(
-    finalRunStatus(batch([[0, "failed"], [0, "needs_attention"]])),
-    "failed",
-  );
+    finalRunStatus(
+      batch([
+        [0, 'failed'],
+        [0, 'needs_attention'],
+      ])
+    ),
+    'failed'
+  )
   assertEquals(
-    finalRunStatus(batch([[0, "done"], [0, "failed"]])),
-    "partially_failed",
-  );
+    finalRunStatus(
+      batch([
+        [0, 'done'],
+        [0, 'failed'],
+      ])
+    ),
+    'partially_failed'
+  )
   const summary = summarizeSteps(
-    batch([[0, "done"], [0, "failed"], [0, "installing"]]),
-  );
+    batch([
+      [0, 'done'],
+      [0, 'failed'],
+      [0, 'installing'],
+    ])
+  )
   assertEquals(summary, {
     total: 3,
     done: 1,
@@ -80,123 +119,110 @@ test("summarizeSteps and finalRunStatus classify outcomes", () => {
     failed: 1,
     needsAttention: 0,
     inProgress: 1,
-  });
-});
+  })
+})
 
-test("a failed platform step is detected (fails the run, holds the gate)", () => {
-  assertEquals(
-    failedPlatformPhase([{ phase: "control_plane", status: "failed" }]),
-    "control_plane",
-  );
-  assertEquals(
-    failedPlatformPhase([{
-      phase: "control_plane",
-      status: "needs_attention",
-    }]),
-    "control_plane",
-  );
-  assertEquals(
-    failedPlatformPhase([{ phase: "colocated_daemon", status: "failed" }]),
-    "colocated_daemon",
-  );
+test('a failed platform step is detected (fails the run, holds the gate)', () => {
+  assertEquals(failedPlatformPhase([{ phase: 'control_plane', status: 'failed' }]), 'control_plane')
   assertEquals(
     failedPlatformPhase([
-      { phase: "control_plane", status: "failed" },
-      { phase: "colocated_daemon", status: "needs_attention" },
+      {
+        phase: 'control_plane',
+        status: 'needs_attention',
+      },
     ]),
-    "colocated_daemon",
-  );
+    'control_plane'
+  )
   assertEquals(
-    failedPlatformPhase([{ phase: "fleet", status: "failed" }]),
-    null,
-  );
-  assertEquals(platformFailureError("control_plane"), "control_plane_failed");
+    failedPlatformPhase([{ phase: 'colocated_daemon', status: 'failed' }]),
+    'colocated_daemon'
+  )
   assertEquals(
-    platformFailureError("colocated_daemon"),
-    "colocated_daemon_failed",
-  );
-});
+    failedPlatformPhase([
+      { phase: 'control_plane', status: 'failed' },
+      { phase: 'colocated_daemon', status: 'needs_attention' },
+    ]),
+    'colocated_daemon'
+  )
+  assertEquals(failedPlatformPhase([{ phase: 'fleet', status: 'failed' }]), null)
+  assertEquals(platformFailureError('control_plane'), 'control_plane_failed')
+  assertEquals(platformFailureError('colocated_daemon'), 'colocated_daemon_failed')
+})
 
-test("fleet gate: self-hosted needs both units on target", () => {
+test('fleet gate: self-hosted needs both units on target', () => {
   const base = {
     development: false,
-    runtime: "deno" as const,
+    runtime: 'deno' as const,
     channelHasInstancePackage: true,
     colocatedDaemonOnTarget: false,
     controlPlaneOnTarget: false,
-  };
-  assertEquals(isFleetGateSatisfied(base), false);
-  assertEquals(
-    isFleetGateSatisfied({ ...base, colocatedDaemonOnTarget: true }),
-    false,
-  );
+  }
+  assertEquals(isFleetGateSatisfied(base), false)
+  assertEquals(isFleetGateSatisfied({ ...base, colocatedDaemonOnTarget: true }), false)
   assertEquals(
     isFleetGateSatisfied({
       ...base,
       colocatedDaemonOnTarget: true,
       controlPlaneOnTarget: true,
     }),
-    true,
-  );
-});
+    true
+  )
+})
 
-test("fleet gate: trunk needs only the co-located daemon on target", () => {
+test('fleet gate: trunk needs only the co-located daemon on target', () => {
   assertEquals(
     isFleetGateSatisfied({
       development: false,
-      runtime: "deno",
+      runtime: 'deno',
       channelHasInstancePackage: false,
       colocatedDaemonOnTarget: true,
       controlPlaneOnTarget: false,
     }),
-    true,
-  );
-});
+    true
+  )
+})
 
-test("fleet gate: workers and development are always open", () => {
+test('fleet gate: workers and development are always open', () => {
   const shut = {
     development: false,
-    runtime: "workers" as const,
+    runtime: 'workers' as const,
     channelHasInstancePackage: true,
     colocatedDaemonOnTarget: false,
     controlPlaneOnTarget: false,
-  };
-  assertEquals(isFleetGateSatisfied(shut), true);
-  assertEquals(
-    isFleetGateSatisfied({ ...shut, runtime: "deno", development: true }),
-    true,
-  );
-});
+  }
+  assertEquals(isFleetGateSatisfied(shut), true)
+  assertEquals(isFleetGateSatisfied({ ...shut, runtime: 'deno', development: true }), true)
+})
 
-test("capWorkersDispatch limits Workers ticks but never Deno", () => {
-  const items = Array.from(
-    { length: WORKERS_DISPATCH_BUDGET + 10 },
-    (_, i) => i,
-  );
-  assertEquals(
-    capWorkersDispatch("workers", items).length,
-    WORKERS_DISPATCH_BUDGET,
-  );
-  assertEquals(capWorkersDispatch("deno", items).length, items.length);
-  assertEquals(capWorkersDispatch("workers", items, 3), [0, 1, 2]);
-});
+test('capWorkersDispatch limits Workers ticks but never Deno', () => {
+  const items = Array.from({ length: WORKERS_DISPATCH_BUDGET + 10 }, (_, i) => i)
+  assertEquals(capWorkersDispatch('workers', items).length, WORKERS_DISPATCH_BUDGET)
+  assertEquals(capWorkersDispatch('deno', items).length, items.length)
+  assertEquals(capWorkersDispatch('workers', items, 3), [0, 1, 2])
+})
 
-test("every platform phase fails a run with a code from the published run vocabulary", () => {
+test('every platform phase fails a run with a code from the published run vocabulary', () => {
   for (const phase of PLATFORM_PHASES) {
     assertEquals(
-      (UPGRADE_RUN_ERROR_CODES as readonly string[]).includes(
-        platformFailureError(phase),
-      ),
-      true,
-    );
+      (UPGRADE_RUN_ERROR_CODES as readonly string[]).includes(platformFailureError(phase)),
+      true
+    )
   }
-});
+})
 
-test("with a batch of 1 only one server is open at a time and a failure never starves the rest", () => {
-  const steps = batch([[0, "failed"], [1, "installing"], [2, "pending"]]);
-  assertEquals(activeBatchIndex(steps), 1);
-  assertEquals(batchComplete(steps, 0), true);
-  assertEquals(batchComplete(steps, 1), false);
-  const after = batch([[0, "failed"], [1, "needs_attention"], [2, "pending"]]);
-  assertEquals(activeBatchIndex(after), 2);
-});
+test('with a batch of 1 only one server is open at a time and a failure never starves the rest', () => {
+  const steps = batch([
+    [0, 'failed'],
+    [1, 'installing'],
+    [2, 'pending'],
+  ])
+  assertEquals(activeBatchIndex(steps), 1)
+  assertEquals(batchComplete(steps, 0), true)
+  assertEquals(batchComplete(steps, 1), false)
+  const after = batch([
+    [0, 'failed'],
+    [1, 'needs_attention'],
+    [2, 'pending'],
+  ])
+  assertEquals(activeBatchIndex(after), 2)
+})
