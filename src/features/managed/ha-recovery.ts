@@ -19,7 +19,8 @@ import {
   findLatestAcceptedAutomaticFailover,
   findLatestRecovery,
   findRecoveryById,
-  insertRecovery,
+  insertRecoveryIfFree,
+  recordBlockedRecovery,
   type RecoveryPatch,
   updateRecovery,
   updateRecoveryLocked,
@@ -553,7 +554,7 @@ async function beginRecovery(params: {
   }
 
   const haPresent = await detectHaPresent(params.db, params.members)
-  const recovery = await insertRecovery(params.db, {
+  const recovery = await insertRecoveryIfFree(params.db, {
     managedId: params.managedId,
     kind: params.kind,
     sourcePrimaryMemberId: params.source.id,
@@ -566,6 +567,8 @@ async function beginRecovery(params: {
       ...params.extraMetadata,
     },
   })
+  // Lost the race for the in-flight slot to a concurrent recovery.
+  if (!recovery) return { ok: false, error: 'managed_busy', status: 409 }
 
   const sourceOnline = await isServerConnected(params.db, params.source.serverId)
   if (!sourceOnline) {
@@ -671,7 +674,7 @@ async function recordAutoFailoverDisabled(params: {
     'managed-ha',
     `automatic failover for ${params.managedId} not started: ${AUTOMATIC_FAILOVER_DISABLED_REASON}`
   )
-  return insertRecovery(params.db, {
+  return recordBlockedRecovery(params.db, {
     managedId: params.managedId,
     kind: 'automatic-failover',
     sourcePrimaryMemberId: primary.id,
@@ -718,7 +721,7 @@ export async function beginAutomaticFailover(params: {
       params.members.find((row) => row.role === 'primary') ??
       params.members.find((row) => row.id === params.sourceMemberId)
     if (!coolingPrimary) return null
-    return insertRecovery(params.db, {
+    return recordBlockedRecovery(params.db, {
       managedId: params.managedId,
       kind: 'automatic-failover',
       sourcePrimaryMemberId: coolingPrimary.id,
@@ -741,7 +744,7 @@ export async function beginAutomaticFailover(params: {
   const candidate = OrchestratorManagedHaAuthority.pickAutomaticCandidate(inputs)
   if (!candidate) {
     const cause = automaticFailoverBlockCause(inputs) ?? 'no-candidate'
-    return insertRecovery(params.db, {
+    return recordBlockedRecovery(params.db, {
       managedId: params.managedId,
       kind: 'automatic-failover',
       sourcePrimaryMemberId: primary.id,
@@ -765,7 +768,7 @@ export async function beginAutomaticFailover(params: {
       'managed-ha',
       `automatic failover for ${params.managedId} not started: ${AUTOMATIC_FAILOVER_NO_QUEUE_REASON}`
     )
-    return insertRecovery(params.db, {
+    return recordBlockedRecovery(params.db, {
       managedId: params.managedId,
       kind: 'automatic-failover',
       sourcePrimaryMemberId: primary.id,
