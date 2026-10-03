@@ -176,8 +176,7 @@ export async function recordBlockedRecovery(
 ): Promise<RecoveryRecord> {
   const latest = await findLatestRecovery(db, params.managedId)
   if (
-    latest &&
-    latest.kind === params.kind &&
+    latest?.kind === params.kind &&
     latest.state === 'blocked' &&
     latest.targetMemberId === null &&
     latest.sourcePrimaryMemberId === params.sourcePrimaryMemberId &&
