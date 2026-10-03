@@ -314,9 +314,7 @@ function writeOrphanNetworkRow(fakeAe: FakeAnalyticsEngine, atMs: number): void 
     atMs
   )
   const points = buildMetricsDataPoints(sample, EMPTY_SLOT_MAPPING)
-  const orphanPoints = points.filter(
-    (p) => p.blobs[AE_BLOB_FAMILY_INDEX] === AE_FAMILY_NETWORK
-  )
+  const orphanPoints = points.filter((p) => p.blobs[AE_BLOB_FAMILY_INDEX] === AE_FAMILY_NETWORK)
   assertEquals(orphanPoints.length > 0, true, 'fixture must actually produce a network-family row')
   fakeAe.setNow(atMs)
   for (const point of orphanPoints) fakeAe.dataset.writeDataPoint(point)
@@ -418,5 +416,5 @@ it('orphan row (structural, AE): a network-family row can never satisfy a host-s
   // Every host query also requires the shared metrics-row discriminator —
   // an orphan row written through any other path still has to satisfy this
   // too, and blob2's family value alone already rules it out above.
-  assertEquals(hostMetricsDiscriminatorPredicates(), [`blob1 = 'metrics'`, `blob3 = '6'`])
+  assertEquals(hostMetricsDiscriminatorPredicates(), [`blob1 = 'metrics'`, `blob3 IN ('6', '7')`])
 })

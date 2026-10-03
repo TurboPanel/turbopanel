@@ -1,7 +1,7 @@
 /**
  * Cloudflare Analytics Engine positional field map for the current metrics
  * contract — the single source of truth for the double1..double20 /
- * blob1..blob20 layout on the `turbopanel_server_metrics_v6` dataset.
+ * blob1..blob20 layout on the `turbopanel_server_metrics_v7` dataset.
  *
  * Metrics are grouped by entity/family (`metric-descriptors.ts`'s
  * `hostedFamily`). This module is the packing layer for the active
@@ -70,7 +70,7 @@ import {
 import type { AuthenticatedMetricsSample, ServerStatusEvent, SlotMapping } from '../../types.ts'
 
 /** Analytics Engine dataset for the current metrics contract. */
-export const AE_DATASET_NAME = 'turbopanel_server_metrics_v6'
+export const AE_DATASET_NAME = 'turbopanel_server_metrics_v7'
 
 export const AE_DOUBLE_COUNT = 20
 export const AE_BLOB_COUNT = 20
@@ -890,7 +890,7 @@ export function buildMetricsBlobs(
   const blobs: string[] = new Array(AE_BLOB_COUNT).fill('')
   blobs[AE_BLOB_KIND_INDEX] = AE_KIND_METRICS
   blobs[AE_BLOB_FAMILY_INDEX] = family
-  blobs[AE_BLOB_SCHEMA_VERSION_INDEX] = String(sample.metadata.version)
+  blobs[AE_BLOB_SCHEMA_VERSION_INDEX] = String(METRICS_SCHEMA_VERSION)
   blobs[AE_BLOB_SAMPLED_AT_INDEX] = sample.metadata.sampledAt
   blobs[AE_BLOB_SEQUENCE_INDEX] = String(sample.metadata.sequence)
   blobs[AE_BLOB_TOPOLOGY_GENERATION_INDEX] = String(sample.metadata.topologyGeneration)
@@ -908,7 +908,7 @@ export function buildEventBlobs(
   const blobs: string[] = new Array(AE_BLOB_COUNT).fill('')
   blobs[AE_BLOB_KIND_INDEX] = AE_KIND_EVENT
   blobs[AE_BLOB_FAMILY_INDEX] = event.kind
-  blobs[AE_BLOB_SCHEMA_VERSION_INDEX] = String(sample.metadata.version)
+  blobs[AE_BLOB_SCHEMA_VERSION_INDEX] = String(METRICS_SCHEMA_VERSION)
   blobs[AE_BLOB_SAMPLED_AT_INDEX] = event.at
   blobs[AE_BLOB_SEQUENCE_INDEX] = String(sample.metadata.sequence)
   blobs[AE_BLOB_TOPOLOGY_GENERATION_INDEX] = String(sample.metadata.topologyGeneration)
