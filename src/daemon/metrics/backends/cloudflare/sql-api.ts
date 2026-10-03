@@ -32,13 +32,13 @@
  * all.
  */
 
-import { AE_SQL_MAX_LENGTH } from "./ae-sql-dialect.ts";
+import { AE_SQL_MAX_LENGTH } from './ae-sql-dialect.ts'
 import {
   HOST_METRICS_METRIC_DESCRIPTORS,
   type HostedFamily,
   type HostMetricsMetricDescriptor,
   type MetricEntityScope,
-} from "../../metric-descriptors.ts";
+} from '../../metric-descriptors.ts'
 import type {
   EntityIdsSeenQuery,
   EntityIdsSeenResult,
@@ -61,18 +61,18 @@ import type {
   StatusHistoryEvent,
   StatusHistoryQuery,
   StatusHistoryResult,
-} from "../../types.ts";
+} from '../../types.ts'
 import type {
-  MetricEvent,
   MetricEventKind,
   MetricEventSeverity,
-} from "../../../../contracts/metrics-contract.ts";
-import { computeStatusUptime } from "../../query/uptime.ts";
+  MetricEvent,
+} from '../../../../contracts/metrics-contract.ts'
+import { computeStatusUptime } from '../../query/uptime.ts'
 import {
   computeSeriesGapCount,
   defaultExpectedSamplesPerBucket,
   finalizeHostSeriesResult,
-} from "../../query/series-response.ts";
+} from '../../query/series-response.ts'
 import {
   AE_BLOB_EVENT_ENTITY_ID_INDEX,
   AE_BLOB_EVENT_ID_INDEX,
@@ -83,19 +83,18 @@ import {
   AE_BLOB_SOURCE_OR_IDENTITY_INDEX,
   AE_BLOB_TOPOLOGY_GENERATION_INDEX,
   AE_DATASET_NAME,
-  AE_EVENT_INDEX_SUFFIX,
-  AE_FAMILY_HOST_DIAGNOSTICS,
   AE_FAMILY_HOST_IO,
   AE_FAMILY_HOST_SYSTEM,
+  AE_FAMILY_HOST_DIAGNOSTICS,
   AE_FAMILY_MANAGED_DOCKER,
   AE_FAMILY_MANAGED_ROUTER,
   AE_FAMILY_MANAGED_STORAGE,
+  AE_EVENT_INDEX_SUFFIX,
   AE_INDEX_SERVER_ID_COLUMN,
   AE_KIND_EVENT,
   AE_KIND_METRICS,
   AE_KIND_STATUS,
   AE_TIMESTAMP_COLUMN,
-  aeIndexesForFamilies,
   blobColumn,
   doubleColumn,
   doubleIndexForHostField,
@@ -108,37 +107,38 @@ import {
   slotDoubleIndex,
   statusConnectedColumn,
   statusReasonColumn,
-} from "./field-map.ts";
+  aeIndexesForFamilies,
+} from './field-map.ts'
 
-export { AE_DATASET_NAME };
+export { AE_DATASET_NAME }
 
 /** Schema versions this read path understands (positional semantics must match). */
-export const AE_SUPPORTED_SCHEMA_VERSIONS: readonly number[] = [6, 7];
+export const AE_SUPPORTED_SCHEMA_VERSIONS: readonly number[] = [6, 7]
 
 /** Escape a string literal for AE SQL (single-quote doubling). Same idiom as v3's `quoteSqlString`. */
 export function quoteSqlString(value: string): string {
-  return `'${value.replaceAll("'", "''")}'`;
+  return `'${value.replaceAll("'", "''")}'`
 }
 
 function assertSafeDatasetName(dataset: string): string {
   if (dataset !== AE_DATASET_NAME && !/^[a-zA-Z_]\w*$/.test(dataset)) {
-    throw new TypeError(`invalid AE v5 dataset name: ${dataset}`);
+    throw new TypeError(`invalid AE v5 dataset name: ${dataset}`)
   }
-  return dataset;
+  return dataset
 }
 
 function assertPositiveInt(label: string, value: number): number {
   if (!Number.isInteger(value) || value <= 0) {
-    throw new TypeError(`${label} must be a positive integer, got: ${value}`);
+    throw new TypeError(`${label} must be a positive integer, got: ${value}`)
   }
-  return value;
+  return value
 }
 
 /** Accept only string serverIds from AE rows — never stringify objects. Local to this module (not exported by `sql-api.ts`). */
 function parseAeServerId(raw: unknown): string | null {
-  if (typeof raw !== "string") return null;
-  const id = raw.trim();
-  return id.length > 0 ? id : null;
+  if (typeof raw !== 'string') return null
+  const id = raw.trim()
+  return id.length > 0 ? id : null
 }
 
 // ---------------------------------------------------------------------------
@@ -155,235 +155,214 @@ function parseAeServerId(raw: unknown): string | null {
  * (three months / 90 days). Override via `CloudflareAnalyticsSqlConfig.maxRangeSeconds`
  * or `TURBOPANEL_SERVER_METRICS_AE_MAX_RANGE_SECONDS` on Workers.
  */
-export const AE_DEFAULT_MAX_RANGE_SECONDS = 90 * 24 * 60 * 60;
+export const AE_DEFAULT_MAX_RANGE_SECONDS = 90 * 24 * 60 * 60
 
 /** Default bucket when `resolutionSeconds` is omitted (5 minutes). */
-export const AE_DEFAULT_BUCKET_SECONDS = 300;
+export const AE_DEFAULT_BUCKET_SECONDS = 300
 
 export function assertSafeServerId(serverId: string): string {
   // Canonical UUID (any version) — reject anything that could break out of a string literal.
-  if (
-    !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
-      serverId,
-    )
-  ) {
-    throw new TypeError(`invalid serverId for AE SQL: ${serverId}`);
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(serverId)) {
+    throw new TypeError(`invalid serverId for AE SQL: ${serverId}`)
   }
-  return serverId;
+  return serverId
 }
 
 export function assertIsoTimestamp(label: string, value: string): Date {
-  const ms = Date.parse(value);
+  const ms = Date.parse(value)
   if (!Number.isFinite(ms)) {
-    throw new TypeError(`invalid ${label} timestamp: ${value}`);
+    throw new TypeError(`invalid ${label} timestamp: ${value}`)
   }
-  return new Date(ms);
+  return new Date(ms)
 }
 
-export function assertRange(
-  from: Date,
-  to: Date,
-  maxRangeSeconds: number,
-): void {
-  const spanSeconds = (to.getTime() - from.getTime()) / 1000;
+export function assertRange(from: Date, to: Date, maxRangeSeconds: number): void {
+  const spanSeconds = (to.getTime() - from.getTime()) / 1000
   if (spanSeconds <= 0) {
-    throw new TypeError("range must satisfy from < to");
+    throw new TypeError('range must satisfy from < to')
   }
   if (spanSeconds > maxRangeSeconds) {
-    throw new TypeError(`range exceeds max of ${maxRangeSeconds} seconds`);
+    throw new TypeError(`range exceeds max of ${maxRangeSeconds} seconds`)
   }
 }
 
 export type CloudflareAnalyticsSqlConfig = {
-  accountId: string;
-  apiToken: string;
+  accountId: string
+  apiToken: string
   /** Dataset / table name (defaults to `AE_DATASET_NAME`). */
-  dataset?: string;
+  dataset?: string
   /**
    * Max allowed `to - from` span in seconds.
    * Defaults to `AE_DEFAULT_MAX_RANGE_SECONDS` (documented AE retention).
    */
-  maxRangeSeconds?: number;
+  maxRangeSeconds?: number
   /** Injected for tests. */
-  fetch?: typeof fetch;
+  fetch?: typeof fetch
   /** Cancels the SQL subrequest rather than abandoning it. */
-  signal?: AbortSignal;
-};
+  signal?: AbortSignal
+}
 
 /** SQL payload nested under the Cloudflare v5 `result` field. */
 export type AnalyticsEngineSqlResult = {
-  meta?: Array<{ name: string; type: string }>;
-  data: Array<Record<string, unknown>>;
-  rows?: number;
-};
+  meta?: Array<{ name: string; type: string }>
+  data: Array<Record<string, unknown>>
+  rows?: number
+}
 
 type CloudflareError =
   | {
-    code?: number;
-    message?: string;
-  }
-  | string;
+      code?: number
+      message?: string
+    }
+  | string
 
 type CloudflareSqlEnvelope = {
-  success: boolean;
-  errors?: CloudflareError[];
-  messages?: unknown[];
+  success: boolean
+  errors?: CloudflareError[]
+  messages?: unknown[]
   result?: {
-    meta?: Array<{ name: string; type: string }>;
-    data?: Array<Record<string, unknown>>;
-    rows?: number;
-    error?: string;
-  } | null;
-};
+    meta?: Array<{ name: string; type: string }>
+    data?: Array<Record<string, unknown>>
+    rows?: number
+    error?: string
+  } | null
+}
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
 }
 
 function formatCloudflareError(err: CloudflareError): string {
-  if (typeof err === "string") return err.trim();
-  const msg = err.message?.trim();
-  if (msg) return msg;
-  if (err.code != null) return `code=${err.code}`;
-  return "";
+  if (typeof err === 'string') return err.trim()
+  const msg = err.message?.trim()
+  if (msg) return msg
+  if (err.code != null) return `code=${err.code}`
+  return ''
 }
 
 function collectAeSqlFailureDetail(
-  envelope: CloudflareSqlEnvelope & Record<string, unknown>,
+  envelope: CloudflareSqlEnvelope & Record<string, unknown>
 ): string {
   const messages = (envelope.errors ?? [])
     .map(formatCloudflareError)
-    .filter((msg) => msg.length > 0);
-  const result = envelope.result;
-  if (
-    isPlainObject(result) && typeof result.error === "string" &&
-    result.error.trim()
-  ) {
-    messages.push(result.error.trim());
+    .filter((msg) => msg.length > 0)
+  const result = envelope.result
+  if (isPlainObject(result) && typeof result.error === 'string' && result.error.trim()) {
+    messages.push(result.error.trim())
   }
-  if (messages.length > 0) return messages.join("; ");
-  return `opaque body keys=${
-    Object.keys(envelope)
-      .sort((a, b) => a.localeCompare(b))
-      .join(",")
-  }`;
+  if (messages.length > 0) return messages.join('; ')
+  return `opaque body keys=${Object.keys(envelope)
+    .sort((a, b) => a.localeCompare(b))
+    .join(',')}`
 }
 
 function unwrapAeSqlSuccessResult(
-  result: NonNullable<CloudflareSqlEnvelope["result"]>,
+  result: NonNullable<CloudflareSqlEnvelope['result']>
 ): AnalyticsEngineSqlResult {
-  if (typeof result.error === "string" && result.error.length > 0) {
-    throw new Error(`AE SQL query error: ${result.error}`);
+  if (typeof result.error === 'string' && result.error.length > 0) {
+    throw new Error(`AE SQL query error: ${result.error}`)
   }
-  const data = result.data;
+  const data = result.data
   if (data === undefined || data === null) {
     return {
       meta: result.meta,
       data: [],
-      rows: typeof result.rows === "number" ? result.rows : undefined,
-    };
+      rows: typeof result.rows === 'number' ? result.rows : undefined,
+    }
   }
   if (!Array.isArray(data)) {
-    throw new TypeError("AE SQL response result.data is not an array");
+    throw new TypeError('AE SQL response result.data is not an array')
   }
   return {
     meta: result.meta,
     data,
-    rows: typeof result.rows === "number" ? result.rows : undefined,
-  };
+    rows: typeof result.rows === 'number' ? result.rows : undefined,
+  }
 }
 
-export function parseCloudflareSqlResponse(
-  body: unknown,
-): AnalyticsEngineSqlResult {
+export function parseCloudflareSqlResponse(body: unknown): AnalyticsEngineSqlResult {
   if (!isPlainObject(body)) {
-    throw new TypeError("AE SQL response is not a JSON object");
+    throw new TypeError('AE SQL response is not a JSON object')
   }
   const envelope = body as CloudflareSqlEnvelope & {
-    data?: Array<Record<string, unknown>>;
-    meta?: Array<{ name: string; type: string }>;
-    rows?: number;
-  };
+    data?: Array<Record<string, unknown>>
+    meta?: Array<{ name: string; type: string }>
+    rows?: number
+  }
 
   // ClickHouse FORMAT JSON / bare SQL result — no v5 `success` field.
   if (envelope.success === undefined && Array.isArray(envelope.data)) {
     return {
       meta: envelope.meta,
       data: envelope.data,
-      rows: typeof envelope.rows === "number" ? envelope.rows : undefined,
-    };
+      rows: typeof envelope.rows === 'number' ? envelope.rows : undefined,
+    }
   }
 
   if (envelope.success !== true) {
-    throw new Error(`AE SQL API error: ${collectAeSqlFailureDetail(envelope)}`);
+    throw new Error(`AE SQL API error: ${collectAeSqlFailureDetail(envelope)}`)
   }
-  const result = envelope.result;
+  const result = envelope.result
   if (result == null) {
-    return { data: [] };
+    return { data: [] }
   }
   if (!isPlainObject(result)) {
-    throw new TypeError("AE SQL response result is not an object");
+    throw new TypeError('AE SQL response result is not an object')
   }
-  return unwrapAeSqlSuccessResult(result);
+  return unwrapAeSqlSuccessResult(result)
 }
 
-export { AE_SQL_MAX_LENGTH };
+export { AE_SQL_MAX_LENGTH }
 
 /**
  * Length the chunking query builders pack against: headroom under
  * {@link AE_SQL_MAX_LENGTH} so a slightly longer literal (a longer entity id,
  * a wider time bound) never tips a packed statement over the hard limit.
  */
-export const AE_SQL_CHUNK_BUDGET = 9_000;
+export const AE_SQL_CHUNK_BUDGET = 9_000
 
 /** Most chunked AE statements in flight at once for one logical query. */
-export const AE_SQL_CHUNK_CONCURRENCY = 4;
+export const AE_SQL_CHUNK_CONCURRENCY = 4
 
 async function executeSql(
   config: CloudflareAnalyticsSqlConfig,
   sql: string,
-  label?: string,
+  label?: string
 ): Promise<AnalyticsEngineSqlResult> {
-  const labelSuffix = label ? ` (${label})` : "";
+  const labelSuffix = label ? ` (${label})` : ''
   if (sql.length > AE_SQL_MAX_LENGTH) {
     // Refuse before the round trip: AE would answer 422 anyway, and this
     // names the builder that produced the oversized statement.
     throw new Error(
-      `AE SQL too long${labelSuffix}: ${sql.length} chars exceeds ${AE_SQL_MAX_LENGTH}`,
-    );
-  }
-  const accountId = config.accountId.trim();
-  if (!accountId) {
-    throw new TypeError("CLOUDFLARE_ACCOUNT_ID is required for AE SQL");
-  }
-  const token = config.apiToken.trim();
-  if (!token) {
-    throw new TypeError(
-      "TURBOPANEL_ANALYTICS_ENGINE_API_TOKEN is required for AE SQL",
-    );
-  }
-  const url = `https://api.cloudflare.com/client/v4/accounts/${
-    encodeURIComponent(
-      accountId,
+      `AE SQL too long${labelSuffix}: ${sql.length} chars exceeds ${AE_SQL_MAX_LENGTH}`
     )
-  }/analytics_engine/sql`;
-  const fetchFn = config.fetch ?? fetch;
+  }
+  const accountId = config.accountId.trim()
+  if (!accountId) {
+    throw new TypeError('CLOUDFLARE_ACCOUNT_ID is required for AE SQL')
+  }
+  const token = config.apiToken.trim()
+  if (!token) {
+    throw new TypeError('TURBOPANEL_ANALYTICS_ENGINE_API_TOKEN is required for AE SQL')
+  }
+  const url = `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(
+    accountId
+  )}/analytics_engine/sql`
+  const fetchFn = config.fetch ?? fetch
   const response = await fetchFn(url, {
-    method: "POST",
+    method: 'POST',
     headers: {
       Authorization: `Bearer ${token}`,
-      "Content-Type": "text/plain",
+      'Content-Type': 'text/plain',
     },
     body: sql,
     signal: config.signal,
-  });
+  })
   if (!response.ok) {
-    const body = await response.text();
-    throw new Error(
-      `AE SQL HTTP ${response.status}${labelSuffix}: ${body.slice(0, 500)}`,
-    );
+    const body = await response.text()
+    throw new Error(`AE SQL HTTP ${response.status}${labelSuffix}: ${body.slice(0, 500)}`)
   }
-  return parseCloudflareSqlResponse(await response.json());
+  return parseCloudflareSqlResponse(await response.json())
 }
 
 /**
@@ -392,15 +371,15 @@ async function executeSql(
  * need to run a pre-built statement.
  */
 export class CloudflareAnalyticsSqlClient {
-  readonly #config: CloudflareAnalyticsSqlConfig;
+  readonly #config: CloudflareAnalyticsSqlConfig
 
   constructor(config: CloudflareAnalyticsSqlConfig) {
-    this.#config = config;
+    this.#config = config
   }
 
   /** `label` names the query in error messages (never the token or the SQL). */
   executeSql(sql: string, label?: string): Promise<AnalyticsEngineSqlResult> {
-    return executeSql(this.#config, sql, label);
+    return executeSql(this.#config, sql, label)
   }
 }
 
@@ -413,47 +392,43 @@ export class CloudflareAnalyticsSqlClient {
 export function packItemsBySqlLength<T>(
   items: readonly T[],
   sqlLength: (chunk: readonly T[]) => number,
-  budget: number = AE_SQL_CHUNK_BUDGET,
+  budget: number = AE_SQL_CHUNK_BUDGET
 ): T[][] {
-  const chunks: T[][] = [];
-  let current: T[] = [];
+  const chunks: T[][] = []
+  let current: T[] = []
   for (const item of items) {
-    const candidate = [...current, item];
+    const candidate = [...current, item]
     if (sqlLength(candidate) <= budget) {
-      current = candidate;
-      continue;
+      current = candidate
+      continue
     }
-    if (current.length > 0) chunks.push(current);
-    current = [item];
+    if (current.length > 0) chunks.push(current)
+    current = [item]
     if (sqlLength(current) > budget) {
-      throw new RangeError(
-        `AE SQL for a single item exceeds the ${budget}-character budget`,
-      );
+      throw new RangeError(`AE SQL for a single item exceeds the ${budget}-character budget`)
     }
   }
-  if (current.length > 0) chunks.push(current);
-  return chunks;
+  if (current.length > 0) chunks.push(current)
+  return chunks
 }
 
 /** `fn` over `items` with at most `limit` calls in flight; results keep `items` order. */
 export async function mapWithConcurrency<T, R>(
   items: readonly T[],
   limit: number,
-  fn: (item: T, index: number) => Promise<R>,
+  fn: (item: T, index: number) => Promise<R>
 ): Promise<R[]> {
-  const results = new Array<R>(items.length);
-  let next = 0;
+  const results = new Array<R>(items.length)
+  let next = 0
   // Each worker claims the next unclaimed index, runs it, then claims again.
   const worker = async (): Promise<void> => {
-    if (next >= items.length) return;
-    const index = next++;
-    results[index] = await fn(items[index], index);
-    await worker();
-  };
-  await Promise.all(
-    Array.from({ length: Math.min(limit, items.length) }, worker),
-  );
-  return results;
+    if (next >= items.length) return
+    const index = next++
+    results[index] = await fn(items[index], index)
+    await worker()
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker))
+  return results
 }
 
 /**
@@ -467,46 +442,39 @@ export function packRowsAndColumns<R, C>(
   rows: readonly R[],
   columns: readonly C[],
   sqlLength: (rows: readonly R[], columns: readonly C[]) => number,
-  budget: number = AE_SQL_CHUNK_BUDGET,
+  budget: number = AE_SQL_CHUNK_BUDGET
 ): Array<{ rows: R[]; columns: C[] }> {
-  const probeRows = rows.slice(0, 1);
-  let widest = columns[0];
-  let widestLength = sqlLength(probeRows, [widest]);
+  const probeRows = rows.slice(0, 1)
+  let widest = columns[0]
+  let widestLength = sqlLength(probeRows, [widest])
   for (const column of columns.slice(1)) {
-    const length = sqlLength(probeRows, [column]);
+    const length = sqlLength(probeRows, [column])
     if (length > widestLength) {
-      widest = column;
-      widestLength = length;
+      widest = column
+      widestLength = length
     }
   }
   // Reserve what the remaining columns add beyond the widest one (at least
   // half the budget), so a row chunk usually carries every column at once.
-  const extraForAllColumns = sqlLength(probeRows, columns) - widestLength;
-  const rowBudget = Math.max(
-    Math.floor(budget / 2),
-    budget - extraForAllColumns,
-  );
-  const rowChunks = sqlLength(rows, [widest]) <= budget
-    ? [[...rows]]
-    : packItemsBySqlLength(rows, (chunk) =>
-      sqlLength(chunk, [widest]), rowBudget);
+  const extraForAllColumns = sqlLength(probeRows, columns) - widestLength
+  const rowBudget = Math.max(Math.floor(budget / 2), budget - extraForAllColumns)
+  const rowChunks =
+    sqlLength(rows, [widest]) <= budget
+      ? [[...rows]]
+      : packItemsBySqlLength(rows, (chunk) => sqlLength(chunk, [widest]), rowBudget)
   return rowChunks.flatMap((rowChunk) =>
-    packItemsBySqlLength(columns, (chunk) => sqlLength(rowChunk, chunk), budget)
-      .map(
-        (columnChunk) => ({ rows: rowChunk, columns: columnChunk }),
-      )
-  );
+    packItemsBySqlLength(columns, (chunk) => sqlLength(rowChunk, chunk), budget).map(
+      (columnChunk) => ({ rows: rowChunk, columns: columnChunk })
+    )
+  )
 }
 
 /** `"<name> 2/3"` — chunk position for error labels; just `name` when unchunked. */
 function chunkLabel(name: string, index: number, total: number): string {
-  return total > 1 ? `${name} ${index + 1}/${total}` : name;
+  return total > 1 ? `${name} ${index + 1}/${total}` : name
 }
 
-type PointWithValues = {
-  at: string;
-  values: Partial<Record<string, number | null>>;
-};
+type PointWithValues = { at: string; values: Partial<Record<string, number | null>> }
 
 /**
  * Merge series points produced by column-chunked queries of the same
@@ -515,40 +483,35 @@ type PointWithValues = {
  * chunk that reported the bucket — those columns do not depend on which
  * metrics a chunk selected. Result is ordered by `at` ascending.
  */
-export function mergePointsByAt<P extends PointWithValues>(
-  lists: readonly (readonly P[])[],
-): P[] {
-  if (lists.length === 1) return [...lists[0]];
-  const byAt = new Map<
-    string,
-    { point: P; values: PointWithValues["values"] }
-  >();
+export function mergePointsByAt<P extends PointWithValues>(lists: readonly (readonly P[])[]): P[] {
+  if (lists.length === 1) return [...lists[0]]
+  const byAt = new Map<string, { point: P; values: PointWithValues['values'] }>()
   for (const list of lists) {
     for (const point of list) {
-      const existing = byAt.get(point.at);
+      const existing = byAt.get(point.at)
       if (existing) {
-        Object.assign(existing.values, point.values);
+        Object.assign(existing.values, point.values)
       } else {
-        byAt.set(point.at, { point, values: { ...point.values } });
+        byAt.set(point.at, { point, values: { ...point.values } })
       }
     }
   }
   return [...byAt.values()]
     .map(({ point, values }) => ({ ...point, values }))
-    .sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+    .sort((a, b) => Date.parse(a.at) - Date.parse(b.at))
 }
 
 export function parseAeLatestAtMs(raw: unknown): number | null {
-  if (raw === null || raw === undefined) return null;
-  if (typeof raw === "number" && Number.isFinite(raw)) {
+  if (raw === null || raw === undefined) return null
+  if (typeof raw === 'number' && Number.isFinite(raw)) {
     // AE may return unix seconds or milliseconds.
-    return raw > 1e12 ? raw : raw * 1000;
+    return raw > 1e12 ? raw : raw * 1000
   }
-  if (typeof raw !== "string" || raw.length === 0) return null;
-  const match = BACKEND_UTC_DATETIME_RE.exec(raw);
-  const normalized = match === null ? raw : `${match[1]}T${match[2]}Z`;
-  const ms = Date.parse(normalized);
-  return Number.isFinite(ms) ? ms : null;
+  if (typeof raw !== 'string' || raw.length === 0) return null
+  const match = BACKEND_UTC_DATETIME_RE.exec(raw)
+  const normalized = match === null ? raw : `${match[1]}T${match[2]}Z`
+  const ms = Date.parse(normalized)
+  return Number.isFinite(ms) ? ms : null
 }
 
 /**
@@ -556,87 +519,78 @@ export function parseAeLatestAtMs(raw: unknown): number | null {
  * `YYYY-MM-DD HH:MM:SS.SSS`. Must be treated as UTC — engines may otherwise
  * parse the space-separated form as local time.
  */
-const BACKEND_UTC_DATETIME_RE =
-  /^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?)$/;
+const BACKEND_UTC_DATETIME_RE = /^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?)$/
 
 /** Cap on serverIds accepted into one fleet-snapshot `IN (...)` list. */
-export const MAX_FLEET_SNAPSHOT_SERVERS = 500;
+export const MAX_FLEET_SNAPSHOT_SERVERS = 500
 
 /** Quote + validate a non-empty list of server UUIDs for an SQL `IN (...)`. */
 export function quoteServerIdInList(serverIds: readonly string[]): string {
   if (serverIds.length === 0) {
-    throw new TypeError("serverIds must be non-empty for fleet snapshot SQL");
+    throw new TypeError('serverIds must be non-empty for fleet snapshot SQL')
   }
   if (serverIds.length > MAX_FLEET_SNAPSHOT_SERVERS) {
     throw new TypeError(
-      `serverIds length ${serverIds.length} exceeds max ${MAX_FLEET_SNAPSHOT_SERVERS}`,
-    );
+      `serverIds length ${serverIds.length} exceeds max ${MAX_FLEET_SNAPSHOT_SERVERS}`
+    )
   }
-  const seen = new Set<string>();
-  const quoted: string[] = [];
+  const seen = new Set<string>()
+  const quoted: string[] = []
   for (const raw of serverIds) {
-    const id = assertSafeServerId(raw);
-    if (seen.has(id)) continue;
-    seen.add(id);
-    quoted.push(quoteSqlString(id));
+    const id = assertSafeServerId(raw)
+    if (seen.has(id)) continue
+    seen.add(id)
+    quoted.push(quoteSqlString(id))
   }
   if (quoted.length === 0) {
-    throw new TypeError("serverIds must be non-empty for fleet snapshot SQL");
+    throw new TypeError('serverIds must be non-empty for fleet snapshot SQL')
   }
-  return quoted.join(", ");
+  return quoted.join(', ')
 }
 
 /**
  * Cap on status-history rows returned to the client. Builders request
  * `MAX_STATUS_EVENTS + 1` so the route can set `truncated`.
  */
-export const MAX_STATUS_EVENTS = 1000;
+export const MAX_STATUS_EVENTS = 1000
 
 const STATUS_TRANSITION_REASONS = new Set<string>([
-  "connect",
-  "disconnect",
-  "sweep_stale",
-  "self_heal",
-]);
+  'connect',
+  'disconnect',
+  'sweep_stale',
+  'self_heal',
+])
 
 /** Length of a canonical UUID serverId — the prefix every per-family index shares. */
-const SERVER_ID_LENGTH = 36;
+const SERVER_ID_LENGTH = 36
 
 /** Quoted `index1` values for a fleet host read: each server's host-family indexes. */
-function fleetHostIndexInList(
-  serverIds: readonly string[],
-  metrics: readonly string[],
-): string {
-  const families = hostFamiliesFor(metrics);
-  const seen = new Set<string>();
-  const quoted: string[] = [];
+function fleetHostIndexInList(serverIds: readonly string[], metrics: readonly string[]): string {
+  const families = hostFamiliesFor(metrics)
+  const seen = new Set<string>()
+  const quoted: string[] = []
   for (const raw of serverIds) {
-    for (
-      const index of aeIndexesForFamilies(assertSafeServerId(raw), families)
-    ) {
-      if (seen.has(index)) continue;
-      seen.add(index);
-      quoted.push(quoteSqlString(index));
+    for (const index of aeIndexesForFamilies(assertSafeServerId(raw), families)) {
+      if (seen.has(index)) continue
+      seen.add(index)
+      quoted.push(quoteSqlString(index))
     }
   }
-  return quoted.join(", ");
+  return quoted.join(', ')
 }
 
 function parseStatusConnected(raw: unknown): boolean | null {
-  if (typeof raw === "boolean") return raw;
-  const num = typeof raw === "number" ? raw : Number(raw);
-  if (!Number.isFinite(num)) return null;
-  return num >= 0.5;
+  if (typeof raw === 'boolean') return raw
+  const num = typeof raw === 'number' ? raw : Number(raw)
+  if (!Number.isFinite(num)) return null
+  return num >= 0.5
 }
 
-function parseStatusReason(
-  raw: unknown,
-  connected: boolean,
-): ServerStatusTransitionReason {
-  if (typeof raw === "string" && STATUS_TRANSITION_REASONS.has(raw)) {
-    return raw as ServerStatusTransitionReason;
+function parseStatusReason(raw: unknown, connected: boolean): ServerStatusTransitionReason {
+  if (typeof raw === 'string' && STATUS_TRANSITION_REASONS.has(raw)) {
+    return raw as ServerStatusTransitionReason
   }
-  return connected ? "connect" : "disconnect";
+  return connected ? 'connect' : 'disconnect'
 }
 
 /**
@@ -644,22 +598,20 @@ function parseStatusReason(
  * the v3-shaped AE status query (historically) and the DuckDB backend's own
  * `server_status_events` reads, which select the identical column aliases.
  */
-export function parseStatusEventRows(
-  rows: Array<Record<string, unknown>>,
-): StatusHistoryEvent[] {
-  const events: StatusHistoryEvent[] = [];
+export function parseStatusEventRows(rows: Array<Record<string, unknown>>): StatusHistoryEvent[] {
+  const events: StatusHistoryEvent[] = []
   for (const row of rows) {
-    const atMs = parseAeLatestAtMs(row.timestamp);
-    if (atMs === null) continue;
-    const connected = parseStatusConnected(row.connected);
-    if (connected === null) continue;
+    const atMs = parseAeLatestAtMs(row.timestamp)
+    if (atMs === null) continue
+    const connected = parseStatusConnected(row.connected)
+    if (connected === null) continue
     events.push({
       at: new Date(atMs).toISOString(),
       connected,
       reason: parseStatusReason(row.reason, connected),
-    });
+    })
   }
-  return events;
+  return events
 }
 
 /**
@@ -669,21 +621,21 @@ export function parseStatusEventRows(
  */
 export function resolveTruncatedStatusEvents(
   rawRows: Array<Record<string, unknown>>,
-  fromMs: number,
+  fromMs: number
 ): {
-  events: StatusHistoryEvent[];
-  truncated: boolean;
-  knownUntilMs: number | undefined;
+  events: StatusHistoryEvent[]
+  truncated: boolean
+  knownUntilMs: number | undefined
 } {
-  const truncated = rawRows.length > MAX_STATUS_EVENTS;
-  const rows = truncated ? rawRows.slice(0, MAX_STATUS_EVENTS) : rawRows;
-  const events = parseStatusEventRows(rows);
+  const truncated = rawRows.length > MAX_STATUS_EVENTS
+  const rows = truncated ? rawRows.slice(0, MAX_STATUS_EVENTS) : rawRows
+  const events = parseStatusEventRows(rows)
   if (!truncated) {
-    return { events, truncated: false, knownUntilMs: undefined };
+    return { events, truncated: false, knownUntilMs: undefined }
   }
-  const lastAt = events.length > 0 ? Date.parse(events.at(-1)!.at) : Number.NaN;
-  const knownUntilMs = Number.isFinite(lastAt) ? lastAt : fromMs;
-  return { events, truncated: true, knownUntilMs };
+  const lastAt = events.length > 0 ? Date.parse(events.at(-1)!.at) : Number.NaN
+  const knownUntilMs = Number.isFinite(lastAt) ? lastAt : fromMs
+  return { events, truncated: true, knownUntilMs }
 }
 
 /**
@@ -692,10 +644,10 @@ export function resolveTruncatedStatusEvents(
  * `checkLiveness` DO wake) quickly; a slightly-stale-but-alive server just
  * costs one extra wake (safe).
  */
-export const AE_LIVENESS_WINDOW_SECONDS = 180;
+export const AE_LIVENESS_WINDOW_SECONDS = 180
 
 /** Hard deadline for the offline-sweep AE liveness SQL read. */
-export const AE_LIVENESS_QUERY_TIMEOUT_MS = 5_000;
+export const AE_LIVENESS_QUERY_TIMEOUT_MS = 5_000
 
 /**
  * Fleet-wide v5 AE SQL: serverIds that emitted a `host.system` row within
@@ -707,17 +659,17 @@ export const AE_LIVENESS_QUERY_TIMEOUT_MS = 5_000;
  * (probed via `checkLiveness` as today) — correctness is preserved.
  */
 export function buildRecentlyActiveServerIdsSql(opts: {
-  sinceSeconds: number;
-  nowMs?: number;
-  dataset?: string;
+  sinceSeconds: number
+  nowMs?: number
+  dataset?: string
 }): string {
-  const sinceSeconds = assertPositiveInt("sinceSeconds", opts.sinceSeconds);
-  const dataset = assertSafeDatasetName(opts.dataset ?? AE_DATASET_NAME);
-  const fromUnix = Math.floor((opts.nowMs ?? Date.now()) / 1000) - sinceSeconds;
-  const discriminators = hostMetricsDiscriminatorPredicates();
+  const sinceSeconds = assertPositiveInt('sinceSeconds', opts.sinceSeconds)
+  const dataset = assertSafeDatasetName(opts.dataset ?? AE_DATASET_NAME)
+  const fromUnix = Math.floor((opts.nowMs ?? Date.now()) / 1000) - sinceSeconds
+  const discriminators = hostMetricsDiscriminatorPredicates()
 
   return [
-    "SELECT",
+    'SELECT',
     `  ${AE_INDEX_SERVER_ID_COLUMN} AS server_id,`,
     `  max(${AE_TIMESTAMP_COLUMN}) AS latest_at`,
     `FROM ${dataset}`,
@@ -726,7 +678,7 @@ export function buildRecentlyActiveServerIdsSql(opts: {
     `  AND ${familyPredicate(AE_FAMILY_HOST_SYSTEM)}`,
     `  AND ${AE_TIMESTAMP_COLUMN} >= toDateTime(${fromUnix})`,
     `GROUP BY server_id`,
-  ].join("\n");
+  ].join('\n')
 }
 
 /**
@@ -736,27 +688,27 @@ export function buildRecentlyActiveServerIdsSql(opts: {
  */
 export async function queryRecentlyActiveServerIds(
   config: CloudflareAnalyticsSqlConfig,
-  opts: { sinceSeconds: number; signal?: AbortSignal },
+  opts: { sinceSeconds: number; signal?: AbortSignal }
 ): Promise<Map<string, number>> {
-  const dataset = config.dataset ?? AE_DATASET_NAME;
+  const dataset = config.dataset ?? AE_DATASET_NAME
   const sql = buildRecentlyActiveServerIdsSql({
     sinceSeconds: opts.sinceSeconds,
     dataset,
-  });
+  })
   const result = await executeSql(
     { ...config, signal: opts.signal },
     sql,
-    "recentlyActiveServerIds",
-  );
-  const out = new Map<string, number>();
+    'recentlyActiveServerIds'
+  )
+  const out = new Map<string, number>()
   for (const row of result.data) {
-    const serverId = parseAeServerId(row.server_id);
-    if (serverId === null) continue;
-    const latestAtMs = parseAeLatestAtMs(row.latest_at);
-    if (latestAtMs === null) continue;
-    out.set(serverId, latestAtMs);
+    const serverId = parseAeServerId(row.server_id)
+    if (serverId === null) continue
+    const latestAtMs = parseAeLatestAtMs(row.latest_at)
+    if (latestAtMs === null) continue
+    out.set(serverId, latestAtMs)
   }
-  return out;
+  return out
 }
 
 /**
@@ -765,35 +717,36 @@ export async function queryRecentlyActiveServerIds(
  * `AE_BLOB_KIND_INDEX`).
  */
 export function kindDiscriminatorPredicates(kind: string): string[] {
-  const kindCol = blobColumn(AE_BLOB_KIND_INDEX);
-  const schemaVersionCol = blobColumn(AE_BLOB_SCHEMA_VERSION_INDEX);
+  const kindCol = blobColumn(AE_BLOB_KIND_INDEX)
+  const schemaVersionCol = blobColumn(AE_BLOB_SCHEMA_VERSION_INDEX)
   const schemaVersions = AE_SUPPORTED_SCHEMA_VERSIONS.map((version) =>
     quoteSqlString(String(version))
-  );
-  const schemaPredicate = schemaVersions.length === 1
-    ? `${schemaVersionCol} = ${schemaVersions[0]}`
-    : `${schemaVersionCol} IN (${schemaVersions.join(", ")})`;
-  return [`${kindCol} = ${quoteSqlString(kind)}`, schemaPredicate];
+  )
+  const schemaPredicate =
+    schemaVersions.length === 1
+      ? `${schemaVersionCol} = ${schemaVersions[0]}`
+      : `${schemaVersionCol} IN (${schemaVersions.join(', ')})`
+  return [`${kindCol} = ${quoteSqlString(kind)}`, schemaPredicate]
 }
 
 /** `"metrics"`-kind row discriminators (`blob1 = 'metrics'` + schema version). */
 export function hostMetricsDiscriminatorPredicates(): string[] {
-  return kindDiscriminatorPredicates(AE_KIND_METRICS);
+  return kindDiscriminatorPredicates(AE_KIND_METRICS)
 }
 
 /** `"event"`-kind row discriminators. */
 export function eventDiscriminatorPredicates(): string[] {
-  return kindDiscriminatorPredicates(AE_KIND_EVENT);
+  return kindDiscriminatorPredicates(AE_KIND_EVENT)
 }
 
 /** `"status"`-kind row discriminators. */
 export function statusDiscriminatorPredicates(): string[] {
-  return kindDiscriminatorPredicates(AE_KIND_STATUS);
+  return kindDiscriminatorPredicates(AE_KIND_STATUS)
 }
 
 /** `blob2 = '<family>'` predicate scoping an aggregate to one hosted family. */
 export function familyPredicate(family: HostedFamily): string {
-  return `${blobColumn(AE_BLOB_FAMILY_INDEX)} = ${quoteSqlString(family)}`;
+  return `${blobColumn(AE_BLOB_FAMILY_INDEX)} = ${quoteSqlString(family)}`
 }
 
 /**
@@ -802,7 +755,7 @@ export function familyPredicate(family: HostedFamily): string {
  * notation — so `pow(10, 308)` stands in, same idiom as v3.
  */
 export function aeMissingMetricSentinelSql(): string {
-  return "-pow(10, 308)";
+  return '-pow(10, 308)'
 }
 
 /**
@@ -812,7 +765,7 @@ export function aeMissingMetricSentinelSql(): string {
  * never anywhere near -1e307.
  */
 export function aePresentValueSql(col: string): string {
-  return `${col} > -pow(10, 307)`;
+  return `${col} > -pow(10, 307)`
 }
 
 /**
@@ -821,7 +774,7 @@ export function aePresentValueSql(col: string): string {
  * with no Caddy must show a gap, not a flat zero request line.
  */
 function presenceAwareSum(presentCount: string, sum: string): string {
-  return `if(${presentCount} > 0, ${sum}, ${aeMissingMetricSentinelSql()})`;
+  return `if(${presentCount} > 0, ${sum}, ${aeMissingMetricSentinelSql()})`
 }
 
 /**
@@ -829,11 +782,11 @@ function presenceAwareSum(presentCount: string, sum: string): string {
  * Threshold, not equality: the SQL-side sentinel is `-pow(10, 308)` and must
  * match after float round-trips. Same threshold as v3.
  */
-const AE_SENTINEL_STRIP_THRESHOLD = -1e307;
+const AE_SENTINEL_STRIP_THRESHOLD = -1e307
 
 /** Report a still-sentinel result as missing, never a number. */
 export function stripAeSentinel(value: number): number | null {
-  return value <= AE_SENTINEL_STRIP_THRESHOLD ? null : value;
+  return value <= AE_SENTINEL_STRIP_THRESHOLD ? null : value
 }
 
 /**
@@ -845,19 +798,14 @@ export function stripAeSentinel(value: number): number | null {
  * Unlike v3, no cross-row recombination is needed first — `family` already
  * identifies the one row per sample that carries this column.
  */
-export function weightedAvgExpressionForColumn(
-  family: HostedFamily,
-  doubleIndex: number,
-): string {
-  const col = doubleColumn(doubleIndex);
-  const familyPred = familyPredicate(family);
-  const weight = `${intervalSecondsColumn()} * _sample_interval`;
-  const present = aePresentValueSql(col);
-  const numerator =
-    `SUM(if(${familyPred}, if(${present}, ${col} * ${weight}, 0.0), 0.0))`;
-  const denominator =
-    `SUM(if(${familyPred}, if(${present}, ${weight} * 1.0, 0.0), 0.0))`;
-  return `${numerator} / ${denominator}`;
+export function weightedAvgExpressionForColumn(family: HostedFamily, doubleIndex: number): string {
+  const col = doubleColumn(doubleIndex)
+  const familyPred = familyPredicate(family)
+  const weight = `${intervalSecondsColumn()} * _sample_interval`
+  const present = aePresentValueSql(col)
+  const numerator = `SUM(if(${familyPred}, if(${present}, ${col} * ${weight}, 0.0), 0.0))`
+  const denominator = `SUM(if(${familyPred}, if(${present}, ${weight} * 1.0, 0.0), 0.0))`
+  return `${numerator} / ${denominator}`
 }
 
 /**
@@ -866,28 +814,22 @@ export function weightedAvgExpressionForColumn(
  * `intervalSeconds` (double20), since the delta already totals its own
  * collection interval. Same rationale as v3's `sum` aggregation.
  */
-export function deltaSumExpressionForColumn(
-  family: HostedFamily,
-  doubleIndex: number,
-): string {
-  const col = doubleColumn(doubleIndex);
-  const familyPred = familyPredicate(family);
-  const present = aePresentValueSql(col);
+export function deltaSumExpressionForColumn(family: HostedFamily, doubleIndex: number): string {
+  const col = doubleColumn(doubleIndex)
+  const familyPred = familyPredicate(family)
+  const present = aePresentValueSql(col)
   return presenceAwareSum(
     `SUM(if(${familyPred}, if(${present}, 1, 0), 0))`,
-    `SUM(if(${familyPred}, if(${present}, ${col} * _sample_interval, 0.0), 0.0))`,
-  );
+    `SUM(if(${familyPred}, if(${present}, ${col} * _sample_interval, 0.0), 0.0))`
+  )
 }
 
 /** `max` aggregate for one host.system/host.io column, scoped to its family. */
-export function maxValueExpressionForColumn(
-  family: HostedFamily,
-  doubleIndex: number,
-): string {
-  const col = doubleColumn(doubleIndex);
-  const familyPred = familyPredicate(family);
-  const sentinel = aeMissingMetricSentinelSql();
-  return `MAX(if(${familyPred}, ${col}, ${sentinel}))`;
+export function maxValueExpressionForColumn(family: HostedFamily, doubleIndex: number): string {
+  const col = doubleColumn(doubleIndex)
+  const familyPred = familyPredicate(family)
+  const sentinel = aeMissingMetricSentinelSql()
+  return `MAX(if(${familyPred}, ${col}, ${sentinel}))`
 }
 
 /**
@@ -895,18 +837,13 @@ export function maxValueExpressionForColumn(
  * row's own ingestion timestamp, with sentinel/other-family rows demoted to
  * ordering key `0` so any real observation always outranks them.
  */
-export function lastValueExpressionForColumn(
-  family: HostedFamily,
-  doubleIndex: number,
-): string {
-  const col = doubleColumn(doubleIndex);
-  const familyPred = familyPredicate(family);
-  const sentinel = aeMissingMetricSentinelSql();
-  const rawValue = `if(${familyPred}, ${col}, ${sentinel})`;
-  const tsExpr = `toUnixTimestamp(${AE_TIMESTAMP_COLUMN})`;
-  return `argMax(${rawValue}, if(${
-    aePresentValueSql(rawValue)
-  }, ${tsExpr}, ${tsExpr} * 0))`;
+export function lastValueExpressionForColumn(family: HostedFamily, doubleIndex: number): string {
+  const col = doubleColumn(doubleIndex)
+  const familyPred = familyPredicate(family)
+  const sentinel = aeMissingMetricSentinelSql()
+  const rawValue = `if(${familyPred}, ${col}, ${sentinel})`
+  const tsExpr = `toUnixTimestamp(${AE_TIMESTAMP_COLUMN})`
+  return `argMax(${rawValue}, if(${aePresentValueSql(rawValue)}, ${tsExpr}, ${tsExpr} * 0))`
 }
 
 /**
@@ -915,28 +852,24 @@ export function lastValueExpressionForColumn(
  * never double-count the way counting more than one v3 part would.
  */
 export function sampleCountExpression(): string {
-  return `SUM(if(${
-    familyPredicate(AE_FAMILY_HOST_SYSTEM)
-  }, _sample_interval * 1.0, 0.0))`;
+  return `SUM(if(${familyPredicate(AE_FAMILY_HOST_SYSTEM)}, _sample_interval * 1.0, 0.0))`
 }
 
 /** Latest observed sample timestamp (unix seconds) for a bucket/group, anchored on `host.system`. */
 export function latestAtExpression(): string {
-  return `MAX(if(${
-    familyPredicate(
-      AE_FAMILY_HOST_SYSTEM,
-    )
-  }, toUnixTimestamp(${AE_TIMESTAMP_COLUMN}), 0))`;
+  return `MAX(if(${familyPredicate(
+    AE_FAMILY_HOST_SYSTEM
+  )}, toUnixTimestamp(${AE_TIMESTAMP_COLUMN}), 0))`
 }
 
 /** Canonical half-open `[fromUnix, toUnix)` time-range predicate — matches v3 and `computeSeriesGapCount`'s coverage grid. */
 export function timeRangePredicate(fromUnix: number, toUnix: number): string {
-  return `${AE_TIMESTAMP_COLUMN} >= toDateTime(${fromUnix}) AND ${AE_TIMESTAMP_COLUMN} < toDateTime(${toUnix})`;
+  return `${AE_TIMESTAMP_COLUMN} >= toDateTime(${fromUnix}) AND ${AE_TIMESTAMP_COLUMN} < toDateTime(${toUnix})`
 }
 
 /** `index1 = '<serverId>'` predicate for the AE v6 dataset. */
 export function serverIdPredicate(serverId: string): string {
-  return `${AE_INDEX_SERVER_ID_COLUMN} = ${quoteSqlString(serverId)}`;
+  return `${AE_INDEX_SERVER_ID_COLUMN} = ${quoteSqlString(serverId)}`
 }
 
 /**
@@ -948,13 +881,11 @@ export function serverIdPredicate(serverId: string): string {
  */
 export function serverFamiliesPredicate(
   serverId: string,
-  families: readonly (HostedFamily | typeof AE_EVENT_INDEX_SUFFIX)[],
+  families: readonly (HostedFamily | typeof AE_EVENT_INDEX_SUFFIX)[]
 ): string {
-  const indexes = aeIndexesForFamilies(serverId, families);
-  if (indexes.length === 1) return serverIdPredicate(serverId);
-  return `${AE_INDEX_SERVER_ID_COLUMN} IN (${
-    indexes.map(quoteSqlString).join(", ")
-  })`;
+  const indexes = aeIndexesForFamilies(serverId, families)
+  if (indexes.length === 1) return serverIdPredicate(serverId)
+  return `${AE_INDEX_SERVER_ID_COLUMN} IN (${indexes.map(quoteSqlString).join(', ')})`
 }
 
 /**
@@ -969,15 +900,15 @@ export function serverFamiliesPredicate(
  * read `_` / `%` inside an entity id as wildcards.
  */
 export function entityIdInPageIdentityPredicate(entityId: string): string {
-  const col = blobColumn(AE_BLOB_SOURCE_OR_IDENTITY_INDEX);
-  const id = quoteSqlString(entityId);
-  const prefix = quoteSqlString(`${entityId},`);
-  const suffix = quoteSqlString(`,${entityId}`);
-  const middle = quoteSqlString(`,${entityId},`);
-  return `(${col} = ${id} OR startsWith(${col}, ${prefix}) OR endsWith(${col}, ${suffix}) OR position(${middle} IN ${col}) > 0)`;
+  const col = blobColumn(AE_BLOB_SOURCE_OR_IDENTITY_INDEX)
+  const id = quoteSqlString(entityId)
+  const prefix = quoteSqlString(`${entityId},`)
+  const suffix = quoteSqlString(`,${entityId}`)
+  const middle = quoteSqlString(`,${entityId},`)
+  return `(${col} = ${id} OR startsWith(${col}, ${prefix}) OR endsWith(${col}, ${suffix}) OR position(${middle} IN ${col}) > 0)`
 }
 
-export { assertSafeDatasetName };
+export { assertSafeDatasetName }
 
 // ---------------------------------------------------------------------------
 // Status history — see the module doc comment for why this query is in
@@ -986,23 +917,23 @@ export { assertSafeDatasetName };
 
 function buildStatusEventsSql(
   input: StatusHistoryQuery,
-  opts: { dataset: string; maxRangeSeconds: number },
+  opts: { dataset: string; maxRangeSeconds: number }
 ): string {
-  const serverId = assertSafeServerId(input.serverId);
-  const from = assertIsoTimestamp("from", input.from);
-  const to = assertIsoTimestamp("to", input.to);
-  assertRange(from, to, opts.maxRangeSeconds);
-  assertSafeDatasetName(opts.dataset);
+  const serverId = assertSafeServerId(input.serverId)
+  const from = assertIsoTimestamp('from', input.from)
+  const to = assertIsoTimestamp('to', input.to)
+  assertRange(from, to, opts.maxRangeSeconds)
+  assertSafeDatasetName(opts.dataset)
 
-  const fromUnix = Math.floor(from.getTime() / 1000);
-  const toUnix = Math.floor(to.getTime() / 1000);
-  const discriminators = statusDiscriminatorPredicates();
-  const connectedCol = statusConnectedColumn();
-  const reasonCol = statusReasonColumn();
-  const limit = MAX_STATUS_EVENTS + 1;
+  const fromUnix = Math.floor(from.getTime() / 1000)
+  const toUnix = Math.floor(to.getTime() / 1000)
+  const discriminators = statusDiscriminatorPredicates()
+  const connectedCol = statusConnectedColumn()
+  const reasonCol = statusReasonColumn()
+  const limit = MAX_STATUS_EVENTS + 1
 
   return [
-    "SELECT",
+    'SELECT',
     `  ${AE_TIMESTAMP_COLUMN} AS timestamp,`,
     `  ${connectedCol} AS connected,`,
     `  ${reasonCol} AS reason`,
@@ -1014,7 +945,7 @@ function buildStatusEventsSql(
     `  AND ${AE_TIMESTAMP_COLUMN} < toDateTime(${toUnix})`,
     `ORDER BY ${AE_TIMESTAMP_COLUMN} ASC`,
     `LIMIT ${limit}`,
-  ].join("\n");
+  ].join('\n')
 }
 
 /**
@@ -1023,21 +954,21 @@ function buildStatusEventsSql(
  */
 function buildStatusPriorStateSql(
   input: StatusHistoryQuery,
-  opts: { dataset: string; maxRangeSeconds: number },
+  opts: { dataset: string; maxRangeSeconds: number }
 ): string {
-  const serverId = assertSafeServerId(input.serverId);
-  const from = assertIsoTimestamp("from", input.from);
-  const to = assertIsoTimestamp("to", input.to);
-  assertRange(from, to, opts.maxRangeSeconds);
-  assertSafeDatasetName(opts.dataset);
+  const serverId = assertSafeServerId(input.serverId)
+  const from = assertIsoTimestamp('from', input.from)
+  const to = assertIsoTimestamp('to', input.to)
+  assertRange(from, to, opts.maxRangeSeconds)
+  assertSafeDatasetName(opts.dataset)
 
-  const fromUnix = Math.floor(from.getTime() / 1000);
-  const discriminators = statusDiscriminatorPredicates();
-  const connectedCol = statusConnectedColumn();
-  const reasonCol = statusReasonColumn();
+  const fromUnix = Math.floor(from.getTime() / 1000)
+  const discriminators = statusDiscriminatorPredicates()
+  const connectedCol = statusConnectedColumn()
+  const reasonCol = statusReasonColumn()
 
   return [
-    "SELECT",
+    'SELECT',
     `  ${AE_TIMESTAMP_COLUMN} AS timestamp,`,
     `  ${connectedCol} AS connected,`,
     `  ${reasonCol} AS reason`,
@@ -1048,7 +979,7 @@ function buildStatusPriorStateSql(
     `  AND ${AE_TIMESTAMP_COLUMN} < toDateTime(${fromUnix})`,
     `ORDER BY ${AE_TIMESTAMP_COLUMN} DESC`,
     `LIMIT 1`,
-  ].join("\n");
+  ].join('\n')
 }
 
 /**
@@ -1058,40 +989,39 @@ function buildStatusPriorStateSql(
  */
 export async function queryStatusHistoryViaSqlApi(
   config: CloudflareAnalyticsSqlConfig,
-  input: StatusHistoryQuery,
+  input: StatusHistoryQuery
 ): Promise<StatusHistoryResult> {
-  const dataset = config.dataset ?? AE_DATASET_NAME;
-  const maxRangeSeconds = config.maxRangeSeconds ??
-    AE_DEFAULT_MAX_RANGE_SECONDS;
-  const client = new CloudflareAnalyticsSqlClient(config);
+  const dataset = config.dataset ?? AE_DATASET_NAME
+  const maxRangeSeconds = config.maxRangeSeconds ?? AE_DEFAULT_MAX_RANGE_SECONDS
+  const client = new CloudflareAnalyticsSqlClient(config)
   const priorSql = buildStatusPriorStateSql(input, {
     dataset,
     maxRangeSeconds,
-  });
-  const eventsSql = buildStatusEventsSql(input, { dataset, maxRangeSeconds });
+  })
+  const eventsSql = buildStatusEventsSql(input, { dataset, maxRangeSeconds })
 
   const [priorResult, eventsResult] = await Promise.all([
-    client.executeSql(priorSql, "statusPriorState"),
-    client.executeSql(eventsSql, "statusEvents"),
-  ]);
+    client.executeSql(priorSql, 'statusPriorState'),
+    client.executeSql(eventsSql, 'statusEvents'),
+  ])
 
-  const priorConnected = parseStatusConnected(priorResult.data[0]?.connected);
-  const fromMs = Date.parse(input.from);
-  const toMs = Date.parse(input.to);
+  const priorConnected = parseStatusConnected(priorResult.data[0]?.connected)
+  const fromMs = Date.parse(input.from)
+  const toMs = Date.parse(input.to)
   const { events, truncated, knownUntilMs } = resolveTruncatedStatusEvents(
     eventsResult.data,
-    fromMs,
-  );
+    fromMs
+  )
   const uptime = computeStatusUptime({
     fromMs,
     toMs,
     initialConnected: priorConnected,
     events,
     knownUntilMs,
-  });
+  })
 
   return {
-    kind: "analytics-engine",
+    kind: 'analytics-engine',
     available: true,
     serverId: input.serverId,
     initialConnected: priorConnected,
@@ -1101,7 +1031,7 @@ export async function queryStatusHistoryViaSqlApi(
     unknownSeconds: uptime.unknownSeconds,
     uptimePercent: uptime.uptimePercent,
     truncated,
-  };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1118,27 +1048,27 @@ export async function queryStatusHistoryViaSqlApi(
 export function aggregateExpressionForDescriptor(
   descriptor: HostMetricsMetricDescriptor,
   family: HostedFamily,
-  doubleIndex: number,
+  doubleIndex: number
 ): string {
   switch (descriptor.aggregation) {
-    case "weighted-average":
-      return weightedAvgExpressionForColumn(family, doubleIndex);
-    case "delta-sum":
-      return deltaSumExpressionForColumn(family, doubleIndex);
-    case "max":
-      return maxValueExpressionForColumn(family, doubleIndex);
-    case "last":
-      return lastValueExpressionForColumn(family, doubleIndex);
+    case 'weighted-average':
+      return weightedAvgExpressionForColumn(family, doubleIndex)
+    case 'delta-sum':
+      return deltaSumExpressionForColumn(family, doubleIndex)
+    case 'max':
+      return maxValueExpressionForColumn(family, doubleIndex)
+    case 'last':
+      return lastValueExpressionForColumn(family, doubleIndex)
     default: {
-      const exhaustive: never = descriptor.aggregation;
-      throw new TypeError(`unhandled v5 metric aggregation: ${exhaustive}`);
+      const exhaustive: never = descriptor.aggregation
+      throw new TypeError(`unhandled v5 metric aggregation: ${exhaustive}`)
     }
   }
 }
 
 /** Positional column alias — canonical names contain dots, so requested metrics are aliased `m0`, `m1`, ... rather than by name. */
 function metricAlias(index: number): string {
-  return `m${index}`;
+  return `m${index}`
 }
 
 /**
@@ -1152,82 +1082,67 @@ function metricAlias(index: number): string {
  * index.
  */
 const HOST_SERIES_QUERYABLE_SCOPES: ReadonlySet<MetricEntityScope> = new Set([
-  "host.cpu",
-  "host.kernel",
-  "host.memory",
-  "host.storage",
-  "host.network",
-  "diagnostics",
-  "router",
-  "storage",
-  "dockerUsage",
-]);
+  'host.cpu',
+  'host.kernel',
+  'host.memory',
+  'host.storage',
+  'host.network',
+  'diagnostics',
+  'router',
+  'storage',
+  'dockerUsage',
+])
 
 /** Validate `metrics` are known canonical names scoped to a queryable host-singleton entity, de-duplicated, in request order. */
 function assertHostMetrics(metrics: readonly string[]): string[] {
   if (metrics.length === 0) {
-    throw new TypeError("metrics must be non-empty");
+    throw new TypeError('metrics must be non-empty')
   }
-  const seen = new Set<string>();
-  const result: string[] = [];
+  const seen = new Set<string>()
+  const result: string[] = []
   for (const name of metrics) {
-    const descriptor = HOST_METRICS_METRIC_DESCRIPTORS[name];
-    if (
-      !descriptor || !HOST_SERIES_QUERYABLE_SCOPES.has(descriptor.entityScope)
-    ) {
-      throw new TypeError(
-        `unknown or non-host v5 metric canonicalName: ${name}`,
-      );
+    const descriptor = HOST_METRICS_METRIC_DESCRIPTORS[name]
+    if (!descriptor || !HOST_SERIES_QUERYABLE_SCOPES.has(descriptor.entityScope)) {
+      throw new TypeError(`unknown or non-host v5 metric canonicalName: ${name}`)
     }
-    if (seen.has(name)) continue;
-    seen.add(name);
-    result.push(name);
+    if (seen.has(name)) continue
+    seen.add(name)
+    result.push(name)
   }
-  return result;
+  return result
 }
 
 /** `true` when any of `metrics` resolves to a `host.diagnostics` field, requiring that family's rows in the scan. */
 function requiresDiagnosticsFamily(metrics: readonly string[]): boolean {
   return metrics.some(
-    (name) =>
-      HOST_METRICS_METRIC_DESCRIPTORS[name]?.entityScope === "diagnostics",
-  );
+    (name) => HOST_METRICS_METRIC_DESCRIPTORS[name]?.entityScope === 'diagnostics'
+  )
 }
 
 /** `true` when any of `metrics` resolves to a `managed.router` field, requiring that family's rows in the scan. */
 function requiresRouterFamily(metrics: readonly string[]): boolean {
-  return metrics.some((name) =>
-    HOST_METRICS_METRIC_DESCRIPTORS[name]?.entityScope === "router"
-  );
+  return metrics.some((name) => HOST_METRICS_METRIC_DESCRIPTORS[name]?.entityScope === 'router')
 }
 
 /** `true` when any of `metrics` resolves to a `managed.storage` field, requiring that family's rows in the scan. */
 function requiresStorageFamily(metrics: readonly string[]): boolean {
-  return metrics.some((name) =>
-    HOST_METRICS_METRIC_DESCRIPTORS[name]?.entityScope === "storage"
-  );
+  return metrics.some((name) => HOST_METRICS_METRIC_DESCRIPTORS[name]?.entityScope === 'storage')
 }
 
 /** `true` when any of `metrics` resolves to a `managed.docker` field, requiring that family's rows in the scan. */
 function requiresDockerUsageFamily(metrics: readonly string[]): boolean {
   return metrics.some(
-    (name) =>
-      HOST_METRICS_METRIC_DESCRIPTORS[name]?.entityScope === "dockerUsage",
-  );
+    (name) => HOST_METRICS_METRIC_DESCRIPTORS[name]?.entityScope === 'dockerUsage'
+  )
 }
 
-function hostMetricSelectExpression(
-  canonicalName: string,
-  alias: string,
-): string {
-  const descriptor = HOST_METRICS_METRIC_DESCRIPTORS[canonicalName];
+function hostMetricSelectExpression(canonicalName: string, alias: string): string {
+  const descriptor = HOST_METRICS_METRIC_DESCRIPTORS[canonicalName]
   const { family, doubleIndex } = doubleIndexForHostField(
     descriptor.entityScope,
-    descriptor.fieldName,
-  );
-  return `${
-    aggregateExpressionForDescriptor(descriptor, family, doubleIndex)
-  } AS ${alias}`;
+    descriptor.fieldName
+  )
+  return `${aggregateExpressionForDescriptor(descriptor, family, doubleIndex)} AS ${alias}`
 }
 
 /**
@@ -1241,42 +1156,42 @@ function hostMetricSelectExpression(
  * doesn't pay to scan its rows.
  */
 function hostFamiliesFor(metrics: readonly string[]): HostedFamily[] {
-  const families: HostedFamily[] = [AE_FAMILY_HOST_SYSTEM, AE_FAMILY_HOST_IO];
+  const families: HostedFamily[] = [AE_FAMILY_HOST_SYSTEM, AE_FAMILY_HOST_IO]
   if (requiresDiagnosticsFamily(metrics)) {
-    families.push(AE_FAMILY_HOST_DIAGNOSTICS);
+    families.push(AE_FAMILY_HOST_DIAGNOSTICS)
   }
   if (requiresRouterFamily(metrics)) {
-    families.push(AE_FAMILY_MANAGED_ROUTER);
+    families.push(AE_FAMILY_MANAGED_ROUTER)
   }
   if (requiresStorageFamily(metrics)) {
-    families.push(AE_FAMILY_MANAGED_STORAGE);
+    families.push(AE_FAMILY_MANAGED_STORAGE)
   }
   if (requiresDockerUsageFamily(metrics)) {
-    families.push(AE_FAMILY_MANAGED_DOCKER);
+    families.push(AE_FAMILY_MANAGED_DOCKER)
   }
-  return families;
+  return families
 }
 
 function hostFamilyScopePredicate(metrics: readonly string[]): string {
-  return `(${hostFamiliesFor(metrics).map(familyPredicate).join(" OR ")})`;
+  return `(${hostFamiliesFor(metrics).map(familyPredicate).join(' OR ')})`
 }
 
 function parseHostMetricValues(
   metrics: readonly string[],
   aliases: readonly string[],
-  row: Record<string, unknown>,
+  row: Record<string, unknown>
 ): Partial<Record<string, number | null>> {
-  const values: Partial<Record<string, number | null>> = {};
+  const values: Partial<Record<string, number | null>> = {}
   metrics.forEach((name, i) => {
-    const raw = row[aliases[i]];
+    const raw = row[aliases[i]]
     if (raw === null || raw === undefined) {
-      values[name] = null;
-      return;
+      values[name] = null
+      return
     }
-    const num = typeof raw === "number" ? raw : Number(raw);
-    values[name] = Number.isFinite(num) ? stripAeSentinel(num) : null;
-  });
-  return values;
+    const num = typeof raw === 'number' ? raw : Number(raw)
+    values[name] = Number.isFinite(num) ? stripAeSentinel(num) : null
+  })
+  return values
 }
 
 /**
@@ -1287,57 +1202,55 @@ function parseHostMetricValues(
  * discipline as v3's `parseBucketHardwareProfileGeneration`.
  */
 function parseTopologyGeneration(row: Record<string, unknown>): number | null {
-  const min = row.topology_gen_min;
-  const max = row.topology_gen_max;
+  const min = row.topology_gen_min
+  const max = row.topology_gen_max
   if (min === null || min === undefined || max === null || max === undefined) {
-    return null;
+    return null
   }
-  if (typeof min !== "string" && typeof min !== "number") return null;
-  if (typeof max !== "string" && typeof max !== "number") return null;
-  if (String(min) !== String(max)) return null;
-  const num = typeof min === "number" ? min : Number(min);
-  return Number.isFinite(num) ? num : null;
+  if (typeof min !== 'string' && typeof min !== 'number') return null
+  if (typeof max !== 'string' && typeof max !== 'number') return null
+  if (String(min) !== String(max)) return null
+  const num = typeof min === 'number' ? min : Number(min)
+  return Number.isFinite(num) ? num : null
 }
 
 function parseBucketEpochSeconds(bucket: unknown): number {
-  if (typeof bucket === "number") return bucket;
-  if (typeof bucket === "string") return Number(bucket);
-  return Number.NaN;
+  if (typeof bucket === 'number') return bucket
+  if (typeof bucket === 'string') return Number(bucket)
+  return Number.NaN
 }
 
 function buildHostSeriesSql(
   input: HostSeriesQuery,
-  opts: { dataset: string; maxRangeSeconds: number },
+  opts: { dataset: string; maxRangeSeconds: number }
 ): {
-  sql: string;
-  metrics: string[];
-  aliases: string[];
-  bucketSeconds: number;
+  sql: string
+  metrics: string[]
+  aliases: string[]
+  bucketSeconds: number
 } {
-  const serverId = assertSafeServerId(input.serverId);
-  const metrics = assertHostMetrics(input.metrics);
-  const from = assertIsoTimestamp("from", input.from);
-  const to = assertIsoTimestamp("to", input.to);
-  assertRange(from, to, opts.maxRangeSeconds);
+  const serverId = assertSafeServerId(input.serverId)
+  const metrics = assertHostMetrics(input.metrics)
+  const from = assertIsoTimestamp('from', input.from)
+  const to = assertIsoTimestamp('to', input.to)
+  assertRange(from, to, opts.maxRangeSeconds)
   const bucketSeconds = assertPositiveInt(
-    "resolutionSeconds",
-    input.resolutionSeconds ?? AE_DEFAULT_BUCKET_SECONDS,
-  );
-  assertSafeDatasetName(opts.dataset);
+    'resolutionSeconds',
+    input.resolutionSeconds ?? AE_DEFAULT_BUCKET_SECONDS
+  )
+  assertSafeDatasetName(opts.dataset)
 
-  const fromUnix = Math.floor(from.getTime() / 1000);
-  const toUnix = Math.floor(to.getTime() / 1000);
-  const discriminators = hostMetricsDiscriminatorPredicates();
-  const aliases = metrics.map((_, i) => metricAlias(i));
-  const metricSelects = metrics.map((name, i) =>
-    hostMetricSelectExpression(name, aliases[i])
-  );
-  const generationCol = blobColumn(AE_BLOB_TOPOLOGY_GENERATION_INDEX);
-  const hostSystemPred = familyPredicate(AE_FAMILY_HOST_SYSTEM);
-  const allSelects = metricSelects;
+  const fromUnix = Math.floor(from.getTime() / 1000)
+  const toUnix = Math.floor(to.getTime() / 1000)
+  const discriminators = hostMetricsDiscriminatorPredicates()
+  const aliases = metrics.map((_, i) => metricAlias(i))
+  const metricSelects = metrics.map((name, i) => hostMetricSelectExpression(name, aliases[i]))
+  const generationCol = blobColumn(AE_BLOB_TOPOLOGY_GENERATION_INDEX)
+  const hostSystemPred = familyPredicate(AE_FAMILY_HOST_SYSTEM)
+  const allSelects = metricSelects
 
   const sql = [
-    "SELECT",
+    'SELECT',
     `  intDiv(toUnixTimestamp(${AE_TIMESTAMP_COLUMN}), ${bucketSeconds}) * ${bucketSeconds} AS bucket,`,
     `  ${sampleCountExpression()} AS sample_count,`,
     `  SUM(if(${hostSystemPred}, ${intervalSecondsColumn()} * _sample_interval, 0.0)) / ${sampleCountExpression()} AS avg_interval_seconds,`,
@@ -1354,7 +1267,7 @@ function buildHostSeriesSql(
     // as argument 1 in max"), hence the documented toUInt32 conversion.
     `  MIN(toUInt32(${generationCol})) AS topology_gen_min,`,
     `  MAX(toUInt32(${generationCol})) AS topology_gen_max,`,
-    `  ${allSelects.join(",\n  ")}`,
+    `  ${allSelects.join(',\n  ')}`,
     `FROM ${opts.dataset}`,
     `WHERE ${serverFamiliesPredicate(serverId, hostFamiliesFor(metrics))}`,
     `  AND ${discriminators[0]}`,
@@ -1363,9 +1276,9 @@ function buildHostSeriesSql(
     `  AND ${timeRangePredicate(fromUnix, toUnix)}`,
     `GROUP BY bucket`,
     `ORDER BY bucket ASC`,
-  ].join("\n");
+  ].join('\n')
 
-  return { sql, metrics, aliases, bucketSeconds };
+  return { sql, metrics, aliases, bucketSeconds }
 }
 
 /**
@@ -1376,21 +1289,21 @@ function buildHostSeriesSql(
  */
 function buildTopologyGenerationsSql(
   input: HostSeriesQuery,
-  opts: { dataset: string; maxRangeSeconds: number },
+  opts: { dataset: string; maxRangeSeconds: number }
 ): string {
-  const serverId = assertSafeServerId(input.serverId);
-  const from = assertIsoTimestamp("from", input.from);
-  const to = assertIsoTimestamp("to", input.to);
-  assertRange(from, to, opts.maxRangeSeconds);
-  assertSafeDatasetName(opts.dataset);
+  const serverId = assertSafeServerId(input.serverId)
+  const from = assertIsoTimestamp('from', input.from)
+  const to = assertIsoTimestamp('to', input.to)
+  assertRange(from, to, opts.maxRangeSeconds)
+  assertSafeDatasetName(opts.dataset)
 
-  const fromUnix = Math.floor(from.getTime() / 1000);
-  const toUnix = Math.floor(to.getTime() / 1000);
-  const discriminators = hostMetricsDiscriminatorPredicates();
-  const generationCol = blobColumn(AE_BLOB_TOPOLOGY_GENERATION_INDEX);
+  const fromUnix = Math.floor(from.getTime() / 1000)
+  const toUnix = Math.floor(to.getTime() / 1000)
+  const discriminators = hostMetricsDiscriminatorPredicates()
+  const generationCol = blobColumn(AE_BLOB_TOPOLOGY_GENERATION_INDEX)
 
   return [
-    "SELECT",
+    'SELECT',
     `  ${generationCol} AS generation`,
     `FROM ${opts.dataset}`,
     `WHERE ${serverIdPredicate(serverId)}`,
@@ -1399,46 +1312,44 @@ function buildTopologyGenerationsSql(
     `  AND ${familyPredicate(AE_FAMILY_HOST_SYSTEM)}`,
     `  AND ${timeRangePredicate(fromUnix, toUnix)}`,
     `GROUP BY generation`,
-  ].join("\n");
+  ].join('\n')
 }
 
-function parseTopologyGenerationsRows(
-  data: Array<Record<string, unknown>>,
-): number[] {
-  const generations = new Set<number>();
+function parseTopologyGenerationsRows(data: Array<Record<string, unknown>>): number[] {
+  const generations = new Set<number>()
   for (const row of data) {
-    const raw = row.generation;
-    const num = typeof raw === "number" ? raw : Number(raw);
-    if (Number.isFinite(num)) generations.add(num);
+    const raw = row.generation
+    const num = typeof raw === 'number' ? raw : Number(raw)
+    if (Number.isFinite(num)) generations.add(num)
   }
-  return [...generations].sort((a, b) => a - b);
+  return [...generations].sort((a, b) => a - b)
 }
 
 function parseHostSeriesRows(
   metrics: readonly string[],
   aliases: readonly string[],
   data: Array<Record<string, unknown>>,
-  resolutionSeconds: number,
-): { points: HostSeriesResult["points"]; sampleCount: number } {
-  const points: HostSeriesResult["points"] = [];
-  let sampleCount = 0;
+  resolutionSeconds: number
+): { points: HostSeriesResult['points']; sampleCount: number } {
+  const points: HostSeriesResult['points'] = []
+  let sampleCount = 0
   for (const row of data) {
-    const bucketEpochSeconds = parseBucketEpochSeconds(row.bucket);
-    if (!Number.isFinite(bucketEpochSeconds)) continue;
+    const bucketEpochSeconds = parseBucketEpochSeconds(row.bucket)
+    if (!Number.isFinite(bucketEpochSeconds)) continue
 
-    const rowSamples = Number(row.sample_count ?? 0);
-    const hasSamples = Number.isFinite(rowSamples) && rowSamples > 0;
+    const rowSamples = Number(row.sample_count ?? 0)
+    const hasSamples = Number.isFinite(rowSamples) && rowSamples > 0
     // No SQL HAVING filter (see buildHostSeriesSql) — a bucket whose only
     // rows are an orphaned host.io write with no matching host.system row
     // (sampleCountExpression is host.system-anchored) is skipped here
     // instead, same effect as v3's WHERE-wrapped-subquery idiom.
-    if (!hasSamples) continue;
-    sampleCount += rowSamples;
+    if (!hasSamples) continue
+    sampleCount += rowSamples
 
-    const avgIntervalSeconds = Number(row.avg_interval_seconds);
+    const avgIntervalSeconds = Number(row.avg_interval_seconds)
     const expectedSampleCount = Number.isFinite(avgIntervalSeconds)
       ? defaultExpectedSamplesPerBucket(resolutionSeconds, avgIntervalSeconds)
-      : defaultExpectedSamplesPerBucket(resolutionSeconds);
+      : defaultExpectedSamplesPerBucket(resolutionSeconds)
 
     points.push({
       at: new Date(bucketEpochSeconds * 1000).toISOString(),
@@ -1447,9 +1358,9 @@ function parseHostSeriesRows(
       expectedSampleCount,
       ...storedSampleSpacing(row, rowSamples, avgIntervalSeconds),
       topologyGeneration: parseTopologyGeneration(row),
-    });
+    })
   }
-  return { points, sampleCount };
+  return { points, sampleCount }
 }
 
 /**
@@ -1461,75 +1372,57 @@ function parseHostSeriesRows(
 export function storedSampleSpacing(
   row: Record<string, unknown>,
   weightedSamples: number,
-  avgIntervalSeconds: number,
+  avgIntervalSeconds: number
 ): { lastSampleAt?: string; sampleSpacingSeconds?: number } {
-  const out: { lastSampleAt?: string; sampleSpacingSeconds?: number } = {};
-  const lastMs = parseAeLatestAtMs(row.last_sample_at);
-  if (lastMs !== null && lastMs > 0) {
-    out.lastSampleAt = new Date(lastMs).toISOString();
-  }
-  const rows = Number(row.row_count);
+  const out: { lastSampleAt?: string; sampleSpacingSeconds?: number } = {}
+  const lastMs = parseAeLatestAtMs(row.last_sample_at)
+  if (lastMs !== null && lastMs > 0) out.lastSampleAt = new Date(lastMs).toISOString()
+  const rows = Number(row.row_count)
   if (
     Number.isFinite(avgIntervalSeconds) &&
     avgIntervalSeconds > 0 &&
     Number.isFinite(rows) &&
     rows > 0
   ) {
-    out.sampleSpacingSeconds = avgIntervalSeconds *
-      Math.max(1, weightedSamples / rows);
+    out.sampleSpacingSeconds = avgIntervalSeconds * Math.max(1, weightedSamples / rows)
   }
-  return out;
+  return out
 }
 
 export async function queryHostSeriesViaSqlApi(
   config: CloudflareAnalyticsSqlConfig,
-  input: HostSeriesQuery,
+  input: HostSeriesQuery
 ): Promise<HostSeriesResult> {
-  const dataset = config.dataset ?? AE_DATASET_NAME;
-  const maxRangeSeconds = config.maxRangeSeconds ??
-    AE_DEFAULT_MAX_RANGE_SECONDS;
-  const opts = { dataset, maxRangeSeconds };
-  const metrics = assertHostMetrics(input.metrics);
+  const dataset = config.dataset ?? AE_DATASET_NAME
+  const maxRangeSeconds = config.maxRangeSeconds ?? AE_DEFAULT_MAX_RANGE_SECONDS
+  const opts = { dataset, maxRangeSeconds }
+  const metrics = assertHostMetrics(input.metrics)
   // One statement per metric chunk: every requested metric adds a long
   // aggregate, and AE refuses statements over AE_SQL_MAX_LENGTH.
   const built = packItemsBySqlLength(
     metrics,
-    (chunk) =>
-      buildHostSeriesSql({ ...input, metrics: chunk }, opts).sql.length,
-  ).map((chunk) => buildHostSeriesSql({ ...input, metrics: chunk }, opts));
-  const bucketSeconds = built[0].bucketSeconds;
-  const generationsSql = buildTopologyGenerationsSql(input, opts);
-  const client = new CloudflareAnalyticsSqlClient(config);
+    (chunk) => buildHostSeriesSql({ ...input, metrics: chunk }, opts).sql.length
+  ).map((chunk) => buildHostSeriesSql({ ...input, metrics: chunk }, opts))
+  const bucketSeconds = built[0].bucketSeconds
+  const generationsSql = buildTopologyGenerationsSql(input, opts)
+  const client = new CloudflareAnalyticsSqlClient(config)
   const [seriesResults, generationsResult] = await Promise.all([
-    mapWithConcurrency(
-      built,
-      AE_SQL_CHUNK_CONCURRENCY,
-      (chunk, i) =>
-        client.executeSql(chunk.sql, chunkLabel("hostSeries", i, built.length)),
+    mapWithConcurrency(built, AE_SQL_CHUNK_CONCURRENCY, (chunk, i) =>
+      client.executeSql(chunk.sql, chunkLabel('hostSeries', i, built.length))
     ),
-    client.executeSql(generationsSql, "topologyGenerations"),
-  ]);
+    client.executeSql(generationsSql, 'topologyGenerations'),
+  ])
   const points = mergePointsByAt(
     built.map(
       (chunk, i) =>
-        parseHostSeriesRows(
-          chunk.metrics,
-          chunk.aliases,
-          seriesResults[i].data,
-          bucketSeconds,
-        )
-          .points,
-    ),
-  );
-  const sampleCount = points.reduce(
-    (sum, point) => sum + (point.sampleCount ?? 0),
-    0,
-  );
-  const topologyGenerations = parseTopologyGenerationsRows(
-    generationsResult.data,
-  );
+        parseHostSeriesRows(chunk.metrics, chunk.aliases, seriesResults[i].data, bucketSeconds)
+          .points
+    )
+  )
+  const sampleCount = points.reduce((sum, point) => sum + (point.sampleCount ?? 0), 0)
+  const topologyGenerations = parseTopologyGenerationsRows(generationsResult.data)
   return finalizeHostSeriesResult(input.from, input.to, {
-    kind: "analytics-engine",
+    kind: 'analytics-engine',
     available: true,
     serverId: input.serverId,
     metrics,
@@ -1538,25 +1431,25 @@ export async function queryHostSeriesViaSqlApi(
     gapCount: 0,
     sampleCount,
     topologyGenerations,
-  });
+  })
 }
 
 function buildHostSummarySql(
   input: HostSummaryQuery,
-  opts: { dataset: string; maxRangeSeconds: number },
+  opts: { dataset: string; maxRangeSeconds: number }
 ): string {
-  const serverId = assertSafeServerId(input.serverId);
-  const from = assertIsoTimestamp("from", input.from);
-  const to = assertIsoTimestamp("to", input.to);
-  assertRange(from, to, opts.maxRangeSeconds);
-  assertSafeDatasetName(opts.dataset);
+  const serverId = assertSafeServerId(input.serverId)
+  const from = assertIsoTimestamp('from', input.from)
+  const to = assertIsoTimestamp('to', input.to)
+  assertRange(from, to, opts.maxRangeSeconds)
+  assertSafeDatasetName(opts.dataset)
 
-  const fromUnix = Math.floor(from.getTime() / 1000);
-  const toUnix = Math.floor(to.getTime() / 1000);
-  const discriminators = hostMetricsDiscriminatorPredicates();
+  const fromUnix = Math.floor(from.getTime() / 1000)
+  const toUnix = Math.floor(to.getTime() / 1000)
+  const discriminators = hostMetricsDiscriminatorPredicates()
 
   return [
-    "SELECT",
+    'SELECT',
     `  ${sampleCountExpression()} AS sample_count,`,
     `  ${latestAtExpression()} AS latest_at`,
     `FROM ${opts.dataset}`,
@@ -1567,72 +1460,69 @@ function buildHostSummarySql(
     // (it only counts/dates samples), so the scan never needs those families.
     `  AND ${hostFamilyScopePredicate([])}`,
     `  AND ${timeRangePredicate(fromUnix, toUnix)}`,
-  ].join("\n");
+  ].join('\n')
 }
 
 function parseHostSummaryRow(row: Record<string, unknown> | undefined): {
-  sampleCount: number;
-  latestAt: string | null;
+  sampleCount: number
+  latestAt: string | null
 } {
-  const sampleCountRaw = Number(row?.sample_count ?? 0);
-  const sampleCount = Number.isFinite(sampleCountRaw) ? sampleCountRaw : 0;
+  const sampleCountRaw = Number(row?.sample_count ?? 0)
+  const sampleCount = Number.isFinite(sampleCountRaw) ? sampleCountRaw : 0
   if (sampleCount <= 0) {
-    return { sampleCount, latestAt: null };
+    return { sampleCount, latestAt: null }
   }
-  const latestAtMs = parseAeLatestAtMs(row?.latest_at);
+  const latestAtMs = parseAeLatestAtMs(row?.latest_at)
   return {
     sampleCount,
     latestAt: latestAtMs === null ? null : new Date(latestAtMs).toISOString(),
-  };
+  }
 }
 
 export async function queryHostSummaryViaSqlApi(
   config: CloudflareAnalyticsSqlConfig,
-  input: HostSummaryQuery,
+  input: HostSummaryQuery
 ): Promise<HostSummaryResult> {
-  const dataset = config.dataset ?? AE_DATASET_NAME;
-  const maxRangeSeconds = config.maxRangeSeconds ??
-    AE_DEFAULT_MAX_RANGE_SECONDS;
-  const sql = buildHostSummarySql(input, { dataset, maxRangeSeconds });
-  const client = new CloudflareAnalyticsSqlClient(config);
-  const result = await client.executeSql(sql, "hostSummary");
-  const { sampleCount, latestAt } = parseHostSummaryRow(result.data[0]);
+  const dataset = config.dataset ?? AE_DATASET_NAME
+  const maxRangeSeconds = config.maxRangeSeconds ?? AE_DEFAULT_MAX_RANGE_SECONDS
+  const sql = buildHostSummarySql(input, { dataset, maxRangeSeconds })
+  const client = new CloudflareAnalyticsSqlClient(config)
+  const result = await client.executeSql(sql, 'hostSummary')
+  const { sampleCount, latestAt } = parseHostSummaryRow(result.data[0])
   return {
-    kind: "analytics-engine",
+    kind: 'analytics-engine',
     available: true,
     serverId: input.serverId,
     sampleCount,
     latestAt,
-  };
+  }
 }
 
 function buildFleetHostSnapshotSql(
   input: FleetHostSnapshotQuery,
-  opts: { dataset: string; maxRangeSeconds: number },
+  opts: { dataset: string; maxRangeSeconds: number }
 ): { sql: string; metrics: string[]; aliases: string[] } {
-  const metrics = assertHostMetrics(input.metrics);
-  const from = assertIsoTimestamp("from", input.from);
-  const to = assertIsoTimestamp("to", input.to);
-  assertRange(from, to, opts.maxRangeSeconds);
-  assertSafeDatasetName(opts.dataset);
+  const metrics = assertHostMetrics(input.metrics)
+  const from = assertIsoTimestamp('from', input.from)
+  const to = assertIsoTimestamp('to', input.to)
+  assertRange(from, to, opts.maxRangeSeconds)
+  assertSafeDatasetName(opts.dataset)
   // Validates the id list (non-empty, UUID-shaped, under the cap).
-  quoteServerIdInList(input.serverIds);
+  quoteServerIdInList(input.serverIds)
   // Every server's host-family indexes (bare serverId + per-family, see
   // serverFamiliesPredicate); rows group back to their server by the
   // serverId prefix — assertSafeServerId pins it to a 36-char UUID.
-  const indexInList = fleetHostIndexInList(input.serverIds, metrics);
+  const indexInList = fleetHostIndexInList(input.serverIds, metrics)
 
-  const fromUnix = Math.floor(from.getTime() / 1000);
-  const toUnix = Math.floor(to.getTime() / 1000);
-  const discriminators = hostMetricsDiscriminatorPredicates();
-  const aliases = metrics.map((_, i) => metricAlias(i));
-  const metricSelects = metrics.map((name, i) =>
-    hostMetricSelectExpression(name, aliases[i])
-  );
-  const generationCol = blobColumn(AE_BLOB_TOPOLOGY_GENERATION_INDEX);
+  const fromUnix = Math.floor(from.getTime() / 1000)
+  const toUnix = Math.floor(to.getTime() / 1000)
+  const discriminators = hostMetricsDiscriminatorPredicates()
+  const aliases = metrics.map((_, i) => metricAlias(i))
+  const metricSelects = metrics.map((name, i) => hostMetricSelectExpression(name, aliases[i]))
+  const generationCol = blobColumn(AE_BLOB_TOPOLOGY_GENERATION_INDEX)
 
   const sql = [
-    "SELECT",
+    'SELECT',
     `  substring(${AE_INDEX_SERVER_ID_COLUMN}, 1, ${SERVER_ID_LENGTH}) AS server_id,`,
     `  ${sampleCountExpression()} AS sample_count,`,
     `  ${latestAtExpression()} AS latest_at,`,
@@ -1644,7 +1534,7 @@ function buildFleetHostSnapshotSql(
     // as argument 1 in max"), hence the documented toUInt32 conversion.
     `  MIN(toUInt32(${generationCol})) AS topology_gen_min,`,
     `  MAX(toUInt32(${generationCol})) AS topology_gen_max,`,
-    `  ${metricSelects.join(",\n  ")}`,
+    `  ${metricSelects.join(',\n  ')}`,
     `FROM ${opts.dataset}`,
     `WHERE ${AE_INDEX_SERVER_ID_COLUMN} IN (${indexInList})`,
     `  AND ${discriminators[0]}`,
@@ -1652,77 +1542,69 @@ function buildFleetHostSnapshotSql(
     `  AND ${hostFamilyScopePredicate(metrics)}`,
     `  AND ${timeRangePredicate(fromUnix, toUnix)}`,
     `GROUP BY server_id`,
-  ].join("\n");
+  ].join('\n')
 
-  return { sql, metrics, aliases };
+  return { sql, metrics, aliases }
 }
 
 function parseFleetHostSnapshotRows(
   metrics: readonly string[],
   aliases: readonly string[],
-  data: Array<Record<string, unknown>>,
+  data: Array<Record<string, unknown>>
 ): FleetHostSnapshotServer[] {
-  const servers: FleetHostSnapshotServer[] = [];
+  const servers: FleetHostSnapshotServer[] = []
   for (const row of data) {
-    const serverId = parseAeServerId(row.server_id);
-    if (serverId === null) continue;
-    const sampleCountRaw = Number(row.sample_count ?? 0);
-    const sampleCount = Number.isFinite(sampleCountRaw) ? sampleCountRaw : 0;
+    const serverId = parseAeServerId(row.server_id)
+    if (serverId === null) continue
+    const sampleCountRaw = Number(row.sample_count ?? 0)
+    const sampleCount = Number.isFinite(sampleCountRaw) ? sampleCountRaw : 0
     // No SQL HAVING filter (see buildFleetHostSnapshotSql) — a server with
     // only an orphaned host.io row (no matching host.system row) is skipped
     // here instead, same effect as v3's WHERE-wrapped-subquery idiom.
-    if (sampleCount <= 0) continue;
-    const latestAtMs = parseAeLatestAtMs(row.latest_at);
+    if (sampleCount <= 0) continue
+    const latestAtMs = parseAeLatestAtMs(row.latest_at)
     servers.push({
       serverId,
       sampleCount,
-      latestAt: latestAtMs === null || sampleCount <= 0
-        ? null
-        : new Date(latestAtMs).toISOString(),
+      latestAt: latestAtMs === null || sampleCount <= 0 ? null : new Date(latestAtMs).toISOString(),
       values: parseHostMetricValues(metrics, aliases, row),
       topologyGeneration: parseTopologyGeneration(row),
-    });
+    })
   }
-  servers.sort((a, b) => a.serverId.localeCompare(b.serverId));
-  return servers;
+  servers.sort((a, b) => a.serverId.localeCompare(b.serverId))
+  return servers
 }
 
 export async function queryFleetHostSnapshotViaSqlApi(
   config: CloudflareAnalyticsSqlConfig,
-  input: FleetHostSnapshotQuery,
+  input: FleetHostSnapshotQuery
 ): Promise<FleetHostSnapshotResult> {
   if (input.serverIds.length === 0) {
     return {
-      kind: "analytics-engine",
+      kind: 'analytics-engine',
       available: true,
       metrics: [...input.metrics],
       servers: [],
-    };
+    }
   }
-  const dataset = config.dataset ?? AE_DATASET_NAME;
-  const maxRangeSeconds = config.maxRangeSeconds ??
-    AE_DEFAULT_MAX_RANGE_SECONDS;
-  const opts = { dataset, maxRangeSeconds };
-  const metrics = assertHostMetrics(input.metrics);
-  const client = new CloudflareAnalyticsSqlClient(config);
-  const tasks = planFleetSnapshotChunks(input, metrics, opts);
-  const results = await mapWithConcurrency(
-    tasks,
-    AE_SQL_CHUNK_CONCURRENCY,
-    (task, i) =>
-      client.executeSql(task.sql, chunkLabel("fleetSnapshot", i, tasks.length)),
-  );
+  const dataset = config.dataset ?? AE_DATASET_NAME
+  const maxRangeSeconds = config.maxRangeSeconds ?? AE_DEFAULT_MAX_RANGE_SECONDS
+  const opts = { dataset, maxRangeSeconds }
+  const metrics = assertHostMetrics(input.metrics)
+  const client = new CloudflareAnalyticsSqlClient(config)
+  const tasks = planFleetSnapshotChunks(input, metrics, opts)
+  const results = await mapWithConcurrency(tasks, AE_SQL_CHUNK_CONCURRENCY, (task, i) =>
+    client.executeSql(task.sql, chunkLabel('fleetSnapshot', i, tasks.length))
+  )
   const servers = mergeFleetSnapshotServers(
-    tasks.map((task, i) =>
-      parseFleetHostSnapshotRows(task.metrics, task.aliases, results[i].data)
-    ),
-  );
+    tasks.map((task, i) => parseFleetHostSnapshotRows(task.metrics, task.aliases, results[i].data))
+  )
   return {
-    kind: "analytics-engine",
+    kind: 'analytics-engine',
     available: true,
     metrics,
     servers,
-  };
+  }
 }
 
 /**
@@ -1732,123 +1614,115 @@ export async function queryFleetHostSnapshotViaSqlApi(
 function planFleetSnapshotChunks(
   input: FleetHostSnapshotQuery,
   metrics: readonly string[],
-  opts: { dataset: string; maxRangeSeconds: number },
+  opts: { dataset: string; maxRangeSeconds: number }
 ): Array<{ sql: string; metrics: string[]; aliases: string[] }> {
-  const build = (
-    serverIds: readonly string[],
-    chunkMetrics: readonly string[],
-  ) =>
-    buildFleetHostSnapshotSql(
-      { ...input, serverIds, metrics: chunkMetrics },
-      opts,
-    );
+  const build = (serverIds: readonly string[], chunkMetrics: readonly string[]) =>
+    buildFleetHostSnapshotSql({ ...input, serverIds, metrics: chunkMetrics }, opts)
   return packRowsAndColumns(
     input.serverIds,
     metrics,
-    (serverIds, chunkMetrics) => build(serverIds, chunkMetrics).sql.length,
-  ).map(({ rows, columns }) => build(rows, columns));
+    (serverIds, chunkMetrics) => build(serverIds, chunkMetrics).sql.length
+  ).map(({ rows, columns }) => build(rows, columns))
 }
 
 /** One entry per server across chunked snapshot results: base fields from the first chunk, `values` unioned. */
 function mergeFleetSnapshotServers(
-  lists: readonly (readonly FleetHostSnapshotServer[])[],
+  lists: readonly (readonly FleetHostSnapshotServer[])[]
 ): FleetHostSnapshotServer[] {
-  if (lists.length === 1) return [...lists[0]];
-  const byId = new Map<string, FleetHostSnapshotServer>();
+  if (lists.length === 1) return [...lists[0]]
+  const byId = new Map<string, FleetHostSnapshotServer>()
   for (const list of lists) {
     for (const server of list) {
-      const existing = byId.get(server.serverId);
+      const existing = byId.get(server.serverId)
       if (existing) {
-        Object.assign(existing.values, server.values);
+        Object.assign(existing.values, server.values)
       } else {
-        byId.set(server.serverId, { ...server, values: { ...server.values } });
+        byId.set(server.serverId, { ...server, values: { ...server.values } })
       }
     }
   }
-  return [...byId.values()].sort((a, b) =>
-    a.serverId.localeCompare(b.serverId)
-  );
+  return [...byId.values()].sort((a, b) => a.serverId.localeCompare(b.serverId))
 }
 
 // ---------------------------------------------------------------------------
 // Metric events (`sample.events`) — `"event"`-kind rows, capped like status history.
 // ---------------------------------------------------------------------------
 
-const EVENT_SEVERITIES = new Set<string>(["info", "warning", "critical"]);
+const EVENT_SEVERITIES = new Set<string>(['info', 'warning', 'critical'])
 
 function parseEventSeverity(raw: unknown): MetricEventSeverity {
-  return typeof raw === "string" && EVENT_SEVERITIES.has(raw)
+  return typeof raw === 'string' && EVENT_SEVERITIES.has(raw)
     ? (raw as MetricEventSeverity)
-    : "info";
+    : 'info'
 }
 
 function optionalNonEmptyString(raw: unknown): string | undefined {
-  if (typeof raw !== "string" || raw.length === 0) return undefined;
-  return raw;
+  if (typeof raw !== 'string' || raw.length === 0) return undefined
+  return raw
 }
 
-function parseEventPayload(raw: unknown): MetricEvent["payload"] {
-  if (typeof raw !== "string" || raw.length === 0) return undefined;
+function parseEventPayload(raw: unknown): MetricEvent['payload'] {
+  if (typeof raw !== 'string' || raw.length === 0) return undefined
   try {
-    return JSON.parse(raw) as MetricEvent["payload"];
+    return JSON.parse(raw) as MetricEvent['payload']
   } catch {
-    return undefined;
+    return undefined
   }
 }
 
 function parseMetricEventRow(row: Record<string, unknown>): MetricEvent | null {
-  const atMs = parseAeLatestAtMs(row.timestamp);
-  if (atMs === null) return null;
-  const eventId = typeof row.event_id === "string" ? row.event_id : "";
-  const kind = typeof row.kind === "string" ? row.kind : "";
-  if (eventId.length === 0 || kind.length === 0) return null;
+  const atMs = parseAeLatestAtMs(row.timestamp)
+  if (atMs === null) return null
+  const eventId = typeof row.event_id === 'string' ? row.event_id : ''
+  const kind = typeof row.kind === 'string' ? row.kind : ''
+  if (eventId.length === 0 || kind.length === 0) return null
   const event: MetricEvent = {
     eventId,
     at: new Date(atMs).toISOString(),
     kind: kind as MetricEventKind,
     severity: parseEventSeverity(row.severity),
-  };
-  const entityId = optionalNonEmptyString(row.entity_id);
-  if (entityId !== undefined) event.entityId = entityId;
-  const source = optionalNonEmptyString(row.source);
-  if (source !== undefined) event.source = source;
-  const payload = parseEventPayload(row.payload);
-  if (payload !== undefined) event.payload = payload;
-  return event;
+  }
+  const entityId = optionalNonEmptyString(row.entity_id)
+  if (entityId !== undefined) event.entityId = entityId
+  const source = optionalNonEmptyString(row.source)
+  if (source !== undefined) event.source = source
+  const payload = parseEventPayload(row.payload)
+  if (payload !== undefined) event.payload = payload
+  return event
 }
 
 function parseMetricEventRows(rawRows: Array<Record<string, unknown>>): {
-  events: MetricEvent[];
-  truncated: boolean;
+  events: MetricEvent[]
+  truncated: boolean
 } {
-  const truncated = rawRows.length > MAX_STATUS_EVENTS;
-  const rows = truncated ? rawRows.slice(0, MAX_STATUS_EVENTS) : rawRows;
-  const events: MetricEvent[] = [];
+  const truncated = rawRows.length > MAX_STATUS_EVENTS
+  const rows = truncated ? rawRows.slice(0, MAX_STATUS_EVENTS) : rawRows
+  const events: MetricEvent[] = []
   for (const row of rows) {
-    const event = parseMetricEventRow(row);
-    if (event === null) continue;
-    events.push(event);
+    const event = parseMetricEventRow(row)
+    if (event === null) continue
+    events.push(event)
   }
-  return { events, truncated };
+  return { events, truncated }
 }
 
 function buildMetricEventsSql(
   input: MetricEventsQuery,
-  opts: { dataset: string; maxRangeSeconds: number },
+  opts: { dataset: string; maxRangeSeconds: number }
 ): string {
-  const serverId = assertSafeServerId(input.serverId);
-  const from = assertIsoTimestamp("from", input.from);
-  const to = assertIsoTimestamp("to", input.to);
-  assertRange(from, to, opts.maxRangeSeconds);
-  assertSafeDatasetName(opts.dataset);
+  const serverId = assertSafeServerId(input.serverId)
+  const from = assertIsoTimestamp('from', input.from)
+  const to = assertIsoTimestamp('to', input.to)
+  assertRange(from, to, opts.maxRangeSeconds)
+  assertSafeDatasetName(opts.dataset)
 
-  const fromUnix = Math.floor(from.getTime() / 1000);
-  const toUnix = Math.floor(to.getTime() / 1000);
-  const discriminators = eventDiscriminatorPredicates();
-  const limit = MAX_STATUS_EVENTS + 1;
+  const fromUnix = Math.floor(from.getTime() / 1000)
+  const toUnix = Math.floor(to.getTime() / 1000)
+  const discriminators = eventDiscriminatorPredicates()
+  const limit = MAX_STATUS_EVENTS + 1
 
   return [
-    "SELECT",
+    'SELECT',
     `  ${AE_TIMESTAMP_COLUMN} AS timestamp,`,
     `  ${blobColumn(AE_BLOB_EVENT_ID_INDEX)} AS event_id,`,
     `  ${blobColumn(AE_BLOB_FAMILY_INDEX)} AS kind,`,
@@ -1863,27 +1737,26 @@ function buildMetricEventsSql(
     `  AND ${timeRangePredicate(fromUnix, toUnix)}`,
     `ORDER BY ${AE_TIMESTAMP_COLUMN} ASC`,
     `LIMIT ${limit}`,
-  ].join("\n");
+  ].join('\n')
 }
 
 export async function queryMetricEventsViaSqlApi(
   config: CloudflareAnalyticsSqlConfig,
-  input: MetricEventsQuery,
+  input: MetricEventsQuery
 ): Promise<MetricEventsResult> {
-  const dataset = config.dataset ?? AE_DATASET_NAME;
-  const maxRangeSeconds = config.maxRangeSeconds ??
-    AE_DEFAULT_MAX_RANGE_SECONDS;
-  const sql = buildMetricEventsSql(input, { dataset, maxRangeSeconds });
-  const client = new CloudflareAnalyticsSqlClient(config);
-  const result = await client.executeSql(sql, "metricEvents");
-  const { events, truncated } = parseMetricEventRows(result.data);
+  const dataset = config.dataset ?? AE_DATASET_NAME
+  const maxRangeSeconds = config.maxRangeSeconds ?? AE_DEFAULT_MAX_RANGE_SECONDS
+  const sql = buildMetricEventsSql(input, { dataset, maxRangeSeconds })
+  const client = new CloudflareAnalyticsSqlClient(config)
+  const result = await client.executeSql(sql, 'metricEvents')
+  const { events, truncated } = parseMetricEventRows(result.data)
   return {
-    kind: "analytics-engine",
+    kind: 'analytics-engine',
     available: true,
     serverId: input.serverId,
     events,
     truncated,
-  };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1894,239 +1767,222 @@ export async function queryMetricEventsViaSqlApi(
 // ---------------------------------------------------------------------------
 
 const SINGLE_ROW_FAMILIES = new Set<PerEntityHostedFamily>([
-  "managed.ingress",
-  "managed.database_proxy",
-]);
+  'managed.ingress',
+  'managed.database_proxy',
+])
 
 /** `PerEntityHostedFamily` -> the `MetricEntityScope` its bare field names are qualified under in `HOST_METRICS_METRIC_DESCRIPTORS`. */
-const ENTITY_SCOPE_FOR_FAMILY: Record<
-  PerEntityHostedFamily,
-  MetricEntityScope
-> = {
-  gpu: "gpu",
-  network: "network",
-  filesystem: "filesystem",
-  block: "block",
-  "hardware.physical": "hardwareSignal",
-  "managed.ingress": "ingress",
-  "managed.database_proxy": "databaseProxy",
-};
+const ENTITY_SCOPE_FOR_FAMILY: Record<PerEntityHostedFamily, MetricEntityScope> = {
+  gpu: 'gpu',
+  network: 'network',
+  filesystem: 'filesystem',
+  block: 'block',
+  'hardware.physical': 'hardwareSignal',
+  'managed.ingress': 'ingress',
+  'managed.database_proxy': 'databaseProxy',
+}
 
 /**
  * The family's physical *slot* order — a `null` entry is a reserved spare, so
  * an index into this array is a physical double index. `includes`/`indexOf`
  * on a requested field name skip spares for free.
  */
-function fieldOrderForFamily(
-  family: PerEntityHostedFamily,
-): readonly (string | null)[] {
-  if (family === "managed.ingress" || family === "managed.database_proxy") {
-    return SINGLE_ROW_FIELD_ORDER[family];
+function fieldOrderForFamily(family: PerEntityHostedFamily): readonly (string | null)[] {
+  if (family === 'managed.ingress' || family === 'managed.database_proxy') {
+    return SINGLE_ROW_FIELD_ORDER[family]
   }
-  return PER_ENTITY_FIELD_ORDER[family];
+  return PER_ENTITY_FIELD_ORDER[family]
 }
 
 function resolveEntityFieldDescriptor(
   family: PerEntityHostedFamily,
-  field: string,
+  field: string
 ): HostMetricsMetricDescriptor {
-  const canonicalName = `${ENTITY_SCOPE_FOR_FAMILY[family]}.${field}`;
-  const descriptor = HOST_METRICS_METRIC_DESCRIPTORS[canonicalName];
+  const canonicalName = `${ENTITY_SCOPE_FOR_FAMILY[family]}.${field}`
+  const descriptor = HOST_METRICS_METRIC_DESCRIPTORS[canonicalName]
   if (!descriptor) {
-    throw new TypeError(
-      `unknown v5 metric field "${field}" for family "${family}"`,
-    );
+    throw new TypeError(`unknown v5 metric field "${field}" for family "${family}"`)
   }
-  return descriptor;
+  return descriptor
 }
 
 /** Validate + de-dupe requested bare field names, in request order. */
-function assertEntityFields(
-  family: PerEntityHostedFamily,
-  fields: readonly string[],
-): string[] {
+function assertEntityFields(family: PerEntityHostedFamily, fields: readonly string[]): string[] {
   if (fields.length === 0) {
-    throw new TypeError("metrics must be non-empty");
+    throw new TypeError('metrics must be non-empty')
   }
-  const order = fieldOrderForFamily(family);
-  const seen = new Set<string>();
-  const result: string[] = [];
+  const order = fieldOrderForFamily(family)
+  const seen = new Set<string>()
+  const result: string[] = []
   for (const field of fields) {
     if (!order.includes(field)) {
-      throw new TypeError(
-        `unknown v5 metric field "${field}" for family "${family}"`,
-      );
+      throw new TypeError(`unknown v5 metric field "${field}" for family "${family}"`)
     }
-    if (seen.has(field)) continue;
-    seen.add(field);
-    result.push(field);
+    if (seen.has(field)) continue
+    seen.add(field)
+    result.push(field)
   }
-  return result;
+  return result
 }
 
 /** Validate + de-dupe requested entity ids, in request order. */
 function assertEntityIds(entityIds: readonly string[]): string[] {
   if (entityIds.length === 0) {
-    throw new TypeError("entityIds must be non-empty");
+    throw new TypeError('entityIds must be non-empty')
   }
-  const seen = new Set<string>();
-  const result: string[] = [];
+  const seen = new Set<string>()
+  const result: string[] = []
   for (const id of entityIds) {
-    if (!id) throw new TypeError("entityIds must not contain an empty string");
-    if (seen.has(id)) continue;
-    seen.add(id);
-    result.push(id);
+    if (!id) throw new TypeError('entityIds must not contain an empty string')
+    if (seen.has(id)) continue
+    seen.add(id)
+    result.push(id)
   }
-  return result;
+  return result
 }
 
 /** Per-(bucket, entity, field) accumulator across every contributing group row. */
 type EntityFieldAccumulator =
-  | { aggregation: "weighted-average"; numerator: number; denominator: number }
-  | { aggregation: "delta-sum"; raw: number | null }
-  | { aggregation: "max"; raw: number }
-  | { aggregation: "last"; value: number; key: number };
+  | { aggregation: 'weighted-average'; numerator: number; denominator: number }
+  | { aggregation: 'delta-sum'; raw: number | null }
+  | { aggregation: 'max'; raw: number }
+  | { aggregation: 'last'; value: number; key: number }
 
 type BucketEntityAccumulator = {
-  sampleCount: number;
+  sampleCount: number
   /** Reconstructed `SUM(interval * weight)` — see {@link mergeIntervalWeightedSum}. */
-  intervalWeightedSum: number;
-  fields: Map<string, EntityFieldAccumulator>;
-};
+  intervalWeightedSum: number
+  fields: Map<string, EntityFieldAccumulator>
+}
 
-type FieldRaw = Parameters<typeof mergeFieldAccumulator>[2];
+type FieldRaw = Parameters<typeof mergeFieldAccumulator>[2]
 
 function mergeDeltaSum(
   existing: EntityFieldAccumulator | undefined,
-  raw: FieldRaw,
+  raw: FieldRaw
 ): EntityFieldAccumulator {
-  const prev = existing?.aggregation === "delta-sum" ? existing : undefined;
+  const prev = existing?.aggregation === 'delta-sum' ? existing : undefined
   // A group whose delta-sum is the missing sentinel had no present rows:
   // it adds nothing, and a field with no present group stays null.
-  const next = raw.raw === undefined ? null : stripAeSentinel(raw.raw);
-  const total = next === null ? (prev?.raw ?? null) : (prev?.raw ?? 0) + next;
-  return { aggregation: "delta-sum", raw: total };
+  const next = raw.raw === undefined ? null : stripAeSentinel(raw.raw)
+  const total = next === null ? (prev?.raw ?? null) : (prev?.raw ?? 0) + next
+  return { aggregation: 'delta-sum', raw: total }
 }
 
 function mergeMax(
   existing: EntityFieldAccumulator | undefined,
-  raw: FieldRaw,
+  raw: FieldRaw
 ): EntityFieldAccumulator {
-  const prev = existing?.aggregation === "max" ? existing : undefined;
-  const nextRaw = raw.raw ?? aeMissingSentinelValue();
+  const prev = existing?.aggregation === 'max' ? existing : undefined
+  const nextRaw = raw.raw ?? aeMissingSentinelValue()
   return {
-    aggregation: "max",
+    aggregation: 'max',
     raw: prev === undefined ? nextRaw : Math.max(prev.raw, nextRaw),
-  };
+  }
 }
 
 function mergeLast(
   existing: EntityFieldAccumulator | undefined,
-  raw: FieldRaw,
+  raw: FieldRaw
 ): EntityFieldAccumulator {
-  const prev = existing?.aggregation === "last" ? existing : undefined;
-  const nextKey = raw.key ?? 0;
-  const nextValue = raw.value ?? aeMissingSentinelValue();
+  const prev = existing?.aggregation === 'last' ? existing : undefined
+  const nextKey = raw.key ?? 0
+  const nextValue = raw.value ?? aeMissingSentinelValue()
   if (prev === undefined || nextKey > prev.key) {
-    return { aggregation: "last", value: nextValue, key: nextKey };
+    return { aggregation: 'last', value: nextValue, key: nextKey }
   }
-  return prev;
+  return prev
 }
 
 function mergeFieldAccumulator(
   existing: EntityFieldAccumulator | undefined,
-  aggregation: HostMetricsMetricDescriptor["aggregation"],
+  aggregation: HostMetricsMetricDescriptor['aggregation'],
   raw: {
-    numerator?: number;
-    denominator?: number;
-    raw?: number;
-    value?: number;
-    key?: number;
-  },
+    numerator?: number
+    denominator?: number
+    raw?: number
+    value?: number
+    key?: number
+  }
 ): EntityFieldAccumulator {
   switch (aggregation) {
-    case "weighted-average": {
-      const prev = existing?.aggregation === "weighted-average"
-        ? existing
-        : undefined;
+    case 'weighted-average': {
+      const prev = existing?.aggregation === 'weighted-average' ? existing : undefined
       return {
-        aggregation: "weighted-average",
+        aggregation: 'weighted-average',
         numerator: (prev?.numerator ?? 0) + (raw.numerator ?? 0),
         denominator: (prev?.denominator ?? 0) + (raw.denominator ?? 0),
-      };
+      }
     }
-    case "delta-sum":
-      return mergeDeltaSum(existing, raw);
-    case "max":
-      return mergeMax(existing, raw);
-    case "last":
-      return mergeLast(existing, raw);
+    case 'delta-sum':
+      return mergeDeltaSum(existing, raw)
+    case 'max':
+      return mergeMax(existing, raw)
+    case 'last':
+      return mergeLast(existing, raw)
   }
 }
 
-const AE_MISSING_SENTINEL_JS = -Math.pow(10, 308);
+const AE_MISSING_SENTINEL_JS = -Math.pow(10, 308)
 
 /** The JS-side numeric sentinel matching AE SQL's `-pow(10, 308)` literal. */
 function aeMissingSentinelValue(): number {
-  return AE_MISSING_SENTINEL_JS;
+  return AE_MISSING_SENTINEL_JS
 }
 
-function finalizeFieldAccumulator(
-  acc: EntityFieldAccumulator | undefined,
-): number | null {
-  if (acc === undefined) return null;
+function finalizeFieldAccumulator(acc: EntityFieldAccumulator | undefined): number | null {
+  if (acc === undefined) return null
   switch (acc.aggregation) {
-    case "weighted-average":
-      return acc.denominator > 0
-        ? stripAeSentinel(acc.numerator / acc.denominator)
-        : null;
-    case "delta-sum":
-      return acc.raw;
-    case "max":
-      return stripAeSentinel(acc.raw);
-    case "last":
-      return stripAeSentinel(acc.value);
+    case 'weighted-average':
+      return acc.denominator > 0 ? stripAeSentinel(acc.numerator / acc.denominator) : null
+    case 'delta-sum':
+      return acc.raw
+    case 'max':
+      return stripAeSentinel(acc.raw)
+    case 'last':
+      return stripAeSentinel(acc.value)
   }
 }
 
 /** `groupAvgIntervalSeconds * groupSampleCount` reconstructs that group's own `SUM(interval * weight)`, summable across groups before a final division. */
 function mergeIntervalWeightedSum(
   groupAvgIntervalSeconds: unknown,
-  groupSampleCount: number,
+  groupSampleCount: number
 ): number {
-  const avg = typeof groupAvgIntervalSeconds === "number"
-    ? groupAvgIntervalSeconds
-    : Number(groupAvgIntervalSeconds);
-  return Number.isFinite(avg) ? avg * groupSampleCount : 0;
+  const avg =
+    typeof groupAvgIntervalSeconds === 'number'
+      ? groupAvgIntervalSeconds
+      : Number(groupAvgIntervalSeconds)
+  return Number.isFinite(avg) ? avg * groupSampleCount : 0
 }
 
 function toEntitySeriesPoints(
   byBucket: Map<number, BucketEntityAccumulator>,
   fields: readonly string[],
-  resolutionSeconds: number,
+  resolutionSeconds: number
 ): { points: EntitySeriesPoint[]; sampleCount: number } {
-  const points: EntitySeriesPoint[] = [];
-  let sampleCount = 0;
-  const buckets = [...byBucket.entries()].sort((a, b) => a[0] - b[0]);
+  const points: EntitySeriesPoint[] = []
+  let sampleCount = 0
+  const buckets = [...byBucket.entries()].sort((a, b) => a[0] - b[0])
   for (const [bucketEpochSeconds, acc] of buckets) {
-    sampleCount += acc.sampleCount;
-    const values: Partial<Record<string, number | null>> = {};
+    sampleCount += acc.sampleCount
+    const values: Partial<Record<string, number | null>> = {}
     for (const field of fields) {
-      values[field] = finalizeFieldAccumulator(acc.fields.get(field));
+      values[field] = finalizeFieldAccumulator(acc.fields.get(field))
     }
-    const avgIntervalSeconds = acc.sampleCount > 0
-      ? acc.intervalWeightedSum / acc.sampleCount
-      : undefined;
+    const avgIntervalSeconds =
+      acc.sampleCount > 0 ? acc.intervalWeightedSum / acc.sampleCount : undefined
     points.push({
       at: new Date(bucketEpochSeconds * 1000).toISOString(),
       values,
       sampleCount: acc.sampleCount,
-      expectedSampleCount: avgIntervalSeconds !== undefined
-        ? defaultExpectedSamplesPerBucket(resolutionSeconds, avgIntervalSeconds)
-        : defaultExpectedSamplesPerBucket(resolutionSeconds),
-    });
+      expectedSampleCount:
+        avgIntervalSeconds !== undefined
+          ? defaultExpectedSamplesPerBucket(resolutionSeconds, avgIntervalSeconds)
+          : defaultExpectedSamplesPerBucket(resolutionSeconds),
+    })
   }
-  return { points, sampleCount };
+  return { points, sampleCount }
 }
 
 // ---------------------------------------------------------------------------
@@ -2135,46 +1991,41 @@ function toEntitySeriesPoints(
 
 function buildSingleRowEntitySeriesSql(
   input: EntitySeriesQuery,
-  family: Extract<
-    PerEntityHostedFamily,
-    "managed.ingress" | "managed.database_proxy"
-  >,
+  family: Extract<PerEntityHostedFamily, 'managed.ingress' | 'managed.database_proxy'>,
   fields: readonly string[],
   entityIds: readonly string[],
-  opts: { dataset: string; maxRangeSeconds: number },
+  opts: { dataset: string; maxRangeSeconds: number }
 ): { sql: string; aliases: string[]; bucketSeconds: number } {
-  const serverId = assertSafeServerId(input.serverId);
-  const from = assertIsoTimestamp("from", input.from);
-  const to = assertIsoTimestamp("to", input.to);
-  assertRange(from, to, opts.maxRangeSeconds);
+  const serverId = assertSafeServerId(input.serverId)
+  const from = assertIsoTimestamp('from', input.from)
+  const to = assertIsoTimestamp('to', input.to)
+  assertRange(from, to, opts.maxRangeSeconds)
   const bucketSeconds = assertPositiveInt(
-    "resolutionSeconds",
-    input.resolutionSeconds ?? AE_DEFAULT_BUCKET_SECONDS,
-  );
-  assertSafeDatasetName(opts.dataset);
+    'resolutionSeconds',
+    input.resolutionSeconds ?? AE_DEFAULT_BUCKET_SECONDS
+  )
+  assertSafeDatasetName(opts.dataset)
 
-  const fromUnix = Math.floor(from.getTime() / 1000);
-  const toUnix = Math.floor(to.getTime() / 1000);
-  const discriminators = hostMetricsDiscriminatorPredicates();
-  const order = fieldOrderForFamily(family);
-  const aliases = fields.map((_, i) => metricAlias(i));
+  const fromUnix = Math.floor(from.getTime() / 1000)
+  const toUnix = Math.floor(to.getTime() / 1000)
+  const discriminators = hostMetricsDiscriminatorPredicates()
+  const order = fieldOrderForFamily(family)
+  const aliases = fields.map((_, i) => metricAlias(i))
   const metricSelects = fields.map((field, i) => {
-    const descriptor = resolveEntityFieldDescriptor(family, field);
-    const fieldIndex = order.indexOf(field);
-    return `${
-      aggregateExpressionForDescriptor(descriptor, family, fieldIndex)
-    } AS ${aliases[i]}`;
-  });
-  const entityIdCol = blobColumn(AE_BLOB_SOURCE_OR_IDENTITY_INDEX);
-  const inList = entityIds.map((id) => quoteSqlString(id)).join(", ");
+    const descriptor = resolveEntityFieldDescriptor(family, field)
+    const fieldIndex = order.indexOf(field)
+    return `${aggregateExpressionForDescriptor(descriptor, family, fieldIndex)} AS ${aliases[i]}`
+  })
+  const entityIdCol = blobColumn(AE_BLOB_SOURCE_OR_IDENTITY_INDEX)
+  const inList = entityIds.map((id) => quoteSqlString(id)).join(', ')
 
   const sql = [
-    "SELECT",
+    'SELECT',
     `  intDiv(toUnixTimestamp(${AE_TIMESTAMP_COLUMN}), ${bucketSeconds}) * ${bucketSeconds} AS bucket,`,
     `  ${entityIdCol} AS entity_id,`,
     `  SUM(_sample_interval) AS sample_count,`,
     `  SUM(${intervalSecondsColumn()} * _sample_interval) / SUM(_sample_interval) AS avg_interval_seconds,`,
-    `  ${metricSelects.join(",\n  ")}`,
+    `  ${metricSelects.join(',\n  ')}`,
     `FROM ${opts.dataset}`,
     `WHERE ${serverFamiliesPredicate(serverId, [family])}`,
     `  AND ${discriminators[0]}`,
@@ -2184,9 +2035,9 @@ function buildSingleRowEntitySeriesSql(
     `  AND ${timeRangePredicate(fromUnix, toUnix)}`,
     `GROUP BY bucket, entity_id`,
     `ORDER BY bucket ASC`,
-  ].join("\n");
+  ].join('\n')
 
-  return { sql, aliases, bucketSeconds };
+  return { sql, aliases, bucketSeconds }
 }
 
 /**
@@ -2201,55 +2052,47 @@ function parseSingleRowEntitySeriesRows(
   aliases: readonly string[],
   entityIds: readonly string[],
   data: Array<Record<string, unknown>>,
-  resolutionSeconds: number,
+  resolutionSeconds: number
 ): EntitySeriesEntityResult[] {
-  const perEntity = new Map<string, EntitySeriesPoint[]>();
-  for (const id of entityIds) perEntity.set(id, []);
+  const perEntity = new Map<string, EntitySeriesPoint[]>()
+  for (const id of entityIds) perEntity.set(id, [])
 
   for (const row of data) {
-    const entityId = typeof row.entity_id === "string" ? row.entity_id : null;
-    if (entityId === null || !perEntity.has(entityId)) continue;
-    const bucketEpochSeconds = parseBucketEpochSeconds(row.bucket);
-    if (!Number.isFinite(bucketEpochSeconds)) continue;
-    const sampleCountRaw = Number(row.sample_count ?? 0);
-    const sampleCount = Number.isFinite(sampleCountRaw) ? sampleCountRaw : 0;
-    const avgIntervalSecondsRaw = Number(row.avg_interval_seconds);
+    const entityId = typeof row.entity_id === 'string' ? row.entity_id : null
+    if (entityId === null || !perEntity.has(entityId)) continue
+    const bucketEpochSeconds = parseBucketEpochSeconds(row.bucket)
+    if (!Number.isFinite(bucketEpochSeconds)) continue
+    const sampleCountRaw = Number(row.sample_count ?? 0)
+    const sampleCount = Number.isFinite(sampleCountRaw) ? sampleCountRaw : 0
+    const avgIntervalSecondsRaw = Number(row.avg_interval_seconds)
     const expectedSampleCount = Number.isFinite(avgIntervalSecondsRaw)
-      ? defaultExpectedSamplesPerBucket(
-        resolutionSeconds,
-        avgIntervalSecondsRaw,
-      )
-      : defaultExpectedSamplesPerBucket(resolutionSeconds);
+      ? defaultExpectedSamplesPerBucket(resolutionSeconds, avgIntervalSecondsRaw)
+      : defaultExpectedSamplesPerBucket(resolutionSeconds)
 
-    const values: Partial<Record<string, number | null>> = {};
+    const values: Partial<Record<string, number | null>> = {}
     fields.forEach((field, i) => {
-      const raw = row[aliases[i]];
+      const raw = row[aliases[i]]
       if (raw === null || raw === undefined) {
-        values[field] = null;
-        return;
+        values[field] = null
+        return
       }
-      const num = typeof raw === "number" ? raw : Number(raw);
-      values[field] = Number.isFinite(num) ? stripAeSentinel(num) : null;
-    });
+      const num = typeof raw === 'number' ? raw : Number(raw)
+      values[field] = Number.isFinite(num) ? stripAeSentinel(num) : null
+    })
 
     perEntity.get(entityId)!.push({
       at: new Date(bucketEpochSeconds * 1000).toISOString(),
       values,
       sampleCount,
       expectedSampleCount,
-    });
+    })
   }
 
   return entityIds.map((entityId) => {
-    const points = perEntity.get(entityId)!.sort((a, b) =>
-      a.at.localeCompare(b.at)
-    );
-    const sampleCount = points.reduce(
-      (sum, point) => sum + (point.sampleCount ?? 0),
-      0,
-    );
-    return { entityId, points, sampleCount, gapCount: 0 };
-  });
+    const points = perEntity.get(entityId)!.sort((a, b) => a.at.localeCompare(b.at))
+    const sampleCount = points.reduce((sum, point) => sum + (point.sampleCount ?? 0), 0)
+    return { entityId, points, sampleCount, gapCount: 0 }
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -2258,140 +2101,123 @@ function parseSingleRowEntitySeriesRows(
 
 type PagedFieldPlan =
   | {
-    field: string;
-    slot: number;
-    aggregation: "weighted-average";
-    numAlias: string;
-    denAlias: string;
-  }
-  | { field: string; slot: number; aggregation: "delta-sum"; rawAlias: string }
-  | { field: string; slot: number; aggregation: "max"; rawAlias: string }
+      field: string
+      slot: number
+      aggregation: 'weighted-average'
+      numAlias: string
+      denAlias: string
+    }
+  | { field: string; slot: number; aggregation: 'delta-sum'; rawAlias: string }
+  | { field: string; slot: number; aggregation: 'max'; rawAlias: string }
   | {
-    field: string;
-    slot: number;
-    aggregation: "last";
-    valueAlias: string;
-    keyAlias: string;
-  };
+      field: string
+      slot: number
+      aggregation: 'last'
+      valueAlias: string
+      keyAlias: string
+    }
 
 function buildPagedEntitySeriesSql(
   input: EntitySeriesQuery,
-  family: Exclude<
-    PerEntityHostedFamily,
-    "managed.ingress" | "managed.database_proxy"
-  >,
+  family: Exclude<PerEntityHostedFamily, 'managed.ingress' | 'managed.database_proxy'>,
   fields: readonly string[],
   entityIds: readonly string[],
-  opts: { dataset: string; maxRangeSeconds: number },
+  opts: { dataset: string; maxRangeSeconds: number }
 ): { sql: string; plans: PagedFieldPlan[]; bucketSeconds: number } {
-  const serverId = assertSafeServerId(input.serverId);
-  const from = assertIsoTimestamp("from", input.from);
-  const to = assertIsoTimestamp("to", input.to);
-  assertRange(from, to, opts.maxRangeSeconds);
+  const serverId = assertSafeServerId(input.serverId)
+  const from = assertIsoTimestamp('from', input.from)
+  const to = assertIsoTimestamp('to', input.to)
+  assertRange(from, to, opts.maxRangeSeconds)
   const bucketSeconds = assertPositiveInt(
-    "resolutionSeconds",
-    input.resolutionSeconds ?? AE_DEFAULT_BUCKET_SECONDS,
-  );
-  assertSafeDatasetName(opts.dataset);
+    'resolutionSeconds',
+    input.resolutionSeconds ?? AE_DEFAULT_BUCKET_SECONDS
+  )
+  assertSafeDatasetName(opts.dataset)
 
-  const fromUnix = Math.floor(from.getTime() / 1000);
-  const toUnix = Math.floor(to.getTime() / 1000);
-  const discriminators = hostMetricsDiscriminatorPredicates();
-  const order = fieldOrderForFamily(family);
-  const width = order.length;
-  const perPage = entitiesPerPage(width);
-  const sentinel = aeMissingMetricSentinelSql();
-  const tsExpr = `toUnixTimestamp(${AE_TIMESTAMP_COLUMN})`;
+  const fromUnix = Math.floor(from.getTime() / 1000)
+  const toUnix = Math.floor(to.getTime() / 1000)
+  const discriminators = hostMetricsDiscriminatorPredicates()
+  const order = fieldOrderForFamily(family)
+  const width = order.length
+  const perPage = entitiesPerPage(width)
+  const sentinel = aeMissingMetricSentinelSql()
+  const tsExpr = `toUnixTimestamp(${AE_TIMESTAMP_COLUMN})`
 
-  const plans: PagedFieldPlan[] = [];
-  const selects: string[] = [];
+  const plans: PagedFieldPlan[] = []
+  const selects: string[] = []
   for (let slot = 0; slot < perPage; slot++) {
     for (const field of fields) {
-      const descriptor = resolveEntityFieldDescriptor(family, field);
-      const fieldIndex = order.indexOf(field);
-      const doubleIndex = slotDoubleIndex(width, slot, fieldIndex);
-      const col = doubleColumn(doubleIndex);
-      const prefix = `f${fieldIndex}_s${slot}`;
+      const descriptor = resolveEntityFieldDescriptor(family, field)
+      const fieldIndex = order.indexOf(field)
+      const doubleIndex = slotDoubleIndex(width, slot, fieldIndex)
+      const col = doubleColumn(doubleIndex)
+      const prefix = `f${fieldIndex}_s${slot}`
 
       switch (descriptor.aggregation) {
-        case "weighted-average": {
-          const numAlias = `${prefix}_n`;
-          const denAlias = `${prefix}_d`;
+        case 'weighted-average': {
+          const numAlias = `${prefix}_n`
+          const denAlias = `${prefix}_d`
           selects.push(
-            `SUM(if(${
-              aePresentValueSql(col)
-            }, ${col} * ${intervalSecondsColumn()} * _sample_interval, 0.0)) AS ${numAlias}`,
-            `SUM(if(${
-              aePresentValueSql(col)
-            }, ${intervalSecondsColumn()} * _sample_interval, 0.0)) AS ${denAlias}`,
-          );
+            `SUM(if(${aePresentValueSql(col)}, ${col} * ${intervalSecondsColumn()} * _sample_interval, 0.0)) AS ${numAlias}`,
+            `SUM(if(${aePresentValueSql(col)}, ${intervalSecondsColumn()} * _sample_interval, 0.0)) AS ${denAlias}`
+          )
           plans.push({
             field,
             slot,
-            aggregation: "weighted-average",
+            aggregation: 'weighted-average',
             numAlias,
             denAlias,
-          });
-          break;
+          })
+          break
         }
-        case "delta-sum": {
-          const rawAlias = `${prefix}_r`;
+        case 'delta-sum': {
+          const rawAlias = `${prefix}_r`
           selects.push(
-            `${
-              presenceAwareSum(
-                `SUM(if(${aePresentValueSql(col)}, 1, 0))`,
-                `SUM(if(${
-                  aePresentValueSql(col)
-                }, ${col} * _sample_interval, 0.0))`,
-              )
-            } AS ${rawAlias}`,
-          );
-          plans.push({ field, slot, aggregation: "delta-sum", rawAlias });
-          break;
+            `${presenceAwareSum(
+              `SUM(if(${aePresentValueSql(col)}, 1, 0))`,
+              `SUM(if(${aePresentValueSql(col)}, ${col} * _sample_interval, 0.0))`
+            )} AS ${rawAlias}`
+          )
+          plans.push({ field, slot, aggregation: 'delta-sum', rawAlias })
+          break
         }
-        case "max": {
-          const rawAlias = `${prefix}_r`;
-          selects.push(`MAX(${col}) AS ${rawAlias}`);
-          plans.push({ field, slot, aggregation: "max", rawAlias });
-          break;
+        case 'max': {
+          const rawAlias = `${prefix}_r`
+          selects.push(`MAX(${col}) AS ${rawAlias}`)
+          plans.push({ field, slot, aggregation: 'max', rawAlias })
+          break
         }
-        case "last": {
-          const valueAlias = `${prefix}_v`;
-          const keyAlias = `${prefix}_k`;
-          const keyExpr = `if(${
-            aePresentValueSql(col)
-          }, ${tsExpr}, ${tsExpr} * 0)`;
+        case 'last': {
+          const valueAlias = `${prefix}_v`
+          const keyAlias = `${prefix}_k`
+          const keyExpr = `if(${aePresentValueSql(col)}, ${tsExpr}, ${tsExpr} * 0)`
           selects.push(
-            `argMax(if(${
-              aePresentValueSql(col)
-            }, ${col}, ${sentinel}), ${keyExpr}) AS ${valueAlias}`,
-            `MAX(${keyExpr}) AS ${keyAlias}`,
-          );
+            `argMax(if(${aePresentValueSql(col)}, ${col}, ${sentinel}), ${keyExpr}) AS ${valueAlias}`,
+            `MAX(${keyExpr}) AS ${keyAlias}`
+          )
           plans.push({
             field,
             slot,
-            aggregation: "last",
+            aggregation: 'last',
             valueAlias,
             keyAlias,
-          });
-          break;
+          })
+          break
         }
       }
     }
   }
 
-  const idsCol = blobColumn(AE_BLOB_SOURCE_OR_IDENTITY_INDEX);
-  const entityPredicate = entityIds.map((id) =>
-    entityIdInPageIdentityPredicate(id)
-  ).join(" OR ");
+  const idsCol = blobColumn(AE_BLOB_SOURCE_OR_IDENTITY_INDEX)
+  const entityPredicate = entityIds.map((id) => entityIdInPageIdentityPredicate(id)).join(' OR ')
 
   const sql = [
-    "SELECT",
+    'SELECT',
     `  intDiv(toUnixTimestamp(${AE_TIMESTAMP_COLUMN}), ${bucketSeconds}) * ${bucketSeconds} AS bucket,`,
     `  ${idsCol} AS ids,`,
     `  SUM(_sample_interval) AS sample_count,`,
     `  SUM(${intervalSecondsColumn()} * _sample_interval) / SUM(_sample_interval) AS avg_interval_seconds,`,
-    `  ${selects.join(",\n  ")}`,
+    `  ${selects.join(',\n  ')}`,
     `FROM ${opts.dataset}`,
     `WHERE ${serverFamiliesPredicate(serverId, [family])}`,
     `  AND ${discriminators[0]}`,
@@ -2401,61 +2227,61 @@ function buildPagedEntitySeriesSql(
     `  AND ${timeRangePredicate(fromUnix, toUnix)}`,
     `GROUP BY bucket, ids`,
     `ORDER BY bucket ASC`,
-  ].join("\n");
+  ].join('\n')
 
-  return { sql, plans, bucketSeconds };
+  return { sql, plans, bucketSeconds }
 }
 
 /** Split a page's blob10 identity list, returning each entity id's 0-based slot position. */
 function splitPageIdentity(ids: string): string[] {
-  return ids.length === 0 ? [] : ids.split(",");
+  return ids.length === 0 ? [] : ids.split(',')
 }
 
 function finiteNumberOr(raw: unknown, fallback: number): number {
-  const num = Number(raw);
-  return Number.isFinite(num) ? num : fallback;
+  const num = Number(raw)
+  return Number.isFinite(num) ? num : fallback
 }
 
 function applyPagedFieldPlan(
   acc: BucketEntityAccumulator,
   plan: PagedFieldPlan,
-  row: Record<string, unknown>,
+  row: Record<string, unknown>
 ): void {
-  const existing = acc.fields.get(plan.field);
+  const existing = acc.fields.get(plan.field)
   switch (plan.aggregation) {
-    case "weighted-average":
+    case 'weighted-average':
       acc.fields.set(
         plan.field,
-        mergeFieldAccumulator(existing, "weighted-average", {
+        mergeFieldAccumulator(existing, 'weighted-average', {
           numerator: finiteNumberOr(row[plan.numAlias], 0),
           denominator: finiteNumberOr(row[plan.denAlias], 0),
-        }),
-      );
-      return;
-    case "delta-sum":
+        })
+      )
+      return
+    case 'delta-sum':
       acc.fields.set(
         plan.field,
-        mergeFieldAccumulator(existing, "delta-sum", {
+        mergeFieldAccumulator(existing, 'delta-sum', {
           raw: finiteNumberOr(row[plan.rawAlias], aeMissingSentinelValue()),
-        }),
-      );
-      return;
-    case "max":
+        })
+      )
+      return
+    case 'max':
       acc.fields.set(
         plan.field,
-        mergeFieldAccumulator(existing, "max", {
+        mergeFieldAccumulator(existing, 'max', {
           raw: finiteNumberOr(row[plan.rawAlias], aeMissingSentinelValue()),
-        }),
-      );
-      return;
-    case "last":
+        })
+      )
+      return
+    case 'last':
       acc.fields.set(
         plan.field,
-        mergeFieldAccumulator(existing, "last", {
+        mergeFieldAccumulator(existing, 'last', {
           value: finiteNumberOr(row[plan.valueAlias], aeMissingSentinelValue()),
           key: finiteNumberOr(row[plan.keyAlias], 0),
-        }),
-      );
+        })
+      )
   }
 }
 
@@ -2466,25 +2292,22 @@ function accumulatePagedEntitySlot(
   groupSampleCount: number,
   row: Record<string, unknown>,
   plans: readonly PagedFieldPlan[],
-  slot: number,
+  slot: number
 ): void {
-  const byBucket = perEntity.get(entityId);
-  if (byBucket === undefined) return;
+  const byBucket = perEntity.get(entityId)
+  if (byBucket === undefined) return
   const acc = byBucket.get(bucketEpochSeconds) ?? {
     sampleCount: 0,
     intervalWeightedSum: 0,
     fields: new Map(),
-  };
-  acc.sampleCount += groupSampleCount;
-  acc.intervalWeightedSum += mergeIntervalWeightedSum(
-    row.avg_interval_seconds,
-    groupSampleCount,
-  );
-  for (const plan of plans) {
-    if (plan.slot !== slot) continue;
-    applyPagedFieldPlan(acc, plan, row);
   }
-  byBucket.set(bucketEpochSeconds, acc);
+  acc.sampleCount += groupSampleCount
+  acc.intervalWeightedSum += mergeIntervalWeightedSum(row.avg_interval_seconds, groupSampleCount)
+  for (const plan of plans) {
+    if (plan.slot !== slot) continue
+    applyPagedFieldPlan(acc, plan, row)
+  }
+  byBucket.set(bucketEpochSeconds, acc)
 }
 
 function parsePagedEntitySeriesRows(
@@ -2492,29 +2315,29 @@ function parsePagedEntitySeriesRows(
   plans: readonly PagedFieldPlan[],
   entityIds: readonly string[],
   data: Array<Record<string, unknown>>,
-  bucketSeconds: number,
+  bucketSeconds: number
 ): EntitySeriesEntityResult[] {
-  const perEntity = new Map<string, Map<number, BucketEntityAccumulator>>();
-  for (const id of entityIds) perEntity.set(id, new Map());
+  const perEntity = new Map<string, Map<number, BucketEntityAccumulator>>()
+  for (const id of entityIds) perEntity.set(id, new Map())
 
   for (const row of data) {
-    const idsRaw = typeof row.ids === "string" ? row.ids : "";
-    const positions = splitPageIdentity(idsRaw);
-    if (positions.length === 0) continue;
-    const bucketEpochSeconds = parseBucketEpochSeconds(row.bucket);
-    if (!Number.isFinite(bucketEpochSeconds)) continue;
-    const groupSampleCount = finiteNumberOr(row.sample_count, 0);
+    const idsRaw = typeof row.ids === 'string' ? row.ids : ''
+    const positions = splitPageIdentity(idsRaw)
+    if (positions.length === 0) continue
+    const bucketEpochSeconds = parseBucketEpochSeconds(row.bucket)
+    if (!Number.isFinite(bucketEpochSeconds)) continue
+    const groupSampleCount = finiteNumberOr(row.sample_count, 0)
 
     for (let slot = 0; slot < positions.length; slot++) {
       accumulatePagedEntitySlot(
         perEntity,
-        positions[slot] ?? "",
+        positions[slot] ?? '',
         bucketEpochSeconds,
         groupSampleCount,
         row,
         plans,
-        slot,
-      );
+        slot
+      )
     }
   }
 
@@ -2522,10 +2345,10 @@ function parsePagedEntitySeriesRows(
     const { points, sampleCount } = toEntitySeriesPoints(
       perEntity.get(entityId) ?? new Map(),
       fields,
-      bucketSeconds,
-    );
-    return { entityId, points, sampleCount, gapCount: 0 };
-  });
+      bucketSeconds
+    )
+    return { entityId, points, sampleCount, gapCount: 0 }
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -2545,19 +2368,19 @@ function parsePagedEntitySeriesRows(
  */
 function embeddedNicSlotForEntityId(
   entityIds: readonly string[],
-  slotMapping: SlotMapping | undefined,
+  slotMapping: SlotMapping | undefined
 ): Map<string, 0 | 1> {
-  const bySlot = new Map<string, 0 | 1>();
-  if (!slotMapping) return bySlot;
-  const requested = new Set(entityIds);
-  const [slot1, slot2] = slotMapping.normalNicSlots;
-  if (slot1 && requested.has(slot1)) bySlot.set(slot1, 0);
-  if (slot2 && requested.has(slot2)) bySlot.set(slot2, 1);
-  return bySlot;
+  const bySlot = new Map<string, 0 | 1>()
+  if (!slotMapping) return bySlot
+  const requested = new Set(entityIds)
+  const [slot1, slot2] = slotMapping.normalNicSlots
+  if (slot1 && requested.has(slot1)) bySlot.set(slot1, 0)
+  if (slot2 && requested.has(slot2)) bySlot.set(slot2, 1)
+  return bySlot
 }
 
 function embeddedNicAlias(slot: 0 | 1, field: string): string {
-  return `nic${slot}_${field}`;
+  return `nic${slot}_${field}`
 }
 
 /**
@@ -2573,58 +2396,54 @@ function embeddedNicAlias(slot: 0 | 1, field: string): string {
 function buildEmbeddedNicEntitySeriesSql(
   input: EntitySeriesQuery,
   fields: readonly string[],
-  opts: { dataset: string; maxRangeSeconds: number },
+  opts: { dataset: string; maxRangeSeconds: number }
 ): { sql: string; bucketSeconds: number; embeddableFields: string[] } | null {
-  if (input.topologyGeneration == null) return null;
+  if (input.topologyGeneration == null) return null
 
-  const serverId = assertSafeServerId(input.serverId);
-  const from = assertIsoTimestamp("from", input.from);
-  const to = assertIsoTimestamp("to", input.to);
-  assertRange(from, to, opts.maxRangeSeconds);
+  const serverId = assertSafeServerId(input.serverId)
+  const from = assertIsoTimestamp('from', input.from)
+  const to = assertIsoTimestamp('to', input.to)
+  assertRange(from, to, opts.maxRangeSeconds)
   const bucketSeconds = assertPositiveInt(
-    "resolutionSeconds",
-    input.resolutionSeconds ?? AE_DEFAULT_BUCKET_SECONDS,
-  );
-  assertSafeDatasetName(opts.dataset);
+    'resolutionSeconds',
+    input.resolutionSeconds ?? AE_DEFAULT_BUCKET_SECONDS
+  )
+  assertSafeDatasetName(opts.dataset)
 
-  const fromUnix = Math.floor(from.getTime() / 1000);
-  const toUnix = Math.floor(to.getTime() / 1000);
-  const discriminators = hostMetricsDiscriminatorPredicates();
-  const hostIoPred = familyPredicate(AE_FAMILY_HOST_IO);
-  const generationCol = blobColumn(AE_BLOB_TOPOLOGY_GENERATION_INDEX);
-  const generationPred = `${generationCol} = ${
-    quoteSqlString(String(input.topologyGeneration))
-  }`;
+  const fromUnix = Math.floor(from.getTime() / 1000)
+  const toUnix = Math.floor(to.getTime() / 1000)
+  const discriminators = hostMetricsDiscriminatorPredicates()
+  const hostIoPred = familyPredicate(AE_FAMILY_HOST_IO)
+  const generationCol = blobColumn(AE_BLOB_TOPOLOGY_GENERATION_INDEX)
+  const generationPred = `${generationCol} = ${quoteSqlString(String(input.topologyGeneration))}`
 
   const embeddableFields = fields.filter((field) =>
     (HOST_IO_EMBEDDED_NIC_FIELDS as readonly string[]).includes(field)
-  );
-  const selects: string[] = [];
+  )
+  const selects: string[] = []
   for (const slot of [0, 1] as const) {
     for (const field of embeddableFields) {
       const doubleIndex = hostIoEmbeddedNicDoubleIndex(
         slot,
-        field as (typeof HOST_IO_EMBEDDED_NIC_FIELDS)[number],
-      );
+        field as (typeof HOST_IO_EMBEDDED_NIC_FIELDS)[number]
+      )
       selects.push(
-        `${
-          weightedAvgExpressionForColumn(
-            AE_FAMILY_HOST_IO,
-            doubleIndex,
-          )
-        } AS ${embeddedNicAlias(slot, field)}`,
-      );
+        `${weightedAvgExpressionForColumn(
+          AE_FAMILY_HOST_IO,
+          doubleIndex
+        )} AS ${embeddedNicAlias(slot, field)}`
+      )
     }
   }
 
   const sql = [
-    "SELECT",
+    'SELECT',
     `  intDiv(toUnixTimestamp(${AE_TIMESTAMP_COLUMN}), ${bucketSeconds}) * ${bucketSeconds} AS bucket,`,
     // `_sample_interval * 1.0`: AE's if() refuses an Integer branch beside
     // a Double one (`422 … must have the same type`).
     `  SUM(if(${hostIoPred}, _sample_interval * 1.0, 0.0)) AS sample_count,`,
     `  SUM(if(${hostIoPred}, ${intervalSecondsColumn()} * _sample_interval, 0.0)) / SUM(if(${hostIoPred}, _sample_interval * 1.0, 0.0)) AS avg_interval_seconds` +
-    (selects.length > 0 ? `,\n  ${selects.join(",\n  ")}` : ""),
+      (selects.length > 0 ? `,\n  ${selects.join(',\n  ')}` : ''),
     `FROM ${opts.dataset}`,
     `WHERE ${serverFamiliesPredicate(serverId, [AE_FAMILY_HOST_IO])}`,
     `  AND ${discriminators[0]}`,
@@ -2634,31 +2453,28 @@ function buildEmbeddedNicEntitySeriesSql(
     `  AND ${timeRangePredicate(fromUnix, toUnix)}`,
     `GROUP BY bucket`,
     `ORDER BY bucket ASC`,
-  ].join("\n");
+  ].join('\n')
 
-  return { sql, bucketSeconds, embeddableFields };
+  return { sql, bucketSeconds, embeddableFields }
 }
 
-function expectedSamplesFromAvg(
-  resolutionSeconds: number,
-  avgIntervalSeconds: number,
-): number {
+function expectedSamplesFromAvg(resolutionSeconds: number, avgIntervalSeconds: number): number {
   if (!Number.isFinite(avgIntervalSeconds)) {
-    return defaultExpectedSamplesPerBucket(resolutionSeconds);
+    return defaultExpectedSamplesPerBucket(resolutionSeconds)
   }
-  return defaultExpectedSamplesPerBucket(resolutionSeconds, avgIntervalSeconds);
+  return defaultExpectedSamplesPerBucket(resolutionSeconds, avgIntervalSeconds)
 }
 
 function embeddedNicFieldValue(
   field: string,
   embeddableFields: readonly string[],
   row: Record<string, unknown>,
-  slot: 0 | 1,
+  slot: 0 | 1
 ): number | null {
-  if (!embeddableFields.includes(field)) return null;
-  const raw = row[embeddedNicAlias(slot, field)];
-  const num = typeof raw === "number" ? raw : Number(raw);
-  return Number.isFinite(num) ? stripAeSentinel(num) : null;
+  if (!embeddableFields.includes(field)) return null
+  const raw = row[embeddedNicAlias(slot, field)]
+  const num = typeof raw === 'number' ? raw : Number(raw)
+  return Number.isFinite(num) ? stripAeSentinel(num) : null
 }
 
 /**
@@ -2673,21 +2489,21 @@ function parseEmbeddedNicEntitySeriesRows(
   embeddableFields: readonly string[],
   data: Array<Record<string, unknown>>,
   slot: 0 | 1,
-  resolutionSeconds: number,
+  resolutionSeconds: number
 ): { points: EntitySeriesPoint[]; sampleCount: number } {
-  const points: EntitySeriesPoint[] = [];
-  let sampleCount = 0;
+  const points: EntitySeriesPoint[] = []
+  let sampleCount = 0
   for (const row of data) {
-    const bucketEpochSeconds = parseBucketEpochSeconds(row.bucket);
-    if (!Number.isFinite(bucketEpochSeconds)) continue;
-    const sampleCountRaw = Number(row.sample_count ?? 0);
-    if (!Number.isFinite(sampleCountRaw)) continue;
-    if (sampleCountRaw <= 0) continue;
-    sampleCount += sampleCountRaw;
+    const bucketEpochSeconds = parseBucketEpochSeconds(row.bucket)
+    if (!Number.isFinite(bucketEpochSeconds)) continue
+    const sampleCountRaw = Number(row.sample_count ?? 0)
+    if (!Number.isFinite(sampleCountRaw)) continue
+    if (sampleCountRaw <= 0) continue
+    sampleCount += sampleCountRaw
 
-    const values: Partial<Record<string, number | null>> = {};
+    const values: Partial<Record<string, number | null>> = {}
     for (const field of fields) {
-      values[field] = embeddedNicFieldValue(field, embeddableFields, row, slot);
+      values[field] = embeddedNicFieldValue(field, embeddableFields, row, slot)
     }
 
     points.push({
@@ -2696,22 +2512,22 @@ function parseEmbeddedNicEntitySeriesRows(
       sampleCount: sampleCountRaw,
       expectedSampleCount: expectedSamplesFromAvg(
         resolutionSeconds,
-        Number(row.avg_interval_seconds),
+        Number(row.avg_interval_seconds)
       ),
-    });
+    })
   }
-  return { points, sampleCount };
+  return { points, sampleCount }
 }
 
 function withGapCounts(
   entities: EntitySeriesEntityResult[],
   from: string,
   to: string,
-  resolutionSeconds: number,
+  resolutionSeconds: number
 ): EntitySeriesEntityResult[] {
-  const fromMs = Date.parse(from);
-  const toMs = Date.parse(to);
-  if (!Number.isFinite(fromMs) || !Number.isFinite(toMs)) return entities;
+  const fromMs = Date.parse(from)
+  const toMs = Date.parse(to)
+  if (!Number.isFinite(fromMs) || !Number.isFinite(toMs)) return entities
   return entities.map((entity) => ({
     ...entity,
     gapCount: computeSeriesGapCount({
@@ -2720,55 +2536,49 @@ function withGapCounts(
       resolutionSeconds,
       points: entity.points,
     }),
-  }));
+  }))
 }
 
 export async function queryEntitySeriesViaSqlApi(
   config: CloudflareAnalyticsSqlConfig,
-  input: EntitySeriesQuery,
+  input: EntitySeriesQuery
 ): Promise<EntitySeriesResult> {
-  const fields = assertEntityFields(input.family, input.metrics);
-  const entityIds = assertEntityIds(input.entityIds);
-  const dataset = config.dataset ?? AE_DATASET_NAME;
-  const maxRangeSeconds = config.maxRangeSeconds ??
-    AE_DEFAULT_MAX_RANGE_SECONDS;
-  const opts = { dataset, maxRangeSeconds };
-  const client = new CloudflareAnalyticsSqlClient(config);
+  const fields = assertEntityFields(input.family, input.metrics)
+  const entityIds = assertEntityIds(input.entityIds)
+  const dataset = config.dataset ?? AE_DATASET_NAME
+  const maxRangeSeconds = config.maxRangeSeconds ?? AE_DEFAULT_MAX_RANGE_SECONDS
+  const opts = { dataset, maxRangeSeconds }
+  const client = new CloudflareAnalyticsSqlClient(config)
   // Entity predicates and per-slot field selects both grow the statement —
   // pack along both axes so no statement exceeds AE_SQL_MAX_LENGTH.
-  const tasks = packRowsAndColumns(
-    entityIds,
-    fields,
-    (ids, chunkFields) => entitySeriesSqlLength(input, chunkFields, ids, opts),
-  );
-  const chunks = await mapWithConcurrency(
-    tasks,
-    AE_SQL_CHUNK_CONCURRENCY,
-    (task, i) =>
-      queryEntitySeriesChunk(
-        client,
-        input,
-        task.columns,
-        task.rows,
-        opts,
-        chunkLabel(`entitySeries ${input.family}`, i, tasks.length),
-      ),
-  );
-  const bucketSeconds = chunks[0].bucketSeconds;
+  const tasks = packRowsAndColumns(entityIds, fields, (ids, chunkFields) =>
+    entitySeriesSqlLength(input, chunkFields, ids, opts)
+  )
+  const chunks = await mapWithConcurrency(tasks, AE_SQL_CHUNK_CONCURRENCY, (task, i) =>
+    queryEntitySeriesChunk(
+      client,
+      input,
+      task.columns,
+      task.rows,
+      opts,
+      chunkLabel(`entitySeries ${input.family}`, i, tasks.length)
+    )
+  )
+  const bucketSeconds = chunks[0].bucketSeconds
   const entities = mergeEntitySeriesChunks(
     entityIds,
-    chunks.map((chunk) => chunk.entities),
-  );
+    chunks.map((chunk) => chunk.entities)
+  )
 
   return {
-    kind: "analytics-engine",
+    kind: 'analytics-engine',
     available: true,
     serverId: input.serverId,
     family: input.family,
     metrics: fields,
     resolutionSeconds: bucketSeconds,
     entities: withGapCounts(entities, input.from, input.to, bucketSeconds),
-  };
+  }
 }
 
 /** Longest statement one entity-series chunk would send — mirrors {@link queryEntitySeriesChunk}'s builder choice. */
@@ -2776,55 +2586,51 @@ function entitySeriesSqlLength(
   input: EntitySeriesQuery,
   fields: readonly string[],
   entityIds: readonly string[],
-  opts: { dataset: string; maxRangeSeconds: number },
+  opts: { dataset: string; maxRangeSeconds: number }
 ): number {
-  if (input.family === "network") {
-    const embeddedSlotForId = embeddedNicSlotForEntityId(
-      entityIds,
-      input.slotMapping,
-    );
-    const pagedIds = entityIds.filter((id) => !embeddedSlotForId.has(id));
-    const pagedLength = pagedIds.length > 0
-      ? buildPagedEntitySeriesSql(input, "network", fields, pagedIds, opts).sql
-        .length
-      : 0;
-    const embeddedLength = embeddedSlotForId.size > 0
-      ? (buildEmbeddedNicEntitySeriesSql(input, fields, opts)?.sql.length ?? 0)
-      : 0;
-    return Math.max(pagedLength, embeddedLength);
+  if (input.family === 'network') {
+    const embeddedSlotForId = embeddedNicSlotForEntityId(entityIds, input.slotMapping)
+    const pagedIds = entityIds.filter((id) => !embeddedSlotForId.has(id))
+    const pagedLength =
+      pagedIds.length > 0
+        ? buildPagedEntitySeriesSql(input, 'network', fields, pagedIds, opts).sql.length
+        : 0
+    const embeddedLength =
+      embeddedSlotForId.size > 0
+        ? (buildEmbeddedNicEntitySeriesSql(input, fields, opts)?.sql.length ?? 0)
+        : 0
+    return Math.max(pagedLength, embeddedLength)
   }
   if (SINGLE_ROW_FAMILIES.has(input.family)) {
     const family = input.family as Extract<
       PerEntityHostedFamily,
-      "managed.ingress" | "managed.database_proxy"
-    >;
-    return buildSingleRowEntitySeriesSql(input, family, fields, entityIds, opts)
-      .sql.length;
+      'managed.ingress' | 'managed.database_proxy'
+    >
+    return buildSingleRowEntitySeriesSql(input, family, fields, entityIds, opts).sql.length
   }
   const family = input.family as Exclude<
     PerEntityHostedFamily,
-    "managed.ingress" | "managed.database_proxy"
-  >;
-  return buildPagedEntitySeriesSql(input, family, fields, entityIds, opts).sql
-    .length;
+    'managed.ingress' | 'managed.database_proxy'
+  >
+  return buildPagedEntitySeriesSql(input, family, fields, entityIds, opts).sql.length
 }
 
 /** One entity per requested id across chunked results: points merged by bucket, sample count from the fullest chunk. */
 function mergeEntitySeriesChunks(
   entityIds: readonly string[],
-  lists: readonly (readonly EntitySeriesEntityResult[])[],
+  lists: readonly (readonly EntitySeriesEntityResult[])[]
 ): EntitySeriesEntityResult[] {
-  const pointLists = new Map<string, EntitySeriesEntityResult["points"][]>();
-  const sampleCounts = new Map<string, number>();
+  const pointLists = new Map<string, EntitySeriesEntityResult['points'][]>()
+  const sampleCounts = new Map<string, number>()
   for (const list of lists) {
     for (const entity of list) {
-      const points = pointLists.get(entity.entityId) ?? [];
-      points.push(entity.points);
-      pointLists.set(entity.entityId, points);
+      const points = pointLists.get(entity.entityId) ?? []
+      points.push(entity.points)
+      pointLists.set(entity.entityId, points)
       sampleCounts.set(
         entity.entityId,
-        Math.max(sampleCounts.get(entity.entityId) ?? 0, entity.sampleCount),
-      );
+        Math.max(sampleCounts.get(entity.entityId) ?? 0, entity.sampleCount)
+      )
     }
   }
   return entityIds.map((entityId) => ({
@@ -2832,7 +2638,7 @@ function mergeEntitySeriesChunks(
     points: mergePointsByAt(pointLists.get(entityId) ?? [[]]),
     sampleCount: sampleCounts.get(entityId) ?? 0,
     gapCount: 0,
-  }));
+  }))
 }
 
 /** One entity-series statement set for a chunk of `fields` × `entityIds` (gap counts are added after merging). */
@@ -2842,157 +2648,139 @@ async function queryEntitySeriesChunk(
   fields: readonly string[],
   entityIds: readonly string[],
   opts: { dataset: string; maxRangeSeconds: number },
-  label: string,
+  label: string
 ): Promise<{ bucketSeconds: number; entities: EntitySeriesEntityResult[] }> {
-  const { dataset, maxRangeSeconds } = opts;
-  let entities: EntitySeriesEntityResult[];
-  let bucketSeconds: number;
+  const { dataset, maxRangeSeconds } = opts
+  let entities: EntitySeriesEntityResult[]
+  let bucketSeconds: number
 
-  if (input.family === "network") {
-    const embeddedSlotForId = embeddedNicSlotForEntityId(
-      entityIds,
-      input.slotMapping,
-    );
-    const pagedIds = entityIds.filter((id) => !embeddedSlotForId.has(id));
-    const embeddedIds = entityIds.filter((id) => embeddedSlotForId.has(id));
+  if (input.family === 'network') {
+    const embeddedSlotForId = embeddedNicSlotForEntityId(entityIds, input.slotMapping)
+    const pagedIds = entityIds.filter((id) => !embeddedSlotForId.has(id))
+    const embeddedIds = entityIds.filter((id) => embeddedSlotForId.has(id))
 
-    const pagedPromise = pagedIds.length > 0
-      ? (async () => {
-        const built = buildPagedEntitySeriesSql(
-          input,
-          "network",
-          fields,
-          pagedIds,
-          {
-            dataset,
-            maxRangeSeconds,
-          },
-        );
-        const result = await client.executeSql(built.sql, label);
-        return {
-          bucketSeconds: built.bucketSeconds,
-          entities: parsePagedEntitySeriesRows(
-            fields,
-            built.plans,
-            pagedIds,
-            result.data,
-            built.bucketSeconds,
-          ),
-        };
-      })()
-      : null;
+    const pagedPromise =
+      pagedIds.length > 0
+        ? (async () => {
+            const built = buildPagedEntitySeriesSql(input, 'network', fields, pagedIds, {
+              dataset,
+              maxRangeSeconds,
+            })
+            const result = await client.executeSql(built.sql, label)
+            return {
+              bucketSeconds: built.bucketSeconds,
+              entities: parsePagedEntitySeriesRows(
+                fields,
+                built.plans,
+                pagedIds,
+                result.data,
+                built.bucketSeconds
+              ),
+            }
+          })()
+        : null
 
-    const embeddedPromise = embeddedIds.length > 0
-      ? (async () => {
-        const built = buildEmbeddedNicEntitySeriesSql(input, fields, {
-          dataset,
-          maxRangeSeconds,
-        });
-        if (!built) {
-          // No resolved topology generation — see
-          // buildEmbeddedNicEntitySeriesSql's doc comment. Still validate
-          // the query shape so a malformed request fails the same way it
-          // would on any other path.
-          assertSafeServerId(input.serverId);
-          const from = assertIsoTimestamp("from", input.from);
-          const to = assertIsoTimestamp("to", input.to);
-          assertRange(from, to, maxRangeSeconds);
-          const fallbackBucketSeconds = assertPositiveInt(
-            "resolutionSeconds",
-            input.resolutionSeconds ?? AE_DEFAULT_BUCKET_SECONDS,
-          );
-          return {
-            bucketSeconds: fallbackBucketSeconds,
-            entities: embeddedIds.map((entityId) => ({
-              entityId,
-              points: [],
-              sampleCount: 0,
-              gapCount: 0,
-            })),
-          };
-        }
-        const result = await client.executeSql(built.sql, label);
-        return {
-          bucketSeconds: built.bucketSeconds,
-          entities: embeddedIds.map((entityId) => {
-            const slot = embeddedSlotForId.get(entityId)!;
-            const { points, sampleCount } = parseEmbeddedNicEntitySeriesRows(
-              fields,
-              built.embeddableFields,
-              result.data,
-              slot,
-              built.bucketSeconds,
-            );
-            return { entityId, points, sampleCount, gapCount: 0 };
-          }),
-        };
-      })()
-      : null;
+    const embeddedPromise =
+      embeddedIds.length > 0
+        ? (async () => {
+            const built = buildEmbeddedNicEntitySeriesSql(input, fields, {
+              dataset,
+              maxRangeSeconds,
+            })
+            if (!built) {
+              // No resolved topology generation — see
+              // buildEmbeddedNicEntitySeriesSql's doc comment. Still validate
+              // the query shape so a malformed request fails the same way it
+              // would on any other path.
+              assertSafeServerId(input.serverId)
+              const from = assertIsoTimestamp('from', input.from)
+              const to = assertIsoTimestamp('to', input.to)
+              assertRange(from, to, maxRangeSeconds)
+              const fallbackBucketSeconds = assertPositiveInt(
+                'resolutionSeconds',
+                input.resolutionSeconds ?? AE_DEFAULT_BUCKET_SECONDS
+              )
+              return {
+                bucketSeconds: fallbackBucketSeconds,
+                entities: embeddedIds.map((entityId) => ({
+                  entityId,
+                  points: [],
+                  sampleCount: 0,
+                  gapCount: 0,
+                })),
+              }
+            }
+            const result = await client.executeSql(built.sql, label)
+            return {
+              bucketSeconds: built.bucketSeconds,
+              entities: embeddedIds.map((entityId) => {
+                const slot = embeddedSlotForId.get(entityId)!
+                const { points, sampleCount } = parseEmbeddedNicEntitySeriesRows(
+                  fields,
+                  built.embeddableFields,
+                  result.data,
+                  slot,
+                  built.bucketSeconds
+                )
+                return { entityId, points, sampleCount, gapCount: 0 }
+              }),
+            }
+          })()
+        : null
 
-    const [pagedResult, embeddedResult] = await Promise.all([
-      pagedPromise,
-      embeddedPromise,
-    ]);
+    const [pagedResult, embeddedResult] = await Promise.all([pagedPromise, embeddedPromise])
 
-    bucketSeconds = pagedResult?.bucketSeconds ??
+    bucketSeconds =
+      pagedResult?.bucketSeconds ??
       embeddedResult?.bucketSeconds ??
-      assertPositiveInt(
-        "resolutionSeconds",
-        input.resolutionSeconds ?? AE_DEFAULT_BUCKET_SECONDS,
-      );
+      assertPositiveInt('resolutionSeconds', input.resolutionSeconds ?? AE_DEFAULT_BUCKET_SECONDS)
 
-    const byEntityId = new Map<string, EntitySeriesEntityResult>();
+    const byEntityId = new Map<string, EntitySeriesEntityResult>()
     for (const entity of pagedResult?.entities ?? []) {
-      byEntityId.set(entity.entityId, entity);
+      byEntityId.set(entity.entityId, entity)
     }
     for (const entity of embeddedResult?.entities ?? []) {
-      byEntityId.set(entity.entityId, entity);
+      byEntityId.set(entity.entityId, entity)
     }
-    entities = entityIds.map((id) => byEntityId.get(id)!);
+    entities = entityIds.map((id) => byEntityId.get(id)!)
   } else if (SINGLE_ROW_FAMILIES.has(input.family)) {
     const family = input.family as Extract<
       PerEntityHostedFamily,
-      "managed.ingress" | "managed.database_proxy"
-    >;
-    const built = buildSingleRowEntitySeriesSql(
-      input,
-      family,
-      fields,
-      entityIds,
-      {
-        dataset,
-        maxRangeSeconds,
-      },
-    );
-    bucketSeconds = built.bucketSeconds;
-    const result = await client.executeSql(built.sql, label);
+      'managed.ingress' | 'managed.database_proxy'
+    >
+    const built = buildSingleRowEntitySeriesSql(input, family, fields, entityIds, {
+      dataset,
+      maxRangeSeconds,
+    })
+    bucketSeconds = built.bucketSeconds
+    const result = await client.executeSql(built.sql, label)
     entities = parseSingleRowEntitySeriesRows(
       fields,
       built.aliases,
       entityIds,
       result.data,
-      bucketSeconds,
-    );
+      bucketSeconds
+    )
   } else {
     const family = input.family as Exclude<
       PerEntityHostedFamily,
-      "managed.ingress" | "managed.database_proxy"
-    >;
+      'managed.ingress' | 'managed.database_proxy'
+    >
     const built = buildPagedEntitySeriesSql(input, family, fields, entityIds, {
       dataset,
       maxRangeSeconds,
-    });
-    bucketSeconds = built.bucketSeconds;
-    const result = await client.executeSql(built.sql, label);
+    })
+    bucketSeconds = built.bucketSeconds
+    const result = await client.executeSql(built.sql, label)
     entities = parsePagedEntitySeriesRows(
       fields,
       built.plans,
       entityIds,
       result.data,
-      bucketSeconds,
-    );
+      bucketSeconds
+    )
   }
-  return { bucketSeconds, entities };
+  return { bucketSeconds, entities }
 }
 
 // ---------------------------------------------------------------------------
@@ -3001,21 +2789,21 @@ async function queryEntitySeriesChunk(
 
 function buildEntityIdsSeenSql(
   input: EntityIdsSeenQuery,
-  opts: { dataset: string; maxRangeSeconds: number },
+  opts: { dataset: string; maxRangeSeconds: number }
 ): string {
-  const serverId = assertSafeServerId(input.serverId);
-  const from = assertIsoTimestamp("from", input.from);
-  const to = assertIsoTimestamp("to", input.to);
-  assertRange(from, to, opts.maxRangeSeconds);
-  assertSafeDatasetName(opts.dataset);
+  const serverId = assertSafeServerId(input.serverId)
+  const from = assertIsoTimestamp('from', input.from)
+  const to = assertIsoTimestamp('to', input.to)
+  assertRange(from, to, opts.maxRangeSeconds)
+  assertSafeDatasetName(opts.dataset)
 
-  const fromUnix = Math.floor(from.getTime() / 1000);
-  const toUnix = Math.floor(to.getTime() / 1000);
-  const discriminators = hostMetricsDiscriminatorPredicates();
-  const idsCol = blobColumn(AE_BLOB_SOURCE_OR_IDENTITY_INDEX);
+  const fromUnix = Math.floor(from.getTime() / 1000)
+  const toUnix = Math.floor(to.getTime() / 1000)
+  const discriminators = hostMetricsDiscriminatorPredicates()
+  const idsCol = blobColumn(AE_BLOB_SOURCE_OR_IDENTITY_INDEX)
 
   return [
-    "SELECT",
+    'SELECT',
     `  ${idsCol} AS ids`,
     `FROM ${opts.dataset}`,
     `WHERE ${serverFamiliesPredicate(serverId, [input.family])}`,
@@ -3023,7 +2811,7 @@ function buildEntityIdsSeenSql(
     `  AND ${discriminators[1]}`,
     `  AND ${familyPredicate(input.family)}`,
     `  AND ${timeRangePredicate(fromUnix, toUnix)}`,
-  ].join("\n");
+  ].join('\n')
 }
 
 /**
@@ -3034,35 +2822,34 @@ function buildEntityIdsSeenSql(
  */
 function parseEntityIdsSeenRows(
   family: PerEntityHostedFamily,
-  data: Array<Record<string, unknown>>,
+  data: Array<Record<string, unknown>>
 ): string[] {
-  const seen = new Set<string>();
-  const paged = !SINGLE_ROW_FAMILIES.has(family);
+  const seen = new Set<string>()
+  const paged = !SINGLE_ROW_FAMILIES.has(family)
   for (const row of data) {
-    const raw = typeof row.ids === "string" ? row.ids : "";
-    if (!raw) continue;
+    const raw = typeof row.ids === 'string' ? row.ids : ''
+    if (!raw) continue
     if (paged) {
-      for (const id of splitPageIdentity(raw)) seen.add(id);
+      for (const id of splitPageIdentity(raw)) seen.add(id)
     } else {
-      seen.add(raw);
+      seen.add(raw)
     }
   }
-  return [...seen].sort((a, b) => a.localeCompare(b));
+  return [...seen].sort((a, b) => a.localeCompare(b))
 }
 
 export async function queryEntityIdsSeenViaSqlApi(
   config: CloudflareAnalyticsSqlConfig,
-  input: EntityIdsSeenQuery,
+  input: EntityIdsSeenQuery
 ): Promise<EntityIdsSeenResult> {
-  const dataset = config.dataset ?? AE_DATASET_NAME;
-  const maxRangeSeconds = config.maxRangeSeconds ??
-    AE_DEFAULT_MAX_RANGE_SECONDS;
-  const sql = buildEntityIdsSeenSql(input, { dataset, maxRangeSeconds });
-  const client = new CloudflareAnalyticsSqlClient(config);
-  const result = await client.executeSql(sql, "entityIdsSeen");
+  const dataset = config.dataset ?? AE_DATASET_NAME
+  const maxRangeSeconds = config.maxRangeSeconds ?? AE_DEFAULT_MAX_RANGE_SECONDS
+  const sql = buildEntityIdsSeenSql(input, { dataset, maxRangeSeconds })
+  const client = new CloudflareAnalyticsSqlClient(config)
+  const result = await client.executeSql(sql, 'entityIdsSeen')
   return {
-    kind: "analytics-engine",
+    kind: 'analytics-engine',
     available: true,
     entityIds: parseEntityIdsSeenRows(input.family, result.data),
-  };
+  }
 }
