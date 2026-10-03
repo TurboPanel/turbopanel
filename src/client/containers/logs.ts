@@ -34,7 +34,7 @@ export async function fetchContainerLogTail(
     serverId: string
     containerId: string
     tail: number
-  },
+  }
 ): Promise<{ logs: string } | Response> {
   const registry = getDaemonCellRegistry(c)
   if (!registry) {
@@ -64,10 +64,9 @@ export async function fetchContainerLogTail(
   })
 
   try {
-    const record = await registry.getCell(params.serverId).createRequestAndWait(
-      envelope,
-      LOGS_TIMEOUT_MS,
-    )
+    const record = await registry
+      .getCell(params.serverId)
+      .createRequestAndWait(envelope, LOGS_TIMEOUT_MS)
 
     if (record.status === 'expired') {
       cellTrace('request-result', {
@@ -97,7 +96,7 @@ export async function fetchContainerLogTail(
             message:
               'This container does not belong to a deployment on this server, so its logs cannot be read.',
           },
-          403,
+          403
         )
       }
       return c.json({ error }, 500)

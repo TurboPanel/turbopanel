@@ -7,7 +7,7 @@
  * isolate (worker stub or Deno process), not inside the Durable Object.
  * There is no per-server polling or cross-cell fan-out.
  */
-import { and, eq, inArray, sql } from 'drizzle-orm'
+import { and, eq, inArray, isNull, or, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 import type { DaemonCellRegistry, PendingRequestRecord } from '../../contracts/cell.ts'
@@ -808,7 +808,10 @@ async function advanceRolloutSafely(
   }
 }
 
-/** A successful deploy created the environment's volumes on this server: `pending` copies are ready. */
+/**
+ * A successful deploy created the environment's docker volumes on this server: their `pending`
+ * primary copies are ready. Scratch, non-docker and other-server copies are left alone.
+ */
 async function markEnvironmentCopiesReady(
   db: Db,
   environmentId: string,
@@ -821,12 +824,29 @@ async function markEnvironmentCopiesReady(
       and(
         eq(storageCopy.serverId, serverId),
         eq(storageCopy.state, 'pending'),
+        eq(storageCopy.provider, 'docker'),
+        eq(storageCopy.role, 'primary'),
         inArray(
           storageCopy.storageId,
           db
             .select({ id: storage.id })
             .from(storage)
-            .where(eq(storage.environmentId, environmentId))
+            .where(
+              and(
+                eq(storage.environmentId, environmentId),
+                // Environment-wide storage, or storage of a service that runs on this server.
+                or(
+                  isNull(storage.serviceId),
+                  inArray(
+                    storage.serviceId,
+                    db
+                      .select({ id: container.serviceId })
+                      .from(container)
+                      .where(eq(container.serverId, serverId))
+                  )
+                )
+              )
+            )
         )
       )
     )

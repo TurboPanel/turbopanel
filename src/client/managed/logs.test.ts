@@ -76,7 +76,7 @@ test('fetchManagedLogs returns 409 when the target server is offline', async () 
       serverId: 'server-1',
       managedId: 'managed-1',
       tail: 50,
-    },
+    }
   )
   if (!(response instanceof Response)) {
     throw new TypeError('expected Response')
@@ -102,7 +102,7 @@ test('fetchManagedLogs returns compose logs on success', async () => {
       serverId: 'server-1',
       managedId: 'managed-1',
       tail: 200,
-    },
+    }
   )
   if (result instanceof Response) {
     throw new TypeError('expected logs payload')
@@ -118,15 +118,11 @@ test('fetchManagedLogs maps cell failures to HTTP errors', async () => {
       createRequestAndWait: () => Promise.resolve({ status: 'expired' }),
     }),
   } as unknown as DaemonCellRegistry
-  const expired = await fetchManagedLogs(
-    mockContext(expiredRegistry),
-    statusDb,
-    {
-      serverId: 'server-1',
-      managedId: 'managed-1',
-      tail: 10,
-    },
-  )
+  const expired = await fetchManagedLogs(mockContext(expiredRegistry), statusDb, {
+    serverId: 'server-1',
+    managedId: 'managed-1',
+    tail: 10,
+  })
   if (!(expired instanceof Response)) throw new TypeError('expected Response')
   assertEquals(expired.status, 503)
 
@@ -157,34 +153,25 @@ test('fetchManagedLogs maps cell failures to HTTP errors', async () => {
         }),
     }),
   } as unknown as DaemonCellRegistry
-  const invalid = await fetchManagedLogs(
-    mockContext(invalidRegistry),
-    statusDb,
-    {
-      serverId: 'server-1',
-      managedId: 'managed-1',
-      tail: 10,
-    },
-  )
+  const invalid = await fetchManagedLogs(mockContext(invalidRegistry), statusDb, {
+    serverId: 'server-1',
+    managedId: 'managed-1',
+    tail: 10,
+  })
   if (!(invalid instanceof Response)) throw new TypeError('expected Response')
   assertEquals(invalid.status, 500)
   assertEquals(await invalid.json(), { error: 'invalid managed logs result' })
 
   const throwingRegistry = {
     getCell: () => ({
-      createRequestAndWait: () =>
-        Promise.reject(new Error('cell transport down')),
+      createRequestAndWait: () => Promise.reject(new Error('cell transport down')),
     }),
   } as unknown as DaemonCellRegistry
-  const transport = await fetchManagedLogs(
-    mockContext(throwingRegistry),
-    statusDb,
-    {
-      serverId: 'server-1',
-      managedId: 'managed-1',
-      tail: 10,
-    },
-  )
+  const transport = await fetchManagedLogs(mockContext(throwingRegistry), statusDb, {
+    serverId: 'server-1',
+    managedId: 'managed-1',
+    tail: 10,
+  })
   if (!(transport instanceof Response)) {
     throw new TypeError('expected Response')
   }

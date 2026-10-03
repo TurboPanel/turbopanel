@@ -2,10 +2,7 @@ import { eq } from 'drizzle-orm'
 import type { Context } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import { type Db, getDaemonCellRegistry } from '../../db/connection.ts'
-import {
-  getManagedEngineSpec,
-  MANAGED_ENGINE_STATUS,
-} from '../../features/managed/index.ts'
+import { getManagedEngineSpec, MANAGED_ENGINE_STATUS } from '../../features/managed/index.ts'
 import { environment, project } from '../../db/schema.ts'
 import type { ManagedContext } from '../../features/managed/managed-context.ts'
 import { loadManagedOrgDefaults } from '../../features/managed/load-org-defaults.ts'
@@ -25,7 +22,7 @@ export async function authorizeManagedRequest(
   c: Context<AppEnv>,
   db: Db,
   environmentId: string,
-  mode: 'read' | 'manage',
+  mode: 'read' | 'manage'
 ): Promise<{ userId: string; organizationId: string } | Response> {
   const session = c.get('session')
   if (!session) return c.json({ error: 'Unauthorized' }, 401)
@@ -33,26 +30,19 @@ export async function authorizeManagedRequest(
   const orgResult = await getOrgId(c, session.userId)
   if (orgResult instanceof Response) return orgResult
 
-  const entityOrgId = await resolveEntityOrganizationId(
-    db,
-    'environment',
-    environmentId,
-  )
+  const entityOrgId = await resolveEntityOrganizationId(db, 'environment', environmentId)
   if (!entityOrgId || entityOrgId !== orgResult) {
     return c.json({ error: 'Not found' }, 404)
   }
 
-  const denied = mode === 'read'
-    ? await assertCanReadOr403(c, 'environment', environmentId)
-    : await assertCanManageOr403(c, 'environment', environmentId)
+  const denied =
+    mode === 'read'
+      ? await assertCanReadOr403(c, 'environment', environmentId)
+      : await assertCanManageOr403(c, 'environment', environmentId)
   if (denied) return denied
 
   if (mode === 'manage') {
-    const immutable = await assertNotSystemOwnedOr403(
-      c,
-      'environment',
-      environmentId,
-    )
+    const immutable = await assertNotSystemOwnedOr403(c, 'environment', environmentId)
     if (immutable) return immutable
   }
 
@@ -60,9 +50,7 @@ export async function authorizeManagedRequest(
 }
 
 function readProjectCatalogCode(metadata: unknown): string | null {
-  if (
-    typeof metadata !== 'object' || metadata === null || Array.isArray(metadata)
-  ) {
+  if (typeof metadata !== 'object' || metadata === null || Array.isArray(metadata)) {
     return null
   }
   const code = (metadata as Record<string, unknown>).code
@@ -75,7 +63,7 @@ export async function loadManagedContext(
   c: Context<AppEnv>,
   db: Db,
   environmentId: string,
-  organizationId: string,
+  organizationId: string
 ): Promise<ManagedContext | Response> {
   const [envRow] = await db
     .select({
@@ -146,7 +134,7 @@ export async function loadManagedContext(
  */
 export function requireManagedCreateServerId(
   c: Context<AppEnv>,
-  serverId: string | null,
+  serverId: string | null
 ): string | Response {
   if (!serverId) {
     return c.json({ error: 'server_placement_required' }, 409)
@@ -161,7 +149,7 @@ export function requireManagedCreateServerId(
  */
 export function resolveManagedTargetServerId(
   c: Context<AppEnv>,
-  managedServerId: string | null,
+  managedServerId: string | null
 ): string | Response {
   if (!managedServerId) {
     return c.json({ error: 'server_placement_required' }, 409)
@@ -169,10 +157,7 @@ export function resolveManagedTargetServerId(
   return managedServerId
 }
 
-export function assertManagedNotBusy(
-  c: Context<AppEnv>,
-  status: string | null,
-): Response | null {
+export function assertManagedNotBusy(c: Context<AppEnv>, status: string | null): Response | null {
   if (status === 'applying') {
     return c.json({ error: 'managed_busy' }, 409)
   }
@@ -189,7 +174,7 @@ export const SERVER_OFFLINE_BODY = {
 export async function assertTargetServerOnline(
   c: Context<AppEnv>,
   db: Db,
-  serverId: string,
+  serverId: string
 ): Promise<Response | null> {
   const registry = getDaemonCellRegistry(c)
   const records = await loadServerStatusRecords(db, registry, [serverId])
@@ -201,9 +186,11 @@ export async function assertTargetServerOnline(
 }
 
 export function isManagedStatus(value: string | null): value is ManagedStatus {
-  return value === 'provisioning' ||
+  return (
+    value === 'provisioning' ||
     value === 'applying' ||
     value === 'ready' ||
     value === 'stopped' ||
     value === 'failed'
+  )
 }

@@ -1966,7 +1966,11 @@ test('GET logs returns 409 when the pinned server is offline', async () => {
     }),
     registry: stubRegistry(),
   })
-  await expectJson(await app.request(envPath('/logs'), { headers: authHeaders(cookie) }), 409, SERVER_OFFLINE_BODY)
+  await expectJson(
+    await app.request(envPath('/logs'), { headers: authHeaders(cookie) }),
+    409,
+    SERVER_OFFLINE_BODY
+  )
 })
 
 test('GET logs returns the cell transcript when the host is online', async () => {

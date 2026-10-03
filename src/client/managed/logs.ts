@@ -45,7 +45,7 @@ export async function fetchManagedLogs(
     serverId: string
     managedId: string
     tail: number
-  },
+  }
 ): Promise<{ logs: string } | Response> {
   const registry = getDaemonCellRegistry(c)
   if (!registry) {
@@ -75,10 +75,9 @@ export async function fetchManagedLogs(
   })
 
   try {
-    const record = await registry.getCell(params.serverId).createRequestAndWait(
-      envelope,
-      LOGS_TIMEOUT_MS,
-    )
+    const record = await registry
+      .getCell(params.serverId)
+      .createRequestAndWait(envelope, LOGS_TIMEOUT_MS)
 
     if (record.status === 'expired') {
       cellTrace('request-result', {

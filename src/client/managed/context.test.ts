@@ -7,9 +7,9 @@ import {
   isManagedStatus,
   requireManagedCreateServerId,
   resolveManagedTargetServerId,
+  SERVER_OFFLINE_BODY,
 } from './context.ts'
 import { createServerPresenceDb } from './server-status-test-db.ts'
-import { SERVER_OFFLINE_BODY } from './context.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -83,7 +83,7 @@ test('assertTargetServerOnline rejects offline servers', async () => {
   const offline = await assertTargetServerOnline(
     c,
     createServerPresenceDb('server-1', false),
-    'server-1',
+    'server-1'
   )
   if (!(offline instanceof Response)) {
     throw new TypeError('expected Response')
@@ -95,11 +95,7 @@ test('assertTargetServerOnline rejects offline servers', async () => {
 test('assertTargetServerOnline accepts online servers', async () => {
   const c = mockContext()
   assertEquals(
-    await assertTargetServerOnline(
-      c,
-      createServerPresenceDb('server-1', true),
-      'server-1',
-    ),
-    null,
+    await assertTargetServerOnline(c, createServerPresenceDb('server-1', true), 'server-1'),
+    null
   )
 })
