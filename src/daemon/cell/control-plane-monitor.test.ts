@@ -934,6 +934,57 @@ test("maybeRepairUpdateFromDaemonBuildHello clears updating when daemonBuild mat
   assertEquals(update?.requestId, "req-1");
 });
 
+test("maybeRepairUpdateFromDaemonBuildHello clears a stale failed update when daemonBuild matches trunk", async () => {
+  const { db, getDaemon } = createTrackingDb({
+    key: baseKey,
+    projection: {
+      update: {
+        status: "failed",
+        requestId: "req-old",
+        finishedAt: "2020-01-01T00:00:00.000Z",
+        error: "preflight_in_progress: update already in progress",
+      },
+    },
+  });
+
+  const { maybeRepairUpdateFromDaemonBuildHello } = await import(
+    "./control-plane-monitor.ts"
+  );
+  await maybeRepairUpdateFromDaemonBuildHello(
+    db,
+    serverId,
+    { commit: "target-commit", buildId: "b1", channel: "trunk" },
+    "target-commit",
+  );
+
+  const update = parseServerDaemonState(getDaemon())?.projection?.update;
+  assertEquals(update?.status, "done");
+  assertEquals(update?.error, undefined);
+});
+
+test("maybeRepairUpdateFromDaemonBuildHello keeps a failed update while the daemon is behind trunk", async () => {
+  const { db, getDaemon } = createTrackingDb({
+    key: baseKey,
+    projection: {
+      update: { status: "failed", requestId: "req-old", error: "boom" },
+    },
+  });
+
+  const { maybeRepairUpdateFromDaemonBuildHello } = await import(
+    "./control-plane-monitor.ts"
+  );
+  await maybeRepairUpdateFromDaemonBuildHello(
+    db,
+    serverId,
+    { commit: "old-commit", buildId: "b0", channel: "trunk" },
+    "target-commit",
+  );
+
+  const update = parseServerDaemonState(getDaemon())?.projection?.update;
+  assertEquals(update?.status, "failed");
+  assertEquals(update?.error, "boom");
+});
+
 test("onDaemonDisconnected defaults reason to disconnect", async () => {
   resetServerStatusEventSinkForTests();
   const events: ServerStatusEvent[] = [];

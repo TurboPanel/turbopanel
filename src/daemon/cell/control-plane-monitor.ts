@@ -20,9 +20,9 @@ import { notifyDemotions } from "../../features/alerts/notify-demotions.ts";
 import {
   daemonBuildChanged,
   identityFromSnapshot,
+  type ProjectionDaemonBuild,
   projectServerDaemon,
   steadyStateInboundSkipsDbRead,
-  type ProjectionDaemonBuild,
 } from "./postgres-projection.ts";
 import { resolveUpdateManifest } from "../../features/update/manifest.ts";
 import {
@@ -88,13 +88,19 @@ export async function onDaemonInbound(
   db: Db,
   serverId: string,
   cell: DaemonCell,
-  opts: { at?: string; daemonBuild?: ProjectionDaemonBuild; geo?: ServerGeo } = {},
+  opts: { at?: string; daemonBuild?: ProjectionDaemonBuild; geo?: ServerGeo } =
+    {},
 ): Promise<void> {
   if (opts.daemonBuild?.commit && opts.daemonBuild?.buildId) {
     await maybeRepairUpdateFromDaemonBuildHello(db, serverId, opts.daemonBuild);
 
-    const existingForDaemonBuild = await getServerDaemonStateByServerId(db, serverId);
-    if (daemonBuildChanged(existingForDaemonBuild?.projection, opts.daemonBuild)) {
+    const existingForDaemonBuild = await getServerDaemonStateByServerId(
+      db,
+      serverId,
+    );
+    if (
+      daemonBuildChanged(existingForDaemonBuild?.projection, opts.daemonBuild)
+    ) {
       await projectServerDaemon(db, serverId, {
         kind: "daemon-build",
         daemonBuild: opts.daemonBuild,
@@ -268,7 +274,12 @@ export async function maybeRepairUpdateFromDaemonBuildHello(
 
   const existing = await getServerDaemonStateByServerId(db, serverId);
   const update = existing?.projection?.update;
-  if (update?.status !== "updating") return;
+  // A failed or expired attempt is superseded too: the daemon came back on the
+  // target build, so the old error (e.g. `preflight_in_progress`) is moot.
+  if (
+    update?.status !== "updating" && update?.status !== "failed" &&
+    update?.status !== "expired"
+  ) return;
 
   const manifestCommit = targetCommit ??
     (await resolveUpdateManifest(channel))?.commit;
