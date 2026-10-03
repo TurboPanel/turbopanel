@@ -318,7 +318,11 @@
         // Automatic failover (fence + promote on an accepted dead-primary
         // event). On here; staging and live keep it off until the owner turns
         // it on. Manual switchover / DR are unaffected either way.
-        "TURBOPANEL_AUTO_FAILOVER": "on"
+        "TURBOPANEL_AUTO_FAILOVER": "on",
+        // Firewall apply allowlist (deploy-time key of the managed-mode gate):
+        // themisto, a throwaway testing server, so firewall drills can apply.
+        // Testing only: staging and live never set it here (live ignores it).
+        "TURBOPANEL_FIREWALL_APPLY_SERVERS": "01a0e123-9cd6-7760-96bc-5056aed162da"
       }
     },
     // Staging: the release-candidate environment. Same shape as testing and live,
