@@ -394,8 +394,8 @@ test('orchestrator event naming another instance is recorded stale and never fen
     { reporterServerId: SERVER_A, commandQueue: queue, binding: binding({ advertises: true }) }
   )
   assertEquals(result?.id, 'rec-stale')
-  // One terminal row (after one latest-row lookup); no candidate, datacenter, or command reads followed.
-  assertEquals(calls, { inserts: 1, reads: 4 })
+  // One terminal row (after the blocked-row dedupe lookup); no candidate, datacenter, or command reads followed.
+  assertEquals(calls, { inserts: 1, reads: 5 })
 })
 
 test('orchestrator event with a matching host but another port is stale', async () => {
@@ -405,7 +405,7 @@ test('orchestrator event with a matching host but another port is stale', async 
     { managedId: MANAGED_ID, instanceHost: '10.0.0.5', instancePort: 3307 },
     { reporterServerId: SERVER_A, commandQueue: queue, binding: binding() }
   )
-  assertEquals(calls, { inserts: 1, reads: 4 })
+  assertEquals(calls, { inserts: 1, reads: 5 })
 })
 
 test('orchestrator event without an instance from a daemon that advertises the feature is stale', async () => {
@@ -415,7 +415,7 @@ test('orchestrator event without an instance from a daemon that advertises the f
     { managedId: MANAGED_ID },
     { reporterServerId: SERVER_A, commandQueue: queue, binding: binding({ advertises: true }) }
   )
-  assertEquals(calls, { inserts: 1, reads: 4 })
+  assertEquals(calls, { inserts: 1, reads: 5 })
 })
 
 test('orchestrator event without an instance from an old daemon keeps the legacy behavior', async () => {
