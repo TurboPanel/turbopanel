@@ -45,6 +45,7 @@ export type BuildRefusalCode =
   | 'build_extra_host_internal'
   | 'build_context_outside_project'
   | 'build_context_internal_url'
+  | 'build_remote_source_refused'
 
 const BUILD_REFUSAL_CODES: ReadonlySet<string> = new Set<BuildRefusalCode>([
   'build_network_refused',
@@ -55,6 +56,7 @@ const BUILD_REFUSAL_CODES: ReadonlySet<string> = new Set<BuildRefusalCode>([
   'build_extra_host_internal',
   'build_context_outside_project',
   'build_context_internal_url',
+  'build_remote_source_refused',
 ])
 
 export function isBuildRefusalCode(code: string | undefined): code is BuildRefusalCode {
@@ -71,6 +73,14 @@ export type BuildRefusal = {
 }
 
 const NO_OPT_IN = 'builds may not do this, whatever the organization allows'
+
+/**
+ * The one rule an organization can lift: fetching a build's source from a
+ * public remote (a URL or git context). `validateComposeForDeploy` drops it
+ * when the organization has turned remote build sources on.
+ */
+const REMOTE_OPT_IN =
+  'an organization owner can allow remote build sources under Manage Organization → Compose'
 
 /** Build networks BuildKit offers that reach nothing on the host. */
 const ALLOWED_BUILD_NETWORKS = new Set(['default', 'none'])
@@ -104,12 +114,18 @@ function joinPath(segments: ReadonlyArray<string | number>): string {
 class Refusals {
   readonly found: BuildRefusal[] = []
 
-  add(code: BuildRefusalCode, segments: Array<string | number>, what: string, reason: string) {
+  add(
+    code: BuildRefusalCode,
+    segments: Array<string | number>,
+    what: string,
+    reason: string,
+    suffix = NO_OPT_IN
+  ) {
     this.found.push({
       code,
       path: joinPath(segments),
       segments,
-      message: `${what} ${reason} — ${NO_OPT_IN}`,
+      message: `${what} ${reason} — ${suffix}`,
     })
   }
 
@@ -196,13 +212,23 @@ function checkContext(
     out.path('build_context_outside_project', segments, what, value)
     return
   }
-  if (/^github\.com\//i.test(value)) return
-  const host = remoteHost(value)
+  const shorthand = /^github\.com\//i.test(value)
+  const host = shorthand ? 'github.com' : remoteHost(value)
   const reason =
     host === undefined
       ? 'cannot be parsed, so where it points cannot be checked'
       : internalHostReason(host)
-  if (reason) out.add('build_context_internal_url', segments, `${what} \`${value}\``, reason)
+  if (reason) {
+    out.add('build_context_internal_url', segments, `${what} \`${value}\``, reason)
+    return
+  }
+  out.add(
+    'build_remote_source_refused',
+    segments,
+    `${what} \`${value}\``,
+    'fetches the build source from a remote host, which cannot be vetted before deploy',
+    REMOTE_OPT_IN
+  )
 }
 
 /** `docker-image://`, `service:` and `target:` name an image or stage, not a path. */

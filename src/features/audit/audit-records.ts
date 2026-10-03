@@ -42,6 +42,7 @@ export const AUDIT_ACTIONS = [
   'forge.update',
   'forge.delete',
   'organization.compose_privileged_fields.set',
+  'organization.compose_remote_build_sources.set',
   'organization.deploy_hooks.set',
   'organization.compose_resource_defaults.set',
   'organization.acme.set',

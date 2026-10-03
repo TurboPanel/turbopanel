@@ -5,6 +5,7 @@ import {
   resolveAcmeEnabled,
   resolveComposeDefaultResourceLimits,
   resolveComposeGatedFieldsEnabled,
+  resolveComposeRemoteBuildSourcesEnabled,
   resolveDeployHooksEnabled,
   type TemperatureUnit,
 } from "../../features/organizations/organization-options.ts";
@@ -65,6 +66,10 @@ export type TlsSettingsPatch = {
 
 export type ComposeGatedFieldsPatch = {
   composeGatedFieldsEnabled: boolean;
+};
+
+export type ComposeRemoteBuildSourcesPatch = {
+  composeRemoteBuildSourcesEnabled: boolean;
 };
 
 export type DeployHooksPatch = {
@@ -370,6 +375,22 @@ export function parseTlsSettingsPatch(
     return { ok: false, error: "Invalid acmeEnabled", status: 400 };
   }
   return { ok: true, patch: { acmeEnabled: body.acmeEnabled } };
+}
+
+export function parseComposeRemoteBuildSourcesPatch(
+  body: Record<string, unknown>,
+):
+  | { ok: true; patch: ComposeRemoteBuildSourcesPatch }
+  | OrganizationRouteValidationError {
+  const value = body.composeRemoteBuildSourcesEnabled;
+  if (typeof value !== "boolean") {
+    return {
+      ok: false,
+      error: "Invalid composeRemoteBuildSourcesEnabled",
+      status: 400,
+    };
+  }
+  return { ok: true, patch: { composeRemoteBuildSourcesEnabled: value } };
 }
 
 export function parseComposeGatedFieldsPatch(
@@ -678,6 +699,16 @@ export function composeGatedFieldsPutResponse(options: {
   return {
     ok: true as const,
     ...composeGatedFieldsGetResponse(options),
+  };
+}
+
+export function composeRemoteBuildSourcesResponse(options: {
+  composeRemoteBuildSourcesEnabled?: boolean;
+}) {
+  return {
+    composeRemoteBuildSourcesEnabled: resolveComposeRemoteBuildSourcesEnabled(
+      options,
+    ),
   };
 }
 

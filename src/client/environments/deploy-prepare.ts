@@ -30,6 +30,7 @@ import {
   resolveAcmeEnabled,
   resolveComposeDefaultResourceLimits,
   resolveComposeGatedFieldsEnabled,
+  resolveComposeRemoteBuildSourcesEnabled,
   resolveDeployHooksEnabled,
 } from '../../features/organizations/organization-options.ts'
 import {
@@ -2554,11 +2555,10 @@ async function loadDeployComposeContext(
   // which is entitled to assume every `deploy:` key it still sees is one the
   // registry says we handle, and before the reconciles below write rows.
   if (!params.composeValidated) {
-    const composeGatedFieldsEnabled = resolveComposeGatedFieldsEnabled(
-      parseOrganizationOptions(orgRow?.options)
-    )
+    const orgOptions = parseOrganizationOptions(orgRow?.options)
     const rejected = validateComposeForDeploy(merged, {
-      composeGatedFieldsEnabled,
+      composeGatedFieldsEnabled: resolveComposeGatedFieldsEnabled(orgOptions),
+      composeRemoteBuildSourcesEnabled: resolveComposeRemoteBuildSourcesEnabled(orgOptions),
     })
     if (rejected) return { ok: false, failure: rejected }
   }

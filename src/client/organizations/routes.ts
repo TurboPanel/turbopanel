@@ -33,6 +33,7 @@ import {
   composeDefaultResourceLimitsPutResponse,
   composeGatedFieldsGetResponse,
   composeGatedFieldsPutResponse,
+  composeRemoteBuildSourcesResponse,
   defaultEnvironmentGetResponse,
   defaultEnvironmentPutResponse,
   defaultTimezoneGetResponse,
@@ -47,6 +48,7 @@ import {
   managedDefaultsPutResponse,
   parseComposeDefaultResourceLimitsPatch,
   parseComposeGatedFieldsPatch,
+  parseComposeRemoteBuildSourcesPatch,
   parseDefaultEnvironmentPutBody,
   parseDefaultTimezonePatch,
   parseDeployHooksPatch,
@@ -457,7 +459,9 @@ export function registerOrganizationRoutes(
       .limit(1);
     if (!orgRow) return c.json({ error: "Not found" }, 404);
 
-    return c.json(deployHooksGetResponse(parseOrganizationOptions(orgRow.options)));
+    return c.json(
+      deployHooksGetResponse(parseOrganizationOptions(orgRow.options)),
+    );
   });
 
   router.put("/organizations/:id/deploy-hooks", async (c) => {
@@ -562,6 +566,77 @@ export function registerOrganizationRoutes(
     });
 
     return c.json(composeGatedFieldsPutResponse(options));
+  });
+
+  // Org-owner only, like the gated-fields opt-in above. Lets a Compose build
+  // fetch its source from a public remote (a URL or git `build.context`).
+  // Internal hosts stay refused whatever this says.
+  router.get("/organizations/:id/compose-remote-build-sources", async (c) => {
+    const db = getDb(c);
+    if (!db) return c.json({ error: "Database unavailable" }, 503);
+
+    const id = c.req.param("id");
+    const denied = await assertOrgOwnerOr403(c, "organization", id);
+    if (denied) return denied;
+
+    const [orgRow] = await db
+      .select({ options: organization.options })
+      .from(organization)
+      .where(eq(organization.id, id))
+      .limit(1);
+    if (!orgRow) return c.json({ error: "Not found" }, 404);
+
+    return c.json(
+      composeRemoteBuildSourcesResponse(
+        parseOrganizationOptions(orgRow.options),
+      ),
+    );
+  });
+
+  router.put("/organizations/:id/compose-remote-build-sources", async (c) => {
+    const db = getDb(c);
+    if (!db) return c.json({ error: "Database unavailable" }, 503);
+
+    const session = c.get("session");
+    const id = c.req.param("id");
+    const denied = await assertOrgOwnerOr403(c, "organization", id);
+    if (denied) return denied;
+
+    const body = await parseJsonBody(c);
+    if (body instanceof Response) return body;
+
+    const parsedPatch = parseComposeRemoteBuildSourcesPatch(body);
+    if (!parsedPatch.ok) {
+      return c.json({ error: parsedPatch.error }, parsedPatch.status);
+    }
+    const patch = parsedPatch.patch;
+
+    const [updated] = await db.update(organization).set({
+      options: sql`COALESCE(${organization.options}, '{}'::jsonb) || ${
+        JSON.stringify(patch)
+      }::jsonb`,
+      updatedAt: new Date().toISOString(),
+    }).where(eq(organization.id, id)).returning({
+      options: organization.options,
+    });
+    if (!updated) return c.json({ error: "Not found" }, 404);
+
+    await recordAudit(db, {
+      organizationId: id,
+      actorUserId: session?.userId ?? null,
+      actorEmail: session?.email ?? null,
+      action: "organization.compose_remote_build_sources.set",
+      targetType: "organization",
+      targetId: id,
+      context: patch,
+    });
+
+    return c.json({
+      ok: true as const,
+      ...composeRemoteBuildSourcesResponse(
+        parseOrganizationOptions(updated.options),
+      ),
+    });
   });
 
   /**

@@ -7,6 +7,7 @@ import {
   applyManagedDefaultsPatch,
   composeGatedFieldsGetResponse,
   composeGatedFieldsPutResponse,
+  composeRemoteBuildSourcesResponse,
   defaultEnvironmentGetResponse,
   defaultEnvironmentPutResponse,
   defaultTimezoneGetResponse,
@@ -17,6 +18,7 @@ import {
   managedDefaultsPutResponse,
   parseComposeDefaultResourceLimitsPatch,
   parseComposeGatedFieldsPatch,
+  parseComposeRemoteBuildSourcesPatch,
   parseDefaultEnvironmentPutBody,
   parseDefaultTimezonePatch,
   parseHostDefaultsPatch,
@@ -61,6 +63,34 @@ test("parseComposeGatedFieldsPatch requires a boolean, no reset sentinel", () =>
   assertEquals(
     parseComposeGatedFieldsPatch({ composeGatedFieldsEnabled: "true" }).ok,
     false,
+  );
+});
+
+test("remote build sources: a boolean is required, and the setting defaults to off", () => {
+  assertEquals(
+    parseComposeRemoteBuildSourcesPatch({
+      composeRemoteBuildSourcesEnabled: true,
+    }),
+    { ok: true, patch: { composeRemoteBuildSourcesEnabled: true } },
+  );
+  assertEquals(
+    parseComposeRemoteBuildSourcesPatch({
+      composeRemoteBuildSourcesEnabled: "yes",
+    }),
+    {
+      ok: false,
+      error: "Invalid composeRemoteBuildSourcesEnabled",
+      status: 400,
+    },
+  );
+  assertEquals(composeRemoteBuildSourcesResponse({}), {
+    composeRemoteBuildSourcesEnabled: false,
+  });
+  assertEquals(
+    composeRemoteBuildSourcesResponse({
+      composeRemoteBuildSourcesEnabled: true,
+    }),
+    { composeRemoteBuildSourcesEnabled: true },
   );
 });
 

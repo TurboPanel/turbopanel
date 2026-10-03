@@ -23,6 +23,7 @@ import { parseProjectOptions } from '../projects/project-options.ts'
 import {
   parseOrganizationOptions,
   resolveComposeGatedFieldsEnabled,
+  resolveComposeRemoteBuildSourcesEnabled,
 } from '../organizations/organization-options.ts'
 import { parseServiceOptions, resolveServiceInstances } from '../projects/service-options.ts'
 import { environmentComposeFilename } from '../deploy/deploy-layers.ts'
@@ -148,6 +149,12 @@ export type PlannedDeploy = {
    * Docker-socket binds.
    */
   hostLevelApproved: boolean
+  /**
+   * The organization allows builds to fetch a public remote source. Rides every
+   * `environment.deploy` command as `remoteBuildSourcesApproved`, so the daemon
+   * repeats the same verdict instead of refusing what the control plane let by.
+   */
+  remoteBuildSourcesApproved: boolean
   pinServerId: string | null
   defaultServerId: string | null
   fabricEnabled: boolean
@@ -367,9 +374,10 @@ export async function planEnvironmentDeploy(
     .from(organization)
     .where(eq(organization.id, params.organizationId))
     .limit(1)
-  const composeGatedFieldsEnabled = resolveComposeGatedFieldsEnabled(
-    parseOrganizationOptions(orgRow?.options),
-  )
+  const orgOptions = parseOrganizationOptions(orgRow?.options)
+  const composeGatedFieldsEnabled = resolveComposeGatedFieldsEnabled(orgOptions)
+  const composeRemoteBuildSourcesEnabled =
+    resolveComposeRemoteBuildSourcesEnabled(orgOptions)
 
   // Before anything is written. `reconcile` below creates and retires `service`
   // rows, and `registerVolumes` / `registerMounts` further down create `storage`
@@ -377,7 +385,10 @@ export async function planEnvironmentDeploy(
   // must not have shaped the control plane on its way to being refused. Planning
   // used to run first and the refusal came later, per server, which left rows
   // behind for a deploy that never happened.
-  const rejected = validateComposeForDeploy(merged, { composeGatedFieldsEnabled })
+  const rejected = validateComposeForDeploy(merged, {
+    composeGatedFieldsEnabled,
+    composeRemoteBuildSourcesEnabled,
+  })
   if (rejected) return { kind: 'compose_rejected', error: rejected }
   const access = await authorizeHostAccess(db, envRow, merged, params.hostAccess)
   if ('error' in access) return { kind: 'compose_rejected', error: access.error }
@@ -452,6 +463,7 @@ export async function planEnvironmentDeploy(
     plan,
     composeValidated: true,
     hostLevelApproved: access.hostLevelApproved,
+    remoteBuildSourcesApproved: composeRemoteBuildSourcesEnabled,
     pinServerId,
     defaultServerId,
     fabricEnabled: Boolean(fabricRow),
