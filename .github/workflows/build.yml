@@ -134,6 +134,9 @@ jobs:
       - name: Check import boundaries
         run: pnpm run check:import-boundaries
 
+      - name: Check metrics boundaries (AE tokens and page identity stay backend-private)
+        run: pnpm run check:metrics-boundaries
+
       - name: Check contract drift (skip when turbopaneld is not a sibling)
         run: pnpm run check:contract-drift
 
@@ -364,16 +367,14 @@ jobs:
         if: github.event_name == 'pull_request' && steps.sonar.outcome == 'success'
         uses: TurboPanel/dev/.github/actions/sonar-new-issues@2db1bbfa3cff89a52fac3ee4a53bd495dc1c79b1 # dev#47
 
-  # ClickHouse/Tabix metrics infrastructure is retired (DuckDB + Parquet /
-  # Analytics Engine replaced it). The guard lives in TurboPanel/turbopaneld
-  # (scripts/check-metrics-legacy.ts) and scans sibling checkouts when present,
-  # so check this repo out next to it — a clean single-repo turbopaneld CI run
-  # cannot see PRs made here.
-  metrics-legacy:
+  # Contract twin: byte-compares the metrics contract and the other mirrored
+  # contracts against TurboPanel/turbopaneld, so this repo is checked out next
+  # to a sibling turbopaneld checkout (a same-named branch, else trunk).
+  contract-twin:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     concurrency:
-      group: instance-metrics-legacy-${{ github.event_name }}-${{ (github.head_ref == 'trunk' || github.head_ref == 'staging') && github.run_id || github.ref }}
+      group: instance-contract-twin-${{ github.event_name }}-${{ (github.head_ref == 'trunk' || github.head_ref == 'staging') && github.run_id || github.ref }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' && github.head_ref != 'trunk' && github.head_ref != 'staging' }}
     steps:
       - name: Check out repository
@@ -402,7 +403,7 @@ jobs:
             echo "ref=trunk" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Check out turbopaneld (metrics-legacy guard)
+      - name: Check out turbopaneld (contract twin sibling)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: TurboPanel/turbopaneld
@@ -440,10 +441,6 @@ jobs:
         with:
           deno-version: ${{ steps.deno-pin.outputs.version }}
 
-      - name: Check metrics legacy (no ClickHouse/Tabix references)
-        working-directory: turbopaneld
-        run: deno task check:metrics-legacy
-
       - name: Check metrics contract twin (sibling byte-compare)
         working-directory: turbopanel
         run: deno test -A --no-check src/contracts/metrics-contract.test.ts
@@ -467,7 +464,7 @@ jobs:
   # would still turn ci-ok red.
   ci-ok:
     name: ci-ok
-    needs: [checks, typecheck, vitest, deno-hostfree, deno-db, sonarqube, metrics-legacy]
+    needs: [checks, typecheck, vitest, deno-hostfree, deno-db, sonarqube, contract-twin]
     if: >-
       ${{ (github.event_name == 'pull_request' && always())
       || (!cancelled() && !contains(needs.*.result, 'cancelled')) }}

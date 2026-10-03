@@ -426,8 +426,8 @@ metrics `*.test.ts` files must be claimed** in `scripts/test-coverage.sh` (Deno
 is the Workers-pool exception) — then `pnpm check:test-inventory`. Unclaimed
 suites fail `test:hook` / CI and never reach Sonar LCOV. Root `AGENTS.md` →
 **Adding tests (inventory)**. The AE/v6-boundary guard
-(`scripts/check-metrics-boundaries.mjs` here, mirrored into
-`turbopaneld/scripts/check-metrics-legacy.ts`) enforces: (1) AE positional
+(`scripts/check-metrics-boundaries.mjs`, run by the `checks` job in
+`build.yml` and by `verify-ci.sh`) enforces: (1) AE positional
 tokens (`doubleN`/`blobN` literals, the `-1e308` sentinel) stay confined to
 `backends/cloudflare/`; (2) backend-private page-identifier symbols
 (`AE_BLOB_PAGE_INDEX`, `AE_BLOB_SOURCE_OR_IDENTITY_INDEX`,

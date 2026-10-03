@@ -312,6 +312,22 @@ lifecycle is **non-destructive** (`compose start|stop|restart`,
 files/volumes/deployment dir preserved, container rows keep their ids).
 Lifecycle `start`/`restart` rehydrate missing `/run` secret files first.
 
+**`retirePrincipals[]` (`{ username }[]`) is set only by a delete teardown**
+(`client/environments/teardown.ts`). The plan captures the project's server
+principals (applied logins) before the cascade; after it commits,
+`resolvePrincipalRetirement` keeps every login a surviving environment still
+places on that server (pinned there or holding a `deployment` row there) and
+names the rest on the **last** stop sent to that server. The daemon retires each
+after everything else in the stop through `tp-host principal-remove` (slice
+stopped and removed, processes killed, key file and group memberships cleared,
+the home tree removed without following symlinks, `userdel`, `groupdel
+<name>-grp`), then re-renders the `sshd` drop-in. tp-host refuses an account
+whose uid or `<name>-grp` gid is outside 15001–60000, whose home is not under
+the principal root, or that the host still references (a `turbopanel-*` unit
+running as it or in its slice, or a tree left under its `sites/`); a refusal is
+logged and the account kept, never a stop failure. An older daemon ignores the
+field.
+
 `environment.lifecycle` uses a 120s consumer timeout. On success the consumer
 reconciles the daemon's authoritative `compose ps -a` report through
 `reconcileEnvironmentContainers` (live rows update pins rather than clearing

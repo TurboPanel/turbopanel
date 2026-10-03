@@ -134,7 +134,7 @@ change. Future agents read `AGENTS.md` first.
 ### SonarQube (CI-based analysis)
 
 `build.yml` ends in a `ci-ok` job that `needs:` every pull_request job (checks,
-typecheck, vitest, deno-hostfree, deno-db, sonarqube, metrics-legacy) and fails unless all of them succeeded. It is the
+typecheck, vitest, deno-hostfree, deno-db, sonarqube, contract-twin) and fails unless all of them succeeded. It is the
 one context the branch rulesets will require; a new PR-time job must be added
 to its `needs:` or it never gates a merge. A red X must mean "this change is
 broken", so: on a pull request a cancelled need still fails `ci-ok`; on a trunk
@@ -454,7 +454,14 @@ guard; `pnpm test:do` alone does not.
   they are. Each new message is feature-gated: the peer advertises support
   in `features[]` (`DAEMON_WIRE_FEATURES`, kept equal in both
   `version-wire.ts` files) and the daemon checks `instanceSupports()` before
-  treating the peer as able to speak it. `update-progress`
+  treating the peer as able to speak it. `php-site-modes-v1` gates a deploy
+  field rather than a message: the daemon runs each PHP site in its `php.mode`
+  (FastCGI or php-fpm, nginx and Apache). Deploy prepare refuses a mode other
+  than php-fpm for a daemon that does not list it (`php_mode_unavailable`,
+  reason `daemon_unsupported`) and stamps no mode on its sites. A deployment
+  record without `phpModes` means the modes are unknown, not php-fpm.
+  OpenLiteSpeed and Caddy sites ignore `php.mode` in the daemon for now (the
+  OpenLiteSpeed lsphp work is turbopaneld#250). `update-progress`
   (`update-progress-v1`) is the worked example — fire-and-forget progress,
   ignored by a peer that does not list the feature. `managed-health-v1` is
   the worked example in the other direction, a control-plane-initiated
