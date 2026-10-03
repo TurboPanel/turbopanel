@@ -4,7 +4,14 @@ import {
   type MetricEventKind,
   type MetricEventSeverity,
   type MetricEvent,
-  METRICS_SCHEMA_VERSION,
+  EXTENDED_DOCKER_FIELD_NAMES,
+  EXTENDED_HOST_FIELD_NAMES,
+  EXTENDED_INGRESS_FIELD_NAMES,
+  isMetricsWireVersion,
+  MAX_METRICS_TEXT_LENGTH,
+  METRICS_TEXT_FIELD_NAMES,
+  METRICS_WIRE_VERSIONS,
+  type MetricsExtended,
   type MetricsSampleMetadata,
   type MetricsSample,
   type MetricsSampleInput,
@@ -227,6 +234,7 @@ const ALLOWED_TOP_LEVEL_FIELDS: ReadonlySet<string> = new Set([
   'router',
   'storage',
   'dockerUsage',
+  'extended',
 ])
 
 function parseEnvelope(raw: unknown): ValidateResult<Record<string, unknown>> {
@@ -250,6 +258,7 @@ const ALLOWED_METADATA_FIELDS: ReadonlySet<string> = new Set([
   'sequence',
   'topologyGeneration',
   'bootGeneration',
+  'durable',
 ])
 
 function parseMetadata(raw: unknown, nowMs: number): ValidateResult<MetricsSampleMetadata> {
@@ -259,8 +268,11 @@ function parseMetadata(raw: unknown, nowMs: number): ValidateResult<MetricsSampl
       return fail(`metadata.${key} is not a recognized metadata field`)
     }
   }
-  if (raw.version !== METRICS_SCHEMA_VERSION) {
-    return fail(`metadata.version must be ${METRICS_SCHEMA_VERSION}`)
+  if (!isMetricsWireVersion(raw.version)) {
+    return fail(`metadata.version must be one of ${METRICS_WIRE_VERSIONS.join(', ')}`)
+  }
+  if (raw.durable !== undefined && typeof raw.durable !== 'boolean') {
+    return fail('metadata.durable must be a boolean')
   }
   const sampledAt = parseTimestamp(raw.sampledAt, 'metadata.sampledAt', {
     checkSkew: true,
@@ -286,7 +298,8 @@ function parseMetadata(raw: unknown, nowMs: number): ValidateResult<MetricsSampl
   return {
     ok: true,
     value: {
-      version: METRICS_SCHEMA_VERSION,
+      version: raw.version,
+      ...(raw.durable === undefined ? {} : { durable: raw.durable }),
       sampledAt: sampledAt.value,
       intervalSeconds: intervalSeconds.value,
       sequence: sequence.value,
@@ -862,9 +875,7 @@ function parseDiagnostics(
  * `parseFieldGroup` directly: an unrecognized field is an error, and a
  * missing one sanitizes to `null` rather than being silently dropped.
  */
-function parseRouter(
-  raw: unknown
-): ValidateResult<NonNullable<MetricsSampleInput['router']>> {
+function parseRouter(raw: unknown): ValidateResult<NonNullable<MetricsSampleInput['router']>> {
   const parsed = parseFieldGroup(raw, 'router', 'router', ROUTER_FIELD_NAMES)
   if (!parsed.ok) return parsed
   return {
@@ -914,9 +925,7 @@ const ALLOWED_STORAGE_KEYS: ReadonlySet<string> = new Set<string>([
   ...STORAGE_ENGINE_KEYS,
 ])
 
-function parseStorage(
-  raw: unknown
-): ValidateResult<NonNullable<MetricsSampleInput['storage']>> {
+function parseStorage(raw: unknown): ValidateResult<NonNullable<MetricsSampleInput['storage']>> {
   if (!isRecord(raw)) return fail('storage must be an object')
   const unknown = rejectUnknownKeys(raw, ALLOWED_STORAGE_KEYS, 'storage')
   if (unknown) return unknown
@@ -956,7 +965,121 @@ function parseDockerUsage(
   }
 }
 
+const ALLOWED_EXTENDED_FIELDS: ReadonlySet<string> = new Set([
+  'host',
+  'docker',
+  'ingress',
+  'text',
+  'blockDeviceText',
+  'gpuText',
+])
+
+/** One flat object of `number | null` readings: unknown keys and non-numbers are rejected. */
+function parseOptionalNumberGroup(
+  raw: unknown,
+  label: string,
+  names: readonly string[]
+): ValidateResult<Record<string, number | null>> {
+  if (!isRecord(raw)) return fail(`${label} must be an object`)
+  const unknown = rejectUnknownKeys(raw, new Set(names), label)
+  if (unknown) return unknown
+  const out: Record<string, number | null> = {}
+  for (const name of names) {
+    const value = raw[name]
+    if (value === undefined) continue
+    if (value !== null && typeof value !== 'number') {
+      return fail(`${label}.${name} must be a number or null`)
+    }
+    out[name] = value
+  }
+  return { ok: true, value: out }
+}
+
+/** Free text: strings only, bounded; the contract sanitizer trims and drops empties. */
+function parseTextGroup(
+  raw: unknown,
+  label: string,
+  names: readonly string[],
+  idField?: string
+): ValidateResult<Record<string, string>> {
+  if (!isRecord(raw)) return fail(`${label} must be an object`)
+  const unknown = rejectUnknownKeys(raw, new Set(idField ? [idField, ...names] : names), label)
+  if (unknown) return unknown
+  const out: Record<string, string> = {}
+  for (const name of idField ? [idField, ...names] : names) {
+    const value = raw[name]
+    if (value === undefined) continue
+    if (typeof value !== 'string') return fail(`${label}.${name} must be a string`)
+    const limit = name === idField ? MAX_DIMENSION_LEN : MAX_METRICS_TEXT_LENGTH * 4
+    if (value.length > limit) return fail(`${label}.${name} exceeds max length ${limit}`)
+    out[name] = value
+  }
+  if (idField && !out[idField]) return fail(`${label}.${idField} must be a non-empty string`)
+  return { ok: true, value: out }
+}
+
+function parseTextEntries(
+  raw: unknown,
+  label: string,
+  idField: string,
+  names: readonly string[]
+): ValidateResult<Record<string, string>[]> {
+  const arr = parseArray(raw, label, MAX_METRIC_ENTITY_ARRAY_LENGTH)
+  if (!arr.ok) return arr
+  const out: Record<string, string>[] = []
+  for (let i = 0; i < arr.value.length; i++) {
+    const entry = parseTextGroup(arr.value[i], `${label}[${i}]`, names, idField)
+    if (!entry.ok) return entry
+    out.push(entry.value)
+  }
+  return { ok: true, value: out }
+}
+
+type ExtendedNumberSection = 'host' | 'docker' | 'ingress'
+const EXTENDED_NUMBER_SECTIONS: readonly (readonly [ExtendedNumberSection, readonly string[]])[] = [
+  ['host', EXTENDED_HOST_FIELD_NAMES],
+  ['docker', EXTENDED_DOCKER_FIELD_NAMES],
+  ['ingress', EXTENDED_INGRESS_FIELD_NAMES],
+]
+
+/**
+ * Parse the optional v7 `extended` section. Every key is optional and unknown
+ * keys are rejected, so a typo cannot silently drop a reading.
+ */
+function parseExtended(raw: unknown): ValidateResult<MetricsExtended> {
+  if (!isRecord(raw)) return fail('extended must be an object')
+  const unknown = rejectUnknownKeys(raw, ALLOWED_EXTENDED_FIELDS, 'extended')
+  if (unknown) return unknown
+  const out: Record<string, unknown> = {}
+  for (const [section, names] of EXTENDED_NUMBER_SECTIONS) {
+    if (raw[section] === undefined) continue
+    const parsed = parseOptionalNumberGroup(raw[section], `extended.${section}`, names)
+    if (!parsed.ok) return parsed
+    out[section] = parsed.value
+  }
+  if (raw.text !== undefined) {
+    const parsed = parseTextGroup(raw.text, 'extended.text', METRICS_TEXT_FIELD_NAMES)
+    if (!parsed.ok) return parsed
+    out.text = parsed.value
+  }
+  if (raw.blockDeviceText !== undefined) {
+    const parsed = parseTextEntries(raw.blockDeviceText, 'extended.blockDeviceText', 'deviceId', [
+      'model',
+      'smart',
+    ])
+    if (!parsed.ok) return parsed
+    out.blockDeviceText = parsed.value
+  }
+  if (raw.gpuText !== undefined) {
+    const parsed = parseTextEntries(raw.gpuText, 'extended.gpuText', 'gpuId', ['driver', 'model'])
+    if (!parsed.ok) return parsed
+    out.gpuText = parsed.value
+  }
+  return { ok: true, value: out as MetricsExtended }
+}
+
 type OptionalSampleParts = {
+  extended?: MetricsExtended
   diagnostics?: NonNullable<MetricsSampleInput['diagnostics']>
   router?: NonNullable<MetricsSampleInput['router']>
   storage?: NonNullable<MetricsSampleInput['storage']>
@@ -986,6 +1109,11 @@ function parseOptionalSampleParts(
     const parsed = parseDockerUsage(envelope.dockerUsage)
     if (!parsed.ok) return parsed
     value.dockerUsage = parsed.value
+  }
+  if (envelope.extended !== undefined) {
+    const parsed = parseExtended(envelope.extended)
+    if (!parsed.ok) return parsed
+    value.extended = parsed.value
   }
   return { ok: true, value }
 }

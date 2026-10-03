@@ -113,7 +113,7 @@ import {
 export { AE_DATASET_NAME }
 
 /** Schema versions this read path understands (positional semantics must match). */
-export const AE_SUPPORTED_SCHEMA_VERSIONS: readonly number[] = [6]
+export const AE_SUPPORTED_SCHEMA_VERSIONS: readonly number[] = [6, 7]
 
 /** Escape a string literal for AE SQL (single-quote doubling). Same idiom as v3's `quoteSqlString`. */
 export function quoteSqlString(value: string): string {

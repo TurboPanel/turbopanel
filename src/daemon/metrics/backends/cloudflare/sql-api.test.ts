@@ -44,8 +44,8 @@ it('AE_DATASET_NAME is the current dataset', () => {
   assertEquals(AE_DATASET_NAME, 'turbopanel_server_metrics_v6')
 })
 
-it('AE_SUPPORTED_SCHEMA_VERSIONS is exactly [6]', () => {
-  assertEquals(AE_SUPPORTED_SCHEMA_VERSIONS, [6])
+it('AE_SUPPORTED_SCHEMA_VERSIONS reads both v6 and v7 rows', () => {
+  assertEquals(AE_SUPPORTED_SCHEMA_VERSIONS, [6, 7])
 })
 
 it('quoteSqlString doubles single quotes', () => {
@@ -55,19 +55,19 @@ it('quoteSqlString doubles single quotes', () => {
 
 it('kindDiscriminatorPredicates: blob1 = kind, blob3 = schema version', () => {
   const predicates = kindDiscriminatorPredicates('metrics')
-  assertEquals(predicates, [`blob1 = 'metrics'`, `blob3 = '6'`])
+  assertEquals(predicates, [`blob1 = 'metrics'`, `blob3 IN ('6', '7')`])
 })
 
 it('hostMetricsDiscriminatorPredicates matches the metrics kind', () => {
-  assertEquals(hostMetricsDiscriminatorPredicates(), [`blob1 = 'metrics'`, `blob3 = '6'`])
+  assertEquals(hostMetricsDiscriminatorPredicates(), [`blob1 = 'metrics'`, `blob3 IN ('6', '7')`])
 })
 
 it('eventDiscriminatorPredicates matches the event kind', () => {
-  assertEquals(eventDiscriminatorPredicates(), [`blob1 = 'event'`, `blob3 = '6'`])
+  assertEquals(eventDiscriminatorPredicates(), [`blob1 = 'event'`, `blob3 IN ('6', '7')`])
 })
 
 it('statusDiscriminatorPredicates matches the status kind', () => {
-  assertEquals(statusDiscriminatorPredicates(), [`blob1 = 'status'`, `blob3 = '6'`])
+  assertEquals(statusDiscriminatorPredicates(), [`blob1 = 'status'`, `blob3 IN ('6', '7')`])
 })
 
 it("familyPredicate: blob2 = '<family>'", () => {
