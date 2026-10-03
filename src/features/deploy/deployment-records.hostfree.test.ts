@@ -4,9 +4,11 @@
 
 import { assertEquals } from '@std/assert'
 import type { Db } from '../../db/connection.ts'
+import { createMemoryDb } from '../../test-fixtures/memory-db.ts'
 import { deployment } from '../../db/schema.ts'
 import {
   listEnvironmentDeploymentTargets,
+  listReservedListenPorts,
   markDeploymentApplied,
   markDeploymentFailed,
   pruneDrainedDeployments,
@@ -153,11 +155,13 @@ test('upsertDeploymentTargets never writes applied_generation', async () => {
 
 test('markDeploymentFailed merges metadata.error and updates one row', async () => {
   const db = createDeploymentDb({
-    returning: [{
-      ...baseRow,
-      status: 'failed',
-      metadata: { error: 'compose rejected' },
-    }],
+    returning: [
+      {
+        ...baseRow,
+        status: 'failed',
+        metadata: { error: 'compose rejected' },
+      },
+    ],
   })
 
   const record = await markDeploymentFailed(db, {
@@ -178,12 +182,14 @@ test('markDeploymentFailed merges metadata.error and updates one row', async () 
 
 test('markDeploymentApplied clears metadata.error and sets applied_generation', async () => {
   const db = createDeploymentDb({
-    returning: [{
-      ...baseRow,
-      status: 'applied',
-      appliedGeneration: 4,
-      metadata: { error: null },
-    }],
+    returning: [
+      {
+        ...baseRow,
+        status: 'applied',
+        appliedGeneration: 4,
+        metadata: { error: null },
+      },
+    ],
   })
 
   const record = await markDeploymentApplied(db, {
@@ -233,11 +239,10 @@ test('listEnvironmentDeploymentTargets sorts by serverId then id', async () => {
     ],
   })
   const listed = await listEnvironmentDeploymentTargets(db, envId)
-  assertEquals(listed.map((row) => `${row.serverId}:${row.id}`), [
-    `${serverA}:a`,
-    `${serverA}:b`,
-    `${serverB}:z`,
-  ])
+  assertEquals(
+    listed.map((row) => `${row.serverId}:${row.id}`),
+    [`${serverA}:a`, `${serverA}:b`, `${serverB}:z`]
+  )
 })
 
 test('serializeDeploymentTarget flattens nullable columns', () => {
@@ -253,4 +258,30 @@ test('serializeDeploymentTarget flattens nullable columns', () => {
   assertEquals(record.desiredHash, null)
   assertEquals(record.lastCommandId, null)
   assertEquals(record.status, 'applied')
+})
+
+test('listReservedListenPorts reads other environments ports on the given servers only', async () => {
+  const otherEnv = '00000000-0000-4000-8000-000000000002'
+  const row = (environmentId: string, serverId: string, options: unknown) => ({
+    environmentId,
+    serverId,
+    options,
+  })
+  const db = createMemoryDb([
+    [
+      deployment,
+      [
+        row(envId, serverA, { listenPorts: [18_080] }),
+        row(otherEnv, serverA, { listenPorts: [18_081, 18_082] }),
+        row(otherEnv, serverB, { listenPorts: [18_090] }),
+        row(otherEnv, serverA, { listenPorts: 'bad' }),
+      ],
+    ],
+  ])
+  const reserved = await listReservedListenPorts(db as unknown as Db, {
+    environmentId: envId,
+    serverIds: [serverA],
+  })
+  assertEquals([...(reserved.get(serverA) ?? [])].sort(), [18_081, 18_082])
+  assertEquals(reserved.has(serverB), false)
 })
