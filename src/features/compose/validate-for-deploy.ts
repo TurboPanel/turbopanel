@@ -187,6 +187,13 @@ export function validateComposeForDeploy(
      * defaults to `false` — the safe, deny-by-default reading.
      */
     composeGatedFieldsEnabled?: boolean
+    /**
+     * The organization's `resolveComposeRemoteBuildSourcesEnabled` result:
+     * whether a build may fetch its source from a public remote (a URL or git
+     * context). Same seam and same deny-by-default reading as the flag above.
+     * Remote hosts that are internal stay refused whatever this says.
+     */
+    composeRemoteBuildSourcesEnabled?: boolean
   }
 ): ComposeDeployValidationError | null {
   // Stages 1–3. `validateComposeDocument` runs the vendored Compose schema, the
@@ -219,9 +226,13 @@ export function validateComposeForDeploy(
   })
 
   // Build options no deploy may carry, refused before anything org-gated is
-  // even considered: there is no opt-in that reaches these.
+  // even considered: there is no opt-in that reaches these, bar one — a public
+  // remote build source, which an organization owner may allow.
   const buildRefused = lintIssues.flatMap((issue) =>
-    isBuildRefusalCode(issue.code) ? [{ ...toValidationIssue(issue), code: issue.code }] : []
+    isBuildRefusalCode(issue.code) &&
+    !(issue.code === 'build_remote_source_refused' && opts?.composeRemoteBuildSourcesEnabled)
+      ? [{ ...toValidationIssue(issue), code: issue.code }]
+      : []
   )
   if (buildRefused.length > 0) {
     return { kind: 'compose_build_refused', issues: buildRefused }

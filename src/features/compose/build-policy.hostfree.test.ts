@@ -175,6 +175,26 @@ const REFUSED: Array<[string, unknown, Array<[string, string]>, Record<string, u
   ],
   ['URL on metadata', 'http://169.254.169.254/latest', [[B, 'build_context_internal_url']]],
   [
+    'a public remote context',
+    'https://github.com/example/api.git#main',
+    [[B, 'build_remote_source_refused']],
+  ],
+  [
+    'github.com shorthand',
+    { context: 'github.com/x/y' },
+    [[`${B}.context`, 'build_remote_source_refused']],
+  ],
+  [
+    'git@ on a public host',
+    { context: 'git@github.com:x/y.git' },
+    [[`${B}.context`, 'build_remote_source_refused']],
+  ],
+  [
+    'a public remote additional context',
+    { additional_contexts: { r: 'https://example.com/x.tar' } },
+    [[`${B}.additional_contexts.r`, 'build_remote_source_refused']],
+  ],
+  [
     'URL on loopback',
     { context: 'https://127.0.0.1/x.tar' },
     [[`${B}.context`, 'build_context_internal_url']],
@@ -243,9 +263,6 @@ const ALLOWED: Array<[string, unknown, Record<string, unknown>?]> = [
   ],
   ['a secret with no top-level definition', { secrets: ['missing'] }],
   ['extra hosts on public and private addresses', { extra_hosts: ['a:203.0.113.7', 'b=10.1.2.3'] }],
-  ['a public remote context', 'https://github.com/example/api.git#main'],
-  ['github.com shorthand', { context: 'github.com/x/y' }],
-  ['git@ on a public host', { context: 'git@github.com:x/y.git' }],
   [
     'image and stage contexts',
     {

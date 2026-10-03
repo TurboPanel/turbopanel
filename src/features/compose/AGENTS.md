@@ -215,7 +215,17 @@ secret whose top-level `file` is outside (`build_secret_outside_project`),
 addresses (`build_extra_host_internal`), a `context`, `dockerfile` or
 `additional_contexts` path outside (`build_context_outside_project`), and a
 remote context on a non-public IP or reserved name
-(`build_context_internal_url`). `lint.ts` reports them with
+(`build_context_internal_url`). One rule has an opt-in:
+a public remote `context` or `additional_contexts` entry (URL, `git@`,
+`github.com/...`) is `build_remote_source_refused` unless the organization
+turned on `composeRemoteBuildSourcesEnabled` (owner-only,
+`PUT /organizations/:id/compose-remote-build-sources`, default off); the
+control plane passes it to `validateComposeForDeploy` and to the daemon as
+`remoteBuildSourcesApproved` on `environment.deploy`. Internal hosts stay
+refused either way. Known gap: the control plane never reads a Dockerfile, so
+`ADD http(s)://...` or `COPY --from=<remote>` inside one is invisible to every
+check here, opted in or not; only builder egress rules (phase 2) bound it.
+`lint.ts` reports them with
 `field_unsupported`'s posture (save-time advice, strict error) and
 `validateComposeForDeploy` refuses them as `compose_build_refused` before the
 org gate. The daemon repeats them on the resolved model and resolves build

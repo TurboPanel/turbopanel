@@ -341,11 +341,10 @@ for (const [what, build, path, code, extra] of BUILD_REFUSALS) {
   })
 }
 
-test('a relative or remote build context stays ordinary', () => {
+test('a relative build context stays ordinary', () => {
   assertOrdinary({
     services: {
       web: { build: { context: './app', dockerfile: 'Dockerfile' }, mem_limit: '256m' },
-      api: { build: 'https://github.com/example/api.git#main', mem_limit: '256m' },
       worker: {
         build: {
           context: '.',
@@ -358,6 +357,31 @@ test('a relative or remote build context stays ordinary', () => {
     },
     secrets: { token: { file: './token.txt' } },
   })
+})
+
+test('a public remote build context is refused unless the organization allows it', () => {
+  const data = built('https://github.com/example/api.git#main')
+  const off = validateComposeForDeploy(doc(data), {})
+  assertEquals(off?.kind, 'compose_build_refused')
+  assertEquals(
+    off?.issues.map((issue) => 'code' in issue && issue.code),
+    ['build_remote_source_refused']
+  )
+  assertEquals(
+    validateComposeForDeploy(doc(data), { composeRemoteBuildSourcesEnabled: true }),
+    null
+  )
+})
+
+test('an internal remote build context is refused even when remote sources are allowed', () => {
+  const refused = validateComposeForDeploy(doc(built('https://10.0.0.5/x.git')), {
+    composeRemoteBuildSourcesEnabled: true,
+  })
+  assertEquals(refused?.kind, 'compose_build_refused')
+  assertEquals(
+    refused?.issues.map((issue) => 'code' in issue && issue.code),
+    ['build_context_internal_url']
+  )
 })
 
 test('extends from a file outside the service directory is refused', () => {

@@ -8,6 +8,7 @@ export const SESSION_GUARDED_ORG_PATHS = [
   '/organizations/:id/audit',
   '/organizations/:id/deploy-hooks',
   '/organizations/:id/compose-resource-defaults',
+  '/organizations/:id/compose-remote-build-sources',
 ] as const
 
 /** Mount the session middleware so these routes answer 401 without a session. */
