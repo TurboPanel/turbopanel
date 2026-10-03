@@ -2,6 +2,7 @@ import { assertEquals } from '@std/assert'
 import { describe, it } from '@std/testing/bdd'
 import {
   aggregateReleaseStatus,
+  applyResolvedCommitSha,
   isReleaseMaterializedEverywhere,
   markLiveReleases,
   railpackIdentitiesFromResult,
@@ -186,5 +187,29 @@ describe('resolvedCommitShasFromResult', () => {
     })
     assertEquals(shas.size, 0)
     assertEquals(resolvedCommitShasFromResult(null).size, 0)
+  })
+})
+
+describe('applyResolvedCommitSha', () => {
+  const sha = 'b663dc04a1b2c3d4e5f60718293a4b5c6d7e8f90'
+  const other = 'a'.repeat(40)
+  const record = (commitSha: string) => ({ commitSha }) as ServiceReleaseRecord
+
+  it('replaces a ref-name placeholder with the resolved commit', () => {
+    const release = record('main')
+    applyResolvedCommitSha(release, sha)
+    assertEquals(release.commitSha, sha)
+  })
+
+  it('keeps a full SHA the record already has', () => {
+    const release = record(other)
+    applyResolvedCommitSha(release, sha)
+    assertEquals(release.commitSha, other)
+  })
+
+  it('leaves the placeholder when the host reported nothing', () => {
+    const release = record('main')
+    applyResolvedCommitSha(release, undefined)
+    assertEquals(release.commitSha, 'main')
   })
 })

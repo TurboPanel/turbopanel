@@ -354,9 +354,7 @@ export async function listServiceReleases(
       const resolvedSha = resolvedShas.get(key)
       const existing = folded.get(key)
       if (existing) {
-        if (resolvedSha !== undefined && !FULL_COMMIT_SHA.test(existing.commitSha)) {
-          existing.commitSha = resolvedSha
-        }
+        applyResolvedCommitSha(existing, resolvedSha)
         foldReleaseAttempt(
           existing,
           attempt,
@@ -374,9 +372,7 @@ export async function listServiceReleases(
         row.queuedAt ?? null,
         row.finishedAt ?? null
       )
-      if (resolvedSha !== undefined && !FULL_COMMIT_SHA.test(record.commitSha)) {
-        record.commitSha = resolvedSha
-      }
+      applyResolvedCommitSha(record, resolvedSha)
       folded.set(key, record)
     }
   }
@@ -384,6 +380,16 @@ export async function listServiceReleases(
   return markLiveReleases(
     order.map((key) => withSettledFinishedAt(folded.get(key) as ServiceReleaseRecord))
   )
+}
+
+/** Replace a ref-name placeholder with the commit a host reported; a full SHA already there stays. */
+export function applyResolvedCommitSha(
+  release: ServiceReleaseRecord,
+  resolvedSha: string | undefined
+): void {
+  if (resolvedSha !== undefined && !FULL_COMMIT_SHA.test(release.commitSha)) {
+    release.commitSha = resolvedSha
+  }
 }
 
 /** Fold one more host's attempt into the release record it belongs to. */
