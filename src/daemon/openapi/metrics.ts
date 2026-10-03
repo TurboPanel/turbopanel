@@ -4,7 +4,7 @@ import {
   HOST_METRICS_METRIC_DESCRIPTORS,
   type MetricEntityScope,
 } from '../metrics/metric-descriptors.ts'
-import { METRIC_EVENT_KINDS, METRICS_SCHEMA_VERSION } from '../../contracts/metrics-contract.ts'
+import { METRIC_EVENT_KINDS, METRICS_WIRE_VERSIONS } from '../../contracts/metrics-contract.ts'
 
 /** Every descriptor-backed numeric field for `scope`, keyed by `fieldName` — the same grouping `field-map.ts` uses to pack physical storage. */
 function numericPropertiesForScope(
@@ -29,9 +29,7 @@ function hostGroupSchema(scope: MetricEntityScope) {
 
 /** A nullable-number property map for an explicit `fieldName` subset of one scope. */
 function numericPropertiesForFields(fields: readonly string[]) {
-  return Object.fromEntries(
-    fields.map((field) => [field, { type: ['number', 'null'] as const }])
-  )
+  return Object.fromEntries(fields.map((field) => [field, { type: ['number', 'null'] as const }]))
 }
 
 /** One half of the nested `diagnostics` object — `cpu` or `memory`. */
@@ -85,7 +83,12 @@ export const metricsSchemas = {
           'bootGeneration',
         ],
         properties: {
-          version: { type: 'integer', const: METRICS_SCHEMA_VERSION },
+          version: { type: 'integer', enum: [...METRICS_WIRE_VERSIONS] },
+          durable: {
+            type: 'boolean',
+            description:
+              'v7 only. false marks a 10 s live-lease sample that feeds the live overlay and is never stored; absent means durable.',
+          },
           sampledAt: { type: 'string', format: 'date-time' },
           intervalSeconds: { type: 'number' },
           sequence: { type: 'integer' },
