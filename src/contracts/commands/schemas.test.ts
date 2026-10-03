@@ -3806,6 +3806,27 @@ test('parseEnvironmentStopPayload round-trips siteReleases and rejects unsafe se
   )
 })
 
+test('parseEnvironmentStopPayload round-trips retirePrincipals and rejects unsafe names', () => {
+  const base = { environmentId: 'env-1', projectId: 'proj-1', projectName: 'tp-demo' }
+  assertEquals(
+    parseEnvironmentStopPayload({ ...base, retirePrincipals: [{ username: 'app_x1' }] }),
+    { ...base, retirePrincipals: [{ username: 'app_x1' }] }
+  )
+  assertEquals('retirePrincipals' in parseEnvironmentStopPayload(base), false)
+  for (const username of ['../root', '-r', 'a b', '', 7]) {
+    assertThrows(
+      () => parseEnvironmentStopPayload({ ...base, retirePrincipals: [{ username }] }),
+      Error,
+      'Invalid environment.stop retirePrincipals entry'
+    )
+  }
+  assertThrows(
+    () => parseEnvironmentStopPayload({ ...base, retirePrincipals: 'app_x1' }),
+    TypeError,
+    'retirePrincipals must be an array'
+  )
+})
+
 test('parseEnvironmentStopPayload round-trips tpn_ fabricNetworks and rejects other names', () => {
   assertEquals(
     parseEnvironmentStopPayload({

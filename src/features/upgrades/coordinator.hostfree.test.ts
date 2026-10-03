@@ -4,6 +4,7 @@ import { createUpgradeCoordinator } from './coordinator.ts'
 import { clientUpdateBlock } from './decisions.ts'
 import { compareUpgradeStepRows } from './run.ts'
 import { createMemoryUpgradeStore, type FleetServerFact } from './store.ts'
+import { DEFAULT_UPGRADE_SETTINGS } from '../settings/upgrade-settings.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -730,6 +731,7 @@ test('auto-update waits for an offline server to reconnect instead of opening ru
       },
     ],
     latest: target,
+    settings: { ...DEFAULT_UPGRADE_SETTINGS, autoUpdate: true },
   })
   const enqueued: DaemonOutboundEnvelope[] = []
   const coordinator = createUpgradeCoordinator({

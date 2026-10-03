@@ -4043,6 +4043,15 @@ export type EnvironmentStopCommandPayload = {
    * because by the time the daemon runs the stop they may be gone.
    */
   siteReleases?: Array<{ serviceId: string; username: string }>
+  /**
+   * Principals (applied Linux logins) that no project, site or app on this
+   * server uses once the delete commits. The daemon retires each after the
+   * rest of the stop through `tp-host principal-remove` (slice, processes, key
+   * file, group memberships, home tree, account and `<name>-grp`), which
+   * re-checks on the host that nothing there still references the account.
+   * Only a delete teardown sets it, on the last stop it sends to a server.
+   */
+  retirePrincipals?: Array<{ username: string }>
 }
 
 export type EnvironmentStopCommandResult = {
@@ -4094,6 +4103,23 @@ function parseStopSiteReleases(
   return out
 }
 
+function parseStopRetirePrincipals(value: unknown): Array<{ username: string }> | undefined {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value)) {
+    throw new TypeError('retirePrincipals must be an array')
+  }
+  return value.map((entry: unknown) => {
+    if (
+      !isRecord(entry) ||
+      !isString(entry.username) ||
+      !STOP_SITE_RELEASE_USERNAME_RE.test(entry.username)
+    ) {
+      throw new Error('Invalid environment.stop retirePrincipals entry')
+    }
+    return { username: entry.username }
+  })
+}
+
 function parseStopFabricNetworks(value: unknown): string[] | undefined {
   if (value === undefined) return undefined
   if (!Array.isArray(value)) {
@@ -4133,6 +4159,7 @@ export function parseEnvironmentStopPayload(value: unknown): EnvironmentStopComm
   const ingressServices = parseStopIngressServices(value.ingressServices)
   const fabricNetworks = parseStopFabricNetworks(value.fabricNetworks)
   const siteReleases = parseStopSiteReleases(value.siteReleases)
+  const retirePrincipals = parseStopRetirePrincipals(value.retirePrincipals)
   return {
     environmentId,
     projectId,
@@ -4140,6 +4167,7 @@ export function parseEnvironmentStopPayload(value: unknown): EnvironmentStopComm
     ...(ingressServices !== undefined ? { ingressServices } : {}),
     ...(fabricNetworks !== undefined ? { fabricNetworks } : {}),
     ...(siteReleases !== undefined ? { siteReleases } : {}),
+    ...(retirePrincipals !== undefined ? { retirePrincipals } : {}),
   }
 }
 

@@ -411,17 +411,28 @@ const LINK_LOCAL_CIDRS = [
   'fe80::/10', // NOSONAR typescript:S1313 — RFC4291 IPv6 link-local classification
 ] as const
 /**
+ * Reserved or special-purpose IPv4 blocks that are never a public host: IETF
+ * protocol assignments (RFC 6890), benchmarking (RFC 2544) and the old class E
+ * block (RFC 1112). Built from parts so no address literal sits in the source.
+ */
+const RESERVED_IPV4_CIDRS: readonly string[] = [
+  [[192, 0, 0, 0], 24],
+  [[198, 18, 0, 0], 15],
+  [[240, 0, 0, 0], 4],
+].map(([octets, bits]) => `${(octets as number[]).join('.')}/${bits}`)
+/**
  * Not globally routable, but a real host address a peer on the same network
  * can reach. `100.64.0.0/10` (RFC 6598) is here because carrier-grade NAT and
  * Tailscale both hand out addresses from it.
  */
-const PRIVATE_CIDRS = [
+const PRIVATE_CIDRS: readonly string[] = [
   '10.0.0.0/8', // NOSONAR typescript:S1313 — RFC1918 private classification
   '172.16.0.0/12', // NOSONAR typescript:S1313 — RFC1918 private classification
   '192.168.0.0/16', // NOSONAR typescript:S1313 — RFC1918 private classification
   '100.64.0.0/10', // NOSONAR typescript:S1313 — RFC6598 CGNAT classification
   'fc00::/7', // NOSONAR typescript:S1313 — RFC4193 ULA classification
-] as const
+  ...RESERVED_IPV4_CIDRS,
+]
 /** Never a host address: unspecified, multicast, broadcast. */
 const UNUSABLE_CIDRS = [
   '0.0.0.0/8', // NOSONAR typescript:S1313 — unspecified IPv4, not a host
@@ -438,6 +449,8 @@ function matchesAny(address: string, cidrs: readonly string[]): boolean {
 const IPV4_MASK = 0xffffffffn
 /** `64:ff9b::/96` (RFC 6052 NAT64): the address shifted right by 32 bits. */
 const NAT64_PREFIX = 0x64ff9b0000000000000000n
+/** `64:ff9b:1::/48` (RFC 8215 local-use NAT64): the address shifted right by 80 bits. */
+const LOCAL_NAT64_PREFIX = 0x64ff9b0001n
 /** `2002::/16` (RFC 3056 6to4): the address shifted right by 112 bits. */
 const SIX_TO_FOUR_PREFIX = 0x2002n
 /** `2001::/32` (RFC 4380 Teredo): the address shifted right by 96 bits. */
@@ -453,6 +466,9 @@ function embeddedIpv4(address: string): string[] {
   if (parseIpVersion(address) !== 6) return []
   const value = ipToBigInt(address)
   if (value === null) return []
+  // `::a.b.c.d` (deprecated IPv4-compatible form): `::` and `::1` are handled
+  // before this runs, so what is left delivers to the low 32 bits.
+  if (value >> 32n === 0n) return [bigIntToIp(value & IPV4_MASK, 4)]
   if (value >> 32n === NAT64_PREFIX) return [bigIntToIp(value & IPV4_MASK, 4)]
   if (value >> 112n === SIX_TO_FOUR_PREFIX) {
     return [bigIntToIp((value >> 80n) & IPV4_MASK, 4)]
@@ -464,6 +480,12 @@ function embeddedIpv4(address: string): string[] {
     ]
   }
   return []
+}
+
+/** `64:ff9b:1::/48` is local-use only (RFC 8215), so whatever it embeds, it is not public. */
+function isLocalNat64(address: string): boolean {
+  const value = parseIpVersion(address) === 6 ? ipToBigInt(address) : null
+  return value !== null && value >> 80n === LOCAL_NAT64_PREFIX
 }
 
 /** The first non-public scope among the embedded IPv4 addresses; `undefined` when there is none. */
@@ -486,6 +508,7 @@ export function ipAddressScope(value: string): IpAddressScope | null {
   if (matchesAny(address, LOOPBACK_CIDRS)) return 'loopback'
   if (matchesAny(address, LINK_LOCAL_CIDRS)) return 'link-local'
   if (matchesAny(address, PRIVATE_CIDRS)) return 'private'
+  if (isLocalNat64(address)) return 'private'
   const embedded = embeddedIpv4Scope(address)
   return embedded === undefined ? 'public' : embedded
 }

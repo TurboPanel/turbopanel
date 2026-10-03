@@ -280,6 +280,19 @@ function mapComposeUnsupportedError(
   }
 }
 
+function mapComposeBuildRefusedError(
+  prepared: Extract<DeployPrepareError, { kind: 'compose_build_refused' }>
+): PrepareErrorResponse {
+  return {
+    status: 422,
+    body: {
+      error: 'compose_build_refused',
+      issues: prepared.issues,
+      message: `This compose document builds with options no deploy may use: ${composeIssuePaths(prepared.issues)}. Each issue carries its rule's code. There is no organization setting that allows them; remove them and deploy again.`,
+    },
+  }
+}
+
 function mapComposeOptInError(
   prepared: Extract<DeployPrepareError, { kind: 'compose_field_requires_org_opt_in' }>
 ): PrepareErrorResponse {
@@ -597,6 +610,11 @@ function mapCorePrepareError(prepared: DeployPrepareError): PrepareErrorResponse
       return mapComposeMergeError(prepared)
     case 'compose_field_unsupported':
       return mapComposeUnsupportedError(prepared)
+    // A build option no deploy may carry (host network, privileges, SSH agent,
+    // a context or secret outside the project, …). 422, not 403: no opt-in and
+    // no higher role makes it deployable.
+    case 'compose_build_refused':
+      return mapComposeBuildRefusedError(prepared)
     // TurboPanel *does* implement this field — unlike compose_field_unsupported
     // above, the fix is an org-owner opt-in
     // (PUT /organizations/:id/compose-privileged-fields), not removing the

@@ -730,6 +730,41 @@ test('resolveSourceWebhookInfo is undefined for generic git and otherwise folds 
   assertEquals(withApp?.webhookUrl?.includes('/webhook/gitlab'), true)
 })
 
+test('fetchInstallationAccount refuses a loopback API base and never follows a redirect', async () => {
+  const originalFetch = globalThis.fetch
+  const calls: string[] = []
+  globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+    calls.push(String(input))
+    assertEquals(init?.redirect, 'manual')
+    return Promise.resolve(
+      new Response(null, { status: 302, headers: { location: 'http://127.0.0.1:9/' } })
+    )
+  }) as typeof fetch
+  try {
+    for (const base of ['https://127.0.0.1/api/v3', 'https://[::1]/api/v3']) {
+      let thrown: unknown
+      try {
+        await fetchInstallationAccount('jwt', '42', base)
+      } catch (error) {
+        thrown = error
+      }
+      assertEquals(thrown instanceof GithubAppTokenError, true)
+    }
+    assertEquals(calls.length, 0)
+
+    let redirected: unknown
+    try {
+      await fetchInstallationAccount('jwt', '42', 'https://ghe.example.com/api/v3')
+    } catch (error) {
+      redirected = error
+    }
+    assertEquals(redirected instanceof GithubAppTokenError, true)
+    assertEquals(calls, ['https://ghe.example.com/api/v3/app/installations/42'])
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('fetchInstallationAccount treats lookup failures as authorization failures', async () => {
   const originalFetch = globalThis.fetch
   const calls: string[] = []

@@ -134,7 +134,7 @@ change. Future agents read `AGENTS.md` first.
 ### SonarQube (CI-based analysis)
 
 `build.yml` ends in a `ci-ok` job that `needs:` every pull_request job (checks,
-typecheck, vitest, deno-hostfree, deno-db, sonarqube, metrics-legacy) and fails unless all of them succeeded. It is the
+typecheck, vitest, deno-hostfree, deno-db, sonarqube, contract-twin) and fails unless all of them succeeded. It is the
 one context the branch rulesets will require; a new PR-time job must be added
 to its `needs:` or it never gates a merge. A red X must mean "this change is
 broken", so: on a pull request a cancelled need still fails `ci-ok`; on a trunk
