@@ -10,7 +10,8 @@
  * (a) it was last seen streaming no earlier than the failure start minus a
  *     small margin (`lastStreaming.ageMs` from the daemon's sampler);
  * (b) its replay LSN equals its received LSN (nothing received is unapplied);
- * (c) the lag of that last streaming read was within the promote limits.
+ * (c) the received-vs-primary byte lag of that last streaming read was within
+ *     the promote limit (64 MiB). Seconds since the last commit are not used.
  *
  * Anything missing, unparseable or out of range refuses. This never replaces
  * fencing or the cooldown; it only decides whether the candidate is healthy.
@@ -19,7 +20,6 @@
 import type { ManagedReplicationHealth } from '../../contracts/commands/schemas.ts'
 import {
   DEFAULT_MANAGED_PROMOTE_MAX_LAG_BYTES,
-  DEFAULT_MANAGED_PROMOTE_MAX_LAG_SECONDS,
   evaluateManagedPromoteLagGate,
 } from './promote-lag.ts'
 
@@ -117,25 +117,21 @@ function checkReplay(replication: ManagedReplicationHealth): Check<string> {
   return { ok: true, value: String(replication.receivedLsn) }
 }
 
-/** (c) The last streaming read's lag, as text. */
+/**
+ * (c) The last streaming read's received-vs-primary byte lag (the standby's
+ * own `latest_end_lsn - flushed_lsn`, sampled every 2 s by the daemon).
+ * Seconds since the last replayed commit are deliberately not used here: on
+ * an idle cluster they grow without bound while nothing is behind.
+ */
 function checkLastLag(
   input: FreshStandbyInput,
   replication: ManagedReplicationHealth
 ): Check<string> {
-  const last = replication.lastStreaming
   const maxLagBytes = input.maxLagBytes ?? DEFAULT_MANAGED_PROMOTE_MAX_LAG_BYTES
-  const maxLagSeconds = input.maxLagSeconds ?? DEFAULT_MANAGED_PROMOTE_MAX_LAG_SECONDS
-  const lagBytes = last?.lagBytes
-  const lagSeconds = last?.lagSeconds
-  if (!isNonNegativeFinite(lagBytes)) return refuse('last_lag_unknown')
-  if (lagSeconds !== undefined && !isNonNegativeFinite(lagSeconds)) {
-    return refuse('last_lag_unknown')
-  }
-  if (lagBytes > maxLagBytes || (lagSeconds ?? 0) > maxLagSeconds) {
-    return refuse('last_lag_over_limit')
-  }
-  const seconds = lagSeconds === undefined ? '' : ` / ${lagSeconds} s`
-  return { ok: true, value: `${lagBytes} B${seconds}` }
+  const receiveLagBytes = replication.lastStreaming?.receiveLagBytes
+  if (!isNonNegativeFinite(receiveLagBytes)) return refuse('last_lag_unknown')
+  if (receiveLagBytes > maxLagBytes) return refuse('last_lag_over_limit')
+  return { ok: true, value: `${receiveLagBytes} B` }
 }
 
 /**
@@ -168,7 +164,7 @@ export function evaluateFreshStandby(input: FreshStandbyInput): FreshStandbyVerd
     basis:
       `${replication.state}; last streaming ${receipt.value.toFixed(1)} s before failure ` +
       `start (margin ${input.marginMs / 1000} s); received = replayed = ${replay.value}; ` +
-      `last lag ${lag.value}`,
+      `last receive lag ${lag.value}`,
   }
 }
 

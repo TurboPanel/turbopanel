@@ -2422,7 +2422,7 @@ it('managed-health-result carries standby WAL positions and the last streaming r
         at: VALID_AT,
       })
     ).ok
-  const lastStreaming = { at: VALID_AT, ageMs: 4000, lagBytes: 0, lagSeconds: 0.5 }
+  const lastStreaming = { at: VALID_AT, ageMs: 4000, lagBytes: 0, receiveLagBytes: 64 }
   assertEquals(frame({ receivedLsn: '0/3000148', replayLsn: '0/3000148', lastStreaming }), true)
   assertEquals(frame({ receivedLsn: '' }), false)
   assertEquals(frame({ replayLsn: 7 }), false)
@@ -2430,4 +2430,6 @@ it('managed-health-result carries standby WAL positions and the last streaming r
   assertEquals(frame({ lastStreaming: { ...lastStreaming, at: 'soon' } }), false)
   assertEquals(frame({ lastStreaming: { ...lastStreaming, ageMs: '4000' } }), false)
   assertEquals(frame({ lastStreaming: { ...lastStreaming, lagBytes: Number.NaN } }), false)
+  assertEquals(frame({ lastStreaming: { ...lastStreaming, receiveLagBytes: '1' } }), false)
+  assertEquals(frame({ receiveLagBytes: '1' }), false)
 })

@@ -27,7 +27,7 @@ function cold(overrides: Partial<ManagedReplicationHealth> = {}): ManagedReplica
     receivedLsn: LSN,
     replayLsn: LSN,
     // Last streaming 25 s before the probe = 5 s before the failure start.
-    lastStreaming: { at: 'x', ageMs: 25_000, lagBytes: 0, lagSeconds: 0 },
+    lastStreaming: { at: 'x', ageMs: 25_000, receiveLagBytes: 0, lagSeconds: 900 },
     ...overrides,
   }
 }
@@ -65,23 +65,23 @@ test('accepts a stopped standby seen streaming inside the margin, fully replayed
     assertEquals(
       verdict.basis,
       'stopped; last streaming 5.0 s before failure start (margin 10 s); ' +
-        'received = replayed = 0/3000148; last lag 0 B / 0 s'
+        'received = replayed = 0/3000148; last receive lag 0 B'
     )
   }
   // Exactly at the margin is still fresh.
-  const edge = cold({ lastStreaming: { at: 'x', ageMs: 30_000, lagBytes: 0 } })
+  const edge = cold({ lastStreaming: { at: 'x', ageMs: 30_000, receiveLagBytes: 0 } })
   assertEquals(reason(judge(edge)), 'accepted')
 })
 
 test('refuses a receipt older than failure start minus the margin, or none at all', () => {
   assertEquals(
-    reason(judge(cold({ lastStreaming: { at: 'x', ageMs: 30_001, lagBytes: 0 } }))),
+    reason(judge(cold({ lastStreaming: { at: 'x', ageMs: 30_001, receiveLagBytes: 0 } }))),
     'receipt_stale'
   )
   assertEquals(reason(judge(cold(), { marginMs: 0 })), 'receipt_stale')
   assertEquals(reason(judge(cold({ lastStreaming: undefined }))), 'receipt_unknown')
   assertEquals(
-    reason(judge(cold({ lastStreaming: { at: 'x', ageMs: -1, lagBytes: 0 } }))),
+    reason(judge(cold({ lastStreaming: { at: 'x', ageMs: -1, receiveLagBytes: 0 } }))),
     'receipt_unknown'
   )
 })
@@ -92,25 +92,22 @@ test('refuses replay behind the received LSN, or unknown LSNs', () => {
   assertEquals(reason(judge(cold({ replayLsn: 'nope' }))), 'lsn_unknown')
 })
 
-test('refuses a last streaming lag over the limits, or with no byte lag recorded', () => {
+test('refuses a last receive byte lag over the limit, or none recorded; ignores seconds since commit', () => {
   const at = { at: 'x', ageMs: 25_000 }
+  const over = { ...at, receiveLagBytes: 64 * 1024 * 1024 + 1 }
+  assertEquals(reason(judge(cold({ lastStreaming: over }))), 'last_lag_over_limit')
+  const custom = { ...at, receiveLagBytes: 10 }
   assertEquals(
-    reason(judge(cold({ lastStreaming: { ...at, lagBytes: 64 * 1024 * 1024 + 1 } }))),
+    reason(judge(cold({ lastStreaming: custom }), { maxLagBytes: 5 })),
     'last_lag_over_limit'
   )
-  assertEquals(
-    reason(judge(cold({ lastStreaming: { ...at, lagBytes: 0, lagSeconds: 31 } }))),
-    'last_lag_over_limit'
-  )
-  assertEquals(
-    reason(judge(cold({ lastStreaming: { ...at, lagBytes: 10 } }), { maxLagBytes: 5 })),
-    'last_lag_over_limit'
-  )
-  assertEquals(reason(judge(cold({ lastStreaming: { ...at } }))), 'last_lag_unknown')
-  assertEquals(
-    reason(judge(cold({ lastStreaming: { ...at, lagBytes: 0, lagSeconds: Number.NaN } }))),
-    'last_lag_unknown'
-  )
+  // Replay lag bytes are not the receive lag: still unknown.
+  assertEquals(reason(judge(cold({ lastStreaming: { ...at, lagBytes: 0 } }))), 'last_lag_unknown')
+  const nan = { ...at, receiveLagBytes: Number.NaN }
+  assertEquals(reason(judge(cold({ lastStreaming: nan }))), 'last_lag_unknown')
+  // An idle cluster: hours since the last commit, nothing behind.
+  const idle = { ...at, receiveLagBytes: 0, lagBytes: 0, lagSeconds: 36_000 }
+  assertEquals(reason(judge(cold({ lastStreaming: idle }))), 'accepted')
 })
 
 test('refuses no answer and anything that is not a disconnected standby', () => {

@@ -1694,8 +1694,9 @@ function freshStopped(overrides: Partial<ManagedReplicationHealth> = {}): Manage
     lastStreaming: {
       at: new Date(EVENT_MS - 30_000).toISOString(),
       ageMs: 30_000,
-      lagBytes: 0,
-      lagSeconds: 0,
+      receiveLagBytes: 0,
+      // Idle cluster: long since the last commit; not part of this gate.
+      lagSeconds: 3_600,
     },
     ...overrides,
   }
@@ -1760,7 +1761,11 @@ test('fresh-standby: a fresh, fully replayed, not-streaming replica is accepted 
 test('fresh-standby: a receipt older than failure start minus the margin is refused', async () => {
   // Last streaming 40 s before the probe = 15 s before the failure start.
   const stale = freshStopped({
-    lastStreaming: { at: new Date(EVENT_MS - 40_000).toISOString(), ageMs: 40_000, lagBytes: 0 },
+    lastStreaming: {
+      at: new Date(EVENT_MS - 40_000).toISOString(),
+      ageMs: 40_000,
+      receiveLagBytes: 0,
+    },
   })
   const { row, sent } = await coldKillFailover(stale)
   assertEquals(row.state, 'blocked')
@@ -1784,13 +1789,12 @@ test('fresh-standby: replay behind the received LSN is refused', async () => {
   assertEquals(sent.length, 0)
 })
 
-test('fresh-standby: a last streaming lag over the promote limit is refused', async () => {
+test('fresh-standby: a last receive byte lag over the promote limit is refused', async () => {
   const lagging = freshStopped({
     lastStreaming: {
       at: new Date(EVENT_MS - 30_000).toISOString(),
       ageMs: 30_000,
-      lagBytes: 128 * 1024 * 1024,
-      lagSeconds: 0,
+      receiveLagBytes: 128 * 1024 * 1024,
     },
   })
   const { row, sent } = await coldKillFailover(lagging)

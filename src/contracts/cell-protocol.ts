@@ -281,11 +281,13 @@ export type ManagedHealthObservedMember = {
     observedAt: string
     receivedLsn?: string
     replayLsn?: string
+    receiveLagBytes?: number
     lastStreaming?: {
       at: string
       ageMs: number
       lagBytes?: number
       lagSeconds?: number
+      receiveLagBytes?: number
     }
   }
 }
@@ -1220,6 +1222,10 @@ function validateManagedHealthMember(value: unknown): string | null {
     validateOptionalFiniteNumber(replication.lagSeconds, 'member.replication.lagSeconds') ??
     validateOptionalHealthString(replication.receivedLsn, 'member.replication.receivedLsn') ??
     validateOptionalHealthString(replication.replayLsn, 'member.replication.replayLsn') ??
+    validateOptionalFiniteNumber(
+      replication.receiveLagBytes,
+      'member.replication.receiveLagBytes'
+    ) ??
     validateLastStreaming(replication.lastStreaming)
   )
 }
@@ -1238,7 +1244,11 @@ function validateLastStreaming(value: unknown): string | null {
   }
   return (
     validateOptionalFiniteNumber(value.lagBytes, 'member.replication.lastStreaming.lagBytes') ??
-    validateOptionalFiniteNumber(value.lagSeconds, 'member.replication.lastStreaming.lagSeconds')
+    validateOptionalFiniteNumber(value.lagSeconds, 'member.replication.lastStreaming.lagSeconds') ??
+    validateOptionalFiniteNumber(
+      value.receiveLagBytes,
+      'member.replication.lastStreaming.receiveLagBytes'
+    )
   )
 }
 

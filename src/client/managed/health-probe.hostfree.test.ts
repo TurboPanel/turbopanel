@@ -229,7 +229,8 @@ const COLD: ManagedReplicationHealth = {
   observedAt: NOW,
   receivedLsn: '0/3000148',
   replayLsn: '0/3000148',
-  lastStreaming: { at: NOW, ageMs: 4000, lagBytes: 0, lagSeconds: 0.5 },
+  receiveLagBytes: 0,
+  lastStreaming: { at: NOW, ageMs: 4000, lagBytes: 0, lagSeconds: 0.5, receiveLagBytes: 128 },
 }
 
 test('keeps the standby WAL positions and last streaming read, dropping a malformed one', async () => {

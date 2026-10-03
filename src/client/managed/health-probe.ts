@@ -105,10 +105,15 @@ function finiteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value)
 }
 
-function lagFields(record: Record<string, unknown>): { lagBytes?: number; lagSeconds?: number } {
+function lagFields(record: Record<string, unknown>): {
+  lagBytes?: number
+  lagSeconds?: number
+  receiveLagBytes?: number
+} {
   return {
     ...(finiteNumber(record.lagBytes) ? { lagBytes: record.lagBytes } : {}),
     ...(finiteNumber(record.lagSeconds) ? { lagSeconds: record.lagSeconds } : {}),
+    ...(finiteNumber(record.receiveLagBytes) ? { receiveLagBytes: record.receiveLagBytes } : {}),
   }
 }
 

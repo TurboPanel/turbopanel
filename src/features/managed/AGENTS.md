@@ -547,8 +547,10 @@ all:
    decision 2026-10-02). A replica that is no longer streaming is accepted only
    when (a) the daemon saw it streaming no earlier than the failure start minus
    `TURBOPANEL_AUTO_FAILOVER_RECEIPT_MARGIN_SECONDS` (default 10, max 60),
-   (b) its replay LSN equals its received LSN, and (c) the lag of that last
-   streaming read was under 64 MiB / 30 s. The failure start is event receipt
+   (b) its replay LSN equals its received LSN, and (c) that last streaming
+   read's received-vs-primary byte lag (`latest_end_lsn - flushed_lsn` on the
+   standby) was under 64 MiB. Seconds since the last commit are not used: on
+   an idle cluster they grow while nothing is behind. The failure start is event receipt
    minus the detector's `evidence.spanMs`; no usable span, no probe answer, or
    any missing field refuses. The daemon (turbopaneld `pg-standby-sampler.ts`)
    reads its standbys every 2 s and reports `lastStreaming.ageMs` on its
