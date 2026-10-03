@@ -8,6 +8,7 @@ import { assertCanOr403, listVisible } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import { getDb, type Db } from '../../db/connection.ts'
 import { variable } from '../../db/schema.ts'
+import { ORG_ID_HEADER } from '../org-context.ts'
 import {
   assertCanCreateOr403,
   assertCanReadOr403,
@@ -412,7 +413,12 @@ export function registerVariableRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts
 
     const conditions = [inArray(variable.id, visibleIds)]
 
+    // `?organizationId=` is also how a client names the org context when it
+    // sends no header; only treat it as an org-scope filter when the header
+    // carries the context, otherwise every non-org variable is filtered out.
+    const orgFromHeader = Boolean(c.req.header(ORG_ID_HEADER)?.trim())
     for (const { bodyKey, column } of PARENT_BODY_FIELDS) {
+      if (bodyKey === 'organizationId' && !orgFromHeader) continue
       const filterValue = c.req.query(bodyKey)
       if (filterValue) {
         conditions.push(eq(variable[column], filterValue))

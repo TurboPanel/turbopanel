@@ -904,3 +904,52 @@ test("GET /variables/resolved applies service override chain and excludes server
     assertEquals(environmentBody.variables["server-only"], undefined);
   });
 });
+
+test("GET /variables lists non-org variables when the org context is a query param only", async () => {
+  await withVariableFixtures(
+    async ({ db, app, secrets, userId, organizationId, environmentId }) => {
+      const [inserted] = await db
+        .insert(variable)
+        .values({ environmentId, key: "QUERY_ORG_VAR", value: "v" })
+        .returning({ id: variable.id });
+      const cookie = await sessionCookie(db, secrets, userId);
+
+      for (const qs of ["", `&environmentId=${environmentId}`]) {
+        const response = await app.request(
+          `/variables?organizationId=${organizationId}${qs}`,
+          { headers: { Cookie: cookie } },
+        );
+        assertEquals(response.status, 200);
+        const body = await response.json() as {
+          variables: Array<{ id: string }>;
+        };
+        assertEquals(body.variables.some((row) => row.id === inserted!.id), true, qs);
+      }
+    },
+  );
+});
+
+test("GET /variables with the org header and ?organizationId= still filters to org-scope rows", async () => {
+  await withVariableFixtures(
+    async ({ db, app, secrets, userId, organizationId, environmentId }) => {
+      const [envVar] = await db
+        .insert(variable)
+        .values({ environmentId, key: "ENV_ONLY", value: "v" })
+        .returning({ id: variable.id });
+      const [orgVar] = await db
+        .insert(variable)
+        .values({ organizationId, key: "ORG_ONLY", value: "v" })
+        .returning({ id: variable.id });
+      const cookie = await sessionCookie(db, secrets, userId);
+
+      const response = await app.request(
+        `/variables?organizationId=${organizationId}`,
+        { headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId } },
+      );
+      const body = await response.json() as { variables: Array<{ id: string }> };
+      const ids = body.variables.map((row) => row.id);
+      assertEquals(ids.includes(orgVar!.id), true);
+      assertEquals(ids.includes(envVar!.id), false);
+    },
+  );
+});
