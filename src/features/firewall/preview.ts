@@ -86,7 +86,14 @@ export type FirewallPreviewRecord = {
   notes: string[]
   /** The host's own answer: warnings, validation, and the rendered text. Null until it answers. */
   host: unknown
+  /** Why the daemon failed the command, when `status` is `failed`; cleared by the next answer. */
+  error?: string
+  /** When that failure was recorded. */
+  failedAt?: string
 }
+
+/** Longest daemon error kept on the record. */
+const FAILURE_ERROR_MAX = 500
 
 type PreviewOptions = {
   /** Send even when the desired set is unchanged (after a reconnect); never re-sends an unchanged apply. */
@@ -471,10 +478,42 @@ export async function recordFirewallPreviewResult(
       set: {
         // A teardown answers with an empty digest: nothing is loaded, so no drift key.
         lastDigest: result.digest === '' ? null : result.digest,
-        lastResult: { ...stored, status, host: result },
+        lastResult: { ...withoutFailure(stored), status, host: result },
         ...bulwarkStateOfResult(status, result, new Date().toISOString()),
       },
     })
+}
+
+function withoutFailure(record: FirewallPreviewRecord): FirewallPreviewRecord {
+  const { error: _error, failedAt: _failedAt, ...rest } = record
+  return rest
+}
+
+/**
+ * Keep why the daemon failed a reconcile, so the record does not stay queued
+ * for ever. Same staleness rule as an answer; moves no other bulwark column.
+ */
+export async function recordFirewallPreviewFailure(
+  db: Db,
+  serverId: string,
+  payloadValue: unknown,
+  error: string,
+  failedAt: string = new Date().toISOString()
+): Promise<void> {
+  const payload = parseFirewallReconcilePayload(payloadValue)
+  const stored = await readStoredRecord(db, serverId)
+  if (stored?.generation !== payload.generation) return
+  if (stored.kind !== KIND_OF_MODE[payload.mode]) return
+  const record: FirewallPreviewRecord = {
+    ...stored,
+    status: 'failed',
+    error: error.slice(0, FAILURE_ERROR_MAX),
+    failedAt,
+  }
+  await db
+    .insert(bulwark)
+    .values({ serverId, generation: payload.generation })
+    .onConflictDoUpdate({ target: bulwark.serverId, set: { lastResult: record } })
 }
 
 async function readStoredRecord(db: Db, serverId: string): Promise<FirewallPreviewRecord | null> {

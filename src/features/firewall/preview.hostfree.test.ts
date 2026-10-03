@@ -16,6 +16,7 @@ import {
   planWireMode,
   previewFromFacts,
   previewOfLastResult,
+  recordFirewallPreviewFailure,
   recordFirewallPreviewResult,
   runFirewallPreviewSweep,
   shouldSend,
@@ -275,4 +276,57 @@ test('a reported teardown is recorded as removed and idle; a refusal moves no st
   const refused = { ...appliedAnswer, applied: false, confirmation: undefined }
   assertEquals(statusOfResult('managed', refused as never), 'refused')
   assertEquals(bulwarkStateOfResult('refused', refused as never, 'now'), {})
+})
+
+const FAILED_AT = '2026-10-03T06:01:30.000Z'
+
+test('a failed reconcile is recorded as failed with the error, generation and time', async () => {
+  const { db, written } = recordingDb({ ...storedPreview, kind: 'apply' })
+  await recordFirewallPreviewFailure(
+    db,
+    SERVER,
+    { ...sentPayload, mode: 'managed' },
+    'firewall rollback guard could not be armed: Access denied',
+    FAILED_AT
+  )
+  assertEquals(written.length, 1)
+  const set = written[0].set as { lastResult: Record<string, unknown> }
+  assertEquals(set.lastResult.status, 'failed')
+  assertEquals(set.lastResult.kind, 'apply')
+  assertEquals(set.lastResult.generation, 4)
+  assertEquals(set.lastResult.error, 'firewall rollback guard could not be armed: Access denied')
+  assertEquals(set.lastResult.failedAt, FAILED_AT)
+  assertEquals('state' in set, false)
+})
+
+test('a failure for a stale generation or kind is ignored', async () => {
+  const older = recordingDb({ ...storedPreview, generation: 5 })
+  await recordFirewallPreviewFailure(older.db, SERVER, sentPayload, 'boom', FAILED_AT)
+  assertEquals(older.written.length, 0)
+  const other = recordingDb(storedPreview)
+  await recordFirewallPreviewFailure(
+    other.db,
+    SERVER,
+    { ...sentPayload, mode: 'off' },
+    'boom',
+    FAILED_AT
+  )
+  assertEquals(other.written.length, 0)
+})
+
+test('a long daemon error is shortened', async () => {
+  const { db, written } = recordingDb(storedPreview)
+  await recordFirewallPreviewFailure(db, SERVER, sentPayload, 'x'.repeat(5000), FAILED_AT)
+  const record = written[0].set!.lastResult as { error: string }
+  assertEquals(record.error.length <= 500, true)
+})
+
+test('a later success clears the recorded failure', async () => {
+  const failed = { ...storedPreview, status: 'failed', error: 'boom', failedAt: FAILED_AT }
+  const { db, written } = recordingDb(failed)
+  await recordFirewallPreviewResult(db, SERVER, sentPayload, hostAnswer)
+  const record = written[0].set!.lastResult as Record<string, unknown>
+  assertEquals(record.status, 'previewed')
+  assertEquals('error' in record, false)
+  assertEquals('failedAt' in record, false)
 })
