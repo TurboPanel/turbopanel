@@ -706,7 +706,7 @@ export async function recordStaleDeadPrimaryReport(params: {
     'managed-ha',
     `stale dead-primary report for ${params.managedId} ignored: ${params.reason}`
   )
-  return insertRecovery(params.db, {
+  return recordBlockedRecovery(params.db, {
     managedId: params.managedId,
     kind: 'automatic-failover',
     sourcePrimaryMemberId: primary.id,
