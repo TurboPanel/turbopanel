@@ -78,6 +78,9 @@ export type RecoveryMetadata = {
   drainApplied?: boolean
   stopApplied?: boolean
   blockedReason?: string
+  /** Times the same refusal was seen; absent = once. */
+  blockedCount?: number
+  lastBlockedAt?: string
   lagBytes?: number | null
   sourceDatacenterId?: string | null
   targetDatacenterId?: string | null
@@ -164,6 +167,8 @@ export function parseRecoveryMetadata(value: unknown): RecoveryMetadata {
   setIfPresent(metadata, 'drainApplied', optionalBoolean(value.drainApplied))
   setIfPresent(metadata, 'stopApplied', optionalBoolean(value.stopApplied))
   setIfPresent(metadata, 'blockedReason', optionalString(value.blockedReason))
+  setIfPresent(metadata, 'blockedCount', optionalNullableNumber(value.blockedCount) ?? undefined)
+  setIfPresent(metadata, 'lastBlockedAt', optionalString(value.lastBlockedAt))
   setIfPresent(metadata, 'lagBytes', optionalNullableNumber(value.lagBytes))
   setIfPresent(metadata, 'sourceDatacenterId', optionalNullableString(value.sourceDatacenterId))
   setIfPresent(metadata, 'targetDatacenterId', optionalNullableString(value.targetDatacenterId))

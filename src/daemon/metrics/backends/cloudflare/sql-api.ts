@@ -1,6 +1,6 @@
 /**
  * Query-side SQL primitives for the v5 Analytics Engine dataset
- * (`turbopanel_server_metrics_v6` — see `field-map.ts`).
+ * (`turbopanel_server_metrics_v7` — see `field-map.ts`).
  *
  * Host-level aggregates (`host.system` / `host.io`) are simple: every sample
  * writes exactly one `host.system` row and one `host.io` row — unlike v3's

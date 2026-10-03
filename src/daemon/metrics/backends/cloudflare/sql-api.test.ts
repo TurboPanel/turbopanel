@@ -41,7 +41,7 @@ import {
 } from './sql-api.ts'
 
 it('AE_DATASET_NAME is the current dataset', () => {
-  assertEquals(AE_DATASET_NAME, 'turbopanel_server_metrics_v6')
+  assertEquals(AE_DATASET_NAME, 'turbopanel_server_metrics_v7')
 })
 
 it('AE_SUPPORTED_SCHEMA_VERSIONS reads both v6 and v7 rows', () => {
