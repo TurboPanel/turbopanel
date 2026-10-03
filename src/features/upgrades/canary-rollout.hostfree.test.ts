@@ -9,6 +9,7 @@ import {
 } from './maintenance.ts'
 import { builtAfter, createMemoryUpgradeStore, type FleetServerFact } from './store.ts'
 import type { UpgradeTarget } from './target.ts'
+import { DEFAULT_UPGRADE_SETTINGS } from '../settings/upgrade-settings.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -53,10 +54,14 @@ const canaryTarget: UpgradeTarget = {
   ui: null,
 }
 
-function workersFleet(facts: FleetServerFact[]) {
+function workersFleet(facts: FleetServerFact[], autoUpdate = true) {
   const enqueued: { serverId: string; envelope: DaemonOutboundEnvelope }[] = []
   const decisions: UpgradeTickDecision[] = []
-  const store = createMemoryUpgradeStore({ facts, latest: canaryTarget })
+  const store = createMemoryUpgradeStore({
+    facts,
+    latest: canaryTarget,
+    settings: { ...DEFAULT_UPGRADE_SETTINGS, autoUpdate },
+  })
   const coordinator = createUpgradeCoordinator({
     store,
     enqueue: (serverId, envelope) => {
@@ -168,6 +173,21 @@ test('self-hosted preflight does not call a canary build of the installed base a
     preflight.blockers.filter((blocker) => blocker.includes('older than')),
     []
   )
+})
+
+test('a canary build never starts a Workers run while autoUpdate is off', async () => {
+  const { coordinator, enqueued, decisions, store } = workersFleet(
+    [fleetHost('adrastea'), fleetHost('kore')],
+    false
+  )
+
+  await coordinator.tick({ resolveManifests: true })
+
+  assertEquals(decisions.length, 1)
+  assertEquals(decisions[0].daemonDrift, true)
+  assertEquals(decisions[0].autoStart, { decision: 'not-attempted' })
+  assertEquals(await store.activeRun(), null)
+  assertEquals(enqueued.length, 0)
 })
 
 test('builtAfter needs both build times and a strictly later install', () => {

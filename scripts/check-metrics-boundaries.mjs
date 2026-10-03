@@ -38,14 +38,14 @@
  */
 import fs from 'node:fs'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const SELF = path.relative(ROOT, fileURLToPath(import.meta.url))
 
-const SCAN_ROOT = path.join(ROOT, 'src/daemon/metrics')
+const SCAN_ROOT = 'src/daemon/metrics'
 
-const EXTRA_SURFACE_DIRS = [path.join(ROOT, 'src/daemon/openapi')]
+const EXTRA_SURFACE_DIRS = ['src/daemon/openapi']
 
 const EXTRA_SURFACE_FILES = [
   'src/client/openapi/metrics.ts',
@@ -61,9 +61,9 @@ const EXTRA_SURFACE_FILES = [
   'src/contracts/topology-slot-mapping.ts',
   'src/contracts/topology-slot-mapping.test.ts',
   'src/contracts/topology-types.ts',
-].map((p) => path.join(ROOT, p))
+]
 
-const PAGE_TOKEN_ROOT = path.join(ROOT, 'src')
+const PAGE_TOKEN_ROOT = 'src'
 
 const PAGE_TOKEN_ALLOWLIST = new Set([
   // Daemon end-to-end ingest-route test: asserts on the actual AE row shape
@@ -102,6 +102,7 @@ function isUnderCloudflareBackend(rel) {
 }
 
 function scanLines(rel, lines, checks) {
+  const failures = []
   lines.forEach((line, i) => {
     if (isCommentLine(line)) return
     for (const check of checks) {
@@ -111,68 +112,94 @@ function scanLines(rel, lines, checks) {
       }
     }
   })
+  return failures
 }
-
-const failures = []
 
 const aeTokenCheck = {
   pattern: AE_TOKEN_PATTERN,
   message: (m) => `references AE physical token "${m}" outside backends/cloudflare/`,
 }
 
-for (const file of walk(SCAN_ROOT)) {
-  if (!file.endsWith('.ts')) continue
-  const rel = path.relative(ROOT, file)
-  if (rel === SELF) continue
-  if (isUnderCloudflareBackend(rel)) continue
-  const lines = fs.readFileSync(file, 'utf8').split('\n')
-  scanLines(rel, lines, [aeTokenCheck])
+const pageTokenCheck = {
+  pattern: PAGE_TOKEN_PATTERN,
+  message: (m) =>
+    `references backend-private page-identifier symbol "${m}" outside backends/cloudflare/`,
 }
 
-const extraSurfaceFiles = [
-  ...EXTRA_SURFACE_DIRS.flatMap((dir) => [...walk(dir)]),
-  ...EXTRA_SURFACE_FILES.filter((f) => fs.existsSync(f)),
-]
-for (const file of extraSurfaceFiles) {
-  if (!file.endsWith('.ts')) continue
-  const rel = path.relative(ROOT, file)
-  if (rel === SELF) continue
-  if (isUnderCloudflareBackend(rel)) continue
-  const lines = fs.readFileSync(file, 'utf8').split('\n')
-  scanLines(rel, lines, [aeTokenCheck])
+/**
+ * Failures for one file's text under the AE positional-token rule. `rel` is
+ * the repo-relative path; files under `backends/cloudflare/` are exempt.
+ * @param {string} rel
+ * @param {string} text
+ * @returns {string[]}
+ */
+export function collectAeTokenFailures(rel, text) {
+  if (!rel.endsWith('.ts') || rel === SELF || isUnderCloudflareBackend(rel)) return []
+  return scanLines(rel, text.split('\n'), [aeTokenCheck])
 }
 
-for (const file of walk(PAGE_TOKEN_ROOT)) {
-  if (!file.endsWith('.ts')) continue
-  const rel = path.relative(ROOT, file)
-  if (rel === SELF) continue
-  if (isUnderCloudflareBackend(rel)) continue
-  if (PAGE_TOKEN_ALLOWLIST.has(rel)) continue
-  const lines = fs.readFileSync(file, 'utf8').split('\n')
-  scanLines(rel, lines, [
-    {
-      pattern: PAGE_TOKEN_PATTERN,
-      message: (m) =>
-        `references backend-private page-identifier symbol "${m}" outside backends/cloudflare/`,
-    },
-  ])
+/**
+ * Failures for one file's text under the page-identity symbol rule.
+ * @param {string} rel
+ * @param {string} text
+ * @returns {string[]}
+ */
+export function collectPageIdentifierFailures(rel, text) {
+  if (!rel.endsWith('.ts') || rel === SELF || isUnderCloudflareBackend(rel)) return []
+  if (PAGE_TOKEN_ALLOWLIST.has(rel)) return []
+  return scanLines(rel, text.split('\n'), [pageTokenCheck])
 }
 
-if (failures.length > 0) {
-  console.error('metrics boundary check failed:\n')
-  for (const failure of failures) {
-    console.error(`  ✗ ${failure}`)
+/**
+ * @param {{ root?: string }} [options]
+ * @returns {string[]}
+ */
+export function checkMetricsBoundaries(options = {}) {
+  const root = options.root ?? ROOT
+  const abs = (p) => path.join(root, p)
+  const failures = []
+  const read = (file) => [path.relative(root, file), fs.readFileSync(file, 'utf8')]
+
+  const aeFiles = [
+    ...walk(abs(SCAN_ROOT)),
+    ...EXTRA_SURFACE_DIRS.flatMap((dir) => [...walk(abs(dir))]),
+    ...EXTRA_SURFACE_FILES.map(abs).filter((f) => fs.existsSync(f)),
+  ]
+  for (const file of aeFiles) {
+    failures.push(...collectAeTokenFailures(...read(file)))
   }
-  console.error(
-    `\n${failures.length} problem(s) found. AE positional tokens (double<N>/blob<N>/-1e308) ` +
-      'must stay confined to src/daemon/metrics/backends/cloudflare/ — always derive columns ' +
-      'through field-map.ts. The page-identifier symbols (AE_BLOB_PAGE_INDEX, ' +
-      'AE_BLOB_SOURCE_OR_IDENTITY_INDEX, entityIdInPageIdentityPredicate) are backend-private ' +
-      'and must stay confined to backends/cloudflare/ as well — see sql-api.ts.'
-  )
-  process.exit(1)
+  for (const file of walk(abs(PAGE_TOKEN_ROOT))) {
+    failures.push(...collectPageIdentifierFailures(...read(file)))
+  }
+  return failures
 }
 
-console.log(
-  'check-metrics-boundaries: AE physical tokens and page-identifier symbols stay confined to backends/cloudflare/.'
-)
+function isDirectRun() {
+  const entry = process.argv[1]
+  if (!entry) return false
+  return import.meta.url === pathToFileURL(path.resolve(entry)).href
+}
+
+function main() {
+  const failures = checkMetricsBoundaries()
+  if (failures.length > 0) {
+    console.error('metrics boundary check failed:\n')
+    for (const failure of failures) {
+      console.error(`  ✗ ${failure}`)
+    }
+    console.error(
+      `\n${failures.length} problem(s) found. AE positional tokens (double<N>/blob<N>/-1e308) ` +
+        'must stay confined to src/daemon/metrics/backends/cloudflare/ — always derive columns ' +
+        'through field-map.ts. The page-identifier symbols (AE_BLOB_PAGE_INDEX, ' +
+        'AE_BLOB_SOURCE_OR_IDENTITY_INDEX, entityIdInPageIdentityPredicate) are backend-private ' +
+        'and must stay confined to backends/cloudflare/ as well — see sql-api.ts.'
+    )
+    process.exit(1)
+  }
+
+  console.log(
+    'check-metrics-boundaries: AE physical tokens and page-identifier symbols stay confined to backends/cloudflare/.'
+  )
+}
+
+if (isDirectRun()) main()
