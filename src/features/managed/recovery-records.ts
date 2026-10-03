@@ -93,17 +93,28 @@ export async function findLatestAcceptedAutomaticFailover(
   return row ? serializeRow(row) : null
 }
 
-export async function insertRecovery(
-  db: Db,
-  params: {
-    managedId: string
-    kind: RecoveryKind
-    sourcePrimaryMemberId: string
-    targetMemberId?: string | null
-    state?: RecoveryState
-    metadata?: RecoveryMetadata
+type InsertRecoveryParams = {
+  managedId: string
+  kind: RecoveryKind
+  sourcePrimaryMemberId: string
+  targetMemberId?: string | null
+  state?: RecoveryState
+  metadata?: RecoveryMetadata
+}
+
+const UNIQUE_VIOLATION = '23505'
+
+/** True for a Postgres unique violation, however the driver wraps it. */
+function isUniqueViolation(error: unknown): boolean {
+  let current: unknown = error
+  for (let depth = 0; depth < 3 && typeof current === 'object' && current !== null; depth++) {
+    if ((current as { code?: unknown }).code === UNIQUE_VIOLATION) return true
+    current = (current as { cause?: unknown }).cause
   }
-): Promise<RecoveryRecord> {
+  return false
+}
+
+async function insertRecoveryRow(db: Db, params: InsertRecoveryParams): Promise<RecoveryRecord> {
   const now = new Date().toISOString()
   const rows = await db
     .insert(recovery)
@@ -122,6 +133,67 @@ export async function insertRecovery(
   const serialized = serializeRow(row)
   if (!serialized) throw new Error('Failed to serialize recovery')
   return serialized
+}
+
+/**
+ * Insert a recovery row, or return `null` when another recovery already holds
+ * the cluster's in-flight slot (the partial unique index): two events racing
+ * past the in-flight check lose cleanly instead of throwing.
+ */
+export async function insertRecoveryIfFree(
+  db: Db,
+  params: InsertRecoveryParams
+): Promise<RecoveryRecord | null> {
+  try {
+    return await insertRecoveryRow(db, params)
+  } catch (error) {
+    if (isUniqueViolation(error)) return null
+    throw error
+  }
+}
+
+/** Insert a recovery row; if the in-flight slot is taken, return that row. */
+export async function insertRecovery(
+  db: Db,
+  params: InsertRecoveryParams
+): Promise<RecoveryRecord> {
+  const created = await insertRecoveryIfFree(db, params)
+  if (created) return created
+  const inflight = await findInFlightRecovery(db, params.managedId)
+  if (inflight) return inflight
+  throw new Error('Failed to create recovery')
+}
+
+/**
+ * Record a refused automatic failover (terminal `blocked`, no target). A
+ * flapping detector re-sends the same refused event every poll, so when the
+ * newest row of the cluster is already the same refusal, count it on that row
+ * instead of adding another.
+ */
+export async function recordBlockedRecovery(
+  db: Db,
+  params: InsertRecoveryParams & { metadata: RecoveryMetadata & { blockedReason: string } }
+): Promise<RecoveryRecord> {
+  const latest = await findLatestRecovery(db, params.managedId)
+  if (
+    latest &&
+    latest.kind === params.kind &&
+    latest.state === 'blocked' &&
+    latest.targetMemberId === null &&
+    latest.sourcePrimaryMemberId === params.sourcePrimaryMemberId &&
+    latest.metadata.blockedReason === params.metadata.blockedReason
+  ) {
+    const updated = await updateRecovery(db, latest.id, {
+      metadata: {
+        ...latest.metadata,
+        ...params.metadata,
+        blockedCount: (latest.metadata.blockedCount ?? 1) + 1,
+        lastBlockedAt: new Date().toISOString(),
+      },
+    })
+    if (updated) return updated
+  }
+  return await insertRecovery(db, { ...params, state: 'blocked' })
 }
 
 export type RecoveryPatch = {
