@@ -299,148 +299,46 @@ const TEXT_KEYS: Readonly<Record<string, keyof NonNullable<MetricsExtended['text
 
 type HostRowSpec = { doubles: readonly (string | null)[]; blobs: readonly string[] }
 
+/** Slot ids for a host row, written as one space-separated list. */
+function ids(list: string): string[] {
+  return list.split(' ')
+}
+
 export const V7_HOST_ROW_SPECS: Readonly<Record<V7HostFamily, HostRowSpec>> = {
   'host.system': {
-    doubles: [
-      'busy',
-      'user',
-      'system',
-      'iowait',
-      'steal',
-      'softirq',
-      'cpuPsi',
-      'saturated',
-      'used',
-      'cachedFiles',
-      'swapUsed',
-      'memPsiSome',
-      'memPsiFull',
-      'majorFaults',
-      'oomKills',
-      'fileHandles',
-      'conntrack',
-      'pidLimit',
-      'dSlabU',
-    ],
-    blobs: ['loadavg', 'topCpu', 'cpuModel', 'topMem', 'lastOom'],
+    doubles: ids(
+      'busy user system iowait steal softirq cpuPsi saturated used cachedFiles swapUsed memPsiSome memPsiFull majorFaults oomKills fileHandles conntrack pidLimit dSlabU'
+    ),
+    blobs: ids('loadavg topCpu cpuModel topMem lastOom'),
   },
   'host.io': {
-    doubles: [
-      'ioPsiSome',
-      'ioPsiFull',
-      'diskRead',
-      'diskWrite',
-      'diskLatency',
-      'rootQueue',
-      'rootOps',
-      'ctrRunning',
-      'ctrUnhealthy',
-      'ctrRestarting',
-      'ctrOom',
-      'ctrDie',
-      'ctrCpu',
-      'ctrMem',
-      'layers',
-      'ctrBytes',
-      'volumes',
-      'buildCache',
-      'reclTotal',
-    ],
-    blobs: ['unhealthyNames', 'dockerVersion'],
+    doubles: ids(
+      'ioPsiSome ioPsiFull diskRead diskWrite diskLatency rootQueue rootOps ctrRunning ctrUnhealthy ctrRestarting ctrOom ctrDie ctrCpu ctrMem layers ctrBytes volumes buildCache reclTotal'
+    ),
+    blobs: ids('unhealthyNames dockerVersion'),
   },
   'host.network': {
-    doubles: [
-      'rootAvail',
-      'rootInodes',
-      'fs_availableBytes',
-      'fs_freeInodes',
-      'tcpRetrans',
-      'nic1.rx',
-      'nic1.tx',
-      'nic1.problems',
-      'nic2.rx',
-      'nic2.tx',
-      'nic2.problems',
-      'systemdFailed',
-      'mdDegraded',
-      'dCommit',
-      'tUp',
-      'tTotal',
-      't5xx',
-      'tLatency',
-      'tRequests',
-    ],
-    blobs: [
-      'failedUnits',
-      'raidState',
-      'rebootRequired',
-      'kernel',
-      'os',
-      'bootId',
-      'virt',
-      'cloudProvider',
-      'agentVersion',
-      'timeSync',
-      'pendingUpdates',
-      'fsReadOnly',
-      'phpVersions',
-      'webEngines',
-    ],
+    doubles: ids(
+      'rootAvail rootInodes fs_availableBytes fs_freeInodes tcpRetrans nic1.rx nic1.tx nic1.problems nic2.rx nic2.tx nic2.problems systemdFailed mdDegraded dCommit tUp tTotal t5xx tLatency tRequests'
+    ),
+    blobs: ids(
+      'failedUnits raidState rebootRequired kernel os bootId virt cloudProvider agentVersion timeSync pendingUpdates fsReadOnly phpVersions webEngines'
+    ),
   },
   'host.web': {
-    doubles: [
-      'hostingUsed',
-      'backupUsed',
-      'dockerUsed',
-      'logsUsed',
-      'hostingFree',
-      'backupFree',
-      'cReq',
-      'c2xx',
-      'c4xx',
-      'c5xx',
-      'cErr',
-      'cReqB',
-      'cRespB',
-      'cDur',
-      'cB100',
-      'cB500',
-      'cB1s',
-      'cInFlight',
-      'cTls',
-    ],
-    blobs: [
-      'fpmBusiest',
-      'topSites',
-      'caddyVersion',
-      'certSoonest',
-      'traefikVersion',
-      'unhealthyBackends',
-    ],
+    doubles: ids(
+      'hostingUsed backupUsed dockerUsed logsUsed hostingFree backupFree cReq c2xx c4xx c5xx cErr cReqB cRespB cDur cB100 cB500 cB1s cInFlight cTls'
+    ),
+    blobs: ids('fpmBusiest topSites caddyVersion certSoonest traefikVersion unhealthyBackends'),
   },
   'managed.database': {
     doubles: [
-      'dbpostgresInstancesRunning',
-      'dbpostgresInstancesHealthy',
-      'dbmysqlInstancesRunning',
-      'dbmysqlInstancesHealthy',
-      'dbmariadbInstancesRunning',
-      'dbmariadbInstancesHealthy',
-      'pxqueries',
-      'pxslowQueries',
-      'pxqueryLatencyMsAvg',
-      'pxbackendLatencyMsAvg',
-      'pxactiveTransactions',
-      'pxclientConnections',
-      'pxclientConnectionsAborted',
-      'pxconnectionsRejectedMaxConns',
-      'pxbackendConnections',
-      'pxconnectionErrors',
-      'pxbackendsUp',
-      'pxbackendsTotal',
+      ...ids(
+        'dbpostgresInstancesRunning dbpostgresInstancesHealthy dbmysqlInstancesRunning dbmysqlInstancesHealthy dbmariadbInstancesRunning dbmariadbInstancesHealthy pxqueries pxslowQueries pxqueryLatencyMsAvg pxbackendLatencyMsAvg pxactiveTransactions pxclientConnections pxclientConnectionsAborted pxconnectionsRejectedMaxConns pxbackendConnections pxconnectionErrors pxbackendsUp pxbackendsTotal'
+      ),
       null,
     ],
-    blobs: ['dbVersions'],
+    blobs: ids('dbVersions'),
   },
 }
 
