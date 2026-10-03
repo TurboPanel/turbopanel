@@ -547,6 +547,20 @@ function opsPerSecond(device: BlockDeviceSample): number | null {
   return device.readOpsPerSecond + device.writeOpsPerSecond
 }
 
+function blockText(key: 'model' | 'smart') {
+  return {
+    read: (d: BlockDeviceSample, s: MetricsSample) =>
+      s.extended?.blockDeviceText?.find((t) => t.deviceId === d.deviceId)?.[key] ?? '',
+  }
+}
+
+function gpuText(key: 'driver' | 'model') {
+  return {
+    read: (g: GpuSample, s: MetricsSample) =>
+      s.extended?.gpuText?.find((t) => t.gpuId === g.gpuId)?.[key] ?? '',
+  }
+}
+
 const BLOCK_SPEC: EntityRowSpec<BlockDeviceSample> = {
   doubles: [
     entityNum('readBytesPerSecond'),
@@ -598,10 +612,7 @@ const GPU_SPEC: EntityRowSpec<GpuSample> = {
     entityNum('pcieTransmitBytesPerSecond'),
     entityNum('throttlePercent'),
   ],
-  blobs: [
-    { read: (g, s) => s.extended?.gpuText?.find((t) => t.gpuId === g.gpuId)?.driver ?? '' },
-    { read: (g, s) => s.extended?.gpuText?.find((t) => t.gpuId === g.gpuId)?.model ?? '' },
-  ],
+  blobs: [gpuText('driver'), gpuText('model')],
   perPage: 3,
 }
 
