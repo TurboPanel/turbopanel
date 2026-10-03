@@ -94,7 +94,9 @@ test('server.firewall.reconcile result carries an optional pending confirmation'
 test('server.firewall.reconcile result refuses a malformed confirmation', () => {
   const good = { state: 'pending', deadlineAt: '2026-10-01T12:02:00.000Z', windowSeconds: 120 }
   for (const confirmation of [
-    { ...good, state: 'confirmed' },
+    { ...good, state: 'maybe' },
+    { ...good, autoConfirm: { ok: 'yes', reason: 'x' } },
+    { ...good, autoConfirm: { ok: true } },
     { ...good, deadlineAt: 'soon' },
     { ...good, windowSeconds: 0 },
     { ...good, windowSeconds: 7200 },
@@ -105,4 +107,26 @@ test('server.firewall.reconcile result refuses a malformed confirmation', () => 
       parseCommandResult('server.firewall.reconcile', { ...reconcileResult, confirmation })
     )
   }
+})
+
+test("server.firewall.reconcile result carries the daemon's own confirm and a last rollback", () => {
+  const confirmation: FirewallPendingConfirmation = {
+    state: 'confirmed',
+    deadlineAt: '2026-10-01T12:02:00.000Z',
+    windowSeconds: 120,
+    autoConfirm: { ok: true, reason: 'reached the control plane' },
+  }
+  const lastRollback = {
+    digest: 'c'.repeat(64),
+    at: '2026-10-01T12:02:01.000Z',
+    restored: 'none' as const,
+  }
+  const full = { ...reconcileResult, confirmation, lastRollback }
+  assertEquals(parseCommandResult('server.firewall.reconcile', full), full)
+  assertThrows(() =>
+    parseCommandResult('server.firewall.reconcile', {
+      ...reconcileResult,
+      lastRollback: { ...lastRollback, restored: 'maybe' },
+    })
+  )
 })
