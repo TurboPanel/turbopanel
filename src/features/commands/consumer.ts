@@ -456,13 +456,18 @@ export const COMMAND_UNACKED_ERROR =
   'The server did not acknowledge the command in time; its connection looked dead and was reset. Try again once it reconnects.'
 
 /**
- * Wait for a terminal outcome, but fail fast when the daemon never acks.
+ * Wait for a terminal outcome, but fail fast when the daemon never acks a
+ * command that was written to its socket.
  *
- * Never re-sends: the outbox row is already delivered, and the dead connection
- * is dropped first so a frame still buffered on it can never run later. The
- * daemon also ignores a command id it has already seen. The result is a
- * synthetic `failed` pending record, which flows through the normal failure
- * side effects.
+ * Only a `sent` request is failed: a `queued` one is still waiting for the
+ * outbox to retry, so it keeps its whole budget. Never re-sends. The dead
+ * connection is dropped first so a frame still buffered on it cannot run
+ * later, and the request is expired in the cell so the outbox cannot deliver
+ * it after the caller was told it failed (the daemon also ignores a command id
+ * it has already seen). A backend that cannot drop a connection and expire a
+ * request (Redis) does a plain wait, so the message never claims a reset that
+ * did not happen. The result is a synthetic `failed` record, which flows
+ * through the normal failure side effects.
  */
 export async function awaitOutcomeWithAckDeadline(
   cell: DaemonCell,
@@ -470,21 +475,26 @@ export async function awaitOutcomeWithAckDeadline(
   timeoutMs: number,
   ackDeadlineMs = COMMAND_ACK_DEADLINE_MS
 ): Promise<PendingRequestRecord | null> {
-  if (ackDeadlineMs >= timeoutMs) return cell.waitForRequest(requestId, timeoutMs)
+  const { dropDaemonConnection, expireRequest } = cell
+  if (ackDeadlineMs >= timeoutMs || !dropDaemonConnection || !expireRequest) {
+    return cell.waitForRequest(requestId, timeoutMs)
+  }
+  const restMs = timeoutMs - ackDeadlineMs
   const first = await cell.waitForRequest(requestId, ackDeadlineMs)
   if (first) return first
   const current = await cell.getRequest(requestId)
-  if (!current) return cell.waitForRequest(requestId, timeoutMs - ackDeadlineMs)
-  if (current.ackAt || current.status === 'acked') {
-    return cell.waitForRequest(requestId, timeoutMs - ackDeadlineMs)
+  if (!current || current.status !== 'sent' || current.ackAt) {
+    return cell.waitForRequest(requestId, restMs)
   }
-  await cell.dropDaemonConnection?.('command_unacked').catch(() => undefined)
+  await dropDaemonConnection.call(cell, 'command_unacked').catch(() => undefined)
   // The ack may have landed while the connection was being dropped.
   const settled = await cell.getRequest(requestId)
-  if (settled && (settled.ackAt || settled.status === 'acked')) {
-    return cell.waitForRequest(requestId, timeoutMs - ackDeadlineMs)
-  }
   if (settled && ['done', 'failed', 'expired'].includes(settled.status)) return settled
+  if (settled && (settled.ackAt || settled.status !== 'sent')) {
+    return cell.waitForRequest(requestId, restMs)
+  }
+  const expired = await expireRequest.call(cell, requestId).catch(() => null)
+  if (expired && (expired.status === 'done' || expired.status === 'failed')) return expired
   return { ...(settled ?? current), status: 'failed', error: COMMAND_UNACKED_ERROR }
 }
 

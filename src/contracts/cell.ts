@@ -217,6 +217,14 @@ export interface DaemonCell {
    * dispatched command gets no ack. Backends without per-socket control omit it.
    */
   dropDaemonConnection?(reason: string): Promise<void>
+
+  /**
+   * Optional — expire one request now so its outbox row is never delivered
+   * later. Returns the record as it stands: an already terminal request is
+   * returned untouched. Paired with `dropDaemonConnection` by the command
+   * ack deadline; backends without it keep the plain wait.
+   */
+  expireRequest?(requestId: string): Promise<PendingRequestRecord>
 }
 
 export interface DaemonCellRegistry {
