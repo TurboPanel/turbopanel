@@ -684,6 +684,39 @@ async function recordAutoFailoverDisabled(params: {
   })
 }
 
+/**
+ * A dead-primary report that does not name the current primary: record it as
+ * a TERMINAL stale row (no target, so it never counts for the cooldown) and do
+ * nothing else. Never fences, never promotes.
+ */
+export async function recordStaleDeadPrimaryReport(params: {
+  db: Db
+  managedId: string
+  members: readonly ManagedMemberRow[]
+  reason: string
+  detector?: string
+  evidence?: string
+}): Promise<RecoveryRecord | null> {
+  const primary = params.members.find((row) => row.role === 'primary')
+  if (!primary) return null
+  compatLogWarn(
+    'managed-ha',
+    `stale dead-primary report for ${params.managedId} ignored: ${params.reason}`
+  )
+  return insertRecovery(params.db, {
+    managedId: params.managedId,
+    kind: 'automatic-failover',
+    sourcePrimaryMemberId: primary.id,
+    state: 'blocked',
+    metadata: {
+      stale: true,
+      blockedReason: `Ignored stale dead-primary report: ${params.reason}`,
+      sourceServerId: primary.serverId,
+      ...detectorMetadata(params.detector, params.evidence),
+    },
+  })
+}
+
 export async function beginAutomaticFailover(params: {
   db: Db
   commandQueue: CommandQueue | null

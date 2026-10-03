@@ -243,6 +243,21 @@ export function toHaClusterMember(
   }
 }
 
+/**
+ * The host and port `reporterServerId`'s Orchestrator knows `member` by (the
+ * same dial `buildHaClusterMembers` registered), or `null` when it has none.
+ */
+export async function haMemberDialForReporter(
+  db: Db,
+  reporterServerId: string,
+  member: ManagedMemberRow,
+  defaultPort: number
+): Promise<HaMemberDial | null> {
+  const localNames = await loadLocalEngineContainerNames(db, member.managedId, reporterServerId)
+  const endpoints = await loadHaRemoteEndpoints(db, reporterServerId, [member])
+  return resolveHaMemberDial(member, reporterServerId, localNames, defaultPort, endpoints)
+}
+
 async function buildHaClusterMembers(
   db: Db,
   thisServerId: string,

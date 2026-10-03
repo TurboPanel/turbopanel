@@ -174,6 +174,7 @@ export const DAEMON_WIRE_FEATURES = [
   'sealed-instance-secrets-v1',
   'managed-health-v1',
   'managed-ha-probe-v1',
+  'managed-ha-instance-v1',
   'php-site-modes-v1',
 ] as const
 
@@ -200,6 +201,15 @@ export const MANAGED_HEALTH_FEATURE: DaemonWireFeature = 'managed-health-v1'
  * checks that such an event comes from the current primary's own server.
  */
 export const MANAGED_HA_PROBE_FEATURE: DaemonWireFeature = 'managed-ha-probe-v1'
+
+/**
+ * The daemon's Orchestrator poller names the dead instance (`instanceHost` +
+ * `instancePort`) on `managed-ha-event`, so the control plane can check it is
+ * the cluster's CURRENT primary before fencing. A daemon that lists this
+ * feature and sends an event without the instance is treated as stale; a
+ * daemon that does not list it keeps the legacy behavior (no binding).
+ */
+export const MANAGED_HA_INSTANCE_FEATURE: DaemonWireFeature = 'managed-ha-instance-v1'
 
 /**
  * The daemon runs each PHP site in the mode its deploy asks for (`php.mode`).

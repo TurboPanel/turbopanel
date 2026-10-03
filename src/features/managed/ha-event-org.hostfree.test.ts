@@ -81,7 +81,14 @@ test('an org-B server hosting a member of an org-A cluster is rejected on the jo
 
 test('the same event from an org-A member server passes the gate (control)', async () => {
   const db = seed(SERVER_A)
-  await handleManagedHaEvent(db, { managedId: MANAGED_ID }, { reporterServerId: SERVER_A })
+  await handleManagedHaEvent(
+    db,
+    { managedId: MANAGED_ID },
+    {
+      reporterServerId: SERVER_A,
+      binding: { reporterBindsInstance: async () => false, primaryDial: async () => null },
+    }
+  )
   // Past the gate the failover path runs: with a lone primary and no queue it
   // records a terminal blocked row.
   assertEquals(db.rows(recovery).length, 1)
