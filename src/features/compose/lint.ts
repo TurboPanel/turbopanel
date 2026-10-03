@@ -47,6 +47,7 @@ import {
   unsupportedNetworkReason,
 } from './field-policy.ts'
 import { validateAgainstUpstreamSchema } from './upstream-schema.ts'
+import { type BuildRefusalCode, collectBuildRefusals } from './build-policy.ts'
 import { collectHostAccessFindings } from './host-access.ts'
 
 export type ComposeLintLevel = 'error' | 'warning'
@@ -66,6 +67,7 @@ export type ComposeLintCode =
   | 'turbofabric_required'
   | 'field_requires_org_opt_in'
   | 'field_recommends_resource_limits'
+  | BuildRefusalCode
 
 export type ComposeLintIssue = {
   level: ComposeLintLevel
@@ -747,6 +749,31 @@ function lintHostAccess(
       path: finding.path,
       line: nodeLine(node, lineCounter),
       blocking: false,
+    })
+  }
+}
+
+/**
+ * Build options no deploy may carry (`./build-policy.ts`), with no opt-in.
+ * Posture of `field_unsupported`: advice while editing so a draft stays
+ * savable, an error under `strict`, and `validateComposeForDeploy` refuses
+ * the deploy on the code whatever the organization allows.
+ */
+function lintBuildPolicy(
+  doc: ReturnType<typeof parseDocument>,
+  lineCounter: LineCounter,
+  strict: boolean,
+  issues: ComposeLintIssue[]
+): void {
+  for (const refusal of collectBuildRefusals(doc.toJS())) {
+    const node = doc.getIn(refusal.segments, true) as Node | undefined
+    issues.push({
+      level: strict ? 'error' : 'warning',
+      code: refusal.code,
+      message: refusal.message,
+      path: refusal.path,
+      line: nodeLine(node, lineCounter),
+      ...(strict ? {} : { blocking: false as const }),
     })
   }
 }
@@ -1775,6 +1802,7 @@ export function lintComposeYaml(source: string, options?: ComposeLintOptions): C
   const issues: ComposeLintIssue[] = []
   lintTopLevel(root, lineCounter, layer, options?.strict ?? false, known, issues)
   lintHostAccess(doc, lineCounter, issues)
+  lintBuildPolicy(doc, lineCounter, options?.strict ?? false, issues)
   if (options?.projectRepositoryId !== undefined) {
     lintSingleRepository(root, lineCounter, options.projectRepositoryId, issues)
   }

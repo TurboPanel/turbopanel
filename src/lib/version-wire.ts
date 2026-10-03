@@ -174,6 +174,7 @@ export const DAEMON_WIRE_FEATURES = [
   'sealed-instance-secrets-v1',
   'managed-health-v1',
   'managed-ha-probe-v1',
+  'php-site-modes-v1',
 ] as const
 
 export type DaemonWireFeature = (typeof DAEMON_WIRE_FEATURES)[number]
@@ -199,6 +200,14 @@ export const MANAGED_HEALTH_FEATURE: DaemonWireFeature = 'managed-health-v1'
  * checks that such an event comes from the current primary's own server.
  */
 export const MANAGED_HA_PROBE_FEATURE: DaemonWireFeature = 'managed-ha-probe-v1'
+
+/**
+ * The daemon runs each PHP site in the mode its deploy asks for (`php.mode`).
+ * Without it the daemon runs every PHP site on one shared php-fpm pool, so the
+ * control plane refuses to deploy any other mode to it. OpenLiteSpeed and
+ * Caddy sites ignore `php.mode` either way.
+ */
+export const PHP_SITE_MODES_FEATURE: DaemonWireFeature = 'php-site-modes-v1'
 
 /** Features that need an instance at or above a semver. Empty until one lands. */
 export const INSTANCE_FEATURE_MIN_VERSIONS: Readonly<Record<string, string>> = {}

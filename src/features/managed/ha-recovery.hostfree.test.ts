@@ -239,6 +239,8 @@ type HarnessOpts = {
   inflightOnlyRecoveryReads?: boolean
   /** Scripted recovery reads, in call order (overrides `recovery` for reads). */
   recoveryReads?: RecoveryRow[][]
+  /** The recovery insert fails with this (a lost race on the in-flight slot). */
+  recoveryInsertError?: unknown
 }
 
 type RecoveryHarness = {
@@ -317,6 +319,9 @@ function createHarness(opts: HarnessOpts = {}): RecoveryHarness {
           table === recovery ||
           (typeof values.kind === 'string' && typeof values.sourcePrimaryMemberId === 'string')
         ) {
+          if (opts.recoveryInsertError !== undefined) {
+            return { returning: () => Promise.reject(opts.recoveryInsertError) }
+          }
           stored = recoveryRow({
             ...values,
             id: REC_ID,
@@ -884,6 +889,24 @@ test('beginOperatorSwitchover is managed_busy while a journal row is in flight',
     actor: ACTOR,
   })
   assertEquals(result, { ok: false, error: 'managed_busy', status: 409 })
+})
+
+test('beginOperatorSwitchover is managed_busy when it loses the in-flight insert race', async () => {
+  const harness = createHarness({
+    recoveryInsertError: Object.assign(new Error('duplicate key'), { code: '23505' }),
+  })
+  const result = await beginOperatorSwitchover({
+    db: harness.db,
+    commandQueue: okQueue(),
+    managedId: MANAGED_ID,
+    engine: 'postgres',
+    source: member(),
+    target: failoverReplica(),
+    members: [member(), failoverReplica()],
+    actor: ACTOR,
+  })
+  assertEquals(result, { ok: false, error: 'managed_busy', status: 409 })
+  assertEquals(harness.commandInserts.length, 0)
 })
 
 test('beginOperatorSwitchover promotes when the old primary is already offline', async () => {

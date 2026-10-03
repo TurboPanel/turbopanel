@@ -144,7 +144,8 @@ test("a bind of the service's own directory is found, in every spelling", () => 
   )
 })
 
-test('a build context of the service directory stays allowed: it only reads', () => {
+test('a build is not judged here: build-policy.ts refuses its reach outright', () => {
+  assertEquals(collectHostAccessFindings(stack({ build: { context: '/', network: 'host' } })), [])
   assertEquals(collectHostAccessFindings(stack({ build: { context: '.' } })), [])
   assertEquals(collectHostAccessFindings(stack({ build: './' })), [])
 })
@@ -548,223 +549,6 @@ const GATE_CASES: Array<[string, unknown, Expected[]]> = [
     [[[...WEB, 'label_file'], 'label_file `/etc/labels`', ABSOLUTE, '/etc/labels']],
   ],
 
-  // --- services.<name>.build ---
-  ['build: nothing', stack({ build: null }), []],
-  ['build: a string that is not a path or URL type', stack({ build: 5 }), []],
-  ['build: a list is not checked', stack({ build: ['/'] }), []],
-  [
-    'build: a string context outside',
-    stack({ build: '/' }),
-    [[[...WEB, 'build'], 'build context `/`', ABSOLUTE, '/']],
-  ],
-  [
-    'build: a string context that climbs',
-    stack({ build: '../app' }),
-    [[[...WEB, 'build'], 'build context `../app`', CLIMBS, '../app']],
-  ],
-  ['build: remote string contexts', stack({ build: 'git@github.com:x/y.git' }), []],
-  [
-    'build: remote URL, github.com and git@ contexts',
-    {
-      services: {
-        a: { build: 'https://example.com/x.git#main' },
-        b: { build: 'github.com/x/y' },
-        c: { build: { context: 'GITHUB.com/x/y' } },
-        d: { build: { context: 'git@host:x/y.git' } },
-        e: { build: { context: 'ssh://host/x' } },
-      },
-    },
-    [],
-  ],
-  [
-    'build: object context outside',
-    stack({ build: { context: '/srv' } }),
-    [[[...WEB, 'build', 'context'], 'build context `/srv`', ABSOLUTE, '/srv']],
-  ],
-  [
-    'build: object context that is not a string',
-    stack({ build: { context: 42 } }),
-    [[[...WEB, 'build', 'context'], 'build context', NOT_PLAIN, 42]],
-  ],
-  [
-    'build: object context that is null',
-    stack({ build: { context: null } }),
-    [[[...WEB, 'build', 'context'], 'build context', NOT_PLAIN, null]],
-  ],
-  ['build: object without a context', stack({ build: { dockerfile: 'Dockerfile' } }), []],
-  ['build: object context inside', stack({ build: { context: './app' } }), []],
-  [
-    'build: dockerfile outside',
-    stack({ build: { context: '.', dockerfile: '/Dockerfile' } }),
-    [[[...WEB, 'build', 'dockerfile'], 'Dockerfile `/Dockerfile`', ABSOLUTE, '/Dockerfile']],
-  ],
-  [
-    'build: dockerfile that is not a string',
-    stack({ build: { dockerfile: null } }),
-    [[[...WEB, 'build', 'dockerfile'], 'Dockerfile', NOT_PLAIN, null]],
-  ],
-  [
-    'build: additional_contexts skips remote, docker-image and service',
-    stack({
-      build: {
-        additional_contexts: {
-          a: 'https://x/y.git',
-          b: 'docker-image://alpine',
-          c: 'service:base',
-          d: './local',
-        },
-      },
-    }),
-    [],
-  ],
-  [
-    'build: additional_contexts outside, climbing and not a string',
-    stack({
-      build: {
-        additional_contexts: { a: '/etc', b: '../up', c: 7, d: '${X}' },
-      },
-    }),
-    [
-      [
-        [...WEB, 'build', 'additional_contexts', 'a'],
-        'additional build context `/etc`',
-        ABSOLUTE,
-        '/etc',
-      ],
-      [
-        [...WEB, 'build', 'additional_contexts', 'b'],
-        'additional build context `../up`',
-        CLIMBS,
-        '../up',
-      ],
-      [[...WEB, 'build', 'additional_contexts', 'c'], 'additional build context', NOT_PLAIN, 7],
-      [
-        [...WEB, 'build', 'additional_contexts', 'd'],
-        'additional build context `${X}`',
-        INTERPOLATED,
-        '${X}',
-      ],
-    ],
-  ],
-  [
-    'build: additional_contexts as a list',
-    stack({
-      build: { additional_contexts: ['a=/etc'] },
-    }),
-    [
-      [
-        [...WEB, 'build', 'additional_contexts'],
-        'additional build contexts',
-        'are a list, so the paths they name cannot be checked',
-        ['a=/etc'],
-      ],
-    ],
-  ],
-  [
-    'build: additional_contexts as a scalar is ignored',
-    stack({ build: { additional_contexts: 'x' } }),
-    [],
-  ],
-  [
-    'build: ssh, even when empty or false',
-    stack({ build: { ssh: ['default'] } }),
-    [
-      [
-        [...WEB, 'build', 'ssh'],
-        'build ssh',
-        "forwards the host's SSH agent or keys into the build",
-        ['default'],
-      ],
-    ],
-  ],
-  [
-    'build: ssh false is still a finding',
-    stack({ build: { ssh: false } }),
-    [
-      [
-        [...WEB, 'build', 'ssh'],
-        'build ssh',
-        "forwards the host's SSH agent or keys into the build",
-        false,
-      ],
-    ],
-  ],
-  [
-    'build: network host',
-    stack({ build: { network: 'host' } }),
-    [
-      [
-        [...WEB, 'build', 'network'],
-        'build network `host`',
-        "shares the host's network stack",
-        'host',
-      ],
-    ],
-  ],
-  ['build: other networks', stack({ build: { network: 'none' } }), []],
-  [
-    'build: privileged true',
-    stack({ build: { privileged: true } }),
-    [[[...WEB, 'build', 'privileged'], 'privileged build', 'runs with full host privileges', true]],
-  ],
-  ['build: privileged that is not exactly true', stack({ build: { privileged: 'true' } }), []],
-  ['build: privileged false', stack({ build: { privileged: false } }), []],
-  [
-    'build: entitlements, even when empty',
-    stack({ build: { entitlements: [] } }),
-    [
-      [
-        [...WEB, 'build', 'entitlements'],
-        'build entitlements',
-        'grant the build host-level privileges',
-        [],
-      ],
-    ],
-  ],
-  [
-    'build: every rule at once, in order',
-    stack({
-      build: {
-        context: '/',
-        dockerfile: '../D',
-        additional_contexts: { x: '/x' },
-        ssh: true,
-        network: 'host',
-        privileged: true,
-        entitlements: ['security.insecure'],
-      },
-    }),
-    [
-      [[...WEB, 'build', 'context'], 'build context `/`', ABSOLUTE, '/'],
-      [[...WEB, 'build', 'dockerfile'], 'Dockerfile `../D`', CLIMBS, '../D'],
-      [
-        [...WEB, 'build', 'additional_contexts', 'x'],
-        'additional build context `/x`',
-        ABSOLUTE,
-        '/x',
-      ],
-      [
-        [...WEB, 'build', 'ssh'],
-        'build ssh',
-        "forwards the host's SSH agent or keys into the build",
-        true,
-      ],
-      [
-        [...WEB, 'build', 'network'],
-        'build network `host`',
-        "shares the host's network stack",
-        'host',
-      ],
-      [[...WEB, 'build', 'privileged'], 'privileged build', 'runs with full host privileges', true],
-      [
-        [...WEB, 'build', 'entitlements'],
-        'build entitlements',
-        'grant the build host-level privileges',
-        ['security.insecure'],
-      ],
-    ],
-  ],
-
   // --- extends ---
   [
     'extends: a file inside',
@@ -804,6 +588,31 @@ const GATE_CASES: Array<[string, unknown, Expected[]]> = [
     },
     [],
   ],
+  [
+    'volumes: an explicit name reaches a volume the stack may not own',
+    { volumes: { a: { name: 'other_stack_data' } } },
+    [
+      [
+        ['volumes', 'a', 'name'],
+        'volume `a`',
+        'names a Docker volume on the host, which may belong to another stack',
+        'other_stack_data',
+      ],
+    ],
+  ],
+  [
+    'volumes: external uses a volume the stack does not own',
+    { volumes: { a: { external: true } } },
+    [
+      [
+        ['volumes', 'a', 'external'],
+        'volume `a`',
+        'uses a Docker volume the stack does not own',
+        true,
+      ],
+    ],
+  ],
+  ['volumes: external false is an ordinary volume', { volumes: { a: { external: false } } }, []],
   [
     'volumes: named volume with harmless options',
     {
@@ -1079,7 +888,6 @@ const GATE_CASES: Array<[string, unknown, Expected[]]> = [
       services: {
         a: {
           extends: { file: 'e.yaml' },
-          build: '/',
           label_file: '/l',
           env_file: '/e',
           volumes: ['/v:/v'],
@@ -1090,7 +898,6 @@ const GATE_CASES: Array<[string, unknown, Expected[]]> = [
       [['services', 'a', 'volumes', 0], 'bind source `/v`', ABSOLUTE, '/v:/v'],
       [['services', 'a', 'env_file'], 'env_file `/e`', ABSOLUTE, '/e'],
       [['services', 'a', 'label_file'], 'label_file `/l`', ABSOLUTE, '/l'],
-      [['services', 'a', 'build'], 'build context `/`', ABSOLUTE, '/'],
       [['services', 'a', 'extends', 'file'], 'extends file `e.yaml`', PULLS_UNCHECKED, 'e.yaml'],
       [
         ['volumes', 'v', 'driver_opts'],
@@ -1172,19 +979,19 @@ test('gate: hostAccessCanonical is the sorted path/value pairs, gated keys inclu
         web: {
           privileged: true,
           volumes: ['/z:/z'],
-          build: { ssh: { b: 1, a: 2 } },
         },
         api: { pid: 'host', 'not a mapping': 1 },
         gone: 'x',
       },
+      volumes: { v: { driver_opts: { type: 'none', o: 'bind' } } },
       include: ['i.yaml'],
     }),
     JSON.stringify([
       ['include[0]', 'i.yaml'],
       ['services.api.pid', 'host'],
-      ['services.web.build.ssh', { a: 2, b: 1 }],
       ['services.web.privileged', true],
       ['services.web.volumes[0]', '/z:/z'],
+      ['volumes.v.driver_opts', { o: 'bind', type: 'none' }],
     ])
   )
 })
