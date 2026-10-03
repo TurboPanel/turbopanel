@@ -1042,21 +1042,11 @@ const EXTENDED_NUMBER_SECTIONS: readonly (readonly [ExtendedNumberSection, reado
   ['ingress', EXTENDED_INGRESS_FIELD_NAMES],
 ]
 
-/**
- * Parse the optional v7 `extended` section. Every key is optional and unknown
- * keys are rejected, so a typo cannot silently drop a reading.
- */
-function parseExtended(raw: unknown): ValidateResult<MetricsExtended> {
-  if (!isRecord(raw)) return fail('extended must be an object')
-  const unknown = rejectUnknownKeys(raw, ALLOWED_EXTENDED_FIELDS, 'extended')
-  if (unknown) return unknown
-  const out: Record<string, unknown> = {}
-  for (const [section, names] of EXTENDED_NUMBER_SECTIONS) {
-    if (raw[section] === undefined) continue
-    const parsed = parseOptionalNumberGroup(raw[section], `extended.${section}`, names)
-    if (!parsed.ok) return parsed
-    out[section] = parsed.value
-  }
+/** Parse the text-bearing parts of the v7 `extended` section into `out`. */
+function parseExtendedText(
+  raw: Record<string, unknown>,
+  out: Record<string, unknown>
+): ValidateResult<true> {
   if (raw.text !== undefined) {
     const parsed = parseTextGroup(raw.text, 'extended.text', METRICS_TEXT_FIELD_NAMES)
     if (!parsed.ok) return parsed
@@ -1075,6 +1065,26 @@ function parseExtended(raw: unknown): ValidateResult<MetricsExtended> {
     if (!parsed.ok) return parsed
     out.gpuText = parsed.value
   }
+  return { ok: true, value: true }
+}
+
+/**
+ * Parse the optional v7 `extended` section. Every key is optional and unknown
+ * keys are rejected, so a typo cannot silently drop a reading.
+ */
+function parseExtended(raw: unknown): ValidateResult<MetricsExtended> {
+  if (!isRecord(raw)) return fail('extended must be an object')
+  const unknown = rejectUnknownKeys(raw, ALLOWED_EXTENDED_FIELDS, 'extended')
+  if (unknown) return unknown
+  const out: Record<string, unknown> = {}
+  for (const [section, names] of EXTENDED_NUMBER_SECTIONS) {
+    if (raw[section] === undefined) continue
+    const parsed = parseOptionalNumberGroup(raw[section], `extended.${section}`, names)
+    if (!parsed.ok) return parsed
+    out[section] = parsed.value
+  }
+  const text = parseExtendedText(raw, out)
+  if (!text.ok) return text
   return { ok: true, value: out as MetricsExtended }
 }
 
