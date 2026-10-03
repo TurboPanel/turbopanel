@@ -88,7 +88,7 @@ test('refuses a receipt older than failure start minus the margin, or none at al
 })
 
 test('refuses replay behind the received LSN, or unknown LSNs', () => {
-  assertEquals(reason(judge(cold({ replayLsn: '0/3000100' }))), 'replay_behind')
+  assertEquals(reason(judge(cold({ replayLsn: '0/2FFC147' }))), 'replay_behind')
   assertEquals(reason(judge(cold({ receivedLsn: undefined }))), 'lsn_unknown')
   assertEquals(reason(judge(cold({ replayLsn: 'nope' }))), 'lsn_unknown')
 })
@@ -118,14 +118,30 @@ test('refuses no answer and anything that is not a disconnected standby', () => 
   assertEquals(reason(judge(cold({ state: 'waiting' }))), 'accepted')
 })
 
-test('a standby still streaming at event time goes through the unchanged lag gate', () => {
+test('replay within 16 KiB of received (a partial record) still counts as replayed', () => {
+  // 0x3000148 - 0x2FFC148 = 16 KiB exactly.
+  const partial = judge(cold({ replayLsn: '0/2FFC148' }))
+  assertEquals(reason(partial), 'accepted')
+  if (partial.accepted) assertEquals(partial.basis.includes('(replay 16384 B behind)'), true)
+  assertEquals(reason(judge(cold({ replayLsn: '0/3000100' }))), 'accepted')
+  assertEquals(reason(judge(cold({ replayLsn: '0/2FFC147' }))), 'replay_behind')
+  // Replay ahead of the receiver (local WAL) is not behind.
+  assertEquals(reason(judge(cold({ replayLsn: '0/3000200' }))), 'accepted')
+})
+
+test('a standby still streaming at event time needs the lag gate AND a fresh receipt', () => {
   const streaming = {
     state: 'streaming',
     observedAt: new Date(PROBE_MS).toISOString(),
     lagBytes: 0,
+    lastStreaming: { at: 'x', ageMs: 1_000, receiveLagBytes: 0 },
   }
   assertEquals(reason(judge(streaming)), 'accepted')
   assertEquals(reason(judge({ ...streaming, lagBytes: 128 * 1024 * 1024 })), 'lagging')
+  // Silent link drop: still 'streaming', zero lag, nothing heard for 40 s.
+  const dropped = { ...streaming, lastStreaming: { at: 'x', ageMs: 40_000, receiveLagBytes: 0 } }
+  assertEquals(reason(judge(dropped)), 'receipt_stale')
+  assertEquals(reason(judge({ ...streaming, lastStreaming: undefined })), 'receipt_unknown')
 })
 
 test('failureStartedAtMs anchors on the detector span and refuses a bad one', () => {

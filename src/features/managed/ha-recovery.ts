@@ -695,7 +695,7 @@ async function recordAutoFailoverDisabled(params: {
 type FreshStandbyGate = {
   /** Asks a candidate's daemon for a fresh reading at event time. */
   probeStandby?: FreshStandbyProbe
-  /** Control-plane ms of the detector's first failed probe; null = unknown. */
+  /** Control-plane ms of the detector's first hard failure; null = unknown. */
   failureStartedAtMs?: number | null
   /** `TURBOPANEL_AUTO_FAILOVER_RECEIPT_MARGIN_SECONDS` in ms; default 10 s. */
   freshStandbyMarginMs?: number
@@ -730,7 +730,9 @@ type CandidatePick = {
  * Postgres only: the stored observations name no healthy candidate, so probe
  * each same-DC `failover` replica now and let the fresh-standby gate accept
  * one that stopped streaming only because its primary died. Probes run in
- * parallel; the pick itself stays the policy's (lowest ordinal).
+ * parallel. Of the accepted ones, the standby that received the most WAL
+ * wins (`pickMostAdvancedStandby`: highest `receivedLsn`, then lowest
+ * ordinal), not simply the lowest ordinal.
  */
 async function probeFreshStandbys(
   params: AutomaticFailoverParams,

@@ -547,16 +547,21 @@ all:
    decision 2026-10-02). A replica that is no longer streaming is accepted only
    when (a) the daemon saw it streaming no earlier than the failure start minus
    `TURBOPANEL_AUTO_FAILOVER_RECEIPT_MARGIN_SECONDS` (default 10, max 60),
-   (b) its replay LSN equals its received LSN, and (c) that last streaming
+   (b) its replay LSN is within 16 KiB of its received LSN (a receive position
+   stopped mid-record can never be replayed exactly), and (c) that last streaming
    read's received-vs-primary byte lag (`latest_end_lsn - flushed_lsn` on the
    standby) was under 64 MiB. Seconds since the last commit are not used: on
    an idle cluster they grow while nothing is behind. The failure start is event receipt
-   minus the detector's `evidence.spanMs`; no usable span, no probe answer, or
+   minus the detector's `evidence.spanMs` (its first hard failure); no usable span, no probe answer, or
    any missing field refuses. The daemon (turbopaneld `pg-standby-sampler.ts`)
    reads its standbys every 2 s and reports `lastStreaming.ageMs` on its
    monotonic clock, so no cross-host clock is compared. The outcome per replica
    is recorded as `metadata.freshStandby`; a refusal is `blocked` with
    `AUTOMATIC_FAILOVER_STANDBY_NOT_PROVEN_MESSAGE`. Otherwise `blocked`.
+   A standby still `streaming` at event time must also pass (a): a silently
+   dropped link reads `streaming` with zero lag until `wal_receiver_timeout`.
+   Standbys run with `wal_receiver_timeout = 10s`, so even an idle link
+   exchanges a message every ~5 s and the 5 s receipt rule can hold.
    Several accepted: the one with the highest `receivedLsn` wins (ties: lowest
    ordinal). A failure span over 10 min (a re-send for an old incident) is not
    anchored, so it refuses. Loss window: async replication, so an accepted

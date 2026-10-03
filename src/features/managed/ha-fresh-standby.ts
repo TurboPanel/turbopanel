@@ -9,7 +9,8 @@
  *
  * (a) it was last seen streaming no earlier than the failure start minus a
  *     small margin (`lastStreaming.ageMs` from the daemon's sampler);
- * (b) its replay LSN equals its received LSN (nothing received is unapplied);
+ * (b) its replay LSN is within {@link MAX_REPLAY_DELTA_BYTES} of its received
+ *     LSN (nothing received is unapplied, short of a partial record);
  * (c) the received-vs-primary byte lag of that last streaming read was within
  *     the promote limit (64 MiB). Seconds since the last commit are not used.
  *
@@ -79,7 +80,7 @@ export type FreshStandbyInput = {
   replication: ManagedReplicationHealth | null
   /** Control-plane ms taken before the probe was sent. */
   probeStartedAtMs: number
-  /** Control-plane ms of the detector's first failed probe. */
+  /** Control-plane ms of the detector's first hard failure. */
   failureStartedAtMs: number
   marginMs: number
   maxLagBytes?: number
@@ -120,12 +121,23 @@ function checkReceipt(
 }
 
 /** (b) The received (= replayed) LSN. */
+/**
+ * How far replay may trail the received position and still count as "fully
+ * replayed". The receive position can stop mid-record (a partial WAL record
+ * that replay can never apply without the rest), which would otherwise
+ * refuse forever; 16 KiB covers a partial record, not a backlog.
+ */
+export const MAX_REPLAY_DELTA_BYTES = 16 * 1024
+
+/** (b) Replay caught up with what was received (within the delta). */
 function checkReplay(replication: ManagedReplicationHealth): Check<string> {
   const received = parsePgLsn(replication.receivedLsn)
   const replayed = parsePgLsn(replication.replayLsn)
   if (received === null || replayed === null) return refuse('lsn_unknown')
-  if (received !== replayed) return refuse('replay_behind')
-  return { ok: true, value: String(replication.receivedLsn) }
+  const behind = received - replayed
+  if (behind > BigInt(MAX_REPLAY_DELTA_BYTES)) return refuse('replay_behind')
+  const delta = behind > 0n ? ` (replay ${behind} B behind)` : ''
+  return { ok: true, value: `${replication.receivedLsn}${delta}` }
 }
 
 /**
@@ -146,21 +158,36 @@ function checkLastLag(
 }
 
 /**
+ * Still `streaming` at event time: the unchanged lag gate on the fresh
+ * reading, AND the receipt check. A silently dropped link keeps reading
+ * `streaming` with zero lag until `wal_receiver_timeout`, so `streaming`
+ * alone proves nothing about the failure window.
+ */
+function evaluateStillStreaming(
+  input: FreshStandbyInput,
+  replication: ManagedReplicationHealth
+): FreshStandbyVerdict {
+  const gate = evaluateManagedPromoteLagGate(replication, input.probeStartedAtMs, {
+    maxLagBytes: input.maxLagBytes,
+    maxLagSeconds: input.maxLagSeconds,
+  })
+  if (gate !== null) return { accepted: false, reason: 'lagging' }
+  const receipt = checkReceipt(input, replication)
+  if (!receipt.ok) return { accepted: false, reason: receipt.reason }
+  return {
+    accepted: true,
+    basis: `streaming at event time; last receipt ${receipt.value.toFixed(1)} s before failure start`,
+  }
+}
+
+/**
  * Decide whether the probed candidate may be promoted. A standby that is
  * still `streaming` goes through the unchanged lag gate on the fresh reading.
  */
 export function evaluateFreshStandby(input: FreshStandbyInput): FreshStandbyVerdict {
   const replication = input.replication
   if (!replication) return { accepted: false, reason: 'probe_unavailable' }
-  if (replication.state === 'streaming') {
-    const gate = evaluateManagedPromoteLagGate(replication, input.probeStartedAtMs, {
-      maxLagBytes: input.maxLagBytes,
-      maxLagSeconds: input.maxLagSeconds,
-    })
-    return gate === null
-      ? { accepted: true, basis: 'streaming at event time' }
-      : { accepted: false, reason: 'lagging' }
-  }
+  if (replication.state === 'streaming') return evaluateStillStreaming(input, replication)
   if (!DISCONNECTED_STANDBY_STATES.has(replication.state)) {
     return { accepted: false, reason: 'not_a_standby' }
   }
@@ -180,7 +207,7 @@ export function evaluateFreshStandby(input: FreshStandbyInput): FreshStandbyVerd
 }
 
 /**
- * Control-plane ms of the detector's first failed probe: event receipt
+ * Control-plane ms of the detector's first hard failure: event receipt
  * minus the detector's own (monotonic) failure span. `null` when the
  * evidence carries no usable span, which keeps the gate closed.
  */

@@ -1672,7 +1672,7 @@ test('beginAutomaticFailover returns the latest row when fencing enqueue fails',
 // --- Fresh-standby gate (cold kill: the replica stopped streaming) ---------
 
 const EVENT_MS = Date.parse('2026-10-02T12:00:00.000Z')
-/** The detector's first failed probe, 25 s before the event. */
+/** The detector's first hard failure, 25 s before the event. */
 const FAILURE_START_MS = EVENT_MS - 25_000
 const LSN = '0/3000148'
 
@@ -1783,7 +1783,7 @@ test('fresh-standby: no last-streaming record (old daemon, restarted daemon) is 
 })
 
 test('fresh-standby: replay behind the received LSN is refused', async () => {
-  const { row, sent } = await coldKillFailover(freshStopped({ replayLsn: '0/3000100' }))
+  const { row, sent } = await coldKillFailover(freshStopped({ replayLsn: '0/2000000' }))
   assertEquals(row.state, 'blocked')
   assertEquals(row.metadata.freshStandby, `${MEM_REPLICA} refused: replay_behind`)
   assertEquals(sent.length, 0)
