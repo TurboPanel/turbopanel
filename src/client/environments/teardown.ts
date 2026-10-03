@@ -16,12 +16,18 @@
  * trees the current compose declares with the ones the environment's `deployment`
  * rows recorded — so a Git-backed service that was removed from the compose
  * before the delete is still named here, rather than orphaned on the host.
+ *
+ * The project's server principals are captured too: once the delete commits,
+ * any of them that no surviving environment still places on a server is named
+ * in `retirePrincipals` on the last stop sent there, and the daemon removes the
+ * account, its group, home and slice (`tp-host principal-remove`, which
+ * re-checks on the host that nothing still references it).
  */
 import { mapSequential, forEachSequential } from '../../lib/sequential.ts'
-import { eq } from 'drizzle-orm'
+import { and, eq, inArray, or } from 'drizzle-orm'
 import type { Context } from 'hono'
 import type { Db } from '../../db/connection.ts'
-import { environment, project } from '../../db/schema.ts'
+import { deployment, environment, principal, project } from '../../db/schema.ts'
 import type { CommandEnvelope } from '../../features/commands/envelope.ts'
 import type { CommandQueue } from '../../features/commands/queue.ts'
 import { createCommandRecord, transitionCommand } from '../../features/commands/command-records.ts'
@@ -35,6 +41,7 @@ import {
   resolveEffectivePlacementServerId,
 } from '../../features/projects/project-options.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
+import { SERVER_PRINCIPAL_PROVIDER } from '../../features/principals/store.ts'
 import { assertDispatchInfrastructure } from '../servers/command-dispatch.ts'
 import { retireHostingIngressIfIdle } from '../../features/system/reconcile.ts'
 import { composeProjectName } from './deploy-routes-helpers.ts'
@@ -56,6 +63,27 @@ export type EnvironmentTeardownPlan = {
    * scoped to sites.
    */
   siteReleases: EnvironmentSiteRelease[]
+  /**
+   * The project's server principals (applied Linux logins). Candidates only:
+   * which of them retire is decided after the delete commits, against the
+   * environments that survive it ({@link resolvePrincipalRetirement}).
+   */
+  principalUsernames: string[]
+}
+
+/** Applied logins of the project's server (Linux) principals. */
+async function loadProjectPrincipalUsernames(db: Db, projectId: string): Promise<string[]> {
+  const rows = await db
+    .select({ username: principal.appliedUsername })
+    .from(principal)
+    .where(
+      and(
+        eq(principal.projectId, projectId),
+        eq(principal.provider, SERVER_PRINCIPAL_PROVIDER),
+        eq(principal.kind, 'system')
+      )
+    )
+  return [...new Set(rows.map((row) => row.username))].sort((a, b) => a.localeCompare(b))
 }
 
 /** Servers holding this environment's deployment, else its effective pin. */
@@ -116,6 +144,7 @@ export async function planEnvironmentTeardown(
   const tcpUdpServices = await resolveTcpUdpIngressServices(db, environmentId)
   const composeNetworks = await listEnvironmentComposeNetworks(db, environmentId)
   const siteReleases = await resolveEnvironmentSiteReleases(db, environmentId)
+  const principalUsernames = await loadProjectPrincipalUsernames(db, projectRow.id)
 
   return {
     environmentId,
@@ -125,6 +154,7 @@ export async function planEnvironmentTeardown(
     ingressServices: tcpUdpServices.map((svc) => ({ serviceId: svc.serviceId })),
     fabricNetworksByServer: composeNetworkNamesByServer(composeNetworks),
     siteReleases,
+    principalUsernames,
   }
 }
 
@@ -139,6 +169,64 @@ export async function planEnvironmentsTeardown(
   return planned.filter((plan): plan is EnvironmentTeardownPlan => !!plan)
 }
 
+/** Servers one plan's stops go to: its targets plus fabric-only peers. */
+function planServerIds(plan: EnvironmentTeardownPlan): Set<string> {
+  return new Set<string>([...plan.serverIds, ...plan.fabricNetworksByServer.keys()])
+}
+
+/**
+ * Of `usernames`, the ones a surviving environment still places on `serverId`:
+ * a principal of a project with an environment pinned there or deployed there.
+ * Run after the delete commits, so the deleted rows are no longer counted.
+ */
+async function principalsStillOnServer(
+  db: Db,
+  serverId: string,
+  usernames: readonly string[]
+): Promise<Set<string>> {
+  const rows = await db
+    .selectDistinct({ username: principal.appliedUsername })
+    .from(principal)
+    .innerJoin(environment, eq(environment.projectId, principal.projectId))
+    .leftJoin(deployment, eq(deployment.environmentId, environment.id))
+    .where(
+      and(
+        eq(principal.provider, SERVER_PRINCIPAL_PROVIDER),
+        inArray(principal.appliedUsername, [...usernames]),
+        or(eq(environment.serverId, serverId), eq(deployment.serverId, serverId))
+      )
+    )
+  return new Set(rows.map((row) => row.username))
+}
+
+/**
+ * Per server, the principals the deleted environments used there that nothing
+ * surviving still places on it. Call after the delete has committed.
+ */
+export async function resolvePrincipalRetirement(
+  db: Db,
+  plans: readonly EnvironmentTeardownPlan[]
+): Promise<Map<string, string[]>> {
+  const candidates = new Map<string, Set<string>>()
+  for (const plan of plans) {
+    for (const serverId of plan.serverIds) {
+      const set = candidates.get(serverId) ?? new Set<string>()
+      for (const username of plan.principalUsernames) set.add(username)
+      candidates.set(serverId, set)
+    }
+  }
+  const retire = new Map<string, string[]>()
+  await forEachSequential(candidates, async ([serverId, usernames]) => {
+    if (usernames.size === 0) return
+    const kept = await principalsStillOnServer(db, serverId, [...usernames])
+    const gone = [...usernames]
+      .filter((username) => !kept.has(username))
+      .sort((a, b) => a.localeCompare(b))
+    if (gone.length > 0) retire.set(serverId, gone)
+  })
+  return retire
+}
+
 async function enqueueTeardownStop(
   db: Db,
   commandQueue: CommandQueue,
@@ -146,9 +234,10 @@ async function enqueueTeardownStop(
     serverId: string
     actorId: string
     plan: EnvironmentTeardownPlan
+    retirePrincipals: readonly string[]
   }>
 ): Promise<void> {
-  const { plan, serverId } = params
+  const { plan, serverId, retirePrincipals } = params
   const fabricNetworks = plan.fabricNetworksByServer.get(serverId) ?? []
   const record = await createCommandRecord(db, {
     serverId,
@@ -162,6 +251,9 @@ async function enqueueTeardownStop(
       ...(plan.ingressServices.length > 0 ? { ingressServices: plan.ingressServices } : {}),
       ...(fabricNetworks.length > 0 ? { fabricNetworks } : {}),
       ...(plan.siteReleases.length > 0 ? { siteReleases: plan.siteReleases } : {}),
+      ...(retirePrincipals.length > 0
+        ? { retirePrincipals: retirePrincipals.map((username) => ({ username })) }
+        : {}),
     },
     expiresAt: new Date(Date.now() + 120_000).toISOString(),
   })
@@ -190,22 +282,32 @@ async function enqueueTeardownStop(
  * enqueue is logged (and compensated to `failed`) but never thrown — the rows
  * are already gone by the time this runs. Returns the servers reached, so the
  * caller can follow up with shared-ingress retirement.
+ *
+ * `retireByServer` rides only on the **last** stop sent to each server, so the
+ * account outlives every other environment's teardown there.
  */
 export async function dispatchEnvironmentTeardown(
   db: Db,
   commandQueue: CommandQueue,
   plans: readonly EnvironmentTeardownPlan[],
-  actorId: string
+  actorId: string,
+  retireByServer: ReadonlyMap<string, readonly string[]> = new Map()
 ): Promise<string[]> {
+  const lastPlanForServer = new Map<string, EnvironmentTeardownPlan>()
+  for (const plan of plans) {
+    for (const serverId of planServerIds(plan)) lastPlanForServer.set(serverId, plan)
+  }
   const reached = new Set<string>()
   await forEachSequential(plans, async (plan) => {
-    const serverIds = new Set<string>([...plan.serverIds, ...plan.fabricNetworksByServer.keys()])
-    await forEachSequential(serverIds, async (serverId) => {
+    await forEachSequential(planServerIds(plan), async (serverId) => {
+      const retirePrincipals =
+        lastPlanForServer.get(serverId) === plan ? (retireByServer.get(serverId) ?? []) : []
       try {
         await enqueueTeardownStop(db, commandQueue, {
           serverId,
           actorId,
           plan,
+          retirePrincipals,
         })
         reached.add(serverId)
       } catch (err) {
@@ -218,6 +320,20 @@ export async function dispatchEnvironmentTeardown(
     })
   })
   return [...reached].sort((a, b) => a.localeCompare(b))
+}
+
+/** A failed lookup keeps every account: retiring one is never worth a guess. */
+async function resolvePrincipalRetirementBestEffort(
+  db: Db,
+  plans: readonly EnvironmentTeardownPlan[]
+): Promise<Map<string, string[]>> {
+  try {
+    return await resolvePrincipalRetirement(db, plans)
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    compatLogWarn('environments', `principal retirement skipped: ${message}`)
+    return new Map()
+  }
 }
 
 /**
@@ -244,7 +360,14 @@ export async function reclaimDeletedEnvironmentHosts(
     return
   }
 
-  const serverIds = await dispatchEnvironmentTeardown(db, commandQueue, plans, actorId)
+  const retireByServer = await resolvePrincipalRetirementBestEffort(db, plans)
+  const serverIds = await dispatchEnvironmentTeardown(
+    db,
+    commandQueue,
+    plans,
+    actorId,
+    retireByServer
+  )
   await forEachSequential(serverIds, (serverId) =>
     retireHostingIngressIfIdle(db, commandQueue, {
       serverId,

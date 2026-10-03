@@ -47,10 +47,14 @@ it('the dataset name tracks the metrics schema version in code and in every wran
   assertEquals(AE_DATASET_NAME, expected)
   const wrangler = await readWrangler()
   const top = wrangler.analytics_engine_datasets.find((d) => d.binding === 'SERVER_METRICS')
-  assertEquals(top?.dataset, expected, 'local-dev dataset')
+  assertEquals(top?.dataset, expected, 'top level (local wrangler dev) keeps the bare name')
   for (const [name, env] of Object.entries(wrangler.env)) {
     const binding = env.analytics_engine_datasets?.find((d) => d.binding === 'SERVER_METRICS')
-    assertEquals(binding?.dataset, `${name}_${expected}`, `${name}: per-environment prefix`)
-    assertEquals(env.vars?.TURBOPANEL_SERVER_METRICS_AE_DATASET, `${name}_${expected}`)
+    assertEquals(binding?.dataset, `${name}_${expected}`, `${name}: binding dataset`)
+    assertEquals(
+      env.vars?.TURBOPANEL_SERVER_METRICS_AE_DATASET,
+      `${name}_${expected}`,
+      `${name}: read-side var`
+    )
   }
 })

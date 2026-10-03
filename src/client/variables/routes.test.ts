@@ -1,21 +1,18 @@
-import { assertEquals } from "@std/assert";
-import { and, eq } from "drizzle-orm";
-import { Hono } from "hono";
-import type { AppEnv } from "../../app/app.ts";
-import { getDatabaseUrl } from "../../db/url.ts";
-import { createDenoDb } from "../../db/connection.ts";
-import {
-  buildSignedCookie,
-  HTTP_SESSION_COOKIE_NAME,
-} from "../authn/crypto.ts";
-import { createSession } from "../authn/session-store.ts";
+import { assertEquals } from '@std/assert'
+import { and, eq } from 'drizzle-orm'
+import { Hono } from 'hono'
+import type { AppEnv } from '../../app/app.ts'
+import { getDatabaseUrl } from '../../db/url.ts'
+import { createDenoDb } from '../../db/connection.ts'
+import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from '../authn/crypto.ts'
+import { createSession } from '../authn/session-store.ts'
 import {
   deriveEncryptionSecretsConfig,
   deriveSecretsConfig,
   type SecretsConfig,
-} from "../../lib/secrets/secrets.ts";
-import { decryptSecret, encryptSecret } from "../../lib/secrets/data-encryption.ts";
-import { computePublicKeyFingerprint } from "../../daemon/authn/server-key.ts";
+} from '../../lib/secrets/secrets.ts'
+import { decryptSecret, encryptSecret } from '../../lib/secrets/data-encryption.ts'
+import { computePublicKeyFingerprint } from '../../daemon/authn/server-key.ts'
 import {
   binding,
   environment,
@@ -29,117 +26,111 @@ import {
   user,
   variable,
   workspace,
-} from "../../db/schema.ts";
-import { ORG_ID_HEADER } from "../org-context.ts";
-import { registerVariableRoutes } from "./routes.ts";
-import { parseTestSecretsConfig } from "../../test-fixtures/secrets.ts";
+} from '../../db/schema.ts'
+import { ORG_ID_HEADER } from '../org-context.ts'
+import { registerVariableRoutes } from './routes.ts'
+import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 
-const dbUrl = getDatabaseUrl();
+const dbUrl = getDatabaseUrl()
 
 async function generateDaemonKey() {
-  const pair = await crypto.subtle.generateKey(
-    { name: "Ed25519" },
-    true,
-    ["sign", "verify"],
-  ) as CryptoKeyPair;
-  const publicJwk = await crypto.subtle.exportKey("jwk", pair.publicKey);
-  const fingerprint = await computePublicKeyFingerprint(publicJwk);
-  return { publicJwk, fingerprint };
+  const pair = (await crypto.subtle.generateKey({ name: 'Ed25519' }, true, [
+    'sign',
+    'verify',
+  ])) as CryptoKeyPair
+  const publicJwk = await crypto.subtle.exportKey('jwk', pair.publicKey)
+  const fingerprint = await computePublicKeyFingerprint(publicJwk)
+  return { publicJwk, fingerprint }
 }
 
 async function createVariableTestApp(db: ReturnType<typeof createDenoDb>) {
-  const secretsConfig = parseTestSecretsConfig("deno");
-  const secrets = await deriveSecretsConfig(secretsConfig, "session-signing");
+  const secretsConfig = parseTestSecretsConfig('deno')
+  const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
     secretsConfig,
-    "data-encryption",
-  );
-  const app = new Hono<AppEnv>();
-  app.use("*", (c, next) => {
-    c.set("db", db);
-    c.set("secretsConfig", secretsConfig);
-    c.set("dataEncryptionSecrets", dataEncryptionSecrets);
-    return next();
-  });
+    'data-encryption'
+  )
+  const app = new Hono<AppEnv>()
+  app.use('*', (c, next) => {
+    c.set('db', db)
+    c.set('secretsConfig', secretsConfig)
+    c.set('dataEncryptionSecrets', dataEncryptionSecrets)
+    return next()
+  })
   registerVariableRoutes(app, {
     secrets,
-    runtime: "deno",
+    runtime: 'deno',
     signupEnvOverride: undefined,
-  });
-  return { app, secrets, secretsConfig, dataEncryptionSecrets };
+  })
+  return { app, secrets, secretsConfig, dataEncryptionSecrets }
 }
 
 async function sessionCookie(
   db: ReturnType<typeof createDenoDb>,
   secrets: Awaited<ReturnType<typeof deriveSecretsConfig>>,
-  userId: string,
+  userId: string
 ): Promise<string> {
-  const { token } = await createSession(db, userId, {});
-  const signed = await buildSignedCookie(token, secrets);
-  return `${HTTP_SESSION_COOKIE_NAME}=${signed}`;
+  const { token } = await createSession(db, userId, {})
+  const signed = await buildSignedCookie(token, secrets)
+  return `${HTTP_SESSION_COOKIE_NAME}=${signed}`
 }
 
 async function withVariableFixtures(
   fn: (ctx: {
-    db: ReturnType<typeof createDenoDb>;
-    app: Hono<AppEnv>;
-    secrets: Awaited<ReturnType<typeof deriveSecretsConfig>>;
-    secretsConfig: SecretsConfig;
-    dataEncryptionSecrets: Awaited<
-      ReturnType<typeof deriveEncryptionSecretsConfig>
-    >;
-    userId: string;
-    organizationId: string;
-    workspaceId: string;
-    projectId: string;
-    environmentId: string;
-    serviceId: string;
-    serverId: string;
-  }) => Promise<void>,
+    db: ReturnType<typeof createDenoDb>
+    app: Hono<AppEnv>
+    secrets: Awaited<ReturnType<typeof deriveSecretsConfig>>
+    secretsConfig: SecretsConfig
+    dataEncryptionSecrets: Awaited<ReturnType<typeof deriveEncryptionSecretsConfig>>
+    userId: string
+    organizationId: string
+    workspaceId: string
+    projectId: string
+    environmentId: string
+    serviceId: string
+    serverId: string
+  }) => Promise<void>
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn(
-      "Skipping variable route tests: TURBOPANEL_DATABASE_URL not set",
-    );
-    return;
+    console.warn('Skipping variable route tests: TURBOPANEL_DATABASE_URL not set')
+    return
   }
 
-  const db = createDenoDb();
-  const { app, secrets, secretsConfig, dataEncryptionSecrets } =
-    await createVariableTestApp(db);
-  const { publicJwk, fingerprint } = await generateDaemonKey();
+  const db = createDenoDb()
+  const { app, secrets, secretsConfig, dataEncryptionSecrets } = await createVariableTestApp(db)
+  const { publicJwk, fingerprint } = await generateDaemonKey()
 
   const insertedOrg = await db
     .insert(organization)
-    .values({ name: "Variable Route Test Org" })
-    .returning({ id: organization.id });
-  const organizationId = insertedOrg[0]!.id;
+    .values({ name: 'Variable Route Test Org' })
+    .returning({ id: organization.id })
+  const organizationId = insertedOrg[0]!.id
 
   const insertedUser = await db
     .insert(user)
     .values({
       email: `variable-route-${crypto.randomUUID()}@example.com`,
       isEmailVerified: true,
-      role: "user",
+      role: 'user',
     })
-    .returning({ id: user.id });
-  const userId = insertedUser[0]!.id;
+    .returning({ id: user.id })
+  const userId = insertedUser[0]!.id
 
   await db.insert(grant).values({
-    entityType: "organization",
+    entityType: 'organization',
     entityId: organizationId,
-    actorType: "user",
+    actorType: 'user',
     actorId: userId,
-    permission: "organization:own",
-  });
+    permission: 'organization:own',
+  })
 
   const [insertedWorkspace] = await db
     .insert(workspace)
-    .values({ name: "Variable Route Workspace", organizationId })
-    .returning({ id: workspace.id });
-  const workspaceId = insertedWorkspace!.id;
+    .values({ name: 'Variable Route Workspace', organizationId })
+    .returning({ id: workspace.id })
+  const workspaceId = insertedWorkspace!.id
 
-  const now = new Date().toISOString();
+  const now = new Date().toISOString()
 
   const [insertedServer] = await db
     .insert(server)
@@ -148,45 +139,45 @@ async function withVariableFixtures(
       createdAt: now,
       updatedAt: now,
     })
-    .returning({ id: server.id });
-  const serverId = insertedServer!.id;
+    .returning({ id: server.id })
+  const serverId = insertedServer!.id
 
   await db.insert(key).values({
     serverId,
-    algorithm: "Ed25519",
+    algorithm: 'Ed25519',
     publicJwk,
     fingerprint,
-  });
+  })
 
   const [insertedProject] = await db
     .insert(project)
     .values({
-      name: "Variable Route Project",
+      name: 'Variable Route Project',
       workspaceId,
       organizationId,
       metadata: { serverId },
     })
-    .returning({ id: project.id });
-  const projectId = insertedProject!.id;
+    .returning({ id: project.id })
+  const projectId = insertedProject!.id
 
   const [insertedEnvironment] = await db
     .insert(environment)
     .values({
-      name: "Variable Route Env",
+      name: 'Variable Route Env',
       projectId,
     })
-    .returning({ id: environment.id });
-  const environmentId = insertedEnvironment!.id;
+    .returning({ id: environment.id })
+  const environmentId = insertedEnvironment!.id
 
   const [insertedService] = await db
     .insert(service)
     .values({
       environmentId,
-      name: "variable-route-service",
-      composeServiceName: "variable-route-service",
+      name: 'variable-route-service',
+      composeServiceName: 'variable-route-service',
     })
-    .returning({ id: service.id });
-  const serviceId = insertedService!.id;
+    .returning({ id: service.id })
+  const serviceId = insertedService!.id
 
   try {
     await fn({
@@ -202,32 +193,27 @@ async function withVariableFixtures(
       environmentId,
       serviceId,
       serverId,
-    });
+    })
   } finally {
-    await db.delete(variable).where(eq(variable.environmentId, environmentId));
-    await db.delete(variable).where(
-      eq(variable.organizationId, organizationId),
-    );
-    await db.delete(variable).where(eq(variable.workspaceId, workspaceId));
-    await db.delete(variable).where(eq(variable.projectId, projectId));
-    await db.delete(variable).where(eq(variable.serviceId, serviceId));
-    await db.delete(variable).where(eq(variable.serverId, serverId));
+    await db.delete(variable).where(eq(variable.environmentId, environmentId))
+    await db.delete(variable).where(eq(variable.organizationId, organizationId))
+    await db.delete(variable).where(eq(variable.workspaceId, workspaceId))
+    await db.delete(variable).where(eq(variable.projectId, projectId))
+    await db.delete(variable).where(eq(variable.serviceId, serviceId))
+    await db.delete(variable).where(eq(variable.serverId, serverId))
     try {
-      await db.delete(binding).where(eq(binding.serviceId, serviceId));
+      await db.delete(binding).where(eq(binding.serviceId, serviceId))
     } catch {
       // binding table requires the migration to be applied; ignore until applied
     }
-    await db.delete(service).where(eq(service.id, serviceId));
-    await db.delete(environment).where(eq(environment.id, environmentId));
-    await db.delete(project).where(eq(project.id, projectId));
-    await db.delete(server).where(eq(server.id, serverId));
-    await db.delete(grant).where(and(
-      eq(grant.actorId, userId),
-      eq(grant.entityId, organizationId),
-    ));
-    await db.delete(workspace).where(eq(workspace.id, workspaceId));
-    await db.delete(user).where(eq(user.id, userId));
-    await db.delete(organization).where(eq(organization.id, organizationId));
+    await db.delete(service).where(eq(service.id, serviceId))
+    await db.delete(environment).where(eq(environment.id, environmentId))
+    await db.delete(project).where(eq(project.id, projectId))
+    await db.delete(server).where(eq(server.id, serverId))
+    await db.delete(grant).where(and(eq(grant.actorId, userId), eq(grant.entityId, organizationId)))
+    await db.delete(workspace).where(eq(workspace.id, workspaceId))
+    await db.delete(user).where(eq(user.id, userId))
+    await db.delete(organization).where(eq(organization.id, organizationId))
   }
 }
 
@@ -237,670 +223,655 @@ async function withVariableFixtures(
  * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
  * reports Deno suites as empty; keep this alias so analysis sees real tests.
  */
-const test = Deno.test.bind(Deno);
+const test = Deno.test.bind(Deno)
 
-test("GET /variables lists visible variables for org owner", async () => {
-  await withVariableFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-    environmentId,
-  }) => {
-    const [insertedVariable] = await db
-      .insert(variable)
-      .values({ environmentId, key: "VISIBLE_VAR", value: "hello" })
-      .returning({ id: variable.id });
+test('GET /variables lists visible variables for org owner', async () => {
+  await withVariableFixtures(
+    async ({ db, app, secrets, userId, organizationId, environmentId }) => {
+      const [insertedVariable] = await db
+        .insert(variable)
+        .values({ environmentId, key: 'VISIBLE_VAR', value: 'hello' })
+        .returning({ id: variable.id })
 
-    const cookie = await sessionCookie(db, secrets, userId);
-    const response = await app.request("/variables", {
-      headers: {
-        Cookie: cookie,
-        [ORG_ID_HEADER]: organizationId,
-      },
-    });
-
-    assertEquals(response.status, 200);
-    const body = await response.json() as { variables: Array<{ id: string }> };
-    assertEquals(
-      body.variables.some((row) => row.id === insertedVariable!.id),
-      true,
-    );
-  });
-});
-
-test("PATCH /variables/:id seals plaintext when isSecret toggles true without value", async () => {
-  await withVariableFixtures(async ({
-    db,
-    app,
-    secrets,
-    dataEncryptionSecrets,
-    userId,
-    organizationId,
-    environmentId,
-  }) => {
-    const [insertedVariable] = await db
-      .insert(variable)
-      .values({
-        environmentId,
-        key: "TOGGLE_SECRET",
-        value: "plain-secret",
-        isSecret: false,
+      const cookie = await sessionCookie(db, secrets, userId)
+      const response = await app.request('/variables', {
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+        },
       })
-      .returning({ id: variable.id });
 
-    const cookie = await sessionCookie(db, secrets, userId);
-    const response = await app.request(`/variables/${insertedVariable!.id}`, {
-      method: "PATCH",
-      headers: {
-        Cookie: cookie,
-        [ORG_ID_HEADER]: organizationId,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ isSecret: true }),
-    });
+      assertEquals(response.status, 200)
+      const body = (await response.json()) as { variables: Array<{ id: string }> }
+      assertEquals(
+        body.variables.some((row) => row.id === insertedVariable!.id),
+        true
+      )
+    }
+  )
+})
 
-    assertEquals(response.status, 200);
+test('PATCH /variables/:id seals plaintext when isSecret toggles true without value', async () => {
+  await withVariableFixtures(
+    async ({ db, app, secrets, dataEncryptionSecrets, userId, organizationId, environmentId }) => {
+      const [insertedVariable] = await db
+        .insert(variable)
+        .values({
+          environmentId,
+          key: 'TOGGLE_SECRET',
+          value: 'plain-secret',
+          isSecret: false,
+        })
+        .returning({ id: variable.id })
 
-    const rows = await db
-      .select({ value: variable.value, isSecret: variable.isSecret })
-      .from(variable)
-      .where(eq(variable.id, insertedVariable!.id))
-      .limit(1);
-
-    const row = rows[0]!;
-    assertEquals(row.isSecret, true);
-    assertEquals(row.value?.startsWith("tpsecret."), true);
-
-    const decrypted = await decryptSecret(dataEncryptionSecrets, row.value!);
-    assertEquals(decrypted, "plain-secret");
-  });
-});
-
-test("PATCH /variables/:id rejects secret to non-secret without replacement value", async () => {
-  await withVariableFixtures(async ({
-    db,
-    app,
-    secrets,
-    dataEncryptionSecrets,
-    userId,
-    organizationId,
-    environmentId,
-  }) => {
-    const sealed = await encryptSecret(dataEncryptionSecrets, "stored-secret");
-
-    const [insertedVariable] = await db
-      .insert(variable)
-      .values({
-        environmentId,
-        key: "FROM_SECRET",
-        value: sealed,
-        isSecret: true,
+      const cookie = await sessionCookie(db, secrets, userId)
+      const response = await app.request(`/variables/${insertedVariable!.id}`, {
+        method: 'PATCH',
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ isSecret: true }),
       })
-      .returning({ id: variable.id });
 
-    const cookie = await sessionCookie(db, secrets, userId);
-    const response = await app.request(`/variables/${insertedVariable!.id}`, {
-      method: "PATCH",
-      headers: {
-        Cookie: cookie,
-        [ORG_ID_HEADER]: organizationId,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ isSecret: false }),
-    });
+      assertEquals(response.status, 200)
 
-    assertEquals(response.status, 400);
+      const rows = await db
+        .select({ value: variable.value, isSecret: variable.isSecret })
+        .from(variable)
+        .where(eq(variable.id, insertedVariable!.id))
+        .limit(1)
 
-    const rows = await db
-      .select({ value: variable.value, isSecret: variable.isSecret })
-      .from(variable)
-      .where(eq(variable.id, insertedVariable!.id))
-      .limit(1);
+      const row = rows[0]!
+      assertEquals(row.isSecret, true)
+      assertEquals(row.value?.startsWith('tpsecret.'), true)
 
-    assertEquals(rows[0]!.isSecret, true);
-    assertEquals(rows[0]!.value, sealed);
-  });
-});
+      const decrypted = await decryptSecret(dataEncryptionSecrets, row.value!)
+      assertEquals(decrypted, 'plain-secret')
+    }
+  )
+})
+
+test('PATCH /variables/:id rejects secret to non-secret without replacement value', async () => {
+  await withVariableFixtures(
+    async ({ db, app, secrets, dataEncryptionSecrets, userId, organizationId, environmentId }) => {
+      const sealed = await encryptSecret(dataEncryptionSecrets, 'stored-secret')
+
+      const [insertedVariable] = await db
+        .insert(variable)
+        .values({
+          environmentId,
+          key: 'FROM_SECRET',
+          value: sealed,
+          isSecret: true,
+        })
+        .returning({ id: variable.id })
+
+      const cookie = await sessionCookie(db, secrets, userId)
+      const response = await app.request(`/variables/${insertedVariable!.id}`, {
+        method: 'PATCH',
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ isSecret: false }),
+      })
+
+      assertEquals(response.status, 400)
+
+      const rows = await db
+        .select({ value: variable.value, isSecret: variable.isSecret })
+        .from(variable)
+        .where(eq(variable.id, insertedVariable!.id))
+        .limit(1)
+
+      assertEquals(rows[0]!.isSecret, true)
+      assertEquals(rows[0]!.value, sealed)
+    }
+  )
+})
 
 function postVariable(
   app: Hono<AppEnv>,
   cookie: string,
   organizationId: string,
-  body: Record<string, unknown>,
+  body: Record<string, unknown>
 ) {
-  return app.request("/variables", {
-    method: "POST",
+  return app.request('/variables', {
+    method: 'POST',
     headers: {
       Cookie: cookie,
       [ORG_ID_HEADER]: organizationId,
-      "Content-Type": "application/json",
+      'Content-Type': 'application/json',
     },
     body: JSON.stringify(body),
-  });
+  })
 }
 
-test("POST /variables with organizationId only succeeds", async () => {
-  await withVariableFixtures(
-    async ({ db, app, secrets, userId, organizationId }) => {
-      const cookie = await sessionCookie(db, secrets, userId);
-      const response = await postVariable(app, cookie, organizationId, {
-        organizationId,
-        key: "ORG_VAR",
-        value: "org-value",
-      });
+test('POST /variables with organizationId only succeeds', async () => {
+  await withVariableFixtures(async ({ db, app, secrets, userId, organizationId }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const response = await postVariable(app, cookie, organizationId, {
+      organizationId,
+      key: 'ORG_VAR',
+      value: 'org-value',
+    })
 
-      assertEquals(response.status, 200);
-      const { id } = await response.json() as { id: string };
+    assertEquals(response.status, 200)
+    const { id } = (await response.json()) as { id: string }
 
-      const listResponse = await app.request(
-        "/variables?organizationId=" + organizationId,
-        {
-          headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
-        },
-      );
-      const listBody = await listResponse.json() as {
-        variables: Array<{ id: string }>;
-      };
-      assertEquals(listBody.variables.some((row) => row.id === id), true);
-    },
-  );
-});
+    const listResponse = await app.request('/variables?organizationId=' + organizationId, {
+      headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
+    })
+    const listBody = (await listResponse.json()) as {
+      variables: Array<{ id: string }>
+    }
+    assertEquals(
+      listBody.variables.some((row) => row.id === id),
+      true
+    )
+  })
+})
 
-test("POST /variables with workspaceId only succeeds", async () => {
-  await withVariableFixtures(
-    async ({ db, app, secrets, userId, organizationId, workspaceId }) => {
-      const cookie = await sessionCookie(db, secrets, userId);
-      const response = await postVariable(app, cookie, organizationId, {
-        workspaceId,
-        key: "WS_VAR",
-        value: "ws-value",
-      });
-      assertEquals(response.status, 200);
-    },
-  );
-});
+test('POST /variables with workspaceId only succeeds', async () => {
+  await withVariableFixtures(async ({ db, app, secrets, userId, organizationId, workspaceId }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const response = await postVariable(app, cookie, organizationId, {
+      workspaceId,
+      key: 'WS_VAR',
+      value: 'ws-value',
+    })
+    assertEquals(response.status, 200)
+  })
+})
 
-test("POST /variables with projectId only succeeds", async () => {
-  await withVariableFixtures(
-    async ({ db, app, secrets, userId, organizationId, projectId }) => {
-      const cookie = await sessionCookie(db, secrets, userId);
-      const response = await postVariable(app, cookie, organizationId, {
-        projectId,
-        key: "PROJ_VAR",
-        value: "proj-value",
-      });
-      assertEquals(response.status, 200);
-    },
-  );
-});
-
-test("POST /variables with serviceId only succeeds", async () => {
-  await withVariableFixtures(
-    async ({ db, app, secrets, userId, organizationId, serviceId }) => {
-      const cookie = await sessionCookie(db, secrets, userId);
-      const response = await postVariable(app, cookie, organizationId, {
-        serviceId,
-        key: "SVC_VAR",
-        value: "svc-value",
-      });
-      assertEquals(response.status, 200);
-    },
-  );
-});
-
-test("POST /variables with serverId only succeeds", async () => {
-  await withVariableFixtures(
-    async ({ db, app, secrets, userId, organizationId, serverId }) => {
-      const cookie = await sessionCookie(db, secrets, userId);
-      const response = await postVariable(app, cookie, organizationId, {
-        serverId,
-        key: "SRV_VAR",
-        value: "srv-value",
-      });
-      assertEquals(response.status, 200);
-    },
-  );
-});
-
-test("POST /variables with two parent fields returns 400", async () => {
-  await withVariableFixtures(
-    async (
-      { db, app, secrets, userId, organizationId, projectId, environmentId },
-    ) => {
-      const cookie = await sessionCookie(db, secrets, userId);
-      const response = await postVariable(app, cookie, organizationId, {
-        projectId,
-        environmentId,
-        key: "DUAL_PARENT",
-        value: "x",
-      });
-      assertEquals(response.status, 400);
-      const body = await response.json() as { error: string };
-      assertEquals(body.error, "Exactly one parent resource must be specified");
-    },
-  );
-});
-
-test("POST /variables with no parent field returns 400", async () => {
-  await withVariableFixtures(
-    async ({ db, app, secrets, userId, organizationId }) => {
-      const cookie = await sessionCookie(db, secrets, userId);
-      const response = await postVariable(app, cookie, organizationId, {
-        key: "NO_PARENT",
-        value: "x",
-      });
-      assertEquals(response.status, 400);
-      const body = await response.json() as { error: string };
-      assertEquals(body.error, "Exactly one parent resource must be specified");
-    },
-  );
-});
-
-test("POST /variables duplicate key within same parent returns 409", async () => {
-  await withVariableFixtures(
-    async ({ db, app, secrets, userId, organizationId, projectId }) => {
-      const cookie = await sessionCookie(db, secrets, userId);
-      const first = await postVariable(app, cookie, organizationId, {
-        projectId,
-        key: "DUP_KEY",
-        value: "one",
-      });
-      assertEquals(first.status, 200);
-
-      const second = await postVariable(app, cookie, organizationId, {
-        projectId,
-        key: "DUP_KEY",
-        value: "two",
-      });
-      assertEquals(second.status, 409);
-    },
-  );
-});
-
-test("POST /variables same key in different parents both succeed", async () => {
-  await withVariableFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-    projectId,
-    serviceId,
-  }) => {
-    const cookie = await sessionCookie(db, secrets, userId);
-    const projectResponse = await postVariable(app, cookie, organizationId, {
+test('POST /variables with projectId only succeeds', async () => {
+  await withVariableFixtures(async ({ db, app, secrets, userId, organizationId, projectId }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const response = await postVariable(app, cookie, organizationId, {
       projectId,
-      key: "SHARED_KEY",
-      value: "project",
-    });
-    assertEquals(projectResponse.status, 200);
+      key: 'PROJ_VAR',
+      value: 'proj-value',
+    })
+    assertEquals(response.status, 200)
+  })
+})
 
-    const serviceResponse = await postVariable(app, cookie, organizationId, {
+test('POST /variables with serviceId only succeeds', async () => {
+  await withVariableFixtures(async ({ db, app, secrets, userId, organizationId, serviceId }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const response = await postVariable(app, cookie, organizationId, {
       serviceId,
-      key: "SHARED_KEY",
-      value: "service",
-    });
-    assertEquals(serviceResponse.status, 200);
-  });
-});
+      key: 'SVC_VAR',
+      value: 'svc-value',
+    })
+    assertEquals(response.status, 200)
+  })
+})
 
-test("PATCH /variables/:id rejects environmentId change", async () => {
-  await withVariableFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-    environmentId,
-    projectId,
-  }) => {
-    const [otherEnvironment] = await db
-      .insert(environment)
-      .values({ name: "Other Env", projectId })
-      .returning({ id: environment.id });
+test('POST /variables with serverId only succeeds', async () => {
+  await withVariableFixtures(async ({ db, app, secrets, userId, organizationId, serverId }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const response = await postVariable(app, cookie, organizationId, {
+      serverId,
+      key: 'SRV_VAR',
+      value: 'srv-value',
+    })
+    assertEquals(response.status, 200)
+  })
+})
 
-    const [insertedVariable] = await db
-      .insert(variable)
-      .values({ environmentId, key: "IMMUTABLE_PARENT", value: "v" })
-      .returning({ id: variable.id });
+test('POST /variables with two parent fields returns 400', async () => {
+  await withVariableFixtures(
+    async ({ db, app, secrets, userId, organizationId, projectId, environmentId }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const response = await postVariable(app, cookie, organizationId, {
+        projectId,
+        environmentId,
+        key: 'DUAL_PARENT',
+        value: 'x',
+      })
+      assertEquals(response.status, 400)
+      const body = (await response.json()) as { error: string }
+      assertEquals(body.error, 'Exactly one parent resource must be specified')
+    }
+  )
+})
 
-    const cookie = await sessionCookie(db, secrets, userId);
-    const response = await app.request(`/variables/${insertedVariable!.id}`, {
-      method: "PATCH",
-      headers: {
-        Cookie: cookie,
-        [ORG_ID_HEADER]: organizationId,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ environmentId: otherEnvironment!.id }),
-    });
+test('POST /variables with no parent field returns 400', async () => {
+  await withVariableFixtures(async ({ db, app, secrets, userId, organizationId }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const response = await postVariable(app, cookie, organizationId, {
+      key: 'NO_PARENT',
+      value: 'x',
+    })
+    assertEquals(response.status, 400)
+    const body = (await response.json()) as { error: string }
+    assertEquals(body.error, 'Exactly one parent resource must be specified')
+  })
+})
 
-    assertEquals(response.status, 400);
+test('POST /variables duplicate key within same parent returns 409', async () => {
+  await withVariableFixtures(async ({ db, app, secrets, userId, organizationId, projectId }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const first = await postVariable(app, cookie, organizationId, {
+      projectId,
+      key: 'DUP_KEY',
+      value: 'one',
+    })
+    assertEquals(first.status, 200)
 
-    await db.delete(variable).where(eq(variable.id, insertedVariable!.id));
-    await db.delete(environment).where(
-      eq(environment.id, otherEnvironment!.id),
-    );
-  });
-});
+    const second = await postVariable(app, cookie, organizationId, {
+      projectId,
+      key: 'DUP_KEY',
+      value: 'two',
+    })
+    assertEquals(second.status, 409)
+  })
+})
 
-test("POST /variables rejects non-boolean isSecret string", async () => {
+test('POST /variables same key in different parents both succeed', async () => {
+  await withVariableFixtures(
+    async ({ db, app, secrets, userId, organizationId, projectId, serviceId }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const projectResponse = await postVariable(app, cookie, organizationId, {
+        projectId,
+        key: 'SHARED_KEY',
+        value: 'project',
+      })
+      assertEquals(projectResponse.status, 200)
+
+      const serviceResponse = await postVariable(app, cookie, organizationId, {
+        serviceId,
+        key: 'SHARED_KEY',
+        value: 'service',
+      })
+      assertEquals(serviceResponse.status, 200)
+    }
+  )
+})
+
+test('PATCH /variables/:id rejects environmentId change', async () => {
+  await withVariableFixtures(
+    async ({ db, app, secrets, userId, organizationId, environmentId, projectId }) => {
+      const [otherEnvironment] = await db
+        .insert(environment)
+        .values({ name: 'Other Env', projectId })
+        .returning({ id: environment.id })
+
+      const [insertedVariable] = await db
+        .insert(variable)
+        .values({ environmentId, key: 'IMMUTABLE_PARENT', value: 'v' })
+        .returning({ id: variable.id })
+
+      const cookie = await sessionCookie(db, secrets, userId)
+      const response = await app.request(`/variables/${insertedVariable!.id}`, {
+        method: 'PATCH',
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ environmentId: otherEnvironment!.id }),
+      })
+
+      assertEquals(response.status, 400)
+
+      await db.delete(variable).where(eq(variable.id, insertedVariable!.id))
+      await db.delete(environment).where(eq(environment.id, otherEnvironment!.id))
+    }
+  )
+})
+
+test('POST /variables rejects non-boolean isSecret string', async () => {
   await withVariableFixtures(
     async ({ db, app, secrets, userId, organizationId, environmentId }) => {
-      const cookie = await sessionCookie(db, secrets, userId);
+      const cookie = await sessionCookie(db, secrets, userId)
       const response = await postVariable(app, cookie, organizationId, {
         environmentId,
-        key: "BAD_IS_SECRET_STR",
-        value: "secret-value",
-        isSecret: "true",
-      });
+        key: 'BAD_IS_SECRET_STR',
+        value: 'secret-value',
+        isSecret: 'true',
+      })
 
-      assertEquals(response.status, 400);
+      assertEquals(response.status, 400)
 
       const rows = await db
         .select({ id: variable.id })
         .from(variable)
         .where(
-          and(
-            eq(variable.environmentId, environmentId),
-            eq(variable.key, "BAD_IS_SECRET_STR"),
-          ),
-        );
+          and(eq(variable.environmentId, environmentId), eq(variable.key, 'BAD_IS_SECRET_STR'))
+        )
 
-      assertEquals(rows.length, 0);
-    },
-  );
-});
+      assertEquals(rows.length, 0)
+    }
+  )
+})
 
-test("POST /variables rejects non-boolean isSecret number", async () => {
+test('POST /variables rejects non-boolean isSecret number', async () => {
   await withVariableFixtures(
     async ({ db, app, secrets, userId, organizationId, environmentId }) => {
-      const cookie = await sessionCookie(db, secrets, userId);
+      const cookie = await sessionCookie(db, secrets, userId)
       const response = await postVariable(app, cookie, organizationId, {
         environmentId,
-        key: "BAD_IS_SECRET_NUM",
-        value: "secret-value",
+        key: 'BAD_IS_SECRET_NUM',
+        value: 'secret-value',
         isSecret: 1,
-      });
+      })
 
-      assertEquals(response.status, 400);
+      assertEquals(response.status, 400)
 
       const rows = await db
         .select({ id: variable.id })
         .from(variable)
         .where(
-          and(
-            eq(variable.environmentId, environmentId),
-            eq(variable.key, "BAD_IS_SECRET_NUM"),
-          ),
-        );
+          and(eq(variable.environmentId, environmentId), eq(variable.key, 'BAD_IS_SECRET_NUM'))
+        )
 
-      assertEquals(rows.length, 0);
-    },
-  );
-});
+      assertEquals(rows.length, 0)
+    }
+  )
+})
 
-test("POST /variables preserves empty-string value", async () => {
+test('POST /variables preserves empty-string value', async () => {
   await withVariableFixtures(
     async ({ db, app, secrets, userId, organizationId, environmentId }) => {
-      const cookie = await sessionCookie(db, secrets, userId);
+      const cookie = await sessionCookie(db, secrets, userId)
       const response = await postVariable(app, cookie, organizationId, {
         environmentId,
-        key: "EMPTY_VALUE",
-        value: "",
-      });
+        key: 'EMPTY_VALUE',
+        value: '',
+      })
 
-      assertEquals(response.status, 200);
-      const { id } = await response.json() as { id: string };
+      assertEquals(response.status, 200)
+      const { id } = (await response.json()) as { id: string }
 
       const rows = await db
         .select({ value: variable.value, isSecret: variable.isSecret })
         .from(variable)
         .where(eq(variable.id, id))
-        .limit(1);
+        .limit(1)
 
-      assertEquals(rows[0]!.value, "");
-      assertEquals(rows[0]!.isSecret, false);
+      assertEquals(rows[0]!.value, '')
+      assertEquals(rows[0]!.isSecret, false)
 
       const getResponse = await app.request(`/variables/${id}`, {
         headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
-      });
-      const getBody = await getResponse.json() as {
-        variable: { value: string };
-      };
-      assertEquals(getBody.variable.value, "");
-    },
-  );
-});
+      })
+      const getBody = (await getResponse.json()) as {
+        variable: { value: string }
+      }
+      assertEquals(getBody.variable.value, '')
+    }
+  )
+})
 
-test("PATCH /variables/:id preserves empty-string value", async () => {
+test('PATCH /variables/:id preserves empty-string value', async () => {
   await withVariableFixtures(
     async ({ db, app, secrets, userId, organizationId, environmentId }) => {
       const [insertedVariable] = await db
         .insert(variable)
-        .values({ environmentId, key: "PATCH_EMPTY", value: "before" })
-        .returning({ id: variable.id });
+        .values({ environmentId, key: 'PATCH_EMPTY', value: 'before' })
+        .returning({ id: variable.id })
 
-      const cookie = await sessionCookie(db, secrets, userId);
+      const cookie = await sessionCookie(db, secrets, userId)
       const response = await app.request(`/variables/${insertedVariable!.id}`, {
-        method: "PATCH",
+        method: 'PATCH',
         headers: {
           Cookie: cookie,
           [ORG_ID_HEADER]: organizationId,
-          "Content-Type": "application/json",
+          'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ value: "" }),
-      });
+        body: JSON.stringify({ value: '' }),
+      })
 
-      assertEquals(response.status, 200);
+      assertEquals(response.status, 200)
 
       const rows = await db
         .select({ value: variable.value })
         .from(variable)
         .where(eq(variable.id, insertedVariable!.id))
-        .limit(1);
+        .limit(1)
 
-      assertEquals(rows[0]!.value, "");
-    },
-  );
-});
+      assertEquals(rows[0]!.value, '')
+    }
+  )
+})
 
-test("PATCH /variables/:id preserves empty-string when toggling to secret", async () => {
-  await withVariableFixtures(async ({
-    db,
-    app,
-    secrets,
-    dataEncryptionSecrets,
-    userId,
-    organizationId,
-    environmentId,
-  }) => {
-    const [insertedVariable] = await db
-      .insert(variable)
-      .values({
-        environmentId,
-        key: "EMPTY_TO_SECRET",
-        value: "",
-        isSecret: false,
+test('PATCH /variables/:id preserves empty-string when toggling to secret', async () => {
+  await withVariableFixtures(
+    async ({ db, app, secrets, dataEncryptionSecrets, userId, organizationId, environmentId }) => {
+      const [insertedVariable] = await db
+        .insert(variable)
+        .values({
+          environmentId,
+          key: 'EMPTY_TO_SECRET',
+          value: '',
+          isSecret: false,
+        })
+        .returning({ id: variable.id })
+
+      const cookie = await sessionCookie(db, secrets, userId)
+      const response = await app.request(`/variables/${insertedVariable!.id}`, {
+        method: 'PATCH',
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ isSecret: true }),
       })
-      .returning({ id: variable.id });
 
-    const cookie = await sessionCookie(db, secrets, userId);
-    const response = await app.request(`/variables/${insertedVariable!.id}`, {
-      method: "PATCH",
-      headers: {
+      assertEquals(response.status, 200)
+
+      const rows = await db
+        .select({ value: variable.value, isSecret: variable.isSecret })
+        .from(variable)
+        .where(eq(variable.id, insertedVariable!.id))
+        .limit(1)
+
+      const row = rows[0]!
+      assertEquals(row.isSecret, true)
+      assertEquals(row.value.startsWith('tpsecret.'), true)
+
+      const decrypted = await decryptSecret(dataEncryptionSecrets, row.value)
+      assertEquals(decrypted, '')
+    }
+  )
+})
+
+test('binding-owned variables reject PATCH/DELETE and conflict on POST', async () => {
+  await withVariableFixtures(
+    async ({ db, app, secrets, userId, organizationId, projectId, serviceId }) => {
+      // Requires applied schema with binding + variable.binding_id.
+      try {
+        await db.select({ id: binding.id }).from(binding).limit(1)
+      } catch {
+        console.warn('Skipping binding-owned variable tests: binding table not applied')
+        return
+      }
+
+      const cookie = await sessionCookie(db, secrets, userId)
+      const headers = {
         Cookie: cookie,
         [ORG_ID_HEADER]: organizationId,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ isSecret: true }),
-    });
+        'Content-Type': 'application/json',
+      }
 
-    assertEquals(response.status, 200);
+      // Binding FKs need a principal (project-scoped host/db kind is enough for tests).
+      const [insertedPrincipal] = await db
+        .insert(principal)
+        .values({
+          organizationId,
+          projectId,
+          kind: 'database',
+          provider: 'postgres',
+          username: `bind_test_${crypto.randomUUID().slice(0, 8)}`,
+          appliedUsername: `bind_test_${crypto.randomUUID().slice(0, 8)}`,
+        })
+        .returning({ id: principal.id })
+      const principalId = insertedPrincipal!.id
 
-    const rows = await db
-      .select({ value: variable.value, isSecret: variable.isSecret })
-      .from(variable)
-      .where(eq(variable.id, insertedVariable!.id))
-      .limit(1);
+      const [insertedBinding] = await db
+        .insert(binding)
+        .values({
+          principalId,
+          serviceId,
+          databaseName: 'appdb',
+          keyPrefix: 'DATABASE',
+          isEmitEngineDefaults: false,
+        })
+        .returning({ id: binding.id })
+      const bindingId = insertedBinding!.id
 
-    const row = rows[0]!;
-    assertEquals(row.isSecret, true);
-    assertEquals(row.value.startsWith("tpsecret."), true);
+      const [owned] = await db
+        .insert(variable)
+        .values({
+          serviceId,
+          bindingId,
+          key: 'DATABASE_URL',
+          value: 'tpsecret.fake-envelope',
+          isSecret: true,
+          isLiteral: true,
+          isForRuntime: true,
+          isForBuild: false,
+        })
+        .returning({ id: variable.id })
 
-    const decrypted = await decryptSecret(dataEncryptionSecrets, row.value);
-    assertEquals(decrypted, "");
-  });
-});
+      const patch = await app.request(`/variables/${owned!.id}`, {
+        method: 'PATCH',
+        headers,
+        body: JSON.stringify({ description: 'nope' }),
+      })
+      assertEquals(patch.status, 403)
+      assertEquals(await patch.json(), { error: 'binding_owned_variable' })
 
-test("binding-owned variables reject PATCH/DELETE and conflict on POST", async () => {
-  await withVariableFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-    projectId,
-    serviceId,
-  }) => {
-    // Requires applied schema with binding + variable.binding_id.
-    try {
-      await db.select({ id: binding.id }).from(binding).limit(1);
-    } catch {
-      console.warn(
-        "Skipping binding-owned variable tests: binding table not applied",
-      );
-      return;
+      const del = await app.request(`/variables/${owned!.id}`, {
+        method: 'DELETE',
+        headers,
+      })
+      assertEquals(del.status, 403)
+      assertEquals(await del.json(), { error: 'binding_owned_variable' })
+
+      const conflict = await app.request('/variables', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          serviceId,
+          key: 'DATABASE_URL',
+          value: 'shadow',
+        }),
+      })
+      assertEquals(conflict.status, 409)
+      assertEquals(await conflict.json(), { error: 'binding_key_conflict' })
+
+      await db.delete(variable).where(eq(variable.id, owned!.id))
+      await db.delete(binding).where(eq(binding.id, bindingId))
+      await db.delete(principal).where(eq(principal.id, principalId))
     }
+  )
+})
 
-    const cookie = await sessionCookie(db, secrets, userId);
-    const headers = {
-      Cookie: cookie,
-      [ORG_ID_HEADER]: organizationId,
-      "Content-Type": "application/json",
-    };
+test('GET /variables/resolved applies service override chain and excludes server scope', async () => {
+  await withVariableFixtures(
+    async ({
+      db,
+      app,
+      secrets,
+      userId,
+      organizationId,
+      workspaceId,
+      projectId,
+      environmentId,
+      serviceId,
+      serverId,
+    }) => {
+      await db.insert(variable).values([
+        { organizationId, key: 'SHARED', value: 'org' },
+        { workspaceId, key: 'SHARED', value: 'workspace' },
+        { projectId, key: 'SHARED', value: 'project' },
+        { environmentId, key: 'SHARED', value: 'environment' },
+        { serviceId, key: 'SHARED', value: 'service' },
+        { serverId, key: 'SHARED', value: 'server-only' },
+        { organizationId, key: 'ORG_ONLY', value: 'org-only' },
+      ])
 
-    // Binding FKs need a principal (project-scoped host/db kind is enough for tests).
-    const [insertedPrincipal] = await db
-      .insert(principal)
-      .values({
-        organizationId,
-        projectId,
-        kind: "database",
-        provider: "postgres",
-        username: `bind_test_${crypto.randomUUID().slice(0, 8)}`,
-        appliedUsername: `bind_test_${crypto.randomUUID().slice(0, 8)}`,
+      const cookie = await sessionCookie(db, secrets, userId)
+
+      const serviceResponse = await app.request(`/variables/resolved?serviceId=${serviceId}`, {
+        headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
       })
-      .returning({ id: principal.id });
-    const principalId = insertedPrincipal!.id;
+      assertEquals(serviceResponse.status, 200)
+      const serviceBody = (await serviceResponse.json()) as {
+        variables: Record<string, { value: string | null; isSecret: boolean }>
+      }
+      assertEquals(serviceBody.variables.SHARED?.value, 'service')
+      assertEquals(serviceBody.variables.ORG_ONLY?.value, 'org-only')
+      assertEquals(serviceBody.variables['server-only'], undefined)
 
-    const [insertedBinding] = await db
-      .insert(binding)
-      .values({
-        principalId,
-        serviceId,
-        databaseName: "appdb",
-        keyPrefix: "DATABASE",
-        isEmitEngineDefaults: false,
+      const environmentResponse = await app.request(
+        `/variables/resolved?environmentId=${environmentId}`,
+        { headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId } }
+      )
+      assertEquals(environmentResponse.status, 200)
+      const environmentBody = (await environmentResponse.json()) as {
+        variables: Record<string, { value: string | null; isSecret: boolean }>
+      }
+      assertEquals(environmentBody.variables.SHARED?.value, 'environment')
+      assertEquals(environmentBody.variables['server-only'], undefined)
+    }
+  )
+})
+
+test('GET /variables lists non-org variables when the org context is a query param only', async () => {
+  await withVariableFixtures(
+    async ({ db, app, secrets, userId, organizationId, environmentId }) => {
+      const [inserted] = await db
+        .insert(variable)
+        .values({ environmentId, key: 'QUERY_ORG_VAR', value: 'v' })
+        .returning({ id: variable.id })
+      const cookie = await sessionCookie(db, secrets, userId)
+
+      for (const qs of ['', `&environmentId=${environmentId}`]) {
+        const response = await app.request(`/variables?organizationId=${organizationId}${qs}`, {
+          headers: { Cookie: cookie },
+        })
+        assertEquals(response.status, 200)
+        const body = (await response.json()) as {
+          variables: Array<{ id: string }>
+        }
+        assertEquals(
+          body.variables.some((row) => row.id === inserted!.id),
+          true,
+          qs
+        )
+      }
+    }
+  )
+})
+
+test('GET /variables with the org header and ?organizationId= still filters to org-scope rows', async () => {
+  await withVariableFixtures(
+    async ({ db, app, secrets, userId, organizationId, environmentId }) => {
+      const [envVar] = await db
+        .insert(variable)
+        .values({ environmentId, key: 'ENV_ONLY', value: 'v' })
+        .returning({ id: variable.id })
+      const [orgVar] = await db
+        .insert(variable)
+        .values({ organizationId, key: 'ORG_ONLY', value: 'v' })
+        .returning({ id: variable.id })
+      const cookie = await sessionCookie(db, secrets, userId)
+
+      const response = await app.request(`/variables?organizationId=${organizationId}`, {
+        headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId },
       })
-      .returning({ id: binding.id });
-    const bindingId = insertedBinding!.id;
-
-    const [owned] = await db
-      .insert(variable)
-      .values({
-        serviceId,
-        bindingId,
-        key: "DATABASE_URL",
-        value: "tpsecret.fake-envelope",
-        isSecret: true,
-        isLiteral: true,
-        isForRuntime: true,
-        isForBuild: false,
-      })
-      .returning({ id: variable.id });
-
-    const patch = await app.request(`/variables/${owned!.id}`, {
-      method: "PATCH",
-      headers,
-      body: JSON.stringify({ description: "nope" }),
-    });
-    assertEquals(patch.status, 403);
-    assertEquals(await patch.json(), { error: "binding_owned_variable" });
-
-    const del = await app.request(`/variables/${owned!.id}`, {
-      method: "DELETE",
-      headers,
-    });
-    assertEquals(del.status, 403);
-    assertEquals(await del.json(), { error: "binding_owned_variable" });
-
-    const conflict = await app.request("/variables", {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        serviceId,
-        key: "DATABASE_URL",
-        value: "shadow",
-      }),
-    });
-    assertEquals(conflict.status, 409);
-    assertEquals(await conflict.json(), { error: "binding_key_conflict" });
-
-    await db.delete(variable).where(eq(variable.id, owned!.id));
-    await db.delete(binding).where(eq(binding.id, bindingId));
-    await db.delete(principal).where(eq(principal.id, principalId));
-  });
-});
-
-test("GET /variables/resolved applies service override chain and excludes server scope", async () => {
-  await withVariableFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-    workspaceId,
-    projectId,
-    environmentId,
-    serviceId,
-    serverId,
-  }) => {
-    await db.insert(variable).values([
-      { organizationId, key: "SHARED", value: "org" },
-      { workspaceId, key: "SHARED", value: "workspace" },
-      { projectId, key: "SHARED", value: "project" },
-      { environmentId, key: "SHARED", value: "environment" },
-      { serviceId, key: "SHARED", value: "service" },
-      { serverId, key: "SHARED", value: "server-only" },
-      { organizationId, key: "ORG_ONLY", value: "org-only" },
-    ]);
-
-    const cookie = await sessionCookie(db, secrets, userId);
-
-    const serviceResponse = await app.request(
-      `/variables/resolved?serviceId=${serviceId}`,
-      { headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId } },
-    );
-    assertEquals(serviceResponse.status, 200);
-    const serviceBody = await serviceResponse.json() as {
-      variables: Record<string, { value: string | null; isSecret: boolean }>;
-    };
-    assertEquals(serviceBody.variables.SHARED?.value, "service");
-    assertEquals(serviceBody.variables.ORG_ONLY?.value, "org-only");
-    assertEquals(serviceBody.variables["server-only"], undefined);
-
-    const environmentResponse = await app.request(
-      `/variables/resolved?environmentId=${environmentId}`,
-      { headers: { Cookie: cookie, [ORG_ID_HEADER]: organizationId } },
-    );
-    assertEquals(environmentResponse.status, 200);
-    const environmentBody = await environmentResponse.json() as {
-      variables: Record<string, { value: string | null; isSecret: boolean }>;
-    };
-    assertEquals(environmentBody.variables.SHARED?.value, "environment");
-    assertEquals(environmentBody.variables["server-only"], undefined);
-  });
-});
+      const body = (await response.json()) as { variables: Array<{ id: string }> }
+      const ids = body.variables.map((row) => row.id)
+      assertEquals(ids.includes(orgVar!.id), true)
+      assertEquals(ids.includes(envVar!.id), false)
+    }
+  )
+})

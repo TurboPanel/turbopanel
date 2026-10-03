@@ -3,9 +3,9 @@
  *
  * Mirrors the server-metrics setting shape: one jsonb row keyed by a stable
  * name, read fresh on every call so a panel change applies without a
- * redeploy. On Workers `autoUpdate` is always effectively true and the
- * stored flag is ignored by the orchestrator phase. This module only stores
- * and validates; it does not enforce that override.
+ * redeploy. `autoUpdate` gates automatic runs on every runtime, Workers
+ * included (`shouldAutoStartRun` in `../upgrades/schedule.ts`). This module
+ * only stores and validates.
  */
 import { eq } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
@@ -61,10 +61,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-function hasExactKeys(
-  record: Record<string, unknown>,
-  keys: readonly string[],
-): boolean {
+function hasExactKeys(record: Record<string, unknown>, keys: readonly string[]): boolean {
   const present = Object.keys(record)
   if (present.length !== keys.length) return false
   return keys.every((key) => Object.hasOwn(record, key))
@@ -91,27 +88,13 @@ function isValidWeekdays(value: unknown): value is number[] {
   return true
 }
 
-function isIntegerInRange(
-  value: unknown,
-  min: number,
-  max: number,
-): value is number {
-  return typeof value === 'number' && Number.isInteger(value) &&
-    value >= min && value <= max
+function isIntegerInRange(value: unknown, min: number, max: number): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= min && value <= max
 }
 
-function isValidMaintenanceWindow(
-  value: unknown,
-): value is UpgradeSettings['maintenanceWindow'] {
+function isValidMaintenanceWindow(value: unknown): value is UpgradeSettings['maintenanceWindow'] {
   if (!isRecord(value)) return false
-  if (
-    !hasExactKeys(value, [
-      'enabled',
-      'startMinute',
-      'durationMinutes',
-      'weekdays',
-    ])
-  ) {
+  if (!hasExactKeys(value, ['enabled', 'startMinute', 'durationMinutes', 'weekdays'])) {
     return false
   }
   if (typeof value.enabled !== 'boolean') return false
@@ -123,9 +106,7 @@ function isValidMaintenanceWindow(
 }
 
 /** True when `value` is a complete upgrade-settings object. */
-export function isValidUpgradeSettings(
-  value: unknown,
-): value is UpgradeSettings {
+export function isValidUpgradeSettings(value: unknown): value is UpgradeSettings {
   if (!isRecord(value)) return false
   if (!hasExactKeys(value, ['autoUpdate', 'batch', 'maintenanceWindow'])) {
     return false
@@ -155,9 +136,7 @@ function copySettings(settings: UpgradeSettings): UpgradeSettings {
 /**
  * Return a detached copy with weekdays sorted, or `null` when invalid.
  */
-export function normalizeUpgradeSettings(
-  value: unknown,
-): UpgradeSettings | null {
+export function normalizeUpgradeSettings(value: unknown): UpgradeSettings | null {
   if (!isValidUpgradeSettings(value)) return null
   return copySettings(value)
 }
@@ -172,18 +151,14 @@ export async function getUpgradeSettings(db: Db): Promise<UpgradeSettings> {
     .from(setting)
     .where(eq(setting.key, UPGRADE_SETTINGS_KEY))
     .limit(1)
-  return normalizeUpgradeSettings(rows[0]?.value) ??
-    copySettings(DEFAULT_UPGRADE_SETTINGS)
+  return normalizeUpgradeSettings(rows[0]?.value) ?? copySettings(DEFAULT_UPGRADE_SETTINGS)
 }
 
 /**
  * Persist upgrade settings. Rejects a value {@link isValidUpgradeSettings}
  * does not accept.
  */
-export async function setUpgradeSettings(
-  db: Db,
-  settings: UpgradeSettings,
-): Promise<void> {
+export async function setUpgradeSettings(db: Db, settings: UpgradeSettings): Promise<void> {
   const normalized = normalizeUpgradeSettings(settings)
   if (!normalized) {
     throw new TypeError('upgrade settings are invalid')
