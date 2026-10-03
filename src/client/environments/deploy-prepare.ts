@@ -2727,7 +2727,8 @@ async function resolveManagedNetworkHostName(
 }
 
 /**
- * Persist Node runtime entitlements implied by this deploy.
+ * Persist the runtime entitlements this deploy implies (Node for native apps,
+ * PHP for per-site FastCGI / php-fpm runtimes).
  *
  * Preview must not write. Empty lists are a no-op inside the store helper.
  */
@@ -3012,6 +3013,7 @@ export async function prepareDeployCompose(
       principalMaterial,
       nativeAppServices: localNativeApps,
       sourceMaterial: localSourceMaterial,
+      sites: localSite,
     })
   await persistDeployRuntimeEntitlements(db, mode, deployEntitlements)
 
