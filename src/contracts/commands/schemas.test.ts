@@ -6373,6 +6373,22 @@ test('parseEnvironmentDeployPayload covers sourceMaterial cloneUrl, railpack, an
     Error,
     'Invalid sourceMaterial build installCommand'
   )
+  for (const bad of ['x'.repeat(1001), 42, ['pnpm install']]) {
+    assertThrows(
+      () =>
+        parseEnvironmentDeployPayload({
+          ...NATIVE_APP_BASE,
+          sourceMaterial: [
+            {
+              ...GITLAB_SOURCE_ENTRY,
+              build: { kind: 'native', installCommand: bad },
+            },
+          ],
+        }),
+      Error,
+      'Invalid sourceMaterial build installCommand'
+    )
+  }
   assertThrows(
     () =>
       parseEnvironmentDeployPayload({
