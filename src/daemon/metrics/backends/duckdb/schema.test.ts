@@ -12,12 +12,10 @@ import {
   DOCKER_USAGE_METRIC_FIELDS,
   dockerSamplesInsertColumns,
   dockerUsageStorageColumnName,
-  DUCKDB_MIGRATABLE_MARKER_VERSIONS,
   DUCKDB_SCHEMA_MARKER_VERSION,
   V7_DOCKER_COLUMNS,
   V7_HOST_COLUMNS,
   V7_INGRESS_COLUMNS,
-  V7_MIGRATION_STATEMENTS,
   entityMetricColumnName,
   FILESYSTEM_METRIC_FIELDS,
   FILESYSTEM_SAMPLES_TABLE,
@@ -45,22 +43,14 @@ import {
   STATUS_EVENTS_TABLE,
 } from './schema.ts'
 
-it('DuckDB schema marker is 9 and upgrades marker 8 in place', () => {
+it('DuckDB schema marker is 9', () => {
   assertEquals(DUCKDB_SCHEMA_MARKER_VERSION, 9)
-  assertEquals([...DUCKDB_MIGRATABLE_MARKER_VERSIONS], [8])
 })
 
-it('v7 migration adds every extended numeric column with ADD COLUMN IF NOT EXISTS', () => {
+it('the DDL carries every extended numeric column', () => {
   assertEquals(V7_HOST_COLUMNS.length, 7)
   assertEquals(V7_DOCKER_COLUMNS.length, 8)
   assertEquals(V7_INGRESS_COLUMNS, ['ext_tls_cert_soonest_expiry_days'])
-  assertEquals(V7_MIGRATION_STATEMENTS.length, 7 + 8 + 1)
-  assertEquals(
-    V7_MIGRATION_STATEMENTS.every((s) =>
-      /^ALTER TABLE \w+ ADD COLUMN IF NOT EXISTS ext_\w+ DOUBLE$/.test(s)
-    ),
-    true
-  )
   const ddl = buildSchemaStatements().join('\n')
   for (const column of [...V7_HOST_COLUMNS, ...V7_DOCKER_COLUMNS, ...V7_INGRESS_COLUMNS]) {
     assertEquals(ddl.includes(`${column} DOUBLE`), true, column)

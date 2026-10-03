@@ -12,12 +12,7 @@
 import { DuckDBInstance } from '@duckdb/node-api'
 import { resolveMetricsDir } from '../../../../platform/deno/server-paths.ts'
 import { forEachSequential } from '../../../../lib/sequential.ts'
-import {
-  buildSchemaStatements,
-  DUCKDB_MIGRATABLE_MARKER_VERSIONS,
-  DUCKDB_SCHEMA_MARKER_VERSION,
-  V7_MIGRATION_STATEMENTS,
-} from './schema.ts'
+import { buildSchemaStatements, DUCKDB_SCHEMA_MARKER_VERSION } from './schema.ts'
 
 /** One result row as plain JS values (via `getRowObjectsJS`). */
 export type DuckDbRow = Record<string, unknown>
@@ -111,8 +106,7 @@ export function escapeSqlString(value: string): string {
 
 /**
  * Open (or create) the current DuckDB metrics store (schema marker 9).
- * A marker-8 store is upgraded in place (`ALTER TABLE ... ADD COLUMN`, one
- * transaction). Any other missing, corrupt, or non-current sidecar marker discards
+ * Any missing, corrupt, or non-current sidecar marker discards
  * `metrics.duckdb`, `parquet/`, `tmp/`, and `schema-version` before this
  * open creates the current layout. There is no in-place migration.
  */
@@ -141,7 +135,6 @@ export async function openDuckDb(options: OpenDuckDbOptions): Promise<DuckDbHand
     )
     await connection.run(`SET temp_directory = '${escapeSqlString(paths.tmpDir)}'`)
     await forEachSequential(buildSchemaStatements(), (statement) => connection.run(statement))
-    await migrateInPlace(connection)
   } catch (error) {
     connection.closeSync()
     instance.closeSync()
@@ -161,26 +154,13 @@ export async function openDuckDb(options: OpenDuckDbOptions): Promise<DuckDbHand
 
 /**
  * Current-version-only gate: anything other than
- * {@link DUCKDB_SCHEMA_MARKER_VERSION} (9) or a migratable older one is discarded, including a missing
+ * {@link DUCKDB_SCHEMA_MARKER_VERSION} (9) is discarded, including a missing
  * or corrupt marker next to leftover `metrics.duckdb` / Parquet files.
  */
 async function discardNonCurrentMetricsStore(paths: DuckDbPaths): Promise<void> {
   const marker = await readSchemaMarker(paths)
   if (marker === DUCKDB_SCHEMA_MARKER_VERSION) return
-  if (marker !== null && DUCKDB_MIGRATABLE_MARKER_VERSIONS.includes(marker)) return
   await removeMetricsStoreFiles(paths)
-}
-
-/** Add the v7 columns to a store created at an older marker; a no-op on fresh ones (idempotent). */
-async function migrateInPlace(connection: DuckDbConnectionLike): Promise<void> {
-  await connection.run('BEGIN TRANSACTION')
-  try {
-    await forEachSequential(V7_MIGRATION_STATEMENTS, (statement) => connection.run(statement))
-    await connection.run('COMMIT')
-  } catch (error) {
-    await connection.run('ROLLBACK')
-    throw error
-  }
 }
 
 async function removeMetricsStoreFiles(paths: DuckDbPaths): Promise<void> {

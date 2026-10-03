@@ -1,6 +1,6 @@
 import { assertEquals } from '@std/assert'
 import { it } from '@std/testing/bdd'
-import { DUCKDB_SCHEMA_MARKER_VERSION, HOST_SAMPLES_TABLE, V7_HOST_COLUMNS } from './schema.ts'
+import { DUCKDB_SCHEMA_MARKER_VERSION, HOST_SAMPLES_TABLE } from './schema.ts'
 import {
   openDuckDb,
   readSchemaMarker,
@@ -193,39 +193,23 @@ it('openDuckDb keeps parquet when the current marker (5) is already present', as
   }
 })
 
-it('openDuckDb upgrades a marker-8 store in place: data and parquet kept, ext_* columns added, idempotent', async () => {
-  const metricsDir = await Deno.makeTempDir({ prefix: 'tp-duckdb-open-migrate-' })
+it('openDuckDb discards a marker-8 store and recreates the current layout', async () => {
+  const metricsDir = await Deno.makeTempDir({ prefix: 'tp-duckdb-open-cut-' })
   try {
     const paths = resolveDuckDbPaths(metricsDir)
-    const first = await openDuckDb({ paths })
-    // Rebuild the host table without its ext_* columns: a marker-8 layout.
-    await first.connection.run(`DROP INDEX idx_${HOST_SAMPLES_TABLE}_server_time`)
-    await first.connection.run(
-      `CREATE TABLE legacy_host AS SELECT * EXCLUDE (${V7_HOST_COLUMNS.join(', ')}) FROM ${HOST_SAMPLES_TABLE}`
-    )
-    await first.connection.run(`DROP TABLE ${HOST_SAMPLES_TABLE}`)
-    await first.connection.run(`ALTER TABLE legacy_host RENAME TO ${HOST_SAMPLES_TABLE}`)
-    first.close()
-    await writeSchemaMarker(paths)
+    ;(await openDuckDb({ paths })).close()
     await Deno.writeTextFile(schemaMarkerPath(paths), '8')
-    const keep = `${paths.parquetRoot}/server_host_samples/year=2026`
-    await Deno.mkdir(keep, { recursive: true })
-    await Deno.writeTextFile(`${keep}/metrics.parquet`, 'kept')
+    const stale = `${paths.parquetRoot}/server_host_samples/year=2026`
+    await Deno.mkdir(stale, { recursive: true })
+    await Deno.writeTextFile(`${stale}/metrics.parquet`, 'stale')
 
-    for (let pass = 0; pass < 2; pass++) {
-      const handle = await openDuckDb({ paths })
-      try {
-        assertEquals(await readSchemaMarker(paths), DUCKDB_SCHEMA_MARKER_VERSION)
-        const reader = await handle.connection.runAndReadAll(
-          `SELECT column_name FROM information_schema.columns ` +
-            `WHERE table_name = '${HOST_SAMPLES_TABLE}' AND column_name = 'ext_oom_kills'`
-        )
-        assertEquals(reader.getRowObjectsJS().length, 1)
-      } finally {
-        handle.close()
-      }
+    const handle = await openDuckDb({ paths })
+    try {
+      assertEquals(await readSchemaMarker(paths), DUCKDB_SCHEMA_MARKER_VERSION)
+    } finally {
+      handle.close()
     }
-    assertEquals(await fileExistsForTest(`${keep}/metrics.parquet`), true)
+    assertEquals(await fileExistsForTest(`${stale}/metrics.parquet`), false)
   } finally {
     await Deno.remove(metricsDir, { recursive: true })
   }

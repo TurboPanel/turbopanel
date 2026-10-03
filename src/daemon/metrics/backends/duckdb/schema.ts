@@ -88,16 +88,11 @@ export const STATUS_EVENTS_TABLE = 'server_status_events'
  * `managed.docker` gained `server_storage_samples` / `server_docker_samples`.
  * Bumped 8 → 9 for metrics v7: the optional `extended` numeric fields became
  * `ext_*` columns on `server_host_samples`, `server_docker_samples` and
- * `server_ingress_samples`. Unlike the earlier bumps this one migrates in
- * place: a marker-8 file is kept and {@link V7_MIGRATION_STATEMENTS} adds the
- * columns (`ALTER TABLE ... ADD COLUMN IF NOT EXISTS`, one transaction).
- * Free-text v7 fields are not stored here (Analytics Engine and the live view
+ * `server_ingress_samples`; like the earlier bumps it is a hard cut (a
+ * marker-8 file is discarded). Free-text v7 fields are not stored here (Analytics Engine and the live view
  * only).
  */
 export const DUCKDB_SCHEMA_MARKER_VERSION = 9
-
-/** Older markers `openDuckDb` upgrades in place instead of discarding. */
-export const DUCKDB_MIGRATABLE_MARKER_VERSIONS: readonly number[] = [8]
 
 // ---------------------------------------------------------------------------
 // Field ordering — hand-declared `Record<keyof T, true>` literals so a
@@ -476,21 +471,6 @@ export const V7_DOCKER_COLUMNS: readonly string[] =
   EXTENDED_DOCKER_FIELD_NAMES.map(extendedColumnName)
 export const V7_INGRESS_COLUMNS: readonly string[] =
   EXTENDED_INGRESS_FIELD_NAMES.map(extendedColumnName)
-
-/**
- * Idempotent in-place upgrade from marker 8. Run inside one transaction by
- * `openDuckDb`; fresh stores already have these columns from their DDL, so
- * `IF NOT EXISTS` makes the same statements a no-op there.
- */
-export const V7_MIGRATION_STATEMENTS: readonly string[] = [
-  [HOST_SAMPLES_TABLE, V7_HOST_COLUMNS],
-  [DOCKER_SAMPLES_TABLE, V7_DOCKER_COLUMNS],
-  [INGRESS_SAMPLES_TABLE, V7_INGRESS_COLUMNS],
-].flatMap(([table, columns]) =>
-  (columns as readonly string[]).map(
-    (column) => `ALTER TABLE ${table as string} ADD COLUMN IF NOT EXISTS ${column} DOUBLE`
-  )
-)
 
 /** DuckDB column name for one of the diagnostics CPU half's hand-declared host-global scalar fields. */
 export function cpuDiagnosticsHostColumnName(field: string): string {
