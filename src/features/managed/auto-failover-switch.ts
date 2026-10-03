@@ -12,6 +12,8 @@
  * event; manual switchover and disaster recovery are unaffected.
  */
 
+import { DEFAULT_FRESH_STANDBY_MARGIN_MS, MAX_FRESH_STANDBY_MARGIN_MS } from './ha-fresh-standby.ts'
+
 export const AUTO_FAILOVER_ENV = 'TURBOPANEL_AUTO_FAILOVER'
 
 export type AutoFailoverSetting = 'on' | 'off'
@@ -61,5 +63,29 @@ export function resolveAutoFailoverFromDenoEnv(): AutoFailoverSetting {
   return resolveAutoFailover({
     [AUTO_FAILOVER_ENV]: denoEnvGet(AUTO_FAILOVER_ENV),
     TURBOPANEL_ENVIRONMENT: denoEnvGet('TURBOPANEL_ENVIRONMENT'),
+  })
+}
+
+/**
+ * `TURBOPANEL_AUTO_FAILOVER_RECEIPT_MARGIN_SECONDS`: how long before the
+ * detected failure start a non-streaming standby may have last been seen
+ * streaming and still be promoted (`ha-fresh-standby.ts`). Unset, blank or
+ * malformed = the 10 s default; capped at 60 s so a typo cannot open the gate
+ * wide.
+ */
+export const FRESH_STANDBY_MARGIN_ENV = 'TURBOPANEL_AUTO_FAILOVER_RECEIPT_MARGIN_SECONDS'
+
+export function resolveFreshStandbyMarginMs(
+  env: Readonly<Record<string, string | undefined>> | undefined
+): number {
+  const raw = env?.[FRESH_STANDBY_MARGIN_ENV]?.trim() ?? ''
+  if (!/^\d+(\.\d+)?$/.test(raw)) return DEFAULT_FRESH_STANDBY_MARGIN_MS
+  return Math.min(Math.round(Number(raw) * 1000), MAX_FRESH_STANDBY_MARGIN_MS)
+}
+
+/** The margin from `Deno.env` (self-hosted). */
+export function resolveFreshStandbyMarginMsFromDenoEnv(): number {
+  return resolveFreshStandbyMarginMs({
+    [FRESH_STANDBY_MARGIN_ENV]: denoEnvGet(FRESH_STANDBY_MARGIN_ENV),
   })
 }

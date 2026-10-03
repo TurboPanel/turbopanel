@@ -303,7 +303,7 @@ async function loadManagedRowScope(c: Context<AppEnv>) {
  * Fail-closed is preserved: on timeout, an offline server, a daemon without
  * `managed-health-v1`, or any error the gate runs on the stored observation
  * exactly as before. `force` never probes. Automatic failover does not come
- * through here and keeps using only stored, fresh observations.
+ * through here; its own event-time probe is `ha-fresh-standby.ts`.
  */
 async function assertManagedPromoteLagAllowed(
   c: Context<AppEnv>,

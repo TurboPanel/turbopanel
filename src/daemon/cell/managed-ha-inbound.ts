@@ -17,8 +17,11 @@ import {
 import { handleManagedHaEvent } from '../../features/managed/ha-event.ts'
 import {
   type AutoFailoverSetting,
+  FRESH_STANDBY_MARGIN_ENV,
   resolveAutoFailover,
+  resolveFreshStandbyMarginMs,
 } from '../../features/managed/auto-failover-switch.ts'
+import type { FreshStandbyProbe } from '../../features/managed/ha-fresh-standby.ts'
 import type { DaemonMessage } from '../../contracts/cell-protocol.ts'
 
 export type ManagedHaEventFrame = Extract<DaemonMessage, { type: 'managed-ha-event' }>
@@ -30,6 +33,7 @@ export type CellCommandQueueEnv = {
 export type CellAutoFailoverEnv = {
   TURBOPANEL_AUTO_FAILOVER?: string
   TURBOPANEL_ENVIRONMENT?: string
+  TURBOPANEL_AUTO_FAILOVER_RECEIPT_MARGIN_SECONDS?: string
 }
 
 /** `TURBOPANEL_AUTO_FAILOVER` from the Worker's vars, read per event. */
@@ -37,6 +41,13 @@ export function cellAutoFailover(env: CellAutoFailoverEnv): AutoFailoverSetting 
   return resolveAutoFailover({
     TURBOPANEL_AUTO_FAILOVER: env.TURBOPANEL_AUTO_FAILOVER,
     TURBOPANEL_ENVIRONMENT: env.TURBOPANEL_ENVIRONMENT,
+  })
+}
+
+/** Fresh-standby receipt margin from the Worker's vars, read per event. */
+export function cellFreshStandbyMarginMs(env: CellAutoFailoverEnv): number {
+  return resolveFreshStandbyMarginMs({
+    [FRESH_STANDBY_MARGIN_ENV]: env.TURBOPANEL_AUTO_FAILOVER_RECEIPT_MARGIN_SECONDS,
   })
 }
 
@@ -57,6 +68,8 @@ export async function handleCellManagedHaEvent(
     reporterServerId: string
     commandQueue: CommandQueue | undefined
     autoFailover: AutoFailoverSetting
+    probeStandby?: FreshStandbyProbe
+    freshStandbyMarginMs?: number
     handle?: typeof handleManagedHaEvent
   }
 ): Promise<void> {
@@ -74,6 +87,10 @@ export async function handleCellManagedHaEvent(
       reporterServerId: deps.reporterServerId,
       ...(deps.commandQueue ? { commandQueue: deps.commandQueue } : {}),
       autoFailover: deps.autoFailover,
+      ...(deps.probeStandby ? { probeStandby: deps.probeStandby } : {}),
+      ...(deps.freshStandbyMarginMs === undefined
+        ? {}
+        : { freshStandbyMarginMs: deps.freshStandbyMarginMs }),
     }
   )
 }

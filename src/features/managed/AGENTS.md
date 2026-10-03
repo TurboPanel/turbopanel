@@ -470,10 +470,10 @@ another member all fall back to the gate on the stored observation — today's
 409. `force` never probes. `GET …/managed/status?refresh=1` (the panel's
 Refresh) probes every **replica** in parallel and returns
 `healthRefresh: { observed, unavailable }`; a plain GET stays DB-only. The probe
-writes replication only (never `replica.status`). **Automatic failover never
-probes** and never honours `force`: `isAutomaticFailoverHealthy` reads only the
-stored, fresh observation (a test pins that the failover modules do not import
-the probe). Read-class promotion is
+writes replication only (never `replica.status`). Automatic failover never
+honours `force`; it reads the stored, fresh observation first and probes only
+on the Postgres cold-kill path below (the probe is injected by the transports;
+a test pins that the failover modules do not import it). Read-class promotion is
 `POST …/managed/disaster-recovery/promote` (`{ memberId, confirm: true }`).
 Automatic failover of same-DC `failover` replicas is TurboPanel-gated after
 fencing (journal table `recovery`). Candidate pick requires `replica` +
@@ -541,7 +541,21 @@ all:
    never extends the cooldown); the daemon re-sends while the primary stays
    dead, so a refusal inside the window is retried after it.
 6. A same-DC `failover` replica passes the promote lag gate (streaming,
-   observation ≤ 120 s old, lag under 64 MiB / 30 s); otherwise `blocked`.
+   observation ≤ 120 s old, lag under 64 MiB / 30 s). If none does and the
+   engine is Postgres, each same-DC `failover` replica is probed at event time
+   (`managed-health-request`, 8 s, in parallel; `ha-fresh-standby.ts`, owner
+   decision 2026-10-02). A replica that is no longer streaming is accepted only
+   when (a) the daemon saw it streaming no earlier than the failure start minus
+   `TURBOPANEL_AUTO_FAILOVER_RECEIPT_MARGIN_SECONDS` (default 10, max 60),
+   (b) its replay LSN equals its received LSN, and (c) the lag of that last
+   streaming read was under 64 MiB / 30 s. The failure start is event receipt
+   minus the detector's `evidence.spanMs`; no usable span, no probe answer, or
+   any missing field refuses. The daemon (turbopaneld `pg-standby-sampler.ts`)
+   reads its standbys every 2 s and reports `lastStreaming.ageMs` on its
+   monotonic clock, so no cross-host clock is compared. The outcome per replica
+   is recorded as `metadata.freshStandby`; a refusal is `blocked` with
+   `AUTOMATIC_FAILOVER_STANDBY_NOT_PROVEN_MESSAGE`. Otherwise `blocked`.
+   Fencing (step 7) and the cooldown (step 5) still apply unchanged.
 7. Without a command queue (a deployment with no `TURBOPANEL_COMMAND_QUEUE`
    binding; the Durable Object passes the Worker's binding through
    `daemon/cell/managed-ha-inbound.ts`) a **terminal** `blocked` row is written with

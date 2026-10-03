@@ -4,6 +4,10 @@
  * failover. Both transports pass one (Deno's queue; the Durable Object's
  * `TURBOPANEL_COMMAND_QUEUE` binding); without it a terminal blocked row is
  * recorded.
+ *
+ * For Postgres, a failover replica that is no longer streaming is probed at
+ * event time (`deps.probeStandby`) and judged by the fresh-standby gate
+ * (`ha-fresh-standby.ts`), anchored on the detector's failure span.
  */
 
 import { eq } from 'drizzle-orm'
@@ -17,13 +21,18 @@ import { listManagedMembers } from './members.ts'
 import { haEventRejection } from './ha-policy.ts'
 import { compatLogInfo, compatLogWarn } from '../../lib/log-compat.ts'
 import type { AutoFailoverSetting } from './auto-failover-switch.ts'
+import { failureStartedAtMs, type FreshStandbyProbe } from './ha-fresh-standby.ts'
 
 export type ManagedHaEventInput = {
   managedId: string
   sourceMemberId?: string
   /** Absent = Orchestrator. See `ha-policy.ts` → `AUTOMATIC_FAILOVER_DETECTORS`. */
   detector?: string
-  /** Bounded detector evidence: logged and recorded, never used to decide. */
+  /**
+   * Bounded detector evidence: logged and recorded. Only `spanMs` (the
+   * detector's monotonic failure span) is used, to anchor the fresh-standby
+   * gate's failure start; a missing or bad span keeps that gate closed.
+   */
   evidence?: Record<string, unknown>
   at?: string
 }
@@ -81,8 +90,15 @@ export async function handleManagedHaEvent(
     reporterServerId: string
     /** `TURBOPANEL_AUTO_FAILOVER`, resolved by the transport; absent = `on`. */
     autoFailover?: AutoFailoverSetting
+    /** Event-time probe of a candidate standby; absent = never probe. */
+    probeStandby?: FreshStandbyProbe
+    /** Fresh-standby receipt margin in ms; absent = 10 s. */
+    freshStandbyMarginMs?: number
+    /** Test seam: control-plane ms the event was received. */
+    nowMs?: () => number
   }
 ): Promise<RecoveryRecord | null> {
+  const receivedAtMs = (deps.nowMs ?? Date.now)()
   const row = await loadCluster(db, input.managedId)
   if (!row) return null
   if (!row.engine || !isManagedEngineCode(row.engine)) return null
@@ -129,5 +145,11 @@ export async function handleManagedHaEvent(
     ...(evidence ? { evidence } : {}),
     actor: { actorType: 'system', actorId: deps.reporterServerId },
     ...(deps.autoFailover ? { autoFailover: deps.autoFailover } : {}),
+    ...(deps.probeStandby ? { probeStandby: deps.probeStandby } : {}),
+    ...(deps.freshStandbyMarginMs === undefined
+      ? {}
+      : { freshStandbyMarginMs: deps.freshStandbyMarginMs }),
+    ...(deps.nowMs ? { nowMs: deps.nowMs } : {}),
+    failureStartedAtMs: failureStartedAtMs(input.evidence, receivedAtMs),
   })
 }

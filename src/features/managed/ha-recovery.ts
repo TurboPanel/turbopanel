@@ -43,13 +43,20 @@ import {
   automaticFailoverBlockedReason,
   automaticFailoverCoolingDown,
   type HaMemberCandidateInput,
+  isAutomaticFailoverClassMember,
 } from './ha-policy.ts'
+import {
+  DEFAULT_FRESH_STANDBY_MARGIN_MS,
+  evaluateFreshStandby,
+  type FreshStandbyProbe,
+} from './ha-fresh-standby.ts'
 import { isAutomaticFailoverHealthy, replicationFromMemberMetadata } from './promote-lag.ts'
 import {
   AUTOMATIC_FAILOVER_BLOCKED_ERROR,
   AUTOMATIC_FAILOVER_COOLDOWN_MESSAGE,
   AUTOMATIC_FAILOVER_NO_QUEUE_MESSAGE,
   AUTOMATIC_FAILOVER_NO_QUEUE_REASON,
+  AUTOMATIC_FAILOVER_STANDBY_NOT_PROVEN_MESSAGE,
   FENCE_STOP_UNQUEUED_MESSAGE,
   PROMOTE_UNQUEUED_MESSAGE,
   isTerminalRecoveryState,
@@ -684,7 +691,18 @@ async function recordAutoFailoverDisabled(params: {
   })
 }
 
-export async function beginAutomaticFailover(params: {
+type FreshStandbyGate = {
+  /** Asks a candidate's daemon for a fresh reading at event time. */
+  probeStandby?: FreshStandbyProbe
+  /** Control-plane ms of the detector's first failed probe; null = unknown. */
+  failureStartedAtMs?: number | null
+  /** `TURBOPANEL_AUTO_FAILOVER_RECEIPT_MARGIN_SECONDS` in ms; default 10 s. */
+  freshStandbyMarginMs?: number
+  /** Test seam for the probe start time. */
+  nowMs?: () => number
+}
+
+type AutomaticFailoverParams = FreshStandbyGate & {
   db: Db
   commandQueue: CommandQueue | null
   managedId: string
@@ -698,7 +716,94 @@ export async function beginAutomaticFailover(params: {
   actor: RecoveryCommandActor
   /** `TURBOPANEL_AUTO_FAILOVER` for this deployment; absent = `on`. */
   autoFailover?: AutoFailoverSetting
-}): Promise<RecoveryRecord | null> {
+}
+
+type CandidatePick = {
+  inputs: HaMemberCandidateInput[]
+  candidate: HaMemberCandidateInput | null
+  /** What the fresh-standby probe found; absent when it did not run. */
+  freshStandby?: string
+}
+
+/**
+ * Postgres only: the stored observations name no healthy candidate, so probe
+ * each same-DC `failover` replica now and let the fresh-standby gate accept
+ * one that stopped streaming only because its primary died. Probes run in
+ * parallel; the pick itself stays the policy's (lowest ordinal).
+ */
+async function probeFreshStandbys(
+  params: AutomaticFailoverParams,
+  inputs: HaMemberCandidateInput[]
+): Promise<CandidatePick | null> {
+  const probe = params.probeStandby
+  const failureStartedAtMs = params.failureStartedAtMs
+  if (params.engine !== 'postgres' || !probe || typeof failureStartedAtMs !== 'number') {
+    return null
+  }
+  const now = params.nowMs ?? Date.now
+  const unhealthy = inputs.filter(
+    (input) => isAutomaticFailoverClassMember(input) && !input.healthy
+  )
+  if (unhealthy.length === 0) return null
+  const verdicts = await Promise.all(
+    unhealthy.map(async (input) => {
+      const member = params.members.find((row) => row.id === input.id)
+      const probeStartedAtMs = now()
+      const replication = member
+        ? await probe({
+            memberId: member.id,
+            managedId: member.managedId,
+            serverId: member.serverId,
+            engine: params.engine,
+          }).catch(() => null)
+        : null
+      const verdict = evaluateFreshStandby({
+        replication,
+        probeStartedAtMs,
+        failureStartedAtMs,
+        marginMs: params.freshStandbyMarginMs ?? DEFAULT_FRESH_STANDBY_MARGIN_MS,
+      })
+      return { id: input.id, verdict }
+    })
+  )
+  const accepted = new Set(verdicts.filter((row) => row.verdict.accepted).map((row) => row.id))
+  const probed = inputs.map((input) =>
+    accepted.has(input.id) ? { ...input, healthy: true } : input
+  )
+  const freshStandby = verdicts
+    .map(({ id, verdict }) =>
+      verdict.accepted ? `${id} accepted: ${verdict.basis}` : `${id} refused: ${verdict.reason}`
+    )
+    .join('; ')
+  return {
+    inputs: probed,
+    candidate: OrchestratorManagedHaAuthority.pickAutomaticCandidate(probed),
+    freshStandby,
+  }
+}
+
+async function pickAutomaticCandidate(
+  params: AutomaticFailoverParams,
+  primary: ManagedMemberRow,
+  dcSets: Map<string, Set<string>>
+): Promise<CandidatePick> {
+  const inputs = candidateInputs(params.members, primary, dcSets)
+  const candidate = OrchestratorManagedHaAuthority.pickAutomaticCandidate(inputs)
+  if (candidate) return { inputs, candidate }
+  return (await probeFreshStandbys(params, inputs)) ?? { inputs, candidate: null }
+}
+
+function noCandidateBlockedReason(pick: CandidatePick): string {
+  const cause = automaticFailoverBlockCause(pick.inputs) ?? 'no-candidate'
+  if (cause === 'unhealthy' && pick.freshStandby) {
+    return AUTOMATIC_FAILOVER_STANDBY_NOT_PROVEN_MESSAGE
+  }
+  return automaticFailoverBlockedReason(cause)
+}
+
+export async function beginAutomaticFailover(
+  params: AutomaticFailoverParams
+): Promise<RecoveryRecord | null> {
   const inflight = await findInFlightRecovery(params.db, params.managedId)
   if (inflight) return inflight
 
@@ -737,19 +842,20 @@ export async function beginAutomaticFailover(params: {
   if (!primary) return null
 
   const dcSets = await loadDatacenterSets(params.db, params.members)
-  const inputs = candidateInputs(params.members, primary, dcSets)
-  const candidate = OrchestratorManagedHaAuthority.pickAutomaticCandidate(inputs)
+  const pick = await pickAutomaticCandidate(params, primary, dcSets)
+  const freshStandby = pick.freshStandby ? { freshStandby: pick.freshStandby } : {}
+  const candidate = pick.candidate
   if (!candidate) {
-    const cause = automaticFailoverBlockCause(inputs) ?? 'no-candidate'
     return insertRecovery(params.db, {
       managedId: params.managedId,
       kind: 'automatic-failover',
       sourcePrimaryMemberId: primary.id,
       state: 'blocked',
       metadata: {
-        blockedReason: automaticFailoverBlockedReason(cause),
+        blockedReason: noCandidateBlockedReason(pick),
         sourceServerId: primary.serverId,
         sourceDatacenterId: firstDatacenterId(dcSets, primary.serverId),
+        ...freshStandby,
         ...detectorMetadata(params.detector, params.evidence),
       },
     })
@@ -776,6 +882,7 @@ export async function beginAutomaticFailover(params: {
         targetServerId: target.serverId,
         sourceDatacenterId: firstDatacenterId(dcSets, primary.serverId),
         targetDatacenterId: firstDatacenterId(dcSets, target.serverId),
+        ...freshStandby,
         ...detectorMetadata(params.detector, params.evidence),
       },
     })
@@ -794,6 +901,7 @@ export async function beginAutomaticFailover(params: {
     extraMetadata: {
       sourceDatacenterId: firstDatacenterId(dcSets, primary.serverId),
       targetDatacenterId: firstDatacenterId(dcSets, target.serverId),
+      ...freshStandby,
       ...detectorMetadata(params.detector, params.evidence),
     },
   })

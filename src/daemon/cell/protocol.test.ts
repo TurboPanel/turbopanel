@@ -2410,3 +2410,24 @@ it('managed-health request/result map between wire and envelope forms', () => {
     false
   )
 })
+
+it('managed-health-result carries standby WAL positions and the last streaming read', () => {
+  const frame = (replication: Record<string, unknown>) =>
+    validateDaemonInboundFrame(
+      JSON.stringify({
+        type: 'managed-health-result',
+        id: 'req-1',
+        ok: true,
+        member: { ...HEALTH_MEMBER, replication: { ...HEALTH_MEMBER.replication, ...replication } },
+        at: VALID_AT,
+      })
+    ).ok
+  const lastStreaming = { at: VALID_AT, ageMs: 4000, lagBytes: 0, lagSeconds: 0.5 }
+  assertEquals(frame({ receivedLsn: '0/3000148', replayLsn: '0/3000148', lastStreaming }), true)
+  assertEquals(frame({ receivedLsn: '' }), false)
+  assertEquals(frame({ replayLsn: 7 }), false)
+  assertEquals(frame({ lastStreaming: 'recent' }), false)
+  assertEquals(frame({ lastStreaming: { ...lastStreaming, at: 'soon' } }), false)
+  assertEquals(frame({ lastStreaming: { ...lastStreaming, ageMs: '4000' } }), false)
+  assertEquals(frame({ lastStreaming: { ...lastStreaming, lagBytes: Number.NaN } }), false)
+})
