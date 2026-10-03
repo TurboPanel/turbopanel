@@ -177,6 +177,7 @@ export const DAEMON_WIRE_FEATURES = [
   'managed-ha-instance-v1',
   'metrics-v7',
   'php-site-modes-v1',
+  'site-engine-nginx-apache-v1',
 ] as const
 
 export type DaemonWireFeature = (typeof DAEMON_WIRE_FEATURES)[number]

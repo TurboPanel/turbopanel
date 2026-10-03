@@ -145,6 +145,13 @@ test('php-site-modes-v1 is an advertised wire feature and raised no floor', () =
   assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
 })
 
+test('site-engine-nginx-apache-v1 is an advertised wire feature', () => {
+  assertEquals(
+    (DAEMON_WIRE_FEATURES as readonly string[]).includes('site-engine-nginx-apache-v1'),
+    true
+  )
+})
+
 test('managed-ha-instance-v1 is an advertised wire feature and raised no floor', () => {
   assertEquals(MANAGED_HA_INSTANCE_FEATURE, 'managed-ha-instance-v1')
   assertEquals(
