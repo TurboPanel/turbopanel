@@ -10,6 +10,7 @@ import {
   cacheLiveSample,
   clearServerLiveSession,
   hostValuesFromSample,
+  isDurableSample,
   isServerLiveSessionActive,
   LIVE_SAMPLE_CACHE_TTL_SECONDS,
   markServerLiveSessionActive,
@@ -291,4 +292,14 @@ test("mergeLiveSampleIntoHostSummary advances latestAt when the live sample is n
 
   const skipped = mergeLiveSampleIntoHostSummary(updated, sample);
   assertEquals(skipped.sampleCount, 5);
+});
+
+test("isDurableSample: only an explicit durable:false marks a live-only sample", () => {
+  const meta = (durable?: boolean) =>
+    ({
+      metadata: durable === undefined ? {} : { durable },
+    }) as Parameters<typeof isDurableSample>[0];
+  assertEquals(isDurableSample(meta()), true);
+  assertEquals(isDurableSample(meta(true)), true);
+  assertEquals(isDurableSample(meta(false)), false);
 });
