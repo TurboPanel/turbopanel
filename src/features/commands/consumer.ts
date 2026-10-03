@@ -483,7 +483,7 @@ export async function awaitOutcomeWithAckDeadline(
   const first = await cell.waitForRequest(requestId, ackDeadlineMs)
   if (first) return first
   const current = await cell.getRequest(requestId)
-  if (!current || current.status !== 'sent' || current.ackAt) {
+  if (current?.status !== 'sent' || current.ackAt) {
     return cell.waitForRequest(requestId, restMs)
   }
   await dropDaemonConnection.call(cell, 'command_unacked').catch(() => undefined)
