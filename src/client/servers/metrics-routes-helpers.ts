@@ -572,8 +572,8 @@ const HOST_SINGLETON_QUERYABLE_SCOPES: ReadonlySet<MetricEntityScope> = new Set(
  *
  * `storage` / `dockerUsage`: host-wide singletons on the same footing —
  * storage accounting is ungated but still only present once the daemon's
- * directory-usage walker has a result, and the Docker breakdown rides the
- * capability plan's `managedDockerEnabled`. Both answer a storage panel that
+ * directory-usage walker has a result, and the Docker breakdown is on every
+ * plan (the capability plan's `managedDockerEnabled`, no longer tier-gated). Both answer a storage panel that
  * asks for them by name, never the fleet overview's default selection.
  */
 const HOST_SINGLETON_EXPLICIT_ONLY_SCOPES: ReadonlySet<MetricEntityScope> = new Set([

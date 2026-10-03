@@ -22,6 +22,7 @@
  * control-plane reconstruction.
  */
 import {
+  type BlockDeviceTopology,
   type FilesystemRole,
   MAX_NIC_SLOTS,
   type SlotMapping,
@@ -71,6 +72,16 @@ const FILESYSTEM_ROLE_PRIORITY: readonly FilesystemRole[] = [
   'backup',
   'logs',
 ]
+
+/**
+ * A real whole disk: not a partition and not an md/dm virtual array. RAID
+ * member disks are whole disks and take drive slots; the arrays themselves
+ * (RAID health and filesystem free space already cover them) and partitions
+ * never count as drives.
+ */
+export function isWholeDisk(device: Pick<BlockDeviceTopology, 'deviceType'>): boolean {
+  return device.deviceType === 'physical'
+}
 
 /**
  * Role-bearing filesystems first (in {@link FILESYSTEM_ROLE_PRIORITY} order,
@@ -129,7 +140,10 @@ export function computeSlotMapping(
     overrides.hostingFilesystemId
   )
 
-  const blockPageOrder = snapshot.blockDevices.map((device) => device.deviceId).sort(byId)
+  const blockPageOrder = snapshot.blockDevices
+    .filter(isWholeDisk)
+    .map((device) => device.deviceId)
+    .sort(byId)
   const gpuPageOrder = snapshot.gpus.map((gpu) => gpu.gpuId).sort(byId)
   const hardwareSignalPageOrder = snapshot.hardwareSignals
     .map((signal) => signal.signalId)

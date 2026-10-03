@@ -1,6 +1,6 @@
 /**
  * Query-side SQL primitives for the v5 Analytics Engine dataset
- * (`turbopanel_server_metrics_v6` — see `field-map.ts`).
+ * (`turbopanel_server_metrics_v7` — see `field-map.ts`).
  *
  * Host-level aggregates (`host.system` / `host.io`) are simple: every sample
  * writes exactly one `host.system` row and one `host.io` row — unlike v3's
@@ -113,7 +113,7 @@ import {
 export { AE_DATASET_NAME }
 
 /** Schema versions this read path understands (positional semantics must match). */
-export const AE_SUPPORTED_SCHEMA_VERSIONS: readonly number[] = [6]
+export const AE_SUPPORTED_SCHEMA_VERSIONS: readonly number[] = [6, 7]
 
 /** Escape a string literal for AE SQL (single-quote doubling). Same idiom as v3's `quoteSqlString`. */
 export function quoteSqlString(value: string): string {

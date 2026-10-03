@@ -35,6 +35,42 @@ export const INSTANCE_UPDATES_PATHS = {
       },
     },
   },
+  [`${ADMIN_API_PREFIX}/instance/updates/settings`]: {
+    get: {
+      tags: ['Instance'],
+      summary: 'Read the managed-upgrade settings',
+      description:
+        'Returns `autoUpdate`, the maintenance window and `batch` ' +
+        '(`{ mode: "count" | "percent", value }`): how many servers update ' +
+        'together in one batch. The next batch starts on a later upgrade tick ' +
+        '(15 minutes by default) once every server in the current one has ' +
+        'finished or failed. Settings belong to this environment. With nothing ' +
+        'saved, `batch` is one server at a time unless the environment sets ' +
+        '`TURBOPANEL_UPGRADE_BATCH` (for example the testing fleet).',
+      security: [...cookieSecurity],
+      responses: {
+        '200': { description: 'Current settings' },
+        '401': { description: 'Unauthorized' },
+        '403': { description: 'Forbidden — requires admin or superadmin role' },
+      },
+    },
+    put: {
+      tags: ['Instance'],
+      summary: 'Save the managed-upgrade settings',
+      description:
+        'Replaces the whole settings object. `batch.mode` is `count` (1 to ' +
+        '10000 servers) or `percent` (1 to 100 of the fleet, rounded up); ' +
+        'values must be whole numbers. Anything else answers 400 ' +
+        '`invalid_settings`.',
+      security: [...cookieSecurity],
+      responses: {
+        '200': { description: 'Saved settings' },
+        '400': { description: 'invalid_settings' },
+        '401': { description: 'Unauthorized' },
+        '403': { description: 'Forbidden — requires admin or superadmin role' },
+      },
+    },
+  },
   [`${ADMIN_API_PREFIX}/instance/updates/instance`]: {
     post: {
       tags: ['Instance'],

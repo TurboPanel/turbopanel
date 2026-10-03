@@ -600,7 +600,7 @@ test('POST /tiers writes a conforming product with rank and isCustom from the la
   assertEquals(body.tier.providerProductId, 'prod_s4')
   assertEquals(body.tier.priceCents, 1500)
   assertEquals(body.tier.currency, 'usd')
-  assertEquals(body.tier.entitlements?.driveSlots, 8)
+  assertEquals(body.tier.entitlements?.driveSlots, 9)
   assertEquals(body.tier.references, { seats: 0, servers: 0 })
   assertEquals(body.verification?.ok, true)
   assertEquals(body.verification?.failures, [])
