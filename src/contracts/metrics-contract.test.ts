@@ -331,14 +331,13 @@ test('buildMetricsSample sanitizes both diagnostics halves, never coercing missi
 // twin in `turbopaneld/src/metrics`. Deno tests in two repos cannot import
 // each other directly, so this reads the counterpart off the co-located
 // sibling checkout instead (`../turbopaneld/...`, the same sibling-checkout
-// layout `turbopaneld/scripts/check-metrics-legacy.ts` scans) and compares
+// layout CI uses) and compares
 // the mirrored surface area directly: schema version, event-kind catalog,
 // export set, and the file body itself. When the sibling repo isn't checked
-// out next to this one, the checks are skipped rather than failed (matching
-// `check-metrics-legacy.ts`'s absent-sibling handling) — this repo's own
-// suite still runs. The dual-checkout `metrics-legacy` job in this repo's
-// `build.yml` runs this file after the legacy-string guard so the twin
-// compare is gated in CI whenever both checkouts are present.
+// out next to this one, the checks are skipped rather than failed — this repo's own
+// suite still runs. The dual-checkout `contract-twin` job in this repo's
+// `build.yml` runs this file so the twin compare is gated in CI whenever
+// both checkouts are present.
 // ---------------------------------------------------------------------------
 
 const SIBLING_CONTRACT_URL = new URL(

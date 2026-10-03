@@ -115,7 +115,7 @@ test("the committed snapshot matches both checkouts' normalized field types", as
   try {
     await Deno.stat(sibling);
   } catch {
-    // CI's deno db shards check this repo out alone; metrics-legacy dual-checkout
+    // CI's deno db shards check this repo out alone; contract-twin dual-checkout
     // still runs the sibling assert via check-contract-drift.mjs.
     return;
   }

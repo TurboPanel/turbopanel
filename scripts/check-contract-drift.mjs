@@ -4,9 +4,8 @@
  *
  * Compares the isolated `src/contracts/` twins against the sibling checkout
  * (`../turbopaneld` when run from turbopanel, `../turbopanel` when run from
- * turbopaneld). Missing sibling → skip (exit 0), matching
- * `check-metrics-legacy.ts`. Dual-checkout CI that already clones both
- * (turbopanel `metrics-legacy` job) must run this.
+ * turbopaneld). Missing sibling → skip (exit 0). Dual-checkout CI that
+ * already clones both (turbopanel `contract-twin` job) must run this.
  *
  * Pairs:
  *   - metrics contract body (byte-equal below the header docblock)
