@@ -18,6 +18,7 @@ import {
   isNull,
   lt,
   lte,
+  ne,
   notInArray,
   or,
   sql,
@@ -849,15 +850,20 @@ export async function listDueDeliveries(
 /** Enabled, verified email channels that have at least one held delivery — the digest sweep's batch. */
 export async function listChannelsWithHeldDeliveries(
   db: Db,
-  limit = 50
+  limit = 50,
+  opts: { includeEmail?: boolean } = {}
 ): Promise<NotificationChannelRecord[]> {
   const rows = await db
     .select()
     .from(notificationChannel)
     .where(
       and(
-        eq(notificationChannel.kind, 'email'),
-        isNotNull(notificationChannel.verifiedAt),
+        // Chat and webhook channels need nothing but the sweep; an email
+        // channel also needs a verified address and a tick with a mail queue.
+        opts.includeEmail
+          ? or(ne(notificationChannel.kind, 'email'), isNotNull(notificationChannel.verifiedAt))
+          : ne(notificationChannel.kind, 'email'),
+        ne(notificationChannel.kind, 'push'),
         isNull(notificationChannel.disabledAt),
         inArray(
           notificationChannel.id,

@@ -162,7 +162,7 @@ export function parseHoldFields(
   return { ok: true, value: hold }
 }
 
-/** Which channels may carry delivery timing: digest and quiet hours are email, the zone is personal. */
+/** Which channels may carry delivery timing: digest and quiet hours are for every kind but push, the zone is personal. */
 export function refuseHoldFieldsFor(
   channel: { kind: NotificationChannelKind; scope: string },
   hold: ChannelHoldFields
@@ -170,8 +170,8 @@ export function refuseHoldFieldsFor(
   const setsTiming =
     (hold.digestCadence !== undefined && hold.digestCadence !== null) ||
     (hold.quiet !== undefined && hold.quiet !== null)
-  if (setsTiming && channel.kind !== 'email') {
-    return { ok: false, status: 422, error: 'timing_email_only' }
+  if (setsTiming && channel.kind === 'push') {
+    return { ok: false, status: 422, error: 'timing_push_unsupported' }
   }
   if (hold.timeZone !== undefined && channel.scope !== 'user') {
     return { ok: false, status: 422, error: 'time_zone_user_channels_only' }
