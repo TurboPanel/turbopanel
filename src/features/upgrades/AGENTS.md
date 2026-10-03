@@ -52,7 +52,9 @@ the cache.
 
 - **Manual** — pre-flight first; 409 when a run is already active
   (`uniq_upgrade_active`).
-- **Automatic** — self-hosted only when `autoUpdate` is on, Workers always. Only
+- **Automatic** — only when `autoUpdate` is on, on every runtime and channel
+  (Workers included; it used to ignore the flag, which kept rolling canary
+  builds to the testing fleet with `autoUpdate` off, 2026-10-03). Only
   inside the maintenance window (if one is set), only when the target differs
   from what's installed (`differsFromInstalled`), and only when no run is
   active. Never replace a run in progress; the next run targets the newest
