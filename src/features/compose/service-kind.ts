@@ -109,6 +109,8 @@ export type ComposeServiceSourceExtension = {
   branch?: string
   /** Relative checkout subdirectory (same rule as {@link isSafeRoot}). */
   subdirectory?: string
+  /** Runs before `buildCommand`; replaces the install derived from the package manager. */
+  installCommand?: string
   buildCommand?: string
   startCommand?: string
   /** Relative build-output directory (same rule as {@link isSafeRoot}). */
@@ -561,6 +563,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const SOURCE_STRING_FIELDS = [
   'branch',
   'subdirectory',
+  'installCommand',
   'buildCommand',
   'startCommand',
   'outputDirectory',
@@ -570,7 +573,7 @@ type SourceStringField = (typeof SOURCE_STRING_FIELDS)[number]
 
 function sourceFieldMaxLength(field: SourceStringField): number {
   if (field === 'branch') return SOURCE_BRANCH_MAX_LENGTH
-  if (field === 'buildCommand' || field === 'startCommand') {
+  if (field === 'installCommand' || field === 'buildCommand' || field === 'startCommand') {
     return SOURCE_COMMAND_MAX_LENGTH
   }
   return 200
