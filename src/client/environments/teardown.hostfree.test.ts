@@ -11,6 +11,7 @@ import {
   dispatchEnvironmentTeardown,
   planEnvironmentTeardown,
   planEnvironmentsTeardown,
+  resolvePrincipalRetirement,
   type EnvironmentTeardownPlan,
 } from './teardown.ts'
 
@@ -44,7 +45,7 @@ function fakeDb(resultSets: unknown[][]): Db {
         if (prop === 'catch' || prop === 'finally') return undefined
         return () => chain
       },
-    },
+    }
   )
   return chain as Db
 }
@@ -66,9 +67,7 @@ function deploymentRow(serverId: string) {
   }
 }
 
-function plan(
-  overrides: Partial<EnvironmentTeardownPlan> = {},
-): EnvironmentTeardownPlan {
+function plan(overrides: Partial<EnvironmentTeardownPlan> = {}): EnvironmentTeardownPlan {
   return {
     environmentId: ENV_ID,
     projectId: PROJECT_ID,
@@ -77,6 +76,7 @@ function plan(
     ingressServices: [],
     fabricNetworksByServer: new Map(),
     siteReleases: [],
+    principalUsernames: [],
     ...overrides,
   }
 }
@@ -129,10 +129,7 @@ test('planEnvironmentTeardown falls back to the effective pin and collects ingre
   const result = await planEnvironmentTeardown(db, ENV_ID)
   assertEquals(result?.serverIds, [DEFAULT_SERVER_ID])
   assertEquals(result?.ingressServices, [{ serviceId: 'svc-1' }])
-  assertEquals(
-    (result?.fabricNetworksByServer.get(DEFAULT_SERVER_ID) ?? []).length,
-    1,
-  )
+  assertEquals((result?.fabricNetworksByServer.get(DEFAULT_SERVER_ID) ?? []).length, 1)
 })
 
 test('planEnvironmentTeardown still reclaims a release tree whose service left the compose', async () => {
@@ -157,6 +154,47 @@ test('planEnvironmentTeardown still reclaims a release tree whose service left t
   assertEquals(result?.siteReleases, recorded)
 })
 
+test("planEnvironmentTeardown captures the project's server principals while the rows exist", async () => {
+  const db = fakeDb([
+    [{ id: ENV_ID, projectId: PROJECT_ID, serverId: null }],
+    [{ id: PROJECT_ID, options: { defaultServerId: DEFAULT_SERVER_ID } }],
+    [],
+    [],
+    [],
+    [{ id: ENV_ID, projectId: PROJECT_ID, options: {} }],
+    [{ id: PROJECT_ID, options: {} }],
+    [],
+    // The project's principals, deduplicated and sorted.
+    [{ username: 'web_b' }, { username: 'app_a' }, { username: 'web_b' }],
+  ])
+  const result = await planEnvironmentTeardown(db, ENV_ID)
+  assertEquals(result?.principalUsernames, ['app_a', 'web_b'])
+})
+
+test('resolvePrincipalRetirement keeps a principal a surviving environment still places there', async () => {
+  // One query per server, in plan order: srv-a still runs `shared` for another
+  // environment of the project; nothing on srv-b survives the delete.
+  const db = fakeDb([[{ username: 'shared' }], []])
+  const retire = await resolvePrincipalRetirement(db, [
+    plan({ serverIds: ['srv-a', 'srv-b'], principalUsernames: ['shared', 'solo'] }),
+  ])
+  assertEquals(
+    [...retire.entries()],
+    [
+      ['srv-a', ['solo']],
+      ['srv-b', ['shared', 'solo']],
+    ]
+  )
+})
+
+test('resolvePrincipalRetirement retires nothing a project without principals never placed', async () => {
+  const retire = await resolvePrincipalRetirement(fakeDb([[{ username: 'shared' }]]), [
+    plan({ serverIds: ['srv-a'], principalUsernames: [] }),
+    plan({ serverIds: ['srv-b'], principalUsernames: ['shared'] }),
+  ])
+  assertEquals([...retire.entries()], [])
+})
+
 test('planEnvironmentsTeardown drops environments with nothing to reclaim', async () => {
   const db = fakeDb([
     [],
@@ -172,9 +210,7 @@ test('planEnvironmentsTeardown drops environments with nothing to reclaim', asyn
 })
 
 /** Command-record double: captures inserts, reports transitions. */
-function fakeCommandDb(
-  captured: { payloads: unknown[]; transitions: string[] },
-): Db {
+function fakeCommandDb(captured: { payloads: unknown[]; transitions: string[] }): Db {
   return {
     // createCommandRecord writes command + dispatch in one transaction.
     transaction(fn: (tx: unknown) => Promise<unknown>) {
@@ -236,7 +272,7 @@ test('dispatchEnvironmentTeardown enqueues one stop per server with its own netw
         fabricNetworksByServer: new Map([['srv-a', ['tpn_one']]]),
       }),
     ],
-    'user-1',
+    'user-1'
   )
 
   assertEquals(servers, ['srv-a', 'srv-b'])
@@ -263,7 +299,7 @@ test('dispatchEnvironmentTeardown includes fabric-only servers', async () => {
         fabricNetworksByServer: new Map([['srv-remote', ['tpn_two']]]),
       }),
     ],
-    'user-1',
+    'user-1'
   )
   assertEquals(servers, ['srv-a', 'srv-remote'])
 })
@@ -272,16 +308,14 @@ test('dispatchEnvironmentTeardown compensates and keeps going when the queue rej
   const captured = { payloads: [] as unknown[], transitions: [] as string[] }
   const queue = {
     enqueue: (envelope: { serverId: string }) =>
-      envelope.serverId === 'srv-a'
-        ? Promise.reject(new Error('queue down'))
-        : Promise.resolve(),
+      envelope.serverId === 'srv-a' ? Promise.reject(new Error('queue down')) : Promise.resolve(),
   } as unknown as CommandQueue
 
   const servers = await dispatchEnvironmentTeardown(
     fakeCommandDb(captured),
     queue,
     [plan({ serverIds: ['srv-a', 'srv-b'] })],
-    'user-1',
+    'user-1'
   )
 
   assertEquals(servers, ['srv-b'])
@@ -291,9 +325,49 @@ test('dispatchEnvironmentTeardown compensates and keeps going when the queue rej
 test('dispatchEnvironmentTeardown is a no-op without plans', async () => {
   const captured = { payloads: [] as unknown[], transitions: [] as string[] }
   const queue = { enqueue: () => Promise.resolve() } as unknown as CommandQueue
-  assertEquals(
-    await dispatchEnvironmentTeardown(fakeCommandDb(captured), queue, [], 'u'),
-    [],
-  )
+  assertEquals(await dispatchEnvironmentTeardown(fakeCommandDb(captured), queue, [], 'u'), [])
   assertEquals(captured.payloads.length, 0)
+})
+
+test('dispatchEnvironmentTeardown names retired principals on the last stop per server only', async () => {
+  const captured = { payloads: [] as unknown[], transitions: [] as string[] }
+  const queue = { enqueue: () => Promise.resolve() } as unknown as CommandQueue
+
+  await dispatchEnvironmentTeardown(
+    fakeCommandDb(captured),
+    queue,
+    [
+      plan({ environmentId: 'env-1', serverIds: ['srv-a', 'srv-b'] }),
+      plan({ environmentId: 'env-2', serverIds: ['srv-a'] }),
+    ],
+    'user-1',
+    new Map([
+      ['srv-a', ['app_x']],
+      ['srv-b', ['app_x', 'app_y']],
+    ])
+  )
+
+  const payloads = captured.payloads as Array<Record<string, unknown>>
+  assertEquals(
+    payloads.map((payload) => [payload.environmentId, payload.retirePrincipals]),
+    [
+      // env-1 on srv-a: env-2's stop still follows there, so not yet.
+      ['env-1', undefined],
+      ['env-1', [{ username: 'app_x' }, { username: 'app_y' }]],
+      ['env-2', [{ username: 'app_x' }]],
+    ]
+  )
+})
+
+test('dispatchEnvironmentTeardown never retires a principal unless told to', async () => {
+  const captured = { payloads: [] as unknown[], transitions: [] as string[] }
+  const queue = { enqueue: () => Promise.resolve() } as unknown as CommandQueue
+  await dispatchEnvironmentTeardown(
+    fakeCommandDb(captured),
+    queue,
+    [plan({ serverIds: ['srv-a'], principalUsernames: ['app_x'] })],
+    'user-1'
+  )
+  const payloads = captured.payloads as Array<Record<string, unknown>>
+  assertEquals('retirePrincipals' in (payloads[0] ?? {}), false)
 })

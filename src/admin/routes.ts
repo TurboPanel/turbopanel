@@ -415,7 +415,7 @@ export function registerAdminRoutes(
     return c.json({ settings: authProviderSettingsToApiShape(resolved) })
   })
 
-  admin.put('/settings/auth-providers', async (c) => {
+  admin.put('/settings/auth-providers', createRootOnlyMiddleware(opts.secrets), async (c) => {
     const db = getDb(c)
     if (!db) return c.json({ error: 'Database unavailable' }, 503)
 
@@ -453,7 +453,7 @@ export function registerAdminRoutes(
     })
   })
 
-  admin.put('/settings/signup', async (c) => {
+  admin.put('/settings/signup', createRootOnlyMiddleware(opts.secrets), async (c) => {
     const db = getDb(c)
     if (!db) return c.json({ error: 'Database unavailable' }, 503)
 
@@ -537,7 +537,7 @@ export function registerAdminRoutes(
     return c.json(describeAlertWebhook(url))
   })
 
-  admin.put('/settings/alert-webhook', async (c) => {
+  admin.put('/settings/alert-webhook', createRootOnlyMiddleware(opts.secrets), async (c) => {
     const db = getDb(c)
     if (!db) return c.json({ error: 'Database unavailable' }, 503)
 
