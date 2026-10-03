@@ -5,8 +5,8 @@
  * fail-open). The marker tracks **per-lease ids** so concurrent viewers share
  * one ingest buffer: a single stop must not clear the buffer while another
  * lease is still active. Live samples are cached here during an
- * active lease for the chart overlay — and still written durably by the ingest
- * route (the daemon sends only 10 s samples while a lease is active; see
+ * active lease for the chart overlay. A v7 live sample (`durable: false`) is
+ * buffered only; a baseline sample is also stored by the ingest route (see
  * `src/daemon/metrics/AGENTS.md`). Query routes overlay the buffered point on
  * a now-tailed live-range read, and only while the marker still has an
  * unexpired lease.
@@ -40,6 +40,15 @@ type LiveSessionMarker = { leases: LiveSessionLease[] }
  */
 export const LIVE_SAMPLE_CACHE_TTL_SECONDS =
   METRICS_LIVE_INTERVAL_SECONDS + METRICS_LIVE_10S_CACHE_TTL_SECONDS
+
+/**
+ * Whether ingest stores this sample. `metadata.durable === false` marks a v7
+ * daemon's 10 s live-lease sample (overlay buffer only); absent or `true` is
+ * stored, which keeps every v6 daemon's samples, lease cadence included.
+ */
+export function isDurableSample(sample: Pick<MetricsSample, 'metadata'>): boolean {
+  return sample.metadata.durable !== false
+}
 
 function liveSessionKey(serverId: string): string {
   return `${METRICS_LIVE_SESSION_CACHE_PREFIX}${serverId}`

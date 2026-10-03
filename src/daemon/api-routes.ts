@@ -50,7 +50,12 @@ import {
 } from '../contracts/capability-plan.ts'
 import { DisabledServerMetricsStore } from './metrics/disabled-store.ts'
 import { createMetricsChartCache } from './metrics/query/cache.ts'
-import { cacheLiveSample, isServerLiveSessionActive } from './metrics/query/live-session.ts'
+import { applyIngestAllowlist } from './metrics/ingest-allowlist.ts'
+import {
+  cacheLiveSample,
+  isDurableSample,
+  isServerLiveSessionActive,
+} from './metrics/query/live-session.ts'
 import type { AuthenticatedMetricsSample } from './metrics/types.ts'
 import {
   type OrganizationOptions,
@@ -1538,7 +1543,11 @@ export function registerDaemonApiRoutes<E extends Env>(
       const prepared =
         deployment === 'self-hosted'
           ? result.sample
-          : truncateSampleToCapabilityPlan(result.sample, plan, slotMapping)
+          : truncateSampleToCapabilityPlan(
+              applyIngestAllowlist(result.sample, slotMapping),
+              plan,
+              slotMapping
+            )
       const sample = {
         ...prepared,
         serverId,
@@ -1553,14 +1562,20 @@ export function registerDaemonApiRoutes<E extends Env>(
         })
       }
 
-      // A live session also buffers the sample for the chart's live overlay.
-      // It is STILL written durably: the daemon replaces its 60 s cadence
-      // with the 10 s one while any lease is active (turbopaneld
-      // `live-leases.ts`) rather than adding to it, so skipping these writes
-      // left the durable store empty for as long as anyone watched — the
-      // "huge gaps" on testing (2026-09-27). The marker lives in the
-      // colo-local Cache API, so a daemon ingesting through another colo
-      // never saw it at all, and its 10 s samples were dropped outright.
+      // Live leases. A v7 daemon keeps its 60 s baseline running during a
+      // lease and flags the parallel 10 s live samples `durable: false`: those
+      // feed the chart's live overlay ONLY and are never stored (storing them
+      // is the 6x row cost the baseline-only rule removes). They are buffered
+      // whether or not this colo saw the lease marker, because the marker is
+      // colo-local and a live sample has nowhere else to go. Every other
+      // sample is stored: the 60 s baseline, and, for the v6 transition, every
+      // sample of a daemon that has no flag and REPLACES its cadence with 10 s
+      // during a lease (dropping those would leave gaps for as long as anyone
+      // watches). A stored sample is also buffered while a lease is active.
+      if (!isDurableSample(sample)) {
+        await cacheLiveSample(metricsChartCache, sample)
+        return c.json({ ok: true }, 202)
+      }
       if (await isServerLiveSessionActive(metricsChartCache, serverId)) {
         await cacheLiveSample(metricsChartCache, sample)
       }

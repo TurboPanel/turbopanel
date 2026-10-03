@@ -2626,7 +2626,10 @@ test('POST /metrics truncates entity arrays to the resolved capability plan', as
       buildValidMetricsFrame({
         // Default (virtual) plan: gpuSlots=1, detailedBlockDeviceSlots=1,
         // extraFilesystemSlots=0, physicalHardwareSignalSlots=0.
-        gpus: [{ gpuId: 'gpu0' }, { gpuId: 'gpu1' }],
+        gpus: [
+          { gpuId: 'gpu0', utilizationPercent: 5 },
+          { gpuId: 'gpu1', utilizationPercent: 6 },
+        ],
         blockDevices: [{ deviceId: 'sda' }],
         filesystems: [{ filesystemId: 'fs0' }],
         hardwareSignals: [{ signalId: 'sig0', kind: 'fan' }],
@@ -2672,7 +2675,7 @@ test('POST /metrics on self-hosted skips capability-plan truncation', async () =
   assertEquals(writes[0]?.hardwareSignals.length, 2)
 })
 
-test('POST /metrics buffers a live-session sample for the overlay AND writes it durably', async () => {
+test('POST /metrics buffers a live-session sample for the overlay AND writes a flag-less (v6) sample durably', async () => {
   const { app, writes } = await createMetricsTestApp({ runtime: 'deno' })
   const serverId = 'srv-metrics-live-buffer'
   const cache = createMetricsChartCache('deno')
@@ -2704,6 +2707,82 @@ test('POST /metrics buffers a live-session sample for the overlay AND writes it 
   const buffered = await readLiveSample(cache, serverId)
   assertEquals(buffered?.serverId, serverId)
   assertEquals(buffered?.host.cpu.busyPercent, 81)
+})
+
+test('POST /metrics routes a non-durable v7 live sample to the overlay buffer only, with or without the lease marker', async () => {
+  for (const marked of [true, false]) {
+    const { app, writes } = await createMetricsTestApp({ runtime: 'deno' })
+    const serverId = `srv-metrics-nondurable-${marked}`
+    const cache = createMetricsChartCache('deno')
+    if (marked) await markServerLiveSessionActive(cache, serverId, 'lease-nondurable', 3600)
+    const daemonToken = await issueDaemonToken(serverId, `key-metrics-nondurable-${marked}`)
+    const response = await app.request('/api/daemon/v1/metrics', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${daemonToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(
+        buildValidMetricsFrame({
+          metadata: { version: 7, durable: false, intervalSeconds: 10 },
+          host: {
+            cpu: { busyPercent: 64 },
+            kernel: emptyHostGroup(),
+            memory: emptyHostGroup(),
+            storage: emptyHostGroup(),
+            network: emptyHostGroup(),
+          },
+        })
+      ),
+    })
+    assertEquals(response.status, 202)
+    assertEquals(writes.length, 0)
+    if (marked) {
+      assertEquals((await readLiveSample(cache, serverId))?.host.cpu.busyPercent, 64)
+    }
+  }
+})
+
+test('POST /metrics stores a v7 durable baseline sample and buffers it while a lease is active', async () => {
+  const { app, writes } = await createMetricsTestApp({ runtime: 'deno' })
+  const serverId = 'srv-metrics-baseline-lease'
+  const cache = createMetricsChartCache('deno')
+  await markServerLiveSessionActive(cache, serverId, 'lease-baseline', 3600)
+  const daemonToken = await issueDaemonToken(serverId, 'key-metrics-baseline-lease')
+  const response = await app.request('/api/daemon/v1/metrics', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${daemonToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(
+      buildValidMetricsFrame({ metadata: { version: 7, durable: true, intervalSeconds: 60 } })
+    ),
+  })
+  assertEquals(response.status, 202)
+  assertEquals(writes.length, 1)
+  assertEquals((await readLiveSample(cache, serverId))?.serverId, serverId)
+})
+
+test('POST /metrics hosted ingest drops entities the allowlist rejects before plan truncation', async () => {
+  const { app, writes } = await createMetricsTestApp()
+  const serverId = 'srv-metrics-allowlist'
+  const daemonToken = await issueDaemonToken(serverId, 'key-metrics-allowlist')
+  const response = await app.request('/api/daemon/v1/metrics', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${daemonToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(
+      buildValidMetricsFrame({
+        networks: [{ deviceId: 'veth1' }, { deviceId: 'eth0' }],
+        blockDevices: [{ deviceId: 'loop0' }, { deviceId: 'sda1' }, { deviceId: 'sda' }],
+        gpus: [{ gpuId: 'gpu0' }],
+      })
+    ),
+  })
+  assertEquals(response.status, 202)
+  assertEquals(
+    writes[0]?.networks.map((n) => n.deviceId),
+    ['eth0']
+  )
+  assertEquals(
+    writes[0]?.blockDevices.map((d) => d.deviceId),
+    ['sda']
+  )
+  assertEquals(writes[0]?.gpus, [])
 })
 
 test('POST /metrics writes a 10 s sample even when this colo never saw the live-session marker', async () => {
@@ -2765,7 +2844,7 @@ test('POST /metrics through a real CloudflareAnalyticsEngineServerMetricsStore: 
             deviceId: 'eth2',
           },
         ],
-        gpus: [{ gpuId: 'gpu0' }],
+        gpus: [{ gpuId: 'gpu0', utilizationPercent: 5 }],
         ingressSources: [
           { sourceId: 'caddy-1', sourceKind: 'caddy' },
           { sourceId: 'caddy-2', sourceKind: 'caddy' },
