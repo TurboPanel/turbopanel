@@ -385,6 +385,13 @@ class DurableObjectStubDaemonCell implements DaemonCell {
     })
   }
 
+  async dropDaemonConnection(reason: string): Promise<void> {
+    await this.#rpc('/rpc/drop-connection', {
+      serverId: this.#serverId,
+      body: { reason },
+    })
+  }
+
   checkLiveness(): Promise<DaemonCellLiveness> {
     return this.#rpc<DaemonCellLiveness>('/rpc/liveness', {
       serverId: this.#serverId,

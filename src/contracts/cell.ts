@@ -210,6 +210,13 @@ export interface DaemonCell {
    * Daemon Cell → Presence model).
    */
   checkLiveness?(): Promise<DaemonCellLiveness>
+
+  /**
+   * Optional — close this server's live daemon socket(s) so a dead/half-open
+   * connection is marked disconnected and the daemon reconnects. Used when a
+   * dispatched command gets no ack. Backends without per-socket control omit it.
+   */
+  dropDaemonConnection?(reason: string): Promise<void>
 }
 
 export interface DaemonCellRegistry {

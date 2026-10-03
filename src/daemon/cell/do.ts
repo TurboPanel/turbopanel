@@ -628,6 +628,24 @@ export class DaemonCellObject {
     }
   }
 
+  /**
+   * Close every socket held for `serverId` so a connection that stopped
+   * delivering (but never closed) is torn down. The `webSocketClose` event then
+   * runs the normal cleanup and Postgres demotion, and the daemon reconnects.
+   */
+  #dropDaemonSockets(serverId: string, reason: string): void {
+    for (const ws of this.#ctx.getWebSockets()) {
+      const attachment = ws.deserializeAttachment() as { serverId?: string } | null
+      if (attachment?.serverId !== serverId) continue
+      console.info(`daemon-cell event=drop-connection serverId=${serverId} reason=${reason}`)
+      try {
+        ws.close(4002, `dropped:${reason}`)
+      } catch {
+        // Socket may already be closing.
+      }
+    }
+  }
+
   #bumpFetchRoute(route: string): void {
     this.#diag.fetchByRoute[route] = (this.#diag.fetchByRoute[route] ?? 0) + 1
     if (this.#isDaemonDebug()) {
@@ -2300,6 +2318,13 @@ export class DaemonCellObject {
             Number(body?.ttlMs ?? 0)
           ),
         })
+
+      case '/rpc/drop-connection':
+        this.#dropDaemonSockets(
+          this.#requireServerId(request, body),
+          rpcString(body?.reason) || 'dropped'
+        )
+        return jsonResponse({ ok: true })
 
       case '/rpc/lease/release':
         this.#releaseDeliveryLease(this.#requireServerId(request, body), rpcString(body?.holder))

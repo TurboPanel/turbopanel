@@ -10,7 +10,7 @@
 import { and, eq, inArray, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
-import type { DaemonCellRegistry, PendingRequestRecord } from '../../contracts/cell.ts'
+import type { DaemonCell, DaemonCellRegistry, PendingRequestRecord } from '../../contracts/cell.ts'
 import { generateDeliveryId } from '../../contracts/cell-protocol.ts'
 import { resultSummaryForPersist } from './result-summary.ts'
 import { getResolveFleetPresence } from '../../platform/ports/fleet-presence.ts'
@@ -445,6 +445,49 @@ async function ensureServerAndDaemonOnline(
   return null
 }
 
+/**
+ * How long a dispatched command may go without the daemon's `command-ack`.
+ * The daemon acks the instant it receives the frame, so silence this long
+ * means the frame never arrived (a half-open connection), not slow work.
+ */
+export const COMMAND_ACK_DEADLINE_MS = 45_000
+
+export const COMMAND_UNACKED_ERROR =
+  'The server did not acknowledge the command in time; its connection looked dead and was reset. Try again once it reconnects.'
+
+/**
+ * Wait for a terminal outcome, but fail fast when the daemon never acks.
+ *
+ * Never re-sends: the outbox row is already delivered, and the dead connection
+ * is dropped first so a frame still buffered on it can never run later. The
+ * daemon also ignores a command id it has already seen. The result is a
+ * synthetic `failed` pending record, which flows through the normal failure
+ * side effects.
+ */
+export async function awaitOutcomeWithAckDeadline(
+  cell: DaemonCell,
+  requestId: string,
+  timeoutMs: number,
+  ackDeadlineMs = COMMAND_ACK_DEADLINE_MS
+): Promise<PendingRequestRecord | null> {
+  if (ackDeadlineMs >= timeoutMs) return cell.waitForRequest(requestId, timeoutMs)
+  const first = await cell.waitForRequest(requestId, ackDeadlineMs)
+  if (first) return first
+  const current = await cell.getRequest(requestId)
+  if (!current) return cell.waitForRequest(requestId, timeoutMs - ackDeadlineMs)
+  if (current.ackAt || current.status === 'acked') {
+    return cell.waitForRequest(requestId, timeoutMs - ackDeadlineMs)
+  }
+  await cell.dropDaemonConnection?.('command_unacked').catch(() => undefined)
+  // The ack may have landed while the connection was being dropped.
+  const settled = await cell.getRequest(requestId)
+  if (settled && (settled.ackAt || settled.status === 'acked')) {
+    return cell.waitForRequest(requestId, timeoutMs - ackDeadlineMs)
+  }
+  if (settled && ['done', 'failed', 'expired'].includes(settled.status)) return settled
+  return { ...(settled ?? current), status: 'failed', error: COMMAND_UNACKED_ERROR }
+}
+
 async function enqueueAndAwaitOutcome(
   db: Db,
   registry: DaemonCellRegistry,
@@ -479,7 +522,7 @@ async function enqueueAndAwaitOutcome(
     serverId: envelope.serverId,
   })
 
-  const pending = await cell.waitForRequest(record.id, timeoutMs)
+  const pending = await awaitOutcomeWithAckDeadline(cell, record.id, timeoutMs)
   if (!pending) {
     await transitionCommand(db, record.id, { status: 'timed_out' })
     commandConsumerTrace('dispatch-result', {
