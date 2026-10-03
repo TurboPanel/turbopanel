@@ -18,7 +18,8 @@ export const TURBOPANEL_SERVICE_EXTENSION_KEY = 'x-turbopanel'
 
 export type ComposeServiceKind = 'container' | 'site' | 'node'
 
-export type SiteEngine = 'caddy' | 'apache' | 'nginx' | 'openlitespeed'
+/** `nginx+apache` is nginx in front of Apache: static types from nginx, the rest via Apache. */
+export type SiteEngine = 'caddy' | 'apache' | 'nginx' | 'openlitespeed' | 'nginx+apache'
 
 /**
  * Runtime family for a `serviceKind: node` service.
@@ -455,7 +456,13 @@ const PHP_EXTENSION_RE = /^[a-z][a-z0-9_-]{0,31}$/
 
 const SERVICE_KINDS = new Set<ComposeServiceKind>(['container', 'site', 'node'])
 const NATIVE_RUNTIME_FRAMEWORKS = new Set<NativeRuntimeFramework>(['auto', 'node', 'next'])
-const SITE_ENGINES = new Set<SiteEngine>(['caddy', 'apache', 'nginx', 'openlitespeed'])
+const SITE_ENGINES = new Set<SiteEngine>([
+  'caddy',
+  'apache',
+  'nginx',
+  'openlitespeed',
+  'nginx+apache',
+])
 const SOURCE_BUILD_KINDS = new Set<ComposeSourceBuildKind>(['native', 'railpack'])
 const NODE_PACKAGE_MANAGERS = new Set<NodePackageManager>(['npm', 'yarn', 'pnpm'])
 const NODE_APP_MODES = new Set<NodeAppMode>(['production', 'development'])
@@ -840,7 +847,7 @@ const SERVICE_EXTENSION_FIELDS: Readonly<Record<string, ServiceExtensionFieldRul
   engine: {
     kinds: SITE_KIND_ONLY,
     isValid: (value) => Boolean(readSiteEngine(value)),
-    typeMessage: 'engine must be "caddy", "apache", "nginx", or "openlitespeed"',
+    typeMessage: 'engine must be "caddy", "apache", "nginx", "openlitespeed", or "nginx+apache"',
   },
   root: { kinds: SITE_KIND_ONLY },
   sourceKind: { kinds: SITE_KIND_ONLY },
@@ -1176,7 +1183,7 @@ function validatePhpMode(
   if (supported.includes(rawMode)) return []
   const message =
     supported.length === 0
-      ? `Caddy sites have no PHP mode; use nginx, apache or openlitespeed for "${rawMode}"`
+      ? `Caddy sites have no PHP mode; use nginx, apache, nginx+apache or openlitespeed for "${rawMode}"`
       : `The ${siteEngine} engine cannot run php.mode "${rawMode}"; it supports: ${supported.join(', ')}`
   return [{ path, message }]
 }

@@ -174,6 +174,7 @@ export const DAEMON_WIRE_FEATURES = [
   'sealed-instance-secrets-v1',
   'managed-health-v1',
   'managed-ha-probe-v1',
+  'site-engine-nginx-apache-v1',
   'php-site-modes-v1',
 ] as const
 

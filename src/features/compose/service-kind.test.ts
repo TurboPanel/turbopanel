@@ -1078,6 +1078,10 @@ test('php.mode must be a known mode the engine can run', () => {
   assertEquals(modeIssues('nginx', 'fastcgi'), [])
   assertEquals(modeIssues('apache', 'fpm'), [])
   assertEquals(modeIssues('openlitespeed', 'lsphp-attached'), [])
+  // nginx in front of Apache runs PHP through Apache: FastCGI or php-fpm.
+  assertEquals(modeIssues('nginx+apache', 'fastcgi'), [])
+  assertEquals(modeIssues('nginx+apache', 'fpm'), [])
+  assertEquals(modeIssues('nginx+apache', 'lsphp-detached')[0]?.message.includes('supports'), true)
   assertEquals(modeIssues('nginx', 'cgi')[0]?.message.includes('must be one of'), true)
   assertEquals(modeIssues('nginx', 'lsphp-detached')[0]?.message.includes('supports'), true)
   // No engine is Caddy, which has no PHP mode at all.

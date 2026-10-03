@@ -13,17 +13,22 @@ import {
   readServiceTurbopanelExtension,
   type SiteEngine,
   type SiteSourceKind,
-} from "./service-kind.ts";
+} from './service-kind.ts'
 
 export type SiteSpec = {
-  composeServiceName: string;
-  engine: SiteEngine;
+  composeServiceName: string
+  engine: SiteEngine
   /** Document-root segment under the site directory (default `public`). */
-  root: string;
+  root: string
   /** Loopback listen port for hosting Caddy → nginx/apache. */
-  listenPort: number;
+  listenPort: number
+  /**
+   * `nginx+apache` only: Apache's loopback port behind nginx, from the same
+   * ledger as `listenPort` so nothing else is handed it.
+   */
+  backendPort?: number
   /** PHP config from `x-turbopanel.php`, when the service declares any. */
-  php?: ComposeServicePhpExtension;
+  php?: ComposeServicePhpExtension
   /**
    * Where the content comes from. Omitted means `release`, which is what every
    * site had before the managed-directory lane existed.
@@ -32,48 +37,65 @@ export type SiteSpec = {
    * value as `release` too, and emitting an explicit `release` on every site
    * would churn the wire for services that never opted in.
    */
-  sourceKind?: SiteSourceKind;
+  sourceKind?: SiteSourceKind
   /** Authored cron jobs from `x-turbopanel.cron`, untranslated. */
-  cron?: ComposeServiceCronJob[];
-};
+  cron?: ComposeServiceCronJob[]
+}
+
+/** nginx in front of Apache: the one engine that needs a second port. */
+const NGINX_APACHE_ENGINE = 'nginx+apache'
+/** Hash seed suffix for Apache's port, so it differs from the site's own. */
+const BACKEND_PORT_SEED = '#apache'
+/**
+ * Apache's ports behind nginx get their own band, clear of every hashed
+ * `listenPort` (18080–18999), Apache's bootstrap `Listen 127.0.0.1:19080` and
+ * the instance website's 19820: a backend port can then only collide with
+ * another backend port, never with some other environment's public vhost.
+ */
+const BACKEND_PORT_BASE = 19_100
+const BACKEND_PORT_SPAN = 700
 
 /** Engine a site gets when its compose block does not name one. */
-export const DEFAULT_SITE_ENGINE: SiteEngine = "caddy";
+export const DEFAULT_SITE_ENGINE: SiteEngine = 'caddy'
 
-const DEFAULT_ROOT = "public";
-const LISTEN_PORT_BASE = 18_080;
-const LISTEN_PORT_SPAN = 920;
+const DEFAULT_ROOT = 'public'
+const LISTEN_PORT_BASE = 18_080
+const LISTEN_PORT_SPAN = 920
 
 function isPlainMapping(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 /** Reject path traversal and absolute paths — daemon resolves under stateDir. */
 export function isSafeSiteRoot(value: string): boolean {
-  const trimmed = value.trim();
-  if (trimmed.length === 0 || trimmed.length > 200) return false;
-  if (trimmed.startsWith("/") || trimmed.startsWith("\\")) return false;
-  if (trimmed.includes("..")) return false;
-  if (trimmed.includes("\0")) return false;
-  return /^[A-Za-z0-9._/-]+$/.test(trimmed);
+  const trimmed = value.trim()
+  if (trimmed.length === 0 || trimmed.length > 200) return false
+  if (trimmed.startsWith('/') || trimmed.startsWith('\\')) return false
+  if (trimmed.includes('..')) return false
+  if (trimmed.includes('\0')) return false
+  return /^[A-Za-z0-9._/-]+$/.test(trimmed)
 }
 
 function hashServiceName(name: string): number {
-  let hash = 0;
+  let hash = 0
   for (let i = 0; i < name.length; i++) {
-    hash = (hash * 31 + (name.codePointAt(i) ?? 0)) >>> 0;
+    hash = (hash * 31 + (name.codePointAt(i) ?? 0)) >>> 0
   }
-  return hash;
+  return hash
 }
 
 /**
  * Prefer hosting `targetPort` when free; otherwise a stable port in
- * 18080–18999 derived from the compose service name.
+ * 18080–18999 derived from `uniqueKey` (the environment id) plus the compose
+ * service name. The name alone is not unique on a host: two projects that each
+ * name a site `site` would otherwise share a loopback port, and Apache refuses
+ * the second `Listen`. Collisions inside one deploy are probed past via `used`.
  */
 export function allocateSiteListenPort(
   composeServiceName: string,
   used: Set<number>,
   preferred?: number,
+  environmentId = ''
 ): number {
   if (
     preferred !== undefined &&
@@ -82,29 +104,43 @@ export function allocateSiteListenPort(
     preferred <= 65_535 &&
     !used.has(preferred)
   ) {
-    used.add(preferred);
-    return preferred;
+    used.add(preferred)
+    return preferred
   }
 
-  let port = LISTEN_PORT_BASE +
-    (hashServiceName(composeServiceName) % LISTEN_PORT_SPAN);
-  for (let attempt = 0; attempt < LISTEN_PORT_SPAN; attempt++) {
+  return allocateHashedPort(
+    `${environmentId}\0${composeServiceName}`,
+    used,
+    LISTEN_PORT_BASE,
+    LISTEN_PORT_SPAN,
+    'listen'
+  )
+}
+
+/** First free port in `[base, base + span)`, probing from the key's hash. */
+function allocateHashedPort(
+  key: string,
+  used: Set<number>,
+  base: number,
+  span: number,
+  label: string
+): number {
+  let port = base + (hashServiceName(key) % span)
+  for (let attempt = 0; attempt < span; attempt++) {
     if (!used.has(port)) {
-      used.add(port);
-      return port;
+      used.add(port)
+      return port
     }
-    port = port >= LISTEN_PORT_BASE + LISTEN_PORT_SPAN - 1
-      ? LISTEN_PORT_BASE
-      : port + 1;
+    port = port >= base + span - 1 ? base : port + 1
   }
-  throw new Error("No free site listen port in 18080–18999");
+  throw new Error(`No free site ${label} port in ${base}–${base + span - 1}`)
 }
 
 export type SplitSiteResult = {
   /** Services that remain for Docker Compose. */
-  containerServices: Record<string, unknown>;
-  sites: SiteSpec[];
-};
+  containerServices: Record<string, unknown>
+  sites: SiteSpec[]
+}
 
 /**
  * Partition compose `services` into Docker containers vs sites.
@@ -120,33 +156,33 @@ export type SplitSiteResult = {
 export function splitSiteServices(
   services: Record<string, unknown>,
   preferredListenPortByService: ReadonlyMap<string, number> = new Map(),
-  usedPorts: Set<number> = new Set<number>(),
+  usedPorts: Set<number> = new Set<number>()
 ): SplitSiteResult {
-  const containerServices: Record<string, unknown> = {};
-  const sites: SiteSpec[] = [];
+  const containerServices: Record<string, unknown> = {}
+  const sites: SiteSpec[] = []
 
-  const names = Object.keys(services).sort((a, b) => a.localeCompare(b));
+  const names = Object.keys(services).sort((a, b) => a.localeCompare(b))
   for (const name of names) {
-    const raw = services[name];
+    const raw = services[name]
     if (!isPlainMapping(raw) || !isSiteComposeService(raw)) {
-      containerServices[name] = raw;
-      continue;
+      containerServices[name] = raw
+      continue
     }
 
-    const extension = readServiceTurbopanelExtension(raw);
+    const extension = readServiceTurbopanelExtension(raw)
     // `engine` is optional on a site. This is the one place the default is
     // resolved, so the wire always carries an explicit engine and the daemon
     // never has to guess. Caddy is the default because a static site then
     // needs no engine choice, no PHP pool, and no vhost tuning at all.
-    const engine = extension?.engine ?? DEFAULT_SITE_ENGINE;
+    const engine = extension?.engine ?? DEFAULT_SITE_ENGINE
 
-    const rootRaw = extension?.root?.trim() || DEFAULT_ROOT;
-    const root = isSafeSiteRoot(rootRaw) ? rootRaw : DEFAULT_ROOT;
+    const rootRaw = extension?.root?.trim() || DEFAULT_ROOT
+    const root = isSafeSiteRoot(rootRaw) ? rootRaw : DEFAULT_ROOT
     const listenPort = allocateSiteListenPort(
       name,
       usedPorts,
-      preferredListenPortByService.get(name),
-    );
+      preferredListenPortByService.get(name)
+    )
 
     sites.push({
       composeServiceName: name,
@@ -156,18 +192,46 @@ export function splitSiteServices(
       ...(extension?.php ? { php: extension.php } : {}),
       ...(extension?.sourceKind ? { sourceKind: extension.sourceKind } : {}),
       ...(extension?.cron ? { cron: extension.cron } : {}),
-    });
+    })
   }
 
   return {
     containerServices,
-    sites,
-  };
+    sites: assignBackendPorts(sites, usedPorts),
+  }
+}
+
+/**
+ * Give each `nginx+apache` site Apache's port behind nginx, in its own band
+ * (`BACKEND_PORT_BASE`). Allocated after every `listenPort`, so a hosting
+ * `targetPort` is never lost to a backend.
+ *
+ * The hash is seeded with the environment id: the ledger is per environment
+ * and not persisted, so two environments on one server deploying the same
+ * compose file (staging and production, say) would otherwise derive the very
+ * same port for every site. Seeded, the port is stable per (environment,
+ * service) and a cross-environment clash is down to hash chance; the daemon
+ * refuses one that does happen (host-wide port check before apply). A
+ * host-wide guarantee here would need every environment's ports on the server,
+ * which this payload does not carry.
+ */
+function assignBackendPorts<
+  T extends { composeServiceName: string; engine?: string; backendPort?: number },
+>(sites: readonly T[], used: Set<number>, environmentId = ''): T[] {
+  return sites.map((site) => {
+    const { backendPort: _stale, ...rest } = site
+    if (site.engine !== NGINX_APACHE_ENGINE) return rest as T
+    const key = `${environmentId}/${site.composeServiceName}${BACKEND_PORT_SEED}`
+    return {
+      ...rest,
+      backendPort: allocateHashedPort(key, used, BACKEND_PORT_BASE, BACKEND_PORT_SPAN, 'backend'),
+    } as T
+  })
 }
 
 /** Runtime compose YAML body when every service is site. */
 export function emptyContainerComposeYaml(): string {
-  return "services: {}\n";
+  return 'services: {}\n'
 }
 
 /**
@@ -176,24 +240,31 @@ export function emptyContainerComposeYaml(): string {
  *
  * `used` is shared with the native-app allocator for the same reason
  * {@link splitSiteServices} shares it — one loopback ledger per
- * deploy, not one per lane.
+ * deploy, not one per lane. `environmentId` seeds Apache's backend port (see
+ * {@link assignBackendPorts}).
  */
 export function assignSiteListenPorts<
-  T extends { composeServiceName: string; listenPort: number },
+  T extends {
+    composeServiceName: string
+    listenPort: number
+    engine?: string
+    backendPort?: number
+  },
 >(
   sites: readonly T[],
   preferredListenPortByService: ReadonlyMap<string, number> = new Map(),
   used: Set<number> = new Set<number>(),
+  environmentId = ''
 ): T[] {
-  const sorted = [...sites].sort((a, b) =>
-    a.composeServiceName.localeCompare(b.composeServiceName)
-  );
-  return sorted.map((site) => ({
+  const sorted = [...sites].sort((a, b) => a.composeServiceName.localeCompare(b.composeServiceName))
+  const listening = sorted.map((site) => ({
     ...site,
     listenPort: allocateSiteListenPort(
       site.composeServiceName,
       used,
       preferredListenPortByService.get(site.composeServiceName),
+      environmentId
     ),
-  }));
+  }))
+  return assignBackendPorts(listening, used, environmentId)
 }

@@ -18,7 +18,7 @@ export const phpModeSchemas = {
   PhpModeEngineChoices: {
     type: 'object',
     description:
-      'Per site engine (`caddy`, `nginx`, `apache`, `openlitespeed`): the modes a site may pick under this policy and what a new PHP site gets. Caddy has none.',
+      'Per site engine (`caddy`, `nginx`, `apache`, `nginx+apache`, `openlitespeed`): the modes a site may pick under this policy and what a new PHP site gets. Caddy has none.',
     additionalProperties: {
       type: 'object',
       required: ['allowed', 'default'],

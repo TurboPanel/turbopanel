@@ -101,6 +101,7 @@ import {
 } from '../../features/principals/store.ts'
 import { renderPhpForDeploy } from '../../features/hostings/php-settings.ts'
 import { type PhpModePrepareError, withSitePhpModes } from './deploy-php-modes.ts'
+import { type SiteEngineFeatureError, withSiteEngineFeature } from './deploy-site-engine-gate.ts'
 import { PHP_SITE_MODES_FEATURE } from '../../lib/version-wire.ts'
 import {
   isComposeChainError,
@@ -525,6 +526,7 @@ export type DeployPrepareError =
   | { kind: 'site_cron_unowned'; composeServiceName: string }
   /** A PHP site asks for a mode its engine, organization or server does not offer. */
   | PhpModePrepareError
+  | SiteEngineFeatureError
   | { kind: 'source_principal_ambiguous'; composeServiceName: string }
   | {
       kind: 'source_ref_unresolved'
@@ -619,6 +621,7 @@ type HardDeployPrepareError =
   | { kind: 'datacenter_ip_required'; serverId: string }
   // Hard in preview too: the site would not come up in the mode it asks for.
   | PhpModePrepareError
+  | SiteEngineFeatureError
   // Hard in preview too: previewing a deploy that would silently ignore a field
   // — or that would be refused the moment it was run for real — is exactly the
   // reassurance an operator must not be given.
@@ -2988,6 +2991,8 @@ export async function prepareDeployCompose(
   )
   if ('kind' in siteResolved) return siteResolved
   const localSite = sitesOnScheduledServer(siteResolved, pipeline.localServiceNames)
+  const engineGate = await withSiteEngineFeature(db, params.serverId, localSite)
+  if ('kind' in engineGate) return engineGate
 
   const localNativeApps = sitesOnScheduledServer(
     nativeAppServicesForDeploy(

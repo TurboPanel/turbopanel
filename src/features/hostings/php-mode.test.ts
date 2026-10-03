@@ -31,6 +31,7 @@ test('parsePhpModesInput refuses unknown modes and takes null as offer-everythin
 test('allowedPhpModes intersects organization, server and engine', () => {
   assertEquals(allowedPhpModes({}, 'nginx'), ['fastcgi', 'fpm'])
   assertEquals(allowedPhpModes({}, 'apache'), ['fastcgi', 'fpm'])
+  assertEquals(allowedPhpModes({}, 'nginx+apache'), ['fastcgi', 'fpm'])
   assertEquals(allowedPhpModes({}, 'openlitespeed'), [
     'fastcgi',
     'fpm',

@@ -576,9 +576,22 @@ function tryMapPhpModePrepareError(prepared: DeployPrepareError): PrepareErrorRe
   }
 }
 
+function tryMapSiteEngineFeatureError(prepared: DeployPrepareError): PrepareErrorResponse | null {
+  if (prepared.kind !== 'site_engine_feature_missing') return null
+  return {
+    status: 422,
+    body: {
+      error: 'site_engine_feature_missing',
+      composeServiceName: prepared.composeServiceName,
+      message: `Site "${prepared.composeServiceName}" uses the nginx+apache web server pair, but the TurboPanel agent on this server is too old to run it. Update the agent on this server, then deploy again.`,
+    },
+  }
+}
+
 export function mapPrepareErrorResponse(prepared: DeployPrepareError): PrepareErrorResponse {
   return (
     tryMapPhpModePrepareError(prepared) ??
+    tryMapSiteEngineFeatureError(prepared) ??
     tryMapSitePrepareError(prepared) ??
     tryMapPrincipalPrepareError(prepared) ??
     tryMapHostingPrepareError(prepared) ??
@@ -822,10 +835,11 @@ export function preferredListenPortsFromHostings(
 export function buildSitesForDeploy(
   sites: EnvironmentDeploySite[],
   hostings: EnvironmentDeployHosting[],
-  used: Set<number> = new Set<number>()
+  used: Set<number> = new Set<number>(),
+  environmentId = ''
 ): EnvironmentDeploySite[] {
   return attachWebMetadataToSites(
-    assignSiteListenPorts(sites, preferredListenPortsFromHostings(hostings), used),
+    assignSiteListenPorts(sites, preferredListenPortsFromHostings(hostings), used, environmentId),
     hostings
   )
 }
@@ -878,15 +892,19 @@ export function buildNativeAppServicesForDeploy(
   nativeAppServices: readonly PreparedNativeAppService[],
   hostings: EnvironmentDeployHosting[],
   ingressServices: readonly EnvironmentDeployIngressService[],
-  used: Set<number> = new Set<number>()
+  used: Set<number> = new Set<number>(),
+  uniqueKey?: string
 ): EnvironmentDeployNativeAppService[] {
   if (nativeAppServices.length === 0) return []
-  return assignNativeAppListenPorts(nativeAppServices, new Map<string, number>(), used).map(
-    (app) => ({
-      ...app,
-      serviceId: resolveDeployReleaseServiceId(app.composeServiceName, hostings, ingressServices),
-    })
-  )
+  return assignNativeAppListenPorts(
+    nativeAppServices,
+    new Map<string, number>(),
+    used,
+    uniqueKey
+  ).map((app) => ({
+    ...app,
+    serviceId: resolveDeployReleaseServiceId(app.composeServiceName, hostings, ingressServices),
+  }))
 }
 
 export type DeployMaterialValidationError = {
