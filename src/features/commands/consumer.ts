@@ -60,6 +60,7 @@ import {
   commandMayChangeFirewallPreview,
   enqueueFirewallPreview,
   FIREWALL_RECONCILE_COMMAND,
+  recordFirewallPreviewFailure,
   recordFirewallPreviewResult,
 } from '../firewall/preview.ts'
 import type { FirewallApplyGate } from '../firewall/enforcement.ts'
@@ -1974,6 +1975,24 @@ async function applyFirewallPreviewSideEffect(
   }
 }
 
+/** A failed or timed-out reconcile is kept on the firewall record so it does not read as queued. */
+async function applyFirewallFailedSideEffect(
+  db: Db,
+  record: DispatchableCommandRecord,
+  envelope: CommandEnvelope,
+  error: string
+): Promise<void> {
+  if (record.type !== FIREWALL_RECONCILE_COMMAND) return
+  try {
+    await recordFirewallPreviewFailure(db, envelope.serverId, record.payload, error)
+  } catch (err) {
+    compatLogWarn(
+      'command-consumer',
+      `firewall failure record failed for command ${record.id}: ${errorMessage(err)}`
+    )
+  }
+}
+
 /**
  * After a successful promote: demote the old primary **before** promoting so
  * `uniq_node_primary` is never violated mid-flip, then re-point
@@ -2285,6 +2304,7 @@ async function handlePendingFailed(
   await applyManagedFailedSideEffect(db, record, deps, error)
   await applyEnvironmentDeployFailedSideEffect(db, record, envelope, error)
   await applyFabricFailedSideEffect(db, record, envelope)
+  await applyFirewallFailedSideEffect(db, record, envelope, error)
 }
 
 async function handlePendingExpired(
@@ -2305,6 +2325,7 @@ async function handlePendingExpired(
   await applyManagedFailedSideEffect(db, record, deps, pending.error ?? 'Command timed out')
   await applyEnvironmentDeployFailedSideEffect(db, record, envelope, 'timed_out', 'timed_out')
   await applyFabricFailedSideEffect(db, record, envelope)
+  await applyFirewallFailedSideEffect(db, record, envelope, pending.error ?? 'Command timed out')
 }
 
 async function handlePendingUnexpected(
