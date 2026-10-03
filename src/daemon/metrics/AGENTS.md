@@ -1,14 +1,31 @@
 # Server metrics — AGENTS.md
 
 Host-metrics ingestion (`POST /api/daemon/v1/metrics`, never wakes the DO),
-backend storage, and the query/caching API — **unsuffixed v6 contract**
-(`contract.ts`, `METRICS_SCHEMA_VERSION = 6`). Metrics are grouped by **entity**
+backend storage, and the query/caching API — **v7 stored schema**
+(`metrics-contract.ts`, `METRICS_SCHEMA_VERSION = 7`; v6-stamped samples are still
+accepted on the wire and written as v7 rows, see "Metrics v7" below). Metrics are grouped by **entity**
 (host, network device, filesystem, block device, GPU, hardware signal, ingress
 source, database proxy) with a stable logical id per entity, every leaf value is
 `number | null` (missing is always `null`, never coerced to `0`), and no value's
-presence is inferred from bitmask/part membership. There is no dual-accept and
-no migration: ingest rejects any sample whose `metadata.version !== 6` outright,
-and existing pre-v6 metrics data is discarded.
+presence is inferred from bitmask/part membership. Ingest accepts
+`metadata.version` 6 or 7 (`METRICS_WIRE_VERSIONS`) during the daemon transition
+and rejects anything else; every stored row carries blob3 `"7"`.
+
+## Metrics v7 (authoritative for new rows)
+
+The v7 layout is **fixture-pinned**: `V7-LAYOUT.md` (generated) and
+`testing/v7-layout.fixture.json` are the spec, produced from the owner-sealed
+plan by `scripts/metrics-v7-layout/generate.mjs`; `backends/cloudflare/v7-layout.ts`
+must reproduce them exactly (`v7-layout.test.ts`). The family catalog and blob
+tables below describe the **v6** layout, kept only as the read-side reference for
+v6 rows; where they disagree with `V7-LAYOUT.md`, v7 wins.
+
+- **Dataset** `turbopanel_server_metrics_v${METRICS_SCHEMA_VERSION}` (hard cut, per-env `<env>_` prefix); pinned for every wrangler environment by `wrangler-datasets.test.ts`. Readers accept blob3 in `AE_SUPPORTED_SCHEMA_VERSIONS` = [6, 7].
+- **Rows**: `host.system` (liveness, bare serverId index), `host.io`, `host.network`, `host.web` on every host; `managed.database` only with managed databases; `block` (>1 drive, 3/row), `network` (NIC 3+, 3/row), `filesystem` (9/row; exactly one extra filesystem is folded into `host.network`), `gpu` (3/row, physical or real passthrough), `hardware.physical` (physical, up to 19 signals). VPS 4 rows, physical 5-6, +1 with databases.
+- **Envelope**: blob1 kind, blob2 family, blob3 `"7"` (the storage constant, never the wire version), blob4 topology generation, blob5 sample time as UTC text `YYYY-MM-DD hh:mm:ss`, blob6 entity ids, content text from blob7, double20 interval. Sequence, plan generation and page are no longer written. Event and status rows keep their v6 blob positions except blob3 and the blob5 text format.
+- **Wire negotiation**: wire feature `metrics-v7` (`DAEMON_WIRE_FEATURES`, both repos). A daemon stamps `METRICS_LEGACY_WIRE_VERSION` (6) until the control plane it is attached to advertises it. v7 data rides the optional `extended` section and `metadata.durable`; a v6 sample writes the same v7 rows with sentinels and empty text for the absent data.
+- **Caddy is totals only** (no per-site fields anywhere); slow families are still re-sent every sample.
+- **Reads**: the missing-metric sentinel is tested as `col > -pow(10, 307)` (`aePresentValueSql`), never by equality; a delta-sum over an absent family is null, not 0. The v6+v7 dual-dataset merge and descriptors for the new v7 metrics (OOM kills, Docker health, cert expiry, text blobs) are reader work.
 
 Root context: `../../../AGENTS.md`. Daemon cell: `../cell/AGENTS.md`. Operator
 glossary (what each console chart means): `../../../../website/docs/metrics/`.
@@ -17,7 +34,7 @@ Human docs + AE cost model:
 
 The store surface is unsuffixed: `ServerMetricsStore`,
 `resolveServerMetricsStore`, binding `SERVER_METRICS`, dataset
-`turbopanel_server_metrics_v6`. `DuckDbParquetServerMetricsStore` implements
+`turbopanel_server_metrics_v7`. `DuckDbParquetServerMetricsStore` implements
 only `ServerMetricsStore` — its
 `queryHostSeries`/`queryHostSummary`/`queryFleetHostSnapshot` accept the current
 canonical metric names. `app.ts`/`db.ts`/`workers.ts` carry only the
@@ -163,29 +180,21 @@ Every family writes on every sample. There is no per-family cadence and no
 ingest decimation step: `cadence-tiers.ts` is gone. Doubles inside a row are
 free on Analytics Engine, so the pipeline never chooses which families to drop.
 
-**Live samples are buffered for the overlay AND durably stored.** A live-session marker
-(`markServerLiveSessionActive`, keyed under `tp:metrics:live-session:` so a
-chart-cache eviction cannot clear it) tracks **active lease ids** per server and
-is add/removed by `POST`/`DELETE /servers/:id/metrics/live`. Concurrent viewers
-share the marker: stopping one lease must not resume durable writes while
-another remains. While any unexpired lease is present, ingest also writes the
-sample into a short-lived live-sample buffer (`cacheLiveSample` /
-`readLiveSample`). Query routes overlay the buffered point on the tail of a
-now-ranged live read **only while the marker is still active** — a stop of the
-last lease deletes the buffer, and a naturally expired marker is ignored even if
-the sample TTL has not elapsed.
-
-`store.writeSample` runs for **every** validated sample, live cadence or not.
-The daemon _replaces_ its 60 s cadence with the 10 s one while a lease is active
-(turbopaneld `live-leases.ts`) — it does not add to it — so the old rule
-("live samples are cached, never durably stored", plus a backstop dropping any
-unmarked 10 s sample) left the durable store empty for as long as anyone watched
-a server, and the marker lives in the colo-local Cache API, so a daemon ingesting
-through another colo never saw it and its samples were dropped outright. Both
-were the "huge gaps" on testing (2026-09-27). The cost is ~6× the rows while a
-live lease is active; leases are capped and expire. Queries weight by
-`interval_seconds` and `_sample_interval`, so mixed 10 s / 60 s rows aggregate
-correctly.
+**Live samples feed the overlay; only the 60 s baseline is stored.** A live-session
+marker (`markServerLiveSessionActive`, keyed under `tp:metrics:live-session:`)
+tracks active lease ids per server and is added/removed by `POST`/`DELETE
+/servers/:id/metrics/live`; concurrent viewers share it. A sample with
+`metadata.durable === false` (a v7 daemon's 10 s live sample) is cached for the
+overlay (`cacheLiveSample`, even if this colo never saw the marker) and **never**
+reaches `store.writeSample`. The parallel 60 s baseline (`durable` true or
+absent) is stored and, while a lease is active, also cached. A sample with no
+flag (every v6 daemon, which replaces its cadence during a lease) is stored as
+before, so lease windows are never gaps. Query routes overlay the buffered point
+only while the marker is active. Hosted ingest first applies the pure allowlist
+backstop (`ingest-allowlist.ts`: pseudo mounts, loop/ram/zram/md devices and
+partitions of kept disks, lo/veth/bridge NICs except fabric, virtual-display and
+all-null GPUs), then plan truncation. Queries weight by `interval_seconds` and
+`_sample_interval`.
 
 A missing bucket is always a genuine gap. There is no slow tier left to hold a
 reading across empty host-grid buckets.
@@ -227,7 +236,7 @@ below).
 | Binding / config | Value                                                                                                                                                                                        |
 | ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Wrangler binding | `SERVER_METRICS` (`analytics_engine_datasets`)                                                                                                                                               |
-| Dataset name     | `turbopanel_server_metrics_v6` by default (`AE_DATASET_NAME`, `field-map.ts`); every hosted environment has its own `<testing|staging|live>_turbopanel_server_metrics_v6`: wrangler.jsonc sets it on the `SERVER_METRICS` binding (writes) AND as `TURBOPANEL_SERVER_METRICS_AE_DATASET` (the SQL read side, `resolveCloudflareAnalyticsSqlConfig`); `wrangler-datasets.test.ts` keeps the two equal and unique per env |
+| Dataset name     | `turbopanel_server_metrics_v7` by default (`AE_DATASET_NAME`, `field-map.ts`; always `turbopanel_server_metrics_v${METRICS_SCHEMA_VERSION}`); every hosted environment has its own `<testing|staging|live>_turbopanel_server_metrics_v7`: wrangler.jsonc sets it on the `SERVER_METRICS` binding (writes) AND as `TURBOPANEL_SERVER_METRICS_AE_DATASET` (the SQL read side, `resolveCloudflareAnalyticsSqlConfig`); `wrangler-datasets.test.ts` keeps the two equal and unique per env |
 | Write API        | `writeDataPoint({ indexes, doubles, blobs })` — sync, non-blocking; one call per family row actually emitted (2 baseline + 0..N presence-gated), full 20/20 doubles/blobs shape on every row |
 | SQL API          | `POST .../analytics_engine/sql` with `Authorization: Bearer <token>`; response envelope rows under `result.data`                                                                             |
 | Max range        | Default `AE_DEFAULT_MAX_RANGE_SECONDS` = 90 days; override via `TURBOPANEL_SERVER_METRICS_AE_MAX_RANGE_SECONDS`                                                                              |
@@ -391,8 +400,8 @@ flag. Entity tables carry arbitrary cardinality per sample (one row per reported
 entity), unlike v3's fixed-width part tables.
 
 **Schema on open** (`database.ts`): `CREATE TABLE IF NOT EXISTS` /
-`CREATE INDEX IF NOT EXISTS` for the current layout (schema marker **6**). A
-missing, corrupt, or non-6 sidecar marker discards `metrics.duckdb`, `parquet/`,
+`CREATE INDEX IF NOT EXISTS` for the current layout (schema marker **9**). A
+marker-8 database is upgraded in place (`ALTER TABLE ... ADD COLUMN IF NOT EXISTS` for the v7 `ext_*` numeric columns, one transaction, idempotent); a missing, corrupt, or any other sidecar marker discards `metrics.duckdb`, `parquet/`,
 `tmp/`, and `schema-version` before the current store is created — there is no
 in-place migration and no supported path for older DuckDB files. The marker is a
 discard-on-mismatch counter, not a monotonic migration version. **The three
@@ -488,7 +497,7 @@ clamped to 11. `MetricsCapabilityPlan` fields: `liveMinIntervalSeconds`,
 `detailedBlockDeviceSlots`, `gpuSlots`, `gpuInterconnectEnabled`,
 `physicalHardwareSignalSlots`, `managedIngressEnabled`,
 `databaseProxyMetricsEnabled`, `managedDockerEnabled`,
-`hardwareHealthEventsEnabled` — deliberately no pricing-tier names/literals,
+`hardwareHealthEventsEnabled` (v7 tier mapping: Docker metrics are on every plan, `managedDockerEnabled` is never tier-gated; the entry tier keeps 1 extra filesystem and the same 19 physical sensor slots as every plan; GPU slots S1 0, S2 1, S3 1, then 4, 4, 6, 8, 8; drive slots 3, 6, 6, 9, 12, 18, 21, 24; GPU-only sensor signals never make a machine physical; real whole disks, RAID members included, take drive slots while md arrays and partitions never count as drives) — deliberately no pricing-tier names/literals,
 only slot counts and toggles. v6 removed `baselineIntervalSeconds` (the daemon's
 steady cadence is fixed, not sold), `cpuDetailEnabled`/ `memoryDetailEnabled`
 (depth is always on — doubles inside a row are free, so gating them only
@@ -556,7 +565,7 @@ UI charts: **`../ui/AGENTS.md`** (Server metrics). Operator glossary:
 20. The store/binding/dataset are unsuffixed. `app.ts`/`db.ts`/`workers.ts`/
     `do.ts`/`offline-sweep.ts`/`store-selection*.ts` carry only
     `serverMetricsStore`, `resolveServerMetricsStore`, and `SERVER_METRICS`
-    (dataset `turbopanel_server_metrics_v6`). Do not reintroduce a
+    (dataset `turbopanel_server_metrics_v7`). Do not reintroduce a
     version-suffixed parallel store, binding, or dataset.
 
 ## Coverage and gaps
