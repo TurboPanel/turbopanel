@@ -23,6 +23,7 @@ import { deriveSecretsConfig } from "../../lib/secrets/secrets.ts";
 import { parseTestSecretsConfig } from "../../test-fixtures/secrets.ts";
 import { ORG_ID_HEADER } from "../org-context.ts";
 import { registerContainerRoutes } from "./routes.ts";
+import { SERVER_OFFLINE_BODY } from '../managed/context.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -711,7 +712,7 @@ test("GET /containers/:id/logs returns 409 when the host is offline", async () =
     headers: sessionHeaders(cookie),
   });
   assertEquals(res.status, 409);
-  assertEquals(await res.json(), { error: "server_offline" });
+  assertEquals(await res.json(), SERVER_OFFLINE_BODY);
   assertEquals(cellRequests.count, 0);
 });
 

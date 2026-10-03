@@ -48,7 +48,16 @@ import {
   stampRelayReconcileSuccess,
 } from '../fabric/fabric-records.ts'
 import { reconcileFabricMembership } from '../fabric/enqueue.ts'
-import { command, container, managed, replica, server, service } from '../../db/schema.ts'
+import {
+  command,
+  container,
+  managed,
+  replica,
+  server,
+  service,
+  storage,
+  storageCopy,
+} from '../../db/schema.ts'
 import {
   MANAGED_DESTROY_GATE_CLAIM_KEY,
   MANAGED_DESTROY_GATE_METADATA_KEY,
@@ -799,6 +808,30 @@ async function advanceRolloutSafely(
   }
 }
 
+/** A successful deploy created the environment's volumes on this server: `pending` copies are ready. */
+async function markEnvironmentCopiesReady(
+  db: Db,
+  environmentId: string,
+  serverId: string
+): Promise<void> {
+  await db
+    .update(storageCopy)
+    .set({ state: 'ready' })
+    .where(
+      and(
+        eq(storageCopy.serverId, serverId),
+        eq(storageCopy.state, 'pending'),
+        inArray(
+          storageCopy.storageId,
+          db
+            .select({ id: storage.id })
+            .from(storage)
+            .where(eq(storage.environmentId, environmentId))
+        )
+      )
+    )
+}
+
 async function applyEnvironmentDeploySideEffect(
   db: Db,
   record: DispatchableCommandRecord,
@@ -829,6 +862,7 @@ async function applyEnvironmentDeploySideEffect(
         await advanceRolloutSafely(db, deps, payload.environmentId, payload.generation)
       }
     }
+    await markEnvironmentCopiesReady(db, payload.environmentId, envelope.serverId)
     const deployResult = parseEnvironmentDeployResult(result)
     await recordSiteAppsSafely(db, record, payload.environmentId, deployResult.sites)
     // Only reconcile when the daemon included an authoritative containers
@@ -2277,6 +2311,22 @@ async function handlePendingDone(
   await applySucceededSideEffects(db, record, envelope, pending.result, deps)
 }
 
+/** Host text for a restore whose archive is gone (deleted or pruned). */
+const BACKUP_NOT_ON_HOST_RE = /backup \S+ is not on this host/
+
+/** Machine-readable `errorCode` for a failed command, when its error text names one. */
+export function failureErrorCodeField(
+  type: string,
+  deployFailure: ReturnType<typeof classifyDeployFailure>,
+  error: string
+): { errorCode?: string } {
+  if (deployFailure !== null) return { errorCode: deployOutcomeErrorCode(deployFailure.outcome) }
+  if (type === 'storage.restore' && BACKUP_NOT_ON_HOST_RE.test(error)) {
+    return { errorCode: 'backup_not_found' }
+  }
+  return {}
+}
+
 async function handlePendingFailed(
   db: Db,
   record: DispatchableCommandRecord,
@@ -2291,7 +2341,7 @@ async function handlePendingFailed(
   await transitionCommand(db, record.id, {
     status: 'failed',
     error,
-    ...(deployFailure === null ? {} : { errorCode: deployOutcomeErrorCode(deployFailure.outcome) }),
+    ...failureErrorCodeField(record.type, deployFailure, error),
   })
   commandConsumerTrace('dispatch-result', {
     commandId: record.id,

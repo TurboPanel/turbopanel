@@ -179,6 +179,13 @@ export function assertManagedNotBusy(
   return null
 }
 
+/** 409 body when the target server has no live connection. */
+export const SERVER_OFFLINE_BODY = {
+  error: 'server_offline',
+  message:
+    'This server is offline right now, so the request could not be sent. Try again once it reconnects.',
+} as const
+
 export async function assertTargetServerOnline(
   c: Context<AppEnv>,
   db: Db,
@@ -188,7 +195,7 @@ export async function assertTargetServerOnline(
   const records = await loadServerStatusRecords(db, registry, [serverId])
   const live = records[0]
   if (!live?.connected) {
-    return c.json({ error: 'server_offline' }, 409)
+    return c.json(SERVER_OFFLINE_BODY, 409)
   }
   return null
 }

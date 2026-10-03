@@ -5,6 +5,7 @@ import type { Db } from '../../db/connection.ts'
 import type { DaemonCellRegistry } from '../../contracts/cell.ts'
 import { clampManagedLogsTail, fetchManagedLogs, parseLogsTailQuery } from './logs.ts'
 import { createServerPresenceDb } from './server-status-test-db.ts'
+import { SERVER_OFFLINE_BODY } from './context.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -81,7 +82,7 @@ test('fetchManagedLogs returns 409 when the target server is offline', async () 
     throw new TypeError('expected Response')
   }
   assertEquals(response.status, 409)
-  assertEquals(await response.json(), { error: 'server_offline' })
+  assertEquals(await response.json(), SERVER_OFFLINE_BODY)
 })
 
 test('fetchManagedLogs returns compose logs on success', async () => {

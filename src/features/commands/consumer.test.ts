@@ -31,6 +31,8 @@ import {
   replica,
   server,
   service,
+  storage,
+  storageCopy,
   tls,
   variable,
   workspace,
@@ -2487,6 +2489,21 @@ test('processCommandEnvelope reconciles containers on environment.deploy success
         },
       })
 
+      const [vol] = await db
+        .insert(storage)
+        .values({ organizationId, environmentId, kind: 'volume', name: 'data' })
+        .returning({ id: storage.id })
+      const [copy] = await db
+        .insert(storageCopy)
+        .values({
+          storageId: vol!.id,
+          serverId,
+          provider: 'docker',
+          role: 'primary',
+          state: 'pending',
+        })
+        .returning({ id: storageCopy.id })
+
       await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
 
       const [row] = await db
@@ -2496,6 +2513,13 @@ test('processCommandEnvelope reconciles containers on environment.deploy success
         .limit(1)
       assertEquals(row?.containerId, 'deploy-cid')
       assertEquals(row?.status, 'running')
+      const [copyRow] = await db
+        .select({ state: storageCopy.state })
+        .from(storageCopy)
+        .where(eq(storageCopy.id, copy!.id))
+      assertEquals(copyRow?.state, 'ready')
+      await db.delete(storageCopy).where(eq(storageCopy.id, copy!.id))
+      await db.delete(storage).where(eq(storage.id, vol!.id))
     }
   )
 })

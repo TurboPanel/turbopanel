@@ -5,6 +5,7 @@ import type { Db } from '../../db/connection.ts'
 import type { DaemonCellRegistry } from '../../contracts/cell.ts'
 import { fetchContainerLogTail, parseLogsTailQuery } from './logs.ts'
 import { createServerPresenceDb } from '../managed/server-status-test-db.ts'
+import { SERVER_OFFLINE_BODY } from '../managed/context.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -74,7 +75,7 @@ test('fetchContainerLogTail returns 409 when the target server is offline', asyn
     throw new TypeError('expected Response')
   }
   assertEquals(response.status, 409)
-  assertEquals(await response.json(), { error: 'server_offline' })
+  assertEquals(await response.json(), SERVER_OFFLINE_BODY)
 })
 
 test('fetchContainerLogTail returns 503 when the cell wait expires', async () => {
@@ -93,6 +94,24 @@ test('fetchContainerLogTail returns 503 when the cell wait expires', async () =>
   }
   assertEquals(response.status, 503)
   assertEquals(await response.json(), { error: 'timeout waiting for container logs' })
+})
+
+test('fetchContainerLogTail returns 403 with a plain message when the host does not own the container', async () => {
+  const response = await fetchContainerLogTail(
+    mockContext({
+      getCell: () => ({
+        createRequestAndWait: () =>
+          Promise.resolve({ status: 'failed', error: 'container is not owned by this host' }),
+      }),
+    } as unknown as DaemonCellRegistry),
+    createServerPresenceDb('server-1', true),
+    { serverId: 'server-1', containerId: 'aabbccddeeff', tail: 20 },
+  )
+  if (!(response instanceof Response)) throw new TypeError('expected Response')
+  assertEquals(response.status, 403)
+  const body = (await response.json()) as { error: string; message: string }
+  assertEquals(body.error, 'container_not_owned')
+  assertEquals(body.message.length > 0, true)
 })
 
 test('fetchContainerLogTail returns 500 when the cell wait fails', async () => {
