@@ -262,7 +262,10 @@ export function parseCopyRecord(
   copy: Record<string, unknown>,
 ): CreateCopyFields | Response {
   if (!isApiCopyProvider(copy.provider)) {
-    return c.json({ error: 'Invalid request' }, 400)
+    return c.json({
+      error: `Unsupported copy provider. Supported providers: ${API_COPY_PROVIDERS.join(', ')}. ` +
+        'Remote storage (nfs, s3, sftp, webdav, cifs) is not available yet.',
+    }, 400)
   }
   const serverId = requireStringField(c, copy, 'serverId')
   if (serverId instanceof Response) return serverId

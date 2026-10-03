@@ -11,6 +11,7 @@ import {
   isCopyRole,
   isCopyState,
   isRetention,
+  parseCopyRecord,
   parseCreateMountFields,
   parseCopyPatchFields,
   parseMountPatchFields,
@@ -121,4 +122,13 @@ test('parseCreateMountFields requires destinationPath and serviceId', async () =
   assertEquals(await blank.json(), { error: 'destinationPath is required' })
   assertEquals(parseCreateMountFields(c, {}), undefined)
   await expectInvalidRequest(parseCreateMountFields(c, { mount: 'bad' }))
+})
+
+test('parseCopyRecord explains why a remote provider is refused', async () => {
+  const response = parseCopyRecord(mockContext(), { provider: 's3', serverId: 'x' })
+  if (!(response instanceof Response)) throw new TypeError('expected error response')
+  assertEquals(response.status, 400)
+  const body = await response.json() as { error: string }
+  assertEquals(body.error.includes('docker, path'), true)
+  assertEquals(body.error.includes('Remote storage'), true)
 })
