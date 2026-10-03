@@ -16,9 +16,6 @@
  *   (`o: bind`, `type: none`, a host-path `device`);
  * - top-level `configs.<name>.file` / `secrets.<name>.file`;
  * - `services.<name>.env_file` / `label_file`;
- * - `services.<name>.build` — `context`, `dockerfile`, `additional_contexts`,
- *   and the build-time host reach of `ssh`, `network: host`, `privileged`,
- *   `entitlements`;
  * - `services.<name>.extends.file` and top-level `include` — always, even
  *   inside the directory: the daemon reads those files on the host at deploy
  *   time, so what they add never passes this check.
@@ -31,6 +28,9 @@
  *
  * Fail closed: a path this module cannot resolve statically — an interpolated
  * `${VAR}`, a backslash, a value of the wrong type — is treated as outside.
+ *
+ * `services.<name>.build` is not here: what a build may read and reach is
+ * refused outright, with no opt-in, by `./build-policy.ts`.
  *
  * Pure and org-blind, like the rest of `src/features/compose/`: it only says
  * *what* is host-level. Whether this organization may deploy it is decided
@@ -72,10 +72,6 @@ function joinPath(segments: ReadonlyArray<string | number>): string {
   return out
 }
 
-/**
- * Why a host path is outside the service's directory, or `null` when it is a
- * plain relative path that stays inside it.
- */
 /** Trailing slashes stripped without a quantified regex. */
 function withoutTrailingSlashes(value: string): string {
   let end = value.length
@@ -83,7 +79,11 @@ function withoutTrailingSlashes(value: string): string {
   return value.slice(0, end)
 }
 
-function outsideReason(path: string): string | null {
+/**
+ * Why a host path is outside the service's directory, or `null` when it is a
+ * plain relative path that stays inside it.
+ */
+export function outsideReason(path: string): string | null {
   const trimmed = path.trim()
   if (trimmed === '') return 'is empty, so it cannot be resolved'
   if (trimmed.includes('$')) {
@@ -107,7 +107,6 @@ function outsideReason(path: string): string | null {
  * Why a bind source is not allowed even though it stays inside: the service's
  * directory itself (`.`, `./`). A container that can write there can rewrite
  * the files the daemon deploys from and plant symlinks a later bind follows.
- * Only binds — a build context of `.` only reads, so it stays allowed.
  */
 function wholeDirectoryReason(path: string): string | null {
   const parts = path
@@ -126,15 +125,6 @@ function wholeDirectoryReason(path: string): string | null {
  */
 const PULLS_UNCHECKED_COMPOSE =
   'is read on the host at deploy time, so what it adds never passes this check'
-
-/** Whether a URL-shaped build context names a remote source, not a host path. */
-function isRemoteContext(value: string): boolean {
-  return (
-    /^[a-z][a-z0-9+.-]*:\/\//i.test(value) ||
-    value.startsWith('git@') ||
-    /^github\.com\//i.test(value)
-  )
-}
 
 class Collector {
   readonly findings: HostAccessFinding[] = []
@@ -248,97 +238,6 @@ function checkFileList(
 }
 
 /**
- * A build context. A URL-shaped one names a remote source, not a host path, so
- * only a string that is not remote — or a value that is not a string at all —
- * is judged as a path.
- */
-function checkBuildContext(out: Collector, segments: Array<string | number>, context: unknown) {
-  if (context === undefined) return
-  if (typeof context === 'string' && isRemoteContext(context)) return
-  out.path(segments, 'build context', context)
-}
-
-/** Build contexts that name another service or image, or a remote source. */
-function isNonPathAdditionalContext(value: unknown): boolean {
-  return (
-    typeof value === 'string' &&
-    (isRemoteContext(value) || value.startsWith('docker-image://') || value.startsWith('service:'))
-  )
-}
-
-function checkAdditionalContexts(out: Collector, at: Array<string | number>, contexts: unknown) {
-  if (isRecord(contexts)) {
-    for (const [name, value] of Object.entries(contexts)) {
-      if (isNonPathAdditionalContext(value)) continue
-      out.path([...at, 'additional_contexts', name], 'additional build context', value)
-    }
-  } else if (Array.isArray(contexts)) {
-    out.add(
-      [...at, 'additional_contexts'],
-      'additional build contexts',
-      'are a list, so the paths they name cannot be checked',
-      contexts
-    )
-  }
-}
-
-/** What a build can reach on the host besides files: `ssh`, the host network, privileges. */
-function checkBuildPrivileges(
-  out: Collector,
-  at: Array<string | number>,
-  build: Record<string, unknown>
-) {
-  if (build.ssh !== undefined) {
-    out.add(
-      [...at, 'ssh'],
-      'build ssh',
-      "forwards the host's SSH agent or keys into the build",
-      build.ssh
-    )
-  }
-  if (build.network === 'host') {
-    out.add(
-      [...at, 'network'],
-      'build network `host`',
-      "shares the host's network stack",
-      build.network
-    )
-  }
-  if (build.privileged === true) {
-    out.add(
-      [...at, 'privileged'],
-      'privileged build',
-      'runs with full host privileges',
-      build.privileged
-    )
-  }
-  if (build.entitlements !== undefined) {
-    out.add(
-      [...at, 'entitlements'],
-      'build entitlements',
-      'grant the build host-level privileges',
-      build.entitlements
-    )
-  }
-}
-
-function checkBuild(out: Collector, serviceSegments: string[], build: unknown): void {
-  const at = [...serviceSegments, 'build']
-  if (build === undefined || build === null) return
-  if (typeof build === 'string') {
-    checkBuildContext(out, at, build)
-    return
-  }
-  if (!isRecord(build)) return
-  checkBuildContext(out, [...at, 'context'], build.context)
-  if (build.dockerfile !== undefined) {
-    out.path([...at, 'dockerfile'], 'Dockerfile', build.dockerfile)
-  }
-  checkAdditionalContexts(out, at, build.additional_contexts)
-  checkBuildPrivileges(out, at, build)
-}
-
-/**
  * How an `extends.file` is named in a message: the text as written, or a
  * primitive (a number, `null`) spelled out. Anything else (a mapping or list
  * the schema would refuse) has no text to quote, and stringifying it would
@@ -433,7 +332,6 @@ export function collectHostAccessFindings(data: unknown): HostAccessFinding[] {
       checkServiceVolumes(out, at, body.volumes)
       checkFileList(out, [...at, 'env_file'], 'env_file', body.env_file)
       checkFileList(out, [...at, 'label_file'], 'label_file', body.label_file)
-      checkBuild(out, at, body.build)
       checkExtends(out, at, body.extends)
     }
   }

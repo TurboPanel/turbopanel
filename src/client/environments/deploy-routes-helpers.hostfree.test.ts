@@ -257,6 +257,21 @@ test('mapPrepareErrorResponse covers every DeployPrepareError kind', () => {
   assertEquals(String(mergedInvalid.body.message).includes('overlay changes the base'), true)
 })
 
+test('mapPrepareErrorResponse refuses a build option with 422 and the rule codes', () => {
+  const issue = {
+    path: 'services.web.build.network',
+    message: 'build network `host` is refused',
+    level: 'error' as const,
+    code: 'build_network_refused' as const,
+  }
+  const refused = mapPrepareErrorResponse({ kind: 'compose_build_refused', issues: [issue] })
+  // 422, not 403: no opt-in and no higher role makes it deployable.
+  assertEquals(refused.status, 422)
+  assertEquals(refused.body.error, 'compose_build_refused')
+  assertEquals(refused.body.issues, [issue])
+  assertEquals(String(refused.body.message).includes('services.web.build.network'), true)
+})
+
 const NO_OVERRIDE = { strategy: null, migration: null }
 
 test('parseDeployRequestFlags defaults flags to false', () => {
