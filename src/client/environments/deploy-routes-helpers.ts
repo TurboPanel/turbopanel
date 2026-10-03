@@ -892,15 +892,19 @@ export function buildNativeAppServicesForDeploy(
   nativeAppServices: readonly PreparedNativeAppService[],
   hostings: EnvironmentDeployHosting[],
   ingressServices: readonly EnvironmentDeployIngressService[],
-  used: Set<number> = new Set<number>()
+  used: Set<number> = new Set<number>(),
+  uniqueKey?: string
 ): EnvironmentDeployNativeAppService[] {
   if (nativeAppServices.length === 0) return []
-  return assignNativeAppListenPorts(nativeAppServices, new Map<string, number>(), used).map(
-    (app) => ({
-      ...app,
-      serviceId: resolveDeployReleaseServiceId(app.composeServiceName, hostings, ingressServices),
-    })
-  )
+  return assignNativeAppListenPorts(
+    nativeAppServices,
+    new Map<string, number>(),
+    used,
+    uniqueKey
+  ).map((app) => ({
+    ...app,
+    serviceId: resolveDeployReleaseServiceId(app.composeServiceName, hostings, ingressServices),
+  }))
 }
 
 export type DeployMaterialValidationError = {

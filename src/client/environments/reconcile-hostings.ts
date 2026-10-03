@@ -39,6 +39,10 @@ import { forEachSequential } from '../../lib/sequential.ts'
 import { eq, inArray } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import {
+  type ComposeDocument,
+  type ComposeHostingExtensionEntry,
+  type ComposeHostingTlsMode,
+  type ComposeServiceKind,
   DEFAULT_HOSTING_PATH_PREFIX,
   hostingBindScopeOf,
   hostingEntryKey,
@@ -46,10 +50,6 @@ import {
   hostingTargetPortAuthorable,
   hostingTlsModeOf,
   readServiceTurbopanelExtension,
-  type ComposeDocument,
-  type ComposeHostingExtensionEntry,
-  type ComposeHostingTlsMode,
-  type ComposeServiceKind,
 } from '../../features/compose/index.ts'
 import { hosting, ip, service, tls } from '../../db/schema.ts'
 import {
@@ -64,8 +64,8 @@ import {
   withoutHostingComposeOwner,
 } from '../../features/hostings/hosting-compose-owner.ts'
 import {
-  parseHostingOptions,
   type HostingOptions,
+  parseHostingOptions,
 } from '../../features/hostings/hosting-options.ts'
 
 /**
@@ -251,7 +251,12 @@ function collectRefs(
  * not a UUID. A label two rows share resolves to neither — picking one would be
  * a coin flip about which certificate serves production traffic.
  */
-type RefResolution = { kind: 'ok'; id: string } | { kind: 'not_found' } | { kind: 'ambiguous' }
+type RefResolution =
+  | { kind: 'ok'; id: string }
+  | { kind: 'not_found' }
+  | {
+      kind: 'ambiguous'
+    }
 
 function buildRefIndex(
   rows: ReadonlyArray<{ id: string; label: string | null }>
@@ -746,20 +751,45 @@ export async function reconcileHostingsFromCompose(
     adopted: [],
   }
 
+  // Retire rows whose declaration is gone *before* upserting, so a renamed
+  // service does not find its old row still holding the hostname (a 409
+  // `hosting_hostname_conflict` against itself).
+  const declaredKeys = new Set<string>()
+  for (const route of routes) {
+    const serviceId = serviceIdByComposeName.get(route.composeServiceName)
+    if (serviceId) declaredKeys.add(existingRowKey(serviceId, route.route))
+  }
+  const staleRows = existingRows.filter((row) => {
+    const route = readRouteFromMetadata(row.metadata)
+    return route !== null && !declaredKeys.has(existingRowKey(row.serviceId, route))
+  })
+  const early = await pruneOrphanedComposeRows(db, staleRows, new Set<string>())
+  for (const row of staleRows) {
+    const route = readRouteFromMetadata(row.metadata)
+    if (route !== null) {
+      existingByKey.delete(existingRowKey(row.serviceId, route))
+    }
+  }
+  const staleIds = new Set(staleRows.map((row) => row.id))
+
   for (const route of routes) {
     const error = await reconcileDeclaredRoute(db, route, ctx)
     if (error) return { ok: false, error }
   }
 
-  const { removed, released } = await pruneOrphanedComposeRows(db, existingRows, ctx.keptIds)
+  const late = await pruneOrphanedComposeRows(
+    db,
+    existingRows.filter((row) => !staleIds.has(row.id)),
+    ctx.keptIds
+  )
 
   return {
     ok: true,
     created: ctx.created,
     updated: ctx.updated,
     adopted: ctx.adopted,
-    removed,
-    released,
+    removed: [...early.removed, ...late.removed],
+    released: [...early.released, ...late.released],
   }
 }
 

@@ -765,7 +765,8 @@ function createParamsForPreparedServer(
       row.prepared.nativeAppServices,
       row.prepared.hostings,
       row.prepared.ingressServices,
-      usedListenPorts
+      usedListenPorts,
+      params.environmentId
     ),
     sourceMaterial: row.prepared.sourceMaterial,
     ingressServices: row.prepared.ingressServices,

@@ -86,12 +86,16 @@ function hashServiceName(name: string): number {
 
 /**
  * Prefer hosting `targetPort` when free; otherwise a stable port in
- * 18080–18999 derived from the compose service name.
+ * 18080–18999 derived from `uniqueKey` (the environment id) plus the compose
+ * service name. The name alone is not unique on a host: two projects that each
+ * name a site `site` would otherwise share a loopback port, and Apache refuses
+ * the second `Listen`. Collisions inside one deploy are probed past via `used`.
  */
 export function allocateSiteListenPort(
   composeServiceName: string,
   used: Set<number>,
-  preferred?: number
+  preferred?: number,
+  environmentId = ''
 ): number {
   if (
     preferred !== undefined &&
@@ -104,7 +108,13 @@ export function allocateSiteListenPort(
     return preferred
   }
 
-  return allocateHashedPort(composeServiceName, used, LISTEN_PORT_BASE, LISTEN_PORT_SPAN, 'listen')
+  return allocateHashedPort(
+    `${environmentId}\0${composeServiceName}`,
+    used,
+    LISTEN_PORT_BASE,
+    LISTEN_PORT_SPAN,
+    'listen'
+  )
 }
 
 /** First free port in `[base, base + span)`, probing from the key's hash. */
@@ -252,7 +262,8 @@ export function assignSiteListenPorts<
     listenPort: allocateSiteListenPort(
       site.composeServiceName,
       used,
-      preferredListenPortByService.get(site.composeServiceName)
+      preferredListenPortByService.get(site.composeServiceName),
+      environmentId
     ),
   }))
   return assignBackendPorts(listening, used, environmentId)
