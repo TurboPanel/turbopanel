@@ -1,7 +1,7 @@
 import type { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
-import { createSessionMiddleware } from '../../client/authn/middleware.ts'
+import { createSessionMiddleware } from '../authn/middleware.ts'
 
 /** Organization routes that read the session but had no middleware mounted. */
 export const SESSION_GUARDED_ORG_PATHS = [

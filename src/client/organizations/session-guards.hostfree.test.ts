@@ -3,7 +3,7 @@ import { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import { deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
-import { registerOrganizationRoutes } from '../../client/organizations/routes.ts'
+import { registerOrganizationRoutes } from './routes.ts'
 import { registerOrganizationSessionGuards, SESSION_GUARDED_ORG_PATHS } from './session-guards.ts'
 
 const test = Deno.test.bind(Deno)
