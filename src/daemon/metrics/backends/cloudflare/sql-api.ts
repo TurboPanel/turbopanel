@@ -757,6 +757,25 @@ export function aeMissingMetricSentinelSql(): string {
 }
 
 /**
+ * SQL predicate true when `col` holds a real reading. Threshold, not
+ * equality against the sentinel: equality only works while the doubles JS
+ * writes and ClickHouse parses are bit-identical, and a real reading is
+ * never anywhere near -1e307.
+ */
+export function aePresentValueSql(col: string): string {
+  return `${col} > -pow(10, 307)`
+}
+
+/**
+ * Wrap a delta-sum so a window with no present rows reports the missing
+ * sentinel (read back as null) instead of the 0 an empty SUM yields. A host
+ * with no Caddy must show a gap, not a flat zero request line.
+ */
+function presenceAwareSum(presentCount: string, sum: string): string {
+  return `if(${presentCount} > 0, ${sum}, ${aeMissingMetricSentinelSql()})`
+}
+
+/**
  * Any parsed metric value at or below this is the missing-metric sentinel.
  * Threshold, not equality: the SQL-side sentinel is `-pow(10, 308)` and must
  * match after float round-trips. Same threshold as v3.
@@ -780,10 +799,10 @@ export function stripAeSentinel(value: number): number | null {
 export function weightedAvgExpressionForColumn(family: HostedFamily, doubleIndex: number): string {
   const col = doubleColumn(doubleIndex)
   const familyPred = familyPredicate(family)
-  const sentinel = aeMissingMetricSentinelSql()
   const weight = `${intervalSecondsColumn()} * _sample_interval`
-  const numerator = `SUM(if(${familyPred}, if(${col} = ${sentinel}, 0.0, ${col} * ${weight}), 0.0))`
-  const denominator = `SUM(if(${familyPred}, if(${col} = ${sentinel}, 0.0, ${weight} * 1.0), 0.0))`
+  const present = aePresentValueSql(col)
+  const numerator = `SUM(if(${familyPred}, if(${present}, ${col} * ${weight}, 0.0), 0.0))`
+  const denominator = `SUM(if(${familyPred}, if(${present}, ${weight} * 1.0, 0.0), 0.0))`
   return `${numerator} / ${denominator}`
 }
 
@@ -796,8 +815,11 @@ export function weightedAvgExpressionForColumn(family: HostedFamily, doubleIndex
 export function deltaSumExpressionForColumn(family: HostedFamily, doubleIndex: number): string {
   const col = doubleColumn(doubleIndex)
   const familyPred = familyPredicate(family)
-  const sentinel = aeMissingMetricSentinelSql()
-  return `SUM(if(${familyPred}, if(${col} = ${sentinel}, 0.0, ${col} * _sample_interval), 0.0))`
+  const present = aePresentValueSql(col)
+  return presenceAwareSum(
+    `SUM(if(${familyPred}, if(${present}, 1, 0), 0))`,
+    `SUM(if(${familyPred}, if(${present}, ${col} * _sample_interval, 0.0), 0.0))`
+  )
 }
 
 /** `max` aggregate for one host.system/host.io column, scoped to its family. */
@@ -819,7 +841,7 @@ export function lastValueExpressionForColumn(family: HostedFamily, doubleIndex: 
   const sentinel = aeMissingMetricSentinelSql()
   const rawValue = `if(${familyPred}, ${col}, ${sentinel})`
   const tsExpr = `toUnixTimestamp(${AE_TIMESTAMP_COLUMN})`
-  return `argMax(${rawValue}, if(${rawValue} = ${sentinel}, ${tsExpr} * 0, ${tsExpr}))`
+  return `argMax(${rawValue}, if(${aePresentValueSql(rawValue)}, ${tsExpr}, ${tsExpr} * 0))`
 }
 
 /**
@@ -1809,7 +1831,7 @@ function assertEntityIds(entityIds: readonly string[]): string[] {
 /** Per-(bucket, entity, field) accumulator across every contributing group row. */
 type EntityFieldAccumulator =
   | { aggregation: 'weighted-average'; numerator: number; denominator: number }
-  | { aggregation: 'delta-sum'; raw: number }
+  | { aggregation: 'delta-sum'; raw: number | null }
   | { aggregation: 'max'; raw: number }
   | { aggregation: 'last'; value: number; key: number }
 
@@ -1818,6 +1840,16 @@ type BucketEntityAccumulator = {
   /** Reconstructed `SUM(interval * weight)` — see {@link mergeIntervalWeightedSum}. */
   intervalWeightedSum: number
   fields: Map<string, EntityFieldAccumulator>
+}
+
+/** The accumulator so far, when it is of the given aggregation kind. */
+function priorAccumulator<K extends EntityFieldAccumulator['aggregation']>(
+  existing: EntityFieldAccumulator | undefined,
+  kind: K
+): Extract<EntityFieldAccumulator, { aggregation: K }> | undefined {
+  return existing?.aggregation === kind
+    ? (existing as Extract<EntityFieldAccumulator, { aggregation: K }>)
+    : undefined
 }
 
 function mergeFieldAccumulator(
@@ -1833,7 +1865,7 @@ function mergeFieldAccumulator(
 ): EntityFieldAccumulator {
   switch (aggregation) {
     case 'weighted-average': {
-      const prev = existing?.aggregation === 'weighted-average' ? existing : undefined
+      const prev = priorAccumulator(existing, 'weighted-average')
       return {
         aggregation: 'weighted-average',
         numerator: (prev?.numerator ?? 0) + (raw.numerator ?? 0),
@@ -1841,14 +1873,15 @@ function mergeFieldAccumulator(
       }
     }
     case 'delta-sum': {
-      const prev = existing?.aggregation === 'delta-sum' ? existing : undefined
-      return {
-        aggregation: 'delta-sum',
-        raw: (prev?.raw ?? 0) + (raw.raw ?? 0),
-      }
+      const prev = priorAccumulator(existing, 'delta-sum')
+      // A group whose delta-sum is the missing sentinel had no present rows:
+      // it adds nothing, and a field with no present group stays null.
+      const next = raw.raw === undefined ? null : stripAeSentinel(raw.raw)
+      const total = next === null ? (prev?.raw ?? null) : (prev?.raw ?? 0) + next
+      return { aggregation: 'delta-sum', raw: total }
     }
     case 'max': {
-      const prev = existing?.aggregation === 'max' ? existing : undefined
+      const prev = priorAccumulator(existing, 'max')
       const nextRaw = raw.raw ?? aeMissingSentinelValue()
       return {
         aggregation: 'max',
@@ -1856,7 +1889,7 @@ function mergeFieldAccumulator(
       }
     }
     case 'last': {
-      const prev = existing?.aggregation === 'last' ? existing : undefined
+      const prev = priorAccumulator(existing, 'last')
       const nextKey = raw.key ?? 0
       const nextValue = raw.value ?? aeMissingSentinelValue()
       if (prev === undefined || nextKey > prev.key) {
@@ -2080,8 +2113,8 @@ function buildPagedEntitySeriesSql(
           const numAlias = `${prefix}_n`
           const denAlias = `${prefix}_d`
           selects.push(
-            `SUM(if(${col} = ${sentinel}, 0.0, ${col} * ${intervalSecondsColumn()} * _sample_interval)) AS ${numAlias}`,
-            `SUM(if(${col} = ${sentinel}, 0.0, ${intervalSecondsColumn()} * _sample_interval)) AS ${denAlias}`
+            `SUM(if(${aePresentValueSql(col)}, ${col} * ${intervalSecondsColumn()} * _sample_interval, 0.0)) AS ${numAlias}`,
+            `SUM(if(${aePresentValueSql(col)}, ${intervalSecondsColumn()} * _sample_interval, 0.0)) AS ${denAlias}`
           )
           plans.push({
             field,
@@ -2095,7 +2128,10 @@ function buildPagedEntitySeriesSql(
         case 'delta-sum': {
           const rawAlias = `${prefix}_r`
           selects.push(
-            `SUM(if(${col} = ${sentinel}, 0.0, ${col} * _sample_interval)) AS ${rawAlias}`
+            `${presenceAwareSum(
+              `SUM(if(${aePresentValueSql(col)}, 1, 0))`,
+              `SUM(if(${aePresentValueSql(col)}, ${col} * _sample_interval, 0.0))`
+            )} AS ${rawAlias}`
           )
           plans.push({ field, slot, aggregation: 'delta-sum', rawAlias })
           break
@@ -2109,9 +2145,9 @@ function buildPagedEntitySeriesSql(
         case 'last': {
           const valueAlias = `${prefix}_v`
           const keyAlias = `${prefix}_k`
-          const keyExpr = `if(${col} = ${sentinel}, ${tsExpr} * 0, ${tsExpr})`
+          const keyExpr = `if(${aePresentValueSql(col)}, ${tsExpr}, ${tsExpr} * 0)`
           selects.push(
-            `argMax(if(${col} = ${sentinel}, ${sentinel}, ${col}), ${keyExpr}) AS ${valueAlias}`,
+            `argMax(if(${aePresentValueSql(col)}, ${col}, ${sentinel}), ${keyExpr}) AS ${valueAlias}`,
             `MAX(${keyExpr}) AS ${keyAlias}`
           )
           plans.push({
@@ -2181,7 +2217,7 @@ function applyPagedFieldPlan(
       acc.fields.set(
         plan.field,
         mergeFieldAccumulator(existing, 'delta-sum', {
-          raw: finiteNumberOr(row[plan.rawAlias], 0),
+          raw: finiteNumberOr(row[plan.rawAlias], aeMissingSentinelValue()),
         })
       )
       return
