@@ -203,5 +203,6 @@ export function serializeRecovery(row: RecoveryRecord) {
     targetDatacenterId: row.metadata.targetDatacenterId ?? null,
     sourceServerId: row.metadata.sourceServerId ?? null,
     targetServerId: row.metadata.targetServerId ?? null,
+    freshStandby: row.metadata.freshStandby ?? null,
   }
 }

@@ -236,8 +236,12 @@ test('keeps the standby WAL positions and last streaming read, dropping a malfor
   const { registry } = fakeRegistry(
     ok({ memberId: MEMBER_ID, role: 'replica', status: 'ready', replication: COLD })
   )
-  const outcome = await probeManagedMemberHealth(DB, registry, PARAMS, deps().merged)
+  const { merged, persisted } = deps()
+  const outcome = await probeManagedMemberHealth(DB, registry, PARAMS, merged)
   assertEquals(outcome, { status: 'observed', replication: COLD })
+  // The age is only meaningful at probe time: never stored.
+  const { lastStreaming: _age, ...stored } = COLD
+  assertEquals(persisted, [{ memberId: MEMBER_ID, replication: stored }])
 
   const { registry: bad } = fakeRegistry(
     ok({

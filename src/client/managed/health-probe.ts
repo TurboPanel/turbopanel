@@ -119,6 +119,14 @@ function parseLastStreaming(value: unknown): ManagedReplicationHealth['lastStrea
   return { at: value.at, ageMs: value.ageMs, ...lagFields(value) }
 }
 
+/** `lastStreaming.ageMs` is only meaningful at probe time: never stored. */
+function withoutLastStreaming(health: ManagedReplicationHealth): ManagedReplicationHealth {
+  if (!health.lastStreaming) return health
+  const stored = { ...health }
+  delete stored.lastStreaming
+  return stored
+}
+
 /**
  * Ask one member's daemon for a fresh replication reading and store it.
  * Sends nothing to a daemon that does not advertise `managed-health-v1`.
@@ -191,7 +199,7 @@ export async function probeManagedMemberHealth(
     if (parsed === 'member_mismatch') return { status: 'unavailable', reason: 'member_mismatch' }
     if (parsed === null) return { status: 'unavailable', reason: 'invalid_result' }
 
-    await persist(params.memberId, parsed)
+    await persist(params.memberId, withoutLastStreaming(parsed))
     return { status: 'observed', replication: parsed }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)

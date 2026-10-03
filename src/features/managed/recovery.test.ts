@@ -104,6 +104,12 @@ test('serializeRecovery surfaces blocked copy for the UI', () => {
     serializeRecovery({ ...row, metadata: {} }).blockedReason,
     null,
   )
+  assertEquals(serializeRecovery(row).freshStandby, null)
+  assertEquals(
+    serializeRecovery({ ...row, metadata: { freshStandby: 'r2 refused: receipt_stale' } })
+      .freshStandby,
+    'r2 refused: receipt_stale',
+  )
 })
 
 test('parseRecoveryMetadata drops non-number lagBytes that are not null', () => {

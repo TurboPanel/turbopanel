@@ -238,6 +238,7 @@ export const managedSchemas = {
       'targetDatacenterId',
       'sourceServerId',
       'targetServerId',
+      'freshStandby',
     ],
     properties: {
       id: { type: 'string', format: 'uuid' },
@@ -269,6 +270,12 @@ export const managedSchemas = {
       targetDatacenterId: { type: 'string', format: 'uuid', nullable: true },
       sourceServerId: { type: 'string', format: 'uuid', nullable: true },
       targetServerId: { type: 'string', format: 'uuid', nullable: true },
+      freshStandby: {
+        type: 'string',
+        nullable: true,
+        description:
+          'Automatic failover only: the event-time fresh-standby verdict per probed replica (accepted basis or refusal reason).',
+      },
     },
   },
   CreateManagedRequest: {
