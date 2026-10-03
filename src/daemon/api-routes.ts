@@ -1657,6 +1657,15 @@ export function registerDaemonApiRoutes<E extends Env>(
     }
   )
 
+  /**
+   * Authenticated no-op round trip. The daemon calls it after a firewall
+   * change goes live to prove it can still reach the control plane with a
+   * valid token; it reads nothing and the control plane runs no test of its own.
+   */
+  daemon.get('/ping', requireDaemonJwt, enforceJwtRestLimit('ping'), requireActiveDaemonKey, (c) =>
+    c.json({ ok: true, at: new Date().toISOString() }, 200)
+  )
+
   daemon.post(
     '/deployments/secrets/rehydrate',
     requireDaemonJwt,

@@ -342,8 +342,9 @@ test('handleManagedHaEvent honours the persisted cooldown (a fresh process sees 
     { managedId: MANAGED_ID, sourceMemberId: 'mem-primary', detector: 'postgres-probe' },
     { reporterServerId: SERVER_A, commandQueue: queue }
   )
-  // Refused: one visible terminal row, no fence/promote (no further reads).
+  // Refused: one visible terminal row, no fence/promote. The two extra reads
+  // look for an identical refusal to count instead of inserting again.
   assertEquals(result?.state, 'blocked')
   assertEquals(result?.metadata.blockedReason, AUTOMATIC_FAILOVER_COOLDOWN_MESSAGE)
-  assertEquals(calls, { inserts: 1, reads: 5 })
+  assertEquals(calls, { inserts: 1, reads: 7 })
 })
