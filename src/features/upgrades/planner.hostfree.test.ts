@@ -106,3 +106,29 @@ test("planSingleServer is one fleet daemon step", () => {
     { serverId: "srv-1", unit: "daemon", phase: "fleet", batchIndex: 0 },
   ]);
 });
+
+test("batch of 1 plans one server per wave, in fleet order", () => {
+  const plan = planUpgrade(
+    input({
+      fleetServerIds: ["a", "b", "c", "d"],
+      batch: { mode: "count", value: 1 },
+    }),
+  );
+  const fleet = plan.phases.find((p) => p.phase === "fleet");
+  assertEquals(fleet?.steps.map((s) => s.batchIndex), [0, 1, 2, 3]);
+});
+
+test("every fleet server lands in exactly one wave for any batch size", () => {
+  const ids = ["a", "b", "c", "d", "e", "f", "g"];
+  for (const value of [1, 2, 3, 7, 50]) {
+    const batch = { mode: "count", value } as const;
+    const plan = planUpgrade(input({ fleetServerIds: ids, batch }));
+    const steps = plan.phases.find((p) => p.phase === "fleet")?.steps ?? [];
+    assertEquals(steps.map((s) => s.serverId), ids);
+    const size = computeBatchSize(batch, ids.length);
+    assertEquals(
+      Math.max(...steps.map((s) => s.batchIndex)),
+      Math.ceil(ids.length / size) - 1,
+    );
+  }
+});

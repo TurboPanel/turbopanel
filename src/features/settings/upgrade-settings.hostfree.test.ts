@@ -6,6 +6,7 @@ import {
   getUpgradeSettings,
   isValidUpgradeSettings,
   normalizeUpgradeSettings,
+  parseUpgradeBatchDefault,
   setUpgradeSettings,
   type UpgradeSettings,
   UPGRADE_SETTINGS_KEY,
@@ -157,4 +158,26 @@ test('setUpgradeSettings rejects invalid values and round-trips a valid one', as
   assertEquals(stored.autoUpdate, true)
   assertEquals(stored.batch, { mode: 'count', value: 4 })
   assertEquals(stored.maintenanceWindow.weekdays, [1, 3])
+})
+
+test('the built-in default is one server at a time', () => {
+  assertEquals(DEFAULT_UPGRADE_SETTINGS.batch, { mode: 'count', value: 1 })
+})
+
+test('parseUpgradeBatchDefault reads count and percent, else one at a time', () => {
+  assertEquals(parseUpgradeBatchDefault('percent:100'), { mode: 'percent', value: 100 })
+  assertEquals(parseUpgradeBatchDefault(' count:5 '), { mode: 'count', value: 5 })
+  const bad = [undefined, '', 'all', 'percent:0', 'percent:101', 'count:0', 'count:10001', 'count:x']
+  for (const raw of bad) {
+    assertEquals(parseUpgradeBatchDefault(raw), { mode: 'count', value: 1 })
+  }
+})
+
+test('an unset row uses the environment default; a saved row wins', async () => {
+  const fallback = { mode: 'percent', value: 100 } as const
+  const unset = await getUpgradeSettings(createFakeSettingDb(), fallback)
+  assertEquals(unset.batch, fallback)
+  const saved = sample({ batch: { mode: 'count', value: 2 } })
+  const fake = createFakeSettingDb(saved)
+  assertEquals((await getUpgradeSettings(fake, fallback)).batch, { mode: 'count', value: 2 })
 })

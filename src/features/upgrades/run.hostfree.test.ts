@@ -191,3 +191,12 @@ test("every platform phase fails a run with a code from the published run vocabu
     );
   }
 });
+
+test("with a batch of 1 only one server is open at a time and a failure never starves the rest", () => {
+  const steps = batch([[0, "failed"], [1, "installing"], [2, "pending"]]);
+  assertEquals(activeBatchIndex(steps), 1);
+  assertEquals(batchComplete(steps, 0), true);
+  assertEquals(batchComplete(steps, 1), false);
+  const after = batch([[0, "failed"], [1, "needs_attention"], [2, "pending"]]);
+  assertEquals(activeBatchIndex(after), 2);
+});
