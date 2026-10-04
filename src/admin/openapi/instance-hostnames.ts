@@ -38,7 +38,7 @@ export const INSTANCE_HOSTNAME_PATHS = {
         "200": { description: "`{ ok, hostnames }`" },
         "400": { description: "Invalid request body" },
         "401": { description: "Unauthorized" },
-        "403": { description: "Forbidden — requires admin or superadmin role" },
+        "403": { description: "Forbidden — requires the superadmin role" },
         "422": {
           description:
             "`{ ok: false, error, invalid }` when a hostname fails validation, or " +
@@ -78,7 +78,7 @@ export const INSTANCE_HOSTNAME_PATHS = {
         },
         "400": { description: "Invalid request body" },
         "401": { description: "Unauthorized" },
-        "403": { description: "Forbidden — requires admin or superadmin role" },
+        "403": { description: "Forbidden — requires the superadmin role" },
         "422": { description: "Certificate parse or key match failed" },
         "503": { description: "Database or encryption unavailable" },
       },
@@ -98,7 +98,7 @@ export const INSTANCE_HOSTNAME_PATHS = {
         "200": { description: "`{ ok, hostnames }`" },
         "400": { description: "Invalid request body" },
         "401": { description: "Unauthorized" },
-        "403": { description: "Forbidden — requires admin or superadmin role" },
+        "403": { description: "Forbidden — requires the superadmin role" },
         "404": { description: "Certificate not found" },
         "422": {
           description:
@@ -138,7 +138,7 @@ export const INSTANCE_HOSTNAME_PATHS = {
         "200": { description: "`{ settings, tosAccepted }`" },
         "400": { description: "Invalid request body" },
         "401": { description: "Unauthorized" },
-        "403": { description: "Forbidden — requires admin or superadmin role" },
+        "403": { description: "Forbidden — requires the superadmin role" },
         "422": { description: "A setting value is invalid" },
         "503": {
           description:

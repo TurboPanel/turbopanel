@@ -1335,7 +1335,9 @@ src/
   `GET/PUT /instance/hostnames`, `GET/POST /instance/certificates`,
   `PATCH /instance/certificates/:id/hostnames`, and `GET/PUT /instance/acme`
   manage per-name certificate source and instance ACME settings (independent
-  of any organization's ACME opt-in); `GET /instance/daemon` reports the
+  of any organization's ACME opt-in); the reads stay admin-gated but the
+  writes (PUT hostnames, POST certificates, PATCH certificate hostnames, PUT
+  acme) sit behind `createRootOnlyMiddleware` like public URLs and apply; `GET /instance/daemon` reports the
   co-located daemon's `resolveDaemonCapabilities` snapshot (`{ applicable: false }`
   on Workers, and it must not wake a cell); `GET /instance/updates` reports the
   installed control-plane version (`INSTANCE_VERSION` plus `resolveInstanceRevision`)
