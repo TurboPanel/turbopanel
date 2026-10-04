@@ -217,7 +217,6 @@ test('the stale-command sweep settles the recovery of a command it times out', a
     id: 'cmd-p',
     name: 'managed.promote',
     queuedAt: '2026-08-28T00:00:00.000Z',
-    updatedAt: '2026-08-28T00:00:00.000Z',
     metadata: { recoveryId: 'rec-1' },
   })
   const db = createMemoryDb([
@@ -240,7 +239,6 @@ test('the stale-command sweep leaves a recovery alone when its command was alrea
     id: 'cmd-p',
     name: 'managed.promote',
     queuedAt: '2026-08-28T00:00:00.000Z',
-    updatedAt: '2026-08-28T00:00:00.000Z',
     metadata: { recoveryId: 'rec-1' },
   })
   // The command row is gone (a concurrent writer finished it): no transition.
