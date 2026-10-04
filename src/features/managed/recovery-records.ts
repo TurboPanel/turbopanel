@@ -1,11 +1,13 @@
-import { and, desc, eq, inArray, isNotNull, notInArray } from 'drizzle-orm'
+import { and, desc, eq, inArray, isNotNull } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import { recovery } from '../../db/schema.ts'
+import { managed, recovery } from '../../db/schema.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 import {
   isRecoveryKind,
   isRecoveryState,
   parseRecoveryMetadata,
+  RECOVERY_STALLED_MESSAGE,
+  RECOVERY_STATES,
   type RecoveryKind,
   type RecoveryMetadata,
   type RecoveryRecord,
@@ -13,7 +15,7 @@ import {
   TERMINAL_RECOVERY_STATES,
 } from './recovery.ts'
 
-const TERMINAL_STATES = [...TERMINAL_RECOVERY_STATES]
+const IN_FLIGHT_STATES = RECOVERY_STATES.filter((state) => !TERMINAL_RECOVERY_STATES.has(state))
 
 function serializeRow(row: typeof recovery.$inferSelect): RecoveryRecord | null {
   if (!isRecoveryKind(row.kind) || !isRecoveryState(row.state)) return null
@@ -45,7 +47,7 @@ export async function findInFlightRecovery(
   const rows = await db
     .select()
     .from(recovery)
-    .where(and(eq(recovery.managedId, managedId), notInArray(recovery.state, TERMINAL_STATES)))
+    .where(and(eq(recovery.managedId, managedId), inArray(recovery.state, IN_FLIGHT_STATES)))
     .orderBy(desc(recovery.startedAt))
     .limit(1)
   const row = rows[0]
@@ -276,6 +278,15 @@ export async function updateRecoveryLocked(
 /** A `detecting`/`fencing` row older than this with no command queued is expired. */
 export const STALE_DETECTING_RECOVERY_MS = 10 * 60_000
 
+/**
+ * Longest a recovery step may go without any update: the longest recovery
+ * command lifetime (10 minutes) plus the stale-command grace (5 minutes). Every
+ * state change bumps `updatedAt`, so a row older than this has no live driver.
+ */
+export const STALE_RECOVERY_STEP_MS = 15 * 60_000
+
+const SWEEP_LIMIT = 200
+
 function hasQueuedCommands(metadata: RecoveryMetadata): boolean {
   return Boolean(
     (metadata.fenceCommandIds?.length ?? 0) > 0 ||
@@ -285,39 +296,82 @@ function hasQueuedCommands(metadata: RecoveryMetadata): boolean {
   )
 }
 
+function ageMs(iso: string, nowMs: number): number {
+  const at = Date.parse(iso)
+  return Number.isFinite(at) ? nowMs - at : 0
+}
+
 /**
- * Safety net for the stale sweep: a `detecting` or `fencing` row that nothing
- * advanced (no command recorded in its metadata) for
- * {@link STALE_DETECTING_RECOVERY_MS} holds the per-cluster in-flight slot
- * and would lock switchover / DR out with `managed_busy`. Expire it to
- * terminal `blocked`. Returns the expired ids.
+ * What the sweep should do with an in-flight row, or null to leave it:
+ * - never advanced (`detecting`/`fencing`, no command queued) for 10 minutes:
+ *   terminal `blocked`, nothing ran so nothing needs checking;
+ * - no update for a full step budget in any state: terminal `failed` flagged
+ *   `needsOperator`, because the driver is gone and roles may be half changed.
  */
-export async function expireStaleDetectingRecoveries(
+function stalePatch(
+  row: RecoveryRecord,
+  nowMs: number,
+  unadvancedMaxAgeMs: number,
+  unadvancedReason: string
+): RecoveryPatch | null {
+  const unadvanced =
+    (row.state === 'detecting' || row.state === 'fencing') && !hasQueuedCommands(row.metadata)
+  if (unadvanced && ageMs(row.startedAt, nowMs) >= unadvancedMaxAgeMs) {
+    return { state: 'blocked', metadata: { ...row.metadata, blockedReason: unadvancedReason } }
+  }
+  if (ageMs(row.updatedAt, nowMs) >= STALE_RECOVERY_STEP_MS) {
+    return {
+      state: 'failed',
+      metadata: {
+        ...row.metadata,
+        needsOperator: true,
+        failedReason: RECOVERY_STALLED_MESSAGE,
+      },
+    }
+  }
+  return null
+}
+
+/**
+ * Time-bounded recovery state machine. A recovery that loses its driver (a
+ * control plane restart or deploy mid-failover) would otherwise hold the
+ * per-cluster in-flight slot for ever and answer `managed_busy` to every
+ * switchover and DR. Every non-terminal row is re-judged here: an unadvanced
+ * `detecting`/`fencing` row expires to `blocked`, any other row with no
+ * progress for {@link STALE_RECOVERY_STEP_MS} ends `failed` with `needsOperator`
+ * so operator actions unblock. The decision is re-made under the row lock, so
+ * a row that advanced since the read is never overwritten. A `managed` row
+ * parked at `applying` by a failed recovery is released to `failed`.
+ * Returns the rows that were expired.
+ */
+export async function expireStaleRecoveries(
   db: Db,
   opts: { now?: number; maxAgeMs?: number; reason: string }
-): Promise<string[]> {
+): Promise<RecoveryRecord[]> {
   const nowMs = opts.now ?? Date.now()
   const maxAgeMs = opts.maxAgeMs ?? STALE_DETECTING_RECOVERY_MS
   const rows = await db
     .select()
     .from(recovery)
-    .where(inArray(recovery.state, ['detecting', 'fencing']))
-  const stale = rows
+    .where(inArray(recovery.state, IN_FLIGHT_STATES))
+    .limit(SWEEP_LIMIT)
+  const candidates = rows
     .map((row) => serializeRow(row))
     .filter((row): row is RecoveryRecord => row !== null)
-    .filter((row) => {
-      const started = Date.parse(row.startedAt)
-      return (
-        Number.isFinite(started) && nowMs - started >= maxAgeMs && !hasQueuedCommands(row.metadata)
-      )
-    })
-  const expired: string[] = []
-  await forEachSequential(stale, async (row) => {
-    const updated = await updateRecovery(db, row.id, {
-      state: 'blocked',
-      metadata: { ...row.metadata, blockedReason: opts.reason },
-    })
-    if (updated) expired.push(updated.id)
+    .filter((row) => stalePatch(row, nowMs, maxAgeMs, opts.reason) !== null)
+  const expired: RecoveryRecord[] = []
+  await forEachSequential(candidates, async (row) => {
+    const updated = await updateRecoveryLocked(db, row.id, (current) =>
+      stalePatch(current, nowMs, maxAgeMs, opts.reason)
+    )
+    if (!updated) return
+    expired.push(updated)
+    if (updated.state === 'failed') {
+      await db
+        .update(managed)
+        .set({ status: 'failed', updatedAt: new Date().toISOString() })
+        .where(and(eq(managed.id, updated.managedId), eq(managed.status, 'applying')))
+    }
   })
   return expired
 }

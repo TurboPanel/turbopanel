@@ -1,5 +1,5 @@
 import type { Hono } from 'hono'
-import { expireStaleDetectingRecoveries } from '../../features/managed/recovery-records.ts'
+import { expireStaleRecoveries } from '../../features/managed/recovery-records.ts'
 import { AUTOMATIC_FAILOVER_STALE_DETECTING_MESSAGE } from '../../features/managed/recovery.ts'
 import { deriveDaemonJwtKeyring } from '../../daemon/authn/daemon-jwt-keyring.ts'
 import {
@@ -322,14 +322,18 @@ async function runCleanupPhase(label: string, fn: () => Promise<unknown>): Promi
 
 async function sweepStaleCommandsPhase(db: Db): Promise<void> {
   const swept = await sweepStaleCommands(db)
+  // Recoveries first: a row that is still in flight keeps its managed row at
+  // `applying`, and an expired one releases it itself.
+  const expired = (
+    await expireStaleRecoveries(db, {
+      reason: AUTOMATIC_FAILOVER_STALE_DETECTING_MESSAGE,
+    })
+  ).map((row) => row.id)
   const released = await releaseStuckManagedApplying(db)
-  const expired = await expireStaleDetectingRecoveries(db, {
-    reason: AUTOMATIC_FAILOVER_STALE_DETECTING_MESSAGE,
-  })
   if (swept > 0 || released.length > 0 || expired.length > 0) {
     logWarn(
       'daemon-cell',
-      `stale command sweep: timed out ${swept}, released managed ${released.join(',') || 'none'}, expired detecting recoveries ${expired.join(',') || 'none'}`
+      `stale command sweep: timed out ${swept}, released managed ${released.join(',') || 'none'}, expired recoveries ${expired.join(',') || 'none'}`
     )
   }
 }

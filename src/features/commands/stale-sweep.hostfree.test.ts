@@ -1,7 +1,10 @@
 import { assertEquals } from "@std/assert";
+import { managed, recovery } from "../../db/schema.ts";
+import { createMemoryDb } from "../../test-fixtures/memory-db.ts";
 import {
   daemonEverHadCommand,
   isStaleCommand,
+  settleRecoveryOfTimedOutCommand,
   STALE_COMMAND_GRACE_MS,
   type StaleCommandCandidate,
 } from "./stale-sweep.ts";
@@ -142,4 +145,67 @@ test("a stalled command says whether re-running it is free", () => {
     daemonEverHadCommand({ ...base, sentAt: null, dispatchStartedAt: null }),
     false,
   );
+});
+
+function recoveryRowFor(state: string, metadata: Record<string, unknown>) {
+  return {
+    id: "rec-1",
+    managedId: "mgd-1",
+    kind: "automatic-failover",
+    sourcePrimaryMemberId: "mem-a",
+    targetMemberId: "mem-b",
+    state,
+    startedAt: new Date(T0).toISOString(),
+    completedAt: null,
+    metadata,
+    createdAt: new Date(T0).toISOString(),
+    updatedAt: new Date(T0).toISOString(),
+  };
+}
+
+test("a timed-out fence stop frees the recovery slot instead of stranding the row", async () => {
+  const db = createMemoryDb([
+    [recovery, [recoveryRowFor("fencing", { fenceCommandIds: ["cmd-stop"] })]],
+    [managed, [{ id: "mgd-1", status: "applying" }]],
+  ]);
+  await settleRecoveryOfTimedOutCommand(
+    db,
+    candidate({
+      id: "cmd-stop",
+      name: "managed.lifecycle",
+      metadata: { recoveryId: "rec-1", fencePhase: "stop" },
+    }),
+  );
+  assertEquals(db.rows(recovery)[0]?.state, "blocked");
+});
+
+test("a timed-out promote command fails the recovery for the operator", async () => {
+  const db = createMemoryDb([
+    [recovery, [recoveryRowFor("promoting", { promoteCommandId: "cmd-p" })]],
+    [managed, [{ id: "mgd-1", status: "applying" }]],
+  ]);
+  await settleRecoveryOfTimedOutCommand(
+    db,
+    candidate({
+      id: "cmd-p",
+      name: "managed.promote",
+      metadata: { recoveryId: "rec-1" },
+    }),
+  );
+  const row = db.rows(recovery)[0];
+  assertEquals(row?.state, "failed");
+  assertEquals((row?.metadata as Record<string, unknown>).needsOperator, true);
+  assertEquals(db.rows(managed)[0]?.status, "failed");
+});
+
+test("a timed-out command with no recovery is left alone", async () => {
+  const db = createMemoryDb([
+    [recovery, [recoveryRowFor("promoting", {})]],
+    [managed, []],
+  ]);
+  await settleRecoveryOfTimedOutCommand(
+    db,
+    candidate({ name: "managed.apply", metadata: {} }),
+  );
+  assertEquals(db.rows(recovery)[0]?.state, "promoting");
 });

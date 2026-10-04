@@ -44,7 +44,7 @@ import {
   resolvePrivateEndpoint,
 } from '../../features/net/private-endpoint.ts'
 import {
-  assertManagedNotBusy,
+  assertManagedIdle,
   assertTargetServerOnline,
   authorizeManagedRequest,
   loadManagedContext,
@@ -777,7 +777,7 @@ async function assertManagedApplyReady(
   options: ManagedRowOptions,
   targetServerId: string
 ): Promise<CommandQueue | Response> {
-  const busy = assertManagedNotBusy(c, managedRow.status)
+  const busy = await assertManagedIdle(c, db, managedRow)
   if (busy) return busy
 
   const offline = await assertTargetServerOnline(c, db, targetServerId)
@@ -1261,7 +1261,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     if (scope instanceof Response) return scope
     const { db, auth, ctx, row } = scope
 
-    const busy = assertManagedNotBusy(c, row.status)
+    const busy = await assertManagedIdle(c, db, row)
     if (busy) return busy
 
     // Resource limits are server-specific — clamp against the host that
@@ -1342,7 +1342,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     if (scope instanceof Response) return scope
     const { db, auth, ctx, row } = scope
 
-    const busy = assertManagedNotBusy(c, row.status)
+    const busy = await assertManagedIdle(c, db, row)
     if (busy) return busy
 
     const targetServerId = resolveManagedTargetServerId(c, row.serverId)
@@ -1389,7 +1389,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const stepUp = await requireStepUpIfConfigured(c, auth.organizationId, 'managed.delete')
     if (stepUp) return stepUp
 
-    const busy = assertManagedNotBusy(c, row.status)
+    const busy = await assertManagedIdle(c, db, row)
     if (busy) return busy
 
     const canHardDelete = canHardDeleteManaged(row.serverId)
@@ -2078,7 +2078,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     if (scope instanceof Response) return scope
     const { db, auth, ctx, row } = scope
 
-    const busy = assertManagedNotBusy(c, row.status)
+    const busy = await assertManagedIdle(c, db, row)
     if (busy) return busy
 
     const primaryServerId = resolveManagedTargetServerId(c, row.serverId)
@@ -2181,7 +2181,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const row = await findManagedForEnvironment(db, environmentId)
     if (!row) return c.json({ error: 'Not found' }, 404)
 
-    const busy = assertManagedNotBusy(c, row.status)
+    const busy = await assertManagedIdle(c, db, row)
     if (busy) return busy
 
     const member = await findManagedMember(db, memberId)
@@ -2242,7 +2242,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const row = await findManagedForEnvironment(db, environmentId)
     if (!row) return c.json({ error: 'Not found' }, 404)
 
-    const busy = assertManagedNotBusy(c, row.status)
+    const busy = await assertManagedIdle(c, db, row)
     if (busy) return busy
 
     const member = await findManagedMember(db, memberId)
@@ -2341,6 +2341,11 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const row = await findManagedForEnvironment(db, environmentId)
     if (!row) return c.json({ error: 'Not found' }, 404)
 
+    // A resync wipes the member's data directory: never while a failover is
+    // fencing or promoting (it may be the candidate being promoted).
+    const busy = await assertManagedIdle(c, db, row)
+    if (busy) return busy
+
     const member = await findManagedMember(db, memberId)
     if (member?.managedId !== row.id) {
       return c.json({ error: 'Not found' }, 404)
@@ -2395,7 +2400,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const row = await findManagedForEnvironment(db, environmentId)
     if (!row) return c.json({ error: 'Not found' }, 404)
 
-    const busy = assertManagedNotBusy(c, row.status)
+    const busy = await assertManagedIdle(c, db, row)
     if (busy) return busy
 
     const member = await findManagedMember(db, memberId)
@@ -2460,7 +2465,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     if (scope instanceof Response) return scope
     const { db, auth, ctx, row } = scope
 
-    const busy = assertManagedNotBusy(c, row.status)
+    const busy = await assertManagedIdle(c, db, row)
     if (busy) return busy
 
     const body = await parseJsonBody(c)
@@ -2623,7 +2628,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const targetServerId = resolveManagedTargetServerId(c, row.serverId)
     if (targetServerId instanceof Response) return targetServerId
 
-    const busy = assertManagedNotBusy(c, row.status)
+    const busy = await assertManagedIdle(c, db, row)
     if (busy) return busy
 
     const offline = await assertTargetServerOnline(c, db, targetServerId)
@@ -2683,7 +2688,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const targetServerId = resolveManagedTargetServerId(c, row.serverId)
     if (targetServerId instanceof Response) return targetServerId
 
-    const busy = assertManagedNotBusy(c, row.status)
+    const busy = await assertManagedIdle(c, db, row)
     if (busy) return busy
 
     const offline = await assertTargetServerOnline(c, db, targetServerId)
@@ -2734,7 +2739,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const targetServerId = resolveManagedTargetServerId(c, row.serverId)
     if (targetServerId instanceof Response) return targetServerId
 
-    const busy = assertManagedNotBusy(c, row.status)
+    const busy = await assertManagedIdle(c, db, row)
     if (busy) return busy
 
     const offline = await assertTargetServerOnline(c, db, targetServerId)

@@ -130,7 +130,9 @@ import {
   onFenceCommandFailed,
   onFenceCommandSucceeded,
   onPromoteSucceeded,
+  logRecoveryAdvanceFailure,
   onRecoveryCommandFailed,
+  onRecoveryStepFailed,
   recoveryIdFromCommandMetadata,
 } from '../managed/ha-recovery.ts'
 import { isManagedEngineCode, type ManagedEngineCode } from '../managed/types.ts'
@@ -2110,6 +2112,24 @@ async function applyFirewallFailedSideEffect(
  * `fanOutManagedIngressReconcile` so member and consuming servers both
  * re-reconcile ProxySQL against the new primary.
  */
+/**
+ * The side effect of a successful promote threw after the role change. Nothing
+ * else advances the recovery row, so end it terminal for the operator instead
+ * of leaving it holding the cluster's slot (`managed_busy` for ever).
+ */
+async function failRecoveryOfSideEffectError(
+  db: Db,
+  record: DispatchableCommandRecord
+): Promise<void> {
+  try {
+    const recoveryId = recoveryIdFromCommandMetadata(await getCommandMetadata(db, record.id))
+    if (recoveryId) await onRecoveryStepFailed(db, recoveryId)
+  } catch (err) {
+    // The recovery sweep expires the row if even this write fails.
+    logRecoveryAdvanceFailure(record.id, errorMessage(err))
+  }
+}
+
 async function applyManagedPromoteSideEffect(
   db: Db,
   record: DispatchableCommandRecord,
@@ -2242,6 +2262,7 @@ async function applyManagedPromoteSideEffect(
       'command-consumer',
       `managed.promote side effect failed for command ${record.id}: ${message}`
     )
+    await failRecoveryOfSideEffectError(db, record)
   }
 }
 
@@ -2357,6 +2378,7 @@ async function applyManagedHaFailoverSideEffect(
       'command-consumer',
       `managed.ha.failover side effect failed for command ${record.id}: ${message}`
     )
+    await failRecoveryOfSideEffectError(db, record)
   }
 }
 

@@ -52,6 +52,24 @@ export const AUTOMATIC_FAILOVER_NO_QUEUE_MESSAGE =
 export const AUTOMATIC_FAILOVER_STALE_DETECTING_MESSAGE =
   'Recovery expired: it was never advanced and no command was queued (stale_unadvanced)'
 
+/**
+ * A row that has been in flight for a full step budget with no progress: the
+ * control plane that was driving it is gone (restart, deploy) or the daemon
+ * never answered. The row ends terminal `failed` and is flagged
+ * `needsOperator`: nothing will advance it, the cluster's roles may be
+ * half-changed, and an operator has to look before changing roles again.
+ */
+export const RECOVERY_STALLED_MESSAGE =
+  'Recovery stopped: nothing advanced it for 15 minutes (the control plane restarted or a server never answered). The cluster may be half way through a role change. Check which member is the writer before switching over again.'
+
+/** A recovery command timed out or its result was lost. */
+export const RECOVERY_COMMAND_TIMED_OUT_MESSAGE =
+  'Recovery stopped: a recovery command timed out or its result was lost. The cluster may be half way through a role change. Check which member is the writer before switching over again.'
+
+/** A step after the role change threw, so the row can never be advanced. */
+export const RECOVERY_STEP_FAILED_MESSAGE =
+  'Recovery stopped: a step after the role change failed. The roles were changed; check the cluster, then reconcile it.'
+
 /** Refused inside the per-cluster cooldown (recorded, terminal, no target). */
 export const AUTOMATIC_FAILOVER_COOLDOWN_MESSAGE =
   'Automatic failover refused: a previous automatic failover started less than 15 minutes ago (cooldown)'
@@ -108,6 +126,12 @@ export type RecoveryMetadata = {
    * (no fencing, no promotion). `blockedReason` says why.
    */
   stale?: boolean
+  /**
+   * Terminal `failed` row nothing will advance: an operator has to check the
+   * cluster before the next role change. `failedReason` says why.
+   */
+  needsOperator?: boolean
+  failedReason?: string
 }
 
 export type RecoveryRecord = {
@@ -196,6 +220,8 @@ export function parseRecoveryMetadata(value: unknown): RecoveryMetadata {
   setIfPresent(metadata, 'detectorEvidence', optionalString(value.detectorEvidence))
   setIfPresent(metadata, 'freshStandby', optionalString(value.freshStandby))
   setIfPresent(metadata, 'stale', optionalBoolean(value.stale))
+  setIfPresent(metadata, 'needsOperator', optionalBoolean(value.needsOperator))
+  setIfPresent(metadata, 'failedReason', optionalString(value.failedReason))
   return metadata
 }
 
@@ -209,6 +235,8 @@ export function serializeRecovery(row: RecoveryRecord) {
     startedAt: row.startedAt,
     completedAt: row.completedAt,
     blockedReason: row.metadata.blockedReason ?? null,
+    needsOperator: row.metadata.needsOperator ?? false,
+    failedReason: row.metadata.failedReason ?? null,
     lagBytes: row.metadata.lagBytes ?? null,
     sourceDatacenterId: row.metadata.sourceDatacenterId ?? null,
     targetDatacenterId: row.metadata.targetDatacenterId ?? null,
