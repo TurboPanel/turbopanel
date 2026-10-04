@@ -21,6 +21,7 @@ import {
   stampRelayPublicKey,
   stampRelayReconcileSuccess,
   updateFabricRelay,
+  type UnallocatedFabricServer,
 } from './fabric-records.ts'
 import { fabric, network, relay, server, subnet } from '../../db/schema.ts'
 
@@ -1260,7 +1261,7 @@ test('ensureFabricRelays enrols 16 servers of 17 on the default pool and reports
     FabricAllocationError
   )
 
-  const unallocated: { serverId: string; kind: string }[] = []
+  const unallocated: UnallocatedFabricServer[] = []
   const relays = await ensureFabricRelays(db, {
     fabric,
     organizationId: ORG,
