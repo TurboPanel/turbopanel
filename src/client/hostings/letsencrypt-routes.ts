@@ -8,13 +8,13 @@
  * - `GET /hostings/:id/dns-check` - the same DNS check, read-only.
  */
 import { eq } from 'drizzle-orm'
-import type { Hono, MiddlewareHandler } from 'hono'
+import type { Context, Hono, MiddlewareHandler } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { assertCanOr403 } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
-import { getDb } from '../../db/connection.ts'
+import { getDb, type Db } from '../../db/connection.ts'
 import { hosting } from '../../db/schema.ts'
 import { recordAudit } from '../../features/audit/audit-records.ts'
 import {
@@ -92,6 +92,23 @@ function enrichHostingReads(now: () => Date): MiddlewareHandler<AppEnv> {
   }
 }
 
+/** Same gate as PATCH /hostings/:id: this organization's row, manager, not system or compose owned. */
+async function refuseHostingWrite(
+  c: Context<AppEnv>,
+  db: Db,
+  organizationId: string,
+  id: string
+): Promise<Response | null> {
+  if ((await resolveEntityOrganizationId(db, 'hosting', id)) !== organizationId) {
+    return c.json({ error: 'Not found' }, 404)
+  }
+  const denied = await assertCanOr403(c, 'organization:manage', 'hosting', id)
+  if (denied) return denied
+  const immutable = await assertNotSystemOwnedOr403(c, 'hosting', id)
+  if (immutable) return immutable
+  return assertHostingNotComposeOwnedOr409(c, db, id)
+}
+
 export function registerHostingLetsEncryptRoutes(
   router: Hono<AppEnv>,
   opts: AuthRouteOpts,
@@ -119,15 +136,8 @@ export function registerHostingLetsEncryptRoutes(
     const organizationId = orgResult
 
     const id = c.req.param('id')
-    if ((await resolveEntityOrganizationId(db, 'hosting', id)) !== organizationId) {
-      return c.json({ error: 'Not found' }, 404)
-    }
-    const denied = await assertCanOr403(c, 'organization:manage', 'hosting', id)
-    if (denied) return denied
-    const immutable = await assertNotSystemOwnedOr403(c, 'hosting', id)
-    if (immutable) return immutable
-    const composeOwned = await assertHostingNotComposeOwnedOr409(c, db, id)
-    if (composeOwned) return composeOwned
+    const refused = await refuseHostingWrite(c, db, organizationId, id)
+    if (refused) return refused
 
     const body = await parseJsonBody(c)
     if (body instanceof Response) return body
