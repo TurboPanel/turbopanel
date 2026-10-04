@@ -11,7 +11,6 @@ import type { Db } from '../../db/connection.ts'
 import { license, organization, server, tier } from '../../db/schema.ts'
 import { listSeatsForOrganization } from '../billing/billing-records.ts'
 import {
-  parseServerHardwareProfile,
   parseServerHostResources,
   parseServerOptions,
   resolveEffectiveMetricsCapabilityPlan,
@@ -25,13 +24,14 @@ import {
   resolveServerMachineClass,
 } from '../../contracts/capability-plan.ts'
 import { getLatestTopologyGenerations } from '../servers/server-topology-records.ts'
-import { computeSlotMapping, isWholeDisk } from '../../contracts/topology-slot-mapping.ts'
-import {
-  EMPTY_TOPOLOGY_OVERRIDES,
-  type TopologyOverrides,
-  type TopologySnapshot,
-} from '../../contracts/topology-types.ts'
+import type { TopologyOverrides, TopologySnapshot } from '../../contracts/topology-types.ts'
 import { metricsCapabilityTierEntitlementsForRank } from './tier-entitlements.ts'
+import {
+  discoveredDeviceIds,
+  monitoredNicIds,
+  parseTopologySnapshot,
+  topologyOverridesFromMetadata,
+} from './topology-recommendation.ts'
 import { computeAssignment } from './assignment.ts'
 import { loadAssignableServers, tierQuantitiesFromState } from './assignment-records.ts'
 import {
@@ -119,80 +119,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-function isSlotMappableTopologySnapshot(value: Record<string, unknown>): value is TopologySnapshot {
-  return (
-    Array.isArray(value.networks) &&
-    Array.isArray(value.filesystems) &&
-    Array.isArray(value.blockDevices) &&
-    Array.isArray(value.gpus) &&
-    Array.isArray(value.hardwareSignals)
-  )
-}
-
-export function parseTopologySnapshot(value: unknown): TopologySnapshot | undefined {
-  if (!isRecord(value)) return undefined
-  if (!isSlotMappableTopologySnapshot(value)) return undefined
-  return value
-}
+export { parseTopologySnapshot }
 
 function hasKnownHardware(resources: ServerHostResources | undefined): boolean {
   if (!resources) return false
   return totalPhysicalCores(resources) > 0 || (resources.memory?.totalBytes ?? 0) > 0
 }
 
-function sortedIds(ids: readonly string[]): string[] {
-  return [...ids].sort((a, b) => a.localeCompare(b))
-}
-
-function discoveredDeviceIds(snapshot: TopologySnapshot | undefined): TierUnwatchedIds {
-  if (!snapshot) {
-    return { nics: [], drives: [], gpus: [] }
-  }
-  const nics = snapshot.networks
-    .filter((device) => device.kind === 'uplink')
-    .map((device) => device.deviceId)
-  // Real whole disks, RAID members included. md/dm arrays and partitions are
-  // never drives: RAID is covered by RAID health and filesystem free space.
-  const drives = snapshot.blockDevices.filter(isWholeDisk).map((device) => device.deviceId)
-  const gpus = snapshot.gpus.map((gpu) => gpu.gpuId)
-  return {
-    nics: sortedIds(nics),
-    drives: sortedIds(drives),
-    gpus: sortedIds(gpus),
-  }
-}
-
 function unwatchedBeyondSlots(discovered: readonly string[], slotCount: number): string[] {
   if (slotCount <= 0) return [...discovered]
   return discovered.slice(slotCount)
-}
-
-function topologyOverridesFromMetadata(
-  metadata: Record<string, unknown> | undefined
-): TopologyOverrides {
-  const hardwareProfile = parseServerHardwareProfile(metadata?.hardwareProfile)
-  return {
-    ...EMPTY_TOPOLOGY_OVERRIDES,
-    nicSlotDeviceIds: hardwareProfile?.nicSlotDeviceIds ?? [],
-    hostingFilesystemId: hardwareProfile?.hostingFilesystemId ?? null,
-    drivetempEnabled: hardwareProfile?.drivetempEnabled ?? false,
-  }
-}
-
-/**
- * The operator's monitored NIC set, in slot order — the slot mapping's
- * `normalNicSlots`: `nicSlotDeviceIds` when pinned, otherwise the
- * `defaultRoute` uplink, otherwise the first uplink by sorted id — never
- * "alphabetical first N". This is the same list hosted ingest truncates and
- * the picker renders, so the recommendation, the unwatched notice and the
- * stored sample all describe one selection.
- */
-function monitoredNicIds(
-  snapshot: TopologySnapshot | undefined,
-  overrides: TopologyOverrides | undefined
-): string[] {
-  if (!snapshot) return []
-  return computeSlotMapping(snapshot, overrides ?? EMPTY_TOPOLOGY_OVERRIDES).normalNicSlots
 }
 
 /**

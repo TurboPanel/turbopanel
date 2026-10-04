@@ -23,10 +23,27 @@
  *      rank: the server needs *a* tier, and the smallest will do until it
  *      says otherwise.
  *
- * Rank is a total order, so this greedy pass covers every server that any
- * assignment could cover for the given order; the coverage gate on every
- * reduction and deferred change runs the same function against the future
- * mix, so the two can never disagree.
+ *   4. **Swap pass** (after the greedy pass, so coverage cannot change).
+ *      A server's recommended tier (`resolveRecommendedTier`: the harder of
+ *      required and the monitored NIC / drive / GPU slots) can exceed the
+ *      tier it was placed on. Walking those servers oldest first, each one
+ *      trades seats with a server that holds a higher tier and needs none
+ *      of it — that server's required AND recommended tiers are both at or
+ *      below the first server's placed tier. The first server takes the
+ *      smallest such seat that reaches its recommendation (else the largest
+ *      below it); the other takes the lower seat, which still covers it.
+ *      Repeats until no swap applies. Each swap lifts one server toward its
+ *      recommendation and leaves the other where it was recommended, so it
+ *      ends, and the result depends only on the inputs (idempotent).
+ *      Spare capacity therefore lands on servers that recommend it instead
+ *      of sitting on one that recommends less. Unknown recommendation means
+ *      "no more than required".
+ *
+ * Rank is a total order, so the greedy pass covers every server that any
+ * assignment could cover for the given order, and the swap pass never
+ * uncovers anyone; the coverage gate on every reduction and deferred change
+ * runs the same function against the future mix, so the two can never
+ * disagree.
  *
  * Pure: no I/O, no clock.
  */
@@ -43,6 +60,8 @@ export type AssignableServer = Readonly<{
   serverId: string
   /** From `tier-placement`; `null` when hardware is not yet known. */
   requiredRank: number | null
+  /** From `resolveRecommendedTier`; `null`/absent when unknown (treated as no more than required). */
+  recommendedRank?: number | null
   /** Bind order key: the server row's `created_at`. Ties break on id. */
   boundAt: string
 }>
@@ -60,6 +79,12 @@ export function effectiveRequiredRank(server: Pick<AssignableServer, 'requiredRa
   return server.requiredRank ?? ENTRY_TIER_RANK
 }
 
+export function effectiveRecommendedRank(
+  server: Pick<AssignableServer, 'requiredRank' | 'recommendedRank'>
+): number {
+  return Math.max(server.recommendedRank ?? 0, effectiveRequiredRank(server))
+}
+
 /** Bind order: oldest first, then id, so a recompute is stable. */
 export function sortByBindOrder<T extends AssignableServer>(servers: readonly T[]): T[] {
   return [...servers].sort((a, b) => {
@@ -71,7 +96,7 @@ export function sortByBindOrder<T extends AssignableServer>(servers: readonly T[
 
 export function computeAssignment(
   quantities: readonly TierQuantity[],
-  servers: readonly AssignableServer[],
+  servers: readonly AssignableServer[]
 ): TierAssignment {
   // Ascending rank so "smallest tier that fits" is the first hit.
   const pool = quantities
@@ -80,21 +105,77 @@ export function computeAssignment(
     .sort((a, b) => a.rank - b.rank)
 
   const byServer = new Map<string, string | null>()
+  const placed = new Map<string, { tierId: string; rank: number }>()
   const uncovered: string[] = []
-  for (const server of sortByBindOrder(servers)) {
+  const ordered = sortByBindOrder(servers)
+  for (const server of ordered) {
     const need = effectiveRequiredRank(server)
     const slot = pool.find((entry) => entry.left > 0 && entry.rank >= need)
     if (slot) {
       slot.left -= 1
       byServer.set(server.serverId, slot.tierId)
+      placed.set(server.serverId, { tierId: slot.tierId, rank: slot.rank })
     } else {
       byServer.set(server.serverId, null)
       uncovered.push(server.serverId)
     }
   }
+  swapTowardRecommended(ordered, placed)
+  for (const [serverId, seat] of placed) byServer.set(serverId, seat.tierId)
   const spare = new Map<string, number>()
   for (const entry of pool) spare.set(entry.tierId, entry.left)
   return { byServer, spare, uncovered }
+}
+
+type Seat = { tierId: string; rank: number }
+
+function fitsBetter(candidate: number, incumbent: number, want: number): boolean {
+  if (candidate >= want) return incumbent < want || candidate < incumbent
+  return incumbent < want && candidate > incumbent
+}
+
+/** The donor for `server`'s upgrade: holds a higher seat and needs none of it. */
+function pickDonor(
+  server: AssignableServer,
+  ordered: readonly AssignableServer[],
+  placed: ReadonlyMap<string, Seat>
+): AssignableServer | undefined {
+  const mine = placed.get(server.serverId)!.rank
+  const want = effectiveRecommendedRank(server)
+  let best: AssignableServer | undefined
+  let bestRank = 0
+  for (const other of ordered) {
+    const seat = placed.get(other.serverId)
+    if (!seat || seat.rank <= mine) continue
+    if (effectiveRecommendedRank(other) > mine) continue
+    // Prefer the smallest seat that reaches `want`, else the largest below it.
+    if (!best || fitsBetter(seat.rank, bestRank, want)) {
+      best = other
+      bestRank = seat.rank
+    }
+  }
+  return best
+}
+
+/** Rule 4: trade seats until no server recommends more than it holds while a donor exists. */
+function swapTowardRecommended(
+  ordered: readonly AssignableServer[],
+  placed: Map<string, Seat>
+): void {
+  let swapped = true
+  while (swapped) {
+    swapped = false
+    for (const server of ordered) {
+      const mine = placed.get(server.serverId)
+      if (!mine || mine.rank >= effectiveRecommendedRank(server)) continue
+      const donor = pickDonor(server, ordered, placed)
+      if (!donor) continue
+      const theirs = placed.get(donor.serverId)!
+      placed.set(server.serverId, theirs)
+      placed.set(donor.serverId, mine)
+      swapped = true
+    }
+  }
 }
 
 /**
@@ -105,14 +186,17 @@ export function computeAssignment(
 export function coverageLoss(
   current: readonly TierQuantity[],
   proposed: readonly TierQuantity[],
-  servers: readonly AssignableServer[],
+  servers: readonly AssignableServer[]
 ): { serverId: string; requiredRank: number } | null {
   const before = new Set(computeAssignment(current, servers).uncovered)
   const after = computeAssignment(proposed, servers)
   for (const serverId of after.uncovered) {
     if (before.has(serverId)) continue
     const server = servers.find((entry) => entry.serverId === serverId)
-    return { serverId, requiredRank: server ? effectiveRequiredRank(server) : ENTRY_TIER_RANK }
+    return {
+      serverId,
+      requiredRank: server ? effectiveRequiredRank(server) : ENTRY_TIER_RANK,
+    }
   }
   return null
 }
@@ -121,7 +205,7 @@ export function coverageLoss(
 export function applyTierDeltas(
   current: readonly TierQuantity[],
   deltas: ReadonlyMap<string, number>,
-  rankOf: (tierId: string) => number | undefined,
+  rankOf: (tierId: string) => number | undefined
 ): TierQuantity[] {
   const out = new Map<string, TierQuantity>()
   for (const entry of current) out.set(entry.tierId, entry)
@@ -130,7 +214,9 @@ export function applyTierDeltas(
     const rank = existing?.rank ?? rankOf(tierId)
     if (rank === undefined) throw new TypeError(`tier ${tierId} has no rank`)
     const quantity = (existing?.quantity ?? 0) + delta
-    if (quantity < 0) throw new RangeError(`tier ${tierId} would go to ${quantity}`)
+    if (quantity < 0) {
+      throw new RangeError(`tier ${tierId} would go to ${quantity}`)
+    }
     out.set(tierId, { tierId, rank, quantity })
   }
   return [...out.values()]

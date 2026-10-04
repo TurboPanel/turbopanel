@@ -400,7 +400,7 @@ function enrollmentDb(opts: {
         },
       ],
     ],
-  ])
+  ], { fallback: { execute: () => Promise.resolve([]) } as never })
 }
 
 test("evaluateHostedEnrollmentTier refuses a fresh enroll with 'License tier not assigned' when every purchased tier is taken", async () => {

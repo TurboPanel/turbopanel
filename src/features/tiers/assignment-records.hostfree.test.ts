@@ -90,7 +90,7 @@ function seed(opts: {
     }))],
     [server, opts.servers ?? []],
     [license, opts.licenses ?? []],
-  ])
+  ], { fallback: { execute: () => Promise.resolve([]) } as never })
 }
 
 test('requiredRankFromResources / Metadata: reported hardware places, unreported hardware is unknown', () => {

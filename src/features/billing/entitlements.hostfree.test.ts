@@ -184,7 +184,7 @@ function seed(opts: {
     [allowance, []],
     [key, []],
     [lease, []],
-  ])
+  ], { fallback: { execute: () => Promise.resolve([]) } as never })
 }
 
 async function assignments(db: ReturnType<typeof seed>) {

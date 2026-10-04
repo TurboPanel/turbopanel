@@ -64,7 +64,7 @@ function seed(opts: { s3Seats: number; s5Seats: number; licenses: { id: string; 
     [allowance, []],
     [key, []],
     [lease, []],
-  ])
+  ], { fallback: { execute: () => Promise.resolve([]) } as never })
 }
 
 test('compareSeatsToLicenses classifies the three drift kinds and explains a surplus by outstanding releases', () => {
