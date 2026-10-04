@@ -439,7 +439,7 @@ jobs:
 
       - name: Sign the manifest
         env:
-          RELEASE_SIGNING_KEY: ${{ secrets.TURBOPANEL_RELEASE_SIGNING_KEY || secrets.RELEASE_SIGNING_KEY }}
+          RELEASE_SIGNING_KEY: ${{ secrets.TURBOPANEL_RELEASE_SIGNING_KEY }}
         run: |
           set -eu
           deno run --config .manifest-signer/deno.json \
