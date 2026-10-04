@@ -1,11 +1,13 @@
 import { assertEquals } from '@std/assert'
-import { managed, recovery } from '../../db/schema.ts'
+import type { Db } from '../../db/connection.ts'
+import { command, deployment, managed, recovery } from '../../db/schema.ts'
 import { createMemoryDb } from '../../test-fixtures/memory-db.ts'
 import {
   daemonEverHadCommand,
   isStaleCommand,
   settleRecoveryOfTimedOutCommand,
   STALE_COMMAND_GRACE_MS,
+  sweepStaleCommands,
   type StaleCommandCandidate,
 } from './stale-sweep.ts'
 
@@ -190,5 +192,64 @@ test('a timed-out command with no recovery is left alone', async () => {
     [managed, []],
   ])
   await settleRecoveryOfTimedOutCommand(db, candidate({ name: 'managed.apply', metadata: {} }))
+  assertEquals(db.rows(recovery)[0]?.state, 'promoting')
+})
+
+/**
+ * The in-memory double cannot evaluate the sweep's NOT EXISTS pre-filter, so
+ * the candidate read is answered here and everything after it (the transition,
+ * the recovery hooks) runs against the double.
+ */
+function withCandidates(db: ReturnType<typeof createMemoryDb>, rows: unknown[]): Db {
+  return new Proxy(db, {
+    get(target, prop, receiver) {
+      if (prop !== 'select') return Reflect.get(target, prop, receiver)
+      return (fields?: Record<string, unknown>) =>
+        fields && 'metadata' in fields && 'serverId' in fields
+          ? { from: () => ({ where: () => ({ limit: () => Promise.resolve(rows) }) }) }
+          : target.select(fields as never)
+    },
+  }) as unknown as Db
+}
+
+test('the stale-command sweep settles the recovery of a command it times out', async () => {
+  const stalled = candidate({
+    id: 'cmd-p',
+    name: 'managed.promote',
+    queuedAt: '2026-08-28T00:00:00.000Z',
+    updatedAt: '2026-08-28T00:00:00.000Z',
+    metadata: { recoveryId: 'rec-1' },
+  })
+  const db = createMemoryDb([
+    [command, [{ id: 'cmd-p', name: 'managed.promote', status: 'running', attempts: 1 }]],
+    [deployment, []],
+    [recovery, [recoveryRowFor('promoting', { promoteCommandId: 'cmd-p' })]],
+    [managed, [{ id: 'mgd-1', status: 'applying' }]],
+  ])
+  const swept = await sweepStaleCommands(withCandidates(db, [stalled]), { now: T0 })
+  assertEquals(swept, 1)
+  assertEquals(db.rows(command)[0]?.status, 'timed_out')
+  const row = db.rows(recovery)[0]
+  assertEquals(row?.state, 'failed')
+  assertEquals((row?.metadata as Record<string, unknown>).needsOperator, true)
+  assertEquals(db.rows(managed)[0]?.status, 'failed')
+})
+
+test('the stale-command sweep leaves a recovery alone when its command was already settled', async () => {
+  const stalled = candidate({
+    id: 'cmd-p',
+    name: 'managed.promote',
+    queuedAt: '2026-08-28T00:00:00.000Z',
+    updatedAt: '2026-08-28T00:00:00.000Z',
+    metadata: { recoveryId: 'rec-1' },
+  })
+  // The command row is gone (a concurrent writer finished it): no transition.
+  const db = createMemoryDb([
+    [command, []],
+    [deployment, []],
+    [recovery, [recoveryRowFor('promoting', { promoteCommandId: 'cmd-p' })]],
+    [managed, [{ id: 'mgd-1', status: 'applying' }]],
+  ])
+  assertEquals(await sweepStaleCommands(withCandidates(db, [stalled]), { now: T0 }), 0)
   assertEquals(db.rows(recovery)[0]?.state, 'promoting')
 })

@@ -6,6 +6,7 @@
 import { DENY_FIREWALL_APPLY } from '../firewall/enforcement.ts'
 import { assertEquals } from '@std/assert'
 import type { Db } from '../../db/connection.ts'
+import { recovery } from '../../db/schema.ts'
 import type { DaemonCell, DaemonCellRegistry, PendingRequestRecord } from '../../contracts/cell.ts'
 import { COMMAND_DISPATCH_FAILURE_RETENTION_MS } from './command-records.ts'
 import type { CommandEnvelope } from './envelope.ts'
@@ -23,6 +24,7 @@ import {
   resolveManagedIdFromPayload,
   resolveManagedMemberIdFromFailedPayload,
 } from './consumer.ts'
+import { RECOVERY_STEP_FAILED_MESSAGE } from '../managed/recovery.ts'
 import { createNoopCommandQueue } from './noop-command-queue.ts'
 import { resolveFleetPresence } from '../../daemon/cell/server-status.ts'
 import { setResolveFleetPresence } from '../../platform/ports/fleet-presence.ts'
@@ -370,6 +372,8 @@ type ConsumerFakeDbOptions = Readonly<{
   throwOnManagedReadyUpdate?: boolean
   throwOnManagedFailedUpdate?: boolean
   throwOnBackupInsert?: boolean
+  /** The HA recovery journal row the command belongs to (`recovery` table reads and writes). */
+  recoveryRow?: Record<string, unknown>
 }>
 
 function createConsumerFakeDb(options: ConsumerFakeDbOptions = {}): {
@@ -377,6 +381,7 @@ function createConsumerFakeDb(options: ConsumerFakeDbOptions = {}): {
   transitions: Array<{ status: string; error?: string }>
   inserts: Array<Record<string, unknown>>
   managedUpdates: Array<Record<string, unknown>>
+  recoveryUpdates: Array<Record<string, unknown>>
   relayUpdates: Array<Record<string, unknown>>
   leafUpserts: number
   dispatchDeletes: number
@@ -385,6 +390,7 @@ function createConsumerFakeDb(options: ConsumerFakeDbOptions = {}): {
   const transitions: Array<{ status: string; error?: string }> = []
   const inserts: Array<Record<string, unknown>> = []
   const managedUpdates: Array<Record<string, unknown>> = []
+  const recoveryUpdates: Array<Record<string, unknown>> = []
   const relayUpdates: Array<Record<string, unknown>> = []
   const leafState = { upserts: 0 }
   const dispatchState = { deletes: 0, retentions: [] as string[] }
@@ -395,10 +401,13 @@ function createConsumerFakeDb(options: ConsumerFakeDbOptions = {}): {
 
   const db = {
     select: (fields?: Record<string, unknown>) => ({
-      from: () => {
+      from: (table?: unknown) => {
         const source = {
           innerJoin: () => source,
           where: () => {
+            if (table === recovery) {
+              return queryResult(options.recoveryRow ? [options.recoveryRow] : [])
+            }
             // getCommandRecord / listServerCommands: explicit command columns
             if (fields && 'name' in fields && 'attempts' in fields) {
               return queryResult(commandRow ? [commandRow] : [])
@@ -528,8 +537,16 @@ function createConsumerFakeDb(options: ConsumerFakeDbOptions = {}): {
         })
       },
     }),
-    update: () => ({
+    update: (table?: unknown) => ({
       set: (patch: Record<string, unknown>) => {
+        if (table === recovery) {
+          recoveryUpdates.push(patch)
+          return {
+            where: () => ({
+              returning: () => Promise.resolve([{ ...options.recoveryRow, ...patch }]),
+            }),
+          }
+        }
         if (
           options.throwOnReplicaObservedUpdate &&
           typeof patch.status === 'string' &&
@@ -618,6 +635,7 @@ function createConsumerFakeDb(options: ConsumerFakeDbOptions = {}): {
     transitions,
     inserts,
     managedUpdates,
+    recoveryUpdates,
     relayUpdates,
     get leafUpserts() {
       return leafState.upserts
@@ -2387,6 +2405,92 @@ test('processCommandEnvelope managed.ha.failover recover with recoveryId is best
       commandMetadata: { recoveryId: 'rec-2' },
     }
   )
+  assertEquals(
+    fake.transitions.some((t) => t.status === 'succeeded'),
+    true
+  )
+})
+
+const RECOVERY_ID = '00000000-0000-4000-8000-0000000000f1'
+
+function promotingRecoveryRow(): Record<string, unknown> {
+  return {
+    id: RECOVERY_ID,
+    managedId: MANAGED_ID,
+    kind: 'switchover',
+    sourcePrimaryMemberId: DEMOTE_ID,
+    targetMemberId: MEMBER_ID,
+    state: 'promoting',
+    startedAt: '2020-01-01T00:00:00.000Z',
+    completedAt: null,
+    metadata: { promoteCommandId: COMMAND_ID },
+    createdAt: '2020-01-01T00:00:00.000Z',
+    updatedAt: '2020-01-01T00:00:00.000Z',
+  }
+}
+
+const PROMOTE_PAYLOAD = { managedId: MANAGED_ID, memberId: MEMBER_ID, demoteMemberId: DEMOTE_ID }
+const PROMOTE_RESULT = {
+  status: 'ready',
+  role: 'primary',
+  promotedMemberId: MEMBER_ID,
+  demotedMemberId: DEMOTE_ID,
+  demoted: true,
+}
+
+test('a promote side effect that throws ends its recovery failed for the operator', async () => {
+  const fake = await runOnline('managed.promote', PROMOTE_PAYLOAD, doneWith(PROMOTE_RESULT), {
+    replicaServerId: SERVER_ID,
+    throwOnManagedReadyUpdate: true,
+    commandMetadata: { recoveryId: RECOVERY_ID },
+    recoveryRow: promotingRecoveryRow(),
+  })
+  assertEquals(
+    fake.transitions.some((t) => t.status === 'succeeded'),
+    true
+  )
+  assertEquals(fake.recoveryUpdates.length, 1)
+  const [patch] = fake.recoveryUpdates
+  assertEquals(patch?.state, 'failed')
+  const metadata = patch?.metadata as Record<string, unknown>
+  assertEquals(metadata.needsOperator, true)
+  assertEquals(metadata.failedReason, RECOVERY_STEP_FAILED_MESSAGE)
+  assertEquals(metadata.promoteCommandId, COMMAND_ID)
+})
+
+test('a failover side effect that throws ends its recovery failed for the operator', async () => {
+  const fake = await runOnline(
+    'managed.ha.failover',
+    { ...VALID_HA_FAILOVER_PAYLOAD, phase: 'recover' },
+    doneWith({ summary: 'recovered', phase: 'recover' }),
+    {
+      replicaServerId: SERVER_ID,
+      throwOnManagedReadyUpdate: true,
+      commandMetadata: { recoveryId: RECOVERY_ID },
+      recoveryRow: promotingRecoveryRow(),
+    }
+  )
+  assertEquals(fake.recoveryUpdates.length, 1)
+  assertEquals(fake.recoveryUpdates[0]?.state, 'failed')
+})
+
+test('a throwing side effect on a command with no recovery writes no journal row', async () => {
+  const fake = await runOnline('managed.promote', PROMOTE_PAYLOAD, doneWith(PROMOTE_RESULT), {
+    replicaServerId: SERVER_ID,
+    throwOnManagedReadyUpdate: true,
+    recoveryRow: promotingRecoveryRow(),
+  })
+  assertEquals(fake.recoveryUpdates, [])
+})
+
+test('a failed recovery write never throws out of the consumer', async () => {
+  // The journal row is missing, so the failure hook finds nothing to update.
+  const fake = await runOnline('managed.promote', PROMOTE_PAYLOAD, doneWith(PROMOTE_RESULT), {
+    replicaServerId: SERVER_ID,
+    throwOnManagedReadyUpdate: true,
+    commandMetadata: { recoveryId: RECOVERY_ID },
+  })
+  assertEquals(fake.recoveryUpdates, [])
   assertEquals(
     fake.transitions.some((t) => t.status === 'succeeded'),
     true

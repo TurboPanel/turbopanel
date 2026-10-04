@@ -1,5 +1,8 @@
 import { assertEquals } from '@std/assert'
-import { mergeManagedFailureMessages, pickManagedFailureMessage } from './last-error.ts'
+import {
+  mergeManagedFailureMessages,
+  pickManagedFailureMessage,
+} from './last-error.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -13,7 +16,7 @@ test('mergeManagedFailureMessages skips blanks and duplicates', () => {
   assertEquals(mergeManagedFailureMessages(null, '  ', undefined), null)
   assertEquals(
     mergeManagedFailureMessages('docker.sock denied', 'docker.sock denied', 'proxysql missing'),
-    'docker.sock denied\nproxysql missing'
+    'docker.sock denied\nproxysql missing',
   )
 })
 
@@ -56,9 +59,9 @@ test('pickManagedFailureMessage prefers latest apply-family then ingress', () =>
           context: { managedId },
         },
       ],
-      managedId
+      managedId,
     ),
-    'permission denied while trying to connect to the docker API\nproxysql admin.cnf is missing'
+    'permission denied while trying to connect to the docker API\nproxysql admin.cnf is missing',
   )
 })
 
@@ -84,31 +87,28 @@ test('pickManagedFailureMessage ignores ingress failure superseded by a later su
         {
           type: 'managed.apply',
           status: 'failed',
-          error:
-            "mysql failed: ERROR 1045 (28000): Access denied for user 'root'@'localhost' (using password: NO)",
+          error: "mysql failed: ERROR 1045 (28000): Access denied for user 'root'@'localhost' (using password: NO)",
           context: { managedId },
           createdAt: '2026-08-19T19:16:00.000Z',
         },
       ],
-      managedId
+      managedId,
     ),
-    "mysql failed: ERROR 1045 (28000): Access denied for user 'root'@'localhost' (using password: NO)"
+    "mysql failed: ERROR 1045 (28000): Access denied for user 'root'@'localhost' (using password: NO)",
   )
 })
 
 test('pickManagedFailureMessage returns null when nothing failed', () => {
   assertEquals(
     pickManagedFailureMessage(
-      [
-        {
-          type: 'managed.apply',
-          status: 'succeeded',
-          error: null,
-          context: { managedId: 'managed-1' },
-        },
-      ],
-      'managed-1'
+      [{
+        type: 'managed.apply',
+        status: 'succeeded',
+        error: null,
+        context: { managedId: 'managed-1' },
+      }],
+      'managed-1',
     ),
-    null
+    null,
   )
 })

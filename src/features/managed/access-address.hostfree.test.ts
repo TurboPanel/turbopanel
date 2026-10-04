@@ -26,14 +26,14 @@ test('isManagedAccessAddressError recognizes only bind/dial resolution failures'
       kind: 'datacenter_ip_required',
       serverId: '550e8400-e29b-41d4-a716-446655440000',
     }),
-    true
+    true,
   )
   assertEquals(
     isManagedAccessAddressError({
       kind: 'fabric_address_required',
       serverId: '550e8400-e29b-41d4-a716-446655440000',
     }),
-    true
+    true,
   )
 })
 
@@ -61,74 +61,78 @@ function loaders(overrides: ManagedAddressLoaders = {}): ManagedAddressLoaders {
 test('resolveManagedBindAddress maps each scope without widening on miss', async () => {
   assertEquals(
     await resolveManagedBindAddress(unusedDb, { serverId: SERVER_ID, scope: 'local' }, loaders()),
-    LOOPBACK_BIND
+    LOOPBACK_BIND,
   )
   assertEquals(
     await resolveManagedBindAddress(unusedDb, { serverId: SERVER_ID, scope: 'public' }, loaders()),
-    ALL_INTERFACES_BIND
+    ALL_INTERFACES_BIND,
   )
   assertEquals(
     await resolveManagedBindAddress(
       unusedDb,
       { serverId: SERVER_ID, scope: 'datacenter' },
-      loaders()
+      loaders(),
     ),
-    DC_ADDR
+    DC_ADDR,
   )
   assertEquals(
     await resolveManagedBindAddress(
       unusedDb,
       { serverId: SERVER_ID, scope: 'turbofabric' },
-      loaders()
+      loaders(),
     ),
-    FABRIC_ADDR
+    FABRIC_ADDR,
   )
   assertEquals(
     await resolveManagedBindAddress(
       unusedDb,
       { serverId: SERVER_ID, scope: 'datacenter' },
-      loaders({ loadDatacenterAddress: async () => null })
+      loaders({ loadDatacenterAddress: async () => null }),
     ),
-    { kind: 'datacenter_ip_required', serverId: SERVER_ID }
+    { kind: 'datacenter_ip_required', serverId: SERVER_ID },
   )
   assertEquals(
     await resolveManagedBindAddress(
       unusedDb,
       { serverId: SERVER_ID, scope: 'turbofabric' },
-      loaders({ loadFabricAddress: async () => null })
+      loaders({ loadFabricAddress: async () => null }),
     ),
-    { kind: 'fabric_address_required', serverId: SERVER_ID }
+    { kind: 'fabric_address_required', serverId: SERVER_ID },
   )
 })
 
 test('resolveManagedDialHost prefers a pinned public IP then hostname', async () => {
   assertEquals(
     await resolveManagedDialHost(unusedDb, { serverId: SERVER_ID, scope: 'local' }, loaders()),
-    LOOPBACK_BIND
+    LOOPBACK_BIND,
   )
   assertEquals(
-    await resolveManagedDialHost(unusedDb, { serverId: SERVER_ID, scope: 'datacenter' }, loaders()),
-    DC_ADDR
+    await resolveManagedDialHost(
+      unusedDb,
+      { serverId: SERVER_ID, scope: 'datacenter' },
+      loaders(),
+    ),
+    DC_ADDR,
   )
   assertEquals(
     await resolveManagedDialHost(
       unusedDb,
       { serverId: SERVER_ID, scope: 'turbofabric' },
-      loaders()
+      loaders(),
     ),
-    FABRIC_ADDR
+    FABRIC_ADDR,
   )
   assertEquals(
     await resolveManagedDialHost(unusedDb, { serverId: SERVER_ID, scope: 'public' }, loaders()),
-    PUBLIC_ADDR
+    PUBLIC_ADDR,
   )
   assertEquals(
     await resolveManagedDialHost(
       unusedDb,
       { serverId: SERVER_ID, scope: 'public' },
-      loaders({ loadPublicAddress: async () => null })
+      loaders({ loadPublicAddress: async () => null }),
     ),
-    'edge.example'
+    'edge.example',
   )
   assertEquals(
     await resolveManagedDialHost(
@@ -137,9 +141,9 @@ test('resolveManagedDialHost prefers a pinned public IP then hostname', async ()
       loaders({
         loadPublicAddress: async () => null,
         loadHostname: async () => null,
-      })
+      }),
     ),
-    null
+    null,
   )
 })
 
@@ -154,14 +158,10 @@ test('resolveManagedDialHost trims a hostname from the default column read', asy
     }),
   } as unknown as Db
   assertEquals(
-    await resolveManagedDialHost(
-      db,
-      { serverId: SERVER_ID, scope: 'public' },
-      {
-        loadPublicAddress: async () => null,
-      }
-    ),
-    'edge.lan'
+    await resolveManagedDialHost(db, { serverId: SERVER_ID, scope: 'public' }, {
+      loadPublicAddress: async () => null,
+    }),
+    'edge.lan',
   )
   const empty = {
     select: () => ({
@@ -173,13 +173,9 @@ test('resolveManagedDialHost trims a hostname from the default column read', asy
     }),
   } as unknown as Db
   assertEquals(
-    await resolveManagedDialHost(
-      empty,
-      { serverId: SERVER_ID, scope: 'public' },
-      {
-        loadPublicAddress: async () => null,
-      }
-    ),
-    null
+    await resolveManagedDialHost(empty, { serverId: SERVER_ID, scope: 'public' }, {
+      loadPublicAddress: async () => null,
+    }),
+    null,
   )
 })

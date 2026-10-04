@@ -7,7 +7,10 @@ import {
 } from '../../lib/secrets/data-encryption.ts'
 import { deriveEncryptionSecretsConfig } from '../../lib/secrets/secrets.ts'
 import type { ManagedApplyCommandPayload } from '../../contracts/commands/schemas.ts'
-import { mintOrganizationCa, verifyCertificateSignature } from '../../lib/tls/index.ts'
+import {
+  mintOrganizationCa,
+  verifyCertificateSignature,
+} from '../../lib/tls/index.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import type { CommandRecord } from '../commands/command-records.ts'
 import type { CommandStatus } from '../commands/types.ts'
@@ -50,7 +53,7 @@ function assertPayloadShape(value: unknown): asserts value is ManagedApplyComman
 }
 
 function minimalPayload(
-  overrides: Partial<ManagedApplyCommandPayload> = {}
+  overrides: Partial<ManagedApplyCommandPayload> = {},
 ): ManagedApplyCommandPayload {
   return {
     managedId: 'm1',
@@ -269,10 +272,7 @@ test('prepareErrorResponse ignores serverId on wire body', async () => {
   if (typeof body !== 'object' || body === null) {
     throw new TypeError('expected JSON object body')
   }
-  assertEquals(
-    Object.keys(body).sort((a, b) => a.localeCompare(b)),
-    ['error']
-  )
+  assertEquals(Object.keys(body).sort((a, b) => a.localeCompare(b)), ['error'])
   assertEquals(body, { error: 'datacenter_ip_required' })
 })
 
@@ -280,7 +280,7 @@ test('buildManagedOrgTlsMaterial issues CA-signed leaf and reseals as denc', asy
   const secretsConfig = parseTestSecretsConfig('deno')
   const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
     secretsConfig,
-    'data-encryption'
+    'data-encryption',
   )
   const serverId = '11111111-1111-4111-8111-111111111111'
   const keyId = '22222222-2222-4222-8222-222222222222'
@@ -291,12 +291,8 @@ test('buildManagedOrgTlsMaterial issues CA-signed leaf and reseals as denc', asy
     secretsConfig,
     dataEncryptionSecrets,
     { serverId, keyId },
-    {
-      certificatePem: ca.certificatePem,
-      privateKeyPem: ca.privateKeyPem,
-      trustBundlePem: ca.certificatePem,
-    },
-    managedId
+    { certificatePem: ca.certificatePem, privateKeyPem: ca.privateKeyPem, trustBundlePem: ca.certificatePem },
+    managedId,
   )
 
   assertEquals(material.certificatePem.includes('BEGIN CERTIFICATE'), true)
@@ -310,20 +306,21 @@ test('buildManagedOrgTlsMaterial issues CA-signed leaf and reseals as denc', asy
   const privateKeyPem = await decryptSecretForDaemon(
     secretsConfig,
     { serverId, keyId },
-    material.privateKeyEnvelope
+    material.privateKeyEnvelope,
   )
   assertEquals(privateKeyPem.includes('BEGIN PRIVATE KEY'), true)
 
-  assertEquals(await verifyCertificateSignature(material.certificatePem, material.caCertPem), true)
+  assertEquals(
+    await verifyCertificateSignature(material.certificatePem, material.caCertPem),
+    true,
+  )
 
   // Managed leaves must carry the clientAuth EKU — ProxySQL presents them as
   // client certs on proxy-to-server connections, and Postgres rejects a
   // serverAuth-only leaf with "unsuitable certificate purpose" once
   // ssl_ca_file is set.
-  const derBase64 = material.certificatePem.replace(
-    /-----BEGIN CERTIFICATE-----|-----END CERTIFICATE-----|\s/g,
-    ''
-  )
+  const derBase64 = material.certificatePem
+    .replace(/-----BEGIN CERTIFICATE-----|-----END CERTIFICATE-----|\s/g, '')
   const der = Uint8Array.from(atob(derBase64), (c) => c.charCodeAt(0))
   // OID 1.3.6.1.5.5.7.3.2 (id-kp-clientAuth) as DER TLV.
   const clientAuthOid = [0x06, 0x08, 0x2b, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x02]
@@ -337,7 +334,7 @@ test('buildManagedOrgTlsMaterial org A leaf does not validate against org B CA b
   const secretsConfig = parseTestSecretsConfig('deno')
   const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
     secretsConfig,
-    'data-encryption'
+    'data-encryption',
   )
   const recipientA = {
     serverId: '11111111-1111-4111-8111-111111111111',
@@ -361,7 +358,7 @@ test('buildManagedOrgTlsMaterial org A leaf does not validate against org B CA b
       privateKeyPem: orgA.privateKeyPem,
       trustBundlePem: orgA.certificatePem,
     },
-    'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+    'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
   )
   const leafB = await buildManagedOrgTlsMaterial(
     secretsConfig,
@@ -372,21 +369,33 @@ test('buildManagedOrgTlsMaterial org A leaf does not validate against org B CA b
       privateKeyPem: orgBActive.privateKeyPem,
       trustBundlePem: orgBBundle,
     },
-    'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+    'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
   )
 
   assertEquals(leafB.caCertPem, orgBBundle)
-  assertEquals(await verifyCertificateSignature(leafA.certificatePem, orgA.certificatePem), true)
-  assertEquals(await verifyCertificateSignature(leafA.certificatePem, orgBBundle), false)
-  assertEquals(await verifyCertificateSignature(leafB.certificatePem, orgBBundle), true)
-  assertEquals(await verifyCertificateSignature(leafB.certificatePem, orgA.certificatePem), false)
+  assertEquals(
+    await verifyCertificateSignature(leafA.certificatePem, orgA.certificatePem),
+    true,
+  )
+  assertEquals(
+    await verifyCertificateSignature(leafA.certificatePem, orgBBundle),
+    false,
+  )
+  assertEquals(
+    await verifyCertificateSignature(leafB.certificatePem, orgBBundle),
+    true,
+  )
+  assertEquals(
+    await verifyCertificateSignature(leafB.certificatePem, orgA.certificatePem),
+    false,
+  )
 })
 
 test('buildManagedOrgTlsMaterial ships trustBundlePem as caCertPem and signs with the active signer', async () => {
   const secretsConfig = parseTestSecretsConfig('deno')
   const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
     secretsConfig,
-    'data-encryption'
+    'data-encryption',
   )
   const active = await mintOrganizationCa({ organizationId: 'Org CA Active' })
   const retired = await mintOrganizationCa({ organizationId: 'Org CA Retired' })
@@ -403,19 +412,22 @@ test('buildManagedOrgTlsMaterial ships trustBundlePem as caCertPem and signs wit
       privateKeyPem: active.privateKeyPem,
       trustBundlePem,
     },
-    '44444444-4444-4444-8444-444444444444'
+    '44444444-4444-4444-8444-444444444444',
   )
 
   assertEquals(material.caCertPem, trustBundlePem)
   assertEquals(material.caCertPem.split('BEGIN CERTIFICATE').length - 1, 2)
-  assertEquals(await verifyCertificateSignature(material.certificatePem, material.caCertPem), true)
+  assertEquals(
+    await verifyCertificateSignature(material.certificatePem, material.caCertPem),
+    true,
+  )
 })
 
 test('buildManagedOrgTlsMaterial adds private listener IP SAN for remote replication', async () => {
   const secretsConfig = parseTestSecretsConfig('deno')
   const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
     secretsConfig,
-    'data-encryption'
+    'data-encryption',
   )
   const managedId = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'
   const ca = await mintOrganizationCa({ organizationId: 'Org CA Remote Primary' })
@@ -426,14 +438,10 @@ test('buildManagedOrgTlsMaterial adds private listener IP SAN for remote replica
       serverId: 'bbbbbbbb-cccc-4ddd-8eee-ffffffffffff',
       keyId: 'cccccccc-dddd-4eee-8fff-000000000000',
     },
-    {
-      certificatePem: ca.certificatePem,
-      privateKeyPem: ca.privateKeyPem,
-      trustBundlePem: ca.certificatePem,
-    },
+    { certificatePem: ca.certificatePem, privateKeyPem: ca.privateKeyPem, trustBundlePem: ca.certificatePem },
     managedId,
     ['svc-1'],
-    ['203.0.113.50']
+    ['203.0.113.50'],
   )
 
   const { parseCertificatePem } = await import('../../lib/tls/parse.ts')
@@ -447,7 +455,7 @@ test('buildManagedOrgTlsMaterial dedupes managed leaf name and localhost from ex
   const secretsConfig = parseTestSecretsConfig('deno')
   const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
     secretsConfig,
-    'data-encryption'
+    'data-encryption',
   )
   const managedId = 'dddddddd-eeee-4fff-8aaa-bbbbbbbbbbbb'
   const ca = await mintOrganizationCa({ organizationId: 'Org CA Dedupe Test' })
@@ -458,20 +466,22 @@ test('buildManagedOrgTlsMaterial dedupes managed leaf name and localhost from ex
       serverId: 'eeeeeeee-ffff-4aaa-8bbb-cccccccccccc',
       keyId: 'ffffffff-0000-4bbb-8ccc-dddddddddddd',
     },
-    {
-      certificatePem: ca.certificatePem,
-      privateKeyPem: ca.privateKeyPem,
-      trustBundlePem: ca.certificatePem,
-    },
+    { certificatePem: ca.certificatePem, privateKeyPem: ca.privateKeyPem, trustBundlePem: ca.certificatePem },
     managedId,
-    [`managed-${managedId}`, 'localhost', 'extra.example']
+    [`managed-${managedId}`, 'localhost', 'extra.example'],
   )
 
   const { parseCertificatePem } = await import('../../lib/tls/parse.ts')
   const leaf = await parseCertificatePem(material.certificatePem)
   const managedName = `managed-${managedId}`
-  assertEquals(leaf.dnsNames.filter((name) => name === managedName).length, 1)
-  assertEquals(leaf.dnsNames.filter((name) => name === 'localhost').length, 1)
+  assertEquals(
+    leaf.dnsNames.filter((name) => name === managedName).length,
+    1,
+  )
+  assertEquals(
+    leaf.dnsNames.filter((name) => name === 'localhost').length,
+    1,
+  )
   assertEquals(leaf.dnsNames.includes('extra.example'), true)
 })
 

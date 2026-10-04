@@ -2106,13 +2106,6 @@ async function applyFirewallFailedSideEffect(
 }
 
 /**
- * After a successful promote: demote the old primary **before** promoting so
- * `uniq_node_primary` is never violated mid-flip, then re-point
- * `managed.server_id`, project health, and hand off to
- * `fanOutManagedIngressReconcile` so member and consuming servers both
- * re-reconcile ProxySQL against the new primary.
- */
-/**
  * The side effect of a successful promote threw after the role change. Nothing
  * else advances the recovery row, so end it terminal for the operator instead
  * of leaving it holding the cluster's slot (`managed_busy` for ever).
@@ -2130,6 +2123,13 @@ async function failRecoveryOfSideEffectError(
   }
 }
 
+/**
+ * After a successful promote: demote the old primary **before** promoting so
+ * `uniq_node_primary` is never violated mid-flip, then re-point
+ * `managed.server_id`, project health, and hand off to
+ * `fanOutManagedIngressReconcile` so member and consuming servers both
+ * re-reconcile ProxySQL against the new primary.
+ */
 async function applyManagedPromoteSideEffect(
   db: Db,
   record: DispatchableCommandRecord,
