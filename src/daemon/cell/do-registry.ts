@@ -385,6 +385,22 @@ class DurableObjectStubDaemonCell implements DaemonCell {
     })
   }
 
+  async expireRequest(requestId: string): Promise<PendingRequestRecord> {
+    const expired = await this.#rpc<{ record: PendingRequestRecord }>('/rpc/expire-request', {
+      serverId: this.#serverId,
+      body: { requestId },
+      idempotent: true,
+    })
+    return expired.record
+  }
+
+  async dropDaemonConnection(reason: string): Promise<void> {
+    await this.#rpc('/rpc/drop-connection', {
+      serverId: this.#serverId,
+      body: { reason },
+    })
+  }
+
   checkLiveness(): Promise<DaemonCellLiveness> {
     return this.#rpc<DaemonCellLiveness>('/rpc/liveness', {
       serverId: this.#serverId,

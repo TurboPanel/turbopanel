@@ -7,6 +7,7 @@
  */
 
 import { parseFirewallAddress } from '../../contracts/commands/schemas.ts'
+import { addressInCidr } from '../../lib/ip-address.ts'
 import { MAX_FIREWALL_RULE_ADDRESSES } from './vocabulary.ts'
 
 export type FirewallOrgPolicy = {
@@ -100,4 +101,15 @@ export function mergeFirewallPolicyIntoOptions(
   const base = isPlainObject(options) ? options : {}
   const next: FirewallOrgPolicy = { ...parseFirewallOrgPolicy(options), ...patch }
   return { ...base, firewall: next }
+}
+
+/**
+ * True when the SSH sources are narrowed to certain addresses and none of them
+ * covers `address` (the caller's own address). Saving that would cut the person
+ * saving it off from SSH, so the route asks them to confirm. Unknown address:
+ * nothing to compare, never blocks. Empty lists are refused earlier.
+ */
+export function sshSourcesExcludeAddress(sources: readonly string[], address: string | null) {
+  if (address === null || sources.includes('any')) return false
+  return !sources.some((cidr) => addressInCidr(address, cidr))
 }

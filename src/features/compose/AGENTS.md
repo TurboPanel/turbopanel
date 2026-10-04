@@ -45,24 +45,24 @@ or it is said in a row where privilege can gate it — not as
 One row per question an operator can ask, and the one place its answer lives. A
 second source of truth for any of these is a bug, not a convenience.
 
-| Concern                             | Canonical place                                    | Notes                                                                                                                                                                                                                                                                                                                                                                                                          |
-| ----------------------------------- | -------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| What image/command/ports/volumes    | Compose service body                               | Rule 1. Passthrough unless `field-policy.ts` says otherwise.                                                                                                                                                                                                                                                                                                                                                   |
-| Replica count / mode                | `deploy.replicas` / `deploy.mode`                  | Interpreted by `../schedule/interpret.ts`; stripped from runtime YAML.                                                                                                                                                                                                                                                                                                                                         |
-| Placement constraints & spread      | `deploy.placement.*`                               | Interpreted by the planner. `deploy.placement` is _not_ the server pin.                                                                                                                                                                                                                                                                                                                                        |
-| Which server an environment runs on | `environment.server_id`                            | Refused in compose (`PLACEMENT_NOT_STORED_MESSAGE`).                                                                                                                                                                                                                                                                                                                                                           |
-| Resource ceiling                    | `deploy.resources` + `service.options.resources`   | Compose expresses the request; the org ∩ server ceiling clamps it.                                                                                                                                                                                                                                                                                                                                             |
-| What kind of thing a service is     | `x-turbopanel.serviceKind`                         | `container` (default) / `site` / `node`.                                                                                                                                                                                                                                                                                                                                                                       |
-| Which account it runs as            | `x-turbopanel.principal` (alias) → `principal` row | Alias in YAML, account on the row. See below.                                                                                                                                                                                                                                                                                                                                                                  |
-| Ingress hostnames / TLS / bind      | `x-turbopanel.hosting[]` → `hosting` rows          | Never a `ports:` replacement.                                                                                                                                                                                                                                                                                                                                                                                  |
-| Git source                          | `x-turbopanel.source` → `sourceMaterial[]`         | Release trees are resolved control-plane side.                                                                                                                                                                                                                                                                                                                                                                 |
-| PHP version / extensions / pool     | `x-turbopanel.php`                                 | Keyed 1:1 with the _service_, not the hosting. `php.mode` is resolved per server at deploy (`deploy-php-modes.ts`).                                                                                                                                                                                                                                                                                            |
-| Scheduled jobs                      | `x-turbopanel.cron[]` + `task` rows                | Rendered as systemd timers under the service's principal. Two authoring paths, one namespace: a `POST /tasks` row's display name folds to a unit name (`cronJobUnitName`), the API refuses one that a compose job owns (`task_name_in_compose`) or another task folds to (`task_name_in_use`), and at deploy compose comes first and wins a collision (`renderCronForDeploy`). Disabled rows are not rendered. |
-| Spanning (TurboFabric) networks     | `networks.<key>.driver: overlay`                   | Compose already expresses overlay intent — no `x-` key.                                                                                                                                                                                                                                                                                                                                                        |
-| Container naming                    | `project.options.containerNaming`                  | A compiler decision, not a document one.                                                                                                                                                                                                                                                                                                                                                                       |
-| Deploy strategy & migration status  | `environment.options.deployStrategy` / `migrations` | `inplace` (existing envs) / `sequential` (new envs, stamped at create) / `bluegreen`; `src/features/deploy/deploy-options.ts`. Tuning (`drainSeconds`, `healthTimeoutSeconds`, `rollbackWindowMinutes`; `0` = retire the old generation at cutover) may also sit on `project.options`. Not a document concern. |
-| Rolling-update pace across hosts    | `services.<n>.deploy.update_config`                | Compose already says it (default parallelism 1, halt on failure); parsed by `src/features/deploy/rollout-policy.ts`. `parallelism` is applied (`interpreted` in `field-policy.ts`, rollout in `src/features/deploy/rollout.ts`); `delay`, `monitor`, `order`, `max_failure_ratio` and `failure_action: continue` are still refused by `lintDeployUpdateConfig` in `lint.ts`. |
-| Variable & secret values            | Variable store (org/project/env/server scopes)     | Compose carries refs, never values.                                                                                                                                                                                                                                                                                                                                                                            |
+| Concern                             | Canonical place                                     | Notes                                                                                                                                                                                                                                                                                                                                                                                                          |
+| ----------------------------------- | --------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| What image/command/ports/volumes    | Compose service body                                | Rule 1. Passthrough unless `field-policy.ts` says otherwise.                                                                                                                                                                                                                                                                                                                                                   |
+| Replica count / mode                | `deploy.replicas` / `deploy.mode`                   | Interpreted by `../schedule/interpret.ts`; stripped from runtime YAML.                                                                                                                                                                                                                                                                                                                                         |
+| Placement constraints & spread      | `deploy.placement.*`                                | Interpreted by the planner. `deploy.placement` is _not_ the server pin.                                                                                                                                                                                                                                                                                                                                        |
+| Which server an environment runs on | `environment.server_id`                             | Refused in compose (`PLACEMENT_NOT_STORED_MESSAGE`).                                                                                                                                                                                                                                                                                                                                                           |
+| Resource ceiling                    | `deploy.resources` + `service.options.resources`    | Compose expresses the request; the org ∩ server ceiling clamps it.                                                                                                                                                                                                                                                                                                                                             |
+| What kind of thing a service is     | `x-turbopanel.serviceKind`                          | `container` (default) / `site` / `node`.                                                                                                                                                                                                                                                                                                                                                                       |
+| Which account it runs as            | `x-turbopanel.principal` (alias) → `principal` row  | Alias in YAML, account on the row. See below.                                                                                                                                                                                                                                                                                                                                                                  |
+| Ingress hostnames / TLS / bind      | `x-turbopanel.hosting[]` → `hosting` rows           | Never a `ports:` replacement.                                                                                                                                                                                                                                                                                                                                                                                  |
+| Git source                          | `x-turbopanel.source` → `sourceMaterial[]`          | Release trees are resolved control-plane side.                                                                                                                                                                                                                                                                                                                                                                 |
+| PHP version / extensions / pool     | `x-turbopanel.php`                                  | Keyed 1:1 with the _service_, not the hosting. `php.mode` is resolved per server at deploy (`deploy-php-modes.ts`).                                                                                                                                                                                                                                                                                            |
+| Scheduled jobs                      | `x-turbopanel.cron[]` + `task` rows                 | Rendered as systemd timers under the service's principal. Two authoring paths, one namespace: a `POST /tasks` row's display name folds to a unit name (`cronJobUnitName`), the API refuses one that a compose job owns (`task_name_in_compose`) or another task folds to (`task_name_in_use`), and at deploy compose comes first and wins a collision (`renderCronForDeploy`). Disabled rows are not rendered. |
+| Spanning (TurboFabric) networks     | `networks.<key>.driver: overlay`                    | Compose already expresses overlay intent — no `x-` key.                                                                                                                                                                                                                                                                                                                                                        |
+| Container naming                    | `project.options.containerNaming`                   | A compiler decision, not a document one.                                                                                                                                                                                                                                                                                                                                                                       |
+| Deploy strategy & migration status  | `environment.options.deployStrategy` / `migrations` | `inplace` (existing envs) / `sequential` (new envs, stamped at create) / `bluegreen`; `src/features/deploy/deploy-options.ts`. Tuning (`drainSeconds`, `healthTimeoutSeconds`, `rollbackWindowMinutes`; `0` = retire the old generation at cutover) may also sit on `project.options`. Not a document concern.                                                                                                 |
+| Rolling-update pace across hosts    | `services.<n>.deploy.update_config`                 | Compose already says it (default parallelism 1, halt on failure); parsed by `src/features/deploy/rollout-policy.ts`. `parallelism` is applied (`interpreted` in `field-policy.ts`, rollout in `src/features/deploy/rollout.ts`); `delay`, `monitor`, `order`, `max_failure_ratio` and `failure_action: continue` are still refused by `lintDeployUpdateConfig` in `lint.ts`.                                   |
+| Variable & secret values            | Variable store (org/project/env/server scopes)      | Compose carries refs, never values.                                                                                                                                                                                                                                                                                                                                                                            |
 
 #### Four field states
 
@@ -142,12 +142,17 @@ Ordering is load-bearing — each stage assumes the ones before it passed, and
    stored _layer_, but a deploy runs the merge of several, and no save ever saw
    that. An overlay `!reset` that removes the base `image`, or the root
    `x-turbopanel.principals` map a base alias depends on, is two valid saves
-   whose sum is not runnable. Three error kinds reach `deploy-prepare.ts`:
+   whose sum is not runnable. Four error kinds reach `deploy-prepare.ts`:
    `{ kind: "compose_merged_invalid" }` → **422**
    `{ error: "compose_merged_invalid", issues }` for a stage-1–3 failure of the
    merge, `{ kind: "compose_field_unsupported" }` → **422**
    `{ error: "compose_field_unsupported", issues }` for a field this platform
-   does not implement, and `{ kind: "compose_field_requires_org_opt_in" }` →
+   does not implement, `{ kind: "compose_build_refused" }` → **422**
+   `{ error: "compose_build_refused", issues }` (each issue with its rule's
+   `code`, `build-policy.ts`) for a `build:` option no deploy may carry — host
+   network, privileges, entitlements, SSH agent, a context or secret outside
+   the service's directory, an internal `extra_hosts` or remote context; no
+   opt-in reaches these — and `{ kind: "compose_field_requires_org_opt_in" }` →
    **403** `{ error: "compose_field_requires_org_opt_in", issues }` for a field
    this platform _does_ implement but this organization is not authorized to set
    (see "Gated fields", below). Three distinct kinds because the operator's next
@@ -166,6 +171,7 @@ Ordering is load-bearing — each stage assumes the ones before it passed, and
    which skips re-deriving it for the identical merge — a skip, never a bypass:
    a caller that has not validated leaves the flag unset and prepare gates
    itself.
+
 5. **Compiler** — `compile-runtime.ts`, which is entitled to assume 1–4 ran.
 
 ### Field policy (`field-policy.ts`)
@@ -197,6 +203,35 @@ _managed_-engine `dockerOptions` path (`lib/managed/settings.ts`'s
 `turbopaneld/src/contracts/commands-contracts.ts`). `cap_drop`, `ports` and
 `user` are deliberately _not_ gated.
 
+**Builds, refused with no opt-in (`build-policy.ts`).** Until builds leave the
+rootful engine, a `RUN` step is root on the daemon host's engine, and anyone
+who can deploy may define a build. So `collectBuildRefusals` refuses, with one
+code per rule and no organization opt-in: `build.network` other than
+`default`/`none` (`build_network_refused`), `privileged`
+(`build_privileged_refused`), `entitlements` (`build_entitlements_refused`),
+`ssh` agent forwarding or a key path outside (`build_ssh_refused`), a build
+secret whose top-level `file` is outside (`build_secret_outside_project`),
+`extra_hosts` to `host-gateway`, loopback, link-local, unspecified or metadata
+addresses (`build_extra_host_internal`), a `context`, `dockerfile` or
+`additional_contexts` path outside (`build_context_outside_project`), and a
+remote context on a non-public IP or reserved name
+(`build_context_internal_url`). One rule has an opt-in:
+a public remote `context` or `additional_contexts` entry (URL, `git@`,
+`github.com/...`) is `build_remote_source_refused` unless the organization
+turned on `composeRemoteBuildSourcesEnabled` (owner-only,
+`PUT /organizations/:id/compose-remote-build-sources`, default off); the
+control plane passes it to `validateComposeForDeploy` and to the daemon as
+`remoteBuildSourcesApproved` on `environment.deploy`. Internal hosts stay
+refused either way. Known gap: the control plane never reads a Dockerfile, so
+`ADD http(s)://...` or `COPY --from=<remote>` inside one is invisible to every
+check here, opted in or not; only builder egress rules (phase 2) bound it.
+`lint.ts` reports them with
+`field_unsupported`'s posture (save-time advice, strict error) and
+`validateComposeForDeploy` refuses them as `compose_build_refused` before the
+org gate. The daemon repeats them on the resolved model and resolves build
+paths on the host (turbopaneld `compose-build-policy.ts`,
+`compose-host-paths.ts`).
+
 **Host paths, by value (`host-access.ts`).** `volumes` is not a gated _key_: a
 bind inside the service's own directory (`./data:/data`) and a named volume are
 ordinary. A path that resolves anywhere else is gated by _value_ —
@@ -205,16 +240,15 @@ segment, an interpolated or backslashed path (fail closed), the Docker socket
 by name, long-syntax `type: bind`/`npipe`/unknown types, and every spelling
 that smuggles a bind in: top-level `volumes.<name>.driver_opts` binds (`o:
 bind`, `type: none`, a host-path `device` that is not a network filesystem),
-`configs`/`secrets` `file:`, `env_file`, `label_file`, `build` (`context`,
-`dockerfile`, `additional_contexts`, plus `ssh`, `network: host`,
-`privileged`, `entitlements`), `extends.file`, and top-level `include`.
+`configs`/`secrets` `file:`, `env_file`, `label_file`, `extends.file`, and
+top-level `include`. `build` is not gated here: `build-policy.ts` refuses its
+host reach outright (below).
 `extends.file` and `include` are host-level **wherever** they point: the daemon
 reads those files on the host at deploy time, so what they add never passes
 this check, and a file inside the service's directory is one a container could
 have written. A bind of the service's directory itself (`.:/app`, `./:/app`)
 is host-level too — a container that can write there can rewrite the deployed
-files and plant symlinks — while a build context of `.` only reads and stays
-allowed. This check is lexical; the daemon resolves every bind on the host
+files and plant symlinks. This check is lexical; the daemon resolves every bind on the host
 before `compose up` (turbopaneld `src/deploy/compose-host-paths.ts`), which is
 what catches a symlink planted inside `./data`.
 `lint.ts` emits each finding with the same `field_requires_org_opt_in` code
@@ -653,7 +687,7 @@ overwrite the write. Rows created in the panel keep working unchanged.
 ### Per-service Git source (`x-turbopanel.source`) — resolved into `sourceMaterial[]`
 
 `services.<name>.x-turbopanel` accepts an optional **`source`** block:
-`{ sourceId, branch?, subdirectory?, buildCommand?, startCommand?, outputDirectory?, deployOnPush? }`
+`{ sourceId, branch?, subdirectory?, installCommand?, buildCommand?, startCommand?, outputDirectory?, deployOnPush? }`
 (`src/features/compose/service-kind.ts` — `parseServiceSourceExtension`,
 `SOURCE_BRANCH_MAX_LENGTH` / `SOURCE_COMMAND_MAX_LENGTH`; the path fields reuse
 the exported `isSafeRoot` rule that already guards `root`). It is no longer

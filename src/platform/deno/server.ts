@@ -722,6 +722,8 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
       // for the events held by a digest cadence or quiet hours.
       await runCleanupPhase('notification digest sweep', () =>
         sendDueDigests(db, {
+          secrets: dataEncryptionSecrets,
+          allowPrivateTargets: true,
           email: {
             queue: emailQueue,
             from: emailSettings.from,

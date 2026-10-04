@@ -519,6 +519,14 @@ export type DaemonMessage =
        */
       detector?: string
       /**
+       * Orchestrator's key for the dead instance (feature
+       * `managed-ha-instance-v1`): the host and port it was discovered with.
+       * The control plane fences only when they match the cluster's current
+       * primary. Both or neither.
+       */
+      instanceHost?: string
+      instancePort?: number
+      /**
        * Bounded detector evidence. Logged and stored on the recovery row
        * (`metadata.detectorEvidence`). Only `spanMs` is read: it anchors the
        * fresh-standby gate's failure start (`ha-fresh-standby.ts`).
@@ -1027,6 +1035,29 @@ function validateManagedHaEventFields(record: Record<string, unknown>): string |
   }
   if (record.evidence !== undefined && !isRecord(record.evidence)) {
     return 'invalid evidence'
+  }
+  return validateManagedHaInstanceFields(record)
+}
+
+const MANAGED_HA_INSTANCE_HOST_MAX = 255
+
+function validateManagedHaInstanceFields(record: Record<string, unknown>): string | null {
+  const { instanceHost, instancePort } = record
+  if (instanceHost === undefined && instancePort === undefined) return null
+  if (
+    typeof instanceHost !== 'string' ||
+    instanceHost.length === 0 ||
+    instanceHost.length > MANAGED_HA_INSTANCE_HOST_MAX
+  ) {
+    return 'invalid instanceHost'
+  }
+  if (
+    typeof instancePort !== 'number' ||
+    !Number.isInteger(instancePort) ||
+    instancePort < 1 ||
+    instancePort > 65535
+  ) {
+    return 'invalid instancePort'
   }
   return null
 }

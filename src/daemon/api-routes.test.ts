@@ -85,7 +85,6 @@ import {
 import {
   AE_BLOB_FAMILY_INDEX,
   AE_BLOB_KIND_INDEX,
-  AE_BLOB_SOURCE_OR_IDENTITY_INDEX,
   type AnalyticsEngineDataPointLike,
 } from './metrics/backends/cloudflare/field-map.ts'
 import {
@@ -2627,7 +2626,10 @@ test('POST /metrics truncates entity arrays to the resolved capability plan', as
       buildValidMetricsFrame({
         // Default (virtual) plan: gpuSlots=1, detailedBlockDeviceSlots=1,
         // extraFilesystemSlots=0, physicalHardwareSignalSlots=0.
-        gpus: [{ gpuId: 'gpu0' }, { gpuId: 'gpu1' }],
+        gpus: [
+          { gpuId: 'gpu0', utilizationPercent: 5 },
+          { gpuId: 'gpu1', utilizationPercent: 6 },
+        ],
         blockDevices: [{ deviceId: 'sda' }],
         filesystems: [{ filesystemId: 'fs0' }],
         hardwareSignals: [{ signalId: 'sig0', kind: 'fan' }],
@@ -2673,7 +2675,7 @@ test('POST /metrics on self-hosted skips capability-plan truncation', async () =
   assertEquals(writes[0]?.hardwareSignals.length, 2)
 })
 
-test('POST /metrics buffers a live-session sample for the overlay AND writes it durably', async () => {
+test('POST /metrics buffers a live-session sample for the overlay AND writes a flag-less (v6) sample durably', async () => {
   const { app, writes } = await createMetricsTestApp({ runtime: 'deno' })
   const serverId = 'srv-metrics-live-buffer'
   const cache = createMetricsChartCache('deno')
@@ -2705,6 +2707,82 @@ test('POST /metrics buffers a live-session sample for the overlay AND writes it 
   const buffered = await readLiveSample(cache, serverId)
   assertEquals(buffered?.serverId, serverId)
   assertEquals(buffered?.host.cpu.busyPercent, 81)
+})
+
+test('POST /metrics routes a non-durable v7 live sample to the overlay buffer only, with or without the lease marker', async () => {
+  for (const marked of [true, false]) {
+    const { app, writes } = await createMetricsTestApp({ runtime: 'deno' })
+    const serverId = `srv-metrics-nondurable-${marked}`
+    const cache = createMetricsChartCache('deno')
+    if (marked) await markServerLiveSessionActive(cache, serverId, 'lease-nondurable', 3600)
+    const daemonToken = await issueDaemonToken(serverId, `key-metrics-nondurable-${marked}`)
+    const response = await app.request('/api/daemon/v1/metrics', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${daemonToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(
+        buildValidMetricsFrame({
+          metadata: { version: 7, durable: false, intervalSeconds: 10 },
+          host: {
+            cpu: { busyPercent: 64 },
+            kernel: emptyHostGroup(),
+            memory: emptyHostGroup(),
+            storage: emptyHostGroup(),
+            network: emptyHostGroup(),
+          },
+        })
+      ),
+    })
+    assertEquals(response.status, 202)
+    assertEquals(writes.length, 0)
+    if (marked) {
+      assertEquals((await readLiveSample(cache, serverId))?.host.cpu.busyPercent, 64)
+    }
+  }
+})
+
+test('POST /metrics stores a v7 durable baseline sample and buffers it while a lease is active', async () => {
+  const { app, writes } = await createMetricsTestApp({ runtime: 'deno' })
+  const serverId = 'srv-metrics-baseline-lease'
+  const cache = createMetricsChartCache('deno')
+  await markServerLiveSessionActive(cache, serverId, 'lease-baseline', 3600)
+  const daemonToken = await issueDaemonToken(serverId, 'key-metrics-baseline-lease')
+  const response = await app.request('/api/daemon/v1/metrics', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${daemonToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(
+      buildValidMetricsFrame({ metadata: { version: 7, durable: true, intervalSeconds: 60 } })
+    ),
+  })
+  assertEquals(response.status, 202)
+  assertEquals(writes.length, 1)
+  assertEquals((await readLiveSample(cache, serverId))?.serverId, serverId)
+})
+
+test('POST /metrics hosted ingest drops entities the allowlist rejects before plan truncation', async () => {
+  const { app, writes } = await createMetricsTestApp()
+  const serverId = 'srv-metrics-allowlist'
+  const daemonToken = await issueDaemonToken(serverId, 'key-metrics-allowlist')
+  const response = await app.request('/api/daemon/v1/metrics', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${daemonToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(
+      buildValidMetricsFrame({
+        networks: [{ deviceId: 'veth1' }, { deviceId: 'eth0' }],
+        blockDevices: [{ deviceId: 'loop0' }, { deviceId: 'sda1' }, { deviceId: 'sda' }],
+        gpus: [{ gpuId: 'gpu0' }],
+      })
+    ),
+  })
+  assertEquals(response.status, 202)
+  assertEquals(
+    writes[0]?.networks.map((n) => n.deviceId),
+    ['eth0']
+  )
+  assertEquals(
+    writes[0]?.blockDevices.map((d) => d.deviceId),
+    ['sda']
+  )
+  assertEquals(writes[0]?.gpus, [])
 })
 
 test('POST /metrics writes a 10 s sample even when this colo never saw the live-session marker', async () => {
@@ -2743,7 +2821,7 @@ test('POST /metrics still writes priming and baseline intervals without a live-s
   assertEquals(writes.length, 2)
 })
 
-test('POST /metrics through a real CloudflareAnalyticsEngineServerMetricsStore: entity families and events all land as AE rows, ingress sources keyed by sourceId', async () => {
+test('POST /metrics through a real CloudflareAnalyticsEngineServerMetricsStore: host rows, entity families and events all land as v7 AE rows', async () => {
   const { app, points } = await createMetricsTestAppWithRealCloudflareStore()
   const serverId = 'srv-metrics-cf-real'
   const daemonToken = await issueDaemonToken(serverId, 'key-metrics-cf-real')
@@ -2766,7 +2844,7 @@ test('POST /metrics through a real CloudflareAnalyticsEngineServerMetricsStore: 
             deviceId: 'eth2',
           },
         ],
-        gpus: [{ gpuId: 'gpu0' }],
+        gpus: [{ gpuId: 'gpu0', utilizationPercent: 5 }],
         ingressSources: [
           { sourceId: 'caddy-1', sourceKind: 'caddy' },
           { sourceId: 'caddy-2', sourceKind: 'caddy' },
@@ -2790,18 +2868,15 @@ test('POST /metrics through a real CloudflareAnalyticsEngineServerMetricsStore: 
   const family = (kind: string) => points.filter((p) => p.blobs[AE_BLOB_FAMILY_INDEX] === kind)
   assertEquals(family('host.system').length, 1)
   assertEquals(family('host.io').length, 1)
+  assertEquals(family('host.network').length, 1)
+  assertEquals(family('host.web').length, 1)
   assertEquals(family('network').length, 0) // eth0/eth1 embed; eth2 exceeds the 2-slot hosted plan
   assertEquals(family('gpu').length, 1)
 
-  const ingressRows = family('managed.ingress')
-  assertEquals(ingressRows.length, 2)
-  const ingressIds = ingressRows.map((p) => p.blobs[AE_BLOB_SOURCE_OR_IDENTITY_INDEX]).sort()
-  // Two sources sharing sourceKind "caddy" stay distinct rows keyed by sourceId.
-  assertEquals(ingressIds, ['caddy-1', 'caddy-2'])
-
-  const proxyRows = family('managed.database_proxy')
-  assertEquals(proxyRows.length, 1)
-  assertEquals(proxyRows[0]!.blobs[AE_BLOB_SOURCE_OR_IDENTITY_INDEX], 'proxysql-1')
+  // v7 folds Caddy into host.web and ProxySQL into managed.database: no rows
+  // of their own, one source each.
+  assertEquals(family('managed.ingress').length, 0)
+  assertEquals(family('managed.database').length, 1)
 
   const eventRows = points.filter((p) => p.blobs[AE_BLOB_KIND_INDEX] === 'event')
   assertEquals(eventRows.length, 1)

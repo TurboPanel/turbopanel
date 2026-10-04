@@ -16,9 +16,17 @@ import type { CommandQueue } from '../commands/queue.ts'
 import { environment, managed, project, server } from '../../db/schema.ts'
 import { isManagedEngineCode } from './types.ts'
 import type { RecoveryRecord } from './recovery.ts'
-import { beginAutomaticFailover } from './ha-recovery.ts'
-import { listManagedMembers } from './members.ts'
-import { haEventRejection } from './ha-policy.ts'
+import { beginAutomaticFailover, recordStaleDeadPrimaryReport } from './ha-recovery.ts'
+import { listManagedMembers, type ManagedMemberRow } from './members.ts'
+import { haMemberDialForReporter } from './ha-desired.ts'
+import { getManagedEngineSpec } from './index.ts'
+import { getServerDaemonStateByServerId } from '../servers/server-identity-db.ts'
+import { MANAGED_HA_INSTANCE_FEATURE } from '../../lib/version-wire.ts'
+import {
+  haEventRejection,
+  ORCHESTRATOR_DETECTOR,
+  orchestratorBindingRejection,
+} from './ha-policy.ts'
 import { compatLogInfo, compatLogWarn } from '../../lib/log-compat.ts'
 import type { AutoFailoverSetting } from './auto-failover-switch.ts'
 import { failureStartedAtMs, type FreshStandbyProbe } from './ha-fresh-standby.ts'
@@ -28,6 +36,9 @@ export type ManagedHaEventInput = {
   sourceMemberId?: string
   /** Absent = Orchestrator. See `ha-policy.ts` → `AUTOMATIC_FAILOVER_DETECTORS`. */
   detector?: string
+  /** Orchestrator's key for the dead instance (`managed-ha-instance-v1`). */
+  instanceHost?: string
+  instancePort?: number
   /**
    * Bounded detector evidence: logged and recorded. Only `spanMs` (the
    * detector's monotonic failure span) is used, to anchor the fresh-standby
@@ -77,6 +88,67 @@ async function loadServerOrganization(db: Db, serverId: string): Promise<string 
   return row?.organizationId ?? null
 }
 
+/** Lookups behind the Orchestrator binding check (test seam). */
+export type HaBindingLoaders = {
+  reporterBindsInstance: (db: Db, serverId: string) => Promise<boolean>
+  primaryDial: (
+    db: Db,
+    reporterServerId: string,
+    engine: string,
+    primary: ManagedMemberRow | null
+  ) => Promise<{ host: string; port: number } | null>
+}
+
+async function reporterBindsInstance(db: Db, serverId: string): Promise<boolean> {
+  const state = await getServerDaemonStateByServerId(db, serverId)
+  return state?.projection?.features?.includes(MANAGED_HA_INSTANCE_FEATURE) === true
+}
+
+async function currentPrimaryDial(
+  db: Db,
+  reporterServerId: string,
+  engine: string,
+  primary: ManagedMemberRow | null
+): Promise<{ host: string; port: number } | null> {
+  const spec = getManagedEngineSpec(engine)
+  if (!primary || !spec) return null
+  const dial = await haMemberDialForReporter(db, reporterServerId, primary, spec.defaultPort)
+  return dial ? { host: dial.host, port: dial.port } : null
+}
+
+const DEFAULT_BINDING_LOADERS: HaBindingLoaders = {
+  reporterBindsInstance,
+  primaryDial: currentPrimaryDial,
+}
+
+/**
+ * Orchestrator reports must name the CURRENT primary (by the address and port
+ * its Orchestrator knows it by) once the daemon can say which instance died.
+ */
+async function staleOrchestratorReason(
+  db: Db,
+  input: ManagedHaEventInput,
+  ctx: {
+    reporterServerId: string
+    engine: string
+    primary: ManagedMemberRow | null
+    loaders: HaBindingLoaders
+  }
+): Promise<string | null> {
+  if ((input.detector ?? ORCHESTRATOR_DETECTOR) !== ORCHESTRATOR_DETECTOR) return null
+  const bindsInstance = await ctx.loaders.reporterBindsInstance(db, ctx.reporterServerId)
+  const named = input.instanceHost !== undefined && input.instancePort !== undefined
+  const expectedPrimary = named
+    ? await ctx.loaders.primaryDial(db, ctx.reporterServerId, ctx.engine, ctx.primary)
+    : null
+  return orchestratorBindingRejection({
+    reporterBindsInstance: bindsInstance,
+    instanceHost: input.instanceHost,
+    instancePort: input.instancePort,
+    expectedPrimary,
+  })
+}
+
 /**
  * `deps.reporterServerId` must be the authenticated session's server id
  * (the cell attachment), never a payload field: the gate trusts it to prove
@@ -96,6 +168,8 @@ export async function handleManagedHaEvent(
     freshStandbyMarginMs?: number
     /** Test seam: control-plane ms the event was received. */
     nowMs?: () => number
+    /** Test seam for the Orchestrator binding lookups. */
+    binding?: HaBindingLoaders
   }
 ): Promise<RecoveryRecord | null> {
   const receivedAtMs = (deps.nowMs ?? Date.now)()
@@ -126,6 +200,22 @@ export async function handleManagedHaEvent(
       `ignored managed-ha-event for ${row.id} from server ${deps.reporterServerId}: ${rejection}`
     )
     return null
+  }
+  const stale = await staleOrchestratorReason(db, input, {
+    reporterServerId: deps.reporterServerId,
+    engine,
+    primary,
+    loaders: deps.binding ?? DEFAULT_BINDING_LOADERS,
+  })
+  if (stale) {
+    return recordStaleDeadPrimaryReport({
+      db,
+      managedId: row.id,
+      members,
+      reason: stale,
+      ...(input.detector ? { detector: input.detector } : {}),
+      ...(evidence ? { evidence } : {}),
+    })
   }
   const detectorName = input.detector ?? 'orchestrator'
   const evidenceSuffix = evidence ? ` evidence=${evidence}` : ''

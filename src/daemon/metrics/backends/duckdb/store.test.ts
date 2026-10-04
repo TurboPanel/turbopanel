@@ -3,6 +3,8 @@ import { it } from '@std/testing/bdd'
 import { buildMetricsSample } from '../../../../contracts/metrics-contract.ts'
 import type {
   DiagnosticsSample,
+  DockerUsageSample,
+  MetricsExtended,
   DatabaseProxySample,
   IngressSourceSample,
   MetricEvent,
@@ -72,6 +74,8 @@ function sample(overrides: {
   databaseProxies?: DatabaseProxySample[]
   events?: MetricEvent[]
   diagnostics?: DiagnosticsSample
+  extended?: MetricsExtended
+  dockerUsage?: DockerUsageSample
 }): AuthenticatedMetricsSample {
   const at = new Date(overrides.atMs).toISOString()
   const gpuCount = overrides.gpuCount ?? 0
@@ -86,6 +90,8 @@ function sample(overrides: {
       bootGeneration: overrides.bootGeneration ?? 1,
     },
     diagnostics: overrides.diagnostics,
+    extended: overrides.extended,
+    dockerUsage: overrides.dockerUsage,
     host: {
       cpu: {
         busyPercent: overrides.cpuBusyPercent ?? null,
@@ -1146,21 +1152,13 @@ it("writeSample splits diagnostics across the host row's cpu_diagnostics_* colum
 
 it('startUiServer rejects a non-TCP port before opening DuckDB', async () => {
   await withStore(async (store) => {
-    await assertRejects(
-      () => store.startUiServer(0),
-      TypeError,
-      'port must be a valid TCP port',
-    )
+    await assertRejects(() => store.startUiServer(0), TypeError, 'port must be a valid TCP port')
     await assertRejects(
       () => store.startUiServer(65536),
       TypeError,
-      'port must be a valid TCP port',
+      'port must be a valid TCP port'
     )
-    await assertRejects(
-      () => store.startUiServer(1.5),
-      TypeError,
-      'port must be a valid TCP port',
-    )
+    await assertRejects(() => store.startUiServer(1.5), TypeError, 'port must be a valid TCP port')
   })
 })
 
@@ -1170,12 +1168,12 @@ it('constructor rejects non-positive threads / retentionDays before opening Duck
     assertThrows(
       () => new DuckDbParquetServerMetricsStore({ metricsDir, threads: 0 }),
       TypeError,
-      'threads must be a positive integer',
+      'threads must be a positive integer'
     )
     assertThrows(
       () => new DuckDbParquetServerMetricsStore({ metricsDir, retentionDays: -1 }),
       TypeError,
-      'retentionDays must be a positive integer',
+      'retentionDays must be a positive integer'
     )
   } finally {
     await Deno.remove(metricsDir, { recursive: true })
@@ -1193,7 +1191,7 @@ it('queryHostSeries rejects unsafe ids, inverted ranges, and empty metrics', asy
           to: new Date(DAY_START + 60_000).toISOString(),
         }),
       TypeError,
-      'invalid serverId for DuckDB',
+      'invalid serverId for DuckDB'
     )
     await assertRejects(
       () =>
@@ -1204,7 +1202,7 @@ it('queryHostSeries rejects unsafe ids, inverted ranges, and empty metrics', asy
           to: new Date(DAY_START + 60_000).toISOString(),
         }),
       TypeError,
-      'invalid from timestamp',
+      'invalid from timestamp'
     )
     await assertRejects(
       () =>
@@ -1215,7 +1213,7 @@ it('queryHostSeries rejects unsafe ids, inverted ranges, and empty metrics', asy
           to: new Date(DAY_START).toISOString(),
         }),
       TypeError,
-      'from must be <= to',
+      'from must be <= to'
     )
     await assertRejects(
       () =>
@@ -1226,7 +1224,7 @@ it('queryHostSeries rejects unsafe ids, inverted ranges, and empty metrics', asy
           to: new Date(DAY_START + 60_000).toISOString(),
         }),
       TypeError,
-      'metrics must be a non-empty list of v6 canonical names',
+      'metrics must be a non-empty list of v6 canonical names'
     )
     await assertRejects(
       () =>
@@ -1238,7 +1236,7 @@ it('queryHostSeries rejects unsafe ids, inverted ranges, and empty metrics', asy
           resolutionSeconds: 0,
         }),
       TypeError,
-      'resolutionSeconds must be a positive integer',
+      'resolutionSeconds must be a positive integer'
     )
   })
 })
@@ -1247,7 +1245,7 @@ it('age-based flush writes a sample that is under the row batch cap', async () =
   const metricsDir = await Deno.makeTempDir({ prefix: 'tp-duckdb-store-age-' })
   const store = new DuckDbParquetServerMetricsStore(
     { metricsDir },
-    { writeBatchMaxRows: 50, writeBatchMaxAgeMs: 5 },
+    { writeBatchMaxRows: 50, writeBatchMaxAgeMs: 5 }
   )
   try {
     await store.writeSample(sample({ atMs: DAY_START, cpuBusyPercent: 7 }))
@@ -1274,6 +1272,102 @@ it('age-based flush writes a sample that is under the row batch cap', async () =
     assertEquals(result.points[0]?.values['host.cpu.busyPercent'], 7)
   } finally {
     await store.close()
+    await Deno.remove(metricsDir, { recursive: true })
+  }
+})
+
+const INGRESS_V6: IngressSourceSample = {
+  sourceId: 'caddy',
+  sourceKind: 'caddy',
+  requests: 10,
+  responses2xx: null,
+  responses3xx: null,
+  responses4xx: null,
+  responses5xx: null,
+  requestErrors: null,
+  requestBytes: null,
+  responseBytes: null,
+  requestDurationSecondsSum: null,
+  bucket10ms: null,
+  bucket50ms: null,
+  bucket100ms: null,
+  bucket500ms: null,
+  bucket1s: null,
+  bucket5s: null,
+  requestsInFlight: null,
+  upstreamsHealthy: null,
+  upstreamsTotal: null,
+  retries: null,
+}
+
+const DOCKER_V6: DockerUsageSample = {
+  layersBytes: 1,
+  imagesCount: null,
+  imagesReclaimableBytes: null,
+  containersBytes: null,
+  containersCount: null,
+  volumesBytes: null,
+  volumesCount: null,
+  volumesReclaimableBytes: null,
+  buildCacheBytes: null,
+  buildCacheReclaimableBytes: null,
+}
+
+it('v7 extended numeric fields land in the ext_* columns; a v6 sample writes real NULLs there', async () => {
+  const metricsDir = await Deno.makeTempDir({ prefix: 'tp-duckdb-v7-' })
+  try {
+    const store = makeStore(metricsDir)
+    await store.writeSample(
+      sample({
+        atMs: DAY_START + 60_000,
+        ingressSources: [INGRESS_V6],
+        dockerUsage: DOCKER_V6,
+        extended: {
+          host: { oomKills: 3, rootDiskQueueDepth: 1.5, pidLimitUsedPercent: 20 },
+          docker: { containersRunning: 7, reclaimableBytes: 99 },
+          ingress: { tlsCertSoonestExpiryDays: 21 },
+          text: { kernel: '6.8.0' },
+        },
+      })
+    )
+    await store.writeSample(
+      sample({
+        atMs: DAY_START + 120_000,
+        sequence: 2,
+        ingressSources: [INGRESS_V6],
+        dockerUsage: DOCKER_V6,
+      })
+    )
+    await store.close()
+
+    const handle = await openDuckDb({ paths: resolveDuckDbPaths(metricsDir) })
+    try {
+      const read = async (sql: string) =>
+        (await handle.connection.runAndReadAll(sql)).getRowObjectsJS()
+      const host = await read(
+        `SELECT ext_oom_kills, ext_root_disk_queue_depth, ext_pid_limit_used_percent, ` +
+          `ext_systemd_units_failed FROM ${HOST_SAMPLES_TABLE} ORDER BY sequence`
+      )
+      assertEquals(host[0], {
+        ext_oom_kills: 3,
+        ext_root_disk_queue_depth: 1.5,
+        ext_pid_limit_used_percent: 20,
+        ext_systemd_units_failed: null,
+      })
+      assertEquals(host[1].ext_oom_kills, null)
+      const docker = await read(
+        `SELECT ext_containers_running, ext_reclaimable_bytes FROM server_docker_samples ORDER BY sequence`
+      )
+      assertEquals(docker[0], { ext_containers_running: 7, ext_reclaimable_bytes: 99 })
+      assertEquals(docker[1].ext_containers_running, null)
+      const ingress = await read(
+        `SELECT ext_tls_cert_soonest_expiry_days AS d FROM server_ingress_samples ORDER BY sequence`
+      )
+      assertEquals([ingress[0].d, ingress[1].d], [21, null])
+    } finally {
+      handle.close()
+    }
+  } finally {
     await Deno.remove(metricsDir, { recursive: true })
   }
 })

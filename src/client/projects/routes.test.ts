@@ -293,7 +293,7 @@ test('POST /projects managed rejects unknown catalog code', async () => {
   })
 })
 
-test('POST /projects empty scaffolds Production once with type empty', async () => {
+test('POST /projects empty scaffolds production once with type empty', async () => {
   await withProjectFixtures(async ({ db, app, secrets, userId, organizationId, workspaceId }) => {
     const cookie = await sessionCookie(db, secrets, userId)
     const res = await app.request('/projects', {
@@ -327,7 +327,7 @@ test('POST /projects empty scaffolds Production once with type empty', async () 
       .from(environment)
       .where(eq(environment.projectId, body.id))
     assertEquals(envs.length, 1)
-    assertEquals(envs[0]!.name, 'Production')
+    assertEquals(envs[0]!.name, 'production')
   })
 })
 
@@ -655,7 +655,7 @@ test('POST /projects/:id/configure reuses scaffolded env when org default change
   })
 })
 
-test('POST /projects/:id/configure prefers literal Production over org default match', async () => {
+test('POST /projects/:id/configure prefers literal production over org default match', async () => {
   await withProjectFixtures(async ({ db, app, secrets, userId, organizationId, workspaceId }) => {
     const cookie = await sessionCookie(db, secrets, userId)
     const createRes = await app.request('/projects', {
@@ -706,7 +706,7 @@ test('POST /projects/:id/configure prefers literal Production over org default m
       .where(eq(environment.projectId, id))
     assertEquals(envs.length, 2)
 
-    const production = envs.find((row) => row.name === 'Production')
+    const production = envs.find((row) => row.name === 'production')
     const staging = envs.find((row) => row.name === 'Staging')
     assertEquals(production != null, true)
     assertEquals(staging != null, true)
@@ -790,7 +790,7 @@ test('POST /projects/:id/configure pins serverId on existing default environment
         .from(environment)
         .where(eq(environment.projectId, id))
         .limit(1)
-      assertEquals(after?.name, 'Production')
+      assertEquals(after?.name, 'production')
       assertEquals(after?.serverId, serverId)
     } finally {
       await db.update(environment).set({ serverId: null }).where(eq(environment.projectId, id))
@@ -872,7 +872,7 @@ test('POST /projects/:id/configure sets docker-compose idempotently', async () =
   })
 })
 
-test('POST /projects/:id/configure managed postgres reuses Production', async () => {
+test('POST /projects/:id/configure managed postgres reuses production', async () => {
   await withProjectFixtures(async ({ db, app, secrets, userId, organizationId, workspaceId }) => {
     const cookie = await sessionCookie(db, secrets, userId)
     const createRes = await app.request('/projects', {
@@ -919,7 +919,7 @@ test('POST /projects/:id/configure managed postgres reuses Production', async ()
       .from(environment)
       .where(eq(environment.projectId, id))
     assertEquals(envs.length, 1)
-    assertEquals(envs[0]!.name, 'Production')
+    assertEquals(envs[0]!.name, 'production')
 
     const managedForEnv = await db
       .select({ id: managed.id })
@@ -1709,7 +1709,7 @@ type CatalogScaffoldBody = {
 
 /** The environment name a catalog entry scaffolds under (its Production-like name follows the org default). */
 function expectedCatalogEnvironmentName(declared: string): string {
-  return declared.toLowerCase() === 'production' ? 'Production' : declared
+  return declared.toLowerCase() === 'production' ? 'production' : declared
 }
 
 async function assertCatalogScaffold(

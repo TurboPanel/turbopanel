@@ -72,9 +72,17 @@ pendingDigest?, summary }` with `state` one of `confirmed`, `nothing_pending`
 ruleset is pending), `expired` (the window ran out; the host is rolling back)
 or `rolled_back` (the guard already restored the previous rules). Outbound is
 open, so a daemon that "can still reach the control plane" proves nothing about
-inbound access: the confirming party must have reached the host from outside
-(the outside probe is the Road row `r2-fw-outside-probe`). 60s consumer timeout.
-Nothing enqueues it yet.
+inbound access (the invariant SSH and control-plane ACCEPTs are what protect
+that). Decided 2026-10-03: **the daemon confirms itself.** After the rules are
+live it makes one authenticated round trip (`GET /api/daemon/v1/ping`) and, only
+if that answers, runs this same confirm; the reconcile result then carries
+`confirmation: { state: "confirmed", autoConfirm: { ok: true, reason } }`. If the
+round trip fails or times out the result stays `state: "pending"` with
+`autoConfirm: { ok: false, reason }` and nothing else happens: the 120 s rollback
+fires. A rollback is reported as `lastRollback { digest, at, restored }` on the
+next result while nothing is pending. The control plane runs no test or outside
+probe and sends no confirm; 60s consumer timeout kept for a manual confirm.
+Nothing enqueues it.
 
 `server.backups.reconcile` (added 2026-09-30, Road row `r2-backup-schema`)
 carries the **complete** set of scheduled backup policies whose target lives on
@@ -311,6 +319,22 @@ site + deployment dir + `/run` secrets removed, `containers: []` clears pins);
 lifecycle is **non-destructive** (`compose start|stop|restart`,
 files/volumes/deployment dir preserved, container rows keep their ids).
 Lifecycle `start`/`restart` rehydrate missing `/run` secret files first.
+
+**`retirePrincipals[]` (`{ username }[]`) is set only by a delete teardown**
+(`client/environments/teardown.ts`). The plan captures the project's server
+principals (applied logins) before the cascade; after it commits,
+`resolvePrincipalRetirement` keeps every login a surviving environment still
+places on that server (pinned there or holding a `deployment` row there) and
+names the rest on the **last** stop sent to that server. The daemon retires each
+after everything else in the stop through `tp-host principal-remove` (slice
+stopped and removed, processes killed, key file and group memberships cleared,
+the home tree removed without following symlinks, `userdel`, `groupdel
+<name>-grp`), then re-renders the `sshd` drop-in. tp-host refuses an account
+whose uid or `<name>-grp` gid is outside 15001–60000, whose home is not under
+the principal root, or that the host still references (a `turbopanel-*` unit
+running as it or in its slice, or a tree left under its `sites/`); a refusal is
+logged and the account kept, never a stop failure. An older daemon ignores the
+field.
 
 `environment.lifecycle` uses a 120s consumer timeout. On success the consumer
 reconciles the daemon's authoritative `compose ps -a` report through

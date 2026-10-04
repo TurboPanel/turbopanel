@@ -81,7 +81,7 @@ export const SYSTEM_MANAGED_HA_PROJECT_DISPLAY_NAME = 'Database High-Availabilit
 /** Self-host project/environment identity key — not a wire `SystemComponentKey`. */
 export const SYSTEM_SELF_HOST_COMPONENT = 'turbopanel'
 export const SYSTEM_SELF_HOST_PROJECT_DISPLAY_NAME = 'Self Hosted TurboPanel Instance'
-export const SYSTEM_SELF_HOST_ENVIRONMENT_DISPLAY_NAME = 'Production'
+export const SYSTEM_SELF_HOST_ENVIRONMENT_DISPLAY_NAME = 'production'
 
 /**
  * Project names the system hierarchy claims for itself, as uniqueness keys.

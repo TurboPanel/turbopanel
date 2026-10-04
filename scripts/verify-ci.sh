@@ -82,6 +82,9 @@ pnpm run check:instance-acme-boundary
 echo "==> Check import boundaries"
 pnpm run check:import-boundaries
 
+echo "==> Check metrics boundaries"
+pnpm run check:metrics-boundaries
+
 echo "==> Check contract drift (sibling twins)"
 pnpm run check:contract-drift
 

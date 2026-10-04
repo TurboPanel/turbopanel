@@ -530,6 +530,17 @@ all:
 3. `PRIMARY_HOST_DETECTORS` (`postgres-probe`): `sourceMemberId` is the
    current primary member and the reporter is that member's server, so a stale
    daemon (old primary after a switchover) can never fail over the new primary.
+3a. `orchestrator` events are bound to the CURRENT primary
+   (`orchestratorBindingRejection`): the daemon sends Orchestrator's key for
+   the dead instance (`instanceHost` + `instancePort`, feature
+   `managed-ha-instance-v1`), and it must equal the primary's address and port
+   as the reporter's Orchestrator knows it (`haMemberDialForReporter`, the same
+   dial `managed.ha.reconcile` registered: private address + `privatePort`, or
+   the local container name + engine default port). A mismatch, or a missing
+   instance from a daemon that advertises the feature, is recorded as a
+   terminal `blocked` row with `metadata.stale = true` and a reason, and
+   nothing is fenced or promoted (no in-flight resume, no cooldown). A daemon
+   that does not advertise the feature keeps the legacy, unbound behavior.
 4. An in-flight recovery for the cluster is resumed, not duplicated. Then the
    per-deployment switch (`TURBOPANEL_AUTO_FAILOVER`, below): when off, a
    terminal `blocked` row (`auto_failover_disabled`, no target) and stop.

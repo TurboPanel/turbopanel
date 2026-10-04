@@ -141,11 +141,16 @@ async function call(
   method: string,
   path: string,
   cookie: string | null,
-  body?: unknown
+  body?: unknown,
+  extraHeaders: Record<string, string> = {}
 ): Promise<Called> {
   const res = await f.app.request(path, {
     method,
-    headers: { 'content-type': 'application/json', ...(cookie ? { Cookie: cookie } : {}) },
+    headers: {
+      'content-type': 'application/json',
+      ...(cookie ? { Cookie: cookie } : {}),
+      ...extraHeaders,
+    },
     body: body === undefined || method === 'GET' ? undefined : JSON.stringify(body),
   })
   return { status: res.status, body: (await res.json()) as Record<string, unknown> }
@@ -220,6 +225,40 @@ async function db_count(f: Fixture): Promise<{ rules: number; bulwarks: number }
     .where(eq(bulwark.serverId, f.serverA))
   return { rules: rules.length, bulwarks: bulwarks.length }
 }
+
+test('narrowing SSH to a list without the caller is refused unless acknowledged', async () => {
+  await withFixture(async (f) => {
+    const path = `/organizations/${f.orgA}/firewall`
+    const me = { 'X-Real-IP': '198.51.100.4' }
+    const narrow = { sshSources: ['203.0.113.0/24'] }
+    const refused = await call(f, 'PUT', path, f.ownerCookie, narrow, me)
+    assertEquals(refused.status, 409)
+    assertEquals(refused.body.error, 'firewall_ssh_excludes_you')
+    assertEquals((await call(f, 'GET', path, f.ownerCookie)).body.policy, {
+      inputDefault: 'accept',
+      ipv6: 'mirror',
+      sshSources: ['any'],
+    })
+    const covered = await call(
+      f,
+      'PUT',
+      path,
+      f.ownerCookie,
+      { sshSources: ['198.51.100.0/24'] },
+      me
+    )
+    assertEquals(covered.status, 200)
+    const forced = await call(
+      f,
+      'PUT',
+      path,
+      f.ownerCookie,
+      { ...narrow, acknowledgeSshExcludesMe: true },
+      me
+    )
+    assertEquals(forced.status, 200)
+  })
+})
 
 test('the policy starts observe-friendly, and an owner or a manager may change it', async () => {
   await withFixture(async (f) => {

@@ -6,33 +6,27 @@
  *   daemon cell  = live connection owner
  *   projection   = writing meaningful state to Postgres (postgres-projection.ts)
  */
-import type { Db } from "../../db/connection.ts";
-import type { ServerGeo } from "../../features/geo/server-geo.ts";
-import { getServerDaemonStateByServerId } from "../../features/servers/server-identity-db.ts";
-import type { UpdateProjection } from "../../features/servers/daemon-state.ts";
-import type { DaemonCell } from "../../contracts/cell.ts";
-import {
-  type AlertSender,
-  NOOP_ALERT_SENDER,
-} from "../../features/alerts/alert-sender.ts";
-import { isMassDisconnect } from "./mass-disconnect.ts";
-import { notifyDemotions } from "../../features/alerts/notify-demotions.ts";
+import type { Db } from '../../db/connection.ts'
+import type { ServerGeo } from '../../features/geo/server-geo.ts'
+import { getServerDaemonStateByServerId } from '../../features/servers/server-identity-db.ts'
+import type { UpdateProjection } from '../../features/servers/daemon-state.ts'
+import type { DaemonCell } from '../../contracts/cell.ts'
+import { type AlertSender, NOOP_ALERT_SENDER } from '../../features/alerts/alert-sender.ts'
+import { isMassDisconnect } from './mass-disconnect.ts'
+import { notifyDemotions } from '../../features/alerts/notify-demotions.ts'
 import {
   daemonBuildChanged,
   identityFromSnapshot,
+  type ProjectionDaemonBuild,
   projectServerDaemon,
   steadyStateInboundSkipsDbRead,
-  type ProjectionDaemonBuild,
-} from "./postgres-projection.ts";
-import { resolveUpdateManifest } from "../../features/update/manifest.ts";
-import {
-  DEFAULT_UPDATE_CHANNEL,
-  type UpdateChannel,
-} from "../../contracts/update-channel.ts";
-import { isStaleProjectedUpdating } from "../../client/servers/update-status.ts";
-import { UPDATE_REQUEST_TTL_MS } from "../../features/update/constants.ts";
-import type { RedisDaemonCell } from "./redis/cell.ts";
-import type { RedisDaemonCellRegistry } from "./redis/registry.ts";
+} from './postgres-projection.ts'
+import { resolveUpdateManifest } from '../../features/update/manifest.ts'
+import { DEFAULT_UPDATE_CHANNEL, type UpdateChannel } from '../../contracts/update-channel.ts'
+import { isStaleProjectedUpdating } from '../../client/servers/update-status.ts'
+import { UPDATE_REQUEST_TTL_MS } from '../../features/update/constants.ts'
+import type { RedisDaemonCell } from './redis/cell.ts'
+import type { RedisDaemonCellRegistry } from './redis/registry.ts'
 
 export async function onDaemonConnected(
   db: Db,
@@ -41,18 +35,23 @@ export async function onDaemonConnected(
   connectedAt?: string,
   daemonBuild?: ProjectionDaemonBuild,
   geo?: ServerGeo,
-  keyId?: string,
+  keyId?: string
 ): Promise<void> {
-  const snapshot = await cell.getSnapshot();
-  await projectServerDaemon(db, serverId, {
-    kind: "online",
-    identity: {
-      ...identityFromSnapshot(snapshot),
-      ...(keyId ? { keyId } : {}),
-      ...(geo ? { geo } : {}),
+  const snapshot = await cell.getSnapshot()
+  await projectServerDaemon(
+    db,
+    serverId,
+    {
+      kind: 'online',
+      identity: {
+        ...identityFromSnapshot(snapshot),
+        ...(keyId ? { keyId } : {}),
+        ...(geo ? { geo } : {}),
+      },
+      connectedAt: connectedAt ?? snapshot.connectedAt,
     },
-    connectedAt: connectedAt ?? snapshot.connectedAt,
-  }, { cell, daemonBuild });
+    { cell, daemonBuild }
+  )
 }
 
 /**
@@ -65,14 +64,14 @@ export async function onDaemonConnected(
 export async function onDaemonConnectedFromEvidence(
   db: Db,
   serverId: string,
-  connectedAt?: string | null,
+  connectedAt?: string | null
 ): Promise<void> {
   await projectServerDaemon(db, serverId, {
-    kind: "online",
+    kind: 'online',
     identity: {},
-    reason: "self_heal",
+    reason: 'self_heal',
     ...(connectedAt ? { connectedAt } : {}),
-  });
+  })
 }
 
 /**
@@ -88,71 +87,76 @@ export async function onDaemonInbound(
   db: Db,
   serverId: string,
   cell: DaemonCell,
-  opts: { at?: string; daemonBuild?: ProjectionDaemonBuild; geo?: ServerGeo } = {},
+  opts: { at?: string; daemonBuild?: ProjectionDaemonBuild; geo?: ServerGeo } = {}
 ): Promise<void> {
   if (opts.daemonBuild?.commit && opts.daemonBuild?.buildId) {
-    await maybeRepairUpdateFromDaemonBuildHello(db, serverId, opts.daemonBuild);
+    await maybeRepairUpdateFromDaemonBuildHello(db, serverId, opts.daemonBuild)
 
-    const existingForDaemonBuild = await getServerDaemonStateByServerId(db, serverId);
+    const existingForDaemonBuild = await getServerDaemonStateByServerId(db, serverId)
     if (daemonBuildChanged(existingForDaemonBuild?.projection, opts.daemonBuild)) {
-      await projectServerDaemon(db, serverId, {
-        kind: "daemon-build",
-        daemonBuild: opts.daemonBuild,
-      }, { cell });
+      await projectServerDaemon(
+        db,
+        serverId,
+        {
+          kind: 'daemon-build',
+          daemonBuild: opts.daemonBuild,
+        },
+        { cell }
+      )
     }
   }
 
-  const snapshot = await cell.getSnapshot();
+  const snapshot = await cell.getSnapshot()
 
   // Backfill / refresh geo before the steady-state short-circuit — attach geo is
   // only available on this socket and must not wait for a later reconnect.
   if (opts.geo) {
-    await projectServerDaemon(db, serverId, {
-      kind: "identity",
-      identity: {
-        ...identityFromSnapshot(snapshot),
-        geo: opts.geo,
+    await projectServerDaemon(
+      db,
+      serverId,
+      {
+        kind: 'identity',
+        identity: {
+          ...identityFromSnapshot(snapshot),
+          geo: opts.geo,
+        },
       },
-    }, { cell });
+      { cell }
+    )
   }
 
   // Skip heartbeat-only Postgres reads when steady-state; repair above still runs.
   if (steadyStateInboundSkipsDbRead(snapshot, opts)) {
-    return;
+    return
   }
 
-  const existing = await getServerDaemonStateByServerId(db, serverId);
-  const projectedOffline = existing?.status?.connected === false;
-  const runtimeOffline = !snapshot.connected;
+  const existing = await getServerDaemonStateByServerId(db, serverId)
+  const projectedOffline = existing?.status?.connected === false
+  const runtimeOffline = !snapshot.connected
 
   if (projectedOffline || runtimeOffline) {
-    const at = opts.at ?? new Date().toISOString();
+    const at = opts.at ?? new Date().toISOString()
     await onDaemonConnected(
       db,
       serverId,
       cell,
       snapshot.connectedAt ?? at,
       opts.daemonBuild,
-      opts.geo,
-    );
-    return;
+      opts.geo
+    )
+    return
   }
 
-  await onDaemonHeartbeat(db, serverId, cell, opts.daemonBuild, opts.at);
+  await onDaemonHeartbeat(db, serverId, cell, opts.daemonBuild, opts.at)
 }
 
 export async function onDaemonDisconnected(
   db: Db,
   serverId: string,
   cell?: DaemonCell,
-  reason: "disconnect" | "sweep_stale" = "disconnect",
+  reason: 'disconnect' | 'sweep_stale' = 'disconnect'
 ): Promise<void> {
-  await projectServerDaemon(
-    db,
-    serverId,
-    { kind: "disconnected", reason },
-    { cell },
-  );
+  await projectServerDaemon(db, serverId, { kind: 'disconnected', reason }, { cell })
 }
 
 export async function onDaemonUpdateQueued(
@@ -160,14 +164,14 @@ export async function onDaemonUpdateQueued(
   serverId: string,
   requestId: string,
   channel: string,
-  queuedAt: string,
+  queuedAt: string
 ): Promise<void> {
   await projectServerDaemon(db, serverId, {
-    kind: "update-queued",
+    kind: 'update-queued',
     requestId,
     channel,
     queuedAt,
-  });
+  })
 }
 
 export async function onDaemonUpdateResult(
@@ -176,22 +180,19 @@ export async function onDaemonUpdateResult(
   requestId: string,
   ok: boolean,
   finishedAt: string,
-  error?: string,
+  error?: string
 ): Promise<void> {
   await projectServerDaemon(db, serverId, {
-    kind: "update-result",
+    kind: 'update-result',
     requestId,
     ok,
     finishedAt,
     error,
-  });
+  })
 }
 
-export async function onDaemonUpdateReset(
-  db: Db,
-  serverId: string,
-): Promise<void> {
-  await projectServerDaemon(db, serverId, { kind: "update-reset" });
+export async function onDaemonUpdateReset(db: Db, serverId: string): Promise<void> {
+  await projectServerDaemon(db, serverId, { kind: 'update-reset' })
 }
 
 export async function onDaemonUpdateExpired(
@@ -199,14 +200,14 @@ export async function onDaemonUpdateExpired(
   serverId: string,
   requestId: string,
   finishedAt: string,
-  error?: string,
+  error?: string
 ): Promise<void> {
   await projectServerDaemon(db, serverId, {
-    kind: "update-expired",
+    kind: 'update-expired',
     requestId,
     finishedAt,
     error,
-  });
+  })
 }
 
 /** Repair a stale `updating` Postgres projection when terminal evidence is available. */
@@ -215,10 +216,10 @@ export async function repairStaleProjectedUpdate(
   serverId: string,
   projectedUpdate: UpdateProjection,
   opts: {
-    currentCommit?: string | null;
-    targetCommit?: string | null;
-    updateTtlMs?: number;
-  } = {},
+    currentCommit?: string | null
+    targetCommit?: string | null
+    updateTtlMs?: number
+  } = {}
 ): Promise<boolean> {
   if (
     !isStaleProjectedUpdating({
@@ -228,32 +229,28 @@ export async function repairStaleProjectedUpdate(
       updateTtlMs: opts.updateTtlMs ?? UPDATE_REQUEST_TTL_MS,
     })
   ) {
-    return false;
+    return false
   }
 
-  const finishedAt = new Date().toISOString();
-  const requestId = projectedUpdate.requestId ?? "";
+  const finishedAt = new Date().toISOString()
+  const requestId = projectedUpdate.requestId ?? ''
 
-  if (
-    opts.targetCommit &&
-    opts.currentCommit &&
-    opts.currentCommit === opts.targetCommit
-  ) {
+  if (opts.targetCommit && opts.currentCommit && opts.currentCommit === opts.targetCommit) {
     await projectServerDaemon(db, serverId, {
-      kind: "update-result",
+      kind: 'update-result',
       requestId,
       ok: true,
       finishedAt,
-    });
-    return true;
+    })
+    return true
   }
 
   await projectServerDaemon(db, serverId, {
-    kind: "update-expired",
+    kind: 'update-expired',
     requestId,
     finishedAt,
-  });
-  return true;
+  })
+  return true
 }
 
 /** Self-heal when a reconnecting daemon already reports the channel's target commit. */
@@ -262,24 +259,26 @@ export async function maybeRepairUpdateFromDaemonBuildHello(
   serverId: string,
   daemonBuild?: ProjectionDaemonBuild,
   targetCommit?: string,
-  channel: UpdateChannel = DEFAULT_UPDATE_CHANNEL,
+  channel: UpdateChannel = DEFAULT_UPDATE_CHANNEL
 ): Promise<void> {
-  if (!daemonBuild?.commit || !daemonBuild?.buildId) return;
+  if (!daemonBuild?.commit || !daemonBuild?.buildId) return
 
-  const existing = await getServerDaemonStateByServerId(db, serverId);
-  const update = existing?.projection?.update;
-  if (update?.status !== "updating") return;
+  const existing = await getServerDaemonStateByServerId(db, serverId)
+  const update = existing?.projection?.update
+  // A failed or expired attempt is superseded too: the daemon came back on the
+  // target build, so the old error (e.g. `preflight_in_progress`) is moot.
+  if (update?.status !== 'updating' && update?.status !== 'failed' && update?.status !== 'expired')
+    return
 
-  const manifestCommit = targetCommit ??
-    (await resolveUpdateManifest(channel))?.commit;
-  if (!manifestCommit || daemonBuild.commit !== manifestCommit) return;
+  const manifestCommit = targetCommit ?? (await resolveUpdateManifest(channel))?.commit
+  if (!manifestCommit || daemonBuild.commit !== manifestCommit) return
 
   await projectServerDaemon(db, serverId, {
-    kind: "update-result",
-    requestId: update.requestId ?? "",
+    kind: 'update-result',
+    requestId: update.requestId ?? '',
     ok: true,
     finishedAt: new Date().toISOString(),
-  });
+  })
 }
 
 export async function onDaemonHeartbeat(
@@ -287,24 +286,24 @@ export async function onDaemonHeartbeat(
   serverId: string,
   cell: DaemonCell,
   daemonBuild?: ProjectionDaemonBuild,
-  inboundAt?: string,
+  inboundAt?: string
 ): Promise<void> {
   // Heartbeat-only frames never open Postgres without a daemonBuild that may have
   // changed — elapsed coalesce time alone is not a projection trigger.
-  if (!daemonBuild?.commit || !daemonBuild?.buildId) return;
+  if (!daemonBuild?.commit || !daemonBuild?.buildId) return
 
-  const snapshot = await cell.getSnapshot();
+  const snapshot = await cell.getSnapshot()
   // Skip Postgres SELECT when the cell snapshot shows steady-state heartbeats.
   if (steadyStateInboundSkipsDbRead(snapshot, { at: inboundAt, daemonBuild })) {
-    return;
+    return
   }
 
-  const existing = await getServerDaemonStateByServerId(db, serverId);
-  if (!existing) return;
+  const existing = await getServerDaemonStateByServerId(db, serverId)
+  if (!existing) return
 
-  if (!daemonBuildChanged(existing.projection, daemonBuild)) return;
+  if (!daemonBuildChanged(existing.projection, daemonBuild)) return
 
-  await projectServerDaemon(db, serverId, { kind: "heartbeat", daemonBuild });
+  await projectServerDaemon(db, serverId, { kind: 'heartbeat', daemonBuild })
 }
 
 /**
@@ -331,30 +330,29 @@ export async function sweepStalePresence(
    * Resolved lazily, and only when something was actually demoted: the
    * common tick demotes nothing, and it should not cost a settings read.
    */
-  resolveSender: () => Promise<AlertSender> = () =>
-    Promise.resolve(NOOP_ALERT_SENDER),
+  resolveSender: () => Promise<AlertSender> = () => Promise.resolve(NOOP_ALERT_SENDER)
 ): Promise<void> {
-  const onlineServerIds = await registry.listOnlineServerIds();
-  const connectedBefore = onlineServerIds.length;
-  const demotedIds: string[] = [];
+  const onlineServerIds = await registry.listOnlineServerIds()
+  const connectedBefore = onlineServerIds.length
+  const demotedIds: string[] = []
 
   await Promise.all(
     onlineServerIds.map(async (serverId) => {
-      const cell = registry.getCell(serverId) as RedisDaemonCell;
-      const demoted = await cell.reconcileStalePresence();
+      const cell = registry.getCell(serverId) as RedisDaemonCell
+      const demoted = await cell.reconcileStalePresence()
       if (demoted) {
-        await onDaemonDisconnected(db, serverId, cell, "sweep_stale");
-        demotedIds.push(serverId);
+        await onDaemonDisconnected(db, serverId, cell, 'sweep_stale')
+        demotedIds.push(serverId)
       }
-    }),
-  );
+    })
+  )
 
-  if (demotedIds.length === 0) return;
+  if (demotedIds.length === 0) return
 
   const massDisconnect = isMassDisconnect(demotedIds.length, connectedBefore)
     ? { staleCount: demotedIds.length, connectedBefore }
-    : null;
+    : null
   void resolveSender().then((alertSender) =>
     notifyDemotions(demotedIds, massDisconnect, alertSender)
-  );
+  )
 }

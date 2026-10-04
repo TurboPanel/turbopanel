@@ -3,12 +3,19 @@
  */
 
 import { eq, sql } from 'drizzle-orm'
-import {
-  isComposeChainError,
-  resolveComposeLayerChain,
-} from '../compose/layer-chain.ts'
+import { isComposeChainError, resolveComposeLayerChain } from '../compose/layer-chain.ts'
 import type { Db } from '../../db/connection.ts'
-import { environment, fabric, organization, storageCopy, mount, project, server, service, storage } from '../../db/schema.ts'
+import {
+  environment,
+  fabric,
+  organization,
+  storageCopy,
+  mount,
+  project,
+  server,
+  service,
+  storage,
+} from '../../db/schema.ts'
 import { listServerLabelsForServers } from '../servers/label-records.ts'
 import { listEnvironmentSlots } from '../servers/slot-records.ts'
 import {
@@ -23,6 +30,7 @@ import { parseProjectOptions } from '../projects/project-options.ts'
 import {
   parseOrganizationOptions,
   resolveComposeGatedFieldsEnabled,
+  resolveComposeRemoteBuildSourcesEnabled,
 } from '../organizations/organization-options.ts'
 import { parseServiceOptions, resolveServiceInstances } from '../projects/service-options.ts'
 import { environmentComposeFilename } from '../deploy/deploy-layers.ts'
@@ -91,10 +99,8 @@ async function authorizeHostAccess(
   db: Db,
   envRow: { id: string; metadata: unknown },
   merged: ComposeDocument,
-  actor: HostAccessActor,
-): Promise<
-  { error: ComposeDeployValidationError } | { hostLevelApproved: boolean }
-> {
+  actor: HostAccessActor
+): Promise<{ error: ComposeDeployValidationError } | { hostLevelApproved: boolean }> {
   const fingerprint = await hostAccessFingerprint(merged.data)
   if (fingerprint === null) return { hostLevelApproved: false }
   const issues = hostAccessIssues(merged.data)
@@ -148,6 +154,12 @@ export type PlannedDeploy = {
    * Docker-socket binds.
    */
   hostLevelApproved: boolean
+  /**
+   * The organization allows builds to fetch a public remote source. Rides every
+   * `environment.deploy` command as `remoteBuildSourcesApproved`, so the daemon
+   * repeats the same verdict instead of refusing what the control plane let by.
+   */
+  remoteBuildSourcesApproved: boolean
   pinServerId: string | null
   defaultServerId: string | null
   fabricEnabled: boolean
@@ -193,7 +205,7 @@ export function extractComposeFromOptions(options: unknown): unknown {
 export function resolveMergedCompose(
   projectOptions: unknown,
   environmentOptions: unknown,
-  environmentFilename: string,
+  environmentFilename: string
 ): ComposeDocument | PlanDeployError {
   const chain = resolveComposeLayerChain({
     projectOptions,
@@ -226,7 +238,7 @@ export type StoragePinMountRow = {
  * has a shared (null-server) storageCopy.
  */
 export function computeStoragePinsFromMountRows(
-  rows: readonly StoragePinMountRow[],
+  rows: readonly StoragePinMountRow[]
 ): Map<string, string> {
   const hasShared = new Set<string>()
   const primaryServer = new Map<string, string>()
@@ -250,7 +262,7 @@ export function computeStoragePinsFromMountRows(
 async function loadFleet(
   db: Db,
   organizationId: string,
-  listLabels: typeof listServerLabelsForServers,
+  listLabels: typeof listServerLabelsForServers
 ): Promise<FleetServer[]> {
   const rows = await db
     .select({
@@ -262,7 +274,7 @@ async function loadFleet(
 
   const labelsByServer = await listLabels(
     db,
-    rows.map((row) => row.id),
+    rows.map((row) => row.id)
   )
   return rows.map((row) => {
     const labels: Record<string, string> = {}
@@ -277,10 +289,7 @@ async function loadFleet(
   })
 }
 
-async function loadStoragePins(
-  db: Db,
-  environmentId: string,
-): Promise<Map<string, string>> {
+async function loadStoragePins(db: Db, environmentId: string): Promise<Map<string, string>> {
   const rows = await db
     .select({
       serviceId: mount.serviceId,
@@ -323,7 +332,7 @@ export async function planEnvironmentDeploy(
     /** Required: there is no default actor, so a new caller cannot skip the gate. */
     hostAccess: HostAccessActor
   },
-  deps: PlanEnvironmentDeployDeps = {},
+  deps: PlanEnvironmentDeployDeps = {}
 ): Promise<PlannedDeploy | PlanDeployError> {
   const reconcile = deps.reconcileServicesFromCompose ?? reconcileServicesFromCompose
   const registerVolumes = deps.registerComposeVolumes ?? registerComposeVolumes
@@ -367,9 +376,9 @@ export async function planEnvironmentDeploy(
     .from(organization)
     .where(eq(organization.id, params.organizationId))
     .limit(1)
-  const composeGatedFieldsEnabled = resolveComposeGatedFieldsEnabled(
-    parseOrganizationOptions(orgRow?.options),
-  )
+  const orgOptions = parseOrganizationOptions(orgRow?.options)
+  const composeGatedFieldsEnabled = resolveComposeGatedFieldsEnabled(orgOptions)
+  const composeRemoteBuildSourcesEnabled = resolveComposeRemoteBuildSourcesEnabled(orgOptions)
 
   // Before anything is written. `reconcile` below creates and retires `service`
   // rows, and `registerVolumes` / `registerMounts` further down create `storage`
@@ -377,7 +386,10 @@ export async function planEnvironmentDeploy(
   // must not have shaped the control plane on its way to being refused. Planning
   // used to run first and the refusal came later, per server, which left rows
   // behind for a deploy that never happened.
-  const rejected = validateComposeForDeploy(merged, { composeGatedFieldsEnabled })
+  const rejected = validateComposeForDeploy(merged, {
+    composeGatedFieldsEnabled,
+    composeRemoteBuildSourcesEnabled,
+  })
   if (rejected) return { kind: 'compose_rejected', error: rejected }
   const access = await authorizeHostAccess(db, envRow, merged, params.hostAccess)
   if ('error' in access) return { kind: 'compose_rejected', error: access.error }
@@ -452,6 +464,7 @@ export async function planEnvironmentDeploy(
     plan,
     composeValidated: true,
     hostLevelApproved: access.hostLevelApproved,
+    remoteBuildSourcesApproved: composeRemoteBuildSourcesEnabled,
     pinServerId,
     defaultServerId,
     fabricEnabled: Boolean(fabricRow),

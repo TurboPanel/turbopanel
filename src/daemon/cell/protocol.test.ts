@@ -69,6 +69,35 @@ it('validateDaemonInboundFrame rejects managed-ha-event without managedId', () =
   assertEquals(result.ok, false)
 })
 
+function haEventFrame(extra: Record<string, unknown>): string {
+  return JSON.stringify({
+    type: 'managed-ha-event',
+    managedId: '00000000-0000-4000-8000-000000000001',
+    at: VALID_AT,
+    ...extra,
+  })
+}
+
+it('validateDaemonInboundFrame accepts managed-ha-event with a well-formed instance', () => {
+  const result = validateDaemonInboundFrame(
+    haEventFrame({ instanceHost: '10.0.0.5', instancePort: 3306 })
+  )
+  assertEquals(result.ok, true)
+})
+
+it('validateDaemonInboundFrame rejects a half-named or malformed managed-ha-event instance', () => {
+  for (const extra of [
+    { instanceHost: '10.0.0.5' },
+    { instancePort: 3306 },
+    { instanceHost: '', instancePort: 3306 },
+    { instanceHost: '10.0.0.5', instancePort: 0 },
+    { instanceHost: '10.0.0.5', instancePort: 70000 },
+    { instanceHost: '10.0.0.5', instancePort: '3306' },
+  ]) {
+    assertEquals(validateDaemonInboundFrame(haEventFrame(extra)).ok, false)
+  }
+})
+
 it('validateDaemonInboundFrame rejects oversized frames', () => {
   const padding = 'x'.repeat(MAX_DAEMON_WS_FRAME_BYTES)
   const raw = `{"type":"heartbeat","at":"2020-01-01T00:00:00.000Z","pad":"${padding}"}`

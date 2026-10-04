@@ -178,7 +178,7 @@ changes.
   stored. Canonical detail: `src/features/managed/AGENTS.md` → **Client TLS (SSL
   mode)**.
 - **Org default environment name:**
-  `organization.options.defaultEnvironmentName` (unset = `Production`).
+  `organization.options.defaultEnvironmentName` (unset = `production`).
   `GET`/`PUT /organizations/:id/default-environment` (manage-gated) names the
   environment scaffolded by project create / configure. Matching for existing
   literal "production" catalog environments is unchanged.
