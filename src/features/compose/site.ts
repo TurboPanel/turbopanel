@@ -22,6 +22,11 @@ export type SiteSpec = {
   root: string
   /** Loopback listen port for hosting Caddy → nginx/apache. */
   listenPort: number
+  /**
+   * `nginx+apache` only: Apache's loopback port behind nginx, from the same
+   * ledger as `listenPort` so nothing else is handed it.
+   */
+  backendPort?: number
   /** PHP config from `x-turbopanel.php`, when the service declares any. */
   php?: ComposeServicePhpExtension
   /**
@@ -36,6 +41,19 @@ export type SiteSpec = {
   /** Authored cron jobs from `x-turbopanel.cron`, untranslated. */
   cron?: ComposeServiceCronJob[]
 }
+
+/** nginx in front of Apache: the one engine that needs a second port. */
+const NGINX_APACHE_ENGINE = 'nginx+apache'
+/** Hash seed suffix for Apache's port, so it differs from the site's own. */
+const BACKEND_PORT_SEED = '#apache'
+/**
+ * Apache's ports behind nginx get their own band, clear of every hashed
+ * `listenPort` (18080–18999), Apache's bootstrap `Listen 127.0.0.1:19080` and
+ * the instance website's 19820: a backend port can then only collide with
+ * another backend port, never with some other environment's public vhost.
+ */
+const BACKEND_PORT_BASE = 19_100
+const BACKEND_PORT_SPAN = 700
 
 /** Engine a site gets when its compose block does not name one. */
 export const DEFAULT_SITE_ENGINE: SiteEngine = 'caddy'
@@ -90,17 +108,32 @@ export function allocateSiteListenPort(
     return preferred
   }
 
-  let port =
-    LISTEN_PORT_BASE +
-    (hashServiceName(`${uniqueKey ?? ''}\0${composeServiceName}`) % LISTEN_PORT_SPAN)
-  for (let attempt = 0; attempt < LISTEN_PORT_SPAN; attempt++) {
+  return allocateHashedPort(
+    `${uniqueKey ?? ''}\0${composeServiceName}`,
+    used,
+    LISTEN_PORT_BASE,
+    LISTEN_PORT_SPAN,
+    'listen'
+  )
+}
+
+/** First free port in `[base, base + span)`, probing from the key's hash. */
+function allocateHashedPort(
+  key: string,
+  used: Set<number>,
+  base: number,
+  span: number,
+  label: string
+): number {
+  let port = base + (hashServiceName(key) % span)
+  for (let attempt = 0; attempt < span; attempt++) {
     if (!used.has(port)) {
       used.add(port)
       return port
     }
-    port = port >= LISTEN_PORT_BASE + LISTEN_PORT_SPAN - 1 ? LISTEN_PORT_BASE : port + 1
+    port = port >= base + span - 1 ? base : port + 1
   }
-  throw new Error('No free site listen port in 18080–18999')
+  throw new Error(`No free site ${label} port in ${base}–${base + span - 1}`)
 }
 
 export type SplitSiteResult = {
@@ -164,8 +197,36 @@ export function splitSiteServices(
 
   return {
     containerServices,
-    sites,
+    sites: assignBackendPorts(sites, usedPorts),
   }
+}
+
+/**
+ * Give each `nginx+apache` site Apache's port behind nginx, in its own band
+ * (`BACKEND_PORT_BASE`). Allocated after every `listenPort`, so a hosting
+ * `targetPort` is never lost to a backend.
+ *
+ * The hash is seeded with the environment id: the ledger is per environment
+ * and not persisted, so two environments on one server deploying the same
+ * compose file (staging and production, say) would otherwise derive the very
+ * same port for every site. Seeded, the port is stable per (environment,
+ * service) and a cross-environment clash is down to hash chance; the daemon
+ * refuses one that does happen (host-wide port check before apply). A
+ * host-wide guarantee here would need every environment's ports on the server,
+ * which this payload does not carry.
+ */
+function assignBackendPorts<
+  T extends { composeServiceName: string; engine?: string; backendPort?: number },
+>(sites: readonly T[], used: Set<number>, uniqueKey = ''): T[] {
+  return sites.map((site) => {
+    const { backendPort: _stale, ...rest } = site
+    if (site.engine !== NGINX_APACHE_ENGINE) return rest as T
+    const key = `${uniqueKey}/${site.composeServiceName}${BACKEND_PORT_SEED}`
+    return {
+      ...rest,
+      backendPort: allocateHashedPort(key, used, BACKEND_PORT_BASE, BACKEND_PORT_SPAN, 'backend'),
+    } as T
+  })
 }
 
 /** Runtime compose YAML body when every service is site. */
@@ -179,16 +240,24 @@ export function emptyContainerComposeYaml(): string {
  *
  * `used` is shared with the native-app allocator for the same reason
  * {@link splitSiteServices} shares it — one loopback ledger per
- * deploy, not one per lane. `uniqueKey` is the environment id.
+ * deploy, not one per lane. `uniqueKey` is the environment id; it also seeds
+ * Apache's backend port (see {@link assignBackendPorts}).
  */
-export function assignSiteListenPorts<T extends { composeServiceName: string; listenPort: number }>(
+export function assignSiteListenPorts<
+  T extends {
+    composeServiceName: string
+    listenPort: number
+    engine?: string
+    backendPort?: number
+  },
+>(
   sites: readonly T[],
   preferredListenPortByService: ReadonlyMap<string, number> = new Map(),
   used: Set<number> = new Set<number>(),
   uniqueKey?: string
 ): T[] {
   const sorted = [...sites].sort((a, b) => a.composeServiceName.localeCompare(b.composeServiceName))
-  return sorted.map((site) => ({
+  const listening = sorted.map((site) => ({
     ...site,
     listenPort: allocateSiteListenPort(
       site.composeServiceName,
@@ -197,4 +266,5 @@ export function assignSiteListenPorts<T extends { composeServiceName: string; li
       uniqueKey
     ),
   }))
+  return assignBackendPorts(listening, used, uniqueKey)
 }

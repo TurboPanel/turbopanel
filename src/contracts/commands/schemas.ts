@@ -1720,11 +1720,20 @@ export type EnvironmentDeployCronJob = {
 
 export type EnvironmentDeploySite = {
   composeServiceName: string
-  engine: 'caddy' | 'apache' | 'nginx' | 'openlitespeed'
+  /**
+   * `nginx+apache` is nginx in front of Apache: nginx serves common static
+   * types on `listenPort` and proxies the rest to Apache on `backendPort`.
+   */
+  engine: 'caddy' | 'apache' | 'nginx' | 'openlitespeed' | 'nginx+apache'
   /** Relative document-root segment under the site directory. */
   root: string
   /** Loopback port hosting Caddy reverse-proxies to. */
   listenPort: number
+  /**
+   * Apache's loopback port behind nginx, from the same ledger as `listenPort`.
+   * Required for `nginx+apache`, absent otherwise.
+   */
+  backendPort?: number
   /**
    * Where the content comes from. Omitted means `release` — a Git-backed
    * immutable tree the daemon publishes and only asserts.
@@ -2894,7 +2903,7 @@ function parseDeployServiceHooks(value: unknown): EnvironmentDeployServiceHook[]
   return value.map(parseDeployServiceHookEntry)
 }
 
-const SITE_ENGINES = new Set(['caddy', 'apache', 'nginx', 'openlitespeed'])
+const SITE_ENGINES = new Set(['caddy', 'apache', 'nginx', 'openlitespeed', 'nginx+apache'])
 const SITE_SOURCE_KINDS = new Set(['release', 'managed-directory'])
 const CRON_JOB_NAME_RE = /^[a-z0-9][a-z0-9-]{0,31}$/
 /**
@@ -2977,6 +2986,9 @@ function parseDeploySiteEntry(entry: unknown): EnvironmentDeploySite {
     root: entry.root,
     listenPort: entry.listenPort,
   }
+  if (site.engine === 'nginx+apache') {
+    site.backendPort = parseDeploySiteBackendPort(entry.backendPort, site.listenPort)
+  }
   if (entry.sourceKind !== undefined) {
     if (!isString(entry.sourceKind) || !SITE_SOURCE_KINDS.has(entry.sourceKind)) {
       throw new Error('Invalid sites entry')
@@ -3007,6 +3019,20 @@ function parseDeploySiteEntry(entry: unknown): EnvironmentDeploySite {
     )
   }
   return site
+}
+
+/** Apache's port behind nginx: a loopback high port other than `listenPort`. */
+function parseDeploySiteBackendPort(value: unknown, listenPort: number): number {
+  if (
+    typeof value !== 'number' ||
+    !Number.isInteger(value) ||
+    value < 1024 ||
+    value > 65_535 ||
+    value === listenPort
+  ) {
+    throw new Error('Invalid sites entry: nginx+apache needs a backendPort other than listenPort')
+  }
+  return value
 }
 
 function parseDeploySitePrincipal(value: unknown): EnvironmentDeploySitePrincipal | undefined {

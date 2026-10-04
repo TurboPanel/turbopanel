@@ -90,6 +90,74 @@ test('assignSiteListenPorts reassigns from preferred map', () => {
   assertEquals(assigned[0]?.listenPort, 9090)
 })
 
+test("nginx+apache sites get Apache's own port from the same ledger", () => {
+  const used = new Set<number>()
+  const { sites } = splitSiteServices(
+    {
+      plain: { 'x-turbopanel': { serviceKind: 'site', engine: 'nginx' } },
+      wp: { 'x-turbopanel': { serviceKind: 'site', engine: 'nginx+apache' } },
+    },
+    new Map(),
+    used
+  )
+  const wp = sites.find((site) => site.composeServiceName === 'wp')
+  const plain = sites.find((site) => site.composeServiceName === 'plain')
+  assertEquals(wp?.engine, 'nginx+apache')
+  assertEquals(typeof wp?.backendPort, 'number')
+  assertEquals(plain?.backendPort, undefined)
+  const ports = sites.flatMap((site) => [site.listenPort, site.backendPort])
+  const allocated = ports.filter((port) => port !== undefined)
+  assertEquals(new Set(allocated).size, 3)
+  for (const port of allocated) assertEquals(used.has(port as number), true)
+
+  // Reassigned after hosting targetPorts are known: preferred listen ports win,
+  // backends are allocated after them, and nothing collides.
+  const assigned = assignSiteListenPorts(
+    sites,
+    new Map([
+      ['plain', 9090],
+      ['wp', 9091],
+    ])
+  )
+  const reWp = assigned.find((site) => site.composeServiceName === 'wp')
+  assertEquals(reWp?.listenPort, 9091)
+  assertEquals(reWp?.backendPort !== undefined && ![9090, 9091].includes(reWp.backendPort), true)
+  assertEquals(assigned.find((site) => site.composeServiceName === 'plain')?.backendPort, undefined)
+})
+
+test("Apache's backend port sits in its own band, clear of every hashed listen port", () => {
+  const services: Record<string, unknown> = {}
+  for (let i = 0; i < 40; i++) {
+    services[`wp${i}`] = { 'x-turbopanel': { serviceKind: 'site', engine: 'nginx+apache' } }
+  }
+  const sites = assignSiteListenPorts(
+    splitSiteServices(services).sites,
+    new Map(),
+    new Set(),
+    'env-a'
+  )
+  for (const site of sites) {
+    // Another environment's hashed listenPort can never be handed out as a backend.
+    assertEquals(site.listenPort >= 18_080 && site.listenPort <= 18_999, true)
+    const backend = site.backendPort as number
+    assertEquals(backend >= 19_100 && backend <= 19_799, true, String(backend))
+  }
+})
+
+test('backend ports are stable per environment and differ between environments', () => {
+  const services = {
+    shop: { 'x-turbopanel': { serviceKind: 'site', engine: 'nginx+apache' } },
+  }
+  const backendFor = (environmentId: string) =>
+    assignSiteListenPorts(splitSiteServices(services).sites, new Map(), new Set(), environmentId)[0]
+      ?.backendPort
+  // Same environment, fresh ledger (nothing is persisted): the same port.
+  assertEquals(backendFor('env-staging'), backendFor('env-staging'))
+  // Two environments deploying the same compose file on one server must not
+  // derive the same port for the same service name.
+  assertEquals(backendFor('env-staging') !== backendFor('env-production'), true)
+})
+
 test('emptyContainerComposeYaml is a valid empty services document', () => {
   assertEquals(emptyContainerComposeYaml(), 'services: {}\n')
 })
