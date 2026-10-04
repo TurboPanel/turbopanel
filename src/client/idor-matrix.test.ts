@@ -11,6 +11,10 @@
  * organization id and a child id, A's own organization id with B's child id
  * (right organization, wrong parent).
  *
+ * Writes are probed again with bodies that name B's objects (on A's own paths,
+ * and as body-id cases with an own-id positive control), because `{}` makes a
+ * handler that validates first answer 400 before any organization check runs.
+ *
  * Positive controls prove the harness is not simply being blocked before
  * authorization (CSRF, validation): the same calls with A's own ids succeed.
  *
@@ -18,7 +22,7 @@
  */
 
 import { assert, assertEquals } from '@std/assert'
-import { sql } from 'drizzle-orm'
+import { eq, sql } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AppEnv } from '../app/app.ts'
 import { createDenoDb } from '../db/connection.ts'
@@ -105,7 +109,9 @@ type Fixture = {
   orgB: string
   cookieA: string
   b: Ids
-  aOwn: { tagId: string; serverId: string } & Ids
+  aOwn: { tagId: string; serverId: string; fullStorageId?: string } & Ids
+  /** A full set of A's own objects, shaped like B's: the valid ids for own-path probes. */
+  aFull: Ids
 }
 
 async function insertId(promise: Promise<{ id: string }[]>): Promise<string> {
@@ -661,7 +667,7 @@ async function withFixtureOn(db: Db, fn: (fixture: Fixture) => Promise<void>): P
   const { token } = await createSession(db, ownerA, {})
   const cookieA = `${HTTP_SESSION_COOKIE_NAME}=${await buildSignedCookie(token, secrets)}`
 
-  const aOwn = {
+  const aOwn: Fixture['aOwn'] = {
     tagId: await insertId(
       db
         .insert(tag)
@@ -677,7 +683,22 @@ async function withFixtureOn(db: Db, fn: (fixture: Fixture) => Promise<void>): P
   }
   Object.assign(aOwn, await seedBodyTargetsA(db, orgA, nonce))
   const b = await seedOrganizationB(db, orgB, ownerB, nonce)
-  await fn({ db, app, nonce, orgA, orgB, cookieA, b, aOwn })
+  const aFull = await seedOrganizationB(db, orgA, ownerA, `a2-${nonce}`)
+  // The body-id positive controls take A's ids from aOwn: give it the full set too.
+  for (const [key, value] of Object.entries(aFull)) aOwn[key] ??= value
+  aOwn.fullStorageId = aFull.storageId!
+  // A reported private address, so a datacenter member pin on A's own server can succeed.
+  await db
+    .update(server)
+    .set({
+      metadata: {
+        resources: {
+          ips: [{ address: '10.88.0.9', version: 4, scope: 'private', cidr: '10.88.0.0/24' }],
+        },
+      },
+    })
+    .where(eq(server.id, aOwn.serverId))
+  await fn({ db, app, nonce, orgA, orgB, cookieA, b, aOwn, aFull })
 }
 
 class RollbackFixture extends Error {}
@@ -809,6 +830,21 @@ const BODY_ID_CASES: Record<string, BodyCase> = {
       type: 'empty',
       options: { defaultServerId: ref.serverId },
     }),
+  },
+  'PATCH /projects/:id options.defaultServerId': {
+    method: 'PATCH',
+    path: (own) => `/api/client/v1/projects/${own.projectId}`,
+    body: (_own, ref) => ({ options: { defaultServerId: ref.serverId } }),
+  },
+  'POST /datacenters/:id/members serverId': {
+    method: 'POST',
+    path: (own) => `/api/client/v1/datacenters/${own.datacenterId}/members`,
+    body: (_own, ref) => ({ serverId: ref.serverId, address: '10.88.0.9' }),
+  },
+  'POST /storage/:id/mounts serviceId': {
+    method: 'POST',
+    path: (own) => `/api/client/v1/storage/${own.fullStorageId}/mounts`,
+    body: (_own, ref) => ({ serviceId: ref.serviceId, destinationPath: '/idor-mount' }),
   },
   'POST /storage principalId': {
     method: 'POST',
@@ -944,7 +980,8 @@ async function probeWithForeignReferences(
   fixture: Fixture,
   route: { method: string; path: string },
   query: string,
-  body: Record<string, unknown>
+  body: Record<string, unknown>,
+  statuses?: Map<number, number>
 ): Promise<string[]> {
   const before = await rowsNamingB(fixture.db, fixture.b)
   const result =
@@ -956,12 +993,14 @@ async function probeWithForeignReferences(
         }))
   const after = await rowsNamingB(fixture.db, fixture.b)
   if (result === 'timeout') return ['no answer within 15 s']
+  statuses?.set(result.status, (statuses.get(result.status) ?? 0) + 1)
   const problems: string[] = []
   // A 401 means A's session stopped working: every later route would then pass
   // vacuously, so it is a harness failure, never a pass.
   if (result.status === 401) problems.push('answered 401 to a signed-in owner')
-  // 503 is a feature the harness leaves unconfigured (upgrade channel, public URL).
-  if (result.status >= 500 && result.status !== 503) {
+  // 503 is a feature the harness leaves unconfigured (upgrade channel, public URL);
+  // 502 is a forge or provider the harness cannot reach.
+  if (result.status >= 500 && result.status !== 503 && result.status !== 502) {
     problems.push(`server error ${result.status}`)
   }
   if (revealsB(result.body, fixture.nonce)) problems.push("body contains B's data")
@@ -985,6 +1024,50 @@ test('unparameterised client routes never act on or reveal B through body or que
       const problems = await probeWithForeignReferences(fixture, route, query, body)
       failures.push(...problems.map((problem) => `${key}: ${problem}`))
     })
+    assertEquals(failures, [], failures.join('\n'))
+  })
+})
+
+/**
+ * The matrix above sends `{}` to every parameterised write, so a handler that
+ * validates its body first answers 400 and its organization checks never run.
+ * This pass calls each parameterised POST/PUT/PATCH on A's own objects (a path
+ * that resolves, so the route gets past the path checks) with a body that names
+ * B's objects in every reference field it might take. Whatever the route
+ * answers, it must not reveal B, store a reference to B or change B.
+ */
+test('parameterised writes on A’s own objects never act on or reveal B through body ids', async () => {
+  await withFixture(async (fixture) => {
+    // No `options` bag here: tasks, containers and mounts store any JSON in it
+    // without reading it, so a foreign id there is inert text, not a reference.
+    // The one options key that is a reference (project defaultServerId) has its
+    // own body-id case below.
+    const body = foreignReferenceFields(fixture.b)
+    // `containerId` on a container patch is the engine's own container name
+    // (free text), not a reference to a row.
+    const { containerId: _engineName, ...containerBody } = body
+    const writes = listParameterisedRoutes(fixture.app).filter((call) =>
+      ['POST', 'PUT', 'PATCH'].includes(call.method)
+    )
+    assert(writes.length > 50, `expected the parameterised write routes, found ${writes.length}`)
+    const failures: string[] = []
+    const statuses = new Map<number, number>()
+    await forEachSequential(writes, async (call) => {
+      const path = fillTemplate(call, fixture.aFull, { ownOrgId: fixture.orgA })
+      const problems = await probeWithForeignReferences(
+        fixture,
+        { method: call.method, path },
+        '',
+        call.template.endsWith('/containers/:id') ? containerBody : body,
+        statuses
+      )
+      failures.push(...problems.map((problem) => `${call.method} ${call.template}: ${problem}`))
+    })
+    // Guard against the pass going vacuous: most routes answering 400/404 means
+    // the bodies or ids stopped reaching the handlers.
+    const reached = [...statuses].filter(([status]) => ![400, 404, 422].includes(status))
+    const reachedCount = reached.reduce((sum, [, count]) => sum + count, 0)
+    assert(reachedCount > 0, `no write reached past validation: ${JSON.stringify([...statuses])}`)
     assertEquals(failures, [], failures.join('\n'))
   })
 })
