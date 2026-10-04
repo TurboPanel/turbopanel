@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assertEquals } from '@std/assert'
 import { asc, and, eq, inArray, isNull } from 'drizzle-orm'
 import { it } from '@std/testing/bdd'
@@ -39,10 +40,9 @@ import { SYSTEM_WORKSPACE_DISPLAY_NAME } from '../../features/system/hierarchy.t
 const dbUrl = getDatabaseUrl()
 
 it('unmigrated database does not report needsInstall as a normal state', async () => {
-  const missingRelation = Object.assign(
-    new Error('relation "organization" does not exist'),
-    { code: '42P01' },
-  )
+  const missingRelation = Object.assign(new Error('relation "organization" does not exist'), {
+    code: '42P01',
+  })
   const db = {
     select: () => ({
       from: () => ({
@@ -66,9 +66,7 @@ it('unmigrated database does not report needsInstall as a normal state', async (
     }
   }
   if (!installedThrew) {
-    throw new Error(
-      'expected isInstanceInstalled to throw for an unmigrated database',
-    )
+    throw new Error('expected isInstanceInstalled to throw for an unmigrated database')
   }
 
   let statusThrew = false
@@ -81,9 +79,7 @@ it('unmigrated database does not report needsInstall as a normal state', async (
     }
   }
   if (!statusThrew) {
-    throw new Error(
-      'expected getInstallStatus to throw rather than report needsInstall',
-    )
+    throw new Error('expected getInstallStatus to throw rather than report needsInstall')
   }
 })
 
@@ -117,14 +113,10 @@ async function cleanupInstall(db: Db, organizationId: string, userId: string) {
           .where(inArray(service.environmentId, environmentIds))
         const serviceIds = serviceRows.map((row) => row.id)
         if (serviceIds.length > 0) {
-          await db
-            .delete(container)
-            .where(inArray(container.serviceId, serviceIds))
+          await db.delete(container).where(inArray(container.serviceId, serviceIds))
           await db.delete(service).where(inArray(service.id, serviceIds))
         }
-        await db
-          .delete(environment)
-          .where(inArray(environment.id, environmentIds))
+        await db.delete(environment).where(inArray(environment.id, environmentIds))
       }
       await db.delete(project).where(inArray(project.id, projectIds))
     }
@@ -140,9 +132,7 @@ async function cleanupInstall(db: Db, organizationId: string, userId: string) {
 
 it('concurrent install completions create exactly one superadmin bootstrap', async () => {
   if (!dbUrl) {
-    console.warn(
-      'Skipping concurrent install test: TURBOPANEL_DATABASE_URL not set',
-    )
+    skipWithoutDatabase('concurrent install test')
     return
   }
 
@@ -172,31 +162,25 @@ it('concurrent install completions create exactly one superadmin bootstrap', asy
     ])
 
     const fulfilled = [resultA, resultB].filter(
-      (r): r is PromiseFulfilledResult<
-        Awaited<ReturnType<typeof completeInstanceInstall>>
-      > => r.status === 'fulfilled',
+      (r): r is PromiseFulfilledResult<Awaited<ReturnType<typeof completeInstanceInstall>>> =>
+        r.status === 'fulfilled'
     )
     const rejected = [resultA, resultB].filter(
-      (r): r is PromiseRejectedResult => r.status === 'rejected',
+      (r): r is PromiseRejectedResult => r.status === 'rejected'
     )
 
     if (fulfilled.length !== 1) {
-      throw new Error(
-        `expected exactly one install to succeed, got ${fulfilled.length}`,
-      )
+      throw new Error(`expected exactly one install to succeed, got ${fulfilled.length}`)
     }
     if (rejected.length !== 1) {
-      throw new Error(
-        `expected exactly one install to fail, got ${rejected.length}`,
-      )
+      throw new Error(`expected exactly one install to fail, got ${rejected.length}`)
     }
 
-    const loserMessage = rejected[0].reason instanceof Error
-      ? rejected[0].reason.message
-      : String(rejected[0].reason)
+    const loserMessage =
+      rejected[0].reason instanceof Error ? rejected[0].reason.message : String(rejected[0].reason)
     if (loserMessage !== INSTANCE_ALREADY_CONFIGURED_ERROR) {
       throw new Error(
-        `expected loser to fail with "${INSTANCE_ALREADY_CONFIGURED_ERROR}", got "${loserMessage}"`,
+        `expected loser to fail with "${INSTANCE_ALREADY_CONFIGURED_ERROR}", got "${loserMessage}"`
       )
     }
 
@@ -209,9 +193,7 @@ it('concurrent install completions create exactly one superadmin bootstrap', asy
       .from(organization)
       .where(eq(organization.name, ROOT_ORGANIZATION_NAME))
     if (orgRows.length !== 1) {
-      throw new Error(
-        `expected exactly one Root Organization, got ${orgRows.length}`,
-      )
+      throw new Error(`expected exactly one Root Organization, got ${orgRows.length}`)
     }
 
     // Exactly one superadmin.
@@ -228,22 +210,19 @@ it('concurrent install completions create exactly one superadmin bootstrap', asy
 
     // The losing email must not have created a user row.
     const loserEmail = winnerUserId
-      ? (await db
-        .select({ email: user.email })
-        .from(user)
-        .where(eq(user.id, winnerUserId))
-        .limit(1))[0]?.email === emailA
+      ? (
+          await db
+            .select({ email: user.email })
+            .from(user)
+            .where(eq(user.id, winnerUserId))
+            .limit(1)
+        )[0]?.email === emailA
         ? emailB
         : emailA
       : emailB
-    const loserRows = await db
-      .select({ id: user.id })
-      .from(user)
-      .where(eq(user.email, loserEmail))
+    const loserRows = await db.select({ id: user.id }).from(user).where(eq(user.email, loserEmail))
     if (loserRows.length !== 0) {
-      throw new Error(
-        `expected no user row for the losing install email, got ${loserRows.length}`,
-      )
+      throw new Error(`expected no user row for the losing install email, got ${loserRows.length}`)
     }
 
     // The install sentinel exists exactly once.
@@ -252,23 +231,18 @@ it('concurrent install completions create exactly one superadmin bootstrap', asy
       .from(setting)
       .where(eq(setting.key, INSTANCE_INSTALL_SENTINEL_KEY))
     if (sentinelRows.length !== 1) {
-      throw new Error(
-        `expected exactly one install sentinel, got ${sentinelRows.length}`,
-      )
+      throw new Error(`expected exactly one install sentinel, got ${sentinelRows.length}`)
     }
 
     // Concurrent installs still yield exactly one System workspace.
     const systemRows = await db
       .select({ id: workspace.id, kind: workspace.kind })
       .from(workspace)
-      .where(and(
-        eq(workspace.organizationId, winnerOrgId),
-        eq(workspace.kind, WORKSPACE_KIND_SYSTEM),
-      ))
-    if (systemRows.length !== 1) {
-      throw new Error(
-        `expected exactly one System workspace, got ${systemRows.length}`,
+      .where(
+        and(eq(workspace.organizationId, winnerOrgId), eq(workspace.kind, WORKSPACE_KIND_SYSTEM))
       )
+    if (systemRows.length !== 1) {
+      throw new Error(`expected exactly one System workspace, got ${systemRows.length}`)
     }
   } finally {
     if (winnerOrgId && winnerUserId) {
@@ -279,17 +253,13 @@ it('concurrent install completions create exactly one superadmin bootstrap', asy
 
 it('install produces System workspace then Default Workspace', async () => {
   if (!dbUrl) {
-    console.warn(
-      'Skipping install workspace order test: TURBOPANEL_DATABASE_URL not set',
-    )
+    skipWithoutDatabase('install workspace order test')
     return
   }
 
   const db = createDenoDb()
   if (await isInstanceInstalled(db)) {
-    console.warn(
-      'Skipping install workspace order test: instance already installed',
-    )
+    console.warn('Skipping install workspace order test: instance already installed')
     return
   }
 
@@ -354,9 +324,7 @@ it('install produces System workspace then Default Workspace', async () => {
 
 it('resolveColocatedServerId falls back to the server.hostname column', async () => {
   if (!dbUrl) {
-    console.warn(
-      'Skipping colocated hostname fallback test: TURBOPANEL_DATABASE_URL not set',
-    )
+    skipWithoutDatabase('colocated hostname fallback test')
     return
   }
 
@@ -364,9 +332,7 @@ it('resolveColocatedServerId falls back to the server.hostname column', async ()
   try {
     hostname = Deno.hostname()
   } catch {
-    console.warn(
-      'Skipping colocated hostname fallback test: Deno.hostname() unavailable',
-    )
+    console.warn('Skipping colocated hostname fallback test: Deno.hostname() unavailable')
     return
   }
 
@@ -402,9 +368,7 @@ it('resolveColocatedServerId falls back to the server.hostname column', async ()
 
 it('rotateColocatedLicenseCredentials revokes stale this-server licenses then mints one', async () => {
   if (!dbUrl) {
-    console.warn(
-      'Skipping colocated license rotate test: TURBOPANEL_DATABASE_URL not set',
-    )
+    skipWithoutDatabase('colocated license rotate test')
     return
   }
 
@@ -432,16 +396,16 @@ it('rotateColocatedLicenseCredentials revokes stale this-server licenses then mi
     const active = await db
       .select({ id: license.id, revokedAt: license.revokedAt })
       .from(license)
-      .where(and(
-        eq(license.organizationId, organizationId),
-        eq(license.name, COLOCATED_SERVER_DISPLAY_NAME),
-        isNull(license.revokedAt),
-      ))
+      .where(
+        and(
+          eq(license.organizationId, organizationId),
+          eq(license.name, COLOCATED_SERVER_DISPLAY_NAME),
+          isNull(license.revokedAt)
+        )
+      )
 
     if (active.length !== 1) {
-      throw new Error(
-        `expected exactly one active colocated license, got ${active.length}`,
-      )
+      throw new Error(`expected exactly one active colocated license, got ${active.length}`)
     }
     if (active[0]?.id !== rotated.licenseId) {
       throw new Error('active colocated license id does not match rotated mint')
@@ -470,9 +434,7 @@ it('rotateColocatedLicenseCredentials revokes stale this-server licenses then mi
 
 it('rotateColocatedLicenseCredentials preserves an already-bound colocated seat', async () => {
   if (!dbUrl) {
-    console.warn(
-      'Skipping bound colocated license rotate test: TURBOPANEL_DATABASE_URL not set',
-    )
+    skipWithoutDatabase('bound colocated license rotate test')
     return
   }
 
@@ -556,9 +518,7 @@ it('rotateColocatedLicenseCredentials preserves an already-bound colocated seat'
 
 it('disk-credential recovery rewrites license files for an enrolled colocated server', async () => {
   if (!dbUrl) {
-    console.warn(
-      'Skipping colocated disk restore test: TURBOPANEL_DATABASE_URL not set',
-    )
+    skipWithoutDatabase('colocated disk restore test')
     return
   }
 
@@ -600,10 +560,7 @@ it('disk-credential recovery rewrites license files for an enrolled colocated se
     // Same steps as operator recovery: rotate colocated credentials and
     // write license.id + license.token under TURBOPANEL_DAEMON_STATE_DIR.
     const rotated = await rotateColocatedLicenseCredentials(db, organizationId)
-    const wrote = await persistColocatedLicenseCredentials(
-      rotated.licenseId,
-      rotated.licenseToken,
-    )
+    const wrote = await persistColocatedLicenseCredentials(rotated.licenseId, rotated.licenseToken)
     assertEquals(wrote, true)
     assertEquals(rotated.licenseId, boundId)
 

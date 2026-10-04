@@ -1,6 +1,11 @@
 /**
  * Stable rate-limit keys shared by Workers and the Deno Redis limiter.
- * Key on serverId / licenseId — never IP (Cloudflare Rate Limiting best practice).
+ * Authenticated daemon traffic keys on serverId / licenseId. Anything charged
+ * before the caller has proved a key or license (anonymous and enrollment
+ * challenges, the first check of `/auth/session` and `/enroll`) keys on the
+ * source address via {@link daemonPreProofRateLimitKey}, so a stranger cannot
+ * spend a known server's or license's bucket. The per-server / per-license
+ * bucket is charged only after the proof passes.
  * Anonymous enrollment challenges (`POST /auth/challenge` with no serverId/keyId)
  * use {@link DAEMON_ENROLL_CHALLENGE_RATE_LIMIT_ID} via
  * {@link daemonEnrollChallengeRateLimitKey}.
@@ -34,9 +39,20 @@ export function daemonMetricsRateLimitKey(serverId: string): string {
   return `daemon:metrics:${serverId}`
 }
 
-/** Global key for empty-body / enrollment-style `POST /auth/challenge`. */
-export function daemonEnrollChallengeRateLimitKey(): string {
-  return daemonRestRateLimitKey(DAEMON_ENROLL_CHALLENGE_RATE_LIMIT_ID, 'auth-challenge')
+/**
+ * Per-source-address key for a REST route that runs before the caller has
+ * proved anything. A blank address shares the `unknown` bucket.
+ */
+export function daemonPreProofRateLimitKey(route: DaemonRestRateLimitRoute, peer: string): string {
+  return daemonRestRateLimitKey(`peer:${normalizeWebhookPeer(peer)}`, route)
+}
+
+/** Per-source-address key for empty-body / enrollment-style `POST /auth/challenge`. */
+export function daemonEnrollChallengeRateLimitKey(peer: string): string {
+  return daemonRestRateLimitKey(
+    `${DAEMON_ENROLL_CHALLENGE_RATE_LIMIT_ID}:${normalizeWebhookPeer(peer)}`,
+    'auth-challenge'
+  )
 }
 
 /**

@@ -166,11 +166,7 @@ test('formatEntityMetricId rejects entityId on the router singleton scope', () =
 })
 
 test('parseEntityMetricId rejects an unknown router field', () => {
-  assertThrows(
-    () => parseEntityMetricId('router.notAField'),
-    TypeError,
-    'invalid entity metric id'
-  )
+  assertThrows(() => parseEntityMetricId('router.notAField'), TypeError, 'invalid entity metric id')
 })
 
 test('formatEntityMetricId rejects a missing entityId on a per-entity scope', () => {
@@ -214,5 +210,43 @@ test('parseEntityMetricId rejects an unknown singleton canonical name', () => {
     () => parseEntityMetricId('host.cpu.notAField'),
     TypeError,
     'invalid entity metric id'
+  )
+})
+
+test('parseEntityMetricId accepts realistic device, disk, and signal ids', () => {
+  for (const entityId of [
+    'eth0',
+    'mac:aa:bb:cc:dd:ee:ff',
+    'pci:0000:00:1f.6',
+    'wwn:0x5002538e40b1c2d3',
+    'disk:Samsung SSD 980 PRO 1TB:S5GXNX0T123456A',
+    'signal:gpu:GPU-1a2b3c:temperature',
+    'blk:0123abcd',
+    '/mnt/data',
+  ]) {
+    assertEquals(
+      parseEntityMetricId(`network:${entityId}.receiveBytesPerSecond`).entityId,
+      entityId
+    )
+  }
+})
+
+test('parseEntityMetricId rejects entity ids with quotes, backslashes, control characters, or excess length', () => {
+  const bad = ['x\\', "x'", "\\' OR 1=1 OR '", 'a"b', 'a`b', 'a;b', 'a\nb', 'a\tb', 'a\u0000b', 'é']
+  for (const entityId of bad) {
+    assertThrows(
+      () => parseEntityMetricId(`network:${entityId}.receiveBytesPerSecond`),
+      TypeError,
+      undefined,
+      JSON.stringify(entityId)
+    )
+  }
+  assertThrows(
+    () => parseEntityMetricId(`network:${'a'.repeat(257)}.receiveBytesPerSecond`),
+    TypeError
+  )
+  assertEquals(
+    parseEntityMetricId(`network:${'a'.repeat(256)}.receiveBytesPerSecond`).entityId?.length,
+    256
   )
 })

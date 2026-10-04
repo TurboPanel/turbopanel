@@ -18,10 +18,12 @@ export const DEFAULT_DAEMON_REST_RATE_LIMIT = 30
 export const DEFAULT_DAEMON_REST_RATE_PERIOD_SECONDS = 60
 
 /**
- * Defaults match Wrangler `DAEMON_METRICS_RATE_LIMITER` (`{ limit: 3, period: 60 }`).
- * Daemons send ~1 sample/min; the small burst covers reconnect/retry jitter.
+ * Defaults match Wrangler `DAEMON_METRICS_RATE_LIMITER` (`{ limit: 12, period: 60 }`).
+ * Daemons send 1 baseline sample/min; while a live lease is open they add a
+ * 10 s stream plus a reconnect primer (about 9 POSTs/min), and the baseline
+ * must not be starved by those. Still a tight per-server abuse ceiling.
  */
-export const DEFAULT_DAEMON_METRICS_RATE_LIMIT = 3
+export const DEFAULT_DAEMON_METRICS_RATE_LIMIT = 12
 export const DEFAULT_DAEMON_METRICS_RATE_PERIOD_SECONDS = 60
 
 /**

@@ -1,0 +1,1 @@
+CREATE INDEX "idx_command_server_id_name_created_at" ON "command" USING btree ("server_id","name","created_at" DESC NULLS LAST);

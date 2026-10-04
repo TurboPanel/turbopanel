@@ -1695,6 +1695,24 @@ test('parseManagedBackupPayload accepts delete action and optional retentionKeep
   )
 })
 
+test('parseManagedBackupPayload carries a canonical policyId and rejects a malformed one', () => {
+  const policyId = '11111111-1111-4111-8111-111111111111'
+  assertEquals(
+    parseManagedBackupPayload({ ...VALID_MANAGED_BACKUP_CREATE, action: 'delete', policyId }),
+    { ...VALID_MANAGED_BACKUP_CREATE, action: 'delete', policyId }
+  )
+  assertThrows(
+    () =>
+      parseManagedBackupPayload({
+        ...VALID_MANAGED_BACKUP_CREATE,
+        action: 'delete',
+        policyId: '../policy',
+      }),
+    Error,
+    'Invalid managed.backup payload policyId'
+  )
+})
+
 test('parseManagedBackupPayload rejects hostile or malformed input', () => {
   assertThrows(
     () =>

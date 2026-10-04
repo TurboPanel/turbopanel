@@ -1114,6 +1114,19 @@ export const command = pgTable(
     ),
     index('idx_command_status').using('btree', table.status.asc()),
     /**
+     * Backs the per-minute reconcile sweeps' "has this server ever (or since
+     * its last connect) been sent a `<x>.reconcile`" EXISTS probes, which
+     * otherwise walk the server's whole command history. Not partial on
+     * purpose: the sweeps bind the command name as a parameter, and a generic
+     * plan cannot use a partial index whose predicate it cannot see.
+     */
+    index('idx_command_server_id_name_created_at').using(
+      'btree',
+      table.serverId.asc(),
+      table.name.asc(),
+      table.createdAt.desc()
+    ),
+    /**
      * Backs the environment deploy-history read
      * (`GET /environments/:id/deployments`). Deploy history is sourced from
      * the append-only `command` table — one row per attempt — not from
