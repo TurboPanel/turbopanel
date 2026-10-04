@@ -594,7 +594,7 @@ function tryMapSiteEngineFeatureError(prepared: DeployPrepareError): PrepareErro
     body: {
       error: 'site_engine_feature_missing',
       composeServiceName: prepared.composeServiceName,
-      message: `Site "${prepared.composeServiceName}" uses the nginx+apache web server pair, but the TurboPanel agent on this server is too old to run it. Update the agent on this server, then deploy again.`,
+      message: `Site "${prepared.composeServiceName}" uses the nginx+apache web server pair, but the TurboPanel daemon on this server is too old to run it. Update the daemon on this server, then deploy again.`,
     },
   }
 }
