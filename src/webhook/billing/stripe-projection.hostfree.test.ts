@@ -90,18 +90,21 @@ type Obj = Record<string, unknown>
 
 /** An empty projection target: the catalogue and nothing projected yet. */
 function emptyDb(opts: { licenses?: Obj[]; servers?: Obj[] } = {}): MemoryDb {
-  return createMemoryDb([
-    [setting, []],
-    [allowance, []],
-    [key, []],
-    [lease, []],
-    [payer, []],
-    [subscription, []],
-    [subscriptionItem, []],
-    [tier, [tierRow(S1, 'S1', 1), tierRow(S2, 'S2', 2)]],
-    [license, opts.licenses ?? []],
-    [server, opts.servers ?? []],
-  ])
+  return createMemoryDb(
+    [
+      [setting, []],
+      [allowance, []],
+      [key, []],
+      [lease, []],
+      [payer, []],
+      [subscription, []],
+      [subscriptionItem, []],
+      [tier, [tierRow(S1, 'S1', 1), tierRow(S2, 'S2', 2)]],
+      [license, opts.licenses ?? []],
+      [server, opts.servers ?? []],
+    ],
+    { fallback: { execute: () => Promise.resolve([]) } as never }
+  )
 }
 
 const licenseRow = (id: string, serverId: string | null) => ({

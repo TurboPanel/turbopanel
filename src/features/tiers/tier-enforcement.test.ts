@@ -336,71 +336,74 @@ function enrollmentDb(opts: {
   resources?: ServerHostResources
   status?: string
 }): MemoryDb {
-  return createMemoryDb([
-    [tier, [tierRow(S1, 'S1', 1), tierRow(S3, 'S3', 3)]],
-    // The self-hosted grant lives in the `self_hosted_grant` table; every
-    // entitlement read looks for a row (`src/features/tiers/self-hosted-grant.ts`).
-    [allowance, []],
+  return createMemoryDb(
     [
-      payer,
+      [tier, [tierRow(S1, 'S1', 1), tierRow(S3, 'S3', 3)]],
+      // The self-hosted grant lives in the `self_hosted_grant` table; every
+      // entitlement read looks for a row (`src/features/tiers/self-hosted-grant.ts`).
+      [allowance, []],
       [
-        {
-          id: PAYER,
-          organizationId: ORG,
-          userId: null,
-          provider: 'stripe',
-          providerCustomerId: 'cus_1',
-          taxId: null,
+        payer,
+        [
+          {
+            id: PAYER,
+            organizationId: ORG,
+            userId: null,
+            provider: 'stripe',
+            providerCustomerId: 'cus_1',
+            taxId: null,
+            createdAt: NOW,
+            updatedAt: NOW,
+          },
+        ],
+      ],
+      [
+        subscription,
+        [
+          {
+            id: SUB,
+            payerId: PAYER,
+            providerSubscriptionId: 'sub_1',
+            status: opts.status ?? 'active',
+            currentPeriodEnd: null,
+            scheduleId: null,
+            graceExpiresAt: null,
+            pastDueSince: null,
+            createdAt: NOW,
+            updatedAt: NOW,
+          },
+        ],
+      ],
+      [
+        subscriptionItem,
+        opts.seats.map((seat, index) => ({
+          id: `seat-${index}`,
+          subscriptionId: SUB,
+          tierId: seat.tierId,
+          providerItemId: `si_${index}`,
+          providerPriceId: `price_${index}`,
+          quantity: seat.quantity,
           createdAt: NOW,
           updatedAt: NOW,
-        },
+        })),
       ],
-    ],
-    [
-      subscription,
+      [license, [licenseRow(LICENSE_A, SERVER_A), licenseRow(LICENSE_NEW, null)]],
       [
-        {
-          id: SUB,
-          payerId: PAYER,
-          providerSubscriptionId: 'sub_1',
-          status: opts.status ?? 'active',
-          currentPeriodEnd: null,
-          scheduleId: null,
-          graceExpiresAt: null,
-          pastDueSince: null,
-          createdAt: NOW,
-          updatedAt: NOW,
-        },
+        server,
+        [
+          {
+            id: SERVER_A,
+            organizationId: ORG,
+            createdAt: NOW,
+            updatedAt: NOW,
+            metadata: opts.resources ? { resources: opts.resources } : null,
+            assignedTierId: null,
+          },
+        ],
       ],
     ],
-    [
-      subscriptionItem,
-      opts.seats.map((seat, index) => ({
-        id: `seat-${index}`,
-        subscriptionId: SUB,
-        tierId: seat.tierId,
-        providerItemId: `si_${index}`,
-        providerPriceId: `price_${index}`,
-        quantity: seat.quantity,
-        createdAt: NOW,
-        updatedAt: NOW,
-      })),
-    ],
-    [license, [licenseRow(LICENSE_A, SERVER_A), licenseRow(LICENSE_NEW, null)]],
-    [
-      server,
-      [
-        {
-          id: SERVER_A,
-          organizationId: ORG,
-          createdAt: NOW,
-          updatedAt: NOW,
-          metadata: opts.resources ? { resources: opts.resources } : null,
-          assignedTierId: null,
-        },
-      ],
-    ],
-  ])
+    { fallback: { execute: () => Promise.resolve([]) } as never }
+  )
 }
 
 test("evaluateHostedEnrollmentTier refuses a fresh enroll with 'License tier not assigned' when every purchased tier is taken", async () => {
