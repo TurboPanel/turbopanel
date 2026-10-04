@@ -342,6 +342,47 @@ export const deploySchemas = {
           },
         },
       },
+      nativeAppVariables: {
+        type: 'array',
+        description:
+          "For each Node.js app (native service) in the deploy: every environment variable its process gets, where each one comes from, and whether it reaches the process. Secret values are never shown (`value` is null). The platform sets HOST, NODE_ENV and PORT itself; a variable of one of those names is listed with `delivered: false`. A secret set directly on the app (service or hostname) is passed automatically; a secret set higher up is passed only when the app's environment references it as `{$KEY}`, and is otherwise listed with `delivered: false, reason: not_referenced`.",
+        items: {
+          type: 'object',
+          required: ['composeServiceName', 'variables'],
+          properties: {
+            composeServiceName: { type: 'string' },
+            variables: {
+              type: 'array',
+              items: {
+                type: 'object',
+                required: ['name', 'source', 'isSecret', 'value', 'delivered'],
+                properties: {
+                  name: { type: 'string' },
+                  source: {
+                    type: 'string',
+                    description:
+                      'Where the value was set: `organization`, `workspace`, `project`, `environment`, `service`, `hosting`, `server`, `binding` (a managed database), `platform` (set by TurboPanel for every app) or `unknown`.',
+                  },
+                  isSecret: { type: 'boolean' },
+                  value: { type: 'string', nullable: true },
+                  delivered: { type: 'boolean' },
+                  reason: {
+                    type: 'string',
+                    enum: [
+                      'platform',
+                      'invalid_name',
+                      'invalid_value',
+                      'too_many',
+                      'not_referenced',
+                    ],
+                    description: 'Why a variable that was set does not reach the process.',
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
     },
   },
   DeploymentHistoryEntry: {

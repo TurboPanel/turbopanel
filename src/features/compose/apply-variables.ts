@@ -28,6 +28,33 @@ export type DeployVariableEntry = {
   forBuild: boolean
   forRuntime: boolean
   bindingId?: string | null
+  /**
+   * Where this value was set (a scope name, or `binding`). Informational: it
+   * labels the list a service's owner sees and decides nothing at deploy.
+   */
+  source?: string
+}
+
+/** A runtime secret in a native app's resolved set that nothing passes to it. */
+export type UnreferencedSecret = { key: string; source?: string }
+
+/**
+ * One environment variable a service's process ends up with, as this module
+ * decided it — recorded so a lane that has no Compose `environment:` (a native
+ * app) can be handed the same answer the Compose lane got.
+ */
+export type RuntimeEnvAssignment = {
+  /** Name the process sees. Differs from `key` for `FOO: "{$BAR}"`. */
+  name: string
+  /** The variable the value comes from. */
+  key: string
+  isSecret: boolean
+  /**
+   * The plain value, trimmed and **not** Compose-escaped. `null` for a secret:
+   * it travels sealed, never as a value this module holds.
+   */
+  value: string | null
+  source?: string
 }
 
 export type DeployVariableMaterial = {
@@ -57,6 +84,15 @@ export type ApplyVariablesResult = {
   secretMaterial: DeployVariableMaterial[]
   secretPlan: DeploySecretPlanEntry[]
   envFileContent: string
+  /** Runtime environment per compose service, in assignment order. */
+  runtimeAssignments: Map<string, RuntimeEnvAssignment[]>
+  /**
+   * Runtime secrets a native app was **not** given because nothing references
+   * them, per compose service — so the list the app's owner reads can say so
+   * instead of leaving them out. Only filled for the services named in
+   * `params.nativeServiceNames`.
+   */
+  unreferencedSecrets: Map<string, UnreferencedSecret[]>
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -259,6 +295,10 @@ type ApplyServiceState = {
   secretMaterial: DeployVariableMaterial[]
   secretPlan: DeploySecretPlanEntry[]
   envEntries: EnvFileEntry[]
+  runtimeAssignments: RuntimeEnvAssignment[]
+  /** The service is a native (`serviceKind: node`) app — see {@link shouldAutoAttachSecret}. */
+  nativeApp: boolean
+  unreferencedSecrets: UnreferencedSecret[]
   projectId: string
   environmentId: string
   runDir: string
@@ -280,6 +320,15 @@ function applyNonSecretAssignment(
   runtimeEnv: Record<string, string>,
   buildArgs: Record<string, string>
 ): void {
+  if (target === 'runtime') {
+    state.runtimeAssignments.push({
+      name: envKey,
+      key: entry.key,
+      isSecret: false,
+      value: trimVariableValue(entry.value),
+      ...(entry.source === undefined ? {} : { source: entry.source }),
+    })
+  }
   if (isPlatformInlineKey(entry.key)) {
     const formatted = entry.isLiteral
       ? escapeLiteralComposeValue(trimVariableValue(entry.value))
@@ -384,6 +433,20 @@ function secretInterpolationError(
   return null
 }
 
+function recordSecretAssignment(
+  state: ApplyServiceState,
+  name: string,
+  entry: DeployVariableEntry
+): void {
+  state.runtimeAssignments.push({
+    name,
+    key: entry.key,
+    isSecret: true,
+    value: null,
+    ...(entry.source === undefined ? {} : { source: entry.source }),
+  })
+}
+
 function applySecretRefValue(
   state: ApplyServiceState,
   envKey: string,
@@ -392,8 +455,10 @@ function applySecretRefValue(
   runtimeEnv: Record<string, string>,
   buildArgs: Record<string, string>
 ): void {
-  if (target === 'runtime') delete runtimeEnv[envKey]
-  else delete buildArgs[envKey]
+  if (target === 'runtime') {
+    delete runtimeEnv[envKey]
+    recordSecretAssignment(state, envKey, entry)
+  } else delete buildArgs[envKey]
   applySecretAssignment(
     state,
     {
@@ -453,15 +518,49 @@ function scanMapForRefs(
   return null
 }
 
+/**
+ * A secret nothing references is attached on its own only when it is owned by a
+ * binding, or — for a native app — when it was set on the app itself (its
+ * service or one of its hostnames). A secret set higher up (organization,
+ * workspace, project, environment, server) still needs a `{$KEY}` reference, so
+ * a credential set for the whole organization never lands in an app that did
+ * not ask for it; containers keep that rule for every scope.
+ */
+function shouldAutoAttachSecret(state: ApplyServiceState, entry: DeployVariableEntry): boolean {
+  if (state.plannedKeys.has(entry.key)) return false
+  if (entry.bindingId) return true
+  return (
+    state.nativeApp &&
+    entry.forRuntime &&
+    (entry.source === 'service' || entry.source === 'hosting')
+  )
+}
+
+function attachUnreferencedSecret(
+  state: ApplyServiceState,
+  entry: DeployVariableEntry,
+  runtimeEnv: Record<string, string>
+): void {
+  if (shouldAutoAttachSecret(state, entry)) {
+    applySecretAssignment(state, entry, runtimeEnv)
+    if (entry.forRuntime) recordSecretAssignment(state, entry.key, entry)
+    return
+  }
+  if (state.nativeApp && entry.forRuntime && !state.plannedKeys.has(entry.key)) {
+    state.unreferencedSecrets.push({
+      key: entry.key,
+      ...(entry.source === undefined ? {} : { source: entry.source }),
+    })
+  }
+}
+
 function autoInjectEntries(state: ApplyServiceState): void {
   const runtimeEnv = readStringEnvMap(state.service.environment)
   const buildArgs = isRecord(state.service.build) ? readStringEnvMap(state.service.build.args) : {}
 
   for (const entry of state.inherited.values()) {
     if (entry.isSecret) {
-      if (entry.bindingId && !state.plannedKeys.has(entry.key)) {
-        applySecretAssignment(state, entry, runtimeEnv)
-      }
+      attachUnreferencedSecret(state, entry, runtimeEnv)
       continue
     }
     if (entry.forRuntime) {
@@ -504,6 +603,8 @@ export function applyVariablesToComposeDocument(
     globalEntries: DeployVariableEntry[]
     perServiceEntries: Map<string, DeployVariableEntry[]>
     perServiceScopes?: Map<string, VariableScopeEntryMap>
+    /** Compose services that are native (`serviceKind: node`) apps. */
+    nativeServiceNames?: ReadonlySet<string>
     projectId?: string
     environmentId?: string
     runDir?: string
@@ -514,6 +615,8 @@ export function applyVariablesToComposeDocument(
   const secretMaterial: DeployVariableMaterial[] = []
   const secretPlan: DeploySecretPlanEntry[] = []
   const envEntries: EnvFileEntry[] = []
+  const runtimeAssignments = new Map<string, RuntimeEnvAssignment[]>()
+  const unreferencedSecrets = new Map<string, UnreferencedSecret[]>()
   const runDir = params.runDir ?? DEFAULT_DEPLOY_RUN_DIR
   const projectId = params.projectId ?? 'preview'
   const environmentId = params.environmentId ?? 'preview'
@@ -537,6 +640,9 @@ export function applyVariablesToComposeDocument(
       secretMaterial,
       secretPlan,
       envEntries,
+      runtimeAssignments: [],
+      nativeApp: params.nativeServiceNames?.has(composeServiceName) ?? false,
+      unreferencedSecrets: [],
       projectId,
       environmentId,
       runDir,
@@ -544,6 +650,8 @@ export function applyVariablesToComposeDocument(
     const error = applyEntriesToService(state)
     if (error) return error
     services[composeServiceName] = state.service
+    runtimeAssignments.set(composeServiceName, state.runtimeAssignments)
+    unreferencedSecrets.set(composeServiceName, state.unreferencedSecrets)
   }
 
   data.services = services
@@ -557,6 +665,8 @@ export function applyVariablesToComposeDocument(
     secretMaterial,
     secretPlan,
     envFileContent: encodeEnvFile(envEntries),
+    runtimeAssignments,
+    unreferencedSecrets,
   }
 }
 

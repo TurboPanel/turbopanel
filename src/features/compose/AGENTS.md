@@ -787,6 +787,37 @@ it out first. Two do:
   Compose spellings are read (a mapping, or a sequence of `KEY=VALUE`). It never
   becomes container `labels:` on either lane.
 
+**Variables reach a node app on their own lane.** The Compose `environment:`
+that `apply-variables.ts` builds for every service is removed with the node
+service, so before `nativeAppServices[].variables` a variable set on a Node app
+never reached its process. `applyVariablesToComposeDocument` therefore also
+records, per service, what the process would see (`runtimeAssignments`: the name
+it sees, the variable it came from, the scope that set it, the plain value or
+`null` for a secret). `native-app-variables.ts` turns that into the wire list —
+`{ name, value }` for a plain value, `{ name, secretKey }` for a secret, the
+latter pointing at the daemon-sealed `variableMaterial[]` entry for the same
+service, so no secret is plaintext on the wire — and into the human list the
+deploy preview returns as `nativeAppVariables`. Non-secret runtime variables
+are injected on their own, as on the Compose lane; build-only variables never.
+**Secrets** are passed when the app's `environment:` references them with
+`{$KEY}`, when a binding owns them, and — the one difference from containers —
+when they were set on the app itself (service or hostname scope): an owner who
+sets a secret on a Node app expects it to arrive, and there is no secret-file
+mount to fall back on. A secret set higher up (organization, workspace, project,
+environment, server) is **not** passed until referenced, so a credential set for
+the whole organization never lands in an app that did not ask for it; it is
+listed with `reason: 'not_referenced'` (`unreferencedSecrets`, never the value).
+Other differences worth knowing: the value is passed as typed
+(trimmed, not Compose-escaped, and a non-literal value's `${…}` is **not**
+expanded); the platform's own names (`HOST`, `NODE_ENV`, `PORT`, `PATH`, `HOME`,
+`TMPDIR`, `XDG_CACHE_HOME`, `COREPACK_*`) are listed as not delivered, because
+systemd applies the environment file over the unit's own `Environment=` lines;
+names or values the daemon would refuse are held back and listed with a reason
+rather than failing the deploy. `source` comes from `resolveVariableSource`
+(`features/variables/resolve-inherited.ts`) in the same order deploy merges
+scopes. The daemon side is `../../../../turbopaneld/src/deploy/native/AGENTS.md`
+("Variables").
+
 Both ride the wire. `deploy-prepare.ts` copies them onto
 `EnvironmentDeployNativeAppService.restartPolicy` / `.serviceLabels`
 (`lib/commands/schemas.ts`), the daemon re-validates them in

@@ -911,4 +911,276 @@ describe('apply-variables', () => {
     assertEquals(build.args, undefined)
     assertEquals(build.secrets.length, 1)
   })
+
+  describe("runtimeAssignments (what a native app's process gets)", () => {
+    const entry = (
+      overrides: Partial<
+        Parameters<typeof applyVariablesToComposeDocument>[1]['globalEntries'][number]
+      >
+    ) => ({
+      key: 'K',
+      value: 'v',
+      isSecret: false,
+      isLiteral: false,
+      forBuild: false,
+      forRuntime: true,
+      ...overrides,
+    })
+
+    it('records auto-injected runtime non-secrets with their raw value and source', () => {
+      const doc = emptyComposeDocument()
+      doc.data.services = { web: { image: 'x' }, api: { image: 'x' } }
+      const result = mustApply(
+        applyVariablesToComposeDocument(doc, {
+          globalEntries: [
+            entry({
+              key: 'API_URL',
+              value: '  https://example.test  ',
+              source: 'project',
+            }),
+            entry({
+              key: 'DOLLAR',
+              value: 'p$ss',
+              isLiteral: true,
+              source: 'service',
+            }),
+            entry({ key: 'BUILD_ONLY', forBuild: true, forRuntime: false }),
+          ],
+          perServiceEntries: new Map(),
+        })
+      )
+      // Trimmed like the Compose lane, but never Compose-escaped: the value a
+      // native app sees is the one the author typed.
+      assertEquals(result.runtimeAssignments.get('web'), [
+        {
+          name: 'API_URL',
+          key: 'API_URL',
+          isSecret: false,
+          value: 'https://example.test',
+          source: 'project',
+        },
+        {
+          name: 'DOLLAR',
+          key: 'DOLLAR',
+          isSecret: false,
+          value: 'p$ss',
+          source: 'service',
+        },
+      ])
+      assertEquals(result.runtimeAssignments.get('api')?.length, 2)
+    })
+
+    it('records a referenced secret by the name the process sees, never its value', () => {
+      const doc = emptyComposeDocument()
+      doc.data.services = {
+        web: {
+          image: 'x',
+          environment: { DB_PASSWORD: '{$DB_SECRET}', API_URL: '{$URL}' },
+        },
+      }
+      const result = mustApply(
+        applyVariablesToComposeDocument(doc, {
+          globalEntries: [
+            entry({
+              key: 'DB_SECRET',
+              value: 'super-secret',
+              isSecret: true,
+              source: 'organization',
+            }),
+            entry({
+              key: 'URL',
+              value: 'https://example.test',
+              forRuntime: false,
+            }),
+          ],
+          perServiceEntries: new Map(),
+        })
+      )
+      assertEquals(result.runtimeAssignments.get('web'), [
+        {
+          name: 'DB_PASSWORD',
+          key: 'DB_SECRET',
+          isSecret: true,
+          value: null,
+          source: 'organization',
+        },
+        // A reference makes the name reach the service even when the variable
+        // is not itself flagged runtime-only — same as the Compose lane.
+        {
+          name: 'API_URL',
+          key: 'URL',
+          isSecret: false,
+          value: 'https://example.test',
+        },
+      ])
+      assertEquals(JSON.stringify([...result.runtimeAssignments]).includes('super-secret'), false)
+      // The sealed value rides `secretMaterial`, keyed by service and variable.
+      assertEquals(
+        result.secretMaterial.map((m) => [m.composeServiceName, m.key]),
+        [['web', 'DB_SECRET']]
+      )
+    })
+
+    it('does not record unreferenced secrets or build-only secret references', () => {
+      const doc = emptyComposeDocument()
+      doc.data.services = {
+        web: { image: 'x', build: { args: { TOKEN: '{$TOKEN}' } } },
+      }
+      const result = mustApply(
+        applyVariablesToComposeDocument(doc, {
+          globalEntries: [
+            entry({ key: 'UNUSED', isSecret: true }),
+            entry({
+              key: 'TOKEN',
+              isSecret: true,
+              forBuild: true,
+              forRuntime: false,
+            }),
+          ],
+          perServiceEntries: new Map(),
+        })
+      )
+      assertEquals(result.runtimeAssignments.get('web'), [])
+    })
+
+    describe('secrets set on a native app itself', () => {
+      const docWith = (environment?: Record<string, string>) => {
+        const doc = emptyComposeDocument()
+        doc.data.services = {
+          web: { image: 'x', ...(environment ? { environment } : {}) },
+          worker: { image: 'x' },
+        }
+        return doc
+      }
+      const secretAt = (source: string, key = 'API_KEY') =>
+        entry({ key, isSecret: true, value: 'sealed', source })
+
+      it('passes a service- or hostname-scoped runtime secret without a reference', () => {
+        for (const source of ['service', 'hosting']) {
+          const result = mustApply(
+            applyVariablesToComposeDocument(docWith(), {
+              globalEntries: [secretAt(source)],
+              perServiceEntries: new Map(),
+              nativeServiceNames: new Set(['web']),
+            })
+          )
+          assertEquals(result.runtimeAssignments.get('web'), [
+            { name: 'API_KEY', key: 'API_KEY', isSecret: true, value: null, source },
+          ])
+          // Its sealed value rides variableMaterial, keyed by service and variable.
+          assertEquals(
+            result.secretMaterial.map((m) => [m.composeServiceName, m.key]),
+            [['web', 'API_KEY']]
+          )
+          assertEquals(result.unreferencedSecrets.get('web'), [])
+        }
+      })
+
+      it('leaves a wider-scope secret out until the app references it, and says so', () => {
+        for (const source of ['organization', 'workspace', 'project', 'environment', 'server']) {
+          const result = mustApply(
+            applyVariablesToComposeDocument(docWith(), {
+              globalEntries: [secretAt(source)],
+              perServiceEntries: new Map(),
+              nativeServiceNames: new Set(['web']),
+            })
+          )
+          assertEquals(result.runtimeAssignments.get('web'), [])
+          assertEquals(result.secretMaterial, [])
+          assertEquals(result.unreferencedSecrets.get('web'), [{ key: 'API_KEY', source }])
+        }
+      })
+
+      it('attaches it as soon as the app references it, and then it is not "unreferenced"', () => {
+        const result = mustApply(
+          applyVariablesToComposeDocument(docWith({ TOKEN: '{$API_KEY}' }), {
+            globalEntries: [secretAt('organization')],
+            perServiceEntries: new Map(),
+            nativeServiceNames: new Set(['web']),
+          })
+        )
+        assertEquals(result.runtimeAssignments.get('web'), [
+          { name: 'TOKEN', key: 'API_KEY', isSecret: true, value: null, source: 'organization' },
+        ])
+        assertEquals(result.unreferencedSecrets.get('web'), [])
+      })
+
+      it('does not double-deliver a service secret that is also referenced', () => {
+        const result = mustApply(
+          applyVariablesToComposeDocument(docWith({ TOKEN: '{$API_KEY}' }), {
+            globalEntries: [secretAt('service')],
+            perServiceEntries: new Map(),
+            nativeServiceNames: new Set(['web']),
+          })
+        )
+        assertEquals(
+          result.runtimeAssignments.get('web')?.map((a) => a.name),
+          ['TOKEN']
+        )
+        assertEquals(result.secretMaterial.length, 1)
+      })
+
+      it('changes nothing for a container service, or a secret that is not for runtime', () => {
+        const result = mustApply(
+          applyVariablesToComposeDocument(docWith(), {
+            globalEntries: [
+              secretAt('service'),
+              entry({
+                key: 'BUILD_TOKEN',
+                isSecret: true,
+                forBuild: true,
+                forRuntime: false,
+                source: 'service',
+              }),
+            ],
+            perServiceEntries: new Map(),
+            nativeServiceNames: new Set(['web']),
+          })
+        )
+        // `worker` is a container: a service-scoped secret still needs a reference.
+        assertEquals(result.runtimeAssignments.get('worker'), [])
+        assertEquals(result.unreferencedSecrets.get('worker'), [])
+        // The build-only secret is neither delivered nor listed on the native app.
+        assertEquals(
+          result.runtimeAssignments.get('web')?.map((a) => a.name),
+          ['API_KEY']
+        )
+        assertEquals(result.unreferencedSecrets.get('web'), [])
+      })
+    })
+
+    it('records binding-owned secrets, which attach without a reference', () => {
+      const doc = emptyComposeDocument()
+      doc.data.services = { web: { image: 'x' } }
+      const result = mustApply(
+        applyVariablesToComposeDocument(doc, {
+          globalEntries: [
+            entry({
+              key: 'DATABASE_PASSWORD',
+              isSecret: true,
+              bindingId: '11111111-1111-4111-8111-111111111111',
+              source: 'binding',
+            }),
+            entry({
+              key: 'BUILD_ONLY_BOUND',
+              isSecret: true,
+              forBuild: true,
+              forRuntime: false,
+              bindingId: '11111111-1111-4111-8111-111111111111',
+            }),
+          ],
+          perServiceEntries: new Map(),
+        })
+      )
+      assertEquals(result.runtimeAssignments.get('web'), [
+        {
+          name: 'DATABASE_PASSWORD',
+          key: 'DATABASE_PASSWORD',
+          isSecret: true,
+          value: null,
+          source: 'binding',
+        },
+      ])
+    })
+  })
 })
