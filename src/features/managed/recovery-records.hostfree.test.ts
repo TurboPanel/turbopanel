@@ -4,7 +4,7 @@
 
 import { assertEquals, assertRejects } from '@std/assert'
 import type { Db } from '../../db/connection.ts'
-import { managed, recovery } from '../../db/schema.ts'
+import { command, managed, recovery } from '../../db/schema.ts'
 import { createMemoryDb } from '../../test-fixtures/memory-db.ts'
 import {
   findInFlightRecovery,
@@ -333,6 +333,7 @@ test('expireStaleRecoveries expires only old detecting/fencing rows with no queu
       ],
     ],
     [managed, []],
+    [command, []],
   ])
   const expired = await expireStaleRecoveries(db, {
     now: Date.parse('2026-10-01T01:00:00.000Z'),
@@ -381,6 +382,7 @@ test('expireStaleRecoveries fails rows that stopped progressing in any in-flight
       ],
     ],
     [managed, [{ id: 'mgd-promoting', status: 'applying' }]],
+    [command, []],
   ])
   const expired = await expireStaleRecoveries(db, { now, reason: 'stale' })
   assertEquals(expired.map((row) => row.id).sort(), [
@@ -406,6 +408,53 @@ test('expireStaleRecoveries fails rows that stopped progressing in any in-flight
   assertEquals(db.rows(managed)[0]?.status, 'failed')
 })
 
+test('expireStaleRecoveries leaves a row alone while one of its commands is still live', async () => {
+  const now = Date.parse('2026-10-01T01:00:00.000Z')
+  const old = new Date(now - 3_600_000).toISOString()
+  const db = createMemoryDb([
+    [
+      recovery,
+      [
+        staleRow('live-promote', {
+          state: 'promoting',
+          updatedAt: old,
+          metadata: { promoteCommandId: 'cmd-live' },
+        }),
+        staleRow('dead-promote', {
+          state: 'promoting',
+          updatedAt: old,
+          metadata: { promoteCommandId: 'cmd-dead' },
+        }),
+        staleRow('live-fence', {
+          state: 'fencing',
+          updatedAt: old,
+          metadata: { fenceCommandIds: ['cmd-dead', 'cmd-fence-live'] },
+        }),
+      ],
+    ],
+    [managed, []],
+    [
+      command,
+      [
+        { id: 'cmd-live', status: 'sent' },
+        { id: 'cmd-dead', status: 'timed_out' },
+        { id: 'cmd-fence-live', status: 'queued' },
+      ],
+    ],
+  ])
+  const expired = await expireStaleRecoveries(db, { now, reason: 'stale' })
+  // The stale-command sweep owns rows with a live command and settles them
+  // through the recovery hooks once the command times out; the watchdog only
+  // catches rows with nothing running.
+  assertEquals(
+    expired.map((row) => row.id),
+    ['dead-promote']
+  )
+  const byId = new Map(db.rows(recovery).map((row) => [row.id, row]))
+  assertEquals(byId.get('live-promote')?.state, 'promoting')
+  assertEquals(byId.get('live-fence')?.state, 'fencing')
+})
+
 test('expireStaleRecoveries does not overwrite a row that advanced after it was read', async () => {
   const now = Date.parse('2026-10-01T01:00:00.000Z')
   const db = createMemoryDb([
@@ -420,6 +469,7 @@ test('expireStaleRecoveries does not overwrite a row that advanced after it was 
         }),
       ],
     ],
+    [command, []],
   ])
   const expired = await expireStaleRecoveries(db, { now, reason: 'stale' })
   assertEquals(expired, [])

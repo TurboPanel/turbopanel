@@ -18,9 +18,18 @@ import { AUTOMATIC_FAILOVER_BLOCKED_MESSAGE } from './recovery.ts'
 const test = Deno.test.bind(Deno)
 
 test('verifyFenced requires drain plus stop', () => {
-  assertEquals(verifyFenced({ oldPrimaryReachable: true, drainApplied: true, stopApplied: true }), true)
-  assertEquals(verifyFenced({ oldPrimaryReachable: true, drainApplied: true, stopApplied: false }), false)
-  assertEquals(verifyFenced({ oldPrimaryReachable: false, drainApplied: false, stopApplied: false }), false)
+  assertEquals(
+    verifyFenced({ oldPrimaryReachable: true, drainApplied: true, stopApplied: true }),
+    true
+  )
+  assertEquals(
+    verifyFenced({ oldPrimaryReachable: true, drainApplied: true, stopApplied: false }),
+    false
+  )
+  assertEquals(
+    verifyFenced({ oldPrimaryReachable: false, drainApplied: false, stopApplied: false }),
+    false
+  )
 })
 
 test('fence success advances automatic failover to promoting', () => {

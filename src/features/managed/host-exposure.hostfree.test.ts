@@ -44,38 +44,34 @@ test('a host with zero enabled clusters publishes nothing', () => {
   assertEquals(hostExposureScopes([off]), [])
   assertEquals(hostExposureScopes([off, off, off]), [])
   // …and the bind decision agrees: no addresses at all, not all-interfaces.
-  assertEquals(
-    decideIngressBindScopes([off, off, off].map(requestedExposureScope)),
-    { kind: 'omit' },
-  )
+  assertEquals(decideIngressBindScopes([off, off, off].map(requestedExposureScope)), {
+    kind: 'omit',
+  })
 })
 
 test('a mixed host publishes the union of the enabled clusters', () => {
   assertEquals(hostExposureScopes([off, onDatacenter, off]), ['datacenter'])
-  assertEquals(hostExposureScopes([off, onDatacenter, onFabric]), [
-    'turbofabric',
-    'datacenter',
-  ])
+  assertEquals(hostExposureScopes([off, onDatacenter, onFabric]), ['turbofabric', 'datacenter'])
   // `public` already covers every narrower address; publishing both would be a
   // duplicate compose binding.
   assertEquals(hostExposureScopes([onDatacenter, onPublic, off]), ['public'])
 
   // The bind decision is driven by the same union, so a mixed host publishes
   // for its enabled clusters and drags the disabled ones along.
-  assertEquals(
-    decideIngressBindScopes([off, onDatacenter, off].map(requestedExposureScope)),
-    { kind: 'resolve', scopes: ['datacenter'] },
-  )
-  assertEquals(
-    decideIngressBindScopes([off, onPublic].map(requestedExposureScope)),
-    { kind: 'public_all_interfaces', addresses: ['0.0.0.0'] },
-  )
+  assertEquals(decideIngressBindScopes([off, onDatacenter, off].map(requestedExposureScope)), {
+    kind: 'resolve',
+    scopes: ['datacenter'],
+  })
+  assertEquals(decideIngressBindScopes([off, onPublic].map(requestedExposureScope)), {
+    kind: 'public_all_interfaces',
+    addresses: ['0.0.0.0'],
+  })
 })
 
 /** Minimal stub: the two SELECTs `loadHostExposureScopes` makes, in order. */
 function stubDb(
   rows: readonly { engine: string; exposure: Exposure }[],
-  organizationId: string | null = 'org-1',
+  organizationId: string | null = 'org-1'
 ): Db {
   let call = 0
   return {
@@ -89,16 +85,12 @@ function stubDb(
           return query
         },
         limit() {
-          return Promise.resolve(
-            step === 1 ? [{ organizationId }] : [],
-          )
+          return Promise.resolve(step === 1 ? [{ organizationId }] : [])
         },
         where() {
           if (step === 0) {
             // replica rows on this server — one member per cluster
-            return Promise.resolve(
-              rows.map((_, index) => ({ managedId: `mg-${index}` })),
-            )
+            return Promise.resolve(rows.map((_, index) => ({ managedId: `mg-${index}` })))
           }
           if (step === 1) return query
           // bound consumer lookup (step 2) then the managed rows (step 3)
@@ -112,7 +104,7 @@ function stubDb(
                 databases: [],
                 backups: [],
               },
-            })),
+            }))
           )
         },
       }
@@ -128,7 +120,7 @@ function stubDb(
 test('an unexposed cluster alone on a host reports no publish', async () => {
   const effective = await resolveManagedEffectiveExposure(
     stubDb([{ engine: 'postgres', exposure: off }]),
-    { serverId: 'srv-1', exposure: off },
+    { serverId: 'srv-1', exposure: off }
   )
   assertEquals(effective, {
     requested: false,
@@ -146,7 +138,7 @@ test('an unexposed cluster next to an exposed one is reported as reachable', asy
       { engine: 'postgres', exposure: off },
       { engine: 'mysql', exposure: onPublic },
     ]),
-    { serverId: 'srv-1', exposure: off },
+    { serverId: 'srv-1', exposure: off }
   )
   assertEquals(effective, {
     requested: false,
@@ -162,7 +154,7 @@ test('an exposed cluster is published on its own request, not a neighbour’s', 
       { engine: 'postgres', exposure: onDatacenter },
       { engine: 'mysql', exposure: off },
     ]),
-    { serverId: 'srv-1', exposure: onDatacenter },
+    { serverId: 'srv-1', exposure: onDatacenter }
   )
   assertEquals(effective, {
     requested: true,

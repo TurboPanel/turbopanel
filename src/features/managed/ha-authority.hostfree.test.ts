@@ -11,7 +11,7 @@ import { OrchestratorManagedHaAuthority } from './ha-authority.ts'
 const test = Deno.test.bind(Deno)
 
 function member(
-  overrides: Partial<HaMemberCandidateInput> & Pick<HaMemberCandidateInput, 'id'>,
+  overrides: Partial<HaMemberCandidateInput> & Pick<HaMemberCandidateInput, 'id'>
 ): HaMemberCandidateInput {
   return {
     role: 'replica',
@@ -33,24 +33,13 @@ test('OrchestratorManagedHaAuthority picks the lowest healthy same-DC failover',
   })
   const unhealthy = member({ id: 'd', ordinal: 1, healthy: false })
 
-  assertEquals(
-    OrchestratorManagedHaAuthority.isAutomaticCandidate(earlier),
-    true,
-  )
+  assertEquals(OrchestratorManagedHaAuthority.isAutomaticCandidate(earlier), true)
   assertEquals(OrchestratorManagedHaAuthority.isAutomaticCandidate(read), false)
   assertEquals(
-    OrchestratorManagedHaAuthority.pickAutomaticCandidate([
-      later,
-      read,
-      unhealthy,
-      earlier,
-    ])?.id,
-    'a',
+    OrchestratorManagedHaAuthority.pickAutomaticCandidate([later, read, unhealthy, earlier])?.id,
+    'a'
   )
-  assertEquals(
-    OrchestratorManagedHaAuthority.pickAutomaticCandidate([unhealthy, read]),
-    null,
-  )
+  assertEquals(OrchestratorManagedHaAuthority.pickAutomaticCandidate([unhealthy, read]), null)
 })
 
 test('OrchestratorManagedHaAuthority promotion and DR class rewrite', () => {
@@ -67,7 +56,7 @@ test('OrchestratorManagedHaAuthority promotion and DR class rewrite', () => {
       replicaClass: 'failover',
       sameDatacenterAsNewPrimary: false,
     }),
-    null,
+    null
   )
   assertEquals(
     OrchestratorManagedHaAuthority.replicaClassAfterDisasterRecovery({
@@ -75,7 +64,7 @@ test('OrchestratorManagedHaAuthority promotion and DR class rewrite', () => {
       replicaClass: 'failover',
       sameDatacenterAsNewPrimary: false,
     }),
-    'read',
+    'read'
   )
   assertEquals(
     OrchestratorManagedHaAuthority.replicaClassAfterDisasterRecovery({
@@ -83,6 +72,6 @@ test('OrchestratorManagedHaAuthority promotion and DR class rewrite', () => {
       replicaClass: 'read',
       sameDatacenterAsNewPrimary: true,
     }),
-    'read',
+    'read'
   )
 })

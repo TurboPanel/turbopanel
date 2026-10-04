@@ -176,6 +176,24 @@ test('every mutating managed route that can disturb a running cluster checks the
     'delete /environments/:id/managed/backups/:backupId',
     'post /environments/:id/managed/backups/:backupId/restore',
   ]
+  // These reach the journal gate through the shared apply helpers.
+  const gatedViaApply = [
+    'post /environments/:id/managed/apply',
+    'post /environments/:id/managed/root-password',
+    'post /environments/:id/managed/users',
+    'post /environments/:id/managed/users/:principalId/password',
+    'delete /environments/:id/managed/users/:principalId',
+    'post /environments/:id/managed/databases',
+    'delete /environments/:id/managed/databases/:databaseName',
+  ]
+  for (const key of gatedViaApply) {
+    const handler = handlers.get(key)
+    if (handler === undefined) throw new TypeError(`route not found: ${key}`)
+    const viaApply = /assertManagedApplyReady\(|prepareApplyForManaged\(|runApplyForManaged\(/.test(
+      handler
+    )
+    assertEquals(viaApply, true, `${key} must go through the journal-gated apply helpers`)
+  }
   for (const key of gated) {
     const handler = handlers.get(key)
     if (handler === undefined) throw new TypeError(`route not found: ${key}`)

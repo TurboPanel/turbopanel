@@ -1,7 +1,8 @@
 import { and, desc, eq, inArray, isNotNull } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import { managed, recovery } from '../../db/schema.ts'
+import { command, managed, recovery } from '../../db/schema.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
+import { COMMAND_STATUSES, TERMINAL_COMMAND_STATUSES } from '../commands/types.ts'
 import {
   isRecoveryKind,
   isRecoveryState,
@@ -287,6 +288,29 @@ export const STALE_RECOVERY_STEP_MS = 15 * 60_000
 
 const SWEEP_LIMIT = 200
 
+const LIVE_COMMAND_STATUSES = COMMAND_STATUSES.filter(
+  (status) => !TERMINAL_COMMAND_STATUSES.has(status)
+)
+
+function commandIdsOf(metadata: RecoveryMetadata): string[] {
+  return [
+    ...(metadata.fenceCommandIds ?? []),
+    ...(metadata.promoteCommandId ? [metadata.promoteCommandId] : []),
+    ...(metadata.failoverCommandId ? [metadata.failoverCommandId] : []),
+    ...(metadata.ingressCommandIds ?? []),
+  ]
+}
+
+/** Which of these commands are still queued, sent or running. */
+async function liveCommandIds(db: Db, ids: string[]): Promise<Set<string>> {
+  if (ids.length === 0) return new Set()
+  const rows = await db
+    .select({ id: command.id })
+    .from(command)
+    .where(and(inArray(command.id, ids), inArray(command.status, LIVE_COMMAND_STATUSES)))
+  return new Set(rows.map((row) => row.id))
+}
+
 function hasQueuedCommands(metadata: RecoveryMetadata): boolean {
   return Boolean(
     (metadata.fenceCommandIds?.length ?? 0) > 0 ||
@@ -359,10 +383,21 @@ export async function expireStaleRecoveries(
     .map((row) => serializeRow(row))
     .filter((row): row is RecoveryRecord => row !== null)
     .filter((row) => stalePatch(row, nowMs, maxAgeMs, opts.reason) !== null)
+  // A row whose command is still live belongs to the stale-command sweep: it
+  // times the command out on its own clock and settles the row through the
+  // recovery hooks. Expiring it here first would free the cluster for operator
+  // actions while a promote may still be running. A command only ever moves
+  // from live to terminal, and a new one bumps `updatedAt`, which the locked
+  // re-check below sees, so reading this set outside the lock is safe.
+  const live = await liveCommandIds(db, [
+    ...new Set(candidates.flatMap((r) => commandIdsOf(r.metadata))),
+  ])
   const expired: RecoveryRecord[] = []
   await forEachSequential(candidates, async (row) => {
     const updated = await updateRecoveryLocked(db, row.id, (current) =>
-      stalePatch(current, nowMs, maxAgeMs, opts.reason)
+      commandIdsOf(current.metadata).some((id) => live.has(id))
+        ? null
+        : stalePatch(current, nowMs, maxAgeMs, opts.reason)
     )
     if (!updated) return
     expired.push(updated)

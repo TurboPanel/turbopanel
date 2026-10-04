@@ -1992,3 +1992,22 @@ test('onRecoveryStepFailed ends a promoting row terminal for the operator', asyn
   assertEquals(row?.state, 'failed')
   assertEquals((row?.metadata as Record<string, unknown>).needsOperator, true)
 })
+
+test('a fence that settles on the sweep path (no queue) cannot leave a promoting row behind', async () => {
+  const harness = createHarness({
+    recovery: recoveryRow({
+      state: 'fencing',
+      metadata: { fenceCommandIds: ['cmd-drain'], stopApplied: true },
+    }),
+  })
+  await onRecoveryCommandTimedOut(harness.db, {
+    recoveryId: REC_ID,
+    commandId: 'cmd-drain',
+    type: 'managed.ha.failover',
+    fencePhase: 'drain',
+  })
+  // The stop landed and the last drain is gone, but nothing can queue the
+  // promote here: the row must be terminal, not parked at `promoting`.
+  const state = harness.recovery()?.state
+  assertEquals(state === 'blocked' || state === 'failed', true)
+})

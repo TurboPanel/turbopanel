@@ -55,15 +55,11 @@ function stubDb(opts: {
             if (table === monitor) {
               reads += 1
               // The second read models the concurrent winner's row.
-              const row = reads > 1 && opts.onConflictRow
-                ? opts.onConflictRow
-                : monitorRow
+              const row = reads > 1 && opts.onConflictRow ? opts.onConflictRow : monitorRow
               return Promise.resolve(row ? [row] : [])
             }
             if (table === server) {
-              return Promise.resolve(
-                (opts.serverExists ?? true) ? [{ id: SERVER_ID }] : [],
-              )
+              return Promise.resolve((opts.serverExists ?? true) ? [{ id: SERVER_ID }] : [])
             }
             throw new TypeError(`unexpected select from ${String(fields)}`)
           },
@@ -105,10 +101,7 @@ function emptyRecorded(): Recorded {
 }
 
 async function secrets() {
-  return await deriveEncryptionSecretsConfig(
-    parseTestSecretsConfig('deno'),
-    'data-encryption',
-  )
+  return await deriveEncryptionSecretsConfig(parseTestSecretsConfig('deno'), 'data-encryption')
 }
 
 test('monitorUsernameForServer stays inside engine identifier limits', () => {
@@ -125,7 +118,7 @@ test('an existing credential is returned without a new mint', async () => {
   const credential = await ensureServerMonitorCredential(
     stubDb({ existing, recorded }),
     await secrets(),
-    SERVER_ID,
+    SERVER_ID
   )
   assertEquals(credential, {
     username: EXPECTED_USERNAME,
@@ -140,7 +133,7 @@ test('a missing credential is minted onto the monitor table, not server.options'
   const credential = await ensureServerMonitorCredential(
     stubDb({ recorded }),
     await secrets(),
-    SERVER_ID,
+    SERVER_ID
   )
 
   assertEquals(credential.username, EXPECTED_USERNAME)
@@ -154,10 +147,7 @@ test('a missing credential is minted onto the monitor table, not server.options'
   // fragment that removes a key, never to a value carrying the sealed password.
   assertEquals(recorded.serverUpdates.length, 1)
   const serverUpdate = recorded.serverUpdates[0]!
-  assertEquals(
-    Object.keys(serverUpdate).toSorted(),
-    ['options', 'updatedAt'],
-  )
+  assertEquals(Object.keys(serverUpdate).toSorted(), ['options', 'updatedAt'])
   for (const value of Object.values(serverUpdate)) {
     assertEquals(value === credential.passwordSealed, false)
   }
@@ -172,7 +162,7 @@ test('a stale stored username is replaced rather than trusted', async () => {
   const credential = await ensureServerMonitorCredential(
     stubDb({ existing: stale, onConflictRow: stale, recorded }),
     await secrets(),
-    SERVER_ID,
+    SERVER_ID
   )
   assertEquals(credential.username, EXPECTED_USERNAME)
   assertEquals(credential.passwordSealed === stale.secretEnvelope, false)
@@ -189,7 +179,7 @@ test('an unsealed stored password is not handed out', async () => {
   const credential = await ensureServerMonitorCredential(
     stubDb({ existing: plaintext, recorded }),
     await secrets(),
-    SERVER_ID,
+    SERVER_ID
   )
   assertEquals(credential.passwordSealed.startsWith(ENVELOPE_PREFIX_SECRET), true)
   assertEquals(credential.passwordSealed === plaintext.secretEnvelope, false)
@@ -204,7 +194,7 @@ test('a concurrent mint keeps the winner rather than rotating', async () => {
   const credential = await ensureServerMonitorCredential(
     stubDb({ onConflictRow: winner, recorded }),
     await secrets(),
-    SERVER_ID,
+    SERVER_ID
   )
   // A credential already on its way to a daemon must not be overwritten.
   assertEquals(credential.passwordSealed, winner.secretEnvelope)
@@ -213,11 +203,7 @@ test('a concurrent mint keeps the winner rather than rotating', async () => {
 
 test('the legacy server.options key is stripped whenever the credential is read', async () => {
   const recorded = emptyRecorded()
-  await ensureServerMonitorCredential(
-    stubDb({ recorded }),
-    await secrets(),
-    SERVER_ID,
-  )
+  await ensureServerMonitorCredential(stubDb({ recorded }), await secrets(), SERVER_ID)
   // One `server` UPDATE clearing the published blob. The value is built in SQL,
   // so assert the write happened against `options` — the SQL itself names the key.
   assertEquals(recorded.serverUpdates.length, 1)
@@ -233,10 +219,10 @@ test('a missing server row fails loudly instead of minting an orphan', async () 
       ensureServerMonitorCredential(
         stubDb({ serverExists: false, recorded }),
         dataEncryptionSecrets,
-        SERVER_ID,
+        SERVER_ID
       ),
     Error,
-    'server not found for monitor credential',
+    'server not found for monitor credential'
   )
   assertEquals(recorded.inserts.length, 0)
 })
