@@ -305,7 +305,15 @@ export function yamlToComposeDocument(source: string): ComposeDocument {
     throw new ComposeParseError(doc.errors.map((e) => e.message).join('; '))
   }
 
-  const json = doc.toJSON() as unknown
+  let json: unknown
+  try {
+    json = doc.toJSON()
+  } catch {
+    // The parser caps alias expansion; do not leak its own wording.
+    throw new ComposeParseError(
+      'The compose file reuses anchors and aliases so heavily that it expands to an unreasonable size; write the repeated parts out'
+    )
+  }
   if (json == null) return emptyComposeDocument()
   if (typeof json !== 'object' || Array.isArray(json)) {
     throw new ComposeParseError('Compose file root must be a mapping')

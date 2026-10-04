@@ -128,13 +128,15 @@ test('every network key the registry knows has an answer at both drivers', () =>
   }
 })
 
-test('GATED_SERVICE_FIELD_KEYS is exactly the sixteen host-reaching keys', () => {
+test('GATED_SERVICE_FIELD_KEYS is exactly the eighteen host-reaching keys', () => {
   assertEquals([...GATED_SERVICE_FIELD_KEYS].sort(), [
     'cap_add',
     'cgroup',
     'cgroup_parent',
     'device_cgroup_rules',
     'devices',
+    'gpus',
+    'group_add',
     'ipc',
     'network_mode',
     'pid',

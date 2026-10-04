@@ -119,7 +119,14 @@ export const COMPOSE_CUSTOM_TAGS: Array<ScalarTag | CollectionTag> = [
   seqTag('override'),
 ]
 
-/** Shared parse/stringify schema options for every compose YAML site. */
+/**
+ * Shared parse/stringify schema options for every compose YAML site.
+ *
+ * `merge: true` expands `<<` merge keys the way Docker Compose reads them. The
+ * default leaves `<<` as a plain key, which hides whatever it merges in (a
+ * `privileged: true`, an `env_file`) from every check that reads service keys.
+ */
 export const COMPOSE_YAML_OPTIONS: SchemaOptions = {
+  merge: true,
   customTags: COMPOSE_CUSTOM_TAGS,
 }
