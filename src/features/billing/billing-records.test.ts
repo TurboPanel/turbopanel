@@ -139,26 +139,22 @@ async function projectedSubscription(
 test('T15 · payer_subject_check: exactly one of organization or user, enforced by Postgres', async () => {
   await withDb(async (ctx) => {
     await expectPgRefusal(
-      ctx.db
-        .insert(payer)
-        .values({
-          provider: 'stripe',
-          providerCustomerId: `cus_${RUN}_none`,
-          organizationId: null,
-          userId: null,
-        }),
+      ctx.db.insert(payer).values({
+        provider: 'stripe',
+        providerCustomerId: `cus_${RUN}_none`,
+        organizationId: null,
+        userId: null,
+      }),
       CHECK_VIOLATION,
       'payer_subject_check'
     )
     await expectPgRefusal(
-      ctx.db
-        .insert(payer)
-        .values({
-          provider: 'stripe',
-          providerCustomerId: `cus_${RUN}_both`,
-          organizationId: ctx.organizationId,
-          userId: ctx.userId,
-        }),
+      ctx.db.insert(payer).values({
+        provider: 'stripe',
+        providerCustomerId: `cus_${RUN}_both`,
+        organizationId: ctx.organizationId,
+        userId: ctx.userId,
+      }),
       CHECK_VIOLATION,
       'payer_subject_check'
     )
@@ -174,14 +170,12 @@ test('T15 · payer_subject_check: exactly one of organization or user, enforced 
     assertEquals(typeof org?.id, 'string')
     // A second customer for the same organization is refused, not re-homed.
     await expectPgRefusal(
-      ctx.db
-        .insert(payer)
-        .values({
-          provider: 'stripe',
-          providerCustomerId: `cus_${RUN}_dup`,
-          organizationId: ctx.organizationId,
-          userId: null,
-        }),
+      ctx.db.insert(payer).values({
+        provider: 'stripe',
+        providerCustomerId: `cus_${RUN}_dup`,
+        organizationId: ctx.organizationId,
+        userId: null,
+      }),
       UNIQUE_VIOLATION,
       'uniq_payer_organization_provider'
     )
@@ -220,38 +214,32 @@ test('T15 · the delivery ledger accepts stripe and refuses any other provider',
 test('T15 · one seat row per (subscription, tier), and one per provider item id', async () => {
   await withDb(async (ctx) => {
     const { subscriptionId } = await projectedSubscription(ctx)
-    await ctx.db
-      .insert(subscriptionItem)
-      .values({
+    await ctx.db.insert(subscriptionItem).values({
+      subscriptionId,
+      tierId: ctx.tierA,
+      providerItemId: `si_${RUN}_1`,
+      providerPriceId: `price_${RUN}_1`,
+      quantity: 2,
+    })
+    await expectPgRefusal(
+      ctx.db.insert(subscriptionItem).values({
         subscriptionId,
         tierId: ctx.tierA,
-        providerItemId: `si_${RUN}_1`,
-        providerPriceId: `price_${RUN}_1`,
-        quantity: 2,
-      })
-    await expectPgRefusal(
-      ctx.db
-        .insert(subscriptionItem)
-        .values({
-          subscriptionId,
-          tierId: ctx.tierA,
-          providerItemId: `si_${RUN}_2`,
-          providerPriceId: `price_${RUN}_2`,
-          quantity: 1,
-        }),
+        providerItemId: `si_${RUN}_2`,
+        providerPriceId: `price_${RUN}_2`,
+        quantity: 1,
+      }),
       UNIQUE_VIOLATION,
       'uniq_seat_subscription_tier'
     )
     await expectPgRefusal(
-      ctx.db
-        .insert(subscriptionItem)
-        .values({
-          subscriptionId,
-          tierId: ctx.tierB,
-          providerItemId: `si_${RUN}_1`,
-          providerPriceId: `price_${RUN}_1`,
-          quantity: 1,
-        }),
+      ctx.db.insert(subscriptionItem).values({
+        subscriptionId,
+        tierId: ctx.tierB,
+        providerItemId: `si_${RUN}_1`,
+        providerPriceId: `price_${RUN}_1`,
+        quantity: 1,
+      }),
       UNIQUE_VIOLATION,
       'uniq_seat_provider_item'
     )
@@ -261,15 +249,13 @@ test('T15 · one seat row per (subscription, tier), and one per provider item id
 test('T15 · the seat replacement really rolls back: a failure after the delete leaves the old rows in place', async () => {
   await withDb(async (ctx) => {
     const { subscriptionId } = await projectedSubscription(ctx)
-    await ctx.db
-      .insert(subscriptionItem)
-      .values({
-        subscriptionId,
-        tierId: ctx.tierA,
-        providerItemId: `si_${RUN}_old`,
-        providerPriceId: `price_${RUN}_old`,
-        quantity: 2,
-      })
+    await ctx.db.insert(subscriptionItem).values({
+      subscriptionId,
+      tierId: ctx.tierA,
+      providerItemId: `si_${RUN}_old`,
+      providerPriceId: `price_${RUN}_old`,
+      quantity: 2,
+    })
 
     let threw = false
     try {
@@ -333,24 +319,20 @@ test('T15 · tier uniqueness: one row per label, per rank and per (provider, pro
       'tier_provider_check'
     )
     // The product index is partial: two rows with no product (custom tiers) may coexist.
-    await ctx.db
-      .insert(tier)
-      .values({
-        ...fresh(8, 'SX'),
-        providerProductId: null,
-        priceCents: null,
-        currency: null,
-        isCustom: true,
-      })
-    await ctx.db
-      .insert(tier)
-      .values({
-        ...fresh(9, 'SY'),
-        providerProductId: null,
-        priceCents: null,
-        currency: null,
-        isCustom: true,
-      })
+    await ctx.db.insert(tier).values({
+      ...fresh(8, 'SX'),
+      providerProductId: null,
+      priceCents: null,
+      currency: null,
+      isCustom: true,
+    })
+    await ctx.db.insert(tier).values({
+      ...fresh(9, 'SY'),
+      providerProductId: null,
+      priceCents: null,
+      currency: null,
+      isCustom: true,
+    })
     // `apple` was the reserved second provider until 2026-09-17; both provider
     // CHECKs now admit `stripe` only, so the same product id under another
     // provider is refused by the CHECK before uniqueness is even consulted.
