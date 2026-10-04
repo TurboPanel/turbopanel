@@ -99,11 +99,16 @@ test('an alias bomb is refused instead of expanded', () => {
       .join(',')}]\n`
   }
   yaml += 'services:\n  web:\n    image: alpine\n'
-  let threw = false
+  let message = ''
   try {
     yamlToComposeDocument(yaml)
-  } catch {
-    threw = true
+  } catch (error) {
+    message = error instanceof Error ? error.message : ''
   }
-  assertEquals(threw, true)
+  assertEquals(message.includes('unreasonable size'), true)
+  assertEquals(message.includes('resource exhaustion'), false)
+  const issues = lintComposeYaml(yaml)
+  assertEquals(issues.length, 1)
+  assertEquals(issues[0]?.level, 'error')
+  assertEquals(issues[0]?.message.includes('unreasonable size'), true)
 })

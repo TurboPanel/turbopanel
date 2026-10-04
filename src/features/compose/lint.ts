@@ -737,10 +737,11 @@ function lintServiceField(
  */
 function lintHostAccess(
   doc: ReturnType<typeof parseDocument>,
+  data: unknown,
   lineCounter: LineCounter,
   issues: ComposeLintIssue[]
 ): void {
-  for (const finding of collectHostAccessFindings(doc.toJS())) {
+  for (const finding of collectHostAccessFindings(data)) {
     const node = doc.getIn(finding.segments, true) as Node | undefined
     issues.push({
       level: 'warning',
@@ -750,6 +751,25 @@ function lintHostAccess(
       line: nodeLine(node, lineCounter),
       blocking: false,
     })
+  }
+}
+
+/**
+ * The document with merge keys and aliases expanded. Expansion is capped by the
+ * parser (a document that aliases itself into an enormous value is refused);
+ * that surfaces as one plain error rather than the parser's own message.
+ */
+function expandForLint(
+  doc: ReturnType<typeof parseDocument>
+): { ok: true; data: unknown } | { ok: false; message: string } {
+  try {
+    return { ok: true, data: doc.toJS() }
+  } catch {
+    return {
+      ok: false,
+      message:
+        'The compose file reuses anchors and aliases so heavily that it expands to an unreasonable size; write the repeated parts out',
+    }
   }
 }
 
@@ -774,10 +794,10 @@ function labelKeysOf(labels: unknown): string[] {
  */
 function lintExpandedServices(
   doc: ReturnType<typeof parseDocument>,
+  data: unknown,
   lineCounter: LineCounter,
   issues: ComposeLintIssue[]
 ): void {
-  const data: unknown = doc.toJS()
   const services = (data as { services?: unknown } | null)?.services
   if (services === null || typeof services !== 'object') return
   for (const [name, service] of Object.entries(services)) {
@@ -820,11 +840,12 @@ function lintExpandedServices(
  */
 function lintBuildPolicy(
   doc: ReturnType<typeof parseDocument>,
+  data: unknown,
   lineCounter: LineCounter,
   strict: boolean,
   issues: ComposeLintIssue[]
 ): void {
-  for (const refusal of collectBuildRefusals(doc.toJS())) {
+  for (const refusal of collectBuildRefusals(data)) {
     const node = doc.getIn(refusal.segments, true) as Node | undefined
     issues.push({
       level: strict ? 'error' : 'warning',
@@ -1857,12 +1878,16 @@ export function lintComposeYaml(source: string, options?: ComposeLintOptions): C
   // Stage 1 — upstream Compose Specification, before any TurboPanel opinion.
   const schemaIssues = validateAgainstUpstreamSchema(root, lineCounter)
 
-  // Stage 2 — TurboPanel's own semantics.
+  // Stage 2 — TurboPanel's own semantics, over the expanded document.
+  const expanded = expandForLint(doc)
+  if (!expanded.ok) {
+    return [{ level: 'error', message: expanded.message, path: '$' }]
+  }
   const issues: ComposeLintIssue[] = []
   lintTopLevel(root, lineCounter, layer, options?.strict ?? false, known, issues)
-  lintHostAccess(doc, lineCounter, issues)
-  lintExpandedServices(doc, lineCounter, issues)
-  lintBuildPolicy(doc, lineCounter, options?.strict ?? false, issues)
+  lintHostAccess(doc, expanded.data, lineCounter, issues)
+  lintExpandedServices(doc, expanded.data, lineCounter, issues)
+  lintBuildPolicy(doc, expanded.data, lineCounter, options?.strict ?? false, issues)
   if (options?.projectRepositoryId !== undefined) {
     lintSingleRepository(root, lineCounter, options.projectRepositoryId, issues)
   }
