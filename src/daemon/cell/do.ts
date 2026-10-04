@@ -1155,7 +1155,8 @@ export class DaemonCellObject {
       docker?: ServerDockerMetadata
       features?: string[]
     },
-    geo?: ServerGeo
+    geo?: ServerGeo,
+    runtimeWasOffline?: boolean
   ): Promise<void> {
     await this.#withProjectionDb('inbound', serverId, async (db) => {
       if (
@@ -1181,6 +1182,7 @@ export class DaemonCellObject {
         at,
         daemonBuild,
         geo,
+        runtimeWasOffline,
       })
       if (daemonBuild?.commit) {
         await persistDaemonReachedTarget(
@@ -1669,6 +1671,30 @@ export class DaemonCellObject {
     }
   }
 
+  /**
+   * Record liveness for a non-presence frame. A stale sweep leaves Postgres
+   * offline and #recordInbound alone only clears the runtime flag, so repair
+   * the projection when the cell was offline before this frame.
+   */
+  async #recordInboundRepairingPresence(
+    attachment: { connectionId: string; serverId: string },
+    at: string
+  ): Promise<void> {
+    const needsOfflineRepair =
+      !this.#runtimeConnected || this.#sweptOffline.has(attachment.serverId)
+    this.#recordInbound(attachment.serverId, at, undefined, attachment.connectionId)
+    if (needsOfflineRepair) {
+      await this.#projectInbound(
+        attachment.serverId,
+        at,
+        undefined,
+        undefined,
+        undefined,
+        needsOfflineRepair
+      )
+    }
+  }
+
   async #handlePresenceMessage(
     attachment: {
       connectionId: string
@@ -1754,7 +1780,8 @@ export class DaemonCellObject {
         at,
         parsed.daemonBuild,
         hostIdentity,
-        attachGeo
+        attachGeo,
+        needsOfflineRepair
       )
     }
   }
@@ -1783,7 +1810,7 @@ export class DaemonCellObject {
       errorCode?: string
     }
   ): Promise<void> {
-    this.#recordInbound(attachment.serverId, parsed.at, undefined, attachment.connectionId)
+    await this.#recordInboundRepairingPresence(attachment, parsed.at)
     await this.#withProjectionDb('update-progress', attachment.serverId, (db) =>
       persistUpgradeProgress(db, {
         serverId: attachment.serverId,
@@ -1847,7 +1874,7 @@ export class DaemonCellObject {
       }
 
       if (parsed.type === 'managed-ha-event') {
-        this.#recordInbound(attachment.serverId, parsed.at, undefined, attachment.connectionId)
+        await this.#recordInboundRepairingPresence(attachment, parsed.at)
         await this.#withProjectionDb('managed-ha-event', attachment.serverId, async (db) => {
           await handleCellManagedHaEvent(db, parsed, {
             reporterServerId: attachment.serverId,
@@ -1866,7 +1893,7 @@ export class DaemonCellObject {
       }
 
       if (parsed.type === 'topology-report') {
-        this.#recordInbound(attachment.serverId, parsed.at, undefined, attachment.connectionId)
+        await this.#recordInboundRepairingPresence(attachment, parsed.at)
         await this.#withProjectionDb('topology-report', attachment.serverId, async (db) => {
           await recordTopologyGeneration(db, attachment.serverId, {
             generation: parsed.generation,
@@ -1879,7 +1906,7 @@ export class DaemonCellObject {
       }
 
       if (parsed.type === 'acme-issuance-event') {
-        this.#recordInbound(attachment.serverId, parsed.at, undefined, attachment.connectionId)
+        await this.#recordInboundRepairingPresence(attachment, parsed.at)
         await this.#withProjectionDb('acme-issuance-event', attachment.serverId, async (db) => {
           await handleAcmeIssuanceEvent(db, {
             serverId: attachment.serverId,
@@ -1892,7 +1919,7 @@ export class DaemonCellObject {
       }
 
       if (parsed.type === 'instance-acme-issuance-event') {
-        this.#recordInbound(attachment.serverId, parsed.at, undefined, attachment.connectionId)
+        await this.#recordInboundRepairingPresence(attachment, parsed.at)
         await this.#withProjectionDb(
           'instance-acme-issuance-event',
           attachment.serverId,
@@ -1914,7 +1941,7 @@ export class DaemonCellObject {
         return
       }
 
-      this.#recordInbound(attachment.serverId, parsed.at, undefined, attachment.connectionId)
+      await this.#recordInboundRepairingPresence(attachment, parsed.at)
       await this.#handleInboundMessage(attachment.serverId, parsed, ws)
       await this.#scheduleNearestAlarm()
     } catch (err) {

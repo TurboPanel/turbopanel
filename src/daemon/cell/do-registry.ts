@@ -192,23 +192,25 @@ class DurableObjectStubDaemonCell implements DaemonCell {
     })
   }
 
-  recordInbound(params: {
+  async recordInbound(params: {
     connectionId?: string
     hostname?: string
     at?: string
     daemonBuild?: import('../../contracts/cell-protocol.ts').DaemonBuildInfo
   }): Promise<void> {
-    return this.#rpc('/rpc/record-inbound', {
+    // Snapshot before the RPC marks the cell connected again.
+    const before = this.#db ? await this.getSnapshot() : undefined
+    await this.#rpc('/rpc/record-inbound', {
       serverId: this.#serverId,
       body: { params },
-    }).then(async () => {
-      if (this.#db) {
-        await onDaemonInbound(this.#db, this.#serverId, this, {
-          at: params.at,
-          daemonBuild: params.daemonBuild,
-        })
-      }
     })
+    if (this.#db) {
+      await onDaemonInbound(this.#db, this.#serverId, this, {
+        at: params.at,
+        daemonBuild: params.daemonBuild,
+        runtimeWasOffline: before?.connected === false,
+      })
+    }
   }
 
   getSnapshot(): Promise<DaemonCellSnapshot> {

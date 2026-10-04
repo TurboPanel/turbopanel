@@ -311,6 +311,10 @@ async function handleDaemonPresenceInbound(params: {
 }): Promise<void> {
   const { cell, db, serverId, connectionId, message } = params
   const presence = message as unknown as Record<string, unknown>
+  // Snapshot before recordInbound, which marks Redis connected again; otherwise
+  // onDaemonInbound sees a connected cell and skips the Postgres online write
+  // after a stale sweep (same ordering rule as handleDaemonCellPing).
+  const snapshotBefore = await cell.getSnapshot()
   const resources = resourcesFromDaemonPresence(presence)
 
   if (message.type === 'hello') {
@@ -339,6 +343,7 @@ async function handleDaemonPresenceInbound(params: {
   await onDaemonInbound(db, serverId, cell, {
     at: message.at,
     daemonBuild: message.daemonBuild,
+    runtimeWasOffline: !snapshotBefore.connected,
   })
   const commit = message.daemonBuild?.commit
   if (commit) {
@@ -495,7 +500,23 @@ async function handleBackupRunReportInbound(params: {
  * dedicated handler record liveness and, when they carry a correlated result,
  * apply the inbound envelope to the cell.
  */
-async function dispatchDaemonInboundMessage(params: DaemonInboundDispatch): Promise<void> {
+export async function dispatchDaemonInboundMessage(params: DaemonInboundDispatch): Promise<void> {
+  const { cell, db, serverId, message } = params
+  if (message.type === 'hello' || message.type === 'heartbeat') {
+    await dispatchDaemonInboundByType(params)
+    return
+  }
+  // Every other frame marks Redis connected via recordInbound but projects
+  // nothing to Postgres: re-project online when a stale sweep had demoted it.
+  const snapshotBefore = await cell.getSnapshot()
+  await dispatchDaemonInboundByType(params)
+  if (!snapshotBefore.connected) {
+    const at = message.at ?? new Date().toISOString()
+    await onDaemonConnected(db, serverId, cell, snapshotBefore.connectedAt ?? at)
+  }
+}
+
+async function dispatchDaemonInboundByType(params: DaemonInboundDispatch): Promise<void> {
   const { cell, db, serverId, connectionId, message } = params
   switch (message.type) {
     case 'hello':

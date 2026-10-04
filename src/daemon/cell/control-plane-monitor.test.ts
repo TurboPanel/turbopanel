@@ -742,6 +742,24 @@ test('onDaemonInbound restores online projection after stale sweep', async () =>
   assertEquals(typeof onlinePatch?.statusChangedAt, 'string')
 })
 
+test('onDaemonInbound with runtimeWasOffline restores online when daemonBuild is unchanged', async () => {
+  const stale = new Date(Date.now() - DAEMON_OFFLINE_SWEEP_MS - 1000).toISOString()
+  const build = { commit: 'same', buildId: '1', channel: 'trunk' }
+  const { db, updateCalls } = createTrackingDb(
+    { key: baseKey, projection: { hostname: 'host-1', daemonBuild: build } },
+    { connected: false, statusChangedAt: stale }
+  )
+  const at = new Date().toISOString()
+  // recordInbound already ran: the cell reads connected with the same build.
+  const cell = createMockCell({ connected: true, lastSeenAt: at, daemonBuild: build }) as never
+
+  await onDaemonInbound(db, serverId, cell, { at, daemonBuild: build })
+  assertEquals(updateCalls.length, 0)
+
+  await onDaemonInbound(db, serverId, cell, { at, daemonBuild: build, runtimeWasOffline: true })
+  assert(updateCalls.some((patch) => patch.isConnected === true))
+})
+
 test('onDaemonUpdateQueued writes projection.update as updating', async () => {
   const { db, getDaemon } = createTrackingDb({ key: baseKey })
 

@@ -25,6 +25,7 @@ import { DAEMON_CELL_PING, DAEMON_CELL_PONG } from '../contracts/cell-protocol.t
 import { issueDaemonJwt } from './authn/daemon-jwt.ts'
 import { materializeDaemonJsonbWrite } from '../test-fixtures/daemon-jsonb-simulator.ts'
 import {
+  dispatchDaemonInboundMessage,
   handleDaemonCellPing,
   isClosedConnectionError,
   registerDaemonWebSocket,
@@ -2276,6 +2277,55 @@ test('live WS hello persists os hostname machineKey docker and timeSync', async 
     }
   )
 })
+
+const STALE_SWEEP_FRAMES: ReadonlyArray<{ name: string; frame: Record<string, unknown> }> = [
+  { name: 'hello', frame: { type: 'hello', daemonBuild: { commit: 'same', buildId: '1' } } },
+  {
+    name: 'heartbeat',
+    frame: { type: 'heartbeat', daemonBuild: { commit: 'same', buildId: '1' } },
+  },
+  { name: 'update-result', frame: { type: 'update-result', id: 'req-stale', ok: true } },
+]
+
+for (const { name, frame } of STALE_SWEEP_FRAMES) {
+  test(`${name} after a stale sweep restores Postgres online`, async () => {
+    const serverId = `srv-stale-${name}`
+    const { db, getStatus } = createProjectionTrackingDb(
+      serverId,
+      { key: baseDaemonKey, projection: { daemonBuild: { commit: 'same', buildId: '1' } } },
+      { connected: false, statusChangedAt: '2020-01-01T00:00:00.000Z' }
+    )
+    const tracking = createTrackingDaemonCell(serverId)
+    // The sweep left the cell offline; recordInbound flips it back, like Redis.
+    let cellConnected = false
+    tracking.cell.getSnapshot = () =>
+      Promise.resolve({
+        serverId,
+        version: 1,
+        updatedAt: new Date().toISOString(),
+        connected: cellConnected,
+        lastSeenAt: new Date().toISOString(),
+        daemonBuild: { commit: 'same', buildId: '1' },
+      })
+    tracking.cell.recordInbound = () => {
+      tracking.calls.recordInbound += 1
+      cellConnected = true
+      return Promise.resolve()
+    }
+
+    await dispatchDaemonInboundMessage({
+      cell: tracking.cell,
+      db,
+      serverId,
+      connectionId: 'track-conn',
+      message: { ...frame, at: new Date().toISOString() } as never,
+      reply: () => {},
+    })
+
+    assertEquals(tracking.calls.recordInbound >= 1, true)
+    assertEquals(getStatus().connected, true)
+  })
+}
 
 test('live WS update-result and heartbeat with addresses cover inbound dispatch', async () => {
   const secrets = await createDaemonJwtSecrets()
