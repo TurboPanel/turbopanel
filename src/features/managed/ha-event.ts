@@ -149,6 +149,17 @@ async function staleOrchestratorReason(
   })
 }
 
+/** Only the detector / evidence fields that are actually present. */
+function detectorAndEvidence(
+  detector: string | undefined,
+  evidence: string | undefined
+): { detector?: string; evidence?: string } {
+  return {
+    ...(detector ? { detector } : {}),
+    ...(evidence ? { evidence } : {}),
+  }
+}
+
 /**
  * `deps.reporterServerId` must be the authenticated session's server id
  * (the cell attachment), never a payload field: the gate trusts it to prove
@@ -213,8 +224,7 @@ export async function handleManagedHaEvent(
       managedId: row.id,
       members,
       reason: stale,
-      ...(input.detector ? { detector: input.detector } : {}),
-      ...(evidence ? { evidence } : {}),
+      ...detectorAndEvidence(input.detector, evidence),
     })
   }
   const detectorName = input.detector ?? 'orchestrator'
@@ -231,8 +241,7 @@ export async function handleManagedHaEvent(
     engine,
     members,
     sourceMemberId: input.sourceMemberId,
-    ...(input.detector ? { detector: input.detector } : {}),
-    ...(evidence ? { evidence } : {}),
+    ...detectorAndEvidence(input.detector, evidence),
     actor: { actorType: 'system', actorId: deps.reporterServerId },
     ...(deps.autoFailover ? { autoFailover: deps.autoFailover } : {}),
     ...(deps.probeStandby ? { probeStandby: deps.probeStandby } : {}),
