@@ -295,35 +295,33 @@ function checkTopLevelVolumes(out: Collector, volumes: unknown): void {
   for (const [name, entry] of Object.entries(volumes)) {
     if (!isRecord(entry)) continue
     checkVolumeIdentity(out, name, entry)
-    if (!isRecord(entry.driver_opts)) continue
-    const opts = entry.driver_opts
-    const at = ['volumes', name, 'driver_opts']
-    const type = typeof opts.type === 'string' ? opts.type.trim().toLowerCase() : undefined
-    const o = typeof opts.o === 'string' ? opts.o : ''
-    const mountFlags = new Set(o.split(',').map((flag) => flag.trim().toLowerCase()))
-    const bindFlag = mountFlags.has('bind') || mountFlags.has('rbind')
-    if (bindFlag || type === 'none' || type === 'bind') {
-      out.add(at, `volume \`${name}\``, 'is a bind mount of a host path in disguise', opts)
-      continue
-    }
-    const device = opts.device
-    if (typeof device === 'string' && device.trim().startsWith('/')) {
-      out.add(
-        [...at, 'device'],
-        `volume \`${name}\` device \`${device}\``,
-        'mounts a host path',
-        opts
-      )
-      continue
-    }
-    if (Object.keys(opts).length > 0 && !isSafeTmpfsVolume(opts, type, mountFlags)) {
-      out.add(
-        at,
-        `volume \`${name}\``,
-        'mounts something other than plain Docker storage (overlay, network and other filesystem types can reach host paths)',
-        opts
-      )
-    }
+    if (isRecord(entry.driver_opts)) checkVolumeDriverOpts(out, name, entry.driver_opts)
+  }
+}
+
+function checkVolumeDriverOpts(out: Collector, name: string, opts: Record<string, unknown>): void {
+  const at = ['volumes', name, 'driver_opts']
+  const type = typeof opts.type === 'string' ? opts.type.trim().toLowerCase() : undefined
+  const o = typeof opts.o === 'string' ? opts.o : ''
+  const mountFlags = new Set(o.split(',').map((flag) => flag.trim().toLowerCase()))
+  const bindFlag = mountFlags.has('bind') || mountFlags.has('rbind')
+  const device = opts.device
+  if (bindFlag || type === 'none' || type === 'bind') {
+    out.add(at, `volume \`${name}\``, 'is a bind mount of a host path in disguise', opts)
+  } else if (typeof device === 'string' && device.trim().startsWith('/')) {
+    out.add(
+      [...at, 'device'],
+      `volume \`${name}\` device \`${device}\``,
+      'mounts a host path',
+      opts
+    )
+  } else if (Object.keys(opts).length > 0 && !isSafeTmpfsVolume(opts, type, mountFlags)) {
+    out.add(
+      at,
+      `volume \`${name}\``,
+      'mounts something other than plain Docker storage (overlay, network and other filesystem types can reach host paths)',
+      opts
+    )
   }
 }
 
