@@ -1520,21 +1520,26 @@ function parseFabricObservedPeer(value: unknown): FabricReconcileObservedPeer {
     peer.endpoint = value.endpoint
   }
   if (value.health !== undefined) {
-    if (
-      typeof value.health !== 'string' ||
-      !FABRIC_PEER_HEALTH.has(value.health as FabricPeerHealth)
-    ) {
-      throw new TypeError('Invalid fabric reconcile result peer health')
-    }
-    peer.health = value.health as FabricPeerHealth
+    peer.health = parseObservedPeerHealth(value.health)
   }
   if (value.interface !== undefined) {
-    if (!isValidInterfaceName(value.interface)) {
-      throw new TypeError('Invalid fabric reconcile result peer interface')
-    }
-    peer.interface = value.interface
+    peer.interface = parseObservedPeerInterface(value.interface)
   }
   return peer
+}
+
+function parseObservedPeerHealth(value: unknown): FabricPeerHealth {
+  if (typeof value !== 'string' || !FABRIC_PEER_HEALTH.has(value as FabricPeerHealth)) {
+    throw new TypeError('Invalid fabric reconcile result peer health')
+  }
+  return value as FabricPeerHealth
+}
+
+function parseObservedPeerInterface(value: unknown): string {
+  if (!isValidInterfaceName(value)) {
+    throw new TypeError('Invalid fabric reconcile result peer interface')
+  }
+  return value
 }
 
 export type EnvironmentDeployTlsMaterial = {
