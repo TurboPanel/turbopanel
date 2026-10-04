@@ -1,13 +1,13 @@
-import { assertEquals } from "@std/assert";
-import { managed, recovery } from "../../db/schema.ts";
-import { createMemoryDb } from "../../test-fixtures/memory-db.ts";
+import { assertEquals } from '@std/assert'
+import { managed, recovery } from '../../db/schema.ts'
+import { createMemoryDb } from '../../test-fixtures/memory-db.ts'
 import {
   daemonEverHadCommand,
   isStaleCommand,
   settleRecoveryOfTimedOutCommand,
   STALE_COMMAND_GRACE_MS,
   type StaleCommandCandidate,
-} from "./stale-sweep.ts";
+} from './stale-sweep.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -15,16 +15,14 @@ import {
  * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
  * reports Deno suites as empty; keep this alias so analysis sees real tests.
  */
-const test = Deno.test.bind(Deno);
+const test = Deno.test.bind(Deno)
 
-const T0 = Date.parse("2026-08-29T00:00:00.000Z");
+const T0 = Date.parse('2026-08-29T00:00:00.000Z')
 
-function candidate(
-  overrides: Partial<StaleCommandCandidate>,
-): StaleCommandCandidate {
+function candidate(overrides: Partial<StaleCommandCandidate>): StaleCommandCandidate {
   return {
-    id: "01a04c10-a436-7c38-b64e-e070b3b158fa",
-    name: "managed.apply",
+    id: '01a04c10-a436-7c38-b64e-e070b3b158fa',
+    name: 'managed.apply',
     createdAt: new Date(T0).toISOString(),
     queuedAt: null,
     dispatchStartedAt: null,
@@ -32,180 +30,165 @@ function candidate(
     ackedAt: null,
     startedAt: null,
     ...overrides,
-  };
+  }
 }
 
-test("isStaleCommand keeps a running command within its budget", () => {
-  const row = candidate({ startedAt: new Date(T0).toISOString() });
+test('isStaleCommand keeps a running command within its budget', () => {
+  const row = candidate({ startedAt: new Date(T0).toISOString() })
   // managed.apply budget is 600s; still inside budget + grace.
-  const now = T0 + 600_000 + STALE_COMMAND_GRACE_MS - 1_000;
-  assertEquals(isStaleCommand(row, now), false);
-});
+  const now = T0 + 600_000 + STALE_COMMAND_GRACE_MS - 1_000
+  assertEquals(isStaleCommand(row, now), false)
+})
 
-test("isStaleCommand times out a running command past budget + grace", () => {
-  const row = candidate({ startedAt: new Date(T0).toISOString() });
-  const now = T0 + 600_000 + STALE_COMMAND_GRACE_MS + 1_000;
-  assertEquals(isStaleCommand(row, now), true);
-});
+test('isStaleCommand times out a running command past budget + grace', () => {
+  const row = candidate({ startedAt: new Date(T0).toISOString() })
+  const now = T0 + 600_000 + STALE_COMMAND_GRACE_MS + 1_000
+  assertEquals(isStaleCommand(row, now), true)
+})
 
-test("isStaleCommand measures from the most recent lifecycle timestamp", () => {
+test('isStaleCommand measures from the most recent lifecycle timestamp', () => {
   // Created long ago but only started recently — not stale yet.
   const row = candidate({
     createdAt: new Date(T0 - 3_600_000).toISOString(),
     queuedAt: new Date(T0 - 3_600_000).toISOString(),
     startedAt: new Date(T0).toISOString(),
-  });
-  const now = T0 + 60_000;
-  assertEquals(isStaleCommand(row, now), false);
-});
+  })
+  const now = T0 + 60_000
+  assertEquals(isStaleCommand(row, now), false)
+})
 
-test("isStaleCommand handles queued rows that never dispatched", () => {
-  const row = candidate({ queuedAt: new Date(T0).toISOString() });
-  const now = T0 + 600_000 + STALE_COMMAND_GRACE_MS + 1_000;
-  assertEquals(isStaleCommand(row, now), true);
-});
+test('isStaleCommand handles queued rows that never dispatched', () => {
+  const row = candidate({ queuedAt: new Date(T0).toISOString() })
+  const now = T0 + 600_000 + STALE_COMMAND_GRACE_MS + 1_000
+  assertEquals(isStaleCommand(row, now), true)
+})
 
-test("isStaleCommand treats unparseable timestamps as not stale", () => {
-  const row = candidate({ createdAt: "not-a-date" });
-  assertEquals(isStaleCommand(row, T0 + 86_400_000), false);
-});
+test('isStaleCommand treats unparseable timestamps as not stale', () => {
+  const row = candidate({ createdAt: 'not-a-date' })
+  assertEquals(isStaleCommand(row, T0 + 86_400_000), false)
+})
 
-test("isStaleCommand falls back through acked, sent, and dispatch timestamps", () => {
-  const now = T0 + 600_000 + STALE_COMMAND_GRACE_MS + 1_000;
+test('isStaleCommand falls back through acked, sent, and dispatch timestamps', () => {
+  const now = T0 + 600_000 + STALE_COMMAND_GRACE_MS + 1_000
   assertEquals(
     isStaleCommand(
       candidate({
         createdAt: new Date(T0 - 3_600_000).toISOString(),
         ackedAt: new Date(T0).toISOString(),
       }),
-      now,
+      now
     ),
-    true,
-  );
+    true
+  )
   assertEquals(
     isStaleCommand(
       candidate({
         createdAt: new Date(T0 - 3_600_000).toISOString(),
         sentAt: new Date(T0).toISOString(),
       }),
-      now,
+      now
     ),
-    true,
-  );
+    true
+  )
   assertEquals(
     isStaleCommand(
       candidate({
         createdAt: new Date(T0 - 3_600_000).toISOString(),
         dispatchStartedAt: new Date(T0).toISOString(),
       }),
-      now,
+      now
     ),
-    true,
-  );
-});
+    true
+  )
+})
 
-test("isStaleCommand respects longer budgets per type", () => {
+test('isStaleCommand respects longer budgets per type', () => {
   // managed.backup budget is 30 minutes — 15 minutes in is not stale.
   const row = candidate({
-    name: "managed.backup",
+    name: 'managed.backup',
     startedAt: new Date(T0).toISOString(),
-  });
-  assertEquals(isStaleCommand(row, T0 + 900_000), false);
-  assertEquals(
-    isStaleCommand(row, T0 + 1_800_000 + STALE_COMMAND_GRACE_MS + 1_000),
-    true,
-  );
-});
+  })
+  assertEquals(isStaleCommand(row, T0 + 900_000), false)
+  assertEquals(isStaleCommand(row, T0 + 1_800_000 + STALE_COMMAND_GRACE_MS + 1_000), true)
+})
 
-test("a stalled command says whether re-running it is free", () => {
+test('a stalled command says whether re-running it is free', () => {
   const base = {
-    id: "00000000-0000-4000-8000-0000000000c1",
-    name: "environment.deploy",
-    createdAt: "2026-01-01T00:00:00.000Z",
-    queuedAt: "2026-01-01T00:00:00.000Z",
-    dispatchStartedAt: "2026-01-01T00:00:00.000Z",
-    sentAt: "2026-01-01T00:00:01.000Z",
+    id: '00000000-0000-4000-8000-0000000000c1',
+    name: 'environment.deploy',
+    createdAt: '2026-01-01T00:00:00.000Z',
+    queuedAt: '2026-01-01T00:00:00.000Z',
+    dispatchStartedAt: '2026-01-01T00:00:00.000Z',
+    sentAt: '2026-01-01T00:00:01.000Z',
     ackedAt: null,
     startedAt: null,
-    updatedAt: "2026-01-01T00:00:01.000Z",
-  };
+    updatedAt: '2026-01-01T00:00:01.000Z',
+  }
   // Put on the wire and never acknowledged: nothing ran on the host.
-  assertEquals(daemonEverHadCommand(base), false);
+  assertEquals(daemonEverHadCommand(base), false)
   // The daemon's own frames are the evidence that it arrived.
-  assertEquals(
-    daemonEverHadCommand({ ...base, ackedAt: "2026-01-01T00:00:02.000Z" }),
-    true,
-  );
-  assertEquals(
-    daemonEverHadCommand({ ...base, startedAt: "2026-01-01T00:00:03.000Z" }),
-    true,
-  );
+  assertEquals(daemonEverHadCommand({ ...base, ackedAt: '2026-01-01T00:00:02.000Z' }), true)
+  assertEquals(daemonEverHadCommand({ ...base, startedAt: '2026-01-01T00:00:03.000Z' }), true)
   // Never even sent.
-  assertEquals(
-    daemonEverHadCommand({ ...base, sentAt: null, dispatchStartedAt: null }),
-    false,
-  );
-});
+  assertEquals(daemonEverHadCommand({ ...base, sentAt: null, dispatchStartedAt: null }), false)
+})
 
 function recoveryRowFor(state: string, metadata: Record<string, unknown>) {
   return {
-    id: "rec-1",
-    managedId: "mgd-1",
-    kind: "automatic-failover",
-    sourcePrimaryMemberId: "mem-a",
-    targetMemberId: "mem-b",
+    id: 'rec-1',
+    managedId: 'mgd-1',
+    kind: 'automatic-failover',
+    sourcePrimaryMemberId: 'mem-a',
+    targetMemberId: 'mem-b',
     state,
     startedAt: new Date(T0).toISOString(),
     completedAt: null,
     metadata,
     createdAt: new Date(T0).toISOString(),
     updatedAt: new Date(T0).toISOString(),
-  };
+  }
 }
 
-test("a timed-out fence stop frees the recovery slot instead of stranding the row", async () => {
+test('a timed-out fence stop frees the recovery slot instead of stranding the row', async () => {
   const db = createMemoryDb([
-    [recovery, [recoveryRowFor("fencing", { fenceCommandIds: ["cmd-stop"] })]],
-    [managed, [{ id: "mgd-1", status: "applying" }]],
-  ]);
+    [recovery, [recoveryRowFor('fencing', { fenceCommandIds: ['cmd-stop'] })]],
+    [managed, [{ id: 'mgd-1', status: 'applying' }]],
+  ])
   await settleRecoveryOfTimedOutCommand(
     db,
     candidate({
-      id: "cmd-stop",
-      name: "managed.lifecycle",
-      metadata: { recoveryId: "rec-1", fencePhase: "stop" },
-    }),
-  );
-  assertEquals(db.rows(recovery)[0]?.state, "blocked");
-});
+      id: 'cmd-stop',
+      name: 'managed.lifecycle',
+      metadata: { recoveryId: 'rec-1', fencePhase: 'stop' },
+    })
+  )
+  assertEquals(db.rows(recovery)[0]?.state, 'blocked')
+})
 
-test("a timed-out promote command fails the recovery for the operator", async () => {
+test('a timed-out promote command fails the recovery for the operator', async () => {
   const db = createMemoryDb([
-    [recovery, [recoveryRowFor("promoting", { promoteCommandId: "cmd-p" })]],
-    [managed, [{ id: "mgd-1", status: "applying" }]],
-  ]);
+    [recovery, [recoveryRowFor('promoting', { promoteCommandId: 'cmd-p' })]],
+    [managed, [{ id: 'mgd-1', status: 'applying' }]],
+  ])
   await settleRecoveryOfTimedOutCommand(
     db,
     candidate({
-      id: "cmd-p",
-      name: "managed.promote",
-      metadata: { recoveryId: "rec-1" },
-    }),
-  );
-  const row = db.rows(recovery)[0];
-  assertEquals(row?.state, "failed");
-  assertEquals((row?.metadata as Record<string, unknown>).needsOperator, true);
-  assertEquals(db.rows(managed)[0]?.status, "failed");
-});
+      id: 'cmd-p',
+      name: 'managed.promote',
+      metadata: { recoveryId: 'rec-1' },
+    })
+  )
+  const row = db.rows(recovery)[0]
+  assertEquals(row?.state, 'failed')
+  assertEquals((row?.metadata as Record<string, unknown>).needsOperator, true)
+  assertEquals(db.rows(managed)[0]?.status, 'failed')
+})
 
-test("a timed-out command with no recovery is left alone", async () => {
+test('a timed-out command with no recovery is left alone', async () => {
   const db = createMemoryDb([
-    [recovery, [recoveryRowFor("promoting", {})]],
+    [recovery, [recoveryRowFor('promoting', {})]],
     [managed, []],
-  ]);
-  await settleRecoveryOfTimedOutCommand(
-    db,
-    candidate({ name: "managed.apply", metadata: {} }),
-  );
-  assertEquals(db.rows(recovery)[0]?.state, "promoting");
-});
+  ])
+  await settleRecoveryOfTimedOutCommand(db, candidate({ name: 'managed.apply', metadata: {} }))
+  assertEquals(db.rows(recovery)[0]?.state, 'promoting')
+})
