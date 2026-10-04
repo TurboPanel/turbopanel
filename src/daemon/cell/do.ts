@@ -1671,6 +1671,11 @@ export class DaemonCellObject {
     }
   }
 
+  /** Offline evidence a stale sweep or wake leaves, read before #recordInbound clears it. */
+  #needsOfflineRepair(serverId: string): boolean {
+    return !this.#runtimeConnected || this.#sweptOffline.has(serverId)
+  }
+
   /**
    * Record liveness for a non-presence frame. A stale sweep leaves Postgres
    * offline and #recordInbound alone only clears the runtime flag, so repair
@@ -1680,8 +1685,7 @@ export class DaemonCellObject {
     attachment: { connectionId: string; serverId: string },
     at: string
   ): Promise<void> {
-    const needsOfflineRepair =
-      !this.#runtimeConnected || this.#sweptOffline.has(attachment.serverId)
+    const needsOfflineRepair = this.#needsOfflineRepair(attachment.serverId)
     this.#recordInbound(attachment.serverId, at, undefined, attachment.connectionId)
     if (needsOfflineRepair) {
       await this.#projectInbound(
@@ -1717,8 +1721,7 @@ export class DaemonCellObject {
     this.#bumpDiag('heartbeatCount')
     const at = parsed.at ?? nowIso()
     // Capture offline/runtime repair evidence before #recordInbound clears it.
-    const needsOfflineRepair =
-      !this.#runtimeConnected || this.#sweptOffline.has(attachment.serverId)
+    const needsOfflineRepair = this.#needsOfflineRepair(attachment.serverId)
     const daemonBuildOrOfflineDue =
       this.#shouldProjectInbound(at, parsed.daemonBuild) || needsOfflineRepair
     this.#recordInbound(attachment.serverId, at, parsed.daemonBuild, attachment.connectionId)
@@ -2329,14 +2332,17 @@ export class DaemonCellObject {
         )
         return jsonResponse({ ok: true })
 
-      case '/rpc/record-inbound':
+      case '/rpc/record-inbound': {
+        const recordServerId = this.#requireServerId(request, body)
+        const wasOffline = this.#needsOfflineRepair(recordServerId)
         this.#recordInbound(
-          this.#requireServerId(request, body),
+          recordServerId,
           String((body?.params as { at?: string })?.at ?? nowIso()),
           (body?.params as { daemonBuild?: DaemonBuildInfo })?.daemonBuild,
           (body?.params as { connectionId?: string })?.connectionId
         )
-        return jsonResponse({ ok: true })
+        return jsonResponse({ ok: true, wasOffline })
+      }
 
       case '/rpc/lease/claim':
         return jsonResponse({

@@ -1,7 +1,7 @@
 import type { Context, Env, Hono } from 'hono'
 import { upgradeWebSocket } from 'hono/deno'
 import type { WSContext } from 'hono/ws'
-import type { DaemonCellRegistry } from '../contracts/cell.ts'
+import type { DaemonCellRegistry, DaemonCellSnapshot } from '../contracts/cell.ts'
 import type {
   BackupRunReportResultMessage,
   DaemonInboundEnvelope,
@@ -509,11 +509,34 @@ export async function dispatchDaemonInboundMessage(params: DaemonInboundDispatch
   // Every other frame marks Redis connected via recordInbound but projects
   // nothing to Postgres: re-project online when a stale sweep had demoted it.
   const snapshotBefore = await cell.getSnapshot()
-  await dispatchDaemonInboundByType(params)
-  if (!snapshotBefore.connected) {
-    const at = message.at ?? new Date().toISOString()
-    await onDaemonConnected(db, serverId, cell, snapshotBefore.connectedAt ?? at)
+  try {
+    await dispatchDaemonInboundByType(params)
+  } catch (err) {
+    // A handler that fails after recordInbound leaves Redis connected, so the
+    // next frame would see steady state: repair here when it got that far.
+    if (!snapshotBefore.connected && (await cell.getSnapshot()).connected) {
+      await restoreProjectedOnline(db, serverId, cell, snapshotBefore, message.at)
+    }
+    throw err
   }
+  if (!snapshotBefore.connected) {
+    await restoreProjectedOnline(db, serverId, cell, snapshotBefore, message.at)
+  }
+}
+
+async function restoreProjectedOnline(
+  db: Db,
+  serverId: string,
+  cell: ReturnType<DaemonCellRegistry['getCell']>,
+  snapshotBefore: DaemonCellSnapshot,
+  at: string | undefined
+): Promise<void> {
+  await onDaemonConnected(
+    db,
+    serverId,
+    cell,
+    snapshotBefore.connectedAt ?? at ?? new Date().toISOString()
+  )
 }
 
 async function dispatchDaemonInboundByType(params: DaemonInboundDispatch): Promise<void> {

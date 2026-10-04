@@ -2285,33 +2285,54 @@ const STALE_SWEEP_FRAMES: ReadonlyArray<{ name: string; frame: Record<string, un
     frame: { type: 'heartbeat', daemonBuild: { commit: 'same', buildId: '1' } },
   },
   { name: 'update-result', frame: { type: 'update-result', id: 'req-stale', ok: true } },
+  {
+    name: 'update-progress',
+    frame: { type: 'update-progress', id: 'req-prog', unit: 'daemon', stage: 'downloading' },
+  },
+  {
+    name: 'managed-ha-event',
+    frame: { type: 'managed-ha-event', managedId: 'm1', sourceMemberId: 's1' },
+  },
 ]
+
+/** A cell the sweep left offline; recordInbound flips it connected, like Redis. */
+function createSweptCell(serverId: string, startConnected: boolean) {
+  const tracking = createTrackingDaemonCell(serverId)
+  const order: string[] = []
+  let cellConnected = startConnected
+  tracking.cell.getSnapshot = () => {
+    order.push(`snapshot:${cellConnected}`)
+    return Promise.resolve({
+      serverId,
+      version: 1,
+      updatedAt: new Date().toISOString(),
+      connected: cellConnected,
+      lastSeenAt: new Date().toISOString(),
+      daemonBuild: { commit: 'same', buildId: '1' },
+    })
+  }
+  tracking.cell.recordInbound = () => {
+    tracking.calls.recordInbound += 1
+    order.push('record')
+    cellConnected = true
+    return Promise.resolve()
+  }
+  return { tracking, order }
+}
+
+function createSweptDb(serverId: string, projectedConnected: boolean) {
+  return createProjectionTrackingDb(
+    serverId,
+    { key: baseDaemonKey, projection: { daemonBuild: { commit: 'same', buildId: '1' } } },
+    { connected: projectedConnected, statusChangedAt: '2020-01-01T00:00:00.000Z' }
+  )
+}
 
 for (const { name, frame } of STALE_SWEEP_FRAMES) {
   test(`${name} after a stale sweep restores Postgres online`, async () => {
     const serverId = `srv-stale-${name}`
-    const { db, getStatus } = createProjectionTrackingDb(
-      serverId,
-      { key: baseDaemonKey, projection: { daemonBuild: { commit: 'same', buildId: '1' } } },
-      { connected: false, statusChangedAt: '2020-01-01T00:00:00.000Z' }
-    )
-    const tracking = createTrackingDaemonCell(serverId)
-    // The sweep left the cell offline; recordInbound flips it back, like Redis.
-    let cellConnected = false
-    tracking.cell.getSnapshot = () =>
-      Promise.resolve({
-        serverId,
-        version: 1,
-        updatedAt: new Date().toISOString(),
-        connected: cellConnected,
-        lastSeenAt: new Date().toISOString(),
-        daemonBuild: { commit: 'same', buildId: '1' },
-      })
-    tracking.cell.recordInbound = () => {
-      tracking.calls.recordInbound += 1
-      cellConnected = true
-      return Promise.resolve()
-    }
+    const { db, getStatus } = createSweptDb(serverId, false)
+    const { tracking, order } = createSweptCell(serverId, false)
 
     await dispatchDaemonInboundMessage({
       cell: tracking.cell,
@@ -2320,12 +2341,59 @@ for (const { name, frame } of STALE_SWEEP_FRAMES) {
       connectionId: 'track-conn',
       message: { ...frame, at: new Date().toISOString() } as never,
       reply: () => {},
-    })
+    }).catch(() => undefined)
 
-    assertEquals(tracking.calls.recordInbound >= 1, true)
+    // Exactly one record, and the offline snapshot was read before it.
+    assertEquals(tracking.calls.recordInbound, 1)
+    assertEquals(order[0], 'snapshot:false')
+    assertEquals(order.indexOf('record') > order.indexOf('snapshot:false'), true)
     assertEquals(getStatus().connected, true)
   })
 }
+
+test('non-presence frame on a connected cell does not rewrite Postgres presence', async () => {
+  const serverId = 'srv-steady-update-result'
+  const { db, getPatches } = createSweptDb(serverId, true)
+  const { tracking } = createSweptCell(serverId, true)
+
+  await dispatchDaemonInboundMessage({
+    cell: tracking.cell,
+    db,
+    serverId,
+    connectionId: 'track-conn',
+    message: { type: 'update-result', id: 'req-steady', ok: true, at: new Date().toISOString() },
+    reply: () => {},
+  })
+
+  assertEquals(
+    getPatches().some((patch) => patch.isConnected !== undefined),
+    false
+  )
+})
+
+test('a handler that throws after recordInbound still restores Postgres online', async () => {
+  const serverId = 'srv-stale-throws'
+  const { db, getStatus } = createSweptDb(serverId, false)
+  const { tracking } = createSweptCell(serverId, false)
+  tracking.cell.handleInbound = () => Promise.reject(new Error('handler failed'))
+
+  let thrown: unknown
+  try {
+    await dispatchDaemonInboundMessage({
+      cell: tracking.cell,
+      db,
+      serverId,
+      connectionId: 'track-conn',
+      message: { type: 'update-result', id: 'req-throw', ok: true, at: new Date().toISOString() },
+      reply: () => {},
+    })
+  } catch (err) {
+    thrown = err
+  }
+
+  assertEquals((thrown as Error).message, 'handler failed')
+  assertEquals(getStatus().connected, true)
+})
 
 test('live WS update-result and heartbeat with addresses cover inbound dispatch', async () => {
   const secrets = await createDaemonJwtSecrets()

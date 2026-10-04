@@ -388,6 +388,90 @@ describe("createDurableObjectDaemonCellRegistry", () => {
   });
 });
 
+describe("DurableObjectStubDaemonCell recordInbound projection", () => {
+  function createSelectCountingDb() {
+    let selects = 0;
+    const empty = () => ({
+      where: () => {
+        selects += 1;
+        return { limit: () => Promise.resolve([]) };
+      },
+    });
+    const db = {
+      select: () => ({ from: () => ({ ...empty(), innerJoin: empty }) }),
+      update: () => ({
+        set: () => ({ where: () => Promise.resolve(undefined) }),
+      }),
+      $client: { end: async () => undefined },
+    } as unknown as Db;
+    return { db, selects: () => selects };
+  }
+
+  function createRecordInboundEnv(wasOffline: boolean, rpcPaths: string[]) {
+    return createFakeCellEnv(async (path) => {
+      rpcPaths.push(path);
+      if (path.startsWith("/rpc/record-inbound")) {
+        return Response.json({ ok: true, wasOffline });
+      }
+      return Response.json({
+        serverId: "test-srv-stub-inbound",
+        version: 1,
+        updatedAt: new Date().toISOString(),
+        connected: true,
+        lastSeenAt: new Date().toISOString(),
+      });
+    });
+  }
+
+  // The stub itself reads the server row once to place the cell, so compare the
+  // two paths instead of expecting zero reads in steady state.
+  async function countSelects(wasOffline: boolean) {
+    const rpcPaths: string[] = [];
+    const { db, selects } = createSelectCountingDb();
+    const cell = new DurableObjectStubDaemonCell(
+      createRecordInboundEnv(wasOffline, rpcPaths),
+      db,
+      "test-srv-stub-inbound",
+    );
+    await cell.recordInbound({ at: new Date().toISOString() });
+    return { selects: selects(), rpcPaths };
+  }
+
+  it("re-projects online only when the cell reports it was offline, with no extra snapshot RPC", async () => {
+    const steady = await countSelects(false);
+    const offline = await countSelects(true);
+
+    expect(offline.selects).toBeGreaterThan(steady.selects);
+    const recordCalls = (paths: string[]) =>
+      paths.filter((p) => p.startsWith("/rpc/record-inbound")).length;
+    expect(recordCalls(offline.rpcPaths)).toBe(1);
+    // No snapshot RPC ahead of the record: the cell reports its own state.
+    expect(offline.rpcPaths[0]).toMatch(/^\/rpc\/record-inbound/);
+  });
+
+  it("/rpc/record-inbound reports the offline evidence a stale sweep left", async () => {
+    const serverId = "test-srv-record-inbound-evidence";
+    const stub = env.DAEMON_CELL.getByName(serverId);
+    const record = async () => {
+      const response = await stub.fetch("https://do.internal/rpc/record-inbound", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-turbopanel-cell-server-id": serverId,
+        },
+        body: JSON.stringify({ serverId, params: { at: new Date().toISOString() } }),
+      });
+      return (await response.json()) as { wasOffline: boolean };
+    };
+
+    // No live socket yet: offline evidence, repair needed.
+    expect((await record()).wasOffline).toBe(true);
+    await createDurableObjectDaemonCellRegistry(env).getCell(serverId)
+      .attachDaemonSocket({ keyId: "key-evidence" });
+    expect((await record()).wasOffline).toBe(false);
+  });
+});
+
 describe("DurableObjectStubDaemonCell RPC retry edges", () => {
   it("does not retry when the stub reports overloaded", async () => {
     let fetchCalls = 0;

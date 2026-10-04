@@ -198,9 +198,9 @@ class DurableObjectStubDaemonCell implements DaemonCell {
     at?: string
     daemonBuild?: import('../../contracts/cell-protocol.ts').DaemonBuildInfo
   }): Promise<void> {
-    // Snapshot before the RPC marks the cell connected again.
-    const before = this.#db ? await this.getSnapshot() : undefined
-    await this.#rpc('/rpc/record-inbound', {
+    // The cell reports whether it was offline before this inbound cleared the
+    // flag, so no extra snapshot round-trip is needed.
+    const result = await this.#rpc<{ wasOffline?: boolean } | undefined>('/rpc/record-inbound', {
       serverId: this.#serverId,
       body: { params },
     })
@@ -208,7 +208,7 @@ class DurableObjectStubDaemonCell implements DaemonCell {
       await onDaemonInbound(this.#db, this.#serverId, this, {
         at: params.at,
         daemonBuild: params.daemonBuild,
-        runtimeWasOffline: before?.connected === false,
+        runtimeWasOffline: result?.wasOffline === true,
       })
     }
   }
