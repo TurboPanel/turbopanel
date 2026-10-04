@@ -109,8 +109,8 @@ function wwwRedirectProblem(value: Record<string, unknown>): HostingOptionInputE
     return { field, message: 'applies to http hostings only' }
   }
   const hostnames = Array.isArray(value.hostnames) ? value.hostnames : []
-  const bad = hostnames.find(
-    (h): h is string => typeof h === 'string' && h.length > 0 && wwwSiblingHostname(h) === null
+  const bad = hostnames.some(
+    (h) => typeof h === 'string' && h.length > 0 && wwwSiblingHostname(h) === null
   )
   return bad ? { field, message: 'every hostname needs a valid www or non-www twin name' } : null
 }

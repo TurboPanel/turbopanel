@@ -2479,6 +2479,23 @@ function parseDeployHostingWeb(value: unknown): EnvironmentDeployHostingWeb | un
   return Object.keys(web).length > 0 ? web : undefined
 }
 
+function parseDeployHostingBindAddress(value: unknown): string | undefined {
+  if (value === undefined) return undefined
+  if (!isString(value) || value.length === 0 || !isValidIpAddress(value)) {
+    throw new Error('Invalid environment.deploy payload')
+  }
+  return value
+}
+
+/** `true` when on; `undefined` when absent or false; anything else is refused. */
+function parseDeployHostingWwwRedirect(value: unknown): true | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== 'boolean') {
+    throw new TypeError('Invalid environment.deploy payload')
+  }
+  return value ? true : undefined
+}
+
 function applyOptionalDeployHostingFields(
   hosting: EnvironmentDeployHosting,
   entry: Record<string, unknown>
@@ -2496,27 +2513,15 @@ function applyOptionalDeployHostingFields(
   if (tlsMode) hosting.tlsMode = tlsMode
   const proxy = parseDeployHostingProxy(entry.proxy)
   if (proxy) hosting.proxy = proxy
-  if (entry.bindAddress !== undefined) {
-    if (!isString(entry.bindAddress) || entry.bindAddress.length === 0) {
-      throw new Error('Invalid environment.deploy payload')
-    }
-    if (!isValidIpAddress(entry.bindAddress)) {
-      throw new Error('Invalid environment.deploy payload')
-    }
-    hosting.bindAddress = entry.bindAddress
-  }
+  const bindAddress = parseDeployHostingBindAddress(entry.bindAddress)
+  if (bindAddress) hosting.bindAddress = bindAddress
   const protocol = parseDeployHostingProtocol(entry.protocol)
   if (protocol) hosting.protocol = protocol
   const ports = parseDeployHostingPorts(entry.ports)
   if (ports) hosting.ports = ports
   const web = parseDeployHostingWeb(entry.web)
   if (web) hosting.web = web
-  if (entry.wwwRedirect !== undefined) {
-    if (typeof entry.wwwRedirect !== 'boolean') {
-      throw new Error('Invalid environment.deploy payload')
-    }
-    if (entry.wwwRedirect) hosting.wwwRedirect = true
-  }
+  if (parseDeployHostingWwwRedirect(entry.wwwRedirect)) hosting.wwwRedirect = true
 }
 
 function parseDeployHostingEntry(entry: unknown): EnvironmentDeployHosting {
