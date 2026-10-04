@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assertEquals } from '@std/assert'
 import { and, eq, inArray, like } from 'drizzle-orm'
 import { Hono } from 'hono'
@@ -153,7 +154,7 @@ async function withScene(
   reauthLimit = 1000
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn('Skipping step-up tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('step-up tests')
     return
   }
   const db = createDenoDb()

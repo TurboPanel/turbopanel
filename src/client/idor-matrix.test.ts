@@ -21,6 +21,7 @@
  * Skips without TURBOPANEL_DATABASE_URL (like the other real-database suites).
  */
 
+import { skipWithoutDatabase } from '../test-fixtures/require-service.test.support.ts'
 import { assert, assertEquals } from '@std/assert'
 import { eq, sql } from 'drizzle-orm'
 import { Hono } from 'hono'
@@ -709,7 +710,7 @@ class RollbackFixture extends Error {}
  */
 async function withFixture(fn: (fixture: Fixture) => Promise<void>): Promise<void> {
   if (!dbUrl) {
-    console.warn('Skipping IDOR matrix: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('IDOR matrix')
     return
   }
   try {

@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from '../test-fixtures/require-service.test.support.ts'
 import { assert, assertEquals, assertExists } from '@std/assert'
 import { decodeBase64Url, encodeBase64Url } from '@std/encoding/base64url'
 import { eq, sql } from 'drizzle-orm'
@@ -651,7 +652,7 @@ async function withEnrollFixture(
   options: EnrollFixtureOptions = {}
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn('Skipping daemon API route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('daemon API route tests')
     return
   }
 
@@ -852,7 +853,7 @@ test('GET /jwks.json returns public OKP keys only', async () => {
 
 test('POST /enroll rejects a raw machine-id shaped machineKey', async () => {
   if (!dbUrl) {
-    console.warn('Skipping daemon API route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('daemon API route tests')
     return
   }
   const db = createDenoDb()
@@ -883,7 +884,7 @@ test('POST /enroll rejects a raw machine-id shaped machineKey', async () => {
 
 test('POST /enroll returns 400 for malformed tpchallenge id', async () => {
   if (!dbUrl) {
-    console.warn('Skipping daemon API route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('daemon API route tests')
     return
   }
   const db = createDenoDb()

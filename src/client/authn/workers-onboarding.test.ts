@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { eq } from 'drizzle-orm'
 import { it } from '@std/testing/bdd'
 import { Hono } from 'hono'
@@ -183,7 +184,7 @@ async function cleanupUser(db: ReturnType<typeof createDenoDb>, email: string) {
 
 it('Workers password sign-up succeeds on a fresh database without install', async () => {
   if (!dbUrl) {
-    console.warn('Skipping Workers sign-up test: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('Workers sign-up test')
     return
   }
 
@@ -209,7 +210,7 @@ it('Workers password sign-up succeeds on a fresh database without install', asyn
 
 it('Workers duplicate sign-up is indistinguishable from a new sign-up', async () => {
   if (!dbUrl) {
-    console.warn('Skipping Workers duplicate sign-up test: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('Workers duplicate sign-up test')
     return
   }
 
@@ -259,7 +260,7 @@ it('Workers duplicate sign-up is indistinguishable from a new sign-up', async ()
 
 it('Workers sign-up creates an organization for the new user', async () => {
   if (!dbUrl) {
-    console.warn('Skipping Workers org sign-up test: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('Workers org sign-up test')
     return
   }
 
@@ -329,7 +330,7 @@ it('Workers sign-up creates an organization for the new user', async () => {
 
 it('Workers OTP auto-registration succeeds without install completion', async () => {
   if (!dbUrl) {
-    console.warn('Skipping Workers OTP test: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('Workers OTP test')
     return
   }
 
@@ -364,7 +365,7 @@ it('Workers OTP auto-registration succeeds without install completion', async ()
 
 it('Deno sign-up still requires install completion on a fresh database', async () => {
   if (!dbUrl) {
-    console.warn('Skipping Deno install gate test: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('Deno install gate test')
     return
   }
 
@@ -391,7 +392,7 @@ it('Deno sign-up still requires install completion on a fresh database', async (
 
 it('Deno status reflects email verification from resolved email settings', async () => {
   if (!dbUrl) {
-    console.warn('Skipping Deno email verification status test: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('Deno email verification status test')
     return
   }
 
@@ -420,7 +421,7 @@ it('Deno status reflects email verification from resolved email settings', async
 
 it('Deno sign-up auto-verifies when email delivery is not configured', async () => {
   if (!dbUrl) {
-    console.warn('Skipping Deno sign-up auto-verify test: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('Deno sign-up auto-verify test')
     return
   }
 
@@ -462,7 +463,7 @@ it('Deno sign-up auto-verifies when email delivery is not configured', async () 
 
 it('Deno sign-up rejects when verification is required but the queue is noop', async () => {
   if (!dbUrl) {
-    console.warn('Skipping Deno noop queue sign-up test: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('Deno noop queue sign-up test')
     return
   }
 
@@ -501,7 +502,7 @@ it('Deno sign-up rejects when verification is required but the queue is noop', a
 
 it('Workers sign-up leaves no org residue when verification email enqueue fails', async () => {
   if (!dbUrl) {
-    console.warn('Skipping Workers enqueue rollback test: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('Workers enqueue rollback test')
     return
   }
 
@@ -609,7 +610,7 @@ it('resolveSignupEnvOverrideFromContext prefers per-request platformEnv over cre
 
 it('Workers status, sign-up, and OTP auto-registration agree when DB signup is toggled', async () => {
   if (!dbUrl) {
-    console.warn('Skipping Workers signup toggle agreement test: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('Workers signup toggle agreement test')
     return
   }
 
@@ -702,7 +703,7 @@ it('Workers status, sign-up, and OTP auto-registration agree when DB signup is t
 
 it('Workers email queue follows DB Mailgun settings without a Worker restart', async () => {
   if (!dbUrl) {
-    console.warn('Skipping Workers email settings→queue test: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('Workers email settings→queue test')
     return
   }
 
@@ -774,7 +775,7 @@ it('Workers email queue follows DB Mailgun settings without a Worker restart', a
 
 it('Workers status answers 200 on a freshly migrated database', async () => {
   if (!dbUrl) {
-    console.warn('Skipping Workers status test: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('Workers status test')
     return
   }
   // CI's db shards run against a database migrated from scratch — the same

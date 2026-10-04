@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assertEquals } from '@std/assert'
 import { and, eq } from 'drizzle-orm'
 import { Hono } from 'hono'
@@ -92,7 +93,7 @@ async function withVariableFixtures(
   }) => Promise<void>
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn('Skipping variable route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('variable route tests')
     return
   }
 
