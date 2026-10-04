@@ -27,7 +27,10 @@
  * from anywhere in the metrics tree (Workers bundling included).
  */
 
-import { METRICS_SCHEMA_VERSION, type MetricsSampleInput } from '../../../contracts/metrics-contract.ts'
+import {
+  METRICS_SCHEMA_VERSION,
+  type MetricsSampleInput,
+} from '../../../contracts/metrics-contract.ts'
 import {
   type MetricsCapabilityPlanOverride,
   type MetricsCapabilityPlan,
@@ -352,7 +355,7 @@ function diagnostics(): NonNullable<MetricsSampleInput['diagnostics']> {
   }
 }
 
-const HOST_BASE_FAMILIES: HostedFamily[] = ['host.system', 'host.io']
+const HOST_BASE_FAMILIES: HostedFamily[] = ['host.system', 'host.io', 'host.network', 'host.web']
 
 function ids(count: number, prefix: string): string[] {
   return Array.from({ length: count }, (_, i) => `${prefix}${i}`)
@@ -385,7 +388,7 @@ function vmWithEvent(): RepresentativeMachineFixture {
     plan: plan('virtual'),
     slotMapping: emptySlotMapping({ normalNicSlots: ['eth0'] }),
     expectedFamilies: [...HOST_BASE_FAMILIES, 'oom_kill' as HostedFamily],
-    expectedRowCount: 3,
+    expectedRowCount: 5,
   }
 }
 
@@ -396,7 +399,7 @@ function oneNicVm(): RepresentativeMachineFixture {
     plan: plan('virtual'),
     slotMapping: emptySlotMapping({ normalNicSlots: ['eth0'] }),
     expectedFamilies: [...HOST_BASE_FAMILIES],
-    expectedRowCount: 2,
+    expectedRowCount: 4,
   }
 }
 
@@ -413,7 +416,7 @@ function twoNicVm(): RepresentativeMachineFixture {
       normalNicSlots: ['eth0', 'eth1'],
     }),
     expectedFamilies: [...HOST_BASE_FAMILIES],
-    expectedRowCount: 2,
+    expectedRowCount: 4,
   }
 }
 
@@ -433,7 +436,7 @@ function twoNicFabricVm(): RepresentativeMachineFixture {
       fabricDeviceIds: ['fabric0'],
     }),
     expectedFamilies: [...HOST_BASE_FAMILIES],
-    expectedRowCount: 2,
+    expectedRowCount: 4,
   }
 }
 
@@ -454,7 +457,7 @@ function oneGpuVm(): RepresentativeMachineFixture {
       gpuPageOrder: ['gpu0'],
     }),
     expectedFamilies: [...HOST_BASE_FAMILIES, 'gpu'],
-    expectedRowCount: 3,
+    expectedRowCount: 5,
   }
 }
 
@@ -479,7 +482,7 @@ function webVm(): RepresentativeMachineFixture {
     slotMapping: emptySlotMapping({
       normalNicSlots: ['eth0', 'eth1'],
     }),
-    expectedFamilies: [...HOST_BASE_FAMILIES, 'managed.ingress', 'managed.router'],
+    expectedFamilies: [...HOST_BASE_FAMILIES],
     expectedRowCount: 4,
   }
 }
@@ -502,7 +505,7 @@ function webGpuVm(): RepresentativeMachineFixture {
       normalNicSlots: ['eth0', 'eth1'],
       gpuPageOrder: ['gpu0'],
     }),
-    expectedFamilies: [...HOST_BASE_FAMILIES, 'gpu', 'managed.ingress', 'managed.router'],
+    expectedFamilies: [...HOST_BASE_FAMILIES, 'gpu'],
     expectedRowCount: 5,
   }
 }
@@ -520,7 +523,7 @@ function dbOnlyVm(): RepresentativeMachineFixture {
       normalNicSlots: ['eth0', 'eth1'],
     }),
     expectedFamilies: [...HOST_BASE_FAMILIES],
-    expectedRowCount: 2,
+    expectedRowCount: 4,
   }
 }
 
@@ -539,8 +542,8 @@ function dbProxySqlVm(): RepresentativeMachineFixture {
     slotMapping: emptySlotMapping({
       normalNicSlots: ['eth0', 'eth1'],
     }),
-    expectedFamilies: [...HOST_BASE_FAMILIES, 'managed.database_proxy'],
-    expectedRowCount: 3,
+    expectedFamilies: [...HOST_BASE_FAMILIES, 'managed.database'],
+    expectedRowCount: 5,
   }
 }
 
@@ -562,7 +565,7 @@ function bareMetalLowSignals(): RepresentativeMachineFixture {
       hardwareSignalPageOrder: [...signalIds].sort((a, b) => a.localeCompare(b)),
     }),
     expectedFamilies: [...HOST_BASE_FAMILIES, 'hardware.physical'],
-    expectedRowCount: 3,
+    expectedRowCount: 5,
   }
 }
 
@@ -590,7 +593,7 @@ function bareMetalGpu(): RepresentativeMachineFixture {
       hardwareSignalPageOrder: sorted(signalIds),
     }),
     expectedFamilies: [...HOST_BASE_FAMILIES, 'gpu', 'hardware.physical'],
-    expectedRowCount: 4,
+    expectedRowCount: 6,
   }
 }
 
@@ -612,7 +615,7 @@ function fourNic(): RepresentativeMachineFixture {
       normalNicSlots: ['eth0', 'eth1', ...extra],
     }),
     expectedFamilies: [...HOST_BASE_FAMILIES, 'network'],
-    expectedRowCount: 3,
+    expectedRowCount: 5,
   }
 }
 
@@ -633,7 +636,7 @@ function eightNic(): RepresentativeMachineFixture {
       normalNicSlots: ['eth0', 'eth1', ...extra],
     }),
     expectedFamilies: [...HOST_BASE_FAMILIES, 'network', 'network'],
-    expectedRowCount: 4,
+    expectedRowCount: 6,
   }
 }
 
@@ -655,7 +658,7 @@ function sixteenGpu(): RepresentativeMachineFixture {
       gpuPageOrder: [...gpuIds].sort((a, b) => a.localeCompare(b)),
     }),
     expectedFamilies: [...HOST_BASE_FAMILIES, ...new Array(6).fill('gpu')],
-    expectedRowCount: 8,
+    expectedRowCount: 10,
   }
 }
 
@@ -689,10 +692,10 @@ function twentyFourBlockDevices(): RepresentativeMachineFixture {
     }),
     expectedFamilies: [
       ...HOST_BASE_FAMILIES,
-      ...new Array(12).fill('block'),
+      ...new Array(8).fill('block'),
       ...new Array(2).fill('hardware.physical'),
     ],
-    expectedRowCount: 16,
+    expectedRowCount: 14,
   }
 }
 
@@ -714,7 +717,7 @@ function twelveExtraFilesystems(): RepresentativeMachineFixture {
       filesystemPageOrder: [...filesystemIds].sort((a, b) => a.localeCompare(b)),
     }),
     expectedFamilies: [...HOST_BASE_FAMILIES, 'filesystem', 'filesystem'],
-    expectedRowCount: 4,
+    expectedRowCount: 6,
   }
 }
 
@@ -738,8 +741,8 @@ function largeCpuRam(): RepresentativeMachineFixture {
     slotMapping: emptySlotMapping({
       normalNicSlots: ['eth0', 'eth1'],
     }),
-    expectedFamilies: [...HOST_BASE_FAMILIES, 'host.diagnostics'],
-    expectedRowCount: 3,
+    expectedFamilies: [...HOST_BASE_FAMILIES],
+    expectedRowCount: 4,
   }
 }
 
@@ -774,12 +777,7 @@ function managedStorageHost(): RepresentativeMachineFixture {
       filesystemPageOrder: ['fs-hosting', 'fs-backup', 'fs-logs'],
     }),
     // Three filesystems fit one 9-per-page `filesystem` row (2 fields wide).
-    expectedFamilies: [
-      ...HOST_BASE_FAMILIES,
-      'filesystem',
-      'managed.storage',
-      'managed.docker',
-    ],
+    expectedFamilies: [...HOST_BASE_FAMILIES, 'filesystem'],
     expectedRowCount: 5,
   }
 }
@@ -803,8 +801,8 @@ function managedStorageHostDockerOff(): RepresentativeMachineFixture {
     }),
     plan: plan('virtual', { managedDockerEnabled: false }),
     slotMapping: emptySlotMapping({ normalNicSlots: ['eth0'] }),
-    expectedFamilies: [...HOST_BASE_FAMILIES, 'managed.storage'],
-    expectedRowCount: 3,
+    expectedFamilies: [...HOST_BASE_FAMILIES],
+    expectedRowCount: 4,
   }
 }
 

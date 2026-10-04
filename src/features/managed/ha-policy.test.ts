@@ -4,6 +4,7 @@ import {
   automaticFailoverBlockedReason,
   isAutomaticFailoverCandidate,
   isAutomaticFailoverClassMember,
+  orchestratorBindingRejection,
   orchestratorPromotionRule,
   pickAutomaticFailoverCandidate,
   pickHaAdvertiseAddress,
@@ -413,4 +414,53 @@ test('automaticFailoverCoolingDown: 15 minutes from the last accepted failover',
   assertEquals(automaticFailoverCoolingDown('2026-10-01T11:50:00Z', now), true)
   assertEquals(automaticFailoverCoolingDown('2026-10-01T11:45:00Z', now), false)
   assertEquals(automaticFailoverCoolingDown('not-a-date', now), false)
+})
+
+const BOUND_PRIMARY = { host: '10.0.0.5', port: 3306 }
+
+test('orchestratorBindingRejection: the current primary proceeds', () => {
+  assertEquals(
+    orchestratorBindingRejection({
+      reporterBindsInstance: true,
+      instanceHost: '10.0.0.5',
+      instancePort: 3306,
+      expectedPrimary: BOUND_PRIMARY,
+    }),
+    null
+  )
+})
+
+test('orchestratorBindingRejection: another host, another port, or no primary address is stale', () => {
+  const base = { reporterBindsInstance: true, expectedPrimary: BOUND_PRIMARY }
+  assertEquals(
+    typeof orchestratorBindingRejection({ ...base, instanceHost: '10.0.0.6', instancePort: 3306 }),
+    'string'
+  )
+  assertEquals(
+    typeof orchestratorBindingRejection({ ...base, instanceHost: '10.0.0.5', instancePort: 3307 }),
+    'string'
+  )
+  assertEquals(
+    typeof orchestratorBindingRejection({
+      ...base,
+      instanceHost: '10.0.0.5',
+      instancePort: 3306,
+      expectedPrimary: null,
+    }),
+    'string'
+  )
+})
+
+test('orchestratorBindingRejection: a missing instance is legacy only for a daemon without the feature', () => {
+  assertEquals(
+    orchestratorBindingRejection({ reporterBindsInstance: false, expectedPrimary: BOUND_PRIMARY }),
+    null
+  )
+  assertEquals(
+    typeof orchestratorBindingRejection({
+      reporterBindsInstance: true,
+      expectedPrimary: BOUND_PRIMARY,
+    }),
+    'string'
+  )
 })

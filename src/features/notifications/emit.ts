@@ -205,9 +205,15 @@ export async function emitNotification(
   }
 }
 
+/** Email, chat and webhook channels can wait for a window (push is the store apps'; an unverified address gets nothing). */
+function canHoldFor(channel: NotificationChannelRecord): boolean {
+  if (channel.kind === 'push') return false
+  return channel.kind !== 'email' || channel.verifiedAt !== null
+}
+
 /**
- * The channels that should wait rather than send now: a verified email channel
- * with a digest cadence, or one inside its quiet hours, for an event that is
+ * The channels that should wait rather than send now: a verified email, chat or
+ * webhook channel with a digest cadence, or one inside its quiet hours, for an event that is
  * not urgent. An urgent event (outage, anything security-related) is never held
  * and the bell is never touched — only the external send waits.
  */
@@ -219,8 +225,7 @@ async function heldChannelIds(
 ): Promise<Set<string>> {
   if (eventIsUrgent(event)) return new Set()
   const candidates = channels.filter(
-    (c) =>
-      c.kind === 'email' && c.verifiedAt !== null && (c.digestCadence !== null || c.quiet !== null)
+    (c) => canHoldFor(c) && (c.digestCadence !== null || c.quiet !== null)
   )
   if (candidates.length === 0) return new Set()
   const zones = await channelTimeZones(db, candidates)

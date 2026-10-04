@@ -52,6 +52,7 @@ import { registerOrganizationPrincipalDefaultsRoutes } from './organizations/pri
 import { registerPhpModeRoutes } from './hostings/php-mode-routes.ts'
 import { registerOrganizationRoutes } from './organizations/routes.ts'
 import { registerOrganizationSessionGuards } from './organizations/session-guards.ts'
+import { registerComposeRemoteBuildSourcesRoutes } from './organizations/compose-remote-build-sources-routes.ts'
 import { registerReauthSettingsRoutes } from './organizations/reauth-settings-routes.ts'
 import { registerOrganizationFirewallRoutes } from './organizations/firewall-routes.ts'
 import { registerWorkspaceRoutes } from './workspaces/routes.ts'
@@ -120,6 +121,7 @@ export function registerClientRoutes(app: Hono<AppEnv>, opts: ClientRouteOpts) {
   registerOrganizationPrincipalDefaultsRoutes(client, opts)
   if (opts.secrets) registerOrganizationSessionGuards(client, opts.secrets)
   registerOrganizationRoutes(client, opts)
+  registerComposeRemoteBuildSourcesRoutes(client)
   registerOrganizationMemberRoutes(client, opts)
   registerReauthSettingsRoutes(client, opts)
   registerOrganizationFirewallRoutes(client, opts)

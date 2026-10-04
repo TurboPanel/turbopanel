@@ -601,3 +601,35 @@ test('reconcileHostingsFromCompose retires a renamed service row before insertin
     [SVC_OTHER]
   )
 })
+
+test('reconcileHostingsFromCompose leaves a stale row in place when a later route is rejected', async () => {
+  const db = createReconcileDb({
+    hostingRows: [
+      {
+        id: 'host-old',
+        serviceId: SVC_WEB,
+        metadata: composeOwnedMetadata('web', ROUTE),
+        options: { hostnames: [HOSTNAME] },
+      },
+    ],
+  })
+  const result = await reconcileHostingsFromCompose(db, {
+    organizationId: ORG_ID,
+    environmentId: ENV_ID,
+    merged: composeDoc({
+      other: hostingService([
+        {
+          hostname: 'next.example.test',
+          tls: { mode: 'certificate', certificateRef: 'missing-cert' },
+        },
+      ]),
+    }),
+    serviceRows: [{ id: SVC_OTHER, composeServiceName: 'other' }],
+  })
+  assertEquals(result.ok, false)
+  // The old row was retired before the rejected route; the rollback restored it.
+  assertEquals(
+    db.rows(hosting).map((row) => row.id),
+    ['host-old']
+  )
+})

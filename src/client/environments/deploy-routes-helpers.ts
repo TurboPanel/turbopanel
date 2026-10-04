@@ -283,12 +283,23 @@ function mapComposeUnsupportedError(
 function mapComposeBuildRefusedError(
   prepared: Extract<DeployPrepareError, { kind: 'compose_build_refused' }>
 ): PrepareErrorResponse {
+  const onlyRemote = prepared.issues.every((issue) => issue.code === 'build_remote_source_refused')
+  if (onlyRemote) {
+    return {
+      status: 422,
+      body: {
+        error: 'compose_build_refused',
+        issues: prepared.issues,
+        message: `This compose document builds from a remote source (${composeIssuePaths(prepared.issues)}), and remote build sources are off for this organization. An organization owner can turn them on under Manage Organization → Compose, or point the build at a folder in the project instead.`,
+      },
+    }
+  }
   return {
     status: 422,
     body: {
       error: 'compose_build_refused',
       issues: prepared.issues,
-      message: `This compose document builds with options no deploy may use: ${composeIssuePaths(prepared.issues)}. Each issue carries its rule's code. There is no organization setting that allows them; remove them and deploy again.`,
+      message: `This compose document builds with options no deploy may use: ${composeIssuePaths(prepared.issues)}. Each issue carries its rule's code. Remove them and deploy again (only a public remote build source can be allowed, by an organization owner).`,
     },
   }
 }
@@ -836,10 +847,10 @@ export function buildSitesForDeploy(
   sites: EnvironmentDeploySite[],
   hostings: EnvironmentDeployHosting[],
   used: Set<number> = new Set<number>(),
-  environmentId = ''
+  uniqueKey?: string
 ): EnvironmentDeploySite[] {
   return attachWebMetadataToSites(
-    assignSiteListenPorts(sites, preferredListenPortsFromHostings(hostings), used, environmentId),
+    assignSiteListenPorts(sites, preferredListenPortsFromHostings(hostings), used, uniqueKey),
     hostings
   )
 }

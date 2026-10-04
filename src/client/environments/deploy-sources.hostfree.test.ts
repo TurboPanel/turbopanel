@@ -295,6 +295,7 @@ test('preview resolves a generic-git binding from the source default branch', as
     fakeDb([[sourceRow({ subdirectory: 'apps/web' })], []]),
     baseParams({
       services: sourcedService({
+        installCommand: 'pnpm install --frozen-lockfile',
         buildCommand: 'pnpm build',
         startCommand: 'pnpm start',
         outputDirectory: 'dist',
@@ -314,6 +315,7 @@ test('preview resolves a generic-git binding from the source default branch', as
   assertEquals(result[0]?.subdirectory, 'apps/web')
   assertEquals(result[0]?.build, {
     kind: 'railpack',
+    installCommand: 'pnpm install --frozen-lockfile',
     buildCommand: 'pnpm build',
     startCommand: 'pnpm start',
     outputDirectory: 'dist',

@@ -29,7 +29,7 @@ src/features/billing/
 └── test-clock.ts         /v1/test_helpers/test_clocks, for the live harness only
 
 src/features/tiers/ladder.ts                the S1…S7 + SX ladder: what a label entitles (the one matrix)
-src/features/tiers/assignment.ts            the greedy server → tier assignment (pure)
+src/features/tiers/assignment.ts            the greedy + swap server → tier assignment (pure)
 src/features/tiers/assignment-records.ts    reads seats + licensed servers, writes `server.assigned_tier_id`
 src/features/tiers/self-hosted-grant.ts     what a self-hosted organization is entitled to: one SX unit per licence (pure)
 src/features/tiers/self-hosted-grant-records.ts  the grant's `setting` row + the grow-on-self-hosted / shrink-only rule
@@ -171,7 +171,12 @@ chosen: `src/features/tiers/assignment.ts` takes the servers in bind order (olde
 first), gives each the smallest purchased tier whose rank covers its need
 (unknown hardware needs the entry rank), and leaves the newest uncovered when
 nothing fits. Incumbents are placed before any newcomer, so adding hardware can
-never move a covered server onto nothing. `assignment-records.ts` writes the
+never move a covered server onto nothing. A swap pass then runs on top: a
+server whose recommended tier (monitored NIC / drive / GPU slots) is above its
+placed tier trades seats with a server holding a higher one whose required and
+recommended tiers are both at or below the first server's placed tier, so spare
+big seats go where they are recommended and no server drops below its required
+tier. `assignment-records.ts` writes the
 result to `server.assigned_tier_id` after every projection and mutation, on
 every hardware report, on enroll, on delete and on revoke; ingest and the
 capability plan read the column.

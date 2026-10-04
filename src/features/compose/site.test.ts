@@ -227,3 +227,14 @@ test('an unknown sourceKind is dropped rather than carried', () => {
   // tree rather than creating a principal-writable one.
   assertEquals(sites[0]?.sourceKind, undefined)
 })
+
+test('allocateSiteListenPort probes past ports other environments hold, deterministically', () => {
+  const first = allocateSiteListenPort('site', new Set<number>(), undefined, 'env-a')
+  // Another environment on the same server already holds the hashed port.
+  const taken = new Set<number>([first])
+  const second = allocateSiteListenPort('site', taken, undefined, 'env-a')
+  assertEquals(second === first, false)
+  assertEquals(second, first + 1 > 18_999 ? 18_080 : first + 1)
+  // Same ledger, same answer.
+  assertEquals(allocateSiteListenPort('site', new Set<number>([first]), undefined, 'env-a'), second)
+})

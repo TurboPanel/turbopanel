@@ -105,8 +105,8 @@ export function escapeSqlString(value: string): string {
 }
 
 /**
- * Open (or create) the current DuckDB metrics store (schema marker 6).
- * A missing, corrupt, or non-current sidecar marker discards
+ * Open (or create) the current DuckDB metrics store (schema marker 9).
+ * Any missing, corrupt, or non-current sidecar marker discards
  * `metrics.duckdb`, `parquet/`, `tmp/`, and `schema-version` before this
  * open creates the current layout. There is no in-place migration.
  */
@@ -154,7 +154,7 @@ export async function openDuckDb(options: OpenDuckDbOptions): Promise<DuckDbHand
 
 /**
  * Current-version-only gate: anything other than
- * {@link DUCKDB_SCHEMA_MARKER_VERSION} (6) is discarded, including a missing
+ * {@link DUCKDB_SCHEMA_MARKER_VERSION} (9) is discarded, including a missing
  * or corrupt marker next to leftover `metrics.duckdb` / Parquet files.
  */
 async function discardNonCurrentMetricsStore(paths: DuckDbPaths): Promise<void> {

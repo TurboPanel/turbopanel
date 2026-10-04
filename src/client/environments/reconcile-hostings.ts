@@ -35,7 +35,7 @@
  * untouched, which is what makes this additive rather than a migration.
  */
 
-import { forEachSequential } from '../../lib/sequential.ts'
+import { firstSequential, forEachSequential } from '../../lib/sequential.ts'
 import { eq, inArray } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import {
@@ -700,12 +700,35 @@ async function pruneOrphanedComposeRows(
  */
 export async function reconcileHostingsFromCompose(
   db: Db,
-  params: {
-    organizationId: string
-    environmentId: string
-    merged: ComposeDocument
-    serviceRows: ReadonlyArray<{ id: string; composeServiceName: string }>
+  params: ReconcileHostingsParams
+): Promise<ComposeHostingReconcileResult> {
+  // One transaction: a rejected route rolls back the stale-row retirement that
+  // ran before it, so a refused deploy leaves every hosting row as it was.
+  try {
+    return await db.transaction((tx) => reconcileHostingsInTransaction(tx, params))
+  } catch (err) {
+    if (err instanceof HostingReconcileRejected) return { ok: false, error: err.error }
+    throw err
   }
+}
+
+type ReconcileHostingsParams = {
+  organizationId: string
+  environmentId: string
+  merged: ComposeDocument
+  serviceRows: ReadonlyArray<{ id: string; composeServiceName: string }>
+}
+
+/** Thrown inside the transaction to roll it back; carries the refusal out. */
+class HostingReconcileRejected extends Error {
+  constructor(readonly error: ComposeHostingError) {
+    super('hosting reconcile rejected')
+  }
+}
+
+async function reconcileHostingsInTransaction(
+  db: Db,
+  params: ReconcileHostingsParams
 ): Promise<ComposeHostingReconcileResult> {
   const routes = collectDeclaredRoutes(params.merged)
   const { composeOwned: existingRows, panelAuthored } = await loadEnvironmentHostingRows(
@@ -772,10 +795,8 @@ export async function reconcileHostingsFromCompose(
   }
   const staleIds = new Set(staleRows.map((row) => row.id))
 
-  for (const route of routes) {
-    const error = await reconcileDeclaredRoute(db, route, ctx)
-    if (error) return { ok: false, error }
-  }
+  const rejection = await firstSequential(routes, (route) => reconcileDeclaredRoute(db, route, ctx))
+  if (rejection) throw new HostingReconcileRejected(rejection)
 
   const late = await pruneOrphanedComposeRows(
     db,

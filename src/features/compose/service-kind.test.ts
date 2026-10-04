@@ -312,11 +312,16 @@ test('serviceKind node parses with its framework and version hints', () => {
     serviceKind: 'node',
     framework: 'next',
     nodeVersion: '24.17.0',
-    source: { sourceId: NODE_SOURCE_ID, startCommand: 'node server.js' },
+    source: {
+      sourceId: NODE_SOURCE_ID,
+      installCommand: 'corepack pnpm install --frozen-lockfile',
+      startCommand: 'node server.js',
+    },
   })
   assertEquals(parsed?.serviceKind, 'node')
   assertEquals(parsed?.framework, 'next')
   assertEquals(parsed?.nodeVersion, '24.17.0')
+  assertEquals(parsed?.source?.installCommand, 'corepack pnpm install --frozen-lockfile')
   assertEquals(parsed?.source?.startCommand, 'node server.js')
 })
 

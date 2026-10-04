@@ -342,6 +342,12 @@ export type FirewallReconcileCommandResult = {
    */
   confirmation?: FirewallPendingConfirmation
   /**
+   * Set when the host's guard rolled a ruleset back and nothing has been
+   * confirmed since (only while no ruleset is pending). Lets the control plane
+   * report "rolled back" without ever asking.
+   */
+  lastRollback?: FirewallLastRollback
+  /**
    * The kernel's verdict on the rendered ruleset when this result did not
    * apply it (observe, or a refused apply): `iptables-restore --test`, nothing
    * loaded. Absent when the rules were loaded.
@@ -381,11 +387,29 @@ export type FirewallRendered = {
  * A ruleset that was applied and is waiting to be confirmed (commit-confirm).
  */
 export type FirewallPendingConfirmation = {
-  state: 'pending'
+  /**
+   * `pending`: loaded, rolls back at `deadlineAt` unless confirmed.
+   * `confirmed`: the daemon confirmed its own change (see `autoConfirm`).
+   */
+  state: 'pending' | 'confirmed'
   /** ISO time after which the host's root guard rolls the ruleset back. */
   deadlineAt: string
   /** The confirm window the host armed, in seconds. */
   windowSeconds: number
+  /**
+   * The daemon's own confirm attempt: after the rules went live it made an
+   * authenticated round trip to the control plane and, if that worked,
+   * confirmed. `ok: false` means it did nothing and the host rolls back at
+   * `deadlineAt`. `reason` says why, in plain words.
+   */
+  autoConfirm?: { ok: boolean; reason: string }
+}
+
+/** The host guard's record of an undone ruleset. */
+export type FirewallLastRollback = {
+  digest: string
+  at: string
+  restored: 'durable' | 'none' | 'open'
 }
 
 /**
@@ -955,6 +979,9 @@ export function parseFirewallReconcileResult(value: unknown): FirewallReconcileC
     ...(value.confirmation === undefined
       ? {}
       : { confirmation: parseFirewallPendingConfirmation(value.confirmation) }),
+    ...(value.lastRollback === undefined
+      ? {}
+      : { lastRollback: parseFirewallLastRollback(value.lastRollback) }),
     ...(value.validation === undefined
       ? {}
       : { validation: parseFirewallValidation(value.validation) }),
@@ -998,9 +1025,30 @@ function parseFirewallRendered(value: unknown): FirewallRendered {
   return rendered
 }
 
+function parseFirewallLastRollback(value: unknown): FirewallLastRollback {
+  if (
+    !isRecord(value) ||
+    !isString(value.digest) ||
+    !/^[a-f0-9]{64}$/.test(value.digest) ||
+    !isString(value.at) ||
+    Number.isNaN(Date.parse(value.at)) ||
+    (value.restored !== 'durable' && value.restored !== 'none' && value.restored !== 'open')
+  ) {
+    throw new Error('lastRollback must be a rollback record')
+  }
+  return { digest: value.digest, at: value.at, restored: value.restored }
+}
+
+function parseFirewallAutoConfirm(value: unknown): { ok: boolean; reason: string } {
+  if (!isRecord(value) || typeof value.ok !== 'boolean' || !isString(value.reason)) {
+    throw new Error('confirmation.autoConfirm must be { ok, reason }')
+  }
+  return { ok: value.ok, reason: value.reason }
+}
+
 function parseFirewallPendingConfirmation(value: unknown): FirewallPendingConfirmation {
-  if (!isRecord(value) || value.state !== 'pending') {
-    throw new Error('confirmation must be a pending confirmation')
+  if (!isRecord(value) || (value.state !== 'pending' && value.state !== 'confirmed')) {
+    throw new Error('confirmation must be a pending or confirmed confirmation')
   }
   if (!isString(value.deadlineAt) || Number.isNaN(Date.parse(value.deadlineAt))) {
     throw new TypeError('confirmation.deadlineAt must be an ISO time')
@@ -1014,9 +1062,12 @@ function parseFirewallPendingConfirmation(value: unknown): FirewallPendingConfir
     throw new Error('confirmation.windowSeconds must be an integer from 1 to 3600')
   }
   return {
-    state: 'pending',
+    state: value.state,
     deadlineAt: value.deadlineAt,
     windowSeconds: value.windowSeconds,
+    ...(value.autoConfirm === undefined
+      ? {}
+      : { autoConfirm: parseFirewallAutoConfirm(value.autoConfirm) }),
   }
 }
 
@@ -2056,6 +2107,12 @@ export type EnvironmentDeployDockerNetwork = {
  */
 export type EnvironmentDeployHostAccess = {
   hostLevelApproved?: boolean
+  /**
+   * True only when the organization allows a build to fetch its source from a
+   * public remote (a URL or git `build.context`). Absent reads as `false`; the
+   * daemon then refuses such a context. Internal hosts are refused either way.
+   */
+  remoteBuildSourcesApproved?: boolean
 }
 
 export type EnvironmentDeployCommandPayload = EnvironmentDeployHostAccess & {
@@ -3909,6 +3966,7 @@ export function parseEnvironmentDeployPayload(value: unknown): EnvironmentDeploy
       healthTimeoutSeconds: parseHealthTimeoutField(value.healthTimeoutSeconds),
       keepRunningServices: parseKeepRunningField(value.keepRunningServices),
       hostLevelApproved: parseOptionalDeployBoolean(value.hostLevelApproved),
+      remoteBuildSourcesApproved: parseOptionalDeployBoolean(value.remoteBuildSourcesApproved),
       tlsMaterial: parseDeployTlsMaterial(value.tlsMaterial),
       variableMaterial: parseDeployVariableMaterial(value.variableMaterial),
       envFile: parseDeployEnvFile(value.envFile),

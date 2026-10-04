@@ -95,7 +95,7 @@ export function allocateSiteListenPort(
   composeServiceName: string,
   used: Set<number>,
   preferred?: number,
-  environmentId = ''
+  uniqueKey?: string
 ): number {
   if (
     preferred !== undefined &&
@@ -109,7 +109,7 @@ export function allocateSiteListenPort(
   }
 
   return allocateHashedPort(
-    `${environmentId}\0${composeServiceName}`,
+    `${uniqueKey ?? ''}\0${composeServiceName}`,
     used,
     LISTEN_PORT_BASE,
     LISTEN_PORT_SPAN,
@@ -217,11 +217,11 @@ export function splitSiteServices(
  */
 function assignBackendPorts<
   T extends { composeServiceName: string; engine?: string; backendPort?: number },
->(sites: readonly T[], used: Set<number>, environmentId = ''): T[] {
+>(sites: readonly T[], used: Set<number>, uniqueKey = ''): T[] {
   return sites.map((site) => {
     const { backendPort: _stale, ...rest } = site
     if (site.engine !== NGINX_APACHE_ENGINE) return rest as T
-    const key = `${environmentId}/${site.composeServiceName}${BACKEND_PORT_SEED}`
+    const key = `${uniqueKey}/${site.composeServiceName}${BACKEND_PORT_SEED}`
     return {
       ...rest,
       backendPort: allocateHashedPort(key, used, BACKEND_PORT_BASE, BACKEND_PORT_SPAN, 'backend'),
@@ -240,8 +240,8 @@ export function emptyContainerComposeYaml(): string {
  *
  * `used` is shared with the native-app allocator for the same reason
  * {@link splitSiteServices} shares it — one loopback ledger per
- * deploy, not one per lane. `environmentId` seeds Apache's backend port (see
- * {@link assignBackendPorts}).
+ * deploy, not one per lane. `uniqueKey` is the environment id; it also seeds
+ * Apache's backend port (see {@link assignBackendPorts}).
  */
 export function assignSiteListenPorts<
   T extends {
@@ -254,7 +254,7 @@ export function assignSiteListenPorts<
   sites: readonly T[],
   preferredListenPortByService: ReadonlyMap<string, number> = new Map(),
   used: Set<number> = new Set<number>(),
-  environmentId = ''
+  uniqueKey?: string
 ): T[] {
   const sorted = [...sites].sort((a, b) => a.composeServiceName.localeCompare(b.composeServiceName))
   const listening = sorted.map((site) => ({
@@ -263,8 +263,8 @@ export function assignSiteListenPorts<
       site.composeServiceName,
       used,
       preferredListenPortByService.get(site.composeServiceName),
-      environmentId
+      uniqueKey
     ),
   }))
-  return assignBackendPorts(listening, used, environmentId)
+  return assignBackendPorts(listening, used, uniqueKey)
 }

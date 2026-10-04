@@ -1391,6 +1391,8 @@ async function runOptionalCronPhases(
       phasesSkipped,
       async () => {
         await sendDueDigests(db, {
+          secrets: tlsRenewal?.dataEncryptionSecrets,
+          allowPrivateTargets: true,
           email: await workersNotificationEmail(env, db, tlsRenewal),
         })
       }

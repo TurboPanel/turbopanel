@@ -113,7 +113,7 @@ test('parseDefaultEnvironmentNameInput rejects invalid values', () => {
 
 test('resolveDefaultEnvironmentName uses option or Production fallback', () => {
   assertEquals(resolveDefaultEnvironmentName({ defaultEnvironmentName: 'Staging' }), 'Staging')
-  assertEquals(resolveDefaultEnvironmentName({}), 'Production')
+  assertEquals(resolveDefaultEnvironmentName({}), 'production')
 })
 
 test('isUnlimitedMaxServers for omitted and null', () => {

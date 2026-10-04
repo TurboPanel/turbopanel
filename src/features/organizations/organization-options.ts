@@ -26,7 +26,7 @@ import {
 import { parsePhpModes, type PhpMode } from '../hostings/php-mode.ts'
 
 /** Platform fallback when `defaultEnvironmentName` is unset. */
-export const DEFAULT_ENVIRONMENT_NAME = 'Production'
+export const DEFAULT_ENVIRONMENT_NAME = 'production'
 
 /** Display unit for temperature metrics (chart axes, tooltips, thresholds). */
 export type TemperatureUnit = 'celsius' | 'fahrenheit'
@@ -53,7 +53,7 @@ export type OrganizationOptions = {
   maxServers?: number | null
   /**
    * Org-wide name used for the environment scaffolded with every new project.
-   * Platform fallback is {@link DEFAULT_ENVIRONMENT_NAME} (`Production`).
+   * Platform fallback is {@link DEFAULT_ENVIRONMENT_NAME} (`production`).
    */
   defaultEnvironmentName?: string
   /**
@@ -143,6 +143,14 @@ export type OrganizationOptions = {
    * this on explicitly; it is not a per-field allowlist.
    */
   composeGatedFieldsEnabled?: boolean
+  /**
+   * Whether a Compose build may fetch its source from a public remote: a
+   * `build.context` that is a URL or git repository. Off by default, because
+   * the fetched tree (and anything a Dockerfile it contains pulls in) was never
+   * seen by a project member's reviewers. Internal hosts stay refused either
+   * way. Dockerfile `ADD http(s)://` lines are not read by the control plane.
+   */
+  composeRemoteBuildSourcesEnabled?: boolean
   /**
    * Whether services in this organization may carry `preDeployCommand` /
    * `postDeployCommand`. Off by default: a hook is arbitrary shell authored
@@ -269,6 +277,15 @@ function assignDocker(options: OrganizationOptions, value: Record<string, unknow
   }
 }
 
+function assignComposeOptIns(options: OrganizationOptions, value: Record<string, unknown>): void {
+  if (typeof value.composeGatedFieldsEnabled === 'boolean') {
+    options.composeGatedFieldsEnabled = value.composeGatedFieldsEnabled
+  }
+  if (typeof value.composeRemoteBuildSourcesEnabled === 'boolean') {
+    options.composeRemoteBuildSourcesEnabled = value.composeRemoteBuildSourcesEnabled
+  }
+}
+
 function assignRequireReauth(options: OrganizationOptions, value: Record<string, unknown>): void {
   if (typeof value.requireReauthForDestructive === 'boolean') {
     options.requireReauthForDestructive = value.requireReauthForDestructive
@@ -314,9 +331,7 @@ export function parseOrganizationOptions(value: unknown): OrganizationOptions {
     options.acmeEnabled = value.acmeEnabled
   }
   assignRequireReauth(options, value)
-  if (typeof value.composeGatedFieldsEnabled === 'boolean') {
-    options.composeGatedFieldsEnabled = value.composeGatedFieldsEnabled
-  }
+  assignComposeOptIns(options, value)
   if (typeof value.deployHooksEnabled === 'boolean') {
     options.deployHooksEnabled = value.deployHooksEnabled
   }
@@ -414,4 +429,9 @@ export function parseTemperatureUnitInput(
     return { ok: true, value: value as TemperatureUnit }
   }
   return { ok: false }
+}
+
+/** Effective remote-build-sources posture: off (deny) unless the org opted in. */
+export function resolveComposeRemoteBuildSourcesEnabled(options: OrganizationOptions): boolean {
+  return options.composeRemoteBuildSourcesEnabled ?? false
 }

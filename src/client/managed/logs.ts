@@ -9,6 +9,7 @@ import {
 import { cellTrace } from '../../lib/logger.ts'
 import { loadServerStatusRecords } from '../servers/update-status.ts'
 import type { Db } from '../../db/connection.ts'
+import { SERVER_OFFLINE_BODY } from './context.ts'
 
 const LOGS_TIMEOUT_MS = 20_000
 const DEFAULT_TAIL = 200
@@ -44,7 +45,7 @@ export async function fetchManagedLogs(
     serverId: string
     managedId: string
     tail: number
-  },
+  }
 ): Promise<{ logs: string } | Response> {
   const registry = getDaemonCellRegistry(c)
   if (!registry) {
@@ -54,7 +55,7 @@ export async function fetchManagedLogs(
   const records = await loadServerStatusRecords(db, registry, [params.serverId])
   const live = records[0]
   if (!live?.connected) {
-    return c.json({ error: 'server_offline' }, 409)
+    return c.json(SERVER_OFFLINE_BODY, 409)
   }
 
   const requestId = generateRequestId()
@@ -74,10 +75,9 @@ export async function fetchManagedLogs(
   })
 
   try {
-    const record = await registry.getCell(params.serverId).createRequestAndWait(
-      envelope,
-      LOGS_TIMEOUT_MS,
-    )
+    const record = await registry
+      .getCell(params.serverId)
+      .createRequestAndWait(envelope, LOGS_TIMEOUT_MS)
 
     if (record.status === 'expired') {
       cellTrace('request-result', {
