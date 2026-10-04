@@ -57,6 +57,7 @@ import { enforceAuthRateLimit } from '../authn/http.ts'
 import { isPostgresUniqueViolation, isUniqueViolationOn } from '../../db/unique-violation.ts'
 import { resolveGitProvider, type RepositorySummary } from '../../features/git/git-provider.ts'
 import { canonicalizeRepositoryUrl } from '../../features/git/clone-url.ts'
+import { connectionHostsRepositoryUrl } from '../../features/git/forge-clone-host.ts'
 import { forgeFetch } from '../../features/git/forge-url.ts'
 import { fetchPublicGithubDefaultBranch } from '../../features/git/github-provider.ts'
 import {
@@ -295,6 +296,30 @@ export async function assertConnectionInOrganization(
     return c.json({ error: 'source_installation_provider_mismatch' }, 400)
   }
   return null
+}
+
+/**
+ * A connection-bound repository must live on its forge's host: the credential
+ * minted through the connection is sent to whatever host the URL names, so a
+ * URL on any other host would hand it to a server the forge does not control.
+ * Checked at every write that can set the pair (create, attach, patch) and
+ * again when the credential is minted.
+ */
+export async function assertRepositoryUrlOnConnectionForge(
+  c: Context<AppEnv>,
+  db: Db,
+  connectionId: string | null,
+  repositoryUrl: string
+): Promise<Response | null> {
+  if (!connectionId) return null
+  if (await connectionHostsRepositoryUrl(db, connectionId, repositoryUrl)) return null
+  return c.json(
+    {
+      error: 'source_repository_url_host_mismatch',
+      message: 'The repository URL must be on the host of the connected forge.',
+    },
+    400
+  )
 }
 
 /**
@@ -1521,6 +1546,14 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
     )
     if (connectionDenied) return connectionDenied
 
+    const attachHostDenied = await assertRepositoryUrlOnConnectionForge(
+      c,
+      db,
+      fields.connectionId,
+      fields.repositoryUrl
+    )
+    if (attachHostDenied) return attachHostDenied
+
     const [installation] = await db
       .select({ provider: gitConnection.provider })
       .from(gitConnection)
@@ -1666,6 +1699,14 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
     )
     if (connectionDenied) return connectionDenied
 
+    const hostDenied = await assertRepositoryUrlOnConnectionForge(
+      c,
+      db,
+      fields.connectionId,
+      fields.repositoryUrl
+    )
+    if (hostDenied) return hostDenied
+
     const secretDenied = await assertSecretInOrganization(
       c,
       db,
@@ -1777,6 +1818,19 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
         ? undefined
         : await assertSecretInOrganization(c, db, organizationId, patch.secretId, existingProvider)
     if (secretDenied) return secretDenied
+
+    // The pair that results from the patch, not the patch alone: moving the URL
+    // under an existing connection and moving the connection under an existing
+    // URL are the same hole.
+    if (patch.connectionId !== undefined || patch.repositoryUrl !== undefined) {
+      const patchHostDenied = await assertRepositoryUrlOnConnectionForge(
+        c,
+        db,
+        patch.connectionId === undefined ? existing.connectionId : patch.connectionId,
+        patch.repositoryUrl ?? existing.repositoryUrl
+      )
+      if (patchHostDenied) return patchHostDenied
+    }
 
     const notVisible = await assertSourceVisibleToConnection(
       c,
