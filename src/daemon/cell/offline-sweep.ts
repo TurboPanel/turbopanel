@@ -67,6 +67,7 @@ import type { FirewallApplyGate } from '../../features/firewall/enforcement.ts'
 import { runFirewallPreviewSweep } from '../../features/firewall/preview.ts'
 import { runLeafRenewalSweepTick } from '../../client/tls/leaf-renewal-sweep.ts'
 import { type AlertSender, NOOP_ALERT_SENDER } from '../../features/alerts/alert-sender.ts'
+import { cachedForEnv } from './notification-email-cache.ts'
 import { resolveAlertSender } from '../../features/alerts/resolve-alert-sender.ts'
 import { type EmitEmail, retryDueDeliveries } from '../../features/notifications/emit.ts'
 import { sendDueDigests } from '../../features/notifications/digest.ts'
@@ -1263,7 +1264,15 @@ async function sweepExecutionLogsPhase(
 }
 
 /** The mail queue and from address a Workers tick hands the notifications pipeline. */
-async function workersNotificationEmail(
+function workersNotificationEmail(
+  env: CloudflareBindings,
+  db: Db,
+  tlsRenewal: CronTlsRenewal | null | undefined
+): Promise<EmitEmail | undefined> {
+  return cachedForEnv(env, () => resolveWorkersNotificationEmail(env, db, tlsRenewal))
+}
+
+async function resolveWorkersNotificationEmail(
   env: CloudflareBindings,
   db: Db,
   tlsRenewal: CronTlsRenewal | null | undefined
@@ -1552,7 +1561,14 @@ export async function runOfflineSweep(
               tlsRenewal?.dataEncryptionSecrets,
               sweepTrace,
               undefined,
-              await workersNotificationEmail(env, db, tlsRenewal)
+              // Resolved only if an alert is actually sent this tick.
+              () => workersNotificationEmail(env, db, tlsRenewal),
+              // The legacy-webhook adoption is a one-time migration touch: the
+              // 15-minute window is plenty, not every minute.
+              {
+                adoptLegacy:
+                  opts.scheduledTime === undefined || shouldSweepExecutionLogs(opts.scheduledTime),
+              }
             )),
           nowMs: opts.sweepOnceDeps?.nowMs ?? startedAtMs,
           deadlineMs: opts.sweepOnceDeps?.deadlineMs ?? deadlineMs,
