@@ -374,6 +374,8 @@ type ConsumerFakeDbOptions = Readonly<{
   throwOnBackupInsert?: boolean
   /** The HA recovery journal row the command belongs to (`recovery` table reads and writes). */
   recoveryRow?: Record<string, unknown>
+  /** The journal read throws (database down), so the failure hook itself fails. */
+  throwOnRecoveryRead?: boolean
 }>
 
 function createConsumerFakeDb(options: ConsumerFakeDbOptions = {}): {
@@ -406,6 +408,7 @@ function createConsumerFakeDb(options: ConsumerFakeDbOptions = {}): {
           innerJoin: () => source,
           where: () => {
             if (table === recovery) {
+              if (options.throwOnRecoveryRead) throw new Error('recovery read failed')
               return queryResult(options.recoveryRow ? [options.recoveryRow] : [])
             }
             // getCommandRecord / listServerCommands: explicit command columns
@@ -2484,11 +2487,14 @@ test('a throwing side effect on a command with no recovery writes no journal row
 })
 
 test('a failed recovery write never throws out of the consumer', async () => {
-  // The journal row is missing, so the failure hook finds nothing to update.
+  // The journal read throws, so the failure hook itself fails: it is logged and
+  // swallowed (the recovery sweep expires the row later), and the command ends.
   const fake = await runOnline('managed.promote', PROMOTE_PAYLOAD, doneWith(PROMOTE_RESULT), {
     replicaServerId: SERVER_ID,
     throwOnManagedReadyUpdate: true,
+    throwOnRecoveryRead: true,
     commandMetadata: { recoveryId: RECOVERY_ID },
+    recoveryRow: promotingRecoveryRow(),
   })
   assertEquals(fake.recoveryUpdates, [])
   assertEquals(
