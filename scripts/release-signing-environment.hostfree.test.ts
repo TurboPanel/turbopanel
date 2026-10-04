@@ -18,7 +18,7 @@ const test = Deno.test.bind(Deno)
 
 const WORKFLOWS = join(dirname(dirname(fromFileUrl(import.meta.url))), '.github', 'workflows')
 
-type Job = { environment?: unknown } & Record<string, unknown>
+type Job = { environment?: unknown; uses?: unknown; secrets?: unknown } & Record<string, unknown>
 
 function workflowJobs(file: string): Array<[string, Job]> {
   const doc = parse(Deno.readTextFileSync(join(WORKFLOWS, file))) as {
@@ -57,14 +57,23 @@ test('the live-channel signing job resolves to the protected release environment
   )
 })
 
-test('no workflow inherits secrets or falls back to a repo-level signing key', () => {
+test('callers of release workflows inherit secrets, and nothing falls back to a repo-level signing key', () => {
   for (const entry of Deno.readDirSync(WORKFLOWS)) {
     if (!entry.isFile || !entry.name.endsWith('.yml')) continue
     const text = Deno.readTextFileSync(join(WORKFLOWS, entry.name))
-    assert(!/^\s*secrets:\s*inherit\b/m.test(text), `${entry.name} uses secrets: inherit`)
     assert(
       !text.includes('secrets.RELEASE_SIGNING_KEY'),
       `${entry.name} falls back to a repo-level RELEASE_SIGNING_KEY`
     )
+    // An environment secret evaluates empty in a called workflow unless the caller passes secrets
+    // down (ui#164 broke canary signing by dropping `inherit`; ui#169 restored it).
+    for (const [jobName, job] of workflowJobs(entry.name)) {
+      const uses = String(job.uses ?? '')
+      if (!/release\.yml$|gh-promote\.yml@/.test(uses)) continue
+      assert(
+        job.secrets === 'inherit',
+        `${entry.name} job ${jobName} must pass \`secrets: inherit\``
+      )
+    }
   }
 })

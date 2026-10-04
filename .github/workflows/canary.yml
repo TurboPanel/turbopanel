@@ -54,8 +54,8 @@ jobs:
       channel: canary
       ref: ${{ github.event.workflow_run.head_sha }}
       build-run-id: ${{ github.event.workflow_run.id }}
-    # Only the Release App pair is passed. The signing key is never passed: the called workflow's
-    # `manifest` job declares the `canary` environment and reads TURBOPANEL_RELEASE_SIGNING_KEY there.
-    secrets:
-      RELEASE_APP_ID: ${{ secrets.RELEASE_APP_ID }}
-      RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+    # `secrets: inherit` is required: the called workflow's signing job declares the `canary` environment
+    # and reads its TURBOPANEL_RELEASE_SIGNING_KEY secret, but an environment secret evaluates empty in a
+    # called workflow unless the caller passes secrets down (ui#164 broke signing this way, ui#169 fixed it).
+    # There is no repo-level signing key.
+    secrets: inherit

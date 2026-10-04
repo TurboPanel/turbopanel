@@ -73,13 +73,6 @@ on:
         required: false
         type: string
         default: ""
-    secrets:
-      RELEASE_APP_ID:
-        description: Optional - Release App id, used to move the canary tag past workflow changes
-        required: false
-      RELEASE_APP_PRIVATE_KEY:
-        description: Optional - the Release App private key PEM
-        required: false
 
 # Read-only by default. Writes: the `release` and `canary` jobs (the called
 # TurboPanel/dev workflows create the GitHub release / update the rolling

@@ -146,9 +146,7 @@ jobs:
       approval-environment: ''
     permissions:
       contents: write # the v<x.y.z>-rc.<N> tag
-    secrets:
-      RELEASE_APP_ID: ${{ secrets.RELEASE_APP_ID }}
-      RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+    secrets: inherit
 
   publish:
     needs: prepare
@@ -162,9 +160,7 @@ jobs:
       target-commit: ${{ needs.prepare.outputs.commit }}
     permissions:
       contents: write # the GitHub pre-release + the rolling rc pointer
-    secrets:
-      RELEASE_APP_ID: ${{ secrets.RELEASE_APP_ID }}
-      RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+    secrets: inherit
 
   finalize:
     needs: [prepare, publish]
@@ -177,9 +173,7 @@ jobs:
       manifest-filename: ${{ needs.prepare.outputs.manifest-filename }}
     permissions:
       contents: write # the staging fast-forward
-    secrets:
-      RELEASE_APP_ID: ${{ secrets.RELEASE_APP_ID }}
-      RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+    secrets: inherit
 
   release-pr:
     needs: [resolve, prepare, finalize]

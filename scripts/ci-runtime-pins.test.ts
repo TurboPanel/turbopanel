@@ -95,6 +95,7 @@ describe('release manifest signing', () => {
       "environment: ${{ inputs.channel == 'canary' && 'canary' || (inputs.channel == 'rc' && 'rc' || 'release') }}"
     )
     assertEquals(release.includes('secrets.RELEASE_SIGNING_KEY'), false)
-    assertEquals(canary.includes('secrets: inherit'), false)
+    // The environment secret only reaches the called workflow when its caller inherits secrets.
+    assertStringIncludes(canary, 'secrets: inherit')
   })
 })
