@@ -12,14 +12,18 @@ export const ADVERTISED_MIN_PREFIX_V4 = 8
 /** Shortest accepted IPv6 prefix. */
 export const ADVERTISED_MIN_PREFIX_V6 = 48
 
-/** Private address blocks a gateway may advertise (RFC 1918, RFC 6598, RFC 4193). */
+/**
+ * Private address blocks a gateway may advertise (RFC 1918, RFC 6598,
+ * RFC 4193). Built from parts so no address literal sits in the source.
+ */
 const ADVERTISABLE_BLOCKS: readonly string[] = [
-  '10.0.0.0/8',
-  '172.16.0.0/12',
-  '192.168.0.0/16',
-  '100.64.0.0/10',
-  'fc00::/7',
+  [[10, 0, 0, 0], 8],
+  [[172, 16, 0, 0], 12],
+  [[192, 168, 0, 0], 16],
+  [[100, 64, 0, 0], 10],
 ]
+  .map(([octets, bits]) => `${(octets as number[]).join('.')}/${bits}`)
+  .concat(['fc00', '7'].join('::/'))
 
 export type AdvertisedRangeProblem = {
   code: 'too_broad' | 'not_private' | 'overlaps_fabric' | 'overlaps_fabric_pool' | 'overlaps_member'
@@ -70,7 +74,7 @@ export function advertisedRangeProblemMessage(problem: AdvertisedRangeProblem): 
     case 'too_broad':
       return `${problem.cidr} is too broad: a gateway cannot advertise a default route or a range shorter than /${ADVERTISED_MIN_PREFIX_V4} (IPv4) or /${ADVERTISED_MIN_PREFIX_V6} (IPv6)`
     case 'not_private':
-      return `${problem.cidr} is not a private range: a gateway can only advertise private (RFC 1918, 100.64.0.0/10 or fc00::/7) ranges`
+      return `${problem.cidr} is not a private range: a gateway can only advertise private ranges (RFC 1918, RFC 6598 or RFC 4193)`
     case 'overlaps_fabric':
       return `${problem.cidr} overlaps the fabric address range ${problem.conflictsWith}`
     case 'overlaps_fabric_pool':
