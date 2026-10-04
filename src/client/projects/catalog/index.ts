@@ -154,7 +154,7 @@ function postgresCatalogEntry(): CatalogEntry {
     },
     environments: [
       {
-        displayName: 'Production',
+        displayName: 'production',
         description: 'Production environment',
         variables: [{ key: 'POSTGRES_PASSWORD', isSecret: true }],
       },
@@ -183,7 +183,7 @@ function mysqlCatalogEntry(): CatalogEntry {
     },
     environments: [
       {
-        displayName: 'Production',
+        displayName: 'production',
         description: 'Production environment',
         variables: [{ key: 'MYSQL_ROOT_PASSWORD', isSecret: true }],
       },
@@ -212,7 +212,7 @@ function mariadbCatalogEntry(): CatalogEntry {
     },
     environments: [
       {
-        displayName: 'Production',
+        displayName: 'production',
         description: 'Production environment',
         variables: [{ key: 'MYSQL_ROOT_PASSWORD', isSecret: true }],
       },
@@ -282,7 +282,7 @@ const CATALOG: CatalogEntry[] = [
     },
     environments: [
       {
-        displayName: 'Production',
+        displayName: 'production',
         description: 'Production environment',
         variables: [{ key: 'REDIS_PASSWORD', isSecret: true }],
       },
@@ -306,7 +306,7 @@ const CATALOG: CatalogEntry[] = [
     },
     environments: [
       {
-        displayName: 'Production',
+        displayName: 'production',
         description: 'Production environment',
         variables: [{ key: 'CLICKHOUSE_PASSWORD', isSecret: true }],
       },

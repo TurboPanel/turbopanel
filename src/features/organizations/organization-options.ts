@@ -26,7 +26,7 @@ import {
 import { parsePhpModes, type PhpMode } from '../hostings/php-mode.ts'
 
 /** Platform fallback when `defaultEnvironmentName` is unset. */
-export const DEFAULT_ENVIRONMENT_NAME = 'Production'
+export const DEFAULT_ENVIRONMENT_NAME = 'production'
 
 /** Display unit for temperature metrics (chart axes, tooltips, thresholds). */
 export type TemperatureUnit = 'celsius' | 'fahrenheit'
@@ -53,7 +53,7 @@ export type OrganizationOptions = {
   maxServers?: number | null
   /**
    * Org-wide name used for the environment scaffolded with every new project.
-   * Platform fallback is {@link DEFAULT_ENVIRONMENT_NAME} (`Production`).
+   * Platform fallback is {@link DEFAULT_ENVIRONMENT_NAME} (`production`).
    */
   defaultEnvironmentName?: string
   /**
