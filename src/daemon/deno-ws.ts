@@ -59,7 +59,11 @@ import {
   handleBackupRunReport,
 } from '../features/backups/run-report.ts'
 import { handleManagedHaEvent } from '../features/managed/ha-event.ts'
-import { resolveAutoFailoverFromDenoEnv } from '../features/managed/auto-failover-switch.ts'
+import {
+  resolveAutoFailoverFromDenoEnv,
+  resolveFreshStandbyMarginMsFromDenoEnv,
+} from '../features/managed/auto-failover-switch.ts'
+import { createFreshStandbyProbe } from '../client/managed/health-probe.ts'
 import { enqueueLatestRecordedCapabilityPlan } from '../client/servers/capability-plan-push.ts'
 import { recordTopologyGeneration } from '../features/servers/server-topology-records.ts'
 import { createInboundWindowGate } from './rate-limit/inbound-window.ts'
@@ -348,6 +352,7 @@ async function handleDaemonManagedHaInbound(params: {
   connectionId: string | undefined
   message: Extract<DaemonMessage, { type: 'managed-ha-event' }>
   commandQueue?: CommandQueue
+  registry?: DaemonCellRegistry
   reporterServerId: string
 }): Promise<void> {
   const { cell, db, connectionId, message } = params
@@ -366,6 +371,8 @@ async function handleDaemonManagedHaInbound(params: {
       commandQueue: params.commandQueue,
       reporterServerId: params.reporterServerId,
       autoFailover: resolveAutoFailoverFromDenoEnv(),
+      probeStandby: createFreshStandbyProbe(db, params.registry),
+      freshStandbyMarginMs: resolveFreshStandbyMarginMsFromDenoEnv(),
     }
   )
   await cell.recordInbound({ connectionId, at: message.at })
@@ -456,6 +463,8 @@ type DaemonInboundDispatch = {
   serverId: string
   connectionId: string | undefined
   commandQueue?: CommandQueue
+  /** Reaches other servers' cells (the HA event probes a standby's daemon). */
+  registry?: DaemonCellRegistry
   message: DaemonMessage
   /** Answer on the socket the frame arrived on (daemon-initiated requests). */
   reply: (message: BackupRunReportResultMessage) => void
@@ -506,6 +515,7 @@ async function dispatchDaemonInboundMessage(params: DaemonInboundDispatch): Prom
         connectionId,
         message,
         commandQueue: params.commandQueue,
+        registry: params.registry,
         reporterServerId: serverId,
       })
       return
@@ -741,6 +751,7 @@ export function registerDaemonWebSocket<E extends Env>(
           serverId: payload.sub,
           connectionId,
           commandQueue: options.commandQueue,
+          registry,
           message,
           reply: (answer) => ws.send(JSON.stringify(answer)),
         })

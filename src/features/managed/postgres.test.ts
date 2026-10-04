@@ -16,7 +16,7 @@ import { MANAGED_SSL_MODES } from './ssl.ts'
 const test = Deno.test.bind(Deno)
 
 function defaultSettings(
-  overrides: Partial<PostgresManagedSettings> = {},
+  overrides: Partial<PostgresManagedSettings> = {}
 ): PostgresManagedSettings {
   const parsed = postgresEngineSpec.parseSettings({
     initialDatabase: 'appdb',
@@ -27,14 +27,8 @@ function defaultSettings(
 }
 
 test('default image is docker.io/library/postgres:18-alpine', () => {
-  assertEquals(
-    postgresEngineSpec.defaultImage,
-    'docker.io/library/postgres:18-alpine',
-  )
-  assertEquals(
-    POSTGRES_ALLOWED_IMAGES.includes(postgresEngineSpec.defaultImage),
-    true,
-  )
+  assertEquals(postgresEngineSpec.defaultImage, 'docker.io/library/postgres:18-alpine')
+  assertEquals(POSTGRES_ALLOWED_IMAGES.includes(postgresEngineSpec.defaultImage), true)
   const spec = postgresEngineSpec.buildRuntimeSpec({
     managedId: '11111111-1111-1111-1111-111111111111',
     settings: defaultSettings(),
@@ -55,18 +49,15 @@ test('parseSettings accepts every approved image and rejects everything else', (
     postgresEngineSpec.parseSettings({
       image: 'docker.io/library/postgres:14',
     }),
-    null,
+    null
   )
   assertEquals(
     postgresEngineSpec.parseSettings({
       image: 'docker.io/library/postgres:latest',
     }),
-    null,
+    null
   )
-  assertEquals(
-    postgresEngineSpec.parseSettings({ image: 'docker.io/library/mysql:9.7' }),
-    null,
-  )
+  assertEquals(postgresEngineSpec.parseSettings({ image: 'docker.io/library/mysql:9.7' }), null)
 })
 
 test('runtime spec has no ports key and container port stays 5432', () => {
@@ -90,10 +81,7 @@ test('volume target is /var/lib/postgresql parent', () => {
   })
   assertEquals(spec.volumes.length, 1)
   assertEquals(spec.volumes[0]?.target, '/var/lib/postgresql')
-  assertEquals(
-    spec.volumes[0]?.name,
-    'managed_11111111_1111_1111_1111_111111111111_data',
-  )
+  assertEquals(spec.volumes[0]?.name, 'managed_11111111_1111_1111_1111_111111111111_data')
 })
 
 test('volume name is hyphen-free for SAFE_IDENTIFIER_RE', () => {
@@ -114,10 +102,7 @@ test('pg_isready healthcheck', () => {
     settings: defaultSettings({ initialDatabase: 'appdb' }),
     rootUsername: 'postgres',
   })
-  assertEquals(spec.healthcheck.test, [
-    'CMD-SHELL',
-    'pg_isready -U postgres -d appdb',
-  ])
+  assertEquals(spec.healthcheck.test, ['CMD-SHELL', 'pg_isready -U postgres -d appdb'])
 })
 
 test('POSTGRES_PASSWORD is placeholder and serialized spec has no plaintext', () => {
@@ -134,7 +119,7 @@ test('POSTGRES_PASSWORD is placeholder and serialized spec has no plaintext', ()
   assertEquals(serialized.includes(ManagedSecretPlaceholder), true)
   assertEquals(
     (spec.service.environment as Record<string, string>).POSTGRES_PASSWORD,
-    ManagedSecretPlaceholder,
+    ManagedSecretPlaceholder
   )
 })
 
@@ -153,10 +138,7 @@ test('postgresql.conf is base plus appended operator snippet', () => {
   assertEquals(conf.contents.includes("listen_addresses = '*'"), true)
   assertEquals(conf.contents.includes('port = 5432'), true)
   assertEquals(conf.contents.includes('# --- operator config ---'), true)
-  assertEquals(
-    conf.contents.includes('log_min_duration_statement = 250'),
-    true,
-  )
+  assertEquals(conf.contents.includes('log_min_duration_statement = 250'), true)
   assertEquals(conf.contents.includes('ssl = on'), true)
   assertEquals(conf.contents.includes('max_replication_slots = 3'), true)
 })
@@ -222,7 +204,7 @@ test('postgres defaultSettings leave ssl.mode unset so the org default applies',
 test('formatSslMode renders libpq sslmode spellings verbatim', () => {
   assertEquals(
     MANAGED_SSL_MODES.map((mode) => postgresEngineSpec.formatSslMode(mode)),
-    [...MANAGED_SSL_MODES],
+    [...MANAGED_SSL_MODES]
   )
 })
 
@@ -263,19 +245,19 @@ test('parseSettings rejects include directives in engineConfig', () => {
     postgresEngineSpec.parseSettings({
       engineConfig: "include = '/etc/passwd'\n",
     }),
-    null,
+    null
   )
   assertEquals(
     postgresEngineSpec.parseSettings({
       engineConfig: 'include_dir = conf.d\n',
     }),
-    null,
+    null
   )
   assertEquals(
     postgresEngineSpec.parseSettings({
       engineConfig: "include_if_exists = 'extra.conf'\n",
     }),
-    null,
+    null
   )
 })
 
@@ -284,44 +266,35 @@ test('parseSettings rejects ssl_ca_file overrides in engineConfig', () => {
     postgresEngineSpec.parseSettings({
       engineConfig: "ssl_ca_file = '/tmp/evil-ca.crt'\n",
     }),
-    null,
+    null
   )
 })
 
 test('parseSettings rejects engineConfig overriding platform-owned port/network keys', () => {
-  assertEquals(
-    postgresEngineSpec.parseSettings({ engineConfig: 'port = 5555\n' }),
-    null,
-  )
+  assertEquals(postgresEngineSpec.parseSettings({ engineConfig: 'port = 5555\n' }), null)
   assertEquals(
     postgresEngineSpec.parseSettings({
       engineConfig: "listen_addresses = '127.0.0.1'\n",
     }),
-    null,
+    null
   )
   // Case-insensitive: Postgres itself treats parameter names case-insensitively.
-  assertEquals(
-    postgresEngineSpec.parseSettings({ engineConfig: 'PORT = 5555\n' }),
-    null,
-  )
+  assertEquals(postgresEngineSpec.parseSettings({ engineConfig: 'PORT = 5555\n' }), null)
 })
 
 test('parseSettings rejects engineConfig overriding platform-owned TLS keys', () => {
-  assertEquals(
-    postgresEngineSpec.parseSettings({ engineConfig: 'ssl = off\n' }),
-    null,
-  )
+  assertEquals(postgresEngineSpec.parseSettings({ engineConfig: 'ssl = off\n' }), null)
   assertEquals(
     postgresEngineSpec.parseSettings({
       engineConfig: "ssl_cert_file = '/tmp/evil.crt'\n",
     }),
-    null,
+    null
   )
   assertEquals(
     postgresEngineSpec.parseSettings({
       engineConfig: "ssl_key_file = '/tmp/evil.key'\n",
     }),
-    null,
+    null
   )
 })
 
@@ -330,19 +303,19 @@ test('parseSettings rejects engineConfig overriding platform-owned path/control 
     postgresEngineSpec.parseSettings({
       engineConfig: "data_directory = '/tmp/evil'\n",
     }),
-    null,
+    null
   )
   assertEquals(
     postgresEngineSpec.parseSettings({
       engineConfig: "hba_file = '/tmp/evil_hba.conf'\n",
     }),
-    null,
+    null
   )
   assertEquals(
     postgresEngineSpec.parseSettings({
       engineConfig: "unix_socket_directories = '/tmp'\n",
     }),
-    null,
+    null
   )
 })
 
@@ -359,10 +332,7 @@ test('parseSettings still accepts harmless operator settings and they survive to
   })
   const conf = spec.configFiles.find((f) => f.path === 'postgresql.conf')
   if (!conf) throw new TypeError('missing postgresql.conf')
-  assertEquals(
-    conf.contents.includes('log_min_duration_statement = 250'),
-    true,
-  )
+  assertEquals(conf.contents.includes('log_min_duration_statement = 250'), true)
   assertEquals(conf.contents.includes('max_connections = 200'), true)
   assertEquals(conf.contents.includes("work_mem = '8MB'"), true)
   // Platform invariants still win — appended operator block cannot shadow them.
@@ -373,28 +343,14 @@ test('parseSettings still accepts harmless operator settings and they survive to
 test('parseSettings rejects invalid initialDatabase and non-object input', () => {
   assertEquals(postgresEngineSpec.parseSettings([]), null)
   assertEquals(postgresEngineSpec.parseSettings('postgres'), null)
-  assertEquals(
-    postgresEngineSpec.parseSettings({ initialDatabase: '' }),
-    null,
-  )
-  assertEquals(
-    postgresEngineSpec.parseSettings({ initialDatabase: 'bad-name' }),
-    null,
-  )
-  assertEquals(
-    postgresEngineSpec.parseSettings({ initialDatabase: 12 }),
-    null,
-  )
-  assertEquals(
-    postgresEngineSpec.parseSettings({ initialDatabase: 'a'.repeat(64) }),
-    null,
-  )
+  assertEquals(postgresEngineSpec.parseSettings({ initialDatabase: '' }), null)
+  assertEquals(postgresEngineSpec.parseSettings({ initialDatabase: 'bad-name' }), null)
+  assertEquals(postgresEngineSpec.parseSettings({ initialDatabase: 12 }), null)
+  assertEquals(postgresEngineSpec.parseSettings({ initialDatabase: 'a'.repeat(64) }), null)
 })
 
 test('parseSettings defaults initialDatabase and rejects blank conf lines that are not settings', () => {
-  const defaults = postgresEngineSpec.parseSettings({}) as
-    | PostgresManagedSettings
-    | null
+  const defaults = postgresEngineSpec.parseSettings({}) as PostgresManagedSettings | null
   if (!defaults) throw new TypeError('expected defaults')
   assertEquals(defaults.initialDatabase, 'defaultdb')
 
@@ -402,7 +358,7 @@ test('parseSettings defaults initialDatabase and rejects blank conf lines that a
     postgresEngineSpec.parseSettings({
       engineConfig: 'not a setting line\n',
     }),
-    null,
+    null
   )
 })
 
@@ -411,10 +367,7 @@ test('parseSettings accepts comment-only engineConfig', () => {
     engineConfig: '# tuning notes\n\n',
   })
   if (!settings) throw new TypeError('expected settings')
-  assertEquals(
-    (settings as PostgresManagedSettings).engineConfig,
-    '# tuning notes\n\n',
-  )
+  assertEquals((settings as PostgresManagedSettings).engineConfig, '# tuning notes\n\n')
 })
 
 test('buildPlatformPgHba grants replication for co-resident peers and /128 for IPv6', () => {
@@ -430,33 +383,27 @@ test('buildPlatformPgHba grants replication for co-resident peers and /128 for I
       privateListener: { address: '203.0.113.10', port: 15432 },
       replication: {
         username: 'tp_repl',
-        peerAddresses: [
-          'tp-managed-engine-1',
-          '203.0.113.20',
-          '2001:db8::10',
-        ],
+        peerAddresses: ['tp-managed-engine-1', '203.0.113.20', '2001:db8::10'],
       },
     },
   })
   const hba = spec.configFiles.find((f) => f.path === 'pg_hba.conf')?.contents ?? ''
   assertEquals(hba.includes('pg_hba.conf'), false) // path not contents
   assertEquals(
-    hba.includes(
-      'hostssl replication     tp_repl        172.16.0.0/12       scram-sha-256',
-    ),
-    true,
+    hba.includes('hostssl replication     tp_repl        172.16.0.0/12       scram-sha-256'),
+    true
   )
   assertEquals(
     hba.includes(
-      'hostssl replication     tp_repl        203.0.113.20/32                 scram-sha-256',
+      'hostssl replication     tp_repl        203.0.113.20/32                 scram-sha-256'
     ),
-    true,
+    true
   )
   assertEquals(
     hba.includes(
-      'hostssl replication     tp_repl        2001:db8::10/128                 scram-sha-256',
+      'hostssl replication     tp_repl        2001:db8::10/128                 scram-sha-256'
     ),
-    true,
+    true
   )
   // IPv6 must not be written as /32.
   assertEquals(hba.includes('2001:db8::10/32'), false)
@@ -464,15 +411,15 @@ test('buildPlatformPgHba grants replication for co-resident peers and /128 for I
   // traffic) — non-replication access must be admitted host-scoped.
   assertEquals(
     hba.includes(
-      'hostssl all             all             203.0.113.20/32                 scram-sha-256',
+      'hostssl all             all             203.0.113.20/32                 scram-sha-256'
     ),
-    true,
+    true
   )
   assertEquals(
     hba.includes(
-      'hostssl all             all             2001:db8::10/128                 scram-sha-256',
+      'hostssl all             all             2001:db8::10/128                 scram-sha-256'
     ),
-    true,
+    true
   )
   // Container-name peers are co-resident and covered by the managed-network
   // CIDR rule — they must not leak into address-literal lines.
@@ -500,9 +447,9 @@ test('buildPlatformPgHba admits cross-host consumer servers without replication'
   const hba = spec.configFiles.find((f) => f.path === 'pg_hba.conf')?.contents ?? ''
   assertEquals(
     hba.includes(
-      'hostssl all             all             203.0.113.99/32                 scram-sha-256',
+      'hostssl all             all             203.0.113.99/32                 scram-sha-256'
     ),
-    true,
+    true
   )
   // Consumers never get replication rules.
   assertEquals(hba.includes('hostssl replication     tp_repl        203.0.113.99'), false)
@@ -532,18 +479,16 @@ test('buildPlatformPgHba scopes a public replica to its own address', () => {
   const hba = spec.configFiles.find((f) => f.path === 'pg_hba.conf')?.contents ?? ''
   assertEquals(
     hba.includes(
-      'hostssl replication     tp_repl        203.0.113.51/32                 scram-sha-256',
+      'hostssl replication     tp_repl        203.0.113.51/32                 scram-sha-256'
     ),
-    true,
+    true
   )
   // A public listener must never widen HBA beyond the known peer.
   assertEquals(hba.includes('0.0.0.0/0'), false)
   assertEquals(hba.includes('::/0'), false)
   assertEquals(
-    hba.includes(
-      'host    all             all             all                     reject',
-    ),
-    true,
+    hba.includes('host    all             all             all                     reject'),
+    true
   )
 })
 
@@ -572,19 +517,22 @@ test('standby primary_conninfo has no passfile (no durable auth plaintext)', () 
   const conf = spec.configFiles.find((f) => f.path === 'postgresql.conf')?.contents ?? ''
   assertEquals(conf.includes('passfile='), false)
   assertEquals(conf.includes('sslmode=verify-full'), true)
-  assertEquals(
-    conf.includes('host=managed-11111111-1111-1111-1111-111111111111'),
-    true,
-  )
+  assertEquals(conf.includes('host=managed-11111111-1111-1111-1111-111111111111'), true)
   assertEquals(conf.includes('hostaddr=203.0.113.10'), true)
   // No durable auth/ volume mount for standby.
   const volumes = spec.service.volumes as string[]
-  assertEquals(volumes.some((v) => v.includes('./auth')), false)
+  assertEquals(
+    volumes.some((v) => v.includes('./auth')),
+    false
+  )
   // Config must be a DIRECTORY mount — single-file binds pin the inode at
   // container create, so daemon rewrites (unlink+create) would be invisible
   // to the running engine and pg_reload_conf() would reload stale content.
   assertEquals(volumes.includes('./config:/etc/postgresql/conf:ro'), true)
-  assertEquals(volumes.some((v) => v.includes('./config/')), false)
+  assertEquals(
+    volumes.some((v) => v.includes('./config/')),
+    false
+  )
   assertEquals(conf.includes("hba_file = '/etc/postgresql/conf/pg_hba.conf'"), true)
 })
 
@@ -613,16 +561,10 @@ test('buildRuntimeSpec applies dockerOptions onto compose service and env', () =
     nofile: { soft: 1024, hard: 2048 },
   })
   assertEquals(spec.service.labels, { 'app.tier': 'db' })
-  assertEquals(
-    (spec.service.environment as Record<string, string>).MY_FLAG,
-    '1',
-  )
+  assertEquals((spec.service.environment as Record<string, string>).MY_FLAG, '1')
   assertEquals(spec.env.MY_FLAG, '1')
   assertEquals(spec.exposure.scope, 'local')
-  assertEquals(
-    spec.configFiles[0]?.contents.includes("shared_buffers = '"),
-    true,
-  )
+  assertEquals(spec.configFiles[0]?.contents.includes("shared_buffers = '"), true)
 })
 
 test(
@@ -647,18 +589,12 @@ test(
       rootUsername: 'postgres_a1b2c3d4',
     })
 
-    assertEquals(
-      (spec.service.environment as Record<string, string>).POSTGRES_USER,
-      'postgres',
-    )
-    assertEquals(spec.healthcheck.test, [
-      'CMD-SHELL',
-      'pg_isready -U postgres -d appdb',
-    ])
+    assertEquals((spec.service.environment as Record<string, string>).POSTGRES_USER, 'postgres')
+    assertEquals(spec.healthcheck.test, ['CMD-SHELL', 'pg_isready -U postgres -d appdb'])
     const hba = spec.configFiles.find((f) => f.path === 'pg_hba.conf')?.contents ?? ''
     assertEquals(hba.includes('postgres_a1b2c3d4'), false)
     assertEquals(hba.includes('local   all             postgres'), true)
-  },
+  }
 )
 
 test('buildConnectionInfo renders the mode it is given, including disable', () => {
@@ -708,8 +644,7 @@ test('useOrgTls omits self-signed tlsMaterial and adds ssl_ca_file', () => {
     useOrgTls: true,
   })
   assertEquals(withOrg.tlsMaterial, undefined)
-  const conf = withOrg.configFiles.find((f) => f.path === 'postgresql.conf')
-    ?.contents ?? ''
+  const conf = withOrg.configFiles.find((f) => f.path === 'postgresql.conf')?.contents ?? ''
   assertEquals(conf.includes('ssl_ca_file'), true)
 
   const withoutOrg = postgresEngineSpec.buildRuntimeSpec({
@@ -754,11 +689,12 @@ test('standby without hostaddr omits hostaddr from primary_conninfo', () => {
       },
     },
   })
-  const conf = spec.configFiles.find((f) => f.path === 'postgresql.conf')
-    ?.contents ?? ''
+  const conf = spec.configFiles.find((f) => f.path === 'postgresql.conf')?.contents ?? ''
   assertEquals(conf.includes('host=managed-primary'), true)
   assertEquals(conf.includes('hostaddr='), false)
   assertEquals(conf.includes("primary_slot_name = 'tp_member_2'"), true)
+  // Idle links still exchange a message every ~5 s (fresh-standby gate).
+  assertEquals(conf.includes("wal_receiver_timeout = '10s'"), true)
 })
 
 test('parseSettings rejects non-objects; null/undefined fall through to defaults', () => {
@@ -772,10 +708,7 @@ test('parseSettings rejects non-objects; null/undefined fall through to defaults
   if (!fromUndefined) {
     throw new TypeError('expected defaults for undefined settings')
   }
-  assertEquals(
-    (fromUndefined as PostgresManagedSettings).initialDatabase,
-    'defaultdb',
-  )
+  assertEquals((fromUndefined as PostgresManagedSettings).initialDatabase, 'defaultdb')
 })
 
 test('buildRuntimeSpec falls back when settings omit image and initialDatabase', () => {
@@ -790,4 +723,11 @@ test('buildRuntimeSpec falls back when settings omit image and initialDatabase',
   })
   assertEquals(spec.service.image, postgresEngineSpec.defaultImage)
   assertEquals(spec.env.POSTGRES_DB, 'defaultdb')
+})
+
+test('parseSettings rejects engineConfig overriding wal_receiver_timeout (fresh-standby gate)', () => {
+  assertEquals(
+    postgresEngineSpec.parseSettings({ engineConfig: "wal_receiver_timeout = '60s'\n" }),
+    null
+  )
 })

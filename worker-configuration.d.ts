@@ -158,6 +158,13 @@ interface CloudflareBindings {
    * See `src/features/managed/auto-failover-switch.ts`.
    */
   TURBOPANEL_AUTO_FAILOVER?: string
+  /**
+   * Seconds before the detected failure start that a non-streaming Postgres
+   * standby may last have streamed and still be promoted automatically.
+   * Unset or malformed = 10; capped at 60. See
+   * `src/features/managed/ha-fresh-standby.ts`.
+   */
+  TURBOPANEL_AUTO_FAILOVER_RECEIPT_MARGIN_SECONDS?: string
   /** Max inbound WS messages per connection per window (DO in-memory cap; default 120). */
   TURBOPANEL_DAEMON_WS_INBOUND_LIMIT?: string
   /** Inbound WS flood window in ms (DO in-memory cap; default 60000). */

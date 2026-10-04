@@ -77,6 +77,7 @@ const RESERVED_CONF_KEYS = new Set([
   'wal_log_hints',
   'primary_conninfo',
   'primary_slot_name',
+  'wal_receiver_timeout',
 ])
 
 /** Docker bridge CIDR for hostssl ProxySQL client access on the org managed network. */
@@ -108,11 +109,7 @@ const USER_OPERATIONS: ManagedUserOperations = {
 }
 
 function isValidIdentifier(value: string): boolean {
-  return (
-    value.length > 0 &&
-    value.length <= MAX_IDENTIFIER_LENGTH &&
-    IDENTIFIER_RE.test(value)
-  )
+  return value.length > 0 && value.length <= MAX_IDENTIFIER_LENGTH && IDENTIFIER_RE.test(value)
 }
 
 /**
@@ -145,20 +142,14 @@ function parseInitialDatabase(value: unknown): string | null {
   return trimmed
 }
 
-function asSettingsRecord(
-  value: unknown,
-): Record<string, unknown> | undefined | null {
+function asSettingsRecord(value: unknown): Record<string, unknown> | undefined | null {
   if (value === null || value === undefined) return undefined
   if (typeof value !== 'object' || Array.isArray(value)) return null
   return value as Record<string, unknown>
 }
 
 function parsePostgresSettings(value: unknown): PostgresManagedSettings | null {
-  const base = parseManagedSettingsBase(
-    value,
-    POSTGRES_RESERVED_ENV_KEYS,
-    'postgres',
-  )
+  const base = parseManagedSettingsBase(value, POSTGRES_RESERVED_ENV_KEYS, 'postgres')
   if (base === null) return null
 
   const record = asSettingsRecord(value)
@@ -167,10 +158,7 @@ function parsePostgresSettings(value: unknown): PostgresManagedSettings | null {
   const initialDatabase = parseInitialDatabase(record?.initialDatabase)
   if (initialDatabase === null) return null
 
-  if (
-    base.engineConfig !== undefined &&
-    !isValidPostgresqlConfSnippet(base.engineConfig)
-  ) {
+  if (base.engineConfig !== undefined && !isValidPostgresqlConfSnippet(base.engineConfig)) {
     return null
   }
 
@@ -190,7 +178,7 @@ function replicationSlotCount(memberCount: number | undefined): number {
 
 function buildPlatformPostgresqlConf(
   settings: PostgresManagedSettings,
-  input: BuildRuntimeSpecInput,
+  input: BuildRuntimeSpecInput
 ): string {
   const lines = [
     '# TurboPanel managed PostgreSQL — platform base (do not edit above the operator block)',
@@ -209,37 +197,24 @@ function buildPlatformPostgresqlConf(
 
   const memoryBytes = settings.resources?.memoryBytes
   if (memoryBytes !== undefined && memoryBytes > 0) {
-    const sharedBuffers = Math.max(
-      16,
-      Math.floor(memoryBytes / (4 * 1024 * 1024)),
-    )
-    const effectiveCache = Math.max(
-      48,
-      Math.floor(memoryBytes / (2 * 1024 * 1024)),
-    )
+    const sharedBuffers = Math.max(16, Math.floor(memoryBytes / (4 * 1024 * 1024)))
+    const effectiveCache = Math.max(48, Math.floor(memoryBytes / (2 * 1024 * 1024)))
     lines.push(
       `shared_buffers = '${sharedBuffers}MB'`,
-      `effective_cache_size = '${effectiveCache}MB'`,
+      `effective_cache_size = '${effectiveCache}MB'`
     )
   }
 
   // Engine TLS is unconditional: `pg_hba.conf` below only publishes `hostssl`
   // rules and ProxySQL dials backends with `use_ssl=1`. Client-facing policy
   // (`ManagedSslMode`) is enforced at the ProxySQL frontend, not here.
-  lines.push(
-    'ssl = on',
-    `ssl_cert_file = '${TLS_CERT_PATH}'`,
-    `ssl_key_file = '${TLS_KEY_PATH}'`,
-  )
+  lines.push('ssl = on', `ssl_cert_file = '${TLS_CERT_PATH}'`, `ssl_key_file = '${TLS_KEY_PATH}'`)
   if (input.useOrgTls) {
     lines.push(`ssl_ca_file = '${SSL_ROOTCERT_PATH}'`)
   }
 
   const replication = input.member?.replication
-  if (
-    input.member?.role === 'standby' && replication?.primary &&
-    replication.slotName
-  ) {
+  if (input.member?.role === 'standby' && replication?.primary && replication.slotName) {
     // No password/passfile in conf — durable plaintext secrets under managed
     // state are forbidden. `pg_basebackup -R` seeds password-bearing
     // primary_conninfo into the data volume's postgresql.auto.conf (not under
@@ -247,11 +222,18 @@ function buildPlatformPostgresqlConf(
     // so re-apply can retarget the primary without re-storing secrets.
     const primary = replication.primary
     const hostaddr = primary.hostaddr !== undefined ? ` hostaddr=${primary.hostaddr}` : ''
-    const conninfo = `user=${replication.username} host=${primary.host}${hostaddr} ` +
+    const conninfo =
+      `user=${replication.username} host=${primary.host}${hostaddr} ` +
       `port=${primary.port} sslmode=verify-full sslrootcert=${SSL_ROOTCERT_PATH}`
     lines.push(
       `primary_conninfo = '${conninfo.replaceAll("'", "''")}'`,
       `primary_slot_name = '${replication.slotName}'`,
+      // The receiver pings the primary after half of this with no message,
+      // so even an idle link yields a receipt every ~5 s. Automatic
+      // failover's fresh-standby gate needs that (the daemon only counts a
+      // streaming sample heard from the primary within 5 s), and a silently
+      // dropped link is noticed in 10 s instead of 60.
+      "wal_receiver_timeout = '10s'"
     )
   }
 
@@ -298,26 +280,21 @@ function peerHbaAddress(peer: string): string | null {
  */
 function buildIngressSourceHbaLines(
   input: BuildRuntimeSpecInput,
-  peerAddresses: readonly string[],
+  peerAddresses: readonly string[]
 ): string[] {
   const ingressSources = new Set<string>()
-  for (
-    const source of [
-      ...peerAddresses,
-      ...(input.member?.clientSourceAddresses ?? []),
-    ]
-  ) {
+  for (const source of [...peerAddresses, ...(input.member?.clientSourceAddresses ?? [])]) {
     const addr = peerHbaAddress(source)
     if (addr) ingressSources.add(addr)
   }
-  return [...ingressSources].map((addr) =>
-    `hostssl all             all             ${addr}                 scram-sha-256`
+  return [...ingressSources].map(
+    (addr) => `hostssl all             all             ${addr}                 scram-sha-256`
   )
 }
 
 function buildReplicationHbaLines(
   replUser: string | undefined,
-  peerAddresses: readonly string[],
+  peerAddresses: readonly string[]
 ): string[] {
   if (!replUser || peerAddresses.length === 0) return []
   const out: string[] = []
@@ -325,9 +302,7 @@ function buildReplicationHbaLines(
   for (const peer of peerAddresses) {
     const addr = peerHbaAddress(peer)
     if (addr) {
-      out.push(
-        `hostssl replication     ${replUser}        ${addr}                 scram-sha-256`,
-      )
+      out.push(`hostssl replication     ${replUser}        ${addr}                 scram-sha-256`)
     } else {
       hasLocalPeer = true
     }
@@ -337,16 +312,13 @@ function buildReplicationHbaLines(
     // replication uses database=replication, which is not covered by
     // `hostssl all`.
     out.push(
-      `hostssl replication     ${replUser}        ${MANAGED_DOCKER_NETWORK_CIDR}       scram-sha-256`,
+      `hostssl replication     ${replUser}        ${MANAGED_DOCKER_NETWORK_CIDR}       scram-sha-256`
     )
   }
   return out
 }
 
-function buildPlatformPgHba(
-  input: BuildRuntimeSpecInput,
-  rootUsername: string,
-): string {
+function buildPlatformPgHba(input: BuildRuntimeSpecInput, rootUsername: string): string {
   const lines = [
     '# TurboPanel managed PostgreSQL — platform pg_hba (do not edit)',
     '# local socket for engine admin',
@@ -359,26 +331,17 @@ function buildPlatformPgHba(
   const peerAddresses = input.member?.replication?.peerAddresses ?? []
   lines.push(
     ...buildIngressSourceHbaLines(input, peerAddresses),
-    ...buildReplicationHbaLines(
-      input.member?.replication?.username,
-      peerAddresses,
-    ),
+    ...buildReplicationHbaLines(input.member?.replication?.username, peerAddresses),
     // Reject everything else over the published private listener.
     'host    all             all             all                     reject',
-    '',
+    ''
   )
   return lines.join('\n')
 }
 
-function buildHealthcheck(
-  rootUsername: string,
-  database: string,
-): ManagedRuntimeHealthcheck {
+function buildHealthcheck(rootUsername: string, database: string): ManagedRuntimeHealthcheck {
   return {
-    test: [
-      'CMD-SHELL',
-      `pg_isready -U ${rootUsername} -d ${database}`,
-    ],
+    test: ['CMD-SHELL', `pg_isready -U ${rootUsername} -d ${database}`],
     interval: '10s',
     timeout: '5s',
     retries: 5,
@@ -389,7 +352,7 @@ function buildHealthcheck(
 function applyDockerOptions(
   service: Record<string, unknown>,
   env: Record<string, string>,
-  settings: PostgresManagedSettings,
+  settings: PostgresManagedSettings
 ): void {
   const opts = settings.dockerOptions
   if (!opts) return
@@ -398,9 +361,7 @@ function applyDockerOptions(
     service.restart = opts.restart
   }
   if (opts.stopGracePeriodSeconds !== undefined) {
-    service.stop_grace_period = formatStopGracePeriod(
-      opts.stopGracePeriodSeconds,
-    )
+    service.stop_grace_period = formatStopGracePeriod(opts.stopGracePeriodSeconds)
   }
   if (opts.shmSizeBytes !== undefined) {
     service.shm_size = opts.shmSizeBytes
@@ -480,10 +441,7 @@ function buildRuntimeSpec(input: BuildRuntimeSpecInput): ManagedRuntimeSpec {
     // `pg_reload_conf()` would reload stale (or orphaned-unreadable) content.
     // The sibling mountpoint (`/etc/postgresql/conf`) also avoids nesting
     // `./tls` under a read-only `./config` parent (OCI mkdirat fail).
-    volumes: [
-      `${volumeName}:${DATA_VOLUME_TARGET}`,
-      `./config:/etc/postgresql/conf:ro`,
-    ],
+    volumes: [`${volumeName}:${DATA_VOLUME_TARGET}`, `./config:/etc/postgresql/conf:ro`],
     healthcheck: {
       test: healthcheck.test,
       interval: healthcheck.interval,
@@ -561,10 +519,9 @@ function formatSslMode(mode: ManagedSslMode): string {
   return mode
 }
 
-function buildConnectionInfo(
-  input: BuildConnectionInfoInput,
-): ManagedConnectionInfo {
-  const dsn = `postgresql://${encodeURIComponent(input.username)}:***@` +
+function buildConnectionInfo(input: BuildConnectionInfoInput): ManagedConnectionInfo {
+  const dsn =
+    `postgresql://${encodeURIComponent(input.username)}:***@` +
     `${input.host}:${input.port}/${encodeURIComponent(input.database)}` +
     `?sslmode=${formatSslMode(input.sslMode)}`
   return {
@@ -576,9 +533,7 @@ function buildConnectionInfo(
   }
 }
 
-function buildBindingDsn(
-  input: BuildConnectionInfoInput & { password: string },
-): string {
+function buildBindingDsn(input: BuildConnectionInfoInput & { password: string }): string {
   return (
     `postgresql://${encodeURIComponent(input.username)}:` +
     `${encodeURIComponent(input.password)}@` +
