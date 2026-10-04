@@ -4,6 +4,10 @@ import {
   type parseDatacenterOptions,
   resolveDatacenterPolicy,
 } from '../../features/datacenters/datacenter-options.ts'
+import {
+  serverTrafficStatus,
+  type ServerTrafficStatus,
+} from '../../features/datacenters/server-traffic.ts'
 import { suggestDatacenterDisplayNameFromGeo } from '../../features/datacenters/datacenter-name-suggestions.ts'
 import { parseServerGeo } from '../../features/geo/server-geo.ts'
 import {
@@ -233,6 +237,23 @@ export function attachEffectivePolicy<T extends { options: unknown }>(
   return rows.map((row) => ({
     ...row,
     ...resolveDatacenterPolicy(row.options),
+  }))
+}
+
+/**
+ * Surface, per datacenter, whether it carries server-to-server traffic and
+ * whether another trusted datacenter shares its number. Takes rows that already
+ * carry the effective `priority` / `trusted` (see {@link attachEffectivePolicy}).
+ */
+export function attachServerTraffic<T extends { id: string } & DatacenterPolicy>(
+  rows: readonly T[]
+): Array<T & { serverTraffic: ServerTrafficStatus }> {
+  const status = serverTrafficStatus(
+    rows.map((row) => ({ id: row.id, priority: row.priority, trusted: row.trusted }))
+  )
+  return rows.map((row) => ({
+    ...row,
+    serverTraffic: status.get(row.id) ?? { wins: false, tied: false },
   }))
 }
 

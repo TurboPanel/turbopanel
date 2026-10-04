@@ -448,6 +448,19 @@ sourceServerId? }`
   `src/lib/ip-address.ts`; `src/features/fabric/cidr.ts` keeps only IPv4 pool
   arithmetic and delegates its overlap helpers there.
 
+- **Server-to-server network choice (`POST /datacenters/:id/server-traffic`
+  `{ preferred: true }`):** the point-and-click form of the priority rule, so
+  nobody has to type a number. `planServerTrafficChoice`
+  (`src/features/datacenters/server-traffic.ts`, pure) gives the chosen trusted
+  datacenter the lowest number among the organization's trusted datacenters
+  (10, or 0 when a rival is at 10 or lower; a rival at 0 moves every trusted
+  rival up by 10, capped at 1000) and writes only the numbers that change, in
+  one transaction, then runs the same routing fan-out a priority PATCH does.
+  An untrusted datacenter is **409** `datacenter_not_trusted`. `GET
+  /datacenters` adds `serverTraffic: { wins, tied }` per row and a top-level
+  `warnings` list (`equal_priority`, one per shared number among trusted
+  datacenters); the raw number stays editable through PATCH under Advanced.
+
 - **Compose hosting projection (client surface):** `x-turbopanel.hosting[]` is
   the _declaration_; `hosting` rows are the _record_. `reconcile-hostings.ts`
   runs inside deploy-prepare, before anything reads a route, and materializes
