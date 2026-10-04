@@ -191,9 +191,10 @@ async function discardNonCurrentMetricsStore(paths: DuckDbPaths): Promise<void> 
     return
   }
   if (state.kind === 'missing' && !(await metricsStoreHasData(paths))) return
+  const described =
+    state.kind === 'version' ? 'newer (' + state.value + ') than this build' : state.kind
   throw new Error(
-    `DuckDB metrics schema marker at ${schemaMarkerPath(paths)} is ` +
-      `${state.kind === 'version' ? `newer (${state.value}) than this build` : state.kind}; ` +
+    `DuckDB metrics schema marker at ${schemaMarkerPath(paths)} is ${described}; ` +
       'refusing to delete the metrics store. Fix or remove the marker, or remove the metrics ' +
       'directory yourself to start fresh.'
   )
