@@ -19,7 +19,8 @@ import {
   findLatestAcceptedAutomaticFailover,
   findLatestRecovery,
   findRecoveryById,
-  insertRecovery,
+  insertRecoveryIfFree,
+  recordBlockedRecovery,
   type RecoveryPatch,
   updateRecovery,
   updateRecoveryLocked,
@@ -553,7 +554,7 @@ async function beginRecovery(params: {
   }
 
   const haPresent = await detectHaPresent(params.db, params.members)
-  const recovery = await insertRecovery(params.db, {
+  const recovery = await insertRecoveryIfFree(params.db, {
     managedId: params.managedId,
     kind: params.kind,
     sourcePrimaryMemberId: params.source.id,
@@ -566,6 +567,8 @@ async function beginRecovery(params: {
       ...params.extraMetadata,
     },
   })
+  // Lost the race for the in-flight slot to a concurrent recovery.
+  if (!recovery) return { ok: false, error: 'managed_busy', status: 409 }
 
   const sourceOnline = await isServerConnected(params.db, params.source.serverId)
   if (!sourceOnline) {
@@ -671,13 +674,46 @@ async function recordAutoFailoverDisabled(params: {
     'managed-ha',
     `automatic failover for ${params.managedId} not started: ${AUTOMATIC_FAILOVER_DISABLED_REASON}`
   )
-  return insertRecovery(params.db, {
+  return recordBlockedRecovery(params.db, {
     managedId: params.managedId,
     kind: 'automatic-failover',
     sourcePrimaryMemberId: primary.id,
     state: 'blocked',
     metadata: {
       blockedReason: AUTOMATIC_FAILOVER_DISABLED_MESSAGE,
+      sourceServerId: primary.serverId,
+      ...detectorMetadata(params.detector, params.evidence),
+    },
+  })
+}
+
+/**
+ * A dead-primary report that does not name the current primary: record it as
+ * a TERMINAL stale row (no target, so it never counts for the cooldown) and do
+ * nothing else. Never fences, never promotes.
+ */
+export async function recordStaleDeadPrimaryReport(params: {
+  db: Db
+  managedId: string
+  members: readonly ManagedMemberRow[]
+  reason: string
+  detector?: string
+  evidence?: string
+}): Promise<RecoveryRecord | null> {
+  const primary = params.members.find((row) => row.role === 'primary')
+  if (!primary) return null
+  compatLogWarn(
+    'managed-ha',
+    `stale dead-primary report for ${params.managedId} ignored: ${params.reason}`
+  )
+  return recordBlockedRecovery(params.db, {
+    managedId: params.managedId,
+    kind: 'automatic-failover',
+    sourcePrimaryMemberId: primary.id,
+    state: 'blocked',
+    metadata: {
+      stale: true,
+      blockedReason: `Ignored stale dead-primary report: ${params.reason}`,
       sourceServerId: primary.serverId,
       ...detectorMetadata(params.detector, params.evidence),
     },
@@ -718,7 +754,7 @@ export async function beginAutomaticFailover(params: {
       params.members.find((row) => row.role === 'primary') ??
       params.members.find((row) => row.id === params.sourceMemberId)
     if (!coolingPrimary) return null
-    return insertRecovery(params.db, {
+    return recordBlockedRecovery(params.db, {
       managedId: params.managedId,
       kind: 'automatic-failover',
       sourcePrimaryMemberId: coolingPrimary.id,
@@ -741,7 +777,7 @@ export async function beginAutomaticFailover(params: {
   const candidate = OrchestratorManagedHaAuthority.pickAutomaticCandidate(inputs)
   if (!candidate) {
     const cause = automaticFailoverBlockCause(inputs) ?? 'no-candidate'
-    return insertRecovery(params.db, {
+    return recordBlockedRecovery(params.db, {
       managedId: params.managedId,
       kind: 'automatic-failover',
       sourcePrimaryMemberId: primary.id,
@@ -765,7 +801,7 @@ export async function beginAutomaticFailover(params: {
       'managed-ha',
       `automatic failover for ${params.managedId} not started: ${AUTOMATIC_FAILOVER_NO_QUEUE_REASON}`
     )
-    return insertRecovery(params.db, {
+    return recordBlockedRecovery(params.db, {
       managedId: params.managedId,
       kind: 'automatic-failover',
       sourcePrimaryMemberId: primary.id,

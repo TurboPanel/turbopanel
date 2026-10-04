@@ -35,9 +35,7 @@ type ExistingRow = {
   options: unknown
 }
 
-function composeDoc(
-  services: Record<string, unknown>,
-): ComposeDocument {
+function composeDoc(services: Record<string, unknown>): ComposeDocument {
   return {
     version: 1,
     data: { services },
@@ -47,7 +45,7 @@ function composeDoc(
 
 function hostingService(
   hostingEntries: unknown[],
-  extra: Record<string, unknown> = {},
+  extra: Record<string, unknown> = {}
 ): Record<string, unknown> {
   return {
     image: 'nginx:alpine',
@@ -61,13 +59,16 @@ function hostingService(
 function composeOwnedMetadata(
   composeServiceName: string,
   route: string,
-  adopted = false,
+  adopted = false
 ): Record<string, unknown> {
-  return withHostingComposeOwner({}, {
-    composeServiceName,
-    route,
-    ...(adopted ? { adopted: true } : {}),
-  })
+  return withHostingComposeOwner(
+    {},
+    {
+      composeServiceName,
+      route,
+      ...(adopted ? { adopted: true } : {}),
+    }
+  )
 }
 
 function createReconcileDb(opts: {
@@ -77,20 +78,29 @@ function createReconcileDb(opts: {
 }) {
   return createMemoryDb([
     [hosting, opts.hostingRows ?? []],
-    [service, [
-      { id: SVC_WEB, environmentId: ENV_ID },
-      { id: SVC_OTHER, environmentId: ENV_ID },
-    ]],
-    [tls, (opts.tlsRows ?? []).map((row) => ({
-      id: row.id,
-      name: row.label,
-      organizationId: ORG_ID,
-    }))],
-    [ip, (opts.ipRows ?? []).map((row) => ({
-      id: row.id,
-      address: row.label,
-      organizationId: ORG_ID,
-    }))],
+    [
+      service,
+      [
+        { id: SVC_WEB, environmentId: ENV_ID },
+        { id: SVC_OTHER, environmentId: ENV_ID },
+      ],
+    ],
+    [
+      tls,
+      (opts.tlsRows ?? []).map((row) => ({
+        id: row.id,
+        name: row.label,
+        organizationId: ORG_ID,
+      })),
+    ],
+    [
+      ip,
+      (opts.ipRows ?? []).map((row) => ({
+        id: row.id,
+        address: row.label,
+        organizationId: ORG_ID,
+      })),
+    ],
     [hostname, []],
   ])
 }
@@ -151,14 +161,16 @@ test('reconcileHostingsFromCompose creates a row and pins TLS/IP by id or label,
     organizationId: ORG_ID,
     environmentId: ENV_ID,
     merged: composeDoc({
-      web: hostingService([{
-        hostname: HOSTNAME,
-        pathPrefix: '/app',
-        targetPort: 8080,
-        forceHttps: true,
-        tls: { mode: 'certificate', certificateRef: 'tls-1' },
-        bind: { scope: 'public', ipRef: '203.0.113.10' },
-      }]),
+      web: hostingService([
+        {
+          hostname: HOSTNAME,
+          pathPrefix: '/app',
+          targetPort: 8080,
+          forceHttps: true,
+          tls: { mode: 'certificate', certificateRef: 'tls-1' },
+          bind: { scope: 'public', ipRef: '203.0.113.10' },
+        },
+      ]),
     }),
     serviceRows: [{ id: SVC_WEB, composeServiceName: 'web' }],
   })
@@ -184,10 +196,15 @@ test('reconcileHostingsFromCompose drops targetPort on site services', async () 
     organizationId: ORG_ID,
     environmentId: ENV_ID,
     merged: composeDoc({
-      web: hostingService([{
-        hostname: HOSTNAME,
-        targetPort: 8080,
-      }], { serviceKind: 'site' }),
+      web: hostingService(
+        [
+          {
+            hostname: HOSTNAME,
+            targetPort: 8080,
+          },
+        ],
+        { serviceKind: 'site' }
+      ),
     }),
     serviceRows: [{ id: SVC_WEB, composeServiceName: 'web' }],
   })
@@ -199,12 +216,14 @@ test('reconcileHostingsFromCompose drops targetPort on site services', async () 
 test('reconcileHostingsFromCompose updates an existing compose-owned row and replaces its hostname row', async () => {
   const existingId = 'host-existing'
   const db = createReconcileDb({
-    hostingRows: [{
-      id: existingId,
-      serviceId: SVC_WEB,
-      metadata: composeOwnedMetadata('web', ROUTE),
-      options: { hostnames: [HOSTNAME], web: { env: { KEEP: '1' } } },
-    }],
+    hostingRows: [
+      {
+        id: existingId,
+        serviceId: SVC_WEB,
+        metadata: composeOwnedMetadata('web', ROUTE),
+        options: { hostnames: [HOSTNAME], web: { env: { KEEP: '1' } } },
+      },
+    ],
   })
   db.rows(hostname).push({
     id: 'hn-existing',
@@ -238,12 +257,14 @@ test('reconcileHostingsFromCompose updates an existing compose-owned row and rep
 test('reconcileHostingsFromCompose adopts a matching panel-authored row', async () => {
   const panelId = 'host-panel'
   const db = createReconcileDb({
-    hostingRows: [{
-      id: panelId,
-      serviceId: SVC_WEB,
-      metadata: { note: 'panel' },
-      options: { hostnames: [HOSTNAME], pathPrefix: '/' },
-    }],
+    hostingRows: [
+      {
+        id: panelId,
+        serviceId: SVC_WEB,
+        metadata: { note: 'panel' },
+        options: { hostnames: [HOSTNAME], pathPrefix: '/' },
+      },
+    ],
   })
   const result = await reconcileHostingsFromCompose(db, {
     organizationId: ORG_ID,
@@ -264,15 +285,17 @@ test('reconcileHostingsFromCompose adopts a matching panel-authored row', async 
 
 test('reconcileHostingsFromCompose reports a multi-hostname panel conflict', async () => {
   const db = createReconcileDb({
-    hostingRows: [{
-      id: 'host-multi',
-      serviceId: SVC_WEB,
-      metadata: {},
-      options: {
-        hostnames: [HOSTNAME, 'www.example.com'],
-        pathPrefix: '/',
+    hostingRows: [
+      {
+        id: 'host-multi',
+        serviceId: SVC_WEB,
+        metadata: {},
+        options: {
+          hostnames: [HOSTNAME, 'www.example.com'],
+          pathPrefix: '/',
+        },
       },
-    }],
+    ],
   })
   const result = await reconcileHostingsFromCompose(db, {
     organizationId: ORG_ID,
@@ -337,10 +360,12 @@ test('reconcileHostingsFromCompose refuses automatic TLS mode', async () => {
     organizationId: ORG_ID,
     environmentId: ENV_ID,
     merged: composeDoc({
-      web: hostingService([{
-        hostname: HOSTNAME,
-        tls: { mode: 'automatic' },
-      }]),
+      web: hostingService([
+        {
+          hostname: HOSTNAME,
+          tls: { mode: 'automatic' },
+        },
+      ]),
     }),
     serviceRows: [{ id: SVC_WEB, composeServiceName: 'web' }],
   })
@@ -361,13 +386,15 @@ test('reconcileHostingsFromCompose reports unresolved and ambiguous TLS refs', a
       organizationId: ORG_ID,
       environmentId: ENV_ID,
       merged: composeDoc({
-        web: hostingService([{
-          hostname: HOSTNAME,
-          tls: { mode: 'certificate', certificateRef: 'missing-cert' },
-        }]),
+        web: hostingService([
+          {
+            hostname: HOSTNAME,
+            tls: { mode: 'certificate', certificateRef: 'missing-cert' },
+          },
+        ]),
       }),
       serviceRows: [{ id: SVC_WEB, composeServiceName: 'web' }],
-    },
+    }
   )
   assertEquals(missing, {
     ok: false,
@@ -391,13 +418,15 @@ test('reconcileHostingsFromCompose reports unresolved and ambiguous TLS refs', a
       organizationId: ORG_ID,
       environmentId: ENV_ID,
       merged: composeDoc({
-        web: hostingService([{
-          hostname: HOSTNAME,
-          tls: { mode: 'certificate', certificateRef: 'shared' },
-        }]),
+        web: hostingService([
+          {
+            hostname: HOSTNAME,
+            tls: { mode: 'certificate', certificateRef: 'shared' },
+          },
+        ]),
       }),
       serviceRows: [{ id: SVC_WEB, composeServiceName: 'web' }],
-    },
+    }
   )
   assertEquals(ambiguous.ok, false)
   if (ambiguous.ok) throw new TypeError('expected ambiguous TLS ref')
@@ -417,13 +446,15 @@ test('reconcileHostingsFromCompose reports unresolved IP refs', async () => {
       organizationId: ORG_ID,
       environmentId: ENV_ID,
       merged: composeDoc({
-        web: hostingService([{
-          hostname: HOSTNAME,
-          bind: { scope: 'public', ipRef: '198.51.100.10' },
-        }]),
+        web: hostingService([
+          {
+            hostname: HOSTNAME,
+            bind: { scope: 'public', ipRef: '198.51.100.10' },
+          },
+        ]),
       }),
       serviceRows: [{ id: SVC_WEB, composeServiceName: 'web' }],
-    },
+    }
   )
   assertEquals(result, {
     ok: false,
@@ -454,12 +485,14 @@ test('reconcileHostingsFromCompose skips a declaration whose service row is miss
 
 test('reconcileHostingsFromCompose deletes orphaned compose-owned rows, cascading their hostname row', async () => {
   const db = createReconcileDb({
-    hostingRows: [{
-      id: 'host-orphan',
-      serviceId: SVC_WEB,
-      metadata: composeOwnedMetadata('web', 'gone.example.com /'),
-      options: { hostnames: ['gone.example.com'] },
-    }],
+    hostingRows: [
+      {
+        id: 'host-orphan',
+        serviceId: SVC_WEB,
+        metadata: composeOwnedMetadata('web', 'gone.example.com /'),
+        options: { hostnames: ['gone.example.com'] },
+      },
+    ],
   })
   db.rows(hostname).push({
     id: 'hn-orphan',
@@ -485,12 +518,14 @@ test('reconcileHostingsFromCompose deletes orphaned compose-owned rows, cascadin
 
 test('reconcileHostingsFromCompose releases adopted rows when the declaration disappears', async () => {
   const db = createReconcileDb({
-    hostingRows: [{
-      id: 'host-adopted',
-      serviceId: SVC_WEB,
-      metadata: composeOwnedMetadata('web', 'old.example.com /', true),
-      options: { hostnames: ['old.example.com'] },
-    }],
+    hostingRows: [
+      {
+        id: 'host-adopted',
+        serviceId: SVC_WEB,
+        metadata: composeOwnedMetadata('web', 'old.example.com /', true),
+        options: { hostnames: ['old.example.com'] },
+      },
+    ],
   })
   const result = await reconcileHostingsFromCompose(db, {
     organizationId: ORG_ID,
@@ -509,12 +544,14 @@ test('reconcileHostingsFromCompose releases adopted rows when the declaration di
 
 test('reconcileHostingsFromCompose ignores compose-owned rows without a route key', async () => {
   const db = createReconcileDb({
-    hostingRows: [{
-      id: 'host-unkeyed',
-      serviceId: SVC_WEB,
-      metadata: { composeOwned: true },
-      options: { hostnames: [HOSTNAME] },
-    }],
+    hostingRows: [
+      {
+        id: 'host-unkeyed',
+        serviceId: SVC_WEB,
+        metadata: { composeOwned: true },
+        options: { hostnames: [HOSTNAME] },
+      },
+    ],
   })
   const result = await reconcileHostingsFromCompose(db, {
     organizationId: ORG_ID,
@@ -535,6 +572,64 @@ test('reconcileHostingsFromCompose ignores compose-owned rows without a route ke
     typeof (hostingRow(db, result.created[0]!)?.metadata as Record<string, unknown>)[
       HOSTING_COMPOSE_ROUTE_METADATA_KEY
     ],
-    'string',
+    'string'
+  )
+})
+
+test('reconcileHostingsFromCompose retires a renamed service row before inserting its replacement', async () => {
+  const db = createReconcileDb({
+    hostingRows: [
+      {
+        id: 'host-old',
+        serviceId: SVC_WEB,
+        metadata: composeOwnedMetadata('web', ROUTE),
+        options: { hostnames: [HOSTNAME] },
+      },
+    ],
+  })
+  const result = await reconcileHostingsFromCompose(db, {
+    organizationId: ORG_ID,
+    environmentId: ENV_ID,
+    merged: composeDoc({ other: hostingService([{ hostname: HOSTNAME }]) }),
+    serviceRows: [{ id: SVC_OTHER, composeServiceName: 'other' }],
+  })
+  if (!result.ok) throw new TypeError('expected rename to succeed')
+  assertEquals(result.removed, ['host-old'])
+  assertEquals(result.created.length, 1)
+  assertEquals(
+    db.rows(hosting).map((row) => row.serviceId),
+    [SVC_OTHER]
+  )
+})
+
+test('reconcileHostingsFromCompose leaves a stale row in place when a later route is rejected', async () => {
+  const db = createReconcileDb({
+    hostingRows: [
+      {
+        id: 'host-old',
+        serviceId: SVC_WEB,
+        metadata: composeOwnedMetadata('web', ROUTE),
+        options: { hostnames: [HOSTNAME] },
+      },
+    ],
+  })
+  const result = await reconcileHostingsFromCompose(db, {
+    organizationId: ORG_ID,
+    environmentId: ENV_ID,
+    merged: composeDoc({
+      other: hostingService([
+        {
+          hostname: 'next.example.test',
+          tls: { mode: 'certificate', certificateRef: 'missing-cert' },
+        },
+      ]),
+    }),
+    serviceRows: [{ id: SVC_OTHER, composeServiceName: 'other' }],
+  })
+  assertEquals(result.ok, false)
+  // The old row was retired before the rejected route; the rollback restored it.
+  assertEquals(
+    db.rows(hosting).map((row) => row.id),
+    ['host-old']
   )
 })

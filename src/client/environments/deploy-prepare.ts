@@ -30,6 +30,7 @@ import {
   resolveAcmeEnabled,
   resolveComposeDefaultResourceLimits,
   resolveComposeGatedFieldsEnabled,
+  resolveComposeRemoteBuildSourcesEnabled,
   resolveDeployHooksEnabled,
 } from '../../features/organizations/organization-options.ts'
 import {
@@ -101,6 +102,7 @@ import {
 } from '../../features/principals/store.ts'
 import { renderPhpForDeploy } from '../../features/hostings/php-settings.ts'
 import { type PhpModePrepareError, withSitePhpModes } from './deploy-php-modes.ts'
+import { PHP_SITE_MODES_FEATURE } from '../../lib/version-wire.ts'
 import {
   isComposeChainError,
   resolveComposeLayerChain,
@@ -2554,11 +2556,10 @@ async function loadDeployComposeContext(
   // which is entitled to assume every `deploy:` key it still sees is one the
   // registry says we handle, and before the reconciles below write rows.
   if (!params.composeValidated) {
-    const composeGatedFieldsEnabled = resolveComposeGatedFieldsEnabled(
-      parseOrganizationOptions(orgRow?.options)
-    )
+    const orgOptions = parseOrganizationOptions(orgRow?.options)
     const rejected = validateComposeForDeploy(merged, {
-      composeGatedFieldsEnabled,
+      composeGatedFieldsEnabled: resolveComposeGatedFieldsEnabled(orgOptions),
+      composeRemoteBuildSourcesEnabled: resolveComposeRemoteBuildSourcesEnabled(orgOptions),
     })
     if (rejected) return { ok: false, failure: rejected }
   }
@@ -2727,7 +2728,8 @@ async function resolveManagedNetworkHostName(
 }
 
 /**
- * Persist Node runtime entitlements implied by this deploy.
+ * Persist the runtime entitlements this deploy implies (Node for native apps,
+ * PHP for per-site FastCGI / php-fpm runtimes).
  *
  * Preview must not write. Empty lists are a no-op inside the store helper.
  */
@@ -2955,9 +2957,12 @@ export async function prepareDeployCompose(
   // Task rows (`POST /tasks`) join compose-authored cron on the wire for
   // sites and native apps alike — loaded once here, keyed by compose name.
   const tasksByComposeName = await loadTasksByComposeServiceName(db, serviceRows)
+  const phpDaemonState = await getServerDaemonStateByServerId(db, params.serverId)
   const siteResolved = await withSitePhpModes(
     db,
     {
+      daemonRunsModes:
+        phpDaemonState?.projection?.features?.includes(PHP_SITE_MODES_FEATURE) === true,
       environmentId: params.environmentId,
       serverId: params.serverId,
       localServiceNames: pipeline.localServiceNames,
@@ -3012,6 +3017,7 @@ export async function prepareDeployCompose(
       principalMaterial,
       nativeAppServices: localNativeApps,
       sourceMaterial: localSourceMaterial,
+      sites: localSite,
     })
   await persistDeployRuntimeEntitlements(db, mode, deployEntitlements)
 

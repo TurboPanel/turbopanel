@@ -45,6 +45,7 @@ import { postgresEngineSpec } from '../../features/managed/postgres.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { managedSessionPaths } from '../../features/managed/routes-helpers.ts'
 import { registerManagedRoutes } from './routes.ts'
+import { SERVER_OFFLINE_BODY } from './context.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -1965,9 +1966,11 @@ test('GET logs returns 409 when the pinned server is offline', async () => {
     }),
     registry: stubRegistry(),
   })
-  await expectJson(await app.request(envPath('/logs'), { headers: authHeaders(cookie) }), 409, {
-    error: 'server_offline',
-  })
+  await expectJson(
+    await app.request(envPath('/logs'), { headers: authHeaders(cookie) }),
+    409,
+    SERVER_OFFLINE_BODY
+  )
 })
 
 test('GET logs returns the cell transcript when the host is online', async () => {
@@ -2000,7 +2003,7 @@ test('POST apply returns 409 when the pinned server is offline', async () => {
       headers: authHeaders(cookie),
     }),
     409,
-    { error: 'server_offline' }
+    SERVER_OFFLINE_BODY
   )
 })
 
@@ -2183,7 +2186,7 @@ test('POST lifecycle / backups / restore require an online host', async () => {
       body: JSON.stringify({ action: 'start' }),
     }),
     409,
-    { error: 'server_offline' }
+    SERVER_OFFLINE_BODY
   )
   await expectJson(
     await app.request(envPath('/backups'), {
@@ -2192,7 +2195,7 @@ test('POST lifecycle / backups / restore require an online host', async () => {
       body: JSON.stringify({}),
     }),
     409,
-    { error: 'server_offline' }
+    SERVER_OFFLINE_BODY
   )
   await expectJson(
     await app.request(envPath(`/backups/${BACKUP_ID}`), {
@@ -2200,7 +2203,7 @@ test('POST lifecycle / backups / restore require an online host', async () => {
       headers,
     }),
     409,
-    { error: 'server_offline' }
+    SERVER_OFFLINE_BODY
   )
   await expectJson(
     await app.request(envPath(`/backups/${BACKUP_ID}/restore`), {
@@ -2208,7 +2211,7 @@ test('POST lifecycle / backups / restore require an online host', async () => {
       headers,
     }),
     409,
-    { error: 'server_offline' }
+    SERVER_OFFLINE_BODY
   )
 })
 
@@ -2348,7 +2351,7 @@ test('POST promote force still requires an online host', async () => {
       body: JSON.stringify({ force: true }),
     }),
     409,
-    { error: 'server_offline' }
+    SERVER_OFFLINE_BODY
   )
 })
 

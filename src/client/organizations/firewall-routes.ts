@@ -1,6 +1,6 @@
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
-import type { AuthRouteOpts } from '../authn/http.ts'
+import { type AuthRouteOpts, resolveClientIp } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { assertCanManageOr403, parseJsonBody } from '../shared.ts'
 import { type Db, getDb } from '../../db/connection.ts'
@@ -12,7 +12,10 @@ import {
   parseEdictCreate,
   parseEdictPatch,
 } from '../../features/firewall/edict-input.ts'
-import { parseFirewallPolicyPatch } from '../../features/firewall/policy.ts'
+import {
+  parseFirewallPolicyPatch,
+  sshSourcesExcludeAddress,
+} from '../../features/firewall/policy.ts'
 import {
   createEdict,
   deleteEdict,
@@ -204,11 +207,31 @@ async function patchEdictResponse(c: Context<AppEnv>, scope: Scope): Promise<Res
   return c.json({ rule: toEdictApiRow(row) })
 }
 
-async function putPolicyResponse(c: Context<AppEnv>, scope: Scope): Promise<Response> {
+async function putPolicyResponse(
+  c: Context<AppEnv>,
+  scope: Scope,
+  runtime: 'deno' | 'workers'
+): Promise<Response> {
   const body = await parseJsonBody(c)
   if (body instanceof Response) return body
   const parsed = parseFirewallPolicyPatch(body)
   if (!parsed.ok) return c.json({ error: 'firewall_policy_invalid', message: parsed.error }, 400)
+  const callerIp = resolveClientIp(c, runtime)
+  const acknowledged = (body as { acknowledgeSshExcludesMe?: unknown }).acknowledgeSshExcludesMe
+  if (
+    parsed.patch.sshSources &&
+    acknowledged !== true &&
+    sshSourcesExcludeAddress(parsed.patch.sshSources, callerIp)
+  ) {
+    return c.json(
+      {
+        error: 'firewall_ssh_excludes_you',
+        message: `This list does not include your own address (${callerIp}). If it is applied, you could lose SSH access to your servers. Add your address, or save again with acknowledgeSshExcludesMe set to true if you are sure.`,
+        yourAddress: callerIp,
+      },
+      409
+    )
+  }
   const policy = await updateOrganizationFirewallPolicy(
     scope.db,
     scope.organizationId,
@@ -329,7 +352,7 @@ export function registerOrganizationFirewallRoutes(router: Hono<AppEnv>, opts: A
   router.put('/organizations/:id/firewall', async (c) => {
     const scope = await loadScope(c)
     if (scope instanceof Response) return scope
-    return await putPolicyResponse(c, scope)
+    return await putPolicyResponse(c, scope, opts.runtime)
   })
 
   router.get('/organizations/:id/firewall/rules', async (c) => {

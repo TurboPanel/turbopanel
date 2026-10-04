@@ -79,6 +79,7 @@ import { bumpEnvironmentGeneration } from '../../features/deploy/environment-gen
 import {
   type DeploymentTargetInput,
   listEnvironmentDeploymentTargets,
+  listReservedListenPorts,
   markDeploymentFailed,
   pruneDrainedDeployments,
   upsertDeploymentTargets,
@@ -531,6 +532,7 @@ type DeployCommandCreateParams = DeployActor & {
   engine: DeployEnginePlan
   /** The planner's host-level verdict (`PlannedDeploy.hostLevelApproved`). */
   hostLevelApproved: boolean
+  remoteBuildSourcesApproved: boolean
   generation: number
   desiredHash: string
   replicaCounts: Record<string, number>
@@ -644,6 +646,7 @@ async function createDeployCommand(
         managedNetwork: params.managedNetwork,
         noCache: params.noCache ? true : undefined,
         hostLevelApproved: params.hostLevelApproved ? true : undefined,
+        remoteBuildSourcesApproved: params.remoteBuildSourcesApproved ? true : undefined,
         ...params.engine.payload,
       }),
       listenerPorts: params.listenerPorts,
@@ -737,13 +740,17 @@ function createParamsForPreparedServer(
     noCache: boolean
     engine: DeployEnginePlan
     hostLevelApproved: boolean
+    remoteBuildSourcesApproved: boolean
     selection: DeploySourceSelection
+    /** Ports other environments already hold on this server; allocation probes past them. */
+    reservedListenPorts?: ReadonlySet<number>
   }
 ): DeployCommandCreateParams {
   // One loopback-port ledger for both host-native lanes: site vhosts
   // and native `node` apps are both reverse-proxied on 127.0.0.1, so allocating
-  // them separately could hand the same port to a site and an app.
-  const usedListenPorts = new Set<number>()
+  // them separately could hand the same port to a site and an app. It starts
+  // from the ports other environments hold on this server.
+  const usedListenPorts = new Set<number>(params.reservedListenPorts)
   return {
     serverId: row.serverId,
     actorType: params.actorType,
@@ -755,12 +762,18 @@ function createParamsForPreparedServer(
     projectName: params.projectName,
     composeFiles: row.prepared.composeFiles,
     hostings: row.prepared.hostings,
-    sites: buildSitesForDeploy(row.prepared.sites, row.prepared.hostings, usedListenPorts),
+    sites: buildSitesForDeploy(
+      row.prepared.sites,
+      row.prepared.hostings,
+      usedListenPorts,
+      params.environmentId
+    ),
     nativeAppServices: buildNativeAppServicesForDeploy(
       row.prepared.nativeAppServices,
       row.prepared.hostings,
       row.prepared.ingressServices,
-      usedListenPorts
+      usedListenPorts,
+      params.environmentId
     ),
     sourceMaterial: row.prepared.sourceMaterial,
     ingressServices: row.prepared.ingressServices,
@@ -785,6 +798,7 @@ function createParamsForPreparedServer(
     noCache: params.noCache,
     engine: params.engine,
     hostLevelApproved: params.hostLevelApproved,
+    remoteBuildSourcesApproved: params.remoteBuildSourcesApproved,
     generation: params.generation,
     desiredHash: row.prepared.desiredHash,
     replicaCounts: row.prepared.replicaCounts,
@@ -800,7 +814,16 @@ function createParamsForPreparedServer(
  * later stop or delete would leave it behind. See `site-releases.ts`.
  * `phpModes` is what each PHP site runs, which `deploy-php-modes.ts` reads
  * back so a site keeps its mode when the policy narrows.
+ * `listenPorts` is the loopback ports this deploy gave sites and native apps, which
+ * other environments on the same server read so they never take the same port.
  */
+function deployListenPorts(params: DeployCommandCreateParams): number[] {
+  return [
+    ...(params.sites ?? []).map((site) => site.listenPort),
+    ...(params.nativeAppServices ?? []).map((app) => app.listenPort),
+  ]
+}
+
 function deploymentTargetsForFanOut(params: {
   preparedByServer: readonly PreparedServerDeploy[]
   planServerIds: readonly string[]
@@ -809,6 +832,8 @@ function deploymentTargetsForFanOut(params: {
   created: readonly CreatedDeployCommand[]
   /** Release trees the current compose declares, recorded per target. */
   siteReleases: readonly EnvironmentSiteRelease[]
+  /** Loopback ports each server's deploy allocated, so the next allocation avoids them. */
+  listenPortsByServer: ReadonlyMap<string, readonly number[]>
   /** Server ids per rollout batch; a single batch records nothing extra. */
   batches: readonly (readonly string[])[]
 }): DeploymentTargetInput[] {
@@ -832,6 +857,7 @@ function deploymentTargetsForFanOut(params: {
           siteReleases: params.siteReleases,
           // The PHP mode each site was given, so the next deploy keeps it.
           phpModes: recordSitePhpModes(prepared?.sites),
+          listenPorts: params.listenPortsByServer.get(serverId) ?? [],
           ...(rollout === undefined ? {} : { rollout }),
         },
       }
@@ -878,6 +904,7 @@ async function persistDeployFanOut(
     noCache: boolean
     engine: DeployEnginePlan
     hostLevelApproved: boolean
+    remoteBuildSourcesApproved: boolean
     selection: DeploySourceSelection
     /** Release trees to record on each target — see `deploymentTargetsForFanOut`. */
     siteReleases: readonly EnvironmentSiteRelease[]
@@ -895,26 +922,34 @@ async function persistDeployFanOut(
       slots: params.slots,
     })
 
+    const reservedPorts = await listReservedListenPorts(tx, {
+      environmentId: params.environmentId,
+      serverIds: params.preparedByServer.map((row) => row.serverId),
+    })
+    const listenPortsByServer = new Map<string, number[]>()
+
     // One transaction connection: the writes must stay ordered.
     const created = await mapSequential(
       params.preparedByServer,
-      (row): Promise<CreatedDeployCommand> =>
-        createDeployCommand(
-          tx,
-          createParamsForPreparedServer(row, {
-            actorType: params.actorType,
-            actorId: params.actorId,
-            environmentId: params.environmentId,
-            projectId: params.projectId,
-            organizationId: params.organizationId,
-            projectName: params.projectName,
-            generation,
-            noCache: params.noCache,
-            engine: params.engine,
-            hostLevelApproved: params.hostLevelApproved,
-            selection: params.selection,
-          })
-        )
+      (row): Promise<CreatedDeployCommand> => {
+        const createParams = createParamsForPreparedServer(row, {
+          actorType: params.actorType,
+          actorId: params.actorId,
+          environmentId: params.environmentId,
+          projectId: params.projectId,
+          organizationId: params.organizationId,
+          projectName: params.projectName,
+          generation,
+          noCache: params.noCache,
+          engine: params.engine,
+          hostLevelApproved: params.hostLevelApproved,
+          remoteBuildSourcesApproved: params.remoteBuildSourcesApproved,
+          selection: params.selection,
+          reservedListenPorts: reservedPorts.get(row.serverId),
+        })
+        listenPortsByServer.set(row.serverId, deployListenPorts(createParams))
+        return createDeployCommand(tx, createParams)
+      }
     )
 
     await upsertDeploymentTargets(tx, {
@@ -926,6 +961,7 @@ async function persistDeployFanOut(
         generation,
         created,
         siteReleases: params.siteReleases,
+        listenPortsByServer,
         batches,
       }),
     })
@@ -1801,6 +1837,7 @@ async function runEnvironmentDeploy(
       noCache: auth.noCache,
       engine,
       hostLevelApproved: planned.hostLevelApproved,
+      remoteBuildSourcesApproved: planned.remoteBuildSourcesApproved,
       selection: auth.selection,
       siteReleases,
     })

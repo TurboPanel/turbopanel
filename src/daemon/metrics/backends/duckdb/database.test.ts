@@ -192,3 +192,25 @@ it('openDuckDb keeps parquet when the current marker (5) is already present', as
     await Deno.remove(metricsDir, { recursive: true })
   }
 })
+
+it('openDuckDb discards a marker-8 store and recreates the current layout', async () => {
+  const metricsDir = await Deno.makeTempDir({ prefix: 'tp-duckdb-open-cut-' })
+  try {
+    const paths = resolveDuckDbPaths(metricsDir)
+    ;(await openDuckDb({ paths })).close()
+    await Deno.writeTextFile(schemaMarkerPath(paths), '8')
+    const stale = `${paths.parquetRoot}/server_host_samples/year=2026`
+    await Deno.mkdir(stale, { recursive: true })
+    await Deno.writeTextFile(`${stale}/metrics.parquet`, 'stale')
+
+    const handle = await openDuckDb({ paths })
+    try {
+      assertEquals(await readSchemaMarker(paths), DUCKDB_SCHEMA_MARKER_VERSION)
+    } finally {
+      handle.close()
+    }
+    assertEquals(await fileExistsForTest(`${stale}/metrics.parquet`), false)
+  } finally {
+    await Deno.remove(metricsDir, { recursive: true })
+  }
+})

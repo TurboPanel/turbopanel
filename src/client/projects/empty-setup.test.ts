@@ -381,6 +381,26 @@ test('ensureProductionEnvironment skips update when already matching', async () 
   assertEquals(updated, false)
 })
 
+test('platform default environment name is lowercase production', () => {
+  assertEquals(DEFAULT_PRODUCTION_ENVIRONMENT_NAME, 'production')
+})
+
+test('ensureProductionEnvironment reuses a legacy Production row under the default', async () => {
+  const tx = createTxStub({
+    envRows: [
+      {
+        id: 'env-legacy',
+        name: 'Production',
+        description: DEFAULT_PRODUCTION_ENVIRONMENT_DESCRIPTION,
+        serverId: 'srv-1',
+      },
+    ],
+    insertedEnvId: 'env-should-not-insert',
+  })
+  const id = await ensureProductionEnvironment(tx, 'proj-1', 'srv-1')
+  assertEquals(id, 'env-legacy')
+})
+
 test('insertEmptyProject inserts project and environment', async () => {
   const tx = createTxStub({ insertedProjectId: 'proj-created' })
   const id = await insertEmptyProject(tx, {

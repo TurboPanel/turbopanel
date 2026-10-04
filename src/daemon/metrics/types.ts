@@ -80,12 +80,11 @@ export type AuthenticatedMetricsSample = MetricsSample & {
  * `queryHostSeries` / `queryHostSummary` instead, since a server has exactly
  * one of each, never many).
  *
- * `managed.ingress` / `managed.database_proxy` are included even though they
- * physically write one unpaged row per entity rather than a shared page
- * (`field-map.ts`'s `packSingleEntityRow`) — they still have multiple
- * entity instances per server, so they still need entity-scoped querying.
- * For these two families, the "entity id" is `sourceId` — distinct source
- * instances stay distinct entities even when they share a `sourceKind` — see
+ * `managed.ingress` / `managed.database_proxy` are included for entity-scoped
+ * querying even though the Analytics Engine v7 layout no longer writes rows of
+ * their own: Caddy totals ride `host.web` and ProxySQL rides
+ * `managed.database`, one source each (ids `caddy` and `proxysql`). DuckDB
+ * still stores one row per source, keyed by `sourceId`; see the
  * `EntitySeriesQuery.entityIds` doc comment.
  */
 export type PerEntityHostedFamily = Extract<
@@ -194,9 +193,9 @@ export type HostSummaryResult = {
  *    `block` -> `deviceId`, `hardware.physical` -> `signalId`: the contract
  *    entity id, matching `entity-metric-id.ts`'s per-entity identity.
  *  - `managed.ingress` / `managed.database_proxy` -> `sourceId`, **not**
- *    `sourceKind`. Cloudflare Analytics Engine writes `sourceId` to blob10 for
- *    these two families (`field-map.ts`'s `AE_BLOB_SOURCE_OR_IDENTITY_INDEX`
- *    doc comment) — `sourceKind` never reaches AE at all. DuckDB stores both
+ *    `sourceKind`. Cloudflare Analytics Engine v7 has a single fixed source
+ *    per family (`v7-layout.ts`'s `V7_SOURCE_IDS`) and writes no source id —
+ *    `sourceKind` never reaches AE at all. DuckDB stores both
  *    columns but groups by `source_id` here too so the two backends agree on
  *    what an "entity id" means for these families — two different sources of
  *    the same `sourceKind` (e.g. two Caddy instances) remain distinct

@@ -135,8 +135,14 @@ import {
   STORAGE_SAMPLES_TABLE,
   storageSamplesInsertColumns,
   storageSamplesMetricColumnNames,
+  V7_DOCKER_COLUMNS,
+  V7_HOST_COLUMNS,
+  V7_INGRESS_COLUMNS,
 } from './schema.ts'
 import {
+  EXTENDED_DOCKER_FIELD_NAMES,
+  EXTENDED_HOST_FIELD_NAMES,
+  EXTENDED_INGRESS_FIELD_NAMES,
   STORAGE_ENGINE_FIELD_NAMES,
   STORAGE_ENGINE_KEYS,
 } from '../../../../contracts/metrics-contract.ts'
@@ -320,6 +326,7 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
         ...HOST_GLOBAL_CPU_DIAGNOSTICS_FIELDS_LIST.map((field) =>
           input.diagnostics ? numericField(input.diagnostics.cpu, field) : null
         ),
+        ...EXTENDED_HOST_FIELD_NAMES.map((field) => extendedNumber(input.extended?.host, field)),
       ],
     })
 
@@ -395,6 +402,11 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
           ingress.sourceId,
           ingress.sourceKind,
           ...INGRESS_METRIC_FIELDS.map((field) => numericField(ingress, field)),
+          // Hosting Caddy is the only ingress source and the v7 section is
+          // host-wide, so its value rides every ingress row.
+          ...EXTENDED_INGRESS_FIELD_NAMES.map((field) =>
+            extendedNumber(input.extended?.ingress, field)
+          ),
         ],
       })
     }
@@ -453,6 +465,9 @@ export class DuckDbParquetServerMetricsStore implements ServerMetricsStore {
         values: [
           ...common,
           ...DOCKER_USAGE_METRIC_FIELDS.map((field) => numericField(dockerUsage, field)),
+          ...EXTENDED_DOCKER_FIELD_NAMES.map((field) =>
+            extendedNumber(input.extended?.docker, field)
+          ),
         ],
       })
     }
@@ -1256,6 +1271,11 @@ function numericField(source: unknown, field: string): number | null {
   return (source as Record<string, number | null>)[field] ?? null
 }
 
+/** One v7 `extended` numeric field: the real value, or SQL `NULL` when the section or field is absent (a v6 sample). */
+function extendedNumber(source: object | undefined, field: string): number | null {
+  return source ? numericField(source, field) : null
+}
+
 // ---------------------------------------------------------------------------
 // Per-table parameterized INSERT builders — column lists come from
 // `schema.ts` (the single source of truth also used for DDL); tuples here
@@ -1288,7 +1308,9 @@ function entityTuple(idPlaceholders: readonly string[], metricCount: number): st
 const HOST_COLUMNS = hostSamplesInsertColumns()
 const HOST_TUPLE = entityTuple(
   [],
-  HOST_METRIC_FIELD_REFS.length + HOST_GLOBAL_CPU_DIAGNOSTICS_FIELDS_LIST.length
+  HOST_METRIC_FIELD_REFS.length +
+    HOST_GLOBAL_CPU_DIAGNOSTICS_FIELDS_LIST.length +
+    V7_HOST_COLUMNS.length
 )
 
 const NETWORK_COLUMNS = networkSamplesInsertColumns()
@@ -1310,7 +1332,10 @@ const HARDWARE_SIGNAL_COLUMNS = hardwareSignalSamplesInsertColumns()
 const HARDWARE_SIGNAL_TUPLE = entityTuple(['?', '?'], 1)
 
 const INGRESS_COLUMNS = ingressSamplesInsertColumns()
-const INGRESS_TUPLE = entityTuple(['?', '?'], INGRESS_METRIC_FIELDS.length)
+const INGRESS_TUPLE = entityTuple(
+  ['?', '?'],
+  INGRESS_METRIC_FIELDS.length + V7_INGRESS_COLUMNS.length
+)
 
 const DATABASE_PROXY_COLUMNS = databaseProxySamplesInsertColumns()
 const DATABASE_PROXY_TUPLE = entityTuple(['?', '?'], DATABASE_PROXY_METRIC_FIELDS.length)
@@ -1327,7 +1352,7 @@ const STORAGE_TUPLE = entityTuple(
 )
 
 const DOCKER_COLUMNS = dockerSamplesInsertColumns()
-const DOCKER_TUPLE = entityTuple([], DOCKER_USAGE_METRIC_FIELDS.length)
+const DOCKER_TUPLE = entityTuple([], DOCKER_USAGE_METRIC_FIELDS.length + V7_DOCKER_COLUMNS.length)
 
 const EVENT_COLUMNS = metricEventsInsertColumns()
 const EVENT_TUPLE =

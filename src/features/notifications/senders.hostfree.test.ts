@@ -2,9 +2,14 @@ import { assertEquals, assertMatch } from '@std/assert'
 import type { DeliveryPayload } from './records.ts'
 import {
   chatBody,
+  DIGEST_TEXT_MAX,
+  type DigestMessage,
+  digestText,
+  digestWebhookBody,
   parseTelegramAddress,
   renderText,
   send,
+  sendDigest,
   signBody,
   webhookBody,
 } from './senders.ts'
@@ -153,4 +158,123 @@ test('a webhook 302 to an internal address is never followed and fails with redi
   assertEquals(outcome, { ok: false, error: 'redirect_blocked' })
   assertEquals(calls.length, 1)
   assertEquals(calls[0]!.init.redirect, 'manual')
+})
+
+const digest: DigestMessage = {
+  summary: 'daily',
+  total: 4,
+  groups: [
+    {
+      event: 'server.deleted',
+      severity: 'warning',
+      count: 3,
+      items: [
+        {
+          title: 'Server a deleted',
+          at: '2026-09-18T01:00:00.000Z',
+          url: null,
+        },
+        {
+          title: 'Server b deleted',
+          at: '2026-09-18T02:00:00.000Z',
+          url: null,
+        },
+      ],
+    },
+    {
+      event: 'site.created',
+      severity: 'info',
+      count: 1,
+      items: [
+        {
+          title: 'Site x created',
+          at: '2026-09-18T03:00:00.000Z',
+          url: null,
+        },
+      ],
+    },
+  ],
+  moreGroups: 2,
+  consoleUrl: 'https://panel.example.com',
+  at: '2026-09-18T08:00:00.000Z',
+}
+
+test('chat digest text is compact: a head, one line per kind, the counts, the link', () => {
+  const lines = digestText(digest).split('\n')
+  assertEquals(lines, [
+    'TurboPanel daily digest: 4 events',
+    '- [warning] server.deleted x3: Server a deleted (+2 more)',
+    '- [info] site.created x1: Site x created',
+    '...and 2 more kinds',
+    'https://panel.example.com',
+  ])
+})
+
+test('chat digest text stays under the smallest chat limit', () => {
+  const long = {
+    ...digest.groups[0]!,
+    items: [{ title: 'x'.repeat(5000), at: '', url: null }],
+  }
+  const text = digestText({
+    ...digest,
+    groups: Array.from({ length: 8 }, () => long),
+  })
+  assertEquals(text.length <= DIGEST_TEXT_MAX, true)
+})
+
+test('webhook digest body carries the grouped events as data and no address or secret', () => {
+  const body = digestWebhookBody(digest)
+  assertEquals(body.type, 'digest')
+  assertEquals(body.total, 4)
+  assertEquals(body.moreGroups, 2)
+  const groups = body.groups as Array<{ event: string; count: number; items: unknown[] }>
+  assertEquals(
+    groups.map((g) => [g.event, g.count, g.items.length]),
+    [
+      ['server.deleted', 3, 2],
+      ['site.created', 1, 1],
+    ]
+  )
+  assertEquals(typeof body.text, 'string')
+})
+
+test('sendDigest posts the right body per transport through the injected fetch only', async () => {
+  const calls: Array<{ url: string; body: Record<string, unknown>; headers: Headers }> = []
+  const fake = ((url: string, init: RequestInit) => {
+    calls.push({
+      url,
+      body: JSON.parse(init.body as string),
+      headers: new Headers(init.headers),
+    })
+    return Promise.resolve(new Response('ok', { status: 200 }))
+  }) as unknown as typeof fetch
+
+  const slack = await sendDigest(
+    { kind: 'slack', address: 'https://s.example.com/h' },
+    digest,
+    fake
+  )
+  const discord = await sendDigest(
+    { kind: 'discord', address: 'https://d.example.com/h' },
+    digest,
+    fake
+  )
+  const telegram = await sendDigest({ kind: 'telegram', address: '123:abc/-100' }, digest, fake)
+  const hook = await sendDigest(
+    {
+      kind: 'webhook',
+      address: 'https://w.example.com/h',
+      signingSecret: 'shh',
+    },
+    digest,
+    fake
+  )
+  assertEquals([slack.ok, discord.ok, telegram.ok, hook.ok], [true, true, true, true])
+  assertEquals(Object.keys(calls[0]!.body), ['text'])
+  assertEquals(Object.keys(calls[1]!.body), ['content'])
+  assertEquals(calls[2]!.body.chat_id, '-100')
+  assertEquals(calls[3]!.body.type, 'digest')
+  assertEquals(calls[3]!.headers.get('x-turbopanel-event'), 'digest')
+  assertMatch(calls[3]!.headers.get('x-turbopanel-signature') ?? '', /^sha256=[0-9a-f]{64}$/)
+  assertEquals((await sendDigest({ kind: 'email', address: 'a@b.c' }, digest, fake)).ok, false)
 })

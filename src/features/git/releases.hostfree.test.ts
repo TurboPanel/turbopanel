@@ -2,9 +2,11 @@ import { assertEquals } from '@std/assert'
 import { describe, it } from '@std/testing/bdd'
 import {
   aggregateReleaseStatus,
+  applyResolvedCommitSha,
   isReleaseMaterializedEverywhere,
   markLiveReleases,
   railpackIdentitiesFromResult,
+  resolvedCommitShasFromResult,
   releaseServerIds,
   type ServiceReleaseAttempt,
   type ServiceReleaseRecord,
@@ -81,11 +83,7 @@ describe('railpackIdentitiesFromResult', () => {
   })
 })
 
-function attempt(
-  status: string,
-  serverId = 's1',
-  commandId = 'c1',
-): ServiceReleaseAttempt {
+function attempt(status: string, serverId = 's1', commandId = 'c1'): ServiceReleaseAttempt {
   return { commandId, serverId, status }
 }
 
@@ -111,19 +109,19 @@ describe('aggregateReleaseStatus', () => {
     assertEquals(aggregateReleaseStatus([]), 'queued')
     assertEquals(
       aggregateReleaseStatus([attempt('succeeded', 's1'), attempt('failed', 's2')]),
-      'failed',
+      'failed'
     )
     assertEquals(
       aggregateReleaseStatus([attempt('succeeded', 's1'), attempt('timed_out', 's2')]),
-      'timed_out',
+      'timed_out'
     )
     assertEquals(
       aggregateReleaseStatus([attempt('running', 's1'), attempt('succeeded', 's2')]),
-      'running',
+      'running'
     )
     assertEquals(
       aggregateReleaseStatus([attempt('succeeded', 's1'), attempt('succeeded', 's2')]),
-      'succeeded',
+      'succeeded'
     )
   })
 })
@@ -136,12 +134,15 @@ describe('markLiveReleases', () => {
       release({ composeServiceName: 'web', releaseId: 'rel-old', status: 'succeeded' }),
       release({ composeServiceName: 'api', releaseId: 'rel-api', status: 'succeeded' }),
     ])
-    assertEquals(marked.map((row) => [row.releaseId, row.isLive]), [
-      ['rel-new', false],
-      ['rel-live', true],
-      ['rel-old', false],
-      ['rel-api', true],
-    ])
+    assertEquals(
+      marked.map((row) => [row.releaseId, row.isLive]),
+      [
+        ['rel-new', false],
+        ['rel-live', true],
+        ['rel-old', false],
+        ['rel-api', true],
+      ]
+    )
   })
 })
 
@@ -150,7 +151,10 @@ describe('release coverage', () => {
     const row = release({
       attempts: [attempt('succeeded', 's1'), attempt('failed', 's2'), attempt('running', 's1')],
     })
-    assertEquals([...releaseServerIds(row)].sort((a, b) => a.localeCompare(b)), ['s1', 's2'])
+    assertEquals(
+      [...releaseServerIds(row)].sort((a, b) => a.localeCompare(b)),
+      ['s1', 's2']
+    )
   })
 
   it('is materialized only when every target already published it', () => {
@@ -160,5 +164,52 @@ describe('release coverage', () => {
     assertEquals(isReleaseMaterializedEverywhere(row, []), true)
     assertEquals(isReleaseMaterializedEverywhere(row, ['s1', 's2']), true)
     assertEquals(isReleaseMaterializedEverywhere(row, ['s1', 's3']), false)
+  })
+})
+
+describe('resolvedCommitShasFromResult', () => {
+  const sha = 'b663dc04a1b2c3d4e5f60718293a4b5c6d7e8f90'
+
+  it('reads the commit the daemon checked out, keyed by service and release', () => {
+    const shas = resolvedCommitShasFromResult({
+      releases: [{ composeServiceName: 'web', releaseId: 'rel-1', commitSha: sha }],
+    })
+    assertEquals(shas.get('web rel-1'), sha)
+  })
+
+  it('ignores a ref name or a missing sha', () => {
+    const shas = resolvedCommitShasFromResult({
+      releases: [
+        { composeServiceName: 'web', releaseId: 'rel-1', commitSha: 'main' },
+        { composeServiceName: 'api', releaseId: 'rel-2' },
+        null,
+      ],
+    })
+    assertEquals(shas.size, 0)
+    assertEquals(resolvedCommitShasFromResult(null).size, 0)
+  })
+})
+
+describe('applyResolvedCommitSha', () => {
+  const sha = 'b663dc04a1b2c3d4e5f60718293a4b5c6d7e8f90'
+  const other = 'a'.repeat(40)
+  const record = (commitSha: string) => ({ commitSha }) as ServiceReleaseRecord
+
+  it('replaces a ref-name placeholder with the resolved commit', () => {
+    const release = record('main')
+    applyResolvedCommitSha(release, sha)
+    assertEquals(release.commitSha, sha)
+  })
+
+  it('keeps a full SHA the record already has', () => {
+    const release = record(other)
+    applyResolvedCommitSha(release, sha)
+    assertEquals(release.commitSha, other)
+  })
+
+  it('leaves the placeholder when the host reported nothing', () => {
+    const release = record('main')
+    applyResolvedCommitSha(release, undefined)
+    assertEquals(release.commitSha, 'main')
   })
 })

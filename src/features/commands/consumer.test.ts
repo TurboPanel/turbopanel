@@ -31,6 +31,8 @@ import {
   replica,
   server,
   service,
+  storage,
+  storageCopy,
   tls,
   variable,
   workspace,
@@ -2487,7 +2489,100 @@ test('processCommandEnvelope reconciles containers on environment.deploy success
         },
       })
 
-      await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
+      const [vol] = await db
+        .insert(storage)
+        .values({ organizationId, environmentId, kind: 'volume', name: 'data' })
+        .returning({ id: storage.id })
+      const [copy] = await db
+        .insert(storageCopy)
+        .values({
+          storageId: vol!.id,
+          serverId,
+          provider: 'docker',
+          role: 'primary',
+          state: 'pending',
+        })
+        .returning({ id: storageCopy.id })
+      // Copies the deploy never created must stay pending: scratch, non-docker, and a
+      // service-scoped volume of a service that has no container on this server.
+      const [otherService] = await db
+        .insert(service)
+        .values({ environmentId, name: 'elsewhere', composeServiceName: 'elsewhere' })
+        .returning({ id: service.id })
+      const extraStorage = await db
+        .insert(storage)
+        .values([
+          { organizationId, environmentId, kind: 'volume', name: 'scratchy' },
+          { organizationId, environmentId, kind: 'volume', name: 'remote' },
+          {
+            organizationId,
+            kind: 'volume',
+            name: 'scoped',
+            serviceId: otherService!.id,
+          },
+          {
+            organizationId,
+            kind: 'volume',
+            name: 'scoped-here',
+            serviceId: webServiceId,
+          },
+        ])
+        .returning({ id: storage.id })
+      const extraCopies = await db
+        .insert(storageCopy)
+        .values([
+          {
+            storageId: extraStorage[0]!.id,
+            serverId,
+            provider: 'docker',
+            role: 'scratch',
+            state: 'pending',
+          },
+          {
+            storageId: extraStorage[1]!.id,
+            serverId,
+            provider: 's3',
+            role: 'primary',
+            state: 'pending',
+          },
+          {
+            storageId: extraStorage[2]!.id,
+            serverId,
+            provider: 'docker',
+            role: 'primary',
+            state: 'pending',
+          },
+          {
+            storageId: extraStorage[3]!.id,
+            serverId,
+            provider: 'docker',
+            role: 'primary',
+            state: 'pending',
+          },
+        ])
+        .returning({ id: storageCopy.id })
+
+      const cleanup = async () => {
+        for (const extra of extraCopies)
+          await db.delete(storageCopy).where(eq(storageCopy.id, extra.id))
+        for (const extra of extraStorage) await db.delete(storage).where(eq(storage.id, extra.id))
+        await db.delete(service).where(eq(service.id, otherService!.id))
+      }
+      try {
+        await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
+        const labels = ['scratch', 's3', 'service-scoped elsewhere', 'service-scoped here']
+        for (const [index, extra] of extraCopies.entries()) {
+          const [extraRow] = await db
+            .select({ state: storageCopy.state })
+            .from(storageCopy)
+            .where(eq(storageCopy.id, extra.id))
+          // The last copy belongs to a service this deploy ran on this server.
+          const want = index === extraCopies.length - 1 ? 'ready' : 'pending'
+          assertEquals(extraRow?.state, want, `${labels[index]} copy must be ${want}`)
+        }
+      } finally {
+        await cleanup()
+      }
 
       const [row] = await db
         .select({ containerId: container.containerId, status: container.status })
@@ -2496,6 +2591,13 @@ test('processCommandEnvelope reconciles containers on environment.deploy success
         .limit(1)
       assertEquals(row?.containerId, 'deploy-cid')
       assertEquals(row?.status, 'running')
+      const [copyRow] = await db
+        .select({ state: storageCopy.state })
+        .from(storageCopy)
+        .where(eq(storageCopy.id, copy!.id))
+      assertEquals(copyRow?.state, 'ready')
+      await db.delete(storageCopy).where(eq(storageCopy.id, copy!.id))
+      await db.delete(storage).where(eq(storage.id, vol!.id))
     }
   )
 })
