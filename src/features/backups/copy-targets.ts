@@ -12,9 +12,8 @@
  *   `path`, else the principal's `/srv/users/<user>/volumes/<storageId>`, else
  *   the host's default `<stateDir>/storage/<org>/<storage>/<copy>/data`.
  *
- * Only the site owner's own directories are backed up: a path copy must sit
- * under `/srv/users/<the storage's own Linux user>/volumes/` (or be the host's
- * default root, which has no path), and a Docker volume must be the storage's
+ * Only the site owner's own directories are backed up: a path copy must be the storage's own directory `/srv/users/<its Linux user>/volumes/<storage id>`
+ * (or the host's default root, which has no path), and a Docker volume must be the storage's
  * own (its id, as deploy names it) or an external one the project's compose
  * project labels. Another owner's directory or another project's volume is
  * refused here and again on the host, which receives the owner and project
@@ -29,7 +28,6 @@ import { type CopyBackupSource, isSafeCopyHostPath } from '../../contracts/comma
 import {
   isValidDockerResourceName,
   principalVolumePath,
-  principalVolumesDir,
   resolveDockerVolumeName,
 } from '../../lib/naming.ts'
 
@@ -115,23 +113,30 @@ export function copyOptionsError(options: unknown): string | null {
 }
 
 /**
- * Whether `hostPath` is inside the site owner's own volumes directory (and
- * names something in it). Returns the reason when it is not. Shared by the
- * copy create/update routes and by backup command building.
+ * Whether `hostPath` is exactly the storage's own directory under its site
+ * owner's volumes (`/srv/users/<user>/volumes/<storageId>`). Returns the reason
+ * when it is not. Exact, not a prefix: a storage can be handed to another
+ * site owner, and that must never reach a directory named after someone
+ * else's storage. `storageId` is null while the storage is being created (no
+ * path can match yet). Shared by the copy routes and by command building.
  */
-export function copyHostPathError(username: string | null, hostPath: string): string | null {
+export function copyHostPathError(
+  username: string | null,
+  storageId: string | null,
+  hostPath: string
+): string | null {
   if (!isSafeCopyHostPath(hostPath)) return 'the copy path is not a safe absolute path'
   if (!username) {
     return 'a copy path needs a storage assigned to a site owner; otherwise leave the path empty'
   }
-  let ownerDir: string
+  let ownPath: string | null = null
   try {
-    ownerDir = `${principalVolumesDir(username)}/`
+    ownPath = storageId ? principalVolumePath(username, storageId) : null
   } catch {
     return "the storage's site owner has no valid Linux user"
   }
-  if (!hostPath.startsWith(ownerDir) || hostPath.length === ownerDir.length) {
-    return "the copy path must be inside the storage's own site owner's volumes directory"
+  if (hostPath !== ownPath) {
+    return "the copy path can only be the storage's own directory under its site owner's volumes"
   }
   return null
 }
@@ -155,7 +160,7 @@ function pathSource(row: CopyTargetRow): CopySourceResult {
       },
     }
   }
-  const pathError = copyHostPathError(row.principalUsername, hostPath)
+  const pathError = copyHostPathError(row.principalUsername, row.storageId, hostPath)
   if (pathError || !row.principalUsername) {
     return { ok: false, error: pathError ?? 'the copy has no site owner' }
   }

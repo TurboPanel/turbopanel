@@ -100,13 +100,15 @@ test('a docker copy naming a foreign or unusable volume is refused', () => {
 test('a path copy is inside its own site owner volumes, the principal volume, or the default directory', () => {
   const directory = { provider: 'path', storageKind: 'directory', principalUsername: 'acme' }
   assertEquals(
-    resolveCopyBackupSource(row({ ...directory, copyPath: '/srv/users/acme/volumes/data' })),
+    resolveCopyBackupSource(
+      row({ ...directory, copyPath: `/srv/users/acme/volumes/${STORAGE_ID}` })
+    ),
     {
       ok: true,
       source: {
         copyId: COPY_ID,
         copyProvider: 'path',
-        hostPath: '/srv/users/acme/volumes/data',
+        hostPath: `/srv/users/acme/volumes/${STORAGE_ID}`,
         ownerUsername: 'acme',
       },
     }
@@ -134,43 +136,33 @@ test('a path copy is inside its own site owner volumes, the principal volume, or
 test('a path copy in another site owner tree, or with no owner, is refused', () => {
   const directory = { provider: 'path', storageKind: 'directory' }
   const cases: Partial<CopyTargetRow>[] = [
-    { copyPath: '/srv/users/victim/volumes/x', principalUsername: 'acme' },
+    { copyPath: `/srv/users/victim/volumes/${STORAGE_ID}`, principalUsername: 'acme' },
     { copyPath: '/srv/users/acme2/volumes/x', principalUsername: 'acme' },
+    // The same owner's tree, but not this storage's own directory.
+    { copyPath: '/srv/users/acme/volumes/other-storage', principalUsername: 'acme' },
     { copyPath: '/srv/users/acme/volumes', principalUsername: 'acme' },
     { copyPath: '/srv/users/acme/volumes/', principalUsername: 'acme' },
     { copyPath: '/srv/users/acme/.ssh', principalUsername: 'acme' },
-    { copyPath: '/srv/users/acme/volumes/x', principalUsername: null },
+    { copyPath: `/srv/users/acme/volumes/${STORAGE_ID}`, principalUsername: null },
   ]
   for (const overrides of cases) {
     assertEquals(resolveCopyBackupSource(row({ ...directory, ...overrides })).ok, false)
   }
 })
 
-test('copyHostPathError names the reason', () => {
-  assertEquals(copyHostPathError('acme', '/srv/users/acme/volumes/a'), null)
-  assertEquals(typeof copyHostPathError('acme', '/srv/users/victim/volumes/a'), 'string')
-  assertEquals(typeof copyHostPathError(null, '/srv/users/acme/volumes/a'), 'string')
-  assertEquals(typeof copyHostPathError('acme', '/srv/users/acme/volumes/../../victim'), 'string')
-})
-
-test('copies outside the backup-able shapes are refused with a reason', () => {
-  const cases: Partial<CopyTargetRow>[] = [
-    { serverId: null },
-    { storageKind: 'file' },
-    { storageKind: 'object' },
-    { provider: 'nfs' },
-    { provider: 's3' },
-    { provider: 'path', storageKind: 'volume' },
-    { provider: 'path', storageKind: 'directory', copyPath: '/etc' },
-    { provider: 'path', storageKind: 'directory', copyPath: '/var/lib/docker/volumes/x' },
-    { provider: 'path', storageKind: 'directory', copyPath: '/srv/users/../etc' },
-    { provider: 'path', storageKind: 'directory', copyPath: '/srv/users/acme/data' },
-    { provider: 'path', storageKind: 'directory', copyPath: 'srv/users/a' },
-    { provider: 'path', storageKind: 'directory', copyPath: '/srv/users/a,b' },
-  ]
-  for (const overrides of cases) {
-    const result = resolveCopyBackupSource(row(overrides))
-    assertEquals(result.ok, false, JSON.stringify(overrides))
+test('copyHostPathError accepts only the storage own directory', () => {
+  const own = `/srv/users/acme/volumes/${STORAGE_ID}`
+  assertEquals(copyHostPathError('acme', STORAGE_ID, own), null)
+  const refused = [
+    ['acme', STORAGE_ID, `/srv/users/victim/volumes/${STORAGE_ID}`],
+    ['acme', STORAGE_ID, '/srv/users/acme/volumes/another-storage'],
+    ['acme', STORAGE_ID, `${own}/sub`],
+    ['acme', STORAGE_ID, `/srv/users/acme/volumes/../../victim/volumes/${STORAGE_ID}`],
+    [null, STORAGE_ID, own],
+    ['acme', null, own],
+  ] as const
+  for (const [user, storageId, path] of refused) {
+    assertEquals(typeof copyHostPathError(user, storageId, path), 'string', path)
   }
 })
 

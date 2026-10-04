@@ -89,7 +89,8 @@ async function insertCopy(
     serverId: string | null
     kind: string
     provider: string
-    path?: string
+    /** A fixed path, or one built from the new storage's id. */
+    path?: string | ((storageId: string) => string)
     principalUsername?: string
   }
 ): Promise<{ storageId: string; copyId: string }> {
@@ -122,7 +123,7 @@ async function insertCopy(
       storageId: store!.id,
       serverId: values.serverId,
       provider: values.provider,
-      path: values.path ?? null,
+      path: typeof values.path === 'function' ? values.path(store!.id) : (values.path ?? null),
     })
     .returning({ id: storageCopy.id })
   return { storageId: store!.id, copyId: copy!.id }
@@ -304,10 +305,21 @@ test('copies that cannot be backed up are refused; a principal-style path is acc
       {
         kind: 'directory',
         provider: 'path',
-        path: '/srv/users/victim/volumes/uploads',
+        path: (id: string) => `/srv/users/victim/volumes/${id}`,
         principalUsername: 'acme',
       },
-      { kind: 'directory', provider: 'path', path: '/srv/users/acme/volumes/uploads' },
+      // The same owner's tree, but not this storage's own directory.
+      {
+        kind: 'directory',
+        provider: 'path',
+        path: '/srv/users/acme/volumes/another-storage',
+        principalUsername: 'acme',
+      },
+      {
+        kind: 'directory',
+        provider: 'path',
+        path: (id: string) => `/srv/users/acme/volumes/${id}`,
+      },
       { kind: 'file', provider: 'path' },
     ]
     for (const values of refused) {
@@ -328,7 +340,7 @@ test('copies that cannot be backed up are refused; a principal-style path is acc
       serverId: fixture.serverId,
       kind: 'directory',
       provider: 'path',
-      path: '/srv/users/acme/volumes/uploads',
+      path: (id) => `/srv/users/acme/volumes/${id}`,
       principalUsername: 'acme',
     })
     const res = await request(fixture, policiesPath(fixture, accepted.storageId, accepted.copyId), {
@@ -346,12 +358,13 @@ test('a manager cannot point a copy at another owner path or a foreign volume', 
       serverId: fixture.serverId,
       kind: 'directory',
       provider: 'path',
-      path: '/srv/users/acme/volumes/uploads',
+      path: (id) => `/srv/users/acme/volumes/${id}`,
       principalUsername: 'acme',
     })
     const copyPath = `/storage/${own.storageId}/copies/${own.copyId}`
     const refusedPatches = [
-      { path: '/srv/users/victim/volumes/uploads' },
+      { path: `/srv/users/victim/volumes/${own.storageId}` },
+      { path: '/srv/users/acme/volumes/another-storage' },
       { path: '/srv/users/acme/volumes' },
       { path: '/etc' },
       { options: { managed: false, externalName: 'other-site-data' } },
@@ -362,7 +375,7 @@ test('a manager cannot point a copy at another owner path or a foreign volume', 
     }
     const ownPatch = await request(fixture, copyPath, {
       method: 'PATCH',
-      body: { path: '/srv/users/acme/volumes/other' },
+      body: { path: `/srv/users/acme/volumes/${own.storageId}` },
     })
     assertEquals(ownPatch.status, 200)
     const create = await request(fixture, `/storage/${own.storageId}/copies`, {

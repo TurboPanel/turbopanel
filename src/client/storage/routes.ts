@@ -322,6 +322,7 @@ async function validateCopyOwnership(
   c: Context<AppEnv>,
   db: StorageDb,
   principalId: string | null,
+  storageId: string | null,
   copy: { path?: unknown; options?: unknown }
 ): Promise<Response | null> {
   const optionsError = copyOptionsError(copy.options)
@@ -336,7 +337,7 @@ async function validateCopyOwnership(
       .limit(1)
     username = row?.username ?? null
   }
-  const pathError = copyHostPathError(username, copy.path)
+  const pathError = copyHostPathError(username, storageId, copy.path)
   return pathError ? c.json({ error: pathError }, 400) : null
 }
 
@@ -434,7 +435,7 @@ async function createStorageRecord(
   if (fields.copy) {
     const copyRefError = await validateCopyRefsInOrg(c, db, orgId, fields.copy)
     if (copyRefError) return copyRefError
-    const ownershipError = await validateCopyOwnership(c, db, fields.principalId, fields.copy)
+    const ownershipError = await validateCopyOwnership(c, db, fields.principalId, null, fields.copy)
     if (ownershipError) return ownershipError
   }
   if (fields.mount) {
@@ -751,7 +752,7 @@ export function registerStorageRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     const copyRefError = await validateCopyRefsInOrg(c, ctx.db, ctx.orgId, fields)
     if (copyRefError) return copyRefError
-    const ownershipError = await validateCopyOwnership(c, ctx.db, row.principalId, fields)
+    const ownershipError = await validateCopyOwnership(c, ctx.db, row.principalId, row.id, fields)
     if (ownershipError) return ownershipError
 
     try {
@@ -784,7 +785,7 @@ export function registerStorageRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     const copyRefError = await validateCopyRefsInOrg(c, ctx.db, ctx.orgId, updateFields)
     if (copyRefError) return copyRefError
-    const ownershipError = await validateCopyOwnership(c, ctx.db, row.principalId, {
+    const ownershipError = await validateCopyOwnership(c, ctx.db, row.principalId, row.id, {
       path: 'path' in updateFields ? updateFields.path : existing.path,
       options: updateFields.options,
     })
