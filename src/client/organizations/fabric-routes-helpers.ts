@@ -25,13 +25,23 @@ import {
   resolveEffectiveAllowRelay,
 } from '../../features/fabric/policy.ts'
 import {
+  type AdvertisedRangeProblem,
   advertisedRangeProblemMessage,
-  checkAdvertisedRangeOverlaps,
+  checkAdvertisedRanges,
   checkAdvertisedRangeShape,
 } from '../../features/fabric/advertised-ranges.ts'
+import {
+  advertisedRangeContext,
+  loadGatewaySubnets,
+  otherGatewayRanges,
+} from '../../features/fabric/gateway-ranges.ts'
+import {
+  type DatacenterSubnetRow,
+  type GatewayRelayReadyError,
+  resolveDerivedAdvertisedCidrsByRelay,
+} from '../../features/net/datacenter-networks.ts'
 import { alignedNetworkCidr, isValidIpAddress } from '../../lib/ip-address.ts'
 import { isValidWireguardPublicKey } from '../../features/fabric/wg.ts'
-import type { GatewayRelayReadyError } from '../../features/net/datacenter-networks.ts'
 
 export type FabricMembershipSecrets = Pick<
   Parameters<typeof reconcileFabricMembership>[0],
@@ -259,31 +269,76 @@ export function parseRelayPatchBody(
 }
 
 /**
- * Refuse advertised ranges that overlap the fabric's own addressing or another
- * server's range (409). Shape rules (default routes, public ranges) are in
- * {@link parseRelayPatchBody}.
+ * Plain-words 400 for a gateway range the daemon would refuse. One code
+ * (`gateway_range_<problem>`) and one status for every path that writes ranges,
+ * so a caller handles them the same way.
  */
-export function advertisedRangesOverlapErrorResponse(
-  patch: RelayPatchBody,
-  record: FabricRecord,
-  relays: readonly Pick<RelayRecord, 'prefix'>[]
-): Response | null {
-  if (!patch.advertisedCidrs || patch.advertisedCidrs.length === 0) return null
-  const problem = checkAdvertisedRangeOverlaps(patch.advertisedCidrs, {
-    fabricCidr: record.cidr,
-    containerPool: parseFabricOptions(record.options).containerPool,
-    relayPrefixes: relays.map((relay) => relay.prefix),
-  })
-  if (!problem) return null
+export function advertisedRangeProblemResponse(
+  problem: AdvertisedRangeProblem,
+  source: 'set' | 'datacenter' = 'set'
+): Response {
+  const hint =
+    source === 'datacenter'
+      ? ' (this range comes from a subnet of a datacenter the gateway server is in: change the subnet, or give the gateway ranges of its own)'
+      : ''
   return Response.json(
     {
       error: `gateway_range_${problem.code}`,
-      message: advertisedRangeProblemMessage(problem),
+      message: `${advertisedRangeProblemMessage(problem)}${hint}`,
       cidr: problem.cidr,
       conflictsWith: problem.conflictsWith,
+      ...(problem.otherServerId ? { otherServerId: problem.otherServerId } : {}),
     },
-    { status: 409 }
+    { status: 400 }
   )
+}
+
+/**
+ * Refuse a relay change that would leave the gateway advertising a range the
+ * daemon refuses: the explicit list as written, or, for a gateway whose list
+ * is empty, the datacenter subnets it falls back to. The daemon rejects a
+ * host's whole payload on one bad range, so this is checked before anything
+ * is stored (see `advertised-ranges.ts`). `subnetsByServer` are the datacenter
+ * subnets of the gateway servers (`loadGatewaySubnets`).
+ */
+export function gatewayRangePatchResponse(params: {
+  patch: RelayPatchBody
+  existing: RelayRecord
+  record: FabricRecord
+  relays: readonly RelayRecord[]
+  subnetsByServer: ReadonlyMap<string, readonly DatacenterSubnetRow[]>
+}): Response | null {
+  const { patch, existing, record, relays, subnetsByServer } = params
+  if (patch.role === undefined && patch.advertisedCidrs === undefined) return null
+  const role = patch.role ?? existing.role
+  if (role !== 'gateway') return null
+  const advertisedCidrs = patch.advertisedCidrs ?? existing.advertisedCidrs
+  const after = relays.map((row) =>
+    row.id === existing.id ? { ...row, role, advertisedCidrs } : row
+  )
+  const resolved = resolveDerivedAdvertisedCidrsByRelay(after, subnetsByServer)
+  const problem = checkAdvertisedRanges(
+    resolved.get(existing.id) ?? [],
+    advertisedRangeContext(record, relays, otherGatewayRanges(after, resolved, existing.id))
+  )
+  if (!problem) return null
+  return advertisedRangeProblemResponse(problem, advertisedCidrs.length > 0 ? 'set' : 'datacenter')
+}
+
+/** {@link gatewayRangePatchResponse}, loading the gateway servers' datacenter subnets first. */
+export async function gatewayRangePatchErrorResponse(
+  db: Db,
+  params: Omit<Parameters<typeof gatewayRangePatchResponse>[0], 'subnetsByServer'>
+): Promise<Response | null> {
+  const { patch, existing, relays } = params
+  if (patch.role === undefined && patch.advertisedCidrs === undefined) return null
+  const gateways = relays.map((row) =>
+    row.id === existing.id ? { ...row, role: patch.role ?? existing.role } : row
+  )
+  return gatewayRangePatchResponse({
+    ...params,
+    subnetsByServer: await loadGatewaySubnets(db, gateways),
+  })
 }
 
 export type RelayPatchUpdateFields = {

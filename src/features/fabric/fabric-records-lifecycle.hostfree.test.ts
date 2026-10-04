@@ -1242,6 +1242,39 @@ test('ensureFabricRelays maps repeated prefix unique violations to pool exhauste
   assertEquals(db.relayInserts, 2)
 })
 
+test('ensureFabricRelays keeps a new relay prefix out of a range a gateway advertises', async () => {
+  const db = createLifecycleDb({
+    servers: [
+      { id: 'srv-a', organizationId: ORG },
+      { id: 'srv-b', organizationId: ORG },
+    ],
+    relays: [
+      {
+        id: 'relay-a',
+        fabricId: 'fab-1',
+        serverId: 'srv-a',
+        address: '10.250.0.1',
+        role: 'gateway',
+        keepalive: null,
+        endpointAddress: null,
+        publicKey: null,
+        prefix: '10.194.0.0/16',
+        // a stored range that sits on the pool's first two prefixes
+        advertisedCidrs: ['10.192.0.0/15'],
+        metadata: {},
+      },
+    ],
+  })
+
+  const relays = await ensureFabricRelays(db, {
+    fabric: { id: 'fab-1', organizationId: ORG, cidr: '10.250.0.0/16', options: null },
+    organizationId: ORG,
+  })
+
+  const added = relays.find((row) => row.serverId === 'srv-b')
+  assertEquals(added?.prefix, '10.195.0.0/16')
+})
+
 test('ensureFabricRelays enrols 16 servers of 17 on the default pool and reports the 17th', async () => {
   const db = createLifecycleDb({
     servers: Array.from({ length: 17 }, (_, i) => ({

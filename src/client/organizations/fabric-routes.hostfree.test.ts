@@ -7,7 +7,7 @@ import {
   type RelayRecord,
 } from '../../features/fabric/fabric-records.ts'
 import {
-  advertisedRangesOverlapErrorResponse,
+  gatewayRangePatchResponse,
   bindSecretEncryptFn,
   enqueueRelayPatchReconcile,
   fabricEnableErrorResponse,
@@ -839,22 +839,104 @@ test('parseRelayPatchBody refuses default routes and public ranges for a gateway
   }
 })
 
-test('advertisedRangesOverlapErrorResponse refuses the fabric range, pool and member prefixes', async () => {
-  const record = {
-    id: 'fab-1',
-    organizationId: 'org-1',
-    cidr: '10.250.0.0/16',
-    options: {},
+const RANGE_RECORD = {
+  id: 'fab-1',
+  organizationId: 'org-1',
+  cidr: '10.250.0.0/16',
+  options: {},
+}
+
+function rangeRelay(id: string, overrides: Partial<RelayRecord> = {}): RelayRecord {
+  return {
+    id,
+    fabricId: RANGE_RECORD.id,
+    serverId: `srv-${id}`,
+    address: '10.250.0.1',
+    role: 'member',
+    keepalive: null,
+    endpointAddress: null,
+    publicKey: null,
+    prefix: `10.${192 + Number(id.replace(/\D/g, ''))}.0.0/16`,
+    advertisedCidrs: [],
+    metadata: {},
+    allowRelay: null,
+    preferredGatewayIds: [],
+    ...overrides,
   }
-  const relays = [{ prefix: '10.192.0.0/16' }, { prefix: '10.193.0.0/16' }]
-  for (const cidr of ['10.250.4.0/24', '10.200.0.0/24', '10.193.4.0/24']) {
-    const res = advertisedRangesOverlapErrorResponse({ advertisedCidrs: [cidr] }, record, relays)
-    assertEquals(res?.status, 409, cidr)
+}
+
+const RANGE_RELAYS = [
+  rangeRelay('r1'),
+  rangeRelay('r2', { role: 'gateway', advertisedCidrs: ['192.168.0.0/16'] }),
+  rangeRelay('r3'),
+]
+
+function patchRanges(
+  patch: Parameters<typeof gatewayRangePatchResponse>[0]['patch'],
+  existing: RelayRecord,
+  subnetsByServer: Parameters<typeof gatewayRangePatchResponse>[0]['subnetsByServer'] = new Map()
+) {
+  return gatewayRangePatchResponse({
+    patch,
+    existing,
+    record: RANGE_RECORD,
+    relays: RANGE_RELAYS,
+    subnetsByServer,
+  })
+}
+
+test('PATCH refuses a gateway range that covers the fabric range with a plain 400', async () => {
+  const res = patchRanges({ role: 'gateway', advertisedCidrs: ['10.0.0.0/8'] }, RANGE_RELAYS[0]!)
+  assertEquals(res?.status, 400)
+  const body = await res?.json()
+  assertEquals(body.error, 'gateway_range_overlaps_fabric')
+  assertEquals(body.cidr, '10.0.0.0/8')
+  assertEquals(body.conflictsWith, '10.250.0.0/16')
+  assertEquals(body.message, '10.0.0.0/8 overlaps the fabric address range 10.250.0.0/16')
+})
+
+test('PATCH refuses the pool and a server container range with the same 400', async () => {
+  for (const cidr of ['10.200.0.0/24', '10.195.4.0/24']) {
+    const res = patchRanges({ advertisedCidrs: [cidr] }, RANGE_RELAYS[1]!)
+    assertEquals(res?.status, 400, cidr)
     await res?.body?.cancel()
   }
+  assertEquals(patchRanges({ advertisedCidrs: ['172.20.0.0/16'] }, RANGE_RELAYS[1]!), null)
+})
+
+test('PATCH refuses a range that partly overlaps another gateway, but not the same range', async () => {
+  const other = RANGE_RELAYS[0]!
+  const res = patchRanges({ role: 'gateway', advertisedCidrs: ['192.168.4.0/24'] }, other)
+  assertEquals(res?.status, 400)
+  const body = await res?.json()
+  assertEquals(body.error, 'gateway_range_overlaps_gateway')
+  assertEquals(body.conflictsWith, '192.168.0.0/16')
+  assertEquals(body.otherServerId, 'srv-r2')
+  assertEquals(patchRanges({ role: 'gateway', advertisedCidrs: ['192.168.0.0/16'] }, other), null)
+})
+
+test('PATCH checks the datacenter subnets a gateway with no list of its own falls back to', async () => {
+  const subnet = (cidr: string) => ({ networkId: 'net-1', cidr, version: 4 as const, name: null })
+  const bad = patchRanges(
+    { role: 'gateway' },
+    RANGE_RELAYS[0]!,
+    new Map([['srv-r1', [subnet('10.0.0.0/8')]]])
+  )
+  assertEquals(bad?.status, 400)
+  const body = await bad?.json()
+  assertEquals(body.error, 'gateway_range_overlaps_fabric')
+  assertEquals(body.message.includes('datacenter'), true)
   assertEquals(
-    advertisedRangesOverlapErrorResponse({ advertisedCidrs: ['192.168.5.0/24'] }, record, relays),
+    patchRanges(
+      { role: 'gateway' },
+      RANGE_RELAYS[0]!,
+      new Map([['srv-r1', [subnet('172.20.0.0/16')]]])
+    ),
     null
   )
-  assertEquals(advertisedRangesOverlapErrorResponse({}, record, relays), null)
+})
+
+test('PATCH ignores changes that leave the ranges alone, and members', () => {
+  assertEquals(patchRanges({ keepalive: 25 }, RANGE_RELAYS[1]!), null)
+  assertEquals(patchRanges({ role: 'member', advertisedCidrs: [] }, RANGE_RELAYS[1]!), null)
 })

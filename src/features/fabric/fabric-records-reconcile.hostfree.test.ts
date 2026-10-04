@@ -6,6 +6,7 @@
 import { assertEquals, assertNotEquals } from '@std/assert'
 import type { Db } from '../../db/connection.ts'
 import { composeNetworkHostName } from './cidr.ts'
+import { daemonAllowedIpsRefusal } from './daemon-allowed-ips-oracle.test.support.ts'
 import {
   buildFabricReconcilePayload,
   buildFabricReconcilePayloadFromSnapshot,
@@ -467,7 +468,7 @@ function sampleRelays(): RelayRow[] {
       endpointAddress: '203.0.113.11',
       publicKey: WG_KEY_B,
       prefix: '10.193.0.0/16',
-      advertisedCidrs: ['10.200.0.0/16'],
+      advertisedCidrs: ['10.30.0.0/16'],
       metadata: {},
       presharedKey: null,
     },
@@ -537,11 +538,70 @@ test('loadFabricReconcileSnapshot batches relays PSK envelopes segments and cach
     ['198.51.100.1']
   )
   assertEquals(snapshot.derivedAdvertisedCidrsByRelayId.get('r1'), [])
-  assertEquals(snapshot.derivedAdvertisedCidrsByRelayId.get('r2'), ['10.200.0.0/16'])
+  assertEquals(snapshot.derivedAdvertisedCidrsByRelayId.get('r2'), ['10.30.0.0/16'])
   assertEquals(snapshot.derivedAdvertisedCidrsByRelayId.has('r3'), false)
   assertEquals(snapshot.policy, { allowRelay: false })
   assertEquals(snapshot.relays[0]?.allowRelay, null)
   assertEquals(snapshot.relays[0]?.preferredGatewayIds, [])
+})
+
+function gatewayRow(n: number, advertisedCidrs: string[]): RelayRow {
+  return {
+    id: `g${n}`,
+    fabricId: FABRIC.id,
+    serverId: `srv-g${n}`,
+    address: `10.250.0.${10 + n}`,
+    role: 'gateway',
+    keepalive: null,
+    endpointAddress: `203.0.113.${20 + n}`,
+    publicKey: WG_KEY_B,
+    prefix: `10.${195 + n}.0.0/16`,
+    advertisedCidrs,
+    metadata: {},
+    presharedKey: null,
+  }
+}
+
+test('a payload built from unsafe gateway ranges still passes the daemon rules', async () => {
+  const member = sampleRelays()[0] as RelayRow
+  const db = createReconcileDb({
+    relays: [
+      member,
+      // overlaps the fabric range, the pool and every server prefix
+      gatewayRow(1, ['10.0.0.0/8']),
+      // a nested pair: the smaller id keeps its range
+      gatewayRow(2, ['192.168.0.0/16']),
+      gatewayRow(3, ['192.168.4.0/24']),
+      // the very same range on two gateways is allowed
+      gatewayRow(4, ['172.16.0.0/16']),
+      gatewayRow(5, ['172.16.0.0/16']),
+      // public and default routes never get through
+      gatewayRow(6, ['0.0.0.0/0', '8.8.8.0/24']),
+      // IPv6: nested ranges, the smaller id keeps its range
+      gatewayRow(7, ['fd00:1::/48']),
+      gatewayRow(8, ['fd00:1:0:5::/64']),
+    ],
+    servers: [{ id: 'srv-1', organizationId: ORG }],
+  })
+  const snapshot = await loadFabricReconcileSnapshot(db, FABRIC)
+  const built = await buildFabricReconcilePayloadFromSnapshot(snapshot, { serverId: 'srv-1' })
+  assertEquals(built !== null, true)
+  const payload = built?.payload
+  if (!payload?.enabled) throw new Error('expected an enabled payload')
+  assertEquals(daemonAllowedIpsRefusal(payload), null)
+  const ranges = payload.peers.flatMap((peer) => peer.allowedIPs)
+  for (const kept of ['192.168.0.0/16', '172.16.0.0/16', 'fd00:1::/48']) {
+    assertEquals(ranges.includes(kept), true, kept)
+  }
+  for (const dropped of [
+    '10.0.0.0/8',
+    '192.168.4.0/24',
+    '0.0.0.0/0',
+    '8.8.8.0/24',
+    'fd00:1:0:5::/64',
+  ]) {
+    assertEquals(ranges.includes(dropped), false, dropped)
+  }
 })
 
 test('loadFabricReconcileSnapshot returns empty maps when fabric has no relays', async () => {

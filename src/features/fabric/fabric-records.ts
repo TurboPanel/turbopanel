@@ -57,6 +57,11 @@ import {
 import { partitionSharedDatacenters, pinAddressForDatacenter } from '../net/private-endpoint.ts'
 import { loadCidrAllocationExclusions } from '../net/cidr-collisions.ts'
 import { checkAdvertisedRangeShape } from './advertised-ranges.ts'
+import {
+  advertisedRangeContext,
+  loadResolvedGatewayRanges,
+  withoutUnsafeRanges,
+} from './gateway-ranges.ts'
 import { WIREGUARD_PERSISTENT_KEEPALIVE } from './wg.ts'
 import {
   type FabricPolicy,
@@ -561,12 +566,6 @@ export type UnallocatedFabricServer = {
   kind: FabricAllocationErrorKind
 }
 
-/**
- * Give every org server a relay. By default a full pool throws (enable rolls
- * back). When `unallocated` is passed, a pool-full server is reported there
- * instead and the others carry on, so one extra server never blocks the rest
- * of the fabric from reconciling.
- */
 function isPoolFullError(err: unknown): err is FabricAllocationError {
   return (
     err instanceof FabricAllocationError &&
@@ -574,6 +573,29 @@ function isPoolFullError(err: unknown): err is FabricAllocationError {
   )
 }
 
+/**
+ * Ranges a new relay prefix must stay out of: the org's own ranges plus every
+ * range a gateway advertises, so a new server's container range is never one
+ * the daemon would refuse next to a gateway's route.
+ */
+async function loadRelayAllocationExclusions(
+  db: Db,
+  organizationId: string,
+  relays: readonly RelayRecord[]
+): Promise<string[]> {
+  const [orgRanges, gatewayRanges] = await Promise.all([
+    loadCidrAllocationExclusions(db, organizationId),
+    loadResolvedGatewayRanges(db, relays),
+  ])
+  return [...new Set([...orgRanges, ...[...gatewayRanges.values()].flat()])]
+}
+
+/**
+ * Give every org server a relay. By default a full pool throws (enable rolls
+ * back). When `unallocated` is passed, a pool-full server is reported there
+ * instead and the others carry on, so one extra server never blocks the rest
+ * of the fabric from reconciling.
+ */
 export async function ensureFabricRelays(
   db: Db,
   params: {
@@ -595,7 +617,7 @@ export async function ensureFabricRelays(
   await forEachSequential(orgServers, async (row) => {
     if (have.has(row.id)) return
     // Loaded lazily: most calls find every server already has a relay.
-    exclusions ??= await loadCidrAllocationExclusions(db, params.organizationId)
+    exclusions ??= await loadRelayAllocationExclusions(db, params.organizationId, existing)
     try {
       await insertRelayWithRetry(db, {
         fabric: params.fabric,
@@ -1741,6 +1763,7 @@ export async function loadFabricReconcileSnapshot(
     loadDatacenterSubnetsForServers(db, serverIds),
     loadDatacenterMembershipsForServers(db, serverIds),
   ])
+  const publicKeyed = publicKeyedRelays(relays)
   const datacenterIds = new Set<string>()
   for (const pins of datacenterMembershipsByServer.values()) {
     for (const pin of pins) datacenterIds.add(pin.datacenterId)
@@ -1761,9 +1784,12 @@ export async function loadFabricReconcileSnapshot(
     caches,
     sealedPresharedKeyByRelayId,
     segmentsByServer,
-    derivedAdvertisedCidrsByRelayId: resolveDerivedAdvertisedCidrsByRelay(
-      publicKeyedRelays(relays),
-      subnetsByServer
+    // One answer for the whole fabric: a range the daemon would refuse (it
+    // refuses the host's WHOLE payload, which leaves tp0 down) is left out here.
+    derivedAdvertisedCidrsByRelayId: withoutUnsafeRanges(
+      publicKeyed,
+      resolveDerivedAdvertisedCidrsByRelay(publicKeyed, subnetsByServer),
+      advertisedRangeContext(fabric, relays)
     ),
     policy: parseFabricPolicy(fabric.options),
   }

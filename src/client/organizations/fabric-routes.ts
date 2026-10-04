@@ -30,6 +30,8 @@ import {
   updateFabricRelay,
 } from '../../features/fabric/fabric-records.ts'
 import { parseFabricPolicy } from '../../features/fabric/policy.ts'
+import { checkAdvertisedRangesAgainstPool } from '../../features/fabric/advertised-ranges.ts'
+import { loadResolvedGatewayRanges } from '../../features/fabric/gateway-ranges.ts'
 import {
   findCidrCollision,
   loadOrganizationCidrRegistry,
@@ -41,7 +43,7 @@ import {
   reconcileFabricMembership,
 } from '../../features/fabric/enqueue.ts'
 import {
-  advertisedRangesOverlapErrorResponse,
+  advertisedRangeProblemResponse,
   bindSecretEncryptFn,
   enqueueRelayPatchReconcile,
   fabricEnableErrorResponse,
@@ -51,6 +53,7 @@ import {
   fabricSettingsResponse,
   fabricTypedEnqueueErrorResponse,
   findByServerId,
+  gatewayRangePatchErrorResponse,
   gatewayRolePatchErrorResponse,
   parseFabricPutBody,
   parseRelayPatchBody,
@@ -69,7 +72,9 @@ import {
  *    the one it replaces) — 409 via `cidrCollisionResponse`;
  * 2. every allocated relay prefix must still sit inside the new pool.
  *    Nothing renumbers relays, so a pool that orphans one is refused
- *    (409 `fabric_container_pool_in_use`) rather than silently accepted.
+ *    (409 `fabric_container_pool_in_use`) rather than silently accepted;
+ * 3. no range a gateway advertises may sit inside the new pool (400
+ *    `gateway_range_overlaps_fabric_pool`).
  */
 async function assertContainerPoolWritable(
   c: Context,
@@ -98,7 +103,22 @@ async function assertContainerPoolWritable(
       409
     )
   }
-  return null
+  return gatewayRangesInPoolResponse(db, containerPool, relays)
+}
+
+/**
+ * A wider or moved pool must not swallow a range a gateway already advertises
+ * (the daemon would refuse every host's peers). Only the pool is checked here;
+ * the other range rules are enforced where the ranges are written.
+ */
+async function gatewayRangesInPoolResponse(
+  db: Db,
+  containerPool: string,
+  relays: readonly RelayRecord[]
+): Promise<Response | null> {
+  const resolved = await loadResolvedGatewayRanges(db, relays)
+  const problem = checkAdvertisedRangesAgainstPool([...resolved.values()].flat(), containerPool)
+  return problem ? advertisedRangeProblemResponse(problem) : null
 }
 
 function fabricSecretsFromContext(c: {
@@ -267,15 +287,20 @@ export function registerOrganizationFabricRoutes(router: Hono<AppEnv>, opts: Aut
     const existing = findByServerId(fabricRelays, serverId)
     if (!existing) return c.json({ error: 'Not found' }, 404)
 
-    const overlapDenied = advertisedRangesOverlapErrorResponse(parsed.patch, record, fabricRelays)
-    if (overlapDenied) return overlapDenied
-
     const role = parsed.patch.role ?? existing.role
     const gatewayDenied = gatewayRolePatchErrorResponse(
       role,
       await assertGatewayRelaysReady(db, [{ serverId, role }])
     )
     if (gatewayDenied) return gatewayDenied
+
+    const rangeDenied = await gatewayRangePatchErrorResponse(db, {
+      patch: parsed.patch,
+      existing,
+      record,
+      relays: fabricRelays,
+    })
+    if (rangeDenied) return rangeDenied
 
     const preferredDenied = preferredGatewayPatchErrorResponse(parsed.patch, fabricRelays, serverId)
     if (preferredDenied) return preferredDenied
