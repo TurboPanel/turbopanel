@@ -1026,10 +1026,14 @@ test('a product whose default price has no unit_amount leaves the cached price a
 
 // --- ordering and settling ------------------------------------------------
 
+/** A clock that answers each read with the next listed instant, then the last one. */
+const clockOf = (...instants: string[]) => {
+  let i = 0
+  return () => instants[Math.min(i++, instants.length - 1)]!
+}
+
 test('a projection whose read began earlier never overwrites a newer one: it reads Stripe again', async () => {
   const db = emptyDb()
-  const older = '2026-09-07T11:00:00.000Z'
-  const newer = '2026-09-07T12:00:00.000Z'
   const canceled = () => stripeSubscription({ status: 'canceled' })
   // The newer projection runs and commits while the older read is in flight.
   const newerClient = routedClient({ [SUB_ROUTE]: canceled })
@@ -1038,11 +1042,16 @@ test('a projection whose read began earlier never overwrites a newer one: it rea
     [SUB_ROUTE]: async () => {
       gets += 1
       if (gets > 1) return canceled()
-      await projectSubscriptionById({ db, client: newerClient, now: newer }, 'sub_1')
+      await projectSubscriptionById(
+        { db, client: newerClient, readClock: clockOf('2026-09-07T12:00:00.000Z') },
+        'sub_1'
+      )
       return stripeSubscription({ status: 'active' })
     },
   })
-  const outcome = await projectSubscriptionById({ db, client: olderClient, now: older }, 'sub_1')
+  // First read began at 11:00; the retry's read begins at 13:00.
+  const readClock = clockOf('2026-09-07T11:00:00.000Z', '2026-09-07T13:00:00.000Z')
+  const outcome = await projectSubscriptionById({ db, client: olderClient, readClock }, 'sub_1')
   assertEquals(outcome.action, 'projected')
   assertEquals(gets, 2)
   assertEquals(db.rows(subscription)[0]?.status, 'canceled')
@@ -1050,18 +1059,34 @@ test('a projection whose read began earlier never overwrites a newer one: it rea
 
 test('a projection that keeps losing to newer ones throws so the event stays pending', async () => {
   const db = emptyDb()
-  const future = '2999-01-01T00:00:00.000Z'
   await projectSubscriptionById(
-    { db, client: routedClient({ [SUB_ROUTE]: () => stripeSubscription() }), now: future },
+    {
+      db,
+      client: routedClient({ [SUB_ROUTE]: () => stripeSubscription() }),
+      readClock: clockOf('2026-09-07T12:00:00.000Z'),
+    },
     'sub_1'
   )
   const client = routedClient({ [SUB_ROUTE]: () => stripeSubscription({ status: 'canceled' }) })
   await assertRejects(
-    () => projectSubscriptionById({ db, client, now: NOW }, 'sub_1'),
+    () =>
+      projectSubscriptionById(
+        { db, client, readClock: clockOf('2026-09-07T11:00:00.000Z') },
+        'sub_1'
+      ),
     Error,
     'newer projection holds the row'
   )
   assertEquals(db.rows(subscription)[0]?.status, 'active')
+})
+
+test('a frozen business clock far in the future never blocks later projections', async () => {
+  const db = emptyDb()
+  const client = routedClient({ [SUB_ROUTE]: () => stripeSubscription() })
+  await projectSubscriptionById({ db, client, now: '2999-01-01T00:00:00.000Z' }, 'sub_1')
+  const canceled = routedClient({ [SUB_ROUTE]: () => stripeSubscription({ status: 'canceled' }) })
+  await projectSubscriptionById({ db, client: canceled }, 'sub_1')
+  assertEquals(db.rows(subscription)[0]?.status, 'canceled')
 })
 
 const EVENT = {

@@ -172,6 +172,8 @@ export type UpsertSubscriptionInput = Readonly<{
   currentPeriodEnd: string | null
   scheduleId: string | null
   now?: string
+  /** The value written to `updated_at` when it must differ from `now` (the ordering stamp). */
+  stampedAt?: string
   /**
    * Compare-and-set guard for an existing row: write only when the row's
    * `updated_at` is not later than this instant. A projection passes the
@@ -196,6 +198,7 @@ export async function upsertSubscriptionFromProvider(
   input: UpsertSubscriptionInput
 ): Promise<{ id: string; applied: boolean }> {
   const now = input.now ?? new Date().toISOString()
+  const stamp = input.stampedAt ?? now
   const pastDue = isDelinquentStatus(input.status)
   const [row] = await db
     .insert(subscription)
@@ -209,7 +212,7 @@ export async function upsertSubscriptionFromProvider(
       pastDueSince: pastDue ? now : null,
       graceExpiresAt: null,
       createdAt: now,
-      updatedAt: now,
+      updatedAt: stamp,
     })
     .onConflictDoUpdate({
       target: subscription.providerSubscriptionId,
@@ -224,7 +227,7 @@ export async function upsertSubscriptionFromProvider(
           ? sql`coalesce(${subscription.pastDueSince}, ${now}::timestamptz)`
           : null,
         graceExpiresAt: null,
-        updatedAt: now,
+        updatedAt: stamp,
       },
     })
     .returning({ id: subscription.id })
