@@ -2,7 +2,7 @@
  * Host-free coverage for admin route short-circuits and wiring branches.
  */
 
-import { assertEquals, assertExists } from '@std/assert'
+import { assertEquals, assertExists, assertNotEquals } from '@std/assert'
 import { Hono } from 'hono'
 import type { AppEnv } from '../app/app.ts'
 import {
@@ -1420,12 +1420,16 @@ test('legacy instance update refuses a daemon that cannot roll the control plane
 })
 
 const SUPERADMIN_ONLY_SETTINGS_ROUTES: ReadonlyArray<
-  Readonly<{ method: 'PUT' | 'POST'; path: string; body: unknown }>
+  Readonly<{ method: 'PUT' | 'POST' | 'PATCH'; path: string; body: unknown }>
 > = [
   { method: 'PUT', path: '/settings/email', body: { FROM: 'ops@example.com' } },
   { method: 'PUT', path: '/instance/public-urls', body: { urls: ['https://panel.example.com'] } },
   { method: 'POST', path: '/instance/public-urls/apply', body: {} },
   { method: 'POST', path: '/instance/tunnel-token', body: { token: 'x' } },
+  { method: 'PUT', path: '/instance/hostnames', body: { hostnames: [] } },
+  { method: 'PUT', path: '/instance/acme', body: {} },
+  { method: 'POST', path: '/instance/certificates', body: {} },
+  { method: 'PATCH', path: '/instance/certificates/c1/hostnames', body: { hosts: [] } },
   { method: 'PUT', path: '/settings/auth-providers', body: { GITHUB_CLIENT_ID: 'x' } },
   { method: 'PUT', path: '/settings/signup', body: { enabled: false } },
   { method: 'PUT', path: '/settings/alert-webhook', body: { url: '' } },
@@ -1445,6 +1449,24 @@ test('installation-wide settings writes return a clean 403 for org admins', asyn
       ok: false,
       error: 'Forbidden',
     })
+  }
+})
+
+test('platform TLS writes get past the superadmin check for a superadmin', async () => {
+  const { app, cookie } = await buildApp({ role: 'superadmin' })
+  for (const [method, path] of [
+    ['PUT', '/instance/hostnames'],
+    ['PUT', '/instance/acme'],
+    ['POST', '/instance/certificates'],
+    ['PATCH', '/instance/certificates/c1/hostnames'],
+  ]) {
+    const res = await app.request(`${ADMIN_API_PREFIX}${path}`, {
+      method,
+      headers: { Cookie: cookie, 'content-type': 'application/json' },
+      body: '{}',
+    })
+    assertNotEquals(res.status, 403, path)
+    assertNotEquals(res.status, 401, path)
   }
 })
 
