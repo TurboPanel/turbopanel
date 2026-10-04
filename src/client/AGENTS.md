@@ -402,8 +402,9 @@ sourceServerId? }`
   `src/features/datacenters/datacenter-options.ts`, no migration) describe how the ladder should
   treat each membership:
   - `priority` — integer `0`–`1000`, **lower wins**; absent = **`100`**
-    (`DEFAULT_DATACENTER_PRIORITY`). Out-of-range or non-integer values are
-    dropped by the parser, never clamped.
+    (`DEFAULT_DATACENTER_PRIORITY`). A stored out-of-range or non-integer value is
+    dropped by the parser, never clamped; a **request** (`POST` / `PATCH`)
+    carrying one is **400** `invalid_priority` (`hasInvalidPriority`).
   - `trusted` — boolean; absent = **`true`** (`DEFAULT_DATACENTER_TRUSTED`).
     `false` marks a datacenter whose L2 is **not** under the operator's control
     (shared or provider-owned segments).

@@ -13,6 +13,7 @@ import { metricsDeploymentKindForRuntime } from '../../contracts/capability-plan
 import { autoMonitorNicsForDatacenterAttach } from '../../features/servers/nic-auto-monitor.ts'
 import {
   type DatacenterPolicy,
+  hasInvalidPriority,
   parseDatacenterOptions,
   resolveDatacenterPolicy,
 } from '../../features/datacenters/datacenter-options.ts'
@@ -192,6 +193,7 @@ function parseDatacenterPatchFields(
   }
   const optionsResult = parseJsonbObject(c, body, 'options')
   if (optionsResult instanceof Response) return optionsResult
+  if (hasInvalidPriority(optionsResult)) return c.json({ error: 'invalid_priority' }, 400)
   if (optionsResult !== null) {
     patchFields.options = parseDatacenterOptions(optionsResult)
   }
@@ -274,6 +276,7 @@ function parseCreateDatacenterInput(
   if (metadata instanceof Response) return metadata
   const rawOptions = parseJsonbObject(c, body, 'options')
   if (rawOptions instanceof Response) return rawOptions
+  if (hasInvalidPriority(rawOptions)) return c.json({ error: 'invalid_priority' }, 400)
 
   return {
     name,
