@@ -36,7 +36,7 @@ export function parseSingleEmailAddress(raw: string): string | null {
   let candidate = trimmed
   const open = trimmed.indexOf('<')
   if (open !== -1) {
-    if (!trimmed.endsWith('>') || trimmed.indexOf('<', open + 1) !== -1) return null
+    if (!trimmed.endsWith('>') || trimmed.slice(open + 1).includes('<')) return null
     candidate = trimmed.slice(open + 1, -1).trim()
   }
   if (candidate.length === 0 || candidate.length > MAX_ADDRESS_LENGTH) return null

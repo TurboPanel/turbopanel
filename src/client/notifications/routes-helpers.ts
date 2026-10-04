@@ -192,12 +192,18 @@ export function isPlainEmailChannelLabel(label: string): boolean {
   )
 }
 
-function parseLabel(raw: unknown): string | ChannelWriteRefusal {
+function parseLabel(raw: unknown, kind?: string): string | ChannelWriteRefusal {
   if (typeof raw !== 'string') {
     return { ok: false, status: 400, error: 'label_required' }
   }
   const label = raw.trim()
-  if (label.length === 0 || label.length > CHANNEL_LABEL_MAX || hasControlCharacters(label)) {
+  const plainEnough = kind !== 'email' || isPlainEmailChannelLabel(label)
+  if (
+    label.length === 0 ||
+    label.length > CHANNEL_LABEL_MAX ||
+    hasControlCharacters(label) ||
+    !plainEnough
+  ) {
     return { ok: false, status: 400, error: 'label_invalid' }
   }
   return label
@@ -270,11 +276,8 @@ export async function parseChannelCreateBody(
     // Push tokens are registered by the store apps on sign-in, never typed in.
     return { ok: false, status: 400, error: 'kind_invalid' }
   }
-  const label = parseLabel(raw.label)
+  const label = parseLabel(raw.label, kind)
   if (typeof label !== 'string') return label
-  if (kind === 'email' && !isPlainEmailChannelLabel(label)) {
-    return { ok: false, status: 400, error: 'label_invalid' }
-  }
   const address = await validateChannelAddress(kind as ChannelCreate['kind'], raw.address, opts)
   if (typeof address !== 'string') return address
   let signingSecret: string | null = null
