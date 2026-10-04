@@ -1973,6 +1973,80 @@ test('POST /auth/challenge enrollment path returns 429 when restLimiter denies',
   assertEquals(body, { ok: false, error: 'rate_limited' })
 })
 
+/** Limiter that allows `max` hits per key, like the production buckets. */
+function createCountingRestLimiter(max: number) {
+  const counts = new Map<string, number>()
+  return {
+    keys: counts,
+    limit: async ({ key }: { key: string }) => {
+      const next = (counts.get(key) ?? 0) + 1
+      counts.set(key, next)
+      return { success: next <= max }
+    },
+  }
+}
+
+async function createRestLimitTestApp(restLimiter: {
+  limit: (input: { key: string }) => Promise<{ success: boolean }>
+}) {
+  const app = new Hono<AppEnv>()
+  registerDaemonApiRoutes(app, {
+    secrets: await createTestSecrets(),
+    challengeSigningSecrets: await createTestChallengeSecrets(),
+    secretsConfig: createTestSecretsConfig(),
+    restLimiter,
+  })
+  return app
+}
+
+function postChallenge(app: Hono<AppEnv>, peer: string, body: Record<string, string> = {}) {
+  return app.request('/api/daemon/v1/auth/challenge', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': peer },
+    body: JSON.stringify(body),
+  })
+}
+
+test('anonymous enrollment challenges are limited per source address, not globally', async () => {
+  const app = await createRestLimitTestApp(createCountingRestLimiter(30))
+  for (let i = 0; i < 31; i++) await postChallenge(app, '198.51.100.7')
+  assertEquals((await postChallenge(app, '198.51.100.7')).status, 429)
+  assertEquals((await postChallenge(app, '198.51.100.8')).status, 200)
+})
+
+test('challenge requests naming a server never spend that server bucket before a proof', async () => {
+  const limiter = createCountingRestLimiter(30)
+  const app = await createRestLimitTestApp(limiter)
+  for (let i = 0; i < 40; i++) {
+    await postChallenge(app, '198.51.100.7', { serverId: 'srv-known', keyId: 'key-known' })
+  }
+  assertEquals(
+    [...limiter.keys.keys()].some((key) => key.endsWith(':srv-known')),
+    false
+  )
+})
+
+test('auth/session bad requests never spend the per-server bucket', async () => {
+  const limiter = createCountingRestLimiter(30)
+  const app = await createRestLimitTestApp(limiter)
+  for (let i = 0; i < 40; i++) {
+    await app.request('/api/daemon/v1/auth/session', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '198.51.100.7' },
+      body: JSON.stringify({
+        serverId: 'srv-known',
+        keyId: 'key-known',
+        challengeId: 'c',
+        signature: 's',
+      }),
+    })
+  }
+  assertEquals(
+    [...limiter.keys.keys()].some((key) => key.endsWith(':srv-known')),
+    false
+  )
+})
+
 test('POST /commands/lease returns 429 when restLimiter denies with valid JWT', async () => {
   const app = new Hono<AppEnv>()
   const secrets = await createTestSecrets()
