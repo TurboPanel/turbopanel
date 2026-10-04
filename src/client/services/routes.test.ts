@@ -8,14 +8,17 @@ import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from '../authn/crypto.ts'
 import { createSession } from '../authn/session-store.ts'
 import { deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
 import {
+  container,
   environment,
   grant,
   organization,
   project,
+  server,
   service,
   user,
   workspace,
 } from '../../db/schema.ts'
+import { touchServerMetadata } from '../../features/servers/server-registry.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { registerServiceRoutes } from './routes.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
@@ -300,5 +303,69 @@ test('PATCH /services/:id keeps the daemon-detected app fact when metadata is re
     assertEquals(getRes.status, 200)
     const body = (await getRes.json()) as { service: { app?: unknown } }
     assertEquals(body.service.app, { kind: 'wordpress', version: '6.5.2' })
+  })
+})
+
+test('GET /services and /services/:id serve the daemon-reported runState, absent until reported', async () => {
+  await withServiceFixtures(async ({ db, app, secrets, userId, organizationId, environmentId }) => {
+    const cookie = await sessionCookie(db, secrets, userId)
+    const headers = { Cookie: cookie, [ORG_ID_HEADER]: organizationId }
+
+    const [web] = await db
+      .insert(service)
+      .values({ name: 'web', environmentId, composeServiceName: 'web' })
+      .returning({ id: service.id })
+    const [srv] = await db
+      .insert(server)
+      .values({ organizationId, name: 'Service Route Server' })
+      .returning({ id: server.id })
+    const serverId = srv!.id
+    try {
+      await db.insert(container).values({
+        serviceId: web!.id,
+        serverId,
+        containerId: 'cid-web',
+        containerName: 'route-web-1',
+        composeServiceName: 'web',
+      })
+
+      const before = await app.request(`/services/${web!.id}`, { headers })
+      assertEquals(before.status, 200)
+      const beforeBody = (await before.json()) as { service: Record<string, unknown> }
+      assertEquals('runState' in beforeBody.service, false)
+
+      const asOf = '2026-10-04T12:00:00.000Z'
+      await touchServerMetadata(db, serverId, {
+        services: [
+          {
+            serviceId: web!.id,
+            state: 'stopped_after_crashes',
+            restartCount: 10,
+            lastError: '/bin/sh: 1: next: not found',
+            asOf,
+          },
+        ],
+      })
+      const expected = {
+        state: 'stopped_after_crashes',
+        running: false,
+        restartCount: 10,
+        lastError: '/bin/sh: 1: next: not found',
+        asOf,
+      }
+
+      const one = await app.request(`/services/${web!.id}`, { headers })
+      const oneBody = (await one.json()) as { service: { runState?: unknown } }
+      assertEquals(oneBody.service.runState, expected)
+
+      const list = await app.request(`/services?environmentId=${environmentId}`, { headers })
+      const listBody = (await list.json()) as {
+        services: { id: string; runState?: unknown }[]
+      }
+      assertEquals(listBody.services.find((row) => row.id === web!.id)?.runState, expected)
+    } finally {
+      await db.delete(container).where(eq(container.serverId, serverId))
+      await db.delete(server).where(eq(server.id, serverId))
+    }
   })
 })

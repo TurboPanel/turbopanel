@@ -832,6 +832,30 @@ it('validateDaemonInboundFrame accepts hello with optional fields', () => {
   }
 })
 
+it('validateDaemonInboundFrame accepts hello and heartbeat carrying services, even a malformed list', () => {
+  const services = [{ serviceId: 'svc-1', state: 'running', restartCount: 0, asOf: VALID_AT }]
+  const hello = validateDaemonInboundFrame(
+    JSON.stringify({ type: 'hello', at: VALID_AT, daemonBuild: VALID_DAEMON_BUILD, services })
+  )
+  assertEquals(hello.ok, true)
+  if (hello.ok && hello.message.type === 'hello') {
+    assertEquals(hello.message.services, services)
+  }
+  const heartbeat = validateDaemonInboundFrame(
+    JSON.stringify({ type: 'heartbeat', at: VALID_AT, services })
+  )
+  assertEquals(heartbeat.ok, true)
+  if (heartbeat.ok && heartbeat.message.type === 'heartbeat') {
+    assertEquals(heartbeat.message.services, services)
+  }
+  // Bad entries are dropped when stored; they never cost the daemon its socket.
+  assertEquals(
+    validateDaemonInboundFrame(JSON.stringify({ type: 'heartbeat', at: VALID_AT, services: 'x' }))
+      .ok,
+    true
+  )
+})
+
 it('validateDaemonInboundFrame rejects hello with invalid daemonBuild or hostname', () => {
   assertEquals(
     validateDaemonInboundFrame(

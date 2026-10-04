@@ -44,6 +44,7 @@ import {
 import { enqueueLatestRecordedCapabilityPlan } from '../../client/servers/capability-plan-push.ts'
 import { recordTopologyGeneration } from '../../features/servers/server-topology-records.ts'
 import { touchServerMetadata } from '../../features/servers/server-registry.ts'
+import { parseServiceRunStates, type ServiceRunState } from '../../contracts/service-run-state.ts'
 import { instanceAttachVersionFrame } from '../attach-version.ts'
 import { verifyDaemonJwt } from '../authn/daemon-jwt.ts'
 import { getServerDaemonStateByServerId } from '../../features/servers/server-identity-db.ts'
@@ -1153,6 +1154,7 @@ export class DaemonCellObject {
       resources?: ServerHostResources
       timeSync?: ServerTimeSync
       docker?: ServerDockerMetadata
+      services?: ServiceRunState[]
       features?: string[]
     },
     geo?: ServerGeo
@@ -1165,6 +1167,7 @@ export class DaemonCellObject {
         hostIdentity?.resources ||
         hostIdentity?.timeSync ||
         hostIdentity?.docker ||
+        hostIdentity?.services ||
         hostIdentity?.features
       ) {
         await touchServerMetadata(db, serverId, {
@@ -1174,6 +1177,7 @@ export class DaemonCellObject {
           resources: hostIdentity.resources,
           timeSync: hostIdentity.timeSync,
           docker: hostIdentity.docker,
+          services: hostIdentity.services,
           ...(hostIdentity.features !== undefined ? { features: hostIdentity.features } : {}),
         })
       }
@@ -1685,6 +1689,7 @@ export class DaemonCellObject {
       resources?: ServerHostResources
       timeSync?: ServerTimeSync
       docker?: ServerDockerMetadata
+      services?: unknown
       features?: string[]
     }
   ): Promise<void> {
@@ -1700,9 +1705,13 @@ export class DaemonCellObject {
       timeSync: parsed.timeSync,
       resources: resourcesFromDaemonPresence(parsed),
       docker: parsed.docker,
+      services: parseServiceRunStates(parsed.services),
     }
     const hasPresenceFacts = Boolean(
-      presenceFacts.timeSync || presenceFacts.resources || presenceFacts.docker
+      presenceFacts.timeSync ||
+      presenceFacts.resources ||
+      presenceFacts.docker ||
+      presenceFacts.services
     )
     // hostname/os stay hello-only; timeSync / resources / docker project
     // on both hello and change-detected heartbeats.
@@ -1714,6 +1723,7 @@ export class DaemonCellObject {
           resources?: ServerHostResources
           timeSync?: ServerTimeSync
           docker?: ServerDockerMetadata
+          services?: ServiceRunState[]
           features?: string[]
         }
       | undefined
@@ -1735,6 +1745,7 @@ export class DaemonCellObject {
       hostIdentity?.resources ||
       hostIdentity?.timeSync ||
       hostIdentity?.docker ||
+      hostIdentity?.services ||
       hostIdentity?.features
     )
     const attachGeo = parseServerGeo(attachment.geo) ?? undefined
