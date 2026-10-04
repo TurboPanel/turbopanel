@@ -12,6 +12,7 @@ import {
   organization,
   project,
   session,
+  storage,
   user,
   verification,
   workspace,
@@ -23,6 +24,7 @@ import { registerEnvironmentRoutes } from '../environments/routes.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { registerOrganizationMemberRoutes } from '../organizations/members.ts'
 import { registerReauthSettingsRoutes } from '../organizations/reauth-settings-routes.ts'
+import { registerStorageRoutes } from '../storage/routes.ts'
 import { createAuthRateLimiter, setSharedAuthRateLimiterForTests } from './auth-rate-limit.ts'
 import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from './crypto.ts'
 import { registerAuthRoutes } from './http.ts'
@@ -74,6 +76,7 @@ async function buildFixture(db: Db, reauthLimit = 1000) {
   registerReauthSettingsRoutes(client, opts)
   registerOrganizationMemberRoutes(client, opts)
   registerEnvironmentRoutes(client, opts)
+  registerStorageRoutes(client, opts)
   // A stand-in destructive route: any route wired to the gate behaves like it.
   client.use('/probe/*', createSessionMiddleware(sessionSecrets))
   client.delete('/probe/:orgId', async (c) => {
@@ -201,6 +204,29 @@ test('registry names every gated action once', () => {
   const keys = Object.keys(STEP_UP_ACTIONS)
   assertEquals(new Set(keys).size, keys.length)
   assertEquals(keys.includes('environment.delete'), true)
+})
+
+/** Non-test sources under src/client, so the wiring check sees every route file. */
+async function* clientSources(dir: URL): AsyncGenerator<string> {
+  for await (const entry of Deno.readDir(dir)) {
+    const child = new URL(entry.name + (entry.isDirectory ? '/' : ''), dir)
+    if (entry.isDirectory) yield* clientSources(child)
+    else if (entry.name.endsWith('.ts') && !entry.name.includes('.test.')) {
+      yield await Deno.readTextFile(child)
+    }
+  }
+}
+
+test('every registered action is called by a route', async () => {
+  const sources: string[] = []
+  for await (const text of clientSources(new URL('../', import.meta.url))) sources.push(text)
+  const all = sources.join('\n')
+  for (const action of Object.keys(STEP_UP_ACTIONS)) {
+    const wired = new RegExp(
+      String.raw`requireStepUpIfConfigured\(\s*c,\s*[\w.]+,\s*['"]${action.replaceAll('.', String.raw`\.`)}['"]`
+    )
+    assertEquals(wired.test(all), true, `no route calls the gate for ${action}`)
+  }
 })
 
 test('setting off: permanent actions are unchanged', async () => {
@@ -454,6 +480,68 @@ test('delete environment is wired to the gate', async () => {
       await db.delete(environment).where(eq(environment.projectId, on.projectId))
       await db.delete(project).where(eq(project.workspaceId, off.workspaceId))
       await db.delete(project).where(eq(project.workspaceId, on.workspaceId))
+      await db.delete(workspace).where(eq(workspace.organizationId, orgA))
+    }
+  })
+})
+
+test('changing the re-authentication setting needs step-up while it is on', async () => {
+  await withScene(async ({ db, fx, orgA, cookie, password }) => {
+    await setOrgReauth(db, orgA, true)
+    const path = `/organizations/${orgA}/reauth-settings`
+    const off = { requireReauthForDestructive: false }
+
+    const refused = await req(fx, 'PUT', path, cookie, off)
+    assertEquals(refused.status, 403)
+    assertEquals(
+      ((await refused.json()) as { action: string }).action,
+      'organization.reauth_settings.update'
+    )
+    const stillOn = (await (await req(fx, 'GET', path, cookie)).json()) as {
+      requireReauthForDestructive: boolean
+    }
+    assertEquals(stillOn.requireReauthForDestructive, true)
+
+    await req(fx, 'POST', '/auth/reauth', cookie, proofBody(password))
+    assertEquals((await req(fx, 'PUT', path, cookie, off)).status, 200)
+  })
+})
+
+test('delete storage is wired to the gate', async () => {
+  await withScene(async ({ db, fx, orgA, cookie, password }) => {
+    const scene = await makeStoppedEnvironment(db, orgA, 'storage')
+    const now = new Date().toISOString()
+    const [row] = await db
+      .insert(storage)
+      .values({
+        organizationId: orgA,
+        projectId: scene.projectId,
+        environmentId: null,
+        serviceId: null,
+        kind: 'volume',
+        name: 'step-up-volume',
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning({ id: storage.id })
+    const remove = () =>
+      fx.app.request(`${API}/storage/${row!.id}`, {
+        method: 'DELETE',
+        headers: { cookie, [ORG_ID_HEADER]: orgA, 'X-Real-IP': '203.0.113.7' },
+      })
+    try {
+      await setOrgReauth(db, orgA, true)
+      const refused = await remove()
+      assertEquals(refused.status, 403)
+      assertEquals(((await refused.json()) as { action: string }).action, 'storage.delete')
+      assertEquals((await db.select().from(storage).where(eq(storage.id, row!.id))).length, 1)
+
+      await req(fx, 'POST', '/auth/reauth', cookie, proofBody(password))
+      assertEquals((await remove()).status, 200)
+    } finally {
+      await db.delete(storage).where(eq(storage.organizationId, orgA))
+      await db.delete(environment).where(eq(environment.projectId, scene.projectId))
+      await db.delete(project).where(eq(project.workspaceId, scene.workspaceId))
       await db.delete(workspace).where(eq(workspace.organizationId, orgA))
     }
   })

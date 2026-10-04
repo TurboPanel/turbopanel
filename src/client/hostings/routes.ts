@@ -1,5 +1,6 @@
 import { and, eq, inArray } from "drizzle-orm";
 import type { Context, Hono } from "hono";
+import { requireStepUpIfConfigured } from "../authn/step-up.ts";
 import type { AppEnv } from "../../app/app.ts";
 import type { AuthRouteOpts } from "../authn/http.ts";
 import { createSessionMiddleware } from "../authn/middleware.ts";
@@ -417,6 +418,13 @@ export function registerHostingRoutes(
 
     const immutable = await assertNotSystemOwnedOr403(c, "hosting", id);
     if (immutable) return immutable;
+
+    const stepUp = await requireStepUpIfConfigured(
+      c,
+      organizationId,
+      "hosting.delete",
+    );
+    if (stepUp) return stepUp;
 
     const composeOwned = await assertHostingNotComposeOwnedOr409(c, db, id);
     if (composeOwned) return composeOwned;

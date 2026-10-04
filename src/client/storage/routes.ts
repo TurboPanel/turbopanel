@@ -1,3 +1,4 @@
+import { requireStepUpIfConfigured } from '../authn/step-up.ts'
 import { and, eq, inArray } from 'drizzle-orm'
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
@@ -669,6 +670,9 @@ export function registerStorageRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const authorized = await authorizeStorageMutation(c, existing, ctx.orgId)
     if (authorized instanceof Response) return authorized
 
+    const stepUp = await requireStepUpIfConfigured(c, ctx.orgId, 'storage.delete')
+    if (stepUp) return stepUp
+
     const backupHosts = await captureCopyBackupHosts(ctx.db, c.get('commandQueue'), {
       storageId: id,
     })
@@ -769,6 +773,9 @@ export function registerStorageRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const copyId = c.req.param('copyId')
     const row = await requireStorageForNested(c, ctx.db, ctx.orgId, storageId, 'manage')
     if (row instanceof Response) return row
+
+    const stepUp = await requireStepUpIfConfigured(c, ctx.orgId, 'storage.copy.delete')
+    if (stepUp) return stepUp
 
     const backupHosts = await captureCopyBackupHosts(ctx.db, c.get('commandQueue'), {
       copyIds: [copyId],

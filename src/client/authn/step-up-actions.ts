@@ -28,6 +28,14 @@ export const STEP_UP_ACTIONS = {
   'managed.delete': 'Delete a managed database',
   'managed.database.delete': 'Delete a database inside a managed database',
   'member.remove': 'Remove a member from the organization',
+  'storage.delete': 'Delete a storage volume',
+  'storage.copy.delete': 'Delete a copy of a storage volume',
+  'storage.backup.delete': 'Delete a storage backup',
+  'storage.restore': 'Restore a storage backup over its volume',
+  'managed.backup.delete': 'Delete a managed database backup',
+  'managed.restore': 'Restore a managed database backup over its data',
+  'hosting.delete': 'Delete a hosting',
+  'organization.reauth_settings.update': 'Change the re-authentication setting',
 } as const
 
 export type StepUpAction = keyof typeof STEP_UP_ACTIONS
