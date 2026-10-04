@@ -66,23 +66,45 @@ export function schemaMarkerPath(paths: DuckDbPaths): string {
   return `${paths.metricsDir}/schema-version`
 }
 
-/**
- * Marker version recorded by the last successful open, or `null` when no
- * marker exists yet (fresh install, or a pre-marker store).
- */
-export async function readSchemaMarker(paths: DuckDbPaths): Promise<number | null> {
+type SchemaMarkerState =
+  { kind: 'missing' } | { kind: 'invalid' } | { kind: 'version'; value: number }
+
+/** Marker content, with absent and unparseable told apart. Read errors other than NotFound throw. */
+async function readSchemaMarkerState(paths: DuckDbPaths): Promise<SchemaMarkerState> {
+  let text: string
   try {
-    const text = await Deno.readTextFile(schemaMarkerPath(paths))
-    const value = Number(text.trim())
-    return Number.isInteger(value) ? value : null
-  } catch {
-    return null
+    text = await Deno.readTextFile(schemaMarkerPath(paths))
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return { kind: 'missing' }
+    throw error
   }
+  const trimmed = text.trim()
+  const value = Number(trimmed)
+  return trimmed !== '' && Number.isInteger(value) && value > 0
+    ? { kind: 'version', value }
+    : { kind: 'invalid' }
 }
 
-/** Record the current schema marker — called only after a successful open. */
+/**
+ * Marker version recorded by the last successful open, or `null` when no
+ * marker exists yet (fresh install) or its content is not a version number.
+ */
+export async function readSchemaMarker(paths: DuckDbPaths): Promise<number | null> {
+  const state = await readSchemaMarkerState(paths)
+  return state.kind === 'version' ? state.value : null
+}
+
+/**
+ * Record the current schema marker — called only after a successful open.
+ * Skipped when it already matches; otherwise written to a temp file and
+ * renamed so a crash never leaves an empty or partial marker behind.
+ */
 export async function writeSchemaMarker(paths: DuckDbPaths): Promise<void> {
-  await Deno.writeTextFile(schemaMarkerPath(paths), String(DUCKDB_SCHEMA_MARKER_VERSION))
+  if ((await readSchemaMarker(paths)) === DUCKDB_SCHEMA_MARKER_VERSION) return
+  const target = schemaMarkerPath(paths)
+  const temp = `${target}.tmp`
+  await Deno.writeTextFile(temp, String(DUCKDB_SCHEMA_MARKER_VERSION))
+  await Deno.rename(temp, target)
 }
 
 /** Default DuckDB worker-thread cap applied when no override is given. */
@@ -106,9 +128,11 @@ export function escapeSqlString(value: string): string {
 
 /**
  * Open (or create) the current DuckDB metrics store (schema marker 9).
- * Any missing, corrupt, or non-current sidecar marker discards
+ * A sidecar marker holding an older version number discards
  * `metrics.duckdb`, `parquet/`, `tmp/`, and `schema-version` before this
- * open creates the current layout. There is no in-place migration.
+ * open creates the current layout (no in-place migration). A missing marker
+ * beside existing data, or an empty, unparseable, or newer marker, makes the
+ * open fail without deleting anything.
  */
 export async function openDuckDb(options: OpenDuckDbOptions): Promise<DuckDbHandle> {
   const { paths } = options
@@ -153,14 +177,41 @@ export async function openDuckDb(options: OpenDuckDbOptions): Promise<DuckDbHand
 }
 
 /**
- * Current-version-only gate: anything other than
- * {@link DUCKDB_SCHEMA_MARKER_VERSION} (9) is discarded, including a missing
- * or corrupt marker next to leftover `metrics.duckdb` / Parquet files.
+ * Current-version-only gate. The store is discarded only when the marker is
+ * explicitly an older version number. A missing marker next to existing data,
+ * an empty or unreadable marker, or a newer version is refused instead:
+ * wiping on ambiguity would let a crash or a permission error erase the
+ * whole metrics history.
  */
 async function discardNonCurrentMetricsStore(paths: DuckDbPaths): Promise<void> {
-  const marker = await readSchemaMarker(paths)
-  if (marker === DUCKDB_SCHEMA_MARKER_VERSION) return
-  await removeMetricsStoreFiles(paths)
+  const state = await readSchemaMarkerState(paths)
+  if (state.kind === 'version' && state.value === DUCKDB_SCHEMA_MARKER_VERSION) return
+  if (state.kind === 'version' && state.value < DUCKDB_SCHEMA_MARKER_VERSION) {
+    await removeMetricsStoreFiles(paths)
+    return
+  }
+  if (state.kind === 'missing' && !(await metricsStoreHasData(paths))) return
+  throw new Error(
+    `DuckDB metrics schema marker at ${schemaMarkerPath(paths)} is ` +
+      `${state.kind === 'version' ? `newer (${state.value}) than this build` : state.kind}; ` +
+      'refusing to delete the metrics store. Fix or remove the marker, or remove the metrics ' +
+      'directory yourself to start fresh.'
+  )
+}
+
+async function metricsStoreHasData(paths: DuckDbPaths): Promise<boolean> {
+  try {
+    await Deno.stat(paths.databasePath)
+    return true
+  } catch (error) {
+    if (!(error instanceof Deno.errors.NotFound)) throw error
+  }
+  try {
+    for await (const _entry of Deno.readDir(paths.parquetRoot)) return true
+  } catch (error) {
+    if (!(error instanceof Deno.errors.NotFound)) throw error
+  }
+  return false
 }
 
 async function removeMetricsStoreFiles(paths: DuckDbPaths): Promise<void> {

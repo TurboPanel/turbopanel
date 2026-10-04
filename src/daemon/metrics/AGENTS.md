@@ -401,8 +401,8 @@ entity), unlike v3's fixed-width part tables.
 
 **Schema on open** (`database.ts`): `CREATE TABLE IF NOT EXISTS` /
 `CREATE INDEX IF NOT EXISTS` for the current layout (schema marker **9**). A
-marker-8 database is discarded like any other mismatch (hard cut, no migration); a missing, corrupt, or any other sidecar marker discards `metrics.duckdb`, `parquet/`,
-`tmp/`, and `schema-version` before the current store is created — there is no
+marker-8 database is discarded like any older version (hard cut, no migration); a sidecar marker holding an older version number discards `metrics.duckdb`, `parquet/`,
+`tmp/`, and `schema-version` before the current store is created. A missing marker beside existing data, or an empty, unparseable, or newer marker, fails the open without deleting anything — there is no
 in-place migration and no supported path for older DuckDB files. The marker is a
 discard-on-mismatch counter, not a monotonic migration version. **The three
 version counters move together, always**: `METRICS_SCHEMA_VERSION` (the wire

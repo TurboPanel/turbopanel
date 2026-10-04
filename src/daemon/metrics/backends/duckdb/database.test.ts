@@ -1,4 +1,4 @@
-import { assertEquals } from '@std/assert'
+import { assertEquals, assertRejects } from '@std/assert'
 import { it } from '@std/testing/bdd'
 import { DUCKDB_SCHEMA_MARKER_VERSION, HOST_SAMPLES_TABLE } from './schema.ts'
 import {
@@ -74,7 +74,7 @@ async function fileExistsForTest(path: string): Promise<boolean> {
   }
 }
 
-it('openDuckDb discards a missing marker and leftover parquet before creating the current store', async () => {
+it('openDuckDb refuses to wipe a store whose marker went missing', async () => {
   const metricsDir = await Deno.makeTempDir({
     prefix: 'tp-duckdb-open-missing-marker-',
   })
@@ -87,19 +87,15 @@ it('openDuckDb discards a missing marker and leftover parquet before creating th
     await Deno.mkdir(extraDir, { recursive: true })
     await Deno.writeTextFile(`${extraDir}/metrics.parquet`, 'sealed partition')
 
-    const second = await openDuckDb({ paths })
-    try {
-      assertEquals(await fileExistsForTest(`${extraDir}/metrics.parquet`), false)
-      assertEquals(await readSchemaMarker(paths), DUCKDB_SCHEMA_MARKER_VERSION)
-    } finally {
-      second.close()
-    }
+    await assertRejects(() => openDuckDb({ paths }), Error, 'schema marker')
+    assertEquals(await fileExistsForTest(`${extraDir}/metrics.parquet`), true)
+    assertEquals(await fileExistsForTest(paths.databasePath), true)
   } finally {
     await Deno.remove(metricsDir, { recursive: true })
   }
 })
 
-it('openDuckDb discards an orphan parquet tree when the marker is missing', async () => {
+it('openDuckDb refuses an orphan parquet tree without a marker', async () => {
   const metricsDir = await Deno.makeTempDir({
     prefix: 'tp-duckdb-open-orphan-parquet-',
   })
@@ -109,36 +105,57 @@ it('openDuckDb discards an orphan parquet tree when the marker is missing', asyn
     await Deno.mkdir(leftoverDir, { recursive: true })
     await Deno.writeTextFile(`${leftoverDir}/metrics.parquet`, 'orphaned partition')
 
-    const handle = await openDuckDb({ paths })
-    try {
-      assertEquals(await readSchemaMarker(paths), DUCKDB_SCHEMA_MARKER_VERSION)
-      assertEquals(await fileExistsForTest(`${leftoverDir}/metrics.parquet`), false)
-    } finally {
-      handle.close()
+    await assertRejects(() => openDuckDb({ paths }), Error, 'schema marker')
+    assertEquals(await fileExistsForTest(`${leftoverDir}/metrics.parquet`), true)
+  } finally {
+    await Deno.remove(metricsDir, { recursive: true })
+  }
+})
+
+it('openDuckDb refuses to wipe the store for an empty or corrupt marker', async () => {
+  const metricsDir = await Deno.makeTempDir({
+    prefix: 'tp-duckdb-open-corrupt-marker-',
+  })
+  try {
+    const paths = resolveDuckDbPaths(metricsDir)
+    ;(await openDuckDb({ paths })).close()
+    const leftoverDir = `${paths.parquetRoot}/server-metrics/year=2025`
+    await Deno.mkdir(leftoverDir, { recursive: true })
+    await Deno.writeTextFile(`${leftoverDir}/metrics.parquet`, 'partition')
+    for (const content of ['', 'not-a-number', '9.5', '-1']) {
+      await Deno.writeTextFile(schemaMarkerPath(paths), content)
+      await assertRejects(() => openDuckDb({ paths }), Error, 'schema marker')
+      assertEquals(await fileExistsForTest(`${leftoverDir}/metrics.parquet`), true)
+      assertEquals(await fileExistsForTest(paths.databasePath), true)
     }
   } finally {
     await Deno.remove(metricsDir, { recursive: true })
   }
 })
 
-it('openDuckDb discards a corrupt marker and existing files before creating the current store', async () => {
-  const metricsDir = await Deno.makeTempDir({
-    prefix: 'tp-duckdb-open-corrupt-marker-',
-  })
+it('openDuckDb refuses to wipe the store for a marker newer than this build', async () => {
+  const metricsDir = await Deno.makeTempDir({ prefix: 'tp-duckdb-open-newer-marker-' })
   try {
     const paths = resolveDuckDbPaths(metricsDir)
-    await Deno.writeTextFile(schemaMarkerPath(paths), 'not-a-number')
-    const leftoverDir = `${paths.parquetRoot}/server-metrics/year=2025`
-    await Deno.mkdir(leftoverDir, { recursive: true })
-    await Deno.writeTextFile(`${leftoverDir}/metrics.parquet`, 'stale partition')
+    ;(await openDuckDb({ paths })).close()
+    await Deno.writeTextFile(schemaMarkerPath(paths), String(DUCKDB_SCHEMA_MARKER_VERSION + 1))
+    await assertRejects(() => openDuckDb({ paths }), Error, 'schema marker')
+    assertEquals(await fileExistsForTest(paths.databasePath), true)
+  } finally {
+    await Deno.remove(metricsDir, { recursive: true })
+  }
+})
 
-    const handle = await openDuckDb({ paths })
-    try {
-      assertEquals(await fileExistsForTest(`${leftoverDir}/metrics.parquet`), false)
-      assertEquals(await readSchemaMarker(paths), DUCKDB_SCHEMA_MARKER_VERSION)
-    } finally {
-      handle.close()
-    }
+it('openDuckDb leaves a current marker file untouched on reopen', async () => {
+  const metricsDir = await Deno.makeTempDir({ prefix: 'tp-duckdb-open-marker-stable-' })
+  try {
+    const paths = resolveDuckDbPaths(metricsDir)
+    ;(await openDuckDb({ paths })).close()
+    const before = await Deno.stat(schemaMarkerPath(paths))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    ;(await openDuckDb({ paths })).close()
+    const after = await Deno.stat(schemaMarkerPath(paths))
+    assertEquals(after.mtime?.getTime(), before.mtime?.getTime())
   } finally {
     await Deno.remove(metricsDir, { recursive: true })
   }
