@@ -8,6 +8,7 @@ import {
   parseServerDockerMetadata,
   parseServerHostResources,
   parseServerOsMetadata,
+  parseServerReleaseLinkScan,
   parseServerRuntimeMetadata,
   parseServerTimeSync,
   type ServerDockerMetadata,
@@ -17,7 +18,9 @@ import {
   type ServerMetadata,
   type ServerOsColumns,
   type ServerOsMetadata,
+  type ServerReleaseLinkScanMetadata,
   type ServerRuntimeMetadata,
+  serverReleaseLinkScanEquals,
   serverRuntimeMetadataEquals,
   type ServerTimeSync,
   type ServerTimeSyncColumns,
@@ -86,6 +89,7 @@ export type ServerHelloIdentity = {
   timeSync?: ServerTimeSync
   docker?: ServerDockerMetadata
   runtimes?: ServerRuntimeMetadata
+  releaseLinkScan?: ServerReleaseLinkScanMetadata
   /** Hello only. `[]` when the daemon omitted `features`. Heartbeat leaves this unset. */
   features?: string[]
 }
@@ -100,6 +104,8 @@ function metadataPatch(identity: ServerHelloIdentity): Partial<ServerMetadata> {
   if (docker) patch.docker = docker
   const runtimes = parseServerRuntimeMetadata(identity.runtimes)
   if (runtimes) patch.runtimes = runtimes
+  const releaseLinkScan = parseServerReleaseLinkScan(identity.releaseLinkScan)
+  if (releaseLinkScan) patch.releaseLinkScan = releaseLinkScan
   return patch
 }
 
@@ -164,7 +170,7 @@ export function mergeServerMetadataIdentity(
   current: ServerMetadata | null | undefined,
   identity: Pick<
     ServerHelloIdentity,
-    'hostname' | 'machineKey' | 'os' | 'resources' | 'timeSync' | 'docker'
+    'hostname' | 'machineKey' | 'os' | 'resources' | 'timeSync' | 'docker' | 'releaseLinkScan'
   >
 ): ServerMetadata | null {
   const patch = metadataPatch(identity)
@@ -187,6 +193,13 @@ export function mergeServerMetadataIdentity(
   }
   if (patch.runtimes !== undefined && !serverRuntimeMetadataEquals(patch.runtimes, base.runtimes)) {
     next.runtimes = patch.runtimes
+    changed = true
+  }
+  if (
+    patch.releaseLinkScan !== undefined &&
+    !serverReleaseLinkScanEquals(patch.releaseLinkScan, base.releaseLinkScan)
+  ) {
+    next.releaseLinkScan = patch.releaseLinkScan
     changed = true
   }
 
@@ -226,6 +239,12 @@ function buildMetadataDelta(
     !serverRuntimeMetadataEquals(patch.runtimes, base?.runtimes)
   ) {
     delta.runtimes = patch.runtimes
+  }
+  if (
+    patch.releaseLinkScan !== undefined &&
+    !serverReleaseLinkScanEquals(patch.releaseLinkScan, base?.releaseLinkScan)
+  ) {
+    delta.releaseLinkScan = patch.releaseLinkScan
   }
   return delta
 }

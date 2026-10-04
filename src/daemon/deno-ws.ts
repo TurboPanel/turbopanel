@@ -325,13 +325,20 @@ async function handleDaemonPresenceInbound(params: {
       resources,
       timeSync: message.timeSync,
       docker: message.docker,
+      releaseLinkScan: message.releaseLinkScan,
       features: message.features ?? [],
     })
-  } else if (message.timeSync || resources !== undefined || message.docker) {
+  } else if (
+    message.timeSync ||
+    resources !== undefined ||
+    message.docker ||
+    message.releaseLinkScan
+  ) {
     await touchServerMetadata(db, serverId, {
       resources,
       timeSync: message.timeSync,
       docker: message.docker,
+      releaseLinkScan: message.releaseLinkScan,
     })
   }
 

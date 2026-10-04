@@ -2278,6 +2278,54 @@ test('live WS hello persists os hostname machineKey docker and timeSync', async 
   )
 })
 
+test('live WS heartbeat carrying only a link scan writes server metadata', async () => {
+  const secrets = await createDaemonJwtSecrets()
+  const serverId = 'srv-live-heartbeat-scan'
+  const { db, getPatches } = createProjectionTrackingDb(
+    serverId,
+    { key: baseDaemonKey },
+    {
+      connected: true,
+      statusChangedAt: '2020-01-01T00:00:00.000Z',
+    }
+  )
+  const tracking = createTrackingDaemonCell(serverId)
+
+  await withLiveDaemonServer(
+    {
+      secrets,
+      db,
+      registry: createTrackingRegistry(tracking.cell),
+    },
+    async ({ port }) => {
+      const issued = await issueDaemonJwt({ sub: serverId, kid: 'key-test' }, secrets)
+      const ws = await openLiveDaemonWs({
+        port,
+        token: issued.token,
+        remoteIp: LIVE_REMOTE_IP,
+      })
+      ws.send(
+        JSON.stringify({
+          type: 'heartbeat',
+          at: new Date().toISOString(),
+          releaseLinkScan: {
+            scannedAt: '2026-10-04T00:00:00.000Z',
+            findingCount: 1,
+            findings: [{ username: 'appuser', serviceId: 'svc-a', linkCount: 1 }],
+          },
+        })
+      )
+      await new Promise((resolve) => setTimeout(resolve, 60))
+      assertEquals(
+        getPatches().some((patch) => 'metadata' in patch),
+        true
+      )
+      ws.close(1000, 'done')
+      await waitForWsClose(ws)
+    }
+  )
+})
+
 const STALE_SWEEP_FRAMES: ReadonlyArray<{ name: string; frame: Record<string, unknown> }> = [
   { name: 'hello', frame: { type: 'hello', daemonBuild: { commit: 'same', buildId: '1' } } },
   {

@@ -19,6 +19,7 @@ import {
   type ServerDockerMetadata,
   type ServerHostResources,
   type ServerOsMetadata,
+  type ServerReleaseLinkScanMetadata,
   type ServerTimeSync,
 } from '../../features/servers/server-metadata.ts'
 import {
@@ -1153,6 +1154,7 @@ export class DaemonCellObject {
       resources?: ServerHostResources
       timeSync?: ServerTimeSync
       docker?: ServerDockerMetadata
+      releaseLinkScan?: ServerReleaseLinkScanMetadata
       features?: string[]
     },
     geo?: ServerGeo,
@@ -1166,6 +1168,7 @@ export class DaemonCellObject {
         hostIdentity?.resources ||
         hostIdentity?.timeSync ||
         hostIdentity?.docker ||
+        hostIdentity?.releaseLinkScan ||
         hostIdentity?.features
       ) {
         await touchServerMetadata(db, serverId, {
@@ -1175,6 +1178,7 @@ export class DaemonCellObject {
           resources: hostIdentity.resources,
           timeSync: hostIdentity.timeSync,
           docker: hostIdentity.docker,
+          releaseLinkScan: hostIdentity.releaseLinkScan,
           ...(hostIdentity.features !== undefined ? { features: hostIdentity.features } : {}),
         })
       }
@@ -1715,6 +1719,7 @@ export class DaemonCellObject {
       resources?: ServerHostResources
       timeSync?: ServerTimeSync
       docker?: ServerDockerMetadata
+      releaseLinkScan?: ServerReleaseLinkScanMetadata
       features?: string[]
     }
   ): Promise<void> {
@@ -1729,9 +1734,13 @@ export class DaemonCellObject {
       timeSync: parsed.timeSync,
       resources: resourcesFromDaemonPresence(parsed),
       docker: parsed.docker,
+      releaseLinkScan: parsed.releaseLinkScan,
     }
     const hasPresenceFacts = Boolean(
-      presenceFacts.timeSync || presenceFacts.resources || presenceFacts.docker
+      presenceFacts.timeSync ||
+      presenceFacts.resources ||
+      presenceFacts.docker ||
+      presenceFacts.releaseLinkScan
     )
     // hostname/os stay hello-only; timeSync / resources / docker project
     // on both hello and change-detected heartbeats.
@@ -1743,6 +1752,7 @@ export class DaemonCellObject {
           resources?: ServerHostResources
           timeSync?: ServerTimeSync
           docker?: ServerDockerMetadata
+          releaseLinkScan?: ServerReleaseLinkScanMetadata
           features?: string[]
         }
       | undefined
@@ -1764,6 +1774,7 @@ export class DaemonCellObject {
       hostIdentity?.resources ||
       hostIdentity?.timeSync ||
       hostIdentity?.docker ||
+      hostIdentity?.releaseLinkScan ||
       hostIdentity?.features
     )
     const attachGeo = parseServerGeo(attachment.geo) ?? undefined
