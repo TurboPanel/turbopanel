@@ -1249,6 +1249,12 @@ export type FabricReconcileObservedPeer = {
   transferTx?: number
   endpoint?: string
   health?: FabricPeerHealth
+  /**
+   * Local NIC whose connected subnet holds the peer's live endpoint (the
+   * network the tunnel really runs on). Absent when the endpoint is not on a
+   * connected subnet (reached by the default route).
+   */
+  interface?: string
 }
 
 /**
@@ -1260,6 +1266,11 @@ export type FabricReconcileCommandResult = {
   publicKey?: string
   skipped?: boolean
   peers?: FabricReconcileObservedPeer[]
+}
+
+/** Linux interface name: at most 15 bytes, no slash or whitespace (daemon twin). */
+function isValidInterfaceName(value: unknown): value is string {
+  return typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,14}$/.test(value)
 }
 
 const FABRIC_DOCKER_NETWORK_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/
@@ -1516,6 +1527,12 @@ function parseFabricObservedPeer(value: unknown): FabricReconcileObservedPeer {
       throw new TypeError('Invalid fabric reconcile result peer health')
     }
     peer.health = value.health as FabricPeerHealth
+  }
+  if (value.interface !== undefined) {
+    if (!isValidInterfaceName(value.interface)) {
+      throw new TypeError('Invalid fabric reconcile result peer interface')
+    }
+    peer.interface = value.interface
   }
   return peer
 }

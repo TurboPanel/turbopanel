@@ -2805,6 +2805,21 @@ test('parseFabricReconcileResult accepts skipped, reconciled, and teardown shape
   })
 })
 
+test('parseFabricReconcileResult carries the peer interface and refuses a bad name', () => {
+  const peer = (iface: unknown) => ({
+    summary: 'TurboFabric reconciled',
+    peers: [{ publicKey: WG_PUBKEY, interface: iface }],
+  })
+  assertEquals(parseFabricReconcileResult(peer('eno2')).peers?.[0]?.interface, 'eno2')
+  for (const bad of ['', 'has space', 'x'.repeat(16), '../etc', 7]) {
+    assertThrows(
+      () => parseFabricReconcileResult(peer(bad)),
+      TypeError,
+      'Invalid fabric reconcile result peer interface'
+    )
+  }
+})
+
 test('encodeCommandEnvelope round-trips through parseCommandEnvelope', () => {
   const envelope = {
     commandId: 'cmd-1',
