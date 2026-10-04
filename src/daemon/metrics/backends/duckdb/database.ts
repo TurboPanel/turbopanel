@@ -207,7 +207,10 @@ async function metricsStoreHasData(paths: DuckDbPaths): Promise<boolean> {
     if (!(error instanceof Deno.errors.NotFound)) throw error
   }
   try {
-    for await (const _entry of Deno.readDir(paths.parquetRoot)) return true
+    const entries = Deno.readDir(paths.parquetRoot)[Symbol.asyncIterator]()
+    const first = await entries.next()
+    await entries.return?.()
+    if (!first.done) return true
   } catch (error) {
     if (!(error instanceof Deno.errors.NotFound)) throw error
   }
