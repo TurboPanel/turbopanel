@@ -423,10 +423,9 @@ export async function mintGitlabAccessToken(
   if (!app) {
     throw new GitlabOauthTokenError('gitlab oauth application is not configured')
   }
+  const lockKey = `gitlab-oauth:${connectionId}`
   return await db.transaction(async (tx) => {
-    await tx.execute(
-      sql`SELECT pg_advisory_xact_lock(hashtextextended(${`gitlab-oauth:${connectionId}`}, 0))`
-    )
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`)
     return await refreshUnderLock(tx, dataEncryptionSecrets, connectionId, app)
   })
 }
