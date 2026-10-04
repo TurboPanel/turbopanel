@@ -6,7 +6,15 @@
  */
 
 import { assertEquals } from '@std/assert'
-import { license, payer, allowance, server, subscription, subscriptionItem, tier } from '../../db/schema.ts'
+import {
+  license,
+  payer,
+  allowance,
+  server,
+  subscription,
+  subscriptionItem,
+  tier,
+} from '../../db/schema.ts'
 import { listSeatsForOrganization } from '../billing/billing-records.ts'
 import { createMemoryDb } from '../../test-fixtures/memory-db.ts'
 import {
@@ -44,15 +52,44 @@ const NOW = '2026-09-07T12:00:00.000Z'
 const GIB = 1024 ** 3
 
 const tierRow = (id: string, label: string, rank: number) => ({
-  id, createdAt: NOW, updatedAt: NOW, label, rank, provider: 'stripe', providerProductId: `prod_${label}`,
-  priceCents: 1000 * rank, currency: 'usd', isCustom: false, isActive: true,
+  id,
+  createdAt: NOW,
+  updatedAt: NOW,
+  label,
+  rank,
+  provider: 'stripe',
+  providerProductId: `prod_${label}`,
+  priceCents: 1000 * rank,
+  currency: 'usd',
+  isCustom: false,
+  isActive: true,
 })
-const hardware = (cores: number, memoryGib = 8) => ({ resources: { cpus: [{ cores: { total: cores } }], memory: { totalBytes: memoryGib * GIB } } })
-const serverRow = (id: string, createdAt: string, metadata: unknown, assignedTierId: string | null, organizationId: string | null = ORG) => ({
-  id, organizationId, createdAt, updatedAt: createdAt, metadata, assignedTierId,
+const hardware = (cores: number, memoryGib = 8) => ({
+  resources: { cpus: [{ cores: { total: cores } }], memory: { totalBytes: memoryGib * GIB } },
+})
+const serverRow = (
+  id: string,
+  createdAt: string,
+  metadata: unknown,
+  assignedTierId: string | null,
+  organizationId: string | null = ORG
+) => ({
+  id,
+  organizationId,
+  createdAt,
+  updatedAt: createdAt,
+  metadata,
+  assignedTierId,
 })
 const licenseRow = (id: string, serverId: string | null, revokedAt: string | null = null) => ({
-  id, organizationId: ORG, serverId, name: null, token: 'x', revokedAt, createdAt: NOW, updatedAt: NOW,
+  id,
+  organizationId: ORG,
+  serverId,
+  name: null,
+  token: 'x',
+  revokedAt,
+  createdAt: NOW,
+  updatedAt: NOW,
 })
 
 function seed(opts: {
@@ -71,33 +108,85 @@ function seed(opts: {
     isCustom: true,
   }
   const grantRows = opts.grantQuantity
-    ? [{
-      organizationId: ORG,
-      tierId: SX,
-      quantity: opts.grantQuantity,
-      createdAt: NOW,
-      updatedAt: NOW,
-    }]
+    ? [
+        {
+          organizationId: ORG,
+          tierId: SX,
+          quantity: opts.grantQuantity,
+          createdAt: NOW,
+          updatedAt: NOW,
+        },
+      ]
     : []
-  return createMemoryDb([
-    [tier, [tierRow(S1, 'S1', 1), tierRow(S3, 'S3', 3), tierRow(S5, 'S5', 5), sxRow]],
-    [allowance, grantRows],
-    [payer, opts.payer === false ? [] : [{ id: PAYER, organizationId: ORG, userId: null, provider: 'stripe', providerCustomerId: 'cus_1', taxId: null, createdAt: NOW, updatedAt: NOW }]],
-    [subscription, [{ id: SUB, payerId: PAYER, providerSubscriptionId: 'sub_1', status: opts.status ?? 'active', currentPeriodEnd: null, scheduleId: null, graceExpiresAt: null, pastDueSince: null, createdAt: NOW, updatedAt: NOW }]],
-    [subscriptionItem, (opts.seats ?? []).map((seat, index) => ({
-      id: `seat-${index}`, subscriptionId: SUB, tierId: seat.tierId, providerItemId: `si_${index}`, providerPriceId: `price_${index}`,
-      quantity: seat.quantity, createdAt: NOW, updatedAt: NOW,
-    }))],
-    [server, opts.servers ?? []],
-    [license, opts.licenses ?? []],
-  ], { fallback: { execute: () => Promise.resolve([]) } as never })
+  return createMemoryDb(
+    [
+      [tier, [tierRow(S1, 'S1', 1), tierRow(S3, 'S3', 3), tierRow(S5, 'S5', 5), sxRow]],
+      [allowance, grantRows],
+      [
+        payer,
+        opts.payer === false
+          ? []
+          : [
+              {
+                id: PAYER,
+                organizationId: ORG,
+                userId: null,
+                provider: 'stripe',
+                providerCustomerId: 'cus_1',
+                taxId: null,
+                createdAt: NOW,
+                updatedAt: NOW,
+              },
+            ],
+      ],
+      [
+        subscription,
+        [
+          {
+            id: SUB,
+            payerId: PAYER,
+            providerSubscriptionId: 'sub_1',
+            status: opts.status ?? 'active',
+            currentPeriodEnd: null,
+            scheduleId: null,
+            graceExpiresAt: null,
+            pastDueSince: null,
+            createdAt: NOW,
+            updatedAt: NOW,
+          },
+        ],
+      ],
+      [
+        subscriptionItem,
+        (opts.seats ?? []).map((seat, index) => ({
+          id: `seat-${index}`,
+          subscriptionId: SUB,
+          tierId: seat.tierId,
+          providerItemId: `si_${index}`,
+          providerPriceId: `price_${index}`,
+          quantity: seat.quantity,
+          createdAt: NOW,
+          updatedAt: NOW,
+        })),
+      ],
+      [server, opts.servers ?? []],
+      [license, opts.licenses ?? []],
+    ],
+    { fallback: { execute: () => Promise.resolve([]) } as never }
+  )
 }
 
 test('requiredRankFromResources / Metadata: reported hardware places, unreported hardware is unknown', () => {
   assertEquals(requiredRankFromResources(undefined), null)
   assertEquals(requiredRankFromResources({}), null)
   assertEquals(requiredRankFromResources({ cpus: [{ cores: { total: 0 } }] }), null)
-  assertEquals(requiredRankFromResources({ cpus: [{ cores: { total: 4 } }], memory: { totalBytes: 16 * GIB } }), 1)
+  assertEquals(
+    requiredRankFromResources({
+      cpus: [{ cores: { total: 4 } }],
+      memory: { totalBytes: 16 * GIB },
+    }),
+    1
+  )
   assertEquals(requiredRankFromResources({ cpus: [{ cores: { total: 12 } }] }), 3)
   // RAM alone is enough to know the box; the harder of the two wins.
   assertEquals(requiredRankFromResources({ memory: { totalBytes: 100 * GIB } }), 4)
@@ -108,14 +197,25 @@ test('requiredRankFromResources / Metadata: reported hardware places, unreported
 })
 
 test('tierQuantitiesFromState sums per tier with its rank and reads zero once the subscription ended', async () => {
-  const live = seed({ seats: [{ tierId: S3, quantity: 2 }, { tierId: S1, quantity: 1 }, { tierId: S3, quantity: 1 }] })
+  const live = seed({
+    seats: [
+      { tierId: S3, quantity: 2 },
+      { tierId: S1, quantity: 1 },
+      { tierId: S3, quantity: 1 },
+    ],
+  })
   assertEquals(tierQuantitiesFromState(await listSeatsForOrganization(live, ORG)), [
     { tierId: S1, rank: 1, quantity: 1 },
     { tierId: S3, rank: 3, quantity: 3 },
   ])
   const ended = seed({ status: 'canceled', seats: [{ tierId: S3, quantity: 2 }] })
-  assertEquals(tierQuantitiesFromState(await listSeatsForOrganization(ended, ORG)), [{ tierId: S3, rank: 3, quantity: 0 }])
-  assertEquals(tierQuantitiesFromState({ payer: null, subscription: null, seats: [], grant: null }), [])
+  assertEquals(tierQuantitiesFromState(await listSeatsForOrganization(ended, ORG)), [
+    { tierId: S3, rank: 3, quantity: 0 },
+  ])
+  assertEquals(
+    tierQuantitiesFromState({ payer: null, subscription: null, seats: [], grant: null }),
+    []
+  )
 })
 
 test('loadAssignableServers is every licensed server of the organization with its requirement and cached assignment', async () => {
@@ -136,15 +236,21 @@ test('loadAssignableServers is every licensed server of the organization with it
     ],
   })
   const rows = await loadAssignableServers(db, ORG)
-  assertEquals(rows.map((row) => [row.serverId, row.requiredRank, row.boundAt, row.assignedTierId]), [
-    [SERVER_B, 3, '2026-09-02T00:00:00.000Z', S3],
-    [SERVER_A, null, '2026-09-01T00:00:00.000Z', null],
-  ])
+  assertEquals(
+    rows.map((row) => [row.serverId, row.requiredRank, row.boundAt, row.assignedTierId]),
+    [
+      [SERVER_B, 3, '2026-09-02T00:00:00.000Z', S3],
+      [SERVER_A, null, '2026-09-01T00:00:00.000Z', null],
+    ]
+  )
 })
 
 test('recomputeOrganizationAssignments writes assigned_tier_id only for the rows that moved', async () => {
   const db = seed({
-    seats: [{ tierId: S1, quantity: 1 }, { tierId: S3, quantity: 1 }],
+    seats: [
+      { tierId: S1, quantity: 1 },
+      { tierId: S3, quantity: 1 },
+    ],
     servers: [
       // Already on the right tier: untouched.
       serverRow(SERVER_A, '2026-09-01T00:00:00.000Z', hardware(2), S1),
@@ -155,19 +261,36 @@ test('recomputeOrganizationAssignments writes assigned_tier_id only for the rows
       // Unlicensed: never read, never written.
       serverRow(SERVER_UNLICENSED, '2026-09-01T00:00:00.000Z', hardware(2), S5),
     ],
-    licenses: [licenseRow('l-a', SERVER_A), licenseRow('l-b', SERVER_B), licenseRow('l-c', SERVER_C)],
+    licenses: [
+      licenseRow('l-a', SERVER_A),
+      licenseRow('l-b', SERVER_B),
+      licenseRow('l-c', SERVER_C),
+    ],
   })
   const result = await recomputeOrganizationAssignments(db, ORG, { now: NOW })
-  assertEquals([...result.assignment.byServer], [[SERVER_A, S1], [SERVER_B, S3], [SERVER_C, null]])
+  assertEquals(
+    [...result.assignment.byServer],
+    [
+      [SERVER_A, S1],
+      [SERVER_B, S3],
+      [SERVER_C, null],
+    ]
+  )
   assertEquals(result.changed, [SERVER_B, SERVER_C])
   assertEquals(result.uncovered, [SERVER_C])
   const byId = new Map(db.rows(server).map((row) => [row.id, row]))
-  assertEquals([byId.get(SERVER_A)?.assignedTierId, byId.get(SERVER_A)?.updatedAt], [S1, '2026-09-01T00:00:00.000Z'])
+  assertEquals(
+    [byId.get(SERVER_A)?.assignedTierId, byId.get(SERVER_A)?.updatedAt],
+    [S1, '2026-09-01T00:00:00.000Z']
+  )
   assertEquals([byId.get(SERVER_B)?.assignedTierId, byId.get(SERVER_B)?.updatedAt], [S3, NOW])
   assertEquals([byId.get(SERVER_C)?.assignedTierId, byId.get(SERVER_C)?.updatedAt], [null, NOW])
   assertEquals(byId.get(SERVER_UNLICENSED)?.assignedTierId, S5)
   assertEquals(db.ops.filter((op) => op === 'update:server').length, result.changed.length)
-  assertEquals(db.ops.filter((op) => op.startsWith('insert:') || op.startsWith('delete:')), [])
+  assertEquals(
+    db.ops.filter((op) => op.startsWith('insert:') || op.startsWith('delete:')),
+    []
+  )
 
   // A second pass is a pure read: everything is where it should be.
   const again = await recomputeOrganizationAssignments(db, ORG, { now: '2026-09-08T00:00:00.000Z' })
@@ -185,7 +308,10 @@ test('an already-loaded state skips the billing read, and an ended subscription 
   const state = await listSeatsForOrganization(db, ORG)
   const opsBefore = db.ops.length
   const result = await recomputeOrganizationAssignments(db, ORG, { state, now: NOW })
-  assertEquals(db.ops.slice(opsBefore).filter((op) => op.startsWith('select:')), ['select:server'])
+  assertEquals(
+    db.ops.slice(opsBefore).filter((op) => op.startsWith('select:')),
+    ['select:server']
+  )
   assertEquals(result.changed, [SERVER_A])
   assertEquals(result.uncovered, [SERVER_A])
   assertEquals(db.rows(server)[0]?.assignedTierId, null)
@@ -234,10 +360,15 @@ test('recomputeAssignmentsForServer with no payer and no grant leaves a licensed
   const empty = await recomputeAssignmentsForServer(clean, SERVER_A)
   assertEquals(empty?.changed, [])
   assertEquals(empty?.uncovered, [SERVER_A])
-  assertEquals(clean.ops.filter((op) => op.startsWith('update:')), [])
+  assertEquals(
+    clean.ops.filter((op) => op.startsWith('update:')),
+    []
+  )
 
   // A server outside any organization, or one that does not exist, is left alone.
-  const orphan = seed({ servers: [serverRow(SERVER_A, '2026-09-01T00:00:00.000Z', hardware(12), S3, null)] })
+  const orphan = seed({
+    servers: [serverRow(SERVER_A, '2026-09-01T00:00:00.000Z', hardware(12), S3, null)],
+  })
   assertEquals(await recomputeAssignmentsForServer(orphan, SERVER_A), null)
   assertEquals(orphan.rows(server)[0]?.assignedTierId, S3)
   assertEquals(orphan.ops, ['select:server'])
@@ -255,6 +386,9 @@ test('clearAssignmentsForServers nulls exactly the named rows and skips the writ
   await clearAssignmentsForServers(db, [])
   assertEquals(db.ops, [])
   await clearAssignmentsForServers(db, [SERVER_A, SERVER_C])
-  assertEquals(db.rows(server).map((row) => row.assignedTierId), [null, S3, null])
+  assertEquals(
+    db.rows(server).map((row) => row.assignedTierId),
+    [null, S3, null]
+  )
   assertEquals(db.ops, ['update:server'])
 })

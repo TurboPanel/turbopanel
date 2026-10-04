@@ -64,127 +64,130 @@ function seed(opts: {
   currentPeriodEnd?: string | null
   ledger?: unknown
 }) {
-  return createMemoryDb([
-    [tier, [tierRow(S1, 'S1', 1), tierRow(S3, 'S3', 3)]],
+  return createMemoryDb(
     [
-      payer,
+      [tier, [tierRow(S1, 'S1', 1), tierRow(S3, 'S3', 3)]],
       [
-        {
-          id: PAYER,
-          organizationId: ORG,
-          userId: null,
-          provider: 'stripe',
-          providerCustomerId: 'cus_1',
-          taxId: null,
-          createdAt: NOW,
-          updatedAt: NOW,
-        },
+        payer,
+        [
+          {
+            id: PAYER,
+            organizationId: ORG,
+            userId: null,
+            provider: 'stripe',
+            providerCustomerId: 'cus_1',
+            taxId: null,
+            createdAt: NOW,
+            updatedAt: NOW,
+          },
+        ],
       ],
-    ],
-    [
-      subscription,
       [
-        {
-          id: SUB,
-          payerId: PAYER,
-          providerSubscriptionId: 'sub_1',
-          status: opts.status ?? 'active',
-          currentPeriodEnd: opts.currentPeriodEnd ?? '2026-10-01T00:00:00.000Z',
-          scheduleId: null,
-          graceExpiresAt: null,
-          pastDueSince: null,
-          createdAt: NOW,
-          updatedAt: NOW,
-        },
+        subscription,
+        [
+          {
+            id: SUB,
+            payerId: PAYER,
+            providerSubscriptionId: 'sub_1',
+            status: opts.status ?? 'active',
+            currentPeriodEnd: opts.currentPeriodEnd ?? '2026-10-01T00:00:00.000Z',
+            scheduleId: null,
+            graceExpiresAt: null,
+            pastDueSince: null,
+            createdAt: NOW,
+            updatedAt: NOW,
+          },
+        ],
       ],
-    ],
-    [
-      subscriptionItem,
-      opts.seats.map((seat, index) => ({
-        id: `seat-${index}`,
-        subscriptionId: SUB,
-        tierId: seat.tierId,
-        providerItemId: `si_${index}`,
-        providerPriceId: `price_${index}`,
-        quantity: seat.quantity,
-        createdAt: NOW,
-        updatedAt: NOW,
-      })),
-    ],
-    [
-      server,
       [
-        {
-          id: SERVER_A,
-          organizationId: ORG,
-          createdAt: '2026-09-01T00:00:00.000Z',
+        subscriptionItem,
+        opts.seats.map((seat, index) => ({
+          id: `seat-${index}`,
+          subscriptionId: SUB,
+          tierId: seat.tierId,
+          providerItemId: `si_${index}`,
+          providerPriceId: `price_${index}`,
+          quantity: seat.quantity,
+          createdAt: NOW,
           updatedAt: NOW,
-          metadata: hardware(2),
-          assignedTierId: null,
-        },
-        {
-          id: SERVER_B,
-          organizationId: ORG,
-          createdAt: '2026-09-02T00:00:00.000Z',
-          updatedAt: NOW,
-          metadata: hardware(12),
-          assignedTierId: S1,
-        },
+        })),
       ],
-    ],
-    [
-      license,
       [
-        {
-          id: 'l-a',
-          organizationId: ORG,
-          serverId: SERVER_A,
-          name: null,
-          token: 'x',
-          revokedAt: null,
-          createdAt: NOW,
-          updatedAt: NOW,
-        },
-        {
-          id: 'l-b',
-          organizationId: ORG,
-          serverId: SERVER_B,
-          name: null,
-          token: 'x',
-          revokedAt: null,
-          createdAt: NOW,
-          updatedAt: NOW,
-        },
-        {
-          id: 'l-free',
-          organizationId: ORG,
-          serverId: null,
-          name: null,
-          token: 'x',
-          revokedAt: null,
-          createdAt: NOW,
-          updatedAt: NOW,
-        },
+        server,
+        [
+          {
+            id: SERVER_A,
+            organizationId: ORG,
+            createdAt: '2026-09-01T00:00:00.000Z',
+            updatedAt: NOW,
+            metadata: hardware(2),
+            assignedTierId: null,
+          },
+          {
+            id: SERVER_B,
+            organizationId: ORG,
+            createdAt: '2026-09-02T00:00:00.000Z',
+            updatedAt: NOW,
+            metadata: hardware(12),
+            assignedTierId: S1,
+          },
+        ],
       ],
+      [
+        license,
+        [
+          {
+            id: 'l-a',
+            organizationId: ORG,
+            serverId: SERVER_A,
+            name: null,
+            token: 'x',
+            revokedAt: null,
+            createdAt: NOW,
+            updatedAt: NOW,
+          },
+          {
+            id: 'l-b',
+            organizationId: ORG,
+            serverId: SERVER_B,
+            name: null,
+            token: 'x',
+            revokedAt: null,
+            createdAt: NOW,
+            updatedAt: NOW,
+          },
+          {
+            id: 'l-free',
+            organizationId: ORG,
+            serverId: null,
+            name: null,
+            token: 'x',
+            revokedAt: null,
+            createdAt: NOW,
+            updatedAt: NOW,
+          },
+        ],
+      ],
+      [
+        setting,
+        opts.ledger
+          ? [
+              {
+                id: 'set-1',
+                key: billingPendingChangesKey(ORG),
+                value: opts.ledger,
+                createdAt: NOW,
+                updatedAt: NOW,
+              },
+            ]
+          : [],
+      ],
+      [allowance, []],
+      [key, []],
+      [lease, []],
     ],
-    [
-      setting,
-      opts.ledger
-        ? [
-            {
-              id: 'set-1',
-              key: billingPendingChangesKey(ORG),
-              value: opts.ledger,
-              createdAt: NOW,
-              updatedAt: NOW,
-            },
-          ]
-        : [],
-    ],
-    [allowance, []],
-    [key, []],
-    [lease, []],
-  ], { fallback: { execute: () => Promise.resolve([]) } as never })
+    { fallback: { execute: () => Promise.resolve([]) } as never }
+  )
 }
 
 async function assignments(db: ReturnType<typeof seed>) {
