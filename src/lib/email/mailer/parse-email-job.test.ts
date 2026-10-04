@@ -46,10 +46,10 @@ const INVITATION_JOB: EmailJob = {
 
 test('parseEmailJob accepts a server-tier-notice payload', () => {
   assertEquals(parseEmailJob(TIER_NOTICE_JOB), TIER_NOTICE_JOB)
-  assertEquals(
-    parseEmailJob({ ...TIER_NOTICE_JOB, kind: 'overprovisioned' }),
-    { ...TIER_NOTICE_JOB, kind: 'overprovisioned' },
-  )
+  assertEquals(parseEmailJob({ ...TIER_NOTICE_JOB, kind: 'overprovisioned' }), {
+    ...TIER_NOTICE_JOB,
+    kind: 'overprovisioned',
+  })
 })
 
 test('parseEmailJob accepts an invitation payload', () => {
@@ -74,7 +74,7 @@ test('parseEmailJob accepts a notification payload and refuses a malformed one',
   assertEquals(parseEmailJob(NOTIFICATION_JOB), NOTIFICATION_JOB)
   assertEquals(
     parseEmailJob({ ...NOTIFICATION_JOB, body: null, consoleUrl: null, organizationName: null }),
-    { ...NOTIFICATION_JOB, body: null, consoleUrl: null, organizationName: null },
+    { ...NOTIFICATION_JOB, body: null, consoleUrl: null, organizationName: null }
   )
   assertEquals(parseEmailJob({ ...NOTIFICATION_JOB, severity: 'loud' }), null)
   assertEquals(parseEmailJob({ ...NOTIFICATION_JOB, details: 'serverName=db-1' }), null)
@@ -98,14 +98,14 @@ const OTP_JOB: EmailJob = {
 test('parseEmailJob accepts signup-verification and email-otp payloads', () => {
   assertEquals(parseEmailJob(SIGNUP_JOB), SIGNUP_JOB)
   assertEquals(parseEmailJob(OTP_JOB), OTP_JOB)
-  assertEquals(
-    parseEmailJob({ ...OTP_JOB, otpType: 'email-verification' }),
-    { ...OTP_JOB, otpType: 'email-verification' },
-  )
-  assertEquals(
-    parseEmailJob({ ...OTP_JOB, otpType: 'forget-password' }),
-    { ...OTP_JOB, otpType: 'forget-password' },
-  )
+  assertEquals(parseEmailJob({ ...OTP_JOB, otpType: 'email-verification' }), {
+    ...OTP_JOB,
+    otpType: 'email-verification',
+  })
+  assertEquals(parseEmailJob({ ...OTP_JOB, otpType: 'forget-password' }), {
+    ...OTP_JOB,
+    otpType: 'forget-password',
+  })
 })
 
 test('parseEmailJob rejects unknown types and incomplete payloads', () => {
@@ -113,15 +113,9 @@ test('parseEmailJob rejects unknown types and incomplete payloads', () => {
   assertEquals(parseEmailJob({ type: 'invitation', to: 'a@b.co' }), null)
   assertEquals(parseEmailJob({ ...TIER_NOTICE_JOB, kind: 'unknown' }), null)
   assertEquals(parseEmailJob({ ...TIER_NOTICE_JOB, serverName: 1 }), null)
-  assertEquals(
-    parseEmailJob({ ...TIER_NOTICE_JOB, unwatched: { nics: ['eth0'] } }),
-    null,
-  )
+  assertEquals(parseEmailJob({ ...TIER_NOTICE_JOB, unwatched: { nics: ['eth0'] } }), null)
   assertEquals(parseEmailJob({ ...TIER_NOTICE_JOB, unwatched: 'eth0' }), null)
-  assertEquals(
-    parseEmailJob({ ...INVITATION_JOB, acceptUrl: undefined }),
-    null,
-  )
+  assertEquals(parseEmailJob({ ...INVITATION_JOB, acceptUrl: undefined }), null)
   assertEquals(parseEmailJob({ ...INVITATION_JOB, inviterEmail: 1 }), null)
   assertEquals(parseEmailJob({ ...INVITATION_JOB, organizationName: 1 }), null)
   assertEquals(parseEmailJob({ ...INVITATION_JOB, teamName: 1 }), null)
@@ -134,24 +128,17 @@ test('parseEmailJob rejects unknown types and incomplete payloads', () => {
   assertEquals(parseEmailJob({ ...NOTIFICATION_JOB, organizationName: 1 }), null)
   assertEquals(parseEmailJob({ ...NOTIFICATION_JOB, consoleUrl: 1 }), null)
   assertEquals(parseEmailJob({ ...NOTIFICATION_JOB, at: 1 }), null)
-  assertEquals(
-    parseEmailJob({ type: 'carrier-pigeon', to: 'a@b.co', from: 'c@d.co' }),
-    null,
-  )
+  assertEquals(parseEmailJob({ type: 'carrier-pigeon', to: 'a@b.co', from: 'c@d.co' }), null)
 })
 
 test('parsed server-tier-notice and invitation jobs dispatch through the SMTP sender', async () => {
   const sent: Array<{ to?: unknown; subject?: unknown }> = []
-  const createStub = stub(
-    nodemailer,
-    'createTransport',
-    (() => ({
-      sendMail: (mail: { to?: unknown; subject?: unknown }) => {
-        sent.push(mail)
-        return Promise.resolve({ messageId: 'ok' })
-      },
-    })) as typeof nodemailer.createTransport,
-  )
+  const createStub = stub(nodemailer, 'createTransport', (() => ({
+    sendMail: (mail: { to?: unknown; subject?: unknown }) => {
+      sent.push(mail)
+      return Promise.resolve({ messageId: 'ok' })
+    },
+  })) as typeof nodemailer.createTransport)
   try {
     const sender = createMailerSmtpSender({ db: undefined, env: SMTP_ENV })
     const tierNotice = parseEmailJob(TIER_NOTICE_JOB)
@@ -169,4 +156,30 @@ test('parsed server-tier-notice and invitation jobs dispatch through the SMTP se
   } finally {
     createStub.restore()
   }
+})
+
+const DIGEST_JOB: EmailJob = {
+  type: 'notification-digest',
+  to: 'ops@example.com',
+  from: 'noreply@example.com',
+  summary: 'hourly',
+  total: 3,
+  groups: [
+    {
+      event: 'server.deleted',
+      severity: 'info',
+      count: 3,
+      items: [{ title: 'Server db-1 was deleted', at: '2026-05-01T10:10:00.000Z', url: null }],
+    },
+  ],
+  moreGroups: 0,
+  consoleUrl: 'https://panel.example.com',
+  at: '2026-05-01T11:00:00.000Z',
+}
+
+test('parseEmailJob accepts a digest payload and refuses a malformed one', () => {
+  assertEquals(parseEmailJob(DIGEST_JOB), DIGEST_JOB)
+  assertEquals(parseEmailJob({ ...DIGEST_JOB, summary: 'weekly' }), null)
+  assertEquals(parseEmailJob({ ...DIGEST_JOB, groups: [{ event: 'x' }] }), null)
+  assertEquals(parseEmailJob({ ...DIGEST_JOB, total: '3' }), null)
 })

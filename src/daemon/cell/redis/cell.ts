@@ -17,10 +17,10 @@ import {
   DAEMON_CELL_MAINTAIN_MS,
   DAEMON_OFFLINE_SWEEP_MS,
   DAEMON_STALE_MS,
+  TERMINAL_REQUEST_RETENTION_MS,
   validateDaemonInboundEnvelope,
 } from '../../../contracts/cell-protocol.ts'
 import { deriveInboundOutcome } from '../inbound-outcome.ts'
-import { TERMINAL_UPDATE_RETENTION_MS } from '../../../features/update/constants.ts'
 import { cellTrace, isDaemonDebugEnabled, logDebug, logInfo } from '../../../lib/logger.ts'
 import { onDaemonUpdateExpired } from '../control-plane-monitor.ts'
 import type { Db } from '../../../db/connection.ts'
@@ -433,7 +433,7 @@ export class RedisDaemonCell implements DaemonCell {
 
   /**
    * Retain-on-terminal, then prune: every terminal kind keeps its correlation
-   * HASH for {@link TERMINAL_UPDATE_RETENTION_MS} (DO parity — done/failed rows
+   * HASH for {@link TERMINAL_REQUEST_RETENTION_MS} (DO parity — done/failed rows
    * survive until alarm/prune). {@link prune} reaps via {@link #purgeRequestRecord}.
    *
    * Redis EXPIRE is only a leak backstop — it must outlive retention plus one
@@ -454,11 +454,11 @@ export class RedisDaemonCell implements DaemonCell {
       return
     }
 
-    const retainUntil = nowIso(Date.now() + TERMINAL_UPDATE_RETENTION_MS)
+    const retainUntil = nowIso(Date.now() + TERMINAL_REQUEST_RETENTION_MS)
     await redis.hset(reqKey, { expiresAt: retainUntil })
     // Safety TTL only — prune owns deletion of the HASH and Stream leftovers.
     const safetyTtlSeconds =
-      Math.ceil((TERMINAL_UPDATE_RETENTION_MS + DAEMON_CELL_MAINTAIN_MS) / 1000) + 1
+      Math.ceil((TERMINAL_REQUEST_RETENTION_MS + DAEMON_CELL_MAINTAIN_MS) / 1000) + 1
     await redis.expire(reqKey, safetyTtlSeconds)
   }
 

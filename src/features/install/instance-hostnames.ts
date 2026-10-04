@@ -373,6 +373,21 @@ export async function recordInstanceAcmePreflightFailure(
 }
 
 /**
+ * An apply that timed out names no host, so every Let's Encrypt row carries
+ * the message: the table then shows why nothing was issued.
+ */
+export async function recordInstanceAcmeApplyTimeout(
+  db: Db,
+  message: string,
+  at = new Date().toISOString()
+): Promise<void> {
+  await db
+    .update(instanceHostname)
+    .set({ acmeLastAttemptAt: at, acmeLastError: message })
+    .where(eq(instanceHostname.source, 'lets-encrypt'))
+}
+
+/**
  * Record one instance Let's Encrypt probe. Matches `origin` rows whose
  * source is `lets-encrypt`. Does not touch an organization's `tls` rows.
  * `notAfter` is written only on success. A failure leaves the stored expiry

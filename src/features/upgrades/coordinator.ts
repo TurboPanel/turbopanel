@@ -10,6 +10,7 @@ import {
   type UpdateProgressStage,
 } from '../../contracts/cell-protocol.ts'
 import type { UpdateChannel } from '../../contracts/update-channel.ts'
+import { redactUrlSecrets } from './redact-url-secrets.ts'
 import {
   channelHasInstancePackage,
   pinnedManifestBlockers,
@@ -19,6 +20,7 @@ import {
   differsFromInstalled,
   isDowngrade,
   isOnTarget,
+  uiBehindTarget,
   unitTarget,
   type UpgradeTarget,
 } from './target.ts'
@@ -44,7 +46,13 @@ import {
   summarizeSteps,
   UPGRADE_TICK_STEP_BUDGET,
 } from './run.ts'
-import { planStepAction, type StepAction } from './transitions.ts'
+import {
+  computeBackoffMs,
+  planStepAction,
+  type StepAction,
+  UPGRADE_STEP_MAX_ATTEMPTS,
+  UPGRADE_VERIFY_TIMEOUT_MS,
+} from './transitions.ts'
 import { shouldAutoStartRun } from './schedule.ts'
 import {
   type ClientUpdateBlock,
@@ -57,6 +65,7 @@ import {
   MANAGED_UPGRADE_FEATURE,
   readDispatchHistory,
   stepStatusForProgressStage,
+  uiRefreshFromDetail,
   withInProgressRefused,
   withSupersededRequest,
 } from './decisions.ts'
@@ -99,12 +108,19 @@ export type UpgradeCoordinator = {
     fleetServerIds?: readonly string[]
     /** The id preflight already showed. Reused so the copied command matches. */
     runId?: string
+    /**
+     * The commit of the UI bundle the console is running. When it differs from
+     * the channel's UI target the control-plane step opens even if the instance
+     * binary is current, because the install is what moves the UI.
+     */
+    consoleCommit?: string | null
   }): Promise<
     | { ok: true; runId: string }
     | {
         ok: false
         error: string
         blockers?: string[]
+        activeRunId?: string
       }
   >
   tick(input?: { resolveManifests?: boolean }): Promise<void>
@@ -162,6 +178,11 @@ export type UpgradeCoordinatorDeps = {
   instanceInstalled: { version: string; commit: string | null }
   resolveTarget?: () => Promise<UpgradeTarget>
   /**
+   * How long a restarted control-plane step may wait for the daemon's verdict
+   * (`UPGRADE_VERIFY_TIMEOUT_MS`; `TURBOPANEL_UPGRADE_VERIFY_TIMEOUT_MINUTES`).
+   */
+  verifyTimeoutMs?: number
+  /**
    * One line per maintenance tick describing what it decided (target, drift,
    * whether an automatic run started or why not). The tick caller rate-limits.
    */
@@ -218,6 +239,27 @@ function checkManagedFeature(
   }
 }
 
+/** One short, single-line reason for a failed delivery (never a stack). */
+function dispatchErrorText(error: unknown): string {
+  const text = redactUrlSecrets(error instanceof Error ? error.message : String(error))
+  const line = text.replace(/\s+/g, ' ').trim()
+  return line.length > 200 ? `${line.slice(0, 197)}...` : line || 'unknown error'
+}
+
+/** `start()` error code while an update is still in progress (HTTP 409). */
+export const UPGRADE_RUN_ACTIVE = 'upgrade_run_active'
+
+export const UPGRADE_RUN_ACTIVE_MESSAGE = 'Another update is already in progress.'
+
+function runActiveRefusal(activeRunId?: string) {
+  return {
+    ok: false as const,
+    error: UPGRADE_RUN_ACTIVE,
+    blockers: [UPGRADE_RUN_ACTIVE_MESSAGE],
+    ...(activeRunId ? { activeRunId } : {}),
+  }
+}
+
 export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeCoordinator {
   const resolveTarget = deps.resolveTarget ?? (() => resolveUpgradeTarget(deps.channel))
 
@@ -264,7 +306,7 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
       label: 'No upgrade is already running',
       passed: active === null,
     })
-    if (active) blockers.push('An upgrade is already running.')
+    if (active) blockers.push(UPGRADE_RUN_ACTIVE_MESSAGE)
     const manifestGaps = pinnedManifestBlockers(deps.channel, target, {
       runtime: deps.runtime,
       hasColocated: Boolean(deps.colocatedServerId),
@@ -362,9 +404,35 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
     step.requestId = envelope.requestId
     step.lastStageAt = deps.now()
     step.nextAttemptAt = null
+    step.errorMessage = null
     const claimed = await deps.store.saveStep(step, expectedStatus)
     if (!claimed) return
-    await deps.enqueue(step.serverId, envelope)
+    try {
+      await deps.enqueue(step.serverId, envelope)
+    } catch (error) {
+      await recordDispatchFailure(step, error)
+    }
+  }
+
+  /**
+   * The command never reached the server's cell. Say so on the step instead of
+   * leaving it `dispatched` until the 15-minute stall timeout: retry with the
+   * usual backoff, and after the last allowed attempt hand it to an operator.
+   * Never throws: one server's failed delivery must not stop the others.
+   */
+  async function recordDispatchFailure(step: UpgradeStepRow, error: unknown): Promise<void> {
+    step.errorMessage = `The update command could not be delivered to the server: ${dispatchErrorText(error)}`
+    step.lastStageAt = deps.now()
+    if (step.attempts >= UPGRADE_STEP_MAX_ATTEMPTS) {
+      step.status = 'needs_attention'
+      step.errorCode = 'dispatch_failed' satisfies UpgradeStepErrorCode
+    } else {
+      step.status = 'pending'
+      step.nextAttemptAt = new Date(
+        Date.parse(deps.now()) + computeBackoffMs(step.attempts)
+      ).toISOString()
+    }
+    await deps.store.saveStep(step, 'dispatched')
   }
 
   function envelopeFor(
@@ -444,6 +512,7 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
     if (action.kind === 'needs_attention') {
       step.status = 'needs_attention'
       step.errorCode = action.errorCode
+      if (action.errorCode === 'verify_timeout') step.errorMessage = verifyTimeoutMessage(step)
       return await saveStepIfChanged(step, before, readStatus)
     }
     if (action.kind === 'retry') {
@@ -497,20 +566,37 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
     return overlayProbes(fleet, probes)
   }
 
+  /** What the operator needs when the daemon never confirmed the restarted control plane. */
+  function verifyTimeoutMessage(step: UpgradeStepRow): string {
+    const minutes = Math.round((deps.verifyTimeoutMs ?? UPGRADE_VERIFY_TIMEOUT_MS) / 60_000)
+    const want = shortCommit(step.toCommit)
+    const running = deps.instanceInstalled.commit
+    const where =
+      running && running === step.toCommit
+        ? `This control plane is running the target build ${want}`
+        : `This control plane is running ${shortCommit(running)}, not the target build ${want}`
+    return `The daemon did not confirm the new control plane within ${minutes} minutes. ${where}. Check the daemon log on this host, then retry the step or cancel the update.`
+  }
+
   function stepActionFor(step: UpgradeStepRow, fact: FleetServerFact | undefined): StepAction {
     return planStepAction(
       {
         status: step.status,
+        unit: step.unit,
         attempts: step.attempts,
         nextAttemptAt: step.nextAttemptAt,
         lastStageAt: step.lastStageAt,
         toCommit: step.toCommit,
+        inProgressRefused: readDispatchHistory(step.detail).inProgressRefused,
       },
       {
         serverConnected: fact?.connected === true,
         currentCommit: currentCommit(step, fact),
       },
-      { now: deps.now() }
+      {
+        now: deps.now(),
+        ...(deps.verifyTimeoutMs === undefined ? {} : { verifyTimeoutMs: deps.verifyTimeoutMs }),
+      }
     )
   }
 
@@ -655,6 +741,7 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
       open.map((step) => step.serverId)
     )
     const dirty = await processSteps(run, open, fleetView)
+    if (dirty && failedPlatformPhase(open) && (await endedByPlatformFailure(run))) return
     const counts = dirty ? await deps.store.countSteps(run.id) : window.counts
     if (counts.total > 0 && counts.inProgress === 0) {
       // This tick settled the last open step (counts cover the whole run).
@@ -663,6 +750,20 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
     }
     await saveRunIfChanged(run, window.phase, counts)
     await writeWindowCursor(run, window)
+  }
+
+  /**
+   * A platform step this tick moved to failed / needs attention ends the run
+   * now with its `<phase>_failed` error, not as a plain `partially_failed`
+   * finish when it was the last open step (a single-server self-hosted run).
+   * The store is re-read so a concurrent report that won the write decides.
+   */
+  async function endedByPlatformFailure(run: UpgradeRunRow): Promise<boolean> {
+    const settled = await deps.store.tickWindow(run.id, null, UPGRADE_TICK_STEP_BUDGET)
+    if (!settled.failedPlatformPhase) return false
+    await failRun(run, settled.failedPlatformPhase, settled.counts)
+    await deps.store.writeTickCursor(run.id, null)
+    return true
   }
 
   async function markInProgressRefused(step: UpgradeStepRow, at: string): Promise<void> {
@@ -674,7 +775,19 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
   }
 
   function currentCommit(step: UpgradeStepRow, fact: FleetServerFact | undefined): string | null {
-    if (step.unit === 'instance') return deps.instanceInstalled.commit
+    if (step.unit === 'instance') {
+      // A UI-only refresh reinstalls the same binary, so "the instance runs the
+      // target commit" is true before the install ran. Only the daemon's
+      // result report settles such a step.
+      //
+      // The same holds once the step was dispatched: the new binary answers as
+      // soon as it restarts, while the daemon is still verifying it (and may
+      // yet roll it back). The step is done when the daemon says so (`done`
+      // stage or an ok result), never on the commit alone, so the update is
+      // not reported as finished early and a second one cannot start on top.
+      if (uiRefreshFromDetail(step.detail) || step.attempts > 0) return null
+      return deps.instanceInstalled.commit
+    }
     return fact?.commit ?? null
   }
 
@@ -688,10 +801,14 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
       return await buildPreflight(target, fleet, active)
     },
     start: async (input) => {
-      const [target, fleet, active, settings] = await Promise.all([
+      // One update at a time. Checked before anything else (the target is not
+      // even resolved) so a second press always gets the machine code, never
+      // a preflight sentence or a manifest-fetch error.
+      const active = await deps.store.activeRun()
+      if (active) return runActiveRefusal(active.id)
+      const [target, fleet, settings] = await Promise.all([
         resolveTarget(),
         facts(),
-        deps.store.activeRun(),
         deps.store.settings(),
       ])
       const preflight = await buildPreflight(target, fleet, active)
@@ -737,14 +854,16 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
         startedAt: now,
         finishedAt: null,
       }
+      const uiBehind = uiBehindTarget(target.ui, input.consoleCommit)
       const steps = plan.steps.map((planned) =>
-        stepFromPlan(run, planned, fleet, now, deps.instanceInstalled.commit)
+        stepFromPlan(run, planned, fleet, now, {
+          commit: deps.instanceInstalled.commit,
+          uiBehind,
+        })
       )
       run.phase = earliestOpenPhase(steps)
       const inserted = await deps.store.insertRun(run, steps)
-      if (inserted === 'active') {
-        return { ok: false, error: 'An upgrade is already running.' }
-      }
+      if (inserted === 'active') return runActiveRefusal()
       await deps.store.clearReservedRunId()
       const stored = await deps.store.stepsFor(run.id)
       run.phase = earliestOpenPhase(stored)
@@ -953,17 +1072,31 @@ export function createUpgradeCoordinator(deps: UpgradeCoordinatorDeps): UpgradeC
         // result must not turn that into an ordinary failure.
         step.status = 'rolled_back'
         step.errorCode = input.errorCode ?? step.errorCode ?? 'rolled_back'
-        step.errorMessage = input.error ?? step.errorMessage ?? null
+        step.errorMessage = input.error
+          ? redactUrlSecrets(input.error)
+          : (step.errorMessage ?? null)
         step.lastStageAt = input.at
       } else {
         step.status = 'failed'
         step.errorCode = input.errorCode ?? 'update_failed'
-        step.errorMessage = input.error ?? null
+        step.errorMessage = redactedOr(input.error, null)
         step.lastStageAt = input.at
       }
       await deps.store.saveStep(step)
     },
   }
+}
+
+/** `text` with URL secrets stripped, or `fallback` when there is no text. */
+function redactedOr(
+  text: string | null | undefined,
+  fallback: string | null | undefined
+): string | null {
+  return text ? redactUrlSecrets(text) : (fallback ?? null)
+}
+
+function shortCommit(commit: string | null): string {
+  return commit ? commit.slice(0, 7) : 'an unknown build'
 }
 
 async function ensureReservedRunId(store: UpgradeStore): Promise<string> {
@@ -980,12 +1113,13 @@ function recordProgressDetail(
   status: UpgradeStepStatus,
   detail: string
 ): void {
+  const safeDetail = redactUrlSecrets(detail)
   step.detail = {
     ...(typeof step.detail === 'object' && step.detail !== null ? step.detail : {}),
     phase: step.phase,
-    progressDetail: detail,
+    progressDetail: safeDetail,
   }
-  if (isProgressTerminal(status) && status !== 'done') step.errorMessage = detail
+  if (isProgressTerminal(status) && status !== 'done') step.errorMessage = safeDetail
 }
 
 /** A window step the tick may act on: still open, and not a fleet step behind a closed gate. */
@@ -1110,7 +1244,7 @@ function stepFromPlan(
   planned: PlannedStep,
   fleet: FleetServerFact[],
   now: string,
-  instanceCommit: string | null
+  instance: { commit: string | null; uiBehind: boolean }
 ): UpgradeStepRow {
   const fact = fleet.find((item) => item.serverId === planned.serverId)
   const pin = unitTarget(run.target, planned.unit)
@@ -1118,7 +1252,8 @@ function stepFromPlan(
     planned,
     {
       daemonCommit: fact?.commit ?? null,
-      instanceCommit: instanceCommit,
+      instanceCommit: instance.commit,
+      uiBehind: instance.uiBehind,
     },
     run.target
   )
@@ -1151,7 +1286,10 @@ function stepFromPlan(
     errorMessage: ahead
       ? `Runs ${fact?.version}, newer than the target ${pin?.version}. Managed updates never downgrade a server.`
       : null,
-    detail: { phase: planned.phase },
+    detail: {
+      phase: planned.phase,
+      ...(planned.unit === 'instance' && instance.uiBehind ? { uiRefresh: true } : {}),
+    },
   }
 }
 

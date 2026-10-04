@@ -26,6 +26,7 @@
 import { and, eq, sql } from 'drizzle-orm'
 import { inspectRepository } from './inspect.ts'
 import { resolveDefaultBranchViaDaemon } from './read-repository.ts'
+import { assertSourceVisibleToConnection, sourceBindingAfterPatch } from './source-visibility.ts'
 import { isSafeRoot } from '../../features/compose/index.ts'
 import { getDaemonCellRegistry } from '../../db/connection.ts'
 import type { Context, Hono } from 'hono'
@@ -56,6 +57,7 @@ import { enforceAuthRateLimit } from '../authn/http.ts'
 import { isPostgresUniqueViolation, isUniqueViolationOn } from '../../db/unique-violation.ts'
 import { resolveGitProvider, type RepositorySummary } from '../../features/git/git-provider.ts'
 import { canonicalizeRepositoryUrl } from '../../features/git/clone-url.ts'
+import { forgeFetch } from '../../features/git/forge-url.ts'
 import { fetchPublicGithubDefaultBranch } from '../../features/git/github-provider.ts'
 import {
   exchangeGitlabAuthorizationCode,
@@ -368,7 +370,7 @@ export function providerErrorResponse(c: Context<AppEnv>, error: unknown): Respo
  * The registered app a connect flow was asked to run against.
  *
  * `?forgeId=` is required rather than defaulted, because "the" app no longer
- * exists: an instance may hold several per provider, and silently picking one
+ * exists: a control plane may hold several per provider, and silently picking one
  * would connect the operator's account to an application they did not choose.
  * The lookup is scoped by {@link visibleForgesCondition}, so an organization
  * can only name its own apps or instance-wide ones — a 404 for anything else,
@@ -851,7 +853,7 @@ export async function fetchInstallationAccount(
   const id = encodeURIComponent(externalInstallationId)
   let response: Response
   try {
-    response = await fetch(`${apiBase}/app/installations/${id}`, {
+    response = await forgeFetch(`${apiBase}/app/installations/${id}`, {
       headers: githubApiHeaders(appJwt, 'Bearer'),
     })
   } catch (error) {
@@ -1529,6 +1531,14 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
     const existing = await findAttachedSource(db, organizationId, fields)
     if (existing) return c.json({ ok: true as const, id: existing, reused: true })
 
+    const notVisible = await assertSourceVisibleToConnection(
+      c,
+      db,
+      { ...fields, provider: installation.provider },
+      (error) => providerErrorResponse(c, error)
+    )
+    if (notVisible) return notVisible
+
     // Same repository, different lane: a row created from the clone URL (a
     // manual or deploy-key source) is the same repository this attach names, so
     // it is adopted — the connection becomes its clone authority — rather than
@@ -1674,6 +1684,11 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
     const existing = await findSourceByUrl(db, organizationId, fields.repositoryUrl)
     if (existing) return c.json({ ok: true as const, id: existing, reused: true })
 
+    const notVisible = await assertSourceVisibleToConnection(c, db, fields, (error) =>
+      providerErrorResponse(c, error)
+    )
+    if (notVisible) return notVisible
+
     const detected = await detectPublicDefaultBranch(c, db, organizationId, fields)
 
     try {
@@ -1724,6 +1739,7 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
         connectionId: repository.connectionId,
         secretId: repository.secretId,
         repositoryUrl: repository.repositoryUrl,
+        repositoryExternalId: repository.repositoryExternalId,
       })
       .from(repository)
       .where(and(eq(repository.id, id), eq(repository.organizationId, organizationId)))
@@ -1756,16 +1772,19 @@ export function registerRepositoryRoutes(router: Hono<AppEnv>, opts: AuthRouteOp
       if (connectionDenied) return connectionDenied
     }
 
-    if (patch.secretId !== undefined) {
-      const secretDenied = await assertSecretInOrganization(
-        c,
-        db,
-        organizationId,
-        patch.secretId,
-        existingProvider
-      )
-      if (secretDenied) return secretDenied
-    }
+    const secretDenied =
+      patch.secretId === undefined
+        ? undefined
+        : await assertSecretInOrganization(c, db, organizationId, patch.secretId, existingProvider)
+    if (secretDenied) return secretDenied
+
+    const notVisible = await assertSourceVisibleToConnection(
+      c,
+      db,
+      sourceBindingAfterPatch(existing, patch),
+      (error) => providerErrorResponse(c, error)
+    )
+    if (notVisible) return notVisible
 
     try {
       await db.update(repository).set(patch).where(eq(repository.id, id))

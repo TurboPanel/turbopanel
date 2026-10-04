@@ -18,44 +18,44 @@
  * planner lays out every phase, but the orchestrator only dispatches fleet
  * steps once the gate opens.
  */
-import type { UpgradePhase, UpgradeStepUnit } from "./vocabulary.ts";
-import type { UpgradeBatchMode } from "../settings/upgrade-settings.ts";
-import { isOnTarget, type UpgradeTarget } from "./target.ts";
+import type { UpgradePhase, UpgradeStepUnit } from './vocabulary.ts'
+import type { UpgradeBatchMode } from '../settings/upgrade-settings.ts'
+import { isOnTarget, type UpgradeTarget } from './target.ts'
 
-export type UpgradeRuntime = "deno" | "workers";
+export type UpgradeRuntime = 'deno' | 'workers'
 
-export type BatchPolicy = { mode: UpgradeBatchMode; value: number };
+export type BatchPolicy = { mode: UpgradeBatchMode; value: number }
 
 export type PlannedStep = {
-  serverId: string;
-  unit: UpgradeStepUnit;
-  phase: UpgradePhase;
-  batchIndex: number;
-};
+  serverId: string
+  unit: UpgradeStepUnit
+  phase: UpgradePhase
+  batchIndex: number
+}
 
 export type PlannedPhase = {
-  phase: UpgradePhase;
-  steps: PlannedStep[];
-};
+  phase: UpgradePhase
+  steps: PlannedStep[]
+}
 
 export type UpgradePlan = {
-  phases: PlannedPhase[];
-  steps: PlannedStep[];
-};
+  phases: PlannedPhase[]
+  steps: PlannedStep[]
+}
 
 export type PlanInput = {
-  runtime: UpgradeRuntime;
+  runtime: UpgradeRuntime
   /** False for trunk self-hosted (no control-plane package to install). */
-  channelHasInstancePackage: boolean;
+  channelHasInstancePackage: boolean
   /** The co-located control-plane host, or null when none is enrolled. */
-  colocatedServerId: string | null;
+  colocatedServerId: string | null
   /** Every managed server that is not the co-located control-plane host. */
-  fleetServerIds: readonly string[];
-  batch: BatchPolicy;
-};
+  fleetServerIds: readonly string[]
+  batch: BatchPolicy
+}
 
 function clamp(value: number, lo: number, hi: number): number {
-  return Math.min(Math.max(value, lo), hi);
+  return Math.min(Math.max(value, lo), hi)
 }
 
 /**
@@ -63,145 +63,137 @@ function clamp(value: number, lo: number, hi: number): number {
  * fleet always advances; `count` is a literal wave size. Both clamp to
  * `[1, stepCount]`; an empty fleet is 0.
  */
-export function computeBatchSize(
-  policy: BatchPolicy,
-  stepCount: number,
-): number {
-  if (stepCount <= 0) return 0;
-  if (policy.mode === "count") {
-    return clamp(Math.trunc(policy.value), 1, stepCount);
+export function computeBatchSize(policy: BatchPolicy, stepCount: number): number {
+  if (stepCount <= 0) return 0
+  if (policy.mode === 'count') {
+    return clamp(Math.trunc(policy.value), 1, stepCount)
   }
-  const size = Math.ceil((stepCount * policy.value) / 100);
-  return clamp(size, 1, stepCount);
+  const size = Math.ceil((stepCount * policy.value) / 100)
+  return clamp(size, 1, stepCount)
 }
 
 /** Zero-based batch index for the i-th fleet step given a wave `size`. */
 export function batchIndexFor(index: number, size: number): number {
-  if (size <= 0) return 0;
-  return Math.floor(index / size);
+  if (size <= 0) return 0
+  return Math.floor(index / size)
 }
 
 function dedupeInOrder(ids: readonly string[]): string[] {
-  const seen = new Set<string>();
-  const out: string[] = [];
+  const seen = new Set<string>()
+  const out: string[] = []
   for (const id of ids) {
-    if (id.length === 0 || seen.has(id)) continue;
-    seen.add(id);
-    out.push(id);
+    if (id.length === 0 || seen.has(id)) continue
+    seen.add(id)
+    out.push(id)
   }
-  return out;
+  return out
 }
 
-function planFleetSteps(
-  fleetServerIds: readonly string[],
-  batch: BatchPolicy,
-): PlannedStep[] {
-  const size = computeBatchSize(batch, fleetServerIds.length);
+function planFleetSteps(fleetServerIds: readonly string[], batch: BatchPolicy): PlannedStep[] {
+  const size = computeBatchSize(batch, fleetServerIds.length)
   return fleetServerIds.map((serverId, index) => ({
     serverId,
-    unit: "daemon",
-    phase: "fleet",
+    unit: 'daemon',
+    phase: 'fleet',
     batchIndex: batchIndexFor(index, size),
-  }));
+  }))
 }
 
 function assemble(phases: PlannedPhase[]): UpgradePlan {
-  const nonEmpty = phases.filter((phase) => phase.steps.length > 0);
+  const nonEmpty = phases.filter((phase) => phase.steps.length > 0)
   return {
     phases: nonEmpty,
     steps: nonEmpty.flatMap((phase) => phase.steps),
-  };
+  }
 }
 
 /** One fleet step for exactly one server (manual per-server run). */
 export function planSingleServer(serverId: string): UpgradePlan {
   return assemble([
     {
-      phase: "fleet",
-      steps: [{ serverId, unit: "daemon", phase: "fleet", batchIndex: 0 }],
+      phase: 'fleet',
+      steps: [{ serverId, unit: 'daemon', phase: 'fleet', batchIndex: 0 }],
     },
-  ]);
+  ])
 }
 
 /** Units a run will install. Workers and an empty fleet do not need instance or UI. */
 export function unitsForPlannedRun(input: {
-  runtime: UpgradeRuntime;
-  channelHasInstancePackage: boolean;
-  hasColocated: boolean;
-  fleetCount: number;
-}): ("daemon" | "instance" | "ui")[] {
-  const units: ("daemon" | "instance" | "ui")[] = [];
-  if (input.runtime === "deno" && input.hasColocated) {
-    units.push("daemon");
-    if (input.channelHasInstancePackage) units.push("instance", "ui");
+  runtime: UpgradeRuntime
+  channelHasInstancePackage: boolean
+  hasColocated: boolean
+  fleetCount: number
+}): ('daemon' | 'instance' | 'ui')[] {
+  const units: ('daemon' | 'instance' | 'ui')[] = []
+  if (input.runtime === 'deno' && input.hasColocated) {
+    units.push('daemon')
+    if (input.channelHasInstancePackage) units.push('instance', 'ui')
   }
-  if (
-    (input.runtime === "workers" || input.fleetCount > 0) &&
-    !units.includes("daemon")
-  ) {
-    units.push("daemon");
+  if ((input.runtime === 'workers' || input.fleetCount > 0) && !units.includes('daemon')) {
+    units.push('daemon')
   }
-  return units;
+  return units
 }
 
 /**
  * An already-current unit stays in the plan as satisfied. The tick does not
  * dispatch it. Instance and UI share the control-plane step, so that step
- * stays open until the instance commit matches.
+ * stays open until the instance commit matches and the UI is not behind: a
+ * UI-only change still needs the step, because the install is what moves the
+ * bundle.
  */
 export function stepSatisfiedByInstalled(
   step: PlannedStep,
-  installed: { daemonCommit: string | null; instanceCommit: string | null },
-  target: UpgradeTarget,
+  installed: {
+    daemonCommit: string | null
+    instanceCommit: string | null
+    uiBehind?: boolean
+  },
+  target: UpgradeTarget
 ): boolean {
-  if (step.unit === "instance") {
-    return isOnTarget(
-      { version: null, commit: installed.instanceCommit },
-      target.instance,
-    );
+  if (step.unit === 'instance') {
+    return (
+      !installed.uiBehind &&
+      isOnTarget({ version: null, commit: installed.instanceCommit }, target.instance)
+    )
   }
-  return isOnTarget(
-    { version: null, commit: installed.daemonCommit },
-    target.daemon,
-  );
+  return isOnTarget({ version: null, commit: installed.daemonCommit }, target.daemon)
 }
 
 /** Lay out the phases and batched steps of a full run. */
 export function planUpgrade(input: PlanInput): UpgradePlan {
-  const phases: PlannedPhase[] = [];
-  const colocated = input.colocatedServerId;
+  const phases: PlannedPhase[] = []
+  const colocated = input.colocatedServerId
 
-  if (input.runtime === "deno" && colocated) {
+  if (input.runtime === 'deno' && colocated) {
     phases.push({
-      phase: "colocated_daemon",
+      phase: 'colocated_daemon',
       steps: [
         {
           serverId: colocated,
-          unit: "daemon",
-          phase: "colocated_daemon",
+          unit: 'daemon',
+          phase: 'colocated_daemon',
           batchIndex: 0,
         },
       ],
-    });
+    })
     if (input.channelHasInstancePackage) {
       phases.push({
-        phase: "control_plane",
+        phase: 'control_plane',
         steps: [
           {
             serverId: colocated,
-            unit: "instance",
-            phase: "control_plane",
+            unit: 'instance',
+            phase: 'control_plane',
             batchIndex: 0,
           },
         ],
-      });
+      })
     }
   }
 
-  const fleet = dedupeInOrder(input.fleetServerIds).filter((id) =>
-    id !== colocated
-  );
-  phases.push({ phase: "fleet", steps: planFleetSteps(fleet, input.batch) });
+  const fleet = dedupeInOrder(input.fleetServerIds).filter((id) => id !== colocated)
+  phases.push({ phase: 'fleet', steps: planFleetSteps(fleet, input.batch) })
 
-  return assemble(phases);
+  return assemble(phases)
 }

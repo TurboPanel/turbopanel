@@ -23,16 +23,7 @@
  * into one seat row under the first item's id.
  */
 
-import {
-  and,
-  desc,
-  eq,
-  type ExtractTablesWithRelations,
-  inArray,
-  isNotNull,
-  isNull,
-  sql,
-} from 'drizzle-orm'
+import { and, desc, eq, type ExtractTablesWithRelations, isNotNull, isNull, sql } from 'drizzle-orm'
 import type { PgTransaction } from 'drizzle-orm/pg-core'
 import type { PostgresJsQueryResultHKT } from 'drizzle-orm/postgres-js'
 import type { BillingProviderId } from './gateway.ts'
@@ -91,10 +82,13 @@ export const KNOWN_SUBSCRIPTION_STATUSES = [
 export type SubscriptionStatus = (typeof KNOWN_SUBSCRIPTION_STATUSES)[number]
 
 /**
- * Statuses under which the grace clock runs. Stripe stays `past_due`
- * indefinitely by design (Smart Retries, then "leave past-due" — a
- * Dashboard setting, not an API field), and moves to `unpaid` only when the
- * account is configured that way; both mean "not paid, still entitled".
+ * "Not paid, still entitled." Stripe holds a subscription `past_due` while
+ * its dunning retries the renewal, and ends it itself once the retries run
+ * out — each environment's Dashboard sets the retry schedule and "cancel
+ * the subscription" as the outcome (Dashboard settings, not API fields).
+ * `unpaid` appears only on an account configured to mark unpaid instead.
+ * The end arrives as `customer.subscription.deleted`, projected like any
+ * other status change: TurboPanel never cancels a subscription itself.
  */
 export const DELINQUENT_SUBSCRIPTION_STATUSES: readonly string[] = ['past_due', 'unpaid']
 
@@ -106,14 +100,6 @@ export function isDelinquentStatus(status: string): boolean {
 export function isEndedStatus(status: string): boolean {
   return status === 'canceled' || status === 'incomplete_expired'
 }
-
-/**
- * How long entitlement survives past the first missed payment: Stripe's
- * two-month Smart Retry window plus a margin. The only place the grace
- * length is written; the grace clock (`src/features/billing/grace-clock.ts`)
- * cancels what is still delinquent when `grace_expires_at` passes.
- */
-export const BILLING_GRACE_WINDOW_MS = 65 * 24 * 60 * 60 * 1000
 
 export function parseSubscriptionStatus(value: string): SubscriptionStatus | 'unknown' {
   return (KNOWN_SUBSCRIPTION_STATUSES as readonly string[]).includes(value)
@@ -184,10 +170,10 @@ export type UpsertSubscriptionInput = Readonly<{
  *
  * `past_due_since` is a latch: set the first time the provider reports a
  * delinquent status (`past_due` / `unpaid`), kept while it stays there,
- * cleared by any other status. `grace_expires_at` latches beside it —
- * `coalesce(existing, past_due_since + BILLING_GRACE_WINDOW_MS)` while
- * delinquent, `null` otherwise — so recovery resets the clock and a second
- * lapse starts a fresh window.
+ * cleared by any other status. `grace_expires_at` is always written `null`:
+ * Stripe's dunning decides when a delinquent subscription ends, so there is
+ * no TurboPanel-side expiry to record, and a row latched by the old grace
+ * clock is cleared by its next projection.
  */
 export async function upsertSubscriptionFromProvider(
   db: BillingWriteDb,
@@ -195,7 +181,6 @@ export async function upsertSubscriptionFromProvider(
 ): Promise<{ id: string }> {
   const now = input.now ?? new Date().toISOString()
   const pastDue = isDelinquentStatus(input.status)
-  const graceSeconds = Math.floor(BILLING_GRACE_WINDOW_MS / 1000)
   const [row] = await db
     .insert(subscription)
     .values({
@@ -206,9 +191,7 @@ export async function upsertSubscriptionFromProvider(
       currentPeriodEnd: input.currentPeriodEnd,
       scheduleId: input.scheduleId,
       pastDueSince: pastDue ? now : null,
-      graceExpiresAt: pastDue
-        ? new Date(Date.parse(now) + BILLING_GRACE_WINDOW_MS).toISOString()
-        : null,
+      graceExpiresAt: null,
       createdAt: now,
       updatedAt: now,
     })
@@ -223,9 +206,7 @@ export async function upsertSubscriptionFromProvider(
         pastDueSince: pastDue
           ? sql`coalesce(${subscription.pastDueSince}, ${now}::timestamptz)`
           : null,
-        graceExpiresAt: pastDue
-          ? sql`coalesce(${subscription.graceExpiresAt}, coalesce(${subscription.pastDueSince}, ${now}::timestamptz) + make_interval(secs => ${graceSeconds}))`
-          : null,
+        graceExpiresAt: null,
         updatedAt: now,
       },
     })
@@ -561,35 +542,6 @@ export async function revokeAllLicensesForOrganization(
     }
   })
   return out
-}
-
-export type ListGraceExpiredOpts = Readonly<{
-  /** Narrow the batch to one subscription — the live harness's scope, never the tick's. */
-  providerSubscriptionId?: string
-}>
-
-/** Delinquent subscriptions whose grace clock has run out — the cancel batch. */
-export async function listGraceExpiredSubscriptions(
-  db: Db,
-  nowIso: string,
-  limit: number,
-  opts: ListGraceExpiredOpts = {}
-): Promise<SubscriptionRow[]> {
-  return await db
-    .select()
-    .from(subscription)
-    .where(
-      and(
-        inArray(subscription.status, [...DELINQUENT_SUBSCRIPTION_STATUSES]),
-        isNotNull(subscription.graceExpiresAt),
-        sql`${subscription.graceExpiresAt} <= ${nowIso}::timestamptz`,
-        ...(opts.providerSubscriptionId
-          ? [eq(subscription.providerSubscriptionId, opts.providerSubscriptionId)]
-          : [])
-      )
-    )
-    .orderBy(subscription.graceExpiresAt)
-    .limit(limit)
 }
 
 /** Every organization with a projected payer, for the reconciliation sweep. */

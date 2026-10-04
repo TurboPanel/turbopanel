@@ -25,16 +25,6 @@ export type InvitationGrantSpec = {
   permissionKey: string
 }
 
-export function defaultInvitationGrants(organizationId: string): InvitationGrantSpec[] {
-  return [
-    {
-      entityType: 'organization',
-      entityId: organizationId,
-      permissionKey: 'organization:manage',
-    },
-  ]
-}
-
 function parseGrantTarget(
   record: Record<string, unknown>
 ): Pick<InvitationGrantSpec, 'permissionKey'> | null {
@@ -89,11 +79,14 @@ export function parseInvitationGrants(raw: unknown): InvitationGrantSpec[] | nul
   return grants.length > 0 ? grants : null
 }
 
-export function resolveInvitationGrants(
-  raw: unknown,
-  organizationId: string
-): InvitationGrantSpec[] {
-  return parseInvitationGrants(raw) ?? defaultInvitationGrants(organizationId)
+/**
+ * The grants an accepted invitation confers beyond team membership. An
+ * invitation stored without grants confers none: the invitee joins the team and
+ * holds only what that team holds. Org-level access is granted explicitly (an
+ * owner's `grants`, or `POST /access` afterwards), never by default.
+ */
+export function resolveInvitationGrants(raw: unknown): InvitationGrantSpec[] {
+  return parseInvitationGrants(raw) ?? []
 }
 
 /** Materialize invitation grant specs into user-scoped `grant` rows (idempotent). */

@@ -22,14 +22,14 @@ const HERE = dirname(fromFileUrl(import.meta.url))
 /** The sibling daemon checkout, when this is the shared five-repo tree. */
 const DAEMON_URLS_TS = join(HERE, '../../../../turbopaneld/src/update/urls.ts')
 
-test('resolveInstanceUpdateChannel defaults to trunk and reads TURBOPANEL_UPDATE_CHANNEL', () => {
-  assertEquals(resolveInstanceUpdateChannel(undefined), 'trunk')
-  assertEquals(resolveInstanceUpdateChannel({}), 'trunk')
-  assertEquals(resolveInstanceUpdateChannel({ TURBOPANEL_UPDATE_CHANNEL: '  ' }), 'trunk')
+test('resolveInstanceUpdateChannel defaults to release and reads TURBOPANEL_UPDATE_CHANNEL', () => {
+  assertEquals(resolveInstanceUpdateChannel(undefined), 'release')
+  assertEquals(resolveInstanceUpdateChannel({}), 'release')
+  assertEquals(resolveInstanceUpdateChannel({ TURBOPANEL_UPDATE_CHANNEL: '  ' }), 'release')
   assertEquals(resolveInstanceUpdateChannel({ TURBOPANEL_UPDATE_CHANNEL: ' release ' }), 'release')
   assertEquals(resolveInstanceUpdateChannel({ TURBOPANEL_UPDATE_CHANNEL: 'rc' }), 'rc')
   // The request path never throws; startup does (below).
-  assertEquals(resolveInstanceUpdateChannel({ TURBOPANEL_UPDATE_CHANNEL: 'stable' }), 'trunk')
+  assertEquals(resolveInstanceUpdateChannel({ TURBOPANEL_UPDATE_CHANNEL: 'stable' }), 'release')
 })
 
 test("assertValidUpdateChannelEnv throws the daemon's wording for an unknown channel", () => {
@@ -165,4 +165,12 @@ test("builtinChannelManifestUrl matches the daemon's table when the daemon check
       )
     }
   }
+})
+
+test('wrangler pins each environment to its own channel and the dev box to trunk', async () => {
+  const raw = await Deno.readTextFile(join(HERE, '../../wrangler.jsonc'))
+  // Deployed environments name their channel explicitly, so the release
+  // fallback never moves testing (canary) or staging (rc) off their rail.
+  const channels = [...raw.matchAll(/"TURBOPANEL_UPDATE_CHANNEL":\s*"([a-z]+)"/g)].map((m) => m[1])
+  assertEquals(channels, ['trunk', 'canary', 'rc', 'release'])
 })

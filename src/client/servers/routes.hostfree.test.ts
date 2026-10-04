@@ -423,7 +423,7 @@ test('GET /servers/updates returns the empty payload when nothing is visible', a
   const res = await app.request('/servers/updates', {
     headers: sessionHeaders(cookie),
   })
-  await expectJson(res, 200, emptyServersUpdatesPayload('trunk'))
+  await expectJson(res, 200, emptyServersUpdatesPayload('release'))
 })
 
 test('GET /servers/updates reports the channel the instance follows, not a trunk literal', async () => {

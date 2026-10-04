@@ -4,6 +4,7 @@ import { createUpgradeCoordinator } from './coordinator.ts'
 import { clientUpdateBlock } from './decisions.ts'
 import { compareUpgradeStepRows } from './run.ts'
 import { createMemoryUpgradeStore, type FleetServerFact } from './store.ts'
+import { DEFAULT_UPGRADE_SETTINGS } from '../settings/upgrade-settings.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -730,6 +731,7 @@ test('auto-update waits for an offline server to reconnect instead of opening ru
       },
     ],
     latest: target,
+    settings: { ...DEFAULT_UPGRADE_SETTINGS, autoUpdate: true },
   })
   const enqueued: DaemonOutboundEnvelope[] = []
   const coordinator = createUpgradeCoordinator({
@@ -828,4 +830,79 @@ test('a hello reporting the target commit while a tick is mid-redispatch is not 
   const after = await coordinator.activeRun()
   const finalStep = after?.steps.find((item) => item.unit === 'daemon')
   assertEquals(finalStep?.status, 'done')
+})
+
+test('the control-plane step is not done until the daemon reports, and a second update is refused meanwhile', async () => {
+  const installed = { version: '0.1.0', commit: 'old-instance' as string | null }
+  const enqueued: DaemonOutboundEnvelope[] = []
+  const store = createMemoryUpgradeStore({
+    facts: [fact(['managed-upgrade-v1'], 'new-daemon')],
+    latest: target,
+  })
+  const coordinator = createUpgradeCoordinator({
+    store,
+    enqueue: (_serverId, envelope) => {
+      enqueued.push(envelope)
+      return Promise.resolve()
+    },
+    runtime: 'deno',
+    channel: 'release',
+    development: false,
+    now: () => T0,
+    colocatedServerId: SERVER,
+    instanceInstalled: installed,
+    resolveTarget: () => Promise.resolve(target),
+  })
+  const runId = await startOrThrow(coordinator)
+  assertEquals(
+    enqueued.map((envelope) => envelope.kind),
+    ['instance-update']
+  )
+
+  // The new binary restarted and now answers as the target build, but the
+  // daemon is still verifying it.
+  installed.commit = 'new-instance'
+  await coordinator.tick({ resolveManifests: false })
+  assertEquals((await coordinator.activeRun())?.id, runId)
+
+  const second = await coordinator.start({ source: 'manual', startedBy: null })
+  assertEquals(second.ok, false)
+  if (second.ok) throw new TypeError('expected a refusal')
+  assertEquals(second.error, 'upgrade_run_active')
+  assertEquals(second.activeRunId, runId)
+  assertEquals(second.blockers, ['Another update is already in progress.'])
+
+  const requestId = enqueued[0]?.requestId
+  if (!requestId) throw new TypeError('expected the dispatch')
+  await coordinator.noteOutcome({
+    serverId: SERVER,
+    unit: 'instance',
+    ok: true,
+    at: T0,
+    requestId,
+  })
+  await coordinator.tick({ resolveManifests: false })
+  assertEquals(await coordinator.activeRun(), null)
+  assertEquals((await coordinator.run(runId))?.status, 'succeeded')
+})
+
+test('a step the busy daemon refused reaches needs_attention after one install window, not three', async () => {
+  const h = clockHarness({ facts: [fact(['managed-upgrade-v1'], 'new-daemon')] })
+  const runId = await startOrThrow(h.coordinator)
+  const requestId = h.enqueued[0]?.envelope.requestId
+  if (!requestId) throw new TypeError('expected the dispatch')
+  await h.coordinator.noteProgress({
+    serverId: SERVER,
+    unit: 'instance',
+    stage: 'failed',
+    at: T0,
+    errorCode: 'preflight_in_progress',
+    requestId,
+  })
+  h.clock.now = minutesAfter(T0, 16)
+  await h.coordinator.tick({ resolveManifests: false })
+  const recorded = await h.coordinator.run(runId)
+  const stuck = recorded?.steps.find((item) => item.unit === 'instance')
+  assertEquals(stuck?.status, 'needs_attention')
+  assertEquals(stuck?.errorCode, 'step_timeout')
 })

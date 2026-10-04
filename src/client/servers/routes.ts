@@ -3,6 +3,7 @@ import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
+import { requireStepUpIfConfigured } from '../authn/step-up.ts'
 import { isAdminRole } from '../authn/session-store.ts'
 import { can, listVisible } from '../authz/index.ts'
 import { assertCanManageOr403, assertCanReadOr403, getOrgId, parseJsonBody } from '../shared.ts'
@@ -49,7 +50,12 @@ import { INSTANCE_VERSION } from '../../app/version.ts'
 import { resolveInstanceRevision } from '../../app/build-info.ts'
 import { isExplicitDevelopmentMode } from '../../lib/dev-mode.ts'
 import { createUpgradeCoordinator } from '../../features/upgrades/coordinator.ts'
+import { parseUpgradeBatchDefault } from '../../features/settings/upgrade-settings.ts'
 import { createDrizzleUpgradeStore } from '../../features/upgrades/store.ts'
+import {
+  parseUpgradeVerifyTimeoutMs,
+  UPGRADE_VERIFY_TIMEOUT_ENV,
+} from '../../features/upgrades/transitions.ts'
 import {
   type ClientUpdateBlock,
   clientUpdateBlockReason,
@@ -159,7 +165,7 @@ type QueueUpdateFailure = {
   error: string
 }
 
-/** The channel this instance follows — the one every queued update targets. */
+/** The channel this control plane follows — the one every queued update targets. */
 function instanceUpdateChannel(c: Context<AppEnv>): UpdateChannel {
   return resolveInstanceUpdateChannel(c.get('platformEnv'))
 }
@@ -180,7 +186,11 @@ async function buildUpgradeCoordinator(
   const revision = resolveInstanceRevision(c.get('platformEnv'))
   const colocated = await resolveColocatedServerId(db, registry)
   const coordinator = createUpgradeCoordinator({
-    store: createDrizzleUpgradeStore(db, registry),
+    store: createDrizzleUpgradeStore(
+      db,
+      registry,
+      parseUpgradeBatchDefault(c.get('platformEnv')?.TURBOPANEL_UPGRADE_BATCH)
+    ),
     enqueue: (serverId, envelope) => registry.getCell(serverId).enqueue(envelope),
     runtime,
     channel: instanceUpdateChannel(c),
@@ -188,6 +198,9 @@ async function buildUpgradeCoordinator(
     now: () => new Date().toISOString(),
     colocatedServerId: colocated,
     instanceInstalled: { version: INSTANCE_VERSION, commit: revision.commit },
+    verifyTimeoutMs: parseUpgradeVerifyTimeoutMs(
+      c.get('platformEnv')?.[UPGRADE_VERIFY_TIMEOUT_ENV]
+    ),
   })
   return { coordinator, colocated }
 }
@@ -1427,6 +1440,9 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
     const denied = await assertCanManageOr403(c, 'server', id)
     if (denied) return denied
 
+    const stepUp = await requireStepUpIfConfigured(c, organizationId, 'server.daemon_key.revoke')
+    if (stepUp) return stepUp
+
     const registry = getDaemonCellRegistry(c)
     const blocked = await assertServerNotColocatedOr403(
       c,
@@ -1488,6 +1504,9 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
 
     const denied = await assertCanManageOr403(c, 'server', id)
     if (denied) return denied
+
+    const stepUp = await requireStepUpIfConfigured(c, organizationId, 'server.delete')
+    if (stepUp) return stepUp
 
     // Co-located guard before the registry 503 so an unavailable registry can
     // never turn a self-host-pinned (or probe-matched) host into a deletable one.

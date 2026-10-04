@@ -29,6 +29,7 @@ import {
 } from '../billing/routes-helpers.ts'
 import { loadServerStatusRecords } from '../servers/update-status.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
+import { requireStepUpIfConfigured } from '../authn/step-up.ts'
 import { assertOrgOwnerOr403 } from '../authz/index.ts'
 import { compatLogInfo } from '../../lib/log-compat.ts'
 import { type Db, getDaemonCellRegistry, getDb } from '../../db/connection.ts'
@@ -329,6 +330,9 @@ export function registerLicenseRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const ctx = await requireLicenseOwnerContext(c)
     if (ctx instanceof Response) return ctx
     const { db, organizationId } = ctx
+
+    const stepUp = await requireStepUpIfConfigured(c, organizationId, 'license.revoke')
+    if (stepUp) return stepUp
 
     const id = c.req.param('id')
     const registry = getDaemonCellRegistry(c)

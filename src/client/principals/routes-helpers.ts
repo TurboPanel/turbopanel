@@ -3,10 +3,8 @@
  * (extracted for host-free coverage).
  */
 
-import {
-  assertSafePrincipalUsername,
-  isReservedPrincipalUsername,
-} from '../../lib/naming.ts'
+import type { PrincipalNameScheme } from '../../lib/principal-name-scheme.ts'
+import { assertSafePrincipalUsername, isReservedPrincipalUsername } from '../../lib/naming.ts'
 import {
   isPrincipalAccessLevel,
   shellForAccessLevel,
@@ -28,9 +26,7 @@ export type PrincipalRouteValidationError = {
  * Accept top-level `uid`/`gid` as a shorthand for `options.uid`/`options.gid`.
  * Non-object `options` are left as-is so strict parse rejects them.
  */
-export function mergeTopLevelPrincipalIdsIntoOptions(
-  body: Record<string, unknown>,
-): unknown {
+export function mergeTopLevelPrincipalIdsIntoOptions(body: Record<string, unknown>): unknown {
   if (body.uid === undefined && body.gid === undefined) {
     return body.options
   }
@@ -48,7 +44,7 @@ export function mergeTopLevelPrincipalIdsIntoOptions(
 }
 
 export function parsePrincipalUsernameValue(
-  usernameRaw: string,
+  usernameRaw: string
 ): { ok: true; username: string } | PrincipalRouteValidationError {
   const username = usernameRaw.trim()
   try {
@@ -64,18 +60,16 @@ export function parsePrincipalUsernameValue(
 
 export type ParsedCreatePrincipalOptions =
   | {
-    ok: true
-    options: PrincipalOptionsPersisted
-    override: { uid: number; gid: number } | null
-  }
+      ok: true
+      options: PrincipalOptionsPersisted
+      override: { uid: number; gid: number } | null
+    }
   | PrincipalRouteValidationError
 
 export function parseCreatePrincipalOptions(
-  body: Record<string, unknown>,
+  body: Record<string, unknown>
 ): ParsedCreatePrincipalOptions {
-  const parsedOptions = parsePrincipalOptionsInput(
-    mergeTopLevelPrincipalIdsIntoOptions(body),
-  )
+  const parsedOptions = parsePrincipalOptionsInput(mergeTopLevelPrincipalIdsIntoOptions(body))
   if (!parsedOptions.ok) {
     return { ok: false, error: 'Invalid request', status: 400 }
   }
@@ -90,19 +84,22 @@ export type InsertedProjectPrincipal = {
   id: string
   /** Login actually created on the host (short name + optional random suffix). */
   appliedUsername: string
+  /** Scheme the system name was derived with (`plain` | `partial` | `random`). */
+  nameScheme: PrincipalNameScheme
   uid?: number
   gid?: number
 }
 
 export function projectPrincipalCreateResponse(
   inserted: InsertedProjectPrincipal,
-  serviceIds: string[],
+  serviceIds: string[]
 ) {
   if (inserted.uid !== undefined && inserted.gid !== undefined) {
     return {
       ok: true as const,
       id: inserted.id,
       appliedUsername: inserted.appliedUsername,
+      nameScheme: inserted.nameScheme,
       uid: inserted.uid,
       gid: inserted.gid,
       serviceIds,
@@ -112,6 +109,7 @@ export function projectPrincipalCreateResponse(
     ok: true as const,
     id: inserted.id,
     appliedUsername: inserted.appliedUsername,
+    nameScheme: inserted.nameScheme,
     serviceIds,
   }
 }
@@ -147,7 +145,7 @@ export function patchTouchesPrincipal(body: Record<string, unknown>): boolean {
  */
 export function parseEntitlementsField(
   body: Record<string, unknown>,
-  supported: { runtimes: readonly string[]; series: readonly string[] },
+  supported: { runtimes: readonly string[]; series: readonly string[] }
 ): { runtime: string; series: string; grantedBy: 'operator' }[] | null | undefined {
   if (!('entitlements' in body)) return undefined
   const raw = body.entitlements
@@ -185,9 +183,7 @@ export function parseEntitlementsField(
  * shell path here instead would put a filesystem path in a security-decision
  * field, which is what the Phase 0 allowlist already had to defend against.
  */
-export function parseAccessField(
-  body: Record<string, unknown>,
-): string | null | undefined {
+export function parseAccessField(body: Record<string, unknown>): string | null | undefined {
   if (!('access' in body)) return undefined
   const raw = body.access
   if (!isPrincipalAccessLevel(raw)) return null
@@ -207,15 +203,12 @@ export const MAX_PRINCIPAL_PASSWORD_LENGTH = 128
  * authenticate.
  */
 export function parsePrincipalPasswordField(
-  body: Record<string, unknown>,
+  body: Record<string, unknown>
 ): { password?: string } | null {
   if (!('password' in body) || body.password === undefined) return {}
   const raw = body.password
   if (typeof raw !== 'string') return null
-  if (
-    raw.length < MIN_PRINCIPAL_PASSWORD_LENGTH ||
-    raw.length > MAX_PRINCIPAL_PASSWORD_LENGTH
-  ) {
+  if (raw.length < MIN_PRINCIPAL_PASSWORD_LENGTH || raw.length > MAX_PRINCIPAL_PASSWORD_LENGTH) {
     return null
   }
   if (/\p{Cc}/u.test(raw)) return null
@@ -223,8 +216,7 @@ export function parsePrincipalPasswordField(
 }
 
 const GENERATED_PASSWORD_LENGTH = 20
-const GENERATED_PASSWORD_ALPHABET =
-  'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
+const GENERATED_PASSWORD_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
 
 /**
  * Random show-once password: 20 base62 chars (~119 bits), unbiased via

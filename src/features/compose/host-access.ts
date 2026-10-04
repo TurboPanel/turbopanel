@@ -14,11 +14,11 @@
  *   (`type: bind` / `npipe` / an unknown type) syntax;
  * - top-level `volumes.<name>.driver_opts` that make a local volume a bind
  *   (`o: bind`, `type: none`, a host-path `device`);
+ * - top-level `volumes.<name>.name` / `external`, which name a Docker volume
+ *   the stack does not own (another stack's data, mounted on deploy and
+ *   removed by `compose down --volumes`);
  * - top-level `configs.<name>.file` / `secrets.<name>.file`;
  * - `services.<name>.env_file` / `label_file`;
- * - `services.<name>.build` — `context`, `dockerfile`, `additional_contexts`,
- *   and the build-time host reach of `ssh`, `network: host`, `privileged`,
- *   `entitlements`;
  * - `services.<name>.extends.file` and top-level `include` — always, even
  *   inside the directory: the daemon reads those files on the host at deploy
  *   time, so what they add never passes this check.
@@ -31,6 +31,9 @@
  *
  * Fail closed: a path this module cannot resolve statically — an interpolated
  * `${VAR}`, a backslash, a value of the wrong type — is treated as outside.
+ *
+ * `services.<name>.build` is not here: what a build may read and reach is
+ * refused outright, with no opt-in, by `./build-policy.ts`.
  *
  * Pure and org-blind, like the rest of `src/features/compose/`: it only says
  * *what* is host-level. Whether this organization may deploy it is decided
@@ -56,8 +59,8 @@ const DOCKER_SOCKET_PATHS = new Set(['/var/run/docker.sock', '/run/docker.sock']
 /** Long-syntax `volumes` types that never touch a host path. */
 const SAFE_MOUNT_TYPES = new Set(['volume', 'tmpfs', 'image'])
 
-/** `driver_opts.type` values that mount remote storage, not a host path. */
-const NETWORK_FS_TYPES = new Set(['nfs', 'nfs4', 'cifs', 'smb', 'smb3', 'glusterfs', 'ceph'])
+const SAFE_TMPFS_OPTION = /^(size|mode|uid|gid|nr_inodes|nr_blocks)=[\w.]+$/
+const SAFE_TMPFS_FLAGS = new Set(['noexec', 'nosuid', 'nodev', 'noatime', 'ro', 'rw'])
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -72,10 +75,6 @@ function joinPath(segments: ReadonlyArray<string | number>): string {
   return out
 }
 
-/**
- * Why a host path is outside the service's directory, or `null` when it is a
- * plain relative path that stays inside it.
- */
 /** Trailing slashes stripped without a quantified regex. */
 function withoutTrailingSlashes(value: string): string {
   let end = value.length
@@ -83,7 +82,11 @@ function withoutTrailingSlashes(value: string): string {
   return value.slice(0, end)
 }
 
-function outsideReason(path: string): string | null {
+/**
+ * Why a host path is outside the service's directory, or `null` when it is a
+ * plain relative path that stays inside it.
+ */
+export function outsideReason(path: string): string | null {
   const trimmed = path.trim()
   if (trimmed === '') return 'is empty, so it cannot be resolved'
   if (trimmed.includes('$')) {
@@ -107,7 +110,6 @@ function outsideReason(path: string): string | null {
  * Why a bind source is not allowed even though it stays inside: the service's
  * directory itself (`.`, `./`). A container that can write there can rewrite
  * the files the daemon deploys from and plant symlinks a later bind follows.
- * Only binds — a build context of `.` only reads, so it stays allowed.
  */
 function wholeDirectoryReason(path: string): string | null {
   const parts = path
@@ -126,15 +128,6 @@ function wholeDirectoryReason(path: string): string | null {
  */
 const PULLS_UNCHECKED_COMPOSE =
   'is read on the host at deploy time, so what it adds never passes this check'
-
-/** Whether a URL-shaped build context names a remote source, not a host path. */
-function isRemoteContext(value: string): boolean {
-  return (
-    /^[a-z][a-z0-9+.-]*:\/\//i.test(value) ||
-    value.startsWith('git@') ||
-    /^github\.com\//i.test(value)
-  )
-}
 
 class Collector {
   readonly findings: HostAccessFinding[] = []
@@ -248,97 +241,6 @@ function checkFileList(
 }
 
 /**
- * A build context. A URL-shaped one names a remote source, not a host path, so
- * only a string that is not remote — or a value that is not a string at all —
- * is judged as a path.
- */
-function checkBuildContext(out: Collector, segments: Array<string | number>, context: unknown) {
-  if (context === undefined) return
-  if (typeof context === 'string' && isRemoteContext(context)) return
-  out.path(segments, 'build context', context)
-}
-
-/** Build contexts that name another service or image, or a remote source. */
-function isNonPathAdditionalContext(value: unknown): boolean {
-  return (
-    typeof value === 'string' &&
-    (isRemoteContext(value) || value.startsWith('docker-image://') || value.startsWith('service:'))
-  )
-}
-
-function checkAdditionalContexts(out: Collector, at: Array<string | number>, contexts: unknown) {
-  if (isRecord(contexts)) {
-    for (const [name, value] of Object.entries(contexts)) {
-      if (isNonPathAdditionalContext(value)) continue
-      out.path([...at, 'additional_contexts', name], 'additional build context', value)
-    }
-  } else if (Array.isArray(contexts)) {
-    out.add(
-      [...at, 'additional_contexts'],
-      'additional build contexts',
-      'are a list, so the paths they name cannot be checked',
-      contexts
-    )
-  }
-}
-
-/** What a build can reach on the host besides files: `ssh`, the host network, privileges. */
-function checkBuildPrivileges(
-  out: Collector,
-  at: Array<string | number>,
-  build: Record<string, unknown>
-) {
-  if (build.ssh !== undefined) {
-    out.add(
-      [...at, 'ssh'],
-      'build ssh',
-      "forwards the host's SSH agent or keys into the build",
-      build.ssh
-    )
-  }
-  if (build.network === 'host') {
-    out.add(
-      [...at, 'network'],
-      'build network `host`',
-      "shares the host's network stack",
-      build.network
-    )
-  }
-  if (build.privileged === true) {
-    out.add(
-      [...at, 'privileged'],
-      'privileged build',
-      'runs with full host privileges',
-      build.privileged
-    )
-  }
-  if (build.entitlements !== undefined) {
-    out.add(
-      [...at, 'entitlements'],
-      'build entitlements',
-      'grant the build host-level privileges',
-      build.entitlements
-    )
-  }
-}
-
-function checkBuild(out: Collector, serviceSegments: string[], build: unknown): void {
-  const at = [...serviceSegments, 'build']
-  if (build === undefined || build === null) return
-  if (typeof build === 'string') {
-    checkBuildContext(out, at, build)
-    return
-  }
-  if (!isRecord(build)) return
-  checkBuildContext(out, [...at, 'context'], build.context)
-  if (build.dockerfile !== undefined) {
-    out.path([...at, 'dockerfile'], 'Dockerfile', build.dockerfile)
-  }
-  checkAdditionalContexts(out, at, build.additional_contexts)
-  checkBuildPrivileges(out, at, build)
-}
-
-/**
  * How an `extends.file` is named in a message: the text as written, or a
  * primitive (a number, `null`) spelled out. Anything else (a mapping or list
  * the schema would refuse) has no text to quote, and stringifying it would
@@ -368,34 +270,79 @@ function checkExtends(out: Collector, serviceSegments: string[], value: unknown)
   }
 }
 
+/** An explicit `name:` or `external` makes Compose use a volume by its host-wide name. */
+function checkVolumeIdentity(out: Collector, name: string, entry: Record<string, unknown>): void {
+  if (entry.name !== undefined) {
+    out.add(
+      ['volumes', name, 'name'],
+      `volume \`${name}\``,
+      'names a Docker volume on the host, which may belong to another stack',
+      entry.name
+    )
+  }
+  if (entry.external !== undefined && entry.external !== false) {
+    out.add(
+      ['volumes', name, 'external'],
+      `volume \`${name}\``,
+      'uses a Docker volume the stack does not own',
+      entry.external
+    )
+  }
+}
+
 function checkTopLevelVolumes(out: Collector, volumes: unknown): void {
   if (!isRecord(volumes)) return
   for (const [name, entry] of Object.entries(volumes)) {
-    if (!isRecord(entry) || !isRecord(entry.driver_opts)) continue
-    const opts = entry.driver_opts
-    const at = ['volumes', name, 'driver_opts']
-    const type = typeof opts.type === 'string' ? opts.type.trim() : undefined
-    const o = typeof opts.o === 'string' ? opts.o : ''
-    const mountFlags = new Set(o.split(',').map((flag) => flag.trim()))
-    const bindFlag = mountFlags.has('bind') || mountFlags.has('rbind')
-    const device = opts.device
-    if (bindFlag || type === 'none' || type === 'bind') {
-      out.add(at, `volume \`${name}\``, 'is a bind mount of a host path in disguise', opts)
-      continue
-    }
-    if (
-      typeof device === 'string' &&
-      device.trim().startsWith('/') &&
-      (type === undefined || !NETWORK_FS_TYPES.has(type))
-    ) {
-      out.add(
-        [...at, 'device'],
-        `volume \`${name}\` device \`${device}\``,
-        'mounts a host path',
-        opts
-      )
-    }
+    if (!isRecord(entry)) continue
+    checkVolumeIdentity(out, name, entry)
+    if (isRecord(entry.driver_opts)) checkVolumeDriverOpts(out, name, entry.driver_opts)
   }
+}
+
+function checkVolumeDriverOpts(out: Collector, name: string, opts: Record<string, unknown>): void {
+  const at = ['volumes', name, 'driver_opts']
+  const type = typeof opts.type === 'string' ? opts.type.trim().toLowerCase() : undefined
+  const o = typeof opts.o === 'string' ? opts.o : ''
+  const mountFlags = new Set(o.split(',').map((flag) => flag.trim().toLowerCase()))
+  const bindFlag = mountFlags.has('bind') || mountFlags.has('rbind')
+  const device = opts.device
+  if (bindFlag || type === 'none' || type === 'bind') {
+    out.add(at, `volume \`${name}\``, 'is a bind mount of a host path in disguise', opts)
+  } else if (typeof device === 'string' && device.trim().startsWith('/')) {
+    out.add(
+      [...at, 'device'],
+      `volume \`${name}\` device \`${device}\``,
+      'mounts a host path',
+      opts
+    )
+  } else if (Object.keys(opts).length > 0 && !isSafeTmpfsVolume(opts, type, mountFlags)) {
+    out.add(
+      at,
+      `volume \`${name}\``,
+      'mounts something other than plain Docker storage (overlay, network and other filesystem types can reach host paths)',
+      opts
+    )
+  }
+}
+
+/** A tmpfs volume with sizing and ownership options only. */
+function isSafeTmpfsVolume(
+  opts: Record<string, unknown>,
+  type: string | undefined,
+  mountFlags: ReadonlySet<string>
+): boolean {
+  if (Object.keys(opts).some((key) => key !== 'type' && key !== 'device' && key !== 'o')) {
+    return false
+  }
+  if (type !== 'tmpfs') return false
+  if (
+    opts.device !== undefined &&
+    !(typeof opts.device === 'string' && opts.device.trim().toLowerCase() === 'tmpfs')
+  )
+    return false
+  return [...mountFlags].every(
+    (flag) => flag === '' || SAFE_TMPFS_FLAGS.has(flag) || SAFE_TMPFS_OPTION.test(flag)
+  )
 }
 
 function checkFileBacked(out: Collector, kind: 'configs' | 'secrets', value: unknown): void {
@@ -433,7 +380,6 @@ export function collectHostAccessFindings(data: unknown): HostAccessFinding[] {
       checkServiceVolumes(out, at, body.volumes)
       checkFileList(out, [...at, 'env_file'], 'env_file', body.env_file)
       checkFileList(out, [...at, 'label_file'], 'label_file', body.label_file)
-      checkBuild(out, at, body.build)
       checkExtends(out, at, body.extends)
     }
   }

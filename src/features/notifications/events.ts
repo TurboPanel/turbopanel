@@ -19,40 +19,43 @@
  * constants.
  */
 
-export const NOTIFICATION_SEVERITIES = ["info", "warning", "critical"] as const;
-export type NotificationSeverity = (typeof NOTIFICATION_SEVERITIES)[number];
+export const NOTIFICATION_SEVERITIES = ['info', 'warning', 'critical'] as const
+export type NotificationSeverity = (typeof NOTIFICATION_SEVERITIES)[number]
 
 /** Where an event belongs: to one organization, or to the instance as a whole. */
-export const NOTIFICATION_SCOPES = ["organization", "instance"] as const;
-export type NotificationScope = (typeof NOTIFICATION_SCOPES)[number];
+export const NOTIFICATION_SCOPES = ['organization', 'instance'] as const
+export type NotificationScope = (typeof NOTIFICATION_SCOPES)[number]
 
 /** Small, non-secret facts an event carries. Rendered into the sentence and stored beside it. */
-export type NotificationContext = Record<
-  string,
-  string | number | boolean | null | undefined
->;
+export type NotificationContext = Record<string, string | number | boolean | null | undefined>
 
 /**
  * Who gets the inbox row for an organization event: every member, or only
  * those who could read the audit trail it mirrors (owners and managers).
  * Instance events always go to instance administrators.
  */
-export const NOTIFICATION_AUDIENCES = ["members", "managers"] as const;
-export type NotificationAudience = (typeof NOTIFICATION_AUDIENCES)[number];
+export const NOTIFICATION_AUDIENCES = ['members', 'managers'] as const
+export type NotificationAudience = (typeof NOTIFICATION_AUDIENCES)[number]
 
 type EventDefinition = {
-  readonly severity: NotificationSeverity;
-  readonly scope: NotificationScope;
-  readonly audience: NotificationAudience;
+  readonly severity: NotificationSeverity
+  readonly scope: NotificationScope
+  readonly audience: NotificationAudience
+  /**
+   * Urgent events (an outage, anything security-related) always go out at
+   * once: quiet hours never hold them and a digest never batches them. Every
+   * new event must choose.
+   */
+  readonly urgent: boolean
   /** The short line the bell and the subject line show. */
-  readonly title: (ctx: NotificationContext) => string;
+  readonly title: (ctx: NotificationContext) => string
   /** The fuller sentence, when the title alone is not enough. */
-  readonly body?: (ctx: NotificationContext) => string;
-};
+  readonly body?: (ctx: NotificationContext) => string
+}
 
 function name(ctx: NotificationContext, key: string, fallback: string): string {
-  const value = ctx[key];
-  return typeof value === "string" && value.length > 0 ? value : fallback;
+  const value = ctx[key]
+  return typeof value === 'string' && value.length > 0 ? value : fallback
 }
 
 /**
@@ -60,131 +63,141 @@ function name(ctx: NotificationContext, key: string, fallback: string): string {
  * union and the CHECK pin in `enum-checks.test.ts` derive from one place.
  */
 export const NOTIFICATION_EVENT_DEFINITIONS = {
-  "server.offline": {
-    severity: "critical",
-    scope: "organization",
-    audience: "members",
-    title: (ctx) => `Server ${name(ctx, "serverName", "unknown")} went offline`,
+  'server.offline': {
+    severity: 'critical',
+    scope: 'organization',
+    audience: 'members',
+    urgent: true,
+    title: (ctx) => `Server ${name(ctx, 'serverName', 'unknown')} went offline`,
     body: (ctx) =>
-      `The daemon on ${
-        name(ctx, "serverName", "the server")
-      } stopped answering and the server was marked offline${
-        typeof ctx.lastSeenAt === "string"
-          ? ` (last seen ${ctx.lastSeenAt})`
-          : ""
+      `The daemon on ${name(
+        ctx,
+        'serverName',
+        'the server'
+      )} stopped answering and the server was marked offline${
+        typeof ctx.lastSeenAt === 'string' ? ` (last seen ${ctx.lastSeenAt})` : ''
       }.`,
   },
-  "fleet.mass_disconnect": {
-    severity: "critical",
-    scope: "instance",
-    audience: "managers",
+  'fleet.mass_disconnect': {
+    severity: 'critical',
+    scope: 'instance',
+    audience: 'managers',
+    urgent: true,
     title: (ctx) =>
-      `${
-        typeof ctx.count === "number" ? ctx.count : "Many"
-      } servers went offline in one sweep`,
+      `${typeof ctx.count === 'number' ? ctx.count : 'Many'} servers went offline in one sweep`,
     body: () =>
-      "A whole sweep lost its fleet at once — that is usually the control plane's own network or " +
-      "a broker, not every host at the same time.",
+      "A whole sweep lost all its servers at once — that is usually the control plane's own network or " +
+      'a broker, not every host at the same time.',
   },
-  "server.deleted": {
-    severity: "info",
-    scope: "organization",
-    audience: "managers",
-    title: (ctx) => `Server ${name(ctx, "serverName", "unknown")} was deleted`,
+  'server.deleted': {
+    severity: 'info',
+    scope: 'organization',
+    audience: 'managers',
+    urgent: false,
+    title: (ctx) => `Server ${name(ctx, 'serverName', 'unknown')} was deleted`,
+    body: (ctx) => `${name(ctx, 'actorEmail', 'An operator')} deleted the server.`,
+  },
+  'server.daemon_key_revoked': {
+    severity: 'warning',
+    scope: 'organization',
+    audience: 'managers',
+    urgent: true,
+    title: (ctx) => `Daemon key revoked on ${name(ctx, 'serverName', 'a server')}`,
     body: (ctx) =>
-      `${name(ctx, "actorEmail", "An operator")} deleted the server.`,
+      `${name(
+        ctx,
+        'actorEmail',
+        'An operator'
+      )} revoked the daemon key; the host cannot enrol again until the server is deleted and a rebuilt host enrols fresh.`,
   },
-  "server.daemon_key_revoked": {
-    severity: "warning",
-    scope: "organization",
-    audience: "managers",
-    title: (ctx) =>
-      `Daemon key revoked on ${name(ctx, "serverName", "a server")}`,
+  'access.grant_created': {
+    severity: 'info',
+    scope: 'organization',
+    audience: 'managers',
+    urgent: true,
+    title: (ctx) => `Access granted: ${name(ctx, 'permissionKey', 'a permission')}`,
     body: (ctx) =>
-      `${
-        name(ctx, "actorEmail", "An operator")
-      } revoked the daemon key; the host cannot enrol again until the server is deleted and a rebuilt host enrols fresh.`,
+      `${name(ctx, 'actorEmail', 'An owner')} granted ${name(
+        ctx,
+        'permissionKey',
+        'a permission'
+      )} to ${name(ctx, 'subjectKind', 'a subject')} ${name(ctx, 'subjectId', '')}`.trimEnd() + '.',
   },
-  "access.grant_created": {
-    severity: "info",
-    scope: "organization",
-    audience: "managers",
-    title: (ctx) =>
-      `Access granted: ${name(ctx, "permissionKey", "a permission")}`,
+  'access.grant_revoked': {
+    severity: 'warning',
+    scope: 'organization',
+    audience: 'managers',
+    urgent: true,
+    title: (ctx) => `Access revoked: ${name(ctx, 'permissionKey', 'a permission')}`,
     body: (ctx) =>
-      `${name(ctx, "actorEmail", "An owner")} granted ${
-        name(ctx, "permissionKey", "a permission")
-      } to ${name(ctx, "subjectKind", "a subject")} ${
-        name(ctx, "subjectId", "")
-      }`.trimEnd() + ".",
+      `${name(ctx, 'actorEmail', 'An owner')} revoked ${name(
+        ctx,
+        'permissionKey',
+        'a permission'
+      )} from ${name(ctx, 'subjectKind', 'a subject')} ${name(ctx, 'subjectId', '')}`.trimEnd() +
+      '.',
   },
-  "access.grant_revoked": {
-    severity: "warning",
-    scope: "organization",
-    audience: "managers",
-    title: (ctx) =>
-      `Access revoked: ${name(ctx, "permissionKey", "a permission")}`,
-    body: (ctx) =>
-      `${name(ctx, "actorEmail", "An owner")} revoked ${
-        name(ctx, "permissionKey", "a permission")
-      } from ${name(ctx, "subjectKind", "a subject")} ${
-        name(ctx, "subjectId", "")
-      }`.trimEnd() + ".",
-  },
-} as const satisfies Record<string, EventDefinition>;
+} as const satisfies Record<string, EventDefinition>
 
-export type NotificationEvent = keyof typeof NOTIFICATION_EVENT_DEFINITIONS;
+export type NotificationEvent = keyof typeof NOTIFICATION_EVENT_DEFINITIONS
 
 /** The codes, in catalogue order — what the CHECK constraint and the rules vocabulary pin. */
 export const NOTIFICATION_EVENTS = Object.keys(
-  NOTIFICATION_EVENT_DEFINITIONS,
-) as readonly NotificationEvent[];
+  NOTIFICATION_EVENT_DEFINITIONS
+) as readonly NotificationEvent[]
 
 /** A rule may name one event, or every event. */
-export const NOTIFICATION_RULE_ANY_EVENT = "*" as const;
+export const NOTIFICATION_RULE_ANY_EVENT = '*' as const
 export const NOTIFICATION_RULE_EVENTS = [
   NOTIFICATION_RULE_ANY_EVENT,
   ...NOTIFICATION_EVENTS,
-] as const;
+] as const
 
 export function isNotificationEvent(value: string): value is NotificationEvent {
-  return Object.hasOwn(NOTIFICATION_EVENT_DEFINITIONS, value);
+  return Object.hasOwn(NOTIFICATION_EVENT_DEFINITIONS, value)
 }
 
 export function eventSeverity(event: NotificationEvent): NotificationSeverity {
-  return NOTIFICATION_EVENT_DEFINITIONS[event].severity;
+  return NOTIFICATION_EVENT_DEFINITIONS[event].severity
 }
 
 export function eventScope(event: NotificationEvent): NotificationScope {
-  return NOTIFICATION_EVENT_DEFINITIONS[event].scope;
+  return NOTIFICATION_EVENT_DEFINITIONS[event].scope
+}
+
+/** True when the event must never wait for quiet hours or a digest window. */
+export function eventIsUrgent(event: NotificationEvent): boolean {
+  const definition: EventDefinition = NOTIFICATION_EVENT_DEFINITIONS[event]
+  // A critical event is never routine, whatever its flag says.
+  return definition.urgent || definition.severity === 'critical'
 }
 
 export function eventAudience(event: NotificationEvent): NotificationAudience {
-  return NOTIFICATION_EVENT_DEFINITIONS[event].audience;
+  return NOTIFICATION_EVENT_DEFINITIONS[event].audience
 }
 
 /** The sentence(s) a human reads for one occurrence of an event. */
 export function describeEvent(
   event: NotificationEvent,
-  context: NotificationContext = {},
+  context: NotificationContext = {}
 ): { title: string; body: string | null } {
-  const definition: EventDefinition = NOTIFICATION_EVENT_DEFINITIONS[event];
+  const definition: EventDefinition = NOTIFICATION_EVENT_DEFINITIONS[event]
   return {
     title: definition.title(context),
     body: definition.body ? definition.body(context) : null,
-  };
+  }
 }
 
 const SEVERITY_RANK: Record<NotificationSeverity, number> = {
   info: 0,
   warning: 1,
   critical: 2,
-};
+}
 
 /** True when `severity` is at least `floor` — how a rule's minimum severity is applied. */
 export function severityAtLeast(
   severity: NotificationSeverity,
-  floor: NotificationSeverity,
+  floor: NotificationSeverity
 ): boolean {
-  return SEVERITY_RANK[severity] >= SEVERITY_RANK[floor];
+  return SEVERITY_RANK[severity] >= SEVERITY_RANK[floor]
 }

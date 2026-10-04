@@ -21,7 +21,7 @@ import type { AuthenticatedMetricsSample } from '../../types.ts'
 import { representativeMachineFixtures } from '../../testing/representative-machines.ts'
 import {
   AE_MISSING_METRIC_SENTINEL,
-  PER_ENTITY_FIELD_ORDER,
+  queryableEntityFields,
   SINGLE_ROW_FIELD_ORDER,
 } from '../cloudflare/field-map.ts'
 import { ROUTER_FIELD_NAMES } from '../../metric-descriptors.ts'
@@ -116,7 +116,7 @@ for (const name of FIXTURES_TO_CHECK) {
           serverId: SERVER_ID,
           family,
           entityIds,
-          metrics: PER_ENTITY_FIELD_ORDER[family],
+          metrics: queryableEntityFields(family),
           from: new Date(FROM_MS).toISOString(),
           to: new Date(TO_MS).toISOString(),
           resolutionSeconds: 3600,

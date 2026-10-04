@@ -369,6 +369,10 @@ export type PublicUrlsApplyHttpResult =
   | { status: 200; body: { ok: true; applied: true } }
   | { status: 500; body: { ok: false; applied: false; error: string } }
 
+/** What the owner sees when the server's helper never answered the apply. */
+export const PUBLIC_URLS_APPLY_TIMEOUT_MESSAGE =
+  'The server did not answer in time; check its status and try again'
+
 export function publicUrlsApplyWaitToResponse(
   result: PublicUrlsApplyWaitResult
 ): PublicUrlsApplyHttpResult {
@@ -381,7 +385,7 @@ export function publicUrlsApplyWaitToResponse(
         body: {
           ok: false,
           applied: false,
-          error: 'timeout waiting for daemon',
+          error: PUBLIC_URLS_APPLY_TIMEOUT_MESSAGE,
         },
       }
     case 'failed':

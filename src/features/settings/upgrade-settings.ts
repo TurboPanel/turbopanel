@@ -3,9 +3,9 @@
  *
  * Mirrors the server-metrics setting shape: one jsonb row keyed by a stable
  * name, read fresh on every call so a panel change applies without a
- * redeploy. On Workers `autoUpdate` is always effectively true and the
- * stored flag is ignored by the orchestrator phase. This module only stores
- * and validates; it does not enforce that override.
+ * redeploy. `autoUpdate` gates automatic runs on every runtime, Workers
+ * included (`shouldAutoStartRun` in `../upgrades/schedule.ts`). This module
+ * only stores and validates.
  */
 import { eq } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
@@ -33,9 +33,19 @@ export type UpgradeSettings = {
   }
 }
 
+/**
+ * Customer fleets update one server at a time (one batch per upgrade tick, 15
+ * minutes by default). A throwaway environment can start larger through
+ * `TURBOPANEL_UPGRADE_BATCH`; a value saved in the panel always wins.
+ */
+export const DEFAULT_UPGRADE_BATCH: UpgradeSettings['batch'] = {
+  mode: 'count',
+  value: 1,
+}
+
 export const DEFAULT_UPGRADE_SETTINGS: UpgradeSettings = {
   autoUpdate: false,
-  batch: { mode: 'percent', value: 100 },
+  batch: { ...DEFAULT_UPGRADE_BATCH },
   maintenanceWindow: {
     enabled: false,
     startMinute: 0,
@@ -61,10 +71,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
-function hasExactKeys(
-  record: Record<string, unknown>,
-  keys: readonly string[],
-): boolean {
+function hasExactKeys(record: Record<string, unknown>, keys: readonly string[]): boolean {
   const present = Object.keys(record)
   if (present.length !== keys.length) return false
   return keys.every((key) => Object.hasOwn(record, key))
@@ -80,6 +87,18 @@ function isValidBatchValue(mode: UpgradeBatchMode, value: unknown): boolean {
   return value >= COUNT_MIN && value <= COUNT_MAX
 }
 
+/**
+ * Parse `TURBOPANEL_UPGRADE_BATCH` (`count:5` or `percent:100`). Blank or
+ * anything outside the stored limits falls back to one server at a time.
+ */
+export function parseUpgradeBatchDefault(raw: string | undefined): UpgradeSettings['batch'] {
+  const match = /^(percent|count):(\d{1,5})$/.exec(raw?.trim() ?? '')
+  if (!match) return { ...DEFAULT_UPGRADE_BATCH }
+  const mode = match[1] as UpgradeBatchMode
+  const value = Number.parseInt(match[2], 10)
+  return isValidBatchValue(mode, value) ? { mode, value } : { ...DEFAULT_UPGRADE_BATCH }
+}
+
 function isValidWeekdays(value: unknown): value is number[] {
   if (!Array.isArray(value)) return false
   const seen = new Set<number>()
@@ -91,27 +110,13 @@ function isValidWeekdays(value: unknown): value is number[] {
   return true
 }
 
-function isIntegerInRange(
-  value: unknown,
-  min: number,
-  max: number,
-): value is number {
-  return typeof value === 'number' && Number.isInteger(value) &&
-    value >= min && value <= max
+function isIntegerInRange(value: unknown, min: number, max: number): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= min && value <= max
 }
 
-function isValidMaintenanceWindow(
-  value: unknown,
-): value is UpgradeSettings['maintenanceWindow'] {
+function isValidMaintenanceWindow(value: unknown): value is UpgradeSettings['maintenanceWindow'] {
   if (!isRecord(value)) return false
-  if (
-    !hasExactKeys(value, [
-      'enabled',
-      'startMinute',
-      'durationMinutes',
-      'weekdays',
-    ])
-  ) {
+  if (!hasExactKeys(value, ['enabled', 'startMinute', 'durationMinutes', 'weekdays'])) {
     return false
   }
   if (typeof value.enabled !== 'boolean') return false
@@ -123,9 +128,7 @@ function isValidMaintenanceWindow(
 }
 
 /** True when `value` is a complete upgrade-settings object. */
-export function isValidUpgradeSettings(
-  value: unknown,
-): value is UpgradeSettings {
+export function isValidUpgradeSettings(value: unknown): value is UpgradeSettings {
   if (!isRecord(value)) return false
   if (!hasExactKeys(value, ['autoUpdate', 'batch', 'maintenanceWindow'])) {
     return false
@@ -155,35 +158,36 @@ function copySettings(settings: UpgradeSettings): UpgradeSettings {
 /**
  * Return a detached copy with weekdays sorted, or `null` when invalid.
  */
-export function normalizeUpgradeSettings(
-  value: unknown,
-): UpgradeSettings | null {
+export function normalizeUpgradeSettings(value: unknown): UpgradeSettings | null {
   if (!isValidUpgradeSettings(value)) return null
   return copySettings(value)
 }
 
 /**
  * Read upgrade settings. An unset or invalid row falls back to
- * {@link DEFAULT_UPGRADE_SETTINGS}.
+ * {@link DEFAULT_UPGRADE_SETTINGS}, with `defaultBatch` (this environment's
+ * starting batch) in place of the built-in one.
  */
-export async function getUpgradeSettings(db: Db): Promise<UpgradeSettings> {
+export async function getUpgradeSettings(
+  db: Db,
+  defaultBatch: UpgradeSettings['batch'] = DEFAULT_UPGRADE_BATCH
+): Promise<UpgradeSettings> {
   const rows = await db
     .select({ value: setting.value })
     .from(setting)
     .where(eq(setting.key, UPGRADE_SETTINGS_KEY))
     .limit(1)
-  return normalizeUpgradeSettings(rows[0]?.value) ??
-    copySettings(DEFAULT_UPGRADE_SETTINGS)
+  return (
+    normalizeUpgradeSettings(rows[0]?.value) ??
+    copySettings({ ...DEFAULT_UPGRADE_SETTINGS, batch: defaultBatch })
+  )
 }
 
 /**
  * Persist upgrade settings. Rejects a value {@link isValidUpgradeSettings}
  * does not accept.
  */
-export async function setUpgradeSettings(
-  db: Db,
-  settings: UpgradeSettings,
-): Promise<void> {
+export async function setUpgradeSettings(db: Db, settings: UpgradeSettings): Promise<void> {
   const normalized = normalizeUpgradeSettings(settings)
   if (!normalized) {
     throw new TypeError('upgrade settings are invalid')

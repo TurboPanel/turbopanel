@@ -73,6 +73,19 @@ test('buildLicenseInstallCommand omits insecure TLS for public overlay HTTPS', (
   assertEquals(command.includes('curl -fsSLk'), false)
   assertEquals(command.includes('TURBOPANEL_INSECURE_TLS'), false)
   assertEquals(command.includes('TURBOPANEL_DL_BASE=https://turbopanel.dev/downloads/daemon'), true)
+  // The overlay serves unsigned builds: run.sh needs the explicit second opt-in.
+  assertEquals(command.includes('TURBOPANEL_DEV_ALLOW_UNSIGNED_MANIFEST=1'), true)
+})
+
+test('buildLicenseInstallCommand never opts into unsigned manifests without an overlay', () => {
+  const command = buildLicenseInstallCommand({
+    runtime: 'deno',
+    instanceUrl: 'https://panel.example.com',
+    licenseId: 'license-id',
+    licenseToken: 'token',
+  })
+  assertEquals(command.includes('TURBOPANEL_DL_BASE'), false)
+  assertEquals(command.includes('UNSIGNED'), false)
 })
 
 test('buildLicenseInstallCommand self-hosted Deno curls CDN with TURBOPANEL_HOST', () => {
@@ -223,7 +236,7 @@ test("formatInstallScriptCurlUrl keeps each environment's bare installer host", 
   }
 })
 
-test("buildLicenseInstallCommand curls the installer host for the instance's channel", () => {
+test("buildLicenseInstallCommand curls the installer host for the control plane's channel", () => {
   const base = {
     instanceUrl: 'https://turbopanel.app',
     licenseId: 'license-id',

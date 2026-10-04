@@ -4,6 +4,7 @@ import type { AppEnv } from '../../app/app.ts'
 import { resolveManagedSslMode } from '../../features/managed/ssl.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
+import { requireStepUpIfConfigured } from '../authn/step-up.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { getDaemonCellRegistry, getDb } from '../../db/connection.ts'
 import type { CommandQueue } from '../../features/commands/queue.ts'
@@ -32,7 +33,8 @@ import {
   rotatePrincipalPassword,
   USERNAME_IN_USE_ERROR,
 } from '../../features/principals/store.ts'
-import { loadRandomizedUsernamesDefault } from '../../features/managed/load-org-defaults.ts'
+import { loadPrincipalNamePolicy } from '../../features/managed/load-org-defaults.ts'
+import { resolveRequestedNameScheme } from '../../lib/principal-name-scheme.ts'
 import { assertDispatchInfrastructure } from '../servers/command-dispatch.ts'
 import { assertCanManageOr403, getOrgId, parseJsonBody, requireStringField } from '../shared.ts'
 import { assertServerDatacenterReady } from '../../features/net/datacenter-networks.ts'
@@ -106,6 +108,19 @@ import {
   writeManagedRowOptions,
 } from '../../features/managed/options.ts'
 import { findManagedBackupById, listManagedBackups } from '../../features/backups/backup-records.ts'
+import {
+  createBackupPolicyResponse,
+  deleteBackupPolicyResponse,
+  listBackupPoliciesResponse,
+  listBackupRunsResponse,
+  updateBackupPolicyResponse,
+} from './backup-policies.ts'
+import {
+  captureManagedBackupHost,
+  enqueueBackupsReconcile,
+} from '../../features/backups/reconcile.ts'
+import { insertManagedBackupPolicy } from '../../features/backups/policy-records.ts'
+import { defaultBackupSchedule } from '../../features/backups/schedules.ts'
 import {
   assertFailoverReplicaTransportAllowed,
   buildDisasterRecoveryQueuedResponse,
@@ -288,7 +303,7 @@ async function loadManagedRowScope(c: Context<AppEnv>) {
  * Fail-closed is preserved: on timeout, an offline server, a daemon without
  * `managed-health-v1`, or any error the gate runs on the stored observation
  * exactly as before. `force` never probes. Automatic failover does not come
- * through here and keeps using only stored, fresh observations.
+ * through here; its own event-time probe is `ha-fresh-standby.ts`.
  */
 async function assertManagedPromoteLagAllowed(
   c: Context<AppEnv>,
@@ -504,9 +519,14 @@ async function runManagedDeleteFanout(
   if (force) {
     // Hard-delete now: clear the runtime rows so `deleteProjectCascade`
     // stops gating on them, regardless of destroy outcomes. Report as
-    // deleted — the UI has nothing left to track.
+    // deleted — the UI has nothing left to track. The engine's backup
+    // policies cascade with the row, so its host gets the smaller set.
+    const backupHost = await captureManagedBackupHost(db, commandQueue, managedId)
     await clearPendingNullIdContainersForEnvironment(db, environmentId)
     await deleteManagedRuntimeRows(db, environmentId, managedId)
+    await enqueueBackupsReconcile(db, commandQueue, { actorType: 'user', actorId: userId }, [
+      backupHost,
+    ])
     return c.json(buildManagedDeleteHardResponse())
   }
 
@@ -619,6 +639,7 @@ async function insertManagedCreateTransaction(
   row: ManagedRow
   rootPassword: string
   prepared: PreparedManagedMemberApply[]
+  hasDefaultBackupPolicy: boolean
 }> {
   const { environmentId, ctx, serverId, name, rowOptions, initialDatabase, dataEncryptionSecrets } =
     params
@@ -646,16 +667,19 @@ async function insertManagedCreateTransaction(
   const owningOrgIds = await resolveManagedOwningOrganizationIds(tx, managedId, [serverId])
   await lockOrganizationsForUpdate(tx, owningOrgIds)
 
-  // Always suffixed regardless of the org randomized-usernames default: the
-  // exposed root login is `postgres_<11 rand>`/`root_<11 rand>`, never the
-  // engine's bare admin name — those stay platform-internal. The short
-  // `username` keeps the spec name for internal reference.
+  // Never plain, whatever the org scheme: the exposed root login is
+  // `postgres_<11 rand>`/`root_<11 rand>` (or fully random under the `random`
+  // scheme), never the engine's bare admin name — those stay
+  // platform-internal. The short `username` keeps the spec name for internal
+  // reference.
+  const { defaultScheme } = await loadPrincipalNamePolicy(tx, ctx.organizationId)
+  const rootScheme = defaultScheme === 'plain' ? 'partial' : defaultScheme
   const rootUsername = await resolveManagedAppliedUsername(
     tx,
     owningOrgIds,
     ctx.spec.rootUsername,
     ctx.spec.userOperations.identifier,
-    { suffix: true }
+    { scheme: rootScheme }
   )
 
   const { principalId, password } = await createManagedPrincipal(tx, dataEncryptionSecrets, {
@@ -663,6 +687,7 @@ async function insertManagedCreateTransaction(
     provider: ctx.spec.principalProvider,
     username: ctx.spec.rootUsername,
     appliedUsername: rootUsername,
+    nameScheme: rootScheme,
     metadata: {
       managedRoot: true,
       engine: ctx.spec.engine,
@@ -702,11 +727,40 @@ async function insertManagedCreateTransaction(
     throw new ManagedPrepareRollbackError(prepared)
   }
 
+  const hasDefaultBackupPolicy = await insertDefaultBackupPolicy(tx, ctx, managedId)
+
   return {
     row,
     rootPassword: password,
     prepared: prepared.members,
+    hasDefaultBackupPolicy,
   }
+}
+
+/**
+ * Every new managed database gets one daily backup policy, keep the engine's
+ * default (owner decision 2026-09-30; storage volumes stay opt-in). Created in
+ * the engine's own transaction so a rolled-back create leaves no policy, and
+ * marked automatic by a null `created_by`. Existing engines are not backfilled.
+ */
+async function insertDefaultBackupPolicy(
+  tx: NonNullable<ReturnType<typeof getDb>>,
+  ctx: ManagedContext,
+  managedId: string
+): Promise<boolean> {
+  const backup = ctx.spec.backup
+  if (!backup) return false
+  await insertManagedBackupPolicy(tx, {
+    organizationId: ctx.organizationId,
+    managedId,
+    name: 'Daily',
+    schedule: defaultBackupSchedule(managedId),
+    timezone: null,
+    retentionKeep: Math.min(backup.defaultRetentionKeep, backup.maxRetentionKeep),
+    isEnabled: true,
+    createdBy: null,
+  })
+  return true
 }
 
 type PreparedManagedApply = {
@@ -870,6 +924,14 @@ async function createManagedAndEnqueueApply(
   if (enqueued instanceof Response) {
     await deleteManagedCompensation(db, created.row.id, environmentId)
     return enqueued
+  }
+
+  // Only after the create stuck: a compensated create cascades its policy away
+  // and must never have reached the host.
+  if (created.hasDefaultBackupPolicy) {
+    await enqueueBackupsReconcile(db, commandQueue, { actorType: 'user', actorId: userId }, [
+      createServerId,
+    ])
   }
 
   const primary = pickPrimaryCommandResult(enqueued)
@@ -1324,6 +1386,9 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     if (scope instanceof Response) return scope
     const { db, environmentId, auth, row } = scope
 
+    const stepUp = await requireStepUpIfConfigured(c, auth.organizationId, 'managed.delete')
+    if (stepUp) return stepUp
+
     const busy = assertManagedNotBusy(c, row.status)
     if (busy) return busy
 
@@ -1478,14 +1543,19 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     if (!options) return c.json({ error: 'Invalid managed options' }, 400)
 
     const residual = parseManagedResidual(row.metadata)
-    const randomizeSuffix = await loadRandomizedUsernamesDefault(db, ctx.organizationId)
+    // The org policy picks the scheme (and refuses a locked-out choice) before
+    // any name is validated: the scheme decides how long the typed name may be.
+    const policy = await loadPrincipalNamePolicy(db, ctx.organizationId)
+    const schemeChoice = resolveRequestedNameScheme(policy, body.nameScheme)
+    if (!schemeChoice.ok) return c.json({ error: schemeChoice.error }, schemeChoice.status)
+    const nameScheme = schemeChoice.scheme
     const fields = parseManagedUserCreateFields(
       c,
       ctx,
       body,
       options,
       residual.rootUsername,
-      randomizeSuffix
+      nameScheme
     )
     if (fields instanceof Response) return fields
     const { username, databases, privileges } = fields
@@ -1517,27 +1587,26 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       })
       const owningOrgIds = await resolveManagedOwningOrganizationIds(tx, row.id, [targetServerId])
       await lockOrganizationsForUpdate(tx, owningOrgIds)
-      // With the org randomized-usernames default on, the applied login gets a
-      // random `_<11>` suffix (collision-free by construction); off, the
-      // operator-chosen name is the login and must be free org-wide.
-      let appliedUsername = username
-      if (randomizeSuffix) {
-        appliedUsername = await resolveManagedAppliedUsername(
-          tx,
-          owningOrgIds,
-          username,
-          ctx.spec.userOperations.identifier,
-          { suffix: true }
-        )
-      } else if (await isManagedUsernameTaken(tx, owningOrgIds, username)) {
+      // `plain`: the operator-typed name is the login and must be free
+      // org-wide. `partial` / `random`: the server derives a collision-free
+      // system name; the typed name stays the display name.
+      if (nameScheme === 'plain' && (await isManagedUsernameTaken(tx, owningOrgIds, username))) {
         return { ok: false as const, error: USERNAME_IN_USE_ERROR }
       }
+      const appliedUsername = await resolveManagedAppliedUsername(
+        tx,
+        owningOrgIds,
+        username,
+        ctx.spec.userOperations.identifier,
+        { scheme: nameScheme }
+      )
 
       const created = await createManagedPrincipal(tx, dataEncryptionSecrets, {
         managedId: row.id,
         provider: ctx.spec.principalProvider,
         username,
         appliedUsername,
+        nameScheme,
         metadata: {
           engine: ctx.spec.engine,
           databases,
@@ -1589,6 +1658,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
         id: principalId,
         username,
         appliedUsername: userCreate.appliedUsername,
+        nameScheme,
         databases,
         privileges,
         createdAt: createdUser?.createdAt ?? new Date().toISOString(),
@@ -1895,6 +1965,13 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const databaseName = decodeURIComponent(c.req.param('databaseName'))
     const auth = await authorizeManagedRequest(c, db, environmentId, 'manage')
     if (auth instanceof Response) return auth
+
+    const stepUp = await requireStepUpIfConfigured(
+      c,
+      auth.organizationId,
+      'managed.database.delete'
+    )
+    if (stepUp) return stepUp
 
     const ctx = await loadManagedContext(c, db, environmentId, auth.organizationId)
     if (ctx instanceof Response) return ctx
@@ -2684,6 +2761,42 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       commandId: enqueued.commandId,
       serverId: enqueued.serverId,
     })
+  })
+
+  router.get('/environments/:id/managed/backup-policies', async (c) => {
+    const scope = await loadManagedContextScope(c)
+    if (scope instanceof Response) return scope
+    const row = await findManagedForEnvironment(scope.db, scope.environmentId)
+    if (!row) return c.json({ policies: [] })
+    return await listBackupPoliciesResponse(c, scope.db, row.id)
+  })
+
+  router.post('/environments/:id/managed/backup-policies', async (c) => {
+    const scope = await loadManagedRowScope(c)
+    if (scope instanceof Response) return scope
+    const body = await parseJsonBody(c)
+    if (body instanceof Response) return body
+    return await createBackupPolicyResponse(c, scope, body)
+  })
+
+  router.patch('/environments/:id/managed/backup-policies/:policyId', async (c) => {
+    const scope = await loadManagedRowScope(c)
+    if (scope instanceof Response) return scope
+    const body = await parseJsonBody(c)
+    if (body instanceof Response) return body
+    return await updateBackupPolicyResponse(c, scope, c.req.param('policyId'), body)
+  })
+
+  router.delete('/environments/:id/managed/backup-policies/:policyId', async (c) => {
+    const scope = await loadManagedRowScope(c)
+    if (scope instanceof Response) return scope
+    return await deleteBackupPolicyResponse(c, scope, c.req.param('policyId'))
+  })
+
+  router.get('/environments/:id/managed/backup-policies/:policyId/runs', async (c) => {
+    const scope = await loadManagedRowScope(c)
+    if (scope instanceof Response) return scope
+    return await listBackupRunsResponse(c, scope.db, scope.row.id, c.req.param('policyId'))
   })
 
   router.get('/organizations/:id/managed', async (c) => {

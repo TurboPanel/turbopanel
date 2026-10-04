@@ -1,53 +1,50 @@
-import type { Context } from "hono";
-import type { AppEnv } from "../../app/app.ts";
+import type { Context } from 'hono'
+import type { AppEnv } from '../../app/app.ts'
 import type {
   ManagedBackupCommandPayload,
   ManagedRestoreCommandPayload,
-} from "../../contracts/commands/schemas.ts";
-import type { CommandQueue } from "../../features/commands/queue.ts";
-import type { Db } from "../../db/connection.ts";
-import type { ManagedContext } from "./context.ts";
-import { enqueueTypedCommand } from "../../features/managed/apply-prepare.ts";
-import type { ManagedRowOptions } from "../../features/managed/options.ts";
-import type { ManagedBackupRecord } from "../../features/backups/backup-records.ts";
+} from '../../contracts/commands/schemas.ts'
+import type { CommandQueue } from '../../features/commands/queue.ts'
+import type { Db } from '../../db/connection.ts'
+import type { ManagedContext } from './context.ts'
+import { enqueueTypedCommand } from '../../features/managed/apply-prepare.ts'
+import type { ManagedRowOptions } from '../../features/managed/options.ts'
+import type { ManagedBackupRecord } from '../../features/backups/backup-records.ts'
 
 /** Mirrors `COMMAND_TIMEOUT_MS['managed.backup' | 'managed.restore']` in `../../features/commands/consumer.ts`. */
-const BACKUP_COMMAND_EXPIRES_MS = 1_800_000;
+const BACKUP_COMMAND_EXPIRES_MS = 1_800_000
 
 export type ManagedBackupApiError =
-  | { kind: "managed_backup_unsupported" }
-  | { kind: "backup_not_found" };
+  { kind: 'managed_backup_unsupported' } | { kind: 'backup_not_found' }
 
 export function mapManagedBackupApiError(
   c: Context<AppEnv>,
-  error: ManagedBackupApiError,
+  error: ManagedBackupApiError
 ): Response {
   switch (error.kind) {
-    case "managed_backup_unsupported":
-      return c.json({ error: "managed_backup_unsupported" }, 400);
-    case "backup_not_found":
-      return c.json({ error: "backup_not_found" }, 404);
+    case 'managed_backup_unsupported':
+      return c.json({ error: 'managed_backup_unsupported' }, 400)
+    case 'backup_not_found':
+      return c.json({ error: 'backup_not_found' }, 404)
   }
 }
 
-export function isManagedBackupApiError(
-  value: unknown,
-): value is ManagedBackupApiError {
-  return typeof value === "object" && value !== null && "kind" in value;
+export function isManagedBackupApiError(value: unknown): value is ManagedBackupApiError {
+  return typeof value === 'object' && value !== null && 'kind' in value
 }
 
 /** `bk_<32 hex chars>` — satisfies the daemon/instance shared `SAFE_BACKUP_ID_RE` charset. */
 function generateBackupId(): string {
-  return `bk_${crypto.randomUUID().replaceAll("-", "")}`;
+  return `bk_${crypto.randomUUID().replaceAll('-', '')}`
 }
 
 /** Engine system schemas that must never be chosen for a default backup. */
 const MYSQL_FAMILY_SYSTEM_SCHEMAS = new Set([
-  "mysql",
-  "information_schema",
-  "performance_schema",
-  "sys",
-]);
+  'mysql',
+  'information_schema',
+  'performance_schema',
+  'sys',
+])
 
 /**
  * Body `database` must already be a database configured on this managed
@@ -57,92 +54,84 @@ const MYSQL_FAMILY_SYSTEM_SCHEMAS = new Set([
 export function resolveBackupDatabase(
   options: ManagedRowOptions,
   requested: unknown,
-  engine?: string,
+  engine?: string
 ): string | null {
   if (requested !== undefined) {
-    if (
-      typeof requested !== "string" || !options.databases.includes(requested)
-    ) {
-      return null;
+    if (typeof requested !== 'string' || !options.databases.includes(requested)) {
+      return null
     }
-    return requested;
+    return requested
   }
-  const skipSystem = engine === "mysql" || engine === "mariadb";
+  const skipSystem = engine === 'mysql' || engine === 'mariadb'
   for (const name of options.databases) {
     if (skipSystem && MYSQL_FAMILY_SYSTEM_SCHEMAS.has(name.toLowerCase())) {
-      continue;
+      continue
     }
-    return name;
+    return name
   }
-  return null;
+  return null
 }
 
 /** Clamp `settings.backups.retentionKeep` (or the engine default) to the engine's `maxRetentionKeep`. */
-function resolveRetentionKeep(
-  ctx: ManagedContext,
-  options: ManagedRowOptions,
-): number | undefined {
-  const backup = ctx.spec.backup;
-  if (!backup) return undefined;
-  const requested = options.settings.backups?.retentionKeep ??
-    backup.defaultRetentionKeep;
-  return Math.min(requested, backup.maxRetentionKeep);
+function resolveRetentionKeep(ctx: ManagedContext, options: ManagedRowOptions): number | undefined {
+  const backup = ctx.spec.backup
+  if (!backup) return undefined
+  const requested = options.settings.backups?.retentionKeep ?? backup.defaultRetentionKeep
+  return Math.min(requested, backup.maxRetentionKeep)
 }
 
 export function buildManagedBackupCreatePayload(
   ctx: ManagedContext,
   managedId: string,
   options: ManagedRowOptions,
-  database: string,
-):
-  | { payload: ManagedBackupCommandPayload; backupId: string }
-  | ManagedBackupApiError {
-  const backup = ctx.spec.backup;
-  if (!backup) return { kind: "managed_backup_unsupported" };
+  database: string
+): { payload: ManagedBackupCommandPayload; backupId: string } | ManagedBackupApiError {
+  const backup = ctx.spec.backup
+  if (!backup) return { kind: 'managed_backup_unsupported' }
 
-  const backupId = generateBackupId();
+  const backupId = generateBackupId()
   const payload: ManagedBackupCommandPayload = {
     managedId,
     engine: ctx.spec.engine,
-    action: "create",
+    action: 'create',
     backupId,
     artifactExtension: backup.artifactExtension,
-    scope: "database",
+    scope: 'database',
     database,
-  };
-  const retentionKeep = resolveRetentionKeep(ctx, options);
-  if (retentionKeep !== undefined) payload.retentionKeep = retentionKeep;
+  }
+  const retentionKeep = resolveRetentionKeep(ctx, options)
+  if (retentionKeep !== undefined) payload.retentionKeep = retentionKeep
 
-  return { payload, backupId };
+  return { payload, backupId }
 }
 
 export function buildManagedBackupDeletePayload(
   ctx: ManagedContext,
   managedId: string,
-  record: ManagedBackupRecord,
+  record: ManagedBackupRecord
 ): { payload: ManagedBackupCommandPayload } | ManagedBackupApiError {
-  const backup = ctx.spec.backup;
-  if (!backup) return { kind: "managed_backup_unsupported" };
+  const backup = ctx.spec.backup
+  if (!backup) return { kind: 'managed_backup_unsupported' }
 
   const payload: ManagedBackupCommandPayload = {
     managedId,
     engine: ctx.spec.engine,
-    action: "delete",
+    action: 'delete',
     backupId: record.id,
     artifactExtension: backup.artifactExtension,
-    scope: record.database !== undefined ? "database" : "instance",
-  };
-  if (record.database !== undefined) payload.database = record.database;
-  return { payload };
+    scope: record.database !== undefined ? 'database' : 'instance',
+  }
+  if (record.database !== undefined) payload.database = record.database
+  return { payload }
 }
 
 export function buildManagedRestorePayload(
   ctx: ManagedContext,
   managedId: string,
-  record: ManagedBackupRecord,
+  record: ManagedBackupRecord
 ): { payload: ManagedRestoreCommandPayload } | ManagedBackupApiError {
-  const backup = ctx.spec.backup;
-  if (!backup) return { kind: "managed_backup_unsupported" };
+  const backup = ctx.spec.backup
+  if (!backup) return { kind: 'managed_backup_unsupported' }
 
   const payload: ManagedRestoreCommandPayload = {
     managedId,
@@ -151,9 +140,13 @@ export function buildManagedRestorePayload(
     artifactExtension: backup.artifactExtension,
     checksum: record.checksum,
     sizeBytes: record.sizeBytes,
-  };
-  if (record.database !== undefined) payload.database = record.database;
-  return { payload };
+  }
+  if (record.database !== undefined) payload.database = record.database
+  // A scheduled backup lives in its own policy directory on the host, so the
+  // daemon needs the policy id to find it. It comes from the stored row, never
+  // from the request.
+  if (record.retentionId !== undefined) payload.policyId = record.retentionId
+  return { payload }
 }
 
 /**
@@ -166,21 +159,18 @@ export async function enqueueManagedBackup(
   db: Db,
   commandQueue: CommandQueue,
   params: {
-    userId: string;
-    serverId: string;
-    payload: ManagedBackupCommandPayload;
-  },
-): Promise<
-  | { ok: true; commandId: string; status: "queued"; serverId: string }
-  | Response
-> {
+    userId: string
+    serverId: string
+    payload: ManagedBackupCommandPayload
+  }
+): Promise<{ ok: true; commandId: string; status: 'queued'; serverId: string } | Response> {
   return enqueueTypedCommand(c, db, commandQueue, {
     userId: params.userId,
     serverId: params.serverId,
-    type: "managed.backup",
+    type: 'managed.backup',
     payload: params.payload,
     expiresAtMs: BACKUP_COMMAND_EXPIRES_MS,
-  });
+  })
 }
 
 /**
@@ -192,22 +182,19 @@ export async function enqueueManagedRestore(
   db: Db,
   commandQueue: CommandQueue,
   params: {
-    userId: string;
-    serverId: string;
-    managedId: string;
-    payload: ManagedRestoreCommandPayload;
-  },
-): Promise<
-  | { ok: true; commandId: string; status: "queued"; serverId: string }
-  | Response
-> {
+    userId: string
+    serverId: string
+    managedId: string
+    payload: ManagedRestoreCommandPayload
+  }
+): Promise<{ ok: true; commandId: string; status: 'queued'; serverId: string } | Response> {
   return enqueueTypedCommand(c, db, commandQueue, {
     userId: params.userId,
     serverId: params.serverId,
-    type: "managed.restore",
+    type: 'managed.restore',
     payload: params.payload,
     expiresAtMs: BACKUP_COMMAND_EXPIRES_MS,
     managedId: params.managedId,
     setApplying: true,
-  });
+  })
 }

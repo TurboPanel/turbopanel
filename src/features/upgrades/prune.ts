@@ -4,7 +4,7 @@
  *
  * The orchestrator (not this file) writes `upgrade.counts` when a run
  * finishes. That summary is what history keeps after these deletes remove
- * old `upgradestep` rows.
+ * old `stage` rows.
  *
  * Three capped deletes per call, oldest first, same shape as
  * `sweepExpiredCommandDispatch` / `sweepExpiredWebhookDeliveries`:
@@ -18,51 +18,51 @@
  *
  * Returns counts for the caller to trace. No logger of its own.
  */
-import { sql } from "drizzle-orm";
-import type { Db } from "../../db/connection.ts";
-import { upgrade, upgradeStep } from "../../db/schema.ts";
+import { sql } from 'drizzle-orm'
+import type { Db } from '../../db/connection.ts'
+import { upgrade, stage } from '../../db/schema.ts'
 import {
   UPGRADE_STEP_DONE_STATUSES,
   UPGRADE_STEP_FAILURE_STATUSES,
   UPGRADE_TERMINAL_STATUSES,
-} from "./vocabulary.ts";
+} from './vocabulary.ts'
 
 /** Default age of a `done` / `skipped` step before it can be deleted. */
-export const UPGRADE_STEP_DONE_RETENTION_DAYS = 14;
+export const UPGRADE_STEP_DONE_RETENTION_DAYS = 14
 
 /** Age of a failed step before it can be deleted. */
-export const UPGRADE_STEP_FAILURE_RETENTION_DAYS = 90;
+export const UPGRADE_STEP_FAILURE_RETENTION_DAYS = 90
 
 /** Age of a terminal run before it can be deleted. */
-export const UPGRADE_RUN_RETENTION_DAYS = 365;
+export const UPGRADE_RUN_RETENTION_DAYS = 365
 
 /** Newest runs kept even when they are older than {@link UPGRADE_RUN_RETENTION_DAYS}. */
-export const UPGRADE_RUN_KEEP_NEWEST = 50;
+export const UPGRADE_RUN_KEEP_NEWEST = 50
 
 /** Rows removed per delete inside one call. */
-export const UPGRADE_PRUNE_BATCH_LIMIT = 200;
+export const UPGRADE_PRUNE_BATCH_LIMIT = 200
 
-const PRUNE_LIMIT_MAX = 1000;
-const MS_PER_DAY = 24 * 60 * 60 * 1000;
+const PRUNE_LIMIT_MAX = 1000
+const MS_PER_DAY = 24 * 60 * 60 * 1000
 
 export type UpgradePruneCounts = {
-  doneSteps: number;
-  failedSteps: number;
-  runs: number;
-};
+  doneSteps: number
+  failedSteps: number
+  runs: number
+}
 
 export type PruneUpgradeHistoryOpts = {
-  limit?: number;
-  now?: string;
-  doneRetentionDays?: number;
-  failureRetentionDays?: number;
-  runRetentionDays?: number;
-  keepNewestRuns?: number;
-};
+  limit?: number
+  now?: string
+  doneRetentionDays?: number
+  failureRetentionDays?: number
+  runRetentionDays?: number
+  keepNewestRuns?: number
+}
 
 /** Clamp a batch cap the way the other maintenance sweeps do. */
 export function clampUpgradePruneLimit(limit: number): number {
-  return Math.min(Math.max(Math.trunc(limit), 1), PRUNE_LIMIT_MAX);
+  return Math.min(Math.max(Math.trunc(limit), 1), PRUNE_LIMIT_MAX)
 }
 
 /**
@@ -70,55 +70,53 @@ export function clampUpgradePruneLimit(limit: number): number {
  * falls back to {@link UPGRADE_STEP_DONE_RETENTION_DAYS}.
  */
 export function parseUpgradeStepRetentionDays(raw: string | undefined): number {
-  if (raw === undefined || raw.trim() === "") {
-    return UPGRADE_STEP_DONE_RETENTION_DAYS;
+  if (raw === undefined || raw.trim() === '') {
+    return UPGRADE_STEP_DONE_RETENTION_DAYS
   }
-  const parsed = Number.parseInt(raw, 10);
+  const parsed = Number.parseInt(raw, 10)
   if (!Number.isInteger(parsed) || parsed < 1 || parsed > 3650) {
-    return UPGRADE_STEP_DONE_RETENTION_DAYS;
+    return UPGRADE_STEP_DONE_RETENTION_DAYS
   }
-  return parsed;
+  return parsed
 }
 
 function cutoffIso(now: string, days: number): string {
-  return new Date(Date.parse(now) - days * MS_PER_DAY).toISOString();
+  return new Date(Date.parse(now) - days * MS_PER_DAY).toISOString()
 }
 
 function quotedList(values: readonly string[]): string {
-  return values.map((value) => `'${value}'`).join(", ");
+  return values.map((value) => `'${value}'`).join(', ')
 }
 
 async function deleteOldSteps(
   db: Db,
   statuses: readonly string[],
   cutoff: string,
-  limit: number,
+  limit: number
 ): Promise<number> {
   const deleted = await db
-    .delete(upgradeStep)
+    .delete(stage)
     .where(
-      sql`${upgradeStep.id} in (
-        select step.id from ${upgradeStep} step
+      sql`${stage.id} in (
+        select step.id from ${stage} step
         inner join ${upgrade} parent on parent.id = step.upgrade_id
         where step.status in (${sql.raw(quotedList(statuses))})
           and step.updated_at < ${cutoff}::timestamptz
-          and parent.status in (${
-        sql.raw(quotedList(UPGRADE_TERMINAL_STATUSES))
-      })
+          and parent.status in (${sql.raw(quotedList(UPGRADE_TERMINAL_STATUSES))})
           and parent.counts is not null
         order by step.updated_at
         limit ${limit}
-      )`,
+      )`
     )
-    .returning({ id: upgradeStep.id });
-  return deleted.length;
+    .returning({ id: stage.id })
+  return deleted.length
 }
 
 async function deleteOldRuns(
   db: Db,
   cutoff: string,
   limit: number,
-  keepNewest: number,
+  keepNewest: number
 ): Promise<number> {
   const deleted = await db
     .delete(upgrade)
@@ -134,10 +132,10 @@ async function deleteOldRuns(
           )
         order by created_at
         limit ${limit}
-      )`,
+      )`
     )
-    .returning({ id: upgrade.id });
-  return deleted.length;
+    .returning({ id: upgrade.id })
+  return deleted.length
 }
 
 /**
@@ -145,33 +143,27 @@ async function deleteOldRuns(
  */
 export async function pruneUpgradeHistory(
   db: Db,
-  opts: PruneUpgradeHistoryOpts = {},
+  opts: PruneUpgradeHistoryOpts = {}
 ): Promise<UpgradePruneCounts> {
-  const limit = clampUpgradePruneLimit(opts.limit ?? UPGRADE_PRUNE_BATCH_LIMIT);
-  const now = opts.now ?? new Date().toISOString();
-  const doneDays = opts.doneRetentionDays ?? UPGRADE_STEP_DONE_RETENTION_DAYS;
-  const failureDays = opts.failureRetentionDays ??
-    UPGRADE_STEP_FAILURE_RETENTION_DAYS;
-  const runDays = opts.runRetentionDays ?? UPGRADE_RUN_RETENTION_DAYS;
-  const keepNewest = opts.keepNewestRuns ?? UPGRADE_RUN_KEEP_NEWEST;
+  const limit = clampUpgradePruneLimit(opts.limit ?? UPGRADE_PRUNE_BATCH_LIMIT)
+  const now = opts.now ?? new Date().toISOString()
+  const doneDays = opts.doneRetentionDays ?? UPGRADE_STEP_DONE_RETENTION_DAYS
+  const failureDays = opts.failureRetentionDays ?? UPGRADE_STEP_FAILURE_RETENTION_DAYS
+  const runDays = opts.runRetentionDays ?? UPGRADE_RUN_RETENTION_DAYS
+  const keepNewest = opts.keepNewestRuns ?? UPGRADE_RUN_KEEP_NEWEST
 
   const doneSteps = await deleteOldSteps(
     db,
     UPGRADE_STEP_DONE_STATUSES,
     cutoffIso(now, doneDays),
-    limit,
-  );
+    limit
+  )
   const failedSteps = await deleteOldSteps(
     db,
     UPGRADE_STEP_FAILURE_STATUSES,
     cutoffIso(now, failureDays),
-    limit,
-  );
-  const runs = await deleteOldRuns(
-    db,
-    cutoffIso(now, runDays),
-    limit,
-    keepNewest,
-  );
-  return { doneSteps, failedSteps, runs };
+    limit
+  )
+  const runs = await deleteOldRuns(db, cutoffIso(now, runDays), limit, keepNewest)
+  return { doneSteps, failedSteps, runs }
 }

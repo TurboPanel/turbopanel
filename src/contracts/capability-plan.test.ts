@@ -1,6 +1,7 @@
 import { assertEquals, assertNotEquals } from '@std/assert'
 import {
   computeMetricsCapabilityPlanHash,
+  countHostLevelSignals,
   inferServerMachineClass,
   isServerMachineClass,
   type MetricsCapabilityPlan,
@@ -174,9 +175,9 @@ test('metricsCapabilityPlanFromTierEntitlements: entry-tier carve-outs apply onl
     'physical',
     'hosted'
   )
-  assertEquals(entry.extraFilesystemSlots, 0)
-  assertEquals(entry.physicalHardwareSignalSlots, 11)
-  assertEquals(entry.managedDockerEnabled, false)
+  assertEquals(entry.extraFilesystemSlots, 1)
+  assertEquals(entry.physicalHardwareSignalSlots, 19)
+  assertEquals(entry.managedDockerEnabled, true)
 
   const standard = metricsCapabilityPlanFromTierEntitlements(
     STANDARD_TIER_ENTITLEMENTS,
@@ -195,7 +196,34 @@ test('metricsCapabilityPlanFromTierEntitlements: virtual machines still get zero
     'hosted'
   )
   assertEquals(plan.physicalHardwareSignalSlots, 0)
-  assertEquals(plan.managedDockerEnabled, false)
+  assertEquals(plan.managedDockerEnabled, true)
+})
+
+test('inferServerMachineClass: GPU-derived signals never prove a machine physical', () => {
+  const gpuOnly = {
+    hardwareSignals: [
+      { signalId: 'signal:gpu:0x1234-bochs:temperature' },
+      { signalId: 'signal:gpu:0x1234-bochs:power' },
+    ],
+  }
+  assertEquals(inferServerMachineClass(gpuOnly), 'virtual')
+  assertEquals(
+    inferServerMachineClass({
+      hardwareSignals: [...gpuOnly.hardwareSignals, { signalId: 'signal:coretemp:Package id 0' }],
+    }),
+    'physical'
+  )
+  assertEquals(
+    countHostLevelSignals([
+      { signalId: 'signal:gpu:a:power' },
+      { signalId: 'signal:block:sda:temperature' },
+    ]),
+    1
+  )
+  assertEquals(
+    inferServerMachineClass(undefined, countHostLevelSignals(gpuOnly.hardwareSignals)),
+    'virtual'
+  )
 })
 
 test('resolveMetricsCapabilityPlan: a tier-derived base replaces the platform default', () => {

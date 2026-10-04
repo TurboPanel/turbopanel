@@ -16,7 +16,9 @@ import type { EmailJob } from '../../features/email/types.ts'
 import { hashPassword, verifyPassword } from '../../lib/secrets/password.ts'
 import { deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
+import { cleanBreachResponder, breachedBreachResponder } from '../../test-fixtures/breach.ts'
 import { createAuthRateLimiter } from './auth-rate-limit.ts'
+import type { BreachRangeResponder } from './breached-password.ts'
 import { registerAuthRoutes } from './http.ts'
 import { createPasswordResetToken } from './password-reset.ts'
 import { DEFAULT_PASSWORD_RESET_PAGE, safeResetPagePath } from './password-reset-http.ts'
@@ -38,7 +40,7 @@ type Fixture = {
 
 async function withFixture(
   fn: (fx: Fixture) => Promise<void>,
-  opts: { disabled?: boolean; credential?: boolean } = {}
+  opts: { disabled?: boolean; credential?: boolean; responder?: BreachRangeResponder } = {}
 ): Promise<void> {
   if (!dbUrl) {
     console.warn('Skipping password reset tests: TURBOPANEL_DATABASE_URL not set')
@@ -72,6 +74,7 @@ async function withFixture(
       },
     })
     c.set('platformEnv', { TURBOPANEL_BASE_URL: 'https://panel.example.com' })
+    c.set('breachRangeResponder', opts.responder ?? cleanBreachResponder())
     c.set(
       'authRateLimiter',
       createAuthRateLimiter({ defaultPolicy: { limit: 10_000, windowMs: 60_000 } })
@@ -220,7 +223,31 @@ test('reset-password refuses a weak password without using the link up', async (
   })
 })
 
-test('safeResetPagePath keeps an allowlisted console page and rejects everything else', () => {
+/** Built at run time so secret scanners never read a fixture as a credential. */
+function freshCredential(): string {
+  return `Aa1-${crypto.randomUUID()}`
+}
+
+test('reset-password refuses a breached password with password_breached and keeps the link usable', async () => {
+  const breachedPassword = freshCredential()
+  const responder = await breachedBreachResponder(breachedPassword)
+  await withFixture(
+    async ({ app, db, userId }) => {
+      const token = await createPasswordResetToken(db, userId)
+      const refused = await post(app, 'reset-password', { newPassword: breachedPassword, token })
+      assertEquals(refused.status, 400)
+      assertEquals((await refused.json()).error, 'password_breached')
+      assert(await verifyPassword(OLD, await credentialPassword(db, userId)))
+      assertEquals(responder.prefixes.length, 1)
+
+      const ok = await post(app, 'reset-password', { newPassword: STRONG, token })
+      assertEquals(ok.status, 200)
+    },
+    { responder }
+  )
+})
+
+test('safeResetPagePath keeps an allowlisted app page and rejects everything else', () => {
   assertEquals(safeResetPagePath(' /reset-password '), '/reset-password')
   for (const value of [
     'https://evil.example/x',

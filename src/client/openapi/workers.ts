@@ -11,7 +11,7 @@ import { getClientOpenApiSpec } from './index.ts'
 const BILLING_TAG = {
   name: 'Billing',
   description:
-    'Hosted billing: catalogue, projected subscription, Checkout, Customer Portal, seat and tier changes. Hosted (Workers) only; absent on self-hosted. `503 billing_not_configured` until Stripe is configured.',
+    'Billing on TurboPanel High Availability: catalogue, projected subscription, Checkout, Customer Portal, license and tier changes. TurboPanel High Availability only; absent on self-hosted. `503 billing_not_configured` until Stripe is configured.',
 } as const
 
 type ClientSpec = {
@@ -29,9 +29,7 @@ export function getWorkersClientOpenApiSpec(serverUrl: string): object {
   } else {
     spec.tags.splice(licensesIndex + 1, 0, BILLING_TAG)
   }
-  const infrastructure = spec['x-tagGroups'].find((group) =>
-    group.name === 'Infrastructure'
-  )
+  const infrastructure = spec['x-tagGroups'].find((group) => group.name === 'Infrastructure')
   if (infrastructure && !infrastructure.tags.includes('Billing')) {
     infrastructure.tags.push('Billing')
   }

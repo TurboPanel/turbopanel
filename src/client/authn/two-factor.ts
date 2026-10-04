@@ -850,3 +850,51 @@ export async function verifyTwoFactorSignIn(
     return { status: 'ok' as const, userId }
   })
 }
+
+export type VerifyTotpForStepUpResult = 'ok' | 'invalid' | 'too_many_attempts'
+
+/**
+ * Check one authenticator code for a person who is already signed in (step-up
+ * re-authentication). It shares the sign-in lockout and replay ledger: five
+ * failures inside {@link TWO_FACTOR_LOCKOUT_WINDOW_MS} lock the second factor
+ * (`2fa-attempts:<userId>`), and a code at or before the last accepted TOTP
+ * step is refused (`2fa-used:<userId>`). Backup codes are not accepted here.
+ */
+export async function verifyTotpForStepUp(
+  db: Db,
+  params: {
+    userId: string
+    code: string
+    dataEncryptionSecrets: DerivedSecretsConfig
+    nowMs?: number
+  }
+): Promise<VerifyTotpForStepUpResult> {
+  const nowMs = params.nowMs ?? Date.now()
+  const { userId } = params
+  return await db.transaction(async (tx) => {
+    const row = await lockTwoFactorRow(tx, userId)
+    const { attempts, expiresAt } = await readAttemptCount(tx, userId, nowMs)
+    if (attempts >= MAX_2FA_ATTEMPTS) return 'too_many_attempts' as const
+
+    const used = await readUsedState(tx, userId, nowMs)
+    const step = row?.isVerified
+      ? await matchTotpStep(
+          decodeBase32(await decryptSecret(params.dataEncryptionSecrets, row.secret)),
+          params.code,
+          nowMs / 1000
+        )
+      : null
+    const fresh = step !== null && (used.totpStep === null || step > used.totpStep)
+    if (!fresh) {
+      const nextAttempts = attempts + 1
+      await recordFailedAttempt(tx, userId, nextAttempts, expiresAt)
+      return nextAttempts >= MAX_2FA_ATTEMPTS
+        ? ('too_many_attempts' as const)
+        : ('invalid' as const)
+    }
+
+    await resetTwoFactorAttempts(tx, userId)
+    await writeUsedState(tx, userId, { ...used, totpStep: step }, nowMs)
+    return 'ok' as const
+  })
+}

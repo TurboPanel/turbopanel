@@ -3,6 +3,7 @@ import { upgradeWebSocket } from 'hono/deno'
 import type { WSContext } from 'hono/ws'
 import type { DaemonCellRegistry } from '../contracts/cell.ts'
 import type {
+  BackupRunReportResultMessage,
   DaemonInboundEnvelope,
   DaemonInboundFrameResult,
   DaemonMessage,
@@ -52,7 +53,17 @@ import {
 } from '../features/servers/server-identity-db.ts'
 import type { CommandQueue } from '../features/commands/queue.ts'
 import type { RateLimiter } from './rate-limit/contracts.ts'
+import {
+  backupRunReportResultMessage,
+  createBackupRunReportStore,
+  handleBackupRunReport,
+} from '../features/backups/run-report.ts'
 import { handleManagedHaEvent } from '../features/managed/ha-event.ts'
+import {
+  resolveAutoFailoverFromDenoEnv,
+  resolveFreshStandbyMarginMsFromDenoEnv,
+} from '../features/managed/auto-failover-switch.ts'
+import { createFreshStandbyProbe } from '../client/managed/health-probe.ts'
 import { enqueueLatestRecordedCapabilityPlan } from '../client/servers/capability-plan-push.ts'
 import { recordTopologyGeneration } from '../features/servers/server-topology-records.ts'
 import { createInboundWindowGate } from './rate-limit/inbound-window.ts'
@@ -341,6 +352,7 @@ async function handleDaemonManagedHaInbound(params: {
   connectionId: string | undefined
   message: Extract<DaemonMessage, { type: 'managed-ha-event' }>
   commandQueue?: CommandQueue
+  registry?: DaemonCellRegistry
   reporterServerId: string
 }): Promise<void> {
   const { cell, db, connectionId, message } = params
@@ -349,11 +361,18 @@ async function handleDaemonManagedHaInbound(params: {
     {
       managedId: message.managedId,
       sourceMemberId: message.sourceMemberId,
+      ...(message.detector ? { detector: message.detector } : {}),
+      ...(message.instanceHost ? { instanceHost: message.instanceHost } : {}),
+      ...(message.instancePort ? { instancePort: message.instancePort } : {}),
+      ...(message.evidence ? { evidence: message.evidence } : {}),
       at: message.at,
     },
     {
       commandQueue: params.commandQueue,
       reporterServerId: params.reporterServerId,
+      autoFailover: resolveAutoFailoverFromDenoEnv(),
+      probeStandby: createFreshStandbyProbe(db, params.registry),
+      freshStandbyMarginMs: resolveFreshStandbyMarginMsFromDenoEnv(),
     }
   )
   await cell.recordInbound({ connectionId, at: message.at })
@@ -444,7 +463,31 @@ type DaemonInboundDispatch = {
   serverId: string
   connectionId: string | undefined
   commandQueue?: CommandQueue
+  /** Reaches other servers' cells (the HA event probes a standby's daemon). */
+  registry?: DaemonCellRegistry
   message: DaemonMessage
+  /** Answer on the socket the frame arrived on (daemon-initiated requests). */
+  reply: (message: BackupRunReportResultMessage) => void
+}
+
+/**
+ * Answer only once the outcome is known: an error escapes to the socket's
+ * exception boundary, nothing is sent, and the daemon resends the report.
+ */
+async function handleBackupRunReportInbound(params: {
+  cell: ReturnType<DaemonCellRegistry['getCell']>
+  db: Db
+  connectionId: string | undefined
+  message: Extract<DaemonMessage, { type: 'backup-run-report' }>
+  reporterServerId: string
+  reply: DaemonInboundDispatch['reply']
+}): Promise<void> {
+  const { cell, db, connectionId, message } = params
+  await cell.recordInbound({ connectionId, at: message.at })
+  const outcome = await handleBackupRunReport(createBackupRunReportStore(db), message, {
+    reporterServerId: params.reporterServerId,
+  })
+  params.reply(backupRunReportResultMessage(message.id, outcome, new Date().toISOString()))
 }
 
 /**
@@ -472,6 +515,7 @@ async function dispatchDaemonInboundMessage(params: DaemonInboundDispatch): Prom
         connectionId,
         message,
         commandQueue: params.commandQueue,
+        registry: params.registry,
         reporterServerId: serverId,
       })
       return
@@ -490,6 +534,16 @@ async function dispatchDaemonInboundMessage(params: DaemonInboundDispatch): Prom
         db,
         connectionId,
         message,
+      })
+      return
+    case 'backup-run-report':
+      await handleBackupRunReportInbound({
+        cell,
+        db,
+        connectionId,
+        message,
+        reporterServerId: serverId,
+        reply: params.reply,
       })
       return
     case 'update-progress':
@@ -697,7 +751,9 @@ export function registerDaemonWebSocket<E extends Env>(
           serverId: payload.sub,
           connectionId,
           commandQueue: options.commandQueue,
+          registry,
           message,
+          reply: (answer) => ws.send(JSON.stringify(answer)),
         })
       }
 

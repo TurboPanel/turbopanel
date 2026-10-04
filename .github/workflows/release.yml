@@ -68,10 +68,11 @@ on:
         description: The trunk commit to build (the head of the green Build run)
         required: true
         type: string
-    secrets:
-      RELEASE_SIGNING_KEY:
-        description: PKCS#8 PEM of the offline release key the manifest is signed with
-        required: true
+      build-run-id:
+        description: The Build run that triggered this canary; checked directly instead of searching the commit's runs
+        required: false
+        type: string
+        default: ""
 
 # Read-only by default. Writes: the `release` and `canary` jobs (the called
 # TurboPanel/dev workflows create the GitHub release / update the rolling
@@ -105,7 +106,7 @@ jobs:
       - name: Work out the canary version from the tags
         id: canary
         if: inputs.channel == 'canary' && inputs.ref != ''
-        uses: TurboPanel/dev/.github/actions/version@387788e9e64344fc5de32f6b93abd178e956d6a1 # dev#42
+        uses: TurboPanel/dev/.github/actions/version@d9127ee03a6a3b42e9435ebec3542db5fab09bc0 # dev#49
         with:
           mode: canary
 
@@ -153,13 +154,50 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           COMMIT: ${{ steps.resolve.outputs.commit }}
+          RUN_ID: ${{ inputs.build-run-id }}
         run: |
           set -eu
-          _ok="$(gh run list --repo "$REPO" --workflow Build --commit "$COMMIT" --status success --json event --jq '[.[] | select(.event == "push" or .event == "workflow_dispatch")] | length')"
-          if [ "${_ok:-0}" -lt 1 ]; then
-            echo "::error::no successful push (or manual) Build run found for ${COMMIT} — tag a commit whose trunk Build is green"
-            exit 1
+          # The canary passes the exact run that triggered it: read that run
+          # directly (no search index, no race with a newer run on the commit).
+          if [ -n "${RUN_ID:-}" ]; then
+            _row="$(gh api "repos/$REPO/actions/runs/$RUN_ID" --jq '[.head_sha, .event, .status, .conclusion] | @tsv')"
+            _sha="$(printf '%s' "$_row" | cut -f1)"
+            _event="$(printf '%s' "$_row" | cut -f2)"
+            _result="$(printf '%s' "$_row" | cut -f4)"
+            if [ "$_sha" = "$COMMIT" ] && [ "$_result" = "success" ] && { [ "$_event" = "push" ] || [ "$_event" = "workflow_dispatch" ]; }; then
+              echo "Build run $RUN_ID is green for $COMMIT"
+              exit 0
+            fi
+            echo "::warning::run $RUN_ID is not a green push Build of $COMMIT (head $_sha, $_event, $_result); searching the commit's runs"
           fi
+          # Search the commit's runs. A run still going is waited for (up to 30
+          # minutes); a run that never shows up is retried a few times, because
+          # the run search can lag behind a run that has just finished.
+          _missing=0
+          for _attempt in $(seq 1 60); do
+            _rows="$(gh run list --repo "$REPO" --workflow Build --commit "$COMMIT" --limit 20 --json event,status,conclusion --jq '[.[] | select(.event == "push" or .event == "workflow_dispatch")]')"
+            if [ "$(printf '%s' "$_rows" | jq '[.[] | select(.conclusion == "success")] | length')" -ge 1 ]; then
+              echo "a green push Build run exists for $COMMIT"
+              exit 0
+            fi
+            _total="$(printf '%s' "$_rows" | jq 'length')"
+            _going="$(printf '%s' "$_rows" | jq '[.[] | select(.status != "completed")] | length')"
+            if [ "$_total" -gt 0 ] && [ "$_going" -eq 0 ]; then
+              _last="$(printf '%s' "$_rows" | jq -r '.[0].conclusion')"
+              echo "::error::the Build run of $COMMIT ended '$_last', not green (a cancelled run means a newer run replaced it: re-run Build for this commit, or work from a commit whose Build is green)"
+              exit 1
+            fi
+            if [ "$_total" -eq 0 ]; then
+              _missing=$((_missing + 1))
+              if [ "$_missing" -ge 6 ]; then
+                echo "::error::no push (or manual) Build run found for $COMMIT after 3 minutes — tag a trunk commit whose Build is green"
+                exit 1
+              fi
+            fi
+            sleep 30
+          done
+          echo "::error::the Build run of $COMMIT was still running after 30 minutes"
+          exit 1
 
   build:
     needs: prepare
@@ -202,6 +240,22 @@ jobs:
         # What gets embedded in the binary. Runtime deps only; the dev tree
         # (wrangler + workerd, vitest, drizzle-kit, esbuild) never ships.
         run: pnpm install --prod --frozen-lockfile --ignore-scripts
+
+      - name: Generate the SBOM
+        # Straight from pnpm-lock.yaml (--lockfile-only), the lock the frozen
+        # install above enforced, so the SBOM lists exactly the shipped npm
+        # tree. Kept as a workflow artifact beside the release assets: the
+        # signed manifest lists the assets, so it is not one of them. The jsr
+        # packages (deno.lock) are pinned by the --frozen compile, not listed.
+        run: pnpm sbom --sbom-format cyclonedx --sbom-type application --prod --lockfile-only > sbom.cdx.json
+
+      - name: Upload the SBOM
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: turbopanel-sbom-${{ matrix.arch }}
+          path: sbom.cdx.json
+          if-no-files-found: error
+          retention-days: 90
 
       - name: Stamp the build identity
         # The version: src/app/version.ts reads deno.json, so the base X.Y.Z
@@ -282,6 +336,9 @@ jobs:
           retention-days: 7
 
   manifest:
+    # Signing key = environment secret TURBOPANEL_RELEASE_SIGNING_KEY, one environment per
+    # channel: `canary` (trunk), `rc` (staging), `release` (live, owner approval).
+    environment: ${{ inputs.channel == 'canary' && 'canary' || (inputs.channel == 'rc' && 'rc' || 'release') }}
     needs: [prepare, build]
     runs-on: ubuntu-latest
     steps:
@@ -382,7 +439,7 @@ jobs:
 
       - name: Sign the manifest
         env:
-          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+          RELEASE_SIGNING_KEY: ${{ secrets.TURBOPANEL_RELEASE_SIGNING_KEY }}
         run: |
           set -eu
           deno run --config .manifest-signer/deno.json \
@@ -417,7 +474,12 @@ jobs:
     if: needs.prepare.outputs.channel == 'canary'
     permissions:
       contents: write # gh-canary.yml: rolling `canary` release assets + tag move
-    uses: TurboPanel/dev/.github/workflows/gh-canary.yml@387788e9e64344fc5de32f6b93abd178e956d6a1 # dev#42
+    uses: TurboPanel/dev/.github/workflows/gh-canary.yml@5e45cd0b7795193a55728746279c75dadcbf7157 # dev#50 (squash on dev trunk)
+    # The Release App token moves the canary tag past commits that change .github/workflows
+    # (GITHUB_TOKEN cannot). Optional: without the secrets the tag move only warns.
+    secrets:
+      RELEASE_APP_ID: ${{ secrets.RELEASE_APP_ID }}
+      RELEASE_APP_PRIVATE_KEY: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
     with:
       version: ${{ needs.prepare.outputs.version }}
       commit: ${{ needs.prepare.outputs.commit }}

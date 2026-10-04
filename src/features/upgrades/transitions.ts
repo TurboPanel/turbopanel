@@ -12,11 +12,14 @@
  *   - No progress within the step timeout → retry with backoff, up to
  *     {@link UPGRADE_STEP_MAX_ATTEMPTS} dispatches, then `needs_attention`.
  *   - `rolled_back` → one automatic retry, then `needs_attention`.
+ *   - A control-plane step that restarted (`restarting` / `verifying`) is never
+ *     re-dispatched: quiet past {@link UPGRADE_VERIFY_TIMEOUT_MS} it goes to
+ *     `needs_attention` (`verify_timeout`).
  *   - A commit that matches the target marks the step `done` (this is also
  *     what the hello/heartbeat projection sees when a host comes back on the
  *     new build).
  */
-import type { UpgradeStepErrorCode, UpgradeStepStatus } from './vocabulary.ts'
+import type { UpgradeStepErrorCode, UpgradeStepStatus, UpgradeStepUnit } from './vocabulary.ts'
 
 /** Total dispatches allowed for a step whose install stalls. */
 export const UPGRADE_STEP_MAX_ATTEMPTS = 3
@@ -26,6 +29,44 @@ export const UPGRADE_ROLLBACK_MAX_ATTEMPTS = 2
 
 /** No stage change within this window is treated as a stalled install. */
 export const UPGRADE_STEP_TIMEOUT_MS = 15 * 60 * 1000
+
+/**
+ * A step still `dispatched` (the daemon has not answered with any stage) after
+ * this long is stuck, not slow: the daemon acknowledges a command within
+ * seconds. Much shorter than {@link UPGRADE_STEP_TIMEOUT_MS}, so an unanswered
+ * step reaches `needs_attention` in minutes, not after three 15-minute waits.
+ */
+export const UPGRADE_DISPATCH_ACK_TIMEOUT_MS = 5 * 60 * 1000
+
+/**
+ * How long a control-plane step may stay `restarting` / `verifying` without a
+ * word from the daemon. The daemon checks the restarted build for up to its own
+ * health budget (10 min by default, `TURBOPANEL_UPDATE_HEALTH_TIMEOUT_SECONDS`
+ * on the host) and then reports `done` or rolls back, so this must be longer.
+ * Past it the step needs attention instead of being re-dispatched: a second
+ * install on top of a build under verification can only make things worse.
+ * Override with {@link UPGRADE_VERIFY_TIMEOUT_ENV}.
+ */
+export const UPGRADE_VERIFY_TIMEOUT_MS = 20 * 60 * 1000
+
+export const UPGRADE_VERIFY_TIMEOUT_ENV = 'TURBOPANEL_UPGRADE_VERIFY_TIMEOUT_MINUTES'
+
+const VERIFY_TIMEOUT_MIN_MINUTES = 5
+const VERIFY_TIMEOUT_MAX_MINUTES = 180
+
+/**
+ * {@link UPGRADE_VERIFY_TIMEOUT_ENV} as milliseconds: a whole number of minutes
+ * within 5..180, else the default.
+ */
+export function parseUpgradeVerifyTimeoutMs(raw: string | undefined): number {
+  const text = raw?.trim() ?? ''
+  if (!/^\d{1,3}$/.test(text)) return UPGRADE_VERIFY_TIMEOUT_MS
+  const minutes = Number.parseInt(text, 10)
+  if (minutes < VERIFY_TIMEOUT_MIN_MINUTES || minutes > VERIFY_TIMEOUT_MAX_MINUTES) {
+    return UPGRADE_VERIFY_TIMEOUT_MS
+  }
+  return minutes * 60 * 1000
+}
 
 /** First retry waits this long; each further retry doubles it. */
 export const UPGRADE_BACKOFF_BASE_MS = 60 * 1000
@@ -67,11 +108,15 @@ export function isInFlightStepStatus(status: UpgradeStepStatus): boolean {
 
 export type StepView = {
   status: UpgradeStepStatus
+  /** Which component the step installs; `instance` gets the verify window. */
+  unit?: UpgradeStepUnit
   attempts: number
   nextAttemptAt: string | null
   lastStageAt: string | null
   /** The commit this step installs (copied from the run target). */
   toCommit: string | null
+  /** The daemon refused the current dispatch because it is busy with another install. */
+  inProgressRefused?: boolean
 }
 
 export type StepFacts = {
@@ -85,6 +130,8 @@ export type StepConfig = {
   maxAttempts?: number
   rollbackMaxAttempts?: number
   stepTimeoutMs?: number
+  dispatchAckTimeoutMs?: number
+  verifyTimeoutMs?: number
   backoffBaseMs?: number
   backoffMaxMs?: number
   offlineDeadlineMs?: number
@@ -126,7 +173,10 @@ function backoffElapsed(step: StepView, cfg: StepConfig): boolean {
 
 function isStalled(step: StepView, cfg: StepConfig): boolean {
   if (!step.lastStageAt) return false
-  const timeout = cfg.stepTimeoutMs ?? UPGRADE_STEP_TIMEOUT_MS
+  const timeout =
+    step.status === 'dispatched' && step.inProgressRefused !== true
+      ? (cfg.dispatchAckTimeoutMs ?? UPGRADE_DISPATCH_ACK_TIMEOUT_MS)
+      : (cfg.stepTimeoutMs ?? UPGRADE_STEP_TIMEOUT_MS)
   return Date.parse(cfg.now) - Date.parse(step.lastStageAt) > timeout
 }
 
@@ -157,12 +207,33 @@ function handleDue(step: StepView, facts: StepFacts, cfg: StepConfig): StepActio
   return { kind: 'dispatch' }
 }
 
+/** A control-plane step whose new build already restarted and is under the daemon's check. */
+function isAwaitingVerdict(step: StepView): boolean {
+  return step.unit === 'instance' && (step.status === 'restarting' || step.status === 'verifying')
+}
+
+function verifyWindowPassed(step: StepView, cfg: StepConfig): boolean {
+  if (!step.lastStageAt) return false
+  const window = cfg.verifyTimeoutMs ?? UPGRADE_VERIFY_TIMEOUT_MS
+  return Date.parse(cfg.now) - Date.parse(step.lastStageAt) > window
+}
+
 function handleInFlight(step: StepView, facts: StepFacts, cfg: StepConfig): StepAction {
+  // Checked before the offline rule: the co-located daemon reconnects to the
+  // freshly restarted control plane, and a tick in that gap must not turn the
+  // step into `waiting` and re-install on reconnect.
+  if (isAwaitingVerdict(step)) {
+    return verifyWindowPassed(step, cfg)
+      ? { kind: 'needs_attention', errorCode: 'verify_timeout' satisfies UpgradeStepErrorCode }
+      : { kind: 'none' }
+  }
   // A host that drops mid-install cannot finish; re-dispatch on reconnect.
   if (!facts.serverConnected) return { kind: 'wait_offline' }
   if (!isStalled(step, cfg)) return { kind: 'none' }
   const maxAttempts = cfg.maxAttempts ?? UPGRADE_STEP_MAX_ATTEMPTS
-  if (step.attempts >= maxAttempts) {
+  // A refused dispatch (the daemon is busy with an earlier install) is an
+  // answer, so it keeps the long window; sending it again cannot help.
+  if (step.inProgressRefused === true || step.attempts >= maxAttempts) {
     return { kind: 'needs_attention', errorCode: 'step_timeout' satisfies UpgradeStepErrorCode }
   }
   return { kind: 'retry', nextAttemptAt: backoffAt(cfg, step.attempts) }

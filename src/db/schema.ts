@@ -26,6 +26,7 @@ import {
   integer,
   jsonb,
   pgTable,
+  smallint,
   text,
   timestamp,
   unique,
@@ -1256,11 +1257,11 @@ export const upgrade = pgTable(
 )
 /**
  * One daemon or instance install on one server inside an {@link upgrade} run.
- * Physical name `upgradestep` (one word). Active steps are indexed for the
+ * Physical name `stage`. Active steps are indexed for the
  * retry scan; terminal rows are pruned by `pruneUpgradeHistory`.
  */
-export const upgradeStep = pgTable(
-  'upgradestep',
+export const stage = pgTable(
+  'stage',
   {
     id: uuid()
       .default(sql`uuidv7()`)
@@ -1297,7 +1298,7 @@ export const upgradeStep = pgTable(
     toVersion: text('to_version'),
     fromCommit: text('from_commit'),
     toCommit: text('to_commit'),
-    lastStageAt: timestamp('last_stage_at', {
+    statusChangedAt: timestamp('status_changed_at', {
       precision: 3,
       withTimezone: true,
       mode: 'string',
@@ -1307,9 +1308,9 @@ export const upgradeStep = pgTable(
     detail: jsonb(),
   },
   (table) => [
-    index('idx_upgradestep_upgrade_status').on(table.upgradeId, table.status),
-    index('idx_upgradestep_server_created').on(table.serverId, table.createdAt.desc()),
-    index('idx_upgradestep_active_next_attempt')
+    index('idx_stage_upgrade_status').on(table.upgradeId, table.status),
+    index('idx_stage_server_created').on(table.serverId, table.createdAt.desc()),
+    index('idx_stage_active_next_attempt')
       .on(table.status, table.nextAttemptAt)
       .where(
         sql`${table.status} IN ('pending', 'waiting', 'dispatched', 'preparing', 'downloading', 'installing', 'restarting', 'verifying')`
@@ -1317,18 +1318,18 @@ export const upgradeStep = pgTable(
     foreignKey({
       columns: [table.upgradeId],
       foreignColumns: [upgrade.id],
-      name: 'upgradestep_upgrade_id_upgrade_id_fk',
+      name: 'stage_upgrade_id_upgrade_id_fk',
     }).onDelete('cascade'),
     foreignKey({
       columns: [table.serverId],
       foreignColumns: [server.id],
-      name: 'upgradestep_server_id_server_id_fk',
+      name: 'stage_server_id_server_id_fk',
     }).onDelete('cascade'),
     // Mirror UPGRADE_STEP_UNITS / UPGRADE_STEP_STATUSES
     // (src/features/upgrades/vocabulary.ts) — pinned by enum-checks.test.ts.
-    check('upgradestep_unit_check', sql`unit IN ('daemon', 'instance')`),
+    check('stage_unit_check', sql`unit IN ('daemon', 'instance')`),
     check(
-      'upgradestep_status_check',
+      'stage_status_check',
       sql`status IN ('pending', 'waiting', 'dispatched', 'preparing', 'downloading', 'installing', 'restarting', 'verifying', 'done', 'failed', 'rolled_back', 'needs_attention', 'skipped')`
     ),
   ]
@@ -2246,6 +2247,12 @@ export const backup = pgTable(
     database: text(),
     /** Artifact path on the host filesystem. */
     path: text().notNull(),
+    /**
+     * The {@link retention} whose scheduled run made this artifact; null for
+     * a manual backup. `set null` so deleting a policy keeps the record of an
+     * artifact that is still on disk.
+     */
+    retentionId: uuid('retention_id'),
   },
   (table) => [
     index('idx_backup_managed_id_created_at').using(
@@ -2253,11 +2260,17 @@ export const backup = pgTable(
       table.managedId.asc(),
       table.createdAt.desc()
     ),
+    index('idx_backup_retention_id').using('btree', table.retentionId.asc().nullsLast()),
     foreignKey({
       columns: [table.managedId],
       foreignColumns: [managed.id],
       name: 'backup_managed_id_managed_id_fk',
     }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.retentionId],
+      foreignColumns: [retention.id],
+      name: 'backup_retention_id_retention_id_fk',
+    }).onDelete('set null'),
     uniqueIndex('uniq_backup_managed_backup_id').on(table.managedId, table.backupId),
     check('backup_id_format_check', sql`backup_id ~ '^[A-Za-z0-9_-]+$'`),
     check('backup_checksum_format_check', sql`checksum ~ '^[a-f0-9]{64}$'`),
@@ -3917,6 +3930,202 @@ export const storageCopy = pgTable(
   ]
 )
 /**
+ * A scheduled backup of one target — a managed engine or one local storage
+ * copy. The control plane owns the row; each host receives the full set of
+ * policies whose target lives on it (`server.backups.reconcile`) and runs
+ * them from its own systemd timers, so a run never waits on the control plane.
+ *
+ * `organization_id` is denormalized, unlike {@link backup}: the target is
+ * polymorphic (`managed` or `copy`), so there is no single parent chain to
+ * resolve it through, and the policy list is read per organization.
+ */
+export const retention = pgTable(
+  'retention',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .$onUpdate(() => sql`now()`)
+      .notNull(),
+    organizationId: uuid('organization_id').notNull(),
+    targetKind: text('target_kind').notNull(),
+    managedId: uuid('managed_id'),
+    copyId: uuid('copy_id'),
+    name: text().notNull(),
+    /** As authored: a cron expression or alias; translated to `OnCalendar` when pushed. */
+    schedule: text().notNull(),
+    /** IANA zone the schedule is read in; null means the host's local time. */
+    timezone: text(),
+    retentionKeep: integer('retention_keep').notNull(),
+    isEnabled: boolean('is_enabled').default(true).notNull(),
+    nextRunAt: timestamp('next_run_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }),
+    createdBy: uuid('created_by'),
+  },
+  (table) => [
+    index('idx_retention_organization_id').using('btree', table.organizationId.asc()),
+    index('idx_retention_managed_id').using('btree', table.managedId.asc().nullsLast()),
+    index('idx_retention_copy_id').using('btree', table.copyId.asc().nullsLast()),
+    foreignKey({
+      columns: [table.organizationId],
+      foreignColumns: [organization.id],
+      name: 'retention_organization_id_organization_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.managedId],
+      foreignColumns: [managed.id],
+      name: 'retention_managed_id_managed_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.copyId],
+      foreignColumns: [storageCopy.id],
+      name: 'retention_copy_id_copy_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.createdBy],
+      foreignColumns: [user.id],
+      name: 'retention_created_by_user_id_fk',
+    }).onDelete('set null'),
+    // Mirror BACKUP_TARGET_KINDS (src/features/backups/vocabulary.ts) — pinned by enum-checks.test.ts.
+    check('retention_target_kind_check', sql`target_kind IN ('managed', 'copy')`),
+    check(
+      'retention_target_check',
+      sql`(target_kind = 'managed' AND managed_id IS NOT NULL AND copy_id IS NULL) OR (target_kind = 'copy' AND copy_id IS NOT NULL AND managed_id IS NULL)`
+    ),
+    check('retention_retention_keep_check', sql`retention_keep BETWEEN 1 AND 100`),
+  ]
+)
+/**
+ * One finished scheduled run of a {@link retention}, reported by the host
+ * that ran it. `run_id` is minted by the daemon and unique per policy, not
+ * globally, for the same reason `backup.backup_id` is: a global key would let
+ * one host's report shadow another organization's record of the same string.
+ */
+export const snapshot = pgTable(
+  'snapshot',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .notNull(),
+    retentionId: uuid('retention_id').notNull(),
+    serverId: uuid('server_id').notNull(),
+    runId: text('run_id').notNull(),
+    startedAt: timestamp('started_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }).notNull(),
+    finishedAt: timestamp('finished_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }).notNull(),
+    status: text().notNull(),
+    error: text(),
+    /** The `bk_` id of the artifact the run produced; null when it failed. */
+    backupRef: text('backup_ref'),
+  },
+  (table) => [
+    index('idx_snapshot_retention_id_started_at').using(
+      'btree',
+      table.retentionId.asc(),
+      table.startedAt.desc()
+    ),
+    index('idx_snapshot_server_id').using('btree', table.serverId.asc()),
+    uniqueIndex('uniq_snapshot_retention_run_id').on(table.retentionId, table.runId),
+    foreignKey({
+      columns: [table.retentionId],
+      foreignColumns: [retention.id],
+      name: 'snapshot_retention_id_retention_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.serverId],
+      foreignColumns: [server.id],
+      name: 'snapshot_server_id_server_id_fk',
+    }).onDelete('cascade'),
+    check('snapshot_run_id_format_check', sql`run_id ~ '^[A-Za-z0-9_-]+$'`),
+    // Mirror BACKUP_RUN_STATUSES (src/features/backups/vocabulary.ts) — pinned by enum-checks.test.ts.
+    check('snapshot_status_check', sql`status IN ('succeeded', 'failed')`),
+    check(
+      'snapshot_backup_ref_format_check',
+      sql`backup_ref IS NULL OR backup_ref ~ '^[A-Za-z0-9_-]+$'`
+    ),
+  ]
+)
+/**
+ * One completed backup artifact of a local storage copy — the volume twin of
+ * {@link backup}, with the same per-target uniqueness and format checks.
+ */
+export const archive = pgTable(
+  'archive',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .notNull(),
+    copyId: uuid('copy_id').notNull(),
+    retentionId: uuid('retention_id'),
+    backupId: text('backup_id').notNull(),
+    sizeBytes: bigint('size_bytes', { mode: 'number' }).notNull(),
+    checksum: text().notNull(),
+    path: text().notNull(),
+  },
+  (table) => [
+    index('idx_archive_copy_id_created_at').using(
+      'btree',
+      table.copyId.asc(),
+      table.createdAt.desc()
+    ),
+    index('idx_archive_retention_id').using('btree', table.retentionId.asc().nullsLast()),
+    uniqueIndex('uniq_archive_copy_backup_id').on(table.copyId, table.backupId),
+    foreignKey({
+      columns: [table.copyId],
+      foreignColumns: [storageCopy.id],
+      name: 'archive_copy_id_copy_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.retentionId],
+      foreignColumns: [retention.id],
+      name: 'archive_retention_id_retention_id_fk',
+    }).onDelete('set null'),
+    check('archive_backup_id_format_check', sql`backup_id ~ '^[A-Za-z0-9_-]+$'`),
+    check('archive_checksum_format_check', sql`checksum ~ '^[a-f0-9]{64}$'`),
+    check('archive_size_bytes_check', sql`size_bytes >= 0`),
+  ]
+)
+/**
  * Service attachment of a storage identity at a container destination path.
  */
 export const mount = pgTable(
@@ -5094,6 +5303,8 @@ export const user = pgTable(
     is2FaEnabled: boolean('is_2fa_enabled').default(false).notNull(),
     isDisabled: boolean('is_disabled').default(false).notNull(),
     role: text().default('user').notNull(),
+    /** IANA zone the person's quiet hours are read in; null means UTC. */
+    timeZone: varchar('time_zone', { length: 64 }),
   },
   (table) => [
     unique('user_email_unique').on(table.email),
@@ -5351,6 +5562,12 @@ export const notificationChannel = pgTable(
       mode: 'string',
     }),
     createdByUserId: uuid('created_by_user_id'),
+    /** NOTIFICATION_DIGEST_CADENCES; null = every event is sent as it happens. */
+    digestCadence: text('digest_cadence'),
+    /** Quiet hours start, minutes after local midnight (0-1439); null with `quietEndMinute` = no quiet hours. */
+    quietStartMinute: smallint('quiet_start_minute'),
+    /** Quiet hours end, minutes after local midnight (0-1439); the window may wrap midnight. */
+    quietEndMinute: smallint('quiet_end_minute'),
   },
   (table) => [
     check('channel_scope_check', sql`scope IN ('instance', 'organization', 'user')`),
@@ -5362,6 +5579,15 @@ export const notificationChannel = pgTable(
     check(
       'channel_owner_check',
       sql`(scope = 'instance' AND organization_id IS NULL AND user_id IS NULL) OR (scope = 'organization' AND organization_id IS NOT NULL AND user_id IS NULL) OR (scope = 'user' AND user_id IS NOT NULL AND organization_id IS NULL)`
+    ),
+    check(
+      'channel_digest_cadence_check',
+      sql`digest_cadence IS NULL OR digest_cadence IN ('hourly', 'daily')`
+    ),
+    // Quiet hours are both ends or neither, each a minute of the day, and not an empty window.
+    check(
+      'channel_quiet_hours_check',
+      sql`(quiet_start_minute IS NULL AND quiet_end_minute IS NULL) OR (quiet_start_minute BETWEEN 0 AND 1439 AND quiet_end_minute BETWEEN 0 AND 1439 AND quiet_start_minute <> quiet_end_minute)`
     ),
     index('idx_channel_organization').on(table.organizationId),
     index('idx_channel_user').on(table.userId),
@@ -5531,8 +5757,15 @@ export const notificationDelivery = pgTable(
       sql`event IN ('server.offline', 'fleet.mass_disconnect', 'server.deleted', 'server.daemon_key_revoked', 'access.grant_created', 'access.grant_revoked')`
     ),
     check('attempt_severity_check', sql`severity IN ('info', 'warning', 'critical')`),
-    check('attempt_status_check', sql`status IN ('pending', 'sent', 'failed', 'abandoned')`),
+    check(
+      'attempt_status_check',
+      sql`status IN ('pending', 'sent', 'failed', 'abandoned', 'held')`
+    ),
     index('idx_attempt_pending').on(table.status, table.nextAttemptAt),
+    // The digest sweep reads only the rows waiting for a window to end.
+    index('idx_attempt_held')
+      .on(table.channelId, table.createdAt)
+      .where(sql`status = 'held'`),
     index('idx_attempt_channel_created').on(table.channelId, table.createdAt.desc()),
     foreignKey({
       columns: [table.channelId],
@@ -5544,5 +5777,165 @@ export const notificationDelivery = pgTable(
       foreignColumns: [organization.id],
       name: 'attempt_organization_id_organization_id_fk',
     }).onDelete('cascade'),
+  ]
+)
+/**
+ * One firewall rule an operator typed, in the vocabulary of the
+ * `server.firewall.reconcile` wire contract (`scope`, `action`, `proto`,
+ * `ports`), so a stored rule maps onto a wire entry unchanged. Rules derived
+ * from what is deployed (published ports, the panel's own port, SSH) are
+ * computed when a server's ruleset is built and never stored here.
+ *
+ * `server_id` null means every server in the organization. `source_kind`
+ * names who the rule is about; only `addresses` carries `source_addresses`.
+ * `label` doubles as the rule's wire comment, so it follows the contract's
+ * comment alphabet.
+ */
+export const edict = pgTable(
+  'edict',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .$onUpdate(() => sql`now()`)
+      .notNull(),
+    organizationId: uuid('organization_id').notNull(),
+    serverId: uuid('server_id'),
+    label: text().notNull(),
+    scope: text().notNull(),
+    action: text().notNull(),
+    proto: text().notNull(),
+    /** One port (`8443`) or an inclusive ascending range (`5432-5440`); null means every port. */
+    ports: text(),
+    sourceKind: text('source_kind').notNull(),
+    /** Explicit addresses or CIDRs; only for `source_kind = 'addresses'`, otherwise empty. */
+    sourceAddresses: inet('source_addresses')
+      .array()
+      .notNull()
+      .default(sql`'{}'::inet[]`),
+    isEnabled: boolean('is_enabled').default(true).notNull(),
+    createdBy: uuid('created_by'),
+  },
+  (table) => [
+    index('idx_edict_organization_id').using('btree', table.organizationId.asc()),
+    index('idx_edict_server_id').using('btree', table.serverId.asc().nullsLast()),
+    foreignKey({
+      columns: [table.organizationId],
+      foreignColumns: [organization.id],
+      name: 'edict_organization_id_organization_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.serverId],
+      foreignColumns: [server.id],
+      name: 'edict_server_id_server_id_fk',
+    }).onDelete('cascade'),
+    foreignKey({
+      columns: [table.createdBy],
+      foreignColumns: [user.id],
+      name: 'edict_created_by_user_id_fk',
+    }).onDelete('set null'),
+    // Mirror the arrays in src/features/firewall/vocabulary.ts — pinned by enum-checks.test.ts.
+    check('edict_scope_check', sql`scope IN ('host', 'published')`),
+    check('edict_action_check', sql`action IN ('accept', 'drop', 'reject')`),
+    check('edict_proto_check', sql`proto IN ('tcp', 'udp', 'any')`),
+    check(
+      'edict_source_kind_check',
+      sql`source_kind IN ('any', 'servers', 'datacenter', 'fabric', 'addresses')`
+    ),
+    check('edict_label_format_check', sql`label ~ '^[A-Za-z0-9 ._:/-]{1,48}$'`),
+    check('edict_ports_format_check', sql`ports IS NULL OR ports ~ '^[0-9]{1,5}(-[0-9]{1,5})?$'`),
+    // Ports mean something only to tcp and udp.
+    check('edict_ports_proto_check', sql`ports IS NULL OR proto <> 'any'`),
+    // Only a block may say "every port"; an allow names its ports.
+    check('edict_accept_ports_check', sql`action <> 'accept' OR ports IS NOT NULL`),
+    check(
+      'edict_source_addresses_check',
+      sql`(source_kind = 'addresses' AND cardinality(source_addresses) BETWEEN 1 AND 256) OR (source_kind <> 'addresses' AND cardinality(source_addresses) = 0)`
+    ),
+  ]
+)
+/**
+ * One server's firewall state, one row per server. `mode` decides whether
+ * the computed ruleset is only shown (`observe`, the default), enforced
+ * (`managed`) or left alone (`off`). `generation` rises by one each time the
+ * desired state changes, so a host can tell a stale push from a current one.
+ * The remaining columns record the last apply and whether it was kept.
+ */
+export const bulwark = pgTable(
+  'bulwark',
+  {
+    id: uuid()
+      .default(sql`uuidv7()`)
+      .primaryKey()
+      .notNull(),
+    createdAt: timestamp('created_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    })
+      .defaultNow()
+      .$onUpdate(() => sql`now()`)
+      .notNull(),
+    serverId: uuid('server_id').notNull(),
+    mode: text().default('observe').notNull(),
+    generation: integer().default(0).notNull(),
+    /** sha256 hex of the rendered rulesets the host last reported; the drift key. */
+    lastDigest: text('last_digest'),
+    /** What the host last answered (applied or refused, rule count, warnings); null before any report. */
+    lastResult: jsonb('last_result'),
+    state: text().default('idle').notNull(),
+    /** When an unconfirmed ruleset is undone by the host's guard; null unless `state` is `pending`. */
+    deadlineAt: timestamp('deadline_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }),
+    lastAppliedAt: timestamp('last_applied_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }),
+    confirmedAt: timestamp('confirmed_at', {
+      precision: 3,
+      withTimezone: true,
+      mode: 'string',
+    }),
+  },
+  (table) => [
+    uniqueIndex('uniq_bulwark_server_id').using('btree', table.serverId.asc()),
+    foreignKey({
+      columns: [table.serverId],
+      foreignColumns: [server.id],
+      name: 'bulwark_server_id_server_id_fk',
+    }).onDelete('cascade'),
+    // Mirror FIREWALL_MODES / FIREWALL_STATES — pinned by enum-checks.test.ts.
+    check('bulwark_mode_check', sql`mode IN ('observe', 'managed', 'off')`),
+    check('bulwark_state_check', sql`state IN ('idle', 'pending', 'confirmed', 'rolled_back')`),
+    check('bulwark_generation_check', sql`generation >= 0`),
+    check(
+      'bulwark_digest_format_check',
+      sql`last_digest IS NULL OR last_digest ~ '^[a-f0-9]{64}$'`
+    ),
   ]
 )

@@ -112,6 +112,10 @@ those two directories (`node-app-runtime` role), never through world bits.
 `turbopanel`, RabbitMQ user = `turbopanel`, Docker network/volumes =
 `turbopanel*`.
 
+## Releases
+
+How changes ship: squash-merge into `trunk`, then two bot-opened pull requests (`trunk` to `staging`, `staging` to `live`) that a maintainer merges with merge commits. Hotfixes land on `trunk` first, and the daemon ships before the control plane. See [How changes ship](https://github.com/TurboPanel/.github/blob/trunk/CONTRIBUTING.md#how-changes-ship) and [How to ship](https://turbopanel.io/docs/development/how-to-ship).
+
 ## Documentation discipline
 
 **Keep this file current.** When you learn something durable about how
@@ -130,8 +134,7 @@ change. Future agents read `AGENTS.md` first.
 ### SonarQube (CI-based analysis)
 
 `build.yml` ends in a `ci-ok` job that `needs:` every pull_request job (checks,
-typecheck, vitest, deno-hostfree, deno-db, sonarqube, metrics-legacy,
-data-dictionary) and fails unless all of them succeeded. It is the
+typecheck, vitest, deno-hostfree, deno-db, sonarqube, contract-twin) and fails unless all of them succeeded. It is the
 one context the branch rulesets will require; a new PR-time job must be added
 to its `needs:` or it never gates a merge. A red X must mean "this change is
 broken", so: on a pull request a cancelled need still fails `ci-ok`; on a trunk
@@ -296,7 +299,7 @@ Unit tests use non-production secrets from `src/test-fixtures/secrets.ts`
 (`TEST_ONLY_TURBOPANEL_SECRET`). Vitest Workers config uses the same naming
 convention in `wrangler.vitest.jsonc`. The secret scanner allowlists only exact
 fixture lines in `.secretscan-allowlist` — do not add broad exclusions.
-`scripts/scan-secrets.sh` is byte-identical in turbopanel, turbopaneld, ui, website and dev — change all five together. It refuses a committed secret-bearing file (`license.token`, `server-key.json`, `.pgpass`, `.rabbitmq_pass`, …), flags credential URLs (`amqp(s)`/`postgres(ql)` with `user:pass@`) and `TURBOPANEL_SECRET(S)` bindings, and flags any line that names a secret-bearing file unless that exact path and full line text is in `.secretscan-allowlist` as `path:line text` (no line number, so edits elsewhere in the file do not break it; the old `path:lineno:text` form is deprecated but still accepted, and with `--all` an entry that allows nothing is warned about as stale). dev's `src/lib/scan-secrets.test.ts` tests the rules and, with the siblings checked out in dev CI, fails if any copy drifts.
+`scripts/scan-secrets.sh`, `scripts/scan-secrets.patterns` and `scripts/scan-secrets.selftest.sh` are byte-identical in turbopanel, turbopaneld, ui, website and dev: change all five together (each repo keeps a copy because the pre-commit hook runs it locally). The rules in the patterns file cover private key blocks, vendor tokens, JWTs, connection URLs with credentials, secret-looking assignments and forbidden file names (dotenv files, `*.pem`, `*.key`, daemon identity files, …); the scanner reports the rule id and location, never the matching text. `--all` scans the tree; `--range BASE..HEAD` scans every line the PR's commits added, so a secret added and removed inside a PR is still caught (CI runs it on PRs into trunk). Allowlist entries in `.secretscan-allowlist` are `path:full line text` (or `@path exact/file` for a forbidden file name), each needs a `# reason:` comment above it, and wildcards are rejected. The self-test builds its fixtures at run time from fragments; dev's `src/lib/scan-secrets.test.ts` runs it and, with the siblings checked out in dev CI, fails if any copy drifts.
 
 **Where to run tests:** host VirtFS checkouts lack a usable Node/pnpm/Deno tree.
 Run suites **inside the Vagrant guest** from the host `dev` checkout
@@ -391,7 +394,7 @@ guard; `pnpm test:do` alone does not.
   `GET /api/health` reports `{ license, version, revision: { commit, sourceUrl },
   channel, build, environment }` (`src/app/build-info.ts`) so a network user can
   identify Corresponding Source. `channel` is the resolved
-  `TURBOPANEL_UPDATE_CHANNEL` (default `trunk`); `build` is the installed
+  `TURBOPANEL_UPDATE_CHANNEL` (default `release`); `build` is the installed
   package's full label from `TURBOPANEL_BUILD_LABEL` (e.g.
   `0.1.1-canary.<buildId>`, `0.1.1-rc.1`) or null — never baked into the
   binary, because promotion reuses the canary bytes for rc and release, so the
@@ -451,7 +454,14 @@ guard; `pnpm test:do` alone does not.
   they are. Each new message is feature-gated: the peer advertises support
   in `features[]` (`DAEMON_WIRE_FEATURES`, kept equal in both
   `version-wire.ts` files) and the daemon checks `instanceSupports()` before
-  treating the peer as able to speak it. `update-progress`
+  treating the peer as able to speak it. `php-site-modes-v1` gates a deploy
+  field rather than a message: the daemon runs each PHP site in its `php.mode`
+  (FastCGI or php-fpm, nginx and Apache). Deploy prepare refuses a mode other
+  than php-fpm for a daemon that does not list it (`php_mode_unavailable`,
+  reason `daemon_unsupported`) and stamps no mode on its sites. A deployment
+  record without `phpModes` means the modes are unknown, not php-fpm.
+  OpenLiteSpeed and Caddy sites ignore `php.mode` in the daemon for now (the
+  OpenLiteSpeed lsphp work is turbopaneld#250). `update-progress`
   (`update-progress-v1`) is the worked example — fire-and-forget progress,
   ignored by a peer that does not list the feature. `managed-health-v1` is
   the worked example in the other direction, a control-plane-initiated
@@ -564,6 +574,23 @@ Installed and managed by the daemon via the `instance-launch` Ansible role:
 - Logs:
   `journalctl -u turbopanel-instance -u turbopanel-caddy -u turbopanel-ui -f`
 - Co-located daemon: `../turbopaneld/scripts/install-daemon-systemd.sh`
+- **Production instance hardening** (compiled `tpctrl` unit only; co-located dev
+  is unsandboxed because its source checkout lives in `$HOME`). Systemd:
+  `ProtectSystem=strict` with a `ReadWritePaths` list, `ProtectHome`,
+  `PrivateTmp`/`PrivateDevices`, `ProtectKernel*`, `RestrictAddressFamilies`
+  (`AF_UNIX AF_INET AF_INET6 AF_NETLINK`), a deny-list `CapabilityBoundingSet`.
+  `NoNewPrivileges` stays **off** while the instance runs `sudo` (host-credential
+  `pamtester`, upgrade `systemctl restart`); move those behind the daemon before
+  enabling it. Pinned by `../turbopaneld/src/orchestration/instance-unit-sandbox.test.ts`.
+  Deno: `--deny-net` carves the cloud-metadata endpoints out of the open
+  `--allow-net` (same list as the daemon). `--allow-env` is a list
+  (`TURBOPANEL_*`, `HOME`, `PATH`, `LANG`, `CADDY_TLS_CERT`, `SMTP_PORT`) plus a
+  bare `--ignore-env`: unlisted names read as unset, and `Deno.env.toObject()` /
+  ioredis's `debug` enumeration of `process.env` return just the allowed names
+  instead of failing. `src/deno-env-allowlist.test.ts` fails on a source read the
+  list misses — extend the list, never go back to a bare `--allow-env`. `SIGTERM` exits
+  in about a second (`src/platform/deno/instance-shutdown.ts`): without it the
+  idle Postgres pool kept the process until systemd's SIGKILL.
 
 ## Unix domain sockets
 
@@ -948,6 +975,38 @@ see the last row.
 | Daemon                       | `/api/daemon/v1/*`                | `/ws/daemon/v1`           | `version`, `instance/ca`, `instance/uploaded-trust`; daemons connect on the WS path                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | Git webhooks                 | `/webhook/{github,gitlab}(/:ref)` | —                         | **Not an API.** The caller is GitHub or GitLab: no session, no daemon JWT, no `Origin`, and what arrives is an event rather than a call. Unversioned and outside every protected prefix by design. Self-hosted providers get the `:ref` suffix; hosted ones get the clean path. Every fronting layer must forward it — see `src/webhook/AGENTS.md`                                                                                                                                                                |
 
+### Gates on mutating requests (client / admin / install / developer)
+
+`createApp` (`src/app/app.ts`) runs three gates, in this order, on `POST` /
+`PUT` / `PATCH` / `DELETE` under the four cookie-authenticated prefixes. `GET`,
+`HEAD` and `OPTIONS` are never gated. `/api/daemon/v1`, `/ws/*`, `/webhook/*`,
+`/api/health` and docs/static routes are outside all three (they have their own
+bounded readers and limiters).
+
+1. **CSRF** (`app/browser-write-protection.ts`). Exact-origin match on `Origin`,
+   else `Referer`; neither present = non-browser client, allowed. `Sec-Fetch-Site`
+   only tightens: `cross-site` is always `403`, and with no `Origin`/`Referer` a
+   present value other than `same-origin` / `none` (so `same-site`) is `403`.
+   `same-site` is **not** a pass on its own: customer sites can live on sibling
+   subdomains of the panel host. A missing `Sec-Fetch-Site` stays allowed — the
+   native apps, CLI, installer curl and Local-Console HMAC calls send none. Do
+   not add a required custom header: store apps in the field would lock out.
+2. **Body limit** (`app/body-limit.ts`). 1 MiB default, 4 MiB for compose-bearing
+   routes (projects, environments, deploy, docker-run import); `413`
+   `{ ok: false, error, code: 'request_body_too_large' }` before any handler
+   parses the body, with or without `Content-Length`. Smaller per-route bounds
+   (auth, 2-8 KiB) still apply inside handlers. Add a route to
+   `CLIENT_LARGE_BODY_PATTERNS` only with a reason.
+3. **Write rate limit** (`app/write-rate-limit.ts`). 120 writes / 60 s per
+   verified session cookie (digest, no DB read), else per client IP; `429`
+   `{ code: 'rate_limited' }` + `Retry-After: 60`. Backend is the `RateLimiter`
+   seam: Workers binding `CLIENT_WRITE_RATE_LIMITER` (namespace ids 1010 / 2010 /
+   3010 / 4010), Deno Redis (`TURBOPANEL_CLIENT_WRITE_RATE_LIMIT` /
+   `_PERIOD`). It **fails open**: no binding, no limiter injected, an unresolvable
+   IP, or a limiter error all let the write through (one warning per process).
+   Unlike `authRateLimiter` it must never become an outage. Forged cookies are
+   anonymous and keyed by IP.
+
 - Route modules: `src/daemon/api-routes.ts`, `src/client/routes.ts`,
   `src/install/routes.ts` (registered from `deno.ts` only); Deno-only routes
   `src/developer/system-routes.ts`, `src/developer/dev-sync.ts`,
@@ -972,6 +1031,35 @@ Per-feature client-surface behavior notes (timezone/NTP, host defaults, labels,
 TurboFabric, compiled compose, org options, containers, datacenters / subnets /
 addresses, …) moved to `src/client/AGENTS.md` → **Client surface feature
 notes**.
+
+### Tenant values in root-loaded configs
+
+Any project member (`organization:manage`) can set hosting options, so they
+are tenant input that the daemon writes into configs root-run engines parse
+(hosting Caddyfile, Traefik labels, Apache `SetEnv`). `POST`/`PATCH /hostings`
+refuse them with **400** `{ error: 'invalid_hosting_option', field, message }`
+(`src/features/hostings/config-values.ts`, called from
+`parseOptionalHostingOptions`); the message names the field, never the value.
+Stored rows still parse leniently through `parseHostingOptions`, and the daemon
+refuses the same values again in its renderers (its sink table:
+`../turbopaneld/src/deploy/AGENTS.md`, "Tenant values in root-loaded configs").
+
+| Field | Rule | Sink |
+| --- | --- | --- |
+| `options.proxy.stripPrefix` | `/` + segments of `[A-Za-z0-9._~-]`, no `//`, `.`, `..`, at most 200 | hosting Caddy `uri strip_prefix`, Traefik `stripprefix` |
+| `options.pathPrefix` | same | hosting Caddy `handle`, Traefik `PathPrefix` |
+| `options.hostnames[]` | `isValidHostname` | Caddy site address, Traefik `Host` |
+| `options.web.env` keys | `[A-Za-z_][A-Za-z0-9_]*`, at most 128 | Apache `SetEnv`, site Caddy `env` |
+| `options.web.env` values | no control character, NEL, U+2028/U+2029 | Apache `SetEnv`, site Caddy `env` |
+
+Runtime variables (`forRuntime`) stay multi-line at the variables API (a PEM is
+legitimate for containers). When one is merged into a site's web env, the
+daemon refuses it for Apache (where it never rendered) and drops it for the
+site Caddy, as before. PHP settings, cron and site roots were already
+allowlisted (`php-settings.ts`, `features/deploy/cron.ts`,
+`features/compose/site.ts`). There is no source-scan registry on this side: the
+control plane renders no engine config, so the boundary check plus the
+daemon's scan cover the sinks.
 
 ## Storage classification (four workloads)
 
@@ -1011,7 +1099,11 @@ in `src/deno-compile-permissions.test.ts` and gated by `deno task duckdb:smoke`:
 
 - `deno compile` bundles the `duckdb.node` addon from `node_modules`
   automatically and **self-extracts it at runtime**; loading it needs
-  `--allow-ffi` (unscoped — the extraction path is a per-binary temp dir).
+  FFI permission, **scoped** to `--allow-ffi=/tmp/deno-compile-<binary name>`
+  (the permission check names `/tmp/deno-compile-turbopanel/node_modules/…/duckdb.node`;
+  `turbopanel-dev` gets `/tmp/deno-compile-turbopanel-dev`). Never bare
+  `--allow-ffi`: it lets the process load any shared object and defeats every
+  other permission. If the binary is renamed, the scope must follow.
 - It does **not** extract the companion `libduckdb.so` the addon links via
   `RUNPATH $ORIGIN`, and `--include` cannot help (the compiled binary's VFS is
   invisible to the dynamic linker). The daemon's `instance-build` role stages
@@ -1019,7 +1111,7 @@ in `src/deno-compile-permissions.test.ts` and gated by `deno task duckdb:smoke`:
   converge (locating it via `scripts/duckdb-native-lib.ts`; converge fails when
   it cannot be staged) and the instance unit puts that directory on
   `LD_LIBRARY_PATH` (see `resolveDuckdbNativeLibraryPath` in
-  `src/platform/deno/server-paths.ts`). Source mode (`deno run --allow-ffi`) needs neither —
+  `src/platform/deno/server-paths.ts`). Source mode (`deno run --allow-ffi=<instance dir>/node_modules`) needs neither —
   addon and `.so` are real sibling files under `node_modules`.
 - Metrics state lives at `resolveMetricsDir()` (`<stateDir>/metrics`,
   `TURBOPANEL_METRICS_DIR` override); the compile tasks and the daemon's
@@ -1038,8 +1130,9 @@ The release package (`.github/workflows/release.yml`,
 `turbopanel-instance-<version>-<arch>.tar.zst`) is `bin/turbopanel` and
 `lib/libduckdb.so`, unpacked flat into `/opt/turbopanel` beside the daemon.
 Its `manifest.json` is **signed** before upload with the offline release key
-(`RELEASE_SIGNING_KEY`, a repo secret; the canary path passes it to the called
-workflow explicitly). The `manifest` job runs turbopaneld's
+(`TURBOPANEL_RELEASE_SIGNING_KEY`, an environment secret with the same value in
+the `canary` (trunk), `rc` (staging) and `release` (live, owner-approved)
+environments: the signing job declares the one matching its channel). There is no repo-level fallback. Callers of `release.yml` and the dev release workflows keep `secrets: inherit`, or the environment secret evaluates empty in the called workflow and `Sign the manifest` fails (ui#164 dropped it and broke canary signing; ui#169 restored it). The `manifest` job runs turbopaneld's
 `scripts/sign-manifest.ts` from a SHA-pinned checkout, so the control plane,
 UI and daemon share one signer and one canonicaliser. A missing key, or one
 that does not match the public key pinned in that turbopaneld commit, fails
@@ -1223,7 +1316,7 @@ src/
   (`fetch`-only, one fetch straight to the channel's built-in location from
   `src/contracts/update-channel.ts` — trunk on the CDN drop, rc/release on the
   daemon's GitHub Releases; per-channel cache; returns `null` on any failure).
-  The instance follows `TURBOPANEL_UPDATE_CHANNEL` (default `trunk`; invalid
+  The instance follows `TURBOPANEL_UPDATE_CHANNEL` (default `release`; invalid
   is a Deno startup error) and every queued daemon update carries that channel
 - `src/features/email/` — shared queue types/templates; SMTP (Deno/AMQP) and
   Mailgun (Workers) backends live under `src/platform/`
@@ -1242,7 +1335,9 @@ src/
   `GET/PUT /instance/hostnames`, `GET/POST /instance/certificates`,
   `PATCH /instance/certificates/:id/hostnames`, and `GET/PUT /instance/acme`
   manage per-name certificate source and instance ACME settings (independent
-  of any organization's ACME opt-in); `GET /instance/daemon` reports the
+  of any organization's ACME opt-in); the reads stay admin-gated but the
+  writes (PUT hostnames, POST certificates, PATCH certificate hostnames, PUT
+  acme) sit behind `createRootOnlyMiddleware` like public URLs and apply; `GET /instance/daemon` reports the
   co-located daemon's `resolveDaemonCapabilities` snapshot (`{ applicable: false }`
   on Workers, and it must not wake a cell); `GET /instance/updates` reports the
   installed control-plane version (`INSTANCE_VERSION` plus `resolveInstanceRevision`)

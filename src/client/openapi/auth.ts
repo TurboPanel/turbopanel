@@ -34,7 +34,7 @@ const denoClientStatusSchema = {
     billingEnabled: {
       type: 'boolean',
       description:
-        'Whether customer billing is operational (Stripe API key and webhook signing secret). Presence only — the console hides the billing area wholesale when false. Never the keys.',
+        'Whether customer billing is operational (Stripe API key and webhook signing secret). Presence only — the app hides the billing area wholesale when false. Never the keys.',
     },
     authProviders: {
       type: 'array',
@@ -66,7 +66,7 @@ const workersClientStatusSchema = {
     billingEnabled: {
       type: 'boolean',
       description:
-        'Whether customer billing is operational (Stripe API key and webhook signing secret). Presence only — the console hides the billing area wholesale when false. Never the keys.',
+        'Whether customer billing is operational (Stripe API key and webhook signing secret). Presence only — the app hides the billing area wholesale when false. Never the keys.',
     },
     authProviders: {
       type: 'array',
@@ -115,13 +115,13 @@ export function buildAuthSchemas(runtime?: 'deno' | 'workers') {
         license: { type: 'string', const: 'AGPL-3.0-only' },
         version: {
           type: 'string',
-          description: "The instance's semver (deno.json).",
+          description: "The control plane's semver (deno.json).",
         },
         channel: {
           type: 'string',
           enum: ['trunk', 'edge', 'canary', 'rc', 'release'],
           description:
-            'The update channel this instance follows (TURBOPANEL_UPDATE_CHANNEL; default trunk).',
+            'The update channel this control plane follows (TURBOPANEL_UPDATE_CHANNEL; default release).',
         },
         build: {
           type: ['string', 'null'],
@@ -132,7 +132,7 @@ export function buildAuthSchemas(runtime?: 'deno' | 'workers') {
           type: ['string', 'null'],
           enum: ['testing', 'staging', 'live', null],
           description:
-            'The hosted deployment (TURBOPANEL_ENVIRONMENT, set per wrangler env); null for local dev and self-hosted.',
+            'The TurboPanel High Availability deployment (TURBOPANEL_ENVIRONMENT, set per wrangler env); null for local dev and self-hosted.',
         },
         revision: {
           type: 'object',
@@ -368,7 +368,7 @@ export function buildAuthSchemas(runtime?: 'deno' | 'workers') {
         redirectTo: {
           type: 'string',
           description:
-            'Console page the emailed link lands on; only allowlisted pages (today just /reset-password) are honoured, anything else falls back to /reset-password.',
+            'App page the emailed link lands on; only allowlisted pages (today just /reset-password) are honoured, anything else falls back to /reset-password.',
         },
       },
     },
@@ -417,6 +417,14 @@ export function buildAuthSchemas(runtime?: 'deno' | 'workers') {
         token: { type: 'string', description: 'The token from the reset page URL (?token=).' },
       },
     },
+    ChangePasswordRequest: {
+      type: 'object',
+      required: ['currentPassword', 'newPassword'],
+      properties: {
+        currentPassword: { type: 'string', format: 'password' },
+        newPassword: { type: 'string', format: 'password' },
+      },
+    },
     ResetPasswordOtpRequest: {
       type: 'object',
       required: ['email', 'otp', 'password'],
@@ -450,7 +458,7 @@ export const authPaths: Record<string, unknown> = {
       summary: 'Health probe',
       responses: {
         '200': {
-          description: 'Instance is reachable',
+          description: 'Control plane is reachable',
           content: {
             'application/json': {
               schema: { $ref: '#/components/schemas/OkHealth' },
@@ -1011,13 +1019,13 @@ export const authPaths: Record<string, unknown> = {
       tags: ['Authentication'],
       summary: 'Open a password-reset link',
       description:
-        'The link in the email. Redirects to `callbackURL` (an allowlisted console page, default /reset-password) with `?token=` when the link is live, else `?error=INVALID_TOKEN`. Does not use the link up.',
+        'The link in the email. Redirects to `callbackURL` (an allowlisted app page, default /reset-password) with `?token=` when the link is live, else `?error=INVALID_TOKEN`. Does not use the link up.',
       parameters: [
         { name: 'token', in: 'path', required: true, schema: { type: 'string' } },
         { name: 'callbackURL', in: 'query', required: false, schema: { type: 'string' } },
       ],
       responses: {
-        '302': { description: 'Redirect to the console reset page' },
+        '302': { description: 'Redirect to the app reset page' },
       },
     },
   },
@@ -1035,7 +1043,35 @@ export const authPaths: Record<string, unknown> = {
         '200': { description: 'Password updated', ...jsonBody('OkResponse') },
         '400': {
           description:
-            'Invalid body or weak password, or `INVALID_TOKEN` (unknown, used or expired link)',
+            'Invalid body, weak or breached (`password_breached`) password, or `INVALID_TOKEN` (unknown, used or expired link)',
+          ...jsonBody('ErrorResponse'),
+        },
+        '429': { description: 'Too many requests', ...jsonBody('ErrorResponse') },
+        '503': { description: 'Database unavailable', ...jsonBody('ErrorResponse') },
+      },
+    },
+  },
+  '/api/client/v1/auth/change-password': {
+    post: {
+      tags: ['Authentication'],
+      summary: 'Change the signed-in account password',
+      description:
+        'Verifies the current password (throttled like every step-up), applies the sign-up password rules, refuses a known breached password (`password_breached`; if the breach lookup is unreachable the change is allowed) and signs out every other session. This session stays signed in.',
+      security: [{ cookieAuth: [] }],
+      requestBody: {
+        required: true,
+        ...jsonBody('ChangePasswordRequest'),
+      },
+      responses: {
+        '200': { description: 'Password changed', ...jsonBody('OkResponse') },
+        '400': {
+          description:
+            'Invalid body or weak password, `incorrect_current_password`, `password_unchanged` or `password_breached`',
+          ...jsonBody('ErrorResponse'),
+        },
+        '401': { description: 'Not signed in', ...jsonBody('ErrorResponse') },
+        '409': {
+          description: '`no_password`: the account signs in without a password',
           ...jsonBody('ErrorResponse'),
         },
         '429': { description: 'Too many requests', ...jsonBody('ErrorResponse') },
@@ -1725,6 +1761,50 @@ export const authPaths: Record<string, unknown> = {
           description:
             '`last_sign_in_method` — no credential account, other provider account, or passkey would remain',
         },
+      },
+    },
+  },
+  '/api/client/v1/auth/reauth': {
+    post: {
+      tags: ['Authentication'],
+      summary: 'Re-authenticate for permanent actions',
+      description:
+        'Proves who the signed-in person is again so permanent actions (delete a project, remove a member, revoke a key) unlock for five minutes on this session. Send `password`, or `code` (authenticator) when an authenticator is enrolled. Routes that need this answer `403` with `error: reauth_required` and the allowed `methods` when the organization has turned the setting on.',
+      security: [{ cookieAuth: [] }],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              properties: {
+                password: { type: 'string', format: 'password' },
+                code: { type: 'string' },
+              },
+            },
+          },
+        },
+      },
+      responses: {
+        '200': {
+          description: 'Re-authenticated; `expiresAt` is when it lapses',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['ok', 'expiresAt'],
+                properties: {
+                  ok: { type: 'boolean', const: true },
+                  expiresAt: { type: 'string', format: 'date-time' },
+                },
+              },
+            },
+          },
+        },
+        '400': { description: 'Invalid request, or `reauth_unavailable` (sign in again)' },
+        '401': { description: 'Unauthorized' },
+        '403': { description: 'Reauthentication failed' },
+        '429': { description: 'Too many attempts' },
       },
     },
   },

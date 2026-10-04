@@ -128,8 +128,22 @@ describe('build.yml fan-in', () => {
       .split('\n')
       .filter((line) => line.trimStart().startsWith('cancel-in-progress:'))
     assert(cancelLines.length >= 5)
+    // The trunk -> staging and staging -> live promotion PRs are never
+    // cancelled either (each head is a real commit; a cancelled run is a red
+    // mark on it): their groups end in the run id instead of the ref.
     for (const line of cancelLines) {
-      assertStringIncludes(line, "cancel-in-progress: ${{ github.event_name == 'pull_request' }}")
+      assertStringIncludes(
+        line,
+        "cancel-in-progress: ${{ github.event_name == 'pull_request' && github.head_ref != 'trunk' && github.head_ref != 'staging' }}"
+      )
+    }
+    const groupLines = workflow.split('\n').filter((line) => line.trimStart().startsWith('group:'))
+    assert(groupLines.length >= 5)
+    for (const line of groupLines) {
+      assertStringIncludes(
+        line,
+        "(github.head_ref == 'trunk' || github.head_ref == 'staging') && github.run_id || github.ref"
+      )
     }
     assertStringIncludes(
       workflow,
@@ -139,8 +153,13 @@ describe('build.yml fan-in', () => {
 
   it('pairs sibling checkouts with trunk, never staging or live', () => {
     const guard = 'staging:* | live:* | *:staging | *:live) REF=trunk ;;'
-    assertEquals(workflow.split(guard).length - 1, 2)
+    assertEquals(workflow.split(guard).length - 1, 1)
     assertEquals(workflow.includes('REF="${{'), false)
+  })
+
+  it('does not depend on the website checkout or a generated data dictionary', () => {
+    assertEquals(workflow.includes('repository: TurboPanel/website'), false)
+    assertEquals(workflow.includes('data-dictionary'), false)
   })
 })
 

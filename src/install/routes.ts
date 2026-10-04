@@ -12,20 +12,14 @@ import {
   resolveClientIp,
   type AuthRouteOpts,
 } from '../client/authn/http.ts'
-import {
-  completeInstanceInstall,
-  isInstanceInstalled,
-} from '../client/authn/install-state.ts'
+import { completeInstanceInstall, isInstanceInstalled } from '../client/authn/install-state.ts'
 import { createSession, getSession } from '../client/authn/session-store.ts'
 import { getDb } from '../db/connection.ts'
 import {
   INSTALL_BOOTSTRAP_MAX_BODY_BYTES,
   INSTALL_COMPLETE_MAX_BODY_BYTES,
 } from '../client/authn/auth-body-limits.ts'
-import {
-  parseCompleteInstallBodyRaw,
-  parseInstallHostCredentialsBody,
-} from './parse-body.ts'
+import { parseCompleteInstallBodyRaw, parseInstallHostCredentialsBody } from './parse-body.ts'
 import { INSTALL_API_PREFIX } from '../app/surfaces.ts'
 
 async function completeInstallHandler(c: Context, opts: AuthRouteOpts) {
@@ -43,7 +37,7 @@ async function completeInstallHandler(c: Context, opts: AuthRouteOpts) {
   }
 
   if (await isInstanceInstalled(db)) {
-    return c.json({ ok: false, error: 'Instance is already configured' }, 409)
+    return c.json({ ok: false, error: 'Control plane is already configured' }, 409)
   }
 
   const gated = await readGatedAuthJsonBody(c, {
@@ -56,12 +50,7 @@ async function completeInstallHandler(c: Context, opts: AuthRouteOpts) {
   if (!gated.ok) return gated.response
   const { username, password, superadminEmail, superadminPassword } = gated.value
 
-  const hostOk = await verifyInstallHostCredentials(
-    username.trim(),
-    password,
-    opts.runtime,
-    db,
-  )
+  const hostOk = await verifyInstallHostCredentials(username.trim(), password, opts.runtime, db)
   if (!hostOk) {
     return c.json({ ok: false, error: 'Invalid host credentials' }, 401)
   }
@@ -73,7 +62,7 @@ async function completeInstallHandler(c: Context, opts: AuthRouteOpts) {
         superadminEmail,
         superadminPassword,
       },
-      c.get('commandQueue'),
+      c.get('commandQueue')
     )
 
     const { token } = await createSession(db, result.userId, {
@@ -86,8 +75,7 @@ async function completeInstallHandler(c: Context, opts: AuthRouteOpts) {
       runtime: opts.runtime,
       forwardedProto: c.req.header('x-forwarded-proto'),
     })
-    let setCookie =
-      `${tls.cookieName}=${sessionCookie}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_EXPIRES_IN_MS / 1000}`
+    let setCookie = `${tls.cookieName}=${sessionCookie}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_EXPIRES_IN_MS / 1000}`
     if (tls.isHttps) {
       setCookie += '; Secure'
     }
@@ -108,11 +96,11 @@ async function completeInstallHandler(c: Context, opts: AuthRouteOpts) {
       200,
       {
         'Set-Cookie': setCookie,
-      },
+      }
     )
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Install failed'
-    if (message === 'Instance is already configured') {
+    if (message === 'Control plane is already configured') {
       return c.json({ ok: false, error: message }, 409)
     }
     return c.json({ ok: false, error: message }, 400)
@@ -140,7 +128,7 @@ export function registerInstallRoutes(app: Hono<AppEnv>, opts: AuthRouteOpts) {
     }
 
     if (await isInstanceInstalled(db)) {
-      return c.json({ ok: false, error: 'Instance is already configured' }, 409)
+      return c.json({ ok: false, error: 'Control plane is already configured' }, 409)
     }
 
     const gated = await readGatedAuthJsonBody(c, {
@@ -153,12 +141,7 @@ export function registerInstallRoutes(app: Hono<AppEnv>, opts: AuthRouteOpts) {
     if (!gated.ok) return gated.response
     const { username, password } = gated.value
 
-    const ok = await verifyInstallHostCredentials(
-      username.trim(),
-      password,
-      opts.runtime,
-      db,
-    )
+    const ok = await verifyInstallHostCredentials(username.trim(), password, opts.runtime, db)
     if (!ok) {
       return c.json({ ok: false, error: 'Invalid credentials' }, 401)
     }

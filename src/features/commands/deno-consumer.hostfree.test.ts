@@ -3,6 +3,7 @@
  * AMQP start/consume/close loop (broker is stubbed).
  */
 
+import { DENY_FIREWALL_APPLY } from '../firewall/enforcement.ts'
 import { assertEquals, assertRejects } from '@std/assert'
 import { stub } from '@std/testing/mock'
 import amqplib from 'amqplib'
@@ -25,17 +26,27 @@ import { createNoopCommandQueue } from './noop-command-queue.ts'
 const test = Deno.test.bind(Deno)
 
 test('buildCommandConsumerDeps returns undefined when no optional deps are set', () => {
-  assertEquals(buildCommandConsumerDeps({}), undefined)
+  assertEquals(buildCommandConsumerDeps({ firewallApplyGate: DENY_FIREWALL_APPLY }), undefined)
 })
 
 test('buildCommandConsumerDeps wires commandQueue when present', () => {
   const commandQueue = createNoopCommandQueue()
-  assertEquals(buildCommandConsumerDeps({ commandQueue }), {
+  assertEquals(buildCommandConsumerDeps({ firewallApplyGate: DENY_FIREWALL_APPLY, commandQueue }), {
     commandQueue,
     resealDeps: undefined,
     secretsConfig: undefined,
     dataEncryptionSecrets: undefined,
+    firewallApplyGate: DENY_FIREWALL_APPLY,
   })
+})
+
+test('buildCommandConsumerDeps passes the firewall apply key through untouched', () => {
+  const commandQueue = createNoopCommandQueue()
+  const firewallApplyGate = (serverId: string) => serverId === 'one'
+  assertEquals(
+    buildCommandConsumerDeps({ commandQueue, firewallApplyGate })?.firewallApplyGate,
+    firewallApplyGate
+  )
 })
 
 test('buildCommandConsumerDeps wires resealDeps without a queue', () => {
@@ -43,7 +54,7 @@ test('buildCommandConsumerDeps wires resealDeps without a queue', () => {
     secretsConfig: { runtime: 'deno' },
     dataEncryptionSecrets: { versions: [] },
   } as never
-  const deps = buildCommandConsumerDeps({ resealDeps })
+  const deps = buildCommandConsumerDeps({ firewallApplyGate: DENY_FIREWALL_APPLY, resealDeps })
   assertEquals(deps?.resealDeps, resealDeps)
   assertEquals(deps?.commandQueue, undefined)
 })
@@ -52,15 +63,15 @@ test('commandMessageDisposition acks success and branches on transient vs perman
   assertEquals(commandMessageDisposition({ ok: true }), 'ack')
   assertEquals(
     commandMessageDisposition({ ok: false, error: new Error('ECONNREFUSED') }),
-    'nack_requeue',
+    'nack_requeue'
   )
   assertEquals(
     commandMessageDisposition({ ok: false, error: new Error('invalid command envelope') }),
-    'nack_dead',
+    'nack_dead'
   )
   assertEquals(
     commandMessageDisposition({ ok: false, error: 'data integrity failure' }),
-    'nack_dead',
+    'nack_dead'
   )
 })
 
@@ -89,18 +100,20 @@ test('applyCommandMessageDisposition maps dispositions to ack/nack flags', () =>
 
 type ConsumeHandler = (msg: { content: { toString(): string } } | null) => void
 
-function createStubBroker(options: {
-  consumerTag?: string
-  cancel?: () => Promise<void>
-  channelClose?: () => Promise<void>
-  connectionClose?: () => Promise<void>
-  /** Make ack/nack throw, the way a channel the broker took away does. */
-  dispositionError?: Error
-  /** Runs inside consume(), i.e. after the loss listeners are attached. */
-  duringConsume?: () => void
-  /** Runs inside prefetch(), i.e. while the session is still being set up. */
-  duringPrefetch?: () => void
-} = {}) {
+function createStubBroker(
+  options: {
+    consumerTag?: string
+    cancel?: () => Promise<void>
+    channelClose?: () => Promise<void>
+    connectionClose?: () => Promise<void>
+    /** Make ack/nack throw, the way a channel the broker took away does. */
+    dispositionError?: Error
+    /** Runs inside consume(), i.e. after the loss listeners are attached. */
+    duringConsume?: () => void
+    /** Runs inside prefetch(), i.e. while the session is still being set up. */
+    duringPrefetch?: () => void
+  } = {}
+) {
   const dispositions: Array<{ method: string; requeue?: boolean }> = []
   let onMessage: ConsumeHandler | undefined
   let consumeCount = 0
@@ -191,9 +204,10 @@ function missingRowDb(): Db {
   return {
     select: () => ({
       from: () => ({
-        where: () => Object.assign(Promise.resolve([]), {
-          limit: () => Promise.resolve([]),
-        }),
+        where: () =>
+          Object.assign(Promise.resolve([]), {
+            limit: () => Promise.resolve([]),
+          }),
       }),
     }),
   } as unknown as Db
@@ -207,9 +221,7 @@ function throwingDb(error: Error): Db {
   } as unknown as Db
 }
 
-async function waitForDisposition(
-  dispositions: Array<{ method: string }>,
-): Promise<void> {
+async function waitForDisposition(dispositions: Array<{ method: string }>): Promise<void> {
   for (let i = 0; i < 50; i++) {
     if (dispositions.length > 0) return
     await new Promise((resolve) => setTimeout(resolve, 5))
@@ -230,6 +242,7 @@ test('startCommandConsumer acks a valid envelope and ignores a null delivery', a
   const connectStub = stub(amqplib, 'connect', () => Promise.resolve(broker.connection as never))
   try {
     const handle = await startCommandConsumer({
+      firewallApplyGate: DENY_FIREWALL_APPLY,
       db: missingRowDb(),
       registry: emptyRegistry(),
       amqpUrl: 'amqp://test',
@@ -249,6 +262,7 @@ test('startCommandConsumer dead-letters a permanent envelope parse error', async
   const connectStub = stub(amqplib, 'connect', () => Promise.resolve(broker.connection as never))
   try {
     const handle = await startCommandConsumer({
+      firewallApplyGate: DENY_FIREWALL_APPLY,
       db: missingRowDb(),
       registry: emptyRegistry(),
       amqpUrl: 'amqp://test',
@@ -267,6 +281,7 @@ test('startCommandConsumer requeues a transient processing error', async () => {
   const connectStub = stub(amqplib, 'connect', () => Promise.resolve(broker.connection as never))
   try {
     const handle = await startCommandConsumer({
+      firewallApplyGate: DENY_FIREWALL_APPLY,
       db: throwingDb(new Error('ECONNREFUSED')),
       registry: emptyRegistry(),
       amqpUrl: 'amqp://test',
@@ -289,6 +304,7 @@ test('startCommandConsumer close swallows cancel and connection errors', async (
   const connectStub = stub(amqplib, 'connect', () => Promise.resolve(broker.connection as never))
   try {
     const handle = await startCommandConsumer({
+      firewallApplyGate: DENY_FIREWALL_APPLY,
       db: missingRowDb(),
       registry: emptyRegistry(),
       amqpUrl: 'amqp://test',
@@ -309,6 +325,7 @@ test('startCommandConsumer retries a non-Error connect failure then succeeds', a
   })
   try {
     const handle = await startCommandConsumer({
+      firewallApplyGate: DENY_FIREWALL_APPLY,
       db: missingRowDb(),
       registry: emptyRegistry(),
       amqpUrl: 'amqp://retry-string',
@@ -325,6 +342,7 @@ test('startCommandConsumer dead-letters a non-Error permanent processing error',
   const connectStub = stub(amqplib, 'connect', () => Promise.resolve(broker.connection as never))
   try {
     const handle = await startCommandConsumer({
+      firewallApplyGate: DENY_FIREWALL_APPLY,
       db: throwingDb('data integrity failure' as unknown as Error),
       registry: emptyRegistry(),
       amqpUrl: 'amqp://test',
@@ -348,6 +366,7 @@ test('startCommandConsumer retries AMQP connect once then succeeds', async () =>
   })
   try {
     const handle = await startCommandConsumer({
+      firewallApplyGate: DENY_FIREWALL_APPLY,
       db: missingRowDb(),
       registry: emptyRegistry(),
       amqpUrl: 'amqp://retry',
@@ -364,17 +383,19 @@ test('startCommandConsumer rejects when the first connect succeeds but channel s
     Promise.resolve({
       createConfirmChannel: () => Promise.reject(new Error('channel down')),
       close: async () => undefined,
-    } as never))
+    } as never)
+  )
   try {
     await assertRejects(
       () =>
         startCommandConsumer({
+          firewallApplyGate: DENY_FIREWALL_APPLY,
           db: missingRowDb(),
           registry: emptyRegistry(),
           amqpUrl: 'amqp://bad-channel',
         }),
       Error,
-      'channel down',
+      'channel down'
     )
   } finally {
     connectStub.restore()
@@ -393,6 +414,7 @@ test('startCommandConsumer survives the broker dropping an open connection and c
   const connectStub = stub(amqplib, 'connect', () => Promise.resolve(broker.connection as never))
   try {
     const handle = await startCommandConsumer({
+      firewallApplyGate: DENY_FIREWALL_APPLY,
       db: missingRowDb(),
       registry: emptyRegistry(),
       amqpUrl: 'amqp://test',
@@ -432,6 +454,7 @@ test('the connection has its error listener before the session setup awaits the 
   const connectStub = stub(amqplib, 'connect', () => Promise.resolve(broker.connection as never))
   try {
     const handle = await startCommandConsumer({
+      firewallApplyGate: DENY_FIREWALL_APPLY,
       db: missingRowDb(),
       registry: emptyRegistry(),
       amqpUrl: 'amqp://test',
@@ -457,6 +480,7 @@ test('a broker that drops while the first session is set up is rebuilt, not kept
   const connectStub = stub(amqplib, 'connect', () => Promise.resolve(broker.connection as never))
   try {
     const handle = await startCommandConsumer({
+      firewallApplyGate: DENY_FIREWALL_APPLY,
       db: missingRowDb(),
       registry: emptyRegistry(),
       amqpUrl: 'amqp://test',
@@ -480,6 +504,7 @@ test('a broker event after close does not reopen the consumer', async () => {
   const connectStub = stub(amqplib, 'connect', () => Promise.resolve(broker.connection as never))
   try {
     const handle = await startCommandConsumer({
+      firewallApplyGate: DENY_FIREWALL_APPLY,
       db: missingRowDb(),
       registry: emptyRegistry(),
       amqpUrl: 'amqp://test',
@@ -519,6 +544,7 @@ test('a delivery whose ack throws does not escape the message handler', async ()
   globalThis.addEventListener('unhandledrejection', onRejection)
   try {
     const handle = await startCommandConsumer({
+      firewallApplyGate: DENY_FIREWALL_APPLY,
       db: missingRowDb(),
       registry: emptyRegistry(),
       amqpUrl: 'amqp://test',
@@ -552,6 +578,7 @@ test('a broker that dies during the reconnect handshake is retried, not installe
   const connectStub = stub(amqplib, 'connect', () => Promise.resolve(broker.connection as never))
   try {
     const handle = await startCommandConsumer({
+      firewallApplyGate: DENY_FIREWALL_APPLY,
       db: missingRowDb(),
       registry: emptyRegistry(),
       amqpUrl: 'amqp://test',

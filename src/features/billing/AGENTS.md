@@ -25,12 +25,11 @@ src/features/billing/
 ├── pending-checkout.ts    an in-flight first Checkout session, persisted under the lease
 ├── checkout.ts           first purchase (hosted Checkout) + customer creation
 ├── portal.ts             Customer Portal: invoices and payment methods only
-├── grace-clock.ts        maintenance phase: cancel what Stripe leaves past due
 ├── reconcile.ts          maintenance phase: purchased vs held vs covered, alert only
 └── test-clock.ts         /v1/test_helpers/test_clocks, for the live harness only
 
 src/features/tiers/ladder.ts                the S1…S7 + SX ladder: what a label entitles (the one matrix)
-src/features/tiers/assignment.ts            the greedy server → tier assignment (pure)
+src/features/tiers/assignment.ts            the greedy + swap server → tier assignment (pure)
 src/features/tiers/assignment-records.ts    reads seats + licensed servers, writes `server.assigned_tier_id`
 src/features/tiers/self-hosted-grant.ts     what a self-hosted organization is entitled to: one SX unit per licence (pure)
 src/features/tiers/self-hosted-grant-records.ts  the grant's `setting` row + the grow-on-self-hosted / shrink-only rule
@@ -53,8 +52,8 @@ there is impossible on cost alone, and it would also mean a Stripe outage breaks
 monitoring. So: **nothing on the ingest or page-load path may call Stripe.**
 Reads are local rows; Stripe is called only from the webhook's deferred task,
 from the explicit mutation routes (`src/client/billing/`), the admin catalogue
-routes, and from the grace clock on the maintenance tick. The reconciliation
-sweep reads Postgres only.
+routes, and from the pending-projection retry on the maintenance tick. The
+reconciliation sweep reads Postgres only.
 
 ## The switch
 
@@ -172,7 +171,12 @@ chosen: `src/features/tiers/assignment.ts` takes the servers in bind order (olde
 first), gives each the smallest purchased tier whose rank covers its need
 (unknown hardware needs the entry rank), and leaves the newest uncovered when
 nothing fits. Incumbents are placed before any newcomer, so adding hardware can
-never move a covered server onto nothing. `assignment-records.ts` writes the
+never move a covered server onto nothing. A swap pass then runs on top: a
+server whose recommended tier (monitored NIC / drive / GPU slots) is above its
+placed tier trades seats with a server holding a higher one whose required and
+recommended tiers are both at or below the first server's placed tier, so spare
+big seats go where they are recommended and no server drops below its required
+tier. `assignment-records.ts` writes the
 result to `server.assigned_tier_id` after every projection and mutation, on
 every hardware report, on enroll, on delete and on revoke; ingest and the
 capability plan read the column.
@@ -325,21 +329,19 @@ which applied nothing. A transient failure after Stripe accepted the update
 keeps the row, so the console's retry cannot buy twice. Records expire with
 Stripe's 24 h key window.
 
-## Grace clock and reconciliation
+## Dunning and reconciliation
 
-`grace-clock.ts` owns cancellation. Stripe's dunning is configured in the
-Dashboard and stays `past_due` forever by design; the projection latches
-`grace_expires_at = past_due_since + BILLING_GRACE_WINDOW_MS` (the constant
-beside the latch in `billing-records.ts` is the only place the length is
-written), and the maintenance tick (`runGraceClock`) cancels what is still
-delinquent after it — `DELETE /v1/subscriptions/:id` keyed on
-`(subscription, expiry)` so a retried tick replays — then reprojects, which is
-what revokes the licenses, bound ones included. Leftover credit is forfeited;
-there is no refund call anywhere. `runGraceClockForSubscription` is the same
-step narrowed to one provider subscription id: it exists for the live harness,
-which must never run the batch against a shared development database (it would
-cancel whatever other delinquent rows were there), and nothing in the instance
-calls it.
+**Stripe owns cancellation** (Road to 0.2.x decision 2, 2026-09-30; before
+that a TurboPanel grace clock cancelled after 65 days). Each environment's
+Dashboard sets the retry schedule and "cancel the subscription" as the outcome
+(runbook below). While Stripe retries, the subscription is `past_due`, the
+projection latches `past_due_since`, entitlement is intact, and the C8 gate
+refuses entitlement-raising changes. When the retries run out, Stripe cancels
+and sends `customer.subscription.deleted`; the projection refetches, sees
+`canceled`, reads the seats as zero, and revokes every license, bound ones
+included. TurboPanel never calls `DELETE /v1/subscriptions/:id`, and there is
+no refund call anywhere. `grace_expires_at` is written `null` on every
+projection and is no longer read for anything.
 
 `reconcile.ts` compares, per organization, the purchased total to the active
 licenses (`licenses_exceed_purchased`), runs the assignment and reports every
@@ -352,8 +354,8 @@ refetch Stripe and is not recovery for a missed webhook — that is
 claimed deliveries whose `projected_at` is still null.
 
 Both run as optional phases of the Workers maintenance cron
-(`src/daemon/cell/offline-sweep.ts`; stripe-projection every tick, grace clock
-and reconcile on minute-divisor predicates, each isolated by
+(`src/daemon/cell/offline-sweep.ts`; stripe-projection every tick, reconcile on
+a minute-divisor predicate, each isolated by
 `runOptionalPhase`), and are skipped entirely when `resolveBillingConfig`
 returns `null`. The Deno maintenance tick has no billing phases.
 
@@ -408,7 +410,10 @@ a **resolvable tax behaviour**. `livemode`, `name` and `metadata` come back for
 the operator to eyeball.
 
 "Resolvable" means the price names `inclusive`/`exclusive` **or** the account's
-Stripe Tax settings carry a default; Stripe documents `tax_behavior` as "only
+Stripe Tax settings carry a default (`inclusive`, `exclusive`, or
+`inferred_by_currency`, the Dashboard's "Automatic": exclusive for USD/CAD,
+inclusive otherwise; only the account default can hold that third value, a
+price is just inclusive/exclusive/unspecified; `null` = unreadable or none); Stripe documents `tax_behavior` as "only
 required if a default tax behavior was not provided in the Stripe Tax settings",
 and recommends the account default. The Dashboard renders that state as _"Use
 default (no)"_ while the API still returns `unspecified`, so refusing on the
@@ -438,14 +443,14 @@ Product and a superadmin binds it to the SX row.
 each on its own Stripe **test clock** and its own throw-away organization; both,
 and the organization's ledger and lease rows, are deleted in a `finally`:
 
-| Scenario                 | Proves                                                                                                                                                                                                                                                                                                                                                                           |
-| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `partial-first-month`    | C2: signup mid-month — day-1 anchor, one prorated first invoice, `active` projection, no latch                                                                                                                                                                                                                                                                                   |
-| `mid-cycle-upgrade`      | C4/C6: `upgradeTier` on a failing card is parked (`pending: true`); seats and the server's `assigned_tier_id` are unchanged, a reprojection raises nothing; paying the open proration makes Stripe apply it (`pending_update_applied`), and only then does the projection add the S5 seat and the assignment move the server onto it                                             |
-| `deferred-downgrade`     | C5/C7: `downgradeTier` parks S5 → S3 on a schedule; seats and the assignment hold until the boundary, then S3 replaces S5, the intent lands, the server is reassigned S3, and the renewal bills S3 with no proration invoice                                                                                                                                                     |
-| `quantity-up-down`       | C3/C5, one scenario: `changeSeats(+2)` is immediate and invoiced (`always_invoice`); `changeSeats(−1)` is a `release-seat` intent on a schedule that lands at the boundary, `current_period_end` rolls, and the renewal bills the reduced quantity at full price                                                                                                                 |
-| `upgrade-while-past-due` | C8: after a failed renewal `upgradeTier` and `changeSeats(+1)` answer `409 subscription_past_due` (naming `graceExpiresAt`) with **zero** Stripe writes, no intent, no invoice, lease released; paying the renewal clears both latches and the same upgrade then applies                                                                                                         |
-| `dunning-retry-window`   | C13: the failed renewal latches `past_due` + grace; the clock is walked through Smart Retries' window a fortnight at a time with the status delinquent, the latches held and the seat and license intact; `runGraceClockForSubscription` does nothing a millisecond early and at expiry cancels, reprojects to `canceled`, zero seats, license revoked; a second tick is a no-op |
+| Scenario                 | Proves                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `partial-first-month`    | C2: signup mid-month — day-1 anchor, one prorated first invoice, `active` projection, no latch                                                                                                                                                                                                                                                                                                                              |
+| `mid-cycle-upgrade`      | C4/C6: `upgradeTier` on a failing card is parked (`pending: true`); seats and the server's `assigned_tier_id` are unchanged, a reprojection raises nothing; paying the open proration makes Stripe apply it (`pending_update_applied`), and only then does the projection add the S5 seat and the assignment move the server onto it                                                                                        |
+| `deferred-downgrade`     | C5/C7: `downgradeTier` parks S5 → S3 on a schedule; seats and the assignment hold until the boundary, then S3 replaces S5, the intent lands, the server is reassigned S3, and the renewal bills S3 with no proration invoice                                                                                                                                                                                                |
+| `quantity-up-down`       | C3/C5, one scenario: `changeSeats(+2)` is immediate and invoiced (`always_invoice`); `changeSeats(−1)` is a `release-seat` intent on a schedule that lands at the boundary, `current_period_end` rolls, and the renewal bills the reduced quantity at full price                                                                                                                                                            |
+| `upgrade-while-past-due` | C8: after a failed renewal `upgradeTier` and `changeSeats(+1)` answer `409 subscription_past_due` (`graceExpiresAt` is always `null`) with **zero** Stripe writes, no intent, no invoice, lease released; paying the renewal clears the `past_due_since` latch and the same upgrade then applies                                                                                                                            |
+| `dunning-retry-window`   | C13: the failed renewal latches `past_due`; the clock is walked a week at a time while Stripe retries, with the status delinquent, `past_due_since` held and the seat, license and assignment intact, until Stripe's own dunning cancels; the projection then reads `canceled`, zero seats, every license revoked and the server on nothing. Fails with a pointer to the runbook if Stripe has not cancelled within 35 days |
 
 Every seat or tier change is made through `src/client/billing/mutations.ts` —
 the bodies of the `/billing/*` routes, called with the same deps the routes pass
@@ -455,9 +460,8 @@ objects. Nothing in the harness writes `server.assigned_tier_id`,
 `license.revoked_at` or a ledger row directly; minting a license and binding it
 to a `server` row sized for the tier under test are the only direct writes, as
 setup. The scenario's test clock is its wall clock — projection `now`, intent
-timestamps, `prorationDate` and the grace clock's `nowMs` all read the frozen
-time — so a latch written at a simulated boundary and a sweep run at a simulated
-expiry agree.
+timestamps and `prorationDate` all read the frozen time — so a latch written at
+a simulated boundary and the state read back after a later advance agree.
 
 It is service-dependent (`scripts/check-test-inventory.mjs`) and never runs in
 CI. The traps live in the shared helpers, not the scenarios: customers are
@@ -543,8 +547,8 @@ surface:
 The self-hosted OpenAPI builders (`src/client/openapi/index.ts`,
 `src/admin/openapi/index.ts`) do not import billing or tier definitions.
 `platform/deno/server.ts` resolves no `BillingConfig`, builds no Stripe rate-limit
-bucket, and its maintenance tick has no grace-clock, reconcile or tier-notice
-phase; the grace clock and reconcile run on the Workers cron
+bucket, and its maintenance tick has no billing-projection, reconcile or
+tier-notice phase; those run on the Workers cron
 (`src/daemon/cell/offline-sweep.ts`). `createApp` has no `billingConfig` option
 — `workers.ts` sets the context variable per request in its own middleware.
 
@@ -598,13 +602,16 @@ These are **account-level settings, not API fields**; set them once per Stripe
 account (the sandbox included) and keep them so. Nothing here can be done from
 code.
 
-1. _Billing → Settings → Subscriptions and emails → Manage failed payments_:
-   Smart Retries, retry for up to **2 months** (C13).
-2. _If all retries fail_: **leave the subscription past-due**. Not "cancel" (the
-   grace clock is the cancel) and not "mark unpaid" (also fine — the clock
-   treats `unpaid` as delinquent — but past-due keeps invoices collectable). The
-   grace clock exists because of this step: Stripe will never end the
-   subscription on its own, and entitlement must end somewhere.
+1. _Billing → Revenue recovery → Retries_ (or _Settings → Subscriptions and
+   emails → Manage failed payments_): a custom retry schedule of about **14
+   days** on staging and live; testing may use a much shorter one so the
+   lifecycle can be exercised quickly. Stripe caps a custom schedule at about
+   27 days (C13). Set per environment, since each has its own sandbox.
+2. _If all retries fail_: **cancel the subscription**. This is the only thing
+   that ends a past-due subscription — TurboPanel has no clock of its own and
+   never cancels. Not "leave past-due" (entitlement would never end) and not
+   "mark unpaid" (same problem). The `dunning-retry-window` harness scenario
+   fails with a pointer here if the sandbox is set any other way.
 3. **Customer Portal.** Features are set by `portal.ts` on the configuration it
    creates, not in the Dashboard; a Dashboard-edited default configuration is
    never used because sessions name their configuration explicitly. What the

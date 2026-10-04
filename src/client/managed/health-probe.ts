@@ -10,6 +10,7 @@ import { updateManagedMemberObservedReplication } from '../../features/managed/m
 import { getServerDaemonStateByServerId } from '../../features/servers/server-identity-db.ts'
 import { cellTrace } from '../../lib/logger.ts'
 import { MANAGED_HEALTH_FEATURE } from '../../lib/version-wire.ts'
+import type { FreshStandbyProbe } from '../../features/managed/ha-fresh-standby.ts'
 import { loadServerStatusRecords } from '../servers/update-status.ts'
 
 /**
@@ -91,14 +92,44 @@ function parseObservedReplication(
   const health: ManagedReplicationHealth = {
     state: replication.state,
     observedAt: replication.observedAt,
+    ...lagFields(replication),
   }
-  if (typeof replication.lagBytes === 'number' && Number.isFinite(replication.lagBytes)) {
-    health.lagBytes = replication.lagBytes
-  }
-  if (typeof replication.lagSeconds === 'number' && Number.isFinite(replication.lagSeconds)) {
-    health.lagSeconds = replication.lagSeconds
-  }
+  if (typeof replication.receivedLsn === 'string') health.receivedLsn = replication.receivedLsn
+  if (typeof replication.replayLsn === 'string') health.replayLsn = replication.replayLsn
+  const lastStreaming = parseLastStreaming(replication.lastStreaming)
+  if (lastStreaming) health.lastStreaming = lastStreaming
   return health
+}
+
+function finiteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value)
+}
+
+function lagFields(record: Record<string, unknown>): {
+  lagBytes?: number
+  lagSeconds?: number
+  receiveLagBytes?: number
+} {
+  return {
+    ...(finiteNumber(record.lagBytes) ? { lagBytes: record.lagBytes } : {}),
+    ...(finiteNumber(record.lagSeconds) ? { lagSeconds: record.lagSeconds } : {}),
+    ...(finiteNumber(record.receiveLagBytes) ? { receiveLagBytes: record.receiveLagBytes } : {}),
+  }
+}
+
+/** The daemon's last `streaming` read of a standby; dropped when malformed. */
+function parseLastStreaming(value: unknown): ManagedReplicationHealth['lastStreaming'] {
+  if (!isRecord(value)) return undefined
+  if (typeof value.at !== 'string' || !finiteNumber(value.ageMs)) return undefined
+  return { at: value.at, ageMs: value.ageMs, ...lagFields(value) }
+}
+
+/** `lastStreaming.ageMs` is only meaningful at probe time: never stored. */
+function withoutLastStreaming(health: ManagedReplicationHealth): ManagedReplicationHealth {
+  if (!health.lastStreaming) return health
+  const stored = { ...health }
+  delete stored.lastStreaming
+  return stored
 }
 
 /**
@@ -173,7 +204,7 @@ export async function probeManagedMemberHealth(
     if (parsed === 'member_mismatch') return { status: 'unavailable', reason: 'member_mismatch' }
     if (parsed === null) return { status: 'unavailable', reason: 'invalid_result' }
 
-    await persist(params.memberId, parsed)
+    await persist(params.memberId, withoutLastStreaming(parsed))
     return { status: 'observed', replication: parsed }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
@@ -185,5 +216,36 @@ export async function probeManagedMemberHealth(
       error: message,
     })
     return { status: 'unavailable', reason: 'error', error: message }
+  }
+}
+
+/**
+ * Automatic failover's probe of a candidate standby
+ * (`features/managed/ha-fresh-standby.ts`): the fresh observation, or `null`
+ * for any outcome other than `observed` (the gate then refuses).
+ */
+export function createFreshStandbyProbe(
+  db: Db,
+  registry: DaemonCellRegistry | undefined,
+  options: { skipServerId?: string; deps?: ManagedHealthProbeDeps } = {}
+): FreshStandbyProbe {
+  return async (target) => {
+    // A Durable Object must not wait on its own cell from inside one of its
+    // own inbound handlers.
+    if (target.serverId === options.skipServerId) return null
+    const outcome = await probeManagedMemberHealth(
+      db,
+      registry,
+      {
+        serverId: target.serverId,
+        managedId: target.managedId,
+        memberId: target.memberId,
+        role: 'replica',
+        engine: target.engine,
+        timeoutMs: MANAGED_HEALTH_PROBE_PROMOTE_TIMEOUT_MS,
+      },
+      options.deps
+    )
+    return outcome.status === 'observed' ? outcome.replication : null
   }
 }

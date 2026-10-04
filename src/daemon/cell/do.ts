@@ -21,9 +21,20 @@ import {
   type ServerOsMetadata,
   type ServerTimeSync,
 } from '../../features/servers/server-metadata.ts'
-import { TERMINAL_UPDATE_RETENTION_MS } from '../../features/update/constants.ts'
-import { handleManagedHaEvent } from '../../features/managed/ha-event.ts'
+import {
+  cellAutoFailover,
+  cellCommandQueue,
+  cellFreshStandbyMarginMs,
+  handleCellManagedHaEvent,
+} from './managed-ha-inbound.ts'
+import { createDurableObjectDaemonCellRegistry } from './do-registry.ts'
+import { createFreshStandbyProbe } from '../../client/managed/health-probe.ts'
 import { handleAcmeIssuanceEvent } from '../../client/tls/acme-issuance-event.ts'
+import {
+  backupRunReportResultMessage,
+  createBackupRunReportStore,
+  handleBackupRunReport,
+} from '../../features/backups/run-report.ts'
 import { recordInstanceAcmeIssuance } from '../../features/install/instance-hostnames.ts'
 import {
   persistDaemonReachedTarget,
@@ -73,6 +84,7 @@ import {
   DAEMON_CELL_PONG,
   DAEMON_OFFLINE_SWEEP_MS,
   DAEMON_WS_POLICY_VIOLATION_CLOSE,
+  TERMINAL_REQUEST_RETENTION_MS,
   outboundEnvelopeToWireMessage,
   validateDaemonInboundEnvelope,
   validateDaemonInboundFrame,
@@ -613,6 +625,24 @@ export class DaemonCellObject {
       )
       try {
         ws.close(4001, `watchdog:${decision.reason}`)
+      } catch {
+        // Socket may already be closing.
+      }
+    }
+  }
+
+  /**
+   * Close every socket held for `serverId` so a connection that stopped
+   * delivering (but never closed) is torn down. The `webSocketClose` event then
+   * runs the normal cleanup and Postgres demotion, and the daemon reconnects.
+   */
+  #dropDaemonSockets(serverId: string, reason: string): void {
+    for (const ws of this.#ctx.getWebSockets()) {
+      const attachment = ws.deserializeAttachment() as { serverId?: string } | null
+      if (attachment?.serverId !== serverId) continue
+      console.info(`daemon-cell event=drop-connection serverId=${serverId} reason=${reason}`)
+      try {
+        ws.close(4002, `dropped:${reason}`)
       } catch {
         // Socket may already be closing.
       }
@@ -1332,7 +1362,7 @@ export class DaemonCellObject {
         finishedMs !== null &&
         (status === 'acked' || status === 'done' || status === 'failed' || status === 'expired')
       ) {
-        bumpCleanup(finishedMs + TERMINAL_UPDATE_RETENTION_MS)
+        bumpCleanup(finishedMs + TERMINAL_REQUEST_RETENTION_MS)
       }
     }
     return hasDeliverableOutbox
@@ -1819,15 +1849,18 @@ export class DaemonCellObject {
       if (parsed.type === 'managed-ha-event') {
         this.#recordInbound(attachment.serverId, parsed.at, undefined, attachment.connectionId)
         await this.#withProjectionDb('managed-ha-event', attachment.serverId, async (db) => {
-          await handleManagedHaEvent(
-            db,
-            {
-              managedId: parsed.managedId,
-              ...(parsed.sourceMemberId ? { sourceMemberId: parsed.sourceMemberId } : {}),
-              at: parsed.at,
-            },
-            { reporterServerId: attachment.serverId }
-          )
+          await handleCellManagedHaEvent(db, parsed, {
+            reporterServerId: attachment.serverId,
+            commandQueue: cellCommandQueue(this.#env),
+            autoFailover: cellAutoFailover(this.#env),
+            // Other servers' cells via their DO stubs; never this one.
+            probeStandby: createFreshStandbyProbe(
+              db,
+              createDurableObjectDaemonCellRegistry(this.#env, db),
+              { skipServerId: attachment.serverId }
+            ),
+            freshStandbyMarginMs: cellFreshStandbyMarginMs(this.#env),
+          })
         })
         return
       }
@@ -1882,7 +1915,7 @@ export class DaemonCellObject {
       }
 
       this.#recordInbound(attachment.serverId, parsed.at, undefined, attachment.connectionId)
-      await this.#handleInboundMessage(attachment.serverId, parsed)
+      await this.#handleInboundMessage(attachment.serverId, parsed, ws)
       await this.#scheduleNearestAlarm()
     } catch (err) {
       // Swallow — a bad/unexpected message must not terminate the DO instance.
@@ -1988,7 +2021,7 @@ export class DaemonCellObject {
     }
 
     // Non-terminal rows only — terminal/acked-with-finished_at rows are owned by
-    // the finished_at + TERMINAL_UPDATE_RETENTION_MS prune below (Redis parity).
+    // the finished_at + TERMINAL_REQUEST_RETENTION_MS prune below (Redis parity).
     // Deleting by expires_at here would drop a reply that landed just before the
     // original TTL before polling consumers could read it.
     this.#sql(
@@ -2004,7 +2037,7 @@ export class DaemonCellObject {
        WHERE status IN ('acked', 'done', 'failed', 'expired')
        AND finished_at IS NOT NULL
        AND finished_at <= ?`,
-      nowIso(nowMs - TERMINAL_UPDATE_RETENTION_MS)
+      nowIso(nowMs - TERMINAL_REQUEST_RETENTION_MS)
     )
     return expiringUpdates
   }
@@ -2296,6 +2329,13 @@ export class DaemonCellObject {
           ),
         })
 
+      case '/rpc/drop-connection':
+        this.#dropDaemonSockets(
+          this.#requireServerId(request, body),
+          rpcString(body?.reason) || 'dropped'
+        )
+        return jsonResponse({ ok: true })
+
       case '/rpc/lease/release':
         this.#releaseDeliveryLease(this.#requireServerId(request, body), rpcString(body?.holder))
         return jsonResponse({ ok: true })
@@ -2546,8 +2586,16 @@ export class DaemonCellObject {
     this.#trace('mark-sent', { serverId, requestId, deliveryId })
   }
 
-  async #handleInboundMessage(serverId: string, msg: DaemonMessage | null): Promise<void> {
+  async #handleInboundMessage(
+    serverId: string,
+    msg: DaemonMessage | null,
+    ws?: WebSocket
+  ): Promise<void> {
     if (!msg) return
+    if (msg.type === 'backup-run-report') {
+      await this.#handleBackupRunReport(serverId, msg, ws)
+      return
+    }
     const inbound = wireMessageToInboundEnvelope(msg)
     if (!inbound) return
     const envelopeOk = validateDaemonInboundEnvelope(inbound)
@@ -2560,6 +2608,23 @@ export class DaemonCellObject {
       return
     }
     await this.#handleInbound(serverId, inbound)
+  }
+
+  /**
+   * Answer a `backup-run-report` on the socket it arrived on. A null outcome
+   * (no projection DB, or a failure `#withProjectionDbResult` already logged)
+   * sends nothing, so the daemon keeps its spooled result and resends it.
+   */
+  async #handleBackupRunReport(
+    serverId: string,
+    msg: Extract<DaemonMessage, { type: 'backup-run-report' }>,
+    ws: WebSocket | undefined
+  ): Promise<void> {
+    const outcome = await this.#withProjectionDbResult('backup-run-report', serverId, (db) =>
+      handleBackupRunReport(createBackupRunReportStore(db), msg, { reporterServerId: serverId })
+    )
+    if (!outcome || !ws) return
+    ws.send(JSON.stringify(backupRunReportResultMessage(msg.id, outcome, nowIso())))
   }
 
   #readRequestRow(serverId: string, requestId: string): PendingRequestRecord | null {
@@ -2682,8 +2747,8 @@ export class DaemonCellObject {
     // (matches Redis `#cleanupTerminalRequest`).
     const finishedMs = Date.parse(finishedAt)
     const retainUntil = Number.isFinite(finishedMs)
-      ? nowIso(finishedMs + TERMINAL_UPDATE_RETENTION_MS)
-      : nowIso(Date.now() + TERMINAL_UPDATE_RETENTION_MS)
+      ? nowIso(finishedMs + TERMINAL_REQUEST_RETENTION_MS)
+      : nowIso(Date.now() + TERMINAL_REQUEST_RETENTION_MS)
     this.#sql(
       'handle-inbound',
       `UPDATE request SET status = ?, result_json = ?, error = ?,
@@ -2860,8 +2925,8 @@ export class DaemonCellObject {
     const requestKind = existing.requestKind
     const finishedMs = Date.parse(finishedAt)
     const retainUntil = Number.isFinite(finishedMs)
-      ? nowIso(finishedMs + TERMINAL_UPDATE_RETENTION_MS)
-      : nowIso(Date.now() + TERMINAL_UPDATE_RETENTION_MS)
+      ? nowIso(finishedMs + TERMINAL_REQUEST_RETENTION_MS)
+      : nowIso(Date.now() + TERMINAL_REQUEST_RETENTION_MS)
     this.#ctx.storage.transactionSync(() => {
       if (requestKind === 'update') {
         // Retain update rows through the terminal window (Redis parity).

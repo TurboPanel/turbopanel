@@ -3,7 +3,11 @@ import {
   accessLevelForShell,
   type PrincipalAccessLevel,
 } from '../../features/principals/principal-access.ts'
-import { parsePrincipalOptions, resolvePrincipalShell } from '../../features/principals/principal-options.ts'
+import { type PrincipalNameScheme, principalNameSchemeOf } from '../../lib/principal-name-scheme.ts'
+import {
+  parsePrincipalOptions,
+  resolvePrincipalShell,
+} from '../../features/principals/principal-options.ts'
 
 /**
  * Only the columns the serializer reads — deliberately excludes `password` so
@@ -35,6 +39,12 @@ export type SerializedProjectPrincipal = {
    * This is the name to SSH/SFTP in with; `username` is the panel identity.
    */
   appliedUsername: string
+  /**
+   * Scheme the system name (`appliedUsername`) was derived with: `plain`
+   * (same as `username`), `partial` (`username` + random suffix) or `random`
+   * (no trace of `username`). Older rows are derived from their names.
+   */
+  nameScheme: PrincipalNameScheme
   projectId: string | null
   managedId: string | null
   metadata: unknown
@@ -81,7 +91,7 @@ export function serializeProjectPrincipal(
     grantedBy: string
   }[] = [],
   sshKeyCount = 0,
-  passwordAuth = false,
+  passwordAuth = false
 ): SerializedProjectPrincipal {
   return {
     id: row.id,
@@ -89,6 +99,7 @@ export function serializeProjectPrincipal(
     provider: row.provider,
     username: row.username,
     appliedUsername: row.appliedUsername,
+    nameScheme: principalNameSchemeOf(row),
     projectId: row.projectId,
     managedId: row.managedId,
     metadata: row.metadata,
@@ -97,9 +108,7 @@ export function serializeProjectPrincipal(
     entitlements: [...entitlements].sort((a, b) =>
       `${a.runtime}@${a.series}`.localeCompare(`${b.runtime}@${b.series}`)
     ),
-    access: accessLevelForShell(
-      resolvePrincipalShell(parsePrincipalOptions(row.options)),
-    ),
+    access: accessLevelForShell(resolvePrincipalShell(parsePrincipalOptions(row.options))),
     sshKeyCount,
     passwordAuth,
     createdAt: row.createdAt,

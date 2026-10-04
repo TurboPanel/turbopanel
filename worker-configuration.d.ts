@@ -59,6 +59,11 @@ interface CloudflareBindings {
    */
   CLIENT_AUTH_STRICT_RATE_LIMITER?: RateLimit
   /**
+   * Generic mutating-request cap (`src/app/write-rate-limit.ts`): 120 writes /
+   * 60 s per signed session or per IP. Optional — absent means no limit.
+   */
+  CLIENT_WRITE_RATE_LIMITER?: RateLimit
+  /**
    * Inbound GitHub webhook throttle (`/webhook/github`). Keyed per
    * peer address because the caller has no identity until its HMAC is verified.
    * Missing binding fails closed on production-like Workers (see
@@ -134,6 +139,32 @@ interface CloudflareBindings {
    * `TURBOPANEL_EXECUTION_LOG_RETENTION_DAYS` env var.
    */
   TURBOPANEL_EXECUTION_LOG_RETENTION_DAYS?: string
+  /**
+   * How often the Workers cron advances managed upgrades, in minutes. One of
+   * 1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30, 60; anything else (or unset) means
+   * the 15-minute default. Workers only: the Deno tick runs on every cleanup
+   * pass.
+   */
+  TURBOPANEL_UPGRADE_TICK_MINUTES?: string
+  /**
+   * Starting batch for managed upgrades when none is saved in the panel:
+   * `count:N` or `percent:N`. Unset means one server at a time.
+   */
+  TURBOPANEL_UPGRADE_BATCH?: string
+  /**
+   * Automatic Postgres / MySQL failover on an accepted dead-primary event:
+   * `on` or `off`. Unset = off on staging / live (`TURBOPANEL_ENVIRONMENT`),
+   * on elsewhere; any other value = off. Manual switchover / DR unaffected.
+   * See `src/features/managed/auto-failover-switch.ts`.
+   */
+  TURBOPANEL_AUTO_FAILOVER?: string
+  /**
+   * Seconds before the detected failure start that a non-streaming Postgres
+   * standby may last have streamed and still be promoted automatically.
+   * Unset or malformed = 10; capped at 60. See
+   * `src/features/managed/ha-fresh-standby.ts`.
+   */
+  TURBOPANEL_AUTO_FAILOVER_RECEIPT_MARGIN_SECONDS?: string
   /** Max inbound WS messages per connection per window (DO in-memory cap; default 120). */
   TURBOPANEL_DAEMON_WS_INBOUND_LIMIT?: string
   /** Inbound WS flood window in ms (DO in-memory cap; default 60000). */
