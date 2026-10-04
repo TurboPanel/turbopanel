@@ -220,87 +220,90 @@ function orgDb(seed: OrgSeed = {}): MemoryDb {
     createdAt: NOW,
     updatedAt: NOW,
   }))
-  return createMemoryDb([
-    [setting, []],
-    [allowance, []],
-    [key, []],
+  return createMemoryDb(
     [
-      organization,
+      [setting, []],
+      [allowance, []],
+      [key, []],
       [
-        {
-          id: ORG,
-          name: 'Billing Org',
-          slug: null,
-          metadata: null,
-          options: null,
+        organization,
+        [
+          {
+            id: ORG,
+            name: 'Billing Org',
+            slug: null,
+            metadata: null,
+            options: null,
+            createdAt: NOW,
+            updatedAt: NOW,
+          },
+        ],
+      ],
+      [
+        payer,
+        [
+          {
+            id: 'payer-1',
+            provider: 'stripe',
+            providerCustomerId: 'cus_1',
+            organizationId: ORG,
+            userId: null,
+            taxId: null,
+            createdAt: NOW,
+            updatedAt: NOW,
+          },
+        ],
+      ],
+      [
+        subscription,
+        seed.subscription === false
+          ? []
+          : [
+              {
+                id: 'sub-row',
+                payerId: 'payer-1',
+                providerSubscriptionId: 'sub_1',
+                status: seed.status ?? 'active',
+                currentPeriodEnd: PERIOD_END_ISO,
+                scheduleId: seed.scheduleId ?? null,
+                pastDueSince: null,
+                graceExpiresAt: null,
+                createdAt: NOW,
+                updatedAt: NOW,
+              },
+            ],
+      ],
+      [
+        subscriptionItem,
+        (seed.seats ?? []).map((seat, i) => ({
+          id: `seat-${i}`,
+          subscriptionId: 'sub-row',
+          tierId: seat.tierId,
+          providerItemId: seat.providerItemId,
+          providerPriceId: PRICE_BY_TIER[seat.tierId]!,
+          quantity: seat.quantity,
           createdAt: NOW,
           updatedAt: NOW,
-        },
+        })),
       ],
-    ],
-    [
-      payer,
+      [tier, [TIER_S1, TIER_S3, TIER_S5]],
+      [license, [...unbound, ...bound]],
       [
-        {
-          id: 'payer-1',
-          provider: 'stripe',
-          providerCustomerId: 'cus_1',
+        server,
+        servers.map((row) => ({
+          id: row.id,
           organizationId: ORG,
-          userId: null,
-          taxId: null,
-          createdAt: NOW,
+          name: row.id,
+          createdAt: row.createdAt ?? NOW,
           updatedAt: NOW,
-        },
+          metadata: hardware(row.cores, row.memoryGib),
+          assignedTierId: null,
+          isConnected: false,
+        })),
       ],
     ],
-    [
-      subscription,
-      seed.subscription === false
-        ? []
-        : [
-            {
-              id: 'sub-row',
-              payerId: 'payer-1',
-              providerSubscriptionId: 'sub_1',
-              status: seed.status ?? 'active',
-              currentPeriodEnd: PERIOD_END_ISO,
-              scheduleId: seed.scheduleId ?? null,
-              pastDueSince: null,
-              graceExpiresAt: null,
-              createdAt: NOW,
-              updatedAt: NOW,
-            },
-          ],
-    ],
-    [
-      subscriptionItem,
-      (seed.seats ?? []).map((seat, i) => ({
-        id: `seat-${i}`,
-        subscriptionId: 'sub-row',
-        tierId: seat.tierId,
-        providerItemId: seat.providerItemId,
-        providerPriceId: PRICE_BY_TIER[seat.tierId]!,
-        quantity: seat.quantity,
-        createdAt: NOW,
-        updatedAt: NOW,
-      })),
-    ],
-    [tier, [TIER_S1, TIER_S3, TIER_S5]],
-    [license, [...unbound, ...bound]],
-    [
-      server,
-      servers.map((row) => ({
-        id: row.id,
-        organizationId: ORG,
-        name: row.id,
-        createdAt: row.createdAt ?? NOW,
-        updatedAt: NOW,
-        metadata: hardware(row.cores, row.memoryGib),
-        assignedTierId: null,
-        isConnected: false,
-      })),
-    ],
-  ])
+    { fallback: { execute: () => Promise.resolve([]) } as never }
+  )
 }
 
 type StripeItem = { id: string; tierId: string; quantity: number }
@@ -1110,7 +1113,13 @@ test('T3 · a decrease below the licenses held is refused 409 licenses_in_use wi
     await changeSeats(depsFor(db, client).deps, { organizationId: ORG, tierId: S3, delta: -2 })
   )
   assertEquals(outcome.status, 409)
-  assertEquals(outcome.body, { error: LICENSES_IN_USE_ERROR, purchasedAfter: 1, licensesHeld: 2 })
+  assertEquals(outcome.body, {
+    error: LICENSES_IN_USE_ERROR,
+    purchasedAfter: 1,
+    licensesHeld: 2,
+    inUse: 0,
+    unusedKeys: 2,
+  })
   assertEquals(client.calls, [])
   assertEquals((await ledgerOf(db)).intents, [])
 })

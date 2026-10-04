@@ -64,6 +64,69 @@
       "when": 1790530277576,
       "tag": "0008_invitation_token_hash",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1790803233946,
+      "tag": "0009_backup_policies",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1790811211147,
+      "tag": "0010_single_word_table_names",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1790812730427,
+      "tag": "0011_rename_upgradestep_to_stage",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1790813625007,
+      "tag": "0012_rename_stage_last_stage_at",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1790817372598,
+      "tag": "0013_add_edict_and_bulwark",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1790833774570,
+      "tag": "0014_update_grace_expires_at_comment",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1790861043773,
+      "tag": "0015_deploy_options_comments",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1790883090317,
+      "tag": "0016_notification_digest_quiet_hours",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1790966133776,
+      "tag": "0017_php_mode_policy_comments",
+      "breakpoints": true
     }
   ]
 }

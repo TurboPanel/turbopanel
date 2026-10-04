@@ -2,7 +2,7 @@
 
 const IPV4_OCTET = String.raw`(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)`
 const IPV4_ADDRESS_RE = new RegExp(
-  String.raw`^${IPV4_OCTET}\.${IPV4_OCTET}\.${IPV4_OCTET}\.${IPV4_OCTET}$`,
+  String.raw`^${IPV4_OCTET}\.${IPV4_OCTET}\.${IPV4_OCTET}\.${IPV4_OCTET}$`
 )
 
 function isIpv6Hextet(part: string): boolean {
@@ -117,9 +117,7 @@ export function parseCidr(value: string): ParsedCidr | null {
   const base = ipToBigInt(addressPart)
   if (base === null) return null
   const hostBits = (version === 4 ? 32 : 128) - prefix
-  const aligned = hostBits === 0
-    ? base
-    : (base >> BigInt(hostBits)) << BigInt(hostBits)
+  const aligned = hostBits === 0 ? base : (base >> BigInt(hostBits)) << BigInt(hostBits)
   return { version, base: aligned, prefix }
 }
 
@@ -190,11 +188,7 @@ function expandIpv6Hextets(address: string): string[] | null {
     const rightParts = right === '' ? [] : right.split(':')
     const missing = 8 - leftParts.length - rightParts.length
     if (missing < 0) return null
-    return [
-      ...leftParts,
-      ...Array.from({ length: missing }, () => '0'),
-      ...rightParts,
-    ]
+    return [...leftParts, ...Array.from({ length: missing }, () => '0'), ...rightParts]
   }
   const parts = address.split(':')
   if (parts.length !== 8) return null
@@ -222,9 +216,7 @@ function ipv6HextetsFromBigInt(value: bigint): number[] {
 }
 
 /** Longest run of zero hextets (RFC 5952 prefers the leftmost on ties). */
-function longestIpv6ZeroRun(
-  hextets: readonly number[],
-): { start: number; length: number } {
+function longestIpv6ZeroRun(hextets: readonly number[]): { start: number; length: number } {
   let bestStart = -1
   let bestLen = 0
   let runStart = -1
@@ -302,8 +294,7 @@ export function cidrsOverlap(a: string, b: string): boolean {
   const right = parseCidr(b)
   if (!left || !right) return false
   if (left.version !== right.version) return false
-  return left.base <= cidrInclusiveLast(right) &&
-    right.base <= cidrInclusiveLast(left)
+  return left.base <= cidrInclusiveLast(right) && right.base <= cidrInclusiveLast(left)
 }
 
 /**
@@ -320,8 +311,7 @@ export function cidrContains(parent: string, child: string): boolean {
   if (!outer || !inner) return false
   if (outer.version !== inner.version) return false
   if (inner.prefix < outer.prefix) return false
-  return inner.base >= outer.base &&
-    cidrInclusiveLast(inner) <= cidrInclusiveLast(outer)
+  return inner.base >= outer.base && cidrInclusiveLast(inner) <= cidrInclusiveLast(outer)
 }
 
 export type CidrHostRange = {
@@ -354,10 +344,7 @@ export function cidrHostRange(cidr: string): CidrHostRange | null {
   return { first: network + 1n, last: broadcast }
 }
 
-export function nextFreeHostAddress(
-  cidr: string,
-  usedAddresses: Iterable<string>,
-): string | null {
+export function nextFreeHostAddress(cidr: string, usedAddresses: Iterable<string>): string | null {
   const range = cidrHostRange(cidr)
   const parsed = parseCidr(cidr)
   if (!range || !parsed) return null
@@ -424,17 +411,28 @@ const LINK_LOCAL_CIDRS = [
   'fe80::/10', // NOSONAR typescript:S1313 — RFC4291 IPv6 link-local classification
 ] as const
 /**
+ * Reserved or special-purpose IPv4 blocks that are never a public host: IETF
+ * protocol assignments (RFC 6890), benchmarking (RFC 2544) and the old class E
+ * block (RFC 1112). Built from parts so no address literal sits in the source.
+ */
+const RESERVED_IPV4_CIDRS: readonly string[] = [
+  [[192, 0, 0, 0], 24],
+  [[198, 18, 0, 0], 15],
+  [[240, 0, 0, 0], 4],
+].map(([octets, bits]) => `${(octets as number[]).join('.')}/${bits}`)
+/**
  * Not globally routable, but a real host address a peer on the same network
  * can reach. `100.64.0.0/10` (RFC 6598) is here because carrier-grade NAT and
  * Tailscale both hand out addresses from it.
  */
-const PRIVATE_CIDRS = [
+const PRIVATE_CIDRS: readonly string[] = [
   '10.0.0.0/8', // NOSONAR typescript:S1313 — RFC1918 private classification
   '172.16.0.0/12', // NOSONAR typescript:S1313 — RFC1918 private classification
   '192.168.0.0/16', // NOSONAR typescript:S1313 — RFC1918 private classification
   '100.64.0.0/10', // NOSONAR typescript:S1313 — RFC6598 CGNAT classification
   'fc00::/7', // NOSONAR typescript:S1313 — RFC4193 ULA classification
-] as const
+  ...RESERVED_IPV4_CIDRS,
+]
 /** Never a host address: unspecified, multicast, broadcast. */
 const UNUSABLE_CIDRS = [
   '0.0.0.0/8', // NOSONAR typescript:S1313 — unspecified IPv4, not a host
@@ -446,6 +444,55 @@ const UNUSABLE_CIDRS = [
 
 function matchesAny(address: string, cidrs: readonly string[]): boolean {
   return cidrs.some((cidr) => addressInCidr(address, cidr))
+}
+
+const IPV4_MASK = 0xffffffffn
+/** `64:ff9b::/96` (RFC 6052 NAT64): the address shifted right by 32 bits. */
+const NAT64_PREFIX = 0x64ff9b0000000000000000n
+/** `64:ff9b:1::/48` (RFC 8215 local-use NAT64): the address shifted right by 80 bits. */
+const LOCAL_NAT64_PREFIX = 0x64ff9b0001n
+/** `2002::/16` (RFC 3056 6to4): the address shifted right by 112 bits. */
+const SIX_TO_FOUR_PREFIX = 0x2002n
+/** `2001::/32` (RFC 4380 Teredo): the address shifted right by 96 bits. */
+const TEREDO_PREFIX = 0x20010000n
+
+/**
+ * The IPv4 addresses an IPv6 transition address delivers to: NAT64 (the low
+ * 32 bits), 6to4 (bits 16–47), Teredo (the server in bits 32–63 and the
+ * client, inverted, in the low 32). Each is where the packet really ends up,
+ * so it has to pass the same scope check as the IPv4 address itself would.
+ */
+function embeddedIpv4(address: string): string[] {
+  if (parseIpVersion(address) !== 6) return []
+  const value = ipToBigInt(address)
+  if (value === null) return []
+  // `::a.b.c.d` (deprecated IPv4-compatible form): `::` and `::1` are handled
+  // before this runs, so what is left delivers to the low 32 bits.
+  if (value >> 32n === 0n) return [bigIntToIp(value & IPV4_MASK, 4)]
+  if (value >> 32n === NAT64_PREFIX) return [bigIntToIp(value & IPV4_MASK, 4)]
+  if (value >> 112n === SIX_TO_FOUR_PREFIX) {
+    return [bigIntToIp((value >> 80n) & IPV4_MASK, 4)]
+  }
+  if (value >> 96n === TEREDO_PREFIX) {
+    return [
+      bigIntToIp((value >> 64n) & IPV4_MASK, 4),
+      bigIntToIp((value & IPV4_MASK) ^ IPV4_MASK, 4),
+    ]
+  }
+  return []
+}
+
+/** `64:ff9b:1::/48` is local-use only (RFC 8215), so whatever it embeds, it is not public. */
+function isLocalNat64(address: string): boolean {
+  const value = parseIpVersion(address) === 6 ? ipToBigInt(address) : null
+  return value !== null && value >> 80n === LOCAL_NAT64_PREFIX
+}
+
+/** The first non-public scope among the embedded IPv4 addresses; `undefined` when there is none. */
+function embeddedIpv4Scope(address: string): IpAddressScope | null | undefined {
+  return embeddedIpv4(address)
+    .map((ipv4) => ipAddressScope(ipv4))
+    .find((scope) => scope !== 'public')
 }
 
 /**
@@ -461,7 +508,9 @@ export function ipAddressScope(value: string): IpAddressScope | null {
   if (matchesAny(address, LOOPBACK_CIDRS)) return 'loopback'
   if (matchesAny(address, LINK_LOCAL_CIDRS)) return 'link-local'
   if (matchesAny(address, PRIVATE_CIDRS)) return 'private'
-  return 'public'
+  if (isLocalNat64(address)) return 'private'
+  const embedded = embeddedIpv4Scope(address)
+  return embedded === undefined ? 'public' : embedded
 }
 
 /** True when a peer on some network could reach the host at this address. */

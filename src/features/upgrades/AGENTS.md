@@ -7,7 +7,7 @@ exposes it, and the maintenance tick drives it.
 Root context: `../../../AGENTS.md`. Cell protocol + tolerant inbound:
 `../../daemon/cell/AGENTS.md`. Settings row: `../settings/upgrade-settings.ts`.
 Channel manifests: `../../contracts/update-channel.ts`. Schema (`upgrade` /
-`upgradestep`): `../../db/AGENTS.md`.
+`stage`): `../../db/AGENTS.md`.
 
 ## The one rule: the planner and state transitions stay pure
 
@@ -21,7 +21,7 @@ do not import a DB/cell module here.
 
 | Module              | Owns                                                                                                                               |
 | ------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `vocabulary.ts`     | `upgrade` / `upgradestep` enums, pinned by `../../db/enum-checks.test.ts`                                                          |
+| `vocabulary.ts`     | `upgrade` / `stage` enums, pinned by `../../db/enum-checks.test.ts`                                                                |
 | `target.ts`         | `upgrade.target` jsonb shape + `isOnTarget` / `differsFromInstalled`                                                               |
 | `target-resolve.ts` | channel manifests → `UpgradeTarget` (pinned via `pinnedChannelManifestUrl`), `channelHasInstancePackage`, latest-build setting row |
 | `planner.ts`        | phases + batch sizing → the run's step list                                                                                        |
@@ -32,7 +32,7 @@ do not import a DB/cell module here.
 
 The coordinator is `coordinator.ts` (decisions) plus `store.ts` (Postgres or the
 in-memory test store). `maintenance.ts` is the tick: Deno cleanup lane every
-pass, Workers offline-sweep on the 15-minute divisor. Hello, heartbeat, and
+pass, Workers offline-sweep on `TURBOPANEL_UPGRADE_TICK_MINUTES` (default 15, testing 5; `tick-cadence.ts`). Hello, heartbeat, and
 `update-progress` / `update-result` / `instance-update-result` persist through
 `persist.ts` and do not enqueue. Admin routes live in
 `../../admin/instance-updates-routes.ts`. The client gate is
@@ -52,7 +52,9 @@ the cache.
 
 - **Manual** — pre-flight first; 409 when a run is already active
   (`uniq_upgrade_active`).
-- **Automatic** — self-hosted only when `autoUpdate` is on, Workers always. Only
+- **Automatic** — only when `autoUpdate` is on, on every runtime and channel
+  (Workers included; it used to ignore the flag, which kept rolling canary
+  builds to the testing fleet with `autoUpdate` off, 2026-10-03). Only
   inside the maintenance window (if one is set), only when the target differs
   from what's installed (`differsFromInstalled`), and only when no run is
   active. Never replace a run in progress; the next run targets the newest
@@ -139,6 +141,14 @@ and never block it (no threshold). Workers caps enqueues per tick
 (`capWorkersDispatch`, `WORKERS_DISPATCH_BUDGET`) below the subrequest ceiling
 it shares with the sweep, so a 100% batch drains over several ticks.
 
+The batch is per environment: each control plane keeps its own `UPGRADE_SETTINGS`
+row. With no row saved the default is **one server per batch** (count 1), so
+customer fleets update one at a time, one batch per tick (15 minutes). An
+environment can start larger with `TURBOPANEL_UPGRADE_BATCH` (`count:N` /
+`percent:N`; testing sets `percent:100`); a value saved in Admin > Updates
+always wins. Not to be confused with `update_config.parallelism` (rolling
+deploys of a site).
+
 ## Marking servers done
 
 In the hello/heartbeat projection paths (`../../daemon/deno-ws.ts`, and the DO's
@@ -152,8 +162,8 @@ working.
 ## Self-healing (`transitions.ts`)
 
 - An offline server's step becomes `waiting` (`wait_offline`) and is dispatched
-  when the server reconnects. The orchestrator stamps `lastStageAt` when the
-  step enters `waiting`; still waiting after `UPGRADE_OFFLINE_DEADLINE_MS`
+  when the server reconnects. The orchestrator stamps `lastStageAt` (column
+  `stage.status_changed_at`) when the step enters `waiting`; still waiting after `UPGRADE_OFFLINE_DEADLINE_MS`
   (60 min) it becomes `needs_attention` with `errorCode` `server_offline`, so
   one unreachable host cannot hold the single instance-wide run open. The
   step-retry endpoint reopens it.
@@ -166,6 +176,37 @@ working.
 - A run whose last open step settles this tick finishes this tick (the
   recount covers the whole run, not just the page the tick read).
 - Endpoints exist for retrying a step and cancelling a run.
+- A control-plane (`instance`) step is never settled by the commit alone once it
+  was dispatched: the new binary answers as soon as it restarts, while the
+  daemon is still verifying it (and may roll it back). Only the daemon's `done`
+  stage or an ok `instance-update-result` settles it, so the run stays active
+  until then and `start()` answers 409 `upgrade_run_active` (with
+  `activeRunId`) to a second update.
+- A step still `dispatched` after `UPGRADE_DISPATCH_ACK_TIMEOUT_MS` (5 min) is
+  stuck, not slow: it retries (up to the attempt limit) and then goes to
+  `needs_attention` / `step_timeout`; a dispatch the daemon refused as busy
+  (`inProgressRefused`) is an answer: the earlier install may still finish the
+  step, so it keeps the 15-minute window and then goes to `needs_attention`
+  without a retry. Steps that reported a stage keep
+  `UPGRADE_STEP_TIMEOUT_MS` (15 min).
+- A control-plane step that restarted (`restarting` / `verifying`) is never
+  retried: a second install on top of a build the daemon is still checking
+  can only make it worse. Quiet past `UPGRADE_VERIFY_TIMEOUT_MS` (20 min;
+  `TURBOPANEL_UPGRADE_VERIFY_TIMEOUT_MINUTES`, whole minutes 5..180) it goes to
+  `needs_attention` / `verify_timeout`, whose `errorMessage` says whether this
+  control plane runs the target commit. This holds while the daemon is
+  disconnected too (it reconnects to the restarted control plane), so a tick in
+  that gap never turns the step into `waiting` and re-installs. The run then
+  ends in that tick with `control_plane_failed`, so the console never spins
+  forever and the next Update can start. Keep the window longer than the
+  daemon's own health budget (10 min by default;
+  `TURBOPANEL_UPDATE_HEALTH_TIMEOUT_SECONDS` on the host, up to 60 min), after
+  which the daemon has reported `done` or rolled back. Canary update #2
+  (2026-10-01) sat in `verifying` because the daemon's health check never
+  matched a canary label (`0.1.7` vs `0.1.7-canary.56`; fixed in turbopaneld).
+- `start()` reads the active run before anything else, before the target is
+  even resolved, so a second press answers 409 `upgrade_run_active` even when
+  the manifest host is unreachable.
 
 ## Saving what daemons report
 
@@ -229,7 +270,7 @@ grouped `count(*)`, not a materialised server or step list.
   client renders it and never compares version or commit strings itself.
 - Error vocabulary (`vocabulary.ts`): `UPGRADE_STEP_ERROR_CODES` are the step
   `errorCode`s the control plane sets itself (`rolled_back`, `server_offline`,
-  `step_timeout`, `managed_upgrade_required`, `downgrade_refused`); a daemon
+  `step_timeout`, `verify_timeout`, `dispatch_failed`, `managed_upgrade_required`, `downgrade_refused`); a daemon
   result may add its own reason code, so a client names these and shows any
   other code verbatim. `UPGRADE_RUN_ERROR_CODES` are the run `error`s
   (`colocated_daemon_failed`, `control_plane_failed`). The literals in

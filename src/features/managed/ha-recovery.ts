@@ -16,10 +16,14 @@ import type { ManagedEngineCode } from './types.ts'
 import { createCommandRecord, transitionCommand } from '../commands/command-records.ts'
 import {
   findInFlightRecovery,
+  findLatestAcceptedAutomaticFailover,
   findLatestRecovery,
   findRecoveryById,
-  insertRecovery,
+  insertRecoveryIfFree,
+  recordBlockedRecovery,
+  type RecoveryPatch,
   updateRecovery,
+  updateRecoveryLocked,
 } from './recovery-records.ts'
 import { container, managed, replica, server, service } from '../../db/schema.ts'
 import { OrchestratorManagedHaAuthority } from './ha-authority.ts'
@@ -38,17 +42,36 @@ import { isPrivateEndpointError, resolvePrivateEndpoints } from '../net/private-
 import {
   automaticFailoverBlockCause,
   automaticFailoverBlockedReason,
+  automaticFailoverCoolingDown,
   type HaMemberCandidateInput,
+  isAutomaticFailoverClassMember,
 } from './ha-policy.ts'
+import {
+  DEFAULT_FRESH_STANDBY_MARGIN_MS,
+  evaluateFreshStandby,
+  type FreshStandbyProbe,
+  pickMostAdvancedStandby,
+} from './ha-fresh-standby.ts'
 import { isAutomaticFailoverHealthy, replicationFromMemberMetadata } from './promote-lag.ts'
 import {
   AUTOMATIC_FAILOVER_BLOCKED_ERROR,
+  AUTOMATIC_FAILOVER_COOLDOWN_MESSAGE,
+  AUTOMATIC_FAILOVER_NO_QUEUE_MESSAGE,
+  AUTOMATIC_FAILOVER_NO_QUEUE_REASON,
+  AUTOMATIC_FAILOVER_STANDBY_NOT_PROVEN_MESSAGE,
+  FENCE_STOP_UNQUEUED_MESSAGE,
+  PROMOTE_UNQUEUED_MESSAGE,
   isTerminalRecoveryState,
   type RecoveryKind,
   type RecoveryMetadata,
   type RecoveryRecord,
 } from './recovery.ts'
 import { compatLogWarn } from '../../lib/log-compat.ts'
+import {
+  AUTOMATIC_FAILOVER_DISABLED_MESSAGE,
+  AUTOMATIC_FAILOVER_DISABLED_REASON,
+  type AutoFailoverSetting,
+} from './auto-failover-switch.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 
 export type RecoveryEnqueueOk = {
@@ -98,18 +121,24 @@ async function stampManagedReady(db: Db, managedId: string): Promise<void> {
     .where(eq(managed.id, managedId))
 }
 
-async function enqueueCommand(
-  db: Db,
-  commandQueue: CommandQueue,
-  params: {
-    serverId: string
-    type: CommandType
-    payload: unknown
-    expiresAtMs: number
-    actor: RecoveryCommandActor
-    metadata?: Record<string, unknown>
-  }
-): Promise<{ commandId: string; serverId: string } | null> {
+type CommandSpec = {
+  serverId: string
+  type: CommandType
+  payload: unknown
+  expiresAtMs: number
+  actor: RecoveryCommandActor
+  metadata?: Record<string, unknown>
+}
+
+/** A command row written `queued` but not yet handed to the queue. */
+type PreparedCommand = {
+  commandId: string
+  serverId: string
+  type: CommandType
+  queuedAt: string
+}
+
+async function prepareCommand(db: Db, params: CommandSpec): Promise<PreparedCommand> {
   const expiresAt = new Date(Date.now() + params.expiresAtMs).toISOString()
   const record = await createCommandRecord(db, {
     serverId: params.serverId,
@@ -120,22 +149,46 @@ async function enqueueCommand(
     expiresAt,
     ...(params.metadata ? { metadata: params.metadata } : {}),
   })
+  return {
+    commandId: record.id,
+    serverId: params.serverId,
+    type: params.type,
+    queuedAt: record.queuedAt ?? record.createdAt,
+  }
+}
+
+/** Hand a prepared command to the queue; on failure the row is failed and false returned. */
+async function publishCommand(
+  db: Db,
+  commandQueue: CommandQueue,
+  prepared: PreparedCommand
+): Promise<boolean> {
   try {
     await commandQueue.enqueue({
-      commandId: record.id,
-      serverId: params.serverId,
-      type: params.type,
+      commandId: prepared.commandId,
+      serverId: prepared.serverId,
+      type: prepared.type,
       attempt: 1,
-      queuedAt: record.queuedAt ?? record.createdAt,
+      queuedAt: prepared.queuedAt,
     })
   } catch {
-    await transitionCommand(db, record.id, {
+    await transitionCommand(db, prepared.commandId, {
       status: 'failed',
       error: 'Command queue unavailable',
     })
-    return null
+    return false
   }
-  return { commandId: record.id, serverId: params.serverId }
+  return true
+}
+
+async function enqueueCommand(
+  db: Db,
+  commandQueue: CommandQueue,
+  params: CommandSpec
+): Promise<{ commandId: string; serverId: string } | null> {
+  const prepared = await prepareCommand(db, params)
+  if (!(await publishCommand(db, commandQueue, prepared))) return null
+  return { commandId: prepared.commandId, serverId: prepared.serverId }
 }
 
 async function detectHaPresent(db: Db, members: readonly ManagedMemberRow[]): Promise<boolean> {
@@ -298,6 +351,7 @@ async function enqueuePromoteOrRecover(
       metadata: { recoveryId: params.recovery.id },
     })
     if (!queued) {
+      await blockUnqueuedPromote(db, params.recovery.id, metadata)
       return { ok: false, error: 'Command queue unavailable', status: 503 }
     }
     await updateRecovery(db, params.recovery.id, {
@@ -327,6 +381,7 @@ async function enqueuePromoteOrRecover(
     metadata: { recoveryId: params.recovery.id },
   })
   if (!queued) {
+    await blockUnqueuedPromote(db, params.recovery.id, metadata)
     return { ok: false, error: 'Command queue unavailable', status: 503 }
   }
   await updateRecovery(db, params.recovery.id, {
@@ -341,20 +396,34 @@ async function enqueuePromoteOrRecover(
   }
 }
 
-async function enqueueFenceCommands(
+/**
+ * A `promoting` row whose promote command never got queued would hold the
+ * in-flight slot (managed_busy) with nothing to advance it: make it terminal.
+ */
+async function blockUnqueuedPromote(
   db: Db,
-  commandQueue: CommandQueue,
-  params: {
-    recovery: RecoveryRecord
-    engine: ManagedEngineCode
-    source: ManagedMemberRow
-    target: ManagedMemberRow
-    members: readonly ManagedMemberRow[]
-    actor: RecoveryCommandActor
-    haPresent: boolean
-  }
-): Promise<RecoveryEnqueueResult> {
-  const fenceCommandIds: string[] = []
+  recoveryId: string,
+  metadata: RecoveryMetadata
+): Promise<void> {
+  await updateRecovery(db, recoveryId, {
+    state: 'blocked',
+    metadata: { ...metadata, blockedReason: PROMOTE_UNQUEUED_MESSAGE },
+  })
+}
+
+type FenceParams = {
+  recovery: RecoveryRecord
+  engine: ManagedEngineCode
+  source: ManagedMemberRow
+  target: ManagedMemberRow
+  members: readonly ManagedMemberRow[]
+  actor: RecoveryCommandActor
+  haPresent: boolean
+}
+
+/** Drain rows for every connected member server (written, not yet queued). */
+async function prepareDrainCommands(db: Db, params: FenceParams): Promise<PreparedCommand[]> {
+  const prepared: PreparedCommand[] = []
   const drainServers = [...new Set(params.members.map((row) => row.serverId))]
   await forEachSequential(drainServers, async (serverId) => {
     if (!(await isServerConnected(db, serverId))) return
@@ -365,18 +434,74 @@ async function enqueueFenceCommands(
       engine: params.engine,
       phase: 'drain',
     })
-    const queued = await enqueueCommand(db, commandQueue, {
-      serverId,
-      type: 'managed.ha.failover',
-      payload,
-      expiresAtMs: FENCE_TTL_MS,
-      actor: params.actor,
-      metadata: { recoveryId: params.recovery.id, fencePhase: 'drain' },
-    })
-    if (queued) fenceCommandIds.push(queued.commandId)
+    prepared.push(
+      await prepareCommand(db, {
+        serverId,
+        type: 'managed.ha.failover',
+        payload,
+        expiresAtMs: FENCE_TTL_MS,
+        actor: params.actor,
+        metadata: { recoveryId: params.recovery.id, fencePhase: 'drain' },
+      })
+    )
   })
+  return prepared
+}
 
-  const stopQueued = await enqueueCommand(db, commandQueue, {
+/**
+ * Record every fence command id on the row BEFORE any is queued, so no result
+ * can arrive for a command the row does not know about yet.
+ */
+function recordFenceCommands(
+  db: Db,
+  recoveryId: string,
+  fenceCommandIds: string[],
+  haPresent: boolean
+): Promise<RecoveryRecord | null> {
+  return updateRecoveryLocked(db, recoveryId, (current) =>
+    current.state === 'fencing'
+      ? {
+          metadata: {
+            ...current.metadata,
+            haPresent,
+            fenceCommandIds,
+            fencingEpoch: new Date().toISOString(),
+            drainApplied: false,
+            stopApplied: false,
+          },
+        }
+      : null
+  )
+}
+
+/**
+ * The stop command never reached the queue: nothing can prove the fence, so
+ * the row turns terminal `blocked` (never promote without fencing) instead of
+ * holding the in-flight slot.
+ */
+async function blockUnqueuedFenceStop(db: Db, recoveryId: string, stopId: string): Promise<void> {
+  const blocked = await updateRecoveryLocked(db, recoveryId, (current) =>
+    current.state === 'fencing'
+      ? {
+          state: 'blocked',
+          metadata: {
+            ...current.metadata,
+            fenceCommandIds: (current.metadata.fenceCommandIds ?? []).filter((id) => id !== stopId),
+            blockedReason: FENCE_STOP_UNQUEUED_MESSAGE,
+          },
+        }
+      : null
+  )
+  if (blocked) await stampManagedReady(db, blocked.managedId)
+}
+
+async function enqueueFenceCommands(
+  db: Db,
+  commandQueue: CommandQueue,
+  params: FenceParams
+): Promise<RecoveryEnqueueResult> {
+  const drains = await prepareDrainCommands(db, params)
+  const stop = await prepareCommand(db, {
     serverId: params.source.serverId,
     type: 'managed.lifecycle',
     payload: {
@@ -389,27 +514,31 @@ async function enqueueFenceCommands(
     actor: params.actor,
     metadata: { recoveryId: params.recovery.id, fencePhase: 'stop' },
   })
-  if (!stopQueued) {
+  const fenceCommandIds = [...drains.map((row) => row.commandId), stop.commandId]
+  const recorded = await recordFenceCommands(
+    db,
+    params.recovery.id,
+    fenceCommandIds,
+    params.haPresent
+  )
+  if (!recorded) return { ok: false, error: 'managed_busy', status: 409 }
+  await stampManagedApplying(db, params.recovery.managedId)
+
+  const settle = { recoveryId: params.recovery.id, engine: params.engine, actor: params.actor }
+  await forEachSequential(drains, async (drain) => {
+    if (await publishCommand(db, commandQueue, drain)) return
+    // A drain that never left still has to leave the pending list; the stop
+    // is still pending, so this never advances the row on its own.
+    await settleFenceCommand(db, commandQueue, { ...settle, commandId: drain.commandId })
+  })
+  if (!(await publishCommand(db, commandQueue, stop))) {
+    await blockUnqueuedFenceStop(db, params.recovery.id, stop.commandId)
     return { ok: false, error: 'Command queue unavailable', status: 503 }
   }
-  fenceCommandIds.push(stopQueued.commandId)
-
-  await updateRecovery(db, params.recovery.id, {
-    state: 'fencing',
-    metadata: {
-      ...params.recovery.metadata,
-      haPresent: params.haPresent,
-      fenceCommandIds,
-      fencingEpoch: new Date().toISOString(),
-      drainApplied: false,
-      stopApplied: false,
-    },
-  })
-  await stampManagedApplying(db, params.recovery.managedId)
   return {
     ok: true,
-    commandId: stopQueued.commandId,
-    serverId: stopQueued.serverId,
+    commandId: stop.commandId,
+    serverId: stop.serverId,
     fencePending: true,
     recoveryId: params.recovery.id,
   }
@@ -433,7 +562,7 @@ async function beginRecovery(params: {
   }
 
   const haPresent = await detectHaPresent(params.db, params.members)
-  const recovery = await insertRecovery(params.db, {
+  const recovery = await insertRecoveryIfFree(params.db, {
     managedId: params.managedId,
     kind: params.kind,
     sourcePrimaryMemberId: params.source.id,
@@ -446,6 +575,8 @@ async function beginRecovery(params: {
       ...params.extraMetadata,
     },
   })
+  // Lost the race for the in-flight slot to a concurrent recovery.
+  if (!recovery) return { ok: false, error: 'managed_busy', status: 409 }
 
   const sourceOnline = await isServerConnected(params.db, params.source.serverId)
   if (!sourceOnline) {
@@ -520,17 +651,236 @@ export function beginDisasterRecovery(params: {
   return beginRecovery({ ...params, kind: 'disaster-recovery' })
 }
 
-export async function beginAutomaticFailover(params: {
+function detectorMetadata(
+  detector: string | undefined,
+  evidence: string | undefined
+): { detector?: string; detectorEvidence?: string } {
+  return {
+    ...(detector ? { detector } : {}),
+    ...(evidence ? { detectorEvidence: evidence } : {}),
+  }
+}
+
+/**
+ * Automatic failover is switched off for this deployment: record the accepted
+ * event as a TERMINAL row with no target (never counts for the cooldown) and
+ * queue nothing. Manual switchover / DR stay available.
+ */
+async function recordAutoFailoverDisabled(params: {
+  db: Db
+  managedId: string
+  members: readonly ManagedMemberRow[]
+  sourceMemberId?: string
+  detector?: string
+  evidence?: string
+}): Promise<RecoveryRecord | null> {
+  const primary =
+    params.members.find((row) => row.role === 'primary') ??
+    params.members.find((row) => row.id === params.sourceMemberId)
+  if (!primary) return null
+  compatLogWarn(
+    'managed-ha',
+    `automatic failover for ${params.managedId} not started: ${AUTOMATIC_FAILOVER_DISABLED_REASON}`
+  )
+  return recordBlockedRecovery(params.db, {
+    managedId: params.managedId,
+    kind: 'automatic-failover',
+    sourcePrimaryMemberId: primary.id,
+    state: 'blocked',
+    metadata: {
+      blockedReason: AUTOMATIC_FAILOVER_DISABLED_MESSAGE,
+      sourceServerId: primary.serverId,
+      ...detectorMetadata(params.detector, params.evidence),
+    },
+  })
+}
+
+/**
+ * A dead-primary report that does not name the current primary: record it as
+ * a TERMINAL stale row (no target, so it never counts for the cooldown) and do
+ * nothing else. Never fences, never promotes.
+ */
+export async function recordStaleDeadPrimaryReport(params: {
+  db: Db
+  managedId: string
+  members: readonly ManagedMemberRow[]
+  reason: string
+  detector?: string
+  evidence?: string
+}): Promise<RecoveryRecord | null> {
+  const primary = params.members.find((row) => row.role === 'primary')
+  if (!primary) return null
+  compatLogWarn(
+    'managed-ha',
+    `stale dead-primary report for ${params.managedId} ignored: ${params.reason}`
+  )
+  return recordBlockedRecovery(params.db, {
+    managedId: params.managedId,
+    kind: 'automatic-failover',
+    sourcePrimaryMemberId: primary.id,
+    state: 'blocked',
+    metadata: {
+      stale: true,
+      blockedReason: `Ignored stale dead-primary report: ${params.reason}`,
+      sourceServerId: primary.serverId,
+      ...detectorMetadata(params.detector, params.evidence),
+    },
+  })
+}
+
+type FreshStandbyGate = {
+  /** Asks a candidate's daemon for a fresh reading at event time. */
+  probeStandby?: FreshStandbyProbe
+  /** Control-plane ms of the detector's first hard failure; null = unknown. */
+  failureStartedAtMs?: number | null
+  /** `TURBOPANEL_AUTO_FAILOVER_RECEIPT_MARGIN_SECONDS` in ms; default 10 s. */
+  freshStandbyMarginMs?: number
+  /** Test seam for the probe start time. */
+  nowMs?: () => number
+}
+
+type AutomaticFailoverParams = FreshStandbyGate & {
   db: Db
   commandQueue: CommandQueue | null
   managedId: string
   engine: ManagedEngineCode
   members: readonly ManagedMemberRow[]
   sourceMemberId?: string
+  /** `managed-ha-event` detector; recorded on the journal row. */
+  detector?: string
+  /** Bounded detector evidence (JSON text); recorded on the journal row. */
+  evidence?: string
   actor: RecoveryCommandActor
-}): Promise<RecoveryRecord | null> {
+  /** `TURBOPANEL_AUTO_FAILOVER` for this deployment; absent = `on`. */
+  autoFailover?: AutoFailoverSetting
+}
+
+type CandidatePick = {
+  inputs: HaMemberCandidateInput[]
+  candidate: HaMemberCandidateInput | null
+  /** What the fresh-standby probe found; absent when it did not run. */
+  freshStandby?: string
+}
+
+/**
+ * Postgres only: the stored observations name no healthy candidate, so probe
+ * each same-DC `failover` replica now and let the fresh-standby gate accept
+ * one that stopped streaming only because its primary died. Probes run in
+ * parallel. Of the accepted ones, the standby that received the most WAL
+ * wins (`pickMostAdvancedStandby`: highest `receivedLsn`, then lowest
+ * ordinal), not simply the lowest ordinal.
+ */
+async function probeFreshStandbys(
+  params: AutomaticFailoverParams,
+  inputs: HaMemberCandidateInput[]
+): Promise<CandidatePick | null> {
+  const probe = params.probeStandby
+  const failureStartedAtMs = params.failureStartedAtMs
+  if (params.engine !== 'postgres' || !probe || typeof failureStartedAtMs !== 'number') {
+    return null
+  }
+  const now = params.nowMs ?? Date.now
+  const unhealthy = inputs.filter(
+    (input) => isAutomaticFailoverClassMember(input) && !input.healthy
+  )
+  if (unhealthy.length === 0) return null
+  const verdicts = await Promise.all(
+    unhealthy.map(async (input) => {
+      const member = params.members.find((row) => row.id === input.id)
+      const probeStartedAtMs = now()
+      const replication = member
+        ? await probe({
+            memberId: member.id,
+            managedId: member.managedId,
+            serverId: member.serverId,
+            engine: params.engine,
+          }).catch(() => null)
+        : null
+      const verdict = evaluateFreshStandby({
+        replication,
+        probeStartedAtMs,
+        failureStartedAtMs,
+        marginMs: params.freshStandbyMarginMs ?? DEFAULT_FRESH_STANDBY_MARGIN_MS,
+      })
+      return {
+        id: input.id,
+        ordinal: input.ordinal,
+        verdict,
+        receivedLsn: replication?.receivedLsn,
+      }
+    })
+  )
+  const accepted = new Set(verdicts.filter((row) => row.verdict.accepted).map((row) => row.id))
+  const probed = inputs.map((input) =>
+    accepted.has(input.id) ? { ...input, healthy: true } : input
+  )
+  const freshStandby = verdicts
+    .map(({ id, verdict }) =>
+      verdict.accepted ? `${id} accepted: ${verdict.basis}` : `${id} refused: ${verdict.reason}`
+    )
+    .join('; ')
+  // Several accepted: the one that received the most WAL loses the least.
+  const best = pickMostAdvancedStandby(verdicts.filter((row) => row.verdict.accepted))
+  return {
+    inputs: probed,
+    candidate: best ? (probed.find((input) => input.id === best.id) ?? null) : null,
+    freshStandby,
+  }
+}
+
+async function pickAutomaticCandidate(
+  params: AutomaticFailoverParams,
+  primary: ManagedMemberRow,
+  dcSets: Map<string, Set<string>>
+): Promise<CandidatePick> {
+  const inputs = candidateInputs(params.members, primary, dcSets)
+  const candidate = OrchestratorManagedHaAuthority.pickAutomaticCandidate(inputs)
+  if (candidate) return { inputs, candidate }
+  return (await probeFreshStandbys(params, inputs)) ?? { inputs, candidate: null }
+}
+
+function noCandidateBlockedReason(pick: CandidatePick): string {
+  const cause = automaticFailoverBlockCause(pick.inputs) ?? 'no-candidate'
+  if (cause === 'unhealthy' && pick.freshStandby) {
+    return AUTOMATIC_FAILOVER_STANDBY_NOT_PROVEN_MESSAGE
+  }
+  return automaticFailoverBlockedReason(cause)
+}
+
+export async function beginAutomaticFailover(
+  params: AutomaticFailoverParams
+): Promise<RecoveryRecord | null> {
   const inflight = await findInFlightRecovery(params.db, params.managedId)
   if (inflight) return inflight
+
+  if (params.autoFailover === 'off') return recordAutoFailoverDisabled(params)
+
+  // Persisted cooldown: the journal row of the last accepted failover, so a
+  // flapping detector or a restart can never chain failovers back to back.
+  const lastAccepted = await findLatestAcceptedAutomaticFailover(params.db, params.managedId)
+  if (automaticFailoverCoolingDown(lastAccepted?.startedAt ?? null, Date.now())) {
+    compatLogWarn(
+      'managed-ha',
+      `automatic failover for ${params.managedId} refused: previous one started ${lastAccepted?.startedAt} (cooldown)`
+    )
+    // Visible in the journal / UI, terminal, and without a target so it never
+    // extends the cooldown itself. The daemon re-sends after the cooldown.
+    const coolingPrimary =
+      params.members.find((row) => row.role === 'primary') ??
+      params.members.find((row) => row.id === params.sourceMemberId)
+    if (!coolingPrimary) return null
+    return recordBlockedRecovery(params.db, {
+      managedId: params.managedId,
+      kind: 'automatic-failover',
+      sourcePrimaryMemberId: coolingPrimary.id,
+      state: 'blocked',
+      metadata: {
+        blockedReason: AUTOMATIC_FAILOVER_COOLDOWN_MESSAGE,
+        sourceServerId: coolingPrimary.serverId,
+        ...detectorMetadata(params.detector, params.evidence),
+      },
+    })
+  }
 
   const primary =
     params.members.find((row) => row.role === 'primary') ??
@@ -538,19 +888,21 @@ export async function beginAutomaticFailover(params: {
   if (!primary) return null
 
   const dcSets = await loadDatacenterSets(params.db, params.members)
-  const inputs = candidateInputs(params.members, primary, dcSets)
-  const candidate = OrchestratorManagedHaAuthority.pickAutomaticCandidate(inputs)
+  const pick = await pickAutomaticCandidate(params, primary, dcSets)
+  const freshStandby = pick.freshStandby ? { freshStandby: pick.freshStandby } : {}
+  const candidate = pick.candidate
   if (!candidate) {
-    const cause = automaticFailoverBlockCause(inputs) ?? 'no-candidate'
-    return insertRecovery(params.db, {
+    return recordBlockedRecovery(params.db, {
       managedId: params.managedId,
       kind: 'automatic-failover',
       sourcePrimaryMemberId: primary.id,
       state: 'blocked',
       metadata: {
-        blockedReason: automaticFailoverBlockedReason(cause),
+        blockedReason: noCandidateBlockedReason(pick),
         sourceServerId: primary.serverId,
         sourceDatacenterId: firstDatacenterId(dcSets, primary.serverId),
+        ...freshStandby,
+        ...detectorMetadata(params.detector, params.evidence),
       },
     })
   }
@@ -558,17 +910,26 @@ export async function beginAutomaticFailover(params: {
   if (!target) return null
 
   if (!params.commandQueue) {
-    return insertRecovery(params.db, {
+    // No queue means nothing can ever fence or promote: record a TERMINAL row
+    // (never `detecting`, which would hold the in-flight slot forever) and no
+    // target, so it does not count as an accepted failover for the cooldown.
+    compatLogWarn(
+      'managed-ha',
+      `automatic failover for ${params.managedId} not started: ${AUTOMATIC_FAILOVER_NO_QUEUE_REASON}`
+    )
+    return recordBlockedRecovery(params.db, {
       managedId: params.managedId,
       kind: 'automatic-failover',
       sourcePrimaryMemberId: primary.id,
-      targetMemberId: target.id,
-      state: 'detecting',
+      state: 'blocked',
       metadata: {
+        blockedReason: AUTOMATIC_FAILOVER_NO_QUEUE_MESSAGE,
         sourceServerId: primary.serverId,
         targetServerId: target.serverId,
         sourceDatacenterId: firstDatacenterId(dcSets, primary.serverId),
         targetDatacenterId: firstDatacenterId(dcSets, target.serverId),
+        ...freshStandby,
+        ...detectorMetadata(params.detector, params.evidence),
       },
     })
   }
@@ -586,18 +947,14 @@ export async function beginAutomaticFailover(params: {
     extraMetadata: {
       sourceDatacenterId: firstDatacenterId(dcSets, primary.serverId),
       targetDatacenterId: firstDatacenterId(dcSets, target.serverId),
+      ...freshStandby,
+      ...detectorMetadata(params.detector, params.evidence),
     },
   })
   if (!result.ok) {
     return findLatestRecovery(params.db, params.managedId)
   }
   return findRecoveryById(params.db, result.recoveryId)
-}
-
-async function loadRecovery(db: Db, recoveryId: string): Promise<RecoveryRecord | null> {
-  const current = await findRecoveryById(db, recoveryId)
-  if (!current || isTerminalRecoveryState(current.state)) return null
-  return current
 }
 
 function fenceOutcomeFromMetadata(metadata: RecoveryMetadata): FenceOutcome {
@@ -608,57 +965,81 @@ function fenceOutcomeFromMetadata(metadata: RecoveryMetadata): FenceOutcome {
   }
 }
 
-async function maybeAdvanceAfterFence(
+type FenceSettlement = {
+  recoveryId: string
+  commandId: string
+  /** Set when the command succeeded; absent for a failed (or never queued) one. */
+  applied?: 'drain' | 'stop'
+  engine: ManagedEngineCode
+  actor: RecoveryCommandActor
+}
+
+/**
+ * Pure step applied under the row lock. Only a `fencing` row whose pending
+ * list still holds this command changes: a duplicate or late result, or one
+ * for a command the row never recorded, is ignored rather than advancing on
+ * an empty list. The result that empties the list decides the next state.
+ */
+function applyFenceSettlement(
+  current: RecoveryRecord,
+  settlement: Pick<FenceSettlement, 'commandId' | 'applied'>
+): RecoveryPatch | null {
+  if (current.state !== 'fencing') return null
+  const recorded = current.metadata.fenceCommandIds ?? []
+  if (!recorded.includes(settlement.commandId)) return null
+  const pending = recorded.filter((id) => id !== settlement.commandId)
+  const metadata: RecoveryMetadata = { ...current.metadata, fenceCommandIds: pending }
+  if (settlement.applied === 'drain') metadata.drainApplied = true
+  if (settlement.applied === 'stop') metadata.stopApplied = true
+  if (pending.length > 0) return { metadata }
+  const advance = nextStateAfterFence({
+    kind: current.kind,
+    outcome: fenceOutcomeFromMetadata(metadata),
+    metadata,
+  })
+  return { state: advance.state, metadata: advance.metadata }
+}
+
+/** After the lock is released: act on the state the settlement produced. */
+async function followFenceAdvance(
   db: Db,
   commandQueue: CommandQueue | undefined,
-  params: {
-    current: RecoveryRecord
-    engine: ManagedEngineCode
-    actor: RecoveryCommandActor
-  }
+  record: RecoveryRecord,
+  settlement: FenceSettlement
 ): Promise<void> {
-  const pending = params.current.metadata.fenceCommandIds ?? []
-  if (pending.length > 0) {
-    await updateRecovery(db, params.current.id, {
-      metadata: params.current.metadata,
-    })
+  if (record.state === 'blocked') {
+    await stampManagedReady(db, record.managedId)
     return
   }
+  if (!commandQueue || record.state !== 'promoting') return
 
-  const advance = nextStateAfterFence({
-    kind: params.current.kind,
-    outcome: fenceOutcomeFromMetadata(params.current.metadata),
-    metadata: params.current.metadata,
-  })
-  await updateRecovery(db, params.current.id, {
-    state: advance.state,
-    metadata: advance.metadata,
-  })
-  if (advance.state === 'blocked') {
-    await stampManagedReady(db, params.current.managedId)
-    return
-  }
-  if (!commandQueue || advance.state !== 'promoting') return
-
-  const members = await listManagedMembers(db, params.current.managedId)
-  const source = members.find((row) => row.id === params.current.sourcePrimaryMemberId)
-  const target = params.current.targetMemberId
-    ? members.find((row) => row.id === params.current.targetMemberId)
+  const members = await listManagedMembers(db, record.managedId)
+  const source = members.find((row) => row.id === record.sourcePrimaryMemberId)
+  const target = record.targetMemberId
+    ? members.find((row) => row.id === record.targetMemberId)
     : null
   if (!source || !target) return
 
   await enqueuePromoteOrRecover(db, commandQueue, {
-    recovery: {
-      ...params.current,
-      state: 'promoting',
-      metadata: advance.metadata,
-    },
-    engine: params.engine,
+    recovery: record,
+    engine: settlement.engine,
     source,
     target,
-    actor: params.actor,
-    haPresent: Boolean(advance.metadata.haPresent),
+    actor: settlement.actor,
+    haPresent: Boolean(record.metadata.haPresent),
   })
+}
+
+async function settleFenceCommand(
+  db: Db,
+  commandQueue: CommandQueue | undefined,
+  settlement: FenceSettlement
+): Promise<void> {
+  const updated = await updateRecoveryLocked(db, settlement.recoveryId, (current) =>
+    applyFenceSettlement(current, settlement)
+  )
+  if (!updated) return
+  await followFenceAdvance(db, commandQueue, updated, settlement)
 }
 
 export async function onFenceCommandSucceeded(
@@ -672,18 +1053,10 @@ export async function onFenceCommandSucceeded(
     actor: RecoveryCommandActor
   }
 ): Promise<void> {
-  const current = await loadRecovery(db, params.recoveryId)
-  if (!current) return
-
-  const pending = (current.metadata.fenceCommandIds ?? []).filter((id) => id !== params.commandId)
-  const metadata: RecoveryMetadata = {
-    ...current.metadata,
-    fenceCommandIds: pending,
-    drainApplied: params.fencePhase === 'drain' || Boolean(current.metadata.drainApplied),
-    stopApplied: params.fencePhase === 'stop' || Boolean(current.metadata.stopApplied),
-  }
-  await maybeAdvanceAfterFence(db, commandQueue, {
-    current: { ...current, metadata },
+  await settleFenceCommand(db, commandQueue, {
+    recoveryId: params.recoveryId,
+    commandId: params.commandId,
+    applied: params.fencePhase,
     engine: params.engine,
     actor: params.actor,
   })
@@ -699,19 +1072,7 @@ export async function onFenceCommandFailed(
     actor: RecoveryCommandActor
   }
 ): Promise<void> {
-  const current = await loadRecovery(db, params.recoveryId)
-  if (!current) return
-
-  const pending = (current.metadata.fenceCommandIds ?? []).filter((id) => id !== params.commandId)
-  const metadata: RecoveryMetadata = {
-    ...current.metadata,
-    fenceCommandIds: pending,
-  }
-  await maybeAdvanceAfterFence(db, commandQueue, {
-    current: { ...current, metadata },
-    engine: params.engine,
-    actor: params.actor,
-  })
+  await settleFenceCommand(db, commandQueue, params)
 }
 
 async function reclassifyAfterDisasterRecovery(db: Db, record: RecoveryRecord): Promise<void> {

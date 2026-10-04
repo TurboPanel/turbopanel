@@ -1,8 +1,7 @@
 /**
  * Human descriptions for every physical table and every non-obvious column
- * in the control-plane schema — the single source both the Postgres
- * `COMMENT ON` migrations and the website data dictionary are generated
- * from (`scripts/schema-comments.mjs`, `scripts/generate-data-dictionary.mjs`).
+ * in the control-plane schema — the single source the Postgres `COMMENT ON`
+ * migrations are generated from (`scripts/schema-comments.mjs`).
  *
  * Keyed by **physical** names (`seat`, `copy`, `2fa`, …), exactly as they
  * appear in the latest `migrations/meta/NNNN_snapshot.json` — never by the
@@ -203,6 +202,8 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
     columns: {
       metadata: 'Reserved pairing jsonb with no first-party reader or writer today; stays null.',
       options: 'Reserved pairing jsonb with no first-party reader or writer today; stays null.',
+      time_zone:
+        'IANA zone (from the supported list) in which quiet hours on the personal channels of this user are read; NULL means UTC.',
       name: 'Optional display name copied at creation from the OAuth profile or the OTP sign-in form (1-255 chars); absent on password sign-up and never edited later.',
       email:
         'Unique sign-in address, trimmed at write; the identity that accounts, sessions, OTP flows and invitation accepts are matched against.',
@@ -301,7 +302,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
     columns: {
       metadata: 'Reserved pairing jsonb with no first-party reader or writer today; stays null.',
       options:
-        'Org-wide settings merged key-by-key by the organization PATCH routes (`defaultServerTimezone`, `maxServers`, `acmeEnabled`, `managedDatabase` and more).',
+        'Org-wide settings merged key-by-key by the organization routes (`defaultServerTimezone`, `maxServers`, `acmeEnabled`, `managedDatabase`, `phpModes` and more).',
       name: 'Display name; `My Organization` when sign-up gives none, otherwise set by the install wizard or PATCH `/organizations/:id`.',
     },
   },
@@ -441,9 +442,9 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       schedule_id:
         'Provider subscription schedule id (Stripe `sub_sched_...`) while a downgrade is parked on a schedule; null otherwise, written by the webhook projection.',
       grace_expires_at:
-        'Moment entitlement lapses after non-payment: latched to `past_due_since` plus 65 days while status is `past_due` or `unpaid`, cleared on any other status.',
+        'Always null since the TurboPanel grace clock was removed: provider retries now end a past-due subscription. Kept by the schema freeze, never read.',
       past_due_since:
-        'First moment the provider reported `past_due` or `unpaid`; latched while delinquent, cleared by any other status so a second lapse restarts the grace clock.',
+        'First moment the provider reported `past_due` or `unpaid`; latched while delinquent, cleared by any other status so a later lapse is measured afresh.',
     },
   },
   tier: {
@@ -734,7 +735,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       metadata:
         'Client jsonb; the promoted keys `serverId` and `component` are stripped on create and patch so placement and system identity never live here.',
       options:
-        'Jsonb whose `compose` key is the per-environment ComposeDocument overlay merged onto the project compose at deploy; placement keys are stripped on save.',
+        'Jsonb: `compose` overlay merged at deploy, plus deploy settings `deployStrategy`, `migrations`, `drainSeconds`, `healthTimeoutSeconds`, `rollbackWindowMinutes`.',
       server_id:
         'Desired whole-server placement pin and single source of truth; NULL inherits `project.options.defaultServerId` at deploy, lifecycle and stop.',
       generation:
@@ -830,7 +831,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       metadata:
         'Client jsonb: `type` is `docker-compose`, `managed`, `template` or platform-only `system` (absent means setup not chosen yet), plus optional catalog `code`.',
       options:
-        'Jsonb holding `compose` (the base ComposeDocument), `containerNaming` (`uuid` or `custom`), `defaultServerId` and `composeSource` seed provenance.',
+        'Jsonb: `compose`, `containerNaming`, `defaultServerId`, `composeSource`, and deploy defaults `drainSeconds`, `healthTimeoutSeconds`, `rollbackWindowMinutes`.',
       organization_id:
         "Denormalized copy of the workspace's organization, resolved on every insert; exists so `uniq_project_organization_name` can be a real per-organization unique.",
       repository_id:
@@ -943,6 +944,92 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'Lowercase SHA-256 hex digest of the artifact computed by the daemon; a restore refuses on mismatch.',
       database: 'Database name for a single-database backup; null for an instance-scope backup.',
       path: "Absolute artifact path on the primary server's filesystem as reported by the daemon.",
+      retention_id:
+        'The `retention` whose scheduled run made this artifact; null for a manual backup or once that retention is deleted.',
+    },
+  },
+  retention: {
+    group: 'managed',
+    summary:
+      'A scheduled backup of one managed engine or one local storage copy, pushed to its host as a systemd timer that runs without the control plane.',
+    columns: {
+      organization_id:
+        'Owning organization stored directly, because the target is polymorphic; cascade-deletes the policy with the org.',
+      target_kind:
+        '`managed` or `copy`: which of `managed_id` and `copy_id` names the target; exactly one is set (`retention_target_check`).',
+      name: "Operator label for the policy, shown in the console's backup list.",
+      schedule:
+        'The schedule as authored, a cron expression or alias; translated to a systemd `OnCalendar` value when pushed to the host.',
+      timezone: "IANA zone the schedule is read in; null means the host's local time.",
+      retention_keep:
+        "How many of this policy's own artifacts the host keeps, 1 to 100; older ones are pruned after each run.",
+      is_enabled:
+        'False pauses the policy: its timer is removed from the host while the row and its run history stay.',
+      next_run_at:
+        "When the host's timer next fires, as last reported by the daemon; null until a report arrives.",
+      created_by:
+        'User who created the policy; null for an automatic default policy or once that user is deleted.',
+    },
+  },
+  edict: {
+    group: 'networking',
+    summary:
+      'One firewall rule an operator typed, in the wire contract words; rules derived from what is deployed are computed per server and never stored here.',
+    columns: {
+      organization_id: 'Owning organization; cascade-deletes the rule with the org.',
+      server_id: 'The one server the rule applies to; null means every server in the organization.',
+      label:
+        "Operator label shown in the console, also sent to the host as the rule's comment, so it uses the comment alphabet.",
+      scope:
+        "`host` for the host's own listeners or `published` for a port Docker publishes for a container.",
+      action: '`accept` allows, `drop` blocks silently and `reject` blocks and tells the sender.',
+      proto: '`tcp`, `udp` or `any`; ports are meaningful only for `tcp` and `udp`.',
+      ports:
+        'One port or an inclusive ascending range such as `5432-5440`; null means every port, which only a block may say.',
+      source_kind:
+        "Who the rule is about: `any`, `servers` (the organization's other servers), `datacenter`, `fabric` or `addresses`.",
+      source_addresses:
+        'Explicit addresses or CIDRs, one to 256 of them; only for `source_kind` `addresses`, empty for every other kind.',
+      is_enabled: 'False keeps the rule but leaves it out of the ruleset sent to hosts.',
+      created_by: 'User who created the rule; null once that user is deleted.',
+    },
+  },
+  bulwark: {
+    group: 'networking',
+    summary:
+      "One server's firewall state: its mode, the generation last sent, what the host last answered, and whether the last ruleset was kept.",
+    columns: {
+      server_id: 'The server this state belongs to; one row per server, cascade-deleted with it.',
+      mode: '`observe` shows the ruleset and applies nothing (the default), `managed` enforces it and `off` leaves the firewall alone.',
+      generation:
+        'Rises by one each time the desired ruleset changes, so a host can tell a stale push from a current one.',
+      last_digest:
+        'The sha256 hex the host last reported for its rendered rulesets; the drift key.',
+      last_result:
+        'What the host last answered: applied or refused, the rule count and any warnings; null before any report.',
+      state:
+        '`idle`, `pending` (awaiting confirmation), `confirmed` or `rolled_back` (undone by the host guard).',
+      deadline_at:
+        'When the host guard undoes an unconfirmed ruleset; null unless `state` is `pending`.',
+      last_applied_at: 'When the host last applied a ruleset; null before the first.',
+      confirmed_at:
+        'When the last ruleset was confirmed as keeping the host reachable; null before the first.',
+    },
+  },
+  snapshot: {
+    group: 'managed',
+    summary:
+      'One finished scheduled run of a `retention`, reported by the host that ran it; unique per (retention_id, run_id).',
+    columns: {
+      retention_id: 'The `retention` this run belongs to; the run history cascades with it.',
+      run_id:
+        'Daemon-minted id for the run, unique per policy so a report delivered twice is recorded once.',
+      started_at: 'When the host started the run.',
+      finished_at: 'When the host finished the run, whether it succeeded or failed.',
+      status: '`succeeded` or `failed`, as reported by the host.',
+      error: 'Failure text reported by the host; null when the run succeeded.',
+      backup_ref:
+        'The `bk_` id of the artifact the run produced, matching `backup.backup_id` or `archive.backup_id`; null when it failed.',
     },
   },
   managed: {
@@ -1103,6 +1190,22 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'Compose top-level volume key for auto-registered `volume` rows; unique per environment and the idempotency key for compose volume registration.',
     },
   },
+  archive: {
+    group: 'storage',
+    summary:
+      'One completed storage-copy backup artifact recorded from a daemon report; unique per (copy_id, backup_id), cascades with the copy.',
+    columns: {
+      retention_id:
+        'The `retention` whose scheduled run made this artifact; null for a manual backup or once that retention is deleted.',
+      backup_id:
+        'Daemon-minted `bk_` plus hex token that is also the artifact filename on the host; unique per storage copy, not globally.',
+      size_bytes:
+        'Artifact size in bytes as reported by the daemon after writing the archive; re-checked before a restore.',
+      checksum:
+        'Lowercase SHA-256 hex digest of the artifact computed by the daemon; a restore refuses on mismatch.',
+      path: "Absolute artifact path on the copy's server as reported by the daemon.",
+    },
+  },
   // ── runtime ───────────────────────────────────────────────────────────
   capability: {
     group: 'runtime',
@@ -1163,7 +1266,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       metadata:
         'Jsonb patched on apply outcome: `error` holds the last failure message and is reset to null on success.',
       options:
-        'Per-target apply inputs written at deploy time: `secretPlan` and `siteReleases` (release trees the compose declares) for that server.',
+        'Per-target apply inputs written at deploy time: `secretPlan`, `siteReleases` (release trees the compose declares) and `phpModes` (mode per PHP site).',
       desired_generation:
         'Environment deploy generation this row targets, written by deploy-routes.ts for every planned and drained server on each deploy.',
       applied_generation:
@@ -1259,7 +1362,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       metadata:
         'Daemon-projected host facts jsonb: `resources`, `geo`, `docker`, `runtimes`, `cell` plus the operator `hardwareProfile`; hostname, OS and NTP have own columns.',
       options:
-        'Operator config jsonb served verbatim by GET /servers: `timezone`, `sshPort`, `ntp`, `hosting`, `cellLocationHint`, `cellGeneration`, `metricsCapabilityPlan`.',
+        'Operator config served by GET /servers: `timezone`, `sshPort`, `ntp`, `hosting`, `cellLocationHint`, `cellGeneration`, `metricsCapabilityPlan`, `phpModes`.',
       organization_id:
         'Owning organization, nullable; ON DELETE RESTRICT so an organization that still has server rows cannot be deleted.',
       name: 'Optional operator-chosen display name, set when the registration key is minted or via PATCH; the UI falls back to `hostname` when null.',
@@ -1489,7 +1592,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       payload:
         'Rendered non-secret message as JSON: `event`, `severity`, `title`, `body`, `organizationId`, `organizationName`, `targetType`, `targetId`, `context`, `at`.',
       status:
-        '`pending` (default, not yet sent), `sent`, `failed` (retry due) or `abandoned` (after 5 failed attempts); retries pick up `pending` and `failed`.',
+        '`pending` (default), `sent`, `failed` (retry due), `abandoned` (after 5 attempts) or `held` (waits for quiet hours or a digest); retries skip `held`.',
       attempts:
         'Number of send attempts so far, bumped in SQL by the sender; the row is abandoned once it reaches 5.',
       next_attempt_at:
@@ -1522,6 +1625,12 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
         'Set when the owner pauses the channel; it keeps its rules but receives nothing until resumed.',
       created_by_user_id:
         'User whose session created the channel (provenance, set NULL on user delete); differs from `user_id` for org and instance channels.',
+      digest_cadence:
+        'Email only: `hourly` or `daily` batches non-urgent events into one summary per window; NULL sends each event as it happens.',
+      quiet_start_minute:
+        'Quiet hours start as minutes after local midnight (0-1439), set together with `quiet_end_minute`; NULL means no quiet hours.',
+      quiet_end_minute:
+        'Quiet hours end as minutes after local midnight (0-1439); the window may wrap midnight, and held events go out as one summary when it ends.',
     },
   },
   notification: {
@@ -1590,7 +1699,7 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       finished_at: 'When the run reached a terminal status.',
     },
   },
-  upgradestep: {
+  stage: {
     group: 'upgrades',
     summary:
       'One `daemon` or `instance` install on one server inside an upgrade run, advanced by the orchestrator until a terminal outcome.',
@@ -1609,7 +1718,8 @@ export const SCHEMA_DESCRIPTIONS: Readonly<Record<string, TableDescription>> = {
       to_version: 'Version this step installs, copied from the run target for `unit`.',
       from_commit: 'Commit installed before this step ran; NULL when it was unknown.',
       to_commit: 'Commit this step installs, copied from the run target for `unit`.',
-      last_stage_at: 'When `status` last changed, so a step stuck in one stage can be detected.',
+      status_changed_at:
+        'When `status` last changed, so a step stuck in one stage can be detected.',
       error_code: 'Machine-readable code when the step fails, rolls back or needs attention.',
       error_message: 'Human-readable failure text set alongside `error_code`.',
       detail:

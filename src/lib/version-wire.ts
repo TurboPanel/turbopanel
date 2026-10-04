@@ -173,6 +173,11 @@ export const DAEMON_WIRE_FEATURES = [
   'update-progress-v1',
   'sealed-instance-secrets-v1',
   'managed-health-v1',
+  'managed-ha-probe-v1',
+  'managed-ha-instance-v1',
+  'metrics-v7',
+  'php-site-modes-v1',
+  'site-engine-nginx-apache-v1',
 ] as const
 
 export type DaemonWireFeature = (typeof DAEMON_WIRE_FEATURES)[number]
@@ -190,6 +195,38 @@ export const SEALED_INSTANCE_SECRETS_FEATURE: DaemonWireFeature = 'sealed-instan
  * plane never sends the request and keeps using the stored observation.
  */
 export const MANAGED_HEALTH_FEATURE: DaemonWireFeature = 'managed-health-v1'
+
+/**
+ * The daemon may send `managed-ha-event` with `detector: 'postgres-probe'`
+ * (its own dead-primary probe for managed Postgres). It sends one only when
+ * this control plane advertises the feature, because only this control plane
+ * checks that such an event comes from the current primary's own server.
+ */
+export const MANAGED_HA_PROBE_FEATURE: DaemonWireFeature = 'managed-ha-probe-v1'
+
+/**
+ * The daemon's Orchestrator poller names the dead instance (`instanceHost` +
+ * `instancePort`) on `managed-ha-event`, so the control plane can check it is
+ * the cluster's CURRENT primary before fencing. A daemon that lists this
+ * feature and sends an event without the instance is treated as stale; a
+ * daemon that does not list it keeps the legacy behavior (no binding).
+ */
+export const MANAGED_HA_INSTANCE_FEATURE: DaemonWireFeature = 'managed-ha-instance-v1'
+
+/**
+ * Metrics schema v7 (`metadata.version` 7: the `extended` section and the
+ * `durable` flag). The daemon stamps the legacy wire version until the control
+ * plane it is attached to lists this feature.
+ */
+export const METRICS_V7_FEATURE: DaemonWireFeature = 'metrics-v7'
+
+/**
+ * The daemon runs each PHP site in the mode its deploy asks for (`php.mode`).
+ * Without it the daemon runs every PHP site on one shared php-fpm pool, so the
+ * control plane refuses to deploy any other mode to it. OpenLiteSpeed and
+ * Caddy sites ignore `php.mode` either way.
+ */
+export const PHP_SITE_MODES_FEATURE: DaemonWireFeature = 'php-site-modes-v1'
 
 /** Features that need an instance at or above a semver. Empty until one lands. */
 export const INSTANCE_FEATURE_MIN_VERSIONS: Readonly<Record<string, string>> = {}

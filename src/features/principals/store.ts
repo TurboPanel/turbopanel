@@ -4,13 +4,14 @@ import {
   MAX_PRINCIPAL_USERNAME_LENGTH,
   MAX_SUFFIXED_PRINCIPAL_USERNAME_LENGTH,
   principalHomeDir,
-  randomPrincipalUsernameSuffix,
 } from '../../lib/naming.ts'
 import {
   type PrincipalAccessLevel,
   shellForAccessLevel,
 } from '../../features/principals/principal-access.ts'
-import { loadRandomizedUsernamesDefault } from '../../features/managed/load-org-defaults.ts'
+import { loadPrincipalNamePolicy } from '../../features/managed/load-org-defaults.ts'
+import type { PrincipalNameScheme } from '../../lib/principal-name-scheme.ts'
+import { deriveFreeSystemName } from './system-name.ts'
 import { encryptSecret, generateSealedSecret } from '../../lib/secrets/data-encryption.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import type { Db } from '../../db/connection.ts'
@@ -358,7 +359,11 @@ export async function ensureComposePrincipal(
     if (raced) return { principalId: raced, created: false }
 
     const username = composeAliasShortUsername(input.alias)
-    const appliedUsername = await resolveComposeAppliedUsername(tx, input.organizationId, username)
+    const { appliedUsername, nameScheme } = await resolveComposeAppliedUsername(
+      tx,
+      input.organizationId,
+      username
+    )
 
     const [row] = await tx
       .insert(principal)
@@ -375,6 +380,7 @@ export async function ensureComposePrincipal(
         },
         options: {
           shell: shellForAccessLevel(ACCESS_LEVEL_FOR_COMPOSE[input.access ?? 'none']),
+          nameScheme,
         },
       })
       .returning({ id: principal.id })
@@ -417,23 +423,29 @@ async function resolveComposeAppliedUsername(
   tx: Db,
   organizationId: string,
   username: string
-): Promise<string> {
-  const randomize = await loadRandomizedUsernamesDefault(tx, organizationId)
-  if (!randomize && !(await isServerPrincipalUsernameTaken(tx, organizationId, username))) {
-    return username
-  }
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const candidate = `${username}${randomPrincipalUsernameSuffix()}`.slice(
-      0,
-      MAX_PRINCIPAL_USERNAME_LENGTH
-    )
-    if (!(await isServerPrincipalUsernameTaken(tx, organizationId, candidate))) {
-      return candidate
+): Promise<{ appliedUsername: string; nameScheme: PrincipalNameScheme }> {
+  // Compose aliases always follow the org default scheme (the document has no
+  // per-principal choice and the lock only restricts what a person may pick).
+  const { defaultScheme } = await loadPrincipalNamePolicy(tx, organizationId)
+  const isTaken = (candidate: string) =>
+    isServerPrincipalUsernameTaken(tx, organizationId, candidate)
+  if (defaultScheme === 'plain') {
+    if (!(await isTaken(username))) {
+      return { appliedUsername: username, nameScheme: 'plain' }
     }
+    // Plain name already held by someone else: suffix it rather than fail a
+    // deploy over a name the operator never typed.
+    const appliedUsername = await deriveFreeSystemName(
+      { scheme: 'partial', typed: username, maxLength: MAX_PRINCIPAL_USERNAME_LENGTH },
+      isTaken
+    )
+    return { appliedUsername, nameScheme: 'partial' }
   }
-  // 36^11 odds three times over. Returning the last candidate unprobed beats
-  // throwing on a live namespace mid-deploy.
-  return `${username}${randomPrincipalUsernameSuffix()}`.slice(0, MAX_PRINCIPAL_USERNAME_LENGTH)
+  const appliedUsername = await deriveFreeSystemName(
+    { scheme: defaultScheme, typed: username, maxLength: MAX_PRINCIPAL_USERNAME_LENGTH },
+    isTaken
+  )
+  return { appliedUsername, nameScheme: defaultScheme }
 }
 
 export type SetPrincipalPasswordInput = { readonly generate: true } | { readonly password: string }
@@ -550,6 +562,8 @@ export type CreateManagedPrincipalInput = {
   appliedUsername?: string
   kind?: string
   metadata?: Record<string, unknown> | null
+  /** Scheme `appliedUsername` was derived with; stored on `options.nameScheme`. */
+  nameScheme?: PrincipalNameScheme
   /**
    * Override the generated password length. Replication principals use
    * {@link REPLICATION_PASSWORD_LENGTH} — MySQL caps `SOURCE_PASSWORD` in
@@ -618,6 +632,7 @@ export async function createManagedPrincipal(
       managedId: input.managedId,
       password: sealed,
       ...(input.metadata != null ? { metadata: input.metadata } : {}),
+      ...(input.nameScheme ? { options: { nameScheme: input.nameScheme } } : {}),
     })
     .returning({ id: principal.id })
 
@@ -750,14 +765,14 @@ export async function isManagedUsernameTaken(
 }
 
 /**
- * Resolve the **applied** engine login for a managed principal whose short
- * name is `shortUsername`. With `suffix: true` (the org randomized-usernames
- * default, and always the root path) the result is
- * `<short>_<11 random chars>` — the bare short name is never returned, so
- * reserved engine admin names (`postgres` / `root`) never become logins.
- * With `suffix: false` the bare short name wins when free across the
- * owning-org managed login namespace; on collision it falls back to a random
- * suffix so cluster create never 409s on a system-generated name.
+ * Resolve the **applied** engine login for a managed principal whose typed
+ * (display) name is `shortUsername`, under `opts.scheme`:
+ * `plain` is the typed name when free across the owning-org managed login
+ * namespace (on collision it falls back to a random suffix so a system
+ * generated name never 409s cluster create); `partial` is
+ * `<typed>_<11 random chars>`; `random` is a fully random name. Callers that
+ * must never expose a bare engine admin name (the root login) pass `partial`
+ * or `random`, never `plain`.
  *
  * Validated against {@link USERNAME_RE} and the engine identifier
  * pattern/maxLength (a suffixed name must fit maxLength whole). A random
@@ -769,7 +784,7 @@ export async function resolveManagedAppliedUsername(
   owningOrganizationIds: readonly string[],
   shortUsername: string,
   identifier: { pattern: RegExp; maxLength: number },
-  opts: { suffix: boolean }
+  opts: { scheme: PrincipalNameScheme }
 ): Promise<string> {
   if (
     !USERNAME_RE.test(shortUsername) ||
@@ -779,29 +794,27 @@ export async function resolveManagedAppliedUsername(
     throw new TypeError(`invalid managed short username: ${shortUsername}`)
   }
 
-  if (!opts.suffix && !(await isManagedUsernameTaken(db, owningOrganizationIds, shortUsername))) {
+  const isTaken = (candidate: string) =>
+    isManagedUsernameTaken(db, owningOrganizationIds, candidate)
+  if (opts.scheme === 'plain' && !(await isTaken(shortUsername))) {
     return shortUsername
   }
 
-  const suffixed = (): string => {
-    const candidate = `${shortUsername}${randomPrincipalUsernameSuffix()}`
-    if (
-      !USERNAME_RE.test(candidate) ||
-      !identifier.pattern.test(candidate) ||
-      candidate.length > identifier.maxLength
-    ) {
-      throw new TypeError(
-        `suffixed managed username does not fit engine identifier limits: ${shortUsername}`
-      )
-    }
-    return candidate
+  const drawn = opts.scheme === 'plain' ? 'partial' : opts.scheme
+  const candidate = await deriveFreeSystemName(
+    { scheme: drawn, typed: shortUsername, maxLength: identifier.maxLength },
+    isTaken
+  )
+  if (
+    !USERNAME_RE.test(candidate) ||
+    !identifier.pattern.test(candidate) ||
+    candidate.length > identifier.maxLength
+  ) {
+    throw new TypeError(
+      `generated managed username does not fit engine identifier limits: ${shortUsername}`
+    )
   }
-
-  const candidate = suffixed()
-  if (!(await isManagedUsernameTaken(db, owningOrganizationIds, candidate))) {
-    return candidate
-  }
-  return suffixed()
+  return candidate
 }
 
 /**
@@ -819,8 +832,8 @@ export async function ensureManagedReplicationPrincipal(
     preferredUsername?: string
     provider: string
     identifier: { pattern: RegExp; maxLength: number }
-    /** Org randomized-usernames default (`resolveRandomizedPrincipalUsernames`). */
-    randomizeSuffix: boolean
+    /** Org default name scheme (`loadPrincipalNamePolicy`). */
+    nameScheme: PrincipalNameScheme
   }
 ): Promise<{ principalId: string; appliedUsername: string; created: boolean }> {
   const rows = await listManagedPrincipals(db, params.managedId)
@@ -842,13 +855,14 @@ export async function ensureManagedReplicationPrincipal(
     owningOrgIds,
     preferred,
     params.identifier,
-    { suffix: params.randomizeSuffix }
+    { scheme: params.nameScheme }
   )
   const created = await createManagedPrincipal(db, dataEncryptionSecrets, {
     managedId: params.managedId,
     provider: params.provider,
     username: preferred,
     appliedUsername,
+    nameScheme: storedSchemeAfterFallback(params.nameScheme, appliedUsername, preferred),
     passwordLength: REPLICATION_PASSWORD_LENGTH,
     metadata: { managedReplication: true },
   })
@@ -857,6 +871,15 @@ export async function ensureManagedReplicationPrincipal(
     appliedUsername,
     created: true,
   }
+}
+
+/** A `plain` request that collided and got a suffix is stored as `partial`. */
+function storedSchemeAfterFallback(
+  requested: PrincipalNameScheme,
+  applied: string,
+  typed: string
+): PrincipalNameScheme {
+  return requested === 'plain' && applied !== typed ? 'partial' : requested
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

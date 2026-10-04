@@ -18,6 +18,7 @@
 import { and, desc, eq, lt, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { normalizeReplicaCounts } from '../commands/context.ts'
+import { normalizeBranchName } from '../git/environment-branch-tracking.ts'
 import type { ExecutionLogStore } from '../execution-logs/types.ts'
 
 /**
@@ -28,6 +29,11 @@ import type { ExecutionLogStore } from '../execution-logs/types.ts'
  * here rather than silently drifting.
  */
 export type ExecutionLogPresence = Pick<ExecutionLogStore, 'exists'>
+import {
+  type DeployStrategyOutcome,
+  deployOutcomeReason,
+  outcomeFromErrorCode,
+} from './deploy-outcome.ts'
 import { deploymentDurationMs } from './deployment-records.ts'
 import { command, deployment, server } from '../../db/schema.ts'
 
@@ -49,6 +55,7 @@ const DEPLOY_COMMAND_COLUMNS = {
   serverId: command.serverId,
   status: command.status,
   context: command.context,
+  metadata: command.metadata,
   actorType: command.actorType,
   actorId: command.actorId,
   errorCode: command.errorCode,
@@ -65,6 +72,8 @@ type DeployCommandRow = {
   serverId: string
   status: string
   context: unknown
+  /** `command.metadata`: carries the push attribution (`sourceSelection`) of an automated deploy. */
+  metadata?: unknown
   actorType: string
   actorId: string
   errorCode: string | null
@@ -105,8 +114,37 @@ export type DeploymentHistoryEntry = {
   durationMs: number | null
   errorCode: string | null
   errorMessage: string | null
+  /**
+   * The engine this attempt ran: `inplace` or `sequential`. `null` for a row
+   * queued before the strategy was recorded.
+   */
+  strategy: 'inplace' | 'sequential' | null
+  /**
+   * `rolled_back` (the previous version is running again) or `needs_attention`
+   * (stopped on purpose, e.g. a migration already ran) when a sequential deploy
+   * did not finish; `null` otherwise.
+   */
+  strategyOutcome: DeployStrategyOutcome | null
+  /** Why a `rolled_back` / `needs_attention` deploy ended that way. */
+  strategyOutcomeReason: string | null
   /** Whether an execution-log transcript is retained (store-side, not a column). */
   hasLog: boolean
+  /**
+   * What set this attempt off when it was a push, `null` for a person's deploy.
+   * Read from the attribution the deploy path wrote on the command, so it stays
+   * after the daemon payload is deleted.
+   */
+  trigger: DeploymentTrigger | null
+}
+
+/** A deploy started by a git push rather than a person. */
+export type DeploymentTrigger = {
+  kind: 'push'
+  /** Branch that was pushed (no `refs/heads/` prefix), or `null` when only a SHA was recorded. */
+  branch: string | null
+  commitSha: string | null
+  /** The repository (`repository.id`) the push came from. */
+  sourceId: string | null
 }
 
 export type ListDeploymentHistoryParams = {
@@ -197,16 +235,14 @@ function contextString(context: Record<string, unknown>, key: string): string | 
   return typeof raw === 'string' ? raw : null
 }
 
-function contextReplicaCounts(
-  context: Record<string, unknown>,
-): Record<string, number> | null {
+function contextReplicaCounts(context: Record<string, unknown>): Record<string, number> | null {
   return normalizeReplicaCounts(context.replicaCounts) ?? null
 }
 
 function clampLimit(limit: number | undefined): number {
   return Math.min(
     Math.max(limit ?? DEPLOYMENT_HISTORY_DEFAULT_LIMIT, 1),
-    DEPLOYMENT_HISTORY_MAX_LIMIT,
+    DEPLOYMENT_HISTORY_MAX_LIMIT
   )
 }
 
@@ -215,8 +251,38 @@ function environmentContextFilter(environmentId: string) {
   return sql`${command.context} ->> 'environmentId' = ${environmentId}`
 }
 
+/**
+ * The push behind an automated deploy, from `command.metadata.sourceSelection`.
+ *
+ * Only a `system` actor can have one: a person pressing Deploy records no
+ * selection (a manual ref is refused), and metadata is never read as a claim
+ * about who acted. A selection with neither branch nor SHA is no attribution.
+ */
+export function readDeploymentTrigger(row: {
+  actorType: string
+  metadata?: unknown
+}): DeploymentTrigger | null {
+  if (row.actorType !== 'system') return null
+  const selection = contextBag(contextBag(row.metadata).sourceSelection)
+  const ref = contextString(selection, 'ref')
+  const commitSha = contextString(selection, 'commitSha')
+  if (ref === null && commitSha === null) return null
+  return {
+    kind: 'push',
+    branch: ref === null ? null : (normalizeBranchName(ref) ?? ref),
+    commitSha,
+    sourceId: contextString(selection, 'sourceId'),
+  }
+}
+
+function contextStrategy(context: Record<string, unknown>): 'inplace' | 'sequential' | null {
+  const raw = contextString(context, 'deployStrategy')
+  return raw === 'inplace' || raw === 'sequential' ? raw : null
+}
+
 function serializeEntry(row: DeployCommandRow, hasLog: boolean): DeploymentHistoryEntry {
   const context = contextBag(row.context)
+  const strategyOutcome = outcomeFromErrorCode(row.errorCode)
   return {
     id: row.id,
     commandId: row.id,
@@ -240,7 +306,11 @@ function serializeEntry(row: DeployCommandRow, hasLog: boolean): DeploymentHisto
       : null,
     errorCode: row.errorCode ?? null,
     errorMessage: row.errorMessage ?? null,
+    strategy: contextStrategy(context),
+    strategyOutcome,
+    strategyOutcomeReason: deployOutcomeReason(strategyOutcome, row.errorMessage ?? null),
     hasLog,
+    trigger: readDeploymentTrigger(row),
   }
 }
 
@@ -259,7 +329,7 @@ function serializeEntry(row: DeployCommandRow, hasLog: boolean): DeploymentHisto
  */
 async function resolveHasLogs(
   store: ExecutionLogPresence | undefined,
-  ids: readonly string[],
+  ids: readonly string[]
 ): Promise<boolean[]> {
   if (!store) return ids.map(() => false)
   return await Promise.all(ids.map((id) => store.exists(id).catch(() => false)))
@@ -272,14 +342,11 @@ async function resolveHasLogs(
 export async function listEnvironmentDeploymentHistory(
   db: Db,
   environmentId: string,
-  params: ListDeploymentHistoryParams = {},
+  params: ListDeploymentHistoryParams = {}
 ): Promise<DeploymentHistoryPage> {
   const limit = clampLimit(params.limit)
 
-  const filters = [
-    eq(command.name, DEPLOY_COMMAND_NAME),
-    environmentContextFilter(environmentId),
-  ]
+  const filters = [eq(command.name, DEPLOY_COMMAND_NAME), environmentContextFilter(environmentId)]
   if (params.before) {
     filters.push(lt(command.id, params.before))
   }
@@ -299,7 +366,7 @@ export async function listEnvironmentDeploymentHistory(
   const page = hasMore ? rows.slice(0, limit) : rows
   const hasLogs = await resolveHasLogs(
     params.logStore,
-    page.map((row) => row.id),
+    page.map((row) => row.id)
   )
 
   const deployments = page.map((row, index) => serializeEntry(row, hasLogs[index] ?? false))
@@ -320,7 +387,7 @@ export async function getEnvironmentDeploymentDetail(
   db: Db,
   environmentId: string,
   deploymentId: string,
-  params: { logStore?: ExecutionLogPresence } = {},
+  params: { logStore?: ExecutionLogPresence } = {}
 ): Promise<DeploymentHistoryDetail | null> {
   const anchorRows = (await db
     .select(DEPLOY_COMMAND_COLUMNS)
@@ -330,8 +397,8 @@ export async function getEnvironmentDeploymentDetail(
       and(
         eq(command.id, deploymentId),
         eq(command.name, DEPLOY_COMMAND_NAME),
-        environmentContextFilter(environmentId),
-      ),
+        environmentContextFilter(environmentId)
+      )
     )
     .limit(1)) as DeployCommandRow[]
 
@@ -359,14 +426,14 @@ export async function getEnvironmentDeploymentDetail(
             and(
               eq(command.name, DEPLOY_COMMAND_NAME),
               environmentContextFilter(environmentId),
-              sql`${command.context} ->> 'generation' = ${String(generation)}`,
-            ),
+              sql`${command.context} ->> 'generation' = ${String(generation)}`
+            )
           )
           .orderBy(desc(command.createdAt), desc(command.id))) as DeployCommandRow[])
 
   const hasLogs = await resolveHasLogs(
     params.logStore,
-    rows.map((row) => row.id),
+    rows.map((row) => row.id)
   )
   const commands = rows.map((row, index) => serializeEntry(row, hasLogs[index] ?? false))
 

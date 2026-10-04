@@ -198,7 +198,7 @@ requires a ProxySQL restart, so exposure toggles must never flap the compose
 publish). **Exposure defaults on** (`DEFAULT_MANAGED_SETTINGS` and every
 engine spec record `{ enabled: true }`); create has no exposure choice — the
 settings panel is the opt-out. Access control today is credential auth +
-org-CA TLS; the future host firewall will enforce `exposure.scope`. One-release
+org-CA TLS; the host firewall (`features/firewall/`, preview only so far; enforcement is a later stage) will enforce `exposure.scope`. One-release
 read of retired
 `exposure.bind` (`public` | `datacenter` | `local`) migrates to the same-named
 `scope`; new writes must use `scope`.
@@ -352,9 +352,23 @@ also validates identifiers before they reach argv).
 
 Postgres backs up via `pg_dump -Fc` (custom format), per-database only —
 `supportsInstanceScope: false` documents `pg_dumpall` as an explicit future
-seam. **Scheduled backups are also an explicit future seam** — this pass adds
-on-demand create/delete/restore only; no timers, no cron, no retention sweep
-outside of the retention-keep pruning that runs on every successful backup.
+seam.
+
+**Scheduled backups** are `retention` rows (routes under
+`/environments/:id/managed/backup-policies`, org owners and managers only;
+`src/client/managed/backup-policies.ts`). The control plane never queues a
+run: it pushes each host its full policy set as `server.backups.reconcile`
+(`src/features/backups/reconcile.ts`, triggers listed in
+`src/features/commands/payload-contracts.md`), and a systemd timer on the host
+runs each backup. Schedules are stored as cron — presets (`hourly`, `daily` at
+HH:MM, `weekly` on a day at HH:MM) normalize to cron and read back out for
+display (`src/features/backups/schedules.ts`) — and are translated to
+`OnCalendar` at push time; a schedule that cannot translate is refused on
+write. Every new managed database gets one automatic daily policy ("Daily",
+03:MM host time, keep the engine's `defaultRetentionKeep`, `created_by`
+null), created in the engine's own create transaction; existing engines are
+not backfilled. Policy retention is capped at the engine's
+`maxRetentionKeep`, and prunes only that policy's own directory on the host.
 
 ## Container naming
 
@@ -411,7 +425,7 @@ admits peers with `hostssl all` rules alongside the `hostssl replication`
 entries — a peer-less standby HBA rejects cross-host monitor/read traffic.
 Cross-host **consumer** servers (bound apps elsewhere) are admitted the same
 way via `member.clientSourceAddresses` → payload `ingressSourceAddresses`
-(pg_hba `hostssl all` + daemon firewall + MySQL/MariaDB account host scoping);
+(pg_hba `hostssl all` + daemon firewall (preview only so far) + MySQL/MariaDB account host scoping);
 consumers never receive replication rules.
 Managed leaves are minted serverAuth **+ clientAuth** (`includeClientAuth` in
 `buildManagedOrgTlsMaterial`): ProxySQL presents them as client certs on
@@ -456,10 +470,10 @@ another member all fall back to the gate on the stored observation — today's
 409. `force` never probes. `GET …/managed/status?refresh=1` (the panel's
 Refresh) probes every **replica** in parallel and returns
 `healthRefresh: { observed, unavailable }`; a plain GET stays DB-only. The probe
-writes replication only (never `replica.status`). **Automatic failover never
-probes** and never honours `force`: `isAutomaticFailoverHealthy` reads only the
-stored, fresh observation (a test pins that the failover modules do not import
-the probe). Read-class promotion is
+writes replication only (never `replica.status`). Automatic failover never
+honours `force`; it reads the stored, fresh observation first and probes only
+on the Postgres cold-kill path below (the probe is injected by the transports;
+a test pins that the failover modules do not import it). Read-class promotion is
 `POST …/managed/disaster-recovery/promote` (`{ memberId, confirm: true }`).
 Automatic failover of same-DC `failover` replicas is TurboPanel-gated after
 fencing (journal table `recovery`). Candidate pick requires `replica` +
@@ -489,6 +503,132 @@ Durable Object poll loop. DR rewrite: members no longer in the new primary's
 datacenter cannot stay `failover` → `read` (keep `readEligible`). Same-DC `read`
 peers are never silently upgraded to `failover`.
 
+### Dead-primary detectors
+
+`managed-ha-event` may carry `detector` (absent = Orchestrator) and bounded
+`evidence`. `ha-policy.ts` → `AUTOMATIC_FAILOVER_DETECTORS` is the policy
+switch for which detectors may start automatic failover, per engine:
+
+- `orchestrator` (absent field): Orchestrator DeadPrimary, **MySQL/MariaDB
+  only** — Orchestrator's image has only the MySQL driver, so an
+  Orchestrator-shaped event for Postgres is always rejected.
+- `postgres-probe`: the daemon's own probe on the Postgres primary's host
+  (`turbopaneld/src/managed/AGENTS.md` → **Postgres dead-primary detection**):
+  engine dead, host alive. Sent only when the attach frame advertises
+  `managed-ha-probe-v1`.
+
+What the control plane actually checks, in order (`handleManagedHaEvent` →
+`haEventRejection` → `beginAutomaticFailover`); there is **no raft-leader
+check here** — Raft only matters to whether Orchestrator raises DeadPrimary at
+all:
+
+1. The detector covers the cluster's engine.
+2. **Every** event (with or without `detector`): the reporting server — the
+   authenticated cell session's `serverId`, never a payload field — hosts a
+   member of the cluster **and** `server.organization_id` equals the cluster's
+   organization (environment → project).
+3. `PRIMARY_HOST_DETECTORS` (`postgres-probe`): `sourceMemberId` is the
+   current primary member and the reporter is that member's server, so a stale
+   daemon (old primary after a switchover) can never fail over the new primary.
+3a. `orchestrator` events are bound to the CURRENT primary
+   (`orchestratorBindingRejection`): the daemon sends Orchestrator's key for
+   the dead instance (`instanceHost` + `instancePort`, feature
+   `managed-ha-instance-v1`), and it must equal the primary's address and port
+   as the reporter's Orchestrator knows it (`haMemberDialForReporter`, the same
+   dial `managed.ha.reconcile` registered: private address + `privatePort`, or
+   the local container name + engine default port). A mismatch, or a missing
+   instance from a daemon that advertises the feature, is recorded as a
+   terminal `blocked` row with `metadata.stale = true` and a reason, and
+   nothing is fenced or promoted (no in-flight resume, no cooldown). A daemon
+   that does not advertise the feature keeps the legacy, unbound behavior.
+4. An in-flight recovery for the cluster is resumed, not duplicated. Then the
+   per-deployment switch (`TURBOPANEL_AUTO_FAILOVER`, below): when off, a
+   terminal `blocked` row (`auto_failover_disabled`, no target) and stop.
+5. Persisted cooldown: no new automatic failover within
+   `AUTOMATIC_FAILOVER_COOLDOWN_MS` (15 min) of the last **accepted** one
+   (newest `automatic-failover` recovery row with a target), read from the
+   journal so it survives restarts. A refusal is recorded as a terminal
+   `blocked` row (`AUTOMATIC_FAILOVER_COOLDOWN_MESSAGE`, no target, so it
+   never extends the cooldown); the daemon re-sends while the primary stays
+   dead, so a refusal inside the window is retried after it.
+6. A same-DC `failover` replica passes the promote lag gate (streaming,
+   observation ≤ 120 s old, lag under 64 MiB / 30 s). If none does and the
+   engine is Postgres, each same-DC `failover` replica is probed at event time
+   (`managed-health-request`, 8 s, in parallel; `ha-fresh-standby.ts`, owner
+   decision 2026-10-02). A replica that is no longer streaming is accepted only
+   when (a) the daemon saw it streaming no earlier than the failure start minus
+   `TURBOPANEL_AUTO_FAILOVER_RECEIPT_MARGIN_SECONDS` (default 10, max 60),
+   (b) its replay LSN is within 16 KiB of its received LSN (a receive position
+   stopped mid-record can never be replayed exactly), and (c) that last streaming
+   read's received-vs-primary byte lag (`latest_end_lsn - flushed_lsn` on the
+   standby) was under 64 MiB. Seconds since the last commit are not used: on
+   an idle cluster they grow while nothing is behind. The failure start is event receipt
+   minus the detector's `evidence.spanMs` (its first hard failure); no usable span, no probe answer, or
+   any missing field refuses. The daemon (turbopaneld `pg-standby-sampler.ts`)
+   reads its standbys every 2 s and reports `lastStreaming.ageMs` on its
+   monotonic clock, so no cross-host clock is compared. The outcome per replica
+   is recorded as `metadata.freshStandby`; a refusal is `blocked` with
+   `AUTOMATIC_FAILOVER_STANDBY_NOT_PROVEN_MESSAGE`. Otherwise `blocked`.
+   A standby still `streaming` at event time must also pass (a): a silently
+   dropped link reads `streaming` with zero lag until `wal_receiver_timeout`.
+   Standbys run with `wal_receiver_timeout = 10s`, so even an idle link
+   exchanges a message every ~5 s and the 5 s receipt rule can hold.
+   Several accepted: the one with the highest `receivedLsn` wins (ties: lowest
+   ordinal). A failure span over 10 min (a re-send for an old incident) is not
+   anchored, so it refuses. Loss window: async replication, so an accepted
+   standby may lack up to the margin's worth of commits plus the last
+   sample's receive lag (≤ 64 MiB of WAL). The daemon records a streaming
+   sample only when the receiver heard from the primary within 5 s.
+   Fencing (step 7) and the cooldown (step 5) still apply unchanged.
+7. Without a command queue (a deployment with no `TURBOPANEL_COMMAND_QUEUE`
+   binding; the Durable Object passes the Worker's binding through
+   `daemon/cell/managed-ha-inbound.ts`) a **terminal** `blocked` row is written with
+   `AUTOMATIC_FAILOVER_NO_QUEUE_MESSAGE` (`no_command_queue`) and no target —
+   never `detecting`, which would hold the in-flight slot
+   (`uniq_recovery_inflight_managed`) and make every later switchover / DR
+   answer `managed_busy`. With a queue: fence (drain + `managed.lifecycle
+   stop`; an unreachable old primary blocks) then promote.
+8. A fence stop or promote/recover command that cannot be enqueued turns the
+   row terminal `blocked` (`FENCE_STOP_UNQUEUED_MESSAGE` /
+   `PROMOTE_UNQUEUED_MESSAGE`) instead of leaving `fencing` / `promoting`
+   holding the in-flight slot.
+9. Safety net: the stale sweep (Deno cleanup lane and the Workers
+   offline-sweep cron) expires any `detecting` or `fencing` row older than
+   `STALE_DETECTING_RECOVERY_MS` (10 min) with no command recorded in its
+   metadata to `blocked` (`expireStaleDetectingRecoveries`).
+
+**Automatic failover switch** (`auto-failover-switch.ts`):
+`TURBOPANEL_AUTO_FAILOVER=on|off` (also `true`/`false`, `1`/`0`), read at
+event time — the Worker's vars on Workers (`daemon/cell/managed-ha-inbound.ts`),
+`Deno.env` on self-hosted. Unset: **off** when `TURBOPANEL_ENVIRONMENT` is
+`staging` or `live`, **on** everywhere else (testing, local dev, self-hosted
+Deno keep the original behaviour); any other value is off, so a typo never
+promotes. `wrangler.jsonc` commits `on` for testing and `off` for staging and
+live. Off writes `AUTOMATIC_FAILOVER_DISABLED_MESSAGE` as a terminal `blocked`
+row with no target (no cooldown) and queues nothing; like the no-queue row, a
+detector that keeps re-sending writes one row per accepted event. Manual
+switchover and disaster recovery never read the switch.
+
+A rejected event is logged and dropped (no recovery row). An accepted one is
+logged with its evidence and records `metadata.detector` /
+`metadata.detectorEvidence` on the recovery row.
+
+Whole-host loss is deliberately **not** a detector: nothing can fence a host
+that is gone, so it stays manual with an alert. Widening it (Option A) is a new
+entry in `AUTOMATIC_FAILOVER_DETECTORS` once fencing can cope.
+
+**Fence bookkeeping is lock-serialized** (`ha-recovery.ts`). Every fence
+command row is created first, `metadata.fenceCommandIds` is written, and only
+then are the commands queued (drains, stop last), so no result can arrive for
+an id the row does not hold. Fence results (parallel queue consumers on both
+runtimes) go through `updateRecoveryLocked` (`SELECT … FOR UPDATE` in a
+transaction): only a `fencing` row that still lists the command changes; a
+duplicate, late or unknown result is ignored. The result that empties the list
+picks the next state under the lock, and the promote is queued after the
+commit, so it is queued once. A stop command that cannot be queued blocks the
+row (`FENCE_STOP_UNQUEUED_MESSAGE`); a drain that cannot be queued just leaves
+the list.
+
 ### Manual live HA checklist
 
 Unit tests encode topology/lag/fence policy. A later live run (not CI) should
@@ -506,12 +646,18 @@ still walk, on PostgreSQL, MySQL, and MariaDB:
 
 ## Login namespace
 
-Every managed principal has a short internal `username` and an
-`applied_username` — the actual engine login. With the org
-randomized-usernames default on (`organization.options.randomizedPrincipalUsernames`,
-platform default **on**), the applied login is `<short>_<11 random chars>`
-(`resolveManagedAppliedUsername`); off, it is the short name. Root is
-**always** suffixed regardless (`postgres_<11 rand>` / `root_<11 rand>`,
+Every managed principal has the name the person typed (`username`, the display
+name) and an `applied_username` — the actual engine login, the system name. A
+**name scheme** decides how the system name is derived
+(`src/lib/principal-name-scheme.ts`, `resolveManagedAppliedUsername`): `plain`
+= the typed name, `partial` = `<typed>_<11 random chars>` (the platform default),
+`random` = a fully random 12-character name with no trace of the typed name. The
+org default and optional lock live on `organization.options`
+(`principalNameScheme`, `principalNameSchemeLocked`; the legacy boolean
+`randomizedPrincipalUsernames` is the fallback: true = partial, false = plain);
+the chosen scheme is stored on `principal.options.nameScheme`. The server always
+derives the system name. Root is **never** plain
+(`postgres_<11 rand>` / `root_<11 rand>`, or random under the `random` scheme;
 persisted on `managed.metadata.rootUsername` — spec `rootUsername` is only the
 short name/prefix), so the bare engine admin name is never a login. Applied
 usernames are unique across every cluster landing on servers owned by the same

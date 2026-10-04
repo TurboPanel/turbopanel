@@ -4,9 +4,8 @@
  *
  * Compares the isolated `src/contracts/` twins against the sibling checkout
  * (`../turbopaneld` when run from turbopanel, `../turbopanel` when run from
- * turbopaneld). Missing sibling → skip (exit 0), matching
- * `check-metrics-legacy.ts`. Dual-checkout CI that already clones both
- * (turbopanel `metrics-legacy` job) must run this.
+ * turbopaneld). Missing sibling → skip (exit 0). Dual-checkout CI that
+ * already clones both (turbopanel `contract-twin` job) must run this.
  *
  * Pairs:
  *   - metrics contract body (byte-equal below the header docblock)
@@ -42,8 +41,9 @@ function stripHeaderDocblock(source) {
 }
 
 function isWordChar(ch) {
-  return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
-    (ch >= '0' && ch <= '9') || ch === '_'
+  return (
+    (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch === '_'
+  )
 }
 
 function isWord(value) {
@@ -105,7 +105,10 @@ function extractConst(source, name) {
   if (from == null) return null
   while (
     from < source.length &&
-    (source[from] === ' ' || source[from] === '\t' || source[from] === '\n' || source[from] === '\r')
+    (source[from] === ' ' ||
+      source[from] === '\t' ||
+      source[from] === '\n' ||
+      source[from] === '\r')
   ) {
     from += 1
   }
@@ -154,9 +157,7 @@ function fail(message) {
 
 function resolveLayout() {
   const pkgPath = path.join(ROOT, 'package.json')
-  const pkg = fs.existsSync(pkgPath)
-    ? JSON.parse(fs.readFileSync(pkgPath, 'utf8'))
-    : {}
+  const pkg = fs.existsSync(pkgPath) ? JSON.parse(fs.readFileSync(pkgPath, 'utf8')) : {}
   if (pkg.name === 'turbopanel') {
     return {
       self: ROOT,
@@ -193,11 +194,11 @@ function requireJoinedEqual(left, right, message) {
 function checkMetrics(tp, td) {
   const metricsLeft = requireText(
     readRel(tp, 'src/contracts/metrics-contract.ts'),
-    'metrics-contract.ts missing on one side of the pair',
+    'metrics-contract.ts missing on one side of the pair'
   )
   const metricsRight = requireText(
     readRel(td, 'src/contracts/metrics-contract.ts'),
-    'metrics-contract.ts missing on one side of the pair',
+    'metrics-contract.ts missing on one side of the pair'
   )
   if (stripHeaderDocblock(metricsLeft) !== stripHeaderDocblock(metricsRight)) {
     fail('metrics-contract.ts body drifted (below the header docblock)')
@@ -207,48 +208,48 @@ function checkMetrics(tp, td) {
 function checkHostname(tp, td) {
   const hostnameLeft = requireText(
     readRel(tp, 'src/contracts/commands/hostname.ts'),
-    'hostname sources missing on one side of the pair',
+    'hostname sources missing on one side of the pair'
   )
   const hostnameRight = requireText(
     readRel(td, 'src/contracts/commands-contracts.ts'),
-    'hostname sources missing on one side of the pair',
+    'hostname sources missing on one side of the pair'
   )
   requireEqual(
     extractConst(hostnameLeft, 'HOSTNAME_RE'),
     extractConst(hostnameRight, 'HOSTNAME_RE'),
-    'HOSTNAME_RE drifted',
+    'HOSTNAME_RE drifted'
   )
   requireEqual(
     extractConst(hostnameLeft, 'HOSTNAME_MAX_LENGTH'),
     extractConst(hostnameRight, 'HOSTNAME_MAX_LENGTH'),
-    'HOSTNAME_MAX_LENGTH drifted',
+    'HOSTNAME_MAX_LENGTH drifted'
   )
 }
 
 function checkMachineKey(tp, td) {
   const mkLeft = requireText(
     readRel(tp, 'src/lib/machine-key.ts'),
-    'machine-key.ts missing on one side of the pair',
+    'machine-key.ts missing on one side of the pair'
   )
   const mkRight = requireText(
     readRel(td, 'src/host/machine-key.ts'),
-    'machine-key.ts missing on one side of the pair',
+    'machine-key.ts missing on one side of the pair'
   )
   requireEqual(
     extractConst(mkLeft, 'TURBOPANEL_MACHINE_ID_NAMESPACE'),
     extractConst(mkRight, 'TURBOPANEL_MACHINE_ID_NAMESPACE'),
-    'TURBOPANEL_MACHINE_ID_NAMESPACE drifted',
+    'TURBOPANEL_MACHINE_ID_NAMESPACE drifted'
   )
 }
 
 function checkUpdateChannels(tp, td) {
   const channelsLeftSrc = requireText(
     readRel(tp, 'src/contracts/update-channel.ts'),
-    'update-channel sources missing on one side of the pair',
+    'update-channel sources missing on one side of the pair'
   )
   const channelsRightSrc = requireText(
     readRel(td, 'src/update/types.ts'),
-    'update-channel sources missing on one side of the pair',
+    'update-channel sources missing on one side of the pair'
   )
   const channelsLeft = extractArrayConst(channelsLeftSrc, 'UPDATE_CHANNELS')
   const marker = 'export type UpdateChannel'
@@ -264,623 +265,594 @@ function checkUpdateChannels(tp, td) {
   requireJoinedEqual(
     channelsLeft,
     channelsRight,
-    `UPDATE_CHANNELS drifted (${channelsLeft?.join(',')} vs ${channelsRight?.join(',')})`,
+    `UPDATE_CHANNELS drifted (${channelsLeft?.join(',')} vs ${channelsRight?.join(',')})`
   )
 }
 
 function checkReportedIp(tp, td) {
   const ipLeftSrc = requireText(
     readRel(tp, 'src/contracts/server-addresses.ts'),
-    'ServerReportedIp sources missing on one side of the pair',
+    'ServerReportedIp sources missing on one side of the pair'
   )
   const ipRightSrc = requireText(
     readRel(td, 'src/contracts/server-reported-ip.ts'),
-    'ServerReportedIp sources missing on one side of the pair',
+    'ServerReportedIp sources missing on one side of the pair'
   )
   requireJoinedEqual(
     extractTypeFields(ipLeftSrc, 'ServerReportedIp'),
     extractTypeFields(ipRightSrc, 'ServerReportedIp'),
-    'ServerReportedIp fields drifted',
+    'ServerReportedIp fields drifted'
   )
 }
 
 function checkSlotMapping(tp, td) {
   const slotLeftTypes = requireText(
     readRel(tp, 'src/contracts/topology-types.ts'),
-    'topology slot-mapping sources missing on one side of the pair',
+    'topology slot-mapping sources missing on one side of the pair'
   )
   const slotRightTypes = requireText(
     readRel(td, 'src/contracts/topology-types.ts'),
-    'topology slot-mapping sources missing on one side of the pair',
+    'topology slot-mapping sources missing on one side of the pair'
   )
   const slotLeftMap = requireText(
     readRel(tp, 'src/contracts/topology-slot-mapping.ts'),
-    'topology slot-mapping sources missing on one side of the pair',
+    'topology slot-mapping sources missing on one side of the pair'
   )
   const slotRightMap = requireText(
     readRel(td, 'src/contracts/topology-slot-mapping.ts'),
-    'topology slot-mapping sources missing on one side of the pair',
+    'topology slot-mapping sources missing on one side of the pair'
   )
   requireEqual(
     extractConst(slotLeftTypes, 'MAX_NIC_SLOTS'),
     extractConst(slotRightTypes, 'MAX_NIC_SLOTS'),
-    'MAX_NIC_SLOTS drifted',
+    'MAX_NIC_SLOTS drifted'
   )
   requireJoinedEqual(
     extractArrayConst(slotLeftMap, 'FILESYSTEM_ROLE_PRIORITY'),
     extractArrayConst(slotRightMap, 'FILESYSTEM_ROLE_PRIORITY'),
-    'FILESYSTEM_ROLE_PRIORITY drifted',
+    'FILESYSTEM_ROLE_PRIORITY drifted'
   )
 }
 
 const TYPE_KEYWORDS = new Set([
-  "string",
-  "number",
-  "boolean",
-  "bigint",
-  "symbol",
-  "object",
-  "any",
-  "unknown",
-  "never",
-  "void",
-  "null",
-  "undefined",
-]);
+  'string',
+  'number',
+  'boolean',
+  'bigint',
+  'symbol',
+  'object',
+  'any',
+  'unknown',
+  'never',
+  'void',
+  'null',
+  'undefined',
+])
 
 function skipTrivia(source, i) {
-  let j = i;
+  let j = i
   while (j < source.length) {
-    const ch = source[j];
-    if (ch === " " || ch === "\t" || ch === "\n" || ch === "\r") {
-      j += 1;
-      continue;
+    const ch = source[j]
+    if (ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r') {
+      j += 1
+      continue
     }
-    if (ch === "/" && source[j + 1] === "/") {
-      j += 2;
-      while (j < source.length && source[j] !== "\n") j += 1;
-      continue;
+    if (ch === '/' && source[j + 1] === '/') {
+      j += 2
+      while (j < source.length && source[j] !== '\n') j += 1
+      continue
     }
-    if (ch === "/" && source[j + 1] === "*") {
-      j += 2;
-      while (
-        j < source.length && !(source[j] === "*" && source[j + 1] === "/")
-      ) {
-        j += 1;
+    if (ch === '/' && source[j + 1] === '*') {
+      j += 2
+      while (j < source.length && !(source[j] === '*' && source[j + 1] === '/')) {
+        j += 1
       }
-      j = Math.min(source.length, j + 2);
-      continue;
+      j = Math.min(source.length, j + 2)
+      continue
     }
-    break;
+    break
   }
-  return j;
+  return j
 }
 
 function skipQuoted(source, i) {
-  const quote = source[i];
-  if (quote !== "'" && quote !== '"' && quote !== "`") return i + 1;
-  let j = i + 1;
+  const quote = source[i]
+  if (quote !== "'" && quote !== '"' && quote !== '`') return i + 1
+  let j = i + 1
   while (j < source.length) {
-    if (source[j] === "\\") {
-      j += 2;
-      continue;
+    if (source[j] === '\\') {
+      j += 2
+      continue
     }
-    if (source[j] === quote) return j + 1;
-    j += 1;
+    if (source[j] === quote) return j + 1
+    j += 1
   }
-  return j;
+  return j
 }
 
 function readWordAt(source, i) {
-  if (!isWordChar(source[i] ?? "")) return null;
-  let j = i + 1;
-  while (j < source.length && isWordChar(source[j] ?? "")) j += 1;
-  return source.slice(i, j);
+  if (!isWordChar(source[i] ?? '')) return null
+  let j = i + 1
+  while (j < source.length && isWordChar(source[j] ?? '')) j += 1
+  return source.slice(i, j)
 }
 
 function isDigits(word) {
-  if (!word) return false;
+  if (!word) return false
   for (const ch of word) {
-    if (ch < "0" || ch > "9") return false;
+    if (ch < '0' || ch > '9') return false
   }
-  return true;
+  return true
 }
 
 function decodeString(raw) {
-  let out = "";
+  let out = ''
   for (let i = 0; i < raw.length; i += 1) {
-    if (raw[i] !== "\\") {
-      out += raw[i];
-      continue;
+    if (raw[i] !== '\\') {
+      out += raw[i]
+      continue
     }
-    const next = raw[i + 1] ?? "";
-    out += next === "n" ? "\n" : next;
-    i += 1;
+    const next = raw[i + 1] ?? ''
+    out += next === 'n' ? '\n' : next
+    i += 1
   }
-  return out;
+  return out
 }
 
 function quoteLiteral(value) {
-  return `'${value.replaceAll("\\", "\\\\").replaceAll("'", "\\'")}'`;
+  return `'${value.replaceAll('\\', '\\\\').replaceAll("'", "\\'")}'`
 }
 
 class TypeParser {
-  #source;
-  #i = 0;
+  #source
+  #i = 0
 
   constructor(source) {
-    this.#source = source;
+    this.#source = source
   }
 
   get index() {
-    return this.#i;
+    return this.#i
   }
 
   parse() {
-    return this.#parseUnion();
+    return this.#parseUnion()
   }
 
   #skip() {
-    this.#i = skipTrivia(this.#source, this.#i);
+    this.#i = skipTrivia(this.#source, this.#i)
   }
 
   #eat(token) {
-    this.#skip();
-    if (!this.#source.startsWith(token, this.#i)) return false;
-    this.#i += token.length;
-    return true;
+    this.#skip()
+    if (!this.#source.startsWith(token, this.#i)) return false
+    this.#i += token.length
+    return true
   }
 
   #peekWord() {
-    return readWordAt(this.#source, skipTrivia(this.#source, this.#i)) ?? "";
+    return readWordAt(this.#source, skipTrivia(this.#source, this.#i)) ?? ''
   }
 
   #readWord() {
-    this.#skip();
-    const word = readWordAt(this.#source, this.#i) ?? "";
-    this.#i += word.length;
-    return word;
+    this.#skip()
+    const word = readWordAt(this.#source, this.#i) ?? ''
+    this.#i += word.length
+    return word
   }
 
   #parseUnion() {
     // A leading `|` is TypeScript style, not an empty union member.
-    this.#skip();
-    if (this.#source.startsWith("|", this.#i)) this.#i += 1;
-    const members = [this.#parseIntersection()];
-    while (this.#eat("|")) members.push(this.#parseIntersection());
-    if (members.length === 1) return members[0];
-    return { kind: "union", members };
+    this.#skip()
+    if (this.#source.startsWith('|', this.#i)) this.#i += 1
+    const members = [this.#parseIntersection()]
+    while (this.#eat('|')) members.push(this.#parseIntersection())
+    if (members.length === 1) return members[0]
+    return { kind: 'union', members }
   }
 
   #parseIntersection() {
-    const members = [this.#parsePostfix()];
-    while (this.#eat("&")) members.push(this.#parsePostfix());
-    if (members.length === 1) return members[0];
-    return { kind: "intersection", members };
+    const members = [this.#parsePostfix()]
+    while (this.#eat('&')) members.push(this.#parsePostfix())
+    if (members.length === 1) return members[0]
+    return { kind: 'intersection', members }
   }
 
   #parsePostfix() {
-    let ast = this.#parsePrimary();
-    while (this.#eat("[]")) {
-      ast = { kind: "array", element: ast, readonly: false };
+    let ast = this.#parsePrimary()
+    while (this.#eat('[]')) {
+      ast = { kind: 'array', element: ast, readonly: false }
     }
-    return ast;
+    return ast
   }
 
   #parsePrimary() {
-    this.#skip();
-    if (this.#peekWord() === "readonly") {
-      return this.#parseReadonly();
+    this.#skip()
+    if (this.#peekWord() === 'readonly') {
+      return this.#parseReadonly()
     }
-    if (this.#eat("(")) {
-      const inner = this.#parseUnion();
-      this.#eat(")");
-      return inner;
+    if (this.#eat('(')) {
+      const inner = this.#parseUnion()
+      this.#eat(')')
+      return inner
     }
-    if (this.#eat("{")) return this.#parseObjectFields();
-    const ch = this.#source[this.#i];
-    if (ch === "'" || ch === '"') return this.#parseStringLiteral();
-    const word = this.#readWord();
-    if (!word) return { kind: "opaque", text: "" };
-    return this.#wordType(word);
+    if (this.#eat('{')) return this.#parseObjectFields()
+    const ch = this.#source[this.#i]
+    if (ch === "'" || ch === '"') return this.#parseStringLiteral()
+    const word = this.#readWord()
+    if (!word) return { kind: 'opaque', text: '' }
+    return this.#wordType(word)
   }
 
   #parseReadonly() {
-    this.#readWord();
-    const inner = this.#parsePostfix();
-    if (inner.kind === "array") return { ...inner, readonly: true };
-    return { kind: "opaque", text: `readonly ${canonical(inner)}` };
+    this.#readWord()
+    const inner = this.#parsePostfix()
+    if (inner.kind === 'array') return { ...inner, readonly: true }
+    return { kind: 'opaque', text: `readonly ${canonical(inner)}` }
   }
 
   #wordType(word) {
-    if (isDigits(word)) return { kind: "literal", text: word };
-    if (word === "true" || word === "false") {
-      return { kind: "literal", text: word };
+    if (isDigits(word)) return { kind: 'literal', text: word }
+    if (word === 'true' || word === 'false') {
+      return { kind: 'literal', text: word }
     }
-    if (TYPE_KEYWORDS.has(word)) return { kind: "keyword", name: word };
-    const args = this.#eat("<") ? this.#parseTypeArgs() : [];
-    return { kind: "ref", name: word, args };
+    if (TYPE_KEYWORDS.has(word)) return { kind: 'keyword', name: word }
+    const args = this.#eat('<') ? this.#parseTypeArgs() : []
+    return { kind: 'ref', name: word, args }
   }
 
   #parseStringLiteral() {
-    const quote = this.#source[this.#i];
-    const end = skipQuoted(this.#source, this.#i);
-    const raw = this.#source.slice(this.#i + 1, end - 1);
-    this.#i = end;
+    const quote = this.#source[this.#i]
+    const end = skipQuoted(this.#source, this.#i)
+    const raw = this.#source.slice(this.#i + 1, end - 1)
+    this.#i = end
     if (quote !== "'" && quote !== '"') {
-      return { kind: "opaque", text: this.#source.slice(end) };
+      return { kind: 'opaque', text: this.#source.slice(end) }
     }
-    return { kind: "literal", text: quoteLiteral(decodeString(raw)) };
+    return { kind: 'literal', text: quoteLiteral(decodeString(raw)) }
   }
 
   #parseTypeArgs() {
-    const args = [];
+    const args = []
     while (this.#i < this.#source.length) {
-      this.#skip();
-      if (this.#source[this.#i] === ">") break;
-      args.push(this.#parseUnion());
-      this.#skip();
-      if (this.#source[this.#i] === ",") {
-        this.#i += 1;
-        continue;
+      this.#skip()
+      if (this.#source[this.#i] === '>') break
+      args.push(this.#parseUnion())
+      this.#skip()
+      if (this.#source[this.#i] === ',') {
+        this.#i += 1
+        continue
       }
-      break;
+      break
     }
-    this.#eat(">");
-    return args;
+    this.#eat('>')
+    return args
   }
 
   #parseObjectFields() {
-    const fields = [];
+    const fields = []
     while (this.#i < this.#source.length) {
-      this.#skip();
-      if (this.#eat("}")) break;
-      if (this.#eat(";") || this.#eat(",")) continue;
-      const before = this.#i;
-      const field = this.#parseField();
-      if (field) fields.push(field);
-      if (this.#i === before) this.#i += 1;
+      this.#skip()
+      if (this.#eat('}')) break
+      if (this.#eat(';') || this.#eat(',')) continue
+      const before = this.#i
+      const field = this.#parseField()
+      if (field) fields.push(field)
+      if (this.#i === before) this.#i += 1
     }
-    return { kind: "object", fields };
+    return { kind: 'object', fields }
   }
 
   #parseField() {
-    if (this.#peekWord() === "readonly") {
-      const mark = this.#i;
-      this.#readWord();
-      this.#skip();
-      const next = this.#source[this.#i];
-      if (next === ":" || next === "?") this.#i = mark;
+    if (this.#peekWord() === 'readonly') {
+      const mark = this.#i
+      this.#readWord()
+      this.#skip()
+      const next = this.#source[this.#i]
+      if (next === ':' || next === '?') this.#i = mark
     }
-    this.#skip();
-    const quoted = this.#source[this.#i] === "'" ||
-      this.#source[this.#i] === '"';
-    const name = quoted ? this.#readQuotedName() : this.#readWord();
-    if (!name || !isWord(name)) return null;
-    const required = !this.#eat("?");
-    if (!this.#eat(":")) return null;
-    return { name, required, type: this.#parseUnion() };
+    this.#skip()
+    const quoted = this.#source[this.#i] === "'" || this.#source[this.#i] === '"'
+    const name = quoted ? this.#readQuotedName() : this.#readWord()
+    if (!name || !isWord(name)) return null
+    const required = !this.#eat('?')
+    if (!this.#eat(':')) return null
+    return { name, required, type: this.#parseUnion() }
   }
 
   #readQuotedName() {
-    const end = skipQuoted(this.#source, this.#i);
-    const raw = this.#source.slice(this.#i + 1, Math.max(this.#i + 1, end - 1));
-    this.#i = end;
-    return decodeString(raw);
+    const end = skipQuoted(this.#source, this.#i)
+    const raw = this.#source.slice(this.#i + 1, Math.max(this.#i + 1, end - 1))
+    this.#i = end
+    return decodeString(raw)
   }
 }
 
 function parseType(text) {
-  return new TypeParser(text).parse();
+  return new TypeParser(text).parse()
 }
 
 function collectTypeAliases(source) {
-  const aliases = new Map();
-  let i = 0;
+  const aliases = new Map()
+  let i = 0
   while (i < source.length) {
-    const trivia = skipTrivia(source, i);
+    const trivia = skipTrivia(source, i)
     if (trivia > i) {
-      i = trivia;
-      continue;
+      i = trivia
+      continue
     }
-    const ch = source[i];
-    if (ch === "'" || ch === '"' || ch === "`") {
-      i = skipQuoted(source, i);
-      continue;
+    const ch = source[i]
+    if (ch === "'" || ch === '"' || ch === '`') {
+      i = skipQuoted(source, i)
+      continue
     }
-    if (source.startsWith("export type ", i) && boundaryBefore(source, i)) {
-      i = captureAlias(source, i + "export type ".length, aliases);
-      continue;
+    if (source.startsWith('export type ', i) && boundaryBefore(source, i)) {
+      i = captureAlias(source, i + 'export type '.length, aliases)
+      continue
     }
-    i += 1;
+    i += 1
   }
-  return aliases;
+  return aliases
 }
 
 function boundaryBefore(source, i) {
-  if (i === 0) return true;
-  return !isWordChar(source[i - 1] ?? "");
+  if (i === 0) return true
+  return !isWordChar(source[i - 1] ?? '')
 }
 
-function captureAlias(
-  source,
-  i,
-  aliases,
-) {
-  const nameAt = skipTrivia(source, i);
-  const name = readWordAt(source, nameAt);
-  if (!name) return nameAt + 1;
-  let cursor = skipTrivia(source, nameAt + name.length);
-  if (source[cursor] === "<") {
-    const parser = new TypeParser(source.slice(cursor));
-    parser.parse();
-    cursor = skipTrivia(source, cursor + parser.index);
+function captureAlias(source, i, aliases) {
+  const nameAt = skipTrivia(source, i)
+  const name = readWordAt(source, nameAt)
+  if (!name) return nameAt + 1
+  let cursor = skipTrivia(source, nameAt + name.length)
+  if (source[cursor] === '<') {
+    const parser = new TypeParser(source.slice(cursor))
+    parser.parse()
+    cursor = skipTrivia(source, cursor + parser.index)
   }
-  if (source[cursor] !== "=") return cursor;
-  cursor = skipTrivia(source, cursor + 1);
-  const parser = new TypeParser(source.slice(cursor));
-  parser.parse();
-  const end = cursor + parser.index;
-  aliases.set(name, source.slice(cursor, end).trim());
-  let after = skipTrivia(source, end);
-  if (source[after] === ";") after += 1;
-  return after;
+  if (source[cursor] !== '=') return cursor
+  cursor = skipTrivia(source, cursor + 1)
+  const parser = new TypeParser(source.slice(cursor))
+  parser.parse()
+  const end = cursor + parser.index
+  aliases.set(name, source.slice(cursor, end).trim())
+  let after = skipTrivia(source, end)
+  if (source[after] === ';') after += 1
+  return after
 }
 
-function resolveAst(
-  ast,
-  aliases,
-  seen,
-) {
-  if (ast.kind === "ref" && ast.args.length === 0) {
-    return resolveAliasRef(ast.name, aliases, seen);
+function resolveAst(ast, aliases, seen) {
+  if (ast.kind === 'ref' && ast.args.length === 0) {
+    return resolveAliasRef(ast.name, aliases, seen)
   }
-  if (ast.kind === "ref") {
+  if (ast.kind === 'ref') {
     return {
-      kind: "ref",
+      kind: 'ref',
       name: ast.name,
       args: ast.args.map((arg) => resolveAst(arg, aliases, seen)),
-    };
+    }
   }
-  if (ast.kind === "union") {
+  if (ast.kind === 'union') {
     return {
-      kind: "union",
+      kind: 'union',
       members: ast.members.map((member) => resolveAst(member, aliases, seen)),
-    };
+    }
   }
-  if (ast.kind === "intersection") {
+  if (ast.kind === 'intersection') {
     return {
-      kind: "intersection",
+      kind: 'intersection',
       members: ast.members.map((member) => resolveAst(member, aliases, seen)),
-    };
+    }
   }
-  if (ast.kind === "array") {
+  if (ast.kind === 'array') {
     return {
-      kind: "array",
+      kind: 'array',
       readonly: ast.readonly,
       element: resolveAst(ast.element, aliases, seen),
-    };
+    }
   }
-  if (ast.kind === "object") {
+  if (ast.kind === 'object') {
     return {
-      kind: "object",
+      kind: 'object',
       fields: ast.fields.map((field) => ({
         name: field.name,
         required: field.required,
         type: resolveAst(field.type, aliases, seen),
       })),
-    };
+    }
   }
-  return ast;
+  return ast
 }
 
-function resolveAliasRef(
-  name,
-  aliases,
-  seen,
-) {
-  const body = aliases.get(name);
-  if (!body || seen.has(name)) return { kind: "ref", name, args: [] };
-  const next = new Set(seen);
-  next.add(name);
-  return resolveAst(parseType(body), aliases, next);
+function resolveAliasRef(name, aliases, seen) {
+  const body = aliases.get(name)
+  if (!body || seen.has(name)) return { kind: 'ref', name, args: [] }
+  const next = new Set(seen)
+  next.add(name)
+  return resolveAst(parseType(body), aliases, next)
 }
 
 function desugar(ast) {
-  if (ast.kind === "ref" && ast.name === "Array" && ast.args.length === 1) {
-    return { kind: "array", readonly: false, element: desugar(ast.args[0]) };
+  if (ast.kind === 'ref' && ast.name === 'Array' && ast.args.length === 1) {
+    return { kind: 'array', readonly: false, element: desugar(ast.args[0]) }
   }
-  if (
-    ast.kind === "ref" && ast.name === "ReadonlyArray" && ast.args.length === 1
-  ) {
-    return { kind: "array", readonly: true, element: desugar(ast.args[0]) };
+  if (ast.kind === 'ref' && ast.name === 'ReadonlyArray' && ast.args.length === 1) {
+    return { kind: 'array', readonly: true, element: desugar(ast.args[0]) }
   }
-  if (ast.kind === "ref") {
-    return { kind: "ref", name: ast.name, args: ast.args.map(desugar) };
+  if (ast.kind === 'ref') {
+    return { kind: 'ref', name: ast.name, args: ast.args.map(desugar) }
   }
-  if (ast.kind === "union") {
-    return { kind: "union", members: ast.members.map(desugar) };
+  if (ast.kind === 'union') {
+    return { kind: 'union', members: ast.members.map(desugar) }
   }
-  if (ast.kind === "intersection") {
-    return { kind: "intersection", members: ast.members.map(desugar) };
+  if (ast.kind === 'intersection') {
+    return { kind: 'intersection', members: ast.members.map(desugar) }
   }
-  if (ast.kind === "array") {
+  if (ast.kind === 'array') {
     return {
-      kind: "array",
+      kind: 'array',
       readonly: ast.readonly,
       element: desugar(ast.element),
-    };
+    }
   }
-  if (ast.kind === "object") {
+  if (ast.kind === 'object') {
     return {
-      kind: "object",
+      kind: 'object',
       fields: ast.fields.map((field) => ({
         name: field.name,
         required: field.required,
         type: desugar(field.type),
       })),
-    };
+    }
   }
-  return ast;
+  return ast
 }
 
 function canonical(ast) {
-  if (ast.kind === "keyword") return ast.name;
-  if (ast.kind === "literal") return ast.text;
-  if (ast.kind === "opaque") return normalizeWs(ast.text);
-  if (ast.kind === "array") return canonicalArray(ast);
-  if (ast.kind === "ref") return canonicalRef(ast);
-  if (ast.kind === "union") return joinSorted(ast.members, " | ");
-  if (ast.kind === "intersection") return joinSorted(ast.members, " & ");
-  return canonicalObject(ast.fields);
+  if (ast.kind === 'keyword') return ast.name
+  if (ast.kind === 'literal') return ast.text
+  if (ast.kind === 'opaque') return normalizeWs(ast.text)
+  if (ast.kind === 'array') return canonicalArray(ast)
+  if (ast.kind === 'ref') return canonicalRef(ast)
+  if (ast.kind === 'union') return joinSorted(ast.members, ' | ')
+  if (ast.kind === 'intersection') return joinSorted(ast.members, ' & ')
+  return canonicalObject(ast.fields)
 }
 
 function canonicalArray(ast) {
-  const inner = canonical(ast.element);
-  return ast.readonly ? `ReadonlyArray<${inner}>` : `Array<${inner}>`;
+  const inner = canonical(ast.element)
+  return ast.readonly ? `ReadonlyArray<${inner}>` : `Array<${inner}>`
 }
 
 function canonicalRef(ast) {
-  if (ast.args.length === 0) return ast.name;
-  return `${ast.name}<${ast.args.map(canonical).join(", ")}>`;
+  if (ast.args.length === 0) return ast.name
+  return `${ast.name}<${ast.args.map(canonical).join(', ')}>`
 }
 
 function joinSorted(members, sep) {
-  return members.map(canonical).sort((a, b) => a.localeCompare(b)).join(sep);
+  return members
+    .map(canonical)
+    .sort((a, b) => a.localeCompare(b))
+    .join(sep)
 }
 
 function canonicalObject(fields) {
   const parts = fields
     .map((field) => ({
       name: field.name,
-      text: `${field.name}${field.required ? "" : "?"}: ${
-        canonical(field.type)
-      }`,
+      text: `${field.name}${field.required ? '' : '?'}: ${canonical(field.type)}`,
     }))
     .sort((a, b) => a.name.localeCompare(b.name))
-    .map((field) => field.text);
-  return `{ ${parts.join("; ")} }`;
+    .map((field) => field.text)
+  return `{ ${parts.join('; ')} }`
 }
 
 function literalFitsKeyword(text, keyword) {
-  if (keyword === "string") return text.startsWith("'");
-  if (keyword === "number") return isDigits(text);
-  if (keyword === "boolean") return text === "true" || text === "false";
-  return false;
+  if (keyword === 'string') return text.startsWith("'")
+  if (keyword === 'number') return isDigits(text)
+  if (keyword === 'boolean') return text === 'true' || text === 'false'
+  return false
 }
 
 function isAssignable(from, to) {
-  if (canonical(from) === canonical(to)) return true;
-  if (from.kind === "keyword" && from.name === "never") return true;
-  if (to.kind === "keyword" && (to.name === "any" || to.name === "unknown")) {
-    return true;
+  if (canonical(from) === canonical(to)) return true
+  if (from.kind === 'keyword' && from.name === 'never') return true
+  if (to.kind === 'keyword' && (to.name === 'any' || to.name === 'unknown')) {
+    return true
   }
-  if (from.kind === "union") {
-    return from.members.every((member) => isAssignable(member, to));
+  if (from.kind === 'union') {
+    return from.members.every((member) => isAssignable(member, to))
   }
-  if (to.kind === "union") {
-    return to.members.some((member) => isAssignable(from, member));
+  if (to.kind === 'union') {
+    return to.members.some((member) => isAssignable(from, member))
   }
-  return isAssignableShape(from, to);
+  return isAssignableShape(from, to)
 }
 
 function isAssignableShape(from, to) {
-  if (from.kind === "literal" && to.kind === "keyword") {
-    return literalFitsKeyword(from.text, to.name);
+  if (from.kind === 'literal' && to.kind === 'keyword') {
+    return literalFitsKeyword(from.text, to.name)
   }
-  if (from.kind === "array" && to.kind === "array") {
-    if (from.readonly && !to.readonly) return false;
-    return isAssignable(from.element, to.element);
+  if (from.kind === 'array' && to.kind === 'array') {
+    if (from.readonly && !to.readonly) return false
+    return isAssignable(from.element, to.element)
   }
-  if (from.kind === "object" && to.kind === "object") {
-    return objectAssignable(from.fields, to.fields);
+  if (from.kind === 'object' && to.kind === 'object') {
+    return objectAssignable(from.fields, to.fields)
   }
   if (
-    from.kind === "ref" && to.kind === "ref" && from.name === to.name &&
+    from.kind === 'ref' &&
+    to.kind === 'ref' &&
+    from.name === to.name &&
     from.args.length === to.args.length
   ) {
-    return from.args.every((arg, index) => isAssignable(arg, to.args[index]));
+    return from.args.every((arg, index) => isAssignable(arg, to.args[index]))
   }
-  return false;
+  return false
 }
 
 function objectAssignable(from, to) {
   for (const field of to) {
-    const found = from.find((item) => item.name === field.name);
-    if (!found) return false;
-    if (field.required && !found.required) return false;
-    if (!isAssignable(found.type, field.type)) return false;
+    const found = from.find((item) => item.name === field.name)
+    if (!found) return false
+    if (field.required && !found.required) return false
+    if (!isAssignable(found.type, field.type)) return false
   }
-  return true;
+  return true
 }
 
 export function relateFieldTypes(live, pin) {
-  const liveAst = desugar(parseType(live));
-  const pinAst = desugar(parseType(pin));
-  const liveToPin = isAssignable(liveAst, pinAst);
-  const pinToLive = isAssignable(pinAst, liveAst);
-  if (liveToPin && pinToLive) return "same";
-  if (liveToPin) return "narrower";
-  if (pinToLive) return "wider";
-  return "different";
+  const liveAst = desugar(parseType(live))
+  const pinAst = desugar(parseType(pin))
+  const liveToPin = isAssignable(liveAst, pinAst)
+  const pinToLive = isAssignable(pinAst, liveAst)
+  if (liveToPin && pinToLive) return 'same'
+  if (liveToPin) return 'narrower'
+  if (pinToLive) return 'wider'
+  return 'different'
 }
 
-function finishType(
-  text,
-  aliases,
-  seen,
-) {
-  return desugar(resolveAst(parseType(text), aliases, seen));
+function finishType(text, aliases, seen) {
+  return desugar(resolveAst(parseType(text), aliases, seen))
 }
 
-export function extractFieldSpecs(
-  source,
-  typeName,
-) {
-  const aliases = collectTypeAliases(source);
-  const body = aliases.get(typeName);
-  if (body == null) return null;
-  const ast = finishType(body, aliases, new Set([typeName]));
-  if (ast.kind !== "object") return null;
+export function extractFieldSpecs(source, typeName) {
+  const aliases = collectTypeAliases(source)
+  const body = aliases.get(typeName)
+  if (body == null) return null
+  const ast = finishType(body, aliases, new Set([typeName]))
+  if (ast.kind !== 'object') return null
   return ast.fields
     .map((field) => ({
       name: field.name,
       required: field.required,
       type: canonical(field.type),
     }))
-    .sort((a, b) => a.name.localeCompare(b.name));
+    .sort((a, b) => a.name.localeCompare(b.name))
 }
 
-export function fieldPinDrift(
-  live,
-  pin,
-  label,
-) {
-  if (!live) return `${label} type missing`;
-  const byName = new Map(live.map((field) => [field.name, field]));
+export function fieldPinDrift(live, pin, label) {
+  if (!live) return `${label} type missing`
+  const byName = new Map(live.map((field) => [field.name, field]))
   for (const field of pin) {
-    const reason = pinFieldDrift(byName.get(field.name), field, label);
-    if (reason) return reason;
+    const reason = pinFieldDrift(byName.get(field.name), field, label)
+    if (reason) return reason
   }
-  return null;
+  return null
 }
 
-function pinFieldDrift(
-  found,
-  field,
-  label,
-) {
-  if (!found) return `${label} removed ${field.name}`;
+function pinFieldDrift(found, field, label) {
+  if (!found) return `${label} removed ${field.name}`
   if (field.required && !found.required) {
-    return `${label} narrowed ${field.name}`;
+    return `${label} narrowed ${field.name}`
   }
-  const relation = relateFieldTypes(found.type, field.type);
-  if (relation === "same") return null;
-  if (relation === "wider" && field.expansion === true) return null;
-  if (relation === "wider") {
-    return `${label} expanded ${field.name} from ${field.type} to ${found.type} without a compatible expansion mark`;
+  const relation = relateFieldTypes(found.type, field.type)
+  if (relation === 'same') return null
+  if (relation === 'wider' && field.expansion === true) return null
+  if (relation === 'wider') {
+    return `${label} expanded ${field.name} from ${field.type} to ${found.type} without a compatible expansion mark`
   }
-  return `${label} narrowed ${field.name} from ${field.type} to ${found.type}`;
+  return `${label} narrowed ${field.name} from ${field.type} to ${found.type}`
 }
 
 function extractObjectLiteral(source, name) {
@@ -914,11 +886,11 @@ function assertRequiredSuperset(instanceFields, daemonFields, label) {
 function checkExpandOnly(tp, td) {
   const left = requireText(
     readRel(tp, 'scripts/contract-field-snapshot.json'),
-    'contract-field-snapshot.json missing on the instance',
+    'contract-field-snapshot.json missing on the instance'
   )
   const right = requireText(
     readRel(td, 'scripts/contract-field-snapshot.json'),
-    'contract-field-snapshot.json missing on the daemon',
+    'contract-field-snapshot.json missing on the daemon'
   )
   if (normalizeWs(left) !== normalizeWs(right)) {
     fail('contract-field-snapshot.json drifted between checkouts')
@@ -927,12 +899,9 @@ function checkExpandOnly(tp, td) {
   for (const [typeName, pin] of Object.entries(snapshot)) {
     const instanceSrc = requireText(
       readRel(tp, pin.instance),
-      `${typeName} instance source missing`,
+      `${typeName} instance source missing`
     )
-    const daemonSrc = requireText(
-      readRel(td, pin.daemon),
-      `${typeName} daemon source missing`,
-    )
+    const daemonSrc = requireText(readRel(td, pin.daemon), `${typeName} daemon source missing`)
     const instanceFields = extractFieldSpecs(instanceSrc, typeName)
     const daemonFields = extractFieldSpecs(daemonSrc, typeName)
     assertFieldsCovered(instanceFields, pin.fields, `${typeName} instance`)
@@ -943,45 +912,43 @@ function checkExpandOnly(tp, td) {
 
   const instanceWire = requireText(
     readRel(tp, 'src/lib/version-wire.ts'),
-    'instance version-wire.ts missing',
+    'instance version-wire.ts missing'
   )
   const daemonWire = requireText(
     readRel(td, 'src/instance/version-wire.ts'),
-    'daemon version-wire.ts missing',
+    'daemon version-wire.ts missing'
   )
   requireEqual(
     extractConst(instanceWire, 'INSTANCE_VERSION_HEADER'),
     extractConst(daemonWire, 'INSTANCE_VERSION_HEADER'),
-    'INSTANCE_VERSION_HEADER drifted',
+    'INSTANCE_VERSION_HEADER drifted'
   )
   requireEqual(
     extractConst(instanceWire, 'MIN_SUPPORTED_DAEMON_VERSION'),
     extractConst(daemonWire, 'MIN_SUPPORTED_INSTANCE_VERSION'),
-    'MIN_SUPPORTED_DAEMON_VERSION and MIN_SUPPORTED_INSTANCE_VERSION must move together',
+    'MIN_SUPPORTED_DAEMON_VERSION and MIN_SUPPORTED_INSTANCE_VERSION must move together'
   )
   requireEqual(
     extractObjectLiteral(instanceWire, 'DAEMON_FEATURE_MIN_VERSIONS'),
     extractObjectLiteral(daemonWire, 'DAEMON_FEATURE_MIN_VERSIONS'),
-    'DAEMON_FEATURE_MIN_VERSIONS drifted',
+    'DAEMON_FEATURE_MIN_VERSIONS drifted'
   )
   requireEqual(
     extractObjectLiteral(instanceWire, 'INSTANCE_FEATURE_MIN_VERSIONS'),
     extractObjectLiteral(daemonWire, 'INSTANCE_FEATURE_MIN_VERSIONS'),
-    'INSTANCE_FEATURE_MIN_VERSIONS drifted',
+    'INSTANCE_FEATURE_MIN_VERSIONS drifted'
   )
   requireJoinedEqual(
     extractArrayConst(instanceWire, 'DAEMON_WIRE_FEATURES'),
     extractArrayConst(daemonWire, 'DAEMON_WIRE_FEATURES'),
-    'DAEMON_WIRE_FEATURES drifted',
+    'DAEMON_WIRE_FEATURES drifted'
   )
 }
 
 function main() {
   const { self, sibling, selfName } = resolveLayout()
   if (!fs.existsSync(path.join(sibling, 'src'))) {
-    console.log(
-      `check-contract-drift: sibling checkout missing at ${sibling}; skip`,
-    )
+    console.log(`check-contract-drift: sibling checkout missing at ${sibling}; skip`)
     return
   }
 
@@ -996,7 +963,7 @@ function main() {
   checkExpandOnly(tp, td)
 
   console.log(
-    'check-contract-drift: metrics, hostname, machine-key, channels, ServerReportedIp, slot-mapping, expand-only fields agree.',
+    'check-contract-drift: metrics, hostname, machine-key, channels, ServerReportedIp, slot-mapping, expand-only fields agree.'
   )
 }
 

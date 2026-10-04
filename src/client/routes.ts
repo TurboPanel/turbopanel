@@ -34,6 +34,7 @@ import {
   registerServerLimitsRoutes,
 } from './principals/routes.ts'
 import { registerStorageRoutes } from './storage/routes.ts'
+import { registerStorageBackupRoutes } from './storage/backup-routes.ts'
 import { registerRepositoryRoutes } from './repositories/routes.ts'
 import { registerForgeRoutes } from './forges/routes.ts'
 import { registerNetworkRoutes } from './networks/routes.ts'
@@ -45,7 +46,15 @@ import { registerSystemRoutes } from './system/routes.ts'
 import { registerServiceRoutes } from './services/routes.ts'
 import { registerTeamRoutes } from './teams/routes.ts'
 import { registerNotificationRoutes } from './notifications/routes.ts'
+import { registerNotificationVerifyRoutes } from './notifications/verify-routes.ts'
+import { registerOrganizationMemberRoutes } from './organizations/members.ts'
+import { registerOrganizationPrincipalDefaultsRoutes } from './organizations/principal-defaults-routes.ts'
+import { registerPhpModeRoutes } from './hostings/php-mode-routes.ts'
 import { registerOrganizationRoutes } from './organizations/routes.ts'
+import { registerOrganizationSessionGuards } from './organizations/session-guards.ts'
+import { registerComposeRemoteBuildSourcesRoutes } from './organizations/compose-remote-build-sources-routes.ts'
+import { registerReauthSettingsRoutes } from './organizations/reauth-settings-routes.ts'
+import { registerOrganizationFirewallRoutes } from './organizations/firewall-routes.ts'
 import { registerWorkspaceRoutes } from './workspaces/routes.ts'
 import { type ClientOpenApiOptions, getClientOpenApiSpec } from './openapi/index.ts'
 import { buildClientScalarHtml } from '../app/scalar-html.ts'
@@ -100,6 +109,8 @@ export function registerClientRoutes(app: Hono<AppEnv>, opts: ClientRouteOpts) {
     return c.json(payload)
   })
 
+  // Ahead of the generic server and organization routes, like principal defaults.
+  registerPhpModeRoutes(client, opts)
   registerServerRoutes(client, opts)
   registerSystemRoutes(client, opts)
   registerNetworkRoutes(client, opts)
@@ -107,8 +118,16 @@ export function registerClientRoutes(app: Hono<AppEnv>, opts: ClientRouteOpts) {
   registerIpRoutes(client, opts)
   registerLicenseRoutes(client, opts)
   opts.registerBilling?.(client, opts)
+  registerOrganizationPrincipalDefaultsRoutes(client, opts)
+  if (opts.secrets) registerOrganizationSessionGuards(client, opts.secrets)
   registerOrganizationRoutes(client, opts)
+  registerComposeRemoteBuildSourcesRoutes(client)
+  registerOrganizationMemberRoutes(client, opts)
+  registerReauthSettingsRoutes(client, opts)
+  registerOrganizationFirewallRoutes(client, opts)
   registerAccessRoutes(client, opts)
+  // Before the catch-all session middleware the next call installs: the verify link has no session.
+  registerNotificationVerifyRoutes(client, opts)
   registerNotificationRoutes(client, opts)
   registerWorkspaceRoutes(client, opts)
   registerEnvironmentRoutes(client, opts)
@@ -129,6 +148,7 @@ export function registerClientRoutes(app: Hono<AppEnv>, opts: ClientRouteOpts) {
   registerContainerRoutes(client, opts)
   registerDockerRunRoutes(client, opts)
   registerStorageRoutes(client, opts)
+  registerStorageBackupRoutes(client, opts)
   registerRepositoryRoutes(client, opts)
   registerForgeRoutes(client, opts)
   registerProjectPrincipalRoutes(client, opts)

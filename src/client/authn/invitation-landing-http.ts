@@ -28,6 +28,7 @@ import type { Db } from '../../db/connection.ts'
 import { getDb } from '../../db/connection.ts'
 import { invitation, organization, team, user } from '../../db/schema.ts'
 import { hashPassword } from '../../lib/secrets/password.ts'
+import { refuseIfBreached } from './breached-password.ts'
 import { acceptInvitationForUser } from '../access/invitation-accept.ts'
 import { invitationTokenHash, isInvitationToken } from '../access/invitation-token.ts'
 import { invitationAcceptErrorPayload, isUuid } from '../access/routes-helpers.ts'
@@ -229,6 +230,9 @@ export function registerInvitationLandingRoutes<E extends Env>(
     if ((await accountIdForEmail(db, email)) !== undefined) {
       return c.json({ ok: false, error: 'account_exists' }, 409)
     }
+
+    const breached = await refuseIfBreached(c, gated.value.password)
+    if (breached) return breached
 
     // Hash before any transaction: argon2 is slow and must never run while
     // this request's single database connection is held (see #47).

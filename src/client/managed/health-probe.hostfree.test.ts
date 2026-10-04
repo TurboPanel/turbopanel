@@ -5,8 +5,10 @@ import type { DaemonOutboundEnvelope } from '../../contracts/cell-protocol.ts'
 import type { ManagedReplicationHealth } from '../../contracts/commands/schemas.ts'
 import { MANAGED_HEALTH_FEATURE } from '../../lib/version-wire.ts'
 import {
+  createFreshStandbyProbe,
   type ManagedHealthProbeDeps,
   type ManagedHealthProbeParams,
+  MANAGED_HEALTH_PROBE_PROMOTE_TIMEOUT_MS,
   probeManagedMemberHealth,
 } from './health-probe.ts'
 
@@ -220,4 +222,73 @@ test('a throwing transport or persist is contained as unavailable', async () => 
     reason: 'error',
     error: 'db down',
   })
+})
+
+const COLD: ManagedReplicationHealth = {
+  state: 'stopped',
+  observedAt: NOW,
+  receivedLsn: '0/3000148',
+  replayLsn: '0/3000148',
+  receiveLagBytes: 0,
+  lastStreaming: { at: NOW, ageMs: 4000, lagBytes: 0, lagSeconds: 0.5, receiveLagBytes: 128 },
+}
+
+test('keeps the standby WAL positions and last streaming read, dropping a malformed one', async () => {
+  const { registry } = fakeRegistry(
+    ok({ memberId: MEMBER_ID, role: 'replica', status: 'ready', replication: COLD })
+  )
+  const { merged, persisted } = deps()
+  const outcome = await probeManagedMemberHealth(DB, registry, PARAMS, merged)
+  assertEquals(outcome, { status: 'observed', replication: COLD })
+  // The age is only meaningful at probe time: never stored.
+  const { lastStreaming: _age, ...stored } = COLD
+  assertEquals(persisted, [{ memberId: MEMBER_ID, replication: stored }])
+
+  const { registry: bad } = fakeRegistry(
+    ok({
+      memberId: MEMBER_ID,
+      role: 'replica',
+      status: 'ready',
+      replication: { state: 'stopped', observedAt: NOW, lastStreaming: { at: NOW } },
+    })
+  )
+  const dropped = await probeManagedMemberHealth(DB, bad, PARAMS, deps().merged)
+  assertEquals(dropped, { status: 'observed', replication: { state: 'stopped', observedAt: NOW } })
+})
+
+test('the fresh-standby probe asks for a replica with the promote timeout', async () => {
+  const { registry, sent } = fakeRegistry(
+    ok({ memberId: MEMBER_ID, role: 'replica', status: 'ready', replication: COLD })
+  )
+  const probe = createFreshStandbyProbe(DB, registry, { deps: deps().merged })
+  const target = {
+    memberId: MEMBER_ID,
+    managedId: 'managed-1',
+    serverId: 'server-1',
+    engine: 'postgres',
+  }
+  assertEquals(await probe(target), COLD)
+  assertEquals(sent[0]!.timeoutMs, MANAGED_HEALTH_PROBE_PROMOTE_TIMEOUT_MS)
+  const envelope = sent[0]!.envelope
+  if (envelope.kind !== 'managed-health-request') throw new TypeError('wrong envelope')
+  assertEquals(envelope.role, 'replica')
+})
+
+test('the fresh-standby probe answers null for its own cell or any non-observed outcome', async () => {
+  const { registry, sent } = fakeRegistry({ status: 'expired' })
+  const target = {
+    memberId: MEMBER_ID,
+    managedId: 'managed-1',
+    serverId: 'server-1',
+    engine: 'postgres',
+  }
+  const own = createFreshStandbyProbe(DB, registry, {
+    skipServerId: 'server-1',
+    deps: deps().merged,
+  })
+  assertEquals(await own(target), null)
+  assertEquals(sent.length, 0)
+  const other = createFreshStandbyProbe(DB, registry, { deps: deps().merged })
+  assertEquals(await other(target), null)
+  assertEquals(sent.length, 1)
 })

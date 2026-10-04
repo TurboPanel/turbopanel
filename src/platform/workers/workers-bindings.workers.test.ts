@@ -6,6 +6,7 @@ import {
   resetWorkersBindingWarningsForTests,
   resolveWorkersCachedDb,
   resolveWorkersClientAuthRateLimiter,
+  resolveWorkersWriteRateLimiter,
   resolveWorkersDaemonRateLimiters,
   resolveWorkersDb,
   resolveWorkersQueryCache,
@@ -114,9 +115,7 @@ describe('workers-bindings Hyperdrive resolve / close guards', () => {
   })
 
   it('resolveWorkersQueryCache wraps a fresh Hyperdrive client per resolve', () => {
-    setWorkersDbFactoryForTests((binding: HyperdriveBinding) =>
-      mockDb(binding.connectionString)
-    )
+    setWorkersDbFactoryForTests((binding: HyperdriveBinding) => mockDb(binding.connectionString))
 
     const env = {
       HYPERDRIVE: mockHyperdrive('postgres://primary'),
@@ -131,9 +130,7 @@ describe('workers-bindings Hyperdrive resolve / close guards', () => {
   })
 
   it('resolveWorkersDb prefers HYPERDRIVE over TURBOPANEL_DATABASE_URL fallback', () => {
-    setWorkersDbFactoryForTests((binding: HyperdriveBinding) =>
-      mockDb(binding.connectionString),
-    )
+    setWorkersDbFactoryForTests((binding: HyperdriveBinding) => mockDb(binding.connectionString))
 
     const env = {
       HYPERDRIVE: mockHyperdrive('postgres://hyperdrive'),
@@ -145,9 +142,7 @@ describe('workers-bindings Hyperdrive resolve / close guards', () => {
   })
 
   it('resolveWorkersDb uses TURBOPANEL_DATABASE_URL when HYPERDRIVE is absent', () => {
-    setWorkersDbFactoryForTests((binding: HyperdriveBinding) =>
-      mockDb(binding.connectionString),
-    )
+    setWorkersDbFactoryForTests((binding: HyperdriveBinding) => mockDb(binding.connectionString))
 
     const env = {
       TURBOPANEL_DATABASE_URL: '  postgres://fallback  ',
@@ -160,7 +155,7 @@ describe('workers-bindings Hyperdrive resolve / close guards', () => {
   it('resolveWorkersDb returns undefined when no database binding or URL is configured', () => {
     expect(resolveWorkersDb({} as CloudflareBindings)).toBeUndefined()
     expect(
-      resolveWorkersDb({ TURBOPANEL_DATABASE_URL: '   ' } as CloudflareBindings),
+      resolveWorkersDb({ TURBOPANEL_DATABASE_URL: '   ' } as CloudflareBindings)
     ).toBeUndefined()
   })
 
@@ -170,7 +165,7 @@ describe('workers-bindings Hyperdrive resolve / close guards', () => {
 
   it('closeWorkersRequestDb is a no-op when handles have no clients', async () => {
     await expect(
-      closeWorkersRequestDb({ db: undefined, cachedDb: undefined, queryCache: undefined }),
+      closeWorkersRequestDb({ db: undefined, cachedDb: undefined, queryCache: undefined })
     ).resolves.toBeUndefined()
   })
 
@@ -306,9 +301,7 @@ describe('workers-bindings Hyperdrive resolve / close guards', () => {
     expect(/closeWorkersRequestDb\s*\(/.test(workersSource)).toBe(true)
     expect(/endDbConnection\s*\(/.test(workersSource)).toBe(true)
     expect(/endDbConnection\s*\(/.test(offlineSweepSource)).toBe(true)
-    expect(/finally\s*\{[\s\S]*endDbConnection/.test(offlineSweepSource)).toBe(
-      true,
-    )
+    expect(/finally\s*\{[\s\S]*endDbConnection/.test(offlineSweepSource)).toBe(true)
   })
 
   it('resolveWorkersDaemonRateLimiters returns noop adapters on dev surface when bindings absent', async () => {
@@ -404,6 +397,24 @@ describe('workers-bindings Hyperdrive resolve / close guards', () => {
     }
   })
 
+  it('resolveWorkersWriteRateLimiter wraps CLIENT_WRITE_RATE_LIMITER and fails open (null) when unbound', async () => {
+    const keys: string[] = []
+    const env = {
+      CLIENT_WRITE_RATE_LIMITER: {
+        limit: (options: { key: string }) => {
+          keys.push(options.key)
+          return Promise.resolve({ success: true })
+        },
+      },
+    } as unknown as CloudflareBindings
+    const limiter = resolveWorkersWriteRateLimiter(env)
+    expect(limiter).not.toBeNull()
+    expect(await limiter?.limit({ key: 'write:ip:abc' })).toEqual({ success: true })
+    expect(keys).toEqual(['write:ip:abc'])
+    // A deploy without the binding must never 429 every write.
+    expect(resolveWorkersWriteRateLimiter({} as unknown as CloudflareBindings)).toBeNull()
+  })
+
   it('resolveWorkersClientAuthRateLimiter routes strict-tier purposes to CLIENT_AUTH_STRICT_RATE_LIMITER', async () => {
     const defaultKeys: string[] = []
     const strictKeys: string[] = []
@@ -495,12 +506,8 @@ describe('workers-bindings Hyperdrive resolve / close guards', () => {
   })
 
   it('isPlaceholderHyperdriveCachedId matches only the dev placeholder', () => {
-    expect(
-      isPlaceholderHyperdriveCachedId('0000000000000000000000000000dev0'),
-    ).toBe(true)
-    expect(
-      isPlaceholderHyperdriveCachedId('d9c42999730048e2842dccb61aa05d67'),
-    ).toBe(false)
+    expect(isPlaceholderHyperdriveCachedId('0000000000000000000000000000dev0')).toBe(true)
+    expect(isPlaceholderHyperdriveCachedId('d9c42999730048e2842dccb61aa05d67')).toBe(false)
     expect(isPlaceholderHyperdriveCachedId(undefined)).toBe(false)
     expect(isPlaceholderHyperdriveCachedId('   ')).toBe(false)
   })
@@ -705,8 +712,7 @@ describe('workers-bindings Hyperdrive resolve / close guards', () => {
       assertExercisedHyperdriveCachedBindings({
         testing: badIds.testing,
         live: badIds.live,
-      }),
+      })
     ).toThrow(/testing HYPERDRIVE_CACHED/)
   })
 })
-

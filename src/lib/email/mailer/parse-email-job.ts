@@ -1,4 +1,4 @@
-import type { EmailJob, OtpType } from '../../../features/email/types.ts'
+import type { EmailJob, NotificationDigestGroup, OtpType } from '../../../features/email/types.ts'
 
 const VALID_OTP_TYPES = new Set<OtpType>(['sign-in', 'email-verification', 'forget-password'])
 
@@ -100,6 +100,56 @@ function parseServerTierNotice(
   }
 }
 
+const SEVERITIES = new Set(['info', 'warning', 'critical'])
+
+function isDigestItem(item: unknown): boolean {
+  const i = item as Record<string, unknown> | null
+  return (
+    typeof i === 'object' &&
+    i !== null &&
+    typeof i.title === 'string' &&
+    typeof i.at === 'string' &&
+    (i.url === null || typeof i.url === 'string')
+  )
+}
+
+function isDigestGroup(group: unknown): group is NotificationDigestGroup {
+  const g = group as Record<string, unknown> | null
+  return (
+    typeof g === 'object' &&
+    g !== null &&
+    typeof g.event === 'string' &&
+    typeof g.severity === 'string' &&
+    SEVERITIES.has(g.severity) &&
+    typeof g.count === 'number' &&
+    Array.isArray(g.items) &&
+    g.items.every(isDigestItem)
+  )
+}
+
+function parseNotificationDigest(
+  job: Record<string, unknown>,
+  to: string,
+  from: string
+): EmailJob | null {
+  if (job.summary !== 'hourly' && job.summary !== 'daily' && job.summary !== 'quiet') return null
+  if (typeof job.total !== 'number' || typeof job.moreGroups !== 'number') return null
+  if (!Array.isArray(job.groups) || !job.groups.every(isDigestGroup)) return null
+  if (job.consoleUrl !== null && typeof job.consoleUrl !== 'string') return null
+  if (typeof job.at !== 'string') return null
+  return {
+    type: 'notification-digest',
+    to,
+    from,
+    summary: job.summary,
+    total: job.total,
+    groups: job.groups as NotificationDigestGroup[],
+    moreGroups: job.moreGroups,
+    consoleUrl: job.consoleUrl,
+    at: job.at,
+  }
+}
+
 function parseInvitation(job: Record<string, unknown>, to: string, from: string): EmailJob | null {
   if (typeof job.inviterEmail !== 'string') return null
   if (typeof job.organizationName !== 'string') return null
@@ -145,6 +195,26 @@ function parseNotification(
   }
 }
 
+function parseChannelVerification(
+  job: Record<string, unknown>,
+  to: string,
+  from: string
+): EmailJob | null {
+  if (typeof job.verifyUrl !== 'string') return null
+  if (typeof job.channelLabel !== 'string') return null
+  if (job.organizationName !== null && typeof job.organizationName !== 'string') return null
+  if (typeof job.requestedByEmail !== 'string') return null
+  return {
+    type: 'channel-verification',
+    to,
+    from,
+    verifyUrl: job.verifyUrl,
+    channelLabel: job.channelLabel,
+    organizationName: job.organizationName,
+    requestedByEmail: job.requestedByEmail,
+  }
+}
+
 /** Decode a queued mailer payload into an {@link EmailJob}, or `null` if invalid. */
 export function parseEmailJob(raw: unknown): EmailJob | null {
   if (!isRecord(raw)) return null
@@ -167,6 +237,14 @@ export function parseEmailJob(raw: unknown): EmailJob | null {
   }
   if (raw.type === 'notification') {
     return parseNotification(raw, raw.to, raw.from)
+  }
+
+  if (raw.type === 'notification-digest') {
+    return parseNotificationDigest(raw, raw.to, raw.from)
+  }
+
+  if (raw.type === 'channel-verification') {
+    return parseChannelVerification(raw, raw.to, raw.from)
   }
 
   return null

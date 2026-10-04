@@ -1,3 +1,4 @@
+import { readServiceApp } from '../../features/environments/app-facts.ts'
 import {
   type ParseServiceOptionsOptions,
   parseServiceOptions,
@@ -32,6 +33,7 @@ export type ServiceRow = {
 }
 
 export function serializeService(row: ServiceRow) {
+  const app = readServiceApp(row.metadata)
   return {
     id: row.id,
     name: row.name,
@@ -39,6 +41,8 @@ export function serializeService(row: ServiceRow) {
     environmentId: row.environmentId,
     composeServiceName: row.composeServiceName,
     metadata: row.metadata,
+    // Detected by the daemon (`metadata.app`); omitted until a deploy finds one.
+    ...(app === undefined ? {} : { app }),
     options: row.options,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
@@ -47,7 +51,7 @@ export function serializeService(row: ServiceRow) {
 
 export function parseJsonbField(
   body: Record<string, unknown>,
-  field: string,
+  field: string
 ): Record<string, unknown> | null | 'invalid' {
   if (body[field] === undefined) {
     return null
@@ -72,7 +76,7 @@ export type ComposeServiceNameRejection = {
  * value (including explicit `null`) rather than silently ignoring it.
  */
 export function rejectComposeServiceNameInBody(
-  body: Record<string, unknown>,
+  body: Record<string, unknown>
 ): ComposeServiceNameRejection | null {
   if (body.composeServiceName === undefined) return null
   return {
@@ -97,7 +101,7 @@ export type OptionalServiceOptionsResult =
  */
 export function parseOptionalServiceOptions(
   body: Record<string, unknown>,
-  parseOptions: ParseServiceOptionsOptions = {},
+  parseOptions: ParseServiceOptionsOptions = {}
 ): OptionalServiceOptionsResult {
   const optionsResult = parseJsonbField(body, 'options')
   if (optionsResult === 'invalid') return { kind: 'invalid' }
@@ -108,21 +112,19 @@ export function parseOptionalServiceOptions(
 }
 
 export function stripServicePromotedMetadata(
-  metadata: Record<string, unknown>,
+  metadata: Record<string, unknown>
 ): Record<string, unknown> {
   return stripPromotedMetadataKeys(metadata, SERVICE_PROMOTED_METADATA_KEYS)
 }
 
-export function parseServiceCreateFields(
-  body: Record<string, unknown>,
-):
+export function parseServiceCreateFields(body: Record<string, unknown>):
   | {
-    ok: true
-    name: string | null
-    description: string | null
-    metadata: Record<string, unknown> | null
-    options: Record<string, unknown> | null
-  }
+      ok: true
+      name: string | null
+      description: string | null
+      metadata: Record<string, unknown> | null
+      options: Record<string, unknown> | null
+    }
   | ComposeServiceNameRejection
   | ServiceRouteValidationError {
   const composeNameRejected = rejectComposeServiceNameInBody(body)
@@ -141,9 +143,7 @@ export function parseServiceCreateFields(
       return { ok: false, error: 'invalid_service_options', status: 400 }
     }
 
-    const metadata = metadataResult === null
-      ? null
-      : stripServicePromotedMetadata(metadataResult)
+    const metadata = metadataResult === null ? null : stripServicePromotedMetadata(metadataResult)
 
     return {
       ok: true,
@@ -173,7 +173,7 @@ export type ServicePatchFields = {
 
 export function parseServicePatchFields(
   body: Record<string, unknown>,
-  parseOptions: ParseServiceOptionsOptions = {},
+  parseOptions: ParseServiceOptionsOptions = {}
 ):
   | { ok: true; patch: ServicePatchFields }
   | ComposeServiceNameRejection

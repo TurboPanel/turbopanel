@@ -8,7 +8,9 @@ import { resolveInstanceUpdateChannel } from '../../contracts/update-channel.ts'
 import type { Db } from '../../db/connection.ts'
 import { isExplicitDevelopmentMode } from '../../lib/dev-mode.ts'
 import { createUpgradeCoordinator, type UpgradeTickDecision } from './coordinator.ts'
+import { parseUpgradeBatchDefault } from '../settings/upgrade-settings.ts'
 import { createDrizzleUpgradeStore } from './store.ts'
+import { parseUpgradeVerifyTimeoutMs, UPGRADE_VERIFY_TIMEOUT_ENV } from './transitions.ts'
 import type { UpgradeRuntime } from './planner.ts'
 
 export async function runUpgradeMaintenance(input: {
@@ -23,9 +25,15 @@ export async function runUpgradeMaintenance(input: {
   const env = input.env ?? (typeof Deno === 'undefined' ? {} : Deno.env.toObject())
   const channel = resolveInstanceUpdateChannel(env)
   const coordinator = createUpgradeCoordinator({
-    store: createDrizzleUpgradeStore(input.db, input.registry),
+    store: createDrizzleUpgradeStore(
+      input.db,
+      input.registry,
+      parseUpgradeBatchDefault(env.TURBOPANEL_UPGRADE_BATCH)
+    ),
     enqueue: async (serverId, envelope) => {
-      if (!input.registry) return
+      // No registry means the command can never reach a daemon; failing here makes
+      // the step say so instead of waiting out the stall timeout.
+      if (!input.registry) throw new Error('no daemon cell registry is available')
       await input.registry.getCell(serverId).enqueue(envelope)
     },
     runtime: input.runtime,
@@ -34,6 +42,7 @@ export async function runUpgradeMaintenance(input: {
     now: () => new Date().toISOString(),
     colocatedServerId: input.colocatedServerId,
     instanceInstalled: input.instanceInstalled,
+    verifyTimeoutMs: parseUpgradeVerifyTimeoutMs(env[UPGRADE_VERIFY_TIMEOUT_ENV]),
     trace: traceUpgradeTick,
   })
   await coordinator.tick({ resolveManifests: input.resolveManifests })

@@ -7,6 +7,7 @@ import type { ServerGeo } from '../geo/server-geo.ts'
 import { type LocationFields, parseLocationOverride } from '../geo/location-override.ts'
 import type { DatacenterOptions } from '../datacenters/datacenter-options.ts'
 import { type NtpDefaults, parseNtpDefaults, parseSshPort } from './host-defaults.ts'
+import { parsePhpModes, type PhpMode } from '../hostings/php-mode.ts'
 import type { OrganizationOptions } from '../organizations/organization-options.ts'
 import { isExactCpuCatalogMatch, resolveCpuCatalogEntry } from '../hardware/cpu-catalog.ts'
 import {
@@ -368,6 +369,11 @@ export type ServerOptions = {
    * `options`, not `metadata`, so the daemon connect path never overwrites it.
    */
   location?: LocationFields
+  /**
+   * PHP modes this server offers, narrowed further by the organization's
+   * list. Omitted offers every mode; set through `/servers/:id/php-modes`.
+   */
+  phpModes?: PhpMode[]
 }
 
 const OS_FAMILIES = new Set<ServerOsFamily>(['linux', 'windows', 'freebsd', 'darwin'])
@@ -1755,7 +1761,13 @@ export function parseServerOptions(value: unknown): ServerOptions | null {
   }
   const location = parseLocationOverride(value.location)
   if (location) options.location = location
+  assignServerPhpModes(options, value.phpModes)
   return Object.keys(options).length > 0 ? options : {}
+}
+
+function assignServerPhpModes(options: ServerOptions, value: unknown): void {
+  const phpModes = parsePhpModes(value)
+  if (phpModes) options.phpModes = phpModes
 }
 
 export type EffectiveServerTimezone = {

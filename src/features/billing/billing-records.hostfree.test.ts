@@ -10,7 +10,6 @@ import type { Db } from '../../db/connection.ts'
 import { createMemoryDb } from '../../test-fixtures/memory-db.ts'
 import { license, payer, allowance, subscription, subscriptionItem, tier } from '../../db/schema.ts'
 import {
-  BILLING_GRACE_WINDOW_MS,
   getPayerForOrganization,
   getSubscriptionForPayer,
   isDelinquentStatus,
@@ -701,10 +700,8 @@ test('T8 · committed seats read as zero under an ended status and as counted un
   }
 })
 
-test('T8 · the past-due latch and the 65-day grace deadline are set for the delinquent statuses only', async () => {
+test('T8 · the past-due latch is set for the delinquent statuses only, and no grace deadline is ever written', async () => {
   const now = '2026-09-07T00:00:00.000Z'
-  assertEquals(BILLING_GRACE_WINDOW_MS, 65 * 24 * 60 * 60 * 1000)
-  const deadline = new Date(Date.parse(now) + BILLING_GRACE_WINDOW_MS).toISOString()
   for (const status of EVERY_STATUS) {
     const db = createRecordingDb()
     await upsertSubscriptionFromProvider(db, {
@@ -717,17 +714,16 @@ test('T8 · the past-due latch and the 65-day grace deadline are set for the del
     })
     const [insert] = db.inserts
     const set = insert?.conflict?.set as Record<string, unknown>
+    // Stripe's dunning ends a delinquent subscription; TurboPanel keeps no expiry.
+    assertEquals(insert?.values.graceExpiresAt, null, status)
+    assertEquals(set.graceExpiresAt, null, status)
     if (DELINQUENT.includes(status)) {
       assertEquals(insert?.values.pastDueSince, now, status)
-      assertEquals(insert?.values.graceExpiresAt, deadline, status)
-      // On conflict both latch: the earlier moment wins.
+      // On conflict the latch holds: the earlier moment wins.
       assertEquals(flattenSql(set.pastDueSince).includes('coalesce('), true, status)
-      assertEquals(flattenSql(set.graceExpiresAt).includes('coalesce('), true, status)
     } else {
       assertEquals(insert?.values.pastDueSince, null, status)
-      assertEquals(insert?.values.graceExpiresAt, null, status)
       assertEquals(set.pastDueSince, null, status)
-      assertEquals(set.graceExpiresAt, null, status)
     }
   }
 })

@@ -69,6 +69,35 @@ it('validateDaemonInboundFrame rejects managed-ha-event without managedId', () =
   assertEquals(result.ok, false)
 })
 
+function haEventFrame(extra: Record<string, unknown>): string {
+  return JSON.stringify({
+    type: 'managed-ha-event',
+    managedId: '00000000-0000-4000-8000-000000000001',
+    at: VALID_AT,
+    ...extra,
+  })
+}
+
+it('validateDaemonInboundFrame accepts managed-ha-event with a well-formed instance', () => {
+  const result = validateDaemonInboundFrame(
+    haEventFrame({ instanceHost: '10.0.0.5', instancePort: 3306 })
+  )
+  assertEquals(result.ok, true)
+})
+
+it('validateDaemonInboundFrame rejects a half-named or malformed managed-ha-event instance', () => {
+  for (const extra of [
+    { instanceHost: '10.0.0.5' },
+    { instancePort: 3306 },
+    { instanceHost: '', instancePort: 3306 },
+    { instanceHost: '10.0.0.5', instancePort: 0 },
+    { instanceHost: '10.0.0.5', instancePort: 70000 },
+    { instanceHost: '10.0.0.5', instancePort: '3306' },
+  ]) {
+    assertEquals(validateDaemonInboundFrame(haEventFrame(extra)).ok, false)
+  }
+})
+
 it('validateDaemonInboundFrame rejects oversized frames', () => {
   const padding = 'x'.repeat(MAX_DAEMON_WS_FRAME_BYTES)
   const raw = `{"type":"heartbeat","at":"2020-01-01T00:00:00.000Z","pad":"${padding}"}`
@@ -1344,6 +1373,36 @@ it('validateDaemonInboundFrame rejects managed-ha-event with an invalid sourceMe
   assertEquals(result.ok, false)
 })
 
+it('validateDaemonInboundFrame accepts managed-ha-event with detector and evidence', () => {
+  const result = validateDaemonInboundFrame(
+    JSON.stringify({
+      type: 'managed-ha-event',
+      managedId: '00000000-0000-4000-8000-000000000001',
+      sourceMemberId: '00000000-0000-4000-8000-000000000002',
+      detector: 'postgres-probe',
+      evidence: { failures: 6, spanMs: 25000, lastError: 'container exited exit=137' },
+      at: VALID_AT,
+    })
+  )
+  assertEquals(result.ok, true)
+})
+
+it('validateDaemonInboundFrame rejects managed-ha-event with a malformed detector or evidence', () => {
+  const base = {
+    type: 'managed-ha-event',
+    managedId: '00000000-0000-4000-8000-000000000001',
+    at: VALID_AT,
+  }
+  for (const extra of [
+    { detector: 'Postgres Probe' },
+    { detector: 7 },
+    { evidence: 'dead' },
+    { evidence: null },
+  ]) {
+    assertEquals(validateDaemonInboundFrame(JSON.stringify({ ...base, ...extra })).ok, false)
+  }
+})
+
 it('validateDaemonInboundFrame rejects fabric path field shapes', () => {
   const base = {
     type: 'fabric-paths-result',
@@ -2379,4 +2438,27 @@ it('managed-health request/result map between wire and envelope forms', () => {
     } as DaemonInboundEnvelope).ok,
     false
   )
+})
+
+it('managed-health-result carries standby WAL positions and the last streaming read', () => {
+  const frame = (replication: Record<string, unknown>) =>
+    validateDaemonInboundFrame(
+      JSON.stringify({
+        type: 'managed-health-result',
+        id: 'req-1',
+        ok: true,
+        member: { ...HEALTH_MEMBER, replication: { ...HEALTH_MEMBER.replication, ...replication } },
+        at: VALID_AT,
+      })
+    ).ok
+  const lastStreaming = { at: VALID_AT, ageMs: 4000, lagBytes: 0, receiveLagBytes: 64 }
+  assertEquals(frame({ receivedLsn: '0/3000148', replayLsn: '0/3000148', lastStreaming }), true)
+  assertEquals(frame({ receivedLsn: '' }), false)
+  assertEquals(frame({ replayLsn: 7 }), false)
+  assertEquals(frame({ lastStreaming: 'recent' }), false)
+  assertEquals(frame({ lastStreaming: { ...lastStreaming, at: 'soon' } }), false)
+  assertEquals(frame({ lastStreaming: { ...lastStreaming, ageMs: '4000' } }), false)
+  assertEquals(frame({ lastStreaming: { ...lastStreaming, lagBytes: Number.NaN } }), false)
+  assertEquals(frame({ lastStreaming: { ...lastStreaming, receiveLagBytes: '1' } }), false)
+  assertEquals(frame({ receiveLagBytes: '1' }), false)
 })

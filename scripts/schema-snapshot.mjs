@@ -2,12 +2,11 @@
  * Read the latest drizzle snapshot (`migrations/meta/NNNN_snapshot.json`)
  * as a flat, ordered description of the shipped schema.
  *
- * Shared by `scripts/schema-comments.mjs` (Postgres `COMMENT ON` delta) and
- * `scripts/generate-data-dictionary.mjs` (website data dictionary). Both
- * describe the schema as it *shipped* — the snapshot behind the newest
+ * Used by `scripts/schema-comments.mjs` (Postgres `COMMENT ON` delta). It
+ * describes the schema as it *shipped* — the snapshot behind the newest
  * journal entry — never `schema.ts` directly, so an edit that has not been
- * through `pnpm drizzle-kit generate --name …` cannot leak into comments or
- * docs ahead of its migration.
+ * through `pnpm drizzle-kit generate --name …` cannot leak into comments
+ * ahead of its migration.
  */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -18,7 +17,9 @@ export const MIGRATIONS_DIR = path.join(REPO_ROOT, 'migrations')
 
 /** @returns {{ idx: number, tag: string, when: number }[]} journal entries in order */
 export function readJournal(migrationsDir = MIGRATIONS_DIR) {
-  const journal = JSON.parse(fs.readFileSync(path.join(migrationsDir, 'meta/_journal.json'), 'utf8'))
+  const journal = JSON.parse(
+    fs.readFileSync(path.join(migrationsDir, 'meta/_journal.json'), 'utf8')
+  )
   return journal.entries
 }
 

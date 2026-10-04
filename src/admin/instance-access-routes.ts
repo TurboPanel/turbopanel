@@ -1,12 +1,14 @@
 import type { Hono } from 'hono'
 import type { AppEnv } from '../app/app.ts'
 import { getDaemonCellRegistry, getDb } from '../db/connection.ts'
+import { createRootOnlyMiddleware } from '../client/authn/middleware.ts'
 import { resolveColocatedServerId } from '../client/authn/install-state.ts'
 import { getCommandQueue } from '../features/commands/queue.ts'
 import { DEFAULT_TRUSTED_PROXY_CIDRS, parseTrustedProxyCidrs } from '../lib/peer-address.ts'
 import { parseCertificatePem } from '../lib/tls/parse.ts'
 import { resolveDaemonCapabilities } from '../lib/version-wire.ts'
 import { dispatchInstanceTunnelToken, parseTunnelTokenBody } from '../developer/tunnel-token.ts'
+import type { DerivedSecretsConfig } from '../lib/secrets/secrets.ts'
 import { resolvePlatformEnv } from './routes-helpers.ts'
 import { enqueuePlatformCaTrustReconcile } from './tls-trust-reconcile.ts'
 
@@ -30,6 +32,7 @@ function emptyDaemonCapabilities() {
 export function registerInstanceAccessAdminRoutes(
   admin: Hono<AppEnv>,
   opts: {
+    secrets: DerivedSecretsConfig
     runtime: 'deno' | 'workers'
     getEnv?: () => Record<string, string | undefined>
     readPlatformCaBundle?: () => Promise<string>
@@ -63,30 +66,34 @@ export function registerInstanceAccessAdminRoutes(
     return c.json(await readPlatformCaInfo(opts.readPlatformCaBundle))
   })
 
-  admin.post('/instance/platform-ca/trust-reconcile', async (c) => {
-    if (opts.runtime !== 'deno') {
-      return c.json({ ok: false, error: PLATFORM_CA_RUNTIME_ERROR }, 422)
+  admin.post(
+    '/instance/platform-ca/trust-reconcile',
+    createRootOnlyMiddleware(opts.secrets),
+    async (c) => {
+      if (opts.runtime !== 'deno') {
+        return c.json({ ok: false, error: PLATFORM_CA_RUNTIME_ERROR }, 422)
+      }
+      const db = getDb(c)
+      if (!db) return c.json({ ok: false, error: 'Database unavailable' }, 503)
+      const commandQueue = getCommandQueue(c)
+      const actorId = c.get('session')?.userId
+      if (!commandQueue || !actorId || !opts.readPlatformCaBundle) {
+        return c.json({ ok: false, error: 'Command queue unavailable' }, 503)
+      }
+      try {
+        const { enqueued } = await enqueuePlatformCaTrustReconcile({
+          db,
+          commandQueue,
+          actorId,
+          readBundle: opts.readPlatformCaBundle,
+        })
+        return c.json({ ok: true, enqueued })
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        return c.json({ ok: false, error: message }, 503)
+      }
     }
-    const db = getDb(c)
-    if (!db) return c.json({ ok: false, error: 'Database unavailable' }, 503)
-    const commandQueue = getCommandQueue(c)
-    const actorId = c.get('session')?.userId
-    if (!commandQueue || !actorId || !opts.readPlatformCaBundle) {
-      return c.json({ ok: false, error: 'Command queue unavailable' }, 503)
-    }
-    try {
-      const { enqueued } = await enqueuePlatformCaTrustReconcile({
-        db,
-        commandQueue,
-        actorId,
-        readBundle: opts.readPlatformCaBundle,
-      })
-      return c.json({ ok: true, enqueued })
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
-      return c.json({ ok: false, error: message }, 503)
-    }
-  })
+  )
 
   admin.get('/instance/trusted-proxies', (c) => {
     // resolvePeerAddress() (../lib/peer-address.ts) already ignores this
@@ -102,7 +109,7 @@ export function registerInstanceAccessAdminRoutes(
     return c.json({ cidrs, isDefault: trustedProxiesAreDefault(cidrs) })
   })
 
-  admin.post('/instance/tunnel-token', async (c) => {
+  admin.post('/instance/tunnel-token', createRootOnlyMiddleware(opts.secrets), async (c) => {
     const body = await c.req.json().catch(() => null)
     const parsed = parseTunnelTokenBody(body)
     if (!parsed.ok) {

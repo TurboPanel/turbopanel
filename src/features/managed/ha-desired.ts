@@ -29,7 +29,7 @@ import { container, managed, replica, principal, server, service } from '../../d
 import { MANAGED_HA_HTTP_PORT, MANAGED_HA_RAFT_PORT } from './ha-ports.ts'
 import {
   orchestratorPromotionRule,
-  pickHaAdvertiseAddress,
+  selectHaRaftMembers,
   serverHostsManagedHa,
 } from './ha-policy.ts'
 import { getManagedEngineSpec, type ManagedEngineSpec } from './index.ts'
@@ -243,6 +243,21 @@ export function toHaClusterMember(
   }
 }
 
+/**
+ * The host and port `reporterServerId`'s Orchestrator knows `member` by (the
+ * same dial `buildHaClusterMembers` registered), or `null` when it has none.
+ */
+export async function haMemberDialForReporter(
+  db: Db,
+  reporterServerId: string,
+  member: ManagedMemberRow,
+  defaultPort: number
+): Promise<HaMemberDial | null> {
+  const localNames = await loadLocalEngineContainerNames(db, member.managedId, reporterServerId)
+  const endpoints = await loadHaRemoteEndpoints(db, reporterServerId, [member])
+  return resolveHaMemberDial(member, reporterServerId, localNames, defaultPort, endpoints)
+}
+
 async function buildHaClusterMembers(
   db: Db,
   thisServerId: string,
@@ -294,21 +309,16 @@ async function buildRaftConfig(
   if (!raftServerIds.includes(thisServerId)) return null
 
   const pins = await loadDatacenterMembershipsForServers(db, raftServerIds)
-  const thisPins = pins.get(thisServerId) ?? []
-  const advertiseAddress = pickHaAdvertiseAddress(thisPins)
-  if (!advertiseAddress) return null
+  const members = selectHaRaftMembers(thisServerId, raftServerIds, pins)
+  if (!members) return null
+  const { advertiseAddress } = members
 
-  const peers: ManagedHaRaftPeer[] = []
-  for (const serverId of raftServerIds) {
-    const address = pickHaAdvertiseAddress(pins.get(serverId) ?? [])
-    if (!address) continue
-    peers.push({
-      nodeId: serverId,
-      address,
-      raftPort: MANAGED_HA_RAFT_PORT,
-      httpPort: MANAGED_HA_HTTP_PORT,
-    })
-  }
+  const peers: ManagedHaRaftPeer[] = members.peers.map(({ serverId, address }) => ({
+    nodeId: serverId,
+    address,
+    raftPort: MANAGED_HA_RAFT_PORT,
+    httpPort: MANAGED_HA_HTTP_PORT,
+  }))
   if (peers.length === 0) return null
 
   return {

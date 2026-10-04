@@ -77,7 +77,10 @@ describe('release manifest signing', () => {
       release,
       '.manifest-signer/scripts/sign-manifest.ts release-assets/manifest.json'
     )
-    assertStringIncludes(release, 'RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}')
+    assertStringIncludes(
+      release,
+      'RELEASE_SIGNING_KEY: ${{ secrets.TURBOPANEL_RELEASE_SIGNING_KEY }}'
+    )
   })
 
   it('pins the signer to an exact turbopaneld commit', () => {
@@ -86,8 +89,13 @@ describe('release manifest signing', () => {
     assertEquals(/^[0-9a-f]{40}$/.test(ref), true, `signer ref is not a commit SHA: ${ref}`)
   })
 
-  it('hands the signing key to the called workflow on the canary path', () => {
-    assertStringIncludes(release, 'RELEASE_SIGNING_KEY:\n        description:')
-    assertStringIncludes(canary, 'RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}')
+  it('reads the signing key from the canary, rc or release environment only', () => {
+    assertStringIncludes(
+      release,
+      "environment: ${{ inputs.channel == 'canary' && 'canary' || (inputs.channel == 'rc' && 'rc' || 'release') }}"
+    )
+    assertEquals(release.includes('secrets.RELEASE_SIGNING_KEY'), false)
+    // The environment secret only reaches the called workflow when its caller inherits secrets.
+    assertStringIncludes(canary, 'secrets: inherit')
   })
 })

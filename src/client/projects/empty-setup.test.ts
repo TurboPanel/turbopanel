@@ -92,10 +92,7 @@ function createTxStub(opts: {
           }
           // insertExtraCatalogEnvironments: existing extra env lookup
           return {
-            limit: () =>
-              Promise.resolve(
-                existingExtraEnvIds.map((id) => ({ id })),
-              ),
+            limit: () => Promise.resolve(existingExtraEnvIds.map((id) => ({ id }))),
           }
         },
       }),
@@ -106,9 +103,10 @@ function createTxStub(opts: {
           opts.onInsertVariable?.(values)
           return thenableValue(undefined)
         }
-        const insertedId = 'workspaceId' in values
-          ? (opts.insertedProjectId ?? 'proj-new')
-          : (opts.insertedEnvId ?? 'env-new')
+        const insertedId =
+          'workspaceId' in values
+            ? (opts.insertedProjectId ?? 'proj-new')
+            : (opts.insertedEnvId ?? 'env-new')
         const rows = Promise.resolve([{ id: insertedId }])
         // insertEmptyProject awaits values() without .returning() for the
         // environment row; ensureProductionEnvironment / project insert use
@@ -135,7 +133,7 @@ function createTxStub(opts: {
 function createProjectSelectDb(
   rows: Array<{ id: string; metadata: unknown; options: unknown }>,
   tx?: DbTx,
-  transactionError?: Error,
+  transactionError?: Error
 ): Db {
   return {
     select: () => ({
@@ -147,14 +145,19 @@ function createProjectSelectDb(
     }),
     transaction: (fn: (inner: DbTx) => Promise<unknown>) => {
       if (transactionError) throw transactionError
-      return fn(tx ?? createTxStub({
-        envRows: [{
-          id: 'env-1',
-          name: 'Production',
-          description: DEFAULT_PRODUCTION_ENVIRONMENT_DESCRIPTION,
-          serverId: null,
-        }],
-      }))
+      return fn(
+        tx ??
+          createTxStub({
+            envRows: [
+              {
+                id: 'env-1',
+                name: 'Production',
+                description: DEFAULT_PRODUCTION_ENVIRONMENT_DESCRIPTION,
+                serverId: null,
+              },
+            ],
+          })
+      )
     },
   } as unknown as Db
 }
@@ -214,7 +217,7 @@ test('loadDefaultEnvironmentName falls back when org is missing', async () => {
 test('loadDefaultEnvironmentName resolves org options', async () => {
   const name = await loadDefaultEnvironmentName(
     createOrgSelectDb([{ options: { defaultEnvironmentName: ' Staging ' } }]),
-    'org-1',
+    'org-1'
   )
   assertEquals(name, 'Staging')
 })
@@ -222,19 +225,21 @@ test('loadDefaultEnvironmentName resolves org options', async () => {
 test('loadDefaultEnvironmentName uses platform default when options omit name', async () => {
   const name = await loadDefaultEnvironmentName(
     createOrgSelectDb([{ options: { maxServers: 3 } }]),
-    'org-1',
+    'org-1'
   )
   assertEquals(name, DEFAULT_PRODUCTION_ENVIRONMENT_NAME)
 })
 
 test('ensureProductionEnvironment returns existing Production row', async () => {
   const tx = createTxStub({
-    envRows: [{
-      id: 'env-prod',
-      name: 'Production',
-      description: 'custom',
-      serverId: null,
-    }],
+    envRows: [
+      {
+        id: 'env-prod',
+        name: 'Production',
+        description: 'custom',
+        serverId: null,
+      },
+    ],
   })
   const id = await ensureProductionEnvironment(tx, 'proj-1')
   assertEquals(id, 'env-prod')
@@ -257,48 +262,37 @@ test('ensureProductionEnvironment prefers literal Production over org default', 
       },
     ],
   })
-  const id = await ensureProductionEnvironment(
-    tx,
-    'proj-1',
-    null,
-    'Staging',
-  )
+  const id = await ensureProductionEnvironment(tx, 'proj-1', null, 'Staging')
   assertEquals(id, 'env-prod')
 })
 
 test('ensureProductionEnvironment matches org default name', async () => {
   const tx = createTxStub({
-    envRows: [{
-      id: 'env-staging',
-      name: 'Staging',
-      description: 'other',
-      serverId: null,
-    }],
+    envRows: [
+      {
+        id: 'env-staging',
+        name: 'Staging',
+        description: 'other',
+        serverId: null,
+      },
+    ],
   })
-  const id = await ensureProductionEnvironment(
-    tx,
-    'proj-1',
-    null,
-    'Staging',
-  )
+  const id = await ensureProductionEnvironment(tx, 'proj-1', null, 'Staging')
   assertEquals(id, 'env-staging')
 })
 
 test('ensureProductionEnvironment reuses sole scaffold row', async () => {
   const tx = createTxStub({
-    envRows: [{
-      id: 'env-only',
-      name: 'Old Default',
-      description: DEFAULT_PRODUCTION_ENVIRONMENT_DESCRIPTION,
-      serverId: null,
-    }],
+    envRows: [
+      {
+        id: 'env-only',
+        name: 'Old Default',
+        description: DEFAULT_PRODUCTION_ENVIRONMENT_DESCRIPTION,
+        serverId: null,
+      },
+    ],
   })
-  const id = await ensureProductionEnvironment(
-    tx,
-    'proj-1',
-    null,
-    'New Default',
-  )
+  const id = await ensureProductionEnvironment(tx, 'proj-1', null, 'New Default')
   assertEquals(id, 'env-only')
 })
 
@@ -319,12 +313,7 @@ test('ensureProductionEnvironment matches scaffold description among many', asyn
       },
     ],
   })
-  const id = await ensureProductionEnvironment(
-    tx,
-    'proj-1',
-    null,
-    'Gamma',
-  )
+  const id = await ensureProductionEnvironment(tx, 'proj-1', null, 'Gamma')
   assertEquals(id, 'env-scaffold')
 })
 
@@ -346,34 +335,26 @@ test('ensureProductionEnvironment inserts when nothing matches', async () => {
     ],
     insertedEnvId: 'env-inserted',
   })
-  const id = await ensureProductionEnvironment(
-    tx,
-    'proj-1',
-    'srv-1',
-    'Production',
-  )
+  const id = await ensureProductionEnvironment(tx, 'proj-1', 'srv-1', 'Production')
   assertEquals(id, 'env-inserted')
 })
 
 test('ensureProductionEnvironment normalizes casing and pins server', async () => {
   const patches: Record<string, unknown>[] = []
   const tx = createTxStub({
-    envRows: [{
-      id: 'env-prod',
-      name: 'production',
-      description: DEFAULT_PRODUCTION_ENVIRONMENT_DESCRIPTION,
-      serverId: 'srv-old',
-    }],
+    envRows: [
+      {
+        id: 'env-prod',
+        name: 'production',
+        description: DEFAULT_PRODUCTION_ENVIRONMENT_DESCRIPTION,
+        serverId: 'srv-old',
+      },
+    ],
     onUpdate: (patch) => {
       patches.push(patch)
     },
   })
-  const id = await ensureProductionEnvironment(
-    tx,
-    'proj-1',
-    'srv-new',
-    'Production',
-  )
+  const id = await ensureProductionEnvironment(tx, 'proj-1', 'srv-new', 'Production')
   assertEquals(id, 'env-prod')
   assertEquals(patches.length, 1)
   assertEquals(patches[0]?.name, 'Production')
@@ -383,24 +364,41 @@ test('ensureProductionEnvironment normalizes casing and pins server', async () =
 test('ensureProductionEnvironment skips update when already matching', async () => {
   let updated = false
   const tx = createTxStub({
-    envRows: [{
-      id: 'env-prod',
-      name: 'Production',
-      description: DEFAULT_PRODUCTION_ENVIRONMENT_DESCRIPTION,
-      serverId: 'srv-1',
-    }],
+    envRows: [
+      {
+        id: 'env-prod',
+        name: 'Production',
+        description: DEFAULT_PRODUCTION_ENVIRONMENT_DESCRIPTION,
+        serverId: 'srv-1',
+      },
+    ],
     onUpdate: () => {
       updated = true
     },
   })
-  const id = await ensureProductionEnvironment(
-    tx,
-    'proj-1',
-    'srv-1',
-    'Production',
-  )
+  const id = await ensureProductionEnvironment(tx, 'proj-1', 'srv-1', 'Production')
   assertEquals(id, 'env-prod')
   assertEquals(updated, false)
+})
+
+test('platform default environment name is lowercase production', () => {
+  assertEquals(DEFAULT_PRODUCTION_ENVIRONMENT_NAME, 'production')
+})
+
+test('ensureProductionEnvironment reuses a legacy Production row under the default', async () => {
+  const tx = createTxStub({
+    envRows: [
+      {
+        id: 'env-legacy',
+        name: 'Production',
+        description: DEFAULT_PRODUCTION_ENVIRONMENT_DESCRIPTION,
+        serverId: 'srv-1',
+      },
+    ],
+    insertedEnvId: 'env-should-not-insert',
+  })
+  const id = await ensureProductionEnvironment(tx, 'proj-1', 'srv-1')
+  assertEquals(id, 'env-legacy')
 })
 
 test('insertEmptyProject inserts project and environment', async () => {
@@ -439,33 +437,37 @@ test('configureProjectType returns not found when project missing', async () => 
 
 test('configureProjectType is idempotent for matching docker-compose', async () => {
   const result = await configureProjectType(
-    createProjectSelectDb([{
-      id: 'p1',
-      metadata: { type: 'docker-compose' },
-      options: {},
-    }]),
+    createProjectSelectDb([
+      {
+        id: 'p1',
+        metadata: { type: 'docker-compose' },
+        options: {},
+      },
+    ]),
     {
       projectId: 'p1',
       projectType: 'docker-compose',
       dataEncryptionSecrets: stubSecrets(),
-    },
+    }
   )
   assertEquals(result, { ok: true, alreadyConfigured: true })
 })
 
 test('configureProjectType rejects changing configured type', async () => {
   const result = await configureProjectType(
-    createProjectSelectDb([{
-      id: 'p1',
-      metadata: { type: 'docker-compose' },
-      options: {},
-    }]),
+    createProjectSelectDb([
+      {
+        id: 'p1',
+        metadata: { type: 'docker-compose' },
+        options: {},
+      },
+    ]),
     {
       projectId: 'p1',
       projectType: 'template',
       catalogCode: 'static-site',
       dataEncryptionSecrets: stubSecrets(),
-    },
+    }
   )
   assertEquals(result, {
     ok: false,
@@ -476,17 +478,19 @@ test('configureProjectType rejects changing configured type', async () => {
 
 test('configureProjectType rejects catalog code mismatch when already set', async () => {
   const result = await configureProjectType(
-    createProjectSelectDb([{
-      id: 'p1',
-      metadata: { type: 'template', code: 'static-site' },
-      options: {},
-    }]),
+    createProjectSelectDb([
+      {
+        id: 'p1',
+        metadata: { type: 'template', code: 'static-site' },
+        options: {},
+      },
+    ]),
     {
       projectId: 'p1',
       projectType: 'template',
       catalogCode: 'wordpress-mysql',
       dataEncryptionSecrets: stubSecrets(),
-    },
+    }
   )
   assertEquals(result, {
     ok: false,
@@ -497,34 +501,38 @@ test('configureProjectType rejects catalog code mismatch when already set', asyn
 
 test('configureProjectType is idempotent for matching template code', async () => {
   const result = await configureProjectType(
-    createProjectSelectDb([{
-      id: 'p1',
-      metadata: { type: 'template', code: 'static-site' },
-      options: {},
-    }]),
+    createProjectSelectDb([
+      {
+        id: 'p1',
+        metadata: { type: 'template', code: 'static-site' },
+        options: {},
+      },
+    ]),
     {
       projectId: 'p1',
       projectType: 'template',
       catalogCode: 'static-site',
       dataEncryptionSecrets: stubSecrets(),
-    },
+    }
   )
   assertEquals(result, { ok: true, alreadyConfigured: true })
 })
 
 test('configureProjectType is idempotent for matching managed code', async () => {
   const result = await configureProjectType(
-    createProjectSelectDb([{
-      id: 'p1',
-      metadata: { type: 'managed', code: 'postgres' },
-      options: {},
-    }]),
+    createProjectSelectDb([
+      {
+        id: 'p1',
+        metadata: { type: 'managed', code: 'postgres' },
+        options: {},
+      },
+    ]),
     {
       projectId: 'p1',
       projectType: 'managed',
       catalogCode: 'postgres',
       dataEncryptionSecrets: stubSecrets(),
-    },
+    }
   )
   assertEquals(result, { ok: true, alreadyConfigured: true })
 })
@@ -536,7 +544,7 @@ test('configureProjectType requires catalogCode for template/managed', async () 
       projectId: 'p1',
       projectType: 'template',
       dataEncryptionSecrets: stubSecrets(),
-    },
+    }
   )
   assertEquals(result, { ok: false, error: 'Invalid request', status: 400 })
 })
@@ -549,7 +557,7 @@ test('configureProjectType requires encryption secrets for catalog types', async
       projectType: 'managed',
       catalogCode: 'postgres',
       dataEncryptionSecrets: undefined,
-    },
+    }
   )
   assertEquals(result, {
     ok: false,
@@ -566,7 +574,7 @@ test('configureProjectType rejects unknown catalog code', async () => {
       projectType: 'template',
       catalogCode: 'does-not-exist',
       dataEncryptionSecrets: stubSecrets(),
-    },
+    }
   )
   assertEquals(result, { ok: false, error: 'Unknown catalog code', status: 400 })
 })
@@ -579,7 +587,7 @@ test('configureProjectType rejects catalog kind mismatch', async () => {
       projectType: 'managed',
       catalogCode: 'static-site',
       dataEncryptionSecrets: stubSecrets(),
-    },
+    }
   )
   assertEquals(result, { ok: false, error: 'Unknown catalog code', status: 400 })
 })
@@ -592,9 +600,57 @@ test('configureProjectType configures docker-compose via transaction', async () 
       projectType: 'docker-compose',
       dataEncryptionSecrets: stubSecrets(),
       serverId: 'srv-1',
-    },
+    }
   )
   assertEquals(result, { ok: true, alreadyConfigured: false })
+})
+
+const TUNING = { drainSeconds: 45, healthTimeoutSeconds: 200, rollbackWindowMinutes: 10 }
+
+function projectPatchOf(patches: Record<string, unknown>[]): Record<string, unknown> {
+  const patch = patches.find((p) => 'metadata' in p)
+  if (!patch) throw new Error('no project update')
+  return patch
+}
+
+test('configureProjectType catalog configure keeps stored deploy tuning on the project', async () => {
+  const patches: Record<string, unknown>[] = []
+  const tx = createTxStub({
+    envRows: [{ id: 'env-1', name: 'Production', serverId: null }],
+    onUpdate: (patch) => patches.push(patch),
+  })
+  const result = await configureProjectType(
+    createProjectSelectDb([{ id: 'p1', metadata: {}, options: { ...TUNING, stale: 1 } }], tx),
+    {
+      projectId: 'p1',
+      projectType: 'template',
+      catalogCode: 'static-site',
+      dataEncryptionSecrets: stubSecrets(),
+    }
+  )
+  assertEquals(result, { ok: true, alreadyConfigured: false })
+  const options = projectPatchOf(patches).options as Record<string, unknown>
+  assertEquals(options.drainSeconds, 45)
+  assertEquals(options.healthTimeoutSeconds, 200)
+  assertEquals(options.rollbackWindowMinutes, 10)
+  assertEquals('compose' in options, true)
+  assertEquals('stale' in options, false)
+})
+
+test('configureProjectType docker-compose configure keeps stored deploy tuning', async () => {
+  const patches: Record<string, unknown>[] = []
+  const tx = createTxStub({
+    envRows: [{ id: 'env-1', name: 'Production', serverId: null }],
+    onUpdate: (patch) => patches.push(patch),
+  })
+  await configureProjectType(
+    createProjectSelectDb([{ id: 'p1', metadata: null, options: TUNING }], tx),
+    { projectId: 'p1', projectType: 'docker-compose', dataEncryptionSecrets: stubSecrets() }
+  )
+  const options = projectPatchOf(patches).options as Record<string, unknown>
+  assertEquals(options.drainSeconds, 45)
+  assertEquals(options.rollbackWindowMinutes, 10)
+  assertEquals('compose' in options, true)
 })
 
 test('configureProjectType configures static-site template', async () => {
@@ -605,7 +661,7 @@ test('configureProjectType configures static-site template', async () => {
       projectType: 'template',
       catalogCode: 'static-site',
       dataEncryptionSecrets: stubSecrets(),
-    },
+    }
   )
   assertEquals(result, { ok: true, alreadyConfigured: false })
 })
@@ -614,12 +670,14 @@ test('configureProjectType configures managed postgres with secret vars', async 
   const secrets = await realDataEncryptionSecrets()
   const insertedVars: Record<string, unknown>[] = []
   const tx = createTxStub({
-    envRows: [{
-      id: 'env-1',
-      name: 'Production',
-      description: DEFAULT_PRODUCTION_ENVIRONMENT_DESCRIPTION,
-      serverId: null,
-    }],
+    envRows: [
+      {
+        id: 'env-1',
+        name: 'Production',
+        description: DEFAULT_PRODUCTION_ENVIRONMENT_DESCRIPTION,
+        serverId: null,
+      },
+    ],
     existingVarKeys: [],
     onInsertVariable: (values) => {
       insertedVars.push(values)
@@ -633,7 +691,7 @@ test('configureProjectType configures managed postgres with secret vars', async 
       catalogCode: 'postgres',
       dataEncryptionSecrets: secrets,
       serverId: 'srv-1',
-    },
+    }
   )
   assertEquals(result, { ok: true, alreadyConfigured: false })
   assertEquals(insertedVars.length, 1)
@@ -649,12 +707,14 @@ test('configureProjectType skips existing catalog variable keys', async () => {
   const secrets = await realDataEncryptionSecrets()
   const insertedVars: Record<string, unknown>[] = []
   const tx = createTxStub({
-    envRows: [{
-      id: 'env-1',
-      name: 'Production',
-      description: DEFAULT_PRODUCTION_ENVIRONMENT_DESCRIPTION,
-      serverId: null,
-    }],
+    envRows: [
+      {
+        id: 'env-1',
+        name: 'Production',
+        description: DEFAULT_PRODUCTION_ENVIRONMENT_DESCRIPTION,
+        serverId: null,
+      },
+    ],
     existingVarKeys: ['POSTGRES_PASSWORD'],
     onInsertVariable: (values) => {
       insertedVars.push(values)
@@ -667,7 +727,7 @@ test('configureProjectType skips existing catalog variable keys', async () => {
       projectType: 'managed',
       catalogCode: 'postgres',
       dataEncryptionSecrets: secrets,
-    },
+    }
   )
   assertEquals(result, { ok: true, alreadyConfigured: false })
   assertEquals(insertedVars.length, 0)
@@ -678,14 +738,14 @@ test('configureProjectType maps encryption unavailable from transaction', async 
     createProjectSelectDb(
       [{ id: 'p1', metadata: null, options: null }],
       undefined,
-      new Error('encryption unavailable'),
+      new Error('encryption unavailable')
     ),
     {
       projectId: 'p1',
       projectType: 'template',
       catalogCode: 'static-site',
       dataEncryptionSecrets: stubSecrets(),
-    },
+    }
   )
   assertEquals(result, {
     ok: false,
@@ -701,17 +761,17 @@ test('configureProjectType rethrows unrelated transaction errors', async () => {
         createProjectSelectDb(
           [{ id: 'p1', metadata: null, options: null }],
           undefined,
-          new Error('disk full'),
+          new Error('disk full')
         ),
         {
           projectId: 'p1',
           projectType: 'template',
           catalogCode: 'static-site',
           dataEncryptionSecrets: stubSecrets(),
-        },
+        }
       ),
     Error,
-    'disk full',
+    'disk full'
   )
 })
 
@@ -725,7 +785,7 @@ test('configureProjectType configures wordpress template with entry options', as
       catalogCode: 'wordpress-mysql',
       dataEncryptionSecrets: secrets,
       defaultEnvironmentName: 'Production',
-    },
+    }
   )
   assertEquals(result, { ok: true, alreadyConfigured: false })
 })

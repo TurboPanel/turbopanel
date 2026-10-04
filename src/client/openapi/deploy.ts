@@ -1,3 +1,20 @@
+/** Rollout settings the effective strategy ignores; present only when there are some. */
+const ROLLOUT_WARNINGS_SCHEMA = {
+  type: 'array',
+  description:
+    'Advisory compose lint warnings for rollout settings this deploy ignores: `deploy.update_config.parallelism` on an `inplace` deploy, which updates every server at once. Never blocking.',
+  items: {
+    type: 'object',
+    required: ['level', 'message', 'path'],
+    properties: {
+      level: { type: 'string', enum: ['warning'] },
+      message: { type: 'string' },
+      path: { type: 'string' },
+      blocking: { type: 'boolean', enum: [false] },
+    },
+  },
+}
+
 export const deploySchemas = {
   DeployEnvironmentRequest: {
     type: 'object',
@@ -15,13 +32,28 @@ export const deploySchemas = {
         description:
           'Cacheless redeploy: rebuild images with `docker compose build --no-cache --pull` before `up`',
       },
+      strategy: {
+        type: 'string',
+        enum: ['inplace', 'sequential', 'bluegreen'],
+        description:
+          'Per-deploy override of the environment deploy strategy. `inplace` and `sequential` ' +
+          'are honored; `bluegreen` has no engine yet and is refused with ' +
+          '`501 deploy_strategy_unsupported` rather than ignored.',
+      },
+      migration: {
+        type: 'string',
+        enum: ['none', 'compatible', 'breaking', 'unknown'],
+        description:
+          'Per-deploy override of the environment migration status ("this deploy contains a ' +
+          'breaking migration"). **Not honored yet**: refused with `501 deploy_strategy_unsupported`.',
+      },
       ref: {
         type: 'string',
         maxLength: 255,
         description:
           'Branch, tag, or commit SHA to deploy for Git-backed services. Equivalent to what a ' +
           'push webhook would trigger, for instances GitHub cannot reach. **Not honored yet**: ' +
-          'checking a ref out is the release-engine phase\'s job, so a request that sets this ' +
+          "checking a ref out is the release-engine phase's job, so a request that sets this " +
           'field is refused with `501 source_ref_unsupported` rather than deploying the ' +
           "environment's current state under a ref the caller asked for. Omit it to deploy " +
           'current state.',
@@ -39,9 +71,43 @@ export const deploySchemas = {
       },
       status: { type: 'string', const: 'queued' },
       serverId: { type: 'string' },
+      strategy: {
+        type: 'object',
+        description:
+          'The deploy strategy this deploy was queued with. `effective` is what the host runs (`inplace` or `sequential`); it differs from `requested` when `bluegreen` was asked for and not available. How the deploy ends (`rolled_back`, `needs_attention`) is reported on the deployment history entry once the host answers.',
+        required: ['requested', 'effective', 'fallbackReasons', 'rollout'],
+        properties: {
+          rollout: {
+            type: 'object',
+            description:
+              'Rolling deploy across servers. `parallelism` is how many servers update at once (compose `deploy.update_config.parallelism`; default 1, `0` = all at once; an `inplace` deploy reports 0). `batches` is how many batches the deploy delivers in order. Batch 1 is queued now; each next batch is queued when the one before is applied, and the first failed server stops the rollout: servers not yet started are marked failed and their commands cancelled.',
+            required: ['parallelism', 'batches'],
+            properties: {
+              parallelism: { type: 'integer', minimum: 0 },
+              batches: { type: 'integer', minimum: 0 },
+              warnings: ROLLOUT_WARNINGS_SCHEMA,
+            },
+          },
+          requested: { type: 'string', enum: ['inplace', 'sequential', 'bluegreen'] },
+          effective: { type: 'string', enum: ['inplace', 'sequential'] },
+          fallbackReasons: {
+            type: 'array',
+            items: {
+              type: 'object',
+              required: ['code', 'message', 'services'],
+              properties: {
+                code: { type: 'string' },
+                message: { type: 'string' },
+                services: { type: 'array', items: { type: 'string' } },
+              },
+            },
+          },
+        },
+      },
       commands: {
         type: 'array',
-        description: 'Every queued `environment.deploy` (and drained-server stop) command.',
+        description:
+          'Every queued `environment.deploy` (and drained-server stop) command. On a rolling deploy this is the first batch only; later batches are queued as the one before them is applied.',
         items: {
           type: 'object',
           required: ['commandId', 'serverId', 'status'],
@@ -68,6 +134,7 @@ export const deploySchemas = {
           'site_principal_ambiguous',
           'site_managed_directory_unowned',
           'site_cron_unowned',
+          'php_mode_not_allowed',
         ],
       },
       message: { type: 'string' },
@@ -114,6 +181,11 @@ export const deploySchemas = {
       'containers',
       'volumes',
       'warnings',
+      'strategy',
+      'effectiveStrategy',
+      'migrations',
+      'fallbackReasons',
+      'rollout',
     ],
     properties: {
       ok: { type: 'boolean', const: true },
@@ -153,13 +225,7 @@ export const deploySchemas = {
         type: 'array',
         items: {
           type: 'object',
-          required: [
-            'serviceId',
-            'composeServiceName',
-            'containerName',
-            'ordinal',
-            'role',
-          ],
+          required: ['serviceId', 'composeServiceName', 'containerName', 'ordinal', 'role'],
           properties: {
             serviceId: { type: 'string' },
             composeServiceName: { type: 'string' },
@@ -169,7 +235,7 @@ export const deploySchemas = {
               type: 'string',
               enum: ['service', 'ingress', 'turbopanel'],
               description:
-                "Workload replica (`service`), ingress frontend (`ingress` — per-service Traefik or shared per-server ProxySQL managed-ingress, both named `<serviceId>-in` at ordinal 1), or platform `turbopanel-system` stack / Orchestrator container (`turbopanel`).",
+                'Workload replica (`service`), ingress frontend (`ingress` — per-service Traefik or shared per-server ProxySQL managed-ingress, both named `<serviceId>-in` at ordinal 1), or platform `turbopanel-system` stack / Orchestrator container (`turbopanel`).',
             },
           },
         },
@@ -189,6 +255,61 @@ export const deploySchemas = {
       warnings: {
         type: 'array',
         items: { $ref: '#/components/schemas/DeployPreviewWarning' },
+      },
+      strategy: {
+        type: 'string',
+        enum: ['inplace', 'sequential', 'bluegreen'],
+        description:
+          'The strategy requested: the `strategy` query, else the environment setting, else `inplace`.',
+      },
+      effectiveStrategy: {
+        type: 'string',
+        enum: ['inplace', 'sequential', 'bluegreen'],
+        description:
+          'The strategy a deploy would actually run (`inplace` or `sequential`). Differs from `strategy` only when `bluegreen` is requested: it runs as `sequential` for now (see `fallbackReasons`).',
+      },
+      rollout: {
+        type: 'object',
+        description:
+          'Rolling deploy across servers. `parallelism` is how many servers update at once (compose `deploy.update_config.parallelism`; default 1, `0` = all at once; an `inplace` deploy reports 0). `batches` is how many batches the deploy delivers in order. Batch 1 is queued now; each next batch is queued when the one before is applied, and the first failed server stops the rollout: servers not yet started are marked failed and their commands cancelled.',
+        required: ['parallelism', 'batches'],
+        properties: {
+          parallelism: { type: 'integer', minimum: 0 },
+          batches: { type: 'integer', minimum: 0 },
+          warnings: ROLLOUT_WARNINGS_SCHEMA,
+        },
+      },
+      migrations: {
+        type: 'string',
+        enum: ['none', 'compatible', 'breaking', 'unknown'],
+        description: 'Migration status the decision used; `unknown` when none is declared.',
+      },
+      fallbackReasons: {
+        type: 'array',
+        description: 'Every reason blue-green is refused; empty when no fallback applies.',
+        items: {
+          type: 'object',
+          required: ['code', 'message', 'services'],
+          properties: {
+            code: {
+              type: 'string',
+              enum: [
+                'host_published_ports',
+                'authored_container_name',
+                'stateful_writable_volume',
+                'missing_healthcheck',
+                'native_or_cron_service',
+                'host_level_binds',
+                'migration_unknown',
+                'migration_breaking',
+                'bluegreen_unavailable',
+                'migrator_undeclared',
+              ],
+            },
+            message: { type: 'string' },
+            services: { type: 'array', items: { type: 'string' } },
+          },
+        },
       },
       envFile: {
         type: 'string',
@@ -264,7 +385,8 @@ export const deploySchemas = {
       serverName: { type: ['string', 'null'] },
       status: {
         type: 'string',
-        description: 'Command lifecycle status (`queued`, `sent`, `succeeded`, `failed`, `timed_out`, …).',
+        description:
+          'Command lifecycle status (`queued`, `sent`, `succeeded`, `failed`, `timed_out`, …).',
       },
       actorEntityType: { type: 'string' },
       actorEntityId: { type: 'string' },
@@ -277,10 +399,49 @@ export const deploySchemas = {
       },
       errorCode: { type: ['string', 'null'] },
       errorMessage: { type: ['string', 'null'] },
+      strategy: {
+        type: ['string', 'null'],
+        enum: ['inplace', 'sequential', null],
+        description:
+          'The deploy engine this attempt ran. Null for attempts queued before it was recorded.',
+      },
+      strategyOutcome: {
+        type: ['string', 'null'],
+        enum: ['rolled_back', 'needs_attention', null],
+        description:
+          'How a sequential deploy that did not finish ended: `rolled_back` (the previous version is running again) or `needs_attention` (stopped on purpose, for example because a migration already ran so the old version was not restarted). `errorCode` is `deploy_rolled_back` / `deploy_needs_attention`. Null otherwise.',
+      },
+      strategyOutcomeReason: {
+        type: ['string', 'null'],
+        description: 'Why the deploy rolled back or needs attention.',
+      },
       hasLog: {
         type: 'boolean',
         description:
           'Whether an execution-log transcript is retained. Resolved store-side — there is no Postgres column.',
+      },
+      trigger: {
+        description:
+          'What set this attempt off when it was a git push (`actorEntityType` is `system`); null for a deploy a person started. Read from the attribution recorded on the command, so it outlives the daemon payload.',
+        oneOf: [
+          { type: 'null' },
+          {
+            type: 'object',
+            required: ['kind', 'branch', 'commitSha', 'sourceId'],
+            properties: {
+              kind: { type: 'string', const: 'push' },
+              branch: {
+                type: ['string', 'null'],
+                description: 'Branch that was pushed, without the `refs/heads/` prefix.',
+              },
+              commitSha: { type: ['string', 'null'], description: 'Head commit of the push.' },
+              sourceId: {
+                type: ['string', 'null'],
+                description: 'The repository (`repository.id`) the push came from.',
+              },
+            },
+          },
+        ],
       },
     },
   },
@@ -302,14 +463,7 @@ export const deploySchemas = {
   },
   DeploymentHistoryDetail: {
     type: 'object',
-    required: [
-      'id',
-      'environmentId',
-      'replicaCounts',
-      'totalReplicas',
-      'commands',
-      'servers',
-    ],
+    required: ['id', 'environmentId', 'replicaCounts', 'totalReplicas', 'commands', 'servers'],
     properties: {
       id: { type: 'string' },
       environmentId: { type: 'string' },
@@ -319,7 +473,7 @@ export const deploySchemas = {
         type: 'object',
         additionalProperties: { type: 'integer', minimum: 1 },
         description:
-          'Per-service replica counts for the whole fan-out, summed across every participating host from each attempt\'s historical `command.context`. Empty when no attempt in the fan-out carries counts (rows queued before they were persisted).',
+          "Per-service replica counts for the whole fan-out, summed across every participating host from each attempt's historical `command.context`. Empty when no attempt in the fan-out carries counts (rows queued before they were persisted).",
       },
       totalReplicas: {
         type: 'integer',
@@ -356,7 +510,7 @@ export const deploySchemas = {
             },
             totalReplicas: {
               type: ['integer', 'null'],
-              description: 'Sum of this host\'s `replicaCounts`; null when unknown.',
+              description: "Sum of this host's `replicaCounts`; null when unknown.",
             },
           },
         },
@@ -510,7 +664,7 @@ export const deployPaths = {
       tags: ['Environments'],
       summary: 'Read one deploy attempt and its multi-server fan-out',
       description:
-        '`deploymentId` is a `command.id`. The response groups every `environment.deploy` command sharing the anchor\'s `context.generation` — the full fan-out, unpaginated and untruncated, so every participating host can be enumerated. Replica counts (`replicaCounts` / `totalReplicas`) are historical, read from each attempt\'s `command.context`. The per-server convergence figures (`appliedGeneration`, `desiredGeneration`, `deploymentStatus`) instead come from a live join to `deployment` and therefore reflect current state, not a snapshot taken at deploy time.',
+        "`deploymentId` is a `command.id`. The response groups every `environment.deploy` command sharing the anchor's `context.generation` — the full fan-out, unpaginated and untruncated, so every participating host can be enumerated. Replica counts (`replicaCounts` / `totalReplicas`) are historical, read from each attempt's `command.context`. The per-server convergence figures (`appliedGeneration`, `desiredGeneration`, `deploymentStatus`) instead come from a live join to `deployment` and therefore reflect current state, not a snapshot taken at deploy time.",
       parameters: [
         { name: 'id', in: 'path', required: true, schema: { type: 'string' } },
         { name: 'deploymentId', in: 'path', required: true, schema: { type: 'string' } },
@@ -541,6 +695,20 @@ export const deployPaths = {
           in: 'path',
           required: true,
           schema: { type: 'string' },
+        },
+        {
+          name: 'strategy',
+          in: 'query',
+          required: false,
+          description: 'What-if: preview as if this strategy were requested.',
+          schema: { type: 'string', enum: ['inplace', 'sequential', 'bluegreen'] },
+        },
+        {
+          name: 'migration',
+          in: 'query',
+          required: false,
+          description: 'What-if: preview as if this migration status were declared.',
+          schema: { type: 'string', enum: ['none', 'compatible', 'breaking', 'unknown'] },
         },
       ],
       responses: {

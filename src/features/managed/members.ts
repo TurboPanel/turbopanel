@@ -110,6 +110,11 @@ function parseReplicationHealth(metadata: unknown): ManagedReplicationHealth | u
   if (typeof r.lagSeconds === 'number' && Number.isFinite(r.lagSeconds)) {
     health.lagSeconds = r.lagSeconds
   }
+  if (typeof r.receivedLsn === 'string') health.receivedLsn = r.receivedLsn
+  if (typeof r.replayLsn === 'string') health.replayLsn = r.replayLsn
+  if (typeof r.receiveLagBytes === 'number' && Number.isFinite(r.receiveLagBytes)) {
+    health.receiveLagBytes = r.receiveLagBytes
+  }
   return health
 }
 

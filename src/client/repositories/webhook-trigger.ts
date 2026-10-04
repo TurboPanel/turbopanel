@@ -52,6 +52,12 @@ import {
 import type { WebhookGitProviderName } from '../../features/git/git-provider.ts'
 import { COMPOSE_SOURCE_JSONPATH } from './routes-helpers.ts'
 import { forEachSequential, mapSequential } from '../../lib/sequential.ts'
+import {
+  decideEnvironmentPush,
+  environmentBranchBindings,
+  normalizeBranchName,
+  type EnvironmentBranchBinding,
+} from '../../features/git/environment-branch-tracking.ts'
 
 /** Why a matched repository did not produce a deploy. */
 export type TriggerSkipReason =
@@ -61,8 +67,13 @@ export type TriggerSkipReason =
   | 'installation_suspended'
   /** `autoDeploy: 'disabled'` — the repository is wired up but not armed. */
   | 'auto_deploy_disabled'
-  /** The push was on a branch this repository does not watch. */
+  /** No environment of this repository builds the pushed branch. */
   | 'branch_not_watched'
+  /**
+   * An environment builds the pushed branch, but every matching service opted
+   * out with `x-turbopanel.source.deployOnPush: false`.
+   */
+  | 'push_deploys_off'
   /** `autoDeploy: 'checks_passed'` — the SHA is parked until checks report. */
   | 'awaiting_checks'
   /** The repository is attached to nothing deployable (library entry). */
@@ -187,11 +198,16 @@ async function findSourcesForRepository(
 /**
  * Branch policy.
  *
- * A repository with `defaultBranch` set watches exactly that branch. A repository that
- * left it blank never picked one, so it watches **every** branch the repository
- * pushes — the alternative (guessing the repository's own default) would need a
- * live GitHub call on the hot path of every delivery and would silently change
- * behavior when someone renames the default branch upstream.
+ * **The environment decides, not the repository.** Each environment builds the
+ * branch its merged compose names (`x-turbopanel.source.branch`, project
+ * document overlaid by the environment's own), falling back to the repository's
+ * default branch — the same precedence a manual deploy uses. A push to
+ * `staging` therefore deploys the environments that build `staging` and leaves
+ * the one that builds `main` alone, and the repository's `autoDeploy` stays the
+ * single arming switch. An environment that resolves no branch at all is never
+ * deployed by a push: deploy-prepare refuses such a binding
+ * (`source_ref_unresolved`), so there is no commit a push could correctly
+ * build. See `src/features/git/environment-branch-tracking.ts`.
  */
 export type WebhookTriggerDeps = {
   loadInstallations?: (
@@ -209,11 +225,22 @@ export type WebhookTriggerDeps = {
     pending: PendingChecks | null
   ) => Promise<void>
   resolveRepositoryEnvironmentIds?: (db: Db, row: TriggerRepositoryRow) => Promise<string[]>
+  resolveEnvironmentBranches?: (
+    db: Db,
+    row: TriggerRepositoryRow,
+    environmentIds: readonly string[]
+  ) => Promise<EnvironmentBranches[]>
   resolveEnvironmentPlacement?: (
     db: Db,
     environmentId: string
   ) => Promise<{ serverId: string | null; organizationId: string } | null>
   runDeploy?: typeof runEnvironmentDeployForActor
+}
+
+/** The branch each service of one environment builds from the pushed repository. */
+export type EnvironmentBranches = {
+  environmentId: string
+  bindings: EnvironmentBranchBinding[]
 }
 
 function resolveTriggerIo(deps: WebhookTriggerDeps = {}) {
@@ -223,14 +250,10 @@ function resolveTriggerIo(deps: WebhookTriggerDeps = {}) {
     setPendingChecks: deps.setPendingChecks ?? setPendingChecks,
     resolveRepositoryEnvironmentIds:
       deps.resolveRepositoryEnvironmentIds ?? resolveRepositoryEnvironmentIds,
+    resolveEnvironmentBranches: deps.resolveEnvironmentBranches ?? resolveEnvironmentBranches,
     resolveEnvironmentPlacement: deps.resolveEnvironmentPlacement ?? resolveEnvironmentPlacement,
     runDeploy: deps.runDeploy ?? runEnvironmentDeployForActor,
   }
-}
-
-export function sourceWatchesBranch(defaultBranch: string | null, pushedBranch: string): boolean {
-  if (defaultBranch === null || defaultBranch.trim().length === 0) return true
-  return defaultBranch.trim() === pushedBranch
 }
 
 /** Parked `checks_passed` state, stored on `repository.options`. */
@@ -318,6 +341,48 @@ export async function resolveRepositoryEnvironmentIds(
   for (const found of referenced) ids.add(found.environment_id)
 
   return [...ids]
+}
+
+/**
+ * The stored compose of each candidate environment, reduced to the branches its
+ * services build from this repository.
+ *
+ * Scoped to the repository's own organization — the ids come from a query that
+ * already is, but a delivery must never be able to reach another
+ * organization's environment even if a caller hands this a foreign id. An id
+ * that does not belong to the organization is simply absent from the result and
+ * so never deploys.
+ */
+export async function resolveEnvironmentBranches(
+  db: Db,
+  row: TriggerRepositoryRow,
+  environmentIds: readonly string[]
+): Promise<EnvironmentBranches[]> {
+  if (environmentIds.length === 0) return []
+  const found = await db
+    .select({
+      environmentId: environment.id,
+      environmentOptions: environment.options,
+      projectOptions: project.options,
+    })
+    .from(environment)
+    .innerJoin(project, eq(project.id, environment.projectId))
+    .innerJoin(workspace, eq(workspace.id, project.workspaceId))
+    .where(
+      and(
+        inArray(environment.id, [...environmentIds]),
+        eq(workspace.organizationId, row.organizationId)
+      )
+    )
+  return found.map((entry) => ({
+    environmentId: entry.environmentId,
+    bindings: environmentBranchBindings({
+      projectOptions: entry.projectOptions,
+      environmentOptions: entry.environmentOptions,
+      sourceId: row.id,
+      repositoryDefaultBranch: row.defaultBranch,
+    }),
+  }))
 }
 
 /**
@@ -442,30 +507,79 @@ async function deployEnvironmentForSource(
   }
 }
 
-async function deployAllEnvironmentsForSource(
+/** Which environments a push to one branch should deploy, and why the rest do not. */
+type PushPlan = {
+  /** Environments that build the pushed branch and allow push deploys. */
+  deploy: string[]
+  /** Final outcomes for everything that does not deploy. */
+  skipped: TriggerOutcome[]
+}
+
+/**
+ * Decide, per environment, whether a push to `ref` deploys it.
+ *
+ * Pure routing over what the stored compose says; nothing is enqueued. Kept
+ * apart from the enqueue so `autoDeploy: 'checks_passed'` can ask "does any
+ * environment care about this branch?" *before* it parks a SHA — parking a
+ * commit nobody builds would only leave a stale `pendingChecks` behind.
+ */
+async function planEnvironmentsForPush(
+  db: Db,
+  row: TriggerRepositoryRow,
+  ref: string | null,
+  io: ReturnType<typeof resolveTriggerIo>
+): Promise<PushPlan> {
+  const environmentIds = await io.resolveRepositoryEnvironmentIds(db, row)
+  if (environmentIds.length === 0) {
+    return {
+      deploy: [],
+      skipped: [
+        { kind: 'skipped', sourceId: row.id, environmentId: null, reason: 'no_environment' },
+      ],
+    }
+  }
+
+  const branch = normalizeBranchName(ref)
+  const environments = await io.resolveEnvironmentBranches(db, row, environmentIds)
+  const deploy: string[] = []
+  const skipped: TriggerOutcome[] = []
+  for (const entry of environments) {
+    const decision =
+      branch === null ? 'branch_not_tracked' : decideEnvironmentPush(entry.bindings, branch)
+    if (decision === 'deploy') deploy.push(entry.environmentId)
+    if (decision === 'push_deploys_off') {
+      skipped.push({
+        kind: 'skipped',
+        sourceId: row.id,
+        environmentId: entry.environmentId,
+        reason: 'push_deploys_off',
+      })
+    }
+  }
+  if (deploy.length === 0 && skipped.length === 0) {
+    skipped.push({
+      kind: 'skipped',
+      sourceId: row.id,
+      environmentId: null,
+      reason: 'branch_not_watched',
+    })
+  }
+  return { deploy, skipped }
+}
+
+async function deployEnvironments(
   c: Context<AppEnv>,
   db: Db,
   commandQueue: CommandQueue,
   params: {
     row: TriggerRepositoryRow
+    environmentIds: readonly string[]
     commitSha: string | null
     ref: string | null
   },
   io: ReturnType<typeof resolveTriggerIo>
 ): Promise<TriggerOutcome[]> {
-  const environmentIds = await io.resolveRepositoryEnvironmentIds(db, params.row)
-  if (environmentIds.length === 0) {
-    return [
-      {
-        kind: 'skipped',
-        sourceId: params.row.id,
-        environmentId: null,
-        reason: 'no_environment',
-      },
-    ]
-  }
-
-  return await mapSequential(environmentIds, (environmentId) =>
+  return await mapSequential([...params.environmentIds], (environmentId) =>
     deployEnvironmentForSource(
       c,
       db,
@@ -479,6 +593,29 @@ async function deployAllEnvironmentsForSource(
       io
     )
   )
+}
+
+/** Plan and deploy in one step — the released-by-checks path, where nothing is parked in between. */
+async function deployAllEnvironmentsForSource(
+  c: Context<AppEnv>,
+  db: Db,
+  commandQueue: CommandQueue,
+  params: {
+    row: TriggerRepositoryRow
+    commitSha: string | null
+    ref: string | null
+  },
+  io: ReturnType<typeof resolveTriggerIo>
+): Promise<TriggerOutcome[]> {
+  const plan = await planEnvironmentsForPush(db, params.row, params.ref, io)
+  const deployed = await deployEnvironments(
+    c,
+    db,
+    commandQueue,
+    { ...params, environmentIds: plan.deploy },
+    io
+  )
+  return [...plan.skipped, ...deployed]
 }
 
 /** What a verified delivery knows about the connection it came from. */
@@ -569,6 +706,57 @@ export type PushTrigger = {
   commitSha: string | null
 }
 
+/** One matched repository's answer to a push: what it parks, skips, or deploys. */
+async function resolvePushForSource(
+  c: Context<AppEnv>,
+  db: Db,
+  commandQueue: CommandQueue,
+  push: PushTrigger,
+  row: TriggerRepositoryRow,
+  io: ReturnType<typeof resolveTriggerIo>
+): Promise<TriggerOutcome[]> {
+  const skipped = (reason: TriggerSkipReason): TriggerOutcome[] => [
+    { kind: 'skipped', sourceId: row.id, environmentId: null, reason },
+  ]
+  if (row.autoDeploy === 'disabled') return skipped('auto_deploy_disabled')
+
+  // Which environments build this branch is settled before anything is parked
+  // or enqueued: a commit no environment builds must not leave a stale
+  // `pendingChecks` behind, and must not deploy anything.
+  const plan = await planEnvironmentsForPush(db, row, push.ref, io)
+  if (plan.deploy.length === 0) return plan.skipped
+
+  if (row.autoDeploy === 'checks_passed') {
+    // Park the SHA and wait for the matching check_suite / check_run. A push
+    // that carried no head SHA (a branch delete) has nothing to park and
+    // nothing a later check could match, so it is simply dropped.
+    if (push.commitSha) {
+      await io.setPendingChecks(db, row, {
+        commitSha: push.commitSha,
+        ref: push.ref,
+        recordedAt: new Date().toISOString(),
+      })
+    }
+    return skipped('awaiting_checks')
+  }
+
+  // Mirrors the `checks_passed` guard above: a branch delete carries no head
+  // SHA, so there is nothing to build and an immediate deploy would either
+  // redeploy the previous state or fail at checkout. The webhook route
+  // short-circuits these before they reach here; this is the same rule for any
+  // other caller.
+  if (!push.commitSha) return skipped('branch_deleted')
+
+  const deployed = await deployEnvironments(
+    c,
+    db,
+    commandQueue,
+    { row, environmentIds: plan.deploy, commitSha: push.commitSha, ref: push.ref },
+    io
+  )
+  return [...plan.skipped, ...deployed]
+}
+
 /** Resolve and act on one `push` delivery, from any provider. */
 export async function resolvePushTrigger(
   c: Context<AppEnv>,
@@ -601,72 +789,7 @@ export async function resolvePushTrigger(
 
   const outcomes: TriggerOutcome[] = []
   await forEachSequential(rows, async (row) => {
-    if (row.autoDeploy === 'disabled') {
-      outcomes.push({
-        kind: 'skipped',
-        sourceId: row.id,
-        environmentId: null,
-        reason: 'auto_deploy_disabled',
-      })
-      return
-    }
-    if (!sourceWatchesBranch(row.defaultBranch, push.branch)) {
-      outcomes.push({
-        kind: 'skipped',
-        sourceId: row.id,
-        environmentId: null,
-        reason: 'branch_not_watched',
-      })
-      return
-    }
-    if (row.autoDeploy === 'checks_passed') {
-      // Park the SHA and wait for the matching check_suite / check_run. A push
-      // that carried no head SHA (a branch delete) has nothing to park and
-      // nothing a later check could match, so it is simply dropped.
-      if (push.commitSha) {
-        await io.setPendingChecks(db, row, {
-          commitSha: push.commitSha,
-          ref: push.ref,
-          recordedAt: new Date().toISOString(),
-        })
-      }
-      outcomes.push({
-        kind: 'skipped',
-        sourceId: row.id,
-        environmentId: null,
-        reason: 'awaiting_checks',
-      })
-      return
-    }
-
-    if (!push.commitSha) {
-      // Mirrors the `checks_passed` guard above: a branch delete carries no head
-      // SHA, so there is nothing to build and an immediate deploy would either
-      // redeploy the previous state or fail at checkout. The webhook route
-      // short-circuits these before they reach here; this is the same rule for
-      // any other caller.
-      outcomes.push({
-        kind: 'skipped',
-        sourceId: row.id,
-        environmentId: null,
-        reason: 'branch_deleted',
-      })
-      return
-    }
-
-    outcomes.push(
-      ...(await deployAllEnvironmentsForSource(
-        c,
-        db,
-        commandQueue,
-        {
-          row,
-          commitSha: push.commitSha,
-          ref: push.ref,
-        },
-        io
-      ))
-    )
+    outcomes.push(...(await resolvePushForSource(c, db, commandQueue, push, row, io)))
   })
 
   const summary = summarize(outcomes, rows.length)

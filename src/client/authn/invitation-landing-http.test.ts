@@ -26,7 +26,9 @@ import { deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import { registerAccessRoutes } from '../access/routes.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
+import { breachedBreachResponder, cleanBreachResponder } from '../../test-fixtures/breach.ts'
 import { createAuthRateLimiter } from './auth-rate-limit.ts'
+import type { BreachRangeResponder } from './breached-password.ts'
 import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from './crypto.ts'
 import { registerAuthRoutes } from './http.ts'
 import { createOrganizationForUser } from './install-state.ts'
@@ -62,7 +64,10 @@ type Fixture = {
   inviterCookie: () => Promise<string>
 }
 
-async function withFixture(fn: (fx: Fixture) => Promise<void>): Promise<void> {
+async function withFixture(
+  fn: (fx: Fixture) => Promise<void>,
+  responder: BreachRangeResponder = cleanBreachResponder()
+): Promise<void> {
   if (!dbUrl) {
     console.warn('Skipping invitation landing tests: TURBOPANEL_DATABASE_URL not set')
     return
@@ -91,6 +96,7 @@ async function withFixture(fn: (fx: Fixture) => Promise<void>): Promise<void> {
       },
     })
     c.set('platformEnv', { TURBOPANEL_BASE_URL: 'https://panel.example.com' })
+    c.set('breachRangeResponder', responder)
     c.set(
       'authRateLimiter',
       createAuthRateLimiter({ defaultPolicy: { limit: 10_000, windowMs: 60_000 } })
@@ -401,6 +407,26 @@ test('sign-up-and-accept refuses an existing account, a revoked invitation and a
     const weak = await fx.invite(`weak-${crypto.randomUUID()}@example.com`)
     assertEquals((await signUp(fx, weak.token, 'short')).status, 400)
   })
+})
+
+test('sign-up-and-accept refuses a breached password and leaves the invitation pending', async () => {
+  const breachedPassword = strongCredential()
+  const responder = await breachedBreachResponder(breachedPassword)
+  await withFixture(async (fx) => {
+    const email = `pwned-${crypto.randomUUID()}@example.com`
+    const { id, token } = await fx.invite(email)
+    const refused = await signUp(fx, token, breachedPassword)
+    assertEquals(refused.status, 400)
+    assertEquals((await refused.json()).error, 'password_breached')
+    const [row] = await fx.db
+      .select({ status: invitation.status })
+      .from(invitation)
+      .where(eq(invitation.id, id))
+    assertEquals(row?.status, 'pending')
+    assertEquals((await signUp(fx, token)).status, 200)
+    const created = await fx.db.select({ id: user.id }).from(user).where(eq(user.email, email))
+    for (const row of created) fx.track(row.id)
+  }, responder)
 })
 
 function linkToken(job: EmailJob | undefined): string {

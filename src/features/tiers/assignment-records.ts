@@ -36,6 +36,8 @@ import {
   type TierQuantity,
 } from './assignment.ts'
 import { resolveRequiredTier, totalPhysicalCores } from './tier-placement.ts'
+import { getLatestTopologyGenerations } from '../servers/server-topology-records.ts'
+import { parseTopologySnapshot, recommendedRankFromMetadata } from './topology-recommendation.ts'
 import { selfHostedGrantRank } from './self-hosted-grant.ts'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -73,7 +75,11 @@ export function tierQuantitiesFromState(state: OrganizationBillingState): TierQu
   const out = new Map<string, TierQuantity>()
   const add = (tierId: string, rank: number, quantity: number) => {
     const existing = out.get(tierId)
-    out.set(tierId, { tierId, rank, quantity: (existing?.quantity ?? 0) + quantity })
+    out.set(tierId, {
+      tierId,
+      rank,
+      quantity: (existing?.quantity ?? 0) + quantity,
+    })
   }
   for (const seat of state.seats) {
     add(seat.tierId, seat.tier.rank, ended ? 0 : seat.quantity)
@@ -101,10 +107,18 @@ export async function loadAssignableServers(
     .from(server)
     .innerJoin(license, and(eq(license.serverId, server.id), isNull(license.revokedAt)))
     .where(eq(server.organizationId, organizationId))
+  const topology = await getLatestTopologyGenerations(
+    db,
+    rows.map((row) => row.serverId)
+  )
   return rows.map((row) => ({
     serverId: row.serverId,
     boundAt: row.createdAt,
     requiredRank: requiredRankFromMetadata(row.metadata),
+    recommendedRank: recommendedRankFromMetadata(
+      row.metadata,
+      parseTopologySnapshot(topology.get(row.serverId)?.snapshot)
+    ),
     assignedTierId: row.assignedTierId,
   }))
 }

@@ -12,9 +12,7 @@ import { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import type { DaemonCell } from '../../contracts/cell.ts'
 import type { Db } from '../../db/connection.ts'
-import {
-  GITLAB_WEBHOOK_PATH,
-} from '../../app/surfaces.ts'
+import { GITLAB_WEBHOOK_PATH } from '../../app/surfaces.ts'
 import { deriveEncryptionSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { encryptSecret } from '../../lib/secrets/data-encryption.ts'
 import { emptyComposeDocument } from '../../features/compose/types.ts'
@@ -32,10 +30,7 @@ import {
 } from '../../db/schema.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import { hashWebhookToken } from '../../features/git/forge-records.ts'
-import {
-  GITLAB_WEBHOOK_MAX_BODY_BYTES,
-  registerGitlabWebhookRoutes,
-} from './gitlab.ts'
+import { GITLAB_WEBHOOK_MAX_BODY_BYTES, registerGitlabWebhookRoutes } from './gitlab.ts'
 import { registerWebhookRoutes } from '../routes.ts'
 
 /**
@@ -52,7 +47,7 @@ const COMMIT_SHA = 'b'.repeat(40)
 
 function stubAppDb(
   rows: unknown[],
-  opts: { claimed?: boolean; installations?: unknown[] } = {},
+  opts: { claimed?: boolean; installations?: unknown[] } = {}
 ): Db {
   return {
     select: () => ({
@@ -62,17 +57,15 @@ function stubAppDb(
           orderBy: () => Promise.resolve(rows),
           then: (
             onFulfilled: (value: unknown) => unknown,
-            onRejected?: (reason: unknown) => unknown,
-          ) =>
-            Promise.resolve(opts.installations ?? []).then(onFulfilled, onRejected),
+            onRejected?: (reason: unknown) => unknown
+          ) => Promise.resolve(opts.installations ?? []).then(onFulfilled, onRejected),
         }),
       }),
     }),
     insert: () => ({
       values: () => ({
         onConflictDoNothing: () => ({
-          returning: () =>
-            Promise.resolve(opts.claimed === false ? [] : [{ id: 'row' }]),
+          returning: () => Promise.resolve(opts.claimed === false ? [] : [{ id: 'row' }]),
         }),
       }),
     }),
@@ -124,6 +117,22 @@ function flattenSql(query: unknown): string {
   return parts.join('')
 }
 
+/** An environment document whose one service builds `main` from the test repository. */
+const buildsMainFromRepository = {
+  compose: {
+    version: 1,
+    data: {
+      services: {
+        web: {
+          image: 'node:24',
+          'x-turbopanel': { source: { sourceId: SOURCE_ID, branch: 'main' } },
+        },
+      },
+    },
+    presentation: { keyOrder: [], comments: {} },
+  },
+}
+
 /**
  * Table-aware repository graph + empty-compose deploy stub.
  *
@@ -140,7 +149,7 @@ function createEnqueueGraphDb(
     enqueue: 'success' | 'fail' | 'throw'
     repository?: { autoDeploy?: string; options?: unknown }
     onRelease?: () => void
-  },
+  }
 ): Db {
   const composeOptions = { compose: emptyComposeDocument() }
   const sourceRow = {
@@ -175,29 +184,38 @@ function createEnqueueGraphDb(
         if (table === environment) {
           return {
             where: () =>
-              thenableRows([{
-                id: ENV_ID,
-                projectId: PROJECT_ID,
-                serverId: null,
-                options: composeOptions,
-                name: 'Production',
-              }]),
+              thenableRows([
+                {
+                  id: ENV_ID,
+                  projectId: PROJECT_ID,
+                  serverId: null,
+                  options: composeOptions,
+                  name: 'Production',
+                },
+              ]),
             innerJoin: () => ({
               innerJoin: () => ({
+                // One row answers both joins that reach here: the placement
+                // lookup (server pin + org) and the push resolver's per-
+                // environment branch lookup (the environment's own compose,
+                // which builds `main` from this repository).
                 where: () =>
-                  thenableRows([{
-                    serverId: SERVER_ID,
-                    projectOptions: composeOptions,
-                    organizationId: ORG_ID,
-                  }]),
+                  thenableRows([
+                    {
+                      serverId: SERVER_ID,
+                      projectOptions: composeOptions,
+                      organizationId: ORG_ID,
+                      environmentId: ENV_ID,
+                      environmentOptions: buildsMainFromRepository,
+                    },
+                  ]),
               }),
             }),
           }
         }
         if (table === project) {
           return {
-            where: () =>
-              thenableRows([{ id: PROJECT_ID, options: composeOptions }]),
+            where: () => thenableRows([{ id: PROJECT_ID, options: composeOptions }]),
           }
         }
         if (table === fabric || table === server) {
@@ -230,8 +248,7 @@ function createEnqueueGraphDb(
     insert: () => ({
       values: () => ({
         onConflictDoNothing: () => ({
-          returning: () =>
-            Promise.resolve(opts.claimed === false ? [] : [{ id: 'row' }]),
+          returning: () => Promise.resolve(opts.claimed === false ? [] : [{ id: 'row' }]),
         }),
         returning: () => Promise.resolve([{ id: 'svc-1' }]),
       }),
@@ -242,7 +259,7 @@ function createEnqueueGraphDb(
           returning: () => Promise.resolve([]),
           then: (
             onFulfilled: (value: unknown) => unknown,
-            onRejected?: (reason: unknown) => unknown,
+            onRejected?: (reason: unknown) => unknown
           ) => Promise.resolve().then(onFulfilled, onRejected),
         }),
       }),
@@ -264,11 +281,13 @@ function createEnqueueGraphDb(
     transaction: async () => {
       if (opts.enqueue === 'throw') throw new Error('injected dispatch crash')
       if (opts.enqueue === 'fail') {
-        return [{
-          commandId: 'cmd-1',
-          serverId: SERVER_ID,
-          queuedAt: '2026-01-01T00:00:00.000Z',
-        }]
+        return [
+          {
+            commandId: 'cmd-1',
+            serverId: SERVER_ID,
+            queuedAt: '2026-01-01T00:00:00.000Z',
+          },
+        ]
       }
       return []
     },
@@ -291,31 +310,38 @@ async function buildApp(opts: {
   const secretsConfig = parseTestSecretsConfig('deno')
   const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
     secretsConfig,
-    'data-encryption',
+    'data-encryption'
   )
 
-  const rows = opts.appRegistered === false ? [] : [{
-    id: 'app-1',
-    organizationId: null,
-    provider: 'gitlab',
-    name: 'TurboPanel GitLab',
-    baseUrl: 'https://gitlab.com',
-    apiUrl: null,
-    externalAppId: null,
-    appSlug: null,
-    clientId: null,
-    redirectUri: null,
-    webhookRef: WEBHOOK_REF,
-    webhookTokenHash: opts.webhookTokenHash ?? null,
-    envelopes: {
-      ...(opts.webhookSecret === undefined ? {} : {
-        webhookSecretEnvelope: await encryptSecret(
-          dataEncryptionSecrets,
-          opts.webhookSecret,
-        ),
-      }),
-    },
-  }]
+  const rows =
+    opts.appRegistered === false
+      ? []
+      : [
+          {
+            id: 'app-1',
+            organizationId: null,
+            provider: 'gitlab',
+            name: 'TurboPanel GitLab',
+            baseUrl: 'https://gitlab.com',
+            apiUrl: null,
+            externalAppId: null,
+            appSlug: null,
+            clientId: null,
+            redirectUri: null,
+            webhookRef: WEBHOOK_REF,
+            webhookTokenHash: opts.webhookTokenHash ?? null,
+            envelopes: {
+              ...(opts.webhookSecret === undefined
+                ? {}
+                : {
+                    webhookSecretEnvelope: await encryptSecret(
+                      dataEncryptionSecrets,
+                      opts.webhookSecret
+                    ),
+                  }),
+            },
+          },
+        ]
 
   const app = new Hono<AppEnv>()
   app.use('*', (c, next) => {
@@ -323,12 +349,12 @@ async function buildApp(opts: {
       'db',
       opts.graph
         ? createEnqueueGraphDb(rows, {
-          claimed: opts.claimed,
-          enqueue: opts.graph.enqueue,
-          ...(opts.graph.repository === undefined ? {} : { repository: opts.graph.repository }),
-          ...(opts.graph.onRelease === undefined ? {} : { onRelease: opts.graph.onRelease }),
-        })
-        : stubAppDb(rows, { claimed: opts.claimed }),
+            claimed: opts.claimed,
+            enqueue: opts.graph.enqueue,
+            ...(opts.graph.repository === undefined ? {} : { repository: opts.graph.repository }),
+            ...(opts.graph.onRelease === undefined ? {} : { onRelease: opts.graph.onRelease }),
+          })
+        : stubAppDb(rows, { claimed: opts.claimed })
     )
     c.set('dataEncryptionSecrets', dataEncryptionSecrets)
     if (opts.dispatchReady || opts.graph) {
@@ -339,7 +365,7 @@ async function buildApp(opts: {
             : Promise.resolve(),
       })
       c.set('daemonCellRegistry', {
-        getCell: () => ({} as unknown as DaemonCell),
+        getCell: () => ({}) as unknown as DaemonCell,
         listOnlineServerIds: () => Promise.resolve([]),
         getSnapshots: () => Promise.resolve(new Map()),
         purge: () => Promise.resolve(),
@@ -349,18 +375,16 @@ async function buildApp(opts: {
   })
   registerGitlabWebhookRoutes(app, {
     runtime: 'deno',
-    ...(opts.rateLimited === undefined ? {} : {
-      rateLimiter: { limit: () => Promise.resolve({ success: !opts.rateLimited }) },
-    }),
+    ...(opts.rateLimited === undefined
+      ? {}
+      : {
+          rateLimiter: { limit: () => Promise.resolve({ success: !opts.rateLimited }) },
+        }),
   })
   return app
 }
 
-function postTo(
-  path: string,
-  body: string,
-  headers: Record<string, string> = {},
-): Request {
+function postTo(path: string, body: string, headers: Record<string, string> = {}): Request {
   return new Request(`http://instance${path}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', ...headers },
@@ -372,9 +396,7 @@ function post(body: string, headers: Record<string, string> = {}): Request {
   return postTo(`${GITLAB_WEBHOOK_PATH}/${WEBHOOK_REF}`, body, headers)
 }
 
-function tokenHeaders(
-  extra: Record<string, string> = {},
-): Record<string, string> {
+function tokenHeaders(extra: Record<string, string> = {}): Record<string, string> {
   return {
     'x-gitlab-token': WEBHOOK_SECRET,
     'x-gitlab-event': 'Push Hook',
@@ -409,29 +431,35 @@ test('a missing or wrong token is 401 before the delivery is claimed', async () 
   const missing = await app.request(post('{}', { 'x-gitlab-event': 'Push Hook' }))
   assertEquals(missing.status, 401)
 
-  const wrong = await app.request(post('{}', {
-    'x-gitlab-event': 'Push Hook',
-    'x-gitlab-token': 'definitely-not-the-secret',
-  }))
+  const wrong = await app.request(
+    post('{}', {
+      'x-gitlab-event': 'Push Hook',
+      'x-gitlab-token': 'definitely-not-the-secret',
+    })
+  )
   assertEquals(wrong.status, 401)
 })
 
 test('a tokened delivery missing its event header is a bad request', async () => {
   const app = await buildApp({ webhookSecret: WEBHOOK_SECRET })
-  const res = await app.request(post('{}', {
-    'x-gitlab-token': WEBHOOK_SECRET,
-    'x-gitlab-event-uuid': crypto.randomUUID(),
-  }))
+  const res = await app.request(
+    post('{}', {
+      'x-gitlab-token': WEBHOOK_SECRET,
+      'x-gitlab-event-uuid': crypto.randomUUID(),
+    })
+  )
   assertEquals(res.status, 400)
 })
 
 test('an oversized declared body is refused before it is buffered', async () => {
   const app = await buildApp({ webhookSecret: WEBHOOK_SECRET })
-  const res = await app.request(post('{}', {
-    'x-gitlab-token': WEBHOOK_SECRET,
-    'x-gitlab-event': 'Push Hook',
-    'content-length': String(GITLAB_WEBHOOK_MAX_BODY_BYTES + 1),
-  }))
+  const res = await app.request(
+    post('{}', {
+      'x-gitlab-token': WEBHOOK_SECRET,
+      'x-gitlab-event': 'Push Hook',
+      'content-length': String(GITLAB_WEBHOOK_MAX_BODY_BYTES + 1),
+    })
+  )
   assertEquals(res.status, 413)
 })
 
@@ -462,7 +490,7 @@ test('an oversized body with no Content-Length is refused without buffering the 
       body,
       duplex: 'half',
       // deno-lint-ignore no-explicit-any
-    } as any),
+    } as any)
   )
   assertEquals(res.status, 413)
   // GITLAB_WEBHOOK_MAX_BODY_BYTES is 1 MiB; the reader must abort within a
@@ -475,9 +503,7 @@ test('the scoped and bare paths both reach the same gate', async () => {
   const app = await buildApp({ webhookSecret: WEBHOOK_SECRET, webhookTokenHash: tokenHash })
 
   for (const path of [`${GITLAB_WEBHOOK_PATH}/${WEBHOOK_REF}`, GITLAB_WEBHOOK_PATH]) {
-    const res = await app.request(
-      postTo(path, '{}', { 'x-gitlab-event': 'Push Hook' }),
-    )
+    const res = await app.request(postTo(path, '{}', { 'x-gitlab-event': 'Push Hook' }))
     // 401 is the gate rejecting a missing token — which means it ran. A 404
     // would mean the path never reached the handler at all.
     assertEquals(res.status, 401, `expected the gate to run for ${path}`)
@@ -487,76 +513,112 @@ test('the scoped and bare paths both reach the same gate', async () => {
 test('the bare path resolves the app from the presented token digest', async () => {
   const tokenHash = await hashWebhookToken(WEBHOOK_SECRET)
   const app = await buildApp({ webhookSecret: WEBHOOK_SECRET, webhookTokenHash: tokenHash })
-  const res = await app.request(postTo(GITLAB_WEBHOOK_PATH, JSON.stringify({
-    object_kind: 'note',
-  }), tokenHeaders({ 'x-gitlab-event': 'Note Hook' })))
+  const res = await app.request(
+    postTo(
+      GITLAB_WEBHOOK_PATH,
+      JSON.stringify({
+        object_kind: 'note',
+      }),
+      tokenHeaders({ 'x-gitlab-event': 'Note Hook' })
+    )
+  )
   assertEquals(res.status, 200)
   assertEquals(await res.json(), { ok: true })
 })
 
 test('a tokened push that is not a branch ref is accepted as skipped', async () => {
   const app = await buildApp({ webhookSecret: WEBHOOK_SECRET })
-  const res = await app.request(post(JSON.stringify({
-    object_kind: 'push',
-    ref: 'refs/tags/v1',
-  }), tokenHeaders()))
+  const res = await app.request(
+    post(
+      JSON.stringify({
+        object_kind: 'push',
+        ref: 'refs/tags/v1',
+      }),
+      tokenHeaders()
+    )
+  )
   assertEquals(res.status, 200)
   assertEquals(await res.json(), { ok: true })
 })
 
 test('a tokened branch-delete push is accepted as skipped', async () => {
   const app = await buildApp({ webhookSecret: WEBHOOK_SECRET })
-  const res = await app.request(post(JSON.stringify({
-    object_kind: 'push',
-    ref: 'refs/heads/main',
-    after: '0'.repeat(40),
-    checkout_sha: null,
-    project_id: 7,
-  }), tokenHeaders()))
+  const res = await app.request(
+    post(
+      JSON.stringify({
+        object_kind: 'push',
+        ref: 'refs/heads/main',
+        after: '0'.repeat(40),
+        checkout_sha: null,
+        project_id: 7,
+      }),
+      tokenHeaders()
+    )
+  )
   assertEquals(res.status, 200)
   assertEquals(await res.json(), { ok: true })
 })
 
 test('a tokened push that would deploy asks for a retry when dispatch is down', async () => {
   const app = await buildApp({ webhookSecret: WEBHOOK_SECRET })
-  const res = await app.request(post(JSON.stringify({
-    object_kind: 'push',
-    ref: 'refs/heads/main',
-    after: COMMIT_SHA,
-    checkout_sha: COMMIT_SHA,
-    project_id: 7,
-  }), tokenHeaders()))
+  const res = await app.request(
+    post(
+      JSON.stringify({
+        object_kind: 'push',
+        ref: 'refs/heads/main',
+        after: COMMIT_SHA,
+        checkout_sha: COMMIT_SHA,
+        project_id: 7,
+      }),
+      tokenHeaders()
+    )
+  )
   assertEquals(res.status, 503)
   assertEquals(await res.json(), { error: 'retry' })
 })
 
 test('a tokened pipeline that is not success is accepted as skipped', async () => {
   const app = await buildApp({ webhookSecret: WEBHOOK_SECRET })
-  const res = await app.request(post(JSON.stringify({
-    object_kind: 'pipeline',
-    object_attributes: { status: 'failed', sha: COMMIT_SHA },
-    project_id: 7,
-  }), tokenHeaders({ 'x-gitlab-event': 'Pipeline Hook' })))
+  const res = await app.request(
+    post(
+      JSON.stringify({
+        object_kind: 'pipeline',
+        object_attributes: { status: 'failed', sha: COMMIT_SHA },
+        project_id: 7,
+      }),
+      tokenHeaders({ 'x-gitlab-event': 'Pipeline Hook' })
+    )
+  )
   assertEquals(res.status, 200)
   assertEquals(await res.json(), { ok: true })
 })
 
 test('a tokened successful pipeline asks for a retry when dispatch is down', async () => {
   const app = await buildApp({ webhookSecret: WEBHOOK_SECRET })
-  const res = await app.request(post(JSON.stringify({
-    object_kind: 'pipeline',
-    object_attributes: { status: 'success', sha: COMMIT_SHA },
-    project: { id: 7 },
-  }), tokenHeaders({ 'x-gitlab-event': 'Pipeline Hook' })))
+  const res = await app.request(
+    post(
+      JSON.stringify({
+        object_kind: 'pipeline',
+        object_attributes: { status: 'success', sha: COMMIT_SHA },
+        project: { id: 7 },
+      }),
+      tokenHeaders({ 'x-gitlab-event': 'Pipeline Hook' })
+    )
+  )
   assertEquals(res.status, 503)
   assertEquals(await res.json(), { error: 'retry' })
 })
 
 test('dispatch falls back to the ledger event when object_kind is absent', async () => {
   const app = await buildApp({ webhookSecret: WEBHOOK_SECRET })
-  const res = await app.request(post('{}', tokenHeaders({
-    'x-gitlab-event': 'Job Hook',
-  })))
+  const res = await app.request(
+    post(
+      '{}',
+      tokenHeaders({
+        'x-gitlab-event': 'Job Hook',
+      })
+    )
+  )
   assertEquals(res.status, 200)
   assertEquals(await res.json(), { ok: true })
 })
@@ -564,10 +626,12 @@ test('dispatch falls back to the ledger event when object_kind is absent', async
 test('a body-digest delivery id is used when GitLab omits the UUID header', async () => {
   const app = await buildApp({ webhookSecret: WEBHOOK_SECRET })
   const body = JSON.stringify({ object_kind: 'wiki_page' })
-  const res = await app.request(post(body, {
-    'x-gitlab-token': WEBHOOK_SECRET,
-    'x-gitlab-event': 'Wiki Page Hook',
-  }))
+  const res = await app.request(
+    post(body, {
+      'x-gitlab-token': WEBHOOK_SECRET,
+      'x-gitlab-event': 'Wiki Page Hook',
+    })
+  )
   assertEquals(res.status, 200)
   assertEquals(await res.json(), { ok: true })
 })
@@ -576,7 +640,7 @@ test('registerWebhookRoutes mounts both providers on the workers runtime', async
   const secretsConfig = parseTestSecretsConfig('deno')
   const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
     secretsConfig,
-    'data-encryption',
+    'data-encryption'
   )
   const app = new Hono<AppEnv>()
   app.use('*', (c, next) => {
@@ -586,16 +650,20 @@ test('registerWebhookRoutes mounts both providers on the workers runtime', async
   })
   registerWebhookRoutes(app, { runtime: 'workers' })
 
-  const githubRes = await app.request(new Request('http://instance/webhook/github', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: '{}',
-  }))
-  const gitlabRes = await app.request(new Request('http://instance/webhook/gitlab', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: '{}',
-  }))
+  const githubRes = await app.request(
+    new Request('http://instance/webhook/github', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    })
+  )
+  const gitlabRes = await app.request(
+    new Request('http://instance/webhook/gitlab', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    })
+  )
   assertEquals(githubRes.status, 401)
   assertEquals(gitlabRes.status, 401)
 })
@@ -604,7 +672,7 @@ test('registerWebhookRoutes mounts both providers without per-kind limiters', as
   const secretsConfig = parseTestSecretsConfig('deno')
   const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
     secretsConfig,
-    'data-encryption',
+    'data-encryption'
   )
   const app = new Hono<AppEnv>()
   app.use('*', (c, next) => {
@@ -614,69 +682,95 @@ test('registerWebhookRoutes mounts both providers without per-kind limiters', as
   })
   registerWebhookRoutes(app, { runtime: 'deno' })
 
-  const githubRes = await app.request(new Request('http://instance/webhook/github', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: '{}',
-  }))
-  const gitlabRes = await app.request(new Request('http://instance/webhook/gitlab', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: '{}',
-  }))
+  const githubRes = await app.request(
+    new Request('http://instance/webhook/github', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    })
+  )
+  const gitlabRes = await app.request(
+    new Request('http://instance/webhook/gitlab', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    })
+  )
   assertEquals(githubRes.status, 401)
   assertEquals(gitlabRes.status, 401)
 })
 
 test('dispatch falls back to a push when object_kind is missing', async () => {
   const app = await buildApp({ webhookSecret: WEBHOOK_SECRET })
-  const res = await app.request(post(JSON.stringify({
-    ref: 'refs/tags/v1',
-  }), tokenHeaders({ 'x-gitlab-event': 'push' })))
+  const res = await app.request(
+    post(
+      JSON.stringify({
+        ref: 'refs/tags/v1',
+      }),
+      tokenHeaders({ 'x-gitlab-event': 'push' })
+    )
+  )
   assertEquals(res.status, 200)
   assertEquals(await res.json(), { ok: true })
 })
 
 test('dispatch falls back to a pipeline when object_kind is missing', async () => {
   const app = await buildApp({ webhookSecret: WEBHOOK_SECRET })
-  const res = await app.request(post(JSON.stringify({
-    object_attributes: { status: 'success', sha: COMMIT_SHA },
-    project: { id: 7 },
-  }), tokenHeaders({ 'x-gitlab-event': 'pipeline' })))
+  const res = await app.request(
+    post(
+      JSON.stringify({
+        object_attributes: { status: 'success', sha: COMMIT_SHA },
+        project: { id: 7 },
+      }),
+      tokenHeaders({ 'x-gitlab-event': 'pipeline' })
+    )
+  )
   assertEquals(res.status, 200)
   assertEquals(await res.json(), { ok: true })
 })
 
 test('an empty event header is a bad request after the token is accepted', async () => {
   const app = await buildApp({ webhookSecret: WEBHOOK_SECRET })
-  const res = await app.request(post('{}', {
-    'x-gitlab-token': WEBHOOK_SECRET,
-    'x-gitlab-event': '   ',
-    'x-gitlab-event-uuid': crypto.randomUUID(),
-  }))
+  const res = await app.request(
+    post('{}', {
+      'x-gitlab-token': WEBHOOK_SECRET,
+      'x-gitlab-event': '   ',
+      'x-gitlab-event-uuid': crypto.randomUUID(),
+    })
+  )
   assertEquals(res.status, 400)
 })
 
 test('a tokened push with dispatch up is accepted when no installation matches', async () => {
   const app = await buildApp({ webhookSecret: WEBHOOK_SECRET, dispatchReady: true })
-  const res = await app.request(post(JSON.stringify({
-    object_kind: 'push',
-    ref: 'refs/heads/main',
-    after: COMMIT_SHA,
-    checkout_sha: COMMIT_SHA,
-    project_id: 7,
-  }), tokenHeaders()))
+  const res = await app.request(
+    post(
+      JSON.stringify({
+        object_kind: 'push',
+        ref: 'refs/heads/main',
+        after: COMMIT_SHA,
+        checkout_sha: COMMIT_SHA,
+        project_id: 7,
+      }),
+      tokenHeaders()
+    )
+  )
   assertEquals(res.status, 200)
   assertEquals(await res.json(), { ok: true })
 })
 
 test('a tokened successful pipeline with dispatch up is accepted when no installation matches', async () => {
   const app = await buildApp({ webhookSecret: WEBHOOK_SECRET, dispatchReady: true })
-  const res = await app.request(post(JSON.stringify({
-    object_kind: 'pipeline',
-    object_attributes: { status: 'success', sha: COMMIT_SHA },
-    project: { id: 7 },
-  }), tokenHeaders({ 'x-gitlab-event': 'Pipeline Hook' })))
+  const res = await app.request(
+    post(
+      JSON.stringify({
+        object_kind: 'pipeline',
+        object_attributes: { status: 'success', sha: COMMIT_SHA },
+        project: { id: 7 },
+      }),
+      tokenHeaders({ 'x-gitlab-event': 'Pipeline Hook' })
+    )
+  )
   assertEquals(res.status, 200)
   assertEquals(await res.json(), { ok: true })
 })
@@ -685,7 +779,7 @@ test('registerWebhookRoutes mounts both providers and keeps limiter buckets apar
   const secretsConfig = parseTestSecretsConfig('deno')
   const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
     secretsConfig,
-    'data-encryption',
+    'data-encryption'
   )
   const app = new Hono<AppEnv>()
   app.use('*', (c, next) => {
@@ -712,16 +806,20 @@ test('registerWebhookRoutes mounts both providers and keeps limiter buckets apar
     },
   })
 
-  const githubRes = await app.request(new Request('http://instance/webhook/github', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: '{}',
-  }))
-  const gitlabRes = await app.request(new Request('http://instance/webhook/gitlab', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: '{}',
-  }))
+  const githubRes = await app.request(
+    new Request('http://instance/webhook/github', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    })
+  )
+  const gitlabRes = await app.request(
+    new Request('http://instance/webhook/gitlab', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+    })
+  )
   assertEquals(githubRes.status, 401)
   assertEquals(gitlabRes.status, 401)
   assertEquals(githubLimited, 1)
@@ -778,9 +876,14 @@ test('a tokened successful pipeline with a parked SHA enqueues a deploy', async 
       repository: { autoDeploy: 'checks_passed', options: parkedChecks },
     },
   })
-  const res = await app.request(post(JSON.stringify(greenPipeline), tokenHeaders({
-    'x-gitlab-event': 'Pipeline Hook',
-  })))
+  const res = await app.request(
+    post(
+      JSON.stringify(greenPipeline),
+      tokenHeaders({
+        'x-gitlab-event': 'Pipeline Hook',
+      })
+    )
+  )
   assertEquals(res.status, 200)
   assertEquals(await res.json(), { ok: true })
 })
@@ -793,9 +896,14 @@ test('a tokened successful pipeline reports enqueue failure so GitLab redelivers
       repository: { autoDeploy: 'checks_passed', options: parkedChecks },
     },
   })
-  const res = await app.request(post(JSON.stringify(greenPipeline), tokenHeaders({
-    'x-gitlab-event': 'Pipeline Hook',
-  })))
+  const res = await app.request(
+    post(
+      JSON.stringify(greenPipeline),
+      tokenHeaders({
+        'x-gitlab-event': 'Pipeline Hook',
+      })
+    )
+  )
   assertEquals(res.status, 503)
   assertEquals(await res.json(), { error: 'retry' })
 })

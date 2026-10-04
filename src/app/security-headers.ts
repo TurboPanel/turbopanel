@@ -20,33 +20,47 @@
  *   also serves operator-uploaded content paths; never let a browser guess.
  * - `X-Frame-Options: DENY` plus `frame-ancestors 'none'` — nothing in the
  *   panel is meant to be embedded, and the two cover old and new browsers.
- * - `Referrer-Policy: strict-origin-when-cross-origin` — panel URLs carry
- *   organization and resource ids; they do not belong in a third party's
- *   referrer log.
+ * - `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'` —
+ *   JSON loads nothing; HTML documents (the API-reference pages) get
+ *   `frame-ancestors 'none'` only, since they load a viewer script.
+ * - `Referrer-Policy: no-referrer` — API responses never need to tell anyone
+ *   where the request came from.
+ * - `Cross-Origin-Resource-Policy: same-site` — no-cors embeds (img/script)
+ *   from other sites are refused. CORS fetches from the documented origin
+ *   allowlist are unaffected: CORP only gates no-cors loads.
  * - `Permissions-Policy` — the panel asks for none of these features, so the
  *   answer is no for itself and anything it embeds.
  *
- * A Content-Security-Policy is deliberately not set here: the API surface
- * needs none, and the one that matters is for the UI, which is served by
- * Caddy (self-hosted) or Workers assets (hosted) rather than through this
- * app — sending a policy from here would cover the JSON and miss the HTML.
+ * The UI's script CSP is not set here: the UI is served by Caddy
+ * (self-hosted) or Workers assets (hosted), not through this app.
  */
-import type { Hono } from "hono";
-import type { AppEnv } from "./app.ts";
+import type { Hono } from 'hono'
+import type { AppEnv } from './app.ts'
+
+/**
+ * The API answers JSON, so it may load nothing at all. The one exception is
+ * the interactive API-reference pages (Scalar HTML), which pull their viewer
+ * from a CDN: they keep only the framing refusal (see {@link cspFor}).
+ */
+export const API_CSP = "default-src 'none'; frame-ancestors 'none'"
+export const HTML_CSP = "frame-ancestors 'none'"
+
+/** CSP for a response: strict for data, framing-only for HTML documents. */
+export function cspFor(contentType: string | null | undefined): string {
+  return contentType?.toLowerCase().includes('text/html') ? HTML_CSP : API_CSP
+}
 
 export const SECURITY_HEADERS: ReadonlyArray<readonly [string, string]> = [
-  ["X-Content-Type-Options", "nosniff"],
-  ["X-Frame-Options", "DENY"],
-  ["Content-Security-Policy", "frame-ancestors 'none'"],
-  ["Referrer-Policy", "strict-origin-when-cross-origin"],
-  [
-    "Permissions-Policy",
-    "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
-  ],
-] as const;
+  ['X-Content-Type-Options', 'nosniff'],
+  ['X-Frame-Options', 'DENY'],
+  ['Content-Security-Policy', API_CSP],
+  ['Referrer-Policy', 'no-referrer'],
+  ['Cross-Origin-Resource-Policy', 'same-site'],
+  ['Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=(), usb=()'],
+] as const
 
-export const HSTS_HEADER = "Strict-Transport-Security";
-export const HSTS_VALUE = "max-age=31536000; includeSubDomains";
+export const HSTS_HEADER = 'Strict-Transport-Security'
+export const HSTS_VALUE = 'max-age=31536000; includeSubDomains'
 
 /** True when the client reached this instance over TLS. */
 export function isSecureRequest(url: string, forwardedProto?: string): boolean {
@@ -55,45 +69,46 @@ export function isSecureRequest(url: string, forwardedProto?: string): boolean {
   // can only add headers, never remove them, so a spoofed value costs
   // nothing an attacker does not already control.
   if (forwardedProto) {
-    const first = forwardedProto.split(",")[0]?.trim().toLowerCase();
-    if (first === "https") return true;
-    if (first === "http") return false;
+    const first = forwardedProto.split(',')[0]?.trim().toLowerCase()
+    if (first === 'https') return true
+    if (first === 'http') return false
   }
   try {
-    return new URL(url).protocol === "https:";
+    return new URL(url).protocol === 'https:'
   } catch {
-    return false;
+    return false
   }
 }
 
 /** True when this request is a WebSocket handshake (Upgrade: websocket). */
-export function isWebSocketUpgradeRequest(
-  upgradeHeader: string | undefined,
-): boolean {
-  return upgradeHeader?.trim().toLowerCase() === "websocket";
+export function isWebSocketUpgradeRequest(upgradeHeader: string | undefined): boolean {
+  return upgradeHeader?.trim().toLowerCase() === 'websocket'
 }
 
 /** Register the baseline headers on every response of `app`. */
 export function registerSecurityHeaders(app: Hono<AppEnv>): void {
-  app.use("*", async (c, next) => {
+  app.use('*', async (c, next) => {
     // Snapshot before `next()`: a WebSocket handler hijacks the connection, and
     // Deno then refuses `c.req.header()` with `TypeError: Request closed`.
     // Reading after the upgrade also prevented returning the 101, which logged
     // "Upgrade response was not returned from callback" and left Caddy 502ing
     // `/api/*` (the unix socket name vanished while the process kept the inode).
-    const upgrade = c.req.header("upgrade");
-    const forwardedProto = c.req.header("x-forwarded-proto");
-    const url = c.req.url;
-    const isUpgrade = isWebSocketUpgradeRequest(upgrade);
-    await next();
+    const upgrade = c.req.header('upgrade')
+    const forwardedProto = c.req.header('x-forwarded-proto')
+    const url = c.req.url
+    const isUpgrade = isWebSocketUpgradeRequest(upgrade)
+    await next()
     if (isUpgrade || c.res.status === 101) {
-      return;
+      return
     }
     for (const [name, value] of SECURITY_HEADERS) {
-      c.header(name, value);
+      c.header(
+        name,
+        name === 'Content-Security-Policy' ? cspFor(c.res.headers.get('Content-Type')) : value
+      )
     }
     if (isSecureRequest(url, forwardedProto)) {
-      c.header(HSTS_HEADER, HSTS_VALUE);
+      c.header(HSTS_HEADER, HSTS_VALUE)
     }
-  });
+  })
 }

@@ -5,23 +5,27 @@
 import { assertEquals } from '@std/assert'
 import type { Db } from '../../db/connection.ts'
 import type { CommandQueue } from '../commands/queue.ts'
+import { createWorkersCommandQueue } from '../commands/workers-queue.ts'
 import {
+  AUTOMATIC_FAILOVER_COOLDOWN_MESSAGE,
   AUTOMATIC_FAILOVER_NO_CANDIDATE_MESSAGE,
+  FENCE_STOP_UNQUEUED_MESSAGE,
+  PROMOTE_UNQUEUED_MESSAGE,
+  AUTOMATIC_FAILOVER_NO_QUEUE_MESSAGE,
   AUTOMATIC_FAILOVER_UNHEALTHY_MESSAGE,
+  AUTOMATIC_FAILOVER_STANDBY_NOT_PROVEN_MESSAGE,
+  isTerminalRecoveryState,
   type RecoveryRecord,
+  type RecoveryState,
+  TERMINAL_RECOVERY_STATES,
 } from './recovery.ts'
-import {
-  container,
-  environment,
-  ip,
-  managed,
-  replica,
-  recovery,
-  server,
-} from '../../db/schema.ts'
+import { AUTOMATIC_FAILOVER_DISABLED_MESSAGE } from './auto-failover-switch.ts'
+import { container, environment, ip, managed, replica, recovery, server } from '../../db/schema.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import { deriveEncryptionSecretsConfig } from '../../lib/secrets/secrets.ts'
 import type { ManagedMemberRow } from './members.ts'
+import type { ManagedReplicationHealth } from '../../contracts/commands/schemas.ts'
+import type { FreshStandbyProbe } from './ha-fresh-standby.ts'
 import {
   beginAutomaticFailover,
   beginDisasterRecovery,
@@ -81,6 +85,7 @@ function thenableRows(rows: unknown[]) {
   chain.where = self
   chain.orderBy = self
   chain.limit = self
+  chain.for = self
   chain.innerJoin = self
   chain.leftJoin = self
   chain.returning = () => promise
@@ -119,9 +124,7 @@ function member(overrides: Partial<ManagedMemberRow> = {}): ManagedMemberRow {
   }
 }
 
-function failoverReplica(
-  overrides: Partial<ManagedMemberRow> = {},
-): ManagedMemberRow {
+function failoverReplica(overrides: Partial<ManagedMemberRow> = {}): ManagedMemberRow {
   return member({
     id: MEM_REPLICA,
     role: 'replica',
@@ -235,6 +238,12 @@ type HarnessOpts = {
   connected?: boolean[]
   haPresent?: boolean
   containerNames?: Array<string | undefined>
+  /** Recovery reads honour the in-flight (non-terminal) predicate, like the unique index. */
+  inflightOnlyRecoveryReads?: boolean
+  /** Scripted recovery reads, in call order (overrides `recovery` for reads). */
+  recoveryReads?: RecoveryRow[][]
+  /** The recovery insert fails with this (a lost race on the in-flight slot). */
+  recoveryInsertError?: unknown
 }
 
 type RecoveryHarness = {
@@ -256,23 +265,35 @@ function createHarness(opts: HarnessOpts = {}): RecoveryHarness {
   const commandInserts: Array<Record<string, unknown>> = []
   let commandSeq = 0
   let lastCommand: ReturnType<typeof commandRow> | null = null
+  let txTail: Promise<unknown> = Promise.resolve()
 
   const haHierarchy = opts.haPresent
-    ? [{
-      workspaceId: 'ws',
-      projectId: 'proj',
-      environmentId: 'env',
-      serviceId: 'svc-ha',
-      containerRowId: 'row',
-      containerName: 'svc-ha-ha',
-    }]
+    ? [
+        {
+          workspaceId: 'ws',
+          projectId: 'proj',
+          environmentId: 'env',
+          serviceId: 'svc-ha',
+          containerRowId: 'row',
+          containerName: 'svc-ha-ha',
+        },
+      ]
     : []
 
   const db = {
     select: () => ({
       from: (table: unknown) => {
+        if (table === recovery && opts.recoveryReads) {
+          return thenableRows(opts.recoveryReads.shift() ?? [])
+        }
         if (table === recovery) {
-          return thenableRows(stored ? [stored] : [])
+          const visible =
+            stored &&
+            !(
+              opts.inflightOnlyRecoveryReads &&
+              TERMINAL_RECOVERY_STATES.has(stored.state as RecoveryState)
+            )
+          return thenableRows(visible && stored ? [stored] : [])
         }
         if (table === server) {
           const next = connected.shift()
@@ -282,7 +303,11 @@ function createHarness(opts: HarnessOpts = {}): RecoveryHarness {
         if (table === environment) return thenableRows(haHierarchy)
         if (table === container) {
           const name = containerNames.shift()
-          if (name === undefined && containerNames.length === 0 && opts.containerNames === undefined) {
+          if (
+            name === undefined &&
+            containerNames.length === 0 &&
+            opts.containerNames === undefined
+          ) {
             return thenableRows([{ containerName: 'pg-local' }])
           }
           return thenableRows(name ? [{ containerName: name }] : [])
@@ -295,9 +320,11 @@ function createHarness(opts: HarnessOpts = {}): RecoveryHarness {
       values: (values: Record<string, unknown>) => {
         if (
           table === recovery ||
-          (typeof values.kind === 'string' &&
-            typeof values.sourcePrimaryMemberId === 'string')
+          (typeof values.kind === 'string' && typeof values.sourcePrimaryMemberId === 'string')
         ) {
+          if (opts.recoveryInsertError !== undefined) {
+            return { returning: () => Promise.reject(opts.recoveryInsertError) }
+          }
           stored = recoveryRow({
             ...values,
             id: REC_ID,
@@ -320,13 +347,14 @@ function createHarness(opts: HarnessOpts = {}): RecoveryHarness {
           managedStatus.push(patch.status)
         }
         if (table === replica) nodePatches.push(patch)
-        const rows = table === recovery && stored
-          ? [stored]
-          : table === server
-          ? []
-          : lastCommand
-          ? [{ ...lastCommand, ...patch }]
-          : []
+        const rows =
+          table === recovery && stored
+            ? [stored]
+            : table === server
+              ? []
+              : lastCommand
+                ? [{ ...lastCommand, ...patch }]
+                : []
         return {
           where: () => thenableRows(rows),
         }
@@ -335,7 +363,13 @@ function createHarness(opts: HarnessOpts = {}): RecoveryHarness {
     delete: () => ({
       where: () => Promise.resolve(),
     }),
-    transaction: (fn: (tx: Db) => Promise<unknown>) => fn(db as unknown as Db),
+    // Serializes transactions like Postgres row locks (`SELECT … FOR UPDATE`):
+    // a second transaction waits for the first to finish.
+    transaction: (fn: (tx: Db) => Promise<unknown>) => {
+      const run = txTail.then(() => fn(db as unknown as Db))
+      txTail = run.catch(() => undefined)
+      return run
+    },
   }
 
   return {
@@ -348,7 +382,7 @@ function createHarness(opts: HarnessOpts = {}): RecoveryHarness {
 }
 
 function expectOk(
-  result: { ok: true; commandId: string; recoveryId: string } | { ok: false },
+  result: { ok: true; commandId: string; recoveryId: string } | { ok: false }
 ): asserts result is { ok: true; commandId: string; recoveryId: string } {
   if (!result.ok) {
     throw new TypeError('expected recovery enqueue to succeed')
@@ -361,9 +395,7 @@ function expectRecord(row: RecoveryRecord | null): RecoveryRecord {
 }
 
 test('firstDatacenterId returns the lex-smallest pin or null', () => {
-  const sets = new Map<string, Set<string>>([
-    [SERVER_A, new Set([DC_B, DC_A])],
-  ])
+  const sets = new Map<string, Set<string>>([[SERVER_A, new Set([DC_B, DC_A])]])
   assertEquals(firstDatacenterId(sets, SERVER_A), DC_A)
   assertEquals(firstDatacenterId(sets, 'missing'), null)
   assertEquals(firstDatacenterId(new Map([[SERVER_A, new Set()]]), SERVER_A), null)
@@ -447,7 +479,7 @@ test('beginAutomaticFailover returns the in-flight journal row', async () => {
       engine: 'postgres',
       members: [member(), failoverReplica()],
       actor: ACTOR,
-    }),
+    })
   )
   assertEquals(row.id, REC_ID)
   assertEquals(row.state, 'fencing')
@@ -468,13 +500,15 @@ test('beginAutomaticFailover returns null without a primary or source member', a
 
 test('beginAutomaticFailover falls back to sourceMemberId when no primary role exists', async () => {
   const harness = createHarness({
-    pins: [{
-      ipId: 'ip-1',
-      serverId: SERVER_A,
-      datacenterId: DC_A,
-      networkId: 'net-1',
-      address: '203.0.113.10',
-    }],
+    pins: [
+      {
+        ipId: 'ip-1',
+        serverId: SERVER_A,
+        datacenterId: DC_A,
+        networkId: 'net-1',
+        address: '203.0.113.10',
+      },
+    ],
   })
   const source = member({ role: 'replica', replicaClass: 'read' })
   const row = expectRecord(
@@ -486,7 +520,7 @@ test('beginAutomaticFailover falls back to sourceMemberId when no primary role e
       members: [source],
       sourceMemberId: MEM_PRIMARY,
       actor: ACTOR,
-    }),
+    })
   )
   assertEquals(row.state, 'blocked')
   assertEquals(row.metadata.blockedReason, AUTOMATIC_FAILOVER_NO_CANDIDATE_MESSAGE)
@@ -494,13 +528,15 @@ test('beginAutomaticFailover falls back to sourceMemberId when no primary role e
 
 test('beginAutomaticFailover persists blocked when no same-DC failover replica exists', async () => {
   const harness = createHarness({
-    pins: [{
-      ipId: 'ip-1',
-      serverId: SERVER_A,
-      datacenterId: DC_A,
-      networkId: 'net-1',
-      address: '203.0.113.10',
-    }],
+    pins: [
+      {
+        ipId: 'ip-1',
+        serverId: SERVER_A,
+        datacenterId: DC_A,
+        networkId: 'net-1',
+        address: '203.0.113.10',
+      },
+    ],
   })
   const row = expectRecord(
     await beginAutomaticFailover({
@@ -510,7 +546,7 @@ test('beginAutomaticFailover persists blocked when no same-DC failover replica e
       engine: 'postgres',
       members: [member(), failoverReplica({ replicaClass: 'read' })],
       actor: ACTOR,
-    }),
+    })
   )
   assertEquals(row.state, 'blocked')
   assertEquals(row.kind, 'automatic-failover')
@@ -547,21 +583,23 @@ test('beginAutomaticFailover persists blocked when the failover replica is unhea
         failoverReplica({ metadata: { replication: { state: 'disconnected' } } }),
       ],
       actor: ACTOR,
-    }),
+    })
   )
   assertEquals(row.state, 'blocked')
   assertEquals(row.metadata.blockedReason, AUTOMATIC_FAILOVER_UNHEALTHY_MESSAGE)
 })
 
-test('beginAutomaticFailover parks detecting when a candidate exists but the queue does not', async () => {
+test('beginAutomaticFailover without a command queue records a terminal blocked row (no_command_queue)', async () => {
   const harness = createHarness({
-    pins: [{
-      ipId: 'ip-1',
-      serverId: SERVER_A,
-      datacenterId: DC_A,
-      networkId: 'net-1',
-      address: '203.0.113.10',
-    }],
+    pins: [
+      {
+        ipId: 'ip-1',
+        serverId: SERVER_A,
+        datacenterId: DC_A,
+        networkId: 'net-1',
+        address: '203.0.113.10',
+      },
+    ],
   })
   const row = expectRecord(
     await beginAutomaticFailover({
@@ -571,23 +609,180 @@ test('beginAutomaticFailover parks detecting when a candidate exists but the que
       engine: 'postgres',
       members: [member(), failoverReplica()],
       actor: ACTOR,
-    }),
+    })
   )
-  assertEquals(row.state, 'detecting')
-  assertEquals(row.targetMemberId, MEM_REPLICA)
+  // Never `detecting`: nothing on a queue-less transport would advance it,
+  // and it would hold the in-flight slot (managed_busy) forever.
+  assertEquals(row.state, 'blocked')
+  assertEquals(isTerminalRecoveryState(row.state), true)
+  assertEquals(row.targetMemberId, null)
+  assertEquals(row.metadata.blockedReason, AUTOMATIC_FAILOVER_NO_QUEUE_MESSAGE)
   assertEquals(row.metadata.sourceDatacenterId, DC_A)
-  assertEquals(row.metadata.targetDatacenterId, DC_A)
+  assertEquals(harness.commandInserts.length, 0)
+})
+
+function countingQueue(): { queue: CommandQueue; sent: unknown[] } {
+  const sent: unknown[] = []
+  return {
+    sent,
+    queue: {
+      enqueue: (message) => {
+        sent.push(message)
+        return Promise.resolve()
+      },
+    },
+  }
+}
+
+test('beginAutomaticFailover with auto failover off records a terminal blocked row and queues nothing', async () => {
+  const harness = createHarness({
+    pins: [
+      {
+        ipId: 'ip-1',
+        serverId: SERVER_A,
+        datacenterId: DC_A,
+        networkId: 'net-1',
+        address: '203.0.113.10',
+      },
+    ],
+  })
+  const { queue, sent } = countingQueue()
+  const row = expectRecord(
+    await beginAutomaticFailover({
+      db: harness.db,
+      commandQueue: queue,
+      managedId: MANAGED_ID,
+      engine: 'postgres',
+      members: [member(), failoverReplica()],
+      detector: 'postgres-probe',
+      actor: ACTOR,
+      autoFailover: 'off',
+    })
+  )
+  assertEquals(row.state, 'blocked')
+  assertEquals(isTerminalRecoveryState(row.state), true)
+  // No target: never counts as an accepted failover for the cooldown.
+  assertEquals(row.targetMemberId, null)
+  assertEquals(row.metadata.blockedReason, AUTOMATIC_FAILOVER_DISABLED_MESSAGE)
+  assertEquals(row.metadata.detector, 'postgres-probe')
+  assertEquals(harness.commandInserts.length, 0)
+  assertEquals(sent.length, 0)
+})
+
+test('beginAutomaticFailover with auto failover on still fences', async () => {
+  const harness = createHarness({
+    pins: [
+      {
+        ipId: 'ip-1',
+        serverId: SERVER_A,
+        datacenterId: DC_A,
+        networkId: 'net-1',
+        address: '203.0.113.10',
+      },
+    ],
+  })
+  const { queue, sent } = countingQueue()
+  const row = expectRecord(
+    await beginAutomaticFailover({
+      db: harness.db,
+      commandQueue: queue,
+      managedId: MANAGED_ID,
+      engine: 'postgres',
+      members: [member(), failoverReplica()],
+      actor: ACTOR,
+      autoFailover: 'on',
+    })
+  )
+  assertEquals(row.state, 'fencing')
+  assertEquals(sent.length > 0, true)
+})
+
+test('a manual switchover still works after an automatic failover refused as off', async () => {
+  const harness = createHarness({
+    inflightOnlyRecoveryReads: true,
+    connected: [false],
+    pins: [
+      {
+        ipId: 'ip-1',
+        serverId: SERVER_A,
+        datacenterId: DC_A,
+        networkId: 'net-1',
+        address: '203.0.113.10',
+      },
+    ],
+  })
+  expectRecord(
+    await beginAutomaticFailover({
+      db: harness.db,
+      commandQueue: okQueue(),
+      managedId: MANAGED_ID,
+      engine: 'postgres',
+      members: [member(), failoverReplica()],
+      actor: ACTOR,
+      autoFailover: 'off',
+    })
+  )
+  const result = await beginOperatorSwitchover({
+    db: harness.db,
+    commandQueue: okQueue(),
+    managedId: MANAGED_ID,
+    engine: 'postgres',
+    source: member(),
+    target: failoverReplica(),
+    members: [member(), failoverReplica()],
+    actor: ACTOR,
+  })
+  expectOk(result)
+})
+
+test('a manual switchover still works after a queue-less automatic failover attempt', async () => {
+  const harness = createHarness({
+    inflightOnlyRecoveryReads: true,
+    connected: [false],
+    pins: [
+      {
+        ipId: 'ip-1',
+        serverId: SERVER_A,
+        datacenterId: DC_A,
+        networkId: 'net-1',
+        address: '203.0.113.10',
+      },
+    ],
+  })
+  expectRecord(
+    await beginAutomaticFailover({
+      db: harness.db,
+      commandQueue: null,
+      managedId: MANAGED_ID,
+      engine: 'postgres',
+      members: [member(), failoverReplica()],
+      actor: ACTOR,
+    })
+  )
+  const result = await beginOperatorSwitchover({
+    db: harness.db,
+    commandQueue: okQueue(),
+    managedId: MANAGED_ID,
+    engine: 'postgres',
+    source: member(),
+    target: failoverReplica(),
+    members: [member(), failoverReplica()],
+    actor: ACTOR,
+  })
+  expectOk(result)
 })
 
 test('beginAutomaticFailover blocks when the old primary is offline and unfenced', async () => {
   const harness = createHarness({
-    pins: [{
-      ipId: 'ip-1',
-      serverId: SERVER_A,
-      datacenterId: DC_A,
-      networkId: 'net-1',
-      address: '203.0.113.10',
-    }],
+    pins: [
+      {
+        ipId: 'ip-1',
+        serverId: SERVER_A,
+        datacenterId: DC_A,
+        networkId: 'net-1',
+        address: '203.0.113.10',
+      },
+    ],
     connected: [false],
   })
   const row = expectRecord(
@@ -598,26 +793,28 @@ test('beginAutomaticFailover blocks when the old primary is offline and unfenced
       engine: 'postgres',
       members: [member(), failoverReplica()],
       actor: ACTOR,
-    }),
+    })
   )
   assertEquals(row.state, 'blocked')
   assertEquals(harness.managedStatus.includes('ready'), true)
   assertEquals(
     harness.nodePatches.some((patch) => patch.status === 'needs_resync'),
-    true,
+    true
   )
 })
 
 test('beginAutomaticFailover fences a reachable primary and records drain/stop commands', async () => {
   const queue = okQueue()
   const harness = createHarness({
-    pins: [{
-      ipId: 'ip-1',
-      serverId: SERVER_A,
-      datacenterId: DC_A,
-      networkId: 'net-1',
-      address: '203.0.113.10',
-    }],
+    pins: [
+      {
+        ipId: 'ip-1',
+        serverId: SERVER_A,
+        datacenterId: DC_A,
+        networkId: 'net-1',
+        address: '203.0.113.10',
+      },
+    ],
     connected: [true, true],
   })
   const row = expectRecord(
@@ -628,7 +825,7 @@ test('beginAutomaticFailover fences a reachable primary and records drain/stop c
       engine: 'postgres',
       members: [member(), failoverReplica()],
       actor: ACTOR,
-    }),
+    })
   )
   assertEquals(row.state, 'fencing')
   assertEquals(row.kind, 'automatic-failover')
@@ -637,6 +834,46 @@ test('beginAutomaticFailover fences a reachable primary and records drain/stop c
   const stored = harness.recovery()
   if (!stored) throw new TypeError('expected stored fencing row')
   const metadata = stored.metadata as { fenceCommandIds?: string[] }
+  assertEquals((metadata.fenceCommandIds ?? []).length >= 2, true)
+})
+
+test('beginAutomaticFailover fences through the Workers queue binding', async () => {
+  const sent: unknown[] = []
+  const queue = createWorkersCommandQueue({
+    send: (message) => {
+      sent.push(message)
+      return Promise.resolve()
+    },
+  })
+  const harness = createHarness({
+    pins: [
+      {
+        ipId: 'ip-1',
+        serverId: SERVER_A,
+        datacenterId: DC_A,
+        networkId: 'net-1',
+        address: '203.0.113.10',
+      },
+    ],
+    connected: [true, true],
+  })
+  const row = expectRecord(
+    await beginAutomaticFailover({
+      db: harness.db,
+      commandQueue: queue,
+      managedId: MANAGED_ID,
+      engine: 'postgres',
+      members: [member(), failoverReplica()],
+      actor: ACTOR,
+      detector: 'postgres-probe',
+    })
+  )
+  assertEquals(row.state, 'fencing')
+  assertEquals(sent.length >= 2, true)
+  const stored = harness.recovery()
+  if (!stored) throw new TypeError('expected stored fencing row')
+  const metadata = stored.metadata as { blockedReason?: string; fenceCommandIds?: string[] }
+  assertEquals(metadata.blockedReason, undefined)
   assertEquals((metadata.fenceCommandIds ?? []).length >= 2, true)
 })
 
@@ -657,6 +894,24 @@ test('beginOperatorSwitchover is managed_busy while a journal row is in flight',
   assertEquals(result, { ok: false, error: 'managed_busy', status: 409 })
 })
 
+test('beginOperatorSwitchover is managed_busy when it loses the in-flight insert race', async () => {
+  const harness = createHarness({
+    recoveryInsertError: Object.assign(new Error('duplicate key'), { code: '23505' }),
+  })
+  const result = await beginOperatorSwitchover({
+    db: harness.db,
+    commandQueue: okQueue(),
+    managedId: MANAGED_ID,
+    engine: 'postgres',
+    source: member(),
+    target: failoverReplica(),
+    members: [member(), failoverReplica()],
+    actor: ACTOR,
+  })
+  assertEquals(result, { ok: false, error: 'managed_busy', status: 409 })
+  assertEquals(harness.commandInserts.length, 0)
+})
+
 test('beginOperatorSwitchover promotes when the old primary is already offline', async () => {
   const queue = okQueue()
   const harness = createHarness({ connected: [false] })
@@ -674,10 +929,7 @@ test('beginOperatorSwitchover promotes when the old primary is already offline',
   assertEquals(result.fencePending, false)
   assertEquals(result.recoveryId, REC_ID)
   assertEquals(queue.envelopes.length, 1)
-  assertEquals(
-    (queue.envelopes[0] as { type: string }).type,
-    'managed.promote',
-  )
+  assertEquals((queue.envelopes[0] as { type: string }).type, 'managed.promote')
   assertEquals(harness.managedStatus.includes('applying'), true)
 })
 
@@ -757,6 +1009,36 @@ test('beginOperatorSwitchover returns 503 when the promote queue is down', async
     actor: ACTOR,
   })
   assertEquals(result, { ok: false, error: 'Command queue unavailable', status: 503 })
+  // Not left `promoting` with no promote command (in-flight slot held).
+  assertEquals(harness.recovery()?.state, 'blocked')
+  assertEquals(
+    (harness.recovery()?.metadata as Record<string, unknown>).blockedReason,
+    PROMOTE_UNQUEUED_MESSAGE
+  )
+})
+
+test('beginAutomaticFailover inside the cooldown records a visible terminal row without a target', async () => {
+  const previous = recoveryRow({
+    state: 'completed',
+    targetMemberId: MEM_REPLICA,
+    startedAt: new Date(Date.now() - 5 * 60_000).toISOString(),
+  })
+  // In-flight read: nothing. Cooldown read: the previous accepted failover.
+  const harness = createHarness({ recoveryReads: [[], [previous]] })
+  const row = expectRecord(
+    await beginAutomaticFailover({
+      db: harness.db,
+      commandQueue: okQueue(),
+      managedId: MANAGED_ID,
+      engine: 'postgres',
+      members: [member(), failoverReplica()],
+      actor: ACTOR,
+    })
+  )
+  assertEquals(row.state, 'blocked')
+  assertEquals(row.targetMemberId, null)
+  assertEquals(row.metadata.blockedReason, AUTOMATIC_FAILOVER_COOLDOWN_MESSAGE)
+  assertEquals(harness.commandInserts.length, 0)
 })
 
 test('beginOperatorSwitchover fences a reachable primary', async () => {
@@ -777,7 +1059,7 @@ test('beginOperatorSwitchover fences a reachable primary', async () => {
   assertEquals(queue.envelopes.length >= 2, true)
   assertEquals(
     (queue.envelopes[queue.envelopes.length - 1] as { type: string }).type,
-    'managed.lifecycle',
+    'managed.lifecycle'
   )
 })
 
@@ -794,10 +1076,7 @@ test('beginOperatorSwitchover skips drain on disconnected peers and still stops 
     engine: 'postgres',
     source: member(),
     target: failoverReplica({ serverId: SERVER_B, privatePort: null }),
-    members: [
-      member(),
-      failoverReplica({ serverId: SERVER_B, privatePort: null }),
-    ],
+    members: [member(), failoverReplica({ serverId: SERVER_B, privatePort: null })],
     actor: ACTOR,
   })
   expectOk(result)
@@ -819,6 +1098,12 @@ test('beginOperatorSwitchover returns 503 when the fence stop command cannot enq
     actor: ACTOR,
   })
   assertEquals(result, { ok: false, error: 'Command queue unavailable', status: 503 })
+  // The journal row must not stay `fencing` (it would hold the in-flight slot).
+  assertEquals(harness.recovery()?.state, 'blocked')
+  assertEquals(
+    (harness.recovery()?.metadata as Record<string, unknown>).blockedReason,
+    FENCE_STOP_UNQUEUED_MESSAGE
+  )
 })
 
 test('beginOperatorSwitchover continues fencing when a drain enqueue fails', async () => {
@@ -844,11 +1129,11 @@ test('beginOperatorSwitchover continues fencing when a drain enqueue fails', asy
   assertEquals((metadata.fenceCommandIds ?? []).length, 1)
   assertEquals(
     harness.commandInserts.some((row) => row.name === 'managed.ha.failover'),
-    true,
+    true
   )
   assertEquals(
     harness.commandInserts.some((row) => row.name === 'managed.lifecycle'),
-    true,
+    true
   )
 })
 
@@ -862,10 +1147,7 @@ test('beginDisasterRecovery continues promote when the old site is gone', async 
     engine: 'postgres',
     source: member(),
     target: failoverReplica({ replicaClass: 'read', serverId: SERVER_B }),
-    members: [
-      member(),
-      failoverReplica({ replicaClass: 'read', serverId: SERVER_B }),
-    ],
+    members: [member(), failoverReplica({ replicaClass: 'read', serverId: SERVER_B })],
     actor: ACTOR,
     extraMetadata: { sourceDatacenterId: DC_A, targetDatacenterId: DC_B },
   })
@@ -1047,6 +1329,199 @@ test('onFenceCommandFailed advances once the last fence command is gone', async 
   assertEquals(harness.recovery()?.state, 'blocked')
 })
 
+type QueuedEnvelope = { commandId: string; type: string }
+
+const FENCE_PHASE_BY_TYPE: Readonly<Record<string, 'drain' | 'stop'>> = {
+  'managed.ha.failover': 'drain',
+  'managed.lifecycle': 'stop',
+}
+
+/**
+ * A queue whose consumer answers at once: each fence command's success is
+ * delivered while `enqueue` is still running, i.e. before the producer gets
+ * control back — the earliest a result can ever arrive.
+ */
+function instantFenceResultQueue(db: Db): CommandQueue & { envelopes: QueuedEnvelope[] } {
+  const envelopes: QueuedEnvelope[] = []
+  const queue: CommandQueue & { envelopes: QueuedEnvelope[] } = {
+    envelopes,
+    enqueue: async (envelope) => {
+      const queued = envelope as unknown as QueuedEnvelope
+      envelopes.push(queued)
+      const fencePhase = FENCE_PHASE_BY_TYPE[queued.type]
+      if (!fencePhase) return
+      await onFenceCommandSucceeded(db, queue, {
+        recoveryId: REC_ID,
+        commandId: queued.commandId,
+        fencePhase,
+        engine: 'postgres',
+        actor: ACTOR,
+      })
+    },
+  }
+  return queue
+}
+
+function fenceSuccess(commandId: string, fencePhase: 'drain' | 'stop') {
+  return {
+    recoveryId: REC_ID,
+    commandId,
+    fencePhase,
+    engine: 'postgres' as const,
+    actor: ACTOR,
+  }
+}
+
+test("concurrent fence results never lose each other's pending-list edits", async () => {
+  const harness = createHarness({
+    recovery: recoveryRow({
+      kind: 'switchover',
+      metadata: { fenceCommandIds: ['cmd-d1', 'cmd-d2', 'cmd-stop'] },
+    }),
+  })
+  await Promise.all([
+    onFenceCommandSucceeded(harness.db, okQueue(), fenceSuccess('cmd-d1', 'drain')),
+    onFenceCommandSucceeded(harness.db, okQueue(), fenceSuccess('cmd-d2', 'drain')),
+  ])
+  const stored = harness.recovery()
+  if (!stored) throw new TypeError('expected stored recovery')
+  assertEquals(stored.state, 'fencing')
+  const metadata = stored.metadata as { fenceCommandIds?: string[]; drainApplied?: boolean }
+  assertEquals(metadata.fenceCommandIds, ['cmd-stop'])
+  assertEquals(metadata.drainApplied, true)
+})
+
+test('concurrent last fence results advance exactly once and promote once', async () => {
+  const queue = okQueue()
+  const harness = createHarness({
+    members: [member(), failoverReplica()],
+    recovery: recoveryRow({
+      kind: 'automatic-failover',
+      metadata: { fenceCommandIds: ['cmd-drain', 'cmd-stop'] },
+    }),
+  })
+  await Promise.all([
+    onFenceCommandSucceeded(harness.db, queue, fenceSuccess('cmd-drain', 'drain')),
+    onFenceCommandSucceeded(harness.db, queue, fenceSuccess('cmd-stop', 'stop')),
+    onFenceCommandFailed(harness.db, queue, {
+      recoveryId: REC_ID,
+      commandId: 'cmd-stop',
+      engine: 'postgres',
+      actor: ACTOR,
+    }),
+  ])
+  const stored = harness.recovery()
+  if (!stored) throw new TypeError('expected stored recovery')
+  assertEquals(stored.state, 'promoting')
+  const metadata = stored.metadata as { fenceCommandIds?: string[]; fenced?: boolean }
+  assertEquals(metadata.fenceCommandIds, [])
+  assertEquals(metadata.fenced, true)
+  assertEquals(
+    queue.envelopes.filter((row) => (row as { type: string }).type === 'managed.promote').length,
+    1
+  )
+})
+
+test('a fence result for a command the row does not list is ignored', async () => {
+  const harness = createHarness({
+    recovery: recoveryRow({
+      kind: 'automatic-failover',
+      metadata: { fenceCommandIds: ['cmd-stop'] },
+    }),
+  })
+  await onFenceCommandSucceeded(harness.db, okQueue(), fenceSuccess('cmd-other', 'drain'))
+  assertEquals(harness.recovery()?.state, 'fencing')
+  assertEquals((harness.recovery()?.metadata as { fenceCommandIds?: string[] }).fenceCommandIds, [
+    'cmd-stop',
+  ])
+})
+
+test('automatic failover tolerates fence results that arrive while still enqueuing', async () => {
+  const harness = createHarness({
+    members: [member(), failoverReplica()],
+    pins: [
+      {
+        ipId: 'ip-1',
+        serverId: SERVER_A,
+        datacenterId: DC_A,
+        networkId: 'net-1',
+        address: '203.0.113.10',
+      },
+    ],
+    connected: [true, true, true],
+  })
+  const queue = instantFenceResultQueue(harness.db)
+  await beginAutomaticFailover({
+    db: harness.db,
+    commandQueue: queue,
+    managedId: MANAGED_ID,
+    engine: 'postgres',
+    members: [member(), failoverReplica()],
+    actor: ACTOR,
+  })
+  const stored = harness.recovery()
+  if (!stored) throw new TypeError('expected stored recovery')
+  // Fenced (drain + stop proven) and promoted, never blocked `unfenced` and
+  // never reset to `fencing` with ids nothing will clear.
+  assertEquals(stored.state, 'promoting')
+  const metadata = stored.metadata as {
+    fenceCommandIds?: string[]
+    fenced?: boolean
+    blockedReason?: string
+  }
+  assertEquals(metadata.fenceCommandIds, [])
+  assertEquals(metadata.fenced, true)
+  assertEquals(metadata.blockedReason, undefined)
+  const types = queue.envelopes.map((row) => row.type)
+  assertEquals(types.filter((type) => type === 'managed.promote').length, 1)
+  // Never promote before the stop (fence) command was queued.
+  assertEquals(types.indexOf('managed.lifecycle') < types.indexOf('managed.promote'), true)
+})
+
+test('switchover never promotes ahead of its stop command when results arrive early', async () => {
+  const harness = createHarness({
+    members: [member(), failoverReplica()],
+    connected: [true, true, true],
+  })
+  const queue = instantFenceResultQueue(harness.db)
+  const result = await beginOperatorSwitchover({
+    db: harness.db,
+    commandQueue: queue,
+    managedId: MANAGED_ID,
+    engine: 'postgres',
+    source: member(),
+    target: failoverReplica(),
+    members: [member(), failoverReplica()],
+    actor: ACTOR,
+  })
+  expectOk(result)
+  const types = queue.envelopes.map((row) => row.type)
+  assertEquals(types.filter((type) => type === 'managed.promote').length, 1)
+  assertEquals(types.indexOf('managed.lifecycle') < types.indexOf('managed.promote'), true)
+  assertEquals(harness.recovery()?.state, 'promoting')
+  assertEquals((harness.recovery()?.metadata as { fenced?: boolean }).fenced, true)
+})
+
+test('a stop command that cannot be queued blocks the row instead of leaving it fencing', async () => {
+  const harness = createHarness({ connected: [true, true] })
+  const result = await beginOperatorSwitchover({
+    db: harness.db,
+    commandQueue: failingQueue(),
+    managedId: MANAGED_ID,
+    engine: 'postgres',
+    source: member(),
+    target: failoverReplica(),
+    members: [member(), failoverReplica()],
+    actor: ACTOR,
+  })
+  assertEquals(result, { ok: false, error: 'Command queue unavailable', status: 503 })
+  assertEquals(harness.recovery()?.state, 'blocked')
+  assertEquals(
+    (harness.recovery()?.metadata as { blockedReason?: string }).blockedReason,
+    FENCE_STOP_UNQUEUED_MESSAGE
+  )
+})
+
 test('onFenceCommandFailed is a no-op for a missing journal', async () => {
   const harness = createHarness({ recovery: null })
   await onFenceCommandFailed(harness.db, okQueue(), {
@@ -1059,13 +1534,7 @@ test('onFenceCommandFailed is a no-op for a missing journal', async () => {
 })
 
 test('onPromoteSucceeded is a no-op for a missing or terminal journal', async () => {
-  await onPromoteSucceeded(
-    createHarness({ recovery: null }).db,
-    undefined,
-    {},
-    REC_ID,
-    ACTOR_ID,
-  )
+  await onPromoteSucceeded(createHarness({ recovery: null }).db, undefined, {}, REC_ID, ACTOR_ID)
   const terminal = createHarness({
     recovery: recoveryRow({ state: 'failed' }),
   })
@@ -1091,14 +1560,14 @@ test('onPromoteSucceeded fans out ingress and HA reconcile when secrets are pres
   const secretsConfig = parseTestSecretsConfig('deno')
   const dataEncryptionSecrets = await deriveEncryptionSecretsConfig(
     secretsConfig,
-    'data-encryption',
+    'data-encryption'
   )
   await onPromoteSucceeded(
     harness.db,
     queue,
     { secretsConfig, dataEncryptionSecrets },
     REC_ID,
-    ACTOR_ID,
+    ACTOR_ID
   )
   assertEquals(harness.recovery()?.state, 'completed')
 })
@@ -1158,7 +1627,7 @@ test('onPromoteSucceeded reclassifies leftover failover members after disaster r
   await onPromoteSucceeded(harness.db, undefined, {}, REC_ID, ACTOR_ID)
   assertEquals(
     harness.nodePatches.some((patch) => patch.replicaClass === 'read'),
-    true,
+    true
   )
   assertEquals(harness.recovery()?.state, 'completed')
 })
@@ -1199,13 +1668,15 @@ test('onRecoveryCommandFailed ignores a missing or terminal journal', async () =
 
 test('beginAutomaticFailover returns the latest row when fencing enqueue fails', async () => {
   const harness = createHarness({
-    pins: [{
-      ipId: 'ip-1',
-      serverId: SERVER_A,
-      datacenterId: DC_A,
-      networkId: 'net-1',
-      address: '203.0.113.10',
-    }],
+    pins: [
+      {
+        ipId: 'ip-1',
+        serverId: SERVER_A,
+        datacenterId: DC_A,
+        networkId: 'net-1',
+        address: '203.0.113.10',
+      },
+    ],
     connected: [true, true],
   })
   const row = expectRecord(
@@ -1216,7 +1687,222 @@ test('beginAutomaticFailover returns the latest row when fencing enqueue fails',
       engine: 'postgres',
       members: [member(), failoverReplica()],
       actor: ACTOR,
-    }),
+    })
   )
   assertEquals(row.id, REC_ID)
+})
+
+// --- Fresh-standby gate (cold kill: the replica stopped streaming) ---------
+
+const EVENT_MS = Date.parse('2026-10-02T12:00:00.000Z')
+/** The detector's first hard failure, 25 s before the event. */
+const FAILURE_START_MS = EVENT_MS - 25_000
+const LSN = '0/3000148'
+
+/** The candidate's stored observation after a cold kill: not streaming. */
+function coldReplica(): ManagedMemberRow {
+  return failoverReplica({
+    serverId: SERVER_B,
+    metadata: { replication: { state: 'stopped', observedAt: new Date(EVENT_MS).toISOString() } },
+  })
+}
+
+/** Probe answer: stopped, last seen streaming 30 s before the probe (5 s before failure). */
+function freshStopped(overrides: Partial<ManagedReplicationHealth> = {}): ManagedReplicationHealth {
+  return {
+    state: 'stopped',
+    observedAt: new Date(EVENT_MS).toISOString(),
+    receivedLsn: LSN,
+    replayLsn: LSN,
+    lastStreaming: {
+      at: new Date(EVENT_MS - 30_000).toISOString(),
+      ageMs: 30_000,
+      receiveLagBytes: 0,
+      // Idle cluster: long since the last commit; not part of this gate.
+      lagSeconds: 3_600,
+    },
+    ...overrides,
+  }
+}
+
+function stubProbe(answer: ManagedReplicationHealth | null): {
+  probe: FreshStandbyProbe
+  calls: Array<Parameters<FreshStandbyProbe>[0]>
+} {
+  const calls: Array<Parameters<FreshStandbyProbe>[0]> = []
+  return {
+    calls,
+    probe: (target) => {
+      calls.push(target)
+      return Promise.resolve(answer)
+    },
+  }
+}
+
+async function coldKillFailover(
+  answer: ManagedReplicationHealth | null,
+  extra: { autoFailover?: 'on' | 'off'; failureStartedAtMs?: number | null } = {}
+) {
+  const harness = createHarness({ pins: sharedDatacenterPins() })
+  const { queue, sent } = countingQueue()
+  const { probe, calls } = stubProbe(answer)
+  const row = expectRecord(
+    await beginAutomaticFailover({
+      db: harness.db,
+      commandQueue: queue,
+      managedId: MANAGED_ID,
+      engine: 'postgres',
+      members: [member(), coldReplica()],
+      sourceMemberId: MEM_PRIMARY,
+      detector: 'postgres-probe',
+      actor: ACTOR,
+      autoFailover: extra.autoFailover ?? 'on',
+      probeStandby: probe,
+      failureStartedAtMs:
+        extra.failureStartedAtMs === undefined ? FAILURE_START_MS : extra.failureStartedAtMs,
+      nowMs: () => EVENT_MS,
+    })
+  )
+  return { row, sent, calls, harness }
+}
+
+test('fresh-standby: a fresh, fully replayed, not-streaming replica is accepted and fenced first', async () => {
+  const { row, sent, calls, harness } = await coldKillFailover(freshStopped())
+  assertEquals(calls, [
+    { memberId: MEM_REPLICA, managedId: MANAGED_ID, serverId: SERVER_B, engine: 'postgres' },
+  ])
+  assertEquals(row.state, 'fencing')
+  assertEquals(row.targetMemberId, MEM_REPLICA)
+  assertEquals(row.metadata.freshStandby?.startsWith(`${MEM_REPLICA} accepted: stopped`), true)
+  // Fencing stays mandatory: drain + stop are queued, no promote yet.
+  const names = harness.commandInserts.map((values) => values.name ?? values.type)
+  assertEquals(names.includes('managed.promote'), false)
+  assertEquals(sent.length > 0, true)
+  assertEquals(row.metadata.fenceCommandIds?.length, sent.length)
+})
+
+test('fresh-standby: a receipt older than failure start minus the margin is refused', async () => {
+  // Last streaming 40 s before the probe = 15 s before the failure start.
+  const stale = freshStopped({
+    lastStreaming: {
+      at: new Date(EVENT_MS - 40_000).toISOString(),
+      ageMs: 40_000,
+      receiveLagBytes: 0,
+    },
+  })
+  const { row, sent } = await coldKillFailover(stale)
+  assertEquals(row.state, 'blocked')
+  assertEquals(row.targetMemberId, null)
+  assertEquals(row.metadata.blockedReason, AUTOMATIC_FAILOVER_STANDBY_NOT_PROVEN_MESSAGE)
+  assertEquals(row.metadata.freshStandby, `${MEM_REPLICA} refused: receipt_stale`)
+  assertEquals(sent.length, 0)
+})
+
+test('fresh-standby: no last-streaming record (old daemon, restarted daemon) is refused', async () => {
+  const { row, sent } = await coldKillFailover(freshStopped({ lastStreaming: undefined }))
+  assertEquals(row.state, 'blocked')
+  assertEquals(row.metadata.freshStandby, `${MEM_REPLICA} refused: receipt_unknown`)
+  assertEquals(sent.length, 0)
+})
+
+test('fresh-standby: replay behind the received LSN is refused', async () => {
+  const { row, sent } = await coldKillFailover(freshStopped({ replayLsn: '0/2000000' }))
+  assertEquals(row.state, 'blocked')
+  assertEquals(row.metadata.freshStandby, `${MEM_REPLICA} refused: replay_behind`)
+  assertEquals(sent.length, 0)
+})
+
+test('fresh-standby: a last receive byte lag over the promote limit is refused', async () => {
+  const lagging = freshStopped({
+    lastStreaming: {
+      at: new Date(EVENT_MS - 30_000).toISOString(),
+      ageMs: 30_000,
+      receiveLagBytes: 128 * 1024 * 1024,
+    },
+  })
+  const { row, sent } = await coldKillFailover(lagging)
+  assertEquals(row.state, 'blocked')
+  assertEquals(row.metadata.freshStandby, `${MEM_REPLICA} refused: last_lag_over_limit`)
+  assertEquals(sent.length, 0)
+})
+
+test('fresh-standby: the switch off still blocks and never probes', async () => {
+  const { row, sent, calls } = await coldKillFailover(freshStopped(), { autoFailover: 'off' })
+  assertEquals(row.state, 'blocked')
+  assertEquals(row.targetMemberId, null)
+  assertEquals(row.metadata.blockedReason, AUTOMATIC_FAILOVER_DISABLED_MESSAGE)
+  assertEquals(calls.length, 0)
+  assertEquals(sent.length, 0)
+})
+
+test('fresh-standby: without a failure start the gate stays closed and nothing is probed', async () => {
+  const { row, sent, calls } = await coldKillFailover(freshStopped(), { failureStartedAtMs: null })
+  assertEquals(row.state, 'blocked')
+  assertEquals(row.metadata.blockedReason, AUTOMATIC_FAILOVER_UNHEALTHY_MESSAGE)
+  assertEquals(row.metadata.freshStandby, undefined)
+  assertEquals(calls.length, 0)
+  assertEquals(sent.length, 0)
+})
+
+test('fresh-standby: a probe that answers nothing is refused', async () => {
+  const { row, sent } = await coldKillFailover(null)
+  assertEquals(row.state, 'blocked')
+  assertEquals(row.metadata.freshStandby, `${MEM_REPLICA} refused: probe_unavailable`)
+  assertEquals(sent.length, 0)
+})
+
+test('fresh-standby: the cooldown still refuses before any probe', async () => {
+  const previous = recoveryRow({
+    state: 'completed',
+    targetMemberId: MEM_REPLICA,
+    startedAt: new Date(Date.now() - 5 * 60_000).toISOString(),
+  })
+  const harness = createHarness({ recoveryReads: [[], [previous]] })
+  const { probe, calls } = stubProbe(freshStopped())
+  const row = expectRecord(
+    await beginAutomaticFailover({
+      db: harness.db,
+      commandQueue: okQueue(),
+      managedId: MANAGED_ID,
+      engine: 'postgres',
+      members: [member(), coldReplica()],
+      actor: ACTOR,
+      probeStandby: probe,
+      failureStartedAtMs: FAILURE_START_MS,
+      nowMs: () => EVENT_MS,
+    })
+  )
+  assertEquals(row.metadata.blockedReason, AUTOMATIC_FAILOVER_COOLDOWN_MESSAGE)
+  assertEquals(calls.length, 0)
+})
+
+test('fresh-standby: of several accepted standbys the one that received the most WAL wins', async () => {
+  const harness = createHarness({ pins: sharedDatacenterPins() })
+  const { queue } = countingQueue()
+  const second = failoverReplica({
+    id: MEM_READ,
+    serverId: SERVER_B,
+    ordinal: 3,
+    metadata: { replication: { state: 'stopped', observedAt: new Date(EVENT_MS).toISOString() } },
+  })
+  const behind = freshStopped({ receivedLsn: '0/3000100', replayLsn: '0/3000100' })
+  const ahead = freshStopped()
+  const row = expectRecord(
+    await beginAutomaticFailover({
+      db: harness.db,
+      commandQueue: queue,
+      managedId: MANAGED_ID,
+      engine: 'postgres',
+      members: [member(), coldReplica(), second],
+      sourceMemberId: MEM_PRIMARY,
+      detector: 'postgres-probe',
+      actor: ACTOR,
+      probeStandby: (target) => Promise.resolve(target.memberId === MEM_READ ? ahead : behind),
+      failureStartedAtMs: FAILURE_START_MS,
+      nowMs: () => EVENT_MS,
+    })
+  )
+  assertEquals(row.state, 'fencing')
+  // The lower-ordinal replica was accepted too, but is behind.
+  assertEquals(row.targetMemberId, MEM_READ)
 })

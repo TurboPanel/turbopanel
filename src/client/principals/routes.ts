@@ -1,38 +1,38 @@
-import { eq } from "drizzle-orm";
+import { eq } from 'drizzle-orm'
+import { SUPPORTED_RUNTIME_SERIES, SUPPORTED_RUNTIMES } from '../../contracts/runtime-registry.ts'
+import type { Context, Hono } from 'hono'
+import type { AppEnv } from '../../app/app.ts'
+import type { AuthRouteOpts } from '../authn/http.ts'
+import { createSessionMiddleware } from '../authn/middleware.ts'
+import { assertCanOr403 } from '../authz/index.ts'
+import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
+import { type Db, getDb } from '../../db/connection.ts'
+import { organization, principal, server } from '../../db/schema.ts'
+import { MAX_PRINCIPAL_USERNAME_LENGTH, principalHomeDir } from '../../lib/naming.ts'
 import {
-  SUPPORTED_RUNTIME_SERIES,
-  SUPPORTED_RUNTIMES,
-} from "../../contracts/runtime-registry.ts";
-import type { Context, Hono } from "hono";
-import type { AppEnv } from "../../app/app.ts";
-import type { AuthRouteOpts } from "../authn/http.ts";
-import { createSessionMiddleware } from "../authn/middleware.ts";
-import { assertCanOr403 } from "../authz/index.ts";
-import { resolveEntityOrganizationId } from "../authz/create-access-grant.ts";
-import { type Db, getDb } from "../../db/connection.ts";
-import { organization, principal, server } from "../../db/schema.ts";
-import {
-  MAX_SUFFIXED_PRINCIPAL_USERNAME_LENGTH,
-  principalHomeDir,
-  randomPrincipalUsernameSuffix,
-} from "../../lib/naming.ts";
-import { loadRandomizedUsernamesDefault } from "../../features/managed/load-org-defaults.ts";
-import type { PrincipalOptionsPersisted } from "../../features/principals/principal-options.ts";
+  maxTypedNameLength,
+  type PrincipalNameScheme,
+  resolveRequestedNameScheme,
+  type SchemeRequestResult,
+} from '../../lib/principal-name-scheme.ts'
+import { loadPrincipalNamePolicy } from '../../features/managed/load-org-defaults.ts'
+import { deriveFreeSystemName } from '../../features/principals/system-name.ts'
+import type { PrincipalOptionsPersisted } from '../../features/principals/principal-options.ts'
 import {
   assertCanManageOr403,
   assertNotSystemOwnedOr403,
   getOrgId,
   parseJsonBody,
   requireStringField,
-} from "../shared.ts";
-import { parseResourceLimits } from "../../features/organizations/resource-limits.ts";
+} from '../shared.ts'
+import { parseResourceLimits } from '../../features/organizations/resource-limits.ts'
 import {
   loadServiceIdsByPrincipalIds,
   parseServiceIdsField,
   servicesBelongToProject,
-} from "./tenancies.ts";
-import { getCommandQueue } from "../../features/commands/queue.ts";
-import { reconcilePrincipalAccess } from "./reconcile.ts";
+} from './tenancies.ts'
+import { getCommandQueue } from '../../features/commands/queue.ts'
+import { reconcilePrincipalAccess } from './reconcile.ts'
 import {
   addSshKey,
   countSshKeysByPrincipalIds,
@@ -41,7 +41,7 @@ import {
   SSH_KEY_DUPLICATE_ERROR,
   SSH_KEY_LIMIT_ERROR,
   SshKeyRejected,
-} from "./ssh-keys.ts";
+} from './ssh-keys.ts'
 import {
   clearServerPrincipalPassword,
   isServerPrincipalUsernameTaken,
@@ -52,9 +52,9 @@ import {
   SERVER_PRINCIPAL_PROVIDER,
   setServerPrincipalPasswordHash,
   USERNAME_IN_USE_ERROR,
-} from "../../features/principals/store.ts";
-import { hashPrincipalPassword } from "../../lib/sha512-crypt.ts";
-import { serializeProjectPrincipal } from "./serialize.ts";
+} from '../../features/principals/store.ts'
+import { hashPrincipalPassword } from '../../lib/sha512-crypt.ts'
+import { serializeProjectPrincipal } from './serialize.ts'
 import {
   generatePrincipalPassword,
   type InsertedProjectPrincipal,
@@ -68,87 +68,101 @@ import {
   patchTouchesPrincipal,
   projectPrincipalCreateResponse,
   resourceLimitsFromOptions,
-} from "./routes-helpers.ts";
+} from './routes-helpers.ts'
 
 class UsernameInUseError extends Error {
   constructor() {
-    super(USERNAME_IN_USE_ERROR);
-    this.name = "UsernameInUseError";
+    super(USERNAME_IN_USE_ERROR)
+    this.name = 'UsernameInUseError'
+  }
+}
+
+/** The create asked for a scheme the org policy refuses (or an unknown one). */
+class NameSchemeRefusedError extends Error {
+  constructor(
+    readonly code: Extract<SchemeRequestResult, { ok: false }>['error'],
+    readonly status: 400 | 409
+  ) {
+    super(code)
+    this.name = 'NameSchemeRefusedError'
   }
 }
 
 /** Short name too long to take the randomized `_<11>` applied suffix. */
 class UsernameTooLongError extends Error {
   constructor() {
-    super("username_too_long");
-    this.name = "UsernameTooLongError";
+    super('username_too_long')
+    this.name = 'UsernameTooLongError'
   }
 }
 
 type ParsedCreateProjectPrincipal = {
-  username: string;
-  options: PrincipalOptionsPersisted;
-  override: { uid: number; gid: number } | null;
-  serviceIds: string[];
-  entitlements: { runtime: string; series: string; grantedBy: "operator" }[];
-};
+  username: string
+  /** Raw client `nameScheme`; resolved against the org policy at insert. */
+  requestedScheme: unknown
+  options: PrincipalOptionsPersisted
+  override: { uid: number; gid: number } | null
+  serviceIds: string[]
+  entitlements: { runtime: string; series: string; grantedBy: 'operator' }[]
+}
 
 function parseCreatePrincipalUsername(
   c: Context,
-  body: Record<string, unknown>,
+  body: Record<string, unknown>
 ): string | Response {
-  const usernameRaw = requireStringField(c, body, "username");
-  if (usernameRaw instanceof Response) return usernameRaw;
-  const parsed = parsePrincipalUsernameValue(usernameRaw);
+  const usernameRaw = requireStringField(c, body, 'username')
+  if (usernameRaw instanceof Response) return usernameRaw
+  const parsed = parsePrincipalUsernameValue(usernameRaw)
   if (!parsed.ok) {
-    return c.json({ error: parsed.error }, parsed.status);
+    return c.json({ error: parsed.error }, parsed.status)
   }
-  return parsed.username;
+  return parsed.username
 }
 
 async function parseCreateProjectPrincipalRequest(
   c: Context,
   db: Db,
   projectId: string,
-  body: Record<string, unknown>,
+  body: Record<string, unknown>
 ): Promise<ParsedCreateProjectPrincipal | Response> {
-  const username = parseCreatePrincipalUsername(c, body);
-  if (username instanceof Response) return username;
+  const username = parseCreatePrincipalUsername(c, body)
+  if (username instanceof Response) return username
 
   const entitlements = parseEntitlementsField(body, {
     runtimes: SUPPORTED_RUNTIMES,
     series: SUPPORTED_RUNTIME_SERIES,
-  });
+  })
   if (entitlements === null) {
-    return c.json({ error: "invalid_entitlements" }, 400);
+    return c.json({ error: 'invalid_entitlements' }, 400)
   }
-  const serviceIds = parseServiceIdsField(body);
+  const serviceIds = parseServiceIdsField(body)
   if (serviceIds === null) {
-    return c.json({ error: "invalid_service_ids" }, 400);
+    return c.json({ error: 'invalid_service_ids' }, 400)
   }
   if (!(await servicesBelongToProject(db, projectId, serviceIds))) {
-    return c.json({ error: "invalid_service_ids" }, 400);
+    return c.json({ error: 'invalid_service_ids' }, 400)
   }
 
-  const parsedOptions = parseCreatePrincipalOptions(body);
+  const parsedOptions = parseCreatePrincipalOptions(body)
   if (!parsedOptions.ok) {
-    return c.json({ error: parsedOptions.error }, parsedOptions.status);
+    return c.json({ error: parsedOptions.error }, parsedOptions.status)
   }
 
   return {
     username,
+    requestedScheme: body.nameScheme,
     options: parsedOptions.options,
     override: parsedOptions.override,
     serviceIds,
     entitlements: entitlements ?? [],
-  };
+  }
 }
 
 async function insertProjectPrincipal(
   db: Db,
   organizationId: string,
   projectId: string,
-  input: ParsedCreateProjectPrincipal,
+  input: ParsedCreateProjectPrincipal
 ): Promise<InsertedProjectPrincipal> {
   return await db.transaction(async (tx) => {
     // Serialize concurrent creates for this org so the uniqueness check
@@ -157,108 +171,97 @@ async function insertProjectPrincipal(
       .select({ id: organization.id })
       .from(organization)
       .where(eq(organization.id, organizationId))
-      .for("update")
-      .limit(1);
+      .for('update')
+      .limit(1)
 
-    if (
-      await isServerPrincipalUsernameTaken(tx, organizationId, input.username)
-    ) {
-      throw new UsernameInUseError();
+    if (await isServerPrincipalUsernameTaken(tx, organizationId, input.username)) {
+      throw new UsernameInUseError()
     }
 
-    // Org randomized-usernames default: the host account becomes
-    // `<short>_<11 rand>` (still ≤ 28 so `<applied>-grp` fits Linux's 32).
-    const randomizeSuffix = await loadRandomizedUsernamesDefault(
-      tx,
-      organizationId,
-    );
-    if (
-      randomizeSuffix &&
-      input.username.length > MAX_SUFFIXED_PRINCIPAL_USERNAME_LENGTH
-    ) {
-      throw new UsernameTooLongError();
+    // The org policy decides which scheme this principal may use; the
+    // server derives the system name, the client never supplies it.
+    const policy = await loadPrincipalNamePolicy(tx, organizationId)
+    const resolved = resolveRequestedNameScheme(policy, input.requestedScheme)
+    if (!resolved.ok) {
+      throw new NameSchemeRefusedError(resolved.error, resolved.status)
     }
-    const appliedUsername = randomizeSuffix
-      ? `${input.username}${randomPrincipalUsernameSuffix()}`
-      : input.username;
+    const nameScheme: PrincipalNameScheme = resolved.scheme
+    if (input.username.length > maxTypedNameLength(nameScheme, MAX_PRINCIPAL_USERNAME_LENGTH)) {
+      throw new UsernameTooLongError()
+    }
+    const appliedUsername = await deriveFreeSystemName(
+      {
+        scheme: nameScheme,
+        typed: input.username,
+        maxLength: MAX_PRINCIPAL_USERNAME_LENGTH,
+      },
+      (candidate) => isServerPrincipalUsernameTaken(tx, organizationId, candidate)
+    )
 
     const metadata: Record<string, unknown> = {
       home: principalHomeDir(appliedUsername),
-    };
+    }
     if (input.override) {
-      metadata.uid = input.override.uid;
-      metadata.gid = input.override.gid;
+      metadata.uid = input.override.uid
+      metadata.gid = input.override.gid
     }
 
-    const [row] = await tx.insert(principal).values({
-      organizationId,
-      kind: "system",
-      provider: SERVER_PRINCIPAL_PROVIDER,
-      username: input.username,
-      appliedUsername,
-      projectId,
-      metadata,
-      options: input.options,
-    }).returning({ id: principal.id });
+    const [row] = await tx
+      .insert(principal)
+      .values({
+        organizationId,
+        kind: 'system',
+        provider: SERVER_PRINCIPAL_PROVIDER,
+        username: input.username,
+        appliedUsername,
+        projectId,
+        metadata,
+        options: { ...input.options, nameScheme },
+      })
+      .returning({ id: principal.id })
 
     if (input.serviceIds.length > 0) {
-      await replaceTenancies(tx, row.id, input.serviceIds);
+      await replaceTenancies(tx, row.id, input.serviceIds)
     }
     if (input.entitlements.length > 0) {
-      await replaceEntitlements(tx, row.id, input.entitlements);
+      await replaceEntitlements(tx, row.id, input.entitlements)
     }
     return {
       id: row.id,
       appliedUsername,
-      ...(input.override
-        ? { uid: input.override.uid, gid: input.override.gid }
-        : {}),
-    };
-  });
+      nameScheme,
+      ...(input.override ? { uid: input.override.uid, gid: input.override.gid } : {}),
+    }
+  })
 }
 
-export function registerProjectPrincipalRoutes(
-  router: Hono<AppEnv>,
-  opts: AuthRouteOpts,
-) {
+export function registerProjectPrincipalRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
   if (!opts.secrets) {
-    throw new TypeError(
-      "session secrets are required for project principal routes",
-    );
+    throw new TypeError('session secrets are required for project principal routes')
   }
-  const secrets = opts.secrets;
+  const secrets = opts.secrets
 
-  router.use(
-    "/projects/:projectId/principals",
-    createSessionMiddleware(secrets),
-  );
-  router.use(
-    "/projects/:projectId/principals/:id",
-    createSessionMiddleware(secrets),
-  );
+  router.use('/projects/:projectId/principals', createSessionMiddleware(secrets))
+  router.use('/projects/:projectId/principals/:id', createSessionMiddleware(secrets))
 
-  router.get("/projects/:projectId/principals", async (c) => {
-    const db = getDb(c);
-    if (!db) return c.json({ error: "Database unavailable" }, 503);
+  router.get('/projects/:projectId/principals', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
 
-    const session = c.get("session");
-    if (!session) return c.json({ error: "Unauthorized" }, 401);
+    const session = c.get('session')
+    if (!session) return c.json({ error: 'Unauthorized' }, 401)
 
-    const orgResult = await getOrgId(c, session.userId);
-    if (orgResult instanceof Response) return orgResult;
+    const orgResult = await getOrgId(c, session.userId)
+    if (orgResult instanceof Response) return orgResult
 
-    const projectId = c.req.param("projectId");
-    const projectOrgId = await resolveEntityOrganizationId(
-      db,
-      "project",
-      projectId,
-    );
+    const projectId = c.req.param('projectId')
+    const projectOrgId = await resolveEntityOrganizationId(db, 'project', projectId)
     if (!projectOrgId || projectOrgId !== orgResult) {
-      return c.json({ error: "Not found" }, 404);
+      return c.json({ error: 'Not found' }, 404)
     }
 
-    const denied = await assertCanManageOr403(c, "project", projectId);
-    if (denied) return denied;
+    const denied = await assertCanManageOr403(c, 'project', projectId)
+    if (denied) return denied
 
     const rows = await db
       .select({
@@ -275,22 +278,13 @@ export function registerProjectPrincipalRoutes(
         updatedAt: principal.updatedAt,
       })
       .from(principal)
-      .where(eq(principal.projectId, projectId));
+      .where(eq(principal.projectId, projectId))
 
-    const principalIds = rows.map((row) => row.id);
-    const serviceIdsByPrincipal = await loadServiceIdsByPrincipalIds(
-      db,
-      principalIds,
-    );
-    const entitlementsByPrincipal = await loadEntitlementsByPrincipalIds(
-      db,
-      principalIds,
-    );
-    const keyCounts = await countSshKeysByPrincipalIds(db, principalIds);
-    const passwordEnabled = await passwordEnabledByPrincipalIds(
-      db,
-      principalIds,
-    );
+    const principalIds = rows.map((row) => row.id)
+    const serviceIdsByPrincipal = await loadServiceIdsByPrincipalIds(db, principalIds)
+    const entitlementsByPrincipal = await loadEntitlementsByPrincipalIds(db, principalIds)
+    const keyCounts = await countSshKeysByPrincipalIds(db, principalIds)
+    const passwordEnabled = await passwordEnabledByPrincipalIds(db, principalIds)
 
     return c.json({
       principals: rows.map((row) =>
@@ -299,100 +293,86 @@ export function registerProjectPrincipalRoutes(
           serviceIdsByPrincipal.get(row.id) ?? [],
           entitlementsByPrincipal.get(row.id) ?? [],
           keyCounts.get(row.id) ?? 0,
-          passwordEnabled.has(row.id),
+          passwordEnabled.has(row.id)
         )
       ),
-    });
-  });
+    })
+  })
 
-  router.post("/projects/:projectId/principals", async (c) => {
-    const db = getDb(c);
-    if (!db) return c.json({ error: "Database unavailable" }, 503);
+  router.post('/projects/:projectId/principals', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
 
-    const session = c.get("session");
-    if (!session) return c.json({ error: "Unauthorized" }, 401);
+    const session = c.get('session')
+    if (!session) return c.json({ error: 'Unauthorized' }, 401)
 
-    const orgResult = await getOrgId(c, session.userId);
-    if (orgResult instanceof Response) return orgResult;
+    const orgResult = await getOrgId(c, session.userId)
+    if (orgResult instanceof Response) return orgResult
 
-    const projectId = c.req.param("projectId");
-    const projectOrgId = await resolveEntityOrganizationId(
-      db,
-      "project",
-      projectId,
-    );
+    const projectId = c.req.param('projectId')
+    const projectOrgId = await resolveEntityOrganizationId(db, 'project', projectId)
     if (!projectOrgId || projectOrgId !== orgResult) {
-      return c.json({ error: "Not found" }, 404);
+      return c.json({ error: 'Not found' }, 404)
     }
 
-    const denied = await assertCanManageOr403(c, "project", projectId);
-    if (denied) return denied;
+    const denied = await assertCanManageOr403(c, 'project', projectId)
+    if (denied) return denied
 
-    const immutable = await assertNotSystemOwnedOr403(c, "project", projectId);
-    if (immutable) return immutable;
+    const immutable = await assertNotSystemOwnedOr403(c, 'project', projectId)
+    if (immutable) return immutable
 
-    const body = await parseJsonBody(c);
-    if (body instanceof Response) return body;
+    const body = await parseJsonBody(c)
+    if (body instanceof Response) return body
 
-    const parsed = await parseCreateProjectPrincipalRequest(
-      c,
-      db,
-      projectId,
-      body,
-    );
-    if (parsed instanceof Response) return parsed;
+    const parsed = await parseCreateProjectPrincipalRequest(c, db, projectId, body)
+    if (parsed instanceof Response) return parsed
 
     try {
-      const inserted = await insertProjectPrincipal(
-        db,
-        orgResult,
-        projectId,
-        parsed,
-      );
-      return c.json(
-        projectPrincipalCreateResponse(inserted, parsed.serviceIds),
-      );
+      const inserted = await insertProjectPrincipal(db, orgResult, projectId, parsed)
+      return c.json(projectPrincipalCreateResponse(inserted, parsed.serviceIds))
     } catch (err) {
       if (err instanceof UsernameInUseError) {
-        return c.json({ error: USERNAME_IN_USE_ERROR }, 409);
+        return c.json({ error: USERNAME_IN_USE_ERROR }, 409)
       }
       if (err instanceof UsernameTooLongError) {
-        return c.json({ error: "username_too_long" }, 400);
+        return c.json({ error: 'username_too_long' }, 400)
       }
-      throw err;
+      if (err instanceof NameSchemeRefusedError) {
+        return c.json({ error: err.code }, err.status)
+      }
+      throw err
     }
-  });
+  })
 
-  router.patch("/projects/:projectId/principals/:id", async (c) => {
-    const db = getDb(c);
-    if (!db) return c.json({ error: "Database unavailable" }, 503);
+  router.patch('/projects/:projectId/principals/:id', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
 
-    const session = c.get("session");
-    if (!session) return c.json({ error: "Unauthorized" }, 401);
+    const session = c.get('session')
+    if (!session) return c.json({ error: 'Unauthorized' }, 401)
 
-    const orgResult = await getOrgId(c, session.userId);
-    if (orgResult instanceof Response) return orgResult;
+    const orgResult = await getOrgId(c, session.userId)
+    if (orgResult instanceof Response) return orgResult
 
-    const projectId = c.req.param("projectId");
-    const id = c.req.param("id");
+    const projectId = c.req.param('projectId')
+    const id = c.req.param('id')
 
-    const [row] = await db.select().from(principal).where(eq(principal.id, id))
-      .limit(1);
+    const [row] = await db.select().from(principal).where(eq(principal.id, id)).limit(1)
     if (row?.projectId !== projectId) {
-      return c.json({ error: "Not found" }, 404);
+      return c.json({ error: 'Not found' }, 404)
     }
 
-    const denied = await assertCanManageOr403(c, "project", projectId);
-    if (denied) return denied;
+    const denied = await assertCanManageOr403(c, 'project', projectId)
+    if (denied) return denied
 
-    const immutable = await assertNotSystemOwnedOr403(c, "project", projectId);
-    if (immutable) return immutable;
+    const immutable = await assertNotSystemOwnedOr403(c, 'project', projectId)
+    if (immutable) return immutable
 
-    const body = await parseJsonBody(c);
-    if (body instanceof Response) return body;
+    const body = await parseJsonBody(c)
+    if (body instanceof Response) return body
 
     if (!patchTouchesPrincipal(body)) {
-      return c.json({ error: "Invalid request" }, 400);
+      return c.json({ error: 'Invalid request' }, 400)
     }
 
     // Absent means "leave them alone"; `[]` means "revoke everything". Both
@@ -400,88 +380,96 @@ export function registerProjectPrincipalRoutes(
     const entitlements = parseEntitlementsField(body, {
       runtimes: SUPPORTED_RUNTIMES,
       series: SUPPORTED_RUNTIME_SERIES,
-    });
+    })
     if (entitlements === null) {
-      return c.json({ error: "invalid_entitlements" }, 400);
+      return c.json({ error: 'invalid_entitlements' }, 400)
     }
 
     // Absent means "leave it alone"; a value sets it. Rejected rather than
     // dropped, so an operator cannot believe they suspended a live account.
-    const accessShell = parseAccessField(body);
+    const accessShell = parseAccessField(body)
     if (accessShell === null) {
-      return c.json({ error: "invalid_access" }, 400);
+      return c.json({ error: 'invalid_access' }, 400)
     }
 
-    const patchesStewards = patchRequiresServiceIds(body);
-    const serviceIds = patchesStewards ? parseServiceIdsField(body) : [];
+    const patchesStewards = patchRequiresServiceIds(body)
+    const serviceIds = patchesStewards ? parseServiceIdsField(body) : []
     if (serviceIds === null) {
-      return c.json({ error: "invalid_service_ids" }, 400);
+      return c.json({ error: 'invalid_service_ids' }, 400)
     }
-    if (
-      patchesStewards &&
-      !(await servicesBelongToProject(db, projectId, serviceIds))
-    ) {
-      return c.json({ error: "invalid_service_ids" }, 400);
+    if (patchesStewards && !(await servicesBelongToProject(db, projectId, serviceIds))) {
+      return c.json({ error: 'invalid_service_ids' }, 400)
     }
 
     await db.transaction(async (tx) => {
-      if (patchesStewards) await replaceTenancies(tx, id, serviceIds);
+      if (patchesStewards) await replaceTenancies(tx, id, serviceIds)
       if (entitlements !== undefined) {
-        await replaceEntitlements(tx, id, entitlements);
+        await replaceEntitlements(tx, id, entitlements)
       }
-      const options = accessShell === undefined ? {} : {
-        options: {
-          ...optionsRecordFromJsonb(row.options),
-          shell: accessShell,
-        },
-      };
-      await tx.update(principal).set({
-        ...options,
-        updatedAt: new Date().toISOString(),
-      }).where(eq(principal.id, id));
-    });
+      const options =
+        accessShell === undefined
+          ? {}
+          : {
+              options: {
+                ...optionsRecordFromJsonb(row.options),
+                shell: accessShell,
+              },
+            }
+      await tx
+        .update(principal)
+        .set({
+          ...options,
+          updatedAt: new Date().toISOString(),
+        })
+        .where(eq(principal.id, id))
+    })
 
     // Entitlements and access are both enforced on the host as unix group
     // membership, so a change that only lands in the database has not actually
     // happened yet. Revoking in particular must not wait for a deploy.
-    const reconciled = (entitlements !== undefined || accessShell !== undefined)
-      ? await reconcilePrincipalAccess(db, getCommandQueue(c), {
-        actorType: "user",
-        actorId: session.userId,
-      }, id)
-      : { queuedServerIds: [], failedServerIds: [] };
+    const reconciled =
+      entitlements !== undefined || accessShell !== undefined
+        ? await reconcilePrincipalAccess(
+            db,
+            getCommandQueue(c),
+            {
+              actorType: 'user',
+              actorId: session.userId,
+            },
+            id
+          )
+        : { queuedServerIds: [], failedServerIds: [] }
 
-    return c.json({ ok: true as const, serviceIds, reconciled });
-  });
+    return c.json({ ok: true as const, serviceIds, reconciled })
+  })
 
-  router.delete("/projects/:projectId/principals/:id", async (c) => {
-    const db = getDb(c);
-    if (!db) return c.json({ error: "Database unavailable" }, 503);
+  router.delete('/projects/:projectId/principals/:id', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
 
-    const session = c.get("session");
-    if (!session) return c.json({ error: "Unauthorized" }, 401);
+    const session = c.get('session')
+    if (!session) return c.json({ error: 'Unauthorized' }, 401)
 
-    const orgResult = await getOrgId(c, session.userId);
-    if (orgResult instanceof Response) return orgResult;
+    const orgResult = await getOrgId(c, session.userId)
+    if (orgResult instanceof Response) return orgResult
 
-    const projectId = c.req.param("projectId");
-    const id = c.req.param("id");
+    const projectId = c.req.param('projectId')
+    const id = c.req.param('id')
 
-    const [row] = await db.select().from(principal).where(eq(principal.id, id))
-      .limit(1);
+    const [row] = await db.select().from(principal).where(eq(principal.id, id)).limit(1)
     if (row?.projectId !== projectId) {
-      return c.json({ error: "Not found" }, 404);
+      return c.json({ error: 'Not found' }, 404)
     }
 
-    const denied = await assertCanManageOr403(c, "project", projectId);
-    if (denied) return denied;
+    const denied = await assertCanManageOr403(c, 'project', projectId)
+    if (denied) return denied
 
-    const immutable = await assertNotSystemOwnedOr403(c, "project", projectId);
-    if (immutable) return immutable;
+    const immutable = await assertNotSystemOwnedOr403(c, 'project', projectId)
+    if (immutable) return immutable
 
-    await db.delete(principal).where(eq(principal.id, id));
-    return c.json({ ok: true as const });
-  });
+    await db.delete(principal).where(eq(principal.id, id))
+    return c.json({ ok: true as const })
+  })
 
   // --- SSH keys ----------------------------------------------------------
   //
@@ -489,87 +477,77 @@ export function registerProjectPrincipalRoutes(
   // per-account file. The panel is authoritative — the daemon writes a
   // root-owned file outside the account's home, so a tenant cannot add a key
   // over SSH that the panel cannot see and therefore cannot revoke.
+  router.use('/projects/:projectId/principals/:id/ssh-keys', createSessionMiddleware(secrets))
   router.use(
-    "/projects/:projectId/principals/:id/ssh-keys",
-    createSessionMiddleware(secrets),
-  );
-  router.use(
-    "/projects/:projectId/principals/:id/ssh-keys/:keyId",
-    createSessionMiddleware(secrets),
-  );
+    '/projects/:projectId/principals/:id/ssh-keys/:keyId',
+    createSessionMiddleware(secrets)
+  )
 
-  router.get("/projects/:projectId/principals/:id/ssh-keys", async (c) => {
-    const ctx = await resolvePrincipalRequest(c);
-    if (ctx instanceof Response) return ctx;
-    return c.json({ keys: await listSshKeys(ctx.db, ctx.principalId) });
-  });
+  router.get('/projects/:projectId/principals/:id/ssh-keys', async (c) => {
+    const ctx = await resolvePrincipalRequest(c)
+    if (ctx instanceof Response) return ctx
+    return c.json({ keys: await listSshKeys(ctx.db, ctx.principalId) })
+  })
 
-  router.post("/projects/:projectId/principals/:id/ssh-keys", async (c) => {
-    const ctx = await resolvePrincipalRequest(c, { requireMutable: true });
-    if (ctx instanceof Response) return ctx;
+  router.post('/projects/:projectId/principals/:id/ssh-keys', async (c) => {
+    const ctx = await resolvePrincipalRequest(c, { requireMutable: true })
+    if (ctx instanceof Response) return ctx
 
-    const body = await parseJsonBody(c);
-    if (body instanceof Response) return body;
-    const name = requireStringField(c, body, "name");
-    if (name instanceof Response) return name;
+    const body = await parseJsonBody(c)
+    if (body instanceof Response) return body
+    const name = requireStringField(c, body, 'name')
+    if (name instanceof Response) return name
 
-    let key;
+    let key
     try {
       key = await addSshKey(ctx.db, {
         principalId: ctx.principalId,
         name,
         publicKey: (body as Record<string, unknown>).publicKey,
         userId: ctx.userId,
-      });
+      })
     } catch (err) {
-      if (!(err instanceof SshKeyRejected)) throw err;
+      if (!(err instanceof SshKeyRejected)) throw err
       // The parser's own sentence, not a generic "invalid key": an operator
       // gets this wrong in specific, fixable ways (a pasted options field, a
       // DSA key, the private half by mistake) and each deserves its own
       // instruction.
       if (err.message === SSH_KEY_LIMIT_ERROR) {
-        return c.json({ error: SSH_KEY_LIMIT_ERROR }, 409);
+        return c.json({ error: SSH_KEY_LIMIT_ERROR }, 409)
       }
       if (err.message === SSH_KEY_DUPLICATE_ERROR) {
-        return c.json({ error: SSH_KEY_DUPLICATE_ERROR }, 409);
+        return c.json({ error: SSH_KEY_DUPLICATE_ERROR }, 409)
       }
-      return c.json({ error: "invalid_public_key", detail: err.message }, 400);
+      return c.json({ error: 'invalid_public_key', detail: err.message }, 400)
     }
 
     const reconciled = await reconcilePrincipalAccess(
       ctx.db,
       getCommandQueue(c),
-      { actorType: "user", actorId: ctx.userId },
-      ctx.principalId,
-    );
-    return c.json({ key, reconciled }, 201);
-  });
+      { actorType: 'user', actorId: ctx.userId },
+      ctx.principalId
+    )
+    return c.json({ key, reconciled }, 201)
+  })
 
-  router.delete(
-    "/projects/:projectId/principals/:id/ssh-keys/:keyId",
-    async (c) => {
-      const ctx = await resolvePrincipalRequest(c, { requireMutable: true });
-      if (ctx instanceof Response) return ctx;
+  router.delete('/projects/:projectId/principals/:id/ssh-keys/:keyId', async (c) => {
+    const ctx = await resolvePrincipalRequest(c, { requireMutable: true })
+    if (ctx instanceof Response) return ctx
 
-      const removed = await removeSshKey(
-        ctx.db,
-        ctx.principalId,
-        c.req.param("keyId"),
-      );
-      if (!removed) return c.json({ error: "Not found" }, 404);
+    const removed = await removeSshKey(ctx.db, ctx.principalId, c.req.param('keyId'))
+    if (!removed) return c.json({ error: 'Not found' }, 404)
 
-      // The reconcile is the revocation. Without it the row is gone from the
-      // panel and the key still opens the account, which is the worst possible
-      // gap between what the operator sees and what is true.
-      const reconciled = await reconcilePrincipalAccess(
-        ctx.db,
-        getCommandQueue(c),
-        { actorType: "user", actorId: ctx.userId },
-        ctx.principalId,
-      );
-      return c.json({ ok: true as const, reconciled });
-    },
-  );
+    // The reconcile is the revocation. Without it the row is gone from the
+    // panel and the key still opens the account, which is the worst possible
+    // gap between what the operator sees and what is true.
+    const reconciled = await reconcilePrincipalAccess(
+      ctx.db,
+      getCommandQueue(c),
+      { actorType: 'user', actorId: ctx.userId },
+      ctx.principalId
+    )
+    return c.json({ ok: true as const, reconciled })
+  })
 
   // --- Password sign-in --------------------------------------------------
   //
@@ -577,51 +555,46 @@ export function registerProjectPrincipalRoutes(
   // stored, so there is no "show me the password" route to have. A generated
   // password is returned exactly once, in the response to the request that
   // created it.
-  router.use(
-    "/projects/:projectId/principals/:id/password",
-    createSessionMiddleware(secrets),
-  );
+  router.use('/projects/:projectId/principals/:id/password', createSessionMiddleware(secrets))
 
-  router.post("/projects/:projectId/principals/:id/password", async (c) => {
-    const ctx = await resolvePrincipalRequest(c, { requireMutable: true });
-    if (ctx instanceof Response) return ctx;
+  router.post('/projects/:projectId/principals/:id/password', async (c) => {
+    const ctx = await resolvePrincipalRequest(c, { requireMutable: true })
+    if (ctx instanceof Response) return ctx
 
-    const body = await parseJsonBody(c);
-    if (body instanceof Response) return body;
-    const parsed = parsePrincipalPasswordField(body);
+    const body = await parseJsonBody(c)
+    if (body instanceof Response) return body
+    const parsed = parsePrincipalPasswordField(body)
     if (parsed === null) {
-      return c.json({ error: "invalid_password" }, 400);
+      return c.json({ error: 'invalid_password' }, 400)
     }
 
-    const generated = parsed.password === undefined
-      ? generatePrincipalPassword()
-      : undefined;
+    const generated = parsed.password === undefined ? generatePrincipalPassword() : undefined
     await setServerPrincipalPasswordHash(
       ctx.db,
       ctx.principalId,
-      hashPrincipalPassword(parsed.password ?? generated ?? ""),
-    );
+      hashPrincipalPassword(parsed.password ?? generated ?? '')
+    )
 
     // Same doctrine as keys: a password that only exists in the database has
     // not been set yet — the host's shadow entry is what authenticates.
     const reconciled = await reconcilePrincipalAccess(
       ctx.db,
       getCommandQueue(c),
-      { actorType: "user", actorId: ctx.userId },
-      ctx.principalId,
-    );
+      { actorType: 'user', actorId: ctx.userId },
+      ctx.principalId
+    )
     return c.json({
       ok: true as const,
       ...(generated === undefined ? {} : { generatedPassword: generated }),
       reconciled,
-    });
-  });
+    })
+  })
 
-  router.delete("/projects/:projectId/principals/:id/password", async (c) => {
-    const ctx = await resolvePrincipalRequest(c, { requireMutable: true });
-    if (ctx instanceof Response) return ctx;
+  router.delete('/projects/:projectId/principals/:id/password', async (c) => {
+    const ctx = await resolvePrincipalRequest(c, { requireMutable: true })
+    if (ctx instanceof Response) return ctx
 
-    await clearServerPrincipalPassword(ctx.db, ctx.principalId);
+    await clearServerPrincipalPassword(ctx.db, ctx.principalId)
 
     // The reconcile is what locks the account's shadow entry on the host;
     // without it the panel shows password sign-in off while the password
@@ -629,11 +602,11 @@ export function registerProjectPrincipalRoutes(
     const reconciled = await reconcilePrincipalAccess(
       ctx.db,
       getCommandQueue(c),
-      { actorType: "user", actorId: ctx.userId },
-      ctx.principalId,
-    );
-    return c.json({ ok: true as const, reconciled });
-  });
+      { actorType: 'user', actorId: ctx.userId },
+      ctx.principalId
+    )
+    return c.json({ ok: true as const, reconciled })
+  })
 }
 
 /**
@@ -647,226 +620,200 @@ export function registerProjectPrincipalRoutes(
  */
 async function resolvePrincipalRequest(
   c: Context<AppEnv>,
-  opts: { requireMutable?: boolean } = {},
-): Promise<
-  { db: Db; principalId: string; projectId: string; userId: string } | Response
-> {
-  const db = getDb(c);
-  if (!db) return c.json({ error: "Database unavailable" }, 503);
+  opts: { requireMutable?: boolean } = {}
+): Promise<{ db: Db; principalId: string; projectId: string; userId: string } | Response> {
+  const db = getDb(c)
+  if (!db) return c.json({ error: 'Database unavailable' }, 503)
 
-  const session = c.get("session");
-  if (!session) return c.json({ error: "Unauthorized" }, 401);
+  const session = c.get('session')
+  if (!session) return c.json({ error: 'Unauthorized' }, 401)
 
-  const orgResult = await getOrgId(c, session.userId);
-  if (orgResult instanceof Response) return orgResult;
+  const orgResult = await getOrgId(c, session.userId)
+  if (orgResult instanceof Response) return orgResult
 
   // Read with a fallback rather than `!`: this helper is shared across two
   // route shapes, so the path params are only `string | undefined` here.
-  const projectId = c.req.param("projectId") ?? "";
-  const principalId = c.req.param("id") ?? "";
-  if (!projectId || !principalId) return c.json({ error: "Not found" }, 404);
+  const projectId = c.req.param('projectId') ?? ''
+  const principalId = c.req.param('id') ?? ''
+  if (!projectId || !principalId) return c.json({ error: 'Not found' }, 404)
 
-  const projectOrgId = await resolveEntityOrganizationId(
-    db,
-    "project",
-    projectId,
-  );
+  const projectOrgId = await resolveEntityOrganizationId(db, 'project', projectId)
   if (!projectOrgId || projectOrgId !== orgResult) {
-    return c.json({ error: "Not found" }, 404);
+    return c.json({ error: 'Not found' }, 404)
   }
 
   const [row] = await db
     .select({ projectId: principal.projectId })
     .from(principal)
     .where(eq(principal.id, principalId))
-    .limit(1);
-  if (row?.projectId !== projectId) return c.json({ error: "Not found" }, 404);
+    .limit(1)
+  if (row?.projectId !== projectId) return c.json({ error: 'Not found' }, 404)
 
-  const denied = await assertCanManageOr403(c, "project", projectId);
-  if (denied) return denied;
+  const denied = await assertCanManageOr403(c, 'project', projectId)
+  if (denied) return denied
 
   if (opts.requireMutable) {
-    const immutable = await assertNotSystemOwnedOr403(c, "project", projectId);
-    if (immutable) return immutable;
+    const immutable = await assertNotSystemOwnedOr403(c, 'project', projectId)
+    if (immutable) return immutable
   }
 
-  return { db, principalId, projectId, userId: session.userId };
+  return { db, principalId, projectId, userId: session.userId }
 }
 
-export function registerOrganizationLimitsRoutes(
-  router: Hono<AppEnv>,
-  opts: AuthRouteOpts,
-) {
+export function registerOrganizationLimitsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
   if (!opts.secrets) {
-    throw new TypeError(
-      "session secrets are required for organization limits routes",
-    );
+    throw new TypeError('session secrets are required for organization limits routes')
   }
 
-  router.use(
-    "/organizations/:id/resource-limits",
-    createSessionMiddleware(opts.secrets),
-  );
+  router.use('/organizations/:id/resource-limits', createSessionMiddleware(opts.secrets))
 
-  router.get("/organizations/:id/resource-limits", async (c) => {
-    const db = getDb(c);
-    if (!db) return c.json({ error: "Database unavailable" }, 503);
+  router.get('/organizations/:id/resource-limits', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
 
-    const session = c.get("session");
-    if (!session) return c.json({ error: "Unauthorized" }, 401);
+    const session = c.get('session')
+    if (!session) return c.json({ error: 'Unauthorized' }, 401)
 
-    const orgResult = await getOrgId(c, session.userId);
-    if (orgResult instanceof Response) return orgResult;
+    const orgResult = await getOrgId(c, session.userId)
+    if (orgResult instanceof Response) return orgResult
 
-    const id = c.req.param("id");
-    if (id !== orgResult) return c.json({ error: "Not found" }, 404);
+    const id = c.req.param('id')
+    if (id !== orgResult) return c.json({ error: 'Not found' }, 404)
 
-    const denied = await assertCanOr403(
-      c,
-      "organization:manage",
-      "organization",
-      id,
-    );
-    if (denied) return denied;
+    const denied = await assertCanOr403(c, 'organization:manage', 'organization', id)
+    if (denied) return denied
 
-    const [orgRow] = await db.select({ options: organization.options }).from(
-      organization,
-    ).where(
-      eq(organization.id, id),
-    ).limit(1);
+    const [orgRow] = await db
+      .select({ options: organization.options })
+      .from(organization)
+      .where(eq(organization.id, id))
+      .limit(1)
 
     return c.json({
       resourceLimits: resourceLimitsFromOptions(orgRow?.options),
-    });
-  });
+    })
+  })
 
-  router.put("/organizations/:id/resource-limits", async (c) => {
-    const db = getDb(c);
-    if (!db) return c.json({ error: "Database unavailable" }, 503);
+  router.put('/organizations/:id/resource-limits', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
 
-    const session = c.get("session");
-    if (!session) return c.json({ error: "Unauthorized" }, 401);
+    const session = c.get('session')
+    if (!session) return c.json({ error: 'Unauthorized' }, 401)
 
-    const orgResult = await getOrgId(c, session.userId);
-    if (orgResult instanceof Response) return orgResult;
+    const orgResult = await getOrgId(c, session.userId)
+    if (orgResult instanceof Response) return orgResult
 
-    const id = c.req.param("id");
-    if (id !== orgResult) return c.json({ error: "Not found" }, 404);
+    const id = c.req.param('id')
+    if (id !== orgResult) return c.json({ error: 'Not found' }, 404)
 
-    const denied = await assertCanOr403(
-      c,
-      "organization:own",
-      "organization",
-      id,
-    );
-    if (denied) return denied;
+    const denied = await assertCanOr403(c, 'organization:own', 'organization', id)
+    if (denied) return denied
 
-    const body = await parseJsonBody(c);
-    if (body instanceof Response) return body;
+    const body = await parseJsonBody(c)
+    if (body instanceof Response) return body
 
-    const limits = parseResourceLimits(body.resourceLimits);
-    if (limits === null) return c.json({ error: "Invalid request" }, 400);
+    const limits = parseResourceLimits(body.resourceLimits)
+    if (limits === null) return c.json({ error: 'Invalid request' }, 400)
 
-    const [orgRow] = await db.select({ options: organization.options }).from(
-      organization,
-    ).where(
-      eq(organization.id, id),
-    ).limit(1);
+    const [orgRow] = await db
+      .select({ options: organization.options })
+      .from(organization)
+      .where(eq(organization.id, id))
+      .limit(1)
 
-    const prevOptions = optionsRecordFromJsonb(orgRow?.options);
+    const prevOptions = optionsRecordFromJsonb(orgRow?.options)
 
-    await db.update(organization).set({
-      options: { ...prevOptions, resourceLimits: limits },
-      updatedAt: new Date().toISOString(),
-    }).where(eq(organization.id, id));
+    await db
+      .update(organization)
+      .set({
+        options: { ...prevOptions, resourceLimits: limits },
+        updatedAt: new Date().toISOString(),
+      })
+      .where(eq(organization.id, id))
 
-    return c.json({ ok: true as const, resourceLimits: limits });
-  });
+    return c.json({ ok: true as const, resourceLimits: limits })
+  })
 }
 
-export function registerServerLimitsRoutes(
-  router: Hono<AppEnv>,
-  opts: AuthRouteOpts,
-) {
+export function registerServerLimitsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
   if (!opts.secrets) {
-    throw new TypeError(
-      "session secrets are required for server limits routes",
-    );
+    throw new TypeError('session secrets are required for server limits routes')
   }
 
-  router.use(
-    "/servers/:id/resource-limits",
-    createSessionMiddleware(opts.secrets),
-  );
+  router.use('/servers/:id/resource-limits', createSessionMiddleware(opts.secrets))
 
-  router.get("/servers/:id/resource-limits", async (c) => {
-    const db = getDb(c);
-    if (!db) return c.json({ error: "Database unavailable" }, 503);
+  router.get('/servers/:id/resource-limits', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
 
-    const session = c.get("session");
-    if (!session) return c.json({ error: "Unauthorized" }, 401);
+    const session = c.get('session')
+    if (!session) return c.json({ error: 'Unauthorized' }, 401)
 
-    const orgResult = await getOrgId(c, session.userId);
-    if (orgResult instanceof Response) return orgResult;
+    const orgResult = await getOrgId(c, session.userId)
+    if (orgResult instanceof Response) return orgResult
 
-    const id = c.req.param("id");
-    const serverOrgId = await resolveEntityOrganizationId(db, "server", id);
+    const id = c.req.param('id')
+    const serverOrgId = await resolveEntityOrganizationId(db, 'server', id)
     if (!serverOrgId || serverOrgId !== orgResult) {
-      return c.json({ error: "Not found" }, 404);
+      return c.json({ error: 'Not found' }, 404)
     }
 
-    const denied = await assertCanOr403(c, "organization:manage", "server", id);
-    if (denied) return denied;
+    const denied = await assertCanOr403(c, 'organization:manage', 'server', id)
+    if (denied) return denied
 
-    const [serverRow] = await db.select({ options: server.options }).from(
-      server,
-    ).where(
-      eq(server.id, id),
-    ).limit(1);
+    const [serverRow] = await db
+      .select({ options: server.options })
+      .from(server)
+      .where(eq(server.id, id))
+      .limit(1)
 
     return c.json({
       resourceLimits: resourceLimitsFromOptions(serverRow?.options),
-    });
-  });
+    })
+  })
 
-  router.put("/servers/:id/resource-limits", async (c) => {
-    const db = getDb(c);
-    if (!db) return c.json({ error: "Database unavailable" }, 503);
+  router.put('/servers/:id/resource-limits', async (c) => {
+    const db = getDb(c)
+    if (!db) return c.json({ error: 'Database unavailable' }, 503)
 
-    const session = c.get("session");
-    if (!session) return c.json({ error: "Unauthorized" }, 401);
+    const session = c.get('session')
+    if (!session) return c.json({ error: 'Unauthorized' }, 401)
 
-    const orgResult = await getOrgId(c, session.userId);
-    if (orgResult instanceof Response) return orgResult;
+    const orgResult = await getOrgId(c, session.userId)
+    if (orgResult instanceof Response) return orgResult
 
-    const id = c.req.param("id");
-    const serverOrgId = await resolveEntityOrganizationId(db, "server", id);
+    const id = c.req.param('id')
+    const serverOrgId = await resolveEntityOrganizationId(db, 'server', id)
     if (!serverOrgId || serverOrgId !== orgResult) {
-      return c.json({ error: "Not found" }, 404);
+      return c.json({ error: 'Not found' }, 404)
     }
 
-    const denied = await assertCanOr403(c, "organization:manage", "server", id);
-    if (denied) return denied;
+    const denied = await assertCanOr403(c, 'organization:manage', 'server', id)
+    if (denied) return denied
 
-    const body = await parseJsonBody(c);
-    if (body instanceof Response) return body;
+    const body = await parseJsonBody(c)
+    if (body instanceof Response) return body
 
-    const limits = parseResourceLimits(body.resourceLimits);
-    if (limits === null) return c.json({ error: "Invalid request" }, 400);
+    const limits = parseResourceLimits(body.resourceLimits)
+    if (limits === null) return c.json({ error: 'Invalid request' }, 400)
 
-    const [serverRow] = await db.select({ options: server.options }).from(
-      server,
-    ).where(
-      eq(server.id, id),
-    ).limit(1);
+    const [serverRow] = await db
+      .select({ options: server.options })
+      .from(server)
+      .where(eq(server.id, id))
+      .limit(1)
 
-    const prevOptions = optionsRecordFromJsonb(serverRow?.options);
+    const prevOptions = optionsRecordFromJsonb(serverRow?.options)
 
-    await db.update(server).set({
-      options: { ...prevOptions, resourceLimits: limits },
-      updatedAt: new Date().toISOString(),
-    }).where(eq(server.id, id));
+    await db
+      .update(server)
+      .set({
+        options: { ...prevOptions, resourceLimits: limits },
+        updatedAt: new Date().toISOString(),
+      })
+      .where(eq(server.id, id))
 
-    return c.json({ ok: true as const, resourceLimits: limits });
-  });
+    return c.json({ ok: true as const, resourceLimits: limits })
+  })
 }

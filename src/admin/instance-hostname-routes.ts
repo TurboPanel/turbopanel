@@ -1,5 +1,7 @@
 import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../app/app.ts'
+import { createRootOnlyMiddleware } from '../client/authn/middleware.ts'
+import type { DerivedSecretsConfig } from '../lib/secrets/secrets.ts'
 import { type Db, getDb } from '../db/connection.ts'
 import {
   emptyInstanceAcmeApiShape,
@@ -70,6 +72,7 @@ function refuseWorkersWrite(c: Context<AppEnv>, opts: { runtime: 'deno' | 'worke
 export function registerInstanceHostnameAdminRoutes(
   admin: Hono<AppEnv>,
   opts: {
+    secrets: DerivedSecretsConfig
     runtime: 'deno' | 'workers'
     getEnv?: () => Record<string, string | undefined>
   }
@@ -111,7 +114,11 @@ export function registerInstanceHostnameAdminRoutes(
     })
   })
 
-  admin.put('/instance/hostnames', async (c) => {
+  // Platform TLS settings are superadmin-only, like the public URLs and apply
+  // routes they feed.
+  const rootOnly = createRootOnlyMiddleware(opts.secrets)
+
+  admin.put('/instance/hostnames', rootOnly, async (c) => {
     const refused = refuseWorkersWrite(c, opts)
     if (refused) return refused
     const db = getDb(c)
@@ -155,7 +162,7 @@ export function registerInstanceHostnameAdminRoutes(
     return c.json({ ok: true, certificates })
   })
 
-  admin.post('/instance/certificates', async (c) => {
+  admin.post('/instance/certificates', rootOnly, async (c) => {
     const refused = refuseWorkersWrite(c, opts)
     if (refused) return refused
     const db = getDb(c)
@@ -181,7 +188,7 @@ export function registerInstanceHostnameAdminRoutes(
     )
   })
 
-  admin.patch('/instance/certificates/:id/hostnames', async (c) => {
+  admin.patch('/instance/certificates/:id/hostnames', rootOnly, async (c) => {
     const refused = refuseWorkersWrite(c, opts)
     if (refused) return refused
     const db = getDb(c)
@@ -215,7 +222,7 @@ export function registerInstanceHostnameAdminRoutes(
     })
   })
 
-  admin.put('/instance/acme', async (c) => {
+  admin.put('/instance/acme', rootOnly, async (c) => {
     if (opts.runtime === 'workers') {
       return c.json({ error: PLATFORM_MANAGED_TLS_ERROR }, 422)
     }

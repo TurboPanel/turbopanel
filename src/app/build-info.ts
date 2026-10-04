@@ -64,7 +64,7 @@ export function resolveBuildLabel(
   return BUILD_LABEL_PATTERN.test(raw) ? raw : null
 }
 
-/** The hosted deployments `TURBOPANEL_ENVIRONMENT` may name (wrangler.jsonc per env). */
+/** The TurboPanel High Availability deployments `TURBOPANEL_ENVIRONMENT` may name (wrangler.jsonc per env). */
 export const DEPLOYMENT_ENVIRONMENTS = ['testing', 'staging', 'live'] as const
 
 export type DeploymentEnvironment = (typeof DEPLOYMENT_ENVIRONMENTS)[number]
@@ -86,14 +86,14 @@ export function resolveDeploymentEnvironment(
 export type HealthPayload = {
   ok: true
   license: string
-  /** The instance's semver — what the app holds against its supported range. */
+  /** The control plane's semver — what the app holds against its supported range. */
   version: string
   revision: InstanceRevision
-  /** The update channel this instance follows (`TURBOPANEL_UPDATE_CHANNEL`, default `trunk`). */
+  /** The update channel this control plane follows (`TURBOPANEL_UPDATE_CHANNEL`, default `release`). */
   channel: UpdateChannel
   /** The installed package's pre-release label, when known; see {@link resolveBuildLabel}. */
   build: string | null
-  /** The hosted deployment (`testing` / `staging` / `live`), else null; see {@link resolveDeploymentEnvironment}. */
+  /** The TurboPanel High Availability deployment (`testing` / `staging` / `live`), else null; see {@link resolveDeploymentEnvironment}. */
   environment: DeploymentEnvironment | null
 }
 

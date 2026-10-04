@@ -40,20 +40,16 @@
  *   `unsupported`.
  */
 export type ComposeFieldState =
-  | "passthrough"
-  | "interpreted"
-  | "runtime-generated"
-  | "unsupported"
-  | "gated";
+  'passthrough' | 'interpreted' | 'runtime-generated' | 'unsupported' | 'gated'
 
 export type ComposeFieldPolicy = {
-  state: ComposeFieldState;
+  state: ComposeFieldState
   /**
    * Required when {@link ComposeFieldPolicy.state} is `unsupported` or
    * `gated`; the diagnostic quotes it verbatim, so it has to name what is
    * missing (or why the field is gated) rather than restate the state.
    */
-  reason?: string;
+  reason?: string
   /**
    * Whether the key survives into compiled runtime YAML.
    *
@@ -66,11 +62,11 @@ export type ComposeFieldPolicy = {
    *
    * Defaults to `keep` when absent.
    */
-  runtime?: "keep" | "strip";
-};
+  runtime?: 'keep' | 'strip'
+}
 
-const PASSTHROUGH: ComposeFieldPolicy = { state: "passthrough" };
-const INTERPRETED: ComposeFieldPolicy = { state: "interpreted" };
+const PASSTHROUGH: ComposeFieldPolicy = { state: 'passthrough' }
+const INTERPRETED: ComposeFieldPolicy = { state: 'interpreted' }
 
 /**
  * Namespace/capability-escaping Compose keys — a service that sets any of
@@ -97,23 +93,25 @@ const INTERPRETED: ComposeFieldPolicy = { state: "interpreted" };
  * `cap_drop`, `ports` and `user` are deliberately *not* gated.
  */
 const GATED_SERVICE_FIELD_NAMES = [
-  "cap_add",
-  "cgroup",
-  "cgroup_parent",
-  "device_cgroup_rules",
-  "devices",
-  "ipc",
-  "network_mode",
-  "pid",
-  "privileged",
-  "runtime",
-  "security_opt",
-  "sysctls",
-  "use_api_socket",
-  "userns_mode",
-  "uts",
-  "volumes_from",
-] as const;
+  'cap_add',
+  'cgroup',
+  'cgroup_parent',
+  'device_cgroup_rules',
+  'devices',
+  'gpus',
+  'group_add',
+  'ipc',
+  'network_mode',
+  'pid',
+  'privileged',
+  'runtime',
+  'security_opt',
+  'sysctls',
+  'use_api_socket',
+  'userns_mode',
+  'uts',
+  'volumes_from',
+] as const
 
 /**
  * The sentence every host-level refusal ends with: who can turn it on, and who
@@ -121,17 +119,17 @@ const GATED_SERVICE_FIELD_NAMES = [
  * and a gated bind tell the operator the same thing.
  */
 export const HOST_LEVEL_OPT_IN_SENTENCE =
-  "an organization owner has to turn on host-level Compose features under " +
-  "Manage Organization → Compose, and only an organization manager or owner " +
-  "can deploy them";
+  'an organization owner has to turn on host-level Compose features under ' +
+  'Manage Organization → Compose, and only an organization manager or owner ' +
+  'can deploy them'
 
 function gatedField(field: string): ComposeFieldPolicy {
   return {
-    state: "gated",
+    state: 'gated',
     reason:
       `${field} grants root-equivalent access to the shared daemon host — ` +
       HOST_LEVEL_OPT_IN_SENTENCE,
-  };
+  }
 }
 
 /**
@@ -145,16 +143,16 @@ function gatedField(field: string): ComposeFieldPolicy {
  * about what this control plane will actually do.
  */
 const TOP_LEVEL_FIELD_POLICY = new Map<string, ComposeFieldPolicy>([
-  ["configs", PASSTHROUGH],
-  ["name", PASSTHROUGH],
-  ["networks", PASSTHROUGH],
-  ["secrets", PASSTHROUGH],
-  ["services", PASSTHROUGH],
+  ['configs', PASSTHROUGH],
+  ['name', PASSTHROUGH],
+  ['networks', PASSTHROUGH],
+  ['secrets', PASSTHROUGH],
+  ['services', PASSTHROUGH],
   // Read and dropped: Compose has been version-less since the Specification
   // folded v2/v3 together. Accepted so old documents keep saving.
-  ["version", INTERPRETED],
-  ["volumes", PASSTHROUGH],
-]);
+  ['version', INTERPRETED],
+  ['volumes', PASSTHROUGH],
+])
 
 /**
  * Service-level keys from the Compose Specification.
@@ -165,110 +163,110 @@ const TOP_LEVEL_FIELD_POLICY = new Map<string, ComposeFieldPolicy>([
  * grepping the pipeline.
  */
 const SERVICE_FIELD_POLICY = new Map<string, ComposeFieldPolicy>([
-  ["annotations", PASSTHROUGH],
-  ["attach", PASSTHROUGH],
-  ["blkio_config", PASSTHROUGH],
+  ['annotations', PASSTHROUGH],
+  ['attach', PASSTHROUGH],
+  ['blkio_config', PASSTHROUGH],
   // `build.args` is scanned for `{$KEY}` variable refs (`apply-variables.ts`).
-  ["build", INTERPRETED],
-  ["cap_add", gatedField("cap_add")],
-  ["cap_drop", PASSTHROUGH],
-  ["cgroup", gatedField("cgroup")],
-  ["cgroup_parent", gatedField("cgroup_parent")],
-  ["command", PASSTHROUGH],
-  ["configs", PASSTHROUGH],
+  ['build', INTERPRETED],
+  ['cap_add', gatedField('cap_add')],
+  ['cap_drop', PASSTHROUGH],
+  ['cgroup', gatedField('cgroup')],
+  ['cgroup_parent', gatedField('cgroup_parent')],
+  ['command', PASSTHROUGH],
+  ['configs', PASSTHROUGH],
   // Sole writer is `apply-service-options.ts`; in `uuid` naming mode the
   // authored value is ignored outright.
-  ["container_name", INTERPRETED],
-  ["cpu_count", PASSTHROUGH],
-  ["cpu_percent", PASSTHROUGH],
-  ["cpu_period", PASSTHROUGH],
-  ["cpu_quota", PASSTHROUGH],
-  ["cpu_rt_period", PASSTHROUGH],
-  ["cpu_rt_runtime", PASSTHROUGH],
-  ["cpu_shares", PASSTHROUGH],
-  ["cpus", PASSTHROUGH],
-  ["cpuset", PASSTHROUGH],
-  ["credential_spec", PASSTHROUGH],
+  ['container_name', INTERPRETED],
+  ['cpu_count', PASSTHROUGH],
+  ['cpu_percent', PASSTHROUGH],
+  ['cpu_period', PASSTHROUGH],
+  ['cpu_quota', PASSTHROUGH],
+  ['cpu_rt_period', PASSTHROUGH],
+  ['cpu_rt_runtime', PASSTHROUGH],
+  ['cpu_shares', PASSTHROUGH],
+  ['cpus', PASSTHROUGH],
+  ['cpuset', PASSTHROUGH],
+  ['credential_spec', PASSTHROUGH],
   // Filtered to services that land on the same server (`compile-runtime.ts`).
-  ["depends_on", INTERPRETED],
+  ['depends_on', INTERPRETED],
   // See {@link DEPLOY_FIELD_POLICY} for the per-key answer.
-  ["deploy", INTERPRETED],
-  ["develop", PASSTHROUGH],
-  ["device_cgroup_rules", gatedField("device_cgroup_rules")],
-  ["devices", gatedField("devices")],
-  ["dns", PASSTHROUGH],
-  ["dns_opt", PASSTHROUGH],
-  ["dns_search", PASSTHROUGH],
-  ["domainname", PASSTHROUGH],
-  ["entrypoint", PASSTHROUGH],
-  ["env_file", PASSTHROUGH],
+  ['deploy', INTERPRETED],
+  ['develop', PASSTHROUGH],
+  ['device_cgroup_rules', gatedField('device_cgroup_rules')],
+  ['devices', gatedField('devices')],
+  ['dns', PASSTHROUGH],
+  ['dns_opt', PASSTHROUGH],
+  ['dns_search', PASSTHROUGH],
+  ['domainname', PASSTHROUGH],
+  ['entrypoint', PASSTHROUGH],
+  ['env_file', PASSTHROUGH],
   // `{$KEY}` / `{$scope.KEY}` refs resolve here (`apply-variables.ts`).
-  ["environment", INTERPRETED],
-  ["expose", PASSTHROUGH],
-  ["extends", PASSTHROUGH],
-  ["external_links", PASSTHROUGH],
+  ['environment', INTERPRETED],
+  ['expose', PASSTHROUGH],
+  ['extends', PASSTHROUGH],
+  ['external_links', PASSTHROUGH],
   // Spanning-network peers are appended (`compile-runtime.ts`).
-  ["extra_hosts", INTERPRETED],
-  ["gpus", PASSTHROUGH],
-  ["group_add", PASSTHROUGH],
-  ["healthcheck", PASSTHROUGH],
-  ["hostname", PASSTHROUGH],
-  ["image", PASSTHROUGH],
-  ["init", PASSTHROUGH],
-  ["ipc", gatedField("ipc")],
-  ["isolation", PASSTHROUGH],
+  ['extra_hosts', INTERPRETED],
+  ['gpus', gatedField('gpus')],
+  ['group_add', gatedField('group_add')],
+  ['healthcheck', PASSTHROUGH],
+  ['hostname', PASSTHROUGH],
+  ['image', PASSTHROUGH],
+  ['init', PASSTHROUGH],
+  ['ipc', gatedField('ipc')],
+  ['isolation', PASSTHROUGH],
   // Compose Specification service keys with no TurboPanel behavior of their
   // own. Listed so `docker run --label-file` / `--use-api-socket` survive the
   // importer (`lib/docker-run/`) into a document that saves.
-  ["label_file", PASSTHROUGH],
-  ["labels", PASSTHROUGH],
-  ["links", PASSTHROUGH],
-  ["logging", PASSTHROUGH],
-  ["mac_address", PASSTHROUGH],
-  ["mem_limit", PASSTHROUGH],
-  ["mem_reservation", PASSTHROUGH],
-  ["mem_swappiness", PASSTHROUGH],
-  ["memswap_limit", PASSTHROUGH],
-  ["network_mode", gatedField("network_mode")],
+  ['label_file', PASSTHROUGH],
+  ['labels', PASSTHROUGH],
+  ['links', PASSTHROUGH],
+  ['logging', PASSTHROUGH],
+  ['mac_address', PASSTHROUGH],
+  ['mem_limit', PASSTHROUGH],
+  ['mem_reservation', PASSTHROUGH],
+  ['mem_swappiness', PASSTHROUGH],
+  ['memswap_limit', PASSTHROUGH],
+  ['network_mode', gatedField('network_mode')],
   // Spanning keys become `external: true` + `tpn_<id>`; a rename adds aliases.
-  ["networks", INTERPRETED],
-  ["oom_kill_disable", PASSTHROUGH],
-  ["oom_score_adj", PASSTHROUGH],
-  ["pid", gatedField("pid")],
-  ["pids_limit", PASSTHROUGH],
-  ["platform", PASSTHROUGH],
-  ["ports", PASSTHROUGH],
-  ["post_start", PASSTHROUGH],
-  ["pre_stop", PASSTHROUGH],
-  ["privileged", gatedField("privileged")],
-  ["profiles", PASSTHROUGH],
-  ["pull_policy", PASSTHROUGH],
-  ["read_only", PASSTHROUGH],
-  ["restart", PASSTHROUGH],
-  ["runtime", gatedField("runtime")],
+  ['networks', INTERPRETED],
+  ['oom_kill_disable', PASSTHROUGH],
+  ['oom_score_adj', PASSTHROUGH],
+  ['pid', gatedField('pid')],
+  ['pids_limit', PASSTHROUGH],
+  ['platform', PASSTHROUGH],
+  ['ports', PASSTHROUGH],
+  ['post_start', PASSTHROUGH],
+  ['pre_stop', PASSTHROUGH],
+  ['privileged', gatedField('privileged')],
+  ['profiles', PASSTHROUGH],
+  ['pull_policy', PASSTHROUGH],
+  ['read_only', PASSTHROUGH],
+  ['restart', PASSTHROUGH],
+  ['runtime', gatedField('runtime')],
   // Written by `apply-service-options.ts` when a service has >1 local replica.
-  ["scale", INTERPRETED],
+  ['scale', INTERPRETED],
   // Secret variables become Compose `secrets:` entries (`apply-variables.ts`).
-  ["secrets", INTERPRETED],
-  ["security_opt", gatedField("security_opt")],
-  ["shm_size", PASSTHROUGH],
-  ["stdin_open", PASSTHROUGH],
-  ["stop_grace_period", PASSTHROUGH],
-  ["stop_signal", PASSTHROUGH],
-  ["storage_opt", PASSTHROUGH],
-  ["sysctls", gatedField("sysctls")],
-  ["tmpfs", PASSTHROUGH],
-  ["tty", PASSTHROUGH],
-  ["ulimits", PASSTHROUGH],
-  ["use_api_socket", gatedField("use_api_socket")],
-  ["user", PASSTHROUGH],
-  ["userns_mode", gatedField("userns_mode")],
-  ["uts", gatedField("uts")],
+  ['secrets', INTERPRETED],
+  ['security_opt', gatedField('security_opt')],
+  ['shm_size', PASSTHROUGH],
+  ['stdin_open', PASSTHROUGH],
+  ['stop_grace_period', PASSTHROUGH],
+  ['stop_signal', PASSTHROUGH],
+  ['storage_opt', PASSTHROUGH],
+  ['sysctls', gatedField('sysctls')],
+  ['tmpfs', PASSTHROUGH],
+  ['tty', PASSTHROUGH],
+  ['ulimits', PASSTHROUGH],
+  ['use_api_socket', gatedField('use_api_socket')],
+  ['user', PASSTHROUGH],
+  ['userns_mode', gatedField('userns_mode')],
+  ['uts', gatedField('uts')],
   // Named volumes are registered as `storage` rows and renamed to their UUID.
-  ["volumes", INTERPRETED],
-  ["volumes_from", gatedField("volumes_from")],
-  ["working_dir", PASSTHROUGH],
-]);
+  ['volumes', INTERPRETED],
+  ['volumes_from', gatedField('volumes_from')],
+  ['working_dir', PASSTHROUGH],
+])
 
 /**
  * Keys under a top-level `networks.<key>` entry.
@@ -289,16 +287,16 @@ const SERVICE_FIELD_POLICY = new Map<string, ComposeFieldPolicy>([
  */
 const NETWORK_FIELD_POLICY = new Map<string, ComposeFieldPolicy>([
   // The one key whose value TurboPanel acts on. See `lib/fabric/spanning.ts`.
-  ["driver", INTERPRETED],
-  ["attachable", PASSTHROUGH],
-  ["driver_opts", PASSTHROUGH],
-  ["enable_ipv6", PASSTHROUGH],
-  ["external", PASSTHROUGH],
-  ["internal", PASSTHROUGH],
-  ["ipam", PASSTHROUGH],
-  ["labels", PASSTHROUGH],
-  ["name", PASSTHROUGH],
-]);
+  ['driver', INTERPRETED],
+  ['attachable', PASSTHROUGH],
+  ['driver_opts', PASSTHROUGH],
+  ['enable_ipv6', PASSTHROUGH],
+  ['external', PASSTHROUGH],
+  ['internal', PASSTHROUGH],
+  ['ipam', PASSTHROUGH],
+  ['labels', PASSTHROUGH],
+  ['name', PASSTHROUGH],
+])
 
 /**
  * Overrides for a network declared `driver: overlay`.
@@ -341,49 +339,49 @@ const NETWORK_FIELD_POLICY = new Map<string, ComposeFieldPolicy>([
  */
 const OVERLAY_NETWORK_FIELD_POLICY = new Map<string, ComposeFieldPolicy>([
   [
-    "ipam",
+    'ipam',
     {
-      state: "unsupported",
+      state: 'unsupported',
       reason:
-        "a spanning network gets one subnet per participating host, allocated out of the fabric relay prefix for that host, so an authored address pool is not the pool the network would run on",
+        'a spanning network gets one subnet per participating host, allocated out of the fabric relay prefix for that host, so an authored address pool is not the pool the network would run on',
     },
   ],
   [
-    "driver_opts",
+    'driver_opts',
     {
-      state: "unsupported",
+      state: 'unsupported',
       reason:
-        "these are options for a Docker overlay driver, and a TurboFabric spanning network is a routed bridge on each host rather than a driver TurboPanel can pass them to",
+        'these are options for a Docker overlay driver, and a TurboFabric spanning network is a routed bridge on each host rather than a driver TurboPanel can pass them to',
     },
   ],
   [
-    "attachable",
+    'attachable',
     {
-      state: "unsupported",
+      state: 'unsupported',
       reason:
-        "attachable is a Swarm service-network flag and every container on a TurboFabric spanning network is already a standalone container, so there is nothing for it to switch",
+        'attachable is a Swarm service-network flag and every container on a TurboFabric spanning network is already a standalone container, so there is nothing for it to switch',
     },
   ],
   [
-    "enable_ipv6",
+    'enable_ipv6',
     {
-      state: "unsupported",
+      state: 'unsupported',
       reason:
-        "the fabric and its per-host segment allocator are IPv4-only, so this would deploy an IPv4-only network that claimed to carry IPv6",
+        'the fabric and its per-host segment allocator are IPv4-only, so this would deploy an IPv4-only network that claimed to carry IPv6',
     },
   ],
   [
-    "internal",
+    'internal',
     {
-      state: "unsupported",
+      state: 'unsupported',
       reason:
-        "a spanning network reaches its other hosts by being routed off this one over the fabric interface, which is exactly the traffic an internal network forbids, so TurboPanel cannot deliver both the isolation and the span",
+        'a spanning network reaches its other hosts by being routed off this one over the fabric interface, which is exactly the traffic an internal network forbids, so TurboPanel cannot deliver both the isolation and the span',
     },
   ],
-]);
+])
 
 /** Compose `driver:` value that makes a network TurboFabric-eligible. */
-export const SPANNING_NETWORK_DRIVER = "overlay";
+export const SPANNING_NETWORK_DRIVER = 'overlay'
 
 /**
  * Every key under `services.<name>.deploy`.
@@ -405,47 +403,43 @@ const DEPLOY_FIELD_POLICY = new Map<string, ComposeFieldPolicy>([
   // does not have, and are refused by `lintDeployMode` (`./lint.ts`) rather
   // than stripped here. A value-level refusal, because stripping the key would
   // silently turn a job into a service that never finishes.
-  ["mode", { state: "interpreted", runtime: "strip" }],
-  ["replicas", { state: "interpreted", runtime: "strip" }],
-  ["placement", { state: "interpreted", runtime: "strip" }],
+  ['mode', { state: 'interpreted', runtime: 'strip' }],
+  ['replicas', { state: 'interpreted', runtime: 'strip' }],
+  ['placement', { state: 'interpreted', runtime: 'strip' }],
   // Docker Compose honours `deploy.resources.limits` in standalone mode and the
   // native lane turns the same numbers into systemd directives, so the key
   // itself is passthrough. Its `reservations` sub-key is *not* — see
   // {@link DEPLOY_RESOURCES_FIELD_POLICY}.
-  ["resources", { state: "passthrough", runtime: "keep" }],
+  ['resources', { state: 'passthrough', runtime: 'keep' }],
   // Read by the service-options lane and still handed to the daemon.
-  ["restart_policy", { state: "interpreted", runtime: "keep" }],
+  ['restart_policy', { state: 'interpreted', runtime: 'keep' }],
   // Service metadata. Deliberately never copied onto the container's own
   // `labels:` — Compose keeps the two namespaces apart and so do we.
-  ["labels", { state: "interpreted", runtime: "keep" }],
+  ['labels', { state: 'interpreted', runtime: 'keep' }],
+  // Rolling deploys across servers read `parallelism` (and a stopping
+  // `failure_action`) from here; `lintDeployUpdateConfig` (`./lint.ts`) refuses
+  // the settings nothing acts on yet. Stripped from the runtime document: the
+  // control plane drives the rollout, standalone Docker must not reinterpret it.
+  ['update_config', { state: 'interpreted', runtime: 'strip' }],
   [
-    "update_config",
+    'rollback_config',
     {
-      state: "unsupported",
-      runtime: "strip",
+      state: 'unsupported',
+      runtime: 'strip',
       reason:
-        "TurboPanel has no rolling-update controller — parallelism, delay, order and failure_action would all be ignored",
+        'TurboPanel rolls back by re-deploying a published release, not by unwinding an update in place, so none of these settings have anything to drive',
     },
   ],
   [
-    "rollback_config",
+    'endpoint_mode',
     {
-      state: "unsupported",
-      runtime: "strip",
+      state: 'unsupported',
+      runtime: 'strip',
       reason:
-        "TurboPanel rolls back by re-deploying a published release, not by unwinding an update in place, so none of these settings have anything to drive",
+        'service discovery is Docker DNS plus TurboPanel-managed networks; there is no VIP/dnsrr switch to set',
     },
   ],
-  [
-    "endpoint_mode",
-    {
-      state: "unsupported",
-      runtime: "strip",
-      reason:
-        "service discovery is Docker DNS plus TurboPanel-managed networks; there is no VIP/dnsrr switch to set",
-    },
-  ],
-]);
+])
 
 /**
  * Keys under `services.<name>.deploy.resources`.
@@ -474,16 +468,16 @@ const DEPLOY_FIELD_POLICY = new Map<string, ComposeFieldPolicy>([
  * entry becomes `interpreted` and the diagnostic disappears with it.
  */
 const DEPLOY_RESOURCES_FIELD_POLICY = new Map<string, ComposeFieldPolicy>([
-  ["limits", PASSTHROUGH],
+  ['limits', PASSTHROUGH],
   [
-    "reservations",
+    'reservations',
     {
-      state: "unsupported",
+      state: 'unsupported',
       reason:
-        "reservations are a scheduler admission requirement and TurboPanel has no per-host capacity inventory to admit against, so placement would ignore them entirely — use deploy.resources.limits for a ceiling both engines enforce",
+        'reservations are a scheduler admission requirement and TurboPanel has no per-host capacity inventory to admit against, so placement would ignore them entirely — use deploy.resources.limits for a ceiling both engines enforce',
     },
   ],
-]);
+])
 
 /**
  * Keys under `services.<name>.deploy.placement`.
@@ -497,9 +491,9 @@ const DEPLOY_RESOURCES_FIELD_POLICY = new Map<string, ComposeFieldPolicy>([
  * would refuse documents that the very next phase honours.
  */
 const DEPLOY_PLACEMENT_FIELD_POLICY = new Map<string, ComposeFieldPolicy>([
-  ["constraints", INTERPRETED],
-  ["preferences", INTERPRETED],
-  ["max_replicas_per_node", INTERPRETED],
+  ['constraints', INTERPRETED],
+  ['preferences', INTERPRETED],
+  ['max_replicas_per_node', INTERPRETED],
   /**
    * Defensive entry. The authored pin lives on `environment.server_id` and the
    * *runtime* echo is the root `x-turbopanel.placement.server_id` that
@@ -508,22 +502,14 @@ const DEPLOY_PLACEMENT_FIELD_POLICY = new Map<string, ComposeFieldPolicy>([
    * a reader who meets the name here is told which of the two they are looking
    * at.
    */
-  ["server_id", { state: "runtime-generated" }],
-]);
+  ['server_id', { state: 'runtime-generated' }],
+])
 
 /** Key sets, for "did you mean" suggestions on an unknown key. */
-export const TOP_LEVEL_FIELD_KEYS: ReadonlySet<string> = new Set(
-  TOP_LEVEL_FIELD_POLICY.keys(),
-);
-export const SERVICE_FIELD_KEYS: ReadonlySet<string> = new Set(
-  SERVICE_FIELD_POLICY.keys(),
-);
-export const DEPLOY_FIELD_KEYS: ReadonlySet<string> = new Set(
-  DEPLOY_FIELD_POLICY.keys(),
-);
-export const NETWORK_FIELD_KEYS: ReadonlySet<string> = new Set(
-  NETWORK_FIELD_POLICY.keys(),
-);
+export const TOP_LEVEL_FIELD_KEYS: ReadonlySet<string> = new Set(TOP_LEVEL_FIELD_POLICY.keys())
+export const SERVICE_FIELD_KEYS: ReadonlySet<string> = new Set(SERVICE_FIELD_POLICY.keys())
+export const DEPLOY_FIELD_KEYS: ReadonlySet<string> = new Set(DEPLOY_FIELD_POLICY.keys())
+export const NETWORK_FIELD_KEYS: ReadonlySet<string> = new Set(NETWORK_FIELD_POLICY.keys())
 
 /**
  * Service-level keys classified `gated` — set on a service, these require
@@ -531,27 +517,21 @@ export const NETWORK_FIELD_KEYS: ReadonlySet<string> = new Set(
  * organization. Enforced in `validateComposeForDeploy`'s caller, which has
  * org context this module deliberately does not.
  */
-export const GATED_SERVICE_FIELD_KEYS: ReadonlySet<string> = new Set(
-  GATED_SERVICE_FIELD_NAMES,
-);
+export const GATED_SERVICE_FIELD_KEYS: ReadonlySet<string> = new Set(GATED_SERVICE_FIELD_NAMES)
 
 /** Policy for a top-level Compose key, or `undefined` when it is unknown. */
-export function classifyTopLevelKey(
-  key: string,
-): ComposeFieldPolicy | undefined {
-  return TOP_LEVEL_FIELD_POLICY.get(key);
+export function classifyTopLevelKey(key: string): ComposeFieldPolicy | undefined {
+  return TOP_LEVEL_FIELD_POLICY.get(key)
 }
 
 /** Policy for a `services.<name>` key, or `undefined` when it is unknown. */
-export function classifyServiceKey(
-  key: string,
-): ComposeFieldPolicy | undefined {
-  return SERVICE_FIELD_POLICY.get(key);
+export function classifyServiceKey(key: string): ComposeFieldPolicy | undefined {
+  return SERVICE_FIELD_POLICY.get(key)
 }
 
 /** Policy for a `services.<name>.deploy` key, or `undefined` when unknown. */
 export function classifyDeployKey(key: string): ComposeFieldPolicy | undefined {
-  return DEPLOY_FIELD_POLICY.get(key);
+  return DEPLOY_FIELD_POLICY.get(key)
 }
 
 /**
@@ -563,29 +543,22 @@ export function classifyDeployKey(key: string): ComposeFieldPolicy | undefined {
  * verbatim (or omit it); anything other than `overlay` gets the base table, so
  * a `bridge` or default network keeps handing every attribute to Docker.
  */
-export function classifyNetworkKey(
-  key: string,
-  driver?: string,
-): ComposeFieldPolicy | undefined {
+export function classifyNetworkKey(key: string, driver?: string): ComposeFieldPolicy | undefined {
   if (driver?.trim() === SPANNING_NETWORK_DRIVER) {
-    const overlay = OVERLAY_NETWORK_FIELD_POLICY.get(key);
-    if (overlay) return overlay;
+    const overlay = OVERLAY_NETWORK_FIELD_POLICY.get(key)
+    if (overlay) return overlay
   }
-  return NETWORK_FIELD_POLICY.get(key);
+  return NETWORK_FIELD_POLICY.get(key)
 }
 
 /** Policy for a `services.<name>.deploy.placement` key, or `undefined`. */
-export function classifyDeployPlacementKey(
-  key: string,
-): ComposeFieldPolicy | undefined {
-  return DEPLOY_PLACEMENT_FIELD_POLICY.get(key);
+export function classifyDeployPlacementKey(key: string): ComposeFieldPolicy | undefined {
+  return DEPLOY_PLACEMENT_FIELD_POLICY.get(key)
 }
 
 /** Policy for a `services.<name>.deploy.resources` key, or `undefined`. */
-export function classifyDeployResourcesKey(
-  key: string,
-): ComposeFieldPolicy | undefined {
-  return DEPLOY_RESOURCES_FIELD_POLICY.get(key);
+export function classifyDeployResourcesKey(key: string): ComposeFieldPolicy | undefined {
+  return DEPLOY_RESOURCES_FIELD_POLICY.get(key)
 }
 
 /**
@@ -594,11 +567,9 @@ export function classifyDeployResourcesKey(
  * Same sentence shape as {@link unsupportedDeployReason}: the diagnostic reads
  * `deploy.resources.<key> is not supported — <reason>`.
  */
-export function unsupportedDeployResourcesReason(
-  key: string,
-): string | undefined {
-  const policy = DEPLOY_RESOURCES_FIELD_POLICY.get(key);
-  return policy?.state === "unsupported" ? policy.reason : undefined;
+export function unsupportedDeployResourcesReason(key: string): string | undefined {
+  const policy = DEPLOY_RESOURCES_FIELD_POLICY.get(key)
+  return policy?.state === 'unsupported' ? policy.reason : undefined
 }
 
 /**
@@ -607,12 +578,9 @@ export function unsupportedDeployResourcesReason(
  * Same sentence shape as {@link unsupportedDeployReason}: the diagnostic reads
  * `networks.<key>.<field> is not supported ... \u2014 <reason>`.
  */
-export function unsupportedNetworkReason(
-  key: string,
-  driver?: string,
-): string | undefined {
-  const policy = classifyNetworkKey(key, driver);
-  return policy?.state === "unsupported" ? policy.reason : undefined;
+export function unsupportedNetworkReason(key: string, driver?: string): string | undefined {
+  const policy = classifyNetworkKey(key, driver)
+  return policy?.state === 'unsupported' ? policy.reason : undefined
 }
 
 /**
@@ -622,8 +590,8 @@ export function unsupportedNetworkReason(
  * reason has to complete that sentence.
  */
 export function unsupportedDeployReason(key: string): string | undefined {
-  const policy = DEPLOY_FIELD_POLICY.get(key);
-  return policy?.state === "unsupported" ? policy.reason : undefined;
+  const policy = DEPLOY_FIELD_POLICY.get(key)
+  return policy?.state === 'unsupported' ? policy.reason : undefined
 }
 
 /**
@@ -635,7 +603,5 @@ export function unsupportedDeployReason(key: string): string | undefined {
  * an author about it.
  */
 export const DEPLOY_KEYS_STRIPPED_FROM_RUNTIME: ReadonlySet<string> = new Set(
-  [...DEPLOY_FIELD_POLICY]
-    .filter(([, policy]) => policy.runtime === "strip")
-    .map(([key]) => key),
-);
+  [...DEPLOY_FIELD_POLICY].filter(([, policy]) => policy.runtime === 'strip').map(([key]) => key)
+)

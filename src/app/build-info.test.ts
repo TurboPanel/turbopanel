@@ -52,7 +52,7 @@ test('healthPayload reports channel, build label and deployment environment', ()
   assertEquals(payload.environment, 'testing')
 
   const bare = healthPayload({})
-  assertEquals(bare.channel, 'trunk')
+  assertEquals(bare.channel, 'release')
   assertEquals(bare.build, null)
   assertEquals(bare.environment, null)
 })

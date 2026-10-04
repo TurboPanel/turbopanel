@@ -270,7 +270,7 @@ claim kept — providers retry 5xx, not a body that will never parse.
 
 | Event | Handling |
 | --- | --- |
-| `push` | `resolveGithubPushTrigger` — branch + head SHA → deploys |
+| `push` | `resolveGithubPushTrigger` — branch + head SHA → the environments that build that branch → deploys |
 | `push` (branch delete) | dropped: the all-zero `after` SHA / `deleted: true` is not a deploy trigger |
 | `check_suite` / `check_run` | **suite**-level success only; releases a SHA parked by `autoDeploy: 'checks_passed'` |
 | `installation` | `suspend` / `deleted` set `suspended_at`; `unsuspend` / `created` / `new_permissions_accepted` clear it |
@@ -479,9 +479,53 @@ things there are easy to get wrong:
   spanning the whole instance — including projects on a *different* GitLab
   origin whose numeric ids happen to collide, since `base_url` is per app.
 
-A repository with `defaultBranch` set watches exactly that branch; one that left it
-blank watches every branch, because guessing the repository's upstream default
-would need a live provider call per delivery.
+### Which environments a push deploys (per-environment branch)
+
+**The environment decides, not the repository.** Each environment builds the
+branch its *merged* compose names — `services.<name>.x-turbopanel.source.branch`
+in the project document overlaid by the environment's own document — falling
+back to the repository's `defaultBranch`, the same precedence a manual deploy
+uses (`deploy-sources.ts` `resolveBindingMaterial`). So `production` can build
+`main` and `staging` build `staging` from one repository, and a push to
+`staging` deploys only `staging`. The rule lives in
+`src/features/git/environment-branch-tracking.ts` (pure, host-free):
+`environmentBranchBindings` reads the effective compose through
+`resolveComposeLayerChain` + `mergeComposeLayers` — exactly the layers deploy
+merges — and `decideEnvironmentPush` answers `deploy`, `push_deploys_off` or
+`branch_not_tracked`.
+
+- **`repository.autoDeploy` is still the one arming switch** (`disabled` /
+  `immediate` / `checks_passed`). It does not choose branches any more.
+- **`x-turbopanel.source.deployOnPush: false`** keeps one binding out of push
+  deploys (set it on the environment's overlay to make that environment
+  manual-only). Omitted means allowed. It is validated as a boolean on save, and
+  an unparseable stored document tracks nothing, like the deploy path refusing it.
+- **No resolvable branch means no push deploy.** A binding with neither
+  `source.branch` nor a repository `defaultBranch` is refused by deploy-prepare
+  (`source_ref_unresolved`), so a push has nothing correct to build. This
+  replaces the old "blank watches every branch" rule, which only produced a
+  rejected deploy per environment.
+- **Matching is exact and case-sensitive** on the branch name; `refs/heads/x` and
+  `x` are the same, anything else (tags, `refs/pull/…`) is not a branch and never
+  matches. That is also the seam preview builds on pull requests will need — a
+  different ref namespace — and nothing here is in their way.
+- **Plan before park.** `planEnvironmentsForPush` decides which environments
+  care *before* a `checks_passed` SHA is parked, so a commit nobody builds never
+  leaves a stale `pendingChecks`, and the check-release path re-plans from the
+  parked ref so a green check deploys only the environment that builds that branch.
+- **The pinned SHA belongs to its branch.** `requestedCommitShaForSource` pins the
+  pushed SHA only to bindings whose effective ref is the pushed branch; another
+  service of the same repository on a different branch resolves from its own ref.
+- **Org scoped.** `resolveEnvironmentBranches` joins through the workspace and
+  filters on the repository's `organization_id`; an environment id from another
+  organization is simply absent and never deploys.
+- **History.** The deploy command's `metadata.sourceSelection` (`ref`, `commitSha`,
+  `sourceId`) is surfaced as `trigger: { kind: 'push', branch, commitSha, sourceId }`
+  on each deployment-history entry for automated deploys (`readDeploymentTrigger`).
+
+Known limitation: `pendingChecks` is one slot per repository, so with
+`checks_passed` and several tracked branches a newer push to another branch
+overwrites a parked SHA that has not seen its green check yet.
 
 ## Reachability
 

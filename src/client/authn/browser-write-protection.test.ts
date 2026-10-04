@@ -32,23 +32,15 @@ function describe(_name: string, fn: () => void): void {
 describe('isSameOriginBrowserWrite', () => {
   test('allows matching Origin', () => {
     assertEquals(
-      isSameOriginBrowserWrite(
-        'https://panel.example.com',
-        undefined,
-        'https://panel.example.com',
-      ),
-      true,
+      isSameOriginBrowserWrite('https://panel.example.com', undefined, 'https://panel.example.com'),
+      true
     )
   })
 
   test('rejects cross-origin Origin', () => {
     assertEquals(
-      isSameOriginBrowserWrite(
-        'https://evil.example',
-        undefined,
-        'https://panel.example.com',
-      ),
-      false,
+      isSameOriginBrowserWrite('https://evil.example', undefined, 'https://panel.example.com'),
+      false
     )
   })
 
@@ -57,39 +49,94 @@ describe('isSameOriginBrowserWrite', () => {
       isSameOriginBrowserWrite(
         undefined,
         'https://panel.example.com/servers',
-        'https://panel.example.com',
+        'https://panel.example.com'
       ),
-      true,
+      true
     )
   })
 
   test('allows non-browser requests with neither Origin nor Referer', () => {
-    assertEquals(
-      isSameOriginBrowserWrite(undefined, undefined, 'https://panel.example.com'),
-      true,
-    )
+    assertEquals(isSameOriginBrowserWrite(undefined, undefined, 'https://panel.example.com'), true)
   })
 
   test('rejects when expected origin is null', () => {
-    assertEquals(
-      isSameOriginBrowserWrite('https://panel.example.com', undefined, null),
-      false,
-    )
+    assertEquals(isSameOriginBrowserWrite('https://panel.example.com', undefined, null), false)
   })
 
   test('rejects malformed Origin / Referer values', () => {
     assertEquals(
       isSameOriginBrowserWrite('not a url', undefined, 'https://panel.example.com'),
-      false,
+      false
     )
     assertEquals(
-      isSameOriginBrowserWrite(
-        undefined,
-        'also not a url',
-        'https://panel.example.com',
-      ),
-      false,
+      isSameOriginBrowserWrite(undefined, 'also not a url', 'https://panel.example.com'),
+      false
     )
+  })
+})
+
+describe('Sec-Fetch-Site (only ever tightens)', () => {
+  const expected = 'https://panel.example.com'
+  const same = 'https://panel.example.com'
+
+  // [Sec-Fetch-Site, allowed with NO Origin/Referer, allowed WITH matching Origin]
+  const matrix: Array<[string | undefined, boolean, boolean]> = [
+    [undefined, true, true], // native app / curl / CLI: no Sec-Fetch headers
+    ['same-origin', true, true],
+    ['none', true, true],
+    ['same-site', false, true], // sibling subdomains are attacker-controllable
+    ['cross-site', false, false],
+    ['SAME-ORIGIN', true, true],
+    ['bogus', false, true],
+  ]
+  for (const [site, noOrigin, withOrigin] of matrix) {
+    test('Sec-Fetch-Site ' + String(site), () => {
+      assertEquals(isSameOriginBrowserWrite(undefined, undefined, expected, site), noOrigin)
+      assertEquals(isSameOriginBrowserWrite(same, undefined, expected, site), withOrigin)
+    })
+  }
+
+  test('a matching Origin never rescues cross-site; a bad Origin is never rescued by same-origin', () => {
+    assertEquals(isSameOriginBrowserWrite(same, undefined, expected, 'cross-site'), false)
+    assertEquals(
+      isSameOriginBrowserWrite('https://evil.example', undefined, expected, 'same-origin'),
+      false
+    )
+  })
+
+  test('middleware refuses cross-site and Sec-Fetch-Site-only same-site; daemon and webhook stay open', async () => {
+    const app = new Hono()
+    app.use('*', createBrowserWriteProtectionMiddleware('workers'))
+    app.post(`${CLIENT_API_PREFIX}/x`, (c) => c.json({ ok: true }))
+    app.post(`${DAEMON_API_PREFIX}/x`, (c) => c.json({ ok: true }))
+    app.post('/webhook/github', (c) => c.json({ ok: true }))
+    const post = (path: string, headers: Record<string, string>) =>
+      app.request(
+        new Request('https://panel.example.com' + path, { method: 'POST', headers, body: '{}' })
+      )
+    assertEquals(
+      (await post(`${CLIENT_API_PREFIX}/x`, { 'Sec-Fetch-Site': 'cross-site' })).status,
+      403
+    )
+    assertEquals(
+      (await post(`${CLIENT_API_PREFIX}/x`, { 'Sec-Fetch-Site': 'same-site' })).status,
+      403
+    )
+    assertEquals(
+      (await post(`${CLIENT_API_PREFIX}/x`, { 'Sec-Fetch-Site': 'same-origin' })).status,
+      200
+    )
+    assertEquals(
+      (await post(`${CLIENT_API_PREFIX}/x`, { 'Sec-Fetch-Site': 'same-site', Origin: same }))
+        .status,
+      200
+    )
+    assertEquals((await post(`${CLIENT_API_PREFIX}/x`, {})).status, 200)
+    assertEquals(
+      (await post(`${DAEMON_API_PREFIX}/x`, { 'Sec-Fetch-Site': 'cross-site' })).status,
+      200
+    )
+    assertEquals((await post('/webhook/github', { 'Sec-Fetch-Site': 'cross-site' })).status, 200)
   })
 })
 
@@ -103,7 +150,7 @@ describe('browser write protection residual branches', () => {
       new Request('https://panel.example.com/api/client/v1/status', {
         method: 'GET',
         headers: { Origin: 'https://evil.example' },
-      }),
+      })
     )
     assertEquals(res.status, 200)
   })
@@ -122,13 +169,9 @@ describe('browser write protection residual branches', () => {
         url: 'http://[',
         header: () => undefined,
       },
-      json: (body: unknown, status?: number) =>
-        Response.json(body, { status: status ?? 200 }),
+      json: (body: unknown, status?: number) => Response.json(body, { status: status ?? 200 }),
     }
-    const res = await middleware(
-      fakeContext as never,
-      (() => Promise.resolve()) as never,
-    )
+    const res = await middleware(fakeContext as never, (() => Promise.resolve()) as never)
     assertEquals(res instanceof Response ? res.status : 0, 403)
   })
 })
@@ -147,7 +190,7 @@ describe('browser write protection middleware', () => {
           'content-type': 'application/json',
         },
         body: '{}',
-      }),
+      })
     )
     assertEquals(cross.status, 403)
 
@@ -159,7 +202,7 @@ describe('browser write protection middleware', () => {
           'content-type': 'application/json',
         },
         body: '{}',
-      }),
+      })
     )
     assertEquals(same.status, 200)
   })
@@ -175,7 +218,7 @@ describe('browser write protection middleware', () => {
         method: 'PUT',
         headers: { Origin: 'https://docs.example.com' },
         body: '{}',
-      }),
+      })
     )
     assertEquals(adminCross.status, 403)
 
@@ -184,7 +227,7 @@ describe('browser write protection middleware', () => {
         method: 'POST',
         headers: { Origin: 'https://docs.example.com' },
         body: '{}',
-      }),
+      })
     )
     assertEquals(installCross.status, 403)
   })
@@ -202,7 +245,7 @@ describe('browser write protection middleware', () => {
           'content-type': 'application/json',
         },
         body: '{}',
-      }),
+      })
     )
     assertEquals(cross.status, 403)
 
@@ -214,7 +257,7 @@ describe('browser write protection middleware', () => {
           'content-type': 'application/json',
         },
         body: '{}',
-      }),
+      })
     )
     assertEquals(same.status, 200)
 
@@ -223,7 +266,7 @@ describe('browser write protection middleware', () => {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: '{}',
-      }),
+      })
     )
     assertEquals(nonBrowser.status, 200)
   })
@@ -238,7 +281,7 @@ describe('browser write protection middleware', () => {
         method: 'POST',
         headers: { Origin: 'https://docs.evil.example' },
         body: '{}',
-      }),
+      })
     )
     assertEquals(res.status, 200)
   })
@@ -259,7 +302,7 @@ describe('browser write protection middleware', () => {
           'content-type': 'application/json',
         },
         body: '{}',
-      }),
+      })
     )
     assertEquals(res.status, 200)
   })
@@ -280,7 +323,7 @@ describe('browser write protection middleware', () => {
           'content-type': 'application/json',
         },
         body: '{}',
-      }),
+      })
     )
     assertEquals(res.status, 403)
   })
@@ -308,40 +351,27 @@ describe('browser write protection middleware', () => {
         header: (name: string) => denoReq.headers.get(name) ?? undefined,
       },
     } as unknown as Parameters<typeof resolveExpectedBrowserOrigin>[0]
-    assertEquals(
-      resolveExpectedBrowserOrigin(denoCtx, 'deno'),
-      'https://panel.example.com:8443',
-    )
+    assertEquals(resolveExpectedBrowserOrigin(denoCtx, 'deno'), 'https://panel.example.com:8443')
 
-    const workersReq = new Request(
-      'https://panel.example.com/api/client/v1/auth/sign-in',
-      {
-        headers: {
-          Host: 'evil.example',
-          'X-Forwarded-Proto': 'http',
-        },
+    const workersReq = new Request('https://panel.example.com/api/client/v1/auth/sign-in', {
+      headers: {
+        Host: 'evil.example',
+        'X-Forwarded-Proto': 'http',
       },
-    )
+    })
     const workersCtx = {
       req: {
         url: workersReq.url,
         header: (name: string) => workersReq.headers.get(name) ?? undefined,
       },
     } as unknown as Parameters<typeof resolveExpectedBrowserOrigin>[0]
-    assertEquals(
-      resolveExpectedBrowserOrigin(workersCtx, 'workers'),
-      'https://panel.example.com',
-    )
+    assertEquals(resolveExpectedBrowserOrigin(workersCtx, 'workers'), 'https://panel.example.com')
   })
 
   test('createApp mounts write protection before client routes', async () => {
-    const secretsConfig = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`,
-    'workers')
+    const secretsConfig = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`, 'workers')
     const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
-    const otpVerifierSecrets = await deriveSecretsConfig(
-      secretsConfig,
-      'email-otp-verifier',
-    )
+    const otpVerifierSecrets = await deriveSecretsConfig(secretsConfig, 'email-otp-verifier')
     const app = createApp({
       secrets,
       otpVerifierSecrets,
@@ -358,7 +388,7 @@ describe('browser write protection middleware', () => {
           'CF-Connecting-IP': '203.0.113.40',
         },
         body: JSON.stringify({ email: 'a@example.com', password: 'x' }),
-      }),
+      })
     )
     assertEquals(cross.status, 403)
 
@@ -372,7 +402,7 @@ describe('browser write protection middleware', () => {
           'CF-Connecting-IP': '203.0.113.40',
         },
         body: JSON.stringify({ email: 'a@example.com', password: 'x' }),
-      }),
+      })
     )
     assertEquals(same.status === 403, false)
   })
@@ -391,7 +421,7 @@ describe('CORS read-only methods for docs origins', () => {
           Origin: 'https://docs.example.com',
           'Access-Control-Request-Method': 'POST',
         },
-      }),
+      })
     )
     assertEquals(preflight.status, 204)
     const allowed = preflight.headers.get('Access-Control-Allow-Methods') ?? ''
@@ -408,21 +438,18 @@ describe('CORS read-only methods for docs origins', () => {
       new Request('https://panel.example.com/api/client/v1/status', {
         method: 'GET',
         headers: { Origin: 'https://docs.example.com' },
-      }),
+      })
     )
     assertEquals(allowedGet.status, 200)
     assertEquals(allowedGet.headers.get('Vary'), 'Origin')
-    assertEquals(
-      allowedGet.headers.get('Access-Control-Allow-Origin'),
-      'https://docs.example.com',
-    )
+    assertEquals(allowedGet.headers.get('Access-Control-Allow-Origin'), 'https://docs.example.com')
     assertEquals(allowedGet.headers.get('Access-Control-Allow-Credentials'), 'true')
 
     const deniedGet = await app.request(
       new Request('https://panel.example.com/api/client/v1/status', {
         method: 'GET',
         headers: { Origin: 'https://evil.example' },
-      }),
+      })
     )
     assertEquals(deniedGet.status, 200)
     assertEquals(deniedGet.headers.get('Vary'), 'Origin')
@@ -436,15 +463,12 @@ describe('CORS read-only methods for docs origins', () => {
           Origin: 'https://evil.example',
           'Access-Control-Request-Method': 'GET',
         },
-      }),
+      })
     )
     assertEquals(deniedOptions.status, 204)
     assertEquals(deniedOptions.headers.get('Vary'), 'Origin')
     assertEquals(deniedOptions.headers.get('Access-Control-Allow-Origin'), null)
-    assertEquals(
-      deniedOptions.headers.get('Access-Control-Allow-Credentials'),
-      null,
-    )
+    assertEquals(deniedOptions.headers.get('Access-Control-Allow-Credentials'), null)
   })
 })
 

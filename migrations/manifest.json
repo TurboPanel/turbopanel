@@ -56,6 +56,60 @@
       "tag": "0008_invitation_token_hash",
       "when": 1790530277576,
       "sha256": "73d4541a2de6aa82fff53f7cb52f7689d2f07c5059dc7cf7bf5b8974444fad93"
+    },
+    {
+      "idx": 9,
+      "tag": "0009_backup_policies",
+      "when": 1790803233946,
+      "sha256": "d6d4a248b76af2746fd6f68d96f3f291d78de998f38838fba314cfddd856699f"
+    },
+    {
+      "idx": 10,
+      "tag": "0010_single_word_table_names",
+      "when": 1790811211147,
+      "sha256": "13d9c32c2669236ad930c79a100c8dc2d298b65df42e46899c917ba8af8ddd11"
+    },
+    {
+      "idx": 11,
+      "tag": "0011_rename_upgradestep_to_stage",
+      "when": 1790812730427,
+      "sha256": "309b9437f1f0da48fc9053b3621dc9c52132d3ad8692681b3cfca5c3f1dd7620"
+    },
+    {
+      "idx": 12,
+      "tag": "0012_rename_stage_last_stage_at",
+      "when": 1790813625007,
+      "sha256": "55282be50e5f77319d1c07d5456a45a86d45b1a61a0861a6a7a3adb3bc3bb37d"
+    },
+    {
+      "idx": 13,
+      "tag": "0013_add_edict_and_bulwark",
+      "when": 1790817372598,
+      "sha256": "cc71491c50c1fad9757d61245ccdd9b8e9a89dfe46b211376d02ebfd7b202342"
+    },
+    {
+      "idx": 14,
+      "tag": "0014_update_grace_expires_at_comment",
+      "when": 1790833774570,
+      "sha256": "70b225eebab3d87914330681414a7d8e05c9f7af11876831eb7ddd239ed0b1b4"
+    },
+    {
+      "idx": 15,
+      "tag": "0015_deploy_options_comments",
+      "when": 1790861043773,
+      "sha256": "09ff69834416a683987274366a6a9f1c8a147a92f28f49c80c059d628a6e3383"
+    },
+    {
+      "idx": 16,
+      "tag": "0016_notification_digest_quiet_hours",
+      "when": 1790883090317,
+      "sha256": "73fe747a33e184ec44596ec9e80d512cbc2d97b39797884b4591f0497e9d7a88"
+    },
+    {
+      "idx": 17,
+      "tag": "0017_php_mode_policy_comments",
+      "when": 1790966133776,
+      "sha256": "76ed00dec1f12cdcf30e121f9273cd1081325884032909d3c9565a43c431f4b9"
     }
   ]
 }

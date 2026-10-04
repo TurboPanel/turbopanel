@@ -213,6 +213,51 @@ export type TunnelTokenMessage = {
   at: string
 }
 
+/**
+ * Daemon → control plane: one finished scheduled backup run, read from the
+ * host's result spool. Correlated by `id`: the daemon deletes the spooled
+ * result only when a {@link BackupRunReportResultMessage} with the same `id`
+ * arrives, so a report lost in a disconnect is simply sent again, and
+ * `runId` (unique per policy) makes the second copy a no-op. The artifact
+ * fields are present when `status` is `succeeded`. Twin of
+ * `turbopaneld/src/contracts/cell-messages.ts`; not yet accepted inbound
+ * (Road row `r2-backup-status-report` wires it).
+ */
+export type BackupRunReportMessage = {
+  type: 'backup-run-report'
+  id: string
+  policyId: string
+  runId: string
+  startedAt: string
+  finishedAt: string
+  status: 'succeeded' | 'failed'
+  error?: string
+  backupId?: string
+  sizeBytes?: number
+  checksum?: string
+  path?: string
+  /** `bk_` ids this run's retention removed from the policy's directory. */
+  pruned?: string[]
+  /** When the policy's timer next fires, read from systemd after the run. */
+  nextRunAt?: string
+  at: string
+}
+
+/**
+ * Control plane → daemon: the report with this `id` is stored (`ok: true`) or
+ * refused for good (`ok: false`, e.g. the policy is gone or targets another
+ * server) — either way the daemon drops the spooled result. No reply means a
+ * transient failure, and the report is sent again. Twin of
+ * `turbopaneld/src/contracts/cell-messages.ts`.
+ */
+export type BackupRunReportResultMessage = {
+  type: 'backup-run-report-result'
+  id: string
+  ok: boolean
+  error?: string
+  at: string
+}
+
 /** Instance-wide ACME knobs for hostnames whose source is `lets-encrypt`. */
 export type InstanceAcmeWireSettings = {
   contactEmail: string
@@ -234,6 +279,16 @@ export type ManagedHealthObservedMember = {
     lagBytes?: number
     lagSeconds?: number
     observedAt: string
+    receivedLsn?: string
+    replayLsn?: string
+    receiveLagBytes?: number
+    lastStreaming?: {
+      at: string
+      ageMs: number
+      lagBytes?: number
+      lagSeconds?: number
+      receiveLagBytes?: number
+    }
   }
 }
 
@@ -456,6 +511,27 @@ export type DaemonMessage =
       type: 'managed-ha-event'
       managedId: string
       sourceMemberId?: string
+      /**
+       * Who decided the primary is dead. Absent = the daemon's Orchestrator
+       * poller. `postgres-probe` = the daemon's own Postgres probe on the
+       * primary's host (feature `managed-ha-probe-v1`); see
+       * `features/managed/ha-policy.ts` → `AUTOMATIC_FAILOVER_DETECTORS`.
+       */
+      detector?: string
+      /**
+       * Orchestrator's key for the dead instance (feature
+       * `managed-ha-instance-v1`): the host and port it was discovered with.
+       * The control plane fences only when they match the cluster's current
+       * primary. Both or neither.
+       */
+      instanceHost?: string
+      instancePort?: number
+      /**
+       * Bounded detector evidence. Logged and stored on the recovery row
+       * (`metadata.detectorEvidence`). Only `spanMs` is read: it anchors the
+       * fresh-standby gate's failure start (`ha-fresh-standby.ts`).
+       */
+      evidence?: Record<string, unknown>
       at: string
     }
   | {
@@ -550,6 +626,8 @@ export type DaemonMessage =
       error?: string
       at: string
     }
+  | BackupRunReportMessage
+  | BackupRunReportResultMessage
   | {
       type: 'public-urls-update'
       id: string
@@ -612,6 +690,11 @@ export const DAEMON_STALE_MS = 60_000
 export const DAEMON_OFFLINE_SWEEP_MS = 150_000
 /** Redis cell registry maintenance interval (prune); not used for liveness. */
 export const DAEMON_CELL_MAINTAIN_MS = 60_000
+/** How long a terminal request's correlation record stays queryable after
+ * finishing, across every request kind (deploys, backups, secret handoffs,
+ * updates) on both the Redis and Durable Object backends — not update-specific
+ * despite the value historically living under features/update. */
+export const TERMINAL_REQUEST_RETENTION_MS = 120_000
 
 /** Message types accepted from daemons after authentication succeeds. */
 export const DAEMON_INBOUND_ALLOWED = new Set([
@@ -633,6 +716,7 @@ export const DAEMON_INBOUND_ALLOWED = new Set([
   'topology-report',
   'acme-issuance-event',
   'instance-acme-issuance-event',
+  'backup-run-report',
   'fabric-paths-result',
   'dev-sync-result',
   'tunnel-token-result',
@@ -946,7 +1030,43 @@ function validateManagedHaEventFields(record: Record<string, unknown>): string |
   ) {
     return 'invalid sourceMemberId'
   }
+  if (record.detector !== undefined && !isManagedHaDetectorName(record.detector)) {
+    return 'invalid detector'
+  }
+  if (record.evidence !== undefined && !isRecord(record.evidence)) {
+    return 'invalid evidence'
+  }
+  return validateManagedHaInstanceFields(record)
+}
+
+const MANAGED_HA_INSTANCE_HOST_MAX = 255
+
+function validateManagedHaInstanceFields(record: Record<string, unknown>): string | null {
+  const { instanceHost, instancePort } = record
+  if (instanceHost === undefined && instancePort === undefined) return null
+  if (
+    typeof instanceHost !== 'string' ||
+    instanceHost.length === 0 ||
+    instanceHost.length > MANAGED_HA_INSTANCE_HOST_MAX
+  ) {
+    return 'invalid instanceHost'
+  }
+  if (
+    typeof instancePort !== 'number' ||
+    !Number.isInteger(instancePort) ||
+    instancePort < 1 ||
+    instancePort > 65535
+  ) {
+    return 'invalid instancePort'
+  }
   return null
+}
+
+const MANAGED_HA_DETECTOR_RE = /^[a-z][a-z0-9-]{0,63}$/
+
+/** Shape only: which detectors may start a failover is policy, not wire. */
+function isManagedHaDetectorName(value: unknown): value is string {
+  return typeof value === 'string' && MANAGED_HA_DETECTOR_RE.test(value)
 }
 
 function isNonNegativeInt(value: unknown): value is number {
@@ -976,6 +1096,85 @@ function validateAcmeIssuanceEventFields(record: Record<string, unknown>): strin
     return 'invalid notAfter'
   }
   return validateOptionalError(record.errorMessage)
+}
+
+/** A backup policy id: lower-case, because the host also uses it as a systemd unit name. */
+const BACKUP_POLICY_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+/** Daemon-minted run and artifact ids (`run_<hex>`, `bk_<hex>`); both become filenames. */
+const BACKUP_RUN_TOKEN_RE = /^[\w-]{1,64}$/
+const BACKUP_CHECKSUM_RE = /^[a-f0-9]{64}$/
+const BACKUP_RUN_STATUSES = new Set(['succeeded', 'failed'])
+
+/** Max characters for `backup-run-report.path`. */
+export const MAX_DAEMON_WS_BACKUP_PATH_CHARS = 1024
+
+/** Max `backup-run-report.pruned` entries (a policy keeps at most 100 artifacts). */
+export const MAX_DAEMON_WS_BACKUP_PRUNED = 256
+
+function isBackupRunToken(value: unknown): value is string {
+  return typeof value === 'string' && BACKUP_RUN_TOKEN_RE.test(value)
+}
+
+function isBackupPrunedList(value: unknown): boolean {
+  return (
+    Array.isArray(value) &&
+    value.length <= MAX_DAEMON_WS_BACKUP_PRUNED &&
+    value.every((entry) => isBackupRunToken(entry))
+  )
+}
+
+function validateBackupRunReportRun(record: Record<string, unknown>): string | null {
+  if (!isBoundedId(record.id)) return 'invalid id'
+  if (!isIsoTimestamp(record.at)) return 'invalid at timestamp'
+  if (typeof record.policyId !== 'string' || !BACKUP_POLICY_ID_RE.test(record.policyId)) {
+    return 'invalid policyId'
+  }
+  if (!isBackupRunToken(record.runId)) return 'invalid runId'
+  if (!isIsoTimestamp(record.startedAt)) return 'invalid startedAt'
+  if (!isIsoTimestamp(record.finishedAt)) return 'invalid finishedAt'
+  if (typeof record.status !== 'string' || !BACKUP_RUN_STATUSES.has(record.status)) {
+    return 'invalid status'
+  }
+  return (
+    validateOptionalIsoTimestamp(record.nextRunAt, 'nextRunAt') ??
+    validateOptionalError(record.error)
+  )
+}
+
+function validateBackupRunReportArtifact(record: Record<string, unknown>): string | null {
+  if (record.backupId !== undefined && !isBackupRunToken(record.backupId)) {
+    return 'invalid backupId'
+  }
+  if (
+    record.sizeBytes !== undefined &&
+    !(isNonNegativeInt(record.sizeBytes) && Number.isSafeInteger(record.sizeBytes))
+  ) {
+    return 'invalid sizeBytes'
+  }
+  if (
+    record.checksum !== undefined &&
+    (typeof record.checksum !== 'string' || !BACKUP_CHECKSUM_RE.test(record.checksum))
+  ) {
+    return 'invalid checksum'
+  }
+  if (
+    record.path !== undefined &&
+    (typeof record.path !== 'string' || record.path.length > MAX_DAEMON_WS_BACKUP_PATH_CHARS)
+  ) {
+    return 'invalid path'
+  }
+  if (record.pruned !== undefined && !isBackupPrunedList(record.pruned)) return 'invalid pruned'
+  return null
+}
+
+/**
+ * Shape only. Whether the report is believed (the policy exists, targets an
+ * engine on the reporting server, the artifact path is that policy's own) is
+ * decided by `handleBackupRunReport`, which answers `ok: false` rather than
+ * closing the socket, so one bad spool file cannot keep a daemon disconnected.
+ */
+function validateBackupRunReportFields(record: Record<string, unknown>): string | null {
+  return validateBackupRunReportRun(record) ?? validateBackupRunReportArtifact(record)
 }
 
 function isFabricPeerHealth(value: unknown): value is FabricPathPeerHealth {
@@ -1051,7 +1250,36 @@ function validateManagedHealthMember(value: unknown): string | null {
   }
   return (
     validateOptionalFiniteNumber(replication.lagBytes, 'member.replication.lagBytes') ??
-    validateOptionalFiniteNumber(replication.lagSeconds, 'member.replication.lagSeconds')
+    validateOptionalFiniteNumber(replication.lagSeconds, 'member.replication.lagSeconds') ??
+    validateOptionalHealthString(replication.receivedLsn, 'member.replication.receivedLsn') ??
+    validateOptionalHealthString(replication.replayLsn, 'member.replication.replayLsn') ??
+    validateOptionalFiniteNumber(
+      replication.receiveLagBytes,
+      'member.replication.receiveLagBytes'
+    ) ??
+    validateLastStreaming(replication.lastStreaming)
+  )
+}
+
+function validateOptionalHealthString(value: unknown, field: string): string | null {
+  if (value === undefined || isBoundedHealthString(value)) return null
+  return `invalid ${field}`
+}
+
+function validateLastStreaming(value: unknown): string | null {
+  if (value === undefined) return null
+  if (!isRecord(value)) return 'invalid member.replication.lastStreaming'
+  if (!isIsoTimestamp(value.at)) return 'invalid member.replication.lastStreaming.at'
+  if (typeof value.ageMs !== 'number' || !Number.isFinite(value.ageMs)) {
+    return 'invalid member.replication.lastStreaming.ageMs'
+  }
+  return (
+    validateOptionalFiniteNumber(value.lagBytes, 'member.replication.lastStreaming.lagBytes') ??
+    validateOptionalFiniteNumber(value.lagSeconds, 'member.replication.lastStreaming.lagSeconds') ??
+    validateOptionalFiniteNumber(
+      value.receiveLagBytes,
+      'member.replication.lastStreaming.receiveLagBytes'
+    )
   )
 }
 
@@ -1202,6 +1430,8 @@ function validateInboundMessageFields(record: Record<string, unknown>): string |
     case 'acme-issuance-event':
     case 'instance-acme-issuance-event':
       return validateAcmeIssuanceEventFields(record)
+    case 'backup-run-report':
+      return validateBackupRunReportFields(record)
     case 'fabric-paths-result':
       return validateFabricPathsResultFields(record)
     case 'dev-sync-result':

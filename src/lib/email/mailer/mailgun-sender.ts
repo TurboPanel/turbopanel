@@ -74,7 +74,8 @@ export class MailerMailgunSender {
         job.type === 'email-otp' ||
         job.type === 'server-tier-notice' ||
         job.type === 'invitation' ||
-        job.type === 'notification'
+        job.type === 'notification' ||
+        job.type === 'channel-verification'
       ) {
         validateEmailAddress(job.to, 'recipient')
       }

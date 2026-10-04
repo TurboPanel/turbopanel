@@ -47,7 +47,7 @@ test('parseRecoveryMetadata keeps fencing epoch and blocked reason', () => {
       blockedReason: 'unfenced',
       fenceCommandIds: ['c1'],
       lagBytes: 12,
-    },
+    }
   )
 })
 
@@ -80,7 +80,7 @@ test('parseRecoveryMetadata copies command ids, flags, and nullable fields', () 
       targetDatacenterId: 'dc-2',
       sourceServerId: 's1',
       targetServerId: 's2',
-    },
+    }
   )
 })
 
@@ -100,15 +100,15 @@ test('serializeRecovery surfaces blocked copy for the UI', () => {
   }
   assertEquals(serializeRecovery(row).blockedReason, 'unable to fence')
   assertEquals(serializeRecovery(row).state, 'blocked')
+  assertEquals(serializeRecovery({ ...row, metadata: {} }).blockedReason, null)
+  assertEquals(serializeRecovery(row).freshStandby, null)
   assertEquals(
-    serializeRecovery({ ...row, metadata: {} }).blockedReason,
-    null,
+    serializeRecovery({ ...row, metadata: { freshStandby: 'r2 refused: receipt_stale' } })
+      .freshStandby,
+    'r2 refused: receipt_stale'
   )
 })
 
 test('parseRecoveryMetadata drops non-number lagBytes that are not null', () => {
-  assertEquals(
-    parseRecoveryMetadata({ lagBytes: '12', blockedReason: 9 }),
-    {},
-  )
+  assertEquals(parseRecoveryMetadata({ lagBytes: '12', blockedReason: 9 }), {})
 })

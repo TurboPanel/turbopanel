@@ -440,6 +440,10 @@ export type CoverageRefusal =
       error: typeof LICENSES_IN_USE_ERROR
       purchasedAfter: number
       licensesHeld: number
+      /** Licenses bound to a server or being provisioned (what a customer must remove). */
+      inUse: number
+      /** Registration keys nobody has used yet: delete them to free licenses. */
+      unusedKeys: number
     }
 
 /**
@@ -472,10 +476,13 @@ export function coverageRefusal(
   }
   const purchasedAfter = future.reduce((sum, entry) => sum + entry.quantity, 0)
   if (purchasedAfter < view.licenses.active) {
+    const { inUse, unusedKeys } = summarizeLicenses(view)
     return {
       error: LICENSES_IN_USE_ERROR,
       purchasedAfter,
       licensesHeld: view.licenses.active,
+      inUse,
+      unusedKeys,
     }
   }
   const loss = coverageLoss(current, future, view.servers)

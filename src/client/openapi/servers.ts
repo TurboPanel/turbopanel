@@ -362,7 +362,7 @@ export const serverSchemas = {
       remoteAddress: {
         type: ['string', 'null'],
         description:
-          'Raw peer address as seen by the instance (CF-Connecting-IP through a trusted Cloudflare Tunnel, else X-Real-IP from Caddy). Diagnostic — prefer `address`. Null when offline or co-located on a Unix socket.',
+          'Raw peer address as seen by the control plane (CF-Connecting-IP through a trusted Cloudflare Tunnel, else X-Real-IP from Caddy). Diagnostic — prefer `address`. Null when offline or co-located on a Unix socket.',
       },
       address: {
         type: ['string', 'null'],
@@ -489,7 +489,7 @@ export const serverSchemas = {
       colocatedWithInstance: {
         type: 'boolean',
         description:
-          'True when this server is the daemon co-located on the same host as this control plane instance.',
+          'True when this server is the daemon co-located on the same host as this control plane.',
       },
       datacenters: {
         type: 'array',
@@ -736,7 +736,7 @@ export const serverSchemas = {
         type: 'string',
         enum: ['trunk', 'edge', 'canary', 'rc', 'release'],
         description:
-          "The update channel this instance follows (TURBOPANEL_UPDATE_CHANNEL; default trunk) — the one every queued update targets. rc and release resolve from the daemon's GitHub Releases.",
+          "The update channel this control plane follows (TURBOPANEL_UPDATE_CHANNEL; default release) — the one every queued update targets. rc and release resolve from the daemon's GitHub Releases.",
       },
       current: {
         oneOf: [{ $ref: '#/components/schemas/ServerUpdateCurrent' }, { type: 'null' }],
@@ -748,7 +748,7 @@ export const serverSchemas = {
       colocatedWithInstance: {
         type: 'boolean',
         description:
-          'True when this server is the daemon co-located on the same host as this control plane instance.',
+          'True when this server is the daemon co-located on the same host as this control plane.',
       },
       updateBlocked: {
         type: 'boolean',
@@ -1011,7 +1011,7 @@ export const serverPaths: Record<string, unknown> = {
       ],
       responses: {
         '200': {
-          description: "Current daemon build vs the instance's channel manifest target",
+          description: "Current daemon build vs the control plane's channel manifest target",
           content: {
             'application/json': {
               schema: {
@@ -1060,7 +1060,7 @@ export const serverPaths: Record<string, unknown> = {
     },
     post: {
       tags: ['Servers'],
-      summary: "Trigger a daemon update on a connected server, on the instance's channel",
+      summary: "Trigger a daemon update on a connected server, on the control plane's channel",
       security: [{ cookieAuth: [] }],
       parameters: [
         {
@@ -1150,7 +1150,7 @@ export const serverPaths: Record<string, unknown> = {
   '/api/client/v1/servers/{id}/update/reset': {
     post: {
       tags: ['Servers'],
-      summary: 'Clear stale daemon update status after a manual node update',
+      summary: 'Clear stale daemon update status after a manual server update',
       security: [{ cookieAuth: [] }],
       parameters: [
         {

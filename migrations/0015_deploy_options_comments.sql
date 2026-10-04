@@ -1,0 +1,2 @@
+COMMENT ON COLUMN "environment"."options" IS 'Jsonb: `compose` overlay merged at deploy, plus deploy settings `deployStrategy`, `migrations`, `drainSeconds`, `healthTimeoutSeconds`, `rollbackWindowMinutes`.';--> statement-breakpoint
+COMMENT ON COLUMN "project"."options" IS 'Jsonb: `compose`, `containerNaming`, `defaultServerId`, `composeSource`, and deploy defaults `drainSeconds`, `healthTimeoutSeconds`, `rollbackWindowMinutes`.';
