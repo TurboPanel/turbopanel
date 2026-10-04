@@ -646,7 +646,7 @@ test('GET /environments/:id/deploy-preview returns prepared yaml with warnings f
         warnings: Array<{ code: string }>
       }
       assertEquals(body.ok, true)
-      assertEquals(body.projectName, projectId)
+      assertEquals(body.projectName, environmentId)
       assertEquals(body.containers, [])
       assertEquals(body.volumes, [])
       assertEquals(
@@ -707,7 +707,7 @@ test('GET /environments/:id/deploy-preview returns containers for a service', as
         warnings: unknown[]
       }
       assertEquals(body.ok, true)
-      assertEquals(body.projectName, projectId)
+      assertEquals(body.projectName, environmentId)
       const runtimeYaml = body.composeFiles[0]?.content ?? ''
       assertEquals(runtimeYaml.includes('web:'), true)
       assertEquals(runtimeYaml.includes('x-turbopanel:'), true)

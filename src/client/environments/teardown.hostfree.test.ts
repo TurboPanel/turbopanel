@@ -71,7 +71,7 @@ function plan(overrides: Partial<EnvironmentTeardownPlan> = {}): EnvironmentTear
   return {
     environmentId: ENV_ID,
     projectId: PROJECT_ID,
-    projectName: PROJECT_ID,
+    projectName: ENV_ID,
     serverIds: ['srv-a'],
     ingressServices: [],
     fabricNetworksByServer: new Map(),
@@ -109,7 +109,7 @@ test('planEnvironmentTeardown prefers deployment rows over the pin', async () =>
   ])
   const result = await planEnvironmentTeardown(db, ENV_ID)
   assertEquals(result?.serverIds, ['srv-a', 'srv-b'])
-  assertEquals(result?.projectName, PROJECT_ID)
+  assertEquals(result?.projectName, ENV_ID)
 })
 
 test('planEnvironmentTeardown falls back to the effective pin and collects ingress + fabric', async () => {

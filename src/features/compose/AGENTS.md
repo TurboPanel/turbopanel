@@ -454,7 +454,7 @@ with an explicit compose `services.<key>.container_name`; replica identity is
 `(service, ordinal)` with `ordinal = slot + 1`, not sibling `web-N` compose
 keys) → **`registerComposeVolumes`** + **`renameComposeVolumes`** (auto-register
 top-level named volumes as `storage` rows and rewrite keys to their UUID
-`volumeName`) → build service-options map → resource-limit + health gates →
+`volumeName`, and pin each with `name:` unless the author set `name`/`external`, so a volume does not depend on the Compose project name; the project is per environment, and the first deploy after that change leaves a stack's old `<project>_<uuid>` volumes on the host unused) → build service-options map → resource-limit + health gates →
 **`apply-variables.ts`** (parse `{$KEY}` / `{$scope.KEY}` on `environment` /
 `build.args`; non-secrets → project `.env` + `${service__KEY}`; secrets →
 Compose `secrets:` + `KEY_FILE`; unreferenced secrets not auto-injected except
