@@ -1,22 +1,16 @@
-import { skipWithoutDatabase } from "../../test-fixtures/require-service.ts";
-import { assertEquals } from "@std/assert";
-import { and, eq, inArray } from "drizzle-orm";
-import { Hono } from "hono";
-import type { AppEnv } from "../../app/app.ts";
-import { getDatabaseUrl } from "../../db/url.ts";
-import { createDenoDb } from "../../db/connection.ts";
-import type {
-  DaemonCell,
-  DaemonCellRegistry,
-} from "../../contracts/cell.ts";
-import type { CommandEnvelope } from "../../features/commands/envelope.ts";
-import type { CommandQueue } from "../../features/commands/queue.ts";
-import {
-  buildSignedCookie,
-  HTTP_SESSION_COOKIE_NAME,
-} from "../authn/crypto.ts";
-import { createSession } from "../authn/session-store.ts";
-import { deriveSecretsConfig } from "../../lib/secrets/secrets.ts";
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.ts'
+import { assertEquals } from '@std/assert'
+import { and, eq, inArray } from 'drizzle-orm'
+import { Hono } from 'hono'
+import type { AppEnv } from '../../app/app.ts'
+import { getDatabaseUrl } from '../../db/url.ts'
+import { createDenoDb } from '../../db/connection.ts'
+import type { DaemonCell, DaemonCellRegistry } from '../../contracts/cell.ts'
+import type { CommandEnvelope } from '../../features/commands/envelope.ts'
+import type { CommandQueue } from '../../features/commands/queue.ts'
+import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from '../authn/crypto.ts'
+import { createSession } from '../authn/session-store.ts'
+import { deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
 import {
   command,
   container,
@@ -30,13 +24,13 @@ import {
   teammate,
   user,
   workspace,
-} from "../../db/schema.ts";
-import { ORG_ID_HEADER } from "../org-context.ts";
-import { ensureSystemHierarchy } from "../../features/system/hierarchy.ts";
-import { registerSystemRoutes } from "./routes.ts";
-import { parseTestSecretsConfig } from "../../test-fixtures/secrets.ts";
+} from '../../db/schema.ts'
+import { ORG_ID_HEADER } from '../org-context.ts'
+import { ensureSystemHierarchy } from '../../features/system/hierarchy.ts'
+import { registerSystemRoutes } from './routes.ts'
+import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 
-const dbUrl = getDatabaseUrl();
+const dbUrl = getDatabaseUrl()
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -44,17 +38,17 @@ const dbUrl = getDatabaseUrl();
  * Sonar typescript:S2187 only recognizes `test()` / `it()` / `describe()` and
  * reports Deno suites as empty; keep this alias so analysis sees real tests.
  */
-const test = Deno.test.bind(Deno);
+const test = Deno.test.bind(Deno)
 
 function createMockCell(serverId: string): DaemonCell {
-  const noopAsync = () => Promise.resolve();
+  const noopAsync = () => Promise.resolve()
   return {
     attachDaemonSocket: () =>
       Promise.resolve({
-        connectionId: "conn",
+        connectionId: 'conn',
         lease: {
-          holder: "conn",
-          token: "conn",
+          holder: 'conn',
+          token: 'conn',
           expiresAt: new Date(Date.now() + 45_000).toISOString(),
         },
       }),
@@ -80,7 +74,7 @@ function createMockCell(serverId: string): DaemonCell {
         serverId,
         requestId: outbound.requestId,
         requestKind: outbound.kind,
-        status: "queued" as const,
+        status: 'queued' as const,
         createdAt: outbound.at,
         expiresAt: outbound.at,
       }),
@@ -94,7 +88,7 @@ function createMockCell(serverId: string): DaemonCell {
         serverId,
         requestId: outbound.requestId,
         requestKind: outbound.kind,
-        status: "done" as const,
+        status: 'done' as const,
         createdAt: outbound.at,
         expiresAt: outbound.at,
       }),
@@ -106,139 +100,136 @@ function createMockCell(serverId: string): DaemonCell {
     prune: () => Promise.resolve([]),
     clearUpdateStatus: () => Promise.resolve({ cleared: 0 }),
     purge: noopAsync,
-  };
+  }
 }
 
 function createTrackingRegistry(): DaemonCellRegistry {
-  const cells = new Map<string, DaemonCell>();
+  const cells = new Map<string, DaemonCell>()
   return {
     getCell(serverId: string): DaemonCell {
-      let cell = cells.get(serverId);
+      let cell = cells.get(serverId)
       if (!cell) {
-        cell = createMockCell(serverId);
-        cells.set(serverId, cell);
+        cell = createMockCell(serverId)
+        cells.set(serverId, cell)
       }
-      return cell;
+      return cell
     },
     listOnlineServerIds: () => Promise.resolve([]),
     getSnapshots: () => Promise.resolve(new Map()),
     purge: () => Promise.resolve(),
-  };
+  }
 }
 
 function createRecordingCommandQueue(): CommandQueue & {
-  envelopes: CommandEnvelope[];
+  envelopes: CommandEnvelope[]
 } {
-  const envelopes: CommandEnvelope[] = [];
+  const envelopes: CommandEnvelope[] = []
   return {
     envelopes,
     enqueue: (envelope) => {
-      envelopes.push(envelope);
-      return Promise.resolve();
+      envelopes.push(envelope)
+      return Promise.resolve()
     },
-  };
+  }
 }
 
 async function sessionCookie(
   db: ReturnType<typeof createDenoDb>,
   secrets: Awaited<ReturnType<typeof deriveSecretsConfig>>,
-  userId: string,
+  userId: string
 ): Promise<string> {
-  const { token } = await createSession(db, userId, {});
-  const signed = await buildSignedCookie(token, secrets);
-  return `${HTTP_SESSION_COOKIE_NAME}=${signed}`;
+  const { token } = await createSession(db, userId, {})
+  const signed = await buildSignedCookie(token, secrets)
+  return `${HTTP_SESSION_COOKIE_NAME}=${signed}`
 }
 
 async function withSystemRouteFixtures(
   options: {
-    withSystemOperateGrant?: boolean;
-    withCommandQueue?: boolean;
-    withRegistry?: boolean;
-    provisionHierarchy?: boolean;
+    withSystemOperateGrant?: boolean
+    withCommandQueue?: boolean
+    withRegistry?: boolean
+    provisionHierarchy?: boolean
   },
   fn: (ctx: {
-    db: ReturnType<typeof createDenoDb>;
-    app: Hono<AppEnv>;
-    secrets: Awaited<ReturnType<typeof deriveSecretsConfig>>;
-    userId: string;
-    organizationId: string;
-    serverId: string;
-    commandQueue: ReturnType<typeof createRecordingCommandQueue> | undefined;
-  }) => Promise<void>,
+    db: ReturnType<typeof createDenoDb>
+    app: Hono<AppEnv>
+    secrets: Awaited<ReturnType<typeof deriveSecretsConfig>>
+    userId: string
+    organizationId: string
+    serverId: string
+    commandQueue: ReturnType<typeof createRecordingCommandQueue> | undefined
+  }) => Promise<void>
 ): Promise<void> {
   if (!dbUrl) {
-    skipWithoutDatabase("system route tests");
-    return;
+    skipWithoutDatabase('system route tests')
+    return
   }
 
-  const db = createDenoDb();
-  const commandQueue = options.withCommandQueue === false
-    ? undefined
-    : createRecordingCommandQueue();
-  const registry = options.withRegistry === false
-    ? undefined
-    : createTrackingRegistry();
+  const db = createDenoDb()
+  const commandQueue =
+    options.withCommandQueue === false ? undefined : createRecordingCommandQueue()
+  const registry = options.withRegistry === false ? undefined : createTrackingRegistry()
 
-  const secretsConfig = parseTestSecretsConfig("deno");
-  const secrets = await deriveSecretsConfig(secretsConfig, "session-signing");
-  const app = new Hono<AppEnv>();
-  app.use("*", (c, next) => {
-    c.set("db", db);
-    if (registry) c.set("daemonCellRegistry", registry);
-    if (commandQueue) c.set("commandQueue", commandQueue);
-    return next();
-  });
+  const secretsConfig = parseTestSecretsConfig('deno')
+  const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
+  const app = new Hono<AppEnv>()
+  app.use('*', (c, next) => {
+    c.set('db', db)
+    if (registry) c.set('daemonCellRegistry', registry)
+    if (commandQueue) c.set('commandQueue', commandQueue)
+    return next()
+  })
   registerSystemRoutes(app, {
     secrets,
-    runtime: "deno",
+    runtime: 'deno',
     signupEnvOverride: undefined,
-  });
+  })
 
-  const email = `system-route-${crypto.randomUUID()}@example.com`;
+  const email = `system-route-${crypto.randomUUID()}@example.com`
   const [insertedOrg] = await db
     .insert(organization)
-    .values({ name: "System Route Org" })
-    .returning({ id: organization.id });
-  const organizationId = insertedOrg!.id;
+    .values({ name: 'System Route Org' })
+    .returning({ id: organization.id })
+  const organizationId = insertedOrg!.id
 
   const [insertedUser] = await db
     .insert(user)
-    .values({ email, isEmailVerified: true, role: "user" })
-    .returning({ id: user.id });
-  const userId = insertedUser!.id;
+    .values({ email, isEmailVerified: true, role: 'user' })
+    .returning({ id: user.id })
+  const userId = insertedUser!.id
   const [insertedTeam] = await db
     .insert(team)
-    .values({ name: "System Route Team", organizationId })
-    .returning({ id: team.id });
-  const teamId = insertedTeam!.id;
-  await db.insert(teammate).values({ teamId, userId });
+    .values({ name: 'System Route Team', organizationId })
+    .returning({ id: team.id })
+  const teamId = insertedTeam!.id
+  await db.insert(teammate).values({ teamId, userId })
 
   if (options.withSystemOperateGrant !== false) {
     await db.insert(grant).values({
-      entityType: "organization",
+      entityType: 'organization',
       entityId: organizationId,
-      actorType: "user",
+      actorType: 'user',
       actorId: userId,
-      permission: "system:operate",
-    });
+      permission: 'system:operate',
+    })
   }
 
-  const now = new Date().toISOString();
+  const now = new Date().toISOString()
   const [insertedServer] = await db
     .insert(server)
     .values({
       organizationId,
-      name: "System Route Server",
+      name: 'System Route Server',
       options: { hosting: { enabled: true } },
       isHostingEnabled: true,
       createdAt: now,
       updatedAt: now,
     })
-    .returning({ id: server.id });
-  const serverId = insertedServer!.id;
+    .returning({ id: server.id })
+  const serverId = insertedServer!.id
 
   if (options.provisionHierarchy !== false) {
-    await ensureSystemHierarchy(db, { organizationId, serverId });
+    await ensureSystemHierarchy(db, { organizationId, serverId })
   }
 
   try {
@@ -250,208 +241,160 @@ async function withSystemRouteFixtures(
       organizationId,
       serverId,
       commandQueue,
-    });
+    })
   } finally {
-    await db.delete(command).where(eq(command.serverId, serverId));
+    await db.delete(command).where(eq(command.serverId, serverId))
     const workspaceRows = await db
       .select({ id: workspace.id })
       .from(workspace)
-      .where(eq(workspace.organizationId, organizationId));
-    const workspaceIds = workspaceRows.map((row) => row.id);
+      .where(eq(workspace.organizationId, organizationId))
+    const workspaceIds = workspaceRows.map((row) => row.id)
     if (workspaceIds.length > 0) {
       const projectRows = await db
         .select({ id: project.id })
         .from(project)
-        .where(inArray(project.workspaceId, workspaceIds));
-      const projectIds = projectRows.map((row) => row.id);
+        .where(inArray(project.workspaceId, workspaceIds))
+      const projectIds = projectRows.map((row) => row.id)
       if (projectIds.length > 0) {
         const environmentRows = await db
           .select({ id: environment.id })
           .from(environment)
-          .where(inArray(environment.projectId, projectIds));
-        const environmentIds = environmentRows.map((row) => row.id);
+          .where(inArray(environment.projectId, projectIds))
+        const environmentIds = environmentRows.map((row) => row.id)
         if (environmentIds.length > 0) {
           const serviceRows = await db
             .select({ id: service.id })
             .from(service)
-            .where(inArray(service.environmentId, environmentIds));
-          const serviceIds = serviceRows.map((row) => row.id);
+            .where(inArray(service.environmentId, environmentIds))
+          const serviceIds = serviceRows.map((row) => row.id)
           if (serviceIds.length > 0) {
-            await db.delete(container).where(
-              inArray(container.serviceId, serviceIds),
-            );
-            await db.delete(service).where(inArray(service.id, serviceIds));
+            await db.delete(container).where(inArray(container.serviceId, serviceIds))
+            await db.delete(service).where(inArray(service.id, serviceIds))
           }
-          await db.delete(environment).where(
-            inArray(environment.id, environmentIds),
-          );
+          await db.delete(environment).where(inArray(environment.id, environmentIds))
         }
-        await db.delete(project).where(inArray(project.id, projectIds));
+        await db.delete(project).where(inArray(project.id, projectIds))
       }
-      await db.delete(workspace).where(inArray(workspace.id, workspaceIds));
+      await db.delete(workspace).where(inArray(workspace.id, workspaceIds))
     }
-    await db.delete(server).where(eq(server.id, serverId));
-    await db.delete(grant).where(and(
-      eq(grant.actorId, userId),
-      eq(grant.entityId, organizationId),
-    ));
-    await db.delete(teammate).where(and(
-      eq(teammate.teamId, teamId),
-      eq(teammate.userId, userId),
-    ));
-    await db.delete(team).where(eq(team.id, teamId));
-    await db.delete(user).where(eq(user.id, userId));
-    await db.delete(organization).where(eq(organization.id, organizationId));
+    await db.delete(server).where(eq(server.id, serverId))
+    await db.delete(grant).where(and(eq(grant.actorId, userId), eq(grant.entityId, organizationId)))
+    await db.delete(teammate).where(and(eq(teammate.teamId, teamId), eq(teammate.userId, userId)))
+    await db.delete(team).where(eq(team.id, teamId))
+    await db.delete(user).where(eq(user.id, userId))
+    await db.delete(organization).where(eq(organization.id, organizationId))
   }
 }
 
-test("POST /servers/:id/system/:component/restart queues system.reconcile", async () => {
-  await withSystemRouteFixtures({}, async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-    serverId,
-    commandQueue,
-  }) => {
-    const cookie = await sessionCookie(db, secrets, userId);
-    const res = await app.request(
-      `/servers/${serverId}/system/hosting-ingress/restart`,
-      {
-        method: "POST",
+test('POST /servers/:id/system/:component/restart queues system.reconcile', async () => {
+  await withSystemRouteFixtures(
+    {},
+    async ({ db, app, secrets, userId, organizationId, serverId, commandQueue }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const res = await app.request(`/servers/${serverId}/system/hosting-ingress/restart`, {
+        method: 'POST',
         headers: {
           Cookie: cookie,
           [ORG_ID_HEADER]: organizationId,
         },
-      },
-    );
+      })
 
-    assertEquals(res.status, 200);
-    const body = await res.json() as {
-      ok: boolean;
-      commandId: string;
-      status: string;
-      serverId: string;
-    };
-    assertEquals(body.ok, true);
-    assertEquals(body.status, "queued");
-    assertEquals(body.serverId, serverId);
-    assertEquals(typeof body.commandId, "string");
-    assertEquals(commandQueue!.envelopes.length, 1);
-    assertEquals(commandQueue!.envelopes[0]?.type, "system.reconcile");
-  });
-});
+      assertEquals(res.status, 200)
+      const body = (await res.json()) as {
+        ok: boolean
+        commandId: string
+        status: string
+        serverId: string
+      }
+      assertEquals(body.ok, true)
+      assertEquals(body.status, 'queued')
+      assertEquals(body.serverId, serverId)
+      assertEquals(typeof body.commandId, 'string')
+      assertEquals(commandQueue!.envelopes.length, 1)
+      assertEquals(commandQueue!.envelopes[0]?.type, 'system.reconcile')
+    }
+  )
+})
 
-test("POST /servers/:id/system/:component/restart returns 400 for unknown component", async () => {
-  await withSystemRouteFixtures({}, async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-    serverId,
-  }) => {
-    const cookie = await sessionCookie(db, secrets, userId);
-    const res = await app.request(
-      `/servers/${serverId}/system/database/restart`,
-      {
-        method: "POST",
+test('POST /servers/:id/system/:component/restart returns 400 for unknown component', async () => {
+  await withSystemRouteFixtures(
+    {},
+    async ({ db, app, secrets, userId, organizationId, serverId }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const res = await app.request(`/servers/${serverId}/system/database/restart`, {
+        method: 'POST',
         headers: {
           Cookie: cookie,
           [ORG_ID_HEADER]: organizationId,
         },
-      },
-    );
+      })
 
-    assertEquals(res.status, 400);
-    const body = await res.json() as { error: string };
-    assertEquals(body.error, "unknown_system_component");
-  });
-});
+      assertEquals(res.status, 400)
+      const body = (await res.json()) as { error: string }
+      assertEquals(body.error, 'unknown_system_component')
+    }
+  )
+})
 
-test("POST /servers/:id/system/:component/restart returns 404 when hierarchy is missing", async () => {
-  await withSystemRouteFixtures({ provisionHierarchy: false }, async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-    serverId,
-    commandQueue,
-  }) => {
-    const cookie = await sessionCookie(db, secrets, userId);
-    const res = await app.request(
-      `/servers/${serverId}/system/hosting-ingress/restart`,
-      {
-        method: "POST",
+test('POST /servers/:id/system/:component/restart returns 404 when hierarchy is missing', async () => {
+  await withSystemRouteFixtures(
+    { provisionHierarchy: false },
+    async ({ db, app, secrets, userId, organizationId, serverId, commandQueue }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const res = await app.request(`/servers/${serverId}/system/hosting-ingress/restart`, {
+        method: 'POST',
         headers: {
           Cookie: cookie,
           [ORG_ID_HEADER]: organizationId,
         },
-      },
-    );
+      })
 
-    assertEquals(res.status, 404);
-    const body = await res.json() as { error: string };
-    assertEquals(body.error, "system_component_not_provisioned");
-    assertEquals(commandQueue!.envelopes.length, 0);
-  });
-});
+      assertEquals(res.status, 404)
+      const body = (await res.json()) as { error: string }
+      assertEquals(body.error, 'system_component_not_provisioned')
+      assertEquals(commandQueue!.envelopes.length, 0)
+    }
+  )
+})
 
-test("POST /servers/:id/system/:component/restart returns 403 without system:operate", async () => {
-  await withSystemRouteFixtures({ withSystemOperateGrant: false }, async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-    serverId,
-    commandQueue,
-  }) => {
-    const cookie = await sessionCookie(db, secrets, userId);
-    const res = await app.request(
-      `/servers/${serverId}/system/hosting-ingress/restart`,
-      {
-        method: "POST",
+test('POST /servers/:id/system/:component/restart returns 403 without system:operate', async () => {
+  await withSystemRouteFixtures(
+    { withSystemOperateGrant: false },
+    async ({ db, app, secrets, userId, organizationId, serverId, commandQueue }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const res = await app.request(`/servers/${serverId}/system/hosting-ingress/restart`, {
+        method: 'POST',
         headers: {
           Cookie: cookie,
           [ORG_ID_HEADER]: organizationId,
         },
-      },
-    );
+      })
 
-    assertEquals(res.status, 403);
-    assertEquals(commandQueue!.envelopes.length, 0);
-  });
-});
+      assertEquals(res.status, 403)
+      assertEquals(commandQueue!.envelopes.length, 0)
+    }
+  )
+})
 
-test("POST /servers/:id/system/:component/restart returns 503 without dispatch infra", async () => {
-  await withSystemRouteFixtures({
-    withCommandQueue: false,
-    withRegistry: true,
-  }, async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-    serverId,
-  }) => {
-    const cookie = await sessionCookie(db, secrets, userId);
-    const res = await app.request(
-      `/servers/${serverId}/system/hosting-ingress/restart`,
-      {
-        method: "POST",
+test('POST /servers/:id/system/:component/restart returns 503 without dispatch infra', async () => {
+  await withSystemRouteFixtures(
+    {
+      withCommandQueue: false,
+      withRegistry: true,
+    },
+    async ({ db, app, secrets, userId, organizationId, serverId }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const res = await app.request(`/servers/${serverId}/system/hosting-ingress/restart`, {
+        method: 'POST',
         headers: {
           Cookie: cookie,
           [ORG_ID_HEADER]: organizationId,
         },
-      },
-    );
+      })
 
-    assertEquals(res.status, 503);
-    const body = await res.json() as { error: string };
-    assertEquals(body.error, "Command queue unavailable");
-  });
-});
+      assertEquals(res.status, 503)
+      const body = (await res.json()) as { error: string }
+      assertEquals(body.error, 'Command queue unavailable')
+    }
+  )
+})

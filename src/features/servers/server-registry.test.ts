@@ -14,11 +14,7 @@ import {
   service,
   workspace,
 } from '../../db/schema.ts'
-import {
-  getServerLicenseBinding,
-  resolveServerId,
-  touchServerMetadata,
-} from './server-registry.ts'
+import { getServerLicenseBinding, resolveServerId, touchServerMetadata } from './server-registry.ts'
 
 const dbUrl = getDatabaseUrl()
 
@@ -44,7 +40,7 @@ async function withTestDb(fn: (db: ReturnType<typeof createDenoDb>) => Promise<v
 async function deleteOrganizationServerTree(
   db: ReturnType<typeof createDenoDb>,
   organizationId: string,
-  serverId: string,
+  serverId: string
 ): Promise<void> {
   const workspaceRows = await db
     .select({ id: workspace.id })
@@ -76,10 +72,7 @@ async function deleteOrganizationServerTree(
     await db.delete(workspace).where(eq(workspace.id, ws.id))
   }
   await db.delete(container).where(eq(container.serverId, serverId))
-  await db
-    .update(license)
-    .set({ serverId: null })
-    .where(eq(license.serverId, serverId))
+  await db.update(license).set({ serverId: null }).where(eq(license.serverId, serverId))
   await db.delete(server).where(eq(server.id, serverId))
 }
 
@@ -223,10 +216,7 @@ test('getServerLicenseBinding prefers an active bound license', async () => {
       organizationId,
       name: 'Active Bound',
     })
-    await db
-      .update(license)
-      .set({ serverId, updatedAt: now })
-      .where(eq(license.id, licenseId))
+    await db.update(license).set({ serverId, updatedAt: now }).where(eq(license.id, licenseId))
 
     try {
       const binding = await getServerLicenseBinding(db, serverId)
@@ -264,10 +254,7 @@ test('getServerLicenseBinding surfaces a revoked-only latch for fail-closed chec
       organizationId,
       name: 'Revoked Bound',
     })
-    await db
-      .update(license)
-      .set({ serverId, updatedAt: now })
-      .where(eq(license.id, licenseId))
+    await db.update(license).set({ serverId, updatedAt: now }).where(eq(license.id, licenseId))
     await revokeLicense(db, licenseId, organizationId)
 
     try {

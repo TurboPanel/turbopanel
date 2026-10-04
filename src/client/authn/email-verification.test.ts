@@ -16,8 +16,7 @@ import { deriveSecretsConfig, parseSecretsEnv } from '../../lib/secrets/secrets.
 const dbUrl = getDatabaseUrl()
 
 async function createAuthApp(db: ReturnType<typeof createDenoDb>) {
-  const secretsConfig = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`,
-    'deno')
+  const secretsConfig = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`, 'deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const app = new Hono<AppEnv>()
   app.use('*', (c, next) => {
@@ -81,7 +80,7 @@ it('GET /auth/verify-email marks the user verified and consumes the token', asyn
     const token = await createEmailVerificationToken(db, email)
 
     const response = await app.request(
-      `${CLIENT_API_PREFIX}/auth/verify-email?token=${encodeURIComponent(token)}`,
+      `${CLIENT_API_PREFIX}/auth/verify-email?token=${encodeURIComponent(token)}`
     )
     assertEquals(response.status, 200)
     const payload = (await response.json()) as { ok: boolean }

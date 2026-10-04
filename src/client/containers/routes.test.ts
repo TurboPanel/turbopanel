@@ -5,10 +5,7 @@ import { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
 import { createDenoDb } from '../../db/connection.ts'
-import {
-  buildSignedCookie,
-  HTTP_SESSION_COOKIE_NAME,
-} from '../authn/crypto.ts'
+import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from '../authn/crypto.ts'
 import { createSession } from '../authn/session-store.ts'
 import { deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
 import {
@@ -53,7 +50,7 @@ async function createContainerRoutesTestApp(db: ReturnType<typeof createDenoDb>)
 async function sessionCookie(
   db: ReturnType<typeof createDenoDb>,
   secrets: Awaited<ReturnType<typeof deriveSecretsConfig>>,
-  userId: string,
+  userId: string
 ): Promise<string> {
   const { token } = await createSession(db, userId, {})
   const signed = await buildSignedCookie(token, secrets)
@@ -65,7 +62,7 @@ async function insertOrgTeamMembership(
   db: ReturnType<typeof createDenoDb>,
   organizationId: string,
   userId: string,
-  teamName: string,
+  teamName: string
 ): Promise<string> {
   const [insertedTeam] = await db
     .insert(team)
@@ -87,7 +84,7 @@ async function withContainerFixtures(
     environmentId: string
     serviceId: string
     serverId: string
-  }) => Promise<void>,
+  }) => Promise<void>
 ): Promise<void> {
   if (!dbUrl) {
     skipWithoutDatabase('container route tests')
@@ -161,10 +158,10 @@ async function withContainerFixtures(
   const [insertedService] = await db
     .insert(service)
     .values({
-        environmentId,
-        name: 'web',
+      environmentId,
+      name: 'web',
       composeServiceName: 'web',
-      })
+    })
     .returning({ id: service.id })
   const serviceId = insertedService!.id
 
@@ -186,10 +183,7 @@ async function withContainerFixtures(
     await db.delete(environment).where(eq(environment.id, environmentId))
     await db.delete(project).where(eq(project.id, projectId))
     await db.delete(server).where(eq(server.id, serverId))
-    await db.delete(grant).where(and(
-      eq(grant.actorId, userId),
-      eq(grant.entityId, organizationId),
-    ))
+    await db.delete(grant).where(and(eq(grant.actorId, userId), eq(grant.entityId, organizationId)))
     await db.delete(workspace).where(eq(workspace.id, workspaceId))
     await db.delete(user).where(eq(user.id, userId))
     await db.delete(organization).where(eq(organization.id, organizationId))
@@ -197,150 +191,12 @@ async function withContainerFixtures(
 }
 
 test('POST/PATCH /containers strip promoted keys from stored JSONB', async () => {
-  await withContainerFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-    serviceId,
-    serverId,
-  }) => {
-    const cookie = await sessionCookie(db, secrets, userId)
-    const dockerId = `ctr-${crypto.randomUUID()}`
+  await withContainerFixtures(
+    async ({ db, app, secrets, userId, organizationId, serviceId, serverId }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const dockerId = `ctr-${crypto.randomUUID()}`
 
-    const createRes = await app.request('/containers', {
-      method: 'POST',
-      headers: {
-        Cookie: cookie,
-        [ORG_ID_HEADER]: organizationId,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        serviceId,
-        serverId,
-        containerId: dockerId,
-        containerName: 'web-1',
-        status: 'running',
-        composeServiceName: 'web',
-        metadata: {
-          note: 'keep-me',
-          containerId: 'should-not-persist',
-          role: 'ingress',
-        },
-      }),
-    })
-    assertEquals(createRes.status, 200)
-    const { id } = await createRes.json() as { ok: true; id: string }
-
-    const [storedAfterCreate] = await db
-      .select({
-        containerId: container.containerId,
-        containerName: container.containerName,
-        status: container.status,
-        composeServiceName: container.composeServiceName,
-        metadata: container.metadata,
-      })
-      .from(container)
-      .where(eq(container.id, id))
-      .limit(1)
-    assertEquals(storedAfterCreate?.containerId, dockerId)
-    assertEquals(storedAfterCreate?.containerName, 'web-1')
-    assertEquals(storedAfterCreate?.status, 'running')
-    assertEquals(storedAfterCreate?.composeServiceName, 'web')
-    assertEquals(storedAfterCreate?.metadata, { note: 'keep-me' })
-
-    const getRes = await app.request(`/containers/${id}`, {
-      headers: {
-        Cookie: cookie,
-        [ORG_ID_HEADER]: organizationId,
-      },
-    })
-    assertEquals(getRes.status, 200)
-    const getBody = await getRes.json() as {
-      container: {
-        containerId: string
-        containerName: string
-        status: string
-        role: string
-        composeServiceName: string
-        metadata: { note?: string; containerId?: string; role?: string }
-      }
-    }
-    assertEquals(getBody.container.containerId, dockerId)
-    assertEquals(getBody.container.containerName, 'web-1')
-    assertEquals(getBody.container.status, 'running')
-    assertEquals(getBody.container.role, 'service')
-    assertEquals(getBody.container.composeServiceName, 'web')
-    assertEquals(getBody.container.metadata.note, 'keep-me')
-    assertEquals(getBody.container.metadata.containerId, undefined)
-    assertEquals(getBody.container.metadata.role, undefined)
-
-    const patchRes = await app.request(`/containers/${id}`, {
-      method: 'PATCH',
-      headers: {
-        Cookie: cookie,
-        [ORG_ID_HEADER]: organizationId,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        status: 'exited',
-        metadata: {
-          note: 'patched',
-          status: 'should-not-persist',
-        },
-      }),
-    })
-    assertEquals(patchRes.status, 200)
-
-    const [storedAfterPatch] = await db
-      .select({
-        status: container.status,
-        metadata: container.metadata,
-      })
-      .from(container)
-      .where(eq(container.id, id))
-      .limit(1)
-    assertEquals(storedAfterPatch?.status, 'exited')
-    assertEquals(storedAfterPatch?.metadata, { note: 'patched' })
-  })
-})
-
-test('GET /containers?environmentId= returns only matching environment containers', async () => {
-  await withContainerFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-    projectId,
-    environmentId,
-    serviceId,
-    serverId,
-  }) => {
-    const cookie = await sessionCookie(db, secrets, userId)
-
-    const [otherEnv] = await db
-      .insert(environment)
-      .values({
-        name: 'Other Env',
-        projectId,
-      })
-      .returning({ id: environment.id })
-    const otherEnvironmentId = otherEnv!.id
-
-    const [otherService] = await db
-      .insert(service)
-      .values({
-        name: 'api',
-      composeServiceName: 'api',
-        environmentId: otherEnvironmentId,
-      })
-      .returning({ id: service.id })
-    const otherServiceId = otherService!.id
-
-    try {
-      const createMatching = await app.request('/containers', {
+      const createRes = await app.request('/containers', {
         method: 'POST',
         headers: {
           Cookie: cookie,
@@ -350,359 +206,468 @@ test('GET /containers?environmentId= returns only matching environment container
         body: JSON.stringify({
           serviceId,
           serverId,
-          containerId: `ctr-match-${crypto.randomUUID()}`,
+          containerId: dockerId,
           containerName: 'web-1',
           status: 'running',
           composeServiceName: 'web',
+          metadata: {
+            note: 'keep-me',
+            containerId: 'should-not-persist',
+            role: 'ingress',
+          },
         }),
       })
-      assertEquals(createMatching.status, 200)
-      const matching = await createMatching.json() as { ok: true; id: string }
+      assertEquals(createRes.status, 200)
+      const { id } = (await createRes.json()) as { ok: true; id: string }
 
-      const createOther = await app.request('/containers', {
-        method: 'POST',
+      const [storedAfterCreate] = await db
+        .select({
+          containerId: container.containerId,
+          containerName: container.containerName,
+          status: container.status,
+          composeServiceName: container.composeServiceName,
+          metadata: container.metadata,
+        })
+        .from(container)
+        .where(eq(container.id, id))
+        .limit(1)
+      assertEquals(storedAfterCreate?.containerId, dockerId)
+      assertEquals(storedAfterCreate?.containerName, 'web-1')
+      assertEquals(storedAfterCreate?.status, 'running')
+      assertEquals(storedAfterCreate?.composeServiceName, 'web')
+      assertEquals(storedAfterCreate?.metadata, { note: 'keep-me' })
+
+      const getRes = await app.request(`/containers/${id}`, {
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+        },
+      })
+      assertEquals(getRes.status, 200)
+      const getBody = (await getRes.json()) as {
+        container: {
+          containerId: string
+          containerName: string
+          status: string
+          role: string
+          composeServiceName: string
+          metadata: { note?: string; containerId?: string; role?: string }
+        }
+      }
+      assertEquals(getBody.container.containerId, dockerId)
+      assertEquals(getBody.container.containerName, 'web-1')
+      assertEquals(getBody.container.status, 'running')
+      assertEquals(getBody.container.role, 'service')
+      assertEquals(getBody.container.composeServiceName, 'web')
+      assertEquals(getBody.container.metadata.note, 'keep-me')
+      assertEquals(getBody.container.metadata.containerId, undefined)
+      assertEquals(getBody.container.metadata.role, undefined)
+
+      const patchRes = await app.request(`/containers/${id}`, {
+        method: 'PATCH',
         headers: {
           Cookie: cookie,
           [ORG_ID_HEADER]: organizationId,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          serviceId: otherServiceId,
-          serverId,
-          containerId: `ctr-other-${crypto.randomUUID()}`,
-          containerName: 'api-1',
-          status: 'running',
-          composeServiceName: 'api',
+          status: 'exited',
+          metadata: {
+            note: 'patched',
+            status: 'should-not-persist',
+          },
         }),
       })
-      assertEquals(createOther.status, 200)
+      assertEquals(patchRes.status, 200)
 
-      const listRes = await app.request(
-        `/containers?environmentId=${environmentId}`,
-        {
+      const [storedAfterPatch] = await db
+        .select({
+          status: container.status,
+          metadata: container.metadata,
+        })
+        .from(container)
+        .where(eq(container.id, id))
+        .limit(1)
+      assertEquals(storedAfterPatch?.status, 'exited')
+      assertEquals(storedAfterPatch?.metadata, { note: 'patched' })
+    }
+  )
+})
+
+test('GET /containers?environmentId= returns only matching environment containers', async () => {
+  await withContainerFixtures(
+    async ({
+      db,
+      app,
+      secrets,
+      userId,
+      organizationId,
+      projectId,
+      environmentId,
+      serviceId,
+      serverId,
+    }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+
+      const [otherEnv] = await db
+        .insert(environment)
+        .values({
+          name: 'Other Env',
+          projectId,
+        })
+        .returning({ id: environment.id })
+      const otherEnvironmentId = otherEnv!.id
+
+      const [otherService] = await db
+        .insert(service)
+        .values({
+          name: 'api',
+          composeServiceName: 'api',
+          environmentId: otherEnvironmentId,
+        })
+        .returning({ id: service.id })
+      const otherServiceId = otherService!.id
+
+      try {
+        const createMatching = await app.request('/containers', {
+          method: 'POST',
+          headers: {
+            Cookie: cookie,
+            [ORG_ID_HEADER]: organizationId,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            serviceId,
+            serverId,
+            containerId: `ctr-match-${crypto.randomUUID()}`,
+            containerName: 'web-1',
+            status: 'running',
+            composeServiceName: 'web',
+          }),
+        })
+        assertEquals(createMatching.status, 200)
+        const matching = (await createMatching.json()) as { ok: true; id: string }
+
+        const createOther = await app.request('/containers', {
+          method: 'POST',
+          headers: {
+            Cookie: cookie,
+            [ORG_ID_HEADER]: organizationId,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            serviceId: otherServiceId,
+            serverId,
+            containerId: `ctr-other-${crypto.randomUUID()}`,
+            containerName: 'api-1',
+            status: 'running',
+            composeServiceName: 'api',
+          }),
+        })
+        assertEquals(createOther.status, 200)
+
+        const listRes = await app.request(`/containers?environmentId=${environmentId}`, {
           headers: {
             Cookie: cookie,
             [ORG_ID_HEADER]: organizationId,
           },
-        },
-      )
-      assertEquals(listRes.status, 200)
-      const listBody = await listRes.json() as {
-        containers: Array<{ id: string; serviceId: string }>
+        })
+        assertEquals(listRes.status, 200)
+        const listBody = (await listRes.json()) as {
+          containers: Array<{ id: string; serviceId: string }>
+        }
+        assertEquals(listBody.containers.length, 1)
+        assertEquals(listBody.containers[0]?.id, matching.id)
+        assertEquals(listBody.containers[0]?.serviceId, serviceId)
+      } finally {
+        await db.delete(container).where(eq(container.serviceId, otherServiceId))
+        await db.delete(service).where(eq(service.id, otherServiceId))
+        await db.delete(environment).where(eq(environment.id, otherEnvironmentId))
       }
-      assertEquals(listBody.containers.length, 1)
-      assertEquals(listBody.containers[0]?.id, matching.id)
-      assertEquals(listBody.containers[0]?.serviceId, serviceId)
-    } finally {
-      await db.delete(container).where(eq(container.serviceId, otherServiceId))
-      await db.delete(service).where(eq(service.id, otherServiceId))
-      await db.delete(environment).where(eq(environment.id, otherEnvironmentId))
     }
-  })
+  )
 })
 
 test('GET /containers?environmentId= ANDs with status and serverId filters', async () => {
-  await withContainerFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-    environmentId,
-    serviceId,
-    serverId,
-  }) => {
-    const cookie = await sessionCookie(db, secrets, userId)
-    const now = new Date().toISOString()
+  await withContainerFixtures(
+    async ({ db, app, secrets, userId, organizationId, environmentId, serviceId, serverId }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
+      const now = new Date().toISOString()
 
-    const [otherServer] = await db
-      .insert(server)
-      .values({
-        organizationId,
-        name: 'Other Server',
-        createdAt: now,
-        updatedAt: now,
-      })
-      .returning({ id: server.id })
-    const otherServerId = otherServer!.id
+      const [otherServer] = await db
+        .insert(server)
+        .values({
+          organizationId,
+          name: 'Other Server',
+          createdAt: now,
+          updatedAt: now,
+        })
+        .returning({ id: server.id })
+      const otherServerId = otherServer!.id
 
-    try {
-      const createRunning = await app.request('/containers', {
-        method: 'POST',
-        headers: {
-          Cookie: cookie,
-          [ORG_ID_HEADER]: organizationId,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          serviceId,
-          serverId,
-          containerId: `ctr-running-${crypto.randomUUID()}`,
-          containerName: 'web-running',
-          status: 'running',
-          composeServiceName: 'web',
-          ordinal: 1,
-        }),
-      })
-      assertEquals(createRunning.status, 200)
-      const running = await createRunning.json() as { ok: true; id: string }
-
-      const createExited = await app.request('/containers', {
-        method: 'POST',
-        headers: {
-          Cookie: cookie,
-          [ORG_ID_HEADER]: organizationId,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          serviceId,
-          serverId,
-          containerId: `ctr-exited-${crypto.randomUUID()}`,
-          containerName: 'web-exited',
-          status: 'exited',
-          composeServiceName: 'web',
-          ordinal: 2,
-        }),
-      })
-      assertEquals(createExited.status, 200)
-
-      const createOtherServer = await app.request('/containers', {
-        method: 'POST',
-        headers: {
-          Cookie: cookie,
-          [ORG_ID_HEADER]: organizationId,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          serviceId,
-          serverId: otherServerId,
-          containerId: `ctr-other-srv-${crypto.randomUUID()}`,
-          containerName: 'web-other-srv',
-          status: 'running',
-          composeServiceName: 'web',
-          ordinal: 3,
-        }),
-      })
-      assertEquals(createOtherServer.status, 200)
-
-      const listRes = await app.request(
-        `/containers?environmentId=${environmentId}&status=running&serverId=${serverId}`,
-        {
+      try {
+        const createRunning = await app.request('/containers', {
+          method: 'POST',
           headers: {
             Cookie: cookie,
             [ORG_ID_HEADER]: organizationId,
+            'Content-Type': 'application/json',
           },
-        },
-      )
-      assertEquals(listRes.status, 200)
-      const listBody = await listRes.json() as {
-        containers: Array<{ id: string; status: string; serverId: string }>
+          body: JSON.stringify({
+            serviceId,
+            serverId,
+            containerId: `ctr-running-${crypto.randomUUID()}`,
+            containerName: 'web-running',
+            status: 'running',
+            composeServiceName: 'web',
+            ordinal: 1,
+          }),
+        })
+        assertEquals(createRunning.status, 200)
+        const running = (await createRunning.json()) as { ok: true; id: string }
+
+        const createExited = await app.request('/containers', {
+          method: 'POST',
+          headers: {
+            Cookie: cookie,
+            [ORG_ID_HEADER]: organizationId,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            serviceId,
+            serverId,
+            containerId: `ctr-exited-${crypto.randomUUID()}`,
+            containerName: 'web-exited',
+            status: 'exited',
+            composeServiceName: 'web',
+            ordinal: 2,
+          }),
+        })
+        assertEquals(createExited.status, 200)
+
+        const createOtherServer = await app.request('/containers', {
+          method: 'POST',
+          headers: {
+            Cookie: cookie,
+            [ORG_ID_HEADER]: organizationId,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            serviceId,
+            serverId: otherServerId,
+            containerId: `ctr-other-srv-${crypto.randomUUID()}`,
+            containerName: 'web-other-srv',
+            status: 'running',
+            composeServiceName: 'web',
+            ordinal: 3,
+          }),
+        })
+        assertEquals(createOtherServer.status, 200)
+
+        const listRes = await app.request(
+          `/containers?environmentId=${environmentId}&status=running&serverId=${serverId}`,
+          {
+            headers: {
+              Cookie: cookie,
+              [ORG_ID_HEADER]: organizationId,
+            },
+          }
+        )
+        assertEquals(listRes.status, 200)
+        const listBody = (await listRes.json()) as {
+          containers: Array<{ id: string; status: string; serverId: string }>
+        }
+        assertEquals(listBody.containers.length, 1)
+        assertEquals(listBody.containers[0]?.id, running.id)
+        assertEquals(listBody.containers[0]?.status, 'running')
+        assertEquals(listBody.containers[0]?.serverId, serverId)
+      } finally {
+        await db.delete(container).where(eq(container.serverId, otherServerId))
+        await db.delete(server).where(eq(server.id, otherServerId))
       }
-      assertEquals(listBody.containers.length, 1)
-      assertEquals(listBody.containers[0]?.id, running.id)
-      assertEquals(listBody.containers[0]?.status, 'running')
-      assertEquals(listBody.containers[0]?.serverId, serverId)
-    } finally {
-      await db.delete(container).where(eq(container.serverId, otherServerId))
-      await db.delete(server).where(eq(server.id, otherServerId))
     }
-  })
+  )
 })
 
 test('GET /containers?environmentId= does not leak containers the caller cannot see', async () => {
-  await withContainerFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-    environmentId,
-    serviceId,
-    serverId,
-  }) => {
-    const managerCookie = await sessionCookie(db, secrets, userId)
+  await withContainerFixtures(
+    async ({ db, app, secrets, userId, organizationId, environmentId, serviceId, serverId }) => {
+      const managerCookie = await sessionCookie(db, secrets, userId)
 
-    const createRes = await app.request('/containers', {
-      method: 'POST',
-      headers: {
-        Cookie: managerCookie,
-        [ORG_ID_HEADER]: organizationId,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        serviceId,
-        serverId,
-        containerId: `ctr-hidden-${crypto.randomUUID()}`,
-        containerName: 'web-hidden',
-        status: 'running',
-        composeServiceName: 'web',
-      }),
-    })
-    assertEquals(createRes.status, 200)
-
-    const [limitedUser] = await db
-      .insert(user)
-      .values({
-        email: `ctr-limited-${crypto.randomUUID()}@example.com`,
-        isEmailVerified: true,
-        role: 'user',
+      const createRes = await app.request('/containers', {
+        method: 'POST',
+        headers: {
+          Cookie: managerCookie,
+          [ORG_ID_HEADER]: organizationId,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          serviceId,
+          serverId,
+          containerId: `ctr-hidden-${crypto.randomUUID()}`,
+          containerName: 'web-hidden',
+          status: 'running',
+          composeServiceName: 'web',
+        }),
       })
-      .returning({ id: user.id })
-    const limitedUserId = limitedUser!.id
-    const limitedTeamId = await insertOrgTeamMembership(
-      db,
-      organizationId,
-      limitedUserId,
-      'Container Limited Team',
-    )
+      assertEquals(createRes.status, 200)
 
-    try {
-      const limitedCookie = await sessionCookie(db, secrets, limitedUserId)
-      const listRes = await app.request(
-        `/containers?environmentId=${environmentId}`,
-        {
+      const [limitedUser] = await db
+        .insert(user)
+        .values({
+          email: `ctr-limited-${crypto.randomUUID()}@example.com`,
+          isEmailVerified: true,
+          role: 'user',
+        })
+        .returning({ id: user.id })
+      const limitedUserId = limitedUser!.id
+      const limitedTeamId = await insertOrgTeamMembership(
+        db,
+        organizationId,
+        limitedUserId,
+        'Container Limited Team'
+      )
+
+      try {
+        const limitedCookie = await sessionCookie(db, secrets, limitedUserId)
+        const listRes = await app.request(`/containers?environmentId=${environmentId}`, {
           headers: {
             Cookie: limitedCookie,
             [ORG_ID_HEADER]: organizationId,
           },
-        },
-      )
-      assertEquals(listRes.status, 200)
-      const listBody = await listRes.json() as {
-        containers: Array<{ id: string }>
+        })
+        assertEquals(listRes.status, 200)
+        const listBody = (await listRes.json()) as {
+          containers: Array<{ id: string }>
+        }
+        assertEquals(listBody.containers.length, 0)
+      } finally {
+        await db
+          .delete(teammate)
+          .where(and(eq(teammate.teamId, limitedTeamId), eq(teammate.userId, limitedUserId)))
+        await db.delete(team).where(eq(team.id, limitedTeamId))
+        await db.delete(user).where(eq(user.id, limitedUserId))
       }
-      assertEquals(listBody.containers.length, 0)
-    } finally {
-      await db.delete(teammate).where(and(
-        eq(teammate.teamId, limitedTeamId),
-        eq(teammate.userId, limitedUserId),
-      ))
-      await db.delete(team).where(eq(team.id, limitedTeamId))
-      await db.delete(user).where(eq(user.id, limitedUserId))
     }
-  })
+  )
 })
 
 test('GET /containers?projectId= spans the project environments and stamps environmentId', async () => {
-  await withContainerFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-    projectId,
-    environmentId,
-    serviceId,
-    serverId,
-  }) => {
-    const cookie = await sessionCookie(db, secrets, userId)
+  await withContainerFixtures(
+    async ({
+      db,
+      app,
+      secrets,
+      userId,
+      organizationId,
+      projectId,
+      environmentId,
+      serviceId,
+      serverId,
+    }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
 
-    const [projectRow] = await db
-      .select({ workspaceId: project.workspaceId })
-      .from(project)
-      .where(eq(project.id, projectId))
-      .limit(1)
-    const workspaceId = projectRow!.workspaceId
+      const [projectRow] = await db
+        .select({ workspaceId: project.workspaceId })
+        .from(project)
+        .where(eq(project.id, projectId))
+        .limit(1)
+      const workspaceId = projectRow!.workspaceId
 
-    // A second environment of the SAME project — the project filter must span it.
-    const [secondEnv] = await db
-      .insert(environment)
-      .values({ name: 'Second Env', projectId })
-      .returning({ id: environment.id })
-    const secondEnvironmentId = secondEnv!.id
-    const [secondService] = await db
-      .insert(service)
-      .values({
-        name: 'worker',
-        composeServiceName: 'worker',
-        environmentId: secondEnvironmentId,
-      })
-      .returning({ id: service.id })
-    const secondServiceId = secondService!.id
+      // A second environment of the SAME project — the project filter must span it.
+      const [secondEnv] = await db
+        .insert(environment)
+        .values({ name: 'Second Env', projectId })
+        .returning({ id: environment.id })
+      const secondEnvironmentId = secondEnv!.id
+      const [secondService] = await db
+        .insert(service)
+        .values({
+          name: 'worker',
+          composeServiceName: 'worker',
+          environmentId: secondEnvironmentId,
+        })
+        .returning({ id: service.id })
+      const secondServiceId = secondService!.id
 
-    // A different project in the same org — must stay out of the response.
-    const [otherProject] = await db
-      .insert(project)
-      .values({ name: 'Other Container Route Project', workspaceId, organizationId })
-      .returning({ id: project.id })
-    const otherProjectId = otherProject!.id
-    const [otherEnv] = await db
-      .insert(environment)
-      .values({ name: 'Other Project Env', projectId: otherProjectId })
-      .returning({ id: environment.id })
-    const otherEnvironmentId = otherEnv!.id
-    const [otherService] = await db
-      .insert(service)
-      .values({
-        name: 'api',
-        composeServiceName: 'api',
-        environmentId: otherEnvironmentId,
-      })
-      .returning({ id: service.id })
-    const otherServiceId = otherService!.id
+      // A different project in the same org — must stay out of the response.
+      const [otherProject] = await db
+        .insert(project)
+        .values({ name: 'Other Container Route Project', workspaceId, organizationId })
+        .returning({ id: project.id })
+      const otherProjectId = otherProject!.id
+      const [otherEnv] = await db
+        .insert(environment)
+        .values({ name: 'Other Project Env', projectId: otherProjectId })
+        .returning({ id: environment.id })
+      const otherEnvironmentId = otherEnv!.id
+      const [otherService] = await db
+        .insert(service)
+        .values({
+          name: 'api',
+          composeServiceName: 'api',
+          environmentId: otherEnvironmentId,
+        })
+        .returning({ id: service.id })
+      const otherServiceId = otherService!.id
 
-    const createContainer = async (
-      targetServiceId: string,
-      containerName: string,
-      composeServiceName: string,
-    ): Promise<string> => {
-      const res = await app.request('/containers', {
-        method: 'POST',
-        headers: {
-          Cookie: cookie,
-          [ORG_ID_HEADER]: organizationId,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          serviceId: targetServiceId,
-          serverId,
-          containerId: `ctr-${crypto.randomUUID()}`,
-          containerName,
-          status: 'running',
-          composeServiceName,
-        }),
-      })
-      assertEquals(res.status, 200)
-      const body = await res.json() as { ok: true; id: string }
-      return body.id
-    }
-
-    try {
-      const firstId = await createContainer(serviceId, 'web-1', 'web')
-      const secondId = await createContainer(
-        secondServiceId,
-        'worker-1',
-        'worker',
-      )
-      await createContainer(otherServiceId, 'api-1', 'api')
-
-      const listRes = await app.request(`/containers?projectId=${projectId}`, {
-        headers: {
-          Cookie: cookie,
-          [ORG_ID_HEADER]: organizationId,
-        },
-      })
-      assertEquals(listRes.status, 200)
-      const listBody = await listRes.json() as {
-        containers: Array<{ id: string; environmentId: string }>
+      const createContainer = async (
+        targetServiceId: string,
+        containerName: string,
+        composeServiceName: string
+      ): Promise<string> => {
+        const res = await app.request('/containers', {
+          method: 'POST',
+          headers: {
+            Cookie: cookie,
+            [ORG_ID_HEADER]: organizationId,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            serviceId: targetServiceId,
+            serverId,
+            containerId: `ctr-${crypto.randomUUID()}`,
+            containerName,
+            status: 'running',
+            composeServiceName,
+          }),
+        })
+        assertEquals(res.status, 200)
+        const body = (await res.json()) as { ok: true; id: string }
+        return body.id
       }
-      assertEquals(listBody.containers.length, 2)
 
-      const environmentById = new Map(
-        listBody.containers.map((row) => [row.id, row.environmentId]),
-      )
-      assertEquals(environmentById.get(firstId), environmentId)
-      assertEquals(environmentById.get(secondId), secondEnvironmentId)
-    } finally {
-      await db.delete(container).where(eq(container.serviceId, otherServiceId))
-      await db.delete(container).where(eq(container.serviceId, secondServiceId))
-      await db.delete(service).where(eq(service.id, otherServiceId))
-      await db.delete(service).where(eq(service.id, secondServiceId))
-      await db.delete(environment).where(eq(environment.id, otherEnvironmentId))
-      await db.delete(environment).where(
-        eq(environment.id, secondEnvironmentId),
-      )
-      await db.delete(project).where(eq(project.id, otherProjectId))
+      try {
+        const firstId = await createContainer(serviceId, 'web-1', 'web')
+        const secondId = await createContainer(secondServiceId, 'worker-1', 'worker')
+        await createContainer(otherServiceId, 'api-1', 'api')
+
+        const listRes = await app.request(`/containers?projectId=${projectId}`, {
+          headers: {
+            Cookie: cookie,
+            [ORG_ID_HEADER]: organizationId,
+          },
+        })
+        assertEquals(listRes.status, 200)
+        const listBody = (await listRes.json()) as {
+          containers: Array<{ id: string; environmentId: string }>
+        }
+        assertEquals(listBody.containers.length, 2)
+
+        const environmentById = new Map(
+          listBody.containers.map((row) => [row.id, row.environmentId])
+        )
+        assertEquals(environmentById.get(firstId), environmentId)
+        assertEquals(environmentById.get(secondId), secondEnvironmentId)
+      } finally {
+        await db.delete(container).where(eq(container.serviceId, otherServiceId))
+        await db.delete(container).where(eq(container.serviceId, secondServiceId))
+        await db.delete(service).where(eq(service.id, otherServiceId))
+        await db.delete(service).where(eq(service.id, secondServiceId))
+        await db.delete(environment).where(eq(environment.id, otherEnvironmentId))
+        await db.delete(environment).where(eq(environment.id, secondEnvironmentId))
+        await db.delete(project).where(eq(project.id, otherProjectId))
+      }
     }
-  })
+  )
 })

@@ -42,10 +42,7 @@ test('authoredContainerNamesForAllocation ignores YAML names in uuid mode', () =
     presentation: { keyOrder: ['services'], comments: {} },
   }
   assertEquals(authoredContainerNamesForAllocation('uuid', document), undefined)
-  assertEquals(
-    authoredContainerNamesForAllocation('custom', document)?.get('web'),
-    'adminer',
-  )
+  assertEquals(authoredContainerNamesForAllocation('custom', document)?.get('web'), 'adminer')
 })
 
 test('resolveAllocatedContainerName prefers explicit name in every naming mode', () => {
@@ -56,7 +53,7 @@ test('resolveAllocatedContainerName prefers explicit name in every naming mode',
       ordinal: 1,
       instances: 1,
     }),
-    'my-app',
+    'my-app'
   )
 })
 
@@ -68,7 +65,7 @@ test('resolveAllocatedContainerName suffixes ordinal for multi-instance explicit
       ordinal: 2,
       instances: 3,
     }),
-    'my-app-2',
+    'my-app-2'
   )
 })
 
@@ -81,7 +78,7 @@ test('resolveAllocatedContainerName falls back to service id when no explicit na
       ordinal: 1,
       instances: 1,
     }),
-    serviceId,
+    serviceId
   )
   assertEquals(
     resolveAllocatedContainerName({
@@ -90,7 +87,7 @@ test('resolveAllocatedContainerName falls back to service id when no explicit na
       ordinal: 2,
       instances: 2,
     }),
-    `${serviceId}-2`,
+    `${serviceId}-2`
   )
 })
 
@@ -101,7 +98,7 @@ async function withAllocationFixtures(
     otherServerId: string
     environmentId: string
     webServiceId: string
-  }) => Promise<void>,
+  }) => Promise<void>
 ): Promise<void> {
   if (!dbUrl) {
     skipWithoutDatabase('allocate-containers tests')
@@ -189,12 +186,7 @@ async function withAllocationFixtures(
 }
 
 test('allocateEnvironmentContainers uses explicit name in default uuid mode', async () => {
-  await withAllocationFixtures(async ({
-    db,
-    serverId,
-    environmentId,
-    webServiceId,
-  }) => {
+  await withAllocationFixtures(async ({ db, serverId, environmentId, webServiceId }) => {
     const allocations = await allocateEnvironmentContainers(db, {
       environmentId,
       serverId,
@@ -219,12 +211,7 @@ test('allocateEnvironmentContainers uses explicit name in default uuid mode', as
         status: container.status,
       })
       .from(container)
-      .where(
-        and(
-          eq(container.serviceId, webServiceId),
-          eq(container.serverId, serverId),
-        ),
-      )
+      .where(and(eq(container.serviceId, webServiceId), eq(container.serverId, serverId)))
     assertEquals(rows.length, 1)
     assertEquals(rows[0]!.containerName, 'explicit-web')
     assertEquals(rows[0]!.status, 'pending')
@@ -232,12 +219,7 @@ test('allocateEnvironmentContainers uses explicit name in default uuid mode', as
 })
 
 test('allocateEnvironmentContainers suffixes explicit names for multi-instance', async () => {
-  await withAllocationFixtures(async ({
-    db,
-    serverId,
-    environmentId,
-    webServiceId,
-  }) => {
+  await withAllocationFixtures(async ({ db, serverId, environmentId, webServiceId }) => {
     const allocations = await allocateEnvironmentContainers(db, {
       environmentId,
       serverId,
@@ -254,24 +236,17 @@ test('allocateEnvironmentContainers suffixes explicit names for multi-instance',
     })
 
     assertEquals(allocations.length, 2)
-    const names = allocations
-      .map((row) => row.containerName)
-      .sort((a, b) => a.localeCompare(b))
+    const names = allocations.map((row) => row.containerName).sort((a, b) => a.localeCompare(b))
     assertEquals(names, ['explicit-web-1', 'explicit-web-2'])
     assertEquals(
       allocations.map((row) => row.cloneComposeServiceName).sort((a, b) => a.localeCompare(b)),
-      ['web', 'web'],
+      ['web', 'web']
     )
   })
 })
 
 test('allocateEnvironmentContainers reuses rows on concurrent/repeated calls', async () => {
-  await withAllocationFixtures(async ({
-    db,
-    serverId,
-    environmentId,
-    webServiceId,
-  }) => {
+  await withAllocationFixtures(async ({ db, serverId, environmentId, webServiceId }) => {
     const specs = [
       {
         serviceId: webServiceId,
@@ -308,12 +283,7 @@ test('allocateEnvironmentContainers reuses rows on concurrent/repeated calls', a
     const rows = await db
       .select({ id: container.id })
       .from(container)
-      .where(
-        and(
-          eq(container.serviceId, webServiceId),
-          eq(container.serverId, serverId),
-        ),
-      )
+      .where(and(eq(container.serviceId, webServiceId), eq(container.serverId, serverId)))
     assertEquals(rows.length, 2)
   })
 })
@@ -321,17 +291,20 @@ test('allocateEnvironmentContainers reuses rows on concurrent/repeated calls', a
 test('buildContainerServiceSpecs skips non-container compose names and reads instances', () => {
   const serviceId = '01936b3e-4444-5555-6666-123456789abc'
   const specs = buildContainerServiceSpecs(
-    [{
-      id: serviceId,
-      composeServiceName: 'web',
-      options: { instances: 3 },
-    }, {
-      id: '01936b3e-bbbb-cccc-dddd-123456789abc',
-      composeServiceName: 'site',
-      options: {},
-    }],
+    [
+      {
+        id: serviceId,
+        composeServiceName: 'web',
+        options: { instances: 3 },
+      },
+      {
+        id: '01936b3e-bbbb-cccc-dddd-123456789abc',
+        composeServiceName: 'site',
+        options: {},
+      },
+    ],
     new Set(['web']),
-    new Map([['web', 'explicit-web']]),
+    new Map([['web', 'explicit-web']])
   )
   assertEquals(specs.length, 1)
   assertEquals(specs[0]?.serviceId, serviceId)
@@ -497,11 +470,13 @@ test('allocateEnvironmentContainers host-free custom naming skips allocation and
     environmentId: 'env',
     serverId: 'srv',
     containerNaming: 'custom',
-    containerServices: [{
-      serviceId: 'svc',
-      composeServiceName: 'web',
-      instances: 1,
-    }],
+    containerServices: [
+      {
+        serviceId: 'svc',
+        composeServiceName: 'web',
+        instances: 1,
+      },
+    ],
     environmentServiceIds: ['svc'],
   })
   assertEquals(out, [])
@@ -560,11 +535,13 @@ test('allocateEnvironmentContainers allocates multi-instance uuid services via t
     environmentId: 'env',
     serverId: 'srv',
     containerNaming: 'uuid',
-    containerServices: [{
-      serviceId,
-      composeServiceName: 'web',
-      instances: 2,
-    }],
+    containerServices: [
+      {
+        serviceId,
+        composeServiceName: 'web',
+        instances: 2,
+      },
+    ],
     environmentServiceIds: [serviceId],
     extraKeepIds: new Set(['extra-keep']),
   })
@@ -580,21 +557,18 @@ test('allocateEnvironmentContainers allocates multi-instance uuid services via t
 })
 
 test('allocateEnvironmentContainers skips custom naming without explicit container name', async () => {
-  await withAllocationFixtures(async ({
-    db,
-    serverId,
-    environmentId,
-    webServiceId,
-  }) => {
+  await withAllocationFixtures(async ({ db, serverId, environmentId, webServiceId }) => {
     const allocations = await allocateEnvironmentContainers(db, {
       environmentId,
       serverId,
       containerNaming: 'custom',
-      containerServices: [{
-        serviceId: webServiceId,
-        composeServiceName: 'web',
-        instances: 1,
-      }],
+      containerServices: [
+        {
+          serviceId: webServiceId,
+          composeServiceName: 'web',
+          instances: 1,
+        },
+      ],
       environmentServiceIds: [webServiceId],
     })
     assertEquals(allocations, [])
@@ -608,12 +582,7 @@ test('allocateEnvironmentContainers skips custom naming without explicit contain
 })
 
 test('ensureServiceIngressContainerAllocation is idempotent and re-homes server', async () => {
-  await withAllocationFixtures(async ({
-    db,
-    serverId,
-    otherServerId,
-    webServiceId,
-  }) => {
+  await withAllocationFixtures(async ({ db, serverId, otherServerId, webServiceId }) => {
     const first = await ensureServiceIngressContainerAllocation(db, {
       serviceId: webServiceId,
       serverId,
@@ -646,11 +615,7 @@ test('ensureServiceIngressContainerAllocation is idempotent and re-homes server'
 })
 
 test('pruneUnexpectedPendingContainers removes stale pending rows but keeps keepIds', async () => {
-  await withAllocationFixtures(async ({
-    db,
-    serverId,
-    webServiceId,
-  }) => {
+  await withAllocationFixtures(async ({ db, serverId, webServiceId }) => {
     const [kept] = await db
       .insert(container)
       .values({
@@ -691,71 +656,62 @@ test('pruneUnexpectedPendingContainers removes stale pending rows but keeps keep
 })
 
 test('allocateEnvironmentContainers re-homes rows when placement server changes', async () => {
-  await withAllocationFixtures(async ({
-    db,
-    serverId,
-    otherServerId,
-    environmentId,
-    webServiceId,
-  }) => {
-    const specs = [
-      {
-        serviceId: webServiceId,
-        composeServiceName: 'web',
-        instances: 1,
-      },
-    ] as const
+  await withAllocationFixtures(
+    async ({ db, serverId, otherServerId, environmentId, webServiceId }) => {
+      const specs = [
+        {
+          serviceId: webServiceId,
+          composeServiceName: 'web',
+          instances: 1,
+        },
+      ] as const
 
-    const first = await allocateEnvironmentContainers(db, {
-      environmentId,
-      serverId,
-      containerNaming: 'uuid',
-      containerServices: specs,
-      environmentServiceIds: [webServiceId],
-    })
-
-    assertEquals(first.length, 1)
-    const firstRowId = first[0]!.containerRowId
-    const firstName = first[0]!.containerName
-    assertEquals(firstName, webServiceId)
-
-    const second = await allocateEnvironmentContainers(db, {
-      environmentId,
-      serverId: otherServerId,
-      containerNaming: 'uuid',
-      containerServices: specs,
-      environmentServiceIds: [webServiceId],
-    })
-
-    assertEquals(second.length, 1)
-    assertEquals(second[0]!.containerRowId, firstRowId)
-    assertEquals(second[0]!.containerName, firstName)
-
-    const rows = await db
-      .select({
-        id: container.id,
-        serverId: container.serverId,
-        containerName: container.containerName,
-        status: container.status,
+      const first = await allocateEnvironmentContainers(db, {
+        environmentId,
+        serverId,
+        containerNaming: 'uuid',
+        containerServices: specs,
+        environmentServiceIds: [webServiceId],
       })
-      .from(container)
-      .where(eq(container.serviceId, webServiceId))
 
-    assertEquals(rows.length, 1)
-    assertEquals(rows[0]!.id, firstRowId)
-    assertEquals(rows[0]!.serverId, otherServerId)
-    assertEquals(rows[0]!.containerName, firstName)
-    assertEquals(rows[0]!.status, 'pending')
+      assertEquals(first.length, 1)
+      const firstRowId = first[0]!.containerRowId
+      const firstName = first[0]!.containerName
+      assertEquals(firstName, webServiceId)
 
-    const staleOnFirstServer = await db
-      .select({ id: container.id })
-      .from(container)
-      .where(
-        and(
-          eq(container.serviceId, webServiceId),
-          eq(container.serverId, serverId),
-        ),
-      )
-    assertEquals(staleOnFirstServer.length, 0)
-  })
+      const second = await allocateEnvironmentContainers(db, {
+        environmentId,
+        serverId: otherServerId,
+        containerNaming: 'uuid',
+        containerServices: specs,
+        environmentServiceIds: [webServiceId],
+      })
+
+      assertEquals(second.length, 1)
+      assertEquals(second[0]!.containerRowId, firstRowId)
+      assertEquals(second[0]!.containerName, firstName)
+
+      const rows = await db
+        .select({
+          id: container.id,
+          serverId: container.serverId,
+          containerName: container.containerName,
+          status: container.status,
+        })
+        .from(container)
+        .where(eq(container.serviceId, webServiceId))
+
+      assertEquals(rows.length, 1)
+      assertEquals(rows[0]!.id, firstRowId)
+      assertEquals(rows[0]!.serverId, otherServerId)
+      assertEquals(rows[0]!.containerName, firstName)
+      assertEquals(rows[0]!.status, 'pending')
+
+      const staleOnFirstServer = await db
+        .select({ id: container.id })
+        .from(container)
+        .where(and(eq(container.serviceId, webServiceId), eq(container.serverId, serverId)))
+      assertEquals(staleOnFirstServer.length, 0)
+    }
+  )
 })

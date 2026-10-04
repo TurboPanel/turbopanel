@@ -137,10 +137,7 @@ test('serializeCommandRecord defaults missing lifecycle columns to nulls', () =>
 })
 
 async function withCommandRecordFixtures(
-  fn: (ctx: {
-    db: ReturnType<typeof createDenoDb>
-    serverId: string
-  }) => Promise<void>,
+  fn: (ctx: { db: ReturnType<typeof createDenoDb>; serverId: string }) => Promise<void>
 ): Promise<void> {
   if (!dbUrl) {
     skipWithoutDatabase('command-records DB tests')
@@ -306,10 +303,7 @@ test('transitionCommand writes lifecycle columns and auto-stamps status timestam
       finishedAt: '2020-01-01T00:00:00.250Z',
     })
     assertEquals(succeeded?.status, 'succeeded')
-    assertEquals(
-      (succeeded?.result as { daemonHostname?: string }).daemonHostname,
-      'web-01',
-    )
+    assertEquals((succeeded?.result as { daemonHostname?: string }).daemonHostname, 'web-01')
     assertEquals(succeeded?.ackedAt, '2020-01-01T00:00:00.150Z')
     assertEquals(succeeded?.finishedAt, '2020-01-01T00:00:00.250Z')
   })
@@ -368,21 +362,17 @@ test('listServerCommands returns newest-first rows with clamped limit', async ()
 
 test('getCommandRecord returns null for unknown id', async () => {
   await withCommandRecordFixtures(async ({ db }) => {
-    const missing = await getCommandRecord(
-      db,
-      '00000000-0000-4000-8000-000000000099',
-    )
+    const missing = await getCommandRecord(db, '00000000-0000-4000-8000-000000000099')
     assertEquals(missing, null)
   })
 })
 
 test('transitionCommand returns null for unknown id', async () => {
   await withCommandRecordFixtures(async ({ db }) => {
-    const updated = await transitionCommand(
-      db,
-      '00000000-0000-4000-8000-000000000099',
-      { status: 'failed', error: 'missing' },
-    )
+    const updated = await transitionCommand(db, '00000000-0000-4000-8000-000000000099', {
+      status: 'failed',
+      error: 'missing',
+    })
     assertEquals(updated, null)
   })
 })

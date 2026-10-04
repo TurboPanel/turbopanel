@@ -32,7 +32,7 @@ const test = Deno.test.bind(Deno)
 const dbUrl = getDatabaseUrl()
 
 async function withEnrolledServer(
-  fn: (ctx: { db: ReturnType<typeof createDenoDb>; serverId: string }) => Promise<void>,
+  fn: (ctx: { db: ReturnType<typeof createDenoDb>; serverId: string }) => Promise<void>
 ): Promise<void> {
   if (!dbUrl) {
     skipWithoutDatabase('key-table race tests')
@@ -40,9 +40,13 @@ async function withEnrolledServer(
   }
   const run = `key-race-${crypto.randomUUID().slice(0, 8)}`
   const db = createDenoDb()
-  const [org] = await db.insert(organization).values({ name: `Key race ${run}` })
+  const [org] = await db
+    .insert(organization)
+    .values({ name: `Key race ${run}` })
     .returning({ id: organization.id })
-  const [srv] = await db.insert(server).values({ organizationId: org!.id })
+  const [srv] = await db
+    .insert(server)
+    .values({ organizationId: org!.id })
     .returning({ id: server.id })
   const serverId = srv!.id
   await attachDaemonStateToServer(db, serverId, {

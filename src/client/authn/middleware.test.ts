@@ -5,10 +5,7 @@ import { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
 import { createDenoDb } from '../../db/connection.ts'
-import {
-  buildSignedCookie,
-  HTTP_SESSION_COOKIE_NAME,
-} from './crypto.ts'
+import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from './crypto.ts'
 import {
   createAdminAccessMiddleware,
   createDeveloperAccessMiddleware,
@@ -45,8 +42,7 @@ const dbUrl = getDatabaseUrl()
 const V2_SECRET = 'Bb2Cc3Dd4Ee5Ff6Gg7Hh8Ii9Jj0Kk1Ll2_Mm3Nn4Oo5Pp6Qq7Rr8'
 
 function sessionSigningSecrets(): Promise<DerivedSecretsConfig> {
-  const config = parseSecretsEnv(`2:${V2_SECRET},1:${TEST_ONLY_TURBOPANEL_SECRET}`,
-    'deno')
+  const config = parseSecretsEnv(`2:${V2_SECRET},1:${TEST_ONLY_TURBOPANEL_SECRET}`, 'deno')
   return deriveSecretsConfig(config, 'session-signing')
 }
 
@@ -54,15 +50,12 @@ async function signedCookieForUser(
   db: ReturnType<typeof createDenoDb>,
   secrets: DerivedSecretsConfig,
   userId: string,
-  signWithCurrent = true,
+  signWithCurrent = true
 ): Promise<string> {
   const { token } = await createSession(db, userId, {})
   const signingSecrets = signWithCurrent
     ? secrets
-    : await deriveSecretsConfig(
-      parseTestSecretsConfig('deno'),
-      'session-signing',
-    )
+    : await deriveSecretsConfig(parseTestSecretsConfig('deno'), 'session-signing')
   return await buildSignedCookie(token, signingSecrets)
 }
 
@@ -72,7 +65,7 @@ async function withRoleUser(
     db: ReturnType<typeof createDenoDb>
     userId: string
     secrets: DerivedSecretsConfig
-  }) => Promise<void>,
+  }) => Promise<void>
 ): Promise<void> {
   if (!dbUrl) {
     skipWithoutDatabase('middleware DB test')
@@ -265,7 +258,7 @@ test('resolveSession rotates cookies signed with a fallback key', async () => {
 async function mockSessionApp(
   secrets: DerivedSecretsConfig,
   sessionRow: SessionData,
-  token: string,
+  token: string
 ) {
   const state = createEmptyMockAuthState()
   seedMockSession(state, token, sessionRow)
@@ -277,12 +270,16 @@ async function mockSessionApp(
 test('resolveRootSession returns null for non-superadmin mock session', async () => {
   const secrets = await sessionSigningSecrets()
   const token = crypto.randomUUID()
-  const { db, signed } = await mockSessionApp(secrets, {
-    sessionId: crypto.randomUUID(),
-    userId: crypto.randomUUID(),
-    email: 'admin@example.com',
-    role: 'admin',
-  }, token)
+  const { db, signed } = await mockSessionApp(
+    secrets,
+    {
+      sessionId: crypto.randomUUID(),
+      userId: crypto.randomUUID(),
+      email: 'admin@example.com',
+      role: 'admin',
+    },
+    token
+  )
 
   const app = new Hono<AppEnv>()
   app.use('*', (c, next) => {
@@ -305,12 +302,16 @@ test('resolveRootSession returns null for non-superadmin mock session', async ()
 test('createDeveloperAccessMiddleware rejects non-superadmin sessions', async () => {
   const secrets = await sessionSigningSecrets()
   const token = crypto.randomUUID()
-  const { db, signed } = await mockSessionApp(secrets, {
-    sessionId: crypto.randomUUID(),
-    userId: crypto.randomUUID(),
-    email: 'user@example.com',
-    role: 'user',
-  }, token)
+  const { db, signed } = await mockSessionApp(
+    secrets,
+    {
+      sessionId: crypto.randomUUID(),
+      userId: crypto.randomUUID(),
+      email: 'user@example.com',
+      role: 'user',
+    },
+    token
+  )
 
   const app = new Hono<AppEnv>()
   app.use('*', (c, next) => {
@@ -330,12 +331,16 @@ test('createDeveloperAccessMiddleware rejects non-superadmin sessions', async ()
 test('createDeveloperAccessMiddleware allows superadmin mock session', async () => {
   const secrets = await sessionSigningSecrets()
   const token = crypto.randomUUID()
-  const { db, signed } = await mockSessionApp(secrets, {
-    sessionId: crypto.randomUUID(),
-    userId: crypto.randomUUID(),
-    email: 'root@example.com',
-    role: 'superadmin',
-  }, token)
+  const { db, signed } = await mockSessionApp(
+    secrets,
+    {
+      sessionId: crypto.randomUUID(),
+      userId: crypto.randomUUID(),
+      email: 'root@example.com',
+      role: 'superadmin',
+    },
+    token
+  )
 
   const app = new Hono<AppEnv>()
   app.use('*', (c, next) => {
@@ -370,12 +375,16 @@ test('createSessionMiddleware accepts mock superadmin session without postgres',
   const secrets = await sessionSigningSecrets()
   const token = crypto.randomUUID()
   const userId = crypto.randomUUID()
-  const { db, signed } = await mockSessionApp(secrets, {
-    sessionId: crypto.randomUUID(),
-    userId,
-    email: 'root@example.com',
-    role: 'superadmin',
-  }, token)
+  const { db, signed } = await mockSessionApp(
+    secrets,
+    {
+      sessionId: crypto.randomUUID(),
+      userId,
+      email: 'root@example.com',
+      role: 'superadmin',
+    },
+    token
+  )
 
   const app = new Hono<AppEnv>()
   app.use('*', (c, next) => {
@@ -420,10 +429,12 @@ test('createAdminAccessMiddleware accepts mock admin and rejects users', async (
   adminApp.use('*', createAdminAccessMiddleware(secrets))
   adminApp.get('/admin', (c) => c.json({ ok: true }))
   assertEquals(
-    (await adminApp.request('http://localhost/admin', {
-      headers: { Cookie: `${HTTP_SESSION_COOKIE_NAME}=${adminSigned}` },
-    })).status,
-    200,
+    (
+      await adminApp.request('http://localhost/admin', {
+        headers: { Cookie: `${HTTP_SESSION_COOKIE_NAME}=${adminSigned}` },
+      })
+    ).status,
+    200
   )
 
   const userToken = crypto.randomUUID()
@@ -445,10 +456,12 @@ test('createAdminAccessMiddleware accepts mock admin and rejects users', async (
   userApp.use('*', createAdminAccessMiddleware(secrets))
   userApp.get('/admin', (c) => c.json({ ok: true }))
   assertEquals(
-    (await userApp.request('http://localhost/admin', {
-      headers: { Cookie: `${HTTP_SESSION_COOKIE_NAME}=${userSigned}` },
-    })).status,
-    403,
+    (
+      await userApp.request('http://localhost/admin', {
+        headers: { Cookie: `${HTTP_SESSION_COOKIE_NAME}=${userSigned}` },
+      })
+    ).status,
+    403
   )
 })
 
@@ -474,10 +487,12 @@ test('createRootOnlyMiddleware accepts mock superadmin and rejects users', async
   app.use('*', createRootOnlyMiddleware(secrets))
   app.get('/root', (c) => c.json({ ok: true }))
   assertEquals(
-    (await app.request('http://localhost/root', {
-      headers: { Cookie: `${HTTP_SESSION_COOKIE_NAME}=${signed}` },
-    })).status,
-    200,
+    (
+      await app.request('http://localhost/root', {
+        headers: { Cookie: `${HTTP_SESSION_COOKIE_NAME}=${signed}` },
+      })
+    ).status,
+    200
   )
 
   const userToken = crypto.randomUUID()
@@ -499,19 +514,18 @@ test('createRootOnlyMiddleware accepts mock superadmin and rejects users', async
   userApp.use('*', createRootOnlyMiddleware(secrets))
   userApp.get('/root', (c) => c.json({ ok: true }))
   assertEquals(
-    (await userApp.request('http://localhost/root', {
-      headers: { Cookie: `${HTTP_SESSION_COOKIE_NAME}=${userSigned}` },
-    })).status,
-    403,
+    (
+      await userApp.request('http://localhost/root', {
+        headers: { Cookie: `${HTTP_SESSION_COOKIE_NAME}=${userSigned}` },
+      })
+    ).status,
+    403
   )
 })
 
 test('resolveSession rotates fallback-signed cookies with mock db', async () => {
   const secrets = await sessionSigningSecrets()
-  const legacySecrets = await deriveSecretsConfig(
-    parseTestSecretsConfig('deno'),
-    'session-signing',
-  )
+  const legacySecrets = await deriveSecretsConfig(parseTestSecretsConfig('deno'), 'session-signing')
   const token = crypto.randomUUID()
   const state = createEmptyMockAuthState()
   seedMockSession(state, token, {

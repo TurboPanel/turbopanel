@@ -31,7 +31,7 @@ async function withReconcileFixtures(
     environmentId: string
     webServiceId: string
     workerServiceId: string
-  }) => Promise<void>,
+  }) => Promise<void>
 ): Promise<void> {
   if (!dbUrl) {
     skipWithoutDatabase('container reconcile tests')
@@ -123,68 +123,59 @@ async function withReconcileFixtures(
 }
 
 test('reconcileEnvironmentContainers drops rows for services absent from the report', async () => {
-  await withReconcileFixtures(async ({
-    db,
-    serverId,
-    environmentId,
-    webServiceId,
-    workerServiceId,
-  }) => {
-    await db.insert(container).values([
-      {
-        serviceId: webServiceId,
-        serverId,
-        containerId: 'cid-web',
-        containerName: 'proj-web-1',
-        status: 'running',
-        composeServiceName: 'web',
-      },
-      {
-        serviceId: workerServiceId,
-        serverId,
-        containerId: 'cid-worker',
-        containerName: 'proj-worker-1',
-        status: 'running',
-        composeServiceName: 'worker',
-      },
-    ])
-
-    await reconcileEnvironmentContainers(db, {
-      serverId,
-      environmentId,
-      containers: [
+  await withReconcileFixtures(
+    async ({ db, serverId, environmentId, webServiceId, workerServiceId }) => {
+      await db.insert(container).values([
         {
           serviceId: webServiceId,
-          composeServiceName: 'web',
-          containerId: 'cid-web-new',
-          containerName: 'proj-web-2',
+          serverId,
+          containerId: 'cid-web',
+          containerName: 'proj-web-1',
           status: 'running',
-          role: 'service',
+          composeServiceName: 'web',
         },
-      ],
-    })
+        {
+          serviceId: workerServiceId,
+          serverId,
+          containerId: 'cid-worker',
+          containerName: 'proj-worker-1',
+          status: 'running',
+          composeServiceName: 'worker',
+        },
+      ])
 
-    const rows = await db
-      .select({
-        serviceId: container.serviceId,
-        containerId: container.containerId,
+      await reconcileEnvironmentContainers(db, {
+        serverId,
+        environmentId,
+        containers: [
+          {
+            serviceId: webServiceId,
+            composeServiceName: 'web',
+            containerId: 'cid-web-new',
+            containerName: 'proj-web-2',
+            status: 'running',
+            role: 'service',
+          },
+        ],
       })
-      .from(container)
-      .where(eq(container.serverId, serverId))
 
-    assertEquals(rows.length, 1)
-    assertEquals(rows[0]!.serviceId, webServiceId)
-    assertEquals(rows[0]!.containerId, 'cid-web-new')
-  })
+      const rows = await db
+        .select({
+          serviceId: container.serviceId,
+          containerId: container.containerId,
+        })
+        .from(container)
+        .where(eq(container.serverId, serverId))
+
+      assertEquals(rows.length, 1)
+      assertEquals(rows[0]!.serviceId, webServiceId)
+      assertEquals(rows[0]!.containerId, 'cid-web-new')
+    }
+  )
 })
 
 test('reconcileEnvironmentContainers fills pre-allocated row without inserting another', async () => {
-  await withReconcileFixtures(async ({
-    db,
-    serverId,
-    environmentId,
-    webServiceId,
-  }) => {
+  await withReconcileFixtures(async ({ db, serverId, environmentId, webServiceId }) => {
     const [preallocated] = await db
       .insert(container)
       .values({
@@ -229,12 +220,7 @@ test('reconcileEnvironmentContainers fills pre-allocated row without inserting a
 })
 
 test('reconcileEnvironmentContainers rename/rebuild keeps one row by name match', async () => {
-  await withReconcileFixtures(async ({
-    db,
-    serverId,
-    environmentId,
-    webServiceId,
-  }) => {
+  await withReconcileFixtures(async ({ db, serverId, environmentId, webServiceId }) => {
     const [existing] = await db
       .insert(container)
       .values({
@@ -277,12 +263,7 @@ test('reconcileEnvironmentContainers rename/rebuild keeps one row by name match'
 })
 
 test('reconcileEnvironmentContainers maps multi-instance clone reports to ordinals', async () => {
-  await withReconcileFixtures(async ({
-    db,
-    serverId,
-    environmentId,
-    webServiceId,
-  }) => {
+  await withReconcileFixtures(async ({ db, serverId, environmentId, webServiceId }) => {
     await db.insert(container).values([
       {
         serviceId: webServiceId,
@@ -445,12 +426,7 @@ test('reconcileEnvironmentContainers creates missing services from the report', 
 })
 
 test('reconcileEnvironmentContainers deletes stale pending outside current instances', async () => {
-  await withReconcileFixtures(async ({
-    db,
-    serverId,
-    environmentId,
-    webServiceId,
-  }) => {
+  await withReconcileFixtures(async ({ db, serverId, environmentId, webServiceId }) => {
     await db
       .update(service)
       .set({ options: { instances: 2 } })
@@ -524,12 +500,7 @@ test('reconcileEnvironmentContainers deletes stale pending outside current insta
 })
 
 test('reconcileEnvironmentContainers keeps service + ingress rows under one service', async () => {
-  await withReconcileFixtures(async ({
-    db,
-    serverId,
-    environmentId,
-    webServiceId,
-  }) => {
+  await withReconcileFixtures(async ({ db, serverId, environmentId, webServiceId }) => {
     await db.insert(container).values([
       {
         serviceId: webServiceId,
@@ -598,12 +569,7 @@ test('reconcileEnvironmentContainers keeps service + ingress rows under one serv
 })
 
 test('reconcileEnvironmentContainers does not infer ingress from containerName when role omitted', async () => {
-  await withReconcileFixtures(async ({
-    db,
-    serverId,
-    environmentId,
-    webServiceId,
-  }) => {
+  await withReconcileFixtures(async ({ db, serverId, environmentId, webServiceId }) => {
     await db.insert(container).values([
       {
         serviceId: webServiceId,
@@ -672,10 +638,7 @@ test('reconcileEnvironmentContainers does not infer ingress from containerName w
     assertEquals(byRole.get('service')?.id, serviceId)
     assertEquals(byRole.get('service')?.containerId, 'cid-by-name-default-service')
     assertEquals(byRole.get('service')?.status, 'running')
-    assertEquals(
-      byRole.get('service')?.containerName,
-      `host-${webServiceId}-in`,
-    )
+    assertEquals(byRole.get('service')?.containerName, `host-${webServiceId}-in`)
     assertEquals(byRole.get('ingress')?.id, ingressId)
     assertEquals(byRole.get('ingress')?.containerId, null)
     assertEquals(byRole.get('ingress')?.status, 'pending')
@@ -684,12 +647,7 @@ test('reconcileEnvironmentContainers does not infer ingress from containerName w
 })
 
 test('reconcileEnvironmentContainers leaves pending ingress intact on service-only report', async () => {
-  await withReconcileFixtures(async ({
-    db,
-    serverId,
-    environmentId,
-    webServiceId,
-  }) => {
+  await withReconcileFixtures(async ({ db, serverId, environmentId, webServiceId }) => {
     await db.insert(container).values([
       {
         serviceId: webServiceId,
@@ -713,15 +671,12 @@ test('reconcileEnvironmentContainers leaves pending ingress intact on service-on
       },
     ])
 
-    const ingressId = (await db
-      .select({ id: container.id })
-      .from(container)
-      .where(
-        and(
-          eq(container.serverId, serverId),
-          eq(container.role, 'ingress'),
-        ),
-      ))[0]!.id
+    const ingressId = (
+      await db
+        .select({ id: container.id })
+        .from(container)
+        .where(and(eq(container.serverId, serverId), eq(container.role, 'ingress')))
+    )[0]!.id
 
     await reconcileEnvironmentContainers(db, {
       serverId,
@@ -759,12 +714,7 @@ test('reconcileEnvironmentContainers leaves pending ingress intact on service-on
 })
 
 test('reconcileEnvironmentContainers service+ingress report is idempotent', async () => {
-  await withReconcileFixtures(async ({
-    db,
-    serverId,
-    environmentId,
-    webServiceId,
-  }) => {
+  await withReconcileFixtures(async ({ db, serverId, environmentId, webServiceId }) => {
     const report = [
       {
         serviceId: webServiceId,
@@ -820,7 +770,7 @@ test('reconcileEnvironmentContainers service+ingress report is idempotent', asyn
     assertEquals(second.length, 2)
     assertEquals(
       second.map((row) => row.id).sort((a, b) => a.localeCompare(b)),
-      firstIds,
+      firstIds
     )
     const byRole = new Map(second.map((row) => [row.role, row]))
     assertEquals(byRole.get('service')?.containerId, 'cid-app')
@@ -829,134 +779,122 @@ test('reconcileEnvironmentContainers service+ingress report is idempotent', asyn
 })
 
 test('reconcileEnvironmentContainers resets rather than deletes on empty report', async () => {
-  await withReconcileFixtures(async ({
-    db,
-    serverId,
-    environmentId,
-    webServiceId,
-    workerServiceId,
-  }) => {
-    await db.insert(container).values([
-      {
-        serviceId: webServiceId,
-        serverId,
-        containerId: 'cid-web',
-        containerName: 'proj-web-1',
-        status: 'running',
-        composeServiceName: 'web',
-      },
-      {
-        serviceId: workerServiceId,
-        serverId,
-        containerId: 'cid-worker',
-        containerName: 'proj-worker-1',
-        status: 'exited',
-        composeServiceName: 'worker',
-      },
-    ])
+  await withReconcileFixtures(
+    async ({ db, serverId, environmentId, webServiceId, workerServiceId }) => {
+      await db.insert(container).values([
+        {
+          serviceId: webServiceId,
+          serverId,
+          containerId: 'cid-web',
+          containerName: 'proj-web-1',
+          status: 'running',
+          composeServiceName: 'web',
+        },
+        {
+          serviceId: workerServiceId,
+          serverId,
+          containerId: 'cid-worker',
+          containerName: 'proj-worker-1',
+          status: 'exited',
+          composeServiceName: 'worker',
+        },
+      ])
 
-    await reconcileEnvironmentContainers(db, {
-      serverId,
-      environmentId,
-      containers: [],
-    })
-
-    const rows = await db
-      .select({
-        containerId: container.containerId,
-        status: container.status,
-        containerName: container.containerName,
+      await reconcileEnvironmentContainers(db, {
+        serverId,
+        environmentId,
+        containers: [],
       })
-      .from(container)
-      .where(
-        and(
-          eq(container.serverId, serverId),
-        ),
-      )
 
-    assertEquals(rows.length, 2)
-    for (const row of rows) {
-      assertEquals(row.containerId, null)
-      assertEquals(row.status, 'exited')
+      const rows = await db
+        .select({
+          containerId: container.containerId,
+          status: container.status,
+          containerName: container.containerName,
+        })
+        .from(container)
+        .where(and(eq(container.serverId, serverId)))
+
+      assertEquals(rows.length, 2)
+      for (const row of rows) {
+        assertEquals(row.containerId, null)
+        assertEquals(row.status, 'exited')
+      }
+      assertEquals(
+        rows.map((r) => r.containerName).sort((a, b) => a.localeCompare(b)),
+        ['proj-web-1', 'proj-worker-1']
+      )
     }
-    assertEquals(
-      rows.map((r) => r.containerName).sort((a, b) => a.localeCompare(b)),
-      ['proj-web-1', 'proj-worker-1'],
-    )
-  })
+  )
 })
 
 test('reconcileEnvironmentContainers resets unmatched expected allocations instead of deleting', async () => {
-  await withReconcileFixtures(async ({
-    db,
-    serverId,
-    environmentId,
-    webServiceId,
-    workerServiceId,
-  }) => {
-    const [webRow] = await db
-      .insert(container)
-      .values({
-        serviceId: webServiceId,
-        serverId,
-        containerId: 'cid-web',
-        containerName: webServiceId,
-        status: 'running',
-        role: 'service',
-        composeServiceName: 'web',
-        ordinal: 1,
-      })
-      .returning({ id: container.id })
-    const [workerRow] = await db
-      .insert(container)
-      .values({
-        serviceId: workerServiceId,
-        serverId,
-        containerId: 'cid-worker',
-        containerName: workerServiceId,
-        status: 'running',
-        role: 'service',
-        composeServiceName: 'worker',
-        ordinal: 1,
-      })
-      .returning({ id: container.id })
-
-    await reconcileEnvironmentContainers(db, {
-      serverId,
-      environmentId,
-      containers: [
-        {
+  await withReconcileFixtures(
+    async ({ db, serverId, environmentId, webServiceId, workerServiceId }) => {
+      const [webRow] = await db
+        .insert(container)
+        .values({
           serviceId: webServiceId,
-          composeServiceName: 'web',
-          containerId: 'cid-web-new',
+          serverId,
+          containerId: 'cid-web',
           containerName: webServiceId,
           status: 'running',
           role: 'service',
-        },
-      ],
-      expectedAllocations: [
-        { serviceId: webServiceId, role: 'service', ordinal: 1 },
-        { serviceId: workerServiceId, role: 'service', ordinal: 1 },
-      ],
-    })
+          composeServiceName: 'web',
+          ordinal: 1,
+        })
+        .returning({ id: container.id })
+      const [workerRow] = await db
+        .insert(container)
+        .values({
+          serviceId: workerServiceId,
+          serverId,
+          containerId: 'cid-worker',
+          containerName: workerServiceId,
+          status: 'running',
+          role: 'service',
+          composeServiceName: 'worker',
+          ordinal: 1,
+        })
+        .returning({ id: container.id })
 
-    const rows = await db
-      .select({
-        id: container.id,
-        serviceId: container.serviceId,
-        containerId: container.containerId,
-        status: container.status,
+      await reconcileEnvironmentContainers(db, {
+        serverId,
+        environmentId,
+        containers: [
+          {
+            serviceId: webServiceId,
+            composeServiceName: 'web',
+            containerId: 'cid-web-new',
+            containerName: webServiceId,
+            status: 'running',
+            role: 'service',
+          },
+        ],
+        expectedAllocations: [
+          { serviceId: webServiceId, role: 'service', ordinal: 1 },
+          { serviceId: workerServiceId, role: 'service', ordinal: 1 },
+        ],
       })
-      .from(container)
-      .where(eq(container.serverId, serverId))
 
-    assertEquals(rows.length, 2)
-    const byService = new Map(rows.map((row) => [row.serviceId, row]))
-    assertEquals(byService.get(webServiceId)?.id, webRow!.id)
-    assertEquals(byService.get(webServiceId)?.containerId, 'cid-web-new')
-    assertEquals(byService.get(webServiceId)?.status, 'running')
-    assertEquals(byService.get(workerServiceId)?.id, workerRow!.id)
-    assertEquals(byService.get(workerServiceId)?.containerId, null)
-    assertEquals(byService.get(workerServiceId)?.status, 'exited')
-  })
+      const rows = await db
+        .select({
+          id: container.id,
+          serviceId: container.serviceId,
+          containerId: container.containerId,
+          status: container.status,
+        })
+        .from(container)
+        .where(eq(container.serverId, serverId))
+
+      assertEquals(rows.length, 2)
+      const byService = new Map(rows.map((row) => [row.serviceId, row]))
+      assertEquals(byService.get(webServiceId)?.id, webRow!.id)
+      assertEquals(byService.get(webServiceId)?.containerId, 'cid-web-new')
+      assertEquals(byService.get(webServiceId)?.status, 'running')
+      assertEquals(byService.get(workerServiceId)?.id, workerRow!.id)
+      assertEquals(byService.get(workerServiceId)?.containerId, null)
+      assertEquals(byService.get(workerServiceId)?.status, 'exited')
+    }
+  )
 })

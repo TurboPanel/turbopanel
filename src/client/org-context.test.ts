@@ -5,19 +5,10 @@ import { Hono } from 'hono'
 import type { AppEnv } from '../app/app.ts'
 import { getDatabaseUrl } from '../db/url.ts'
 import { createDenoDb } from '../db/connection.ts'
-import {
-  buildSignedCookie,
-  HTTP_SESSION_COOKIE_NAME,
-} from './authn/crypto.ts'
+import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from './authn/crypto.ts'
 import { createSession } from './authn/session-store.ts'
 import { deriveSecretsConfig } from '../lib/secrets/secrets.ts'
-import {
-  grant,
-  organization,
-  team,
-  teammate,
-  user,
-} from '../db/schema.ts'
+import { grant, organization, team, teammate, user } from '../db/schema.ts'
 import { registerOrganizationRoutes } from './organizations/routes.ts'
 import {
   canAccessOrganization,
@@ -60,7 +51,7 @@ async function createOrgTestApp(db: ReturnType<typeof createDenoDb>) {
 async function sessionCookie(
   db: ReturnType<typeof createDenoDb>,
   secrets: Awaited<ReturnType<typeof deriveSecretsConfig>>,
-  userId: string,
+  userId: string
 ): Promise<string> {
   const { token } = await createSession(db, userId, {})
   const signed = await buildSignedCookie(token, secrets)
@@ -76,7 +67,7 @@ async function withTeamSubjectGrantFixtures(
     homeOrganizationId: string
     targetOrganizationId: string
     teamId: string
-  }) => Promise<void>,
+  }) => Promise<void>
 ): Promise<void> {
   if (!dbUrl) {
     skipWithoutDatabase('org-context tests')
@@ -107,7 +98,6 @@ async function withTeamSubjectGrantFixtures(
     .returning({ id: user.id })
 
   const userId = insertedUser!.id
-
 
   const [insertedTeam] = await db
     .insert(team)
@@ -147,51 +137,40 @@ async function withTeamSubjectGrantFixtures(
 }
 
 it('team-scoped subject grant exposes target org via listAccessibleOrganizations', async () => {
-  await withTeamSubjectGrantFixtures(async ({
-    db,
-    userId,
-    homeOrganizationId,
-    targetOrganizationId,
-  }) => {
-    const organizations = await listAccessibleOrganizations(db, userId)
-    const ids = organizations.map((org) => org.id)
+  await withTeamSubjectGrantFixtures(
+    async ({ db, userId, homeOrganizationId, targetOrganizationId }) => {
+      const organizations = await listAccessibleOrganizations(db, userId)
+      const ids = organizations.map((org) => org.id)
 
-    if (!ids.includes(homeOrganizationId)) {
-      throw new Error('home organization should remain accessible via team membership')
+      if (!ids.includes(homeOrganizationId)) {
+        throw new Error('home organization should remain accessible via team membership')
+      }
+      if (!ids.includes(targetOrganizationId)) {
+        throw new Error('team-scoped subject grant should expose target organization')
+      }
     }
-    if (!ids.includes(targetOrganizationId)) {
-      throw new Error('team-scoped subject grant should expose target organization')
-    }
-  })
+  )
 })
 
 it('team-scoped subject grant allows resolveOrgId for target organization', async () => {
-  await withTeamSubjectGrantFixtures(async ({
-    db,
-    app,
-    userId,
-    targetOrganizationId,
-  }) => {
+  await withTeamSubjectGrantFixtures(async ({ db, app, userId, targetOrganizationId }) => {
     const allowed = await canAccessOrganization(db, userId, targetOrganizationId)
     if (!allowed) {
       throw new Error('canAccessOrganization should accept team-scoped subject grant')
     }
 
-    const response = await app.request(
-      `/resolve-org?userId=${encodeURIComponent(userId)}`,
-      {
-        headers: {
-          [ORG_ID_HEADER]: targetOrganizationId,
-        },
+    const response = await app.request(`/resolve-org?userId=${encodeURIComponent(userId)}`, {
+      headers: {
+        [ORG_ID_HEADER]: targetOrganizationId,
       },
-    )
+    })
 
     if (response.status !== 200) {
       const body = await response.text()
       throw new Error(`resolveOrgId expected 200, got ${response.status}: ${body}`)
     }
 
-    const body = await response.json() as { organizationId: string }
+    const body = (await response.json()) as { organizationId: string }
     if (body.organizationId !== targetOrganizationId) {
       throw new Error('resolveOrgId should return the requested organization id')
     }
@@ -199,13 +178,7 @@ it('team-scoped subject grant allows resolveOrgId for target organization', asyn
 })
 
 it('GET /organizations includes org granted via team-scoped subject', async () => {
-  await withTeamSubjectGrantFixtures(async ({
-    app,
-    secrets,
-    db,
-    userId,
-    targetOrganizationId,
-  }) => {
+  await withTeamSubjectGrantFixtures(async ({ app, secrets, db, userId, targetOrganizationId }) => {
     const cookie = await sessionCookie(db, secrets, userId)
     const response = await app.request('/organizations', {
       headers: { Cookie: cookie },
@@ -216,7 +189,7 @@ it('GET /organizations includes org granted via team-scoped subject', async () =
       throw new Error(`GET /organizations expected 200, got ${response.status}: ${body}`)
     }
 
-    const body = await response.json() as { organizations: Array<{ id: string }> }
+    const body = (await response.json()) as { organizations: Array<{ id: string }> }
     if (!body.organizations.some((org) => org.id === targetOrganizationId)) {
       throw new Error('GET /organizations should include team-granted target organization')
     }

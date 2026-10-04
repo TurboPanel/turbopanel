@@ -17,9 +17,7 @@ const PORT_KEY = 'TURBOPANEL_DRIZZLE_STUDIO_PORT'
 const DB_URL_KEY = 'TURBOPANEL_DATABASE_URL'
 const NODE_KEY = 'TURBOPANEL_NODE'
 
-function restoreEnv(
-  keys: Record<string, string | undefined>,
-): void {
+function restoreEnv(keys: Record<string, string | undefined>): void {
   for (const [key, previous] of Object.entries(keys)) {
     if (previous === undefined) Deno.env.delete(key)
     else Deno.env.set(key, previous)
@@ -64,10 +62,7 @@ test('startDrizzleStudio rejects missing database URL on alt port', async () => 
     const started = await startDrizzleStudio()
     assertEquals(started.ok, false)
     if (started.ok) throw new TypeError('expected failure')
-    assertEquals(
-      started.error,
-      'postgres is not configured (missing TURBOPANEL_DATABASE_URL)',
-    )
+    assertEquals(started.error, 'postgres is not configured (missing TURBOPANEL_DATABASE_URL)')
   } finally {
     restoreEnv(previous)
   }
@@ -108,13 +103,9 @@ test('ensureDrizzleStudioInDev does not throw when Node.js cannot be resolved', 
   // surface. resolveNodePath must convert to { ok: false }, never throw.
   // Module-load may have already frozen DRIZZLE_STUDIO_PORT; only assert the
   // resolve-failure path when that port is free (so we do not short-circuit).
-  const { probeDrizzleStudioPort, DRIZZLE_STUDIO_PORT } = await import(
-    './drizzle-studio-probe.ts'
-  )
+  const { probeDrizzleStudioPort, DRIZZLE_STUDIO_PORT } = await import('./drizzle-studio-probe.ts')
   if (await probeDrizzleStudioPort('127.0.0.1', DRIZZLE_STUDIO_PORT)) {
-    console.warn(
-      'Skipping missing-Node studio test: studio port already listening',
-    )
+    console.warn('Skipping missing-Node studio test: studio port already listening')
     return
   }
 

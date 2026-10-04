@@ -189,8 +189,8 @@ const configSource = fs.readFileSync(path.join(ROOT, 'vitest.config.ts'), 'utf8'
 const deno = parseDenoList(shellSource)
 const vitest = parseVitestInclude(configSource)
 const globMode = [...vitest].some((entry) => isGlobPattern(entry))
-const discovered = TEST_ROOTS.flatMap((root) => collectTests(root)).sort(
-  (a, b) => a.localeCompare(b),
+const discovered = TEST_ROOTS.flatMap((root) => collectTests(root)).sort((a, b) =>
+  a.localeCompare(b)
 )
 
 const problems = []
@@ -217,7 +217,7 @@ for (const file of vitest) {
 for (const file of SERVICE_DEPENDENT.keys()) {
   if (!fs.existsSync(path.join(ROOT, file))) {
     problems.push(
-      `stale entry in SERVICE_DEPENDENT (scripts/check-test-inventory.mjs): ${file} (no such file)`,
+      `stale entry in SERVICE_DEPENDENT (scripts/check-test-inventory.mjs): ${file} (no such file)`
     )
   }
 }
@@ -257,11 +257,11 @@ for (const file of discovered) {
         '    Name Workers/Durable-Object suites `*.workers.test.ts` (or\n' +
         '    `*.workers-e2e.test.ts` / `*.entry.test.ts`). If it needs a service\n' +
         '    CI does not start, add it to SERVICE_DEPENDENT in\n' +
-        '    scripts/check-test-inventory.mjs with the reason.',
+        '    scripts/check-test-inventory.mjs with the reason.'
     )
   } else if (buckets.length > 1) {
     problems.push(
-      `suite claimed by ${buckets.length} buckets: ${file}\n    ${buckets.join('\n    ')}`,
+      `suite claimed by ${buckets.length} buckets: ${file}\n    ${buckets.join('\n    ')}`
     )
   }
 }
@@ -270,7 +270,7 @@ if (problems.length > 0) {
   console.error('Test inventory check failed:\n')
   for (const problem of problems) console.error(`  - ${problem}\n`)
   console.error(
-    `${problems.length} problem(s). Every *.test.ts must be claimed by exactly one runner.`,
+    `${problems.length} problem(s). Every *.test.ts must be claimed by exactly one runner.`
   )
   process.exit(1)
 }
@@ -283,5 +283,5 @@ const denoCount = discovered.length - workersCount - serviceCount
 
 console.log(
   `Test inventory OK: ${discovered.length} suites ` +
-    `(${denoCount} Deno, ${workersCount} Workers, ${serviceCount} service-dependent).`,
+    `(${denoCount} Deno, ${workersCount} Workers, ${serviceCount} service-dependent).`
 )

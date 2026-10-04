@@ -11,10 +11,7 @@ import {
   seedMockInstalledInstance,
   withMockLogin,
 } from './authn-hostfree-doubles.ts'
-import {
-  PAM_ROOT_USERNAME,
-  verifyCredentials,
-} from './credentials.ts'
+import { PAM_ROOT_USERNAME, verifyCredentials } from './credentials.ts'
 import { hashPassword } from '../../lib/secrets/password.ts'
 
 /**
@@ -28,11 +25,7 @@ const test = Deno.test.bind(Deno)
 const dbUrl = getDatabaseUrl()
 
 test('verifyCredentials returns false when db is undefined for non-root logins', async () => {
-  const result = await verifyCredentials(
-    'someone@example.com',
-    'password',
-    'workers',
-  )
+  const result = await verifyCredentials('someone@example.com', 'password', 'workers')
   assertEquals(result.ok, false)
 })
 
@@ -132,10 +125,7 @@ test('verifyCredentials rejects disabled users and wrong passwords', async () =>
     const disabled = await verifyCredentials(email, password, 'workers', db)
     assertEquals(disabled.ok, false)
 
-    await db
-      .update(user)
-      .set({ isDisabled: false })
-      .where(eq(user.id, userId))
+    await db.update(user).set({ isDisabled: false }).where(eq(user.id, userId))
 
     const wrongPassword = await verifyCredentials(email, 'wrong-password', 'workers', db)
     assertEquals(wrongPassword.ok, false)
@@ -146,11 +136,7 @@ test('verifyCredentials rejects disabled users and wrong passwords', async () =>
 })
 
 test('verifyCredentials rejects root on Workers', async () => {
-  const result = await verifyCredentials(
-    PAM_ROOT_USERNAME,
-    'any-password',
-    'workers',
-  )
+  const result = await verifyCredentials(PAM_ROOT_USERNAME, 'any-password', 'workers')
   assertEquals(result.ok, false)
 })
 
@@ -226,17 +212,12 @@ test('the not-found branch runs a dummy Argon2id verify — no early return befo
   const wrongPasswordMs = performance.now() - wrongPasswordStart
 
   const notFoundStart = performance.now()
-  await verifyCredentials(
-    'mock-timing-nonexistent@example.com',
-    'wrong-password',
-    'workers',
-    db,
-  )
+  await verifyCredentials('mock-timing-nonexistent@example.com', 'wrong-password', 'workers', db)
   const notFoundMs = performance.now() - notFoundStart
 
   if (wrongPasswordMs < 5 || notFoundMs < 5) {
     throw new TypeError(
-      `expected both branches to pay real Argon2id cost, got wrongPasswordMs=${wrongPasswordMs} notFoundMs=${notFoundMs}`,
+      `expected both branches to pay real Argon2id cost, got wrongPasswordMs=${wrongPasswordMs} notFoundMs=${notFoundMs}`
     )
   }
 })
@@ -288,12 +269,7 @@ test('verifyCredentials rejects root on Deno when PAM authentication fails', asy
     Deno.env.delete('TURBOPANEL_UI_MODE')
 
     const db = createMockAuthDb(createEmptyMockAuthState())
-    const result = await verifyCredentials(
-      PAM_ROOT_USERNAME,
-      'not-a-real-password',
-      'deno',
-      db,
-    )
+    const result = await verifyCredentials(PAM_ROOT_USERNAME, 'not-a-real-password', 'deno', db)
     assertEquals(result.ok, false)
   } finally {
     for (const [key, value] of saved) {

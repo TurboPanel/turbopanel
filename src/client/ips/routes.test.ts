@@ -5,10 +5,7 @@ import { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
 import { createDenoDb } from '../../db/connection.ts'
-import {
-  buildSignedCookie,
-  HTTP_SESSION_COOKIE_NAME,
-} from '../authn/crypto.ts'
+import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from '../authn/crypto.ts'
 import { createSession } from '../authn/session-store.ts'
 import { deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
 import {
@@ -41,7 +38,7 @@ const test = Deno.test.bind(Deno)
 async function sessionCookie(
   db: ReturnType<typeof createDenoDb>,
   secrets: Awaited<ReturnType<typeof deriveSecretsConfig>>,
-  userId: string,
+  userId: string
 ): Promise<string> {
   const { token } = await createSession(db, userId, {})
   const signed = await buildSignedCookie(token, secrets)
@@ -190,7 +187,6 @@ test('GET /ips returns 403 for org member without organization:manage', async ()
     .returning({ id: user.id })
   const userId = u!.id
 
-
   const cookie = await sessionCookie(db, secrets, userId)
   const res = await app.request('/ips', {
     headers: {
@@ -277,13 +273,13 @@ test('POST /ips derives version from address', async () => {
     }),
   })
   assertEquals(publicCreate.status, 200)
-  const publicBody = await publicCreate.json() as { ok: true; id: string }
+  const publicBody = (await publicCreate.json()) as { ok: true; id: string }
 
   const publicGet = await app.request(`/ips/${publicBody.id}`, {
     headers: { cookie, [ORG_ID_HEADER]: organizationId },
   })
   assertEquals(publicGet.status, 200)
-  const publicRow = await publicGet.json() as { ip: { version: number } }
+  const publicRow = (await publicGet.json()) as { ip: { version: number } }
   assertEquals(publicRow.ip.version, 4)
 
   await db.delete(ip).where(eq(ip.id, publicBody.id))

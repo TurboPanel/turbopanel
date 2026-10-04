@@ -53,7 +53,7 @@ test('createSession rejects undefined db', async () => {
   await assertRejects(
     () => createSession(undefined, crypto.randomUUID(), {}),
     Error,
-    'Database unavailable',
+    'Database unavailable'
   )
 })
 

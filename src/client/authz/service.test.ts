@@ -28,7 +28,7 @@ async function withTestFixtures(
     organizationId: string
     workspaceId: string
     teamId: string
-  }) => Promise<void>,
+  }) => Promise<void>
 ): Promise<void> {
   if (!dbUrl) {
     skipWithoutDatabase('authz tests')
@@ -52,7 +52,6 @@ async function withTestFixtures(
     .returning({ id: user.id })
 
   const userId = insertedUser[0]!.id
-
 
   const [insertedWorkspace] = await db
     .insert(workspace)
@@ -137,7 +136,8 @@ it('org manager can invite and manage org members', async () => {
     const ownsOrg = await canOwnOrganization(db, userId, organizationId)
 
     if (!managesOrg) throw new Error('organization:manage grant should allow canManageOrganization')
-    if (!canInvite) throw new Error('organization:manage grant should allow canInviteToOrganization')
+    if (!canInvite)
+      throw new Error('organization:manage grant should allow canInviteToOrganization')
     if (ownsOrg) throw new Error('organization:manage grant must not allow canOwnOrganization')
   })
 })
@@ -207,12 +207,14 @@ it('invitation grant materialization creates grant rows and enables canOwnOrgani
     await materializeInvitationGrants(
       db,
       userId,
-      [{
-        entityType: 'organization',
-        entityId: organizationId,
-        permissionKey: 'organization:own',
-      }],
-      organizationId,
+      [
+        {
+          entityType: 'organization',
+          entityId: organizationId,
+          permissionKey: 'organization:own',
+        },
+      ],
+      organizationId
     )
 
     const rows = await db
@@ -222,8 +224,8 @@ it('invitation grant materialization creates grant rows and enables canOwnOrgani
         and(
           eq(grant.actorId, userId),
           eq(grant.entityId, organizationId),
-          eq(grant.permission, 'organization:own'),
-        ),
+          eq(grant.permission, 'organization:own')
+        )
       )
 
     if (rows.length === 0) {
@@ -252,7 +254,10 @@ it('assertNotLastOrgOwner throws when removing the sole owner', async () => {
       await assertNotLastOrgOwner(db, organizationId, userId)
     } catch (error) {
       threw = true
-      if (!(error instanceof Error) || error.message !== 'Cannot remove the last owner of an organization') {
+      if (
+        !(error instanceof Error) ||
+        error.message !== 'Cannot remove the last owner of an organization'
+      ) {
         throw error
       }
     }

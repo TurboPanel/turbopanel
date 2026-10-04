@@ -6,10 +6,7 @@ import type { AppEnv } from '../../app/app.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
 import { createDenoDb } from '../../db/connection.ts'
 import type { DaemonCell, DaemonCellRegistry } from '../../contracts/cell.ts'
-import {
-  buildSignedCookie,
-  HTTP_SESSION_COOKIE_NAME,
-} from '../authn/crypto.ts'
+import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from '../authn/crypto.ts'
 import { createSession } from '../authn/session-store.ts'
 import { deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
 import {
@@ -62,7 +59,7 @@ function createOnlineRegistry(serverIds: string[]): DaemonCellRegistry {
 
 async function createLicenseTestApp(
   db: ReturnType<typeof createDenoDb>,
-  registry?: DaemonCellRegistry,
+  registry?: DaemonCellRegistry
 ) {
   const secretsConfig = parseTestSecretsConfig('deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
@@ -90,29 +87,21 @@ async function createLicenseTestApp(
 async function sessionCookie(
   db: ReturnType<typeof createDenoDb>,
   secrets: Awaited<ReturnType<typeof deriveSecretsConfig>>,
-  userId: string,
+  userId: string
 ): Promise<string> {
   const { token } = await createSession(db, userId, {})
   const signed = await buildSignedCookie(token, secrets)
   return `${HTTP_SESSION_COOKIE_NAME}=${signed}`
 }
 
-function orgRequestHeaders(
-  cookie: string,
-  organizationId: string,
-): Record<string, string> {
+function orgRequestHeaders(cookie: string, organizationId: string): Record<string, string> {
   return {
     Cookie: cookie,
     [ORG_ID_HEADER]: organizationId,
   }
 }
 
-function postLicense(
-  app: Hono<AppEnv>,
-  cookie: string,
-  organizationId: string,
-  body: unknown,
-) {
+function postLicense(app: Hono<AppEnv>, cookie: string, organizationId: string, body: unknown) {
   return app.request('/licenses', {
     method: 'POST',
     headers: {
@@ -130,7 +119,7 @@ async function withTestFixtures(
     secrets: Awaited<ReturnType<typeof deriveSecretsConfig>>
     managerId: string
     organizationId: string
-  }) => Promise<void>,
+  }) => Promise<void>
 ): Promise<void> {
   if (!dbUrl) {
     skipWithoutDatabase('license route tests')
@@ -155,7 +144,6 @@ async function withTestFixtures(
     .returning({ id: user.id })
 
   const managerId = insertedManager[0]!.id
-
 
   // The acting user is only an organization *manager*, never an owner.
   await db.insert(grant).values({
@@ -184,7 +172,7 @@ async function withOwnerFixtures(
     ownerId: string
     organizationId: string
   }) => Promise<void>,
-  options?: { registry?: DaemonCellRegistry },
+  options?: { registry?: DaemonCellRegistry }
 ): Promise<void> {
   if (!dbUrl) {
     skipWithoutDatabase('license route tests')
@@ -209,7 +197,6 @@ async function withOwnerFixtures(
     .returning({ id: user.id })
 
   const ownerId = insertedOwner[0]!.id
-
 
   await db.insert(grant).values({
     entityType: 'organization',
@@ -283,10 +270,7 @@ test('DELETE /licenses/:id is forbidden for an organization manager', async () =
     const rows = await db
       .select({ revokedAt: license.revokedAt })
       .from(license)
-      .where(and(
-        eq(license.id, existingLicense!.id),
-        eq(license.organizationId, organizationId),
-      ))
+      .where(and(eq(license.id, existingLicense!.id), eq(license.organizationId, organizationId)))
       .limit(1)
     if (rows[0]?.revokedAt) {
       throw new Error('org manager must not be able to revoke a license')
@@ -331,7 +315,7 @@ test('DELETE /licenses/:id returns 403 for license bound to self-host-pinned ser
       })
 
       assertEquals(res.status, 403)
-      const body = await res.json() as { error?: string }
+      const body = (await res.json()) as { error?: string }
       assertEquals(body.error, colocatedLicenseRevokeError())
 
       const rows = await db
@@ -453,10 +437,7 @@ test('DELETE /licenses/:id still 403 for reserved display-name when registry is 
     permission: 'organization:own',
   })
 
-  const { app, secrets } = await createLicenseTestApp(
-    db,
-    createOnlineRegistry([serverId]),
-  )
+  const { app, secrets } = await createLicenseTestApp(db, createOnlineRegistry([serverId]))
 
   try {
     const cookie = await sessionCookie(db, secrets, ownerId)
@@ -466,7 +447,7 @@ test('DELETE /licenses/:id still 403 for reserved display-name when registry is 
     })
 
     assertEquals(res.status, 403)
-    const body = await res.json() as { error?: string }
+    const body = (await res.json()) as { error?: string }
     assertEquals(body.error, colocatedLicenseRevokeError())
 
     const rows = await db
@@ -562,10 +543,7 @@ test('DELETE /licenses/:id still 403 via fallbacks when registry binding is revo
     permission: 'organization:own',
   })
 
-  const { app, secrets } = await createLicenseTestApp(
-    db,
-    createOnlineRegistry([serverId]),
-  )
+  const { app, secrets } = await createLicenseTestApp(db, createOnlineRegistry([serverId]))
 
   try {
     const cookie = await sessionCookie(db, secrets, ownerId)
@@ -575,7 +553,7 @@ test('DELETE /licenses/:id still 403 via fallbacks when registry binding is revo
     })
 
     assertEquals(res.status, 403)
-    const body = await res.json() as { error?: string }
+    const body = (await res.json()) as { error?: string }
     assertEquals(body.error, colocatedLicenseRevokeError())
 
     const rows = await db
@@ -607,9 +585,7 @@ test('POST /licenses rejects reserved colocated name', async () => {
     })
 
     if (res.status !== 400) {
-      throw new Error(
-        `expected 400 creating license with reserved name, got ${res.status}`,
-      )
+      throw new Error(`expected 400 creating license with reserved name, got ${res.status}`)
     }
 
     const rows = await db
@@ -634,7 +610,10 @@ test('POST /licenses normalizes Unicode, smart quotes, and trimming', async () =
       .select({ name: license.name })
       .from(license)
       .where(eq(license.organizationId, organizationId))
-    assertEquals(rows.map((row) => row.name), ["O'Reilly Café 东京"])
+    assertEquals(
+      rows.map((row) => row.name),
+      ["O'Reilly Café 东京"]
+    )
   })
 })
 
@@ -650,7 +629,10 @@ test('POST /licenses omits whitespace-only optional names', async () => {
       .select({ name: license.name })
       .from(license)
       .where(eq(license.organizationId, organizationId))
-    assertEquals(rows.map((row) => row.name), [null])
+    assertEquals(
+      rows.map((row) => row.name),
+      [null]
+    )
   })
 })
 
@@ -677,10 +659,13 @@ test('POST /licenses rejects control characters and over-length name', async () 
 
 test('POST /licenses returns 409 when org server capacity is exhausted', async () => {
   await withOwnerFixtures(async ({ db, app, secrets, ownerId, organizationId }) => {
-    await db.update(organization).set({
-      options: { maxServers: 0 },
-      updatedAt: new Date().toISOString(),
-    }).where(eq(organization.id, organizationId))
+    await db
+      .update(organization)
+      .set({
+        options: { maxServers: 0 },
+        updatedAt: new Date().toISOString(),
+      })
+      .where(eq(organization.id, organizationId))
 
     const cookie = await sessionCookie(db, secrets, ownerId)
     const res = await app.request('/licenses', {
@@ -691,7 +676,7 @@ test('POST /licenses returns 409 when org server capacity is exhausted', async (
     if (res.status !== 409) {
       throw new Error(`expected 409 when capacity exhausted, got ${res.status}`)
     }
-    const body = await res.json() as { error?: string; maxServers?: number }
+    const body = (await res.json()) as { error?: string; maxServers?: number }
     if (body.error !== 'server_capacity_exceeded') {
       throw new Error(`expected server_capacity_exceeded, got ${body.error}`)
     }
@@ -742,7 +727,7 @@ test('DELETE /licenses/:id returns 409 while a server is attached', async () => 
           headers: orgRequestHeaders(cookie, organizationId),
         })
         assertEquals(attached.status, 409)
-        const attachedBody = await attached.json() as {
+        const attachedBody = (await attached.json()) as {
           error?: string
           server?: { id: string; name: string | null }
         }
@@ -769,6 +754,6 @@ test('DELETE /licenses/:id returns 409 while a server is attached', async () => 
         await db.delete(server).where(eq(server.id, serverId))
       }
     },
-    { registry: createPermissiveRegistry() },
+    { registry: createPermissiveRegistry() }
   )
 })
