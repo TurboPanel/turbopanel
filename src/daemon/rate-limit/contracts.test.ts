@@ -60,8 +60,8 @@ test('daemon rate-limit keys are stable and include id + route', () => {
     'daemon:rest:enroll:lic-9',
   )
   assertEquals(
-    daemonEnrollChallengeRateLimitKey(),
-    `daemon:rest:auth-challenge:${DAEMON_ENROLL_CHALLENGE_RATE_LIMIT_ID}`,
+    daemonEnrollChallengeRateLimitKey('203.0.113.9'),
+    `daemon:rest:auth-challenge:${DAEMON_ENROLL_CHALLENGE_RATE_LIMIT_ID}:203.0.113.9`,
   )
   assertEquals(
     daemonMetricsRateLimitKey('srv-1'),
