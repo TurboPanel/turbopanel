@@ -40,6 +40,32 @@ export const tlsSchemas = {
         description:
           "Column value mirrored into metadata for API stability (shape unchanged).",
       },
+      acme: {
+        type: "object",
+        description:
+          "Present on `lets_encrypt` rows. Caddy on the host issues and renews the certificate; the daemon reports what it observes.",
+        properties: {
+          managedBy: { type: "string", enum: ["caddy"] },
+          challengeType: { type: "string", enum: ["http-01", "dns-01"] },
+          lastError: {
+            type: "string",
+            description:
+              "Latest issuance or renewal failure the daemon observed; absent once a later probe succeeds.",
+          },
+          lastIssuedAt: {
+            type: "string",
+            format: "date-time",
+            description:
+              "When a certificate was last seen newly in place: first good probe, a recovery after a failure, or a changed expiry (a renewal).",
+          },
+          notAfter: {
+            type: "string",
+            format: "date-time",
+            description:
+              "Expiry of the certificate currently served, as probed on the host.",
+          },
+        },
+      },
     },
   },
   TlsRow: {

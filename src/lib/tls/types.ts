@@ -13,7 +13,12 @@ export type TlsStatus =
 export type TlsAcmeMetadata = {
   orderUrl?: string
   challengeType?: 'http-01' | 'dns-01'
+  /** Latest daemon-observed issuance failure; cleared on the next good probe. */
   lastError?: string
+  /** When a certificate was last seen newly in place (ISO 8601): first good probe, a recovery, or a changed `notAfter`. */
+  lastIssuedAt?: string
+  /** Expiry of the certificate Caddy is serving, as the daemon's probe read it (ISO 8601). */
+  notAfter?: string
   /** Present on `lets_encrypt` rows Caddy issues and renews on the host. */
   managedBy?: 'caddy'
 }

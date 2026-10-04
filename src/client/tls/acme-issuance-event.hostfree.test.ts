@@ -4,7 +4,10 @@
 
 import { assertEquals } from "@std/assert";
 import type { Db } from "../../db/connection.ts";
-import { handleAcmeIssuanceEvent } from "./acme-issuance-event.ts";
+import {
+  applyIssuanceOutcome,
+  handleAcmeIssuanceEvent,
+} from "./acme-issuance-event.ts";
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -346,4 +349,103 @@ test("a server with no organization writes nothing", async () => {
   });
   assertEquals(result.updated, false);
   assertEquals(updates.length, 0);
+});
+
+const AT = "2026-10-04T10:00:00.000Z";
+const LATER = "2026-10-05T10:00:00.000Z";
+
+test("applyIssuanceOutcome stamps lastIssuedAt and notAfter on the first good sighting", () => {
+  const next = applyIssuanceOutcome(undefined, {
+    ok: true,
+    notAfter: "2027-01-01T00:00:00.000Z",
+    at: AT,
+  });
+  assertEquals(next, {
+    notAfter: "2027-01-01T00:00:00.000Z",
+    lastIssuedAt: AT,
+  });
+});
+
+test("applyIssuanceOutcome keeps the stamp on a repeat of the same good state", () => {
+  const previous = { notAfter: "2027-01-01T00:00:00.000Z", lastIssuedAt: AT };
+  const next = applyIssuanceOutcome(previous, {
+    ok: true,
+    notAfter: "2027-01-01T00:00:00.000Z",
+    at: LATER,
+  });
+  assertEquals(next, previous);
+});
+
+test("applyIssuanceOutcome restamps when the expiry moves (a renewal)", () => {
+  const next = applyIssuanceOutcome(
+    { notAfter: "2027-01-01T00:00:00.000Z", lastIssuedAt: AT },
+    { ok: true, notAfter: "2027-04-01T00:00:00.000Z", at: LATER },
+  );
+  assertEquals(next, {
+    notAfter: "2027-04-01T00:00:00.000Z",
+    lastIssuedAt: LATER,
+  });
+});
+
+test("applyIssuanceOutcome restamps on recovery even when the expiry is unknown", () => {
+  const next = applyIssuanceOutcome(
+    { lastError: "boom", lastIssuedAt: AT },
+    { ok: true, at: LATER },
+  );
+  assertEquals(next, { lastIssuedAt: LATER });
+});
+
+test("applyIssuanceOutcome records a failure without touching the last good expiry or stamp", () => {
+  const next = applyIssuanceOutcome(
+    {
+      notAfter: "2027-01-01T00:00:00.000Z",
+      lastIssuedAt: AT,
+      managedBy: "caddy",
+    },
+    { ok: false, errorMessage: "no route to host", at: LATER },
+  );
+  assertEquals(next, {
+    notAfter: "2027-01-01T00:00:00.000Z",
+    lastIssuedAt: AT,
+    managedBy: "caddy",
+    lastError: "no route to host",
+  });
+});
+
+test("applyIssuanceOutcome defaults the stamp to now when the daemon sent no time", () => {
+  const next = applyIssuanceOutcome(undefined, { ok: true }, () => LATER);
+  assertEquals(next.lastIssuedAt, LATER);
+});
+
+test("handleAcmeIssuanceEvent writes notAfter and lastIssuedAt on a good event, never status", async () => {
+  const { db, updates } = fakeDb([
+    {
+      id: "tls-1",
+      status: "managed",
+      metadata: {
+        dnsNames: ["app.example.com"],
+        hasWildcard: false,
+        notBefore: "",
+        subject: "",
+        issuer: "",
+        acme: { managedBy: "caddy" },
+      },
+    },
+  ]);
+  await handleAcmeIssuanceEvent(db, {
+    serverId: SERVER_ID,
+    hostname: "app.example.com",
+    ok: true,
+    notAfter: "2027-01-01T00:00:00.000Z",
+    at: AT,
+  });
+  assertEquals("status" in updates[0]!.patch, false);
+  const metadata = updates[0]!.patch.metadata as {
+    acme?: Record<string, unknown>;
+  };
+  assertEquals(metadata.acme, {
+    managedBy: "caddy",
+    notAfter: "2027-01-01T00:00:00.000Z",
+    lastIssuedAt: AT,
+  });
 });
