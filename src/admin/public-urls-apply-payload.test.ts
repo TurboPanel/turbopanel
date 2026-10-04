@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from "../test-fixtures/require-service.ts";
 import { assertEquals, assertRejects } from "@std/assert";
 import { createDenoDb, type Db, endDbConnection } from "../db/connection.ts";
 import { getDatabaseUrl } from "../db/url.ts";
@@ -45,7 +46,7 @@ class RollbackFixture extends Error {
 /** Run `fn` in a transaction that always rolls back. */
 async function withRollback(fn: (tx: Db) => Promise<void>): Promise<void> {
   if (!dbUrl) {
-    console.warn("Skipping public-urls sealing tests: TURBOPANEL_DATABASE_URL not set");
+    skipWithoutDatabase("public-urls sealing tests");
     return;
   }
   const db = createDenoDb();

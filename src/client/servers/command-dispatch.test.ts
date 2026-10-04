@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.ts'
 import { assertEquals } from '@std/assert'
 import { it } from '@std/testing/bdd'
 import type { Context } from 'hono'
@@ -116,7 +117,7 @@ it('enqueueCommandOrCompensate returns null when enqueue succeeds', async () => 
 
 it('enqueueCommandOrCompensate marks the command failed when enqueue throws', async () => {
   if (!dbUrl) {
-    console.warn('Skipping enqueueCommandOrCompensate test: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('enqueueCommandOrCompensate test')
     return
   }
 

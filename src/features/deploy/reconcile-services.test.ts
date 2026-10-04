@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.ts'
 import { assertEquals } from '@std/assert'
 import { eq } from 'drizzle-orm'
 import { describe, it } from '@std/testing/bdd'
@@ -21,7 +22,7 @@ describe('reconcileServicesFromCompose', () => {
   it('creates service rows for compose service names', async () => {
     const dbUrl = getDatabaseUrl()
     if (!dbUrl) {
-      console.warn('Skipping reconcile-services tests: TURBOPANEL_DATABASE_URL not set')
+      skipWithoutDatabase('reconcile-services tests')
       return
     }
 
@@ -82,7 +83,7 @@ describe('reconcileServicesFromCompose', () => {
   it('reconcileServicesForEnvironment reconciles from the persisted project + environment compose', async () => {
     const dbUrl = getDatabaseUrl()
     if (!dbUrl) {
-      console.warn('Skipping reconcile-services tests: TURBOPANEL_DATABASE_URL not set')
+      skipWithoutDatabase('reconcile-services tests')
       return
     }
 
@@ -138,7 +139,7 @@ describe('reconcileServicesFromCompose', () => {
   it('reconcileServicesForProject reconciles every environment of the project', async () => {
     const dbUrl = getDatabaseUrl()
     if (!dbUrl) {
-      console.warn('Skipping reconcile-services tests: TURBOPANEL_DATABASE_URL not set')
+      skipWithoutDatabase('reconcile-services tests')
       return
     }
 
@@ -193,7 +194,7 @@ describe('reconcileServicesFromCompose', () => {
   it('reports orphans when compose drops a service name', async () => {
     const dbUrl = getDatabaseUrl()
     if (!dbUrl) {
-      console.warn('Skipping reconcile-services tests: TURBOPANEL_DATABASE_URL not set')
+      skipWithoutDatabase('reconcile-services tests')
       return
     }
 
@@ -251,7 +252,7 @@ describe('reconcileServicesFromCompose', () => {
   it('reconcileServicesForEnvironment swallows invalid compose without throwing', async () => {
     const dbUrl = getDatabaseUrl()
     if (!dbUrl) {
-      console.warn('Skipping reconcile-services tests: TURBOPANEL_DATABASE_URL not set')
+      skipWithoutDatabase('reconcile-services tests')
       return
     }
 

@@ -5,6 +5,7 @@
  * `TURBOPANEL_DATABASE_URL`; the migrations must be applied.
  */
 
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.ts'
 import { assertEquals } from '@std/assert'
 import { eq, like } from 'drizzle-orm'
 import { getDatabaseUrl } from '../../db/url.ts'
@@ -42,7 +43,7 @@ type Ctx = {
  */
 async function withDb(fn: (ctx: Ctx) => Promise<void>): Promise<void> {
   if (!dbUrl) {
-    console.warn('Skipping billing constraint tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('billing constraint tests')
     return
   }
   const db = createDenoDb()

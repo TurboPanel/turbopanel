@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from "../../test-fixtures/require-service.ts";
 import { assertEquals } from "@std/assert";
 import { eq } from "drizzle-orm";
 import { Hono } from "hono";
@@ -50,9 +51,7 @@ async function sessionCookie(
 
 test("PATCH /hostings rejects public bind with non-public ip scope", async () => {
   if (!dbUrl) {
-    console.warn(
-      "Skipping hosting route tests: TURBOPANEL_DATABASE_URL not set",
-    );
+    skipWithoutDatabase("hosting route tests");
     return;
   }
 

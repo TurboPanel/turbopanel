@@ -6,6 +6,7 @@
  * without TURBOPANEL_DATABASE_URL.
  */
 
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.ts'
 import { assertEquals } from '@std/assert'
 import { eq, inArray } from 'drizzle-orm'
 import { Hono } from 'hono'
@@ -106,7 +107,7 @@ async function insertDeployedEnvironment(db: Db, organizationId: string, serverI
 
 async function withFixture(fn: (fixture: Fixture) => Promise<void>): Promise<void> {
   if (!dbUrl) {
-    console.warn('Skipping php mode route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('php mode route tests')
     return
   }
   const db = createDenoDb()

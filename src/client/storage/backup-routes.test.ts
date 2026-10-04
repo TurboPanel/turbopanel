@@ -7,6 +7,7 @@
  * Skips without TURBOPANEL_DATABASE_URL.
  */
 
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.ts'
 import { assertEquals } from '@std/assert'
 import { and, eq, inArray } from 'drizzle-orm'
 import { Hono } from 'hono'
@@ -109,7 +110,7 @@ async function insertCopy(
 
 async function withFixture(fn: (fixture: Fixture) => Promise<void>): Promise<void> {
   if (!dbUrl) {
-    console.warn('Skipping storage backup route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('storage backup route tests')
     return
   }
   const db = createDenoDb()

@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from '../test-fixtures/require-service.ts'
 import { assertEquals } from '@std/assert'
 
 /**
@@ -75,7 +76,7 @@ test('startDrizzleStudio rejects missing database URL on alt port', async () => 
 test('startDrizzleStudio spawn path surfaces not-ready when drizzle-kit cannot start', async () => {
   const databaseUrl = Deno.env.get(DB_URL_KEY)
   if (!databaseUrl) {
-    console.warn('Skipping spawn test: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('spawn test')
     return
   }
   const previous = {

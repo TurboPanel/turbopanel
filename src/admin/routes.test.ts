@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from '../test-fixtures/require-service.ts'
 import { assertEquals } from '@std/assert'
 import { Hono } from 'hono'
 import type { AppEnv } from '../app/app.ts'
@@ -257,7 +258,7 @@ async function withRoleUser(
   }> = {}
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn('Skipping admin route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('admin route tests')
     return
   }
 
@@ -809,7 +810,7 @@ test('GET and PUT /api/admin/v1/settings/email round-trip non-secret settings', 
 
 test('daemon fleet diagnostics and address request success paths', async () => {
   if (!dbUrl) {
-    console.warn('Skipping admin route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('admin route tests')
     return
   }
 
@@ -916,7 +917,7 @@ test('daemon fleet diagnostics and address request success paths', async () => {
 
 test('daemon address request failed/expired/error branches', async () => {
   if (!dbUrl) {
-    console.warn('Skipping admin route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('admin route tests')
     return
   }
 
@@ -1048,7 +1049,7 @@ test('daemon address request failed/expired/error branches', async () => {
 
 test('POST /instance/public-urls/apply returns 503 when colocated snapshot is disconnected', async () => {
   if (!dbUrl) {
-    console.warn('Skipping admin route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('admin route tests')
     return
   }
 
@@ -1386,7 +1387,7 @@ async function withLetsEncryptColocated(
   fn: (ctx: { app: Hono<AppEnv>; cookie: string }) => Promise<void>
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn('Skipping admin route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('admin route tests')
     return
   }
   const db = createDenoDb()

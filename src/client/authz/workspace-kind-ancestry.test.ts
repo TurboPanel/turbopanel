@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from "../../test-fixtures/require-service.ts";
 import { assertEquals } from "@std/assert";
 import { eq } from "drizzle-orm";
 import { getDatabaseUrl } from "../../db/url.ts";
@@ -38,9 +39,7 @@ async function withAncestryFixtures(
   }) => Promise<void>,
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn(
-      "Skipping workspace-kind ancestry tests: TURBOPANEL_DATABASE_URL not set",
-    );
+    skipWithoutDatabase("workspace-kind ancestry tests");
     return;
   }
 

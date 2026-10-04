@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.ts'
 import { assertEquals } from '@std/assert'
 import { and, eq } from 'drizzle-orm'
 import { Hono } from 'hono'
@@ -65,7 +66,7 @@ async function withNetworkFixtures(
   }) => Promise<void>,
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn('Skipping network route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('network route tests')
     return
   }
 
@@ -113,7 +114,7 @@ async function withNetworkFixtures(
 
 test('POST /networks requires dockerNetworkName for kind=docker', async () => {
   if (!dbUrl) {
-    console.warn('Skipping network route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('network route tests')
     return
   }
 
@@ -189,7 +190,7 @@ test('POST /networks requires dockerNetworkName for kind=docker', async () => {
 
 test('POST /networks rejects datacenterId and serverId together', async () => {
   if (!dbUrl) {
-    console.warn('Skipping network route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('network route tests')
     return
   }
 
@@ -263,7 +264,7 @@ test('POST /networks rejects datacenterId and serverId together', async () => {
 
 test('POST /networks rejects kind=vpn and requires per-kind scope FKs', async () => {
   if (!dbUrl) {
-    console.warn('Skipping network route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('network route tests')
     return
   }
 
@@ -431,7 +432,7 @@ test('POST /networks rejects kind=vpn and requires per-kind scope FKs', async ()
 
 test('GET /networks returns 403 for org member without organization:manage', async () => {
   if (!dbUrl) {
-    console.warn('Skipping network route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('network route tests')
     return
   }
 

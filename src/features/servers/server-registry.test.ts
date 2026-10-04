@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.ts'
 import { assertEquals } from '@std/assert'
 import { eq } from 'drizzle-orm'
 import { getDatabaseUrl } from '../../db/url.ts'
@@ -32,7 +33,7 @@ const RAW_MACHINE_ID = '0123456789abcdef0123456789abcdef'
 
 async function withTestDb(fn: (db: ReturnType<typeof createDenoDb>) => Promise<void>) {
   if (!dbUrl) {
-    console.warn('Skipping server-registry tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('server-registry tests')
     return
   }
   const db = createDenoDb()

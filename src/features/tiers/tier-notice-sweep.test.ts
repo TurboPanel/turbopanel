@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from "../../test-fixtures/require-service.ts";
 import { assertEquals } from "@std/assert";
 import { and, eq, isNull } from "drizzle-orm";
 import type { ServerHostResources } from "../servers/server-metadata.ts";
@@ -149,9 +150,7 @@ async function withEligibleSweepFleet(
   }) => Promise<void>,
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn(
-      "Skipping tier-notice sweep cursor tests: TURBOPANEL_DATABASE_URL not set",
-    );
+    skipWithoutDatabase("tier-notice sweep cursor tests");
     return;
   }
 

@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.ts'
 import { DENY_FIREWALL_APPLY } from '../firewall/enforcement.ts'
 import { assertEquals } from '@std/assert'
 import { projectServerDaemon } from '../../daemon/cell/postgres-projection.ts'
@@ -229,7 +230,7 @@ async function withConsumerFixtures(
   }) => Promise<void>
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn('Skipping command consumer tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('command consumer tests')
     return
   }
 

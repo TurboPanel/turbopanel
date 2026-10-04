@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.ts'
 import { assertEquals } from '@std/assert'
 import { and, eq, inArray } from 'drizzle-orm'
 import { Hono } from 'hono'
@@ -96,7 +97,7 @@ async function withDatacenterFixtures(
   }) => Promise<void>
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn('Skipping datacenter route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('datacenter route tests')
     return
   }
 
@@ -142,7 +143,7 @@ async function withDatacenterFixtures(
 
 test('GET /datacenters/name-suggestions uses unassigned server geo and ASN', async () => {
   if (!dbUrl) {
-    console.warn('Skipping datacenter route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('datacenter route tests')
     return
   }
 
@@ -257,7 +258,7 @@ test('GET /datacenters/name-suggestions uses unassigned server geo and ASN', asy
 
 test('GET /datacenters/:id returns 404 for datacenter in another org', async () => {
   if (!dbUrl) {
-    console.warn('Skipping datacenter route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('datacenter route tests')
     return
   }
 
@@ -327,7 +328,7 @@ test('GET /datacenters/:id returns 404 for datacenter in another org', async () 
 
 test('GET /datacenters returns 403 for org member without organization:manage', async () => {
   if (!dbUrl) {
-    console.warn('Skipping datacenter route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('datacenter route tests')
     return
   }
 
@@ -372,7 +373,7 @@ test('GET /datacenters returns 403 for org member without organization:manage', 
 
 test('DELETE /datacenters/:id succeeds when no scoped networks exist', async () => {
   if (!dbUrl) {
-    console.warn('Skipping datacenter route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('datacenter route tests')
     return
   }
 
@@ -447,7 +448,7 @@ test('DELETE /datacenters/:id succeeds when no scoped networks exist', async () 
 
 test('DELETE /datacenters/:id returns 409 when members remain', async () => {
   if (!dbUrl) {
-    console.warn('Skipping datacenter route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('datacenter route tests')
     return
   }
 
@@ -1969,7 +1970,7 @@ async function withManagedPolicyFixtures(
   }) => Promise<void>
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn('Skipping datacenter route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('datacenter route tests')
     return
   }
 

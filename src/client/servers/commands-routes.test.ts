@@ -6,6 +6,7 @@
  * satisfies either path). The discriminating assertion is grant-present vs
  * grant-absent, not own vs manage.
  */
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.ts'
 import { assertEquals } from '@std/assert'
 import { and, eq } from 'drizzle-orm'
 import { it } from '@std/testing/bdd'
@@ -209,7 +210,7 @@ async function withCommandRouteFixtures(
   }) => Promise<void>,
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn('Skipping server command route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('server command route tests')
     return
   }
 

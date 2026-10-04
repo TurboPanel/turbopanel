@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from "../../test-fixtures/require-service.ts";
 import { assertEquals, assertNotEquals } from "@std/assert";
 import { eq } from "drizzle-orm";
 import { getDatabaseUrl } from "../../db/url.ts";
@@ -33,9 +34,7 @@ async function withServerFixture(
   ) => Promise<void>,
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn(
-      "Skipping capability plan records tests: TURBOPANEL_DATABASE_URL not set",
-    );
+    skipWithoutDatabase("capability plan records tests");
     return;
   }
 

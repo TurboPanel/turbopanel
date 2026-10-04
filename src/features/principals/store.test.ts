@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.ts'
 import { assertEquals, assertMatch, assertRejects } from '@std/assert'
 import { and, eq, inArray } from 'drizzle-orm'
 import { getDatabaseUrl } from '../../db/url.ts'
@@ -44,7 +45,7 @@ async function withPrincipalFixtures(
   }) => Promise<void>
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn('Skipping principal store tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('principal store tests')
     return
   }
 
@@ -265,7 +266,7 @@ test('isServerPrincipalUsernameTaken is org-scoped and case-insensitive', async 
 
 test('isManagedUsernameTaken scopes by server-owning org not create chain', async () => {
   if (!dbUrl) {
-    console.warn('Skipping managed username tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('managed username tests')
     return
   }
   const db = createDenoDb()
@@ -353,7 +354,7 @@ test('isManagedUsernameTaken scopes by server-owning org not create chain', asyn
 
 test('resolveManagedAppliedUsername suffixes when short name taken', async () => {
   if (!dbUrl) {
-    console.warn('Skipping managed username tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('managed username tests')
     return
   }
   const db = createDenoDb()

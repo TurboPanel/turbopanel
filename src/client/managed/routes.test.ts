@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.ts'
 import { assertEquals, assertMatch } from '@std/assert'
 import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm'
 import { Hono } from 'hono'
@@ -219,7 +220,7 @@ async function withManagedFixtures(
   }) => Promise<void>
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn('Skipping managed route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('managed route tests')
     return
   }
 

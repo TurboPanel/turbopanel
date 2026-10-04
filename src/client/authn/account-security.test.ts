@@ -4,6 +4,7 @@
  * auth-totp-enroll, auth-totp-disable, auth-password-change reset half,
  * auth-oauth-link unlink). Skips without TURBOPANEL_DATABASE_URL.
  */
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.ts'
 import { assert, assertEquals } from '@std/assert'
 import { eq, inArray, like } from 'drizzle-orm'
 import { Hono } from 'hono'
@@ -72,7 +73,7 @@ async function withFixture(
   fn: (fx: Fixture) => Promise<void>
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn('Skipping account-security tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('account-security tests')
     return
   }
   const runtime = options.runtime ?? 'deno'

@@ -1,3 +1,4 @@
+import { skipWithoutRedis } from "../test-fixtures/require-service.ts";
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import { RedisDaemonCell } from "./cell/redis/cell.ts";
 import { it } from "@std/testing/bdd";
@@ -64,9 +65,7 @@ function withRedisCell(
 ): () => Promise<void> {
   return async () => {
     if (!(await redisAvailable())) {
-      console.warn(
-        `Skipping ws-handlers regression test: Redis socket not found at ${DEFAULT_SOCKET}`,
-      );
+      skipWithoutRedis("ws-handlers regression test", DEFAULT_SOCKET);
       return;
     }
 

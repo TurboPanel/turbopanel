@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.ts'
 import { assertEquals, assertExists } from '@std/assert'
 import { and, eq } from 'drizzle-orm'
 import { Hono } from 'hono'
@@ -91,7 +92,7 @@ async function cleanUpOrganization(db: Db, organizationId: string): Promise<void
 
 async function withFleetFixtures(fn: (ctx: FleetCtx) => Promise<void>): Promise<void> {
   if (!dbUrl) {
-    console.warn('Skipping fleet verification tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('fleet verification tests')
     return
   }
   const db = createDenoDb()

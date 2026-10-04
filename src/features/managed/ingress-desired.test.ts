@@ -6,6 +6,7 @@
  * must publish only the intended address).
  */
 
+import { skipWithoutDatabase } from "../../test-fixtures/require-service.ts";
 import { assertEquals, assertThrows } from "@std/assert";
 import { eq, inArray } from "drizzle-orm";
 import { getDatabaseUrl } from "../../db/url.ts";
@@ -103,9 +104,7 @@ async function withSingleClusterIngressFixture(
   }) => Promise<void>,
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn(
-      "Skipping ingress-desired bind-address tests: TURBOPANEL_DATABASE_URL not set",
-    );
+    skipWithoutDatabase("ingress-desired bind-address tests");
     return;
   }
 
@@ -293,9 +292,7 @@ async function withEmptyServerIngressFixture(
   }) => Promise<void>,
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn(
-      "Skipping ingress-desired teardown tests: TURBOPANEL_DATABASE_URL not set",
-    );
+    skipWithoutDatabase("ingress-desired teardown tests");
     return;
   }
 
@@ -839,9 +836,7 @@ async function insertBoundConsumer(
 
 test("loadBoundManagedIdsForServer does not scan unpinned environments that default to other servers", async () => {
   if (!dbUrl) {
-    console.warn(
-      "Skipping ingress-desired placement filter tests: TURBOPANEL_DATABASE_URL not set",
-    );
+    skipWithoutDatabase("ingress-desired placement filter tests");
     return;
   }
 

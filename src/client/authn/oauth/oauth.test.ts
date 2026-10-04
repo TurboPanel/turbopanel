@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from "../../../test-fixtures/require-service.ts";
 import { assertEquals } from "@std/assert";
 import { eq, inArray, sql } from "drizzle-orm";
 import { Hono } from "hono";
@@ -106,7 +107,7 @@ function stubGithubFetch(identity: { id: number; email: string }): () => void {
 
 test("Postgres OAuth signup, login, link, unlink, and unique conflict", async () => {
   if (!dbUrl) {
-    console.warn("Skipping OAuth DB test: TURBOPANEL_DATABASE_URL not set");
+    skipWithoutDatabase("OAuth DB test");
     return;
   }
 
@@ -378,9 +379,7 @@ async function hasAccountProviderUserConstraint(
 
 test("Postgres OAuth signup account-conflict race does not leave a user row", async () => {
   if (!dbUrl) {
-    console.warn(
-      "Skipping OAuth signup race test: TURBOPANEL_DATABASE_URL not set",
-    );
+    skipWithoutDatabase("OAuth signup race test");
     return;
   }
 
@@ -501,7 +500,7 @@ async function withOAuthApp(
   }) => Promise<void>,
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn(`Skipping ${label}: TURBOPANEL_DATABASE_URL not set`);
+    skipWithoutDatabase(`${label}`);
     return;
   }
   const db = createDenoDb();

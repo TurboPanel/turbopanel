@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.ts'
 import { assertEquals } from '@std/assert'
 import { and, eq, inArray } from 'drizzle-orm'
 import { Hono } from 'hono'
@@ -49,7 +50,7 @@ async function withManagedAllocationFixtures(
   }) => Promise<void>,
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn('Skipping apply-prepare allocation tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('apply-prepare allocation tests')
     return
   }
 
@@ -135,7 +136,7 @@ async function withManagedApplyPrepareFixtures(
   }) => Promise<void>,
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn('Skipping apply-prepare payload tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('apply-prepare payload tests')
     return
   }
 

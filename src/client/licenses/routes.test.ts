@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.ts'
 import { assertEquals } from '@std/assert'
 import { and, eq } from 'drizzle-orm'
 import { Hono } from 'hono'
@@ -132,7 +133,7 @@ async function withTestFixtures(
   }) => Promise<void>,
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn('Skipping license route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('license route tests')
     return
   }
 
@@ -186,7 +187,7 @@ async function withOwnerFixtures(
   options?: { registry?: DaemonCellRegistry },
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn('Skipping license route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('license route tests')
     return
   }
 
@@ -377,7 +378,7 @@ test('DELETE /licenses/:id returns 403 for license bound to self-host-pinned ser
 
 test('DELETE /licenses/:id still 403 for reserved display-name when registry is present', async () => {
   if (!dbUrl) {
-    console.warn('Skipping license route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('license route tests')
     return
   }
 
@@ -486,7 +487,7 @@ test('DELETE /licenses/:id still 403 for reserved display-name when registry is 
 
 test('DELETE /licenses/:id still 403 via fallbacks when registry binding is revoked', async () => {
   if (!dbUrl) {
-    console.warn('Skipping license route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('license route tests')
     return
   }
 

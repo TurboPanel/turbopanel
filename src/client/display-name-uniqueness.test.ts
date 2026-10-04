@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from "../test-fixtures/require-service.ts";
 import { assertEquals } from "@std/assert";
 import { eq, inArray } from "drizzle-orm";
 import { getDatabaseUrl } from "../db/url.ts";
@@ -235,9 +236,7 @@ async function cleanupOrgHierarchy(
 
 test("isWorkspaceDisplayNameTaken treats TurboPanel workspace as taken", async () => {
   if (!dbUrl) {
-    console.warn(
-      "Skipping workspace display-name uniqueness DB test: TURBOPANEL_DATABASE_URL not set",
-    );
+    skipWithoutDatabase("workspace display-name uniqueness DB test");
     return;
   }
 

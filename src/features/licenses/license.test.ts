@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.ts'
 import { and, eq } from 'drizzle-orm'
 import { assertEquals } from '@std/assert'
 import { getDatabaseUrl } from '../../db/url.ts'
@@ -38,7 +39,7 @@ test('generateLicenseToken and verifyLicenseToken round-trip', async () => {
 
 test('createLicense stores a hashed token and returns plaintext once', async () => {
   if (!dbUrl) {
-    console.warn('Skipping license DB test: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('license DB test')
     return
   }
 
@@ -74,7 +75,7 @@ test('createLicense stores a hashed token and returns plaintext once', async () 
 
 test('revokeLicense is idempotent and invalidateLicense returns server ids', async () => {
   if (!dbUrl) {
-    console.warn('Skipping license revoke test: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('license revoke test')
     return
   }
 
@@ -112,7 +113,7 @@ test('revokeLicense is idempotent and invalidateLicense returns server ids', asy
 
 test('invalidateLicense refuses while a live server is attached', async () => {
   if (!dbUrl) {
-    console.warn('Skipping license attach test: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('license attach test')
     return
   }
 
@@ -171,7 +172,7 @@ test('invalidateLicense refuses while a live server is attached', async () => {
 
 test('invalidateLicense does not treat a revoked attached row as occupied', async () => {
   if (!dbUrl) {
-    console.warn('Skipping license revoked-attach test: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('license revoked-attach test')
     return
   }
 

@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.ts'
 import { assertEquals } from '@std/assert'
 import { eq, inArray } from 'drizzle-orm'
 import type { DaemonOutboundEnvelope } from '../../contracts/cell-protocol.ts'
@@ -82,7 +83,7 @@ type Fixture = {
 
 async function withFixture(label: string, fn: (fx: Fixture) => Promise<void>): Promise<void> {
   if (!dbUrl) {
-    console.warn(`Skipping ${label}: TURBOPANEL_DATABASE_URL not set`)
+    skipWithoutDatabase(`${label}`)
     return
   }
   const db = createDenoDb()

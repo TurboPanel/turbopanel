@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.ts'
 import { assertEquals } from '@std/assert'
 import { eq } from 'drizzle-orm'
 import { Hono } from 'hono'
@@ -49,7 +50,7 @@ async function sessionCookie(
 
 test('DELETE /ips returns 409 when hosting references ipId', async () => {
   if (!dbUrl) {
-    console.warn('Skipping ip route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('ip route tests')
     return
   }
 
@@ -159,7 +160,7 @@ test('DELETE /ips returns 409 when hosting references ipId', async () => {
 
 test('GET /ips returns 403 for org member without organization:manage', async () => {
   if (!dbUrl) {
-    console.warn('Skipping ip route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('ip route tests')
     return
   }
 
@@ -206,7 +207,7 @@ test('GET /ips returns 403 for org member without organization:manage', async ()
 
 test('POST /ips derives version from address', async () => {
   if (!dbUrl) {
-    console.warn('Skipping ip route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('ip route tests')
     return
   }
 
@@ -293,7 +294,7 @@ test('POST /ips derives version from address', async () => {
 
 test('POST /ips rejects datacenterId together with networkId', async () => {
   if (!dbUrl) {
-    console.warn('Skipping ip route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('ip route tests')
     return
   }
 
@@ -376,7 +377,7 @@ test('POST /ips rejects datacenterId together with networkId', async () => {
 
 test('PATCH /ips/:id rejects datacenterId when the row already has networkId', async () => {
   if (!dbUrl) {
-    console.warn('Skipping ip route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('ip route tests')
     return
   }
 

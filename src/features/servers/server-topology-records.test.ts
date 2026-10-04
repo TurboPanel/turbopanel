@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.ts'
 import { assertEquals } from '@std/assert'
 import { eq } from 'drizzle-orm'
 import { getDatabaseUrl } from '../../db/url.ts'
@@ -25,7 +26,7 @@ async function withServerFixture(
   fn: (ctx: { db: ReturnType<typeof createDenoDb>; serverId: string }) => Promise<void>
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn('Skipping server topology records tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('server topology records tests')
     return
   }
 
@@ -114,7 +115,7 @@ async function withTwoServerFixture(
   }) => Promise<void>
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn('Skipping server topology records tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('server topology records tests')
     return
   }
 

@@ -5,6 +5,7 @@
  * TURBOPANEL_DATABASE_URL.
  */
 
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.ts'
 import { assertEquals } from '@std/assert'
 import { eq } from 'drizzle-orm'
 import { createDenoDb, endDbConnection } from '../../db/connection.ts'
@@ -26,7 +27,7 @@ type Db = ReturnType<typeof createDenoDb>
 
 async function withCopy(fn: (db: Db, copyId: string) => Promise<void>): Promise<void> {
   if (!dbUrl) {
-    console.warn('Skipping storage.backup side effect tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('storage.backup side effect tests')
     return
   }
   const db = createDenoDb()

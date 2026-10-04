@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from "../../test-fixtures/require-service.ts";
 import { assertEquals } from "@std/assert";
 import { eq } from "drizzle-orm";
 import { getDatabaseUrl } from "../../db/url.ts";
@@ -45,9 +46,7 @@ test("isActiveContainerStatus treats stopped Docker states as inactive", () => {
 
 test("deleteProjectCascade rejects when containers are still active", async () => {
   if (!dbUrl) {
-    console.warn(
-      "Skipping project cascade tests: TURBOPANEL_DATABASE_URL not set",
-    );
+    skipWithoutDatabase("project cascade tests");
     return;
   }
 
@@ -130,9 +129,7 @@ test("deleteProjectCascade rejects when containers are still active", async () =
 
 test("deleteProjectCascade ignores a running ingress container", async () => {
   if (!dbUrl) {
-    console.warn(
-      "Skipping project cascade tests: TURBOPANEL_DATABASE_URL not set",
-    );
+    skipWithoutDatabase("project cascade tests");
     return;
   }
 
@@ -234,9 +231,7 @@ test("deleteProjectCascade ignores a running ingress container", async () => {
 
 test("deleteProjectCascade removes project with no environments", async () => {
   if (!dbUrl) {
-    console.warn(
-      "Skipping project cascade tests: TURBOPANEL_DATABASE_URL not set",
-    );
+    skipWithoutDatabase("project cascade tests");
     return;
   }
 
@@ -279,9 +274,7 @@ test("deleteProjectCascade removes project with no environments", async () => {
 
 test("deleteProjectCascade removes children when containers are stopped", async () => {
   if (!dbUrl) {
-    console.warn(
-      "Skipping project cascade tests: TURBOPANEL_DATABASE_URL not set",
-    );
+    skipWithoutDatabase("project cascade tests");
     return;
   }
 
@@ -387,9 +380,7 @@ test("deleteProjectCascade removes children when containers are stopped", async 
 
 test("deleteProjectCascade removes tenancy edges before services", async () => {
   if (!dbUrl) {
-    console.warn(
-      "Skipping project cascade tests: TURBOPANEL_DATABASE_URL not set",
-    );
+    skipWithoutDatabase("project cascade tests");
     return;
   }
 

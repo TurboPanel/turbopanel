@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from "../../test-fixtures/require-service.ts";
 import { assertEquals } from "@std/assert";
 import { eq, like } from "drizzle-orm";
 import { Hono } from "hono";
@@ -52,9 +53,7 @@ const dbUrl = getDatabaseUrl();
 
 test("Postgres two-factor enrol, verify, challenge, backup consume, disable", async () => {
   if (!dbUrl) {
-    console.warn(
-      "Skipping two-factor DB test: TURBOPANEL_DATABASE_URL not set",
-    );
+    skipWithoutDatabase("two-factor DB test");
     return;
   }
 
@@ -207,9 +206,7 @@ test("Postgres two-factor enrol, verify, challenge, backup consume, disable", as
 
 test("concurrent 2FA sign-in and disable do not deadlock", async () => {
   if (!dbUrl) {
-    console.warn(
-      "Skipping concurrent two-factor HTTP test: TURBOPANEL_DATABASE_URL not set",
-    );
+    skipWithoutDatabase("concurrent two-factor HTTP test");
     return;
   }
 
@@ -372,7 +369,7 @@ async function withEnrolledUser(
   fn: (ctx: EnrolledUser) => Promise<void>,
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn(`Skipping ${label}: TURBOPANEL_DATABASE_URL not set`);
+    skipWithoutDatabase(`${label}`);
     return;
   }
   const db = createDenoDb();

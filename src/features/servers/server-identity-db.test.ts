@@ -7,6 +7,7 @@
  * without `TURBOPANEL_DATABASE_URL`; the migrations must be applied.
  */
 
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.ts'
 import { assertEquals, assertExists } from '@std/assert'
 import { eq } from 'drizzle-orm'
 import { getDatabaseUrl } from '../../db/url.ts'
@@ -34,7 +35,7 @@ async function withEnrolledServer(
   fn: (ctx: { db: ReturnType<typeof createDenoDb>; serverId: string }) => Promise<void>,
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn('Skipping key-table race tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('key-table race tests')
     return
   }
   const run = `key-race-${crypto.randomUUID().slice(0, 8)}`

@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from '../../../test-fixtures/require-service.ts'
 import { assertEquals, assertNotEquals, assertThrows } from '@std/assert'
 import { eq } from 'drizzle-orm'
 import {
@@ -92,7 +93,7 @@ test('resolveCatalogVariablePlaintext rejects non-secret variables without value
 
 test('scaffoldCatalogEnvironments seals managed secrets as enc without placeholders', async () => {
   if (!dbUrl) {
-    console.warn('Skipping catalog scaffold tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('catalog scaffold tests')
     return
   }
 
@@ -198,7 +199,7 @@ test('scaffoldCatalogEnvironments seals managed secrets as enc without placehold
 
 test('scaffoldCatalogEnvironments reuses sharedCredentialId when sealing', async () => {
   if (!dbUrl) {
-    console.warn('Skipping catalog scaffold tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('catalog scaffold tests')
     return
   }
 

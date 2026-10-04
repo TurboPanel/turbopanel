@@ -2,6 +2,7 @@
  * Signed-in password change and the server-side breached-password refusal on
  * sign-up, against a real Postgres. Skips without TURBOPANEL_DATABASE_URL.
  */
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.ts'
 import { assert, assertEquals } from '@std/assert'
 import { eq, inArray } from 'drizzle-orm'
 import { Hono } from 'hono'
@@ -74,7 +75,7 @@ async function withFixture(
   fn: (fx: Fixture) => Promise<void>
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn('Skipping change-password tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('change-password tests')
     return
   }
   const db = createDenoDb()

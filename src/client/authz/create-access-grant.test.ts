@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.ts'
 import { eq } from 'drizzle-orm'
 import { assertEquals } from '@std/assert'
 import { it } from '@std/testing/bdd'
@@ -30,7 +31,7 @@ async function withTestFixtures(
   }) => Promise<void>,
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn('Skipping create-access-grant tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('create-access-grant tests')
     return
   }
 

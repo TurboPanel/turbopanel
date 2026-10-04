@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from '../test-fixtures/require-service.ts'
 import { and, eq } from 'drizzle-orm'
 import { it } from '@std/testing/bdd'
 import { Hono } from 'hono'
@@ -78,7 +79,7 @@ async function withTeamSubjectGrantFixtures(
   }) => Promise<void>,
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn('Skipping org-context tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('org-context tests')
     return
   }
 

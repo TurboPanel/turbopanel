@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.ts'
 import { and, eq } from 'drizzle-orm'
 import { it } from '@std/testing/bdd'
 import { getDatabaseUrl } from '../../db/url.ts'
@@ -30,7 +31,7 @@ async function withTestFixtures(
   }) => Promise<void>,
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn('Skipping authz tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('authz tests')
     return
   }
 

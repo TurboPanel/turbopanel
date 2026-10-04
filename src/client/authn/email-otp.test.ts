@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.ts'
 import { eq } from 'drizzle-orm'
 import { assertEquals } from '@std/assert'
 import { it } from '@std/testing/bdd'
@@ -43,7 +44,7 @@ async function cleanupOtp(
 
 it('createEmailOtp enforces a resend cooldown', async () => {
   if (!dbUrl) {
-    console.warn('Skipping OTP cooldown test: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('OTP cooldown test')
     return
   }
   const db = createDenoDb()
@@ -62,7 +63,7 @@ it('createEmailOtp enforces a resend cooldown', async () => {
 
 it('createEmailOtp with zero cooldown replaces the OTP', async () => {
   if (!dbUrl) {
-    console.warn('Skipping OTP replace test: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('OTP replace test')
     return
   }
   const db = createDenoDb()
@@ -85,7 +86,7 @@ it('createEmailOtp with zero cooldown replaces the OTP', async () => {
 
 it('verifyEmailOtp locks out after MAX_OTP_ATTEMPTS failures', async () => {
   if (!dbUrl) {
-    console.warn('Skipping OTP attempts test: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('OTP attempts test')
     return
   }
   const db = createDenoDb()
@@ -110,7 +111,7 @@ it('verifyEmailOtp locks out after MAX_OTP_ATTEMPTS failures', async () => {
 
 it('concurrent wrong OTP attempts are counted atomically (no lost updates)', async () => {
   if (!dbUrl) {
-    console.warn('Skipping OTP concurrency test: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('OTP concurrency test')
     return
   }
   const db = createDenoDb()
@@ -143,9 +144,7 @@ it('concurrent wrong OTP attempts are counted atomically (no lost updates)', asy
 
 it('createEmailOtp stores a keyed HMAC verifier, never the raw OTP', async () => {
   if (!dbUrl) {
-    console.warn(
-      'Skipping OTP digest-at-rest test: TURBOPANEL_DATABASE_URL not set',
-    )
+    skipWithoutDatabase('OTP digest-at-rest test')
     return
   }
   const db = createDenoDb()
@@ -281,9 +280,7 @@ it('requireOtpVerifierSecrets fails closed when the keyring is missing', () => {
 
 it('parallel first-time createEmailOtp leaves only one active OTP row', async () => {
   if (!dbUrl) {
-    console.warn(
-      'Skipping OTP create concurrency test: TURBOPANEL_DATABASE_URL not set',
-    )
+    skipWithoutDatabase('OTP create concurrency test')
     return
   }
   const db = createDenoDb()

@@ -1,3 +1,4 @@
+import { skipWithoutRedis } from "../test-fixtures/require-service.ts";
 import { assert, assertEquals, assertRejects } from "@std/assert";
 import type { Db } from "../db/connection.ts";
 import {
@@ -74,9 +75,7 @@ function withRedisCell(
 ): () => Promise<void> {
   return async () => {
     if (!(await redisAvailable())) {
-      console.warn(
-        `Skipping Redis cell test: socket not found at ${DEFAULT_SOCKET}`,
-      );
+      skipWithoutRedis("Redis cell test", DEFAULT_SOCKET);
       return;
     }
 
@@ -104,9 +103,7 @@ function withDebugRedisCell(
 ): () => Promise<void> {
   return async () => {
     if (!(await redisAvailable())) {
-      console.warn(
-        `Skipping Redis cell test: socket not found at ${DEFAULT_SOCKET}`,
-      );
+      skipWithoutRedis("Redis cell test", DEFAULT_SOCKET);
       return;
     }
 

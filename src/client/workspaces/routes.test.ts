@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.ts'
 import { assertEquals } from '@std/assert'
 import { and, eq, inArray } from 'drizzle-orm'
 import { Hono } from 'hono'
@@ -128,7 +129,7 @@ async function withWorkspaceFixtures(
   }) => Promise<void>,
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn('Skipping workspace route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('workspace route tests')
     return
   }
 
@@ -196,7 +197,7 @@ async function withWorkspaceFixtures(
 
 test('GET /workspaces returns System before Default for same-transaction install order', async () => {
   if (!dbUrl) {
-    console.warn('Skipping workspace route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('workspace route tests')
     return
   }
 

@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.ts'
 import { assertEquals } from '@std/assert'
 import { asc, and, eq, inArray, isNull } from 'drizzle-orm'
 import { it } from '@std/testing/bdd'
@@ -140,15 +141,13 @@ async function cleanupInstall(db: Db, organizationId: string, userId: string) {
 
 it('concurrent install completions create exactly one superadmin bootstrap', async () => {
   if (!dbUrl) {
-    console.warn(
-      'Skipping concurrent install test: TURBOPANEL_DATABASE_URL not set',
-    )
+    skipWithoutDatabase('concurrent install test')
     return
   }
 
   const db = createDenoDb()
   if (await isInstanceInstalled(db)) {
-    console.warn('Skipping concurrent install test: instance already installed')
+    skipWithoutDatabase('concurrent install test: instance already installed')
     return
   }
 
@@ -280,15 +279,13 @@ it('concurrent install completions create exactly one superadmin bootstrap', asy
 it('install produces System workspace then Default Workspace', async () => {
   if (!dbUrl) {
     console.warn(
-      'Skipping install workspace order test: TURBOPANEL_DATABASE_URL not set',
-    )
+      'Skipping install workspace order test')
     return
   }
 
   const db = createDenoDb()
   if (await isInstanceInstalled(db)) {
-    console.warn(
-      'Skipping install workspace order test: instance already installed',
+    skipWithoutDatabase('install workspace order test: instance already installed',
     )
     return
   }
@@ -355,8 +352,7 @@ it('install produces System workspace then Default Workspace', async () => {
 it('resolveColocatedServerId falls back to the server.hostname column', async () => {
   if (!dbUrl) {
     console.warn(
-      'Skipping colocated hostname fallback test: TURBOPANEL_DATABASE_URL not set',
-    )
+      'Skipping colocated hostname fallback test')
     return
   }
 
@@ -364,8 +360,7 @@ it('resolveColocatedServerId falls back to the server.hostname column', async ()
   try {
     hostname = Deno.hostname()
   } catch {
-    console.warn(
-      'Skipping colocated hostname fallback test: Deno.hostname() unavailable',
+    skipWithoutDatabase('colocated hostname fallback test: Deno.hostname() unavailable',
     )
     return
   }
@@ -403,8 +398,7 @@ it('resolveColocatedServerId falls back to the server.hostname column', async ()
 it('rotateColocatedLicenseCredentials revokes stale this-server licenses then mints one', async () => {
   if (!dbUrl) {
     console.warn(
-      'Skipping colocated license rotate test: TURBOPANEL_DATABASE_URL not set',
-    )
+      'Skipping colocated license rotate test')
     return
   }
 
@@ -470,9 +464,7 @@ it('rotateColocatedLicenseCredentials revokes stale this-server licenses then mi
 
 it('rotateColocatedLicenseCredentials preserves an already-bound colocated seat', async () => {
   if (!dbUrl) {
-    console.warn(
-      'Skipping bound colocated license rotate test: TURBOPANEL_DATABASE_URL not set',
-    )
+    skipWithoutDatabase('bound colocated license rotate test')
     return
   }
 
@@ -556,9 +548,7 @@ it('rotateColocatedLicenseCredentials preserves an already-bound colocated seat'
 
 it('disk-credential recovery rewrites license files for an enrolled colocated server', async () => {
   if (!dbUrl) {
-    console.warn(
-      'Skipping colocated disk restore test: TURBOPANEL_DATABASE_URL not set',
-    )
+    skipWithoutDatabase('colocated disk restore test')
     return
   }
 

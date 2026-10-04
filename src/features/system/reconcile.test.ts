@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from "../../test-fixtures/require-service.ts";
 import { assertEquals } from "@std/assert";
 import { eq, inArray } from "drizzle-orm";
 import { getDatabaseUrl } from "../../db/url.ts";
@@ -134,9 +135,7 @@ async function withReconcileFixtures(
   }) => Promise<void>,
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn(
-      "Skipping system reconcile tests: TURBOPANEL_DATABASE_URL not set",
-    );
+    skipWithoutDatabase("system reconcile tests");
     return;
   }
 
@@ -528,9 +527,7 @@ test("runSystemReconcileSweep enqueues for self-host containers missing a Docker
 
 test("buildSystemReconcilePayload returns empty when no system hierarchy exists", async () => {
   if (!dbUrl) {
-    console.warn(
-      "Skipping reconcile empty-payload test: TURBOPANEL_DATABASE_URL not set",
-    );
+    skipWithoutDatabase("reconcile empty-payload test");
     return;
   }
 
@@ -566,9 +563,7 @@ test("buildSystemReconcilePayload returns empty when no system hierarchy exists"
 
 test("enqueueSystemReconcile returns not_provisioned without hierarchy", async () => {
   if (!dbUrl) {
-    console.warn(
-      "Skipping reconcile not_provisioned test: TURBOPANEL_DATABASE_URL not set",
-    );
+    skipWithoutDatabase("reconcile not_provisioned test");
     return;
   }
 
@@ -650,9 +645,7 @@ async function withConsumerOnlyManagedFixtures(
   }) => Promise<void>,
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn(
-      "Skipping consumer-only managed-ingress tests: TURBOPANEL_DATABASE_URL not set",
-    );
+    skipWithoutDatabase("consumer-only managed-ingress tests");
     return;
   }
 

@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.ts'
 import { assertEquals } from '@std/assert'
 import { and, eq } from 'drizzle-orm'
 import { getDatabaseUrl } from '../../db/url.ts'
@@ -103,7 +104,7 @@ async function withAllocationFixtures(
   }) => Promise<void>,
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn('Skipping allocate-containers tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('allocate-containers tests')
     return
   }
 

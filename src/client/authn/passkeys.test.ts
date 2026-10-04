@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from "../../test-fixtures/require-service.ts";
 import { assertEquals } from "@std/assert";
 import { eq } from "drizzle-orm";
 import { Hono } from "hono";
@@ -158,7 +159,7 @@ function clientData(
 
 test("Postgres register passkey then sign in with passkey alone while 2FA is enabled", async () => {
   if (!dbUrl) {
-    console.warn("Skipping passkey DB test: TURBOPANEL_DATABASE_URL not set");
+    skipWithoutDatabase("passkey DB test");
     return;
   }
 
@@ -382,9 +383,7 @@ test("Postgres register passkey then sign in with passkey alone while 2FA is ena
 
 test("Postgres concurrent passkey assertions of the same incrementing login consume once", async () => {
   if (!dbUrl) {
-    console.warn(
-      "Skipping passkey concurrency test: TURBOPANEL_DATABASE_URL not set",
-    );
+    skipWithoutDatabase("passkey concurrency test");
     return;
   }
 

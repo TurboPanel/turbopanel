@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.ts'
 import { eq } from 'drizzle-orm'
 import { assertEquals } from '@std/assert'
 import { it } from '@std/testing/bdd'
@@ -36,9 +37,7 @@ async function createAuthApp(db: ReturnType<typeof createDenoDb>) {
 
 it('createEmailVerificationToken stores a verifier digest, never the raw token', async () => {
   if (!dbUrl) {
-    console.warn(
-      'Skipping email-verification digest-at-rest test: TURBOPANEL_DATABASE_URL not set',
-    )
+    skipWithoutDatabase('email-verification digest-at-rest test')
     return
   }
   const db = createDenoDb()
@@ -60,9 +59,7 @@ it('createEmailVerificationToken stores a verifier digest, never the raw token',
 
 it('GET /auth/verify-email marks the user verified and consumes the token', async () => {
   if (!dbUrl) {
-    console.warn(
-      'Skipping verify-email route test: TURBOPANEL_DATABASE_URL not set',
-    )
+    skipWithoutDatabase('verify-email route test')
     return
   }
 

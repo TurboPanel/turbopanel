@@ -4,6 +4,7 @@
  * orgs-remove-member, orgs-invite-existing, orgs-invite-cap). Skips without
  * TURBOPANEL_DATABASE_URL.
  */
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.ts'
 import { assert, assertEquals } from '@std/assert'
 import { and, eq, inArray } from 'drizzle-orm'
 import { Hono } from 'hono'
@@ -72,7 +73,7 @@ const ROLE_GRANT: Record<Role, string | null> = {
 
 async function withFixture(fn: (fx: Fixture) => Promise<void>): Promise<void> {
   if (!dbUrl) {
-    console.warn('Skipping org access journeys: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('org access journeys')
     return
   }
   const db = createDenoDb()

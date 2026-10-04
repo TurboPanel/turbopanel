@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.ts'
 import { eq } from 'drizzle-orm'
 import { assertEquals } from '@std/assert'
 import { Hono } from 'hono'
@@ -74,7 +75,7 @@ async function withRoleUser(
   }) => Promise<void>,
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn('Skipping middleware DB test: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('middleware DB test')
     return
   }
 

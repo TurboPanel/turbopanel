@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.ts'
 import { assertEquals } from '@std/assert'
 import { and, eq } from 'drizzle-orm'
 import { getDatabaseUrl } from '../../db/url.ts'
@@ -33,7 +34,7 @@ async function withReconcileFixtures(
   }) => Promise<void>,
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn('Skipping container reconcile tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('container reconcile tests')
     return
   }
 
@@ -344,7 +345,7 @@ test('reconcileEnvironmentContainers maps multi-instance clone reports to ordina
 
 test('reconcileEnvironmentContainers creates missing services from the report', async () => {
   if (!dbUrl) {
-    console.warn('Skipping container reconcile tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('container reconcile tests')
     return
   }
 

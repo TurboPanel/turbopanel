@@ -7,6 +7,7 @@
  * without TURBOPANEL_DATABASE_URL.
  */
 
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.ts'
 import { assertEquals, assertGreaterOrEqual } from '@std/assert'
 import { eq, inArray, sql } from 'drizzle-orm'
 import { Hono } from 'hono'
@@ -80,7 +81,7 @@ async function insertServer(db: Db, organizationId: string, name: string): Promi
 
 async function withFixture(fn: (fixture: Fixture) => Promise<void>): Promise<void> {
   if (!dbUrl) {
-    console.warn('Skipping firewall route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('firewall route tests')
     return
   }
   const db = createDenoDb()

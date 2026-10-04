@@ -4,6 +4,7 @@
  * rate-limited, and confirming abandons what piled up while unverified.
  * Skipped without TURBOPANEL_DATABASE_URL, the way every Postgres suite is.
  */
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.ts'
 import { assertEquals, assertNotEquals } from '@std/assert'
 import { eq, like } from 'drizzle-orm'
 import { createDenoDb, endDbConnection } from '../../db/connection.ts'
@@ -38,7 +39,7 @@ async function withChannel(
   fn: (ctx: { db: ReturnType<typeof createDenoDb>; channelId: string }) => Promise<void>
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn('Skipping channel verification tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('channel verification tests')
     return
   }
   const db = createDenoDb()

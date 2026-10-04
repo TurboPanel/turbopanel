@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from "../../test-fixtures/require-service.ts";
 import { assertEquals, assertNotEquals } from "@std/assert";
 import { and, eq } from "drizzle-orm";
 import { getDatabaseUrl } from "../../db/url.ts";
@@ -47,9 +48,7 @@ async function withVolumeFixtures(
   }) => Promise<void>,
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn(
-      "Skipping register-compose-volumes tests: TURBOPANEL_DATABASE_URL not set",
-    );
+    skipWithoutDatabase("register-compose-volumes tests");
     return;
   }
 

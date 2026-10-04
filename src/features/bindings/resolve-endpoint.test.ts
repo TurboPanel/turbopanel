@@ -7,6 +7,7 @@
  * own network namespace, regardless of the cluster's public exposure setting.
  */
 
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.ts'
 import { assertEquals } from '@std/assert'
 import { eq, inArray } from 'drizzle-orm'
 import { getDatabaseUrl } from '../../db/url.ts'
@@ -177,9 +178,7 @@ async function withBindingReachabilityFixture(
   }) => Promise<void>,
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn(
-      'Skipping binding-endpoint reachability tests: TURBOPANEL_DATABASE_URL not set',
-    )
+    skipWithoutDatabase('binding-endpoint reachability tests')
     return
   }
 

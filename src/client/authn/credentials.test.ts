@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.ts'
 import { and, eq } from 'drizzle-orm'
 import { assertEquals } from '@std/assert'
 import { getDatabaseUrl } from '../../db/url.ts'
@@ -37,7 +38,7 @@ test('verifyCredentials returns false when db is undefined for non-root logins',
 
 test('verifyCredentials rejects unverified email addresses', async () => {
   if (!dbUrl) {
-    console.warn('Skipping credentials DB test: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('credentials DB test')
     return
   }
 
@@ -71,7 +72,7 @@ test('verifyCredentials rejects unverified email addresses', async () => {
 
 test('verifyCredentials accepts verified credential users by email', async () => {
   if (!dbUrl) {
-    console.warn('Skipping credentials DB test: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('credentials DB test')
     return
   }
 
@@ -107,7 +108,7 @@ test('verifyCredentials accepts verified credential users by email', async () =>
 
 test('verifyCredentials rejects disabled users and wrong passwords', async () => {
   if (!dbUrl) {
-    console.warn('Skipping credentials DB test: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('credentials DB test')
     return
   }
 

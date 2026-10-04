@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.ts'
 import { eq } from 'drizzle-orm'
 import { assertEquals } from '@std/assert'
 import { it } from '@std/testing/bdd'
@@ -59,7 +60,7 @@ async function createAuthApp(db: ReturnType<typeof createDenoDb>) {
 
 it('password reset revokes existing sessions', async () => {
   if (!dbUrl) {
-    console.warn('Skipping reset-password session revoke test: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('reset-password session revoke test')
     return
   }
 
@@ -114,7 +115,7 @@ it('password reset revokes existing sessions', async () => {
 
 it('reset-password/otp rejects weak passwords before touching the OTP', async () => {
   if (!dbUrl) {
-    console.warn('Skipping reset-password weak-password test: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('reset-password weak-password test')
     return
   }
 
@@ -145,7 +146,7 @@ it('reset-password/otp rejects weak passwords before touching the OTP', async ()
 
 it('reset-password/otp returns 429 when the limiter is exceeded', async () => {
   if (!dbUrl) {
-    console.warn('Skipping reset-password rate-limit test: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('reset-password rate-limit test')
     return
   }
 

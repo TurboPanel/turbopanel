@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.ts'
 import { assertEquals } from '@std/assert'
 import { it } from '@std/testing/bdd'
 import { and, eq } from 'drizzle-orm'
@@ -35,7 +36,7 @@ it('uncolocatedCandidates filters already-marked ids', () => {
 
 it('hasActiveColocatedLicenseBinding detects the reserved install license', async () => {
   if (!dbUrl) {
-    console.warn('Skipping colocated license binding test: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('colocated license binding test')
     return
   }
 

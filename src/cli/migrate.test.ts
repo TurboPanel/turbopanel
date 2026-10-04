@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from "../test-fixtures/require-service.ts";
 import { assertEquals, assertMatch } from "@std/assert";
 import { dirname, fromFileUrl, join } from "@std/path";
 import {
@@ -91,9 +92,7 @@ test("runMigrateCommand reports an unreachable server as a refusal, not a crash"
 test("runMigrateCommand passes both gates and is a no-op on an already-migrated database", async () => {
   const url = Deno.env.get("TURBOPANEL_DATABASE_URL")?.trim();
   if (!url) {
-    console.warn(
-      "Skipping runMigrateCommand integration test: TURBOPANEL_DATABASE_URL not set",
-    );
+    skipWithoutDatabase("runMigrateCommand integration test");
     return;
   }
   const logs: string[] = [];

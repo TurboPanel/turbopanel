@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from "../../test-fixtures/require-service.ts";
 import { assertEquals } from "@std/assert";
 import { eq } from "drizzle-orm";
 import { createDenoDb, endDbConnection } from "../../db/connection.ts";
@@ -43,7 +44,7 @@ async function withServer(
   fn: (db: Db, serverId: string) => Promise<void>,
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn(`Skipping ${label}: TURBOPANEL_DATABASE_URL not set`);
+    skipWithoutDatabase(`${label}`);
     return;
   }
   const db = createDenoDb();
