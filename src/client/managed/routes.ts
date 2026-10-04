@@ -46,6 +46,7 @@ import {
 import {
   assertManagedNotBusy,
   assertTargetServerOnline,
+  authorizeManagedBackupMutation,
   authorizeManagedRequest,
   loadManagedContext,
   type ManagedContext,
@@ -2666,11 +2667,8 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     const environmentId = c.req.param('id')
     const backupId = decodeURIComponent(c.req.param('backupId'))
-    const auth = await authorizeManagedRequest(c, db, environmentId, 'manage')
+    const auth = await authorizeManagedBackupMutation(c, db, environmentId, 'managed.backup.delete')
     if (auth instanceof Response) return auth
-
-    const stepUp = await requireStepUpIfConfigured(c, auth.organizationId, 'managed.backup.delete')
-    if (stepUp) return stepUp
 
     const ctx = await loadManagedContext(c, db, environmentId, auth.organizationId)
     if (ctx instanceof Response) return ctx
@@ -2720,11 +2718,8 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     const environmentId = c.req.param('id')
     const backupId = decodeURIComponent(c.req.param('backupId'))
-    const auth = await authorizeManagedRequest(c, db, environmentId, 'manage')
+    const auth = await authorizeManagedBackupMutation(c, db, environmentId, 'managed.restore')
     if (auth instanceof Response) return auth
-
-    const stepUp = await requireStepUpIfConfigured(c, auth.organizationId, 'managed.restore')
-    if (stepUp) return stepUp
 
     const ctx = await loadManagedContext(c, db, environmentId, auth.organizationId)
     if (ctx instanceof Response) return ctx
