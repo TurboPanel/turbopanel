@@ -25,6 +25,7 @@ import { sweepStalePresence } from '../../daemon/cell/control-plane-monitor.ts'
 import { createDenoMaintenanceScheduler } from '../../daemon/cell/deno-maintenance.ts'
 import { resolveAlertSender } from '../../features/alerts/resolve-alert-sender.ts'
 import { ALERT_WEBHOOK_POLICY } from '../../features/alerts/alert-webhook-settings.ts'
+import { pruneCommandHistory } from '../../features/commands/prune.ts'
 import { retryDueDeliveries } from '../../features/notifications/emit.ts'
 import { sendDueDigests } from '../../features/notifications/digest.ts'
 import { DAEMON_CELL_MAINTAIN_MS } from '../../contracts/cell-protocol.ts'
@@ -312,6 +313,9 @@ function resolveCommandAmqpUrl(): string | null {
 }
 
 /** Isolate one cleanup phase so a failure cannot abort the rest of the tick. */
+const COMMAND_PRUNE_INTERVAL_MS = 15 * 60_000
+let lastCommandPruneMs = 0
+
 async function runCleanupPhase(label: string, fn: () => Promise<unknown>): Promise<void> {
   try {
     await fn()
@@ -750,6 +754,11 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
           ),
         })
       )
+      // Workers parity: that cron prunes on its 15-minute window, not every tick.
+      if (Date.now() - lastCommandPruneMs >= COMMAND_PRUNE_INTERVAL_MS) {
+        lastCommandPruneMs = Date.now()
+        await runCleanupPhase('command history prune', () => pruneCommandHistory(db))
+      }
       await runCleanupPhase('upgrade tick', async () => {
         const env = Deno.env.toObject()
         const revision = resolveInstanceRevision(env)

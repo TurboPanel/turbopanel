@@ -2,7 +2,7 @@
  * Host-free coverage for environment deploy route pure helpers.
  */
 
-import { assertEquals } from '@std/assert'
+import { assertEquals, assertNotEquals } from '@std/assert'
 import type { DeployPrepareError } from './deploy-prepare.ts'
 import {
   buildDeployPreviewContainers,
@@ -43,9 +43,11 @@ import {
 const test = Deno.test.bind(Deno)
 
 const projectId = '11111111-1111-4111-8111-111111111111'
+const environmentId = '22222222-2222-4222-8222-222222222222'
 
-test('composeProjectName uses project UUID verbatim', () => {
-  assertEquals(composeProjectName(projectId), projectId)
+test('composeProjectName uses the environment UUID verbatim, one per environment', () => {
+  assertEquals(composeProjectName(environmentId), environmentId)
+  assertNotEquals(composeProjectName(environmentId), composeProjectName(projectId))
 })
 
 test('tlsPinErrorCode maps pin errors', () => {

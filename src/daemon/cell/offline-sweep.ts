@@ -67,6 +67,7 @@ import type { FirewallApplyGate } from '../../features/firewall/enforcement.ts'
 import { runFirewallPreviewSweep } from '../../features/firewall/preview.ts'
 import { runLeafRenewalSweepTick } from '../../client/tls/leaf-renewal-sweep.ts'
 import { type AlertSender, NOOP_ALERT_SENDER } from '../../features/alerts/alert-sender.ts'
+import { cachedForEnv } from './notification-email-cache.ts'
 import { resolveAlertSender } from '../../features/alerts/resolve-alert-sender.ts'
 import { type EmitEmail, retryDueDeliveries } from '../../features/notifications/emit.ts'
 import { sendDueDigests } from '../../features/notifications/digest.ts'
@@ -93,6 +94,7 @@ import {
   parseUpgradeStepRetentionDays,
   pruneUpgradeHistory,
 } from '../../features/upgrades/prune.ts'
+import { pruneCommandHistory } from '../../features/commands/prune.ts'
 import { resolveInstanceRevision } from '../../app/build-info.ts'
 import { INSTANCE_VERSION } from '../../app/version.ts'
 import { resolveColocatedServerId } from '../../client/authn/install-state.ts'
@@ -964,6 +966,24 @@ export async function sweepUpgradeHistorySafely(db: Db, doneRetentionDays?: numb
 }
 
 /**
+ * Retention prune of aged terminal `command` rows (see features/commands/prune.ts).
+ * Rides the same 15-minute window and is isolated so a failure never aborts the
+ * other sweeps.
+ */
+export async function sweepCommandHistorySafely(db: Db): Promise<void> {
+  try {
+    const deleted = await pruneCommandHistory(db)
+    if (deleted > 0) {
+      sweepTrace('command-history-swept', { deleted })
+    }
+  } catch (err) {
+    sweepTrace('command-history-sweep-failed', {
+      error: sweepErrorMessage(err),
+    })
+  }
+}
+
+/**
  * Advance managed upgrades. The cadence is `TURBOPANEL_UPGRADE_TICK_MINUTES`
  * (default 15, see features/upgrades/tick-cadence.ts), independent of history prune.
  * Manifest fetches are cached. Dispatch is capped inside the coordinator.
@@ -1224,6 +1244,7 @@ async function upgradePhaseWork(
         ),
       capDbTimeout(deadlineMs)
     )
+    await runWithDbTimeout(db, sweepCommandHistorySafely, capDbTimeout(deadlineMs))
   }
   if (shouldRunUpgradeTick(scheduledTime, upgradeTickMinutes)) {
     await runUpgradeMaintenanceSafely(db, env)
@@ -1245,7 +1266,15 @@ async function sweepExecutionLogsPhase(
 }
 
 /** The mail queue and from address a Workers tick hands the notifications pipeline. */
-async function workersNotificationEmail(
+function workersNotificationEmail(
+  env: CloudflareBindings,
+  db: Db,
+  tlsRenewal: CronTlsRenewal | null | undefined
+): Promise<EmitEmail | undefined> {
+  return cachedForEnv(env, () => resolveWorkersNotificationEmail(env, db, tlsRenewal))
+}
+
+async function resolveWorkersNotificationEmail(
   env: CloudflareBindings,
   db: Db,
   tlsRenewal: CronTlsRenewal | null | undefined
@@ -1534,7 +1563,14 @@ export async function runOfflineSweep(
               tlsRenewal?.dataEncryptionSecrets,
               sweepTrace,
               undefined,
-              await workersNotificationEmail(env, db, tlsRenewal)
+              // Resolved only if an alert is actually sent this tick.
+              () => workersNotificationEmail(env, db, tlsRenewal),
+              // The legacy-webhook adoption is a one-time migration touch: the
+              // 15-minute window is plenty, not every minute.
+              {
+                adoptLegacy:
+                  opts.scheduledTime === undefined || shouldSweepExecutionLogs(opts.scheduledTime),
+              }
             )),
           nowMs: opts.sweepOnceDeps?.nowMs ?? startedAtMs,
           deadlineMs: opts.sweepOnceDeps?.deadlineMs ?? deadlineMs,

@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assertEquals } from '@std/assert'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
@@ -59,7 +60,7 @@ async function buildDenyAllApp() {
 
 test('every credential, code and token endpoint is throttled before it does any work', async () => {
   if (!getDatabaseUrl()) {
-    console.warn('Skipping rate-limit route matrix: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('rate-limit route matrix')
     return
   }
   const app = await buildDenyAllApp()

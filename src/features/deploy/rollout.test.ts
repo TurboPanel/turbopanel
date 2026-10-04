@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assertEquals } from '@std/assert'
 import { and, eq, inArray } from 'drizzle-orm'
 import { createDenoDb, endDbConnection } from '../../db/connection.ts'
@@ -75,7 +76,7 @@ async function withRollout(
   enqueue?: (envelope: CommandEnvelope) => Promise<void>
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn('Skipping rollout tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('rollout tests')
     return
   }
   const db = createDenoDb()

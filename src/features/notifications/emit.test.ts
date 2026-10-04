@@ -5,6 +5,7 @@
  * transports, and a delivery failure never becomes the emitter's failure.
  * Skipped without TURBOPANEL_DATABASE_URL, the way every Postgres suite is.
  */
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assertEquals } from '@std/assert'
 import { eq } from 'drizzle-orm'
 import { createDenoDb, endDbConnection } from '../../db/connection.ts'
@@ -57,7 +58,7 @@ async function withFixture(
   }) => Promise<void>
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn('Skipping notifications emit tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('notifications emit tests')
     return
   }
   const db = createDenoDb()

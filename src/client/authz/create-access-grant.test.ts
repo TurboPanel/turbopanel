@@ -1,15 +1,10 @@
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { eq } from 'drizzle-orm'
 import { assertEquals } from '@std/assert'
 import { it } from '@std/testing/bdd'
 import { getDatabaseUrl } from '../../db/url.ts'
 import { createDenoDb } from '../../db/connection.ts'
-import {
-  grant,
-  organization,
-  workspace,
-  team,
-  user,
-} from '../../db/schema.ts'
+import { grant, organization, workspace, team, user } from '../../db/schema.ts'
 import {
   createAccessGrant,
   isAccessGrantEntityType,
@@ -27,10 +22,10 @@ async function withTestFixtures(
     organizationId: string
     workspaceId: string
     teamId: string
-  }) => Promise<void>,
+  }) => Promise<void>
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn('Skipping create-access-grant tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('create-access-grant tests')
     return
   }
 
@@ -51,7 +46,6 @@ async function withTestFixtures(
     .returning({ id: user.id })
 
   const userId = insertedUser[0]!.id
-
 
   const [insertedWorkspace] = await db
     .insert(workspace)
@@ -117,10 +111,7 @@ test('validatePermissionEntityCompatibility rejects system permissions on non-or
     throw new TypeError('system:read on team should be rejected')
   }
 
-  const manageOnWorkspace = validatePermissionEntityCompatibility(
-    'system:manage',
-    'workspace',
-  )
+  const manageOnWorkspace = validatePermissionEntityCompatibility('system:manage', 'workspace')
   if (manageOnWorkspace.ok) {
     throw new TypeError('system:manage on workspace should be rejected')
   }
@@ -323,7 +314,7 @@ it('validateGrantEntityTarget rejects cross-organization workspace targets', asy
         db,
         'workspace',
         workspaceId,
-        otherOrganizationId,
+        otherOrganizationId
       )
       if (result.ok || result.status !== 400) {
         throw new TypeError('cross-org workspace should return 400')

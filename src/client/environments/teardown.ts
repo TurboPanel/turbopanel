@@ -149,7 +149,7 @@ export async function planEnvironmentTeardown(
   return {
     environmentId,
     projectId: projectRow.id,
-    projectName: composeProjectName(projectRow.id),
+    projectName: composeProjectName(environmentId),
     serverIds,
     ingressServices: tcpUdpServices.map((svc) => ({ serviceId: svc.serviceId })),
     fabricNetworksByServer: composeNetworkNamesByServer(composeNetworks),

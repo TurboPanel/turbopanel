@@ -5,6 +5,7 @@
  * anyone. Skips without TURBOPANEL_DATABASE_URL.
  */
 
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assertEquals } from '@std/assert'
 import { eq, inArray } from 'drizzle-orm'
 import { createDenoDb, endDbConnection } from '../../db/connection.ts'
@@ -59,7 +60,7 @@ async function withCluster(
   fn: (db: Db, cluster: Cluster) => Promise<void>
 ) {
   if (!dbUrl) {
-    console.warn('Skipping cluster peer firewall tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('cluster peer firewall tests')
     return
   }
   const db = createDenoDb()

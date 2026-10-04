@@ -59,6 +59,7 @@ import {
   listBindingImpactForPrincipal,
 } from '../../features/bindings/impact.ts'
 import { materializeBindingsForPrincipal } from '../../features/bindings/materialize.ts'
+import { rollBackPrincipalRotation } from '../../features/managed/principal-rotation.ts'
 import {
   enqueueManagedDestroyFanout,
   enqueueManagedLifecycleFanout,
@@ -234,23 +235,6 @@ async function loadResourceLimits(
       isPlainObject(serverRow?.options) ? serverRow.options.resourceLimits : null
     ) ?? {}
   return { orgLimits, serverLimits }
-}
-
-/**
- * Restore a principal's previous password hash after a failed apply so a
- * rotate-password request that could not be enqueued/materialized does not
- * leave the stored credential out of sync with the (unrotated) live engine.
- */
-async function restorePreviousPrincipalPassword(
-  db: NonNullable<ReturnType<typeof getDb>>,
-  principalId: string,
-  previousPassword: string | null | undefined
-): Promise<void> {
-  if (typeof previousPassword !== 'string') return
-  await db
-    .update(principal)
-    .set({ password: previousPassword, updatedAt: new Date().toISOString() })
-    .where(eq(principal.id, principalId))
 }
 
 type ManagedDb = NonNullable<ReturnType<typeof getDb>>
@@ -1728,8 +1712,12 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       dataEncryptionSecrets,
       principalId
     )
+    // Every failure from here on must undo BOTH the stored password and the
+    // project variables that were just rewritten with the new one.
+    const rollBack = () =>
+      rollBackPrincipalRotation(db, dataEncryptionSecrets, { principalId, previousPassword })
     if (!('ok' in materializeResult)) {
-      await restorePreviousPrincipalPassword(db, principalId, previousPassword)
+      await rollBack()
       return c.json({ error: materializeResult.kind }, 422)
     }
 
@@ -1745,7 +1733,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       rootUsername: residual.rootUsername ?? ctx.spec.rootUsername,
     })
     if (isPrepareError(preparedApply)) {
-      await restorePreviousPrincipalPassword(db, principalId, previousPassword)
+      await rollBack()
       return mapManagedApplyPrepareError(c, preparedApply)
     }
 
@@ -1755,7 +1743,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       members: preparedApply.members,
     })
     if (enqueued instanceof Response) {
-      await restorePreviousPrincipalPassword(db, principalId, previousPassword)
+      await rollBack()
       return enqueued
     }
 

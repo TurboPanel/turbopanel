@@ -189,6 +189,29 @@ test('buildManagedBackupDeletePayload builds a delete payload from a stored reco
   assertEquals(built.payload.database, 'app')
 })
 
+test("buildManagedBackupDeletePayload carries a scheduled backup's policy id so the host finds the file", () => {
+  const ctx = buildContext(postgresEngineSpec)
+  const record = {
+    ...buildRecord(),
+    retentionId: '11111111-1111-4111-8111-111111111111',
+  }
+
+  const built = buildManagedBackupDeletePayload(ctx, 'managed-1', record)
+  if (isManagedBackupApiError(built)) {
+    throw new Error(`expected success, got error kind=${built.kind}`)
+  }
+  assertEquals(built.payload.policyId, '11111111-1111-4111-8111-111111111111')
+})
+
+test('buildManagedBackupDeletePayload omits the policy id for a manual backup', () => {
+  const ctx = buildContext(postgresEngineSpec)
+  const built = buildManagedBackupDeletePayload(ctx, 'managed-1', buildRecord())
+  if (isManagedBackupApiError(built)) {
+    throw new Error(`expected success, got error kind=${built.kind}`)
+  }
+  assertEquals('policyId' in built.payload, false)
+})
+
 test('buildManagedBackupDeletePayload rejects engines without backup support', () => {
   const unsupportedSpec: ManagedEngineSpec = {
     ...postgresEngineSpec,

@@ -87,7 +87,17 @@ export async function onDaemonInbound(
   db: Db,
   serverId: string,
   cell: DaemonCell,
-  opts: { at?: string; daemonBuild?: ProjectionDaemonBuild; geo?: ServerGeo } = {}
+  opts: {
+    at?: string
+    daemonBuild?: ProjectionDaemonBuild
+    geo?: ServerGeo
+    /**
+     * The cell was offline (stale sweep, false demotion) before this inbound
+     * marked it connected. Callers that record inbound first must pass it, since
+     * the snapshot read here is already connected by then.
+     */
+    runtimeWasOffline?: boolean
+  } = {}
 ): Promise<void> {
   if (opts.daemonBuild?.commit && opts.daemonBuild?.buildId) {
     await maybeRepairUpdateFromDaemonBuildHello(db, serverId, opts.daemonBuild)
@@ -126,13 +136,13 @@ export async function onDaemonInbound(
   }
 
   // Skip heartbeat-only Postgres reads when steady-state; repair above still runs.
-  if (steadyStateInboundSkipsDbRead(snapshot, opts)) {
+  if (!opts.runtimeWasOffline && steadyStateInboundSkipsDbRead(snapshot, opts)) {
     return
   }
 
   const existing = await getServerDaemonStateByServerId(db, serverId)
   const projectedOffline = existing?.status?.connected === false
-  const runtimeOffline = !snapshot.connected
+  const runtimeOffline = !snapshot.connected || opts.runtimeWasOffline === true
 
   if (projectedOffline || runtimeOffline) {
     const at = opts.at ?? new Date().toISOString()

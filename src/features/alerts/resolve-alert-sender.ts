@@ -15,61 +15,54 @@
  * throws: a sweep's job is to demote stale servers, and it runs whether or
  * not anyone can be told about it.
  */
-import { eq } from "drizzle-orm";
-import { type Db, runWithDbTimeout } from "../../db/connection.ts";
-import type { DerivedSecretsConfig } from "../../lib/secrets/secrets.ts";
-import { server } from "../../db/schema.ts";
-import type { Alert, AlertSender } from "./alert-sender.ts";
+import { eq } from 'drizzle-orm'
+import { type Db, runWithDbTimeout } from '../../db/connection.ts'
+import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
+import { server } from '../../db/schema.ts'
+import type { Alert, AlertSender } from './alert-sender.ts'
 import {
   adoptLegacyAlertWebhook,
   type AlertWebhookPolicy,
   ALERT_WEBHOOK_POLICY,
-} from "./alert-webhook-settings.ts";
-import { type EmitEmail, emitNotification } from "../notifications/emit.ts";
-import type {
-  NotificationContext,
-  NotificationEvent,
-} from "../notifications/events.ts";
+} from './alert-webhook-settings.ts'
+import { type EmitEmail, emitNotification } from '../notifications/emit.ts'
+import type { NotificationContext, NotificationEvent } from '../notifications/events.ts'
 
 export type AlertSenderTrace = (
-  event:
-    | "alert-sender-resolve-failed"
-    | "alert-server-unknown",
-  detail: Record<string, unknown>,
-) => void;
+  event: 'alert-sender-resolve-failed' | 'alert-server-unknown',
+  detail: Record<string, unknown>
+) => void
 
 type MappedEvent = {
-  event: NotificationEvent;
-  organizationId: string | null;
-  context: NotificationContext;
-  targetId: string | null;
-};
+  event: NotificationEvent
+  organizationId: string | null
+  context: NotificationContext
+  targetId: string | null
+}
 
 /** An alert's kind is an event code; its detail is the event's context, plus what the server row adds. */
 async function toEvent(
   db: Db,
   alert: Alert,
-  trace: AlertSenderTrace | undefined,
+  trace: AlertSenderTrace | undefined
 ): Promise<MappedEvent | null> {
-  const context: NotificationContext = {};
+  const context: NotificationContext = {}
   for (const [key, value] of Object.entries(alert.detail ?? {})) {
-    if (value !== undefined) context[key] = value;
+    if (value !== undefined) context[key] = value
   }
-  if (alert.kind === "fleet.mass_disconnect") {
-    if (typeof context.staleCount === "number") {
-      context.count = context.staleCount;
+  if (alert.kind === 'fleet.mass_disconnect') {
+    if (typeof context.staleCount === 'number') {
+      context.count = context.staleCount
     }
     return {
-      event: "fleet.mass_disconnect",
+      event: 'fleet.mass_disconnect',
       organizationId: null,
       context,
       targetId: null,
-    };
+    }
   }
-  const serverId = typeof context.serverId === "string"
-    ? context.serverId
-    : null;
-  if (!serverId) return null;
+  const serverId = typeof context.serverId === 'string' ? context.serverId : null
+  if (!serverId) return null
   const rows = await runWithDbTimeout(db, (tx) =>
     tx
       .select({
@@ -79,19 +72,20 @@ async function toEvent(
       })
       .from(server)
       .where(eq(server.id, serverId))
-      .limit(1));
-  const row = rows[0];
+      .limit(1)
+  )
+  const row = rows[0]
   if (!row?.organizationId) {
-    trace?.("alert-server-unknown", { serverId });
-    return null;
+    trace?.('alert-server-unknown', { serverId })
+    return null
   }
-  context.serverName = row.name ?? row.hostname ?? serverId;
+  context.serverName = row.name ?? row.hostname ?? serverId
   return {
-    event: "server.offline",
+    event: 'server.offline',
     organizationId: row.organizationId,
     context,
     targetId: serverId,
-  };
+  }
 }
 
 export async function resolveAlertSender(
@@ -99,38 +93,44 @@ export async function resolveAlertSender(
   dataEncryptionSecrets: DerivedSecretsConfig | undefined,
   trace?: AlertSenderTrace,
   policy: AlertWebhookPolicy = ALERT_WEBHOOK_POLICY,
-  email?: EmitEmail,
+  email?: EmitEmail | (() => Promise<EmitEmail | undefined>),
+  opts: { adoptLegacy?: boolean } = {}
 ): Promise<AlertSender> {
   // An instance upgraded past the ALERT_WEBHOOK_URL setting keeps its
   // webhook: the setting becomes an instance channel on first touch, and the
   // pipeline below reaches it like any other. Bounded, and never the reason
   // a sweep fails.
   try {
-    await runWithDbTimeout(
-      db,
-      (tx) => adoptLegacyAlertWebhook(tx, dataEncryptionSecrets),
-    );
+    if (opts.adoptLegacy !== false) {
+      await runWithDbTimeout(db, (tx) => adoptLegacyAlertWebhook(tx, dataEncryptionSecrets))
+    }
   } catch (err) {
-    trace?.("alert-sender-resolve-failed", {
+    trace?.('alert-sender-resolve-failed', {
       error: err instanceof Error ? err.message : String(err),
-    });
+    })
   }
   return async (alert) => {
     try {
-      const mapped = await toEvent(db, alert, trace);
-      if (!mapped) return;
-      await emitNotification(db, dataEncryptionSecrets, {
-        event: mapped.event,
-        organizationId: mapped.organizationId,
-        context: mapped.context,
-        targetType: mapped.targetId ? "server" : null,
-        targetId: mapped.targetId,
-      }, { allowPrivateTargets: policy.allowPrivateTargets, email });
+      const mapped = await toEvent(db, alert, trace)
+      if (!mapped) return
+      const resolvedEmail = typeof email === 'function' ? await email() : email
+      await emitNotification(
+        db,
+        dataEncryptionSecrets,
+        {
+          event: mapped.event,
+          organizationId: mapped.organizationId,
+          context: mapped.context,
+          targetType: mapped.targetId ? 'server' : null,
+          targetId: mapped.targetId,
+        },
+        { allowPrivateTargets: policy.allowPrivateTargets, email: resolvedEmail }
+      )
     } catch (err) {
       // emitNotification never throws; this guards the lookup above.
-      trace?.("alert-sender-resolve-failed", {
+      trace?.('alert-sender-resolve-failed', {
         error: err instanceof Error ? err.message : String(err),
-      });
+      })
     }
-  };
+  }
 }

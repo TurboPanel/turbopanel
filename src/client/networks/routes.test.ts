@@ -1,24 +1,14 @@
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assertEquals } from '@std/assert'
 import { and, eq } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
 import { createDenoDb } from '../../db/connection.ts'
-import {
-  buildSignedCookie,
-  HTTP_SESSION_COOKIE_NAME,
-} from '../authn/crypto.ts'
+import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from '../authn/crypto.ts'
 import { createSession } from '../authn/session-store.ts'
 import { deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
-import {
-  datacenter,
-  fabric,
-  grant,
-  network,
-  organization,
-  server,
-  user,
-} from '../../db/schema.ts'
+import { datacenter, fabric, grant, network, organization, server, user } from '../../db/schema.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { registerNetworkRoutes } from './routes.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
@@ -36,7 +26,7 @@ const test = Deno.test.bind(Deno)
 async function sessionCookie(
   db: ReturnType<typeof createDenoDb>,
   secrets: Awaited<ReturnType<typeof deriveSecretsConfig>>,
-  userId: string,
+  userId: string
 ): Promise<string> {
   const { token } = await createSession(db, userId, {})
   const signed = await buildSignedCookie(token, secrets)
@@ -62,10 +52,10 @@ async function withNetworkFixtures(
     secrets: Awaited<ReturnType<typeof deriveSecretsConfig>>
     userId: string
     organizationId: string
-  }) => Promise<void>,
+  }) => Promise<void>
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn('Skipping network route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('network route tests')
     return
   }
 
@@ -102,10 +92,7 @@ async function withNetworkFixtures(
     await db.delete(network).where(eq(network.organizationId, organizationId))
     await db.delete(server).where(eq(server.organizationId, organizationId))
     await db.delete(datacenter).where(eq(datacenter.organizationId, organizationId))
-    await db.delete(grant).where(and(
-      eq(grant.actorId, userId),
-      eq(grant.entityId, organizationId),
-    ))
+    await db.delete(grant).where(and(eq(grant.actorId, userId), eq(grant.entityId, organizationId)))
     await db.delete(user).where(eq(user.id, userId))
     await db.delete(organization).where(eq(organization.id, organizationId))
   }
@@ -113,7 +100,7 @@ async function withNetworkFixtures(
 
 test('POST /networks requires dockerNetworkName for kind=docker', async () => {
   if (!dbUrl) {
-    console.warn('Skipping network route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('network route tests')
     return
   }
 
@@ -162,7 +149,7 @@ test('POST /networks requires dockerNetworkName for kind=docker', async () => {
     }),
   })
   assertEquals(missing.status, 400)
-  assertEquals((await missing.json() as { error: string }).error, 'docker_network_name_required')
+  assertEquals(((await missing.json()) as { error: string }).error, 'docker_network_name_required')
 
   const created = await app.request('/networks', {
     method: 'POST',
@@ -178,7 +165,7 @@ test('POST /networks requires dockerNetworkName for kind=docker', async () => {
     }),
   })
   assertEquals(created.status, 200)
-  const createdBody = await created.json() as { ok: true; id: string }
+  const createdBody = (await created.json()) as { ok: true; id: string }
   assertEquals(createdBody.ok, true)
 
   await db.delete(network).where(eq(network.id, createdBody.id))
@@ -189,7 +176,7 @@ test('POST /networks requires dockerNetworkName for kind=docker', async () => {
 
 test('POST /networks rejects datacenterId and serverId together', async () => {
   if (!dbUrl) {
-    console.warn('Skipping network route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('network route tests')
     return
   }
 
@@ -251,7 +238,7 @@ test('POST /networks rejects datacenterId and serverId together', async () => {
   })
 
   assertEquals(res.status, 400)
-  const body = await res.json() as { error: string }
+  const body = (await res.json()) as { error: string }
   assertEquals(body.error, 'network_single_scope_conflict')
 
   await db.delete(server).where(eq(server.id, srv!.id))
@@ -263,7 +250,7 @@ test('POST /networks rejects datacenterId and serverId together', async () => {
 
 test('POST /networks rejects kind=vpn and requires per-kind scope FKs', async () => {
   if (!dbUrl) {
-    console.warn('Skipping network route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('network route tests')
     return
   }
 
@@ -337,7 +324,7 @@ test('POST /networks rejects kind=vpn and requires per-kind scope FKs', async ()
     }),
   })
   assertEquals(missingDc.status, 400)
-  assertEquals((await missingDc.json() as { error: string }).error, 'network_scope_required')
+  assertEquals(((await missingDc.json()) as { error: string }).error, 'network_scope_required')
 
   const missingCidr = await app.request('/networks', {
     method: 'POST',
@@ -353,7 +340,7 @@ test('POST /networks rejects kind=vpn and requires per-kind scope FKs', async ()
     }),
   })
   assertEquals(missingCidr.status, 400)
-  assertEquals((await missingCidr.json() as { error: string }).error, 'network_cidr_required')
+  assertEquals(((await missingCidr.json()) as { error: string }).error, 'network_cidr_required')
 
   const missingServer = await app.request('/networks', {
     method: 'POST',
@@ -384,7 +371,7 @@ test('POST /networks rejects kind=vpn and requires per-kind scope FKs', async ()
     }),
   })
   assertEquals(dockerWithServer.status, 200)
-  const dockerBody = await dockerWithServer.json() as { ok: true; id: string }
+  const dockerBody = (await dockerWithServer.json()) as { ok: true; id: string }
   await db.delete(network).where(eq(network.id, dockerBody.id))
 
   const dockerWithDc = await app.request('/networks', {
@@ -402,7 +389,10 @@ test('POST /networks rejects kind=vpn and requires per-kind scope FKs', async ()
     }),
   })
   assertEquals(dockerWithDc.status, 400)
-  assertEquals((await dockerWithDc.json() as { error: string }).error, 'network_single_scope_conflict')
+  assertEquals(
+    ((await dockerWithDc.json()) as { error: string }).error,
+    'network_single_scope_conflict'
+  )
 
   const okDc = await app.request('/networks', {
     method: 'POST',
@@ -419,7 +409,7 @@ test('POST /networks rejects kind=vpn and requires per-kind scope FKs', async ()
     }),
   })
   assertEquals(okDc.status, 200)
-  const okDcBody = await okDc.json() as { ok: true; id: string }
+  const okDcBody = (await okDc.json()) as { ok: true; id: string }
 
   await db.delete(network).where(eq(network.id, okDcBody.id))
   await db.delete(server).where(eq(server.id, srv!.id))
@@ -431,7 +421,7 @@ test('POST /networks rejects kind=vpn and requires per-kind scope FKs', async ()
 
 test('GET /networks returns 403 for org member without organization:manage', async () => {
   if (!dbUrl) {
-    console.warn('Skipping network route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('network route tests')
     return
   }
 
@@ -457,7 +447,6 @@ test('GET /networks returns 403 for org member without organization:manage', asy
     .returning({ id: user.id })
   const userId = u!.id
 
-
   const cookie = await sessionCookie(db, secrets, userId)
   const res = await app.request('/networks', {
     headers: {
@@ -473,13 +462,7 @@ test('GET /networks returns 403 for org member without organization:manage', asy
 })
 
 test('GET /networks lists networks and applies kind and scope filters', async () => {
-  await withNetworkFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-  }) => {
+  await withNetworkFixtures(async ({ db, app, secrets, userId, organizationId }) => {
     const now = new Date().toISOString()
     const [dc] = await db
       .insert(datacenter)
@@ -520,34 +503,37 @@ test('GET /networks lists networks and applies kind and scope filters', async ()
 
     const all = await app.request('/networks', { headers })
     assertEquals(all.status, 200)
-    const allBody = await all.json() as { networks: Array<{ id: string }> }
+    const allBody = (await all.json()) as { networks: Array<{ id: string }> }
     assertEquals(allBody.networks.length, 2)
 
     const dockerOnly = await app.request('/networks?kind=docker', { headers })
     assertEquals(dockerOnly.status, 200)
-    const dockerBody = await dockerOnly.json() as { networks: Array<{ id: string }> }
-    assertEquals(dockerBody.networks.map((row) => row.id), [dockerNet!.id])
+    const dockerBody = (await dockerOnly.json()) as { networks: Array<{ id: string }> }
+    assertEquals(
+      dockerBody.networks.map((row) => row.id),
+      [dockerNet!.id]
+    )
 
     const byDc = await app.request(`/networks?datacenterId=${dc!.id}`, { headers })
     assertEquals(byDc.status, 200)
-    const dcBody = await byDc.json() as { networks: Array<{ id: string }> }
-    assertEquals(dcBody.networks.map((row) => row.id), [dcNet!.id])
+    const dcBody = (await byDc.json()) as { networks: Array<{ id: string }> }
+    assertEquals(
+      dcBody.networks.map((row) => row.id),
+      [dcNet!.id]
+    )
 
     const byServer = await app.request(`/networks?serverId=${srv!.id}`, { headers })
     assertEquals(byServer.status, 200)
-    const serverBody = await byServer.json() as { networks: Array<{ id: string }> }
-    assertEquals(serverBody.networks.map((row) => row.id), [dockerNet!.id])
+    const serverBody = (await byServer.json()) as { networks: Array<{ id: string }> }
+    assertEquals(
+      serverBody.networks.map((row) => row.id),
+      [dockerNet!.id]
+    )
   })
 })
 
 test('GET /networks returns 404 when datacenterId belongs to another org', async () => {
-  await withNetworkFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-  }) => {
+  await withNetworkFixtures(async ({ db, app, secrets, userId, organizationId }) => {
     const now = new Date().toISOString()
     const [localDc] = await db
       .insert(datacenter)
@@ -594,13 +580,7 @@ test('GET /networks returns 404 when datacenterId belongs to another org', async
 })
 
 test('GET /networks/:id returns network detail', async () => {
-  await withNetworkFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-  }) => {
+  await withNetworkFixtures(async ({ db, app, secrets, userId, organizationId }) => {
     const now = new Date().toISOString()
     const [dc] = await db
       .insert(datacenter)
@@ -624,7 +604,7 @@ test('GET /networks/:id returns network detail', async () => {
       headers: { cookie, [ORG_ID_HEADER]: organizationId },
     })
     assertEquals(res.status, 200)
-    const body = await res.json() as {
+    const body = (await res.json()) as {
       network: { id: string; name: string; cidr: string; kind: string }
     }
     assertEquals(body.network.id, netRow!.id)
@@ -635,13 +615,7 @@ test('GET /networks/:id returns network detail', async () => {
 })
 
 test('GET /networks/:id returns 404 for network in another org', async () => {
-  await withNetworkFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-  }) => {
+  await withNetworkFixtures(async ({ db, app, secrets, userId, organizationId }) => {
     const [otherOrg] = await db
       .insert(organization)
       .values({ name: 'Foreign Detail Org' })
@@ -682,13 +656,7 @@ test('GET /networks/:id returns 404 for network in another org', async () => {
 })
 
 test('PATCH /networks/:id updates name and cidr', async () => {
-  await withNetworkFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-  }) => {
+  await withNetworkFixtures(async ({ db, app, secrets, userId, organizationId }) => {
     const now = new Date().toISOString()
     const [dc] = await db
       .insert(datacenter)
@@ -731,13 +699,7 @@ test('PATCH /networks/:id updates name and cidr', async () => {
 })
 
 test('PATCH /networks/:id rejects immutable scope fields', async () => {
-  await withNetworkFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-  }) => {
+  await withNetworkFixtures(async ({ db, app, secrets, userId, organizationId }) => {
     const now = new Date().toISOString()
     const [dc] = await db
       .insert(datacenter)
@@ -771,13 +733,7 @@ test('PATCH /networks/:id rejects immutable scope fields', async () => {
 })
 
 test('DELETE /networks/:id removes network', async () => {
-  await withNetworkFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-  }) => {
+  await withNetworkFixtures(async ({ db, app, secrets, userId, organizationId }) => {
     const now = new Date().toISOString()
     const [dc] = await db
       .insert(datacenter)
@@ -804,21 +760,13 @@ test('DELETE /networks/:id removes network', async () => {
     assertEquals(res.status, 200)
     assertEquals(await res.json(), { ok: true })
 
-    const rows = await db
-      .select({ id: network.id })
-      .from(network)
-      .where(eq(network.id, netRow!.id))
+    const rows = await db.select({ id: network.id }).from(network).where(eq(network.id, netRow!.id))
     assertEquals(rows.length, 0)
   })
 })
 
 test('POST /networks returns 403 when organizationId is not accessible', async () => {
-  await withNetworkFixtures(async ({
-    app,
-    db,
-    secrets,
-    userId,
-  }) => {
+  await withNetworkFixtures(async ({ app, db, secrets, userId }) => {
     const [otherOrg] = await db
       .insert(organization)
       .values({ name: 'Inaccessible Net Org' })
@@ -845,13 +793,7 @@ test('POST /networks returns 403 when organizationId is not accessible', async (
 })
 
 test('POST /networks returns 404 when datacenterId belongs to another org', async () => {
-  await withNetworkFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-  }) => {
+  await withNetworkFixtures(async ({ db, app, secrets, userId, organizationId }) => {
     const [otherOrg] = await db
       .insert(organization)
       .values({ name: 'Cross Org Net Org' })
@@ -889,13 +831,7 @@ test('POST /networks returns 404 when datacenterId belongs to another org', asyn
 })
 
 test('GET /networks?kind=managed lists the platform-allocated managed network', async () => {
-  await withNetworkFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-  }) => {
+  await withNetworkFixtures(async ({ db, app, secrets, userId, organizationId }) => {
     const now = new Date().toISOString()
     const [dc] = await db
       .insert(datacenter)
@@ -929,10 +865,13 @@ test('GET /networks?kind=managed lists the platform-allocated managed network', 
 
     const res = await app.request('/networks?kind=managed', { headers })
     assertEquals(res.status, 200)
-    const body = await res.json() as {
+    const body = (await res.json()) as {
       networks: Array<{ id: string; kind: string; options: Record<string, unknown> }>
     }
-    assertEquals(body.networks.map((row) => row.id), [managedNet!.id])
+    assertEquals(
+      body.networks.map((row) => row.id),
+      [managedNet!.id]
+    )
     assertEquals(body.networks[0]?.kind, 'managed')
     assertEquals(body.networks[0]?.options, { dockerNetworkName: managedNet!.id })
   })
@@ -951,7 +890,7 @@ test('POST /networks rejects kind=managed', async () => {
       body: JSON.stringify({ organizationId, kind: 'managed' }),
     })
     assertEquals(res.status, 400)
-    assertEquals((await res.json() as { error: string }).error, 'Invalid request')
+    assertEquals(((await res.json()) as { error: string }).error, 'Invalid request')
   })
 })
 
@@ -981,10 +920,7 @@ test('PATCH /networks/:id refuses every patch on a managed network', async () =>
         body: JSON.stringify(patch),
       })
       assertEquals(res.status, 400)
-      assertEquals(
-        (await res.json() as { error: string }).error,
-        'managed_network_immutable',
-      )
+      assertEquals(((await res.json()) as { error: string }).error, 'managed_network_immutable')
     }
 
     const [unchanged] = await db
@@ -1011,10 +947,7 @@ test('DELETE /networks/:id refuses a managed network', async () => {
       headers: { cookie, [ORG_ID_HEADER]: organizationId },
     })
     assertEquals(res.status, 400)
-    assertEquals(
-      (await res.json() as { error: string }).error,
-      'managed_network_immutable',
-    )
+    assertEquals(((await res.json()) as { error: string }).error, 'managed_network_immutable')
 
     const [still] = await db
       .select({ id: network.id })
@@ -1049,7 +982,7 @@ test('POST /networks creates a reserved range, lists it by kind and keeps it org
       }),
     })
     assertEquals(created.status, 200)
-    const { id } = await created.json() as { ok: true; id: string }
+    const { id } = (await created.json()) as { ok: true; id: string }
 
     const [row] = await db
       .select({
@@ -1072,8 +1005,11 @@ test('POST /networks creates a reserved range, lists it by kind and keeps it org
 
     const listed = await app.request('/networks?kind=reserved', { headers })
     assertEquals(listed.status, 200)
-    const { networks } = await listed.json() as { networks: { id: string; kind: string }[] }
-    assertEquals(networks.map((n) => [n.id, n.kind]), [[id, 'reserved']])
+    const { networks } = (await listed.json()) as { networks: { id: string; kind: string }[] }
+    assertEquals(
+      networks.map((n) => [n.id, n.kind]),
+      [[id, 'reserved']]
+    )
 
     // A reserved range exists because of its CIDR.
     const noCidr = await app.request('/networks', {
@@ -1171,7 +1107,11 @@ test('POST /networks routes every CIDR write through the collision authority', a
         body: JSON.stringify({ organizationId, ...body }),
       })
 
-    const fabricHit = await post({ kind: 'datacenter', datacenterId: dc!.id, cidr: '10.250.9.0/24' })
+    const fabricHit = await post({
+      kind: 'datacenter',
+      datacenterId: dc!.id,
+      cidr: '10.250.9.0/24',
+    })
     assertEquals(fabricHit.status, 409)
     assertEquals(await fabricHit.json(), {
       error: 'cidr_overlaps_fabric',
@@ -1187,7 +1127,11 @@ test('POST /networks routes every CIDR write through the collision authority', a
       conflictingCidr: '10.192.0.0/12',
     })
 
-    const reservedHit = await post({ kind: 'datacenter', datacenterId: dc!.id, cidr: '10.100.7.0/24' })
+    const reservedHit = await post({
+      kind: 'datacenter',
+      datacenterId: dc!.id,
+      cidr: '10.100.7.0/24',
+    })
     assertEquals(reservedHit.status, 409)
     assertEquals(await reservedHit.json(), {
       error: 'cidr_overlaps_reserved',
@@ -1222,7 +1166,10 @@ test('POST /networks routes every CIDR write through the collision authority', a
       options: { dockerNetworkName: 'bridge-two' },
     })
     assertEquals(dockerVsReserved.status, 409)
-    assertEquals((await dockerVsReserved.json() as { error: string }).error, 'cidr_overlaps_reserved')
+    assertEquals(
+      ((await dockerVsReserved.json()) as { error: string }).error,
+      'cidr_overlaps_reserved'
+    )
 
     // A free range still lands.
     const free = await post({ kind: 'datacenter', datacenterId: dc!.id, cidr: '10.30.0.0/24' })
@@ -1328,7 +1275,7 @@ test('POST /networks kind=docker keeps cidr and options.subnet in agreement', as
       },
     })
     assertEquals(fromSubnet.status, 200)
-    const a = await fromSubnet.json() as { id: string }
+    const a = (await fromSubnet.json()) as { id: string }
     assertEquals(await stored(a.id), {
       cidr: '10.77.0.0/16',
       options: {
@@ -1343,7 +1290,7 @@ test('POST /networks kind=docker keeps cidr and options.subnet in agreement', as
     // cidr alone → options.subnet derived.
     const fromCidr = await post({ cidr: '10.78.0.0/16', options: { dockerNetworkName: 'edge-b' } })
     assertEquals(fromCidr.status, 200)
-    const b = await fromCidr.json() as { id: string }
+    const b = (await fromCidr.json()) as { id: string }
     assertEquals(await stored(b.id), {
       cidr: '10.78.0.0/16',
       options: { dockerNetworkName: 'edge-b', subnet: '10.78.0.0/16' },
@@ -1356,7 +1303,7 @@ test('POST /networks kind=docker keeps cidr and options.subnet in agreement', as
       options: { dockerNetworkName: 'edge-f', ipRange: '10.83.8.0/24', gateway: '10.83.0.1' },
     })
     assertEquals(cidrAnchored.status, 200)
-    const f = await cidrAnchored.json() as { id: string }
+    const f = (await cidrAnchored.json()) as { id: string }
     assertEquals(await stored(f.id), {
       cidr: '10.83.0.0/16',
       options: {
@@ -1393,7 +1340,10 @@ test('POST /networks kind=docker keeps cidr and options.subnet in agreement', as
       options: { dockerNetworkName: 'edge-e', subnet: '10.77.8.0/24' },
     })
     assertEquals(collide.status, 409)
-    assertEquals((await collide.json() as { error: string }).error, 'cidr_overlaps_docker_network')
+    assertEquals(
+      ((await collide.json()) as { error: string }).error,
+      'cidr_overlaps_docker_network'
+    )
   })
 })
 

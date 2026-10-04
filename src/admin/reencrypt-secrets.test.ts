@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from '../test-fixtures/require-service.test.support.ts'
 import { assertEquals, assertRejects } from '@std/assert'
 import { asc, eq, sql } from 'drizzle-orm'
 import {
@@ -270,7 +271,7 @@ async function withIsolatedFixture(
   fn: (scoped: Db) => Promise<void>
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn('Skipping reencrypt sweep tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('reencrypt sweep tests')
     return
   }
 

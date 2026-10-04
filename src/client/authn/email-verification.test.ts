@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { eq } from 'drizzle-orm'
 import { assertEquals } from '@std/assert'
 import { it } from '@std/testing/bdd'
@@ -15,8 +16,7 @@ import { deriveSecretsConfig, parseSecretsEnv } from '../../lib/secrets/secrets.
 const dbUrl = getDatabaseUrl()
 
 async function createAuthApp(db: ReturnType<typeof createDenoDb>) {
-  const secretsConfig = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`,
-    'deno')
+  const secretsConfig = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`, 'deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const app = new Hono<AppEnv>()
   app.use('*', (c, next) => {
@@ -36,9 +36,7 @@ async function createAuthApp(db: ReturnType<typeof createDenoDb>) {
 
 it('createEmailVerificationToken stores a verifier digest, never the raw token', async () => {
   if (!dbUrl) {
-    console.warn(
-      'Skipping email-verification digest-at-rest test: TURBOPANEL_DATABASE_URL not set',
-    )
+    skipWithoutDatabase('email-verification digest-at-rest test')
     return
   }
   const db = createDenoDb()
@@ -60,9 +58,7 @@ it('createEmailVerificationToken stores a verifier digest, never the raw token',
 
 it('GET /auth/verify-email marks the user verified and consumes the token', async () => {
   if (!dbUrl) {
-    console.warn(
-      'Skipping verify-email route test: TURBOPANEL_DATABASE_URL not set',
-    )
+    skipWithoutDatabase('verify-email route test')
     return
   }
 
@@ -84,7 +80,7 @@ it('GET /auth/verify-email marks the user verified and consumes the token', asyn
     const token = await createEmailVerificationToken(db, email)
 
     const response = await app.request(
-      `${CLIENT_API_PREFIX}/auth/verify-email?token=${encodeURIComponent(token)}`,
+      `${CLIENT_API_PREFIX}/auth/verify-email?token=${encodeURIComponent(token)}`
     )
     assertEquals(response.status, 200)
     const payload = (await response.json()) as { ok: boolean }
