@@ -478,7 +478,8 @@ export const organizationSchemas = {
       advertisedCidrs: {
         type: 'array',
         items: { type: 'string' },
-        description: "empty list = derive from the relay's datacenter IPv4 subnets",
+        description:
+          "empty list = derive from the relay's datacenter IPv4 subnets. Each range must be private (RFC 1918, 100.64.0.0/10 or fc00::/7) and no shorter than /8 (IPv4) or /48 (IPv6): default routes and public ranges are 400. A range that overlaps the fabric range, the container pool or another server's fabric prefix is 409 gateway_range_overlaps_*.",
       },
       keepalive: { type: ['integer', 'null'], minimum: 1, maximum: 65535 },
       endpointAddress: { type: ['string', 'null'] },
