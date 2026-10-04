@@ -667,7 +667,7 @@ async function withFixtureOn(db: Db, fn: (fixture: Fixture) => Promise<void>): P
   const { token } = await createSession(db, ownerA, {})
   const cookieA = `${HTTP_SESSION_COOKIE_NAME}=${await buildSignedCookie(token, secrets)}`
 
-  const aOwn = {
+  const aOwn: Fixture['aOwn'] = {
     tagId: await insertId(
       db
         .insert(tag)
