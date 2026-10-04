@@ -30,6 +30,7 @@ import {
   subscription,
   subscriptionItem,
   tier,
+  webhookDelivery,
 } from '../../db/schema.ts'
 import { createMemoryDb, type MemoryDb } from '../../test-fixtures/memory-db.ts'
 import {
@@ -38,8 +39,10 @@ import {
   type StripeCall,
 } from '../../test-fixtures/stripe-client.ts'
 import {
+  projectAndSettleStripeEvent,
   projectStripeEvent,
   projectSubscriptionById,
+  runPendingStripeProjections,
   type StripeProjectionOutcome,
 } from './stripe-projection.ts'
 import {
@@ -99,6 +102,7 @@ function emptyDb(opts: { licenses?: Obj[]; servers?: Obj[] } = {}): MemoryDb {
       [payer, []],
       [subscription, []],
       [subscriptionItem, []],
+      [webhookDelivery, []],
       [tier, [tierRow(S1, 'S1', 1), tierRow(S2, 'S2', 2)]],
       [license, opts.licenses ?? []],
       [server, opts.servers ?? []],
@@ -1018,4 +1022,105 @@ test('a product whose default price has no unit_amount leaves the cached price a
   )
   const s1 = db.rows(tier).find((row) => row.id === S1)
   assertEquals([s1?.priceCents, s1?.updatedAt], [1000, NOW])
+})
+
+// --- ordering and settling ------------------------------------------------
+
+test('a projection whose read began earlier never overwrites a newer one: it reads Stripe again', async () => {
+  const db = emptyDb()
+  const older = '2026-09-07T11:00:00.000Z'
+  const newer = '2026-09-07T12:00:00.000Z'
+  const canceled = () => stripeSubscription({ status: 'canceled' })
+  // The newer projection runs and commits while the older read is in flight.
+  const newerClient = routedClient({ [SUB_ROUTE]: canceled })
+  let gets = 0
+  const olderClient = routedClient({
+    [SUB_ROUTE]: async () => {
+      gets += 1
+      if (gets > 1) return canceled()
+      await projectSubscriptionById({ db, client: newerClient, now: newer }, 'sub_1')
+      return stripeSubscription({ status: 'active' })
+    },
+  })
+  const outcome = await projectSubscriptionById({ db, client: olderClient, now: older }, 'sub_1')
+  assertEquals(outcome.action, 'projected')
+  assertEquals(gets, 2)
+  assertEquals(db.rows(subscription)[0]?.status, 'canceled')
+})
+
+test('a projection that keeps losing to newer ones throws so the event stays pending', async () => {
+  const db = emptyDb()
+  const future = '2999-01-01T00:00:00.000Z'
+  await projectSubscriptionById(
+    { db, client: routedClient({ [SUB_ROUTE]: () => stripeSubscription() }), now: future },
+    'sub_1'
+  )
+  const client = routedClient({ [SUB_ROUTE]: () => stripeSubscription({ status: 'canceled' }) })
+  await assertRejects(
+    () => projectSubscriptionById({ db, client, now: NOW }, 'sub_1'),
+    Error,
+    'newer projection holds the row'
+  )
+  assertEquals(db.rows(subscription)[0]?.status, 'active')
+})
+
+const EVENT = {
+  id: 'evt_1',
+  type: 'customer.subscription.updated',
+  objectId: 'sub_1',
+  objectType: 'subscription',
+}
+
+const pendingDelivery = (id: string) => ({
+  id: `row-${id}`,
+  provider: 'stripe',
+  externalDeliveryId: id,
+  event: EVENT.type,
+  objectId: 'sub_1',
+  objectType: 'subscription',
+  projectedAt: null,
+  createdAt: '2026-09-07T00:00:00.000Z',
+  updatedAt: '2026-09-07T00:00:00.000Z',
+})
+
+test('an entitlement sync skipped on a held lease leaves the event pending, and the sweep finishes it once the lease is free', async () => {
+  const db = emptyDb()
+  db.rows(webhookDelivery).push(pendingDelivery('evt_1'))
+  db.rows(lease).push({
+    id: 'l1',
+    name: 'BILLING_QUANTITY_LOCK',
+    organizationId: ORG,
+    owner: 'crashed-worker',
+    expiresAt: '2026-09-07T12:00:30.000Z',
+  })
+  const client = routedClient({ [SUB_ROUTE]: () => stripeSubscription() })
+  const deps = { db, client, now: NOW, leaseRetry: { attempts: 1, delayMs: 0 } }
+  assertEquals(await projectAndSettleStripeEvent(deps, EVENT), 'pending')
+  assertEquals(db.rows(webhookDelivery)[0]?.projectedAt, null)
+  // The holder's lease runs out; the retry sweep now completes the sync.
+  const later = { ...deps, now: '2026-09-07T12:05:00.000Z' }
+  assertEquals(await runPendingStripeProjections(later), { attempted: 1, completed: 1 })
+  assertEquals(typeof db.rows(webhookDelivery)[0]?.projectedAt, 'string')
+})
+
+test('a failing projection is moved behind newer ones; one still failing after a week is given up on', async () => {
+  const db = emptyDb()
+  db.rows(webhookDelivery).push(pendingDelivery('evt_1'))
+  const failing = routedClient({
+    [SUB_ROUTE]: () => {
+      throw new Error('boom')
+    },
+  })
+  assertEquals(
+    await projectAndSettleStripeEvent({ db, client: failing, now: NOW }, EVENT),
+    'pending'
+  )
+  assertEquals(db.rows(webhookDelivery)[0]?.updatedAt, NOW)
+  const report = await runPendingStripeProjections({
+    db,
+    client: failing,
+    now: '2026-09-20T00:00:00.000Z',
+  })
+  assertEquals(report, { attempted: 0, completed: 0 })
+  assertEquals(typeof db.rows(webhookDelivery)[0]?.projectedAt, 'string')
 })
