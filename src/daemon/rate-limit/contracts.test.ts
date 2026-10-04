@@ -47,24 +47,15 @@ test('createWorkersRateLimiter delegates to binding.limit with key', async () =>
 })
 
 test('daemon rate-limit keys are stable and include id + route', () => {
-  assertEquals(
-    daemonConnectRateLimitKey('srv-1'),
-    'daemon:connect:srv-1',
-  )
+  assertEquals(daemonConnectRateLimitKey('srv-1'), 'daemon:connect:srv-1')
   assertEquals(
     daemonRestRateLimitKey('srv-1', 'commands-lease'),
-    'daemon:rest:commands-lease:srv-1',
+    'daemon:rest:commands-lease:srv-1'
   )
-  assertEquals(
-    daemonRestRateLimitKey('lic-9', 'enroll'),
-    'daemon:rest:enroll:lic-9',
-  )
+  assertEquals(daemonRestRateLimitKey('lic-9', 'enroll'), 'daemon:rest:enroll:lic-9')
   assertEquals(
     daemonEnrollChallengeRateLimitKey('203.0.113.9'),
-    `daemon:rest:auth-challenge:${DAEMON_ENROLL_CHALLENGE_RATE_LIMIT_ID}:203.0.113.9`,
+    `daemon:rest:auth-challenge:${DAEMON_ENROLL_CHALLENGE_RATE_LIMIT_ID}:203.0.113.9`
   )
-  assertEquals(
-    daemonMetricsRateLimitKey('srv-1'),
-    'daemon:metrics:srv-1',
-  )
+  assertEquals(daemonMetricsRateLimitKey('srv-1'), 'daemon:metrics:srv-1')
 })
