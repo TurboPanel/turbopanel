@@ -112,6 +112,24 @@ export function copyOptionsError(options: unknown): string | null {
   return null
 }
 
+/** Tenant directories live here; every path under it must be the storage's own directory. */
+const PRINCIPAL_PATH_PREFIX = '/srv/users/'
+
+/**
+ * Write-time rule for a copy path: anything inside the site owners' area must
+ * be this storage's own directory (see {@link copyHostPathError}). A path
+ * outside it (an operator mount) is left to deploy, but is never backed up:
+ * command building applies {@link copyHostPathError} to every path.
+ */
+export function copyPathWriteError(
+  username: string | null,
+  storageId: string | null,
+  hostPath: string
+): string | null {
+  if (!hostPath.startsWith(PRINCIPAL_PATH_PREFIX) && !hostPath.includes('..')) return null
+  return copyHostPathError(username, storageId, hostPath)
+}
+
 /**
  * Whether `hostPath` is exactly the storage's own directory under its site
  * owner's volumes (`/srv/users/<user>/volumes/<storageId>`). Returns the reason

@@ -366,7 +366,7 @@ test('a manager cannot point a copy at another owner path or a foreign volume', 
       { path: `/srv/users/victim/volumes/${own.storageId}` },
       { path: '/srv/users/acme/volumes/another-storage' },
       { path: '/srv/users/acme/volumes' },
-      { path: '/etc' },
+      { path: '/srv/users/acme/volumes/../../victim/volumes/x' },
       { options: { managed: false, externalName: 'other-site-data' } },
     ]
     for (const body of refusedPatches) {

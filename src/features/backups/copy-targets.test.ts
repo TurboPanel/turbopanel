@@ -8,6 +8,7 @@ import {
   type CopyTargetRow,
   copyHostPathError,
   copyOptionsError,
+  copyPathWriteError,
   resolveCopyBackupSource,
 } from './copy-targets.ts'
 
@@ -164,6 +165,18 @@ test('copyHostPathError accepts only the storage own directory', () => {
   for (const [user, storageId, path] of refused) {
     assertEquals(typeof copyHostPathError(user, storageId, path), 'string', path)
   }
+})
+
+test('copyPathWriteError guards the owners area and leaves operator mounts to deploy', () => {
+  const own = `/srv/users/acme/volumes/${STORAGE_ID}`
+  assertEquals(copyPathWriteError('acme', STORAGE_ID, own), null)
+  assertEquals(copyPathWriteError(null, STORAGE_ID, '/var/lib/app/config'), null)
+  assertEquals(
+    typeof copyPathWriteError('acme', STORAGE_ID, '/srv/users/victim/volumes/x'),
+    'string'
+  )
+  assertEquals(typeof copyPathWriteError(null, STORAGE_ID, '/srv/users/acme/volumes/x'), 'string')
+  assertEquals(typeof copyPathWriteError('acme', STORAGE_ID, '/data/../srv/users/x'), 'string')
 })
 
 test('copyOptionsError refuses an external volume name or an unmanaged flag', () => {

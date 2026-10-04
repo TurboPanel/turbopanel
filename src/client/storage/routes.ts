@@ -44,7 +44,7 @@ import {
   type StorageParentEntityKind,
   type StorageParentRef,
 } from './routes-helpers.ts'
-import { copyHostPathError, copyOptionsError } from '../../features/backups/copy-targets.ts'
+import { copyOptionsError, copyPathWriteError } from '../../features/backups/copy-targets.ts'
 
 async function sealStorageContent(c: Context<AppEnv>, content: string): Promise<string | Response> {
   if (isStorageContentTooLarge(content)) {
@@ -337,7 +337,7 @@ async function validateCopyOwnership(
       .limit(1)
     username = row?.username ?? null
   }
-  const pathError = copyHostPathError(username, storageId, copy.path)
+  const pathError = copyPathWriteError(username, storageId, copy.path)
   return pathError ? c.json({ error: pathError }, 400) : null
 }
 
