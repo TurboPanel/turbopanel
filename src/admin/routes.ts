@@ -74,7 +74,10 @@ import {
 import { registerInstanceAccessAdminRoutes } from './instance-access-routes.ts'
 import { registerInstanceUpdatesAdminRoutes } from './instance-updates-routes.ts'
 import { registerInstanceHostnameAdminRoutes } from './instance-hostname-routes.ts'
-import { recordInstanceAcmePreflightFailure } from '../features/install/instance-hostnames.ts'
+import {
+  recordInstanceAcmeApplyTimeout,
+  recordInstanceAcmePreflightFailure,
+} from '../features/install/instance-hostnames.ts'
 import { resolvePublicUrlsApplyPayload } from './public-urls-apply-payload.ts'
 import { resolveInstanceSecretSealing } from '../features/install/instance-secret-sealing.ts'
 import {
@@ -85,6 +88,7 @@ import {
   parseServerMetricsLiveSettingsBody,
   parseSignupEnabledBody,
   publicUrlsApplyErrorResponse,
+  PUBLIC_URLS_APPLY_TIMEOUT_MESSAGE,
   type PublicUrlsApplyErrorResponse,
   publicUrlsApplyWaitToResponse,
   resolvePerServerLimit,
@@ -283,6 +287,7 @@ export function registerAdminRoutes(
   })
 
   registerInstanceHostnameAdminRoutes(admin, {
+    secrets: opts.secrets,
     runtime: opts.runtime,
     ...(opts.getEnv ? { getEnv: opts.getEnv } : {}),
   })
@@ -622,6 +627,8 @@ export function registerAdminRoutes(
     const result = await waitForPublicUrlsApply(registry, serverId, applied.payload)
     if (result.kind === 'failed' || result.kind === 'error') {
       await recordInstanceAcmePreflightFailure(db, result.error)
+    } else if (result.kind === 'timeout') {
+      await recordInstanceAcmeApplyTimeout(db, PUBLIC_URLS_APPLY_TIMEOUT_MESSAGE)
     }
     const response = publicUrlsApplyWaitToResponse(result)
     if (response.status === 200) {

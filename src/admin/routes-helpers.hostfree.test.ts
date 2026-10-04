@@ -16,6 +16,7 @@ import {
   parseServerMetricsLiveSettingsBody,
   parseSignupEnabledBody,
   publicUrlsApplyErrorResponse,
+  PUBLIC_URLS_APPLY_TIMEOUT_MESSAGE,
   publicUrlsApplyWaitToResponse,
   resolvePerServerLimit,
   resolvePlatformEnv,
@@ -136,7 +137,7 @@ test('publicUrlsApplyWaitToResponse maps wait outcomes to HTTP payloads', () => 
   })
   assertEquals(publicUrlsApplyWaitToResponse({ kind: 'timeout' }), {
     status: 500,
-    body: { ok: false, applied: false, error: 'timeout waiting for daemon' },
+    body: { ok: false, applied: false, error: PUBLIC_URLS_APPLY_TIMEOUT_MESSAGE },
   })
   assertEquals(publicUrlsApplyWaitToResponse({ kind: 'failed', error: 'boom' }), {
     status: 500,
