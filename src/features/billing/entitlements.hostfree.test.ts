@@ -289,6 +289,23 @@ test('an ended subscription revokes every license, bound ones included, and clea
   assertEquals(active.length, 0)
 })
 
+test('a paused or incomplete subscription confers no seats: every license is revoked and no server stays assigned', async () => {
+  for (const status of ['paused', 'incomplete']) {
+    const db = seed({ seats: [{ tierId: S1, quantity: 1 }], status })
+    const outcome = await syncEntitlementsForOrganization(
+      { db, client: null, nowMs: NOW_MS },
+      { organizationId: ORG, providerSubscriptionId: 'sub_1', pendingUpdate: false }
+    )
+    assertEquals(outcome.action, 'synced', status)
+    const active = await db
+      .select({ id: license.id })
+      .from(license)
+      .where(isNull(license.revokedAt))
+    assertEquals(active.length, 0, status)
+    assertEquals(await assignments(db), { [SERVER_A]: null, [SERVER_B]: null }, status)
+  }
+})
+
 test('a held lease makes the sync yield to the holder without writing', async () => {
   const db = seed({ seats: [{ tierId: S3, quantity: 1 }] })
   const lock = await tryBeginQuantityMutation(db, ORG, NOW_MS)

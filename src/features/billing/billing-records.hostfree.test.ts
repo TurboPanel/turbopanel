@@ -683,7 +683,7 @@ test('revokeAllLicensesForOrganization stops at the first failing hook and touch
 
 const EVERY_STATUS = [...KNOWN_SUBSCRIPTION_STATUSES, 'some_future_status'] as const
 const DELINQUENT = ['past_due', 'unpaid']
-const ENDED = ['canceled', 'incomplete_expired']
+const ENDED = ['canceled', 'incomplete_expired', 'incomplete', 'paused']
 
 test('T8 · delinquent and ended are disjoint, exact, and closed to statuses Stripe adds later', () => {
   for (const status of EVERY_STATUS) {
@@ -692,7 +692,7 @@ test('T8 · delinquent and ended are disjoint, exact, and closed to statuses Str
   }
 })
 
-test('T8 · committed seats read as zero under an ended status and as counted under every other, trialing and paused included', async () => {
+test('T8 · committed seats read as zero under an ended status and as counted under every other (trialing, past_due and unpaid included)', async () => {
   for (const status of EVERY_STATUS) {
     const db = entitlementDb({ status, seats: [{ tierId: TIER_S1, quantity: 2 }], licenses: [] })
     const state = await listSeatsForOrganization(db, ORG_ID)

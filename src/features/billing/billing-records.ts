@@ -96,10 +96,23 @@ export function isDelinquentStatus(status: string): boolean {
   return DELINQUENT_SUBSCRIPTION_STATUSES.includes(status)
 }
 
-/** A subscription that has ended: its seats count as zero. */
+/**
+ * A subscription that confers no seats: its seats count as zero. Besides the
+ * two ended statuses this covers `incomplete` (the first payment has not
+ * succeeded) and `paused` (a trial ended with no payment method): in neither
+ * has money been collected, so neither is entitled. `past_due`, `unpaid`,
+ * `trialing`, `active` and statuses Stripe adds later keep their seats.
+ */
 export function isEndedStatus(status: string): boolean {
-  return status === 'canceled' || status === 'incomplete_expired'
+  return ENDED_SUBSCRIPTION_STATUSES.includes(status)
 }
+
+const ENDED_SUBSCRIPTION_STATUSES: readonly string[] = [
+  'canceled',
+  'incomplete_expired',
+  'incomplete',
+  'paused',
+]
 
 export function parseSubscriptionStatus(value: string): SubscriptionStatus | 'unknown' {
   return (KNOWN_SUBSCRIPTION_STATUSES as readonly string[]).includes(value)
