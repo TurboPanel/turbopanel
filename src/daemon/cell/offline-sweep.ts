@@ -93,6 +93,7 @@ import {
   parseUpgradeStepRetentionDays,
   pruneUpgradeHistory,
 } from '../../features/upgrades/prune.ts'
+import { pruneCommandHistory } from '../../features/commands/prune.ts'
 import { resolveInstanceRevision } from '../../app/build-info.ts'
 import { INSTANCE_VERSION } from '../../app/version.ts'
 import { resolveColocatedServerId } from '../../client/authn/install-state.ts'
@@ -962,6 +963,24 @@ export async function sweepUpgradeHistorySafely(db: Db, doneRetentionDays?: numb
 }
 
 /**
+ * Retention prune of aged terminal `command` rows (see features/commands/prune.ts).
+ * Rides the same 15-minute window and is isolated so a failure never aborts the
+ * other sweeps.
+ */
+export async function sweepCommandHistorySafely(db: Db): Promise<void> {
+  try {
+    const deleted = await pruneCommandHistory(db)
+    if (deleted > 0) {
+      sweepTrace('command-history-swept', { deleted })
+    }
+  } catch (err) {
+    sweepTrace('command-history-sweep-failed', {
+      error: sweepErrorMessage(err),
+    })
+  }
+}
+
+/**
  * Advance managed upgrades. The cadence is `TURBOPANEL_UPGRADE_TICK_MINUTES`
  * (default 15, see features/upgrades/tick-cadence.ts), independent of history prune.
  * Manifest fetches are cached. Dispatch is capped inside the coordinator.
@@ -1222,6 +1241,7 @@ async function upgradePhaseWork(
         ),
       capDbTimeout(deadlineMs)
     )
+    await runWithDbTimeout(db, sweepCommandHistorySafely, capDbTimeout(deadlineMs))
   }
   if (shouldRunUpgradeTick(scheduledTime, upgradeTickMinutes)) {
     await runUpgradeMaintenanceSafely(db, env)
