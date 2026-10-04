@@ -45,7 +45,7 @@ test('looks the daemon up only when a site needs the feature', async () => {
   }
   assertEquals(await withSiteEngineFeature(db, 's1', [plain], load), { ok: true })
   assertEquals(lookups, 0)
-  assertEquals((await withSiteEngineFeature(db, 's1', [paired], load)).hasOwnProperty('kind'), true)
+  assertEquals('kind' in (await withSiteEngineFeature(db, 's1', [paired], load)), true)
   assertEquals(lookups, 1)
 })
 
