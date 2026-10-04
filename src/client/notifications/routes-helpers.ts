@@ -3,7 +3,7 @@
  * without a database. Refusals are `{ status, error, reason? }`, the error a
  * short code the console maps to a sentence.
  */
-import { validateEmailAddress } from '../../features/email/validate-address.ts'
+import { parseSingleEmailAddress } from '../../features/email/validate-address.ts'
 import { resolveOutboundHostScope, validateOutboundUrl } from '../../lib/http/outbound-url.ts'
 import {
   isNotificationEvent,
@@ -179,6 +179,19 @@ export function refuseHoldFieldsFor(
   return null
 }
 
+/** An email channel's label is read out in a mail to a stranger: a short plain name. */
+export const EMAIL_CHANNEL_LABEL_MAX = 40
+const EMAIL_CHANNEL_LABEL_CHARS = /^[\p{L}\p{N} ._'()&/-]+$/u
+const LINK_LIKE = /[\p{L}\p{N}-]\.\p{L}{2,}/u
+
+export function isPlainEmailChannelLabel(label: string): boolean {
+  return (
+    label.length <= EMAIL_CHANNEL_LABEL_MAX &&
+    EMAIL_CHANNEL_LABEL_CHARS.test(label) &&
+    !LINK_LIKE.test(label)
+  )
+}
+
 function parseLabel(raw: unknown): string | ChannelWriteRefusal {
   if (typeof raw !== 'string') {
     return { ok: false, status: 400, error: 'label_required' }
@@ -209,12 +222,9 @@ export async function validateChannelAddress(
   }
   switch (kind) {
     case 'email': {
-      try {
-        validateEmailAddress(address, 'address')
-      } catch {
-        return { ok: false, status: 400, error: 'address_invalid' }
-      }
-      return address
+      // Stored and mailed as given, so it must be exactly one recipient.
+      const single = parseSingleEmailAddress(address)
+      return single ?? { ok: false, status: 400, error: 'address_invalid' }
     }
     case 'telegram': {
       const parsed = parseTelegramAddress(address)
@@ -262,6 +272,9 @@ export async function parseChannelCreateBody(
   }
   const label = parseLabel(raw.label)
   if (typeof label !== 'string') return label
+  if (kind === 'email' && !isPlainEmailChannelLabel(label)) {
+    return { ok: false, status: 400, error: 'label_invalid' }
+  }
   const address = await validateChannelAddress(kind as ChannelCreate['kind'], raw.address, opts)
   if (typeof address !== 'string') return address
   let signingSecret: string | null = null
