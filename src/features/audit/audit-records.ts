@@ -48,6 +48,7 @@ export const AUDIT_ACTIONS = [
   'organization.acme.set',
   'organization.reauth_for_destructive.set',
   'server.firewall_mode.set',
+  'deployment.cancel',
 ] as const
 
 export type AuditAction = (typeof AUDIT_ACTIONS)[number]

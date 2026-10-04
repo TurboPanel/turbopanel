@@ -2674,6 +2674,72 @@ test('processCommandEnvelope records a rolled back and a needs attention sequent
   })
 })
 
+test('processCommandEnvelope records a deploy the host stopped on request as cancelled, keeping the old generation', async () => {
+  await withDeployFixtures(async ({ db, organizationId, serverId, environmentId, projectId }) => {
+    await attachConnectedDaemonStatus(db, serverId)
+    await db.delete(deployment).where(eq(deployment.serverId, serverId))
+    await db.insert(deployment).values({
+      environmentId,
+      serverId,
+      desiredGeneration: 2,
+      appliedGeneration: 1,
+      status: 'applying',
+    })
+    const record = await createCommandRecord(db, {
+      serverId,
+      ...TEST_COMMAND_ACTOR,
+      type: 'environment.deploy',
+      payload: {
+        environmentId,
+        projectId,
+        organizationId,
+        projectName: 'tp-deploy-test',
+        composeFiles: [
+          {
+            filename: 'compose.yaml',
+            role: 'runtime',
+            source: 'inline',
+            content: 'services:\n  web:\n    image: nginx\n',
+          },
+        ],
+        hostings: [],
+        generation: 2,
+      },
+    })
+    const daemonError = 'cancelled: stopped while building; the previous version is still running'
+    const registry = createDispatchMockRegistry(serverId, {
+      waitForRequestResult: {
+        serverId,
+        requestId: record.id,
+        requestKind: 'command-dispatch',
+        status: 'failed',
+        createdAt: record.createdAt,
+        expiresAt: record.createdAt,
+        error: daemonError,
+      },
+    })
+    await processCommandEnvelope(db, registry, buildEnvelope(record, serverId))
+    const updated = await getCommandRecord(db, record.id)
+    assertEquals(updated?.status, 'cancelled')
+    assertEquals(updated?.error, daemonError)
+    assertEquals(updated?.errorCode, 'deploy_cancelled')
+    const [row] = await db
+      .select({
+        status: deployment.status,
+        outcome: deployment.outcome,
+        metadata: deployment.metadata,
+        applied: deployment.appliedGeneration,
+      })
+      .from(deployment)
+      .where(eq(deployment.serverId, serverId))
+    assertEquals(row?.status, 'failed')
+    assertEquals(row?.outcome, 'failed')
+    assertEquals((row?.metadata as { cancelled: unknown }).cancelled, true)
+    // The previous generation is still the applied one.
+    assertEquals(row?.applied, 1)
+  })
+})
+
 /** Two servers of one deploy, generation 5: `serverId` is batch 0 (applying), a second is batch 1 (held). */
 async function holdSecondServerOfRollout(
   db: Parameters<Parameters<typeof withDeployFixtures>[0]>[0]['db'],

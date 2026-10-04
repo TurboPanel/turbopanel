@@ -101,6 +101,12 @@ export function deriveInboundOutcome(inbound: DaemonInboundEnvelope): InboundOut
         ...(inbound.errorCode ? { errorCode: inbound.errorCode } : {}),
         ...(inbound.upgradeId ? { upgradeId: inbound.upgradeId } : {}),
       })
+    case 'deploy-cancel-result':
+      return inboundOutcomeFromOk(inbound.ok, inbound.error, {
+        ok: inbound.ok,
+        outcome: inbound.outcome,
+        error: inbound.error,
+      })
     case 'metrics-capabilities-result':
       return inboundOutcomeFromOk(inbound.ok, inbound.error, {
         capabilities: inbound.capabilities,

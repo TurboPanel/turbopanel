@@ -2392,3 +2392,15 @@ test('processCommandEnvelope managed.ha.failover recover with recoveryId is best
     true
   )
 })
+
+test('failureErrorCodeField names a cancelled deploy and nothing else', () => {
+  const cancelled = 'cancelled: stopped while building; the previous version is still running'
+  assertEquals(failureErrorCodeField('environment.deploy', null, cancelled), {
+    errorCode: 'deploy_cancelled',
+  })
+  assertEquals(failureErrorCodeField('environment.stop', null, cancelled), {})
+  assertEquals(
+    failureErrorCodeField('environment.deploy', null, 'build was cancelled by a script'),
+    {}
+  )
+})

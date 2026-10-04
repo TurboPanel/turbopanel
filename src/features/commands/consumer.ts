@@ -28,7 +28,12 @@ import {
 } from './command-records.ts'
 import { reconcileEnvironmentContainers } from '../environments/container-records.ts'
 import { recordDeployedSiteApps } from '../environments/app-facts.ts'
-import { classifyDeployFailure, deployOutcomeErrorCode } from '../deploy/deploy-outcome.ts'
+import {
+  classifyDeployFailure,
+  DEPLOY_CANCELLED_ERROR_CODE,
+  deployOutcomeErrorCode,
+  isCancelledDeployError,
+} from '../deploy/deploy-outcome.ts'
 import {
   advanceRollout,
   failTimedOutDeploy,
@@ -575,6 +580,7 @@ async function applyEnvironmentDeployFailedSideEffect(
     const payload = parseEnvironmentDeployPayload(record.payload)
     const finishedAt = nowIso()
     const deployFailure = classifyDeployFailure(error)
+    const cancelled = isCancelledDeployError(error)
     const marked = await markDeploymentFailed(db, {
       environmentId: payload.environmentId,
       serverId: envelope.serverId,
@@ -583,6 +589,7 @@ async function applyEnvironmentDeployFailedSideEffect(
       expectedCommandId: record.id,
       outcome,
       ...(deployFailure === null ? {} : { strategyOutcome: deployFailure.outcome }),
+      ...(cancelled ? { cancelled } : {}),
       finishedAt,
       durationMs: deploymentDurationMs({
         startedAt: record.startedAt,
@@ -594,7 +601,7 @@ async function applyEnvironmentDeployFailedSideEffect(
       await haltRollout(db, {
         environmentId: payload.environmentId,
         generation: payload.generation,
-        reason: `${envelope.serverId} failed`,
+        reason: cancelled ? 'the deploy was cancelled' : `${envelope.serverId} failed`,
       })
     }
   } catch (err) {
@@ -2397,6 +2404,9 @@ export function failureErrorCodeField(
   error: string
 ): { errorCode?: string } {
   if (deployFailure !== null) return { errorCode: deployOutcomeErrorCode(deployFailure.outcome) }
+  if (type === 'environment.deploy' && isCancelledDeployError(error)) {
+    return { errorCode: DEPLOY_CANCELLED_ERROR_CODE }
+  }
   if (type === 'storage.restore' && BACKUP_NOT_ON_HOST_RE.test(error)) {
     return { errorCode: 'backup_not_found' }
   }
@@ -2414,8 +2424,10 @@ async function handlePendingFailed(
   // A sequential deploy that rolled back or needs attention says so in its error
   // text; keep that machine-readable on the row.
   const deployFailure = record.type === 'environment.deploy' ? classifyDeployFailure(error) : null
+  // A deploy the daemon stopped on request is `cancelled`, not `failed`.
+  const cancelled = record.type === 'environment.deploy' && isCancelledDeployError(error)
   await transitionCommand(db, record.id, {
-    status: 'failed',
+    status: cancelled ? 'cancelled' : 'failed',
     error,
     ...failureErrorCodeField(record.type, deployFailure, error),
   })
@@ -2424,7 +2436,7 @@ async function handlePendingFailed(
     commandType: record.type,
     serverId: envelope.serverId,
     pendingStatus: pending.status,
-    resultStatus: 'failed',
+    resultStatus: cancelled ? 'cancelled' : 'failed',
     error,
   })
   await applyManagedFailedSideEffect(db, record, deps, error)

@@ -4,6 +4,7 @@ import {
   compareSemver,
   DAEMON_FEATURE_MIN_VERSIONS,
   DAEMON_WIRE_FEATURES,
+  DEPLOY_CANCEL_FEATURE,
   daemonUnsupportedReason,
   INSTANCE_REVISION_HEADER,
   INSTANCE_VERSION_HEADER,
@@ -158,5 +159,11 @@ test('managed-ha-instance-v1 is an advertised wire feature and raised no floor',
     (DAEMON_WIRE_FEATURES as readonly string[]).includes(MANAGED_HA_INSTANCE_FEATURE),
     true
   )
+  assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
+})
+
+test('deploy-cancel-v1 is an advertised wire feature and raised no floor', () => {
+  assertEquals(DEPLOY_CANCEL_FEATURE, 'deploy-cancel-v1')
+  assertEquals((DAEMON_WIRE_FEATURES as readonly string[]).includes(DEPLOY_CANCEL_FEATURE), true)
   assertEquals(MIN_SUPPORTED_DAEMON_VERSION, '0.1.0')
 })

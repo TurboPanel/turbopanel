@@ -508,6 +508,21 @@ export type DaemonMessage =
       at: string
     }
   | {
+      type: 'deploy-cancel'
+      id: string
+      /** The `environment.deploy` command to stop. */
+      commandId: string
+      at: string
+    }
+  | {
+      type: 'deploy-cancel-result'
+      id: string
+      ok: boolean
+      outcome?: DeployCancelOutcome
+      error?: string
+      at: string
+    }
+  | {
       type: 'managed-ha-event'
       managedId: string
       sourceMemberId?: string
@@ -710,6 +725,7 @@ export const DAEMON_INBOUND_ALLOWED = new Set([
   'topology-overrides-update-result',
   'capability-plan-update-result',
   'capability-plan-clear-result',
+  'deploy-cancel-result',
   'repo-read-result',
   'repo-default-branch-result',
   'managed-ha-event',
@@ -1290,6 +1306,27 @@ function validateManagedHealthResultFields(record: Record<string, unknown>): str
   return validateManagedHealthMember(record.member)
 }
 
+/**
+ * What the host did with a `deploy-cancel`: `cancelling` (it was told to stop;
+ * the deploy command's own outcome says how it ended), `too_late` (the deploy
+ * is already switching over and will finish), `not_running` (the host has no
+ * such deploy in flight).
+ */
+export const DEPLOY_CANCEL_OUTCOMES = ['cancelling', 'too_late', 'not_running'] as const
+export type DeployCancelOutcome = (typeof DEPLOY_CANCEL_OUTCOMES)[number]
+
+function validateDeployCancelResultFields(record: Record<string, unknown>): string | null {
+  const base = validateOkResultFields(record)
+  if (base) return base
+  if (
+    record.outcome !== undefined &&
+    !(DEPLOY_CANCEL_OUTCOMES as readonly unknown[]).includes(record.outcome)
+  ) {
+    return 'invalid outcome'
+  }
+  return null
+}
+
 function validateOkResultFields(record: Record<string, unknown>): string | null {
   const base = validateResultEnvelopeFields(record)
   if (base) return base
@@ -1443,6 +1480,8 @@ function validateInboundMessageFields(record: Record<string, unknown>): string |
     case 'capability-plan-update-result':
     case 'capability-plan-clear-result':
       return validateOkResultFields(record)
+    case 'deploy-cancel-result':
+      return validateDeployCancelResultFields(record)
     case 'update-result':
     case 'instance-update-result':
       return validateUpdateResultFields(record)
@@ -1547,6 +1586,7 @@ function validateInboundEnvelopeKind(inbound: DaemonInboundEnvelope): string | n
     case 'topology-overrides-update-result':
     case 'capability-plan-update-result':
     case 'capability-plan-clear-result':
+    case 'deploy-cancel-result':
       return validateOptionalError(inbound.error)
     case 'metrics-capabilities-result':
       return validateCapabilitiesEnvelope(inbound)
@@ -1683,6 +1723,7 @@ export type DaemonOutboundEnvelope =
       generation: number
     })
   | (OutboundEnvelopeBase & { kind: 'capability-plan-clear' })
+  | (OutboundEnvelopeBase & { kind: 'deploy-cancel'; commandId: string })
   | (OutboundEnvelopeBase & {
       kind: 'update'
       channel?: string
@@ -1835,6 +1876,14 @@ export type DaemonInboundEnvelope =
       error?: string
     }
   | {
+      kind: 'deploy-cancel-result'
+      requestId: string
+      at: string
+      ok: boolean
+      outcome?: DeployCancelOutcome
+      error?: string
+    }
+  | {
       kind: 'update-result'
       requestId: string
       at: string
@@ -1975,6 +2024,15 @@ export function wireMessageToInboundEnvelope(msg: DaemonMessage): DaemonInboundE
         ok: msg.ok,
         error: msg.error,
       } as DaemonInboundEnvelope
+    case 'deploy-cancel-result':
+      return {
+        kind: 'deploy-cancel-result',
+        requestId: msg.id,
+        at: msg.at,
+        ok: msg.ok,
+        ...(msg.outcome === undefined ? {} : { outcome: msg.outcome }),
+        error: msg.error,
+      }
     case 'update-result':
       return {
         kind: 'update-result',
@@ -2223,6 +2281,13 @@ export function outboundEnvelopeToWireMessage(env: DaemonOutboundEnvelope): Daem
       return {
         type: 'capability-plan-clear',
         id: env.requestId,
+        at: env.at,
+      }
+    case 'deploy-cancel':
+      return {
+        type: 'deploy-cancel',
+        id: env.requestId,
+        commandId: env.commandId,
         at: env.at,
       }
     case 'update':
