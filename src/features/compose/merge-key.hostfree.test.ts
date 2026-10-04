@@ -112,3 +112,25 @@ test('an alias bomb is refused instead of expanded', () => {
   assertEquals(issues[0]?.level, 'error')
   assertEquals(issues[0]?.message.includes('unreasonable size'), true)
 })
+
+test('gpus and group_add are host-level, like the daemon policy', () => {
+  for (const extra of ['gpus: all', 'group_add: ["999"]']) {
+    const doc = yamlToComposeDocument(`services:\n  web:\n    image: alpine\n    ${extra}\n`)
+    assertEquals(
+      validateComposeForDeploy(doc, { composeGatedFieldsEnabled: false })?.kind,
+      'compose_field_requires_org_opt_in'
+    )
+    assertEquals(validateComposeForDeploy(doc, { composeGatedFieldsEnabled: true }), null)
+  }
+})
+
+test('tmpfs volume options are compared case-insensitively, as in the daemon', () => {
+  const vol = (opts: string) =>
+    yamlToComposeDocument(
+      `services:\n  web:\n    image: alpine\nvolumes:\n  v:\n    driver_opts: ${opts}\n`
+    )
+  const gate = (d: ReturnType<typeof vol>) =>
+    validateComposeForDeploy(d, { composeGatedFieldsEnabled: false })?.kind
+  assertEquals(gate(vol('{type: " TmpFS ", device: Tmpfs, o: "SIZE=1g,NoAtime"}')), undefined)
+  assertEquals(gate(vol('{type: OVERLAY}')), 'compose_field_requires_org_opt_in')
+})
