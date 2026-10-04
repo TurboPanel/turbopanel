@@ -3,6 +3,7 @@ import type { Context, Hono } from "hono";
 import type { AppEnv } from "../../app/app.ts";
 import type { AuthRouteOpts } from "../authn/http.ts";
 import { createSessionMiddleware } from "../authn/middleware.ts";
+import { requireStepUpIfConfigured } from "../authn/step-up.ts";
 import { assertCanOr403, listVisible } from "../authz/index.ts";
 import { resolveEntityOrganizationId } from "../authz/create-access-grant.ts";
 import { getDb, type Db } from "../../db/connection.ts";
@@ -420,6 +421,13 @@ export function registerHostingRoutes(
 
     const composeOwned = await assertHostingNotComposeOwnedOr409(c, db, id);
     if (composeOwned) return composeOwned;
+
+    const stepUp = await requireStepUpIfConfigured(
+      c,
+      organizationId,
+      "hosting.delete",
+    );
+    if (stepUp) return stepUp;
 
     const result = await runHierarchyDelete(db, async (tx) => {
       await tx.delete(hosting).where(eq(hosting.id, id));

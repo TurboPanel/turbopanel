@@ -80,6 +80,7 @@ import {
   parseResumeAfterManagedId,
   runOrganizationCaRotationFanout,
 } from "./changeover-fanout.ts";
+import { requireStepUpIfConfigured } from "../authn/step-up.ts";
 import { assertDispatchInfrastructure } from "../servers/command-dispatch.ts";
 import { listCommandRecordsByIds } from "../../features/commands/command-records.ts";
 
@@ -736,6 +737,13 @@ export function registerTlsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
     );
     if (denied) return denied;
 
+    const stepUp = await requireStepUpIfConfigured(
+      c,
+      organizationId,
+      "tls.ca.rotate",
+    );
+    if (stepUp) return stepUp;
+
     const dataEncryptionSecrets = c.get("dataEncryptionSecrets");
     if (!dataEncryptionSecrets) {
       return c.json({
@@ -822,6 +830,13 @@ export function registerTlsRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) {
       organizationId,
     );
     if (denied) return denied;
+
+    const stepUp = await requireStepUpIfConfigured(
+      c,
+      organizationId,
+      "tls.ca.retire",
+    );
+    if (stepUp) return stepUp;
 
     const journal = await loadLatestCaRotation(db, organizationId);
     if (journal?.state !== "awaiting_retire") {

@@ -4,6 +4,7 @@ import type { AppEnv } from '../../app/app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { encryptSecret } from '../../lib/secrets/data-encryption.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
+import { requireStepUpIfConfigured } from '../authn/step-up.ts'
 import { listVisible } from '../authz/index.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import { getDb } from '../../db/connection.ts'
@@ -668,6 +669,9 @@ export function registerStorageRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     const authorized = await authorizeStorageMutation(c, existing, ctx.orgId)
     if (authorized instanceof Response) return authorized
+
+    const stepUp = await requireStepUpIfConfigured(c, ctx.orgId, 'storage.delete')
+    if (stepUp) return stepUp
 
     const backupHosts = await captureCopyBackupHosts(ctx.db, c.get('commandQueue'), {
       storageId: id,

@@ -2460,6 +2460,13 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     if (scope instanceof Response) return scope
     const { db, auth, ctx, row } = scope
 
+    const stepUp = await requireStepUpIfConfigured(
+      c,
+      auth.organizationId,
+      'managed.disaster_recovery.promote'
+    )
+    if (stepUp) return stepUp
+
     const busy = assertManagedNotBusy(c, row.status)
     if (busy) return busy
 
@@ -2719,6 +2726,9 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const backupId = decodeURIComponent(c.req.param('backupId'))
     const auth = await authorizeManagedRequest(c, db, environmentId, 'manage')
     if (auth instanceof Response) return auth
+
+    const stepUp = await requireStepUpIfConfigured(c, auth.organizationId, 'managed.backup.restore')
+    if (stepUp) return stepUp
 
     const ctx = await loadManagedContext(c, db, environmentId, auth.organizationId)
     if (ctx instanceof Response) return ctx

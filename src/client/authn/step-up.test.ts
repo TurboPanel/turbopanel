@@ -9,9 +9,15 @@ import {
   account,
   environment,
   grant,
+  hosting,
+  managed,
   organization,
   project,
+  server,
+  service,
   session,
+  storage,
+  storageCopy,
   user,
   verification,
   workspace,
@@ -19,7 +25,13 @@ import {
 import { hashPassword } from '../../lib/secrets/password.ts'
 import { deriveEncryptionSecretsConfig, deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
+import { registerEnvironmentStopRoutes } from '../environments/deploy-routes.ts'
 import { registerEnvironmentRoutes } from '../environments/routes.ts'
+import { registerHostingRoutes } from '../hostings/routes.ts'
+import { registerManagedRoutes } from '../managed/routes.ts'
+import { registerStorageBackupRoutes } from '../storage/backup-routes.ts'
+import { registerStorageRoutes } from '../storage/routes.ts'
+import { registerTlsRoutes } from '../tls/routes.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { registerOrganizationMemberRoutes } from '../organizations/members.ts'
 import { registerReauthSettingsRoutes } from '../organizations/reauth-settings-routes.ts'
@@ -74,6 +86,12 @@ async function buildFixture(db: Db, reauthLimit = 1000) {
   registerReauthSettingsRoutes(client, opts)
   registerOrganizationMemberRoutes(client, opts)
   registerEnvironmentRoutes(client, opts)
+  registerEnvironmentStopRoutes(client, opts)
+  registerHostingRoutes(client, opts)
+  registerManagedRoutes(client, opts)
+  registerStorageRoutes(client, opts)
+  registerStorageBackupRoutes(client, opts)
+  registerTlsRoutes(client, opts)
   // A stand-in destructive route: any route wired to the gate behaves like it.
   client.use('/probe/*', createSessionMiddleware(sessionSecrets))
   client.delete('/probe/:orgId', async (c) => {
@@ -455,6 +473,139 @@ test('delete environment is wired to the gate', async () => {
       await db.delete(project).where(eq(project.workspaceId, off.workspaceId))
       await db.delete(project).where(eq(project.workspaceId, on.workspaceId))
       await db.delete(workspace).where(eq(workspace.organizationId, orgA))
+    }
+  })
+})
+
+/** Rows the gated routes below need to get past their own lookups. */
+async function makeGatedResources(db: Db, organizationId: string) {
+  const { workspaceId, projectId, environmentId } = await makeStoppedEnvironment(
+    db,
+    organizationId,
+    'gated'
+  )
+  const now = new Date().toISOString()
+  const [srv] = await db
+    .insert(server)
+    .values({ organizationId, name: 'Step-up Server', createdAt: now, updatedAt: now })
+    .returning({ id: server.id })
+  const [managedRow] = await db
+    .insert(managed)
+    .values({
+      environmentId,
+      serverId: srv!.id,
+      name: 'Postgres',
+      engine: 'postgres',
+      status: 'ready',
+      options: { databases: ['postgres'] },
+    })
+    .returning({ id: managed.id })
+  const [svc] = await db
+    .insert(service)
+    .values({ environmentId, name: 'web', composeServiceName: 'web' })
+    .returning({ id: service.id })
+  const [hostingRow] = await db
+    .insert(hosting)
+    .values({ serviceId: svc!.id, name: 'step-up-hosting' })
+    .returning({ id: hosting.id })
+  const [store] = await db
+    .insert(storage)
+    .values({ organizationId, kind: 'directory', name: 'step-up-storage' })
+    .returning({ id: storage.id })
+  const [copy] = await db
+    .insert(storageCopy)
+    .values({ storageId: store!.id, provider: 'docker' })
+    .returning({ id: storageCopy.id })
+  return {
+    workspaceId,
+    projectId,
+    environmentId,
+    serverId: srv!.id,
+    managedId: managedRow!.id,
+    hostingId: hostingRow!.id,
+    storageId: store!.id,
+    copyId: copy!.id,
+  }
+}
+
+test('the destructive environment, managed, TLS, storage and hosting routes are wired to the gate', async () => {
+  await withScene(async ({ db, fx, orgA, cookie, password }) => {
+    const r = await makeGatedResources(db, orgA)
+    const backup = crypto.randomUUID()
+    const copyBase = `/storage/${r.storageId}/copies/${r.copyId}/backups/${backup}`
+    const cases: Array<[string, string, string]> = [
+      ['POST', `/environments/${r.environmentId}/stop`, 'environment.stop'],
+      [
+        'POST',
+        `/environments/${r.environmentId}/managed/backups/${backup}/restore`,
+        'managed.backup.restore',
+      ],
+      [
+        'POST',
+        `/environments/${r.environmentId}/managed/disaster-recovery/promote`,
+        'managed.disaster_recovery.promote',
+      ],
+      ['POST', '/tls/ca/rotate', 'tls.ca.rotate'],
+      ['POST', '/tls/ca/retire', 'tls.ca.retire'],
+      ['DELETE', `/storage/${r.storageId}`, 'storage.delete'],
+      ['DELETE', copyBase, 'storage.backup.delete'],
+      ['POST', `${copyBase}/restore`, 'storage.backup.restore'],
+      ['DELETE', `/hostings/${r.hostingId}`, 'hosting.delete'],
+    ]
+    const call = (method: string, path: string) =>
+      fx.app.request(`${API}${path}`, {
+        method,
+        headers: {
+          cookie,
+          [ORG_ID_HEADER]: orgA,
+          'content-type': 'application/json',
+          'X-Real-IP': '203.0.113.7',
+        },
+        ...(method === 'POST' ? { body: '{}' } : {}),
+      })
+    try {
+      // Setting off: no route asks for a re-authentication.
+      for (const [method, path, action] of cases) {
+        const res = await call(method, path)
+        assertEquals(
+          res.status === 403 && (await res.clone().text()).includes('reauth_required'),
+          false,
+          action
+        )
+      }
+
+      await setOrgReauth(db, orgA, true)
+      for (const [method, path, action] of cases) {
+        const res = await call(method, path)
+        assertEquals(res.status, 403, action)
+        const body = (await res.json()) as { error: string; action: string }
+        assertEquals(body.error, 'reauth_required', action)
+        assertEquals(body.action, action)
+      }
+      // Nothing was removed by the refused calls.
+      assertEquals(
+        (await db.select({ id: hosting.id }).from(hosting).where(eq(hosting.id, r.hostingId)))
+          .length,
+        1
+      )
+      assertEquals(
+        (await db.select({ id: storage.id }).from(storage).where(eq(storage.id, r.storageId)))
+          .length,
+        1
+      )
+
+      await req(fx, 'POST', '/auth/reauth', cookie, proofBody(password))
+      assertEquals((await call('DELETE', `/hostings/${r.hostingId}`)).status, 200)
+    } finally {
+      await db.delete(storageCopy).where(eq(storageCopy.storageId, r.storageId))
+      await db.delete(storage).where(eq(storage.organizationId, orgA))
+      await db.delete(hosting).where(eq(hosting.id, r.hostingId))
+      await db.delete(managed).where(eq(managed.id, r.managedId))
+      await db.delete(service).where(eq(service.environmentId, r.environmentId))
+      await db.delete(environment).where(eq(environment.projectId, r.projectId))
+      await db.delete(project).where(eq(project.workspaceId, r.workspaceId))
+      await db.delete(workspace).where(eq(workspace.organizationId, orgA))
+      await db.delete(server).where(eq(server.id, r.serverId))
     }
   })
 })
