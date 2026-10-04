@@ -6,7 +6,7 @@
  * without TURBOPANEL_DATABASE_URL.
  */
 
-import { skipWithoutDatabase } from '../../test-fixtures/require-service.ts'
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assertEquals } from '@std/assert'
 import { eq, inArray } from 'drizzle-orm'
 import { Hono } from 'hono'

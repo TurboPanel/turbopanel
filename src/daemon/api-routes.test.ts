@@ -1,4 +1,4 @@
-import { skipWithoutDatabase } from '../test-fixtures/require-service.ts'
+import { skipWithoutDatabase } from '../test-fixtures/require-service.test.support.ts'
 import { assert, assertEquals, assertExists } from '@std/assert'
 import { decodeBase64Url, encodeBase64Url } from '@std/encoding/base64url'
 import { eq, sql } from 'drizzle-orm'

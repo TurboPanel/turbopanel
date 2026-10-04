@@ -6,7 +6,7 @@
  * TURBOPANEL_DATABASE_URL.
  */
 
-import { skipWithoutDatabase } from '../../test-fixtures/require-service.ts'
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assertEquals } from '@std/assert'
 import { and, eq, inArray } from 'drizzle-orm'
 import { createDenoDb, endDbConnection } from '../../db/connection.ts'

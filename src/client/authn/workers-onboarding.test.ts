@@ -1,4 +1,4 @@
-import { skipWithoutDatabase } from '../../test-fixtures/require-service.ts'
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { eq } from 'drizzle-orm'
 import { it } from '@std/testing/bdd'
 import { Hono } from 'hono'
@@ -371,7 +371,7 @@ it('Deno sign-up still requires install completion on a fresh database', async (
 
   const db = createDenoDb()
   if (await isInstanceInstalled(db)) {
-    skipWithoutDatabase('Deno install gate test: instance already installed')
+    console.warn('Skipping Deno install gate test: instance already installed')
     return
   }
 
@@ -392,13 +392,13 @@ it('Deno sign-up still requires install completion on a fresh database', async (
 
 it('Deno status reflects email verification from resolved email settings', async () => {
   if (!dbUrl) {
-    console.warn('Skipping Deno email verification status test')
+    skipWithoutDatabase('Deno email verification status test')
     return
   }
 
   const db = createDenoDb()
   if (!(await isInstanceInstalled(db))) {
-    skipWithoutDatabase('Deno email verification status test: instance not installed')
+    console.warn('Skipping Deno email verification status test: instance not installed')
     return
   }
 
@@ -421,13 +421,13 @@ it('Deno status reflects email verification from resolved email settings', async
 
 it('Deno sign-up auto-verifies when email delivery is not configured', async () => {
   if (!dbUrl) {
-    console.warn('Skipping Deno sign-up auto-verify test')
+    skipWithoutDatabase('Deno sign-up auto-verify test')
     return
   }
 
   const db = createDenoDb()
   if (!(await isInstanceInstalled(db))) {
-    skipWithoutDatabase('Deno sign-up auto-verify test: instance not installed')
+    console.warn('Skipping Deno sign-up auto-verify test: instance not installed')
     return
   }
 
@@ -463,13 +463,13 @@ it('Deno sign-up auto-verifies when email delivery is not configured', async () 
 
 it('Deno sign-up rejects when verification is required but the queue is noop', async () => {
   if (!dbUrl) {
-    console.warn('Skipping Deno noop queue sign-up test')
+    skipWithoutDatabase('Deno noop queue sign-up test')
     return
   }
 
   const db = createDenoDb()
   if (!(await isInstanceInstalled(db))) {
-    skipWithoutDatabase('Deno noop queue sign-up test: instance not installed')
+    console.warn('Skipping Deno noop queue sign-up test: instance not installed')
     return
   }
 
@@ -502,7 +502,7 @@ it('Deno sign-up rejects when verification is required but the queue is noop', a
 
 it('Workers sign-up leaves no org residue when verification email enqueue fails', async () => {
   if (!dbUrl) {
-    console.warn('Skipping Workers enqueue rollback test')
+    skipWithoutDatabase('Workers enqueue rollback test')
     return
   }
 

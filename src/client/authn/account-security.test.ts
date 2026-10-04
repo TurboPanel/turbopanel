@@ -4,7 +4,7 @@
  * auth-totp-enroll, auth-totp-disable, auth-password-change reset half,
  * auth-oauth-link unlink). Skips without TURBOPANEL_DATABASE_URL.
  */
-import { skipWithoutDatabase } from '../../test-fixtures/require-service.ts'
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assert, assertEquals } from '@std/assert'
 import { eq, inArray, like } from 'drizzle-orm'
 import { Hono } from 'hono'

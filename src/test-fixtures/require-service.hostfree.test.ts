@@ -4,7 +4,7 @@ import {
   redisRequired,
   skipWithoutDatabase,
   skipWithoutRedis,
-} from './require-service.ts'
+} from './require-service.test.support.ts'
 
 function withEnv(name: string, value: string | undefined, fn: () => void): void {
   const prior = Deno.env.get(name)

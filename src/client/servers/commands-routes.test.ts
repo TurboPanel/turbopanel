@@ -6,7 +6,7 @@
  * satisfies either path). The discriminating assertion is grant-present vs
  * grant-absent, not own vs manage.
  */
-import { skipWithoutDatabase } from '../../test-fixtures/require-service.ts'
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assertEquals } from '@std/assert'
 import { and, eq } from 'drizzle-orm'
 import { it } from '@std/testing/bdd'

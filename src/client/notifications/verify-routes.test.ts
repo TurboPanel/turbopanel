@@ -5,7 +5,7 @@
  * owner-gated. Skipped without TURBOPANEL_DATABASE_URL like every Postgres
  * suite.
  */
-import { skipWithoutDatabase } from '../../test-fixtures/require-service.ts'
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assertEquals, assertNotEquals, assertStringIncludes } from '@std/assert'
 import { eq, like } from 'drizzle-orm'
 import { Hono } from 'hono'

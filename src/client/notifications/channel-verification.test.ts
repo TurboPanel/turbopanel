@@ -4,7 +4,7 @@
  * rate-limited, and confirming abandons what piled up while unverified.
  * Skipped without TURBOPANEL_DATABASE_URL, the way every Postgres suite is.
  */
-import { skipWithoutDatabase } from '../../test-fixtures/require-service.ts'
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assertEquals, assertNotEquals } from '@std/assert'
 import { eq, like } from 'drizzle-orm'
 import { createDenoDb, endDbConnection } from '../../db/connection.ts'

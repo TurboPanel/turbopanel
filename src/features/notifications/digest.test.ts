@@ -4,7 +4,7 @@
  * The clock is injected everywhere (`now`), so the instants are fixed ones.
  * Skipped without TURBOPANEL_DATABASE_URL like every Postgres suite.
  */
-import { skipWithoutDatabase } from '../../test-fixtures/require-service.ts'
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assertEquals } from '@std/assert'
 import { eq } from 'drizzle-orm'
 import { createDenoDb, endDbConnection } from '../../db/connection.ts'

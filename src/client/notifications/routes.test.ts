@@ -4,7 +4,7 @@
  * need a manager; a LAN address is accepted on every runtime. Skipped without
  * TURBOPANEL_DATABASE_URL like every Postgres suite.
  */
-import { skipWithoutDatabase } from '../../test-fixtures/require-service.ts'
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assertEquals } from '@std/assert'
 import { eq } from 'drizzle-orm'
 import { Hono } from 'hono'

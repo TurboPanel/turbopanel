@@ -3,7 +3,7 @@
  * passkey needs the password, and a removed key can no longer sign in. Skips
  * without TURBOPANEL_DATABASE_URL.
  */
-import { skipWithoutDatabase } from '../../test-fixtures/require-service.ts'
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assert, assertEquals } from '@std/assert'
 import { encodeBase64Url } from '@std/encoding/base64url'
 import { eq } from 'drizzle-orm'

@@ -1,4 +1,4 @@
-import { skipWithoutDatabase } from '../../test-fixtures/require-service.ts'
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assertEquals } from '@std/assert'
 import { asc, and, eq, inArray, isNull } from 'drizzle-orm'
 import { it } from '@std/testing/bdd'
@@ -138,7 +138,7 @@ it('concurrent install completions create exactly one superadmin bootstrap', asy
 
   const db = createDenoDb()
   if (await isInstanceInstalled(db)) {
-    skipWithoutDatabase('concurrent install test: instance already installed')
+    console.warn('Skipping concurrent install test: instance already installed')
     return
   }
 
@@ -253,13 +253,13 @@ it('concurrent install completions create exactly one superadmin bootstrap', asy
 
 it('install produces System workspace then Default Workspace', async () => {
   if (!dbUrl) {
-    console.warn('Skipping install workspace order test')
+    skipWithoutDatabase('install workspace order test')
     return
   }
 
   const db = createDenoDb()
   if (await isInstanceInstalled(db)) {
-    skipWithoutDatabase('install workspace order test: instance already installed')
+    console.warn('Skipping install workspace order test: instance already installed')
     return
   }
 
@@ -324,7 +324,7 @@ it('install produces System workspace then Default Workspace', async () => {
 
 it('resolveColocatedServerId falls back to the server.hostname column', async () => {
   if (!dbUrl) {
-    console.warn('Skipping colocated hostname fallback test')
+    skipWithoutDatabase('colocated hostname fallback test')
     return
   }
 
@@ -332,7 +332,7 @@ it('resolveColocatedServerId falls back to the server.hostname column', async ()
   try {
     hostname = Deno.hostname()
   } catch {
-    skipWithoutDatabase('colocated hostname fallback test: Deno.hostname() unavailable')
+    console.warn('Skipping colocated hostname fallback test: Deno.hostname() unavailable')
     return
   }
 
@@ -368,7 +368,7 @@ it('resolveColocatedServerId falls back to the server.hostname column', async ()
 
 it('rotateColocatedLicenseCredentials revokes stale this-server licenses then mints one', async () => {
   if (!dbUrl) {
-    console.warn('Skipping colocated license rotate test')
+    skipWithoutDatabase('colocated license rotate test')
     return
   }
 

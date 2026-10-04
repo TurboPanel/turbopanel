@@ -17,7 +17,7 @@
  * Skips without TURBOPANEL_DATABASE_URL (like the other real-database suites).
  */
 
-import { skipWithoutDatabase } from '../test-fixtures/require-service.ts'
+import { skipWithoutDatabase } from '../test-fixtures/require-service.test.support.ts'
 import { assert, assertEquals } from '@std/assert'
 import { sql } from 'drizzle-orm'
 import { Hono } from 'hono'

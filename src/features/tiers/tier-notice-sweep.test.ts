@@ -1,4 +1,4 @@
-import { skipWithoutDatabase } from '../../test-fixtures/require-service.ts'
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assertEquals } from '@std/assert'
 import { and, eq, isNull } from 'drizzle-orm'
 import type { ServerHostResources } from '../servers/server-metadata.ts'

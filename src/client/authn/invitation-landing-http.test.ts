@@ -4,7 +4,7 @@
  * new-account sign-up-and-accept (verified user, membership, session, no
  * personal organization). Skips without TURBOPANEL_DATABASE_URL.
  */
-import { skipWithoutDatabase } from '../../test-fixtures/require-service.ts'
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assert, assertEquals } from '@std/assert'
 import { and, eq, inArray } from 'drizzle-orm'
 import { Hono } from 'hono'

@@ -1,4 +1,4 @@
-import { skipWithoutDatabase } from '../test-fixtures/require-service.ts'
+import { skipWithoutDatabase } from '../test-fixtures/require-service.test.support.ts'
 import { assertEquals, assertRejects } from '@std/assert'
 import { createDenoDb, type Db, endDbConnection } from '../db/connection.ts'
 import { getDatabaseUrl } from '../db/url.ts'

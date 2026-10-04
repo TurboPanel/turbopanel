@@ -1,4 +1,4 @@
-import { skipWithoutDatabase } from '../../test-fixtures/require-service.ts'
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assertEquals, assertExists, assertThrows } from '@std/assert'
 import { and, eq } from 'drizzle-orm'
 import { Hono } from 'hono'

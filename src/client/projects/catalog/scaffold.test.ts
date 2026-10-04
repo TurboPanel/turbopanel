@@ -1,4 +1,4 @@
-import { skipWithoutDatabase } from '../../../test-fixtures/require-service.ts'
+import { skipWithoutDatabase } from '../../../test-fixtures/require-service.test.support.ts'
 import { assertEquals, assertNotEquals, assertThrows } from '@std/assert'
 import { eq } from 'drizzle-orm'
 import { decryptSecret, parseSecretEnvelope } from '../../../lib/secrets/data-encryption.ts'
