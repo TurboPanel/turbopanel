@@ -9,7 +9,7 @@
  * `AGENTS.md` ("Tenant values in root-loaded configs").
  */
 
-import { isValidHostname } from '../../contracts/commands/hostname.ts'
+import { isValidHostname, wwwSiblingHostname } from '../../contracts/commands/hostname.ts'
 import { HOSTING_WEB_ENV_KEY_RE } from './hosting-options.ts'
 
 /** Stable error code for a hosting option value outside its allowlist. */
@@ -100,6 +100,21 @@ function hostnamesProblem(value: unknown): HostingOptionInputError | null {
     : null
 }
 
+function wwwRedirectProblem(value: Record<string, unknown>): HostingOptionInputError | null {
+  if (value.wwwRedirect === undefined) return null
+  const field = 'options.wwwRedirect'
+  if (typeof value.wwwRedirect !== 'boolean') return { field, message: 'must be true or false' }
+  if (!value.wwwRedirect) return null
+  if (value.protocol === 'tcp' || value.protocol === 'udp') {
+    return { field, message: 'applies to http hostings only' }
+  }
+  const hostnames = Array.isArray(value.hostnames) ? value.hostnames : []
+  const bad = hostnames.find(
+    (h): h is string => typeof h === 'string' && h.length > 0 && wwwSiblingHostname(h) === null
+  )
+  return bad ? { field, message: 'every hostname needs a valid www or non-www twin name' } : null
+}
+
 function webEnvProblem(web: unknown): HostingOptionInputError | null {
   if (!isRecord(web) || !isRecord(web.env)) return null
   for (const [key, entry] of Object.entries(web.env)) {
@@ -126,6 +141,7 @@ export function hostingOptionsInputError(value: unknown): HostingOptionInputErro
       isRecord(value.proxy) ? value.proxy.stripPrefix : undefined
     ) ??
     hostnamesProblem(value.hostnames) ??
+    wwwRedirectProblem(value) ??
     webEnvProblem(value.web)
   )
 }

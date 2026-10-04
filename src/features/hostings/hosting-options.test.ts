@@ -158,3 +158,9 @@ test('parseHostingOptions returns empty object for nullish input', () => {
   assertEquals(parseHostingOptions(null), {})
   assertEquals(parseHostingOptions(undefined), {})
 })
+
+test('parseHostingOptions keeps wwwRedirect only when it is true', () => {
+  assertEquals(parseHostingOptions({ wwwRedirect: true }), { wwwRedirect: true })
+  assertEquals(parseHostingOptions({ wwwRedirect: false }), {})
+  assertEquals(parseHostingOptions({ wwwRedirect: 'yes' }), {})
+})
