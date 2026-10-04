@@ -59,8 +59,8 @@ const DOCKER_SOCKET_PATHS = new Set(['/var/run/docker.sock', '/run/docker.sock']
 /** Long-syntax `volumes` types that never touch a host path. */
 const SAFE_MOUNT_TYPES = new Set(['volume', 'tmpfs', 'image'])
 
-/** `driver_opts.type` values that mount remote storage, not a host path. */
-const NETWORK_FS_TYPES = new Set(['nfs', 'nfs4', 'cifs', 'smb', 'smb3', 'glusterfs', 'ceph'])
+const SAFE_TMPFS_OPTION = /^(size|mode|uid|gid|nr_inodes|nr_blocks)=[\w.]+$/
+const SAFE_TMPFS_FLAGS = new Set(['noexec', 'nosuid', 'nodev', 'noatime', 'ro', 'rw'])
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -298,28 +298,49 @@ function checkTopLevelVolumes(out: Collector, volumes: unknown): void {
     if (!isRecord(entry.driver_opts)) continue
     const opts = entry.driver_opts
     const at = ['volumes', name, 'driver_opts']
-    const type = typeof opts.type === 'string' ? opts.type.trim() : undefined
+    const type = typeof opts.type === 'string' ? opts.type.trim().toLowerCase() : undefined
     const o = typeof opts.o === 'string' ? opts.o : ''
-    const mountFlags = new Set(o.split(',').map((flag) => flag.trim()))
+    const mountFlags = new Set(o.split(',').map((flag) => flag.trim().toLowerCase()))
     const bindFlag = mountFlags.has('bind') || mountFlags.has('rbind')
-    const device = opts.device
     if (bindFlag || type === 'none' || type === 'bind') {
       out.add(at, `volume \`${name}\``, 'is a bind mount of a host path in disguise', opts)
       continue
     }
-    if (
-      typeof device === 'string' &&
-      device.trim().startsWith('/') &&
-      (type === undefined || !NETWORK_FS_TYPES.has(type))
-    ) {
+    const device = opts.device
+    if (typeof device === 'string' && device.trim().startsWith('/')) {
       out.add(
         [...at, 'device'],
         `volume \`${name}\` device \`${device}\``,
         'mounts a host path',
         opts
       )
+      continue
+    }
+    if (Object.keys(opts).length > 0 && !isSafeTmpfsVolume(opts, type, mountFlags)) {
+      out.add(
+        at,
+        `volume \`${name}\``,
+        'mounts something other than plain Docker storage (overlay, network and other filesystem types can reach host paths)',
+        opts
+      )
     }
   }
+}
+
+/** A tmpfs volume with sizing and ownership options only. */
+function isSafeTmpfsVolume(
+  opts: Record<string, unknown>,
+  type: string | undefined,
+  mountFlags: ReadonlySet<string>
+): boolean {
+  if (Object.keys(opts).some((key) => key !== 'type' && key !== 'device' && key !== 'o')) {
+    return false
+  }
+  if (type !== 'tmpfs') return false
+  if (opts.device !== undefined && opts.device !== 'tmpfs') return false
+  return [...mountFlags].every(
+    (flag) => flag === '' || SAFE_TMPFS_FLAGS.has(flag) || SAFE_TMPFS_OPTION.test(flag)
+  )
 }
 
 function checkFileBacked(out: Collector, kind: 'configs' | 'secrets', value: unknown): void {
