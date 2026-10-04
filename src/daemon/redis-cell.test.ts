@@ -602,7 +602,7 @@ test(
   })
 )
 
-function createProjectionTrackingDb(serverId: string): {
+function createProjectionTrackingDb(): {
   db: Db
   getDaemon: () => ServerDaemonState
 } {
@@ -758,7 +758,7 @@ function createSweepMockDb(init: {
 test(
   'maintain expires offline in-flight update and projects Postgres state',
   withRedisCell(async ({ client, serverId }) => {
-    const { db, getDaemon } = createProjectionTrackingDb(serverId)
+    const { db, getDaemon } = createProjectionTrackingDb()
     const registry = createRedisDaemonCellRegistry({ db })
     const cell = registry.getCell(serverId) as RedisDaemonCell
 
