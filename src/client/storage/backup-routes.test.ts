@@ -19,6 +19,7 @@ import { deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
 import {
   grant,
   organization,
+  principal,
   server,
   storage,
   storageCopy,
@@ -89,11 +90,31 @@ async function insertCopy(
     kind: string
     provider: string
     path?: string
+    principalUsername?: string
   }
 ): Promise<{ storageId: string; copyId: string }> {
+  let principalId: string | null = null
+  if (values.principalUsername) {
+    const [owner] = await db
+      .insert(principal)
+      .values({
+        organizationId: values.organizationId,
+        kind: 'system',
+        provider: 'server',
+        username: values.principalUsername,
+        appliedUsername: values.principalUsername,
+      })
+      .returning({ id: principal.id })
+    principalId = owner!.id
+  }
   const [store] = await db
     .insert(storage)
-    .values({ organizationId: values.organizationId, kind: values.kind, name: 'uploads' })
+    .values({
+      organizationId: values.organizationId,
+      kind: values.kind,
+      name: 'uploads',
+      principalId,
+    })
     .returning({ id: storage.id })
   const [copy] = await db
     .insert(storageCopy)
@@ -156,6 +177,7 @@ async function withFixture(fn: (fixture: Fixture) => Promise<void>): Promise<voi
     })
   } finally {
     await db.delete(storage).where(eq(storage.organizationId, organizationId))
+    await db.delete(principal).where(eq(principal.organizationId, organizationId))
     await db.delete(server).where(eq(server.organizationId, organizationId))
     await db
       .delete(grant)
@@ -278,6 +300,14 @@ test('copies that cannot be backed up are refused; a principal-style path is acc
       { kind: 'volume', provider: 's3' },
       { kind: 'directory', provider: 'path', path: '/etc' },
       { kind: 'directory', provider: 'path', path: '/srv/users/../etc' },
+      // Inside /srv/users but another site owner's tree, or no owner at all.
+      {
+        kind: 'directory',
+        provider: 'path',
+        path: '/srv/users/victim/volumes/uploads',
+        principalUsername: 'acme',
+      },
+      { kind: 'directory', provider: 'path', path: '/srv/users/acme/volumes/uploads' },
       { kind: 'file', provider: 'path' },
     ]
     for (const values of refused) {
@@ -299,12 +329,52 @@ test('copies that cannot be backed up are refused; a principal-style path is acc
       kind: 'directory',
       provider: 'path',
       path: '/srv/users/acme/volumes/uploads',
+      principalUsername: 'acme',
     })
     const res = await request(fixture, policiesPath(fixture, accepted.storageId, accepted.copyId), {
       method: 'POST',
       body: DAILY,
     })
     assertEquals(res.status, 201)
+  })
+})
+
+test('a manager cannot point a copy at another owner path or a foreign volume', async () => {
+  await withFixture(async (fixture) => {
+    const own = await insertCopy(fixture.db, {
+      organizationId: fixture.organizationId,
+      serverId: fixture.serverId,
+      kind: 'directory',
+      provider: 'path',
+      path: '/srv/users/acme/volumes/uploads',
+      principalUsername: 'acme',
+    })
+    const copyPath = `/storage/${own.storageId}/copies/${own.copyId}`
+    const refusedPatches = [
+      { path: '/srv/users/victim/volumes/uploads' },
+      { path: '/srv/users/acme/volumes' },
+      { path: '/etc' },
+      { options: { managed: false, externalName: 'other-site-data' } },
+    ]
+    for (const body of refusedPatches) {
+      const res = await request(fixture, copyPath, { method: 'PATCH', body })
+      assertEquals(res.status, 400, JSON.stringify(body))
+    }
+    const ownPatch = await request(fixture, copyPath, {
+      method: 'PATCH',
+      body: { path: '/srv/users/acme/volumes/other' },
+    })
+    assertEquals(ownPatch.status, 200)
+    const create = await request(fixture, `/storage/${own.storageId}/copies`, {
+      method: 'POST',
+      body: { provider: 'path', serverId: fixture.serverId, path: '/srv/users/victim/volumes/x' },
+    })
+    assertEquals(create.status, 400)
+    const volume = await request(fixture, `/storage/${fixture.storageId}`, {
+      method: 'PATCH',
+      body: { metadata: { dockerVolumeName: 'someone-elses-volume' } },
+    })
+    assertEquals(volume.status, 400)
   })
 })
 

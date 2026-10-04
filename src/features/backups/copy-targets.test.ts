@@ -4,7 +4,12 @@
  */
 
 import { assertEquals } from '@std/assert'
-import { type CopyTargetRow, resolveCopyBackupSource } from './copy-targets.ts'
+import {
+  type CopyTargetRow,
+  copyHostPathError,
+  copyOptionsError,
+  resolveCopyBackupSource,
+} from './copy-targets.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -35,50 +40,87 @@ function row(overrides: Partial<CopyTargetRow> = {}): CopyTargetRow {
   }
 }
 
-test('a docker copy is its storage-id volume, or the pinned name, or the external name', () => {
+const PROJECT_ID = '0192d6a0-0000-7000-8000-0000000000a9'
+
+test('a docker copy is the storage-id volume, or an external volume of the storage project', () => {
   assertEquals(resolveCopyBackupSource(row()), {
     ok: true,
-    source: { copyId: COPY_ID, copyProvider: 'docker', volumeName: STORAGE_ID },
+    source: {
+      copyId: COPY_ID,
+      copyProvider: 'docker',
+      volumeName: STORAGE_ID,
+      storageId: STORAGE_ID,
+    },
   })
+  // The host gets the compose project so it can check an external volume's label.
   assertEquals(
-    resolveCopyBackupSource(row({ storageMetadata: { dockerVolumeName: 'shop_uploads' } })),
-    { ok: true, source: { copyId: COPY_ID, copyProvider: 'docker', volumeName: 'shop_uploads' } }
-  )
-  assertEquals(
-    resolveCopyBackupSource(row({ copyOptions: { managed: false, externalName: 'legacy-data' } })),
-    { ok: true, source: { copyId: COPY_ID, copyProvider: 'docker', volumeName: 'legacy-data' } }
+    resolveCopyBackupSource(
+      row({ copyOptions: { managed: false, externalName: 'legacy-data' }, projectId: PROJECT_ID })
+    ),
+    {
+      ok: true,
+      source: {
+        copyId: COPY_ID,
+        copyProvider: 'docker',
+        volumeName: 'legacy-data',
+        storageId: STORAGE_ID,
+        composeProject: PROJECT_ID,
+      },
+    }
   )
   // An external name only counts for an unmanaged volume.
   assertEquals(
     resolveCopyBackupSource(row({ copyOptions: { managed: true, externalName: 'ignored' } })),
-    { ok: true, source: { copyId: COPY_ID, copyProvider: 'docker', volumeName: STORAGE_ID } }
+    {
+      ok: true,
+      source: {
+        copyId: COPY_ID,
+        copyProvider: 'docker',
+        volumeName: STORAGE_ID,
+        storageId: STORAGE_ID,
+      },
+    }
   )
 })
 
-test('a docker copy with an unusable volume name is refused', () => {
-  const external = resolveCopyBackupSource(
-    row({ copyOptions: { managed: false, externalName: 'bad name' } })
-  )
-  assertEquals(external.ok, false)
-  const pinned = resolveCopyBackupSource(row({ storageMetadata: { dockerVolumeName: '-x' } }))
-  assertEquals(pinned.ok, false)
+test('a docker copy naming a foreign or unusable volume is refused', () => {
+  const cases: Partial<CopyTargetRow>[] = [
+    // A pinned name that is not the storage's own id (another site's volume).
+    { storageMetadata: { dockerVolumeName: 'shop_uploads' } },
+    { storageMetadata: { dockerVolumeName: '-x' } },
+    // An external volume with no project to check its label against.
+    { copyOptions: { managed: false, externalName: 'someone-elses' } },
+    { copyOptions: { managed: false, externalName: 'bad name' }, projectId: PROJECT_ID },
+  ]
+  for (const overrides of cases) {
+    assertEquals(resolveCopyBackupSource(row(overrides)).ok, false, JSON.stringify(overrides))
+  }
 })
 
-test('a path copy is its own path, the principal volume, or the default directory', () => {
-  const directory = { provider: 'path', storageKind: 'directory' }
-  assertEquals(resolveCopyBackupSource(row({ ...directory, copyPath: '/srv/users/acme/data' })), {
-    ok: true,
-    source: { copyId: COPY_ID, copyProvider: 'path', hostPath: '/srv/users/acme/data' },
-  })
-  assertEquals(resolveCopyBackupSource(row({ ...directory, principalUsername: 'acme' })), {
+test('a path copy is inside its own site owner volumes, the principal volume, or the default directory', () => {
+  const directory = { provider: 'path', storageKind: 'directory', principalUsername: 'acme' }
+  assertEquals(
+    resolveCopyBackupSource(row({ ...directory, copyPath: '/srv/users/acme/volumes/data' })),
+    {
+      ok: true,
+      source: {
+        copyId: COPY_ID,
+        copyProvider: 'path',
+        hostPath: '/srv/users/acme/volumes/data',
+        ownerUsername: 'acme',
+      },
+    }
+  )
+  assertEquals(resolveCopyBackupSource(row(directory)), {
     ok: true,
     source: {
       copyId: COPY_ID,
       copyProvider: 'path',
       hostPath: `/srv/users/acme/volumes/${STORAGE_ID}`,
+      ownerUsername: 'acme',
     },
   })
-  assertEquals(resolveCopyBackupSource(row(directory)), {
+  assertEquals(resolveCopyBackupSource(row({ provider: 'path', storageKind: 'directory' })), {
     ok: true,
     source: {
       copyId: COPY_ID,
@@ -87,6 +129,28 @@ test('a path copy is its own path, the principal volume, or the default director
       storageId: STORAGE_ID,
     },
   })
+})
+
+test('a path copy in another site owner tree, or with no owner, is refused', () => {
+  const directory = { provider: 'path', storageKind: 'directory' }
+  const cases: Partial<CopyTargetRow>[] = [
+    { copyPath: '/srv/users/victim/volumes/x', principalUsername: 'acme' },
+    { copyPath: '/srv/users/acme2/volumes/x', principalUsername: 'acme' },
+    { copyPath: '/srv/users/acme/volumes', principalUsername: 'acme' },
+    { copyPath: '/srv/users/acme/volumes/', principalUsername: 'acme' },
+    { copyPath: '/srv/users/acme/.ssh', principalUsername: 'acme' },
+    { copyPath: '/srv/users/acme/volumes/x', principalUsername: null },
+  ]
+  for (const overrides of cases) {
+    assertEquals(resolveCopyBackupSource(row({ ...directory, ...overrides })).ok, false)
+  }
+})
+
+test('copyHostPathError names the reason', () => {
+  assertEquals(copyHostPathError('acme', '/srv/users/acme/volumes/a'), null)
+  assertEquals(typeof copyHostPathError('acme', '/srv/users/victim/volumes/a'), 'string')
+  assertEquals(typeof copyHostPathError(null, '/srv/users/acme/volumes/a'), 'string')
+  assertEquals(typeof copyHostPathError('acme', '/srv/users/acme/volumes/../../victim'), 'string')
 })
 
 test('copies outside the backup-able shapes are refused with a reason', () => {
@@ -100,6 +164,7 @@ test('copies outside the backup-able shapes are refused with a reason', () => {
     { provider: 'path', storageKind: 'directory', copyPath: '/etc' },
     { provider: 'path', storageKind: 'directory', copyPath: '/var/lib/docker/volumes/x' },
     { provider: 'path', storageKind: 'directory', copyPath: '/srv/users/../etc' },
+    { provider: 'path', storageKind: 'directory', copyPath: '/srv/users/acme/data' },
     { provider: 'path', storageKind: 'directory', copyPath: 'srv/users/a' },
     { provider: 'path', storageKind: 'directory', copyPath: '/srv/users/a,b' },
   ]
@@ -107,4 +172,12 @@ test('copies outside the backup-able shapes are refused with a reason', () => {
     const result = resolveCopyBackupSource(row(overrides))
     assertEquals(result.ok, false, JSON.stringify(overrides))
   }
+})
+
+test('copyOptionsError refuses an external volume name or an unmanaged flag', () => {
+  assertEquals(copyOptionsError(null), null)
+  assertEquals(copyOptionsError({}), null)
+  assertEquals(copyOptionsError({ managed: true }), null)
+  assertEquals(typeof copyOptionsError({ externalName: 'other-site-data' }), 'string')
+  assertEquals(typeof copyOptionsError({ managed: false }), 'string')
 })

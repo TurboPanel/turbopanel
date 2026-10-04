@@ -12,24 +12,26 @@
  *   `path`, else the principal's `/srv/users/<user>/volumes/<storageId>`, else
  *   the host's default `<stateDir>/storage/<org>/<storage>/<copy>/data`.
  *
- * Only paths under `/srv/users/` or that default root are backed up (the
- * daemon refuses anything else too): a backup of an arbitrary host path is a
- * copy of the host, not of a tenant's data. Remote providers (nfs, s3, …),
+ * Only the site owner's own directories are backed up: a path copy must sit
+ * under `/srv/users/<the storage's own Linux user>/volumes/` (or be the host's
+ * default root, which has no path), and a Docker volume must be the storage's
+ * own (its id, as deploy names it) or an external one the project's compose
+ * project labels. Another owner's directory or another project's volume is
+ * refused here and again on the host, which receives the owner and project
+ * with the source. Remote providers (nfs, s3, …),
  * `file` / `object` storage and copies without a server are not targets.
  */
 
-import { eq } from 'drizzle-orm'
+import { eq, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import { principal, storage, storageCopy } from '../../db/schema.ts'
+import { environment, principal, storage, storageCopy } from '../../db/schema.ts'
 import { type CopyBackupSource, isSafeCopyHostPath } from '../../contracts/commands/schemas.ts'
 import {
   isValidDockerResourceName,
   principalVolumePath,
+  principalVolumesDir,
   resolveDockerVolumeName,
 } from '../../lib/naming.ts'
-
-/** Tenant directories live here (`principalVolumesDir`); the host's own storage root is the other allowed root. */
-const PRINCIPAL_PATH_PREFIX = '/srv/users/'
 
 /** What a copy target needs from its copy, storage and principal rows. */
 export type CopyTargetRow = {
@@ -43,6 +45,8 @@ export type CopyTargetRow = {
   storageKind: string
   storageMetadata: unknown
   principalUsername: string | null
+  /** The storage's project (its own, else its environment's): the compose project name. */
+  projectId?: string | null
 }
 
 export type CopySourceResult = { ok: true; source: CopyBackupSource } | { ok: false; error: string }
@@ -57,25 +61,79 @@ function readString(record: unknown, key: string): string | null {
   return typeof value === 'string' && value.length > 0 ? value : null
 }
 
-/** The Docker volume deploy mounts for this copy. */
-function dockerVolumeName(row: CopyTargetRow): string | null {
+/**
+ * The Docker volume deploy mounts for this copy: an external volume the
+ * project's compose file names (the host checks its compose-project label),
+ * else the storage's own volume, which is named by the storage id. A pinned
+ * name that is anything else is refused.
+ */
+function dockerVolumeName(row: CopyTargetRow): { name: string; external: boolean } | null {
   const unmanaged = isPlainRecord(row.copyOptions) && row.copyOptions.managed === false
   const externalName = unmanaged ? readString(row.copyOptions, 'externalName') : null
-  if (externalName) return isValidDockerResourceName(externalName) ? externalName : null
+  if (externalName) {
+    return isValidDockerResourceName(externalName) ? { name: externalName, external: true } : null
+  }
   try {
-    return resolveDockerVolumeName({
+    const name = resolveDockerVolumeName({
       storageId: row.storageId,
       pinnedName: readString(row.storageMetadata, 'dockerVolumeName'),
     })
+    return name === row.storageId ? { name, external: false } : null
   } catch {
     return null
   }
 }
 
 function dockerSource(row: CopyTargetRow): CopySourceResult {
-  const volumeName = dockerVolumeName(row)
-  if (!volumeName) return { ok: false, error: 'the copy has no valid Docker volume name' }
-  return { ok: true, source: { copyId: row.copyId, copyProvider: 'docker', volumeName } }
+  const volume = dockerVolumeName(row)
+  if (!volume) {
+    return { ok: false, error: "the copy is not one of this storage's own Docker volumes" }
+  }
+  if (volume.external && !row.projectId) {
+    return {
+      ok: false,
+      error: 'an external Docker volume needs the storage to belong to a project',
+    }
+  }
+  const source: CopyBackupSource = {
+    copyId: row.copyId,
+    copyProvider: 'docker',
+    volumeName: volume.name,
+    storageId: row.storageId,
+  }
+  if (row.projectId) source.composeProject = row.projectId
+  return { ok: true, source }
+}
+
+/** Why a copy's options may not be written through the API (an external volume is recorded by deploy only); null when fine. */
+export function copyOptionsError(options: unknown): string | null {
+  if (!isPlainRecord(options)) return null
+  if ('externalName' in options || options.managed === false) {
+    return 'A copy cannot name an external Docker volume'
+  }
+  return null
+}
+
+/**
+ * Whether `hostPath` is inside the site owner's own volumes directory (and
+ * names something in it). Returns the reason when it is not. Shared by the
+ * copy create/update routes and by backup command building.
+ */
+export function copyHostPathError(username: string | null, hostPath: string): string | null {
+  if (!isSafeCopyHostPath(hostPath)) return 'the copy path is not a safe absolute path'
+  if (!username) {
+    return 'a copy path needs a storage assigned to a site owner; otherwise leave the path empty'
+  }
+  let ownerDir: string
+  try {
+    ownerDir = `${principalVolumesDir(username)}/`
+  } catch {
+    return "the storage's site owner has no valid Linux user"
+  }
+  if (!hostPath.startsWith(ownerDir) || hostPath.length === ownerDir.length) {
+    return "the copy path must be inside the storage's own site owner's volumes directory"
+  }
+  return null
 }
 
 function pathSource(row: CopyTargetRow): CopySourceResult {
@@ -97,13 +155,19 @@ function pathSource(row: CopyTargetRow): CopySourceResult {
       },
     }
   }
-  if (!isSafeCopyHostPath(hostPath) || !hostPath.startsWith(PRINCIPAL_PATH_PREFIX)) {
-    return {
-      ok: false,
-      error: 'only copies under /srv/users/ or the default storage directory can be backed up',
-    }
+  const pathError = copyHostPathError(row.principalUsername, hostPath)
+  if (pathError || !row.principalUsername) {
+    return { ok: false, error: pathError ?? 'the copy has no site owner' }
   }
-  return { ok: true, source: { copyId: row.copyId, copyProvider: 'path', hostPath } }
+  return {
+    ok: true,
+    source: {
+      copyId: row.copyId,
+      copyProvider: 'path',
+      hostPath,
+      ownerUsername: row.principalUsername,
+    },
+  }
 }
 
 /** Whether (and from where) this copy can be backed up. */
@@ -129,6 +193,7 @@ export const COPY_TARGET_SELECT = {
   storageKind: storage.kind,
   storageMetadata: storage.metadata,
   principalUsername: principal.appliedUsername,
+  projectId: sql<string | null>`coalesce(${storage.projectId}, ${environment.projectId})`,
 }
 
 export async function loadCopyTarget(db: Db, copyId: string): Promise<CopyTargetRow | null> {
@@ -137,6 +202,7 @@ export async function loadCopyTarget(db: Db, copyId: string): Promise<CopyTarget
     .from(storageCopy)
     .innerJoin(storage, eq(storage.id, storageCopy.storageId))
     .leftJoin(principal, eq(principal.id, storage.principalId))
+    .leftJoin(environment, eq(environment.id, storage.environmentId))
     .where(eq(storageCopy.id, copyId))
     .limit(1)
   return row ?? null
