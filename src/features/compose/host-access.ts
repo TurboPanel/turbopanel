@@ -335,7 +335,10 @@ function isSafeTmpfsVolume(
     return false
   }
   if (type !== 'tmpfs') return false
-  if (opts.device !== undefined && String(opts.device).trim().toLowerCase() !== 'tmpfs')
+  if (
+    opts.device !== undefined &&
+    !(typeof opts.device === 'string' && opts.device.trim().toLowerCase() === 'tmpfs')
+  )
     return false
   return [...mountFlags].every(
     (flag) => flag === '' || SAFE_TMPFS_FLAGS.has(flag) || SAFE_TMPFS_OPTION.test(flag)
