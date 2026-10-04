@@ -18,6 +18,7 @@
 import { and, desc, eq, lt, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { normalizeReplicaCounts } from '../commands/context.ts'
+import { lastErrorLine } from '../commands/error-line.ts'
 import { normalizeBranchName } from '../git/environment-branch-tracking.ts'
 import type { ExecutionLogStore } from '../execution-logs/types.ts'
 
@@ -114,6 +115,8 @@ export type DeploymentHistoryEntry = {
   durationMs: number | null
   errorCode: string | null
   errorMessage: string | null
+  /** The one line of `errorMessage` that says what went wrong; `null` when there is no error text. */
+  errorLine: string | null
   /**
    * The engine this attempt ran: `inplace` or `sequential`. `null` for a row
    * queued before the strategy was recorded.
@@ -306,6 +309,7 @@ function serializeEntry(row: DeployCommandRow, hasLog: boolean): DeploymentHisto
       : null,
     errorCode: row.errorCode ?? null,
     errorMessage: row.errorMessage ?? null,
+    errorLine: lastErrorLine(row.errorMessage),
     strategy: contextStrategy(context),
     strategyOutcome,
     strategyOutcomeReason: deployOutcomeReason(strategyOutcome, row.errorMessage ?? null),

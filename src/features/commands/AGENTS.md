@@ -77,6 +77,20 @@ streaming output in Postgres — `result` and `error` are bounded summaries only
 result parser), so only that type's listed fields are stored; a report that does
 not fit its type is stored as `null`.
 
+### A failed command names its cause: `errorLine`
+
+The daemon sends the **tail** of a failed handler's message (at most 4000
+characters, led by `[...truncated]` when the start was cut), because tools print
+the cause last. `error-line.ts` `lastErrorLine` derives the one line that says
+what went wrong from that stored text, at read time: no column, no wire field,
+and every old row gets one. It skips blank lines, the truncation marker, a bare
+"exit N", stack frames and log-file pointers, redacts signed URLs, and keeps the
+end of a very long line. `CommandRecord`, the lean status projection
+(`CommandStatusRecord`) and deploy history rows all carry `errorLine`. A new
+failure path must keep the cause as the **last** line of its message.
+`transitionCommand` stores `error` through `redactUrlSecrets` (a daemon error can
+quote a signed download link), as does `deployment.metadata.error`.
+
 ### Dispatch payload (`dispatch` table)
 
 The daemon execution payload is **not** a `command` column. It lives in the
