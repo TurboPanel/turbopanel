@@ -281,7 +281,10 @@ function gitlabDb(opts: {
       limit: () => Promise.resolve(opts.app ? [{ app: opts.app }] : []),
     }),
   })
-  return {
+  const db = {
+    transaction: <T>(fn: (tx: unknown) => Promise<T>) => fn(db),
+    execute: () => Promise.resolve([]),
+    update: () => ({ set: () => ({ where: () => Promise.resolve() }) }),
     select: () => ({
       from: (table: unknown) => ({
         innerJoin: joined,
@@ -295,7 +298,8 @@ function gitlabDb(opts: {
         }),
       }),
     }),
-  } as unknown as Db
+  }
+  return db as unknown as Db
 }
 
 async function mintedCtx(): Promise<GitProviderContext> {

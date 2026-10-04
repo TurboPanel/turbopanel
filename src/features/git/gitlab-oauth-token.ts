@@ -16,7 +16,7 @@
  * stays reachable from `src/workers.ts`.
  */
 
-import { eq } from 'drizzle-orm'
+import { eq, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { gitConnection } from '../../db/schema.ts'
 import {
@@ -25,11 +25,7 @@ import {
   isSealedEnvelope,
 } from '../../lib/secrets/data-encryption.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
-import {
-  type Forge,
-  GITLAB_OAUTH_SCOPES,
-  loadForgeForConnection,
-} from './forge-records.ts'
+import { type Forge, GITLAB_OAUTH_SCOPES, loadForgeForConnection } from './forge-records.ts'
 import { assertForgeUrlAllowed, forgeFetch } from './forge-url.ts'
 
 /**
@@ -128,7 +124,7 @@ function readStored(value: unknown): StoredGitlabOauth {
 /** The URL the connect flow redirects the operator to. */
 export function gitlabAuthorizeUrl(
   config: Pick<GitlabOauthCredentials, 'baseUrl' | 'clientId'>,
-  params: { redirectUri: string; state: string },
+  params: { redirectUri: string; state: string }
 ): string {
   const target = new URL(`${config.baseUrl}/oauth/authorize`)
   target.searchParams.set('client_id', config.clientId)
@@ -160,9 +156,10 @@ async function readGitlabError(response: Response): Promise<string> {
 }
 
 function expiresAtFrom(expiresIn: unknown, nowMs: number): string {
-  const seconds = typeof expiresIn === 'number' && Number.isFinite(expiresIn)
-    ? expiresIn
-    : GITLAB_DEFAULT_TOKEN_LIFETIME_SECONDS
+  const seconds =
+    typeof expiresIn === 'number' && Number.isFinite(expiresIn)
+      ? expiresIn
+      : GITLAB_DEFAULT_TOKEN_LIFETIME_SECONDS
   return new Date(nowMs + seconds * 1000).toISOString()
 }
 
@@ -175,7 +172,7 @@ function expiresAtFrom(expiresIn: unknown, nowMs: number): string {
  */
 async function postTokenGrant(
   config: GitlabOauthCredentials,
-  form: Record<string, string>,
+  form: Record<string, string>
 ): Promise<GitlabTokenPair> {
   const body = new URLSearchParams({
     client_id: config.clientId,
@@ -197,9 +194,7 @@ async function postTokenGrant(
     })
   } catch (error) {
     throw new GitlabOauthTokenError(
-      `gitlab token exchange failed: ${
-        error instanceof Error ? error.message : 'network error'
-      }`,
+      `gitlab token exchange failed: ${error instanceof Error ? error.message : 'network error'}`
     )
   }
 
@@ -207,27 +202,22 @@ async function postTokenGrant(
     throw new GitlabOauthTokenError(await readGitlabError(response), response.status)
   }
 
-  const payload = (await response.json().catch(() => null)) as
-    | {
-      access_token?: unknown
-      refresh_token?: unknown
-      expires_in?: unknown
-      scope?: unknown
-    }
-    | null
-  if (
-    !payload || typeof payload.access_token !== 'string' ||
-    payload.access_token.length === 0
-  ) {
+  const payload = (await response.json().catch(() => null)) as {
+    access_token?: unknown
+    refresh_token?: unknown
+    expires_in?: unknown
+    scope?: unknown
+  } | null
+  if (!payload || typeof payload.access_token !== 'string' || payload.access_token.length === 0) {
     throw new GitlabOauthTokenError('gitlab token exchange returned no token')
   }
 
   return {
     token: payload.access_token,
-    refreshToken: typeof payload.refresh_token === 'string' &&
-        payload.refresh_token.length > 0
-      ? payload.refresh_token
-      : null,
+    refreshToken:
+      typeof payload.refresh_token === 'string' && payload.refresh_token.length > 0
+        ? payload.refresh_token
+        : null,
     expiresAt: expiresAtFrom(payload.expires_in, Date.now()),
     scope: typeof payload.scope === 'string' ? payload.scope : null,
   }
@@ -236,7 +226,7 @@ async function postTokenGrant(
 /** Trade the callback's `code` for the initial token pair. */
 export async function exchangeGitlabAuthorizationCode(
   config: GitlabOauthCredentials,
-  params: { code: string; redirectUri: string },
+  params: { code: string; redirectUri: string }
 ): Promise<GitlabTokenPair> {
   return await postTokenGrant(config, {
     grant_type: 'authorization_code',
@@ -248,7 +238,7 @@ export async function exchangeGitlabAuthorizationCode(
 /** Trade a refresh token for a new pair. GitLab rotates the refresh half. */
 export async function refreshGitlabAccessToken(
   config: GitlabOauthCredentials,
-  refreshToken: string,
+  refreshToken: string
 ): Promise<GitlabTokenPair> {
   return await postTokenGrant(config, {
     grant_type: 'refresh_token',
@@ -264,10 +254,10 @@ export async function refreshGitlabAccessToken(
  * response that omitted it would strand the connection.
  */
 export async function persistGitlabTokenPair(
-  db: Db,
+  db: TokenDb,
   dataEncryptionSecrets: DerivedSecretsConfig,
   connectionId: string,
-  pair: GitlabTokenPair,
+  pair: GitlabTokenPair
 ): Promise<void> {
   const [row] = await db
     .select({ oauthEnvelope: gitConnection.oauthEnvelope })
@@ -281,10 +271,7 @@ export async function persistGitlabTokenPair(
     expiresAt: pair.expiresAt,
   }
   if (pair.refreshToken) {
-    next.refreshTokenEnvelope = await encryptSecret(
-      dataEncryptionSecrets,
-      pair.refreshToken,
-    )
+    next.refreshTokenEnvelope = await encryptSecret(dataEncryptionSecrets, pair.refreshToken)
   } else if (stored.refreshTokenEnvelope) {
     next.refreshTokenEnvelope = stored.refreshTokenEnvelope
   }
@@ -303,21 +290,10 @@ function isExpired(expiresAt: string | undefined, nowMs: number): boolean {
   return parsed - GITLAB_TOKEN_REFRESH_SKEW_MS <= nowMs
 }
 
-/**
- * The access token for one GitLab connection, refreshed if it is about to
- * lapse.
- *
- * Mirrors `mintGithubInstallationToken`'s per-request shape — callers get a
- * token they use once and drop — with one unavoidable difference: when a
- * refresh happens, the **rotated pair is written back** before the token is
- * returned. Skipping that write would hand out a working token and leave the
- * next deploy holding a refresh token GitLab has already invalidated.
- */
-export async function mintGitlabAccessToken(
-  db: Db,
-  dataEncryptionSecrets: DerivedSecretsConfig,
-  connectionId: string,
-): Promise<GitlabAccessToken> {
+/** What the token functions need from a database handle; a transaction fits too. */
+type TokenDb = Pick<Db, 'select' | 'update'>
+
+async function loadUsableConnection(db: TokenDb, connectionId: string): Promise<StoredGitlabOauth> {
   const [row] = await db
     .select({
       provider: gitConnection.provider,
@@ -330,41 +306,116 @@ export async function mintGitlabAccessToken(
 
   if (!row) throw new GitlabOauthTokenError('installation not found', 404)
   if (row.provider !== 'gitlab') {
-    throw new GitlabOauthTokenError(
-      `unsupported installation provider "${row.provider}"`,
-    )
+    throw new GitlabOauthTokenError(`unsupported installation provider "${row.provider}"`)
   }
   if (row.suspendedAt) {
     throw new GitlabOauthTokenError('installation is suspended', 409)
   }
+  return readStored(row.oauthEnvelope)
+}
 
-  const stored = readStored(row.oauthEnvelope)
-  const nowMs = Date.now()
-
-  if (stored.accessTokenEnvelope && !isExpired(stored.expiresAt, nowMs)) {
-    if (!isSealedEnvelope(stored.accessTokenEnvelope)) {
-      throw new GitlabOauthTokenError('gitlab access token is not sealed')
-    }
-    return {
-      token: await decryptSecret(dataEncryptionSecrets, stored.accessTokenEnvelope),
-      expiresAt: stored.expiresAt ?? new Date(nowMs).toISOString(),
-    }
+/** The stored access token when it is still good for a while, else `null`. */
+async function currentAccessToken(
+  dataEncryptionSecrets: DerivedSecretsConfig,
+  stored: StoredGitlabOauth
+): Promise<GitlabAccessToken | null> {
+  if (!stored.accessTokenEnvelope || isExpired(stored.expiresAt, Date.now())) {
+    return null
   }
+  if (!isSealedEnvelope(stored.accessTokenEnvelope)) {
+    throw new GitlabOauthTokenError('gitlab access token is not sealed')
+  }
+  return {
+    token: await decryptSecret(dataEncryptionSecrets, stored.accessTokenEnvelope),
+    expiresAt: stored.expiresAt ?? new Date().toISOString(),
+  }
+}
 
+async function unsealRefreshToken(
+  dataEncryptionSecrets: DerivedSecretsConfig,
+  stored: StoredGitlabOauth
+): Promise<string> {
   if (!stored.refreshTokenEnvelope) {
     throw new GitlabOauthTokenError(
       'gitlab connection has no refresh token — reconnect the account',
-      409,
+      409
     )
   }
   if (!isSealedEnvelope(stored.refreshTokenEnvelope)) {
     throw new GitlabOauthTokenError('gitlab refresh token is not sealed')
   }
+  return await decryptSecret(dataEncryptionSecrets, stored.refreshTokenEnvelope)
+}
 
-  const refreshToken = await decryptSecret(
-    dataEncryptionSecrets,
-    stored.refreshTokenEnvelope,
-  )
+/** GitLab answers a spent or revoked refresh token with 400 (`invalid_grant`) or 401. */
+function isRejectedRefreshToken(error: unknown): boolean {
+  return error instanceof GitlabOauthTokenError && (error.status === 400 || error.status === 401)
+}
+
+/**
+ * One refresh, run inside the connection's lock (see {@link mintGitlabAccessToken}).
+ *
+ * The row is read again *after* the lock was taken: a caller that waited on it
+ * finds the pair the winner stored and uses that instead of presenting the
+ * refresh token a second time. If GitLab still refuses the token, the row is
+ * read one more time before giving up, in case the pair was replaced by
+ * something that does not take this lock (reconnecting the account).
+ */
+async function refreshUnderLock(
+  tx: TokenDb,
+  dataEncryptionSecrets: DerivedSecretsConfig,
+  connectionId: string,
+  app: Forge
+): Promise<GitlabAccessToken> {
+  const stored = await loadUsableConnection(tx, connectionId)
+  const alreadyRefreshed = await currentAccessToken(dataEncryptionSecrets, stored)
+  if (alreadyRefreshed) return alreadyRefreshed
+
+  const refreshToken = await unsealRefreshToken(dataEncryptionSecrets, stored)
+  let pair: GitlabTokenPair
+  try {
+    pair = await refreshGitlabAccessToken(gitlabOauthCredentials(app), refreshToken)
+  } catch (error) {
+    if (!isRejectedRefreshToken(error)) throw error
+    const latest = await loadUsableConnection(tx, connectionId)
+    const replaced = latest.refreshTokenEnvelope !== stored.refreshTokenEnvelope
+    const usable = replaced ? await currentAccessToken(dataEncryptionSecrets, latest) : null
+    if (usable) return usable
+    throw error
+  }
+  // Write back *before* returning: the rotated refresh token is the only thing
+  // that keeps this connection alive past the current token's lifetime.
+  await persistGitlabTokenPair(tx, dataEncryptionSecrets, connectionId, pair)
+  return { token: pair.token, expiresAt: pair.expiresAt }
+}
+
+/**
+ * The access token for one GitLab connection, refreshed if it is about to
+ * lapse.
+ *
+ * Mirrors `mintGithubInstallationToken`'s per-request shape — callers get a
+ * token they use once and drop — with one unavoidable difference: when a
+ * refresh happens, the **rotated pair is written back** before the token is
+ * returned. Skipping that write would hand out a working token and leave the
+ * next deploy holding a refresh token GitLab has already invalidated.
+ *
+ * GitLab's refresh token is single-use, and deploy prepare, the repository
+ * picker and inspect all mint per request, so two callers can find the same
+ * expired token at once. The refresh therefore runs in a transaction holding a
+ * per-connection advisory lock, and a caller that waited re-reads the row and
+ * takes the winner's token. The lock is transaction-scoped, so a crash or a
+ * dropped connection releases it, and the rotated pair is committed together
+ * with the end of the transaction.
+ */
+export async function mintGitlabAccessToken(
+  db: Db,
+  dataEncryptionSecrets: DerivedSecretsConfig,
+  connectionId: string
+): Promise<GitlabAccessToken> {
+  const stored = await loadUsableConnection(db, connectionId)
+  const current = await currentAccessToken(dataEncryptionSecrets, stored)
+  if (current) return current
+
   // Resolved from `installation.app_id`, not from a single instance-wide row:
   // two connections may legitimately be minted through different applications,
   // on different GitLab origins.
@@ -372,9 +423,10 @@ export async function mintGitlabAccessToken(
   if (!app) {
     throw new GitlabOauthTokenError('gitlab oauth application is not configured')
   }
-  const pair = await refreshGitlabAccessToken(gitlabOauthCredentials(app), refreshToken)
-  // Write back *before* returning: the rotated refresh token is the only thing
-  // that keeps this connection alive past the current token's lifetime.
-  await persistGitlabTokenPair(db, dataEncryptionSecrets, connectionId, pair)
-  return { token: pair.token, expiresAt: pair.expiresAt }
+  return await db.transaction(async (tx) => {
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtextextended(${`gitlab-oauth:${connectionId}`}, 0))`
+    )
+    return await refreshUnderLock(tx, dataEncryptionSecrets, connectionId, app)
+  })
 }
