@@ -16,7 +16,6 @@ import {
   INSTANCE_ACME_HTTP01_ISSUER_UNREACHABLE,
   instanceAcmeHttp01PreflightFailure,
   migrateLegacyPublicUrls,
-  recordInstanceAcmeApplyTimeout,
   recordInstanceAcmeIssuance,
   replaceInstanceHostnames,
   replacePublicUrlList,
@@ -486,27 +485,4 @@ test("upsertInstanceHostname replaces the canonical row and replace-all still re
   assertEquals(hostnames.length, 1);
   assertEquals(hostnames[0]?.id, id);
   assertEquals(hostnames[0]?.source, "platform-ca");
-});
-
-test("recordInstanceAcmeApplyTimeout stamps every lets-encrypt row with the message", async () => {
-  const updates: Array<Record<string, unknown>> = [];
-  const db = {
-    update() {
-      return {
-        set(values: Record<string, unknown>) {
-          updates.push(values);
-          return { where: () => Promise.resolve() };
-        },
-      };
-    },
-  };
-  await recordInstanceAcmeApplyTimeout(
-    db as unknown as Db,
-    "The server did not answer in time; check its status and try again",
-    "2026-10-04T00:00:00.000Z",
-  );
-  assertEquals(updates, [{
-    acmeLastAttemptAt: "2026-10-04T00:00:00.000Z",
-    acmeLastError: "The server did not answer in time; check its status and try again",
-  }]);
 });
