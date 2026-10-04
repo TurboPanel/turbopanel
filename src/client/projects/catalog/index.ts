@@ -72,11 +72,10 @@ function composeDocument(data: Record<string, unknown>): ComposeDocument {
  * `managed` row is created later by provisioning.
  */
 export function isManagedEngineCatalogEntry(
-  entry: CatalogEntry,
+  entry: CatalogEntry
 ): entry is CatalogEntry & { code: ManagedEngineCode } {
   return (
-    entry.kind === 'managed' &&
-    (MANAGED_ENGINE_CODES as readonly string[]).includes(entry.code)
+    entry.kind === 'managed' && (MANAGED_ENGINE_CODES as readonly string[]).includes(entry.code)
   )
 }
 
@@ -97,21 +96,13 @@ export type ManagedEngineOptions = {
   port: number
 }
 
-const PRINCIPAL_PROVIDERS = new Set([
-  'server',
-  'postgres',
-  'mysql',
-  'redis',
-  'clickhouse',
-])
+const PRINCIPAL_PROVIDERS = new Set(['server', 'postgres', 'mysql', 'redis', 'clickhouse'])
 
 /**
  * Validate and return managed-engine options from a catalog entry, or `null`
  * when the entry is not an engine catalog row / fields are incomplete.
  */
-export function readManagedEngineOptions(
-  entry: CatalogEntry,
-): ManagedEngineOptions | null {
+export function readManagedEngineOptions(entry: CatalogEntry): ManagedEngineOptions | null {
   if (!isManagedEngineCatalogEntry(entry)) return null
   const options = entry.options
   if (!options || typeof options !== 'object') return null
@@ -321,7 +312,7 @@ const CATALOG: CatalogEntry[] = [
  */
 export function resolveCatalogVariablePlaintext(
   variable: CatalogVariable,
-  sharedCredentials: Map<string, string>,
+  sharedCredentials: Map<string, string>
 ): string {
   if (!variable.isSecret) {
     if (variable.value === undefined) {
