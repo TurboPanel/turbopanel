@@ -10,6 +10,7 @@ import {
   validateSuperadminPassword,
 } from './install-state.ts'
 import { hashPassword } from '../../lib/secrets/password.ts'
+import { verifyEmailOwnershipAndRevokeUntrusted } from './email-ownership.ts'
 import { createSession, deleteSessionsByUserId, getSession } from './session-store.ts'
 import { issueTwoFactorChallenge } from './two-factor.ts'
 import {
@@ -119,6 +120,9 @@ async function resolveOtpSignInUserId(
     }
   }
   if (existingUser) {
+    // The email code just proved the mailbox: an unverified account's sign-up
+    // password came from someone who never did, so it goes (and its sessions).
+    await verifyEmailOwnershipAndRevokeUntrusted(db, existingUser.id)
     return { userId: existingUser.id, is2FaEnabled: existingUser.is2FaEnabled === true }
   }
 
@@ -583,10 +587,7 @@ export function registerOtpRoutes<E extends Env>(auth: Hono<E>, opts: AuthRouteO
       return c.json(mapped.body, mapped.status)
     }
 
-    await db
-      .update(user)
-      .set({ isEmailVerified: true, updatedAt: nowTs() })
-      .where(eq(user.id, sessionData.userId))
+    await verifyEmailOwnershipAndRevokeUntrusted(db, sessionData.userId, sessionData.sessionId)
 
     return c.json({ ok: true }, 200)
   })

@@ -787,7 +787,9 @@ function applyUpdate(
   if (table === account) {
     const rows = matchingRows(account, state.accounts, condition);
     for (const row of rows) {
-      if (patch.password !== undefined) row.password = String(patch.password);
+      if (patch.password !== undefined) {
+        row.password = patch.password === null ? null : String(patch.password);
+      }
     }
     return rows.map(() => ({ id: crypto.randomUUID() }));
   }
