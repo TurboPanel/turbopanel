@@ -57,6 +57,7 @@ import {
   LEAF_RENEWAL_SWEEP_INTERVAL_MS,
   runLeafRenewalSweepTick,
 } from '../../client/tls/leaf-renewal-sweep.ts'
+import { runHostingLetsEncryptSweepTick } from '../../client/hostings/letsencrypt-sweep.ts'
 import {
   assertPasswordHasherAvailable,
   configureArgon2idWorkFactor,
@@ -796,6 +797,9 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
           secretsConfig,
           dataEncryptionSecrets,
         })
+        // Waiting Let's Encrypt requests (DNS not ready yet): same cadence,
+        // no secrets needed.
+        await runHostingLetsEncryptSweepTick(tickDb)
       } catch (err) {
         logWarn('tls-leaf-renewal', `sweep error: ${String(err)}`)
       } finally {

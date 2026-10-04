@@ -26,6 +26,7 @@ import { registerBindingRoutes } from './bindings/routes.ts'
 import { registerContainerRoutes } from './containers/routes.ts'
 import { registerDockerRunRoutes } from './docker-run/routes.ts'
 import { registerHostingRoutes } from './hostings/routes.ts'
+import { registerHostingLetsEncryptRoutes } from './hostings/letsencrypt-routes.ts'
 import { registerTlsRoutes } from './tls/routes.ts'
 import { registerLicenseRoutes } from './licenses/routes.ts'
 import {
@@ -144,6 +145,7 @@ export function registerClientRoutes(app: Hono<AppEnv>, opts: ClientRouteOpts) {
   registerBindingRoutes(client, opts)
   registerProjectRoutes(client, opts)
   registerServiceRoutes(client, opts)
+  registerHostingLetsEncryptRoutes(client, opts)
   registerHostingRoutes(client, opts)
   registerContainerRoutes(client, opts)
   registerDockerRunRoutes(client, opts)
