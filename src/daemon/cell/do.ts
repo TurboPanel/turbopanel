@@ -24,8 +24,11 @@ import {
 import {
   cellAutoFailover,
   cellCommandQueue,
+  cellFreshStandbyMarginMs,
   handleCellManagedHaEvent,
 } from './managed-ha-inbound.ts'
+import { createDurableObjectDaemonCellRegistry } from './do-registry.ts'
+import { createFreshStandbyProbe } from '../../client/managed/health-probe.ts'
 import { handleAcmeIssuanceEvent } from '../../client/tls/acme-issuance-event.ts'
 import {
   backupRunReportResultMessage,
@@ -1850,6 +1853,13 @@ export class DaemonCellObject {
             reporterServerId: attachment.serverId,
             commandQueue: cellCommandQueue(this.#env),
             autoFailover: cellAutoFailover(this.#env),
+            // Other servers' cells via their DO stubs; never this one.
+            probeStandby: createFreshStandbyProbe(
+              db,
+              createDurableObjectDaemonCellRegistry(this.#env, db),
+              { skipServerId: attachment.serverId }
+            ),
+            freshStandbyMarginMs: cellFreshStandbyMarginMs(this.#env),
           })
         })
         return

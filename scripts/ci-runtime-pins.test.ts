@@ -79,7 +79,7 @@ describe('release manifest signing', () => {
     )
     assertStringIncludes(
       release,
-      'RELEASE_SIGNING_KEY: ${{ secrets.TURBOPANEL_RELEASE_SIGNING_KEY || secrets.RELEASE_SIGNING_KEY }}'
+      'RELEASE_SIGNING_KEY: ${{ secrets.TURBOPANEL_RELEASE_SIGNING_KEY }}'
     )
   })
 
@@ -89,16 +89,13 @@ describe('release manifest signing', () => {
     assertEquals(/^[0-9a-f]{40}$/.test(ref), true, `signer ref is not a commit SHA: ${ref}`)
   })
 
-  it('reads the signing key from the canary, rc or release environment, with the repo secret as a fallback', () => {
+  it('reads the signing key from the canary, rc or release environment only', () => {
     assertStringIncludes(
       release,
       "environment: ${{ inputs.channel == 'canary' && 'canary' || (inputs.channel == 'rc' && 'rc' || 'release') }}"
     )
-    assertStringIncludes(
-      release,
-      'secrets.TURBOPANEL_RELEASE_SIGNING_KEY || secrets.RELEASE_SIGNING_KEY'
-    )
+    assertEquals(release.includes('secrets.RELEASE_SIGNING_KEY'), false)
+    // The environment secret only reaches the called workflow when its caller inherits secrets.
     assertStringIncludes(canary, 'secrets: inherit')
-    assertEquals(canary.includes('secrets.'), false)
   })
 })

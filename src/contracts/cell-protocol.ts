@@ -279,6 +279,16 @@ export type ManagedHealthObservedMember = {
     lagBytes?: number
     lagSeconds?: number
     observedAt: string
+    receivedLsn?: string
+    replayLsn?: string
+    receiveLagBytes?: number
+    lastStreaming?: {
+      at: string
+      ageMs: number
+      lagBytes?: number
+      lagSeconds?: number
+      receiveLagBytes?: number
+    }
   }
 }
 
@@ -518,7 +528,8 @@ export type DaemonMessage =
       instancePort?: number
       /**
        * Bounded detector evidence. Logged and stored on the recovery row
-       * (`metadata.detectorEvidence`); never used to decide anything.
+       * (`metadata.detectorEvidence`). Only `spanMs` is read: it anchors the
+       * fresh-standby gate's failure start (`ha-fresh-standby.ts`).
        */
       evidence?: Record<string, unknown>
       at: string
@@ -1239,7 +1250,36 @@ function validateManagedHealthMember(value: unknown): string | null {
   }
   return (
     validateOptionalFiniteNumber(replication.lagBytes, 'member.replication.lagBytes') ??
-    validateOptionalFiniteNumber(replication.lagSeconds, 'member.replication.lagSeconds')
+    validateOptionalFiniteNumber(replication.lagSeconds, 'member.replication.lagSeconds') ??
+    validateOptionalHealthString(replication.receivedLsn, 'member.replication.receivedLsn') ??
+    validateOptionalHealthString(replication.replayLsn, 'member.replication.replayLsn') ??
+    validateOptionalFiniteNumber(
+      replication.receiveLagBytes,
+      'member.replication.receiveLagBytes'
+    ) ??
+    validateLastStreaming(replication.lastStreaming)
+  )
+}
+
+function validateOptionalHealthString(value: unknown, field: string): string | null {
+  if (value === undefined || isBoundedHealthString(value)) return null
+  return `invalid ${field}`
+}
+
+function validateLastStreaming(value: unknown): string | null {
+  if (value === undefined) return null
+  if (!isRecord(value)) return 'invalid member.replication.lastStreaming'
+  if (!isIsoTimestamp(value.at)) return 'invalid member.replication.lastStreaming.at'
+  if (typeof value.ageMs !== 'number' || !Number.isFinite(value.ageMs)) {
+    return 'invalid member.replication.lastStreaming.ageMs'
+  }
+  return (
+    validateOptionalFiniteNumber(value.lagBytes, 'member.replication.lastStreaming.lagBytes') ??
+    validateOptionalFiniteNumber(value.lagSeconds, 'member.replication.lastStreaming.lagSeconds') ??
+    validateOptionalFiniteNumber(
+      value.receiveLagBytes,
+      'member.replication.lastStreaming.receiveLagBytes'
+    )
   )
 }
 

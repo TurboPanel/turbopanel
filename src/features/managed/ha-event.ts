@@ -4,6 +4,10 @@
  * failover. Both transports pass one (Deno's queue; the Durable Object's
  * `TURBOPANEL_COMMAND_QUEUE` binding); without it a terminal blocked row is
  * recorded.
+ *
+ * For Postgres, a failover replica that is no longer streaming is probed at
+ * event time (`deps.probeStandby`) and judged by the fresh-standby gate
+ * (`ha-fresh-standby.ts`), anchored on the detector's failure span.
  */
 
 import { eq } from 'drizzle-orm'
@@ -25,6 +29,7 @@ import {
 } from './ha-policy.ts'
 import { compatLogInfo, compatLogWarn } from '../../lib/log-compat.ts'
 import type { AutoFailoverSetting } from './auto-failover-switch.ts'
+import { failureStartedAtMs, type FreshStandbyProbe } from './ha-fresh-standby.ts'
 
 export type ManagedHaEventInput = {
   managedId: string
@@ -34,7 +39,11 @@ export type ManagedHaEventInput = {
   /** Orchestrator's key for the dead instance (`managed-ha-instance-v1`). */
   instanceHost?: string
   instancePort?: number
-  /** Bounded detector evidence: logged and recorded, never used to decide. */
+  /**
+   * Bounded detector evidence: logged and recorded. Only `spanMs` (the
+   * detector's monotonic failure span) is used, to anchor the fresh-standby
+   * gate's failure start; a missing or bad span keeps that gate closed.
+   */
   evidence?: Record<string, unknown>
   at?: string
 }
@@ -140,6 +149,17 @@ async function staleOrchestratorReason(
   })
 }
 
+/** Only the detector / evidence fields that are actually present. */
+function detectorAndEvidence(
+  detector: string | undefined,
+  evidence: string | undefined
+): { detector?: string; evidence?: string } {
+  return {
+    ...(detector ? { detector } : {}),
+    ...(evidence ? { evidence } : {}),
+  }
+}
+
 /**
  * `deps.reporterServerId` must be the authenticated session's server id
  * (the cell attachment), never a payload field: the gate trusts it to prove
@@ -153,10 +173,17 @@ export async function handleManagedHaEvent(
     reporterServerId: string
     /** `TURBOPANEL_AUTO_FAILOVER`, resolved by the transport; absent = `on`. */
     autoFailover?: AutoFailoverSetting
+    /** Event-time probe of a candidate standby; absent = never probe. */
+    probeStandby?: FreshStandbyProbe
+    /** Fresh-standby receipt margin in ms; absent = 10 s. */
+    freshStandbyMarginMs?: number
+    /** Test seam: control-plane ms the event was received. */
+    nowMs?: () => number
     /** Test seam for the Orchestrator binding lookups. */
     binding?: HaBindingLoaders
   }
 ): Promise<RecoveryRecord | null> {
+  const receivedAtMs = (deps.nowMs ?? Date.now)()
   const row = await loadCluster(db, input.managedId)
   if (!row) return null
   if (!row.engine || !isManagedEngineCode(row.engine)) return null
@@ -197,8 +224,7 @@ export async function handleManagedHaEvent(
       managedId: row.id,
       members,
       reason: stale,
-      ...(input.detector ? { detector: input.detector } : {}),
-      ...(evidence ? { evidence } : {}),
+      ...detectorAndEvidence(input.detector, evidence),
     })
   }
   const detectorName = input.detector ?? 'orchestrator'
@@ -215,9 +241,14 @@ export async function handleManagedHaEvent(
     engine,
     members,
     sourceMemberId: input.sourceMemberId,
-    ...(input.detector ? { detector: input.detector } : {}),
-    ...(evidence ? { evidence } : {}),
+    ...detectorAndEvidence(input.detector, evidence),
     actor: { actorType: 'system', actorId: deps.reporterServerId },
     ...(deps.autoFailover ? { autoFailover: deps.autoFailover } : {}),
+    ...(deps.probeStandby ? { probeStandby: deps.probeStandby } : {}),
+    ...(deps.freshStandbyMarginMs === undefined
+      ? {}
+      : { freshStandbyMarginMs: deps.freshStandbyMarginMs }),
+    ...(deps.nowMs ? { nowMs: deps.nowMs } : {}),
+    failureStartedAtMs: failureStartedAtMs(input.evidence, receivedAtMs),
   })
 }

@@ -1,5 +1,10 @@
 import { assertEquals } from '@std/assert'
-import { AUTO_FAILOVER_ENV, resolveAutoFailover } from './auto-failover-switch.ts'
+import {
+  AUTO_FAILOVER_ENV,
+  FRESH_STANDBY_MARGIN_ENV,
+  resolveAutoFailover,
+  resolveFreshStandbyMarginMs,
+} from './auto-failover-switch.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -37,4 +42,15 @@ test('resolveAutoFailover: an explicit value wins over the deployment', () => {
 test('resolveAutoFailover: an unknown value is off (fail safe)', () => {
   assertEquals(resolveAutoFailover({ [AUTO_FAILOVER_ENV]: 'enabled' }), 'off')
   assertEquals(resolveAutoFailover({ [AUTO_FAILOVER_ENV]: 'yes please' }), 'off')
+})
+
+test('resolveFreshStandbyMarginMs: default 10 s, seconds parsed, capped at 60 s', () => {
+  assertEquals(resolveFreshStandbyMarginMs(undefined), 10_000)
+  assertEquals(resolveFreshStandbyMarginMs({ [FRESH_STANDBY_MARGIN_ENV]: '' }), 10_000)
+  assertEquals(resolveFreshStandbyMarginMs({ [FRESH_STANDBY_MARGIN_ENV]: ' 5 ' }), 5_000)
+  assertEquals(resolveFreshStandbyMarginMs({ [FRESH_STANDBY_MARGIN_ENV]: '2.5' }), 2_500)
+  assertEquals(resolveFreshStandbyMarginMs({ [FRESH_STANDBY_MARGIN_ENV]: '0' }), 0)
+  assertEquals(resolveFreshStandbyMarginMs({ [FRESH_STANDBY_MARGIN_ENV]: '3600' }), 60_000)
+  assertEquals(resolveFreshStandbyMarginMs({ [FRESH_STANDBY_MARGIN_ENV]: '-5' }), 10_000)
+  assertEquals(resolveFreshStandbyMarginMs({ [FRESH_STANDBY_MARGIN_ENV]: 'ten' }), 10_000)
 })

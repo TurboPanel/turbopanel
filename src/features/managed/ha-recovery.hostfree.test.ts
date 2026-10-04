@@ -13,6 +13,7 @@ import {
   PROMOTE_UNQUEUED_MESSAGE,
   AUTOMATIC_FAILOVER_NO_QUEUE_MESSAGE,
   AUTOMATIC_FAILOVER_UNHEALTHY_MESSAGE,
+  AUTOMATIC_FAILOVER_STANDBY_NOT_PROVEN_MESSAGE,
   isTerminalRecoveryState,
   type RecoveryRecord,
   type RecoveryState,
@@ -23,6 +24,8 @@ import { container, environment, ip, managed, replica, recovery, server } from '
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import { deriveEncryptionSecretsConfig } from '../../lib/secrets/secrets.ts'
 import type { ManagedMemberRow } from './members.ts'
+import type { ManagedReplicationHealth } from '../../contracts/commands/schemas.ts'
+import type { FreshStandbyProbe } from './ha-fresh-standby.ts'
 import {
   beginAutomaticFailover,
   beginDisasterRecovery,
@@ -1687,4 +1690,219 @@ test('beginAutomaticFailover returns the latest row when fencing enqueue fails',
     })
   )
   assertEquals(row.id, REC_ID)
+})
+
+// --- Fresh-standby gate (cold kill: the replica stopped streaming) ---------
+
+const EVENT_MS = Date.parse('2026-10-02T12:00:00.000Z')
+/** The detector's first hard failure, 25 s before the event. */
+const FAILURE_START_MS = EVENT_MS - 25_000
+const LSN = '0/3000148'
+
+/** The candidate's stored observation after a cold kill: not streaming. */
+function coldReplica(): ManagedMemberRow {
+  return failoverReplica({
+    serverId: SERVER_B,
+    metadata: { replication: { state: 'stopped', observedAt: new Date(EVENT_MS).toISOString() } },
+  })
+}
+
+/** Probe answer: stopped, last seen streaming 30 s before the probe (5 s before failure). */
+function freshStopped(overrides: Partial<ManagedReplicationHealth> = {}): ManagedReplicationHealth {
+  return {
+    state: 'stopped',
+    observedAt: new Date(EVENT_MS).toISOString(),
+    receivedLsn: LSN,
+    replayLsn: LSN,
+    lastStreaming: {
+      at: new Date(EVENT_MS - 30_000).toISOString(),
+      ageMs: 30_000,
+      receiveLagBytes: 0,
+      // Idle cluster: long since the last commit; not part of this gate.
+      lagSeconds: 3_600,
+    },
+    ...overrides,
+  }
+}
+
+function stubProbe(answer: ManagedReplicationHealth | null): {
+  probe: FreshStandbyProbe
+  calls: Array<Parameters<FreshStandbyProbe>[0]>
+} {
+  const calls: Array<Parameters<FreshStandbyProbe>[0]> = []
+  return {
+    calls,
+    probe: (target) => {
+      calls.push(target)
+      return Promise.resolve(answer)
+    },
+  }
+}
+
+async function coldKillFailover(
+  answer: ManagedReplicationHealth | null,
+  extra: { autoFailover?: 'on' | 'off'; failureStartedAtMs?: number | null } = {}
+) {
+  const harness = createHarness({ pins: sharedDatacenterPins() })
+  const { queue, sent } = countingQueue()
+  const { probe, calls } = stubProbe(answer)
+  const row = expectRecord(
+    await beginAutomaticFailover({
+      db: harness.db,
+      commandQueue: queue,
+      managedId: MANAGED_ID,
+      engine: 'postgres',
+      members: [member(), coldReplica()],
+      sourceMemberId: MEM_PRIMARY,
+      detector: 'postgres-probe',
+      actor: ACTOR,
+      autoFailover: extra.autoFailover ?? 'on',
+      probeStandby: probe,
+      failureStartedAtMs:
+        extra.failureStartedAtMs === undefined ? FAILURE_START_MS : extra.failureStartedAtMs,
+      nowMs: () => EVENT_MS,
+    })
+  )
+  return { row, sent, calls, harness }
+}
+
+test('fresh-standby: a fresh, fully replayed, not-streaming replica is accepted and fenced first', async () => {
+  const { row, sent, calls, harness } = await coldKillFailover(freshStopped())
+  assertEquals(calls, [
+    { memberId: MEM_REPLICA, managedId: MANAGED_ID, serverId: SERVER_B, engine: 'postgres' },
+  ])
+  assertEquals(row.state, 'fencing')
+  assertEquals(row.targetMemberId, MEM_REPLICA)
+  assertEquals(row.metadata.freshStandby?.startsWith(`${MEM_REPLICA} accepted: stopped`), true)
+  // Fencing stays mandatory: drain + stop are queued, no promote yet.
+  const names = harness.commandInserts.map((values) => values.name ?? values.type)
+  assertEquals(names.includes('managed.promote'), false)
+  assertEquals(sent.length > 0, true)
+  assertEquals(row.metadata.fenceCommandIds?.length, sent.length)
+})
+
+test('fresh-standby: a receipt older than failure start minus the margin is refused', async () => {
+  // Last streaming 40 s before the probe = 15 s before the failure start.
+  const stale = freshStopped({
+    lastStreaming: {
+      at: new Date(EVENT_MS - 40_000).toISOString(),
+      ageMs: 40_000,
+      receiveLagBytes: 0,
+    },
+  })
+  const { row, sent } = await coldKillFailover(stale)
+  assertEquals(row.state, 'blocked')
+  assertEquals(row.targetMemberId, null)
+  assertEquals(row.metadata.blockedReason, AUTOMATIC_FAILOVER_STANDBY_NOT_PROVEN_MESSAGE)
+  assertEquals(row.metadata.freshStandby, `${MEM_REPLICA} refused: receipt_stale`)
+  assertEquals(sent.length, 0)
+})
+
+test('fresh-standby: no last-streaming record (old daemon, restarted daemon) is refused', async () => {
+  const { row, sent } = await coldKillFailover(freshStopped({ lastStreaming: undefined }))
+  assertEquals(row.state, 'blocked')
+  assertEquals(row.metadata.freshStandby, `${MEM_REPLICA} refused: receipt_unknown`)
+  assertEquals(sent.length, 0)
+})
+
+test('fresh-standby: replay behind the received LSN is refused', async () => {
+  const { row, sent } = await coldKillFailover(freshStopped({ replayLsn: '0/2000000' }))
+  assertEquals(row.state, 'blocked')
+  assertEquals(row.metadata.freshStandby, `${MEM_REPLICA} refused: replay_behind`)
+  assertEquals(sent.length, 0)
+})
+
+test('fresh-standby: a last receive byte lag over the promote limit is refused', async () => {
+  const lagging = freshStopped({
+    lastStreaming: {
+      at: new Date(EVENT_MS - 30_000).toISOString(),
+      ageMs: 30_000,
+      receiveLagBytes: 128 * 1024 * 1024,
+    },
+  })
+  const { row, sent } = await coldKillFailover(lagging)
+  assertEquals(row.state, 'blocked')
+  assertEquals(row.metadata.freshStandby, `${MEM_REPLICA} refused: last_lag_over_limit`)
+  assertEquals(sent.length, 0)
+})
+
+test('fresh-standby: the switch off still blocks and never probes', async () => {
+  const { row, sent, calls } = await coldKillFailover(freshStopped(), { autoFailover: 'off' })
+  assertEquals(row.state, 'blocked')
+  assertEquals(row.targetMemberId, null)
+  assertEquals(row.metadata.blockedReason, AUTOMATIC_FAILOVER_DISABLED_MESSAGE)
+  assertEquals(calls.length, 0)
+  assertEquals(sent.length, 0)
+})
+
+test('fresh-standby: without a failure start the gate stays closed and nothing is probed', async () => {
+  const { row, sent, calls } = await coldKillFailover(freshStopped(), { failureStartedAtMs: null })
+  assertEquals(row.state, 'blocked')
+  assertEquals(row.metadata.blockedReason, AUTOMATIC_FAILOVER_UNHEALTHY_MESSAGE)
+  assertEquals(row.metadata.freshStandby, undefined)
+  assertEquals(calls.length, 0)
+  assertEquals(sent.length, 0)
+})
+
+test('fresh-standby: a probe that answers nothing is refused', async () => {
+  const { row, sent } = await coldKillFailover(null)
+  assertEquals(row.state, 'blocked')
+  assertEquals(row.metadata.freshStandby, `${MEM_REPLICA} refused: probe_unavailable`)
+  assertEquals(sent.length, 0)
+})
+
+test('fresh-standby: the cooldown still refuses before any probe', async () => {
+  const previous = recoveryRow({
+    state: 'completed',
+    targetMemberId: MEM_REPLICA,
+    startedAt: new Date(Date.now() - 5 * 60_000).toISOString(),
+  })
+  const harness = createHarness({ recoveryReads: [[], [previous]] })
+  const { probe, calls } = stubProbe(freshStopped())
+  const row = expectRecord(
+    await beginAutomaticFailover({
+      db: harness.db,
+      commandQueue: okQueue(),
+      managedId: MANAGED_ID,
+      engine: 'postgres',
+      members: [member(), coldReplica()],
+      actor: ACTOR,
+      probeStandby: probe,
+      failureStartedAtMs: FAILURE_START_MS,
+      nowMs: () => EVENT_MS,
+    })
+  )
+  assertEquals(row.metadata.blockedReason, AUTOMATIC_FAILOVER_COOLDOWN_MESSAGE)
+  assertEquals(calls.length, 0)
+})
+
+test('fresh-standby: of several accepted standbys the one that received the most WAL wins', async () => {
+  const harness = createHarness({ pins: sharedDatacenterPins() })
+  const { queue } = countingQueue()
+  const second = failoverReplica({
+    id: MEM_READ,
+    serverId: SERVER_B,
+    ordinal: 3,
+    metadata: { replication: { state: 'stopped', observedAt: new Date(EVENT_MS).toISOString() } },
+  })
+  const behind = freshStopped({ receivedLsn: '0/3000100', replayLsn: '0/3000100' })
+  const ahead = freshStopped()
+  const row = expectRecord(
+    await beginAutomaticFailover({
+      db: harness.db,
+      commandQueue: queue,
+      managedId: MANAGED_ID,
+      engine: 'postgres',
+      members: [member(), coldReplica(), second],
+      sourceMemberId: MEM_PRIMARY,
+      detector: 'postgres-probe',
+      actor: ACTOR,
+      probeStandby: (target) => Promise.resolve(target.memberId === MEM_READ ? ahead : behind),
+      failureStartedAtMs: FAILURE_START_MS,
+      nowMs: () => EVENT_MS,
+    })
+  )
+  assertEquals(row.state, 'fencing')
+  // The lower-ordinal replica was accepted too, but is behind.
+  assertEquals(row.targetMemberId, MEM_READ)
 })
