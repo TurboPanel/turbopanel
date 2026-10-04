@@ -124,9 +124,9 @@ export function quoteSqlString(value: string): string {
   const escaped = value
     .replaceAll('\\', '\\\\')
     .replaceAll("'", "''")
-    .replaceAll('\n', '\\n')
-    .replaceAll('\r', '\\r')
-    .replaceAll('\0', '\\0')
+    .replaceAll('\n', String.raw`\n`)
+    .replaceAll('\r', String.raw`\r`)
+    .replaceAll('\0', String.raw`\0`)
   return `'${escaped}'`
 }
 
