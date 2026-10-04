@@ -1,21 +1,18 @@
 /// <reference types="@cloudflare/vitest-pool-workers/types" />
-import { env } from "cloudflare:test";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Db } from "../../db/connection.ts";
-import { setDaemonCellProjectionDbFactoryForTests } from "./do.ts";
+import { env } from 'cloudflare:test'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { Db } from '../../db/connection.ts'
+import { setDaemonCellProjectionDbFactoryForTests } from './do.ts'
 import {
   createDurableObjectDaemonCellRegistry,
   DurableObjectStubDaemonCell,
-} from "./do-registry.ts";
-import {
-  generateDeliveryId,
-  generateRequestId,
-} from "../../contracts/cell-protocol.ts";
+} from './do-registry.ts'
+import { generateDeliveryId, generateRequestId } from '../../contracts/cell-protocol.ts'
 
 function createNoopProjectionDb(): Db {
   // The daemon-state read is `server ⋈ key`; an empty join is "not enrolled",
   // which is what a no-op projection wants.
-  const empty = () => ({ where: () => ({ limit: () => Promise.resolve([]) }) });
+  const empty = () => ({ where: () => ({ limit: () => Promise.resolve([]) }) })
   const db = {
     select: () => ({
       from: () => ({
@@ -27,8 +24,8 @@ function createNoopProjectionDb(): Db {
       set: () => ({ where: () => Promise.resolve(undefined) }),
     }),
     $client: { end: async () => undefined },
-  } as unknown as Db;
-  return db;
+  } as unknown as Db
+  return db
 }
 
 function createOnlineListDb(serverIds: string[]): Db {
@@ -38,340 +35,339 @@ function createOnlineListDb(serverIds: string[]): Db {
         where: () => Promise.resolve(serverIds.map((id) => ({ id }))),
       }),
     }),
-  } as unknown as Db;
+  } as unknown as Db
 }
 
 function createFakeCellEnv(
-  fetchImpl: (path: string, init?: RequestInit) => Promise<Response>,
+  fetchImpl: (path: string, init?: RequestInit) => Promise<Response>
 ): CloudflareBindings {
   return {
     DAEMON_CELL: {
       getByName: () => ({
         fetch: (input: RequestInfo | URL, init?: RequestInit) => {
-          const url = typeof input === "string"
-            ? input
-            : input instanceof URL
-            ? input.href
-            : input.url;
-          const path = new URL(url).pathname + new URL(url).search;
-          return fetchImpl(path, init);
+          const url =
+            typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+          const path = new URL(url).pathname + new URL(url).search
+          return fetchImpl(path, init)
         },
       }),
     },
-  } as unknown as CloudflareBindings;
+  } as unknown as CloudflareBindings
 }
 
 beforeEach(() => {
-  setDaemonCellProjectionDbFactoryForTests(createNoopProjectionDb);
-});
+  setDaemonCellProjectionDbFactoryForTests(createNoopProjectionDb)
+})
 
 afterEach(async () => {
-  await new Promise((resolve) => setTimeout(resolve, 50));
-});
+  await new Promise((resolve) => setTimeout(resolve, 50))
+})
 
-describe("createDurableObjectDaemonCellRegistry", () => {
-  it("reuses the same cell instance per serverId", () => {
-    const registry = createDurableObjectDaemonCellRegistry(env);
-    const first = registry.getCell("test-srv-registry-cache");
-    const second = registry.getCell("test-srv-registry-cache");
-    expect(first).toBe(second);
-    expect(first).not.toBe(registry.getCell("test-srv-registry-other"));
-  });
+describe('createDurableObjectDaemonCellRegistry', () => {
+  it('reuses the same cell instance per serverId', () => {
+    const registry = createDurableObjectDaemonCellRegistry(env)
+    const first = registry.getCell('test-srv-registry-cache')
+    const second = registry.getCell('test-srv-registry-cache')
+    expect(first).toBe(second)
+    expect(first).not.toBe(registry.getCell('test-srv-registry-other'))
+  })
 
-  it("getSnapshot and putSnapshot round-trip runtime flags", async () => {
-    const serverId = "test-srv-registry-snapshot";
-    const registry = createDurableObjectDaemonCellRegistry(env);
-    const cell = registry.getCell(serverId);
+  it('getSnapshot and putSnapshot round-trip runtime flags', async () => {
+    const serverId = 'test-srv-registry-snapshot'
+    const registry = createDurableObjectDaemonCellRegistry(env)
+    const cell = registry.getCell(serverId)
 
     const attach = await cell.attachDaemonSocket({
-      keyId: "key-registry",
-      remoteAddress: "203.0.113.50",
+      keyId: 'key-registry',
+      remoteAddress: '203.0.113.50',
       connectedAt: new Date().toISOString(),
-    });
-    expect(attach.connectionId).toBeTruthy();
+    })
+    expect(attach.connectionId).toBeTruthy()
 
-    const before = await cell.getSnapshot();
-    expect(before.connected).toBe(true);
+    const before = await cell.getSnapshot()
+    expect(before.connected).toBe(true)
 
-    const patched = await cell.putSnapshot({ connected: true });
-    expect(patched.connected).toBe(true);
+    const patched = await cell.putSnapshot({ connected: true })
+    expect(patched.connected).toBe(true)
 
     await cell.detachDaemonSocket({
       connectionId: attach.connectionId,
-      reason: "registry test",
-    });
-    const after = await cell.getSnapshot();
-    expect(after.connected).toBe(false);
-  });
+      reason: 'registry test',
+    })
+    const after = await cell.getSnapshot()
+    expect(after.connected).toBe(false)
+  })
 
-  it("enqueue, listRequests, markSent, and handleInbound correlate a command", async () => {
-    const serverId = "test-srv-registry-command";
-    const registry = createDurableObjectDaemonCellRegistry(env);
-    const cell = registry.getCell(serverId);
-    const requestId = generateRequestId();
-    const deliveryId = generateDeliveryId();
-    const at = new Date().toISOString();
+  it('enqueue, listRequests, markSent, and handleInbound correlate a command', async () => {
+    const serverId = 'test-srv-registry-command'
+    const registry = createDurableObjectDaemonCellRegistry(env)
+    const cell = registry.getCell(serverId)
+    const requestId = generateRequestId()
+    const deliveryId = generateDeliveryId()
+    const at = new Date().toISOString()
 
     const queued = await cell.enqueue({
-      kind: "command-dispatch",
+      kind: 'command-dispatch',
       deliveryId,
       requestId,
       at,
-      commandId: "cmd-registry",
-      commandType: "daemon.ping",
+      commandId: 'cmd-registry',
+      commandType: 'daemon.ping',
       payload: {},
-    });
-    expect(queued.status).toBe("queued");
+    })
+    expect(queued.status).toBe('queued')
 
-    const listed = await cell.listRequests(10, "command-dispatch");
-    expect(listed.some((row) => row.requestId === requestId)).toBe(true);
+    const listed = await cell.listRequests(10, 'command-dispatch')
+    expect(listed.some((row) => row.requestId === requestId)).toBe(true)
 
-    await cell.markSent(deliveryId, "conn-registry", at);
+    await cell.markSent(deliveryId, 'conn-registry', at)
 
     const acked = await cell.handleInbound({
-      kind: "command-ack",
+      kind: 'command-ack',
       requestId,
       at,
       daemonReceivedAt: at,
-    });
-    expect(acked?.status).toBe("acked");
+    })
+    expect(acked?.status).toBe('acked')
 
     const done = await cell.handleInbound({
-      kind: "command-outcome",
+      kind: 'command-outcome',
       requestId,
       at,
       ok: true,
       result: { pong: true },
       daemonReceivedAt: at,
       daemonRespondedAt: at,
-    });
-    expect(done?.status).toBe("done");
-    expect(await cell.getRequest(requestId)).toMatchObject({ status: "done" });
-  });
+    })
+    expect(done?.status).toBe('done')
+    expect(await cell.getRequest(requestId)).toMatchObject({ status: 'done' })
+  })
 
-  it("waitForRequest returns a terminal record without blocking the DO", async () => {
-    const serverId = "test-srv-registry-wait";
-    const registry = createDurableObjectDaemonCellRegistry(env);
-    const cell = registry.getCell(serverId);
-    const requestId = generateRequestId();
-    const deliveryId = generateDeliveryId();
-    const at = new Date().toISOString();
+  it('waitForRequest returns a terminal record without blocking the DO', async () => {
+    const serverId = 'test-srv-registry-wait'
+    const registry = createDurableObjectDaemonCellRegistry(env)
+    const cell = registry.getCell(serverId)
+    const requestId = generateRequestId()
+    const deliveryId = generateDeliveryId()
+    const at = new Date().toISOString()
 
     await cell.enqueue({
-      kind: "command-dispatch",
+      kind: 'command-dispatch',
       deliveryId,
       requestId,
       at,
-      commandId: "cmd-wait",
-      commandType: "daemon.ping",
+      commandId: 'cmd-wait',
+      commandType: 'daemon.ping',
       payload: {},
-    });
+    })
 
     await cell.handleInbound({
-      kind: "command-outcome",
+      kind: 'command-outcome',
       requestId,
       at,
       ok: true,
       result: { ok: true },
       daemonReceivedAt: at,
       daemonRespondedAt: at,
-    });
+    })
 
-    const record = await cell.waitForRequest(requestId, 2000);
-    expect(record?.status).toBe("done");
-  });
+    const record = await cell.waitForRequest(requestId, 2000)
+    expect(record?.status).toBe('done')
+  })
 
-  it("waitForRequest returns null after the poll deadline when still non-terminal", async () => {
-    const serverId = "test-srv-registry-wait-timeout";
-    const registry = createDurableObjectDaemonCellRegistry(env);
-    const cell = registry.getCell(serverId);
-    const requestId = generateRequestId();
+  it('waitForRequest returns null after the poll deadline when still non-terminal', async () => {
+    const serverId = 'test-srv-registry-wait-timeout'
+    const registry = createDurableObjectDaemonCellRegistry(env)
+    const cell = registry.getCell(serverId)
+    const requestId = generateRequestId()
 
     await cell.enqueue({
-      kind: "command-dispatch",
+      kind: 'command-dispatch',
       deliveryId: generateDeliveryId(),
       requestId,
       at: new Date().toISOString(),
-      commandId: "cmd-wait-timeout",
-      commandType: "daemon.ping",
+      commandId: 'cmd-wait-timeout',
+      commandType: 'daemon.ping',
       payload: {},
-    });
+    })
 
-    const started = Date.now();
-    const record = await cell.waitForRequest(requestId, 400);
-    expect(record).toBeNull();
+    const started = Date.now()
+    const record = await cell.waitForRequest(requestId, 400)
+    expect(record).toBeNull()
     // At least one jittered poll sleep (POLL_BASE_MS = 250).
-    expect(Date.now() - started).toBeGreaterThanOrEqual(200);
-  }, 10_000);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(200)
+  }, 10_000)
 
-  it("createRequestAndWait expires when the poll deadline elapses", async () => {
-    const serverId = "test-srv-registry-create-wait-expire";
-    const registry = createDurableObjectDaemonCellRegistry(env);
-    const cell = registry.getCell(serverId);
-    const requestId = generateRequestId();
+  it('createRequestAndWait expires when the poll deadline elapses', async () => {
+    const serverId = 'test-srv-registry-create-wait-expire'
+    const registry = createDurableObjectDaemonCellRegistry(env)
+    const cell = registry.getCell(serverId)
+    const requestId = generateRequestId()
 
     const record = await cell.createRequestAndWait(
       {
-        kind: "command-dispatch",
+        kind: 'command-dispatch',
         deliveryId: generateDeliveryId(),
         requestId,
         at: new Date().toISOString(),
-        commandId: "cmd-create-wait-expire",
-        commandType: "daemon.ping",
+        commandId: 'cmd-create-wait-expire',
+        commandType: 'daemon.ping',
         payload: {},
       },
-      350,
-    );
-    expect(record.status).toBe("expired");
-    expect(record.requestId).toBe(requestId);
-  }, 10_000);
+      350
+    )
+    expect(record.status).toBe('expired')
+    expect(record.requestId).toBe(requestId)
+  }, 10_000)
 
-  it("delivery lease claim, renew, and release succeed", async () => {
-    const serverId = "test-srv-registry-lease";
-    const registry = createDurableObjectDaemonCellRegistry(env);
-    const cell = registry.getCell(serverId);
+  it('delivery lease claim, renew, and release succeed', async () => {
+    const serverId = 'test-srv-registry-lease'
+    const registry = createDurableObjectDaemonCellRegistry(env)
+    const cell = registry.getCell(serverId)
 
-    const claimed = await cell.claimDeliveryLease("consumer-a", 60_000);
-    expect(claimed?.holder).toBe("consumer-a");
-    expect(claimed?.expiresAt).toBeTruthy();
+    const claimed = await cell.claimDeliveryLease('consumer-a', 60_000)
+    expect(claimed?.holder).toBe('consumer-a')
+    expect(claimed?.expiresAt).toBeTruthy()
 
-    const renewed = await cell.renewDeliveryLease("consumer-a", 60_000);
-    expect(renewed?.holder).toBe("consumer-a");
+    const renewed = await cell.renewDeliveryLease('consumer-a', 60_000)
+    expect(renewed?.holder).toBe('consumer-a')
 
-    await cell.releaseDeliveryLease("consumer-a");
-  });
+    await cell.releaseDeliveryLease('consumer-a')
+  })
 
-  it("readOutboxBatch and ackOutbox drain queued envelopes", async () => {
-    const serverId = "test-srv-registry-outbox";
-    const registry = createDurableObjectDaemonCellRegistry(env);
-    const cell = registry.getCell(serverId);
-    const requestId = generateRequestId();
-    const deliveryId = generateDeliveryId();
+  it('readOutboxBatch and ackOutbox drain queued envelopes', async () => {
+    const serverId = 'test-srv-registry-outbox'
+    const registry = createDurableObjectDaemonCellRegistry(env)
+    const cell = registry.getCell(serverId)
+    const requestId = generateRequestId()
+    const deliveryId = generateDeliveryId()
 
     await cell.enqueue({
-      kind: "command-dispatch",
+      kind: 'command-dispatch',
       deliveryId,
       requestId,
       at: new Date().toISOString(),
-      commandId: "cmd-outbox",
-      commandType: "daemon.ping",
+      commandId: 'cmd-outbox',
+      commandType: 'daemon.ping',
       payload: {},
-    });
+    })
 
     const envelopes = await cell.readOutboxBatch({
-      consumer: "registry-test",
+      consumer: 'registry-test',
       count: 5,
-    });
-    expect(envelopes.some((entry) => entry.requestId === requestId)).toBe(true);
+    })
+    expect(envelopes.some((entry) => entry.requestId === requestId)).toBe(true)
 
-    await cell.ackOutbox([deliveryId], "registry-test");
-  });
+    await cell.ackOutbox([deliveryId], 'registry-test')
+  })
 
-  it("clearUpdateStatus removes terminal update rows", async () => {
-    const serverId = "test-srv-registry-clear-update";
-    const registry = createDurableObjectDaemonCellRegistry(env);
-    const cell = registry.getCell(serverId);
-    const requestId = generateRequestId();
-    const at = new Date().toISOString();
+  it('clearUpdateStatus removes terminal update rows', async () => {
+    const serverId = 'test-srv-registry-clear-update'
+    const registry = createDurableObjectDaemonCellRegistry(env)
+    const cell = registry.getCell(serverId)
+    const requestId = generateRequestId()
+    const at = new Date().toISOString()
 
     await cell.enqueue(
       {
-        kind: "update",
+        kind: 'update',
         deliveryId: generateDeliveryId(),
         requestId,
         at,
-        channel: "trunk",
+        channel: 'trunk',
       },
-      { ttlSeconds: 300 },
-    );
+      { ttlSeconds: 300 }
+    )
 
     await cell.handleInbound({
-      kind: "update-result",
+      kind: 'update-result',
       requestId,
       at,
       ok: true,
-    });
+    })
 
-    const result = await cell.clearUpdateStatus();
-    expect(result.cleared).toBeGreaterThanOrEqual(1);
-  });
+    const result = await cell.clearUpdateStatus()
+    expect(result.cleared).toBeGreaterThanOrEqual(1)
+  })
 
-  it("getDiagnostics and checkLiveness expose cell probes", async () => {
-    const serverId = "test-srv-registry-diagnostics";
-    const registry = createDurableObjectDaemonCellRegistry(env);
-    const cell = registry.getCell(serverId);
+  it('getDiagnostics and checkLiveness expose cell probes', async () => {
+    const serverId = 'test-srv-registry-diagnostics'
+    const registry = createDurableObjectDaemonCellRegistry(env)
+    const cell = registry.getCell(serverId)
 
-    const diag = await cell.getDiagnostics();
-    expect(diag.backend).toBe("durable-object");
+    const diag = await cell.getDiagnostics()
+    expect(diag.backend).toBe('durable-object')
 
-    const liveness = await cell.checkLiveness();
-    expect(liveness.connected).toBe(false);
-    expect(liveness.lastPingAtMs).toBeNull();
-  });
+    const liveness = await cell.checkLiveness()
+    expect(liveness.connected).toBe(false)
+    expect(liveness.lastPingAtMs).toBeNull()
+  })
 
-  it("recordInbound accepts heartbeat metadata", async () => {
-    const serverId = "test-srv-registry-record-inbound";
-    const registry = createDurableObjectDaemonCellRegistry(env);
-    const cell = registry.getCell(serverId);
+  it('recordInbound accepts heartbeat metadata', async () => {
+    const serverId = 'test-srv-registry-record-inbound'
+    const registry = createDurableObjectDaemonCellRegistry(env)
+    const cell = registry.getCell(serverId)
 
     await cell.attachDaemonSocket({
-      keyId: "key-inbound",
-      remoteAddress: "203.0.113.51",
-    });
+      keyId: 'key-inbound',
+      remoteAddress: '203.0.113.51',
+    })
 
-    await expect(cell.recordInbound({
-      at: new Date().toISOString(),
-      daemonBuild: { commit: "abc", buildId: "1", channel: "trunk" },
-    })).resolves.toBeUndefined();
+    await expect(
+      cell.recordInbound({
+        at: new Date().toISOString(),
+        daemonBuild: { commit: 'abc', buildId: '1', channel: 'trunk' },
+      })
+    ).resolves.toBeUndefined()
 
-    const snapshot = await cell.getSnapshot();
-    expect(snapshot.connected).toBe(true);
-  });
+    const snapshot = await cell.getSnapshot()
+    expect(snapshot.connected).toBe(true)
+  })
 
-  it("getSnapshots batches snapshot reads", async () => {
-    const registry = createDurableObjectDaemonCellRegistry(env);
-    const ids = ["test-srv-registry-batch-a", "test-srv-registry-batch-b"];
-    const map = await registry.getSnapshots(ids);
-    expect(map.size).toBe(2);
+  it('getSnapshots batches snapshot reads', async () => {
+    const registry = createDurableObjectDaemonCellRegistry(env)
+    const ids = ['test-srv-registry-batch-a', 'test-srv-registry-batch-b']
+    const map = await registry.getSnapshots(ids)
+    expect(map.size).toBe(2)
     for (const id of ids) {
-      expect(map.get(id)?.connected).toBe(false);
+      expect(map.get(id)?.connected).toBe(false)
     }
-  });
+  })
 
-  it("listOnlineServerIds reads connected rows from Postgres", async () => {
-    const db = createOnlineListDb(["online-a", "online-b"]);
-    const registry = createDurableObjectDaemonCellRegistry(env, db);
-    await expect(registry.listOnlineServerIds()).resolves.toEqual([
-      "online-a",
-      "online-b",
-    ]);
-  });
+  it('listOnlineServerIds reads connected rows from Postgres', async () => {
+    const db = createOnlineListDb(['online-a', 'online-b'])
+    const registry = createDurableObjectDaemonCellRegistry(env, db)
+    await expect(registry.listOnlineServerIds()).resolves.toEqual(['online-a', 'online-b'])
+  })
 
-  it("listOnlineServerIds returns empty when db is absent", async () => {
-    const registry = createDurableObjectDaemonCellRegistry(env);
-    await expect(registry.listOnlineServerIds()).resolves.toEqual([]);
-  });
+  it('listOnlineServerIds returns empty when db is absent', async () => {
+    const registry = createDurableObjectDaemonCellRegistry(env)
+    await expect(registry.listOnlineServerIds()).resolves.toEqual([])
+  })
 
-  it("purge wipes cell state via registry", async () => {
-    const serverId = "test-srv-registry-purge";
-    const registry = createDurableObjectDaemonCellRegistry(env);
-    const cell = registry.getCell(serverId);
+  it('purge wipes cell state via registry', async () => {
+    const serverId = 'test-srv-registry-purge'
+    const registry = createDurableObjectDaemonCellRegistry(env)
+    const cell = registry.getCell(serverId)
 
-    await cell.attachDaemonSocket({ keyId: "key-purge" });
-    await registry.purge(serverId);
+    await cell.attachDaemonSocket({ keyId: 'key-purge' })
+    await registry.purge(serverId)
 
-    const snapshot = await cell.getSnapshot();
-    expect(snapshot.connected).toBe(false);
-  });
+    const snapshot = await cell.getSnapshot()
+    expect(snapshot.connected).toBe(false)
+  })
 
-  it("uses location hints when resolving stubs", async () => {
-    const serverId = "test-srv-registry-location";
+  it('uses location hints when resolving stubs', async () => {
+    const serverId = 'test-srv-registry-location'
     const hintRows = () => ({
-      limit: () => Promise.resolve([{
-        metadata: {},
-        options: { cellLocationHint: "wnam" },
-      }]),
-    });
+      limit: () =>
+        Promise.resolve([
+          {
+            metadata: {},
+            options: { cellLocationHint: 'wnam' },
+          },
+        ]),
+    })
     const db = {
       select: () => ({
         from: () => ({
@@ -379,119 +375,120 @@ describe("createDurableObjectDaemonCellRegistry", () => {
           innerJoin: () => ({ where: () => ({ limit: () => Promise.resolve([]) }) }),
         }),
       }),
-    } as unknown as Db;
-    const registry = createDurableObjectDaemonCellRegistry(env, db);
-    const cell = registry.getCell(serverId);
-    const snapshot = await cell.getSnapshot();
-    expect(snapshot.connected).toBe(false);
-    expect(snapshot.serverId).toBe(serverId);
-  });
-});
+    } as unknown as Db
+    const registry = createDurableObjectDaemonCellRegistry(env, db)
+    const cell = registry.getCell(serverId)
+    const snapshot = await cell.getSnapshot()
+    expect(snapshot.connected).toBe(false)
+    expect(snapshot.serverId).toBe(serverId)
+  })
+})
 
-describe("DurableObjectStubDaemonCell recordInbound projection", () => {
+describe('DurableObjectStubDaemonCell recordInbound projection', () => {
   function createSelectCountingDb() {
-    let selects = 0;
+    let selects = 0
     const empty = () => ({
       where: () => {
-        selects += 1;
-        return { limit: () => Promise.resolve([]) };
+        selects += 1
+        return { limit: () => Promise.resolve([]) }
       },
-    });
+    })
     const db = {
       select: () => ({ from: () => ({ ...empty(), innerJoin: empty }) }),
       update: () => ({
         set: () => ({ where: () => Promise.resolve(undefined) }),
       }),
       $client: { end: async () => undefined },
-    } as unknown as Db;
-    return { db, selects: () => selects };
+    } as unknown as Db
+    return { db, selects: () => selects }
   }
 
   function createRecordInboundEnv(wasOffline: boolean, rpcPaths: string[]) {
     return createFakeCellEnv(async (path) => {
-      rpcPaths.push(path);
-      if (path.startsWith("/rpc/record-inbound")) {
-        return Response.json({ ok: true, wasOffline });
+      rpcPaths.push(path)
+      if (path.startsWith('/rpc/record-inbound')) {
+        return Response.json({ ok: true, wasOffline })
       }
       return Response.json({
-        serverId: "test-srv-stub-inbound",
+        serverId: 'test-srv-stub-inbound',
         version: 1,
         updatedAt: new Date().toISOString(),
         connected: true,
         lastSeenAt: new Date().toISOString(),
-      });
-    });
+      })
+    })
   }
 
   // The stub itself reads the server row once to place the cell, so compare the
   // two paths instead of expecting zero reads in steady state.
   async function countSelects(wasOffline: boolean) {
-    const rpcPaths: string[] = [];
-    const { db, selects } = createSelectCountingDb();
+    const rpcPaths: string[] = []
+    const { db, selects } = createSelectCountingDb()
     const cell = new DurableObjectStubDaemonCell(
       createRecordInboundEnv(wasOffline, rpcPaths),
       db,
-      "test-srv-stub-inbound",
-    );
-    await cell.recordInbound({ at: new Date().toISOString() });
-    return { selects: selects(), rpcPaths };
+      'test-srv-stub-inbound'
+    )
+    await cell.recordInbound({ at: new Date().toISOString() })
+    return { selects: selects(), rpcPaths }
   }
 
-  it("re-projects online only when the cell reports it was offline, with no extra snapshot RPC", async () => {
-    const steady = await countSelects(false);
-    const offline = await countSelects(true);
+  it('re-projects online only when the cell reports it was offline, with no extra snapshot RPC', async () => {
+    const steady = await countSelects(false)
+    const offline = await countSelects(true)
 
-    expect(offline.selects).toBeGreaterThan(steady.selects);
+    expect(offline.selects).toBeGreaterThan(steady.selects)
     const recordCalls = (paths: string[]) =>
-      paths.filter((p) => p.startsWith("/rpc/record-inbound")).length;
-    expect(recordCalls(offline.rpcPaths)).toBe(1);
+      paths.filter((p) => p.startsWith('/rpc/record-inbound')).length
+    expect(recordCalls(offline.rpcPaths)).toBe(1)
     // No snapshot RPC ahead of the record: the cell reports its own state.
-    expect(offline.rpcPaths[0]).toMatch(/^\/rpc\/record-inbound/);
-  });
+    expect(offline.rpcPaths[0]).toMatch(/^\/rpc\/record-inbound/)
+  })
 
-  it("/rpc/record-inbound reports the offline evidence a stale sweep left", async () => {
-    const serverId = "test-srv-record-inbound-evidence";
-    const stub = env.DAEMON_CELL.getByName(serverId);
+  it('/rpc/record-inbound reports the offline evidence a stale sweep left', async () => {
+    const serverId = 'test-srv-record-inbound-evidence'
+    const stub = env.DAEMON_CELL.getByName(serverId)
     const record = async () => {
-      const response = await stub.fetch("https://do.internal/rpc/record-inbound", {
-        method: "POST",
+      const response = await stub.fetch('https://do.internal/rpc/record-inbound', {
+        method: 'POST',
         headers: {
-          "Content-Type": "application/json",
-          "x-turbopanel-cell-server-id": serverId,
+          'Content-Type': 'application/json',
+          'x-turbopanel-cell-server-id': serverId,
         },
         body: JSON.stringify({ serverId, params: { at: new Date().toISOString() } }),
-      });
-      return (await response.json()) as { wasOffline: boolean };
-    };
+      })
+      return (await response.json()) as { wasOffline: boolean }
+    }
 
     // No live socket yet: offline evidence, repair needed.
-    expect((await record()).wasOffline).toBe(true);
-    await createDurableObjectDaemonCellRegistry(env).getCell(serverId)
-      .attachDaemonSocket({ keyId: "key-evidence" });
-    expect((await record()).wasOffline).toBe(false);
-  });
-});
+    expect((await record()).wasOffline).toBe(true)
+    await createDurableObjectDaemonCellRegistry(env)
+      .getCell(serverId)
+      .attachDaemonSocket({ keyId: 'key-evidence' })
+    expect((await record()).wasOffline).toBe(false)
+  })
+})
 
-describe("DurableObjectStubDaemonCell RPC retry edges", () => {
-  it("does not retry when the stub reports overloaded", async () => {
-    let fetchCalls = 0;
+describe('DurableObjectStubDaemonCell RPC retry edges', () => {
+  it('does not retry when the stub reports overloaded', async () => {
+    let fetchCalls = 0
     const cell = new DurableObjectStubDaemonCell(
       createFakeCellEnv(async () => {
-        fetchCalls += 1;
-        throw new Error("Durable Object is overloaded");
+        fetchCalls += 1
+        throw new Error('Durable Object is overloaded')
       }),
       undefined,
-      "test-srv-registry-overloaded",
-    );
+      'test-srv-registry-overloaded'
+    )
 
-    await expect(cell.getDiagnostics()).rejects.toThrow(/overloaded/i);
-    expect(fetchCalls).toBe(1);
-  });
+    await expect(cell.getDiagnostics()).rejects.toThrow(/overloaded/i)
+    expect(fetchCalls).toBe(1)
+  })
 
-  it("retries an idempotent RPC once after a transient network error", async () => {
-    let fetchCalls = 0;
+  it('retries an idempotent RPC once after a transient network error', async () => {
+    let fetchCalls = 0
     const diagnostics = {
-      backend: "durable-object",
+      backend: 'durable-object',
       usesHibernationWebSocket: true,
       constructorCalls: 1,
       wsAccepted: 0,
@@ -504,74 +501,74 @@ describe("DurableObjectStubDaemonCell RPC retry edges", () => {
       storageReads: 0,
       storageWrites: 0,
       storageByCallSite: {},
-    };
+    }
     const cell = new DurableObjectStubDaemonCell(
       createFakeCellEnv(async () => {
-        fetchCalls += 1;
+        fetchCalls += 1
         if (fetchCalls === 1) {
-          throw new Error("network timeout while contacting cell");
+          throw new Error('network timeout while contacting cell')
         }
-        return Response.json(diagnostics);
+        return Response.json(diagnostics)
       }),
       undefined,
-      "test-srv-registry-transient",
-    );
+      'test-srv-registry-transient'
+    )
 
     await expect(cell.getDiagnostics()).resolves.toMatchObject({
-      backend: "durable-object",
-    });
-    expect(fetchCalls).toBe(2);
-  });
+      backend: 'durable-object',
+    })
+    expect(fetchCalls).toBe(2)
+  })
 
-  it("does not retry a non-idempotent RPC after a transient error", async () => {
-    let fetchCalls = 0;
+  it('does not retry a non-idempotent RPC after a transient error', async () => {
+    let fetchCalls = 0
     const cell = new DurableObjectStubDaemonCell(
       createFakeCellEnv(async () => {
-        fetchCalls += 1;
-        throw new Error("failed to fetch from durable object");
+        fetchCalls += 1
+        throw new Error('failed to fetch from durable object')
       }),
       undefined,
-      "test-srv-registry-non-idempotent",
-    );
+      'test-srv-registry-non-idempotent'
+    )
 
-    await expect(
-      cell.attachDaemonSocket({ keyId: "key-no-retry" }),
-    ).rejects.toThrow(/failed to fetch/i);
-    expect(fetchCalls).toBe(1);
-  });
+    await expect(cell.attachDaemonSocket({ keyId: 'key-no-retry' })).rejects.toThrow(
+      /failed to fetch/i
+    )
+    expect(fetchCalls).toBe(1)
+  })
 
-  it("waitForRequest polls with jitter until a terminal status appears", async () => {
-    vi.useFakeTimers();
+  it('waitForRequest polls with jitter until a terminal status appears', async () => {
+    vi.useFakeTimers()
     try {
-      let fetchCalls = 0;
-      const requestId = "req-poll-jitter";
+      let fetchCalls = 0
+      const requestId = 'req-poll-jitter'
       const cell = new DurableObjectStubDaemonCell(
         createFakeCellEnv(async (path) => {
-          fetchCalls += 1;
-          const status = fetchCalls >= 3 ? "done" : "queued";
-          expect(path).toContain(`/rpc/request?requestId=`);
+          fetchCalls += 1
+          const status = fetchCalls >= 3 ? 'done' : 'queued'
+          expect(path).toContain(`/rpc/request?requestId=`)
           return Response.json({
             record: {
               requestId,
-              requestKind: "command-dispatch",
+              requestKind: 'command-dispatch',
               status,
               createdAt: new Date().toISOString(),
               expiresAt: new Date(Date.now() + 60_000).toISOString(),
             },
-          });
+          })
         }),
         undefined,
-        "test-srv-registry-poll-jitter",
-      );
+        'test-srv-registry-poll-jitter'
+      )
 
-      const pending = cell.waitForRequest(requestId, 5_000);
+      const pending = cell.waitForRequest(requestId, 5_000)
       // Advance past two jittered sleeps (250–349 ms each).
-      await vi.advanceTimersByTimeAsync(800);
-      const record = await pending;
-      expect(record?.status).toBe("done");
-      expect(fetchCalls).toBeGreaterThanOrEqual(3);
+      await vi.advanceTimersByTimeAsync(800)
+      const record = await pending
+      expect(record?.status).toBe('done')
+      expect(fetchCalls).toBeGreaterThanOrEqual(3)
     } finally {
-      vi.useRealTimers();
+      vi.useRealTimers()
     }
-  });
-});
+  })
+})
