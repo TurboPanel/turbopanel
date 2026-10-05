@@ -1486,6 +1486,13 @@ async function mapResolvedScopesToDeployEntries(
   return out
 }
 
+/** `{ variables }` for the wire, or nothing when the app has none (its payload stays as it was). */
+function nativeAppVariablesField(resolved: NativeAppVariables | undefined): {
+  variables?: NativeAppVariables['variables']
+} {
+  return resolved && resolved.variables.length > 0 ? { variables: resolved.variables } : {}
+}
+
 /**
  * What each native app's process gets, from what the variables module recorded
  * for it (see {@link buildNativeAppVariables}).
@@ -1859,7 +1866,6 @@ function nativeAppServicesForDeploy(
   )
   return apps.map((app) => {
     const cron = renderCronForDeploy(app.cron, tasksByComposeName.get(app.composeServiceName))
-    const variables = variablesByComposeName.get(app.composeServiceName)?.variables
     const resources = resourcesByComposeName.get(app.composeServiceName)
     const cpus = resources?.cpus
     const memoryBytes = resources?.memoryBytes
@@ -1895,7 +1901,7 @@ function nativeAppServicesForDeploy(
       // The `node` service left the compose document, and with it the
       // `environment:` the variables module built — this list is the only way
       // its variables reach the process.
-      ...(variables === undefined || variables.length === 0 ? {} : { variables }),
+      ...nativeAppVariablesField(variablesByComposeName.get(app.composeServiceName)),
     }
   })
 }
