@@ -34,9 +34,43 @@ export function resolveBase(args) {
   return !requested || requested === NIL_SHA ? 'origin/trunk' : requested
 }
 
-/** Modified or deleted immutable migration files among `git diff --name-status` changes. */
+/**
+ * `git diff` arguments for the changes under `migrations/`. `--no-renames`
+ * matters: with git's default rename detection, moving a shipped migration
+ * into a subfolder is one `R100` entry whose new path is not an immutable
+ * name, so the old file would vanish without a trace. Without renames it is a
+ * deletion of the old path (flagged) plus an addition.
+ */
+export function diffArgs(base) {
+  return ['diff', '--name-status', '--no-renames', base, 'HEAD', '--', 'migrations/']
+}
+
+/**
+ * Parse `git diff --name-status` output. A rename or copy line carries two
+ * paths (old, new); both are kept so a caller can never miss the old one.
+ */
+export function parseChanges(output) {
+  return output
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => {
+      const [status, ...paths] = line.split('\t')
+      return { status: status[0], path: paths[paths.length - 1], paths }
+    })
+}
+
+/**
+ * Modified, deleted, renamed or copied-over immutable migration files among
+ * `git diff --name-status` changes. A rename or copy counts when EITHER path
+ * is immutable: the old path is gone, or the new name was taken by a shipped
+ * file's content.
+ */
 export function findViolations(changes) {
-  return changes.filter((change) => change.status !== 'A' && IMMUTABLE.test(change.path))
+  return changes.filter(
+    (change) =>
+      change.status !== 'A' &&
+      (change.paths ?? [change.path]).some((candidate) => IMMUTABLE.test(candidate))
+  )
 }
 
 function git(...args) {
@@ -67,19 +101,13 @@ function main() {
     return
   }
 
-  const changes = git('diff', '--name-status', base, 'HEAD', '--', 'migrations/')
-    .split('\n')
-    .filter(Boolean)
-    .map((line) => {
-      const [status, ...paths] = line.split('\t')
-      return { status: status[0], path: paths[paths.length - 1] }
-    })
+  const changes = parseChanges(git(...diffArgs(base)))
 
   const violations = findViolations(changes)
   if (violations.length > 0) {
     for (const violation of violations) {
       console.error(
-        `migration-additions: ${violation.path} was ${violation.status === 'D' ? 'deleted' : 'modified'} — shipped migrations are immutable; add a forward migration instead`
+        `migration-additions: ${violation.path} was ${{ D: 'deleted', R: 'renamed', C: 'copied' }[violation.status] ?? 'modified'} — shipped migrations are immutable; add a forward migration instead`
       )
     }
     fail(`${violations.length} change(s) to frozen migration files since ${base}`)

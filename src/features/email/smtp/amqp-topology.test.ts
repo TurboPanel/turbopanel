@@ -1,5 +1,6 @@
 import { assertEquals } from '@std/assert'
 import {
+  EMAIL_AMQP_DEAD_QUEUE,
   EMAIL_AMQP_EXCHANGE,
   EMAIL_AMQP_QUEUE,
   EMAIL_AMQP_ROUTING_KEY,
@@ -21,7 +22,9 @@ test('assertEmailAmqpTopology asserts exchange, queue, and binding', async () =>
       calls.push(`exchange:${exchange}:${type}:${options?.durable}`)
     },
     assertQueue: async (queue, options) => {
-      calls.push(`queue:${queue}:${options?.durable}`)
+      calls.push(
+        `queue:${queue}:${options?.durable}:${options?.arguments?.['x-dead-letter-exchange'] ?? ''}`
+      )
     },
     bindQueue: async (queue, exchange, routingKey) => {
       calls.push(`bind:${queue}:${exchange}:${routingKey}`)
@@ -29,7 +32,12 @@ test('assertEmailAmqpTopology asserts exchange, queue, and binding', async () =>
   })
   assertEquals(calls, [
     `exchange:${EMAIL_AMQP_EXCHANGE}:topic:true`,
-    `queue:${EMAIL_AMQP_QUEUE}:true`,
+    // The send queue keeps its original, argument-free declaration.
+    `queue:${EMAIL_AMQP_QUEUE}:true:`,
     `bind:${EMAIL_AMQP_QUEUE}:${EMAIL_AMQP_EXCHANGE}:${EMAIL_AMQP_ROUTING_KEY}`,
+    ...[30, 60, 120, 300, 900, 3600].map(
+      (seconds) => `queue:turbopanel.email.retry.${seconds}s:true:${EMAIL_AMQP_EXCHANGE}`
+    ),
+    `queue:${EMAIL_AMQP_DEAD_QUEUE}:true:`,
   ])
 })

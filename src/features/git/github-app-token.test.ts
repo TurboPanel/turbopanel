@@ -13,6 +13,7 @@ import {
   exchangeInstallationTokenAt,
   githubApiBaseFor,
   githubApiHeaders,
+  clearGithubInstallationTokenCache,
   mintGithubInstallationToken,
   privateKeyPemToPkcs8Der,
   signGithubAppJwt,
@@ -441,6 +442,7 @@ async function sealedApp(privateKeyPem: string, baseUrl = 'https://github.com') 
 }
 
 test('mintGithubInstallationToken exchanges a JWT for the installation token', async () => {
+  clearGithubInstallationTokenCache()
   const pem = await generatePkcs8Pem()
   const { secrets, app } = await sealedApp(pem)
   const db = gitDb({
@@ -472,6 +474,7 @@ test('mintGithubInstallationToken exchanges a JWT for the installation token', a
 })
 
 test('mintGithubInstallationToken rejects a missing App config', async () => {
+  clearGithubInstallationTokenCache()
   const secrets = await deriveEncryptionSecretsConfig(
     parseTestSecretsConfig('deno'),
     'data-encryption'
@@ -492,6 +495,98 @@ test('mintGithubInstallationToken rejects a missing App config', async () => {
     GithubAppTokenError,
     'github app is not configured'
   )
+})
+
+function mintFixture(opts: { expiresAt: string; suspendedAt?: string | null }) {
+  return async () => {
+    const pem = await generatePkcs8Pem()
+    const { secrets, app } = await sealedApp(pem)
+    const row = {
+      provider: 'github',
+      externalInstallationId: '88',
+      suspendedAt: null as string | null,
+    }
+    const db = gitDb({ app, installation: row })
+    let calls = 0
+    const respond = () => {
+      calls += 1
+      return new Response(JSON.stringify({ token: `ghs_${calls}`, expires_at: opts.expiresAt }), {
+        status: 201,
+      })
+    }
+    return { db, secrets, row, respond, calls: () => calls }
+  }
+}
+
+test('a minted installation token is reused until close to its expiry', async () => {
+  clearGithubInstallationTokenCache()
+  const fixture = await mintFixture({ expiresAt: new Date(Date.now() + 3_600_000).toISOString() })()
+  await withFetch(fixture.respond, async () => {
+    const first = await mintGithubInstallationToken(fixture.db, fixture.secrets, 'install-reuse')
+    const second = await mintGithubInstallationToken(fixture.db, fixture.secrets, 'install-reuse')
+    assertEquals(second, first)
+    assertEquals(fixture.calls(), 1)
+    // Another connection is its own entry.
+    await mintGithubInstallationToken(fixture.db, fixture.secrets, 'install-other')
+    assertEquals(fixture.calls(), 2)
+  })
+})
+
+test('a token near its expiry is not handed out again', async () => {
+  clearGithubInstallationTokenCache()
+  const fixture = await mintFixture({
+    expiresAt: new Date(Date.now() + 5 * 60_000).toISOString(),
+  })()
+  await withFetch(fixture.respond, async () => {
+    await mintGithubInstallationToken(fixture.db, fixture.secrets, 'install-near')
+    await mintGithubInstallationToken(fixture.db, fixture.secrets, 'install-near')
+    assertEquals(fixture.calls(), 2)
+  })
+})
+
+test('callers that arrive together share one upstream mint', async () => {
+  clearGithubInstallationTokenCache()
+  const fixture = await mintFixture({ expiresAt: new Date(Date.now() + 3_600_000).toISOString() })()
+  await withFetch(fixture.respond, async () => {
+    const tokens = await Promise.all(
+      Array.from({ length: 8 }, () =>
+        mintGithubInstallationToken(fixture.db, fixture.secrets, 'install-burst')
+      )
+    )
+    assertEquals(fixture.calls(), 1)
+    assertEquals(new Set(tokens.map((t) => t.token)).size, 1)
+  })
+})
+
+test('a suspended installation is refused even while a token is cached', async () => {
+  clearGithubInstallationTokenCache()
+  const fixture = await mintFixture({ expiresAt: new Date(Date.now() + 3_600_000).toISOString() })()
+  await withFetch(fixture.respond, async () => {
+    await mintGithubInstallationToken(fixture.db, fixture.secrets, 'install-susp')
+    fixture.row.suspendedAt = '2030-01-01T00:00:00.000Z'
+    await assertRejects(
+      () => mintGithubInstallationToken(fixture.db, fixture.secrets, 'install-susp'),
+      GithubAppTokenError,
+      'installation is suspended'
+    )
+  })
+})
+
+test('a failed mint is not cached', async () => {
+  clearGithubInstallationTokenCache()
+  const fixture = await mintFixture({ expiresAt: new Date(Date.now() + 3_600_000).toISOString() })()
+  await withFetch(
+    () => new Response(JSON.stringify({ message: 'nope' }), { status: 403 }),
+    async () => {
+      await assertRejects(() =>
+        mintGithubInstallationToken(fixture.db, fixture.secrets, 'install-fail')
+      )
+    }
+  )
+  await withFetch(fixture.respond, async () => {
+    const token = await mintGithubInstallationToken(fixture.db, fixture.secrets, 'install-fail')
+    assertEquals(token.token, 'ghs_1')
+  })
 })
 
 test('mintGithubInstallationToken rejects a missing installation', async () => {

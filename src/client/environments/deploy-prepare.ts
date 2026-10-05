@@ -234,6 +234,7 @@ import {
   readHostnames,
   readPathPrefix,
   readTargetPort,
+  readWwwRedirect,
   tlsPinErrorCode,
 } from './deploy-routes-helpers.ts'
 import {
@@ -3603,6 +3604,7 @@ async function resolveHttpHostingEntry(
       tlsId: tlsWire.tlsId,
       ...(tlsWire.tlsMode === undefined ? {} : { tlsMode: tlsWire.tlsMode }),
       proxy: readHostingProxyFromOptions(h.options),
+      ...(readWwwRedirect(h.options) ? { wwwRedirect: true } : {}),
       ...(bindResolved === undefined ? {} : { bindAddress: bindResolved }),
       ...(web === undefined ? {} : { web }),
     },

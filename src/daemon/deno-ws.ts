@@ -20,6 +20,7 @@ import {
 import { instanceAttachVersionFrame } from './attach-version.ts'
 import type { DaemonJwtKeyring } from './authn/daemon-jwt-keyring.ts'
 import { tryAssignColocatedDaemonToInstalledOrganization } from '../client/authn/install-state.ts'
+import { handleAcmeIssuanceEvent } from '../client/tls/acme-issuance-event.ts'
 import { recordInstanceAcmeIssuance } from '../features/install/instance-hostnames.ts'
 import {
   persistDaemonReachedTarget,
@@ -383,6 +384,25 @@ async function handleDaemonManagedHaInbound(params: {
   await cell.recordInbound({ connectionId, at: message.at })
 }
 
+async function handleAcmeIssuanceInbound(params: {
+  cell: ReturnType<DaemonCellRegistry['getCell']>
+  db: Db
+  serverId: string
+  connectionId: string | undefined
+  message: Extract<DaemonMessage, { type: 'acme-issuance-event' }>
+}): Promise<void> {
+  const { cell, db, serverId, connectionId, message } = params
+  await cell.recordInbound({ connectionId, at: message.at })
+  await handleAcmeIssuanceEvent(db, {
+    serverId,
+    hostname: message.hostname,
+    ok: message.ok,
+    at: message.at,
+    ...(message.errorMessage ? { errorMessage: message.errorMessage } : {}),
+    ...(message.notAfter ? { notAfter: message.notAfter } : {}),
+  })
+}
+
 async function handleInstanceAcmeIssuanceInbound(params: {
   cell: ReturnType<DaemonCellRegistry['getCell']>
   db: Db
@@ -570,6 +590,15 @@ async function dispatchDaemonInboundByType(params: DaemonInboundDispatch): Promi
         connectionId,
         message,
         reporterServerId: serverId,
+      })
+      return
+    case 'acme-issuance-event':
+      await handleAcmeIssuanceInbound({
+        cell,
+        db,
+        serverId,
+        connectionId,
+        message,
       })
       return
     case 'instance-acme-issuance-event':

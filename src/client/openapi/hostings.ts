@@ -203,6 +203,11 @@ export const hostingSchemas = {
         description:
           'Required non-empty when protocol is tcp or udp. Invalid or duplicate published ports are dropped on parse; deploy rejects an empty list for tcp/udp.',
       },
+      wwwRedirect: {
+        type: 'boolean',
+        description:
+          "When true, the other spelling of each hostname (`www.` added, or removed when the name starts with `www.`) is also served and redirected permanently to the hostname as written, keeping the path and query. With Let's Encrypt the extra name gets its own certificate. http hostings only; the extra name must not already be a hostname in the environment. Default false.",
+      },
       web: {
         $ref: '#/components/schemas/HostingWebOptions',
         description: 'Site / host-native stack options (env + optional Apache PHP hints)',

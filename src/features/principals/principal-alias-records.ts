@@ -43,10 +43,7 @@ export function composePrincipalAliases(options: unknown): Set<string> {
  * An unknown project yields an empty set rather than throwing: the caller has
  * already resolved (or refused) the project by the time it asks.
  */
-export async function loadProjectPrincipalAliases(
-  db: Db,
-  projectId: string,
-): Promise<Set<string>> {
+export async function loadProjectPrincipalAliases(db: Db, projectId: string): Promise<Set<string>> {
   const [row] = await db
     .select({ options: project.options })
     .from(project)
@@ -55,10 +52,22 @@ export async function loadProjectPrincipalAliases(
   return composePrincipalAliases(row?.options)
 }
 
+/**
+ * The project's stored `options` blob (its Base compose and extra layers), or
+ * `null` when the project has none or does not exist. What an environment's
+ * changes are checked against on save.
+ */
+export async function loadProjectOptions(db: Db, projectId: string): Promise<unknown> {
+  const [row] = await db
+    .select({ options: project.options })
+    .from(project)
+    .where(eq(project.id, projectId))
+    .limit(1)
+  return row?.options ?? null
+}
+
 /** Union of two alias sets, for the overlay case (project base ∪ own root). */
-export function unionAliasSets(
-  ...sets: ReadonlyArray<ReadonlySet<string>>
-): Set<string> {
+export function unionAliasSets(...sets: ReadonlyArray<ReadonlySet<string>>): Set<string> {
   const out = new Set<string>()
   for (const set of sets) {
     for (const alias of set) out.add(alias)

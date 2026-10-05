@@ -101,23 +101,18 @@ describe('validateMetricsSample', () => {
     })
 
     it('rejects intervalSeconds out of range', () => {
-      const result = validateMetricsSample(
-        validRaw({ metadata: { intervalSeconds: 0 } }),
-        ctx()
-      )
+      const result = validateMetricsSample(validRaw({ metadata: { intervalSeconds: 0 } }), ctx())
       expect(result.ok).toBe(false)
     })
 
     it('rejects a negative sequence/topologyGeneration/bootGeneration', () => {
-      expect(validateMetricsSample(validRaw({ metadata: { sequence: -1 } }), ctx()).ok).toBe(
-        false
-      )
+      expect(validateMetricsSample(validRaw({ metadata: { sequence: -1 } }), ctx()).ok).toBe(false)
       expect(
         validateMetricsSample(validRaw({ metadata: { topologyGeneration: -1 } }), ctx()).ok
       ).toBe(false)
-      expect(
-        validateMetricsSample(validRaw({ metadata: { bootGeneration: -1 } }), ctx()).ok
-      ).toBe(false)
+      expect(validateMetricsSample(validRaw({ metadata: { bootGeneration: -1 } }), ctx()).ok).toBe(
+        false
+      )
     })
 
     it('rejects the removed collectionMode metadata field', () => {
@@ -136,10 +131,7 @@ describe('validateMetricsSample', () => {
 
   describe('host', () => {
     it('rejects an unrecognized host group', () => {
-      const result = validateMetricsSample(
-        validRaw({ host: { ...emptyHost(), extra: {} } }),
-        ctx()
-      )
+      const result = validateMetricsSample(validRaw({ host: { ...emptyHost(), extra: {} } }), ctx())
       expect(result.ok).toBe(false)
     })
 
@@ -204,10 +196,7 @@ describe('validateMetricsSample', () => {
     })
 
     it('rejects an entity entry missing its id field', () => {
-      const result = validateMetricsSample(
-        validRaw({ gpus: [{ utilizationPercent: 10 }] }),
-        ctx()
-      )
+      const result = validateMetricsSample(validRaw({ gpus: [{ utilizationPercent: 10 }] }), ctx())
       expect(result.ok).toBe(false)
     })
 
@@ -336,9 +325,7 @@ describe('validateMetricsSample', () => {
 
     it('rejects a non-object router block and a non-numeric router field', () => {
       expect(validateMetricsSample(validRaw({ router: 1 }), ctx()).ok).toBe(false)
-      expect(validateMetricsSample(validRaw({ router: { backendsUp: 'x' } }), ctx()).ok).toBe(
-        false
-      )
+      expect(validateMetricsSample(validRaw({ router: { backendsUp: 'x' } }), ctx()).ok).toBe(false)
     })
   })
 
@@ -462,7 +449,7 @@ describe('validateMetricsSample', () => {
           events: [
             {
               eventId: 'e1',
-              at: '2000-01-01T00:00:00.000Z',
+              at: new Date(Date.now() - 3_600_000).toISOString(),
               kind: 'oom_kill',
               severity: 'critical',
             },

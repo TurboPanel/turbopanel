@@ -67,7 +67,9 @@ export async function recordAuditAndNotify(
     ? {
         queue,
         from: c.get('emailFrom') || 'noreply@turbopanel.local',
-        consoleBaseUrl: await resolvePublicBaseUrl(c).catch(() => null),
+        consoleBaseUrl: await resolvePublicBaseUrl(c, { allowRequestHost: false }).catch(
+          () => null
+        ),
       }
     : undefined
   await emitNotification(
