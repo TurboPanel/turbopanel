@@ -14,7 +14,11 @@ import {
   type GitProviderSourceRow,
 } from './git-provider.ts'
 import { ForgeError } from './forge-records.ts'
-import { GITHUB_API_BASE, GithubAppTokenError } from './github-app-token.ts'
+import {
+  clearGithubInstallationTokenCache,
+  GITHUB_API_BASE,
+  GithubAppTokenError,
+} from './github-app-token.ts'
 import { GITHUB_SIGNATURE_HEADER } from './github-webhook.ts'
 import {
   githubInstallationExternalId,
@@ -129,6 +133,7 @@ function gitDb(opts: {
 }
 
 async function mintedCtx(): Promise<GitProviderContext> {
+  clearGithubInstallationTokenCache()
   const pem = await generatePkcs8Pem()
   const secrets = await deriveEncryptionSecretsConfig(
     parseTestSecretsConfig('deno'),
