@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { and, eq } from 'drizzle-orm'
 import { assertEquals } from '@std/assert'
 import { getDatabaseUrl } from '../../db/url.ts'
@@ -38,7 +39,7 @@ test('generateLicenseToken and verifyLicenseToken round-trip', async () => {
 
 test('createLicense stores a hashed token and returns plaintext once', async () => {
   if (!dbUrl) {
-    console.warn('Skipping license DB test: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('license DB test')
     return
   }
 
@@ -65,7 +66,10 @@ test('createLicense stores a hashed token and returns plaintext once', async () 
     assertEquals(await verifyLicenseToken(created.licenseToken, active.token), true)
 
     const listed = await listLicenses(db, organizationId)
-    assertEquals(listed.some((row) => row.id === created.licenseId), true)
+    assertEquals(
+      listed.some((row) => row.id === created.licenseId),
+      true
+    )
   } finally {
     await db.delete(license).where(eq(license.organizationId, organizationId))
     await db.delete(organization).where(eq(organization.id, organizationId))
@@ -74,7 +78,7 @@ test('createLicense stores a hashed token and returns plaintext once', async () 
 
 test('revokeLicense is idempotent and invalidateLicense returns server ids', async () => {
   if (!dbUrl) {
-    console.warn('Skipping license revoke test: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('license revoke test')
     return
   }
 
@@ -93,17 +97,16 @@ test('revokeLicense is idempotent and invalidateLicense returns server ids', asy
     const invalidated = await invalidateLicense(db, created.licenseId, organizationId)
     assertEquals(invalidated.ok, false)
 
-    const bound = await listServersBoundToLicenses(
-      db,
-      organizationId,
-      [created.licenseId],
-    )
+    const bound = await listServersBoundToLicenses(db, organizationId, [created.licenseId])
     assertEquals(bound.size, 0)
 
     assertEquals(await lookupActiveLicense(db, created.licenseId), null)
 
     const listed = await listLicenses(db, organizationId)
-    assertEquals(listed.some((row) => row.id === created.licenseId), false)
+    assertEquals(
+      listed.some((row) => row.id === created.licenseId),
+      false
+    )
   } finally {
     await db.delete(license).where(and(eq(license.organizationId, organizationId)))
     await db.delete(organization).where(eq(organization.id, organizationId))
@@ -112,7 +115,7 @@ test('revokeLicense is idempotent and invalidateLicense returns server ids', asy
 
 test('invalidateLicense refuses while a live server is attached', async () => {
   if (!dbUrl) {
-    console.warn('Skipping license attach test: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('license attach test')
     return
   }
 
@@ -151,12 +154,7 @@ test('invalidateLicense refuses while a live server is attached', async () => {
       }
     }
 
-    const forced = await invalidateLicense(
-      db,
-      created.licenseId,
-      organizationId,
-      { force: true },
-    )
+    const forced = await invalidateLicense(db, created.licenseId, organizationId, { force: true })
     assertEquals(forced.ok, true)
     if (forced.ok) {
       assertEquals(forced.serverIds, [serverId])
@@ -171,7 +169,7 @@ test('invalidateLicense refuses while a live server is attached', async () => {
 
 test('invalidateLicense does not treat a revoked attached row as occupied', async () => {
   if (!dbUrl) {
-    console.warn('Skipping license revoked-attach test: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('license revoked-attach test')
     return
   }
 
@@ -215,20 +213,13 @@ test('invalidateLicense does not treat a revoked attached row as occupied', asyn
 
 test('listServersBoundToLicenses returns empty map for empty id list', async () => {
   const db = createMockAuthDb(createEmptyMockAuthState())
-  const bound = await listServersBoundToLicenses(
-    db,
-    '00000000-0000-4000-8000-000000000010',
-    [],
-  )
+  const bound = await listServersBoundToLicenses(db, '00000000-0000-4000-8000-000000000010', [])
   assertEquals(bound.size, 0)
 })
 
 test('lookupActiveLicense returns null when mock store is empty', async () => {
   const db = createMockAuthDb(createEmptyMockAuthState())
-  assertEquals(
-    await lookupActiveLicense(db, '00000000-0000-4000-8000-000000000011'),
-    null,
-  )
+  assertEquals(await lookupActiveLicense(db, '00000000-0000-4000-8000-000000000011'), null)
 })
 
 test('createLicense inserts into mock store and lists active licenses', async () => {

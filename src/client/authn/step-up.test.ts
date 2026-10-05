@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assertEquals } from '@std/assert'
 import { and, eq, inArray, like } from 'drizzle-orm'
 import { Hono } from 'hono'
@@ -10,14 +11,11 @@ import {
   environment,
   grant,
   hosting,
-  managed,
   organization,
   project,
-  server,
   service,
   session,
   storage,
-  storageCopy,
   user,
   verification,
   workspace,
@@ -27,14 +25,14 @@ import { deriveEncryptionSecretsConfig, deriveSecretsConfig } from '../../lib/se
 import { parseTestSecretsConfig } from '../../test-fixtures/secrets.ts'
 import { registerEnvironmentStopRoutes } from '../environments/deploy-routes.ts'
 import { registerEnvironmentRoutes } from '../environments/routes.ts'
-import { registerHostingRoutes } from '../hostings/routes.ts'
 import { registerManagedRoutes } from '../managed/routes.ts'
-import { registerStorageBackupRoutes } from '../storage/backup-routes.ts'
-import { registerStorageRoutes } from '../storage/routes.ts'
-import { registerTlsRoutes } from '../tls/routes.ts'
+import { registerTlsCaStepUp } from '../tls/ca-step-up.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import { registerOrganizationMemberRoutes } from '../organizations/members.ts'
+import { registerHostingDeleteStepUp } from '../hostings/delete-step-up.ts'
+import { registerHostingRoutes } from '../hostings/routes.ts'
 import { registerReauthSettingsRoutes } from '../organizations/reauth-settings-routes.ts'
+import { registerStorageRoutes } from '../storage/routes.ts'
 import { createAuthRateLimiter, setSharedAuthRateLimiterForTests } from './auth-rate-limit.ts'
 import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from './crypto.ts'
 import { registerAuthRoutes } from './http.ts'
@@ -86,12 +84,12 @@ async function buildFixture(db: Db, reauthLimit = 1000) {
   registerReauthSettingsRoutes(client, opts)
   registerOrganizationMemberRoutes(client, opts)
   registerEnvironmentRoutes(client, opts)
-  registerEnvironmentStopRoutes(client, opts)
-  registerHostingRoutes(client, opts)
-  registerManagedRoutes(client, opts)
   registerStorageRoutes(client, opts)
-  registerStorageBackupRoutes(client, opts)
-  registerTlsRoutes(client, opts)
+  registerEnvironmentStopRoutes(client, opts)
+  registerManagedRoutes(client, opts)
+  registerTlsCaStepUp(client, opts)
+  registerHostingDeleteStepUp(client, opts)
+  registerHostingRoutes(client, opts)
   // A stand-in destructive route: any route wired to the gate behaves like it.
   client.use('/probe/*', createSessionMiddleware(sessionSecrets))
   client.delete('/probe/:orgId', async (c) => {
@@ -171,7 +169,7 @@ async function withScene(
   reauthLimit = 1000
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn('Skipping step-up tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('step-up tests')
     return
   }
   const db = createDenoDb()
@@ -219,6 +217,29 @@ test('registry names every gated action once', () => {
   const keys = Object.keys(STEP_UP_ACTIONS)
   assertEquals(new Set(keys).size, keys.length)
   assertEquals(keys.includes('environment.delete'), true)
+})
+
+/** Non-test sources under src/client, so the wiring check sees every route file. */
+async function* clientSources(dir: URL): AsyncGenerator<string> {
+  for await (const entry of Deno.readDir(dir)) {
+    const child = new URL(entry.name + (entry.isDirectory ? '/' : ''), dir)
+    if (entry.isDirectory) yield* clientSources(child)
+    else if (entry.name.endsWith('.ts') && !entry.name.includes('.test.')) {
+      yield await Deno.readTextFile(child)
+    }
+  }
+}
+
+test('every registered action is called by a route', async () => {
+  const sources: string[] = []
+  for await (const text of clientSources(new URL('../', import.meta.url))) sources.push(text)
+  const all = sources.join('\n')
+  for (const action of Object.keys(STEP_UP_ACTIONS)) {
+    const wired = new RegExp(
+      String.raw`(?:requireStepUpIfConfigured|authorizeManagedBackupMutation|loadManagedRowScope|tlsCaGate)\([^)]*?['"]${action.replaceAll('.', String.raw`\.`)}['"]`
+    )
+    assertEquals(wired.test(all), true, `no route calls the gate for ${action}`)
+  }
 })
 
 test('setting off: permanent actions are unchanged', async () => {
@@ -477,135 +498,139 @@ test('delete environment is wired to the gate', async () => {
   })
 })
 
-/** Rows the gated routes below need to get past their own lookups. */
-async function makeGatedResources(db: Db, organizationId: string) {
-  const { workspaceId, projectId, environmentId } = await makeStoppedEnvironment(
-    db,
-    organizationId,
-    'gated'
-  )
-  const now = new Date().toISOString()
-  const [srv] = await db
-    .insert(server)
-    .values({ organizationId, name: 'Step-up Server', createdAt: now, updatedAt: now })
-    .returning({ id: server.id })
-  const [managedRow] = await db
-    .insert(managed)
-    .values({
-      environmentId,
-      serverId: srv!.id,
-      name: 'Postgres',
-      engine: 'postgres',
-      status: 'ready',
-      options: { databases: ['postgres'] },
-    })
-    .returning({ id: managed.id })
-  const [svc] = await db
-    .insert(service)
-    .values({ environmentId, name: 'web', composeServiceName: 'web' })
-    .returning({ id: service.id })
-  const [hostingRow] = await db
-    .insert(hosting)
-    .values({ serviceId: svc!.id, name: 'step-up-hosting' })
-    .returning({ id: hosting.id })
-  const [store] = await db
-    .insert(storage)
-    .values({ organizationId, kind: 'directory', name: 'step-up-storage' })
-    .returning({ id: storage.id })
-  const [copy] = await db
-    .insert(storageCopy)
-    .values({ storageId: store!.id, provider: 'docker' })
-    .returning({ id: storageCopy.id })
-  return {
-    workspaceId,
-    projectId,
-    environmentId,
-    serverId: srv!.id,
-    managedId: managedRow!.id,
-    hostingId: hostingRow!.id,
-    storageId: store!.id,
-    copyId: copy!.id,
-  }
-}
-
-test('the destructive environment, managed, TLS, storage and hosting routes are wired to the gate', async () => {
+test('changing the re-authentication setting needs step-up while it is on', async () => {
   await withScene(async ({ db, fx, orgA, cookie, password }) => {
-    const r = await makeGatedResources(db, orgA)
-    const backup = crypto.randomUUID()
-    const copyBase = `/storage/${r.storageId}/copies/${r.copyId}/backups/${backup}`
-    const cases: Array<[string, string, string]> = [
-      ['POST', `/environments/${r.environmentId}/stop`, 'environment.stop'],
-      [
-        'POST',
-        `/environments/${r.environmentId}/managed/backups/${backup}/restore`,
-        'managed.backup.restore',
-      ],
-      [
-        'POST',
-        `/environments/${r.environmentId}/managed/disaster-recovery/promote`,
-        'managed.disaster_recovery.promote',
-      ],
-      ['POST', '/tls/ca/rotate', 'tls.ca.rotate'],
-      ['POST', '/tls/ca/retire', 'tls.ca.retire'],
-      ['DELETE', `/storage/${r.storageId}`, 'storage.delete'],
-      ['DELETE', copyBase, 'storage.backup.delete'],
-      ['POST', `${copyBase}/restore`, 'storage.backup.restore'],
-      ['DELETE', `/hostings/${r.hostingId}`, 'hosting.delete'],
+    await setOrgReauth(db, orgA, true)
+    const path = `/organizations/${orgA}/reauth-settings`
+    const off = { requireReauthForDestructive: false }
+
+    const refused = await req(fx, 'PUT', path, cookie, off)
+    assertEquals(refused.status, 403)
+    assertEquals(
+      ((await refused.json()) as { action: string }).action,
+      'organization.reauth_settings.update'
+    )
+    const stillOn = (await (await req(fx, 'GET', path, cookie)).json()) as {
+      requireReauthForDestructive: boolean
+    }
+    assertEquals(stillOn.requireReauthForDestructive, true)
+
+    await req(fx, 'POST', '/auth/reauth', cookie, proofBody(password))
+    assertEquals((await req(fx, 'PUT', path, cookie, off)).status, 200)
+  })
+})
+
+test('delete storage is wired to the gate', async () => {
+  await withScene(async ({ db, fx, orgA, cookie, password }) => {
+    const scene = await makeStoppedEnvironment(db, orgA, 'storage')
+    const now = new Date().toISOString()
+    const [row] = await db
+      .insert(storage)
+      .values({
+        organizationId: orgA,
+        projectId: scene.projectId,
+        environmentId: null,
+        serviceId: null,
+        kind: 'volume',
+        name: 'step-up-volume',
+        createdAt: now,
+        updatedAt: now,
+      })
+      .returning({ id: storage.id })
+    const remove = () =>
+      fx.app.request(`${API}/storage/${row!.id}`, {
+        method: 'DELETE',
+        headers: { cookie, [ORG_ID_HEADER]: orgA, 'X-Real-IP': '203.0.113.7' },
+      })
+    try {
+      await setOrgReauth(db, orgA, true)
+      const refused = await remove()
+      assertEquals(refused.status, 403)
+      assertEquals(((await refused.json()) as { action: string }).action, 'storage.delete')
+      assertEquals((await db.select().from(storage).where(eq(storage.id, row!.id))).length, 1)
+
+      await req(fx, 'POST', '/auth/reauth', cookie, proofBody(password))
+      assertEquals((await remove()).status, 200)
+    } finally {
+      await db.delete(storage).where(eq(storage.organizationId, orgA))
+      await db.delete(environment).where(eq(environment.projectId, scene.projectId))
+      await db.delete(project).where(eq(project.workspaceId, scene.workspaceId))
+      await db.delete(workspace).where(eq(workspace.organizationId, orgA))
+    }
+  })
+})
+
+test('delete hosting is wired to the gate', async () => {
+  await withScene(async ({ db, fx, orgA, cookie, password }) => {
+    const scene = await makeStoppedEnvironment(db, orgA, 'hosting')
+    const [svc] = await db
+      .insert(service)
+      .values({ environmentId: scene.environmentId, composeServiceName: 'step-up-web' })
+      .returning({ id: service.id })
+    const [host] = await db
+      .insert(hosting)
+      .values({ serviceId: svc!.id, name: 'Step-up Site' })
+      .returning({ id: hosting.id })
+    const remove = () =>
+      fx.app.request(`${API}/hostings/${host!.id}`, {
+        method: 'DELETE',
+        headers: { cookie, [ORG_ID_HEADER]: orgA, 'X-Real-IP': '203.0.113.7' },
+      })
+    try {
+      await setOrgReauth(db, orgA, true)
+      const refused = await remove()
+      assertEquals(refused.status, 403)
+      assertEquals(((await refused.json()) as { action: string }).action, 'hosting.delete')
+      assertEquals((await db.select().from(hosting).where(eq(hosting.id, host!.id))).length, 1)
+
+      await req(fx, 'POST', '/auth/reauth', cookie, proofBody(password))
+      assertEquals((await remove()).status, 200)
+      assertEquals((await db.select().from(hosting).where(eq(hosting.id, host!.id))).length, 0)
+    } finally {
+      await db.delete(hosting).where(eq(hosting.id, host!.id))
+      await db.delete(service).where(eq(service.id, svc!.id))
+      await db.delete(environment).where(eq(environment.projectId, scene.projectId))
+      await db.delete(project).where(eq(project.workspaceId, scene.workspaceId))
+      await db.delete(workspace).where(eq(workspace.organizationId, orgA))
+    }
+  })
+})
+
+test('stopping an environment, promoting a disaster-recovery replica and rotating or retiring the CA are wired to the gate', async () => {
+  await withScene(async ({ db, fx, orgA, cookie }) => {
+    const scene = await makeStoppedEnvironment(db, orgA, 'gated')
+    const envPath = `/environments/${scene.environmentId}`
+    const cases: Array<[string, string]> = [
+      [`${envPath}/stop`, 'environment.stop'],
+      [`${envPath}/managed/disaster-recovery/promote`, 'managed.disaster_recovery.promote'],
+      ['/tls/ca/rotate', 'tls.ca.rotate'],
+      ['/tls/ca/retire', 'tls.ca.retire'],
     ]
-    const call = (method: string, path: string) =>
+    const call = (path: string) =>
       fx.app.request(`${API}${path}`, {
-        method,
+        method: 'POST',
         headers: {
           cookie,
           [ORG_ID_HEADER]: orgA,
           'content-type': 'application/json',
           'X-Real-IP': '203.0.113.7',
         },
-        ...(method === 'POST' ? { body: '{}' } : {}),
+        body: '{}',
       })
     try {
-      // Setting off: no route asks for a re-authentication.
-      for (const [method, path, action] of cases) {
-        const res = await call(method, path)
-        assertEquals(
-          res.status === 403 && (await res.clone().text()).includes('reauth_required'),
-          false,
-          action
-        )
-      }
-
+      // Setting on and no recent re-authentication: each route is refused, by name.
       await setOrgReauth(db, orgA, true)
-      for (const [method, path, action] of cases) {
-        const res = await call(method, path)
+      for (const [path, action] of cases) {
+        const res = await call(path)
         assertEquals(res.status, 403, action)
         const body = (await res.json()) as { error: string; action: string }
         assertEquals(body.error, 'reauth_required', action)
         assertEquals(body.action, action)
       }
-      // Nothing was removed by the refused calls.
-      assertEquals(
-        (await db.select({ id: hosting.id }).from(hosting).where(eq(hosting.id, r.hostingId)))
-          .length,
-        1
-      )
-      assertEquals(
-        (await db.select({ id: storage.id }).from(storage).where(eq(storage.id, r.storageId)))
-          .length,
-        1
-      )
-
-      await req(fx, 'POST', '/auth/reauth', cookie, proofBody(password))
-      assertEquals((await call('DELETE', `/hostings/${r.hostingId}`)).status, 200)
     } finally {
-      await db.delete(storageCopy).where(eq(storageCopy.storageId, r.storageId))
-      await db.delete(storage).where(eq(storage.organizationId, orgA))
-      await db.delete(hosting).where(eq(hosting.id, r.hostingId))
-      await db.delete(managed).where(eq(managed.id, r.managedId))
-      await db.delete(service).where(eq(service.environmentId, r.environmentId))
-      await db.delete(environment).where(eq(environment.projectId, r.projectId))
-      await db.delete(project).where(eq(project.workspaceId, r.workspaceId))
+      await db.delete(environment).where(eq(environment.projectId, scene.projectId))
+      await db.delete(project).where(eq(project.workspaceId, scene.workspaceId))
       await db.delete(workspace).where(eq(workspace.organizationId, orgA))
-      await db.delete(server).where(eq(server.id, r.serverId))
     }
   })
 })

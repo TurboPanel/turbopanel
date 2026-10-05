@@ -110,6 +110,12 @@
       "tag": "0017_php_mode_policy_comments",
       "when": 1790966133776,
       "sha256": "76ed00dec1f12cdcf30e121f9273cd1081325884032909d3c9565a43c431f4b9"
+    },
+    {
+      "idx": 18,
+      "tag": "0018_command_server_name_index",
+      "when": 1791097822760,
+      "sha256": "3e6ea84f8dc168f5e4bcdf80b267560fb8026a1f2d02d202cdc0125221b48b25"
     }
   ]
 }

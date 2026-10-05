@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assertEquals, assertMatch } from '@std/assert'
 import { and, eq } from 'drizzle-orm'
 import { Hono } from 'hono'
@@ -102,7 +103,7 @@ async function withPrincipalFixtures(
   }) => Promise<void>
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn('Skipping principal route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('principal route tests')
     return
   }
 

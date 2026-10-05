@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { eq } from 'drizzle-orm'
 import { assertEquals } from '@std/assert'
 import { it } from '@std/testing/bdd'
@@ -59,7 +60,7 @@ async function createAuthApp(db: ReturnType<typeof createDenoDb>) {
 
 it('password reset revokes existing sessions', async () => {
   if (!dbUrl) {
-    console.warn('Skipping reset-password session revoke test: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('reset-password session revoke test')
     return
   }
 
@@ -114,7 +115,7 @@ it('password reset revokes existing sessions', async () => {
 
 it('reset-password/otp rejects weak passwords before touching the OTP', async () => {
   if (!dbUrl) {
-    console.warn('Skipping reset-password weak-password test: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('reset-password weak-password test')
     return
   }
 
@@ -145,7 +146,7 @@ it('reset-password/otp rejects weak passwords before touching the OTP', async ()
 
 it('reset-password/otp returns 429 when the limiter is exceeded', async () => {
   if (!dbUrl) {
-    console.warn('Skipping reset-password rate-limit test: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('reset-password rate-limit test')
     return
   }
 
@@ -409,6 +410,77 @@ test('sign-in/otp succeeds for existing mock user with seeded OTP', async () => 
   assertEquals(body.ok, true)
   assertEquals(body.email, email)
   assertEquals(res.headers.get('Set-Cookie')?.includes('HttpOnly'), true)
+})
+
+test('sign-in/otp on an unverified account clears the sign-up password and revokes sessions', async () => {
+  const secretsConfig = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`, 'deno')
+  const otpVerifierSecrets = await deriveSecretsConfig(secretsConfig, 'email-otp-verifier')
+  const state = createEmptyMockAuthState()
+  const userId = crypto.randomUUID()
+  const email = 'preregistered@example.com'
+  seedMockUser(state, {
+    id: userId,
+    email,
+    isDisabled: false,
+    isEmailVerified: false,
+    role: 'user',
+  })
+  state.accounts.push({
+    userId,
+    password: 'sign-up-password-hash',
+    providerId: 'credential',
+    providerUserId: userId,
+  })
+  seedMockSession(state, 'stale-token', {
+    sessionId: crypto.randomUUID(),
+    userId,
+    email,
+    role: 'user',
+  })
+  await seedMockOtpVerification(state, email, 'sign-in', '135790', otpVerifierSecrets)
+  const { app } = await buildOtpAuthApp(createMockAuthDb(state))
+
+  const res = await app.request(`${CLIENT_API_PREFIX}/auth/sign-in/otp`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'X-Real-IP': '203.0.113.90' },
+    body: JSON.stringify({ email, otp: '135790' }),
+  })
+  assertEquals(res.status, 200)
+  assertEquals(state.users[0]?.isEmailVerified, true)
+  assertEquals(state.accounts[0]?.password, null)
+  assertEquals(state.sessions.has('stale-token'), false)
+})
+
+test('sign-in/otp on a verified account keeps its password and sessions', async () => {
+  const secretsConfig = parseSecretsEnv(`1:${TEST_ONLY_TURBOPANEL_SECRET}`, 'deno')
+  const otpVerifierSecrets = await deriveSecretsConfig(secretsConfig, 'email-otp-verifier')
+  const state = createEmptyMockAuthState()
+  const userId = crypto.randomUUID()
+  const email = 'verified-owner@example.com'
+  seedMockUser(state, { id: userId, email, isDisabled: false, isEmailVerified: true, role: 'user' })
+  state.accounts.push({
+    userId,
+    password: 'owner-password-hash',
+    providerId: 'credential',
+    providerUserId: userId,
+  })
+  seedMockSession(state, 'other-device', {
+    sessionId: crypto.randomUUID(),
+    userId,
+    email,
+    role: 'user',
+  })
+  await seedMockOtpVerification(state, email, 'sign-in', '246801', otpVerifierSecrets)
+  const { app } = await buildOtpAuthApp(createMockAuthDb(state))
+
+  const res = await app.request(`${CLIENT_API_PREFIX}/auth/sign-in/otp`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'X-Real-IP': '203.0.113.91' },
+    body: JSON.stringify({ email, otp: '246801' }),
+  })
+  assertEquals(res.status, 200)
+  assertEquals(state.accounts[0]?.password, 'owner-password-hash')
+  assertEquals(state.sessions.has('other-device'), true)
 })
 
 test('sign-in/otp auto-registers on Workers when signup is enabled', async () => {

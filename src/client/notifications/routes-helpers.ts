@@ -3,7 +3,7 @@
  * without a database. Refusals are `{ status, error, reason? }`, the error a
  * short code the console maps to a sentence.
  */
-import { validateEmailAddress } from '../../features/email/validate-address.ts'
+import { parseSingleEmailAddress } from '../../features/email/validate-address.ts'
 import { resolveOutboundHostScope, validateOutboundUrl } from '../../lib/http/outbound-url.ts'
 import {
   isNotificationEvent,
@@ -179,12 +179,31 @@ export function refuseHoldFieldsFor(
   return null
 }
 
-function parseLabel(raw: unknown): string | ChannelWriteRefusal {
+/** An email channel's label is read out in a mail to a stranger: a short plain name. */
+export const EMAIL_CHANNEL_LABEL_MAX = 40
+const EMAIL_CHANNEL_LABEL_CHARS = /^[\p{L}\p{N} ._'()&/-]+$/u
+const LINK_LIKE = /[\p{L}\p{N}-]\.\p{L}{2,}/u
+
+export function isPlainEmailChannelLabel(label: string): boolean {
+  return (
+    label.length <= EMAIL_CHANNEL_LABEL_MAX &&
+    EMAIL_CHANNEL_LABEL_CHARS.test(label) &&
+    !LINK_LIKE.test(label)
+  )
+}
+
+function parseLabel(raw: unknown, kind?: string): string | ChannelWriteRefusal {
   if (typeof raw !== 'string') {
     return { ok: false, status: 400, error: 'label_required' }
   }
   const label = raw.trim()
-  if (label.length === 0 || label.length > CHANNEL_LABEL_MAX || hasControlCharacters(label)) {
+  const plainEnough = kind !== 'email' || isPlainEmailChannelLabel(label)
+  if (
+    label.length === 0 ||
+    label.length > CHANNEL_LABEL_MAX ||
+    hasControlCharacters(label) ||
+    !plainEnough
+  ) {
     return { ok: false, status: 400, error: 'label_invalid' }
   }
   return label
@@ -209,12 +228,9 @@ export async function validateChannelAddress(
   }
   switch (kind) {
     case 'email': {
-      try {
-        validateEmailAddress(address, 'address')
-      } catch {
-        return { ok: false, status: 400, error: 'address_invalid' }
-      }
-      return address
+      // Stored and mailed as given, so it must be exactly one recipient.
+      const single = parseSingleEmailAddress(address)
+      return single ?? { ok: false, status: 400, error: 'address_invalid' }
     }
     case 'telegram': {
       const parsed = parseTelegramAddress(address)
@@ -260,7 +276,7 @@ export async function parseChannelCreateBody(
     // Push tokens are registered by the store apps on sign-in, never typed in.
     return { ok: false, status: 400, error: 'kind_invalid' }
   }
-  const label = parseLabel(raw.label)
+  const label = parseLabel(raw.label, kind)
   if (typeof label !== 'string') return label
   const address = await validateChannelAddress(kind as ChannelCreate['kind'], raw.address, opts)
   if (typeof address !== 'string') return address

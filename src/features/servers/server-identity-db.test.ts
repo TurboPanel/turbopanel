@@ -7,6 +7,7 @@
  * without `TURBOPANEL_DATABASE_URL`; the migrations must be applied.
  */
 
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assertEquals, assertExists } from '@std/assert'
 import { eq } from 'drizzle-orm'
 import { getDatabaseUrl } from '../../db/url.ts'
@@ -31,17 +32,21 @@ const test = Deno.test.bind(Deno)
 const dbUrl = getDatabaseUrl()
 
 async function withEnrolledServer(
-  fn: (ctx: { db: ReturnType<typeof createDenoDb>; serverId: string }) => Promise<void>,
+  fn: (ctx: { db: ReturnType<typeof createDenoDb>; serverId: string }) => Promise<void>
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn('Skipping key-table race tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('key-table race tests')
     return
   }
   const run = `key-race-${crypto.randomUUID().slice(0, 8)}`
   const db = createDenoDb()
-  const [org] = await db.insert(organization).values({ name: `Key race ${run}` })
+  const [org] = await db
+    .insert(organization)
+    .values({ name: `Key race ${run}` })
     .returning({ id: organization.id })
-  const [srv] = await db.insert(server).values({ organizationId: org!.id })
+  const [srv] = await db
+    .insert(server)
+    .values({ organizationId: org!.id })
     .returning({ id: server.id })
   const serverId = srv!.id
   await attachDaemonStateToServer(db, serverId, {

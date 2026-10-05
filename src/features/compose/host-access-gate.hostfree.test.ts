@@ -173,15 +173,18 @@ test('a local volume device on a host path is refused', () => {
   )
 })
 
-test('an NFS volume is ordinary network storage', () => {
-  assertOrdinary({
-    ...web({ volumes: ['share:/s'] }),
-    volumes: {
-      share: {
-        driver_opts: { type: 'nfs', o: 'addr=10.0.0.5,rw', device: ':/export' },
+test('an NFS volume is refused: the host kernel dials an address the author picks', () => {
+  assertGated(
+    {
+      ...web({ volumes: ['share:/s'] }),
+      volumes: {
+        share: {
+          driver_opts: { type: 'nfs', o: 'addr=10.0.0.5,rw', device: ':/export' },
+        },
       },
     },
-  })
+    'volumes.share.driver_opts'
+  )
 })
 
 test('a config file outside the service directory is refused', () => {
@@ -399,4 +402,22 @@ test('the lint pass reports host reach as a non-blocking advisory at save', () =
   assertEquals(advisory?.code, 'field_requires_org_opt_in')
   assertEquals(advisory?.blocking, false)
   assertEquals(advisory?.message.includes('Docker engine socket'), true)
+})
+
+test('an overlay volume that mounts host directories is refused', () => {
+  assertGated(
+    {
+      ...web({ volumes: ['o:/d'] }),
+      volumes: {
+        o: {
+          driver_opts: {
+            type: 'overlay',
+            device: 'overlay',
+            o: 'lowerdir=/etc,upperdir=/etc/cron.d,workdir=/var/tmp/w',
+          },
+        },
+      },
+    },
+    'volumes.o.driver_opts'
+  )
 })

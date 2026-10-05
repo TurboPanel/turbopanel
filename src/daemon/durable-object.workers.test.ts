@@ -3609,6 +3609,46 @@ describe('DaemonCellObject alarm / outbox / RPC branch coverage', () => {
     ws.close(1000, 'test done')
   }, 10_000)
 
+  it.each([
+    ['heartbeat', { type: 'heartbeat', daemonBuild: { commit: 'same', buildId: '1' } }],
+    [
+      'topology-report',
+      { type: 'topology-report', generation: 1, bootGeneration: 1, snapshot: { networks: [] } },
+    ],
+  ])(
+    '%s after a stale sweep restores the Postgres online projection',
+    async (name, frame) => {
+      const serverId = `test-srv-stale-restore-${name}`
+      const { db, getStatus, updateCalls } = createProjectionRecordingDb({
+        connected: true,
+        statusChangedAt: new Date().toISOString(),
+      })
+      setDaemonCellProjectionDbFactoryForTests(() => db)
+
+      const stub = env.DAEMON_CELL.getByName(serverId)
+      const { ws } = await openDaemonWebSocket(stub, serverId)
+
+      setForceAutoResponseAgeMsForTests(DAEMON_OFFLINE_SWEEP_MS + 5_000)
+      await runInDurableObject(stub, async (instance: DaemonCellObject) => {
+        await instance.alarm()
+      })
+      await waitFor(() => {
+        expect(getStatus().connected).toBe(false)
+      })
+      setForceAutoResponseAgeMsForTests(null)
+
+      ws.send(JSON.stringify({ ...frame, at: new Date().toISOString() }))
+
+      await waitFor(() => {
+        expect(getStatus().connected).toBe(true)
+      })
+      expect(updateCalls.length).toBeGreaterThan(0)
+
+      ws.close(1000, 'test done')
+    },
+    10_000
+  )
+
   it('outbox send failure requeues with retry_at before poison threshold', async () => {
     const serverId = 'test-srv-outbox-retry-delay'
     const stub = env.DAEMON_CELL.getByName(serverId)
