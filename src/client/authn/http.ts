@@ -288,15 +288,16 @@ export function isVerificationDevLoggingEnabled(opts: AuthRouteOpts): boolean {
 }
 
 /**
- * Origin for verification links: the one public-base-URL resolver, so stored
- * public URLs win and a forwarded host is never consulted while any base URL
- * is configured. Exported for direct unit testing only.
+ * Origin for links that are mailed out (verification, reset, channel
+ * confirmation): the one public-base-URL resolver, so stored public URLs win.
+ * The forwarded host and the request URL are never consulted, configured or
+ * not, because a caller can set both. Exported for direct unit testing only.
  */
 export async function resolveVerificationBaseUrlAsync(
   c: Context,
   opts: AuthRouteOpts
 ): Promise<string> {
-  const origin = await resolvePublicBaseUrl(c, { baseUrl: opts.baseUrl })
+  const origin = await resolvePublicBaseUrl(c, { baseUrl: opts.baseUrl, allowRequestHost: false })
   return origin.replace(/\/$/, '')
 }
 

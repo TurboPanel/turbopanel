@@ -186,6 +186,18 @@ changes.
   Environments without their own `server_id` inherit it at deploy / lifecycle /
   stop (`resolveEffectivePlacementServerId`). Overview Base shows an inline
   picker; env-level pins still override.
+- **Environment config view (`GET /environments/:id/config-view`,
+  `environments/config-view-routes.ts` + `features/compose/config-view.ts`):** a
+  derived, read-only answer for the editor: the effective config (project Base
+  merged with the environment compose by `mergeComposeLayers`, the same merge a
+  deploy uses), the changes from the Base per service/field with their sources
+  (`base` / `project` / `environment`), and `followsBase`. `followsBase` is
+  **derived, never stored**: the environment compose (or an extra environment
+  layer) setting `services: !override` / `!reset` means it stands alone. It runs
+  no deploy preparation (nothing is allocated). Secret variables carry no value
+  (the stored ciphertext is not even selected) and credential-looking compose
+  values are masked; the raw `x-turbopanel` block is never returned. A client
+  API only: not a daemon contract, so there is no twin in turbopaneld.
 - **Deploy strategy settings (stage 1, nothing acts on them yet):**
   `environment.options` carries `deployStrategy` (`inplace` | `sequential` |
   `bluegreen`), `migrations` (`none` | `compatible` | `breaking` | `unknown`),

@@ -328,6 +328,7 @@ async function loadManagedForBindingOrg(
   const [managedRow] = await db
     .select({
       id: managed.id,
+      environmentId: managed.environmentId,
       engine: managed.engine,
       options: managed.options,
     })
@@ -559,6 +560,13 @@ export function registerBindingRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       principalResult.managedId
     )
     if (managedResult instanceof Response) return managedResult
+
+    // A binding hands the cluster's credentials to the service, so the caller
+    // needs rights on the database's own environment, not only on the service.
+    // Today both resolve to the same organization-level grant; checking it here
+    // keeps this safe if scoped (per project or environment) grants are added.
+    const databaseDenied = await assertCanManageOr403(c, 'environment', managedResult.environmentId)
+    if (databaseDenied) return databaseDenied
 
     const engineCode = requireBindingEngineCode(c, managedResult, input.databaseName)
     if (engineCode instanceof Response) return engineCode

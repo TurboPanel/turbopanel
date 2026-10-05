@@ -396,6 +396,13 @@ test('defaultHostCanonicalNames covers only queryable host.* scopes, never diagn
   )
 })
 
+test('parseSeriesMetricSelectors rejects entity ids with backslashes or quotes', () => {
+  for (const entityId of ['x\\', "x'", "\\' OR 1=1 OR '"]) {
+    const result = parseSeriesMetricSelectors(`network:${entityId}.receiveBytesPerSecond`)
+    assertEquals(result.ok, false, JSON.stringify(entityId))
+  }
+})
+
 test('parseSeriesMetricSelectors defaults to every queryable host.* canonical name when absent or blank', () => {
   const absent = parseSeriesMetricSelectors(undefined)
   if (!absent.ok) throw new TypeError('expected ok')

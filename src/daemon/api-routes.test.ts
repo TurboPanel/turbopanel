@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from '../test-fixtures/require-service.test.support.ts'
 import { assert, assertEquals, assertExists } from '@std/assert'
 import { decodeBase64Url, encodeBase64Url } from '@std/encoding/base64url'
 import { eq, sql } from 'drizzle-orm'
@@ -651,7 +652,7 @@ async function withEnrollFixture(
   options: EnrollFixtureOptions = {}
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn('Skipping daemon API route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('daemon API route tests')
     return
   }
 
@@ -852,7 +853,7 @@ test('GET /jwks.json returns public OKP keys only', async () => {
 
 test('POST /enroll rejects a raw machine-id shaped machineKey', async () => {
   if (!dbUrl) {
-    console.warn('Skipping daemon API route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('daemon API route tests')
     return
   }
   const db = createDenoDb()
@@ -883,7 +884,7 @@ test('POST /enroll rejects a raw machine-id shaped machineKey', async () => {
 
 test('POST /enroll returns 400 for malformed tpchallenge id', async () => {
   if (!dbUrl) {
-    console.warn('Skipping daemon API route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('daemon API route tests')
     return
   }
   const db = createDenoDb()
@@ -1971,6 +1972,80 @@ test('POST /auth/challenge enrollment path returns 429 when restLimiter denies',
   assertEquals(response.status, 429)
   const body = (await response.json()) as { ok: boolean; error: string }
   assertEquals(body, { ok: false, error: 'rate_limited' })
+})
+
+/** Limiter that allows `max` hits per key, like the production buckets. */
+function createCountingRestLimiter(max: number) {
+  const counts = new Map<string, number>()
+  return {
+    keys: counts,
+    limit: async ({ key }: { key: string }) => {
+      const next = (counts.get(key) ?? 0) + 1
+      counts.set(key, next)
+      return { success: next <= max }
+    },
+  }
+}
+
+async function createRestLimitTestApp(restLimiter: {
+  limit: (input: { key: string }) => Promise<{ success: boolean }>
+}) {
+  const app = new Hono<AppEnv>()
+  registerDaemonApiRoutes(app, {
+    secrets: await createTestSecrets(),
+    challengeSigningSecrets: await createTestChallengeSecrets(),
+    secretsConfig: createTestSecretsConfig(),
+    restLimiter,
+  })
+  return app
+}
+
+function postChallenge(app: Hono<AppEnv>, peer: string, body: Record<string, string> = {}) {
+  return app.request('/api/daemon/v1/auth/challenge', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': peer },
+    body: JSON.stringify(body),
+  })
+}
+
+test('anonymous enrollment challenges are limited per source address, not globally', async () => {
+  const app = await createRestLimitTestApp(createCountingRestLimiter(30))
+  for (let i = 0; i < 31; i++) await postChallenge(app, '198.51.100.7')
+  assertEquals((await postChallenge(app, '198.51.100.7')).status, 429)
+  assertEquals((await postChallenge(app, '198.51.100.8')).status, 200)
+})
+
+test('challenge requests naming a server never spend that server bucket before a proof', async () => {
+  const limiter = createCountingRestLimiter(30)
+  const app = await createRestLimitTestApp(limiter)
+  for (let i = 0; i < 40; i++) {
+    await postChallenge(app, '198.51.100.7', { serverId: 'srv-known', keyId: 'key-known' })
+  }
+  assertEquals(
+    [...limiter.keys.keys()].some((key) => key.endsWith(':srv-known')),
+    false
+  )
+})
+
+test('auth/session bad requests never spend the per-server bucket', async () => {
+  const limiter = createCountingRestLimiter(30)
+  const app = await createRestLimitTestApp(limiter)
+  for (let i = 0; i < 40; i++) {
+    await app.request('/api/daemon/v1/auth/session', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '198.51.100.7' },
+      body: JSON.stringify({
+        serverId: 'srv-known',
+        keyId: 'key-known',
+        challengeId: 'c',
+        signature: 's',
+      }),
+    })
+  }
+  assertEquals(
+    [...limiter.keys.keys()].some((key) => key.endsWith(':srv-known')),
+    false
+  )
 })
 
 test('POST /commands/lease returns 429 when restLimiter denies with valid JWT', async () => {

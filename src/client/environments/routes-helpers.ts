@@ -5,6 +5,7 @@ import {
   isPlacementServerId,
   stripComposePlacementOption,
 } from '../../features/compose/index.ts'
+import { validateEnvironmentComposeAgainstBase } from '../../features/compose/layer-chain.ts'
 import {
   settleDeployOptions,
   stampNewEnvironmentDeployOptions,
@@ -103,9 +104,46 @@ function deployOptionsError(reason: string): EnvironmentRouteValidationError {
   return { ok: false, error: 'deploy_options_invalid', message: reason, status: 400 }
 }
 
+/**
+ * Validate the compose an environment is being saved with.
+ *
+ * An environment's compose is "Changes for {env}": it may set one field of a
+ * service the project's Base defines, so alone it need not name an `image` or
+ * `build`. When the caller supplies the project's options, the document is
+ * therefore checked as a partial layer and then, once more, as the MERGE of the
+ * Base layers, this document and any extra environment layers - where every
+ * rule applies in full, including "every Docker service has an image or
+ * build". Without the project's options (no way to build the merge) the
+ * document is held to the strict standalone rule, as before.
+ */
+function validateEnvironmentCompose(
+  options: Record<string, unknown> | null,
+  validateOptions: ComposeValidateOptions | undefined,
+  projectOptions: unknown
+): EnvironmentComposeValidationError | null {
+  const merging = projectOptions !== undefined
+  const composeOption = applyValidatedComposeOption(
+    options,
+    merging ? { ...validateOptions, requireImageOrBuild: false } : validateOptions
+  )
+  if (!composeOption.ok) {
+    return { ok: false, error: 'compose_invalid', issues: composeOption.issues, status: 400 }
+  }
+  if (options === null) return null
+  stripComposePlacementOption(options)
+  if (!merging || !('compose' in options || 'composeOverlays' in options)) return null
+  const issues = validateEnvironmentComposeAgainstBase({
+    projectOptions,
+    environmentOptions: options,
+    validateOptions,
+  })
+  return issues.length === 0 ? null : { ok: false, error: 'compose_invalid', issues, status: 400 }
+}
+
 export function parseCreateEnvironmentJsonb(
   body: Record<string, unknown>,
-  validateOptions?: ComposeValidateOptions
+  validateOptions?: ComposeValidateOptions,
+  projectOptions?: unknown
 ):
   | {
       ok: true
@@ -118,18 +156,8 @@ export function parseCreateEnvironmentJsonb(
   if (optionsResult === 'invalid') {
     return { ok: false, error: 'Invalid request', status: 400 }
   }
-  const composeOption = applyValidatedComposeOption(optionsResult, validateOptions)
-  if (!composeOption.ok) {
-    return {
-      ok: false,
-      error: 'compose_invalid',
-      issues: composeOption.issues,
-      status: 400,
-    }
-  }
-  if (optionsResult !== null) {
-    stripComposePlacementOption(optionsResult)
-  }
+  const composeError = validateEnvironmentCompose(optionsResult, validateOptions, projectOptions)
+  if (composeError) return composeError
   const deployOptions =
     optionsResult === null
       ? { ok: true as const }
@@ -184,7 +212,8 @@ export function parseEnvironmentPatchMetadata(
 
 export function parseEnvironmentPatchOptions(
   body: Record<string, unknown>,
-  validateOptions?: ComposeValidateOptions
+  validateOptions?: ComposeValidateOptions,
+  projectOptions?: unknown
 ):
   | { ok: true; options: Record<string, unknown> | null | 'absent' }
   | EnvironmentComposeValidationError
@@ -197,16 +226,8 @@ export function parseEnvironmentPatchOptions(
     return { ok: true, options: 'absent' }
   }
 
-  const composeOption = applyValidatedComposeOption(optionsResult, validateOptions)
-  if (!composeOption.ok) {
-    return {
-      ok: false,
-      error: 'compose_invalid',
-      issues: composeOption.issues,
-      status: 400,
-    }
-  }
-  stripComposePlacementOption(optionsResult)
+  const composeError = validateEnvironmentCompose(optionsResult, validateOptions, projectOptions)
+  if (composeError) return composeError
   const deployOptions = validateDeployOptions(optionsResult, 'environment')
   if (!deployOptions.ok) return deployOptionsError(deployOptions.reason)
   return { ok: true, options: optionsResult }

@@ -295,3 +295,56 @@ test('enqueueManagedLifecycleFanout sends each member its own id and HA role', a
     },
   ])
 })
+
+test('enqueueManagedLifecycleFanout never starts a demoted member that needs a resync', async () => {
+  const c = mockContext()
+  const { db, dispatchPayloads } = createEnqueueDb()
+  const queue = recordingQueue()
+  const members = [
+    {
+      id: '00000000-0000-4000-8000-0000000000a1',
+      serverId: 'server-1',
+      role: 'primary',
+      status: 'ready',
+    },
+    {
+      id: '00000000-0000-4000-8000-0000000000a2',
+      serverId: 'server-2',
+      role: 'replica',
+      status: 'needs_resync',
+    },
+  ] as ManagedMemberRow[]
+
+  for (const action of ['start', 'restart'] as const) {
+    dispatchPayloads.length = 0
+    const results = await enqueueManagedLifecycleFanout(c, db, queue, {
+      userId: 'user-1',
+      managedId: 'managed-1',
+      action,
+      members,
+      engine: 'postgres',
+    })
+    if (results instanceof Response) throw new TypeError('expected fan-out results')
+    assertEquals(
+      results.map((result) => result.status),
+      ['queued', 'failed']
+    )
+    assertEquals(results[1]?.error, 'managed_member_needs_resync')
+    assertEquals(dispatchPayloads.length, 1)
+  }
+
+  // Stopping it is always safe.
+  dispatchPayloads.length = 0
+  const stop = await enqueueManagedLifecycleFanout(c, db, queue, {
+    userId: 'user-1',
+    managedId: 'managed-1',
+    action: 'stop',
+    members,
+    engine: 'postgres',
+  })
+  if (stop instanceof Response) throw new TypeError('expected fan-out results')
+  assertEquals(
+    stop.map((result) => result.status),
+    ['queued', 'queued']
+  )
+})

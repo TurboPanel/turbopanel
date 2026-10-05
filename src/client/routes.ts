@@ -15,6 +15,7 @@ import {
   registerEnvironmentLifecycleRoutes,
   registerEnvironmentStopRoutes,
 } from './environments/deploy-routes.ts'
+import { registerEnvironmentConfigViewRoutes } from './environments/config-view-routes.ts'
 import { registerEnvironmentDeploymentHistoryRoutes } from './environments/deployment-history-routes.ts'
 import { registerEnvironmentReleaseRoutes } from './environments/release-routes.ts'
 import { registerManagedRoutes } from './managed/routes.ts'
@@ -25,7 +26,9 @@ import { registerTaskRoutes } from './tasks/routes.ts'
 import { registerBindingRoutes } from './bindings/routes.ts'
 import { registerContainerRoutes } from './containers/routes.ts'
 import { registerDockerRunRoutes } from './docker-run/routes.ts'
+import { registerHostingDeleteStepUp } from './hostings/delete-step-up.ts'
 import { registerHostingRoutes } from './hostings/routes.ts'
+import { registerTlsCaStepUp } from './tls/ca-step-up.ts'
 import { registerTlsRoutes } from './tls/routes.ts'
 import { registerLicenseRoutes } from './licenses/routes.ts'
 import {
@@ -132,6 +135,7 @@ export function registerClientRoutes(app: Hono<AppEnv>, opts: ClientRouteOpts) {
   registerWorkspaceRoutes(client, opts)
   registerEnvironmentRoutes(client, opts)
   registerEnvironmentDeployPreviewRoutes(client, opts)
+  registerEnvironmentConfigViewRoutes(client, opts)
   registerEnvironmentDeployRoutes(client, opts)
   registerEnvironmentDeploymentHistoryRoutes(client, opts)
   registerEnvironmentReleaseRoutes(client, opts)
@@ -144,6 +148,7 @@ export function registerClientRoutes(app: Hono<AppEnv>, opts: ClientRouteOpts) {
   registerBindingRoutes(client, opts)
   registerProjectRoutes(client, opts)
   registerServiceRoutes(client, opts)
+  registerHostingDeleteStepUp(client, opts)
   registerHostingRoutes(client, opts)
   registerContainerRoutes(client, opts)
   registerDockerRunRoutes(client, opts)
@@ -154,6 +159,7 @@ export function registerClientRoutes(app: Hono<AppEnv>, opts: ClientRouteOpts) {
   registerProjectPrincipalRoutes(client, opts)
   registerOrganizationLimitsRoutes(client, opts)
   registerServerLimitsRoutes(client, opts)
+  registerTlsCaStepUp(client, opts)
   registerTlsRoutes(client, opts)
   registerTeamRoutes(client, opts)
 

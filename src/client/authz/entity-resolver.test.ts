@@ -1,13 +1,9 @@
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { eq } from 'drizzle-orm'
 import { assertEquals } from '@std/assert'
 import { getDatabaseUrl } from '../../db/url.ts'
 import { createDenoDb } from '../../db/connection.ts'
-import {
-  network,
-  organization,
-  server,
-  user,
-} from '../../db/schema.ts'
+import { network, organization, server, user } from '../../db/schema.ts'
 import { resolveEntityById } from './entity-resolver.ts'
 
 /**
@@ -21,7 +17,7 @@ const test = Deno.test.bind(Deno)
 test('resolveEntityById resolves network entities', async () => {
   const dbUrl = getDatabaseUrl()
   if (!dbUrl) {
-    console.warn('Skipping entity-resolver tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('entity-resolver tests')
     return
   }
 

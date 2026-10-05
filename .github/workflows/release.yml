@@ -115,11 +115,17 @@ jobs:
         env:
           CANARY_VERSION: ${{ steps.canary.outputs.version }}
           CANARY_BASE: ${{ steps.canary.outputs.base }}
+          # Event values reach the shell through env, never spliced into the
+          # script: a tag name may hold $ ( ) ; and quotes.
+          INPUT_CHANNEL: ${{ inputs.channel }}
+          INPUT_REF: ${{ inputs.ref }}
+          INPUT_VERSION: ${{ inputs.version }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
           set -eu
           _commit="$(git rev-parse HEAD)"
           echo "commit=${_commit}" >> "$GITHUB_OUTPUT"
-          if [ "${{ inputs.channel }}" = "canary" ] && [ -n "${{ inputs.ref }}" ]; then
+          if [ "$INPUT_CHANNEL" = "canary" ] && [ -n "$INPUT_REF" ]; then
             # The rolling trunk build: the base from the tags (what the binary
             # reports) plus a `-canary.<N>` pre-release suffix, so every asset
             # name is unique per build and semver orders it below the release
@@ -131,14 +137,14 @@ jobs:
             echo "version=${CANARY_VERSION}" >> "$GITHUB_OUTPUT"
             echo "base=${CANARY_BASE}" >> "$GITHUB_OUTPUT"
             echo "channel=canary" >> "$GITHUB_OUTPUT"
-          elif [ -n "${{ inputs.version }}" ]; then
-            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
-            echo "base=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
-            echo "channel=${{ inputs.channel }}" >> "$GITHUB_OUTPUT"
+          elif [ -n "$INPUT_VERSION" ]; then
+            echo "version=${INPUT_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "base=${INPUT_VERSION}" >> "$GITHUB_OUTPUT"
+            echo "channel=${INPUT_CHANNEL}" >> "$GITHUB_OUTPUT"
           else
             # A tag pushed by hand: its number is the version (stamped below,
             # not checked against deno.json — versions come from tags).
-            _ref="${{ github.ref_name }}"
+            _ref="$REF_NAME"
             echo "version=${_ref#v}" >> "$GITHUB_OUTPUT"
             echo "base=${_ref#v}" >> "$GITHUB_OUTPUT"
             echo "channel=release" >> "$GITHUB_OUTPUT"

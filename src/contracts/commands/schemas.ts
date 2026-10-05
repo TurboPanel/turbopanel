@@ -6038,6 +6038,12 @@ export type ManagedBackupCommandPayload = {
   scope: 'database' | 'instance'
   database?: string
   retentionKeep?: number
+  /**
+   * The `backuppolicy` that made the artifact, set on `delete` of a scheduled
+   * backup: each policy keeps its artifacts in its own directory, so this is
+   * how the file is found. Omitted for a manual backup.
+   */
+  policyId?: string
 }
 
 export type ManagedBackupCommandResult = {
@@ -6123,6 +6129,12 @@ export function parseManagedBackupPayload(value: unknown): ManagedBackupCommandP
       throw new Error('Invalid managed.backup payload retentionKeep')
     }
     payload.retentionKeep = value.retentionKeep
+  }
+  if (value.policyId !== undefined) {
+    if (!isCanonicalUuid(value.policyId)) {
+      throw new Error('Invalid managed.backup payload policyId')
+    }
+    payload.policyId = value.policyId
   }
   return payload
 }
@@ -6274,13 +6286,31 @@ export type CopyBackupSource = {
   hostPath?: string
   organizationId?: string
   storageId?: string
+  /** A `hostPath` source: the site owner's Linux user whose own tree the path must stay inside. */
+  ownerUsername?: string
+  /** A docker source: the compose project a non-storage-named volume must be labelled with. */
+  composeProject?: string
 }
 
-const COPY_SOURCE_FIELDS = ['volumeName', 'hostPath', 'organizationId', 'storageId'] as const
+const COPY_SOURCE_FIELDS = [
+  'volumeName',
+  'hostPath',
+  'organizationId',
+  'storageId',
+  'ownerUsername',
+  'composeProject',
+] as const
+
+/** Linux user names the daemon accepts (`PRINCIPAL_USERNAME_RE` parity). */
+const COPY_OWNER_USERNAME_RE = /^[A-Za-z_][A-Za-z0-9_-]*$/
+const MAX_COPY_OWNER_USERNAME_LENGTH = 64
 
 function parsePathCopySource(raw: Record<string, unknown>, source: CopyBackupSource): void {
   if (raw.volumeName !== undefined) {
     throw new Error('A path copy source cannot name a volume')
+  }
+  if (raw.composeProject !== undefined) {
+    throw new Error('A path copy source cannot name a compose project')
   }
   if (raw.hostPath !== undefined) {
     if (
@@ -6290,8 +6320,19 @@ function parsePathCopySource(raw: Record<string, unknown>, source: CopyBackupSou
     ) {
       throw new Error('Invalid path copy source hostPath')
     }
+    if (
+      !isString(raw.ownerUsername) ||
+      raw.ownerUsername.length > MAX_COPY_OWNER_USERNAME_LENGTH ||
+      !COPY_OWNER_USERNAME_RE.test(raw.ownerUsername)
+    ) {
+      throw new Error('A path copy source with hostPath needs a valid ownerUsername')
+    }
     source.hostPath = raw.hostPath
+    source.ownerUsername = raw.ownerUsername
     return
+  }
+  if (raw.ownerUsername !== undefined) {
+    throw new Error('Only a hostPath copy source can name an ownerUsername')
   }
   if (!isCanonicalUuid(raw.organizationId) || !isCanonicalUuid(raw.storageId)) {
     throw new Error('A path copy source needs hostPath, or organizationId and storageId')
@@ -6323,11 +6364,21 @@ export function parseCopyBackupSource(raw: Record<string, unknown>): CopyBackupS
   if (
     raw.hostPath !== undefined ||
     raw.organizationId !== undefined ||
-    raw.storageId !== undefined
+    raw.ownerUsername !== undefined
   ) {
     throw new Error('A docker copy source cannot name a host path')
   }
+  if (!isCanonicalUuid(raw.storageId)) {
+    throw new Error('A docker copy source needs the storageId it belongs to')
+  }
+  if (raw.composeProject !== undefined) {
+    if (!isString(raw.composeProject) || !COMPOSE_PROJECT_RE.test(raw.composeProject)) {
+      throw new Error('Invalid docker copy source composeProject')
+    }
+    source.composeProject = raw.composeProject
+  }
   source.volumeName = raw.volumeName
+  source.storageId = raw.storageId
   return source
 }
 
@@ -6362,6 +6413,8 @@ export type BackupPolicyWireEntry = {
   hostPath?: string
   organizationId?: string
   storageId?: string
+  ownerUsername?: string
+  composeProject?: string
   onCalendar: string
   retentionKeep: number
   enabled: boolean
