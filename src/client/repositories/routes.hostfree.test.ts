@@ -12,7 +12,7 @@ import { deriveEncryptionSecretsConfig, deriveSecretsConfig } from '../../lib/se
 import { encryptSecret } from '../../lib/secrets/data-encryption.ts'
 import type { DaemonCellRegistry } from '../../contracts/cell.ts'
 import type { Db } from '../../db/connection.ts'
-import { instanceHostname, setting } from '../../db/schema.ts'
+import { gitConnection, instanceHostname, setting } from '../../db/schema.ts'
 import { GithubAppTokenError } from '../../features/git/github-app-token.ts'
 import { createAuthRateLimiter } from '../authn/auth-rate-limit.ts'
 import { GitlabApiError } from '../../features/git/gitlab-api.ts'
@@ -941,6 +941,8 @@ function sourceHttpDb(
     insertError?: unknown
     sessionRole?: string
     publicUrls?: string[]
+    /** Base URL of the forge every connection was granted through. */
+    forgeBaseUrl?: string
   } = {}
 ): Db {
   const sessionRole = options.sessionRole ?? 'superadmin'
@@ -981,7 +983,12 @@ function sourceHttpDb(
         where: () => whereResult(table),
         innerJoin: () => ({
           where: () => ({
-            limit: () => Promise.resolve([session]),
+            limit: () =>
+              Promise.resolve(
+                table === gitConnection
+                  ? [{ baseUrl: options.forgeBaseUrl ?? 'https://github.com' }]
+                  : [session]
+              ),
           }),
           innerJoin: () => ({
             where: () => ({
@@ -2216,5 +2223,113 @@ test('patch names a foreign installation as not found; attach insert miss is 500
     }),
     500,
     { error: 'Failed to attach repository' }
+  )
+})
+
+const HOST_MISMATCH = { error: 'source_repository_url_host_mismatch' }
+
+async function expectHostMismatch(response: Response): Promise<void> {
+  assertEquals(response.status, 400)
+  const body = (await response.json()) as { error?: unknown }
+  assertEquals({ error: body.error }, HOST_MISMATCH)
+}
+
+test('create, attach and patch refuse a connection-bound url on another host', async () => {
+  const installRow = { organizationId: ORG_ID, provider: 'github' }
+  const insertValues: unknown[] = []
+  const foreignUrls = [
+    'https://attacker.example/acme/app.git',
+    'https://github.com.attacker.example/acme/app.git',
+    'https://attacker.example:8443/acme/app.git',
+  ]
+  for (const repositoryUrl of foreignUrls) {
+    const created = await buildSourceApp(
+      sourceHttpDb({
+        limitQueue: [[{ role: 'superadmin' }], [installRow], []],
+        insertValues,
+      })
+    )
+    await expectHostMismatch(
+      await created.app.request('/repositories', {
+        method: 'POST',
+        headers: { ...authHeaders(created.cookie), 'content-type': 'application/json' },
+        body: JSON.stringify({ repositoryUrl, connectionId: CONNECTION_ID }),
+      })
+    )
+
+    const attached = await buildSourceApp(
+      sourceHttpDb({
+        limitQueue: [[{ role: 'superadmin' }], [installRow], [installRow], [], []],
+        insertValues,
+      })
+    )
+    await expectHostMismatch(
+      await attached.app.request('/repositories/attach', {
+        method: 'POST',
+        headers: { ...authHeaders(attached.cookie), 'content-type': 'application/json' },
+        body: JSON.stringify({
+          connectionId: CONNECTION_ID,
+          repositoryExternalId: '99',
+          repositoryUrl,
+        }),
+      })
+    )
+
+    const patched = await buildSourceApp(sourceHttpDb({ selectRows: [sourceRow()], insertValues }))
+    await expectHostMismatch(
+      await patched.app.request(`/repositories/${SOURCE_ID}`, {
+        method: 'PATCH',
+        headers: { ...authHeaders(patched.cookie), 'content-type': 'application/json' },
+        body: JSON.stringify({ repositoryUrl }),
+      })
+    )
+  }
+  assertEquals(insertValues, [])
+})
+
+test('patch re-checks the stored url when only the connection changes', async () => {
+  // The stored row is a manual clone of a foreign host; binding a connection to
+  // it must not start sending that connection's credential there.
+  const { app, cookie } = await buildSourceApp(
+    sourceHttpDb({
+      selectRows: [
+        sourceRow({
+          connectionId: null,
+          provider: 'gitlab',
+          repositoryUrl: 'https://attacker.example/g/app.git',
+        }),
+      ],
+      forgeBaseUrl: 'https://gitlab.com',
+    })
+  )
+  await expectHostMismatch(
+    await app.request(`/repositories/${SOURCE_ID}`, {
+      method: 'PATCH',
+      headers: { ...authHeaders(cookie), 'content-type': 'application/json' },
+      body: JSON.stringify({ connectionId: CONNECTION_ID }),
+    })
+  )
+})
+
+test('a self-managed forge host is honoured at create', async () => {
+  const { app, cookie } = await buildSourceApp(
+    sourceHttpDb({
+      limitQueue: [[{ role: 'superadmin' }], [{ organizationId: ORG_ID, provider: 'gitlab' }], []],
+      insertId: SOURCE_ID,
+      forgeBaseUrl: 'https://git.corp.test',
+    })
+  )
+  await expectJson(
+    await app.request('/repositories', {
+      method: 'POST',
+      headers: { ...authHeaders(cookie), 'content-type': 'application/json' },
+      body: JSON.stringify({
+        provider: 'gitlab',
+        repositoryUrl: 'https://git.corp.test/g/app.git',
+        connectionId: CONNECTION_ID,
+      }),
+    }),
+    201,
+    { ok: true, id: SOURCE_ID, reused: false }
   )
 })

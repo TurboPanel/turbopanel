@@ -818,15 +818,23 @@ export async function recordDeliveryAttempt(
 }
 
 /**
- * Failed deliveries whose retry time has come — the maintenance tick's batch.
+ * Take the failed deliveries whose retry time has come — the maintenance
+ * tick's batch — claiming them in the same statement.
  *
  * Only rows this sweep can actually send are selected: the channel is not
  * paused, is not push (the Expo transport owns those rows), and is email only
  * when the tick has an email queue and the address is verified. A row the
  * sweep would skip is never picked, so rows for a paused channel (which wait
  * for it to resume) cannot fill the batch and starve every other channel.
+ *
+ * Claiming moves each row's retry time out by the inline-attempt grace
+ * (`FOR UPDATE SKIP LOCKED`, the way {@link claimHeldDeliveries} does), so two
+ * sweeps that overlap — two instances, or one tick running past the next —
+ * never both get a row. The attempt that follows writes the real next retry
+ * time; a sweeper that dies mid-send leaves rows that come due again after the
+ * grace.
  */
-export async function listDueDeliveries(
+export async function claimDueDeliveries(
   db: Db,
   limit = 50,
   opts: { includeEmail?: boolean } = {}
@@ -838,21 +846,24 @@ export async function listDueDeliveries(
         notInArray(notificationChannel.kind, ['email', 'push'])
       )
     : notInArray(notificationChannel.kind, ['email', 'push'])
-  const rows = await db
-    .select({ delivery: notificationDelivery })
+  const dueStatus = and(
+    inArray(notificationDelivery.status, ['pending', 'failed']),
+    lt(notificationDelivery.nextAttemptAt, now)
+  )
+  const candidates = db
+    .select({ id: notificationDelivery.id })
     .from(notificationDelivery)
     .innerJoin(notificationChannel, eq(notificationDelivery.channelId, notificationChannel.id))
-    .where(
-      and(
-        inArray(notificationDelivery.status, ['pending', 'failed']),
-        lt(notificationDelivery.nextAttemptAt, now),
-        isNull(notificationChannel.disabledAt),
-        kindFilter
-      )
-    )
+    .where(and(dueStatus, isNull(notificationChannel.disabledAt), kindFilter))
     .orderBy(notificationDelivery.nextAttemptAt)
     .limit(limit)
-  return rows.map((r) => asDelivery(r.delivery))
+    .for('update', { of: notificationDelivery, skipLocked: true })
+  const rows = await db
+    .update(notificationDelivery)
+    .set({ nextAttemptAt: new Date(Date.now() + INLINE_ATTEMPT_GRACE_MS).toISOString() })
+    .where(and(dueStatus, inArray(notificationDelivery.id, candidates)))
+    .returning()
+  return rows.map(asDelivery)
 }
 
 /**

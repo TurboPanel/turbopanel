@@ -6,6 +6,8 @@ import { getManagedEngineSpec, MANAGED_ENGINE_STATUS } from '../../features/mana
 import { environment, project } from '../../db/schema.ts'
 import type { ManagedContext } from '../../features/managed/managed-context.ts'
 import { loadManagedOrgDefaults } from '../../features/managed/load-org-defaults.ts'
+import { requireStepUpIfConfigured } from '../authn/step-up.ts'
+import type { StepUpAction } from '../authn/step-up-actions.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import {
   assertCanManageOr403,
@@ -48,6 +50,18 @@ export async function authorizeManagedRequest(
   }
 
   return { userId: session.userId, organizationId: orgResult }
+}
+
+/** {@link authorizeManagedRequest} for managing, then the organization's step-up gate for `action`. */
+export async function authorizeManagedBackupMutation(
+  c: Context<AppEnv>,
+  db: Db,
+  environmentId: string,
+  action: StepUpAction
+): Promise<{ userId: string; organizationId: string } | Response> {
+  const auth = await authorizeManagedRequest(c, db, environmentId, 'manage')
+  if (auth instanceof Response) return auth
+  return (await requireStepUpIfConfigured(c, auth.organizationId, action)) ?? auth
 }
 
 function readProjectCatalogCode(metadata: unknown): string | null {

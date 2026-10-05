@@ -25,6 +25,7 @@ import { registerTaskRoutes } from './tasks/routes.ts'
 import { registerBindingRoutes } from './bindings/routes.ts'
 import { registerContainerRoutes } from './containers/routes.ts'
 import { registerDockerRunRoutes } from './docker-run/routes.ts'
+import { registerHostingDeleteStepUp } from './hostings/delete-step-up.ts'
 import { registerHostingRoutes } from './hostings/routes.ts'
 import { registerTlsRoutes } from './tls/routes.ts'
 import { registerLicenseRoutes } from './licenses/routes.ts'
@@ -144,6 +145,7 @@ export function registerClientRoutes(app: Hono<AppEnv>, opts: ClientRouteOpts) {
   registerBindingRoutes(client, opts)
   registerProjectRoutes(client, opts)
   registerServiceRoutes(client, opts)
+  registerHostingDeleteStepUp(client, opts)
   registerHostingRoutes(client, opts)
   registerContainerRoutes(client, opts)
   registerDockerRunRoutes(client, opts)

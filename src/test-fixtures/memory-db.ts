@@ -399,7 +399,12 @@ function rowsOf(store: Store, table: Table): Row[] {
   return rows
 }
 
-type ConflictSpec = Readonly<{ target: Column | Column[] | undefined; set?: Row; nothing: boolean }>
+type ConflictSpec = Readonly<{
+  target: Column | Column[] | undefined
+  set?: Row
+  setWhere?: unknown
+  nothing: boolean
+}>
 
 function conflictKeys(target: Column | Column[] | undefined): string[] {
   if (target === undefined) return []
@@ -427,6 +432,13 @@ function insertInto(store: Store, table: Table) {
             store.ops.push(`insert-conflict:${name}`)
             return []
           }
+          if (
+            spec.setWhere !== undefined &&
+            !evaluateWhere(spec.setWhere, singleRow(table, existing))
+          ) {
+            store.ops.push(`update-skipped:${name}`)
+            return []
+          }
           applySet(existing, spec.set ?? {}, table)
           store.ops.push(`update:${name}`)
           return [project(returning, singleRow(table, existing), table)]
@@ -440,8 +452,8 @@ function insertInto(store: Store, table: Table) {
           conflict = { target: cfg.target, nothing: true }
           return returningQuery(run)
         },
-        onConflictDoUpdate(cfg: { target: Column | Column[]; set: Row }) {
-          conflict = { target: cfg.target, set: cfg.set, nothing: false }
+        onConflictDoUpdate(cfg: { target: Column | Column[]; set: Row; setWhere?: unknown }) {
+          conflict = { target: cfg.target, set: cfg.set, setWhere: cfg.setWhere, nothing: false }
           return returningQuery(run)
         },
       })

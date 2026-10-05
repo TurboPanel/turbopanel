@@ -46,6 +46,7 @@ import {
 import {
   assertManagedIdle,
   assertTargetServerOnline,
+  authorizeManagedBackupMutation,
   authorizeManagedRequest,
   loadManagedContext,
   type ManagedContext,
@@ -2659,7 +2660,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     const environmentId = c.req.param('id')
     const backupId = decodeURIComponent(c.req.param('backupId'))
-    const auth = await authorizeManagedRequest(c, db, environmentId, 'manage')
+    const auth = await authorizeManagedBackupMutation(c, db, environmentId, 'managed.backup.delete')
     if (auth instanceof Response) return auth
 
     const ctx = await loadManagedContext(c, db, environmentId, auth.organizationId)
@@ -2710,7 +2711,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     const environmentId = c.req.param('id')
     const backupId = decodeURIComponent(c.req.param('backupId'))
-    const auth = await authorizeManagedRequest(c, db, environmentId, 'manage')
+    const auth = await authorizeManagedBackupMutation(c, db, environmentId, 'managed.restore')
     if (auth instanceof Response) return auth
 
     const ctx = await loadManagedContext(c, db, environmentId, auth.organizationId)
