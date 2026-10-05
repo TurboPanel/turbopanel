@@ -4,7 +4,6 @@ import {
   isApplyVariablesError,
 } from '../../features/compose/apply-variables.ts'
 import type { DeployVariableEntry } from '../../features/compose/apply-variables.ts'
-import { buildNativeAppVariables } from '../../features/compose/native-app-variables.ts'
 import type { VariableScopeEntryMap } from '../../features/compose/apply-variables.ts'
 import { splitNativeAppServices } from '../../features/compose/native-app.ts'
 import { emptyComposeDocument } from '../../features/compose/types.ts'
@@ -12,7 +11,9 @@ import { parseEnvironmentDeployPayload } from '../../contracts/commands/schemas.
 import {
   mapResolvedScopesToDeployEntries,
   nativeAppServicesForDeploy,
+  nativeAppVariableViews,
   nativeComposeServiceNames,
+  resolveNativeAppVariables,
   tagVariableSources,
 } from './deploy-prepare.ts'
 import { buildNativeAppServicesForDeploy } from './deploy-routes-helpers.ts'
@@ -69,16 +70,7 @@ function prepareNativeApp(
   if (isApplyVariablesError(applied)) throw new TypeError(applied.message)
   const services = applied.document.data.services as Record<string, unknown>
   const split = splitNativeAppServices(services)
-  const variables = new Map(
-    split.apps.map((app) => [
-      app.composeServiceName,
-      buildNativeAppVariables(
-        applied.runtimeAssignments.get(app.composeServiceName) ?? [],
-        app,
-        applied.unreferencedSecrets.get(app.composeServiceName) ?? []
-      ),
-    ])
-  )
+  const variables = resolveNativeAppVariables(split.apps, applied)
   const prepared = nativeAppServicesForDeploy(split.apps, [], {}, {}, new Map(), variables)
   return { applied, split, prepared, variables }
 }
@@ -253,5 +245,20 @@ test('effective entries are labelled from the scope maps they were merged from',
       ['B', 'binding'],
       ['C', 'organization'],
     ]
+  )
+})
+
+test('the preview rows are built per app from the same lists the wire uses', () => {
+  const { variables, split } = prepareNativeApp([
+    variable({ key: 'ORG_KEY', isSecret: true, source: 'organization' }),
+    variable({ key: 'API_URL', value: 'https://example.test', source: 'project' }),
+  ])
+  const rows = nativeAppVariableViews(split.apps, variables)
+  assertEquals(rows.length, 1)
+  assertEquals(rows[0]?.composeServiceName, 'web')
+  // The unreferenced secret is listed (without a value) by the production path.
+  assertEquals(
+    rows[0]?.variables.filter((row) => row.reason === 'not_referenced').map((row) => row.name),
+    ['ORG_KEY']
   )
 })

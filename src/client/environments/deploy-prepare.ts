@@ -35,6 +35,7 @@ import {
 } from '../../features/organizations/organization-options.ts'
 import {
   type ApplyVariablesError,
+  type ApplyVariablesResult,
   applyVariablesToComposeDocument,
   type DeployVariableEntry,
   type DeployVariableMaterial,
@@ -1483,6 +1484,37 @@ async function mapResolvedScopesToDeployEntries(
     )
   }
   return out
+}
+
+/**
+ * What each native app's process gets, from what the variables module recorded
+ * for it (see {@link buildNativeAppVariables}).
+ */
+function resolveNativeAppVariables(
+  apps: readonly NativeAppServiceSpec[],
+  applied: Pick<ApplyVariablesResult, 'runtimeAssignments' | 'unreferencedSecrets'>
+): Map<string, NativeAppVariables> {
+  return new Map(
+    apps.map((app) => [
+      app.composeServiceName,
+      buildNativeAppVariables(
+        applied.runtimeAssignments.get(app.composeServiceName) ?? [],
+        app,
+        applied.unreferencedSecrets.get(app.composeServiceName) ?? []
+      ),
+    ])
+  )
+}
+
+/** The lists people read, for the native apps that run on this server. */
+function nativeAppVariableViews(
+  apps: readonly { composeServiceName: string }[],
+  variables: ReadonlyMap<string, NativeAppVariables>
+): NativeAppVariablesView[] {
+  return apps.map((app) => ({
+    composeServiceName: app.composeServiceName,
+    variables: variables.get(app.composeServiceName)?.view ?? [],
+  }))
 }
 
 /** Compose keys of the services that run as native (`serviceKind: node`) apps. */
@@ -3052,15 +3084,7 @@ export async function prepareDeployCompose(
   const engineGate = await withSiteEngineFeature(db, params.serverId, localSite)
   if ('kind' in engineGate) return engineGate
 
-  const nativeVariables = new Map(
-    split.nativeApps.map((app) => [
-      app.composeServiceName,
-      buildNativeAppVariables(
-        withVariables.runtimeAssignments.get(app.composeServiceName) ?? [],
-        app
-      ),
-    ])
-  )
+  const nativeVariables = resolveNativeAppVariables(split.nativeApps, withVariables)
   const localNativeApps = sitesOnScheduledServer(
     nativeAppServicesForDeploy(
       split.nativeApps,
@@ -3163,10 +3187,7 @@ export async function prepareDeployCompose(
     principalMaterial: principalMaterialWithRuntimes,
     sites: localSite,
     nativeAppServices: localNativeApps,
-    nativeAppVariables: localNativeApps.map((app) => ({
-      composeServiceName: app.composeServiceName,
-      variables: nativeVariables.get(app.composeServiceName)?.view ?? [],
-    })),
+    nativeAppVariables: nativeAppVariableViews(localNativeApps, nativeVariables),
     sourceMaterial: localSourceMaterial,
     dockerExternalNetworks,
     dockerNetworkAddressing: externalNetworks.addressing,
@@ -4174,7 +4195,9 @@ export {
   localManagedNetworkServiceNames,
   mapResolvedScopesToDeployEntries,
   nativeAppServicesForDeploy,
+  nativeAppVariableViews,
   nativeComposeServiceNames,
+  resolveNativeAppVariables,
   resolveSitesForMode,
   resourceLimitPrepareError,
   sitesOnScheduledServer,
