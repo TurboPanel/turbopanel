@@ -1,7 +1,12 @@
 /// <reference types="@cloudflare/workers-types" />
 import type { DaemonJwtKeyring } from '../authn/daemon-jwt-keyring.ts'
 import { deriveDaemonJwtKeyring } from '../authn/daemon-jwt-keyring.ts'
-import { parseSecretsFromEnv } from '../../lib/secrets/secrets.ts'
+import {
+  deriveEncryptionSecretsConfig,
+  parseSecretsFromEnv,
+  type DerivedSecretsConfig,
+} from '../../lib/secrets/secrets.ts'
+import { emitCertificateRenewalFailed } from '../../features/notifications/certificate-alerts.ts'
 import {
   createWorkersDb,
   type Db,
@@ -760,6 +765,20 @@ export class DaemonCellObject {
   async #deleteAll(callSite: string): Promise<void> {
     if (this.#storageDebugEnabled()) this.#bumpStorageCount(callSite, 'write')
     await this.#ctx.storage.deleteAll()
+  }
+
+  /** Seals notification channel addresses for alerts raised from a daemon event. */
+  async #dataEncryptionSecrets(): Promise<DerivedSecretsConfig> {
+    return await deriveEncryptionSecretsConfig(
+      parseSecretsFromEnv(
+        {
+          TURBOPANEL_SECRET: this.#env.TURBOPANEL_SECRET,
+          TURBOPANEL_SECRETS: this.#env.TURBOPANEL_SECRETS,
+        },
+        'workers'
+      ),
+      'data-encryption'
+    )
   }
 
   async #getDaemonJwtKeyring(): Promise<DaemonJwtKeyring> {
@@ -1931,14 +1950,21 @@ export class DaemonCellObject {
       if (parsed.type === 'acme-issuance-event') {
         await this.#recordInboundRepairingPresence(attachment, parsed.at)
         await this.#withProjectionDb('acme-issuance-event', attachment.serverId, async (db) => {
-          await handleAcmeIssuanceEvent(db, {
-            serverId: attachment.serverId,
-            hostname: parsed.hostname,
-            ok: parsed.ok,
-            at: parsed.at,
-            ...(parsed.errorMessage ? { errorMessage: parsed.errorMessage } : {}),
-            ...(parsed.notAfter ? { notAfter: parsed.notAfter } : {}),
-          })
+          await handleAcmeIssuanceEvent(
+            db,
+            {
+              serverId: attachment.serverId,
+              hostname: parsed.hostname,
+              ok: parsed.ok,
+              at: parsed.at,
+              ...(parsed.errorMessage ? { errorMessage: parsed.errorMessage } : {}),
+              ...(parsed.notAfter ? { notAfter: parsed.notAfter } : {}),
+            },
+            {
+              onNewFailure: async (failure) =>
+                emitCertificateRenewalFailed(db, await this.#dataEncryptionSecrets(), failure),
+            }
+          )
         })
         return
       }

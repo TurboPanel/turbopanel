@@ -20,6 +20,7 @@ import {
 import { instanceAttachVersionFrame } from './attach-version.ts'
 import type { DaemonJwtKeyring } from './authn/daemon-jwt-keyring.ts'
 import { tryAssignColocatedDaemonToInstalledOrganization } from '../client/authn/install-state.ts'
+import { emitCertificateRenewalFailed } from '../features/notifications/certificate-alerts.ts'
 import { handleAcmeIssuanceEvent } from '../client/tls/acme-issuance-event.ts'
 import { recordInstanceAcmeIssuance } from '../features/install/instance-hostnames.ts'
 import {
@@ -402,17 +403,25 @@ async function handleAcmeIssuanceInbound(params: {
   serverId: string
   connectionId: string | undefined
   message: Extract<DaemonMessage, { type: 'acme-issuance-event' }>
+  dataEncryptionSecrets: DerivedSecretsConfig | undefined
 }): Promise<void> {
   const { cell, db, serverId, connectionId, message } = params
   await cell.recordInbound({ connectionId, at: message.at })
-  await handleAcmeIssuanceEvent(db, {
-    serverId,
-    hostname: message.hostname,
-    ok: message.ok,
-    at: message.at,
-    ...(message.errorMessage ? { errorMessage: message.errorMessage } : {}),
-    ...(message.notAfter ? { notAfter: message.notAfter } : {}),
-  })
+  await handleAcmeIssuanceEvent(
+    db,
+    {
+      serverId,
+      hostname: message.hostname,
+      ok: message.ok,
+      at: message.at,
+      ...(message.errorMessage ? { errorMessage: message.errorMessage } : {}),
+      ...(message.notAfter ? { notAfter: message.notAfter } : {}),
+    },
+    {
+      onNewFailure: (failure) =>
+        emitCertificateRenewalFailed(db, params.dataEncryptionSecrets, failure),
+    }
+  )
 }
 
 async function handleInstanceAcmeIssuanceInbound(params: {
@@ -503,6 +512,8 @@ type DaemonInboundDispatch = {
   /** Reaches other servers' cells (the HA event probes a standby's daemon). */
   registry?: DaemonCellRegistry
   message: DaemonMessage
+  /** Seals alert channel addresses when an event notifies; omit and only the bell is written. */
+  dataEncryptionSecrets?: DerivedSecretsConfig
   /** Answer on the socket the frame arrived on (daemon-initiated requests). */
   reply: (message: BackupRunReportResultMessage) => void
 }
@@ -611,6 +622,7 @@ async function dispatchDaemonInboundByType(params: DaemonInboundDispatch): Promi
         serverId,
         connectionId,
         message,
+        dataEncryptionSecrets: params.dataEncryptionSecrets,
       })
       return
     case 'instance-acme-issuance-event':
@@ -663,6 +675,8 @@ export type DaemonWebSocketOptions = {
   secrets?: DaemonJwtKeyring
   /** Session keyring used to authorize the placeholder client/developer WS. */
   sessionSecrets?: DerivedSecretsConfig
+  /** Reads and seals notification channel addresses for alerts the daemon's events raise. */
+  dataEncryptionSecrets?: DerivedSecretsConfig
   daemonCellRegistry?: DaemonCellRegistry
   connectLimiter?: RateLimiter
   inboundMessageLimit?: number
@@ -838,6 +852,7 @@ export function registerDaemonWebSocket<E extends Env>(
           commandQueue: options.commandQueue,
           registry,
           message,
+          dataEncryptionSecrets: options.dataEncryptionSecrets,
           reply: (answer) => ws.send(JSON.stringify(answer)),
         })
       }

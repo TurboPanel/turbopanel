@@ -67,6 +67,19 @@ export function applyIssuanceOutcome(
   return next
 }
 
+/** What the caller needs to tell people a certificate just started failing. */
+export type NewAcmeFailure = { organizationId: string; hostname: string; rawError?: string }
+
+export type AcmeIssuanceEventDeps = {
+  /**
+   * Called at most once per event, and only when a matching row had no
+   * `lastError` before and now does (an ok-to-failed transition). A hostname
+   * that keeps failing is not announced again until a good probe clears it.
+   * Never throws into the caller's write path.
+   */
+  onNewFailure?: (failure: NewAcmeFailure) => Promise<void>
+}
+
 /**
  * Records the latest issuance outcome on the reporting organization's
  * `managed` `lets_encrypt` rows whose `dnsNames` cover the hostname.
@@ -87,7 +100,8 @@ export function applyIssuanceOutcome(
  */
 export async function handleAcmeIssuanceEvent(
   db: Db,
-  input: AcmeIssuanceEventInput
+  input: AcmeIssuanceEventInput,
+  deps: AcmeIssuanceEventDeps = {}
 ): Promise<{ updated: boolean }> {
   const hostname = normalizeHostname(input.hostname)
   if (hostname.length === 0) return { updated: false }
@@ -108,12 +122,14 @@ export async function handleAcmeIssuanceEvent(
     .where(and(eq(tls.source, 'lets_encrypt'), eq(tls.organizationId, organizationId)))
 
   let updated = false
+  let newlyFailing = false
   await forEachSequential(rows, async (row) => {
     if (row.status !== 'managed') return
     if (!isResidualMetadata(row.metadata)) return
     if (!coversHostname(row.metadata.dnsNames, hostname)) return
 
     const nextAcme = applyIssuanceOutcome(row.metadata.acme, input)
+    if (!input.ok && row.metadata.acme?.lastError === undefined) newlyFailing = true
 
     await db
       .update(tls)
@@ -125,5 +141,20 @@ export async function handleAcmeIssuanceEvent(
     updated = true
   })
 
+  if (newlyFailing) await announceNewFailure(deps, organizationId, hostname, input.errorMessage)
   return { updated }
+}
+
+async function announceNewFailure(
+  deps: AcmeIssuanceEventDeps,
+  organizationId: string,
+  hostname: string,
+  rawError: string | undefined
+): Promise<void> {
+  if (!deps.onNewFailure) return
+  try {
+    await deps.onNewFailure({ organizationId, hostname, ...(rawError ? { rawError } : {}) })
+  } catch {
+    // The record is already written; a failed alert must not fail the event.
+  }
 }
