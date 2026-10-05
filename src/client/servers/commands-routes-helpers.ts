@@ -4,12 +4,10 @@
  */
 
 import { assertValidHostname } from '../../contracts/commands/hostname.ts'
-import {
-  parseNtpSetPayload,
-  parseTimezoneSetPayload,
-} from '../../contracts/commands/schemas.ts'
+import { parseNtpSetPayload, parseTimezoneSetPayload } from '../../contracts/commands/schemas.ts'
 import { isAllowedTimezone } from '../../lib/timezones.ts'
 import { computePingLatency } from './commands-ping-latency.ts'
+import { lastErrorLine } from '../../features/commands/error-line.ts'
 import { DEFAULT_EXECUTION_LOG_READ_BYTES } from '../../features/execution-logs/types.ts'
 
 export type CommandRouteValidationError = {
@@ -19,10 +17,8 @@ export type CommandRouteValidationError = {
 }
 
 export function parseHostnameCommandBody(
-  body: Record<string, unknown>,
-):
-  | { ok: true; hostname: string }
-  | CommandRouteValidationError {
+  body: Record<string, unknown>
+): { ok: true; hostname: string } | CommandRouteValidationError {
   const hostname = body.hostname
   if (typeof hostname !== 'string' || hostname.length === 0) {
     return { ok: false, error: 'Invalid request', status: 400 }
@@ -38,10 +34,8 @@ export function parseHostnameCommandBody(
 }
 
 export function parseTimezoneCommandBody(
-  body: Record<string, unknown>,
-):
-  | { ok: true; payload: ReturnType<typeof parseTimezoneSetPayload> }
-  | CommandRouteValidationError {
+  body: Record<string, unknown>
+): { ok: true; payload: ReturnType<typeof parseTimezoneSetPayload> } | CommandRouteValidationError {
   let payload
   try {
     payload = parseTimezoneSetPayload(body)
@@ -55,10 +49,8 @@ export function parseTimezoneCommandBody(
 }
 
 export function parseNtpCommandBody(
-  body: Record<string, unknown>,
-):
-  | { ok: true; payload: ReturnType<typeof parseNtpSetPayload> }
-  | CommandRouteValidationError {
+  body: Record<string, unknown>
+): { ok: true; payload: ReturnType<typeof parseNtpSetPayload> } | CommandRouteValidationError {
   let payload
   try {
     payload = parseNtpSetPayload(body)
@@ -69,7 +61,7 @@ export function parseNtpCommandBody(
 }
 
 export function shapeCommandGetResponse<T extends { type: string }>(
-  record: T,
+  record: T
 ): T | (T & { latency: ReturnType<typeof computePingLatency> }) {
   if (record.type === 'daemon.ping') {
     return { ...record, latency: computePingLatency(record as never) }
@@ -79,7 +71,7 @@ export function shapeCommandGetResponse<T extends { type: string }>(
 
 export function commandNotFoundOnServer(
   record: { serverId: string } | null | undefined,
-  serverId: string,
+  serverId: string
 ): boolean {
   return record?.serverId !== serverId
 }
@@ -98,6 +90,8 @@ export type CommandStatusResponse = {
   finishedAt: string | null
   errorCode: string | null
   errorMessage: string | null
+  /** The one line of `errorMessage` that says what went wrong; `null` when there is no error text. */
+  errorLine: string | null
   /** Whether an execution log is retained for this command. */
   hasLog: boolean
 }
@@ -122,7 +116,7 @@ type CommandStatusSource = {
  */
 export function shapeCommandStatusResponse(
   record: CommandStatusSource,
-  hasLog = false,
+  hasLog = false
 ): CommandStatusResponse {
   return {
     id: record.id,
@@ -134,6 +128,7 @@ export function shapeCommandStatusResponse(
     finishedAt: record.finishedAt,
     errorCode: record.errorCode,
     errorMessage: record.errorMessage,
+    errorLine: lastErrorLine(record.errorMessage),
     hasLog,
   }
 }
@@ -161,7 +156,7 @@ export type CommandLogQuery = { from: number; max: number }
  */
 export function parseCommandLogQuery(
   from: string | undefined,
-  max: string | undefined,
+  max: string | undefined
 ): CommandLogQuery {
   const parsedFrom = Number(from ?? '')
   const parsedMax = Number(max ?? '')
@@ -181,7 +176,7 @@ export function parseCommandLogQuery(
  */
 export function shapeCommandLogResponse(
   result: { bytes: Uint8Array; nextSeq: number; sealed: boolean; truncated: boolean } | null,
-  fromSeq: number,
+  fromSeq: number
 ): CommandLogResponse {
   if (!result) {
     return { ok: true, text: '', nextSeq: fromSeq, sealed: false, truncated: false, exists: false }
@@ -197,10 +192,8 @@ export function shapeCommandLogResponse(
 }
 
 export function parseCommandStatusBody(
-  body: Record<string, unknown>,
-):
-  | { ok: true; ids: string[] }
-  | CommandRouteValidationError {
+  body: Record<string, unknown>
+): { ok: true; ids: string[] } | CommandRouteValidationError {
   const ids = body.ids
   if (!Array.isArray(ids) || ids.length === 0) {
     return { ok: false, error: 'Invalid request', status: 400 }

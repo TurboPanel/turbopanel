@@ -45,6 +45,13 @@ export const datacenterSchemas = {
         description:
           "Effective trust flag (`options.trusted` with the default `true` applied). `false` means the datacenter's L2 is not under the operator's control.",
       },
+      serverTraffic: {
+        type: 'object',
+        required: ['wins', 'tied'],
+        description:
+          'Present on the list only. `wins`: no other trusted datacenter has a lower priority number, so server-to-server traffic uses this network. `tied`: another trusted datacenter has the same number (the winner is then chosen by datacenter id).',
+        properties: { wins: { type: 'boolean' }, tied: { type: 'boolean' } },
+      },
       location: { $ref: '#/components/schemas/Location' },
       subnets: {
         type: 'array',
@@ -58,11 +65,25 @@ export const datacenterSchemas = {
   },
   DatacentersResponse: {
     type: 'object',
-    required: ['datacenters'],
+    required: ['datacenters', 'warnings'],
     properties: {
       datacenters: {
         type: 'array',
         items: { $ref: '#/components/schemas/DatacenterRow' },
+      },
+      warnings: {
+        type: 'array',
+        description:
+          'Plain-words warnings about the set. `equal_priority`: two or more trusted datacenters share a priority number.',
+        items: {
+          type: 'object',
+          required: ['code', 'priority', 'datacenterIds'],
+          properties: {
+            code: { type: 'string', const: 'equal_priority' },
+            priority: { type: 'integer' },
+            datacenterIds: { type: 'array', items: { type: 'string', format: 'uuid' } },
+          },
+        },
       },
     },
   },
@@ -456,6 +477,84 @@ export const datacenterPaths: Record<string, unknown> = {
         '409': {
           description:
             '`datacenter_has_members` — unassign every server first. `datacenter_has_networks` if a non-site network is still scoped to the datacenter.',
+          content: { 'application/json': { schema: clientErrorJson } },
+        },
+      },
+    },
+  },
+  '/api/client/v1/datacenters/{id}/server-traffic': {
+    post: {
+      tags: ['Datacenters'],
+      summary: 'Use this network for server-to-server traffic',
+      description:
+        'Gives this datacenter the lowest priority number among the trusted datacenters and moves the others up (lower number wins), so the owner never types a number. Does nothing when it already wins. Changed datacenters re-plan stored endpoints the same way a priority edit does.',
+      security: [{ cookieAuth: [] }],
+      parameters: [
+        {
+          name: 'id',
+          in: 'path',
+          required: true,
+          schema: { type: 'string', format: 'uuid' },
+        },
+      ],
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              required: ['preferred'],
+              properties: { preferred: { type: 'boolean', const: true } },
+            },
+          },
+        },
+      },
+      responses: {
+        '200': {
+          description: 'Applied (or already in place); `changes` lists the numbers that moved',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['ok', 'changes'],
+                properties: {
+                  ok: { type: 'boolean', const: true },
+                  changes: {
+                    type: 'array',
+                    items: {
+                      type: 'object',
+                      required: ['datacenterId', 'before', 'after'],
+                      properties: {
+                        datacenterId: { type: 'string', format: 'uuid' },
+                        before: { type: 'integer' },
+                        after: { type: 'integer' },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+        '400': {
+          description: 'Invalid request',
+          content: { 'application/json': { schema: clientErrorJson } },
+        },
+        '401': {
+          description: 'Unauthorized',
+          content: { 'application/json': { schema: clientErrorJson } },
+        },
+        '403': {
+          description: 'Forbidden',
+          content: { 'application/json': { schema: clientErrorJson } },
+        },
+        '404': {
+          description: 'Not found',
+          content: { 'application/json': { schema: clientErrorJson } },
+        },
+        '409': {
+          description:
+            '`datacenter_not_trusted` — an untrusted datacenter is never used for server-to-server traffic.',
           content: { 'application/json': { schema: clientErrorJson } },
         },
       },
