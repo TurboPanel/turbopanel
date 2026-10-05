@@ -796,7 +796,13 @@ async function buildEnabledFabricApp(opts: {
   removeFabricOnDelete?: boolean
   gatewayReady?: boolean
   queueFails?: boolean
-}): Promise<{ app: Hono<AppEnv>; cookie: string }> {
+  /** A second relay on this server; the queue refuses only its teardown. */
+  secondRelayFailsOn?: string
+}): Promise<{
+  app: Hono<AppEnv>
+  cookie: string
+  relayPatches: Record<string, unknown>[]
+}> {
   const secretsConfig = parseTestSecretsConfig('deno')
   const secrets = await deriveSecretsConfig(secretsConfig, 'session-signing')
   const token = crypto.randomUUID()
@@ -826,7 +832,17 @@ async function buildEnabledFabricApp(opts: {
   ).delete.bind(authDb)
 
   let fabricPresent = true
-  const relays = opts.withRelay ? [{ ...RELAY_ROW }] : []
+  const relays: Array<Record<string, unknown>> = opts.withRelay ? [{ ...RELAY_ROW }] : []
+  if (opts.secondRelayFailsOn) {
+    relays.push({
+      ...RELAY_ROW,
+      id: crypto.randomUUID(),
+      serverId: opts.secondRelayFailsOn,
+      address: '10.250.0.3',
+      prefix: '10.250.0.3/32',
+    })
+  }
+  const relayPatches: Record<string, unknown>[] = []
 
   const db = Object.assign(authDb, {
     execute: () => Promise.resolve([{ allowed: true }]),
@@ -879,6 +895,7 @@ async function buildEnabledFabricApp(opts: {
       if (table === relay) {
         return {
           set: (patch: Record<string, unknown>) => {
+            relayPatches.push(patch)
             for (const row of relays) Object.assign(row, patch)
             return {
               where: () => ({
@@ -911,8 +928,10 @@ async function buildEnabledFabricApp(opts: {
     c.set('db', db)
     c.set('daemonCellRegistry', { cells: new Map() } as never)
     c.set('commandQueue', {
-      enqueue: () =>
-        opts.queueFails ? Promise.reject(new Error('queue down')) : Promise.resolve(),
+      enqueue: (envelope: { serverId: string }) =>
+        opts.queueFails || envelope.serverId === opts.secondRelayFailsOn
+          ? Promise.reject(new Error('queue down'))
+          : Promise.resolve(),
     })
     return next()
   })
@@ -921,7 +940,7 @@ async function buildEnabledFabricApp(opts: {
     runtime: 'deno',
     signupEnvOverride: undefined,
   })
-  return { app, cookie }
+  return { app, cookie, relayPatches }
 }
 
 test("PUT /fabric enabled:false keeps the mesh when a server's teardown cannot be queued", async () => {
@@ -949,6 +968,51 @@ test("PUT /fabric enabled:false keeps the mesh when a server's teardown cannot b
   })
   const settings = (await get.json()) as { enabled: boolean }
   assertEquals(settings.enabled, true)
+})
+
+test('PUT /fabric enabled:false resets the servers it did reach when another cannot be reached', async () => {
+  const unreachable = crypto.randomUUID()
+  const { app, cookie, relayPatches } = await buildEnabledFabricApp({
+    withRelay: true,
+    removeFabricOnDelete: true,
+    secondRelayFailsOn: unreachable,
+  })
+  const res = await app.request(`/organizations/${orgId}/fabric`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json', Cookie: cookie },
+    body: JSON.stringify({ enabled: false }),
+  })
+  assertEquals(res.status, 503)
+  const body = (await res.json()) as { serverIds: string[] }
+  assertEquals(body.serverIds, [unreachable])
+  // The reached server dropped its key: forget it so its new one reaches
+  // the peers on the next reconcile.
+  assertEquals(
+    relayPatches.some((patch) => 'publicKey' in patch && patch.publicKey === null),
+    true
+  )
+  const get = await app.request(`/organizations/${orgId}/fabric`, {
+    headers: { Cookie: cookie },
+  })
+  assertEquals(((await get.json()) as { enabled: boolean }).enabled, true)
+})
+
+test('PUT /fabric enabled:false resets nothing when no server was reached', async () => {
+  const { app, cookie, relayPatches } = await buildEnabledFabricApp({
+    withRelay: true,
+    removeFabricOnDelete: true,
+    queueFails: true,
+  })
+  const res = await app.request(`/organizations/${orgId}/fabric`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json', Cookie: cookie },
+    body: JSON.stringify({ enabled: false }),
+  })
+  assertEquals(res.status, 503)
+  assertEquals(
+    relayPatches.some((patch) => 'publicKey' in patch),
+    false
+  )
 })
 
 test('POST /fabric/apply returns results when TurboFabric is enabled', async () => {

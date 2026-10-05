@@ -817,6 +817,25 @@ export async function clearRelayAppliedPayloadHash(
   })
 }
 
+/**
+ * Servers whose teardown was queued while the fabric stays on (a disable that
+ * could not reach every server): they drop their tunnel and key, so forget
+ * what was applied there and the key they had. The next reconcile then sends
+ * them a full config again, and the key they generate reaches their peers.
+ */
+export async function resetRelaysAfterQueuedTeardown(
+  db: Db,
+  params: { fabricId: string; serverIds: readonly string[] }
+): Promise<void> {
+  await forEachSequential(params.serverIds, async (serverId) => {
+    await clearRelayAppliedPayloadHash(db, { serverId, fabricId: params.fabricId })
+    await db
+      .update(relay)
+      .set({ publicKey: null, updatedAt: nowIso() })
+      .where(and(eq(relay.fabricId, params.fabricId), eq(relay.serverId, serverId)))
+  })
+}
+
 export async function updateFabricRelay(
   db: Db,
   params: {

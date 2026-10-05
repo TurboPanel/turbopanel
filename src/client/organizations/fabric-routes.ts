@@ -27,6 +27,7 @@ import {
   loadRelayPresharedKeyPresence,
   purgeOrganizationComposeNetworks,
   type RelayRecord,
+  resetRelaysAfterQueuedTeardown,
   updateFabricRelay,
 } from '../../features/fabric/fabric-records.ts'
 import { parseFabricPolicy } from '../../features/fabric/policy.ts'
@@ -141,7 +142,8 @@ function fabricSecretsFromContext(c: {
  * The rows go only once every server's teardown is queued: with the relay
  * rows deleted nothing could ever send a teardown again, and that host would
  * keep its tunnel, key and bridges. Returns the servers whose teardown could
- * not be queued (nothing is deleted then; the caller retries).
+ * not be queued; the rows then stay (the caller retries), and the servers
+ * whose teardown did go out are reset so the next reconcile re-applies them.
  */
 async function disableOrganizationFabricForPut(params: {
   db: Db
@@ -167,7 +169,15 @@ async function disableOrganizationFabricForPut(params: {
   const notQueued = results
     .filter((result) => result.status === 'failed')
     .map((result) => result.serverId)
-  if (notQueued.length > 0) return { notQueued }
+  if (notQueued.length > 0) {
+    await resetRelaysAfterQueuedTeardown(db, {
+      fabricId: existing.id,
+      serverIds: results
+        .filter((result) => result.status !== 'failed')
+        .map((result) => result.serverId),
+    })
+    return { notQueued }
+  }
   await db.transaction(async (tx) => {
     await purgeOrganizationComposeNetworks(tx, organizationId)
     await disableOrganizationFabric(tx, organizationId)
@@ -445,7 +455,7 @@ export function registerOrganizationFabricRoutes(router: Hono<AppEnv>, opts: Aut
           {
             error: 'fabric_teardown_not_queued',
             message:
-              'TurboFabric is still on: the teardown could not be queued for every server. Try again.',
+              'TurboFabric is still on: turning it off could not reach every server. Servers that were reached have dropped their tunnel and get it back on the next apply. Try turning it off again.',
             serverIds: notQueued,
           },
           503
