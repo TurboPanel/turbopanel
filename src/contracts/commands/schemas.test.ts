@@ -5531,6 +5531,7 @@ test('parseEnvironmentDeployPayload sites accept engines, php, and principal ids
       engine: 'nginx',
       principal: { ...SITE_PRINCIPAL, uid: 15001, gid: 15001 },
       webEnv: { APP_ENV: 'prod', drop: 1 },
+      webSecretEnv: { SITE_VAR: 'tpdaemon.abc', drop: 1 },
       php: { version: '8.3', extensions: ['gd'] },
     })
   )
@@ -5539,6 +5540,8 @@ test('parseEnvironmentDeployPayload sites accept engines, php, and principal ids
   assertEquals(sites[0]?.engine, 'nginx')
   assertEquals(sites[0]?.principal?.uid, 15001)
   assertEquals(sites[0]?.webEnv, { APP_ENV: 'prod' })
+  // Sealed secret variables ride apart from the plain ones; non-strings drop.
+  assertEquals(sites[0]?.webSecretEnv, { SITE_VAR: 'tpdaemon.abc' })
   assertEquals(sites[0]?.php?.extensions, ['gd'])
 
   for (const engine of ['apache', 'openlitespeed']) {

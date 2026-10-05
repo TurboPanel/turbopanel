@@ -1020,8 +1020,12 @@ function parseFirewallRenderedDocument(value: unknown, field: string): string {
 
 function parseFirewallRendered(value: unknown): FirewallRendered {
   if (!isRecord(value)) throw new Error('rendered must be an object')
-  const rendered: FirewallRendered = { v4: parseFirewallRenderedDocument(value.v4, 'v4') }
-  if (value.v6 !== undefined) rendered.v6 = parseFirewallRenderedDocument(value.v6, 'v6')
+  const rendered: FirewallRendered = {
+    v4: parseFirewallRenderedDocument(value.v4, 'v4'),
+  }
+  if (value.v6 !== undefined) {
+    rendered.v6 = parseFirewallRenderedDocument(value.v6, 'v6')
+  }
   return rendered
 }
 
@@ -1748,8 +1752,14 @@ export type EnvironmentDeploySite = {
    * Requires `principal`: a timer with no `User=` would run as root.
    */
   cron?: EnvironmentDeployCronJob[]
-  /** Merged hosting web env (variables + options.web.env). */
+  /** Merged hosting web env (non-secret variables + options.web.env). */
   webEnv?: Record<string, string>
+  /**
+   * Secret runtime variables, name to `tpdaemon` envelope (the sealed twin of
+   * `webEnv`, disjoint from it). The daemon decrypts them before the site is
+   * applied; the plaintext only ever reaches the engine's own config files.
+   */
+  webSecretEnv?: Record<string, string>
   php?: EnvironmentDeployHostingPhp
   /**
    * When set (from a project principal ↔ service tenancy), the site tree
@@ -2253,6 +2263,12 @@ export type EnvironmentDeployHostingPort = {
 
 export type EnvironmentDeployHostingWeb = {
   env?: Record<string, string>
+  /**
+   * Secret runtime variables, name to `tpdaemon` envelope. Never plaintext: the
+   * daemon decrypts them through `POST /api/daemon/v1/secrets/decrypt` and folds
+   * them into the site's `webEnv`. Disjoint from `env`.
+   */
+  secretEnv?: Record<string, string>
   php?: EnvironmentDeployHostingPhp
 }
 
@@ -2467,6 +2483,8 @@ function parseDeployHostingWeb(value: unknown): EnvironmentDeployHostingWeb | un
   const web: EnvironmentDeployHostingWeb = {}
   const env = parseEnvRecord(value.env)
   if (env) web.env = env
+  const secretEnv = parseEnvRecord(value.secretEnv)
+  if (secretEnv) web.secretEnv = secretEnv
   const php = parseDeployHostingPhp(value.php)
   if (php) web.php = php
   return Object.keys(web).length > 0 ? web : undefined
@@ -2999,6 +3017,8 @@ function parseDeploySiteEntry(entry: unknown): EnvironmentDeploySite {
   if (cron) site.cron = cron
   const webEnv = parseEnvRecord(entry.webEnv)
   if (webEnv) site.webEnv = webEnv
+  const webSecretEnv = parseEnvRecord(entry.webSecretEnv)
+  if (webSecretEnv) site.webSecretEnv = webSecretEnv
   const php = parseDeployHostingPhp(entry.php)
   if (php) site.php = php
   const principal = parseDeploySitePrincipal(entry.principal)
