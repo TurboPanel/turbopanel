@@ -4,7 +4,12 @@
  */
 
 import { assertEquals } from '@std/assert'
-import { hostIsReserved, unbracket, validateOutboundUrl } from './outbound-url.ts'
+import {
+  hostIsReserved,
+  stripTrailingDots,
+  unbracket,
+  validateOutboundUrl,
+} from './outbound-url.ts'
 
 /**
  * Jest/Mocha-shaped alias for {@link Deno.test}.
@@ -25,10 +30,7 @@ test('the refusals, one per reason', () => {
   assertEquals(validateOutboundUrl('nonsense'), 'malformed')
   assertEquals(validateOutboundUrl('http://example.com'), 'scheme_not_https')
   assertEquals(validateOutboundUrl('ftp://example.com'), 'scheme_not_https')
-  assertEquals(
-    validateOutboundUrl('https://u:p@example.com'),
-    'credentials_in_url',
-  )
+  assertEquals(validateOutboundUrl('https://u:p@example.com'), 'credentials_in_url')
   assertEquals(validateOutboundUrl('https://localhost'), 'reserved_host')
   assertEquals(validateOutboundUrl('https://redis'), 'reserved_host')
   assertEquals(validateOutboundUrl('https://x.localhost'), 'reserved_host')
@@ -39,7 +41,7 @@ test('the refusals, one per reason', () => {
   // The cloud metadata endpoint, the single most valuable SSRF target.
   assertEquals(
     validateOutboundUrl('https://169.254.169.254/latest/meta-data'),
-    'address_not_public',
+    'address_not_public'
   )
   assertEquals(validateOutboundUrl('https://192.168.1.1'), 'address_not_public')
 })
@@ -66,6 +68,16 @@ test('a bare single-label host is reserved — Docker service names resolve', ()
   assertEquals(hostIsReserved('postgres'), true)
   assertEquals(hostIsReserved('intranet'), true)
   assertEquals(hostIsReserved('example.com'), false)
+})
+
+test('a trailing dot names the same host, so it is reserved too', () => {
+  assertEquals(hostIsReserved('localhost.'), true)
+  assertEquals(hostIsReserved('metadata.google.internal.'), true)
+  assertEquals(hostIsReserved('intranet.'), true)
+  assertEquals(hostIsReserved('example.com.'), false)
+  assertEquals(stripTrailingDots('a.b..'), 'a.b')
+  assertEquals(validateOutboundUrl('https://localhost./hook'), 'reserved_host')
+  assertEquals(validateOutboundUrl('https://metadata.google.internal./hook'), 'reserved_host')
 })
 
 test('an IPv6 literal is unbracketed before it is classified', () => {

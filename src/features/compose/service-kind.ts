@@ -154,6 +154,12 @@ export type SourceIdResolver = (sourceId: string) => boolean
  */
 type ComposeServiceExtensionFields = {
   serviceKind?: ComposeServiceKind
+  /**
+   * Validation context, not a wire field: the block belongs to a partial layer
+   * (an environment's "Changes for {env}"), so what it leaves out is inherited
+   * from the Base rather than absent. See {@link collectServiceTurbopanelValidationIssues}.
+   */
+  partialLayer?: boolean
   engine?: SiteEngine
   /**
    * Native runtime family for `serviceKind: node`. Omitted means `auto`.
@@ -984,12 +990,16 @@ function describeKinds(kinds: readonly ComposeServiceKind[]): string {
 function kindFieldIssue(
   basePath: string,
   field: string,
-  kind: ComposeServiceKind | undefined
+  fields: ComposeServiceExtensionFields
 ): ServiceTurbopanelValidationIssue | null {
   const rule = SERVICE_EXTENSION_FIELDS[field]
+  // A partial layer that does not restate `serviceKind` is not saying the
+  // service is a container: its kind is the Base's. Which fields fit it is
+  // answered over the merged document, where the kind is known.
+  if (fields.partialLayer && fields.serviceKind === undefined) return null
   // An omitted `serviceKind` means `container`, the same default the parser and
   // the daemon read it as.
-  if (rule.kinds.includes(kind ?? 'container')) return null
+  if (rule.kinds.includes(fields.serviceKind ?? 'container')) return null
   return {
     path: `${basePath}.${field}`,
     message: `${field} is only valid when serviceKind is ${describeKinds(rule.kinds)}`,
@@ -1006,7 +1016,7 @@ function kindMembershipIssues(
   const present = fields as Record<string, unknown>
   for (const field of checked) {
     if (present[field] === undefined) continue
-    const issue = kindFieldIssue(basePath, field, fields.serviceKind)
+    const issue = kindFieldIssue(basePath, field, fields)
     if (issue) issues.push(issue)
   }
   return issues
@@ -1028,7 +1038,10 @@ function requiredFieldIssues(
   fields: ComposeServiceExtensionFields
 ): ServiceTurbopanelValidationIssue[] {
   const kind = fields.serviceKind
-  if (kind === undefined) return []
+  // A partial layer may restate a kind and leave the rest to the Base (a node
+  // app's repository, say); the merged document is where "it has a source" is
+  // asked, with the Base's keys in it.
+  if (kind === undefined || fields.partialLayer) return []
 
   const issues: ServiceTurbopanelValidationIssue[] = []
   const present = fields as Record<string, unknown>
@@ -1044,7 +1057,8 @@ function requiredFieldIssues(
 
 function validateRawExtensionFieldTypes(
   basePath: string,
-  rawExtension: unknown
+  rawExtension: unknown,
+  partialLayer: boolean
 ): ServiceTurbopanelValidationIssue[] {
   if (!isPlainMapping(rawExtension)) return []
   const issues: ServiceTurbopanelValidationIssue[] = []
@@ -1075,7 +1089,7 @@ function validateRawExtensionFieldTypes(
   }
 
   if ('source' in rawExtension) {
-    issues.push(...validateRawSourceFieldTypes(basePath, rawExtension.source))
+    issues.push(...validateRawSourceFieldTypes(basePath, rawExtension.source, partialLayer))
   }
 
   return issues
@@ -1083,7 +1097,8 @@ function validateRawExtensionFieldTypes(
 
 function validateRawSourceFieldTypes(
   basePath: string,
-  rawSource: unknown
+  rawSource: unknown,
+  partialLayer: boolean
 ): ServiceTurbopanelValidationIssue[] {
   const sourcePath = `${basePath}.source`
   if (!isPlainMapping(rawSource)) {
@@ -1091,7 +1106,10 @@ function validateRawSourceFieldTypes(
   }
 
   const issues: ServiceTurbopanelValidationIssue[] = []
-  if (!readSourceId(rawSource.sourceId)) {
+  // A partial layer may change the branch or a command and leave the repository
+  // to the Base; a repository it does name still has to be a real id.
+  const sourceIdOptional = partialLayer && rawSource.sourceId === undefined
+  if (!sourceIdOptional && !readSourceId(rawSource.sourceId)) {
     issues.push({
       path: `${sourcePath}.sourceId`,
       message: 'source.sourceId must be the UUID of a source in this organization',
@@ -1179,7 +1197,12 @@ function validatePhpMode(
   if (rawMode === undefined) return []
   const path = `${basePath}.php.mode`
   if (!isPhpMode(rawMode)) {
-    return [{ path, message: `php.mode must be one of: ${PHP_MODES.join(', ')}` }]
+    return [
+      {
+        path,
+        message: `php.mode must be one of: ${PHP_MODES.join(', ')}`,
+      },
+    ]
   }
   const siteEngine = engine ?? 'caddy'
   const supported = ENGINE_PHP_MODES[siteEngine]
@@ -1187,7 +1210,9 @@ function validatePhpMode(
   const message =
     supported.length === 0
       ? `Caddy sites have no PHP mode; use nginx, apache, nginx+apache or openlitespeed for "${rawMode}"`
-      : `The ${siteEngine} engine cannot run php.mode "${rawMode}"; it supports: ${supported.join(', ')}`
+      : `The ${siteEngine} engine cannot run php.mode "${rawMode}"; it supports: ${supported.join(
+          ', '
+        )}`
   return [{ path, message }]
 }
 
@@ -1259,7 +1284,7 @@ function validatePhpConsistency(
 
   // Asked of the raw key, not the parsed block: `php: {}` on a container parses
   // to nothing but is still an authored php block, and saying so beats silence.
-  const membership = kindFieldIssue(basePath, 'php', fields.serviceKind)
+  const membership = kindFieldIssue(basePath, 'php', fields)
   if (membership) return [membership]
 
   if (!isPlainMapping(rawPhp)) {
@@ -1306,7 +1331,7 @@ function validateCronConsistency(
 
   // A container has no principal to run as and no tree to run in; both
   // host-native kinds have exactly one of each — which is what the table says.
-  const membership = kindFieldIssue(basePath, 'cron', fields.serviceKind)
+  const membership = kindFieldIssue(basePath, 'cron', fields)
   if (membership) return [membership]
 
   const issues: ServiceTurbopanelValidationIssue[] = []
@@ -1367,7 +1392,7 @@ function validatePrincipalConsistency(
   fields: ComposeServiceExtensionFields
 ): ServiceTurbopanelValidationIssue[] {
   if (raw.principal === undefined) return []
-  const membership = kindFieldIssue(basePath, 'principal', fields.serviceKind)
+  const membership = kindFieldIssue(basePath, 'principal', fields)
   return membership ? [membership] : []
 }
 
@@ -1457,7 +1482,7 @@ function validateRootConsistency(
 ): ServiceTurbopanelValidationIssue[] {
   if (fields.root === undefined) return []
 
-  const membership = kindFieldIssue(basePath, 'root', fields.serviceKind)
+  const membership = kindFieldIssue(basePath, 'root', fields)
   if (membership) return [membership]
 
   if (isSafeRoot(fields.root)) return []
@@ -1528,14 +1553,15 @@ function validateHostingConsistency(
   fields: ComposeServiceExtensionFields
 ): ServiceTurbopanelValidationIssue[] {
   if (!('hosting' in raw)) return []
-  const membership = kindFieldIssue(basePath, 'hosting', fields.serviceKind)
+  const membership = kindFieldIssue(basePath, 'hosting', fields)
   if (membership) return [membership]
   return collectHostingExtensionValidationIssues(basePath, raw.hosting, fields.serviceKind)
 }
 
 function collectServiceExtensionValidationIssues(
   basePath: string,
-  rawService: Record<string, unknown>
+  rawService: Record<string, unknown>,
+  partialLayer: boolean
 ): ServiceTurbopanelValidationIssue[] {
   if (!(TURBOPANEL_SERVICE_EXTENSION_KEY in rawService)) return []
 
@@ -1548,10 +1574,10 @@ function collectServiceExtensionValidationIssues(
   // Validators reason over the flat view: their job is deciding whether this
   // document earns one of the union's narrow shapes, so they cannot presume it
   // already has one. Every member widens to it, so this is an assignment.
-  const fields: ComposeServiceExtensionFields = parsed
+  const fields: ComposeServiceExtensionFields = { ...parsed, partialLayer }
 
   return [
-    ...validateRawExtensionFieldTypes(basePath, rawExtension),
+    ...validateRawExtensionFieldTypes(basePath, rawExtension, partialLayer),
     ...validateEngineConsistency(basePath, fields),
     ...(isPlainMapping(rawExtension)
       ? [
@@ -1568,15 +1594,28 @@ function collectServiceExtensionValidationIssues(
   ]
 }
 
+/**
+ * Every service's `x-turbopanel` issues.
+ *
+ * `partialLayer` is for a stored layer that is a partial change by design, an
+ * environment's "Changes for {env}": it may set one setting of an app the Base
+ * defines (a node version, a branch) without restating the app's `serviceKind`
+ * or repository. The rules that need the whole picture (a kind fits its
+ * fields, a node app has a source) are then not asked of the layer alone; they
+ * are asked of the merge with the Base, which is checked on save and at deploy
+ * with `partialLayer` off. What a layer does state is still checked as given.
+ */
 export function collectServiceTurbopanelValidationIssues(
-  services: Record<string, unknown>
+  services: Record<string, unknown>,
+  options?: { partialLayer?: boolean }
 ): ServiceTurbopanelValidationIssue[] {
+  const partialLayer = options?.partialLayer === true
   const issues: ServiceTurbopanelValidationIssue[] = []
 
   for (const [name, rawService] of Object.entries(services)) {
     if (!isPlainMapping(rawService)) continue
     const basePath = `services.${name}.x-turbopanel`
-    issues.push(...collectServiceExtensionValidationIssues(basePath, rawService))
+    issues.push(...collectServiceExtensionValidationIssues(basePath, rawService, partialLayer))
   }
 
   return issues
