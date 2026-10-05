@@ -100,6 +100,10 @@ const OID_SHA256_RSA = Uint8Array.of(0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0
 const OID_SAN = Uint8Array.of(0x55, 0x1d, 0x11)
 /** 2.5.29.19 basicConstraints */
 const OID_BASIC_CONSTRAINTS = Uint8Array.of(0x55, 0x1d, 0x13)
+/** 2.5.29.14 subjectKeyIdentifier */
+const OID_SUBJECT_KEY_IDENTIFIER = Uint8Array.of(0x55, 0x1d, 0x0e)
+/** 2.5.29.35 authorityKeyIdentifier */
+const OID_AUTHORITY_KEY_IDENTIFIER = Uint8Array.of(0x55, 0x1d, 0x23)
 /** 2.5.29.15 keyUsage */
 const OID_KEY_USAGE = Uint8Array.of(0x55, 0x1d, 0x0f)
 /** 2.5.29.37 extKeyUsage */
@@ -232,6 +236,66 @@ export function buildKeyUsageExtension(bits: readonly number[]): Uint8Array {
       Uint8Array.of(0x01, 0x01, 0xff),
       octetString(bitString(usageBytes, unusedBits))
     )
+  )
+}
+
+/**
+ * RFC 5280 section 4.2.1.2 method 1: SHA-1 of the subjectPublicKey BIT STRING
+ * contents (without the tag, length or unused-bits byte). Identifier only, not
+ * a security hash.
+ */
+async function keyIdentifierFromSpki(spkiDer: Uint8Array): Promise<Uint8Array> {
+  const spki = readNode(spkiDer, 0)
+  expectTag(spki, 0x30, 'SubjectPublicKeyInfo')
+  const keyNode = children(spki)[1]
+  if (!keyNode) throw new TypeError('truncated SubjectPublicKeyInfo')
+  expectTag(keyNode, 0x03, 'subjectPublicKey BIT STRING')
+  // content() starts with the unused-bits byte; the key bytes follow it.
+  const keyBytes = content(keyNode).subarray(1)
+  return new Uint8Array(await crypto.subtle.digest('SHA-1', asBufferSource(keyBytes)))
+}
+
+/** subjectKeyIdentifier extension (non-critical). */
+function buildSubjectKeyIdentifierExtension(keyId: Uint8Array): Uint8Array {
+  return seq(concat(oid(OID_SUBJECT_KEY_IDENTIFIER), octetString(octetString(keyId))))
+}
+
+/** authorityKeyIdentifier extension carrying only the keyIdentifier (non-critical). */
+function buildAuthorityKeyIdentifierExtension(keyId: Uint8Array): Uint8Array {
+  return seq(
+    concat(oid(OID_AUTHORITY_KEY_IDENTIFIER), octetString(seq(contextPrimitive(0, keyId))))
+  )
+}
+
+/**
+ * The subjectKeyIdentifier of a certificate PEM, or `null` when absent
+ * (Organization CAs minted before SKI was added carry none).
+ */
+export function readSubjectKeyIdentifier(certificatePem: string): Uint8Array | null {
+  const valueNode = findExtensionValueNode(decodeFirstCertificate(certificatePem), '2.5.29.14')
+  if (!valueNode) return null
+  const inner = readNode(content(valueNode), 0)
+  expectTag(inner, 0x04, 'subjectKeyIdentifier')
+  return content(inner)
+}
+
+/** The authorityKeyIdentifier keyIdentifier of a certificate PEM, or `null` when absent. */
+export function readAuthorityKeyIdentifier(certificatePem: string): Uint8Array | null {
+  const valueNode = findExtensionValueNode(decodeFirstCertificate(certificatePem), '2.5.29.35')
+  if (!valueNode) return null
+  const inner = readNode(content(valueNode), 0)
+  expectTag(inner, 0x30, 'AuthorityKeyIdentifier')
+  const keyId = children(inner).find((node) => node.tag === 0x80)
+  return keyId ? content(keyId) : null
+}
+
+/**
+ * The CA's key identifier for a leaf's AKI: its own subjectKeyIdentifier when
+ * present, otherwise computed from its public key the same way.
+ */
+async function issuerKeyIdentifier(caCertPem: string): Promise<Uint8Array> {
+  return (
+    readSubjectKeyIdentifier(caCertPem) ?? (await keyIdentifierFromSpki(extractSpkiDer(caCertPem)))
   )
 }
 
@@ -554,7 +618,10 @@ export async function mintOrganizationCa(opts: {
     seq(
       concat(
         buildBasicConstraintsExtension({ ca: true, pathLen: 0 }),
-        buildKeyUsageExtension([KEY_USAGE_KEY_CERT_SIGN, KEY_USAGE_CRL_SIGN])
+        buildKeyUsageExtension([KEY_USAGE_KEY_CERT_SIGN, KEY_USAGE_CRL_SIGN]),
+        // Strict verifiers (OpenSSL X509_STRICT, on by default in Python 3.13+)
+        // refuse a CA without a subject key identifier.
+        buildSubjectKeyIdentifierExtension(await keyIdentifierFromSpki(spki))
       )
     )
   )
@@ -624,7 +691,9 @@ export async function issueLeafCertificate(
         buildBasicConstraintsExtension({ ca: false }),
         buildKeyUsageExtension([KEY_USAGE_DIGITAL_SIGNATURE, KEY_USAGE_KEY_ENCIPHERMENT]),
         buildExtendedKeyUsageExtension(ekuOids),
-        buildSanExtension({ dnsNames: names, ipAddresses })
+        buildSanExtension({ dnsNames: names, ipAddresses }),
+        buildSubjectKeyIdentifierExtension(await keyIdentifierFromSpki(spki)),
+        buildAuthorityKeyIdentifierExtension(await issuerKeyIdentifier(caCertPem))
       )
     )
   )
