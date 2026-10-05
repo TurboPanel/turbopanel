@@ -250,11 +250,15 @@ function peerNetworks(
 ): TrafficMapPeerNetwork[] {
   const selfIps = input.reportedIpsByServer.get(input.serverId)
   const peerIps = input.reportedIpsByServer.get(peerServerId)
+  const localSide = fromPins
+  const peerSide = toPins
   return order.ordered.map(({ datacenterId, state }) => {
     const policy =
       input.caches.policiesByDatacenter.get(datacenterId) ?? defaultDatacenterPolicyRow()
+    // `pinAddressForDatacenter(a, b, ...)` returns b's address in the family
+    // both share, so the local address is asked for with the sides swapped.
     const localAddress =
-      pinAddressForDatacenter(toPins, fromPins, datacenterId, policy.addressPreference) ??
+      pinAddressForDatacenter(peerSide, localSide, datacenterId, policy.addressPreference) ??
       pinsIn(fromPins, datacenterId)?.address ??
       null
     const peerAddress =
