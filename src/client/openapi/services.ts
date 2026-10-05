@@ -25,6 +25,8 @@ export const serviceSchemas = {
       },
       // Detected application (site services); read-only, absent until detected.
       app: { $ref: '#/components/schemas/ServiceApp' },
+      // Last daemon report; read-only, absent until the service's server reports it.
+      runState: { $ref: '#/components/schemas/ServiceRunState' },
       options: {
         type: 'object',
         nullable: true,
@@ -33,6 +35,45 @@ export const serviceSchemas = {
       },
       createdAt: { type: 'string', format: 'date-time' },
       updatedAt: { type: 'string', format: 'date-time' },
+    },
+  },
+  ServiceRunState: {
+    type: 'object',
+    required: ['state', 'running', 'restartCount', 'lastError', 'asOf'],
+    description:
+      "The daemon's last report of this service's run state, read-only. Ephemeral: it " +
+      'is the latest report, not a history, and is absent until the service has been reported. ' +
+      'A deploy only reports `running` after the container has stayed up for 60 seconds.',
+    properties: {
+      state: {
+        type: 'string',
+        enum: [
+          'starting',
+          'running',
+          'unhealthy',
+          'crashing',
+          'stopped',
+          'stopped_after_crashes',
+          'unknown',
+        ],
+        description:
+          '`crashing` while Docker keeps restarting the container; `stopped_after_crashes` ' +
+          'once it is down at or past 10 restarts. A service on several containers reports its worst.',
+      },
+      running: {
+        type: 'boolean',
+        description: 'True only when `state` is `running`.',
+      },
+      restartCount: { type: 'integer', minimum: 0 },
+      lastError: {
+        type: ['string', 'null'],
+        description: 'Last log line of the failing container, at most 400 characters.',
+      },
+      asOf: {
+        type: 'string',
+        format: 'date-time',
+        description: 'When the daemon last saw this exact state change.',
+      },
     },
   },
   ServiceApp: {

@@ -7,6 +7,7 @@ import type {
   ServerTimeSync,
 } from '../features/servers/server-metadata.ts'
 import type { MetricsCapabilityPlan } from './capability-plan.ts'
+import type { ServiceRunState } from './service-run-state.ts'
 import { isValidWireguardEndpoint, isValidWireguardPublicKey } from '../features/fabric/wg.ts'
 
 export type DaemonBuildInfo = {
@@ -314,6 +315,12 @@ export type DaemonMessage =
        */
       docker?: ServerDockerMetadata
       /**
+       * Per-service run state (running, restart count, last error); persisted to
+       * `server.metadata.services`. Omitted when the daemon is not watching
+       * Docker; `[]` means no services on the host.
+       */
+      services?: ServiceRunState[]
+      /**
        * Advertised wire features (`DAEMON_WIRE_FEATURES`). Omitted by a daemon
        * that predates the field; persistence stores `[]`.
        */
@@ -335,6 +342,12 @@ export type DaemonMessage =
        * Omit when Docker is not installed.
        */
       docker?: ServerDockerMetadata
+      /**
+       * Change-detected per-service run state; persisted to
+       * `server.metadata.services`. Omitted when the daemon is not watching
+       * Docker; `[]` means no services on the host.
+       */
+      services?: ServiceRunState[]
     }
   | { type: 'echo'; payload: unknown; at: string }
   | CellAttachVersionMessage
