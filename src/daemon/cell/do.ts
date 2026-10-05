@@ -769,15 +769,16 @@ export class DaemonCellObject {
 
   /** Seals notification channel addresses for alerts raised from a daemon event. */
   async #dataEncryptionSecrets(): Promise<DerivedSecretsConfig> {
-    return await deriveEncryptionSecretsConfig(
-      parseSecretsFromEnv(
-        {
-          TURBOPANEL_SECRET: this.#env.TURBOPANEL_SECRET,
-          TURBOPANEL_SECRETS: this.#env.TURBOPANEL_SECRETS,
-        },
-        'workers'
-      ),
-      'data-encryption'
+    return await deriveEncryptionSecretsConfig(this.#parseWorkersSecrets(), 'data-encryption')
+  }
+
+  #parseWorkersSecrets(): ReturnType<typeof parseSecretsFromEnv> {
+    return parseSecretsFromEnv(
+      {
+        TURBOPANEL_SECRET: this.#env.TURBOPANEL_SECRET,
+        TURBOPANEL_SECRETS: this.#env.TURBOPANEL_SECRETS,
+      },
+      'workers'
     )
   }
 
@@ -788,14 +789,7 @@ export class DaemonCellObject {
     if (this.#daemonJwtKeyring) return this.#daemonJwtKeyring
     if (!this.#daemonJwtKeyringPromise) {
       this.#daemonJwtKeyringPromise = (async () => {
-        const secretsConfig = parseSecretsFromEnv(
-          {
-            TURBOPANEL_SECRET: this.#env.TURBOPANEL_SECRET,
-            TURBOPANEL_SECRETS: this.#env.TURBOPANEL_SECRETS,
-          },
-          'workers'
-        )
-        const keyring = await deriveDaemonJwtKeyring(secretsConfig)
+        const keyring = await deriveDaemonJwtKeyring(this.#parseWorkersSecrets())
         this.#daemonJwtKeyring = keyring
         return keyring
       })()
