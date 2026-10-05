@@ -202,18 +202,19 @@ export function createAmqpMailDeadLetterStore(
     replayAll: (limit) =>
       withQueue(async (channel, total): Promise<DeadLetterReplayAll> => {
         const taken = await takeUpTo(channel, limit)
-        let replayed = 0
-        const failed: Delivery[] = []
-        for (const message of taken) {
+        const replayOne = async (message: Delivery): Promise<boolean> => {
           try {
             await republish(channel, message, now())
             channel.ack(message)
-            replayed++
+            return true
           } catch (error) {
             logWarn('mailer', `could not replay a dead letter: ${errorText(error)}`)
-            failed.push(message)
+            return false
           }
         }
+        const results = await Promise.all(taken.map(replayOne))
+        const failed = taken.filter((_, index) => !results[index])
+        const replayed = taken.length - failed.length
         putBack(channel, failed)
         logInfo('mailer', `replayed ${replayed} dead-lettered mail job(s), ${failed.length} failed`)
         return { replayed, failed: failed.length, remaining: Math.max(0, total - replayed) }
