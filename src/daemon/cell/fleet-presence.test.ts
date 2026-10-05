@@ -401,6 +401,7 @@ test("fleetPresenceToConnection maps presence to connection shape", () => {
     ips: null,
     docker: null,
     runtimes: null,
+    releaseLinkScan: null,
     hardwareProfile: null,
   };
 
@@ -437,6 +438,7 @@ test("fleetPresenceToConnection uses zero lastInboundAt when absent", () => {
     ips: null,
     docker: null,
     runtimes: null,
+    releaseLinkScan: null,
     hardwareProfile: null,
   });
   assertEquals(connection.lastInboundAt, 0);
