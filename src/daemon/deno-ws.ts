@@ -46,6 +46,7 @@ import {
   resolvePeerAddress,
 } from '../lib/peer-address.ts'
 import { resourcesFromDaemonPresence } from '../features/servers/server-metadata.ts'
+import { parseServiceRunStates } from '../contracts/service-run-state.ts'
 import { touchServerMetadata } from '../features/servers/server-registry.ts'
 import { verifyDaemonJwt } from './authn/daemon-jwt.ts'
 import {
@@ -317,6 +318,7 @@ async function handleDaemonPresenceInbound(params: {
   // after a stale sweep (same ordering rule as handleDaemonCellPing).
   const snapshotBefore = await cell.getSnapshot()
   const resources = resourcesFromDaemonPresence(presence)
+  const services = parseServiceRunStates(presence.services)
 
   if (message.type === 'hello') {
     await touchServerMetadata(db, serverId, {
@@ -326,13 +328,20 @@ async function handleDaemonPresenceInbound(params: {
       resources,
       timeSync: message.timeSync,
       docker: message.docker,
+      services,
       features: message.features ?? [],
     })
-  } else if (message.timeSync || resources !== undefined || message.docker) {
+  } else if (
+    message.timeSync ||
+    resources !== undefined ||
+    message.docker ||
+    services !== undefined
+  ) {
     await touchServerMetadata(db, serverId, {
       resources,
       timeSync: message.timeSync,
       docker: message.docker,
+      services,
     })
   }
 
