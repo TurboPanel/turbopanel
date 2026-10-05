@@ -71,7 +71,7 @@ function fakeInsertDb(options: {
                   options.commandRows.map((row) => ({
                     ...(row as object),
                     ...(values as object),
-                  })),
+                  }))
                 ),
             }
           }
@@ -113,22 +113,13 @@ test('createCommandRecord writes the command row and its dispatch payload', asyn
   assertEquals(record.actorEntityType, 'user')
   assertEquals((commandValues as { status: string }).status, 'queued')
   // Lifecycle + expiry are real columns now, not metadata keys.
-  assertEquals(
-    (commandValues as { expiresAt: string }).expiresAt,
-    '2020-01-01T00:01:00.000Z',
-  )
+  assertEquals((commandValues as { expiresAt: string }).expiresAt, '2020-01-01T00:01:00.000Z')
   assertEquals((commandValues as { queuedAt?: string }).queuedAt !== undefined, true)
-  assertEquals(
-    (commandValues as { metadata: { followUp: boolean } }).metadata.followUp,
-    true,
-  )
+  assertEquals((commandValues as { metadata: { followUp: boolean } }).metadata.followUp, true)
   // Payload never touches the `command` row.
   assertEquals(Object.hasOwn(commandValues as object, 'payload'), false)
   assertEquals((dispatchValues as { payload: unknown }).payload, { ping: true })
-  assertEquals(
-    (dispatchValues as { commandId: string }).commandId,
-    baseRow.id,
-  )
+  assertEquals((dispatchValues as { commandId: string }).commandId, baseRow.id)
 })
 
 test('createCommandRecord derives context from payload identifiers', async () => {
@@ -193,7 +184,7 @@ test('createCommandRecord throws when insert returns nothing', async () => {
         payload: {},
       }),
     Error,
-    'Failed to create command record',
+    'Failed to create command record'
   )
 })
 
@@ -225,8 +216,7 @@ test('getCommandMetadata and getCommandRecord empty paths', async () => {
     select: () => ({
       from: () => ({
         where: () => ({
-          limit: () =>
-            Promise.resolve([{ metadata: { chain: 'next' } }]),
+          limit: () => Promise.resolve([{ metadata: { chain: 'next' } }]),
         }),
       }),
     }),
@@ -248,16 +238,11 @@ test('getCommandMetadata and getCommandRecord empty paths', async () => {
 })
 
 test('command reads select an explicit column list, never a dispatch join', async () => {
-  const source = await Deno.readTextFile(
-    new URL('./command-records.ts', import.meta.url),
-  )
+  const source = await Deno.readTextFile(new URL('./command-records.ts', import.meta.url))
   // A bare `.select()` would return every column of whatever is joined in.
   assertEquals(source.includes('.select()'), false)
   // Dispatch payload is reachable from exactly one query.
-  assertEquals(
-    source.split('.select({ payload: dispatch.payload })').length - 1,
-    1,
-  )
+  assertEquals(source.split('.select({ payload: dispatch.payload })').length - 1, 1)
   assertEquals(source.includes('.innerJoin('), false)
   assertEquals(source.includes('.leftJoin('), false)
 })
@@ -330,18 +315,15 @@ test('sweepExpiredCommandDispatch clamps the limit and counts deletions', async 
     await sweepExpiredCommandDispatch(makeDb([{ commandId: 'a' }]), {
       limit: 10,
     }),
-    1,
+    1
   )
-  assertEquals(
-    await sweepExpiredCommandDispatch(makeDb([]), { limit: 0 }),
-    0,
-  )
+  assertEquals(await sweepExpiredCommandDispatch(makeDb([]), { limit: 0 }), 0)
   assertEquals(
     await sweepExpiredCommandDispatch(makeDb([]), {
       limit: 100_000,
       now: '2020-01-01T00:00:00.000Z',
     }),
-    0,
+    0
   )
 })
 
@@ -435,10 +417,7 @@ test('transitionCommand patches columns and returns null when missing', async ()
       }),
     }),
   } as unknown as Db
-  assertEquals(
-    await transitionCommand(missing, 'gone', { status: 'succeeded' }),
-    null,
-  )
+  assertEquals(await transitionCommand(missing, 'gone', { status: 'succeeded' }), null)
 })
 
 test('serializeCommandRecord still coerces sparse rows', () => {
@@ -452,6 +431,17 @@ test('serializeCommandRecord still coerces sparse rows', () => {
   assertEquals(record.attempts, 0)
   assertEquals(record.result, null)
   assertEquals(record.context, null)
+})
+
+test('serializeCommandRecord derives the error line from the stored error text', () => {
+  const failed = serializeCommandRecord({
+    ...baseRow,
+    status: 'failed',
+    errorMessage: '[...truncated] step output\nsh: 1: next: not found',
+  } as never)
+  assertEquals(failed.errorLine, 'sh: 1: next: not found')
+  assertEquals(failed.errorMessage, '[...truncated] step output\nsh: 1: next: not found')
+  assertEquals(serializeCommandRecord(baseRow as never).errorLine, null)
 })
 
 test('serializeCommandRecord maps the full lifecycle column set', () => {
@@ -525,6 +515,29 @@ test('listCommandRecordsByIds returns empty for no ids and maps matches', async 
   assertEquals(capturedIds !== undefined, true)
 })
 
+test('transitionCommand stores a failure without signed-URL secrets', async () => {
+  let setPayload: { errorMessage?: string } | undefined
+  const db = {
+    delete: () => ({ where: () => Promise.resolve(undefined) }),
+    update: () => ({
+      set: (patch: { status?: unknown; errorMessage?: string }) => {
+        if (patch.status !== undefined) setPayload = patch
+        return {
+          where: () => ({ returning: () => Promise.resolve([{ ...baseRow, status: 'failed' }]) }),
+        }
+      },
+    }),
+  } as unknown as Db
+  await transitionCommand(db, baseRow.id, {
+    status: 'failed',
+    error: 'download https://objects.example.com/a.tgz?X-Amz-Signature=abc123 failed: 403',
+  })
+  assertEquals(
+    setPayload?.errorMessage,
+    'download https://objects.example.com/a.tgz?[redacted] failed: 403'
+  )
+})
+
 test('transitionCommand auto-stamps the status timestamp when omitted', async () => {
   const cases: Array<{ status: CommandStatus; field: string }> = [
     { status: 'queued', field: 'queuedAt' },
@@ -547,9 +560,7 @@ test('transitionCommand auto-stamps the status timestamp when omitted', async ()
           return {
             where: () => ({
               returning: () =>
-                Promise.resolve([
-                  { ...baseRow, status, [field]: '2020-01-01T00:00:09.000Z' },
-                ]),
+                Promise.resolve([{ ...baseRow, status, [field]: '2020-01-01T00:00:09.000Z' }]),
             }),
           }
         },

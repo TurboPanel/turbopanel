@@ -24,6 +24,11 @@ export const commandSchemas = {
         type: ['string', 'null'],
         description: 'Canonical human-readable error for terminal failures.',
       },
+      errorLine: {
+        type: ['string', 'null'],
+        description:
+          'The one line of `errorMessage` that says what went wrong (the cause is printed last). Signed URLs are redacted. Null when there is no error text.',
+      },
       hasLog: {
         type: 'boolean',
         description: 'Whether a retained execution log exists for this command.',
@@ -53,8 +58,7 @@ export const commandSchemas = {
       },
       truncated: {
         type: 'boolean',
-        description:
-          'Whether output was dropped after the retained-size cap was reached.',
+        description: 'Whether output was dropped after the retained-size cap was reached.',
       },
       exists: {
         type: 'boolean',

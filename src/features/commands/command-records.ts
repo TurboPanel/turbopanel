@@ -1,6 +1,8 @@
 import { and, desc, eq, inArray, notInArray, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { commandContextFromPayload } from './context.ts'
+import { lastErrorLine } from './error-line.ts'
+import { redactUrlSecrets } from '../upgrades/redact-url-secrets.ts'
 import { nowIso } from './ids.ts'
 import { type CommandStatus, TERMINAL_COMMAND_STATUSES } from './types.ts'
 import { command, dispatch } from '../../db/schema.ts'
@@ -52,6 +54,12 @@ export type CommandRecord = {
   errorCode: string | null
   /** Canonical human-readable error for terminal failures. */
   errorMessage: string | null
+  /**
+   * The one line of {@link CommandRecord.errorMessage} that says what went
+   * wrong (the cause is printed last), derived at read time; `null` when the
+   * command has no error text.
+   */
+  errorLine: string | null
   /** @deprecated Legacy alias for {@link CommandRecord.errorMessage}. */
   error: string | null
   attempts: number
@@ -153,6 +161,7 @@ export function serializeCommandRecord(row: CommandDbRow): CommandRecord {
     result: row.resultSummary ?? null,
     errorCode: row.errorCode ?? null,
     errorMessage: row.errorMessage ?? null,
+    errorLine: lastErrorLine(row.errorMessage),
     error: row.errorMessage ?? null,
     attempts: row.attempts ?? 0,
     createdAt: toIsoTimestamp(row.createdAt) ?? row.createdAt,
@@ -472,7 +481,9 @@ export async function transitionCommand(
       updatedAt: now,
       ...(patch.attempts === undefined ? {} : { attempts: patch.attempts }),
       ...(patch.result === undefined ? {} : { resultSummary: patch.result }),
-      ...(patch.error === undefined ? {} : { errorMessage: patch.error }),
+      // A daemon error can quote a signed download link (a bearer credential): store
+      // it without query strings and user info.
+      ...(patch.error === undefined ? {} : { errorMessage: redactUrlSecrets(patch.error) }),
       ...(patch.errorCode === undefined ? {} : { errorCode: patch.errorCode }),
       ...timestamps,
     })

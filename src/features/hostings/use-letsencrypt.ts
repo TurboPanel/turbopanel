@@ -1,0 +1,156 @@
+/**
+ * The one-click "Use Let's Encrypt" decision for one hosting, and the retry the
+ * periodic sweep runs for requests that were waiting on DNS.
+ *
+ * All storage goes through {@link LetsEncryptStore}, so the rules here (gate on
+ * DNS, reuse a matching certificate row, remember a waiting request) are tested
+ * without a database and without touching the network.
+ */
+
+import {
+  type HostingDnsReport,
+  type LetsEncryptRefusal,
+  type PendingLetsEncrypt,
+  isPendingExpired,
+  letsEncryptNames,
+  letsEncryptRefusal,
+  readPendingLetsEncrypt,
+  withPendingLetsEncrypt,
+} from './hosting-certificate.ts'
+import { type DnsLookup, checkHostingDns } from './hosting-dns-check.ts'
+import {
+  parseHostingOptions,
+  resolveHostingBind,
+  resolveHostingProtocol,
+} from './hosting-options.ts'
+
+export type LetsEncryptHostingRecord = {
+  id: string
+  organizationId: string
+  tlsId: string | null
+  options: unknown
+  metadata: unknown
+}
+
+export type LetsEncryptStore = {
+  /** The public addresses of the server this hosting is deployed to (the pinned IP wins). */
+  expectedAddresses(hosting: LetsEncryptHostingRecord): Promise<string[]>
+  /** A live managed Let's Encrypt row of the organization whose names equal `names`, if any. */
+  findManagedCertificate(organizationId: string, names: readonly string[]): Promise<string | null>
+  createManagedCertificate(organizationId: string, names: readonly string[]): Promise<string>
+  saveHosting(
+    hostingId: string,
+    patch: { tlsId?: string; options?: Record<string, unknown>; metadata?: Record<string, unknown> }
+  ): Promise<void>
+}
+
+export type LetsEncryptRequestResult =
+  | { ok: false; error: LetsEncryptRefusal }
+  | { ok: true; outcome: 'waiting'; dns: HostingDnsReport }
+  | { ok: true; outcome: 'pinned'; tlsId: string; dns: HostingDnsReport; created: boolean }
+
+type RequestParams = {
+  store: LetsEncryptStore
+  lookup: DnsLookup
+  now: Date
+  hosting: LetsEncryptHostingRecord
+  acmeEnabled: boolean
+  wwwRedirect: boolean
+}
+
+function readHostnames(options: unknown): string[] {
+  return parseHostingOptions(options)?.hostnames ?? []
+}
+
+function optionsWithWww(options: unknown, wwwRedirect: boolean): Record<string, unknown> {
+  const base =
+    typeof options === 'object' && options !== null && !Array.isArray(options)
+      ? { ...(options as Record<string, unknown>) }
+      : {}
+  if (wwwRedirect) base.wwwRedirect = true
+  else delete base.wwwRedirect
+  return base
+}
+
+async function pinCertificate(
+  params: RequestParams,
+  names: string[],
+  dns: HostingDnsReport
+): Promise<LetsEncryptRequestResult> {
+  const { store, hosting } = params
+  const existing = await store.findManagedCertificate(hosting.organizationId, names)
+  const tlsId = existing ?? (await store.createManagedCertificate(hosting.organizationId, names))
+  await store.saveHosting(hosting.id, {
+    tlsId,
+    options: optionsWithWww(hosting.options, params.wwwRedirect),
+    metadata: withPendingLetsEncrypt(hosting.metadata, null),
+  })
+  return { ok: true, outcome: 'pinned', tlsId, dns, created: existing === null }
+}
+
+async function rememberWaiting(
+  params: RequestParams,
+  dns: HostingDnsReport
+): Promise<LetsEncryptRequestResult> {
+  const previous = readPendingLetsEncrypt(params.hosting.metadata)
+  const pending: PendingLetsEncrypt = {
+    requestedAt: previous?.requestedAt ?? params.now.toISOString(),
+    wwwRedirect: params.wwwRedirect,
+    dns,
+  }
+  await params.store.saveHosting(params.hosting.id, {
+    metadata: withPendingLetsEncrypt(params.hosting.metadata, pending),
+  })
+  return { ok: true, outcome: 'waiting', dns }
+}
+
+/**
+ * The button. Refuses what can never work, checks DNS, then either pins a
+ * certificate (DNS ready) or remembers the request for the sweep (DNS not
+ * ready). Clicking again repeats the whole thing and changes nothing twice.
+ */
+export async function requestLetsEncrypt(params: RequestParams): Promise<LetsEncryptRequestResult> {
+  const options = parseHostingOptions(params.hosting.options)
+  const hostnames = readHostnames(params.hosting.options)
+  const refusal = letsEncryptRefusal({
+    acmeEnabled: params.acmeEnabled,
+    protocol: resolveHostingProtocol(options),
+    bind: resolveHostingBind(options),
+    hostnames,
+  })
+  if (refusal !== null) return { ok: false, error: refusal }
+
+  const names = letsEncryptNames(hostnames, params.wwwRedirect)
+  const expected = await params.store.expectedAddresses(params.hosting)
+  const dns = await checkHostingDns({
+    hostnames: names,
+    expectedAddresses: expected,
+    lookup: params.lookup,
+    now: params.now,
+  })
+  return dns.ready ? pinCertificate(params, names, dns) : rememberWaiting(params, dns)
+}
+
+export type PendingRetryResult = 'pinned' | 'waiting' | 'expired' | 'refused'
+
+/**
+ * One sweep step for a hosting with a waiting request. A request older than the
+ * limit, or one the rules no longer allow (the organization switched Let's
+ * Encrypt off, hostnames changed), is dropped.
+ */
+export async function retryPendingLetsEncrypt(
+  params: Omit<RequestParams, 'wwwRedirect'>
+): Promise<PendingRetryResult> {
+  const pending = readPendingLetsEncrypt(params.hosting.metadata)
+  if (pending === null) return 'refused'
+  const dropPending = async (outcome: 'expired' | 'refused'): Promise<PendingRetryResult> => {
+    await params.store.saveHosting(params.hosting.id, {
+      metadata: withPendingLetsEncrypt(params.hosting.metadata, null),
+    })
+    return outcome
+  }
+  if (isPendingExpired(pending, params.now)) return dropPending('expired')
+  const result = await requestLetsEncrypt({ ...params, wwwRedirect: pending.wwwRedirect })
+  if (!result.ok) return dropPending('refused')
+  return result.outcome
+}

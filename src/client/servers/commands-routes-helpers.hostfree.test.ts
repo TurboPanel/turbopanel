@@ -79,14 +79,8 @@ test('parseNtpCommandBody requires a valid ntp payload', () => {
 
 test('commandNotFoundOnServer and shapeCommandGetResponse', () => {
   assertEquals(commandNotFoundOnServer(null, 'srv-1'), true)
-  assertEquals(
-    commandNotFoundOnServer({ serverId: 'other' }, 'srv-1'),
-    true,
-  )
-  assertEquals(
-    commandNotFoundOnServer({ serverId: 'srv-1' }, 'srv-1'),
-    false,
-  )
+  assertEquals(commandNotFoundOnServer({ serverId: 'other' }, 'srv-1'), true)
+  assertEquals(commandNotFoundOnServer({ serverId: 'srv-1' }, 'srv-1'), false)
 
   const reboot = shapeCommandGetResponse({
     type: 'server.reboot',
@@ -122,6 +116,16 @@ test('shapeCommandStatusResponse defaults hasLog to false', () => {
   assertEquals(shapeCommandStatusResponse(STATUS_SOURCE).hasLog, false)
 })
 
+test('shapeCommandStatusResponse carries the error line of a failure', () => {
+  const failed = shapeCommandStatusResponse({
+    ...STATUS_SOURCE,
+    status: 'failed',
+    errorMessage: 'ansible-playbook failed (exit 2)\nInstall Caddy: apt lock held\n',
+  })
+  assertEquals(failed.errorLine, 'Install Caddy: apt lock held')
+  assertEquals(shapeCommandStatusResponse(STATUS_SOURCE).errorLine, null)
+})
+
 test('shapeCommandStatusResponse carries a store-resolved hasLog', () => {
   assertEquals(shapeCommandStatusResponse(STATUS_SOURCE, true).hasLog, true)
 })
@@ -146,7 +150,7 @@ test('parseCommandLogQuery accepts a window and clamps the byte budget', () => {
   assertEquals(parseCommandLogQuery('12', '1024'), { from: 12, max: 1024 })
   assertEquals(
     parseCommandLogQuery('0', String(DEFAULT_EXECUTION_LOG_READ_BYTES * 10)).max,
-    DEFAULT_EXECUTION_LOG_READ_BYTES,
+    DEFAULT_EXECUTION_LOG_READ_BYTES
   )
 })
 
@@ -170,7 +174,7 @@ test('shapeCommandLogResponse decodes transcript bytes as UTF-8', () => {
         sealed: true,
         truncated: false,
       },
-      1,
+      1
     ),
     {
       ok: true,
@@ -179,14 +183,14 @@ test('shapeCommandLogResponse decodes transcript bytes as UTF-8', () => {
       sealed: true,
       truncated: false,
       exists: true,
-    },
+    }
   )
 })
 
 test('shapeCommandLogResponse distinguishes empty output from no transcript', () => {
   const empty = shapeCommandLogResponse(
     { bytes: new Uint8Array(0), nextSeq: 0, sealed: false, truncated: false },
-    0,
+    0
   )
   assertEquals(empty.text, '')
   assertEquals(empty.exists, true)

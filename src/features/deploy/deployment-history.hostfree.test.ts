@@ -102,6 +102,21 @@ test('listEnvironmentDeploymentHistory serializes context and paginates', async 
   assertEquals(page.nextCursor, olderId)
 })
 
+test('listEnvironmentDeploymentHistory carries the error line of a failed deploy', async () => {
+  const failed = {
+    ...deployRow,
+    id: '00000000-0000-4000-8000-000000000104',
+    status: 'failed',
+    errorMessage: '[...truncated] build output\nrailpack build failed:\nsh: 1: next: not found',
+  }
+  const db = createHistoryDb({ commandRows: [failed, deployRow] })
+  const { deployments } = await listEnvironmentDeploymentHistory(db, envId)
+  assertEquals(
+    deployments.map((d) => d.errorLine),
+    ['sh: 1: next: not found', null]
+  )
+})
+
 test('listEnvironmentDeploymentHistory surfaces the strategy and how an unfinished deploy ended', async () => {
   const rolledBack = {
     ...deployRow,
