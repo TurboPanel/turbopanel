@@ -13,6 +13,7 @@ import { server, tls } from '../../db/schema.ts'
 import { coversHostname, normalizeHostname } from '../../lib/tls/match.ts'
 import type { TlsAcmeMetadata } from '../../lib/tls/types.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
+import { redactUrlSecrets } from '../../features/upgrades/redact-url-secrets.ts'
 
 export type AcmeIssuanceEventInput = {
   /** The server that reported the outcome — scopes the write to its organization. */
@@ -84,7 +85,7 @@ export async function handleAcmeIssuanceEvent(
     if (input.ok) {
       delete nextAcme.lastError
     } else {
-      nextAcme.lastError = input.errorMessage ?? 'ACME issuance failed'
+      nextAcme.lastError = redactUrlSecrets(input.errorMessage ?? 'ACME issuance failed')
     }
 
     await db

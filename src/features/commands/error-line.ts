@@ -22,7 +22,7 @@ const TRUNCATION_MARKER = /^\[\.\.\.truncated\]\s*/
 const NOISE_LINES: readonly RegExp[] = [
   /^(process )?exit(ed)?( code| status)?:? ?\d+\.?$/i,
   /^exit status \d+$/i,
-  /^at\s.+\(.+:\d+:\d+\)$/,
+  /^at\s[^(]+\([^)]*:\d+:\d+\)$/,
   /^at\s\S+:\d+:\d+$/,
   /^npm (ERR!|error) (A complete log of this run|code |path |errno |syscall )/i,
   /^npm notice\b/i,
