@@ -240,9 +240,11 @@ export function buildKeyUsageExtension(bits: readonly number[]): Uint8Array {
 }
 
 /**
- * RFC 5280 section 4.2.1.2 method 1: SHA-1 of the subjectPublicKey BIT STRING
- * contents (without the tag, length or unused-bits byte). Identifier only, not
- * a security hash.
+ * RFC 7093 section 2 method 1: the leftmost 160 bits of the SHA-256 of the
+ * subjectPublicKey BIT STRING contents (without the tag, length or unused-bits
+ * byte). RFC 5280 only asks for a unique value, and verifiers match the
+ * authority identifier against the issuer's subject identifier without
+ * recomputing it.
  */
 async function keyIdentifierFromSpki(spkiDer: Uint8Array): Promise<Uint8Array> {
   const spki = readNode(spkiDer, 0)
@@ -252,7 +254,8 @@ async function keyIdentifierFromSpki(spkiDer: Uint8Array): Promise<Uint8Array> {
   expectTag(keyNode, 0x03, 'subjectPublicKey BIT STRING')
   // content() starts with the unused-bits byte; the key bytes follow it.
   const keyBytes = content(keyNode).subarray(1)
-  return new Uint8Array(await crypto.subtle.digest('SHA-1', asBufferSource(keyBytes)))
+  const digest = await crypto.subtle.digest('SHA-256', asBufferSource(keyBytes))
+  return new Uint8Array(digest).subarray(0, 20)
 }
 
 /** subjectKeyIdentifier extension (non-critical). */

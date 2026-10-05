@@ -232,11 +232,11 @@ test('randomSerial is always a positive, minimal DER integer (no leading zero, t
   }
 })
 
-/** SHA-1 of the subjectPublicKey BIT STRING contents of a certificate (RFC 5280 key identifier). */
+/** Leftmost 160 bits of the SHA-256 of the subjectPublicKey BIT STRING contents (RFC 7093 key identifier). */
 async function expectedKeyIdentifier(certificatePem: string): Promise<Uint8Array> {
   const spki = readNode(extractSpkiDer(certificatePem), 0)
   const bits = content(children(spki)[1]!).subarray(1)
-  return new Uint8Array(await crypto.subtle.digest('SHA-1', bits.slice()))
+  return new Uint8Array(await crypto.subtle.digest('SHA-256', bits.slice())).subarray(0, 20)
 }
 
 test('mintOrganizationCa carries the RFC 5280 subject key identifier', async () => {
