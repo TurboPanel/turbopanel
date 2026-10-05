@@ -197,7 +197,10 @@ export async function handleCreateInvitation(c: Context, opts: AuthRouteOpts): P
   const expiresAt = new Date(now.getTime() + INVITATION_TTL_MS).toISOString()
   const names = await loadInvitationEmailNames(db, organizationId, parsed.teamId)
   const emailFrom = invitationEmailFrom(c, opts)
-  const baseOrigin = await resolvePublicBaseUrl(c, { baseUrl: opts.baseUrl })
+  const baseOrigin = await resolvePublicBaseUrl(c, {
+    baseUrl: opts.baseUrl,
+    allowRequestHost: false,
+  })
   // The link secret: emailed once, stored only as its verifier, never
   // returned — the invitation id below is not a secret (see invitation-token.ts).
   const { token, tokenHash } = await mintInvitationToken()
@@ -377,7 +380,10 @@ export async function handleResendInvitation(c: Context, opts: AuthRouteOpts): P
   }
 
   const names = await loadInvitationEmailNames(db, invite.organizationId, invite.teamId)
-  const baseOrigin = await resolvePublicBaseUrl(c, { baseUrl: opts.baseUrl })
+  const baseOrigin = await resolvePublicBaseUrl(c, {
+    baseUrl: opts.baseUrl,
+    allowRequestHost: false,
+  })
   const { token, tokenHash } = await mintInvitationToken()
   const expiresAt = new Date(Date.now() + INVITATION_TTL_MS).toISOString()
 

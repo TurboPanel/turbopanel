@@ -4,6 +4,7 @@
  * lands. Skips without TURBOPANEL_DATABASE_URL.
  */
 
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assertEquals } from '@std/assert'
 import { eq } from 'drizzle-orm'
 import { createDenoDb, endDbConnection } from '../../db/connection.ts'
@@ -43,7 +44,7 @@ function recordingQueue() {
 
 async function withServer(fn: (db: Db, serverId: string, organizationId: string) => Promise<void>) {
   if (!dbUrl) {
-    console.warn('Skipping firewall preview tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('firewall preview tests')
     return
   }
   const db = createDenoDb()

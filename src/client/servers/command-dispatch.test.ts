@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assertEquals } from '@std/assert'
 import { it } from '@std/testing/bdd'
 import type { Context } from 'hono'
@@ -7,15 +8,9 @@ import { createDenoDb } from '../../db/connection.ts'
 import type { CommandEnvelope } from '../../features/commands/envelope.ts'
 import { createNoopCommandQueue } from '../../features/commands/noop-command-queue.ts'
 import type { CommandQueue } from '../../features/commands/queue.ts'
-import {
-  createCommandRecord,
-  getCommandRecord,
-} from '../../features/commands/command-records.ts'
+import { createCommandRecord, getCommandRecord } from '../../features/commands/command-records.ts'
 import { command, organization, server } from '../../db/schema.ts'
-import {
-  assertDispatchInfrastructure,
-  enqueueCommandOrCompensate,
-} from './command-dispatch.ts'
+import { assertDispatchInfrastructure, enqueueCommandOrCompensate } from './command-dispatch.ts'
 
 const dbUrl = getDatabaseUrl()
 
@@ -34,15 +29,17 @@ function mockContext(bindings: Record<string, unknown> = {}): Context {
   } as unknown as Context
 }
 
-function createRecordingQueue(
-  behavior?: { enqueue?: () => Promise<void> },
-): CommandQueue & { envelopes: CommandEnvelope[] } {
+function createRecordingQueue(behavior?: {
+  enqueue?: () => Promise<void>
+}): CommandQueue & { envelopes: CommandEnvelope[] } {
   const envelopes: CommandEnvelope[] = []
   return {
     envelopes,
-    enqueue: behavior?.enqueue ?? (async (envelope) => {
-      envelopes.push(envelope)
-    }),
+    enqueue:
+      behavior?.enqueue ??
+      (async (envelope) => {
+        envelopes.push(envelope)
+      }),
   }
 }
 
@@ -57,10 +54,12 @@ it('assertDispatchInfrastructure returns 503 when registry is missing', async ()
 })
 
 it('assertDispatchInfrastructure returns 503 when command queue is noop', async () => {
-  const response = assertDispatchInfrastructure(mockContext({
-    daemonCellRegistry: {},
-    commandQueue: createNoopCommandQueue(),
-  }))
+  const response = assertDispatchInfrastructure(
+    mockContext({
+      daemonCellRegistry: {},
+      commandQueue: createNoopCommandQueue(),
+    })
+  )
   assertEquals(response instanceof Response, true)
   if (response instanceof Response) {
     assertEquals(response.status, 503)
@@ -71,17 +70,21 @@ it('assertDispatchInfrastructure returns 503 when command queue is noop', async 
 it('assertDispatchInfrastructure returns the queue when dispatch infra is present', () => {
   const queue = createRecordingQueue()
   const registry = { getCell: () => ({}) }
-  const result = assertDispatchInfrastructure(mockContext({
-    daemonCellRegistry: registry,
-    commandQueue: queue,
-  }))
+  const result = assertDispatchInfrastructure(
+    mockContext({
+      daemonCellRegistry: registry,
+      commandQueue: queue,
+    })
+  )
   assertEquals(result, queue)
 })
 
 it('assertDispatchInfrastructure returns 503 when command queue binding is missing', async () => {
-  const response = assertDispatchInfrastructure(mockContext({
-    daemonCellRegistry: {},
-  }))
+  const response = assertDispatchInfrastructure(
+    mockContext({
+      daemonCellRegistry: {},
+    })
+  )
   assertEquals(response instanceof Response, true)
   if (response instanceof Response) {
     assertEquals(response.status, 503)
@@ -107,7 +110,7 @@ it('enqueueCommandOrCompensate returns null when enqueue succeeds', async () => 
       attempt: 1,
       queuedAt: record.queuedAt ?? record.createdAt,
     },
-    mockContext(),
+    mockContext()
   )
   assertEquals(response, null)
   assertEquals(queue.envelopes.length, 1)
@@ -116,7 +119,7 @@ it('enqueueCommandOrCompensate returns null when enqueue succeeds', async () => 
 
 it('enqueueCommandOrCompensate marks the command failed when enqueue throws', async () => {
   if (!dbUrl) {
-    console.warn('Skipping enqueueCommandOrCompensate test: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('enqueueCommandOrCompensate test')
     return
   }
 
@@ -162,7 +165,7 @@ it('enqueueCommandOrCompensate marks the command failed when enqueue throws', as
       attempt: 1,
       queuedAt: record.queuedAt ?? record.createdAt,
     },
-    mockContext(),
+    mockContext()
   )
 
   assertEquals(response instanceof Response, true)

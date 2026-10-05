@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assertEquals } from '@std/assert'
 import { and, eq, inArray } from 'drizzle-orm'
 import { Hono } from 'hono'
@@ -504,7 +505,7 @@ async function withDeployFixtures(
   }) => Promise<void>
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn('Skipping environment deploy route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('environment deploy route tests')
     return
   }
 
@@ -646,7 +647,7 @@ test('GET /environments/:id/deploy-preview returns prepared yaml with warnings f
         warnings: Array<{ code: string }>
       }
       assertEquals(body.ok, true)
-      assertEquals(body.projectName, projectId)
+      assertEquals(body.projectName, environmentId)
       assertEquals(body.containers, [])
       assertEquals(body.volumes, [])
       assertEquals(
@@ -707,7 +708,7 @@ test('GET /environments/:id/deploy-preview returns containers for a service', as
         warnings: unknown[]
       }
       assertEquals(body.ok, true)
-      assertEquals(body.projectName, projectId)
+      assertEquals(body.projectName, environmentId)
       const runtimeYaml = body.composeFiles[0]?.content ?? ''
       assertEquals(runtimeYaml.includes('web:'), true)
       assertEquals(runtimeYaml.includes('x-turbopanel:'), true)

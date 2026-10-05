@@ -4,6 +4,7 @@
  * predicates, which the in-memory auth doubles do not model. Skips without
  * TURBOPANEL_DATABASE_URL.
  */
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assert, assertEquals } from '@std/assert'
 import { eq } from 'drizzle-orm'
 import { Hono } from 'hono'
@@ -43,7 +44,7 @@ async function withFixture(
   opts: { disabled?: boolean; credential?: boolean; responder?: BreachRangeResponder } = {}
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn('Skipping password reset tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('password reset tests')
     return
   }
   const db = createDenoDb()
