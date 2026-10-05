@@ -18,6 +18,7 @@
 import { and, desc, eq, lt, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { normalizeReplicaCounts } from '../commands/context.ts'
+import { lastErrorLine } from '../commands/error-line.ts'
 import { normalizeBranchName } from '../git/environment-branch-tracking.ts'
 import type { ExecutionLogStore } from '../execution-logs/types.ts'
 
@@ -35,6 +36,7 @@ import {
   outcomeFromErrorCode,
 } from './deploy-outcome.ts'
 import { deploymentDurationMs } from './deployment-records.ts'
+import { CANCEL_REQUESTED_FLAG } from './deploy-cancel.ts'
 import { command, deployment, server } from '../../db/schema.ts'
 
 /** Default page size for `GET /environments/:id/deployments`. */
@@ -114,6 +116,8 @@ export type DeploymentHistoryEntry = {
   durationMs: number | null
   errorCode: string | null
   errorMessage: string | null
+  /** The one line of `errorMessage` that says what went wrong; `null` when there is no error text. */
+  errorLine: string | null
   /**
    * The engine this attempt ran: `inplace` or `sequential`. `null` for a row
    * queued before the strategy was recorded.
@@ -127,6 +131,13 @@ export type DeploymentHistoryEntry = {
   strategyOutcome: DeployStrategyOutcome | null
   /** Why a `rolled_back` / `needs_attention` deploy ended that way. */
   strategyOutcomeReason: string | null
+  /**
+   * When someone asked for this attempt to be cancelled (`command.metadata`).
+   * With a live `status` it reads as "Cancelling"; with `succeeded` the cancel
+   * came too late and the deploy finished anyway. `status: 'cancelled'` is the
+   * terminal state: nothing was switched over, the previous version is serving.
+   */
+  cancelRequestedAt: string | null
   /** Whether an execution-log transcript is retained (store-side, not a column). */
   hasLog: boolean
   /**
@@ -306,9 +317,11 @@ function serializeEntry(row: DeployCommandRow, hasLog: boolean): DeploymentHisto
       : null,
     errorCode: row.errorCode ?? null,
     errorMessage: row.errorMessage ?? null,
+    errorLine: lastErrorLine(row.errorMessage),
     strategy: contextStrategy(context),
     strategyOutcome,
     strategyOutcomeReason: deployOutcomeReason(strategyOutcome, row.errorMessage ?? null),
+    cancelRequestedAt: contextString(contextBag(row.metadata), CANCEL_REQUESTED_FLAG),
     hasLog,
     trigger: readDeploymentTrigger(row),
   }

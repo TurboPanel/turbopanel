@@ -62,7 +62,9 @@ test('serializeService exposes the detected app only when metadata carries a val
 
 test('rejectComposeServiceNameInBody blocks direct compose name writes', () => {
   assertEquals(rejectComposeServiceNameInBody({}), null)
-  const rejected = rejectComposeServiceNameInBody({ composeServiceName: 'web' })
+  const rejected = rejectComposeServiceNameInBody({
+    composeServiceName: 'web',
+  })
   if (!rejected) throw new TypeError('expected compose name rejection')
   assertEquals(rejected.error, 'compose_service_name_read_only')
 })
@@ -72,7 +74,9 @@ test('stripServicePromotedMetadata removes composeServiceName', () => {
 })
 
 test('parseServiceCreateFields rejects invalid options and compose name', () => {
-  const composeRejected = parseServiceCreateFields({ composeServiceName: 'web' })
+  const composeRejected = parseServiceCreateFields({
+    composeServiceName: 'web',
+  })
   if (!composeRejected.ok) {
     assertEquals(composeRejected.error, 'compose_service_name_read_only')
   } else {
@@ -100,7 +104,11 @@ test('parseServicePatchFields normalizes metadata and options', () => {
 
 test('parseServicePatchFields persists hook commands only when the organization gate is on', () => {
   const body = {
-    options: { instances: 2, preDeployCommand: 'bin/migrate', postDeployCommand: 'true' },
+    options: {
+      instances: 2,
+      preDeployCommand: 'bin/migrate',
+      postDeployCommand: 'true',
+    },
   }
   const gated = parseServicePatchFields(body)
   if (!gated.ok) throw new TypeError('expected valid service patch')
@@ -131,7 +139,9 @@ test('parseServiceCreateFields accepts display metadata and options', () => {
 })
 
 test('parseServicePatchFields rejects compose name and invalid options', () => {
-  const composeRejected = parseServicePatchFields({ composeServiceName: 'web' })
+  const composeRejected = parseServicePatchFields({
+    composeServiceName: 'web',
+  })
   if (!composeRejected.ok) {
     assertEquals(composeRejected.error, 'compose_service_name_read_only')
   } else {
@@ -142,4 +152,27 @@ test('parseServicePatchFields rejects compose name and invalid options', () => {
   assertEquals(invalidOptions.ok, false)
   if (invalidOptions.ok) throw new TypeError()
   assertEquals(invalidOptions.error, 'invalid_service_options')
+})
+
+test('serializeService serves runState only once the daemon has reported one', () => {
+  const row = {
+    id: validUuid,
+    name: 'Web',
+    description: null,
+    environmentId: validUuid,
+    composeServiceName: 'web',
+    metadata: null,
+    options: null,
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+  }
+  assertEquals('runState' in serializeService(row), false)
+  const runState = {
+    state: 'crashing' as const,
+    running: false,
+    restartCount: 4,
+    lastError: 'boom',
+    asOf: '2026-10-04T12:00:00.000Z',
+  }
+  assertEquals(serializeService(row, runState).runState, runState)
 })

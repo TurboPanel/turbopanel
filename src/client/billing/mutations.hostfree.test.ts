@@ -103,6 +103,9 @@ const S5 = '33333333-3333-4333-8333-333333333335'
 const SRV_A = '55555555-5555-4555-8555-55555555555a'
 const NOW = '2026-09-07T12:00:00.000Z'
 const NOW_MS = Date.parse(NOW)
+const NOW_SEC = Math.floor(NOW_MS / 1000)
+/** A quote issued a minute ago: inside the accepted window. */
+const QUOTED_AT = NOW_SEC - 60
 /** The projected `current_period_end`: what every deferred intent is parked behind. */
 const PERIOD_END_ISO = '2026-10-01T00:00:00.000Z'
 const PERIOD_END = Date.parse(PERIOD_END_ISO) / 1000
@@ -457,7 +460,7 @@ test('a seat increase whose reprojection fails after Stripe accepted it is retri
     onPost: () => (atPost.record = storedRecord(db)),
   })
   const { deps, leases } = depsFor(db, client)
-  const input = { organizationId: ORG, tierId: S3, delta: 1, prorationDate: 1_800_000_000 }
+  const input = { organizationId: ORG, tierId: S3, delta: 1, prorationDate: QUOTED_AT }
 
   // Attempt 1: Stripe accepts the update; the reprojection's refetch fails.
   await assertRejects(() => changeSeats(deps, input), Error, 'injected: refetch failed')
@@ -476,7 +479,7 @@ test('a seat increase whose reprojection fails after Stripe accepted it is retri
   // …and it survived the failure, with the deltas, items and proration date Stripe saw.
   const record = storedRecord(db)
   assertEquals(record?.idempotencyKey, firstKey)
-  assertEquals(record?.prorationDate, 1_800_000_000)
+  assertEquals(record?.prorationDate, QUOTED_AT)
   assertEquals(record?.deltas, [{ tierId: S3, delta: 1 }])
   assertEquals(record?.items, [{ id: 'si_1', quantity: 3 }])
   assertEquals(record?.providerSubscriptionId, 'sub_1')
@@ -490,7 +493,7 @@ test('a seat increase whose reprojection fails after Stripe accepted it is retri
   assertEquals(posts.length, 2)
   // Same key, the same items and the same pinned proration date: Stripe replays, it does not re-apply.
   assertEquals(posts[1]?.idempotencyKey, firstKey)
-  assertEquals(posts[1]?.body?.proration_date, 1_800_000_000)
+  assertEquals(posts[1]?.body?.proration_date, QUOTED_AT)
   assertEquals(posts[0]?.body, posts[1]?.body)
   // The reprojection landed the committed quantity and consumed the record.
   assertEquals(seatQuantities(db), { [S3]: 3 })
@@ -769,7 +772,7 @@ test('T1 · an upgrade is an immediate −1/+1 item swap under the seat-increase
     organizationId: ORG,
     fromTierId: S3,
     toTierId: S5,
-    prorationDate: 1_800_000_000,
+    prorationDate: QUOTED_AT,
   })
   assertEquals(outcome.ok, true)
   assertEquals(outcome.ok && outcome.body, { ok: true, pending: false })
@@ -789,7 +792,7 @@ test('T1 · an upgrade is an immediate −1/+1 item swap under the seat-increase
   assertEquals(post.idempotencyKey, atPost.record?.idempotencyKey)
   assertEquals(formOf(post, 'payment_behavior'), 'pending_if_incomplete')
   assertEquals(formOf(post, 'proration_behavior'), 'always_invoice')
-  assertEquals(formOf(post, 'proration_date'), '1800000000')
+  assertEquals(formOf(post, 'proration_date'), String(QUOTED_AT))
   // The source item carries its id AND its new quantity (never id alone),
   // the target is a new item by price.
   assertEquals(formOf(post, 'items[0][id]'), 'si_1')
@@ -1453,4 +1456,53 @@ test('T4 · a Stripe refusal of the restore leaves the licenses ending exactly a
   )
   assertEquals(seatQuantities(db), { [S3]: 6 })
   assertEquals(leases, ['begin', 'end'])
+})
+
+test('a proration date outside the quote window is refused before Stripe is called, for seats and upgrades', async () => {
+  for (const bad of [NOW_SEC + 3600, NOW_SEC + 1, 0, -5, NOW_SEC - 901]) {
+    const db = orgDb(twoSeats())
+    const { client, posts } = stripeDouble({})
+    const { deps } = depsFor(db, client)
+    const seats = await changeSeats(deps, {
+      organizationId: ORG,
+      tierId: S3,
+      delta: 1,
+      prorationDate: bad,
+    })
+    assertEquals(refusalOf(seats).status, 409, `seats ${bad}`)
+    assertEquals(refusalOf(seats).body.error, 'proration_date_expired')
+    assertEquals(posts, [])
+    assertEquals(storedRecord(db), null)
+  }
+  const edge = orgDb(twoSeats())
+  const { client, posts } = stripeDouble({})
+  const ok = await changeSeats(depsFor(edge, client).deps, {
+    organizationId: ORG,
+    tierId: S3,
+    delta: 1,
+    prorationDate: NOW_SEC,
+  })
+  assertEquals(ok.ok, true)
+  assertEquals(posts[0]?.body?.proration_date, NOW_SEC)
+})
+
+test('an upgrade with a future proration date is refused before Stripe is called', async () => {
+  const db = orgDb({
+    seats: [
+      { tierId: S3, providerItemId: 'si_1', quantity: 2 },
+      { tierId: S5, providerItemId: 'si_5', quantity: 1 },
+    ],
+  })
+  const client = routedClient({})
+  const outcome = await upgradeTier(depsFor(db, client).deps, {
+    organizationId: ORG,
+    fromTierId: S3,
+    toTierId: S5,
+    prorationDate: NOW_SEC + 86_400,
+  })
+  assertEquals(refusalOf(outcome).body.error, 'proration_date_expired')
+  assertEquals(
+    client.calls.filter((c) => c.method !== 'GET'),
+    []
+  )
 })

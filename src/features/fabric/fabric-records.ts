@@ -56,6 +56,12 @@ import {
 } from '../net/datacenter-membership.ts'
 import { partitionSharedDatacenters, pinAddressForDatacenter } from '../net/private-endpoint.ts'
 import { loadCidrAllocationExclusions } from '../net/cidr-collisions.ts'
+import { checkAdvertisedRangeShape } from './advertised-ranges.ts'
+import {
+  advertisedRangeContext,
+  loadResolvedGatewayRanges,
+  withoutUnsafeRanges,
+} from './gateway-ranges.ts'
 import { WIREGUARD_PERSISTENT_KEEPALIVE } from './wg.ts'
 import {
   type FabricPolicy,
@@ -554,11 +560,48 @@ async function insertRelayWithRetry(
   }
 }
 
+/** A server the fabric could not give a relay to because its address pool is full. */
+export type UnallocatedFabricServer = {
+  serverId: string
+  kind: FabricAllocationErrorKind
+}
+
+function isPoolFullError(err: unknown): err is FabricAllocationError {
+  return (
+    err instanceof FabricAllocationError &&
+    (err.kind === 'fabric_prefix_pool_exhausted' || err.kind === 'fabric_address_pool_exhausted')
+  )
+}
+
+/**
+ * Ranges a new relay prefix must stay out of: the org's own ranges plus every
+ * range a gateway advertises, so a new server's container range is never one
+ * the daemon would refuse next to a gateway's route.
+ */
+async function loadRelayAllocationExclusions(
+  db: Db,
+  organizationId: string,
+  relays: readonly RelayRecord[]
+): Promise<string[]> {
+  const [orgRanges, gatewayRanges] = await Promise.all([
+    loadCidrAllocationExclusions(db, organizationId),
+    loadResolvedGatewayRanges(db, relays),
+  ])
+  return [...new Set([...orgRanges, ...[...gatewayRanges.values()].flat()])]
+}
+
+/**
+ * Give every org server a relay. By default a full pool throws (enable rolls
+ * back). When `unallocated` is passed, a pool-full server is reported there
+ * instead and the others carry on, so one extra server never blocks the rest
+ * of the fabric from reconciling.
+ */
 export async function ensureFabricRelays(
   db: Db,
   params: {
     fabric: FabricRecord
     organizationId: string
+    unallocated?: UnallocatedFabricServer[]
   }
 ): Promise<RelayRecord[]> {
   const options = parseFabricOptions(params.fabric.options)
@@ -574,13 +617,18 @@ export async function ensureFabricRelays(
   await forEachSequential(orgServers, async (row) => {
     if (have.has(row.id)) return
     // Loaded lazily: most calls find every server already has a relay.
-    exclusions ??= await loadCidrAllocationExclusions(db, params.organizationId)
-    await insertRelayWithRetry(db, {
-      fabric: params.fabric,
-      serverId: row.id,
-      containerPool: options.containerPool,
-      exclusions,
-    })
+    exclusions ??= await loadRelayAllocationExclusions(db, params.organizationId, existing)
+    try {
+      await insertRelayWithRetry(db, {
+        fabric: params.fabric,
+        serverId: row.id,
+        containerPool: options.containerPool,
+        exclusions,
+      })
+    } catch (err) {
+      if (!params.unallocated || !isPoolFullError(err)) throw err
+      params.unallocated.push({ serverId: row.id, kind: err.kind })
+    }
   })
 
   return listFabricRelays(db, params.fabric.id)
@@ -1499,6 +1547,12 @@ export async function loadEndpointCaches(
   return { caches, serversById }
 }
 
+/** `host:port`, with brackets around an IPv6 literal (`[fd00::5]:51821`). */
+export function joinHostPort(host: string, port: number): string {
+  const bare = host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host
+  return bare.includes(':') ? `[${bare}]:${String(port)}` : `${bare}:${String(port)}`
+}
+
 function appendUniqueCidrs(target: string[], values: readonly string[]): void {
   for (const value of values) {
     if (value.length === 0 || target.includes(value)) continue
@@ -1527,7 +1581,12 @@ export async function buildPeerMaterial(params: {
   )
   if (params.other.role === 'gateway') {
     const advertised = params.advertisedCidrs ?? params.other.advertisedCidrs
-    appendUniqueCidrs(allowedIPs, advertised)
+    // Never emit a range the policy refuses (default route, public range):
+    // a stored or derived row must not become a route on every peer.
+    appendUniqueCidrs(
+      allowedIPs,
+      advertised.filter((cidr) => checkAdvertisedRangeShape(cidr) === null)
+    )
   }
   const extra = [...(params.extraAllowedIPs ?? [])].sort((a, b) => a.localeCompare(b))
   appendUniqueCidrs(allowedIPs, extra)
@@ -1538,13 +1597,13 @@ export async function buildPeerMaterial(params: {
   }
 
   const carriesTransit = extra.length > 0
-  const keepalive =
-    params.other.keepalive ??
-    (params.plan.selected.kind === 'direct_nat' ? WIREGUARD_PERSISTENT_KEEPALIVE : null)
+  // Every direct pair keeps the tunnel (and its NAT mapping) alive; WireGuard
+  // only re-handshakes while data flows, so an idle LAN pair needs it too.
+  const keepalive = params.other.keepalive ?? WIREGUARD_PERSISTENT_KEEPALIVE
   const endpoint =
     params.plan.selected.kind === 'direct_nat'
       ? params.plan.selected.endpoint
-      : `${params.plan.selected.endpoint}:${String(params.listenPort)}`
+      : joinHostPort(params.plan.selected.endpoint, params.listenPort)
   const material: RelayPeerMaterial = {
     publicKey: params.other.publicKey ?? '',
     allowedIPs,
@@ -1704,6 +1763,7 @@ export async function loadFabricReconcileSnapshot(
     loadDatacenterSubnetsForServers(db, serverIds),
     loadDatacenterMembershipsForServers(db, serverIds),
   ])
+  const publicKeyed = publicKeyedRelays(relays)
   const datacenterIds = new Set<string>()
   for (const pins of datacenterMembershipsByServer.values()) {
     for (const pin of pins) datacenterIds.add(pin.datacenterId)
@@ -1724,9 +1784,12 @@ export async function loadFabricReconcileSnapshot(
     caches,
     sealedPresharedKeyByRelayId,
     segmentsByServer,
-    derivedAdvertisedCidrsByRelayId: resolveDerivedAdvertisedCidrsByRelay(
-      publicKeyedRelays(relays),
-      subnetsByServer
+    // One answer for the whole fabric: a range the daemon would refuse (it
+    // refuses the host's WHOLE payload, which leaves tp0 down) is left out here.
+    derivedAdvertisedCidrsByRelayId: withoutUnsafeRanges(
+      publicKeyed,
+      resolveDerivedAdvertisedCidrsByRelay(publicKeyed, subnetsByServer),
+      advertisedRangeContext(fabric, relays)
     ),
     policy: parseFabricPolicy(fabric.options),
   }

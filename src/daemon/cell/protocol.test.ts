@@ -832,6 +832,30 @@ it('validateDaemonInboundFrame accepts hello with optional fields', () => {
   }
 })
 
+it('validateDaemonInboundFrame accepts hello and heartbeat carrying services, even a malformed list', () => {
+  const services = [{ serviceId: 'svc-1', state: 'running', restartCount: 0, asOf: VALID_AT }]
+  const hello = validateDaemonInboundFrame(
+    JSON.stringify({ type: 'hello', at: VALID_AT, daemonBuild: VALID_DAEMON_BUILD, services })
+  )
+  assertEquals(hello.ok, true)
+  if (hello.ok && hello.message.type === 'hello') {
+    assertEquals(hello.message.services, services)
+  }
+  const heartbeat = validateDaemonInboundFrame(
+    JSON.stringify({ type: 'heartbeat', at: VALID_AT, services })
+  )
+  assertEquals(heartbeat.ok, true)
+  if (heartbeat.ok && heartbeat.message.type === 'heartbeat') {
+    assertEquals(heartbeat.message.services, services)
+  }
+  // Bad entries are dropped when stored; they never cost the daemon its socket.
+  assertEquals(
+    validateDaemonInboundFrame(JSON.stringify({ type: 'heartbeat', at: VALID_AT, services: 'x' }))
+      .ok,
+    true
+  )
+})
+
 it('validateDaemonInboundFrame rejects hello with invalid daemonBuild or hostname', () => {
   assertEquals(
     validateDaemonInboundFrame(
@@ -2461,4 +2485,54 @@ it('managed-health-result carries standby WAL positions and the last streaming r
   assertEquals(frame({ lastStreaming: { ...lastStreaming, lagBytes: Number.NaN } }), false)
   assertEquals(frame({ lastStreaming: { ...lastStreaming, receiveLagBytes: '1' } }), false)
   assertEquals(frame({ receiveLagBytes: '1' }), false)
+})
+
+it('deploy-cancel round-trips between the envelope and the wire message', () => {
+  assertEquals(
+    outboundEnvelopeToWireMessage({
+      kind: 'deploy-cancel',
+      deliveryId: 'del-1',
+      requestId: 'req-c',
+      commandId: 'cmd-1',
+      at: VALID_AT,
+    }),
+    { type: 'deploy-cancel', id: 'req-c', commandId: 'cmd-1', at: VALID_AT }
+  )
+  assertEquals(
+    wireMessageToInboundEnvelope({
+      type: 'deploy-cancel-result',
+      id: 'req-c',
+      ok: true,
+      outcome: 'too_late',
+      at: VALID_AT,
+    }),
+    {
+      kind: 'deploy-cancel-result',
+      requestId: 'req-c',
+      at: VALID_AT,
+      ok: true,
+      outcome: 'too_late',
+      error: undefined,
+    }
+  )
+  // The request is outbound-only; only the result may arrive from a daemon.
+  assertEquals((DAEMON_INBOUND_ALLOWED as ReadonlySet<string>).has('deploy-cancel'), false)
+  assertEquals(DAEMON_INBOUND_ALLOWED.has('deploy-cancel-result'), true)
+})
+
+it('validateDaemonInboundFrame checks the deploy-cancel-result outcome', () => {
+  const frame = (outcome: unknown) =>
+    validateDaemonInboundFrame(
+      JSON.stringify({ type: 'deploy-cancel-result', id: 'req-1', ok: true, outcome, at: VALID_AT })
+    )
+  for (const outcome of ['cancelling', 'too_late', 'not_running', undefined]) {
+    assertEquals(frame(outcome).ok, true, String(outcome))
+  }
+  assertEquals(frame('exploded').ok, false)
+  assertEquals(
+    validateDaemonInboundFrame(
+      JSON.stringify({ type: 'deploy-cancel-result', id: 'req-1', at: VALID_AT })
+    ).ok,
+    false
+  )
 })
