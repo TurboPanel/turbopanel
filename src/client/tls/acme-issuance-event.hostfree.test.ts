@@ -408,6 +408,14 @@ test('applyIssuanceOutcome records a failure without touching the last good expi
   })
 })
 
+test('applyIssuanceOutcome stores a failure without a signed URL query string', () => {
+  const next = applyIssuanceOutcome(undefined, {
+    ok: false,
+    errorMessage: 'fetch failed for https://acme.example.com/dir?X-Amz-Signature=abc123&token=zzz',
+  })
+  assertEquals(next.lastError, 'fetch failed for https://acme.example.com/dir?[redacted]')
+})
+
 test('applyIssuanceOutcome defaults the stamp to now when the daemon sent no time', () => {
   const next = applyIssuanceOutcome(undefined, { ok: true }, () => LATER)
   assertEquals(next.lastIssuedAt, LATER)

@@ -27,6 +27,11 @@ import { license, server } from '../../db/schema.ts'
 import { recomputeAssignmentsForServer } from '../tiers/assignment-records.ts'
 import { applyReportedAddressRepin } from '../net/repin-apply.ts'
 import { serverIpsEquals } from '../../contracts/server-addresses.ts'
+import {
+  parseServiceRunStates,
+  type ServiceRunState,
+  serviceRunStatesEqual,
+} from '../../contracts/service-run-state.ts'
 import { normalizeMachineKey } from '../../lib/machine-key.ts'
 import { daemonFeaturesColumnPatch } from './daemon-jsonb-write.ts'
 import { featuresMatch, parseServerDaemonState } from './daemon-state.ts'
@@ -86,6 +91,8 @@ export type ServerHelloIdentity = {
   timeSync?: ServerTimeSync
   docker?: ServerDockerMetadata
   runtimes?: ServerRuntimeMetadata
+  /** Per-service run state; `[]` clears, `undefined` leaves what is stored. */
+  services?: ServiceRunState[]
   /** Hello only. `[]` when the daemon omitted `features`. Heartbeat leaves this unset. */
   features?: string[]
 }
@@ -100,6 +107,8 @@ function metadataPatch(identity: ServerHelloIdentity): Partial<ServerMetadata> {
   if (docker) patch.docker = docker
   const runtimes = parseServerRuntimeMetadata(identity.runtimes)
   if (runtimes) patch.runtimes = runtimes
+  const services = parseServiceRunStates(identity.services)
+  if (services !== undefined) patch.services = services
   return patch
 }
 
@@ -164,7 +173,7 @@ export function mergeServerMetadataIdentity(
   current: ServerMetadata | null | undefined,
   identity: Pick<
     ServerHelloIdentity,
-    'hostname' | 'machineKey' | 'os' | 'resources' | 'timeSync' | 'docker'
+    'hostname' | 'machineKey' | 'os' | 'resources' | 'timeSync' | 'docker' | 'services'
   >
 ): ServerMetadata | null {
   const patch = metadataPatch(identity)
@@ -187,6 +196,10 @@ export function mergeServerMetadataIdentity(
   }
   if (patch.runtimes !== undefined && !serverRuntimeMetadataEquals(patch.runtimes, base.runtimes)) {
     next.runtimes = patch.runtimes
+    changed = true
+  }
+  if (patch.services !== undefined && !serviceRunStatesEqual(patch.services, base.services)) {
+    next.services = patch.services
     changed = true
   }
 
@@ -226,6 +239,9 @@ function buildMetadataDelta(
     !serverRuntimeMetadataEquals(patch.runtimes, base?.runtimes)
   ) {
     delta.runtimes = patch.runtimes
+  }
+  if (patch.services !== undefined && !serviceRunStatesEqual(patch.services, base?.services)) {
+    delta.services = patch.services
   }
   return delta
 }

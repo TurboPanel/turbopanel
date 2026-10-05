@@ -66,6 +66,7 @@ import { runBackupsReconcileSweep } from '../../features/backups/reconcile.ts'
 import type { FirewallApplyGate } from '../../features/firewall/enforcement.ts'
 import { runFirewallPreviewSweep } from '../../features/firewall/preview.ts'
 import { runLeafRenewalSweepTick } from '../../client/tls/leaf-renewal-sweep.ts'
+import { runHostingLetsEncryptSweepTick } from '../../client/hostings/letsencrypt-sweep.ts'
 import { type AlertSender, NOOP_ALERT_SENDER } from '../../features/alerts/alert-sender.ts'
 import { cachedForEnv } from './notification-email-cache.ts'
 import { resolveAlertSender } from '../../features/alerts/resolve-alert-sender.ts'
@@ -1064,6 +1065,14 @@ async function runQueuedCronSweeps(
       await runFirewallPreviewSweep(db, commandQueue, { applyGate: firewallApplyGate })
     } catch (err) {
       sweepTrace('firewall-preview-sweep-failed', {
+        error: sweepErrorMessage(err),
+      })
+    }
+    // Let's Encrypt requests waiting for DNS; needs no secrets bundle.
+    try {
+      await runHostingLetsEncryptSweepTick(db)
+    } catch (err) {
+      sweepTrace('hosting-letsencrypt-sweep-failed', {
         error: sweepErrorMessage(err),
       })
     }

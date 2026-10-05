@@ -11,7 +11,7 @@ import { computePingLatency } from './commands-ping-latency.ts'
 const test = Deno.test.bind(Deno)
 
 function pingRecord(
-  partial: Partial<CommandRecord> & Pick<CommandRecord, 'id' | 'serverId'>,
+  partial: Partial<CommandRecord> & Pick<CommandRecord, 'id' | 'serverId'>
 ): CommandRecord {
   return {
     actorEntityType: 'user',
@@ -32,26 +32,29 @@ function pingRecord(
     expiresAt: null,
     errorCode: null,
     errorMessage: null,
+    errorLine: null,
     error: null,
     ...partial,
   }
 }
 
 test('computePingLatency breaks down a terminal ping command', () => {
-  const latency = computePingLatency(pingRecord({
-    id: 'cmd-1',
-    serverId: 'srv-1',
-    queuedAt: '2020-01-01T00:00:00.000Z',
-    dispatchStartedAt: '2020-01-01T00:00:00.010Z',
-    sentAt: '2020-01-01T00:00:00.020Z',
-    ackedAt: '2020-01-01T00:00:00.035Z',
-    finishedAt: '2020-01-01T00:00:00.060Z',
-    result: {
-      cellDispatchedAt: '2020-01-01T00:00:00.030Z',
-      daemonReceivedAt: '2020-01-01T00:00:00.040Z',
-      daemonRespondedAt: '2020-01-01T00:00:00.050Z',
-    },
-  }))
+  const latency = computePingLatency(
+    pingRecord({
+      id: 'cmd-1',
+      serverId: 'srv-1',
+      queuedAt: '2020-01-01T00:00:00.000Z',
+      dispatchStartedAt: '2020-01-01T00:00:00.010Z',
+      sentAt: '2020-01-01T00:00:00.020Z',
+      ackedAt: '2020-01-01T00:00:00.035Z',
+      finishedAt: '2020-01-01T00:00:00.060Z',
+      result: {
+        cellDispatchedAt: '2020-01-01T00:00:00.030Z',
+        daemonReceivedAt: '2020-01-01T00:00:00.040Z',
+        daemonRespondedAt: '2020-01-01T00:00:00.050Z',
+      },
+    })
+  )
 
   assertEquals(latency.apiToConsumerMs, 10)
   assertEquals(latency.consumerToCellMs, 20)
@@ -62,44 +65,50 @@ test('computePingLatency breaks down a terminal ping command', () => {
 })
 
 test('computePingLatency clamps negative hop deltas from clock skew', () => {
-  const latency = computePingLatency(pingRecord({
-    id: 'cmd-2',
-    serverId: 'srv-1',
-    queuedAt: '2020-01-01T00:00:00.000Z',
-    dispatchStartedAt: '2020-01-01T00:00:00.010Z',
-    sentAt: '2020-01-01T00:00:00.050Z',
-    ackedAt: '2020-01-01T00:00:00.040Z',
-    finishedAt: '2020-01-01T00:00:00.060Z',
-    result: {
-      cellDispatchedAt: '2020-01-01T00:00:00.050Z',
-      daemonReceivedAt: '2020-01-01T00:00:00.055Z',
-      daemonRespondedAt: '2020-01-01T00:00:00.045Z',
-    },
-  }))
+  const latency = computePingLatency(
+    pingRecord({
+      id: 'cmd-2',
+      serverId: 'srv-1',
+      queuedAt: '2020-01-01T00:00:00.000Z',
+      dispatchStartedAt: '2020-01-01T00:00:00.010Z',
+      sentAt: '2020-01-01T00:00:00.050Z',
+      ackedAt: '2020-01-01T00:00:00.040Z',
+      finishedAt: '2020-01-01T00:00:00.060Z',
+      result: {
+        cellDispatchedAt: '2020-01-01T00:00:00.050Z',
+        daemonReceivedAt: '2020-01-01T00:00:00.055Z',
+        daemonRespondedAt: '2020-01-01T00:00:00.045Z',
+      },
+    })
+  )
 
   assertEquals(latency.cellToDaemonMs, 0)
   assertEquals(latency.daemonProcessingMs, 0)
 })
 
 test('computePingLatency uses sentAt when cellDispatchedAt is absent', () => {
-  const latency = computePingLatency(pingRecord({
-    id: 'cmd-3',
-    serverId: 'srv-1',
-    dispatchStartedAt: '2020-01-01T00:00:00.010Z',
-    sentAt: '2020-01-01T00:00:00.020Z',
-    finishedAt: '2020-01-01T00:00:00.040Z',
-    result: {},
-  }))
+  const latency = computePingLatency(
+    pingRecord({
+      id: 'cmd-3',
+      serverId: 'srv-1',
+      dispatchStartedAt: '2020-01-01T00:00:00.010Z',
+      sentAt: '2020-01-01T00:00:00.020Z',
+      finishedAt: '2020-01-01T00:00:00.040Z',
+      result: {},
+    })
+  )
 
   assertEquals(latency.consumerToCellMs, 10)
   assertEquals(latency.daemonToRecordedMs, 20)
 })
 
 test('computePingLatency returns null segments when lifecycle timestamps are missing', () => {
-  const latency = computePingLatency(pingRecord({
-    id: 'cmd-4',
-    serverId: 'srv-1',
-  }))
+  const latency = computePingLatency(
+    pingRecord({
+      id: 'cmd-4',
+      serverId: 'srv-1',
+    })
+  )
 
   assertEquals(latency.apiToConsumerMs, null)
   assertEquals(latency.consumerToCellMs, null)
@@ -110,43 +119,49 @@ test('computePingLatency returns null segments when lifecycle timestamps are mis
 })
 
 test('computePingLatency falls back to finishedAt for cellAckAt when ackedAt is absent', () => {
-  const latency = computePingLatency(pingRecord({
-    id: 'cmd-5',
-    serverId: 'srv-1',
-    sentAt: '2020-01-01T00:00:00.020Z',
-    finishedAt: '2020-01-01T00:00:00.045Z',
-    result: {
-      cellDispatchedAt: '2020-01-01T00:00:00.025Z',
-    },
-  }))
+  const latency = computePingLatency(
+    pingRecord({
+      id: 'cmd-5',
+      serverId: 'srv-1',
+      sentAt: '2020-01-01T00:00:00.020Z',
+      finishedAt: '2020-01-01T00:00:00.045Z',
+      result: {
+        cellDispatchedAt: '2020-01-01T00:00:00.025Z',
+      },
+    })
+  )
 
   assertEquals(latency.cellToDaemonMs, 20)
   assertEquals(latency.daemonToRecordedMs, 20)
 })
 
 test('computePingLatency uses ackedAt→finishedAt for daemonToRecordedMs when present', () => {
-  const latency = computePingLatency(pingRecord({
-    id: 'cmd-6',
-    serverId: 'srv-1',
-    ackedAt: '2020-01-01T00:00:00.040Z',
-    finishedAt: '2020-01-01T00:00:00.055Z',
-    result: {
-      cellDispatchedAt: '2020-01-01T00:00:00.030Z',
-    },
-  }))
+  const latency = computePingLatency(
+    pingRecord({
+      id: 'cmd-6',
+      serverId: 'srv-1',
+      ackedAt: '2020-01-01T00:00:00.040Z',
+      finishedAt: '2020-01-01T00:00:00.055Z',
+      result: {
+        cellDispatchedAt: '2020-01-01T00:00:00.030Z',
+      },
+    })
+  )
 
   assertEquals(latency.daemonToRecordedMs, 15)
 })
 
 test('computePingLatency ignores non-object results via parsePingResult', () => {
-  const latency = computePingLatency(pingRecord({
-    id: 'cmd-7',
-    serverId: 'srv-1',
-    dispatchStartedAt: '2020-01-01T00:00:00.010Z',
-    sentAt: '2020-01-01T00:00:00.020Z',
-    finishedAt: '2020-01-01T00:00:00.030Z',
-    result: 'not-an-object',
-  }))
+  const latency = computePingLatency(
+    pingRecord({
+      id: 'cmd-7',
+      serverId: 'srv-1',
+      dispatchStartedAt: '2020-01-01T00:00:00.010Z',
+      sentAt: '2020-01-01T00:00:00.020Z',
+      finishedAt: '2020-01-01T00:00:00.030Z',
+      result: 'not-an-object',
+    })
+  )
 
   assertEquals(latency.consumerToCellMs, 10)
   assertEquals(latency.daemonProcessingMs, null)

@@ -102,6 +102,21 @@ test('listEnvironmentDeploymentHistory serializes context and paginates', async 
   assertEquals(page.nextCursor, olderId)
 })
 
+test('listEnvironmentDeploymentHistory carries the error line of a failed deploy', async () => {
+  const failed = {
+    ...deployRow,
+    id: '00000000-0000-4000-8000-000000000104',
+    status: 'failed',
+    errorMessage: '[...truncated] build output\nrailpack build failed:\nsh: 1: next: not found',
+  }
+  const db = createHistoryDb({ commandRows: [failed, deployRow] })
+  const { deployments } = await listEnvironmentDeploymentHistory(db, envId)
+  assertEquals(
+    deployments.map((d) => d.errorLine),
+    ['sh: 1: next: not found', null]
+  )
+})
+
 test('listEnvironmentDeploymentHistory surfaces the strategy and how an unfinished deploy ended', async () => {
   const rolledBack = {
     ...deployRow,
@@ -261,5 +276,37 @@ test('readDeploymentTrigger attributes only automated deploys that recorded a se
       metadata: { sourceSelection: { commitSha: 'only-sha' } },
     }),
     { kind: 'push', branch: null, commitSha: 'only-sha', sourceId: null }
+  )
+})
+
+test('a deploy that was asked to cancel says so, whether it stopped or finished anyway', async () => {
+  const requestedAt = '2030-01-01T00:00:03.000Z'
+  const cancelling = {
+    ...deployRow,
+    id: '00000000-0000-4000-8000-000000000110',
+    status: 'sent',
+    finishedAt: null,
+    metadata: { cancelRequestedAt: requestedAt },
+  }
+  const cancelled = {
+    ...cancelling,
+    id: '00000000-0000-4000-8000-000000000111',
+    status: 'cancelled',
+    errorCode: 'deploy_cancelled',
+    errorMessage: 'cancelled: stopped while building; the previous version is still running',
+    finishedAt: '2030-01-01T00:00:05.000Z',
+  }
+  const tooLate = { ...cancelled, id: '00000000-0000-4000-8000-000000000112', status: 'succeeded' }
+  const db = createHistoryDb({ commandRows: [cancelling, cancelled, tooLate, deployRow] })
+  const { deployments } = await listEnvironmentDeploymentHistory(db, envId)
+  assertEquals(
+    deployments.map((d) => [d.status, d.cancelRequestedAt, d.strategyOutcome]),
+    [
+      ['sent', requestedAt, null],
+      // A cancelled deploy is not a rollback: it never switched anything over.
+      ['cancelled', requestedAt, null],
+      ['succeeded', requestedAt, null],
+      ['succeeded', null, null],
+    ]
   )
 })
