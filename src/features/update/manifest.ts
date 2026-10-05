@@ -137,20 +137,22 @@ export function setUpdateManifestRetryDelaysForTests(delays: number[]): void {
  * run out the last answer or error is handed back. Only the transport is
  * retried; the signature is checked on whatever comes back.
  */
-async function fetchManifestResponse(url: string): Promise<Response> {
-  const startedAt = Date.now()
-  for (let attempt = 0; ; attempt++) {
-    const delay = retryDelaysMs[attempt]
-    const canRetry = delay !== undefined && Date.now() - startedAt < MANIFEST_RETRY_BUDGET_MS
-    try {
-      const response = await fetch(url, { signal: AbortSignal.timeout(MANIFEST_FETCH_TIMEOUT_MS) })
-      if (!canRetry || !TRANSIENT_STATUSES.has(response.status)) return response
-      await response.body?.cancel()
-    } catch (error) {
-      if (!canRetry) throw error
-    }
-    await new Promise((resolve) => setTimeout(resolve, delay))
+async function fetchManifestResponse(
+  url: string,
+  attempt = 0,
+  startedAt = Date.now()
+): Promise<Response> {
+  const delay = retryDelaysMs[attempt]
+  const canRetry = delay !== undefined && Date.now() - startedAt < MANIFEST_RETRY_BUDGET_MS
+  try {
+    const response = await fetch(url, { signal: AbortSignal.timeout(MANIFEST_FETCH_TIMEOUT_MS) })
+    if (!canRetry || !TRANSIENT_STATUSES.has(response.status)) return response
+    await response.body?.cancel()
+  } catch (error) {
+    if (!canRetry) throw error
   }
+  await new Promise((resolve) => setTimeout(resolve, delay))
+  return fetchManifestResponse(url, attempt + 1, startedAt)
 }
 
 /**
