@@ -607,6 +607,10 @@ function selectFrom(store: Store, fields: Row | undefined, table: Table) {
         query.where = cond
         return builder
       },
+      /** `FOR UPDATE`: the memory store serializes writers, so the lock is a no-op. */
+      for(_strength: string) {
+        return builder
+      },
       groupBy(...columns: Column[]) {
         query.groupBy = columns
         return builder

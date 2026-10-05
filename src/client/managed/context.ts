@@ -18,6 +18,7 @@ import {
 import { verifyServerInOrg } from '../environments/deploy-prepare.ts'
 import { getCatalogEntry } from '../projects/catalog/index.ts'
 import { loadServerStatusRecords } from '../servers/update-status.ts'
+import { findInFlightRecovery } from '../../features/managed/recovery-records.ts'
 import type { ManagedStatus } from '../../features/managed/types.ts'
 
 export async function authorizeManagedRequest(
@@ -174,6 +175,26 @@ export function resolveManagedTargetServerId(
 export function assertManagedNotBusy(c: Context<AppEnv>, status: string | null): Response | null {
   if (status === 'applying') {
     return c.json({ error: 'managed_busy' }, 409)
+  }
+  return null
+}
+
+/**
+ * Gate for every mutating managed route: not `applying`, and no HA recovery in
+ * flight in the journal. The journal is the truth during a failover: the
+ * managed status can read `ready` or `failed` while a recovery is still
+ * fencing or promoting, and an operator action then (a resync that wipes the
+ * candidate's data, a start of the fenced old primary) breaks the failover.
+ */
+export async function assertManagedIdle(
+  c: Context<AppEnv>,
+  db: Db,
+  managedRow: { id: string; status: string | null }
+): Promise<Response | null> {
+  const busy = assertManagedNotBusy(c, managedRow.status)
+  if (busy) return busy
+  if (await findInFlightRecovery(db, managedRow.id)) {
+    return c.json({ error: 'managed_busy', reason: 'recovery_in_flight' }, 409)
   }
   return null
 }

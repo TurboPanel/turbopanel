@@ -61,6 +61,8 @@ import {
   AUTOMATIC_FAILOVER_STANDBY_NOT_PROVEN_MESSAGE,
   FENCE_STOP_UNQUEUED_MESSAGE,
   PROMOTE_UNQUEUED_MESSAGE,
+  RECOVERY_COMMAND_TIMED_OUT_MESSAGE,
+  RECOVERY_STEP_FAILED_MESSAGE,
   isTerminalRecoveryState,
   type RecoveryKind,
   type RecoveryMetadata,
@@ -1103,6 +1105,79 @@ async function reclassifyAfterDisasterRecovery(db: Db, record: RecoveryRecord): 
   })
 }
 
+/** Terminal `failed` the operator has to look at; frees the cluster's slot. */
+function failedNeedsOperator(current: RecoveryRecord, reason: string): RecoveryPatch {
+  return {
+    state: 'failed',
+    metadata: { ...current.metadata, needsOperator: true, failedReason: reason },
+  }
+}
+
+async function failRecoveryForOperator(
+  db: Db,
+  recoveryId: string,
+  reason: string
+): Promise<RecoveryRecord | null> {
+  const failed = await updateRecoveryLocked(db, recoveryId, (current) =>
+    failedNeedsOperator(current, reason)
+  )
+  if (failed) await stampManagedFailedIfApplying(db, failed.managedId)
+  return failed
+}
+
+async function stampManagedFailedIfApplying(db: Db, managedId: string): Promise<void> {
+  await db
+    .update(managed)
+    .set({ status: 'failed', updatedAt: new Date().toISOString() })
+    .where(and(eq(managed.id, managedId), eq(managed.status, 'applying')))
+}
+
+/**
+ * Claim the promote result exactly once: only a row still at or before
+ * `promoting` moves to `repointing`, under the row lock, so a redelivered queue
+ * message (or a concurrent consumer) finds it already owned and does nothing.
+ */
+function claimPromoteResult(
+  db: Db,
+  recoveryId: string
+): Promise<{ record: RecoveryRecord; metadata: RecoveryMetadata } | null> {
+  let metadata: RecoveryMetadata | null = null
+  return updateRecoveryLocked(db, recoveryId, (current) => {
+    if (!['detecting', 'fencing', 'promoting'].includes(current.state)) return null
+    const afterPromote = nextStateAfterPromoteSuccess(current.metadata)
+    metadata = afterPromote.metadata
+    return { state: afterPromote.state, metadata: afterPromote.metadata }
+  }).then((record) => (record && metadata ? { record, metadata } : null))
+}
+
+async function fanOutAfterPromote(
+  db: Db,
+  commandQueue: CommandQueue | undefined,
+  secrets: {
+    secretsConfig?: SecretsConfig
+    dataEncryptionSecrets?: DerivedSecretsConfig
+  },
+  record: RecoveryRecord,
+  actorId: string
+): Promise<void> {
+  if (!commandQueue || !secrets.secretsConfig || !secrets.dataEncryptionSecrets) return
+  const { fanOutManagedIngressReconcile } = await import('./ingress-desired.ts')
+  await fanOutManagedIngressReconcile(db, commandQueue, {
+    managedId: record.managedId,
+    actorType: 'system',
+    actorId,
+    secretsConfig: secrets.secretsConfig,
+    dataEncryptionSecrets: secrets.dataEncryptionSecrets,
+  })
+  await fanOutManagedHaReconcile(db, commandQueue, {
+    managedId: record.managedId,
+    actorType: 'system',
+    actorId,
+    secretsConfig: secrets.secretsConfig,
+    dataEncryptionSecrets: secrets.dataEncryptionSecrets,
+  })
+}
+
 export async function onPromoteSucceeded(
   db: Db,
   commandQueue: CommandQueue | undefined,
@@ -1113,54 +1188,86 @@ export async function onPromoteSucceeded(
   recoveryId: string,
   actorId: string
 ): Promise<void> {
-  const record = await findRecoveryById(db, recoveryId)
-  if (!record || isTerminalRecoveryState(record.state)) return
+  const existing = await findRecoveryById(db, recoveryId)
+  if (!existing || isTerminalRecoveryState(existing.state)) return
 
-  if (record.kind === 'disaster-recovery' && record.targetMemberId) {
-    await reclassifyAfterDisasterRecovery(db, record)
-  }
+  const claimed = await claimPromoteResult(db, recoveryId)
+  if (!claimed) return
+  const { record } = claimed
 
-  const afterPromote = nextStateAfterPromoteSuccess(record.metadata)
-  await updateRecovery(db, record.id, {
-    state: afterPromote.state,
-    metadata: afterPromote.metadata,
-  })
+  // The role flip already happened. A throw from here on would strand the row
+  // at `repointing` (nothing else advances it), so any failure ends it
+  // terminal for the operator instead.
+  try {
+    if (record.kind === 'disaster-recovery' && record.targetMemberId) {
+      await reclassifyAfterDisasterRecovery(db, record)
+    }
+    await fanOutAfterPromote(db, commandQueue, secrets, record, actorId)
 
-  if (commandQueue && secrets.secretsConfig && secrets.dataEncryptionSecrets) {
-    const { fanOutManagedIngressReconcile } = await import('./ingress-desired.ts')
-    await fanOutManagedIngressReconcile(db, commandQueue, {
-      managedId: record.managedId,
-      actorType: 'system',
-      actorId,
-      secretsConfig: secrets.secretsConfig,
-      dataEncryptionSecrets: secrets.dataEncryptionSecrets,
+    const afterIngress = nextStateAfterIngressReconcile(claimed.metadata)
+    const members = await listManagedMembers(db, record.managedId)
+    const writerCount = members.filter((row) => row.role === 'primary').length
+    const verified = nextStateAfterVerify({
+      writerCount,
+      metadata: afterIngress.metadata,
     })
-    await fanOutManagedHaReconcile(db, commandQueue, {
-      managedId: record.managedId,
-      actorType: 'system',
-      actorId,
-      secretsConfig: secrets.secretsConfig,
-      dataEncryptionSecrets: secrets.dataEncryptionSecrets,
+    await updateRecovery(db, record.id, {
+      state: verified.state,
+      metadata: verified.metadata,
     })
+  } catch (error) {
+    logRecoveryAdvanceFailure(
+      record.id,
+      error instanceof Error ? error.message : 'post-promote step failed'
+    )
+    await failRecoveryForOperator(db, record.id, RECOVERY_STEP_FAILED_MESSAGE)
   }
+}
 
-  const afterIngress = nextStateAfterIngressReconcile(afterPromote.metadata)
-  const members = await listManagedMembers(db, record.managedId)
-  const writerCount = members.filter((row) => row.role === 'primary').length
-  const verified = nextStateAfterVerify({
-    writerCount,
-    metadata: afterIngress.metadata,
-  })
-  await updateRecovery(db, record.id, {
-    state: verified.state,
-    metadata: verified.metadata,
-  })
+/**
+ * A step after the role change (the consumer's side effect of a successful
+ * promote) threw. The roles already changed, so the row ends terminal for the
+ * operator rather than waiting for the sweep.
+ */
+export async function onRecoveryStepFailed(db: Db, recoveryId: string): Promise<void> {
+  await failRecoveryForOperator(db, recoveryId, RECOVERY_STEP_FAILED_MESSAGE)
 }
 
 export async function onRecoveryCommandFailed(db: Db, recoveryId: string): Promise<void> {
-  const latest = await findRecoveryById(db, recoveryId)
-  if (!latest || isTerminalRecoveryState(latest.state)) return
-  await updateRecovery(db, recoveryId, { state: 'failed' })
+  await failRecoveryForOperator(db, recoveryId, RECOVERY_COMMAND_TIMED_OUT_MESSAGE)
+}
+
+/**
+ * The stale-command sweep timed out a command that belongs to a recovery (the
+ * consumer that was waiting for it died with its process). Settle the journal
+ * the way the consumer's failure path would have, so the row never strands the
+ * cluster's in-flight slot. A fence command that is gone fails the fence
+ * (`blocked`, never promote); a promote / failover command that is gone fails
+ * the row for the operator, who has to check which member is the writer.
+ */
+export async function onRecoveryCommandTimedOut(
+  db: Db,
+  params: {
+    recoveryId: string
+    commandId: string
+    type: string
+    fencePhase: 'drain' | 'stop' | null
+  }
+): Promise<void> {
+  const isFenceCommand = params.fencePhase !== null || params.type === 'managed.lifecycle'
+  if (isFenceCommand) {
+    await onFenceCommandFailed(db, undefined, {
+      recoveryId: params.recoveryId,
+      commandId: params.commandId,
+      // No queue here, so the engine and actor are never used to enqueue.
+      engine: 'postgres',
+      actor: { actorType: 'system', actorId: params.commandId },
+    })
+    return
+  }
+  if (params.type === 'managed.promote' || params.type === 'managed.ha.failover') {
+    await onRecoveryCommandFailed(db, params.recoveryId)
+  }
 }
 
 export function recoveryIdFromCommandMetadata(
