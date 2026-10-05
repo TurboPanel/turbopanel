@@ -1729,6 +1729,16 @@ export async function enqueueManagedLifecycleFanout(
 ): Promise<ManagedApplyEnqueueResult[] | Response> {
   const results = await Promise.all(
     params.members.map(async (member): Promise<ManagedApplyEnqueueResult> => {
+      // A demoted old primary still holds its old writable data directory:
+      // starting it before a resync can bring up a second writer.
+      if (params.action !== 'stop' && member.status === 'needs_resync') {
+        return {
+          memberId: member.id,
+          serverId: member.serverId,
+          status: 'failed',
+          error: 'managed_member_needs_resync',
+        }
+      }
       const enqueued = await enqueueTypedCommand(c, db, commandQueue, {
         userId: params.userId,
         serverId: member.serverId,

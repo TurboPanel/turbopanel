@@ -4,7 +4,7 @@
 
 import { assertEquals, assertRejects } from '@std/assert'
 import type { Db } from '../../db/connection.ts'
-import { recovery } from '../../db/schema.ts'
+import { command, managed, recovery } from '../../db/schema.ts'
 import { createMemoryDb } from '../../test-fixtures/memory-db.ts'
 import {
   findInFlightRecovery,
@@ -14,8 +14,9 @@ import {
   insertRecoveryIfFree,
   recordBlockedRecovery,
   updateRecovery,
-  expireStaleDetectingRecoveries,
+  expireStaleRecoveries,
   STALE_DETECTING_RECOVERY_MS,
+  STALE_RECOVERY_STEP_MS,
 } from './recovery-records.ts'
 
 /**
@@ -311,13 +312,16 @@ function staleRow(id: string, overrides: Record<string, unknown> = {}) {
   }
 }
 
-test('expireStaleDetectingRecoveries expires only old detecting/fencing rows with no queued command', async () => {
+test('expireStaleRecoveries expires only old detecting/fencing rows with no queued command', async () => {
   const db = createMemoryDb([
     [
       recovery,
       [
         staleRow('old'),
-        staleRow('fresh', { startedAt: '2026-10-01T00:55:00.000Z' }),
+        staleRow('fresh', {
+          startedAt: '2026-10-01T00:55:00.000Z',
+          updatedAt: '2026-10-01T00:55:00.000Z',
+        }),
         staleRow('queued', { metadata: { fenceCommandIds: ['cmd-1'] } }),
         staleRow('fencing', { state: 'fencing' }),
         staleRow('fencing-queued', {
@@ -328,24 +332,148 @@ test('expireStaleDetectingRecoveries expires only old detecting/fencing rows wit
         staleRow('done', { state: 'blocked', metadata: { blockedReason: 'earlier' } }),
       ],
     ],
+    [managed, []],
+    [command, []],
   ])
-  const expired = await expireStaleDetectingRecoveries(db, {
+  const expired = await expireStaleRecoveries(db, {
     now: Date.parse('2026-10-01T01:00:00.000Z'),
     reason: 'stale',
   })
   // A `fencing` row whose stop never got queued is as stuck as `detecting`.
-  assertEquals(expired, ['old', 'fencing'])
+  assertEquals(
+    expired.map((row) => row.id),
+    ['old', 'queued', 'fencing', 'fencing-queued', 'promoting']
+  )
   const byId = new Map(db.rows(recovery).map((row) => [row.id, row]))
   assertEquals(byId.get('old')?.state, 'blocked')
   assertEquals((byId.get('old')?.metadata as Record<string, unknown>).blockedReason, 'stale')
   assertEquals(typeof byId.get('old')?.completedAt, 'string')
   assertEquals(byId.get('fresh')?.state, 'detecting')
-  assertEquals(byId.get('queued')?.state, 'detecting')
+  // Commands recorded but 60 minutes without progress: past the step budget.
+  assertEquals(byId.get('queued')?.state, 'failed')
   assertEquals(byId.get('fencing')?.state, 'blocked')
-  assertEquals(byId.get('fencing-queued')?.state, 'fencing')
-  assertEquals(byId.get('promoting')?.state, 'promoting')
+  assertEquals(byId.get('fencing-queued')?.state, 'failed')
+  // 60 minutes without progress is far past the step budget: failed for the operator.
+  assertEquals(byId.get('promoting')?.state, 'failed')
   assertEquals(byId.get('done')?.state, 'blocked')
   assertEquals(STALE_DETECTING_RECOVERY_MS, 10 * 60_000)
+})
+
+test('expireStaleRecoveries fails rows that stopped progressing in any in-flight state, and spares live ones', async () => {
+  const now = Date.parse('2026-10-01T01:00:00.000Z')
+  const fresh = new Date(now - 60_000).toISOString()
+  const old = new Date(now - STALE_RECOVERY_STEP_MS - 1_000).toISOString()
+  const db = createMemoryDb([
+    [
+      recovery,
+      [
+        staleRow('fencing-cmds', {
+          state: 'fencing',
+          metadata: { fenceCommandIds: ['c1'] },
+          updatedAt: old,
+        }),
+        staleRow('promoting', { state: 'promoting', updatedAt: old }),
+        staleRow('repointing', { state: 'repointing', updatedAt: old }),
+        staleRow('ingress', { state: 'reconciling-ingress', updatedAt: old }),
+        staleRow('verifying', { state: 'verifying', updatedAt: old }),
+        staleRow('live-promoting', { state: 'promoting', updatedAt: fresh }),
+        staleRow('live-repointing', { state: 'repointing', updatedAt: fresh }),
+        staleRow('done', { state: 'completed', updatedAt: old }),
+      ],
+    ],
+    [managed, [{ id: 'mgd-promoting', status: 'applying' }]],
+    [command, []],
+  ])
+  const expired = await expireStaleRecoveries(db, { now, reason: 'stale' })
+  assertEquals(expired.map((row) => row.id).sort(), [
+    'fencing-cmds',
+    'ingress',
+    'promoting',
+    'repointing',
+    'verifying',
+  ])
+  const byId = new Map(db.rows(recovery).map((row) => [row.id, row]))
+  for (const id of ['fencing-cmds', 'promoting', 'repointing', 'ingress', 'verifying']) {
+    assertEquals(byId.get(id)?.state, 'failed', id)
+    const metadata = byId.get(id)?.metadata as Record<string, unknown>
+    assertEquals(metadata.needsOperator, true, id)
+    assertEquals(typeof metadata.failedReason, 'string', id)
+  }
+  assertEquals(byId.get('live-promoting')?.state, 'promoting')
+  assertEquals(byId.get('live-repointing')?.state, 'repointing')
+  assertEquals(byId.get('done')?.state, 'completed')
+  // The cluster slot is free again for every expired row.
+  assertEquals(await findInFlightRecovery(db, 'mgd-promoting'), null)
+  // And the managed row that was parked at `applying` is released.
+  assertEquals(db.rows(managed)[0]?.status, 'failed')
+})
+
+test('expireStaleRecoveries leaves a row alone while one of its commands is still live', async () => {
+  const now = Date.parse('2026-10-01T01:00:00.000Z')
+  const old = new Date(now - 3_600_000).toISOString()
+  const db = createMemoryDb([
+    [
+      recovery,
+      [
+        staleRow('live-promote', {
+          state: 'promoting',
+          updatedAt: old,
+          metadata: { promoteCommandId: 'cmd-live' },
+        }),
+        staleRow('dead-promote', {
+          state: 'promoting',
+          updatedAt: old,
+          metadata: { promoteCommandId: 'cmd-dead' },
+        }),
+        staleRow('live-fence', {
+          state: 'fencing',
+          updatedAt: old,
+          metadata: { fenceCommandIds: ['cmd-dead', 'cmd-fence-live'] },
+        }),
+      ],
+    ],
+    [managed, []],
+    [
+      command,
+      [
+        { id: 'cmd-live', status: 'sent' },
+        { id: 'cmd-dead', status: 'timed_out' },
+        { id: 'cmd-fence-live', status: 'queued' },
+      ],
+    ],
+  ])
+  const expired = await expireStaleRecoveries(db, { now, reason: 'stale' })
+  // The stale-command sweep owns rows with a live command and settles them
+  // through the recovery hooks once the command times out; the watchdog only
+  // catches rows with nothing running.
+  assertEquals(
+    expired.map((row) => row.id),
+    ['dead-promote']
+  )
+  const byId = new Map(db.rows(recovery).map((row) => [row.id, row]))
+  assertEquals(byId.get('live-promote')?.state, 'promoting')
+  assertEquals(byId.get('live-fence')?.state, 'fencing')
+})
+
+test('expireStaleRecoveries does not overwrite a row that advanced after it was read', async () => {
+  const now = Date.parse('2026-10-01T01:00:00.000Z')
+  const db = createMemoryDb([
+    [
+      recovery,
+      [
+        staleRow('advanced', {
+          state: 'fencing',
+          startedAt: new Date(now - 3_600_000).toISOString(),
+          updatedAt: new Date(now - 1_000).toISOString(),
+          metadata: { fenceCommandIds: ['c1'] },
+        }),
+      ],
+    ],
+    [command, []],
+  ])
+  const expired = await expireStaleRecoveries(db, { now, reason: 'stale' })
+  assertEquals(expired, [])
+  assertEquals(db.rows(recovery)[0]?.state, 'fencing')
 })
 
 const uniqueViolation = Object.assign(new Error('duplicate key'), { code: '23505' })

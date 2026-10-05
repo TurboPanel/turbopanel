@@ -16,7 +16,14 @@
 
 import { and, eq, inArray, isNotNull, type SQL, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import { retention, managed, principal, storage, storageCopy } from '../../db/schema.ts'
+import {
+  environment,
+  retention,
+  managed,
+  principal,
+  storage,
+  storageCopy,
+} from '../../db/schema.ts'
 import {
   type BackupPolicyWireEntry,
   parseBackupsReconcilePayload,
@@ -147,6 +154,7 @@ async function loadCopyPolicyRows(db: Db, serverId: string): Promise<CopyPolicyR
     .innerJoin(storageCopy, eq(storageCopy.id, retention.copyId))
     .innerJoin(storage, eq(storage.id, storageCopy.storageId))
     .leftJoin(principal, eq(principal.id, storage.principalId))
+    .leftJoin(environment, eq(environment.id, storage.environmentId))
     .where(and(eq(storageCopy.serverId, serverId), eq(retention.targetKind, 'copy')))
 }
 

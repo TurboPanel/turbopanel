@@ -54,6 +54,15 @@ describe('ci-runtime-pins', () => {
     assertEquals(release.includes('deno-version: "'), false)
   })
 
+  it('setup-toolchain reads the pins from a commit SHA, never a moving ref', () => {
+    const action = Deno.readTextFileSync(
+      join(repoRoot, '.github/actions/setup-toolchain/action.yml')
+    )
+    const refs = [...action.matchAll(/^\s+ref:\s*(\S+)/gm)].map((match) => match[1])
+    assertEquals(refs.length, 1)
+    assertEquals(/^[0-9a-f]{40}$/.test(refs[0]), true, `ref ${refs[0]} is not a 40-hex SHA`)
+  })
+
   it('fails when the role file or the key is missing', async () => {
     const root = await Deno.makeTempDir()
     const missing = await pin(root, 'node')

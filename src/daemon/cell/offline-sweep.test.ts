@@ -48,6 +48,7 @@ import {
   tryBeginOfflineSweep,
 } from './offline-sweep-lease.ts'
 import type { Db } from '../../db/connection.ts'
+import { managed, recovery } from '../../db/schema.ts'
 import { COMMAND_DISPATCH_SWEEP_LIMIT } from '../../features/commands/command-records.ts'
 
 const serverId = 'srv-offline-sweep-null-grace'
@@ -548,6 +549,43 @@ it('stale-command sweep failures stay isolated after a successful dispatch delet
     traces.some((line) => line.includes('event=stale-command-sweep-failed')),
     true
   )
+})
+
+/** A db double that answers every query with no rows and records which tables it touched. */
+function recordingDb(touched: unknown[]): Db {
+  const chain: unknown = new Proxy(() => undefined, {
+    get: (_target, prop) => {
+      if (prop === 'then') return (resolve: (rows: unknown[]) => void) => resolve([])
+      return (...args: unknown[]) => {
+        if (prop === 'from' || prop === 'update') touched.push(args[0])
+        return chain
+      }
+    },
+  })
+  return new Proxy(
+    {},
+    {
+      get:
+        (_target, prop) =>
+        (...args: unknown[]) => {
+          if (prop === 'update') touched.push(args[0])
+          return chain
+        },
+    }
+  ) as unknown as Db
+}
+
+it('stale-command sweep expires in-flight recoveries before it releases managed rows', async () => {
+  const touched: unknown[] = []
+  await sweepExpiredCommandDispatchSafely(recordingDb(touched))
+
+  // A recovery still in flight owns its managed row's `applying` status, and an
+  // expired one releases it itself, so the recovery sweep has to go first.
+  const recoveryAt = touched.indexOf(recovery)
+  const managedAt = touched.indexOf(managed)
+  assertEquals(recoveryAt >= 0, true)
+  assertEquals(managedAt >= 0, true)
+  assertEquals(recoveryAt < managedAt, true)
 })
 
 type SweepLockValue = {

@@ -10,8 +10,16 @@ import {
 import type { MailerSender } from '../../../features/email/sender-types.ts'
 import {
   assertEmailAmqpTopology,
+  EMAIL_AMQP_DEAD_QUEUE,
   EMAIL_AMQP_QUEUE,
+  emailRetryQueueName,
 } from '../../../features/email/smtp/amqp-topology.ts'
+import {
+  decideRetry,
+  EMAIL_ATTEMPT_HEADER,
+  failedAttemptsFromHeaders,
+} from '../../../features/email/smtp/retry-policy.ts'
+import type { EmailJob } from '../../../features/email/types.ts'
 import { createMailerSmtpSender } from '@turbopanel/email/smtp-sender'
 import { createMailerMailgunSender } from './mailgun-sender.ts'
 import { parseEmailJob } from './parse-email-job.ts'
@@ -328,6 +336,73 @@ export async function startMailerConsumer(opts: StartMailerConsumerOpts): Promis
   }
 
   /**
+   * A send failed for a reason that may pass. Put the job in the delay queue
+   * its attempt count calls for (it returns to the tail of the send queue when
+   * the delay ends), or in the dead-letter queue once the attempts are used.
+   * Either way the original is acked, so one stubborn message never holds up
+   * the ones behind it. `nack_requeue` only when the broker refuses the
+   * republish, which keeps at-least-once.
+   */
+  function retryOrDeadLetter(
+    owner: ConsumerSession,
+    msg: NonNullable<AmqpMessage>,
+    type: EmailJob['type'],
+    reason: string
+  ): Disposition {
+    const headers = (msg.properties?.headers ?? {}) as Record<string, unknown>
+    const failed = failedAttemptsFromHeaders(headers) + 1
+    const decision = decideRetry(type, failed)
+    try {
+      if (decision.action === 'retry') {
+        owner.channel.sendToQueue(emailRetryQueueName(decision.tier), msg.content, {
+          persistent: true,
+          expiration: String(decision.delayMs),
+          headers: { ...headers, [EMAIL_ATTEMPT_HEADER]: failed },
+        })
+        logWarn(
+          'mailer',
+          `${type} failed (attempt ${failed}), retrying in ${decision.delayMs}ms: ${reason}`
+        )
+      } else {
+        deadLetter(owner, msg, headers, `${type} gave up after ${failed} attempts: ${reason}`)
+      }
+      return 'ack'
+    } catch (error) {
+      logWarn('mailer', `could not schedule a retry: ${errorMessage(error)}`)
+      return 'nack_requeue'
+    }
+  }
+
+  function deadLetterPermanent(
+    owner: ConsumerSession,
+    msg: NonNullable<AmqpMessage>,
+    type: EmailJob['type'],
+    reason: string
+  ): Disposition {
+    try {
+      const headers = (msg.properties?.headers ?? {}) as Record<string, unknown>
+      deadLetter(owner, msg, headers, `${type} refused: ${reason}`)
+      return 'ack'
+    } catch (error) {
+      logWarn('mailer', `could not dead-letter: ${errorMessage(error)}`)
+      return 'nack_dead'
+    }
+  }
+
+  function deadLetter(
+    owner: ConsumerSession,
+    msg: NonNullable<AmqpMessage>,
+    headers: Record<string, unknown>,
+    reason: string
+  ): void {
+    owner.channel.sendToQueue(EMAIL_AMQP_DEAD_QUEUE, msg.content, {
+      persistent: true,
+      headers: { ...headers, 'x-tp-dead-reason': reason.slice(0, 300) },
+    })
+    logError('mailer', `dead-lettered: ${reason}`)
+  }
+
+  /**
    * Rate limit exhausted: requeue the delivery, stop consuming for the
    * limiter's wait, then consume again on the same session. The pause is on
    * the consumer, not the process — nothing else in the instance waits.
@@ -362,6 +437,7 @@ export async function startMailerConsumer(opts: StartMailerConsumerOpts): Promis
     }
 
     let disposition: Disposition
+    let jobType: EmailJob['type'] | undefined
     try {
       let job: ReturnType<typeof parseEmailJob>
       try {
@@ -377,6 +453,7 @@ export async function startMailerConsumer(opts: StartMailerConsumerOpts): Promis
         return
       }
 
+      jobType = job.type
       const settings = await currentSettings()
       const { rate, burst } = mailerRateAndBurst(settings)
       if (rate !== appliedRate || burst !== appliedBurst) {
@@ -407,14 +484,16 @@ export async function startMailerConsumer(opts: StartMailerConsumerOpts): Promis
         disposition = 'ack'
       } else if (result.permanent) {
         logError('mailer', `permanent error: ${result.error}`)
-        disposition = 'nack_dead'
+        disposition = deadLetterPermanent(owner, msg, job.type, result.error)
       } else {
-        logWarn('mailer', `transient send error, requeueing: ${result.error}`)
-        disposition = 'nack_requeue'
+        disposition = retryOrDeadLetter(owner, msg, job.type, result.error)
       }
     } catch (error) {
       logError('mailer', `handler error: ${errorMessage(error)}`)
-      disposition = 'nack_requeue'
+      disposition =
+        jobType === undefined
+          ? 'nack_requeue'
+          : retryOrDeadLetter(owner, msg, jobType, errorMessage(error))
     }
     disposeSafely(owner, msg, disposition)
   }

@@ -23,7 +23,16 @@
  * into one seat row under the first item's id.
  */
 
-import { and, desc, eq, type ExtractTablesWithRelations, isNotNull, isNull, sql } from 'drizzle-orm'
+import {
+  and,
+  desc,
+  eq,
+  type ExtractTablesWithRelations,
+  isNotNull,
+  isNull,
+  lte,
+  sql,
+} from 'drizzle-orm'
 import type { PgTransaction } from 'drizzle-orm/pg-core'
 import type { PostgresJsQueryResultHKT } from 'drizzle-orm/postgres-js'
 import type { BillingProviderId } from './gateway.ts'
@@ -163,6 +172,15 @@ export type UpsertSubscriptionInput = Readonly<{
   currentPeriodEnd: string | null
   scheduleId: string | null
   now?: string
+  /** The value written to `updated_at` when it must differ from `now` (the ordering stamp). */
+  stampedAt?: string
+  /**
+   * Compare-and-set guard for an existing row: write only when the row's
+   * `updated_at` is not later than this instant. A projection passes the
+   * moment its Stripe read began, so a read that began earlier can never
+   * overwrite what a later read already wrote.
+   */
+  notBefore?: string
 }>
 
 /**
@@ -178,8 +196,9 @@ export type UpsertSubscriptionInput = Readonly<{
 export async function upsertSubscriptionFromProvider(
   db: BillingWriteDb,
   input: UpsertSubscriptionInput
-): Promise<{ id: string }> {
+): Promise<{ id: string; applied: boolean }> {
   const now = input.now ?? new Date().toISOString()
+  const stamp = input.stampedAt ?? now
   const pastDue = isDelinquentStatus(input.status)
   const [row] = await db
     .insert(subscription)
@@ -193,10 +212,11 @@ export async function upsertSubscriptionFromProvider(
       pastDueSince: pastDue ? now : null,
       graceExpiresAt: null,
       createdAt: now,
-      updatedAt: now,
+      updatedAt: stamp,
     })
     .onConflictDoUpdate({
       target: subscription.providerSubscriptionId,
+      setWhere: input.notBefore ? lte(subscription.updatedAt, input.notBefore) : undefined,
       set: {
         payerId: input.payerId,
         status: parseSubscriptionStatus(input.status),
@@ -207,12 +227,19 @@ export async function upsertSubscriptionFromProvider(
           ? sql`coalesce(${subscription.pastDueSince}, ${now}::timestamptz)`
           : null,
         graceExpiresAt: null,
-        updatedAt: now,
+        updatedAt: stamp,
       },
     })
     .returning({ id: subscription.id })
-  if (!row) throw new Error('upsertSubscriptionFromProvider returned no row')
-  return row
+  if (row) return { id: row.id, applied: true }
+  // The guard refused the write: a newer projection already holds the row.
+  const [existing] = await db
+    .select({ id: subscription.id })
+    .from(subscription)
+    .where(eq(subscription.providerSubscriptionId, input.providerSubscriptionId))
+    .limit(1)
+  if (!existing) throw new Error('upsertSubscriptionFromProvider returned no row')
+  return { id: existing.id, applied: false }
 }
 
 export type ProviderSubscriptionItem = Readonly<{

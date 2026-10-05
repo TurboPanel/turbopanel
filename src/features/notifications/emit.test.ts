@@ -5,6 +5,7 @@
  * transports, and a delivery failure never becomes the emitter's failure.
  * Skipped without TURBOPANEL_DATABASE_URL, the way every Postgres suite is.
  */
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assertEquals } from '@std/assert'
 import { eq } from 'drizzle-orm'
 import { createDenoDb, endDbConnection } from '../../db/connection.ts'
@@ -23,6 +24,7 @@ import {
 } from '../../db/schema.ts'
 import { emitNotification, retryDueDeliveries } from './emit.ts'
 import {
+  claimDueDeliveries,
   countUnreadForUser,
   createNotificationChannel,
   listNotificationsForUser,
@@ -57,7 +59,7 @@ async function withFixture(
   }) => Promise<void>
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn('Skipping notifications emit tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('notifications emit tests')
     return
   }
   const db = createDenoDb()
@@ -658,4 +660,104 @@ test('emitting never throws: a broken database is a logged no-op', async () => {
   assertEquals(skipped.inbox, 0)
   // The inbox row count is unaffected: nothing reached a table.
   assertEquals(typeof notification, 'object')
+})
+
+test('two sweeps running together send each due delivery once', async () => {
+  await withFixture(async ({ db, organizationId }) => {
+    const enc = await secrets()
+    const channel = await createNotificationChannel(db, enc, {
+      scope: 'organization',
+      organizationId,
+      kind: 'webhook',
+      label: 'Receiver',
+      address: 'https://receiver.example.com/hook',
+    })
+    const payload = {
+      event: 'server.offline',
+      severity: 'critical',
+      title: 'Server db-1 went offline',
+      body: null,
+      organizationId,
+      organizationName: 'Notify Org',
+      targetType: null,
+      targetId: null,
+      context: { serverName: 'db-1' },
+      at: new Date().toISOString(),
+    }
+    const due = new Date(Date.now() - 60_000).toISOString()
+    await db.insert(notificationDelivery).values(
+      Array.from({ length: 6 }, () => ({
+        channelId: channel.id,
+        organizationId,
+        event: 'server.offline',
+        severity: 'critical',
+        payload,
+        status: 'failed',
+        attempts: 1,
+        nextAttemptAt: due,
+      }))
+    )
+
+    const captured: Captured[] = []
+    // A slow receiver, so the two sweeps overlap for real.
+    const inner = fakeFetch(200, captured)
+    const slowFetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      await new Promise((resolve) => setTimeout(resolve, 30))
+      return await inner(url, init)
+    }) as typeof fetch
+    const [a, b] = await Promise.all([
+      retryDueDeliveries(db, enc, { fetchImpl: slowFetch }),
+      retryDueDeliveries(db, enc, { fetchImpl: slowFetch }),
+    ])
+    assertEquals(a.sent + b.sent, 6)
+    assertEquals(captured.length, 6)
+
+    const rows = await db
+      .select({ status: notificationDelivery.status })
+      .from(notificationDelivery)
+      .where(eq(notificationDelivery.channelId, channel.id))
+    assertEquals(
+      rows.every((r) => r.status === 'sent'),
+      true
+    )
+  })
+})
+
+test('a claimed delivery is not picked again until its lease ends', async () => {
+  await withFixture(async ({ db, organizationId }) => {
+    const enc = await secrets()
+    const channel = await createNotificationChannel(db, enc, {
+      scope: 'organization',
+      organizationId,
+      kind: 'webhook',
+      label: 'Receiver',
+      address: 'https://receiver.example.com/hook',
+    })
+    const payload = {
+      event: 'server.offline',
+      severity: 'critical',
+      title: 'Server db-1 went offline',
+      body: null,
+      organizationId,
+      organizationName: 'Notify Org',
+      targetType: null,
+      targetId: null,
+      context: { serverName: 'db-1' },
+      at: new Date().toISOString(),
+    }
+    await db.insert(notificationDelivery).values({
+      channelId: channel.id,
+      organizationId,
+      event: 'server.offline',
+      severity: 'critical',
+      payload,
+      status: 'failed',
+      attempts: 1,
+      nextAttemptAt: new Date(Date.now() - 60_000).toISOString(),
+    })
+    const first = await claimDueDeliveries(db, 10)
+    assertEquals(first.length, 1)
+    // The row is leased: a second sweep right after finds nothing due.
+    assertEquals((await claimDueDeliveries(db, 10)).length, 0)
+  })
 })

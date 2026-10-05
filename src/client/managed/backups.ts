@@ -122,6 +122,10 @@ export function buildManagedBackupDeletePayload(
     scope: record.database !== undefined ? 'database' : 'instance',
   }
   if (record.database !== undefined) payload.database = record.database
+  // A scheduled backup lives in its own policy directory on the host: without
+  // the policy id the daemon looks in the manual-backup directory, removes
+  // nothing and still reports success.
+  if (record.retentionId !== undefined) payload.policyId = record.retentionId
   return { payload }
 }
 

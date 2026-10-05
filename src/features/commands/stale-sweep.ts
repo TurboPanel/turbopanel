@@ -27,12 +27,18 @@
 
 import { and, eq, inArray, lt, notExists, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
-import { command, deployment, managed } from '../../db/schema.ts'
+import { command, deployment, managed, recovery } from '../../db/schema.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
 import { transitionCommand } from './command-records.ts'
 import { failTimedOutDeploy } from '../deploy/rollout.ts'
 import { nowIso } from './ids.ts'
 import { commandTimeoutMs } from './consumer.ts'
+import {
+  fencePhaseFromCommandMetadata,
+  onRecoveryCommandTimedOut,
+  recoveryIdFromCommandMetadata,
+} from '../managed/ha-recovery.ts'
+import { RECOVERY_STATES, TERMINAL_RECOVERY_STATES } from '../managed/recovery.ts'
 import { COMMAND_STATUSES, TERMINAL_COMMAND_STATUSES } from './types.ts'
 
 /** Extra slack past the consumer budget before a row counts as stranded. */
@@ -58,6 +64,8 @@ export type StaleCommandCandidate = {
   /** `command.context`: a deploy's environment and generation, for the rollout. */
   context?: unknown
   serverId?: string
+  /** `command.metadata`: carries `recoveryId` for a managed HA recovery step. */
+  metadata?: unknown
 }
 
 function toMs(value: string | null): number | null {
@@ -108,6 +116,37 @@ export function daemonEverHadCommand(row: StaleCommandCandidate): boolean {
 export const STALLED_UNDELIVERED_ERROR_CODE = 'stalled_undelivered'
 export const STALLED_IN_FLIGHT_ERROR_CODE = 'stalled'
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null
+}
+
+/**
+ * A command of an HA recovery step timed out: its consumer died with its
+ * process, so nothing else will ever call the recovery hooks. Settle the
+ * journal row here (fence failed -> blocked, promote lost -> failed for the
+ * operator) instead of leaving it to strand the cluster's in-flight slot.
+ */
+export async function settleRecoveryOfTimedOutCommand(
+  db: Db,
+  row: StaleCommandCandidate
+): Promise<void> {
+  const metadata = asRecord(row.metadata)
+  const recoveryId = recoveryIdFromCommandMetadata(metadata)
+  if (!recoveryId) return
+  await onRecoveryCommandTimedOut(db, {
+    recoveryId,
+    commandId: row.id,
+    type: row.name,
+    fencePhase: fencePhaseFromCommandMetadata(metadata),
+  })
+}
+
+const IN_FLIGHT_RECOVERY_STATES = RECOVERY_STATES.filter(
+  (state) => !TERMINAL_RECOVERY_STATES.has(state)
+)
+
 /**
  * Transition stranded non-terminal commands to `timed_out`. Returns the
  * number of rows transitioned.
@@ -135,6 +174,7 @@ export async function sweepStaleCommands(
       startedAt: command.startedAt,
       context: command.context,
       serverId: command.serverId,
+      metadata: command.metadata,
     })
     .from(command)
     .where(
@@ -169,6 +209,7 @@ export async function sweepStaleCommands(
         : 'command stalled: the daemon never acknowledged it, so nothing ran on the host. Safe to run again.',
     })
     if (record) swept += 1
+    if (record) await settleRecoveryOfTimedOutCommand(db, row)
     if (record && row.name === 'environment.deploy' && row.serverId !== undefined) {
       // A rolling deploy waits on this server: flag it and stop the rollout.
       await failTimedOutDeploy(db, {
@@ -201,6 +242,19 @@ export async function releaseStuckManagedApplying(
       and(
         eq(managed.status, 'applying'),
         lt(managed.updatedAt, cutoff),
+        // A failover still in flight owns the `applying` status: the recovery
+        // sweep expires or finishes it, never this one.
+        notExists(
+          db
+            .select({ one: sql`1` })
+            .from(recovery)
+            .where(
+              and(
+                eq(recovery.managedId, managed.id),
+                inArray(recovery.state, IN_FLIGHT_RECOVERY_STATES)
+              )
+            )
+        ),
         notExists(
           db
             .select({ one: sql`1` })

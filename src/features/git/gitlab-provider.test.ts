@@ -281,7 +281,10 @@ function gitlabDb(opts: {
       limit: () => Promise.resolve(opts.app ? [{ app: opts.app }] : []),
     }),
   })
-  return {
+  const db = {
+    transaction: <T>(fn: (tx: unknown) => Promise<T>) => fn(db),
+    execute: () => Promise.resolve([]),
+    update: () => ({ set: () => ({ where: () => Promise.resolve() }) }),
     select: () => ({
       from: (table: unknown) => ({
         innerJoin: joined,
@@ -295,7 +298,8 @@ function gitlabDb(opts: {
         }),
       }),
     }),
-  } as unknown as Db
+  }
+  return db as unknown as Db
 }
 
 async function mintedCtx(): Promise<GitProviderContext> {
@@ -340,7 +344,11 @@ async function mintedCtx(): Promise<GitProviderContext> {
   }
 }
 
-const oauthRow = { ...sourceRow, connectionId: 'inst-1' }
+const oauthRow = {
+  ...sourceRow,
+  connectionId: 'inst-1',
+  repositoryUrl: 'https://gitlab.example.com/group/app.git',
+}
 
 test('gitlab listRepositories mints a token and lists projects', async () => {
   const ctx = await mintedCtx()
@@ -578,7 +586,7 @@ test('gitlab read auth maps a missing app and a bad clone url', async () => {
   const ctx = await mintedCtx()
   assertEquals(
     await gitlabProvider.listRepositoryEntries(ctx, {
-      row: { ...oauthRow, repositoryUrl: 'not-a-url' },
+      row: { ...oauthRow, repositoryUrl: 'https://gitlab.example.com/' },
       ref: 'main',
       path: '',
     }),
@@ -602,7 +610,7 @@ test('gitlab prepareClone maps a missing app, a bad clone url, and oauth errors'
   const ctx = await mintedCtx()
   assertEquals(
     await gitlabProvider.prepareClone(ctx, {
-      row: { ...oauthRow, repositoryUrl: 'not-a-url' },
+      row: { ...oauthRow, repositoryUrl: 'https://gitlab.example.com/' },
       ref: 'main',
       needsCredential: true,
     }),
@@ -745,4 +753,33 @@ test('gitlab readRepositoryFiles stops at the first failing file and never fetch
   )
   assertEquals(fetched.length, 1)
   assertEquals(fetched[0]!.includes('first.md'), true)
+})
+
+test('gitlab prepareClone mints nothing for a url on another host', async () => {
+  const ctx = await mintedCtx()
+  let requests = 0
+  await withFetch(
+    () => {
+      requests += 1
+      return new Response('{}', { status: 200 })
+    },
+    async () => {
+      for (const repositoryUrl of [
+        'https://attacker.example/group/app.git',
+        'https://gitlab.example.com.attacker.example/group/app.git',
+        'https://gitlab.example.com@attacker.example/group/app.git',
+        'http://gitlab.example.com/group/app.git',
+      ]) {
+        assertEquals(
+          await gitlabProvider.prepareClone(ctx, {
+            row: { ...oauthRow, repositoryUrl },
+            ref: 'main',
+            needsCredential: true,
+          }),
+          { failure: 'repository url is not hosted by the connected forge' }
+        )
+      }
+    }
+  )
+  assertEquals(requests, 0)
 })

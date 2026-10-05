@@ -58,14 +58,6 @@ const SKIP_DIRS = new Set([
  */
 const SERVICE_DEPENDENT = new Map([
   [
-    'src/daemon/redis-cell.test.ts',
-    'Needs a live Redis. Run locally with `deno test -A src/daemon/redis-cell.test.ts` against a dev Redis.',
-  ],
-  [
-    'src/daemon/ws-handlers.test.ts',
-    'Needs a live Redis (cell registry fan-out). Run locally against a dev Redis.',
-  ],
-  [
     'scripts/billing-test-clock-harness.test.ts',
     'Needs a live Stripe sandbox with a test-mode key, test clocks, and a catalogue entered ' +
       'under Admin \u2192 Tiers (one active priced S3 and S5, both verifying). Run manually: ' +
@@ -74,6 +66,13 @@ const SERVICE_DEPENDENT = new Map([
       '(or `deno task billing:test-clocks`).',
   ],
 ])
+
+/**
+ * Suites run by the `deno-redis` job in .github/workflows/build.yml instead
+ * of a coverage shard (they need a Redis unix socket). The check below fails
+ * if the job stops naming one.
+ */
+const REDIS_JOB_SUITES = ['src/daemon/redis-cell.test.ts', 'src/daemon/ws-handlers.test.ts']
 
 /** Recursively collect `*.test.ts` under `dir`, as repo-relative paths. */
 function collectTests(dir, out = []) {
@@ -190,8 +189,8 @@ const configSource = fs.readFileSync(path.join(ROOT, 'vitest.config.ts'), 'utf8'
 const deno = parseDenoList(shellSource)
 const vitest = parseVitestInclude(configSource)
 const globMode = [...vitest].some((entry) => isGlobPattern(entry))
-const discovered = TEST_ROOTS.flatMap((root) => collectTests(root)).sort(
-  (a, b) => a.localeCompare(b),
+const discovered = TEST_ROOTS.flatMap((root) => collectTests(root)).sort((a, b) =>
+  a.localeCompare(b)
 )
 
 const problems = []
@@ -218,13 +217,20 @@ for (const file of vitest) {
 for (const file of SERVICE_DEPENDENT.keys()) {
   if (!fs.existsSync(path.join(ROOT, file))) {
     problems.push(
-      `stale entry in SERVICE_DEPENDENT (scripts/check-test-inventory.mjs): ${file} (no such file)`,
+      `stale entry in SERVICE_DEPENDENT (scripts/check-test-inventory.mjs): ${file} (no such file)`
     )
   }
 }
 
+const buildWorkflow = fs.readFileSync(path.join(ROOT, '.github/workflows/build.yml'), 'utf8')
+for (const file of REDIS_JOB_SUITES) {
+  if (!buildWorkflow.includes(`deno test -A --no-check`) || !buildWorkflow.includes(file)) {
+    problems.push(`${file} is not run by the deno-redis job in .github/workflows/build.yml`)
+  }
+}
+
 const claimedByDeno = (file) => {
-  if (SERVICE_DEPENDENT.has(file)) return false
+  if (SERVICE_DEPENDENT.has(file) || REDIS_JOB_SUITES.includes(file)) return false
   if (globMode && isWorkersSuite(file)) return false
   if (deno.files.has(file)) return true
   return [...deno.dirs].some((dir) => file.startsWith(dir))
@@ -241,6 +247,7 @@ for (const file of discovered) {
   if (claimedByDeno(file)) buckets.push('scripts/test-coverage.sh (Deno)')
   if (claimedByVitest(file)) buckets.push('vitest.config.ts test.include (Workers)')
   if (SERVICE_DEPENDENT.has(file)) buckets.push('SERVICE_DEPENDENT')
+  if (REDIS_JOB_SUITES.includes(file)) buckets.push('build.yml deno-redis job')
 
   if (buckets.length === 0) {
     problems.push(
@@ -250,11 +257,11 @@ for (const file of discovered) {
         '    Name Workers/Durable-Object suites `*.workers.test.ts` (or\n' +
         '    `*.workers-e2e.test.ts` / `*.entry.test.ts`). If it needs a service\n' +
         '    CI does not start, add it to SERVICE_DEPENDENT in\n' +
-        '    scripts/check-test-inventory.mjs with the reason.',
+        '    scripts/check-test-inventory.mjs with the reason.'
     )
   } else if (buckets.length > 1) {
     problems.push(
-      `suite claimed by ${buckets.length} buckets: ${file}\n    ${buckets.join('\n    ')}`,
+      `suite claimed by ${buckets.length} buckets: ${file}\n    ${buckets.join('\n    ')}`
     )
   }
 }
@@ -263,7 +270,7 @@ if (problems.length > 0) {
   console.error('Test inventory check failed:\n')
   for (const problem of problems) console.error(`  - ${problem}\n`)
   console.error(
-    `${problems.length} problem(s). Every *.test.ts must be claimed by exactly one runner.`,
+    `${problems.length} problem(s). Every *.test.ts must be claimed by exactly one runner.`
   )
   process.exit(1)
 }
@@ -276,5 +283,5 @@ const denoCount = discovered.length - workersCount - serviceCount
 
 console.log(
   `Test inventory OK: ${discovered.length} suites ` +
-    `(${denoCount} Deno, ${workersCount} Workers, ${serviceCount} service-dependent).`,
+    `(${denoCount} Deno, ${workersCount} Workers, ${serviceCount} service-dependent).`
 )

@@ -90,10 +90,11 @@
       "simple": { "limit": 5, "period": 60 }
     },
     {
-      // Host-metrics ingest (~1 sample/min/server) with small reconnect burst.
+      // Host-metrics ingest: 1 baseline/min/server, plus a 10 s live stream while a
+      // live lease is open (about 9 POSTs/min with the reconnect primer).
       "name": "DAEMON_METRICS_RATE_LIMITER",
       "namespace_id": "1004",
-      "simple": { "limit": 3, "period": 60 }
+      "simple": { "limit": 12, "period": 60 }
     },
     {
       // Inbound GitHub webhooks. Keyed per peer address (the caller has no
@@ -229,7 +230,7 @@
         {
           "name": "DAEMON_METRICS_RATE_LIMITER",
           "namespace_id": "2004",
-          "simple": { "limit": 3, "period": 60 }
+          "simple": { "limit": 12, "period": 60 }
         },
         {
           "name": "GITHUB_WEBHOOK_RATE_LIMITER",
@@ -390,7 +391,7 @@
         {
           "name": "DAEMON_METRICS_RATE_LIMITER",
           "namespace_id": "4004",
-          "simple": { "limit": 3, "period": 60 }
+          "simple": { "limit": 12, "period": 60 }
         },
         {
           "name": "GITHUB_WEBHOOK_RATE_LIMITER",
@@ -523,7 +524,7 @@
         {
           "name": "DAEMON_METRICS_RATE_LIMITER",
           "namespace_id": "3004",
-          "simple": { "limit": 3, "period": 60 }
+          "simple": { "limit": 12, "period": 60 }
         },
         {
           "name": "GITHUB_WEBHOOK_RATE_LIMITER",
