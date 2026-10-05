@@ -309,3 +309,24 @@ test('a server off the fabric has no tunnel row', () => {
   assertEquals(buildServerTrafficMap(input({ relays: [RELAYS[0]] })).peers[0].fabric, null)
   assertEquals(buildServerTrafficMap(input()).peers[0].fabric, null)
 })
+
+test('an up network the two servers cannot both use is labelled no_common_address, not standby', () => {
+  const base = input()
+  base.caches.policiesByDatacenter.set(LAN, policy(5))
+  base.caches.membershipsByServer.set('a', [
+    { ...pin('a', LAN, '2001:db8::1'), family: 6 },
+    pin('a', BACKHAUL, '10.9.0.10'),
+  ])
+  const peer = buildServerTrafficMap(base).peers[0]
+  assertEquals(
+    peer.sharedNetworks.map((row) => [row.datacenterId, row.state]),
+    [
+      [LAN, 'no_common_address'],
+      [BACKHAUL, 'chosen'],
+    ]
+  )
+  assertEquals(
+    buildServerTrafficMap(input()).peers[0].sharedNetworks.map((row) => row.state),
+    ['chosen', 'standby']
+  )
+})

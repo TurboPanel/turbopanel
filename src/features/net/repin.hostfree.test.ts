@@ -296,3 +296,20 @@ test('linkDown marker: parsed, keeps the first since, cleared without touching o
     undefined
   )
 })
+
+test('decideLinkActions: an IPv6 address written differently on each side still matches the pin', () => {
+  assertEquals(
+    decideLinkActions(
+      [{ ipId: 'a', address: 'fd00:20:0:0:0:0:0:10', linkDown: true }],
+      [{ address: 'FD00:20::10', version: 6, scope: 'private', link: 'up' }]
+    ),
+    [{ kind: 'link_up', ipId: 'a' }]
+  )
+  assertEquals(
+    decideLinkActions(
+      [{ ipId: 'a', address: 'fd00:20::10/64', linkDown: false }],
+      [{ address: 'fd00:20:0::10', version: 6, scope: 'private', link: 'down' }]
+    ),
+    [{ kind: 'link_down', ipId: 'a' }]
+  )
+})

@@ -7,6 +7,8 @@
  * itself imports the loader).
  */
 
+import { normalizeIpAddress, stripInetPrefixSuffix } from '../../lib/ip-address.ts'
+
 export type IpPinLinkDownMetadata = {
   /** ISO timestamp the daemon first reported the pin's NIC link as down. */
   since: string
@@ -29,4 +31,20 @@ export function parseLinkDownMarker(value: unknown): IpPinLinkDownMetadata | und
 /** Whether an `ip.metadata` value flags the pin's NIC link as down. */
 export function pinLinkIsDown(metadata: unknown): boolean {
   return isRecord(metadata) && parseLinkDownMarker(metadata.linkDown) !== undefined
+}
+
+/**
+ * Canonical key for matching a pin to a reported address: IPv6 written in
+ * another case or compression, with a prefix or zone, must still match, or a
+ * down marker could be left stuck with its network stuck as a last resort.
+ */
+export function addressMatchKey(address: string): string {
+  const normalized = normalizeIpAddress(address) ?? stripInetPrefixSuffix(address.trim())
+  if (!normalized.includes(':')) return normalized
+  try {
+    // The URL parser compresses and lower-cases IPv6 literals.
+    return new URL(`http://[${normalized}]`).hostname
+  } catch {
+    return normalized
+  }
 }

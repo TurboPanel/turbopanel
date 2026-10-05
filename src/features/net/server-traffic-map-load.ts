@@ -8,7 +8,10 @@ import type { Db } from '../../db/connection.ts'
 import { datacenter, server } from '../../db/schema.ts'
 import { reportedIpsFromServerMetadata } from '../../contracts/server-addresses.ts'
 import { getOrganizationFabric, listFabricRelays } from '../fabric/fabric-records.ts'
-import { sharedDatacenterIds } from './datacenter-membership.ts'
+import {
+  loadDatacenterMembershipsForServers,
+  sharedDatacenterIds,
+} from './datacenter-membership.ts'
 import { loadPrivateEndpointCaches } from './private-endpoint.ts'
 import {
   buildServerTrafficMap,
@@ -92,11 +95,52 @@ async function loadNicMetrics(
   return out
 }
 
+export type ServerTrafficMapResult = ServerTrafficMap & {
+  /** More peers share a network with this server than the cap shows. */
+  truncated: boolean
+}
+
+/**
+ * The candidates that share a datacenter or the fabric with this server,
+ * ordered by name then id so the cut is the same on every call.
+ */
+async function selectPeers(
+  db: Db,
+  params: Readonly<{
+    serverId: string
+    candidates: readonly ServerTrafficMapCandidate[]
+  }>,
+  fabricRelays: readonly TrafficMapRelay[]
+): Promise<ServerTrafficMapCandidate[]> {
+  const others = params.candidates.filter((candidate) => candidate.serverId !== params.serverId)
+  const pinsByServer = await loadDatacenterMembershipsForServers(db, [
+    params.serverId,
+    ...others.map((candidate) => candidate.serverId),
+  ])
+  const selfPins = pinsByServer.get(params.serverId) ?? []
+  const fabricServerIds = new Set(fabricRelays.map((row) => row.serverId))
+  return others
+    .filter((candidate) => {
+      const sharesDatacenter =
+        sharedDatacenterIds(selfPins, pinsByServer.get(candidate.serverId) ?? []).length > 0
+      const sharesFabric =
+        fabricServerIds.has(params.serverId) && fabricServerIds.has(candidate.serverId)
+      return sharesDatacenter || sharesFabric
+    })
+    .sort(
+      (a, b) =>
+        (a.name ?? a.serverId).localeCompare(b.name ?? b.serverId) ||
+        a.serverId.localeCompare(b.serverId)
+    )
+}
+
 /**
  * Traffic map of `serverId` toward the `candidates` it may talk to (the
  * caller has already filtered them to the servers the viewer may see). A
  * candidate that shares neither a datacenter nor the fabric with this server
- * is left out: there is no private path to describe.
+ * is left out: there is no private path to describe. At most
+ * {@link SERVER_TRAFFIC_MAP_MAX_PEERS} peers are returned, cut after that
+ * filter in name order, and `truncated` says when it happened.
  */
 export async function loadServerTrafficMap(
   db: Db,
@@ -105,27 +149,14 @@ export async function loadServerTrafficMap(
     organizationId: string
     candidates: readonly ServerTrafficMapCandidate[]
   }>
-): Promise<ServerTrafficMap> {
-  const candidates = params.candidates
-    .filter((candidate) => candidate.serverId !== params.serverId)
-    .slice(0, SERVER_TRAFFIC_MAP_MAX_PEERS)
-  const serverIds = [params.serverId, ...candidates.map((candidate) => candidate.serverId)]
-
-  const [caches, fabricRelays] = await Promise.all([
-    loadPrivateEndpointCaches(db, serverIds),
-    loadFabricRelays(db, params.organizationId),
+): Promise<ServerTrafficMapResult> {
+  const fabricRelays = await loadFabricRelays(db, params.organizationId)
+  const sharing = await selectPeers(db, params, fabricRelays)
+  const peers = sharing.slice(0, SERVER_TRAFFIC_MAP_MAX_PEERS)
+  const caches = await loadPrivateEndpointCaches(db, [
+    params.serverId,
+    ...peers.map((peer) => peer.serverId),
   ])
-
-  const selfPins = caches.membershipsByServer.get(params.serverId) ?? []
-  const fabricServerIds = new Set(fabricRelays.map((row) => row.serverId))
-  const peers = candidates.filter((candidate) => {
-    const sharesDatacenter =
-      sharedDatacenterIds(selfPins, caches.membershipsByServer.get(candidate.serverId) ?? [])
-        .length > 0
-    const sharesFabric =
-      fabricServerIds.has(params.serverId) && fabricServerIds.has(candidate.serverId)
-    return sharesDatacenter || sharesFabric
-  })
 
   const datacenterIds = new Set<string>()
   for (const pins of caches.membershipsByServer.values()) {
@@ -140,7 +171,7 @@ export async function loadServerTrafficMap(
     [...rows.entries()].map(([id, row]) => [id, reportedIpsFromServerMetadata(row.metadata) ?? []])
   )
 
-  return buildServerTrafficMap({
+  const map = buildServerTrafficMap({
     serverId: params.serverId,
     peers,
     caches,
@@ -149,4 +180,5 @@ export async function loadServerTrafficMap(
     fabricRelays,
     nicMetrics,
   })
+  return { ...map, truncated: sharing.length > peers.length }
 }

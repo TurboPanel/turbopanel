@@ -315,9 +315,12 @@ export type TrustedByLink = {
 
 /**
  * Split the partition's trusted datacenters by link state. A datacenter is
- * down for the pair when the pin of either server in it is flagged
- * `linkDown` (the daemon reported that NIC without a link). A pin that never
- * reported a link state counts as up, so older daemons behave as before.
+ * down for the pair when any pin of either server in it is flagged
+ * `linkDown` (the daemon reported that NIC without a link), whatever the
+ * pin's address family: a server whose IPv6 address sits on a down NIC and
+ * whose IPv4 address sits on an up NIC in the same datacenter moves the whole
+ * network to last resort. (Dual-stack on one NIC is unaffected.) A pin that
+ * never reported a link state counts as up, so older daemons behave as before.
  * Both lists keep the `(priority asc, id asc)` order of `trusted`.
  */
 export function splitTrustedByLink(
@@ -465,7 +468,16 @@ export function resolveOneFromCaches(params: {
   }
 
   const datacenter = resolveAmong(byLink.available)
-  if (datacenter) return datacenter
+  if (datacenter) {
+    // The networks that are up cannot be used by this pair (no address family
+    // both servers share) but a lower-priority network that is down can: keep
+    // the path that worked before link state existed rather than an error.
+    if ('kind' in datacenter) {
+      const fallback = lastResort()
+      if (fallback && !('kind' in fallback)) return fallback
+    }
+    return datacenter
+  }
 
   if (params.purpose === 'failover-replication') {
     const fallback = lastResort()

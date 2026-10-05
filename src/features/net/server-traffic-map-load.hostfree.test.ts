@@ -127,3 +127,40 @@ test('loadServerTrafficMap lists peers that share a network, with the flagged ba
     ]
   )
 })
+
+test('loadServerTrafficMap filters to peers that share a network before it caps, in name order', async () => {
+  const SERVERS = 170
+  const pins: Row[] = [pinRow(A, LAN, '192.168.1.10')]
+  const candidates = [{ serverId: A, name: 'adrastea' }]
+  for (let n = 0; n < SERVERS; n++) {
+    const id = `00000000-0000-4000-8000-${String(1000 + n).padStart(12, '0')}`
+    // Every third server shares nothing with A and must not use up a slot.
+    const shares = n % 3 !== 0
+    pins.push(pinRow(id, shares ? LAN : BACKHAUL, `192.168.${n % 200}.${(n % 250) + 2}`))
+    candidates.push({ serverId: id, name: `host-${String(SERVERS - n).padStart(3, '0')}` })
+  }
+  const db = {
+    select(fields: Record<string, unknown> = {}) {
+      return {
+        from(table: Parameters<typeof getTableName>[0]) {
+          const name = getTableName(table)
+          if (name === 'ip' && 'ipId' in fields) return thenable(pins)
+          return thenable([])
+        },
+      }
+    },
+  } as unknown as Db
+  const map = await loadServerTrafficMap(db, { serverId: A, organizationId: 'org-1', candidates })
+  const sharing = candidates.filter((_, index) => index > 0 && (index - 1) % 3 !== 0)
+  assertEquals(sharing.length > 100, true)
+  assertEquals(map.peers.length, 100)
+  assertEquals(map.truncated, true)
+  const expected = sharing
+    .map((candidate) => candidate.name)
+    .sort((a, b) => a.localeCompare(b))
+    .slice(0, 100)
+  assertEquals(
+    map.peers.map((peer) => peer.name),
+    expected
+  )
+})

@@ -16,8 +16,7 @@ export type DatacenterCidrRequiredError = {
 }
 
 export type ServerDatacenterReadyError =
-  | { kind: 'datacenter_required'; serverId: string }
-  | DatacenterCidrRequiredError
+  { kind: 'datacenter_required'; serverId: string } | DatacenterCidrRequiredError
 
 export type DatacenterSubnetRow = {
   networkId: string
@@ -35,7 +34,7 @@ export type DatacenterAddressPreference = 'ipv6' | 'ipv4'
  */
 export async function loadDatacenterSubnets(
   db: Db,
-  datacenterIds: string[],
+  datacenterIds: string[]
 ): Promise<Map<string, DatacenterSubnetRow[]>> {
   const byDc = new Map<string, DatacenterSubnetRow[]>()
   if (datacenterIds.length === 0) return byDc
@@ -52,8 +51,8 @@ export async function loadDatacenterSubnets(
       and(
         eq(network.kind, 'datacenter'),
         isNotNull(network.cidr),
-        inArray(network.datacenterId, datacenterIds),
-      ),
+        inArray(network.datacenterId, datacenterIds)
+      )
     )
 
   for (const row of rows) {
@@ -79,19 +78,20 @@ export async function loadDatacenterSubnets(
  */
 export async function loadDatacenterCidrs(
   db: Db,
-  datacenterIds: string[],
+  datacenterIds: string[]
 ): Promise<Map<string, string[]>> {
   const byDc = new Map<string, string[]>()
   const subnetsByDc = await loadDatacenterSubnets(db, datacenterIds)
   for (const [datacenterId, subnets] of subnetsByDc) {
-    byDc.set(datacenterId, subnets.map((row) => row.cidr))
+    byDc.set(
+      datacenterId,
+      subnets.map((row) => row.cidr)
+    )
   }
   return byDc
 }
 
-function uniqueDatacenterIds(
-  pins: ReadonlyArray<{ datacenterId: string }>,
-): string[] {
+function uniqueDatacenterIds(pins: ReadonlyArray<{ datacenterId: string }>): string[] {
   const ids: string[] = []
   const seen = new Set<string>()
   for (const pin of pins) {
@@ -110,15 +110,13 @@ function uniqueDatacenterIds(
  */
 export async function loadDatacenterSubnetsForServers(
   db: Db,
-  serverIds: string[],
+  serverIds: string[]
 ): Promise<Map<string, DatacenterSubnetRow[]>> {
   const byServer = new Map<string, DatacenterSubnetRow[]>()
   if (serverIds.length === 0) return byServer
 
   const memberships = await loadDatacenterMembershipsForServers(db, serverIds)
-  const datacenterIds = uniqueDatacenterIds(
-    [...memberships.values()].flat(),
-  )
+  const datacenterIds = uniqueDatacenterIds([...memberships.values()].flat())
   const subnetsByDc = await loadDatacenterSubnets(db, datacenterIds)
 
   for (const [serverId, pins] of memberships) {
@@ -144,9 +142,7 @@ export type DerivedAdvertisedRelay = {
   advertisedCidrs: readonly string[]
 }
 
-function ipv4CidrsFromSubnets(
-  subnets: readonly DatacenterSubnetRow[],
-): string[] {
+function ipv4CidrsFromSubnets(subnets: readonly DatacenterSubnetRow[]): string[] {
   const cidrs: string[] = []
   const seen = new Set<string>()
   for (const subnet of subnets) {
@@ -182,7 +178,7 @@ function ipv4CidrsFromSubnets(
  */
 export function resolveDerivedAdvertisedCidrsByRelay(
   relays: ReadonlyArray<DerivedAdvertisedRelay>,
-  subnetsByServer: ReadonlyMap<string, readonly DatacenterSubnetRow[]>,
+  subnetsByServer: ReadonlyMap<string, readonly DatacenterSubnetRow[]>
 ): Map<string, string[]> {
   const resolved = new Map<string, string[]>()
   const deriving: Array<{ id: string; cidrs: string[] }> = []
@@ -215,7 +211,7 @@ export function resolveDerivedAdvertisedCidrsByRelay(
   for (const gateway of deriving) {
     resolved.set(
       gateway.id,
-      gateway.cidrs.filter((cidr) => ownerByCidr.get(cidr) === gateway.id),
+      gateway.cidrs.filter((cidr) => ownerByCidr.get(cidr) === gateway.id)
     )
   }
   return resolved
@@ -249,7 +245,7 @@ export function defaultDatacenterPolicyRow(): DatacenterPolicyRow {
  */
 export async function loadDatacenterPolicies(
   db: Db,
-  datacenterIds: string[],
+  datacenterIds: string[]
 ): Promise<Map<string, DatacenterPolicyRow>> {
   const byDc = new Map<string, DatacenterPolicyRow>()
   if (datacenterIds.length === 0) return byDc
@@ -268,8 +264,7 @@ export async function loadDatacenterPolicies(
   for (const row of rows) {
     const policy = resolveDatacenterPolicy(row.options)
     byDc.set(row.id, {
-      addressPreference: parseDatacenterOptions(row.options).addressPreference ??
-        'ipv6',
+      addressPreference: parseDatacenterOptions(row.options).addressPreference ?? 'ipv6',
       priority: policy.priority,
       trusted: policy.trusted,
     })
@@ -284,7 +279,7 @@ export async function loadDatacenterPolicies(
  */
 export async function loadDatacenterAddressPreferences(
   db: Db,
-  datacenterIds: string[],
+  datacenterIds: string[]
 ): Promise<Map<string, DatacenterAddressPreference>> {
   const byDc = new Map<string, DatacenterAddressPreference>()
   const policies = await loadDatacenterPolicies(db, datacenterIds)
@@ -297,7 +292,7 @@ export async function loadDatacenterAddressPreferences(
 /** Prerequisite for private/replica placement: the site has at least one subnet. */
 export async function assertDatacenterHasCidr(
   db: Db,
-  datacenterId: string,
+  datacenterId: string
 ): Promise<null | DatacenterCidrRequiredError> {
   const cidrsByDc = await loadDatacenterCidrs(db, [datacenterId])
   const cidrs = cidrsByDc.get(datacenterId) ?? []
@@ -313,7 +308,7 @@ export async function assertDatacenterHasCidr(
  */
 export async function assertServerDatacenterReady(
   db: Db,
-  serverId: string,
+  serverId: string
 ): Promise<null | ServerDatacenterReadyError> {
   const memberships = await loadDatacenterMembershipsForServers(db, [serverId])
   const pins = memberships.get(serverId) ?? []
@@ -328,10 +323,12 @@ export async function assertServerDatacenterReady(
     if (!error) return null
     firstCidrError ??= error
   }
-  return firstCidrError ?? {
-    kind: 'datacenter_cidr_required',
-    datacenterId: firstPin.datacenterId,
-  }
+  return (
+    firstCidrError ?? {
+      kind: 'datacenter_cidr_required',
+      datacenterId: firstPin.datacenterId,
+    }
+  )
 }
 
 export type GatewayRelayReadyError =
@@ -345,7 +342,7 @@ export type GatewayRelayReadyError =
  */
 export async function assertGatewayRelaysReady(
   db: Db,
-  rows: ReadonlyArray<{ serverId: string; role: string }>,
+  rows: ReadonlyArray<{ serverId: string; role: string }>
 ): Promise<GatewayRelayReadyError | null> {
   for (const row of rows) {
     if (row.role !== 'gateway') continue
@@ -369,17 +366,13 @@ export async function assertGatewayRelaysReady(
 export async function serverIsMemberOfDatacenter(
   db: Db,
   serverId: string,
-  datacenterId: string,
+  datacenterId: string
 ): Promise<boolean> {
   const [row] = await db
     .select({ id: ip.id })
     .from(ip)
     .where(
-      and(
-        eq(ip.scope, 'datacenter'),
-        eq(ip.serverId, serverId),
-        eq(ip.datacenterId, datacenterId),
-      ),
+      and(eq(ip.scope, 'datacenter'), eq(ip.serverId, serverId), eq(ip.datacenterId, datacenterId))
     )
     .limit(1)
   return Boolean(row)

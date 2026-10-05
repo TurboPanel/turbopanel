@@ -189,3 +189,62 @@ test('a dead LAN is still the only candidate when nothing else reaches the peer'
     { kind: 'direct_lan', address: '10.9.0.11', datacenterId: BACKHAUL },
   ])
 })
+
+test('up networks with no shared address family hand over to a compatible network that is down, not to an error', () => {
+  // Backhaul (priority 10, up) is IPv6 on a and IPv4 on b: no common family.
+  // The office LAN (priority 100) is compatible but a's link there is down.
+  const caches = twoNicCaches({ aLan: true })
+  caches.membershipsByServer.set('a', [
+    pin('a', LAN, '192.168.1.10', true),
+    { ...pin('a', BACKHAUL, 'fd00:9::10'), family: 6 },
+  ])
+  for (const purpose of ['failover-replication', 'read-replication', 'client-backend'] as const) {
+    assertEquals(resolve(caches, purpose), {
+      address: '192.168.1.11',
+      transport: 'datacenter',
+      datacenterId: LAN,
+      linkDown: true,
+    })
+  }
+})
+
+test('up networks with no shared family and nothing else compatible still report the family mismatch', () => {
+  const caches = twoNicCaches()
+  caches.membershipsByServer.set('a', [
+    { ...pin('a', LAN, 'fd00:1::10'), family: 6 },
+    { ...pin('a', BACKHAUL, 'fd00:9::10'), family: 6 },
+  ])
+  for (const purpose of ['failover-replication', 'read-replication', 'client-backend'] as const) {
+    const resolved = resolve(caches, purpose)
+    assertEquals('kind' in resolved && resolved.kind, 'private_family_mismatch')
+  }
+})
+
+test('a network counts as down when any pin of either server in it is flagged, whatever the family', () => {
+  const fromPins = [
+    pin('a', LAN, '192.168.1.10'),
+    { ...pin('a', LAN, 'fd00:1::10', true), family: 6 as const },
+  ]
+  const toPins = [pin('b', LAN, '192.168.1.11')]
+  assertEquals(splitTrustedByLink([LAN], fromPins, toPins), { available: [], down: [LAN] })
+})
+
+test('TurboFabric with two LANs, one up and one down: LAN-up, public, NAT, then LAN-down', () => {
+  const caches = fabricCaches(false)
+  caches.datacenterMembershipsByServer.set('a', [
+    pin('a', BACKHAUL, '10.9.0.10', true),
+    pin('a', LAN, '192.168.1.10'),
+  ])
+  caches.datacenterMembershipsByServer.set('b', [
+    pin('b', BACKHAUL, '10.9.0.11'),
+    pin('b', LAN, '192.168.1.11'),
+  ])
+  caches.policyByDatacenter.set(LAN, policy(100))
+  caches.natEndpointByPair.set('a>b', '198.51.100.7:51820')
+  assertEquals(directCandidates('a', { serverId: 'b', endpointAddress: null }, caches), [
+    { kind: 'direct_lan', address: '192.168.1.11', datacenterId: LAN },
+    { kind: 'direct_public', address: '203.0.113.11' },
+    { kind: 'direct_nat', address: '198.51.100.7:51820' },
+    { kind: 'direct_lan', address: '10.9.0.11', datacenterId: BACKHAUL },
+  ])
+})

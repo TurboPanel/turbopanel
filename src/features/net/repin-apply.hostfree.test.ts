@@ -330,3 +330,50 @@ test('applyReportedAddressRepin: a pin without a subnet still gets its link stat
   )
   assertEquals(applied, [{ kind: 'link_down', ipId: 'ip-1' }])
 })
+
+test('applyReportedAddressRepin: a repin onto an up address drops the old down marker in one write', async () => {
+  const writes: Write[] = []
+  const db = createFakeDb({
+    pins: [pin({ metadata: { linkDown: { since: '2026-10-01T00:00:00.000Z' } } })],
+    writes,
+  })
+  const applied = await applyReportedAddressRepin(db, SERVER, reportedWithLink('10.20.0.42', 'up'))
+  assertEquals(applied, [{ kind: 'repin', ipId: 'ip-1', from: '10.20.0.10', to: '10.20.0.42' }])
+  assertEquals(writes.length, 1)
+  assertEquals(parseIpPinMetadata(writes[0]?.patch.metadata).linkDown, undefined)
+})
+
+test('applyReportedAddressRepin: down, up, down in a row restarts since after the clear', async () => {
+  const writes: Write[] = []
+  let stored: unknown = null
+  const run = async (link: 'up' | 'down') => {
+    const db = createFakeDb({ pins: [pin({ metadata: stored })], writes })
+    await applyReportedAddressRepin(db, SERVER, reportedWithLink('10.20.0.10', link))
+    stored = writes.at(-1)?.patch.metadata
+  }
+  await run('down')
+  const first = parseIpPinMetadata(stored).linkDown?.since
+  await run('up')
+  assertEquals(parseIpPinMetadata(stored).linkDown, undefined)
+  await new Promise((resolve) => setTimeout(resolve, 5))
+  await run('down')
+  const second = parseIpPinMetadata(stored).linkDown?.since
+  assertEquals(typeof first, 'string')
+  assertEquals(typeof second, 'string')
+  assertEquals(second === first, false)
+  assertEquals(writes.length, 3)
+})
+
+test('applyReportedAddressRepin: a stale-marked pin keeps its down marker when the stale flag is set', async () => {
+  const writes: Write[] = []
+  const db = createFakeDb({
+    pins: [pin({ metadata: { linkDown: { since: '2026-10-01T00:00:00.000Z' } } })],
+    writes,
+  })
+  // The pin's address is gone and nothing in its subnet is reported: it goes stale, the link flag stays.
+  const applied = await applyReportedAddressRepin(db, SERVER, reportedWithLink('192.0.2.9', 'down'))
+  assertEquals(applied, [{ kind: 'mark_stale', ipId: 'ip-1', reason: 'address_gone_no_candidate' }])
+  const parsed = parseIpPinMetadata(writes.at(-1)?.patch.metadata)
+  assertEquals(parsed.stale?.reason, 'address_gone_no_candidate')
+  assertEquals(parsed.linkDown?.since, '2026-10-01T00:00:00.000Z')
+})

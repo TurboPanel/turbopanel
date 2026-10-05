@@ -24,7 +24,11 @@
 
 import { stripInetPrefixSuffix } from '../../lib/ip-address.ts'
 import type { ServerReportedIp } from '../../contracts/server-addresses.ts'
-import { type IpPinLinkDownMetadata, parseLinkDownMarker } from './pin-link-state.ts'
+import {
+  addressMatchKey,
+  type IpPinLinkDownMetadata,
+  parseLinkDownMarker,
+} from './pin-link-state.ts'
 import { resolveSubnetForAddress } from './datacenter-membership.ts'
 
 export type RepinPinInput = {
@@ -267,10 +271,10 @@ export function decideLinkActions(
   pins: readonly LinkPinInput[],
   reportedIps: readonly ServerReportedIp[]
 ): LinkAction[] {
-  const byAddress = new Map(reportedIps.map((row) => [normalizeAddress(row.address), row]))
+  const byAddress = new Map(reportedIps.map((row) => [addressMatchKey(row.address), row]))
   const actions: LinkAction[] = []
   for (const pin of pins) {
-    const reported = byAddress.get(normalizeAddress(pin.address))
+    const reported = byAddress.get(addressMatchKey(pin.address))
     if (!reported) continue
     const down = reported.link === 'down'
     if (down && !pin.linkDown) actions.push({ kind: 'link_down', ipId: pin.ipId })

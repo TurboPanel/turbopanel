@@ -17,7 +17,6 @@
  */
 
 import type { ServerReportedIp } from '../../contracts/server-addresses.ts'
-import { normalizeIpAddress } from '../../lib/ip-address.ts'
 import {
   type PrivateEndpointCaches,
   type PrivateEndpointError,
@@ -28,6 +27,7 @@ import {
   splitTrustedByLink,
 } from './private-endpoint.ts'
 import { defaultDatacenterPolicyRow } from './datacenter-networks.ts'
+import { addressMatchKey } from './pin-link-state.ts'
 import type { DatacenterMembershipRow } from './datacenter-membership.ts'
 
 export type TrafficMapLink = 'up' | 'down' | 'unknown'
@@ -40,11 +40,13 @@ export const TRAFFIC_MAP_PURPOSES: readonly PrivateEndpointPurpose[] = [
 
 /**
  * - `chosen`: carries server-to-server traffic for this pair (best priority among networks that are up and usable by both servers).
- * - `standby`: trusted and up, but a better-priority network is chosen; takes over if that one goes down.
+ * - `standby`: trusted and up with an address both servers can use, but a better-priority network is chosen; takes over if that one goes down.
+ * - `no_common_address`: trusted and up, but the two servers share no address family on it, so it cannot carry traffic.
  * - `link_down`: trusted, but the NIC reports no link on one of the two servers; used only as a last resort.
  * - `untrusted`: never used for server-to-server traffic.
  */
-export type TrafficMapNetworkState = 'chosen' | 'standby' | 'link_down' | 'untrusted'
+export type TrafficMapNetworkState =
+  'chosen' | 'standby' | 'no_common_address' | 'link_down' | 'untrusted'
 
 export type TrafficMapPeerNetwork = {
   datacenterId: string
@@ -177,7 +179,7 @@ export type BuildServerTrafficMapInput = {
 }
 
 function ipKey(address: string): string {
-  return normalizeIpAddress(address) ?? address
+  return addressMatchKey(address)
 }
 
 function reportedFor(
@@ -215,21 +217,23 @@ function orderNetworks(
   const byLink = splitTrustedByLink(partition.trusted, fromPins, toPins)
   // Chosen = the best network that is up *and* has an address both servers
   // can use (same family), i.e. the one the resolver really picks.
-  const chosen =
-    byLink.available.find(
-      (datacenterId) =>
-        pinAddressForDatacenter(
-          fromPins,
-          toPins,
-          datacenterId,
-          (caches.policiesByDatacenter.get(datacenterId) ?? defaultDatacenterPolicyRow())
-            .addressPreference
-        ) !== null
-    ) ?? null
+  const usable = (datacenterId: string): boolean =>
+    pinAddressForDatacenter(
+      fromPins,
+      toPins,
+      datacenterId,
+      (caches.policiesByDatacenter.get(datacenterId) ?? defaultDatacenterPolicyRow())
+        .addressPreference
+    ) !== null
+  const chosen = byLink.available.find(usable) ?? null
+  const availableState = (datacenterId: string): TrafficMapNetworkState => {
+    if (datacenterId === chosen) return 'chosen'
+    return usable(datacenterId) ? 'standby' : 'no_common_address'
+  }
   const ordered: NetworkOrder['ordered'] = [
     ...byLink.available.map((datacenterId) => ({
       datacenterId,
-      state: datacenterId === chosen ? ('chosen' as const) : ('standby' as const),
+      state: availableState(datacenterId),
     })),
     ...byLink.down.map((datacenterId) => ({ datacenterId, state: 'link_down' as const })),
     ...partition.untrusted.map((datacenterId) => ({ datacenterId, state: 'untrusted' as const })),

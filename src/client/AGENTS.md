@@ -500,19 +500,27 @@ sourceServerId? }`
   id)` order. `resolveOneFromCaches` walks the up list first; a down network is
   only a last resort (after fabric and public for `read-replication` /
   `client-backend`, straight away for `failover-replication`, which never
-  leaves the datacenter), and the result then carries `linkDown: true`. The
+  leaves the datacenter), and the result then carries `linkDown: true`. When
+  the up networks have no address family both servers share, a compatible
+  network that is down is still used (never an error where a path worked
+  before). A datacenter counts as down when any pin of either server in it is
+  flagged, whatever the pin's family. The
   TurboFabric LAN rung (`directCandidates`) orders LAN-up, public, NAT, then
   LAN-down. `GET /servers/:id/traffic-map`
   (`src/features/net/server-traffic-map.ts`, loaded by
   `server-traffic-map-load.ts`, shape in `openapi/server-traffic-map.ts`) is the
   read-only data behind the map: per peer the shared networks with state
-  (`chosen` / `standby` / `link_down` / `untrusted`), the planned address per
+  (`chosen` / `standby` / `no_common_address` / `link_down` / `untrusted`), the
+  planned address per
   purpose, and for the TurboFabric tunnel only the observed NIC and byte counts
   the daemon reported. Planned and observed stay separate: replication and
   client traffic are planned (the OS picks the NIC), only the tunnel is
   observed. Per-NIC byte counters are not duplicated: each NIC lists a
   `metrics.deviceId` and `monitored` flag that point at the existing metrics
-  series route. Nothing here probes the network.
+  series route. Peers are filtered to those sharing a network or the fabric,
+  then cut at 100 in name order (`truncated` says so). A server that is offline
+  keeps its last reported link state until it reconnects. Nothing here probes
+  the network.
 
 - **Compose hosting projection (client surface):** `x-turbopanel.hosting[]` is
   the _declaration_; `hosting` rows are the _record_. `reconcile-hostings.ts`

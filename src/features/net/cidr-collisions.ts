@@ -150,15 +150,10 @@ function cidrString(value: unknown): string | null {
 
 function advertisedCidrsFromJson(value: unknown): string[] {
   if (!Array.isArray(value)) return []
-  return value.filter((item): item is string =>
-    typeof item === 'string' && item.length > 0
-  )
+  return value.filter((item): item is string => typeof item === 'string' && item.length > 0)
 }
 
-async function loadRegisteredCidrs(
-  db: Db,
-  organizationId: string,
-): Promise<RegisteredCidr[]> {
+async function loadRegisteredCidrs(db: Db, organizationId: string): Promise<RegisteredCidr[]> {
   const rows = await db
     .select({
       id: network.id,
@@ -167,12 +162,7 @@ async function loadRegisteredCidrs(
       datacenterId: network.datacenterId,
     })
     .from(network)
-    .where(
-      and(
-        eq(network.organizationId, organizationId),
-        isNotNull(network.cidr),
-      ),
-    )
+    .where(and(eq(network.organizationId, organizationId), isNotNull(network.cidr)))
   const out: RegisteredCidr[] = []
   for (const row of rows) {
     const cidr = cidrString(row.cidr)
@@ -189,7 +179,7 @@ async function loadRegisteredCidrs(
 
 async function loadGatewayAdvertisements(
   db: Db,
-  fabricId: string,
+  fabricId: string
 ): Promise<GatewayAdvertisement[]> {
   const gatewayRows = await db
     .select({
@@ -215,27 +205,19 @@ async function loadGatewayAdvertisements(
     loadDatacenterMembershipsForServers(db, serverIds),
     loadDatacenterSubnetsForServers(db, serverIds),
   ])
-  const advertised = resolveDerivedAdvertisedCidrsByRelay(
-    gateways,
-    subnetsByServer,
-  )
+  const advertised = resolveDerivedAdvertisedCidrsByRelay(gateways, subnetsByServer)
 
   return gateways.map((gateway) => ({
     relayId: gateway.id,
     serverId: gateway.serverId,
     datacenterIds: [
-      ...new Set(
-        (memberships.get(gateway.serverId) ?? []).map((pin) => pin.datacenterId),
-      ),
+      ...new Set((memberships.get(gateway.serverId) ?? []).map((pin) => pin.datacenterId)),
     ],
     advertisedCidrs: advertised.get(gateway.id) ?? [],
   }))
 }
 
-async function loadDockerHostCidrs(
-  db: Db,
-  organizationId: string,
-): Promise<string[]> {
+async function loadDockerHostCidrs(db: Db, organizationId: string): Promise<string[]> {
   const [orgRow] = await db
     .select({ options: organization.options })
     .from(organization)
@@ -252,7 +234,7 @@ async function loadDockerHostCidrs(
  */
 export async function loadOrganizationCidrRegistry(
   db: Db,
-  organizationId: string,
+  organizationId: string
 ): Promise<OrganizationCidrRegistry> {
   const [fabricRow] = await db
     .select({
@@ -277,9 +259,7 @@ export async function loadOrganizationCidrRegistry(
     }
   }
 
-  const fabricId = typeof fabricRow.id === 'string'
-    ? fabricRow.id
-    : String(fabricRow.id)
+  const fabricId = typeof fabricRow.id === 'string' ? fabricRow.id : String(fabricRow.id)
   const gateways = await loadGatewayAdvertisements(db, fabricId)
   return {
     fabricCidr: cidrString(fabricRow.cidr),
@@ -294,7 +274,7 @@ function collision(
   code: CidrCollisionCode,
   cidr: string,
   conflictingCidr: string,
-  row?: { networkId: string | null; datacenterId: string | null } | null,
+  row?: { networkId: string | null; datacenterId: string | null } | null
 ): CidrCollision {
   return {
     code,
@@ -314,30 +294,24 @@ function findRowCollision(
   rows: readonly RegisteredCidr[],
   candidate: string,
   matchesKind: (kind: string) => boolean,
-  code: CidrCollisionCode,
+  code: CidrCollisionCode
 ): CidrCollision | null {
-  const row = rows.find((entry) =>
-    matchesKind(entry.kind) && cidrsOverlap(candidate, entry.cidr)
-  )
+  const row = rows.find((entry) => matchesKind(entry.kind) && cidrsOverlap(candidate, entry.cidr))
   return row ? collision(code, candidate, row.cidr, row) : null
 }
 
 /** Org Docker host addressing (pools + default bridge) overlapping the candidate. */
 function findDockerHostCollision(
   registry: OrganizationCidrRegistry,
-  candidate: string,
+  candidate: string
 ): CidrCollision | null {
-  const hostCidr = registry.dockerHostCidrs.find((cidr) =>
-    cidrsOverlap(candidate, cidr)
-  )
-  return hostCidr
-    ? collision('cidr_overlaps_docker_network', candidate, hostCidr)
-    : null
+  const hostCidr = registry.dockerHostCidrs.find((cidr) => cidrsOverlap(candidate, cidr))
+  return hostCidr ? collision('cidr_overlaps_docker_network', candidate, hostCidr) : null
 }
 
 function findGatewayAdvertisedCollision(
   registry: OrganizationCidrRegistry,
-  params: CidrCollisionParams,
+  params: CidrCollisionParams
 ): CidrCollision | null {
   if (params.intent !== 'datacenter' || !params.datacenterId) return null
   const candidateDc = params.datacenterId
@@ -352,15 +326,16 @@ function findGatewayAdvertisedCollision(
     if (gateway.datacenterIds.includes(candidateDc)) continue
     for (const advertised of gateway.advertisedCidrs) {
       if (!cidrsOverlap(params.cidr, advertised)) continue
-      const row = registry.networks.find((entry) =>
-        entry.kind === 'datacenter' && entry.cidr === advertised
-      ) ?? null
+      const row =
+        registry.networks.find(
+          (entry) => entry.kind === 'datacenter' && entry.cidr === advertised
+        ) ?? null
       if (row && row.networkId === params.excludeNetworkId) continue
       return collision(
         'cidr_overlaps_gateway_advertised',
         params.cidr,
         advertised,
-        row ?? { networkId: null, datacenterId: gateway.datacenterIds[0] ?? null },
+        row ?? { networkId: null, datacenterId: gateway.datacenterIds[0] ?? null }
       )
     }
   }
@@ -375,7 +350,7 @@ function findGatewayAdvertisedCollision(
  */
 export function findCidrCollision(
   registry: OrganizationCidrRegistry,
-  params: CidrCollisionParams,
+  params: CidrCollisionParams
 ): CidrCollision | null {
   const candidate = params.cidr
   const exclude = params.excludeNetworkId ?? null
@@ -409,7 +384,7 @@ export function findCidrCollision(
  */
 export async function assertCidrAvailable(
   db: Db,
-  params: AssertCidrAvailableParams,
+  params: AssertCidrAvailableParams
 ): Promise<CidrCollision | null> {
   const registry = await loadOrganizationCidrRegistry(db, params.organizationId)
   return findCidrCollision(registry, params)
@@ -423,7 +398,7 @@ export async function assertCidrAvailable(
  */
 export async function assertCidrsAvailable(
   db: Db,
-  params: AssertCidrsAvailableParams,
+  params: AssertCidrsAvailableParams
 ): Promise<CidrCollision | null> {
   const unique = [...new Set(params.cidrs)]
   if (unique.length === 0) return null
@@ -463,22 +438,14 @@ export async function assertCidrsAvailable(
  */
 export async function loadCidrAllocationExclusions(
   db: Db,
-  organizationId: string,
+  organizationId: string
 ): Promise<string[]> {
   const [networks, fabrics, dockerHostCidrs] = await Promise.all([
     db
       .select({ cidr: network.cidr })
       .from(network)
-      .where(
-        and(
-          eq(network.organizationId, organizationId),
-          isNotNull(network.cidr),
-        ),
-      ),
-    db
-      .select({ cidr: fabric.cidr })
-      .from(fabric)
-      .where(eq(fabric.organizationId, organizationId)),
+      .where(and(eq(network.organizationId, organizationId), isNotNull(network.cidr))),
+    db.select({ cidr: fabric.cidr }).from(fabric).where(eq(fabric.organizationId, organizationId)),
     loadDockerHostCidrs(db, organizationId),
   ])
   const out: string[] = []

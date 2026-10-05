@@ -180,6 +180,13 @@ async function applyAction(
   }
 }
 
+function logActionFailure(action: AppliedPinAction, err: unknown): void {
+  compatLogWarn(
+    LOG_COMPONENT,
+    `${action.kind} for pin ${action.ipId} failed: ${err instanceof Error ? err.message : String(err)}`
+  )
+}
+
 async function writeLink(
   db: Db,
   pin: DatacenterMembershipPinDetailRow,
@@ -228,12 +235,7 @@ async function runRepinPass(
     try {
       applied.push(await applyAction(db, pin, action, serverMetadata, nowIso))
     } catch (err) {
-      compatLogWarn(
-        LOG_COMPONENT,
-        `${action.kind} for pin ${action.ipId} failed: ${
-          err instanceof Error ? err.message : String(err)
-        }`
-      )
+      logActionFailure(action, err)
     }
   })
   return applied
@@ -266,12 +268,7 @@ async function runLinkPass(
     try {
       applied.push(await writeLink(db, pin, action, nowIso))
     } catch (err) {
-      compatLogWarn(
-        LOG_COMPONENT,
-        `${action.kind} for pin ${action.ipId} failed: ${
-          err instanceof Error ? err.message : String(err)
-        }`
-      )
+      logActionFailure(action, err)
     }
   })
   return applied

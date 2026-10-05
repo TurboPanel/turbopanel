@@ -42,9 +42,9 @@ export const serverTrafficMapSchemas = {
       trusted: { type: 'boolean' },
       state: {
         type: 'string',
-        enum: ['chosen', 'standby', 'link_down', 'untrusted'],
+        enum: ['chosen', 'standby', 'no_common_address', 'link_down', 'untrusted'],
         description:
-          '`chosen` carries server-to-server traffic for this pair (best priority among networks that are up on both servers). `standby` is up but not chosen; it takes over if the chosen one goes down. `link_down` is trusted but a NIC reports no link; used only as a last resort. `untrusted` is never used.',
+          '`chosen` carries server-to-server traffic for this pair (best priority among networks that are up on both servers). `standby` is up with an address both servers can use but not chosen; it takes over if the chosen one goes down. `no_common_address` is up but the two servers share no address family on it. `link_down` is trusted but a NIC reports no link; used only as a last resort. `untrusted` is never used.',
       },
       localAddress: { type: ['string', 'null'] },
       peerAddress: { type: ['string', 'null'] },
@@ -215,13 +215,21 @@ export const serverTrafficMapSchemas = {
   },
   ServerTrafficMap: {
     type: 'object',
-    required: ['ok', 'generatedAt', 'serverId', 'nics', 'peers'],
+    required: ['ok', 'generatedAt', 'serverId', 'nics', 'peers', 'truncated'],
     properties: {
       ok: { type: 'boolean', const: true },
       generatedAt: { type: 'string', format: 'date-time' },
       serverId: { type: 'string', format: 'uuid' },
       nics: { type: 'array', items: { $ref: '#/components/schemas/ServerTrafficMapNic' } },
-      peers: { type: 'array', items: { $ref: '#/components/schemas/ServerTrafficMapPeer' } },
+      peers: {
+        type: 'array',
+        description: 'Peers sorted by name; at most 100.',
+        items: { $ref: '#/components/schemas/ServerTrafficMapPeer' },
+      },
+      truncated: {
+        type: 'boolean',
+        description: 'More peers share a network with this server than the 100 shown.',
+      },
     },
   },
 }
