@@ -813,6 +813,7 @@ async function buildEnabledFabricApp(opts: {
   withRelay?: boolean;
   removeFabricOnDelete?: boolean;
   gatewayReady?: boolean;
+  queueFails?: boolean;
 }): Promise<{ app: Hono<AppEnv>; cookie: string }> {
   const secretsConfig = parseTestSecretsConfig("deno");
   const secrets = await deriveSecretsConfig(secretsConfig, "session-signing");
@@ -924,7 +925,12 @@ async function buildEnabledFabricApp(opts: {
   app.use("*", (c, next) => {
     c.set("db", db);
     c.set("daemonCellRegistry", { cells: new Map() } as never);
-    c.set("commandQueue", { enqueue: () => Promise.resolve() });
+    c.set("commandQueue", {
+      enqueue: () =>
+        opts.queueFails
+          ? Promise.reject(new Error("queue down"))
+          : Promise.resolve(),
+    });
     return next();
   });
   registerOrganizationFabricRoutes(app, {
@@ -934,6 +940,33 @@ async function buildEnabledFabricApp(opts: {
   });
   return { app, cookie };
 }
+
+test("PUT /fabric enabled:false keeps the mesh when a server's teardown cannot be queued", async () => {
+  const { app, cookie } = await buildEnabledFabricApp({
+    withRelay: true,
+    removeFabricOnDelete: true,
+    queueFails: true,
+  });
+  const res = await app.request(`/organizations/${orgId}/fabric`, {
+    method: "PUT",
+    headers: {
+      "content-type": "application/json",
+      Cookie: cookie,
+    },
+    body: JSON.stringify({ enabled: false }),
+  });
+  assertEquals(res.status, 503);
+  const body = await res.json() as { error: string; serverIds: string[] };
+  assertEquals(body.error, "fabric_teardown_not_queued");
+  assertEquals(body.serverIds, [serverId]);
+
+  // Nothing was deleted: the fabric is still on, so a retry can tear it down.
+  const get = await app.request(`/organizations/${orgId}/fabric`, {
+    headers: { Cookie: cookie },
+  });
+  const settings = await get.json() as { enabled: boolean };
+  assertEquals(settings.enabled, true);
+});
 
 test("POST /fabric/apply returns results when TurboFabric is enabled", async () => {
   const { app, cookie } = await buildEnabledFabricApp({});

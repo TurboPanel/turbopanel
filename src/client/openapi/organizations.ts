@@ -1728,6 +1728,15 @@ export const organizationPaths: Record<string, unknown> = {
             },
           },
         },
+        '503': {
+          description:
+            '`fabric_teardown_not_queued`: `enabled: false` could not queue the teardown for every server (`serverIds`); nothing was removed and TurboFabric stays on. Retry.',
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
       },
     },
   },

@@ -137,6 +137,11 @@ function fabricSecretsFromContext(c: {
 /**
  * `PUT { enabled: false }`: tear relays down, purge compose networks and
  * clear the fabric row together. A never-enabled org is a no-op.
+ *
+ * The rows go only once every server's teardown is queued: with the relay
+ * rows deleted nothing could ever send a teardown again, and that host would
+ * keep its tunnel, key and bridges. Returns the servers whose teardown could
+ * not be queued (nothing is deleted then; the caller retries).
  */
 async function disableOrganizationFabricForPut(params: {
   db: Db
@@ -144,12 +149,12 @@ async function disableOrganizationFabricForPut(params: {
   organizationId: string
   actorId: string
   secrets: FabricMembershipSecrets
-}): Promise<void> {
+}): Promise<{ notQueued: string[] }> {
   const { db, commandQueue, organizationId, actorId, secrets } = params
   const existing = await getOrganizationFabric(db, organizationId)
-  if (!existing) return
+  if (!existing) return { notQueued: [] }
   const relays = await listFabricRelays(db, existing.id)
-  await enqueueFabricReconcileForServers({
+  const results = await enqueueFabricReconcileForServers({
     db,
     commandQueue,
     actorType: 'user',
@@ -159,10 +164,15 @@ async function disableOrganizationFabricForPut(params: {
     enabled: false,
     ...secrets,
   })
+  const notQueued = results
+    .filter((result) => result.status === 'failed')
+    .map((result) => result.serverId)
+  if (notQueued.length > 0) return { notQueued }
   await db.transaction(async (tx) => {
     await purgeOrganizationComposeNetworks(tx, organizationId)
     await disableOrganizationFabric(tx, organizationId)
   })
+  return { notQueued: [] }
 }
 
 /**
@@ -423,13 +433,24 @@ export function registerOrganizationFabricRoutes(router: Hono<AppEnv>, opts: Aut
     const secrets = fabricSecretsFromContext(c)
 
     if (!parsed.enabled) {
-      await disableOrganizationFabricForPut({
+      const { notQueued } = await disableOrganizationFabricForPut({
         db,
         commandQueue,
         organizationId: id,
         actorId: session.userId,
         secrets,
       })
+      if (notQueued.length > 0) {
+        return c.json(
+          {
+            error: 'fabric_teardown_not_queued',
+            message:
+              'TurboFabric is still on: the teardown could not be queued for every server. Try again.',
+            serverIds: notQueued,
+          },
+          503
+        )
+      }
       return c.json(fabricSettingsResponse(null))
     }
 
