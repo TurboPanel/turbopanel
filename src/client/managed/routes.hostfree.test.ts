@@ -334,6 +334,8 @@ type FakeDbConfig = {
   commandRows?: unknown[]
   executeRows?: unknown[]
   userRole?: string
+  /** Called for every `insert().values()`, so a test can see what was written. */
+  onInsert?: (table: unknown, values: Record<string, unknown>) => void
 }
 
 /**
@@ -413,6 +415,7 @@ function fakeDb(config: FakeDbConfig = {}): Db {
     execute: () => Promise.resolve(executeRows),
     insert: (table: unknown) => ({
       values: (values: Record<string, unknown>) => {
+        config.onInsert?.(table, values)
         const rows = [
           {
             ...principalRow(),
@@ -1119,6 +1122,104 @@ test('POST create rejects an invalid display name', async () => {
   })
   // Offline check runs before body parse when a placement pin exists.
   assertEquals(res.status === 409 || res.status === 400, true)
+})
+
+/** A POST create against a placed, online server with a working command queue. */
+async function postCreate(
+  body: Record<string, unknown>,
+  inserted: Array<{ table: unknown; values: Record<string, unknown> }> = [],
+  code = 'postgres'
+): Promise<Response> {
+  const { app, cookie } = await buildApp({
+    db: fakeDb({
+      envRows: [envRow({ serverId: SERVER_ID })],
+      projectRows: [{ metadata: { code } }],
+      serverRows: [applyReadyServer(true)],
+      onInsert: (table, values) => inserted.push({ table, values }),
+    }),
+    registry: stubRegistry(),
+    commandQueue: recordingQueue(),
+  })
+  return await app.request(envPath(), {
+    method: 'POST',
+    headers: { ...authHeaders(cookie), 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
+test('POST create refuses an untested or unknown version with 422 and writes nothing', async () => {
+  for (const body of [
+    { engineSeries: '17' },
+    { engineSeries: '99' },
+    { engineSeries: '18', imageVariant: 'nope' },
+    { imageVariant: 'nope' },
+  ]) {
+    const inserted: Array<{ table: unknown; values: Record<string, unknown> }> = []
+    const res = await postCreate(body, inserted)
+    await expectJson(res, 422, { error: 'managed_version_unsupported' })
+    assertEquals(inserted.length, 0, `${JSON.stringify(body)} must not create anything`)
+  }
+})
+
+test('POST create refuses a malformed series or variant with 400 and writes nothing', async () => {
+  for (const [body, error] of [
+    [{ engineSeries: 18 }, 'Invalid engineSeries'],
+    [{ engineSeries: ['18'] }, 'Invalid engineSeries'],
+    [{ imageVariant: false }, 'Invalid imageVariant'],
+  ] as const) {
+    const inserted: Array<{ table: unknown; values: Record<string, unknown> }> = []
+    await expectJson(await postCreate(body, inserted), 400, { error })
+    assertEquals(inserted.length, 0)
+  }
+})
+
+/**
+ * The settings image the create wrote onto the new `managed` row. The fake
+ * database cannot finish the apply preparation (no member rows come back), so
+ * the status is not asserted here; the DB-backed suite covers the full create.
+ */
+async function createdImage(
+  body: Record<string, unknown>,
+  code = 'postgres'
+): Promise<string | undefined> {
+  const inserted: Array<{ table: unknown; values: Record<string, unknown> }> = []
+  await postCreate(body, inserted, code)
+  const row = inserted.find((entry) => entry.table === managed)
+  const options = row?.values.options as { settings?: { image?: string } } | undefined
+  if (!options?.settings) throw new TypeError('create did not persist settings')
+  return options.settings.image
+}
+
+test('POST create persists the requested variant and keeps the default when none is sent', async () => {
+  // Neither field: no image is written, so the engine default applies as before.
+  assertEquals(await createdImage({}), undefined)
+  assertEquals(await createdImage({ engineSeries: '18' }), 'docker.io/library/postgres:18-alpine')
+  assertEquals(
+    await createdImage({ engineSeries: '18', imageVariant: 'debian' }),
+    'docker.io/library/postgres:18'
+  )
+  assertEquals(await createdImage({ imageVariant: 'debian' }), 'docker.io/library/postgres:18')
+})
+
+test('POST create resolves MySQL and MariaDB versions through the same helper', async () => {
+  assertEquals(
+    await createdImage({ engineSeries: '9.7', imageVariant: 'oraclelinux9' }, 'mysql'),
+    'docker.io/library/mysql:9.7-oraclelinux9'
+  )
+  assertEquals(await createdImage({ engineSeries: '9.7' }, 'mysql'), 'docker.io/library/mysql:9.7')
+  assertEquals(
+    await createdImage({ engineSeries: '12.3' }, 'mariadb'),
+    'docker.io/library/mariadb:12.3'
+  )
+  for (const [code, series] of [
+    ['mysql', '8.4'],
+    ['mariadb', '11.8'],
+  ] as const) {
+    const inserted: Array<{ table: unknown; values: Record<string, unknown> }> = []
+    const res = await postCreate({ engineSeries: series }, inserted, code)
+    await expectJson(res, 422, { error: 'managed_version_unsupported' })
+    assertEquals(inserted.length, 0)
+  }
 })
 
 test('PATCH rejects applying clusters as busy', async () => {

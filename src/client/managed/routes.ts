@@ -161,6 +161,7 @@ import {
   parseManagedCreateName,
   parseManagedLifecycleAction,
   parseManagedUserCreateFields,
+  parseManagedVersionSelection,
   parseMemberPatch,
   parseMemberReadEligibleCreate,
   parsePromoteForce,
@@ -591,7 +592,12 @@ async function resolveManagedCreatePlan(
   }
   const displayName = displayNameResult.name
 
-  let settings = mergeCreateSettings(ctx.spec, body)
+  // Resolve the requested series / variant before anything is created or any
+  // server preflight runs, so a refused version never reaches the host.
+  const version = parseManagedVersionSelection(ctx.spec.engine, body)
+  if (!version.ok) return c.json({ error: version.error }, version.status)
+
+  let settings = mergeCreateSettings(ctx.spec, body, version.image)
   if (!settings) {
     return c.json({ error: 'managed_settings_invalid' }, 400)
   }
