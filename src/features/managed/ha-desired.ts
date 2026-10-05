@@ -34,6 +34,7 @@ import {
 } from './ha-policy.ts'
 import { getManagedEngineSpec, type ManagedEngineSpec } from './index.ts'
 import { loadDatacenterMembershipsForServers } from '../net/datacenter-membership.ts'
+import { loadDatacenterPolicies } from '../net/datacenter-networks.ts'
 import {
   isPrivateEndpointError,
   resolvePrivateEndpoints,
@@ -309,7 +310,11 @@ async function buildRaftConfig(
   if (!raftServerIds.includes(thisServerId)) return null
 
   const pins = await loadDatacenterMembershipsForServers(db, raftServerIds)
-  const members = selectHaRaftMembers(thisServerId, raftServerIds, pins)
+  const datacenterIds = [
+    ...new Set([...pins.values()].flatMap((rows) => rows.map((row) => row.datacenterId))),
+  ]
+  const policies = await loadDatacenterPolicies(db, datacenterIds)
+  const members = selectHaRaftMembers(thisServerId, raftServerIds, pins, policies)
   if (!members) return null
   const { advertiseAddress } = members
 
