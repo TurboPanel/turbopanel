@@ -35,10 +35,7 @@
  * identical to any other `network` entity.
  */
 
-import {
-  HOST_METRICS_METRIC_DESCRIPTORS,
-  type MetricEntityScope,
-} from './metric-descriptors.ts'
+import { HOST_METRICS_METRIC_DESCRIPTORS, type MetricEntityScope } from './metric-descriptors.ts'
 
 export type EntityMetricSelector = {
   scope: MetricEntityScope
@@ -105,6 +102,22 @@ export function formatEntityMetricId(selector: EntityMetricSelector): string {
   return `${alias}:${selector.entityId}.${selector.field}`
 }
 
+/** Longest entity id accepted from a request (matches the ingest-side dimension cap). */
+export const MAX_ENTITY_ID_LENGTH = 256
+
+/**
+ * Characters a requested entity id may contain: letters, digits, space, and `: . _ / @ + - # = ( ) [ ] ~`.
+ * Covers every generated id shape (`mac:`, `pci:`, `wwn:`, `disk:<model>:<serial>`, `signal:`, mount
+ * paths). Quotes, backslashes, commas, semicolons, and control characters are never valid.
+ */
+const ENTITY_ID_PATTERN = /^[A-Za-z0-9 :._/@+\-#=()[\]~]+$/
+
+export function assertSafeEntityId(entityId: string): void {
+  if (entityId.length > MAX_ENTITY_ID_LENGTH || !ENTITY_ID_PATTERN.test(entityId)) {
+    throw new TypeError('invalid entity id')
+  }
+}
+
 /** Parses a wire identity back into a validated selector. Throws on any unknown scope/alias/field. */
 export function parseEntityMetricId(id: string): EntityMetricSelector {
   const colonIndex = id.indexOf(':')
@@ -131,6 +144,7 @@ export function parseEntityMetricId(id: string): EntityMetricSelector {
   const entityId = rest.slice(0, dotIndex)
   const field = rest.slice(dotIndex + 1)
 
+  assertSafeEntityId(entityId)
   descriptorFor(scope, field)
   return { scope, entityId, field }
 }

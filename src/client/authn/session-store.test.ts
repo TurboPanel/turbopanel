@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { and, eq } from 'drizzle-orm'
 import { assertEquals, assertRejects } from '@std/assert'
 import { getDatabaseUrl } from '../../db/url.ts'
@@ -52,13 +53,13 @@ test('createSession rejects undefined db', async () => {
   await assertRejects(
     () => createSession(undefined, crypto.randomUUID(), {}),
     Error,
-    'Database unavailable',
+    'Database unavailable'
   )
 })
 
 test('createSession stores a retrievable session with metadata', async () => {
   if (!dbUrl) {
-    console.warn('Skipping session-store DB test: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('session-store DB test')
     return
   }
 
@@ -91,7 +92,7 @@ test('createSession stores a retrievable session with metadata', async () => {
 
 test('getSession returns null for disabled users', async () => {
   if (!dbUrl) {
-    console.warn('Skipping disabled-user session test: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('disabled-user session test')
     return
   }
 
@@ -114,7 +115,7 @@ test('getSession returns null for disabled users', async () => {
 
 test('deleteSession removes the row and deleteSessionsByUserId clears all sessions', async () => {
   if (!dbUrl) {
-    console.warn('Skipping session delete test: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('session delete test')
     return
   }
 

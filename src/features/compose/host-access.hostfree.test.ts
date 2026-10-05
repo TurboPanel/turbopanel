@@ -220,6 +220,8 @@ const EMPTY = 'is empty, so it cannot be resolved'
 const INTERPOLATED = 'is interpolated, so where it points cannot be checked before deploy'
 const BACKSLASH = 'contains a backslash, so where it points cannot be checked'
 const ENGINE_SOCKET = 'is the Docker engine socket, which controls every container on the host'
+const OTHER_MOUNT =
+  'mounts something other than plain Docker storage (overlay, network and other filesystem types can reach host paths)'
 const ABSOLUTE = 'is an absolute path on the host'
 const HOME = 'is in a home directory on the host'
 const CLIMBS = "climbs out of the service's directory with `..`"
@@ -653,7 +655,7 @@ const GATE_CASES: Array<[string, unknown, Expected[]]> = [
     {
       volumes: { a: { driver_opts: { o: 'bindx,unbind' } } },
     },
-    [],
+    [[['volumes', 'a', 'driver_opts'], 'volume `a`', OTHER_MOUNT, { o: 'bindx,unbind' }]],
   ],
   [
     'volumes: type none',
@@ -686,7 +688,7 @@ const GATE_CASES: Array<[string, unknown, Expected[]]> = [
     {
       volumes: { a: { driver_opts: { o: ['bind'] } } },
     },
-    [],
+    [[['volumes', 'a', 'driver_opts'], 'volume `a`', OTHER_MOUNT, { o: ['bind'] }]],
   ],
   [
     'volumes: a bind in disguise wins over its device (one finding)',
@@ -759,19 +761,27 @@ const GATE_CASES: Array<[string, unknown, Expected[]]> = [
     ],
   ],
   [
-    'volumes: network filesystem types are not host paths',
+    'volumes: network filesystem types are refused like any other mount type',
     {
       volumes: {
         a: { driver_opts: { type: 'nfs', device: '/export' } },
-        b: { driver_opts: { type: 'nfs4', device: '/export' } },
-        c: { driver_opts: { type: ' cifs ', device: '/export' } },
-        d: { driver_opts: { type: 'smb', device: '/export' } },
-        e: { driver_opts: { type: 'smb3', device: '/export' } },
-        f: { driver_opts: { type: 'glusterfs', device: '/export' } },
-        g: { driver_opts: { type: 'ceph', device: '/export' } },
+        b: { driver_opts: { type: 'cifs', device: 'h:/s' } },
       },
     },
-    [],
+    [
+      [
+        ['volumes', 'a', 'driver_opts', 'device'],
+        'volume `a` device `/export`',
+        'mounts a host path',
+        { type: 'nfs', device: '/export' },
+      ],
+      [
+        ['volumes', 'b', 'driver_opts'],
+        'volume `b`',
+        OTHER_MOUNT,
+        { type: 'cifs', device: 'h:/s' },
+      ],
+    ],
   ],
   [
     'volumes: the network filesystem type is case sensitive',
@@ -796,7 +806,11 @@ const GATE_CASES: Array<[string, unknown, Expected[]]> = [
         c: { driver_opts: { device: 5 } },
       },
     },
-    [],
+    [
+      [['volumes', 'a', 'driver_opts'], 'volume `a`', OTHER_MOUNT, { device: ':/export' }],
+      [['volumes', 'b', 'driver_opts'], 'volume `b`', OTHER_MOUNT, { device: 'rel/x' }],
+      [['volumes', 'c', 'driver_opts'], 'volume `c`', OTHER_MOUNT, { device: 5 }],
+    ],
   ],
 
   // --- configs / secrets ---
