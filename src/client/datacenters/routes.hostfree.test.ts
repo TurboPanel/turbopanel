@@ -53,6 +53,7 @@ const DATACENTER_PATHS = [
   ['GET', '/datacenters/name-suggestions'],
   ['GET', `/datacenters/${id}`],
   ['PATCH', `/datacenters/${id}`],
+  ['POST', `/datacenters/${id}/server-traffic`],
   ['DELETE', `/datacenters/${id}`],
   ['POST', `/datacenters/${id}/members`],
   ['DELETE', `/datacenters/${id}/members/${serverId}`],
@@ -155,6 +156,12 @@ type SessionAppOpts = {
   /** Stored `datacenter.metadata` jsonb (e.g. a seeded `geo`; default `{}`). */
   datacenterMetadata?: Record<string, unknown>
   /**
+   * Every datacenter row of the organization (`id` + `options`): returned by
+   * each `select().from(datacenter)` and makes `transaction` run its callback
+   * against this same mock, so multi-row writes land in `updates`.
+   */
+  orgDatacenterRows?: Array<{ id: string; options: unknown }>
+  /**
    * Raw rows the collision authority (`src/features/net/cidr-collisions.ts`) sees
    * for the given table — every `select().from(<table>)` returns them
    * verbatim, conditions ignored. Overrides the scenario flags above.
@@ -237,6 +244,12 @@ async function buildSessionApp(opts: SessionAppOpts): Promise<{
         }
         if (table === ip && opts.ipRows) {
           return { where: () => thenableRows(opts.ipRows ?? []) }
+        }
+        if (table === datacenter && opts.orgDatacenterRows) {
+          return {
+            where: () =>
+              thenableRows((opts.orgDatacenterRows ?? []).map((row) => ({ ...DC_ROW, ...row }))),
+          }
         }
         if (table === datacenter) {
           return {
@@ -352,6 +365,7 @@ async function buildSessionApp(opts: SessionAppOpts): Promise<{
       where: () => thenableRows(opts.deleteMemberFound ? [{ id: crypto.randomUUID() }] : []),
     }),
     transaction: async (fn: (tx: Db) => Promise<unknown>) => {
+      if (opts.orgDatacenterRows) return fn(db)
       if (opts.memberAddressInUse) {
         const error = new Error(
           'duplicate key value violates unique constraint "uniq_ip_org_address"'
@@ -469,7 +483,7 @@ test('GET /datacenters returns an empty list when nothing is visible', async () 
     headers: sessionHeaders(cookie),
   })
   assertEquals(res.status, 200)
-  assertEquals(await res.json(), { datacenters: [] })
+  assertEquals(await res.json(), { datacenters: [], warnings: [] })
 })
 
 test('GET /datacenters/:id returns 404 when the entity is in another org', async () => {
@@ -1607,4 +1621,133 @@ test('PATCH /datacenters/:id refuses an invalid location', async () => {
   assertEquals(res.status, 400)
   assertEquals(await res.json(), { error: 'Invalid location.asn' })
   assertEquals(updates.length, 0)
+})
+
+const BACKHAUL_ID = '77777777-7777-4777-8777-777777777777'
+
+test('POST /datacenters/:id/server-traffic gives the chosen network the lowest number', async () => {
+  const { app, cookie, updates } = await buildSessionApp({
+    manageAllowed: true,
+    orgDatacenterRows: [
+      { id: otherDatacenterId, options: {} },
+      { id: BACKHAUL_ID, options: { addressPreference: 'ipv4' } },
+    ],
+  })
+  const res = await app.request(`/datacenters/${BACKHAUL_ID}/server-traffic`, {
+    method: 'POST',
+    headers: sessionHeaders(cookie, true),
+    body: JSON.stringify({ preferred: true }),
+  })
+  assertEquals(res.status, 200)
+  assertEquals(await res.json(), {
+    ok: true,
+    changes: [{ datacenterId: BACKHAUL_ID, before: 100, after: 10 }],
+  })
+  assertEquals(updates.length, 1)
+  assertEquals((updates[0]?.options as Record<string, unknown>).priority, 10)
+  assertEquals((updates[0]?.options as Record<string, unknown>).addressPreference, 'ipv4')
+})
+
+test('POST /datacenters/:id/server-traffic writes nothing when the network already wins', async () => {
+  const { app, cookie, updates } = await buildSessionApp({
+    manageAllowed: true,
+    orgDatacenterRows: [
+      { id: otherDatacenterId, options: {} },
+      { id: BACKHAUL_ID, options: { priority: 10 } },
+    ],
+  })
+  const res = await app.request(`/datacenters/${BACKHAUL_ID}/server-traffic`, {
+    method: 'POST',
+    headers: sessionHeaders(cookie, true),
+    body: JSON.stringify({ preferred: true }),
+  })
+  assertEquals(res.status, 200)
+  assertEquals(await res.json(), { ok: true, changes: [] })
+  assertEquals(updates.length, 0)
+})
+
+test('POST /datacenters/:id/server-traffic refuses an untrusted datacenter with 409', async () => {
+  const { app, cookie, updates } = await buildSessionApp({
+    manageAllowed: true,
+    orgDatacenterRows: [
+      { id: otherDatacenterId, options: {} },
+      { id: BACKHAUL_ID, options: { trusted: false } },
+    ],
+  })
+  const res = await app.request(`/datacenters/${BACKHAUL_ID}/server-traffic`, {
+    method: 'POST',
+    headers: sessionHeaders(cookie, true),
+    body: JSON.stringify({ preferred: true }),
+  })
+  assertEquals(res.status, 409)
+  assertEquals(await res.json(), { error: 'datacenter_not_trusted' })
+  assertEquals(updates.length, 0)
+})
+
+test('POST /datacenters/:id/server-traffic needs { preferred: true }', async () => {
+  const { app, cookie, updates } = await buildSessionApp({
+    manageAllowed: true,
+    orgDatacenterRows: [{ id: BACKHAUL_ID, options: {} }],
+  })
+  for (const body of [{}, { preferred: false }, { preferred: 'yes' }]) {
+    const res = await app.request(`/datacenters/${BACKHAUL_ID}/server-traffic`, {
+      method: 'POST',
+      headers: sessionHeaders(cookie, true),
+      body: JSON.stringify(body),
+    })
+    assertEquals(res.status, 400)
+  }
+  assertEquals(updates.length, 0)
+})
+
+test('POST /datacenters/:id/server-traffic is 403 without manage permission', async () => {
+  const { app, cookie, updates } = await buildSessionApp({
+    manageAllowed: false,
+    orgDatacenterRows: [{ id: BACKHAUL_ID, options: {} }],
+  })
+  const res = await app.request(`/datacenters/${BACKHAUL_ID}/server-traffic`, {
+    method: 'POST',
+    headers: sessionHeaders(cookie, true),
+    body: JSON.stringify({ preferred: true }),
+  })
+  assertEquals(res.status, 403)
+  assertEquals(updates.length, 0)
+})
+
+async function listWithPriorities(
+  lan: Record<string, unknown>,
+  backhaul: Record<string, unknown>
+): Promise<{
+  datacenters: Array<{ id: string; serverTraffic: { wins: boolean; tied: boolean } }>
+  warnings: Array<{ code: string; priority: number; datacenterIds: string[] }>
+}> {
+  const { app, cookie } = await buildSessionApp({
+    manageAllowed: true,
+    listOnly: true,
+    manageThenList: true,
+    listVisibleIds: [id, BACKHAUL_ID],
+    orgDatacenterRows: [
+      { id, options: lan },
+      { id: BACKHAUL_ID, options: backhaul },
+    ],
+  })
+  const res = await app.request('/datacenters', { headers: sessionHeaders(cookie) })
+  assertEquals(res.status, 200)
+  return await res.json()
+}
+
+test('GET /datacenters says which network carries server-to-server traffic', async () => {
+  const body = await listWithPriorities({}, { priority: 10 })
+  const byId = new Map(body.datacenters.map((row) => [row.id, row.serverTraffic]))
+  assertEquals(byId.get(BACKHAUL_ID), { wins: true, tied: false })
+  assertEquals(byId.get(id), { wins: false, tied: false })
+  assertEquals(body.warnings, [])
+})
+
+test('GET /datacenters warns when two trusted networks share a priority number', async () => {
+  const body = await listWithPriorities({}, {})
+  assertEquals(body.warnings, [
+    { code: 'equal_priority', priority: 100, datacenterIds: [id, BACKHAUL_ID].sort() },
+  ])
+  assertEquals(body.datacenters[0]?.serverTraffic.tied, true)
 })
