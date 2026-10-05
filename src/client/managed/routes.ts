@@ -5,6 +5,7 @@ import { resolveManagedSslMode } from '../../features/managed/ssl.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
 import { requireStepUpIfConfigured } from '../authn/step-up.ts'
+import type { StepUpAction } from '../authn/step-up-actions.ts'
 import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
 import { getDaemonCellRegistry, getDb } from '../../db/connection.ts'
 import type { CommandQueue } from '../../features/commands/queue.ts'
@@ -44,8 +45,9 @@ import {
   resolvePrivateEndpoint,
 } from '../../features/net/private-endpoint.ts'
 import {
-  assertManagedNotBusy,
+  assertManagedIdle,
   assertTargetServerOnline,
+  authorizeManagedBackupMutation,
   authorizeManagedRequest,
   loadManagedContext,
   type ManagedContext,
@@ -256,18 +258,26 @@ async function loadManagedAuthScope(c: Context<AppEnv>): Promise<
   return { db, environmentId, auth }
 }
 
-/** {@link loadManagedAuthScope} plus the managed context for the environment. */
-async function loadManagedContextScope(c: Context<AppEnv>) {
+/**
+ * {@link loadManagedAuthScope} plus the managed context for the environment.
+ * With `stepUpAction`, the organization's step-up gate for it runs right after
+ * the permission check, before anything else is looked up.
+ */
+async function loadManagedContextScope(c: Context<AppEnv>, stepUpAction?: StepUpAction) {
   const scope = await loadManagedAuthScope(c)
   if (scope instanceof Response) return scope
+  if (stepUpAction) {
+    const stepUp = await requireStepUpIfConfigured(c, scope.auth.organizationId, stepUpAction)
+    if (stepUp) return stepUp
+  }
   const ctx = await loadManagedContext(c, scope.db, scope.environmentId, scope.auth.organizationId)
   if (ctx instanceof Response) return ctx
   return { ...scope, ctx }
 }
 
 /** {@link loadManagedContextScope} plus the environment's managed row (404 when absent). */
-async function loadManagedRowScope(c: Context<AppEnv>) {
-  const scope = await loadManagedContextScope(c)
+async function loadManagedRowScope(c: Context<AppEnv>, stepUpAction?: StepUpAction) {
+  const scope = await loadManagedContextScope(c, stepUpAction)
   if (scope instanceof Response) return scope
   const row = await findManagedForEnvironment(scope.db, scope.environmentId)
   if (!row) return c.json({ error: 'Not found' }, 404)
@@ -761,7 +771,7 @@ async function assertManagedApplyReady(
   options: ManagedRowOptions,
   targetServerId: string
 ): Promise<CommandQueue | Response> {
-  const busy = assertManagedNotBusy(c, managedRow.status)
+  const busy = await assertManagedIdle(c, db, managedRow)
   if (busy) return busy
 
   const offline = await assertTargetServerOnline(c, db, targetServerId)
@@ -1245,7 +1255,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     if (scope instanceof Response) return scope
     const { db, auth, ctx, row } = scope
 
-    const busy = assertManagedNotBusy(c, row.status)
+    const busy = await assertManagedIdle(c, db, row)
     if (busy) return busy
 
     // Resource limits are server-specific — clamp against the host that
@@ -1326,7 +1336,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     if (scope instanceof Response) return scope
     const { db, auth, ctx, row } = scope
 
-    const busy = assertManagedNotBusy(c, row.status)
+    const busy = await assertManagedIdle(c, db, row)
     if (busy) return busy
 
     const targetServerId = resolveManagedTargetServerId(c, row.serverId)
@@ -1373,7 +1383,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const stepUp = await requireStepUpIfConfigured(c, auth.organizationId, 'managed.delete')
     if (stepUp) return stepUp
 
-    const busy = assertManagedNotBusy(c, row.status)
+    const busy = await assertManagedIdle(c, db, row)
     if (busy) return busy
 
     const canHardDelete = canHardDeleteManaged(row.serverId)
@@ -2066,7 +2076,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     if (scope instanceof Response) return scope
     const { db, auth, ctx, row } = scope
 
-    const busy = assertManagedNotBusy(c, row.status)
+    const busy = await assertManagedIdle(c, db, row)
     if (busy) return busy
 
     const primaryServerId = resolveManagedTargetServerId(c, row.serverId)
@@ -2169,7 +2179,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const row = await findManagedForEnvironment(db, environmentId)
     if (!row) return c.json({ error: 'Not found' }, 404)
 
-    const busy = assertManagedNotBusy(c, row.status)
+    const busy = await assertManagedIdle(c, db, row)
     if (busy) return busy
 
     const member = await findManagedMember(db, memberId)
@@ -2230,7 +2240,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const row = await findManagedForEnvironment(db, environmentId)
     if (!row) return c.json({ error: 'Not found' }, 404)
 
-    const busy = assertManagedNotBusy(c, row.status)
+    const busy = await assertManagedIdle(c, db, row)
     if (busy) return busy
 
     const member = await findManagedMember(db, memberId)
@@ -2329,6 +2339,11 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const row = await findManagedForEnvironment(db, environmentId)
     if (!row) return c.json({ error: 'Not found' }, 404)
 
+    // A resync wipes the member's data directory: never while a failover is
+    // fencing or promoting (it may be the candidate being promoted).
+    const busy = await assertManagedIdle(c, db, row)
+    if (busy) return busy
+
     const member = await findManagedMember(db, memberId)
     if (member?.managedId !== row.id) {
       return c.json({ error: 'Not found' }, 404)
@@ -2383,7 +2398,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const row = await findManagedForEnvironment(db, environmentId)
     if (!row) return c.json({ error: 'Not found' }, 404)
 
-    const busy = assertManagedNotBusy(c, row.status)
+    const busy = await assertManagedIdle(c, db, row)
     if (busy) return busy
 
     const member = await findManagedMember(db, memberId)
@@ -2444,11 +2459,11 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
   })
 
   router.post('/environments/:id/managed/disaster-recovery/promote', async (c) => {
-    const scope = await loadManagedRowScope(c)
+    const scope = await loadManagedRowScope(c, 'managed.disaster_recovery.promote')
     if (scope instanceof Response) return scope
     const { db, auth, ctx, row } = scope
 
-    const busy = assertManagedNotBusy(c, row.status)
+    const busy = await assertManagedIdle(c, db, row)
     if (busy) return busy
 
     const body = await parseJsonBody(c)
@@ -2611,7 +2626,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const targetServerId = resolveManagedTargetServerId(c, row.serverId)
     if (targetServerId instanceof Response) return targetServerId
 
-    const busy = assertManagedNotBusy(c, row.status)
+    const busy = await assertManagedIdle(c, db, row)
     if (busy) return busy
 
     const offline = await assertTargetServerOnline(c, db, targetServerId)
@@ -2654,7 +2669,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     const environmentId = c.req.param('id')
     const backupId = decodeURIComponent(c.req.param('backupId'))
-    const auth = await authorizeManagedRequest(c, db, environmentId, 'manage')
+    const auth = await authorizeManagedBackupMutation(c, db, environmentId, 'managed.backup.delete')
     if (auth instanceof Response) return auth
 
     const ctx = await loadManagedContext(c, db, environmentId, auth.organizationId)
@@ -2671,7 +2686,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const targetServerId = resolveManagedTargetServerId(c, row.serverId)
     if (targetServerId instanceof Response) return targetServerId
 
-    const busy = assertManagedNotBusy(c, row.status)
+    const busy = await assertManagedIdle(c, db, row)
     if (busy) return busy
 
     const offline = await assertTargetServerOnline(c, db, targetServerId)
@@ -2705,7 +2720,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     const environmentId = c.req.param('id')
     const backupId = decodeURIComponent(c.req.param('backupId'))
-    const auth = await authorizeManagedRequest(c, db, environmentId, 'manage')
+    const auth = await authorizeManagedBackupMutation(c, db, environmentId, 'managed.restore')
     if (auth instanceof Response) return auth
 
     const ctx = await loadManagedContext(c, db, environmentId, auth.organizationId)
@@ -2722,7 +2737,7 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const targetServerId = resolveManagedTargetServerId(c, row.serverId)
     if (targetServerId instanceof Response) return targetServerId
 
-    const busy = assertManagedNotBusy(c, row.status)
+    const busy = await assertManagedIdle(c, db, row)
     if (busy) return busy
 
     const offline = await assertTargetServerOnline(c, db, targetServerId)

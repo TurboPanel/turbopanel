@@ -28,6 +28,18 @@ export const STEP_UP_ACTIONS = {
   'managed.delete': 'Delete a managed database',
   'managed.database.delete': 'Delete a database inside a managed database',
   'member.remove': 'Remove a member from the organization',
+  'storage.delete': 'Delete a storage volume',
+  'storage.copy.delete': 'Delete a copy of a storage volume',
+  'storage.backup.delete': 'Delete a storage backup',
+  'storage.restore': 'Restore a storage backup over its volume',
+  'managed.backup.delete': 'Delete a managed database backup',
+  'managed.restore': 'Restore a managed database backup over its data',
+  'hosting.delete': 'Delete a hosting',
+  'environment.stop': 'Stop an environment and remove its containers',
+  'managed.disaster_recovery.promote': 'Promote a disaster-recovery replica of a managed database',
+  'tls.ca.rotate': "Rotate the organization's certificate authority",
+  'tls.ca.retire': 'Retire the previous certificate authority after a rotation',
+  'organization.reauth_settings.update': 'Change the re-authentication setting',
 } as const
 
 export type StepUpAction = keyof typeof STEP_UP_ACTIONS

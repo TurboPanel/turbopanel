@@ -4,7 +4,12 @@ import {
   METRICS_LEGACY_WIRE_VERSION,
   METRICS_SCHEMA_VERSION,
 } from '../../contracts/metrics-contract.ts'
-import { MAX_METRICS_PAYLOAD_BYTES, validateMetricsSample } from './validation.ts'
+import {
+  MAX_METRICS_PAYLOAD_BYTES,
+  rateLimitedMetricsLog,
+  resetMetricsRateLimitForTests,
+  validateMetricsSample,
+} from './validation.ts'
 
 /**
  * Deno twin of validation.test.ts (Vitest) so Sonar LCOV attributes
@@ -525,7 +530,7 @@ it('validateMetricsSample does not apply the metadata skew window to event.at', 
       events: [
         {
           eventId: 'e1',
-          at: '2000-01-01T00:00:00.000Z',
+          at: new Date(Date.now() - 3_600_000).toISOString(),
           kind: 'oom_kill',
           severity: 'critical',
         },
@@ -578,4 +583,60 @@ it('validateMetricsSample accepts a valid event with entityId/source/payload', (
   assertEquals(result.sample.events.length, 1)
   assertEquals(result.sample.events[0]?.entityId, 'eth0')
   assertEquals(result.sample.events[0]?.payload?.retries, 3)
+})
+
+it('validateMetricsSample rejects generations that do not fit the 32-bit column types', () => {
+  const max = 2_147_483_647
+  assertEquals(
+    validateMetricsSample(
+      validRaw({ metadata: { topologyGeneration: max, bootGeneration: max } }),
+      ctx()
+    ).ok,
+    true
+  )
+  assertEquals(
+    validateMetricsSample(validRaw({ metadata: { topologyGeneration: max + 1 } }), ctx()).ok,
+    false
+  )
+  assertEquals(
+    validateMetricsSample(validRaw({ metadata: { topologyGeneration: 3_000_000_000 } }), ctx()).ok,
+    false
+  )
+  assertEquals(
+    validateMetricsSample(validRaw({ metadata: { bootGeneration: 3_000_000_000 } }), ctx()).ok,
+    false
+  )
+})
+
+it('validateMetricsSample rejects event timestamps far in the past or future', () => {
+  const nowMs = Date.parse('2026-10-04T12:00:00.000Z')
+  const withAt = (at: string) =>
+    validRaw({
+      metadata: { sampledAt: new Date(nowMs).toISOString() },
+      events: [{ eventId: 'e1', at, kind: 'oom_kill', severity: 'info' }],
+    })
+  const run = (at: string) => validateMetricsSample(withAt(at), ctx({ nowMs })).ok
+  assertEquals(run('2026-10-04T11:00:00.000Z'), true)
+  assertEquals(run('2026-10-01T12:00:00.000Z'), true)
+  assertEquals(run('1970-01-01T00:00:00.000Z'), false)
+  assertEquals(run('2026-09-01T00:00:00.000Z'), false)
+  assertEquals(run('2026-10-04T13:00:00.000Z'), false)
+  assertEquals(run('+275760-09-13T00:00:00.000Z'), false)
+})
+
+it('rateLimitedMetricsLog keeps bounded memory and bounded reason length', () => {
+  resetMetricsRateLimitForTests()
+  const logged: string[] = []
+  const log = (message: string) => logged.push(message)
+  for (let i = 0; i < 20_000; i++) {
+    rateLimitedMetricsLog('srv-1', `${i}:${'x'.repeat(5000)}`, log, 1_000 + i)
+  }
+  assertEquals(
+    logged.every((m) => m.length <= 300),
+    true
+  )
+  // Entries are capped, so an old reason is forgotten and logs again.
+  rateLimitedMetricsLog('srv-1', `0:${'x'.repeat(5000)}`, log, 1_000 + 20_000)
+  assertEquals(logged.length, 20_001)
+  resetMetricsRateLimitForTests()
 })
