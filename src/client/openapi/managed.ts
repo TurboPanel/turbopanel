@@ -924,6 +924,17 @@ export const managedSchemas = {
       },
     },
   },
+  ManagedImageRefusalError: {
+    type: 'object',
+    required: ['error', 'message'],
+    properties: {
+      error: {
+        type: 'string',
+        enum: ['managed_series_immutable', 'managed_variant_swap_unsafe'],
+      },
+      message: { type: 'string', description: 'Plain-words explanation of the refusal.' },
+    },
+  },
   ServerPlacementRequiredError: errorSchema('server_placement_required'),
   ServerOfflineError: errorSchema('server_offline'),
   ManagedSettingsInvalidError: errorSchema('managed_settings_invalid'),
@@ -1020,7 +1031,12 @@ export const managedPaths = {
       requestBody: {
         content: {
           'application/json': {
-            schema: { $ref: '#/components/schemas/ManagedSettings' },
+            schema: {
+              type: 'object',
+              properties: {
+                settings: { $ref: '#/components/schemas/ManagedSettings' },
+              },
+            },
           },
         },
       },
@@ -1034,8 +1050,18 @@ export const managedPaths = {
           ...jsonSchema('ManagedSettingsInvalidError'),
         },
         409: {
-          description: 'managed_busy',
-          ...jsonSchema('ManagedBusyError'),
+          description:
+            'managed_busy, or an image change that is refused before anything is written: managed_series_immutable (the engine series cannot change on an existing cluster; create a new cluster and restore a backup into it) / managed_variant_swap_unsafe (PostgreSQL alpine <-> debian would corrupt text indexes); both carry a `message`',
+          content: {
+            'application/json': {
+              schema: {
+                oneOf: [
+                  { $ref: '#/components/schemas/ManagedBusyError' },
+                  { $ref: '#/components/schemas/ManagedImageRefusalError' },
+                ],
+              },
+            },
+          },
         },
       },
     },
