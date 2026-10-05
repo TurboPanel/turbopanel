@@ -1,5 +1,5 @@
 /**
- * Workers deploy (`pnpm deploy`, `pnpm deploy:testing`): migrate first, stamp
+ * Workers deploy (`pnpm deploy`, `pnpm deploy:testing|staging|live`): migrate first, stamp
  * the commit, never ship `revision: unknown`.
  */
 import { assertEquals, assertThrows } from '@std/assert'
@@ -100,4 +100,20 @@ test('a clean run migrates then deploys', () => {
   )
   assertEquals(ran.length, 2)
   assertEquals(ran[1].at(-1), `TURBOPANEL_REVISION:${HEAD_SHA}`)
+})
+
+test('each hosted environment has a deploy script that names it and goes through the migrate-first deploy', () => {
+  const pkg = JSON.parse(Deno.readTextFileSync(new URL('../package.json', import.meta.url)))
+  for (const name of ['testing', 'staging', 'live']) {
+    assertEquals(
+      pkg.scripts[`deploy:${name}`],
+      `CLOUDFLARE_ENV=${name} node scripts/deploy-workers.mjs`
+    )
+  }
+  const wrangler = JSON.parse(
+    Deno.readTextFileSync(new URL('../wrangler.jsonc', import.meta.url))
+      .replace(/^\s*\/\/.*$/gm, '')
+      .replace(/,(\s*[}\]])/g, '$1')
+  )
+  assertEquals(Object.keys(wrangler.env).sort(), ['live', 'staging', 'testing'])
 })

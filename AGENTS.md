@@ -388,6 +388,21 @@ guard; `pnpm test:do` alone does not.
   a wiped database. `/api/client/v1/status` answers **503**
   `{ code: "database_error" }` (not a bare 500) when the settings read fails
   — the symptom of an unmigrated or unreachable database.
+- **STAGING and LIVE use the same Workers Builds setup**, one Worker per
+  environment: `staging-instance` (branch `staging`, deploy command
+  `pnpm run deploy:staging`) and `instance` (branch `live`, deploy command
+  `pnpm run deploy:live`). Each needs its own build variables
+  (`TURBOPANEL_DATABASE_URL`, `TURBOPANEL_DEPLOY_CHECK_API_TOKEN`) pointing at
+  that environment's own database and Hyperdrive; a database URL that is not
+  the env's Hyperdrive origin is refused before anything migrates. The queue
+  (`staging-daemon-commands` / `daemon-commands`) with its `-dlq` dead-letter
+  queue and the R2 bucket must exist before the first deploy; the Durable
+  Object namespace and rate limiters come from `wrangler.jsonc`. Hosted
+  sign-up is off on both until `TURBOPANEL_IS_SIGNUP_ENABLED` says otherwise,
+  and `TURBOPANEL_AUTO_FAILOVER` is `off`. **Monitor
+  `GET /api/daemon/v1/readiness`, not `/api/health`:** `/api/health` is a
+  static identity page and answers 200 with the database gone; readiness reads
+  the database and answers 503 `database unavailable` when it cannot.
   Do not commit `TURBOPANEL_REVISION` in `wrangler.jsonc` — that would freeze a
   SHA. Self-hosted instance-launch writes it into `runtime.env` /
   `runtime.dev-vars` from `git rev-parse HEAD` in the instance checkout.
