@@ -214,7 +214,7 @@ import {
   materializeBindingsForServices,
   reapplyBindingOwnedVariables,
 } from '../../features/bindings/materialize.ts'
-import type { DerivedSecretsConfig } from '../../lib/secrets/secrets.ts'
+import type { DerivedSecretsConfig, SecretsConfig } from '../../lib/secrets/secrets.ts'
 import { resolveHostingDeployWeb } from '../../features/hostings/hosting-web-env.ts'
 import {
   assembleTlsMetadata,
@@ -748,14 +748,21 @@ function warningFromPrepareError(
   }
 }
 
-async function sealVariableMaterialForDaemon(
+type DaemonSealContext = {
+  secretsConfig: SecretsConfig
+  dataEncryptionSecrets: DerivedSecretsConfig
+  recipient: { serverId: string; keyId: string }
+}
+
+/**
+ * What sealing a stored secret for one server's daemon needs, or the refusal
+ * the deploy answers with (`503` no encryption key, `422` no active daemon key).
+ */
+async function resolveDaemonSealContext(
   c: Context<AppEnv>,
   db: Db,
-  serverId: string,
-  material: DeployVariableMaterial[]
-): Promise<EnvironmentDeployVariableMaterial[] | Response> {
-  if (material.length === 0) return []
-
+  serverId: string
+): Promise<DaemonSealContext | Response> {
   const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
   const secretsConfig = c.get('secretsConfig')
   if (!dataEncryptionSecrets || !secretsConfig) {
@@ -776,9 +783,24 @@ async function sealVariableMaterialForDaemon(
       { status: 422 }
     )
   }
-  const keyId = daemonState.key.id
+  return {
+    secretsConfig,
+    dataEncryptionSecrets,
+    recipient: { serverId, keyId: daemonState.key.id },
+  }
+}
 
-  const recipient = { serverId, keyId }
+async function sealVariableMaterialForDaemon(
+  c: Context<AppEnv>,
+  db: Db,
+  serverId: string,
+  material: DeployVariableMaterial[]
+): Promise<EnvironmentDeployVariableMaterial[] | Response> {
+  if (material.length === 0) return []
+
+  const sealing = await resolveDaemonSealContext(c, db, serverId)
+  if (sealing instanceof Response) return sealing
+  const { secretsConfig, dataEncryptionSecrets, recipient } = sealing
   // Pure crypto per entry (no DB, no shared state): seal them concurrently.
   return await Promise.all(
     material.map(async (entry) => {
@@ -802,6 +824,48 @@ async function sealVariableMaterialForDaemon(
         forRuntime: entry.forRuntime,
         isLiteral: entry.isLiteral,
         valueEnvelope: envelope,
+      }
+    })
+  )
+}
+
+/**
+ * Secret runtime variables of a site's hostings, resealed for the daemon.
+ *
+ * `hosting-web-env` hands them over still sealed under the control plane's own
+ * key (`tpsecret`), so a plaintext never exists on this path; here each is
+ * resealed for the target daemon, which decrypts it on the host. A deploy with
+ * no secret site variable needs no daemon key and is returned as is.
+ */
+export async function sealHostingWebSecretsForDaemon(
+  c: Context<AppEnv>,
+  db: Db,
+  serverId: string,
+  hostings: DeployHostingPayload[]
+): Promise<DeployHostingPayload[] | Response> {
+  if (!hostings.some((entry) => entry.web?.secretEnv !== undefined)) {
+    return hostings
+  }
+
+  const sealing = await resolveDaemonSealContext(c, db, serverId)
+  if (sealing instanceof Response) return sealing
+  const { secretsConfig, dataEncryptionSecrets, recipient } = sealing
+  return await Promise.all(
+    hostings.map(async (entry) => {
+      const secretEnv = entry.web?.secretEnv
+      if (!entry.web || secretEnv === undefined) return entry
+      const names = Object.keys(secretEnv)
+      const envelopes = await Promise.all(
+        names.map((name) =>
+          resealSecretForDaemon(secretsConfig, dataEncryptionSecrets, recipient, secretEnv[name]!)
+        )
+      )
+      return {
+        ...entry,
+        web: {
+          ...entry.web,
+          secretEnv: Object.fromEntries(names.map((n, i) => [n, envelopes[i]!])),
+        },
       }
     })
   )
@@ -3535,7 +3599,6 @@ type HostingRow = {
 
 async function resolveHttpHostingEntry(
   db: Db,
-  dataEncryptionSecrets: DerivedSecretsConfig,
   h: HostingRow,
   svc: Readonly<{ id: string; composeServiceName: string }>,
   candidates: OrgTlsCandidate[],
@@ -3578,7 +3641,12 @@ async function resolveHttpHostingEntry(
   })
   if (!tlsWire.ok) {
     return {
-      error: Response.json({ error: tlsWire.error, hostingId: h.id }, { status: 400 }),
+      error: Response.json(
+        { error: tlsWire.error, hostingId: h.id },
+        {
+          status: 400,
+        }
+      ),
     }
   }
 
@@ -3591,7 +3659,7 @@ async function resolveHttpHostingEntry(
     return { prepareError: bindResolved }
   }
 
-  const web = await resolveHostingDeployWeb(db, dataEncryptionSecrets, h.id, h.options)
+  const web = await resolveHostingDeployWeb(db, h.id, h.options)
 
   return {
     entry: {
@@ -3622,7 +3690,11 @@ async function resolveTcpUdpHostingEntry(
   protocol: 'tcp' | 'udp',
   serverId: string
 ): Promise<
-  { entry: DeployHostingPayload } | { skip: true } | { prepareError: DeployPrepareError }
+  | { entry: DeployHostingPayload }
+  | { skip: true }
+  | {
+      prepareError: DeployPrepareError
+    }
 > {
   const ports = readHostingPorts(h.options)
   if (ports.length === 0) return { skip: true }
@@ -3651,7 +3723,6 @@ async function resolveTcpUdpHostingEntry(
 
 function resolveHostingEntry(
   db: Db,
-  dataEncryptionSecrets: DerivedSecretsConfig,
   h: HostingRow,
   svc: Readonly<{ id: string; composeServiceName: string }>,
   candidates: OrgTlsCandidate[],
@@ -3665,15 +3736,7 @@ function resolveHostingEntry(
 > {
   const protocol = readHostingProtocol(h.options)
   if (protocol === 'http') {
-    return resolveHttpHostingEntry(
-      db,
-      dataEncryptionSecrets,
-      h,
-      svc,
-      candidates,
-      serverId,
-      acmeEnabled
-    )
+    return resolveHttpHostingEntry(db, h, svc, candidates, serverId, acmeEnabled)
   }
   return resolveTcpUdpHostingEntry(db, h, svc, protocol, serverId)
 }
@@ -3719,7 +3782,6 @@ async function loadOrgTlsCandidates(db: Db, organizationId: string): Promise<Org
 
 async function buildHostingsForService(
   db: Db,
-  dataEncryptionSecrets: DerivedSecretsConfig,
   svc: HostingServiceRow,
   candidates: OrgTlsCandidate[],
   serverId: string,
@@ -3745,7 +3807,6 @@ async function buildHostingsForService(
   for (const h of hostingRows) {
     const result = await resolveHostingEntry(
       db,
-      dataEncryptionSecrets,
       h,
       { id: svc.id, composeServiceName },
       candidates,
@@ -3767,8 +3828,7 @@ async function buildHostingPayload(
   db: Db,
   environmentId: string,
   organizationId: string,
-  serverId: string,
-  dataEncryptionSecrets: DerivedSecretsConfig
+  serverId: string
 ): Promise<BuildHostingResult> {
   const serviceRows = await db
     .select({
@@ -3789,14 +3849,7 @@ async function buildHostingPayload(
   const resolvedTlsIds = new Set<string>()
 
   for (const svc of serviceRows) {
-    const built = await buildHostingsForService(
-      db,
-      dataEncryptionSecrets,
-      svc,
-      candidates,
-      serverId,
-      acmeEnabled
-    )
+    const built = await buildHostingsForService(db, svc, candidates, serverId, acmeEnabled)
     if ('error' in built) return built
     if ('prepareError' in built) return built
     hostingPayload.push(...built.hostings)
@@ -3972,27 +4025,23 @@ async function compileServerEdgeDeployment(
     return { hostings: [], tlsMaterial: [], listenerPorts }
   }
 
-  const dataEncryptionSecrets = c.get('dataEncryptionSecrets')
-  if (!dataEncryptionSecrets) {
-    return c.json(
-      {
-        error: 'Encryption unavailable — no encryption key configured',
-      },
-      503
-    )
-  }
-
   const built = await buildHostingPayload(
     db,
     params.environmentId,
     params.organizationId,
-    params.serverId,
-    dataEncryptionSecrets
+    params.serverId
   )
   if ('prepareError' in built) return built.prepareError
   if ('error' in built) return built.error
 
-  const hostings = expandHostingsForComposeInstances(built.hostings, params.expansion)
+  const sealedHostings = await sealHostingWebSecretsForDaemon(
+    c,
+    db,
+    params.serverId,
+    built.hostings
+  )
+  if (sealedHostings instanceof Response) return sealedHostings
+  const hostings = expandHostingsForComposeInstances(sealedHostings, params.expansion)
   const tlsMaterial = await sealTlsMaterialForDaemon(
     c,
     db,
