@@ -247,7 +247,6 @@ test('storage CRUD covers list, parent filter, create, patch, and delete', async
           storageCopy: {
             provider: 'path',
             serverId,
-            path: '/var/lib/app/config',
           },
           mount: {
             serviceId,
@@ -294,7 +293,7 @@ test('storage CRUD covers list, parent filter, create, patch, and delete', async
       }
       assertEquals(detailBody.storage.id, dirId)
       assertEquals(detailBody.storage.mounts[0]?.destinationPath, '/etc/app/config')
-      assertEquals(detailBody.storage.copies[0]?.resolvedSourcePath, '/var/lib/app/config')
+      assertEquals(detailBody.storage.copies[0]?.resolvedSourcePath, null)
 
       const patch = await app.request(`/storage/${dirId}`, {
         method: 'PATCH',
@@ -528,7 +527,7 @@ test('POST /storage seals file content when encryption is configured', async () 
           kind: 'file',
           name: 'secrets.txt',
           content: 'hello-storage',
-          storageCopy: { provider: 'path', serverId, path: '/app/secrets.txt' },
+          storageCopy: { provider: 'path', serverId },
         }),
       })
       assertEquals(res.status, 200)
