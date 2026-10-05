@@ -57,6 +57,11 @@ export type HostingOptions = {
   /** Required (non-empty) when `protocol` is `tcp` or `udp`. */
   ports?: HostingPortMapping[]
   web?: HostingWebOptions
+  /**
+   * Also serve the other spelling of each hostname (`www.` added or removed)
+   * and send it permanently to the hostname as written. `http` hostings only.
+   */
+  wwwRedirect?: boolean
 }
 
 const MAX_HOSTING_PORTS = 10
@@ -228,6 +233,8 @@ export function parseHostingOptions(value: unknown): HostingOptions | null {
 
   const web = parseWebOptions(value.web)
   if (web) options.web = web
+
+  if (value.wwwRedirect === true) options.wwwRedirect = true
 
   return options
 }

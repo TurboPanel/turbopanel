@@ -67,6 +67,7 @@ export type ComposeLintCode =
   | 'turbofabric_required'
   | 'field_requires_org_opt_in'
   | 'field_recommends_resource_limits'
+  | 'service_missing_image_or_build'
   | BuildRefusalCode
 
 export type ComposeLintIssue = {
@@ -164,6 +165,24 @@ export type ComposeLintOptions = {
    * this on cannot retroactively fail a document for an unrelated reason.
    */
   strict?: boolean
+  /**
+   * Whether a Docker service must name its own `image` or `build`. Defaults to
+   * `true`.
+   *
+   * Pass `false` only for a layer that is a *partial* document by design — an
+   * environment's "Changes for {env}" may set one field of a service the
+   * project's Base defines, so the layer alone cannot say whether the service
+   * has something to run. The caller must then check the **merged** document
+   * (Base layers plus this one) with the default, because the rule is not
+   * dropped, only moved to where it can be answered.
+   */
+  requireImageOrBuild?: boolean
+  /**
+   * The document being linted is the merge of the Base and an environment's
+   * changes, not a stored layer. Only changes the wording of the missing
+   * image / build refusal, so it names where to put one.
+   */
+  merged?: boolean
 }
 
 /**
@@ -1565,6 +1584,7 @@ function lintService(params: {
     issues.push({
       level: 'error',
       message: `Service "${name}" must define "image" or "build"`,
+      code: 'service_missing_image_or_build',
       path,
       line: keyLine,
     })
@@ -1911,7 +1931,32 @@ export function lintComposeYaml(source: string, options?: ComposeLintOptions): C
   if (options?.projectRepositoryId !== undefined) {
     lintSingleRepository(root, lineCounter, options.projectRepositoryId, issues)
   }
-  return mergeSchemaIssues(schemaIssues, issues).sort(compareLintIssues)
+  return applyImageOrBuildPosture(mergeSchemaIssues(schemaIssues, issues), options).sort(
+    compareLintIssues
+  )
+}
+
+const MERGED_MISSING_IMAGE_SUFFIX =
+  " - neither the project's Base nor this environment's changes give it one"
+
+/**
+ * Settle the "every Docker service has something to run" rule for the caller:
+ * dropped for a partial layer (the merged document answers it), reworded for a
+ * merged one so the message says where to add the missing `image` / `build`.
+ */
+function applyImageOrBuildPosture(
+  issues: ComposeLintIssue[],
+  options: ComposeLintOptions | undefined
+): ComposeLintIssue[] {
+  if (options?.requireImageOrBuild === false) {
+    return issues.filter((issue) => issue.code !== 'service_missing_image_or_build')
+  }
+  if (!options?.merged) return issues
+  return issues.map((issue) =>
+    issue.code === 'service_missing_image_or_build'
+      ? { ...issue, message: issue.message + MERGED_MISSING_IMAGE_SUFFIX }
+      : issue
+  )
 }
 
 /**

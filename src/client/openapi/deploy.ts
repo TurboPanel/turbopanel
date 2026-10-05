@@ -440,6 +440,11 @@ export const deploySchemas = {
       },
       errorCode: { type: ['string', 'null'] },
       errorMessage: { type: ['string', 'null'] },
+      errorLine: {
+        type: ['string', 'null'],
+        description:
+          'The one line of `errorMessage` that says what went wrong (the cause is printed last). Signed URLs are redacted. Null when the attempt has no error text.',
+      },
       strategy: {
         type: ['string', 'null'],
         enum: ['inplace', 'sequential', null],
@@ -455,6 +460,12 @@ export const deploySchemas = {
       strategyOutcomeReason: {
         type: ['string', 'null'],
         description: 'Why the deploy rolled back or needs attention.',
+      },
+      cancelRequestedAt: {
+        type: ['string', 'null'],
+        format: 'date-time',
+        description:
+          'When someone asked for this attempt to be cancelled. With a live `status` the deploy is "cancelling"; with `succeeded` the cancel came too late and the deploy finished anyway; `status: cancelled` (`errorCode` `deploy_cancelled`) is the terminal state, with the previous version still serving.',
       },
       hasLog: {
         type: 'boolean',
@@ -721,6 +732,49 @@ export const deployPaths = {
         },
         403: { description: 'Caller cannot read this environment' },
         404: { description: 'No such deploy attempt for this environment' },
+      },
+    },
+  },
+  '/api/client/v1/environments/{id}/deployments/{deploymentId}/cancel': {
+    post: {
+      tags: ['Environments'],
+      summary: 'Cancel a deploy that is queued or running',
+      description:
+        "`deploymentId` is a `command.id`; the whole deploy is cancelled (every server of that generation, and any rollout batch still waiting). A queued deploy is cancelled outright (`state: cancelled`). A running one is asked to stop (`state: cancelling`): the host only honours that before it switches anything over, so the previous version keeps serving, and the deploy's own outcome later reads `status: cancelled` in the history (`cancelRequestedAt` marks it meanwhile). Needs manage on the environment. No step-up: a re-deploy fully reverses a cancel. Idempotent: an already-cancelled deploy answers `already_cancelled`.",
+      parameters: [
+        { name: 'id', in: 'path', required: true, schema: { type: 'string' } },
+        { name: 'deploymentId', in: 'path', required: true, schema: { type: 'string' } },
+      ],
+      responses: {
+        200: {
+          description: 'Cancelled, cancelling, or already cancelled',
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['ok', 'state', 'environmentId', 'deploymentId'],
+                properties: {
+                  ok: { type: 'boolean', enum: [true] },
+                  state: { type: 'string', enum: ['cancelled', 'cancelling', 'already_cancelled'] },
+                  environmentId: { type: 'string' },
+                  deploymentId: { type: 'string' },
+                },
+              },
+            },
+          },
+        },
+        403: { description: 'Caller cannot manage this environment' },
+        404: { description: 'No such deploy attempt for this environment' },
+        409: {
+          description:
+            "`deploy_not_cancellable` (already finished), `deploy_too_late` (the host is already switching over and will finish), or `cancel_unsupported` (the server's daemon is too old to cancel)",
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/ErrorResponse' },
+            },
+          },
+        },
+        503: { description: '`daemon_unavailable`: the control plane has no link to the server' },
       },
     },
   },

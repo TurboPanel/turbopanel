@@ -2823,6 +2823,21 @@ test('parseFabricReconcileResult accepts skipped, reconciled, and teardown shape
   })
 })
 
+test('parseFabricReconcileResult carries the peer interface and refuses a bad name', () => {
+  const peer = (iface: unknown) => ({
+    summary: 'TurboFabric reconciled',
+    peers: [{ publicKey: WG_PUBKEY, interface: iface }],
+  })
+  assertEquals(parseFabricReconcileResult(peer('eno2')).peers?.[0]?.interface, 'eno2')
+  for (const bad of ['', 'has space', 'x'.repeat(16), '../etc', 7]) {
+    assertThrows(
+      () => parseFabricReconcileResult(peer(bad)),
+      TypeError,
+      'Invalid fabric reconcile result peer interface'
+    )
+  }
+})
+
 test('encodeCommandEnvelope round-trips through parseCommandEnvelope', () => {
   const envelope = {
     commandId: 'cmd-1',
@@ -3397,6 +3412,32 @@ test('parseEnvironmentDeployPayload accepts optional tlsMode acme and rejects un
           },
         ],
       }),
+    Error,
+    'Invalid environment.deploy payload'
+  )
+})
+
+test('parseEnvironmentDeployPayload keeps wwwRedirect only when true and rejects non-booleans', () => {
+  const hostingIngressNetwork = '00000000-0000-4000-8000-0000000000bb'
+  const withHosting = (extra: Record<string, unknown>) =>
+    parseEnvironmentDeployPayload({
+      ...BASE_ENVIRONMENT_DEPLOY,
+      hostingIngressNetwork,
+      hostings: [
+        {
+          hostingId: 'h1',
+          serviceId: 's1',
+          composeServiceName: 'web',
+          hostnames: ['example.com'],
+          ...extra,
+        },
+      ],
+    })
+  assertEquals(withHosting({ wwwRedirect: true }).hostings[0]?.wwwRedirect, true)
+  assertEquals(withHosting({ wwwRedirect: false }).hostings[0]?.wwwRedirect, undefined)
+  assertEquals(withHosting({}).hostings[0]?.wwwRedirect, undefined)
+  assertThrows(
+    () => withHosting({ wwwRedirect: 'yes' }),
     Error,
     'Invalid environment.deploy payload'
   )
@@ -5596,6 +5637,7 @@ test('parseEnvironmentDeployPayload sites accept engines, php, and principal ids
       engine: 'nginx',
       principal: { ...SITE_PRINCIPAL, uid: 15001, gid: 15001 },
       webEnv: { APP_ENV: 'prod', drop: 1 },
+      webSecretEnv: { SITE_VAR: 'tpdaemon.abc', drop: 1 },
       php: { version: '8.3', extensions: ['gd'] },
     })
   )
@@ -5604,6 +5646,8 @@ test('parseEnvironmentDeployPayload sites accept engines, php, and principal ids
   assertEquals(sites[0]?.engine, 'nginx')
   assertEquals(sites[0]?.principal?.uid, 15001)
   assertEquals(sites[0]?.webEnv, { APP_ENV: 'prod' })
+  // Sealed secret variables ride apart from the plain ones; non-strings drop.
+  assertEquals(sites[0]?.webSecretEnv, { SITE_VAR: 'tpdaemon.abc' })
   assertEquals(sites[0]?.php?.extensions, ['gd'])
 
   for (const engine of ['apache', 'openlitespeed']) {

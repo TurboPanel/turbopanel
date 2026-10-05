@@ -178,6 +178,7 @@ export const DAEMON_WIRE_FEATURES = [
   'metrics-v7',
   'php-site-modes-v1',
   'site-engine-nginx-apache-v1',
+  'deploy-cancel-v1',
 ] as const
 
 export type DaemonWireFeature = (typeof DAEMON_WIRE_FEATURES)[number]
@@ -227,6 +228,14 @@ export const METRICS_V7_FEATURE: DaemonWireFeature = 'metrics-v7'
  * Caddy sites ignore `php.mode` either way.
  */
 export const PHP_SITE_MODES_FEATURE: DaemonWireFeature = 'php-site-modes-v1'
+
+/**
+ * The daemon understands `deploy-cancel` and stops an `environment.deploy`
+ * before it switches over, leaving the previous version serving. Without it the
+ * control plane never sends the message and answers 409 `cancel_unsupported`
+ * for a deploy the daemon already acknowledged.
+ */
+export const DEPLOY_CANCEL_FEATURE: DaemonWireFeature = 'deploy-cancel-v1'
 
 /** Features that need an instance at or above a semver. Empty until one lands. */
 export const INSTANCE_FEATURE_MIN_VERSIONS: Readonly<Record<string, string>> = {}

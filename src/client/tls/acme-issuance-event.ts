@@ -1,7 +1,8 @@
 /**
  * Daemon-observed ACME issuance state for one `tlsMode: 'acme'` hostname.
- * Merge-patches `tls.metadata.acme.lastError` on the matching `managed`
- * `lets_encrypt` row only — deliberately never writes `tls.status`.
+ * Merge-patches `tls.metadata.acme` (`lastError`, `lastIssuedAt`, `notAfter`)
+ * on the matching `managed` `lets_encrypt` row only — deliberately never
+ * writes `tls.status`.
  * `isReadyCandidate` (`../../lib/tls/match.ts`) treats any `managed` row as
  * deploy-ready purely from its `status` column; a visibility feature must
  * not become a second, accidental deploy gate by touching that column.
@@ -13,6 +14,7 @@ import { server, tls } from '../../db/schema.ts'
 import { coversHostname, normalizeHostname } from '../../lib/tls/match.ts'
 import type { TlsAcmeMetadata } from '../../lib/tls/types.ts'
 import { forEachSequential } from '../../lib/sequential.ts'
+import { redactUrlSecrets } from '../../features/upgrades/redact-url-secrets.ts'
 
 export type AcmeIssuanceEventInput = {
   /** The server that reported the outcome — scopes the write to its organization. */
@@ -20,6 +22,10 @@ export type AcmeIssuanceEventInput = {
   hostname: string
   ok: boolean
   errorMessage?: string
+  /** Leaf expiry (ISO 8601) the daemon's probe read; sent with `ok: true`. */
+  notAfter?: string
+  /** When the daemon observed it (ISO 8601); stamps `lastIssuedAt`. Defaults to now. */
+  at?: string
 }
 
 function isResidualMetadata(value: unknown): value is {
@@ -32,6 +38,33 @@ function isResidualMetadata(value: unknown): value is {
   }
   const record = value as Record<string, unknown>
   return Array.isArray(record.dnsNames) && record.dnsNames.every((n) => typeof n === 'string')
+}
+
+/**
+ * The next `acme` metadata for one row. A good probe clears `lastError`,
+ * records the served expiry, and stamps `lastIssuedAt` when this is the first
+ * good sighting, a recovery from a failure, or the expiry moved (a renewal);
+ * a repeat of the same good state leaves the stamp alone. A failure sets
+ * `lastError` and leaves the last known expiry and stamp in place.
+ */
+export function applyIssuanceOutcome(
+  previous: TlsAcmeMetadata | undefined,
+  input: Pick<AcmeIssuanceEventInput, 'ok' | 'errorMessage' | 'notAfter' | 'at'>,
+  now: () => string = () => new Date().toISOString()
+): TlsAcmeMetadata {
+  const next: TlsAcmeMetadata = { ...previous }
+  if (!input.ok) {
+    next.lastError = redactUrlSecrets(input.errorMessage ?? 'ACME issuance failed')
+    return next
+  }
+  const recovered = previous?.lastError !== undefined
+  const expiryMoved = input.notAfter !== undefined && input.notAfter !== previous?.notAfter
+  delete next.lastError
+  if (input.notAfter !== undefined) next.notAfter = input.notAfter
+  if (recovered || expiryMoved || previous?.lastIssuedAt === undefined) {
+    next.lastIssuedAt = input.at ?? now()
+  }
+  return next
 }
 
 /**
@@ -80,12 +113,7 @@ export async function handleAcmeIssuanceEvent(
     if (!isResidualMetadata(row.metadata)) return
     if (!coversHostname(row.metadata.dnsNames, hostname)) return
 
-    const nextAcme: TlsAcmeMetadata = { ...row.metadata.acme }
-    if (input.ok) {
-      delete nextAcme.lastError
-    } else {
-      nextAcme.lastError = input.errorMessage ?? 'ACME issuance failed'
-    }
+    const nextAcme = applyIssuanceOutcome(row.metadata.acme, input)
 
     await db
       .update(tls)

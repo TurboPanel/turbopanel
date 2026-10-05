@@ -11,6 +11,7 @@ import type { Context, Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import type { AuthRouteOpts } from '../authn/http.ts'
 import { createSessionMiddleware } from '../authn/middleware.ts'
+import { requireStepUpIfConfigured } from '../authn/step-up.ts'
 import { resolveEntityOrganizationId } from '../authz/create-access-grant.ts'
 import { can } from '../authz/evaluator.ts'
 import {
@@ -2103,6 +2104,9 @@ export function registerEnvironmentStopRoutes(router: Hono<AppEnv>, opts: AuthRo
     const environmentId = c.req.param('id')
     const auth = await authorizeEnvironmentManage(c, db, environmentId)
     if (auth instanceof Response) return auth
+
+    const stepUp = await requireStepUpIfConfigured(c, auth.organizationId, 'environment.stop')
+    if (stepUp) return stepUp
 
     const commandQueue = assertDispatchInfrastructure(c)
     if (commandQueue instanceof Response) return commandQueue

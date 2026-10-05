@@ -37,6 +37,18 @@ Per-feature behavior contracts for the client surface (moved from the root
 `AGENTS.md` **API / WS surfaces** section). Keep current when endpoint behavior
 changes.
 
+- **Org activity feed (client surface):** `GET /organizations/:id/activity` —
+  running and recently failed (7 days) deploy / restart / stop commands across
+  the org, polled by the console (nothing is pushed). `?filter=all|deploying|failed`
+  (`crashing` / `crashed` are **not served**: no restart count is recorded; an
+  unknown filter is **400**), `limit` 1–100 (default 50, larger clamps),
+  `offset`. Returns `{ ok, items, total, hasMore }`; `step` / `totalSteps` /
+  `crashCount` are always `null` until those are recorded. Gate as the members
+  list: unreachable org or bad uuid **404**, no owner/manager rights **403**;
+  rows are limited to `listVisible(server)` and to servers of the **path** org
+  (never the active-org header). Reads `command` only (never `dispatch`); the
+  organization comes from `command.server_id → server.organization_id`.
+  `features/commands/activity-query.ts`.
 - **Server timezone / NTP (client surface):** daemon hello + change-detected
   heartbeats persist `timeSync` onto `server.timezone` / `is_time_sync_enabled`
   / `ntp_servers` / `ntp_last_synced_at`, and nest addresses on
@@ -186,6 +198,18 @@ changes.
   Environments without their own `server_id` inherit it at deploy / lifecycle /
   stop (`resolveEffectivePlacementServerId`). Overview Base shows an inline
   picker; env-level pins still override.
+- **Environment config view (`GET /environments/:id/config-view`,
+  `environments/config-view-routes.ts` + `features/compose/config-view.ts`):** a
+  derived, read-only answer for the editor: the effective config (project Base
+  merged with the environment compose by `mergeComposeLayers`, the same merge a
+  deploy uses), the changes from the Base per service/field with their sources
+  (`base` / `project` / `environment`), and `followsBase`. `followsBase` is
+  **derived, never stored**: the environment compose (or an extra environment
+  layer) setting `services: !override` / `!reset` means it stands alone. It runs
+  no deploy preparation (nothing is allocated). Secret variables carry no value
+  (the stored ciphertext is not even selected) and credential-looking compose
+  values are masked; the raw `x-turbopanel` block is never returned. A client
+  API only: not a daemon contract, so there is no twin in turbopaneld.
 - **Deploy strategy settings (stage 1, nothing acts on them yet):**
   `environment.options` carries `deployStrategy` (`inplace` | `sequential` |
   `bluegreen`), `migrations` (`none` | `compatible` | `breaking` | `unknown`),
@@ -447,6 +471,19 @@ sourceServerId? }`
   dual-family authority `cidrsOverlap` / `cidrContains` in
   `src/lib/ip-address.ts`; `src/features/fabric/cidr.ts` keeps only IPv4 pool
   arithmetic and delegates its overlap helpers there.
+
+- **Server-to-server network choice (`POST /datacenters/:id/server-traffic`
+  `{ preferred: true }`):** the point-and-click form of the priority rule, so
+  nobody has to type a number. `planServerTrafficChoice`
+  (`src/features/datacenters/server-traffic.ts`, pure) gives the chosen trusted
+  datacenter the lowest number among the organization's trusted datacenters
+  (10, or 0 when a rival is at 10 or lower; a rival at 0 moves every trusted
+  rival up by 10, capped at 1000) and writes only the numbers that change, in
+  one transaction, then runs the same routing fan-out a priority PATCH does.
+  An untrusted datacenter is **409** `datacenter_not_trusted`. `GET
+  /datacenters` adds `serverTraffic: { wins, tied }` per row and a top-level
+  `warnings` list (`equal_priority`, one per shared number among trusted
+  datacenters); the raw number stays editable through PATCH under Advanced.
 
 - **Compose hosting projection (client surface):** `x-turbopanel.hosting[]` is
   the _declaration_; `hosting` rows are the _record_. `reconcile-hostings.ts`

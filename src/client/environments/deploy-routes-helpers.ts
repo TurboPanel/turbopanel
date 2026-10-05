@@ -15,6 +15,7 @@ import {
   validateDeployHostings,
   validateDeployStorageMaterialList,
 } from '../../contracts/commands/deploy-validation.ts'
+import { validateDeployWwwRedirects } from '../../contracts/commands/www-redirect.ts'
 import {
   type DeployStrategy,
   type MigrationStatus,
@@ -38,6 +39,10 @@ export function readHostnames(options: unknown): string[] {
 export function readPathPrefix(options: unknown): string | undefined {
   if (!isPlainObject(options)) return undefined
   return typeof options.pathPrefix === 'string' ? options.pathPrefix : undefined
+}
+
+export function readWwwRedirect(options: unknown): boolean {
+  return isPlainObject(options) && options.wwwRedirect === true
 }
 
 export function readTargetPort(options: unknown): number | undefined {
@@ -929,7 +934,8 @@ export function validateDeployMaterials(
   hostings: EnvironmentDeployHosting[],
   storageMaterial: EnvironmentDeployStorageMaterial[]
 ): DeployMaterialValidationError | null {
-  const hostingValidationError = validateDeployHostings(hostings)
+  const hostingValidationError =
+    validateDeployHostings(hostings) ?? validateDeployWwwRedirects(hostings)
   if (hostingValidationError) {
     return { error: 'invalid_deploy_hosting', message: hostingValidationError }
   }

@@ -1,7 +1,8 @@
 import { readServiceApp } from '../../features/environments/app-facts.ts'
+import type { ServiceRunStateView } from '../../features/environments/service-run-state.ts'
 import {
-  type ParseServiceOptionsOptions,
   parseServiceOptions,
+  type ParseServiceOptionsOptions,
 } from '../../features/projects/service-options.ts'
 import {
   buildPatchUpdateFields,
@@ -32,7 +33,7 @@ export type ServiceRow = {
   updatedAt: string
 }
 
-export function serializeService(row: ServiceRow) {
+export function serializeService(row: ServiceRow, runState?: ServiceRunStateView) {
   const app = readServiceApp(row.metadata)
   return {
     id: row.id,
@@ -43,6 +44,9 @@ export function serializeService(row: ServiceRow) {
     metadata: row.metadata,
     // Detected by the daemon (`metadata.app`); omitted until a deploy finds one.
     ...(app === undefined ? {} : { app }),
+    // Last daemon report (running / restart count / last error); omitted until
+    // the service's server has reported it. Ephemeral, never stored per service.
+    ...(runState === undefined ? {} : { runState }),
     options: row.options,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
@@ -90,7 +94,10 @@ export function rejectComposeServiceNameInBody(
 
 export type OptionalServiceOptionsResult =
   | { kind: 'absent' }
-  | { kind: 'value'; value: NonNullable<ReturnType<typeof parseServiceOptions>> }
+  | {
+      kind: 'value'
+      value: NonNullable<ReturnType<typeof parseServiceOptions>>
+    }
   | { kind: 'invalid' }
 
 /**

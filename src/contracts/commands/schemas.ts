@@ -1020,8 +1020,12 @@ function parseFirewallRenderedDocument(value: unknown, field: string): string {
 
 function parseFirewallRendered(value: unknown): FirewallRendered {
   if (!isRecord(value)) throw new Error('rendered must be an object')
-  const rendered: FirewallRendered = { v4: parseFirewallRenderedDocument(value.v4, 'v4') }
-  if (value.v6 !== undefined) rendered.v6 = parseFirewallRenderedDocument(value.v6, 'v6')
+  const rendered: FirewallRendered = {
+    v4: parseFirewallRenderedDocument(value.v4, 'v4'),
+  }
+  if (value.v6 !== undefined) {
+    rendered.v6 = parseFirewallRenderedDocument(value.v6, 'v6')
+  }
   return rendered
 }
 
@@ -1249,6 +1253,12 @@ export type FabricReconcileObservedPeer = {
   transferTx?: number
   endpoint?: string
   health?: FabricPeerHealth
+  /**
+   * Local NIC whose connected subnet holds the peer's live endpoint (the
+   * network the tunnel really runs on). Absent when the endpoint is not on a
+   * connected subnet (reached by the default route).
+   */
+  interface?: string
 }
 
 /**
@@ -1260,6 +1270,11 @@ export type FabricReconcileCommandResult = {
   publicKey?: string
   skipped?: boolean
   peers?: FabricReconcileObservedPeer[]
+}
+
+/** Linux interface name: at most 15 bytes, no slash or whitespace (daemon twin). */
+function isValidInterfaceName(value: unknown): value is string {
+  return typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,14}$/.test(value)
 }
 
 const FABRIC_DOCKER_NETWORK_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/
@@ -1509,15 +1524,26 @@ function parseFabricObservedPeer(value: unknown): FabricReconcileObservedPeer {
     peer.endpoint = value.endpoint
   }
   if (value.health !== undefined) {
-    if (
-      typeof value.health !== 'string' ||
-      !FABRIC_PEER_HEALTH.has(value.health as FabricPeerHealth)
-    ) {
-      throw new TypeError('Invalid fabric reconcile result peer health')
-    }
-    peer.health = value.health as FabricPeerHealth
+    peer.health = parseObservedPeerHealth(value.health)
+  }
+  if (value.interface !== undefined) {
+    peer.interface = parseObservedPeerInterface(value.interface)
   }
   return peer
+}
+
+function parseObservedPeerHealth(value: unknown): FabricPeerHealth {
+  if (typeof value !== 'string' || !FABRIC_PEER_HEALTH.has(value as FabricPeerHealth)) {
+    throw new TypeError('Invalid fabric reconcile result peer health')
+  }
+  return value as FabricPeerHealth
+}
+
+function parseObservedPeerInterface(value: unknown): string {
+  if (!isValidInterfaceName(value)) {
+    throw new TypeError('Invalid fabric reconcile result peer interface')
+  }
+  return value
 }
 
 export type EnvironmentDeployTlsMaterial = {
@@ -1748,8 +1774,14 @@ export type EnvironmentDeploySite = {
    * Requires `principal`: a timer with no `User=` would run as root.
    */
   cron?: EnvironmentDeployCronJob[]
-  /** Merged hosting web env (variables + options.web.env). */
+  /** Merged hosting web env (non-secret variables + options.web.env). */
   webEnv?: Record<string, string>
+  /**
+   * Secret runtime variables, name to `tpdaemon` envelope (the sealed twin of
+   * `webEnv`, disjoint from it). The daemon decrypts them before the site is
+   * applied; the plaintext only ever reaches the engine's own config files.
+   */
+  webSecretEnv?: Record<string, string>
   php?: EnvironmentDeployHostingPhp
   /**
    * When set (from a project principal ↔ service tenancy), the site tree
@@ -2275,6 +2307,12 @@ export type EnvironmentDeployHostingPort = {
 
 export type EnvironmentDeployHostingWeb = {
   env?: Record<string, string>
+  /**
+   * Secret runtime variables, name to `tpdaemon` envelope. Never plaintext: the
+   * daemon decrypts them through `POST /api/daemon/v1/secrets/decrypt` and folds
+   * them into the site's `webEnv`. Disjoint from `env`.
+   */
+  secretEnv?: Record<string, string>
   php?: EnvironmentDeployHostingPhp
 }
 
@@ -2311,6 +2349,13 @@ export type EnvironmentDeployHosting = {
   ports?: EnvironmentDeployHostingPort[]
   /** Merged hosting web env + PHP hints for site materialization. */
   web?: EnvironmentDeployHostingWeb
+  /**
+   * Also serve the other spelling of each hostname (`www.` added, or removed
+   * when the name starts with `www.`) as a permanent redirect to the hostname
+   * as written. `http` only; omitted when off. In `acme` mode the extra name
+   * gets its own certificate. Older daemons ignore the field.
+   */
+  wwwRedirect?: boolean
 }
 
 export type EnvironmentDeployContainer = {
@@ -2489,9 +2534,28 @@ function parseDeployHostingWeb(value: unknown): EnvironmentDeployHostingWeb | un
   const web: EnvironmentDeployHostingWeb = {}
   const env = parseEnvRecord(value.env)
   if (env) web.env = env
+  const secretEnv = parseEnvRecord(value.secretEnv)
+  if (secretEnv) web.secretEnv = secretEnv
   const php = parseDeployHostingPhp(value.php)
   if (php) web.php = php
   return Object.keys(web).length > 0 ? web : undefined
+}
+
+function parseDeployHostingBindAddress(value: unknown): string | undefined {
+  if (value === undefined) return undefined
+  if (!isString(value) || value.length === 0 || !isValidIpAddress(value)) {
+    throw new Error('Invalid environment.deploy payload')
+  }
+  return value
+}
+
+/** `true` when on; `undefined` when absent or false; anything else is refused. */
+function parseDeployHostingWwwRedirect(value: unknown): true | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== 'boolean') {
+    throw new TypeError('Invalid environment.deploy payload')
+  }
+  return value ? true : undefined
 }
 
 function applyOptionalDeployHostingFields(
@@ -2511,21 +2575,15 @@ function applyOptionalDeployHostingFields(
   if (tlsMode) hosting.tlsMode = tlsMode
   const proxy = parseDeployHostingProxy(entry.proxy)
   if (proxy) hosting.proxy = proxy
-  if (entry.bindAddress !== undefined) {
-    if (!isString(entry.bindAddress) || entry.bindAddress.length === 0) {
-      throw new Error('Invalid environment.deploy payload')
-    }
-    if (!isValidIpAddress(entry.bindAddress)) {
-      throw new Error('Invalid environment.deploy payload')
-    }
-    hosting.bindAddress = entry.bindAddress
-  }
+  const bindAddress = parseDeployHostingBindAddress(entry.bindAddress)
+  if (bindAddress) hosting.bindAddress = bindAddress
   const protocol = parseDeployHostingProtocol(entry.protocol)
   if (protocol) hosting.protocol = protocol
   const ports = parseDeployHostingPorts(entry.ports)
   if (ports) hosting.ports = ports
   const web = parseDeployHostingWeb(entry.web)
   if (web) hosting.web = web
+  if (parseDeployHostingWwwRedirect(entry.wwwRedirect)) hosting.wwwRedirect = true
 }
 
 function parseDeployHostingEntry(entry: unknown): EnvironmentDeployHosting {
@@ -3021,6 +3079,8 @@ function parseDeploySiteEntry(entry: unknown): EnvironmentDeploySite {
   if (cron) site.cron = cron
   const webEnv = parseEnvRecord(entry.webEnv)
   if (webEnv) site.webEnv = webEnv
+  const webSecretEnv = parseEnvRecord(entry.webSecretEnv)
+  if (webSecretEnv) site.webSecretEnv = webSecretEnv
   const php = parseDeployHostingPhp(entry.php)
   if (php) site.php = php
   const principal = parseDeploySitePrincipal(entry.principal)
