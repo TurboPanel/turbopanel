@@ -148,10 +148,9 @@ export function validateComposeDocument(
     lintComposeYaml(composeDocumentToYaml(document), {
       layer,
       knownSourceIds,
-      ...(options?.requireImageOrBuild === undefined
-        ? {}
-        : { requireImageOrBuild: options.requireImageOrBuild }),
-      ...(options?.merged === undefined ? {} : { merged: options.merged }),
+      // Unlike the reference sets below, `undefined` here means the default.
+      requireImageOrBuild: options?.requireImageOrBuild,
+      merged: options?.merged,
       ...(knownPrincipalAliases === undefined ? {} : { knownPrincipalAliases }),
       ...(knownTlsIds === undefined ? {} : { knownTlsIds }),
       ...(knownIpIds === undefined ? {} : { knownIpIds }),
