@@ -1263,7 +1263,7 @@ export const managedPaths = {
         },
         409: {
           description:
-            'cannot_drop_initial_database, managed_database_has_bindings (a service binding references the database; lists `services`), or managed_database_has_users (SQL users still list the database; lists their typed usernames in `users`; remove them or change their databases first)',
+            'cannot_drop_initial_database, managed_database_has_bindings (a service binding references the database; lists `services`), or managed_database_has_users (SQL users still list the database; lists their typed usernames in `users`; delete those users first)',
           content: {
             'application/json': {
               schema: {
