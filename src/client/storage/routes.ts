@@ -322,7 +322,6 @@ async function validateCopyOwnership(
   c: Context<AppEnv>,
   db: StorageDb,
   principalId: string | null,
-  storageId: string | null,
   copy: { path?: unknown; options?: unknown }
 ): Promise<Response | null> {
   const optionsError = copyOptionsError(copy.options)
@@ -337,7 +336,7 @@ async function validateCopyOwnership(
       .limit(1)
     username = row?.username ?? null
   }
-  const pathError = copyPathWriteError(username, storageId, copy.path)
+  const pathError = copyPathWriteError(username, copy.path)
   return pathError ? c.json({ error: pathError }, 400) : null
 }
 
@@ -435,7 +434,7 @@ async function createStorageRecord(
   if (fields.copy) {
     const copyRefError = await validateCopyRefsInOrg(c, db, orgId, fields.copy)
     if (copyRefError) return copyRefError
-    const ownershipError = await validateCopyOwnership(c, db, fields.principalId, null, fields.copy)
+    const ownershipError = await validateCopyOwnership(c, db, fields.principalId, fields.copy)
     if (ownershipError) return ownershipError
   }
   if (fields.mount) {
@@ -752,7 +751,7 @@ export function registerStorageRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
 
     const copyRefError = await validateCopyRefsInOrg(c, ctx.db, ctx.orgId, fields)
     if (copyRefError) return copyRefError
-    const ownershipError = await validateCopyOwnership(c, ctx.db, row.principalId, row.id, fields)
+    const ownershipError = await validateCopyOwnership(c, ctx.db, row.principalId, fields)
     if (ownershipError) return ownershipError
 
     try {
@@ -772,7 +771,7 @@ export function registerStorageRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     if (row instanceof Response) return row
 
     const [existing] = await ctx.db
-      .select({ id: storageCopy.id, storageId: storageCopy.storageId, path: storageCopy.path })
+      .select({ id: storageCopy.id, storageId: storageCopy.storageId })
       .from(storageCopy)
       .where(and(eq(storageCopy.id, copyId), eq(storageCopy.storageId, storageId)))
       .limit(1)
@@ -786,7 +785,9 @@ export function registerStorageRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const copyRefError = await validateCopyRefsInOrg(c, ctx.db, ctx.orgId, updateFields)
     if (copyRefError) return copyRefError
     const ownershipError = await validateCopyOwnership(c, ctx.db, row.principalId, row.id, {
-      path: 'path' in updateFields ? updateFields.path : existing.path,
+      // Only a path being written is checked; an unrelated edit of a copy that
+      // predates the rule is left alone (the host refuses its path on deploy).
+      path: 'path' in updateFields ? updateFields.path : undefined,
       options: updateFields.options,
     })
     if (ownershipError) return ownershipError

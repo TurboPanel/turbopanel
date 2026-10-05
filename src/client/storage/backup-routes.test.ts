@@ -364,9 +364,14 @@ test('a manager cannot point a copy at another owner path or a foreign volume', 
     const copyPath = `/storage/${own.storageId}/copies/${own.copyId}`
     const refusedPatches = [
       { path: `/srv/users/victim/volumes/${own.storageId}` },
-      { path: '/srv/users/acme/volumes/another-storage' },
       { path: '/srv/users/acme/volumes' },
       { path: '/srv/users/acme/volumes/../../victim/volumes/x' },
+      // Paths the old prefix check let through.
+      { path: '/etc' },
+      { path: '/var/lib/app/config' },
+      { path: '/srv/./users/victim/volumes/x' },
+      { path: '/srv/users/./victim/volumes/x' },
+      { path: '/data/../srv/users/victim/volumes/x' },
       { options: { managed: false, externalName: 'other-site-data' } },
     ]
     for (const body of refusedPatches) {
@@ -378,11 +383,22 @@ test('a manager cannot point a copy at another owner path or a foreign volume', 
       body: { path: `/srv/users/acme/volumes/${own.storageId}` },
     })
     assertEquals(ownPatch.status, 200)
-    const create = await request(fixture, `/storage/${own.storageId}/copies`, {
-      method: 'POST',
-      body: { provider: 'path', serverId: fixture.serverId, path: '/srv/users/victim/volumes/x' },
+    // Another directory inside the owner's own volumes directory is allowed
+    // (deploy mounts it); a backup of it is refused when the command is built.
+    const inside = await request(fixture, copyPath, {
+      method: 'PATCH',
+      body: { path: '/srv/users/acme/volumes/another-storage' },
     })
-    assertEquals(create.status, 400)
+    assertEquals(inside.status, 200)
+    for (const path of ['/srv/users/victim/volumes/x', '/etc', '/srv/./users/acme/volumes/x']) {
+      const create = await request(fixture, `/storage/${own.storageId}/copies`, {
+        method: 'POST',
+        body: { provider: 'path', serverId: fixture.serverId, path },
+      })
+      assertEquals(create.status, 400, path)
+      const message = ((await create.json()) as { error: string }).error
+      assertEquals(message.includes('copy path'), true, message)
+    }
     const volume = await request(fixture, `/storage/${fixture.storageId}`, {
       method: 'PATCH',
       body: { metadata: { dockerVolumeName: 'someone-elses-volume' } },

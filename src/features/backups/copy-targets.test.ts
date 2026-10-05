@@ -167,16 +167,48 @@ test('copyHostPathError accepts only the storage own directory', () => {
   }
 })
 
-test('copyPathWriteError guards the owners area and leaves operator mounts to deploy', () => {
+test('copyPathWriteError is the daemon allow-list: strictly inside the owner volumes directory', () => {
+  const dir = '/srv/users/acme/volumes'
+  const accepted = [`${dir}/${STORAGE_ID}`, `${dir}/data`, `${dir}/data/sub dir/x`]
+  for (const path of accepted) assertEquals(copyPathWriteError('acme', path), null, path)
+  const refused = [
+    // Outside the owners' area, which the old prefix check let through.
+    '/etc',
+    '/var/lib/app/config',
+    '/srv',
+    '/srv/./users/victim/volumes/x',
+    '/srv/users/./acme/volumes/x',
+    '/srv//users/acme/volumes/x',
+    '/data/../srv/users/acme/volumes/x',
+    '/home/acme/volumes/x',
+    // Inside the owners' area but not this owner's volumes directory.
+    '/srv/users/victim/volumes/x',
+    '/srv/users/acme2/volumes/x',
+    '/srv/users/acme/.ssh',
+    '/srv/users/acme',
+    dir,
+    `${dir}/`,
+    `${dir}2/x`,
+    // Not normalized.
+    `${dir}/../../victim/volumes/x`,
+    `${dir}/./x`,
+    `${dir}//x`,
+    `${dir}/x/`,
+    'srv/users/acme/volumes/x',
+    '',
+  ]
+  for (const path of refused) {
+    assertEquals(typeof copyPathWriteError('acme', path), 'string', path)
+  }
+  assertEquals(typeof copyPathWriteError(null, `${dir}/x`), 'string')
+  assertEquals(typeof copyPathWriteError(null, '/var/lib/app/config'), 'string')
+  assertEquals(typeof copyPathWriteError('bad/user', `${dir}/x`), 'string')
+})
+
+test('every path a backup can read passes the write-time rule', () => {
   const own = `/srv/users/acme/volumes/${STORAGE_ID}`
-  assertEquals(copyPathWriteError('acme', STORAGE_ID, own), null)
-  assertEquals(copyPathWriteError(null, STORAGE_ID, '/var/lib/app/config'), null)
-  assertEquals(
-    typeof copyPathWriteError('acme', STORAGE_ID, '/srv/users/victim/volumes/x'),
-    'string'
-  )
-  assertEquals(typeof copyPathWriteError(null, STORAGE_ID, '/srv/users/acme/volumes/x'), 'string')
-  assertEquals(typeof copyPathWriteError('acme', STORAGE_ID, '/data/../srv/users/x'), 'string')
+  assertEquals(copyHostPathError('acme', STORAGE_ID, own), null)
+  assertEquals(copyPathWriteError('acme', own), null)
 })
 
 test('copyOptionsError refuses an external volume name or an unmanaged flag', () => {

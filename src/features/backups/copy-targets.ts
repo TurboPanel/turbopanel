@@ -28,6 +28,7 @@ import { type CopyBackupSource, isSafeCopyHostPath } from '../../contracts/comma
 import {
   isValidDockerResourceName,
   principalVolumePath,
+  principalVolumesDir,
   resolveDockerVolumeName,
 } from '../../lib/naming.ts'
 
@@ -112,22 +113,40 @@ export function copyOptionsError(options: unknown): string | null {
   return null
 }
 
-/** Tenant directories live here; every path under it must be the storage's own directory. */
-const PRINCIPAL_PATH_PREFIX = '/srv/users/'
-
 /**
- * Write-time rule for a copy path: anything inside the site owners' area must
- * be this storage's own directory (see {@link copyHostPathError}). A path
- * outside it (an operator mount) is left to deploy, but is never backed up:
- * command building applies {@link copyHostPathError} to every path.
+ * Write-time rule for a copy path: the same allow-list the daemon enforces on
+ * deploy (turbopaneld `assertSourcePathConfined`). A path copy's path must be
+ * a normalized absolute path (no empty, `.` or `..` segment, no trailing
+ * slash) strictly inside the volumes directory of the Linux user of the
+ * site owner the storage is assigned to (`/srv/users/<user>/volumes/<name>`).
+ * Anything else (another site owner's home, a system directory, no site owner
+ * at all) is refused here, where it is written, and again on the host before
+ * it is created or mounted. Backups are stricter still: they only ever read
+ * the storage's own directory ({@link copyHostPathError}).
  */
-export function copyPathWriteError(
-  username: string | null,
-  storageId: string | null,
-  hostPath: string
-): string | null {
-  if (!hostPath.startsWith(PRINCIPAL_PATH_PREFIX) && !hostPath.includes('..')) return null
-  return copyHostPathError(username, storageId, hostPath)
+export function copyPathWriteError(username: string | null, hostPath: string): string | null {
+  if (!username) {
+    return 'a copy path needs a storage assigned to a site owner; otherwise leave the path empty'
+  }
+  let volumesDir: string
+  try {
+    volumesDir = principalVolumesDir(username)
+  } catch {
+    return "the storage's site owner has no valid Linux user"
+  }
+  const normalized =
+    hostPath.startsWith('/') && hostPath.slice(1).split('/').every(isPlainPathSegment)
+  if (!normalized) {
+    return 'the copy path must be an absolute path without empty, "." or ".." parts and without a trailing slash'
+  }
+  if (!hostPath.startsWith(`${volumesDir}/`)) {
+    return `the copy path must be inside the site owner's volumes directory (${volumesDir}/)`
+  }
+  return null
+}
+
+function isPlainPathSegment(segment: string): boolean {
+  return segment !== '' && segment !== '.' && segment !== '..'
 }
 
 /**
