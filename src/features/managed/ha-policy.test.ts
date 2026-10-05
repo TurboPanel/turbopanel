@@ -8,6 +8,7 @@ import {
   orchestratorPromotionRule,
   pickAutomaticFailoverCandidate,
   pickHaAdvertiseAddress,
+  pickHaDatacenter,
   replicaClassAfterDisasterRecovery,
   selectHaRaftMembers,
   serverHostsManagedHa,
@@ -231,6 +232,88 @@ test('selectHaRaftMembers dials a multi-datacenter peer on its shared-datacenter
     { serverId: 'b', address: '10.0.0.2' },
   ])
   assertEquals(selectHaRaftMembers('c', ['a', 'b', 'c'], pins), null)
+})
+
+test('pickHaAdvertiseAddress does not depend on row order', () => {
+  const pins = [
+    { address: '10.0.0.9', family: 4 as const },
+    { address: '10.0.0.3', family: 4 as const },
+    { address: '2001:db8::1', family: 6 as const },
+  ]
+  assertEquals(pickHaAdvertiseAddress(pins), '10.0.0.3')
+  assertEquals(pickHaAdvertiseAddress(pins.toReversed()), '10.0.0.3')
+})
+
+test('selectHaRaftMembers uses the highest-priority trusted datacenter, whatever the pin order', () => {
+  // Both servers share two networks: a public-cloud VPC (priority 100, the
+  // default) and a private LAN the owner ranked first (priority 10).
+  const aPins = [
+    { datacenterId: 'dc-vpc', address: '10.100.0.4', family: 4 as const },
+    { datacenterId: 'dc-lan', address: '192.168.1.4', family: 4 as const },
+  ]
+  const bPins = [
+    { datacenterId: 'dc-lan', address: '192.168.1.5', family: 4 as const },
+    { datacenterId: 'dc-vpc', address: '10.100.0.5', family: 4 as const },
+  ]
+  const policies = new Map([
+    ['dc-lan', { priority: 10, trusted: true }],
+    ['dc-vpc', { priority: 100, trusted: true }],
+  ])
+  const expected = {
+    advertiseAddress: '192.168.1.4',
+    peers: [
+      { serverId: 'a', address: '192.168.1.4' },
+      { serverId: 'b', address: '192.168.1.5' },
+    ],
+  }
+  for (const order of [aPins, aPins.toReversed()]) {
+    const pins = new Map([
+      ['a', order],
+      ['b', bPins],
+    ])
+    assertEquals(selectHaRaftMembers('a', ['a', 'b'], pins, policies), expected)
+  }
+})
+
+test('selectHaRaftMembers never puts Raft on a network marked untrusted', () => {
+  const pins = new Map([
+    [
+      'a',
+      [
+        { datacenterId: 'dc-open', address: '172.16.0.4', family: 4 as const },
+        { datacenterId: 'dc-safe', address: '10.0.0.4', family: 4 as const },
+      ],
+    ],
+    [
+      'b',
+      [
+        { datacenterId: 'dc-open', address: '172.16.0.5', family: 4 as const },
+        { datacenterId: 'dc-safe', address: '10.0.0.5', family: 4 as const },
+      ],
+    ],
+  ])
+  // The untrusted network has the better priority; it is still skipped.
+  const policies = new Map([
+    ['dc-open', { priority: 1, trusted: false }],
+    ['dc-safe', { priority: 50, trusted: true }],
+  ])
+  assertEquals(selectHaRaftMembers('a', ['a', 'b'], pins, policies)?.peers, [
+    { serverId: 'a', address: '10.0.0.4' },
+    { serverId: 'b', address: '10.0.0.5' },
+  ])
+  // Only untrusted networks: no Raft group rather than one on that network.
+  const onlyOpen = new Map([['a', [pins.get('a')![0]!]]])
+  assertEquals(selectHaRaftMembers('a', ['a'], onlyOpen, policies), null)
+})
+
+test('pickHaDatacenter breaks a priority tie by datacenter id and defaults missing policies', () => {
+  const pins = [
+    { datacenterId: 'dc-b', address: '10.0.0.2', family: 4 as const },
+    { datacenterId: 'dc-a', address: '10.0.0.1', family: 4 as const },
+  ]
+  assertEquals(pickHaDatacenter(pins, new Map()), 'dc-a')
+  assertEquals(pickHaDatacenter(pins, new Map([['dc-b', { priority: 5, trusted: true }]])), 'dc-b')
+  assertEquals(pickHaDatacenter([], new Map()), null)
 })
 
 /**

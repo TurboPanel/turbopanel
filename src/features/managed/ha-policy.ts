@@ -122,14 +122,49 @@ export function serverHostsManagedHa(
   )
 }
 
+/**
+ * One address out of a server's pins in one datacenter: IPv4 first, and the
+ * lowest address within a family, so the answer never depends on the order
+ * the database returned the rows in.
+ */
 export function pickHaAdvertiseAddress(
   pins: ReadonlyArray<{ address: string; family: 4 | 6 }>
 ): string | null {
-  const v4 = pins.find((pin) => pin.family === 4)
-  return v4?.address ?? pins[0]?.address ?? null
+  const ordered = pins.toSorted((a, b) => a.family - b.family || a.address.localeCompare(b.address))
+  return ordered[0]?.address ?? null
 }
 
 export type HaRaftPin = { datacenterId: string; address: string; family: 4 | 6 }
+
+/** The routing policy fields Raft placement reads (see `DatacenterPolicyRow`). */
+export type HaDatacenterPolicy = { priority: number; trusted: boolean }
+
+/**
+ * A datacenter with no policy entry: the documented defaults
+ * (`DEFAULT_DATACENTER_PRIORITY` / `DEFAULT_DATACENTER_TRUSTED` in
+ * datacenter-options.ts; not imported here, this module is loaded by the
+ * command contracts). `loadDatacenterPolicies` seeds every id anyway.
+ */
+const HA_DEFAULT_DATACENTER_POLICY: HaDatacenterPolicy = { priority: 100, trusted: true }
+
+/**
+ * The datacenter a server's Raft traffic uses: its trusted datacenters only,
+ * by `(priority asc, id asc)` like the private-endpoint ladder, so Raft never
+ * rides a network marked untrusted and follows the same priority as
+ * failover replication. A datacenter missing from `policies` takes the
+ * documented defaults.
+ */
+export function pickHaDatacenter(
+  pins: readonly HaRaftPin[],
+  policies: ReadonlyMap<string, HaDatacenterPolicy>
+): string | null {
+  const policyOf = (id: string): HaDatacenterPolicy =>
+    policies.get(id) ?? HA_DEFAULT_DATACENTER_POLICY
+  const trusted = [...new Set(pins.map((pin) => pin.datacenterId))]
+    .filter((id) => policyOf(id).trusted)
+    .toSorted((a, b) => policyOf(a).priority - policyOf(b).priority || a.localeCompare(b))
+  return trusted[0] ?? null
+}
 
 export type HaRaftMembers = {
   advertiseAddress: string
@@ -147,12 +182,16 @@ export type HaRaftMembers = {
 export function selectHaRaftMembers(
   thisServerId: string,
   raftServerIds: readonly string[],
-  pins: ReadonlyMap<string, readonly HaRaftPin[]>
+  pins: ReadonlyMap<string, readonly HaRaftPin[]>,
+  policies: ReadonlyMap<string, HaDatacenterPolicy> = new Map()
 ): HaRaftMembers | null {
   const thisPins = pins.get(thisServerId) ?? []
-  const advertiseAddress = pickHaAdvertiseAddress(thisPins)
+  const datacenterId = pickHaDatacenter(thisPins, policies)
+  if (!datacenterId) return null
+  const advertiseAddress = pickHaAdvertiseAddress(
+    thisPins.filter((pin) => pin.datacenterId === datacenterId)
+  )
   if (!advertiseAddress) return null
-  const datacenterId = thisPins.find((pin) => pin.address === advertiseAddress)?.datacenterId
   const peers: HaRaftMembers['peers'] = []
   for (const serverId of raftServerIds) {
     const sameDatacenter = (pins.get(serverId) ?? []).filter(
