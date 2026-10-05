@@ -5,10 +5,13 @@
 
 import { assertEquals } from '@std/assert'
 import {
+  clearedLinkDownMetadata,
   clearedStaleMetadata,
+  decideLinkActions,
   decideRepinActions,
   parseIpPinMetadata,
   type RepinPinInput,
+  withLinkDownMetadata,
   withRepinMetadata,
   withStaleMetadata,
 } from './repin.ts'
@@ -249,5 +252,47 @@ test('parseIpPinMetadata ignores invalid or partial markers', () => {
       repin: { at: '2026-09-01T00:00:00.000Z', from: '10.0.0.1', extra: 'ignored' },
     }),
     { repin: { at: '2026-09-01T00:00:00.000Z', from: '10.0.0.1' } }
+  )
+})
+
+test('decideLinkActions: flags a pin whose address is reported down, clears one that is back up', () => {
+  const reported = [
+    { address: '10.9.0.10', version: 4 as const, scope: 'private' as const, link: 'down' as const },
+    { address: '10.8.0.10', version: 4 as const, scope: 'private' as const, link: 'up' as const },
+    { address: '10.7.0.10', version: 4 as const, scope: 'private' as const },
+  ]
+  assertEquals(
+    decideLinkActions(
+      [
+        { ipId: 'a', address: '10.9.0.10', linkDown: false },
+        { ipId: 'b', address: '10.8.0.10', linkDown: true },
+        { ipId: 'c', address: '10.7.0.10', linkDown: true },
+        { ipId: 'd', address: '10.9.0.10', linkDown: true },
+        { ipId: 'e', address: '10.8.0.10', linkDown: false },
+      ],
+      reported
+    ),
+    [
+      { kind: 'link_down', ipId: 'a' },
+      { kind: 'link_up', ipId: 'b' },
+      { kind: 'link_up', ipId: 'c' },
+    ]
+  )
+})
+
+test('decideLinkActions: an address that is not reported says nothing about the link', () => {
+  assertEquals(decideLinkActions([{ ipId: 'a', address: '10.9.0.10', linkDown: true }], []), [])
+})
+
+test('linkDown marker: parsed, keeps the first since, cleared without touching other keys', () => {
+  const first = withLinkDownMetadata({ note: 'x' }, { since: '2026-10-01T00:00:00.000Z' })
+  const again = withLinkDownMetadata(first, { since: '2026-10-02T00:00:00.000Z' })
+  assertEquals(parseIpPinMetadata(again).linkDown?.since, '2026-10-01T00:00:00.000Z')
+  assertEquals(parseIpPinMetadata({ linkDown: { since: 'not a date' } }).linkDown, undefined)
+  const cleared = clearedLinkDownMetadata(again)
+  assertEquals(cleared, { note: 'x' })
+  assertEquals(
+    withRepinMetadata(again, { at: '2026-10-03T00:00:00.000Z', from: '10.0.0.1' }).linkDown,
+    undefined
   )
 })

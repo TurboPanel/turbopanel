@@ -17,6 +17,7 @@ import {
   parseIpVersion,
   stripInetPrefixSuffix,
 } from '../../lib/ip-address.ts'
+import { pinLinkIsDown } from './pin-link-state.ts'
 import {
   reportedIpsFromServerMetadata,
   privateAddressesFromIps,
@@ -35,6 +36,12 @@ export type DatacenterMembershipRow = {
   networkId: string | null
   address: string
   family: 4 | 6
+  /**
+   * The daemon reports the NIC carrying this pin as having no link
+   * (`ip.metadata.linkDown`). Routing prefers networks that are up and only
+   * falls back to this one when nothing else works. Absent means up.
+   */
+  linkDown?: boolean
 }
 
 /**
@@ -71,6 +78,7 @@ function toMembershipRow(row: {
   datacenterId: string | null
   networkId: string | null
   address: unknown
+  metadata?: unknown
 }): DatacenterMembershipRow | null {
   if (!row.serverId || !row.datacenterId) return null
   const address = inetAddressToString(row.address)
@@ -84,6 +92,7 @@ function toMembershipRow(row: {
     networkId: row.networkId,
     address,
     family,
+    ...(pinLinkIsDown(row.metadata) ? { linkDown: true } : {}),
   }
 }
 
@@ -236,6 +245,7 @@ export async function loadDatacenterMembershipsForServers(
       datacenterId: ip.datacenterId,
       networkId: ip.networkId,
       address: ip.address,
+      metadata: ip.metadata,
     })
     .from(ip)
     .where(MEMBERSHIP_PIN_WHERE(serverIds))

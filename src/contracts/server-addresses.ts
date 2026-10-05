@@ -2,6 +2,9 @@ import { alignedNetworkCidr, stripInetPrefixSuffix } from '../lib/ip-address.ts'
 
 export type ServerReportedIpScope = 'private' | 'public'
 
+/** Link state of the interface carrying an address, as the daemon read it from the kernel. */
+export type ServerReportedIpLink = 'up' | 'down'
+
 /** One daemon-reported host interface address (hello / heartbeat / addresses-result). */
 export type ServerReportedIp = {
   address: string
@@ -17,6 +20,13 @@ export type ServerReportedIp = {
    * peer would actually reach the host on, so it wins address selection.
    */
   preferred?: boolean
+  /**
+   * Link state of `interface` (`operstate`, then `carrier`). Absent when the
+   * daemon could not tell (older daemon, non-Linux host); readers treat absent
+   * as up. The datacenter routing ladder moves traffic off a network whose
+   * link is down.
+   */
+  link?: ServerReportedIpLink
 }
 
 /** Workers-safe empty IP list for runtimes without host interface access. */
@@ -47,6 +57,10 @@ function parseOptionalPreferred(value: unknown): true | undefined {
   return value === true ? true : undefined
 }
 
+function parseOptionalLink(value: unknown): ServerReportedIpLink | undefined {
+  return value === 'up' || value === 'down' ? value : undefined
+}
+
 function parseOptionalInterface(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined
   const iface = value.trim()
@@ -68,6 +82,8 @@ function parseServerIpEntry(entry: unknown, seen: Set<string>): ServerReportedIp
   const iface = parseOptionalInterface(entry.interface)
   if (iface) row.interface = iface
   if (parseOptionalPreferred(entry.preferred)) row.preferred = true
+  const link = parseOptionalLink(entry.link)
+  if (link) row.link = link
   return row
 }
 
@@ -129,7 +145,8 @@ export function serverIpsEquals(
       l.scope !== r.scope ||
       l.cidr !== r.cidr ||
       l.interface !== r.interface ||
-      l.preferred !== r.preferred
+      l.preferred !== r.preferred ||
+      l.link !== r.link
     ) {
       return false
     }

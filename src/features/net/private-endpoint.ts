@@ -24,6 +24,12 @@ export type ResolvedPrivateEndpoint = {
   transport: PrivateEndpointTransport
   /** Present when transport is `datacenter`. */
   datacenterId?: string
+  /**
+   * Present (`true`) when transport is `datacenter` and that network's link is
+   * reported down on one of the two servers: it was chosen only because no
+   * network that is up could carry the traffic.
+   */
+  linkDown?: true
   /** Present when transport is `fabric`. */
   fabricId?: string
 }
@@ -146,7 +152,7 @@ export async function loadPublicAddressesForServers(
   return out
 }
 
-type RelayJoinRow = {
+export type RelayJoinRow = {
   relayId: string
   serverId: string
   fabricId: string
@@ -300,6 +306,35 @@ export function partitionSharedDatacenters(
   return { trusted, untrusted }
 }
 
+export type TrustedByLink = {
+  /** Trusted shared datacenters whose NIC link is up on both servers, in the partition's order. */
+  available: string[]
+  /** Trusted shared datacenters where either server reports the pinned NIC down, same order. */
+  down: string[]
+}
+
+/**
+ * Split the partition's trusted datacenters by link state. A datacenter is
+ * down for the pair when the pin of either server in it is flagged
+ * `linkDown` (the daemon reported that NIC without a link). A pin that never
+ * reported a link state counts as up, so older daemons behave as before.
+ * Both lists keep the `(priority asc, id asc)` order of `trusted`.
+ */
+export function splitTrustedByLink(
+  trusted: readonly string[],
+  fromPins: readonly DatacenterMembershipRow[],
+  toPins: readonly DatacenterMembershipRow[]
+): TrustedByLink {
+  const downIds = new Set<string>()
+  for (const pin of [...fromPins, ...toPins]) {
+    if (pin.linkDown) downIds.add(pin.datacenterId)
+  }
+  return {
+    available: trusted.filter((id) => !downIds.has(id)),
+    down: trusted.filter((id) => downIds.has(id)),
+  }
+}
+
 function unavailablePath(fromServerId: string, toServerId: string): PrivateEndpointError {
   return {
     kind: 'private_path_unavailable',
@@ -393,7 +428,7 @@ function resolveFabricFromCaches(params: {
  * A trusted shared-datacenter family mismatch is returned before fabric/public
  * for every purpose.
  */
-function resolveOneFromCaches(params: {
+export function resolveOneFromCaches(params: {
   fromServerId: string
   toServerId: string
   purpose: PrivateEndpointPurpose
@@ -409,17 +444,32 @@ function resolveOneFromCaches(params: {
   const fromPins = params.membershipsByServer.get(params.fromServerId) ?? []
   const toPins = params.membershipsByServer.get(params.toServerId) ?? []
   const partition = partitionSharedDatacenters(fromPins, toPins, params.policiesByDatacenter)
-  const datacenter = resolveDatacenterFromCaches({
-    fromServerId: params.fromServerId,
-    toServerId: params.toServerId,
-    fromPins,
-    toPins,
-    partition,
-    policiesByDatacenter: params.policiesByDatacenter,
-  })
+  const byLink = splitTrustedByLink(partition.trusted, fromPins, toPins)
+  const resolveAmong = (trusted: string[]) =>
+    resolveDatacenterFromCaches({
+      fromServerId: params.fromServerId,
+      toServerId: params.toServerId,
+      fromPins,
+      toPins,
+      partition: { ...partition, trusted },
+      policiesByDatacenter: params.policiesByDatacenter,
+    })
+  // A network whose link is down is a last resort, never a first choice: the
+  // best network that is up wins by priority; the ones that are down are only
+  // used when nothing else carries the traffic, so a replication path never
+  // turns into an error just because a cable was pulled.
+  const lastResort = (): ResolvedPrivateEndpoint | PrivateEndpointError | null => {
+    const down = resolveAmong(byLink.down)
+    if (down === null || 'kind' in down) return down
+    return { ...down, linkDown: true }
+  }
+
+  const datacenter = resolveAmong(byLink.available)
   if (datacenter) return datacenter
 
   if (params.purpose === 'failover-replication') {
+    const fallback = lastResort()
+    if (fallback) return fallback
     const untrustedDatacenterId = partition.untrusted[0]
     if (untrustedDatacenterId !== undefined) {
       return {
@@ -440,7 +490,7 @@ function resolveOneFromCaches(params: {
     return { address: publicAddress, transport: 'public' }
   }
 
-  return unavailablePath(params.fromServerId, params.toServerId)
+  return lastResort() ?? unavailablePath(params.fromServerId, params.toServerId)
 }
 
 /**
@@ -467,6 +517,32 @@ export async function resolvePrivateEndpoint(
   return value
 }
 
+/** Everything {@link resolveOneFromCaches} reads, for one set of servers. */
+export type PrivateEndpointCaches = {
+  membershipsByServer: Map<string, DatacenterMembershipRow[]>
+  relays: RelayJoinRow[]
+  policiesByDatacenter: Map<string, DatacenterPolicyRow>
+  publicAddressesByServer: Map<string, string>
+}
+
+/** One membership query, one relay join, one public-address query, one policy read. */
+export async function loadPrivateEndpointCaches(
+  db: Db,
+  serverIds: string[]
+): Promise<PrivateEndpointCaches> {
+  const [membershipsByServer, relays, publicAddressesByServer] = await Promise.all([
+    loadDatacenterMembershipsForServers(db, serverIds),
+    loadFabricRelayRows(db, serverIds),
+    loadPublicAddressesForServers(db, serverIds),
+  ])
+  const datacenterIds = new Set<string>()
+  for (const pins of membershipsByServer.values()) {
+    for (const pin of pins) datacenterIds.add(pin.datacenterId)
+  }
+  const policiesByDatacenter = await loadDatacenterPolicies(db, [...datacenterIds])
+  return { membershipsByServer, relays, policiesByDatacenter, publicAddressesByServer }
+}
+
 /**
  * Batched resolver for one source server → many targets (one membership query,
  * one relay join, one public-address query — no N+1). Relays and public
@@ -485,18 +561,7 @@ export async function resolvePrivateEndpoints(
 
   const uniqueTargets = [...new Set(params.toServerIds)]
   const allServerIds = [...new Set([params.fromServerId, ...uniqueTargets])]
-
-  const [membershipsByServer, relays, publicAddressesByServer] = await Promise.all([
-    loadDatacenterMembershipsForServers(db, allServerIds),
-    loadFabricRelayRows(db, allServerIds),
-    loadPublicAddressesForServers(db, allServerIds),
-  ])
-
-  const datacenterIds = new Set<string>()
-  for (const pins of membershipsByServer.values()) {
-    for (const pin of pins) datacenterIds.add(pin.datacenterId)
-  }
-  const policiesByDatacenter = await loadDatacenterPolicies(db, [...datacenterIds])
+  const caches = await loadPrivateEndpointCaches(db, allServerIds)
 
   for (const toServerId of uniqueTargets) {
     out.set(
@@ -505,10 +570,7 @@ export async function resolvePrivateEndpoints(
         fromServerId: params.fromServerId,
         toServerId,
         purpose: params.purpose,
-        membershipsByServer,
-        relays,
-        policiesByDatacenter,
-        publicAddressesByServer,
+        ...caches,
       })
     )
   }

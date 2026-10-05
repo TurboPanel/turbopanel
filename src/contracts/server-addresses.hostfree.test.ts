@@ -138,3 +138,25 @@ test('bestReportedAddress follows public-before-private preference', () => {
   assertEquals(row?.address, '203.0.113.20')
   assertEquals(bestReportedAddress([]), undefined)
 })
+
+test('parseServerIps keeps a valid link state and drops anything else', () => {
+  const parsed = parseServerIps([
+    { address: '10.9.0.1', version: 4, scope: 'private', link: 'down' },
+    { address: '10.9.0.2', version: 4, scope: 'private', link: 'up' },
+    { address: '10.9.0.3', version: 4, scope: 'private', link: 'sideways' },
+    { address: '10.9.0.4', version: 4, scope: 'private' },
+  ])
+  assertEquals(
+    parsed?.map((row) => row.link),
+    ['down', 'up', undefined, undefined]
+  )
+})
+
+test('serverIpsEquals sees a link flip as a change', () => {
+  const up: ServerReportedIp[] = [
+    { address: '10.9.0.1', version: 4, scope: 'private', interface: 'eth1', link: 'up' },
+  ]
+  const down: ServerReportedIp[] = [{ ...up[0], link: 'down' }]
+  assertEquals(serverIpsEquals(up, down), false)
+  assertEquals(serverIpsEquals(up, [{ ...up[0] }]), true)
+})

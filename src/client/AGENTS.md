@@ -486,6 +486,34 @@ sourceServerId? }`
   `warnings` list (`equal_priority`, one per shared number among trusted
   datacenters); the raw number stays editable through PATCH under Advanced.
 
+- **Best network that is up (link state) and the traffic map:** the daemon
+  stamps each `resources.ips[]` entry with `link: 'up' | 'down'` (kernel
+  `operstate`, then `carrier`; absent from an older daemon and read as up). The
+  change-detected `touchServerMetadata` write runs `applyReportedAddressRepin`,
+  which now also records `metadata.linkDown { since }` on the datacenter pins
+  whose address sits on a down NIC (and removes it when the link returns) and
+  stamps `repin_pending_fanout_at`, so the existing repin fan-out sweep
+  re-plans (nothing is enqueued on the hello path; a flapping link is bounded
+  by the sweep tick and cap, there is no hold-down timer). `splitTrustedByLink`
+  (`private-endpoint.ts`) splits the trusted shared datacenters into the ones
+  that are up on both servers and the ones that are not, both in `(priority,
+  id)` order. `resolveOneFromCaches` walks the up list first; a down network is
+  only a last resort (after fabric and public for `read-replication` /
+  `client-backend`, straight away for `failover-replication`, which never
+  leaves the datacenter), and the result then carries `linkDown: true`. The
+  TurboFabric LAN rung (`directCandidates`) orders LAN-up, public, NAT, then
+  LAN-down. `GET /servers/:id/traffic-map`
+  (`src/features/net/server-traffic-map.ts`, loaded by
+  `server-traffic-map-load.ts`, shape in `openapi/server-traffic-map.ts`) is the
+  read-only data behind the map: per peer the shared networks with state
+  (`chosen` / `standby` / `link_down` / `untrusted`), the planned address per
+  purpose, and for the TurboFabric tunnel only the observed NIC and byte counts
+  the daemon reported. Planned and observed stay separate: replication and
+  client traffic are planned (the OS picks the NIC), only the tunnel is
+  observed. Per-NIC byte counters are not duplicated: each NIC lists a
+  `metrics.deviceId` and `monitored` flag that point at the existing metrics
+  series route. Nothing here probes the network.
+
 - **Compose hosting projection (client surface):** `x-turbopanel.hosting[]` is
   the _declaration_; `hosting` rows are the _record_. `reconcile-hostings.ts`
   runs inside deploy-prepare, before anything reads a route, and materializes

@@ -94,6 +94,7 @@ import {
 import { UPDATE_REQUEST_TTL_MS } from '../../features/update/constants.ts'
 import { registerServerCommandRoutes } from './commands-routes.ts'
 import { registerServerMetricsRoutes } from './metrics-routes.ts'
+import { registerServerTrafficMapRoutes } from './traffic-map-routes.ts'
 import { registerServerLabelRoutes } from './labels-routes.ts'
 import { resolveOrgRequest } from '../org-request.ts'
 import { cachedServersListReadModel } from '../../query-cache/read-models/servers-list.ts'
@@ -1573,5 +1574,6 @@ export function registerServerRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts) 
 
   registerServerCommandRoutes(router, opts)
   registerServerMetricsRoutes(router, opts)
+  registerServerTrafficMapRoutes(router, opts)
   registerServerLabelRoutes(router, opts)
 }
