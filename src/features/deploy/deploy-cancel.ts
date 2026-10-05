@@ -183,9 +183,8 @@ async function cancelOne(
   db: Db,
   environmentId: string,
   row: SiblingRow,
-  requestCancel: NonNullable<CancelDeployDeps['requestCancel']>,
-  tally: Tally
-): Promise<void> {
+  requestCancel: NonNullable<CancelDeployDeps['requestCancel']>
+): Promise<keyof Tally> {
   if (row.status === 'queued') {
     const error = `${CANCELLED_ERROR_PREFIX}cancelled before it started; nothing was changed`
     const won = await cancelQueuedCommand(db, row.id, {
@@ -203,19 +202,17 @@ async function cancelOne(
         outcome: 'failed',
         cancelled: true,
       })
-      tally.cancelledDirect.push(row.serverId)
-      return
+      return 'cancelledDirect'
     }
   }
   // The daemon is asked first and the stamp follows: a `too_late` answer must
   // not leave a deploy that keeps going reading as "cancelling".
   const outcome = await requestCancel(row.serverId, row.id)
   if (outcome === 'too_late') {
-    tally.tooLate.push(row.serverId)
-    return
+    return 'tooLate'
   }
   await claimCommandMetadataFlag(db, row.id, CANCEL_REQUESTED_FLAG)
-  tally.signalled.push(row.serverId)
+  return 'signalled'
 }
 
 function summarize(tally: Tally): CancelDeployResult {
@@ -241,11 +238,11 @@ export async function cancelEnvironmentDeploy(
   deps: CancelDeployDeps = {}
 ): Promise<CancelDeployResult> {
   const anchor = await getCommandRecord(db, params.deploymentId)
-  if (!anchor || anchor.type !== DEPLOY_COMMAND_NAME) {
+  if (anchor?.type !== DEPLOY_COMMAND_NAME) {
     return { ok: false, status: 404, error: 'Not found' }
   }
   const deploy = readDeployContext(anchor.context)
-  if (deploy === null || deploy.environmentId !== params.environmentId) {
+  if (deploy?.environmentId !== params.environmentId) {
     return { ok: false, status: 404, error: 'Not found' }
   }
 
@@ -277,11 +274,13 @@ export async function cancelEnvironmentDeploy(
 
   // Re-read: halting cancelled the commands of the batches that were waiting.
   const remaining = await listLiveDeployCommands(db, deploy.environmentId, deploy.generation)
+  // The rows are independent (a rolling deploy has a handful of servers), so
+  // they are asked together; the tally is built in row order so the answers
+  // stay attributable.
+  const kinds = await Promise.all(
+    remaining.map((row) => cancelOne(db, deploy.environmentId, row, requestCancel))
+  )
   const tally: Tally = { cancelledDirect: [], signalled: [], tooLate: [] }
-  for (const row of remaining) {
-    // One at a time: a rolling deploy has a handful of servers, and the order
-    // keeps the answers attributable.
-    await cancelOne(db, deploy.environmentId, row, requestCancel, tally)
-  }
+  remaining.forEach((row, index) => tally[kinds[index]].push(row.serverId))
   return summarize(tally)
 }
