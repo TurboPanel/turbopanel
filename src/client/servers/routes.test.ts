@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assertEquals, assertExists, assertThrows } from '@std/assert'
 import { and, eq } from 'drizzle-orm'
 import { Hono } from 'hono'
@@ -488,7 +489,7 @@ async function withServerDeleteFixtures(
   }) => Promise<void>
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn('Skipping server route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('server route tests')
     return
   }
 
@@ -821,7 +822,7 @@ test('POST /servers/:id/daemon-key/revoke returns 403 for the co-located control
 
 test('POST /servers/:id/daemon-key/revoke still revokes when the daemon cell registry is unavailable', async () => {
   if (!dbUrl) {
-    console.warn('Skipping server route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('server route tests')
     return
   }
 
@@ -1001,7 +1002,7 @@ test('DELETE /servers/:id returns 403 via reserved colocated license when pin an
 
 test('DELETE /servers/:id returns 403 not 503 for self-host-pinned server without registry', async () => {
   if (!dbUrl) {
-    console.warn('Skipping server route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('server route tests')
     return
   }
 
@@ -1199,7 +1200,7 @@ test('DELETE /servers/:id invalidates the bound license', async () => {
 
 test('DELETE /servers/:id invalidates the bound license on Workers runtime', async () => {
   if (!dbUrl) {
-    console.warn('Skipping server route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('server route tests')
     return
   }
 
@@ -1336,7 +1337,7 @@ test('DELETE /servers/:id returns 409 when child resources block deletion', asyn
 
 test('DELETE /servers/:id returns 503 when daemon cell registry is unavailable', async () => {
   if (!dbUrl) {
-    console.warn('Skipping server route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('server route tests')
     return
   }
 
@@ -1403,7 +1404,7 @@ test('DELETE /servers/:id returns 503 when daemon cell registry is unavailable',
 
 test('DELETE /servers/:id returns 500 when purge fails after row delete', async () => {
   if (!dbUrl) {
-    console.warn('Skipping server route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('server route tests')
     return
   }
 
@@ -1491,7 +1492,7 @@ test('DELETE /servers/:id returns 500 when purge fails after row delete', async 
 
 test('GET /servers/updates does not call listRequests on the cell', async () => {
   if (!dbUrl) {
-    console.warn('Skipping server route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('server route tests')
     return
   }
 
@@ -1578,7 +1579,7 @@ test('GET /servers/updates does not call listRequests on the cell', async () => 
 
 test('POST /servers/updates refuses a member who cannot manage the organization', async () => {
   if (!dbUrl) {
-    console.warn('Skipping server route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('server route tests')
     return
   }
 
@@ -1822,7 +1823,7 @@ test('GET /servers/:id/cell returns 403 for a non-admin session user', async () 
 
 test('GET /servers/:id/cell returns data for an admin user', async () => {
   if (!dbUrl) {
-    console.warn('Skipping server route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('server route tests')
     return
   }
 
@@ -1944,7 +1945,7 @@ test('GET /servers — cached payload is list rows only (presence comes from pri
 
 test('GET /servers — empty visibleIds short-circuits before cache', async () => {
   if (!dbUrl) {
-    console.warn('Skipping server route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('server route tests')
     return
   }
 

@@ -27,6 +27,7 @@ import {
   readHostingPorts,
   readHostingProtocol,
   readHostnames,
+  readWwwRedirect,
   readPathPrefix,
   readTargetPort,
   scheduleErrorResponse,
@@ -398,6 +399,9 @@ test('hosting option readers filter invalid values', () => {
   assertEquals(readHostnames(null), [])
   assertEquals(readHostnames({ hostnames: ['a.example.com', '', 3] }), ['a.example.com'])
   assertEquals(readPathPrefix({ pathPrefix: '/api' }), '/api')
+  assertEquals(readWwwRedirect({ wwwRedirect: true }), true)
+  assertEquals(readWwwRedirect({ wwwRedirect: 'true' }), false)
+  assertEquals(readWwwRedirect(null), false)
   assertEquals(readTargetPort({ targetPort: 8080 }), 8080)
   assertEquals(readTargetPort({ targetPort: Number.NaN }), undefined)
   assertEquals(readHostingProtocol({ protocol: 'tcp' }), 'tcp')
@@ -504,6 +508,24 @@ test('validateDeployMaterials rejects tcp hostings without ports', () => {
   )
   if (!error) throw new TypeError('expected invalid deploy hosting')
   assertEquals(error.error, 'invalid_deploy_hosting')
+})
+
+test('validateDeployMaterials refuses a www redirect onto an existing hostname', () => {
+  const hosting = (hostingId: string, hostnames: string[], wwwRedirect?: true) => ({
+    hostingId,
+    serviceId: 'svc',
+    composeServiceName: 'web',
+    hostnames,
+    ...(wwwRedirect ? { wwwRedirect } : {}),
+  })
+  const error = validateDeployMaterials(
+    [hosting('h1', ['example.com'], true), hosting('h2', ['www.example.com'])],
+    []
+  )
+  if (!error) throw new TypeError('expected invalid deploy hosting')
+  assertEquals(error.error, 'invalid_deploy_hosting')
+  assertEquals(error.message.includes('www.example.com'), true)
+  assertEquals(validateDeployMaterials([hosting('h1', ['example.com'], true)], []), null)
 })
 
 test('validateDeployMaterials rejects invalid storage material', () => {

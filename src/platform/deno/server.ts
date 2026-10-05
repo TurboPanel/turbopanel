@@ -1,5 +1,5 @@
 import type { Hono } from 'hono'
-import { expireStaleDetectingRecoveries } from '../../features/managed/recovery-records.ts'
+import { expireStaleRecoveries } from '../../features/managed/recovery-records.ts'
 import { AUTOMATIC_FAILOVER_STALE_DETECTING_MESSAGE } from '../../features/managed/recovery.ts'
 import { deriveDaemonJwtKeyring } from '../../daemon/authn/daemon-jwt-keyring.ts'
 import {
@@ -25,6 +25,7 @@ import { sweepStalePresence } from '../../daemon/cell/control-plane-monitor.ts'
 import { createDenoMaintenanceScheduler } from '../../daemon/cell/deno-maintenance.ts'
 import { resolveAlertSender } from '../../features/alerts/resolve-alert-sender.ts'
 import { ALERT_WEBHOOK_POLICY } from '../../features/alerts/alert-webhook-settings.ts'
+import { pruneCommandHistory } from '../../features/commands/prune.ts'
 import { retryDueDeliveries } from '../../features/notifications/emit.ts'
 import { sendDueDigests } from '../../features/notifications/digest.ts'
 import { DAEMON_CELL_MAINTAIN_MS } from '../../contracts/cell-protocol.ts'
@@ -312,6 +313,9 @@ function resolveCommandAmqpUrl(): string | null {
 }
 
 /** Isolate one cleanup phase so a failure cannot abort the rest of the tick. */
+const COMMAND_PRUNE_INTERVAL_MS = 15 * 60_000
+let lastCommandPruneMs = 0
+
 async function runCleanupPhase(label: string, fn: () => Promise<unknown>): Promise<void> {
   try {
     await fn()
@@ -322,14 +326,18 @@ async function runCleanupPhase(label: string, fn: () => Promise<unknown>): Promi
 
 async function sweepStaleCommandsPhase(db: Db): Promise<void> {
   const swept = await sweepStaleCommands(db)
+  // Recoveries first: a row that is still in flight keeps its managed row at
+  // `applying`, and an expired one releases it itself.
+  const expired = (
+    await expireStaleRecoveries(db, {
+      reason: AUTOMATIC_FAILOVER_STALE_DETECTING_MESSAGE,
+    })
+  ).map((row) => row.id)
   const released = await releaseStuckManagedApplying(db)
-  const expired = await expireStaleDetectingRecoveries(db, {
-    reason: AUTOMATIC_FAILOVER_STALE_DETECTING_MESSAGE,
-  })
   if (swept > 0 || released.length > 0 || expired.length > 0) {
     logWarn(
       'daemon-cell',
-      `stale command sweep: timed out ${swept}, released managed ${released.join(',') || 'none'}, expired detecting recoveries ${expired.join(',') || 'none'}`
+      `stale command sweep: timed out ${swept}, released managed ${released.join(',') || 'none'}, expired recoveries ${expired.join(',') || 'none'}`
     )
   }
 }
@@ -746,6 +754,11 @@ export async function startDenoServer(options: StartDenoServerOptions = {}): Pro
           ),
         })
       )
+      // Workers parity: that cron prunes on its 15-minute window, not every tick.
+      if (Date.now() - lastCommandPruneMs >= COMMAND_PRUNE_INTERVAL_MS) {
+        lastCommandPruneMs = Date.now()
+        await runCleanupPhase('command history prune', () => pruneCommandHistory(db))
+      }
       await runCleanupPhase('upgrade tick', async () => {
         const env = Deno.env.toObject()
         const revision = resolveInstanceRevision(env)

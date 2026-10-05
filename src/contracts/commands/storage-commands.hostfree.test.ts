@@ -16,6 +16,7 @@ const BACKUP = {
   copyId: COPY_ID,
   copyProvider: 'docker',
   volumeName: 'shop_uploads',
+  storageId: '0192f0a4-1c2b-7d3e-8f40-5a6b7c8d9e05',
   action: 'create',
   backupId: 'bk_0123abcd',
 }
@@ -36,7 +37,12 @@ test('storage.backup refuses a policy id on create, bad ids and unsafe sources',
     { ...BACKUP, backupId: '../x' },
     { ...BACKUP, copyProvider: 'nfs' },
     { ...BACKUP, volumeName: 'bad name' },
-    { ...BACKUP, copyProvider: 'path', volumeName: undefined, hostPath: '/srv/users/../etc' },
+    {
+      ...BACKUP,
+      copyProvider: 'path',
+      volumeName: undefined,
+      hostPath: '/srv/users/../etc',
+    },
   ]) {
     assertThrows(
       () => parseCommandPayload('storage.backup', bad),
@@ -79,6 +85,7 @@ const RESTORE = {
   copyId: COPY_ID,
   copyProvider: 'path',
   hostPath: '/srv/users/shop/volumes/uploads',
+  ownerUsername: 'shop',
   backupId: 'bk_0123abcd',
   checksum: 'a'.repeat(64),
 }
@@ -99,6 +106,7 @@ test('storage.restore refuses a missing or malformed checksum and unsafe sources
     { ...RESTORE, policyId: 'not-a-uuid' },
     { ...RESTORE, backupId: 'bk/../x' },
     { ...RESTORE, hostPath: '/srv/users/../etc' },
+    { ...RESTORE, ownerUsername: undefined },
     { ...RESTORE, hostPath: 'srv/users/x' },
     { ...RESTORE, copyProvider: 'docker' },
   ]) {
@@ -131,5 +139,7 @@ test('storage.restore results keep container ids and drop anything else', () => 
       summary: 'restored',
     }
   )
-  assertEquals(parseCommandResult('storage.restore', { backupId: '' }), { backupId: '' })
+  assertEquals(parseCommandResult('storage.restore', { backupId: '' }), {
+    backupId: '',
+  })
 })

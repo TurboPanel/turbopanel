@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { eq } from 'drizzle-orm'
 import { getDatabaseUrl } from '../../db/url.ts'
 import { createDenoDb } from '../../db/connection.ts'
@@ -25,10 +26,10 @@ async function withTestFixtures(
     organizationId: string
     workspaceId: string
     teamId: string
-  }) => Promise<void>,
+  }) => Promise<void>
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn('Skipping authz tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('authz tests')
     return
   }
 
@@ -49,7 +50,6 @@ async function withTestFixtures(
     .returning({ id: user.id })
 
   const userId = insertedUser[0]!.id
-
 
   const [insertedWorkspace] = await db
     .insert(workspace)
@@ -136,7 +136,8 @@ test('organization:manage grant allows full org access', async () => {
     const canWorkspace = await can(db, userId, 'organization:manage', 'workspace', workspaceId)
     const canOrg = await can(db, userId, 'organization:manage', 'organization', organizationId)
 
-    if (!canWorkspace) throw new Error('organization:manage should allow access to workspace in org')
+    if (!canWorkspace)
+      throw new Error('organization:manage should allow access to workspace in org')
     if (!canOrg) throw new Error('organization:manage should allow access to organization')
   })
 })
@@ -156,10 +157,14 @@ test('organization:manage grant does not satisfy an organization:own check', asy
     const managesOrg = await can(db, userId, 'organization:manage', 'organization', organizationId)
 
     if (ownsOrg) {
-      throw new Error('organization:manage grant must not satisfy an organization:own check on the org')
+      throw new Error(
+        'organization:manage grant must not satisfy an organization:own check on the org'
+      )
     }
     if (ownsWorkspace) {
-      throw new Error('organization:manage grant must not satisfy an organization:own check on org entities')
+      throw new Error(
+        'organization:manage grant must not satisfy an organization:own check on org entities'
+      )
     }
     if (!managesOrg) {
       throw new Error('organization:manage grant should still satisfy an organization:manage check')
@@ -414,20 +419,8 @@ test('organization grant allows can() on managed and variable entities', async (
         permission: 'organization:manage',
       })
 
-      const canManaged = await can(
-        db,
-        userId,
-        'organization:manage',
-        'managed',
-        managedId,
-      )
-      const canVariable = await can(
-        db,
-        userId,
-        'organization:manage',
-        'variable',
-        variableId,
-      )
+      const canManaged = await can(db, userId, 'organization:manage', 'managed', managedId)
+      const canVariable = await can(db, userId, 'organization:manage', 'variable', variableId)
 
       if (!canManaged) {
         throw new Error('organization:manage should allow access to managed entity')
@@ -454,20 +447,8 @@ test('organization:manage grant does not satisfy system permissions; explicit an
       permission: 'organization:manage',
     })
 
-    const manageOperate = await can(
-      db,
-      userId,
-      'system:operate',
-      'organization',
-      organizationId,
-    )
-    const manageRead = await can(
-      db,
-      userId,
-      'system:read',
-      'organization',
-      organizationId,
-    )
+    const manageOperate = await can(db, userId, 'system:operate', 'organization', organizationId)
+    const manageRead = await can(db, userId, 'system:read', 'organization', organizationId)
     if (manageOperate) {
       throw new TypeError('organization:manage must not satisfy system:operate')
     }
@@ -483,13 +464,7 @@ test('organization:manage grant does not satisfy system permissions; explicit an
       permission: 'system:operate',
     })
 
-    const explicitOperate = await can(
-      db,
-      userId,
-      'system:operate',
-      'organization',
-      organizationId,
-    )
+    const explicitOperate = await can(db, userId, 'system:operate', 'organization', organizationId)
     if (!explicitOperate) {
       throw new TypeError('explicit system:operate grant should satisfy')
     }
@@ -515,27 +490,9 @@ test('organization:manage grant does not satisfy system permissions; explicit an
     const superId = superUser!.id
 
     try {
-      const adminRead = await can(
-        db,
-        adminId,
-        'system:read',
-        'organization',
-        organizationId,
-      )
-      const adminOperate = await can(
-        db,
-        adminId,
-        'system:operate',
-        'organization',
-        organizationId,
-      )
-      const adminManage = await can(
-        db,
-        adminId,
-        'system:manage',
-        'organization',
-        organizationId,
-      )
+      const adminRead = await can(db, adminId, 'system:read', 'organization', organizationId)
+      const adminOperate = await can(db, adminId, 'system:operate', 'organization', organizationId)
+      const adminManage = await can(db, adminId, 'system:manage', 'organization', organizationId)
       if (!adminRead) {
         throw new TypeError('admin should satisfy system:read')
       }
@@ -546,27 +503,9 @@ test('organization:manage grant does not satisfy system permissions; explicit an
         throw new TypeError('admin must not satisfy system:manage')
       }
 
-      const superRead = await can(
-        db,
-        superId,
-        'system:read',
-        'organization',
-        organizationId,
-      )
-      const superOperate = await can(
-        db,
-        superId,
-        'system:operate',
-        'organization',
-        organizationId,
-      )
-      const superManage = await can(
-        db,
-        superId,
-        'system:manage',
-        'organization',
-        organizationId,
-      )
+      const superRead = await can(db, superId, 'system:read', 'organization', organizationId)
+      const superOperate = await can(db, superId, 'system:operate', 'organization', organizationId)
+      const superManage = await can(db, superId, 'system:manage', 'organization', organizationId)
       if (!superRead || !superOperate || !superManage) {
         throw new TypeError('superadmin should satisfy all system permissions')
       }
@@ -587,13 +526,7 @@ test('explicit system:manage grants do not satisfy can(); system:operate grants 
       permission: 'system:manage',
     })
 
-    const manageAllowed = await can(
-      db,
-      userId,
-      'system:manage',
-      'organization',
-      organizationId,
-    )
+    const manageAllowed = await can(db, userId, 'system:manage', 'organization', organizationId)
     if (manageAllowed) {
       throw new TypeError('regular user with explicit system:manage grant must still be denied')
     }
@@ -606,13 +539,7 @@ test('explicit system:manage grants do not satisfy can(); system:operate grants 
       permission: 'system:operate',
     })
 
-    const operateAllowed = await can(
-      db,
-      userId,
-      'system:operate',
-      'organization',
-      organizationId,
-    )
+    const operateAllowed = await can(db, userId, 'system:operate', 'organization', organizationId)
     if (!operateAllowed) {
       throw new TypeError('explicit system:operate grant should still satisfy')
     }
@@ -630,13 +557,7 @@ test('organization-wide subject grants apply to team members', async () => {
       permission: 'organization:manage',
     })
 
-    const memberAllowed = await can(
-      db,
-      userId,
-      'organization:manage',
-      'workspace',
-      workspaceId,
-    )
+    const memberAllowed = await can(db, userId, 'organization:manage', 'workspace', workspaceId)
     if (!memberAllowed) {
       throw new TypeError('team members should inherit organization-subject grants')
     }
@@ -657,11 +578,11 @@ test('organization-wide subject grants apply to team members', async () => {
         outsiderId,
         'organization:manage',
         'workspace',
-        workspaceId,
+        workspaceId
       )
       if (outsiderAllowed) {
         throw new TypeError(
-          'users outside the organization must not inherit organization-subject grants',
+          'users outside the organization must not inherit organization-subject grants'
         )
       }
     } finally {
@@ -719,16 +640,9 @@ test('can honors pre-fetched subjects without re-querying teammate', async () =>
       permission: 'organization:manage',
     })
 
-    const allowed = await can(
-      db,
-      userId,
-      'organization:manage',
-      'workspace',
-      workspaceId,
-      {
-        subjects: [{ subjectKind: 'user', subjectId: userId }],
-      },
-    )
+    const allowed = await can(db, userId, 'organization:manage', 'workspace', workspaceId, {
+      subjects: [{ subjectKind: 'user', subjectId: userId }],
+    })
     if (!allowed) {
       throw new TypeError('can should honor pre-fetched subjects for grant lookup')
     }

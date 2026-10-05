@@ -1695,6 +1695,24 @@ test('parseManagedBackupPayload accepts delete action and optional retentionKeep
   )
 })
 
+test('parseManagedBackupPayload carries a canonical policyId and rejects a malformed one', () => {
+  const policyId = '11111111-1111-4111-8111-111111111111'
+  assertEquals(
+    parseManagedBackupPayload({ ...VALID_MANAGED_BACKUP_CREATE, action: 'delete', policyId }),
+    { ...VALID_MANAGED_BACKUP_CREATE, action: 'delete', policyId }
+  )
+  assertThrows(
+    () =>
+      parseManagedBackupPayload({
+        ...VALID_MANAGED_BACKUP_CREATE,
+        action: 'delete',
+        policyId: '../policy',
+      }),
+    Error,
+    'Invalid managed.backup payload policyId'
+  )
+})
+
 test('parseManagedBackupPayload rejects hostile or malformed input', () => {
   assertThrows(
     () =>
@@ -3379,6 +3397,32 @@ test('parseEnvironmentDeployPayload accepts optional tlsMode acme and rejects un
           },
         ],
       }),
+    Error,
+    'Invalid environment.deploy payload'
+  )
+})
+
+test('parseEnvironmentDeployPayload keeps wwwRedirect only when true and rejects non-booleans', () => {
+  const hostingIngressNetwork = '00000000-0000-4000-8000-0000000000bb'
+  const withHosting = (extra: Record<string, unknown>) =>
+    parseEnvironmentDeployPayload({
+      ...BASE_ENVIRONMENT_DEPLOY,
+      hostingIngressNetwork,
+      hostings: [
+        {
+          hostingId: 'h1',
+          serviceId: 's1',
+          composeServiceName: 'web',
+          hostnames: ['example.com'],
+          ...extra,
+        },
+      ],
+    })
+  assertEquals(withHosting({ wwwRedirect: true }).hostings[0]?.wwwRedirect, true)
+  assertEquals(withHosting({ wwwRedirect: false }).hostings[0]?.wwwRedirect, undefined)
+  assertEquals(withHosting({}).hostings[0]?.wwwRedirect, undefined)
+  assertThrows(
+    () => withHosting({ wwwRedirect: 'yes' }),
     Error,
     'Invalid environment.deploy payload'
   )
@@ -5513,6 +5557,7 @@ test('parseEnvironmentDeployPayload sites accept engines, php, and principal ids
       engine: 'nginx',
       principal: { ...SITE_PRINCIPAL, uid: 15001, gid: 15001 },
       webEnv: { APP_ENV: 'prod', drop: 1 },
+      webSecretEnv: { SITE_VAR: 'tpdaemon.abc', drop: 1 },
       php: { version: '8.3', extensions: ['gd'] },
     })
   )
@@ -5521,6 +5566,8 @@ test('parseEnvironmentDeployPayload sites accept engines, php, and principal ids
   assertEquals(sites[0]?.engine, 'nginx')
   assertEquals(sites[0]?.principal?.uid, 15001)
   assertEquals(sites[0]?.webEnv, { APP_ENV: 'prod' })
+  // Sealed secret variables ride apart from the plain ones; non-strings drop.
+  assertEquals(sites[0]?.webSecretEnv, { SITE_VAR: 'tpdaemon.abc' })
   assertEquals(sites[0]?.php?.extensions, ['gd'])
 
   for (const engine of ['apache', 'openlitespeed']) {

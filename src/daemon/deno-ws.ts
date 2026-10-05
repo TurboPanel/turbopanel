@@ -1,7 +1,7 @@
 import type { Context, Env, Hono } from 'hono'
 import { upgradeWebSocket } from 'hono/deno'
 import type { WSContext } from 'hono/ws'
-import type { DaemonCellRegistry } from '../contracts/cell.ts'
+import type { DaemonCellRegistry, DaemonCellSnapshot } from '../contracts/cell.ts'
 import type {
   BackupRunReportResultMessage,
   DaemonInboundEnvelope,
@@ -20,6 +20,7 @@ import {
 import { instanceAttachVersionFrame } from './attach-version.ts'
 import type { DaemonJwtKeyring } from './authn/daemon-jwt-keyring.ts'
 import { tryAssignColocatedDaemonToInstalledOrganization } from '../client/authn/install-state.ts'
+import { handleAcmeIssuanceEvent } from '../client/tls/acme-issuance-event.ts'
 import { recordInstanceAcmeIssuance } from '../features/install/instance-hostnames.ts'
 import {
   persistDaemonReachedTarget,
@@ -312,6 +313,10 @@ async function handleDaemonPresenceInbound(params: {
 }): Promise<void> {
   const { cell, db, serverId, connectionId, message } = params
   const presence = message as unknown as Record<string, unknown>
+  // Snapshot before recordInbound, which marks Redis connected again; otherwise
+  // onDaemonInbound sees a connected cell and skips the Postgres online write
+  // after a stale sweep (same ordering rule as handleDaemonCellPing).
+  const snapshotBefore = await cell.getSnapshot()
   const resources = resourcesFromDaemonPresence(presence)
   const services = parseServiceRunStates(presence.services)
 
@@ -348,6 +353,7 @@ async function handleDaemonPresenceInbound(params: {
   await onDaemonInbound(db, serverId, cell, {
     at: message.at,
     daemonBuild: message.daemonBuild,
+    runtimeWasOffline: !snapshotBefore.connected,
   })
   const commit = message.daemonBuild?.commit
   if (commit) {
@@ -385,6 +391,25 @@ async function handleDaemonManagedHaInbound(params: {
     }
   )
   await cell.recordInbound({ connectionId, at: message.at })
+}
+
+async function handleAcmeIssuanceInbound(params: {
+  cell: ReturnType<DaemonCellRegistry['getCell']>
+  db: Db
+  serverId: string
+  connectionId: string | undefined
+  message: Extract<DaemonMessage, { type: 'acme-issuance-event' }>
+}): Promise<void> {
+  const { cell, db, serverId, connectionId, message } = params
+  await cell.recordInbound({ connectionId, at: message.at })
+  await handleAcmeIssuanceEvent(db, {
+    serverId,
+    hostname: message.hostname,
+    ok: message.ok,
+    at: message.at,
+    ...(message.errorMessage ? { errorMessage: message.errorMessage } : {}),
+    ...(message.notAfter ? { notAfter: message.notAfter } : {}),
+  })
 }
 
 async function handleInstanceAcmeIssuanceInbound(params: {
@@ -504,7 +529,46 @@ async function handleBackupRunReportInbound(params: {
  * dedicated handler record liveness and, when they carry a correlated result,
  * apply the inbound envelope to the cell.
  */
-async function dispatchDaemonInboundMessage(params: DaemonInboundDispatch): Promise<void> {
+export async function dispatchDaemonInboundMessage(params: DaemonInboundDispatch): Promise<void> {
+  const { cell, db, serverId, message } = params
+  if (message.type === 'hello' || message.type === 'heartbeat') {
+    await dispatchDaemonInboundByType(params)
+    return
+  }
+  // Every other frame marks Redis connected via recordInbound but projects
+  // nothing to Postgres: re-project online when a stale sweep had demoted it.
+  const snapshotBefore = await cell.getSnapshot()
+  try {
+    await dispatchDaemonInboundByType(params)
+  } catch (err) {
+    // A handler that fails after recordInbound leaves Redis connected, so the
+    // next frame would see steady state: repair here when it got that far.
+    if (!snapshotBefore.connected && (await cell.getSnapshot()).connected) {
+      await restoreProjectedOnline(db, serverId, cell, snapshotBefore, message.at)
+    }
+    throw err
+  }
+  if (!snapshotBefore.connected) {
+    await restoreProjectedOnline(db, serverId, cell, snapshotBefore, message.at)
+  }
+}
+
+async function restoreProjectedOnline(
+  db: Db,
+  serverId: string,
+  cell: ReturnType<DaemonCellRegistry['getCell']>,
+  snapshotBefore: DaemonCellSnapshot,
+  at: string | undefined
+): Promise<void> {
+  await onDaemonConnected(
+    db,
+    serverId,
+    cell,
+    snapshotBefore.connectedAt ?? at ?? new Date().toISOString()
+  )
+}
+
+async function dispatchDaemonInboundByType(params: DaemonInboundDispatch): Promise<void> {
   const { cell, db, serverId, connectionId, message } = params
   switch (message.type) {
     case 'hello':
@@ -535,6 +599,15 @@ async function dispatchDaemonInboundMessage(params: DaemonInboundDispatch): Prom
         connectionId,
         message,
         reporterServerId: serverId,
+      })
+      return
+    case 'acme-issuance-event':
+      await handleAcmeIssuanceInbound({
+        cell,
+        db,
+        serverId,
+        connectionId,
+        message,
       })
       return
     case 'instance-acme-issuance-event':

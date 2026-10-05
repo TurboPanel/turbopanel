@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assertEquals, assertExists } from '@std/assert'
 import { and, eq, sql } from 'drizzle-orm'
 import { Hono } from 'hono'
@@ -266,7 +267,7 @@ async function withMetricsFixtures(
   metricsStore?: ServerMetricsStore
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn('Skipping metrics route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('metrics route tests')
     return
   }
 

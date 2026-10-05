@@ -19,7 +19,7 @@
  * `./schema.ts`.
  */
 
-import { and, eq, isNotNull, isNull, sql } from 'drizzle-orm'
+import { and, eq, isNotNull, isNull, lt, sql } from 'drizzle-orm'
 import type { Db } from '../../db/connection.ts'
 import { webhookDelivery } from '../../db/schema.ts'
 
@@ -73,7 +73,7 @@ export async function claimWebhookDelivery(
     provider: WebhookDeliveryProvider
     externalDeliveryId: string
     event?: string | null
-  },
+  }
 ): Promise<boolean> {
   const claimed = await db
     .insert(webhookDelivery)
@@ -87,7 +87,43 @@ export async function claimWebhookDelivery(
     })
     .returning({ id: webhookDelivery.id })
 
-  return claimed.length > 0
+  if (claimed.length > 0) return true
+  return (
+    params.provider === 'stripe' &&
+    (await reclaimUnreferencedStripeClaim(db, params.externalDeliveryId))
+  )
+}
+
+/**
+ * A Stripe claim older than this that never received its object ref was
+ * abandoned by a worker that died between the claim and the handoff.
+ */
+export const STRIPE_CLAIM_ABANDONED_AFTER_MS = 5 * 60 * 1000
+
+/**
+ * Take over a Stripe claim whose worker died before the handoff: unsettled,
+ * no object ref, untouched for {@link STRIPE_CLAIM_ABANDONED_AFTER_MS}. The
+ * update stamps the row, so two redeliveries cannot both take it over.
+ */
+async function reclaimUnreferencedStripeClaim(
+  db: Db,
+  externalDeliveryId: string
+): Promise<boolean> {
+  const cutoff = new Date(Date.now() - STRIPE_CLAIM_ABANDONED_AFTER_MS).toISOString()
+  const taken = await db
+    .update(webhookDelivery)
+    .set({ updatedAt: new Date().toISOString() })
+    .where(
+      and(
+        eq(webhookDelivery.provider, 'stripe'),
+        eq(webhookDelivery.externalDeliveryId, externalDeliveryId),
+        isNull(webhookDelivery.objectId),
+        isNull(webhookDelivery.projectedAt),
+        lt(webhookDelivery.updatedAt, cutoff)
+      )
+    )
+    .returning({ id: webhookDelivery.id })
+  return taken.length > 0
 }
 
 /**
@@ -102,15 +138,15 @@ export async function claimWebhookDelivery(
  */
 export async function releaseWebhookDelivery(
   db: Db,
-  params: { provider: WebhookDeliveryProvider; externalDeliveryId: string },
+  params: { provider: WebhookDeliveryProvider; externalDeliveryId: string }
 ): Promise<void> {
   await db
     .delete(webhookDelivery)
     .where(
       and(
         eq(webhookDelivery.provider, params.provider),
-        eq(webhookDelivery.externalDeliveryId, params.externalDeliveryId),
-      ),
+        eq(webhookDelivery.externalDeliveryId, params.externalDeliveryId)
+      )
     )
 }
 
@@ -122,10 +158,7 @@ export async function releaseWebhookDelivery(
  * so the gate can release and ask Stripe to retry. Always clears
  * `projectedAt` so a late handoff after a mistaken settle stays retryable.
  */
-export async function enqueueStripeProjection(
-  db: Db,
-  task: StripeProjectionTask,
-): Promise<void> {
+export async function enqueueStripeProjection(db: Db, task: StripeProjectionTask): Promise<void> {
   const updated = await db
     .update(webhookDelivery)
     .set({
@@ -135,10 +168,7 @@ export async function enqueueStripeProjection(
       projectedAt: null,
     })
     .where(
-      and(
-        eq(webhookDelivery.provider, 'stripe'),
-        eq(webhookDelivery.externalDeliveryId, task.id),
-      ),
+      and(eq(webhookDelivery.provider, 'stripe'), eq(webhookDelivery.externalDeliveryId, task.id))
     )
     .returning({ id: webhookDelivery.id })
 
@@ -154,12 +184,9 @@ export async function enqueueStripeProjection(
  */
 export async function listPendingStripeProjections(
   db: Db,
-  opts: { limit?: number } = {},
+  opts: { limit?: number } = {}
 ): Promise<StripeProjectionTask[]> {
-  const limit = Math.min(
-    Math.max(Math.trunc(opts.limit ?? STRIPE_PROJECTION_RETRY_LIMIT), 1),
-    2000,
-  )
+  const limit = Math.min(Math.max(Math.trunc(opts.limit ?? STRIPE_PROJECTION_RETRY_LIMIT), 1), 2000)
   const rows = await db
     .select({
       id: webhookDelivery.externalDeliveryId,
@@ -172,10 +199,12 @@ export async function listPendingStripeProjections(
       and(
         eq(webhookDelivery.provider, 'stripe'),
         isNull(webhookDelivery.projectedAt),
-        isNotNull(webhookDelivery.objectId),
-      ),
+        isNotNull(webhookDelivery.objectId)
+      )
     )
-    .orderBy(webhookDelivery.createdAt)
+    // Least recently attempted first: a task that keeps failing moves to the
+    // back, so it cannot starve newer ones.
+    .orderBy(webhookDelivery.updatedAt)
     .limit(limit)
 
   return rows.map((row) => ({
@@ -186,20 +215,56 @@ export async function listPendingStripeProjections(
   }))
 }
 
-/** Mark one Stripe delivery's projection as settled so the sweep will not retry it. */
-export async function completeStripeProjection(
+/** Record a failed or deferred attempt: the task moves to the back of the retry queue. */
+export async function noteStripeProjectionAttempt(
   db: Db,
   eventId: string,
-  now: string,
+  now: string
 ): Promise<void> {
   await db
+    .update(webhookDelivery)
+    .set({ updatedAt: now })
+    .where(
+      and(
+        eq(webhookDelivery.provider, 'stripe'),
+        eq(webhookDelivery.externalDeliveryId, eventId),
+        isNull(webhookDelivery.projectedAt)
+      )
+    )
+}
+
+/**
+ * Give up on Stripe projections still unsettled after
+ * {@link WEBHOOK_DELIVERY_RETENTION_MS}: they are marked settled so the
+ * retention sweep can delete them. Returns how many were given up on.
+ */
+export async function expireStalePendingStripeProjections(db: Db, now: string): Promise<number> {
+  const cutoff = new Date(Date.parse(now) - WEBHOOK_DELIVERY_RETENTION_MS).toISOString()
+  const expired = await db
     .update(webhookDelivery)
     .set({ projectedAt: now })
     .where(
       and(
         eq(webhookDelivery.provider, 'stripe'),
-        eq(webhookDelivery.externalDeliveryId, eventId),
-      ),
+        isNull(webhookDelivery.projectedAt),
+        lt(webhookDelivery.createdAt, cutoff)
+      )
+    )
+    .returning({ id: webhookDelivery.id })
+  return expired.length
+}
+
+/** Mark one Stripe delivery's projection as settled so the sweep will not retry it. */
+export async function completeStripeProjection(
+  db: Db,
+  eventId: string,
+  now: string
+): Promise<void> {
+  await db
+    .update(webhookDelivery)
+    .set({ projectedAt: now })
+    .where(
+      and(eq(webhookDelivery.provider, 'stripe'), eq(webhookDelivery.externalDeliveryId, eventId))
     )
 }
 
@@ -215,7 +280,7 @@ export async function completeStripeProjection(
  */
 export async function sweepExpiredWebhookDeliveries(
   db: Db,
-  opts: { limit: number; now?: string; retentionMs?: number },
+  opts: { limit: number; now?: string; retentionMs?: number }
 ): Promise<number> {
   const limit = Math.min(Math.max(Math.trunc(opts.limit), 1), 2000)
   const retentionMs = opts.retentionMs ?? WEBHOOK_DELIVERY_RETENTION_MS
@@ -231,7 +296,7 @@ export async function sweepExpiredWebhookDeliveries(
           and not (provider = 'stripe' and projected_at is null)
         order by created_at
         limit ${limit}
-      )`,
+      )`
     )
     .returning({ id: webhookDelivery.id })
 

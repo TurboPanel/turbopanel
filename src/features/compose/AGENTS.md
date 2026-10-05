@@ -825,6 +825,20 @@ inputs would point a unit's `WorkingDirectory` at a tree nothing ever published.
 a principal so the daemon can build one `turbopanel-<username>.slice` per
 account. Daemon side: `../../../../turbopaneld/src/deploy/native/`.
 
+### Changes for {env} are a partial layer
+
+An environment's compose (and any extra overlay file) may set one field of a
+service the project's Base defines, so it need not carry an `image` or `build`
+of its own. `resolveComposeLayerChain` therefore reads every layer except the
+project's own base with `assertComposeLayerDocument` (lint option
+`requireImageOrBuild: false`); the rule is moved, not dropped. On save the
+environment routes also run `validateEnvironmentComposeAgainstBase`
+(`layer-chain.ts`) over the merge of Base + changes + extra layers, with every
+rule at full strength, and at deploy `validateComposeForDeploy` does the same
+over the same merge. A service new in the environment still needs its own image
+or build; the host-access, privileged-field, build-policy and banned-key checks
+are unaffected because they were never per-layer-only.
+
 ### Multi-file compose merge + layer model
 
 Merge semantics are now **Compose Spec–faithful** rather than a shallow

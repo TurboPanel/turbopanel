@@ -99,7 +99,14 @@ test('carryOverRateLimiter hands its clock to the new limiter', () => {
   assertEquals(next.tryAcquire(), true)
 })
 
-type ConsumeHandler = (msg: { content: { toString(): string } } | null) => void
+type ConsumeHandler = (
+  msg: {
+    content: { toString(): string }
+    properties?: { headers?: Record<string, unknown> }
+  } | null
+) => void
+
+type SentToQueue = { queue: string; options: Record<string, unknown> }
 
 function createStubBroker(
   options: {
@@ -123,6 +130,7 @@ function createStubBroker(
   } = {}
 ) {
   const dispositions: Array<{ method: string; requeue?: boolean }> = []
+  const sentToQueue: SentToQueue[] = []
   const prefetches: number[] = []
   const cancels: string[] = []
   let onMessage: ConsumeHandler | undefined
@@ -147,6 +155,10 @@ function createStubBroker(
       consumeCount++
       options.duringConsume?.()
       return { consumerTag: options.consumerTag ?? 'ctag-1' }
+    },
+    sendToQueue: (queue: string, _content: unknown, opts: Record<string, unknown>) => {
+      sentToQueue.push({ queue, options: opts })
+      return true
     },
     ack: () => {
       if (options.dispositionError) throw options.dispositionError
@@ -178,6 +190,7 @@ function createStubBroker(
     channel,
     connection,
     dispositions,
+    sentToQueue,
     prefetches,
     cancels,
     consumeCount: () => consumeCount,
@@ -339,11 +352,14 @@ test('startMailerConsumer maps permanent, transient and thrown send failures', a
       broker.deliver({ content: { toString: () => OTP_JOB_JSON } })
       await waitFor(() => broker.dispositions.length === i + 1, `disposition ${i + 1}`)
     }
-    assertEquals(broker.dispositions, [
-      { method: 'nack', requeue: false },
-      { method: 'nack', requeue: true },
-      { method: 'nack', requeue: true },
-    ])
+    // A permanent refusal goes to the dead-letter queue; a transient failure and
+    // a thrown handler error go to a delay queue. All three are acked, so
+    // none of them sits at the head of the send queue.
+    assertEquals(broker.dispositions, [{ method: 'ack' }, { method: 'ack' }, { method: 'ack' }])
+    assertEquals(
+      broker.sentToQueue.map((sent) => sent.queue),
+      ['turbopanel.email.dead', 'turbopanel.email.retry.30s', 'turbopanel.email.retry.30s']
+    )
     await handle.close()
   } finally {
     connectStub.restore()
@@ -766,6 +782,109 @@ test('a broker that dies during the reconnect handshake is retried, not installe
     assertEquals(thirdBroker.dispositions, [{ method: 'ack' }])
   } finally {
     await handle?.close()
+    connectStub.restore()
+  }
+})
+
+function otpDelivery(failedAttempts?: number) {
+  return {
+    content: { toString: () => OTP_JOB_JSON },
+    properties: {
+      headers: failedAttempts === undefined ? {} : { 'x-tp-attempt': failedAttempts },
+    },
+  }
+}
+
+test('a failing sign-in code is retried later with a growing delay, then dead-lettered', async () => {
+  const broker = createStubBroker()
+  const connectStub = stub(amqplib, 'connect', () => Promise.resolve(broker.connection as never))
+  const sender = scriptedSender(() => ({ success: false, error: 'mailbox full', permanent: false }))
+  try {
+    const handle = await startMailerConsumer({
+      db: undefined,
+      amqpUrl: 'amqp://test',
+      env: baseEnv(),
+      senderFactory: sender.factory,
+    })
+    for (const failed of [undefined, 1, 2, 3, 4, 5]) {
+      broker.deliver(otpDelivery(failed))
+      const expected = broker.dispositions.length + 1
+      await waitFor(() => broker.dispositions.length === expected, `disposition ${expected}`)
+    }
+    const queues = broker.sentToQueue.map((sent) => sent.queue)
+    assertEquals(queues, [
+      'turbopanel.email.retry.30s',
+      'turbopanel.email.retry.60s',
+      'turbopanel.email.retry.120s',
+      'turbopanel.email.retry.300s',
+      'turbopanel.email.retry.300s',
+      'turbopanel.email.dead',
+    ])
+    // Each retry carries the new failed-attempt count and its own delay.
+    const headers = broker.sentToQueue
+      .slice(0, 5)
+      .map((sent) => (sent.options.headers as Record<string, unknown>)['x-tp-attempt'])
+    assertEquals(headers, [1, 2, 3, 4, 5])
+    for (const sent of broker.sentToQueue.slice(0, 5)) {
+      assertEquals(Number(sent.options.expiration) > 0, true)
+    }
+    assertEquals(
+      broker.dispositions.every((d) => d.method === 'ack'),
+      true
+    )
+    await handle.close()
+  } finally {
+    connectStub.restore()
+  }
+})
+
+test('a message the provider keeps refusing does not hold up the one behind it', async () => {
+  const broker = createStubBroker()
+  const connectStub = stub(amqplib, 'connect', () => Promise.resolve(broker.connection as never))
+  const results: MailerSendResult[] = [
+    { success: false, error: 'greylisted', permanent: false },
+    { success: true },
+  ]
+  const sender = scriptedSender(results)
+  try {
+    const handle = await startMailerConsumer({
+      db: undefined,
+      amqpUrl: 'amqp://test',
+      env: baseEnv(),
+      senderFactory: sender.factory,
+    })
+    broker.deliver(otpDelivery())
+    broker.deliver(otpDelivery())
+    await waitFor(() => broker.dispositions.length === 2, 'both dispositions')
+    // The first went to a delay queue, the second was sent and acked.
+    assertEquals(sender.jobs.length, 2)
+    assertEquals(broker.sentToQueue.length, 1)
+    assertEquals(broker.dispositions, [{ method: 'ack' }, { method: 'ack' }])
+    await handle.close()
+  } finally {
+    connectStub.restore()
+  }
+})
+
+test('when the broker refuses the retry publish the job is requeued, not lost', async () => {
+  const broker = createStubBroker()
+  broker.channel.sendToQueue = () => {
+    throw new Error('channel closed')
+  }
+  const connectStub = stub(amqplib, 'connect', () => Promise.resolve(broker.connection as never))
+  const sender = scriptedSender(() => ({ success: false, error: 'busy', permanent: false }))
+  try {
+    const handle = await startMailerConsumer({
+      db: undefined,
+      amqpUrl: 'amqp://test',
+      env: baseEnv(),
+      senderFactory: sender.factory,
+    })
+    broker.deliver(otpDelivery())
+    await waitFor(() => broker.dispositions.length === 1, 'disposition')
+    assertEquals(broker.dispositions, [{ method: 'nack', requeue: true }])
+    await handle.close()
+  } finally {
     connectStub.restore()
   }
 })

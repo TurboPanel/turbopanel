@@ -575,6 +575,12 @@ export type DaemonMessage =
       hostname: string
       ok: boolean
       errorMessage?: string
+      /**
+       * Leaf expiry (ISO 8601) the daemon's probe read. Sent with `ok: true`
+       * on the first good sighting, a recovery, and when a renewal changes it.
+       * Merge-patched onto `tls.metadata.acme.notAfter`.
+       */
+      notAfter?: string
       at: string
     }
   | {

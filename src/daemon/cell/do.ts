@@ -1157,7 +1157,8 @@ export class DaemonCellObject {
       services?: ServiceRunState[]
       features?: string[]
     },
-    geo?: ServerGeo
+    geo?: ServerGeo,
+    runtimeWasOffline?: boolean
   ): Promise<void> {
     await this.#withProjectionDb('inbound', serverId, async (db) => {
       if (
@@ -1185,6 +1186,7 @@ export class DaemonCellObject {
         at,
         daemonBuild,
         geo,
+        runtimeWasOffline,
       })
       if (daemonBuild?.commit) {
         await persistDaemonReachedTarget(
@@ -1673,6 +1675,34 @@ export class DaemonCellObject {
     }
   }
 
+  /** Offline evidence a stale sweep or wake leaves, read before #recordInbound clears it. */
+  #needsOfflineRepair(serverId: string): boolean {
+    return !this.#runtimeConnected || this.#sweptOffline.has(serverId)
+  }
+
+  /**
+   * Record liveness for a non-presence frame. A stale sweep leaves Postgres
+   * offline and #recordInbound alone only clears the runtime flag, so repair
+   * the projection when the cell was offline before this frame.
+   */
+  async #recordInboundRepairingPresence(
+    attachment: { connectionId: string; serverId: string },
+    at: string
+  ): Promise<void> {
+    const needsOfflineRepair = this.#needsOfflineRepair(attachment.serverId)
+    this.#recordInbound(attachment.serverId, at, undefined, attachment.connectionId)
+    if (needsOfflineRepair) {
+      await this.#projectInbound(
+        attachment.serverId,
+        at,
+        undefined,
+        undefined,
+        undefined,
+        needsOfflineRepair
+      )
+    }
+  }
+
   async #handlePresenceMessage(
     attachment: {
       connectionId: string
@@ -1696,8 +1726,7 @@ export class DaemonCellObject {
     this.#bumpDiag('heartbeatCount')
     const at = parsed.at ?? nowIso()
     // Capture offline/runtime repair evidence before #recordInbound clears it.
-    const needsOfflineRepair =
-      !this.#runtimeConnected || this.#sweptOffline.has(attachment.serverId)
+    const needsOfflineRepair = this.#needsOfflineRepair(attachment.serverId)
     const daemonBuildOrOfflineDue =
       this.#shouldProjectInbound(at, parsed.daemonBuild) || needsOfflineRepair
     this.#recordInbound(attachment.serverId, at, parsed.daemonBuild, attachment.connectionId)
@@ -1765,7 +1794,8 @@ export class DaemonCellObject {
         at,
         parsed.daemonBuild,
         hostIdentity,
-        attachGeo
+        attachGeo,
+        needsOfflineRepair
       )
     }
   }
@@ -1794,7 +1824,7 @@ export class DaemonCellObject {
       errorCode?: string
     }
   ): Promise<void> {
-    this.#recordInbound(attachment.serverId, parsed.at, undefined, attachment.connectionId)
+    await this.#recordInboundRepairingPresence(attachment, parsed.at)
     await this.#withProjectionDb('update-progress', attachment.serverId, (db) =>
       persistUpgradeProgress(db, {
         serverId: attachment.serverId,
@@ -1858,7 +1888,7 @@ export class DaemonCellObject {
       }
 
       if (parsed.type === 'managed-ha-event') {
-        this.#recordInbound(attachment.serverId, parsed.at, undefined, attachment.connectionId)
+        await this.#recordInboundRepairingPresence(attachment, parsed.at)
         await this.#withProjectionDb('managed-ha-event', attachment.serverId, async (db) => {
           await handleCellManagedHaEvent(db, parsed, {
             reporterServerId: attachment.serverId,
@@ -1877,7 +1907,7 @@ export class DaemonCellObject {
       }
 
       if (parsed.type === 'topology-report') {
-        this.#recordInbound(attachment.serverId, parsed.at, undefined, attachment.connectionId)
+        await this.#recordInboundRepairingPresence(attachment, parsed.at)
         await this.#withProjectionDb('topology-report', attachment.serverId, async (db) => {
           await recordTopologyGeneration(db, attachment.serverId, {
             generation: parsed.generation,
@@ -1890,20 +1920,22 @@ export class DaemonCellObject {
       }
 
       if (parsed.type === 'acme-issuance-event') {
-        this.#recordInbound(attachment.serverId, parsed.at, undefined, attachment.connectionId)
+        await this.#recordInboundRepairingPresence(attachment, parsed.at)
         await this.#withProjectionDb('acme-issuance-event', attachment.serverId, async (db) => {
           await handleAcmeIssuanceEvent(db, {
             serverId: attachment.serverId,
             hostname: parsed.hostname,
             ok: parsed.ok,
+            at: parsed.at,
             ...(parsed.errorMessage ? { errorMessage: parsed.errorMessage } : {}),
+            ...(parsed.notAfter ? { notAfter: parsed.notAfter } : {}),
           })
         })
         return
       }
 
       if (parsed.type === 'instance-acme-issuance-event') {
-        this.#recordInbound(attachment.serverId, parsed.at, undefined, attachment.connectionId)
+        await this.#recordInboundRepairingPresence(attachment, parsed.at)
         await this.#withProjectionDb(
           'instance-acme-issuance-event',
           attachment.serverId,
@@ -1925,7 +1957,7 @@ export class DaemonCellObject {
         return
       }
 
-      this.#recordInbound(attachment.serverId, parsed.at, undefined, attachment.connectionId)
+      await this.#recordInboundRepairingPresence(attachment, parsed.at)
       await this.#handleInboundMessage(attachment.serverId, parsed, ws)
       await this.#scheduleNearestAlarm()
     } catch (err) {
@@ -2313,14 +2345,17 @@ export class DaemonCellObject {
         )
         return jsonResponse({ ok: true })
 
-      case '/rpc/record-inbound':
+      case '/rpc/record-inbound': {
+        const recordServerId = this.#requireServerId(request, body)
+        const wasOffline = this.#needsOfflineRepair(recordServerId)
         this.#recordInbound(
-          this.#requireServerId(request, body),
+          recordServerId,
           String((body?.params as { at?: string })?.at ?? nowIso()),
           (body?.params as { daemonBuild?: DaemonBuildInfo })?.daemonBuild,
           (body?.params as { connectionId?: string })?.connectionId
         )
-        return jsonResponse({ ok: true })
+        return jsonResponse({ ok: true, wasOffline })
+      }
 
       case '/rpc/lease/claim':
         return jsonResponse({

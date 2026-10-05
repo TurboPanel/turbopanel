@@ -1,13 +1,11 @@
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assertEquals } from '@std/assert'
 import { and, eq, inArray } from 'drizzle-orm'
 import { Hono } from 'hono'
 import type { AppEnv } from '../../app/app.ts'
 import { getDatabaseUrl } from '../../db/url.ts'
 import { createDenoDb } from '../../db/connection.ts'
-import {
-  buildSignedCookie,
-  HTTP_SESSION_COOKIE_NAME,
-} from '../authn/crypto.ts'
+import { buildSignedCookie, HTTP_SESSION_COOKIE_NAME } from '../authn/crypto.ts'
 import { createSession } from '../authn/session-store.ts'
 import { deriveSecretsConfig } from '../../lib/secrets/secrets.ts'
 import {
@@ -21,10 +19,7 @@ import {
   user,
   workspace,
 } from '../../db/schema.ts'
-import {
-  WORKSPACE_KIND_SYSTEM,
-  WORKSPACE_KIND_USER,
-} from '../../db/workspace-kind.ts'
+import { WORKSPACE_KIND_SYSTEM, WORKSPACE_KIND_USER } from '../../db/workspace-kind.ts'
 import { SYSTEM_RESOURCE_IMMUTABLE_ERROR } from '../authz/http.ts'
 import { ORG_ID_HEADER } from '../org-context.ts'
 import {
@@ -60,7 +55,7 @@ async function createWorkspaceRoutesTestApp(db: ReturnType<typeof createDenoDb>)
 async function sessionCookie(
   db: ReturnType<typeof createDenoDb>,
   secrets: Awaited<ReturnType<typeof deriveSecretsConfig>>,
-  userId: string,
+  userId: string
 ): Promise<string> {
   const { token } = await createSession(db, userId, {})
   const signed = await buildSignedCookie(token, secrets)
@@ -69,7 +64,7 @@ async function sessionCookie(
 
 async function cleanupOrgHierarchy(
   db: ReturnType<typeof createDenoDb>,
-  organizationId: string,
+  organizationId: string
 ): Promise<void> {
   const workspaceRows = await db
     .select({ id: workspace.id })
@@ -99,14 +94,10 @@ async function cleanupOrgHierarchy(
         const serviceIds = serviceRows.map((row) => row.id)
 
         if (serviceIds.length > 0) {
-          await db
-            .delete(container)
-            .where(inArray(container.serviceId, serviceIds))
+          await db.delete(container).where(inArray(container.serviceId, serviceIds))
           await db.delete(service).where(inArray(service.id, serviceIds))
         }
-        await db
-          .delete(environment)
-          .where(inArray(environment.id, environmentIds))
+        await db.delete(environment).where(inArray(environment.id, environmentIds))
       }
       await db.delete(project).where(inArray(project.id, projectIds))
     }
@@ -125,10 +116,10 @@ async function withWorkspaceFixtures(
     organizationId: string
     serverId: string
     systemWorkspaceId: string
-  }) => Promise<void>,
+  }) => Promise<void>
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn('Skipping workspace route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('workspace route tests')
     return
   }
 
@@ -185,10 +176,7 @@ async function withWorkspaceFixtures(
     })
   } finally {
     await cleanupOrgHierarchy(db, organizationId)
-    await db.delete(grant).where(and(
-      eq(grant.actorId, userId),
-      eq(grant.entityId, organizationId),
-    ))
+    await db.delete(grant).where(and(eq(grant.actorId, userId), eq(grant.entityId, organizationId)))
     await db.delete(user).where(eq(user.id, userId))
     await db.delete(organization).where(eq(organization.id, organizationId))
   }
@@ -196,7 +184,7 @@ async function withWorkspaceFixtures(
 
 test('GET /workspaces returns System before Default for same-transaction install order', async () => {
   if (!dbUrl) {
-    console.warn('Skipping workspace route tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('workspace route tests')
     return
   }
 
@@ -246,7 +234,7 @@ test('GET /workspaces returns System before Default for same-transaction install
       },
     })
     assertEquals(list.status, 200)
-    const body = await list.json() as {
+    const body = (await list.json()) as {
       workspaces: Array<{ name: string; kind: string }>
     }
     assertEquals(body.workspaces.length, 2)
@@ -256,23 +244,14 @@ test('GET /workspaces returns System before Default for same-transaction install
     assertEquals(body.workspaces[1]?.kind, WORKSPACE_KIND_USER)
   } finally {
     await db.delete(workspace).where(eq(workspace.organizationId, organizationId))
-    await db.delete(grant).where(and(
-      eq(grant.actorId, userId),
-      eq(grant.entityId, organizationId),
-    ))
+    await db.delete(grant).where(and(eq(grant.actorId, userId), eq(grant.entityId, organizationId)))
     await db.delete(user).where(eq(user.id, userId))
     await db.delete(organization).where(eq(organization.id, organizationId))
   }
 })
 
 test('POST /workspaces rejects duplicate display names case-insensitively', async () => {
-  await withWorkspaceFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-  }) => {
+  await withWorkspaceFixtures(async ({ db, app, secrets, userId, organizationId }) => {
     const cookie = await sessionCookie(db, secrets, userId)
     const first = await app.request('/workspaces', {
       method: 'POST',
@@ -300,13 +279,7 @@ test('POST /workspaces rejects duplicate display names case-insensitively', asyn
 })
 
 test('PATCH /workspaces/:id rejects renaming onto another workspace name', async () => {
-  await withWorkspaceFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-  }) => {
+  await withWorkspaceFixtures(async ({ db, app, secrets, userId, organizationId }) => {
     const cookie = await sessionCookie(db, secrets, userId)
     const createA = await app.request('/workspaces', {
       method: 'POST',
@@ -329,7 +302,7 @@ test('PATCH /workspaces/:id rejects renaming onto another workspace name', async
       body: JSON.stringify({ name: 'Workspace B' }),
     })
     assertEquals(createB.status, 200)
-    const { id: workspaceBId } = await createB.json() as { id: string }
+    const { id: workspaceBId } = (await createB.json()) as { id: string }
 
     const rename = await app.request(`/workspaces/${workspaceBId}`, {
       method: 'PATCH',
@@ -346,102 +319,97 @@ test('PATCH /workspaces/:id rejects renaming onto another workspace name', async
 })
 
 test('workspace reads expose kind and system workspace is immutable', async () => {
-  await withWorkspaceFixtures(async ({
-    db,
-    app,
-    secrets,
-    userId,
-    organizationId,
-    systemWorkspaceId,
-  }) => {
-    const cookie = await sessionCookie(db, secrets, userId)
+  await withWorkspaceFixtures(
+    async ({ db, app, secrets, userId, organizationId, systemWorkspaceId }) => {
+      const cookie = await sessionCookie(db, secrets, userId)
 
-    const list = await app.request('/workspaces', {
-      headers: {
-        Cookie: cookie,
-        [ORG_ID_HEADER]: organizationId,
-      },
-    })
-    assertEquals(list.status, 200)
-    const listBody = await list.json() as {
-      workspaces: Array<{ id: string; kind: string }>
+      const list = await app.request('/workspaces', {
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+        },
+      })
+      assertEquals(list.status, 200)
+      const listBody = (await list.json()) as {
+        workspaces: Array<{ id: string; kind: string }>
+      }
+      const systemRow = listBody.workspaces.find((row) => row.id === systemWorkspaceId)
+      if (!systemRow) throw new TypeError('expected system workspace in list')
+      assertEquals(systemRow.kind, WORKSPACE_KIND_SYSTEM)
+
+      const detail = await app.request(`/workspaces/${systemWorkspaceId}`, {
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+        },
+      })
+      assertEquals(detail.status, 200)
+      const detailBody = (await detail.json()) as { workspace: { kind: string } }
+      assertEquals(detailBody.workspace.kind, WORKSPACE_KIND_SYSTEM)
+
+      const create = await app.request('/workspaces', {
+        method: 'POST',
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ name: 'X', kind: 'turbopanel' }),
+      })
+      assertEquals(create.status, 200)
+      const { id: createdId } = (await create.json()) as { id: string }
+      const [created] = await db
+        .select({ kind: workspace.kind })
+        .from(workspace)
+        .where(eq(workspace.id, createdId))
+        .limit(1)
+      assertEquals(created?.kind, 'user')
+
+      const namedSystem = await app.request('/workspaces', {
+        method: 'POST',
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ name: 'TurboPanel' }),
+      })
+      assertEquals(namedSystem.status, 409)
+      assertEquals(await namedSystem.json(), { error: 'workspace_name_in_use' })
+
+      const renameOntoSystem = await app.request(`/workspaces/${createdId}`, {
+        method: 'PATCH',
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ name: 'TurboPanel' }),
+      })
+      assertEquals(renameOntoSystem.status, 409)
+      assertEquals(await renameOntoSystem.json(), { error: 'workspace_name_in_use' })
+
+      const patch = await app.request(`/workspaces/${systemWorkspaceId}`, {
+        method: 'PATCH',
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ name: 'Renamed System' }),
+      })
+      assertEquals(patch.status, 403)
+      assertEquals(await patch.json(), { error: SYSTEM_RESOURCE_IMMUTABLE_ERROR })
+
+      const del = await app.request(`/workspaces/${systemWorkspaceId}`, {
+        method: 'DELETE',
+        headers: {
+          Cookie: cookie,
+          [ORG_ID_HEADER]: organizationId,
+        },
+      })
+      assertEquals(del.status, 403)
+      assertEquals(await del.json(), { error: SYSTEM_RESOURCE_IMMUTABLE_ERROR })
     }
-    const systemRow = listBody.workspaces.find((row) => row.id === systemWorkspaceId)
-    if (!systemRow) throw new TypeError('expected system workspace in list')
-    assertEquals(systemRow.kind, WORKSPACE_KIND_SYSTEM)
-
-    const detail = await app.request(`/workspaces/${systemWorkspaceId}`, {
-      headers: {
-        Cookie: cookie,
-        [ORG_ID_HEADER]: organizationId,
-      },
-    })
-    assertEquals(detail.status, 200)
-    const detailBody = await detail.json() as { workspace: { kind: string } }
-    assertEquals(detailBody.workspace.kind, WORKSPACE_KIND_SYSTEM)
-
-    const create = await app.request('/workspaces', {
-      method: 'POST',
-      headers: {
-        Cookie: cookie,
-        [ORG_ID_HEADER]: organizationId,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ name: 'X', kind: 'turbopanel' }),
-    })
-    assertEquals(create.status, 200)
-    const { id: createdId } = await create.json() as { id: string }
-    const [created] = await db
-      .select({ kind: workspace.kind })
-      .from(workspace)
-      .where(eq(workspace.id, createdId))
-      .limit(1)
-    assertEquals(created?.kind, 'user')
-
-    const namedSystem = await app.request('/workspaces', {
-      method: 'POST',
-      headers: {
-        Cookie: cookie,
-        [ORG_ID_HEADER]: organizationId,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ name: 'TurboPanel' }),
-    })
-    assertEquals(namedSystem.status, 409)
-    assertEquals(await namedSystem.json(), { error: 'workspace_name_in_use' })
-
-    const renameOntoSystem = await app.request(`/workspaces/${createdId}`, {
-      method: 'PATCH',
-      headers: {
-        Cookie: cookie,
-        [ORG_ID_HEADER]: organizationId,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ name: 'TurboPanel' }),
-    })
-    assertEquals(renameOntoSystem.status, 409)
-    assertEquals(await renameOntoSystem.json(), { error: 'workspace_name_in_use' })
-
-    const patch = await app.request(`/workspaces/${systemWorkspaceId}`, {
-      method: 'PATCH',
-      headers: {
-        Cookie: cookie,
-        [ORG_ID_HEADER]: organizationId,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ name: 'Renamed System' }),
-    })
-    assertEquals(patch.status, 403)
-    assertEquals(await patch.json(), { error: SYSTEM_RESOURCE_IMMUTABLE_ERROR })
-
-    const del = await app.request(`/workspaces/${systemWorkspaceId}`, {
-      method: 'DELETE',
-      headers: {
-        Cookie: cookie,
-        [ORG_ID_HEADER]: organizationId,
-      },
-    })
-    assertEquals(del.status, 403)
-    assertEquals(await del.json(), { error: SYSTEM_RESOURCE_IMMUTABLE_ERROR })
-  })
+  )
 })

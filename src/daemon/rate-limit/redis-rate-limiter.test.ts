@@ -1,8 +1,5 @@
 import { assertEquals } from '@std/assert'
-import {
-  createRedisCellClient,
-  type RedisCellClient,
-} from '../cell/redis/client.ts'
+import { createRedisCellClient, type RedisCellClient } from '../cell/redis/client.ts'
 import { rateLimitKey } from '../cell/redis/keys.ts'
 import {
   createRedisRateLimiter,
@@ -32,13 +29,9 @@ import {
   resolveGitlabWebhookRateLimit,
   resolveStripeWebhookRateLimit,
 } from './redis-rate-limiter.ts'
-import {
-  daemonConnectRateLimitKey,
-  daemonRestRateLimitKey,
-} from './keys.ts'
+import { daemonConnectRateLimitKey, daemonRestRateLimitKey } from './keys.ts'
 
-const DEFAULT_SOCKET = Deno.env.get('TURBOPANEL_REDIS_SOCKET') ??
-  '/run/turbopanel/redis.sock'
+const DEFAULT_SOCKET = Deno.env.get('TURBOPANEL_REDIS_SOCKET') ?? '/run/turbopanel/redis.sock'
 
 async function redisAvailable(): Promise<boolean> {
   try {
@@ -49,14 +42,10 @@ async function redisAvailable(): Promise<boolean> {
   }
 }
 
-function withRedis(
-  fn: (client: RedisCellClient) => Promise<void>,
-): () => Promise<void> {
+function withRedis(fn: (client: RedisCellClient) => Promise<void>): () => Promise<void> {
   return async () => {
     if (!(await redisAvailable())) {
-      console.warn(
-        `Skipping Redis rate-limiter test: socket not found at ${DEFAULT_SOCKET}`,
-      )
+      console.warn(`Skipping Redis rate-limiter test: socket not found at ${DEFAULT_SOCKET}`)
       return
     }
 
@@ -94,7 +83,7 @@ test(
     } finally {
       await client.del(storageKey)
     }
-  }),
+  })
 )
 
 test(
@@ -115,7 +104,7 @@ test(
     } finally {
       await client.del(rateLimitKey(keyA), rateLimitKey(keyB))
     }
-  }),
+  })
 )
 
 test(
@@ -135,7 +124,7 @@ test(
     } finally {
       await client.del(rateLimitKey(key))
     }
-  }),
+  })
 )
 
 test(
@@ -157,7 +146,7 @@ test(
     } finally {
       await client.del(storageKey)
     }
-  }),
+  })
 )
 
 test('createRedisRateLimiter fails open when eval throws (daemon default)', async () => {
@@ -203,11 +192,7 @@ test('createRedisRateLimiter falls back to a local bucket when onError is local'
 test('createRedisRateLimiter satisfies RateLimiter with shared keys', async () => {
   const seen: string[] = []
   const client = {
-    eval: (
-      _script: string,
-      _numkeys: number,
-      storageKey: string | number,
-    ) => {
+    eval: (_script: string, _numkeys: number, storageKey: string | number) => {
       seen.push(String(storageKey))
       return Promise.resolve(1)
     },
@@ -222,10 +207,7 @@ test('createRedisRateLimiter satisfies RateLimiter with shared keys', async () =
   const restKey = daemonRestRateLimitKey('srv-1', 'auth-session')
   assertEquals(await limiter.limit({ key: connectKey }), { success: true })
   assertEquals(await limiter.limit({ key: restKey }), { success: true })
-  assertEquals(seen, [
-    rateLimitKey(connectKey),
-    rateLimitKey(restKey),
-  ])
+  assertEquals(seen, [rateLimitKey(connectKey), rateLimitKey(restKey)])
 })
 
 test('resolveDaemonConnectRateLimit / REST / metrics defaults match Workers wrangler', () => {
@@ -242,6 +224,26 @@ test('resolveDaemonConnectRateLimit / REST / metrics defaults match Workers wran
     limit: DEFAULT_DAEMON_METRICS_RATE_LIMIT,
     periodSeconds: DEFAULT_DAEMON_METRICS_RATE_PERIOD_SECONDS,
   })
+})
+
+test('metrics ingest limit covers the live-lease cadence in every wrangler env', () => {
+  // Live lease: 10 s stream + 60 s baseline + reconnect primer is about 9 POSTs/min.
+  const LIVE_CADENCE_PER_MINUTE = 9
+  assertEquals(DEFAULT_DAEMON_METRICS_RATE_PERIOD_SECONDS, 60)
+  assertEquals(DEFAULT_DAEMON_METRICS_RATE_LIMIT >= LIVE_CADENCE_PER_MINUTE, true)
+  const wrangler = Deno.readTextFileSync(new URL('../../../wrangler.jsonc', import.meta.url))
+  const matches = [
+    ...wrangler.matchAll(
+      /"name": "DAEMON_METRICS_RATE_LIMITER",[^}]*?"simple": \{ "limit": (\d+), "period": (\d+) \}/gs
+    ),
+  ]
+  assertEquals(matches.length, 4)
+  for (const m of matches) {
+    assertEquals(
+      [Number(m[1]), Number(m[2])],
+      [DEFAULT_DAEMON_METRICS_RATE_LIMIT, DEFAULT_DAEMON_METRICS_RATE_PERIOD_SECONDS]
+    )
+  }
 })
 
 test('resolveDaemon*RateLimit reads env overrides and ignores invalid values', () => {
@@ -279,10 +281,9 @@ test('resolveDaemonWsInboundLimits defaults and env overrides', () => {
   })
   assertEquals(
     resolveDaemonWsInboundLimits({
-      get: (key) =>
-        key === 'TURBOPANEL_DAEMON_WS_INBOUND_LIMIT' ? '90' : '45000',
+      get: (key) => (key === 'TURBOPANEL_DAEMON_WS_INBOUND_LIMIT' ? '90' : '45000'),
     }),
-    { limit: 90, windowMs: 45_000 },
+    { limit: 90, windowMs: 45_000 }
   )
 })
 
@@ -411,7 +412,7 @@ test(
     } finally {
       await client.del(rateLimitKey(key), rateLimitKey(defaultKey))
     }
-  }),
+  })
 )
 
 test('createRedisRateLimiter denies when eval returns non-one', async () => {

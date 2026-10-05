@@ -1,3 +1,4 @@
+import { skipWithoutDatabase } from '../../test-fixtures/require-service.test.support.ts'
 import { assertEquals } from '@std/assert'
 import { eq } from 'drizzle-orm'
 import { getDatabaseUrl } from '../../db/url.ts'
@@ -20,7 +21,7 @@ async function withPublicUrlsFixture(
   fn: (db: ReturnType<typeof createDenoDb>) => Promise<void>
 ): Promise<void> {
   if (!dbUrl) {
-    console.warn('Skipping public-urls DB tests: TURBOPANEL_DATABASE_URL not set')
+    skipWithoutDatabase('public-urls DB tests')
     return
   }
 

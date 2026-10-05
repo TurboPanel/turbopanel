@@ -1371,3 +1371,43 @@ it('v7 extended numeric fields land in the ext_* columns; a v6 sample writes rea
     await Deno.remove(metricsDir, { recursive: true })
   }
 })
+
+it('a row the column types reject never blocks other servers and is dropped after bounded retries', async () => {
+  const metricsDir = await Deno.makeTempDir({ prefix: 'tp-duckdb-poison-' })
+  const errors: unknown[] = []
+  const store = new DuckDbParquetServerMetricsStore(
+    { metricsDir },
+    { writeBatchMaxRows: 1, onFlushError: (error) => errors.push(error) }
+  )
+  const SERVER_B = '66666666-7777-4888-8999-aaaaaaaaaaaa'
+  try {
+    // 3e9 does not fit the INTEGER topology_generation column.
+    await assertRejects(() =>
+      store.writeSample(sample({ atMs: DAY_START + 60_000, topologyGeneration: 3_000_000_000 }))
+    )
+    // A later sample from another server still lands and reads back.
+    await store.writeSample(
+      sample({ serverId: SERVER_B, atMs: DAY_START + 120_000, cpuBusyPercent: 7 })
+    )
+    // Repeated flushes (queries) do not throw because of the poisoned row.
+    for (let i = 0; i < 8; i++) await store.flushWrites()
+    const afterDrop = errors.length
+    await store.flushWrites()
+    assertEquals(errors.length, afterDrop, 'poisoned row is dropped, not retried forever')
+  } finally {
+    await store.close()
+  }
+  const handle = await openDuckDb({ paths: resolveDuckDbPaths(metricsDir) })
+  try {
+    const reader = await handle.connection.runAndReadAll(
+      `SELECT CAST(server_id AS VARCHAR) AS server_id FROM ${HOST_SAMPLES_TABLE}`
+    )
+    assertEquals(
+      reader.getRowObjectsJS().map((row) => row.server_id),
+      [SERVER_B]
+    )
+  } finally {
+    handle.close()
+    await Deno.remove(metricsDir, { recursive: true })
+  }
+})
