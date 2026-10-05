@@ -22,6 +22,7 @@ import {
 import { daemonProjectionColumnPatch } from "../../features/servers/daemon-jsonb-write.ts";
 import { key, server } from "../../db/schema.ts";
 import { normalizeMachineKey } from "../../lib/machine-key.ts";
+import { redactUrlSecrets } from "../../features/upgrades/redact-url-secrets.ts";
 import type { ServerMetadata } from "../../features/servers/server-metadata.ts";
 import {
   geoEquals,
@@ -588,7 +589,8 @@ function applyUpdateResultTrigger(
         status: trigger.ok ? "done" : "failed",
         requestId: trigger.requestId,
         finishedAt: trigger.finishedAt,
-        ...(trigger.error ? { error: trigger.error } : {}),
+        // A daemon error can quote a signed download URL (a bearer token).
+        ...(trigger.error ? { error: redactUrlSecrets(trigger.error) } : {}),
       },
     },
     writeProjection: true,
@@ -625,8 +627,10 @@ function applyUpdateExpiredTrigger(
         channel: currentUpdate.channel,
         queuedAt: currentUpdate.queuedAt,
         finishedAt: trigger.finishedAt,
-        error: trigger.error ??
-          "Update timed out waiting for daemon acknowledgement",
+        error: redactUrlSecrets(
+          trigger.error ??
+            "Update timed out waiting for daemon acknowledgement",
+        ),
       },
     },
     writeProjection: true,

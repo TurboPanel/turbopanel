@@ -1171,6 +1171,56 @@ test("projectServerDaemon update-expired writes projection.update as expired", a
   assertEquals(update?.finishedAt, "2020-01-01T00:05:00.000Z");
 });
 
+test("projectServerDaemon keeps signed URL secrets out of the stored update error", async () => {
+  const signed =
+    "https://objects.example.com/asset.tar.zst?X-Amz-Signature=abc123&token=secret";
+  const { db, getDaemon } = createMockDb({
+    key: baseKey,
+    projection: {
+      update: {
+        status: "updating",
+        requestId: "req-1",
+        channel: "trunk",
+        queuedAt: "2020-01-01T00:00:00.000Z",
+      },
+    },
+  });
+
+  await projectServerDaemon(db, serverId, {
+    kind: "update-result",
+    requestId: "req-1",
+    ok: false,
+    finishedAt: "2020-01-01T00:01:00.000Z",
+    error: `download failed for ${signed}`,
+  });
+  let error = parseServerDaemonState(getDaemon())?.projection?.update?.error;
+  assertEquals(
+    error,
+    "download failed for https://objects.example.com/asset.tar.zst?[redacted]",
+  );
+
+  const expired = createMockDb({
+    key: baseKey,
+    projection: {
+      update: {
+        status: "updating",
+        requestId: "req-2",
+        channel: "trunk",
+        queuedAt: "2020-01-01T00:00:00.000Z",
+      },
+    },
+  });
+  await projectServerDaemon(expired.db, serverId, {
+    kind: "update-expired",
+    requestId: "req-2",
+    finishedAt: "2020-01-01T00:05:00.000Z",
+    error: signed,
+  });
+  error = parseServerDaemonState(expired.getDaemon())?.projection?.update
+    ?.error;
+  assertEquals(error, "https://objects.example.com/asset.tar.zst?[redacted]");
+});
+
 test("listConnectedServerIdsFromProjection includes rows with connected column set", async () => {
   const db = {
     select: () => ({
