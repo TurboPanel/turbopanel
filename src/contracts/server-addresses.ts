@@ -54,10 +54,7 @@ function parseOptionalInterface(value: unknown): string | undefined {
   return iface
 }
 
-function parseServerIpEntry(
-  entry: unknown,
-  seen: Set<string>,
-): ServerReportedIp | undefined {
+function parseServerIpEntry(entry: unknown, seen: Set<string>): ServerReportedIp | undefined {
   if (!isRecord(entry) || typeof entry.address !== 'string') return undefined
   const address = stripInetPrefixSuffix(entry.address.trim())
   const version = parseIpVersion(entry.version)
@@ -90,9 +87,7 @@ export function parseServerIps(value: unknown): ServerReportedIp[] | undefined {
 }
 
 /** Host addresses from daemon hello / change-detected heartbeat payloads. */
-export function ipsFromDaemonPresence(
-  payload: unknown,
-): ServerReportedIp[] | undefined {
+export function ipsFromDaemonPresence(payload: unknown): ServerReportedIp[] | undefined {
   if (!isRecord(payload)) return undefined
   if (!isRecord(payload.resources)) return undefined
   return parseServerIps(payload.resources.ips)
@@ -105,9 +100,7 @@ export function ipsFromDaemonPresence(
  * older jsonb is still accepted so datacenter membership and fleet reads keep
  * working for hosts that have not been rewritten.
  */
-export function reportedIpsFromServerMetadata(
-  metadata: unknown,
-): ServerReportedIp[] | undefined {
+export function reportedIpsFromServerMetadata(metadata: unknown): ServerReportedIp[] | undefined {
   if (!isRecord(metadata)) return undefined
   if (isRecord(metadata.resources)) {
     const nested = parseServerIps(metadata.resources.ips)
@@ -118,7 +111,7 @@ export function reportedIpsFromServerMetadata(
 
 export function serverIpsEquals(
   a: ServerReportedIp[] | null | undefined,
-  b: ServerReportedIp[] | null | undefined,
+  b: ServerReportedIp[] | null | undefined
 ): boolean {
   if (a === b) return true
   if (!a || !b) return false
@@ -145,16 +138,14 @@ export function serverIpsEquals(
 }
 
 /** Private addresses from a reported IP list (any version). */
-export function privateAddressesFromIps(
-  ips: ServerReportedIp[] | null | undefined,
-): string[] {
+export function privateAddressesFromIps(ips: ServerReportedIp[] | null | undefined): string[] {
   if (!ips) return []
   return ips.filter((row) => row.scope === 'private').map((row) => row.address)
 }
 
 /** First public IPv4, then first private IPv4 — for relay endpoint fallback. */
 export function preferredIpv4FromIps(
-  ips: ServerReportedIp[] | null | undefined,
+  ips: ServerReportedIp[] | null | undefined
 ): string | undefined {
   if (!ips) return undefined
   return pickIpv4(ips, 'public') ?? pickIpv4(ips, 'private')
@@ -165,25 +156,15 @@ export function preferredIpv4FromIps(
  * the default-route interface. Without that marker the list is sorted by
  * address, which on a multi-homed host picks an arbitrary NIC.
  */
-function pickIpv4(
-  ips: ServerReportedIp[],
-  scope: ServerReportedIpScope,
-): string | undefined {
-  const matching = ips.filter(
-    (row) => row.scope === scope && row.version === 4,
-  )
+function pickIpv4(ips: ServerReportedIp[], scope: ServerReportedIpScope): string | undefined {
+  const matching = ips.filter((row) => row.scope === scope && row.version === 4)
   const onDefaultRoute = matching.find((row) => row.preferred === true)
   return (onDefaultRoute ?? matching[0])?.address
 }
 
 /** First IPv6 in `scope`, default-route interface first. */
-function pickIpv6(
-  ips: ServerReportedIp[],
-  scope: ServerReportedIpScope,
-): string | undefined {
-  const matching = ips.filter(
-    (row) => row.scope === scope && row.version === 6,
-  )
+function pickIpv6(ips: ServerReportedIp[], scope: ServerReportedIpScope): string | undefined {
+  const matching = ips.filter((row) => row.scope === scope && row.version === 6)
   const onDefaultRoute = matching.find((row) => row.preferred === true)
   return (onDefaultRoute ?? matching[0])?.address
 }
@@ -195,9 +176,7 @@ function pickIpv6(
  * fabric GET `resolvedEndpoint`), where a private LAN address would be wrong
  * rather than merely less specific.
  */
-export function publicIpv4FromIps(
-  ips: ServerReportedIp[] | null | undefined,
-): string | undefined {
+export function publicIpv4FromIps(ips: ServerReportedIp[] | null | undefined): string | undefined {
   if (!ips) return undefined
   return pickIpv4(ips, 'public')
 }
@@ -211,11 +190,14 @@ export function publicIpv4FromIps(
  * development) rather than the host's own address.
  */
 export function bestReportedAddress(
-  ips: ServerReportedIp[] | null | undefined,
+  ips: ServerReportedIp[] | null | undefined
 ): ServerReportedIp | undefined {
   if (!ips) return undefined
-  const address = pickIpv4(ips, 'public') ?? pickIpv6(ips, 'public') ??
-    pickIpv4(ips, 'private') ?? pickIpv6(ips, 'private')
+  const address =
+    pickIpv4(ips, 'public') ??
+    pickIpv6(ips, 'public') ??
+    pickIpv4(ips, 'private') ??
+    pickIpv6(ips, 'private')
   if (!address) return undefined
   return ips.find((row) => row.address === address)
 }

@@ -37,9 +37,7 @@ export type RepinPinInput = {
   stale: boolean
 }
 
-export type RepinStaleReason =
-  | 'address_gone_no_candidate'
-  | 'address_gone_ambiguous'
+export type RepinStaleReason = 'address_gone_no_candidate' | 'address_gone_ambiguous'
 
 export type RepinAction =
   | { kind: 'repin'; ipId: string; from: string; to: string }
@@ -70,7 +68,7 @@ function candidateAddresses(
   pin: RepinPinInput,
   reported: readonly string[],
   addressesInUse: ReadonlySet<string>,
-  claimedAddresses: ReadonlySet<string>,
+  claimedAddresses: ReadonlySet<string>
 ): string[] {
   const subnet = [{ networkId: pin.networkId, cidr: pin.subnetCidr }]
   const out: string[] = []
@@ -82,12 +80,10 @@ function candidateAddresses(
   return out
 }
 
-export function decideRepinActions(
-  params: DecideRepinActionsParams,
-): RepinAction[] {
-  const reported = [
-    ...new Set(params.reportedPrivateAddresses.map(normalizeAddress)),
-  ].filter((address) => address.length > 0)
+export function decideRepinActions(params: DecideRepinActionsParams): RepinAction[] {
+  const reported = [...new Set(params.reportedPrivateAddresses.map(normalizeAddress))].filter(
+    (address) => address.length > 0
+  )
   const reportedSet = new Set(reported)
   const claimedKeys = new Set<string>()
   const claimedAddresses = new Set<string>()
@@ -100,12 +96,7 @@ export function decideRepinActions(
       continue
     }
 
-    const candidates = candidateAddresses(
-      pin,
-      reported,
-      params.addressesInUse,
-      claimedAddresses,
-    )
+    const candidates = candidateAddresses(pin, reported, params.addressesInUse, claimedAddresses)
     if (candidates.length === 0) {
       actions.push({
         kind: 'mark_stale',
@@ -165,10 +156,7 @@ function parseIsoTimestamp(value: unknown): string | undefined {
 }
 
 function parseStaleReason(value: unknown): RepinStaleReason | undefined {
-  if (
-    value === 'address_gone_no_candidate' ||
-    value === 'address_gone_ambiguous'
-  ) {
+  if (value === 'address_gone_no_candidate' || value === 'address_gone_ambiguous') {
     return value
   }
   return undefined
@@ -217,7 +205,7 @@ function baseMetadata(value: unknown): Record<string, unknown> {
  */
 export function withStaleMetadata(
   existing: unknown,
-  stale: IpPinStaleMetadata,
+  stale: IpPinStaleMetadata
 ): Record<string, unknown> {
   const next = baseMetadata(existing)
   const previous = parseStaleMarker(next.stale)
@@ -228,7 +216,7 @@ export function withStaleMetadata(
 /** Merge a `repin` marker into existing metadata and drop any `stale` flag. */
 export function withRepinMetadata(
   existing: unknown,
-  repin: IpPinRepinMetadata,
+  repin: IpPinRepinMetadata
 ): Record<string, unknown> {
   const next = baseMetadata(existing)
   delete next.stale

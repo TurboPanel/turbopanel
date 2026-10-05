@@ -59,7 +59,7 @@ test('decideRepinActions: unchanged pin yields no action', () => {
       reportedPrivateAddresses: ['10.20.0.10', '10.99.0.1'],
       addressesInUse: new Set(),
     }),
-    [],
+    []
   )
 })
 
@@ -70,7 +70,7 @@ test('decideRepinActions: single IPv4 candidate repins', () => {
       reportedPrivateAddresses: ['10.20.0.42', '10.99.0.1'],
       addressesInUse: new Set(),
     }),
-    [{ kind: 'repin', ipId: 'ip-v4', from: '10.20.0.10', to: '10.20.0.42' }],
+    [{ kind: 'repin', ipId: 'ip-v4', from: '10.20.0.10', to: '10.20.0.42' }]
   )
 })
 
@@ -81,7 +81,7 @@ test('decideRepinActions: single IPv6 candidate repins', () => {
       reportedPrivateAddresses: ['fd00:20::42'],
       addressesInUse: new Set(),
     }),
-    [{ kind: 'repin', ipId: 'ip-v6', from: 'fd00:20::10', to: 'fd00:20::42' }],
+    [{ kind: 'repin', ipId: 'ip-v6', from: 'fd00:20::10', to: 'fd00:20::42' }]
   )
 })
 
@@ -92,7 +92,7 @@ test('decideRepinActions: zero candidates marks address_gone_no_candidate', () =
       reportedPrivateAddresses: ['10.99.0.1'],
       addressesInUse: new Set(),
     }),
-    [{ kind: 'mark_stale', ipId: 'ip-v4', reason: 'address_gone_no_candidate' }],
+    [{ kind: 'mark_stale', ipId: 'ip-v4', reason: 'address_gone_no_candidate' }]
   )
 })
 
@@ -103,7 +103,7 @@ test('decideRepinActions: two candidates marks address_gone_ambiguous', () => {
       reportedPrivateAddresses: ['10.20.0.42', '10.20.0.43'],
       addressesInUse: new Set(),
     }),
-    [{ kind: 'mark_stale', ipId: 'ip-v4', reason: 'address_gone_ambiguous' }],
+    [{ kind: 'mark_stale', ipId: 'ip-v4', reason: 'address_gone_ambiguous' }]
   )
 })
 
@@ -114,7 +114,7 @@ test('decideRepinActions: candidate already an ip row is stale, not repin', () =
       reportedPrivateAddresses: ['10.20.0.42'],
       addressesInUse: new Set(['10.20.0.42']),
     }),
-    [{ kind: 'mark_stale', ipId: 'ip-v4', reason: 'address_gone_no_candidate' }],
+    [{ kind: 'mark_stale', ipId: 'ip-v4', reason: 'address_gone_no_candidate' }]
   )
 })
 
@@ -125,7 +125,7 @@ test('decideRepinActions: previously-stale pin whose address returns clears', ()
       reportedPrivateAddresses: ['10.20.0.10'],
       addressesInUse: new Set(),
     }),
-    [{ kind: 'clear_stale', ipId: 'ip-v4' }],
+    [{ kind: 'clear_stale', ipId: 'ip-v4' }]
   )
 })
 
@@ -156,7 +156,7 @@ test('decideRepinActions: to === from is a no-op', () => {
       reportedPrivateAddresses: ['10.20.0.10'],
       addressesInUse: new Set(),
     }),
-    [],
+    []
   )
 })
 
@@ -167,7 +167,7 @@ test('decideRepinActions: cross-family candidate is ignored', () => {
       reportedPrivateAddresses: ['fd00:20::42'],
       addressesInUse: new Set(),
     }),
-    [{ kind: 'mark_stale', ipId: 'ip-v4', reason: 'address_gone_no_candidate' }],
+    [{ kind: 'mark_stale', ipId: 'ip-v4', reason: 'address_gone_no_candidate' }]
   )
   assertEquals(
     decideRepinActions({
@@ -175,7 +175,7 @@ test('decideRepinActions: cross-family candidate is ignored', () => {
       reportedPrivateAddresses: ['10.20.0.42', 'fd00:20::42'],
       addressesInUse: new Set(),
     }),
-    [{ kind: 'repin', ipId: 'ip-v6', from: 'fd00:20::10', to: 'fd00:20::42' }],
+    [{ kind: 'repin', ipId: 'ip-v6', from: 'fd00:20::10', to: 'fd00:20::42' }]
   )
 })
 
@@ -189,14 +189,14 @@ test('decideRepinActions: dual-family pins on one server repin independently', (
     [
       { kind: 'repin', ipId: 'ip-v4', from: '10.20.0.10', to: '10.20.0.42' },
       { kind: 'repin', ipId: 'ip-v6', from: 'fd00:20::10', to: 'fd00:20::42' },
-    ],
+    ]
   )
 })
 
 test('parseIpPinMetadata round-trips stale and repin markers', () => {
   const stale = withStaleMetadata(
     { note: 'keep me' },
-    { since: '2026-09-01T00:00:00.000Z', reason: 'address_gone_ambiguous' },
+    { since: '2026-09-01T00:00:00.000Z', reason: 'address_gone_ambiguous' }
   )
   assertEquals(stale.note, 'keep me')
   assertEquals(parseIpPinMetadata(stale), {
@@ -234,14 +234,20 @@ test('withStaleMetadata keeps the original since on re-flag', () => {
 test('parseIpPinMetadata ignores invalid or partial markers', () => {
   assertEquals(parseIpPinMetadata(null), {})
   assertEquals(parseIpPinMetadata('x'), {})
-  assertEquals(parseIpPinMetadata({ stale: { since: 'nope', reason: 'address_gone_ambiguous' } }), {})
-  assertEquals(parseIpPinMetadata({ stale: { since: '2026-09-01T00:00:00.000Z', reason: 'other' } }), {})
+  assertEquals(
+    parseIpPinMetadata({ stale: { since: 'nope', reason: 'address_gone_ambiguous' } }),
+    {}
+  )
+  assertEquals(
+    parseIpPinMetadata({ stale: { since: '2026-09-01T00:00:00.000Z', reason: 'other' } }),
+    {}
+  )
   assertEquals(parseIpPinMetadata({ repin: { at: '2026-09-01T00:00:00.000Z' } }), {})
   // Unknown keys on a valid marker are dropped, not preserved or rejected.
   assertEquals(
     parseIpPinMetadata({
       repin: { at: '2026-09-01T00:00:00.000Z', from: '10.0.0.1', extra: 'ignored' },
     }),
-    { repin: { at: '2026-09-01T00:00:00.000Z', from: '10.0.0.1' } },
+    { repin: { at: '2026-09-01T00:00:00.000Z', from: '10.0.0.1' } }
   )
 })

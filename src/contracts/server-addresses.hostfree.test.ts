@@ -62,7 +62,10 @@ test('parseServerIps rejects non-arrays and dedupes by address', () => {
     { address: '203.0.113.11', version: 4, scope: 'unknown' },
     { interface: 'eth99' },
   ])
-  assertEquals(rows?.map((r) => r.address), ['203.0.113.10', '203.0.113.20'])
+  assertEquals(
+    rows?.map((r) => r.address),
+    ['203.0.113.10', '203.0.113.20']
+  )
   assertEquals(rows?.[0]?.interface, 'enp1s0')
 })
 
@@ -118,10 +121,7 @@ test('serverIpsEquals compares normalized rows', () => {
   assertEquals(serverIpsEquals(left, right), true)
   assertEquals(serverIpsEquals(left, null), false)
   assertEquals(serverIpsEquals(left, left), true)
-  assertEquals(
-    serverIpsEquals(left, [{ ...PUBLIC_V4, preferred: false }]),
-    false,
-  )
+  assertEquals(serverIpsEquals(left, [{ ...PUBLIC_V4, preferred: false }]), false)
 })
 
 test('privateAddressesFromIps and preferredIpv4FromIps', () => {

@@ -37,10 +37,7 @@ type Write = { patch: Record<string, unknown> }
 
 function thenable<T>(rows: T[]) {
   return {
-    then(
-      resolve: (value: T[]) => unknown,
-      reject?: (err: unknown) => unknown,
-    ) {
+    then(resolve: (value: T[]) => unknown, reject?: (err: unknown) => unknown) {
       return Promise.resolve(rows).then(resolve, reject)
     },
   }
@@ -58,9 +55,7 @@ function createFakeDb(params: {
 }): Db {
   return {
     select(fields: Record<string, unknown>) {
-      const rows: unknown[] = 'subnetCidr' in fields
-        ? params.pins
-        : (params.inUse ?? [])
+      const rows: unknown[] = 'subnetCidr' in fields ? params.pins : (params.inUse ?? [])
       const chain = {
         from: () => chain,
         leftJoin: () => chain,
@@ -110,11 +105,7 @@ function reported(...addresses: string[]): ServerReportedIp[] {
 test('applyReportedAddressRepin: no pins → zero writes', async () => {
   const writes: Write[] = []
   const db = createFakeDb({ pins: [], writes })
-  const applied = await applyReportedAddressRepin(
-    db,
-    SERVER,
-    reported('10.20.0.42'),
-  )
+  const applied = await applyReportedAddressRepin(db, SERVER, reported('10.20.0.42'))
   assertEquals(applied, [])
   assertEquals(writes.length, 0)
 })
@@ -122,11 +113,7 @@ test('applyReportedAddressRepin: no pins → zero writes', async () => {
 test('applyReportedAddressRepin: unchanged pin → zero writes', async () => {
   const writes: Write[] = []
   const db = createFakeDb({ pins: [pin()], writes })
-  const applied = await applyReportedAddressRepin(
-    db,
-    SERVER,
-    reported('10.20.0.10'),
-  )
+  const applied = await applyReportedAddressRepin(db, SERVER, reported('10.20.0.10'))
   assertEquals(applied, [])
   assertEquals(writes.length, 0)
 })
@@ -134,22 +121,18 @@ test('applyReportedAddressRepin: unchanged pin → zero writes', async () => {
 test('applyReportedAddressRepin: a repin stamps repinPendingFanoutAt and clears stale', async () => {
   const writes: Write[] = []
   const db = createFakeDb({
-    pins: [pin({
-      metadata: {
-        note: 'keep',
-        stale: { since: '2026-09-01T00:00:00.000Z', reason: 'address_gone_no_candidate' },
-      },
-    })],
+    pins: [
+      pin({
+        metadata: {
+          note: 'keep',
+          stale: { since: '2026-09-01T00:00:00.000Z', reason: 'address_gone_no_candidate' },
+        },
+      }),
+    ],
     writes,
   })
-  const applied = await applyReportedAddressRepin(
-    db,
-    SERVER,
-    reported('10.20.0.42'),
-  )
-  assertEquals(applied, [
-    { kind: 'repin', ipId: 'ip-1', from: '10.20.0.10', to: '10.20.0.42' },
-  ])
+  const applied = await applyReportedAddressRepin(db, SERVER, reported('10.20.0.42'))
+  assertEquals(applied, [{ kind: 'repin', ipId: 'ip-1', from: '10.20.0.10', to: '10.20.0.42' }])
   assertEquals(writes.length, 1)
   const patch = writes[0]?.patch
   if (!patch) throw new TypeError('expected one ip write')
@@ -171,18 +154,12 @@ test('applyReportedAddressRepin: unique violation on repin downgrades to mark_st
     failWriteWith: (patch) =>
       'address' in patch
         ? Object.assign(new Error('duplicate key uniq_ip_org_address'), {
-          code: '23505',
-        })
+            code: '23505',
+          })
         : undefined,
   })
-  const applied = await applyReportedAddressRepin(
-    db,
-    SERVER,
-    reported('10.20.0.42'),
-  )
-  assertEquals(applied, [
-    { kind: 'mark_stale', ipId: 'ip-1', reason: 'address_gone_ambiguous' },
-  ])
+  const applied = await applyReportedAddressRepin(db, SERVER, reported('10.20.0.42'))
+  assertEquals(applied, [{ kind: 'mark_stale', ipId: 'ip-1', reason: 'address_gone_ambiguous' }])
   assertEquals(writes.length, 1)
   const metadata = writes[0]?.patch.metadata
   assertEquals(parseIpPinMetadata(metadata).stale?.reason, 'address_gone_ambiguous')
@@ -196,32 +173,24 @@ test('applyReportedAddressRepin: candidate held by another org row → stale', a
     inUse: [{ id: 'ip-other', address: '10.20.0.42' }],
     writes,
   })
-  const applied = await applyReportedAddressRepin(
-    db,
-    SERVER,
-    reported('10.20.0.42'),
-  )
-  assertEquals(applied, [
-    { kind: 'mark_stale', ipId: 'ip-1', reason: 'address_gone_no_candidate' },
-  ])
+  const applied = await applyReportedAddressRepin(db, SERVER, reported('10.20.0.42'))
+  assertEquals(applied, [{ kind: 'mark_stale', ipId: 'ip-1', reason: 'address_gone_no_candidate' }])
   assertEquals(writes.length, 1)
 })
 
 test('applyReportedAddressRepin: pin address returning clears stale only', async () => {
   const writes: Write[] = []
   const db = createFakeDb({
-    pins: [pin({
-      metadata: {
-        stale: { since: '2026-09-01T00:00:00.000Z', reason: 'address_gone_ambiguous' },
-      },
-    })],
+    pins: [
+      pin({
+        metadata: {
+          stale: { since: '2026-09-01T00:00:00.000Z', reason: 'address_gone_ambiguous' },
+        },
+      }),
+    ],
     writes,
   })
-  const applied = await applyReportedAddressRepin(
-    db,
-    SERVER,
-    reported('10.20.0.10'),
-  )
+  const applied = await applyReportedAddressRepin(db, SERVER, reported('10.20.0.10'))
   assertEquals(applied, [{ kind: 'clear_stale', ipId: 'ip-1' }])
   assertEquals(writes.length, 1)
   assertEquals(writes[0]?.patch.metadata, {})
@@ -234,11 +203,7 @@ test('applyReportedAddressRepin: a non-unique write failure is swallowed', async
     writes,
     failWriteWith: () => new Error('connection reset'),
   })
-  const applied = await applyReportedAddressRepin(
-    db,
-    SERVER,
-    reported('10.20.0.42'),
-  )
+  const applied = await applyReportedAddressRepin(db, SERVER, reported('10.20.0.42'))
   assertEquals(applied, [])
   assertEquals(writes.length, 0)
 })
