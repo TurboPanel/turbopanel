@@ -336,6 +336,7 @@ const SAMPLES: Record<DaemonInboundEnvelope['kind'], DaemonInboundEnvelope> = {
   },
   'capability-plan-update-result': { kind: 'capability-plan-update-result', ...common, ok: true },
   'capability-plan-clear-result': { kind: 'capability-plan-clear-result', ...common, ok: true },
+  'deploy-cancel-result': { kind: 'deploy-cancel-result', ...common, ok: true },
   'update-result': { kind: 'update-result', ...common, ok: true },
   'instance-update-result': { kind: 'instance-update-result', ...common, ok: true },
   'command-ack': { kind: 'command-ack', ...common, daemonReceivedAt: AT },
@@ -355,4 +356,20 @@ test('deriveInboundOutcome has a mapping for every inbound kind except the non-t
 
 test('deriveInboundOutcome treats an unknown kind as non-terminal', () => {
   assertEquals(deriveInboundOutcome({ kind: 'from-the-future', ...common } as never), null)
+})
+
+test('deriveInboundOutcome maps deploy-cancel-result done and failed', () => {
+  const done: DaemonInboundEnvelope = {
+    kind: 'deploy-cancel-result',
+    requestId: REQUEST_ID,
+    at: AT,
+    ok: true,
+    outcome: 'cancelling',
+  }
+  assertEquals(deriveInboundOutcome(done), {
+    status: 'done',
+    result: { ok: true, outcome: 'cancelling', error: undefined },
+  })
+  const failed = deriveInboundOutcome({ ...done, ok: false, outcome: undefined, error: 'boom' })
+  assertEquals(failed?.status, 'failed')
 })

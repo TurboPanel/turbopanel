@@ -4,6 +4,7 @@ import {
   type ServerReportedIp,
 } from '../../contracts/server-addresses.ts'
 import type { ServerGeo } from '../geo/server-geo.ts'
+import type { ServiceRunState } from '../../contracts/service-run-state.ts'
 import { type LocationFields, parseLocationOverride } from '../geo/location-override.ts'
 import type { DatacenterOptions } from '../datacenters/datacenter-options.ts'
 import { type NtpDefaults, parseNtpDefaults, parseSshPort } from './host-defaults.ts'
@@ -322,6 +323,13 @@ export type ServerMetadata = {
    * no migration.
    */
   releaseLinkScan?: ServerReleaseLinkScanMetadata
+  /**
+   * Run state of every service with a container on this host (running, restart
+   * count, last error), replaced whole by each daemon hello / change-detected
+   * heartbeat that carries it. jsonb, so no migration. Ephemeral by nature:
+   * the last report, not a history.
+   */
+  services?: ServiceRunState[]
   /**
    * Operator-assigned hardware profile for host metrics (sensor/NIC slots,
    * hosting path, drivetemp opt-in, generation). jsonb, so no migration.

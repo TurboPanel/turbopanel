@@ -13,6 +13,7 @@ import {
 } from '../../features/organizations/organization-options.ts'
 import type { ParseServiceOptionsOptions } from '../../features/projects/service-options.ts'
 import { preserveServiceApp } from '../../features/environments/app-facts.ts'
+import { loadServiceRunStates } from '../../features/environments/service-run-state.ts'
 import { applyStorageRetentionOnParentDelete } from '../../features/storage/storage-records.ts'
 import {
   assertCanCreateOr403,
@@ -104,7 +105,13 @@ export function registerServiceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
       .where(and(...conditions))
       .orderBy(service.createdAt)
 
-    return c.json({ services: rows.map(serializeService) })
+    const runStates = await loadServiceRunStates(
+      db,
+      rows.map((row) => row.id)
+    )
+    return c.json({
+      services: rows.map((row) => serializeService(row, runStates.get(row.id))),
+    })
   })
 
   router.get('/services/:id', async (c) => {
@@ -134,7 +141,8 @@ export function registerServiceRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const denied = await assertCanReadOr403(c, 'service', id)
     if (denied) return denied
 
-    return c.json({ service: serializeService(row) })
+    const runStates = await loadServiceRunStates(db, [row.id])
+    return c.json({ service: serializeService(row, runStates.get(row.id)) })
   })
 
   router.post('/services', async (c) => {

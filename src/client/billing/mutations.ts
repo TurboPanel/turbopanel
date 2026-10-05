@@ -148,6 +148,22 @@ export type DowngradeTierBody = {
 
 const INVALID_REQUEST = { error: 'Invalid request' } as const
 
+/**
+ * How far behind the server's clock a quote's pinned proration date may be
+ * (seconds). A date in the future is never accepted: the date prices the
+ * prorated charge while the new seats take effect at once.
+ */
+export const PRORATION_DATE_MAX_AGE_SECONDS = 900
+export const PRORATION_DATE_EXPIRED_ERROR = 'proration_date_expired'
+
+/** The date to bill with, or `null` when the client's date is outside the window. */
+function resolveProrationDate(requested: number | null | undefined, nowMs: number): number | null {
+  const now = Math.floor(nowMs / 1000)
+  if (requested === null || requested === undefined) return now
+  const inWindow = requested <= now && requested >= now - PRORATION_DATE_MAX_AGE_SECONDS
+  return inWindow ? requested : null
+}
+
 function refuse(
   status: BillingRefusalStatus,
   body: { error: string } & Record<string, unknown>
@@ -265,13 +281,20 @@ async function applyImmediate(
     nowMs()
   )
   const retry = stored && seatIncreaseMatches(stored, deltas) ? stored : null
+  const billedAt = retry ? retry.prorationDate : resolveProrationDate(prorationDate, nowMs())
+  if (billedAt === null) {
+    return refuse(409, {
+      error: PRORATION_DATE_EXPIRED_ERROR,
+      message: 'The price quote has expired. Request a new quote and try again.',
+    })
+  }
   const record =
     retry ??
     newSeatIncreaseRecord({
       providerSubscriptionId: sub.providerSubscriptionId,
       deltas,
       items,
-      prorationDate: prorationDate ?? Math.floor(nowMs() / 1000),
+      prorationDate: billedAt,
       nowMs: nowMs(),
     })
   if (!retry) await writeSeatIncrease(deps.db, organizationId, record, nowMs())

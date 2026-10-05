@@ -478,7 +478,8 @@ export const organizationSchemas = {
       advertisedCidrs: {
         type: 'array',
         items: { type: 'string' },
-        description: "empty list = derive from the relay's datacenter IPv4 subnets",
+        description:
+          "empty list = derive from the relay's datacenter IPv4 subnets. Each range must be private (RFC 1918, 100.64.0.0/10 or fc00::/7) and no shorter than /8 (IPv4) or /48 (IPv6): default routes and public ranges are 400. A range that overlaps the fabric range, the container pool, a server's fabric container range or a range another gateway advertises (the very same range on two gateways is fine; partly overlapping or nested ranges are not) is 400 gateway_range_overlaps_* with { message, cidr, conflictsWith, otherServerId? }. The daemon refuses a host's whole peer list over one such range, so the same rule also covers the ranges a gateway falls back to from its datacenter subnets when the list is empty.",
       },
       keepalive: { type: ['integer', 'null'], minimum: 1, maximum: 65535 },
       endpointAddress: { type: ['string', 'null'] },
@@ -558,7 +559,7 @@ export const organizationSchemas = {
       containerPool: {
         type: 'string',
         description:
-          'Replacement IPv4 pool for relay /16 prefixes (prefix <= /16). Checked by the CIDR collision authority with the current pool excluded (409 cidr_overlaps_* / subnet_overlaps) and refused with 409 fabric_container_pool_in_use when an allocated relay prefix would fall outside it. Changing the pool does not renumber existing relay prefixes.',
+          'Replacement IPv4 pool for relay /16 prefixes (prefix <= /16). Checked by the CIDR collision authority with the current pool excluded (409 cidr_overlaps_* / subnet_overlaps) refused with 409 fabric_container_pool_in_use when an allocated relay prefix would fall outside it, and refused with 400 gateway_range_overlaps_fabric_pool when it would swallow a range a gateway already advertises. Changing the pool does not renumber existing relay prefixes.',
       },
     },
   },

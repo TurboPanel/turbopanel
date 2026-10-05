@@ -30,6 +30,11 @@ import { license, server } from '../../db/schema.ts'
 import { recomputeAssignmentsForServer } from '../tiers/assignment-records.ts'
 import { applyReportedAddressRepin } from '../net/repin-apply.ts'
 import { serverIpsEquals } from '../../contracts/server-addresses.ts'
+import {
+  parseServiceRunStates,
+  type ServiceRunState,
+  serviceRunStatesEqual,
+} from '../../contracts/service-run-state.ts'
 import { normalizeMachineKey } from '../../lib/machine-key.ts'
 import { daemonFeaturesColumnPatch } from './daemon-jsonb-write.ts'
 import { featuresMatch, parseServerDaemonState } from './daemon-state.ts'
@@ -90,6 +95,8 @@ export type ServerHelloIdentity = {
   docker?: ServerDockerMetadata
   runtimes?: ServerRuntimeMetadata
   releaseLinkScan?: ServerReleaseLinkScanMetadata
+  /** Per-service run state; `[]` clears, `undefined` leaves what is stored. */
+  services?: ServiceRunState[]
   /** Hello only. `[]` when the daemon omitted `features`. Heartbeat leaves this unset. */
   features?: string[]
 }
@@ -106,6 +113,8 @@ function metadataPatch(identity: ServerHelloIdentity): Partial<ServerMetadata> {
   if (runtimes) patch.runtimes = runtimes
   const releaseLinkScan = parseServerReleaseLinkScan(identity.releaseLinkScan)
   if (releaseLinkScan) patch.releaseLinkScan = releaseLinkScan
+  const services = parseServiceRunStates(identity.services)
+  if (services !== undefined) patch.services = services
   return patch
 }
 
@@ -170,7 +179,14 @@ export function mergeServerMetadataIdentity(
   current: ServerMetadata | null | undefined,
   identity: Pick<
     ServerHelloIdentity,
-    'hostname' | 'machineKey' | 'os' | 'resources' | 'timeSync' | 'docker' | 'releaseLinkScan'
+    | 'hostname'
+    | 'machineKey'
+    | 'os'
+    | 'resources'
+    | 'timeSync'
+    | 'docker'
+    | 'releaseLinkScan'
+    | 'services'
   >
 ): ServerMetadata | null {
   const patch = metadataPatch(identity)
@@ -200,6 +216,10 @@ export function mergeServerMetadataIdentity(
     !serverReleaseLinkScanEquals(patch.releaseLinkScan, base.releaseLinkScan)
   ) {
     next.releaseLinkScan = patch.releaseLinkScan
+    changed = true
+  }
+  if (patch.services !== undefined && !serviceRunStatesEqual(patch.services, base.services)) {
+    next.services = patch.services
     changed = true
   }
 
@@ -245,6 +265,9 @@ function buildMetadataDelta(
     !serverReleaseLinkScanEquals(patch.releaseLinkScan, base?.releaseLinkScan)
   ) {
     delta.releaseLinkScan = patch.releaseLinkScan
+  }
+  if (patch.services !== undefined && !serviceRunStatesEqual(patch.services, base?.services)) {
+    delta.services = patch.services
   }
   return delta
 }

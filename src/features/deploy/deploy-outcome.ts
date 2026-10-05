@@ -52,3 +52,21 @@ export function deployOutcomeReason(
   if (outcome === null || message === null) return null
   return classifyDeployFailure(message)?.reason ?? message
 }
+
+/**
+ * A deploy the daemon stopped because someone asked it to. The daemon's error
+ * text starts with `cancelled: `; the consumer reads it back into command status
+ * `cancelled` (a terminal status the table already allows) and
+ * {@link DEPLOY_CANCELLED_ERROR_CODE}, so no new status or migration is needed.
+ * The previous version is still serving: the daemon only honours a cancel before
+ * it switches anything over.
+ */
+export const CANCELLED_ERROR_PREFIX = 'cancelled: '
+
+/** `command.error_code` of a cancelled deploy. */
+export const DEPLOY_CANCELLED_ERROR_CODE = `${ERROR_CODE_PREFIX}cancelled`
+
+/** Is this daemon error text the report of a cancelled deploy? */
+export function isCancelledDeployError(message: string | null | undefined): boolean {
+  return typeof message === 'string' && message.startsWith(CANCELLED_ERROR_PREFIX)
+}
