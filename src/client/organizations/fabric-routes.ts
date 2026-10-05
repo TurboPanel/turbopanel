@@ -50,6 +50,7 @@ import {
   fabricEnableErrorResponse,
   type FabricMembershipSecrets,
   fabricNotEnabledErrorResponse,
+  type FabricPutBody,
   type FabricRelayApiRow,
   fabricSettingsResponse,
   fabricTypedEnqueueErrorResponse,
@@ -183,6 +184,54 @@ async function disableOrganizationFabricForPut(params: {
     await disableOrganizationFabric(tx, organizationId)
   })
   return { notQueued: [] }
+}
+
+/**
+ * Turn the fabric off and answer the PUT: 200 with the cleared settings, or
+ * 503 `fabric_teardown_not_queued` naming the servers whose teardown could
+ * not be queued (the rows stay so the caller can retry).
+ */
+async function disableFabricResponse(
+  c: Context,
+  params: Parameters<typeof disableOrganizationFabricForPut>[0]
+): Promise<Response> {
+  const { notQueued } = await disableOrganizationFabricForPut(params)
+  if (notQueued.length > 0) {
+    return c.json(
+      {
+        error: 'fabric_teardown_not_queued',
+        message:
+          'TurboFabric is still on: turning it off could not reach every server. Servers that were reached have dropped their tunnel and get it back on the next apply. Try turning it off again.',
+        serverIds: notQueued,
+      },
+      503
+    )
+  }
+  return c.json(fabricSettingsResponse(null))
+}
+
+/** Refuse a requested container pool that cannot be written; null when none was asked for or it is fine. */
+async function containerPoolDenial(
+  c: Context,
+  db: Db,
+  organizationId: string,
+  containerPool: string | undefined
+): Promise<Response | null> {
+  if (containerPool === undefined) return null
+  return assertContainerPoolWritable(
+    c,
+    db,
+    organizationId,
+    containerPool,
+    await getOrganizationFabric(db, organizationId)
+  )
+}
+
+function fabricEnablePolicyFromBody(parsed: FabricPutBody): FabricEnablePolicy {
+  return {
+    ...(parsed.allowRelay === undefined ? {} : { allowRelay: parsed.allowRelay }),
+    ...(parsed.containerPool === undefined ? {} : { containerPool: parsed.containerPool }),
+  }
 }
 
 /**
@@ -443,45 +492,22 @@ export function registerOrganizationFabricRoutes(router: Hono<AppEnv>, opts: Aut
     const secrets = fabricSecretsFromContext(c)
 
     if (!parsed.enabled) {
-      const { notQueued } = await disableOrganizationFabricForPut({
+      return disableFabricResponse(c, {
         db,
         commandQueue,
         organizationId: id,
         actorId: session.userId,
         secrets,
       })
-      if (notQueued.length > 0) {
-        return c.json(
-          {
-            error: 'fabric_teardown_not_queued',
-            message:
-              'TurboFabric is still on: turning it off could not reach every server. Servers that were reached have dropped their tunnel and get it back on the next apply. Try turning it off again.',
-            serverIds: notQueued,
-          },
-          503
-        )
-      }
-      return c.json(fabricSettingsResponse(null))
     }
 
-    if (parsed.containerPool !== undefined) {
-      const poolDenied = await assertContainerPoolWritable(
-        c,
-        db,
-        id,
-        parsed.containerPool,
-        await getOrganizationFabric(db, id)
-      )
-      if (poolDenied) return poolDenied
-    }
+    const poolDenied = await containerPoolDenial(c, db, id, parsed.containerPool)
+    if (poolDenied) return poolDenied
 
     // The policy rides along with the enable so relay prefixes are carved
     // from the requested pool (never the default) and the fabric row, policy
     // and relays land — or roll back — together.
-    const policy: FabricEnablePolicy = {
-      ...(parsed.allowRelay === undefined ? {} : { allowRelay: parsed.allowRelay }),
-      ...(parsed.containerPool === undefined ? {} : { containerPool: parsed.containerPool }),
-    }
+    const policy = fabricEnablePolicyFromBody(parsed)
     const record = await enableOrganizationFabricOrResponse(c, db, id, policy)
     if (record instanceof Response) return record
     const enqueueResults = await reconcileFabricMembership({
