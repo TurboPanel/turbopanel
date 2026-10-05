@@ -35,6 +35,7 @@ import {
 } from '../../features/organizations/organization-options.ts'
 import {
   type ApplyVariablesError,
+  type ApplyVariablesResult,
   applyVariablesToComposeDocument,
   type DeployVariableEntry,
   type DeployVariableMaterial,
@@ -73,6 +74,11 @@ import {
   environmentComposeFilename,
   renderRuntimeComposeFiles,
 } from '../../features/deploy/deploy-layers.ts'
+import {
+  buildNativeAppVariables,
+  type NativeAppVariables,
+  type NativeAppVariableView,
+} from '../../features/compose/native-app-variables.ts'
 import { stripReservedDeployVariableKeys } from '../../features/compose/platform-variables.ts'
 import { renameComposeVolumes } from '../../features/compose/rename-volumes.ts'
 import {
@@ -202,6 +208,7 @@ import {
   resolveInheritedVariableBundleForService,
   resolveInheritedVariablesForEnvironment,
   resolveServerScopedVariables,
+  resolveVariableSource,
 } from '../../features/variables/resolve-inherited.ts'
 import {
   type ComposePrincipalResolution,
@@ -458,6 +465,19 @@ export type PreparedDeployCompose = ServerDeployment & {
   envFile?: string
   /** File-only secret mounts (no plaintext). */
   secretPlan?: DeploySecretPlanEntry[]
+  /**
+   * What each native app's process gets as environment variables, for people:
+   * every name, where it came from, and whether it reaches the process. Secret
+   * values are left out. Never sent to a daemon — the wire list is
+   * `nativeAppServices[].variables`.
+   */
+  nativeAppVariables?: NativeAppVariablesView[]
+}
+
+/** One native app's {@link NativeAppVariableView} list. */
+export type NativeAppVariablesView = {
+  composeServiceName: string
+  variables: NativeAppVariableView[]
 }
 
 export type DeployPrepareError =
@@ -616,6 +636,7 @@ async function emptyPreparedCompose(
     composeServiceExpansion: {},
     volumes: [],
     warnings,
+    nativeAppVariables: [],
   }
 }
 
@@ -1400,6 +1421,17 @@ async function mapResolvedVariablesToDeployEntries(
   )
 }
 
+/** Label each effective entry with the scope that set it (see {@link resolveVariableSource}). */
+function tagVariableSources(
+  entries: readonly DeployVariableEntry[],
+  scopes: ResolvedVariableScopes
+): DeployVariableEntry[] {
+  return entries.map((entry) => {
+    const source = resolveVariableSource(entry.key, entry.bindingId, scopes)
+    return source === undefined ? entry : { ...entry, source }
+  })
+}
+
 type ServiceRow = {
   id: string
   composeServiceName: string
@@ -1432,7 +1464,9 @@ async function resolveDeployVariableBuckets(
     serverVars,
     params.dataEncryptionSecrets
   )
-  const serverScopeMap = new Map(serverScopeEntries.map((entry) => [entry.key, entry]))
+  const serverScopeMap = new Map(
+    serverScopeEntries.map((entry) => [entry.key, { ...entry, source: 'server' }])
+  )
 
   const composeServices = params.composeServiceNames
   const globalEntries: DeployVariableEntry[] = composeServices.length === 0 ? fallbackEntries : []
@@ -1462,15 +1496,15 @@ async function resolveDeployVariableBuckets(
         const hostingMap = await mergeHostingVariablesForService(db, row.id, bundle.inherited)
         await reapplyBindingOwnedVariables(db, row.id, bundle.inherited)
         const mergedServer = new Map([...bundle.inherited, ...serverVars])
-        cached = await mapResolvedVariablesToDeployEntries(
-          mergedServer,
-          params.dataEncryptionSecrets
-        )
         const scopeMaps: ResolvedVariableScopes = {
           ...bundle.scopes,
           hosting: hostingMap,
           server: serverVars,
         }
+        cached = tagVariableSources(
+          await mapResolvedVariablesToDeployEntries(mergedServer, params.dataEncryptionSecrets),
+          scopeMaps
+        )
         cachedScopes = await mapResolvedScopesToDeployEntries(
           scopeMaps,
           params.dataEncryptionSecrets
@@ -1508,9 +1542,63 @@ async function mapResolvedScopesToDeployEntries(
   for (const item of decrypted) {
     if (!item) continue
     const [scope, entries] = item
-    out[scope as keyof VariableScopeEntryMap] = new Map(entries.map((entry) => [entry.key, entry]))
+    // A `{$project.KEY}` reference reads from here, so the entry carries the
+    // scope it was found in (the list people read says where a value came from).
+    out[scope as keyof VariableScopeEntryMap] = new Map(
+      entries.map((entry) => [entry.key, { ...entry, source: scope }])
+    )
   }
   return out
+}
+
+/** `{ variables }` for the wire, or nothing when the app has none (its payload stays as it was). */
+function nativeAppVariablesField(resolved: NativeAppVariables | undefined): {
+  variables?: NativeAppVariables['variables']
+} {
+  return resolved && resolved.variables.length > 0 ? { variables: resolved.variables } : {}
+}
+
+/**
+ * What each native app's process gets, from what the variables module recorded
+ * for it (see {@link buildNativeAppVariables}).
+ */
+function resolveNativeAppVariables(
+  apps: readonly NativeAppServiceSpec[],
+  applied: Pick<ApplyVariablesResult, 'runtimeAssignments' | 'unreferencedSecrets'>
+): Map<string, NativeAppVariables> {
+  return new Map(
+    apps.map((app) => [
+      app.composeServiceName,
+      buildNativeAppVariables(
+        applied.runtimeAssignments.get(app.composeServiceName) ?? [],
+        app,
+        applied.unreferencedSecrets.get(app.composeServiceName) ?? []
+      ),
+    ])
+  )
+}
+
+/** The lists people read, for the native apps that run on this server. */
+function nativeAppVariableViews(
+  apps: readonly { composeServiceName: string }[],
+  variables: ReadonlyMap<string, NativeAppVariables>
+): NativeAppVariablesView[] {
+  return apps.map((app) => ({
+    composeServiceName: app.composeServiceName,
+    variables: variables.get(app.composeServiceName)?.view ?? [],
+  }))
+}
+
+/** Compose keys of the services that run as native (`serviceKind: node`) apps. */
+function nativeComposeServiceNames(document: ComposeDocument): Set<string> {
+  const services = isPlainObject(document.data.services)
+    ? (document.data.services as Record<string, unknown>)
+    : {}
+  return new Set(
+    Object.entries(services)
+      .filter(([, raw]) => isPlainObject(raw) && isNodeComposeService(raw))
+      .map(([name]) => name)
+  )
 }
 
 function listContainerComposeNames(document: ComposeDocument): Set<string> {
@@ -1833,7 +1921,8 @@ function nativeAppServicesForDeploy(
   resolvedServices: readonly ResolvedService[],
   orgOptions: unknown,
   serverOptions: unknown,
-  tasksByComposeName: ReadonlyMap<string, readonly TaskRecord[]> = new Map()
+  tasksByComposeName: ReadonlyMap<string, readonly TaskRecord[]> = new Map(),
+  variablesByComposeName: ReadonlyMap<string, NativeAppVariables> = new Map()
 ): PreparedNativeAppService[] {
   if (apps.length === 0) return []
   const accountLimits = effectiveAccountLimits(orgOptions, serverOptions)
@@ -1874,6 +1963,10 @@ function nativeAppServicesForDeploy(
       // resolves the account from the same binding it builds for the app's own
       // unit. Translation still happens exactly once, in `renderCronForDeploy`.
       ...(cron.length === 0 ? {} : { cron }),
+      // The `node` service left the compose document, and with it the
+      // `environment:` the variables module built — this list is the only way
+      // its variables reach the process.
+      ...nativeAppVariablesField(variablesByComposeName.get(app.composeServiceName)),
     }
   })
 }
@@ -2407,6 +2500,7 @@ async function toPreparedDeployResult(
     principalMaterial: EnvironmentDeployPrincipalMaterial[]
     sites: EnvironmentDeploySite[]
     nativeAppServices: PreparedNativeAppService[]
+    nativeAppVariables?: NativeAppVariablesView[]
     sourceMaterial: EnvironmentDeploySource[]
     dockerExternalNetworks: string[]
     dockerNetworkAddressing?: readonly EnvironmentDeployDockerNetwork[]
@@ -2448,6 +2542,7 @@ async function toPreparedDeployResult(
     principalMaterial: parts.principalMaterial,
     sites: parts.sites,
     nativeAppServices: parts.nativeAppServices,
+    nativeAppVariables: parts.nativeAppVariables ?? [],
     sourceMaterial: parts.sourceMaterial,
     dockerExternalNetworks: parts.dockerExternalNetworks,
     dockerNetworkAddressing: parts.dockerNetworkAddressing
@@ -2957,6 +3052,7 @@ export async function prepareDeployCompose(
     globalEntries,
     perServiceEntries,
     perServiceScopes,
+    nativeServiceNames: nativeComposeServiceNames(pipeline.expandedDocument),
     projectId: envRow.projectId,
     environmentId: params.environmentId,
   })
@@ -3059,13 +3155,15 @@ export async function prepareDeployCompose(
   const engineGate = await withSiteEngineFeature(db, params.serverId, localSite)
   if ('kind' in engineGate) return engineGate
 
+  const nativeVariables = resolveNativeAppVariables(split.nativeApps, withVariables)
   const localNativeApps = sitesOnScheduledServer(
     nativeAppServicesForDeploy(
       split.nativeApps,
       resolved.services,
       orgRow?.options,
       serverRow?.options,
-      tasksByComposeName
+      tasksByComposeName,
+      nativeVariables
     ),
     pipeline.localServiceNames
   )
@@ -3160,6 +3258,7 @@ export async function prepareDeployCompose(
     principalMaterial: principalMaterialWithRuntimes,
     sites: localSite,
     nativeAppServices: localNativeApps,
+    nativeAppVariables: nativeAppVariableViews(localNativeApps, nativeVariables),
     sourceMaterial: localSourceMaterial,
     dockerExternalNetworks,
     dockerNetworkAddressing: externalNetworks.addressing,
@@ -4151,12 +4250,17 @@ export {
   listComposeServiceKeys,
   listContainerComposeNames,
   localManagedNetworkServiceNames,
+  mapResolvedScopesToDeployEntries,
   nativeAppServicesForDeploy,
+  nativeAppVariableViews,
+  nativeComposeServiceNames,
+  resolveNativeAppVariables,
   resolveSitesForMode,
   resourceLimitPrepareError,
   sitesOnScheduledServer,
   splitHostNativeFromDocument,
   stripReservedKeysFromEntries,
+  tagVariableSources,
   toApplyVariablesPrepareError,
   toPreparedDeployResult,
   warningFromPrepareError,

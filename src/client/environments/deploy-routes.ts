@@ -1292,6 +1292,7 @@ export function registerEnvironmentDeployPreviewRoutes(router: Hono<AppEnv>, opt
       warnings: preparedByServer.flatMap((row) => row.prepared.warnings),
       envFile: first?.prepared.envFile ?? '',
       secretPlan: first?.prepared.secretPlan ?? [],
+      nativeAppVariables: preparedByServer.flatMap((row) => row.prepared.nativeAppVariables ?? []),
     })
   })
 }

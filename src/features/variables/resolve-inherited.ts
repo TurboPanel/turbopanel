@@ -135,6 +135,50 @@ export async function mergeHostingVariablesForService(
   return hostingMerged
 }
 
+/**
+ * Where an effective variable value was set: one of the scopes a reference can
+ * name, or `binding` for a value a managed database binding materializes.
+ */
+export type VariableSource = VariableRefScope | 'binding'
+
+/**
+ * Scopes from the one that wins to the one that loses, exactly as deploy
+ * applies them: the chain organization → … → service, then the service's
+ * hostings, then the binding-owned values re-applied over those, then the
+ * server's own variables over everything.
+ */
+const SOURCE_PRECEDENCE = [
+  'server',
+  'binding',
+  'hosting',
+  'service',
+  'environment',
+  'project',
+  'workspace',
+  'organization',
+] as const satisfies readonly VariableSource[]
+
+/**
+ * Which scope an effective variable came from. Walks {@link SOURCE_PRECEDENCE}
+ * and answers the first scope that holds the key, so the label always agrees
+ * with the value that actually reaches the service. `undefined` when no scope
+ * map is known (a service with no row of its own).
+ */
+export function resolveVariableSource(
+  key: string,
+  bindingId: string | null | undefined,
+  scopes: ResolvedVariableScopes
+): VariableSource | undefined {
+  for (const source of SOURCE_PRECEDENCE) {
+    if (source === 'binding') {
+      if (bindingId) return source
+      continue
+    }
+    if (scopes[source]?.has(key)) return source
+  }
+  return undefined
+}
+
 export type InheritedVariableBundle = {
   inherited: ResolvedVariableMap
   scopes: ResolvedVariableScopes

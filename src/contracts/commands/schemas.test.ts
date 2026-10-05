@@ -3980,6 +3980,71 @@ test('parseEnvironmentDeployPayload round-trips nativeAppServices', () => {
   ])
 })
 
+const NATIVE_VARIABLES_APP = {
+  composeServiceName: 'web',
+  serviceId: 'svc-web',
+  listenPort: 18100,
+  framework: 'node',
+}
+
+test('parseEnvironmentDeployPayload keeps nativeAppServices variables', () => {
+  const parsed = parseEnvironmentDeployPayload({
+    ...NATIVE_APP_BASE,
+    nativeAppServices: [
+      {
+        ...NATIVE_VARIABLES_APP,
+        variables: [
+          { name: 'API_URL', value: 'https://example.test' },
+          { name: 'DB_PASSWORD', secretKey: 'DB_PASSWORD' },
+        ],
+      },
+    ],
+  })
+  assertEquals(parsed.nativeAppServices?.[0]?.variables, [
+    { name: 'API_URL', value: 'https://example.test' },
+    { name: 'DB_PASSWORD', secretKey: 'DB_PASSWORD' },
+  ])
+  const empty = parseEnvironmentDeployPayload({
+    ...NATIVE_APP_BASE,
+    nativeAppServices: [{ ...NATIVE_VARIABLES_APP, variables: [] }],
+  })
+  assertEquals(empty.nativeAppServices?.[0]?.variables, undefined)
+})
+
+test('parseEnvironmentDeployPayload rejects unsafe nativeAppServices variables', () => {
+  const reject = (variables: unknown, message: string) =>
+    assertThrows(
+      () =>
+        parseEnvironmentDeployPayload({
+          ...NATIVE_APP_BASE,
+          nativeAppServices: [{ ...NATIVE_VARIABLES_APP, variables }],
+        }),
+      Error,
+      message
+    )
+  reject('API_URL=1', 'Invalid nativeAppServices variables')
+  reject([null], 'Invalid nativeAppServices variables entry')
+  for (const name of ['1ABC', 'A-B', 'A B', '', 'A=B', 'A\nB', 'x'.repeat(129)]) {
+    reject([{ name, value: 'v' }], 'Invalid nativeAppServices variables name')
+  }
+  reject([{ name: 'A' }], 'needs exactly one of value or secretKey')
+  reject([{ name: 'A', value: 'v', secretKey: 'A' }], 'needs exactly one of value or secretKey')
+  reject([{ name: 'A', value: 7 }], 'Invalid nativeAppServices variable value for A')
+  reject([{ name: 'A', value: 'a\0b' }], 'Invalid nativeAppServices variable value for A')
+  reject([{ name: 'A', secretKey: '' }], 'Invalid nativeAppServices variable secretKey for A')
+  reject(
+    [
+      { name: 'A', value: '1' },
+      { name: 'A', value: '2' },
+    ],
+    'Duplicate nativeAppServices variable A'
+  )
+  reject(
+    Array.from({ length: 257 }, (_, i) => ({ name: `V${i}`, value: '1' })),
+    'Invalid nativeAppServices variables'
+  )
+})
+
 test('parseEnvironmentDeployPayload rejects an unsafe nativeAppServices serviceId', () => {
   assertThrows(
     () =>
