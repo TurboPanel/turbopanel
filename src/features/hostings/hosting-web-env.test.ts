@@ -115,6 +115,18 @@ test('sanitizeHostingWebEnv drops invalid keys and empty values', () => {
   )
 })
 
+test('sanitizeHostingWebEnv drops the PHP ini override names in any case', () => {
+  assertEquals(
+    sanitizeHostingWebEnv({
+      PHP_VALUE: 'memory_limit=-1',
+      PHP_ADMIN_VALUE: 'open_basedir=',
+      php_value: 'x',
+      PHP_VALUES: 'kept',
+    }),
+    { PHP_VALUES: 'kept' }
+  )
+})
+
 test('sanitizeHostingWebEnv returns undefined when every entry is dropped', () => {
   assertEquals(
     sanitizeHostingWebEnv({
@@ -397,6 +409,22 @@ test('resolveHostingDeployWeb merges runtime variables; static env wins collisio
       key: 'EMPTY_RUNTIME',
       value: '   ',
       isSecret: false,
+      isLiteral: false,
+      forBuild: false,
+      forRuntime: true,
+    },
+    {
+      key: 'PHP_VALUE',
+      value: 'memory_limit=-1',
+      isSecret: false,
+      isLiteral: false,
+      forBuild: false,
+      forRuntime: true,
+    },
+    {
+      key: 'PHP_ADMIN_VALUE',
+      value: sealed,
+      isSecret: true,
       isLiteral: false,
       forBuild: false,
       forRuntime: true,
