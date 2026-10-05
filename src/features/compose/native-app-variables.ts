@@ -42,7 +42,7 @@ export const NATIVE_APP_PLATFORM_ENV_NAMES: ReadonlySet<string> = new Set([
 ])
 
 /** The daemon's parse limits (`parseNativeAppVariable`); kept in step with it. */
-export const NATIVE_APP_VARIABLE_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/
+export const NATIVE_APP_VARIABLE_NAME_RE = /^[A-Za-z_]\w{0,127}$/
 export const NATIVE_APP_MAX_VARIABLES = 256
 export const NATIVE_APP_MAX_VARIABLE_VALUE = 65_536
 const MAX_SECRET_KEY_LENGTH = 256
