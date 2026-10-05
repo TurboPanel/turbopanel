@@ -6,6 +6,7 @@ import type { ManagedSettings } from './settings.ts'
 import {
   defaultManagedRelease,
   describeManagedImage,
+  isManagedVariantSwapSafe,
   isSameManagedSeries,
   type ManagedReleaseGate,
   resolveManagedImage,
@@ -328,6 +329,9 @@ export const MANAGED_VERSION_UNSUPPORTED_ERROR = 'managed_version_unsupported'
 /** A cluster's engine series cannot change after create. */
 export const MANAGED_SERIES_IMMUTABLE_ERROR = 'managed_series_immutable'
 
+/** A PostgreSQL image swap between libc families would corrupt text indexes. */
+export const MANAGED_VARIANT_SWAP_UNSAFE_ERROR = 'managed_variant_swap_unsafe'
+
 /**
  * Resolve create-time `engineSeries` / `imageVariant` to a catalog image.
  *
@@ -370,26 +374,84 @@ export function parseManagedVersionSelection(
   return { ok: true, image }
 }
 
+/** A settings patch is refused with HTTP 409, an error code and plain words. */
+export type ManagedImageRefusal = {
+  ok: false
+  error: string
+  message: string
+  status: 409
+}
+
 /**
  * Refuse a settings patch that moves an existing cluster to another engine
  * series.
  *
  * An engine refuses to start on a data directory written by a different major,
  * and cross-major replication is not a supported topology, so an in-place
- * series change would break the cluster rather than upgrade it. Changing the
- * base-OS variant within one series (`alpine` ↔ `debian`) is allowed. Series
+ * series change would break the cluster rather than upgrade it. Series
  * migration is a separate managed service plus a data move, not a settings
- * edit.
+ * edit. Whether a base-OS variant may change is decided by
+ * {@link assertManagedVariantSwapSafe}.
  */
 export function assertManagedSeriesUnchanged(
   spec: { defaultImage: string },
   currentSettings: ManagedSettings,
   nextSettings: ManagedSettings
-): { ok: false; error: string; status: 409 } | null {
+): ManagedImageRefusal | null {
   const current = currentSettings.image ?? spec.defaultImage
   const next = nextSettings.image ?? spec.defaultImage
   if (isSameManagedSeries(current, next)) return null
-  return { ok: false, error: MANAGED_SERIES_IMMUTABLE_ERROR, status: 409 }
+  return {
+    ok: false,
+    error: MANAGED_SERIES_IMMUTABLE_ERROR,
+    message:
+      'The database version cannot be changed on an existing cluster, because the data ' +
+      'on disk only works with the version that wrote it. Create a new cluster on the ' +
+      'version you want and restore a backup into it.',
+    status: 409,
+  }
+}
+
+/**
+ * Refuse a settings patch that swaps a PostgreSQL cluster between the Alpine
+ * and Debian images.
+ *
+ * The two images use different C libraries, which sort text differently, so
+ * every text index would silently become wrong (proven on a test host:
+ * `bt_index_check` fails and index-ordered queries return a different order).
+ * Same-variant changes, no-op patches, and engines with their own collations
+ * (MySQL, MariaDB) pass. The policy lives in {@link isManagedVariantSwapSafe}.
+ */
+export function assertManagedVariantSwapSafe(
+  spec: { defaultImage: string },
+  currentSettings: ManagedSettings,
+  nextSettings: ManagedSettings
+): ManagedImageRefusal | null {
+  const current = currentSettings.image ?? spec.defaultImage
+  const next = nextSettings.image ?? spec.defaultImage
+  if (isManagedVariantSwapSafe(current, next)) return null
+  return {
+    ok: false,
+    error: MANAGED_VARIANT_SWAP_UNSAFE_ERROR,
+    message:
+      'Switching this PostgreSQL cluster between the Alpine and Debian images would ' +
+      'silently break its text indexes, because the two sort text differently and the ' +
+      'data would need re-indexing. Create a new cluster on the image you want and ' +
+      'restore a backup into it.',
+    status: 409,
+  }
+}
+
+/** Run the series guard, then the variant guard; first refusal wins. */
+export function assertManagedImageChangeAllowed(
+  spec: { defaultImage: string },
+  currentSettings: ManagedSettings,
+  nextSettings: ManagedSettings
+): ManagedImageRefusal | null {
+  return (
+    assertManagedSeriesUnchanged(spec, currentSettings, nextSettings) ??
+    assertManagedVariantSwapSafe(spec, currentSettings, nextSettings)
+  )
 }
 
 export function readInitialDatabase(spec: {

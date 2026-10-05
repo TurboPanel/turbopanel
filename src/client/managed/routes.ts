@@ -126,6 +126,7 @@ import { insertManagedBackupPolicy } from '../../features/backups/policy-records
 import { defaultBackupSchedule } from '../../features/backups/schedules.ts'
 import {
   assertFailoverReplicaTransportAllowed,
+  assertManagedImageChangeAllowed,
   buildDisasterRecoveryQueuedResponse,
   buildEmptyManagedDetailResponse,
   buildManagedDeleteHardResponse,
@@ -1273,6 +1274,16 @@ export function registerManagedRoutes(router: Hono<AppEnv>, opts: AuthRouteOpts)
     const mergedSettings = mergeManagedPatchSettings(ctx.spec, current.settings, body)
     if (!mergedSettings) {
       return c.json({ error: 'managed_settings_invalid' }, 400)
+    }
+
+    // Refuse before anything is persisted: another series, or a PostgreSQL
+    // swap between libc families (Alpine <-> Debian), would break the data.
+    const imageRefusal = assertManagedImageChangeAllowed(ctx.spec, current.settings, mergedSettings)
+    if (imageRefusal) {
+      return c.json(
+        { error: imageRefusal.error, message: imageRefusal.message },
+        imageRefusal.status
+      )
     }
 
     const { orgLimits, serverLimits } = await loadResourceLimits(
